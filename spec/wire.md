@@ -168,8 +168,9 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
 
 ## 7. Boxes
 - A sealed box (spec/crypto.md §1) is `ct_x (32) || ct_m (1088) || AEAD_K(nonce 24 zero bytes, AD, payload)`, held in a `sealed` value (§3).
-- **`secrets.0` box** (spec/crypto.md §4), a `box` value (spec/data-model.md §9) keyed by `box_key`. AD = `[actor, holder, role, n, nonce, form]` with the key's epoch `[n, nonce]` and `form` = `[0, Opt([kn, knonce]), suite]` for the sealed form (the recipient keyset epoch, none for a key actor other than an account; an account's epoch name, spec/crypto.md §3, for an account) or `[1, [sn, snonce]]` for the symmetric form (the epoch of s).
+- **`secrets.0` box** (spec/crypto.md §4), a `box` value (spec/data-model.md §9) keyed by `box_key`. AD = `[actor, holder, role, n, nonce, form]` with the key's epoch `[n, nonce]` and `form` = `[0, Opt([kn, knonce]), suite]` for the sealed form (the recipient keyset epoch, none for a key actor other than an account; an account's epoch name, spec/crypto.md §3, for an account) or `[1, [sn, snonce]]` for the symmetric form (the epoch of s) or `[2, [[kn, knonce]+], suite]` for the joint form (its keysets, ascending).
   - Sealed payload: `[role, n, secret]`, secret 32 bytes, naming the epoch (n, nonce of the secret under the actor's tid and the role, spec/crypto.md §4); a `secrets.0` box's names its key's (role, epoch).
+  - Joint: the sealed payload sealed to the last keyset's KEM key, that sealed box sealed to the one before's, and so on to the first's, each under the box's one AD.
   - Symmetric `wrap`: XChaCha20-Poly1305 under `kdf("box", s)`, nonce = first 24 bytes of BLAKE3(AD), plaintext `suite (1) || secret (32)`: 49 bytes.
   - For an account holder, `[sn, snonce]` of the symmetric form is its epoch name (spec/crypto.md §3), `s` its role secret at that epoch.
   - Symmetric `possession`: present iff the holder is not a key actor other than an account: a `signature` by the possession key of s (spec/crypto.md §4, Holder actors) under `"osis v1 possession"`, digest BLAKE3(canonical `[actor, holder, role, n, nonce, form, wrap]`), the AD's items then the wrap.

@@ -1870,6 +1870,7 @@ fn sealed_keyset(db: &Osis, a: Tid, h: Tid) -> Option<(u64, [u8; 32])> {
         s.boxes.iter().find(|(k, _)| k.holder == h && k.role == Role::Read && (k.epoch.n, k.epoch.nonce) == (newest.n(), *newest.nonce())).map(|(_, b)| match b {
             ct::SecretBox::Sealed(x) => x.keyset.as_ref().map(|k| (k.n, k.nonce)),
             ct::SecretBox::Symmetric(x) => Some((x.epoch.n, x.epoch.nonce)),
+            ct::SecretBox::Joint(_) => None,
         })?
     })
 }

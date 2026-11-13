@@ -64,20 +64,24 @@ impl Epoch {
 
 /// Form fields of a box, as they enter its AD.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum BoxForm {
+pub enum BoxForm<'a> {
     /// To the holder's KEM key of the keyset `keyset` (none for a key actor), under `suite`.
     Sealed { keyset: Option<Epoch>, suite: u64 },
     /// Wrap under `kdf("box", s)`, s the holder's own secret of epoch `epoch_s`.
     Symmetric { epoch_s: Epoch },
+    /// Sealed to the KEM key of each of the holder's keysets `keysets` (ascending, at least two)
+    /// in turn, the first outermost, under `suite`: opens only for a holder of each.
+    Joint { keysets: &'a [Epoch], suite: u64 },
 }
 
-impl BoxForm {
+impl BoxForm<'_> {
     fn to_wire(self) -> Result<Value, Error> {
         Ok(match self {
             BoxForm::Sealed { keyset, suite } => {
                 Value::List(vec![Value::Int(0), Value::List(keyset.iter().map(Epoch::to_wire).collect()), uint(suite)?])
             }
             BoxForm::Symmetric { epoch_s } => Value::List(vec![Value::Int(1), epoch_s.to_wire()]),
+            BoxForm::Joint { keysets, suite } => Value::List(vec![Value::Int(2), Value::List(keysets.iter().map(Epoch::to_wire).collect()), uint(suite)?]),
         })
     }
 }
@@ -145,19 +149,8 @@ pub struct BoxItem {
 /// none for a key actor) under suite 1. Returns the raw sealed box. The item's epoch must be the
 /// one its secret names (spec/crypto.md §4); at a `secrets.0` slot, its key's (role, epoch).
 pub fn seal_box(recipient: &KemPublicKey, slot: &BoxSlot, keyset: Option<Epoch>, item: &BoxItem, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
-    if slot.key().is_none() {
-        return Err(Error::Malformed("an entry box is sealed by seal_entry"));
-    }
-    if !item.epoch.names(slot.actor(), item.role, &item.secret) {
-        return Err(Error::Malformed("box item epoch"));
-    }
-    if slot.key().is_some_and(|k| k != (item.role, item.epoch)) {
-        return Err(Error::Malformed("box carries no secret of its key"));
-    }
+    let payload = box_payload(slot, item)?;
     let ad = slot.ad(BoxForm::Sealed { keyset, suite: u64::from(SUITE_1) })?;
-    let value = Value::List(vec![role_value(item.role), Value::Int(item.epoch.n), Value::Bytes(item.secret.expose().to_vec())]);
-    let payload = Zeroizing::new(encode(&value));
-    wipe_value(value);
     seal(recipient, &ad, &payload, rng)
 }
 
@@ -197,7 +190,7 @@ pub fn open_entry(kem: &KemSecret, slot: &BoxSlot, form: BoxForm, sealed: &[u8])
     }
     match form {
         BoxForm::Sealed { keyset: None, suite, .. } if suite != u64::from(SUITE_1) => return Err(Error::UnknownSuite(suite)),
-        BoxForm::Symmetric { .. } => return Err(Error::Malformed("symmetric form is not sealed")),
+        BoxForm::Symmetric { .. } | BoxForm::Joint { .. } => return Err(Error::Malformed("entry box form")),
         BoxForm::Sealed { .. } => {}
     }
     let payload = open_sealed(kem, &slot.ad(form)?, sealed)?;
@@ -238,11 +231,71 @@ pub fn open_box(kem: &KemSecret, slot: &BoxSlot, form: BoxForm, sealed: &[u8]) -
     }
     match form {
         BoxForm::Sealed { keyset: None, suite, .. } if suite != u64::from(SUITE_1) => return Err(Error::UnknownSuite(suite)),
-        BoxForm::Symmetric { .. } => return Err(Error::Malformed("symmetric form is not sealed")),
+        BoxForm::Symmetric { .. } | BoxForm::Joint { .. } => return Err(Error::Malformed("not the sealed form")),
         BoxForm::Sealed { .. } => {}
     }
     let payload = open_sealed(kem, &slot.ad(form)?, sealed)?;
-    let value = decode(&payload, &Limits::DEFAULT).map_err(|_| Error::Malformed("box payload"))?;
+    box_item(slot, &payload)
+}
+
+/// Joint form (spec/crypto.md §4, Seal): the sealed payload sealed to `recipients[last]`, that
+/// sealed to the one before, and so on: the outermost to `recipients[0]`, all under one AD
+/// naming every keyset. `recipients` are the holder's keysets ascending, at least two, each with
+/// its KEM key.
+pub fn seal_joint_box(recipients: &[(Epoch, &KemPublicKey)], slot: &BoxSlot, item: &BoxItem, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
+    let keysets: Vec<Epoch> = recipients.iter().map(|(e, _)| *e).collect();
+    if !joint_keysets(&keysets) {
+        return Err(Error::Malformed("joint box keysets"));
+    }
+    let ad = slot.ad(BoxForm::Joint { keysets: &keysets, suite: u64::from(SUITE_1) })?;
+    let mut out = box_payload(slot, item)?;
+    for (_, pk) in recipients.iter().rev() {
+        out = Zeroizing::new(seal(pk, &ad, &out, rng)?);
+    }
+    Ok(out.to_vec())
+}
+
+/// Opens a joint-form box with the KEM secret of each keyset its form names, in order.
+pub fn open_joint_box(kems: &[&KemSecret], slot: &BoxSlot, keysets: &[Epoch], suite: u64, sealed: &[u8]) -> Result<BoxItem, Error> {
+    if suite != u64::from(SUITE_1) {
+        return Err(Error::UnknownSuite(suite));
+    }
+    if kems.len() != keysets.len() || !joint_keysets(keysets) || slot.key().is_none() {
+        return Err(Error::Malformed("joint box keysets"));
+    }
+    let ad = slot.ad(BoxForm::Joint { keysets, suite })?;
+    let mut payload = Zeroizing::new(sealed.to_vec());
+    for kem in kems {
+        payload = open_sealed(kem, &ad, &payload)?;
+    }
+    box_item(slot, &payload)
+}
+
+/// Whether `keysets` fit a joint box: at least two, ascending.
+fn joint_keysets(keysets: &[Epoch]) -> bool {
+    keysets.len() >= 2 && keysets.iter().zip(keysets.iter().skip(1)).all(|(a, b)| a < b)
+}
+
+/// The sealed payload `[role, n, secret]` of `item`, checked against `slot`.
+fn box_payload(slot: &BoxSlot, item: &BoxItem) -> Result<Zeroizing<Vec<u8>>, Error> {
+    if slot.key().is_none() {
+        return Err(Error::Malformed("an entry box is sealed by seal_entry"));
+    }
+    if !item.epoch.names(slot.actor(), item.role, &item.secret) {
+        return Err(Error::Malformed("box item epoch"));
+    }
+    if slot.key().is_some_and(|k| k != (item.role, item.epoch)) {
+        return Err(Error::Malformed("box carries no secret of its key"));
+    }
+    let value = Value::List(vec![role_value(item.role), Value::Int(item.epoch.n), Value::Bytes(item.secret.expose().to_vec())]);
+    let payload = Zeroizing::new(encode(&value));
+    wipe_value(value);
+    Ok(payload)
+}
+
+/// The item of a `secrets.0` box's opened payload, which must name `slot`'s (role, epoch).
+fn box_item(slot: &BoxSlot, payload: &[u8]) -> Result<BoxItem, Error> {
+    let value = decode(payload, &Limits::DEFAULT).map_err(|_| Error::Malformed("box payload"))?;
     let out = parse_box_item(&value, slot.actor());
     wipe_value(value);
     let out = out?;
@@ -428,6 +481,27 @@ mod tests {
         }
         assert!(!e.names(&actor(1), Role::Read, &sec(2)));
         assert_eq!(Epoch::derive(&actor(1), Role::Read, u64::MAX, &sec(1)), Err(Error::TooLarge));
+    }
+
+    // spec/crypto.md §4 (Seal), spec/wire.md §7: a joint box opens only with the KEM secret of
+    // every keyset it names, in order; its AD binds the keysets.
+    #[test]
+    fn joint_box() {
+        let mut rng = SeededRng::from_u64(0);
+        let (k1, k2) = (KemSecret::derive(&sec(0x31)), KemSecret::derive(&sec(0x32)));
+        let (e1, e2) = (ep(Role::Read, 3, 0x31), ep(Role::Read, 3, 0x32));
+        let (e1, e2, k1, k2) = if e1 < e2 { (e1, e2, k1, k2) } else { (e2, e1, k2, k1) };
+        let ew = ep(Role::Write, 4, 9);
+        let at = slot(1, 2, Role::Write, ew);
+        let item = BoxItem { role: Role::Write, epoch: ew, secret: sec(9) };
+        let b = seal_joint_box(&[(e1, k1.public()), (e2, k2.public())], &at, &item, &mut rng).unwrap();
+        assert_eq!(open_joint_box(&[&k1, &k2], &at, &[e1, e2], 1, &b).unwrap(), item);
+        assert!(open_joint_box(&[&k2, &k1], &at, &[e1, e2], 1, &b).is_err(), "out of order");
+        assert!(open_joint_box(&[&k1, &k1], &at, &[e1, e2], 1, &b).is_err(), "one keyset's secret only");
+        assert!(open_joint_box(&[&k1], &at, &[e1], 1, &b).is_err());
+        assert!(open_box(&k1, &at, BoxForm::Sealed { keyset: Some(e1), suite: 1 }, &b).is_err(), "not a sealed box to one keyset");
+        assert!(seal_joint_box(&[(e2, k2.public()), (e1, k1.public())], &at, &item, &mut rng).is_err(), "keysets ascending");
+        assert!(seal_joint_box(&[(e1, k1.public())], &at, &item, &mut rng).is_err(), "at least two");
     }
 
     // spec/wire.md §7: sealed secrets.0 box round trip; AD binds actor, holder, role, epoch, form;

@@ -171,11 +171,16 @@ codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct SymmetricBox { 0 epoch: Epoch, 1 wrap: Vec<u8>, 2 possession: Option<Signature> }
 }
+codec_struct! {
+    /// `keysets`: the holder's keysets it is sealed to, nested in turn (spec/crypto.md §4, Seal).
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct JointBox { 0 keysets: BTreeSet<Epoch>, 1 suite: u64, 2 sealed: Sealed }
+}
 
 codec_enum! {
-    /// `box = enum { sealed 0 (..), symmetric 1 (..) }` (spec/crypto.md §4).
+    /// `box = enum { sealed 0 (..), symmetric 1 (..), joint 2 (..) }` (spec/crypto.md §4).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum SecretBox { 0 Sealed(b: SealedBox), 1 Symmetric(b: SymmetricBox) }
+    pub enum SecretBox { 0 Sealed(b: SealedBox), 1 Symmetric(b: SymmetricBox), 2 Joint(b: JointBox) }
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -1,5 +1,5 @@
 //! Rotations (spec/permissions.md §3, spec/crypto.md §4): when one is due (`rotation_due`:
-//! departures from the actor not covered, by any current epoch; forks, by their merger; stale
+//! departures from the actor not covered, by any current epoch; stale
 //! boxes to holder actors; holders boxed through a keyless grant; an epoch no rotator can
 //! re-seal), the cascade
 //! (`ensure_rotated`: the holder actors this node may rotate first, then the actor), giving a
@@ -31,7 +31,7 @@ pub use departures::{departures_placing, may_rotate};
 pub use lost::{Dropped, Leaving, LostScope, LOST_HEARD_WAIT_MS};
 pub(crate) use lost::{load_kept, without_frozen};
 pub(crate) use departures::{departures, key_role};
-pub(crate) use members::{Boxing, Sealed, grant_keyless};
+pub(crate) use members::{Boxing, Sealed, grant_keyless, sealed};
 pub(crate) use lost::{arm_untils, boxes_kept, load_lost_due, mark_lost_due};
 
 /// How far `blocked_epoch` follows boxes to holder actors (spec/crypto.md §4, Encrypting under).
@@ -217,11 +217,8 @@ pub(crate) fn blocked_roles(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTree
 enum Due {
     /// Only what encrypting under the actor waits for (`ensure_rotated`).
     Encrypt,
-    /// Also the merge where `who` is the role's merger, and withdraws (`pass_end_rotations`).
+    /// Also withdraws (`pass_end_rotations`).
     PassEnd,
-    /// Also every role with more than one current epoch: Seal waits on the actor's fork for a
-    /// rotation or grant this node is making (`merge_for_seal`).
-    Fork,
 }
 
 /// The roles of `a` that `who` may rotate whose rotation is due
@@ -230,10 +227,10 @@ enum Due {
 /// covers nothing: it is superseded unread), or some current epoch, held or not, has a stale box
 /// (rule 2) or a box to an actor whose grant is keyless (the knowing re-key, rule 4), or is
 /// orphaned (`orphaned`); one due only for current epochs whose secret this node lacks, where
-/// its new epoch boxes a rotator (`boxes_rotator`). With `Due::PassEnd` also when the role forked
-/// and `who` is its merger (`members::is_merger`), or an unsuperseded epoch is not current here
-/// and `who` withdraws it; with `Due::Fork` whenever the role forked. No secret of the role is
-/// needed; the commit must be uploadable (`wrappable`), else the rotation waits for a re-seal.
+/// its new epoch boxes a rotator (`boxes_rotator`). With `Due::PassEnd` also when an unsuperseded
+/// epoch is not current here and `who` withdraws it. A fork alone is due nothing: it stands
+/// until the role next rotates (spec/crypto.md §4). No secret of the role is needed; the commit
+/// must be uploadable (`wrappable`), else the rotation waits for a re-seal.
 fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due) -> Result<BTreeSet<Role>> {
     let may = may_rotate(tx.core, who, a);
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
@@ -243,10 +240,8 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due) -> Result<BTreeS
     let roles: Vec<Role> = ROLES.into_iter().filter(|r| may.contains(r) && !epochs.role(*r).current().is_empty()).collect();
     for r in roles {
         let held = tx.core.names_held(a);
-        let forked = epochs.role(r).current().len() > 1;
-        let merger = mode == Due::PassEnd && members::is_merger(tx.core, who, a, r);
-        let mut due = blocked.contains(&r) || forked && (merger || mode == Due::Fork);
-        // merge (rule 3): any current epoch, not only the newest, missing a known departure; a
+        let mut due = blocked.contains(&r);
+        // any current epoch, not only the newest, missing a known departure; a
         // fork made unaware of it stays current otherwise and may win the (n, nonce) order, and a
         // holder actor anchored on it never moves to the knowing one. Judged from the state, so
         // for current epochs whose secret this node lacks too; such an
@@ -264,9 +259,10 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due) -> Result<BTreeS
         }
         due = due || unread && boxes_rotator(tx, who, a, r)?;
         // withdraw: an unsuperseded epoch whose names this node does not meet, by its maker,
-        // or by the merger when its maker may not rotate (or is unknown: a snapshot's epoch)
+        // or by any node that may rotate when its maker may not (or is unknown: a snapshot's
+        // epoch); withdraws by several fork, which stands
         let current = epochs.role(r).current();
-        due = due || mode == Due::PassEnd && epochs.role(r).unsuperseded().iter().any(|e| !current.contains(e) && maker(tx.core, who, a, r, e).map_or(merger, |m| m.me || !m.may_rotate && merger));
+        due = due || mode == Due::PassEnd && epochs.role(r).unsuperseded().iter().any(|e| !current.contains(e) && maker(tx.core, who, a, r, e).is_none_or(|m| m.me || !m.may_rotate));
         if due {
             out.insert(r);
         }
@@ -290,7 +286,7 @@ fn orphaned(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &osis_crypto::Epoch) -> Result
 /// rotator holding `r` only through a holder actor with no keyset to seal to, which every
 /// rotation leaves out: `orphaned_rotations_do_not_trade_spec_crypto_4`).
 fn boxes_rotator(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role) -> Result<bool> {
-    let Some(boxing) = recipients(tx, who, a, &[])? else { return Ok(false) };
+    let boxing = recipients(tx, who, a, &[])?;
     Ok(boxing.holders.iter().any(|h| h.role >= r && may_rotate(tx.core, &h.holder, a).contains(&r)))
 }
 
@@ -325,47 +321,8 @@ fn maker(core: &Core, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch) -> Op
 /// (`members::sealed`); each of `skip` gets its new role or is left out (departing holders).
 /// Holders boxed nothing (keys unknown, no keyset to seal to or encrypt under, no key access) are left out:
 /// re-sealed later where the re-seal trigger finds them; what the rotation records of the holder
-/// actors so left out (`members::left_out`) goes with it. `None`: the rotation waits (Seal waits
-/// for a holder actor's keyset).
-pub(crate) fn recipients(tx: &mut Tx<'_>, who: &Tid, a: &Tid, skip: &[(Tid, Option<Role>)]) -> Result<Option<Boxing>> {
-    Ok(recipients_or_waiting(tx, who, a, skip)?.ok())
-}
-
-/// `recipients`, merging first each holder actor whose fork Seal waits on where `who` may
-/// rotate it (`merge_for_seal`).
-pub(crate) fn recipients_merging(tx: &mut Tx<'_>, who: &Tid, a: &Tid, skip: &[(Tid, Option<Role>)], done: &mut Done) -> Result<Option<Boxing>> {
-    let mut merged = BTreeSet::new();
-    loop {
-        match recipients_or_waiting(tx, who, a, skip)? {
-            Ok(b) => return Ok(Some(b)),
-            Err(m) if merged.insert(m) && merge_for_seal(tx, *who, *a, m, done)? => {}
-            Err(_) => return Ok(None),
-        }
-    }
-}
-
-/// `members::sealed`, merging `m` first where Seal waits on its fork and `who` may rotate it
-/// (`merge_for_seal`).
-pub(crate) fn sealed_merging(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role, done: &mut Done) -> Result<Sealed> {
-    match members::sealed(tx, who, a, m, role)? {
-        Sealed::Wait if merge_for_seal(tx, *who, *a, *m, done)? => members::sealed(tx, who, a, m, role),
-        s => Ok(s),
-    }
-}
-
-/// The merge a rotation or grant of `a` needs (spec/crypto.md §4, Seal): Seal waits on holder
-/// actor `m`'s fork, and `who` rotates every forked role of `m` it may rotate, now, merger or
-/// not, followed upward as any rotation of a holder actor is (`rotate_above`), but for `a`,
-/// whose own step answers its boxes to `m`. Whether it rotated `m`.
-fn merge_for_seal(tx: &mut Tx<'_>, who: Tid, a: Tid, m: Tid, done: &mut Done) -> Result<bool> {
-    let rotated = rotate_below(tx, who, m, &[], Due::Fork, done)?;
-    let merged = rotated.contains(&m);
-    rotate_above_but(tx, who, rotated, Some(a), done)?;
-    Ok(merged)
-}
-
-/// `recipients`, or the holder actor whose keysets Seal waits on.
-fn recipients_or_waiting(tx: &mut Tx<'_>, who: &Tid, a: &Tid, skip: &[(Tid, Option<Role>)]) -> Result<std::result::Result<Boxing, Tid>> {
+/// actors so left out (`members::left_out`) goes with it.
+pub(crate) fn recipients(tx: &mut Tx<'_>, who: &Tid, a: &Tid, skip: &[(Tid, Option<Role>)]) -> Result<Boxing> {
     let mut out = Boxing { holders: Vec::new(), left_out: osis_keys::LeftOut::new() };
     for (m, role) in tx.core.key_holders(a) {
         let role = match skip.iter().find(|(s, _)| *s == m) {
@@ -381,16 +338,11 @@ fn recipients_or_waiting(tx: &mut Tx<'_>, who: &Tid, a: &Tid, skip: &[(Tid, Opti
                 Some(top)
             }
             Sealed::Out => None,
-            Sealed::Wait => return Ok(Err(m)),
         };
         members::left_out(tx, a, &m, role, boxed, &blocked, &mut out.left_out)?;
     }
-    Ok(Ok(out))
+    Ok(out)
 }
-
-/// The error a rotation, grant or re-seal gets while Seal waits (`recipients`); a removal or
-/// finalize goes without its rotation then (`flows::edges::demote_in`, `finalize_in`).
-pub(crate) const SEAL_WAITS: Error = Error::Misuse("a holder actor's keysets have forked: this waits until a node that may rotate that actor merges them (spec/crypto.md §4, Seal)");
 
 /// A fresh deposit seed for `a` in `m` (spec/crypto.md §3; an admin's write).
 pub(crate) fn fresh_deposit_seed(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid) -> Result<osis_crypto::Secret32> {
@@ -503,7 +455,7 @@ pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
 #[cfg(test)]
 pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>) -> Result<Done> {
     let mut done = Done::default();
-    let holders = recipients_merging(tx, &who, &a, &[], &mut done)?.ok_or(SEAL_WAITS)?;
+    let holders = recipients(tx, &who, &a, &[])?;
     done.extend(rotate_boxing(tx, who, a, roles, &holders)?);
     Ok(done)
 }
@@ -658,18 +610,14 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], mode: Due,
         let x = *x;
         stack.pop();
         finalize_due(tx, who, x, if x == target { rewriting } else { &[] }, done)?;
-        // `Due::Fork` is for the actor Seal waits on alone; pass-end rotations go for all below
-        let mode = if x == a || mode == Due::PassEnd { mode } else { Due::Encrypt };
         let mine = rotation_due(tx, &who, &x, mode)?;
         if mine.is_empty() {
             continue;
         }
-        // a rotation due waits (its roles stay blocked) while Seal waits for a holder actor's
-        // keyset this node cannot merge, or for want of possession: every node would judge it
-        // invalid
-        if let Some(holders) = recipients_merging(tx, &who, &x, &[], done)?
-            && let Some(mine) = shown_roles(tx.core, &who, &x, &mine, &holders.holders)
-        {
+        // a rotation due waits (its roles stay blocked) for want of possession: every node
+        // would judge it invalid
+        let holders = recipients(tx, &who, &x, &[])?;
+        if let Some(mine) = shown_roles(tx.core, &who, &x, &mine, &holders.holders) {
             done.extend(rotate_boxing(tx, who, x, &mine, &holders)?);
             rotated.push(x);
         }
@@ -678,13 +626,10 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], mode: Due,
 }
 
 /// The rotations nothing waits for, on `a` and the holder actors below it (`rotate_below`) by
-/// `who`, with the other rotations due there: merges of forks where `who` is the merger
-/// (`members::is_merger`) and withdraws of unsuperseded epochs not current here. Decided at the
-/// end of a complete pass of `a`'s labels (`Engine::reseal_due`), as re-seals and history adds
-/// are, never by `ensure_rotated`: no epoch they supersede is one this node would encrypt under
-/// while it misses a departure, and the pass's end gathers the forks placed before it into one
-/// merge. The merger is read from rosters, so merges never fork each other: a fork still on its
-/// way when the merger merges takes another merge by the same node, listing the first.
+/// `who`, with the other rotations due there: withdraws of unsuperseded epochs not current here.
+/// Decided at the end of a complete pass of `a`'s labels (`Engine::reseal_due`), as re-seals and
+/// history adds are, never by `ensure_rotated`: no epoch they supersede is one this node would
+/// encrypt under while it misses a departure.
 fn pass_end_rotations(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done) -> Result<()> {
     let rotated = rotate_below(tx, who, a, &[], Due::PassEnd, done)?;
     rotate_above(tx, who, rotated, done)
@@ -761,7 +706,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[c
     // a holder whose grant this node may finalize is boxed nothing (spec/permissions.md §2), as
     // a re-seal boxes it nothing: its departure is due, and the finalize follows
     let ended: Vec<(Tid, Option<Role>)> = ended_holders(tx.core, &who, &t).into_iter().map(|m| (m, None)).collect();
-    let holders = recipients_merging(tx, &who, &t, &ended, done)?.ok_or(SEAL_WAITS)?;
+    let holders = recipients(tx, &who, &t, &ended)?;
     let mut m = Mutation::new();
     let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, false)?;
     let deposit = fresh_deposit_seed(tx, &mut m, t)?;
@@ -918,19 +863,11 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
     if ended_holders(tx.core, &me, &a).contains(&holder) {
         return Err(Error::Misuse("the holder's grant has ended: it is finalized, not re-sealed"));
     }
-    // a rotation just made (a merge) boxed the holder at the new epoch already; a re-share
-    // merges a fork Seal waits on, as a grant does; the trigger's re-seals wait for
-    // the fork's merger: every re-sealer makes them at its pass's end, so merges by each would
-    // fork again
+    // a rotation just made boxed the holder at the new epoch already
     let rotated = !done.commits.is_empty();
-    let sealed = match which {
-        Reseal::All => sealed_merging(tx, &me, &a, &holder, role, &mut done)?,
-        Reseal::Missing => members::sealed(tx, &me, &a, &holder, role)?,
-    };
-    let rcpt = match sealed {
+    let rcpt = match members::sealed(tx, &me, &a, &holder, role)? {
         Sealed::Boxed(r) => r,
         Sealed::Out => return Err(Error::Misuse("the holder has no key access or no keyset this node may seal it to")),
-        Sealed::Wait => return Err(SEAL_WAITS),
     };
     let missing = |r: Role| osis_keys::reseal_missing(&secrets, &epochs, &holder, r).iter().any(|e| epochs.role(r).secret(e).is_some());
     let roles: BTreeSet<Role> = roles.iter().copied().filter(|r| *r <= rcpt.role && (which == Reseal::All && !rotated || missing(*r))).collect();
@@ -1091,7 +1028,7 @@ impl Engine {
         self.run(|tx| own_secrets_delivered(tx, t))
     }
 
-    /// Makes the rotations of `actor` nothing waits for (`pass_end_rotations`: merges, withdraws), re-seals the
+    /// Makes the rotations of `actor` nothing waits for (`pass_end_rotations`: withdraws), re-seals the
     /// holders of `actor` the trigger names and adds the history its current epochs lack
     /// (spec/permissions.md §3, spec/crypto.md §4 History box), decided at the end of a complete
     /// pass of its labels (`sync`); nothing otherwise.
@@ -1122,7 +1059,7 @@ impl Engine {
         })
     }
 
-    /// `pass_end_rotations` alone, as a complete pass's end runs it (tests: the merges and withdraws without the
+    /// `pass_end_rotations` alone, as a complete pass's end runs it (tests: the withdraws without the
     /// re-seals and history adds of `reseal_due`).
     #[cfg(test)]
     pub(crate) fn pass_end_rotations(&mut self, actor: &Tid) -> Result<Done> {

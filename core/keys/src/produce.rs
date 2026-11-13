@@ -9,9 +9,9 @@ use crate::open::HistoryAlts;
 use crate::Error;
 use osis_base::{Role, Tid};
 use osis_crypto::{
-    AccountEpochKeys, BoxItem, BoxSlot, CryptoRngCore, Epoch, KemPublicKey, Secret32, SigningSecret, key_actor_role_secret, open_history, seal_box, seal_history, wrap_symmetric_box,
+    AccountEpochKeys, BoxItem, BoxSlot, CryptoRngCore, Epoch, KemPublicKey, Secret32, SigningSecret, key_actor_role_secret, open_history, seal_box, seal_history, seal_joint_box, wrap_symmetric_box,
 };
-use osis_schema::core_types::{BoxKey, KemKey, Keys, Sealed, SealedBox, SecretBox, Secrets, Signature, SymmetricBox};
+use osis_schema::core_types::{BoxKey, JointBox, KemKey, Keys, Sealed, SealedBox, SecretBox, Secrets, Signature, SymmetricBox};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -20,9 +20,10 @@ use std::sync::Arc;
 pub enum HolderKeys {
     /// One KEM key; `seed` when the writer holds it (symmetric boxes under its role secrets).
     KeyActor { kem: KemPublicKey, seed: Option<Secret32> },
-    /// The holder's newest keysets per role the writer holds, and its newest role secrets the
-    /// writer holds (symmetric boxes, e.g. a thing's base actor).
-    Actor { keysets: BTreeMap<Role, (Epoch, KemPublicKey)>, own: BTreeMap<Role, (Epoch, Secret32)> },
+    /// The holder's keysets per role to seal to, each with its KEM key (one; several ascending:
+    /// a joint box, spec/crypto.md §4 Seal), and role secrets of the holder the writer holds
+    /// (symmetric boxes, e.g. a thing's base actor; possession proofs).
+    Actor { keysets: BTreeMap<Role, Vec<(Epoch, KemPublicKey)>>, own: BTreeMap<Role, (Epoch, Secret32)> },
     /// An account at its epoch (spec/crypto.md §3): the epoch's name and KEM key, and its keys
     /// when the writer holds it (symmetric boxes, possession by the epoch's signing key).
     Account { epoch: Epoch, kem: KemPublicKey, keys: Option<Arc<AccountEpochKeys>> },
@@ -41,7 +42,7 @@ impl HolderKeys {
                     return Err(Error::UnknownSuite(ks.suite));
                 }
                 let KemKey::X25519MlKem768(b) = &ks.kem_key;
-                keysets.insert(r, (from_schema(&ks.epoch)?, KemPublicKey::from_slice(b)?));
+                keysets.insert(r, vec![(from_schema(&ks.epoch)?, KemPublicKey::from_slice(b)?)]);
             }
         }
         Ok(HolderKeys::Actor { keysets, own: BTreeMap::new() })
@@ -86,16 +87,16 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
             HolderKeys::KeyActor { seed: Some(seed), .. } => symmetric(&slot, i, &key_actor_role_secret(seed, i.role), Epoch::ZERO, None)?,
             HolderKeys::Account { epoch, keys: Some(k), .. } => symmetric(&slot, i, &key_actor_role_secret(k.seed(), i.role), *epoch, Some(&k.signing))?,
             HolderKeys::Account { epoch, kem, keys: None } => sealed(kem, &slot, Some(*epoch), i, rng)?,
-            HolderKeys::Actor { keysets, own } => {
-                let ks = keysets.get(&i.role);
-                match own.get(&i.role) {
-                    Some((es, s)) if symmetric_box(es, ks.map(|(ek, _)| ek)) => symmetric(&slot, i, s, *es, Some(&crate::possession::possession_secret(s)))?,
+            HolderKeys::Actor { keysets, own } => match keysets.get(&i.role).map(Vec::as_slice) {
+                Some(joint @ [_, _, ..]) => self::joint(joint, &slot, i, rng)?,
+                ks => match own.get(&i.role) {
+                    Some((es, s)) if symmetric_box(es, ks.and_then(|k| k.first()).map(|(ek, _)| ek)) => symmetric(&slot, i, s, *es, Some(&crate::possession::possession_secret(s)))?,
                     _ => {
-                        let Some((ek, pk)) = ks else { return Ok(None) };
+                        let Some([(ek, pk)]) = ks else { return Ok(None) };
                         sealed(pk, &slot, Some(*ek), i, rng)?
                     }
-                }
-            }
+                },
+            },
         };
         out.boxes.insert(box_key(holder, i.role, &i.epoch), b);
     }
@@ -113,6 +114,14 @@ fn sealed(pk: &KemPublicKey, slot: &BoxSlot, keyset: Option<Epoch>, i: &Item, rn
     let item = BoxItem { role: i.role, epoch: i.epoch, secret: i.secret.clone() };
     let sealed = seal_box(pk, slot, keyset, &item, rng)?;
     Ok(SecretBox::Sealed(SealedBox { keyset: keyset.as_ref().map(to_schema), suite: SUITE, sealed: Sealed::X25519MlKem768(sealed) }))
+}
+
+/// A joint box to the holder's keysets `ks` (ascending, at least two) (spec/crypto.md §4, Seal).
+fn joint(ks: &[(Epoch, KemPublicKey)], slot: &BoxSlot, i: &Item, rng: &mut dyn CryptoRngCore) -> Result<SecretBox, Error> {
+    let item = BoxItem { role: i.role, epoch: i.epoch, secret: i.secret.clone() };
+    let to: Vec<(Epoch, &KemPublicKey)> = ks.iter().map(|(e, pk)| (*e, pk)).collect();
+    let sealed = seal_joint_box(&to, slot, &item, rng)?;
+    Ok(SecretBox::Joint(JointBox { keysets: ks.iter().map(|(e, _)| to_schema(e)).collect(), suite: SUITE, sealed: Sealed::X25519MlKem768(sealed) }))
 }
 
 /// A symmetric box under the holder's secret `s` of `epoch_s`; to a holder actor with its
@@ -277,18 +286,22 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
 }
 
 /// The proofs a rotation's keysets carry for holder actor `m` (spec/crypto.md §4, Possession):
-/// at each rotated role where its box to `m` is symmetric under `m`'s secret, a signature over
-/// the keyset by that secret's possession key, naming the keyset its box names.
+/// at each rotated role where its box to `m` is symmetric under `m`'s secret, or joint at keysets
+/// one of whose secrets the rotator holds, a signature over the keyset by that secret's
+/// possession key, naming that keyset.
 fn prove_boxed(actor: &Tid, m: &Recipient, rotated: &[Rotated], secrets: &SecretsWrite, keys: &mut KeysWrite) {
     for x in rotated {
-        let Some(SecretBox::Symmetric(b)) = secrets.boxes.get(&box_key(m.holder, x.role, &x.epoch)) else { continue };
+        let Some(b) = secrets.boxes.get(&box_key(m.holder, x.role, &x.epoch)) else { continue };
+        if matches!(b, SecretBox::Sealed(_)) {
+            continue;
+        }
         let key = match &m.keys {
             HolderKeys::Actor { own, .. } => own.get(&x.role).map(|(es, s)| (*es, crate::possession::possession_secret(s))),
             HolderKeys::Account { epoch, keys: Some(k), .. } => Some((*epoch, k.signing.clone())),
             _ => None,
         };
         let (Some((es, k)), Some(ks)) = (key, keys.keysets.get_mut(&x.role)) else { continue };
-        if from_schema(&b.epoch).is_ok_and(|e| e == es) {
+        if box_keysets(b).contains(&es) {
             let p = crate::possession::prove(actor, x.role, ks, &m.holder, es, &k);
             ks.proofs.insert(m.holder, p);
         }
@@ -297,7 +310,7 @@ fn prove_boxed(actor: &Tid, m: &Recipient, rotated: &[Rotated], secrets: &Secret
 
 /// What a node writes as the history box of one current epoch (spec/crypto.md §4, History box):
 /// the earlier secrets the live entries it opens list and every earlier superseded established
-/// secret it holds (a current fork's travels by box and merge, never by history: what an epoch
+/// secret it holds (a current fork's travels by box and by the rotation listing it, never by history: what an epoch
 /// supersedes is read alike by every node, its keyset listing every fork its rotator knew),
 /// with the epoch's names.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -430,12 +443,13 @@ fn box_at(
     Ok(Some(out))
 }
 
-/// The epoch of its holder box `b` names (a sealed box's recipient keyset epoch, a symmetric
-/// one's epoch of s): none for a key actor's sealed box.
-pub fn box_epoch(b: &SecretBox) -> Option<Epoch> {
+/// The keysets of its holder its box `b` names (a sealed box's recipient keyset epoch, a
+/// symmetric one's epoch of s, a joint one's keysets): none for a key actor's sealed box.
+pub fn box_keysets(b: &SecretBox) -> Vec<Epoch> {
     match b {
-        SecretBox::Sealed(x) => x.keyset.as_ref().and_then(|e| from_schema(e).ok()),
-        SecretBox::Symmetric(x) => from_schema(&x.epoch).ok(),
+        SecretBox::Sealed(x) => x.keyset.iter().filter_map(|e| from_schema(e).ok()).collect(),
+        SecretBox::Symmetric(x) => from_schema(&x.epoch).into_iter().collect(),
+        SecretBox::Joint(x) => x.keysets.iter().filter_map(|e| from_schema(e).ok()).collect(),
     }
 }
 

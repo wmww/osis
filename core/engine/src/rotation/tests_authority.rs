@@ -46,7 +46,7 @@ fn half_valid(lp: &mut LocalPeer, m: Tid, s: Tid, prove: bool) -> (CommitId, BTr
         .run(|tx| {
             let me = tx.core.writer().unwrap();
             let held = tx.core.epochs(&m).unwrap();
-            let holders = super::recipients(tx, &me, &m, &[(s, None)])?.ok_or(super::SEAL_WAITS)?;
+            let holders = super::recipients(tx, &me, &m, &[(s, None)])?;
             let mut mu = Mutation::new();
             crate::flows::edges::removal(tx, &mut mu, m, s)?;
             // the rotation written beside, its keysets proved first

@@ -2,9 +2,9 @@
 (* History cuts (issues/history-less-grant.md): a grant without history is a *)
 (* read rotation at the grant (the cut) whose history box carries no earlier *)
 (* secret. One actor, one key role. Admins rotate, grant, re-seal, remove    *)
-(* and merge (a is the merger); readers only add history. CutTo are granted *)
-(* without history (m: removed, then re-added without history), HistTo with *)
-(* history (one in CutTo too: showing history later).                        *)
+(* and rotate over forks (Merge, by a); readers only add history. CutTo are *)
+(* granted without history (m: removed, then re-added without history),     *)
+(* HistTo with history (one in CutTo too: showing history later).           *)
 (* The rule (Rule = "cut"): each keyset carries a floor, the n of the newest *)
 (* cut it descends from (a cut: its own n; else the greatest floor of the   *)
 (* epochs it lists), at most its own n (above it the keyset is invalid). A *)
@@ -181,7 +181,7 @@ CutGranted(x) == \E i \in Ids : C[i].gr = x /\ C[i].cut
 \* ---- actions ----------------------------------------------------------------
 Rotate(v) == /\ MayRotate(v) /\ nrot < MaxRot
              /\ Add(NewRot(v, FALSE, "", "")) /\ nrot' = nrot + 1 /\ UNCHANGED <<nmerge, ndue, nhost>>
-\* the merger (a) merges a fork
+\* a rotates while it holds a fork (any rotation lists every current epoch)
 Merge(v) == /\ v = "a" /\ MayRotate(v) /\ Cardinality(Cur(v)) > 1 /\ nmerge < MaxMerge
             /\ Add(NewRot(v, FALSE, "", "")) /\ nmerge' = nmerge + 1 /\ UNCHANGED <<nrot, ndue, nhost>>
 \* the knowing re-key: a current epoch misses a departure v knows (or v lacks its secret)

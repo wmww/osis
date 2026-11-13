@@ -32,7 +32,7 @@ Encoding: spec/wire.md §4. Fields:
     - a removal of several holders' grants on one target, each gone or saying retain (spec/permissions.md §2), none of them the author's own grant or a self-removal, with one rotation: an explicit one with one frontier (revoking a link joiner together with L, spec/permissions.md §7), or a finalize of several ended grants (spec/permissions.md §2).
   - A removal of another holder's grant with no frontier (a finalize, spec/permissions.md §2) removes only grants past their `until` at its `ts`; an explicit removal always carries a frontier.
   - These shape rules bind the writer; a receiver does not check them and judges each edge write on its own (spec/permissions.md §5.1).
-  - A grant also carries the grantee's `secrets.0` boxes; a removal or demotion carries the rotation of the target's roles it requires, except while Seal waits (spec/permissions.md §3); other rotations, re-seals and `keys.0` and `label.0` writes change no grant; all may cover many things.
+  - A grant also carries the grantee's `secrets.0` boxes; a removal or demotion carries the rotation of the target's roles it requires, except while Authority would fail (spec/permissions.md §3); other rotations, re-seals and `keys.0` and `label.0` writes change no grant; all may cover many things.
   - Role commits MUST NOT carry `expires`; their retention is fixed (§5) and a purge request never names them.
 - **`created.0`** is carried by the thing's first durable commit, of either kind; a commit whose only deltas are `created.0` and that does not expire is a role commit.
   - A compaction snapshot or ephemeral commit never carries it (§5). A compaction snapshot carrying `retention^.0` is bad input likewise.

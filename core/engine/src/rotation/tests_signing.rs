@@ -412,7 +412,7 @@ fn a_listing_named_late_names_again_spec_permissions_5_5() {
 fn read_box_at(lp: &mut LocalPeer, i: usize, a: Tid, m: Tid) -> Option<osis_crypto::Epoch> {
     let e = super::tests::newest_read(lp, i, a)?;
     let s = lp.peers[i].engine.get_typed(&a, &ct::SECRETS).unwrap()?;
-    s.boxes.iter().find(|(k, _)| k.holder == m && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == e)).and_then(|(_, b)| osis_keys::box_epoch(b))
+    s.boxes.iter().find(|(k, _)| k.holder == m && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == e)).and_then(|(_, b)| osis_keys::box_keysets(b).into_iter().next())
 }
 
 // spec/crypto.md §4 (Encrypting under: an account's epochs minted before a node's removal from

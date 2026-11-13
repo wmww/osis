@@ -2077,7 +2077,7 @@ pub fn unopenable_recipient(e: &mut Engine, holder: Tid, role: Role) -> Recipien
         HolderKeys::KeyActor { kem, seed } => (*kem, *seed) = (wrong, None),
         HolderKeys::Account { kem, keys, .. } => (*kem, *keys) = (wrong, None),
         HolderKeys::Actor { keysets, own } => {
-            keysets.values_mut().for_each(|k| k.1 = wrong.clone());
+            keysets.values_mut().flatten().for_each(|k| k.1 = wrong.clone());
             own.clear();
         }
     }

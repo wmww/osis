@@ -173,10 +173,9 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     let boxes = if rotation::grant_keyless(tx.core, &target, &holder) {
         None
     } else {
-        let rcpt = match rotation::sealed_merging(tx, &who, &target, &holder, edge.role, &mut done)? {
+        let rcpt = match rotation::sealed(tx, &who, &target, &holder, edge.role)? {
             rotation::Sealed::Boxed(r) => r,
             rotation::Sealed::Out => return Err(Error::Misuse("the holder has no keyset this node may seal it to")),
-            rotation::Sealed::Wait => return Err(rotation::SEAL_WAITS),
         };
         let hist = rotation::history_boxes(tx, &who, &target)?;
         Some(box_holder(&target, &epochs, &hist, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?)
@@ -341,11 +340,9 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         if !roles.is_empty() {
             let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
             let skip: Vec<(Tid, Option<Role>)> = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
-            // while Seal waits on a fork this node cannot merge, or Authority would fail, the
-            // removal goes alone (spec/permissions.md §3)
-            if let Some(holders) = rotation::recipients_merging(tx, &who, &target, &skip, &mut done)?
-                && let Some(roles) = rotation::shown_roles(tx.core, &who, &target, &roles, &holders.holders)
-            {
+            // while Authority would fail, the removal goes alone (spec/permissions.md §3)
+            let holders = rotation::recipients(tx, &who, &target, &skip)?;
+            if let Some(roles) = rotation::shown_roles(tx.core, &who, &target, &roles, &holders.holders) {
                 let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, !pending.is_empty())?;
                 if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
                     rotation::fresh_deposit_seed(tx, &mut m, target)?;
@@ -449,7 +446,7 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
 /// A finalize by `who` of the edges `ended` on `target` (`finalizable`; spec/permissions.md §2):
 /// their removal with no frontier, each saying retain or erase as its expiry would, and the
 /// rotation of the roles they held that `who` may rotate, in one role commit, or alone while
-/// Seal waits or Authority would fail (its rotation then stays due, as for any removal:
+/// Authority would fail (its rotation then stays due, as for any removal:
 /// `demote_in`). The cascade below `target` is the caller's (`rotation::ensure_rotated`).
 pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid, PermEdge, bool)], done: &mut Done) -> Result<()> {
     let mut m = Mutation::new();
@@ -475,9 +472,8 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     if !roles.is_empty() && tx.core.has_own_secrets(&target) {
         let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
         let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
-        if let Some(holders) = rotation::recipients_merging(tx, &who, &target, &skip, done)?
-            && let Some(roles) = rotation::shown_roles(tx.core, &who, &target, &roles, &holders.holders)
-        {
+        let holders = rotation::recipients(tx, &who, &target, &skip)?;
+        if let Some(roles) = rotation::shown_roles(tx.core, &who, &target, &roles, &holders.holders) {
             let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, !pending.is_empty())?;
             if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
                 rotation::fresh_deposit_seed(tx, &mut m, target)?;

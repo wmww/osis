@@ -347,7 +347,7 @@ fn roster_removal(n: usize) -> (u64, usize, u64) {
     for i in 0..n - 1 {
         let mut x = [0u8; 15];
         x[..8].copy_from_slice(&(i as u64 + 1).to_le_bytes());
-        let keysets = [Role::Read, Role::Write].into_iter().map(|r| (r, (ep, kem.clone()))).collect();
+        let keysets = [Role::Read, Role::Write].into_iter().map(|r| (r, vec![(ep, kem.clone())])).collect();
         holders.push(Recipient { holder: Tid::from_bytes(x), role: Role::Write, keys: HolderKeys::Actor { keysets, own: BTreeMap::new() } });
     }
     // secrets of its own are all three roles' (spec/crypto.md §3): the thing gets them first

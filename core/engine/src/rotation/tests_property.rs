@@ -150,12 +150,10 @@ impl Run {
         use osis_keys::aspects::from_schema;
         let core = &self.lp.peers[p].engine.core;
         let new = |k, b| !self.states.iter().any(|x| x.0 == a && x.1.boxes.get(k) == Some(b));
-        let sealed = s.boxes.iter().filter(|(k, b)| !self.tids.contains(&k.holder) && new(*k, *b)).filter_map(|(k, b)| {
-            let via = match b {
-                ct::SecretBox::Sealed(sb) => from_schema(sb.keyset.as_ref()?).ok()?,
-                ct::SecretBox::Symmetric(sb) => from_schema(&sb.epoch).ok()?,
-            };
-            Some((k, from_schema(&k.epoch).ok()?, via))
+        // a joint box is stale where any keyset it names is
+        let sealed = s.boxes.iter().filter(|(k, b)| !self.tids.contains(&k.holder) && new(*k, *b)).flat_map(|(k, b)| {
+            let e = from_schema(&k.epoch).ok();
+            osis_keys::box_keysets(b).into_iter().filter_map(move |via| Some((k, e?, via)))
         });
         let superseded = |m: &Tid, r: Role, k: &Epoch| core.epochs(m).is_some_and(|ep| ep.role(r).epochs().any(|(_, info)| info.rotations.iter().any(|(_, list)| list.contains(k))));
         sealed.filter(|(k, _, via)| superseded(&k.holder, k.role, via)).map(|(k, e, _)| (a, k.role, e, k.holder)).collect()
@@ -197,14 +195,12 @@ impl Run {
         let held = super::tests::commit_ids(&mut self.lp, p);
         use osis_keys::aspects::from_schema;
         for (k, b) in after.boxes.iter().filter(|(k, b)| before.boxes.get(k) != Some(b) && !self.tids.contains(&k.holder)) {
-            let via = match b {
-                ct::SecretBox::Sealed(sb) => sb.keyset.as_ref().and_then(|x| from_schema(x).ok()),
-                ct::SecretBox::Symmetric(sb) => from_schema(&sb.epoch).ok(),
-            };
-            if let (Some(via), Ok(e)) = (via, from_schema(&k.epoch))
-                && !self.ever[p].contains(&(k.holder, k.role, via))
-            {
-                self.resealed.push(((t, k.role, e, k.holder), via, held.clone()));
+            for via in osis_keys::box_keysets(b) {
+                if let Ok(e) = from_schema(&k.epoch)
+                    && !self.ever[p].contains(&(k.holder, k.role, via))
+                {
+                    self.resealed.push(((t, k.role, e, k.holder), via, held.clone()));
+                }
             }
         }
         Ok(n)
@@ -334,7 +330,7 @@ impl Run {
         // refused (a rotated role's secret not held, Seal waiting) changes nothing
         self.lp.peers[i].engine.run(|tx| {
             let held = tx.core.epochs(&t).unwrap_or_default();
-            let holders = super::recipients(tx, &tx.core.writer().unwrap(), &t, &skip)?.ok_or(super::SEAL_WAITS)?;
+            let holders = super::recipients(tx, &tx.core.writer().unwrap(), &t, &skip)?;
             let mut m = Mutation::new();
             let r = super::rotation_into(tx, &mut m, t, rot, &held, &holders, false)?;
             crate::engine::Engine::commit_tx(tx, m)?;

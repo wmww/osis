@@ -233,7 +233,7 @@ fn registration_of_thousands_of_readers() {
             let ks = ct::Keyset { kem_key: ct::KemKey::X25519MlKem768(kem.as_bytes().to_vec()), ..template.clone() };
             m.op(h, &ct::KEYS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Replace(Some(ks).to_value()) }).unwrap();
             m.op(a, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(h))], op: Op::Set(ct::Edge { role: Role::Read, until: None, invite: None, tied: None }.to_value()) }).unwrap();
-            holders.push(Recipient { holder: h, role: Role::Read, keys: HolderKeys::Actor { keysets: [(Role::Read, (ep, kem))].into_iter().collect(), own: BTreeMap::new() } });
+            holders.push(Recipient { holder: h, role: Role::Read, keys: HolderKeys::Actor { keysets: [(Role::Read, vec![(ep, kem)])].into_iter().collect(), own: BTreeMap::new() } });
         }
         e.commit_hostile(m).unwrap().unwrap();
     }

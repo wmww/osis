@@ -141,7 +141,7 @@ fn box_to_a_closed_epoch_reads_stale_spec_crypto_4() {
     let ks = e.run(|tx| keysets_of(tx, &a.account, Role::Read, None)).unwrap();
     assert!(stale(&first_name, &ks, &none));
     assert!(!stale(&next_name, &ks, &none));
-    assert_eq!(osis_keys::seal_keyset(&ks, &[first_name].into(), &none, &Default::default()), osis_keys::Seal::At(next_name), "sealed at the open epoch");
+    assert_eq!(osis_keys::seal_keyset(&ks, &[first_name].into(), &none, &Default::default()), osis_keys::Seal::At([next_name].into()), "sealed at the open epoch");
 }
 
 // spec/sync.md §10: an account's proof counts at an open epoch only: its first key alone while no
@@ -196,7 +196,7 @@ fn forked_account_follows_one_head_spec_permissions_5_4() {
     let keys = if followed == ids[0] { &x } else { &y };
     let name = |k: &AccountEpochKeys, h: u64| account_epoch(h, &k.signing.verifying_key()).unwrap();
     let (none, ks) = (BTreeSet::new(), e.run(|tx| keysets_of(tx, &a.account, Role::Read, None)).unwrap());
-    assert_eq!(osis_keys::seal_keyset(&ks, &none, &none, &Default::default()), osis_keys::Seal::At(name(keys, 1)));
+    assert_eq!(osis_keys::seal_keyset(&ks, &none, &none, &Default::default()), osis_keys::Seal::At([name(keys, 1)].into()));
     let other = if followed == ids[0] { &y } else { &x };
     assert!(stale(&name(&first, 0), &ks, &none) && stale(&name(other, 1), &ks, &none) && !stale(&name(keys, 1), &ks, &none));
     assert_eq!(e.core.account_delete_key(&a.account).unwrap(), keys.signing.verifying_key());
@@ -236,8 +236,8 @@ fn grant_boxes_at_the_open_epoch_spec_crypto_4() {
     let e = &mut lp.peers[1].engine;
     let name = account_epoch(1, &next.signing.verifying_key()).unwrap();
     let s = e.run(|tx| crate::flows::secrets_in(tx, &t)).unwrap();
-    let named: Vec<_> = s.boxes.iter().filter(|(k, _)| k.holder == a.account).map(|(_, b)| osis_keys::box_epoch(b)).collect();
-    assert!(!named.is_empty() && named.iter().all(|x| *x == Some(name)), "{named:?}");
+    let named: Vec<_> = s.boxes.iter().filter(|(k, _)| k.holder == a.account).map(|(_, b)| osis_keys::box_keysets(b)).collect();
+    assert!(!named.is_empty() && named.iter().all(|x| *x == [name]), "{named:?}");
     let key = e.run(|tx| crate::flows::labels::reader_key(tx, &a.account)).unwrap();
     match key {
         Some(crate::flows::labels::ReaderKey::Dh(x)) => assert_eq!(x, next.kem.public().x25519(), "the open epoch's key"),

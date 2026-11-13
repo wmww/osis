@@ -1,5 +1,5 @@
-//! Departures from an actor and the covers rule (spec/crypto.md §4), merge (a current epoch that
-//! does not cover; a fork, by its merger), re-seal triggers (spec/permissions.md §3). A departure is
+//! Departures from an actor and the covers rule (spec/crypto.md §4), rotations due (a current epoch that
+//! does not cover), re-seal triggers (spec/permissions.md §3). A departure is
 //! from the actor itself: what departs inside a holder actor reaches the actor only as that
 //! holder's new keyset (`members`).
 

@@ -88,7 +88,7 @@ pub(super) fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::
                 forged_entry(tx, &mut m, g, &Names { departs: Some(Own { ts: ts.to_u64(), author: me, blind }), ..Names::default() })?
             }
             Forge::Rotating => {
-                let holders = super::recipients(tx, &me, &g, &[(me, None)])?.ok_or(super::SEAL_WAITS)?;
+                let holders = super::recipients(tx, &me, &g, &[(me, None)])?;
                 let rot = super::rotation_into(tx, &mut m, g, &[Role::Read, Role::Write].into(), &held, &holders, true)?;
                 assert!(rot.names.departs.is_some());
                 out.extend(rot.rotated.iter().map(|r| (r.role, r.epoch)));
@@ -111,7 +111,7 @@ pub(super) fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::
                 }
                 _ => {
                     // its names list the self-removal: an applied write lowering its edge
-                    let holders = super::recipients(tx, &me, &g, &[])?.ok_or(super::SEAL_WAITS)?;
+                    let holders = super::recipients(tx, &me, &g, &[])?;
                     let rot = super::rotation_into(tx, &mut m, g, &[Role::Read, Role::Write].into(), &held, &holders, false)?;
                     if !rot.names.list.iter().any(|n| n.key.commit == c.unwrap()) {
                         return Err(crate::Error::Misuse("the backdated rotation does not name the self-removal"));
@@ -306,7 +306,7 @@ fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
             m_.ts = Some(tx.core.hlc.next());
             crate::flows::put_edge(&mut m_, a, m, &edge(Role::Write))?;
             m_.frontier(osis_schema::Codec::to_value(&ct::Frontier::default()));
-            let holders = super::recipients(tx, &me, &a, &[(m, Some(Role::Write))])?.ok_or(super::SEAL_WAITS)?;
+            let holders = super::recipients(tx, &me, &a, &[(m, Some(Role::Write))])?;
             let rot = super::rotation_into(tx, &mut m_, a, &[Role::Read, Role::Admin].into(), &held, &holders, true)?;
             assert!(rot.names.departs.is_some());
             tx.core.skip_writer_rules = true;

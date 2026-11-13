@@ -209,7 +209,8 @@ type box_key = struct {
 };
 
 /// A role's secret, encrypted for one holder (spec/wire.md §7): to the holder's public key, or
-/// under a secret the holder already has.
+/// under a secret the holder already has, or to several of the holder's keysets at once (opening
+/// only for a holder of each).
 type box = enum {
     sealed 0 (struct {
         keyset 0: option<epoch>,
@@ -220,6 +221,11 @@ type box = enum {
         epoch 0: epoch,
         wrap 1: blob,
         possession 2: option<signature>,
+    }),
+    joint 2 (struct {
+        keysets 0: set<epoch>,
+        suite 1: int,
+        box 2: sealed,
     }),
 };
 

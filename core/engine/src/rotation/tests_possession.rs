@@ -353,7 +353,7 @@ fn writer_through_a_holder_rotates_write_with_read_spec_crypto_4() {
         .peers[W]
         .engine
         .run(|tx| {
-            let holders = super::recipients(tx, &w, &g, &[])?.unwrap().holders;
+            let holders = super::recipients(tx, &w, &g, &[])?.holders;
             Ok(super::shown_roles(tx.core, &w, &g, &read, &holders))
         })
         .unwrap();
@@ -393,7 +393,7 @@ fn demoted_member_shows_no_write_spec_crypto_4() {
     assert!(em.write.newest_held().is_none_or(|(e, _)| !em.write.is_current(&e)) && em.read.newest_held().is_some(), "W holds X1's read secret, not its new write one");
     let rot = BTreeSet::from([Role::Read, Role::Write]);
     let can = s.lp.peers[W].engine.run(|tx| {
-        let holders = super::recipients(tx, &w, &g, &[])?.unwrap().holders;
+        let holders = super::recipients(tx, &w, &g, &[])?.holders;
         Ok(super::shown_roles(tx.core, &w, &g, &rot, &holders))
     })
     .unwrap();

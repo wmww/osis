@@ -6,7 +6,7 @@ use crate::epoch::{ActorEpochs, Unchecked};
 use crate::names::Names;
 use crate::Error;
 use osis_base::{Role, Tid};
-use osis_crypto::{AccountEpochKeys, BoxForm, BoxSlot, Epoch, KeyActorKeys, Secret32, key_actor_role_secret, open_box, open_history, open_symmetric_box, role_kem};
+use osis_crypto::{AccountEpochKeys, BoxForm, BoxSlot, Epoch, KeyActorKeys, Secret32, key_actor_role_secret, open_box, open_history, open_joint_box, open_symmetric_box, role_kem};
 use osis_schema::core_types::{BoxKey, HistoryKey, Sealed, SecretBox, Secrets};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -77,6 +77,28 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<O
             let Sealed::X25519MlKem768(bytes) = &sb.sealed;
             // osis-crypto checks the item is the key's (role, epoch)
             let i = open_box(kem, &slot, BoxForm::Sealed { keyset, suite: sb.suite }, bytes)?;
+            Ok(Some(Opened { role: i.role, epoch: i.epoch, secret: i.secret }))
+        }
+        SecretBox::Joint(jb) => {
+            let keysets: Vec<Epoch> = jb.keysets.iter().map(from_schema).collect::<Result<_, _>>()?;
+            let mut roles = Vec::new();
+            let mut kems = Vec::new();
+            for ks in &keysets {
+                match opener {
+                    Opener::Actor { epochs, .. } => match epochs.role(k.role).secret(ks) {
+                        Some(s) => roles.push(role_kem(s)),
+                        None => return Ok(None),
+                    },
+                    Opener::Account { keys, .. } => match keys.get(ks) {
+                        Some(e) => kems.push(&e.kem),
+                        None => return Ok(None),
+                    },
+                    Opener::KeyActor { .. } => return Err(Error::Mismatch("joint form does not fit the holder kind")),
+                }
+            }
+            kems.extend(roles.iter());
+            let Sealed::X25519MlKem768(bytes) = &jb.sealed;
+            let i = open_joint_box(&kems, &slot, &keysets, jb.suite, bytes)?;
             Ok(Some(Opened { role: i.role, epoch: i.epoch, secret: i.secret }))
         }
         SecretBox::Symmetric(sym) => {

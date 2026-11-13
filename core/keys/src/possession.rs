@@ -74,6 +74,8 @@ impl Shown {
     pub fn of(actor: &Tid, key: &BoxKey, b: &SecretBox) -> Option<Shown> {
         let (keyset, signed) = match b {
             SecretBox::Sealed(x) => (from_schema(x.keyset.as_ref()?).ok()?, None),
+            // sealed: it shows nothing a keyset's proof does not
+            SecretBox::Joint(_) => return None,
             SecretBox::Symmetric(x) => {
                 let epoch_s = from_schema(&x.epoch).ok()?;
                 let slot = BoxSlot::Secrets { actor: *actor, holder: key.holder, role: key.role, epoch: from_schema(&key.epoch).ok()? };

@@ -88,17 +88,6 @@ bLearners == {"p", "q"}
 bDeps == {<<"D", "A", "p">>}
 bG == << <<"A", "B">>, <<"C", "A">>, <<"B", "C">> >>
 bHide == {<<"p", <<"C", "A">> >>}
-\* forked holder anchors (cycle harness seed
-\* 1838): m1 and m2 admin both A and M; m1 removes D from M; each may rotate M
-\* once more unprompted, so two keysets of M knowing the removal can stand
-\* side by side; each then rotates A (its box to M's first keyset is stale)
-\* sealing M at the keyset it holds, so A's two current epochs anchor M at both
-fActs == <<"A", "M">>
-fMem == {<<"A", "m1">>, <<"A", "m2">>, <<"A", "M">>, <<"M", "m1">>, <<"M", "m2">>, <<"M", "D">>}
-fAdm == {<<"A", "m1">>, <<"A", "m2">>, <<"M", "m1">>, <<"M", "m2">>}
-fLearners == {"m1", "m2"}
-fDeps == {<<"D", "M", "m1">>}
-fEager == {<<"m1", "M">>, <<"m2", "M">>}
 fTrue == TRUE
 \* holder actor M of A; m1 and m2, members of M only, write A through M (Via)
 \* and may rotate M and A; a1 the admin of A; no removal: forks by eager
@@ -111,7 +100,6 @@ viEager == {<<"m1", "M">>, <<"m2", "M">>, <<"m1", "A">>, <<"m2", "A">>}
 viVia == {<<"m1", "A">>, <<"m2", "A">>}
 viG == << <<"A", "M">> >>
 
-fG == << <<"A", "M">> >>
 \* two writers each lacking the other's fork (D0_stall*): G {a1, x, b, d};
 \* writers b and d, granted concurrently (each lacks the other's grant at
 \* first: Hidden; G's initial epoch boxes both, GLate {}, and each one's fork
@@ -128,10 +116,6 @@ sG == << <<"G", "b">>, <<"G", "d">> >>
 sHide == {<<"b", <<"G", "d">> >>, <<"d", <<"G", "b">> >>}
 sNoLate == {}
 sNoSync == {<<"a1", "G">>}
-\* ... and device E reads A; m1 removes E from A (while the anchors fork the
-\* removal goes without A's rotation)
-eMem == fMem \cup {<<"A", "E">>}
-eDeps == {<<"E", "A", "m1">>}
 \* above A: A holds G's role; a1 (admin of A and G) removes device E from A,
 \* the removal alone; a2 (A's other admin) may fork A once
 \* unprompted, a1 may rotate G once unprompted

@@ -11,10 +11,10 @@
 (* keyset the boxes to h at a's current epochs name (anchors); a box of the   *)
 (* epoch it would encrypt under is stale when the keyset it names is invalid *)
 (* or listed as superseded by a held valid keyset, and then it rotates first; *)
-(* an admin rotates while it holds more than one current epoch (merge);     *)
-(* a rotation finding no keyset of h descending from every anchor waits, and *)
-(* any removal may go without its rotation (a superset of the built cases: a *)
-(* self-removal, Seal waiting, Authority failing).                           *)
+(* a fork alone makes no rotation due; a rotation finding no keyset of h    *)
+(* descending from every anchor is not made here (the build seals h jointly *)
+(* at both forks: Joint.tla), and any removal may go without its rotation   *)
+(* (a superset of the built cases: a self-removal, Authority failing).      *)
 (* Rotating needs only the right to rotate (notes/crypto.md): a rotation     *)
 (* supersedes every current epoch, those whose secret the rotator lacks too  *)
 (* (such an epoch covers nothing at it: it rotates), and any holder of an    *)
@@ -69,8 +69,8 @@ CONSTANTS ActSeq,     \* actor names; initial epoch i is ActSeq[i]'s
           Split,      \* TRUE: a holder's keys.0 under a target's label
                       \* arrives without the keysets it names (they are
                       \* carried under the holder's own label only)
-          MaxRace,    \* bound on fork merges made by a node lacking an epoch
-                      \* of the actor (two merges racing fork again): the
+          MaxRace,    \* bound on derived-write merges made by a node lacking an
+                      \* epoch of the actor (two racing fork again): the
                       \* concurrency window, as adversary steps
           Walk,       \* Blocked's box clause (issues/blocked-walk-stops-at-
                       \* readers.md): "rotator" (an epoch boxing an actor at a
@@ -369,8 +369,9 @@ Blinds == UNION {{<<e, b.h>> : b \in {c \in AllBoxesAt(e) : c.h \in Acts \ TExp(
                  e \in Ids}
 BlindOK(a, hs) == (hs \cap Acts) \ TExp(a) # {} => Cardinality(Blinds) < MaxBlind
 
-\* a rotation of a by x would box an actor whose anchors fork ("wait": or
-\* leave out one at a blocked keyset that x may not rotate)
+\* a rotation of a by x would box an actor whose anchors fork (the build seals
+\* it jointly, Joint.tla; not made here: a subset of the build's behaviours)
+\* ("wait": or leave out one at a blocked keyset that x may not rotate)
 Waits(x, a, extra) == \E h \in MemV(x, a, extra) \cap Acts :
   \/ SealK(x, a, h) = 0 /\ Forked(x, a, h)
   \/ Walk = "wait" /\ SealK(x, a, h) \in Blocked(x) /\ ~(IsAdm(x, h) \/ (Through(x, h) /\ ~OffPath(x, x, h)))
@@ -432,14 +433,7 @@ Possess(x, a) == IsAdm(x, a) \/
 
 \* y may rotate a, as x sees it
 MayRot(x, y, a) == IsAdm(y, a) \/ (y \in Learners /\ Through(y, a) /\ ~OffPath(x, y, a))
-\* x merges a fork of a: it is a's merger, read from the roster as x sees it
-\* (one node of those that may rotate a, the same at every node holding the
-\* same roster), whatever epochs x holds (spec/crypto.md §4, Merger; the
-\* built order is standing order, here TLC's CHOOSE)
-Merger(x, a) ==
-  LET c == {y \in Learners : MayRot(x, y, a)}
-  IN c # {} /\ x = CHOOSE y \in c : TRUE
-\* a rotation due for any reason but a fork of knowing epochs: the newest
+\* a rotation due: the newest
 \* epoch blocked, or any current epoch (held or not) not covering a known
 \* departure, with a stale box, or boxing a keyless holder
 OtherDue(x, a) ==
@@ -447,17 +441,6 @@ OtherDue(x, a) ==
   IN \/ e \in Blocked(x)
      \/ \E f \in Cur(x, a) : ~Covers(x, f, a) \/ StaleAt(x, f)
      \/ \E f \in Cur(x, a) : Keyless(x, f) \/ GoneBox(x, f)
-\* a rotation of an actor b that x makes for a reason other than a merge waits
-\* on a's fork (Seal): x merges a first, merger or not
-SealNeed(x, a) ==
-  /\ Cardinality(Cur(x, a)) > 1
-  /\ \E b \in Acts : /\ b # a /\ Writer(x, b) /\ a \in MemV(x, b, {})
-                     /\ SealK(x, b, a) = 0 /\ Forked(x, b, a) /\ OtherDue(x, b)
-\* rule 3, merge: a current epoch misses a known departure, or there is more
-\* than one and x is the merger, or a rotation x needs waits on the fork
-MergeDue(x, a) == \/ \E f \in Cur(x, a) : ~Covers(x, f, a)
-                  \/ Cardinality(Cur(x, a)) > 1 /\ Merger(x, a)
-                  \/ SealNeed(x, a)
 \* a plain thing given secrets of its own: x wrote it under a derived secret
 \* that no history of a current epoch carries (x lacked the own-secrets
 \* rotation when it wrote): it is a current epoch beside the own ones, merged
@@ -467,7 +450,7 @@ DerivedDue(x, a) == \E c \in wr : c.w = x /\ c.a = a /\ c.der /\
 NeedRot(x, a) ==
   /\ a \notin dst /\ Writer(x, a) /\ Possess(x, a) /\ Est(x, a) # {}
   /\ \E f \in Sec(x) : ep[f].act = a
-  /\ OtherDue(x, a) \/ MergeDue(x, a) \/ DerivedDue(x, a)
+  /\ OtherDue(x, a) \/ DerivedDue(x, a)
 \* x lacks an epoch of a some node made: a rotation now may fork
 Racing(x, a) == \E f \in Ids : ep[f].act = a /\ Honest(f) /\ f \notin kn[x]
 
@@ -483,7 +466,7 @@ Remove(dp) ==
                 ELSE pl \cup {<<dp, l>> : l \in {l2 \in Acts : dp[2] \in HClos(l2) /\ Syncs(dp[3], l2)}}
         /\ UNCHANGED kpl
      \* written without its rotation (any removal: a superset of the built
-     \* cases, a self-removal, Seal waiting, Authority failing), learned under
+     \* cases, a self-removal, Authority failing), learned under
      \* the actor's label
      \/ /\ pl' = pl \cup {<<dp, dp[2]>>}
         /\ kpl' = [kpl EXCEPT ![dp[3]] = @ \cup {<<dp, dp[2]>>}]
@@ -497,7 +480,7 @@ EagerRot(p) ==
   /\ evd' = evd \cup {p}
   /\ UNCHANGED <<kg, rs, krs, ha, wr, done, nw, dst, pl, kpl>>
 
-\* a merge of knowing forks alone, racing, only within MaxRace
+\* a derived-write merge alone, racing, only within MaxRace
 ForcedRot(x, a) ==
   /\ Len(ep) < MaxE /\ NeedRot(x, a)
   /\ LET race == ~OtherDue(x, a) /\ Racing(x, a)
@@ -609,7 +592,7 @@ Reseal(x, a, h) ==
 \* what the history entries x holds at e list, with the epoch's own
 ListedAt(x, e) == ep[e].hist \cup {p[2] : p \in {q \in ha : q[1] = e}}
 \* the earlier superseded secrets of e's actor x holds (a current fork's goes
-\* by box and merge)
+\* by box and by the rotation listing it)
 Carry(x, e) == {f \in Sec(x) \ Cur(x, ep[e].act) : ep[e].act = ep[f].act /\ Honest(f) /\ ep[f].n < ep[e].n}
 \* x holds an earlier secret no entry at current epoch e (held, not blocked)
 \* lists: a history add is due (spec/crypto.md §4, History box)
