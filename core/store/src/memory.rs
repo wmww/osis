@@ -13,6 +13,19 @@ pub enum Fault {
     Fail,
     /// That write and every later one fail without effect until `Faults::revive`: power loss.
     Crash,
+    /// That write reaches storage but its sync fails (`BackendError::Unsynced`): it reads as
+    /// written, and a power cut (`MemoryBackend::power_cut`, `MemoryRoot::power_cut`) drops it.
+    /// Later syncs never make it durable (a failed fsync drops the pages from write-back); only
+    /// writing it again does.
+    Unsynced,
+}
+
+/// Whether a durable write that `Faults::check` lets through reaches the disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Synced {
+    Yes,
+    /// It reads as written, but its sync fails (`Fault::Unsynced`).
+    No,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -68,8 +81,9 @@ impl Faults {
     pub fn take_failed(&self) -> bool {
         std::mem::take(&mut self.lock().failed)
     }
-    /// Called before a durable write: `Err` means the write must not take effect.
-    pub fn check(&self) -> Result<(), BackendError> {
+    /// Called before a durable write: `Err` means the write must not take effect; `Synced::No`
+    /// that it takes effect but fails `BackendError::Unsynced` (`Fault::Unsynced`).
+    pub fn check(&self) -> Result<Synced, BackendError> {
         let mut s = self.lock();
         if s.dead {
             return Err(BackendError::Crashed);
@@ -89,7 +103,8 @@ impl Faults {
                 s.dead = true;
                 Err(BackendError::Crashed)
             }
-            _ => Ok(()),
+            Some((at, Fault::Unsynced)) if at == n => Ok(Synced::No),
+            _ => Ok(Synced::Yes),
         }
     }
     /// Tests only (world copies, `osis_base::copying`): the copy's plan, as this one stands. One
@@ -103,10 +118,38 @@ impl Faults {
     }
 }
 
+/// Rows and blobs.
 #[derive(Clone, Debug, Default)]
-struct Data {
+struct Image {
     kv: BTreeMap<Vec<u8>, Vec<u8>>,
     blobs: HashMap<BlobId, Vec<u8>>,
+}
+
+impl Image {
+    fn apply(&mut self, op: Op) {
+        match op {
+            Op::Put(k, v) => {
+                self.kv.insert(k, v);
+            }
+            Op::Delete(k) => {
+                self.kv.remove(&k);
+            }
+            Op::PutBlob(id, b) => {
+                self.blobs.insert(id, b);
+            }
+            Op::DeleteBlob(id) => {
+                self.blobs.remove(&id);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct Data {
+    /// What reads see.
+    live: Image,
+    /// What a power cut leaves, where it differs from `live` (a write whose sync failed).
+    disk: Option<Image>,
     /// Every value ever written, if recording: what a forensic look at freed pages could find.
     history: Option<Vec<KeyValue>>,
     /// Every blob put (`Some`) and free (`None`), if recording.
@@ -183,8 +226,8 @@ impl MemoryBackend {
     /// The bytes held in rows, and in blobs with their number (measures).
     pub fn held_split(&self) -> (u64, u64, u64) {
         let d = self.lock();
-        let rows: usize = d.kv.iter().map(|(k, v)| k.len() + v.len()).sum();
-        (rows as u64, d.blobs.values().map(Vec::len).sum::<usize>() as u64, d.blobs.len() as u64)
+        let rows: usize = d.live.kv.iter().map(|(k, v)| k.len() + v.len()).sum();
+        (rows as u64, d.live.blobs.values().map(Vec::len).sum::<usize>() as u64, d.live.blobs.len() as u64)
     }
     /// An independent copy of the durable state, recorded history and counters, sharing the
     /// faults: a backup, or one device set up once and run down several paths.
@@ -202,12 +245,20 @@ impl MemoryBackend {
     /// Drops every value and blob (a removed database file).
     pub fn erase(&self) {
         let mut d = self.lock();
-        d.kv.clear();
-        d.blobs.clear();
+        d.live = Image::default();
+        d.disk = None;
+    }
+    /// Power loss: what reads see falls back to what reached the disk, dropping writes whose
+    /// sync failed (`Fault::Unsynced`).
+    pub fn power_cut(&self) {
+        let mut d = self.lock();
+        if let Some(disk) = d.disk.take() {
+            d.live = disk;
+        }
     }
     /// The live key-value pairs.
     pub fn dump(&self) -> Vec<KeyValue> {
-        self.lock().kv.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        self.lock().live.kv.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
     pub fn faults(&self) -> &Faults {
         &self.faults
@@ -228,7 +279,7 @@ impl MemoryBackend {
 impl Backend for MemoryBackend {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError> {
         let mut d = self.lock();
-        let v = d.kv.get(key).cloned();
+        let v = d.live.kv.get(key).cloned();
         d.io.read(v.as_ref().map(|v| key.len() + v.len()));
         Ok(v)
     }
@@ -242,7 +293,7 @@ impl Backend for MemoryBackend {
         if end.is_some_and(|e| e <= start) {
             return Ok(Vec::new());
         }
-        let rows: Vec<KeyValue> = d.kv.range::<[u8], _>((Bound::Included(start), hi)).take(limit).map(|(k, v)| (k.clone(), v.clone())).collect();
+        let rows: Vec<KeyValue> = d.live.kv.range::<[u8], _>((Bound::Included(start), hi)).take(limit).map(|(k, v)| (k.clone(), v.clone())).collect();
         for (k, v) in &rows {
             d.io.read(Some(k.len() + v.len()));
         }
@@ -250,9 +301,20 @@ impl Backend for MemoryBackend {
     }
 
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
-        self.faults.check()?;
+        let sync = self.faults.check()?;
         let mut d = self.lock();
-        d.syncs += 1;
+        let d = &mut *d;
+        if sync == Synced::No {
+            // the old disk image stays; an earlier failed sync's one stays as it was
+            if d.disk.is_none() {
+                d.disk = Some(d.live.clone());
+            }
+        } else {
+            d.syncs += 1;
+            if let Some(disk) = &mut d.disk {
+                batch.ops.iter().for_each(|op| disk.apply(op.clone()));
+            }
+        }
         for op in batch.ops {
             d.io.writes += 1;
             d.io.written_bytes += match &op {
@@ -261,29 +323,18 @@ impl Backend for MemoryBackend {
                 Op::PutBlob(_, b) => b.len(),
                 Op::DeleteBlob(_) => 0,
             } as u64;
-            match op {
-                Op::Put(k, v) => {
-                    if let Some(h) = d.history.as_mut() {
-                        h.push((k.clone(), v.clone()));
-                    }
-                    d.kv.insert(k, v);
-                }
-                Op::Delete(k) => {
-                    d.kv.remove(&k);
-                }
-                Op::PutBlob(id, b) => {
-                    if d.history.is_some() {
-                        d.blob_history.push((id, Some(b.clone())));
-                    }
-                    d.blobs.insert(id, b);
-                }
-                Op::DeleteBlob(id) => {
-                    if d.history.is_some() {
-                        d.blob_history.push((id, None));
-                    }
-                    d.blobs.remove(&id);
+            if let Some(h) = d.history.as_mut() {
+                match &op {
+                    Op::Put(k, v) => h.push((k.clone(), v.clone())),
+                    Op::PutBlob(id, b) => d.blob_history.push((*id, Some(b.clone()))),
+                    Op::DeleteBlob(id) => d.blob_history.push((*id, None)),
+                    Op::Delete(_) => {}
                 }
             }
+            d.live.apply(op);
+        }
+        if sync == Synced::No {
+            return Err(BackendError::Unsynced);
         }
         Ok(())
     }
@@ -299,13 +350,13 @@ impl Backend for MemoryBackend {
 
     fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError> {
         let mut d = self.lock();
-        let b = d.blobs.get(id).map(|b| blob_slice(b, offset, len));
+        let b = d.live.blobs.get(id).map(|b| blob_slice(b, offset, len));
         d.io.read(b.as_ref().map(Vec::len));
         Ok(b)
     }
 
     fn blob_len(&self, id: &BlobId) -> Result<Option<u64>, BackendError> {
-        Ok(self.lock().blobs.get(id).map(|b| b.len() as u64))
+        Ok(self.lock().live.blobs.get(id).map(|b| b.len() as u64))
     }
 
     fn test_copy_boxed(&self) -> Option<Box<dyn Backend>> {

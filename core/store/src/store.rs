@@ -282,9 +282,10 @@ impl Transaction<'_> {
     ///
     /// The result is the outcome: a failed commit recovers the store in place as `open` would
     /// (finishing or rolling back) and reads whether it landed (a shredding commit whose root
-    /// record was stored did: `Ok`). `Err` leaves the store as before the transaction and takes
-    /// the next one; only if recovering fails too is the outcome unknown, and every call fails
-    /// `Error::Broken` until the store is opened again.
+    /// record was stored did: `Ok`); `Ok` is always durable. `Err` leaves the store as before the
+    /// transaction and takes the next one; only if a backend sync failed, or recovering fails
+    /// too, is the outcome unknown, and every call fails `Error::Broken` until the store is
+    /// opened again.
     pub fn commit(self) -> Result<(), Error> {
         if self.d.open_savepoints() > 0 {
             return Err(Error::Misuse("commit with a savepoint open"));

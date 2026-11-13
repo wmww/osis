@@ -508,47 +508,123 @@ fn failed_commit_recovers_in_place_on(dev: &dyn Device) {
     }
 }
 
-// spec/commits.md §4 on redb: a write of the file can fail anywhere in redb's commit, also after
-// its new header is written (the commit landed though redb reports the error); the commit's result
-// is still its outcome, in place and after a reopen
+/// Commits `k` and, shredding, overwrites `x`; reads `Ok` from `commit` and whether the store
+/// works on (`false`: the outcome is unknown, `Broken` until a reopen).
+fn put_k(s: &mut Store, rng: &mut SeededRng, k: &[u8], shred: Shred) -> (bool, bool) {
+    let mut t = s.transaction(rng).unwrap();
+    let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
+    t.table_put(tb, k, vec![1], Shred::No).unwrap();
+    t.table_put(tb, b"x", k.to_vec(), shred).unwrap();
+    let ok = t.commit().is_ok();
+    let works = match s.transaction(rng) {
+        Ok(_) => true,
+        Err(e) => {
+            assert_eq!(e, Error::Broken);
+            false
+        }
+    };
+    (ok, works)
+}
+
+fn has(s: &mut Store, rng: &mut SeededRng, k: &[u8]) -> bool {
+    let mut t = s.transaction(rng).unwrap();
+    let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
+    t.table_get(tb, k).unwrap().is_some()
+}
+
+fn put_x(dev: &dyn Device, rng: &mut SeededRng) -> Store {
+    let mut s = create(dev, rng);
+    let mut t = s.transaction(rng).unwrap();
+    let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
+    t.table_put(tb, b"x", vec![], Shred::No).unwrap();
+    t.commit().unwrap();
+    s
+}
+
+// spec/commits.md §4 (notes/local-store.md, Failed writes): a commit reported landed is
+// durable. A write whose sync fails reads as written but a power cut drops it (as a failed fsync
+// does), at any durable write of a commit, plain or shredding: an `Ok` commit survives the cut,
+// and the store opens after it.
+#[test]
+fn a_commit_whose_sync_failed_is_never_reported_landed() {
+    for dev in devices("unsynced") {
+        let name = dev.name();
+        let mut rng = SeededRng::from_u64(0);
+        let mut s = put_x(&*dev, &mut rng);
+        let mut kept = Vec::new();
+        for shred in [Shred::No, Shred::Yes] {
+            let (mut landed, mut lost) = (false, false);
+            for n in 0.. {
+                let k = format!("k-{shred:?}-{n}").into_bytes();
+                dev.faults().at(n, Fault::Unsynced);
+                let (ok, works) = put_k(&mut s, &mut rng, &k, shred);
+                let reached = dev.faults().writes() > n;
+                dev.faults().revive();
+                if !reached {
+                    assert!(ok && works, "{name} {shred:?}: no fault, committed");
+                    break;
+                }
+                assert!(works || !ok, "{name} {shred:?}: a store that lost track reports Err (write {n})");
+                (landed, lost) = (landed || ok, lost || !works);
+                if ok {
+                    kept.push(k.clone());
+                }
+                drop(s);
+                dev.power_cut();
+                s = reopen(&*dev);
+                for k in &kept {
+                    assert!(has(&mut s, &mut rng, k), "{name} {shred:?}: {} reported landed, lost to a power cut after write {n}'s sync failed", String::from_utf8_lossy(k));
+                }
+            }
+            assert!(lost, "{name} {shred:?}: a failed backend sync leaves the outcome unknown");
+            if shred == Shred::Yes {
+                assert!(landed, "{name}: a failed root sync is written again: the commit lands");
+            }
+        }
+    }
+}
+
+// spec/commits.md §4 on redb: a write of the file can fail anywhere in redb's commit, its sync
+// included (which drops the writes since the last sync at a power cut). A failed write reports
+// the outcome it leaves; a failed sync leaves it unknown (`Err`, the store `Broken`); either way
+// an `Ok` commit survives a power cut
 #[test]
 fn a_failed_redb_write_anywhere_in_a_commit_reports_its_outcome() {
     let dev = FileDevice::new("redb-any-write");
     let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
-    let mut t = s.transaction(&mut rng).unwrap();
-    t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
-    t.commit().unwrap();
+    let mut s = put_x(&dev, &mut rng);
     let mut outcomes = Vec::new();
     for shred in [Shred::No, Shred::Yes] {
-        let (mut landed, mut failed) = (false, false);
+        let (mut landed, mut failed, mut lost) = (false, false, false);
         for n in 1.. {
             let k = format!("k-{shred:?}-{n}").into_bytes();
             dev.trap.store(n, std::sync::atomic::Ordering::SeqCst);
-            let mut t = s.transaction(&mut rng).unwrap();
-            let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
-            t.table_put(tb, &k, vec![1], shred).unwrap();
-            let ok = t.commit().is_ok();
+            let (ok, works) = put_k(&mut s, &mut rng, &k, shred);
             let reached = dev.trap.swap(0, std::sync::atomic::Ordering::SeqCst) == 0;
-            let mut t = s.transaction(&mut rng).unwrap();
-            let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
-            assert_eq!(t.table_get(tb, &k).unwrap().is_some(), ok, "{shred:?}: fault at file write {n}");
-            drop(t);
+            if !works {
+                drop(s);
+                dev.power_cut();
+                s = reopen(&dev);
+            }
+            assert!(ok || !has(&mut s, &mut rng, &k) || !works, "{shred:?}: fault at file write {n}: Err, yet landed");
+            assert!(!ok || has(&mut s, &mut rng, &k), "{shred:?}: fault at file write {n}: Ok, yet absent");
             outcomes.push((k, ok));
             if !reached {
                 assert!(ok, "{shred:?}: no fault, committed");
                 break;
             }
-            (landed, failed) = (landed || ok, failed || !ok);
+            (landed, failed, lost) = (landed || ok, failed || !ok, lost || !works);
         }
-        assert!(landed && failed, "{shred:?}: faults both before and after the commit point");
+        assert!(failed && lost, "{shred:?}: faults both before the commit point and at its sync");
+        if shred == Shred::Yes {
+            assert!(landed, "a fault after the root record was stored: landed");
+        }
     }
     drop(s);
+    dev.power_cut();
     let mut s = reopen(&dev);
-    let mut t = s.transaction(&mut rng).unwrap();
-    let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
     for (k, ok) in outcomes {
-        assert_eq!(t.table_get(tb, &k).unwrap().is_some(), ok, "{} after a reopen", String::from_utf8_lossy(&k));
+        assert!(!ok || has(&mut s, &mut rng, &k), "{} reported landed, lost to a power cut", String::from_utf8_lossy(&k));
     }
 }
 

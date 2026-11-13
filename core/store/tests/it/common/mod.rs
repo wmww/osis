@@ -3,11 +3,11 @@
 
 use osis_base::{Ak, BlobId, Tid};
 use osis_crypto::SeededRng;
-use osis_store::{Backend, BackendError, Faults, KeyValue, MemoryBackend, MemoryRoot, RootStorage, Store, StoreConfig, WriteBatch};
+use osis_store::{Backend, BackendError, Faults, KeyValue, MemoryBackend, MemoryRoot, RootStorage, Store, StoreConfig, Synced, WriteBatch};
 use redb::StorageBackend;
 use redb::backends::FileBackend;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Small pages and a small key tree so tests exercise splits and several tree levels.
 pub fn cfg() -> StoreConfig {
@@ -32,6 +32,8 @@ pub trait Device {
     fn file(&self) -> Option<Vec<u8>> {
         None
     }
+    /// Power loss, with no store open: writes whose sync failed are dropped (`Fault::Unsynced`).
+    fn power_cut(&self);
 }
 
 pub struct MemDevice {
@@ -60,6 +62,10 @@ impl Device for MemDevice {
     fn name(&self) -> &'static str {
         "memory"
     }
+    fn power_cut(&self) {
+        self.backend.power_cut();
+        self.root.power_cut();
+    }
 }
 
 pub struct FileDevice {
@@ -67,6 +73,35 @@ pub struct FileDevice {
     pub faults: Faults,
     /// `n > 0`: the `n`th write of the redb file from now fails (`FaultyFile`).
     pub trap: Arc<AtomicUsize>,
+    /// The next sync of the redb file fails.
+    pub sync_trap: Arc<AtomicBool>,
+    disk: Arc<Mutex<Disk>>,
+}
+
+/// What a power cut leaves of the redb file: its bytes as last synced, and the writes since.
+#[derive(Debug, Default)]
+struct Disk {
+    synced: Vec<u8>,
+    pending: Vec<(u64, Option<Vec<u8>>)>,
+}
+
+impl Disk {
+    /// A failed sync: the writes since the last sync never reach the disk, whatever later syncs
+    /// do (Linux drops the failed pages from write-back and marks them clean).
+    fn sync(&mut self, ok: bool) {
+        for (at, w) in std::mem::take(&mut self.pending).into_iter().filter(|_| ok) {
+            match w {
+                None => self.synced.resize(at as usize, 0),
+                Some(data) => {
+                    let end = at as usize + data.len();
+                    if self.synced.len() < end {
+                        self.synced.resize(end, 0);
+                    }
+                    self.synced[at as usize..end].copy_from_slice(&data);
+                }
+            }
+        }
+    }
 }
 
 impl FileDevice {
@@ -76,7 +111,7 @@ impl FileDevice {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let faults = Faults::new();
-        FileDevice { dir, faults, trap: Arc::new(AtomicUsize::new(0)) }
+        FileDevice { dir, faults, trap: Arc::default(), sync_trap: Arc::default(), disk: Arc::default() }
     }
 }
 
@@ -88,7 +123,7 @@ impl Drop for FileDevice {
 
 impl Device for FileDevice {
     fn backend(&self) -> Box<dyn Backend> {
-        let (path, faults, trap) = (self.dir.join("db"), self.faults.clone(), self.trap.clone());
+        let (path, faults, trap, sync_trap, disk) = (self.dir.join("db"), self.faults.clone(), self.trap.clone(), self.sync_trap.clone(), self.disk.clone());
         let inner = osis_store::RedbBackend::with_storage(move || {
             let mut o = std::fs::OpenOptions::new();
             // created owner-only, as `RedbBackend::open` creates it
@@ -96,10 +131,10 @@ impl Device for FileDevice {
             std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
             let file = o.read(true).write(true).create(true).truncate(false).open(&path)?;
             let file = FileBackend::new(file).map_err(std::io::Error::other)?;
-            Ok(FaultyFile { file, faults: faults.clone(), trap: trap.clone() })
+            Ok(FaultyFile { file, faults: faults.clone(), trap: trap.clone(), sync_trap: sync_trap.clone(), disk: disk.clone() })
         })
         .unwrap();
-        Box::new(FaultyRedb { inner, faults: self.faults.clone(), trap: self.trap.clone() })
+        Box::new(FaultyRedb { inner, faults: self.faults.clone(), trap: self.trap.clone(), sync_trap: self.sync_trap.clone() })
     }
     fn root(&self) -> Box<dyn RootStorage> {
         Box::new(osis_store::FileRoot::with_faults(self.dir.join("root"), self.faults.clone()))
@@ -113,14 +148,23 @@ impl Device for FileDevice {
     fn file(&self) -> Option<Vec<u8>> {
         Some(std::fs::read(self.dir.join("db")).unwrap())
     }
+    /// The redb file goes back to its synced bytes; the root file is written through (its
+    /// failed syncs are not modelled).
+    fn power_cut(&self) {
+        let mut d = self.disk.lock().unwrap();
+        d.pending.clear();
+        std::fs::write(self.dir.join("db"), &d.synced).unwrap();
+    }
 }
 
 /// The redb backend with a fault plan on its commits, injected inside redb (a failed write of
-/// the file), so redb fails as on a real I/O error: it refuses every call until reopened.
+/// the file; for `Fault::Unsynced`, a failed sync), so redb fails as on a real I/O error: it
+/// refuses every call until reopened.
 struct FaultyRedb {
     inner: osis_store::RedbBackend,
     faults: Faults,
     trap: Arc<AtomicUsize>,
+    sync_trap: Arc<AtomicBool>,
 }
 
 impl Backend for FaultyRedb {
@@ -131,12 +175,20 @@ impl Backend for FaultyRedb {
         self.inner.scan(start, end, limit)
     }
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
-        if let Err(e) = self.faults.check() {
-            self.trap.store(1, Ordering::SeqCst);
-            assert!(self.inner.commit(batch).is_err(), "the fault reaches redb");
-            return Err(e);
+        match self.faults.check() {
+            Ok(Synced::Yes) => self.inner.commit(batch),
+            Ok(Synced::No) => {
+                self.sync_trap.store(true, Ordering::SeqCst);
+                let r = self.inner.commit(batch);
+                assert_eq!(r, Err(BackendError::Unsynced), "the fault reaches redb's sync");
+                r
+            }
+            Err(e) => {
+                self.trap.store(1, Ordering::SeqCst);
+                assert!(self.inner.commit(batch).is_err(), "the fault reaches redb");
+                Err(e)
+            }
         }
-        self.inner.commit(batch)
     }
     fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError> {
         self.inner.read_blob(id, offset, len)
@@ -146,13 +198,17 @@ impl Backend for FaultyRedb {
     }
 }
 
-/// The redb file, failing the write `trap` counts down to and every write while the device is
-/// crashed (each `write`, `set_len` and `sync_data` is a write).
+/// The redb file, failing the write `trap` counts down to, the sync `sync_trap` arms, and every
+/// write while the device is crashed (each `write`, `set_len` and `sync_data` is a write). A
+/// failed write has no effect; a failed sync loses the writes since the last one at a power cut
+/// (`Disk`).
 #[derive(Debug)]
 struct FaultyFile {
     file: FileBackend,
     faults: Faults,
     trap: Arc<AtomicUsize>,
+    sync_trap: Arc<AtomicBool>,
+    disk: Arc<Mutex<Disk>>,
 }
 
 impl FaultyFile {
@@ -176,15 +232,21 @@ impl StorageBackend for FaultyFile {
     }
     fn set_len(&self, len: u64) -> std::io::Result<()> {
         self.fault()?;
-        self.file.set_len(len)
+        self.file.set_len(len)?;
+        self.disk.lock().unwrap().pending.push((len, None));
+        Ok(())
     }
     fn sync_data(&self, eventual: bool) -> std::io::Result<()> {
-        self.fault()?;
-        self.file.sync_data(eventual)
+        let r = if self.sync_trap.swap(false, Ordering::SeqCst) { Err(std::io::Error::other("injected sync fault")) } else { self.fault() };
+        let r = r.and_then(|()| self.file.sync_data(eventual));
+        self.disk.lock().unwrap().sync(r.is_ok());
+        r
     }
     fn write(&self, offset: u64, data: &[u8]) -> std::io::Result<()> {
         self.fault()?;
-        self.file.write(offset, data)
+        self.file.write(offset, data)?;
+        self.disk.lock().unwrap().pending.push((offset, Some(data.to_vec())));
+        Ok(())
     }
 }
 

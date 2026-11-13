@@ -67,7 +67,8 @@ fn memory_backend_suite() {
     suite(&mut b);
 }
 
-// spec/commits.md §4: one storage transaction per commit applied; a failed or crashed batch has no effect.
+// spec/commits.md §4: one storage transaction per commit applied; a failed or crashed batch has no
+// effect; one whose sync failed reads as written until a power cut.
 #[test]
 fn memory_faults() {
     let faults = Faults::new();
@@ -92,6 +93,15 @@ fn memory_faults() {
     let reopened = b.clone();
     assert_eq!(reopened.get(b"c2").unwrap(), Some(b"v".to_vec()));
     assert_eq!(reopened.get(b"d").unwrap(), None);
+    // a failed sync: reads as written, and a power cut drops it though later syncs succeeded
+    faults.at(0, Fault::Unsynced);
+    assert_eq!(b.commit(batch(b"f")), Err(BackendError::Unsynced));
+    assert_eq!(b.get(b"f").unwrap(), Some(b"v".to_vec()));
+    b.commit(batch(b"g")).unwrap();
+    b.power_cut();
+    assert_eq!(b.get(b"f").unwrap(), None);
+    assert_eq!(b.get(b"g").unwrap(), Some(b"v".to_vec()));
+    assert_eq!(b.get(b"c").unwrap(), Some(b"v".to_vec()));
 }
 
 // spec: none (test hook): while writes are forbidden, a durable write fails without effect and

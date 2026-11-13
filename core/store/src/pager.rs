@@ -17,7 +17,7 @@
 //! Large transactions spill unit rows early under journal rows; their keys stay in memory.
 
 use crate::btree::Page;
-use crate::backend::{Backend, WriteBatch};
+use crate::backend::{Backend, BackendError, WriteBatch};
 use crate::codec::{R, W};
 use crate::root::{RootRecord, RootStorage};
 use crate::Error;
@@ -246,6 +246,13 @@ fn rollback(backend: &mut dyn Backend, prefix: &[u8]) -> Result<(), Error> {
     }
 }
 
+/// A backend write's sync failed: what the backend reads may not be on disk, and nothing written
+/// on top of it is known durable either, so its outcome stays unknown. (A root store whose sync
+/// failed is not this: `RootStorage::repair` writes the record again.)
+fn unsynced(e: &Error) -> bool {
+    matches!(e, Error::Backend(BackendError::Unsynced))
+}
+
 fn pointer(epoch: u64, ver: u64) -> Vec<u8> {
     W::new().u64(epoch).u64(ver).take()
 }
@@ -471,8 +478,8 @@ pub(crate) struct Pager {
     /// A write failed: the transaction that made it goes no further, and the next `begin`
     /// recovers in place first.
     failed: bool,
-    /// A commit failed and recovering in place failed too: its outcome is unknown, so every call
-    /// fails until the store is opened again.
+    /// A write's outcome is unknown (its sync failed, or recovering in place after a failed
+    /// commit failed too), so every call fails until the store is opened again.
     lost: bool,
     /// `Store::writes`.
     writes: crate::Writes,
@@ -523,10 +530,10 @@ impl Pager {
     }
 
     /// Recovers in place as `open` would, after a failed write: caches emptied, versions not
-    /// reused.
+    /// reused. A sync failing in it loses the store.
     fn recover_in_place(&mut self) -> Result<(), Error> {
         let mut cfg = self.cfg;
-        let (epoch, key, ver, meta, top) = recover(&mut *self.backend, &mut *self.root, &mut cfg)?;
+        let (epoch, key, ver, meta, top) = recover(&mut *self.backend, &mut *self.root, &mut cfg).inspect_err(|e| self.lost |= unsynced(e))?;
         self.next_ver = self.next_ver.max(meta.next_ver);
         (self.cfg, self.epoch, self.root_key, self.top_ver, self.meta, self.top) = (cfg, epoch, key, ver, meta, top);
         self.open_spills.clear();
@@ -546,8 +553,10 @@ impl Pager {
         self.writes
     }
 
-    fn write_failed(&mut self) {
+    /// A write failed: its transaction goes no further. One whose sync failed loses the store.
+    fn write_failed(&mut self, e: &Error) {
         self.failed = true;
+        self.lost |= unsynced(e);
         self.writes.failed += 1;
     }
 
@@ -733,7 +742,7 @@ impl Pager {
         }
         self.check()?;
         for ver in std::mem::take(&mut self.open_spills) {
-            rollback(&mut *self.backend, &W::new().u8(JOURNAL).u64(ver).take()).inspect_err(|_| self.write_failed())?;
+            rollback(&mut *self.backend, &W::new().u8(JOURNAL).u64(ver).take()).inspect_err(|e| self.write_failed(e))?;
         }
         let ver = self.next_ver;
         self.next_ver += 1;
@@ -861,14 +870,15 @@ impl Pager {
         self.open_spills.insert(d.ver);
         d.spills += 1;
         d.plain_bytes = 0;
-        self.backend.commit(batch).inspect_err(|_| self.write_failed())?;
+        self.backend.commit(batch).map_err(Error::from).inspect_err(|e| self.write_failed(e))?;
         Ok(())
     }
 
     /// Commits a transaction (module doc for the protocol). The result is the outcome: a commit
-    /// that fails recovers in place as `open` would and reads its outcome there (a rotation whose
-    /// root record was stored is committed: `Ok`). If that recovery fails too, the outcome is
-    /// unknown and every call fails `Broken` until the store is opened again.
+    /// that fails recovers in place as `open` would and reads its outcome there, durable (a
+    /// rotation whose root record was stored is committed: `Ok`). If a backend sync failed, or
+    /// that recovery fails too, the outcome is unknown: `Err`, and every call fails `Broken`
+    /// until the store is opened again.
     pub fn commit(&mut self, d: Dirty, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
         self.check()?;
         if d.is_empty() && d.meta == self.meta {
@@ -881,6 +891,10 @@ impl Pager {
             return Ok(());
         };
         self.writes.failed += 1;
+        if unsynced(&e) {
+            self.lost = true;
+            return Err(e);
+        }
         match self.recover_in_place() {
             Ok(()) if self.top_ver == ver => {
                 self.writes.committed += 1;

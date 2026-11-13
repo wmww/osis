@@ -12,12 +12,17 @@ pub enum BackendError {
     Fault,
     /// The simulated device crashed; nothing more is written until `Faults::revive`.
     Crashed,
+    /// The write reached storage but syncing it failed: it may read as written and still be
+    /// lost to a power cut, and so may whatever is written after it on this storage (a failed
+    /// fsync drops pages from write-back). Its outcome is unknown.
+    Unsynced,
 }
 
 osis_base::impl_error!(BackendError {
     Io(m) => ("storage: {m}"),
     Fault => ("injected storage fault"),
     Crashed => ("storage crashed"),
+    Unsynced => ("storage sync failed"),
 });
 
 impl Classified for BackendError {
@@ -68,7 +73,8 @@ pub trait Backend: Send {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError>;
     /// Up to `limit` pairs with `start <= key < end` (`None`: unbounded), ascending.
     fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, BackendError>;
-    /// Applies `batch` atomically; durable when it returns `Ok`.
+    /// Applies `batch` atomically; durable when it returns `Ok`. On another `Err`, what it
+    /// reads (as before or as after) is durable; on `Unsynced` the outcome is unknown.
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError>;
     /// Bytes `offset..offset+len` of a blob (clipped at its end); `None` if absent.
     fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError>;

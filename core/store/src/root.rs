@@ -2,7 +2,7 @@
 //! (notes/local-store.md, Key tree). Replacing the record must destroy the previous one.
 
 use crate::backend::{BackendError, lock};
-use crate::memory::Faults;
+use crate::memory::{Faults, Synced};
 use osis_crypto::Secret32;
 use std::sync::{Arc, Mutex};
 
@@ -17,8 +17,9 @@ pub trait RootStorage: Send {
     fn load(&self) -> Result<Option<RootRecord>, BackendError>;
     /// Replaces the record durably, destroying the previous one, before returning `Ok`.
     fn store(&mut self, record: &RootRecord) -> Result<(), BackendError>;
-    /// Completes a `store` a crash interrupted, so no copy of a replaced record remains.
-    /// Called on open before `load`.
+    /// Completes a `store` that failed or a crash interrupted: afterwards `load` reads a durable
+    /// record and no copy of a replaced one remains (a record that reads as stored but whose
+    /// sync failed is written again). Called on open, and on recovering in place, before `load`.
     fn repair(&mut self) -> Result<(), BackendError> {
         Ok(())
     }
@@ -32,11 +33,32 @@ pub trait RootStorage: Send {
     }
 }
 
+/// The record a `MemoryRoot` reads, and what a power cut leaves where that differs (a store
+/// whose sync failed).
+#[derive(Clone, Debug, Default)]
+struct Slot {
+    live: Option<RootRecord>,
+    disk: Option<Option<RootRecord>>,
+}
+
+impl Slot {
+    fn write(&mut self, record: Option<RootRecord>, sync: Synced) {
+        match sync {
+            Synced::Yes => self.disk = None,
+            Synced::No => {
+                let old = self.live.clone();
+                self.disk.get_or_insert(old);
+            }
+        }
+        self.live = record;
+    }
+}
+
 /// In-memory root. Clones share the slot (a test reopens the store over it); obeys the device's
 /// `Faults` plan like `MemoryBackend`.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryRoot {
-    slot: Arc<Mutex<Option<RootRecord>>>,
+    slot: Arc<Mutex<Slot>>,
     faults: Faults,
 }
 
@@ -51,6 +73,13 @@ impl MemoryRoot {
     pub fn copy(&self) -> MemoryRoot {
         MemoryRoot { slot: Arc::new(Mutex::new(lock(&self.slot).clone())), faults: self.faults.clone() }
     }
+    /// Power loss: a record whose sync failed is dropped (`MemoryBackend::power_cut`).
+    pub fn power_cut(&self) {
+        let mut s = lock(&self.slot);
+        if let Some(disk) = s.disk.take() {
+            s.live = disk;
+        }
+    }
     /// Tests only (world copies): an exact copy of the record and fault plan, sharing neither
     /// (`MemoryBackend::test_copy`).
     #[doc(hidden)]
@@ -59,22 +88,37 @@ impl MemoryRoot {
     }
 }
 
+impl MemoryRoot {
+    fn write(&mut self, record: Option<RootRecord>) -> Result<(), BackendError> {
+        let sync = self.faults.check()?;
+        lock(&self.slot).write(record, sync);
+        if sync == Synced::No { Err(BackendError::Unsynced) } else { Ok(()) }
+    }
+}
+
 impl RootStorage for MemoryRoot {
     fn test_copy_boxed(&self) -> Option<Box<dyn RootStorage>> {
         Some(Box::new(self.test_copy()))
     }
     fn load(&self) -> Result<Option<RootRecord>, BackendError> {
-        Ok(lock(&self.slot).clone())
+        Ok(lock(&self.slot).live.clone())
     }
     fn store(&mut self, record: &RootRecord) -> Result<(), BackendError> {
-        self.faults.check()?;
-        *lock(&self.slot) = Some(record.clone());
-        Ok(())
+        self.write(Some(record.clone()))
+    }
+    /// Writes the record that reads again if its sync failed.
+    fn repair(&mut self) -> Result<(), BackendError> {
+        let live = {
+            let s = lock(&self.slot);
+            if s.disk.is_none() {
+                return Ok(());
+            }
+            s.live.clone()
+        };
+        self.write(live)
     }
     fn erase(&mut self) -> Result<(), BackendError> {
-        self.faults.check()?;
-        *lock(&self.slot) = None;
-        Ok(())
+        self.write(None)
     }
 }
 
@@ -151,13 +195,18 @@ mod file {
             Ok(buf.chunks(SLOT).take(2).enumerate().filter_map(|(i, c)| Self::decode(c).map(|(s, r)| (i as u64, s, r))).collect())
         }
 
+        /// Writes and syncs one slot. A failed sync is `Unsynced`: `repair` writes the slot again.
         fn write_slot(&self, f: &mut File, slot: u64, bytes: &[u8; SLOT]) -> Result<(), BackendError> {
-            if let Some(faults) = &self.faults {
-                faults.check()?;
-            }
+            let sync = match &self.faults {
+                Some(faults) => faults.check()?,
+                None => Synced::Yes,
+            };
             f.seek(SeekFrom::Start(slot * SLOT as u64)).map_err(io)?;
             f.write_all(bytes).map_err(io)?;
-            f.sync_all().map_err(io)
+            if sync == Synced::No {
+                return Err(BackendError::Unsynced);
+            }
+            f.sync_all().map_err(|_| BackendError::Unsynced)
         }
     }
 

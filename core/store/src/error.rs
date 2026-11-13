@@ -12,8 +12,8 @@ pub enum Error {
     /// Stored bytes fail decryption or their layout: damaged storage or a bug.
     Corrupt(&'static str),
     /// A write of this transaction failed, so it goes no further (the next transaction recovers
-    /// the store in place); or a commit failed and so did recovering, so its outcome is unknown
-    /// and nothing works until the store is opened again.
+    /// the store in place); or a write's outcome is unknown (its sync failed, or a commit failed
+    /// and so did recovering), so nothing works until the store is opened again.
     Broken,
     /// No store here (open), or a store already exists (create).
     NoStore,

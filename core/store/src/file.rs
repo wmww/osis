@@ -6,6 +6,8 @@ use redb::backends::FileBackend;
 use redb::{Builder, Database, StorageBackend, TableDefinition};
 use std::cell::RefCell;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const KV: TableDefinition<&[u8], &[u8]> = TableDefinition::new("kv");
 const BLOBS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("blobs");
@@ -20,10 +22,38 @@ type Opener = Box<dyn Fn() -> Result<Database, BackendError> + Send>;
 /// A redb database file. `commit` uses redb's immediate durability (fsync before returning).
 /// redb refuses every call after an I/O error until opened again, so a failed call closes the
 /// database and the next call opens it again (redb repairs on open): it reads the file as an open
-/// would, and fails while the open does.
+/// would, and fails while the open does. A call during which a sync of the file failed fails
+/// `Unsynced`: what the file reads may not be on disk.
 pub struct RedbBackend {
     open: Opener,
     db: RefCell<Option<Database>>,
+    /// A sync of the file failed since the last call began.
+    unsynced: Arc<AtomicBool>,
+}
+
+/// Storage that notes a failed sync.
+#[derive(Debug)]
+struct Watched<S> {
+    inner: S,
+    unsynced: Arc<AtomicBool>,
+}
+
+impl<S: StorageBackend> StorageBackend for Watched<S> {
+    fn len(&self) -> std::io::Result<u64> {
+        self.inner.len()
+    }
+    fn read(&self, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+        self.inner.read(offset, len)
+    }
+    fn set_len(&self, len: u64) -> std::io::Result<()> {
+        self.inner.set_len(len)
+    }
+    fn sync_data(&self, eventual: bool) -> std::io::Result<()> {
+        self.inner.sync_data(eventual).inspect_err(|_| self.unsynced.store(true, Ordering::SeqCst))
+    }
+    fn write(&self, offset: u64, data: &[u8]) -> std::io::Result<()> {
+        self.inner.write(offset, data)
+    }
 }
 
 impl RedbBackend {
@@ -42,7 +72,10 @@ impl RedbBackend {
     /// Opens or creates a database on the storage `open` gives, called again for each reopen
     /// (tests inject faults through it).
     pub fn with_storage<S: StorageBackend>(open: impl Fn() -> std::io::Result<S> + Send + 'static) -> Result<RedbBackend, BackendError> {
-        let b = RedbBackend { open: Box::new(move || Builder::new().create_with_backend(open().map_err(io)?).map_err(io)), db: RefCell::new(None) };
+        let unsynced = Arc::new(AtomicBool::new(false));
+        let watch = unsynced.clone();
+        let open = move || Builder::new().create_with_backend(Watched { inner: open().map_err(io)?, unsynced: watch.clone() }).map_err(io);
+        let b = RedbBackend { open: Box::new(open), db: RefCell::new(None), unsynced };
         b.call(|_| Ok(()))?;
         Ok(b)
     }
@@ -59,16 +92,21 @@ impl RedbBackend {
     /// Runs `f` on the database, opening it first if it is closed. A failure closes it (releasing
     /// the file lock), so the next call opens it again.
     fn call<T>(&self, f: impl FnOnce(&Database) -> Result<T, BackendError>) -> Result<T, BackendError> {
+        self.unsynced.store(false, Ordering::SeqCst);
         let mut slot = self.db.borrow_mut();
-        let db = match slot.take() {
-            Some(db) => db,
-            None => self.open_db()?,
-        };
-        let r = f(&db);
-        if r.is_ok() {
-            *slot = Some(db);
+        let r = match slot.take() {
+            Some(db) => Ok(db),
+            None => self.open_db(),
         }
-        r
+        .and_then(|db| f(&db).map(|v| (v, db)));
+        match r {
+            Ok((v, db)) => {
+                *slot = Some(db);
+                Ok(v)
+            }
+            Err(_) if self.unsynced.load(Ordering::SeqCst) => Err(BackendError::Unsynced),
+            Err(e) => Err(e),
+        }
     }
 
     fn read<T>(&self, def: TableDefinition<&[u8], &[u8]>, f: impl FnOnce(&redb::ReadOnlyTable<&[u8], &[u8]>) -> Result<T, redb::StorageError>) -> Result<T, BackendError> {
