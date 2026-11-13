@@ -125,16 +125,23 @@ fn a_store_that_cannot_open_shows_why_and_starts_fresh() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// A file where the store's dir should be: start fresh moves it to the next free sibling name
-/// (`store.old` is taken); with nothing at the path there is nothing to move and no button.
+/// A file where the store's dir should be: start fresh never overwrites the name it showed when
+/// that was taken since, but names the next free one; with nothing at the path there is nothing
+/// to move and no button.
 #[test]
 fn start_fresh_takes_a_free_name_and_needs_something_to_move() {
     let base = scratch("file");
     let dir = base.join("store");
     std::fs::write(&dir, b"a file").unwrap();
-    std::fs::create_dir_all(base.join("store.old")).unwrap();
     let mut w = Window::open(&dir);
     assert!(w.ui.error().is_some());
+    assert!(w.shows(&base.join("store.old").display().to_string()));
+    std::fs::write(base.join("store.old"), b"taken since").unwrap();
+    let fresh = w.button().expect("start fresh");
+    w.click(fresh);
+    assert_eq!(std::fs::read(base.join("store.old")).unwrap(), b"taken since", "never overwritten");
+    assert_eq!(std::fs::read(&dir).unwrap(), b"a file", "not moved yet");
+    assert!(w.shows(&base.join("store.old-2").display().to_string()), "names the next free one");
     let fresh = w.button().expect("start fresh");
     w.click(fresh);
     assert_eq!(w.ui.error(), None);

@@ -3,6 +3,6 @@
 > Priority: normal
 > Tags: core-ask, app
 
-- Seen: a second `osis-app` on the same dir; reopening right after dropping the last handle (closing with `Osis::close` avoids that one: kit's `Started::close`).
+- Seen: a second `osis-app` on the same dir (desktop only: Android's shell closes an older view's store before opening); reopening right after dropping the last handle (closing with `Osis::close` avoids that one: kit's `Started::close`).
 - Start fresh only renames, so nothing is lost: the other process keeps writing into the moved dir.
 - Not string-matching redb's message in kit: it is a storage detail that changes with redb.

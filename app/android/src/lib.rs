@@ -147,6 +147,8 @@ mod natives {
 /// timeout (ms) and touch slop (px).
 fn native_create<'l>(env: &mut Env<'l>, this: JObject<'l>, dir: JString<'l>, density: jfloat, dark: jboolean, gestures: JIntArray<'l>) -> R<()> {
     init_logging();
+    // an older view not yet destroyed releases the store first, or this view's open finds it in use
+    close_shell();
     *VIEW.lock().map_err(|_| jni::errors::Error::JniCall(jni::errors::JniError::Unknown))? = Some(env.new_global_ref(&this)?);
     let dir = std::path::PathBuf::from(dir.try_to_string(env)?).join("store");
     let mut g = [0; 4];
@@ -164,9 +166,22 @@ fn native_create<'l>(env: &mut Env<'l>, this: JObject<'l>, dir: JString<'l>, den
     Ok(())
 }
 
-fn native_destroy<'l>(_env: &mut Env<'l>, _this: JObject<'l>) -> R<()> {
-    // close the store (so a new view can open it at once) before forgetting the view its waker
-    // calls
+fn native_destroy<'l>(env: &mut Env<'l>, this: JObject<'l>) -> R<()> {
+    // a newer view (Android may create one before destroying this one) took over at its create
+    let v = VIEW.lock().map_err(|_| jni::errors::Error::JniCall(jni::errors::JniError::Unknown))?;
+    if v.as_ref().is_some_and(|g| env.is_same_object(g, &this).unwrap_or(false)) {
+        drop(v);
+        close_shell();
+        // forgotten after the close, so wakes during it still reach a live view
+        if let Ok(mut v) = VIEW.lock() {
+            *v = None;
+        }
+    }
+    Ok(())
+}
+
+/// Closes the store of the shell there is, if any, so it can be opened again at once.
+fn close_shell() {
     if let Some(sh) = SHELL.with(|c| c.borrow_mut().take()) {
         match sh.close() {
             Ok(osis::Close::Closed) => {}
@@ -174,10 +189,6 @@ fn native_destroy<'l>(_env: &mut Env<'l>, _this: JObject<'l>) -> R<()> {
             Err(e) => log::warn!("closing the store: {e}"),
         }
     }
-    if let Ok(mut v) = VIEW.lock() {
-        *v = None;
-    }
-    Ok(())
 }
 
 fn native_wake<'l>(env: &mut Env<'l>, _class: JClass<'l>) -> R<()> {

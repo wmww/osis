@@ -118,6 +118,17 @@ fn aside(dir: &Path) -> Option<PathBuf> {
     (1u64..).map(|n| dir.with_file_name(if n == 1 { format!("{name}.old") } else { format!("{name}.old-{n}") })).find(|p| p.symlink_metadata().is_err())
 }
 
+/// Moves `from` to `to`, never replacing what is there: a dir's rename replaces at most an empty
+/// dir (POSIX); anything else is linked at `to` (failing when taken), then unlinked at `from`.
+fn move_aside(from: &Path, to: &Path) -> std::io::Result<()> {
+    if from.symlink_metadata()?.is_dir() {
+        std::fs::rename(from, to)
+    } else {
+        std::fs::hard_link(from, to)?;
+        std::fs::remove_file(from)
+    }
+}
+
 impl Started {
     /// Why the store could not open, while the failure screen shows.
     pub fn error(&self) -> Option<&str> {
@@ -146,10 +157,11 @@ impl Started {
     fn start_fresh(&mut self, rr: &mut RenderRoot) {
         let Shown::Failed(f) = &mut self.shown else { return };
         let Some(to) = f.aside.clone() else { return };
-        if to.symlink_metadata().is_ok() {
-            f.aside = aside(&self.start.dir);
-        } else if let Err(e) = std::fs::rename(&self.start.dir, &to) {
-            f.error = format!("could not move {} to {}: {e}", self.start.dir.display(), to.display());
+        if let Err(e) = move_aside(&self.start.dir, &to) {
+            match e.kind() {
+                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::DirectoryNotEmpty => f.aside = aside(&self.start.dir),
+                _ => f.error = format!("could not move {} to {}: {e}", self.start.dir.display(), to.display()),
+            }
         } else {
             match self.start.ui() {
                 Ok(ui) => return self.run(rr, ui),
