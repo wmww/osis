@@ -2270,14 +2270,21 @@ fn cover_kept_from_b(net: &mut Net, host: usize, [a, x, b]: [usize; 3], t: osis_
 }
 
 // spec/sync.md §6 (Placed again once; once no valid snapshot under the label covers it, its
-// holders place it again): `cover_kept_from_b`. Owner a, away and never holding C or S, demotes x
-// to read: S falls and the label's head moves. b, C's only holder, places it again and every node
-// reads it (a stand lasting the tombstone's life left C at b alone).
+// holders place it again): `cover_kept_from_b`; the stand outlasts b's restart. Owner a, away and
+// never holding C or S, demotes x to read: S falls and the label's head moves. b, C's only
+// holder, places it again and every node reads it (a stand lasting the tombstone's life left C
+// at b alone).
 #[test]
 fn a_placement_again_deleted_goes_again_once_the_head_moves_spec_sync_6() {
     let (mut net, host, [a, x, b], g, [t]) = hosted::<3, 1>(&[(1, Role::Admin), (2, Role::Write)], ["x"], true);
     let l = net.label(a);
     let at = cover_kept_from_b(&mut net, host, [a, x, b], t, l);
+    // the stand outlasts a restart: no placement again for x to delete
+    let deletes = |net: &Net| net.deleted.iter().filter(|((n, y, _), _)| *n == x && *y == l).map(|(_, k)| *k).sum::<usize>();
+    let before = deletes(&net);
+    net.restart(b, 31);
+    net.run();
+    assert_eq!(deletes(&net), before, "no placement again after a restart");
     let xt = net.tid(x);
     demote(&mut net, a, g, xt, Role::Read);
     net.hide_blobs.remove(&b);
@@ -2320,4 +2327,74 @@ fn a_placement_again_deleted_goes_again_once_a_team_demotion_moves_the_head_spec
     assert!(steps(&mut net) > before, "G's head moved");
     assert!(at(&mut net), "b placed C again");
     assert_eq!(net.engine(a).get_typed(&t, &SEQ).unwrap(), Some(s("b's")), "a reads C");
+}
+
+// spec/sync.md §6 (Placed again once), spec/permissions.md §5.1 (a self-removal audits nothing;
+// the next explicit write on that grant audits): admins x and y, writer b, owner a away. x
+// compacts b's write C under S, which the host keeps from b, and removes itself; b places C again,
+// a delete of that stands. b then gets S (C covered there). a, away, removes x explicitly: its
+// frontier lacks S, so S falls everywhere and the head stays. b, C's only holder, places it again
+// and every node reads it (a stand while the head stays left C at b alone).
+#[test]
+fn a_placement_again_deleted_goes_again_once_its_held_cover_falls_spec_sync_6() {
+    let (mut net, host, [a, x, y, b], g, [t]) = hosted::<4, 1>(&[(1, Role::Admin), (2, Role::Admin), (3, Role::Write)], ["x"], true);
+    let l = net.label(a);
+    let k = Ak::new(SEQ.ak()).unwrap();
+    net.set_online(a, false);
+    let c = insert(&mut net, b, t, "b's");
+    net.run();
+    let acts = net.sync(x).compact_now(&t, &k).unwrap();
+    let sn = latest_snapshot(&mut net, x, t, &k, acts);
+    let hide = move |net: &mut Net| {
+        let hidden = [x, y].into_iter().flat_map(|n| blobs_of(net, n, &l, sn)).collect();
+        net.hide_blobs.insert(b, hidden);
+    };
+    let xt = net.tid(x);
+    let removal = osis_node::flows::Demotion { holder: xt, new: None, retain: None };
+    let done = net.engine(x).demote(&g, &removal).unwrap();
+    let acts = net.sync(x).carry_out(done).unwrap();
+    net.actions(x, acts);
+    for ms in [0, 20 * 60_000, 2 * 3_600_000] {
+        net.tick(ms);
+        for n in [x, y, b] {
+            net.feed(n, osis_node::sync::Event::Local);
+        }
+        for _ in 0..300 {
+            if net.queue_len() == 0 {
+                break;
+            }
+            hide(&mut net);
+            net.round();
+        }
+    }
+    net.run();
+    let at = move |net: &mut Net| blobs_of(net, b, &l, c).iter().any(|id| net.host_ids(host, &l).contains(id));
+    assert!(!at(&mut net), "the delete of the placement again stands");
+    // b gets S at last (its announcement went by while hidden)
+    let p = net.engine(y).package(&sn).unwrap().unwrap();
+    net.engine(b).ingest(&p.bytes, p.blobs.clone()).unwrap();
+    net.feed(b, osis_node::sync::Event::Local);
+    net.run();
+    assert_eq!(net.engine(b).body_valid(&sn, &t, &k), Some(true), "b holds S");
+    assert!(!at(&mut net), "C stays off the host");
+    let steps = |net: &mut Net| net.engine(b).get_typed(&g, &ct::LABEL).unwrap().unwrap().values().map(|v| v.steps.len()).sum::<usize>();
+    let before = steps(&mut net);
+    // a, back, gets all but S and C, then removes x
+    let hidden = net.hide_blobs[&b].clone();
+    net.hide_blobs.insert(a, hidden);
+    net.set_online(a, true);
+    net.run();
+    assert_eq!(net.engine(a).body_valid(&sn, &t, &k), None, "a lacks S");
+    let done = net.engine(a).demote(&g, &removal).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.hide_blobs.clear();
+    net.advance(61_000);
+    assert_eq!(net.engine(b).body_valid(&sn, &t, &k), Some(false), "S fell at b");
+    assert_eq!(steps(&mut net), before, "the head stays");
+    assert!(at(&mut net), "b placed C again");
+    for n in [a, y, b] {
+        assert_eq!(net.engine(n).get_typed(&t, &SEQ).unwrap(), Some(s("b's")), "node {n} reads C");
+    }
 }

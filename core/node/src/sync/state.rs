@@ -247,8 +247,8 @@ pub struct BlobRec {
     /// A memory commit's blob (`Entry::memory`): the record lives in memory only.
     pub memory: bool,
     /// Sealed by this node to place a body again past a delete it judged unfounded, at the label
-    /// head then: a delete of this blob too stands while that is the head (`SyncEngine::
-    /// delete_stands`).
+    /// head then: a delete of this blob too stands while that is the head and no held part on
+    /// the body's aspects fell invalid here since (`SyncEngine::delete_stands`, `again_fell`).
     pub again: Option<osis_label::StepId>,
 }
 
@@ -1931,6 +1931,14 @@ impl State {
                 self.set_entry(l, *id, e);
             }
         }
+    }
+
+    /// Blob `id` no longer marks a placement again (`BlobRec::again`): a delete of it stands
+    /// only as any other's does.
+    pub fn clear_again(&mut self, id: &BlobId) {
+        let Some(mut rec) = self.blobs.remove(id) else { return };
+        rec.again = None;
+        self.add_blob(*id, rec);
     }
 
     pub fn remove_blob(&mut self, id: &BlobId) {

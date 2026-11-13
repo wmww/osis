@@ -1174,6 +1174,9 @@ pub struct Core {
     /// Aspects a held valid compaction snapshot of either class turned invalid on since the last
     /// take (`Engine::take_fallen`).
     pub fallen: BTreeSet<(Tid, Ak)>,
+    /// Aspects a held part of any commit turned invalid on since the last take
+    /// (`Engine::take_fell`).
+    pub fell: BTreeSet<(Tid, Ak)>,
     /// Set when a lazily held header failed to decode (`LazyHeader`): every later transaction
     /// fails (`Error::Corrupt`).
     pub header_fault: Arc<std::sync::atomic::AtomicBool>,
@@ -1430,6 +1433,7 @@ impl Core {
             memory: self.memory.clone(),
             compaction: self.compaction.clone(),
             fallen: self.fallen.clone(),
+            fell: self.fell.clone(),
             header_fault: osis_base::copying::remap(&self.header_fault, |f| std::sync::atomic::AtomicBool::new(f.load(std::sync::atomic::Ordering::Relaxed))),
             #[cfg(test)]
             check_ingest: self.check_ingest.clone(),
@@ -2015,7 +2019,6 @@ impl Core {
             written: _,
             memory: _,
             compaction: _,
-            fallen: _,
             stale_things: _,
             stale_authors: _,
             stale_under: _,
@@ -2025,6 +2028,10 @@ impl Core {
             memory_tx: _,
             made_labels: _,
             dirty: _,
+            // taken by node-sync, kept: a flip rolled back only reports once more (one more
+            // placement again, one more relist)
+            fallen: _,
+            fell: _,
             // a call's parameter (`memory_room`) and caches true of the store whatever a
             // rollback undoes (`memory_waits`: a pending row's class never changes; `walks`
             // checks what is held as it goes on)
@@ -2282,6 +2289,7 @@ impl Core {
             memory: MemorySync::default(),
             compaction: Default::default(),
             fallen: Default::default(),
+            fell: Default::default(),
             header_fault: Arc::default(),
             #[cfg(test)]
             check_ingest: false,

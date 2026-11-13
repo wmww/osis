@@ -945,6 +945,7 @@ impl SyncEngine {
         self.memory_step(out)?;
         // after `memory_step`: a commit forgotten whole is in `Memory::forgotten` by now
         self.drop_destroyed_secrets()?;
+        self.again_fell();
         self.engine_events()?;
         // joined links that ended: this account leaves K (spec/permissions.md §7)
         if self.leave_ended_links()? {

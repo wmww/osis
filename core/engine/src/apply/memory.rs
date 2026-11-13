@@ -234,4 +234,11 @@ impl Engine {
         self.core.fallen.retain(|x| !out.contains(x));
         Ok(out)
     }
+
+    /// Aspects a held part of any commit (a cover, a killing write) turned invalid on since the
+    /// last take: node-sync's placements again past deletes made on such grounds go once more
+    /// (spec/sync.md §6 Placed again once).
+    pub fn take_fell(&mut self) -> BTreeSet<(Tid, Ak)> {
+        std::mem::take(&mut self.core.fell)
+    }
 }

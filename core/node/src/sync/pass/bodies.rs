@@ -184,9 +184,9 @@ impl SyncEngine {
     /// `head` (`BlobRec::again`): the right holder judges it covered by a snapshot this node
     /// does not hold (one on its way, or a host keeping it from this node), and placing it again
     /// would only be deleted again, one fresh blob and tombstone per round trip. It stands while
-    /// that tombstone lasts and the head is that step: a role change (a demotion, the head
-    /// moving with it) may make the deleter's cover or killing write fall, so one more placement
-    /// goes then.
+    /// that tombstone lasts, the head is that step and no held part on the body's aspects fell
+    /// invalid here since (`again_fell`): a role change may make the deleter's cover or killing
+    /// write fall, so one more placement goes then.
     pub(super) fn delete_stands(&mut self, source: Option<&PeerKey>, (l, head): (LabelId, osis_label::StepId), b: &Body, parts: &[usize], snaps: &Snaps, note: &mut Note) -> Result<bool> {
         if !self.delete_took(source, l, b) {
             return Ok(false);
@@ -234,6 +234,22 @@ impl SyncEngine {
             note.at(t);
         }
         until.is_some()
+    }
+
+    /// Held parts on these aspects fell invalid here (`Engine::take_fell`): a cover or killing
+    /// write the deleter of a placement again may have relied on, so the placements again of
+    /// commits on them (`BlobRec::again`) mark one no more and their deletes stand only as
+    /// any other's (spec/sync.md §6 Placed again once). Rare (a role change): every blob record
+    /// is scanned.
+    pub(in crate::sync) fn again_fell(&mut self) {
+        let fell = self.engine.take_fell();
+        if fell.is_empty() {
+            return;
+        }
+        let marked: Vec<BlobId> = self.state.blobs.iter().filter(|(_, r)| r.again.is_some()).filter(|(_, r)| self.engine.header(&r.commit).is_some_and(|h| h.aspects.iter().any(|a| fell.contains(&(a.tid, a.ak.clone()))))).map(|(id, _)| *id).collect();
+        for id in marked {
+            self.state.clear_again(&id);
+        }
     }
 
     /// Whether every part's aspect of commit `c` is covered by a snapshot under `l`.
