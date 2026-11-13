@@ -12,7 +12,7 @@ A branch proves itself in its worktree; main is only fast-forwarded, never built
 ## Steps
 Each prints its wall and CPU-s (compare CPU-s; wall follows load) and checks its time limit. The steps before the tests fail fast; every test stage runs to its end.
 1. The lockfile is current (`cargo metadata --locked`, about 1 s; not `--offline`, where an uncached crate fails like a stale lock; the failure prints the refresh command); `tools/policy.py`.
-2. Instant checks: the tools' own tests (`tools/gate_select_test.sh`, `test_select_test.py`, `gate_failures_test.py`, `limits_test.py`), `tools/limits.py split`, `tools/spec_map.py --uncited`, `--gaps`.
+2. Instant checks: the tools' own tests (`tools/gate_select_test.sh`, `test_select_test.py`, `gate_failures_test.py`, `limits_test.py`), `tools/limits.py split`, `tools/spec_map.py --uncited --gaps`.
 3. The selection, printed with its commands (The selection, below).
 4. Lints: core clippy, then the GUI's on the same artifacts (re-lints only kit and app, a few seconds; cold, about 1.5 min once per worktree).
 5. Builds, unlocked: `cargo test --no-run` and every binary the selection runs, with the runs' own cargo arguments, so the hold builds nothing (doctests still compile inside it).
@@ -49,6 +49,6 @@ A new project extends the same pattern, with its own properties and release chec
 - The core crates below the engine (osis-base, -crdt, -perm, -schema) pull no tokio, quinn, redb or ML-KEM; tokio enters by default only in osis-transport, osis-node (`driver`) and osis (notes/architecture.md §5).
 
 ## Spec-to-test map
-`python3 tools/spec_map.py` writes notes/testing-map.md (gitignored): per numbered spec section, the tests and vector cases citing it, the rule checklist, gaps and uncited tests. One flag per run: `--uncited` (gate) fails on a test in core/, libs/chat/ or cli/ that cites nothing (models exempt); `--gaps` (gate) fails on a rule with neither a test nor an issue, or a MUST sentence no rule anchors.
+`python3 tools/spec_map.py` writes notes/testing-map.md (gitignored): per numbered spec section, the tests and vector cases citing it, the rule checklist, gaps and uncited tests. `--uncited` (gate) fails on a test in core/, libs/chat/ or cli/ that cites nothing (models exempt); `--gaps` (gate) fails on a rule with neither a test nor an issue, or a MUST sentence no rule anchors; both flags in one run print both lists.
 - **Rules**: every MUST / MUST NOT sentence of spec/*.md plus the refusal rules of spec/permissions.md and spec/sync.md, each a `RULES` entry in the script (file, §, anchor, a substring of the sentence). A test or issue covers one by citing `spec/<file>.md §N (anchor)`; a new MUST fails `--gaps` until it has an entry. `VACUOUS` lists rules nothing can test yet.
 - Not in the map: SHOULDs (listed, not gated), policy numbers (cited as `spec: none` or by section), normative text without a MUST (section level only), spec/requirements.md (no numbered sections; covered by reviews).

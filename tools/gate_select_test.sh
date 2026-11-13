@@ -93,6 +93,13 @@ git checkout -q main; echo x >> core/osis/a.rs; git commit -qam "merged elsewher
 git checkout -q -b lag origin/main; echo x >> libs/kit/src/a.rs; git commit -qam lag
 check "local main behind origin/main" "core=0 gui=1 unify=0 select=none"
 check "--base local main" "core=1 gui=1 unify=0 select=diff" --base main
+# --plan fetches: a push from elsewhere reaches origin/main; a failed fetch warns and keeps the last one
+git clone -q ../up.git ../other; (cd ../other && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m elsewhere && git push -q origin main)
+check "fetches origin/main" "core=0 gui=1 unify=0 select=none"
+n=$((n + 1)); [ "$(git rev-parse origin/main)" = "$(git -C ../up.git rev-parse main)" ] || { echo "FAIL --plan did not fetch origin/main"; fail=1; }
+git remote set-url origin ../missing.git
+check "fetch fails" "gate: fetching origin main failed; using the last fetched one
+core=0 gui=1 unify=0 select=none"
 git checkout -q t; git remote remove origin
 check "no origin/main" "core=1 gui=1 unify=1 select=all"
 # the hold's runner (--held): only under tools/heavy (HEAVY_HELD), each `run LIMIT CMD` line in order with
