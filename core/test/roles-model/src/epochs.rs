@@ -1242,7 +1242,7 @@ pub fn check(w: &World, st: &mut Stats) {
             // While a removed node's fork counts its lists name its own commits; while a head
             // a removed node made before its removal stands (no node of P is left to supersede
             // it: the remover gone), what was written there counts.
-            let fork_counts = (0..n).any(|r| v.counting[r] && w.items[r].hostile) || v.heads.iter().any(|&h| w.left[w.items[h].author] < LATE);
+            let fork_counts = (0..n).any(|r| v.counting[r] && w.items[r].hostile) || w.gone < LATE && v.heads.iter().any(|&h| w.left[w.items[h].author] < LATE);
             if v.visible[i] && !hi && fork_counts {
                 st.final_fork_counts += 1;
             } else if v.visible[i] && !hi {

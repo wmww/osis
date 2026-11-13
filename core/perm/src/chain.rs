@@ -1,7 +1,8 @@
 //! An account's signing chain (spec/crypto.md §9, spec/permissions.md §5.4): which held
-//! rotations count, which head a node follows, and account-level disputes. A pure function of
-//! the held rotations, the side and the receipt order; nothing here reads `ts`, counters or
-//! signatures (the caller checks those and states the result in `Rotation::signed`).
+//! rotations count, which epochs are open (every head), the preferred head, and account-level
+//! disputes. A pure function of the held rotations, the side and the receipt order; nothing
+//! here reads `ts`, counters or signatures (the caller checks those and states the result in
+//! `Rotation::signed`).
 //!
 //! Principle: forks stand. Every head is open and every other epoch closed; nothing merges a
 //! fork for being one (the next rotation for any reason supersedes every head). Only a dispute

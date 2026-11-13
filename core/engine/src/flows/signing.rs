@@ -475,7 +475,7 @@ fn ends(v: &super::account::AccountView, departures: Option<&Departures>, e: &Co
     dep.removed(v, c).iter().any(|x| !mine.contains(x))
 }
 
-/// The held rotations of this node's account `p` minted by a node D no longer holds whose
+/// The held rotations of this node's account `p` beside a removal of their minter whose
 /// epoch no counting rotation D's roster authorizes supersedes, once an authorized rotation
 /// held names that node's removal (so the removal's line is held: rejecting earlier would
 /// reject what it is signed at): a removed node's forks, each a head wherever the roster is not

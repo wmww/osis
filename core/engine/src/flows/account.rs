@@ -74,9 +74,9 @@ pub(crate) struct AccountView {
     /// signature) by a node D holds as current, with that node, whose line holds no rotation
     /// beside a removal of its minter from D (spec/permissions.md §5.4, Nodes of P).
     authorized: BTreeMap<CommitId, Tid>,
-    /// This node's account: the held rotations minted (by inner signature) by a node D does not
-    /// hold as current, or beside a removal of their minter (made while it was removed), with
-    /// that node.
+    /// This node's account: the held rotations beside a removal of their minter (by inner
+    /// signature), with that node: a removed node's forks. One its removal's line holds (made
+    /// before it) is never a head.
     removed_minted: BTreeMap<CommitId, Tid>,
     /// This node's account: the held rotations no rotation on whose line is beside a removal of
     /// its minter (current or not): a removed node's word from before its removal stands.
@@ -176,8 +176,8 @@ impl AccountView {
         self.rule.chain().line(r)
     }
 
-    /// The node that minted held rotation `r` when D's roster no longer holds it, or `r` is
-    /// beside its removal (this node's account only).
+    /// The node that minted held rotation `r` when `r` is beside its removal (this node's
+    /// account only).
     pub(crate) fn removed_minter(&self, r: &CommitId) -> Option<Tid> {
         self.removed_minted.get(r).copied()
     }
@@ -230,8 +230,8 @@ impl AccountView {
     }
 
     /// The counting rotations closing held epoch `e`, void or not: every one it does not
-    /// descend from (the followed head's are the other heads, which bound what a merge names
-    /// of it).
+    /// descend from (a head's are the other heads, which bound what a list names of it once it
+    /// closes).
     pub(crate) fn closers(&self, e: &CommitId) -> BTreeSet<CommitId> {
         let c = self.rule.chain();
         if !c.holds(e) {
@@ -511,7 +511,7 @@ impl Core {
                 if line_stands {
                     standing.insert(*id);
                 }
-                if !roster.contains(n) || !stands(id) {
+                if !stands(id) {
                     removed_minted.insert(*id, *n);
                 }
                 if roster.contains(n) && line_stands {
