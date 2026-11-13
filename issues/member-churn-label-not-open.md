@@ -1,7 +1,7 @@
 # member_churn: a label never opens at a host
-> Summary: seen once in sim `member_churn` (node 2's connection to host 0 kept a group's label Testing, head None, synced false, at quiescence); no reproducer: the seed that showed it passes under the roster merger, whose run makes far fewer role commits. Not studied.
-> Priority: low
+> Summary: sim `member_churn` setup 211283068035 seed 211283068035 fails on main: node 2's connection to host 0 keeps a group's label Testing (head None, synced false) at quiescence. Not studied.
+> Priority: normal
 > Tags: sync, sim, tests
 
-- Seen: setup 313462591648 seed 313462591654, step 153, with merges by a merger read from the forks held (git history has that build); two `delete refused: code 1` diagnostics at step 29.
-- Start at, given a reproducer: why the node never registers or opens that label there (a step refused for now and not registered again, or a head it never read).
+- Repro: `cargo run --bin sim-sweep -- --seeds 1 --from 211283068035 --setup 211283068035 --only member_churn` (fails at step 148); `OSIS_SIM_TRACE=1` for the trace.
+- Start at: why the node never registers or opens that label there (a step refused for now and not registered again, or a head it never read).
