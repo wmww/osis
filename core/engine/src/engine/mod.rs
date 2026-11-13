@@ -881,10 +881,12 @@ indexes! {
     pub kept: JMap<Tid, BTreeSet<Tid>>,
     /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
     pub hint_candidates: JMap<CommitId, Vec<(Tid, osis_base::Value)>>,
-    /// Things holding a purge-on-replace body this node would cover but may not write on yet
-    /// (`MayWrite::Later`: their minting or delete keys are not here), under every thing on
-    /// their record chain: what may move them (`retention::replace::wake_covers`). Not
-    /// persisted: an open judges every held purge-on-replace aspect again (`Core::index_none`).
+    /// Things holding a purge-on-replace body this node would cover, or an aspect the trigger
+    /// owes a weighing (`compact::Trigger::owe`), but may not write on yet (`MayWrite::Later`:
+    /// their minting or delete keys are not here), under every thing on their record chain: what
+    /// may move them (`retention::replace::wake_covers`). Not persisted: an open judges every
+    /// held purge-on-replace aspect again (`Core::index_none`) and owes the trigger's weighings
+    /// again (`Engine::owe_unwritable_held`).
     pub cover_waits: JSetMap<Tid, Tid>,
 }
 
@@ -1577,8 +1579,10 @@ impl Core {
         self.stale_authors.extend(self.ix.held.upstream(&holders));
         let under = self.ix.held.reach(&targets);
         // a role moved there, this node's maybe: a held purge-on-replace body may now be owed a
-        // cover (`retention::settle_none`)
+        // cover (`retention::settle_none`), an aspect weighed while this node could not write it
+        // a weighing (`compact::Trigger::wake`)
         for t in &under {
+            self.compaction.wake(t);
             let on: Vec<(Tid, Ak)> = self.ix.by_aspect.range((*t, Ak::MIN)..).take_while(|((x, _), _)| x == t).map(|(k, _)| k.clone()).collect();
             for (x, ak) in on {
                 if crate::retention::history::of(self, &x, &ak).purges() {
@@ -3177,6 +3181,8 @@ impl Engine {
         for k in held {
             e.core.compaction.arm(k, quiet);
         }
+        // what this node may not write could not be compacted: weighed once it may
+        e.owe_unwritable_held()?;
         e.core.timer_floor = e.next_timer()?.unwrap_or(u64::MAX);
         Ok(e)
     }

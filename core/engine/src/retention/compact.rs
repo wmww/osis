@@ -87,6 +87,10 @@ struct Est {
     /// then passes: O(the bodies that start to count), so a gap that stays costs writes nothing
     /// and one closed bit by bit costs each body once.
     stops: Stops,
+    /// Weighed while this node could not write the aspect: weighed again whatever the estimate
+    /// once it may (`Trigger::wake`), `quiet` when the quiet rule asked it (`Trigger::quiet`).
+    owed: bool,
+    quiet: bool,
 }
 
 impl Trigger {
@@ -301,6 +305,27 @@ impl Trigger {
     pub(crate) fn next_at(&self) -> u64 {
         let live = self.at.keys().next().copied().unwrap_or(u64::MAX);
         live.min(self.quiet_at.first().map_or(u64::MAX, |x| x.0))
+    }
+
+    /// `k` was due at a node that may not write it: owed a weighing once it may (`wake`), its
+    /// estimate kept (`quiet`: the quiet rule asked it).
+    pub(crate) fn owe(&mut self, k: (Tid, Ak), quiet: bool) {
+        let e = self.est.entry(k).or_default();
+        e.owed = true;
+        e.quiet |= quiet;
+    }
+
+    /// This node may now write on `t` (a role, its minting or delete keys arrived): each aspect
+    /// of `t` owed a weighing (`owe`) is weighed at the next step. O(log aspects) plus `t`'s
+    /// estimates; nothing for an aspect not owed one.
+    pub(crate) fn wake(&mut self, t: &Tid) {
+        let owed: Vec<((Tid, Ak), bool)> = self.est.range((*t, Ak::MIN)..).take_while(|(k, _)| k.0 == *t).filter(|(_, e)| e.owed).map(|(k, e)| (k.clone(), e.quiet)).collect();
+        for (k, quiet) in owed {
+            if quiet {
+                self.quiet_due.insert(k.clone());
+            }
+            self.weigh(k);
+        }
     }
 
     /// `k` is weighed at the next step whatever its estimate.
@@ -666,6 +691,23 @@ impl Load {
     }
 }
 
+/// Whether this node may write a snapshot of `k` now (`snapshot::may_snapshot`). Where it may not,
+/// `k` is owed a weighing (`Trigger::owe`, `quiet` for the quiet rule) that what lets it write
+/// wakes (`Trigger::wake`): its minting or delete keys arriving (`Later`: the thing waits in
+/// `Indexes::cover_waits`, `replace::wake_covers`) or a role moving above it
+/// (`Core::timelines_changed`).
+fn owe_unwritable(tx: &mut Tx<'_>, k: &(Tid, Ak), quiet: bool) -> Result<bool> {
+    use crate::engine::write::MayWrite;
+    let may = super::snapshot::may_snapshot(tx, &k.0, &k.1, k.1.ephemeral(), tx.core.hlc.peek())?;
+    if may == MayWrite::Later {
+        super::replace::await_cover(tx.core, &k.0);
+    }
+    if may != MayWrite::Yes {
+        tx.core.compaction.owe(k.clone(), quiet);
+    }
+    Ok(may == MayWrite::Yes)
+}
+
 impl Engine {
     /// The compaction trigger (spec/sync.md §7 Trigger), at each step: every aspect due whose
     /// estimate passes `FACTOR` times its last snapshot cost (or asked to be weighed) is weighed,
@@ -691,14 +733,13 @@ impl Engine {
                 self.core.compaction.est.remove(&k);
                 continue;
             }
-            // a node that may not write the aspect leaves compaction to one that may
-            let Ok(me) = self.core.writer_for(&tid) else { continue };
-            let memory = ak.ephemeral();
-            let may = self.run(|tx| super::snapshot::may_snapshot(tx, &tid, &ak, memory, tx.core.hlc.peek()))?;
-            if may != crate::engine::write::MayWrite::Yes {
-                self.core.compaction.est.remove(&k);
+            // a node that may not write the aspect leaves compaction to one that may, and owes
+            // the weighing for when it may (`owe_unwritable`)
+            if !self.run(|tx| owe_unwritable(tx, &k, quiet.contains(&k)))? {
                 continue;
             }
+            let Ok(me) = self.core.writer_for(&tid) else { continue };
+            let quiet_owed = self.core.compaction.est.get(&k).is_some_and(|e| e.quiet);
             // counted: tests read how often the trigger weighs and fires per write
             crate::costs::count("compact: aspects weighed", 1);
             let Some((l, stops)) = Load::of(self, &tid, &ak, me)? else {
@@ -708,7 +749,7 @@ impl Engine {
             // cover once quiet: a leftover is the one carrier of an expired write's creations and
             // resets to a node that missed it (hosts deleted the body at its expiry)
             let full = l.bodies >= 2 && l.held > FACTOR.saturating_mul(l.snapshot);
-            let fire = full || quiet.contains(&k) && l.leftovers > 0;
+            let fire = full || (quiet.contains(&k) || quiet_owed) && l.leftovers > 0;
             let mut held = l.held;
             if fire {
                 match self.snapshot(&tid, &ak) {
@@ -729,10 +770,26 @@ impl Engine {
             if self.core.ix.by_aspect.get(&k).is_none_or(|s| s.len() <= 1) {
                 self.core.compaction.est.remove(&k);
             } else {
-                self.core.compaction.est.insert(k, Est { held, snapshot: l.snapshot, stops });
+                self.core.compaction.est.insert(k, Est { held, snapshot: l.snapshot, stops, owed: false, quiet: false });
             }
         }
         Ok(out)
+    }
+
+    /// At open: every compactable aspect of more than one body that this node may not write
+    /// now is owed a weighing for when it may (`owe_unwritable`). The trigger kept every aspect
+    /// it may write within `FACTOR` before; those it may not it could not, and what woke them
+    /// went with the estimates. O(the aspects), no body read.
+    pub(crate) fn owe_unwritable_held(&mut self) -> Result<()> {
+        let aspects: Vec<(Tid, Ak)> = self.core.ix.by_aspect.iter().filter(|(k, s)| compactable(&k.1) && s.len() > 1).map(|(k, _)| k.clone()).collect();
+        self.run(|tx| {
+            for k in &aspects {
+                if tx.core.created(&k.0).is_some() {
+                    owe_unwritable(tx, k, false)?;
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Tests: snapshots every ephemeral aspect held here with a body a snapshot may cover, now.
@@ -1049,5 +1106,62 @@ mod tests {
             at.push((cost(&mut lp, t, "x:big.0"), cost(&mut lp, t, "x:cur+.0")));
         }
         assert_eq!(at[0], at[1], "the same at 3 and 30 chunks");
+    }
+
+    // spec/sync.md §7 (Trigger): a writer whose held bodies of an aspect passed the trigger while
+    // it could not write (demoted to reader) compacts them once its write is granted again, with
+    // no write of the aspect between, and so after a restart in between. The grant weighs only
+    // the aspect owed: another aspect of the thing, weighed while Bob could write, weighs nothing
+    // (after the restart it is owed too: an open owes every aspect of a thing it may not write).
+    #[test]
+    fn writer_compacts_once_it_may_write_again_spec_sync_7() {
+        use osis_base::Role;
+        use osis_schema::core_types as ct;
+        for restart in [false, true] {
+            let mut lp = LocalPeer::fresh(2, osis_base::WallMs(1_700_000_000_000));
+            lp.sync_all().unwrap();
+            let [a, b] = [0, 1].map(|i| lp.peers[i].engine.me());
+            let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+            let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
+            lp.peers[0].engine.grant(&t, &b, &edge(Role::Write)).unwrap();
+            lp.sync_all().unwrap();
+            let (m_ak, n_ak) = (Ak::new("x:m.0").unwrap(), Ak::new("x:n.0").unwrap());
+            let set = |lp: &mut LocalPeer, ak: &Ak, k: &str| {
+                lp.advance(10);
+                let mut m = Mutation::new();
+                m.op(t, ak, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str(k.into()))], op: osis_crdt::Op::Set(Value::Int(1)) }).unwrap();
+                lp.peers[1].commit(m).unwrap().unwrap();
+            };
+            set(&mut lp, &n_ak, "k0");
+            set(&mut lp, &n_ak, "k1");
+            lp.peers[1].engine.compactions().unwrap();
+            for i in 0..8 {
+                set(&mut lp, &m_ak, &format!("k{i}"));
+            }
+            lp.sync_all().unwrap();
+            lp.advance(10);
+            lp.peers[0].engine.demote(&t, &crate::flows::Demotion { holder: b, new: Some(edge(Role::Read)), retain: None }).unwrap();
+            lp.sync_all().unwrap();
+            let l = lp.peers[1].engine.compaction_load().unwrap().into_iter().find(|l| l.ak == m_ak).unwrap();
+            assert!(l.bodies >= 8 && l.held > FACTOR * l.snapshot + l.largest, "over the trigger: {l:?}");
+            let e = &mut lp.peers[1].engine;
+            assert!(e.compactions().unwrap().is_empty(), "a reader writes no snapshot");
+            assert!(e.compactions().unwrap().is_empty());
+            if restart {
+                lp.peers[1].restart(3).unwrap();
+                assert!(lp.peers[1].engine.compactions().unwrap().is_empty(), "still a reader");
+            }
+            lp.advance(10);
+            lp.peers[0].engine.grant(&t, &b, &edge(Role::Write)).unwrap();
+            lp.sync_all().unwrap();
+            let e = &mut lp.peers[1].engine;
+            crate::costs::take();
+            let snaps = e.compactions().unwrap();
+            let c = crate::costs::take();
+            let weighed = c.iter().find(|x| x.0 == "compact: aspects weighed").map_or(0, |x| x.2);
+            assert_eq!(snaps.iter().map(|x| (x.0, x.1.clone())).collect::<Vec<_>>(), vec![(t, m_ak.clone())], "restart {restart}: compacted once it may write");
+            assert_eq!(weighed, if restart { 2 } else { 1 }, "restart {restart}: only the owed aspects weighed");
+            assert!(e.compactions().unwrap().is_empty(), "restart {restart}: owed once");
+        }
     }
 }

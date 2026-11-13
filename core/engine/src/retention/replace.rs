@@ -128,7 +128,10 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
         let may = if !written.contains(&k) && !uncovered.is_empty() { super::snapshot::may_snapshot(tx, &tid, &ak, memory, ts)? } else { MayWrite::No };
         match may {
             MayWrite::Later => await_cover(tx.core, &tid),
-            MayWrite::Yes if tx.core.ix.cover_waits.get(&tid).is_some_and(|w| w.contains(&tid)) => end_wait(tx.core, &tid),
+            MayWrite::Yes if tx.core.ix.cover_waits.get(&tid).is_some_and(|w| w.contains(&tid)) => {
+                end_wait(tx.core, &tid);
+                tx.core.compaction.wake(&tid);
+            }
             _ => {}
         }
         if may == MayWrite::Yes
@@ -212,8 +215,9 @@ fn under_purge(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, kep
     Ok(super::bounds::dated_replaced_at(tx, &h, c, ai)?.is_some_and(|r| kept.purge_on_replace(r.wall_ms().0)))
 }
 
-/// `t` waits to be written on before this node covers its bodies (`Indexes::cover_waits`).
-fn await_cover(core: &mut Core, t: &Tid) {
+/// `t` waits to be written on before this node covers its bodies or weighs them for the trigger
+/// (`Indexes::cover_waits`).
+pub(crate) fn await_cover(core: &mut Core, t: &Tid) {
     let chain: Vec<Tid> = core.record_chain(t).filter_map(|s| s.thing()).collect();
     for a in chain {
         core.ix.cover_waits.insert(a, *t);
@@ -232,8 +236,9 @@ fn end_wait(core: &mut Core, t: &Tid) {
 /// those with a thing on their record chain whose `created.0`, `keys.0` or `secrets.0` commits,
 /// opened epochs, own keys or delete-key hints changed (the journals of what it changed: O(what
 /// changed), nothing when nothing waits). Each that may be written on now leaves the waits with
-/// its purge-on-replace aspects due (`settle_none`), so whether a writer covers is a function of
-/// the held set, whatever came last (spec/requirements.md Purge on replace).
+/// its purge-on-replace aspects due (`settle_none`) and the trigger's owed weighings woken
+/// (`compact::Trigger::wake`), so whether a writer covers is a function of the held set, whatever
+/// came last (spec/requirements.md Purge on replace).
 pub(crate) fn wake_covers(tx: &mut Tx<'_>) -> Result<()> {
     // an inbox hint is taken up once its commit applies (`Core::promote_hints`)
     tx.core.promote_hints();
@@ -253,6 +258,7 @@ pub(crate) fn wake_covers(tx: &mut Tx<'_>) -> Result<()> {
             // the chain may have grown (a record arrived): kept under all of it
             MayWrite::Later => await_cover(tx.core, &t),
             MayWrite::Yes => {
+                tx.core.compaction.wake(&t);
                 let on: Vec<Ak> = tx.core.ix.by_aspect.range((t, Ak::MIN)..).take_while(|((x, _), _)| *x == t).map(|((_, a), _)| a.clone()).collect();
                 for ak in on {
                     if super::history::of(tx.core, &t, &ak).purges() {
