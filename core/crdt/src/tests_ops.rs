@@ -283,6 +283,42 @@ fn key_writes_follow_what_they_touch_spec_5_6() {
     assert_eq!(st.read(), Some(map(vec![])));
 }
 
+/// §5.6 Ops, the same for text (deletes by flag) and each record removed in turn: x and y put
+/// key 0 concurrently (`ab`, `cd`); z, holding both, deletes `b` and `c` and types `Z` at the
+/// end. A remover that saw only x's put takes `a` and leaves `dZ`; one that saw only y's leaves
+/// `aZ`; both, stamped above z's writes, take the key. Every rotation of the joins agrees.
+#[test]
+fn text_key_writes_follow_what_they_touch_spec_5_6() {
+    let view = TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text)));
+    let at = |path: Vec<PathSeg>, op: Op| PathOp { path, op };
+    let write = |st: &Fragment, s: u8, t: u64, op: PathOp| {
+        let mut b = Batch::new(st, Writer::new(ts(t << 16), sess(Tid::from_bytes([s; 15])), 1));
+        b.apply(&op, &view).unwrap();
+        b.finish().unwrap().0
+    };
+    let key = || vec![PathSeg::Key(Value::Int(0))];
+    let text = |s: &str| Value::Map([(Value::Int(0), Value::Str(s.into()))].into_iter().collect());
+    let x = write(&Fragment::default(), 1, 1, at(key(), Op::Set(Value::Str("ab".into()))));
+    let y = write(&Fragment::default(), 2, 2, at(key(), Op::Set(Value::Str("cd".into()))));
+    let mut both = x.clone();
+    both.join(y.clone());
+    let Some(Value::Map(m)) = both.read() else { panic!("map") };
+    let Some(Value::Str(s)) = m.get(&Value::Int(0)) else { panic!("text") };
+    let z = write(&both, 3, 3, at(key(), Op::Set(Value::Str(s.replace(['b', 'c'], "") + "Z"))));
+    let gone = |seen: &Fragment, s: u8| write(seen, s, 4, at(vec![], Op::Remove(Value::Int(0))));
+    for (removals, want) in [(vec![gone(&x, 4)], "dZ"), (vec![gone(&y, 5)], "aZ"), (vec![gone(&x, 4), gone(&y, 5)], "")] {
+        let parts: Vec<Fragment> = [x.clone(), y.clone(), z.clone()].into_iter().chain(removals).collect();
+        let want = if want.is_empty() { Value::Map(Default::default()) } else { text(want) };
+        for rot in 0..parts.len() {
+            let mut st = Fragment::default();
+            parts.iter().cycle().skip(rot).take(parts.len()).for_each(|p| {
+                st.join(p.clone());
+            });
+            assert_eq!(st.read(), Some(want.clone()), "{want:?}, rotation {rot}");
+        }
+    }
+}
+
 /// §5.6: a path op into a key with no live entry creates the entry holding the op's writes; two
 /// writers doing so concurrently make two entries that read as one joined value; an op that
 /// writes nothing creates nothing.
@@ -558,7 +594,7 @@ fn undo_remove_of_concurrent_key_spec_4_6() {
     }
 }
 
-/// §4.6, §5.6: an edit into a key with two live entries goes to the lowest one; undoing it
+/// §4.6, §5.6: an edit into a key with two live entries goes into those it touches; undoing it
 /// restores what the key read before (the join of its entries), in either join order.
 #[test]
 fn undo_edit_of_concurrent_key_spec_4_6() {
@@ -570,6 +606,33 @@ fn undo_edit_of_concurrent_key_spec_4_6() {
             assert_eq!(s2.read(), Some(both.clone()), "field {field}");
         }
     }
+}
+
+/// §4.6, §5.6 Ops: under a key of two live records, an element inserted after the conflict sits
+/// in both; deleting it writes into both, and undoing the delete re-inserts it once (one undo of
+/// the key's joined writes, not one per record).
+#[test]
+fn undo_into_a_key_of_two_records_spec_4_6() {
+    let view = TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::List(Box::new(Ty::Register)))));
+    let key = Value::Int(0);
+    let set = |v: Value| PathOp { path: vec![PathSeg::Key(key.clone())], op: Op::Set(v) };
+    let write = |st: &Fragment, s: u8, t: u64, v: Value| {
+        let mut b = Batch::new(st, Writer::new(ts(t << 16), sess(Tid::from_bytes([s; 15])), 1));
+        b.apply(&set(v), &view).unwrap();
+        b.finish().unwrap().0
+    };
+    let list = |xs: &[i64]| Value::List(xs.iter().map(|x| Value::Int(*x)).collect());
+    let mut s = write(&Fragment::default(), 2, 1, list(&[1]));
+    s.join(write(&Fragment::default(), 3, 2, list(&[2])));
+    let Some(Value::Map(m)) = s.read() else { panic!("map") };
+    let Some(Value::List(mut xs)) = m.get(&key).cloned() else { panic!("list") };
+    let before = Value::List(xs.clone());
+    xs.push(Value::Int(3));
+    s.join(write(&s, 4, 3, Value::List(xs)));
+    let read = s.read();
+    let (s1, _, s2) = commit_and_undo(&view, &s, set(before));
+    assert_ne!(s1.read(), read);
+    assert_eq!(s2.read(), read);
 }
 
 /// A struct whose set, enum-payload set, list, text and counter fields start absent.
