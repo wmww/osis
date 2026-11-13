@@ -1188,6 +1188,10 @@ fn aspect_filter(tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Valu
     Value::List(vec![u(super::filter::ASPECT), Value::Tid(tid), c::v(ak), c::v(path)])
 }
 
+pub(crate) fn grants_filter(thing: Tid) -> Value {
+    Value::List(vec![u(super::filter::GRANTS), Value::Tid(thing)])
+}
+
 /// A node's callback of `T`s.
 pub(crate) type CallbackOf<T> = Box<dyn FnMut(&Osis, T) + Send>;
 /// A node's callback of `Change<Value>`s.
@@ -1447,17 +1451,18 @@ impl crate::handle::ReadOnly {
         Ok(self.node_sub(r, Some(tid), Value::List(vec![u(super::filter::THING), Value::Tid(tid)]), true, cb)?.0)
     }
 
-    /// `on_grants_change` at the connected node.
-    pub(crate) fn node_on_grants_change(&self, r: &Arc<Connection>, thing: Tid, mut f: CallbackOf<Result<crate::read::Grants>>) -> Result<Subscription> {
+    /// A watch at the connected node of an answer told whole (`on_grants_change`,
+    /// `on_backlinks_change`): `f` hears it when it differs from the last told.
+    pub(crate) fn node_on_answer<T: c::Port + PartialEq + Clone + Send + 'static>(&self, r: &Arc<Connection>, on: Tid, filter: Value, mut f: CallbackOf<Result<T>>) -> Result<Subscription> {
         let mut last = None;
         let cb: Callback = Box::new(move |db, d| {
             let Delivery::Port(ev) = d else { return };
             match ev {
-                PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v }) => match c::of::<crate::read::Grants>(v) {
-                    Ok(r) if last.as_ref() == Some(&r) => {}
-                    Ok(r) => {
-                        last = Some(r.clone());
-                        f(db, Ok(r));
+                PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v }) => match c::of::<T>(v) {
+                    Ok(x) if last.as_ref() == Some(&x) => {}
+                    Ok(x) => {
+                        last = Some(x.clone());
+                        f(db, Ok(x));
                     }
                     Err(e) => f(db, Err(e)),
                 },
@@ -1469,7 +1474,7 @@ impl crate::handle::ReadOnly {
                 }
             }
         });
-        Ok(self.node_sub(r, Some(thing), Value::List(vec![u(super::filter::GRANTS), Value::Tid(thing)]), true, cb)?.0)
+        Ok(self.node_sub(r, Some(on), filter, true, cb)?.0)
     }
 
     /// `backlinks` at the connected node, bounded by the largest page: a page always fits.
@@ -1478,31 +1483,6 @@ impl crate::handle::ReadOnly {
         const PAGE_BYTES: usize = crate::backlinks::BACKLINK_PAGE * (osis_base::format::MAX_AK_BYTES + 64) + SMALL_REPLY;
         const _: () = assert!(PAGE_BYTES <= REPLY_BUDGET);
         c::of(r.call_big(method::BACKLINKS, vec![Value::Tid(tid), c::v(q)], PAGE_BYTES)?)
-    }
-
-    /// `on_backlinks_change` at the connected node.
-    pub(crate) fn node_on_backlinks_change(&self, r: &Arc<Connection>, tid: Tid, q: &crate::BacklinkQuery, mut f: CallbackOf<Result<crate::BacklinkPage>>) -> Result<Subscription> {
-        let mut last = None;
-        let cb: Callback = Box::new(move |db, d| {
-            let Delivery::Port(ev) = d else { return };
-            match ev {
-                PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v }) => match c::of::<crate::BacklinkPage>(v) {
-                    Ok(p) if last.as_ref() == Some(&p) => {}
-                    Ok(p) => {
-                        last = Some(p.clone());
-                        f(db, Ok(p));
-                    }
-                    Err(e) => f(db, Err(e)),
-                },
-                PortEvent::Notify(Payload::TooLarge { .. }) => f(db, Err(Error::TooLarge { limit: REPLY_BUDGET })),
-                PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => {
-                    last = None;
-                    f(db, Err(sub_ended()));
-                }
-            }
-        });
-        let filter = Value::List(vec![u(super::filter::BACKLINKS), Value::Tid(tid), c::v(q)]);
-        Ok(self.node_sub(r, Some(tid), filter, true, cb)?.0)
     }
 
     fn primary(&self) -> &Arc<Connection> {

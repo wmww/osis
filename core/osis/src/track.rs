@@ -317,7 +317,7 @@ impl ReadOnly {
         let Some(set) = self.tracking.clone() else { return Ok(()) };
         self.track_remote(key, |gate| {
             let w = Arc::downgrade(&set);
-            self.node_on_grants_change(r, tid, Box::new(move |db, g| gate.called_fire(&w, db, g.is_err())))
+            self.node_on_answer(r, tid, crate::port::client::grants_filter(tid), Box::new(move |db, g: Result<crate::read::Grants>| gate.called_fire(&w, db, g.is_err())))
         })
     }
 }

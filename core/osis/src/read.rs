@@ -605,7 +605,7 @@ impl Osis {
     /// connection as an `Err`, and the grants again once it is back.
     pub fn on_grants_change(&self, thing: Tid, mut f: impl FnMut(&Osis, Result<Grants>) + Send + 'static) -> Result<Subscription> {
         if let crate::sources::Source::Node(r) = self.source(thing) {
-            return self.node_on_grants_change(&r, thing, Box::new(f));
+            return self.node_on_answer(&r, thing, crate::port::client::grants_filter(thing), Box::new(f));
         }
         Ok(self.subscribe(Filter::Grants(thing), true, move |r| {
             let mut last = r.grants(thing);

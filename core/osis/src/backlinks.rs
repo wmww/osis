@@ -101,7 +101,7 @@ impl Osis {
     /// and the page again once it is back.
     pub fn on_backlinks_change(&self, tid: Tid, q: &BacklinkQuery, mut f: impl FnMut(&Osis, Result<BacklinkPage>) + Send + 'static) -> Result<Subscription> {
         if let crate::sources::Source::Node(r) = self.source(tid) {
-            return self.node_on_backlinks_change(&r, tid, q, Box::new(f));
+            return self.node_on_answer(&r, tid, osis_base::Value::List(vec![osis_base::Value::uint(crate::port::filter::BACKLINKS), osis_base::Value::Tid(tid), crate::port::codec::v(q)]), Box::new(f));
         }
         let (q, limit, actor) = (q.clone(), self.inner.limit, self.acting);
         let mut failed = None;
