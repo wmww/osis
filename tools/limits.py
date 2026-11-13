@@ -8,7 +8,8 @@
                                        default: the run's start) that went over their share
   tools/limits.py summary [--since HOURS] [--all]
                                        this box's hits, the investigation triggers, and the hits
-                                       notes/time-limits.md does not record yet (--all: every check)
+                                       notes/time-limits.md does not record yet, after its
+                                       `Digested through` time (--all: every check)
   tools/limits.py unit                 measure this box's base unit (alone: take the heavy lock)
   tools/limits.py table                every limit in seconds on this box
   tools/limits.py split                every whole's shares sum to at most it (exits 1 if not)
@@ -23,7 +24,7 @@ notes/time-limits.md with the agent's reason (`summary` prints them in its forma
 `share of` cell names the whole it is a share of (a gate stage of `gate.hold` or `gate`): the
 shares of a whole sum to at most it, so a whole over its limit names its parts over their share.
 """
-import json, os, re, resource, socket, subprocess, sys, time
+import calendar, json, os, re, resource, socket, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NOTE = os.path.join(ROOT, "notes", "build.md")
@@ -231,6 +232,13 @@ def hit_line(o):
     return f"- {stamp(o['t'])} {o['box']} `{o['name']}`{what} {', '.join(parts)} at load {o['load']:.0f}"
 
 
+def digested(record):
+    """The epoch second of the record's `Digested through YYYY-MM-DD HH:MM UTC` line (its hits up to
+    then are folded into its patterns and deleted), or 0."""
+    m = re.search(r"Digested through (\d{4}-\d\d-\d\d \d\d:\d\d) UTC", record)
+    return calendar.timegm(time.strptime(m[1], "%Y-%m-%d %H:%M")) + 59 if m else 0
+
+
 def summary(hours, every):
     ev = read_log(time.time() - hours * 3600 if hours else 0)
     hits = [o for o in ev if o["over"]]
@@ -254,7 +262,8 @@ def summary(hours, every):
             if v > FAR * l:
                 print(f"TRIGGER `{o['name']}` {k} {v / l:.1f}x its limit at {stamp(o['t'])}: investigate")
     known = open(RECORD).read() if os.path.exists(RECORD) else ""
-    new = [o for o in hits if hit_line(o).split(" CPU ")[0].split(" wall ")[0] not in known]
+    done = digested(known)
+    new = [o for o in hits if o["t"] > done and hit_line(o).split(" CPU ")[0].split(" wall ")[0] not in known]
     if new:
         print(f"\nnot yet in notes/time-limits.md (add each with its reason):")
         for o in new:

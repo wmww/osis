@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests tools/limits.py's shares (`split`, and a whole over its limit naming its parts over their
-share) on a fabricated table and log. Exit 1 on a mismatch."""
+share) and `summary`'s digest cutoff on a fabricated table, log and record. Exit 1 on a mismatch."""
 import contextlib, io, json, os, shutil, sys, tempfile
 
 sys.dont_write_bytecode = True
@@ -76,6 +76,17 @@ try:
            ["no part of whole over its share: the time between its parts, or parts unchecked"])
     _, o = out(limits.check, "lone", 50, 1, since=T)
     expect("over, no parts at all", "share" in o, False)
+
+    # summary: a hit up to the record's `Digested through` minute is folded in; one after it is listed
+    expect("digested", limits.digested("x\nDigested through 1970-01-12 13:46 UTC.\n"), 999960 + 59)
+    expect("digested none", limits.digested("no line"), 0)
+    open(limits.LOG, "w").write("".join(json.dumps(o) + "\n" for o in
+                                        [dict(rec, t=999960 + 30, name="a", cpu=70, over=["CPU"], who=here),
+                                         dict(rec, t=999960 + 90, name="b", cpu=70, over=["CPU"], who=here)]))
+    limits.RECORD = os.path.join(tmp, "time-limits.md")
+    open(limits.RECORD, "w").write("Digested through 1970-01-12 13:46 UTC.\n")
+    _, o = out(limits.summary, 0, False)
+    expect("summary: hits after the digest only", [l.split("`")[1] for l in o.split("not yet")[-1].splitlines()[1:]], ["b"])
 finally:
     os.chdir(cwd0)
     shutil.rmtree(tmp)
