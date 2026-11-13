@@ -506,12 +506,13 @@ impl SyncEngine {
 
     /// What a start of node sync holds, read from the store: every field but the engine, its
     /// event subscription, the generator, the config, the hub's store, the host config, the
-    /// connection IDs (never repeated), the diagnostics not yet taken and the store writes seen.
-    /// Run by `new`, and by `restart_in_place` after a store write failed.
+    /// connection IDs (never repeated), the diagnostics not yet taken and the store writes seen;
+    /// the memory class's records and state are kept, as the engine keeps its memory commits
+    /// (`State::reload`). Run by `new`, and by `restart_in_place` after a store write failed.
     fn start(&mut self) -> Result<()> {
         // keeps the changed commits from now on (`Engine::take_changed`)
         self.engine.take_changed();
-        let loaded = State::load(&mut self.engine)?;
+        let loaded = State::reload(&mut self.engine, &self.state)?;
         // deposits not answered before a restart go again
         let outbox_ = loaded.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
         let started_ = self.engine.now().0;
@@ -620,7 +621,8 @@ impl SyncEngine {
         *last_synced = BTreeMap::new();
         *clients_moved = false;
         *prefix_checked = BTreeSet::new();
-        *memory = memory::Memory::default();
+        // the memory class's state is kept as its records are (`State::reload`)
+        memory.forgotten.retain(|_, f| f.header.ephemeral.is_some());
         // durable commits forgotten whole whose entries were not yet deleted at hosts
         for (c, header) in self.state.forgotten.clone() {
             self.memory.forgotten.insert(c, memory::Forgotten { header, why: crate::engine::MemoryDrop::Gone, left: Default::default() });

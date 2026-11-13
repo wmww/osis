@@ -793,6 +793,14 @@ impl StreamAt {
 impl State {
     /// Loads every record.
     pub fn load(engine: &mut Engine) -> Result<State> {
+        Self::reload(engine, &State::default())
+    }
+
+    /// Loads every record, keeping `old`'s memory class: no store holds those records, the
+    /// engine's memory commits they are about stay held, and a failed store write leaves them as
+    /// it leaves the engine's memory overlay. Presence at peers is not kept (per connection,
+    /// spec/sync.md §9).
+    pub fn reload(engine: &mut Engine, old: &State) -> Result<State> {
         let recs = engine.run(|tx| {
             let mut v = Vec::new();
             tx.scan(b"y/", |k, val| {
@@ -934,6 +942,7 @@ impl State {
                 _ => {}
             }
         }
+        s.keep_memory(old);
         let entries = std::mem::take(&mut s.entries);
         for ((l, b), e) in &entries {
             s.index(*l, *b, e, true);
@@ -941,8 +950,9 @@ impl State {
         s.entries = entries;
         s.present_by = s.present.iter().map(|(host, l, b)| (*l, *b, *host)).collect();
         s.gone_by = s.gone.keys().map(|(host, l, b)| (*l, *b, *host)).collect();
+        let life = |memory: bool| if memory { osis_base::format::MAX_DRIFT_MS } else { osis_base::format::TOMBSTONE_LIFETIME_MS };
         s.deleted = s.tombs.iter().filter_map(|(k, t)| match &t.kind {
-            Kind::Commit { commit, parts, .. } if !t.cert => Some(((k.0, *commit, parts.clone()), t.at.saturating_add(osis_base::format::TOMBSTONE_LIFETIME_MS))),
+            Kind::Commit { commit, parts, .. } if !t.cert => Some(((k.0, *commit, parts.clone()), t.at.saturating_add(life(s.memory_entries.contains(k))))),
             _ => None,
         }).collect();
         for (_, c, _) in s.deleted.keys() {
@@ -950,6 +960,34 @@ impl State {
         }
         s.reconcile(engine)?;
         Ok(s)
+    }
+
+    /// `old`'s memory-class records (`reload`), taken before the entries are indexed: entries,
+    /// tombstones, blob records, carriers, charges, and the node log's memory part.
+    fn keep_memory(&mut self, old: &State) {
+        for (k, e) in old.entries.iter().filter(|(_, e)| e.memory) {
+            self.entries.insert(*k, e.clone());
+            self.memory_entries.insert(*k);
+            if let Kind::Commit { commit, .. } = &e.kind {
+                self.memory_commits.insert(*commit);
+            }
+        }
+        for (k, t) in old.tombs.iter().filter(|(k, _)| old.memory_entries.contains(k)) {
+            self.tombs.insert(*k, t.clone());
+            self.memory_entries.insert(*k);
+        }
+        for (id, r) in old.blobs.iter().filter(|(_, r)| r.memory) {
+            self.by_commit.entry(r.commit).or_default().insert(*id);
+            self.blobs.insert(*id, r.clone());
+        }
+        self.carriers.extend(old.carriers.iter().filter(|(_, c)| c.memory).map(|(k, c)| (*k, c.clone())));
+        self.awaits_reopened.extend(old.awaits_reopened.iter().filter(|(k, _)| old.memory_entries.contains(k)).map(|(k, c)| (*k, *c)));
+        self.forget_due.extend(old.forget_due.iter().copied());
+        self.memory_charge.clone_from(&old.memory_charge);
+        self.memory_bytes.clone_from(&old.memory_bytes);
+        self.leftover_charge.clone_from(&old.leftover_charge);
+        self.memory_sizes.clone_from(&old.memory_sizes);
+        self.mem_log = old.mem_log.clone();
     }
 
     /// The hub's store is the truth for ciphertext (issues/net-one-peer.md step 4): at load every

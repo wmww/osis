@@ -6340,6 +6340,41 @@ fn purge_falling_past_the_tombstone_reads_as_never_received_spec_permissions_6()
     assert!(net.engine(b).purged_on(&t, &crate::common::ak("doc:n+.0")).unwrap().is_empty(), "the purge fell");
 }
 
+// notes/node-sync.md Failed writes: node sync restarting in place keeps its records of the
+// ephemeral entries whose commits the engine still holds. A reader alone holds a value (the host
+// and its writer lost it, restarting while the reader was offline); a failed write restarts the
+// reader's node sync in place, and it still places the value at the host again, where the writer
+// gets it back: every holder reads alike
+#[test]
+fn failed_write_keeps_a_readers_ephemeral_entries_spec_sync_9() {
+    let f = osis_store::Faults::new();
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let r = net.forensic_node(2, &[host], &f);
+    let g = net.group(a, &[(r, Role::Read)], &[host]);
+    let w = window(&mut net, a, g, "v");
+    net.run();
+    assert_eq!(net.eph_read(r, w, STATE), Some(s("v")));
+    net.set_online(r, false);
+    net.restart_host(host);
+    net.restart(a, 11);
+    net.run();
+    assert_eq!(net.eph_read(a, w, STATE), None, "lost with the restarts");
+    f.at(0, osis_store::Fault::Fail);
+    let own = net.tid(r);
+    let mut m = Mutation::new();
+    net.engine(r).new_thing(&mut m, own);
+    assert!(net.engine(r).commit(m).is_err());
+    assert!(f.take_failed(), "the reader's store write failed");
+    local(&mut net, r);
+    net.set_online(r, true);
+    net.run();
+    net.advance(10_000);
+    assert_eq!(net.eph_read(r, w, STATE), Some(s("v")));
+    assert_eq!(net.eph_read(a, w, STATE), Some(s("v")), "the reader brought it back");
+}
+
 // notes/node-sync.md Failed writes: a one-off failed write (the device stays up) restarts node
 // sync in place while the engine keeps its ephemeral commits; ephemeral state held, written
 // offline before it or received before it still converges, as do writes after it
