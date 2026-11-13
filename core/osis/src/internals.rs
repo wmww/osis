@@ -271,7 +271,7 @@ impl Internals for Osis {
         self.inner.has_sources.store(true, std::sync::atomic::Ordering::Release);
         let away = to.is_some();
         self.locked(|l| {
-            l.sources_moved = true;
+            l.remerge = true;
             match to {
                 Some(a) => l.group_sources.insert(group, a),
                 None => l.group_sources.remove(&group),

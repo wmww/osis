@@ -632,8 +632,9 @@ impl ReadOnly {
         Ok(self.host_addrs().into_iter().map(Address).collect())
     }
 
-    /// How sync stands now. Called in a callback, groups read at another node are absent: a callback
-    /// never waits on another node (`on_status_change` follows them).
+    /// How sync stands now. Each connected node is asked for what it adds (the groups read there);
+    /// in a callback, which never waits on another node, its part is as of its last message
+    /// instead, as `on_status_change` shows it.
     pub fn status(&self) -> Result<Status> {
         self.track_status()?;
         let acting = self.acting;

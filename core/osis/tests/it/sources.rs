@@ -327,7 +327,7 @@ fn a_status_listener_follows_a_group_at_its_node() {
     assert_eq!(x.p.watches(), here, "one status subscription per connection");
     drop(_sub);
     x.p.settle();
-    assert_eq!(x.p.watches(), here - 2, "the listener and its connection's subscription");
+    assert_eq!(x.p.watches(), here - 1, "the listener; its connection's subscription lasts with the connection");
     // a thin client's listener: the node's groups at the first call and at a change there
     let c = x.thin("c1");
     let (ct, cr) = channel();
@@ -336,6 +336,41 @@ fn a_status_listener_follows_a_group_at_its_node() {
     x.net.partition("n", "s");
     x.set_n("n2");
     while cr.recv_timeout(W).unwrap().groups.get(&x.g).is_none_or(|g| g.state != SyncState::Syncing) {}
+    drop(x.host);
+}
+
+// spec: none (API surface); notes/api.md Sync configuration and status: `status` in a callback, which never waits on another node, shows a group sourced at another node as that node last said, alike with the status listener's call, through a change there; every status read and listener of a process shares one status subscription per connection
+#[test]
+fn status_in_a_callback_shows_a_group_at_its_node() {
+    let x = world();
+    x.connect_p();
+    x.to_node();
+    let (tx, rx) = channel();
+    let g = x.g;
+    let _sub = x.p.on_status_change(move |db, s| {
+        let _ = tx.send((s.unwrap().groups.get(&g).map(|s| s.state), db.status().unwrap().groups.get(&g).map(|s| s.state)));
+    }).unwrap();
+    let next_until = |what: &str, want: SyncState| loop {
+        let (called, read) = rx.recv_timeout(W).unwrap_or_else(|_| panic!("not reached: {what}"));
+        assert_eq!(called, read, "status in the callback answers as the listener");
+        if read == Some(want) {
+            return;
+        }
+    };
+    next_until("first", SyncState::Synced);
+    x.net.partition("n", "s");
+    x.set_n("n1");
+    next_until("syncing at the node", SyncState::Syncing);
+    x.net.heal("n", "s");
+    let _ = x.n.nudge_sync();
+    next_until("synced at the node", SyncState::Synced);
+    // more listeners and reads: one more watch each, no more subscriptions at the node
+    x.p.settle();
+    let here = x.p.watches();
+    let more: Vec<_> = (0..3).map(|_| x.p.on_status_change(|db, _| drop(db.status())).unwrap()).collect();
+    assert!(x.p.status().unwrap().groups.contains_key(&x.g));
+    x.p.settle();
+    assert_eq!(x.p.watches(), here + more.len(), "one status subscription per connection");
     drop(x.host);
 }
 

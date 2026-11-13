@@ -226,6 +226,8 @@ pub(crate) struct Connection {
     keyed: bool,
     /// The secret it logs in with: `connect_node` tells a second login at this address from this one.
     secret: Option<osis_crypto::Secret32>,
+    /// What the node last said of sync, for every status read of this process (`crate::sources`).
+    pub heard: Mutex<crate::sources::Heard>,
 }
 
 /// A call sent whose connection ended before its reply.
@@ -247,7 +249,7 @@ impl Connection {
         let (tx, _) = mpsc::unbounded_channel();
         let link = Arc::new(LinkState::default());
         lock(&link.m).ended = Some(e);
-        Arc::new(Connection { addr: addr.clone(), tx: Mutex::new(Some(tx)), link, limit: 0, keyed: false, secret: None })
+        Arc::new(Connection { addr: addr.clone(), tx: Mutex::new(Some(tx)), link, limit: 0, keyed: false, secret: None, heard: Default::default() })
     }
 
     /// Hands the connection's thread a command; fails once it ended.
@@ -974,7 +976,7 @@ fn spawn_connection(via: Via, addr: Address, shown: crate::Address, secret: Opti
             rt.block_on(run(via, addr, io, rx));
         })
         .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(Arc::new(Connection { addr: shown, tx: Mutex::new(Some(tx)), link, limit, keyed, secret: kept }))
+    Ok(Arc::new(Connection { addr: shown, tx: Mutex::new(Some(tx)), link, limit, keyed, secret: kept, heard: Default::default() }))
 }
 
 /// A connection to the node at `login`'s address as the client its secret stands for.
@@ -1082,7 +1084,7 @@ impl Osis {
         let known = self.locked(|l| {
             let was = l.connections.len();
             l.connections.retain(|r| r.addr != login.addr || r.ended().is_none() && (r.connected() || same(r)));
-            l.sources_moved = l.connections.len() != was;
+            l.remerge = l.connections.len() != was;
             l.connections.iter().find(|r| r.addr == login.addr).cloned()
         });
         let r = match known {
@@ -1092,7 +1094,7 @@ impl Osis {
                 let r = spawn_client(login, &self.inner.transport, self.inner.limit, self.inner.connection_wait, self.inner.clock.clone())?;
                 self.locked(|l| {
                     l.connections.push(r.clone());
-                    l.sources_moved = true;
+                    l.remerge = true;
                 });
                 self.inner.has_sources.store(true, Ordering::Release);
                 r
@@ -1104,7 +1106,7 @@ impl Osis {
             Some(e) => {
                 self.locked(|l| {
                     l.connections.retain(|x| !Arc::ptr_eq(x, &r));
-                    l.sources_moved = true;
+                    l.remerge = true;
                 });
                 Err(e)
             }
