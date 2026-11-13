@@ -19,4 +19,5 @@ osis-crypto.workspace = true
 redb.workspace = true
 
 [dev-dependencies]
+redb.workspace = true
 proptest.workspace = true

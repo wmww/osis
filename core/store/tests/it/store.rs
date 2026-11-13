@@ -438,12 +438,20 @@ fn suspended_transaction_is_one() {
 
 // spec/commits.md §4: a failed commit recovers the store in place and reports its outcome: `Err`
 // leaves the store as before it (earlier commits kept) and the next transaction works, with no
-// reopen; a shredding commit failing after its root record was stored landed, so it is `Ok`
+// reopen; a shredding commit failing after its root record was stored landed, so it is `Ok`. On
+// redb too, where the fault is a failed write of the file (redb refuses every call after one
+// until opened again)
 #[test]
 fn failed_commit_recovers_in_place() {
-    let dev = MemDevice::new();
+    for dev in devices("failed-commit") {
+        failed_commit_recovers_in_place_on(&*dev);
+    }
+}
+
+fn failed_commit_recovers_in_place_on(dev: &dyn Device) {
+    let name = dev.name();
     let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let mut s = create(dev, &mut rng);
     // writes `k`, removing `gone` when `shred` is given
     let put = |s: &mut Store, rng: &mut SeededRng, k: &[u8], shred: Option<Shred>| {
         let mut t = s.transaction(rng).unwrap();
@@ -456,14 +464,14 @@ fn failed_commit_recovers_in_place() {
     };
     put(&mut s, &mut rng, b"gone", None).unwrap();
     for (n, shred) in [(0, Shred::No), (0, Shred::Yes), (1, Shred::Yes), (2, Shred::Yes)] {
-        dev.faults.at(n, Fault::Fail);
+        dev.faults().at(n, Fault::Fail);
         // a shredding commit writes batch A, the root (its commit point), then batch B
         let landed = n == 2;
-        assert_eq!(put(&mut s, &mut rng, b"failed", Some(shred)).is_ok(), landed, "fault at {n}");
+        assert_eq!(put(&mut s, &mut rng, b"failed", Some(shred)).is_ok(), landed, "{name}: fault at {n}");
         let mut t = s.transaction(&mut rng).unwrap();
         let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
-        assert_eq!(t.table_get(tb, b"failed").unwrap().is_some(), landed, "fault at {n}");
-        assert_eq!(t.table_get(tb, b"gone").unwrap().is_some(), !landed, "fault at {n}");
+        assert_eq!(t.table_get(tb, b"failed").unwrap().is_some(), landed, "{name}: fault at {n}");
+        assert_eq!(t.table_get(tb, b"gone").unwrap().is_some(), !landed, "{name}: fault at {n}");
         if landed {
             t.table_remove(tb, b"failed", Shred::No).unwrap();
             t.table_put(tb, b"gone", vec![], Shred::No).unwrap();
@@ -475,7 +483,7 @@ fn failed_commit_recovers_in_place() {
     small.spill_bytes = 64;
     drop(s);
     let mut s = Store::open(dev.backend(), dev.root(), small).unwrap();
-    dev.faults.at(0, Fault::Fail);
+    dev.faults().at(0, Fault::Fail);
     let mut t = s.transaction(&mut rng).unwrap();
     let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
     let r = (0..64u8).try_for_each(|i| t.table_put(tb, &[b'x', i], vec![i; 32], Shred::No).map(drop));
@@ -488,10 +496,16 @@ fn failed_commit_recovers_in_place() {
     drop(t);
     put(&mut s, &mut rng, b"after", None).unwrap();
     drop(s);
-    let mut s = reopen(&dev);
+    let mut s = reopen(dev);
     let mut t = s.transaction(&mut rng).unwrap();
     let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
     assert_eq!(t.table_get(tb, b"after").unwrap(), Some(b"after".to_vec()));
+    // spec/requirements.md, Deletion: failed writes and their recovery leave ciphertext only
+    if let Some(raw) = dev.file() {
+        for marker in [&b"failed"[..], b"gone", b"after"] {
+            assert!(!raw.windows(marker.len()).any(|w| w == marker), "{name}: plaintext in the file");
+        }
+    }
 }
 
 /// What a test can read of a store: every local record, every row of table 0 of `(tid(1), t.0)`,

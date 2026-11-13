@@ -1,9 +1,13 @@
 #![allow(dead_code)]
 //! Shared test setup: a device (backend + root storage) per backend kind.
 
-use osis_base::{Ak, Tid};
+use osis_base::{Ak, BlobId, Tid};
 use osis_crypto::SeededRng;
-use osis_store::{Backend, Faults, MemoryBackend, MemoryRoot, RootStorage, Store, StoreConfig};
+use osis_store::{Backend, BackendError, Faults, KeyValue, MemoryBackend, MemoryRoot, RootStorage, Store, StoreConfig, WriteBatch};
+use redb::StorageBackend;
+use redb::backends::FileBackend;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Small pages and a small key tree so tests exercise splits and several tree levels.
 pub fn cfg() -> StoreConfig {
@@ -24,6 +28,10 @@ pub trait Device {
     fn root(&self) -> Box<dyn RootStorage>;
     fn faults(&self) -> &Faults;
     fn name(&self) -> &'static str;
+    /// The bytes of the backend's file, if it has one.
+    fn file(&self) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 pub struct MemDevice {
@@ -78,8 +86,17 @@ impl Drop for FileDevice {
 
 impl Device for FileDevice {
     fn backend(&self) -> Box<dyn Backend> {
-        let b = osis_store::RedbBackend::open(&self.dir.join("db")).unwrap();
-        Box::new(osis_store::FaultyBackend::new(b, self.faults.clone()))
+        let trap = Arc::new(AtomicBool::new(false));
+        let (path, faults, t) = (self.dir.join("db"), self.faults.clone(), trap.clone());
+        // created as the product creates it (owner-only)
+        drop(osis_store::RedbBackend::open(&path).unwrap());
+        let inner = osis_store::RedbBackend::with_storage(move || {
+            let file = std::fs::OpenOptions::new().read(true).write(true).open(&path)?;
+            let file = FileBackend::new(file).map_err(std::io::Error::other)?;
+            Ok(FaultyFile { file, faults: faults.clone(), trap: t.clone() })
+        })
+        .unwrap();
+        Box::new(FaultyRedb { inner, faults: self.faults.clone(), trap })
     }
     fn root(&self) -> Box<dyn RootStorage> {
         Box::new(osis_store::FileRoot::with_faults(self.dir.join("root"), self.faults.clone()))
@@ -89,6 +106,81 @@ impl Device for FileDevice {
     }
     fn name(&self) -> &'static str {
         "redb"
+    }
+    fn file(&self) -> Option<Vec<u8>> {
+        Some(std::fs::read(self.dir.join("db")).unwrap())
+    }
+}
+
+/// The redb backend with a fault plan on its commits, injected inside redb (a failed write of
+/// the file), so redb fails as on a real I/O error: it refuses every call until reopened.
+struct FaultyRedb {
+    inner: osis_store::RedbBackend,
+    faults: Faults,
+    trap: Arc<AtomicBool>,
+}
+
+impl Backend for FaultyRedb {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError> {
+        self.inner.get(key)
+    }
+    fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, BackendError> {
+        self.inner.scan(start, end, limit)
+    }
+    fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
+        if let Err(e) = self.faults.check() {
+            self.trap.store(true, Ordering::SeqCst);
+            assert!(self.inner.commit(batch).is_err(), "the fault reaches redb");
+            return Err(e);
+        }
+        self.inner.commit(batch)
+    }
+    fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
+        self.inner.get_blob(id)
+    }
+    fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError> {
+        self.inner.read_blob(id, offset, len)
+    }
+    fn blob_len(&self, id: &BlobId) -> Result<Option<u64>, BackendError> {
+        self.inner.blob_len(id)
+    }
+}
+
+/// The redb file, failing one write when `trap` is set and every write while the device is crashed.
+#[derive(Debug)]
+struct FaultyFile {
+    file: FileBackend,
+    faults: Faults,
+    trap: Arc<AtomicBool>,
+}
+
+impl FaultyFile {
+    fn fault(&self) -> std::io::Result<()> {
+        if self.trap.swap(false, Ordering::SeqCst) || self.faults.crashed() {
+            return Err(std::io::Error::other("injected write fault"));
+        }
+        Ok(())
+    }
+}
+
+impl StorageBackend for FaultyFile {
+    fn len(&self) -> std::io::Result<u64> {
+        self.file.len()
+    }
+    fn read(&self, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+        self.file.read(offset, len)
+    }
+    fn set_len(&self, len: u64) -> std::io::Result<()> {
+        self.fault()?;
+        self.file.set_len(len)
+    }
+    fn sync_data(&self, eventual: bool) -> std::io::Result<()> {
+        self.fault()?;
+        self.file.sync_data(eventual)
+    }
+    fn write(&self, offset: u64, data: &[u8]) -> std::io::Result<()> {
+        self.fault()?;
+        self.file.write(offset, data)
     }
 }
 
