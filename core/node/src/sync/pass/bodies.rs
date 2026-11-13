@@ -238,17 +238,21 @@ impl SyncEngine {
 
     /// Held parts on these aspects fell invalid here (`Engine::take_fell`): a cover or killing
     /// write the deleter of a placement again may have relied on, so the placements again of
-    /// commits on them (`BlobRec::again`) mark one no more and their deletes stand only as
-    /// any other's (spec/sync.md §6 Placed again once). Rare (a role change): every blob record
-    /// is scanned.
+    /// commits on them (`BlobRec::again`) mark one no more, their deletes stand only as any
+    /// other's and their commits are judged again (spec/sync.md §6 Placed again once). Walks the
+    /// commits on each aspect (`by_aspect`), as the re-judge that found the fall did.
     pub(in crate::sync) fn again_fell(&mut self) {
         let fell = self.engine.take_fell();
-        if fell.is_empty() {
-            return;
-        }
-        let marked: Vec<BlobId> = self.state.blobs.iter().filter(|(_, r)| r.again.is_some()).filter(|(_, r)| self.engine.header(&r.commit).is_some_and(|h| h.aspects.iter().any(|a| fell.contains(&(a.tid, a.ak.clone()))))).map(|(id, _)| *id).collect();
-        for id in marked {
-            self.state.clear_again(&id);
+        let by_aspect = &self.engine.core.ix.by_aspect;
+        let commits: BTreeSet<CommitId> = fell.iter().flat_map(|k| by_aspect.get(k).into_iter().flatten().map(|x| x.1)).collect();
+        for c in commits {
+            let marked: Vec<BlobId> = self.state.by_commit.get(&c).into_iter().flatten().filter(|b| self.state.blobs.get(b).is_some_and(|r| r.again.is_some())).copied().collect();
+            for id in &marked {
+                self.state.clear_again(id);
+            }
+            if !marked.is_empty() {
+                self.state.touched_commits.insert(c);
+            }
         }
     }
 
