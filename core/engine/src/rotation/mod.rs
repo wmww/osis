@@ -221,7 +221,7 @@ enum Due {
     PassEnd,
 }
 
-/// The roles of `a` that `who` may rotate whose rotation is due
+/// The roles of `a` that `who` may rotate, but `kept` (`Keep`), whose rotation is due
 /// (spec/crypto.md §4, encrypting under): blocked (`blocked_roles_of`), or some current epoch,
 /// not only the newest, does not cover a known departure (one whose secret this node lacks
 /// covers nothing: it is superseded unread), or some current epoch, held or not, has a stale box
@@ -231,13 +231,13 @@ enum Due {
 /// epoch is not current here and `who` withdraws it. A fork alone is due nothing: it stands
 /// until the role next rotates (spec/crypto.md §4). No secret of the role is needed; the commit
 /// must be uploadable (`wrappable`), else the rotation waits for a re-seal.
-fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due) -> Result<BTreeSet<Role>> {
+fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
     let may = may_rotate(tx.core, who, a);
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
     let deps = departures(tx, a)?;
     let blocked = blocked_roles_of(tx, who, a, &deps, Walk::Encrypt)?;
     let mut out = BTreeSet::new();
-    let roles: Vec<Role> = ROLES.into_iter().filter(|r| may.contains(r) && !epochs.role(*r).current().is_empty()).collect();
+    let roles: Vec<Role> = ROLES.into_iter().filter(|r| may.contains(r) && !kept.contains(r) && !epochs.role(*r).current().is_empty()).collect();
     for r in roles {
         let held = tx.core.names_held(a);
         let mut due = blocked.contains(&r);
@@ -535,14 +535,35 @@ pub(crate) fn above(core: &Core, a: &Tid) -> Vec<Tid> {
 /// same for the actors it is a holder of, upward (`rotate_above`). Returns the roles of `a`
 /// still blocked: it must not encrypt under them.
 pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done) -> Result<BTreeSet<Role>> {
-    ensure_rotated_but(tx, who, a, &[], done)
+    ensure_rotated_but(tx, who, a, &[], &BTreeSet::new(), done)
 }
 
-/// `ensure_rotated`, finalizing on `a` no edge of a holder in `rewriting`: the commit about to
-/// be written writes those edges anew (a removal, which is their departure, or a renewal).
-pub(crate) fn ensure_rotated_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], done: &mut Done) -> Result<BTreeSet<Role>> {
-    let rotated = rotate_below(tx, who, a, rewriting, Due::Encrypt, done)?;
-    rotate_above(tx, who, rotated, done)?;
+/// What the cascade before a commit leaves alone on the actor `on` the commit writes, wherever
+/// it meets `on` (below, or upward from a holder actor it rotated): it finalizes no edge of a
+/// holder in `rewriting` (the commit writes those edges anew: a removal, which is their
+/// departure, or a renewal) and no rotation of it, a finalize's included, rotates any of
+/// `leaving` (the roles the removal's holders leave, which its own rotation rotates: so none
+/// boxes a party at a role it is leaving).
+#[derive(Clone, Copy)]
+pub(crate) struct Keep<'k> {
+    on: Tid,
+    rewriting: &'k [Tid],
+    leaving: &'k BTreeSet<Role>,
+}
+
+impl Keep<'_> {
+    /// The roles of `x` no rotation in the cascade may rotate: `leaving` on `on`, none elsewhere.
+    fn kept(keep: Option<Self>, x: &Tid) -> BTreeSet<Role> {
+        keep.filter(|k| k.on == *x).map(|k| k.leaving.clone()).unwrap_or_default()
+    }
+}
+
+/// `ensure_rotated` before a commit writing `rewriting`'s edges on `a`, whose holders leave
+/// `leaving` of it (`Keep`).
+pub(crate) fn ensure_rotated_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], leaving: &BTreeSet<Role>, done: &mut Done) -> Result<BTreeSet<Role>> {
+    let keep = Keep { on: a, rewriting, leaving };
+    let rotated = rotate_below(tx, who, a, Some(keep), Due::Encrypt, done)?;
+    rotate_above(tx, who, rotated, Some(keep), done)?;
     let Some(a) = secret_actor_up(tx.core, &a) else { return Ok(BTreeSet::new()) };
     blocked_roles(tx, &who, &a)
 }
@@ -550,18 +571,13 @@ pub(crate) fn ensure_rotated_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &
 /// After `who` rotated each of `rotated`: the rotations due (`rotate_below`) on the actors they
 /// are holders of (`above`) that `who` may rotate, upward, each once. A rotation of M makes the
 /// boxes to M at its old keyset stale; answered by M's rotator at once, no other rotator above M
-/// meets them and answers with a fork of its own.
-pub(crate) fn rotate_above(tx: &mut Tx<'_>, who: Tid, rotated: Vec<Tid>, done: &mut Done) -> Result<()> {
-    rotate_above_but(tx, who, rotated, None, done)
-}
-
-/// `rotate_above`, leaving `but` alone.
-fn rotate_above_but(tx: &mut Tx<'_>, who: Tid, mut rotated: Vec<Tid>, but: Option<Tid>, done: &mut Done) -> Result<()> {
-    let mut entered: BTreeSet<Tid> = rotated.iter().copied().chain(but).collect();
+/// meets them and answers with a fork of its own. On `keep.on`, what `keep` says.
+fn rotate_above(tx: &mut Tx<'_>, who: Tid, mut rotated: Vec<Tid>, keep: Option<Keep<'_>>, done: &mut Done) -> Result<()> {
+    let mut entered: BTreeSet<Tid> = rotated.iter().copied().collect();
     while let Some(x) = rotated.pop() {
         for y in above(tx.core, &x) {
             if tx.core.has_own_secrets(&y) && !may_rotate(tx.core, &who, &y).is_empty() && entered.insert(y) {
-                rotated.extend(rotate_below(tx, who, y, &[], Due::Encrypt, done)?);
+                rotated.extend(rotate_below(tx, who, y, keep, Due::Encrypt, done)?);
             }
         }
     }
@@ -585,9 +601,8 @@ fn secret_actor_up(core: &Core, a: &Tid) -> Option<Tid> {
 }
 
 /// The rotations due on `a` and the holder actors below it (`ensure_rotated`, the downward
-/// cascade): the actors rotated.
-fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], mode: Due, done: &mut Done) -> Result<Vec<Tid>> {
-    let target = a;
+/// cascade): the actors rotated. On `keep.on`, what `keep` says.
+fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, mode: Due, done: &mut Done) -> Result<Vec<Tid>> {
     let mut rotated = Vec::new();
     let Some(a) = secret_actor_up(tx.core, &a) else { return Ok(rotated) };
     let members = |tx: &mut Tx<'_>, x: &Tid| -> Vec<Tid> {
@@ -609,8 +624,8 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], mode: Due,
         }
         let x = *x;
         stack.pop();
-        finalize_due(tx, who, x, if x == target { rewriting } else { &[] }, done)?;
-        let mine = rotation_due(tx, &who, &x, mode)?;
+        finalize_due(tx, who, x, keep, done)?;
+        let mine = rotation_due(tx, &who, &x, mode, &Keep::kept(keep, &x))?;
         if mine.is_empty() {
             continue;
         }
@@ -631,22 +646,23 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], mode: Due,
 /// history adds are, never by `ensure_rotated`: no epoch they supersede is one this node would
 /// encrypt under while it misses a departure.
 fn pass_end_rotations(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done) -> Result<()> {
-    let rotated = rotate_below(tx, who, a, &[], Due::PassEnd, done)?;
-    rotate_above(tx, who, rotated, done)
+    let rotated = rotate_below(tx, who, a, None, Due::PassEnd, done)?;
+    rotate_above(tx, who, rotated, None, done)
 }
 
 /// The finalize `who` may write of the edges on `a` past their `until` by this node's clock
 /// (spec/permissions.md §2, `flows::edges::finalizable`), written now: a node with write on `a`
 /// writes it before its next commit encrypting under `a`. It is `a`'s departure for keys, and
 /// carries the rotation where `who` can make it now, else goes alone (the departure uncovered,
-/// so `a`'s roles stay blocked until a rotation covers it).
-pub(crate) fn finalize_due(tx: &mut Tx<'_>, who: Tid, a: Tid, skip: &[Tid], done: &mut Done) -> Result<()> {
+/// so `a`'s roles stay blocked until a rotation covers it). Under `keep`: on `keep.on`, none of
+/// its `rewriting`.
+fn finalize_due(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, done: &mut Done) -> Result<()> {
     let mut ended = flows::edges::finalizable(tx.core, &who, &a);
-    ended.retain(|x| !skip.contains(&x.0));
+    ended.retain(|x| !keep.is_some_and(|k| k.on == a && k.rewriting.contains(&x.0)));
     if ended.is_empty() {
         return Ok(());
     }
-    flows::edges::finalize_in(tx, who, a, &ended, done)
+    flows::edges::finalize_in(tx, who, a, &ended, &Keep::kept(keep, &a), done)
 }
 
 /// `ensure_rotated`, failing when `roles` stay blocked: for what encrypts under the epochs

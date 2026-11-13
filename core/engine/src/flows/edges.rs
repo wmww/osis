@@ -165,7 +165,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     }
     let roles = roles_up_to(edge.role);
     // a renewal of an ended edge is not finalized first: the grant writes it anew
-    rotation::ensure_rotated_but(tx, who, target, &[holder], &mut done)?;
+    rotation::ensure_rotated_but(tx, who, target, &[holder], &BTreeSet::new(), &mut done)?;
     let epochs = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
     // a holder actor is boxed at the keyset Seal gives, per role (spec/crypto.md §4); one whose
     // grant would close a key cycle is keyless and boxed nothing; one this node can seal to no
@@ -333,8 +333,9 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     }
     if !selfr && !left.is_empty() && tx.core.has_own_secrets(&target) {
         // boxing to the remaining holders encrypts under their keysets: the cascade first (no
-        // finalize of an edge this commit removes)
-        rotation::ensure_rotated_but(tx, who, target, &removing, &mut done)?;
+        // finalize of an edge this commit removes; no rotation of a role of the target the
+        // holders leave, which would box them at it: this commit rotates it)
+        rotation::ensure_rotated_but(tx, who, target, &removing, &left, &mut done)?;
         let may = rotation::may_rotate(tx.core, &who, &target);
         let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r)).collect();
         if !roles.is_empty() {
@@ -446,9 +447,10 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
 /// A finalize by `who` of the edges `ended` on `target` (`finalizable`; spec/permissions.md §2):
 /// their removal with no frontier, each saying retain or erase as its expiry would, and the
 /// rotation of the roles they held that `who` may rotate, in one role commit, or alone while
-/// Authority would fail (its rotation then stays due, as for any removal:
-/// `demote_in`). The cascade below `target` is the caller's (`rotation::ensure_rotated`).
-pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid, PermEdge, bool)], done: &mut Done) -> Result<()> {
+/// Authority would fail (its rotation then stays due, as for any removal: `demote_in`), none of
+/// `kept` (the roles a removal of the same act rotates, `rotation::Keep`). The cascade below
+/// `target` is the caller's (`rotation::ensure_rotated`).
+pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid, PermEdge, bool)], kept: &BTreeSet<Role>, done: &mut Done) -> Result<()> {
     let mut m = Mutation::new();
     if who != tx.core.writer()? {
         m.sign_as(who);
@@ -468,7 +470,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     let mut rot = None;
     let mut unreached = Vec::new();
     let may = rotation::may_rotate(tx.core, &who, &target);
-    let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r)).collect();
+    let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r) && !kept.contains(r)).collect();
     if !roles.is_empty() && tx.core.has_own_secrets(&target) {
         let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
         let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();

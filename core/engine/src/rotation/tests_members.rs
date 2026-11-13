@@ -1737,7 +1737,7 @@ fn keyless_route_is_no_rotator_spec_crypto_4() {
     lp.peers[0].engine.grant(&m, &x, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&m, &w, &edge(Role::Write)).unwrap();
     lp.sync_all().unwrap();
-    let due = |lp: &mut LocalPeer| lp.peers[2].engine.run(|tx| super::rotation_due(tx, &w, &m, super::Due::Encrypt)).unwrap();
+    let due = |lp: &mut LocalPeer| lp.peers[2].engine.run(|tx| super::rotation_due(tx, &w, &m, super::Due::Encrypt, &BTreeSet::new())).unwrap();
     assert!(due(&mut lp).is_empty());
     rotate_skipping(&mut lp, 0, m, &BTreeSet::from([Role::Read]), &[o, h, w]);
     lp.sync_all().unwrap();

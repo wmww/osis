@@ -11,7 +11,7 @@
 //! forks, departures, forgeries, cycles); every feature stays on its own draws.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Key, Pass, Rng, edge, group, openable, opens_in};
+use super::tests::{Key, Pass, Rng, Via, edge, group, openable, opens_by, opens_in};
 use super::tests_departs::{Forge, leave};
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -80,6 +80,8 @@ struct Run {
     /// after each write, not each step: a rotation removes the boxes at the epochs it supersedes,
     /// so a box another write of the same step replaced is in no later state.
     states: Vec<(Tid, ct::Secrets)>,
+    /// The step (index into `log`) each of `states` was first met at.
+    state_step: Vec<usize>,
     /// The boxes to a holder actor at a keyset the first node holding them held superseded (a
     /// stale box, spec/crypto.md §4 Stale): no honest node writes one, so none is a hand-on.
     stale: BTreeSet<BoxAt>,
@@ -102,7 +104,7 @@ impl Drop for Run {
 impl Run {
     fn new(lp: LocalPeer, actors: Vec<(Tid, usize)>, rng: Rng) -> Run {
         let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.me()).collect();
-        let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), resealed: Vec::new(), states: Vec::new(), stale: BTreeSet::new(), secrets: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
+        let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), resealed: Vec::new(), states: Vec::new(), state_step: Vec::new(), stale: BTreeSet::new(), secrets: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
         run.log.push(format!("actors {:?} (owners), peers {:?}", run.actors, run.tids));
         run.note();
         run
@@ -124,6 +126,8 @@ impl Run {
         out
     }
 
+    /// Notes what each peer holds: its secrets (`ever`, `first`, `secrets`) and its `secrets.0`
+    /// state of each actor.
     fn note(&mut self) {
         let all = self.all();
         for p in 0..N {
@@ -139,6 +143,7 @@ impl Run {
                 {
                     self.stale.extend(self.stale_boxes(p, *a, &s));
                     self.states.push((*a, s));
+                    self.state_step.push(self.log.len());
                 }
             }
         }
@@ -767,19 +772,74 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                 let settled = super::tests::openable_but(&mut run.lp, o, &all, run.tids[d], base.clone(), &limit);
                 let met = opens_in(&run.lp, &run.states, &run.secrets, run.tids[d], base.clone(), &BTreeSet::new());
                 let met_unlimited = opens_in(&run.lp, &run.states, &run.secrets, run.tids[d], base, &limit);
-                for ((mt, mr, e), Made { held, below, .. }) in &run.made {
-                    if *mt == t && *mr == r && below.contains(&d) && lost.iter().any(|c| held.contains(c)) && !regained(e) {
-                        // excused only when boxes within the limit were its one way to it: a leak
-                        // if the settled boxes open it without them, or it holds it and no state
-                        // met opens it, or one opens it without them
-                        let k = (t, r, *e);
-                        let opened = settled.contains(&k) || own.contains(&k) && (met_unlimited.contains(&k) || !met.contains(&k));
-                        assert!(!opened, "seed {seed}: peer {d} (now {:?}) opens {t:?} {r:?} epoch {e:?}, made by a rotator that saw it depart (first held at step {:?})", role(d), run.first.get(&(d, (t, r, *e))));
+                let leaks = run.made.iter().filter(|((mt, mr, e), Made { held, below, .. })| *mt == t && *mr == r && below.contains(&d) && lost.iter().any(|c| held.contains(c)) && !regained(e));
+                // excused only when boxes within the limit were its one way to it: a leak if the
+                // settled boxes open it without them, or it holds it and no state met opens it,
+                // or one opens it without them
+                let leak = leaks.map(|x| *x.0).find(|k| settled.contains(k) || own.contains(k) && (met_unlimited.contains(k) || !met.contains(k)));
+                if let Some(k) = leak {
+                    if osis_base::testenv::u64_var("OSIS_ROTATION_DUMP").is_some() {
+                        dump(run, o, d, k, &own, &limit, &lost);
                     }
+                    panic!("seed {seed}: peer {d} (now {:?}) opens {t:?} {r:?} epoch {:?}, made by a rotator that saw it depart (first held at step {:?})", role(d), k.2, run.first.get(&(d, k)));
                 }
             }
         }
     }
+}
+
+/// `OSIS_ROTATION_DUMP`: on a leak of epoch `k` to peer `d`, prints a legend, how `k` was made,
+/// how `d` opens it (the settled boxes at peer `o` without the boxes within the limit, and every
+/// state met with and without them), each box on the way with the step its state was first met at, and what it
+/// held rightly (`own`), was handed, and lost (`lost`).
+fn dump(run: &mut Run, o: usize, d: usize, k: Key, own: &BTreeSet<Key>, limit: &BTreeSet<BoxAt>, lost: &[CommitId]) {
+    let name = |run: &Run, t: &Tid| run.tids.iter().position(|x| x == t).map(|p| format!("peer {p}")).or_else(|| run.actors.iter().position(|a| a.0 == *t).map(|a| format!("actor {a}"))).unwrap_or_else(|| format!("{t:?}"));
+    let ep = |e: &Epoch| format!("n{} {:?}", e.n(), &e.nonce()[..2]);
+    let key = |run: &Run, k: &Key| format!("{} {:?} {}", name(run, &k.0), k.1, ep(&k.2));
+    let mut out = vec![format!("== dump: peer {d} opens {}", key(run, &k))];
+    for (i, t) in run.tids.iter().enumerate() {
+        out.push(format!("peer {i}: {t:?}{}", if run.hostile.contains(&i) { " (hostile)" } else { "" }));
+    }
+    for (i, (t, ow)) in run.actors.iter().enumerate() {
+        out.push(format!("actor {i}: {t:?}, first admin peer {ow}"));
+    }
+    if let Some(m) = run.made.get(&k) {
+        let maker = run.lp.peers[o].engine.core.ix.epoch_intro.get(&k).and_then(|(_, c)| run.lp.peers[o].engine.core.ix.commits.get(c)).map(|c| name(run, &c.header.author));
+        let blind: Vec<String> = m.blind.iter().map(|(t, e)| format!("{} at {}", name(run, t), ep(e))).collect();
+        let carried: Vec<String> = m.carried.iter().map(ep).collect();
+        out.push(format!("made by {maker:?}: below {:?}, blind {blind:?}, carried {carried:?}, held the lost commits {:?}", m.below, lost.iter().map(|c| m.held.contains(c)).collect::<Vec<_>>()));
+    }
+    out.push(format!("lost: {lost:?}"));
+    let all = run.all();
+    let states: Vec<(Tid, ct::Secrets)> = all.iter().filter_map(|a| run.lp.peers[o].engine.get_typed(a, &ct::SECRETS).unwrap().map(|s| (*a, s))).collect();
+    let mut secrets = BTreeMap::new();
+    for p in &run.lp.peers {
+        secrets.extend(super::tests::held_secrets(p, &all));
+    }
+    let base: BTreeSet<Key> = own.iter().filter(|k| !run.made.get(k).is_some_and(|m| m.below.contains(&d))).copied().collect();
+    let none = BTreeSet::new();
+    for (what, by) in [("settled, without the limit's boxes", opens_by(&run.lp, &states, &secrets, run.tids[d], base.clone(), limit)), ("met", opens_by(&run.lp, &run.states, &run.secrets, run.tids[d], base.clone(), &none)), ("met, without the limit's boxes", opens_by(&run.lp, &run.states, &run.secrets, run.tids[d], base, limit))] {
+        out.push(format!("-- {what}:"));
+        let mut at = Some(k);
+        while let Some(x) = at.take() {
+            let line = match by.get(&x) {
+                None => "not opened".to_string(),
+                Some(Via::Known) => format!("held rightly (first at step {:?}, handed at {:?})", run.first.get(&(d, x)), run.handed[d].get(&x)),
+                Some(Via::History(h)) => {
+                    at = Some(*h);
+                    format!("listed by the history box of {}", key(run, h))
+                }
+                Some(Via::Box(a, r, e, h, ks)) => {
+                    at = ks.first().map(|ks| (*h, *r, *ks)).filter(|_| *h != run.tids[d]);
+                    let b = (*a, *r, *e, *h);
+                    let step = run.states.iter().zip(&run.state_step).find(|((t, s), _)| t == a && s.boxes.iter().any(|(bk, _)| bk.holder == *h && bk.role == *r && osis_keys::aspects::from_schema(&bk.epoch).ok() == Some(*e))).map(|x| *x.1);
+                    format!("box to {} at keyset {:?} (first met at step {step:?}, stale {}, within the limit {})", name(run, h), ks.iter().map(ep).collect::<Vec<_>>(), run.stale.contains(&b), limit.contains(&b))
+                }
+            };
+            out.push(format!("  {}: {line}", key(run, &x)));
+        }
+    }
+    eprintln!("{}", out.join("\n"));
 }
 
 /// Peer `d`'s departure from role `r` of `t` in the settled timeline: the last applied write
@@ -925,3 +985,125 @@ fn handed_keyset_opens_boxes_its_author_never_received_spec_crypto_4() {
     check(&mut run, 1, true);
 }
 
+// A removal's cascade rotates none of the target's roles the removal rotates (seed
+// 750502401262): M (peer 1's) a sync holder of G (peer 0's), D (peer 2) a sync holder of M, A
+// (peer 3) an admin of M. A removes D from M; M's admin, unaware, rotates M to k, boxing D. Peer
+// 0, not in M, holding everything, removes M from G, whose box to M is stale: one rotation of G's
+// sync, leaving M out. A cascade rotation first would seal M at k, then the removal's rotation
+// drop that box, D opening the cascade's epoch by it.
+#[test]
+fn a_removal_boxes_none_it_removes_spec_permissions_3() {
+    let mut lp = LocalPeer::new(N, 1, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let (d, a) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
+    let g = group(&mut lp, 0);
+    let m = group(&mut lp, 1);
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&g, &m, &edge(Role::Sync)).unwrap();
+    lp.peers[1].engine.grant(&m, &d, &edge(Role::Sync)).unwrap();
+    lp.peers[1].engine.grant(&m, &a, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let mut run = Run::new(lp, vec![(g, 0), (m, 1)], Rng(1));
+    step(&mut run, 3, |run| {
+        run.lp.peers[3].clock.advance(1_000);
+        run.lp.peers[3].engine.demote(&m, &Demotion { holder: d, new: None, retain: None }).unwrap();
+    });
+    step(&mut run, 1, |run| {
+        run.lp.peers[1].clock.advance(2_000);
+        // twice: k, the newest keyset of M, is what G seals M at
+        assert!(run.rotate(1, m, &[Role::Sync].into(), false));
+        assert!(run.rotate(1, m, &[Role::Sync].into(), false));
+    });
+    for (from, to) in [(1, 2), (3, 0), (1, 0)] {
+        run.lp.sync(from, to).unwrap();
+    }
+    run.note();
+    let sync = |run: &Run| run.made.keys().filter(|k| k.0 == g && k.1 == Role::Sync).map(|k| k.2).collect::<BTreeSet<Epoch>>();
+    let before = sync(&run);
+    step(&mut run, 0, |run| {
+        run.lp.peers[0].clock.advance(3_000);
+        run.lp.peers[0].engine.demote(&g, &Demotion { holder: m, new: None, retain: None }).unwrap();
+    });
+    let new: Vec<Epoch> = sync(&run).difference(&before).copied().collect();
+    assert_eq!(new.len(), 1, "the removal's rotation alone");
+    run.lp.sync(0, 2).unwrap();
+    run.note();
+    assert!(!run.ever[2].contains(&(g, Role::Sync, new[0])), "D opens no epoch of G the removal made");
+    settle(&mut run, 1, true);
+    check(&mut run, 1, true);
+}
+
+// A removal's cascade rotates none of the target's roles the removal rotates by any path, the
+// upward one included: H (peer 0's) a read holder of G and of Y (peer 0's), G a read holder of Y,
+// H's self-removed member X (peer 2) uncovered, M (peer 3) a read holder of G. Peer 0 removes M
+// from G: the cascade rotates H, making G's and Y's boxes to H stale; following that upward,
+// directly or through Y's cascade below, must not rotate G's read before the removal (boxing M).
+#[test]
+fn a_removal_boxes_none_it_removes_through_the_upward_cascade_spec_permissions_3() {
+    let mut lp = LocalPeer::new(N, 1, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let (x, m) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
+    let g = group(&mut lp, 0);
+    let h = group(&mut lp, 0);
+    let y = group(&mut lp, 0);
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&h, &x, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &h, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&y, &h, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&y, &g, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let mut run = Run::new(lp, vec![(g, 0), (h, 0), (y, 0)], Rng(1));
+    step(&mut run, 2, |run| {
+        run.lp.peers[2].clock.advance(1_000);
+        run.lp.peers[2].engine.demote(&h, &Demotion { holder: x, new: None, retain: None }).unwrap();
+    });
+    run.lp.sync(2, 0).unwrap();
+    run.note();
+    let read = |run: &Run| run.made.keys().filter(|k| k.0 == g && k.1 == Role::Read).map(|k| k.2).collect::<BTreeSet<Epoch>>();
+    let before = read(&run);
+    step(&mut run, 0, |run| {
+        run.lp.peers[0].clock.advance(2_000);
+        run.lp.peers[0].engine.demote(&g, &Demotion { holder: m, new: None, retain: None }).unwrap();
+    });
+    let new: Vec<Epoch> = read(&run).difference(&before).copied().collect();
+    assert_eq!(new.len(), 1, "the removal's rotation alone");
+    run.lp.sync(0, 3).unwrap();
+    run.note();
+    assert!(!run.ever[3].contains(&(g, Role::Read, new[0])), "M opens no epoch of G the removal made");
+    settle(&mut run, 1, true);
+    check(&mut run, 1, true);
+}
+
+// The same through a finalize the cascade makes first: E (peer 2) a read holder of G past its
+// `until`, M (peer 3) a read holder. Peer 0 removes M: the finalize of E goes without a rotation
+// of read, which the removal's rotation makes next (naming E's departure), so M opens no epoch of
+// G the act made.
+#[test]
+fn a_removal_boxes_none_it_removes_through_a_finalize_first_spec_permissions_3() {
+    let mut lp = LocalPeer::new(N, 1, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let (e, m) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
+    let g = group(&mut lp, 0);
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&g, &e, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
+    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: e, new: Some(ct::Edge { until: Some(until), ..edge(Role::Read) }), retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    let mut run = Run::new(lp, vec![(g, 0)], Rng(1));
+    let read = |run: &Run| run.made.keys().filter(|k| k.0 == g && k.1 == Role::Read).map(|k| k.2).collect::<BTreeSet<Epoch>>();
+    let before = read(&run);
+    step(&mut run, 0, |run| {
+        run.lp.peers[0].clock.advance(2_000);
+        run.lp.peers[0].engine.demote(&g, &Demotion { holder: m, new: None, retain: None }).unwrap();
+    });
+    let new: Vec<Epoch> = read(&run).difference(&before).copied().collect();
+    assert_eq!(new.len(), 1, "the removal's rotation alone");
+    assert!(run.lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "it covers E's departure too");
+    run.lp.sync(0, 3).unwrap();
+    run.note();
+    assert!(!run.ever[3].contains(&(g, Role::Read, new[0])), "M opens no epoch of G the removal made");
+    settle(&mut run, 1, true);
+    check(&mut run, 1, true);
+}

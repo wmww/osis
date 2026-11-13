@@ -209,19 +209,37 @@ pub(super) fn held_secrets(p: &crate::local_peer::Peer, actors: &[Tid]) -> BTree
 
 /// `openable_but` over `states` (actor, `secrets.0` state; an actor may have several), with
 /// `secrets` opening history boxes (the test sees every secret; the party has the key it opens).
-pub(super) fn opens_in(lp: &LocalPeer, states: &[(Tid, ct::Secrets)], secrets: &BTreeMap<Key, osis_crypto::Secret32>, party: Tid, mut known: BTreeSet<Key>, skip: &BTreeSet<(Tid, Role, osis_crypto::Epoch, Tid)>) -> BTreeSet<Key> {
+pub(super) fn opens_in(lp: &LocalPeer, states: &[(Tid, ct::Secrets)], secrets: &BTreeMap<Key, osis_crypto::Secret32>, party: Tid, known: BTreeSet<Key>, skip: &BTreeSet<(Tid, Role, osis_crypto::Epoch, Tid)>) -> BTreeSet<Key> {
+    opens_by(lp, states, secrets, party, known, skip).into_keys().collect()
+}
+
+/// How a party came to open a secret (`opens_by`).
+#[derive(Clone, Debug)]
+pub(super) enum Via {
+    /// Known from the start.
+    Known,
+    /// A box (actor, role, epoch, holder): to the party itself, or sealed, wrapped or jointly
+    /// sealed at the holder's keysets (role, epochs) opened before.
+    Box(Tid, Role, osis_crypto::Epoch, Tid, Vec<osis_crypto::Epoch>),
+    /// The history box of this epoch, opened before, lists it.
+    History(Key),
+}
+
+/// `opens_in`, each secret opened with the first way found to it.
+pub(super) fn opens_by(lp: &LocalPeer, states: &[(Tid, ct::Secrets)], secrets: &BTreeMap<Key, osis_crypto::Secret32>, party: Tid, known: BTreeSet<Key>, skip: &BTreeSet<(Tid, Role, osis_crypto::Epoch, Tid)>) -> BTreeMap<Key, Via> {
     use osis_keys::aspects::from_schema;
+    let mut out: BTreeMap<Key, Via> = known.into_iter().map(|k| (k, Via::Known)).collect();
     // boxes to the party itself (a key actor)
     if let Some(p) = lp.peers.iter().find(|p| p.engine.me() == party) {
         let keys = p.engine.core.id.keys().clone();
         for (a, s) in states {
             for o in osis_keys::open_boxes(a, s, &osis_keys::Opener::KeyActor { holder: party, keys: &keys }).0 {
-                known.insert((*a, o.role, o.epoch));
+                out.entry((*a, o.role, o.epoch)).or_insert(Via::Box(*a, o.role, o.epoch, party, vec![]));
             }
         }
     }
     loop {
-        let n = known.len();
+        let n = out.len();
         for (a, s) in states {
             for (k, b) in &s.boxes {
                 let Ok(e) = from_schema(&k.epoch) else { continue };
@@ -230,21 +248,23 @@ pub(super) fn opens_in(lp: &LocalPeer, states: &[(Tid, ct::Secrets)], secrets: &
                 }
                 // a joint box opens for a holder of each keyset it names
                 let via = osis_keys::box_keysets(b);
-                if k.holder == party || !via.is_empty() && via.iter().all(|x| known.contains(&(k.holder, k.role, *x))) {
-                    known.insert((*a, k.role, e));
+                if k.holder == party || !via.is_empty() && via.iter().all(|x| out.contains_key(&(k.holder, k.role, *x))) {
+                    out.entry((*a, k.role, e)).or_insert(Via::Box(*a, k.role, e, k.holder, via));
                 }
             }
             // a history box opened under a secret known carries the earlier secrets it lists
             for (k, c) in &s.history {
                 let Ok(e) = from_schema(&k.epoch) else { continue };
-                let Some(x) = known.contains(&(*a, k.role, e)).then(|| secrets.get(&(*a, k.role, e))).flatten() else { continue };
+                let Some(x) = out.contains_key(&(*a, k.role, e)).then(|| secrets.get(&(*a, k.role, e))).flatten() else { continue };
                 if let Ok((earlier, _)) = osis_crypto::open_history(x, a, k.role, &e, c) {
-                    known.extend(earlier.into_iter().map(|(y, _)| (*a, k.role, y)));
+                    for (y, _) in earlier {
+                        out.entry((*a, k.role, y)).or_insert(Via::History((*a, k.role, e)));
+                    }
                 }
             }
         }
-        if known.len() == n {
-            return known;
+        if out.len() == n {
+            return out;
         }
     }
 }
