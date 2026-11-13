@@ -878,28 +878,37 @@ impl IndexDigest {
 const FORENSIC_CIPHERS: osis_store::Ciphers = osis_store::Ciphers {
     prefix: |blob| osis_label::blob::Prefix::parse(blob).ok().map(|p| p.len()),
     open: |blob, key| osis_label::open(blob, &osis_crypto::Secret32::from_bytes(*key)).ok().map(|(_, p)| p),
-    // a section opens under a candidate as its wrap's read secret, or as its key
-    sections: |plain, keys, opened| {
+    sections: |plain| {
         let Ok(env) = osis_commit::Envelope::decode(plain) else { return Vec::new() };
         let id = env.id();
-        env.sections
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !opened.contains(i))
-            .filter_map(|(i, s)| {
-                keys.iter().find_map(|t| {
-                    // as the key itself, only if its first plaintext bytes can begin a section
-                    let sk = match t.unwrap_section(&id, &s.wrap) {
-                        Ok(sk) => sk,
-                        Err(_) if s.may_open_with(t.zero()) => t.key().clone(),
-                        Err(_) => return None,
-                    };
-                    osis_crypto::open_section(&id, &sk, &s.ciphertext).ok().map(|p| (i, p))
-                })
-            })
-            .collect()
+        env.sections.into_iter().map(|s| Box::new(ForensicSection { bytes: [&id.0[..], &s.wrap, &s.ciphertext].concat(), id, s }) as Box<dyn osis_store::Section>).collect()
     },
 };
+
+/// A section of a commit blob as the forensic attack tries it (`osis_store::Section`): its
+/// bytes are the commit ID, the wrap and the ciphertext.
+struct ForensicSection {
+    id: CommitId,
+    s: osis_commit::Section,
+    bytes: Vec<u8>,
+}
+
+impl osis_store::Section for ForensicSection {
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    // as its wrap's read secret, or as the key itself (only if its first plaintext bytes can
+    // begin a section)
+    fn open(&self, t: &osis_crypto::Trial) -> Option<Vec<u8>> {
+        let sk = match t.unwrap_section(&self.id, &self.s.wrap) {
+            Ok(sk) => sk,
+            Err(_) if self.s.may_open_with(t.zero()) => t.key().clone(),
+            Err(_) => return None,
+        };
+        osis_crypto::open_section(&self.id, &sk, &self.s.ciphertext).ok()
+    }
+}
 
 /// The keys of `a` and `b` whose values differ (or that one lacks), as fields.
 fn keyed<K: Ord + Clone, V: PartialEq>(a: &BTreeMap<K, V>, b: &BTreeMap<K, V>, f: impl Fn(K) -> IndexField, out: &mut Vec<IndexField>) {

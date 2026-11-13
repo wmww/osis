@@ -253,7 +253,7 @@ fn file_backend_holds_no_plaintext() {
 const CIPHERS: osis_store::Ciphers = osis_store::Ciphers {
     prefix: |_| Some(0),
     open: |blob, key| osis_crypto::decrypt_blob(blob, 0, &osis_crypto::Secret32::from_bytes(*key)).ok(),
-    sections: |_, _, _| Vec::new(),
+    sections: |_| Vec::new(),
 };
 
 // spec/requirements.md, Deletion (forward secure): a blob's ciphertext outlives its deletion in

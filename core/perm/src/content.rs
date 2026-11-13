@@ -130,15 +130,14 @@ impl Timeline {
     /// from the change at `p`, `None` never.
     pub fn first_held(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
         let key = (*x, *thing, required);
-        // debug builds compare every answer, memoized ones (some carried over `extend`) too
         if let Some(v) = self.memo.first_held.lock().ok().and_then(|m| m.get(&key).copied()) {
             #[cfg(debug_assertions)]
-            debug_assert_eq!(v, self.first_held_replayed(x, thing, required));
+            self.check_first_held(&key, v);
             return v;
         }
         let v = self.first_held_uncached(x, thing, required);
         #[cfg(debug_assertions)]
-        debug_assert_eq!(v, self.first_held_replayed(x, thing, required));
+        self.check_first_held(&key, v);
         if let Ok(mut m) = self.memo.first_held.lock() {
             m.insert(key, v);
         }
@@ -203,6 +202,16 @@ impl Timeline {
         // replayed to the end: only `first` is read again
         r.best = BTreeMap::new();
         None
+    }
+
+    /// Debug builds: `first_held`'s answer `v` for `key` against a replay, once per key in each
+    /// state of the timeline (`Memo::first_held_checked`); memoized answers, some carried over
+    /// `extend`, included.
+    #[cfg(debug_assertions)]
+    fn check_first_held(&self, key: &(Tid, Tid, Role), v: Option<Option<Point>>) {
+        if self.memo.first_held_checked.lock().map_or(true, |mut s| s.insert(*key)) {
+            debug_assert_eq!(v, self.first_held_replayed(&key.0, &key.1, key.2), "first_held of {key:?}");
+        }
     }
 
     /// `first_held_uncached` by a search at every change (debug check).

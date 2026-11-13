@@ -26,7 +26,7 @@ pub use cipher::{BlobArea, CipherHost, CipherTx, Ciphertext, Note, test_copy_sha
 pub use error::Error;
 pub use nodelog::{CURSOR_LEN, INCARNATIONS_KEPT, LogRead, LoggedEvent, NodeEvent};
 pub use memory::{Fault, FaultyBackend, Faults, Io, MemoryBackend};
-pub use forensic::{Ciphers, Evidence, Recovered, Source, attack};
+pub use forensic::{Ciphers, Evidence, Recovered, Section, Source, attack};
 pub use pager::{StoreConfig, forensic_node_keys, forensic_open};
 pub use record::{At, Filter, Member, RECORD_BUDGET, Record, RecordId};
 pub use root::FileRoot;
