@@ -750,6 +750,42 @@ fn only_a_valid_cover_drops_from_a_nodes_own_store_spec_sync_5() {
     assert_eq!(held(&mut net), Vec::<bool>::new(), "no entry at a holds it");
 }
 
+// spec/sync.md §5 (Placed), §7: what a node drops from its own store under a cover stays readable
+// through it: a reader that held neither the bodies nor the cover, back with only that node to
+// pull, reads the value from the cover there
+#[test]
+fn a_body_dropped_under_a_cover_reaches_a_co_reader_by_the_cover_spec_sync_5() {
+    let (mut net, [a, b, r]) = local_nodes::<3>();
+    reach_ed(&mut net, a);
+    let g = net.group_at(b, &[(a, Role::Write), (r, Role::Read)], vec![]);
+    net.run();
+    net.advance(120_000);
+    net.set_online(r, false);
+    let reg = osis_base::Ak::new("t:reg.0").unwrap();
+    let t = net.item(b, g, g, "x");
+    net.run();
+    net.write(b, t, "y");
+    net.run();
+    let bodies = net.engine(a).core.durable_on(&(t, reg.clone())).collect::<Vec<_>>();
+    assert_eq!(bodies.len(), 2, "a holds both writes");
+    let acts = net.sync(b).compact_now(&t, &reg).unwrap();
+    net.actions(b, acts);
+    net.run();
+    for _ in 0..3 {
+        net.advance(osis_base::format::MAX_DRIFT_MS + 60_000);
+    }
+    for c in &bodies {
+        assert!(!net.engine(a).body_not_dropped(c, &t, &reg), "a dropped the body under b's cover");
+        assert!(entries_holding(&mut net, a, g, c, t, "t:reg.0").is_empty(), "no entry at a holds it");
+    }
+    net.set_online(b, false);
+    net.set_online(r, true);
+    net.run();
+    net.advance(120_000);
+    net.run();
+    assert_eq!(net.read(r, t), Some(s("y")));
+}
+
 // issues/net-reconnect.md (Back after a long absence; Deletions): a node back after the peer's
 // log dropped deletions past its cursor converges by one stream, whatever the number of sync IDs
 // (counted at n and 10n); a deletion older than the log reaches it by its own judgment (expiry,
