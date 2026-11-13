@@ -187,6 +187,23 @@ pub(crate) fn drops_as_covered(m: &crate::engine::Meta, ai: usize, now: u64) -> 
     !m.is_dropped(ai) && (!m.bare(ai) || m.header.expires.is_some_and(|t| t <= now))
 }
 
+/// Whether this node keeps held part `(tid, ak)` of `c` under cover `s` though `s` covers it
+/// (spec/sync.md §7 Own bodies): a delta it wrote none of whose writes is dead drops only under
+/// a cover it wrote. The one judgment: node-sync's covered drops and the compaction trigger's
+/// count (`compact::covered_already`) both ask it.
+pub(crate) fn own_kept_under(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+    let own = |x: &CommitId| tx.core.ix.commits.get(x).is_some_and(|m| m.origin == crate::events::Origin::Local);
+    if !own(c) || own(s) || tx.core.ix.commits.get(c).is_none_or(|m| m.view.kind.is_compaction()) {
+        return Ok(false);
+    }
+    // as `Engine::replaced`: a part not held, or bare, is never replaced
+    let Some(ai) = held_part(tx.core, c, tid, ak) else { return Ok(true) };
+    if tx.core.ix.commits.get(c).is_none_or(|m| m.bare(ai)) {
+        return Ok(true);
+    }
+    Ok(!replace::replaced(tx, c, ai, tid, ak)?)
+}
+
 /// `drop_part`, saying why.
 fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Result<()> {
     tx.core.touch();

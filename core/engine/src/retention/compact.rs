@@ -553,7 +553,7 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
             }
             continue;
         }
-        if !snapshot && !memory && covered_already(tx, &c, ai, tid, ak)? {
+        if !snapshot && !memory && covered_already(tx, &c, tid, ak)? {
             continue;
         }
         let Some(blob) = tx.get_commit(&c)? else { continue };
@@ -579,35 +579,17 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
     Ok((out, stops))
 }
 
-/// Whether a held valid content snapshot of `(tid, ak)` already covers durable body `c` (part
-/// `ai`) so that it drops whether or not this node writes one (node-sync's covered drops, the
-/// compaction agreement): a new snapshot frees nothing by it, and counting it would make the
-/// trigger turn on whether a redundant body (a stale host's, a lagging holder's) passed through
-/// before its drop. A live own body that is not replaced drops only under an own snapshot
-/// (spec/sync.md §9 Own bodies), so another node's snapshot leaves it counted.
-fn covered_already(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<bool> {
-    let own = |tx: &Tx<'_>, x: &CommitId| tx.core.ix.commits.get(x).is_some_and(|m| m.origin == crate::events::Origin::Local);
-    let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| s != c).collect();
-    let mut own_live = None;
+/// Whether a held valid snapshot of `(tid, ak)` already drops durable body `c` as its cover
+/// (node-sync's covered drops, the compaction agreement: `bounds::valid_snapshot_held`,
+/// `retention::own_kept_under`, `snapshot::drops_under`), so that it goes whether or not this
+/// node writes one: a new snapshot frees nothing by it, and counting it would make the trigger
+/// turn on whether a redundant body (a stale copy, a lagging holder's) passed through before
+/// its drop. A live own body under another node's snapshot stays (spec/sync.md §7 Own bodies),
+/// so it counts.
+fn covered_already(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+    let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| s != c && super::bounds::valid_snapshot_held(tx.core, s, tid, ak)).collect();
     for s in snaps {
-        let held = tx.core.ix.commits.get(&s).is_some_and(|m| m.view.kind.is_compaction() && m.aspect(tid, ak).is_some_and(|si| !m.body_gone(si) && !m.missing(si) && m.valid_at(si)));
-        if !held {
-            continue;
-        }
-        if !own(tx, &s) && own(tx, c) {
-            let kept = match own_live {
-                Some(k) => k,
-                // as `Engine::replaced`: a bare part is never replaced
-                None => {
-                    let bare = tx.core.ix.commits.get(c).is_none_or(|m| m.bare(ai));
-                    *own_live.insert(bare || !super::replace::replaced(tx, c, ai, tid, ak)?)
-                }
-            };
-            if kept {
-                continue;
-            }
-        }
-        if super::snapshot::covered(tx, &s, c, tid, ak)? == Some(true) {
+        if !super::own_kept_under(tx, &s, c, tid, ak)? && super::snapshot::drops_under(tx, &s, c, tid, ak)? {
             return Ok(true);
         }
     }

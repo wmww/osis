@@ -157,7 +157,7 @@ impl CoverPass<'_> {
             // a live delta this node wrote (none of its writes dead) drops only under its own
             // covers (spec/sync.md §7 Own bodies): another writer's snapshot may fall later (a
             // demotion not listing it), and the author's copy is then what brings the write back
-            if self.own(&c) && !self.own(&s) && !super::pass::is_snapshot(h.kind) && !self.engine.replaced(&c, t, ak)? {
+            if self.engine.own_kept_under(&s, &c, t, ak)? {
                 continue;
             }
             // an own whole replace is judged before its body's keep bound: most plain commits
@@ -257,11 +257,6 @@ impl CoverPass<'_> {
             due = due.max(self.engine.drop_from(c, &a.tid, &a.ak)?);
         }
         Ok(Some(due))
-    }
-
-    /// Whether this node wrote `c` (`SyncEngine::own`).
-    fn own(&self, c: &CommitId) -> bool {
-        self.engine.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local)
     }
 }
 
