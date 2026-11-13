@@ -2059,6 +2059,12 @@ impl SyncEngine {
     pub(crate) fn absent_at(&mut self, host: Option<PeerKey>, l: LabelId, b: BlobId) -> Result<bool> {
         if let Some(s) = host {
             self.state.set_present(s, l, b, false);
+            // an entry of a forgotten memory commit left there (`Forgotten::left`)
+            if let Some(Entry { kind: Kind::Commit { commit, .. }, .. }) = self.state.entries.get(&(l, b))
+                && let Some(f) = self.memory.forgotten.get_mut(commit)
+            {
+                f.left.insert(s);
+            }
         }
         if self.state.present_anywhere(&l, &b) {
             return Ok(false);

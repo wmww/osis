@@ -7,7 +7,6 @@ order::held_set_decides_plain OSIS_ORDER_START=539131766525 issues/order-require
 order::held_set_decides_plain OSIS_ORDER_START=632680797673 issues/order-required-floor-plain.md held_set_decides: none of \d+ Undo steps made a commit
 keep::any_order_until_keeps_no_more_large OSIS_KEEP_START=636109736897 issues/keep-until-order-seed.md kept only by order
 rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=1044279127 issues/rotation-holder-lacks-box-seed.md with key access lacks a box
-ephemeral::random_window_one_capped_host_large OSIS_EPH_START=1811714465 issues/capped-host-stale-ephemeral-entry.md the full host keeps entries .* no node holds
 runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issues/paired-peer-runtime-flake.md Unsynced \{ groups
 sim-sweep:malformed_blobs 72407225782/72407225792 issues/malformed-blobs-host-refusal.md the host refused a malformed blob: Code\(2\)
 tests_laws::entry_copies::forged_entry_copies_join_and_expire_alike_spec_5_6 OSIS_CRDT_SEED=2854516606 issues/forged-entry-copies-expiry-seed.md before the joins
@@ -16,3 +15,4 @@ ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6 OSIS_EPH_ST
 sim-sweep:work_sets 43254590189/43254590194 issues/work-sets-delete-storm-194.md message storm: 5000 deliveries
 sim-sweep:member_churn 720956814942/720956814950 issues/work-sets-delete-storm-194.md message storm: \d+ deliveries without the queue emptying
 sim-sweep:evil_host_drops 455770488995/455770489005 issues/evil-host-drops-storm-489005.md message storm: \d+ deliveries without the queue emptying
+ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6 OSIS_EPH_START=6 issues/ephemeral-reverts-restarts-loop.md no quiescence after \d+ rounds

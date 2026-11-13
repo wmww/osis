@@ -775,14 +775,16 @@ fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
     assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]));
 }
 
-// spec/sync.md §9 (caps), §10 (a peer that cannot read L takes what it pulls within its own
-// caps and says when it is full): writes past a peer's ephemeral cap for the label, small and then
-// past what the writer's compactions bring the state down to: the peer stays within its cap,
-// everything settles (no compaction of the cover into the next cover forever), the writer keeps
-// every write, and its status shows the peer full
+// spec/sync.md §9 (caps, Deleting at a host), §10 (a peer that cannot read L takes what it pulls
+// within its own caps and says when it is full): writes past a peer's ephemeral cap for the label,
+// small ones a snapshot brings back within it, then ones past what the writer's compactions bring
+// the state down to: the peer stays within its cap, everything settles (no compaction of the
+// cover into the next cover forever) and the writer keeps every write. Small ones: the entries
+// the snapshot covers leave the full peer and the snapshot takes their room, so the other writer
+// reads them all; large ones: the writer's status shows the peer full
 #[test]
 fn ephemeral_writes_past_a_peers_cap_stay_with_the_writer_spec_sync_9() {
-    for (cap, value) in [(6_300, "v"), (2_500, "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv")] {
+    for (cap, value, fits) in [(6_300, "v", true), (2_500, "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv", false)] {
         let mut net = Net::new();
         let host = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
         let a = net.node(1, &[host]);
@@ -800,7 +802,11 @@ fn ephemeral_writes_past_a_peers_cap_stay_with_the_writer_spec_sync_9() {
         net.advance(61_000);
         let want: BTreeMap<String, String> = (0..30).map(|i| (format!("k{i}"), value.to_string())).collect();
         assert_eq!(notes(&mut net, a, w), want, "cap {cap}: the writer keeps every write");
-        assert!(net.refused_at(a, &l), "cap {cap}: the writer's status shows the peer full");
+        if fits {
+            assert_eq!(notes(&mut net, b, w), want, "cap {cap}: the other writer reads them through the snapshot");
+        } else {
+            assert!(net.refused_at(a, &l), "cap {cap}: the writer's status shows the peer full");
+        }
     }
 }
 
@@ -4830,6 +4836,68 @@ fn moving_cursor_one_entry_per_author_spec_sync_9() {
     net.advance(E);
     assert_eq!(net.eph_read(b, w, CURSOR), None);
     assert_eq!(entries(&net), base);
+}
+
+/// A peer full for the window's label: room for the window's entry and two notes (a's, b's),
+/// not for a snapshot beside them; writers a and b. Returns (net, [a, b], w).
+fn full_peer() -> (Net, Vec<usize>, Tid) {
+    let mut net = Net::new();
+    let host = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: 6_000, ..osis_host::HostPolicy::default() });
+    let nodes = vec![net.node(1, &[host]), net.node(2, &[host])];
+    let g = net.group(nodes[0], &[(nodes[1], Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, nodes[0], g, "w");
+    net.run();
+    note(&mut net, nodes[0], w, "k", "a");
+    net.run();
+    note(&mut net, nodes[1], w, "j", "b");
+    net.run();
+    (net, nodes, w)
+}
+
+/// Every node snapshots every ephemeral aspect it holds (each forgets what its snapshot covers);
+/// then a writes another note, and every node reads all three.
+fn compact_then_note(net: &mut Net, nodes: &[usize], w: Tid) {
+    for n in nodes {
+        let acts = net.sync(*n).compact_ephemeral_now().unwrap();
+        net.actions(*n, acts);
+    }
+    net.run();
+    note(net, nodes[0], w, "m", "a");
+    net.run();
+    for n in nodes {
+        assert_eq!(notes(net, *n, w), map(&[("j", "b"), ("k", "a"), ("m", "a")]), "node {n}");
+    }
+}
+
+// spec/sync.md §9 Deleting at a host, §10 Full: the full peer refuses the snapshots a and b write
+// of the window, and both forget what theirs cover, so no node holds the entries there. Those go
+// anyway (what covers them waits there for the room they hold), so a's next note finds room
+// there and reaches b
+#[test]
+fn full_peer_frees_what_every_holder_forgot_spec_sync_9() {
+    let (mut net, nodes, w) = full_peer();
+    compact_then_note(&mut net, &nodes, w);
+}
+
+// spec/sync.md §9 Deleting at a host, §10 Full: a's large note does not fit the full peer, so
+// neither does a's snapshot of the window (nor once the notes there are gone). a forgets the
+// notes under it and deletes them there; b, which holds both and gets no snapshot (none reaches
+// it but through that peer), places them again, and they stay (placed again since a forgot them:
+// held, so not deleted there before their carrier). The two settle, and b reads the notes
+#[test]
+fn full_peer_keeps_what_a_holder_placed_again_spec_sync_9() {
+    let (mut net, nodes, w) = full_peer();
+    let (a, b) = (nodes[0], nodes[1]);
+    let large = "x".repeat(3_000);
+    note(&mut net, a, w, "l", &large);
+    net.run();
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(61_000);
+    assert_eq!(notes(&mut net, a, w), map(&[("j", "b"), ("k", "a"), ("l", &large)]));
+    assert_eq!(notes(&mut net, b, w), map(&[("j", "b"), ("k", "a")]));
 }
 
 // spec/sync.md §9 Superseded parts, §10 Full: a peer with room for one entry of a refreshed

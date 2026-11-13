@@ -623,7 +623,7 @@ impl SyncEngine {
         *memory = memory::Memory::default();
         // durable commits forgotten whole whose entries were not yet deleted at hosts
         for (c, header) in self.state.forgotten.clone() {
-            self.memory.forgotten.insert(c, memory::Forgotten { header, why: crate::engine::MemoryDrop::Gone });
+            self.memory.forgotten.insert(c, memory::Forgotten { header, why: crate::engine::MemoryDrop::Gone, left: Default::default() });
         }
         // what was kept of peers whose record went (evicted, or never committed before a crash):
         // no connection finds it again

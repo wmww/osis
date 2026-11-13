@@ -569,20 +569,20 @@ impl SyncEngine {
         let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok((false, Vec::new())) };
         // a forgotten memory commit not held again: carried once an entry of what covered or
         // superseded it is held at the source (spec/sync.md §9); nothing here to snapshot for it.
-        // A superseded one, its author's own to delete, goes at a source full for the label too:
-        // its superseder waits there for the room it holds, and no other node places it again.
-        // Not a covered one: a co-writer lacking the cover there places what it covers again
-        // (or covers it anew) into the room freed, the cover is refused again, and the two loop.
+        // At a source full for the label it goes without waiting: what carries it waits there
+        // for the room it holds. Not once an entry of it left that source since it was forgotten
+        // here: a holder lacking the carrier placed it again (it is held), and deleting that
+        // again would loop with its next placement.
         // Held again, the join judges it like any held body (`judge`): the record of what
         // covered it then may cover it no more (a validity flip since)
         if let Some(f) = self.memory.forgotten.get(commit)
             && !self.engine.core.ix.commits.contains_key(commit)
         {
-            let superseded = matches!(f.why, MemoryDrop::Superseded { .. });
+            let full = at.full && source.is_some_and(|s| !f.left.contains(s));
             // what covers or supersedes it now: a coverer forgotten in turn (superseded before
             // it was placed, covered by a later snapshot) stands for what covers that
             let by = self.carriers_of_forgotten(commit);
-            let carried = (at.full && superseded && !by.is_empty()) || by.iter().any(|s| self.state.entries_of(l, s).any(|(b, _)| source.is_none_or(|source| self.state.holds_at(source, l, &b))));
+            let carried = (full && !by.is_empty()) || by.iter().any(|s| self.state.entries_of(l, s).any(|(b, _)| source.is_none_or(|source| self.state.holds_at(source, l, &b))));
             return Ok((carried, Vec::new()));
         }
         let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok((false, Vec::new())) };

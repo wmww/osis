@@ -172,6 +172,10 @@ pub(crate) struct Refused {
 pub(crate) struct Forgotten {
     pub header: Arc<osis_commit::Header>,
     pub why: MemoryDrop,
+    /// Peers an entry of it left since this node forgot it: one there now was placed again by a
+    /// holder, so this node no longer deletes it there without its carrier (`carried`, a peer
+    /// full for the label).
+    pub left: BTreeSet<PeerKey>,
 }
 
 /// The memory class's state beside the sync records (all in memory).
@@ -297,7 +301,9 @@ impl SyncEngine {
             }
             // recorded with or without entries: one forgotten before it was placed may stand
             // for what carries another (`carriers_of_forgotten`); the sweep keeps what is needed
-            self.memory.forgotten.insert(*c, Forgotten { header: header.clone(), why: why.clone() });
+            // forgotten again (a copy that arrived applied and went): where entries left stays
+            let left = self.memory.forgotten.remove(c).map(|f| f.left).unwrap_or_default();
+            self.memory.forgotten.insert(*c, Forgotten { header: header.clone(), why: why.clone(), left });
         }
         if !labels.is_empty() {
             self.mark_labels(labels.iter());
