@@ -344,3 +344,28 @@ fn a_removed_member_rejoins_by_a_new_link_spec_permissions_3() {
     }
     assert_eq!(net.read(b, c), Some(s("again")), "the rejoined member reads c");
 }
+
+// A copy under a label carries content its group's actor reads and certificate copies of
+// role-class parts on any thing (spec/sync.md §3): a role-class part on a thing the group
+// cannot read (an account's `account.0`) is no stale content and is taken
+#[test]
+fn a_copys_role_class_parts_are_never_stale_spec_permissions_3() {
+    let mut lp = crate::common::net(2, 0);
+    lp.peers[0].engine.create_account(&[]).unwrap();
+    lp.sync_all().unwrap();
+    let g = crate::common::new_thing(&mut lp, 1);
+    let mut accounts = 0;
+    for c in lp.peers[0].engine.commit_ids() {
+        let Some(body) = lp.peers[0].engine.body(&c).unwrap() else { continue };
+        let blob = osis_commit::CommitBlob::decode(&body.plaintext).unwrap();
+        let stale = lp.peers[1].engine.copy_stale(&g, &blob);
+        for p in &blob.parts {
+            let ak = blob.header.aspects[p.ai].ak.as_str();
+            if osis_schema::core_types::is_role_class(ak) {
+                accounts += usize::from(ak == "account.0");
+                assert!(!stale.contains(&p.ai), "{ak} is no stale content");
+            }
+        }
+    }
+    assert!(accounts > 0);
+}

@@ -32,12 +32,6 @@ use std::collections::{BTreeMap, BTreeSet};
 /// no secret.
 const KEPT: [&str; 5] = ["created.0", "retention^.0", "roles.0", "keys.0", "label.0"];
 
-/// Whether `ak` is certificate material: an aspect forgetting keeps, or `secrets.0` (its boxes
-/// are judged as they open, `rotation::may_take`).
-pub(crate) fn certificate(ak: &Ak) -> bool {
-    KEPT.contains(&ak.as_str()) || ak.as_str() == "secrets.0"
-}
-
 /// What goes of a thing `forget` reaches.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fate {

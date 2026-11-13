@@ -431,7 +431,8 @@ impl Engine {
     }
 
     /// The parts of copy `c`, opened under a label of `g`, that the label carries no more
-    /// (spec/sync.md §3: a label carries the parts its group's actor may read): content on a
+    /// (spec/sync.md §3: a label carries the parts its group's actor may read, and certificate
+    /// copies of role-class parts on any thing): content (`is_content`) on a
     /// thing under an actor with secrets of its own that the group's actor may not read now, left
     /// by a revocation since the per-label copy was placed
     /// (spec/permissions.md §3). Node-sync takes none of them and keeps no byte of the copy;
@@ -440,7 +441,7 @@ impl Engine {
     pub fn copy_stale(&self, g: &Tid, c: &CommitBlob) -> BTreeSet<usize> {
         let actor = self.group_actor(g);
         let h = &c.header;
-        let stale = |a: &osis_commit::AspectEntry| !crate::retention::forget::certificate(&a.ak) && self.core.secret_actor(&a.tid).is_some_and(|x| self.core.ix.own_keys.contains(&x)) && !self.actor_reads(&actor, &a.tid);
+        let stale = |a: &osis_commit::AspectEntry| osis_schema::core_types::is_content(a.ak.as_str()) && self.core.secret_actor(&a.tid).is_some_and(|x| self.core.ix.own_keys.contains(&x)) && !self.actor_reads(&actor, &a.tid);
         c.parts.iter().map(|p| p.ai).filter(|ai| h.aspects.get(*ai).is_some_and(stale)).collect()
     }
 
