@@ -508,6 +508,50 @@ fn failed_commit_recovers_in_place_on(dev: &dyn Device) {
     }
 }
 
+// spec/commits.md §4 on redb: a write of the file can fail anywhere in redb's commit, also after
+// its new header is written (the commit landed though redb reports the error); the commit's result
+// is still its outcome, in place and after a reopen
+#[test]
+fn a_failed_redb_write_anywhere_in_a_commit_reports_its_outcome() {
+    let dev = FileDevice::new("redb-any-write");
+    let mut rng = SeededRng::from_u64(0);
+    let mut s = create(&dev, &mut rng);
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
+    t.commit().unwrap();
+    let mut outcomes = Vec::new();
+    for shred in [Shred::No, Shred::Yes] {
+        let (mut landed, mut failed) = (false, false);
+        for n in 1.. {
+            let k = format!("k-{shred:?}-{n}").into_bytes();
+            dev.trap.store(n, std::sync::atomic::Ordering::SeqCst);
+            let mut t = s.transaction(&mut rng).unwrap();
+            let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
+            t.table_put(tb, &k, vec![1], shred).unwrap();
+            let ok = t.commit().is_ok();
+            let reached = dev.trap.swap(0, std::sync::atomic::Ordering::SeqCst) == 0;
+            let mut t = s.transaction(&mut rng).unwrap();
+            let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
+            assert_eq!(t.table_get(tb, &k).unwrap().is_some(), ok, "{shred:?}: fault at file write {n}");
+            drop(t);
+            outcomes.push((k, ok));
+            if !reached {
+                assert!(ok, "{shred:?}: no fault, committed");
+                break;
+            }
+            (landed, failed) = (landed || ok, failed || !ok);
+        }
+        assert!(landed && failed, "{shred:?}: faults both before and after the commit point");
+    }
+    drop(s);
+    let mut s = reopen(&dev);
+    let mut t = s.transaction(&mut rng).unwrap();
+    let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
+    for (k, ok) in outcomes {
+        assert_eq!(t.table_get(tb, &k).unwrap().is_some(), ok, "{} after a reopen", String::from_utf8_lossy(&k));
+    }
+}
+
 /// What a test can read of a store: every local record, every row of table 0 of `(tid(1), t.0)`,
 /// blobs 1..=4, the counter of `(tid(1), mem+.0)`, and the backend's row names.
 type Observed = (Vec<osis_store::KeyValue>, Vec<osis_store::KeyValue>, Vec<Option<Vec<u8>>>, u64, Vec<Vec<u8>>);

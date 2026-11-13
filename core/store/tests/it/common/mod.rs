@@ -7,7 +7,7 @@ use osis_store::{Backend, BackendError, Faults, KeyValue, MemoryBackend, MemoryR
 use redb::StorageBackend;
 use redb::backends::FileBackend;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Small pages and a small key tree so tests exercise splits and several tree levels.
 pub fn cfg() -> StoreConfig {
@@ -65,6 +65,8 @@ impl Device for MemDevice {
 pub struct FileDevice {
     pub dir: std::path::PathBuf,
     pub faults: Faults,
+    /// `n > 0`: the `n`th write of the redb file from now fails (`FaultyFile`).
+    pub trap: Arc<AtomicUsize>,
 }
 
 impl FileDevice {
@@ -74,7 +76,7 @@ impl FileDevice {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let faults = Faults::new();
-        FileDevice { dir, faults }
+        FileDevice { dir, faults, trap: Arc::new(AtomicUsize::new(0)) }
     }
 }
 
@@ -86,17 +88,18 @@ impl Drop for FileDevice {
 
 impl Device for FileDevice {
     fn backend(&self) -> Box<dyn Backend> {
-        let trap = Arc::new(AtomicBool::new(false));
-        let (path, faults, t) = (self.dir.join("db"), self.faults.clone(), trap.clone());
-        // created as the product creates it (owner-only)
-        drop(osis_store::RedbBackend::open(&path).unwrap());
+        let (path, faults, trap) = (self.dir.join("db"), self.faults.clone(), self.trap.clone());
         let inner = osis_store::RedbBackend::with_storage(move || {
-            let file = std::fs::OpenOptions::new().read(true).write(true).open(&path)?;
+            let mut o = std::fs::OpenOptions::new();
+            // created owner-only, as `RedbBackend::open` creates it
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+            let file = o.read(true).write(true).create(true).truncate(false).open(&path)?;
             let file = FileBackend::new(file).map_err(std::io::Error::other)?;
-            Ok(FaultyFile { file, faults: faults.clone(), trap: t.clone() })
+            Ok(FaultyFile { file, faults: faults.clone(), trap: trap.clone() })
         })
         .unwrap();
-        Box::new(FaultyRedb { inner, faults: self.faults.clone(), trap })
+        Box::new(FaultyRedb { inner, faults: self.faults.clone(), trap: self.trap.clone() })
     }
     fn root(&self) -> Box<dyn RootStorage> {
         Box::new(osis_store::FileRoot::with_faults(self.dir.join("root"), self.faults.clone()))
@@ -117,7 +120,7 @@ impl Device for FileDevice {
 struct FaultyRedb {
     inner: osis_store::RedbBackend,
     faults: Faults,
-    trap: Arc<AtomicBool>,
+    trap: Arc<AtomicUsize>,
 }
 
 impl Backend for FaultyRedb {
@@ -129,7 +132,7 @@ impl Backend for FaultyRedb {
     }
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
         if let Err(e) = self.faults.check() {
-            self.trap.store(true, Ordering::SeqCst);
+            self.trap.store(1, Ordering::SeqCst);
             assert!(self.inner.commit(batch).is_err(), "the fault reaches redb");
             return Err(e);
         }
@@ -146,17 +149,21 @@ impl Backend for FaultyRedb {
     }
 }
 
-/// The redb file, failing one write when `trap` is set and every write while the device is crashed.
+/// The redb file, failing the write `trap` counts down to and every write while the device is
+/// crashed (each `write`, `set_len` and `sync_data` is a write).
 #[derive(Debug)]
 struct FaultyFile {
     file: FileBackend,
     faults: Faults,
-    trap: Arc<AtomicBool>,
+    trap: Arc<AtomicUsize>,
 }
 
 impl FaultyFile {
     fn fault(&self) -> std::io::Result<()> {
-        if self.trap.swap(false, Ordering::SeqCst) || self.faults.crashed() {
+        let n = self.trap.load(Ordering::SeqCst);
+        self.trap.store(n.saturating_sub(1), Ordering::SeqCst);
+        let hit = n == 1;
+        if hit || self.faults.crashed() {
             return Err(std::io::Error::other("injected write fault"));
         }
         Ok(())
@@ -186,11 +193,7 @@ impl StorageBackend for FaultyFile {
 
 /// Every device kind this build has, fresh.
 pub fn devices(name: &str) -> Vec<Box<dyn Device>> {
-    #[allow(unused_mut)]
-    let mut v: Vec<Box<dyn Device>> = vec![Box::new(MemDevice::new())];
-    v.push(Box::new(FileDevice::new(name)));
-    let _ = name;
-    v
+    vec![Box::new(MemDevice::new()), Box::new(FileDevice::new(name))]
 }
 
 pub fn create(dev: &dyn Device, rng: &mut SeededRng) -> Store {
