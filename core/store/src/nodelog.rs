@@ -244,7 +244,7 @@ impl Transaction<'_> {
         let old = self.cat_get(&slot)?;
         // the subject's earlier event is replaced, not removed: it names what the new one does
         if let Some(v) = &old {
-            self.log_drop_event(slot_pos(&v)?, Shred::No)?;
+            self.log_drop_event(slot_pos(v)?, Shred::No)?;
         }
         let extra = extra(pos, old.as_ref().and_then(|v| v.get(8..)));
         // an overwrite keeps the slot's key: what it replaces is positions, so it shreds nothing
