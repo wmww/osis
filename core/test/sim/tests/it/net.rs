@@ -160,3 +160,36 @@ fn host_store_crash_takes_host_down() {
     s.run_until_quiescent(60).unwrap();
     s.finish().unwrap();
 }
+
+// spec/sync.md §9 (Holding: a part past its `expires` is held value-less, one arriving past it
+// included): `author_leaves` holds a reader to a refreshed cursor only through carriers the write
+// was live at. The author reaches the reader only through a bridging admin; with the bridge's
+// clock even with theirs the reader reads every refresh, and with it ahead past the cursor's expiry
+// the bridge holds each refresh dead on arrival and deletes it at the host, so the reader is owed
+// none.
+#[test]
+fn a_cursor_dead_at_its_only_carrier_is_owed_to_nobody_spec_sync_9() {
+    use osis_base::Role;
+    use osis_sim::ClockSpec;
+    use osis_sim::net::Party;
+    use osis_sim::net::ephemeral::CURSOR_MS;
+    use osis_sim::net::scenarios::{persons, shared_group, sim};
+
+    let at = |skew_ms: i64| ClockSpec { skew_ms, drift_ppm: 0 };
+    for ahead in [0, CURSOR_MS as i64 + 5_000] {
+        let mut s = sim("dead_carrier", 0, Default::default());
+        let (s0, s1) = (s.add_host().unwrap(), s.add_host().unwrap());
+        let bridge = s.add_node(&[s0, s1], at(ahead)).unwrap();
+        let w = s.add_node(&[s0], at(0)).unwrap();
+        let e = s.add_node(&[s1], at(0)).unwrap();
+        s.sever(Party::N(w), Party::S(s1));
+        s.sever(Party::N(e), Party::S(s0));
+        let [pb, pw, pe] = persons(&mut s, [bridge, w, e], [s0, s0, s1]).unwrap();
+        let g = shared_group(&mut s, bridge, pb, &[s0, s1], &[(pw, Role::Write), (pe, Role::Read)]).unwrap();
+        let t = s.item(bridge, g).unwrap();
+        s.track_ephemeral(t, g);
+        s.quiet(40).unwrap();
+        s.author_leaves_as(w).unwrap_or_else(|f| panic!("bridge {ahead} ms ahead: {f}"));
+        s.finish().unwrap();
+    }
+}

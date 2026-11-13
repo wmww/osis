@@ -15,4 +15,4 @@ sim-sweep:evil_host_drops 0/117 issues/evil-host-drops-s0-churn.md labels change
 sim-sweep:evil_host_drops 0/138 issues/evil-host-drops-s0-churn.md not quiescent after \d+ rounds
 rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=636429853021 issues/rotation-departed-opens-seed.md made by a rotator that saw it depart
 sim-sweep:folders 636429852973/636429852979 issues/folders-sim-message-storm.md message storm: \d+ deliveries without the queue emptying
-sim-sweep:ephemeral 141303463146/141303463147 issues/ephemeral-sim-refreshed-cursor-unread.md does not read node \d+'s refreshed cursor
+sim-sweep:ephemeral 0/43 issues/ephemeral-sim-reader-holds-unlisted-commits.md ephemeral divergence on

@@ -235,9 +235,10 @@ impl NetSim {
 
     /// After quiescence: a random writer of a tracked durable thing sets its cursor there and
     /// refreshes it every half expiry; each reader a path through hosts that keep nothing
-    /// out joins to it reads it just before every refresh, unless the write expired by the
-    /// reader's clock. Then the writer goes down (nobody sees it leave) and no reader whose clock
-    /// passed its last write's expiry reads its cursor. Then it comes back.
+    /// out and nodes the write was live at joins to it reads it just before every refresh,
+    /// unless the write expired by the reader's clock. Then the writer goes down (nobody sees it
+    /// leave) and no reader whose clock passed its last write's expiry reads its cursor. Then it
+    /// comes back.
     pub fn author_leaves(&mut self) -> Res<()> {
         let Some(&(t, g)) = self.eph.things.first() else { return Ok(()) };
         let ms = self.readers(&g)?;
@@ -248,6 +249,13 @@ impl NetSim {
             }
         }
         let Some(&a) = self.dice.pick(&writers) else { return Ok(()) };
+        self.author_leaves_as(a)
+    }
+
+    /// `author_leaves` with writer `a` as the author.
+    pub fn author_leaves_as(&mut self, a: usize) -> Res<()> {
+        let Some(&(t, g)) = self.eph.things.first() else { return Ok(()) };
+        let ms = self.readers(&g)?;
         self.eph.next += 1;
         let v = format!("c{}", self.eph.next);
         let mut until = 0;
@@ -258,11 +266,22 @@ impl NetSim {
             self.cursor_op(a, t, &v, &mut m)?;
             self.eph_write(a, m, format!("cursor {t} {v} (refresh {round})"))?;
             self.settle()?;
+            // a node whose clock passed the write's expiry by the time it spread holds it dead
+            // (spec/sync.md §9 Holding: value-less on arrival) and carries it to nobody
+            let mut live = Vec::new();
+            for n in &ms {
+                if self.engine(*n)?.now().0 < until {
+                    live.push(*n);
+                } else {
+                    self.note(format!("node {n} holds {v} expired"));
+                }
+            }
             self.advance(CURSOR_MS / 2 - 1_000)?;
             self.settle()?;
-            // the readers a path through hosts that keep nothing out joins to the writer
+            // the readers a path through hosts that keep nothing out and nodes it was live at
+            // joins to the writer
             let lossy = self.lossy_hosts();
-            let readers = self.eph_components(&g, &ms, &lossy).into_iter().find(|c| c.contains(&a)).unwrap_or_default();
+            let readers = self.eph_components(&g, &live, &lossy).into_iter().find(|c| c.contains(&a)).unwrap_or_default();
             for o in &readers {
                 if self.engine(*o)?.now().0 < until && self.cursor_of(*o, &t, a)?.as_deref() != Some(v.as_str()) {
                     return Err(self.fail(format!("node {o} does not read node {a}'s refreshed cursor {v} on {t} (refresh {round})")));
