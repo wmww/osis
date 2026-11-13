@@ -1,0 +1,4 @@
+# churn-label-failed
+- The sim trace cuts every frame at 200 chars and node diagnostics at 160 (`core/test/sim/src/net/mod.rs`): step IDs and Behind answers were unreadable, so finding the cause took temporary eprintlns of the host's path and each node's recorded step tree at the failure. A trace mode printing whole frames, or a failure dump of the label's host path and recorded trees, would have shown the gap at once.
+- The disk filled (0 bytes free) mid-run; the first `cargo test` failed with ENOSPC at link time and reported exit 101 like a test failure.
+- No quick way to build "holds the head's sync key but not a middle step's" in a default test: a re-grant to an account node brings every past epoch, one to a node with no account reaches it only by L, so the test hands the node the newest secrets with `learn_secret`.

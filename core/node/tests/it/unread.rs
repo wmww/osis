@@ -1222,6 +1222,50 @@ fn a_reader_opened_at_a_sibling_registers_once_spec_sync_5() {
     assert!(net.sync(c).shared_members(conn).contains(&l));
 }
 
+// spec/sync.md §5 (Walk): a node holding the sync key of the peer's head opens L there whatever
+// steps it recorded. While reader c is away it is removed (a step under a sync key it never
+// gets), the label rotates again, and c is granted anew; it learns the newest epoch's sync and
+// read secrets alone (as an inbox grant would bring them). Its `label.0` ends before both steps (it comes only by L),
+// and a Behind walk from its newest step stops at the removal's step, which it holds no
+// credential of: its walk tests the held sync key no recorded step bears, L opens, and c reads.
+#[test]
+fn a_node_holding_the_heads_sync_key_opens_past_steps_it_lacks_spec_sync_5() {
+    let (mut net, s, [a, c]) = hosted_nodes::<2>();
+    let g = net.group(a, &[(c, Role::Read)], &[s]);
+    net.item(a, g, g, "item");
+    net.run();
+    let l = net.label(a);
+    let recorded = net.host_path(s, &l).len();
+    net.set_online(c, false);
+    let (at, ct_) = (net.tid(a), net.tid(c));
+    let rs = recipients_of(net.engine(a), &[(at, Role::Admin)]);
+    remove_holder(net.engine(a), g, ct_, &rs, 51);
+    net.run();
+    net.advance(61_000);
+    rotation(net.engine(a), g, &rs, 52, false);
+    net.run();
+    net.advance(61_000);
+    net.grant(a, g, ct_, Role::Read);
+    let t = net.item(a, g, g, "after");
+    net.run();
+    net.advance(61_000);
+    assert_eq!(net.host_path(s, &l).len(), recorded + 2, "two steps c never recorded");
+    for r in [Role::Sync, Role::Read] {
+        let ep = net.engine(a).epochs(&g).unwrap();
+        let ep = if r == Role::Sync { &ep.sync } else { &ep.read };
+        let (e, secret) = ep.held_newest_first().into_iter().next().map(|(e, x)| (e, x.clone())).unwrap();
+        net.engine(c).learn_secret(&g, r, e, secret).unwrap();
+    }
+    net.set_online(c, true);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    let conn = net.conn_to(c, s).expect("connected");
+    assert!(net.sync(c).shared_members(conn).contains(&l), "L open at s: {:?}", net.sync(c).describe());
+    assert_eq!(net.read(c, t), Some(net::s("after")));
+}
+
 // spec/sync.md §5 (Register: relayable by any node), issues/net-one-peer.md 3h2 (Stale head): a
 // peer listed for L (in `label.0`) that lacks L entirely gets the recorded path, genesis first,
 // from a reader that is no admin: its walk finds no credential shown, a Behind item on its

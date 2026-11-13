@@ -5,3 +5,4 @@
 
 - Reached only when every recorded step before the doubted head that holds a credential is refused 14 (this node holds no credential of a step on the peer's path, e.g. no genesis key and a fork above every step it can name).
 - Simple fix candidate: in `new_head`, while `doubting`, ask a Behind item on the head again (bounded by the peer's head moves; nothing is registered while doubted, so no Register storm). Needs a test that exhausts the walk, then moves the peer.
+- Other candidate: end the open there (`shared_end`): the walk tests every held sync key the filter shows (`walk_candidates`), so a head bearing one opens again with no head, the stream naming it (`new_head`). A head bearing none stays unopened, which is what the node can prove.

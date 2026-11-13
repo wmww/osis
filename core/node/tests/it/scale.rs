@@ -1710,9 +1710,9 @@ fn filter_tests_per_arrival_do_not_grow_with_steps() {
 }
 
 /// Behind items reader b sent, those the peer answered with steps and the Registers b sent,
-/// catching up `crossed` steps it missed (holding their secrets, not their `label.0`) past
-/// `steps` earlier ones.
-fn catch_up(steps: usize, crossed: usize) -> (u64, u64, usize) {
+/// catching up `crossed` steps it missed (holding their secrets, not their `label.0`; the last
+/// one's only when `head_held`, else it claims at it) past `steps` earlier ones.
+fn catch_up(steps: usize, crossed: usize, head_held: bool) -> (u64, u64, usize) {
     use crate::net::{recipients_of, rotation};
     let (mut net, s, a, b, g) = rotated(steps);
     let (at, bt) = (net.tid(a), net.tid(b));
@@ -1723,8 +1723,10 @@ fn catch_up(steps: usize, crossed: usize) -> (u64, u64, usize) {
         let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Read)]);
         let c = rotation(e, g, &rs, 500 + i as u64, false);
         // b gets the rotation's secrets by hand, not the step a records once it registered it
-        let pk = net.engine(a).package(&c).unwrap().unwrap();
-        net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();
+        if head_held || i + 1 < crossed {
+            let pk = net.engine(a).package(&c).unwrap().unwrap();
+            net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();
+        }
         net.run();
     }
     let l = net.label(a);
@@ -1741,16 +1743,17 @@ fn catch_up(steps: usize, crossed: usize) -> (u64, u64, usize) {
     (net.sync(b).pass_stats().behind_sent - sent, net.hosts[s].sync.as_mut().unwrap().pass_stats().behind_answered - answered, net.sent_kinds.get(&7).copied().unwrap_or(0) - registers)
 }
 
-// spec/sync.md §5 (Behind), spec/requirements.md (Scale): a reader behind a peer's head by k
-// rotations catches up with one Behind item and answer per rotation crossed (an answer stops at
-// the first step under another sync key), and registers nothing, whether the label's history
-// holds n or 10n steps before them.
+// spec/sync.md §5 (Walk, Behind), spec/requirements.md (Scale): a reader behind a peer's head by
+// k rotations, holding the head's sync key, opens by it with no Behind item; claiming at the
+// head, it catches up with one Behind item and answer per rotation crossed (an answer stops at
+// the first step under another sync key). Either way it registers nothing, whether the label's
+// history holds n or 10n steps before them.
 #[test]
 fn a_catch_up_takes_one_behind_item_per_rotation_spec_sync_5() {
-    for crossed in [1, 3] {
-        let (small, big) = (catch_up(1, crossed), catch_up(10, crossed));
-        assert_eq!(small, big, "{crossed} crossed: at 1 and 10 earlier steps");
-        let k = crossed as u64;
-        assert_eq!(small, (k, k, 0), "{crossed} crossed: one Behind item and answer each, no Register");
+    for (crossed, held) in [(1, false), (3, false), (3, true)] {
+        let (small, big) = (catch_up(1, crossed, held), catch_up(10, crossed, held));
+        assert_eq!(small, big, "{crossed} crossed, head held {held}: at 1 and 10 earlier steps");
+        let k = if held { 0 } else { crossed as u64 };
+        assert_eq!(small, (k, k, 0), "{crossed} crossed, head held {held}: one Behind item and answer per rotation claimed past, no Register");
     }
 }

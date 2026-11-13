@@ -25,10 +25,11 @@ pub(crate) fn in_flight(c: &Conn, m: &BTreeMap<(LabelId, osis_base::BlobId), (u6
 /// the label is a member of the connection's shared set (notes/node-sync.md, Label states).
 #[derive(Clone, Debug)]
 pub(crate) enum Phase {
-    /// Waiting for the peer's filter: each arrival tests the credential of `shown` (a recorded
-    /// step whose credential the walk found shown), else of the newest step known there
-    /// (`SyncEngine::newest_known`), and a Hit opens it (issues/net-one-peer.md 3h2, Stale head).
-    Testing { shown: Option<Box<(Step, osis_crypto::SigningSecret)>> },
+    /// Waiting for the peer's filter: each arrival tests the credential of `shown` (the walk found
+    /// it shown: a recorded step's, or a held sync key no recorded step bears, its step `None`),
+    /// else of the newest step known there (`SyncEngine::newest_known`), and a Hit opens it
+    /// (issues/net-one-peer.md 3h2, Stale head).
+    Testing { shown: Option<Box<(Option<Step>, osis_crypto::SigningSecret)>> },
     /// Registering the recorded path at a peer that lacks the label: its steps not answered yet.
     Registering { path: Vec<Step> },
     /// The peer's head is past the newest step known, or off it: Behind items ask

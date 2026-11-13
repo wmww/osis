@@ -939,11 +939,13 @@ impl SyncEngine {
     /// The peer's latest filter was tested and every Offer of it answered: each label on this
     /// connection to a peer that cannot read it, not open there, waiting for no Register, is walked, once per filter
     /// arrival (issues/net-one-peer.md 3h2, Stale head): the credentials of its recorded steps,
-    /// deepest first, but the one this arrival tested, against the same filter; the first shown is
-    /// Hit, none shown asks by a Behind item or registers the recorded path (`walked`). Every move of a peer's head changes its
+    /// deepest first, then its held sync keys (`walk_candidates`), but the one this arrival
+    /// tested, against the same filter; the first shown is Hit, none shown strands it holding no
+    /// credential of the newest step known (`strands`), else asks by a Behind item or registers
+    /// the recorded path (`walked`). Every move of a peer's head changes its
     /// filter, so an arrival follows each; one still waiting `resync_ms` after its walk (a Hit
     /// refused, a registration ended, the filter unchanged) is tested and walked again
-    /// (`timers`). O(labels on `conn`), and O(steps) per label walked.
+    /// (`timers`). O(labels on `conn`), and O(steps + sync epochs held) per label walked.
     fn shared_unopened(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         let Some(s) = self.records.shared.get(&conn).filter(|s| s.peer.is_some() && !s.test_due && s.pending.offers_unanswered == 0) else { return Ok(()) };
         let arrival = s.arrivals;
@@ -962,26 +964,15 @@ impl SyncEngine {
                     x.last_sync = now;
                 }
             }
-            if self.strands(conn, l, out)? {
-                continue;
-            }
-            // a hint's label knowing no step: a held sync key the filter shows that this arrival
-            // did not test (another epoch's, the tested one refused) is tested now
-            if self.newest_known(conn, &l).is_none()
-                && let Some((g, index)) = self.lc(conn, &l).map(|x| (x.group, x.index))
-                && let Some(k) = self.hint_key(conn, &l, &g, index)
-            {
-                let v = k.verifying_key().to_bytes();
-                if tested.get(&l).is_none_or(|t| t.0 != v) && self.shared_shows(conn, &l, &v) {
-                    self.shared_retest(conn, out)?;
-                    continue;
-                }
-            }
             let refused = |s: &Self, k: &[u8; 32]| s.conns.get(&conn).is_some_and(|c| c.req.refused.contains(&(l, *k)));
             let candidates: Vec<_> = self.walk_candidates(conn, l, tested.get(&l).map(|x| x.0))?.into_iter().filter(|(_, k)| !refused(self, &k.verifying_key().to_bytes())).collect();
             let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
             let Some(peer) = &s.peer else { return Ok(()) };
             let shown = candidates.into_iter().find(|(_, k)| peer.values.binary_search(&beacon_value(&beacon(&k.verifying_key().to_bytes(), &l.0, &s.r), peer.f)).is_ok());
+            // none shown and no credential of the newest step known held: stranded
+            if shown.is_none() && self.strands(conn, l, out)? {
+                continue;
+            }
             // the peer holds L at the newest recorded step (its path registered, the filter since
             // then tested) and shows none of this node's credentials of it (claim keys of a step
             // whose claim set is not held, say): it holds none the peer takes, stranded

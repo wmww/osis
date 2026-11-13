@@ -105,8 +105,7 @@ impl SyncEngine {
     }
 
     /// Starts `l` on `conn`: it waits for the peer's filter to show the credential of the newest
-    /// recorded head, or of a hint's (`Phase::Testing`); holding none of it (sync key, claim key
-    /// or static entry), L is stranded here and nothing is tested.
+    /// recorded head, or of a hint's (`Phase::Testing`), then walks (`shared_unopened`).
     pub(crate) fn start_label(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let index = self.group_label(&g, &l).map(|gl| gl.index).or_else(|| self.state.hints.get(&l).map(|h| h.index)).unwrap_or(0);
         let now = self.now();
@@ -119,9 +118,6 @@ impl SyncEngine {
             // moved past it since, which only a Behind item finds)
             c.req.walked.remove(&l);
             c.req.registered.remove(&l);
-        }
-        if self.strands(conn, l, out)? {
-            return Ok(());
         }
         // open there already by the connection's restored record
         if self.shared_member(conn, &l) {
@@ -229,8 +225,9 @@ impl SyncEngine {
     }
 
     /// `l` on `conn` holds no credential of the newest step it knows (sync key, claim key or
-    /// static entry): it is stranded here (spec/permissions.md §4), tests, walks and registers
-    /// nothing, and is tried again after `resync_ms` (`Phase::Failed`). A hint's label knowing
+    /// static entry), and its walk found none shown (`shared_unopened`): it is stranded here
+    /// (spec/permissions.md §4), registers nothing, and is tried again after `resync_ms`
+    /// (`Phase::Failed`). A hint's label knowing
     /// no step fails so when it holds neither a sync key nor the static entry it follows by.
     /// Whether it is.
     pub(crate) fn strands(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<bool> {
@@ -259,23 +256,30 @@ impl SyncEngine {
 
     /// The walk's credentials of `l` at `conn` (issues/net-one-peer.md 3h2, Stale head): of the
     /// recorded steps, every branch of the tree (two admins' concurrent children: the peer holds
-    /// one), deepest first, each distinct one once, but `tested` (what the arrival's test
-    /// offered). O(steps).
-    pub(crate) fn walk_candidates(&mut self, conn: ConnId, l: LabelId, tested: Option<[u8; 32]>) -> Result<Vec<(Step, SigningSecret)>> {
+    /// one), deepest first, then every held sync key at L's index, newest first (the peer's head
+    /// may be a step this node never recorded: one made while it was out, whose `label.0` comes
+    /// only by L), each distinct one once, but `tested` (what the arrival's test offered); a held
+    /// key's step is the one the stream names (`new_head`). O(steps + sync epochs held).
+    pub(crate) fn walk_candidates(&mut self, conn: ConnId, l: LabelId, tested: Option<[u8; 32]>) -> Result<Vec<(Option<Step>, SigningSecret)>> {
         let Some((g, index)) = self.lc(conn, &l).map(|x| (x.group, x.index)) else { return Ok(Vec::new()) };
-        let Some(steps) = self.group_label(&g, &l).map(|gl| deepest_first(&gl.steps)) else { return Ok(Vec::new()) };
+        let steps = self.group_label(&g, &l).map(|gl| deepest_first(&gl.steps)).unwrap_or_default();
+        let mut keys: Vec<(Option<Step>, SigningSecret)> = Vec::new();
+        for step in steps {
+            keys.extend(self.step_keys(&g, index, &l, &step).0.into_iter().map(|k| (Some(step.clone()), k)));
+        }
+        if let Some(e) = self.engine.epochs(&g) {
+            keys.extend(e.sync.held_newest_first().into_iter().map(|(_, s)| (None, label_role_key(LabelRole::Sync, s, index))));
+        }
         let mut seen: Vec<[u8; 32]> = tested.into_iter().collect();
         let mut out = Vec::new();
-        for step in steps {
-            for k in self.step_keys(&g, index, &l, &step).0 {
-                let v = k.verifying_key().to_bytes();
-                if seen.contains(&v) {
-                    continue;
-                }
-                seen.push(v);
-                self.stats.walk_tests += 1;
-                out.push((step.clone(), k));
+        for (step, k) in keys {
+            let v = k.verifying_key().to_bytes();
+            if seen.contains(&v) {
+                continue;
             }
+            seen.push(v);
+            self.stats.walk_tests += 1;
+            out.push((step, k));
         }
         Ok(out)
     }
@@ -285,7 +289,7 @@ impl SyncEngine {
     /// on that step asks (a credential of it held), and the recorded path is registered from
     /// genesis only where it is refused (or no credential of it is held). A genesis alone is
     /// registered first, a 9 to it then asking by a Behind item.
-    pub(crate) fn walked(&mut self, conn: ConnId, l: LabelId, shown: Option<(Step, SigningSecret)>, out: &mut Vec<super::Action>) -> Result<()> {
+    pub(crate) fn walked(&mut self, conn: ConnId, l: LabelId, shown: Option<(Option<Step>, SigningSecret)>, out: &mut Vec<super::Action>) -> Result<()> {
         match shown {
             Some(x) => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
@@ -311,9 +315,9 @@ impl SyncEngine {
     /// `l` became a member of `conn`'s shared set (a Hit on this node's credential, a static
     /// entry's grant, the peer's own Hit, read credentials, or a record restored on connecting):
     /// open there, whatever it waited for (`Phase::Open` is membership), at the step it was tested
-    /// at (the walk's, else the newest known), or, restored, at the head last known there. A
-    /// hint's label knowing no step opens with no head: the stream's head event names it
-    /// (`new_head`).
+    /// at (the walk's, else the newest known), or, restored, at the head last known there. Opened
+    /// by a held sync key no known step bears (the walk's), or a hint's label knowing no step, it
+    /// opens with no head: the stream's head event names it (`new_head`).
     pub(crate) fn member_unread_there(&mut self, conn: ConnId, l: LabelId, restored: bool, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(c) = self.conns.get(&conn).filter(|c| !c.peer) else { return Ok(()) };
         let host = c.host;
@@ -325,7 +329,14 @@ impl SyncEngine {
         };
         let known = if restored { self.state.heads.get(&(host, l)).cloned() } else { None };
         let (step, by) = match shown {
-            Some((s, k)) => (Some(s), Some(k)),
+            Some((None, k)) => {
+                // no step: whatever a walk reached here is not the head it opened at
+                if let Some(lc) = self.lc_mut(conn, &l) {
+                    (lc.head, lc.keys) = (None, HeadKeys::default());
+                }
+                (None, Some(k))
+            }
+            Some((Some(s), k)) => (Some(s), Some(k)),
             None => match known.or_else(|| self.newest_known(conn, &l)) {
                 Some(step) => {
                     let key = self.test_key(conn, &l, &step);
@@ -726,7 +737,7 @@ impl SyncEngine {
         let held = !keys.is_empty();
         let shown = keys.into_iter().find(|k| self.shared_shows(conn, &l, &k.verifying_key().to_bytes()));
         match shown {
-            Some(k) => self.walked(conn, l, Some((step, k)), out),
+            Some(k) => self.walked(conn, l, Some((Some(step), k)), out),
             None if held => self.behind(conn, l, out),
             None if !verified => {
                 self.fail(conn, l);
