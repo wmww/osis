@@ -1158,6 +1158,12 @@ impl SyncEngine {
                 c.0 = code;
             }
         }
+        // the hub session takes the tester's Deletes from its reading the answer on: told first
+        for (l, _, _) in &opens {
+            if self.is_unread(l)? {
+                self.hub_down(conn, osis_host::Down::Open(*l), out);
+            }
+        }
         // the answer first: the tester opens on reading it, so a Pull joining L after it finds L
         // open there (stream.rs)
         self.shared_send(conn, Message::Shared { id, codes }, out)?;
