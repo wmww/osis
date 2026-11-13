@@ -120,7 +120,7 @@ impl Schema {
     /// One expansion step of a named type (standard or declared): a declared one without
     /// parameters is its body as declared (typed reads expand every node they walk).
     fn instantiate<'a>(&'a self, n: &str, args: &[Type]) -> Result<Cow<'a, Type>, String> {
-        let arity = |k: usize| if args.len() == k { Ok(()) } else { Err(format!("{n} takes {k} type argument(s)")) };
+        let arity = |k: usize| if args.len() == k { Ok(()) } else { Err(format!("{n} takes {k} type argument(s), got {}", args.len())) };
         match n {
             "option" => {
                 arity(1)?;
@@ -322,12 +322,12 @@ impl Schema {
     fn check_syntax(&self, ty: &Type, params: &[String], bad: &mut dyn FnMut(String)) {
         match ty {
             Type::Named(n, args) => {
-                let want = crate::types::STANDARD
-                    .iter()
-                    .find(|(s, _)| s == n)
-                    .map(|(_, k)| *k)
-                    .or_else(|| self.types.get(n).map(|d| d.params.len()));
-                match want {
+                let k = match n.as_str() {
+                    "option" => Some(1),
+                    "markdown" | "timestamp" | "duration" | "date" | "localtime" => Some(0),
+                    _ => self.types.get(n).map(|d| d.params.len()),
+                };
+                match k {
                     None => bad(format!("unknown type {n}")),
                     Some(k) if k != args.len() => bad(format!("{n} takes {k} type argument(s), got {}", args.len())),
                     Some(_) => {}
