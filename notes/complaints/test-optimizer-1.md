@@ -1,0 +1,3 @@
+# test-optimizer-1
+- A plant rebuilds the test binary in place; reverting the source does not. A later whole-suite run (under the heavy lock) then ran the planted `osis-proto` lib binary, whose test loops a million rounds: 18 minutes of the lock lost. Rebuild right after reverting a plant, before any run that reuses the binary paths.
+- The heavy lock was held by another agent's by-hand sweep for 35 minutes while a 4-minute whole-suite count waited; and a clean before/after needs a second build of the base (the sampler's own instructions make a profiled run no baseline), so plan the clean baseline count first.
