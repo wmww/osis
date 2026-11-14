@@ -409,8 +409,10 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen
         Verdict::MustNot(Why::Expired) => return Ok(()),
         Verdict::MustNot(_) => true,
         // a carrier it lacks counts as held at a full source: it takes it with the delete
+        // and it waits `MAX_DRIFT` past its keep-at-least bound (spec/commits.md §5 Keep at
+        // least: every node's clock agrees it left history)
         _ => match f {
-            Some(f) => covered_dropped(verdict, f, |x| Ok(src.full || !g.seen(&src.at, s, x)?.present.is_empty()))?,
+            Some(f) => covered_dropped(verdict, f, |x| Ok(src.full || !g.seen(&src.at, s, x)?.present.is_empty()))? && mine.reached(f.body.hosts_from),
             None => false,
         },
     };

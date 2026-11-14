@@ -67,7 +67,7 @@ fn meta() -> BodyMeta {
 /// A body of this node's own, established uncovered: must-hold.
 fn uncovered() -> Facts {
     Facts {
-        body: BodyFacts { required: true, closure: true, dropped: None, kept: false, covered: Some(false), sole_certificate: false, lasting_header: false },
+        body: BodyFacts { required: true, closure: true, dropped: None, kept: false, hosts_from: 0, covered: Some(false), sole_certificate: false, lasting_header: false },
         must_not: None,
         own: true,
         repair_fresh: Arc::default(),
@@ -685,6 +685,30 @@ fn delete_waits_for_carrier_in_known() {
     w.stream();
     w.settle();
     assert_eq!(w.deletes(), 1);
+}
+
+// spec/commits.md §5 (keep at least): a body covered and dropped is deleted at K only `MAX_DRIFT`
+// past its keep-at-least bound, on this node's clock; the own log drops it at once.
+#[test]
+fn covered_delete_waits_max_drift_spec_commits_5() {
+    let mut w = W::new();
+    w.pulls = false;
+    w.hold(cid(1), &[S], uncovered());
+    let b = w.own_blobs(S, cid(1))[0];
+    w.g.k.held.insert((S, b), cid(1));
+    w.hold(cid(2), &[S], uncovered());
+    let b2 = w.own_blobs(S, cid(2))[0];
+    w.g.k.held.insert((S, b2), cid(2));
+    w.stream();
+    let mut f = covered(cid(2));
+    f.body.hosts_from = 5_000;
+    w.judge(S, cid(1), f);
+    w.settle();
+    assert!(w.own_blobs(S, cid(1)).is_empty(), "the own log waits for no drift");
+    assert_eq!(w.deletes(), 0, "deleted at K before every node's clock agrees it left history");
+    w.g.now = 5_000;
+    w.settle();
+    assert_eq!(w.deletes(), 1, "not deleted once the wait ended");
 }
 
 // spec/sync-judgement.md §3 (deletes): at a source full for S a carrier it lacks counts as held
