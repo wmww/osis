@@ -594,3 +594,105 @@ fn old_epoch_section_sealed_while_newest_unestablished_spec_crypto_5() {
         assert!(content, "given {}: M reads V's encryption of w0 as it reads A's", given.len());
     }
 }
+
+// spec/crypto.md §5 (Passing on: an opening counts only under an epoch established here, and
+// only for the delta it carried): M forges a copy of R's write w (its header, junk delta, one
+// section under the blob key) wrapped under M's newest epoch of g, established at V. V takes it
+// through the facade before R's entry: the forged copy's opening carries no genuine delta of w,
+// so V still neither seals w for g's sync ID nor snapshots it under its own epoch.
+#[test]
+fn planted_copy_unlocks_no_reseal_spec_crypto_5() {
+    let (mut lp, g, w_commits, _, w, entry) = shape(false);
+    let junk = put(&mut lp, A, g, "junk");
+    send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
+    let c = osis_commit::CommitBlob::decode(&lp.peers[R].engine.commit_bytes(&w).unwrap().unwrap()).unwrap();
+    let j = osis_commit::CommitBlob::decode(&lp.peers[A].engine.commit_bytes(&junk).unwrap().unwrap()).unwrap();
+    let ai = c.header.aspect_index(&g, "x:m.0").unwrap();
+    let part = osis_commit::Part { ai, delta: j.parts.iter().find(|p| j.header.aspects[p.ai].ak.as_str() == "x:m.0").unwrap().delta.clone() };
+    let mut rng = osis_crypto::SeededRng::from_u64(31);
+    let key = osis_crypto::Secret32::random(&mut rng);
+    let sec = osis_commit::Section::seal(&w, &[part], Vec::new(), &key, &mut rng).unwrap();
+    let env = osis_commit::Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections: vec![sec] };
+    let f = crate::labeling::frame_envelope(&env, &c.header, osis_label::Class::Durable, &mut rng, &c).unwrap();
+    let mk = lp.peers[M].engine.epochs(&g).unwrap().read.newest_held().unwrap().1.clone();
+    let s = lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap();
+    let planted = HeldBlob { sync_id: s, wrap: osis_crypto::wrap(&mk, &f.id, &f.key, 1).unwrap(), bytes: f.blob.clone() };
+    let o = lp.peers[V].engine.open_entry(&s, &f.id, &planted.wrap, &planted.bytes).unwrap();
+    assert!(matches!(o, crate::sync::Opened::Commit(c, _) if c == w) && !reads(&mut lp, V, g, "w"), "V takes the planted copy, its junk delta refused: {o:?}");
+    let (_, held) = r_held(&mut lp, g, w, &entry);
+    v_takes(&mut lp, &s, w, &held);
+    assert!(reads(&mut lp, V, g, "w"));
+    if let Some((sealed, wrap)) = lp.peers[V].engine.seal_body(&s, &w, &[planted, held], &mut rng).unwrap() {
+        let (header, content) = m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap);
+        panic!("V sealed w after a planted copy: M opens its header {header}, content {content}");
+    }
+    assert!(lp.peers[V].engine.snapshot(&g, &x()).is_err(), "V snapshots w after a planted copy");
+}
+
+// spec/crypto.md §5 (Passing on): R's write w2, stamped past V's drift window, reaches V as a
+// copy wrapped under e_R (not established at V) and waits pending; V restarts before it applies.
+// The copy's opening was written with the pending commit, so once w2 applies V still seals it
+// under no epoch of its own choosing, nor snapshots it.
+#[test]
+fn copy_opening_of_a_pending_write_survives_a_restart_spec_crypto_5() {
+    let (mut lp, g, w_commits, e_r, w, _) = shape(false);
+    send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
+    lp.peers[R].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
+    let w2 = put(&mut lp, R, g, "w2");
+    let r = &mut lp.peers[R].engine;
+    let body = r.body(&w2).unwrap().unwrap();
+    let copy = r.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(32)).unwrap().unwrap();
+    let k = r.wrap_secret(&g, Some((&w2, &body.parts))).unwrap().expect("R wraps its own");
+    let s = lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap();
+    let held = HeldBlob { sync_id: s, wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
+    let _ = lp.peers[V].engine.open_entry(&s, &copy.id, &held.wrap, &held.bytes).unwrap();
+    assert!(lp.peers[V].engine.core.ix.pending.contains_key(&w2), "w2 waits for V's clock");
+    lp.peers[V].restart(33).unwrap();
+    lp.peers[V].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
+    lp.peers[V].tick().unwrap();
+    assert!(reads(&mut lp, V, g, "w2"), "w2 applies at V");
+    assert!(!lp.peers[V].engine.epochs(&g).unwrap().read.is_established(&e_r));
+    let mut rng = osis_crypto::SeededRng::from_u64(34);
+    assert!(lp.peers[V].engine.seal_body(&s, &w2, std::slice::from_ref(&held), &mut rng).unwrap().is_none(), "V seals w2 read from a copy under e_R");
+    assert!(lp.peers[V].engine.snapshot(&g, &x()).is_err(), "V snapshots w2 read from a copy under e_R");
+}
+
+// spec/crypto.md §4 (State at a cut: a part's floor is the greatest floor of an epoch it was
+// opened under), §5 (Passing on): A writes w0, then grants N read without history (the cut).
+// P (an admin, with history), holding the cut, reads w0 only from A's copy wrapped under e0: the
+// copy's opening keeps e0's floor, so P's fresh encryption of w0, given the copy or A's own
+// entry, goes under no epoch N opens, and N reads nothing of it.
+#[test]
+fn copy_read_below_a_cut_keeps_its_floor_spec_crypto_5() {
+    let mut lp = super::tests::synced(3);
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let (a, p, n) = (0, 1, 2);
+    let g = super::tests::group(&mut lp, a);
+    lp.peers[a].engine.grant(&g, &tids[p], &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let w0 = put(&mut lp, a, g, "w0");
+    let ra = &mut lp.peers[a].engine;
+    let body = ra.body(&w0).unwrap().unwrap();
+    let copy = ra.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(35)).unwrap().unwrap();
+    let k = ra.wrap_secret(&g, Some((&w0, &body.parts))).unwrap().expect("A wraps its own");
+    let entry = lp.sealed(a, &[w0]).unwrap();
+    let s = lp.peers[p].engine.home_sync_id(&g).unwrap().unwrap();
+    let copied = HeldBlob { sync_id: s, wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
+    lp.peers[a].engine.grant_with(&g, &tids[n], &edge(Role::Read), crate::flows::edges::History::None).unwrap();
+    send_skipping(&mut lp, a, p, &BTreeSet::from([w0]));
+    send_skipping(&mut lp, a, n, &BTreeSet::from([w0]));
+    // P takes the copy once it holds the cut: the opening is e0's, not P's newest epoch's
+    assert!(matches!(lp.peers[p].engine.open_entry(&s, &copy.id, &copied.wrap, &copied.bytes).unwrap(), crate::sync::Opened::Commit(c, _) if c == w0));
+    assert!(reads(&mut lp, p, g, "w0"), "P reads w0 from A's copy");
+    let e = &entry.iter().find(|x| x.id == w0).unwrap().entries[0];
+    let held = HeldBlob { sync_id: s, wrap: e.wraps.iter().find(|(t, _)| *t == g).unwrap().1, bytes: e.blob.clone() };
+    let mut rng = osis_crypto::SeededRng::from_u64(36);
+    for given in [vec![copied.clone()], vec![copied, held]] {
+        let Some((sealed, wrap)) = lp.peers[p].engine.seal_body(&s, &w0, &given, &mut rng).unwrap() else { continue };
+        let ne = &mut lp.peers[n].engine;
+        let Some((_, key)) = osis_label::unwrap_any(ne.read_secrets(&g).iter(), &sealed.id, &wrap) else { continue };
+        let content = ne.open_commit(&sealed.blob, &key).is_ok_and(|o| !o.commit.parts.is_empty());
+        ne.openings_done(&w0);
+        panic!("given {}: N opens P's fresh encryption of w0 from before its cut (content {content})", given.len());
+    }
+}
