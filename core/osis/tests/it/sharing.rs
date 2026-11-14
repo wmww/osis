@@ -214,7 +214,7 @@ fn new_node_gets_k_keyset_before_its_box_spec_permissions_4() {
     assert!(dev.engine(|e| e.epochs(&k).is_some_and(|x| x.read.held().next().is_some() && x.admin.held().next().is_some())), "the node holds K's secrets");
 }
 
-// spec/permissions.md §7, spec/sync-ids.md §2 (entry boxes): a link works after a joiner left and K rotated; its new joiner reads what was there, is a holder and writes
+// spec/permissions.md §7, spec/sync-ids.md §3 (entry boxes): a link works after a joiner left and K rotated; its new joiner reads what was there, is a holder and writes
 #[test]
 fn redeem_after_a_joiner_left_spec_permissions_7() {
     let (mut w, _, [alice, bob, carol, dave]) = hosted_accounts([1, 2, 3, 4]);
@@ -393,7 +393,7 @@ fn redeem_of_a_mismatched_target_joins_nothing_spec_permissions_7() {
     assert_eq!(x(&dave, t), Some(s("in the other group")));
 }
 
-// spec/permissions.md §7 (Redeem), spec/sync-judgement.md §1 (certificate copy): K's grant on the target outlives the delivery that first carried it, so a link redeemed after its inbox blob expired works, target unknown
+// spec/permissions.md §7 (Redeem), spec/sync-inbox.md §5 (certificate copy): K's grant on the target outlives the delivery that first carried it, so a link redeemed after its inbox blob expired works, target unknown
 #[test]
 fn redeem_after_the_delivery_expired_spec_permissions_7() {
     let (mut w, _, [alice, carol]) = hosted_accounts([1, 3]);
@@ -423,7 +423,7 @@ fn redeem_after_k_left_the_target_spec_permissions_7() {
     assert!(!alice.grants(k).unwrap().contains_key(&carol.me()));
 }
 
-// spec/permissions.md §7 (Bearer use), spec/sync-judgement.md §1 (invite requests): a contact card naming a thing its K holds no grant on makes nobody a contact: its first admin would count as connected on the word of the card's text
+// spec/permissions.md §7 (Bearer use), spec/sync-inbox.md §2 (invite requests): a contact card naming a thing its K holds no grant on makes nobody a contact: its first admin would count as connected on the word of the card's text
 #[test]
 fn contact_card_with_a_mismatched_target_spec_permissions_7() {
     let (mut w, alice, carol, g) = alice_bob(Role::Read);
@@ -826,7 +826,7 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     assert_eq!(bob.role_on(g).unwrap(), Some(Role::Admin));
 }
 
-// spec/sync-judgement.md §1 (invite requests), notes/api.md Sharing: an invite from a stranger waits as a
+// spec/sync-inbox.md §2 (invite requests), notes/api.md Sharing: an invite from a stranger waits as a
 // request; `decline_invite` forgets it, `accept_invite` joins; a request
 // answered once is gone.
 #[test]
@@ -860,7 +860,7 @@ fn invite_requests_accept_and_decline_spec_sync_3() {
     assert!(bob.invite_requests().unwrap().is_empty());
 }
 
-// spec/sync-judgement.md §1: a sender whose card was imported (a contact) is connected: its invite goes
+// spec/sync-inbox.md §2: a sender whose card was imported (a contact) is connected: its invite goes
 // through with no request.
 #[test]
 fn contact_invite_goes_through_spec_sync_3() {

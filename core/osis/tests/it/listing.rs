@@ -452,7 +452,7 @@ fn purge_without_the_right_is_refused_spec_perm_6() {
     }
 }
 
-// spec/sync-judgement.md §2, notes/api.md Commits (the seam for issues/partial-history-fetch.md): `complete` is false while a
+// spec/sync-status.md §3, notes/api.md Commits (the seam for issues/partial-history-fetch.md): `complete` is false while a
 // sync ID carrying the thing has more to bring from a connected node; a sync ID this node made has
 // nothing to bring before any pass.
 #[test]
@@ -478,7 +478,7 @@ fn page_says_when_it_may_miss_commits() {
     assert!(newest(&alone, u).complete);
 }
 
-// spec/sync-judgement.md §2: a new node reads the newest messages while older ones are on their way:
+// spec/sync-streams.md §5: a new node reads the newest messages while older ones are on their way:
 // `complete` false, then true, and every page's commits the newest there are.
 #[test]
 fn a_new_node_reads_newest_first_spec_sync_6() {

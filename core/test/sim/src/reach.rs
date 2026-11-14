@@ -297,7 +297,7 @@ mod tests {
         osis_transport::peer_url(&[item.to_string()])
     }
 
-    // spec: none (test harness, spec/sync-opens.md §4): one route per item kind, the best one taken; no
+    // spec: none (test harness, spec/sync-transport.md §3): one route per item kind, the best one taken; no
     // route where no item reaches. Each `assert` a case of the model's rule.
     #[test]
     fn routes_by_item_kind() {

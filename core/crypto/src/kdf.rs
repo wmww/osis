@@ -86,7 +86,7 @@ pub const LABEL_WRITE: &str = "label write";
 pub const LABEL_DELETE: &str = "label delete";
 pub const LABEL_DEPOSIT: &str = "label deposit";
 pub const LABEL_CLAIM: &str = "label claim";
-/// LAN discovery tag and the announcement signature's keystream (spec/sync-opens.md §4).
+/// LAN discovery tag and the announcement signature's keystream (spec/sync-transport.md §4).
 pub const LAN_TAG: &str = "lan tag";
 pub const LAN_SIG: &str = "lan sig";
 /// The pair key of a record, or of a connection with none (`pair_key`).
@@ -138,7 +138,7 @@ pub fn role_purpose(role: Role) -> &'static str {
 }
 
 /// The pair key from two nodes' nonces (issues/sync-rewrite.md), or from a connection's
-/// challenges where no record is kept (spec/sync-opens.md §4).
+/// challenges where no record is kept (spec/sync-opens.md §3).
 pub fn pair_key(a: &[u8; 32], b: &[u8; 32]) -> Secret32 {
     kdf(PAIR_KEY, a, b)
 }

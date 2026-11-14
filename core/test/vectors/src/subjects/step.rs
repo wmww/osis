@@ -1,4 +1,4 @@
-//! `step/`: registration steps and claim sets (spec/wire.md §8, spec/sync-ids.md §2). Generated.
+//! `step/`: registration steps and claim sets (spec/wire.md §8, spec/sync-ids.md §3). Generated.
 //! Group `07*15` with secrets: read `0a`, write `0b`, admin `09`, deposit seed `0c`,
 //! read epoch 0 (its nonce by spec/crypto.md §4). Randomness in draw order (`osis_label::register`): `step-secret`, per sealed
 //! entry box `ephemeral` then `mlkem-m`, 32 bytes per `padding` key, 8 bytes per `shuffle` swap.

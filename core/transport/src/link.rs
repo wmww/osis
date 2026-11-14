@@ -1,7 +1,7 @@
 //! Sessions over any `Transport` for tokio drivers: a `Link` is one stream's two
 //! directions as channel ends, with pump tasks between them and the stream. The dialer opens one
 //! stream per session and closes the connection when the session ends; the accepting side takes
-//! every stream the dialer opens as a session (spec/sync-opens.md §4), finishes its side when a session
+//! every stream the dialer opens as a session (spec/sync-transport.md §2), finishes its side when a session
 //! ends, and closes only once the dialer closed or the connection sat idle without sessions.
 
 use crate::{Address, Connection, Error, Listener, Peer, PublicKey, RecvStream, SendStream, Source, Transport};
@@ -23,7 +23,7 @@ pub const READ_CHUNK: usize = 64 * 1024;
 /// unix one, the kernel's socket buffers.
 pub const CONN_MEMORY: usize = crate::quic::CONN_WINDOW as usize + crate::quic::MAX_STREAMS as usize * READ_CHUNK;
 /// Largest piece the writer pump hands the transport at once: the grain of `LinkTx::taken`
-/// (progress a slow link shows, spec/sync-judgement.md §2). Minor: smaller costs more awaits, larger
+/// (progress a slow link shows, spec/sync-streams.md §1). Minor: smaller costs more awaits, larger
 /// shows a link slower than a piece per stall timeout as stalled.
 const WRITE_CHUNK: usize = 16 * 1024;
 
@@ -226,7 +226,7 @@ mod tests {
 
     const W: Duration = Duration::from_secs(5);
 
-    // spec/sync-opens.md §4, spec/wire.md §11.1: a session per dialer stream, peer keys as the transport authenticated them, bytes in order both ways, the end of one side ends the other's link
+    // spec/sync-transport.md §2, spec/wire.md §11.1: a session per dialer stream, peer keys as the transport authenticated them, bytes in order both ways, the end of one side ends the other's link
     #[tokio::test]
     async fn session_round_trip_and_end() {
         let net = Net::new(0);
@@ -248,7 +248,7 @@ mod tests {
         assert_eq!(b.rx.recv().await, None);
     }
 
-    // spec/sync-opens.md §4: an in-process pair carries bytes in order both ways with each side's key,
+    // spec/sync-transport.md §1: an in-process pair carries bytes in order both ways with each side's key,
     // counts them taken, and ends the other side's link when one sender is dropped
     #[tokio::test]
     async fn pair_round_trip_and_end() {
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(b.rx.recv().await, None);
     }
 
-    // spec/sync-judgement.md §2: `taken` counts what the transport took, piece by piece, for the stall timeout
+    // spec/sync-streams.md §1: `taken` counts what the transport took, piece by piece, for the stall timeout
     #[tokio::test]
     async fn taken_counts_written_bytes() {
         let net = Net::new(0);

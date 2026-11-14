@@ -194,7 +194,7 @@ pub(crate) fn may_take(core: &Core, a: &Tid, r: Role) -> bool {
     }
 }
 
-/// Whether an entry box may give this node role `r`'s secrets of `a` (spec/sync-ids.md §2): as a box
+/// Whether an entry box may give this node role `r`'s secrets of `a` (spec/sync-ids.md §3): as a box
 /// may (`may_take`), or while nothing held says the node lost `a`: no ended edge on it of the node,
 /// a held key actor or an actor it reads (a link's redeemer opens the label before it holds the
 /// grant to its key; the trigger judges `a` once role commits on it apply).

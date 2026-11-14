@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(r.get(&bad), Err(PageError::Missing));
     }
 
-    // spec/crdt.md §8, spec/sync-judgement.md §2, spec/commits.md §1: a paged snapshot goes out through
+    // spec/crdt.md §8, spec/sync-streams.md §5, spec/commits.md §1: a paged snapshot goes out through
     // BlobWriter (pages framed with the delta's expiry and delete keys) and
     // back through BlobReader; without a page the commit cannot apply (Missing, fetch and retry).
     #[test]

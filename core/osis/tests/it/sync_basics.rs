@@ -55,7 +55,7 @@ fn skip() -> SetRoleOpts {
     SetRoleOpts { retain_copy: None }
 }
 
-// spec/sync-judgement.md §1 (a recipient looks for what an inbox blob names), §5: the invite to a chat its maker has not registered at the chat's peer yet: the invitee is told "not here" and looks again after a back-off, well before the periodic resync, not stranded meanwhile
+// spec/sync-inbox.md §2 (a recipient looks for what an inbox blob names), spec/sync-ids.md §6: the invite to a chat its maker has not registered at the chat's peer yet: the invitee is told "not here" and looks again after a back-off, well before the periodic resync, not stranded meanwhile
 #[test]
 fn invite_to_a_group_not_yet_at_its_peer_looks_again_spec_sync_3() {
     let mut w = World::new();
@@ -83,7 +83,7 @@ fn invite_to_a_group_not_yet_at_its_peer_looks_again_spec_sync_3() {
     assert_eq!(says(&b, m), Some(s("hello")), "{:?}", w.diagnostics(&b));
 }
 
-// spec/sync-judgement.md §1 (a grantee node places a certificate copy): a grant to a group whose first admin is its granter: the group's inbox is the granter's, so its own deposit comes back naming a commit it holds, and that alone must start the group's label's pass: the group's member reads the chat with no clock passing
+// spec/sync-inbox.md §5 (a grantee node places a certificate copy): a grant to a group whose first admin is its granter: the group's inbox is the granter's, so its own deposit comes back naming a commit it holds, and that alone must start the group's label's pass: the group's member reads the chat with no clock passing
 #[test]
 fn grant_to_ones_own_group_reaches_its_members_at_once_spec_sync_3() {
     let (mut w, a, mut others, ids) = crate::common::people(1);
@@ -99,7 +99,7 @@ fn grant_to_ones_own_group_reaches_its_members_at_once_spec_sync_3() {
     assert_eq!(says(&b, m), Some(s("hello")));
 }
 
-// spec/sync-judgement.md §2 (a content write passes only the labels holding it): with no clock passing, so no resync: one commit across two chats, a message in two labels, one in a group nested in a chat, a member's write and a profile rename each reach every reader
+// spec/sync-judgement.md §1 (a content write passes only the labels holding it): with no clock passing, so no resync: one commit across two chats, a message in two labels, one in a group nested in a chat, a member's write and a profile rename each reach every reader
 #[test]
 fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
     let (mut w, a, mut others, ids) = crate::common::people(1);
@@ -234,7 +234,7 @@ fn write_across(b: &Osis, u: Tid, m: Tid) {
     x.commit().unwrap();
 }
 
-// spec/sync-judgement.md §2, notes/arbitrary-values-table.md `retry_ms`: a write made offline reaches a peer at the first redial once back, on a thing under the group and added only to it
+// spec/sync-opens.md §1, notes/arbitrary-values-table.md `retry_ms`: a write made offline reaches a peer at the first redial once back, on a thing under the group and added only to it
 #[test]
 fn offline_write_reaches_the_peer_at_the_redial_spec_sync_6() {
     let (mut w, a, mut others, ids) = crate::common::people(1);

@@ -1,5 +1,5 @@
 //! Labels: role keys, registration steps, step IDs and paths, claim sets with claim keys and
-//! static entries, entry boxes (spec/sync-ids.md §2, spec/sync-ids.md §6, spec/wire.md §8, §7).
+//! static entries, entry boxes (spec/sync-ids.md §2, §3, spec/wire.md §8, §7).
 
 use crate::cbor::{get_bytes, get_key};
 use crate::Error;
@@ -67,7 +67,7 @@ pub fn genesis_label(admin: &Secret32) -> LabelId {
 }
 
 /// Index into `candidates` of the role secret whose label key is `pk`: which held
-/// epoch a peer's head registers (spec/sync-ids.md §2).
+/// epoch a peer's head registers (spec/sync-ids.md §3).
 pub fn match_secret<'a>(pk: &VerifyingKey, role: LabelRole, candidates: impl IntoIterator<Item = &'a Secret32>) -> Option<usize> {
     candidates.into_iter().position(|s| label_role_key(role, s).verifying_key() == *pk)
 }
@@ -171,7 +171,7 @@ impl Step {
         parent.keys.delete.verify(Domain::LabelRegister, &self.digest(), &self.sig).map_err(|_| Error::Verify("step signature"))
     }
 
-    /// The claim key a reader derives from its X25519 private key (spec/sync-ids.md §2); try each
+    /// The claim key a reader derives from its X25519 private key (spec/sync-ids.md §3); try each
     /// keyset epoch held.
     pub fn claim_key(&self, own: &X25519Secret) -> Result<SigningSecret, Error> {
         Ok(claim_key(own, &self.step_key, &self.label, &self.step_key)?)
@@ -179,7 +179,7 @@ impl Step {
 }
 
 /// Verifies a registration path: the genesis step of `label`, then each step a child of the one
-/// before (spec/sync-ids.md §6).
+/// before (spec/sync-ids.md §3).
 pub(crate) fn verify_path(label: &LabelId, path: &[Step]) -> Result<(), Error> {
     let (first, rest) = path.split_first().ok_or(Error::Verify("empty path"))?;
     if first.label != *label {
@@ -293,7 +293,7 @@ fn parse_box(v: &Value) -> Result<SecretBox, Error> {
     Ok(b)
 }
 
-/// A reader of the registered read epoch (spec/sync-ids.md §2).
+/// A reader of the registered read epoch (spec/sync-ids.md §3).
 pub enum Reader<'a> {
     /// Listed by claim key: the X25519 half of its read-role KEM key (a node: its KEM key).
     Dh([u8; 32]),
@@ -309,7 +309,7 @@ pub enum Parent<'a> {
     Child { step: &'a Step, delete: &'a SigningSecret },
 }
 
-/// Issues a step with a fresh step key, its claim set and entry boxes (spec/sync-ids.md §2): one
+/// Issues a step with a fresh step key, its claim set and entry boxes (spec/sync-ids.md §3): one
 /// claim key per DH reader (a non-contributory result omits it), one static entry and entry box
 /// per key actor, padded with random public keys to a power of two, shuffled. `read` is the
 /// label's group thing, the registered read epoch and its secret; `sync` the sync epoch and
@@ -322,7 +322,7 @@ pub fn register(parent: Parent, keys: StepKeys, readers: &[Reader], read: (&Tid,
 }
 
 /// `register` with the entry boxes also carrying `earlier`, the read epoch the registered one's
-/// rotation commit is wrapped under (spec/sync-ids.md §2).
+/// rotation commit is wrapped under (spec/sync-ids.md §3).
 pub fn register_with(parent: Parent, keys: StepKeys, readers: &[Reader], read: (&Tid, Epoch, &Secret32), sync: (Epoch, &Secret32), earlier: Option<(Epoch, &Secret32)>, rng: &mut dyn CryptoRngCore) -> Result<(Step, ClaimSet), Error> {
     let (label, prev, signer) = match parent {
         Parent::Genesis(own) => {
@@ -391,7 +391,7 @@ fn seal_entry_box(slot: &BoxSlot, kem: &KemPublicKey, item: &EntryItem, rng: &mu
 }
 
 /// Opens an entry box of `step` of `group`'s label with the key actor's KEM key: the read
-/// secrets it carries, with the epochs of `group` they name (spec/sync-ids.md §2).
+/// secrets it carries, with the epochs of `group` they name (spec/sync-ids.md §3).
 pub fn open_entry_box(b: &SecretBox, step: &Step, kem: &KemSecret, group: &Tid) -> Result<EntryItem, Error> {
     let slot = BoxSlot::Entry { label: step.label, step_key: step.step_key, group: *group };
     let SecretBox::Sealed(sb) = b else { return Err(Error::Malformed("entry box form")) };
@@ -438,7 +438,7 @@ pub(crate) mod tests {
         Epoch::new(n, [n as u8; 32]).unwrap()
     }
 
-    // spec/wire.md §8, spec/sync-ids.md §2: genesis step bytes round trip; the ID is BLAKE3 of the
+    // spec/wire.md §8, spec/sync-ids.md §3: genesis step bytes round trip; the ID is BLAKE3 of the
     // bytes; the label ID hashes the genesis delete key; a child verifies under the parent's
     // delete key only; paths verify step by step.
     #[test]
@@ -501,7 +501,7 @@ pub(crate) mod tests {
         assert!(Step::parse(&[0x80]).is_err());
     }
 
-    // spec/sync-ids.md §2, spec/wire.md §8: DH readers derive their claim key from the step key;
+    // spec/sync-ids.md §3, spec/wire.md §8: DH readers derive their claim key from the step key;
     // static entries carry entry boxes that open to the read secret; non-contributory keys are
     // omitted; the set hashes into the step.
     #[test]
@@ -545,7 +545,7 @@ pub(crate) mod tests {
         let (s1, _) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &[], (&TG, e3, &g.read), g.sync_at(), &mut rng).unwrap();
         let b = c0.entry_box(&s0.label, &card.signing.verifying_key()).unwrap();
         assert!(open_entry_box(b, &s1, &card.kem, &TG).is_err());
-        // the earlier read secret travels with it (spec/sync-ids.md §2)
+        // the earlier read secret travels with it (spec/sync-ids.md §3)
         let e2 = Epoch::derive(&TG, osis_base::Role::Read, 2, &g.write).unwrap();
         let (s2, c2) = register_with(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &readers, (&TG, e3, &g.read), g.sync_at(), Some((e2, &g.write)), &mut rng).unwrap();
         let b = c2.entry_box(&s2.label, &card.signing.verifying_key()).unwrap();
@@ -588,7 +588,7 @@ pub(crate) mod tests {
     }
 
     proptest! {
-        // spec/sync-ids.md §2: the claim set size is the next power of two of the reader count, so
+        // spec/sync-ids.md §3: the claim set size is the next power of two of the reader count, so
         // counts within one bucket give equal sizes; every slot is a valid Ed25519 key.
         #[test]
         fn claim_set_hides_count(n in 0usize..40, seed in any::<u64>()) {
@@ -601,7 +601,7 @@ pub(crate) mod tests {
             prop_assert!(c.claims.iter().all(|k| VerifyingKey::from_bytes(k).is_ok()));
         }
 
-        // spec/sync-ids.md §2: a claim key verifies at its own step only (fresh step key per step).
+        // spec/sync-ids.md §3: a claim key verifies at its own step only (fresh step key per step).
         #[test]
         fn claim_key_per_step(seed in any::<u64>()) {
             let mut rng = SeededRng::from_u64(seed);

@@ -1,4 +1,4 @@
-//! What a commit needs held, found by walking what it links (spec/sync-judgement.md §2, spec/sync-compaction.md §2 caps;
+//! What a commit needs held, found by walking what it links (spec/sync-streams.md §5, spec/sync-compaction.md §2 caps;
 //! spec/commits.md §4): a header list given by link needs its whole chunk tree; a part needs its
 //! pages (followed: a page's links are pages or value roots) and, for the memory gate, its
 //! large values' roots (not followed: their chunks are fetched after, `Walks::trees`). A held
@@ -222,7 +222,7 @@ pub struct Wants {
 }
 
 impl Engine {
-    /// The blobs commits here wait for (spec/sync-judgement.md §2, spec/sync-compaction.md §2): of each pending commit waiting
+    /// The blobs commits here wait for (spec/sync-streams.md §5, spec/sync-compaction.md §2): of each pending commit waiting
     /// for blobs, its header lists' trees while they do not resolve, then its pages and its
     /// large values' roots; of each memory commit from others applied here, its value trees
     /// (fetched at once: they are held in memory at hosts). Costs the blobs that arrived since

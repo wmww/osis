@@ -45,7 +45,7 @@ impl Account for AppAccount {
             return Ok(*g);
         }
         let mut w = db.write();
-        // a subgroup of home: it and its items sync with home (spec/sync-judgement.md §1)
+        // a subgroup of home: it and its items sync with home (spec/sync-set.md §2)
         let g = w.create()?;
         keep_a_day(&mut w, g)?;
         w.at(g, APP).set(&true)?;

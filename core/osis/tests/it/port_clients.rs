@@ -451,7 +451,7 @@ fn undo_and_revert_are_the_actors() {
     assert_eq!(x.n.at(x.t, kept(&x.n, &a)).get().unwrap(), Some(Value::Int(5)));
 }
 
-// spec/sync-opens.md §4, notes/client-port.md §3 (until, Checked at execution): an expired client: a request after the clock passed its until is refused at execution before any tick closed it; the driver then closes the connection with no other change; a later Auth is refused; `until` at or before now is refused; a restart keeps the entry and the rule
+// spec/sync-transport.md §6, notes/client-port.md §3 (until, Checked at execution): an expired client: a request after the clock passed its until is refused at execution before any tick closed it; the driver then closes the connection with no other change; a later Auth is refused; `until` at or before now is refused; a restart keeps the entry and the rule
 #[test]
 fn until_ends_the_client() {
     let x = node();
@@ -813,7 +813,7 @@ fn connections_past_the_cap() {
     panic!("a slot was not freed");
 }
 
-// spec/sync-opens.md §4 (never on another transport), notes/client-port.md §3 (main-actor rows): the registry calls run through a daemon's main actor session; a client secret never goes to a unix socket
+// spec/sync-transport.md §6 (never on another transport), notes/client-port.md §3 (main-actor rows): the registry calls run through a daemon's main actor session; a client secret never goes to a unix socket
 #[test]
 fn registry_through_the_main_session() {
     let (net, clock, store) = (osis_transport::Net::new(0), Arc::new(ManualClock::new(Time(T0))), MemStore::new());
@@ -1308,7 +1308,7 @@ impl Rng {
     }
 }
 
-// spec/sync-opens.md §4, spec/wire.md §11.2, notes/client-port.md §3 (The rule: every client-session row runs as the client's actor; authority ends at revocation), spec/permissions.md §1: a random walk of grants, lowered roles, secret rotations, expiries and removals against a model of plain grants: at every step every read answers what the model says the actor may read, as an unknown tid otherwise, and every write succeeds exactly when the model says it may write
+// spec/sync-transport.md §6, spec/wire.md §11.2, notes/client-port.md §3 (The rule: every client-session row runs as the client's actor; authority ends at revocation), spec/permissions.md §1: a random walk of grants, lowered roles, secret rotations, expiries and removals against a model of plain grants: at every step every read answers what the model says the actor may read, as an unknown tid otherwise, and every write succeeds exactly when the model says it may write
 #[test]
 fn client_session_differential_against_grants() {
     let name = "port_clients::client_session_differential_against_grants";

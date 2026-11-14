@@ -1,4 +1,4 @@
-//! QUIC transport on localhost (by hand: touches the network). spec/sync-opens.md §4.
+//! QUIC transport on localhost (by hand: touches the network). spec/sync-transport.md §2.
 //! Run: `cargo test -p osis-transport --test it -- --ignored quic::`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -54,7 +54,7 @@ async fn echo(c: &QuicConn, data: &[u8]) -> Vec<u8> {
     read_to_end(&mut r).await
 }
 
-// spec/sync-opens.md §4: pinned listener key, ephemeral dialer key per connection, ordered byte stream.
+// spec/sync-transport.md §1: pinned listener key, ephemeral dialer key per connection, ordered byte stream.
 #[test]
 #[ignore]
 fn quic_round_trip_keys() {
@@ -74,7 +74,7 @@ fn quic_round_trip_keys() {
     });
 }
 
-// spec/sync-opens.md §4 (host key check): the dialer checks the listener's key against the address.
+// spec/sync-transport.md §1 (node key check): the dialer checks the listener's key against the address.
 #[test]
 #[ignore]
 fn quic_pinned_key_mismatch_refused() {
@@ -86,7 +86,7 @@ fn quic_pinned_key_mismatch_refused() {
     });
 }
 
-// spec/sync-opens.md §4: a large stream transfer arrives intact and in order.
+// spec/sync-transport.md §1: a large stream transfer arrives intact and in order.
 #[test]
 #[ignore]
 fn quic_large_transfer() {

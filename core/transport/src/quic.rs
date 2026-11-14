@@ -1,4 +1,4 @@
-//! `Quic`: a direct transport, `quic://host:port` (spec/sync-opens.md §4).
+//! `Quic`: a direct transport, `quic://host:port` (spec/sync-transport.md §2).
 //! QUIC v1 (quinn) with TLS 1.3 (rustls, ring provider), ALPN `osis`, both sides authenticated by
 //! RFC 7250 raw Ed25519 public keys: the listener's is its address key (pinned by the dialer), the
 //! dialer's a fresh key per connection. No certificates, no CA. Needs a tokio runtime.
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const SCHEME: &str = "quic";
-/// TLS ALPN protocol ID (spec/sync-opens.md §4).
+/// TLS ALPN protocol ID (spec/sync-transport.md §2).
 pub const ALPN: &[u8] = b"osis";
 /// SNI sent by clients; not checked (the key is).
 pub(crate) const SNI_NAME: &str = "osis";
@@ -24,7 +24,7 @@ pub(crate) const SNI_NAME: &str = "osis";
 /// Keep-alive so idle subscriptions survive NAT and the idle timeout.
 pub(crate) const KEEP_ALIVE: Duration = Duration::from_secs(15);
 /// A connection silent this long is dropped; also bounds a handshake, which has no deadline of
-/// its own (any link speed passes, spec/sync-opens.md §4).
+/// its own (any link speed passes, spec/sync-transport.md §1).
 pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Flow-control windows per stream and per connection: the reader drains frames incrementally,
 /// so a window need not hold a whole frame; these bound what a peer makes us buffer, and the
@@ -267,7 +267,7 @@ fn transport_config((streams, stream_window, conn_window): (u32, u32, u64)) -> R
     Ok(Arc::new(t))
 }
 
-/// The port of a `quic://` URL that names none (spec/sync-opens.md §4).
+/// The port of a `quic://` URL that names none (spec/sync-transport.md §2).
 pub const DEFAULT_PORT: u16 = 4040;
 
 /// `url` with `:DEFAULT_PORT` appended when it is a `quic://` URL naming no port (one host,
@@ -624,7 +624,7 @@ impl crate::p2p::Sock for QuicSock {
 
 #[cfg(test)]
 mod tests {
-    //! Handshake failure modes (by hand: localhost sockets). spec/sync-opens.md §4.
+    //! Handshake failure modes (by hand: localhost sockets). spec/sync-transport.md §2.
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use crate::{Listener, StaticSecret, Transport};
@@ -654,7 +654,7 @@ mod tests {
         raw_ed25519_only!();
     }
 
-    // spec/sync-opens.md §4: a peer failing the protocol (wrong ALPN) is a protocol error, not retried.
+    // spec/sync-transport.md §2: a peer failing the protocol (wrong ALPN) is a protocol error, not retried.
     #[test]
     #[ignore]
     fn wrong_alpn_is_protocol_error() {
@@ -668,7 +668,7 @@ mod tests {
         });
     }
 
-    // spec/sync-opens.md §4: a stalled handshake does not block accepting others.
+    // spec/sync-transport.md §1: a stalled handshake does not block accepting others.
     #[test]
     #[ignore]
     fn stalled_handshake_does_not_block_accept() {
@@ -717,7 +717,7 @@ mod tests {
         endpoint().connect_with(cfg, sa, SNI_NAME).unwrap().await.map_err(handshake_err)
     }
 
-    // spec/sync-opens.md §4: handshakes have no deadline; past the cap the oldest in progress goes
+    // spec/sync-transport.md §1: handshakes have no deadline; past the cap the oldest in progress goes
     #[test]
     fn handshakes_evict_oldest() {
         rt().block_on(async {
@@ -788,7 +788,7 @@ mod tests {
         });
     }
 
-    // spec/sync-opens.md §4 (raw Ed25519 keys only; the dialer pins the listener's key): the dialing
+    // spec/sync-transport.md §2 (raw Ed25519 keys only; the dialer pins the listener's key): the dialing
     // verifier takes exactly the pinned key, the listening one any Ed25519 key; both offer only
     // the ed25519 scheme and need raw keys.
     #[test]
@@ -839,7 +839,7 @@ mod tests {
         });
     }
 
-    // spec/sync-opens.md §4 (uRL form: port 4040 when absent, IPv6 in brackets), length cap
+    // spec/sync-transport.md §2 (uRL form: port 4040 when absent, IPv6 in brackets), length cap
     #[test]
     fn url_forms_spec_sync_10() {
         assert_eq!(host_port("quic://example.org:4433").unwrap(), "example.org:4433");

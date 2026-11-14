@@ -1,4 +1,4 @@
-//! Inbox blobs (spec/wire.md §9, spec/crypto.md §5, spec/sync-judgement.md §1). The role commit
+//! Inbox blobs (spec/wire.md §9, spec/crypto.md §5, spec/sync-inbox.md §2). The role commit
 //! travels as its `CommitBlobPlaintext` value; osis-commit parses it (the only coupling to the
 //! commit layout, kept here).
 

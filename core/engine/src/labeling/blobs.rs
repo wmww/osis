@@ -540,7 +540,7 @@ impl Engine {
     }
 
     /// Labeled groups whose nearest labeled record-chain actor is `g` (its home label publishes
-    /// their `label.0`, spec/sync-ids.md §2). Empty unless `g` is an actor with secrets of its own.
+    /// their `label.0`, spec/sync-ids.md §4). Empty unless `g` is an actor with secrets of its own.
     /// Taken for every actor at once (`Core::published`): O(labeled things) per change of what
     /// it reads, not per pass.
     pub fn published_under(&mut self, g: &Tid) -> std::sync::Arc<std::collections::BTreeSet<Tid>> {
@@ -815,7 +815,7 @@ mod tests {
         assert_eq!(e.section_chain(&o), vec![me]);
     }
 
-    // spec/sync-judgement.md §2 (convergence after each change; the pass's cost): a group's bodies are
+    // spec/sync-judgement.md §3 (convergence after each change; the pass's cost): a group's bodies are
     // projected per commit once and kept until what they read changes, so one more commit
     // leaves every other commit's bodies kept.
     #[test]

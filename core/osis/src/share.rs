@@ -1630,7 +1630,7 @@ fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> b
     s.iter().cloned().collect::<BTreeSet<_>>() == *old
 }
 
-/// Moves the labels whose host list is `old` (as a set) to `new` (spec/sync-ids.md §2 `label.0`
+/// Moves the labels whose host list is `old` (as a set) to `new` (spec/sync-ids.md §4 `label.0`
 /// hosts; the sync engine registers a label's path at a host that does not know it): the
 /// home label and the labels of groups in the account's own record tree (`standing_chain`) this node administers,
 /// except `fixed` ones (links, the contact card) and groups with a key-actor holder (an

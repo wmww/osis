@@ -25,7 +25,7 @@ pub fn registration_epochs(a: &ActorEpochs) -> Option<[(Epoch, &Secret32); 4]> {
 }
 
 /// The held epoch of `l`'s group role whose label key is `key` (a host head's
-/// registered key): the node talks to that host with it (spec/sync-ids.md §2). Any held secret,
+/// registered key): the node talks to that host with it (spec/sync-ids.md §3). Any held secret,
 /// established or not: opening a label is not encrypting under (spec/crypto.md §4). A stamp,
 /// step or delete under it needs `RoleEpochs::is_established`.
 pub fn registered_epoch(a: &ActorEpochs, l: LabelRole, key: &VerifyingKey) -> Option<Epoch> {

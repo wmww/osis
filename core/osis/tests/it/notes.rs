@@ -151,7 +151,7 @@ fn share_notebook_with_a_second_account() {
     assert_eq!(title(&alice, packing).unwrap().as_deref(), Some("Packing"), "his earlier note stays");
 }
 
-// spec/sync-judgement.md §2, notes/api.md Large values (materialization bound, streams): a body past the
+// spec/sync-streams.md §5, notes/api.md Large values (materialization bound, streams): a body past the
 // read limit, chunked, syncs to the other node, which reads it by stream and length while a whole
 // read fails `TooLarge` explicitly. A large atomic value:
 // `api::stream_len_set_stream_spec_data_model_6`.

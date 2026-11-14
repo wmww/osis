@@ -105,7 +105,7 @@ impl Judge<'_> {
 
 impl Engine {
     /// The signing keys of the key actors on `g`'s read role's roster here that a claim set lists
-    /// by static entry (spec/sync-ids.md §2): not a node, not an account. O(roster).
+    /// by static entry (spec/sync-ids.md §3): not a node, not an account. O(roster).
     pub fn static_listed(&mut self, g: &Tid) -> Result<Vec<VerifyingKey>> {
         let a = self.core.reader_of(g);
         let holders: BTreeSet<Tid> = self.core.key_holders(&a).into_iter().map(|h| h.0).filter(|m| self.core.is_key_actor(m)).collect();

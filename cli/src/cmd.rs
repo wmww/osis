@@ -1358,7 +1358,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
     ctx.list(&lines)
 }
 
-/// What `serve` listens on when serving with no listen URL (osis's default port, spec/sync-opens.md §4).
+/// What `serve` listens on when serving with no listen URL (osis's default port, spec/sync-transport.md §2).
 const DEFAULT_LISTEN: &str = "quic://0.0.0.0:4040";
 
 fn serve(ctx: &mut Ctx<'_>, serving: ServingFlags, listen: &[String]) -> anyhow::Result<()> {

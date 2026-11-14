@@ -629,7 +629,7 @@ fn local_sync_surface_spec_api_sync() {
     assert!("".parse::<osis::Address>().is_err());
     let a = osis::Address::new(&"quic://h:1".parse().unwrap(), [7; 32]);
     assert_eq!(a.to_string().parse::<osis::Address>().unwrap(), a);
-    // a `quic://` URL without a port is :4040 (spec/sync-opens.md §4), kept spelled out
+    // a `quic://` URL without a port is :4040 (spec/sync-transport.md §2), kept spelled out
     let d = osis::Address::new(&"quic://h:4040".parse().unwrap(), [7; 32]);
     assert_eq!(d.to_string().replace(":4040", "").parse::<osis::Address>().unwrap(), d);
     assert_eq!(osis::Address::new(&"quic://h".parse().unwrap(), [7; 32]), d);
@@ -1225,7 +1225,7 @@ fn aspects_agrees_with_reads_after_a_purge() {
 }
 
 // notes/api.md Diagnostics: the check is of what the cut took away, the cut subgroup's closure (itself
-// included, spec/sync-judgement.md §1). A cut below a subgroup of the synced group strands the same; a cut under
+// included, spec/sync-set.md §2). A cut below a subgroup of the synced group strands the same; a cut under
 // a group that never synced strands nothing; deleting a tag tells of its items that went with it,
 // never of the deleted tag, which holds nothing.
 // spec: none (API surface, notes/api.md)

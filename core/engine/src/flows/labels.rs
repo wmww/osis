@@ -31,7 +31,7 @@ fn kem_of(k: &KemKey) -> Result<KemPublicKey> {
     Ok(KemPublicKey::from_slice(b)?)
 }
 
-/// The readers of `group`'s read epoch `e` (spec/sync-ids.md §2): holders of read boxes at `e`, its
+/// The readers of `group`'s read epoch `e` (spec/sync-ids.md §3): holders of read boxes at `e`, its
 /// first admin included while its record edge stands; a node by its KEM key, another key actor
 /// by static entry, an actor by its newest read keyset.
 pub(crate) fn readers(tx: &mut Tx<'_>, group: &Tid, e: &Epoch) -> Result<Vec<ReaderKey>> {
@@ -126,7 +126,7 @@ pub(crate) fn put_label(m: &mut Mutation, group: Tid, label: LabelId, step: &Ste
 }
 
 /// Drops, in `m`, the claim sets (with their entry boxes) of `group`'s steps superseded for
-/// `ROLE_KEEP` (spec/sync-ids.md §2: an admin may): a step is superseded when the record of its
+/// `ROLE_KEEP` (spec/sync-ids.md §4: an admin may): a step is superseded when the record of its
 /// first child was written, by that write's stamp. Folded into every `label.0` write an admin
 /// makes, so a group's records hold the sets of its recent steps only.
 pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid) -> Result<()> {
@@ -164,7 +164,7 @@ pub(crate) fn new_label(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &
     Ok(step.label)
 }
 
-/// Names `label` on `hosts` as `actor`'s inbox in its `keys.0`, in `m` (spec/sync-ids.md §2: in the
+/// Names `label` on `hosts` as `actor`'s inbox in its `keys.0`, in `m` (spec/sync-inbox.md §1: in the
 /// commit that makes the label).
 pub(crate) fn name_inbox(m: &mut Mutation, actor: Tid, label: LabelId, hosts: &[Address]) -> Result<()> {
     m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(ct::Inbox { label, hosts: hosts.to_vec() }).to_value()) })?;
@@ -186,7 +186,7 @@ pub(crate) fn inherited_hosts(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<Address>> 
     Ok(Vec::new())
 }
 
-/// Whether a new label of actor `a` becomes its inbox (spec/sync-ids.md §2): its `keys.0` names none.
+/// Whether a new label of actor `a` becomes its inbox (spec/sync-inbox.md §1): its `keys.0` names none.
 pub(crate) fn takes_inbox(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
     Ok(Core::keys_in(tx, a)?.and_then(|k| k.inbox).is_none())
 }

@@ -1,4 +1,4 @@
-//! `P2p`: nodes dialed by dialable key (`peer://`, spec/sync-opens.md §4) over UDP sockets: direct
+//! `P2p`: nodes dialed by dialable key (`peer://`, spec/sync-transport.md §3) over UDP sockets: direct
 //! QUIC, relaying by any willing node, hole punching through the relay, switching to a direct
 //! connection by reconnecting. Generic over the sockets (`Udp`, `Sock`): QUIC (`QuicUdp`) and
 //! the in-process NAT model (`nat::MemUdp`), so the default tests run the same code through NATs.
@@ -27,10 +27,10 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use tokio::sync::mpsc;
 
-/// ALPN of relay connections (spec/sync-opens.md §4).
+/// ALPN of relay connections (spec/sync-transport.md §3).
 pub const RELAY_ALPN: &[u8] = b"osis-relay";
 
-/// Relay stream kinds and answers (spec/sync-opens.md §4).
+/// Relay stream kinds and answers (spec/sync-transport.md §3).
 const REGISTER: u8 = 1;
 const DIAL: u8 = 2;
 const OK: u8 = 0;
@@ -144,7 +144,7 @@ pub trait Sock: Send + Sync + 'static {
 /// unanswered.
 pub const PUNCH: [u8; 1] = [0];
 
-/// Whether an address a relayed connection's peer sent (spec/sync-opens.md §4, hole punching) may be
+/// Whether an address a relayed connection's peer sent (spec/sync-transport.md §3, hole punching) may be
 /// punched to or dialed: a unicast address with a port, and global unless the relay `via` is not
 /// (a relay on a LAN or loopback sees its peers there). Anything else the peer chose would turn
 /// this node's packets on a host it never meant to reach.
@@ -463,7 +463,7 @@ fn tls_stream<S: SendStream, R: RecvStream>(tls: rustls::Connection, s: S, r: R,
     (send, recv)
 }
 
-/// The address exchange that opens a relayed session (IP consent, spec/sync-opens.md §4): sends
+/// The address exchange that opens a relayed session (IP consent, spec/sync-transport.md §3): sends
 /// `mine`, reads the peer's. Inside TLS, so the peer's key is proven; the relay never forwards
 /// an address (a Dial answer carries the dialer's own, the target's stream starts with an
 /// opaque tag). Whom a node dials, and who knows its key and relays to dial it, is the caller's

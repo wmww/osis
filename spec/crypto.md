@@ -20,7 +20,7 @@
 - Domains, one per signed object:
   - `"osis v1 commit"` (input digest: the commit ID; for an account's commit, BLAKE3 of the commit ID, the inner signature and the merge signatures in order, spec/wire.md §4, so neither can be swapped)
   - `"osis v1 sync step"` (a step, spec/wire.md §8)
-  - `"osis v1 sync open"` (an open signature, spec/sync-opens.md §5)
+  - `"osis v1 sync open"` (an open signature, spec/sync-opens.md §4)
   - `"osis v1 stamp"` (stamps, spec/sync-ids.md §6)
   - `"osis v1 deposit"` (spec/sync-inbox.md §3)
   - `"osis v1 role entry"` (a stamp or deposit signature of a role entry, in place of the two above, spec/sync-ids.md §6)

@@ -92,7 +92,7 @@ pub const MAX_DRIFT_MS: u64 = HOUR_MS;
 pub const ROLE_KEEP_MS: u64 = 90 * DAY_MS;
 /// Inbox blob lifetime (spec/wire.md §2, §9). fixed.
 pub const INBOX_LIFETIME_MS: u64 = 90 * DAY_MS;
-/// Deposits an admin leaves waiting under a label per host (spec/wire.md §2, spec/sync-ids.md §6
+/// Deposits an admin leaves waiting under a label per host (spec/wire.md §2, spec/sync-inbox.md §4
 /// Clearing deposits): half the recommended minimum budget, so the rest stays free. Resource bound
 /// against a fill by a stranger (an inbox) or a reader; past it what is no invite request goes
 /// first, then the requests earliest to expire (a sender re-sends after `INBOX_LIFETIME`). 0:

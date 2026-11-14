@@ -1,4 +1,4 @@
-//! `lan/`: a LAN announcement datagram (spec/sync-opens.md §4, provisional). Generated. Dialable
+//! `lan/`: a LAN announcement datagram (spec/sync-transport.md §4, provisional). Generated. Dialable
 //! seed `08`, lan secret `0c`, transport key `0d`, port 47381, unix ms 1_700_000_000_000.
 
 use super::{case, generated_header, s32};
@@ -6,7 +6,7 @@ use crate::file::VecFile;
 use crate::hex;
 use osis_crypto::{Domain, SigningSecret, lan_digest, lan_keystream, lan_tag, open_lan_sig, seal_lan_sig};
 
-const SPEC: &str = "spec/sync-opens.md §4";
+const SPEC: &str = "spec/sync-transport.md §4";
 
 pub fn announce() -> VecFile {
     let dialable = SigningSecret::from_seed(&s32(0x08));

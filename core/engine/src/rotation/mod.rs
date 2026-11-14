@@ -44,7 +44,7 @@ pub enum Walk {
     /// For sealing a holder actor into an actor this node rotates or grants on: as `Encrypt`, and
     /// a stale box at any epoch walked blocks (the sealer is that actor's rotator).
     Seal,
-    /// For placing role commits and certificates under labels (spec/sync-ids.md §6): through the
+    /// For placing role commits and certificates under labels (spec/sync-judgement.md §1): through the
     /// holder actors this node may rotate only, so a node that may not rotate an actor still
     /// places the keysets and revokes that tell that actor's rotators (node-sync's pass).
     Place,

@@ -1,4 +1,4 @@
-//! Actors, entitlement and closure (spec/sync-ids.md §2, spec/sync-judgement.md §1): a thing's reader actor (the thing if it
+//! Actors, entitlement and closure (spec/sync-ids.md §2, spec/sync-judgement.md §1, spec/sync-set.md §2): a thing's reader actor (the thing if it
 //! has secrets of its own, else its first admin), who may read it, a group's closure and its labels.
 
 use osis_base::memo::Memo;
@@ -12,7 +12,7 @@ use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// A label of a group as its `label.0` records it (spec/sync-ids.md §2).
+/// A label of a group as its `label.0` records it (spec/sync-ids.md §4).
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupLabel {
     pub group: Tid,
@@ -133,7 +133,7 @@ impl Engine {
         self.core.may_read(x, t)
     }
 
-    /// The things of a group's closure (spec/sync-judgement.md §1): the group and every thing it contains
+    /// The things of a group's closure (spec/sync-set.md §2): the group and every thing it contains
     /// through `group.0`, transitively through subgroups. The same `Arc` while it does not change
     /// (`Groups::closure`), so node-sync reuses what it derived from it.
     pub fn closure(&self, g: &Tid) -> std::sync::Arc<BTreeSet<Tid>> {
@@ -145,12 +145,12 @@ impl Engine {
         self.core.ix.labeled.iter().copied().collect()
     }
 
-    /// The inbox of actor `a` (spec/sync-ids.md §2): the sync ID its `keys.0` names.
+    /// The inbox of actor `a` (spec/sync-inbox.md §1): the sync ID its `keys.0` names.
     pub fn inbox(&mut self, a: &Tid) -> Option<LabelId> {
         self.get_typed(a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox).map(|i| i.label)
     }
 
-    /// The inboxes here (spec/sync-ids.md §2): per sync ID, the actors with secrets held here whose
+    /// The inboxes here (spec/sync-inbox.md §1): per sync ID, the actors with secrets held here whose
     /// `keys.0` names it. Usually one: an admin may write any sync ID there, and a blob is tried
     /// under each, so naming another actor's inbox hides nothing from it.
     pub fn inbox_actors(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {

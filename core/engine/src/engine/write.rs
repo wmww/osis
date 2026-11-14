@@ -165,7 +165,7 @@ impl Mutation {
 
     /// The commit fails `Error::Unsynced` when, after it, `tid` is durable and in no synced
     /// (labeled) group's closure while `group` is: a membership in a group that is an item of a
-    /// synced group but no subgroup of one (spec/sync-judgement.md §1).
+    /// synced group but no subgroup of one (spec/sync-set.md §2).
     pub fn require_synced(&mut self, tid: Tid, group: Tid) -> &mut Self {
         self.synced.push((tid, group));
         self

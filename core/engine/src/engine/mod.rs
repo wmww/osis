@@ -1583,7 +1583,7 @@ pub(crate) type EpochIntro = JMap<(Tid, osis_base::Role, osis_crypto::Epoch), (T
 
 impl Core {
     /// Whether the node syncs `t`: it was asked to, or a `group.0` it holds puts `t` in the
-    /// closure of a group it was asked to (a function of held data, whenever it was learned; spec/sync-judgement.md §1).
+    /// closure of a group it was asked to (a function of held data, whenever it was learned; spec/sync-set.md §2).
     pub fn syncs(&self, t: &Tid) -> bool {
         self.ix.groups.enclosing(t).iter().any(|g| self.ix.syncing.contains(g))
     }

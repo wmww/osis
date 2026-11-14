@@ -217,7 +217,7 @@ impl Net {
 
     /// Starts the driver task over one transport for every node it dials (`Multi`). With `p2p` (`Config::direct_sync`) it listens with the
     /// dialable secret (registered at `relays`) and publishes `reach.0`; with `P2p` (QUIC, or a
-    /// test's in-process host) it relays for its co-readers (spec/sync-opens.md §4) and, unless
+    /// test's in-process host) it relays for its co-readers (spec/sync-transport.md §3) and, unless
     /// `Config::lan` is off, runs the LAN loop: over real sockets, or a test's model of them.
     pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, cfg: &crate::Config, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
         let Net::Driver { ctl, stop, .. } = self else { return Ok(()) };

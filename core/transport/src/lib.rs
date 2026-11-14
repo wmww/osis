@@ -1,4 +1,4 @@
-//! osis-transport: `Transport`: confidential authenticated byte streams; `InProcess` (with a NAT model, `nat`), QUIC (`quic`), P2P by dialable key with relaying and hole punching (`p2p`), `Multi` (by scheme); `link` sessions for tokio drivers (`link`) (spec/sync-opens.md §4).
+//! osis-transport: `Transport`: confidential authenticated byte streams; `InProcess` (with a NAT model, `nat`), QUIC (`quic`), P2P by dialable key with relaying and hole punching (`p2p`), `Multi` (by scheme); `link` sessions for tokio drivers (`link`) (spec/sync-transport.md §1).
 //! Layer 1 (notes/architecture.md). Notes: notes/networking.md (Implementation); P2P: notes/networking.md.
 //!
 //! Traits use `impl Future + Send` returns and no runtime types: `InProcess` and `Sched` run
@@ -79,7 +79,7 @@ pub enum Peer {
     Unix { uid: u32 },
 }
 
-/// Where to dial: a transport URL and the key the peer must authenticate with (spec/sync-opens.md §4).
+/// Where to dial: a transport URL and the key the peer must authenticate with (spec/sync-transport.md §1).
 /// Mirrors the schema's `address` type; the scheme picks the implementation.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Address {
@@ -87,7 +87,7 @@ pub struct Address {
     pub key: PublicKey,
 }
 
-/// Scheme of P2P addresses (spec/sync-opens.md §4): a node dialed by its dialable key at the socket
+/// Scheme of P2P addresses (spec/sync-transport.md §3): a node dialed by its dialable key at the socket
 /// addresses and through the relays the URL lists (`peer://` then items separated by single
 /// spaces, `p2p::items`). The key is `Address::key`.
 pub const PEER_SCHEME: &str = "peer";
@@ -121,7 +121,7 @@ impl StaticSecret {
         &self.0
     }
     /// The key a listener (or a P2P registration) with this secret presents, on every transport but `Unix`:
-    /// Ed25519 with the secret as seed (spec/sync-opens.md §4).
+    /// Ed25519 with the secret as seed (spec/sync-transport.md §1).
     pub fn public_key(&self) -> PublicKey {
         ed25519_dalek::SigningKey::from_bytes(&self.0).verifying_key().to_bytes()
     }
@@ -140,14 +140,14 @@ pub struct ListenConfig {
     pub secret: StaticSecret,
 }
 
-/// Dials and listens. Dialing checks the peer's key against `Address::key` (spec/sync-opens.md §4)
+/// Dials and listens. Dialing checks the peer's key against `Address::key` (spec/sync-transport.md §1)
 /// and uses a fresh ephemeral key (and, for QUIC, UDP socket) of its own per connection.
 pub trait Transport: Send + Sync + 'static {
     type Conn: Connection;
     type Listener: Listener<Conn = Self::Conn>;
     fn dial(&self, addr: &Address) -> impl Future<Output = Result<Self::Conn, Error>> + Send;
     fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<Self::Listener, Error>> + Send;
-    /// The LAN loop's announcement socket at `port` (spec/sync-opens.md §4; 0: any). A transport with
+    /// The LAN loop's announcement socket at `port` (spec/sync-transport.md §4; 0: any). A transport with
     /// no LAN has none.
     fn lan(&self, _port: u16) -> impl Future<Output = Result<std::sync::Arc<dyn lan::LanSocket>, Error>> + Send {
         async { Err(Error::Unreachable("no LAN on this transport".into())) }
@@ -193,7 +193,7 @@ pub trait Connection: Clone + Send + Sync + 'static {
     }
     /// Where the connection comes from, when the transport can tell (`Source`).
     fn source(&self) -> Option<Source>;
-    /// Whether a relay carries the connection's bytes (spec/sync-opens.md §4): both ends tell alike.
+    /// Whether a relay carries the connection's bytes (spec/sync-transport.md §3): both ends tell alike.
     fn relayed(&self) -> bool {
         false
     }

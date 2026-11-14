@@ -645,7 +645,7 @@ impl Engine {
 
     /// The blobs the deltas of a body (`plaintext`: its commit blob plaintext) link, through
     /// held node and page blobs: the trees of its values and the pages of its fragments, listed
-    /// by its commit or not (spec/sync-judgement.md §1 closure). Complete when nothing is `missing`.
+    /// by its commit or not (spec/sync-set.md §2 closure). Complete when nothing is `missing`.
     pub fn body_links(&mut self, plaintext: &[u8]) -> Result<Trees> {
         let Ok(cb) = osis_commit::CommitBlob::decode(plaintext) else { return Ok(Trees::default()) };
         let Some(h) = self.header(&cb.id()) else { return Ok(Trees::default()) };
@@ -685,7 +685,7 @@ impl Engine {
     }
 
     /// The blobs of the tree under `link` (a large value of `tid`) this node lacks: node blobs
-    /// below the held ones and the chunks held nodes list (spec/sync-judgement.md §2: a read that misses a
+    /// below the held ones and the chunks held nodes list (spec/sync-streams.md §5: a read that misses a
     /// chunk fetches that tree only). Empty when the tree is whole here; a node fetched may list
     /// more, so a reader asks again once those arrive. `UnknownThing` when the thing's secrets
     /// are not held (nothing could be read either).

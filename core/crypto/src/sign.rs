@@ -14,7 +14,7 @@ pub enum Domain {
     Stamp,
     Deposit,
     Delete,
-    /// A LAN announcement, by a dialable key (spec/sync-opens.md §4).
+    /// A LAN announcement, by a dialable key (spec/sync-transport.md §4).
     LanAnnounce,
     /// A box's possession signature, by a keyset's possession key (spec/crypto.md §4).
     Possession,
@@ -22,7 +22,7 @@ pub enum Domain {
     Inner,
     /// A merge's signature at a fork's epoch, over the merge's commit ID (spec/crypto.md §9).
     Merge,
-    /// An actor's proof on a connection (spec/sync-opens.md §4, spec/wire.md §11.2).
+    /// An actor's proof on a connection (spec/sync-opens.md §2, spec/wire.md §11.2).
     ConnectionProof,
     /// A stamp or deposit signature of an entry deletes are judged by: a role commit or a
     /// request (spec/sync-ids.md §6, storage caps).
