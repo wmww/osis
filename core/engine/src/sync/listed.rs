@@ -2,8 +2,9 @@
 //! kept per (read thing, rotation) (`Listed`): `certificate_lists(s, r)` reads one row. A read
 //! thing carries the lists of the things of its closure its actor reads and of the things whose
 //! records its certificates name (`Engine::certified_records`); which things it carries is
-//! followed per read thing (`Effects`), and the lists held come from `Indexes::lists_on`'s feed,
-//! so a commit that moves neither re-derives nothing, and a rotation's lists cost the rows of the
+//! followed per read thing (`Effects`), the read things are `sync::certified`'s (its set's feed,
+//! so the sync set is followed once), and the lists held come from `Indexes::lists_on`'s feed, so
+//! a commit that moves neither re-derives nothing, and a rotation's lists cost the rows of the
 //! things they name.
 
 use crate::Engine;
@@ -17,8 +18,8 @@ use std::sync::Arc;
 /// whole).
 #[derive(Clone)]
 struct Followers {
-    /// The things read here (a read sync ID of the sync set).
-    read: Effects<(), Arc<BTreeSet<Tid>>>,
+    /// The read things `sync::certified` adds from the first follow on (`Certified::read`).
+    read: Option<Feed<Tid>>,
     /// Per read thing, the things whose lists it carries.
     carried: Effects<Tid, Arc<BTreeSet<Tid>>>,
     /// The (thing, rotation) lists held from the first follow on (`Indexes::lists_on`).
@@ -27,7 +28,7 @@ struct Followers {
 
 impl Default for Followers {
     fn default() -> Self {
-        Followers { read: Effects::new("sync: listed things"), carried: Effects::new("sync: listed carried"), lists: None }
+        Followers { read: None, carried: Effects::new("sync: listed carried"), lists: None }
     }
 }
 
@@ -89,9 +90,12 @@ impl Listed {
 
 impl Engine {
     /// The things whose lists read thing `t`'s sync IDs carry: the closure things its actor
-    /// reads, and the things whose records its certificates name.
+    /// reads, and the things whose records its certificates name; none once `t` is read no more.
     fn carried_lists(&mut self, t: &Tid) -> Result<Arc<BTreeSet<Tid>>> {
         let records = self.certified_records(t)?;
+        if !self.core.certified.read.contains(t) {
+            return Ok(Arc::default());
+        }
         let closure = self.core.ix.groups.closure_of(t);
         let mut out: BTreeSet<Tid> = closure.iter().filter(|x| self.reads_in(t, x)).copied().collect();
         out.extend(records.iter().copied());
@@ -106,7 +110,8 @@ impl Engine {
 
     /// Brings `Listed` up to date with what moved since the last call: the read things whose
     /// carried things moved, and the lists held since. Called by the facade's readers of the
-    /// rows and `Engine::follow`, outside any transaction. Whether a row moved.
+    /// rows and `Engine::follow`; never inside a transaction, by its type: a `Tx` holds the
+    /// `Core` alone, and following reads the engine whole. Whether a row moved.
     pub(crate) fn follow_lists(&mut self) -> Result<bool> {
         let _u = Unrecorded::start();
         self.core.listed.wrote = false;
@@ -117,27 +122,29 @@ impl Engine {
     }
 
     fn follow_lists_with(&mut self, f: &mut Followers) -> Result<()> {
+        // the read things, as `certified` follows them
+        self.follow_certificates()?;
         if f.lists.is_none() {
             // the lists held before are found as their things are placed
             f.lists = Some(self.core.ix.lists_on.feed());
         }
-        if !f.read.wants(&()) {
-            f.read.want(());
-        }
-        for k in f.read.due() {
-            let Some((was, now)) = f.read.try_settle(&k, || self.read_things())? else { continue };
-            let was = was.unwrap_or_default();
-            for t in now.difference(&was) {
-                f.carried.want(*t);
+        let came: Vec<Tid> = match f.read.as_mut() {
+            Some(feed) => feed.added(),
+            None => {
+                f.read = Some(self.core.certified.read.feed());
+                self.core.certified.read.iter().copied().collect()
             }
-            for t in was.difference(&now) {
-                f.carried.unwant(t);
-                self.place_lists(*t, &BTreeSet::new());
-            }
+        };
+        for t in came {
+            f.carried.want(t);
         }
+        // a thing read no more settles to nothing (`carried_lists`) and is followed no more
         for t in f.carried.due() {
             let Some((_, now)) = f.carried.try_settle(&t, || self.carried_lists(&t))? else { continue };
             self.place_lists(t, &now);
+            if now.is_empty() && !self.core.certified.read.contains(&t) {
+                f.carried.unwant(&t);
+            }
         }
         let added = f.lists.as_mut().map(Feed::added).unwrap_or_default();
         for (x, r) in added {
@@ -202,11 +209,11 @@ impl Engine {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::unwrap_used)]
     use crate::flows::Done;
     use crate::local_peer::LocalPeer;
-    use crate::Mutation;
+    use crate::{Engine, Mutation};
     use osis_base::{Ak, CommitId, SyncId, Tid, Value, WallMs};
     use std::collections::{BTreeMap, BTreeSet};
     use osis_schema::core_types as ct;
@@ -241,7 +248,17 @@ mod tests {
     /// Per (sync ID, rotation), the things whose list S carries: as the rows hold them, and
     /// derived whole (every carried thing's lists).
     fn rows(lp: &mut LocalPeer) -> (Rows, Rows) {
-        let e = &mut lp.peers[0].engine;
+        rows_of(&mut lp.peers[0].engine)
+    }
+
+    /// The rows `e` keeps equal those derived whole (`sync::certified`'s random histories call
+    /// this after each step).
+    pub(crate) fn check(e: &mut Engine, step: &str) {
+        let (kept, whole) = rows_of(e);
+        assert_eq!(kept, whole, "{step}: list rows");
+    }
+
+    fn rows_of(e: &mut Engine) -> (Rows, Rows) {
         let ids: Vec<SyncId> = e.sync_set().unwrap().ids.keys().copied().collect();
         let (mut kept, mut whole) = (BTreeMap::new(), BTreeMap::new());
         for s in ids {
@@ -296,5 +313,43 @@ mod tests {
         assert_eq!(a, b, "work grows with the rotations held");
         assert_eq!(a.0, (0, 0), "a plain commit touches no row, settles no carried things");
         assert_eq!(a.1.0, 1, "the rotation's own row");
+    }
+
+    /// Files `x` in group `g`'s items (`add`) or takes it out.
+    fn file(lp: &mut LocalPeer, g: Tid, x: Tid, add: bool) {
+        let v = osis_base::Value::Tid(x);
+        let op = if add { osis_crdt::Op::Add(v) } else { osis_crdt::Op::Remove(v) };
+        let mut m = Mutation::new();
+        m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(crate::engine::groups::ITEMS)], op }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+    }
+
+    /// Whether some row holds `x`.
+    fn listed(lp: &mut LocalPeer, x: Tid) -> bool {
+        let (kept, whole) = rows(lp);
+        assert_eq!(kept, whole);
+        kept.values().any(|row| row.contains(&x))
+    }
+
+    // spec/sync-judgement.md §1 (List blobs: the thing lists of things in the sync ID's closure):
+    // a thing filed in D (the one read thing), written and listed by a rotation, has its list
+    // carried; taken out of D, its list leaves every row, and filed again it comes back.
+    #[test]
+    fn a_thing_leaving_the_closure_leaves_its_rows_spec_sync_judgement_1() {
+        let (mut lp, p, _) = rotated(1);
+        let read = lp.peers[0].engine.read_things().unwrap();
+        assert_eq!(read.len(), 1);
+        let g = *read.first().unwrap();
+        let mut m = Mutation::new();
+        let x = lp.peers[0].engine.new_thing(&mut m, p);
+        m.set(x, &Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        file(&mut lp, g, x, true);
+        rotate(&mut lp, p, c);
+        assert!(listed(&mut lp, x), "x's list carried");
+        file(&mut lp, g, x, false);
+        assert!(!listed(&mut lp, x), "x's list left");
+        file(&mut lp, g, x, true);
+        assert!(listed(&mut lp, x), "x's list carried again");
     }
 }

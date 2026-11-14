@@ -1065,14 +1065,19 @@ impl<T> Deref for StampedSet<T> {
     }
 }
 
-impl<T: Ord + Hash> StampedSet<T> {
+impl<T: Ord + Hash + Clone + Send + Sync + 'static> StampedSet<T> {
     pub fn contains(&self, t: &T) -> bool {
         self.stamps.read(t);
         self.set.contains(t)
     }
     pub fn insert(&mut self, t: T) -> bool {
-        self.stamps.wrote(&t, true);
-        self.set.insert(t)
+        let added = self.set.insert(t.clone());
+        self.stamps.wrote_added(&t, true, added);
+        added
+    }
+    /// A reader's cursor over the items inserted from now on (`Feed`).
+    pub fn feed(&self) -> Feed<T> {
+        self.stamps.feed()
     }
     pub fn remove(&mut self, t: &T) -> bool {
         self.stamps.wrote(t, false);

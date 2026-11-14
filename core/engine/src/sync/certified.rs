@@ -109,8 +109,9 @@ struct Inbox {
 #[derive(Clone, Default)]
 pub(crate) struct Certified {
     followers: Followers,
-    /// The read things, per key (what `Authored` reads).
-    read: StampedSet<Tid>,
+    /// The read things, per key (what `Authored` and `sync::listed` read; `listed` follows its
+    /// feed).
+    pub(crate) read: StampedSet<Tid>,
     /// Each read thing's inbox actors, as placed.
     inboxes_of: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
     inboxes: BTreeMap<Tid, Inbox>,
@@ -502,6 +503,7 @@ mod tests {
             let got = rows.remove(t).unwrap_or_default();
             assert_eq!(got, want, "{step}: certificates of {t:?}");
         }
+        super::super::listed::tests::check(e, step);
     }
 
     // spec/permissions.md §4, spec/sync-inbox.md §5, spec/sync-judgement.md §2 (required set:
@@ -589,9 +591,11 @@ mod tests {
         assert!(came && went, "chain pieces placed and taken away");
     }
 
-    // spec/permissions.md §4, as above: random histories of grants, lowerings, removals, group
-    // filings, own secrets, links, grantee writes and syncs; after each step every read thing's
-    // pieces on both peers equal the whole derivation.
+    // spec/permissions.md §4, spec/sync-judgement.md §1 (List blobs), as above: random histories
+    // of grants, lowerings, removals, group filings, own secrets, links, grantee writes, account
+    // rotations listing a write and syncs;
+    // after each step every read thing's pieces and list rows on both peers equal the whole
+    // derivation.
     #[test]
     fn pieces_keep_the_whole_derivation_through_random_histories_spec_permissions_4() {
         for seed in 1..=2u64 {
@@ -619,7 +623,7 @@ mod tests {
             let roles = [Role::Sync, Role::Read, Role::Write, Role::Admin];
             for step in 0..14 {
                 let t = things[next(things.len())];
-                let op = next(8);
+                let op = next(9);
                 let r = match op {
                     0 => lp.peers[0].engine.grant(&t, &a1.account, &ct::Edge { role: roles[next(4)], until: None, invite: None, tied: None, floor: None }).map(drop),
                     1 => lp.peers[0].engine.demote(&t, &Demotion { holder: a1.account, new: None, retain: None }).map(drop),
@@ -645,6 +649,13 @@ mod tests {
                             lp.sync_all()?;
                             lp.peers[1].engine.redeem(&l, &a1.account, l.single_use).map(drop)
                         })
+                    }
+                    7 => {
+                        // a write on t, and a rotation of the account listing it (its thing lists)
+                        let mut m = Mutation::new();
+                        m.set(t, &ak, &Value::Int(step)).unwrap();
+                        let e = &mut lp.peers[0].engine;
+                        e.commit(m).and_then(|c| e.run(|tx| crate::flows::signing::rotate_in(tx, a0.account, &c.into_iter().collect::<Vec<_>>(), &mut crate::flows::Done::default())).map(drop))
                     }
                     _ => lp.sync_all(),
                 };
