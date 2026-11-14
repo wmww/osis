@@ -17,7 +17,7 @@ pub fn entry_digest(label: &SyncId, blob: &BlobId, wrap: &[u8]) -> [u8; 32] {
     osis_base::hash::hash(&encode(&Value::List(vec![Value::bytes(&label.0), Value::bytes(&blob.0), Value::bytes(wrap)])))
 }
 
-/// A stamp: the label write key's signature under `"osis v1 upload"`, or `"osis v1 role
+/// A stamp: the label write key's signature under `"osis v1 stamp"`, or `"osis v1 role
 /// entry"` for an entry deletes are judged by (`role`: a role commit or a request).
 pub fn sign_stamp(write: &SigningSecret, label: &SyncId, blob: &BlobId, wrap: &[u8], role: bool) -> Signature {
     write.sign(entry_domain(Domain::Stamp, role), &entry_digest(label, blob, wrap))

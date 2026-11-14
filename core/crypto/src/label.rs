@@ -96,15 +96,15 @@ pub fn proof_digest(by_listener: bool, challenge: &[u8; 32], listener_key: &[u8;
     *blake3::hash(&encode(&v)).as_bytes()
 }
 
-/// Open signature under `"osis v1 label open"` by the side `by_listener`, over the other side's
+/// Open signature under `"osis v1 sync open"` by the side `by_listener`, over the other side's
 /// Hello challenge and the listener's static key.
 pub fn sign_open(key: &SigningSecret, by_listener: bool, label: &SyncId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Signature {
-    key.sign(Domain::LabelOpen, &open_digest(by_listener, label, challenge, static_key))
+    key.sign(Domain::SyncOpen, &open_digest(by_listener, label, challenge, static_key))
 }
 
 /// Verifies an open signature as made by the side `by_listener` (the peer's, at the verifier).
 pub fn verify_open(key: &VerifyingKey, by_listener: bool, label: &SyncId, challenge: &[u8; 32], static_key: &[u8; 32], sig: &Signature) -> Result<(), Error> {
-    key.verify(Domain::LabelOpen, &open_digest(by_listener, label, challenge, static_key), sig)
+    key.verify(Domain::SyncOpen, &open_digest(by_listener, label, challenge, static_key), sig)
 }
 
 #[cfg(test)]

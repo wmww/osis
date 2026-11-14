@@ -9,8 +9,8 @@ use std::fmt;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Domain {
     Commit,
-    LabelRegister,
-    LabelOpen,
+    SyncStep,
+    SyncOpen,
     Stamp,
     Deposit,
     Delete,
@@ -30,8 +30,8 @@ pub enum Domain {
 impl Domain {
     pub const ALL: [Domain; 11] = [
         Domain::Commit,
-        Domain::LabelRegister,
-        Domain::LabelOpen,
+        Domain::SyncStep,
+        Domain::SyncOpen,
         Domain::Stamp,
         Domain::Deposit,
         Domain::Delete,
@@ -44,9 +44,9 @@ impl Domain {
     pub const fn as_str(self) -> &'static str {
         match self {
             Domain::Commit => "osis v1 commit",
-            Domain::LabelRegister => "osis v1 label register",
-            Domain::LabelOpen => "osis v1 label open",
-            Domain::Stamp => "osis v1 upload",
+            Domain::SyncStep => "osis v1 sync step",
+            Domain::SyncOpen => "osis v1 sync open",
+            Domain::Stamp => "osis v1 stamp",
             Domain::Deposit => "osis v1 deposit",
             Domain::Delete => "osis v1 delete",
             Domain::Inner => "osis v1 inner",
@@ -60,8 +60,8 @@ impl Domain {
     pub const fn verify_cost(self) -> &'static str {
         match self {
             Domain::Commit => "verify: commit",
-            Domain::LabelRegister => "verify: label register",
-            Domain::LabelOpen => "verify: label open",
+            Domain::SyncStep => "verify: sync step",
+            Domain::SyncOpen => "verify: sync open",
             Domain::Stamp => "verify: stamp",
             Domain::Deposit => "verify: deposit",
             Domain::Delete => "verify: delete",

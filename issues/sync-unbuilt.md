@@ -44,7 +44,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - Nothing calls `history_complete` (spec/sync-status.md §3) from the API.
 
 ## Wire differs from spec
-- Domain and kdf strings in osis-crypto keep the old words where spec/crypto.md §2 and spec/wire.md §8 name new ones (`"osis v1 label id"` for `"osis v1 sync id"`, `"osis v1 label open"` for `"osis v1 sync open"`, `"osis v1 label register"`, kdf `"label sync"` and the other `LABEL_*` for `"sync key"`, `"sync claim"`, ...): a node built from the spec cannot open, verify or derive with this one. Rename with their vectors (issues/deprecated-terms.md, label).
+- Kdf strings in osis-crypto keep the old words where spec/wire.md §8 names new ones (`"osis v1 label id"` for `"osis v1 sync id"`, kdf `"label sync"` and the other `LABEL_*` for `"sync key"`, `"sync claim"`, ...): a node built from the spec cannot open, verify or derive with this one. Rename with their vectors (issues/deprecated-terms.md, label).
 - osis-label's link carries a `hosts` list between K's sync ID and the peers that spec/wire.md §10 `Link` does not have.
 
 ## Own issues

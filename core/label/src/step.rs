@@ -160,7 +160,7 @@ impl Step {
         if sync_id(&self.keys.delete) != self.label {
             return Err(Error::Verify("genesis delete key does not hash to the label ID"));
         }
-        self.keys.delete.verify(Domain::LabelRegister, &self.digest(), &self.sig).map_err(|_| Error::Verify("step signature"))
+        self.keys.delete.verify(Domain::SyncStep, &self.digest(), &self.sig).map_err(|_| Error::Verify("step signature"))
     }
 
     /// A child of `parent`: same label, `prev` its ID, signed by its delete key.
@@ -168,7 +168,7 @@ impl Step {
         if self.label != parent.label || self.prev != Some(parent.id()) {
             return Err(Error::Verify("step is not a child"));
         }
-        parent.keys.delete.verify(Domain::LabelRegister, &self.digest(), &self.sig).map_err(|_| Error::Verify("step signature"))
+        parent.keys.delete.verify(Domain::SyncStep, &self.digest(), &self.sig).map_err(|_| Error::Verify("step signature"))
     }
 
     /// The claim key a reader derives from its X25519 private key (spec/sync-ids.md §3); try each
@@ -372,7 +372,7 @@ pub fn register_with(parent: Parent, keys: StepKeys, readers: &[Reader], read: (
     let set = ClaimSet { claims, entries };
     check_claim_set_size(set.to_bytes().len())?;
     let mut step = Step { label, prev, keys, step_key, claims_hash: set.hash(), sig: Signature([0; 64]) };
-    step.sig = signer.sign(Domain::LabelRegister, &step.digest());
+    step.sig = signer.sign(Domain::SyncStep, &step.digest());
     Ok((step, set))
 }
 

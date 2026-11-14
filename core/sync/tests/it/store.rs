@@ -152,7 +152,7 @@ fn register_takes_genesis_then_children_of_the_head_spec_sync_ids_6() {
     let squat = Sid::new(80);
     let mut sq = squat.steps[0].0.clone();
     sq.label = s.id;
-    sq.sig = squat.delete().sign(osis_crypto::Domain::LabelRegister, &sq.digest());
+    sq.sig = squat.delete().sign(osis_crypto::Domain::SyncStep, &sq.digest());
     assert_eq!(st.take_register(&s.id, &sq, None).unwrap(), Code::REFUSED, "a genesis whose delete key is not S's");
     let (g, gc) = s.steps[0].clone();
     assert_eq!(st.take_register(&s.id, &g, Some(&gc)).unwrap(), Code::OK);

@@ -27,7 +27,7 @@ pub fn signatures() -> VecFile {
         );
     }
     let (l, c, s) = (SyncId([0x0a; 16]), [0x18u8; 32], [0x19u8; 32]);
-    for (name, by_listener) in [("label open by dialer", false), ("label open by listener", true)] {
+    for (name, by_listener) in [("sync open by dialer", false), ("sync open by listener", true)] {
         cases.push(
             case(name, "spec/wire.md §11.2")
                 .with("seed", hex(s32(0x08).expose()))
