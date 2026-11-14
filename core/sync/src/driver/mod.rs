@@ -93,6 +93,8 @@ struct Driver {
     failing: Option<Stretch>,
     /// Restarts in place so far (tests).
     restarts: u64,
+    /// The engine store's writes of unknown outcome as of the last look (`engine_reloaded`).
+    engine_unknown: u64,
     /// What the client port's owner has to answer or forget (`Node::port`).
     port: Vec<PortEvent>,
     /// Outputs made outside a step (`Node::redeem`), carried out with the next step's.
@@ -172,6 +174,7 @@ impl Node {
         self.now = self.now.max(self.engine.now());
         self.driver.sessions.set_now(self.now);
         self.rounds = 0;
+        self.engine_reloaded(&mut out);
         // the compaction trigger runs at each step (spec/sync-compaction.md §1): what its snapshots
         // cover is judged by the settle after it
         let r = self.step(input, &mut out).and_then(|()| self.engine.compactions().map(drop).map_err(Error::from)).and_then(|()| self.settle(&mut out)).and_then(|()| self.flush());
@@ -182,6 +185,8 @@ impl Node {
         if let Err(e) = r {
             self.failed(e, &mut out);
         }
+        // a write of this step whose outcome was unknown: the engine reads its store again
+        self.engine_reloaded(&mut out);
         self.dial(&mut out);
         self.keep_or_close(&mut out);
         for c in self.driver.sessions.closing() {
@@ -585,6 +590,12 @@ impl Node {
         }
         self.driver.failing = Some(Stretch { committed: self.committed(), retry_at: WallMs(self.now.0.saturating_add(RETRY_FIRST_MS)), wait: RETRY_FIRST_MS });
         self.driver.restarts += 1;
+        self.restart_modules(out);
+    }
+
+    /// Every module starts again from the store, then settles (a store failure, or the engine
+    /// having read its store again).
+    fn restart_modules(&mut self, out: &mut Vec<Out>) {
         self.opens = Opens::default();
         self.read = Read::default();
         self.unread = Unread::default();
@@ -596,6 +607,26 @@ impl Node {
         if self.settle(out).and_then(|()| self.flush()).is_err() {
             self.close_all(out);
         }
+    }
+
+    /// The engine's store had a write whose outcome was unknown since the last look: the engine
+    /// reads its whole store again (`Engine::run` does at its next transaction), which replaces
+    /// every index the modules follow (memo feeds, stamps): every connection closes and the
+    /// modules start again from the store, as at an open (spec/sync-ids.md §5: the store is the
+    /// truth after a failure). Whether it did.
+    fn engine_reloaded(&mut self, out: &mut Vec<Out>) -> bool {
+        let unknown = self.engine.store_writes().unknown;
+        if unknown == self.driver.engine_unknown {
+            return false;
+        }
+        self.driver.engine_unknown = unknown;
+        if let Err(e) = self.engine.run(|_| Ok(())) {
+            self.failed(e.into(), out);
+            return true;
+        }
+        self.close_all(out);
+        self.restart_modules(out);
+        true
     }
 
     fn close_all(&mut self, out: &mut Vec<Out>) {

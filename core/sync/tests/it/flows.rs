@@ -83,3 +83,14 @@ fn a_reader_granted_again_opens_by_its_role_spec_sync_opens_3() {
     let _ = crate::harness::play(&mut w, &[New(2), Grant(2, 0, 1, Gives::Reads), Run, Remove(2, 0, 1), Run, Write(2, 0), Grant(2, 0, 1, Gives::Reads), Run], String::new());
     crate::harness::history::check(&mut w);
 }
+
+// spec/sync-ids.md §5 (the store is the truth after a failure): a write of node 1's whose sync
+// failed (its outcome unknown) makes its engine read its store again, which replaces what sync
+// follows of it; sync starts again from the store, so a grant node 1 makes later still reaches
+// its grantee. Found by the differential.
+#[test]
+fn sync_follows_an_engine_that_read_its_store_again_spec_sync_ids_5() {
+    use crate::harness::Step::*;
+    use crate::harness::history::Gives;
+    crate::convergence::converge(15, 3, &[New(2), Disk(1, 0, crate::harness::DiskFault::Unsynced), Grant(2, 0, 1, Gives::Syncs), New(1), New(1), New(1), Grant(1, 3, 2, Gives::Reads)], String::new());
+}
