@@ -1025,7 +1025,7 @@ fn rotation_returns_listening_under_the_new_key() {
     assert!(matches!(block_on(osis::internals::connect(&addr, &secret, thin())), Err(Error::Network(_))));
 }
 
-// spec/sync.md §10, notes/client-port.md §6: with several node connections a thing known here to none goes to the first that knows it; an unreachable earlier one stops the search: Network, not the later one's answer, so a write cannot land at a node chosen by who happens to be up
+// spec/sync-opens.md §4, notes/client-port.md §6: with several node connections a thing known here to none goes to the first that knows it; an unreachable earlier one stops the search: Network, not the later one's answer, so a write cannot land at a node chosen by who happens to be up
 #[test]
 fn several_node_connections_never_skip_a_down_one() {
     let x = world();

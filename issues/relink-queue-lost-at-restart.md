@@ -5,5 +5,5 @@
 > Tags: node-sync
 
 - Window: from the batch that deleted the chunks to the pass that repairs them. Usually one event; longer while a commit on the aspect is pending (`unsettled`), an entry of the label is unopened, or the per-aspect back-off holds the repair (1 h to 7 days).
-- Needs a purger that had not seen the reuse (spec/sync.md §1 Repair) plus a restart in that window.
+- Needs a purger that had not seen the reuse (spec/sync-ids.md §1 repair) plus a restart in that window.
 - Options: persist the queue per label in the sync store (bounded: only held blobs stay queued, `relink_lost`); or rebuild at start by asking which held blobs live states link that no host of the label holds (a scan of every label's closure).

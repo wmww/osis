@@ -1,5 +1,5 @@
 # Invalid bodies at hosts are never deleted
-> Summary: no node deletes a blob at hosts for holding a delta it judges invalid (spec/permissions.md §6, spec/sync.md §6: hosts are the refetch source when it turns valid), so junk a label member uploads that is never valid (a reader's or ex-writer's writes, a non-admin's `retention^.0`) stays until its expiry, a purge, or its thing leaving the label, covered by a snapshot or not (a cover drop of a part judged invalid is an invalid drop), filling the host's per-label cap. Bounded by that cap, not by anything a right holder can do.
+> Summary: no node deletes a blob at hosts for holding a delta it judges invalid (spec/permissions.md §6, spec/sync-judgement.md §2: hosts are the refetch source when it turns valid), so junk a label member uploads that is never valid (a reader's or ex-writer's writes, a non-admin's `retention^.0`) stays until its expiry, a purge, or its thing leaving the label, covered by a snapshot or not (a cover drop of a part judged invalid is an invalid drop), filling the host's per-label cap. Bounded by that cap, not by anything a right holder can do.
 > Priority: low
 > Tags: sync, security, retention
 

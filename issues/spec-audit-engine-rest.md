@@ -4,4 +4,4 @@
 > Tags: spec, engine
 
 ## Not audited
-- Node-sync's half of purge: host deletes and rewrites (`sync/pass/delete.rs`), spec/sync.md §5, §6, §7. Engine side done; the re-snapshot after a purge only spot-checked (`deletion.rs` test).
+- Node-sync's half of purge: host deletes and rewrites (`sync/pass/delete.rs`), spec/sync-ids.md §6, spec/sync-judgement.md §2, spec/sync-compaction.md §1. Engine side done; the re-snapshot after a purge only spot-checked (`deletion.rs` test).

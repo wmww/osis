@@ -1,5 +1,5 @@
 # Node sync rules the spec audit has not compared with code
-> Summary: Parts of spec/sync.md §3, §6, §7, §9 never compared with code.
+> Summary: Parts of spec/sync-judgement.md §1, spec/sync-judgement.md §2, spec/sync-compaction.md §1, spec/sync-compaction.md §2 never compared with code.
 > Priority: low
 > Tags: spec, node-sync, ephemeral
 

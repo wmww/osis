@@ -1,5 +1,5 @@
 # Privacy
-> Summary: Low priority (Tess): where every privacy concern of networking and sharing goes, so the rework (issues/sync-rewrite.md) does not design for it. Who learns this node's IP (settings: strangers only through relays, one chosen relay for everything), open audiences learning IPs. Today any positive action counts as IP consent (spec/sync.md §10). Don't spend effort here until asked.
+> Summary: Low priority (Tess): where every privacy concern of networking and sharing goes, so the rework (issues/sync-rewrite.md) does not design for it. Who learns this node's IP (settings: strangers only through relays, one chosen relay for everything), open audiences learning IPs. Today any positive action counts as IP consent (spec/sync-opens.md §4). Don't spend effort here until asked.
 > Priority: low
 > Tags: transport, security
 

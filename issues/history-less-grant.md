@@ -4,7 +4,7 @@
 > Tags: security, spec, permissions, keys, crypto, engine
 > Queued: build-ready after net step 8 (or beside the late net steps when agents are free); design checked in the model
 
-History is a separate entry any holder of the old secret may add to a current epoch's history (spec/crypto.md §4, History add), and every rotation, grant and re-seal writes what its writer holds into the shared history box: without a rule change, any co-holder re-adds pre-grant secrets to the newcomer's epoch. A first sync (spec/sync.md §6) fetches what does not open last, after everything else; a holder with no old secrets would fetch and hold such bodies for nothing, so this option should stop that: the same stop a node-local cap would be (issues/partial-history-fetch.md).
+History is a separate entry any holder of the old secret may add to a current epoch's history (spec/crypto.md §4, History add), and every rotation, grant and re-seal writes what its writer holds into the shared history box: without a rule change, any co-holder re-adds pre-grant secrets to the newcomer's epoch. A first sync (spec/sync-judgement.md §2) fetches what does not open last, after everything else; a holder with no old secrets would fetch and hold such bodies for nothing, so this option should stop that: the same stop a node-local cap would be (issues/partial-history-fetch.md).
 
 `retention^.0` (spec/commits.md §5 The setting) must reach a history-less holder: its deltas are read like content, so a newcomer that cannot open an earlier epoch's setting does not know it: it shows and keeps history by no setting and fills no expiry or `final` from it. The grant must carry the setting in force or re-seal it.
 
@@ -87,4 +87,4 @@ One actor, one key role. Admins a and b rotate, grant, remove and re-seal, a als
 ### Decided (Tess)
 1. **New devices see what old devices display:** a member's new device may sync anything its account's existing devices display. So a re-add without history boxes the member at the epochs its removal's rotation listed, and rotations take a removed member's boxes only where they carry, as anyone's: a removed member's later device opens what its earlier devices could (Re-added without history, Removed members, above).
 2. **Two history-less adds at once:** each newcomer can read what was written around the other's add, never anything from before its own (accepted).
-3. **Labels and steps** (build): spec/sync.md §2 Role keys in use assumes every holder holds older secrets by history; a history-less holder opens from its cut's step on, and a walk to an older step must not strand it. Not modelled.
+3. **Labels and steps** (build): spec/sync-ids.md §2 role keys in use assumes every holder holds older secrets by history; a history-less holder opens from its cut's step on, and a walk to an older step must not strand it. Not modelled.

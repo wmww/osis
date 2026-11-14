@@ -1,5 +1,5 @@
 # A permanent header-only group.0 part stops outside-closure deletion
-> Summary: node-sync judges nothing outside a label's closure while a closure group holds part of its `group.0` as a header only (`Engine::closure_whole`, spec/sync.md §6). Where no node holds that body any more, the part never fills and those nodes never delete outside-closure entries of the label again: they stay at hosts.
+> Summary: node-sync judges nothing outside a label's closure while a closure group holds part of its `group.0` as a header only (`Engine::closure_whole`, spec/sync-judgement.md §2). Where no node holds that body any more, the part never fills and those nodes never delete outside-closure entries of the label again: they stay at hosts.
 > Priority: low
 > Tags: sync, ephemeral
 

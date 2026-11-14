@@ -1,5 +1,5 @@
 # Unsettled-view delete rules lack small reproducers
-> Summary: two delete rules (spec/sync.md §6 strict subset judged only in a settled view; §7 Carriers: a delta dropped as covered leaves a host only with its cover there) have no default test that fails without them (nor does the purge exemption from §7 Carriers): both need a node to judge a pass while a fetch is out, which the node test net does not stage. Only sim seeds cover them (work_sets setup 963785799942, seeds 963785799948 and 963785799951).
+> Summary: two delete rules (spec/sync-judgement.md §2 strict subset judged only in a settled view; §7 Carriers: a delta dropped as covered leaves a host only with its cover there) have no default test that fails without them (nor does the purge exemption from §7 Carriers): both need a node to judge a pass while a fetch is out, which the node test net does not stage. Only sim seeds cover them (work_sets setup 963785799942, seeds 963785799948 and 963785799951).
 > Priority: low
 > Tags: tests, sync
 

@@ -1,5 +1,5 @@
 # Who deletes a superseded part at a host
-> Summary: spec/sync.md §9 says only the author deletes a superseded commit's entries, and only once a superseder is at the host, but that rule is scoped to forgotten commits. A commit still held with one part superseded goes by node-sync's general held path: any writer judges the entry must-not-hold (`body_gone`), places a rewrite of the parts still held and deletes the original, superseded part included, without waiting for the superseder there. So who may delete a superseded part depends on whether another part of its commit is held. Pick one rule.
+> Summary: spec/sync-compaction.md §2 says only the author deletes a superseded commit's entries, and only once a superseder is at the host, but that rule is scoped to forgotten commits. A commit still held with one part superseded goes by node-sync's general held path: any writer judges the entry must-not-hold (`body_gone`), places a rewrite of the parts still held and deletes the original, superseded part included, without waiting for the superseder there. So who may delete a superseded part depends on whether another part of its commit is held. Pick one rule.
 > Priority: low
 > Tags: node-sync, ephemeral
 

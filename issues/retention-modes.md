@@ -6,7 +6,7 @@
 Design: spec/commits.md §5-§7, notes/engine-retention.md. Model findings: core/test/held-model/AMBIGUITIES.md (Covers and fetching again, Thing-level history).
 
 ## Left
-- **Ephemeral (open)**: an expiring delta is covered by the join like any body, which does not replace spec/sync.md §9 Superseded parts: a map key's rewrite (`KeepAlive`, a cursor map) is a `Put`, a fresh entry, and the old entry stays live in the CRDT (shadowed only in the read), so no cover drops it; without the rule a cursor holds every move to its expiry (measured: 60 moves, 60 commits and host entries, against 1). Options: keep the rule and its second session; a move that removes the old entry (dead, so covered), at a map tombstone per move held in every holder's state; a crdt change (a put that replaces the key's own entries). notes/ephemeral.md Superseded expiring writes (kept, with its reason); issues/connection-lived-data.md.
+- **Ephemeral (open)**: an expiring delta is covered by the join like any body, which does not replace spec/sync-compaction.md §2 superseded parts: a map key's rewrite (`KeepAlive`, a cursor map) is a `Put`, a fresh entry, and the old entry stays live in the CRDT (shadowed only in the read), so no cover drops it; without the rule a cursor holds every move to its expiry (measured: 60 moves, 60 commits and host entries, against 1). Options: keep the rule and its second session; a move that removes the old entry (dead, so covered), at a map tombstone per move held in every holder's state; a crdt change (a put that replaces the key's own entries). notes/ephemeral.md Superseded expiring writes (kept, with its reason); issues/connection-lived-data.md.
 
 ## Decided (Tess)
 - **Names.** "No history needed" is the default, never the delete-on-change option: an entry with no `history` promises nothing; `keep` is named for keeping; the delete-on-change option is named for what it does (`purge_on_replace`) and documented as rarely right because it costs more per change. Public docs never mention compaction.
@@ -15,5 +15,5 @@ Design: spec/commits.md §5-§7, notes/engine-retention.md. Model findings: core
 
 ## Definitions the code follows
 - **Replaced** is "the body holds a write the canonical state does not hold" (what a snapshot from the state leaves out), not "has a dead write" (spec/crdt.md §4.8): a root reset is dead once a later write implies one, yet canonical form keeps it, so by deaths every cover of such an aspect is replaced for good and covers chase each other.
-- **Covered-equal** snapshots at one `ts`: only the lower commit ID covers (spec/sync.md §7), else two covers drop each other.
+- **Covered-equal** snapshots at one `ts`: only the lower commit ID covers (spec/sync-compaction.md §1), else two covers drop each other.
 - A local drop as covered needs no right of the dropping node (the snapshot's commit holds it).

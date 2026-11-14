@@ -10,5 +10,5 @@
 - Tests: a thing removed from its only group and added back reads its ephemeral state again from the holders and hosts that kept it; a restarted node's partial closure drops nothing.
 
 ## Presence at a host
-- Today (spec/sync.md §9 Held at a peer that cannot read L, §10 Stream): a node relearns which memory entries such a peer holds on every connection, from each join's listing of its live ephemeral entries. Only a peer restart loses them; a reconnect to the same running peer does not.
+- Today (spec/sync-compaction.md §2 held at a peer that cannot read L, §10 Stream): a node relearns which memory entries such a peer holds on every connection, from each join's listing of its live ephemeral entries. Only a peer restart loses them; a reconnect to the same running peer does not.
 - Plan: list them again only after the peer restarted. Needs a design before building: the requester cannot tell a restart today (a cursor is sealed, and a restarted log draws its new incarnation only at its first append), the memory part of the node log has no cursor and keeps no deletion events, and the requester would keep presence per peer across connections. A cost on reconnects, not a correctness gap.
