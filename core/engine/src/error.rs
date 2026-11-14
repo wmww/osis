@@ -31,6 +31,8 @@ pub enum Error {
     Clash(String),
     /// Stored data this node wrote fails to read back. Local.
     Corrupt(&'static str),
+    /// A sync facade call not built yet (`crate::sync`), named. Local.
+    NotBuilt(&'static str),
 }
 
 osis_base::impl_error!(Error {
@@ -49,6 +51,7 @@ osis_base::impl_error!(Error {
     Misuse(m) => ("misuse: {m}"),
     Clash(m) => ("{m}"),
     Corrupt(m) => ("corrupt local record: {m}"),
+    NotBuilt(m) => ("not built: {m}"),
 });
 
 impl Classified for Error {
@@ -61,7 +64,7 @@ impl Classified for Error {
             Error::Crypto(e) => e.class(),
             Error::Path(e) => e.class(),
             Error::BadInput(_) => ErrorClass::BadInput,
-            Error::Permission { .. } | Error::UnknownThing(_) | Error::Unsynced { .. } | Error::UnknownCommit(_) | Error::NotKept(_) | Error::Misuse(_) | Error::Clash(_) | Error::Corrupt(_) => ErrorClass::Local,
+            Error::Permission { .. } | Error::UnknownThing(_) | Error::Unsynced { .. } | Error::UnknownCommit(_) | Error::NotKept(_) | Error::Misuse(_) | Error::Clash(_) | Error::Corrupt(_) | Error::NotBuilt(_) => ErrorClass::Local,
         }
     }
 }

@@ -5,7 +5,7 @@
 //! missing field is an error here; typed keys run the typed read first.
 
 use crate::path::{PathError, PathErrorKind, Step};
-use osis_base::{Ak, BlobId, CommitId, Float, LabelId, Role, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, BlobId, CommitId, Float, SyncId, Role, Tid, Ts, Value, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A type a key's value or a path's position reads and writes as: `Value` for any value, the plain
@@ -147,7 +147,7 @@ macro_rules! byte_id {
         }
     };
 }
-byte_id!(LabelId);
+byte_id!(SyncId);
 byte_id!(CommitId);
 byte_id!(BlobId);
 

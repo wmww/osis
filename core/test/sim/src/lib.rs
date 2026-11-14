@@ -2,14 +2,12 @@
 //! seeded scheduler (`harness`), per-node virtual clocks with skew and drift, message faults
 //! (drop, duplicate, delay, reorder), crash and restart over the same `MemoryBackend`; the
 //! invariant library (`check`); named scenarios with seed replay (`scenarios`). No tokio, no
-//! threads, no I/O. `reach`: the reachability model (LAN segments, NATs, relays, partitions) a
-//! sync harness routes by. Layer 9 (notes/architecture.md). Notes: notes/test-sim.md.
+//! threads, no I/O. Layer 9 (notes/architecture.md). Notes: notes/test-sim.md.
 #![forbid(unsafe_code)]
 
 pub mod check;
 pub mod dice;
 pub mod harness;
-pub mod reach;
 pub mod scenarios;
 pub mod workload;
 

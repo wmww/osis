@@ -2679,6 +2679,7 @@ dependencies = [
  "osis-proto",
  "osis-schema",
  "osis-store",
+ "osis-sync",
  "osis-transport",
  "tokio",
 ]
@@ -2888,7 +2889,6 @@ dependencies = [
  "osis-engine",
  "osis-schema",
  "osis-store",
- "osis-transport",
 ]
 
 [[package]]
@@ -2900,6 +2900,20 @@ dependencies = [
  "proptest",
  "redb",
  "rustix 1.1.6",
+]
+
+[[package]]
+name = "osis-sync"
+version = "0.1.0"
+dependencies = [
+ "osis-base",
+ "osis-crypto",
+ "osis-engine",
+ "osis-label",
+ "osis-proto",
+ "osis-store",
+ "osis-transport",
+ "tokio",
 ]
 
 [[package]]

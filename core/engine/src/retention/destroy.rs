@@ -656,7 +656,7 @@ impl crate::engine::Engine {
     pub fn labels_emptied(&mut self, t: &Tid) -> Result<()> {
         let t = *t;
         self.run(|tx| {
-            let labels: BTreeSet<osis_base::LabelId> = tx.core.ix.destroyed_labels.get(&t).into_iter().flatten().map(|l| l.id).collect();
+            let labels: BTreeSet<osis_base::SyncId> = tx.core.ix.destroyed_labels.get(&t).into_iter().flatten().map(|l| l.id).collect();
             unkeep_labels(tx, &t)?;
             tx.core.destroyed_secrets_due.insert(t);
             let gone = match tx.core.sync_records {

@@ -33,7 +33,7 @@ use crate::codec::{R, W};
 use crate::store::{PAGE, Shred, Transaction, kind, tail};
 use crate::Error;
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
-use osis_base::{BlobId, LabelId};
+use osis_base::{BlobId, SyncId};
 use osis_crypto::aead::{self, NONCE_LEN, TAG_LEN};
 
 /// Ended incarnations kept, oldest evicted (issues/sync-rewrite.md). Resource
@@ -61,11 +61,11 @@ const DELETED: &[u8] = &[kind::LOG, b'd'];
 pub enum NodeEvent {
     /// An entry became servable here (its row and its bytes both held), or the wrap or stamp of
     /// one that is changed. An entry whose bytes have not arrived has no event: nothing serves it.
-    Added(LabelId, BlobId),
+    Added(SyncId, BlobId),
     /// An entry left the node. `at` (wall ms) only ages the event.
-    Deleted { label: LabelId, blob: BlobId, at: u64 },
+    Deleted { label: SyncId, blob: BlobId, at: u64 },
     /// The sync ID's head moved.
-    Head(LabelId),
+    Head(SyncId),
 }
 
 /// An event and its position, which stays in this store.
@@ -110,11 +110,11 @@ fn pos_key(prefix: &[u8], pos: u64) -> Vec<u8> {
     [prefix, &pos.to_be_bytes()].concat()
 }
 
-fn entry_slot(l: &LabelId, b: &BlobId) -> Vec<u8> {
+fn entry_slot(l: &SyncId, b: &BlobId) -> Vec<u8> {
     [ENTRY_SLOT, &l.0, &b.0].concat()
 }
 
-fn head_slot(l: &LabelId) -> Vec<u8> {
+fn head_slot(l: &SyncId) -> Vec<u8> {
     [HEAD_SLOT, &l.0].concat()
 }
 
@@ -150,9 +150,9 @@ fn encode_event(e: &NodeEvent) -> Vec<u8> {
 fn decode_event(v: &[u8]) -> Result<NodeEvent, Error> {
     let mut r = R::new(v);
     let e = match r.u8()? {
-        0 => NodeEvent::Added(LabelId(r.array()?), BlobId(r.array()?)),
-        1 => NodeEvent::Deleted { label: LabelId(r.array()?), blob: BlobId(r.array()?), at: r.u64()? },
-        2 => NodeEvent::Head(LabelId(r.array()?)),
+        0 => NodeEvent::Added(SyncId(r.array()?), BlobId(r.array()?)),
+        1 => NodeEvent::Deleted { label: SyncId(r.array()?), blob: BlobId(r.array()?), at: r.u64()? },
+        2 => NodeEvent::Head(SyncId(r.array()?)),
         _ => return Err(Error::Corrupt("node log event")),
     };
     r.end()?;
@@ -258,25 +258,25 @@ impl Transaction<'_> {
     }
 
     /// Logs that an entry became servable or its wrap or stamp changed. Returns its position.
-    pub fn log_added(&mut self, l: LabelId, b: BlobId) -> Result<u64, Error> {
+    pub fn log_added(&mut self, l: SyncId, b: BlobId) -> Result<u64, Error> {
         self.log_place(entry_slot(&l, &b), NodeEvent::Added(l, b), first_logged)
     }
 
     /// The position an entry was first logged at, kept while its slot is (its later events move
     /// only the latest): `None` with none in the log. What a member ended at `until` is served
     /// (issues/sync-rewrite.md).
-    pub fn log_entry_first(&mut self, l: &LabelId, b: &BlobId) -> Result<Option<u64>, Error> {
+    pub fn log_entry_first(&mut self, l: &SyncId, b: &BlobId) -> Result<Option<u64>, Error> {
         let Some(v) = self.cat_get(&entry_slot(l, b))? else { return Ok(None) };
         Ok(Some(pos_value(v.get(8..).ok_or(Error::Corrupt("node log slot"))?)?))
     }
 
     /// Logs that an entry left the node at `at` (wall ms). Returns its position.
-    pub fn log_deleted(&mut self, label: LabelId, blob: BlobId, at: u64) -> Result<u64, Error> {
+    pub fn log_deleted(&mut self, label: SyncId, blob: BlobId, at: u64) -> Result<u64, Error> {
         self.log_place(entry_slot(&label, &blob), NodeEvent::Deleted { label, blob, at }, first_logged)
     }
 
     /// Logs a head event only if `head` is not the head last logged for `l`. Whether it did.
-    pub fn log_head(&mut self, l: LabelId, head: &[u8; 32]) -> Result<bool, Error> {
+    pub fn log_head(&mut self, l: SyncId, head: &[u8; 32]) -> Result<bool, Error> {
         let slot = head_slot(&l);
         if self.cat_get(&slot)?.is_some_and(|v| v.get(8..) == Some(head.as_slice())) {
             return Ok(false);
@@ -287,17 +287,17 @@ impl Transaction<'_> {
 
     /// The position of `l`'s last logged head event: none with none in the log. Where an open by
     /// the sync key of the head before it ends (issues/sync-rewrite.md).
-    pub fn log_head_at(&mut self, l: &LabelId) -> Result<Option<u64>, Error> {
+    pub fn log_head_at(&mut self, l: &SyncId) -> Result<Option<u64>, Error> {
         let Some(v) = self.cat_get(&head_slot(l))? else { return Ok(None) };
         Ok(Some(slot_pos(&v)?))
     }
 
     /// Every sync ID's last logged head.
-    pub fn log_heads(&mut self) -> Result<Vec<(LabelId, [u8; 32])>, Error> {
+    pub fn log_heads(&mut self) -> Result<Vec<(SyncId, [u8; 32])>, Error> {
         let mut out = Vec::new();
         self.cat_each(HEAD_SLOT, |_, k, v| {
             let head: [u8; 32] = v.get(8..).and_then(|x| x.try_into().ok()).ok_or(Error::Corrupt("node log slot"))?;
-            out.push((LabelId(tail(&k)?), head));
+            out.push((SyncId(tail(&k)?), head));
             Ok(())
         })?;
         Ok(out)
@@ -305,7 +305,7 @@ impl Transaction<'_> {
 
     /// Drops a sync ID's every event and slot, with no deletion event: the node stopped holding
     /// it, which says nothing of the entries.
-    pub fn log_forget(&mut self, l: LabelId) -> Result<(), Error> {
+    pub fn log_forget(&mut self, l: SyncId) -> Result<(), Error> {
         self.cat_each(&[ENTRY_SLOT, &l.0].concat(), |t, k, v| {
             t.log_drop_event(slot_pos(&v)?, Shred::Yes)?;
             t.cat_remove(&k, Shred::Yes).map(drop)

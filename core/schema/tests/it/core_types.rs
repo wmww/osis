@@ -2,7 +2,7 @@
 //! Core aspect Rust types and typed keys (spec/data-model.md §9, spec/wire.md §3). Canonical
 //! encodings are the `schema/core` generator of osis-vectors.
 
-use osis_base::{Ak, Classified, CommitId, CreationRecord, ErrorClass, LabelId, Limits, Role, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, Classified, CommitId, CreationRecord, ErrorClass, SyncId, Limits, Role, Tid, Ts, Value, WallMs};
 use osis_schema::core_types::*;
 use osis_schema::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,7 +22,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
     ]);
     let keys = Keys {
         read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]), possession_key: SigningKey::Ed25519(vec![7; 32]), names: [6; 32], proofs: BTreeMap::new(), left_out: BTreeMap::new() }),
-        inbox: Some(Inbox { label: LabelId([10; 16]), hosts: vec![Address { url: "quic://s.example:4433".into(), key: [11; 32] }] }),
+        inbox: Some(Inbox { label: SyncId([10; 16]), hosts: vec![Address { url: "quic://s.example:4433".into(), key: [11; 32] }] }),
         deposit_seed: Some([12; 32]),
         ..Keys::default()
     };
@@ -37,7 +37,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         history: BTreeMap::from([(HistoryKey { role: Role::Read, epoch: epoch(1) }, vec![17; 64])]),
     };
     let labels: Labels = BTreeMap::from([(
-        LabelId([22; 16]),
+        SyncId([22; 16]),
         Label { steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]), hosts: vec![] },
     )]);
     vec![
@@ -51,9 +51,9 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], items: vec!["https://relay.example".into()], lan_secret: [28; 32], account: None })),
         ("host", "host^.0", HOST.encode(&Host {
             admit: Admit::Open,
-            labels: BTreeSet::from([LabelId([31; 16])]),
+            labels: BTreeSet::from([SyncId([31; 16])]),
             policy: BTreeMap::from([("cap_bytes".to_string(), 1000)]),
-            caps: BTreeMap::from([(LabelId([33; 16]), HostCaps { entries: 5, bytes: 6 })]),
+            caps: BTreeMap::from([(SyncId([33; 16]), HostCaps { entries: 5, bytes: 6 })]),
         })),
         ("clients", "clients^.0", CLIENTS.encode(&BTreeMap::from([(tid(34), Client { secret_hash: [35; 32], until: Some(WallMs(1_700_000_000_000)) })]))),
         ("group", "group.0", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),

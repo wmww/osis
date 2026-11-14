@@ -16,7 +16,7 @@ use crate::gen::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub type Thing = u8;
-pub type LabelId = u8;
+pub type SyncId = u8;
 pub type Pid = usize;
 /// A delete key at its level (1 admin, 2 author, 3 writer) and its identity.
 pub type DelKey = (u8, u16);
@@ -54,7 +54,7 @@ pub struct NodeState {
     /// generation only).
     pub keys: BTreeSet<DelKey>,
     /// Labels whose key the node holds.
-    pub labels: BTreeSet<LabelId>,
+    pub labels: BTreeSet<SyncId>,
     /// The freed set: (thing, link) still to judge or delete.
     pub freed: BTreeSet<(Thing, Link)>,
 }
@@ -63,7 +63,7 @@ pub struct NodeState {
 #[derive(Clone, Debug)]
 pub struct Deleted {
     pub node: usize,
-    pub label: LabelId,
+    pub label: SyncId,
     pub piece: Pid,
     pub thing: Thing,
     pub key: DelKey,
@@ -74,9 +74,9 @@ pub struct World {
     pub pieces: Vec<Piece>,
     pub sources: Vec<Source>,
     /// The labels of each thing.
-    pub labels: BTreeMap<Thing, Vec<LabelId>>,
+    pub labels: BTreeMap<Thing, Vec<SyncId>>,
     /// Live host entries (label, piece).
-    pub entries: BTreeSet<(LabelId, Pid)>,
+    pub entries: BTreeSet<(SyncId, Pid)>,
     pub nodes: Vec<NodeState>,
     pub deleted: Vec<Deleted>,
 }

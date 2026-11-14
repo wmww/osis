@@ -45,12 +45,19 @@ What the numbers say:
 
 ## The seam (transports)
 The rebuilt sync core is sans-IO: `Node::handle(Input) -> Outputs`.
-- Inputs: `Up { conn, peer_key, via }` (`via`: direct, relayed, LAN-found), `Bytes { conn, bytes }`, `Closed { conn }`, `Down { conn }`, `Tick { now }`, engine events.
-- Outputs: `Dial { conn, address }`, `Send { conn, bytes }`, `Close { conn }`, `Wake { at }`.
+- Inputs and outputs: `osis_sync::types::{Input, Out}` (notes/sync-boundary.md, The step).
 - `trait Links { fn dial(&mut self, conn, &Address); fn send(&mut self, conn, &[u8]); fn close(&mut self, conn); fn wake(&mut self, at); }`, synchronous; results come back as Inputs. `sync::apply(outputs, &mut impl Links)` is the one place outputs are carried out, with its ordering rules.
-- Implementations: `TransportLinks<T: osis_transport::Transport>` (tokio; QUIC, P2P with relays, LAN, unix, and `InProcess` through `Multi`) for the product, and `FabricLinks` for the harness: a deterministic queue of real encoded frames between world nodes, routed by the reachability model (core/test/sim `reach.rs`: LAN segments, NATs, relays, partitions), so address choice (direct, relayed, LAN) runs as in the product. Sync never knows which it runs on.
+- Implementations: `TransportLinks<T: osis_transport::Transport>` (tokio; QUIC, P2P with relays, LAN, unix, and `InProcess` through `Multi`) for the product, and the harness's `NodeLinks` over the world's `Net`: a deterministic queue of real encoded frames between world nodes, routed by the reachability model (`tests/it/harness/reach.rs`), so address choice (direct, relayed, LAN) runs as in the product. The model is not a packet machine: each node has LAN segments and an uplink (public address, a NAT, none); `route(from, to, url, blocked)` is the best item of a `peer://` URL: a LAN address on a shared segment (rank 0), the target's public address or a punch (`osis_transport::nat::punch_opens`) (rank 1), or a relay both reach (rank 2). A relayed link ends with its relay, a punched one does not. Partitions are the world's. Sync never knows which it runs on.
 - Fabric faults, content-blind: drop, duplicate, delay (reorders across connections, never within one), cut (both ends told), partition and heal, a node's power loss.
 - Not exercised by the fabric: the async driver and the transports themselves. A few driver tests run `TransportLinks` over `osis_transport::InProcess` and `P2p<MemUdp>` (in process, deterministic, the real P2P and relay code); QUIC on localhost stays by hand.
+
+## Built (core/sync/tests/it/harness)
+- `World::new(seed)`; `add_node()` (engine with an account of its own, sync `Node` over a fresh `Store`, LAN segment 0 and a public address, a fresh dialable key) and `add_bare_node()` (no account); `address(i)`; `engine(i)` for reads, `write(i, f)` for writes (then `Input::Wrote`), `status(i)`. No test reaches a node's `handle`: `World::deliver` is the one place a node is stepped and its outputs go to `osis_sync::apply` into `Net`.
+- `run()` to quiet (queue empty, no wake within `horizon_ms`), `flush()`, `advance(ms)`; `partition(a, b)`, `heal()`, `power_off(i)`, `power_on(i)`; `trace` records every delivery in `seen` (`Seen`); `deliveries` against `cap` (`RULE_CAP`, panics naming what still flows); `net.bytes`.
+- Dials: the key names the target (`Reach::node_of`), the route gives the rank; the accepting side gets `ConnId::ACCEPTED | n` and a fresh ephemeral peer key; an unknown key, an offline target or no route is `Down` at the dialer.
+- `fixture(key, build)` (`osis_base::copying::cached`, `World::copy`), refusing a second live copy per test; `two_nodes()`.
+- `Step` and `play(world, steps, replay)`; `shrinking(run, replay)` with `OSIS_SYNC_SHRINK=1`.
+- Not built: fabric faults beyond partition and power (drop, duplicate, delay), per-node clock skew, store faults (`osis_store::Faults`), scripted hostile peers, LAN discovery.
 
 ## Making the marginal test cheap
 | choice | saves | risk | guard |
@@ -79,7 +86,7 @@ Enforcement:
 - Per layer and whole: a `sync-tests` row in notes/build.md Time limits (a share of `default-tests`), checked by the gate like every stage; `tools/icount` over the binary per module (`<layer>::`) is the comparable number, and a branch that raises it by more than 5% says why in its review. The test optimizer compares `tools/pertest.py` profiles.
 
 ## Reuse and drop
-- Reuse: `osis_base::testenv` (`Seeds`, `run_seeds`, env vars, hung-seed detection), `osis_base::copying` (cached copies and `test_copy` hooks), ephemeral.rs's `Script` printing and `shrinking` (generalized into the harness, with chunked removal and step simplification added), order.rs's settled-tail rule for shrinking, sim `reach.rs`, `osis_store::Faults` and `MemoryBackend`, `osis_transport::InProcess`/`P2p<MemUdp>`, held-model, `tools/icount`, `cpuprof`, `pertest.py`.
+- Reuse: `osis_base::testenv` (`Seeds`, `run_seeds`, env vars, hung-seed detection), `osis_base::copying` (cached copies and `test_copy` hooks), `osis_base::testenv::{Script, shrinking}` (chunked removal, then `Step::simpler`), order.rs's settled-tail rule for shrinking, `reach.rs`, `osis_store::Faults` and `MemoryBackend`, `osis_transport::InProcess`/`P2p<MemUdp>`, held-model, `tools/icount`, `cpuprof`, `pertest.py`.
 - Drop: node `it`'s `Net` with `Host`, `add_host` and every content knob (tamper, hide, trickle, hold, deaf, bare blobs, hand sessions); sim's `NetSim`, its scenarios and its own action carrier; the osis `World`'s separate sync driver (the osis API's tests drive the same fabric through the handle's manual runtime); pinned seed lists in default tests; hand `advance` loops for retries.
 
 ## Open

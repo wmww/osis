@@ -4,7 +4,7 @@
 
 use crate::common;
 use common::*;
-use osis_base::{Clock, CommitId, LabelId, Role, Tid, Value};
+use osis_base::{Clock, CommitId, SyncId, Role, Tid, Value};
 use osis_label::Address;
 use osis_engine::flows::{Delivery, Demotion, Done};
 use osis_engine::local_peer::LocalPeer;
@@ -953,7 +953,7 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
 
 /// Peers 0 and 1 are nodes of account P (created on 1, 0 paired); peer 2 is Alice (PA): built
 /// once (`LocalPeer::cached`).
-fn nodes_and_alice() -> (LocalPeer, Tid, Tid, LabelId) {
+fn nodes_and_alice() -> (LocalPeer, Tid, Tid, SyncId) {
     let (lp, (d, pa, home)) = LocalPeer::cached("flows::nodes_and_alice", || {
         let (lp, d, pa, home) = nodes_and_alice_built();
         (lp, (d, pa, home))
@@ -961,7 +961,7 @@ fn nodes_and_alice() -> (LocalPeer, Tid, Tid, LabelId) {
     (lp, d, pa, home)
 }
 
-fn nodes_and_alice_built() -> (LocalPeer, Tid, Tid, LabelId) {
+fn nodes_and_alice_built() -> (LocalPeer, Tid, Tid, SyncId) {
     let mut lp = net_bare(3, 0);
     let (p, _) = lp.peers[1].engine.create_account(&hosts()).unwrap();
     let d1 = lp.peers[0].engine.tid();

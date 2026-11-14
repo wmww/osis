@@ -4,7 +4,7 @@
 use super::{case, generated_header, s32};
 use crate::file::VecFile;
 use crate::hex;
-use osis_base::{BlobId, LabelId};
+use osis_base::{BlobId, SyncId};
 use osis_crypto::*;
 
 const SPEC: &str = "spec/crypto.md §7";
@@ -12,7 +12,7 @@ const SPEC: &str = "spec/crypto.md §7";
 pub fn keys() -> VecFile {
     let mut cases = Vec::new();
     let hb = [0x12u8; 16];
-    let (label, blob) = (LabelId([0x17; 16]), BlobId([0x18; 32]));
+    let (label, blob) = (SyncId([0x17; 16]), BlobId([0x18; 32]));
     // per level, two prefix salts: the same key commits differently and each signature verifies
     // only under its own commitment
     for (level, secret) in [(1u8, 0x14u8), (2, 0x15), (3, 0x16)] {

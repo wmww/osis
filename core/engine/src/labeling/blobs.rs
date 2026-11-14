@@ -5,7 +5,7 @@ use osis_base::memo::Memo;
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 use osis_commit::{CommitBlob, Envelope, Section};
-use osis_base::{BlobId, CommitId, LabelId, Role, Tid, WallMs};
+use osis_base::{BlobId, CommitId, SyncId, Role, Tid, WallMs};
 use osis_crypto::{CryptoRngCore, DeleteSecret, Epoch, LabelRole, Secret32, SigningSecret, deposit_key};
 use osis_keys::ActorEpochs;
 use osis_label::Step;
@@ -709,7 +709,7 @@ impl Engine {
 /// levels (`groups`: the secrets held per commitment group, for the blob's prefix salt and its
 /// header's blind) and the label key those levels need (spec/sync-ids.md §6), under established
 /// epochs only (spec/crypto.md §4), one signature per group.
-pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, blinding: Option<(&[u8; 16], &[u8; 16])>, groups: &[Vec<(u8, DeleteSecret)>]) -> Option<osis_label::DeleteItem> {
+pub fn delete_item(keys: &HeadKeys, label: &SyncId, blob: BlobId, blinding: Option<(&[u8; 16], &[u8; 16])>, groups: &[Vec<(u8, DeleteSecret)>]) -> Option<osis_label::DeleteItem> {
     if let Some(d) = &keys.delete {
         return Some(osis_label::DeleteItem::sign(d, label, blob));
     }
@@ -720,7 +720,7 @@ pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, blinding: Opt
 /// level-3 key needs the write key, which then signs for every level; without it, levels 1
 /// and 2 under the sync key). Signs each distinct (level, key) once. `None`: a group offers no
 /// level this node can sign for.
-pub fn delete_item_by_level(keys: &HeadKeys, label: &LabelId, blob: BlobId, blinding: (&[u8; 16], &[u8; 16]), groups: &[Vec<(u8, DeleteSecret)>]) -> Option<osis_label::DeleteItem> {
+pub fn delete_item_by_level(keys: &HeadKeys, label: &SyncId, blob: BlobId, blinding: (&[u8; 16], &[u8; 16]), groups: &[Vec<(u8, DeleteSecret)>]) -> Option<osis_label::DeleteItem> {
     let (salt, hb) = blinding;
     let sync = keys.sync.as_ref().filter(|_| keys.sync_established);
     let write = keys.write.as_ref();

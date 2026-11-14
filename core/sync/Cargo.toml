@@ -1,0 +1,32 @@
+[package]
+name = "osis-sync"
+description = "Sync: the node's connections, its store per sync ID and the judgement over them"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+osis-base.workspace = true
+osis-crypto.workspace = true
+osis-engine.workspace = true
+osis-label.workspace = true
+osis-proto.workspace = true
+osis-store.workspace = true
+osis-transport.workspace = true
+tokio = { workspace = true, optional = true }
+
+[features]
+default = ["driver"]
+# The tokio driver over osis-transport (`driver::TransportLinks`); off, the crate is sans-I/O.
+driver = ["dep:tokio"]
+
+[dev-dependencies]
+osis-transport.workspace = true

@@ -7,7 +7,7 @@ use crate::{codec_enum, codec_struct};
 use crate::keys::Aspect;
 use crate::path::{Path, PathError, PathErrorKind};
 use crate::statics::CORE;
-use osis_base::{Ak, CommitId, CreationRecord, LabelId, Role, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, CommitId, CreationRecord, SyncId, Role, Tid, Ts, Value, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
@@ -155,7 +155,7 @@ codec_struct! {
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Inbox { 0 label: LabelId, 1 hosts: Vec<Address> }
+    pub struct Inbox { 0 label: SyncId, 1 hosts: Vec<Address> }
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -240,7 +240,7 @@ codec_struct! {
     /// `host^.0`: this node hosts (spec/data-model.md §9).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Host {
-        0 admit: Admit, 1 labels: BTreeSet<LabelId>, 3 policy: BTreeMap<String, u64>, 4 caps: BTreeMap<LabelId, HostCaps>,
+        0 admit: Admit, 1 labels: BTreeSet<SyncId>, 3 policy: BTreeMap<String, u64>, 4 caps: BTreeMap<SyncId, HostCaps>,
     }
 }
 codec_struct! {
@@ -372,7 +372,7 @@ codec_struct! {
 pub type Listings = BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>;
 
 pub type Holders = BTreeMap<Tid, Edge>;
-pub type Labels = BTreeMap<LabelId, Label>;
+pub type Labels = BTreeMap<SyncId, Label>;
 
 pub const TID: Aspect<Tid> = Aspect::new("tid.0", &CORE);
 pub const ASPECTS: Aspect<BTreeSet<String>> = Aspect::new("aspects.0", &CORE);

@@ -8,26 +8,34 @@ Judged against spec/sync.md and its area files, spec/wire.md §11, notes/sync-re
 ## Crate layout
 - **`osis-sync`** (core/sync) replaces osis-node (old sync plus re-exports of the engine) and osis-host (the hub store, rebuilt as `store` below). osis depends on osis-sync and osis-engine directly. The tokio driver sits behind osis-sync's default `driver` feature (the one feature set; osis-node has it today).
 - **osis-proto** keeps the codecs below sync (`frame`, `hello`, `prove`, `filter`, `relay`); its `msg` is rewritten to spec/wire.md §11.2 by the session owner; `session`, `store`, `window` go.
-- **`osis_sync::types`**, written by the Phase 3 deletion agent before module agents start, holds every type two modules share, so each module builds against it alone:
+- **`osis_sync::types`** holds every type two modules share, so each module builds against it and its own section's types alone; a type one module owns and others only read (`Member`, `Proven`, `Known`, `Verdict`, `StatusView`) is in that module:
 ```rust
-pub struct ConnId(pub u64);                    // a connection, numbered by the driver
-pub struct NodeKey(pub [u8; 32]);              // a peer's authenticated static key
+pub struct ConnId(pub u64);                    // dialed: numbered by the node; accepted: by its Links, ConnId::ACCEPTED set
+pub struct NodeKey(pub [u8; 32]);              // a peer's authenticated static key (a dialer's is ephemeral)
 pub type Position = u64;                       // a node log position
-pub enum Holding { Read, Unread }              // spec/sync.md §3, per (node, S)
+pub type Cursor = Vec<u8>;                     // an opaque node-log cursor
+pub use osis_engine::sync::{Holding, Path, Wrap};   // Holding { Read, Unread }: spec/sync.md §3, per (node, S)
+pub use osis_store::RecordId;
 pub enum SourceClass { Store, Reader }         // spec/sync-opens.md §4
 pub enum Credential { ReadSecret(Epoch), SyncKey, SyncProof, Claim, Static([u8; 32]), Deposit, J }
-pub struct Entry { pub blob: BlobId, pub wrap: Wrap, pub stamp: Option<Stamp>, pub deposited: bool, pub own: bool, pub class: Class, pub expires: Option<WallMs> }
+pub struct Entry { pub blob: BlobId, pub wrap: Wrap, pub stamp: Option<Signature>, pub deposited: bool, pub own: bool, pub class: Class, pub expires: Option<WallMs> }
 pub enum SourceEvent { Present(Entry), Gone(BlobId), Head(Step), Full(bool), Refused(BlobId, Code) }
+pub enum Input { .. }                          // The step, below
 pub enum Out { Send(ConnId, Vec<u8>), Dial(ConnId, Address), Close(ConnId), Wake(WallMs) }
+pub enum Scope { All, Thing(Tid), Deliveries }
+pub enum Waiting { Done, Pending, Never(&'static str) }
 pub struct Cx<'a> { pub engine: &'a mut Engine, pub store: &'a mut Store, pub now: WallMs, pub rng: &'a mut dyn NodeRng, pub out: &'a mut Vec<Out> }
+pub enum Error { NotBuilt(&'static str), Engine(osis_engine::Error), Store(osis_store::Error), Proto(osis_proto::Error) }
+pub struct SyncConfig { pub key: Option<NodeKey>, pub dial: Vec<Address> }   // own dialable key; configured dial candidates
 ```
+  A part not built returns `Error::NotBuilt(name)` or does nothing; no path a test reaches panics.
 
 ## The step
 ```rust
 pub enum Input { Up { conn: ConnId, peer: NodeKey, rank: u8, dialed: bool }, Bytes { conn: ConnId, bytes: Vec<u8> }, Closed { conn: ConnId }, Down { conn: ConnId }, Tick { now: WallMs }, Wrote }
 impl Node {
     pub fn open(engine: Engine, store: Store, cfg: SyncConfig, rng: Box<dyn NodeRng>) -> Result<Node>;
-    pub fn handle(&mut self, input: Input) -> Vec<Out>;
+    #[must_use] pub fn handle(&mut self, input: Input) -> Vec<Out>;
     pub fn engine(&mut self) -> &mut Engine;          // the osis handle's writes and reads
     pub fn status(&mut self) -> Arc<StatusView>;      // a memo value (Status below)
     pub fn wait(&mut self, scope: Scope) -> Waiting;  // Done | Pending | Never(why)
@@ -35,33 +43,40 @@ impl Node {
 pub trait Links { fn dial(&mut self, conn: ConnId, to: &Address); fn send(&mut self, conn: ConnId, bytes: &[u8]); fn close(&mut self, conn: ConnId); fn wake(&mut self, at: WallMs); }
 pub fn apply(out: Vec<Out>, links: &mut impl Links);   // the one place outputs are carried out
 ```
-- `handle` routes the input to its module, then **settles**: every module's `settle` in the order store, unread, read, inbox, opens, streams, status, again while one acted, then collects sessions' bytes and the earliest wake (each module's `next_wake`, `Engine::next_timer`, the memo clock's next `until`). Sends of one step leave in the order made; closes after them (a closing node's owed Applied goes first, spec/sync-streams.md §4 Reports).
+- `handle` routes the input to its module (bytes: `Session::receive`, then each message to the module `Incoming::to` names; a message no module takes closes the connection), then **settles**: every module's `settle` (each returns `Result<bool>`, whether it acted) in the order store, unread, read, inbox, opens, streams, status, again while one acted, then collects sessions' bytes and the earliest wake (each module's `next_wake`, `Engine::next_timer`, the memo clock's next `until`). A settle error closes every connection (a store failure's reopen is the driver's).
+- `apply` carries out sends and dials in the order made, then closes (a closing node's owed Applied goes first, spec/sync-streams.md §4 Reports), then one `Links::wake`, the earliest given. A step gives at most one `Wake`, last, and `Links::wake` replaces the node's earlier one, so no older wake overwrites a newer (an early wake costs one idle `Tick`). Outputs made outside `handle` (`status`, `wait`) are held and returned by the next `handle`.
+- The node's time is its engine's clock; `Tick { now }` says a wake came due (`now` moves it forward only).
 - **No engine events as input.** After the osis handle writes it calls `handle(Wrote)`, which only settles: what the write changed reaches sync through the memos it moved. `Engine::subscribe_durable` stays for the API's listeners only.
 - A store failure closes every connection and reopens the node from the store (inputs note, store-reopen); the effects' acted values are not durable (but `changed_at`, below), so a start or reopen settles every key once: the same reload spec/sync-judgement.md §3 names for forgetting.
 
 ## Modules
-Each module is a struct owning its state with `fn settle(&mut self, cx: &mut Cx)`, `fn next_wake(&self) -> Option<WallMs>`, and the entry points below. A module calls another only through the read accessors listed; it changes another's state never (one owner per row). Dependencies are acyclic in this order.
+Each module is a `Clone` struct (world copies: `Node::test_copy`) owning its state, with `fn settle(..) -> Result<bool>`, `fn next_wake(&self) -> Option<WallMs>`, and the entry points below. A module calls another only through the read accessors listed; it changes another's state never (one owner per row). Dependencies are acyclic in this order.
 
 **1. `session`: wire and session** (spec/wire.md §11, spec/sync-streams.md §1-§2). State: per connection, in memory: Hello, proofs shown, request ids, `WINDOW` accounting, the stall clock, unanswered-in bytes, push budget. Depends on osis-proto and the engine's proof calls.
 ```rust
 impl Session {
     pub fn new(conn: ConnId, peer: NodeKey, dialer: bool, rank: u8, cx: &mut Cx) -> Session;  // queues Hello
     pub fn receive(&mut self, bytes: &[u8], cx: &mut Cx) -> Result<Vec<Incoming>, Close>;      // proofs run here
-    pub fn request(&mut self, m: Msg) -> RequestId;   // sent in order while under WINDOW
-    pub fn answer(&mut self, to: RequestId, m: Msg);
-    pub fn push(&mut self, m: Msg) -> bool;           // false: past REPLY_BUDGET, the pusher waits
+    pub fn request(&mut self, m: Message) -> RequestId;   // osis_proto::Message; sent in order while under WINDOW
+    pub fn answer(&mut self, to: RequestId, m: Message);
+    pub fn push(&mut self, m: Message) -> bool;           // false: past REPLY_BUDGET, the pusher waits
     pub fn proven(&self) -> &Proven;                  // account at epoch, key actors, own node
     pub fn take_bytes(&mut self) -> Vec<u8>;
 }
-pub enum Incoming { Request(RequestId, Msg), Reply(RequestId, Msg), Push(Msg) }
+pub enum Incoming { Request(RequestId, Message), Reply(RequestId, Message), Push(Message) }
+impl Incoming { pub fn to(&self) -> Option<To> }   // To { Opens, Streams, Inbox }: the module that takes it
+pub struct Proven { pub account: Option<(Tid, Epoch)>, pub actors: Vec<Tid>, pub own_node: bool }
+pub struct Close(pub &'static str);
 ```
 **2. `opens`: records, agreement, the shared set** (spec/sync-opens.md §2-§6, spec/sync-ids.md §6 Walk). State: records (durable, in the store's record rows, `RECORD_BUDGET` LRU), per connection the members, filter generations sent and received, Offer in flight, walk state; `changed_at` per S (durable). Depends on session, store, unread (its credentials), engine (J, credentials, known actors).
 ```rust
 impl Opens {
     pub fn on_proved(&mut self, cx: &mut Cx, conn: ConnId, s: &mut Session);   // Resume / NoRecord, then Digest
     pub fn on_message(&mut self, cx: &mut Cx, conn: ConnId, s: &mut Session, m: Incoming);  // Resume, Digest, Members, Beacons, Offer, Shared, Lost
+    pub fn on_closed(&mut self, cx: &mut Cx, conn: ConnId);   // after streams' on_close of each member
     pub fn members(&self, conn: ConnId) -> &BTreeMap<SyncId, Member>;
     pub fn record(&mut self, conn: ConnId) -> Option<RecordId>;     // where streams, read and store keep their per-peer rows
+    pub fn settle(&mut self, cx: &mut Cx, unread: &Unread) -> Result<bool>;
 }
 pub struct Member { pub class: SourceClass, pub by: Credential, pub until: Option<Position>, pub step: Option<StepId> }
 ```
@@ -69,7 +84,9 @@ Settle: per S, `admissible(s)` is an effect over the engine's `read_credentials(
 
 **3. `store`: the store per sync ID** (spec/sync-ids.md §5-§6, spec/sync-streams.md §3). State: entries, tombstones, blob bytes once per node, paths (steps, claim sets), the node log and cursors, caps and deposit budgets, ephemeral entries in memory. Implements `osis_store::CipherHost`, so the engine stores and reads blob bytes through it: `Store` is a cheap handle over one locked store, held by the engine's ciphertext door and by `Cx`; the engine locks it only inside its own transactions, sync only between engine calls, so one step never holds both. Depends on osis-store and osis-label crypto (stamp, deposit, delete and step signatures); of the engine only the caps record. Decrypts nothing.
 ```rust
-impl Store {
+impl Store {   // Clone: a handle
+    pub fn open(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, rng: Box<dyn NodeRng>) -> Result<Store>;
+    pub fn cipher(&self) -> Arc<dyn osis_store::Ciphertext>;                   // the engine's ciphertext door
     pub fn entry(&self, s: &SyncId, b: &BlobId) -> Option<Entry>;
     pub fn entries(&self, s: &SyncId) -> impl Iterator<Item = Entry>;          // stamped reads (memo-safe)
     pub fn log(&mut self, s: &SyncId, e: Entry, bytes: Option<Vec<u8>>) -> Result<()>;   // own entry, logs `Added`
@@ -78,10 +95,11 @@ impl Store {
     pub fn take_deposit(&mut self, s: &SyncId, d: &DepositItem, from: Option<RecordId>) -> Result<Code>;
     pub fn take_delete(&mut self, s: &SyncId, d: &DeleteItem, open_by_store_credential: bool) -> Result<Vec<Code>>;
     pub fn take_register(&mut self, s: &SyncId, step: Step, claims: Option<ClaimSet>) -> Result<Code>;
-    pub fn behind(&self, s: &SyncId, item: &BehindItem) -> Answer;
+    pub fn behind(&self, s: &SyncId, item: &BehindItem) -> Result<Answer>;   // BehindItem, DepositItem, Answer: in store until osis-proto's msg holds them
     pub fn path(&self, s: &SyncId) -> Option<Arc<Path>>;          // a kept-unread S's registered path
     pub fn read_log(&self, members: &Members, from: Option<&Cursor>, max: usize) -> Result<LogRead>;
     pub fn shred(&mut self, s: &SyncId) -> Result<()>;            // leaving: keys and wraps erased
+    pub fn settle(&mut self, engine: &mut Engine, now: WallMs) -> Result<bool>;   // not over Cx: Cx holds the store
 }
 ```
 Expiry and caps giving way run in its `settle`; every row change stamps (osis-store `Stamping`), so memos may read it.
@@ -89,7 +107,7 @@ Expiry and caps giving way run in its `settle`; every row change stamps (osis-st
 **4. `read`: judgement for read sync IDs** (spec/sync-judgement.md §1-§5, spec/sync-compaction.md §1). State: the `Effects` below; the stand of "logged again once", the deletes seen and the deletes owed per source, in that source's record. Depends on engine (bodies, facts, seal, keys, destruction), store, opens (members, records), streams (`known`).
 ```rust
 impl Read {
-    pub fn settle(&mut self, cx: &mut Cx, opens: &Opens, streams: &Streams);
+    pub fn settle(&mut self, cx: &mut Cx, opens: &Opens, streams: &Streams) -> Result<bool>;
     pub fn verdict(&self, s: &SyncId, c: &CommitId) -> Option<Verdict>;   // for status and inbox
 }
 pub enum Verdict { Must, May, MustNot(Why), Unjudged }
@@ -101,7 +119,7 @@ Acts on a verdict's change: logs its own must-hold bodies (`Engine::seal`), drop
 impl Unread {
     pub fn credentials(&self, cx: &mut Cx, s: &SyncId) -> Option<Arc<UnreadCredentials>>;  // head sync key, its proof, deposit key, head claim set
     pub fn stranded(&self, s: &SyncId) -> bool;
-    pub fn settle(&mut self, cx: &mut Cx);   // stop on a verified removal, strand on a head move, leave when unlisted
+    pub fn settle(&mut self, cx: &mut Cx) -> Result<bool>;   // stop on a verified removal, strand on a head move, leave when unlisted
 }
 ```
 **6. `streams`: streams and flow control** (spec/sync-streams.md §3-§6). State: per connection and member the cursor, joins, `seq`, owed bodies, fetches in flight, reports; `known` per source and S (durable in the record for a peer with one). Depends on session, store, opens (members), engine (`open_entry`, `wants`).
@@ -112,14 +130,15 @@ impl Streams {
     pub fn on_message(&mut self, cx: &mut Cx, conn: ConnId, s: &mut Session, m: Incoming);  // Pull, PullReply, Stream, Applied, Fetch
     pub fn known(&self, conn: ConnId, s: &SyncId) -> &Known;   // what that source's stream showed
     pub fn caught_up(&self, conn: ConnId, s: &SyncId) -> bool;
-    pub fn import(&mut self, cx: &mut Cx, bundle: &mut dyn Read) -> Result<()>;  // a source with no cursor
+    pub fn import(&mut self, cx: &mut Cx, bundle: &mut dyn std::io::Read) -> Result<()>;  // a source with no cursor
+    pub fn settle(&mut self, cx: &mut Cx) -> Result<bool>;
 }
 ```
 **7. `inbox`: inbox, deposits, steps and Register** (spec/sync-inbox.md, spec/sync-ids.md §6 Steps). State: per delivery its re-sends; Deposit items in flight and back-offs; Register attempts per (source, S); stranded notices sent. Depends on engine (deliveries, inbox blobs, taking, promotion, keys), store, opens, streams.
 ```rust
 impl Inbox {
-    pub fn settle(&mut self, cx: &mut Cx, opens: &Opens, streams: &Streams);
-    pub fn on_answer(&mut self, cx: &mut Cx, conn: ConnId, a: ItemAnswer);      // Deposit and Register codes
+    pub fn settle(&mut self, cx: &mut Cx, opens: &Opens, streams: &Streams) -> Result<bool>;
+    pub fn on_message(&mut self, cx: &mut Cx, conn: ConnId, s: &mut Session, m: Incoming);  // Deposit and Register answers (ItemAnswer each)
     pub fn redeem(&mut self, cx: &mut Cx, link: &Link) -> Waiting;             // first contact
 }
 ```
@@ -128,30 +147,30 @@ impl Inbox {
 impl Status {
     pub fn view(&mut self, cx: &mut Cx) -> Arc<StatusView>;   // per S: sources and their state, passes waiting; idle
     pub fn wait(&mut self, cx: &mut Cx, scope: Scope) -> Waiting;
-    pub fn settle(&mut self, cx: &mut Cx, opens: &Opens, streams: &Streams);  // tells the engine of complete passes and own commits held elsewhere
+    pub fn settle(&mut self, cx: &mut Cx, opens: &Opens, streams: &Streams) -> Result<bool>;  // tells the engine of complete passes and own commits held elsewhere
 }
 ```
-**9. `driver`: the node, dials, timers, outputs** (spec/sync-opens.md §1, spec/sync-transport.md). State: connections, dial candidates (`reach.0`, `dial.0`, grant hints, link sharers, configured addresses, discovery), redial times, dial timeouts, one connection per pair. Owns `Node`, `Input`, `apply` and `TransportLinks<T: osis_transport::Transport>` (tokio). Depends on every module.
+**9. `driver`: the node, dials, timers, outputs** (spec/sync-opens.md §1, spec/sync-transport.md). State: connections and their sessions, dial candidates (`reach.0`, `dial.0`, grant hints, link sharers, configured addresses, discovery), redial times, dial timeouts, one connection per pair. Owns `Node`, `Input`, `apply` and `TransportLinks<T: osis_transport::Transport>` (tokio). Depends on every module.
 
 ## What sync calls on the engine
-One facade, `osis_engine::sync` (methods on `Engine`); every value-returning call is a memo, so a module reading it inside its own effect depends on exactly what the engine read. Marks name the inventory item it comes from: **keep** (as is, renamed for sync IDs), **replace** (reshaped from the named items), **new**.
+One facade, `osis_engine::sync` (methods on `Engine`; its types are there too); every call that reads the store returns `Result` (shown below without it); every value-returning call is a memo, so a module reading it inside its own effect depends on exactly what the engine read. Marks name the inventory item it comes from: **keep** (as is, renamed for sync IDs), **replace** (reshaped from the named items), **new**.
 
 | call | mark | from |
 |---|---|---|
 | **Ingest** | | |
-| `fn open_entry(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opened>`; `enum Opened { Commit(CommitId, Ingested), Linked, Inbox(InboxOpened), NotOpen, Bad }` | replace | `labeling::blobs::open_commit` + `apply::ingest`, `ingest_memory`, `put_blobs`: one call opens the wrap with a held read secret and takes what it holds |
-| `fn ingest_relay(&mut self, bytes: &[u8]) -> Result<Option<EphCommit>>` | keep | `ephemeral::signal::ingest_relay` |
-| `fn wants(&mut self) -> Arc<Wants>` | keep | `apply::reach::blob_wants` as a memo (pages and header lists before apply) |
+| `fn open_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8]) -> Result<Opened>` (the engine cannot name sync's `Entry`); `enum Opened { Commit(CommitId, Ingested), Linked, Inbox(InboxOpened), NotOpen, Bad }` | replace | `labeling::blobs::open_commit` + `apply::ingest`, `ingest_memory`, `put_blobs`: one call opens the wrap with a held read secret and takes what it holds |
+| `fn ingest_relay(&mut self, bytes: &[u8]) -> Result<Option<EphCommit>>` (built) | keep | `ephemeral::signal::ingest_relay` |
+| `fn wants(&mut self) -> Arc<Wants>` (built) | keep | `apply::reach::blob_wants` as a memo (pages and header lists before apply) |
 | **Held parts and bodies** | | |
 | `fn sync_bodies(&mut self, c: &CommitId) -> Arc<BTreeMap<SyncId, BodyMeta>>`: per sync ID of the sync set whose required set holds a body of `c`: its parts, expiry, order, copy or shared, certificate, header-only | new | `commit_bodies_under`, `label_bodies_meta`, `certificates`, `part_body`, `header_body` folded per commit |
-| `fn body_facts(&mut self, s: &SyncId, c: &CommitId) -> BodyFacts` (`required`, `closure`, `dropped: Option<DropWhy>`, `kept`, `covered: Option<bool>`, `sole_certificate`, `lasting_header`) | replace | `labeling::converge::Facts`, assembled in the engine; `classify` moves to `read` |
+| `fn body_facts(&mut self, s: &SyncId, c: &CommitId) -> BodyFacts` (`required`, `closure`, `dropped: Option<DropFor>`, `kept`, `covered: Option<bool>`, `sole_certificate`, `lasting_header`) | replace | `labeling::converge::Facts`, assembled in the engine; `classify` moves to `read` |
 | `fn blob_parts(&mut self, b: &BlobId) -> Option<PartSet>` | keep | `Sealed::parts`, `OpenedBlob::parts`: strict subsets and duplicates are judged in `read` from the store's entries and this |
-| `fn seal(&mut self, s: &SyncId, c: &CommitId, rng: &mut dyn NodeRng) -> Result<Option<Sealed>>` | keep | `labeling::blobs::{seal, seal_to}`, the wrap for `s` included |
+| `fn seal_body(&mut self, s: &SyncId, c: &CommitId, rng: &mut dyn NodeRng) -> Result<Option<(Sealed, Wrap)>>` (`seal` is the engine's own) | keep | `labeling::blobs::{seal, seal_to}`, the wrap for `s` included |
 | `fn fall_mark(&mut self, thing: &Tid, ak: &Ak) -> u64`: falls of held parts on the aspect so far (durable) | replace | `take_fallen`, `take_fell`: the stand of spec/sync-judgement.md §4 compares marks |
 | `fn own_commits(&mut self, s: &SyncId) -> Arc<BTreeSet<CommitId>>`: this node's commits and self-removals with a body under `s` | new | for held elsewhere (spec/sync-status.md §2) |
 | `fn destruction(&mut self, thing: &Tid) -> Option<Arc<Destruction>>` (requests, by expiry alone) and `fn forget_destroyed(&mut self, thing: &Tid) -> Result<()>` (drops its secrets last) | replace | `retention::destroy::{emptying, emptying_things, labels_emptied, drop_destroyed_secrets, commits_keyed_by}` |
 | `fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Promote` (`Yes { chain: Certs }`, `NotYet`, `Never`) | replace | `author_chain`, `valid_parts`, `judged_valid` |
-| `fn freed(&mut self, b: &BlobId) -> bool` | keep | `retention::freed::is_freed` |
+| `fn freed(&mut self, b: &BlobId) -> bool` (built) | keep | `retention::freed::is_freed` |
 | **Keys and secrets for a sync ID** | | |
 | `fn sync_set(&mut self) -> Arc<SyncSet>`; `SyncSet { ids: BTreeMap<SyncId, (Tid, Holding)>, unsyncable: BTreeSet<Tid> }` | replace | `set_syncing`, `labels_read`, `labeled_groups`, `Indexes::syncing`: the synced group's closure walked through read groups, filtered by held read or sync secrets (spec/sync-set.md §2) |
 | `fn sync_ids(&mut self, thing: &Tid) -> Arc<Vec<OwnedSyncId>>`; `OwnedSyncId { id, path: Arc<Path>, hint: bool }` | replace | `labels_of`, `group_labels`, `GroupLabel`; `hint`: held while the node holds no sync secret of the thing's own (spec/sync-ids.md §4) |
@@ -161,7 +180,7 @@ One facade, `osis_engine::sync` (methods on `Engine`); every value-returning cal
 | `fn sync_records(&mut self) -> Arc<BTreeMap<Tid, SyncRecord>>`; `SyncRecord { sync_ids: Vec<SyncId>, secrets: BTreeMap<Epoch, Secret32> }` and `fn drop_sync_record(&mut self, thing: &Tid) -> Result<()>` | new | `learn_secret`'s sync side: the engine writes a record where a box sealed to its own key opens (taking an inbox blob, an entry box, a lowering from read keeps the sync secrets it held), in that transaction |
 | **Grants, removals, peers** | | |
 | `fn judge_peer(&mut self, s: &SyncId, proven: &[Tid]) -> J` (`Reader`, `SyncHolder`, `Departed`, `Unknown`) and `fn covers_departures(&mut self, s: &SyncId, epoch: Epoch) -> bool` | keep | `labeling::judge::{judge, own_node}`, `Judge::of`, departures |
-| `fn known_actor(&mut self, a: &Tid) -> bool`; `fn verify_proof(&mut self, p: &ActorProof, challenge: &[u8; 32], listener: &NodeKey) -> Result<Proved>`; `fn prove(&mut self, ...) -> Vec<ActorProof>` | keep | `Judge::known`, `labeling::proofs::{account_key_open, account_prover}` |
+| `fn known_actor(&mut self, a: &Tid) -> bool`; `fn provers(&mut self) -> Option<(SigningSecret, CreationRecord)>` (the account key this node proves with); `fn key_open(&mut self, record: &CreationRecord, key: &[u8; 32]) -> bool` (a proof's key is its actor's at an epoch open here). Proof signing and checking are osis-proto's `Prover` and `verified` (the engine does not depend on osis-proto) (all built) | keep | `Judge::known`, `labeling::proofs::{account_key_open, account_prover}` |
 | `fn deliveries(&mut self) -> Arc<BTreeSet<(CommitId, Tid)>>`, `fn delivery_taken(&mut self, c: &CommitId, holder: &Tid) -> bool`, `fn inbox_blob(&mut self, c: &CommitId, holder: &Tid, rng: &mut dyn NodeRng) -> Result<Option<Sealed>>` | replace | `SyncRecords::note_unsent`, `flows::Resend`, `Done::deliveries`: what a flow owes is derived from the role commit it wrote; `flows::{inbox_of_actor, inbox_kem}` kept |
 | `fn take_inbox(&mut self, s: &SyncId, blob: &BlobId, accepted: bool) -> Result<InboxOpened>`; `InboxOpened { commit, taken: Taken, hints: Vec<(Tid, SyncId)>, dial: Option<Address> }` | replace | `accept_inbox`, `hint_actors`, `inbox_named`, `learn_secret`, `flows::edges::inbox_chain` (chain only to readers) |
 | `fn removal_notices(&mut self) -> Arc<Vec<RemovalNotice>>` (`sync_id`, `sig`, `recipient`, `commit`) from inbox blobs held to this node's account | new | spec/wire.md §9 position 5, for `unread` to verify under its head's delete key |
@@ -169,10 +188,10 @@ One facade, `osis_engine::sync` (methods on `Engine`); every value-returning cal
 | `fn waiting_held_elsewhere(&mut self) -> Arc<BTreeSet<CommitId>>` and `fn held_elsewhere(&mut self, c: &CommitId) -> Result<()>` | replace | `Done::drop_lost`: a self-removal's secrets drop once it is held elsewhere |
 | `fn note_complete_pass(&mut self, actor: &Tid, began: WallMs)` | replace | `SyncState::complete_pass` (`reseal_due`, `signing_due`, link finalize read the stamped value) |
 | **Timers and config** | | |
-| `fn next_timer(&mut self) -> Result<Option<u64>>`, `fn tick(&mut self) -> Result<()>`, `fn set_now(&mut self, now: WallMs)` | keep | `retention::{tick, next_timer}`; `set_now` moves the memo clock |
-| `fn caps(&mut self) -> Arc<Caps>` (`caps^.0` of this node) | replace | `host^.0`, `HostPolicy` |
+| `fn next_timer(&mut self) -> Result<Option<u64>>`, `fn tick(&mut self) -> Result<()>`, `fn set_now(&mut self, now: WallMs)` (built) | keep | `retention::{tick, next_timer}`; `set_now` moves the memo clock |
+| `fn caps(&mut self) -> Arc<Caps>` (`caps^.0` of this node; `Caps { policy, things: BTreeMap<Tid, ThingCaps> }`) | replace | `host^.0`, `HostPolicy` |
 
-Sync never reads `Core`, `ix`, `Tx` or commit `Meta` (inventory B).
+Sync never reads `Core`, `ix`, `Tx` or commit `Meta` (inventory B). Every call not marked built returns `Error::NotBuilt(name)`.
 
 ## What the engine gives: memo values and effects
 - The engine's outputs are the memo values above: `sync_set`, `sync_bodies(c)`, `body_facts(s, c)`, `read_credentials(s)`, `sync_records`, `deliveries`, `removal_notices`, `invitations`, `waiting_held_elsewhere`, `destruction(t)`. No `Changed` log, no generation counter, no `take_*` queue, no hook trait. Events (`Event`) stay for the osis API's listeners; `Event::SyncStatus` goes (status is `Node::status`).

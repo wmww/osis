@@ -37,7 +37,7 @@ use crate::events::{Event, Events, Origin};
 use crate::identity::Identity;
 use clock::Hlc;
 use osis_commit::{CommitBlob, Form, Header};
-use osis_base::{Ak, Clock, CommitId, LabelId, Tid, Ts, WallMs};
+use osis_base::{Ak, Clock, CommitId, SyncId, Tid, Ts, WallMs};
 use osis_crdt::{Dot, Fragment, SourceKind};
 use osis_crypto::{CryptoRngCore, SeededRng};
 use osis_keys::ActorEpochs;
@@ -1083,7 +1083,7 @@ pub struct Core {
     /// `Core::acting` (`memo`).
     acting_of: memo::Memo<(), Arc<Vec<Tid>>>,
     /// `Engine::inbox_actors` (`memo`).
-    pub(crate) inbox_actors: memo::Memo<(), Arc<BTreeMap<LabelId, Vec<Tid>>>>,
+    pub(crate) inbox_actors: memo::Memo<(), Arc<BTreeMap<SyncId, Vec<Tid>>>>,
     /// Page indexes of the cached states kept paged in the store.
     pub pages: HashMap<(Tid, Ak), pages::StatePages>,
     pub timelines: held::Timelines,
@@ -1519,7 +1519,7 @@ pub trait SyncRecords: Sync {
     fn owe(&self, tx: &mut Tx<'_>, d: &crate::flows::Delivery, owed: bool) -> Result<()>;
     /// Removes the sync records of what is forgotten (`labels`, `things`, `commits`, `parts`)
     /// and returns the blobs among those dropped and `extra` that no kept record names.
-    fn forget(&self, tx: &mut Tx<'_>, labels: &BTreeSet<osis_base::LabelId>, things: &BTreeSet<Tid>, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>, extra: BTreeSet<osis_base::BlobId>) -> Result<BTreeSet<osis_base::BlobId>>;
+    fn forget(&self, tx: &mut Tx<'_>, labels: &BTreeSet<osis_base::SyncId>, things: &BTreeSet<Tid>, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>, extra: BTreeSet<osis_base::BlobId>) -> Result<BTreeSet<osis_base::BlobId>>;
 }
 
 /// What brings back what the node could not judge (notes/expiry-creation-design.md §3).

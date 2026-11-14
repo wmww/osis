@@ -6,12 +6,12 @@ use crate::common;
 
 use common::*;
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
-use osis_base::{BlobId, LabelId};
+use osis_base::{BlobId, SyncId};
 use osis_crypto::SeededRng;
 use osis_store::{Fault, INCARNATIONS_KEPT, NodeEvent, Shred, Store, StoreConfig};
 
-fn l(n: u8) -> LabelId {
-    LabelId([n; 16])
+fn l(n: u8) -> SyncId {
+    SyncId([n; 16])
 }
 
 fn b(n: u32) -> BlobId {

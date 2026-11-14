@@ -5,7 +5,7 @@ use crate::cbor::{get_bytes, get_key};
 use crate::Error;
 use osis_base::cbor::{Limits, decode, encode};
 use osis_base::format::{MAX_CLAIMS, MAX_MESSAGE, MAX_OBJECT_DEPTH};
-use osis_base::{LabelId, Tid, Value};
+use osis_base::{SyncId, Tid, Value};
 use osis_crypto::{
     BoxForm, BoxSlot, CryptoRngCore, Domain, EntryItem, Epoch, KemPublicKey, KemSecret, LabelRole, Secret32, Signature, SigningSecret,
     VerifyingKey, X25519Secret, claim_key, deposit_key, label_id, label_role_key, open_entry, seal_entry, static_entry,
@@ -21,7 +21,7 @@ pub struct StepId(pub [u8; 32]);
 /// A registration step (spec/wire.md §8).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Step {
-    pub label: LabelId,
+    pub label: SyncId,
     pub prev: Option<StepId>,
     pub keys: StepKeys,
     /// Raw X25519 public key.
@@ -43,7 +43,7 @@ pub struct StepKeys {
 impl StepKeys {
     /// Role public keys from the group's role secrets, deposit key from the actor's
     /// deposit seed (spec/sync-ids.md §2).
-    pub fn derive(sync: &Secret32, write: &Secret32, admin: &Secret32, deposit_seed: &Secret32, label: &LabelId) -> StepKeys {
+    pub fn derive(sync: &Secret32, write: &Secret32, admin: &Secret32, deposit_seed: &Secret32, label: &SyncId) -> StepKeys {
         StepKeys {
             sync: label_role_key(LabelRole::Sync, sync).verifying_key(),
             write: label_role_key(LabelRole::Write, write).verifying_key(),
@@ -62,7 +62,7 @@ impl StepKeys {
 }
 
 /// Label ID of the label whose genesis derives from `admin` (spec/sync-ids.md §2).
-pub fn genesis_label(admin: &Secret32) -> LabelId {
+pub fn genesis_label(admin: &Secret32) -> SyncId {
     label_id(&label_role_key(LabelRole::Delete, admin).verifying_key())
 }
 
@@ -138,7 +138,7 @@ impl Step {
             _ => return Err(Error::Malformed("step prev")),
         };
         Ok(Step {
-            label: LabelId(get_bytes(label, "step label")?),
+            label: SyncId(get_bytes(label, "step label")?),
             prev,
             keys: StepKeys {
                 sync: get_key(sync, "step sync key")?,
@@ -180,7 +180,7 @@ impl Step {
 
 /// Verifies a registration path: the genesis step of `label`, then each step a child of the one
 /// before (spec/sync-ids.md §3).
-pub(crate) fn verify_path(label: &LabelId, path: &[Step]) -> Result<(), Error> {
+pub(crate) fn verify_path(label: &SyncId, path: &[Step]) -> Result<(), Error> {
     let (first, rest) = path.split_first().ok_or(Error::Verify("empty path"))?;
     if first.label != *label {
         return Err(Error::Verify("path of another label"));
@@ -275,7 +275,7 @@ impl ClaimSet {
     }
 
     /// The entry box of a key actor's static entry.
-    pub fn entry_box(&self, label: &LabelId, signing: &VerifyingKey) -> Option<&SecretBox> {
+    pub fn entry_box(&self, label: &SyncId, signing: &VerifyingKey) -> Option<&SecretBox> {
         self.entries.get(&static_entry(label, signing))
     }
 }
@@ -467,7 +467,7 @@ pub(crate) mod tests {
         verify_path(&s0.label, &[s0.clone(), s1.clone(), s2.clone()]).unwrap();
         assert!(verify_path(&s0.label, &[s0.clone(), s2.clone()]).is_err());
         assert!(verify_path(&s0.label, std::slice::from_ref(&s1)).is_err());
-        assert!(verify_path(&LabelId([0; 16]), std::slice::from_ref(&s0)).is_err());
+        assert!(verify_path(&SyncId([0; 16]), std::slice::from_ref(&s0)).is_err());
         let map: BTreeMap<StepId, Step> = [&s0, &s1, &s2].into_iter().map(|s| (s.id(), s.clone())).collect();
         assert_eq!(path_to(&map, &s2.id()).unwrap(), vec![s0.clone(), s1.clone(), s2.clone()]);
         // Signer checks.

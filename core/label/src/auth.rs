@@ -8,36 +8,36 @@ use crate::step::Step;
 use crate::Error;
 use osis_base::cbor::encode;
 use osis_base::format::{DELETE_ADMIN, DELETE_WRITER};
-use osis_base::{BlobId, LabelId, Value};
+use osis_base::{BlobId, SyncId, Value};
 use osis_crypto::{DeleteSecret, Domain, LabelRole, Signature, SigningSecret, VerifyingKey, verify_delete};
 
 /// Digest of a stamp, deposit or publish authorization: BLAKE3 of canonical
 /// `[label_id, blob_id, wrap]`.
-pub fn entry_digest(label: &LabelId, blob: &BlobId, wrap: &[u8]) -> [u8; 32] {
+pub fn entry_digest(label: &SyncId, blob: &BlobId, wrap: &[u8]) -> [u8; 32] {
     osis_base::hash::hash(&encode(&Value::List(vec![Value::bytes(&label.0), Value::bytes(&blob.0), Value::bytes(wrap)])))
 }
 
 /// A stamp: the label write key's signature under `"osis v1 upload"`, or `"osis v1 role
 /// entry"` for an entry deletes are judged by (`role`: a role commit or a request).
-pub fn sign_stamp(write: &SigningSecret, label: &LabelId, blob: &BlobId, wrap: &[u8], role: bool) -> Signature {
+pub fn sign_stamp(write: &SigningSecret, label: &SyncId, blob: &BlobId, wrap: &[u8], role: bool) -> Signature {
     write.sign(entry_domain(Domain::Stamp, role), &entry_digest(label, blob, wrap))
 }
 
 /// Checks a stamp against the head's write key, under either domain; an altered wrap fails.
-pub fn verify_stamp(head_write: &VerifyingKey, label: &LabelId, blob: &BlobId, wrap: &[u8], stamp: &Signature) -> Result<(), Error> {
+pub fn verify_stamp(head_write: &VerifyingKey, label: &SyncId, blob: &BlobId, wrap: &[u8], stamp: &Signature) -> Result<(), Error> {
     let d = entry_digest(label, blob, wrap);
     head_write.verify(Domain::Stamp, &d, stamp).or_else(|_| head_write.verify(Domain::RoleEntry, &d, stamp)).map_err(|_| Error::Verify("stamp"))
 }
 
 /// A deposit signature by the deposit key under `"osis v1 deposit"`, or `"osis v1 role entry"`
 /// for a request (`role`).
-pub fn sign_deposit(deposit: &SigningSecret, label: &LabelId, blob: &BlobId, wrap: &[u8], role: bool) -> Signature {
+pub fn sign_deposit(deposit: &SigningSecret, label: &SyncId, blob: &BlobId, wrap: &[u8], role: bool) -> Signature {
     deposit.sign(entry_domain(Domain::Deposit, role), &entry_digest(label, blob, wrap))
 }
 
 /// Checks a deposit's signature against the head's deposit key, under either domain; an
 /// altered wrap fails.
-pub fn verify_deposit(head_deposit: &VerifyingKey, label: &LabelId, blob: &BlobId, wrap: &[u8], sig: &Signature) -> Result<(), Error> {
+pub fn verify_deposit(head_deposit: &VerifyingKey, label: &SyncId, blob: &BlobId, wrap: &[u8], sig: &Signature) -> Result<(), Error> {
     let d = entry_digest(label, blob, wrap);
     head_deposit.verify(Domain::Deposit, &d, sig).or_else(|_| head_deposit.verify(Domain::RoleEntry, &d, sig)).map_err(|_| Error::Verify("deposit"))
 }
@@ -74,14 +74,14 @@ pub struct DeleteItem {
 }
 
 /// Digest of a delete: BLAKE3 of canonical `[label_id, blob_id, [level*]]`.
-pub fn delete_digest(label: &LabelId, blob: &BlobId, levels: &[Level]) -> [u8; 32] {
+pub fn delete_digest(label: &SyncId, blob: &BlobId, levels: &[Level]) -> [u8; 32] {
     let v = Value::List(vec![Value::bytes(&label.0), Value::bytes(&blob.0), Value::List(levels.iter().map(|l| Value::Int(i64::from(*l))).collect())]);
     osis_base::hash::hash(&encode(&v))
 }
 
 impl DeleteItem {
     /// Signed by the head's delete key alone.
-    pub fn sign(delete: &SigningSecret, label: &LabelId, blob: BlobId) -> DeleteItem {
+    pub fn sign(delete: &SigningSecret, label: &SyncId, blob: BlobId) -> DeleteItem {
         let sig = delete.sign(Domain::Delete, &delete_digest(label, &blob, &[]));
         DeleteItem { blob, by: Vec::new(), sig }
     }
@@ -89,7 +89,7 @@ impl DeleteItem {
     /// Signed by the delete keys `dks` (one per level used, levels distinct) under the blob's
     /// prefix `salt` and its blind `hb` (a commit blob's header blind, a linked blob's link
     /// blind), and by the label key `key_for_levels` names.
-    pub fn sign_by(key: &SigningSecret, dks: &[(Level, &DeleteSecret)], salt: &[u8; 16], hb: &[u8; 16], label: &LabelId, blob: BlobId) -> Result<DeleteItem, Error> {
+    pub fn sign_by(key: &SigningSecret, dks: &[(Level, &DeleteSecret)], salt: &[u8; 16], hb: &[u8; 16], label: &SyncId, blob: BlobId) -> Result<DeleteItem, Error> {
         let mut dks: Vec<(Level, &DeleteSecret)> = dks.to_vec();
         dks.sort_by_key(|(l, _)| *l);
         let levels: Vec<Level> = dks.iter().map(|(l, _)| *l).collect();
@@ -278,7 +278,7 @@ mod tests {
         #[test]
         fn stamp_binds_wrap(i in 0usize..49, x in 1u8..=255) {
             let write = label_role_key(LabelRole::Write, &Secret32::from_bytes([1; 32]));
-            let (l, b, w) = (LabelId([1; 16]), BlobId([2; 32]), [3u8; 49]);
+            let (l, b, w) = (SyncId([1; 16]), BlobId([2; 32]), [3u8; 49]);
             let stamp = sign_stamp(&write, &l, &b, &w, false);
             let mut w2 = w;
             w2[i] ^= x;

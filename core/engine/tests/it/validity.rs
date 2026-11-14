@@ -640,7 +640,7 @@ fn forged_role_class_unmerged_spec_perm_1() {
     use osis_schema::{RawKey, core_types as ct};
     let (mut lp, d, _, _) = setup();
     let label = ct::Label { steps: BTreeMap::new(), hosts: Vec::new() };
-    let labels: ct::Labels = BTreeMap::from([(osis_base::LabelId([5; 16]), label)]);
+    let labels: ct::Labels = BTreeMap::from([(osis_base::SyncId([5; 16]), label)]);
     let a = ak(ct::LABEL.ak());
     let before = lp.peers[0].engine.get(&d, &a).unwrap();
     let forged = forge_role_commit(&mut lp, 1, d, &a, &labels.to_value(), 1);

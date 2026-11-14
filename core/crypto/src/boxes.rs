@@ -6,7 +6,7 @@ use crate::aead::{self, SUITE_KEY_LEN, ZERO_NONCE};
 use crate::kdf::{self, kdf};
 use crate::{Error, KemPublicKey, KemSecret, SUITE_1, Secret32, open_sealed, seal};
 use osis_base::cbor::{Limits, decode, encode};
-use osis_base::{LabelId, Role, Tid, Value};
+use osis_base::{SyncId, Role, Tid, Value};
 use rand_core::CryptoRngCore;
 use zeroize::Zeroizing;
 
@@ -93,7 +93,7 @@ pub enum BoxSlot {
     Secrets { actor: Tid, holder: Tid, role: Role, epoch: Epoch },
     /// An entry box of a label step; `group`, the label's group thing, is the actor whose epoch
     /// the payload names (not in the AD).
-    Entry { label: LabelId, step_key: [u8; 32], group: Tid },
+    Entry { label: SyncId, step_key: [u8; 32], group: Tid },
 }
 
 impl BoxSlot {
@@ -554,7 +554,7 @@ mod tests {
         let mut rng = SeededRng::from_u64(0);
         let kem = KemSecret::derive(&sec(0x31));
         let g = actor(5);
-        let entry = BoxSlot::Entry { label: LabelId([3; 16]), step_key: [5; 32], group: g };
+        let entry = BoxSlot::Entry { label: SyncId([3; 16]), step_key: [5; 32], group: g };
         let form = BoxForm::Sealed { keyset: None, suite: 1 };
         let read = |n, s: u8| Epoch::derive(&g, Role::Read, n, &sec(s)).unwrap();
         let sync = (Epoch::derive(&g, Role::Sync, 4, &sec(6)).unwrap(), sec(6));
@@ -592,7 +592,7 @@ mod tests {
         expect.extend([4; 32]);
         expect.extend([0x83, 0x00, 0x80, 0x01]);
         assert_eq!(ad, expect);
-        let entry = BoxSlot::Entry { label: LabelId([3; 16]), step_key: [5; 32], group: actor(9) };
+        let entry = BoxSlot::Entry { label: SyncId([3; 16]), step_key: [5; 32], group: actor(9) };
         let sym = entry.ad(BoxForm::Symmetric { epoch_s: Epoch::new(1, [1; 32]).unwrap() }).unwrap();
         assert_eq!(sym[..2], [0x83, 0x50]);
         assert_eq!(sym[sym.len() - 38..sym.len() - 33], [0x82, 0x01, 0x82, 0x01, 0x58]);

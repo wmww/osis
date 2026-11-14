@@ -79,7 +79,7 @@ pub enum Event {
     /// unknown): a commit answered `Err` may have landed, so any read may answer otherwise.
     Reloaded,
     /// Sync status changed (node-sync fills it).
-    SyncStatus { label: osis_base::LabelId, detail: String },
+    SyncStatus { label: osis_base::SyncId, detail: String },
     /// An admin dispute was detected and a side taken by default (`crate::sides`): `author`'s
     /// edge write `op` of `commit` lowering `holder` on `target`, `trust`: this node sides with it.
     DisputeDetected { commit: CommitId, op: u32, holder: Tid, target: Tid, author: Tid, trust: bool },

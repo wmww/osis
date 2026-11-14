@@ -6,7 +6,7 @@
 use super::{FixedRng, case, generated_header, s32};
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_base::{LabelId, Value, encode};
+use osis_base::{SyncId, Value, encode};
 use osis_crypto::{Epoch, KeyActorKeys, LabelRole, X25519Secret, label_role_key, static_entry};
 use osis_label::{ClaimSet, Parent, Reader, Step, StepKeys, genesis_label, open_entry_box, register};
 use osis_schema::Codec;
@@ -114,7 +114,7 @@ pub fn steps() -> VecFile {
     assert!(t.verify_child(&s0).is_err());
     cases.push(case("child step with a wrong signature", SPEC).with("parent", hex(&s0.to_bytes())).with("step", hex(&t.to_bytes())).with("reject", "step-signature"));
     let mut g = s0.clone();
-    g.label = LabelId([0; 16]);
+    g.label = SyncId([0; 16]);
     assert!(g.verify_genesis().is_err());
     cases.push(case("genesis step of another label ID", SPEC).with("step", hex(&g.to_bytes())).with("reject", "label-id"));
     let three = encode(&Value::List(vec![Value::List((0..3u8).map(|i| Value::Bytes(vec![i; 32])).collect()), Value::Map(Default::default())]));

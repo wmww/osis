@@ -417,8 +417,8 @@ byte_id!(
     CommitId, 32
 );
 byte_id!(
-    /// First 16 bytes of BLAKE3 over the label's genesis delete key (spec/sync-ids.md §2).
-    LabelId, 16
+    /// A sync ID: the first 16 bytes of BLAKE3 over its genesis step's delete key (spec/wire.md §8).
+    SyncId, 16
 );
 
 /// Link to a chunk, tree node or page (spec/data-model.md §5-§6, spec/crypto.md §6): what reads

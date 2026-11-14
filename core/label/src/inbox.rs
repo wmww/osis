@@ -9,14 +9,14 @@ use crate::step::OBJECT_LIMITS;
 use crate::Error;
 use osis_base::cbor::{decode, encode};
 use osis_base::format::INBOX_LIFETIME_MS;
-use osis_base::{CreationRecord, LabelId, Tid, Value, WallMs};
+use osis_base::{CreationRecord, SyncId, Tid, Value, WallMs};
 use osis_crypto::{CryptoRngCore, KemPublicKey, KemSecret, VerifyingKey, open_inbox, seal_inbox};
 use osis_schema::Codec;
 
 /// A label of the thing's own: its ID and peer addresses.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboxLabel {
-    pub id: LabelId,
+    pub id: SyncId,
     pub hosts: Vec<Address>,
 }
 
@@ -89,7 +89,7 @@ impl InboxPayload {
                 Some(Value::List(l)) => {
                     let [id, Value::List(hosts)] = l.as_slice() else { return Err(Error::Malformed("inbox label")) };
                     let hosts = hosts.iter().map(address_from_value).collect::<Result<_, _>>()?;
-                    Some(InboxLabel { id: LabelId(get_bytes(id, "inbox label")?), hosts })
+                    Some(InboxLabel { id: SyncId(get_bytes(id, "inbox label")?), hosts })
                 }
                 Some(_) => return Err(Error::Malformed("inbox label")),
             };
@@ -118,7 +118,7 @@ impl InboxPayload {
 /// role commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StrandedNotice {
-    pub label: LabelId,
+    pub label: SyncId,
     pub holder: Tid,
     pub keys: HolderKeys,
 }
@@ -177,7 +177,7 @@ impl StrandedNotice {
         if k != "stranded" {
             return Err(Error::Malformed("stranded notice"));
         }
-        Ok(StrandedNotice { label: LabelId(get_bytes(label, "stranded label")?), holder: get_tid(holder, "stranded holder")?, keys: HolderKeys::from_values(commits, records)? })
+        Ok(StrandedNotice { label: SyncId(get_bytes(label, "stranded label")?), holder: get_tid(holder, "stranded holder")?, keys: HolderKeys::from_values(commits, records)? })
     }
 }
 
@@ -250,7 +250,7 @@ mod tests {
             records: vec![CreationRecord::Thing { admin: Tid::from_bytes([4; 15]), nonce: [4; 32], link: None }],
             commit: Value::List(vec![Value::List(vec![]), Value::Int(0), Value::List(vec![])]),
             things: vec![
-                InboxThing { tid: Tid::from_bytes([1; 15]), label: Some(InboxLabel { id: LabelId([2; 16]), hosts: vec![a.clone()] }), delete_keys: None },
+                InboxThing { tid: Tid::from_bytes([1; 15]), label: Some(InboxLabel { id: SyncId([2; 16]), hosts: vec![a.clone()] }), delete_keys: None },
                 InboxThing { tid: Tid::from_bytes([3; 15]), label: None, delete_keys: Some((dk(1), dk(2))) },
             ],
         }
@@ -281,7 +281,7 @@ mod tests {
         let kem = KemSecret::derive(&Secret32::from_bytes([9; 32]));
         let r = Tid::from_bytes([5; 15]);
         let p = payload();
-        let n = StrandedNotice { label: LabelId([3; 16]), holder: Tid::from_bytes([7; 15]), keys: HolderKeys { commits: p.chain, records: p.records } };
+        let n = StrandedNotice { label: SyncId([3; 16]), holder: Tid::from_bytes([7; 15]), keys: HolderKeys { commits: p.chain, records: p.records } };
         let b = seal_stranded_notice(&r, kem.public(), &n, WallMs(1000), &mut rng).unwrap();
         let (p, got) = open_inbox_item(&b, &r, &kem).unwrap();
         assert_eq!(got, Inbox::Stranded(n));

@@ -7,7 +7,7 @@ use crate::cbor::{get_bytes, get_tid, get_uint, tid};
 use crate::Error;
 use osis_base::cbor::{Limits, decode, encode};
 use osis_base::format::MAX_URL_BYTES;
-use osis_base::{LabelId, Tid, Value};
+use osis_base::{SyncId, Tid, Value};
 use osis_crypto::Secret32;
 use osis_schema::Codec;
 
@@ -33,7 +33,7 @@ pub struct ShareLink {
     pub seed: Secret32,
     pub target: Tid,
     pub k: Tid,
-    pub k_label: LabelId,
+    pub k_label: SyncId,
     pub hosts: Vec<Address>,
     pub peers: Vec<Peer>,
     /// `flags` bit 0: the redemption removes L's own edge (spec/permissions.md §7).
@@ -142,7 +142,7 @@ impl ShareLink {
             seed: Secret32::from_bytes(get_bytes(seed, "link seed")?),
             target: get_tid(target, "link target")?,
             k: get_tid(k, "link k")?,
-            k_label: LabelId(get_bytes(k_label, "link label")?),
+            k_label: SyncId(get_bytes(k_label, "link label")?),
             hosts: get_hosts(hosts)?,
             peers,
             single_use,
@@ -175,7 +175,7 @@ pub(crate) mod tests {
             seed: Secret32::from_bytes([1; 32]),
             target: Tid::from_bytes([2; 15]),
             k: Tid::from_bytes([3; 15]),
-            k_label: LabelId([4; 16]),
+            k_label: SyncId([4; 16]),
             hosts: vec![Address { url: "quic://a".into(), key: [5; 32] }],
             peers: vec![Peer { dialable: [6; 32], relays: vec!["https://relay".into()] }],
             single_use: false,

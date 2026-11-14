@@ -58,7 +58,7 @@ fn parse_order(s: &str) -> Vec<Tok> {
 /// One label of a bundle: its genesis path record, stamp key and read secret.
 struct Lab {
     path: Record,
-    id: osis_base::LabelId,
+    id: osis_base::SyncId,
     read: Secret32,
     stamp: osis_crypto::SigningSecret,
 }

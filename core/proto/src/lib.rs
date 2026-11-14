@@ -17,9 +17,8 @@ pub mod msg;
 pub mod prove;
 pub mod relay;
 
-/// A sync ID: 16 bytes (spec/wire.md §1, §8). osis-base still names the type `LabelId`
-/// (issues/deprecated-terms.md, label); sync code says `SyncId`.
-pub use osis_base::LabelId as SyncId;
+/// A sync ID: 16 bytes (spec/wire.md §1, §8).
+pub use osis_base::SyncId;
 
 pub use api::{ApiCode, Outcome, Payload};
 pub use error::Error;

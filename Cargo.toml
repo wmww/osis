@@ -27,6 +27,7 @@ osis-label = { path = "core/label" }
 osis-proto = { path = "core/proto" }
 osis-transport = { path = "core/transport" }
 osis-engine = { path = "core/engine" }
+osis-sync = { path = "core/sync" }
 osis = { path = "core/osis" }
 osis-chat = { path = "libs/chat" }
 osis-kit = { path = "libs/kit" }

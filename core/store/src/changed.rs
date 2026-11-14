@@ -11,13 +11,13 @@
 use crate::codec::{R, W};
 use crate::store::{Shred, Transaction, kind, tail};
 use crate::Error;
-use osis_base::LabelId;
+use osis_base::SyncId;
 
 const END: &[u8] = &[kind::CHANGED, b'n'];
 const SLOT: &[u8] = &[kind::CHANGED, b'c'];
 const ORDER: &[u8] = &[kind::CHANGED, b'C'];
 
-fn order_key(pos: u64, l: &LabelId) -> Vec<u8> {
+fn order_key(pos: u64, l: &SyncId) -> Vec<u8> {
     [ORDER, &pos.to_be_bytes(), &l.0].concat()
 }
 
@@ -28,7 +28,7 @@ fn slot_pos(v: &[u8]) -> Result<u64, Error> {
 impl Transaction<'_> {
     /// A sync ID's current fingerprint: `changed_at` advances if it is new or differs. The new
     /// position, or `None` when nothing changed. One row per sync ID.
-    pub fn changed_note(&mut self, l: LabelId, fingerprint: &[u8; 32]) -> Result<Option<u64>, Error> {
+    pub fn changed_note(&mut self, l: SyncId, fingerprint: &[u8; 32]) -> Result<Option<u64>, Error> {
         let slot = [SLOT, &l.0].concat();
         let old = self.cat_get(&slot)?;
         if old.as_ref().is_some_and(|v| v.get(8..) == Some(fingerprint.as_slice())) {
@@ -50,34 +50,34 @@ impl Transaction<'_> {
     }
 
     /// `changed_at` of `l`, `None` for a sync ID not held.
-    pub fn changed_at(&mut self, l: &LabelId) -> Result<Option<u64>, Error> {
+    pub fn changed_at(&mut self, l: &SyncId) -> Result<Option<u64>, Error> {
         let Some(v) = self.cat_get(&[SLOT, &l.0].concat())? else { return Ok(None) };
         Ok(Some(slot_pos(&v)?))
     }
 
     /// Up to `limit` sync IDs with `changed_at` above `after`, in order. Costs what it returns.
-    pub fn changed_after(&mut self, after: u64, limit: usize) -> Result<Vec<(u64, LabelId)>, Error> {
+    pub fn changed_after(&mut self, after: u64, limit: usize) -> Result<Vec<(u64, SyncId)>, Error> {
         let rows = self.cat_scan(ORDER, &after.saturating_add(1).to_be_bytes(), limit)?;
         let mut out = Vec::with_capacity(rows.len());
         for (k, _) in rows {
             let mut r = R::new(k.get(2..).ok_or(Error::Corrupt("changed_at index"))?);
-            out.push((r.u64()?, LabelId(r.array()?)));
+            out.push((r.u64()?, SyncId(r.array()?)));
         }
         Ok(out)
     }
 
     /// Every sync ID with a `changed_at`.
-    pub fn changed_labels(&mut self) -> Result<Vec<LabelId>, Error> {
+    pub fn changed_labels(&mut self) -> Result<Vec<SyncId>, Error> {
         let mut out = Vec::new();
         self.cat_each(SLOT, |_, k, _| {
-            out.push(LabelId(tail(&k)?));
+            out.push(SyncId(tail(&k)?));
             Ok(())
         })?;
         Ok(out)
     }
 
     /// `l` left this node's sync IDs: its `changed_at` goes, and it leaves every record's S.
-    pub fn changed_forget(&mut self, l: &LabelId) -> Result<(), Error> {
+    pub fn changed_forget(&mut self, l: &SyncId) -> Result<(), Error> {
         let slot = [SLOT, &l.0].concat();
         if let Some(v) = self.cat_get(&slot)? {
             self.cat_remove(&order_key(slot_pos(&v)?, l), Shred::No)?;

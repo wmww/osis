@@ -105,7 +105,7 @@ impl Engine {
     /// commit, its valid signal parts not delivered before told to commit listeners once, and nothing
     /// of it kept. Whether it was new here (a co-reader peer passes a new one on). Bad input is
     /// an error.
-    pub fn ingest_relay(&mut self, blob: CommitBlob) -> Result<bool> {
+    pub(crate) fn ingest_relay_blob(&mut self, blob: CommitBlob) -> Result<bool> {
         let id = blob.id();
         let h = &blob.header;
         if h.ephemeral != Some(EphClass::Relay) {

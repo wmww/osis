@@ -4,7 +4,7 @@
 use super::{case, generated_header, s32};
 use crate::file::VecFile;
 use crate::hex;
-use osis_base::LabelId;
+use osis_base::SyncId;
 use osis_crypto::*;
 
 const SPEC: &str = "spec/crypto.md §2";
@@ -26,7 +26,7 @@ pub fn signatures() -> VecFile {
                 .with("signature", hex(&sig.0)),
         );
     }
-    let (l, c, s) = (LabelId([0x0a; 16]), [0x18u8; 32], [0x19u8; 32]);
+    let (l, c, s) = (SyncId([0x0a; 16]), [0x18u8; 32], [0x19u8; 32]);
     for (name, by_listener) in [("label open by dialer", false), ("label open by listener", true)] {
         cases.push(
             case(name, "spec/wire.md §11.2")

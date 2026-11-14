@@ -9,7 +9,7 @@ use osis_keys::ROLES;
 use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use crate::Mutation;
-use osis_base::{LabelId, Role, Tid, Value};
+use osis_base::{SyncId, Role, Tid, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::{Epoch, KemPublicKey, LabelRole, Secret32, VerifyingKey, label_role_key};
 use osis_keys::{ActorEpochs, registration_epochs};
@@ -111,7 +111,7 @@ pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, parent: 
 }
 
 /// `label.0` write: a new label of `group` with its genesis step, or a step added.
-pub(crate) fn put_label(m: &mut Mutation, group: Tid, label: LabelId, step: &Step, set: &ClaimSet, hosts: Option<&[Address]>) -> Result<()> {
+pub(crate) fn put_label(m: &mut Mutation, group: Tid, label: SyncId, step: &Step, set: &ClaimSet, hosts: Option<&[Address]>) -> Result<()> {
     match hosts {
         Some(hosts) => {
             let l = ct::Label { steps: [(step.id().0, step_record(step, Some(set)))].into_iter().collect(), hosts: hosts.to_vec() };
@@ -156,7 +156,7 @@ pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid) -> 
 
 /// A new label of `group` (its home label when `group` is an actor): genesis step at its
 /// newest epochs, written to `label.0` in `m`. Returns the label ID.
-pub(crate) fn new_label(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32, hosts: &[Address]) -> Result<LabelId> {
+pub(crate) fn new_label(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32, hosts: &[Address]) -> Result<SyncId> {
     let (step, set) = issue(tx, &group, epochs, None, readers, deposit)?;
     put_label(m, group, step.label, &step, &set, Some(hosts))?;
     drop_old_claims(tx, m, group)?;
@@ -165,7 +165,7 @@ pub(crate) fn new_label(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &
 
 /// Names `label` on `hosts` as `actor`'s inbox in its `keys.0`, in `m` (spec/sync-inbox.md §1: in the
 /// commit that makes the label).
-pub(crate) fn name_inbox(m: &mut Mutation, actor: Tid, label: LabelId, hosts: &[Address]) -> Result<()> {
+pub(crate) fn name_inbox(m: &mut Mutation, actor: Tid, label: SyncId, hosts: &[Address]) -> Result<()> {
     m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(ct::Inbox { label, hosts: hosts.to_vec() }).to_value()) })?;
     Ok(())
 }
@@ -222,7 +222,7 @@ impl Engine {
     /// (a role commit; node-sync uploads the rotation commits first, then registers, then
     /// the rest). `None` when nothing is newer, or when it does not hold the head's epochs (it
     /// walks first). `fresh`: issue a step without a rotation (to list readers granted since).
-    pub fn issue_step(&mut self, group: &Tid, label: &LabelId, head: &StepId, fresh: bool) -> Result<(Option<(Step, ClaimSet)>, Done)> {
+    pub fn issue_step(&mut self, group: &Tid, label: &SyncId, head: &StepId, fresh: bool) -> Result<(Option<(Step, ClaimSet)>, Done)> {
         let (g, l, h) = (*group, *label, *head);
         let mut done = Done::default();
         let step = self.run(|tx| {
@@ -276,14 +276,14 @@ impl Engine {
     }
 
     /// The label of `group` with its hosts (`own_label`).
-    pub fn label_of(&mut self, group: &Tid) -> Result<Option<(LabelId, Vec<Address>)>> {
+    pub fn label_of(&mut self, group: &Tid) -> Result<Option<(SyncId, Vec<Address>)>> {
         let g = *group;
         self.read(|tx| own_label(tx, &g))
     }
 }
 
 /// The label IDs `label.0` of `g` records, inside a transaction (unparsable: none).
-pub(crate) fn labels_in(tx: &mut Tx<'_>, g: &Tid) -> Result<Vec<LabelId>> {
+pub(crate) fn labels_in(tx: &mut Tx<'_>, g: &Tid) -> Result<Vec<SyncId>> {
     let Some(v) = tx.state(g, &ak("label.0")?)?.and_then(Fragment::read) else { return Ok(Vec::new()) };
     Ok(ct::LABEL.decode(&v).map(|m| m.into_keys().collect()).unwrap_or_default())
 }

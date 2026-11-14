@@ -31,7 +31,7 @@ use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use crate::identity::Identity;
 use crate::Mutation;
-use osis_base::{Ak, CommitId, CreationRecord, LabelId, Role, Tid, Value, WallMs};
+use osis_base::{Ak, CommitId, CreationRecord, SyncId, Role, Tid, Value, WallMs};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
 use osis_keys::{KeysWrite, HolderKeys, Recipient, SecretsWrite};
@@ -314,7 +314,7 @@ pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inb
 
 /// The label of `tid` (two admins giving it secrets at once made two: the higher ID) of those it
 /// owns (`labels::labels_of`): ID, hosts.
-pub(crate) fn own_label(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, Vec<Address>)>> {
+pub(crate) fn own_label(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(SyncId, Vec<Address>)>> {
     let labels = labels::labels_of(tx, tid)?;
     Ok(labels.into_iter().next_back().map(|(id, l)| (id, l.hosts)))
 }

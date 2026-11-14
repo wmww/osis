@@ -15,7 +15,7 @@
 use crate::codec::{R, W};
 use crate::store::{PAGE, Shred, Transaction, kind, tail};
 use crate::Error;
-use osis_base::{LabelId, Tid};
+use osis_base::{SyncId, Tid};
 use osis_base::format::TID_LEN;
 use std::collections::BTreeSet;
 
@@ -101,16 +101,16 @@ fn actor_key(a: &Tid, id: &RecordId) -> Vec<u8> {
 fn used_key(seq: u64, id: &RecordId) -> Vec<u8> {
     [USED, &seq.to_be_bytes(), id].concat()
 }
-fn member_key(id: &RecordId, l: &LabelId) -> Vec<u8> {
+fn member_key(id: &RecordId, l: &SyncId) -> Vec<u8> {
     [MEMBER, id, &l.0].concat()
 }
-fn index_key(l: &LabelId, id: &RecordId) -> Vec<u8> {
+fn index_key(l: &SyncId, id: &RecordId) -> Vec<u8> {
     [INDEX, &l.0, id].concat()
 }
-fn lag_key(id: &RecordId, l: &LabelId) -> Vec<u8> {
+fn lag_key(id: &RecordId, l: &SyncId) -> Vec<u8> {
     [LAG, id, &l.0].concat()
 }
-fn lag_index_key(l: &LabelId, id: &RecordId) -> Vec<u8> {
+fn lag_index_key(l: &SyncId, id: &RecordId) -> Vec<u8> {
     [LAG_INDEX, &l.0, id].concat()
 }
 
@@ -327,7 +327,7 @@ impl Transaction<'_> {
     }
 
     /// Opens `l` in S, or replaces its member row. Row and index in this one transaction.
-    pub fn record_open(&mut self, id: &RecordId, l: LabelId, m: &Member) -> Result<(), Error> {
+    pub fn record_open(&mut self, id: &RecordId, l: SyncId, m: &Member) -> Result<(), Error> {
         self.record_change(id, |t, rec| {
             let (key, index) = (member_key(id, &l), index_key(&l, id));
             if let Some(old) = t.cat_get(&key)? {
@@ -341,10 +341,10 @@ impl Transaction<'_> {
     }
 
     /// S of `id`, by sync ID.
-    pub fn record_members(&mut self, id: &RecordId) -> Result<Vec<(LabelId, Member)>, Error> {
+    pub fn record_members(&mut self, id: &RecordId) -> Result<Vec<(SyncId, Member)>, Error> {
         let mut out = Vec::new();
         self.cat_each(&[MEMBER, id].concat(), |_, k, v| {
-            out.push((LabelId(tail(&k)?), Member::decode(&v)?));
+            out.push((SyncId(tail(&k)?), Member::decode(&v)?));
             Ok(())
         })?;
         Ok(out)
@@ -352,7 +352,7 @@ impl Transaction<'_> {
 
     /// Removes `l` from S, with its index row. No re-marking: the node stopped holding it, or it
     /// went with the record.
-    fn record_drop_member(&mut self, rec: &mut Record, l: &LabelId) -> Result<bool, Error> {
+    fn record_drop_member(&mut self, rec: &mut Record, l: &SyncId) -> Result<bool, Error> {
         let key = member_key(&rec.id, l);
         let index = index_key(l, &rec.id);
         let Some(old) = self.cat_get(&key)? else { return Ok(false) };
@@ -367,7 +367,7 @@ impl Transaction<'_> {
     /// this record alone (issues/sync-rewrite.md), whether or not it was a member: a
     /// digest difference re-marks on both sides. `stop`, a `Lost`'s cursor, is kept for the
     /// rejoin unless an older one is. Returns `acked_pos`.
-    pub fn record_close(&mut self, id: &RecordId, l: &LabelId, changed_at: u64, stop: Option<Vec<u8>>) -> Result<u64, Error> {
+    pub fn record_close(&mut self, id: &RecordId, l: &SyncId, changed_at: u64, stop: Option<Vec<u8>>) -> Result<u64, Error> {
         self.record_change(id, |t, rec| {
             t.record_drop_member(rec, l)?;
             if let Some(c) = stop
@@ -382,21 +382,21 @@ impl Transaction<'_> {
 
     /// Member `l` moved in the stream (`At`): its row changes if it is still a member, else
     /// nothing (a member closed since stays closed).
-    pub fn record_member_at(&mut self, id: &RecordId, l: LabelId, at: At) -> Result<(), Error> {
+    pub fn record_member_at(&mut self, id: &RecordId, l: SyncId, at: At) -> Result<(), Error> {
         let Some(old) = self.cat_get(&member_key(id, &l))? else { return Ok(()) };
         let m = Member { at, ..Member::decode(&old)? };
         self.record_open(id, l, &m)
     }
 
     /// Member `l`'s end (`until`) is set or cleared: its row changes if it is still a member.
-    pub fn record_member_until(&mut self, id: &RecordId, l: LabelId, until: Option<u64>) -> Result<(), Error> {
+    pub fn record_member_until(&mut self, id: &RecordId, l: SyncId, until: Option<u64>) -> Result<(), Error> {
         let Some(old) = self.cat_get(&member_key(id, &l))? else { return Ok(()) };
         let m = Member { until, ..Member::decode(&old)? };
         self.record_open(id, l, &m)
     }
 
     /// The records holding `l` in S, with its member row there. O(records holding it).
-    pub fn records_holding(&mut self, l: &LabelId) -> Result<Vec<(Record, Member)>, Error> {
+    pub fn records_holding(&mut self, l: &SyncId) -> Result<Vec<(Record, Member)>, Error> {
         let mut out = Vec::new();
         self.cat_each(&[INDEX, &l.0].concat(), |t, k, _| {
             let id = tail(&k)?;
@@ -411,7 +411,7 @@ impl Transaction<'_> {
     /// A member only one side of the record held (a digest difference, issues/sync-rewrite.md
     /// Agreement): out of S with no lag kept, so its rejoin is a listing, and pending again as
     /// `record_close` re-marks. Returns `acked_pos`.
-    pub fn record_drop(&mut self, id: &RecordId, l: &LabelId, changed_at: u64) -> Result<u64, Error> {
+    pub fn record_drop(&mut self, id: &RecordId, l: &SyncId, changed_at: u64) -> Result<u64, Error> {
         self.record_change(id, |t, rec| {
             t.record_drop_member(rec, l)?;
             rec.member_bytes = rec.member_bytes.saturating_sub(t.record_drop_lag(id, l)?);
@@ -469,11 +469,11 @@ impl Transaction<'_> {
     }
 
     /// The lag kept for `l`'s rejoin.
-    pub fn record_lag(&mut self, id: &RecordId, l: &LabelId) -> Result<Option<Vec<u8>>, Error> {
+    pub fn record_lag(&mut self, id: &RecordId, l: &SyncId) -> Result<Option<Vec<u8>>, Error> {
         self.cat_get(&lag_key(id, l))
     }
 
-    fn record_put_lag(&mut self, id: &RecordId, l: &LabelId, c: Vec<u8>) -> Result<u64, Error> {
+    fn record_put_lag(&mut self, id: &RecordId, l: &SyncId, c: Vec<u8>) -> Result<u64, Error> {
         let (key, index) = (lag_key(id, l), lag_index_key(l, id));
         let cost = row_bytes(&key, &c) + index.len() as u64;
         self.cat_put_to(&key, c, Shred::No, false)?;
@@ -482,7 +482,7 @@ impl Transaction<'_> {
     }
 
     /// Removes the lag of `l`, if any; the bytes it freed.
-    fn record_drop_lag(&mut self, id: &RecordId, l: &LabelId) -> Result<u64, Error> {
+    fn record_drop_lag(&mut self, id: &RecordId, l: &SyncId) -> Result<u64, Error> {
         let (key, index) = (lag_key(id, l), lag_index_key(l, id));
         let Some(v) = self.cat_get(&key)? else { return Ok(0) };
         self.cat_remove(&key, Shred::No)?;
@@ -491,7 +491,7 @@ impl Transaction<'_> {
     }
 
     /// `l` rejoined: its lag is spent.
-    pub fn record_take_lag(&mut self, id: &RecordId, l: &LabelId) -> Result<Option<Vec<u8>>, Error> {
+    pub fn record_take_lag(&mut self, id: &RecordId, l: &SyncId) -> Result<Option<Vec<u8>>, Error> {
         let Some(v) = self.cat_get(&lag_key(id, l))? else { return Ok(None) };
         self.record_change(id, |t, rec| {
             rec.member_bytes = rec.member_bytes.saturating_sub(t.record_drop_lag(id, l)?);
@@ -501,7 +501,7 @@ impl Transaction<'_> {
 
     /// The node stopped holding `l`: out of every record's S, every lag of it gone, in this one
     /// transaction (issues/sync-rewrite.md). O(records holding it).
-    pub(crate) fn records_forget_label(&mut self, l: &LabelId) -> Result<(), Error> {
+    pub(crate) fn records_forget_label(&mut self, l: &SyncId) -> Result<(), Error> {
         for (prefix, is_lag) in [(INDEX, false), (LAG_INDEX, true)] {
             self.cat_each(&[prefix, &l.0].concat(), |t, k, _| {
                 let id = tail(&k)?;
@@ -525,7 +525,7 @@ impl Transaction<'_> {
         for (l, _) in self.record_members(&rec.id)? {
             self.record_drop_member(&mut rec, &l)?;
         }
-        self.cat_each(&[LAG, &rec.id].concat(), |t, k, _| t.record_drop_lag(&rec.id, &LabelId(tail(&k)?)).map(drop))?;
+        self.cat_each(&[LAG, &rec.id].concat(), |t, k, _| t.record_drop_lag(&rec.id, &SyncId(tail(&k)?)).map(drop))?;
         for (k, _) in self.record_filter_rows(&rec.id)? {
             self.cat_remove(&k, Shred::No)?;
         }

@@ -5,7 +5,7 @@
 use super::{case, generated_header, s32};
 use crate::file::VecFile;
 use crate::hex;
-use osis_base::{LabelId, Role, Tid, encode};
+use osis_base::{SyncId, Role, Tid, encode};
 use osis_crypto::*;
 
 pub fn seed() -> VecFile {
@@ -33,7 +33,7 @@ pub fn seed() -> VecFile {
     c = c.with("read-kem-public", hex(role_kem(&thing_role_secret(&seed, Role::Read, &tid)).public().as_bytes()));
     cases.push(c);
 
-    let label = LabelId([0x0a; 16]);
+    let label = SyncId([0x0a; 16]);
     let step = X25519Secret::from_secret(&s32(0x06));
     let claim = claim_key(&step, &k.kem.public().x25519(), &label, &step.public()).unwrap();
     let by_holder = claim_key(k.kem.x25519(), &step.public(), &label, &step.public()).unwrap();

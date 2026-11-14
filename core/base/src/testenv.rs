@@ -608,9 +608,10 @@ impl<A: std::fmt::Debug + Clone + 'static> Drop for Script<A> {
 }
 
 /// Runs `run`, which records its steps in a `Script<A>`; with `shrink_var` set nonzero, a failing
-/// run's script is shrunk by dropping steps while `replay` still fails, pass after pass until none
-/// drops, and the shrunk run fails as the original failure, printing its script.
-pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: impl FnOnce(), replay: impl Fn(&[A])) {
+/// run's script is shrunk while `replay` still fails: chunks of steps dropped (halves down to
+/// single steps), then each step replaced by a `simpler` form, to a fixpoint; the shrunk run
+/// fails as the original failure, printing its script.
+pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: impl FnOnce(), replay: impl Fn(&[A]), simpler: impl Fn(&A) -> Vec<A>) {
     use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
     if !u64_var(shrink_var).is_some_and(|n| n != 0) {
         return run();
@@ -636,18 +637,40 @@ pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: im
     };
     let n = steps.len();
     loop {
-        let before = steps.len();
-        let mut i = 0;
-        while i < steps.len() {
-            let mut fewer = steps.clone();
-            fewer.remove(i);
-            if fails(&fewer) {
-                steps = fewer;
-            } else {
-                i += 1;
+        let mut changed = false;
+        let mut chunk = steps.len().div_ceil(2).max(1);
+        loop {
+            let mut i = 0;
+            while i < steps.len() {
+                let mut fewer = steps.clone();
+                fewer.drain(i..(i + chunk).min(steps.len()));
+                if fails(&fewer) {
+                    steps = fewer;
+                    changed = true;
+                } else {
+                    i += chunk;
+                }
+            }
+            if chunk == 1 {
+                break;
+            }
+            chunk = chunk.div_ceil(2);
+        }
+        for i in 0..steps.len() {
+            let Some(step) = steps.get(i) else { break };
+            for s in simpler(step) {
+                let mut tried = steps.clone();
+                if let Some(x) = tried.get_mut(i) {
+                    *x = s;
+                }
+                if fails(&tried) {
+                    steps = tried;
+                    changed = true;
+                    break;
+                }
             }
         }
-        if steps.len() == before {
+        if !changed {
             break;
         }
     }

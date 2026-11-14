@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 osis-engine.workspace = true
+osis-sync.workspace = true
 osis-base.workspace = true
 osis-crdt.workspace = true
 osis-schema.workspace = true

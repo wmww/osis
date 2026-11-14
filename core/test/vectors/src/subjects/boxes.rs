@@ -5,7 +5,7 @@
 use super::{FixedRng, case, generated_header, s32};
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_base::{LabelId, Role, Tid, Value, encode};
+use osis_base::{SyncId, Role, Tid, Value, encode};
 use osis_crypto::*;
 
 const EPH: [u8; 32] = [0x0c; 32];
@@ -120,7 +120,7 @@ pub fn boxes() -> VecFile {
     cases.push(case("secrets box symmetric wrong s", "spec/wire.md §7").with("ad", hex(&ad)).with("s", hex(s32(0x0c).expose())).with("wrap", hex(&w)).with("reject", "decrypt"));
 
     // Entry box.
-    let label = LabelId([0x0a; 16]);
+    let label = SyncId([0x0a; 16]);
     let step_key = X25519Secret::from_secret(&s32(0x06)).public();
     let group = Tid::from_bytes([0x07; 15]);
     let slot = BoxSlot::Entry { label, step_key, group };

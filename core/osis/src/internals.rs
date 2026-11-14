@@ -8,7 +8,7 @@ pub use crate::backlinks::BACKLINK_PAGE;
 pub use crate::commits::COMMIT_PAGE;
 pub use crate::account::OFFER_LIFETIME_MS;
 pub use crate::value_type::of_schema;
-pub use osis_base::{Clock, CommitId as RawCommitId, CreationRecord, LabelId, ManualClock, Ts};
+pub use osis_base::{Clock, CommitId as RawCommitId, CreationRecord, SyncId, ManualClock, Ts};
 pub use osis_base::costs;
 pub use osis_engine as engine;
 pub use osis_schema as schema;

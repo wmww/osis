@@ -121,7 +121,7 @@ fn base() -> World {
     w
 }
 
-fn node(w: &World, held: &[usize], keys: &[DelKey], labels: &[LabelId]) -> NodeState {
+fn node(w: &World, held: &[usize], keys: &[DelKey], labels: &[SyncId]) -> NodeState {
     let mut s = NodeState { held: held.iter().copied().collect(), keys: keys.iter().copied().collect(), labels: labels.iter().copied().collect(), ..Default::default() };
     s.blobs = w.pieces.iter().enumerate().filter(|(_, p)| !p.kids.is_empty()).map(|(i, _)| i).collect();
     s

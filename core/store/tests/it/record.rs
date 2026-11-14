@@ -5,13 +5,13 @@
 use crate::common;
 
 use common::*;
-use osis_base::LabelId;
+use osis_base::SyncId;
 use osis_crypto::SeededRng;
 use osis_store::{At, Fault, Member, RecordId, Shred, Store};
 use std::collections::BTreeSet;
 
-fn l(n: u8) -> LabelId {
-    LabelId([n; 16])
+fn l(n: u8) -> SyncId {
+    SyncId([n; 16])
 }
 
 fn member() -> Member {

@@ -4,7 +4,7 @@
 use super::generated_header;
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_base::{CommitId, CreationRecord, LabelId, Role, Tid, Ts, Value, WallMs, encode};
+use osis_base::{CommitId, CreationRecord, SyncId, Role, Tid, Ts, Value, WallMs, encode};
 use osis_schema::core_types::*;
 use osis_schema::{RawKey, core_schema};
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,7 +32,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
     ]);
     let keys = Keys {
         read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]), possession_key: SigningKey::Ed25519(vec![7; 32]), names: [6; 32], proofs: BTreeMap::new(), left_out: BTreeMap::new() }),
-        inbox: Some(Inbox { label: LabelId([10; 16]), hosts: vec![Address { url: "quic://s.example:4433".into(), key: [11; 32] }] }),
+        inbox: Some(Inbox { label: SyncId([10; 16]), hosts: vec![Address { url: "quic://s.example:4433".into(), key: [11; 32] }] }),
         deposit_seed: Some([12; 32]),
         ..Keys::default()
     };
@@ -47,7 +47,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         history: BTreeMap::from([(HistoryKey { role: Role::Read, epoch: epoch(1) }, vec![17; 64])]),
     };
     let labels: Labels = BTreeMap::from([(
-        LabelId([22; 16]),
+        SyncId([22; 16]),
         Label { steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]), hosts: vec![] },
     )]);
     vec![

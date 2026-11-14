@@ -24,7 +24,7 @@ use crate::engine::{Core, Tx};
 use crate::error::Result;
 use crate::events::{Cause, Event};
 use osis_commit::{CommitBlob, Header};
-use osis_base::{Ak, CommitId, LabelId, Tid};
+use osis_base::{Ak, CommitId, SyncId, Tid};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -47,7 +47,7 @@ enum Fate {
 pub struct Forgotten {
     pub things: BTreeSet<Tid>,
     /// Labels of forgotten groups.
-    pub labels: BTreeSet<LabelId>,
+    pub labels: BTreeSet<SyncId>,
     /// Commits deleted whole.
     pub commits: BTreeSet<CommitId>,
     /// The forgotten aspect indices of each commit with a forgotten part (those of `commits`

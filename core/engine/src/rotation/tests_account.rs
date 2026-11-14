@@ -585,10 +585,10 @@ fn signal_at_a_closed_epoch_is_not_delivered_spec_permissions_5_5() {
     e.watch_commits();
     let fired = |lp: &LocalPeer| lp.peers[1].drain_events().into_iter().filter(|v| matches!(v, crate::events::Event::Commits(cs) if cs.iter().any(|c| c.fired.is_some()))).count();
     lp.peers[1].drain_events();
-    assert!(lp.peers[1].engine.ingest_relay(cs.remove(0).blob).unwrap());
+    assert!(lp.peers[1].engine.ingest_relay_blob(cs.remove(0).blob).unwrap());
     assert_eq!(fired(&lp), 1, "delivered at the open epoch");
     assert!(matches!(lp.peers[1].engine.ingest(&rot, Vec::new()).unwrap(), Ingested::Applied(_)));
     lp.peers[1].drain_events();
-    lp.peers[1].engine.ingest_relay(cs.remove(0).blob).unwrap();
+    lp.peers[1].engine.ingest_relay_blob(cs.remove(0).blob).unwrap();
     assert_eq!(fired(&lp), 0, "not once the epoch is closed");
 }

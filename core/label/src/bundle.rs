@@ -11,7 +11,7 @@ use crate::step::{ClaimSet, OBJECT_LIMITS, Step, verify_path};
 use crate::Error;
 use osis_base::cbor::{decode, encode};
 use osis_base::format::MAX_MESSAGE;
-use osis_base::{BlobId, LabelId, Value};
+use osis_base::{BlobId, SyncId, Value};
 use osis_crypto::{Signature, WRAP_LEN};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -23,13 +23,13 @@ const FORMAT: u64 = 1;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Record {
     /// `[1, label_id, [[step, Opt(claim_set)]+]]`: the path from the genesis step to the head.
-    Path { label: LabelId, steps: Vec<(Step, Option<ClaimSet>)> },
+    Path { label: SyncId, steps: Vec<(Step, Option<ClaimSet>)> },
     /// `[2, blob]`: before the first entry naming it, once per bundle.
     Blob(Vec<u8>),
     /// `[3, label_id, blob_id, wrap, Opt(stamp)]`; no stamp: deposited.
-    Entry { label: LabelId, blob: BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature> },
+    Entry { label: SyncId, blob: BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature> },
     /// `[4, label_id, blob_id]`.
-    Delete { label: LabelId, blob: BlobId },
+    Delete { label: SyncId, blob: BlobId },
     /// A record of a kind this build does not know: skipped.
     Unknown(u64),
 }
@@ -54,7 +54,7 @@ impl Record {
     pub fn from_value(v: &Value) -> Result<Record, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("bundle record")) };
         let (kind, rest) = items.split_first().ok_or(Error::Malformed("bundle record"))?;
-        let label = |v: &Value| get_bytes(v, "record label").map(LabelId);
+        let label = |v: &Value| get_bytes(v, "record label").map(SyncId);
         let blob = |v: &Value| get_bytes(v, "record blob id").map(BlobId);
         Ok(match (get_uint(kind, "record kind")?, rest) {
             (1, [l, Value::List(steps)]) => {
@@ -198,19 +198,19 @@ impl<R: Read> BundleReader<R> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BundleEvent {
     /// A verified registration path; its last step is the head.
-    Path { label: LabelId, steps: Vec<(Step, Option<ClaimSet>)> },
+    Path { label: SyncId, steps: Vec<(Step, Option<ClaimSet>)> },
     /// Blob bytes, ID checked by hashing.
     Blob { id: BlobId, blob: Vec<u8> },
     /// An entry; a stamp verified against the label's head write key; no stamp: deposited.
-    Add { label: LabelId, blob: BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature> },
-    Deleted { label: LabelId, blob: BlobId },
+    Add { label: SyncId, blob: BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature> },
+    Deleted { label: SyncId, blob: BlobId },
 }
 
 /// Verifies bundle records as a peer does: paths step by step, stamps against the path's head,
 /// entries only for blobs given earlier. Unknown records are skipped.
 #[derive(Default)]
 pub struct Importer {
-    heads: HashMap<LabelId, Step>,
+    heads: HashMap<SyncId, Step>,
     blobs: HashSet<BlobId>,
 }
 
@@ -220,7 +220,7 @@ impl Importer {
     }
 
     /// The head of a label's imported path.
-    pub fn head(&self, label: &LabelId) -> Option<&Step> {
+    pub fn head(&self, label: &SyncId) -> Option<&Step> {
         self.heads.get(label)
     }
 

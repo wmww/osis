@@ -4,7 +4,7 @@
 use osis_base::memo::Memo;
 use crate::engine::{Core, Engine};
 use crate::error::Result;
-use osis_base::{ChainStep, LabelId, Role, Tid};
+use osis_base::{ChainStep, SyncId, Role, Tid};
 use osis_crypto::{LabelRole, label_role_key};
 use osis_keys::ActorEpochs;
 use osis_label::{ClaimSet, Step, StepId};
@@ -16,7 +16,7 @@ use std::sync::Arc;
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupLabel {
     pub group: Tid,
-    pub id: LabelId,
+    pub id: SyncId,
     /// Steps by ID with their claim sets when recorded.
     pub steps: BTreeMap<StepId, (Step, Option<ClaimSet>)>,
 }
@@ -35,7 +35,7 @@ pub struct GroupLabel {
 /// holds no sync secret of g's own (it reads g by derived secrets, which no step bears, until the
 /// commit giving g's own reaches it under these very labels) the entries are its admins' word, as
 /// a label hint is its sender's.
-pub(crate) fn owns(epochs: Option<&ActorEpochs>, id: &LabelId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
+pub(crate) fn owns(epochs: Option<&ActorEpochs>, id: &SyncId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
     let Some(e) = epochs else { return false };
     let held: BTreeSet<[u8; 32]> = e.sync.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s).verifying_key().to_bytes()).collect();
     // the genesis first (every holder holds the older secrets, so usually it bears one): one
@@ -49,7 +49,7 @@ pub(crate) fn owns(epochs: Option<&ActorEpochs>, id: &LabelId, steps: &BTreeMap<
     bearing.into_iter().any(|(_, k)| osis_label::path_to(&plain, k).is_ok_and(|p| p.first().is_some_and(|g| g.label == *id)))
 }
 
-fn group_label(g: &Tid, id: &LabelId, l: &ct::Label) -> Option<Arc<GroupLabel>> {
+fn group_label(g: &Tid, id: &SyncId, l: &ct::Label) -> Option<Arc<GroupLabel>> {
     let steps = osis_label::label_steps(l).ok()?;
     Some(Arc::new(GroupLabel { group: *g, id: *id, steps }))
 }
@@ -77,7 +77,7 @@ impl GroupLabel {
 impl Core {
     /// Whether `g` owns label `id` here (`owns`): judged once this node holds a sync secret of
     /// `g`'s own, else taken.
-    pub(crate) fn owns_label(&self, g: &Tid, id: &LabelId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
+    pub(crate) fn owns_label(&self, g: &Tid, id: &SyncId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
         if !self.own_record(g).is_some_and(|e| e.sync.holds_any()) {
             return true;
         }
@@ -145,16 +145,16 @@ impl Engine {
     }
 
     /// The inbox of actor `a` (spec/sync-inbox.md §1): the sync ID its `keys.0` names.
-    pub fn inbox(&mut self, a: &Tid) -> Option<LabelId> {
+    pub fn inbox(&mut self, a: &Tid) -> Option<SyncId> {
         self.get_typed(a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox).map(|i| i.label)
     }
 
     /// The inboxes here (spec/sync-inbox.md §1): per sync ID, the actors with secrets held here whose
     /// `keys.0` names it. Usually one: an admin may write any sync ID there, and a blob is tried
     /// under each, so naming another actor's inbox hides nothing from it.
-    pub fn inbox_actors(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
+    pub fn inbox_actors(&mut self) -> Arc<BTreeMap<SyncId, Vec<Tid>>> {
         let read = |e: &mut Engine| {
-            let mut by: BTreeMap<LabelId, Vec<Tid>> = BTreeMap::new();
+            let mut by: BTreeMap<SyncId, Vec<Tid>> = BTreeMap::new();
             for a in e.core.ix.secrets.keys().chain(e.core.accounts.keys()).copied().collect::<BTreeSet<_>>() {
                 if let Some(l) = e.get_typed(&a, &ct::KEYS)?.and_then(|k| k.inbox).map(|i| i.label) {
                     by.entry(l).or_default().push(a);
