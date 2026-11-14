@@ -330,6 +330,39 @@ fn known_actor(e: &mut osis_engine::Engine, h: Tid) -> Result<()> {
     Ok(())
 }
 
+/// `ReadOnly::holders`, read by `r` (as its actor: nothing behind an actor it may not read).
+pub(crate) fn holders_in(r: &crate::read::Reader<'_>, target: Tid) -> Vec<Holder> {
+    let mut out: Vec<Holder> = Vec::new();
+    // the ways looked behind so far, per actor: a way none of them beats goes behind it too,
+    // else a member's role through a nested actor is that of the actor's first way in
+    let mut seen: BTreeMap<Tid, Vec<(Role, Option<Time>)>> = BTreeMap::new();
+    let mut queue = std::collections::VecDeque::<(Tid, Option<Role>, Option<Time>, Vec<Tid>)>::from([(target, None, None, Vec::new())]);
+    while let Some((at, role, until, through)) = queue.pop_front() {
+        for (actor, g) in r.grants(at) {
+            if actor == target || through.contains(&actor) {
+                continue;
+            }
+            let way = Holder {
+                actor,
+                kind: r.holder_kind(actor),
+                role: role.map_or(g.role, |x| x.min(g.role)),
+                until: [until, g.until].into_iter().flatten().min(),
+                through: through.clone(),
+            };
+            let ways = seen.entry(actor).or_default();
+            let beaten = ways.iter().any(|(r, u)| *r >= way.role && (u.is_none() || way.until.is_some_and(|w| Some(w) <= *u)));
+            if !beaten {
+                ways.push((way.role, way.until));
+                let mut on = way.through.clone();
+                on.push(actor);
+                queue.push_back((actor, Some(way.role), way.until, on));
+            }
+            out.push(way);
+        }
+    }
+    out
+}
+
 fn needs_admin(e: osis_engine::Error) -> Error {
     match e {
         osis_engine::Error::Permission { tid } => Error::Permission { tid, needs: Role::Admin },
@@ -346,38 +379,10 @@ impl ReadOnly {
     /// `may_grant` and whether a grant goes with a membership: `grants`. On a client with its own actor,
     /// what that actor may read: nothing behind an actor it may not read.
     pub fn holders(&self, target: Tid) -> Result<Vec<Holder>> {
-        self.local_at(target, "holders")?;
-        Ok(self.read_answer(|| crate::track::thing_key("holders", target), crate::watch::Filter::Due(crate::watch::Watch::Roles), move |r| {
-            let mut out: Vec<Holder> = Vec::new();
-            // the ways looked behind so far, per actor: a way none of them beats goes behind it too,
-            // else a member's role through a nested actor is that of the actor's first way in
-            let mut seen: BTreeMap<Tid, Vec<(Role, Option<Time>)>> = BTreeMap::new();
-            let mut queue = std::collections::VecDeque::<(Tid, Option<Role>, Option<Time>, Vec<Tid>)>::from([(target, None, None, Vec::new())]);
-            while let Some((at, role, until, through)) = queue.pop_front() {
-                for (actor, g) in r.grants(at) {
-                    if actor == target || through.contains(&actor) {
-                        continue;
-                    }
-                    let way = Holder {
-                        actor,
-                        kind: r.holder_kind(actor),
-                        role: role.map_or(g.role, |x| x.min(g.role)),
-                        until: [until, g.until].into_iter().flatten().min(),
-                        through: through.clone(),
-                    };
-                    let ways = seen.entry(actor).or_default();
-                    let beaten = ways.iter().any(|(r, u)| *r >= way.role && (u.is_none() || way.until.is_some_and(|w| Some(w) <= *u)));
-                    if !beaten {
-                        ways.push((way.role, way.until));
-                        let mut on = way.through.clone();
-                        on.push(actor);
-                        queue.push_back((actor, Some(way.role), way.until, on));
-                    }
-                    out.push(way);
-                }
-            }
-            out
-        }))
+        if let Some(at) = self.remote(target, "holders")? {
+            return crate::port::codec::holders_from(self.remote_call(&at, crate::port::method::HOLDERS, vec![osis_base::Value::Tid(target)], crate::port::VALUE_REPLY)?);
+        }
+        Ok(self.read_answer(|| crate::track::thing_key("holders", target), crate::watch::Filter::Due(crate::watch::Watch::Roles), move |r| holders_in(r, target)))
     }
 
     /// The profile thing of an account whose card this node imported, if any.

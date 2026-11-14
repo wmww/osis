@@ -16,8 +16,8 @@ use super::{MAX_CLIENTS, WRITE_NONCES, filter, method};
 use crate::error::{Error, Result};
 use crate::handle::{Locked, ReadOnly};
 use crate::read::Reader;
-use crate::watch::{Delivery, Filter, ReadAt, Subscription, digest};
-use osis_base::{Tid, Value};
+use crate::watch::{Delivery, Digest, Filter, ReadAt, Subscription, digest};
+use osis_base::{Ak, Tid, Value};
 use osis_proto::api::{Outcome, Payload};
 use osis_proto::limits::{MAX_CONNS_PER_CLIENT, MAX_SUBS};
 use osis_proto::{Code, Msg};
@@ -331,6 +331,31 @@ fn run(h: &crate::Osis, method: u64, args: Vec<Value>) -> Result<Value> {
             let t = here(h, one_tid(&args)?)?;
             Ok(Value::Bool(h.read_local(|r| r.holds(t))))
         }
+        method::GROUPS_OF => {
+            let t = here(h, one_tid(&args)?)?;
+            Ok(codec::groups_of_to(&h.read_local(|r| r.groups_of(t))))
+        }
+        method::GRANTS => {
+            let t = here(h, one_tid(&args)?)?;
+            Ok(codec::grants_to(&h.read_local(|r| r.grants(t))))
+        }
+        method::ROLE_ON => {
+            let t = here(h, one_tid(&args)?)?;
+            Ok(opt(h.read_local(|r| r.role_on(t))?.map(codec::role_to)))
+        }
+        method::HOLDERS => {
+            let t = here(h, one_tid(&args)?)?;
+            Ok(codec::holders_to(&h.read_local(|r| crate::share::holders_in(r, t))))
+        }
+        method::CREATED => {
+            let t = here(h, one_tid(&args)?)?;
+            Ok(codec::thing_stamp_to(h.read_local(|r| r.created(t))))
+        }
+        method::CHANGED => {
+            let t = here(h, one_tid(&args)?)?;
+            Ok(codec::thing_stamp_to(h.read_local(|r| r.changed(t))))
+        }
+        method::STATUS => Ok(codec::status_to(&h.locked(|l| crate::syncing::status_in(l, h.acting))?)),
         method::NOW => Ok(Value::uint(h.now()?.0)),
         method::SETTLE => {
             // every Notify for what changed before this goes before its Reply
@@ -394,31 +419,172 @@ fn write(db: &ReadOnly, h: &crate::Osis, who: Who, id: [u8; 16], mut args: Vec<V
     o
 }
 
+/// What a Sub watches (its filter, notes/client-port.md §2).
+enum Watched {
+    Value(Tid, crate::DynamicAspectKey, Path),
+    Thing(Tid),
+    Grants(Tid),
+    Status,
+}
+
+fn watched(f: Value) -> Result<Watched> {
+    let mut f = list(f, "filter")?;
+    let kind = f.first().and_then(Value::as_uint);
+    let rest = f.split_off(f.len().min(1));
+    match kind {
+        Some(filter::VALUE) => place(rest).map(|(t, k, p)| Watched::Value(t, k, p)),
+        Some(filter::THING) => one_tid(&rest).map(Watched::Thing),
+        Some(filter::GRANTS) => one_tid(&rest).map(Watched::Grants),
+        Some(filter::STATUS) if rest.is_empty() => Ok(Watched::Status),
+        Some(filter::STATUS) => Err(bad("filter")),
+        _ => Err(Error::Unsupported("no such filter".into())),
+    }
+}
+
+/// What a subscription's callback makes of a delivery: the Notifies to push, each its value and
+/// the `source` it goes as above `max_reply`.
+type Tell = Box<dyn FnMut(&crate::Osis, Delivery) -> Vec<(Value, Value)> + Send>;
+
+/// Reads with `f` as `actor` (a callback's handle is the node's own).
+fn read_as<R>(db: &ReadOnly, actor: Option<Tid>, f: impl FnOnce(&mut Reader<'_>) -> R) -> R {
+    let limit = db.inner.limit;
+    db.locked(|l| f(&mut Reader { e: l.engine(), limit, actor }))
+}
+
+/// `t`'s `ak` read as `actor`, as a Notify of a thing filter when it reads otherwise than `last`
+/// (absent when never told: a thing the actor may not read tells nothing).
+fn aspect_told(db: &ReadOnly, actor: Option<Tid>, last: &mut BTreeMap<Ak, Option<Digest>>, t: Tid, ak: Ak, origin: &crate::Origin, limit: Value) -> Option<(Value, Value)> {
+    let value = read_as(db, actor, |r| r.value(t, &ak));
+    let now = digest(&value);
+    if value.is_ok() && last.get(&ak).copied().unwrap_or(digest(&Ok(None))) == now {
+        return None;
+    }
+    last.insert(ak.clone(), now);
+    Some((Value::List(vec![codec::ak_to(&ak), read_to(&value), codec::origin_to(origin)]), Value::List(vec![codec::ak_to(&ak), limit])))
+}
+
+/// The value a Sub's Reply carries and how it goes on: each kind read as `actor`, so a thing it
+/// may not read answers and tells exactly what a never known one does.
+fn watch(l: &mut Locked, read_limit: usize, actor: Option<Tid>, w: Watched, limit: usize) -> Result<(Value, Filter, Tell)> {
+    let mut r = Reader { e: l.engine(), limit: read_limit, actor };
+    let source = Value::uint(limit as u64);
+    Ok(match w {
+        Watched::Value(t, k, p) => {
+            let ak = k.ak.clone();
+            let read = ReadAt::new(move |r| {
+                let a = std::mem::replace(&mut r.actor, actor);
+                let v = r.get_path(t, &k, &p);
+                r.actor = a;
+                v
+            });
+            let first = read.0(&mut r);
+            let mut last = digest(&first);
+            let tell: Tell = Box::new(move |_, d| {
+                let Delivery::Aspect { value, origin, .. } = d else { return Vec::new() };
+                let now = digest(&value);
+                if value.is_ok() && now == last {
+                    return Vec::new();
+                }
+                last = now;
+                vec![(Value::List(vec![read_to(&value), codec::origin_to(&origin)]), source.clone())]
+            });
+            (read_to(&first), Filter::Aspect(t, ak, read), tell)
+        }
+        Watched::Thing(t) => {
+            let mut last = BTreeMap::new();
+            let mut first = Vec::new();
+            for ak in r.aspects(t)? {
+                let v = r.value(t, &ak);
+                last.insert(ak.clone(), digest(&v));
+                first.push(Value::List(vec![codec::ak_to(&ak), read_to(&v)]));
+            }
+            let tell: Tell = Box::new(move |db, d| match d {
+                Delivery::Aspect { ak, origin, .. } => aspect_told(db, actor, &mut last, t, ak, &origin, source.clone()).into_iter().collect(),
+                // every aspect it told or holds now, read again
+                Delivery::Reread => {
+                    let mut aks: std::collections::BTreeSet<Ak> = last.keys().cloned().collect();
+                    aks.extend(read_as(db, actor, |r| r.aspects(t)).unwrap_or_default());
+                    let origin = crate::Origin::Derived(crate::DerivedFrom::Recovered);
+                    aks.into_iter().filter_map(|ak| aspect_told(db, actor, &mut last, t, ak, &origin, source.clone())).collect()
+                }
+                _ => Vec::new(),
+            });
+            (Value::List(first), Filter::Thing(t), tell)
+        }
+        Watched::Grants(t) => {
+            let first = codec::grants_to(&r.grants(t));
+            let mut last = first.clone();
+            let tell: Tell = Box::new(move |db, d| {
+                if !matches!(d, Delivery::Grants) {
+                    return Vec::new();
+                }
+                let now = codec::grants_to(&read_as(db, actor, |r| r.grants(t)));
+                if now == last {
+                    return Vec::new();
+                }
+                last = now.clone();
+                vec![(now, source.clone())]
+            });
+            (first, Filter::Grants(t), tell)
+        }
+        Watched::Status => {
+            let first = codec::status_to(&crate::syncing::status_in(l, actor)?);
+            let mut last = first.clone();
+            let tell: Tell = Box::new(move |db, d| {
+                if !matches!(d, Delivery::Due) {
+                    return Vec::new();
+                }
+                let Ok(now) = db.locked(|l| crate::syncing::status_in(l, actor)) else { return Vec::new() };
+                let now = codec::status_to(&now);
+                if now == last {
+                    return Vec::new();
+                }
+                last = now.clone();
+                vec![(now, source.clone())]
+            });
+            (first, Filter::Status, tell)
+        }
+    })
+}
+
+/// Pushes a delivery of subscription `id` on `conn`; one with no room lapses it (the client
+/// subscribes again): `false`.
+fn push(db: &ReadOnly, conn: ConnId, id: osis_sync::session::RequestId, limit: usize, value: Value, source: Value) -> bool {
+    let mut m = Msg::Notify { sub_id: id, payload: Payload::Delivery { value } };
+    if m.encode().len() > limit {
+        m = Msg::Notify { sub_id: id, payload: Payload::TooLarge { source } };
+    }
+    db.locked(|l| match l.node.port_push(conn, m, false) {
+        Some(o) => {
+            l.out.extend(o);
+            true
+        }
+        None => {
+            let gone = l.port.sessions.get_mut(&conn).and_then(|s| s.subs.remove(&id));
+            let o = l.node.port_push(conn, Msg::Notify { sub_id: id, payload: Payload::Lapsed }, true).unwrap_or_default();
+            l.out.extend(o);
+            drop(gone);
+            false
+        }
+    })
+}
+
 /// A Sub: the filter's value now in its Reply and a Notify each time it reads otherwise, read
 /// as the session's actor at each send (notes/client-port.md §2 Subscriptions as pushes).
 fn sub(db: &ReadOnly, conn: ConnId, id: osis_sync::session::RequestId, max_reply: u64, f: Value, answer: &mut dyn FnMut(&mut Locked, Msg)) {
     let mut refuse = |m: Msg| db.locked(|l| answer(l, m));
     let Some((who, _)) = session(db, conn) else { return refuse(error(Code::REFUSED)) };
-    let parsed = list(f, "filter").and_then(|mut f| match f.first().and_then(Value::as_uint) {
-        Some(filter::VALUE) => place(f.split_off(1)),
-        _ => Err(Error::Unsupported("no such filter".into())),
-    });
-    let (t, k, p) = match parsed {
-        Ok(x) => x,
+    let w = match watched(f) {
+        Ok(w) => w,
         Err(e) => return refuse(reply(outcome_of(&e))),
     };
     let h = handle(db, who);
-    if let Err(e) = here(&h, t) {
+    if let Watched::Value(t, ..) | Watched::Thing(t) | Watched::Grants(t) = &w
+        && let Err(e) = here(&h, *t)
+    {
         return refuse(reply(outcome_of(&e)));
     }
     let acting = h.acting;
-    let ak = k.ak.clone();
-    let read = ReadAt::new(move |r| {
-        let a = std::mem::replace(&mut r.actor, acting);
-        let v = r.get_path(t, &k, &p);
-        r.actor = a;
-        v
-    });
     let limit = usize::try_from(max_reply).unwrap_or(usize::MAX);
     db.locked(|l| {
         let Some(s) = l.port.sessions.get(&conn) else { return answer(l, error(Code::REFUSED)) };
@@ -429,40 +595,27 @@ fn sub(db: &ReadOnly, conn: ConnId, id: osis_sync::session::RequestId, max_reply
         if s.subs.len() >= MAX_SUBS {
             return answer(l, error(Code::RATE_LIMITED));
         }
-        let first = read.0(&mut Reader { e: l.engine(), limit: db.inner.limit, actor: acting });
-        let initial = reply(Outcome::Ok { value: read_to(&first) });
+        let (first, filter, mut tell) = match watch(l, db.inner.limit, acting, w, limit) {
+            Ok(x) => x,
+            Err(e) => return answer(l, reply(outcome_of(&e))),
+        };
+        let initial = reply(Outcome::Ok { value: first });
         if initial.encode().len() > limit {
             return answer(l, reply(Outcome::too_large(limit)));
         }
-        let mut last = digest(&first);
         let cb = Box::new(move |db: &crate::Osis, d: Delivery| {
-            let Delivery::Aspect { value, origin, .. } = d else { return };
-            let now = digest(&value);
-            if value.is_ok() && now == last {
-                return;
-            }
-            last = now;
+            let out = tell(db, d);
             // the session is checked at every send: an ended one hears nothing more
-            if session(db, conn).is_none() {
+            if out.is_empty() || session(db, conn).is_none() {
                 return;
             }
-            let delivery = Payload::Delivery { value: Value::List(vec![read_to(&value), codec::origin_to(&origin)]) };
-            let mut m = Msg::Notify { sub_id: id, payload: delivery };
-            if m.encode().len() > limit {
-                m = Msg::Notify { sub_id: id, payload: Payload::TooLarge { source: Value::uint(limit as u64) } };
-            }
-            db.locked(|l| match l.node.port_push(conn, m, false) {
-                Some(o) => l.out.extend(o),
-                // no room: it lapses, and the client subscribes again
-                None => {
-                    let gone = l.port.sessions.get_mut(&conn).and_then(|s| s.subs.remove(&id));
-                    let o = l.node.port_push(conn, Msg::Notify { sub_id: id, payload: Payload::Lapsed }, true).unwrap_or_default();
-                    l.out.extend(o);
-                    drop(gone);
+            for (value, source) in out {
+                if !push(db, conn, id, limit, value, source) {
+                    return;
                 }
-            });
+            }
         });
-        let sub = db.subscribe_in(l, Filter::Aspect(t, ak, read.clone()), false, cb);
+        let sub = db.subscribe_in(l, filter, false, cb);
         if let Some(s) = l.port.sessions.get_mut(&conn) {
             s.subs.insert(id, sub);
         }

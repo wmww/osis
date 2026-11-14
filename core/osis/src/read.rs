@@ -460,7 +460,9 @@ impl ReadOnly {
     /// The groups the thing is in: those listing it as an item or as a subgroup, and every group
     /// holding it transitively.
     pub fn groups_of(&self, tid: Tid) -> Result<GroupsOf> {
-        self.local_at(tid, "groups_of")?;
+        if let Some(at) = self.remote(tid, "groups_of")? {
+            return crate::port::codec::groups_of_from(self.remote_call(&at, crate::port::method::GROUPS_OF, vec![Value::Tid(tid)], crate::port::VALUE_REPLY)?);
+        }
         Ok(self.read_answer(|| thing_key("groups_of", tid), Filter::Due(Watch::Groups(tid)), move |r| r.groups_of(tid)))
     }
 
@@ -474,7 +476,9 @@ impl ReadOnly {
 
     /// The roles granted on `thing`, by holder. Whoever holds through those: `holders`.
     pub fn grants(&self, thing: Tid) -> Result<Grants> {
-        self.local_at(thing, "grants")?;
+        if let Some(at) = self.remote(thing, "grants")? {
+            return crate::port::codec::grants_from(self.remote_call(&at, crate::port::method::GRANTS, vec![Value::Tid(thing)], crate::port::VALUE_REPLY)?);
+        }
         Ok(self.read_answer(|| thing_key("grants", thing), Filter::Grants(thing), move |r| r.grants(thing)))
     }
 
@@ -482,7 +486,10 @@ impl ReadOnly {
     /// read until this node can write the thing: the keys a write needs can arrive after the role
     /// (on another node of the account, say), and a write before then fails `Permission`.
     pub fn role_on(&self, tid: Tid) -> Result<Option<Role>> {
-        self.local_at(tid, "role_on")?;
+        if let Some(at) = self.remote(tid, "role_on")? {
+            let v = self.remote_call(&at, crate::port::method::ROLE_ON, vec![Value::Tid(tid)], crate::port::SMALL_REPLY)?;
+            return crate::port::codec::opt_from(v, "role")?.map(|r| crate::port::codec::role_from(&r)).transpose();
+        }
         self.read_answer(|| thing_key("role_on", tid), Filter::Due(Watch::Roles), move |r| r.role_on(tid))
     }
 
@@ -503,7 +510,9 @@ impl ReadOnly {
     /// When the thing was created: the oldest valid commit carrying its creation; `None` while it
     /// is unknown here, or once it was destroyed (`Write::purge`, `Write::release`, an expiry).
     pub fn created(&self, tid: Tid) -> Result<Option<ThingStamp>> {
-        self.local_at(tid, "created")?;
+        if let Some(at) = self.remote(tid, "created")? {
+            return crate::port::codec::thing_stamp_from(self.remote_call(&at, crate::port::method::CREATED, vec![Value::Tid(tid)], crate::port::SMALL_REPLY)?);
+        }
         Ok(self.read_answer(|| thing_key("created", tid), Filter::Due(Watch::CommitsOf(tid)), move |r| r.created(tid)))
     }
 
@@ -511,7 +520,9 @@ impl ReadOnly {
     /// is); its creation if never since. A commit known here only from a `CommitKind::Snapshot` is
     /// not seen.
     pub fn changed(&self, tid: Tid) -> Result<Option<ThingStamp>> {
-        self.local_at(tid, "changed")?;
+        if let Some(at) = self.remote(tid, "changed")? {
+            return crate::port::codec::thing_stamp_from(self.remote_call(&at, crate::port::method::CHANGED, vec![Value::Tid(tid)], crate::port::SMALL_REPLY)?);
+        }
         Ok(self.read_answer(|| thing_key("changed", tid), Filter::Due(Watch::CommitsOf(tid)), move |r| r.changed(tid)))
     }
 
@@ -563,7 +574,9 @@ impl Osis {
     /// Fails `Network` when `tid` is at a node that cannot be reached now. A live watch hears a
     /// lost connection as an `Err` value, and the aspects again once it is back.
     pub fn on_thing_change(&self, tid: Tid, mut f: impl FnMut(&Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
-        self.local_at(tid, "on_thing_change")?;
+        if let Some(at) = self.remote(tid, "on_thing_change")? {
+            return self.remote_thing_watch(&at, tid, f);
+        }
         let mut failed = None;
         let sub = self.subscribe(Filter::Thing(tid), true, |r| {
             let mut first: BTreeMap<Ak, Result<Option<Value>>> = BTreeMap::new();
@@ -609,7 +622,9 @@ impl Osis {
     /// `Network` when `thing` is at a node that cannot be reached now; a live watch hears a lost
     /// connection as an `Err`, and the grants again once it is back.
     pub fn on_grants_change(&self, thing: Tid, mut f: impl FnMut(&Osis, Result<Grants>) + Send + 'static) -> Result<Subscription> {
-        self.local_at(thing, "on_grants_change")?;
+        if let Some(at) = self.remote(thing, "on_grants_change")? {
+            return self.remote_grants_watch(&at, thing, f);
+        }
         Ok(self.subscribe(Filter::Grants(thing), true, move |r| {
             let mut last = r.grants(thing);
             Box::new(move |db, d| match d {
@@ -861,7 +876,7 @@ impl crate::handle::ReadOnly {
 
 /// `on_thing_change`'s `f` hears `c` when it differs from the last value it heard there (an error
 /// always).
-fn tell_changed(last: &mut BTreeMap<Ak, Option<crate::watch::Digest>>, db: &Osis, c: Change<Value>, f: &mut impl FnMut(&Osis, Change<Value>)) {
+pub(crate) fn tell_changed(last: &mut BTreeMap<Ak, Option<crate::watch::Digest>>, db: &Osis, c: Change<Value>, f: &mut impl FnMut(&Osis, Change<Value>)) {
     if c.value.is_err() || last.get(&c.ak) != Some(&digest(&c.value)) {
         last.insert(c.ak.clone(), digest(&c.value));
         f(db, c);

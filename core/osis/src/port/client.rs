@@ -25,6 +25,7 @@ use super::method;
 use crate::error::{Error, Result};
 use crate::handle::{Locked, ReadOnly};
 use crate::share::Address;
+use crate::syncing::Status;
 use crate::watch::{Change, Delivery, Filter, Msg as Queued, Origin, Subscription, digest};
 use osis_base::{Ak, Tid, Value};
 use osis_proto::api::Payload;
@@ -81,10 +82,23 @@ struct Pending {
 /// A watch at the node.
 struct Watch {
     filter: Value,
-    tid: Tid,
-    ak: Ak,
     /// Its subscription's id at the node, while live.
     sub: Option<RequestId>,
+}
+
+/// What a subscription at a node tells its watch here (`Delivery::Remote`); the watch decodes it
+/// as its filter's forms.
+#[derive(Clone, Debug)]
+pub(crate) enum Pushed {
+    /// The Sub's Reply: the filter's value now (again after a reconnect).
+    Initial(Value),
+    /// A Notify's delivery.
+    Delivery(Value),
+    /// A delivery above the Sub's `max_reply`: its `source`.
+    TooLarge(Value),
+    /// The connection was lost (the watch subscribes again once back), or the node refused the
+    /// Sub.
+    Failed(Error),
 }
 
 /// One node this process is a client of.
@@ -130,10 +144,10 @@ fn with<R>(db: &ReadOnly, l: &mut Locked, i: usize, f: impl FnOnce(&mut Cx<'_>, 
 }
 
 impl Cx<'_> {
-    /// Queues `d` for local watch `local`.
-    fn deliver(&mut self, local: u64, d: Delivery) {
+    /// Queues what `r`'s node pushed for local watch `local`.
+    fn deliver(&mut self, r: &Remote, local: u64, got: Pushed) {
         *self.seq += 1;
-        self.db.inner.dispatch.send(*self.seq, Queued::Deliver(local, d));
+        self.db.inner.dispatch.send(*self.seq, Queued::Deliver(local, Delivery::Remote { from: r.addr.clone(), got }));
     }
 
     /// Dials `r` again if it is down for the network.
@@ -223,9 +237,9 @@ impl Cx<'_> {
                 _ => {}
             }
         }
-        let told: Vec<(u64, Tid, Ak)> = r.watches.iter_mut().filter_map(|(k, w)| w.sub.take().map(|_| (*k, w.tid, w.ak.clone()))).collect();
-        for (local, tid, ak) in told {
-            self.deliver(local, Delivery::Aspect { tid, ak, origin: Origin::Initial, value: Err(e.clone()) });
+        let told: Vec<u64> = r.watches.iter_mut().filter_map(|(k, w)| w.sub.take().map(|_| *k)).collect();
+        for local in told {
+            self.deliver(r, local, Pushed::Failed(e.clone()));
         }
     }
 
@@ -320,13 +334,11 @@ pub(crate) fn reply(db: &ReadOnly, conn: ConnId, id: RequestId, m: Msg) {
                 }
             }
             Asked::Sub(local, waiter) => {
-                let got = answered(m).and_then(read_from).and_then(|v| v);
                 let Some(w) = r.watches.get_mut(&local) else { return };
-                let (tid, ak) = (w.tid, w.ak.clone());
-                match (got, waiter) {
+                match (answered(m), waiter) {
                     (Ok(v), waiter) => {
                         w.sub = Some(id);
-                        cx.deliver(local, Delivery::Aspect { tid, ak, origin: Origin::Initial, value: Ok(v) });
+                        cx.deliver(r, local, Pushed::Initial(v));
                         if let Some(tx) = waiter {
                             let _ = tx.send(Ok(()));
                         }
@@ -335,7 +347,7 @@ pub(crate) fn reply(db: &ReadOnly, conn: ConnId, id: RequestId, m: Msg) {
                         r.watches.remove(&local);
                         let _ = tx.send(Err(e));
                     }
-                    (Err(e), None) => cx.deliver(local, Delivery::Aspect { tid, ak, origin: Origin::Initial, value: Err(e) }),
+                    (Err(e), None) => cx.deliver(r, local, Pushed::Failed(e)),
                 }
             }
             Asked::Unsub => {}
@@ -395,7 +407,7 @@ pub(crate) fn notify(db: &ReadOnly, conn: ConnId, m: Msg) {
     let Msg::Notify { sub_id, payload } = m else { return };
     on_conn(db, conn, |cx, r| {
         let Some((&local, w)) = r.watches.iter().find(|(_, w)| w.sub == Some(sub_id)) else { return };
-        let (tid, ak, filter) = (w.tid, w.ak.clone(), w.filter.clone());
+        let filter = w.filter.clone();
         // a watch the app dropped goes at its next Notify
         if !db.inner.dispatch.registered(local) {
             r.watches.remove(&local);
@@ -403,21 +415,8 @@ pub(crate) fn notify(db: &ReadOnly, conn: ConnId, m: Msg) {
             return;
         }
         match payload {
-            Payload::Delivery { value } => {
-                let d = list(value, "delivery").and_then(|v| match <[Value; 2]>::try_from(v) {
-                    Ok([got, o]) => Ok((read_from(got)?, codec::origin_from(o)?)),
-                    Err(_) => Err(codec::bad("delivery")),
-                });
-                let (value, origin) = match d {
-                    Ok(x) => x,
-                    Err(e) => (Err(e), Origin::Initial),
-                };
-                cx.deliver(local, Delivery::Aspect { tid, ak, origin, value });
-            }
-            Payload::TooLarge { source } => {
-                let limit = source.as_uint().map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX));
-                cx.deliver(local, Delivery::Aspect { tid, ak, origin: Origin::Initial, value: Err(Error::TooLarge { limit }) });
-            }
+            Payload::Delivery { value } => cx.deliver(r, local, Pushed::Delivery(value)),
+            Payload::TooLarge { source } => cx.deliver(r, local, Pushed::TooLarge(source)),
             // the node dropped it: subscribe again
             Payload::Lapsed => {
                 if let Some(w) = r.watches.get_mut(&local) {
@@ -535,30 +534,187 @@ impl ReadOnly {
     }
 }
 
+/// A delivery's `limit` (a `[2, source]` Notify of a value filter).
+fn limit_of(source: &Value) -> usize {
+    source.as_uint().map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX))
+}
+
+/// `[x*]` as exactly `N` values.
+fn fixed<const N: usize>(v: Value, what: &str) -> Result<[Value; N]> {
+    <[Value; N]>::try_from(list(v, what)?).map_err(|_| codec::bad(what))
+}
+
+/// A status as nothing reaches its node now: no connection, each thing not connected.
+fn unreachable(s: &Status) -> Status {
+    let groups = s.groups.iter().map(|(t, g)| (*t, crate::GroupSync { state: crate::SyncState::NotConnected, not_taking: 0, leaving: g.leaving })).collect();
+    Status { connected: 0, groups }
+}
+
+/// The statuses of several nodes as one.
+fn merged<'a>(all: impl Iterator<Item = &'a Status>) -> Status {
+    let mut out = Status::default();
+    for s in all {
+        out.connected += s.connected;
+        for (t, g) in &s.groups {
+            crate::syncing::merge(&mut out.groups, *t, g.clone());
+        }
+    }
+    out
+}
+
+impl ReadOnly {
+    /// How sync stands at this thin client's nodes, merged (`Osis::status`).
+    pub(crate) fn remote_status(&self) -> Result<Status> {
+        let all: Vec<Address> = self.locked(|l| l.remotes.iter().map(|r| r.addr.clone()).collect());
+        let mut out = Vec::new();
+        for a in &all {
+            out.push(codec::status_from(self.remote_call(a, method::STATUS, Vec::new(), super::VALUE_REPLY)?)?);
+        }
+        Ok(merged(out.iter()))
+    }
+}
+
 impl crate::Osis {
+    /// A subscription under `filter` at each node of `at`; `f` hears what each pushes. `wait`:
+    /// the call waits for every Reply and fails as the first failing Sub; else a node not up
+    /// is told as `Pushed::Failed` and subscribed once it comes up.
+    fn remote_sub(&self, at: &[Address], filter: Value, wait: bool, mut f: impl FnMut(&crate::Osis, &Address, Pushed) + Send + 'static) -> Result<Subscription> {
+        let sub = self.inner.dispatch.register(
+            0,
+            Filter::Remote,
+            Box::new(move |db: &crate::Osis, d: Delivery| {
+                if let Delivery::Remote { from, got } = d {
+                    f(db, &from, got)
+                }
+            }),
+        );
+        let local = sub.id().unwrap_or(0);
+        let mut waits = Vec::new();
+        for a in at {
+            let (tx, rx) = channel();
+            on_addr(self, a, |cx, r| {
+                let up = cx.usable(r);
+                if wait {
+                    up.clone()?;
+                }
+                r.watches.insert(local, Watch { filter: filter.clone(), sub: None });
+                if let Err(e) = up {
+                    cx.deliver(r, local, Pushed::Failed(e));
+                    return Ok(());
+                }
+                let m = Msg::Sub { id: 0, max_reply: super::VALUE_REPLY, filter: filter.clone() };
+                if cx.send(r, m, Asked::Sub(local, wait.then_some(tx))) || !wait { Ok(()) } else { Err(Error::Network(format!("connection to {a} lost"))) }
+            })?;
+            if wait {
+                waits.push(rx);
+            }
+        }
+        for rx in waits {
+            self.wait_for(rx)?;
+        }
+        Ok(sub)
+    }
+
     /// A value watch at the node at `at`: `f` hears the value at `path` of `tid`'s `ak` once,
     /// then each time it reads otherwise (a lost connection as an `Err`, then the value again).
     pub(crate) fn remote_watch(&self, at: &Address, tid: Tid, ak: Ak, path: &Path, mut f: impl FnMut(&crate::Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
+        let filter = Value::List(vec![Value::uint(super::filter::VALUE), Value::Tid(tid), codec::ak_to(&ak), codec::path_to(path)]);
         let mut last = None;
-        let cb = Box::new(move |db: &crate::Osis, d: Delivery| {
-            let Delivery::Aspect { tid, ak, origin, value } = d else { return };
+        self.remote_sub(std::slice::from_ref(at), filter, true, move |db, _, got| {
+            let (value, origin) = match got {
+                Pushed::Initial(v) => (read_from(v).and_then(|r| r), Origin::Initial),
+                Pushed::Delivery(v) => match fixed::<2>(v, "delivery").and_then(|[got, o]| Ok((read_from(got)?, codec::origin_from(o)?))) {
+                    Ok(x) => x,
+                    Err(e) => (Err(e), Origin::Initial),
+                },
+                Pushed::TooLarge(source) => (Err(Error::TooLarge { limit: limit_of(&source) }), Origin::Initial),
+                Pushed::Failed(e) => (Err(e), Origin::Initial),
+            };
             let now = digest(&value);
             if value.is_ok() && last == Some(now) {
                 return;
             }
             last = Some(now);
-            f(db, Change { tid, ak, value, origin });
-        });
-        let sub = self.inner.dispatch.register(0, Filter::Remote, cb);
-        let local = sub.id().unwrap_or(0);
-        let filter = Value::List(vec![Value::uint(super::filter::VALUE), Value::Tid(tid), codec::ak_to(&ak), codec::path_to(path)]);
-        let (tx, rx) = channel();
-        on_addr(self, at, |cx, r| {
-            cx.usable(r)?;
-            r.watches.insert(local, Watch { filter: filter.clone(), tid, ak, sub: None });
-            if cx.send(r, Msg::Sub { id: 0, max_reply: super::VALUE_REPLY, filter }, Asked::Sub(local, Some(tx))) { Ok(()) } else { Err(Error::Network(format!("connection to {at} lost"))) }
-        })?;
-        self.wait_for(rx)?;
-        Ok(sub)
+            f(db, Change { tid, ak: ak.clone(), value, origin });
+        })
+    }
+
+    /// `on_thing_change` at the node at `at`: each aspect once, then each change; a lost
+    /// connection as an `Err` for each aspect it told, then each that reads otherwise once back.
+    pub(crate) fn remote_thing_watch(&self, at: &Address, tid: Tid, mut f: impl FnMut(&crate::Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
+        let filter = Value::List(vec![Value::uint(super::filter::THING), Value::Tid(tid)]);
+        let mut last: BTreeMap<Ak, Option<crate::watch::Digest>> = BTreeMap::new();
+        self.remote_sub(std::slice::from_ref(at), filter, true, move |db, _, got| {
+            let told: Result<Vec<(Ak, Result<Option<Value>>, Origin)>> = match got {
+                // every aspect now; one told before and absent now is told absent
+                Pushed::Initial(v) => list(v, "aspects").and_then(|all| {
+                    let mut now = BTreeMap::new();
+                    for a in all {
+                        let [k, read] = fixed::<2>(a, "aspect")?;
+                        now.insert(codec::ak(&k)?, read_from(read)?);
+                    }
+                    for k in last.keys() {
+                        now.entry(k.clone()).or_insert(Ok(None));
+                    }
+                    Ok(now.into_iter().map(|(k, v)| (k, v, Origin::Initial)).collect())
+                }),
+                Pushed::Delivery(v) => fixed::<3>(v, "delivery").and_then(|[k, read, o]| Ok(vec![(codec::ak(&k)?, read_from(read)?, codec::origin_from(o)?)])),
+                Pushed::TooLarge(source) => fixed::<2>(source, "source").and_then(|[k, n]| Ok(vec![(codec::ak(&k)?, Err(Error::TooLarge { limit: limit_of(&n) }), Origin::Initial)])),
+                Pushed::Failed(e) => Ok(last.keys().map(|k| (k.clone(), Err(e.clone()), Origin::Initial)).collect()),
+            };
+            let told = told.unwrap_or_else(|e| last.keys().map(|k| (k.clone(), Err(e.clone()), Origin::Initial)).collect());
+            for (ak, value, origin) in told {
+                crate::read::tell_changed(&mut last, db, Change { tid, ak, value, origin }, &mut f);
+            }
+        })
+    }
+
+    /// `on_grants_change` at the node at `at`: the grants once, then each time they read
+    /// otherwise; a lost connection as an `Err`, then the grants again once back.
+    pub(crate) fn remote_grants_watch(&self, at: &Address, thing: Tid, mut f: impl FnMut(&crate::Osis, Result<crate::Grants>) + Send + 'static) -> Result<Subscription> {
+        let filter = Value::List(vec![Value::uint(super::filter::GRANTS), Value::Tid(thing)]);
+        let mut last = None;
+        self.remote_sub(std::slice::from_ref(at), filter, true, move |db, _, got| {
+            let now = match got {
+                Pushed::Initial(v) | Pushed::Delivery(v) => codec::grants_from(v),
+                Pushed::TooLarge(source) => Err(Error::TooLarge { limit: limit_of(&source) }),
+                Pushed::Failed(e) => Err(e),
+            };
+            match now {
+                Ok(g) if last.as_ref() == Some(&g) => {}
+                Ok(g) => {
+                    last = Some(g.clone());
+                    f(db, Ok(g));
+                }
+                Err(e) => {
+                    last = None;
+                    f(db, Err(e));
+                }
+            }
+        })
+    }
+
+    /// `on_status_change` at this thin client's nodes: their statuses merged, once and on each
+    /// change. A node that cannot be reached shows as not connected, its things each
+    /// `NotConnected`; nothing fails.
+    pub(crate) fn remote_status_watch(&self, mut f: impl FnMut(&crate::Osis, Status) + Send + 'static) -> Result<Subscription> {
+        let all: Vec<Address> = self.locked(|l| l.remotes.iter().map(|r| r.addr.clone()).collect());
+        let filter = Value::List(vec![Value::uint(super::filter::STATUS)]);
+        let mut each: Vec<(Address, Status)> = Vec::new();
+        let mut last: Option<Status> = None;
+        self.remote_sub(&all, filter, false, move |db, from, got| {
+            let before = each.iter().find(|(a, _)| a == from).map(|(_, s)| s.clone()).unwrap_or_default();
+            let now = match got {
+                Pushed::Initial(v) | Pushed::Delivery(v) => codec::status_from(v).unwrap_or_else(|_| unreachable(&before)),
+                Pushed::TooLarge(_) | Pushed::Failed(_) => unreachable(&before),
+            };
+            each.retain(|(a, _)| a != from);
+            each.push((from.clone(), now));
+            let m = merged(each.iter().map(|(_, s)| s));
+            if last.as_ref() != Some(&m) {
+                last = Some(m.clone());
+                f(db, m);
+            }
+        })
     }
 }

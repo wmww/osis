@@ -26,12 +26,27 @@ pub mod method {
     /// `[tid] -> bool`: the thing is known here, content or not (where a thin client of several
     /// nodes finds a thing).
     pub const HOLDS: u64 = 4;
+    /// `[tid] -> [[item_of*], [subgroup_of*], [within*]]`
+    pub const GROUPS_OF: u64 = 5;
+    /// `[tid] -> [[holder, role, Opt(until), Opt(may_grant), with_membership]*]`
+    pub const GRANTS: u64 = 6;
+    /// `[tid] -> Opt(role)`
+    pub const ROLE_ON: u64 = 7;
+    /// `[tid] -> Opt([commit id, actor, ts, received])`
+    pub const CREATED: u64 = 8;
+    /// `[tid] -> Opt([commit id, actor, ts, received])`
+    pub const CHANGED: u64 = 9;
     /// `[nonce, actor, [ak*], [op*], Opt(expiry)] -> Opt(commit)`
     pub const WRITE: u64 = 10;
     /// `[] -> []`, once every Notify for changes before it went.
     pub const SETTLE: u64 = 19;
     /// `[] -> wall ms`
     pub const NOW: u64 = 20;
+    /// `[] -> [connected, [[tid, state, not_taking, leaving]*]]`: for a client actor, the things
+    /// it may read and the connections with one of them open.
+    pub const STATUS: u64 = 21;
+    /// `[tid] -> [[actor, kind, role, Opt(until), [through*]]*]`
+    pub const HOLDERS: u64 = 22;
 }
 
 /// The Sub filters (notes/client-port.md §2).
@@ -39,6 +54,14 @@ pub mod filter {
     /// `[0, tid, ak, path]`: the value at `path` of an aspect; the Reply carries it now, each
     /// Notify `[read result, origin]` when it reads otherwise.
     pub const VALUE: u64 = 0;
+    /// `[1, tid]`: the thing's aspects; the Reply `[[ak, read result]*]` (those present), each
+    /// Notify `[ak, read result, origin]` when one reads otherwise, above `max_reply` `[2, [ak,
+    /// max_reply]]`.
+    pub const THING: u64 = 1;
+    /// `[2, tid]`: its grants, as `GRANTS` answers; a Notify when they read otherwise.
+    pub const GRANTS: u64 = 2;
+    /// `[3]`: the status, as `STATUS` answers; a Notify when it reads otherwise.
+    pub const STATUS: u64 = 3;
 }
 
 /// Ops of one write through another node (notes/client-port.md §2 Decoder limits): a write's

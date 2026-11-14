@@ -4,7 +4,7 @@
 //! other call that waits for another node is a future polled again after each step.
 
 use crate::error::{Error, Result};
-use crate::handle::{Osis, ReadOnly, WeakOsis};
+use crate::handle::{Locked, Osis, ReadOnly, WeakOsis};
 use crate::watch::{Delivery, Filter, Subscription, lock};
 use osis_base::Tid;
 use osis_sync::status::SyncStatus;
@@ -77,39 +77,62 @@ fn state_of(s: &SyncStatus) -> SyncState {
     }
 }
 
-impl ReadOnly {
-    /// How sync stands now.
-    pub fn status(&self) -> Result<Status> {
-        self.local("status")?;
-        self.locked(|l| {
-            let connected = l.node.connections();
-            let per_id = l.node.status();
-            let mut groups: BTreeMap<Tid, GroupSync> = BTreeMap::new();
-            if per_id.is_empty() {
-                return Ok(Status { connected, groups });
-            }
-            let set = l.engine().sync_set()?;
-            for (s, st) in per_id {
-                let Some((t, _)) = set.ids.get(&s).copied() else { continue };
-                let g = GroupSync { state: state_of(&st), not_taking: st.sources.values().filter(|x| !x.waited()).count(), leaving: st.holding.is_none() };
-                groups
-                    .entry(t)
-                    .and_modify(|x| {
-                        x.state = x.state.max(g.state);
-                        x.not_taking += g.not_taking;
-                        x.leaving &= g.leaving;
-                    })
-                    .or_insert(g);
-            }
-            Ok(Status { connected, groups })
+/// How sync stands, as `actor` may see it (notes/client-port.md §3 Status): the things it may
+/// read, and the connections with one of them open; everything without one.
+pub(crate) fn status_in(l: &mut Locked, actor: Option<Tid>) -> Result<Status> {
+    let per_id = l.node.status();
+    let mut connected = l.node.connections();
+    let mut groups: BTreeMap<Tid, GroupSync> = BTreeMap::new();
+    if per_id.is_empty() {
+        return Ok(Status { connected: if actor.is_some() { 0 } else { connected }, groups });
+    }
+    let e = l.engine();
+    let set = e.sync_set()?;
+    let mut seen = std::collections::BTreeSet::new();
+    for (s, st) in per_id {
+        let Some((t, _)) = set.ids.get(&s).copied() else { continue };
+        if actor.is_some_and(|a| !e.readable_by(&a, &t)) {
+            continue;
+        }
+        seen.extend(st.sources.keys().copied());
+        let g = GroupSync { state: state_of(&st), not_taking: st.sources.values().filter(|x| !x.waited()).count(), leaving: st.holding.is_none() };
+        merge(&mut groups, t, g);
+    }
+    if actor.is_some() {
+        connected = seen.len();
+    }
+    Ok(Status { connected, groups })
+}
+
+/// Adds `g`, how `t` stands under one sync ID or at one node, to `groups`: the worst state.
+pub(crate) fn merge(groups: &mut BTreeMap<Tid, GroupSync>, t: Tid, g: GroupSync) {
+    groups
+        .entry(t)
+        .and_modify(|x| {
+            x.state = x.state.max(g.state);
+            x.not_taking += g.not_taking;
+            x.leaving &= g.leaving;
         })
+        .or_insert(g);
+}
+
+impl ReadOnly {
+    /// How sync stands now. On a thin client, at its nodes: the things its actor may read
+    /// there, and their connections with one of them open.
+    pub fn status(&self) -> Result<Status> {
+        if !self.has_store() {
+            return self.remote_status();
+        }
+        self.locked(|l| status_in(l, self.acting))
     }
 }
 
 impl Osis {
     /// Calls `f` with the status now and on every change.
     pub fn on_status_change(&self, mut f: impl FnMut(&Osis, Status) + Send + 'static) -> Result<Subscription> {
-        self.local("on_status_change")?;
+        if !self.has_store() {
+            return self.remote_status_watch(f);
+        }
         let mut last = self.status()?;
         let first = last.clone();
         let mut told = false;

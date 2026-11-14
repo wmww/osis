@@ -6,7 +6,9 @@
 use crate::commit_id::{CommitId, CommitPos};
 use crate::commits::{Body, Commit, CommitKind, Part};
 use crate::error::{Error, Result};
-use crate::read::Stamp;
+use crate::read::{Grant, Grants, GroupsOf, Stamp, ThingStamp};
+use crate::share::{Holder, HolderKind};
+use crate::syncing::{GroupSync, Status, SyncState};
 use crate::watch::{DerivedFrom, Origin};
 use crate::write::WriteOp;
 use osis_base::{Ak, CommitId as RawCommitId, CreationRecord, Role, Tid, Time, Ts, Value};
@@ -403,6 +405,110 @@ pub(crate) fn commit_from(v: Value) -> Result<Commit> {
         bool_from(&in_effect, "commit")?,
         parts,
     ))
+}
+
+fn tids_to(t: &[Tid]) -> Value {
+    Value::List(t.iter().map(|t| Value::Tid(*t)).collect())
+}
+
+fn tids_from(v: Value, what: &str) -> Result<Vec<Tid>> {
+    list(v, what)?.iter().map(tid).collect()
+}
+
+fn time_to(t: Option<Time>) -> Value {
+    opt(t.map(|t| Value::uint(t.0)))
+}
+
+fn time_from(v: Value, what: &str) -> Result<Option<Time>> {
+    opt_from(v, what)?.map(|t| uint(&t, what).map(Time)).transpose()
+}
+
+pub(crate) fn role_to(r: Role) -> Value {
+    Value::uint(u64::from(r.id()))
+}
+
+pub(crate) fn role_from(v: &Value) -> Result<Role> {
+    Role::from_id(uint(v, "role")?).ok_or_else(|| bad("role"))
+}
+
+/// `groups_of`: `[[item_of*], [subgroup_of*], [within*]]`.
+pub(crate) fn groups_of_to(g: &GroupsOf) -> Value {
+    Value::List(vec![tids_to(&g.item_of), tids_to(&g.subgroup_of), tids_to(&g.within)])
+}
+
+pub(crate) fn groups_of_from(v: Value) -> Result<GroupsOf> {
+    let [i, s, w] = <[Value; 3]>::try_from(list(v, "groups")?).map_err(|_| bad("groups"))?;
+    Ok(GroupsOf { item_of: tids_from(i, "groups")?, subgroup_of: tids_from(s, "groups")?, within: tids_from(w, "groups")? })
+}
+
+/// `grants`: `[[holder, role, Opt(until), Opt(may_grant), with_membership]*]`.
+pub(crate) fn grants_to(g: &Grants) -> Value {
+    Value::List(g.iter().map(|(h, g)| Value::List(vec![Value::Tid(*h), role_to(g.role), time_to(g.until), opt(g.may_grant.map(role_to)), Value::Bool(g.with_membership)])).collect())
+}
+
+pub(crate) fn grants_from(v: Value) -> Result<Grants> {
+    list(v, "grants")?
+        .into_iter()
+        .map(|g| {
+            let [h, role, until, may, with] = <[Value; 5]>::try_from(list(g, "grant")?).map_err(|_| bad("grant"))?;
+            let may_grant = opt_from(may, "grant")?.map(|r| role_from(&r)).transpose()?;
+            Ok((tid(&h)?, Grant { role: role_from(&role)?, until: time_from(until, "grant")?, may_grant, with_membership: bool_from(&with, "grant")? }))
+        })
+        .collect()
+}
+
+const HOLDER_KINDS: [HolderKind; 3] = [HolderKind::Actor, HolderKind::Link, HolderKind::Key];
+
+/// `holders`: `[[actor, kind, role, Opt(until), [through*]]*]`, kind 0 an actor, 1 a link's, 2
+/// a key.
+pub(crate) fn holders_to(hs: &[Holder]) -> Value {
+    Value::List(
+        hs.iter()
+            .map(|h| Value::List(vec![Value::Tid(h.actor), Value::uint(HOLDER_KINDS.iter().position(|k| *k == h.kind).unwrap_or(0) as u64), role_to(h.role), time_to(h.until), tids_to(&h.through)]))
+            .collect(),
+    )
+}
+
+pub(crate) fn holders_from(v: Value) -> Result<Vec<Holder>> {
+    list(v, "holders")?
+        .into_iter()
+        .map(|h| {
+            let [actor, kind, role, until, through] = <[Value; 5]>::try_from(list(h, "holder")?).map_err(|_| bad("holder"))?;
+            let kind = *HOLDER_KINDS.get(usize_from(&kind)?).ok_or_else(|| bad("holder kind"))?;
+            Ok(Holder { actor: tid(&actor)?, kind, role: role_from(&role)?, until: time_from(until, "holder")?, through: tids_from(through, "holder")? })
+        })
+        .collect()
+}
+
+/// `created`, `changed`: `Opt([commit id, actor, ts, received])`.
+pub(crate) fn thing_stamp_to(s: Option<ThingStamp>) -> Value {
+    opt(s.map(|s| Value::List(vec![commit_id_to(&s.id.0), Value::Tid(s.actor), Value::uint(s.ts.to_u64()), Value::uint(s.received.0)])))
+}
+
+pub(crate) fn thing_stamp_from(v: Value) -> Result<Option<ThingStamp>> {
+    opt_from(v, "stamp")?.map(stamp_from).transpose().map(|s| s.map(|s| ThingStamp { id: s.id, actor: s.actor, written: s.written, received: s.received, ts: s.ts }))
+}
+
+const STATES: [SyncState; 4] = [SyncState::Synced, SyncState::Syncing, SyncState::NotConnected, SyncState::Stranded];
+
+/// `status`: `[connected, [[tid, state, not_taking, leaving]*]]`, state 0 synced, 1 syncing, 2
+/// not connected, 3 stranded.
+pub(crate) fn status_to(s: &Status) -> Value {
+    let groups = s.groups.iter().map(|(t, g)| Value::List(vec![Value::Tid(*t), Value::uint(STATES.iter().position(|x| *x == g.state).unwrap_or(0) as u64), usize_to(g.not_taking), Value::Bool(g.leaving)]));
+    Value::List(vec![usize_to(s.connected), Value::List(groups.collect())])
+}
+
+pub(crate) fn status_from(v: Value) -> Result<Status> {
+    let [connected, groups] = <[Value; 2]>::try_from(list(v, "status")?).map_err(|_| bad("status"))?;
+    let groups = list(groups, "status")?
+        .into_iter()
+        .map(|g| {
+            let [t, state, not_taking, leaving] = <[Value; 4]>::try_from(list(g, "status")?).map_err(|_| bad("status"))?;
+            let state = *STATES.get(usize_from(&state)?).ok_or_else(|| bad("sync state"))?;
+            Ok((tid(&t)?, GroupSync { state, not_taking: usize_from(&not_taking)?, leaving: bool_from(&leaving, "status")? }))
+        })
+        .collect::<Result<_>>()?;
+    Ok(Status { connected: usize_from(&connected)?, groups })
 }
 
 /// An API error as a Reply's outcome (spec/wire.md §11.2 Outcome error codes).

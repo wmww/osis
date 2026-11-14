@@ -231,6 +231,8 @@ pub(crate) enum Delivery {
     Text { text: String, edits: Vec<crate::text::Splice> },
     /// A `Filter::Due` read may answer otherwise.
     Due,
+    /// What a subscription at another node pushed (`port::client`).
+    Remote { from: crate::share::Address, got: crate::port::client::Pushed },
     /// Anything the subscription shows may read otherwise (`Event::Reloaded`): read it all again.
     /// Only `Filter::Thing` and `Filter::Commits` hear it; the others hear their own deliveries.
     Reread,

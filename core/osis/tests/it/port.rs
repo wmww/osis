@@ -223,17 +223,11 @@ fn a_thin_client_answers_nothing_of_its_own_notes_client_port() {
     let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
     let u = |r: Result<(), Error>| assert!(matches!(r, Err(Error::Unsupported(_))), "{r:?}");
     let t = w.t;
-    u(cl.status().map(drop));
     u(cl.add_client(None).map(drop));
     u(cl.clients().map(drop));
     u(cl.grant(t, w.actor, Role::Read, osis::GrantOpts::default()));
-    u(cl.groups_of(t).map(drop));
-    u(cl.grants(t).map(drop));
-    u(cl.role_on(t).map(drop));
-    u(cl.created(t).map(drop));
     u(cl.writes(&osis::Scope::Thing(t), &osis::CommitQuery::default()).map(drop));
     u(cl.undo(&osis::Scope::Thing(t)).map(drop));
-    u(cl.on_thing_change(t, |_, _| {}).map(drop));
     u(cl.on_diagnostic(|_, _| {}).map(drop));
     u(cl.contact_card().map(drop));
     u(cl.profile().map(drop));
@@ -329,6 +323,7 @@ fn bytes_as(m: &Msg, from: Tid, to: Tid) -> Vec<u8> {
 #[test]
 fn a_hidden_thing_answers_as_a_never_known_one_spec_wire_11() {
     let w = world(None);
+    shared_in_home(&w.a, w.t);
     let never = Tid::from_bytes([9; 15]);
     let call = |method: u64, args: Vec<Value>| Msg::Call { id: 3, max_reply: 1 << 20, method, args };
     let m = osis::internals::port_method::GET;
@@ -346,10 +341,20 @@ fn a_hidden_thing_answers_as_a_never_known_one_spec_wire_11() {
             call(osis::internals::port_method::ASPECTS, vec![tv.clone()]),
             call(osis::internals::port_method::HAS_CONTENT, vec![tv.clone()]),
             call(osis::internals::port_method::HOLDS, vec![tv.clone()]),
+            call(osis::internals::port_method::GROUPS_OF, vec![tv.clone()]),
+            call(osis::internals::port_method::GRANTS, vec![tv.clone()]),
+            call(osis::internals::port_method::ROLE_ON, vec![tv.clone()]),
+            call(osis::internals::port_method::HOLDERS, vec![tv.clone()]),
+            call(osis::internals::port_method::CREATED, vec![tv.clone()]),
+            call(osis::internals::port_method::CHANGED, vec![tv.clone()]),
+            call(osis::internals::port_method::STATUS, vec![]),
             write_call(1, w.actor, t, 7),
             write_call(2 | RESENT, w.actor, t, 7),
             Msg::Sub { id: 4, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(0), tv.clone(), ak.clone(), Value::List(vec![])]) },
-            Msg::Sub { id: 5, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(0), tv, ak, Value::List(vec![index])]) },
+            Msg::Sub { id: 5, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(0), tv.clone(), ak, Value::List(vec![index])]) },
+            Msg::Sub { id: 6, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(1), tv.clone()]) },
+            Msg::Sub { id: 7, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(2), tv]) },
+            Msg::Sub { id: 8, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(3)]) },
         ]
     };
     let hidden = osis::internals::port_answers(&w.a, 1, false, rows(w.t, 1));
@@ -570,7 +575,8 @@ fn a_group_read_at_another_node_spec_sync_set_5() {
     x.at(w.t, v()).set(&Value::Int(6)).unwrap();
     assert_eq!(x.commit().unwrap().unwrap().stamp.actor, w.actor);
     assert_eq!(w.a.at(w.t, v()).get().unwrap(), Some(Value::Int(6)));
-    assert!(matches!(b.grants(w.t), Err(Error::Unsupported(_))));
+    assert_eq!(b.grants(w.t).unwrap(), w.a.grants(w.t).unwrap(), "read at the source");
+    assert!(matches!(b.undo(&osis::Scope::Thing(w.t)), Err(Error::Unsupported(_))));
     assert!(b.has_store());
     b.status().unwrap();
     ready(b.group_source(w.t, GroupSource::Local)).unwrap();
@@ -775,4 +781,162 @@ fn write_outcomes_are_bounded_spec_wire_11() {
     let r = osis::internals::port_answers(a, 101, true, vec![auth_as(None, 65), write_call(1 | RESENT, me, t, 0)]);
     assert!(matches!(outcome(&r[1]), Outcome::Ok { .. }), "session 65 kept");
     assert_eq!(a.at(t, v()).get().unwrap(), Some(Value::Int(165)), "no resend ran");
+}
+
+// ---- sharing, stamps, status and their watches through a connection ----
+
+/// Puts `t` in `a`'s home and grants it to another actor, so it has grants, a group and a sync
+/// ID of its own (in `a`'s status).
+fn shared_in_home(a: &Osis, t: Tid) {
+    crate::common::commit_with(a, |x| x.group(a.home()).add(osis::Member::Item(t)).map(drop));
+    let other = a.add_client(None).unwrap().0;
+    a.grant(t, other, Role::Read, osis::GrantOpts::default()).unwrap();
+    assert!(a.status().unwrap().groups.contains_key(&t), "{:?}", a.status());
+}
+
+// notes/client-port.md §2 (method table), spec/wire.md §11.2 (A client actor's rights): a thin
+// client reads groups, grants, roles, holders and stamps at its node, as its actor: a group it
+// may not read is not listed.
+#[test]
+fn sharing_reads_through_a_thin_client_spec_wire_11() {
+    let w = world(Some(Role::Write));
+    shared_in_home(&w.a, w.t);
+    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
+    assert_eq!(cl.grants(w.t).unwrap(), w.a.grants(w.t).unwrap());
+    assert_eq!(cl.role_on(w.t).unwrap(), Some(Role::Write));
+    assert_eq!(w.a.role_on(w.t).unwrap(), Some(Role::Admin));
+    let (there, all) = (cl.holders(w.t).unwrap(), w.a.holders(w.t).unwrap());
+    assert!(there.iter().any(|h| h.actor == w.actor && h.role == Role::Write && h.through.is_empty()), "{there:?}");
+    assert!(there.iter().all(|h| all.contains(h)), "{there:?}");
+    assert!(all.iter().filter(|h| !there.contains(h)).all(|h| !h.through.is_empty()), "only what is behind an actor it may not read goes");
+    assert_eq!(cl.created(w.t).unwrap(), w.a.created(w.t).unwrap());
+    assert!(cl.created(w.t).unwrap().is_some());
+    assert_eq!(cl.changed(w.t).unwrap(), w.a.changed(w.t).unwrap());
+    assert!(w.a.groups_of(w.t).unwrap().item_of.contains(&w.a.home()));
+    assert_eq!(cl.groups_of(w.t).unwrap(), osis::GroupsOf::default(), "home is no group the client reads");
+}
+
+// spec/wire.md §11.2 (Status): a client actor's status shows the things it may read and counts
+// the connections with one of them open; a thing it may not read is not there, as a never-known
+// one is not.
+#[test]
+fn status_shows_a_client_what_it_reads_spec_wire_11() {
+    let w = world(Some(Role::Read));
+    let mut x = w.a.write();
+    let hidden = x.create().unwrap();
+    x.at(hidden, v()).set(&Value::Int(1)).unwrap();
+    x.commit().unwrap();
+    shared_in_home(&w.a, w.t);
+    shared_in_home(&w.a, hidden);
+    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
+    let s = cl.status().unwrap();
+    assert!(s.groups.contains_key(&w.t) && !s.groups.contains_key(&hidden), "{s:?}");
+    assert!(s.groups.keys().all(|t| *t == w.t || *t == w.actor), "its own actor's sync ID beside it: {s:?}");
+    assert_eq!(s.groups[&w.t], w.a.status().unwrap().groups[&w.t]);
+    assert_eq!(s.connected, 0, "no connection has what it reads open");
+    assert!(w.a.status().unwrap().connected > 0, "the client's own connection is the node's");
+}
+
+// notes/client-port.md §1 (Watches), spec/wire.md §11.2: `on_status_change` through a thin
+// client hears the status at once and again when what its actor may read changes it; a lost
+// connection shows as nothing connected, each thing `NotConnected` (here no change), and
+// `status` fails `Network`.
+#[test]
+fn a_status_watch_through_a_thin_client_spec_wire_11() {
+    let w = world(None);
+    shared_in_home(&w.a, w.t);
+    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
+    let (tx, rx) = channel();
+    let _s = cl.on_status_change(move |_, s| tx.send(s).unwrap()).unwrap();
+    cl.settle();
+    assert!(!rx.try_recv().unwrap().groups.contains_key(&w.t));
+    w.a.grant(w.t, w.actor, Role::Read, osis::GrantOpts::default()).unwrap();
+    w.a.settle();
+    w.net.run();
+    cl.settle();
+    let s = rx.try_iter().last().expect("told");
+    assert!(s.groups.contains_key(&w.t), "{s:?}");
+    w.net.set_online(0, false);
+    w.net.run();
+    cl.settle();
+    // it showed nothing connected already: nothing new to tell; a call fails
+    assert!(rx.try_recv().is_err());
+    assert!(matches!(cl.status(), Err(Error::Network(_))));
+}
+
+/// `on_thing_change` of `t` through `db`, into a channel.
+fn thing_changes(db: &Osis, t: Tid) -> (osis::Subscription, Receiver<osis::Change<Value>>) {
+    let (tx, rx) = channel();
+    let s = db.on_thing_change(t, move |_, ch| tx.send(ch).unwrap()).unwrap();
+    (s, rx)
+}
+
+// notes/client-port.md §1 (Watches), spec/wire.md §11.2 (A client actor's rights):
+// `on_thing_change` through a thin client hears each aspect, then each change; one on a thing
+// the actor may not read hears what one on a never-known thing hears: nothing.
+#[test]
+fn a_thing_watch_through_a_thin_client_spec_wire_11() {
+    let w = world(None);
+    let mut x = w.a.write();
+    let seen = x.create().unwrap();
+    x.at(seen, v()).set(&Value::Int(1)).unwrap();
+    x.commit().unwrap();
+    w.a.grant(seen, w.actor, Role::Read, osis::GrantOpts::default()).unwrap();
+    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
+    let (_a, hidden) = thing_changes(&cl, w.t);
+    let (_b, unknown) = thing_changes(&cl, Tid::from_bytes([9; 15]));
+    let (_c, read) = thing_changes(&cl, seen);
+    cl.settle();
+    let first: Vec<_> = read.try_iter().collect();
+    assert!(first.iter().any(|c| c.ak == ak("x:v.0") && c.value == Ok(Some(Value::Int(1))) && c.origin == Origin::Initial), "{first:?}");
+    for n in 6..9 {
+        crate::common::commit_with(&w.a, |x| {
+            x.at(w.t, v()).set(&Value::Int(n))?;
+            x.at(seen, v()).set(&Value::Int(n))
+        });
+        cl.settle();
+        let c = read.try_recv().unwrap();
+        assert_eq!((c.ak, c.value), (ak("x:v.0"), Ok(Some(Value::Int(n)))));
+        assert!(matches!(c.origin, Origin::Local(s) if s.actor == w.a.me()), "{:?}", c.origin);
+    }
+    assert!(hidden.try_recv().is_err() && unknown.try_recv().is_err());
+    w.net.set_online(0, false);
+    w.net.run();
+    cl.settle();
+    assert!(read.try_iter().all(|c| matches!(c.value, Err(Error::Network(_)))));
+    assert!(hidden.try_recv().is_err() && unknown.try_recv().is_err(), "nothing told, nothing lost");
+}
+
+// notes/client-port.md §1 (Watches), spec/wire.md §11.2 (A client actor's rights):
+// `on_grants_change` through a thin client hears the grants, then each change; one on a thing
+// the actor may not read hears what one on a never-known thing hears: the empty grants, once.
+#[test]
+fn a_grants_watch_through_a_thin_client_spec_wire_11() {
+    let w = world(Some(Role::Read));
+    let mut x = w.a.write();
+    let hidden = x.create().unwrap();
+    x.at(hidden, v()).set(&Value::Int(1)).unwrap();
+    x.commit().unwrap();
+    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
+    let grants = |t: Tid| {
+        let (tx, rx) = channel();
+        (cl.on_grants_change(t, move |_, g| tx.send(g).unwrap()).unwrap(), rx)
+    };
+    let (_a, seen) = grants(w.t);
+    let (_b, hid) = grants(hidden);
+    let (_c, unknown) = grants(Tid::from_bytes([9; 15]));
+    cl.settle();
+    assert_eq!(seen.try_recv().unwrap().unwrap(), w.a.grants(w.t).unwrap());
+    let other = w.a.add_client(None).unwrap().0;
+    for t in [w.t, hidden] {
+        w.a.grant(t, other, Role::Read, osis::GrantOpts::default()).unwrap();
+    }
+    cl.settle();
+    let now = seen.try_recv().unwrap().unwrap();
+    assert!(now.contains_key(&other));
+    assert_eq!(now, w.a.grants(w.t).unwrap());
+    for rx in [&hid, &unknown] {
+        assert_eq!(rx.try_recv().unwrap().unwrap(), osis::Grants::new());
+        assert!(rx.try_recv().is_err());
+    }
 }
