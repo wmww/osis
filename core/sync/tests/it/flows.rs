@@ -875,3 +875,54 @@ fn a_removed_reader_opens_nothing_after_and_stops_spec_sync_set_3() {
     assert_ne!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("after".into())), "nothing written after the removal");
     assert!(w.store(1).synced(&s).is_none(), "S synced no more once its pass ended");
 }
+
+// spec/sync-judgement.md §1 (Per-sync-ID copies), spec/permissions.md §3 (Lost access): node 0
+// files X (its secrets derive from group Y) in group G, which reads Y by role; node 1's account
+// reads G and Y. While node 1 is away, node 0 writes X (G's sync ID carries it as a copy) and
+// removes G from Y: that copy is stale at node 1 and gives nothing. Node 1 still reads X, so
+// the write should arrive under a sync ID carrying X; none does (X has no sync ID of its own and
+// is in no closure but G's), and no later write of X reaches node 1 either.
+#[test]
+#[ignore = "issues/role-read-thing-outside-every-carrying-closure.md"]
+fn repro_a_part_a_stale_copy_leaves_out_arrives_spec_sync_judgement_1() {
+    let mut w = contacts();
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let ak = Ak::new("u:v.0").unwrap();
+    let (g, y, x) = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, a0);
+        let y = e.new_thing(&mut m, a0);
+        e.commit(m).unwrap();
+        e.give_own_secrets(&g).unwrap();
+        e.give_own_secrets(&y).unwrap();
+        let mut m = Mutation::new();
+        let x = e.new_thing(&mut m, y);
+        m.set(x, &ak, &Value::Str("before".into())).unwrap();
+        let mut items = ct::Group::default();
+        items.items.insert(x);
+        m.set(g, &ct::GROUP, &items).unwrap();
+        e.commit(m).unwrap();
+        e.grant(&y, &g, &edge(Role::Read)).unwrap();
+        e.grant(&g, &a1, &edge(Role::Read)).unwrap();
+        e.grant(&y, &a1, &edge(Role::Read)).unwrap();
+        (g, y, x)
+    });
+    file(&mut w, 0, Vec::new(), vec![g, y]);
+    w.run();
+    file(&mut w, 1, Vec::new(), vec![g, y]);
+    w.run();
+    assert_eq!(w.engine(1).get(&x, &ak).unwrap(), Some(Value::Str("before".into())), "node 1 reads X");
+    w.partition(0, 1);
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(x, &ak, &Value::Str("after".into())).unwrap();
+        e.commit(m).unwrap();
+        e.demote(&y, &Demotion { holder: g, new: None, retain: None }).unwrap();
+    });
+    w.run();
+    assert!(!w.engine(0).reads_in(&g, &x), "G reads X no more");
+    w.heal();
+    w.run();
+    assert!(w.engine(1).epochs(&y).is_some_and(|e| e.read.holds_any()), "node 1 still reads X");
+    assert_eq!(w.engine(1).get(&x, &ak).unwrap(), Some(Value::Str("after".into())), "the write arrives");
+}
