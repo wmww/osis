@@ -1,7 +1,7 @@
 # Sync: what a node syncs
 > Summary: Area 1: the synced group, the sync set it gives each node, leaving the set, invitations and accepting them, and writing through another node.
 
-**Principle:** a node syncs exactly the sync IDs of the things in its synced group's closure that it may hold; nothing else decides (no peer list, admission or keep list). The account chooses what is listed; what the node may hold filters it.
+**Principle:** a node syncs exactly the sync IDs of the things in its synced group's closure that it may hold; nothing else decides (no list of peers or of sync IDs to keep). The account chooses what is listed; what the node may hold filters it.
 
 ## 1. Synced group
 - Each node N of an account P has one **synced group** G_N: a plain group whose first admin is P's devices actor D, an item of D's `group.0`, listing D as a subgroup from its making. `synced^.0` on D maps each node's tid to its synced group (spec/data-model.md §9); it is admin-only and travels under home (D's home sync ID), so only P's nodes read it.

@@ -8,7 +8,7 @@
 - Bad bytes are ignored; no peer input causes unbounded allocation, work, storage or diagnostics (spec/wire.md §13).
 - Filters: gaps within `[lo, hi)`, pages in order, `f` checked against the decoded count, additions capped at the whole filter's n; else Error 2 and close. One test pass in flight per peer.
 - Records, Resume, Beacons, Pull and Members floods are bounded by message size, `max_reply`, `RECORD_BUDGET` and the shared set; only a known actor can make records.
-- A memory commit is room-checked whole before any decode and waits only once its signature checks.
+- An ephemeral commit is room-checked whole before any decode and waits only once its signature checks.
 - Unstamped entries a peer brings count against its peer budget (spec/sync-ids.md §5); deposits against the deposit budget (spec/sync-inbox.md §3).
 - Nothing reads a clock above the transport: a skewed peer affects only its own writes.
 - A peer without a credential or J learns only the entry count of its own filter and random bits; beacons are unlinkable across peers; only ByRole, Lost and Deposit items carry a sync ID, each to a judged holder.

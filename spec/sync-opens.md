@@ -5,7 +5,7 @@
 
 ## 1. Connections
 - A node connects to peers below this layer (spec/sync-transport.md); this section says only whom it dials and when.
-- **Where to dial** (addresses are priorities, never a filter on what opens): its own nodes (`reach.0` under home), contacts' nodes (their profile's `dial.0`, spec/sync-set.md §1), the granting node of each grant it holds (the inbox blob's hint, spec/sync-inbox.md §2), a link's sharer node (spec/sync-inbox.md §6), configured addresses, and every osis node announcing on a LAN it is on (spec/sync-transport.md §4). Nothing is learned from group data of other accounts: a reader dials a node keeping S unread only at an address it knows so.
+- **Where to dial** (addresses are priorities, never a filter on what opens): its own nodes (`reach.0` under home), contacts' nodes (their profile's `dial.0`, spec/sync-set.md §1), the granting node of each grant it holds (the inbox blob's hint, spec/sync-inbox.md §2), a link's sharer node (spec/sync-inbox.md §6), configured addresses, and every osis node announcing on a LAN it is on (spec/sync-transport.md §4). Nothing else is learned from other accounts' data: a reader dials a node keeping S unread only at an address it knows so.
 - **Whom to dial**: the nodes of accounts that hold sync or above on a sync ID it syncs, the granters of what it keeps unread, its own nodes while their sync sets intersect, and LAN announcers; within `max_peers` (local policy), which counts connected nodes that share something, never candidates.
 - **Keep or close**: a connection stays while its shared set has a member, an Offer or Lost is unanswered, or a deposit to it may land; else it closes, and is dialed again when this side's sync set or credentials grow. A connection on a LAN is preferred once its record matches (§3).
 - **Redial**: a node not connected to a peer it would dial dials it again after `REDIAL_MS` (local policy) from its last dial of that peer, or sooner on any change this node knows of that could make the peer share something (a new sync ID, credential, role or address), at most once per `REDIAL_MS`. At 0 a failing peer is dialed at every event; at infinity a peer is dialed again only on a change. Opens are never retried: they are judged again at each change (§6).
@@ -41,7 +41,7 @@
   - No Offer is sent before the peer's `Digest` is read, and no Pull before the digests matched or the peer's last `Members` page is read.
 
 ## 4. Shared set
-- The **shared set** of a connection: the sync IDs the two sides share on it, judged by each side on what it holds now. A connection with no shared set answers its requests Error 14.
+- The **shared set** of a connection: the sync IDs the two sides share on it, judged by each side on what it holds now. A side keeping no shared set on a connection yet (before a record or NoRecord, §3) answers its shared-set requests Error 14 (spec/wire.md §11.2).
 - **The rule**: S is in a connection's shared set exactly while each side syncs S (spec/sync-set.md §2) and holds, judged by itself on what it holds now, proof that the other may hold S. Proof is one of:
   - **J**: an actor the peer proved on this connection holds sync or above on S's thing, by the rosters held here;
   - a **secret credential** the peer showed on this connection: a read secret of S's thing, or a sync proof (spec/sync-ids.md §2) of S's head sync key;
