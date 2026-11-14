@@ -257,7 +257,7 @@ impl Streams {
             _ => {}
         }
         self.run(ctx, conn);
-        self.track(conn);
+        self.track(ctx, conn);
     }
 
     /// A member moved.
@@ -289,7 +289,7 @@ impl Streams {
             }
             Moved::Until(conn, s) => self.served_ending(ctx, conn, s),
         }
-        self.track(conn);
+        self.track(ctx, conn);
     }
 
     /// Wants a Pull from the stream's cursor on `conn` though nothing else is due, sent once any
@@ -298,12 +298,14 @@ impl Streams {
         let Some(p) = self.pull.get_mut(&conn) else { return };
         p.again = true;
         self.run(ctx, conn);
-        self.track(conn);
+        self.track(ctx, conn);
     }
 
     /// Keeps `caught` for `conn` as its pulling and serving now stand.
-    fn track(&mut self, conn: ConnId) {
-        let now = self.pull.get(&conn).filter(|p| p.caught_up() && self.served_applied(conn)).map(|p| p.answered_at);
+    fn track(&mut self, ctx: &Ctx, conn: ConnId) {
+        let end = ctx.store.log_bounds().map(|(e, _)| e);
+        let mark = ctx.store.memory_mark();
+        let now = self.pull.get(&conn).filter(|p| p.caught_up() && end.as_ref().is_ok_and(|e| self.served_applied(conn, *e, mark))).map(|p| p.answered_at);
         if self.caught.get(&conn).copied() != now {
             match now {
                 Some(t) => self.caught.insert(conn, t),
@@ -337,7 +339,7 @@ impl Streams {
         for c in conns {
             acted |= self.push(ctx, c)?;
             self.run(ctx, c);
-            self.track(c);
+            self.track(ctx, c);
         }
         Ok(acted)
     }

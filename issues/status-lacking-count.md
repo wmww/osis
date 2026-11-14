@@ -3,4 +3,4 @@
 > Priority: low
 > Tags: sync, status
 
-The count is display only (`SourceStatus::lacking`); waits and held elsewhere never read it. To make it O(change): follow the store's entry feed and streams' `known` per (S, blob) as `Effects` keys whose value is the set of store sources lacking that blob, and keep the per-(S, source) count from their differences (as inbox's `held` follows entries). Costs an `Effects` key per stamped entry held.
+The count is display only (`SourceStatus::lacking`); waits and held elsewhere never read it. It is still taken at each settle whether or not anyone reads status, so a first sync of a large S at a node with a store source costs O(entries × settles). To make it O(change): follow the store's entry feed and streams' `known` per (S, blob) as `Effects` keys whose value is the set of store sources lacking that blob, and keep the per-(S, source) count from their differences (as inbox's `held` follows entries). Costs an `Effects` key per stamped entry held.

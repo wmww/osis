@@ -454,8 +454,9 @@ impl Engine {
         not_built("held_elsewhere")
     }
 
-    pub fn note_complete_pass(&mut self, actor: &Tid, began: WallMs) -> Result<()> {
-        let _ = (actor, began);
+    /// A complete pass of `s` begun at `began` ended (spec/sync-status.md §1).
+    pub fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
+        let _ = (s, began);
         not_built("note_complete_pass")
     }
 

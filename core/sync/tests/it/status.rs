@@ -59,6 +59,7 @@ struct Fake {
     stamped: Stamped<SyncId, Vec<BlobId>>,
     knows: StampedSet<(Source, SyncId, BlobId)>,
     reported: Stamped<(ConnId, SyncId), Position>,
+    until: Stamped<(ConnId, SyncId), Position>,
     records: Stamped<SyncId, BTreeSet<RecordId>>,
     own: Stamped<SyncId, Arc<BTreeSet<CommitId>>>,
     removals: Stamped<(), Arc<BTreeSet<CommitId>>>,
@@ -67,9 +68,8 @@ struct Fake {
     first: Stamped<(SyncId, BlobId), Position>,
     elsewhere: StampedSet<(SyncId, BlobId)>,
     told_held: Vec<CommitId>,
-    wanted: Stamped<(), Arc<BTreeMap<Tid, WallMs>>>,
-    actor_ids: BTreeMap<Tid, Vec<SyncId>>,
-    passes: Vec<(Tid, WallMs)>,
+    wanted: Stamped<(), Arc<BTreeMap<SyncId, WallMs>>>,
+    passes: Vec<(SyncId, WallMs)>,
     /// Calls to `stamped` (lacking counts taken).
     stamped_reads: u64,
 }
@@ -103,8 +103,8 @@ impl Ground for Fake {
     fn knows(&self, at: Source, _conn: ConnId, s: &SyncId, b: &BlobId) -> bool {
         self.knows.contains(&(at, *s, *b))
     }
-    fn refused(&self, at: Source, s: &SyncId, b: &BlobId) -> bool {
-        self.refused.contains(&(at, *s, *b))
+    fn until(&self, conn: ConnId, s: &SyncId) -> Option<Position> {
+        self.until.get(&(conn, *s)).copied()
     }
     fn reported(&self, conn: ConnId, s: &SyncId) -> Option<Position> {
         self.reported.get(&(conn, *s)).copied()
@@ -141,17 +141,16 @@ impl Ground for Fake {
         self.removals.insert((), Arc::new(r));
         Ok(())
     }
-    fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<Tid, WallMs>>> {
+    fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, WallMs>>> {
         Ok(self.wanted.get(&()).cloned().unwrap_or_default())
     }
-    fn actor_sync_ids(&mut self, actor: &Tid) -> Result<Vec<SyncId>> {
-        Ok(self.actor_ids.get(actor).cloned().unwrap_or_default())
-    }
-    fn note_complete_pass(&mut self, actor: &Tid, began: WallMs) -> Result<()> {
-        self.passes.push((*actor, began));
+    fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
+        self.passes.push((*s, began));
         let mut w = self.wanted.get(&()).map(|x| (**x).clone()).unwrap_or_default();
-        w.remove(actor);
-        self.wanted.insert((), Arc::new(w));
+        if w.get(s).is_some_and(|t| *t <= began) {
+            w.remove(s);
+            self.wanted.insert((), Arc::new(w));
+        }
         Ok(())
     }
 }
@@ -268,6 +267,10 @@ fn full_or_refusing_source_named_not_waited_on() {
     t.g.refused.insert((Source::Record(RB), S, blob(1)));
     t.settle();
     assert!(t.heard_out(S) && t.st.of(&S, &t.g).unwrap().sources[&B].refusing);
+    // with only sources that do not take S, nothing is heard out
+    t.st.left(S, A);
+    t.settle();
+    assert!(!t.heard_out(S), "only a refusing source");
 }
 
 // spec/sync-status.md §1 (lacks): a source lacks an entry only for what it would pull: a source
@@ -323,21 +326,41 @@ fn own_commit_held_elsewhere_by_report_or_presence() {
     assert!(t.st.held(&cid(2)));
 }
 
-// spec/sync-status.md §2 (store source): a writer's wait ends on a source keeping S unread
-// reporting it applied the writer's entries, unless it refused the entry.
+// spec/sync-status.md §2 (store source): a source keeping S unread holds a writer's entry once
+// its stream shows it; its reported position says nothing (it applies past what it refused for
+// room or does not pull), so a writer's wait ends on its stream alone.
 #[test]
-fn store_source_report_counts_unless_refused() {
+fn store_source_counts_by_its_stream() {
     let mut t = T::new(&[(S, Holding::Read)]);
     t.join(S, B, store(RB));
     t.caught(B, S, 0);
     t.own(S, cid(1), blob(1), 3);
-    t.g.refused.insert((Source::Record(RB), S, blob(1)));
+    t.g.full.insert((Source::Record(RB), S));
     t.g.reported.insert((B, S), 10);
     t.settle();
-    assert!(!t.st.held(&cid(1)), "refused there");
-    t.g.refused.remove(&(Source::Record(RB), S, blob(1)));
+    assert!(!t.st.held(&cid(1)), "a full store applied past it");
+    t.g.full.remove(&(Source::Record(RB), S));
     t.settle();
-    assert!(t.st.held(&cid(1)) && t.wait(S));
+    assert!(!t.st.held(&cid(1)) && !t.wait(S), "its position alone");
+    t.g.knows.insert((Source::Record(RB), S, blob(1)));
+    t.settle();
+    assert!(t.st.held(&cid(1)) && t.wait(S), "its stream shows it");
+}
+
+// spec/sync-status.md §2 (until): a reader's member being ended counts only the entries first
+// logged at or below its `until`.
+#[test]
+fn ending_member_counts_up_to_its_until() {
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.join(S, A, reader(RA, 1));
+    t.caught(A, S, 0);
+    t.g.until.insert((A, S), 4);
+    t.own(S, cid(1), blob(1), 5);
+    t.g.reported.insert((A, S), 10);
+    t.settle();
+    assert!(!t.st.held(&cid(1)), "logged past its until: never served it");
+    t.own(S, cid(2), blob(2), 4);
+    assert!(t.st.held(&cid(2)), "logged at its until");
 }
 
 // spec/sync-status.md §2 (self-removal): this account's own other nodes never count for its
@@ -373,11 +396,10 @@ fn nothing_to_hold_is_held() {
     assert!(t.st.held(&cid(1)));
 }
 
-/// Actor `a`'s sync IDs are `ids`; the engine wants a pass of it after `since`.
-fn want(t: &mut T, a: Tid, ids: &[SyncId], since: u64) {
-    t.g.actor_ids.insert(a, ids.to_vec());
+/// The engine wants a pass of S begun at or after `since`.
+fn want(t: &mut T, s: SyncId, since: u64) {
     let mut w = t.g.wanted.get(&()).map(|x| (**x).clone()).unwrap_or_default();
-    w.insert(a, WallMs(since));
+    w.insert(s, WallMs(since));
     t.g.wanted.insert((), Arc::new(w));
     t.settle();
 }
@@ -392,8 +414,7 @@ fn complete_pass_needs_fresh_pulls_and_recorded_peers() {
     t.caught(A, S, 0);
     t.g.records.insert(S, [RA, RB].into());
     t.at(100);
-    let a = tid(5);
-    want(&mut t, a, &[S], 100);
+    want(&mut t, S, 100);
     assert_eq!(t.pulls, vec![A], "a fresh Pull at each source");
     assert_eq!(t.st.of(&S, &t.g).unwrap().pass_waits, Some([RA, RB].into()));
     assert!(t.g.passes.is_empty(), "caught up from a Pull before the pass");
@@ -402,7 +423,7 @@ fn complete_pass_needs_fresh_pulls_and_recorded_peers() {
     assert!(t.g.passes.is_empty(), "RB not read since");
     t.join(S, B, reader(RB, 2));
     t.caught(B, S, 120);
-    assert_eq!(t.g.passes, vec![(a, WallMs(100))]);
+    assert_eq!(t.g.passes, vec![(S, WallMs(100))]);
     assert_eq!(t.st.of(&S, &t.g).unwrap().pass_waits, None);
 }
 
@@ -411,8 +432,8 @@ fn complete_pass_needs_fresh_pulls_and_recorded_peers() {
 fn complete_pass_with_nobody_ends_at_once() {
     let mut t = T::new(&[(S, Holding::Read)]);
     t.at(7);
-    want(&mut t, tid(5), &[S], 7);
-    assert_eq!(t.g.passes, vec![(tid(5), WallMs(7))]);
+    want(&mut t, S, 7);
+    assert_eq!(t.g.passes, vec![(S, WallMs(7))]);
 }
 
 // spec/sync-status.md §1 (PASS_WAIT_MS): a recorded peer away holds a pass no longer than
@@ -422,13 +443,13 @@ fn complete_pass_gives_up_on_away_peer() {
     let mut t = T::new(&[(S, Holding::Read)]);
     t.g.records.insert(S, [RB].into());
     t.at(10);
-    want(&mut t, tid(5), &[S], 10);
+    want(&mut t, S, 10);
     assert!(t.g.passes.is_empty());
     assert_eq!(t.st.next_wake(), Some(WallMs(10 + PASS_WAIT_MS)));
     t.at(10 + PASS_WAIT_MS - 1);
     assert!(t.g.passes.is_empty());
     t.at(10 + PASS_WAIT_MS);
-    assert_eq!(t.g.passes, vec![(tid(5), WallMs(10))]);
+    assert_eq!(t.g.passes, vec![(S, WallMs(10))]);
 }
 
 // spec/sync-status.md §1 (complete pass, spec/permissions.md §3 Complete pass): a pass under way
@@ -439,15 +460,23 @@ fn pass_begun_before_the_moment_counts_for_nothing() {
     let mut t = T::new(&[(S, Holding::Read)]);
     t.join(S, A, reader(RA, 1));
     t.at(10);
-    want(&mut t, tid(5), &[S], 10);
+    want(&mut t, S, 10);
     t.at(20);
-    want(&mut t, tid(6), &[S], 20);
+    want(&mut t, S, 20);
     t.pulls.clear();
     t.caught(A, S, 10);
-    assert_eq!(t.g.passes, vec![(tid(5), WallMs(10))]);
+    assert_eq!(t.g.passes, vec![(S, WallMs(10))]);
     assert_eq!(t.pulls, vec![A], "the next pass asks again");
+    // a third moment while the second pass is under way queues one pass, not one per moment
+    t.at(30);
+    want(&mut t, S, 30);
+    t.at(40);
+    want(&mut t, S, 40);
     t.caught(A, S, 20);
-    assert_eq!(t.g.passes, vec![(tid(5), WallMs(10)), (tid(6), WallMs(20))]);
+    assert_eq!(t.g.passes, vec![(S, WallMs(10)), (S, WallMs(20))]);
+    t.caught(A, S, 40);
+    assert_eq!(t.g.passes, vec![(S, WallMs(10)), (S, WallMs(20)), (S, WallMs(40))], "one pass for both");
+    assert!(t.g.wanted.get(&()).unwrap().is_empty());
 }
 
 // spec/sync-status.md §3 (wait): `wait` ends when every sync ID in scope is heard out with its own
@@ -480,7 +509,7 @@ fn work_for_one_report(n: u32) -> (u64, u64) {
     let ids: Vec<(SyncId, Holding)> = (0..n).map(|i| (sid(i), Holding::Read)).collect();
     let mut t = T::new(&ids);
     for (i, (s, _)) in ids.iter().enumerate() {
-        t.join(*s, ConnId(100 + i as u64), store(RA));
+        t.join(*s, ConnId(100 + i as u64), reader(RA, 1));
         t.own(*s, cid(1 + (i % 200) as u8), blob(i as u8), 3);
     }
     let before = t.st.work();
@@ -500,5 +529,5 @@ fn work_follows_change() {
     let (c1, l1) = work_for_one_report(10);
     let (c10, l10) = work_for_one_report(100);
     assert_eq!((c1, l1), (c10, l10));
-    assert!(c1 <= 2, "{c1}");
+    assert!((1..=2).contains(&c1), "{c1}");
 }

@@ -15,9 +15,9 @@
 //!   not show (spec/sync-status.md §1: a source lacks only what it would pull);
 //! - per own commit under a read S: held elsewhere (§2), recorded on the entry durably
 //!   (`Store::set_elsewhere`) and told to the engine for a self-removal (`held_elsewhere`);
-//! - complete passes (§1) of the sync IDs of each actor the engine wants one for, a fresh Pull at
-//!   each source, ended by every source caught up since and every recorded peer read at its next
-//!   connection, or `PASS_WAIT_MS`; told to the engine (`note_complete_pass`).
+//! - complete passes (§1) of each sync ID the engine wants one of, a fresh Pull at each source,
+//!   ended by every source caught up since and every recorded peer read at its next connection,
+//!   or `PASS_WAIT_MS`; each end told to the engine (`note_complete_pass`).
 //!
 //! Only `handle` makes outputs: reading status or a wait changes nothing.
 
@@ -94,7 +94,7 @@ pub struct SyncStatus {
 }
 
 impl SyncStatus {
-    /// Every source caught up but those named full or refusing; never with none (§1).
+    /// Every source caught up but those named full or refusing, and one such at least (§1).
     pub fn heard_out(&self) -> bool {
         heard_out(self.sources.values().map(|x| (x.waited(), x.caught_up)))
     }
@@ -110,12 +110,16 @@ impl SyncStatus {
     }
 }
 
+/// Over (waited, caught up) per source: a source full or refusing is not waited on, and only
+/// such sources is no more heard out than none (§1).
 fn heard_out(sources: impl Iterator<Item = (bool, bool)>) -> bool {
     let mut any = false;
     for (waited, caught_up) in sources {
-        any = true;
-        if waited && !caught_up {
-            return false;
+        if waited {
+            if !caught_up {
+                return false;
+            }
+            any = true;
         }
     }
     any
@@ -140,10 +144,10 @@ pub trait Ground: Net {
     fn stamped(&mut self, s: &SyncId) -> Result<Vec<BlobId>>;
     /// Whether that source's stream showed `b` present under S (streams' `knows`).
     fn knows(&self, at: Source, conn: ConnId, s: &SyncId, b: &BlobId) -> bool;
-    /// Whether that source refused `b` under S (spec/sync-streams.md §4 Refused, Full).
-    fn refused(&self, at: Source, s: &SyncId, b: &BlobId) -> bool;
     /// The position of this node's log the peer on `conn` reported for S (opens' Positions).
     fn reported(&self, conn: ConnId, s: &SyncId) -> Option<Position>;
+    /// The `until` of member S on `conn` (opens: a member being ended).
+    fn until(&self, conn: ConnId, s: &SyncId) -> Option<Position>;
     /// The records holding S as a member (opens).
     fn records_holding(&self, s: &SyncId) -> BTreeSet<RecordId>;
     /// This node's commits and self-removals with a body under S (engine).
@@ -161,12 +165,13 @@ pub trait Ground: Net {
     fn set_elsewhere(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;
     /// Tells the engine a self-removal is held elsewhere (it drops the secrets).
     fn held_elsewhere(&mut self, c: &CommitId) -> Result<()>;
-    /// The actors the engine wants a complete pass of, each with the moment a pass must begin
-    /// after (the newest role commit of the actor from elsewhere it applied).
-    fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<Tid, WallMs>>>;
-    /// The sync IDs of an actor held here.
-    fn actor_sync_ids(&mut self, actor: &Tid) -> Result<Vec<SyncId>>;
-    fn note_complete_pass(&mut self, actor: &Tid, began: WallMs) -> Result<()>;
+    /// The sync IDs the engine wants a complete pass of, each with the moment the pass must begin
+    /// at or after (spec/permissions.md §3 Complete pass: the newest role commit of one of S's
+    /// actors from elsewhere it applied, a role found gone, a tied demotion's scope).
+    fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, WallMs>>>;
+    /// A complete pass of S begun at `began` ended (the engine drops S from `passes_wanted` once
+    /// `began` is at or past its moment).
+    fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()>;
 }
 
 /// A complete pass of S under way (§1).
@@ -222,13 +227,9 @@ pub struct Status {
     held: StampedSet<CommitId>,
     removals_fx: Effects<(), Arc<BTreeSet<CommitId>>>,
     removals: StampedSet<CommitId>,
-    wanted_fx: Effects<(), Arc<BTreeMap<Tid, WallMs>>>,
-    /// Per actor wanting a pass: the moment it must begin after, the sync IDs still owing one.
-    actors: BTreeMap<Tid, (WallMs, BTreeSet<SyncId>)>,
+    wanted_fx: Effects<(), Arc<BTreeMap<SyncId, WallMs>>>,
     passes: Stamped<SyncId, Pass>,
     pass_fx: Effects<SyncId, PassNow>,
-    /// When the last complete pass of S that ended began.
-    done: BTreeMap<SyncId, WallMs>,
     /// S owes another pass once the one under way ends.
     again: BTreeSet<SyncId>,
     /// The engine's `own_commits` is not built: a wait cannot know own commits.
@@ -253,10 +254,8 @@ impl Default for Status {
             removals_fx: Effects::new("status: self-removals"),
             removals: StampedSet::default(),
             wanted_fx: Effects::new("status: passes wanted"),
-            actors: BTreeMap::new(),
             passes: Stamped::default(),
             pass_fx: Effects::new("status: pass"),
-            done: BTreeMap::new(),
             again: BTreeSet::new(),
             own_unbuilt: false,
             work: Work::default(),
@@ -480,39 +479,25 @@ impl Status {
         }
     }
 
-    /// Complete passes (§1, spec/permissions.md §3 Complete pass): begun for each sync ID of an
-    /// actor the engine wants one for, ended and told.
+    /// Complete passes (§1, spec/permissions.md §3 Complete pass): begun for each sync ID the
+    /// engine wants one of, each pass's end told.
     fn passes(&mut self, g: &mut impl Ground, pulls: &mut Vec<ConnId>) -> Result<bool> {
         let mut acted = false;
         self.wanted_fx.want(());
         if !self.wanted_fx.due().is_empty()
             && let Some(wanted) = skip_unbuilt(whole(&mut self.wanted_fx, || g.passes_wanted()))?
         {
-            self.actors.retain(|a, _| wanted.contains_key(a));
-            for (a, since) in wanted.iter() {
-                if self.actors.get(a).is_some_and(|(t, _)| t == since) {
-                    continue;
-                }
-                let Some(ids) = skip_unbuilt(g.actor_sync_ids(a).map(Some))? else { continue };
-                let mut owed = BTreeSet::new();
-                for s in ids {
-                    if self.done.get(&s).is_some_and(|t| t >= since) {
-                        continue;
+            for (s, since) in wanted.iter() {
+                match self.passes.get(s) {
+                    Some(p) if p.began >= *since => {}
+                    // a Pull sent before the moment ends no pass after it: one more once it ends
+                    Some(_) => {
+                        self.again.insert(*s);
                     }
-                    owed.insert(s);
-                    match self.passes.get(&s) {
-                        Some(p) if p.began >= *since => {}
-                        Some(_) => {
-                            self.again.insert(s);
-                        }
-                        None => self.begin(g, s, pulls),
-                    }
+                    None => self.begin(g, *s, pulls),
                 }
-                self.actors.insert(*a, (*since, owed));
             }
-            acted |= self.tell_actors(g)?;
         }
-        let mut ended = false;
         for s in self.pass_fx.due() {
             let Some(p) = self.passes.get(&s).cloned() else {
                 self.pass_fx.unwant(&s);
@@ -528,8 +513,8 @@ impl Status {
             if now.done {
                 self.passes.remove(&s);
                 self.pass_fx.unwant(&s);
-                self.done.insert(s, p.began);
-                ended = true;
+                skip_unbuilt(g.note_complete_pass(&s, p.began).map(Some))?;
+                acted = true;
                 if self.again.remove(&s) {
                     self.begin(g, s, pulls);
                 }
@@ -537,9 +522,6 @@ impl Status {
                 let waits = p.waits.difference(&now.read).copied().collect();
                 self.passes.insert(s, Pass { began: p.began, waits });
             }
-        }
-        if ended {
-            acted |= self.tell_actors(g)?;
         }
         Ok(acted)
     }
@@ -550,25 +532,6 @@ impl Status {
         pulls.extend(self.sources.get(&s).into_iter().flat_map(|x| x.keys().copied()));
         self.passes.insert(s, Pass { began, waits: g.records_holding(&s) });
         self.pass_fx.want(s);
-    }
-
-    /// Tells the engine of each actor whose sync IDs all ended a pass begun after it wanted one.
-    fn tell_actors(&mut self, g: &mut impl Ground) -> Result<bool> {
-        let mut acted = false;
-        let mut told = Vec::new();
-        for (a, (since, owed)) in &mut self.actors {
-            owed.retain(|s| self.done.get(s).is_none_or(|t| t < since));
-            if owed.is_empty() {
-                told.push(*a);
-            }
-        }
-        for a in told {
-            let Some((since, _)) = self.actors.remove(&a) else { continue };
-            // every pass it counts began at or after `since`
-            skip_unbuilt(g.note_complete_pass(&a, since).map(Some))?;
-            acted = true;
-        }
-        Ok(acted)
     }
 
     // ---- reads (stamped: memo-safe; none makes an output) ----
@@ -601,7 +564,8 @@ impl Status {
         ids.into_iter().filter_map(|s| Some((s, self.of(&s, net)?))).collect()
     }
 
-    /// S heard out (§1): every source caught up but those full or refusing; never with none.
+    /// S heard out (§1): every source caught up but those full or refusing, and one such at
+    /// least.
     /// O(sources of S).
     pub fn heard_out(&self, s: &SyncId, net: &impl Net) -> bool {
         let srcs = self.sources.get(s).map_or(&NO_SOURCES, |x| &**x);
@@ -655,8 +619,10 @@ impl Status {
 
 /// Whether own commit `c`'s body under S is held at a source (§2): nothing S must hold (by
 /// read's verdict), an entry recorded held, or one a source's stream showed present (a self-
-/// removal: not at this account's own nodes) or a source reported a position at or past where
-/// this node's log first held it, unless that source refused it.
+/// removal: not at this account's own nodes), or a reader reported a position at or past where
+/// this node's log first held it (for a member being ended, only an entry first logged at or below
+/// its `until`). A store's position says nothing of an entry: it applies past what it refused for
+/// room or does not pull (unstamped), so a store counts by its stream alone.
 fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: &BTreeMap<ConnId, Src>, removal: bool) -> Result<Held> {
     match g.verdict(s, c) {
         Some(Verdict::Must) => {}
@@ -673,7 +639,8 @@ fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: &BTreeMap<Con
                 continue;
             }
             let shown = g.knows(src.at, *conn, s, &b);
-            let reported = first.is_some_and(|f| g.reported(*conn, s).is_some_and(|p| p >= f)) && !g.refused(src.at, s, &b);
+            let reported = src.class == SourceClass::Reader
+                && first.is_some_and(|f| g.reported(*conn, s).is_some_and(|p| p >= f) && g.until(*conn, s).is_none_or(|u| f <= u));
             if shown || reported {
                 return Ok(Held::Yes(Some(b)));
             }

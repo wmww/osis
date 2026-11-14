@@ -359,9 +359,10 @@ pub struct Status {
 pub enum SyncScope {
     /// Every synced group and every pending delivery.
     All,
-    /// What this thing travels under: its own sync and every synced group holding it, those no
-    /// other node is connected on left out while one has a node connected; and the deliveries
-    /// about it, what it holds or those groups. Done too once this node stops holding the thing.
+    /// What this thing travels under: its own sync and every synced group holding it, each with
+    /// a node connected and caught up and this node's own changes held there (spec/sync-status.md
+    /// §3); and the deliveries about it, what it holds or those groups. Runs to the timeout while
+    /// one of them has no node connected, or this node does not hold the thing.
     Thing(Tid),
     /// This node's pending deliveries (grants and other inbox items), nothing else.
     Deliveries,

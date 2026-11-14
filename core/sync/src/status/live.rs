@@ -1,8 +1,8 @@
 //! The product's ground: the engine's facade, the store, opens, streams, read and unread. Not
 //! built (each answers `NotBuilt`, so that part of status does nothing until it is): the store's
-//! own entries by commit (held elsewhere), the engine's actors wanting a complete pass
-//! (`passes_wanted`, proposed facade call: the engine's role-commit rules read the passes it is
-//! told of by `note_complete_pass`).
+//! own entries by commit (held elsewhere), the sync IDs the engine wants a complete pass of
+//! (`passes_wanted`, proposed facade call: the engine's rules waiting on a pass read the passes it
+//! is told of by `note_complete_pass`).
 
 use super::{Ground, Net};
 use crate::opens::Opens;
@@ -11,7 +11,7 @@ use crate::store::Source;
 use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Error, Position, RecordId, Result};
 use crate::unread::Unread;
-use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
+use osis_base::{BlobId, CommitId, SyncId, WallMs};
 use osis_engine::sync::SyncSet;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -80,11 +80,11 @@ impl Ground for Live<'_, '_> {
     fn knows(&self, at: Source, conn: ConnId, s: &SyncId, b: &BlobId) -> bool {
         self.streams.knows(at, Some(conn), s, b)
     }
-    fn refused(&self, at: Source, s: &SyncId, b: &BlobId) -> bool {
-        self.streams.known().refusal(at, s, b).is_some()
-    }
     fn reported(&self, conn: ConnId, s: &SyncId) -> Option<Position> {
         self.opens.reported_at(conn, s).map(|(p, _)| *p)
+    }
+    fn until(&self, conn: ConnId, s: &SyncId) -> Option<Position> {
+        self.opens.members(conn).get(s).and_then(|m| m.until)
     }
     fn records_holding(&self, s: &SyncId) -> BTreeSet<RecordId> {
         self.opens.records_holding(s)
@@ -114,13 +114,10 @@ impl Ground for Live<'_, '_> {
     fn held_elsewhere(&mut self, c: &CommitId) -> Result<()> {
         Ok(self.cx.engine.held_elsewhere(c)?)
     }
-    fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<Tid, WallMs>>> {
-        Err(Error::NotBuilt("engine: passes_wanted (actors wanting a complete pass)"))
+    fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, WallMs>>> {
+        Err(Error::NotBuilt("engine: passes_wanted (sync IDs wanting a complete pass)"))
     }
-    fn actor_sync_ids(&mut self, actor: &Tid) -> Result<Vec<SyncId>> {
-        Ok(self.cx.engine.sync_ids(actor)?.iter().map(|o| o.id).collect())
-    }
-    fn note_complete_pass(&mut self, actor: &Tid, began: WallMs) -> Result<()> {
-        Ok(self.cx.engine.note_complete_pass(actor, began)?)
+    fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
+        Ok(self.cx.engine.note_complete_pass(s, began)?)
     }
 }

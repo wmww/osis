@@ -48,6 +48,8 @@ pub(super) struct Serve {
     /// The position of the last message sent asking a report: every message served is applied
     /// once `applied` reaches it (spec/sync-status.md §1 caught up).
     served: Option<Position>,
+    /// The last reply left a join of a member to read on (the peer pulls again for it).
+    joins_left: bool,
     /// Members reported at a position of their own (a join not merged yet).
     own: BTreeSet<SyncId>,
 }
@@ -184,6 +186,7 @@ impl Streams {
         let read = self.read_into(ctx, conn, &mut page, &stream, None, from, start)?;
         // joins: each from its own cursor; one that reaches the log's end merges
         let mut reply_joins = Vec::new();
+        let mut joins_left = false;
         if !whole {
             for (s, c, pos) in joins {
                 let Some(until) = members.get(&s) else {
@@ -191,6 +194,7 @@ impl Streams {
                     continue;
                 };
                 if page.full {
+                    joins_left = true;
                     let c = match c {
                         Some(c) => Some(c),
                         None => ctx.store.cursor_at(0)?,
@@ -201,6 +205,7 @@ impl Streams {
                 let one = BTreeMap::from([(s, *until)]);
                 let r = self.read_into(ctx, conn, &mut page, &one, Some(s), c, pos.flatten().unwrap_or(0))?;
                 if r.more {
+                    joins_left = true;
                     reply_joins.push((s, wire_cursor(&r.cursor)));
                 } else {
                     self.serve.entry(conn).or_default().merging.insert(s, read.pos);
@@ -223,6 +228,7 @@ impl Streams {
         let serve = self.serve.entry(conn).or_default();
         serve.crossed.extend(page.crossed.iter().copied());
         serve.eph.extend(page.eph.iter().map(|(s, n)| (*s, *n)));
+        serve.joins_left = joins_left;
         if p.follow && !read.more {
             serve.follow = Some(Follow { cursor: read.cursor.clone(), pos: read.pos, seq: 0 });
             serve.mem_mark = ctx.store.memory_mark();
@@ -386,9 +392,13 @@ impl Streams {
         Ok(acted)
     }
 
-    /// Whether the peer reported every message served to it applied (spec/sync-status.md §1).
-    pub(super) fn served_applied(&self, conn: ConnId) -> bool {
-        self.serve.get(&conn).is_none_or(|x| x.served.is_none_or(|p| x.applied.is_some_and(|a| a >= p)))
+    /// Whether the peer pulled this side's stream to its end and reported every message served to
+    /// it applied (spec/sync-status.md §1): it pulled, is followed with nothing left to push (`end`,
+    /// `mark`: the log's end and the memory mark now) and no join left to read on.
+    pub(super) fn served_applied(&self, conn: ConnId, end: Position, mark: u64) -> bool {
+        self.serve.get(&conn).is_some_and(|x| {
+            x.follow.as_ref().is_some_and(|f| f.pos >= end) && x.mem_mark == mark && !x.joins_left && x.served.is_none_or(|p| x.applied.is_some_and(|a| a >= p))
+        })
     }
 
     /// An Applied: the requester stored this cursor (spec/sync-opens.md §6 reported positions).
