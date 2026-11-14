@@ -74,4 +74,4 @@ A realm being a tag too; realms administered by one account ("family", I stay ad
 5. **Keep on removal**: keep by default, matching chat: an honest client cannot force erasure, and silent erasure of someone's own messages reads as data loss. Admins may choose erase per removal.
 6. **Things created in a realm**: the realm is first admin (they stay when the maker leaves, like a team drive) rather than the maker sharing them in; things that already exist are shared in.
 7. **No single controlling account by default**: a realm's admins are equals (an actor whose admins are its grants, the first admin removable); a realm one account controls is allowed too.
-8. **Serving**: a node that cannot read a realm keeps its sync ID as any other (issues/net-one-peer.md, Sync model): nothing realm-specific.
+8. **Serving**: a node that cannot read a realm keeps its sync ID as any other (issues/sync-rewrite.md, Sync model): nothing realm-specific.

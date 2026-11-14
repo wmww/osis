@@ -346,7 +346,7 @@ impl Transaction<'_> {
 
     /// The deletion horizon: a position below it may have had deletion events the sweep has
     /// dropped since, so a reader at such a position does not hear of those deletions by reading
-    /// on (issues/net-one-peer.md 3h1: a listing from the start, marked trimmed, tells it). 0 while
+    /// on (issues/sync-rewrite.md 3h1: a listing from the start, marked trimmed, tells it). 0 while
     /// none was dropped.
     pub fn log_horizon(&mut self) -> Result<u64, Error> {
         self.cat_get(HORIZON)?.map_or(Ok(0), |v| pos_value(&v))

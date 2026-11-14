@@ -357,7 +357,7 @@ async fn flood_does_not_delay_others() {
 }
 
 
-// issues/net-one-peer.md 3c, spec/sync.md §5, §10: node sync above the hub. One connection to the
+// issues/sync-rewrite.md 3c, spec/sync.md §5, §10: node sync above the hub. One connection to the
 // key of a node carries a label the node keeps and cannot read (Register, a Hit, Delete: the hub's
 // store) and a group the node reads (proofs, NoRecord, a Hit, the stream: node sync), each
 // answered by its layer

@@ -14,11 +14,11 @@ Signal edits: reuse the existing edit machinery rather than add a second mechani
 - **Account signing** (issues/account-signing.md): steps 1 and 4 built. Step 2 open with Tess (covered commits: keep listing everything; per-session ranges studied with header forgetting). Next: 3 (spec), 5, 6.
 - **Settings** (issues/settings.md, decided with Tess): account and node settings as ordinary aspects on private things in home; the design to reach for whenever persistent settings are needed, and bespoke settings systems get cut over to it. Not urgent. Build after account signing step 6, which moves node data under D's home label: reconcile the two first.
 - **Forgetting compacted headers** (notes/growth.md row 1): conflicts with removal lists naming commit IDs; study a per-session counter range for frontiers with it.
-- Network rework (issues/net-rework.md), then data that lives while its keepers are connected (issues/connection-lived-data.md).
+- Network rework (issues/sync-rewrite.md), then data that lives while its keepers are connected (issues/connection-lived-data.md).
 
 ## Findings recorded only here
 - Bounding rotation names (issues/rotation-names-grow.md): "chain coverage through supersedes" leaks (a TLA instance found it); a base-chain rule breaks when a base rotation turns invalid. Redo with the rotate-free principle (spec/crypto.md §4).
 
 ## Networking
-Order and state: issues/net-rework.md; the build in progress is issues/net-one-peer.md (one key, one store and serving path; step 3h2 under way). Step 10 of issues/net-shared-set.md (the epoch signature, account signing) decides when a proven account counts: check what main says before relying on "J counts key actors alone".
+Order and state: issues/sync-rewrite.md; the build in progress is issues/sync-rewrite.md (one key, one store and serving path; step 3h2 under way). Step 10 of issues/net-shared-set.md (the epoch signature, account signing) decides when a proven account counts: check what main says before relying on "J counts key actors alone".
 - Dogfood channel served from devbox (`~/osis-dogfood`, port 4040, transient units `osis-dogfood-host` (the node both Claudes sync through; `restart-host.sh`), `osis-dogfood-me`): a box stop stops them; restart per notes/dogfood.md with the same stores.

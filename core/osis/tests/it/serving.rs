@@ -32,7 +32,7 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 // spec/wire.md §11.2 (an unadmitted genesis step gets code 14), notes/serving.md, spec/requirements.md
-// Data a node cannot read, issues/net-one-peer.md step 4: Alice serves admitting nothing for others: her
+// Data a node cannot read, issues/sync-rewrite.md step 4: Alice serves admitting nothing for others: her
 // home label, which she reads, is in her one store with no setup (no saved peer of her own); Bob's is
 // refused until she opens admission (his status names her peer, his home synced at his other peer;
 // Carol's, at her peer only, `Refused`, and `wait_synced` waits: it may yet be admitted), then
@@ -113,7 +113,7 @@ fn serving_listed_then_open_spec_sync_5() {
     assert_eq!(hosted(&w, s), vec![la]);
 }
 
-// spec/data-model.md §9, spec/sync.md §4; notes/api.md Serving, issues/net-one-peer.md step 4: a node serves the groups it reads from its one
+// spec/data-model.md §9, spec/sync.md §4; notes/api.md Serving, issues/sync-rewrite.md step 4: a node serves the groups it reads from its one
 // store with no setup and no peer of its own: Alice, not serving for others, listens; her group
 // names her address alone; Bob, granted it, syncs it there and reads it.
 #[test]
@@ -199,7 +199,7 @@ fn host_store_labels(dir: &std::path::Path) -> Vec<LabelId> {
 }
 
 // spec/data-model.md §9 (`host^.0` absent: it does not serve), spec/requirements.md Deletion,
-// issues/net-one-peer.md step 4: stopping serving drops what the node kept for others from its
+// issues/sync-rewrite.md step 4: stopping serving drops what the node kept for others from its
 // one store (shredded), not the store: on a running driver, or at the next driver start when it
 // stopped while none ran.
 #[test]

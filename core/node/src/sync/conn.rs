@@ -50,7 +50,7 @@ pub(crate) enum Phase {
     /// Waiting for the peer's filter: each arrival tests the credential of `shown` (the walk found
     /// it shown: a recorded step's, or a held sync key no recorded step bears, its step `None`),
     /// else of the newest step known there (`SyncEngine::newest_known`), and a Hit opens it
-    /// (issues/net-one-peer.md 3h2, Stale head).
+    /// (issues/sync-rewrite.md 3h2, Stale head).
     Testing { shown: Option<Box<(Option<Step>, osis_crypto::SigningSecret)>> },
     /// Registering the recorded path at a peer that lacks the label: its steps not answered yet.
     Registering { path: Vec<Step> },

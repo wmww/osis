@@ -564,7 +564,7 @@ fn one_more_write_at(k: usize) -> ([u64; 5], [u64; 5]) {
     (pass_work(before.0, net.sync(a).pass_stats()), pass_work(before.1, net.sync(b).pass_stats()))
 }
 
-// spec/sync.md §6, §10; issues/net-one-peer.md 3h2 (one pass per label): a write to a label
+// spec/sync.md §6, §10; issues/sync-rewrite.md 3h2 (one pass per label): a write to a label
 // kept at 1 and at 3 peers that cannot read it costs each node the same full passes and bodies
 // judged: the own part judges the change once, whatever the number of sources; a source showing
 // what this node holds only marks presence there, which that source's part acts on from the
@@ -1797,7 +1797,7 @@ fn tests_per_arrival(steps: usize) -> (u64, u64) {
     ((after.tested - before.tested) / arrivals, after.walk_tests - before.walk_tests)
 }
 
-// spec/sync.md §10 (Shared set, Testing), issues/net-one-peer.md 3h2 (Stale head: cost),
+// spec/sync.md §10 (Shared set, Testing), issues/sync-rewrite.md 3h2 (Stale head: cost),
 // spec/requirements.md (Scale): a reader on the
 // newest head tests one credential per sync ID at each arrival of a peer's filter whatever the
 // number of steps the label went through (n and 10n rotations), and walks nothing.

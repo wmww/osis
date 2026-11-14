@@ -273,7 +273,7 @@ fn a_failed_sync_taking_bytes_needs_no_restart() {
     }
 }
 
-// issues/net-one-peer.md step 4 (one store): co-readers with no host, each serving the group to the
+// issues/sync-rewrite.md step 4 (one store): co-readers with no host, each serving the group to the
 // other from its one store: every entry a node holds bytes of is one row there, and the blobs on
 // its disk are exactly the distinct blobs of those entries (a body read and served is stored once).
 #[test]

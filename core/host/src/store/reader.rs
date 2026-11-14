@@ -1,4 +1,4 @@
-//! Node sync's entries in the hub's store (issues/net-one-peer.md step 4): for the sync IDs the
+//! Node sync's entries in the hub's store (issues/sync-rewrite.md step 4): for the sync IDs the
 //! node reads (`set_read`) node sync writes the entries whose bytes it holds as this store's
 //! entry rows, so the node's ciphertext is held once and logged once, in this store's node log.
 //! Its path is the one it serves from `label.0` (`reader_steps`). Admission, caps, budgets, rates

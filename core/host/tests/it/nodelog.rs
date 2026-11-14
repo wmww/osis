@@ -1,4 +1,4 @@
-//! spec: none (the node log in the host's store: issues/net-one-peer.md build 3e, issues/net-reconnect.md
+//! spec: none (the node log in the host's store: issues/sync-rewrite.md build 3e, issues/net-reconnect.md
 //! One node log). The hub's store logs every entry and head it holds.
 
 use crate::common::*;
@@ -170,7 +170,7 @@ fn a_restored_store_issues_no_cursor() {
     assert_eq!(from_early.events.iter().map(|e| e.event).collect::<Vec<_>>(), [NodeEvent::Added(f.label, osis_label::blob_id(&blob(3)))]);
 }
 
-// issues/net-one-peer.md step 4 (`host^.0` going drops the sync IDs kept for others, not the
+// issues/sync-rewrite.md step 4 (`host^.0` going drops the sync IDs kept for others, not the
 // store): a dropped label leaves no row, no event and no blob only it held; the others stay whole
 #[test]
 fn dropping_a_label_leaves_nothing_of_it() {

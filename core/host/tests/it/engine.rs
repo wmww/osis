@@ -1,4 +1,4 @@
-//! The engine's blobs in the hub's store (`osis_store::CipherHost`, issues/net-one-peer.md step
+//! The engine's blobs in the hub's store (`osis_store::CipherHost`, issues/sync-rewrite.md step
 //! 4): a blob the node reads and serves is stored once, and each holder's drop leaves it to the
 //! other.
 

@@ -959,7 +959,7 @@ fn a_write_then_a_reply_over_a_reader_spec_sync_3() {
 
 // Row 26, spec/sync.md §10: a peer that cannot read can be added to a group already synced.
 #[test]
-#[ignore = "issues/net-one-peer.md"]
+#[ignore = "issues/sync-rewrite.md"]
 fn repro_row26_a_peer_can_be_added_later() {
     let mut w = World::new();
     let a = w.account(1, &[]);
@@ -971,7 +971,7 @@ fn repro_row26_a_peer_can_be_added_later() {
 
 // Row 27, spec/sync.md §10: a saved peer named by key is dialed.
 #[test]
-#[ignore = "issues/net-one-peer.md"]
+#[ignore = "issues/sync-rewrite.md"]
 fn repro_row27_a_saved_peer_named_by_key_is_dialed() {
     let mut w = World::new();
     let a = w.account(1, &[]);
@@ -1167,7 +1167,7 @@ fn a_link_expiring_with_both_sharer_nodes_online_settles_spec_permissions_7() {
     assert!(!listed(&a) && !listed(&a2), "an expired link is listed nowhere");
 }
 
-// issues/net-one-peer.md step 1, spec/sync.md §10 (One key): a node that serves is a saved peer by
+// issues/sync-rewrite.md step 1, spec/sync.md §10 (One key): a node that serves is a saved peer by
 // its `peer://` address, dialed by its key through its relay, and the serving reaches its hub
 // there: Alice's home syncs at the box, and her new node, offline until she is gone, reads there
 // what she wrote meanwhile

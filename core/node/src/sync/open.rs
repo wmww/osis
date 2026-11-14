@@ -1,4 +1,4 @@
-//! A label at a peer that cannot read it (spec/sync.md §5, §10; issues/net-one-peer.md 3h2, Stale
+//! A label at a peer that cannot read it (spec/sync.md §5, §10; issues/sync-rewrite.md 3h2, Stale
 //! head): the credential of the newest step this node knows is tested against the peer's filter
 //! and Hit; not shown, the recorded path's earlier credentials are walked, then the path is
 //! registered from genesis; a peer whose head is past the recorded path is caught up with by
@@ -261,7 +261,7 @@ impl SyncEngine {
         self.engine.core.key_actors.values().any(|id| set.contains(&osis_crypto::static_entry(l, &id.keys().signing.verifying_key())))
     }
 
-    /// The walk's credentials of `l` at `conn` (issues/net-one-peer.md 3h2, Stale head): of the
+    /// The walk's credentials of `l` at `conn` (issues/sync-rewrite.md 3h2, Stale head): of the
     /// recorded steps, every branch of the tree (two admins' concurrent children: the peer holds
     /// one), deepest first, then every held sync key, newest first (the peer's head
     /// may be a step this node never recorded: one made while it was out, whose `label.0` comes

@@ -1,5 +1,5 @@
 # Role and sync paired: what is left
-> Summary: Role and sync are paired (spec/sync.md §2): a commit giving a thing role secrets of its own makes its one sync ID, never replaced. Left: `send_inbox`'s chain for a sender holding no `label.0` of the thing (likely dead), and two design questions (key actors' sync IDs, per-sync-ID cost). Part of issues/net-rework.md.
+> Summary: Role and sync are paired (spec/sync.md §2): a commit giving a thing role secrets of its own makes its one sync ID, never replaced. Left: `send_inbox`'s chain for a sender holding no `label.0` of the thing (likely dead), and two design questions (key actors' sync IDs, per-sync-ID cost). Part of issues/sync-rewrite.md.
 > Priority: low
 > Tags: sync, spec, engine
 

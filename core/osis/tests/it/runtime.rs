@@ -702,7 +702,7 @@ fn tokio_runtime_close_then_shutdown_no_timer_panic() {
     assert_eq!(shutdown_panics("tk-close"), 0);
 }
 
-// spec/data-model.md §9, notes/cli.md Serving (a dedicated peer node), issues/net-one-peer.md step
+// spec/data-model.md §9, notes/cli.md Serving (a dedicated peer node), issues/sync-rewrite.md step
 // 4: a node paired to Alice's account, admitting nothing for others, serves what it reads on the
 // handle's driver, the only peer either node knows: her home, a group she makes afterwards and a
 // link to it all reach it; Bob, on that peer only, reads the group as soon as his redemption of

@@ -156,7 +156,7 @@ impl SyncEngine {
     }
 
     /// The credential this node tests of each of `labels` at `conn`, a peer that cannot read them, with the key
-    /// its Hit signs the open with (issues/net-one-peer.md 3h2, Credential): of the peer's head
+    /// its Hit signs the open with (issues/sync-rewrite.md 3h2, Credential): of the peer's head
     /// there once open, else of the step the walk found shown, else of the newest step known
     /// there (`newest_known`; `step_key`: the step's sync key when this node holds that epoch's
     /// secret, else its claim key while the step's claim set is held), else, knowing none (a

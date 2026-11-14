@@ -1026,7 +1026,7 @@ impl State {
         parts.keys().chain(commits).flat_map(|c| self.by_commit.get(c).into_iter().flatten()).copied().filter(|b| self.blobs.get(b).is_some_and(|r| r.memory && forgets_blob(commits, parts, &r.commit, &r.parts))).collect::<BTreeSet<_>>().into_iter().collect()
     }
 
-    /// The hub's store is the truth for ciphertext (issues/net-one-peer.md step 4): at load every
+    /// The hub's store is the truth for ciphertext (issues/sync-rewrite.md step 4): at load every
     /// entry and row once (brute force), then the node log past `hub_pos` as the hub changes it
     /// (`hub_changes`). Add before, remove after (`HostStore::removal`), so a row with no entry
     /// here is an arrival the engine's store did not commit or another's entry, derived again (an
@@ -2963,7 +2963,7 @@ mod tests {
         if create { Engine::create(b, r, hub, crate::Config::default(), clock, rng).unwrap() } else { Engine::open(b, r, hub, crate::Config::default(), clock, rng).unwrap() }
     }
 
-    // spec: none (issues/net-one-peer.md step 4, add before, remove after): a crash at any write of a flush
+    // spec: none (issues/sync-rewrite.md step 4, add before, remove after): a crash at any write of a flush
     // removing an entry leaves it both here and as the hub's row, or neither, once reopened (the
     // engine's commit decides; `Engine::settle_blobs` finishes the row's removal).
     #[test]
@@ -2998,7 +2998,7 @@ mod tests {
         assert!(seen_gone && seen_kept, "the crash points reach both outcomes");
     }
 
-    // spec: none (issues/net-one-peer.md step 4, cost: two stores; notes/coordination.md, count work): a
+    // spec: none (issues/sync-rewrite.md step 4, cost: two stores; notes/coordination.md, count work): a
     // flush storing a batch of entries with their bytes writes each store a fixed number of
     // times, the same at n and 10n entries.
     #[test]

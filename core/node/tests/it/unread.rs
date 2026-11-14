@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! The serving side for sync IDs a node keeps and cannot read (issues/net-one-peer.md build 3g;
+//! The serving side for sync IDs a node keeps and cannot read (issues/sync-rewrite.md build 3g;
 //! issues/net-shared-set.md, Peers that cannot read; spec/sync.md §10 Shared set): their head's
 //! sync-key, deposit-key and static entries go in the filter to every connection; a Hit on the
 //! sync key with its open signature opens the sync ID, which is then served by the stream from the
@@ -1307,7 +1307,7 @@ fn rejoin(net: &mut Net, n: usize, s: usize) {
     net.blocked.remove(&(n, s));
 }
 
-// spec/sync.md §5 (Register: relayable by any node), issues/net-one-peer.md 3h2 (Stale head): a
+// spec/sync.md §5 (Register: relayable by any node), issues/sync-rewrite.md 3h2 (Stale head): a
 // rotation while a peer that cannot read L is away leaves it on the old head (the child step
 // registered at another); a reader that is no admin, holding the recorded child, moves it there
 // by its walk (L opens at the old step it still shows) and registration; a reader added after
@@ -1486,7 +1486,7 @@ fn a_node_holding_the_heads_sync_key_opens_past_steps_it_lacks_spec_sync_5() {
     assert_eq!(net.read(c, t), Some(net::s("after")));
 }
 
-// spec/sync.md §5 (Register: relayable by any node), issues/net-one-peer.md 3h2 (Stale head): a
+// spec/sync.md §5 (Register: relayable by any node), issues/sync-rewrite.md 3h2 (Stale head): a
 // peer listed for L (in `label.0`) that lacks L entirely gets the recorded path, genesis first,
 // from a reader that is no admin: its walk finds no credential shown, a Behind item on its
 // newest step is refused there, and it registers the path; L then opens there at its head.
@@ -1528,7 +1528,7 @@ fn a_listed_peer_without_l_gets_the_recorded_path_spec_sync_5() {
     assert!(net.sync(b).shared_members(conn).contains(&l), "L open at s2");
 }
 
-// spec/sync.md §10 (Shared set), issues/net-one-peer.md 3h2 (Stale head: found only at a peer
+// spec/sync.md §10 (Shared set), issues/sync-rewrite.md 3h2 (Stale head: found only at a peer
 // listed for L): a reader connected to a peer that keeps nothing of L and is not listed for it
 // registers nothing of L there, sends it no Behind item, and opens nothing.
 #[test]

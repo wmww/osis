@@ -55,7 +55,7 @@ P2P is in every build; `lan` (socket2 only) is the one networking feature left.
 - **Browser**: no transport yet; relay-only there (notes/networking.md). No LAN, no direct. Not looked at further.
 
 ## Fixes
-The fixes, their order and what is open: issues/net-rework.md and its job issues (`net-*`, rows cited in each).
+The fixes, their order and what is open: issues/sync-rewrite.md and its job issues (`net-*`, rows cited in each).
 
 ## Verified or only read
 - **By probe**: rows marked with `p`/`q`, by-hand tests. In-process results say nothing about finding a peer: only p20, p21 and the by-hand tests ran real sockets, and all on localhost, never between machines.

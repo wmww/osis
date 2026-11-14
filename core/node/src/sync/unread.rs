@@ -1,4 +1,4 @@
-//! The serving side for sync IDs this node keeps and cannot read (issues/net-one-peer.md step 3,
+//! The serving side for sync IDs this node keeps and cannot read (issues/sync-rewrite.md step 3,
 //! Opens; issues/net-shared-set.md, Peers that cannot read): their heads come from the hub's
 //! store, whose head credentials (sync key, deposit key, the claim set's static entries) go in
 //! the filter to every connection; a member opened by one is served from the hub's store (its

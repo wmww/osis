@@ -1,4 +1,4 @@
-//! The node's one store of ciphertext (issues/net-one-peer.md step 4): the blob ciphertexts the
+//! The node's one store of ciphertext (issues/sync-rewrite.md step 4): the blob ciphertexts the
 //! engine writes and reads live in a store beside the engine's (the hub's, `osis_host`'s
 //! `HostStore`), shared with what that store keeps for others, so a blob is held once. An engine
 //! transaction touching blobs locks it (`Ciphertext::begin`) and commits it first: ciphertext is

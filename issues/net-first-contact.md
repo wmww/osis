@@ -1,5 +1,5 @@
 # First contact and delivery without a server
-> Summary: Links, contact cards and grants assume a saved peer (audit rows 5, 6, 8, 9, 12, 21, 37). Design: once connected (issues/net-connect.md), a link's holder finds K's sync ID like any other (issues/net-shared-set.md: the link key's static entry is its credential at every node serving K, reader or not, sharer online or not), and a grant is an offer to a connected node that proved a holder of the recipient's inbox, or a deposit at one serving it unread. No `direct` links; a card is a plain link; undelivered grants show as pending. Part of issues/net-rework.md.
+> Summary: Links, contact cards and grants assume a saved peer (audit rows 5, 6, 8, 9, 12, 21, 37). Design: once connected (issues/net-connect.md), a link's holder finds K's sync ID like any other (issues/net-shared-set.md: the link key's static entry is its credential at every node serving K, reader or not, sharer online or not), and a grant is an offer to a connected node that proved a holder of the recipient's inbox, or a deposit at one serving it unread. No `direct` links; a card is a plain link; undelivered grants show as pending. Part of issues/sync-rewrite.md.
 > Priority: normal
 > Tags: sync, api, node
 

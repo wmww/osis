@@ -1,4 +1,4 @@
-//! The engine's blobs in the hub's store (`osis_store::CipherHost`, issues/net-one-peer.md step
+//! The engine's blobs in the hub's store (`osis_store::CipherHost`, issues/sync-rewrite.md step
 //! 4): one blob area for what the node reads and what it keeps for others, so a blob read and
 //! served is stored once. A `B` row marks a blob the engine holds; the hub deletes a blob only
 //! once no entry references it (`R`) and the engine holds it no more, the engine's release only

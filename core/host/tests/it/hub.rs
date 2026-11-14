@@ -256,7 +256,7 @@ fn started(w: &World, h: usize) -> osis_host::ConnId {
     w.ups.iter().rev().find_map(|(x, c, u)| (*x == h && matches!(u, osis_host::Up::Start(_))).then_some(*c)).expect("a start")
 }
 
-// issues/net-one-peer.md step 3 (The hub calls up for nothing; spec/wire.md §11.2): a session's
+// issues/sync-rewrite.md step 3 (The hub calls up for nothing; spec/wire.md §11.2): a session's
 // start with its binding (the listener's key, the dialer as the transport tells it) goes up at
 // its Hello, an open of the hub's own sends nothing up, then node-kind messages unjudged in
 // arrival order; node sync's answers come down and go out; the end goes up once the connection

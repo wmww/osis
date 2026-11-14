@@ -1018,7 +1018,7 @@ impl SyncEngine {
 
     /// The peer's latest filter was tested and every Offer of it answered: each label on this
     /// connection to a peer that cannot read it, not open there, waiting for no Register, is walked, once per filter
-    /// arrival (issues/net-one-peer.md 3h2, Stale head): the credentials of its recorded steps,
+    /// arrival (issues/sync-rewrite.md 3h2, Stale head): the credentials of its recorded steps,
     /// deepest first, then its held sync keys (`walk_candidates`), but the one this arrival
     /// tested, against the same filter; the first shown is Hit, none shown strands it holding no
     /// credential of the newest step known (`strands`), else asks by a Behind item or registers

@@ -1,5 +1,5 @@
 # Rename: host, label, placed and the other deprecated words
-> Summary: Once the concepts are one (issues/net-one-peer.md, issues/net-role-sync.md), put spec, notes and code in the new words: about 6,500 code uses of host and 7,600 of label, plus placed, routing and the role words issues/deprecated-terms.md points here. Words: issues/net-rework.md. Part of issues/net-rework.md.
+> Summary: Once the concepts are one (issues/sync-rewrite.md, issues/net-role-sync.md), put spec, notes and code in the new words: about 6,500 code uses of host and 7,600 of label, plus placed, routing and the role words issues/deprecated-terms.md points here. Words: issues/sync-rewrite.md. Part of issues/sync-rewrite.md.
 > Priority: low
 > Tags: naming, spec
 
