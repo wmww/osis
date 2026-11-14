@@ -20,6 +20,18 @@ pub struct GroupLabel {
     pub hosts: Vec<Address>,
 }
 
+fn group_label(g: &Tid, id: &LabelId, l: &ct::Label) -> Option<Arc<GroupLabel>> {
+    let steps = osis_label::label_steps(l).ok()?;
+    Some(Arc::new(GroupLabel { group: *g, id: *id, steps, hosts: l.hosts.clone() }))
+}
+
+/// The labels of `g` a `label.0` value `v` records (`Engine::labels_read`); records that do not
+/// parse are skipped.
+pub(crate) fn group_labels_in(g: &Tid, v: &osis_base::Value) -> Vec<Arc<GroupLabel>> {
+    use osis_schema::RawKey;
+    ct::LABEL.decode(v).map(|m| m.iter().filter_map(|(id, l)| group_label(g, id, l)).collect()).unwrap_or_default()
+}
+
 impl GroupLabel {
     /// The tips of the step tree (the newest step of each branch).
     pub fn tips(&self) -> Vec<StepId> {
@@ -136,13 +148,13 @@ impl Engine {
     /// asks, so it keeps no answer built on a failed read.
     pub fn labels_read(&mut self, g: &Tid) -> Result<Vec<Arc<GroupLabel>>> {
         if self.core.created(g).is_none() {
-            return Ok(Vec::new());
+            // a destroyed thing keeping nothing: the labels node-sync empties (`emptying`)
+            return Ok(if self.emptying(g) { self.core.ix.destroyed_labels.get(g).cloned().unwrap_or_default() } else { Vec::new() });
         }
         Memo::get_in(self, |e| &e.core.labels, g, |e| {
             let mut out = Vec::new();
             for (id, l) in &e.get_typed(g, &ct::LABEL)?.unwrap_or_default() {
-                let Ok(steps) = osis_label::label_steps(l) else { continue };
-                out.push(Arc::new(GroupLabel { group: *g, id: *id, steps, hosts: l.hosts.clone() }));
+                out.extend(group_label(g, id, l));
             }
             Ok::<_, crate::error::Error>(out)
         })

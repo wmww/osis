@@ -451,6 +451,39 @@ impl SyncEngine {
         self.engine.drop_destroyed_secrets(&clear)
     }
 
+    /// Ends the emptying of each destroyed thing's labels (`Engine::emptying`,
+    /// `retention::destroy::keep_labels`) once each is done: this node holds no delete key of its
+    /// newest step, or its sources are heard out (none named: its co-readers empty their own
+    /// stores) with no entry of it known here and no delete of one within its tombstone. Then
+    /// their sync state goes (`Engine::labels_emptied`), and with it this node's sessions there.
+    /// O(labels emptied) per step.
+    pub(crate) fn end_emptying(&mut self) -> Result<()> {
+        for t in self.engine.emptying_things() {
+            let labels = self.engine.labels_of(&t);
+            let mut done = true;
+            for gl in &labels {
+                let l = gl.id;
+                let keyed = match super::open::deepest_path(&gl.steps).and_then(|p| p.last().map(|(s, _)| s.clone())) {
+                    Some(step) => self.engine.head_keys(&t, &step)?.delete.is_some(),
+                    None => false,
+                };
+                let empty = self.state.label_entries(&l).next().is_none() && self.state.tombs.range((l, BlobId([0; 32]))..=(l, BlobId([0xff; 32]))).next().is_none();
+                if keyed && !(empty && (super::peers::hostless(&gl.hosts) || self.heard(&l))) {
+                    done = false;
+                    break;
+                }
+            }
+            if !done {
+                continue;
+            }
+            self.state.flush(&mut self.engine)?;
+            let ids: BTreeSet<LabelId> = labels.iter().map(|l| l.id).collect();
+            self.engine.labels_emptied(&t)?;
+            self.forgot(&ids, &BTreeSet::new(), &BTreeMap::new())?;
+        }
+        Ok(())
+    }
+
     /// Forgets the headers of forgotten commits no entry names any more, or held again, but
     /// those that stand for what carries another forgotten commit (`carriers_of_forgotten`).
     /// With the tombstones' expiry (a scan of every deleted body: not per write).

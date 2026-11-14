@@ -68,6 +68,13 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         core.ix.names_due.remove(id);
     }
     super::validity::forget_addenda(core, id, &v.aspects);
+    // its keyset parts' rows (`records::OWN_KEYS`: kept while the commit is held)
+    let keyed: BTreeSet<Tid> = v.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid).filter(|t| core.ix.keyset_parts.get(t).is_some_and(|s| s.contains(id))).collect();
+    for t in &keyed {
+        core.touch();
+        core.ix.keyset_parts.remove(t, id);
+        tx.txn.remove_local(&records::own_keys_key(t, id), Shred::No)?;
+    }
     let void = core.ix.void.remove(id);
     core.ix.pending.remove(id);
     core.stale_commits.remove(id);
@@ -97,7 +104,8 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
             None => crate::retention::off_valueless(tx, &a.tid, &a.ak, &owned),
         }
     }
-    tx.remove_commit(id)
+    tx.remove_commit(id)?;
+    super::keys::refresh_own_keys(tx, &keyed, true)
 }
 
 /// Coverer `id` forgotten: each part dropped under it is dropped from then on under what `id`'s

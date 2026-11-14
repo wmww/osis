@@ -416,8 +416,10 @@ impl SyncEngine {
             if self.fill_first_waits(&l) || self.filling(&l) && !own_wrote && !fill_due.contains(&l) {
                 continue;
             }
-            // one label's failure stops neither the others nor the handle
-            if let Err(e) = self.label_pass(g, l, head, out) {
+            // one label's failure stops neither the others nor the handle; a destroyed thing's
+            // label is emptied, nothing else
+            let pass = if self.engine.emptying(&g) { self.empty_pass(l, out) } else { self.label_pass(g, l, head, out) };
+            if let Err(e) = pass {
                 self.diag(format!("pass of {l:?}: {e}"));
             }
             self.schedule_pass(l);

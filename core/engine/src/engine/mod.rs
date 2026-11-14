@@ -827,6 +827,9 @@ indexes! {
     /// Destroyed things keeping nothing whose own secrets are held for node-sync's deletes alone
     /// (`records::DESTROYED_SECRETS`, `retention::destroy::hold_secrets`).
     pub destroyed_secrets: JSet<Tid>,
+    /// Destroyed things' labels kept for node-sync to empty once they keep nothing
+    /// (`records::DESTROYED_LABELS`, `retention::destroy::keep_labels`).
+    pub destroyed_labels: JMap<Tid, Vec<Arc<crate::labeling::GroupLabel>>>,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
     pub valueless: JMap<(Tid, Ak), Vec<Owned>>,
     /// Actors with secrets of their own whose epochs this node holds.

@@ -38,6 +38,7 @@ use std::collections::BTreeSet;
 
 const CREATED: &str = osis_commit::retention::CREATED;
 const ROLES: &str = "roles.0";
+const LABEL: &str = "label.0";
 
 /// Aspects whose parts a destroyed thing still takes (`thing_wait`), so its destruction is judged alike:
 /// its mintings, its frozen edges and the destroying requests' parts on it.
@@ -310,6 +311,8 @@ fn reopen_fallen(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
         crate::apply::keys::rebuild_keysets(tx, &BTreeSet::from([*t]))?;
     }
     unhold_secrets(tx, t)?;
+    // its `label.0` parts come back with the rest
+    unkeep_labels(tx, t)?;
     // reads of the thing and its roles move, and whatever waited on the thing is judged again
     tx.core.role_changed();
     tx.core.ix.held.record_back(*t);
@@ -404,6 +407,9 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
     } else {
         Vec::new()
     };
+    if aspects.iter().any(|(ak, _)| ak.as_str() == LABEL) {
+        keep_labels(tx, t)?;
+    }
     for (ak, commits) in aspects.iter().chain(&partly) {
         for c in commits {
             if let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(t, ak)) {
@@ -448,6 +454,11 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
     } else {
         hold_secrets(tx, t)?;
         tx.txn.remove_local(&[records::CREATED, t.as_bytes()].concat(), Shred::Yes)?;
+        // no closure of it is synced here any more (`Engine::set_syncing`)
+        if tx.core.ix.syncing.remove(t) {
+            tx.core.touch();
+            tx.txn.remove_local(&[records::SYNCING, t.as_bytes()].concat(), Shred::No)?;
+        }
         tx.core.ix.held.forget_record(t);
         tx.core.tree_reach.remove(t);
         crate::rotation::merge::forget(tx, t)?;
@@ -570,6 +581,44 @@ fn hold_secrets(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     Ok(())
 }
 
+/// Destroyed `t`'s `label.0` goes with its destruction: with secrets of its own held, its labels
+/// are kept (`records::DESTROYED_LABELS`) for node-sync to empty once it keeps nothing.
+///
+/// Invariant: once a destroyed thing keeps nothing here, everything under its own labels is
+/// must-not-hold for every holder: nothing it keeps lives there (what its dependents need of it
+/// travels under their labels, spec/commits.md §5 Destruction), and its closure, its required set
+/// there, is empty. So while it keeps nothing and this node holds its secrets
+/// (`Engine::emptying`), node-sync syncs those labels for that alone: a holder of the delete key of
+/// a label's newest step deletes every entry it knows there by it, and a label is done once its
+/// sources are heard out with no entry known there and no delete within its tombstone (a source
+/// that got an entry late announces it again meanwhile), or at once where this node holds no such
+/// key. Then the labels' sync state goes and the row with them (`Engine::labels_emptied`), and
+/// only then its secrets, which derive those keys (`Engine::drop_destroyed_secrets`). Not while it
+/// keeps: its destruction may still fall (a request in force), and what it dropped is fetched
+/// again from its labels' hosts. Limit: an entry a source announces past those tombstones, or a
+/// source never heard again, stays there.
+fn keep_labels(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    if tx.core.ix.secrets.get(t).is_none() || tx.core.ix.destroyed_labels.contains_key(t) {
+        return Ok(());
+    }
+    let Some(v) = tx.state(t, &crate::flows::ak(LABEL)?)?.and_then(osis_crdt::Fragment::read) else { return Ok(()) };
+    let ls = crate::labeling::actors::group_labels_in(t, &v);
+    if ls.is_empty() {
+        return Ok(());
+    }
+    tx.txn.put_local(&[records::DESTROYED_LABELS, t.as_bytes()].concat(), &osis_base::encode(&v), Shred::No)?;
+    tx.core.ix.destroyed_labels.insert(*t, ls);
+    Ok(())
+}
+
+/// `t`'s destruction fell, or node-sync emptied its labels: their row goes.
+fn unkeep_labels(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    if tx.core.ix.destroyed_labels.remove(t).is_some() {
+        tx.txn.remove_local(&[records::DESTROYED_LABELS, t.as_bytes()].concat(), Shred::No)?;
+    }
+    Ok(())
+}
+
 /// `t` keeps again, or its destruction fell: its secrets are its own again, not node-sync's.
 fn unhold_secrets(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     if tx.core.ix.destroyed_secrets.remove(t) {
@@ -587,6 +636,37 @@ impl crate::engine::Engine {
         due.into_iter().filter(|t| self.core.ix.destroyed_secrets.contains(t)).collect()
     }
 
+    /// Whether node-sync empties destroyed `t`'s labels now (`keep_labels`): it keeps nothing, its
+    /// secrets held for node-sync alone, its labels kept.
+    pub fn emptying(&self, t: &Tid) -> bool {
+        self.core.ix.destroyed_secrets.contains(t) && self.core.ix.destroyed_labels.get(t).is_some()
+    }
+
+    /// The things whose labels node-sync empties now (`emptying`).
+    pub fn emptying_things(&self) -> Vec<Tid> {
+        self.core.ix.destroyed_labels.keys().filter(|t| self.core.ix.destroyed_secrets.contains(t)).copied().collect()
+    }
+
+    /// Node-sync emptied destroyed `t`'s labels (`keep_labels`): their sync state goes with the
+    /// row keeping them (`SyncRecords::forget`, in one transaction), and its secrets are judged
+    /// again for dropping (`drop_destroyed_secrets`). The blobs no record names any more go.
+    pub fn labels_emptied(&mut self, t: &Tid) -> Result<()> {
+        let t = *t;
+        self.run(|tx| {
+            let labels: BTreeSet<osis_base::LabelId> = tx.core.ix.destroyed_labels.get(&t).into_iter().flatten().map(|l| l.id).collect();
+            unkeep_labels(tx, &t)?;
+            tx.core.destroyed_secrets_due.insert(t);
+            let gone = match tx.core.sync_records {
+                Some(r) => r.forget(tx, &labels, &BTreeSet::new(), &BTreeSet::new(), &Default::default(), BTreeSet::new())?,
+                None => BTreeSet::new(),
+            };
+            for b in &gone {
+                tx.blobs.release(b, tx.txn.is_memory())?;
+            }
+            Ok(())
+        })
+    }
+
     /// The held commits keyed by destroyed `t` (`hold_secrets`): with a part on it or acting for it.
     pub fn commits_keyed_by(&self, t: &Tid) -> BTreeSet<CommitId> {
         self.core.on_thing(t).chain(self.core.acting_for(t)).collect()
@@ -594,10 +674,12 @@ impl crate::engine::Engine {
 
     /// Drops the secrets of each of `ts` held for node-sync alone (`hold_secrets`), node-sync
     /// knowing no entry of a commit keyed by it: its `k/` row and `Indexes::secrets` entry go.
-    /// One with a freed link left (`retention::freed`) stays: `freed_done` hands it back. One whose
+    /// One with a freed link left (`retention::freed`) stays: `freed_done` hands it back; so does
+    /// one whose labels node-sync still empties (`keep_labels`): `labels_emptied` hands it back. One whose
     /// record is held again keeps them as its own.
     pub fn drop_destroyed_secrets(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
-        let ts: Vec<Tid> = ts.iter().copied().filter(|t| self.core.ix.destroyed_secrets.contains(t)).collect();
+        // one whose labels node-sync still empties stays: the delete keys derive from them
+        let ts: Vec<Tid> = ts.iter().copied().filter(|t| self.core.ix.destroyed_secrets.contains(t) && self.core.ix.destroyed_labels.get(t).is_none()).collect();
         if ts.is_empty() {
             return Ok(());
         }

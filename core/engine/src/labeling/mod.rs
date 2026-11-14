@@ -3,7 +3,7 @@
 //! calls for, delete keys, certificate blobs, and the convergence rule.
 //! Synchronous functions over the `Engine`; `sync` acts on them.
 
-mod actors;
+pub(crate) mod actors;
 mod blobs;
 mod certs;
 pub(crate) use certs::judged_valid;

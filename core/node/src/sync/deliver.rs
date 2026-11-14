@@ -220,7 +220,7 @@ impl SyncEngine {
     /// pass ended with nothing outstanding (what the hosts have for this node has come, its own
     /// writes went); or some host refuses it (stranded: every key this node holds refused; or
     /// not admitted for now), so nothing of this node's can go there.
-    fn heard(&self, l: &LabelId) -> bool {
+    pub(crate) fn heard(&self, l: &LabelId) -> bool {
         let (mut open, mut idle, mut refused) = (0, 0, false);
         for c in self.conns.values() {
             let Some(x) = c.labels.get(l) else { continue };
@@ -290,10 +290,18 @@ impl SyncEngine {
         if f.things.is_empty() && f.labels.is_empty() {
             return Ok(leaving);
         }
+        self.forgot(&f.labels, &f.commits, &f.parts)?;
+        Ok(leaving)
+    }
+
+    /// The sync state about what the engine forgot (`labels`, and `commits` and `parts` of things
+    /// under labels kept): reloaded, the memory class kept but for what it forgot, and the sessions and
+    /// in-memory marks of `labels` dropped.
+    pub(crate) fn forgot(&mut self, labels: &BTreeSet<LabelId>, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>) -> Result<()> {
         // the memory class is kept as the engine keeps its memory commits (`State::reload`),
         // but for what it forgot
-        let blobs = self.state.forget_memory(&f.labels, &f.commits);
-        for l in &f.labels {
+        let blobs = self.state.forget_memory(labels, commits);
+        for l in labels {
             self.memory.refused.remove(l);
             self.memory.reported.remove(l);
             self.memory.unfit.forget(l);
@@ -304,7 +312,7 @@ impl SyncEngine {
         // what the passes knew of entries is gone with them: everything is judged again
         self.touched.full = true;
         self.state.now = now;
-        for b in self.state.memory_blobs_forgotten(&f.commits, &f.parts) {
+        for b in self.state.memory_blobs_forgotten(commits, parts) {
             self.drop_blob(&b)?;
         }
         for b in blobs {
@@ -324,8 +332,8 @@ impl SyncEngine {
         for k in moot {
             self.settle_owed(k);
         }
-        let gone = |l: &LabelId| f.labels.contains(l);
-        for l in &f.labels {
+        let gone = |l: &LabelId| labels.contains(l);
+        for l in labels {
             self.state.mem_log.forget(l);
             self.state.forget_passed(l);
         }
@@ -353,8 +361,7 @@ impl SyncEngine {
         self.peer_received.retain(|l, _| !gone(l));
         self.peer_passes.retain(|(_, l), _| !gone(l));
         self.served_cache = None;
-        self.forget_inbox()?;
-        Ok(leaving)
+        self.forget_inbox()
     }
 
     /// Records a flow's deliveries; the next step sends them.

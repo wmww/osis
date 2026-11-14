@@ -572,6 +572,35 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// A pass of label `l` of a destroyed thing that keeps nothing (`Engine::emptying`): every
+    /// entry there is must-not-hold (`retention::destroy::keep_labels`). Those no source holds
+    /// leave this node's store; at each source whose head's delete key this node holds, every
+    /// entry present goes by it. Nothing is placed or judged.
+    pub(in crate::sync) fn empty_pass(&mut self, l: LabelId, out: &mut Vec<crate::sync::Action>) -> Result<()> {
+        let ids: Vec<BlobId> = self.state.label_entries(&l).map(|(b, _)| b).filter(|b| !self.state.present_anywhere(&l, b)).collect();
+        for id in ids {
+            self.state.remove_entry(l, id);
+            self.forget_entry_blob(&id)?;
+        }
+        let now = self.now();
+        for conn in self.sources(&l) {
+            let Some(c) = self.conns.get(&conn) else { continue };
+            let (Some(source), Some(lc)) = (c.peer, c.labels.get(&l)) else { continue };
+            let Some(g) = lc.head.as_ref().map(|_| lc.group) else { continue };
+            let Some(head) = lc.head.clone() else { continue };
+            let keys = self.engine.head_keys(&g, &head)?;
+            if keys.delete.is_none() {
+                continue;
+            }
+            let Some(c) = self.conns.get(&conn) else { continue };
+            let items: Vec<osis_label::DeleteItem> = self.state.present_at(&source, &l).into_iter().filter(|id| !crate::sync::in_flight(c, &c.req.deleting, (l, *id), now)).filter_map(|id| delete_item(&keys, &l, id, None, &[])).collect();
+            if !items.is_empty() {
+                self.delete(conn, l, items, out)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Whether the delta of commit `c` on aspect `ai` has a live write in this node's state (spec/commits.md §5): a
     /// dropped body keeps its live writes there (spec/crdt.md §4.6); a purged one holds none.
     pub(super) fn part_live(&mut self, h: &osis_commit::Header, c: &CommitId, ai: usize) -> bool {

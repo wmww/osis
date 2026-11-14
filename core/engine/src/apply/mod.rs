@@ -1773,6 +1773,17 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         Ok(())
     })?;
     tx.core.ix.destroyed_secrets.extend(held);
+    let mut labels = Vec::new();
+    tx.scan(records::DESTROYED_LABELS, |k, v| {
+        let t = Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("destroyed labels"))?);
+        let lim = osis_base::Limits { max_depth: 16, max_bytes: v.len() };
+        let v = osis_base::decode(&v, &lim).map_err(|_| Error::Corrupt("destroyed labels"))?;
+        labels.push((t, crate::labeling::actors::group_labels_in(&t, &v)));
+        Ok(())
+    })?;
+    for (t, ls) in labels {
+        tx.core.ix.destroyed_labels.insert(t, ls);
+    }
     let mut due = Vec::new();
     tx.scan(records::ADDENDA_DUE, |k, _| {
         due.push(CommitId(k.try_into().map_err(|_| Error::Corrupt("addenda due"))?));

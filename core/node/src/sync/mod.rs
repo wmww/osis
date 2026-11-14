@@ -943,7 +943,9 @@ impl SyncEngine {
         // snapshots written here are changes the passes place (the trigger and `memory_step` first)
         self.compact_due()?;
         self.memory_step(out)?;
-        // after `memory_step`: a commit forgotten whole is in `Memory::forgotten` by now
+        // after `memory_step`: a commit forgotten whole is in `Memory::forgotten` by now; a
+        // destroyed thing's labels emptied before its secrets go
+        self.end_emptying()?;
         self.drop_destroyed_secrets()?;
         self.again_fell();
         self.engine_events()?;
@@ -1006,7 +1008,8 @@ impl SyncEngine {
     /// `labels`.
     fn compute_synced(&mut self) -> Result<Synced> {
         let mut labels = Vec::new();
-        for g in self.engine.labeled_groups() {
+        // a destroyed thing's labels are synced to be emptied (`Engine::emptying`)
+        for g in self.engine.labeled_groups().into_iter().chain(self.engine.emptying_things()) {
             // handed off (`set_handed_off`): never synced
             if self.state.handed_off.contains(&g) || self.engine.epochs(&g).is_none_or(|e| !e.read.holds_any()) {
                 continue;

@@ -56,6 +56,10 @@ pub const DESTROYED: &[u8] = b"td/";
 /// held for node-sync's deletes of their commits' entries (`retention::destroy::hold_secrets`):
 /// `kd/` + tid, until `Engine::drop_destroyed_secrets`.
 pub const DESTROYED_SECRETS: &[u8] = b"kd/";
+/// The labels of a destroyed thing with secrets of its own, its `label.0` value as its destruction
+/// dropped it: `kl/` + tid, until node-sync emptied them (`Engine::labels_emptied`) or the
+/// destruction fell (`retention::destroy::keep_labels`).
+pub const DESTROYED_LABELS: &[u8] = b"kl/";
 /// Commits voided by overlapping session ranges: `o/` + commit ID.
 pub const VOID: &[u8] = b"o/";
 /// `ad/<commit>`: explicit demotions this node has not answered with addenda yet

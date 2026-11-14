@@ -1736,6 +1736,70 @@ fn a_destroyed_actors_secrets_go_with_the_last_entry_of_its_commits_spec_commits
     assert_eq!(holds_secrets(&mut net, b, t), (false, false), "nothing of t's secrets left at b");
 }
 
+// spec/commits.md §5 (Destruction: keeps nothing), notes/growth.md row 5: t, a thing with
+// secrets of its own (b granted admin on it) and so a label of its own, tl, is released and nothing
+// needs it. Once it keeps nothing, everything under tl is must-not-hold: its admins delete every
+// entry there at the host by tl's delete key while they still hold t's secrets; once the deletes'
+// tombstones are past (b restarting meanwhile), no node keeps a row naming tl, then t's secrets go. At no step is a
+// node's t's secrets gone while tl is still being emptied there (the keys derive from them)
+#[test]
+fn a_destroyed_things_own_label_is_emptied_before_its_secrets_go_spec_commits_5() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let mut m = Mutation::new();
+    let t = net.engine(a).new_thing(&mut m, g);
+    m.set(t, &REG, &s("t")).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    let mut items = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(t);
+    let mut m = Mutation::new();
+    m.set(g, &ct::GROUP, &items).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let tb = net.tid(b);
+    net.grant(a, t, tb, Role::Admin);
+    net.write(b, t, "y");
+    net.run();
+    let tl = net.engine(b).group_labels(&t).unwrap().first().unwrap().id;
+    let rows = |net: &mut Net, n: usize| net.engine(n).local_rows_naming(&tl.0).unwrap().len();
+    assert!(!net.host_ids(0, &tl).is_empty(), "t's label holds its commits at the host");
+    assert!(rows(&mut net, b) > 0, "b syncs t's label");
+    assert_eq!(holds_secrets(&mut net, b, t), (true, true), "t has secrets of its own at b");
+    net.engine(c).release(&[t]).unwrap().unwrap();
+    // each step: a node without t's secrets keeps no labels of t to empty
+    let check = |net: &mut Net| {
+        for n in [a, b, c] {
+            let e = net.engine(n);
+            assert!(e.core.ix.secrets.get(&t).is_some() || e.core.ix.destroyed_labels.get(&t).is_none(), "node {n}: t's labels kept without its secrets");
+        }
+    };
+    let mut emptied = false;
+    for _ in 0..8 {
+        net.advance(osis_base::format::ROLE_KEEP_MS / 4);
+        check(&mut net);
+        if net.host_ids(0, &tl).is_empty() {
+            emptied = true;
+            break;
+        }
+    }
+    assert!(emptied, "t's label emptied at the host");
+    assert!(!net.engine(b).knows(&t) && net.engine(b).core.created(&t).is_none(), "t kept nothing at b");
+    // a host that got one late may announce it again within the deletes' tombstones
+    assert_eq!(holds_secrets(&mut net, b, t), (true, true), "b holds t's secrets while its deletes' tombstones last");
+    net.restart(b, 50);
+    assert!(net.engine(b).emptying(&t), "and empties t's label over a restart");
+    for _ in 0..4 {
+        net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS / 2);
+        check(&mut net);
+    }
+    assert!(net.host_ids(0, &tl).is_empty(), "nothing came back to the host");
+    for n in [a, b, c] {
+        assert_eq!(rows(&mut net, n), 0, "node {n}: no row names t's label");
+        assert_eq!(holds_secrets(&mut net, n, t), (false, false), "node {n}: t's secrets gone");
+        let left: Vec<String> = net.engine(n).local_rows_naming(t.as_bytes()).unwrap().into_iter().map(|(k, _)| String::from_utf8_lossy(&k[..2.min(k.len())]).into_owned()).filter(|k| k != "c/").collect();
+        assert!(left.is_empty(), "node {n}: rows naming t beside g's commits listing it: {left:?}");
+    }
+}
+
 // spec/crypto.md §7 (level 2), spec/commits.md §5: b, admin of t (secrets of its own), writes on x
 // acting for t, purgeable by its author. b, a writer of x through g, holds no admin secret of x:
 // only t's write secret (level 2) deletes that write's entries. t and x are released together and
