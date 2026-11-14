@@ -373,7 +373,9 @@ impl ReadOnly {
     }
 
     fn target(&self, scope: &Scope, redo: bool) -> Result<Option<Commit>> {
-        self.local_things(&Address::Writes(scope.clone()).things(), "undo")?;
+        if let Some(at) = self.scope_at(scope)? {
+            return self.remote_target(&at, scope, redo);
+        }
         self.track_commits(&Address::Writes(scope.clone()), None)?;
         let Some(c) = self.target_id(scope, redo)? else { return Ok(None) };
         self.commit_here(c)
@@ -473,14 +475,22 @@ impl Osis {
     /// Reverts any held commit or revert, durable or ephemeral, this node may write (an admin
     /// reverting someone else's).
     pub fn revert(&self, id: CommitId) -> Result<Commit> {
-        self.local("revert")?;
+        if !self.has_store() {
+            // a commit names no thing to find its node by: a thin client of one node reverts there
+            return match self.locked(|l| l.remotes.iter().map(|r| r.addr.clone()).collect::<Vec<_>>()).as_slice() {
+                [at] => self.remote_revert(at, id),
+                _ => Err(Error::Unsupported("revert by id through several nodes".into())),
+            };
+        }
         let _g = lock(&self.inner.undo);
         self.revert_one(id)
     }
 
     /// Undo or redo, serialized under one lock: choose by query, then revert.
     fn step(&self, scope: &Scope, redo: bool) -> Result<Option<Commit>> {
-        self.local_things(&Address::Writes(scope.clone()).things(), "undo")?;
+        if let Some(at) = self.scope_at(scope)? {
+            return self.remote_undo(&at, scope, redo);
+        }
         let _g = lock(&self.inner.undo);
         self.target_id(scope, redo)?.map(|c| self.revert_one(c)).transpose()
     }
@@ -618,6 +628,19 @@ impl crate::handle::ReadOnly {
     }
 
     /// `target`'s commit at this engine.
+    /// The node `scope`'s undo goes to, when not here: where all its things are (`Invalid` when
+    /// at two sources). A tracking handle's is `Unsupported`.
+    fn scope_at(&self, scope: &Scope) -> Result<Option<crate::share::Address>> {
+        let things = Address::Writes(scope.clone()).things();
+        match self.source_of_all(&things)? {
+            crate::sources::Source::Local => Ok(None),
+            crate::sources::Source::Node(_) if self.tracking.is_some() => Err(Error::Unsupported("a tracked undo target at another node".into())),
+            crate::sources::Source::Node(a) if self.acting.is_none() => Ok(Some(a)),
+            // a client of this node reads nothing it reads at another (`readable_by`)
+            crate::sources::Source::Node(_) => Ok(None),
+        }
+    }
+
     fn target_id(&self, scope: &Scope, redo: bool) -> Result<Option<CommitId>> {
         let found = self.found(scope)?;
         let Some(f) = self.pick(found, redo) else { return Ok(None) };

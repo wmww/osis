@@ -73,8 +73,9 @@ enum Asked {
     Unsub,
 }
 
-/// A write sent and not answered: its args (after the nonce) for a resend.
+/// A write row sent and not answered: its method and args (after the nonce) for a resend.
 struct Pending {
+    method: u64,
     args: Vec<Value>,
     tx: Sender<Result<Value>>,
 }
@@ -184,11 +185,11 @@ impl Cx<'_> {
         for tx in r.ready.drain(..) {
             let _ = tx.send(Ok(()));
         }
-        let resend: Vec<(u64, Vec<Value>)> = r.writes.iter().map(|(n, p)| (*n, p.args.clone())).collect();
-        for (n, args) in resend {
+        let resend: Vec<(u64, u64, Vec<Value>)> = r.writes.iter().map(|(n, p)| (*n, p.method, p.args.clone())).collect();
+        for (n, method, args) in resend {
             let mut a = vec![Value::uint(n | super::serve::RESENT)];
             a.extend(args);
-            self.send(r, Msg::Call { id: 0, max_reply: super::VALUE_REPLY, method: method::WRITE, args: a }, Asked::Write(n));
+            self.send(r, Msg::Call { id: 0, max_reply: super::VALUE_REPLY, method, args: a }, Asked::Write(n));
         }
         let subs: Vec<(u64, Value)> = r.watches.iter().filter(|(_, w)| w.sub.is_none()).map(|(k, w)| (*k, w.filter.clone())).collect();
         for (local, filter) in subs {
@@ -451,8 +452,8 @@ impl ReadOnly {
         self.wait_for(rx)
     }
 
-    /// A write at the node at `at`: `args` as `Write::wire` made them, under the next nonce.
-    pub(crate) fn remote_write(&self, at: &Address, args: Vec<Value>) -> Result<Option<crate::commits::Commit>> {
+    /// Write row `method` at the node at `at` under the next nonce (`args` after it).
+    fn remote_nonced(&self, at: &Address, method: u64, args: Vec<Value>) -> Result<Value> {
         let (tx, rx) = channel();
         on_addr(self, at, |cx, r| {
             cx.usable(r)?;
@@ -460,15 +461,43 @@ impl ReadOnly {
             let n = r.nonce;
             let mut a = vec![Value::uint(n)];
             a.extend(args.iter().cloned());
-            r.writes.insert(n, Pending { args, tx });
-            if !cx.send(r, Msg::Call { id: 0, max_reply: super::VALUE_REPLY, method: method::WRITE, args: a }, Asked::Write(n)) {
+            r.writes.insert(n, Pending { method, args, tx });
+            if !cx.send(r, Msg::Call { id: 0, max_reply: super::VALUE_REPLY, method, args: a }, Asked::Write(n)) {
                 r.writes.remove(&n);
                 return Err(Error::Network(format!("connection to {at} lost")));
             }
             Ok(())
         })?;
-        let v = self.wait_for(rx)?;
+        self.wait_for(rx)
+    }
+
+    /// `Opt(commit)` as the commit, reporting here.
+    fn made(&self, v: Value) -> Result<Option<crate::commits::Commit>> {
         Ok(codec::opt_from(v, "commit")?.map(codec::commit_from).transpose()?.map(|c| c.reporting(self)))
+    }
+
+    /// A write at the node at `at`: `args` as `Write::wire` made them.
+    pub(crate) fn remote_write(&self, at: &Address, args: Vec<Value>) -> Result<Option<crate::commits::Commit>> {
+        let v = self.remote_nonced(at, method::WRITE, args)?;
+        self.made(v)
+    }
+
+    /// `undo` (`redo`: `redo`) of `scope` at the node at `at`.
+    pub(crate) fn remote_undo(&self, at: &Address, scope: &crate::Scope, redo: bool) -> Result<Option<crate::commits::Commit>> {
+        let v = self.remote_nonced(at, if redo { method::REDO } else { method::UNDO }, vec![codec::scope_to(scope)])?;
+        self.made(v)
+    }
+
+    /// `revert` of `id` at the node at `at`.
+    pub(crate) fn remote_revert(&self, at: &Address, id: crate::CommitId) -> Result<crate::commits::Commit> {
+        let v = self.remote_nonced(at, method::REVERT, vec![codec::commit_ref_to(id)])?;
+        Ok(codec::commit_from(v)?.reporting(self))
+    }
+
+    /// `undo_target` (`redo`: `redo_target`) of `scope` at the node at `at`.
+    pub(crate) fn remote_target(&self, at: &Address, scope: &crate::Scope, redo: bool) -> Result<Option<crate::commits::Commit>> {
+        let v = self.remote_call(at, if redo { method::REDO_TARGET } else { method::UNDO_TARGET }, vec![codec::scope_to(scope)], super::VALUE_REPLY)?;
+        self.made(v)
     }
 
     /// The value at `path` of `tid`'s `ak` at the node at `at`, untyped.

@@ -272,8 +272,8 @@ fn handle(db: &ReadOnly, who: Who) -> crate::Osis {
 fn call(db: &ReadOnly, conn: ConnId, max_reply: u64, method: u64, args: Vec<Value>) -> Msg {
     let Some((who, id)) = session(db, conn) else { return error(Code::REFUSED) };
     let h = handle(db, who);
-    let outcome = if method == method::WRITE {
-        write(db, &h, who, id, args)
+    let outcome = if matches!(method, method::WRITE | method::UNDO | method::REDO | method::REVERT) {
+        write(db, &h, who, id, method, args)
     } else {
         match run(&h, method, args) {
             Ok(v) => Outcome::Ok { value: v },
@@ -355,6 +355,12 @@ fn run(h: &crate::Osis, method: u64, args: Vec<Value>) -> Result<Value> {
             let t = here(h, one_tid(&args)?)?;
             Ok(codec::thing_stamp_to(h.read_local(|r| r.changed(t))))
         }
+        method::UNDO_TARGET | method::REDO_TARGET => {
+            let scope = codec::scope_from(args.into_iter().next().ok_or_else(|| bad("arguments"))?)?;
+            crate::commits::Address::Writes(scope.clone()).things().into_iter().try_for_each(|t| here(h, t).map(drop))?;
+            let c = if method == method::UNDO_TARGET { h.undo_target(&scope)? } else { h.redo_target(&scope)? };
+            Ok(opt(c.as_ref().map(codec::commit_to)))
+        }
         method::STATUS => Ok(codec::status_to(&h.locked(|l| crate::syncing::status_in(l, h.acting))?)),
         method::NOW => Ok(Value::uint(h.now()?.0)),
         method::SETTLE => {
@@ -366,9 +372,10 @@ fn run(h: &crate::Osis, method: u64, args: Vec<Value>) -> Result<Value> {
     }
 }
 
-/// A write by nonce (spec/wire.md §11.2 Write nonces): a remembered nonce gets its first
-/// outcome; a resend this node cannot tell from a repeat is `OutcomeUnknown` and does not run.
-fn write(db: &ReadOnly, h: &crate::Osis, who: Who, id: [u8; 16], mut args: Vec<Value>) -> Outcome {
+/// A write row (`WRITE`, `UNDO`, `REDO`, `REVERT`) by nonce (spec/wire.md §11.2 Write nonces):
+/// a remembered nonce gets its first outcome; a resend this node cannot tell from a repeat is
+/// `OutcomeUnknown` and does not run.
+fn write(db: &ReadOnly, h: &crate::Osis, who: Who, id: [u8; 16], method: u64, mut args: Vec<Value>) -> Outcome {
     let Some(nonce) = args.first().and_then(Value::as_uint) else { return outcome_of(&bad("write")) };
     args.remove(0);
     let (n, resent) = (nonce & !RESENT, nonce & RESENT != 0);
@@ -400,12 +407,8 @@ fn write(db: &ReadOnly, h: &crate::Osis, who: Who, id: [u8; 16], mut args: Vec<V
     if let Err(o) = known {
         return o;
     }
-    let r = crate::write::Write::from_wire(h, args).and_then(|w| {
-        w.things().into_iter().try_for_each(|t| here(h, t).map(drop))?;
-        w.commit()
-    });
-    let o = match r {
-        Ok(c) => Outcome::Ok { value: opt(c.as_ref().map(codec::commit_to)) },
+    let o = match run_write(h, method, args) {
+        Ok(v) => Outcome::Ok { value: v },
         Err(e) => outcome_of(&e),
     };
     db.locked(|l| {
@@ -567,6 +570,28 @@ fn push(db: &ReadOnly, conn: ConnId, id: osis_sync::session::RequestId, limit: u
             false
         }
     })
+}
+
+/// Runs write row `method` (its arguments after the nonce) on `h`.
+fn run_write(h: &crate::Osis, method: u64, args: Vec<Value>) -> Result<Value> {
+    let made = |c: Option<crate::Commit>| opt(c.as_ref().map(codec::commit_to));
+    match method {
+        method::WRITE => {
+            let w = crate::write::Write::from_wire(h, args)?;
+            w.things().into_iter().try_for_each(|t| here(h, t).map(drop))?;
+            Ok(made(w.commit()?))
+        }
+        method::UNDO | method::REDO => {
+            let [s] = <[Value; 1]>::try_from(args).map_err(|_| bad("arguments"))?;
+            let scope = codec::scope_from(s)?;
+            crate::commits::Address::Writes(scope.clone()).things().into_iter().try_for_each(|t| here(h, t).map(drop))?;
+            Ok(made(if method == method::UNDO { h.undo(&scope)? } else { h.redo(&scope)? }))
+        }
+        _ => {
+            let [c] = <[Value; 1]>::try_from(args).map_err(|_| bad("arguments"))?;
+            Ok(codec::commit_to(&h.revert(codec::commit_ref_from(&c)?)?))
+        }
+    }
 }
 
 /// A Sub: the filter's value now in its Reply and a Notify each time it reads otherwise, read

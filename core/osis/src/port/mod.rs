@@ -38,6 +38,16 @@ pub mod method {
     pub const CHANGED: u64 = 9;
     /// `[nonce, actor, [ak*], [op*], Opt(expiry)] -> Opt(commit)`
     pub const WRITE: u64 = 10;
+    /// `[nonce, scope] -> Opt(commit)`: the revert made
+    pub const UNDO: u64 = 11;
+    /// `[nonce, scope] -> Opt(commit)`
+    pub const REDO: u64 = 12;
+    /// `[nonce, commit id] -> commit`
+    pub const REVERT: u64 = 13;
+    /// `[scope] -> Opt(commit)`: what `UNDO` would revert now
+    pub const UNDO_TARGET: u64 = 14;
+    /// `[scope] -> Opt(commit)`
+    pub const REDO_TARGET: u64 = 15;
     /// `[] -> []`, once every Notify for changes before it went.
     pub const SETTLE: u64 = 19;
     /// `[] -> wall ms`

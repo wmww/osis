@@ -4,7 +4,7 @@
 //! encoder and one decoder per form, used by both sides.
 
 use crate::commit_id::{CommitId, CommitPos};
-use crate::commits::{Body, Commit, CommitKind, Part};
+use crate::commits::{Body, Commit, CommitKind, NotUndoableReason, Part, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, GroupsOf, Stamp, ThingStamp};
 use crate::share::{Holder, HolderKind};
@@ -511,6 +511,43 @@ pub(crate) fn status_from(v: Value) -> Result<Status> {
     Ok(Status { connected: usize_from(&connected)?, groups })
 }
 
+/// A scope: `[0, tid]` a thing, `[1, [[tid, ak]*]]` aspects, `[2, tid]` a group.
+pub(crate) fn scope_to(s: &Scope) -> Value {
+    Value::List(match s {
+        Scope::Thing(t) => vec![Value::uint(0), Value::Tid(*t)],
+        Scope::Aspects(v) => vec![Value::uint(1), Value::List(v.iter().map(|(t, a)| Value::List(vec![Value::Tid(*t), ak_to(a)])).collect())],
+        Scope::Group(g) => vec![Value::uint(2), Value::Tid(*g)],
+    })
+}
+
+pub(crate) fn scope_from(v: Value) -> Result<Scope> {
+    let [k, x] = <[Value; 2]>::try_from(list(v, "scope")?).map_err(|_| bad("scope"))?;
+    Ok(match uint(&k, "scope")? {
+        0 => Scope::Thing(tid(&x)?),
+        1 => Scope::Aspects(
+            list(x, "scope")?
+                .into_iter()
+                .map(|p| {
+                    let [t, a] = <[Value; 2]>::try_from(list(p, "scope")?).map_err(|_| bad("scope"))?;
+                    Ok((tid(&t)?, ak(&a)?))
+                })
+                .collect::<Result<_>>()?,
+        ),
+        2 => Scope::Group(tid(&x)?),
+        _ => return Err(bad("scope")),
+    })
+}
+
+pub(crate) fn commit_ref_to(c: CommitId) -> Value {
+    commit_id_to(&c.0)
+}
+
+pub(crate) fn commit_ref_from(v: &Value) -> Result<CommitId> {
+    commit_id_from(v).map(CommitId)
+}
+
+const REASONS: [NotUndoableReason; 2] = [NotUndoableReason::NotKept, NotUndoableReason::Superseded];
+
 /// An API error as a Reply's outcome (spec/wire.md §11.2 Outcome error codes).
 pub(crate) fn outcome_of(e: &Error) -> Outcome {
     let text = |s: &str| vec![Value::Str(s.to_string())];
@@ -529,8 +566,9 @@ pub(crate) fn outcome_of(e: &Error) -> Outcome {
         Error::Refused(m) => (ApiCode::REFUSED, text(m)),
         Error::Closed => (ApiCode::CLOSED, Vec::new()),
         Error::InUse => (ApiCode::IN_USE, Vec::new()),
-        // no code of their own on the wire: told as what they are
-        e @ (Error::NotUndoable { .. } | Error::NotBuilt) => (ApiCode::INVALID, text(&e.to_string())),
+        Error::NotUndoable { commit, reason } => (ApiCode::NOT_UNDOABLE, vec![commit_ref_to(*commit), Value::uint(REASONS.iter().position(|r| r == reason).unwrap_or(0) as u64)]),
+        // no code of its own on the wire: told as what it is
+        e @ Error::NotBuilt => (ApiCode::INVALID, text(&e.to_string())),
     };
     Outcome::Err { code, detail }
 }
@@ -549,6 +587,10 @@ pub(crate) fn error_of(code: u64, detail: &[Value]) -> Error {
         },
         ApiCode::TYPE => match detail.first().cloned().map(path_from) {
             Some(Ok(path)) => Error::Type { path, reason: text() },
+            _ => Error::Invalid(text()),
+        },
+        ApiCode::NOT_UNDOABLE => match (detail.first().map(commit_ref_from), detail.get(1).and_then(Value::as_uint).and_then(|n| REASONS.get(usize::try_from(n).ok()?))) {
+            (Some(Ok(commit)), Some(reason)) => Error::NotUndoable { commit, reason: *reason },
             _ => Error::Invalid(text()),
         },
         ApiCode::TOO_LARGE => Error::TooLarge { limit: detail.first().and_then(Value::as_uint).map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX)) },
