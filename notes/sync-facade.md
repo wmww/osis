@@ -1,5 +1,5 @@
 # Sync: the engine's facade
-> Summary: `osis_engine::sync` (core/engine/src/sync/), the one surface sync reads the engine through: its calls grouped by purpose, the memo and `Effects` mechanism that makes sync's work follow change, the engine tables it keeps for sync (sync records, deliveries, removal notices, passes, section epochs, falls), what each derived value covers, and what is open.
+> Summary: `osis_engine::sync` (core/engine/src/sync/), the one surface sync reads the engine through: its calls grouped by purpose, the memo and `Effects` mechanism that makes sync's work follow change, the engine tables it keeps for sync (sync records, deliveries, passes, section epochs, falls), what each derived value covers, and what is open.
 
 Spec: spec/sync.md and its area files. Overview: notes/sync.md. The memo layer: notes/listener-design.md and issues/derived-state-recomputed.md.
 
