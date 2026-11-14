@@ -115,6 +115,18 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | whole-filter re-send at doubling (additions up to n of the whole) | P (receiver enforces the same limit) | re-send each change / false positives grow only |
 | `RECORD_BUDGET` 256 MiB (`store/record.rs`) | R (evict least recently used record not in use; a filter that does not fit is tested and not stored) | every connection a first contact / disk |
 
+### The store per sync ID (`sync/src/store/`)
+| value | class | 0 / ∞ |
+|---|---|---|
+| `Policy::entries` 2^20, `bytes` 1 GiB, per sync ID kept unread (`caps^.0`) | R (refused 12; a writer's role entries pass) | it takes nothing but role entries / disk |
+| `Policy::total_bytes` 8 GiB | R (the unread sync ID using most gives way, oldest first, no tombstone) | every entry evicts / disk |
+| `Policy::memory_bytes` 16 MiB, `memory_total` 256 MiB (ephemeral) | R (12; past the total the largest gives way) | no ephemeral entry kept unread / RAM |
+| `Policy::peer_bytes` 64 MiB | R (5: an unstamped entry giving nothing held is not kept) | none kept / one peer fills the store |
+| `Policy::deposit_entries`, `deposit_bytes` 0 (raised to `osis_proto::limits::deposit_budget`) | R (5) | the spec's minimum / disk |
+| `Policy::register_every_ms` 1 h | R (a child step past the caps without its set, once per interval, else 12) | every one taken / one ever |
+| `ENTRY_OVERHEAD` 256 B, `TOMB_OVERHEAD` 128 B | M (caps approximate by this per row) | rows count nothing / nothing fits |
+| store `PAGE` 256 (rows a sweep or give-way pass handles per settle round) | P | no progress / one transaction holds the sweep |
+
 ### Engine, keys, perm, crdt, store, schema
 | value | class | 0 / ∞ |
 |---|---|---|

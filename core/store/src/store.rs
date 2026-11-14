@@ -548,6 +548,7 @@ impl Transaction<'_> {
         self.d.meta.catalog
     }
     pub(crate) fn cat_get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        osis_base::costs::count("store rows read", 1);
         self.st.s.read(key);
         if let Some(v) = self.mem.o.cat.get(key) {
             return Ok(Some(v.clone()));
@@ -587,7 +588,10 @@ impl Transaction<'_> {
         let end = crate::backend::prefix_end(prefix);
         let mem = crate::overlay::range(Some(&self.mem.o.cat), &start, end.as_deref(), limit);
         let durable = btree::range(self, c, &start, end.as_deref(), limit)?;
-        Ok(if mem.is_empty() { durable } else { crate::overlay::merge(mem, durable, limit) })
+        let rows = if mem.is_empty() { durable } else { crate::overlay::merge(mem, durable, limit) };
+        // a scan costs a seek and its rows: what scale tests count (`osis_base::costs`)
+        osis_base::costs::count("store rows read", rows.len() as u64 + 1);
+        Ok(rows)
     }
     /// Runs `f` on every catalog entry under `prefix` in key order, reading a page at a time;
     /// `f` may remove the entry it is given.

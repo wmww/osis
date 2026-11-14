@@ -436,3 +436,42 @@ fn an_event_costs_a_few_rows() {
     let per = (b - a) / 10_000;
     assert!(per <= 200, "{per} stored bytes per event");
 }
+
+// a join reads one sync ID's events alone, from its own index: its cost and its events do not
+// depend on what other sync IDs logged; the cursor it ends at resumes it
+#[test]
+fn a_join_reads_one_sync_id_alone() {
+    let (_d, mut rng, mut s) = fresh(cfg());
+    let mut t = s.transaction(&mut rng).unwrap();
+    for n in 0..40 {
+        t.log_added(l(1 + (n % 4) as u8), b(n)).unwrap();
+    }
+    t.log_head(l(2), &[7; 32]).unwrap();
+    let r = t.log_read_sync(&l(2), None, 5).unwrap();
+    assert!(r.whole && r.more && r.events.len() == 5);
+    assert!(r.events.iter().all(|e| e.event.sync_id() == l(2)));
+    let rest = t.log_read_sync(&l(2), r.cursor.as_deref(), 100).unwrap();
+    assert!(!rest.whole && !rest.more);
+    assert_eq!(rest.events.len(), 6, "ten entries and the head in all");
+    assert_eq!(rest.events.last().unwrap().event, NodeEvent::Head(l(2)));
+    // a later event of an entry moves it in the index too
+    t.log_added(l(2), b(1)).unwrap();
+    let again = t.log_read_sync(&l(2), rest.cursor.as_deref(), 100).unwrap();
+    assert_eq!(again.events.iter().map(|e| e.event).collect::<Vec<_>>(), [NodeEvent::Added(l(2), b(1))]);
+    assert_eq!(t.log_read_sync(&l(2), None, 100).unwrap().events.len(), 11, "compacted: one event per subject");
+}
+
+// an entry leaving by a rule every holder applies alone (expiry) leaves the log with no deletion
+// event, from both orders
+#[test]
+fn removed_entries_leave_no_event() {
+    let (_d, mut rng, mut s) = fresh(cfg());
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.log_added(l(1), b(1)).unwrap();
+    t.log_added(l(1), b(2)).unwrap();
+    assert!(t.log_remove(&l(1), &b(1)).unwrap());
+    assert!(!t.log_remove(&l(1), &b(1)).unwrap());
+    assert_eq!(t.log_read(None, 10).unwrap().events.iter().map(|e| e.event).collect::<Vec<_>>(), [NodeEvent::Added(l(1), b(2))]);
+    assert_eq!(t.log_read_sync(&l(1), None, 10).unwrap().events.len(), 1);
+    assert_eq!(t.log_entry_first(&l(1), &b(1)).unwrap(), None);
+}

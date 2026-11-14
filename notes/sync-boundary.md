@@ -95,27 +95,44 @@ pub struct Member { pub class: SourceClass, pub by: Credential, pub until: Optio
 ```
 Settle: per S, `admissible(s)` is an effect over the engine's `read_credentials(s)` or unread's `credentials(s)`; a moved value advances `changed_at(s)`, re-judges members of S on every connection (ending or closing them), and makes filter additions and tests due. The durable `changed_at` row keeps the digest of the value it was advanced for, so a restart advances it only for a value that moved.
 
-**3. `store`: the store per sync ID** (spec/sync-ids.md §5-§6, spec/sync-streams.md §3). State: entries, tombstones, blob bytes once per node, paths (steps, claim sets), the node log and cursors, caps and deposit budgets, ephemeral entries in memory. Implements `osis_store::CipherHost`, so the engine stores and reads blob bytes through it: `Store` is a cheap handle over one locked store, held by the engine's ciphertext door and by `Cx`; the engine locks it only inside its own transactions, sync only between engine calls, so one step never holds both. Depends on osis-store and osis-label crypto (stamp, deposit, delete and step signatures); of the engine only the caps record. Decrypts nothing.
+**3. `store`: the store per sync ID** (spec/sync-ids.md §5-§6, spec/sync-streams.md §3, spec/sync-inbox.md §3 Deposits, spec/sync-judgement.md §4 stand state). State: entries, tombstones, blob bytes once per node, paths (steps, claim sets), the node log (osis-store `nodelog`, with a per-sync-ID index so a join costs that sync ID's events), usage per sync ID against the caps and the deposit budget, peer-budget charges, the stand rows a source's record keeps for `read`; ephemeral entries, their tombstones, bytes and the log's memory part in memory. Implements `osis_store::CipherHost`, so the engine stores and reads blob bytes through it: `Store` is a cheap handle over one locked store, held by the engine's ciphertext door and by `Cx`; the engine locks it only inside its own transactions, sync only between engine calls, so one step never holds both. Every operation is one transaction of the underlying store (crash safety is its), and every row change stamps. Learns its holdings from `Engine::sync_set` and its caps from `Engine::caps` in `settle`. Depends on osis-store, osis-label crypto, osis-proto's codes and items. Decrypts nothing.
 ```rust
 impl Store {   // Clone: a handle
-    pub fn open(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, rng: Box<dyn NodeRng>) -> Result<Store>;
-    pub fn cipher(&self) -> Arc<dyn osis_store::Ciphertext>;                   // the engine's ciphertext door
-    pub fn entry(&self, s: &SyncId, b: &BlobId) -> Option<Entry>;
-    pub fn entries(&self, s: &SyncId) -> impl Iterator<Item = Entry>;          // stamped reads (memo-safe)
-    pub fn log(&mut self, s: &SyncId, e: Entry, bytes: Option<Vec<u8>>) -> Result<()>;   // own entry, logs `Added`
-    pub fn drop_entry(&mut self, s: &SyncId, b: &BlobId, kind: TombKind) -> Result<()>;  // own judgement; tombstone
-    pub fn take_stamped(&mut self, s: &SyncId, e: Entry, from: Option<RecordId>) -> Result<Code>;  // kept unread pulling
-    pub fn take_deposit(&mut self, s: &SyncId, d: &DepositItem, from: Option<RecordId>) -> Result<Code>;
-    pub fn take_delete(&mut self, s: &SyncId, d: &DeleteItem, open_by_store_credential: bool) -> Result<Vec<Code>>;
-    pub fn take_register(&mut self, s: &SyncId, step: Step, claims: Option<ClaimSet>) -> Result<Code>;
-    pub fn behind(&self, s: &SyncId, item: &BehindItem) -> Result<Answer>;   // BehindItem, DepositItem, Answer: in store until osis-proto's msg holds them
-    pub fn path(&self, s: &SyncId) -> Option<Arc<Path>>;          // a kept-unread S's registered path
+    pub fn open(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, rng: Box<dyn NodeRng>) -> Result<Store>;  // drops what record-less connections brought
+    pub fn cipher(&self) -> Arc<dyn osis_store::Ciphertext>;           // the engine's ciphertext door
+    pub fn with_tx<T>(&mut self, f: impl FnOnce(&mut Transaction) -> osis_store::Result<T>) -> Result<T>;  // other modules' rows: records, changed_at
+    pub fn set_sync_set(&mut self, set: &SyncSet); pub fn set_caps(&mut self, caps: &Caps);   // settle calls both
+    pub fn holding(&self, s: &SyncId) -> Option<Holding>;
+    pub fn entry(&self, s: &SyncId, b: &BlobId) -> Result<Option<Entry>>;
+    pub fn entries(&self, s: &SyncId) -> Result<Vec<Entry>>;          // durable then ephemeral (memo-safe)
+    pub fn bytes(&self, b: &BlobId) -> Result<Option<Vec<u8>>>;
+    pub fn tombstone(&self, s: &SyncId, b: &BlobId) -> Result<Option<Tombstone>>;   // { at, deleted, note }
+    pub fn usage(&self, s: &SyncId) -> Result<(Usage, Usage)>;        // durable, memory
+    pub fn head(&self, s: &SyncId) -> Result<Option<Step>>; pub fn path(&self, s: &SyncId) -> Result<Option<Arc<Path>>>;
+    pub fn log(&mut self, s: &SyncId, e: Entry, bytes: Option<Vec<u8>>, from: Option<Source>) -> Result<Code>;  // own judgement
+    pub fn drop_entry(&mut self, s: &SyncId, b: &BlobId, note: Vec<u8>) -> Result<bool>;   // tombstone with what it was
+    pub fn lift_tombstone(&mut self, s: &SyncId, b: &BlobId) -> Result<bool>;
+    pub fn uncharge(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;   // it gives something held: off the peer budget
+    pub fn serve_path(&mut self, s: &SyncId, p: &Path) -> Result<()>;  // a read S's head, from sync.0
+    pub fn take_stamped(&mut self, s: &SyncId, e: &Entry, bytes: Vec<u8>) -> Result<Code>;   // kept unread pulling
+    pub fn take_deposit(&mut self, d: &osis_proto::DepositItem, from: Option<Source>) -> Result<Code>;
+    pub fn take_delete(&mut self, s: &SyncId, items: &[DeleteItem], by_store_credential: bool) -> Result<Vec<Code>>;
+    pub fn take_register(&mut self, s: &SyncId, step: &Step, claims: Option<&ClaimSet>) -> Result<Code>;
+    pub fn behind(&self, s: &SyncId, named: Option<&StepId>, cred: &Cred, max_steps: usize) -> Result<(Code, Option<osis_proto::Grant>)>;  // signature verified by the caller
     pub fn read_log(&self, members: &BTreeMap<SyncId, Option<Position>>, from: Option<&Cursor>, max: usize) -> Result<LogRead>;  // each member and its `until`
-    pub fn shred(&mut self, s: &SyncId) -> Result<()>;            // leaving: keys and wraps erased
+    pub fn read_sync(&self, s: &SyncId, until: Option<Position>, from: Option<&Cursor>, max: usize) -> Result<LogRead>;   // a join
+    pub fn read_memory(&self, s: &SyncId, after: u64, max: usize) -> (Vec<(u64, BlobId, bool)>, u64);   // the log's memory part
+    pub fn shred(&mut self, s: &SyncId) -> Result<()>;            // leaving: every row of S, S in every record, one transaction
+    pub fn closed(&mut self, conn: ConnId) -> Result<()>;         // what a record-less peer brought on it goes
+    pub fn stand(&self, src: Source, s: &SyncId, body: &[u8]) -> Result<Option<Stand>>; pub fn set_stand(..);  // read's §4 rows
+    pub fn saw_deleted(&mut self, src: Source, s: &SyncId, b: &BlobId) -> Result<()>; pub fn seen_deleted(..) -> Result<bool>;
     pub fn settle(&mut self, engine: &mut Engine, now: WallMs) -> Result<bool>;   // not over Cx: Cx holds the store
+    pub fn settle_at(&mut self, now: WallMs) -> Result<bool>; pub fn next_wake(&self) -> Option<WallMs>;
 }
+pub enum Source { Record(RecordId), Conn(ConnId) }   // who brought an unstamped entry; where its charge and stand rows live
+pub enum Cred { Sync(VerifyingKey), Claim([u8; 32]), Signing(VerifyingKey) }
 ```
-Expiry and caps giving way run in its `settle`; every row change stamps (osis-store `Stamping`), so memos may read it.
+`settle` expires entries (no tombstone, no event), ends tombstones and aged stand rows after `TOMBSTONE_LIFETIME`, drops claim sets superseded for `ROLE_KEEP`, sweeps the log's deletion events, and lets the unread sync ID using most give way past the total cap. Caps (`Policy`, read from `caps^.0`'s `policy` by field name, per-thing caps replacing `entries`/`bytes`) apply to sync IDs kept unread only; role entries count toward none; the deposit budget is the policy's raised to `osis_proto::limits::deposit_budget`. A record's rows for other modules use osis-store's `record_put_row(id, tag, sync_id, key, value)` (one tag per owning module: store `b` charges, `s` stands, `d` deletes seen), gone with the record or with the sync ID.
 
 **4. `read`: judgement for read sync IDs** (spec/sync-judgement.md §1-§5, spec/sync-compaction.md §1). State: the `Effects` below; the stand of "logged again once", the deletes seen and the deletes owed per source, in that source's record. Depends on engine (bodies, facts, seal, keys, destruction), store, opens (members, records), streams (`known`).
 ```rust

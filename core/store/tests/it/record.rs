@@ -258,3 +258,30 @@ fn the_peer_filter_is_kept_by_generation_and_goes_with_its_record() {
     assert!(t.record_peer_filter(&a).unwrap().is_empty(), "evicted with its record");
     assert_eq!(t.records_total().unwrap(), 0);
 }
+
+// a module's rows in a record (notes/sync-boundary.md U3): counted in the record's bytes, gone
+// with the record (eviction) and with their sync ID (`changed_forget`), never written into a
+// record that is gone
+#[test]
+fn owned_rows_go_with_the_record_and_the_sync_id() {
+    let (_d, mut rng, mut s) = fresh(cfg());
+    let a = create(&mut s, &mut rng, 1, 1);
+    let mut t = s.transaction(&mut rng).unwrap();
+    let before = t.records_total().unwrap();
+    t.record_put_row(&a, b's', &l(1), b"k1", vec![1; 10]).unwrap();
+    t.record_put_row(&a, b's', &l(2), b"k2", vec![2; 10]).unwrap();
+    t.record_put_row(&a, b'd', &l(1), b"k3", vec![3; 10]).unwrap();
+    assert!(t.records_total().unwrap() > before);
+    assert_eq!(t.record_rows(&a, b's', &l(1), b"", 10).unwrap(), [(b"k1".to_vec(), vec![1; 10])]);
+    t.changed_forget(&l(1)).unwrap();
+    assert!(t.record_get_row(&a, b's', &l(1), b"k1").unwrap().is_none() && t.record_get_row(&a, b'd', &l(1), b"k3").unwrap().is_none());
+    assert_eq!(t.record_get_row(&a, b's', &l(2), b"k2").unwrap(), Some(vec![2; 10]));
+    assert!(t.record_remove_row(&a, b's', &l(2), b"k2").unwrap());
+    assert_eq!(t.records_total().unwrap(), before, "every row's bytes went with it");
+    t.record_put_row(&a, b's', &l(2), b"k2", vec![2; 10]).unwrap();
+    t.records_evict(0, &BTreeSet::new()).unwrap();
+    assert!(t.record_get_row(&a, b's', &l(2), b"k2").unwrap().is_none(), "evicted with the record");
+    t.record_put_row(&a, b's', &l(2), b"k2", vec![2; 10]).unwrap();
+    assert!(t.record_get_row(&a, b's', &l(2), b"k2").unwrap().is_none(), "a gone record takes nothing");
+    assert_eq!(t.records_total().unwrap(), 0);
+}

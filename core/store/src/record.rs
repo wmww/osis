@@ -10,7 +10,10 @@
 //! `m` meta (total bytes, LRU sequence); `c id` the record; `a actor id` the actor index;
 //! `u seq id` least recently used first; `s id label` a member of S; `l label id` the member index;
 //! `g id label` a stopped member's lag, beside S; `j label id` its index; `p id gen` one
-//! generation of the peer's filter, as received (a whole one replaces every row before it).
+//! generation of the peer's filter, as received (a whole one replaces every row before it);
+//! `x id label tag key` a row a module keeps of the peer about a sync ID (`record_put_row`: what a
+//! source showed, the deletes seen there, the charges of what it brought), `X label id tag key`
+//! its index, so a sync ID leaving the node leaves every record with it.
 
 use crate::codec::{R, W};
 use crate::store::{PAGE, Shred, Transaction, kind, tail};
@@ -36,6 +39,8 @@ const INDEX: &[u8] = &[kind::RECORD, b'l'];
 const LAG: &[u8] = &[kind::RECORD, b'g'];
 const LAG_INDEX: &[u8] = &[kind::RECORD, b'j'];
 const FILTER: &[u8] = &[kind::RECORD, b'p'];
+const ROW: &[u8] = &[kind::RECORD, b'x'];
+const ROW_INDEX: &[u8] = &[kind::RECORD, b'X'];
 
 /// A record as held.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,6 +117,13 @@ fn lag_key(id: &RecordId, l: &SyncId) -> Vec<u8> {
 }
 fn lag_index_key(l: &SyncId, id: &RecordId) -> Vec<u8> {
     [LAG_INDEX, &l.0, id].concat()
+}
+
+fn row_key(id: &RecordId, l: &SyncId, tag: u8, key: &[u8]) -> Vec<u8> {
+    [ROW, id, &l.0, &[tag], key].concat()
+}
+fn row_index_key(l: &SyncId, id: &RecordId, tag: u8, key: &[u8]) -> Vec<u8> {
+    [ROW_INDEX, &l.0, id, &[tag], key].concat()
 }
 
 fn opt_bytes(w: &mut W, v: &Option<Vec<u8>>) {
@@ -515,7 +527,12 @@ impl Transaction<'_> {
                 t.record_store(&rec, before)
             })?;
         }
-        Ok(())
+        self.cat_each(&[ROW_INDEX, &l.0].concat(), |t, k, _| {
+            let rest = k.get(ROW_INDEX.len() + 16..).ok_or(Error::Corrupt("peer record row index"))?;
+            let (id, rest) = rest.split_first_chunk::<16>().ok_or(Error::Corrupt("peer record row index"))?;
+            let (tag, key) = rest.split_first().ok_or(Error::Corrupt("peer record row index"))?;
+            t.record_remove_row(id, *tag, l, key).map(drop)
+        })
     }
 
     /// Removes a record and every row of it.
@@ -529,6 +546,13 @@ impl Transaction<'_> {
         for (k, _) in self.record_filter_rows(&rec.id)? {
             self.cat_remove(&k, Shred::No)?;
         }
+        self.cat_each(&[ROW, &rec.id].concat(), |t, k, _| {
+            let rest = k.get(ROW.len() + 16..).ok_or(Error::Corrupt("peer record row"))?;
+            let (l, rest) = rest.split_first_chunk::<16>().ok_or(Error::Corrupt("peer record row"))?;
+            let (tag, key) = rest.split_first().ok_or(Error::Corrupt("peer record row"))?;
+            t.cat_remove(&row_index_key(&SyncId(*l), &rec.id, *tag, key), Shred::No)?;
+            t.cat_remove(&k, Shred::Yes).map(drop)
+        })?;
         for a in &rec.actors {
             self.cat_remove(&actor_key(a, &rec.id), Shred::No)?;
         }
@@ -536,6 +560,52 @@ impl Transaction<'_> {
         self.cat_remove(&core_key(&rec.id), Shred::Yes)?;
         let (total, seq) = self.record_meta()?;
         self.record_put_meta(total.saturating_sub(before), seq)
+    }
+
+    /// Module `tag`'s row `key` about sync ID `l` in record `id` (one owner per tag,
+    /// notes/sync-boundary.md U3), with its index row, in this transaction; counted in the
+    /// record's bytes, gone with the record or with `l`. A record that is gone takes nothing:
+    /// what it would say of the peer went with it.
+    pub fn record_put_row(&mut self, id: &RecordId, tag: u8, l: &SyncId, key: &[u8], val: Vec<u8>) -> Result<(), Error> {
+        if self.record(id)?.is_none() {
+            return Ok(());
+        }
+        self.record_change(id, |t, rec| {
+            let (k, index) = (row_key(id, l, tag, key), row_index_key(l, id, tag, key));
+            if let Some(old) = t.cat_get(&k)? {
+                rec.member_bytes = rec.member_bytes.saturating_sub(row_bytes(&k, &old) + index.len() as u64);
+            }
+            rec.member_bytes += row_bytes(&k, &val) + index.len() as u64;
+            t.cat_put_to(&k, val, Shred::Yes, false)?;
+            t.cat_put_to(&index, Vec::new(), Shred::No, false)
+        })
+    }
+
+    pub fn record_get_row(&mut self, id: &RecordId, tag: u8, l: &SyncId, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        self.cat_get(&row_key(id, l, tag, key))
+    }
+
+    /// Removes module `tag`'s row `key` about `l` in record `id`; whether it was there.
+    pub fn record_remove_row(&mut self, id: &RecordId, tag: u8, l: &SyncId, key: &[u8]) -> Result<bool, Error> {
+        let (k, index) = (row_key(id, l, tag, key), row_index_key(l, id, tag, key));
+        let Some(old) = self.cat_get(&k)? else { return Ok(false) };
+        let freed = row_bytes(&k, &old) + index.len() as u64;
+        self.cat_remove(&k, Shred::Yes)?;
+        self.cat_remove(&index, Shred::No)?;
+        if self.record(id)?.is_some() {
+            self.record_change(id, |_, rec| {
+                rec.member_bytes = rec.member_bytes.saturating_sub(freed);
+                Ok(())
+            })?;
+        }
+        Ok(true)
+    }
+
+    /// Module `tag`'s rows about `l` in record `id`, by key, from `from` on, at most `limit`.
+    /// Costs what it returns.
+    pub fn record_rows(&mut self, id: &RecordId, tag: u8, l: &SyncId, from: &[u8], limit: usize) -> Result<Vec<crate::KeyValue>, Error> {
+        let prefix = [ROW, id, &l.0, &[tag]].concat();
+        Ok(self.cat_scan(&prefix, from, limit)?.into_iter().map(|(k, v)| (k.get(prefix.len()..).unwrap_or_default().to_vec(), v)).collect())
     }
 
     /// Bytes of records kept (what `RECORD_BUDGET` bounds).

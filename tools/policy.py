@@ -256,7 +256,7 @@ COPY_DEFS = {"core/base/src/copying.rs", "core/base/src/lib.rs", "core/crypto/sr
              "core/engine/src/engine/mod.rs", "core/base/src/memo/mod.rs", "core/base/src/memo/effects.rs", "core/engine/src/events/mod.rs",
              "core/engine/src/local_peer.rs", "core/engine/src/tests_copy.rs",
              "core/store/src/cipher.rs",
-             "core/osis/src/testing.rs", "core/sync/src/driver.rs", "core/sync/src/store.rs"}
+             "core/osis/src/testing.rs", "core/sync/src/driver.rs", "core/sync/src/store/mod.rs", "core/sync/src/store/cipher.rs"}
 
 def product_lines(pat, skip):
     """(file, line number) of each line of a member's src/ (core/test's and files `skip(rel)` aside)

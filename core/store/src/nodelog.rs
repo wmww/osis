@@ -18,7 +18,9 @@
 //! Rows, all catalog rows under `kind::LOG`:
 //! `m` meta (cursor key, log ID, current incarnation, end position); `n` the ended incarnations;
 //! `z` the deletion horizon (`log_horizon`);
-//! `e pos` an event; `i label blob` an entry's slot (its latest event's position and the
+//! `e pos` an event; `I label pos` the same event indexed by its sync ID, so one sync ID's events
+//! read without the others' (a join from the start costs that sync ID's events, not the log's);
+//! `i label blob` an entry's slot (its latest event's position and the
 //! position it was first logged at); `h label` a head's slot; `d at pos` the deletion events by
 //! when they were logged, for the sweep. Whether this open of the store has
 //! drawn is the pager's `Meta::log_drawn`, memory only and carried in the transaction, so a
@@ -51,6 +53,8 @@ const ENDED: &[u8] = &[kind::LOG, b'n'];
 /// The deletion horizon: the highest position a deletion event the sweep dropped held.
 const HORIZON: &[u8] = &[kind::LOG, b'z'];
 const EVENT: &[u8] = &[kind::LOG, b'e'];
+/// An event by its sync ID: `I label pos`, empty.
+const BY_SYNC: &[u8] = &[kind::LOG, b'I'];
 const ENTRY_SLOT: &[u8] = &[kind::LOG, b'i'];
 const HEAD_SLOT: &[u8] = &[kind::LOG, b'h'];
 const DELETED: &[u8] = &[kind::LOG, b'd'];
@@ -118,6 +122,10 @@ fn head_slot(l: &SyncId) -> Vec<u8> {
     [HEAD_SLOT, &l.0].concat()
 }
 
+fn by_sync_key(l: &SyncId, pos: u64) -> Vec<u8> {
+    [BY_SYNC, &l.0, &pos.to_be_bytes()].concat()
+}
+
 fn deleted_key(at: u64, pos: u64) -> Vec<u8> {
     [DELETED, &at.to_be_bytes(), &pos.to_be_bytes()].concat()
 }
@@ -157,6 +165,16 @@ fn decode_event(v: &[u8]) -> Result<NodeEvent, Error> {
     };
     r.end()?;
     Ok(e)
+}
+
+impl NodeEvent {
+    /// The sync ID the event is of.
+    pub fn sync_id(&self) -> SyncId {
+        match self {
+            NodeEvent::Added(l, _) | NodeEvent::Head(l) => *l,
+            NodeEvent::Deleted { label, .. } => *label,
+        }
+    }
 }
 
 impl Transaction<'_> {
@@ -228,9 +246,11 @@ impl Transaction<'_> {
     fn log_drop_event(&mut self, pos: u64, shred: Shred) -> Result<(), Error> {
         let key = pos_key(EVENT, pos);
         if let Some(v) = self.cat_get(&key)? {
-            if let NodeEvent::Deleted { at, .. } = decode_event(&v)? {
+            let e = decode_event(&v)?;
+            if let NodeEvent::Deleted { at, .. } = e {
                 self.cat_remove(&deleted_key(at, pos), shred)?;
             }
+            self.cat_remove(&by_sync_key(&e.sync_id(), pos), shred)?;
             self.cat_remove(&key, shred)?;
         }
         Ok(())
@@ -251,6 +271,7 @@ impl Transaction<'_> {
         // (removals do)
         self.cat_put_to(&slot, W::new().u64(pos).raw(&extra).take(), Shred::No, false)?;
         self.cat_put_to(&pos_key(EVENT, pos), encode_event(&e), Shred::No, false)?;
+        self.cat_put_to(&by_sync_key(&e.sync_id(), pos), Vec::new(), Shred::No, false)?;
         if let NodeEvent::Deleted { at, .. } = e {
             self.cat_put_to(&deleted_key(at, pos), Vec::new(), Shred::No, false)?;
         }
@@ -273,6 +294,16 @@ impl Transaction<'_> {
     /// Logs that an entry left the node at `at` (wall ms). Returns its position.
     pub fn log_deleted(&mut self, label: SyncId, blob: BlobId, at: u64) -> Result<u64, Error> {
         self.log_place(entry_slot(&label, &blob), NodeEvent::Deleted { label, blob, at }, first_logged)
+    }
+
+    /// Drops an entry's slot and event with no deletion event: it left by a rule every holder
+    /// applies alone (its expiry), so no reader needs telling. Whether it was in the log.
+    pub fn log_remove(&mut self, l: &SyncId, b: &BlobId) -> Result<bool, Error> {
+        let slot = entry_slot(l, b);
+        let Some(v) = self.cat_get(&slot)? else { return Ok(false) };
+        self.log_drop_event(slot_pos(&v)?, Shred::Yes)?;
+        self.cat_remove(&slot, Shred::Yes)?;
+        Ok(true)
     }
 
     /// Logs a head event only if `head` is not the head last logged for `l`. Whether it did.
@@ -413,6 +444,31 @@ impl Transaction<'_> {
         }
         let at = if more { events.last().map_or(after, |e| e.pos) } else { end.max(after) };
         Ok((events, at, more))
+    }
+
+    /// Up to `limit` events of sync ID `l` after `cursor` in log order, or from the start with no
+    /// cursor or one that is no cursor (`whole`): a join. The cursor returned covers `l` alone.
+    /// Costs what it returns, however many events other sync IDs hold.
+    pub fn log_read_sync(&mut self, l: &SyncId, cursor: Option<&[u8]>, limit: usize) -> Result<LogRead, Error> {
+        let Some(m) = self.log_meta()? else {
+            return Ok(LogRead { whole: true, ..LogRead::default() });
+        };
+        let after = match cursor {
+            Some(c) => self.log_position(c)?,
+            None => None,
+        };
+        let prefix = [BY_SYNC, &l.0].concat();
+        let rows = self.cat_scan(&prefix, &after.unwrap_or(0).saturating_add(1).to_be_bytes(), limit.saturating_add(1))?;
+        let more = rows.len() > limit;
+        let mut events = Vec::with_capacity(rows.len().min(limit));
+        for (k, _) in rows.into_iter().take(limit) {
+            let pos = u64::from_be_bytes(tail(&k)?);
+            let v = self.cat_get(&pos_key(EVENT, pos))?.ok_or(Error::Corrupt("node log index"))?;
+            events.push(LoggedEvent { pos, event: decode_event(&v)? });
+        }
+        let at = if more { events.last().map_or(0, |e| e.pos) } else { m.end };
+        let cursor = Some(self.seal_cursor(&m, at.max(after.unwrap_or(0)))?);
+        Ok(LogRead { events, cursor, whole: after.is_none(), more })
     }
 
     /// Up to `limit` events after `cursor` in log order, or from the start with no cursor or one
