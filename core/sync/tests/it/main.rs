@@ -4,6 +4,7 @@
 mod convergence;
 mod faults;
 mod flows;
+mod growth;
 mod harness;
 mod inbox;
 mod keep;

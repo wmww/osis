@@ -46,7 +46,7 @@ osis-sync's checks (core/sync/tests/it) count module work (`Work` counters, stor
 - a first sync by a node keeping S unread linear, nothing examined again;
 - a walk past missed rotations and filter arrivals flat in steps; one Behind item per rotation crossed;
 - role entries growing with churn, not with the members each change boxes;
-- rows and bytes at a writer, a reader and a node keeping S unread equal at n and 10n replaces once tombstones age out; cover work per write flat;
+- cover work per write flat;
 - many sync IDs, idle ones costing nothing; a timed wait judging its sync ID alone;
 - a chat post's cost flat in history and members; a joiner reading each pending commit a few times;
 - a node keeping S unread writing a 64-entry log or delete batch in a few durable writes at any size.

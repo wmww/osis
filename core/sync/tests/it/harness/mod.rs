@@ -639,6 +639,15 @@ impl World {
         (b.history(), b.dump(), b.blob_history().into_iter().filter_map(|(_, x)| x).collect())
     }
 
+    /// What node `i`'s two disks hold, engine's then store's: (rows, row bytes, blobs, blob bytes).
+    pub fn disk_use(&self, i: usize) -> [(u64, u64, u64, u64); 2] {
+        let d = &self.node(i).disks;
+        [&d.engine.0, &d.store.0].map(|b| {
+            let (rb, bb, bn) = b.held_split();
+            (b.dump().len() as u64, rb, bn, bb)
+        })
+    }
+
     /// Node `i`'s store, for reads.
     pub fn store(&self, i: usize) -> &Store {
         self.node(i).node.store()
