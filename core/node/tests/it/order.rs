@@ -105,6 +105,10 @@ pub(crate) enum Step {
     /// trust set (spec/requirements.md Deterministic: reads are a function of the data and the
     /// trust set).
     WalkSides,
+    /// No commit: the commits made so far are a held set of their own (`held_sets`), a node that
+    /// synced here and heard nothing after. `generate` puts one after an emphasis's start, so
+    /// what the start reaches is judged whatever later steps do to it.
+    HeldHere,
     /// The step, its author and thing first pointed at what it can write at play time (`aim`),
     /// so that most drawn steps make a commit.
     Aim(Box<Step>),
@@ -405,6 +409,16 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
     };
     // what each peer holds, for a compaction
     let holding: Vec<BTreeSet<(Tid, Ak)>> = if matches!(st, Compact { .. }) { lp.peers.iter_mut().map(|p| p.engine.all_aspects().unwrap().into_iter().collect()).collect() } else { Vec::new() };
+    // for an undo, the indexes in `own[by]` of the author's content commits a revert writes
+    // (`check_revertible`), oldest first
+    let undoable: Vec<usize> = match st {
+        Undo { by, .. } => {
+            let e = &mut lp.peers[*by].engine;
+            let content = |e: &osis_node::Engine, id: &CommitId| e.header(id).is_some_and(|h| h.kind == osis_commit::Kind::Content);
+            own[*by].iter().enumerate().filter(|(_, id)| content(e, id) && e.check_revertible(id).is_ok_and(|w| w)).map(|(i, _)| i).collect()
+        }
+        _ => Vec::new(),
+    };
     let lp = &*lp;
     let write = want(Role::Write);
     let admin = want(Role::Admin);
@@ -442,11 +456,8 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
             let held = |lp: &LocalPeer, b: usize, x: &Tid| admin(lp, b, x) && lp.peers[b].engine.roster(x).get(&h).is_some_and(|e| !lower || e.role > Role::Write);
             pick(lp, by, t, &held).map(|(by, t)| RemoveFlow { by, t, holder, lower })
         }
-        Undo { by, back } => {
-            // one of the author's last content commits
-            let content: Vec<usize> = own[by].iter().enumerate().filter(|(_, id)| lp.peers[by].engine.header(id).is_some_and(|h| h.kind == osis_commit::Kind::Content)).map(|(i, _)| i).collect();
-            content.iter().rev().nth(back as usize % content.len().max(1)).map(|i| Undo { by, back: (own[by].len() - 1 - i).min(255) as u8 })
-        }
+        // one of the last of them
+        Undo { by, back } => undoable.iter().rev().nth(back as usize % undoable.len().max(1)).map(|i| Undo { by, back: (own[by].len() - 1 - i).min(255) as u8 }),
         _ => None,
     };
     aimed.unwrap_or_else(|| st.clone())
@@ -561,6 +572,8 @@ pub(crate) struct Played {
     dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// How many commits were made before each step.
     steps_at: Vec<usize>,
+    /// How many commits were made before each `HeldHere`.
+    held_here: Vec<usize>,
     /// A `settled` history: its settling tail's first commit (`settling`). Every order delivers
     /// the tail last, as made, so each settling compaction counts when it arrives; the node then
     /// shows what the keep-everything node does before the sync exchange too, on `settled_last`.
@@ -748,6 +761,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     // per aspect compacted since the last commit of another step: whether a peer could
     let mut compacted_last: BTreeMap<(String, String), bool> = BTreeMap::new();
     let mut steps_at = Vec::new();
+    let mut held_here = Vec::new();
     for st in steps {
         let (old, st) = match st {
             Step::Old(x) => (true, &**x),
@@ -1086,6 +1100,10 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 }
                 None
             }
+            Step::HeldHere => {
+                held_here.push(packs.len());
+                None
+            }
             Step::RecordOnly { by, under } => {
                 let first = under.map_or(ids[by], th);
                 let r = lp.peers[by].engine.create_with_admin(&first);
@@ -1358,7 +1376,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             pk.bytes = b.clone();
         }
     }
-    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, settle_from: None, settled_last, withheld: 0, model: None, setups: Setups::default() }
+    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, held_here, settle_from: None, settled_last, withheld: 0, model: None, setups: Setups::default() }
 }
 
 /// Per body (commit, thing, aspect): when it was replaced, for keep-for-D (spec/commits.md §5).
@@ -2226,7 +2244,8 @@ fn fill_order(played: &Played, held: &[usize]) -> Vec<usize> {
 /// The held sets tried: everything, a first sync part way (the setup and its first half and three
 /// quarters: it reads as if the rest never came), then `subsets` partial ones (alternately without one
 /// writer's commits after the setup, as a node that never heard from it, and without a random
-/// third of them); `usize::MAX`: every held set (all of the setup, any of the rest).
+/// third of them), then what was made before each `HeldHere`; `usize::MAX`: every held set (all
+/// of the setup, any of the rest).
 fn held_sets(played: &Played, subsets: usize, rng: &mut Rng) -> Vec<Vec<usize>> {
     let n = played.packs.len();
     let mut out = vec![(0..n).collect::<Vec<_>>()];
@@ -2250,6 +2269,12 @@ fn held_sets(played: &Played, subsets: usize, rng: &mut Rng) -> Vec<Vec<usize>> 
     for j in 0..subsets {
         let peer = rng.below(3) as usize;
         let keep: Vec<usize> = (0..n).filter(|&i| i < played.base || if j % 2 == 0 { played.authors[i] != peer } else { rng.below(3) != 0 }).collect();
+        if !out.contains(&keep) {
+            out.push(keep);
+        }
+    }
+    for &k in &played.held_here {
+        let keep: Vec<usize> = (0..k).collect();
         if !out.contains(&keep) {
             out.push(keep);
         }
@@ -2687,7 +2712,8 @@ const SEQ_OPS: [u8; 12] = [8, 9, 10, 11, 14, 23, 24, 26, 32, 32, 33, 34];
 /// that group's own stream, so a change to one group's draws leaves every other group's steps
 /// as they were. Groups other than `General` act on the first three things, so their steps meet.
 /// The emphasis also shapes the whole history: a start that reaches its outcome (a fallen
-/// setting, a record-only thing, an addendum, a signal), the settling tail.
+/// setting, a record-only thing, an addendum, a signal) and is held as a set of its own
+/// (`HeldHere`), the settling tail.
 fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
     use Step::*;
     let e = emphasis(seed);
@@ -2741,6 +2767,10 @@ fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
             h.extend([Write { by: 1, t: 0, op: 0, k: 0, v: 0 }, Sync { from: 1, to: 2 }, Advance { who: None, ms: 1_000 }, Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false }, Sync { from: 0, to: 2 }, Edge { by: 2, t: 0, holder: 1, role: Some(Role::Write) }]);
         }
         _ => {}
+    }
+    // a node that synced once the start is made: what it reaches is judged as reached
+    if !h.is_empty() {
+        h.push(HeldHere);
     }
     // group shares: general, purges, keeps, required, record-only, lists, parts
     let mut weights = [40u64, 6, 6, 5, 4, 5, 4];
