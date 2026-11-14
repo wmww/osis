@@ -78,7 +78,7 @@ fn a_reader_opens_a_store_at_its_step_spec_sync_opens_4() {
     let mut r = Side::new(1);
     let mut k = Side::new(2);
     r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
-    k.table.set(S, Some(store(&S, &st, &[])));
+    k.table.set(S, Some(store(&st)));
     let mut p = Pair::new(r, k, Proven::default(), Proven::default());
     p.run();
     assert!(p.a.opens.record(p.ca).is_none() && p.b.opens.record(p.cb).is_none());
@@ -86,6 +86,24 @@ fn a_reader_opens_a_store_at_its_step_spec_sync_opens_4() {
     let m = &p.a.opens.members(p.ca)[&S];
     assert_eq!(m.class, SourceClass::Store);
     assert!(m.step == Some(st.id) || m.by == Credential::SyncProof);
+}
+
+// spec/sync-opens.md §5 (Proof an answer carries: its head at a node keeping S unread): a node
+// keeping S unread answers a Hit on its head's sync key, so a reader whose filter shows nothing
+// the store tests (no sync proof yet) still opens S by its walk's sync key.
+#[test]
+fn a_store_answers_a_hit_on_its_heads_sync_key_spec_sync_opens_5() {
+    let st = StepKeys::new(1, 0);
+    let mut r = Side::new(1);
+    let mut k = Side::new(2);
+    let mut rc = reader(&S, &read_secret(1, 0), &st, &[], &[], &[]);
+    rc.shows.retain(|(x, _)| !matches!(x, osis_sync::opens::cred::Shown::Proof(_)));
+    r.table.set(S, Some(rc));
+    k.table.set(S, Some(store(&st)));
+    let mut p = Pair::new(r, k, Proven::default(), Proven::default());
+    p.run();
+    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
+    assert_eq!(p.b.opens.members(p.cb)[&S].by, Credential::SyncKey);
 }
 
 // spec/sync-opens.md §5 (ByRole): J judging the peer a reader opens S with no credential in
@@ -323,7 +341,7 @@ fn a_refused_hit_is_tried_again_only_when_remarked_spec_sync_opens_5() {
 /// A store K at `head` that Adv dials keeping no record; Adv holds `adv_steps` seeds.
 fn store_dialed_by_adv(head: &StepKeys, ch_adv: [u8; 32]) -> (Side, Adv) {
     let mut k = Side::new(3);
-    k.table.set(S, Some(store(&S, head, &[])));
+    k.table.set(S, Some(store(head)));
     k.settle();
     let (mut adv, _) = Adv::dials(&mut k, Proven::default(), ch_adv);
     hit_once(&mut k, &mut adv);
@@ -348,7 +366,7 @@ fn sync_key_hit(adv: &Adv, st: &StepKeys) -> OfferItem {
 fn an_older_steps_sync_key_proves_nothing_spec_sync_opens_4() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-    k.table.set(S, Some(store(&S, &s1, &[])));
+    k.table.set(S, Some(store(&s1)));
     k.settle();
     let a = adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
     assert_eq!(a[0].code, Code::DECLINED);
@@ -364,7 +382,7 @@ fn an_older_steps_sync_key_proves_nothing_spec_sync_opens_4() {
 fn an_older_steps_proof_proves_nothing_spec_sync_opens_4() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-    k.table.set(S, Some(store(&S, &s1, &[])));
+    k.table.set(S, Some(store(&s1)));
     k.settle();
     let a = adv.offer(&mut k, vec![OfferItem::Hit { hit: adv.hit_on(&s0.proof, &S), sig: None }]);
     assert_eq!(a[0].code, Code::DECLINED);
@@ -406,7 +424,7 @@ fn an_answer_on_a_public_value_opens_nothing_spec_sync_opens_5() {
 fn a_reflected_open_signature_opens_nothing_spec_wire_11_2() {
     let s0 = StepKeys::new(1, 0);
     let mut k = Side::new(3);
-    k.table.set(S, Some(store(&S, &s0, &[])));
+    k.table.set(S, Some(store(&s0)));
     k.settle();
     // K dials Adv, whose challenge is K's own.
     let ch = [0x33; 32];
@@ -429,7 +447,7 @@ fn a_sync_key_open_ends_when_the_head_moves_spec_sync_opens_6() {
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
     assert_eq!(adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)])[0].code, Code::OK);
     assert!(k.open(adv.peer, &S));
-    k.table.set(S, Some(store(&S, &s1, &[])));
+    k.table.set(S, Some(store(&s1)));
     k.settle();
     assert_eq!(k.opens.members(adv.peer)[&S].until, Some(k.table.until));
     k.sent();
@@ -446,7 +464,7 @@ fn an_ended_member_closes_when_the_stream_passes_until_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
     adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
-    k.table.set(S, Some(store(&S, &s1, &[])));
+    k.table.set(S, Some(store(&s1)));
     k.settle();
     let until = k.table.until;
     assert!(k.moved.contains(&Moved::Until(adv.peer, S)));
@@ -465,7 +483,7 @@ fn a_proof_open_ends_at_a_rotation_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
     assert_eq!(adv.offer(&mut k, vec![OfferItem::Hit { hit: adv.hit_on(&s0.proof, &S), sig: None }])[0].code, Code::OK);
-    k.table.set(S, Some(store(&S, &s1, &[])));
+    k.table.set(S, Some(store(&s1)));
     k.settle();
     assert!(k.opens.members(adv.peer)[&S].until.is_some(), "ended");
 }
@@ -587,7 +605,7 @@ fn dialing_proves_nothing_spec_sync_opens_4() {
     let mut outcome = Vec::new();
     for k_dials in [true, false] {
         let mut k = Side::new(3);
-        k.table.set(S, Some(store(&S, &s0, &[])));
+        k.table.set(S, Some(store(&s0)));
         k.settle();
         let mut adv = Adv::connect(&mut k, k_dials, [1; 32], [2; 32], Proven::default());
         if !k_dials {
@@ -699,7 +717,7 @@ fn a_lost_for_an_ending_member_is_answered_with_a_lost_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
     adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
-    k.table.set(S, Some(store(&S, &s1, &[])));
+    k.table.set(S, Some(store(&s1)));
     k.settle();
     k.sent();
     let id = adv.id();
@@ -716,10 +734,10 @@ fn an_ended_member_admissible_again_is_not_ended_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
     adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
-    k.table.set(S, Some(store(&S, &s1, &[])));
+    k.table.set(S, Some(store(&s1)));
     k.settle();
     assert!(k.opens.members(adv.peer)[&S].until.is_some());
-    k.table.set(S, Some(store(&S, &s0, &[])));
+    k.table.set(S, Some(store(&s0)));
     k.settle();
     assert_eq!(k.opens.members(adv.peer)[&S].until, None);
 }

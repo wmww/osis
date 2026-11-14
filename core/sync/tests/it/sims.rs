@@ -102,7 +102,6 @@ fn store_failures() {
 // a reader away while the writer writes, back when the writer is gone, reads every write
 // through the node keeping the thing unread alone.
 #[test]
-#[ignore = "wiring: a reader back on does not open S at a node keeping it unread whose head the writer registered after the reader last tested S there (issues/sync-walk-reopen.md)"]
 fn a_reader_through_a_node_keeping_it_unread() {
     let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", sized(6, 80));
     seeds.run("a_reader_through_a_node_keeping_it_unread", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {

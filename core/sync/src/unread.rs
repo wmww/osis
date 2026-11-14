@@ -24,7 +24,7 @@ use osis_base::{BlobId, SyncId, Tid, WallMs};
 use osis_crypto::kdf::sync_proof;
 use osis_crypto::{LabelRole, Secret32, SigningSecret, VerifyingKey, label_role_key, label_role_seed};
 use osis_engine::sync::{RemovalNotice, SyncRecord, ThingSync};
-use osis_label::{ClaimSet, Step, verify_removal};
+use osis_label::{ClaimSet, Step, StepId, verify_removal};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -33,6 +33,8 @@ use std::sync::Arc;
 /// the head's claim set).
 #[derive(Clone, Debug)]
 pub struct UnreadCredentials {
+    /// The head: the step whose sync key answers a Hit (spec/sync-opens.md §5 Proof).
+    pub step: StepId,
     /// The head's sync key.
     pub sync: SigningSecret,
     /// Its sync proof (spec/sync-ids.md §2).
@@ -45,7 +47,7 @@ pub struct UnreadCredentials {
 
 impl PartialEq for UnreadCredentials {
     fn eq(&self, o: &UnreadCredentials) -> bool {
-        self.proof == o.proof && self.sync.verifying_key() == o.sync.verifying_key() && self.deposit == o.deposit && self.claims == o.claims
+        self.step == o.step && self.proof == o.proof && self.sync.verifying_key() == o.sync.verifying_key() && self.deposit == o.deposit && self.claims == o.claims
     }
 }
 
@@ -106,6 +108,7 @@ pub fn judge(j: &Judged) -> Verdict {
         return Verdict::Keep(Kept { stranded: true, credentials: None });
     };
     let credentials = UnreadCredentials {
+        step: head.id(),
         sync: label_role_key(LabelRole::Sync, secret),
         proof: Secret32::from_bytes(sync_proof(&label_role_seed(LabelRole::Sync, secret))),
         deposit: head.keys.deposit,

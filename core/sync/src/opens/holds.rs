@@ -5,7 +5,7 @@
 use super::cred::{Shown, Tested};
 use crate::session::Proven;
 use crate::types::{Credential, Cursor, Cx, Holding, Position};
-use crate::unread::Unread;
+use crate::unread::{Unread, UnreadCredentials};
 use osis_base::{SyncId, Tid};
 use osis_crypto::Epoch;
 use osis_engine::sync::J;
@@ -34,6 +34,25 @@ pub struct Creds {
 }
 
 impl Creds {
+    /// What a node keeping S unread holds (spec/sync-opens.md §4 Admissible): it shows its head's
+    /// sync key, the sync proof of it, its deposit key and every key of the head's claim set; it
+    /// tests the sync key and the proof; its head answers a Hit on what it shows (§5 Proof), so
+    /// everything it shows it can accept.
+    pub fn kept_unread(uc: &UnreadCredentials) -> Creds {
+        let mut c = Creds { holding: Some(Holding::Unread), ..Creds::default() };
+        c.shows.push((Shown::SyncKey(uc.sync.verifying_key().to_bytes()), None));
+        c.shows.push((Shown::Proof(*uc.proof.expose()), None));
+        c.shows.push((Shown::Deposit(uc.deposit.to_bytes()), None));
+        if let Some(cs) = &uc.claims {
+            c.shows.extend(cs.claims.iter().map(|k| (Shown::Claim(*k), None)));
+            c.shows.extend(cs.entries.keys().map(|k| (Shown::Static(*k), None)));
+        }
+        c.tests.push((Tested::SyncKey { step: uc.step, key: uc.sync.clone() }, None));
+        c.tests.push((Tested::Proof(*uc.proof.expose()), None));
+        c.step = Some((uc.step, uc.sync.clone(), None));
+        c
+    }
+
     /// The digest `changed_at` compares (spec/sync-opens.md §3): what is shown and tested, the
     /// step that answers, and the roles. Secrets enter only through a keyed hash.
     pub fn digest(&self) -> [u8; 32] {
@@ -183,17 +202,7 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
                     }
                 }
             }
-            Holding::Unread => {
-                let uc = unread.credentials(s)?;
-                c.shows.push((Shown::SyncKey(uc.sync.verifying_key().to_bytes()), None));
-                c.shows.push((Shown::Proof(*uc.proof.expose()), None));
-                c.tests.push((Tested::Proof(*uc.proof.expose()), None));
-                c.shows.push((Shown::Deposit(uc.deposit.to_bytes()), None));
-                if let Some(cs) = &uc.claims {
-                    c.shows.extend(cs.claims.iter().map(|k| (Shown::Claim(*k), None)));
-                    c.shows.extend(cs.entries.keys().map(|k| (Shown::Static(*k), None)));
-                }
-            }
+            Holding::Unread => c = Creds::kept_unread(&*unread.credentials(s)?),
         }
         Some(Arc::new(c))
     }

@@ -73,17 +73,10 @@ pub fn reader(s: &SyncId, read: &(Epoch, Secret32), step: &StepKeys, older: &[St
     c
 }
 
-/// What a node keeping S unread at head `head` holds: it shows the head's sync key and proof
-/// (and the static entries of its claim set), and tests them.
-pub fn store(s: &SyncId, head: &StepKeys, claim_links: &[&SigningSecret]) -> Creds {
-    let mut c = Creds { holding: Some(Holding::Unread), ..Creds::default() };
-    c.shows.push((Shown::SyncKey(head.pk()), None));
-    c.shows.push((Shown::Proof(head.proof), None));
-    c.shows.extend(claim_links.iter().map(|k| (Shown::Static(static_entry(s, &k.verifying_key())), None)));
-    c.tests.push((Tested::SyncKey { step: head.id, key: head.sync.clone() }, None));
-    c.tests.push((Tested::Proof(head.proof), None));
-    c.step = Some((head.id, head.sync.clone(), None));
-    c
+/// What a node keeping S unread at head `head` holds: the product's own (`Creds::kept_unread`),
+/// with no claim set.
+pub fn store(head: &StepKeys) -> Creds {
+    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: head.id, sync: head.sync.clone(), proof: Secret32::from_bytes(head.proof), deposit: SigningSecret::from_seed(&Secret32::from_bytes(head.proof)).verifying_key(), claims: None })
 }
 
 /// What a link holder holds: its own static entry to test, no secret of S.
