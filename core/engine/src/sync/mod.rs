@@ -804,6 +804,13 @@ impl Engine {
         self.note_complete_pass_now(s, began)
     }
 
+    /// Sync ID `s` is read here no more (it left the sync set, or is kept unread): its noted
+    /// passes go, so reading it again wants a fresh pass. An open does the same for every sync
+    /// ID not read.
+    pub fn forget_pass(&mut self, s: &SyncId) -> Result<()> {
+        self.forget_pass_now(s)
+    }
+
     /// History complete for `thing` (spec/sync-status.md §3): a complete pass of every sync ID
     /// carrying it noted here.
     pub fn history_complete(&mut self, thing: &Tid) -> Result<bool> {

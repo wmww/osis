@@ -1209,6 +1209,38 @@ mod tests {
         assert_eq!(clock.next(), Some(150));
     }
 
+    // spec: none (internal). A reader of a horizon already reached (one exactly now included)
+    // keeps its answer as the clock moves on and moves when the clock goes back past it; read
+    // again then, its horizon is ahead and wakes it when reached again.
+    #[test]
+    fn a_reached_horizon_reader_moves_when_the_clock_goes_back() {
+        let mut clock = Clock::default();
+        clock.set(100);
+        let (past, now): (Memo<(), u64>, Memo<(), u64>) = (Memo::new("test past"), Memo::new("test now"));
+        let ask = |c: &Clock| (past.get(&(), || u64::from(c.until(Some(50)) >= 50)), now.get(&(), || u64::from(c.until(Some(100)) >= 100)));
+        let ran = || {
+            let c = crate::costs::take();
+            let n = |name: &str| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
+            (n("test past"), n("test now"))
+        };
+        crate::costs::take();
+        assert_eq!(ask(&clock), (1, 1));
+        assert_eq!(clock.next(), None);
+        clock.set(300);
+        assert_eq!(ask(&clock), (1, 1), "a forward move keeps a reached answer");
+        assert_eq!(ran(), (1, 1));
+        clock.set(40);
+        assert_eq!(ask(&clock), (0, 0), "a move back moves it");
+        assert_eq!(ran(), (1, 1));
+        assert_eq!(clock.next(), Some(50));
+        clock.set(50);
+        assert_eq!(ask(&clock), (1, 0), "its horizon, ahead again, wakes it");
+        assert_eq!(clock.next(), Some(100));
+        clock.set(100);
+        assert_eq!(ask(&clock), (1, 1));
+        assert_eq!(ran(), (1, 1));
+    }
+
     // spec: none (internal). Debug builds compare a hit with a fresh run at the 1st, 4th, 16th,
     // ... hit after a change of a container it read, and at hits 16, 256, ... (`Checks`): a read
     // made without its stamp (`hidden`) is found once a container it read changes, and once the

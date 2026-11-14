@@ -115,6 +115,10 @@ impl Follow {
             if let Some(t) = self.read.remove(s) {
                 self.paths.unwant(&(*s, t));
                 self.creds.unwant(s);
+                // read no more: its complete passes go with it (a pass of it again when read again)
+                if !matches!(now, Some((_, Holding::Read))) {
+                    engine.forget_pass(s)?;
+                }
             }
             if let Some((t, Holding::Read)) = now {
                 self.read.insert(*s, *t);

@@ -734,6 +734,22 @@ fn a_card_goes_with_its_nodes_grant_spec_sync_judgement_2() {
     assert_eq!(e.read_facts(&home, &r).unwrap().must_not, None, "paired again: kept");
 }
 
+// spec/sync-judgement.md §2 required set (the certificate blobs of spec/permissions.md §4): the
+// other node's `reach.0` card is in D's home sync ID's required set, so read never judges it
+// outside it (must-not-hold, deleted at a node keeping the sync ID unread by a delete-key
+// holder). Reproducer of issues/sync-certificate-bodies.md.
+#[test]
+#[ignore = "sync-certificate-bodies"]
+fn another_nodes_card_is_in_the_required_set_spec_sync_judgement_2() {
+    let (mut lp, d) = crate::flows::account_two_nodes();
+    let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
+    let r = reach(&mut lp, 1, 1);
+    spread(&mut lp);
+    let e = &mut lp.peers[0].engine;
+    let b = e.sync_bodies(&r).unwrap();
+    assert!(b.get(&home).is_some_and(|m| m.certificate), "the card's certificate body under D's home: {b:?}");
+}
+
 /// Peer 1 takes a write grant on peer 0's thing `t` and syncs it (in its synced group).
 fn grantee() -> (LocalPeer, Tid) {
     let (mut lp, t, _, _, blob) = granted(Role::Write);
@@ -790,6 +806,38 @@ fn history_completes_with_a_pass_spec_sync_status_3() {
     let now = e.pass_clock();
     e.note_complete_pass(&home, now).unwrap();
     assert!(e.history_complete(&d).unwrap() && e.passes_wanted().unwrap().is_empty());
+}
+
+// spec/sync-status.md §3 History complete: a pass belongs to a sync ID read here, so a sync ID
+// left and read again wants a pass of its own (what it missed while away is not here): one that
+// leaves loses its noted pass (sync's follow calls `forget_pass`; an open drops it too, for one
+// left while down), and a pass of a sync ID not read is not kept.
+#[test]
+fn a_pass_goes_with_its_sync_id_spec_sync_status_3() {
+    let (mut lp, ps) = people(1);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    let (_, d) = lp.peers[0].engine.account().unwrap().unwrap();
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
+    let now = lp.peers[0].engine.pass_clock();
+    lp.peers[0].engine.note_complete_pass(&home, now).unwrap();
+    lp.peers[0].engine.note_complete_pass(&s, now).unwrap();
+    add_item(&mut lp, 0, d, t);
+    assert!(!lp.peers[0].engine.history_complete(&t).unwrap(), "noted while not read here: not kept");
+    lp.peers[0].engine.note_complete_pass(&s, now).unwrap();
+    assert!(lp.peers[0].engine.history_complete(&t).unwrap());
+    let mut m = Mutation::new();
+    m.op(d, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Remove(osis_base::Value::Tid(t)) }).unwrap();
+    lp.peers[0].engine.commit(m).unwrap().unwrap();
+    lp.peers[0].restart(9).unwrap();
+    add_item(&mut lp, 0, d, t);
+    assert!(!lp.peers[0].engine.history_complete(&t).unwrap(), "left while down: read again, history not complete");
+    assert_eq!(lp.peers[0].engine.passes_wanted().unwrap().get(&s), Some(&osis_base::WallMs(0)));
+    let now = lp.peers[0].engine.pass_clock();
+    lp.peers[0].engine.note_complete_pass(&s, now).unwrap();
+    lp.peers[0].engine.forget_pass(&s).unwrap();
+    assert!(!lp.peers[0].engine.history_complete(&t).unwrap(), "forgotten: wanted again");
 }
 
 // spec/permissions.md §3 Complete pass: `passes_wanted` is a memo value over the engine's stamps,

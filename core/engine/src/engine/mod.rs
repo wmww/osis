@@ -3139,6 +3139,7 @@ impl Engine {
         self.reload()?;
         self.take_account()?;
         self.reexamine()?;
+        self.forget_passes_unread()?;
         // a leftover held from before goes uncovered no longer than a quiet time from here
         // (spec/sync-compaction.md §1 trigger)
         let quiet = self.now().0.saturating_add(crate::retention::compact::QUIET_MS);

@@ -68,9 +68,9 @@ impl Engine {
     }
 
     /// A complete pass of `s` begun at `began` (engine ms) ended (spec/sync-status.md §1): kept
-    /// durably, the last one alone per sync ID.
+    /// durably, the last one alone per sync ID, while this node reads `s` (`forget_pass`).
     pub(crate) fn note_complete_pass_now(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
-        if self.core.ix.passes.get(s).is_some_and(|b| *b >= began) {
+        if self.core.ix.passes.get(s).is_some_and(|b| *b >= began) || !self.reads_now(s)? {
             return Ok(());
         }
         let s = *s;
@@ -79,6 +79,36 @@ impl Engine {
             tx.core.ix.passes.insert(s, began);
             Ok(())
         })
+    }
+
+    /// This node reads `s` (its sync set holds it read).
+    fn reads_now(&mut self, s: &SyncId) -> Result<bool> {
+        Ok(self.sync_set()?.ids.get(s).is_some_and(|(_, h)| *h == Holding::Read))
+    }
+
+    /// `s` is read here no more: its passes go with it, so a sync ID read again wants a pass of
+    /// its own (history read since it left is not here).
+    pub(crate) fn forget_pass_now(&mut self, s: &SyncId) -> Result<()> {
+        if !self.core.ix.passes.contains_key(s) {
+            return Ok(());
+        }
+        let s = *s;
+        self.run(|tx| {
+            tx.txn.remove_local(&[PASSES, &s.0].concat(), Shred::No)?;
+            tx.core.ix.passes.remove(&s);
+            Ok(())
+        })
+    }
+
+    /// At an open: the passes of sync IDs not read here go (one left while the node was down).
+    pub(crate) fn forget_passes_unread(&mut self) -> Result<()> {
+        let gone: Vec<SyncId> = self.core.ix.passes.keys().copied().collect();
+        for s in gone {
+            if !self.reads_now(&s)? {
+                self.forget_pass_now(&s)?;
+            }
+        }
+        Ok(())
     }
 
     /// The sync IDs some rule waits on a complete pass of, each with the moment (engine ms) the

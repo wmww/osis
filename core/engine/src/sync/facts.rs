@@ -180,11 +180,16 @@ impl Engine {
     /// spec/sync-judgement.md §2 must-not-hold: blob `b` of commit C, whose delta set is a strict
     /// subset of another held blob of C under that sync ID (one of `held`) that is not itself
     /// must-not-hold and whose extra deltas include one only a blob carries. A blob not opened or
-    /// sealed here is no blob of C to this node.
+    /// sealed here is no blob of C to this node; both are of the body's kind (copy or shared).
     pub(crate) fn strict_subset_now(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool> {
         let Some(mine) = self.core.ix.blob_parts.get(b).cloned() else { return Ok(false) };
         let (c, parts) = (mine.0, &mine.1);
         let Some(copy) = self.sync_bodies_now(&c)?.get(s).map(|m| m.copy) else { return Ok(false) };
+        // a blob of the other kind holds no body of it here (a certificate copy beside the shared
+        // blob carries parts S's readers cannot open there, whatever this node opens of it)
+        if mine.2 != copy {
+            return Ok(false);
+        }
         let larger: Vec<PartSet> = held.iter().filter(|x| *x != b).filter_map(|x| self.carried_by(&c, copy, x)).filter(|o| parts.is_subset(o) && o.len() > parts.len()).collect();
         if larger.is_empty() {
             return Ok(false);

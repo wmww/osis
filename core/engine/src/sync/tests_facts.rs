@@ -87,6 +87,19 @@ fn a_fake_superset_drops_nothing_spec_sync_judgement_2() {
     }
 }
 
+// spec/sync-judgement.md §2 strict subset, §1 Certificate blobs: a blob of the other kind than
+// the body (a certificate copy of parts the shared blob also holds, sealed there under a secret
+// S's readers may lack) is no strict subset of the shared blob, however much of it this node
+// opens.
+#[test]
+fn a_copy_beside_the_shared_blob_stays_spec_sync_judgement_2() {
+    let (mut lp, (home, c, [p0, p1], copy)) = two_parts();
+    let other = opened(&mut lp, 0, 1, &c, &[p1], !copy);
+    let big = opened(&mut lp, 0, 2, &c, &[p0, p1], copy);
+    let e = &mut lp.peers[0].engine;
+    assert!(!e.strict_subset(&home, &other, &BTreeSet::from([other, big])).unwrap());
+}
+
 // spec/sync-judgement.md §2 strict subset ("whose extra deltas include one only a blob carries:
 // kept or holding a live write"): once the extra delta's write is replaced and past its keep
 // bound, the two blobs are alike in what only a blob carries: neither is a strict subset.
