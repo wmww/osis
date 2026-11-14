@@ -31,6 +31,9 @@ pub(crate) enum Act {
     Fetch { at: Source, conn: ConnId, blob: BlobId },
     /// A Delete at a source keeping S unread, by its head's delete key (§3 Deletes, §5 Emptying).
     Delete { at: Source, conn: ConnId, head: StepId, blob: BlobId },
+    /// The closing step of the head of a source keeping S unread, registered there (§5 Emptying,
+    /// spec/wire.md §8).
+    Close { at: Source, conn: ConnId, head: StepId },
     /// Logged again once past a delete at the source (§4), a fresh encryption: `old` leaves the
     /// own log; the stand records `head` and `fall`.
     Again { at: Source, conn: ConnId, head: StepId, fall: u64, old: Vec<BlobId> },
@@ -563,14 +566,35 @@ pub(crate) fn doom(g: &mut impl Ground, mine: &Mine, told_before: bool, s: &Sync
         }
         return Ok((Doom::Untold, acts));
     }
+    // everything under S but the requests leaves the own store, whatever it names: an entry of a
+    // commit forgotten with a released thing (spec/commits.md §5 Forgetting) is judged by no body
+    let mut kept = BTreeSet::new();
+    for r in &requests {
+        kept.extend(g.own(s, r)?.into_iter().map(|e| e.blob));
+    }
+    let own = g.own_all(s)?;
+    acts.extend(own.iter().filter(|b| !kept.contains(*b)).map(|b| Act::DropBlob(*b)));
     let creds = g.credentials(s)?;
     let newest = creds.as_ref().and_then(|c| c.head.as_ref().map(|h| h.id()));
     let delete_key = |h: &StepId| creds.as_ref().and_then(|c| c.keys.get(h)).is_some_and(|k| k.delete.is_some());
     let holder = newest.is_some_and(|h| delete_key(&h));
     let mut empty = true;
+    // a source keeping S unread at a head whose delete key this node holds: S is closed there
+    // before it is forgotten here
+    let mut closable = false;
     for src in sources.iter() {
         let all = g.seen_all(&src.at, s)?;
         empty &= all.is_empty();
+        if let (true, Some(head)) = (src.store, src.head)
+            && holder
+            && delete_key(&head)
+        {
+            closable = true;
+            // its stream shows nothing, the requests past their expiry: the closing step (§5)
+            if all.is_empty() && over {
+                acts.insert(Act::Close { at: src.at, conn: src.conn, head });
+            }
+        }
         // deleted where the source holds every request (told there first), or once the requests
         // are past their expiry (no reader can be told any more)
         let keep = match holds_all.get(&src.at) {
@@ -583,7 +607,7 @@ pub(crate) fn doom(g: &mut impl Ground, mine: &Mine, told_before: bool, s: &Sync
             acts.extend(all.iter().filter(|b| !keep.contains(*b)).map(|blob| Act::Delete { at: src.at, conn: src.conn, head, blob: *blob }));
         }
     }
-    if !holder || (empty && g.heard_out(s)? && !g.deletes_known(s)? && g.own_empty(s)?) {
+    if !holder || (empty && !closable && g.heard_out(s)? && !g.deletes_known(s)? && own.is_empty()) {
         acts.insert(Act::Forget);
     }
     Ok((Doom::Told { requests: Arc::new(requests) }, acts))

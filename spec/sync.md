@@ -24,7 +24,7 @@ A node holds S of thing T, at each moment, by the secrets it holds of T:
 - One predicate decides: read exactly while a read secret of T is held. A change of holding never empties the store (spec/sync-judgement.md §6 Read and unread move).
 
 **Sync record.** Principle: a node keeping T unread trusts only its own account. T's sync IDs come only from the account's own judgement, and a sync secret only once a step on the node's own path of such a sync ID bears its sync key. Nothing the granter, a roster or a chain says is needed or used.
-- The account's sync record of T is its entry in `kept^.0` on its devices actor D (spec/data-model.md §9): T's **kept sync IDs** and its **recorded** sync secrets by epoch. Written by the account's nodes only, read by every node of the account, now or paired later, whatever inbox blobs have expired. Entries are only added.
+- The account's sync record of T is its entry in `kept^.0` on its devices actor D (spec/data-model.md §9): T's **kept sync IDs** and its **recorded** sync secrets by epoch. Written by the account's nodes only, read by every node of the account, now or paired later, whatever inbox blobs have expired. Entries are only added, but for a sync ID closed (spec/sync-judgement.md §6 Closes): its node removes it from its thing's entry, and an entry keeping no sync ID goes whole.
 - **A kept sync ID** is added only by:
   - an accept (spec/sync-set.md §4): the sync IDs every held boxes payload offering T names for T, but one the record keeps for another thing;
   - the account's own reading: a node that stops reading T while holding a sync secret of it (spec/sync-judgement.md §6 Read and unread move) adds the sync IDs T owns as it judged them (spec/sync-ids.md §4 Owner) and the sync secrets of T it held.

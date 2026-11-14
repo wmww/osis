@@ -169,6 +169,29 @@ fn register_takes_genesis_then_children_of_the_head_spec_sync_ids_6() {
     assert_eq!(events_of(&st, &s.id), [NodeEvent::Head(s.id)], "one head event, the latest");
 }
 
+// spec/wire.md §8 (closing step), spec/sync-ids.md §6 (Register): a closing step is taken as a
+// child of the head when it bears its parent's keys (else 2), and nothing is registered after it.
+#[test]
+fn register_takes_a_closing_step_and_nothing_after_it_spec_wire_8() {
+    let dev = Dev::new();
+    let mut s = Sid::new(10);
+    let mut st = unread(&dev, &s);
+    let g = s.steps[0].0.clone();
+    let mut other = g.closing(&s.delete());
+    other.keys.sync = s.write_key().verifying_key();
+    other.sig = s.delete().sign(osis_crypto::Domain::SyncStep, &other.digest());
+    assert_eq!(st.take_register(&s.id, &other, None).unwrap(), Code::MALFORMED, "a closing step bearing other keys");
+    let closing = g.closing(&s.delete());
+    assert!(closing.is_closing() && !g.is_closing());
+    assert_eq!(st.take_register(&s.id, &closing, None).unwrap(), Code::OK);
+    assert_eq!(st.head(&s.id).unwrap().as_ref(), Some(&closing));
+    // a child of the closing step, signed by its delete key (its parent's)
+    let (mut after, _) = s.rotate(60);
+    after.prev = Some(closing.id());
+    after.sig = s.delete().sign(osis_crypto::Domain::SyncStep, &after.digest());
+    assert_eq!(st.take_register(&s.id, &after, None).unwrap(), Code::NOT_HEAD_KEY, "a step after a closing step");
+}
+
 // spec/sync-ids.md §6 (claim set hash): a claim set registered with a step must hash to the
 // step's; one that does not is refused with the step.
 #[test]

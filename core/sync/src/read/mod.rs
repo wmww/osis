@@ -451,6 +451,13 @@ impl Read {
                     g.delete(&src, s, &blob, &key)?;
                 }
             }
+            (Act::Close { at, conn, head }, _) => {
+                let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) else { return Ok(()) };
+                let key = g.credentials(s)?.and_then(|cr| cr.keys.get(&head).and_then(|k| k.delete.clone()));
+                if let Some(key) = key {
+                    g.close(&src, s, &head, &key)?;
+                }
+            }
             (Act::Deposit { at, conn, blob }, Some(c)) => {
                 if let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) {
                     g.deposit(&src, s, c, &blob)?;

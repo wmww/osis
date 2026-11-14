@@ -119,7 +119,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. `schem
 - **`caps^.0`**: the limits (`policy`, per-thing `things`, applied to each sync ID the thing owns) on what peers may make the node store of the sync IDs it keeps unread (spec/sync-ids.md §5); local policy, absent: the defaults. Never logged under a sync ID.
 - **`synced^.0`** on an account's devices actor D: each node of the account to its synced group (spec/sync-set.md §1). Admin-only; it travels under home.
 - **`acted^.0`** on D: `set<tid>`, the things the account acted on as invitations (spec/sync-set.md §4 Acted). Admin-only, entries only added; it travels under home.
-- **`kept^.0`** on D: `map<tid, struct { ids 0: set<blob>, secrets 1: map<epoch, blob> }>`, the account's sync records (spec/sync.md §3): per thing, its kept 16-byte sync IDs and its recorded 32-byte sync secrets by epoch. Admin-only, entries only added; it travels under home.
+- **`kept^.0`** on D: `map<tid, struct { ids 0: set<blob>, secrets 1: map<epoch, blob> }>`, the account's sync records (spec/sync.md §3): per thing, its kept 16-byte sync IDs and its recorded 32-byte sync secrets by epoch. Admin-only, entries only added but for a closed sync ID (spec/sync.md §3); it travels under home.
 - **`dial^.0`** on an account's profile: `map<blob, list<text>>`, a node's dialable key to its URLs (spec/sync-set.md §1; spec/sync-opens.md §1); written by the account, each node keeping its own entry; read by contacts.
 - **`clients^.0`**: clients with an actor of their own, by client actor (spec/sync-transport.md §6). Never logged under a sync ID.
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.

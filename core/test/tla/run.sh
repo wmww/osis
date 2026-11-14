@@ -244,6 +244,8 @@ instances=(
   "netdestroy net MCDestroy DN_toldsrc.cfg fail"   # negative control: told by a reader, deletes at K before K holds the request
   "netdestroy net MCDestroy DN_forgetall.cfg fail" # negative control: forget counting K alone, not a reader source
   "netdestroy net MCDestroy DN_untold.cfg fail"    # negative control: untold leaves S keeping T
+  "netdestroy net MCDestroy DN_closegate.cfg fail" # negative control: closing at K before its stream is empty
+  "netdestroy net MCDestroy DN_closefirst.cfg fail" # negative control: forget before K closed S
   "netkeep net MCKeep K_all.cfg pass"              # a node keeping S unread follows its own grant: drops its copy at a head past its keys, a re-grant re-fetches
   "netkeep net MCKeep K_nohead.cfg pass"           # granted before any Register: no head, first box late
   "netkeep net MCKeep K_fake.cfg pass"             # a hostile box of a self-made epoch hides nothing and keeps nothing

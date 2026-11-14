@@ -128,12 +128,12 @@ fn a_destroyed_things_sync_id_empties_but_its_request_past_its_window_spec_sync_
 }
 
 // spec/sync-judgement.md §5 (Emptying): the requests leave at their expiry; it forgets the sync
-// IDs once its sources are heard out with nothing known there, only then the thing's secrets:
-// released, past the request's expiry S empties at every store and, past the deletes'
-// tombstones, node 0 forgets S and t's secrets.
+// IDs once its sources are heard out with nothing known there and none keeps S unread (it
+// registers the closing step there, §6 Closes), only then the thing's secrets: released, past
+// the request's expiry S empties at every store and, past the deletes' tombstones, node 0
+// forgets S and t's secrets, and node 1 (kept unread) forgets S and its account's record of it.
 #[test]
-#[ignore = "issues/destroyed-sync-id-never-left.md"]
-fn repro_a_released_things_sync_id_empties_and_is_forgotten_spec_sync_judgement_5() {
+fn a_released_things_sync_id_empties_and_is_forgotten_spec_sync_judgement_5() {
     let (mut w, t, s) = three();
     w.write(0, |e| e.release(&[t])).unwrap().expect("a release request");
     w.run();
@@ -148,6 +148,10 @@ fn repro_a_released_things_sync_id_empties_and_is_forgotten_spec_sync_judgement_
     w.run();
     assert_eq!(w.engine(0).sync_holder(&s).unwrap(), None, "node 0 still syncs S");
     assert!(w.engine(0).epochs(&t).is_none(), "node 0 still holds t's secrets");
+    // §6 Closes: node 1, keeping S unread, took the closing step: its account's record keeps S no
+    // more, and S, its path and its store are gone
+    assert!(w.store(1).path(&s).unwrap().is_none(), "node 1 keeps S's path");
+    assert!(w.engine(1).sync_record(&t).unwrap().is_none(), "node 1's account still records S");
 }
 
 // spec/sync-judgement.md §5 (Emptying), spec/sync-status.md §1 (heard out), as a lifecycle duty

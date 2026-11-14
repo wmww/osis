@@ -9,8 +9,9 @@
 //! while its head's sync key is one a held
 //! secret derives; at a head whose key none derives it drops its copy and takes nothing
 //! (`Store::set_unheld`), showing only the secrets no step of its path bears, so a reader holding
-//! one registers its path onward (a re-grant past its head). Leaving (unlisted) is `leave`'s: S
-//! is kept here while it waits there. Model: core/test/tla/net/NetKeep.tla.
+//! one registers its path onward (a re-grant past its head). At a closing head it drops its copy
+//! and the record keeps S no more (`Engine::close_kept`), so S leaves the sync set. Leaving
+//! (unlisted or closed) is `leave`'s: S is kept here while it waits there. Model: core/test/tla/net/NetKeep.tla.
 //!
 //! Work follows change: the sync IDs this node syncs kept unread (`set::SyncsFollow`, O(moved)),
 //! and each S's judgement through one `Effects` key that reads its record and path by key, so a
@@ -68,6 +69,9 @@ pub struct Kept {
     /// The sync keys of the held secrets not recorded that a step of its path bears: what the
     /// account's sync record takes (spec/sync.md §3 A recorded secret).
     pub borne: BTreeSet<[u8; 32]>,
+    /// Its head is a closing step (spec/sync-judgement.md §6 Closes): the account's sync record
+    /// keeps S no more, so S leaves (`leave` shreds it, path included).
+    pub closed: bool,
 }
 
 /// What one S is judged on, every value read by key (spec/sync-judgement.md §6).
@@ -90,13 +94,17 @@ pub fn judge(j: &Judged) -> Kept {
         .record
         .map(|r| r.secrets.iter().filter(|(e, _)| !r.recorded.contains(e)).map(|(_, x)| label_role_key(LabelRole::Sync, x).verifying_key()).filter(|k| j.steps.iter().any(|(st, _)| st.keys.sync == *k)).map(|k| k.to_bytes()).collect())
         .unwrap_or_default();
-    let keep = |stranded: bool, credentials: Option<UnreadCredentials>| Kept { stranded, credentials: credentials.map(Arc::new), borne: borne.clone() };
+    let keep = |stranded: bool, credentials: Option<UnreadCredentials>| Kept { stranded, credentials: credentials.map(Arc::new), borne: borne.clone(), closed: false };
     let Some(head) = j.steps.last() else {
         // no step registered yet: each sync secret it holds counts as its step, so a reader's
         // test finds S here and registers its path, and a box at a self-made epoch hides no
         // genuine one (spec/sync-opens.md §4 Admissible)
         return keep(false, (!held.is_empty()).then(|| UnreadCredentials { step: None, keys: held, deposit: None, claims: None }));
     };
+    // closed: it drops its copy, shows nothing, and its record keeps S no more (§6 Closes)
+    if head.0.is_closing() {
+        return Kept { closed: true, ..keep(true, None) };
+    }
     if let Some(k) = held.iter().find(|(k, _)| k.verifying_key() == head.0.keys.sync) {
         return keep(false, Some(UnreadCredentials { step: Some(head.0.id()), keys: vec![k.clone()], deposit: Some(head.0.keys.deposit), claims: head.1.clone() }));
     }
@@ -185,6 +193,9 @@ impl Unread {
             // write moves the record, and the next judgement finds it recorded
             if !k.borne.is_empty() {
                 cx.engine.record_borne(&thing, &k.borne)?;
+            }
+            if k.closed {
+                cx.engine.close_kept(&thing, &s)?;
             }
             self.kept.insert(s, k);
         }

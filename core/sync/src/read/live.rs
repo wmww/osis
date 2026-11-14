@@ -155,8 +155,8 @@ impl Ground for Live<'_, '_> {
         }
         Ok(out)
     }
-    fn own_empty(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(self.cx.store.entries(s)?.is_empty())
+    fn own_all(&mut self, s: &SyncId) -> Result<BTreeSet<BlobId>> {
+        Ok(self.cx.store.entries(s)?.into_iter().map(|e| e.blob).collect())
     }
     fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>> {
         if self.cx.store.blob_len(b)?.is_none() {
@@ -270,6 +270,14 @@ impl Ground for Live<'_, '_> {
     fn delete(&mut self, at: &SrcView, s: &SyncId, b: &BlobId, key: &SigningSecret) -> Result<()> {
         if let Some(session) = self.sessions.get_mut(at.conn) {
             session.request(To::Read, Msg::Delete { id: 0, sync_id: *s, items: vec![DeleteItem::sign(key, s, *b)] });
+        }
+        Ok(())
+    }
+    fn close(&mut self, at: &SrcView, s: &SyncId, head: &StepId, key: &SigningSecret) -> Result<()> {
+        // the source's head is a step this node records (it holds its delete key)
+        let Some(step) = self.cx.store.path(s)?.and_then(|p| p.steps.iter().map(|(st, _)| st).find(|st| st.id() == *head).cloned()) else { return Ok(()) };
+        if let Some(session) = self.sessions.get_mut(at.conn) {
+            session.request(To::Read, Msg::Register { id: 0, sync_id: *s, step: step.closing(key), claim_set: None });
         }
         Ok(())
     }

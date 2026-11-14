@@ -122,6 +122,19 @@ fn a_head_past_its_keys_stops_until_its_box_spec_sync_judgement_6() {
     assert_eq!(k.shows(), vec![step(sync_id(0), 1).keys.sync]);
 }
 
+// spec/sync-judgement.md §6 (Closes), spec/wire.md §8: a head moved to a closing step drops its
+// copy (stranded), shows nothing, and is closed: the account's record keeps S no more.
+#[test]
+fn a_closing_head_closes_spec_sync_judgement_6() {
+    let mut k = Keep::new(&[0]);
+    assert!(!k.kept().closed);
+    let closing = k.path.steps[0].0.closing(&delete_key(0));
+    k.path.steps.push((closing, None));
+    let kept = k.kept();
+    assert!(kept.closed && kept.stranded, "a closing head keeps S");
+    assert!(kept.credentials.is_none(), "a closed S shows its head's key");
+}
+
 fn sync_keys(c: &osis_sync::unread::UnreadCredentials) -> Vec<osis_crypto::VerifyingKey> {
     c.keys.iter().map(|(k, _)| k.verifying_key()).collect()
 }

@@ -113,8 +113,8 @@ pub trait Ground {
     }
     /// This node's own tombstones of `c`'s entries under S.
     fn own_tombstones(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>>;
-    /// No entry of S in the own store.
-    fn own_empty(&mut self, s: &SyncId) -> Result<bool>;
+    /// Every entry of S in the own store, whatever it names (a forgotten commit's included).
+    fn own_all(&mut self, s: &SyncId) -> Result<BTreeSet<BlobId>>;
     fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>>;
     /// Held blob `b` holds a part this node dropped for good (purged, past its bounds, expired,
     /// destroyed): must-not-hold wherever it is logged (spec/sync-judgement.md §1).
@@ -168,6 +168,9 @@ pub trait Ground {
     fn fetch(&mut self, at: &SrcView, s: &SyncId, b: &BlobId) -> Result<()>;
     /// A Delete of `b` at the source, signed by `key` (its head's delete key).
     fn delete(&mut self, at: &SrcView, s: &SyncId, b: &BlobId, key: &SigningSecret) -> Result<()>;
+    /// Registers at the source the closing step of its head `head` (spec/wire.md §8), signed by
+    /// `key`, that head's delete key (spec/sync-judgement.md §5 Emptying).
+    fn close(&mut self, at: &SrcView, s: &SyncId, head: &StepId, key: &SigningSecret) -> Result<()>;
     /// `c`'s body given to a source this node does not stamp for (spec/sync-judgement.md §3
     /// Reader that is not a writer): own entry `b` relayed under its stamp when the source's head
     /// write key verifies it, else a fresh encryption (`Engine::seal_body`) deposited.

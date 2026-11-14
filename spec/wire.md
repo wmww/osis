@@ -199,6 +199,7 @@ ClaimSet := [[claim+], {entry: box}]
 - `claims_hash` = BLAKE3(canonical bytes of the step's `ClaimSet`). `claim`: 32 bytes, a claim public key or static entry (spec/sync-ids.md §2), the count a power of two from 1 to `MAX_CLAIMS`, order as the registrar wrote it. The map holds an entry box (§7) per static entry listed, keyed by the 32-byte entry; every key appears in the claims.
 - **Claim key pair**: the Ed25519 key pair with seed `kdf("sync claim", DH(step private key, M's X25519 key), sync_id || step_key)`.
 - **Static entry**: `BLAKE3("osis v1 static claim" || sync_id || pk)` with `pk` the key actor's raw Ed25519 signing key.
+- **Closing step** (spec/sync-judgement.md §6 Closes): a child step whose `step_key` and `claims_hash` are 32 zero bytes each and whose four public keys are its parent's, signed as any child step (no genuine step has that `step_key`: a fresh X25519 key is never zero); it is carried with no claim set, and nothing is registered after it.
 - `sync.0` stores a step as the canonical bytes of `Step` and its claim set as those of `ClaimSet` (`step_record`, spec/data-model.md §9).
 
 ## 9. Inbox blobs

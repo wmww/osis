@@ -5,7 +5,9 @@
    a content entry of T; <<"e", n>> for n > 0 is an encryption logged again (§4). The window is q's
    life: at its expiry q leaves every store with no tombstone. With Away, b acts only after it.
    With ReadersMeet, a and b are also each other's sources (streams only: no Delete between
-   readers), so a node can be told by a reader while K holds no q yet. *)
+   readers), so a node can be told by a reader while K holds no q yet. With Close, a told reader
+   registers the closing step at K (spec/sync-judgement.md §5 Emptying, §6 Closes): K forgets S
+   and is no source of it any more. *)
 EXTENDS Naturals, FiniteSets, TLC
 
 CONSTANTS
@@ -18,7 +20,10 @@ CONSTANTS
     ReadersMeet,    \* a and b pull each other directly
     ToldAtSource,   \* §5 Emptying: delete at a source only once it holds q (or q expired), not on told alone
     ForgetAll,      \* §5: the sources heard out empty are every source, readers included
-    UntoldForget    \* untold: forget S and T's secrets (FALSE: leave S keeping them)
+    UntoldForget,   \* untold: forget S and T's secrets (FALSE: leave S keeping them)
+    Close,          \* §5 Emptying, §6 Closes: a told reader closes S at K (FALSE: nobody closes, nothing waits for it)
+    CloseGate,      \* §5: close at K only once its stream shows no entry (the requests expired there)
+    CloseFirst      \* §5: forget S only once K closed it
 
 Readers == {"a", "b"}
 Blobs == {<<"q", 0>>} \cup ({"e"} \X (0..MaxEnc))
@@ -40,8 +45,9 @@ VARIABLES
     released, qExpired,
     missed,     \* a node read K's stream inside the window and was not told
     badDel,     \* an honest delete of e at K while K held no q
-    badForget   \* a forget while K's stream showed an entry or a tombstone was known
-vars == <<store, known, knownR, delK, told, forgot, back, left, again, enc, storeK, tombK, released, qExpired, missed, badDel, badForget>>
+    badForget,  \* a forget while K's stream showed an entry or a tombstone was known
+    closedK     \* K took the closing step: it forgot S and shares it with nobody
+vars == <<store, known, knownR, delK, told, forgot, back, left, again, enc, storeK, tombK, released, qExpired, missed, badDel, badForget, closedK>>
 
 Init ==
     /\ store = [n \in Readers |-> {<<"e", 0>>}]
@@ -57,6 +63,7 @@ Init ==
     /\ storeK = {<<"e", 0>>} /\ tombK = {}
     /\ released = FALSE /\ qExpired = FALSE
     /\ missed = FALSE /\ badDel = FALSE /\ badForget = FALSE
+    /\ closedK = FALSE
 
 Held(n) == {B(e) : e \in store[n]}
 KnownB(n) == {B(e) : e \in known[n]}
@@ -70,14 +77,14 @@ Destroyed(n) == IF ToldGate THEN told[n] ELSE told[n] \/ "q" \in Held(n)
 (* ---- honest steps ---- *)
 Sync(n) ==
     LET d == (delK[n] \cup ((known[n] \cup store[n]) \cap tombK)) \ storeK IN
-    /\ Active(n) /\ ~forgot[n]
+    /\ Active(n) /\ ~forgot[n] /\ ~closedK
     /\ known[n] # storeK \/ d # delK[n] \/ (Q \in storeK /\ ~told[n] /\ ~back[n])
     /\ known' = [known EXCEPT ![n] = storeK]
     /\ delK' = [delK EXCEPT ![n] = d]
     /\ told' = [told EXCEPT ![n] = @ \/ (Q \in storeK /\ ~back[n])]
     /\ missed' = (missed \/ (released /\ ~qExpired /\ Q \notin storeK /\ ~told[n] /\ ~back[n]
                             /\ \E m \in Readers : Q \in known[m]))
-    /\ UNCHANGED <<store, knownR, forgot, back, left, again, enc, storeK, tombK, released, qExpired, badDel, badForget>>
+    /\ UNCHANGED <<store, knownR, forgot, back, left, again, enc, storeK, tombK, released, qExpired, badDel, badForget, closedK>>
 
 \* n reads the other reader's stream (ReadersMeet): told once it shows q.
 SyncR(n) ==
@@ -86,7 +93,7 @@ SyncR(n) ==
     /\ knownR[n] # store[o] \/ (Q \in store[o] /\ ~told[n] /\ ~back[n])
     /\ knownR' = [knownR EXCEPT ![n] = store[o]]
     /\ told' = [told EXCEPT ![n] = @ \/ (Q \in store[o] /\ ~back[n])]
-    /\ UNCHANGED <<store, known, delK, forgot, back, left, again, enc, storeK, tombK, released, qExpired, missed, badDel, badForget>>
+    /\ UNCHANGED <<store, known, delK, forgot, back, left, again, enc, storeK, tombK, released, qExpired, missed, badDel, badForget, closedK>>
 
 \* n fetches what the other reader's stream showed and it lacks.
 PullR(n, e) ==
@@ -95,44 +102,44 @@ PullR(n, e) ==
     /\ e \in knownR[n] \cap store[o] /\ B(e) \notin Held(n)
     /\ ~Destroyed(n) \/ B(e) = "q"
     /\ store' = [store EXCEPT ![n] = @ \cup {e}]
-    /\ UNCHANGED <<known, knownR, delK, told, forgot, back, left, again, enc, storeK, tombK, released, qExpired, missed, badDel, badForget>>
+    /\ UNCHANGED <<known, knownR, delK, told, forgot, back, left, again, enc, storeK, tombK, released, qExpired, missed, badDel, badForget, closedK>>
 
 \* K pulls what it lacks of n's store (a tombstoned blob ID is refused, code 6).
 PullK(n, e) ==
-    /\ Active(n) /\ e \in store[n] \ storeK
+    /\ Active(n) /\ ~closedK /\ e \in store[n] \ storeK
     /\ IF e \in tombK
        THEN /\ e \notin delK[n]
             /\ delK' = [delK EXCEPT ![n] = @ \cup {e}]
             /\ UNCHANGED storeK
        ELSE /\ storeK' = storeK \cup {e}
             /\ UNCHANGED delK
-    /\ UNCHANGED <<store, known, knownR, told, forgot, back, left, again, enc, tombK, released, qExpired, missed, badDel, badForget>>
+    /\ UNCHANGED <<store, known, knownR, told, forgot, back, left, again, enc, tombK, released, qExpired, missed, badDel, badForget, closedK>>
 
 \* n fetches what K showed and it lacks; after its forget, an e arriving is T taken back as never received.
 Fetch(n, e) ==
-    /\ Active(n) /\ e \in known[n] \cap storeK /\ B(e) \notin Held(n)
+    /\ Active(n) /\ ~closedK /\ e \in known[n] \cap storeK /\ B(e) \notin Held(n)
     /\ ~Destroyed(n) \/ B(e) = "q"
     /\ IF forgot[n]
        THEN /\ B(e) = "e"
             /\ forgot' = [forgot EXCEPT ![n] = FALSE] /\ back' = [back EXCEPT ![n] = TRUE]
        ELSE UNCHANGED <<forgot, back>>
     /\ store' = [store EXCEPT ![n] = @ \cup {e}]
-    /\ UNCHANGED <<known, knownR, delK, told, left, again, enc, storeK, tombK, released, qExpired, missed, badDel, badForget>>
+    /\ UNCHANGED <<known, knownR, delK, told, left, again, enc, storeK, tombK, released, qExpired, missed, badDel, badForget, closedK>>
 
 \* Emptying: n, judging T destroyed, drops its own entries and deletes at K every entry its stream showed.
 DropOwn(n) ==
     /\ Active(n) /\ Destroyed(n) /\ ~back[n] /\ \E e \in store[n] : B(e) = "e"
     /\ store' = [store EXCEPT ![n] = {e \in @ : B(e) # "e"}]
-    /\ UNCHANGED <<known, knownR, delK, told, forgot, back, left, again, enc, storeK, tombK, released, qExpired, missed, badDel, badForget>>
+    /\ UNCHANGED <<known, knownR, delK, told, forgot, back, left, again, enc, storeK, tombK, released, qExpired, missed, badDel, badForget, closedK>>
 Empty(n, e) ==
-    /\ Active(n) /\ Destroyed(n) /\ ~back[n] /\ ~forgot[n]
+    /\ Active(n) /\ ~closedK /\ Destroyed(n) /\ ~back[n] /\ ~forgot[n]
     /\ e \in known[n] /\ e \in storeK
     /\ KeepReq => B(e) # "q"
     /\ ToldAtSource => Q \in known[n] \/ qExpired
     /\ storeK' = storeK \ {e} /\ tombK' = tombK \cup {e}
     /\ delK' = [delK EXCEPT ![n] = @ \cup {e}]
     /\ badDel' = (badDel \/ (B(e) = "e" /\ Q \notin storeK /\ ~qExpired))
-    /\ UNCHANGED <<store, known, knownR, told, forgot, back, left, again, enc, released, qExpired, missed, badForget>>
+    /\ UNCHANGED <<store, known, knownR, told, forgot, back, left, again, enc, released, qExpired, missed, badForget, closedK>>
 
 \* §4: n, holding T alive, logs e again once past a delete at K.
 LogAgain(n) ==
@@ -143,16 +150,17 @@ LogAgain(n) ==
     /\ store' = [store EXCEPT ![n] = {e \in @ : B(e) # "e"} \cup {<<"e", enc>>}]
     /\ enc' = enc + 1
     /\ again' = [again EXCEPT ![n] = @ + 1]
-    /\ UNCHANGED <<known, knownR, delK, told, forgot, back, left, storeK, tombK, released, qExpired, missed, badDel, badForget>>
+    /\ UNCHANGED <<known, knownR, delK, told, forgot, back, left, storeK, tombK, released, qExpired, missed, badDel, badForget, closedK>>
 
-\* §5: told, n forgets S (and T's secrets) once its source is heard out with no entry and no tombstone known.
+\* §5: told, n forgets S (and T's secrets) once its sources are heard out with no entry and no tombstone
+\* known, K having closed S (CloseFirst).
 Forget(n) ==
     LET o == Oth(n)
         rEmpty == RSrc(n) => knownR[n] = store[o] /\ store[o] = {}
     IN
     /\ Active(n) /\ told[n] /\ ~forgot[n] /\ ~back[n] /\ store[n] \cap ({"e"} \X (0..MaxEnc)) = {}
-    /\ known[n] = storeK
-    /\ ForgetGate => known[n] = {} /\ delK[n] \cap tombK = {}
+    /\ ~closedK => known[n] = storeK /\ (ForgetGate => known[n] = {} /\ delK[n] \cap tombK = {})
+    /\ Close /\ CloseFirst => closedK
     /\ ForgetAll => rEmpty
     /\ forgot' = [forgot EXCEPT ![n] = TRUE]
     /\ store' = [store EXCEPT ![n] = {}]
@@ -160,12 +168,21 @@ Forget(n) ==
     /\ known' = [known EXCEPT ![n] = {}]
     /\ knownR' = [knownR EXCEPT ![n] = {}]
     /\ badForget' = (badForget \/ storeK # {} \/ delK[n] \cap tombK # {} \/ (RSrc(n) /\ store[o] # {}))
-    /\ UNCHANGED <<told, back, left, again, enc, storeK, tombK, released, qExpired, missed, badDel>>
+    /\ UNCHANGED <<told, back, left, again, enc, storeK, tombK, released, qExpired, missed, badDel, closedK>>
+\* §5 Emptying, §6 Closes: told, n registers the closing step at K once K's stream shows no entry;
+\* K drops S whole (entries, tombstones, path) and leaves it.
+CloseK(n) ==
+    /\ Close /\ Active(n) /\ told[n] /\ ~forgot[n] /\ ~back[n] /\ ~closedK
+    /\ known[n] = storeK
+    /\ CloseGate => storeK = {}
+    /\ closedK' = TRUE
+    /\ storeK' = {} /\ tombK' = {}
+    /\ UNCHANGED <<store, known, knownR, delK, told, forgot, back, left, again, enc, released, qExpired, missed, badDel, badForget>>
 \* §5 Untold: past the window, never told, n forgets S and T's secrets, deleting nothing there
 \* (UntoldForget; FALSE: it leaves S keeping them).
 Untold(n) ==
     /\ Active(n) /\ qExpired /\ ~told[n] /\ ~back[n] /\ ~forgot[n]
-    /\ "e" \in KnownB(n) \/ (\E e \in store[n] : e \in delK[n])  \* it meets a delete it cannot explain
+    /\ "e" \in KnownB(n) \/ delK[n] # {}  \* it met a delete it cannot explain (K may have closed S since)
     /\ IF UntoldForget
        THEN /\ forgot' = [forgot EXCEPT ![n] = TRUE]
             /\ store' = [store EXCEPT ![n] = {}]
@@ -175,17 +192,17 @@ Untold(n) ==
             /\ UNCHANGED left
        ELSE /\ left' = [left EXCEPT ![n] = TRUE]
             /\ UNCHANGED <<store, delK, known, knownR, forgot>>
-    /\ UNCHANGED <<told, back, again, enc, storeK, tombK, released, qExpired, missed, badDel, badForget>>
+    /\ UNCHANGED <<told, back, again, enc, storeK, tombK, released, qExpired, missed, badDel, badForget, closedK>>
 
 Honest == \E n \in Readers :
-    \/ Sync(n) \/ SyncR(n) \/ DropOwn(n) \/ LogAgain(n) \/ Forget(n) \/ Untold(n)
+    \/ Sync(n) \/ SyncR(n) \/ DropOwn(n) \/ LogAgain(n) \/ Forget(n) \/ Untold(n) \/ CloseK(n)
     \/ \E e \in Blobs : PullK(n, e) \/ Fetch(n, e) \/ PullR(n, e) \/ Empty(n, e)
 
 (* ---- the world ---- *)
 Release ==
     /\ ~released /\ released' = TRUE
     /\ store' = [store EXCEPT !["a"] = @ \cup {Q}]
-    /\ UNCHANGED <<known, knownR, delK, told, forgot, back, left, again, enc, storeK, tombK, qExpired, missed, badDel, badForget>>
+    /\ UNCHANGED <<known, knownR, delK, told, forgot, back, left, again, enc, storeK, tombK, qExpired, missed, badDel, badForget, closedK>>
 ExpireQ ==
     /\ released /\ ~qExpired /\ qExpired' = TRUE
     /\ \A n \in Readers : told[n] \/ (n = "b" /\ Away)    \* the window outlasts a connected node's reading
@@ -193,15 +210,15 @@ ExpireQ ==
     /\ known' = [n \in Readers |-> known[n] \ {Q}]
     /\ knownR' = [n \in Readers |-> knownR[n] \ {Q}]
     /\ storeK' = storeK \ {Q} /\ tombK' = tombK \ {Q}
-    /\ UNCHANGED <<delK, told, forgot, back, left, again, enc, released, missed, badDel, badForget>>
+    /\ UNCHANGED <<delK, told, forgot, back, left, again, enc, released, missed, badDel, badForget, closedK>>
 ExpireTomb(e) ==
     /\ e \in tombK /\ \A n \in Readers : e \notin known[n] \/ ~Active(n)
     /\ tombK' = tombK \ {e}
-    /\ UNCHANGED <<store, known, knownR, delK, told, forgot, back, left, again, enc, storeK, released, qExpired, missed, badDel, badForget>>
+    /\ UNCHANGED <<store, known, knownR, delK, told, forgot, back, left, again, enc, storeK, released, qExpired, missed, badDel, badForget, closedK>>
 
 Next == Honest \/ Release \/ ExpireQ \/ (\E e \in Blobs : ExpireTomb(e))
 Fair == \A n \in Readers :
-    /\ SF_vars(Sync(n)) /\ SF_vars(SyncR(n)) /\ WF_vars(DropOwn(n)) /\ WF_vars(LogAgain(n)) /\ WF_vars(Forget(n)) /\ WF_vars(Untold(n))
+    /\ SF_vars(Sync(n)) /\ SF_vars(SyncR(n)) /\ WF_vars(DropOwn(n)) /\ WF_vars(LogAgain(n)) /\ WF_vars(Forget(n)) /\ WF_vars(Untold(n)) /\ WF_vars(CloseK(n))
     /\ \A e \in Blobs : WF_vars(PullK(n, e)) /\ WF_vars(Fetch(n, e)) /\ WF_vars(PullR(n, e)) /\ WF_vars(Empty(n, e))
 Spec == Init /\ [][Next]_vars /\ Fair /\ WF_vars(Release)
 
@@ -217,8 +234,13 @@ ForgetEmpty == ~badForget
 \* no loop: a node logs e again at most once (no change of ground in this model).
 Bounded == \A n \in Readers : again[n] <= 1
 NoCap == enc <= MaxEnc
-\* every node ends without T: one present in the window by emptying, one away by Untold.
+\* every node ends without T: one present in the window by emptying, one away by Untold. Limit
+\* (spec/sync-judgement.md §5): b away for the window, back once K closed S with nothing of it
+\* showing a delete, meets nothing that tells it and keeps T (no store keeps it on its behalf).
 QuietDone == Quiet /\ released =>
     \A n \in Readers : (n = "b" /\ Away /\ ~qExpired) \/ ("e" \notin Held(n) /\ ~back[n])
+                       \/ (n = "b" /\ Away /\ closedK /\ ~told[n] /\ delK[n] = {} /\ "e" \notin KnownB(n))
+\* §6 Closes: K ends without S once every reader is done with it.
+KLeft == Close => (Quiet /\ released /\ qExpired => closedK)
 Settles == <>[]Quiet
 ====

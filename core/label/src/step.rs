@@ -171,6 +171,19 @@ impl Step {
         parent.keys.delete.verify(Domain::SyncStep, &self.digest(), &self.sig).map_err(|_| Error::Verify("step signature"))
     }
 
+    /// The closing step under `self` (spec/wire.md §8), signed by `delete`, `self`'s delete key:
+    /// its keys are `self`'s, its step key and claims hash zero, and it carries no claim set.
+    pub fn closing(&self, delete: &SigningSecret) -> Step {
+        let mut step = Step { label: self.label, prev: Some(self.id()), keys: self.keys, step_key: [0; 32], claims_hash: [0; 32], sig: Signature([0; 64]) };
+        step.sig = delete.sign(Domain::SyncStep, &step.digest());
+        step
+    }
+
+    /// A closing step (spec/wire.md §8): no genuine step has a zero step key.
+    pub fn is_closing(&self) -> bool {
+        self.prev.is_some() && self.step_key == [0; 32] && self.claims_hash == [0; 32]
+    }
+
     /// The claim key a reader derives from its X25519 private key (spec/sync-ids.md §3); try each
     /// keyset epoch held.
     pub fn claim_key(&self, own: &X25519Secret) -> Result<SigningSecret, Error> {
