@@ -94,6 +94,8 @@ pub(crate) enum Filter {
     Commits(crate::commits::Address),
     Diagnostics,
     Disputes,
+    /// How sync stands (`on_status_change`): `Delivery::Due` after each sync step.
+    Status,
     /// A text session's `on_merge`: called by the session, no message reaches it.
     Text,
     /// A tracked read with no value of its own (`track`): `Delivery::Due` when `Watch` may answer
@@ -128,6 +130,7 @@ enum Slot {
     CommitsGroup(Tid),
     Diagnostics,
     Disputes,
+    Status,
     CommitsOf(Tid),
     Groups(Tid),
     Roles,
@@ -149,6 +152,7 @@ impl Filter {
             },
             Filter::Diagnostics => vec![Slot::Diagnostics],
             Filter::Disputes => vec![Slot::Disputes],
+            Filter::Status => vec![Slot::Status],
             Filter::Text => Vec::new(),
             Filter::Due(Watch::CommitsOf(t)) => vec![Slot::CommitsOf(*t)],
             Filter::Due(Watch::Groups(t)) => vec![Slot::Groups(*t)],
@@ -231,6 +235,8 @@ pub(crate) enum Delivery {
 
 pub(crate) enum Msg {
     Event(Event),
+    /// Sync stepped: status may read otherwise.
+    Status,
     Initial(u64),
     Barrier(Sender<()>),
 }
@@ -441,6 +447,11 @@ impl Dispatch {
         Subscription { shared: Arc::downgrade(&self.shared), id: Some(id) }
     }
 
+    /// Whether a status listener is registered (sync steps tell it, `Msg::Status`).
+    pub fn status_listened(&self) -> bool {
+        lock(&self.shared.registry).index.contains_key(&Slot::Status)
+    }
+
     /// Subscription `id` hears messages from sequence `since` on (a tracked read, read again).
     pub fn since(&self, id: u64, since: u64) {
         if let Some(s) = lock(&self.shared.registry).subs.get(&id) {
@@ -553,6 +564,7 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
                     // events, not reads (status follows every change on its own); a session's
                     // merge hears its aspect's; another node's store did not move
                     Filter::Diagnostics | Filter::Disputes | Filter::Text => return None,
+                    Filter::Status => Pre::Ready(Delivery::Due),
                 };
                 Some((s, pre))
             })
@@ -647,6 +659,7 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
         Msg::Event(Event::Groups(things)) => due(&things.iter().map(|t| Slot::Groups(*t)).collect::<Vec<_>>(), Delivery::Due),
         Msg::Event(Event::References(targets)) => due(&targets.iter().map(|t| Slot::Backlinks(*t)).collect::<Vec<_>>(), Delivery::Due),
         Msg::Event(Event::Diagnostic(d)) => due(&[Slot::Diagnostics], Delivery::Diagnostic(d.clone())),
+        Msg::Status => due(&[Slot::Status], Delivery::Due),
         Msg::Event(Event::DisputeDetected { commit, op, holder, target, author, trust }) => {
             let side = osis_engine::sides::Side { trust: *trust, chosen: false };
             let d = crate::Dispute::of(&osis_engine::sides::DisputeInfo { commit: *commit, op: *op, holder: *holder, target: *target, author: *author, side: Some(side) });
@@ -751,7 +764,7 @@ fn call(db: &Osis, s: &Sub, d: Delivery) {
 /// in flight, so no call starts or runs after it returns. Dropping it at once is a lint:
 /// ```compile_fail
 /// #![deny(unused_must_use)]
-/// let db = osis::Osis::create(osis::Store::Memory(osis::MemStore::new()), &[], osis::Config::default()).unwrap();
+/// let db = osis::Osis::create(osis::Store::Memory(osis::MemStore::new()), osis::Config::default()).unwrap();
 /// db.on_diagnostic(|_, _| {}).unwrap();
 /// ```
 // The exception: a thread holding the engine lock (inside `Internals::engine`) cannot wait, so a

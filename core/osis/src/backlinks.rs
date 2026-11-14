@@ -114,7 +114,7 @@ impl Osis {
                         f(db, Ok(p));
                     }
                 }
-                Delivery::Due => match db.locked(|l| Reader { e: &mut l.engine, limit, actor }.backlinks(tid, &q)) {
+                Delivery::Due => match db.locked(|l| Reader { e: l.engine(), limit, actor }.backlinks(tid, &q)) {
                     Ok(p) if last.as_ref() == Some(&p) => {}
                     Ok(p) => {
                         last = Some(p.clone());

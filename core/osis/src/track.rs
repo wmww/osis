@@ -149,7 +149,7 @@ impl ReadOnly {
         let (ak, limit, actor) = (ak.clone(), self.inner.limit, self.acting);
         self.locked(|l| {
             drop(osis_base::costs::span("read: engine"));
-            let v = read.0(&mut Reader { e: &mut l.engine, limit, actor });
+            let v = read.0(&mut Reader { e: l.engine(), limit, actor });
             self.track_in(l, &set, key, digest(&v), |gate| {
                 let w = Arc::downgrade(&set);
                 (Filter::Aspect(tid, ak, read), value_callback(gate, w))
@@ -165,7 +165,7 @@ impl ReadOnly {
         let (limit, actor) = (self.inner.limit, self.acting);
         self.locked(|l| {
             drop(osis_base::costs::span("read: engine"));
-            let a = read(&mut Reader { e: &mut l.engine, limit, actor });
+            let a = read(&mut Reader { e: l.engine(), limit, actor });
             let last = Some(answer_digest(&a));
             let w = Arc::downgrade(&set);
             self.track_in(l, &set, key(), last, move |gate| {
@@ -223,7 +223,7 @@ fn value_callback(gate: Arc<Gate>, set: Weak<SetInner>) -> Callback {
 fn answer_callback(gate: Arc<Gate>, set: Weak<SetInner>, read: impl Fn(&mut Reader<'_>) -> Digest + Send + Sync + 'static, limit: usize, actor: Option<Tid>) -> Callback {
     Box::new(move |db, d| match d {
         Delivery::Due | Delivery::Grants => {
-            let now = db.locked(|l| read(&mut Reader { e: &mut l.engine, limit, actor }));
+            let now = db.locked(|l| read(&mut Reader { e: l.engine(), limit, actor }));
             if *lock(&gate.last) != Some(now) {
                 gate.fire(&set, db);
             }

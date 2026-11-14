@@ -79,10 +79,13 @@ pub enum To {
     Read,
     /// Register, Delete, Stranded, Suspect.
     Inbox,
+    /// The client port's requests: Auth, Call, Sub, Unsub (spec/wire.md §11.2 kinds 24-29),
+    /// answered by the node's owner (`Node::port`).
+    Port,
 }
 
 impl Incoming {
-    /// Which module takes this message; `None` for one no module takes (the client port's).
+    /// Which module takes this message; `None` for one no module takes.
     pub fn to(&self) -> Option<To> {
         match self {
             Incoming::Proved => Some(To::Opens),
@@ -91,6 +94,7 @@ impl Incoming {
                 34 | 36 | 37 | 38 | 40 | 45 | 46 => Some(To::Opens),
                 19 | 41 | 43 | 44 => Some(To::Streams),
                 7 | 14 | 30 | 31 => Some(To::Inbox),
+                24 | 25 | 27 | 28 if matches!(self, Incoming::Request(..)) => Some(To::Port),
                 _ => None,
             },
         }

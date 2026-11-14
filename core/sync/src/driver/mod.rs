@@ -91,6 +91,20 @@ struct Driver {
     failing: Option<Stretch>,
     /// Restarts in place so far (tests).
     restarts: u64,
+    /// What the client port's owner has to answer or forget (`Node::port`).
+    port: Vec<PortEvent>,
+    /// Outputs made outside a step (`Node::redeem`), carried out with the next step's.
+    pending: Vec<Out>,
+}
+
+/// The client port as the node's owner sees it (spec/wire.md §11.2 kinds 24-29): sync carries
+/// these requests and their answers on its sessions and judges none of them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PortEvent {
+    /// A request of the peer's (Auth, Call, Sub, Unsub): answered with `Node::port_answer`.
+    Request(ConnId, crate::session::RequestId, osis_proto::Msg),
+    /// A connection ended: its port session goes.
+    Closed(ConnId),
 }
 
 /// The wait after a step fails before the node's next wake, doubling while steps go on failing
@@ -151,7 +165,7 @@ impl Node {
     /// One step: `input` taken, every module settled. The outputs must all reach `apply`.
     #[must_use = "every output must reach `apply`"]
     pub fn handle(&mut self, input: Input) -> Vec<Out> {
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut self.driver.pending);
         self.now = self.now.max(self.engine.now());
         self.driver.sessions.set_now(self.now);
         self.rounds = 0;
@@ -224,6 +238,81 @@ impl Node {
     /// How S stands, as of the last step: O(its sources).
     pub fn status_of(&self, s: &SyncId) -> Option<SyncStatus> {
         self.status.of(s, &self.net())
+    }
+
+    /// Connections up now, whichever side dialed.
+    pub fn connections(&self) -> usize {
+        self.driver.sessions.conns().count()
+    }
+
+    /// The client port's requests and ended connections since the last call, in order.
+    pub fn port(&mut self) -> Vec<PortEvent> {
+        std::mem::take(&mut self.driver.port)
+    }
+
+    /// Answers the client port's request `id` on `conn`; the bytes to send. Nothing for a
+    /// connection gone.
+    #[must_use = "every output must reach `apply`"]
+    pub fn port_answer(&mut self, conn: ConnId, id: crate::session::RequestId, m: osis_proto::Msg) -> Vec<Out> {
+        let Some(s) = self.driver.sessions.get_mut(conn) else { return Vec::new() };
+        s.answer(id, m);
+        let bytes = s.take_bytes();
+        if bytes.is_empty() { Vec::new() } else { vec![Out::Send(conn, bytes)] }
+    }
+
+    /// Pushes a Notify on `conn` under the push rule (spec/sync-streams.md §2); `None`: no room
+    /// (or no such connection), push again after the transport took more.
+    #[must_use = "every output must reach `apply`"]
+    pub fn port_push(&mut self, conn: ConnId, m: osis_proto::Msg) -> Option<Vec<Out>> {
+        let s = self.driver.sessions.get_mut(conn)?;
+        if !s.push(m) {
+            return None;
+        }
+        let bytes = s.take_bytes();
+        Some(if bytes.is_empty() { Vec::new() } else { vec![Out::Send(conn, bytes)] })
+    }
+
+    /// Redeems a share link (spec/sync-inbox.md §6): first contact, kept until the join is held
+    /// elsewhere. `Done` once the join is written.
+    pub fn redeem(&mut self, link: &osis_label::ShareLink) -> Waiting {
+        let mut out = Vec::new();
+        let w = self.inbox.redeem(&mut cx!(self, &mut out), link);
+        self.driver.pending.extend(out);
+        w
+    }
+
+    /// Writes a bundle of the sync IDs `ids` held here (spec/sync-streams.md §6, spec/wire.md
+    /// §12): each one's path, then its entries with their blobs, durable ones only.
+    pub fn export_bundle(&self, ids: &[SyncId], out: &mut dyn std::io::Write) -> Result<()> {
+        use osis_label::Record;
+        let proto = |e: osis_label::Error| Error::Proto(osis_proto::Error::Label(e));
+        let mut w = osis_label::BundleWriter::new(out).map_err(proto)?;
+        let mut sent = std::collections::BTreeSet::new();
+        for s in ids {
+            let Some(path) = self.store.path(s)? else { continue };
+            w.record(&Record::Path { label: *s, steps: path.steps.clone() }).map_err(proto)?;
+            for e in self.store.entries(s)? {
+                if e.class != osis_label::Class::Durable {
+                    continue;
+                }
+                if sent.insert(e.blob) {
+                    let Some(b) = self.store.bytes(&e.blob)? else { continue };
+                    w.record(&Record::Blob(b)).map_err(proto)?;
+                }
+                w.record(&Record::Entry { label: *s, blob: e.blob, wrap: e.wrap, stamp: e.stamp }).map_err(proto)?;
+            }
+        }
+        w.finish().map_err(proto)?;
+        Ok(())
+    }
+
+    /// Takes a bundle as a source with no cursor (spec/sync-streams.md §6); then `handle`
+    /// (`Input::Wrote`) settles what it brought.
+    pub fn import_bundle(&mut self, bundle: &mut dyn std::io::Read) -> Result<()> {
+        let mut out = Vec::new();
+        let r = self.streams.import(&mut cx!(self, &mut out), bundle);
+        self.driver.pending.extend(out);
+        r
     }
 
     /// No request, fill or Hello outstanding on any connection (spec/sync-status.md §3).
@@ -360,6 +449,11 @@ impl Node {
                         Some(To::Streams) => self.streams.on_message(&mut cx, sessions, &self.opens, conn, m, &mut self.driver.reported),
                         Some(To::Read) => self.read.on_message(&mut cx, sessions, conn, m),
                         Some(To::Inbox) => self.inbox.on_message(&mut cx, sessions, &self.opens, &self.streams, conn, m),
+                        Some(To::Port) => {
+                            if let Incoming::Request(id, m) = m {
+                                self.driver.port.push(PortEvent::Request(conn, id, m));
+                            }
+                        }
                         None => {
                             close = true;
                             break;
@@ -429,6 +523,7 @@ impl Node {
         self.opens.on_closed(&mut cx!(self, out), conn, &mut moved);
         self.moved(&mut moved, out);
         self.inbox.on_closed(conn);
+        self.driver.port.push(PortEvent::Closed(conn));
         // a store failure here reopens the node, whose start drops the same entries
         let _ = self.store.gone(crate::store::Source::Conn(conn));
     }

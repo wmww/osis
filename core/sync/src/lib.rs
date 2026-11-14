@@ -17,7 +17,7 @@ pub mod streams;
 pub mod types;
 pub mod unread;
 
-pub use driver::{Links, Node, apply};
+pub use driver::{Links, Node, PortEvent, apply};
 #[cfg(feature = "driver")]
 pub use driver::links::TransportLinks;
 pub use store::Store;

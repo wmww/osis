@@ -14,7 +14,7 @@
 //! all your nodes.
 //! ```
 //! use osis::{Config, Member, MemStore, Osis, Store, Value};
-//! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let mut w = db.write();
 //! let note = w.create()?;
 //! w.group(db.home()).add(Member::Item(note))?;
@@ -30,7 +30,7 @@
 //! time, its values `Value`s. An absent aspect reads as `None`.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value};
-//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let title = db.aspect_key("note:title.0")?;
 //! let mut w = db.write();
 //! let t = w.create()?;
@@ -44,7 +44,7 @@
 //! A key can say what its values look like, for code that handles aspects it was not generated for.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, ValueType};
-//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! db.register_schema("t.osis", "revision 1; aspect t:done.0: bool;")?;
 //! assert_eq!(db.aspect_key("t:done.0")?.value_type().map(|t| t.get()), Some(ValueType::Bool));
 //! assert_eq!(db.aspect_key("t:other.0")?.value_type(), None);
@@ -56,7 +56,7 @@
 //! loaded.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value, p};
-//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let tags = db.aspect_key("note:tags.0")?;
 //! let mut w = db.write();
 //! let t = w.create()?;
@@ -76,7 +76,7 @@
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value};
 //! # use osis::ValueMap;
-//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let form = db.aspect_key("app:form.0")?;
 //! let shown = Value::Map(ValueMap::from([(Value::Int(0), Value::Str("a".into())), (Value::Int(1), Value::Int(1))]));
 //! let mut w = db.write();
@@ -98,7 +98,7 @@
 //! **ephemeral**: shared with other nodes, held in memory, never stored.
 //! ```
 //! # use osis::{Config, Error, Expiry, MemStore, Osis, Store, Value};
-//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let (title, typing) = (db.aspect_key("app:title.0")?, db.aspect_key("app:typing+.0")?);
 //! let mut w = db.write();
 //! let t = w.create()?;
@@ -123,7 +123,7 @@
 //! (`Dispatcher::Pump`), and may call anything. Dropping the `Subscription` unsubscribes.
 //! ```
 //! # use osis::{Config, MemStore, Origin, Osis, Store, Value};
-//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let k = db.aspect_key("app:count.0")?;
 //! let mut w = db.write();
 //! let t = w.create()?;
@@ -145,7 +145,7 @@
 //! the aspect does not call it.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value, p};
-//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let k = db.aspect_key("app:scores.0")?;
 //! let mut w = db.write();
 //! let t = w.create()?;
@@ -164,7 +164,7 @@
 //! From async code, forward `on_change` to a channel of whichever runtime you use and await that.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value};
-//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let k = db.aspect_key("app:count.0")?;
 //! let mut w = db.write();
 //! let t = w.create()?;
@@ -185,7 +185,7 @@
 //! at the read's own address, with no gap between reading and listening.
 //! ```
 //! # use osis::{Config, MemStore, Osis, ReadSet, Store, Value};
-//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let k = db.aspect_key("app:count.0")?;
 //! let mut w = db.write();
 //! let t = w.create()?;
@@ -208,7 +208,7 @@
 //! aspect; a group listing `t` is one. `on_backlinks_change` hears a page now and on each change.
 //! ```
 //! # use osis::{BacklinkQuery, Config, MemStore, Osis, Store, Value};
-//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let link = db.aspect_key("note:link.0")?;
 //! let mut w = db.write();
 //! let (a, b) = (w.create()?, w.create()?);
@@ -226,7 +226,7 @@
 //! list entry with the reference in one call; `release` lets a thing go at once.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value, p};
-//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let files = db.aspect_key("chat:files.0")?;
 //! # let mut w = db.write(); let chat = w.create()?; w.commit()?;
 //! let mut w = db.write();
@@ -251,7 +251,7 @@
 //! # use osis::{Config, MemStore, Osis, Store, Value, Scope, CommitQuery, CommitKind, History, Time};
 //! # use osis::core::{RETENTION, RetentionEntry, RetentionSetting};
 //! # use std::time::Duration;
-//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! db.register_schema("app.osis", "revision 1; aspect app:x.0: int;")?;
 //! let k = db.aspect_key("app:x.0")?;
 //! let mut w = db.write();
@@ -275,12 +275,12 @@
 //! ```
 //!
 //! # Sync
-//! Everything works with nobody online; sync catches up whenever two nodes meet. Sync is not built
-//! yet: every call that needs another node, or a connection to one, fails `Error::NotBuilt`.
+//! Everything works with nobody online; sync catches up whenever two nodes meet. A node syncs what
+//! its account holds with every node it reaches that holds it too; `status` says how that stands.
 //! ```
-//! # use osis::{Config, Error, MemStore, Osis, Store};
-//! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
-//! assert_eq!(db.status(), Err(Error::NotBuilt));
+//! # use osis::{Config, MemStore, Osis, Store};
+//! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
+//! assert_eq!(db.status()?.connected, 0);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -307,7 +307,7 @@
 //! member and lets the group's holders read it.
 //! ```
 //! # use osis::{Config, GrantOpts, MemStore, Osis, Role, Store};
-//! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let mut w = db.write();
 //! let g = w.create()?;
 //! w.at(g, osis::core::NAME).set(&"Trip".to_string())?;
@@ -341,7 +341,7 @@
 //! reply to it (a QR code, the clipboard, a local socket).
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store};
-//! let phone = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! let phone = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let offer = phone.pair_offer()?;
 //! let joining = Osis::pair(Store::Memory(MemStore::new()), &[], &offer, Config::default())?;
 //! let (node, reply) = phone.pair_accept(joining.request())?;
@@ -380,7 +380,7 @@
 //! absent before and after).
 //! ```
 //! # use osis::{Body, CommitEvent, Config, MemStore, Osis, Store, Value};
-//! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let mut w = db.write();
 //! let t = w.create()?;
 //! w.commit()?;
@@ -404,7 +404,7 @@
 //! `Purge::Commit` of the fire deletes every version of it.
 //! ```
 //! # use osis::{Body, CommitQuery, Config, MemStore, Osis, Store, Value};
-//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! // the thing keeps its fires for good
 //! let keep = osis::core::RetentionEntry { history: Some(osis::History::FOREVER), ..Default::default() };
 //! let mut w = db.write();
@@ -433,7 +433,7 @@
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, p};
 //! # use std::io::Read;
-//! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let k = db.aspect_key("app:body.0")?;
 //! let mut w = db.write();
 //! let t = w.create()?;
@@ -457,8 +457,8 @@
 //! fails here was never sent. What another node does wrong is a `Diagnostic`, never an error.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Error, Store};
-//! let a = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
-//! let b = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! let a = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
+//! let b = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let mut w = a.write();
 //! w.at(b.home(), a.aspect_key("app:x.0")?).set(&osis::Value::Int(1))?;
 //! assert!(matches!(w.commit(), Err(Error::UnknownThing { .. })));
@@ -479,11 +479,13 @@ mod keep;
 mod keys;
 mod large;
 mod net;
+mod port;
 mod account;
 mod disputes;
 mod read;
 mod retention;
 mod share;
+mod syncing;
 mod sources;
 mod testing;
 mod text;
@@ -507,7 +509,8 @@ pub use keys::{DynamicAspectKey, core};
 pub use large::ValueStream;
 pub use read::{AspectRef, Grant, Grants, GroupsOf, PathRef, Stamp, ThingStamp};
 pub use retention::{History, Retention};
-pub use share::{AccountNode, Address, ContactCard, GrantOpts, GroupSync, Holder, HolderKind, InviteId, LinkId, LinkInfo, LinkOpts, Member, SetRoleOpts, ShareLink, Status, SyncScope, SyncState, Url};
+pub use share::{AccountNode, Address, ContactCard, GrantOpts, Holder, HolderKind, Invitation, LinkId, LinkInfo, LinkOpts, Member, SetRoleOpts, ShareLink, Url};
+pub use syncing::{GroupSync, Status, SyncScope, SyncState};
 pub use sources::{GroupSource, NodeLogin, NodeConnection};
 pub use text::{Splice, TextSession};
 pub use commits::{Body, Commit, CommitEvent, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};

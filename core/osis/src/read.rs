@@ -486,7 +486,7 @@ impl ReadOnly {
     pub(crate) fn read_with<R>(&self, read: impl FnOnce(&mut Reader<'_>) -> R, also: impl FnOnce()) -> R {
         let (limit, actor) = (self.inner.limit, self.acting);
         self.locked(|l| {
-            let v = read(&mut Reader { e: &mut l.engine, limit, actor });
+            let v = read(&mut Reader { e: l.engine(), limit, actor });
             also();
             v
         })
@@ -512,7 +512,7 @@ impl Osis {
     pub(crate) fn subscribe(&self, filter: Filter, initial: bool, make: impl FnOnce(&mut Reader<'_>) -> Callback) -> Subscription {
         let (limit, actor) = (self.inner.limit, self.acting);
         self.locked(|l| {
-            let cb = make(&mut Reader { e: &mut l.engine, limit, actor });
+            let cb = make(&mut Reader { e: l.engine(), limit, actor });
             self.subscribe_in(l, filter, initial, cb)
         })
     }
@@ -752,9 +752,9 @@ impl crate::handle::ReadOnly {
             Filter::Commits(a) => {
                 // a store failure here only loses telling a keep bound passing: the
                 // subscription stands
-                let _ = l.engine.listen_commits(d.commit_listened(), &a.things());
+                let _ = l.engine().listen_commits(d.commit_listened(), &a.things());
             }
-            Filter::Due(Watch::CommitsOf(_)) => l.engine.watch_commits(),
+            Filter::Due(Watch::CommitsOf(_)) => l.engine().watch_commits(),
             _ => {}
         }
         let sub = d.register(l.seq + 1, filter, cb);

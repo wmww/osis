@@ -36,6 +36,8 @@ enum Event {
 /// One live link: its sender and its tasks.
 struct Live {
     tx: LinkTx,
+    /// Over the unix transport (spec/sync-transport.md §6): a main session's.
+    unix: bool,
     tasks: [JoinHandle<()>; 2],
 }
 
@@ -98,6 +100,20 @@ impl<T: Transport> TransportLinks<T> {
             out.push(addr);
         }
         Ok(out)
+    }
+
+    /// Whether `conn` runs over the unix transport, whose listener takes only this process's own
+    /// uid (spec/sync-transport.md §6): a session on it is a main session.
+    pub fn unix(&self, conn: ConnId) -> bool {
+        self.live.get(&conn).is_some_and(|l| l.unix)
+    }
+
+    /// Ends every listener `listen` started and the discovery `discover` started (their
+    /// connections go on).
+    pub fn stop_background(&mut self) {
+        for t in self.background.drain(..) {
+            t.abort();
+        }
     }
 
     /// Starts the transport's discovery (spec/sync-transport.md §4): what it finds comes as
@@ -179,7 +195,8 @@ impl<T: Transport> TransportLinks<T> {
 
     /// A link up: its bytes and what the transport took of ours are read into events.
     fn up(&mut self, conn: ConnId, l: Link, dialed: bool, listener: [u8; 32]) -> Input {
-        let Link { peer_key, rank, tx, mut rx, .. } = l;
+        let Link { peer_key, rank, tx, mut rx, peer, .. } = l;
+        let unix = matches!(peer, osis_transport::Peer::Unix { .. });
         let ev = self.tx.clone();
         let reader = tokio::spawn(async move {
             while let Some(b) = rx.recv().await {
@@ -199,7 +216,7 @@ impl<T: Transport> TransportLinks<T> {
                 }
             }
         });
-        self.live.insert(conn, Live { tx, tasks: [reader, taken] });
+        self.live.insert(conn, Live { tx, unix, tasks: [reader, taken] });
         Input::Up { conn, peer: NodeKey(peer_key), rank, dialed, listener: NodeKey(listener) }
     }
 }

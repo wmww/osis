@@ -27,20 +27,22 @@ impl Osis {
         if i.dispatch.pumps() {
             return refuse("Dispatcher::Pump");
         }
-        if i.timers {
-            return refuse("a runtime");
+        if i.timers || i.net.online() {
+            return refuse("a runtime or a network");
         }
         i.dispatch.settle(Arc::downgrade(i));
         let mut l = lock(&i.eng);
-        let (engine, events) = osis_base::copying::copying(|| -> Result<_> {
-            let mut engine = l.engine.test_copy(clock.clone())?;
+        let (mut node, events) = osis_base::copying::copying(|| -> Result<_> {
+            let mut node = l.node.test_copy(clock.clone()).map_err(crate::handle::sync_err)?;
             // the events the handle had not drained, readable on both
             let pending: Vec<osis_engine::Event> = l.events.try_iter().collect();
-            l.events = l.engine.test_subscribe_with(pending.clone(), false);
-            let events = engine.test_subscribe_with(pending, false);
-            Ok((engine, events))
+            l.events = l.engine().test_subscribe_with(pending.clone(), false);
+            let events = node.engine().test_subscribe_with(pending, false);
+            Ok((node, events))
         })?;
-        let locked = Locked { engine, events, seq: l.seq, offers: l.offers.clone() };
+        let _ = &mut node;
+        let secret = osis_transport::StaticSecret::from_bytes(*l.secret.as_bytes());
+        let locked = Locked { node, events, seq: l.seq, offers: l.offers.clone(), out: Vec::new(), wake: l.wake, stepped: false, secret, port: Default::default() };
         drop(l);
         let inner = Arc::new(Inner {
             eng: Mutex::new(locked),
@@ -55,6 +57,12 @@ impl Osis {
             schemas: Mutex::new(lock(&i.schemas).clone()),
             undo: Mutex::new(()),
             timers: false,
+            net: crate::net::Net::Off,
+            relays: i.relays.clone(),
+            store_dir: None,
+            waiters: Mutex::new(Vec::new()),
+            port_in: Mutex::new(Default::default()),
+            port_busy: Default::default(),
             life: LifeGuard(Arc::default()),
         });
         inner.dispatch.start(Arc::downgrade(&inner))?;

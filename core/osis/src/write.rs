@@ -95,7 +95,7 @@ enum WriteOp {
 /// Dropped uncommitted, its writes are lost, and forgetting to commit is a lint:
 /// ```compile_fail
 /// #![deny(unused_must_use)]
-/// let db = osis::Osis::create(osis::Store::Memory(osis::MemStore::new()), &[], osis::Config::default()).unwrap();
+/// let db = osis::Osis::create(osis::Store::Memory(osis::MemStore::new()), osis::Config::default()).unwrap();
 /// db.write();
 /// ```
 #[must_use = "a Write does nothing until commit()"]
@@ -327,7 +327,7 @@ impl<'d> Write<'d> {
             // the source invariant's second half: under the lock this commit takes, every thing it
             // writes is still this engine's. A write decided Local before a move fails here, never
             // lands in a group that no longer syncs (crate::sources)
-            let e = &mut l.engine;
+            let e = l.engine();
             if let Some(t) = self.alive
                 && !crate::read::knows_in(e, t)?
             {
@@ -671,7 +671,7 @@ impl<'w, 'd, K: ValueKey> AspectWrite<'w, 'd, K> {
     /// # use osis::{Config, MemStore, Osis, Store, p};
     /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:files.0: set<tid>;\n");
     /// # const FILES: osis::Aspect<std::collections::BTreeSet<osis::Tid>> = osis::Aspect::new("t:files.0", &S);
-    /// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+    /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
     /// # let mut w = db.write();
     /// # let chat = w.create().unwrap();
     /// # w.commit().unwrap();

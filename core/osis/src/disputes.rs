@@ -121,9 +121,9 @@ impl Osis {
     /// `Unsupported` on a thin client.
     pub fn disputes(&self) -> Result<(Vec<Dispute>, usize)> {
         self.locked(|l| {
-            let (ds, left) = l.engine.disputes(LIST_MAX);
+            let (ds, left) = l.engine().disputes(LIST_MAX);
             let mut out: Vec<Dispute> = ds.iter().map(Dispute::of).collect();
-            out.extend(l.engine.account_disputes().iter().map(|a| Dispute::of_account(a.account, &a.lines, a.side, a.chosen)));
+            out.extend(l.engine().account_disputes().iter().map(|a| Dispute::of_account(a.account, &a.lines, a.side, a.chosen)));
             Ok((out, left))
         })
     }
@@ -148,8 +148,8 @@ impl Osis {
     pub fn choose_side(&self, id: DisputeId, side: Side) -> Result<()> {
         let misfit = || Error::Invalid(format!("{side:?} is no side of dispute {id}"));
         self.locked(|l| match (id.0, side) {
-            (Key::Removal { commit, op, holder }, Side::Author | Side::Holder) => Ok(l.engine.choose(commit, op, holder, side == Side::Author)?),
-            (Key::Account(a), Side::Version(c)) => Ok(l.engine.choose_line(a, c.0)?),
+            (Key::Removal { commit, op, holder }, Side::Author | Side::Holder) => Ok(l.engine().choose(commit, op, holder, side == Side::Author)?),
+            (Key::Account(a), Side::Version(c)) => Ok(l.engine().choose_line(a, c.0)?),
             _ => Err(misfit()),
         })
     }

@@ -1,6 +1,6 @@
 //! Using a node from another process (thin clients) and reading a group at another node (group
-//! sources), over the client port (spec/wire.md §11.2): sync is not built yet, so these fail
-//! `NotBuilt`.
+//! sources), over the client port (spec/wire.md §11.2). The node side of the port is built
+//! (`port`); the client side is not: these fail `NotBuilt`.
 
 use crate::error::{Error, Result};
 use crate::handle::{AppConfig, Osis, ReadOnly};
@@ -81,4 +81,46 @@ impl ReadOnly {
     pub fn has_store(&self) -> bool {
         true
     }
+}
+
+/// The path of the client socket of the store at `store` (`Osis::listen_socket`,
+/// `Osis::connect_socket`): under `$XDG_RUNTIME_DIR/osis/`, else `/tmp/osis-<uid>/` (made 0700 and
+/// checked), named by a hash of the store's path.
+pub(crate) fn socket_path(store: &Path) -> Result<std::path::PathBuf> {
+    socket_path_under(std::env::var_os("XDG_RUNTIME_DIR").as_deref().map(Path::new), store)
+}
+
+fn socket_path_under(runtime_dir: Option<&Path>, store: &Path) -> Result<std::path::PathBuf> {
+    let uid = osis_transport::unix::own_uid().map_err(|e| Error::Storage(e.to_string()))?;
+    let dir = match runtime_dir.filter(|d| !d.as_os_str().is_empty()) {
+        Some(d) => d.join("osis"),
+        None => std::path::PathBuf::from(format!("/tmp/osis-{uid}")),
+    };
+    socket_dir(&dir, uid)?;
+    let abs = std::fs::canonicalize(store).or_else(|_| std::path::absolute(store)).map_err(|e| Error::Storage(e.to_string()))?;
+    let h = osis_base::hash::hash(abs.as_os_str().as_encoded_bytes());
+    let name: String = h.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    let sock = dir.join(format!("{name}.sock"));
+    if sock.as_os_str().len() > osis_transport::unix::MAX_PATH {
+        return Err(Error::Storage(format!("{}: too long a path for a socket", sock.display())));
+    }
+    Ok(sock)
+}
+
+/// Makes `dir` 0700 if missing, then checks it is a directory of `uid`'s, mode 0700, not a
+/// symlink; refuses it otherwise (another user's or a planted directory).
+fn socket_dir(dir: &Path, uid: u32) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let mut b = std::fs::DirBuilder::new();
+    b.mode(0o700);
+    match b.create(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(Error::Storage(format!("{}: {e}", dir.display()))),
+    }
+    let m = std::fs::symlink_metadata(dir).map_err(|e| Error::Storage(format!("{}: {e}", dir.display())))?;
+    if m.file_type().is_symlink() || !m.is_dir() || m.uid() != uid || m.mode() & 0o777 != 0o700 {
+        return Err(Error::Storage(format!("{}: not a directory of this user's with mode 0700", dir.display())));
+    }
+    Ok(())
 }

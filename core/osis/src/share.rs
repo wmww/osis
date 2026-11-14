@@ -5,7 +5,6 @@
 
 use crate::error::{Error, Result};
 use crate::handle::{Osis, ReadOnly};
-use crate::watch::Subscription;
 use osis_base::{Role, Tid, Time};
 use osis_engine::flows;
 use osis_schema::core_types as ct;
@@ -94,7 +93,10 @@ pub struct SetRoleOpts {
     pub retain_copy: Option<bool>,
 }
 
-/// How a link made by `Osis::make_link` ends and is reached.
+/// How a link made by `Osis::make_link` ends. The link names the node that made it and its relays,
+/// so a redeemer reaches that node while it is online: anyone holding the link can dial it, also
+/// after the link ends, until `Osis::rotate_peer_address`; dialing opens nothing the link no
+/// longer grants.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinkOpts {
     /// The link expires. It closes when one of your nodes next syncs after `until`: until then
@@ -102,11 +104,6 @@ pub struct LinkOpts {
     pub until: Option<Time>,
     /// The first redemption ends the link.
     pub single_use: bool,
-    /// Opt-in: the link text says how to reach this node directly, so a redeemer reaches it while
-    /// it is online. Anyone holding the link can dial this node, also after the link ends, until
-    /// `Osis::rotate_peer_address`; dialing opens nothing the link no longer grants. Needs a
-    /// runtime and `Config::direct_sync`.
-    pub direct: bool,
 }
 
 /// Names a link (`LinkInfo::id`, `Osis::revoke_link`). Its text form is what `FromStr` reads.
@@ -149,10 +146,19 @@ pub struct LinkInfo {
     pub single_use: bool,
 }
 
-/// An invite from a stranger: nothing it names is fetched or dialed until `accept_invite`. It says
-/// nothing about sender or thing, as both would be the sender's unverified word.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct InviteId(osis_base::CommitId);
+/// A thing this account was given a role on that no node of it syncs yet (`Osis::invitations`):
+/// `accept_invite` syncs it, `leave` turns it down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Invitation {
+    /// The thing.
+    pub thing: Tid,
+    /// The role given.
+    pub role: Role,
+    /// The account that gave it.
+    pub from: Tid,
+    /// This node took the grant's delivery: its keys are here.
+    pub taken: bool,
+}
 
 fn bad(what: &str) -> impl Fn(osis_label::Error) -> Error + '_ {
     move |e| Error::Invalid(format!("{what}: {e}"))
@@ -304,70 +310,6 @@ pub struct AccountNode {
     pub role: Role,
 }
 
-/// How a group's sync stands here (`GroupSync::state`), best first. A group syncing several ways at
-/// once, as when moving from one to another, shows the worst of them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum SyncState {
-    /// A node is connected with it open, and each such node is caught up with this one.
-    Synced,
-    /// A node is connected with it open, and some such node is not caught up (or this node
-    /// has not judged it: a connection only the other side dialed).
-    Syncing,
-    /// No node is connected with it open, whether or not one is known: what is written here stays
-    /// here for now.
-    NotConnected,
-    /// No node is connected with it open, and a connected node this node holds to serve it will
-    /// not (`GroupSync::refused_by` names them).
-    Refused,
-    /// This node holds no key to read what its peers hold now (lost, or not given yet), and can read
-    /// nothing new until another holder gives them again.
-    Stranded,
-}
-
-/// How one group syncs here.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GroupSync {
-    /// Where its sync has got to.
-    pub state: SyncState,
-    /// When it was last `Synced`, as far as this run of the node knows.
-    pub last_sync: Option<Time>,
-    /// Nodes this node holds to serve it that do not take it, or are full and take no more of
-    /// it for now: state `Refused` when no node has it open, else informational.
-    pub refused_by: Vec<Address>,
-    /// This node left the group and keeps it until a connected node has its removal; stays set
-    /// while none has.
-    pub leaving: bool,
-}
-
-/// How sync stands: connections and each group this node syncs or holds the log of.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Status {
-    /// Sync connections up now, whichever side dialed.
-    pub connected: usize,
-    /// How each group stands: as here, or for a group whose source is another node
-    /// (`Osis::group_source`) as that node says, absent while it cannot be asked.
-    pub groups: BTreeMap<Tid, GroupSync>,
-    /// The nodes this process is a client of, and those a group's source names.
-    pub node_connections: Vec<crate::sources::NodeConnection>,
-    /// Things read at a connected node and also in a group that carries them to another source:
-    /// writes on them are refused until one of the groups moves (`Osis::group_source`).
-    pub two_sources: BTreeSet<Tid>,
-}
-
-/// What `Osis::wait_synced` waits for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SyncScope {
-    /// Every synced group and every pending delivery.
-    All,
-    /// What this thing travels under: its own sync and every synced group holding it, each with
-    /// a node connected and caught up and this node's own changes held there (spec/sync-status.md
-    /// §3); and the deliveries about it, what it holds or those groups. Runs to the timeout while
-    /// one of them has no node connected, or this node does not hold the thing.
-    Thing(Tid),
-    /// This node's pending deliveries (grants and other inbox items), nothing else.
-    Deliveries,
-}
-
 fn edge(role: Role, o: GrantOpts) -> ct::Edge {
     ct::Edge { role, until: o.until, invite: o.may_grant, tied: None }
 }
@@ -448,10 +390,6 @@ impl ReadOnly {
         t.parse().map(Some).map_err(|_| Error::Storage("profile record".into()))
     }
 
-    /// How sync stands now. `NotBuilt`.
-    pub fn status(&self) -> Result<Status> {
-        Err(Error::NotBuilt)
-    }
 }
 
 impl Osis {
@@ -481,7 +419,7 @@ impl Osis {
             return Err(Error::UnknownThing { tid: target });
         }
         self.locked(|l| {
-            let e = &mut l.engine;
+            let e = l.engine();
             known_actor(e, holder)?;
             // a change keeps the tie to a membership; a new hand grant has none
             let cur = e.roster(&target).get(&holder).copied();
@@ -735,15 +673,55 @@ impl Osis {
         Ok(())
     }
 
-    /// Makes a share link to `target` with `role`. Anyone holding the link can redeem it until
-    /// `until` or `revoke_link`. `NotBuilt`.
-    pub fn make_link(&self, _target: Tid, _role: Role, _opts: LinkOpts) -> Result<ShareLink> {
-        Err(Error::NotBuilt)
+    /// Makes a share link to `target` with `role` (read or above: `Invalid` below). Anyone
+    /// holding the link can redeem it until `until` or `revoke_link`.
+    pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
+        let me = self.me();
+        let peer = self.own_peer();
+        let spec = flows::LinkSpec { target, role, until: opts.until.map(|t| osis_base::WallMs(t.0)), hosts: Vec::new(), peers: vec![peer], single_use: opts.single_use };
+        let (link, keep, _) = self.engine(|e| e.create_link(&me, &spec)).map_err(needs_admin)?;
+        // the seed thing in the home group: every node of this account holds it and may
+        // finalize the link (spec/sync-inbox.md §6)
+        let mut w = self.write();
+        w.group(self.home()).add(Member::Item(keep))?;
+        w.commit()?;
+        Ok(ShareLink(link.to_text().map_err(bad("link"))?))
     }
 
-    /// Redeems a link: reaches what it names and joins it, returning the thing. `NotBuilt`.
-    pub async fn redeem(&self, _link: &ShareLink) -> Result<Tid> {
-        Err(Error::NotBuilt)
+    /// This node's first-contact reach (spec/wire.md §10): its dialable key and relays.
+    fn own_peer(&self) -> osis_label::Peer {
+        let key = self.locked(|l| l.secret.public_key());
+        osis_label::Peer { dialable: key, relays: self.inner.relays.clone() }
+    }
+
+    /// Redeems a link: reaches what it names and joins it, returning the thing. Returns once
+    /// this account holds a role on the thing here; it waits for the link's node meanwhile
+    /// (wrap it in a timeout). A link this account already reaches the thing by joins nothing.
+    /// What the link holds is kept until the join is held elsewhere, a dropped call included.
+    pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
+        let link = link.parse()?;
+        let target = link.target;
+        if self.engine(|e| e.role_on(&target).is_some()) {
+            return Ok(target);
+        }
+        let mut started = false;
+        self.waiting(move |db| {
+            if db.engine(|e| e.role_on(&target).is_some()) {
+                return Some(Ok(target));
+            }
+            if !started {
+                started = true;
+                if let osis_sync::types::Waiting::Never(why) = db.locked(|l| {
+                    let w = l.node.redeem(&link);
+                    l.handle(osis_sync::Input::Wrote);
+                    w
+                }) {
+                    return Some(Err(Error::Invalid(format!("link: {why}"))));
+                }
+            }
+            None
+        })
+        .await
     }
 
     /// The account's links that still work, whichever node made them (one that has not yet synced here
@@ -794,35 +772,80 @@ impl Osis {
     }
 
     /// This account's contact card: a read link to its profile, a thing that also carries what
-    /// others need to grant this account a role. `NotBuilt`.
+    /// others need to grant this account a role. Made once per node; later calls return the
+    /// same card.
     pub fn contact_card(&self) -> Result<ContactCard> {
-        Err(Error::NotBuilt)
+        if let Some(b) = self.engine(|e| e.app_record(CONTACT))? {
+            return Ok(ContactCard(String::from_utf8(b).map_err(|_| Error::Storage("contact record".into()))?));
+        }
+        let p = self.profile()?;
+        let link = self.make_link(p, Role::Read, LinkOpts::default())?;
+        let card = ContactCard(link.0);
+        self.engine(|e| e.set_app_record(CONTACT, card.0.as_bytes()))?;
+        Ok(card)
     }
 
-    /// This account's profile thing: the target of its contact card. `NotBuilt`.
+    /// This account's profile thing, made with the account: the target of its contact card. The
+    /// account writes its profile aspects on it (`name.0`, `contact:*`); everyone holding the
+    /// card reads them. `Invalid` on a node that does not know it (one paired before its
+    /// creation reached it).
     pub fn profile(&self) -> Result<Tid> {
-        Err(Error::NotBuilt)
+        let b = self.engine(|e| e.app_record(crate::handle::PROFILE))?.ok_or_else(|| Error::Invalid("this node does not know the account's profile".into()))?;
+        Ok(Tid::from_bytes(b.as_slice().try_into().map_err(|_| Error::Storage("profile record".into()))?))
     }
 
-    /// Imports a contact card: reads the profile by the card until the account's keys are here.
-    /// Returns the account, usable in `grant`. `NotBuilt`.
-    pub async fn import_contact(&self, _card: &ContactCard) -> Result<Tid> {
-        Err(Error::NotBuilt)
+    /// Imports a contact card: accepts the profile it names (spec/sync-set.md §4) and returns
+    /// the account once its keys are here, usable in `grant`. Waits for the card's node
+    /// meanwhile (wrap it in a timeout).
+    pub async fn import_contact(&self, card: &ContactCard) -> Result<Tid> {
+        let link = card.parse()?;
+        let p = link.target;
+        let mut started = false;
+        let who = self
+            .waiting(move |db| {
+                let found = db.engine(|e| e.first_admin(&p).filter(|a| e.account_holder_keys(a).is_ok()));
+                if let Some(a) = found {
+                    return Some(Ok(a));
+                }
+                if !started {
+                    started = true;
+                    if let osis_sync::types::Waiting::Never(why) = db.locked(|l| {
+                        let w = l.node.redeem(&link);
+                        l.handle(osis_sync::Input::Wrote);
+                        w
+                    }) {
+                        return Some(Err(Error::Invalid(format!("contact card: {why}"))));
+                    }
+                }
+                None
+            })
+            .await?;
+        self.engine(|e| e.set_app_record(&format!("{PROFILE_OF}{who}"), p.to_string().as_bytes()))?;
+        Ok(who)
     }
 
-    /// The invite requests waiting for the user (`InviteId`). `NotBuilt`.
-    pub fn invite_requests(&self) -> Result<Vec<InviteId>> {
-        Err(Error::NotBuilt)
+    /// The things this account was given a role on that no node of it syncs yet (spec/sync-set.md
+    /// §4), newest grant last.
+    pub fn invitations(&self) -> Result<Vec<Invitation>> {
+        let v = self.engine(|e| e.invitations())?;
+        Ok(v.iter().map(|i| Invitation { thing: i.thing, role: i.role, from: i.from, taken: i.taken }).collect())
     }
 
-    /// Accepts an invite request: its grant applies and its thing's peers are dialed. `NotBuilt`.
-    pub fn accept_invite(&self, _id: InviteId) -> Result<()> {
-        Err(Error::NotBuilt)
-    }
-
-    /// Declines an invite request: it is forgotten and never shown again. `NotBuilt`.
-    pub fn decline_invite(&self, _id: InviteId) -> Result<()> {
-        Err(Error::NotBuilt)
+    /// Accepts an invitation: `thing` becomes a subgroup of `into`, a group this node syncs or
+    /// one under it (`Invalid` otherwise), so every node of the account syncs it. The same write
+    /// as `w.group(into).add(Member::Subgroup(thing))`.
+    pub fn accept_invite(&self, thing: Tid, into: Tid) -> Result<()> {
+        let synced = self.engine(|e| -> Result<bool> {
+            let set = e.sync_set()?;
+            Ok(set.ids.values().any(|(t, _)| *t == into))
+        })?;
+        if !synced {
+            return Err(Error::Invalid(format!("{into} is not synced here: accept into a synced group")));
+        }
+        let mut w = self.write();
+        w.group(into).add(Member::Subgroup(thing))?;
+        w.commit()?;
+        Ok(())
     }
 
     /// This account's nodes: those holding read or above on it (a holder of sync alone keeps
@@ -854,25 +877,30 @@ impl Osis {
         if was { self.links() } else { Ok(Vec::new()) }
     }
 
-    /// Calls `f` with the status now and on every change. `NotBuilt`.
-    pub fn on_status_change(&self, _f: impl FnMut(&Osis, Status) + Send + 'static) -> Result<Subscription> {
-        Err(Error::NotBuilt)
+    /// Writes what this node syncs of `groups` (each thing's sync IDs, with what it holds there)
+    /// as a bundle to `out`, for another node's `import_bundle`: sync by hand, carried any way.
+    pub fn export_bundle(&self, groups: &[Tid], mut out: impl std::io::Write) -> Result<()> {
+        let bytes = self.locked(|l| -> Result<Vec<u8>> {
+            let mut ids = Vec::new();
+            for g in groups {
+                ids.extend(l.engine().sync_ids(g)?.iter().map(|o| o.id));
+            }
+            let mut b = Vec::new();
+            l.node.export_bundle(&ids, &mut b).map_err(crate::handle::sync_err)?;
+            Ok(b)
+        })?;
+        out.write_all(&bytes).map_err(|e| Error::Storage(e.to_string()))
     }
 
-    /// Resolves once every group in scope is `SyncState::Synced` and every pending delivery in
-    /// scope was taken. `NotBuilt`.
-    pub async fn wait_synced(&self, _scope: SyncScope) -> Result<()> {
-        Err(Error::NotBuilt)
-    }
-
-    /// Writes `groups` as a bundle to `out`, for another node's `import_bundle`. `NotBuilt`.
-    pub fn export_bundle(&self, _groups: &[Tid], _out: impl std::io::Write) -> Result<()> {
-        Err(Error::NotBuilt)
-    }
-
-    /// Reads a bundle: what this node can open applies like synced content. `NotBuilt`.
-    pub fn import_bundle(&self, _input: impl std::io::Read) -> Result<()> {
-        Err(Error::NotBuilt)
+    /// Reads a bundle: what this node can open applies like synced content.
+    pub fn import_bundle(&self, mut input: impl std::io::Read) -> Result<()> {
+        let mut b = Vec::new();
+        input.read_to_end(&mut b).map_err(|e| Error::Storage(e.to_string()))?;
+        self.locked(|l| {
+            l.node.import_bundle(&mut b.as_slice()).map_err(crate::handle::sync_err)?;
+            l.handle(osis_sync::Input::Wrote);
+            Ok(())
+        })
     }
 }
 
@@ -892,3 +920,6 @@ fn person_links(e: &mut osis_engine::Engine, me: Tid) -> Result<Vec<flows::HeldL
 
 /// App record prefix: `profile/<account tid>` -> profile tid text, written by `import_contact`.
 const PROFILE_OF: &str = "profile/";
+
+/// App record: this node's contact card text.
+const CONTACT: &str = "contact";

@@ -379,7 +379,7 @@ impl ReadOnly {
     pub(crate) fn commit_told_here(&self, a: &Address, id: CommitId, fired: Option<CommitRow>) -> Result<Option<Commit>> {
         let (mat, actor) = (self.inner.limit, self.acting);
         let c = self.locked(|l| {
-            let mut r = Reader { e: &mut l.engine, limit: mat, actor };
+            let mut r = Reader { e: l.engine(), limit: mat, actor };
             // a group the caller may not read names nothing (`scope_aspects`)
             if let Address::Writes(Scope::Group(g)) = a
                 && r.hidden(*g)
@@ -481,7 +481,7 @@ impl Osis {
         let blocked = |reason| Error::NotUndoable { commit: target, reason };
         let (mat, actor) = (self.inner.limit, self.acting);
         let c = self.locked(|l| {
-            let e = &mut l.engine;
+            let e = l.engine();
             let c = target.0;
             let h = e.header(&c).filter(|h| self.acting.is_none_or(|a| h.aspects.iter().any(|x| e.readable_by(&a, &x.tid)))).ok_or_else(|| Error::Invalid("unknown commit".into()))?;
             if h.kind != Kind::Content {
@@ -492,7 +492,7 @@ impl Osis {
                 None => e.revert_commit(c, me)?,
             };
             match r {
-                Reverted::Written(w) => written_in(&mut Reader { e: &mut l.engine, limit: mat, actor }, w, me),
+                Reverted::Written(w) => written_in(&mut Reader { e: l.engine(), limit: mat, actor }, w, me),
                 Reverted::Superseded => Err(blocked(NotUndoableReason::Superseded)),
                 Reverted::NotKept => Err(blocked(NotUndoableReason::NotKept)),
             }
@@ -607,7 +607,7 @@ impl crate::handle::ReadOnly {
         let Some(f) = self.pick(found, redo) else { return Ok(None) };
         let c = f.id;
         self.locked(|l| {
-            let e = &mut l.engine;
+            let e = l.engine();
             let blocked = |reason| Error::NotUndoable { commit: c, reason };
             let r = match self.acting {
                 Some(a) => e.check_revertible_as(c.0, a),
@@ -637,7 +637,7 @@ impl crate::handle::ReadOnly {
         let (cut, limit) = (limit > COMMIT_PAGE, limit.min(COMMIT_PAGE));
         self.locked(|l| {
             let complete = true;
-            let mut r = Reader { e: &mut l.engine, limit: mat, actor };
+            let mut r = Reader { e: l.engine(), limit: mat, actor };
             let shown = move |e: &mut osis_engine::Engine, t: &Tid| actor.is_none_or(|a| e.readable_by(&a, t));
             let (mut commits, mut more, mut used, mut from) = (Vec::new(), false, 0usize, q.from.into());
             let mut rel = Relations::default();

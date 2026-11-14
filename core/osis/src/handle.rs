@@ -26,7 +26,8 @@ const DEFAULT_IDLE_COMMIT: Duration = Duration::from_secs(2);
 pub struct MemStore {
     pub(crate) backend: MemoryBackend,
     pub(crate) root: MemoryRoot,
-    /// The engine's ciphertext store (`osis_store::BlobArea`), its own key root beside it.
+    /// Sync's store (`osis_sync::Store`), which also holds the engine's ciphertext, its own key
+    /// root beside it.
     pub(crate) blobs: MemoryBackend,
     pub(crate) blobs_root: MemoryRoot,
     /// Opens under a test seed, this store's and its backups' (`open_salt`).
@@ -54,8 +55,12 @@ pub enum Store {
 pub struct Config {
     /// How this handle behaves, as a thin client's does.
     pub app: AppConfig,
-    /// Where background sync runs (default `Runtime::None`: no network; `Invalid` with peers given).
+    /// Where background sync runs (default `Runtime::None`: no network; `Invalid` with `dial`).
     pub runtime: Runtime,
+    /// Nodes this node dials whenever it may share something with them: each a node listening
+    /// at that address with that key. A dial candidate only: what syncs is decided by what both
+    /// nodes hold, never by this list, and nothing of it is stored.
+    pub dial: Vec<Address>,
     /// Sync directly with other nodes that read the same data (default on): this node listens,
     /// tells them how to reach it and relays for them, and finds nodes on its local network (`lan`).
     /// Turn it off to sync only with the peers it is given.
@@ -70,17 +75,22 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Config {
-        Config { app: AppConfig::default(), runtime: Runtime::None, direct_sync: true, relays: Vec::new(), lan: crate::Lan::default() }
+        Config { app: AppConfig::default(), runtime: Runtime::None, dial: Vec::new(), direct_sync: true, relays: Vec::new(), lan: crate::Lan::default() }
     }
 }
 
 impl Config {
-    /// `Invalid` for what would silently do nothing: peers with no runtime to reach them, LAN
-    /// targets with nothing to announce (no runtime, no direct sync) or naming no place, a relay
-    /// not named by one socket address.
-    pub(crate) fn check(&self, peers: &[Address]) -> Result<()> {
-        if !peers.is_empty() && matches!(self.runtime, Runtime::None) {
-            return Err(Error::Invalid("peers with Runtime::None: nothing would sync; set Config.runtime".into()));
+    /// Whether this config has a network: a runtime, or a test's.
+    fn online(&self) -> bool {
+        !matches!(self.runtime, Runtime::None) || self.app.internals.net.is_some()
+    }
+
+    /// `Invalid` for what would silently do nothing: nodes to dial with no runtime to reach them,
+    /// LAN targets with nothing to announce (no runtime, no direct sync) or naming no place, a
+    /// relay not named by one socket address.
+    pub(crate) fn check(&self) -> Result<()> {
+        if !self.dial.is_empty() && !self.online() {
+            return Err(Error::Invalid("Config.dial with Runtime::None: nothing would sync; set Config.runtime".into()));
         }
         if let crate::Lan::On { also_announce_to } = &self.lan {
             if let Some(a) = also_announce_to.iter().find(|a| a.ip().is_unspecified() || a.port() == 0) {
@@ -118,14 +128,37 @@ impl Default for AppConfig {
     }
 }
 
-/// The engine with its event channel, the dispatcher sequence number and the handle's
-/// bookkeeping, all under one lock.
+/// The node's sync (which owns its engine) with the engine's event channel, the dispatcher
+/// sequence number and the handle's bookkeeping, all under one lock.
 pub(crate) struct Locked {
-    pub engine: Engine,
+    pub node: osis_sync::Node,
     pub events: Receiver<Event>,
     pub seq: u64,
     /// Pairing offers not yet used: secret, expiry (wall ms).
     pub offers: Vec<([u8; 32], u64)>,
+    /// What sync steps under this hold gave, for `Net::carry`.
+    pub out: Vec<osis_sync::Out>,
+    /// With no network: the node's wake, run at the next call due.
+    pub wake: Option<osis_base::WallMs>,
+    /// Sync stepped under this hold.
+    pub stepped: bool,
+    /// This node's dialable secret (`rotate_peer_address` replaces it).
+    pub secret: osis_transport::StaticSecret,
+    /// The client port's sessions (`port`).
+    pub port: crate::port::Port,
+}
+
+impl Locked {
+    pub fn engine(&mut self) -> &mut Engine {
+        self.node.engine()
+    }
+
+    /// One sync step; its outputs go with the hold's.
+    pub fn handle(&mut self, input: osis_sync::Input) {
+        let o = self.node.handle(input);
+        self.out.extend(o);
+        self.stepped = true;
+    }
 }
 
 pub(crate) struct Inner {
@@ -144,6 +177,17 @@ pub(crate) struct Inner {
     pub undo: Mutex<()>,
     /// A runtime is configured (`Config::runtime`): timers run (`Inner::after`).
     pub timers: bool,
+    /// Where sync's outputs go.
+    pub net: crate::net::Net,
+    /// This node's relays as `peer://` relay items (`Config::relays`).
+    pub relays: Vec<String>,
+    /// The store's directory (its client socket is named by it).
+    pub store_dir: Option<std::path::PathBuf>,
+    /// Futures waiting on sync (`wait_synced`, `redeem`): polled again after each step.
+    pub waiters: Mutex<Vec<std::task::Waker>>,
+    /// Client port requests taken from sync, served off the lock (`port::serve`).
+    pub port_in: Mutex<std::collections::VecDeque<osis_sync::PortEvent>>,
+    pub port_busy: std::sync::atomic::AtomicBool,
     /// User handles and whether the store closed (the last field: it drops after `eng`).
     pub life: LifeGuard,
 }
@@ -222,7 +266,7 @@ impl std::ops::Deref for Osis {
 /// use osis::{Config, MemStore, Osis, ReadSet, Store};
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
@@ -238,7 +282,7 @@ impl std::ops::Deref for Osis {
 /// use osis::{Config, MemStore, Osis, ReadSet, Store};
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
@@ -253,7 +297,7 @@ impl std::ops::Deref for Osis {
 /// use osis::{Config, MemStore, Osis, ReadSet, Store};
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
@@ -268,7 +312,7 @@ impl std::ops::Deref for Osis {
 /// use osis::{Config, MemStore, Osis, ReadSet, Store};
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
@@ -283,7 +327,7 @@ impl std::ops::Deref for Osis {
 /// use osis::{Config, MemStore, Osis, ReadSet, Store};
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
@@ -298,7 +342,7 @@ impl std::ops::Deref for Osis {
 /// use osis::{Config, MemStore, Osis, ReadSet, Store};
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
@@ -313,7 +357,7 @@ impl std::ops::Deref for Osis {
 /// use osis::{Config, MemStore, Osis, ReadSet, Store};
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
@@ -328,7 +372,7 @@ impl std::ops::Deref for Osis {
 /// use osis::{Config, MemStore, Osis, ReadSet, Store};
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
@@ -343,7 +387,7 @@ impl std::ops::Deref for Osis {
 /// use osis::{Config, MemStore, Osis, ReadSet, Store};
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
@@ -476,10 +520,18 @@ fn open_salt(store: &Store, cfg: &Config) -> Result<u64> {
     Ok(n.wrapping_add(1).wrapping_mul(0x9e37_79b9_7f4a_7c15))
 }
 
-/// The engine's ciphertext store (`Engine::open`).
-fn blob_store(store: &Store) -> Result<Arc<dyn osis_store::Ciphertext>> {
+/// Sync's store, which holds the engine's ciphertext (`Store::cipher`).
+fn sync_store(store: &Store, cfg: &Config, salt: u64) -> Result<osis_sync::Store> {
     let (b, r) = parts(store, true)?;
-    Ok(osis_store::BlobArea::open(b, r, Box::new(OsRng)).map_err(osis_engine::Error::from)?)
+    osis_sync::Store::open(b, r, rng(cfg, salt ^ 1)).map_err(sync_err)
+}
+
+pub(crate) fn sync_err(e: osis_sync::Error) -> Error {
+    match e {
+        osis_sync::Error::Engine(e) => e.into(),
+        osis_sync::Error::NotBuilt(_) => Error::NotBuilt,
+        e => Error::Storage(e.to_string()),
+    }
 }
 
 fn clock(cfg: &Config) -> Arc<dyn Clock> {
@@ -490,47 +542,81 @@ fn engine_cfg() -> osis_engine::Config {
     osis_engine::Config { software: format!("osis {}", env!("CARGO_PKG_VERSION")), ..Default::default() }
 }
 
-/// A new store's engine, from the first commit on (it sees every event).
+/// A new store's engine, from the first commit on (it sees every event), and sync's store.
 pub(crate) struct Fresh {
     pub engine: Engine,
     pub clock: Arc<dyn Clock>,
+    pub sync: osis_sync::Store,
 }
 
 /// A new store's engine.
 pub(crate) fn fresh_engine(store: &Store, cfg: &Config) -> Result<Fresh> {
     let (b, r) = parts(store, false)?;
     let clock = clock(cfg);
-    let engine = Engine::create(b, r, blob_store(store)?, engine_cfg(), clock.clone(), rng(cfg, 0))?;
-    Ok(Fresh { engine, clock })
+    let sync = sync_store(store, cfg, 0)?;
+    let engine = Engine::create(b, r, sync.cipher(), engine_cfg(), clock.clone(), rng(cfg, 0))?;
+    Ok(Fresh { engine, clock, sync })
+}
+
+/// The app record holding the account's profile thing (`Osis::profile`).
+pub(crate) const PROFILE: &str = "profile";
+
+/// The app record holding this node's dialable secret.
+const NODE_KEY: &str = "sync/node-key";
+
+/// This node's dialable secret, made on first use.
+fn node_secret(e: &mut Engine, cfg: &Config, salt: u64) -> Result<osis_transport::StaticSecret> {
+    if let Some(b) = e.app_record(NODE_KEY)? {
+        let b: [u8; 32] = b.as_slice().try_into().map_err(|_| Error::Storage("node key record".into()))?;
+        return Ok(osis_transport::StaticSecret::from_bytes(b));
+    }
+    let mut b = [0u8; 32];
+    rng(cfg, salt ^ 3).fill_bytes(&mut b);
+    e.set_app_record(NODE_KEY, &b)?;
+    Ok(osis_transport::StaticSecret::from_bytes(b))
+}
+
+/// A new dialable secret in place of the old (`rotate_peer_address`).
+pub(crate) fn new_node_secret(e: &mut Engine) -> Result<osis_transport::StaticSecret> {
+    let mut b = [0u8; 32];
+    osis_crypto::RngCore::fill_bytes(&mut OsRng, &mut b);
+    e.set_app_record(NODE_KEY, &b)?;
+    Ok(osis_transport::StaticSecret::from_bytes(b))
+}
+
+/// Sync's config from the handle's.
+pub(crate) fn sync_config(cfg: &Config, key: [u8; 32]) -> osis_sync::SyncConfig {
+    osis_sync::SyncConfig { key: Some(osis_sync::NodeKey(key)), dial: cfg.dial.iter().map(|a| a.0.clone()).collect(), ..Default::default() }
 }
 
 impl Osis {
-    /// Creates a node and a new account with this node its admin. The account is also its home group,
-    /// synced with `peers` (`NotBuilt` with any). Peers need `Config::runtime` (`Invalid`).
-    pub fn create(store: Store, peers: &[Address], cfg: Config) -> Result<Osis> {
-        cfg.check(peers)?;
-        if !peers.is_empty() {
-            return Err(Error::NotBuilt);
-        }
-        let Fresh { mut engine, clock } = fresh_engine(&store, &cfg)?;
+    /// Creates a node and a new account with this node its admin. The account is also its home
+    /// group.
+    pub fn create(store: Store, cfg: Config) -> Result<Osis> {
+        cfg.check()?;
+        let Fresh { mut engine, clock, sync } = fresh_engine(&store, &cfg)?;
         let (a, _) = engine.create_account(&[])?;
+        engine.set_app_record(PROFILE, a.profile.as_bytes())?;
         let mut m = osis_engine::Mutation::new();
         m.set(a.devices, &ct::GROUP, &ct::Group::default())?;
         engine.commit(m)?;
-        Osis::start(engine, clock, store, &cfg, a.account, a.devices)
+        Osis::start(engine, sync, clock, store, &cfg, a.account, a.devices, 0)
     }
 
     /// Opens an existing store.
     pub fn open(store: Store, cfg: Config) -> Result<Osis> {
-        cfg.check(&[])?;
+        cfg.check()?;
         let (b, r) = parts(&store, false)?;
         let clock = clock(&cfg);
-        let mut e = Engine::open(b, r, blob_store(&store)?, engine_cfg(), clock.clone(), rng(&cfg, open_salt(&store, &cfg)?))?;
+        let salt = open_salt(&store, &cfg)?;
+        let sync = sync_store(&store, &cfg, salt)?;
+        let mut e = Engine::open(b, r, sync.cipher(), engine_cfg(), clock.clone(), rng(&cfg, salt))?;
         let (me, home) = e.account()?.ok_or_else(|| Error::Storage("no account record".into()))?;
-        Osis::start(e, clock, store, &cfg, me, home)
+        Osis::start(e, sync, clock, store, &cfg, me, home, salt)
     }
 
-    pub(crate) fn start(mut engine: Engine, clock: Arc<dyn Clock>, store: Store, cfg: &Config, me: Tid, home: Tid) -> Result<Osis> {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn start(mut engine: Engine, sync: osis_sync::Store, clock: Arc<dyn Clock>, store: Store, cfg: &Config, me: Tid, home: Tid, salt: u64) -> Result<Osis> {
         // store files open to group or others: tightened where possible (best effort), else
         // reported
         if let Store::Dir(p) = &store {
@@ -542,12 +628,45 @@ impl Osis {
         }
         let node = engine.tid();
         let events = engine.subscribe();
+        let secret = node_secret(&mut engine, cfg, salt)?;
+        let key = secret.public_key();
+        let sync = osis_sync::Node::open(engine, sync, sync_config(cfg, key), rng(cfg, salt ^ 2)).map_err(sync_err)?;
         let dispatch = Dispatch::new(&cfg.app.dispatch);
-        let locked = Locked { engine, events, seq: 0, offers: Vec::new() };
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, home, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, text_save: cfg.app.internals.text_save.clone(), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), timers: !matches!(cfg.runtime, Runtime::None), life: LifeGuard(Arc::default()) });
+        let (mut net, driver) = crate::net::Net::new(&cfg.runtime, cfg.app.internals.net.as_ref())?;
+        if let crate::net::Net::Manual { net: m, index } = &mut net {
+            *index = m.join();
+        }
+        let locked = Locked { node: sync, events, seq: 0, offers: Vec::new(), out: Vec::new(), wake: None, stepped: false, secret, port: Default::default() };
+        let store_dir = match &store {
+            Store::Dir(p) => Some(p.clone()),
+            Store::Memory(_) => None,
+        };
+        let inner = Arc::new(Inner {
+            eng: Mutex::new(locked),
+            dispatch,
+            node,
+            me,
+            home,
+            limit: cfg.app.read_limit,
+            idle_commit: cfg.app.idle_commit,
+            text_save: cfg.app.internals.text_save.clone(),
+            clock: clock.clone(),
+            schemas: Mutex::new(Vec::new()),
+            undo: Mutex::new(()),
+            timers: !matches!(cfg.runtime, Runtime::None),
+            net,
+            relays: cfg.relays.iter().filter_map(Address::relay_item).collect(),
+            store_dir,
+            waiters: Mutex::new(Vec::new()),
+            port_in: Mutex::new(Default::default()),
+            port_busy: Default::default(),
+            life: LifeGuard(Arc::default()),
+        });
         inner.dispatch.start(Arc::downgrade(&inner))?;
         let db = Osis::user(inner);
-        db.locked(|_| ());
+        db.go_online(cfg, driver)?;
+        // the first step settles every module (and dials what the config names)
+        db.locked(|l| l.handle(osis_sync::Input::Wrote));
         Ok(db)
     }
 
@@ -626,21 +745,63 @@ impl ReadOnly {
     /// Runs `f` on the engine under the node lock, then queues its events for the
     /// dispatcher (`internals::Internals::engine` outside the crate).
     pub(crate) fn engine<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> R {
-        self.locked(|l| f(&mut l.engine))
+        self.locked(|l| f(l.engine()))
     }
 
+    /// Runs `f` under the node lock. A write in it steps sync (`Input::Wrote`); what sync steps
+    /// give is carried out (`Net::carry`), the engine's events go to the dispatcher, and once
+    /// the lock is released the futures waiting on sync are polled again and the client port's
+    /// requests served.
     pub(crate) fn locked<R>(&self, f: impl FnOnce(&mut Locked) -> R) -> R {
         let mut g = lock(&self.inner.eng);
         let holder = &self.inner.dispatch.shared.holder;
         *lock(holder) = Some(std::thread::current().id());
-        expire_due(&mut g.engine);
+        g.stepped = false;
+        // with no network nothing else ticks the node: a wake due runs now
+        if let Some(at) = g.wake.filter(|at| *at <= self.inner.clock.now_wall_ms()) {
+            g.wake = None;
+            g.handle(osis_sync::Input::Tick { now: at.max(self.inner.clock.now_wall_ms()) });
+        }
+        expire_due(g.engine());
+        let before = g.engine().store_writes().committed;
+        let stepped = g.stepped;
         let r = f(&mut g);
-        lifetimes(&mut g.engine);
+        lifetimes(g.engine());
+        if g.stepped == stepped && g.engine().store_writes().committed != before {
+            g.handle(osis_sync::Input::Wrote);
+        }
+        self.inner.net.carry(&mut g);
+        let stepped = g.stepped;
+        let port = g.node.port();
         self.drain(&mut g);
+        if stepped && self.inner.dispatch.status_listened() {
+            g.seq += 1;
+            self.inner.dispatch.send(g.seq, Msg::Status);
+        }
         *lock(holder) = None;
         drop(g);
         self.inner.dispatch.wake();
+        if stepped {
+            for w in std::mem::take(&mut *lock(&self.inner.waiters)) {
+                w.wake();
+            }
+        }
+        if !port.is_empty() {
+            lock(&self.inner.port_in).extend(port);
+        }
+        crate::port::serve(self);
         r
+    }
+
+    /// One sync step on `input` from the node's links; `main`: a connection over the unix
+    /// transport coming up (a main session's, spec/sync-transport.md §6).
+    pub(crate) fn step(&self, input: osis_sync::Input, main: bool) {
+        self.locked(|l| {
+            if let (true, osis_sync::Input::Up { conn, .. }) = (main, &input) {
+                l.port.main(*conn);
+            }
+            l.handle(input)
+        })
     }
 
     /// Queues the engine's events for the dispatcher.

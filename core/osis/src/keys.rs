@@ -111,7 +111,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// # let keep = osis::core::RetentionEntry { history: Some(osis::History::FOREVER), ..Default::default() };
@@ -147,7 +147,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// let _ = db.at(t, PING).get();
@@ -159,7 +159,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// let _ = db.at(t, PING).path(p![]).get::<i64>();
@@ -171,7 +171,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// let _ = db.at(t, PING).on_change(|_, _| {});
@@ -183,7 +183,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// let _ = db.at(t, PING).writes(&CommitQuery::default());
@@ -195,7 +195,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// let _ = db.at(t, PING).on_write(|_, _| {});
@@ -207,7 +207,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// let _ = db.at(t, PING).keep_alive(&1);
@@ -219,7 +219,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// let _ = w.at(t, PING).set(&1);
@@ -231,7 +231,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// let _ = w.at(t, PING).edit(&1, &2);
@@ -243,7 +243,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// let _ = w.at(t, PING).overwrite(&1);
@@ -255,7 +255,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// let _ = w.at(t, PING).remove();
@@ -267,7 +267,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// let _ = w.at(t, PING).path(p![]).set(&1i64);
@@ -279,7 +279,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// let _ = w.at(t, N).fire(&1);
@@ -291,7 +291,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// let _ = db.at(t, N).fired(&CommitQuery::default());
@@ -303,7 +303,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// let _ = db.at(t, N).on_fire(|_, _| {});
@@ -315,7 +315,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// # let id: osis::CommitId = "00".repeat(32).parse().unwrap();
@@ -328,7 +328,7 @@ pub mod core {
 /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
 /// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// # let id: osis::CommitId = "00".repeat(32).parse().unwrap();

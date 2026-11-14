@@ -14,6 +14,7 @@ pub use osis_engine as engine;
 pub use osis_schema as schema;
 pub use osis_schema::core_types;
 pub use osis_store::{Fault, Faults};
+pub use crate::net::{MANUAL_CAP, MANUAL_HORIZON_MS, ManualNet};
 
 /// `group.0`'s field of items, for path reads and writes of it (spec/data-model.md §8).
 pub const GROUP_ITEMS: osis_schema::FieldId = osis_schema::FieldId(0);
@@ -115,6 +116,10 @@ pub struct Knobs {
     pub seed: Option<u64>,
     /// Called by a text session's save between taking its snapshot and committing it.
     pub text_save: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    /// A test network in place of the transports: the node joins it and nothing else.
+    pub net: Option<crate::net::ManualNet>,
+    /// An in-process transport (`mem://`) beside the product's, under a runtime.
+    pub transport: Option<osis_transport::InProcess>,
 }
 
 /// The hooks on `Osis` (`use osis::internals::Internals;`).
@@ -140,12 +145,11 @@ impl Internals for Osis {
     }
 }
 
-/// A store, its peers and its config in one value, for test harnesses that build all three in one
+/// A store and its config in one value, for test harnesses that build all three in one
 /// helper: the fields of `Config` read through it.
 #[derive(Clone)]
 pub struct Opening {
     pub store: crate::Store,
-    pub peers: Vec<crate::Address>,
     pub cfg: crate::Config,
 }
 
@@ -165,7 +169,7 @@ impl std::ops::DerefMut for Opening {
 impl Opening {
     pub fn at(store: crate::Store) -> Opening {
         // no harness announces on the machine's real network unless it asks to
-        Opening { store, peers: Vec::new(), cfg: crate::Config { lan: crate::Lan::Off, ..crate::Config::default() } }
+        Opening { store, cfg: crate::Config { lan: crate::Lan::Off, ..crate::Config::default() } }
     }
 
     pub fn memory() -> Opening {
@@ -179,7 +183,7 @@ impl Opening {
 }
 
 pub fn create(o: Opening) -> crate::Result<Osis> {
-    Osis::create(o.store, &o.peers, o.cfg)
+    Osis::create(o.store, o.cfg)
 }
 
 pub fn open(o: Opening) -> crate::Result<Osis> {
@@ -187,5 +191,14 @@ pub fn open(o: Opening) -> crate::Result<Osis> {
 }
 
 pub fn pair(o: Opening, offer: &crate::PairOffer) -> crate::Result<crate::Joining> {
-    Osis::pair(o.store, &o.peers, offer, o.cfg)
+    Osis::pair(o.store, offer, o.cfg)
 }
+
+/// The client port's answers to `msgs` sent on connection `conn` (`main`: over the unix
+/// transport), as the node gives them, with no transport between.
+pub fn port_answers(db: &Osis, conn: u64, main: bool, msgs: Vec<osis_proto::Msg>) -> Vec<osis_proto::Msg> {
+    crate::port::answer_all(db, osis_sync::ConnId(conn), main, msgs)
+}
+
+pub use crate::port::method as port_method;
+pub use osis_proto as proto;
