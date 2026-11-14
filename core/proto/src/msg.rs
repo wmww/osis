@@ -637,10 +637,10 @@ fn proofs_value(proofs: &[ActorProof]) -> Value {
     Value::List(proofs.iter().map(ActorProof::to_value).collect())
 }
 
-/// `[rotation*]`, at most `MAX_PROVE_ROTATIONS`: each a header-only copy
+/// `[rotation*]`, at most `MAX_ROTATIONS`: each a header-only copy
 /// `[Header, signature, Opt(inner), [signature*], []]` (spec/wire.md §4), judged by the engine.
 fn rotations(v: Value) -> Result<Vec<Value>, Error> {
-    dec::list(v, 0, MAX_PROVE_ROTATIONS, "rotations")?
+    dec::list(v, 0, MAX_ROTATIONS, "rotations")?
         .into_iter()
         .map(|r| match &r {
             Value::List(items) if items.len() == 5 && items.last().is_some_and(|s| matches!(s, Value::List(l) if l.is_empty())) => Ok(r),

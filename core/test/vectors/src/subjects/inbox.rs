@@ -48,10 +48,11 @@ pub fn inbox() -> VecFile {
     let e = Epoch { n: 1, nonce: [0x0b; 32] };
     let b = SecretBox::Symmetric(SymmetricBox { epoch: Epoch { n: 0, nonce: [0x0c; 32] }, wrap: vec![0x0d; 49] });
     let things = vec![BoxedThing::new(Tid::from_bytes([0x03; 15]), Some(SyncId([0x04; 16])), vec![(Role::Sync, e, b)])];
-    let boxes = BoxesPayload::signed(&recipient, CommitId([0x0e; 32]), Tid::from_bytes([0x0f; 15]), Some(CommitId([0x10; 32])), things, None, &signer);
+    let record = osis_base::CreationRecord::KeyActor { alg: osis_base::SIGNING_KEY_ED25519, public_key: signer.verifying_key().to_bytes().to_vec(), nonce: [0x0f; 32], account: false };
+    let boxes = BoxesPayload::signed(&recipient, CommitId([0x0e; 32]), osis_label::AuthorProof { record, rotations: Vec::new() }, None, things, None, &signer);
     let blob = seal_boxes_payload(&recipient, kem.public(), &boxes, now, &mut FixedRng::new(&[&salt, &eph, &m])).unwrap();
     assert_eq!(open_inbox_item(&blob, &recipient, &kem).unwrap().1, Inbox::Boxes(boxes.clone()));
-    assert!(boxes.verifies(&recipient, &signer.verifying_key()));
+    assert!(boxes.verified(&recipient));
     cases.push(
         case("boxes payload", SPEC)
             .with("recipient", hex(recipient.as_bytes()))

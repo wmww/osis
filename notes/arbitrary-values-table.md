@@ -53,7 +53,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 |---|---|---|
 | `MAX_PROOFS` 256 (proofs in a Prove or Proved) | R (past it a message is refused whole; a node holding more key actors proves its own key and the first by tid, the rest unproved on that connection) | nothing proved / seconds of event loop per connection (a stranger pays one signature per proof: about 12 ms per connection, once) |
 | `MAX_RELAY_SEEN` 2^16 | M (commented) | |
-| `MAX_PROVE_ROTATIONS` 256 (account rotations in one Prove) | R (past it a message is refused whole; a verifier lacking more of the chain than that cannot take the account proof from one Prove) | a verifier behind on the account's chain never learns it from a proof / only `MAX_MESSAGE` bounds it (the engine judges every one: a signature check each) |
+| `MAX_ROTATIONS` 256 (account rotations in one Prove or boxes payload) | R (past it a message is refused whole, a boxes payload malformed; a verifier lacking more of the chain than that cannot take the account proof from one Prove, and an account whose epoch lies further from its first than that sends no boxes payload) | a verifier behind on the account's chain never learns it from a proof / only `MAX_MESSAGE` bounds it (the engine judges every one: a signature check each) |
 | connection source = IPv6 /64 (`osis_transport::Source`: relay slots shared by source, `evict_for`, the driver's read turns) | M (commented; a holder of a larger prefix counts as many sources) | /0: every client one source / /128: one machine takes every relay slot and turn |
 | `RelayLimits` 6000 / 32 MiB per 60 s | R (rate, code 4) | no relays / relay floods |
 

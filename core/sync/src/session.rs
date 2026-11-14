@@ -18,7 +18,7 @@
 use crate::types::{ConnId, Cx, NodeKey, Out};
 use osis_base::{CreationRecord, Tid, WallMs};
 use osis_proto::frame::MAX_HELLO_BODY;
-use osis_proto::limits::{MAX_ID, MAX_MESSAGE, MAX_PROOFS, MAX_PROVE_ROTATIONS, NO_RECORD_ID, REPLY_BUDGET, SMALL_REPLY, TOP_BIT, WINDOW};
+use osis_proto::limits::{MAX_ID, MAX_MESSAGE, MAX_PROOFS, MAX_ROTATIONS, NO_RECORD_ID, REPLY_BUDGET, SMALL_REPLY, TOP_BIT, WINDOW};
 use osis_proto::msg::{Flow, answers, peek_head};
 use osis_proto::prove::verified;
 use osis_proto::{ActorProof, ClockSamples, Code, FrameDecoder, Hello, Msg, OffsetSample, PROTOCOL_VERSION, Prover, encode_frame, negotiate};
@@ -772,7 +772,7 @@ fn allowance(m: &Msg) -> u64 {
 }
 
 /// The account's rotations for a Prove, in the engine's order: as many as fit `room` bytes (what
-/// the proofs leave of one message), at most `MAX_PROVE_ROTATIONS` (none while the engine does
+/// the proofs leave of one message), at most `MAX_ROTATIONS` (none while the engine does
 /// not build them).
 fn rotations(cx: &mut Cx, mut room: usize) -> Result<Vec<osis_base::Value>, Close> {
     let all = match cx.engine.prove_rotations() {
@@ -781,7 +781,7 @@ fn rotations(cx: &mut Cx, mut room: usize) -> Result<Vec<osis_base::Value>, Clos
         Err(_) => return Err(Close("engine")),
     };
     let mut out = Vec::new();
-    for r in all.into_iter().take(MAX_PROVE_ROTATIONS) {
+    for r in all.into_iter().take(MAX_ROTATIONS) {
         let n = osis_base::cbor::encode(&r).len();
         if n > room {
             break;

@@ -857,13 +857,14 @@ impl Engine {
     }
 
     /// Takes the inbox blob `blob` held under `s` (its bytes from the ciphertext store), or
-    /// judges it again (spec/sync-inbox.md §2 Taking); `accepted`: the user accepted it
-    /// (spec/sync-set.md §4). `None`: its bytes are not held or nothing here opens it.
-    pub fn take_inbox(&mut self, s: &SyncId, blob: &BlobId, accepted: bool) -> Result<Option<InboxOpened>> {
+    /// judges it again (spec/sync-inbox.md §2 Taking); `vouched`: the user accepted it
+    /// (spec/sync-set.md §4) or a writer of the inbox stamped it in place (a node of the account
+    /// took it). `None`: its bytes are not held or nothing here opens it.
+    pub fn take_inbox(&mut self, s: &SyncId, blob: &BlobId, vouched: bool) -> Result<Option<InboxOpened>> {
         osis_base::costs::count("inbox: take", 1);
         let b = *blob;
         let Some(bytes) = self.run(|tx| tx.blobs.get(&b))? else { return Ok(None) };
-        self.take_inbox_bytes(s, blob, &bytes, accepted)
+        self.take_inbox_bytes(s, blob, &bytes, vouched)
     }
 
     /// The invitations waiting for the user (spec/sync-set.md §4).

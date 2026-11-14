@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use osis_base::{CommitId, Role, Tid, Value};
 use osis_commit::CommitBlob;
 use osis_crypto::NodeRng;
-use osis_label::{BoxedThing, BoxesPayload, DialHint, InboxPayload, InboxThing, seal_boxes_payload, seal_inbox_blob};
+use osis_label::{AuthorProof, BoxedThing, BoxesPayload, DialHint, InboxPayload, InboxThing, seal_boxes_payload, seal_inbox_blob};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -223,9 +223,36 @@ impl Engine {
             return Ok(None);
         }
         let Some((epoch, key)) = self.author_signer(&author)? else { return Ok(None) };
-        let payload = BoxesPayload::signed(&h, id, author, epoch, things, self.dial_hint()?, &key);
+        let Some(proof) = self.author_proof(&author, epoch)? else { return Ok(None) };
+        let payload = BoxesPayload::signed(&h, id, proof, epoch, things, self.dial_hint()?, &key);
         let now = self.now();
         Ok(Some(seal_boxes_payload(&h, &kem, &payload, now, rng)?))
+    }
+
+    /// What proves `author`'s key at `epoch` with nothing held (spec/wire.md §9 boxes payload):
+    /// its creation record and, for an account, header-only copies of the rotations from its first
+    /// epoch to `epoch` along the epochs each is signed at. `None` when a record or rotation is
+    /// not held here, or the line is longer than `MAX_ROTATIONS`.
+    fn author_proof(&mut self, author: &Tid, epoch: Option<CommitId>) -> Result<Option<AuthorProof>> {
+        let Some(record) = self.core.created(author).cloned() else { return Ok(None) };
+        let mut line = Vec::new();
+        let mut at = epoch.unwrap_or(osis_commit::FIRST_EPOCH);
+        while at != osis_commit::FIRST_EPOCH {
+            if line.len() == osis_base::format::MAX_ROTATIONS {
+                return Ok(None);
+            }
+            let Some(next) = self.header(&at).filter(|h| h.author == *author && h.rotation.is_some()).and_then(|h| h.epoch) else { return Ok(None) };
+            line.push(at);
+            at = next;
+        }
+        let mut rotations = Vec::with_capacity(line.len());
+        for c in line.into_iter().rev() {
+            let Some(blob) = self.read(|tx| tx.get_commit(&c))? else { return Ok(None) };
+            let mut copy = Arc::unwrap_or_clone(blob);
+            copy.parts.clear();
+            rotations.push(osis_base::decode(&copy.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB }).map_err(|_| Error::Corrupt("rotation header"))?);
+        }
+        Ok(Some(AuthorProof { record, rotations }))
     }
 
     /// The key this node signs as `author` with, and the epoch it names (an account's open

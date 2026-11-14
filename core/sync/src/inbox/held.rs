@@ -5,8 +5,8 @@
 //! judged by one `Effects` key over what it reads (the entry, the engine's verdicts), so a change
 //! costs what it touched (`inbox-full-walk-scale`: a contact's blobs up to the caps cost a change
 //! O(change)). Per entry:
-//! - under an inbox this node reads: taken (`Engine::take_inbox`, judged again as what it read
-//!   moves) until its commit applied, then taken for good: while the commit is held it is judged
+//! - under an inbox this node reads: taken (`Engine::take_inbox`, vouched for once stamped: a
+//!   writer of the inbox, a node of this account, took it; judged again as what it read moves) until its commit applied, then taken for good: while the commit is held it is judged
 //!   from the commit alone (`taken`), never opened or taken again; a deposited one whose commit applied is stamped in place by a writer of the inbox,
 //!   at most one blob per commit and none whose expiry is more than `INBOX_LIFETIME + 2 ×
 //!   MAX_DRIFT` ahead; its dial hint kept while it lives;
@@ -363,7 +363,8 @@ fn judge(engine: &mut Engine, store: &Store, inboxes: &StampedSet<SyncId>, stamp
         // taken once: while its commit is held, nothing of the blob is opened or taken again
         let o = match taken.get(k) {
             Some((c, dial)) if engine.holds_commit(c) => Some(InboxOpened { commit: Some(*c), taken: Taken::Applied, hints: Vec::new(), dial: dial.clone() }),
-            _ => engine.take_inbox(s, b, false)?,
+            // stamped: a writer of the inbox, a node of this account, took it (vouched)
+            _ => engine.take_inbox(s, b, !e.deposited)?,
         };
         f.stamped = o.as_ref().and_then(|o| o.commit).and_then(|c| stamped.get(&(*s, c)).copied());
         f.writer = e.deposited && engine.signers(s, None)?.stamp.is_some();

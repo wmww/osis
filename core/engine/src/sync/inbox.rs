@@ -1,6 +1,7 @@
 //! Taking inbox blobs (spec/sync-inbox.md §2) and the invitations they leave
 //! (spec/sync-set.md §4): an inbox blob opens under an actor whose `keys.0` names its sync ID as
-//! its inbox; its commit applies only once taken (held already, its sender connected, or the user accepted).
+//! its inbox; its commit applies only once taken (held already, its sender connected, or vouched for:
+//! the user accepted it or a writer of the inbox stamped it).
 //! A taken blob boxing the recipient read applies as any commit; one boxing it sync alone writes a
 //! sync record and applies nothing (spec/sync-judgement.md §6: no engine state of what S carries).
 //! An untaken one waits, listed as an invitation, until judged again.
@@ -247,24 +248,22 @@ impl Engine {
         Ok(things.iter().any(|t| self.core.role_now(author, t).is_some()))
     }
 
-    /// Takes boxes payload `p` to `a` (spec/sync-inbox.md §2 Taking): refused when its signature
-    /// fails under its author's key held here; taken whole when the user accepted it or its
-    /// signature verifies under a connected author's key, else for the things it boxes `a` on
-    /// that a synced group's closure lists; the sync secrets of the boxes taken that open go into
-    /// their things' sync records with its sync IDs and dial hint (spec/sync-judgement.md §6),
-    /// and nothing else.
-    fn take_boxes(&mut self, s: &SyncId, blob: &BlobId, a: &Tid, expires: WallMs, p: BoxesPayload, accepted: bool) -> Result<Option<InboxOpened>> {
+    /// Takes boxes payload `p` to `a` (spec/sync-inbox.md §2 Taking): refused unless its
+    /// signature verifies under the author's key its own proof gives (`BoxesPayload::verified`);
+    /// taken when vouched for (the user accepted it, or a writer of the inbox stamped it) or its
+    /// author is connected, giving the sync secrets of its boxes that open with its sync IDs and
+    /// dial hint (spec/sync-judgement.md §6), and nothing else. Not taken, it gives the things a
+    /// synced group's closure lists their boxes' sync secrets alone: no sync ID and no dial hint,
+    /// which are the sender's word (a forger knowing a listed tid would otherwise attach its own
+    /// data and address to the thing); the blob waits, its other things an invite request.
+    fn take_boxes(&mut self, s: &SyncId, blob: &BlobId, a: &Tid, expires: WallMs, p: BoxesPayload, vouched: bool) -> Result<Option<InboxOpened>> {
         let id = p.commit;
         let refused = |dial| Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Refused, hints: Vec::new(), dial }));
-        let verified = match crate::apply::signing_key_at(&self.core, &p.author, p.epoch) {
-            Ok(Some(k)) if p.verifies(a, &k) => true,
-            Ok(None) => false,
-            _ => return refused(None),
-        };
+        if !p.verified(a) {
+            return refused(None);
+        }
         let boxed = self.boxes_payload_to(a, &p);
-        // accepted or by a connected author: every thing; else only those a synced group's
-        // closure lists (the signature unchecked, a box there gives nothing else)
-        let whole = accepted || (verified && self.author_connected(&p.author)?);
+        let whole = vouched || self.author_connected(&p.author)?;
         let listed = if whole { BTreeSet::new() } else { self.synced_closures()? };
         let take: Vec<&osis_label::BoxedThing> = p.things.iter().filter(|x| whole || listed.contains(&x.tid)).collect();
         let b = *blob;
@@ -272,9 +271,7 @@ impl Engine {
         let rest: Vec<(Tid, Role)> = boxed.things.keys().filter(|t| !take.iter().any(|x| x.tid == **t)).filter_map(|t| Some((*t, boxed.role(t)?))).collect();
         let w = (!rest.is_empty()).then_some(WaitingBlob { sync_id: *s, commit: id, things: rest, from: p.author, expires });
         self.run(|tx| set_waiting(tx, &b, w))?;
-        if take.is_empty() {
-            return Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Waiting, hints: Vec::new(), dial: None }));
-        }
+        let dial = if whole { p.dial.as_ref() } else { None };
         let mut any = false;
         for t in take {
             let secrets: Vec<_> = boxed.things.get(&t.tid).into_iter().flatten().filter(|o| o.role == Role::Sync && o.epoch.names(&t.tid, Role::Sync, &o.secret)).map(|o| (o.epoch, o.secret.clone())).collect();
@@ -282,24 +279,26 @@ impl Engine {
                 continue;
             }
             any = true;
-            let (tid, ids) = (t.tid, t.sync_id.into_iter().collect::<Vec<_>>());
-            self.run(|tx| super::records::note_sync_secrets(tx, &tid, &ids, secrets, p.dial.as_ref()))?;
+            let (tid, ids) = (t.tid, if whole { t.sync_id.into_iter().collect::<Vec<_>>() } else { Vec::new() });
+            self.run(|tx| super::records::note_sync_secrets(tx, &tid, &ids, secrets, dial))?;
         }
-        if !any {
-            return refused(p.dial);
+        match (whole, any) {
+            (true, true) => Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Applied, hints: Vec::new(), dial: p.dial })),
+            (true, false) => refused(p.dial),
+            (false, _) => Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Waiting, hints: Vec::new(), dial: None })),
         }
-        Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Applied, hints: Vec::new(), dial: p.dial }))
     }
 
-    /// Takes the inbox blob `bytes` (ID `blob`) held under `s`: see the module doc. `accepted`:
-    /// the user accepted it (spec/sync-set.md §4).
-    pub(crate) fn take_inbox_bytes(&mut self, s: &SyncId, blob: &BlobId, bytes: &[u8], accepted: bool) -> Result<Option<InboxOpened>> {
+    /// Takes the inbox blob `bytes` (ID `blob`) held under `s`: see the module doc. `vouched`:
+    /// the user accepted it (spec/sync-set.md §4), or a writer of the inbox stamped it in place (a
+    /// node of the account took it, spec/sync-inbox.md §2 Taking).
+    pub(crate) fn take_inbox_bytes(&mut self, s: &SyncId, blob: &BlobId, bytes: &[u8], vouched: bool) -> Result<Option<InboxOpened>> {
         let Some((a, expires, inbox)) = self.open_inbox_bytes(s, bytes) else { return Ok(None) };
         // a stranded notice asks for a re-seal the recipient judges itself (spec/permissions.md
         // §4): not a role commit to take
         let p = match inbox {
             Inbox::Payload(p) => p,
-            Inbox::Boxes(p) => return self.take_boxes(s, blob, &a, expires, p, accepted),
+            Inbox::Boxes(p) => return self.take_boxes(s, blob, &a, expires, p, vouched),
             Inbox::Stranded(_) => return Ok(Some(InboxOpened { commit: None, taken: Taken::Refused, hints: Vec::new(), dial: None })),
         };
         let (plain, rest) = InboxPayload::split(p);
@@ -309,7 +308,7 @@ impl Engine {
         let b = *blob;
         let boxed = self.boxed_to(&a, &cb, &id);
         let held = self.core.ix.commits.contains_key(&id);
-        let taken = held || accepted || self.sender_connected(&cb, &id)?;
+        let taken = held || vouched || self.sender_connected(&cb, &id)?;
         if !taken {
             let w = WaitingBlob { sync_id: *s, commit: id, things: boxed.things.keys().filter_map(|t| Some((*t, boxed.role(t)?))).collect(), from: cb.header.author, expires };
             self.run(|tx| set_waiting(tx, &b, Some(w)))?;
@@ -384,11 +383,11 @@ impl Engine {
     /// Takes inbox blob `bytes` under whichever inbox here opens it (tests: an inbox blob carried
     /// by hand, as sync would take it).
     #[doc(hidden)]
-    pub fn take_inbox_blob(&mut self, bytes: &[u8], accepted: bool) -> Result<Option<InboxOpened>> {
+    pub fn take_inbox_blob(&mut self, bytes: &[u8], vouched: bool) -> Result<Option<InboxOpened>> {
         let b = osis_label::blob_id(bytes);
         let ids: Vec<SyncId> = self.inbox_actors().keys().copied().collect();
         for s in ids {
-            if let Some(o) = self.take_inbox_bytes(&s, &b, bytes, accepted)? {
+            if let Some(o) = self.take_inbox_bytes(&s, &b, bytes, vouched)? {
                 return Ok(Some(o));
             }
         }

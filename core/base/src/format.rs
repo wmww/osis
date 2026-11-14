@@ -24,6 +24,8 @@ pub const TAG_STRUCT_RESERVED: u64 = 1619;
 
 /// Largest blob, prefix and ciphertext (spec/wire.md §2, §5). fixed.
 pub const MAX_BLOB: usize = 8 * MIB;
+/// Account rotations one Prove or one boxes payload carries (spec/wire.md §2, §9, §11.2).
+pub const MAX_ROTATIONS: usize = 256;
 /// Atomic values and header lists whose canonical encoding exceeds this are chunked
 /// (spec/wire.md §2, §4; spec/data-model.md §6). fixed.
 pub const CHUNK_THRESHOLD: usize = 128 * KIB;
