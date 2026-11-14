@@ -125,13 +125,13 @@ pub trait Peers {
 /// The memo effects the product's `Peers` settles: the sync set, and per sync ID its dial peers.
 #[derive(Clone)]
 pub struct PeersFx {
-    set: Effects<(), Vec<SyncId>>,
+    set: crate::set::SetFollow,
     peers: Effects<SyncId, Arc<Vec<Address>>>,
 }
 
 impl Default for PeersFx {
     fn default() -> PeersFx {
-        PeersFx { set: Effects::new("dials sync set"), peers: Effects::new("dial peers") }
+        PeersFx { set: crate::set::SetFollow::new("dials sync set"), peers: Effects::new("dial peers") }
     }
 }
 
@@ -154,18 +154,12 @@ fn dial_peers(engine: &mut Engine, s: &SyncId) -> Arc<Vec<Address>> {
 impl Peers for NodePeers<'_> {
     fn due(&mut self) -> Vec<SyncId> {
         let mut out = Vec::new();
-        self.fx.set.want(());
-        for k in self.fx.set.due() {
-            let engine = &mut *self.engine;
-            if let Some((was, now)) = self.fx.set.settle(&k, || engine.sync_set().map(|s| s.ids.keys().copied().collect()).unwrap_or_default()) {
-                let was: BTreeSet<SyncId> = was.unwrap_or_default().into_iter().collect();
-                let now: BTreeSet<SyncId> = now.into_iter().collect();
-                for s in now.difference(&was) {
-                    self.fx.peers.want(*s);
-                }
-                for s in was.difference(&now) {
-                    self.fx.peers.unwant(s);
-                    out.push(*s);
+        for (s, now) in self.fx.set.settle(self.engine).unwrap_or_default() {
+            match now {
+                Some(_) => self.fx.peers.want(s),
+                None => {
+                    self.fx.peers.unwant(&s);
+                    out.push(s);
                 }
             }
         }

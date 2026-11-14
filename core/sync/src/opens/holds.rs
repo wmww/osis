@@ -12,7 +12,6 @@ use osis_engine::sync::J;
 use osis_label::Step;
 use osis_proto::{BehindItem, Code, DepositItem, Grant, SharedItem};
 use osis_base::memo::Effects;
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// One sync ID's credentials at this node, before a connection's J filters them
@@ -87,8 +86,14 @@ pub trait Holds {
     /// Takes a static entry's grant: the head's sync key when the path verifies from its genesis
     /// step and the box's sync secret derives it (spec/sync-opens.md §5), the box's secrets taken.
     fn take_grant(&mut self, s: &SyncId, entry: &[u8; 32], grant: &Grant) -> Option<[u8; 32]>;
-    /// Answers a Behind item (spec/sync-ids.md §6 Behind).
+    /// Answers a Behind item whose open signature verified (spec/sync-ids.md §6 Behind).
     fn behind(&mut self, item: &BehindItem) -> SharedItem;
+    /// Answers a Behind item whose signature did not verify: 13 for a sync ID not kept unread
+    /// here, else 14.
+    fn behind_unsigned(&mut self, s: &SyncId) -> SharedItem;
+    /// S's recorded genesis step and its claim set, when this node reads S (a Register from
+    /// genesis, spec/sync-ids.md §6 Walk).
+    fn genesis(&mut self, s: &SyncId) -> Option<(Step, Option<osis_label::ClaimSet>)>;
     /// Takes a Deposit item (spec/sync-inbox.md §3) a peer offered; `src` is where its peer
     /// budget charge lives (the peer's record, else the connection).
     fn deposit(&mut self, src: crate::store::Source, item: &DepositItem) -> Code;
@@ -104,13 +109,13 @@ pub trait Holds {
 /// moved.
 #[derive(Clone)]
 pub struct Fx {
-    set: Effects<(), Vec<SyncId>>,
+    set: crate::set::SetFollow,
     creds: Effects<SyncId, Option<[u8; 32]>>,
 }
 
 impl Default for Fx {
     fn default() -> Fx {
-        Fx { set: Effects::new("opens sync set"), creds: Effects::new("opens credentials") }
+        Fx { set: crate::set::SetFollow::new("opens sync set"), creds: Effects::new("opens credentials") }
     }
 }
 
@@ -126,6 +131,12 @@ pub struct NodeHolds<'a, 'c> {
     pub cx: &'a mut Cx<'c>,
     pub unread: &'a Unread,
     pub fx: &'a mut Fx,
+}
+
+/// S's recorded path, read here.
+fn path_of(cx: &mut Cx, s: &SyncId) -> Option<Arc<osis_engine::sync::Path>> {
+    let (t, _) = cx.engine.sync_holding(s).ok()??;
+    cx.engine.sync_ids(&t).ok()?.iter().find(|o| o.id == *s && !o.hint).map(|o| o.path.clone())
 }
 
 /// S's credentials as the engine (read) or `unread` (kept unread) gives them.
@@ -144,6 +155,25 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
                 }
                 for st in &rc.statics {
                     c.shows.push((Shown::Static(*st), None));
+                }
+                // the sync proof of the newest recorded step's sync key (spec/sync-opens.md §4)
+                if let (Some(head), Some((id, p))) = (&rc.head, rc.proofs.first())
+                    && head.id() == *id
+                {
+                    c.shows.push((Shown::Proof(*p), None));
+                }
+                // the walk's tests (spec/sync-ids.md §6 Walk): the recorded steps deepest first,
+                // each by its sync key when held, else its claim key
+                if let Some(path) = path_of(cx, s) {
+                    for (step, _) in path.steps.iter().rev() {
+                        let id = step.id();
+                        let keys = rc.keys.get(&id);
+                        if let Some(k) = keys.and_then(|k| k.sync.clone()) {
+                            c.tests.push((Tested::SyncKey { step: id, key: k }, keys.and_then(|k| k.epochs[0])));
+                        } else if let Ok(Some(k)) = cx.engine.claim_key(s, &id) {
+                            c.tests.push((Tested::Claim { step: id, key: k, sync: step.keys.sync.to_bytes() }, None));
+                        }
+                    }
                 }
                 if let Some(head) = &rc.head {
                     let keys = rc.keys.get(&head.id());
@@ -176,18 +206,14 @@ impl Holds for NodeHolds<'_, '_> {
 
     fn due(&mut self) -> Vec<SyncId> {
         let mut out = Vec::new();
-        self.fx.set.want(());
-        for k in self.fx.set.due() {
-            let engine = &mut *self.cx.engine;
-            if let Some((was, now)) = self.fx.set.settle(&k, || engine.sync_set().map(|s| s.ids.keys().copied().collect()).unwrap_or_default()) {
-                let was: BTreeSet<SyncId> = was.unwrap_or_default().into_iter().collect();
-                let now: BTreeSet<SyncId> = now.into_iter().collect();
-                for s in now.difference(&was) {
-                    self.fx.creds.want(*s);
-                }
-                for s in was.difference(&now) {
-                    self.fx.creds.unwant(s);
-                    out.push(*s);
+        // the sync set per key: what moved of it alone (a failing engine read is tried again at
+        // the next settle; nothing moved is reported meanwhile)
+        for (s, now) in self.fx.set.settle(self.cx.engine).unwrap_or_default() {
+            match now {
+                Some(_) => self.fx.creds.want(s),
+                None => {
+                    self.fx.creds.unwant(&s);
+                    out.push(s);
                 }
             }
         }
@@ -241,8 +267,36 @@ impl Holds for NodeHolds<'_, '_> {
         None
     }
 
-    fn behind(&mut self, _item: &BehindItem) -> SharedItem {
-        SharedItem::code(Code::DECLINED)
+    fn behind(&mut self, item: &BehindItem) -> SharedItem {
+        use crate::store::Cred;
+        let Ok(k) = osis_crypto::VerifyingKey::from_bytes(&item.key) else { return SharedItem::code(Code::DECLINED) };
+        // the item names no kind of key: each kind it may be, in turn (a key is one of them)
+        let creds = match item.step {
+            Some(_) => vec![Cred::Sync(k), Cred::Claim(item.key), Cred::Signing(k)],
+            None => vec![Cred::Sync(k), Cred::Signing(k)],
+        };
+        let max = osis_proto::limits::REPLY_BUDGET / 326;
+        let mut last = SharedItem::code(Code::DECLINED);
+        for c in &creds {
+            match self.cx.store.behind(&item.sync_id, item.step.as_ref(), c, max as usize) {
+                Ok((Code::OK, grant)) => return SharedItem { grant, ..SharedItem::code(Code::OK) },
+                Ok((code, _)) => last = SharedItem::code(code),
+                // a store failure refuses for now: the asker asks again after a back-off
+                Err(_) => return SharedItem::code(Code::RATE_LIMITED),
+            }
+        }
+        last
+    }
+
+    fn behind_unsigned(&mut self, s: &SyncId) -> SharedItem {
+        SharedItem::code(if self.cx.store.holding(s) == Some(Holding::Unread) { Code::DECLINED } else { Code::UNKNOWN_SYNC_ID })
+    }
+
+    fn genesis(&mut self, s: &SyncId) -> Option<(Step, Option<osis_label::ClaimSet>)> {
+        let (t, Holding::Read) = self.cx.engine.sync_holding(s).ok()?? else { return None };
+        let ids = self.cx.engine.sync_ids(&t).ok()?;
+        let o = ids.iter().find(|o| o.id == *s && !o.hint)?;
+        o.path.steps.first().cloned()
     }
 
     fn deposit(&mut self, src: crate::store::Source, item: &DepositItem) -> Code {

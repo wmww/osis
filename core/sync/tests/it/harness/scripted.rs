@@ -184,6 +184,12 @@ impl Holds for Table {
     fn behind(&mut self, _item: &BehindItem) -> SharedItem {
         SharedItem::code(Code::DECLINED)
     }
+    fn behind_unsigned(&mut self, _s: &SyncId) -> SharedItem {
+        SharedItem::code(Code::DECLINED)
+    }
+    fn genesis(&mut self, _s: &SyncId) -> Option<(osis_label::Step, Option<osis_label::ClaimSet>)> {
+        None
+    }
     fn deposit(&mut self, _src: osis_sync::store::Source, _item: &DepositItem) -> Code {
         Code::DECLINED
     }

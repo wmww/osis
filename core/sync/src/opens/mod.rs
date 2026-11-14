@@ -191,6 +191,8 @@ enum Req {
     Beacons { generation: u64 },
     Offer,
     Lost,
+    /// A genesis step registered at a source that keeps S without a step (a Behind answered 13).
+    Register,
 }
 
 /// An Offer item sent, to read its answer by.
@@ -973,7 +975,8 @@ impl Opens {
         match (req, m) {
             (Req::Resume, Msg::Resumed { nonce, tag, .. }) => self.resumed(ctx, conn, nonce, tag, moved),
             (Req::Resume, _) => self.no_record(ctx, conn, moved),
-            (Req::NoRecord | Req::Lost, _) => {}
+            // the source's filter shows its new head's credentials when it moves: nothing to do
+            (Req::NoRecord | Req::Lost | Req::Register, _) => {}
             (Req::Beacons { generation }, m) => self.beacons_answered(ctx, conn, id, generation, &m),
             (Req::Offer, Msg::Shared { items, .. }) => self.answered(ctx, conn, items, moved),
             (Req::Offer, _) => self.answered(ctx, conn, Vec::new(), moved),
@@ -1469,6 +1472,17 @@ impl Opens {
                                 retest = true;
                             }
                         }
+                        // The source keeps S with no step: register the recorded path from genesis
+                        // (spec/sync-ids.md §6 Walk), its genesis step first; the rest follows
+                        // once S opens there by that step's credential (Steps).
+                        (Code::UNKNOWN_SYNC_ID, _) => {
+                            if let Some((step, claim_set)) = ctx.holds.genesis(&s) {
+                                let id = ctx.wire.request(conn, Msg::Register { id: 0, sync_id: s, step, claim_set });
+                                if let Some(c) = self.conns.get_mut(&conn) {
+                                    c.reqs.insert(id, Req::Register);
+                                }
+                            }
+                        }
                         // Refused on a step: off the source's path; ask on an earlier one.
                         _ => {
                             w.refused.insert(named);
@@ -1535,7 +1549,12 @@ impl Opens {
                     let src = self.record(conn).map_or(crate::store::Source::Conn(conn), crate::store::Source::Record);
                     SharedItem::code(ctx.holds.deposit(src, &d))
                 }
-                OfferItem::Behind(b) => ctx.holds.behind(&b),
+                // an open signature by the key it names, bound to this connection (spec/sync-ids.md
+                // §6 Behind); a sync ID not kept here is 13 whatever it carries
+                OfferItem::Behind(b) => match self.conns.get(&conn) {
+                    Some(c) if c.bind.peer_signed(&b.key, &b.sync_id, &b.sig) => ctx.holds.behind(&b),
+                    _ => ctx.holds.behind_unsigned(&b.sync_id),
+                },
             };
             answers.push(a);
         }

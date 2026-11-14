@@ -30,19 +30,21 @@ pub struct SetFollow {
     /// Per sync ID, every thing naming it.
     by_sync: BTreeMap<SyncId, BTreeMap<Tid, Holding>>,
     held: BTreeMap<SyncId, Held>,
+    /// Sync IDs whose things moved and whose entry is not judged yet (kept over a failed settle).
+    touched: BTreeSet<SyncId>,
 }
 
 impl SetFollow {
     pub fn new(name: &'static str) -> SetFollow {
         let mut closure = Effects::new(name);
         closure.want(());
-        SetFollow { closure, things: BTreeSet::new(), thing: Effects::new(name), ids_of: BTreeMap::new(), by_sync: BTreeMap::new(), held: BTreeMap::new() }
+        SetFollow { closure, things: BTreeSet::new(), thing: Effects::new(name), ids_of: BTreeMap::new(), by_sync: BTreeMap::new(), held: BTreeMap::new(), touched: BTreeSet::new() }
     }
 
     /// The sync IDs whose entry moved since the last call, each with its entry now (`None`: it
     /// left the sync set).
     pub fn settle(&mut self, engine: &mut Engine) -> Result<Vec<(SyncId, Option<Held>)>> {
-        let mut touched: BTreeSet<SyncId> = BTreeSet::new();
+        let mut touched = std::mem::take(&mut self.touched);
         if !self.closure.due().is_empty() {
             let mut failed = None;
             let moved = self.closure.settle(&(), || {
@@ -54,6 +56,7 @@ impl SetFollow {
             if let Some(e) = failed {
                 self.closure.unwant(&());
                 self.closure.want(());
+                self.touched = touched;
                 return Err(e.into());
             }
             if let Some((_, now)) = moved {
@@ -81,6 +84,7 @@ impl SetFollow {
             if let Some(e) = failed {
                 self.thing.unwant(&t);
                 self.thing.want(t);
+                self.touched = touched;
                 return Err(e.into());
             }
             let Some((_, now)) = moved else { continue };

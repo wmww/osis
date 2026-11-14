@@ -80,7 +80,6 @@ fn a_history_replays_from_its_seed() {
 // messages, device faults and clock skew, healed and run to quiet: every reader reads as the
 // reference, no needed body is deleted everywhere.
 #[test]
-#[ignore = "wiring: the engine facade's sync_set, deliveries, open_entry and seal_body answer NotBuilt, so no grant or entry reaches another node"]
 fn histories_converge() {
     let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", large(0..1000));
     seeds.run("histories_converge", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |s| converges(s, NODES, STEPS, true));
@@ -89,7 +88,6 @@ fn histories_converge() {
 // spec: none (property: as `histories_converge`, no faults): the same histories on a clean
 // network, so a failure there is sync's rules, not its recovery.
 #[test]
-#[ignore = "wiring: the engine facade's sync_set, deliveries, open_entry and seal_body answer NotBuilt, so no grant or entry reaches another node"]
 fn clean_histories_converge() {
     let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", large(0..1000));
     seeds.run("clean_histories_converge", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |s| converges(s, NODES, STEPS, false));
