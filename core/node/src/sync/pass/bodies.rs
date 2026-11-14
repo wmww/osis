@@ -9,9 +9,9 @@ impl SyncEngine {
     /// state, any entry), else a fresh placement when this node may log or deposit it, with
     /// the blobs it links when this node writes. Another node's body not at `source` waits for
     /// its author or a co-writer (`relay_at`). `behind`: this node writes here and a must-hold role
-    /// commit not at the source waits for its relay (`At::behind`). `roles_lacked`: a source
-    /// lacked one of this node's own role commits or requests at the last pass (`Work::lacked`).
-    pub(super) fn body_sends(&mut self, p: &Head, bodies: &[Body], snaps: &Snaps, snapping: &Unsettled, left: &mut Left, (behind, roles_lacked): (&mut bool, bool)) -> Result<Vec<Out>> {
+    /// commit not at the source waits for its relay (`At::behind`). `lacked`: what a source lacked
+    /// at the last pass (`Work::lacked`).
+    pub(super) fn body_sends(&mut self, p: &Head, bodies: &[Body], snaps: &Snaps, snapping: &Unsettled, left: &mut Left, (behind, lacked): (&mut bool, &BTreeMap<BlobId, (u8, Touch)>)) -> Result<Vec<Out>> {
         let (g, l, keys, read_ok, source) = (&p.g, p.l, &p.keys, p.read_ok, p.source.as_ref());
         let mut sends = Vec::new();
         self.stats.bodies += bodies.len() as u64;
@@ -58,12 +58,12 @@ impl SyncEngine {
                 None if read_ok && (keys.is_writer() || self.may_deposit(keys, b)) => {
                     let again = self.delete_took(source, l, b).then_some(p.id);
                     // a placement again waits, as deletes do (`At::behind`), until every
-                    // source holds this node's own role commits and requests: the deleter pulls
-                    // them first, else it judges the placement by older roles, deletes it again,
-                    // and that delete stands (one refused there until a step registers comes
-                    // after it). Another node's role commits it relays have their own wait
-                    // (`relay_at`)
-                    if again.is_some() && (roles_lacked || self.roles_lacking(&l, &sends)) {
+                    // source not full holds this node's own role commits and requests: the
+                    // deleter pulls them first, else it judges the placement by older roles,
+                    // deletes it again, and that delete stands (one refused there until a step
+                    // registers comes after it). Another node's role commits it relays have
+                    // their own wait (`relay_at`)
+                    if again.is_some() && self.roles_lacking(&l, &sends, lacked) {
                         left.commits.insert(b.commit);
                         continue;
                     }
@@ -95,17 +95,26 @@ impl SyncEngine {
         Ok(sends)
     }
 
-    /// Whether a peer that cannot read `l`, where this node keeps it open, lacks one of this
-    /// node's own role commits or requests among `sends` (`roles_lacking_at`).
-    fn roles_lacking(&self, l: &LabelId, sends: &[Out]) -> bool {
-        let open = |id: &ConnId, c: &crate::sync::conn::Conn| c.up() && c.labels.get(l).is_some_and(|x| x.phase.is_open()) && self.read_as_store(*id, l) && !self.shared_reads(*id, l);
-        self.conns.iter().filter(|(id, c)| open(id, c)).filter_map(|(_, c)| c.peer).any(|peer| self.roles_lacking_at(&peer, l, sends))
+    /// Whether a peer that cannot read `l`, where this node keeps it open and that is not full
+    /// (nothing waits for a full peer: `LabelAt::full`), lacks one of this node's own role
+    /// commits or requests among `sends` or what a source lacked at the last pass.
+    fn roles_lacking(&self, l: &LabelId, sends: &[Out], lacked: &BTreeMap<BlobId, (u8, Touch)>) -> bool {
+        let open = |id: &ConnId, c: &crate::sync::conn::Conn| c.up() && c.labels.get(l).is_some_and(|x| x.phase.is_open() && !x.full) && self.read_as_store(*id, l) && !self.shared_reads(*id, l);
+        let last = lacked.iter().map(|(id, (prio, of))| (*prio, Some(*of), *id));
+        let own: Vec<BlobId> = sends.iter().map(|o| (o.prio, o.of, o.id)).chain(last).filter(|(prio, of, _)| self.own_role(*prio, *of)).map(|(_, _, id)| id).collect();
+        self.conns.iter().filter(|(id, c)| open(id, c)).filter_map(|(_, c)| c.peer).any(|peer| own.iter().any(|id| self.lacks_at(&peer, l, id)))
     }
 
     /// Whether `source` lacks one of this node's own role commits or requests among `sends`
-    /// (`own_role`): neither present there nor deleted there, refused included.
+    /// (`own_role`).
     pub(super) fn roles_lacking_at(&self, source: &PeerKey, l: &LabelId, sends: &[Out]) -> bool {
-        sends.iter().any(|o| self.own_role(o.prio, o.of) && !self.state.is_present(source, l, &o.id) && !self.state.is_gone_at(source, l, &o.id))
+        sends.iter().any(|o| self.own_role(o.prio, o.of) && self.lacks_at(source, l, &o.id))
+    }
+
+    /// Whether `source` lacks entry `id` of `l`: neither present there nor deleted there, refused
+    /// included.
+    fn lacks_at(&self, source: &PeerKey, l: &LabelId, id: &BlobId) -> bool {
+        !self.state.is_present(source, l, id) && !self.state.is_gone_at(source, l, id)
     }
 
     /// Whether an entry placed at priority `prio` for `of` holds this node's own role commit or

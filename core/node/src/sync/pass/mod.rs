@@ -495,9 +495,7 @@ impl SyncEngine {
         // from here yet
         let mut behind = false;
         if own {
-            // own role commits and requests a source lacked at the last pass (`Work::lacked`)
-            let roles_lacked = w.lacked.values().any(|(prio, of)| self.own_role(*prio, Some(*of)));
-            sends = self.body_sends(p, &bodies, &snaps, &snapping, &mut left, (&mut behind, roles_lacked))?;
+            sends = self.body_sends(p, &bodies, &snaps, &snapping, &mut left, (&mut behind, &w.lacked))?;
             self.relay_now.remove(&l);
             let ours: BTreeSet<BlobId> = sends.iter().filter(|o| o.fresh).map(|o| o.id).collect();
             let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
