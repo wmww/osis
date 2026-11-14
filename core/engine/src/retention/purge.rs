@@ -624,7 +624,7 @@ pub(crate) fn rejudge_carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut
     let new: Vec<Owned> = want.iter().filter(|o| !had.contains(o)).cloned().collect();
     off_valueless(tx, tid, ak, &gone);
     if list_valueless(tx, tid, ak, &new) {
-        owe_resnapshot(tx, tid, ak, BTreeSet::new())?;
+        owe_resnapshot(tx, tid, ak, BTreeSet::new(), true)?;
     }
     crate::apply::rebuild(tx, tid, ak)?;
     changed.insert(k);
@@ -685,7 +685,7 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
             }
         }
         if stood {
-            owe_resnapshot(tx, item.tid(), item.ak(), held)?;
+            owe_resnapshot(tx, item.tid(), item.ak(), held, true)?;
         }
     }
     // the copies of commits not held here (`rejudge_carried`), once per named aspect
@@ -704,13 +704,17 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
 /// holds the snapshot. Durable (`records::RESNAPSHOTS_OWED`), so a stop before
 /// `Engine::purge_resnapshots` writes it, or a snapshot that may come only later, keeps the duty;
 /// an ephemeral aspect's in memory, as its data. Nothing on an aspect never compacted, or where
-/// this node does not write.
-pub(crate) fn owe_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, held: BTreeSet<CommitId>) -> Result<()> {
+/// this node does not write. `due`: tried at the next `Engine::purge_resnapshots`; else only once
+/// something marks it due (a body arriving late below a cut waits for the end of a complete
+/// pass, `rotation::floors::owe_state`, when the node holds the snapshots that may cover it).
+pub(crate) fn owe_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, held: BTreeSet<CommitId>, due: bool) -> Result<()> {
     if !super::snapshot::compacted(ak) || !writes_on(tx.core, tid) {
         return Ok(());
     }
     let had = tx.core.ix.resnapshots_owed.get(tid).and_then(|m| m.get(ak)).cloned();
-    tx.core.resnapshots_due.insert((*tid, ak.clone()));
+    if due {
+        tx.core.resnapshots_due.insert((*tid, ak.clone()));
+    }
     let mut all = had.clone().unwrap_or_default();
     all.extend(held);
     if had.as_ref() == Some(&all) {

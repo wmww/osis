@@ -183,11 +183,16 @@ fn stateful(ak: &osis_base::Ak) -> bool {
 /// those bodies (spec/crypto.md §5 Passing on). Signals hold no state, so nothing of them goes.
 /// Run by a cut's author in its grant and by every node at the end of a complete pass: a scan of
 /// the aspects held here once per floor the actor's content is sealed under (a cut is rare),
-/// nothing for an actor never cut.
+/// nothing for an actor never cut. The snapshots owed for bodies that arrived late
+/// (`late_part`) fall due here too: the pass brought whatever snapshots cover them (a first
+/// sync fetches the bodies before the cut's snapshots, spec/crypto.md §5 Order), so a node
+/// fetching history writes none of what those carry.
 pub(crate) fn owe_state(tx: &mut Tx<'_>, a: &Tid) -> Result<()> {
     if !any_floor(tx.core, a) {
         return Ok(());
     }
+    let late: Vec<(Tid, osis_base::Ak)> = tx.core.ix.resnapshots_owed.iter().filter(|(t, _)| tx.core.secret_actor(t) == Some(*a)).flat_map(|(t, m)| m.keys().map(|ak| (*t, ak.clone()))).collect();
+    tx.core.resnapshots_due.extend(late);
     let Some((_, f)) = tx.core.seal_epoch(a) else { return Ok(()) };
     let key = [crate::engine::records::CUT_SETTLED, a.as_bytes().as_slice()].concat();
     let settled = tx.txn.get_local(&key)?.and_then(|v| v.try_into().ok()).map_or(0, u64::from_le_bytes);
@@ -198,7 +203,7 @@ pub(crate) fn owe_state(tx: &mut Tx<'_>, a: &Tid) -> Result<()> {
     for (t, ak) in aspects {
         let held = below(tx, &t, &ak, f, true)?;
         if !held.is_empty() {
-            crate::retention::purge::owe_resnapshot(tx, &t, &ak, held)?;
+            crate::retention::purge::owe_resnapshot(tx, &t, &ak, held, true)?;
         }
     }
     tx.txn.put_local(&key, &f.to_le_bytes(), osis_store::Shred::No)?;
@@ -207,7 +212,8 @@ pub(crate) fn owe_state(tx: &mut Tx<'_>, a: &Tid) -> Result<()> {
 
 /// State at a cut, for part `ai` of commit `c` (header `h`) applied here: one opened under an
 /// epoch whose floor is below the one this node seals its thing under (written beside the cut,
-/// or arriving late) owes a snapshot of its aspect (`owe_state`). A part of unknown floor (read
+/// or arriving late) owes a snapshot of its aspect, due at the end of the next complete pass
+/// (`owe_state`). A part of unknown floor (read
 /// in no section) owes nothing here, nor does this node's own (`owe_state` judges it).
 pub(crate) fn late_part(tx: &mut Tx<'_>, c: &osis_base::CommitId, h: &osis_commit::Header, ai: usize) -> Result<()> {
     let Some(x) = h.aspects.get(ai) else { return Ok(()) };
@@ -219,5 +225,5 @@ pub(crate) fn late_part(tx: &mut Tx<'_>, c: &osis_base::CommitId, h: &osis_commi
     if f == 0 || !crate::labeling::opened::part_floor(tx, c, ai, &x.tid)?.is_some_and(|p| p < f) {
         return Ok(());
     }
-    crate::retention::purge::owe_resnapshot(tx, &x.tid, &x.ak, BTreeSet::from([*c]))
+    crate::retention::purge::owe_resnapshot(tx, &x.tid, &x.ak, BTreeSet::from([*c]), false)
 }

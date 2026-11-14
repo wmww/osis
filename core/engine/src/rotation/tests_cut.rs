@@ -1271,3 +1271,91 @@ fn cut_state_cost_does_not_grow_with_history_spec_crypto_4() {
     assert_eq!((small.0, small.1), (big.0, big.1), "the cut's commits grow with history");
     assert!(big.2 <= small.2 + 8 * 4, "the cut's snapshot bytes grow with history: {} against {}", big.2, small.2);
 }
+
+/// The compaction snapshots peer `i` wrote itself.
+fn own_snapshots(lp: &LocalPeer, i: usize) -> usize {
+    let e = &lp.peers[i].engine;
+    let me = e.me();
+    e.core.ix.commits.values().filter(|m| m.header.kind.is_compaction() && m.view.author == me).count()
+}
+
+// spec/crypto.md §4 (State at a cut): a writer granted with history after a cut (or a new node
+// of any writer) fetches the role commits first, then the bodies from before the cut, the cut's
+// snapshots after them (a first sync goes by order, spec/crypto.md §5 Order). Those bodies are covered by the
+// cut's snapshots, so it owes no snapshot of its own: it writes none, however its fetch is cut
+// into steps (node-sync writes owed snapshots after each, `SyncEngine::engine_events`).
+#[test]
+fn late_bodies_a_cut_covers_owe_no_snapshot_spec_crypto_4() {
+    let mut lp = synced(3);
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let g = group(&mut lp, 0);
+    let mut label = Label::default();
+    for r in 0..3 {
+        let mut m = crate::Mutation::new();
+        for a in 0..4 {
+            m.op(g, &osis_base::Ak::new(format!("x:a{a}.0")).unwrap(), osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Set(osis_base::Value::Str(format!("value {r}"))) }).unwrap();
+        }
+        lp.peers[0].commit(m).unwrap();
+        label.place(&mut lp, g, &[0]);
+    }
+    let cut = lp.peers[0].engine.grant_with(&g, &tids[1], &edge(Role::Read), History::None).unwrap();
+    label.note(&cut);
+    label.place(&mut lp, g, &[0]);
+    let done = lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Write)).unwrap();
+    label.note(&done);
+    label.place(&mut lp, g, &[0]);
+    let snaps_a = own_snapshots(&lp, 0);
+    assert_eq!(snaps_a, 4, "A writes the state at its cut");
+    // W: its grant and A's commits off `g` whole, then `g`'s labels in `ts` order, one step each
+    for c in &done.commits {
+        let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
+        let _ = lp.peers[2].receive(&pk.bytes, pk.blobs.clone());
+    }
+    for pk in lp.packages(0).unwrap() {
+        if !on_g(&pk, g) {
+            let _ = lp.peers[2].receive(&pk.bytes, pk.blobs.clone());
+        }
+    }
+    let mut held = label.held.clone();
+    // spec/crypto.md §5 Order: role commits first (order 0), then by `ts`
+    held.sort_by_key(|pk| lp.peers[0].engine.header(&pk.id).map(|h| (!matches!(h.kind, osis_commit::Kind::Role), h.ts)));
+    for pk in &held {
+        lp.deliver_sealed(2, std::slice::from_ref(pk)).unwrap();
+        lp.peers[2].engine.purge_resnapshots().unwrap();
+    }
+    lp.deliver_sealed(2, &held).unwrap();
+    lp.peers[2].engine.purge_resnapshots().unwrap();
+    lp.peers[2].engine.reseal_due(&g, &Pass).unwrap();
+    for a in 0..4 {
+        let ak = osis_base::Ak::new(format!("x:a{a}.0")).unwrap();
+        assert_eq!(lp.peers[2].engine.get(&g, &ak).unwrap(), Some(osis_base::Value::Str("value 2".into())), "W reads another state");
+    }
+    assert_eq!(own_snapshots(&lp, 2), 0, "W snapshots state the cut's snapshots carry");
+}
+
+// spec/crypto.md §4 (State at a cut), spec/sync-ids.md §2 (Chunk reuse): a large value written
+// before a cut reaches its holder through the cut's snapshot, which links the value's chunk
+// tree as written: the snapshot is a few hundred bytes and no chunk is encrypted again.
+#[test]
+fn cut_snapshot_of_a_large_value_reuses_its_chunks_spec_crypto_4() {
+    let mut lp = synced(2);
+    let n = lp.peers[1].engine.me();
+    let g = group(&mut lp, 0);
+    let ak = osis_base::Ak::new("x:b.0").unwrap();
+    let mut x = vec![0u8; 1 << 20];
+    osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(3), &mut x);
+    let mut m = crate::Mutation::new();
+    m.set(g, &ak, &osis_base::Value::Bytes(x.clone())).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    let tree: BTreeSet<_> = lp.peers[0].engine.live_trees(&g).unwrap().blobs.into_iter().collect();
+    assert!(tree.len() > 4, "the value is chunked");
+    let before: BTreeSet<osis_base::CommitId> = lp.peers[0].engine.core.ix.commits.keys().copied().collect();
+    lp.peers[0].engine.grant_with(&g, &n, &edge(Role::Read), History::None).unwrap();
+    let snaps: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|pk| !before.contains(&pk.id) && osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header.kind.is_compaction()).collect();
+    assert_eq!(snaps.len(), 1, "one snapshot of the value");
+    let s = &snaps[0];
+    eprintln!("snapshot of a 1 MiB value: {} bytes, {} linked blobs", s.bytes.len(), s.blobs.len());
+    assert!(s.bytes.len() < 2048, "the snapshot carries the value: {} bytes", s.bytes.len());
+    assert!(s.blobs.iter().all(|(b, _)| tree.contains(b)), "the snapshot encrypts a chunk again");
+    assert_eq!(lp.peers[0].engine.live_trees(&g).unwrap().blobs.into_iter().collect::<BTreeSet<_>>(), tree, "the value's tree changed");
+}
