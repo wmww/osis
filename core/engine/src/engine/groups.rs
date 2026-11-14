@@ -190,7 +190,7 @@ impl Engine {
     pub fn closure_whole(&mut self, g: &Tid) -> Result<bool> {
         let closure = self.closure(g);
         let missing = missing_groups(&self.core, |x| closure.contains(x))?;
-        // no transaction where nothing is missing (the usual case)
+        // no store read where nothing is missing (the usual case)
         if missing.is_empty() {
             return Ok(true);
         }
