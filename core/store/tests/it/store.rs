@@ -839,7 +839,8 @@ fn unspilled_pages_roll_back_and_absent_removals_change_nothing() {
 // spec: none (notes/local-store.md, Stamps): a memo reading the store holds until a row it read
 // changes: a write, and the undo of one (a savepoint rolled back, an aborted transaction); a scan
 // moves with a row under its prefix, a table's read with a row of the table or its aspect's unit;
-// a row elsewhere moves nothing.
+// a row elsewhere moves nothing. A removal, a table dropped, a transaction set aside and
+// dropped, and a failed commit each move what read their rows.
 #[test]
 fn a_memo_over_the_store_moves_with_the_rows_it_read() {
     use osis_base::memo::Memo;
@@ -900,4 +901,23 @@ fn a_memo_over_the_store_moves_with_the_rows_it_read() {
     let mut t = s.transaction(&mut rng).unwrap();
     assert_eq!((ask(&mut t, 0), ask(&mut t, 2)), (b"1".to_vec(), b"v".to_vec()));
     assert_eq!(runs(), 3, "a write, and the abort of it and of a table row");
+    t.remove_local(b"r/a", Shred::No).unwrap();
+    assert_eq!((ask(&mut t, 0), ask(&mut t, 1)), (Vec::new(), Vec::new()));
+    t.drop_table(&t1, &a, 0).unwrap();
+    assert_eq!(ask(&mut t, 2), Vec::new());
+    assert_eq!(runs(), 3, "a removal, a table dropped");
+    t.commit().unwrap();
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.put_local(b"r/a", b"5", Shred::No).unwrap();
+    assert_eq!(ask(&mut t, 0), b"5".to_vec());
+    drop(t.suspend().unwrap());
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!(ask(&mut t, 0), Vec::new(), "a transaction set aside and dropped");
+    t.put_local(b"r/a", b"6", Shred::No).unwrap();
+    assert_eq!(ask(&mut t, 0), b"6".to_vec());
+    dev.faults.at(0, Fault::Fail);
+    assert!(t.commit().is_err());
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!(ask(&mut t, 0), Vec::new(), "a failed commit");
+    assert_eq!(runs(), 4);
 }

@@ -181,9 +181,9 @@ impl Stamping {
         }
         self.all.moved();
     }
-    fn stamp_owner(&self, o: Owner) {
+    fn stamp_owner(&self, o: Owner, present: bool) {
         if let Some(t) = self.table(o.0) {
-            t.wrote_key(o.1, true);
+            t.wrote_key(o.1, present);
         }
         self.all.moved();
     }
@@ -192,16 +192,19 @@ impl Stamping {
         self.log.push(Logged::Row(key.to_vec()));
     }
     fn owner(&mut self, o: Owner) {
-        self.stamp_owner(o);
+        self.stamp_owner(o, true);
         self.log.push(Logged::Owner(o));
     }
-    /// Stamps again what was written after the first `len` of the log, and forgets it.
+    /// Stamps again what was written after the first `len` of the log, and forgets it. Each is
+    /// stamped as removed, whether the undo leaves it there or not: a removal moves the key and
+    /// keeps no stamp of its own for it (a row there reads at its bucket's), so a row created and
+    /// undone leaves no stamp behind.
     fn undo_to(&mut self, len: usize) {
         let undone = self.log.split_off(len.min(self.log.len()));
         for l in undone {
             match l {
-                Logged::Row(k) => self.stamp_row(&k, true),
-                Logged::Owner(o) => self.stamp_owner(o),
+                Logged::Row(k) => self.stamp_row(&k, false),
+                Logged::Owner(o) => self.stamp_owner(o, false),
             }
         }
     }
@@ -287,9 +290,9 @@ impl Store {
     /// store first recovers in place as `open` would; after one whose outcome is unknown, at once
     /// and then after waits of 1 s doubling to 60 s while that fails (`Error::Broken` between).
     pub fn transaction<'a>(&'a mut self, rng: &'a mut dyn CryptoRngCore) -> Result<Transaction<'a>, Error> {
-        let d = self.pager.begin()?;
         // a suspended transaction not resumed is dropped: what it wrote is undone
         self.stamping.undo_to(0);
+        let d = self.pager.begin()?;
         Ok(Transaction { pager: &mut self.pager, d, rng, mem: MemTxn { o: &mut self.mem, undo: Vec::new(), done: false }, memory: false, st: StampTxn { s: &mut self.stamping, done: false } })
     }
 
