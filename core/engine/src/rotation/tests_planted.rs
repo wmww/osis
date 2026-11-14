@@ -24,7 +24,7 @@ fn made_up(g: &Tid, n: u64, seed: u8) -> (Epoch, Secret32) {
 
 /// Reader `i`'s history add at (read, e), naming nothing: valid (the role its key names).
 fn plant_history(lp: &mut LocalPeer, i: usize, g: Tid, e: &Epoch, s: &Secret32) -> CommitId {
-    let ct = osis_crypto::seal_history(s, &g, Role::Read, e, &[], &osis_keys::Names::default().to_value()).unwrap();
+    let ct = osis_crypto::seal_history(s, &g, Role::Read, e, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: osis_keys::Names::default().to_value(), floor: 0, roles: Vec::new() }).unwrap();
     let history = [(osis_keys::aspects::history_key(Role::Read, e), ct)].into_iter().collect();
     let mut m = Mutation::new();
     crate::flows::put_secrets(&mut m, g, &osis_keys::SecretsWrite { history, ..Default::default() }, true).unwrap();
@@ -37,7 +37,7 @@ fn plant_box(lp: &mut LocalPeer, i: usize, g: Tid, e: &Epoch, s: &Secret32) -> C
     let mut fake = osis_keys::ActorEpochs::default();
     fake.role_mut(Role::Read).set_secret(*e, s.clone());
     fake.role_mut(Role::Read).set_established(*e, osis_keys::Provenance::Fixed);
-    let rcpt = osis_keys::Recipient { holder: me, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: lp.peers[i].engine.identity().keys().kem.public().clone(), seed: None } };
+    let rcpt = osis_keys::Recipient { holder: me, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: lp.peers[i].engine.identity().keys().kem.public().clone(), seed: None }, floor: 0 };
     let w = lp.peers[i].engine.run(|tx| Ok(osis_keys::box_holder(&g, &fake, &osis_keys::HistoryBoxes::new(), &rcpt, &[Role::Read].into(), &mut *tx.rng)?.unwrap())).unwrap();
     let mut m = Mutation::new();
     crate::flows::put_secrets(&mut m, g, &w, true).unwrap();
