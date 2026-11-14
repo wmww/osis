@@ -81,6 +81,19 @@ rBogusMade == {<<"W", "G", "made">>}
 rBogusBack == {<<"W", "G", "back">>}
 \* ... or W rotates X1 itself past X1's knowing keyset, then G (Rogue)
 rRogue == {<<"W", "X1", "G">>}
+\* sealed at judged alone: the rm shape under P, G holding P's role; p1, P's
+\* one admin, writes P and holds G's and X1's keysets (certificates) but none
+\* of their boxes, never syncing X1 or X2: it judges G's epochs by their
+\* records alone (BoxBlind)
+pActs == <<"G", "X1", "X2", "P">>
+pMem == r0Mem \cup {<<"P", "p1">>, <<"P", "G">>}
+pAdm == rAdm \cup {<<"P", "p1">>}
+pLearners == r0Learners \cup {"p1"}
+pNoSync == rNoSync \cup {<<"p1", "X1">>, <<"p1", "X2">>, <<"a1", "P">>, <<"b", "P">>}
+pG == rG \o << <<"P", "G">> >>
+pBlind == {<<"p1", "G">>, <<"p1", "X1">>}
+\* ... W's rotations of G record no keyset of X1 (sealed_at forged)
+pLie == {<<"W", "G">>}
 \* blind box in a cycle (D0_box_ok): 3-cycle,
 \* B in A, C in B, A in C; p the admin of A and B (so p holds a role on C
 \* through A), q of C; p removes D from A. In order B in A, A in C, then C in

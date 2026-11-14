@@ -59,6 +59,8 @@ instances=(
   "depth0 rotation Depth0MC D0_fa_dmerge.cfg pass" # liveness: a derived write is merged
   "depth0 rotation Depth0MC D0_rm_np_travel.cfg pass" # a removed writer below a holder actor: its removal travels with the knowing keyset (spec/crypto.md §4, Carried demotions)
   "depth0 rotation Depth0MC D0_rm_np.cfg fail"    # negative control: without travel W seals the knowing keyset it cannot open
+  "depth0 rotation Depth0MC D0_pf_off.cfg fail"   # negative control: a node holding none of G's boxes, not judging its sealed-at records, seals G at a stale epoch (spec/crypto.md §4 Stale)
+  "depth0 rotation Depth0MC D0_pf_true.cfg fail"  # negative control: true sealed-at records without travel: W's own epoch of G looks fresh
   "depth0 rotation Depth0MC D0_readers.cfg fail" # negative control: Walk "rotator" leaks above (README)
   "depth0 rotation Depth0MC D0_gone_live.cfg pass" # a node's own departure blocks nothing (spec/crypto.md §4)
   "depth0 rotation Depth0MC D0_gone_role.cfg fail" # negative control: judging a holder actor only while in it re-seals into a leave-out

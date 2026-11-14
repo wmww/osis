@@ -179,6 +179,18 @@ Possession == FALSE
 \* the newest keyset it holds the secret of, then rotates a sealing h at that
 \* keyset (notes/crypto.md, Carried demotions, the first leak)
 Rogue == {}
+\* sealed at, judged alone (spec/crypto.md \S 4 Stale, Seal): BoxBlind
+\* {<<node, actor>>}: the node holds the actor's keysets (certificates under
+\* a target's label) and none of its boxes, so it judges the actor's epochs by
+\* their records (pf) alone; PfJudge: an epoch whose secret a node lacks is
+\* blocked there when its record names a stale keyset (whatever the node's
+\* role on the actor); FALSE: such an epoch is judged by order only
+BoxBlind == {}
+PfJudge == FALSE
+\* LiePf {<<device, actor>>}: the device's rotations of the actor record no
+\* keyset (sealed_at is unsigned: a record naming nothing, or keysets nobody
+\* holds, or fresh ones, is never stale) while boxing as Seal gives it
+LiePf == {}
 \* spec/crypto.md §4 Encrypting under: a box carrying an epoch's secret is
 \* encrypted under its recipient's key, not under that epoch, so a re-seal
 \* boxes a current holder at every current epoch whose secret the node holds,
@@ -314,7 +326,8 @@ MemV(x, a, extra) == IF ~Expand THEN MemD(x, a, extra) ELSE IF KeyedPath THEN
            MemD(x, a, extra) \cup (dst \cap RmD(x, a, extra))) \ (dst \cup {a})
 
 RsBox(r) == [h |-> r.h, key |-> r.key, by |-> r.by]
-BoxesAt(x, e) == ep[e].bx \cup {RsBox(r) : r \in {q \in krs[x] : q.e = e}}
+BoxesAt(x, e) == IF <<x, ep[e].act>> \in BoxBlind THEN {} ELSE
+                    ep[e].bx \cup {RsBox(r) : r \in {q \in krs[x] : q.e = e}}
 AllBoxesAt(e) == ep[e].bx \cup {RsBox(r) : r \in {q \in rs : q.e = e}}
 \* a box of a's epoch to b.h, neither a current holder of a as x sees it
 \* nor a direct holder still boxed (one removed: a departure x covers or
@@ -376,7 +389,8 @@ Blocked(x) ==
          {k \in sx : \/ ~CoversBlk(x, k, ep[k].act) /\ Judged(x, ep[k].act)
                      \/ IsAdm(x, ep[k].act) /\ (StaleAt(x, k) \/ Keyless(x, k))
                      \/ GoneBox(x, k)}
-         \cup {k \in kn[x] \ sx : Order /\ Before(x, k)})
+         \cup {k \in kn[x] \ sx : Order /\ Before(x, k)}
+         \cup {k \in kn[x] \ sx : PfJudge /\ StaleAt(x, k)})
 
 Anchors(x, a, h) ==
   {k \in Named({b \in UNION {BoxesAt(x, e) : e \in Cur(x, a)} : b.h = h}) :
@@ -417,7 +431,7 @@ Rotate(x, a, extra, race) ==
               by |-> x,
               bx |-> {[h |-> h, key |-> seal(h), by |-> x] :
                         h \in boxed},
-              pf |-> {SealK(x, a, h) : h \in boxed \cap Acts},
+              pf |-> IF <<x, a>> \in LiePf THEN {} ELSE {SealK(x, a, h) : h \in boxed \cap Acts},
               hist |-> {e \in Sec(x) : ep[e].act = a},
               dhist |-> IF a \in PlainActs THEN DSec(Sec(x), a) ELSE {},
               knows |-> {dp \in Known(x) \cup extra : dp[2] = a},
@@ -443,7 +457,9 @@ Init ==
                         h \in {g \in KeyIn(GAll, ActSeq[i]) : <<ActSeq[i], g>> \notin GLate}},
               hist |-> {},
               dhist |-> IF ActSeq[i] \in PlainActs THEN {Idx(PlainOf(ActSeq[i]))} ELSE {},
-              knows |-> {}, forged |-> FALSE, race |-> FALSE, out |-> {}, pf |-> {}, bog |-> "", at |-> {}, kw |-> {}]]
+              knows |-> {}, forged |-> FALSE, race |-> FALSE, out |-> {},
+              pf |-> {Idx(h) : h \in {g \in KeyIn(GAll, ActSeq[i]) \cap Acts : <<ActSeq[i], g>> \notin GLate}},
+              bog |-> "", at |-> {}, kw |-> {}]]
   /\ rs = {}
   /\ ha = {}
   /\ kn = [x \in Learners |-> {i \in 1..Len(ActSeq) : <<x, ActSeq[i]>> \notin Unaware}]
@@ -712,6 +728,18 @@ Beaten(x, a, dp) ==
   /\ \A h \in KeyAct(a) : \E j \in kn[x] :
         /\ ep[j].act = h /\ Honest(j) /\ j \notin ReachP(dp[1])
         /\ \A k \in Ids : (ep[k].act = h /\ Honest(k) /\ k \in ReachP(dp[1])) => k \in AncH(j)
+\* the stated limit below a holder actor (spec/crypto.md \S 4, the depth
+\* Limit): x holds, for some actor h at or above the removal and below a, a
+\* keyset of h the removed device does not open listing every honest keyset
+\* of h it opens (h's knowing keyset reached x, whose holder actors' epochs
+\* boxing h at an earlier keyset are then stale, by their records where x
+\* holds none of their boxes)
+DeepBeaten(x, a, dp) ==
+  /\ dp \in done /\ dp[2] \in HClos(a)
+  /\ \E h \in HClos(a) : /\ dp[2] = h \/ dp[2] \in HClos(h)
+                        /\ \E j \in kn[x] :
+                             /\ ep[j].act = h /\ Honest(j) /\ j \notin ReachP(dp[1])
+                             /\ \A k \in Ids : (ep[k].act = h /\ Honest(k) /\ k \in ReachP(dp[1])) => k \in AncH(j)
 \* every node holds what it syncs, places what it must and needs no rotation
 Settled ==
   /\ \A y \in Learners :
@@ -757,6 +785,9 @@ Write(x, a) ==
                                    THEN {dp \in done : dp[1] # x /\ dp[2] \in HClos(a) /\
                                            \A h \in KeyAct(a) : (dp[2] = h \/ dp[2] \in HClos(h)) =>
                                              \E j \in kn[x] : ep[j].act = h /\ dp \in ep[j].kw}
+                                   ELSE {},
+                           p12 |-> IF BoxBlind # {} /\ {r \in rs : r.e = e} \subseteq krs[x]
+                                   THEN {dp \in done : dp[1] # x /\ DeepBeaten(x, a, dp)}
                                    ELSE {}]}
   /\ nw' = nw + 1
   /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, done, evd, dst, pl, kpl>>
@@ -832,6 +863,11 @@ NoLeakSettled == \A c \in wr : \A dp \in c.p7 : ~Opens(RD(dp[1], c.a), c)
 \* rotator knew it (and every re-seal box of its epoch); unlike NoLeakLimit,
 \* a keyset descending from the knowing one counts for nothing
 NoLeakKnowing == \A c \in wr : \A dp \in c.p11 : ~Opens(RD(dp[1], c.a), c)
+\* (BoxBlind) a device removed below a holder actor h of a reads no content of
+\* a written by a writer holding the knowing keyset of an actor between
+\* (DeepBeaten), where the writer holds none of h's boxes (BoxBlind)
+NoLeakDeep == \A c \in wr : \A dp \in c.p12 : ~Opens(RD(dp[1], c.a), c)
+ProbeDeepWrite == ~\E c \in wr : c.p12 # {}
 \* probes (expected to fail where the attack and the premise are reachable):
 \* content written under a Bogus or Rogue device's epoch; content written by
 \* a writer the knowing keysets reached
