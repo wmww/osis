@@ -89,8 +89,9 @@ pub trait Holds {
     fn take_grant(&mut self, s: &SyncId, entry: &[u8; 32], grant: &Grant) -> Option<[u8; 32]>;
     /// Answers a Behind item (spec/sync-ids.md §6 Behind).
     fn behind(&mut self, item: &BehindItem) -> SharedItem;
-    /// Takes a Deposit item (spec/sync-inbox.md §3).
-    fn deposit(&mut self, item: &DepositItem) -> Code;
+    /// Takes a Deposit item (spec/sync-inbox.md §3) a peer offered; `src` is where its peer
+    /// budget charge lives (the peer's record, else the connection).
+    fn deposit(&mut self, src: crate::store::Source, item: &DepositItem) -> Code;
     /// Verifies steps a source gave (spec/sync-ids.md §6 Known steps): each under its parent,
     /// the first under the named step (or from genesis). Those that verify.
     fn verify_steps(&mut self, s: &SyncId, named: Option<&osis_label::StepId>, steps: &[Step]) -> Vec<Step>;
@@ -242,8 +243,9 @@ impl Holds for NodeHolds<'_, '_> {
         SharedItem::code(Code::DECLINED)
     }
 
-    fn deposit(&mut self, _item: &DepositItem) -> Code {
-        Code::DECLINED
+    fn deposit(&mut self, src: crate::store::Source, item: &DepositItem) -> Code {
+        // a store failure refuses for now: the sender offers it again after its back-off
+        self.cx.store.take_deposit(item, Some(src)).unwrap_or(Code::RATE_LIMITED)
     }
 
     fn verify_steps(&mut self, _s: &SyncId, _named: Option<&osis_label::StepId>, _steps: &[Step]) -> Vec<Step> {

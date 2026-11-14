@@ -184,7 +184,7 @@ impl Holds for Table {
     fn behind(&mut self, _item: &BehindItem) -> SharedItem {
         SharedItem::code(Code::DECLINED)
     }
-    fn deposit(&mut self, _item: &DepositItem) -> Code {
+    fn deposit(&mut self, _src: osis_sync::store::Source, _item: &DepositItem) -> Code {
         Code::DECLINED
     }
     fn verify_steps(&mut self, _s: &SyncId, _named: Option<&StepId>, _steps: &[osis_label::Step]) -> Vec<osis_label::Step> {

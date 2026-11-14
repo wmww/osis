@@ -23,7 +23,9 @@ mod entries;
 mod memory;
 mod path;
 pub(crate) mod rows;
+mod follow;
 
+pub use follow::Follow;
 pub use path::{Behind, Cred};
 pub use rows::{Source, Tombstone, Usage};
 
@@ -47,7 +49,6 @@ use entries::Removal;
 use memory::Memory;
 use osis_base::format::{MAX_BLOB, TOMBSTONE_LIFETIME_MS};
 use osis_base::{BlobId, SyncId, Tid, WallMs};
-use osis_engine::Engine;
 use osis_engine::sync::{Caps, Holding, Path, SyncSet};
 use osis_label::{Class, ClaimSet, DeleteItem, Prefix, Step, StepId};
 use osis_proto::{Code, DepositItem};
@@ -352,18 +353,35 @@ impl Store {
     /// kept unread. A sync ID moving between read and kept unread is counted again in the unread
     /// total (spec/sync-ids.md §5 Caps); only the sync IDs whose holding moved stamp.
     pub fn set_sync_set(&mut self, set: &SyncSet) {
+        let moved: Vec<(SyncId, Option<(Tid, Holding)>)> = {
+            let g = self.lock();
+            g.holdings.keys().chain(set.ids.keys()).filter(|s| g.holdings.get(s) != set.ids.get(s)).map(|s| (*s, set.ids.get(s).copied())).collect()
+        };
+        self.set_holdings(&moved);
+    }
+
+    /// Sync IDs whose sync set entry moved, each with its entry now (`None`: left the set).
+    pub fn set_holdings(&mut self, moved: &[(SyncId, Option<(Tid, Holding)>)]) {
         let mut g = self.lock();
-        if g.holdings == set.ids {
-            return;
-        }
-        let unread = |m: &BTreeMap<SyncId, (Tid, Holding)>, s: &SyncId| m.get(s).is_some_and(|(_, h)| *h == Holding::Unread);
-        let moved: std::collections::BTreeSet<SyncId> = g.holdings.keys().chain(set.ids.keys()).filter(|s| g.holdings.get(s) != set.ids.get(s)).copied().collect();
-        let recount: Vec<(SyncId, bool)> = moved.iter().filter(|s| unread(&g.holdings, s) != unread(&set.ids, s)).map(|s| (*s, unread(&set.ids, s))).collect();
-        for s in &moved {
+        let unread = |h: Option<&(Tid, Holding)>| h.is_some_and(|(_, h)| *h == Holding::Unread);
+        let mut recount = Vec::new();
+        for (s, now) in moved {
+            let was = g.holdings.get(s).copied();
+            if was == *now {
+                continue;
+            }
+            if unread(was.as_ref()) != unread(now.as_ref()) {
+                recount.push((*s, unread(now.as_ref())));
+            }
             g.mem.stamps.wrote(&("holding", s), true);
+            match now {
+                Some(h) => g.holdings.insert(*s, *h),
+                None => g.holdings.remove(s),
+            };
         }
-        g.holdings = set.ids.clone();
-        if let Some(total) = g.total {
+        if let Some(total) = g.total
+            && !recount.is_empty()
+        {
             let counted = g.read(|t, _| {
                 let mut n = total;
                 for (s, now) in &recount {
@@ -1074,22 +1092,6 @@ impl Store {
     }
 
     // Time
-
-    /// Reads the engine's sync set and caps (a part the engine has not built leaves them as
-    /// they are), then `settle_at`.
-    pub fn settle(&mut self, engine: &mut Engine, now: WallMs) -> Result<bool> {
-        match engine.sync_set() {
-            Ok(set) => self.set_sync_set(&set),
-            Err(osis_engine::Error::NotBuilt(_)) => {}
-            Err(e) => return Err(e.into()),
-        }
-        match engine.caps() {
-            Ok(c) => self.set_caps(&c),
-            Err(osis_engine::Error::NotBuilt(_)) => {}
-            Err(e) => return Err(e.into()),
-        }
-        self.settle_at(now)
-    }
 
     /// Time is `now`: entries past their expiry go (no tombstone, no event), tombstones and the
     /// rows of deletes seen and stands end after `TOMBSTONE_LIFETIME`, claim sets after

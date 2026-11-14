@@ -103,6 +103,8 @@ pub struct WNode {
     pub key: NodeKey,
     /// Its account (`Engine::create_account`).
     pub account: Option<Tid>,
+    /// Its account's profile thing, made with the account.
+    pub profile: Option<Tid>,
 }
 
 /// One delivery, as `World::trace` records it.
@@ -501,12 +503,10 @@ impl World {
     /// public address, listening under a fresh key. Settled once.
     pub fn add_node(&mut self) -> usize {
         let i = self.add_bare_node();
-        let account = {
-            let e = self.engine(i);
-            e.create_account().expect("account").0.account
-        };
+        let made = self.engine(i).create_account().expect("account").0;
         if let Some(n) = self.nodes.get_mut(i) {
-            n.account = Some(account);
+            n.account = Some(made.account);
+            n.profile = Some(made.profile);
         }
         self.deliver(i, Input::Wrote);
         i
@@ -529,7 +529,7 @@ impl World {
         self.net.reach.listen(i, key.0);
         self.net.online.push(true);
         self.net.accepted.push(0);
-        self.nodes.push(WNode { node, disks, store, clock, key, account: None });
+        self.nodes.push(WNode { node, disks, store, clock, key, account: None, profile: None });
         self.tick(i);
         i
     }
@@ -817,7 +817,7 @@ impl World {
                     let dc: Arc<dyn Clock> = c.clone();
                     let node = n.node.test_copy(dc.clone()).expect("node copy");
                     let store = n.store.test_copy(dc).expect("store copy");
-                    WNode { node, disks: n.disks.test_copy(), store, clock: c, key: n.key, account: n.account }
+                    WNode { node, disks: n.disks.test_copy(), store, clock: c, key: n.key, account: n.account, profile: n.profile }
                 })
                 .collect()
         });

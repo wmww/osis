@@ -3,6 +3,7 @@
 
 mod convergence;
 mod faults;
+mod flows;
 mod harness;
 mod inbox;
 mod keep;

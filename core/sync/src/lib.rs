@@ -11,6 +11,7 @@ pub mod inbox;
 pub mod opens;
 pub mod read;
 pub mod session;
+pub mod set;
 pub mod status;
 pub mod store;
 pub mod streams;

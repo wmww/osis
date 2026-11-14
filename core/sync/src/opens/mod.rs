@@ -1531,7 +1531,10 @@ impl Opens {
                 OfferItem::Hit { hit, sig } => self.accept_hit(ctx, conn, &hit, sig.as_ref(), None, moved),
                 OfferItem::Static { hit, signing_pk, sig } => self.accept_hit(ctx, conn, &hit, Some(&sig), Some(signing_pk), moved),
                 OfferItem::ByRole { sync_id, hits } => self.accept_by_role(ctx, conn, sync_id, &hits, moved),
-                OfferItem::Deposit(d) => SharedItem::code(ctx.holds.deposit(&d)),
+                OfferItem::Deposit(d) => {
+                    let src = self.record(conn).map_or(crate::store::Source::Conn(conn), crate::store::Source::Record);
+                    SharedItem::code(ctx.holds.deposit(src, &d))
+                }
                 OfferItem::Behind(b) => ctx.holds.behind(&b),
             };
             answers.push(a);

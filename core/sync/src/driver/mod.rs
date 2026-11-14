@@ -81,6 +81,8 @@ struct Driver {
     /// Reported positions streams gave this step, for opens.
     reported: Vec<Reported>,
     dials: Dials,
+    /// What the store follows of the engine.
+    store: crate::store::Follow,
     /// The memo effects the dial peers follow.
     fx: dials::PeersFx,
     /// Opens' `changed_end` the dials last followed.
@@ -527,7 +529,7 @@ impl Node {
             self.rounds += 1;
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
-            let mut acted = cx.store.settle(cx.engine, cx.now)?;
+            let mut acted = self.driver.store.settle(cx.engine, cx.store, cx.now)?;
             acted |= self.unread.settle(&mut cx, &self.streams)?;
             acted |= self.opens.settle(&mut cx, sessions, &self.unread, &mut moved)?;
             self.moved(&mut moved, out);
@@ -588,6 +590,7 @@ impl Node {
         self.inbox = Inbox::default();
         self.status = Status::default();
         self.driver.changed = 0;
+        self.driver.store = crate::store::Follow::default();
         if self.settle(out).and_then(|()| self.flush()).is_err() {
             self.close_all(out);
         }
