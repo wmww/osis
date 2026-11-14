@@ -596,7 +596,8 @@ fn hold_secrets(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 /// only then its secrets, which derive those keys (`Engine::drop_destroyed_secrets`). Not while it
 /// keeps: its destruction may still fall (a request in force), and what it dropped is fetched
 /// again from its labels' hosts. Limit: an entry a source announces past those tombstones, or a
-/// source never heard again, stays there.
+/// source never heard again, stays there; a label none of whose sources is heard again keeps its
+/// row, its sync state and the thing's secrets here as long.
 fn keep_labels(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     if tx.core.ix.secrets.get(t).is_none() || tx.core.ix.destroyed_labels.contains_key(t) {
         return Ok(());
