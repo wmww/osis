@@ -469,7 +469,9 @@ impl ReadOnly {
         Ok(d.items.into_iter().map(Member::Item).chain(d.subgroups.into_iter().map(Member::Subgroup)).collect())
     }
 
-    /// The roles granted on `thing`, by holder. Whoever holds through those: `holders`.
+    /// The roles granted on `thing`, by holder; empty unless this node reads `thing` (or the
+    /// thing a link's actor stands for): a node holds others' grants it is not entitled to show.
+    /// Whoever holds through those: `holders`.
     pub fn grants(&self, thing: Tid) -> Result<Grants> {
         if let crate::sources::Source::Node(r) = self.source(thing) {
             self.track_remote_grants(&r, thing, thing_key("grants", thing))?;

@@ -1925,6 +1925,71 @@ fn team_left_out_by_a_sealer_reading_none_of_it_reads_again_spec_crypto_4() {
     assert_eq!(x(&dave, after), None);
 }
 
+// As `team_left_out_by_a_sealer_reading_none_of_it_reads_again_spec_crypto_4`, M granted on A
+// after Alice left A: A's boxes to M are the grant's, written in no keyset's sealed-at record, so
+// Alice, holding none of A's boxes, keeps sealing A at its epoch boxing M at a keyset Dave holds.
+#[test]
+#[ignore = "issues/stale-grant-box-unseen-without-boxes.md"]
+fn repro_team_granted_after_left_out_by_a_sealer_reading_none_of_it_spec_crypto_4() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let [alice, bob, carol, dave, erin] = [1, 2, 3, 4, 5].map(|i| w.account(i, &[host]));
+    w.run();
+    let card = |w: &mut World, from: &Osis, to: &Osis| {
+        let c = from.contact_card().unwrap();
+        w.run();
+        w.until(to.import_contact(&c), 1000, 10).unwrap()
+    };
+    let alice_at_bob = card(&mut w, &alice, &bob);
+    let bob_at_carol = card(&mut w, &bob, &carol);
+    let dave_at_carol = card(&mut w, &dave, &carol);
+    let erin_at_alice = card(&mut w, &erin, &alice);
+    let m = group(&carol);
+    carol.grant(m, bob_at_carol, Role::Read, Default::default()).unwrap();
+    carol.grant(m, dave_at_carol, Role::Read, Default::default()).unwrap();
+    w.run();
+    let a = group(&bob);
+    bob.grant(a, alice_at_bob, Role::Read, Default::default()).unwrap();
+    w.run();
+    let g = group(&alice);
+    alice.grant(g, a, Role::Read, Default::default()).unwrap();
+    alice.grant(g, erin_at_alice, Role::Read, Default::default()).unwrap();
+    w.run();
+    alice.leave(alice.me(), a).unwrap();
+    let settle = |w: &mut World, rounds: usize| {
+        for _ in 0..rounds {
+            w.advance(70_000);
+            w.run();
+        }
+    };
+    settle(&mut w, 3);
+    assert!(held_read(&alice, a).is_empty(), "Alice dropped A's secrets");
+    // M joins A by a grant: A's boxes to it are the grant's, no rotation's keyset records them
+    bob.grant(a, m, Role::Read, Default::default()).unwrap();
+    settle(&mut w, 3);
+    let before = item(&alice, g, g, "before");
+    w.run();
+    assert_eq!(x(&carol, before), Some(s("before")));
+    w.set_online(&bob, false);
+    carol.set_role(m, dave_at_carol, None, Default::default()).unwrap();
+    settle(&mut w, 3);
+    alice.set_role(g, erin_at_alice, None, Default::default()).unwrap();
+    settle(&mut w, 3);
+    let mid = item(&alice, g, g, "mid");
+    w.run();
+    assert_eq!(sealed_keyset(&alice, g, a), None, "A left out of G");
+    assert_eq!(x(&carol, mid), None);
+    w.set_online(&bob, true);
+    settle(&mut w, 6);
+    let after = item(&alice, g, g, "after");
+    settle(&mut w, 2);
+    assert!(sealed_keyset(&alice, g, a).is_some(), "A sealed again");
+    assert_eq!(x(&carol, mid), Some(s("mid")));
+    assert_eq!(x(&carol, after), Some(s("after")));
+    assert_eq!(x(&dave, mid), None, "Dave reads what Alice wrote after his removal");
+    assert_eq!(x(&dave, after), None);
+}
+
 /// Bob's two nodes joined Alice's group `g` by her link: (laptop, phone, g, K).
 fn joined_twice(w: &mut World) -> (Osis, Osis, Osis, Tid, Tid) {
     let host = w.add_host();
@@ -2012,7 +2077,6 @@ fn a_fellow_joiner_cannot_end_anothers_link_spec_permissions_7() {
     assert_eq!(laptop.role_on(g).unwrap(), Some(Role::Read), "Bob was pushed off the link by Carol");
 }
 
-
 // spec/requirements.md Permissions (a role M holds on G never depends on who is in M),
 // spec/crypto.md §4 (Carried demotions): Carol reads G, which team M (Bob's, Alice a reader of it
 // too) writes; Bob removes
@@ -2054,4 +2118,30 @@ fn a_parents_reader_sees_no_roster_of_its_member_team_spec_crypto_4() {
     assert!(!bob.grants(m).unwrap().contains_key(&erin_at_bob), "Erin left M");
     assert!(carol.grants(m).unwrap().is_empty(), "no roster of M once Erin left");
     assert!(carol.holders(g).unwrap().iter().all(|h| h.actor != erin_at_bob), "nor through G's holders");
+    // once Carol reads M (a roster change on M's way in, not on M's), her watch on M's grants
+    // hears its roster
+    let t = group(&bob);
+    bob.grant(m, t, Role::Read, Default::default()).unwrap();
+    let carol_at_bob = card(&mut w, &carol, &bob);
+    w.run();
+    let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let h = heard.clone();
+    let _sub = carol.on_grants_change(m, move |_, r| h.lock().unwrap().push(r.unwrap())).unwrap();
+    bob.grant(t, carol_at_bob, Role::Read, Default::default()).unwrap();
+    for _ in 0..3 {
+        w.advance(70_000);
+        w.run();
+    }
+    assert_eq!(carol.role_on(m).unwrap(), Some(Role::Read), "Carol reads M through T");
+    assert!(carol.grants(m).unwrap().contains_key(&t), "M's roster shows to its reader");
+    assert!(heard.lock().unwrap().last().is_some_and(|g| g.contains_key(&t)), "her watch heard it: {:?}", heard.lock().unwrap());
+    // and once she no longer reads M (T's roster changed, M's not), it hears the roster hidden
+    bob.set_role(t, carol_at_bob, None, Default::default()).unwrap();
+    for _ in 0..3 {
+        w.advance(70_000);
+        w.run();
+    }
+    assert_eq!(carol.role_on(m).unwrap(), None, "Carol left T");
+    assert!(carol.grants(m).unwrap().is_empty(), "no roster of M");
+    assert!(heard.lock().unwrap().last().is_some_and(|g| g.is_empty()), "her watch heard it hidden: {:?}", heard.lock().unwrap());
 }

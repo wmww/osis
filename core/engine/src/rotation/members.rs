@@ -268,7 +268,7 @@ pub(crate) fn sealing(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) 
         if cut {
             continue;
         }
-        let (mut row, mut proof) = (Vec::new(), None);
+        let (mut row, mut wrap) = (Vec::new(), None);
         for k in &ks {
             let secret = own.as_ref().filter(|e| e.role(r).is_established(k)).and_then(|e| e.role(r).secret(k)).cloned();
             let written = tx.core.keyset(m, r, k).and_then(|x| x.kem.clone());
@@ -277,15 +277,15 @@ pub(crate) fn sealing(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) 
                 break;
             };
             row.push((*k, kem));
-            if proof.is_none() {
-                proof = secret.map(|s| (*k, s));
+            if wrap.is_none() {
+                wrap = secret.map(|s| (*k, s));
             }
         }
         if cut {
             continue;
         }
         keysets.insert(r, row);
-        secrets.extend(proof.map(|p| (r, p)));
+        secrets.extend(wrap.map(|p| (r, p)));
         top = Some(r);
     }
     let sealed = top.map_or(Sealed::Out, |role| Sealed::Boxed(Recipient { holder: *m, role, keys: HolderKeys::Actor { keysets, own: secrets } }));
