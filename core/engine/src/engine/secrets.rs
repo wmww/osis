@@ -332,10 +332,12 @@ impl Core {
             for r in ROLES {
                 if !crate::rotation::may_take(self, actor, r) {
                     let was = before.as_ref().map(|b| b.role(r).clone()).unwrap_or_default();
-                    // listed only for a secret kept out (epochs observed without one are
-                    // no access, and listing them would list every actor the node cannot read)
+                    // listed only for a held secret kept out (epochs observed without one are
+                    // no access, and listing them would list every actor the node cannot read);
+                    // one a pending read gave for reading only is not held, and goes once that
+                    // commit is judged, so it counts as absent
                     let new = epochs.role(r);
-                    if new.epochs().any(|(e, _)| new.reading_secret(e).is_some() && was.reading_secret(e).is_none()) {
+                    if new.epochs().any(|(e, _)| new.secret(e).is_some() && was.secret(e).is_none()) {
                         untaken.push(r);
                     }
                     *epochs.role_mut(r) = was;

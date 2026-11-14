@@ -358,6 +358,44 @@ fn regrant_after_tag_removal_spec_crypto_4() {
     assert!(lp.peers[0].engine.ensure_rotated(&n).unwrap().1.is_empty(), "covered");
 }
 
+// spec/permissions.md §3 (a node holds no secret of an actor it cannot read; a box applied before
+// the grant that makes it the node's is taken once the grant applies): A grants N read (G) and
+// rotates (R, boxing N). N receives R before `g`'s creation, so R waits and its box is read as
+// pending (reading only); then the creation, so R applies while N holds no grant (its box kept
+// out); then G. N holds R's epoch as it does receiving them in order. Fails when only a box
+// giving a secret not held even for reading counts as kept out (the pending read hid it).
+#[test]
+fn box_applied_before_its_grant_is_taken_after_a_pending_read_spec_permissions_3() {
+    for late in [false, true] {
+        let mut lp = synced(2);
+        let (a, n) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let g = group(&mut lp, 0);
+        let grant: BTreeSet<_> = lp.peers[0].engine.grant(&g, &n, &edge(Role::Read)).unwrap().commits.into_iter().collect();
+        let r = lp.peers[0].engine.rotate_boxing_only(&[g], &[Role::Read], &[a, n]).unwrap().unwrap();
+        let e = newest_read(&lp, 0, g).unwrap();
+        let all = lp.packages(0).unwrap();
+        let (rest, g_pks): (Vec<_>, Vec<_>) = all.iter().filter(|pk| pk.id != r).partition(|pk| !grant.contains(&pk.id));
+        if late {
+            let rp = all.iter().find(|pk| pk.id == r).unwrap();
+            lp.peers[1].receive(&rp.bytes, rp.blobs.clone()).unwrap();
+            assert!(lp.peers[1].engine.epochs(&g).is_some_and(|x| x.read.reading_secret(&e).is_some()), "R's box is not read as pending");
+            for pk in rest {
+                lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+            }
+            assert!(lp.peers[1].engine.core.ix.commits.contains_key(&r), "R does not apply before G");
+            assert!(lp.peers[1].engine.epochs(&g).is_none_or(|x| x.read.secret(&e).is_none()), "N holds R's epoch before its grant");
+            for pk in g_pks {
+                lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+            }
+        } else {
+            for pk in all.iter().filter(|pk| pk.id != r).chain(all.iter().filter(|pk| pk.id == r)) {
+                lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+            }
+        }
+        assert!(lp.peers[1].engine.epochs(&g).is_some_and(|x| x.read.secret(&e).is_some()), "late {late}: N lacks R's epoch");
+    }
+}
+
 // spec/permissions.md §3 (re-seal fixpoint), spec/crypto.md §4 (forks stand): A and D rotate G's
 // write concurrently, D's rotation leaving writer B out, so B lacks a box and the secret at D's
 // fork. B, holding only A's fork, writes no re-seal of itself (before: one boxing A's fork alone
