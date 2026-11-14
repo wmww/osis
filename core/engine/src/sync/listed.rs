@@ -108,22 +108,22 @@ impl Engine {
         self.core.ix.lists_on.range(of(x)).map(|(_, r)| *r).collect()
     }
 
-    /// Brings `Listed` up to date with what moved since the last call: the read things whose
-    /// carried things moved, and the lists held since. Called by the facade's readers of the
+    /// Brings `Certified` and then `Listed` up to date with what moved since the last call: the
+    /// read things whose carried things moved, and the lists held since. Called by the facade's readers of the
     /// rows and `Engine::follow`; never inside a transaction, by its type: a `Tx` holds the
-    /// `Core` alone, and following reads the engine whole. Whether a row moved.
+    /// `Core` alone, and following reads the engine whole. Whether a row of either moved.
     pub(crate) fn follow_lists(&mut self) -> Result<bool> {
         let _u = Unrecorded::start();
+        // the read things, as `certified` follows them
+        let moved = self.follow_certificates()?;
         self.core.listed.wrote = false;
         let mut f = std::mem::take(&mut self.core.listed.followers);
         let r = self.follow_lists_with(&mut f);
         self.core.listed.followers = f;
-        r.map(|()| self.core.listed.wrote)
+        r.map(|()| self.core.listed.wrote | moved)
     }
 
     fn follow_lists_with(&mut self, f: &mut Followers) -> Result<()> {
-        // the read things, as `certified` follows them
-        self.follow_certificates()?;
         if f.lists.is_none() {
             // the lists held before are found as their things are placed
             f.lists = Some(self.core.ix.lists_on.feed());

@@ -420,7 +420,7 @@ impl Engine {
     /// (notes/engine.md).
     pub fn follow(&mut self) -> Result<bool> {
         let moved = self.follow_published();
-        let moved = self.follow_certificates()? | moved;
+        // `listed` follows `certified` first: one follow of each
         Ok(self.follow_lists()? | moved)
     }
 
