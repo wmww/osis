@@ -2008,8 +2008,9 @@ impl Core {
             reach_log: _,
             // memos: each answer holds while what it read does (`memo`); the stamps of what a
             // rollback restores move
-            store_rows: _,
             epochs_of: _,
+            bodies: _,
+            live_bodies: _,
             account_views: _,
             account_epochs_of: _,
             secrets_read: _,
@@ -2035,11 +2036,11 @@ impl Core {
             rotation_seq: _,
             epochs_judged_from: _,
             waits: _,
-            live_bodies: _,
-            bodies: _,
             decoded: _,
             touches: _,
             generation: _,
+            // the store's count, read by `changed_since`
+            store_rows: _,
             role_generation: _,
             memory_generation: _,
             // work lists and hints a superset of which is harmless (the consumer re-checks each

@@ -398,9 +398,9 @@ impl Engine {
         Ok(c.encode())
     }
 
-    /// `label_bodies` without plaintexts, from a per-commit cache (`Core::bodies`): a pass after a
+    /// `label_bodies` without plaintexts, from a memo per commit (`Core::bodies`): a pass after a
     /// change looks at only the commits it changed. The commits are found through `on_thing` and
-    /// `by_aspect` (O(the closure's commits), no header decoded when the cache holds them), in ID
+    /// `by_aspect` (O(the closure's commits), no header decoded when the memo holds them), in ID
     /// order.
     pub fn label_bodies_meta(&mut self, g: &Tid) -> Result<Vec<Body>> {
         let ctx = self.body_ctx(g);
