@@ -982,6 +982,8 @@ pub struct Core {
     /// `Engine::holders_named` per commit (`memo`): an admin's pass reads it for every inbox
     /// copy, and it decodes role parts.
     pub(crate) holders_named: memo::Memo<CommitId, Arc<BTreeMap<usize, BTreeSet<Tid>>>>,
+    /// `Engine::sync_certificates` per thing (`memo`): every commit's bodies read it.
+    pub(crate) sync_certs: memo::Memo<Tid, Arc<crate::labeling::Certs>>,
     /// `rotation::departures` per actor (`memo`).
     pub(crate) departures: memo::Memo<Tid, Vec<osis_keys::Departure>>,
     /// The holders lacking a box of each actor (`rotation::reseal_candidates`, `memo`): O(roster)
@@ -1303,6 +1305,7 @@ impl Core {
             sync_set: self.sync_set.clone(),
             dial_peers: self.dial_peers.clone(),
             holders_named: self.holders_named.clone(),
+            sync_certs: self.sync_certs.clone(),
             departures: self.departures.clone(),
             reseal_scans: self.reseal_scans.clone(),
             store_rows: self.store_rows.clone(),
@@ -1864,6 +1867,7 @@ impl Core {
             sync_set: _,
             dial_peers: _,
             holders_named: _,
+            sync_certs: _,
             key_access: _,
             key_roles: _,
             inbox_actors: _,
@@ -2049,6 +2053,7 @@ impl Core {
             sync_set: memo::Memo::new("sync: sync set"),
             dial_peers: memo::Memo::new("sync: dial peers"),
             holders_named: memo::Memo::new("holders named: read"),
+            sync_certs: memo::Memo::new("sync: certificates"),
             departures: memo::Memo::new("departures"),
             reseal_scans: memo::Memo::new("reseal: scan"),
             rotation_seq: 0,

@@ -32,6 +32,15 @@ fn add_to_d(w: &mut World, i: usize, t: Tid) {
 /// dials and connections, checked on the way (spec/sync-opens.md §1: node 0 dials node 1 by its
 /// dial list, node 1 dials node 0 by the grant's hint).
 fn kept_then_removed() -> (World, Tid, SyncId) {
+    let (mut w, t, s) = kept();
+    let a1 = w.node(1).account.unwrap();
+    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap();
+    w.run();
+    (w, t, s)
+}
+
+/// `kept_then_removed` up to the removal: a write held at node 1, which keeps S unread.
+fn kept() -> (World, Tid, SyncId) {
     let mut w = contacts();
     let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
     let t = w.write(0, |e| {
@@ -67,9 +76,30 @@ fn kept_then_removed() -> (World, Tid, SyncId) {
     let blobs = w.engine(0).commit_blobs(&c).unwrap();
     assert!(blobs.iter().any(|b| w.store(1).entry(&s, b).ok().flatten().is_some()), "the write held at the node keeping S unread");
     assert_eq!(w.engine(1).sync_holding(&s).unwrap(), Some((t, Holding::Unread)), "still kept: nothing opens there");
-    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap();
-    w.run();
     (w, t, s)
+}
+
+// spec/sync-judgement.md §2 (the certificate blobs of spec/permissions.md §4 are in S's required
+// set), §3 (Own store; Deletes: a delete-key holder deletes at a source only what its judgement
+// finds must-not-hold): the chain certificate a reader of S needs to judge node 0's writes there
+// (its account's current `keys.0`, a part on a thing outside S's closure) is logged in node 0's
+// own store, reaches node 1 keeping S unread, and node 0, which holds S's delete key, never
+// deletes it there, an hour on.
+#[test]
+fn a_delete_key_holder_never_deletes_a_needed_certificate_at_an_unread_source_spec_sync_judgement_2() {
+    let (mut w, _, s) = kept();
+    let a0 = w.node(0).account.unwrap();
+    let keys = w.engine(0).current_keys(&a0);
+    assert!(!keys.is_empty());
+    let held_at = |w: &mut World, i: usize| {
+        let blobs: Vec<osis_base::BlobId> = keys.iter().flat_map(|c| w.engine(0).commit_blobs(c).unwrap().iter().copied().collect::<Vec<_>>()).collect();
+        blobs.iter().any(|b| w.store(i).entry(&s, b).ok().flatten().is_some())
+    };
+    assert!(held_at(&mut w, 0), "logged in node 0's own store of S");
+    assert!(held_at(&mut w, 1), "held at the node keeping S unread");
+    w.advance(3_600_000);
+    w.run();
+    assert!(held_at(&mut w, 0) && held_at(&mut w, 1), "never deleted");
 }
 
 // spec/sync-judgement.md §6 (Keeps; Stops), spec/sync-inbox.md §2 (Logging), spec/sync-ids.md

@@ -1,10 +1,8 @@
-# Certificate blobs are not in the engine's required set
-> Summary: `Engine::sync_bodies` lists closure bodies only, so read judges every certificate entry under S (another node's card, chain certificates, record and list blobs, revokes, grant copies) outside the required set: must-not-hold, dropped from the own store and deleted at store sources by a delete-key holder.
-> Priority: critical
+# Record blobs are not logged or opened under sync IDs
+> Summary: certificate commits (chain certificates, cards, account rotations, revokes' parts, header-only mintings) are in `sync_bodies` and logged as copies; the raw creation records a chain needs (record blobs, spec/wire.md §3, spec/permissions.md §4) are neither logged by read nor taken by `open_entry`, so a node that meets an actor only under a sync ID never learns its record.
+> Priority: normal
 > Tags: sync, engine
 
-spec/sync-judgement.md §2 puts the certificate blobs of spec/permissions.md §4 in S's required set. `sync_bodies` (core/engine/src/sync/bodies.rs) never emits a `BodyMeta` with `certificate: true`; read (`judge::body`) then finds no body of the commit under S and, once the closure is settled, judges it `MustNot(OutsideRequired)`. Seen while building the card rules (`card_superseded`, `card_ended`): a node's `reach.0` card has no body under D's home, so those rules are judged by header in `read_facts` but read never asks for them.
+`Engine::sync_certificates(t)` names the records a sync ID's chains need (`Certs::records`), but read judges per commit and a record blob is no commit: nothing logs one (spec/permissions.md §4: the records missing go as one record blob of the logging node's, counted once opened and held at every source) and `open_entry_now` does not recognize one (it should decode `osis_commit::record_blob` and take the records as `receive_records` does). A record blob is never must-not-hold but under an emptied sync ID (spec/sync-judgement.md §2), so read must not judge it outside the required set either: today a record blob entry never names a commit here, so read never judges it.
 
-Needs: certificate bodies per sync ID in `sync_bodies` (the card under D's home; each chain's parts as copies where the closure's bodies do not carry them), and `seal_body` for a certificate copy (through `Engine::seal`, the reseal contract). Until then every module that judges entries under S over-deletes certificates.
-
-Reproducer: `facade::another_nodes_card_is_in_the_required_set_spec_sync_judgement_2` (core/engine/tests/it/facade.rs, ignored with this issue's name): peer 1's `reach.0` card at peer 0 has no body under D's home (`sync_bodies` is empty). So today no node logs a certificate at all (own store logs only `sync_bodies`), and one a peer logs is judged `OutsideRequired`: dropped, and deleted at a source keeping S unread by a delete-key holder (`judge::deletes`, `why` true). Un-ignore it with the fix.
+Needed by a link's first contact (issues/sync-link-first-contact.md): the redeemer must learn the sharer account's and L's records from K's sync ID alone.

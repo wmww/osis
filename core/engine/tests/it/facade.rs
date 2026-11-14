@@ -766,9 +766,8 @@ fn a_card_goes_with_its_nodes_grant_spec_sync_judgement_2() {
 // spec/sync-judgement.md §2 required set (the certificate blobs of spec/permissions.md §4): the
 // other node's `reach.0` card is in D's home sync ID's required set, so read never judges it
 // outside it (must-not-hold, deleted at a node keeping the sync ID unread by a delete-key
-// holder). Reproducer of issues/sync-certificate-bodies.md.
+// holder); sealed as a copy, it opens at the card's own node.
 #[test]
-#[ignore = "sync-certificate-bodies"]
 fn another_nodes_card_is_in_the_required_set_spec_sync_judgement_2() {
     let (mut lp, d) = crate::flows::account_two_nodes();
     let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
@@ -776,7 +775,15 @@ fn another_nodes_card_is_in_the_required_set_spec_sync_judgement_2() {
     spread(&mut lp);
     let e = &mut lp.peers[0].engine;
     let b = e.sync_bodies(&r).unwrap();
-    assert!(b.get(&home).is_some_and(|m| m.certificate), "the card's certificate body under D's home: {b:?}");
+    assert!(b.get(&home).is_some_and(|m| m.certificate && m.copy && !m.parts.is_empty()), "the card's certificate body under D's home: {b:?}");
+    let f = e.body_facts(&home, &r).unwrap();
+    assert!(f.required && !f.closure, "{f:?}");
+    let (sealed, wrap) = e.seal_body(&home, &r, &mut SeededRng::from_u64(1)).unwrap().expect("sealed as a certificate copy");
+    assert_eq!(e.blob_copy(&sealed.id).unwrap(), Some(true));
+    match lp.peers[1].engine.open_entry(&home, &sealed.id, &wrap, &sealed.blob).unwrap() {
+        osis_engine::sync::Opened::Commit(c, _) => assert_eq!(c, r),
+        o => panic!("{o:?}"),
+    }
 }
 
 /// Peer 1 takes a write grant on peer 0's thing `t` and syncs it (in its synced group).

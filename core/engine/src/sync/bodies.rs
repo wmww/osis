@@ -112,9 +112,9 @@ impl Engine {
         Ok(out)
     }
 
-    /// Per sync ID this node reads whose closure body of commit `c` its actor may read: that body
+    /// Per sync ID this node reads whose required set holds a body of commit `c`: that body
     /// (spec/sync-judgement.md §1: parts, expiry, fetch order, a per-sync-ID copy or the shared
-    /// blob, a lasting header alone). This node's own certificates are `own_certificates`.
+    /// blob, a lasting header alone, or a certificate copy, `certificate_bodies`).
     pub(crate) fn sync_bodies_now(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
         let mut out = BTreeMap::new();
         for g in self.body_things(c)? {
@@ -127,7 +127,52 @@ impl Engine {
                 }
             }
         }
+        self.certificate_bodies(c, &mut out)?;
         Ok(Arc::new(out))
+    }
+
+    /// Adds to `out` the certificate bodies of commit `c` (spec/sync-judgement.md §1-§2,
+    /// spec/permissions.md §4): per read sync ID carrying no closure body of `c`, the held parts
+    /// of it the sync ID's certificates name (`sync_certificates`) that its closure's bodies do
+    /// not carry, as a copy; else, a header the certificates name, as a header-only copy. Only a
+    /// commit with a part certificates are made of (an edge write, keys, a card, a record) or a
+    /// request is asked, so content never reads the certificates. Where a sync ID carries a
+    /// closure body of `c`, that body is its one body there (`certificate_reading`).
+    fn certificate_bodies(&mut self, c: &CommitId, out: &mut BTreeMap<SyncId, BodyMeta>) -> Result<()> {
+        let Some(h) = self.header(c) else { return Ok(()) };
+        if !h.has_request() && !h.aspects.iter().any(|a| matches!(a.ak.as_str(), "roles.0" | "keys.0" | "node.0" | "reach.0" | "created.0")) {
+            return Ok(());
+        }
+        let id = *c;
+        let held: PartSet = osis_base::memo::Memo::get_in(self, |e| &e.core.bodies, &id, |e| e.body_with(&id, false))?.map(|b| b.parts.into_iter().collect()).unwrap_or_default();
+        let (expires, order) = (osis_commit::blob_expiry(&h).map(WallMs), crate::labeling::fetch_order(&h));
+        let set = self.sync_set()?;
+        let mut by_thing: BTreeMap<Tid, Vec<SyncId>> = BTreeMap::new();
+        for (s, (t, how)) in set.ids.iter() {
+            if *how == super::Holding::Read && !out.contains_key(s) {
+                by_thing.entry(*t).or_default().push(*s);
+            }
+        }
+        for (t, ids) in by_thing {
+            let certs = self.sync_certificates(&t);
+            let parts: PartSet = match certs.commits.get(c) {
+                Some(p) => {
+                    let ctx = self.body_ctx(&t);
+                    let carried = self.body_carried(&ctx, &h);
+                    p.iter().copied().filter(|ai| held.contains(ai) && !carried.contains(ai)).collect()
+                }
+                None => PartSet::new(),
+            };
+            if parts.is_empty() && !certs.headers.contains(c) {
+                continue;
+            }
+            let header_only = parts.is_empty();
+            let meta = BodyMeta { parts, expires, order, copy: true, certificate: true, header_only };
+            for s in ids {
+                out.insert(s, meta.clone());
+            }
+        }
+        Ok(())
     }
 
     /// The thing whose read sync ID `s` is here (`ThingSync::Read`).
@@ -273,6 +318,9 @@ impl Engine {
     /// tombstoned under `s` is the store's to log verbatim; it never comes here.
     pub(crate) fn seal_body_now(&mut self, s: &SyncId, c: &CommitId, rng: &mut dyn NodeRng) -> Result<Option<(crate::labeling::Sealed, Wrap)>> {
         let Some(t) = self.read_thing(s)? else { return Ok(None) };
+        if let Some(meta) = self.sync_bodies_now(c)?.get(s).filter(|m| m.certificate).cloned() {
+            return self.seal_certificate(&t, c, &meta, rng);
+        }
         let ctx = self.body_ctx(&t);
         let Some(b) = self.commit_bodies_under(&ctx, c)?.into_iter().next() else { return Ok(None) };
         let class = match self.core.ix.commits.get(c).is_some_and(|m| m.view.memory) {
@@ -325,21 +373,50 @@ impl Engine {
         Ok(Some((sealed, wrap)))
     }
 
+    /// Certificate body `meta` of commit `c` under a sync ID of thing `t`, sealed (spec/sync-
+    /// judgement.md §1 Certificate blobs): its parts in one section under the blob key (none: a
+    /// header-only copy), wrapped as `wrap_secret` says for those parts (spec/crypto.md §5).
+    fn seal_certificate(&mut self, t: &Tid, c: &CommitId, meta: &BodyMeta, rng: &mut dyn NodeRng) -> Result<Option<(crate::labeling::Sealed, Wrap)>> {
+        let Some(m) = self.core.ix.commits.get(c).cloned() else { return Ok(None) };
+        let parts: Vec<usize> = meta.parts.iter().copied().collect();
+        let b = crate::labeling::Body { commit: *c, parts: parts.clone(), expires: meta.expires.map(|e| e.0), blind: m.header.blind, plaintext: Vec::new(), role_commit: m.header.kind.is_role(), order: meta.order, to_label: true };
+        let class = if m.view.memory { osis_label::Class::Ephemeral } else { osis_label::Class::Durable };
+        let Some(sealed) = self.seal_to(&b, class, rng)? else { return Ok(None) };
+        if parts.iter().any(|p| !sealed.parts.contains(p)) {
+            return Ok(None);
+        }
+        let Some(w) = self.wrap_secret(t, Some((c, &parts)))? else { return Ok(None) };
+        let wrap = osis_crypto::wrap(&w, &sealed.id, &sealed.key, meta.order)?;
+        let (id, bid, ps) = (*c, sealed.id, meta.parts.clone());
+        self.run(|tx| note_blob(tx, &bid, &id, &ps, true))?;
+        Ok(Some((sealed, wrap)))
+    }
+
     /// A wrap for `to` of held blob `b` of commit `c`, whose entry under `from` has wrap
     /// `from_wrap` (spec/sync-judgement.md §3 Own store: a held blob logged verbatim under a wrap
     /// for S): the blob key and order from that wrap, wrapped under the epoch `c` was written
     /// under at `to`'s thing (`section_epoch`). `None` when either wrap's epoch is not held, when
     /// `b` is not a shared blob opened or sealed here, or when `to`'s body of `c` is no shared
     /// blob's: a per-sync-ID copy is never shared with another sync ID, and only a copy holds a
-    /// copy's body (spec/sync-judgement.md §1 Per-sync-ID copies).
+    /// copy's body (spec/sync-judgement.md §1 Per-sync-ID copies). A certificate copy of exactly
+    /// the parts `to`'s certificate body names is the one blob wrapped under each sync ID needing
+    /// them, wrapped as `wrap_secret` says for those parts (§1 Certificate blobs).
     pub(crate) fn rewrap_now(&mut self, c: &CommitId, b: &BlobId, from: &SyncId, from_wrap: &Wrap, to: &SyncId) -> Result<Option<Wrap>> {
-        if self.blob_copy_now(b) != Some(false) || self.sync_bodies_now(c)?.get(to).is_none_or(|m| m.copy) {
+        // a certificate copy of the same parts is one blob wrapped under each sync ID needing
+        // them (spec/sync-judgement.md §1 Certificate blobs); a per-sync-ID copy never is shared
+        let Some(meta) = self.sync_bodies_now(c)?.get(to).cloned() else { return Ok(None) };
+        let certificate = meta.certificate && self.blob_copy_now(b) == Some(true) && self.blob_parts_now(b).as_ref() == Some(&meta.parts);
+        if !certificate && (self.blob_copy_now(b) != Some(false) || meta.copy) {
             return Ok(None);
         }
         let (Some(tf), Some(tt)) = (self.read_thing(from)?, self.read_thing(to)?) else { return Ok(None) };
         let Some((key, order)) = self.read_secrets(&tf).iter().find_map(|x| osis_crypto::unwrap_order(x, b, from_wrap).ok()) else { return Ok(None) };
         let parts: Vec<usize> = self.blob_parts_now(b).map(|p| p.into_iter().collect()).unwrap_or_default();
-        let Some((_, w)) = self.section_epoch(c, &tt, &parts)? else { return Ok(None) };
+        let w = match certificate {
+            true => self.wrap_secret(&tt, Some((c, &parts)))?,
+            false => self.section_epoch(c, &tt, &parts)?.map(|x| x.1),
+        };
+        let Some(w) = w else { return Ok(None) };
         Ok(Some(osis_crypto::wrap(&w, b, &key, order)?))
     }
 

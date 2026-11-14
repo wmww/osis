@@ -136,8 +136,10 @@ impl Engine {
     pub fn certificates(&mut self, g: &Tid) -> Certs {
         let Some(me) = self.core.me() else { return Certs::default() };
         let mut out = Certs::default();
-        // the account's card (the author of every commit but the node's own) and the node's
-        for who in [me, self.tid()] {
+        // the account's card (the author of every commit but the node's own) and, under D's
+        // home alone, the node's (nothing of a node goes under another sync ID)
+        let under_d = self.core.account_devices().is_some_and(|(_, d)| d == *g);
+        for who in std::iter::once(me).chain(under_d.then(|| self.tid())) {
             let mine = BTreeSet::from([who]);
             out.records.insert(who);
             for ak in CARD {
@@ -195,6 +197,52 @@ impl Engine {
             self.minting_evidence(&t, &mut out);
         }
         out.records.retain(|t| self.core.created(t).is_some());
+        out
+    }
+
+    /// What a sync ID of `g` holds as certificates, whoever logs them (spec/permissions.md §4,
+    /// spec/sync-judgement.md §2): this node's own (`certificates`), every actor's chain
+    /// certificates for writes on the things of `g`'s closure its actor may read
+    /// (`Timeline::certificates_into`), and under D's home every card commit of D's other nodes.
+    /// Parts the closure's bodies carry are `sync_bodies`' to leave out. A memo per thing: it
+    /// reads role commits, records and cards, never content.
+    pub fn sync_certificates(&mut self, g: &Tid) -> Arc<Certs> {
+        Memo::get_in(self, |e| &e.core.sync_certs, g, |e| Ok::<_, ()>(Arc::new(e.sync_certificates_read(g)))).unwrap_or_default()
+    }
+
+    fn sync_certificates_read(&mut self, g: &Tid) -> Certs {
+        let mut out = self.certificates(g);
+        let ctx = self.body_ctx(g);
+        let mut targets: BTreeSet<Tid> = ctx.closure.iter().filter(|t| self.reads(&ctx, t)).copied().collect();
+        // per component timeline, every target of it at once
+        while let Some(t) = targets.pop_first() {
+            let found = {
+                let Some(tl) = self.core.timelines.get(&t) else { continue };
+                let mut same = BTreeSet::from([t]);
+                same.extend(targets.iter().filter(|x| self.core.timelines.get(x).is_some_and(|o| std::ptr::eq(o, tl))).copied());
+                targets.retain(|x| !same.contains(x));
+                tl.certificates_into(&same)
+            };
+            self.cert_parts(&found, &mut out);
+        }
+        if self.core.account_devices().is_some_and(|(_, d)| d == *g) {
+            let me = self.tid();
+            for (n, _) in self.core.key_holders(g) {
+                if n == me || !self.is_node(&n).unwrap_or(false) {
+                    continue;
+                }
+                for ak in CARD {
+                    let Ok(k) = Ak::new(ak) else { continue };
+                    let held: Vec<CommitId> = self.core.ix.by_aspect.get(&(n, k)).into_iter().flatten().map(|x| x.1).collect();
+                    for c in held {
+                        let Some(h) = self.header(&c) else { continue };
+                        if h.author == n && h.aspects.iter().all(|a| a.tid == n && CARD.contains(&a.ak.as_str())) {
+                            out.add(c, (0..h.aspects.len()).collect());
+                        }
+                    }
+                }
+            }
+        }
         out
     }
 

@@ -30,6 +30,6 @@ Work per change: a source's event judges that body at that source; a reader sour
 - `sole_certificate` is always false (the store's to judge); `body_facts.kept` and `covered` move with the memo clock when a keep bound passes.
 
 ## Not built
-- issues/sync-certificate-bodies.md (critical): certificate bodies are not in `sync_bodies`, so read judges another node's card or a certificate outside the required set.
+- issues/sync-certificate-bodies.md: record blobs are not built.
 - issues/reseal-under-own-epoch-leaks.md (Sync side): `seal_body` and `rewrap` still pick the epoch by `section_epoch`, not `Engine::seal` with every held genuine section.
 - issues/sync-unbuilt.md (read): `SrcView::role_unheld` is always false (deletes toward a source do not wait for a role commit it lacks); level-key deletes (freed links, spec/sync-compaction.md §1); a peer's entry counting as lacking for its wrap (Duplicates, spec/sync-ids.md §6 Wraps); HN_fallany (a snapshot arriving invalid moves the fall mark as one held valid falling does) lives in the engine's `fall_mark`, untested end to end.

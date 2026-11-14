@@ -71,6 +71,37 @@ impl Timeline {
         x
     }
 
+    /// Every actor's chain certificates for writes on any of `targets` (§4): the union of
+    /// `certificates(n, t)` over each `t` and each `n` that ever reaches it. The things on those
+    /// paths are exactly what ever reaches a target, so this is one backward walk and the edges
+    /// among what it found, closed under authors (an author on no path adds its own record and
+    /// keys). O(what reaches the targets and the edge writes among it).
+    pub fn certificates_into(&self, targets: &BTreeSet<Tid>) -> Certificates {
+        let mut out = Certificates::default();
+        let index = self.cert_index();
+        let on = self.input.ever_back(targets.iter().copied());
+        let mut things: BTreeSet<Tid> = on.clone();
+        for m in &on {
+            let Some(by_target) = index.by_edge.get(m) else { continue };
+            for (tg, ws) in by_target {
+                if !on.contains(tg) {
+                    continue;
+                }
+                for cm in ws {
+                    out.commits.insert(cm.id);
+                    things.insert(cm.author);
+                }
+            }
+        }
+        for c in &things {
+            out.created.extend(osis_base::record_chain(*c, |x| self.input.records.link(x)).filter_map(|s| s.thing()));
+            if self.input.records.link(c).is_some() {
+                out.keys.insert(*c);
+            }
+        }
+        out
+    }
+
     /// What a verifier needs to judge edge write `id` as this timeline does: its author's
     /// chains to the target and to the holder (a self-removal's authority) and the holder's
     /// chain to the target with that edge's history.

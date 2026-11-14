@@ -175,7 +175,7 @@ impl Engine {
     }
 
     /// `body`, with the plaintext only if `plaintext` (a label pass projects it only to seal).
-    fn body_with(&mut self, c: &CommitId, plaintext: bool) -> Result<Option<Body>> {
+    pub(crate) fn body_with(&mut self, c: &CommitId, plaintext: bool) -> Result<Option<Body>> {
         let id = *c;
         let Some(blob) = self.read(|tx| tx.get_commit(&id))? else { return Ok(None) };
         if blob.parts.is_empty() {
