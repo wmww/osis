@@ -131,6 +131,9 @@ struct Record {
     /// Where each member that left rejoins: held by this side's stream (the connection ended), a
     /// Lost's cursor, or from the start (a digest difference, or this side closed it).
     stopped: BTreeMap<SyncId, Rejoin>,
+    /// The sync IDs this side walks at the peer (J a sync holder, no Hit shown) and has not
+    /// opened there: tested again at each arrival of the peer's filter (spec/sync-ids.md §6 Walk).
+    walking: BTreeSet<SyncId>,
     acked_pos: u64,
     own: OwnFilter,
     peer: Option<PeerFilter>,
@@ -266,6 +269,9 @@ struct Conn {
     /// Members with an `until`: what a reported position may close.
     ending: BTreeSet<SyncId>,
     walks: BTreeMap<SyncId, WalkState>,
+    /// A filter arrived since the last test: every walk not open here is tested again with the
+    /// pending sync IDs (spec/sync-ids.md §6 Walk: at each arrival of the source's filter).
+    rewalk: bool,
     /// It lost its record to this connection (spec/sync-opens.md §1 One connection per pair):
     /// it closes, and acts on nothing meanwhile.
     lost_to: Option<ConnId>,
@@ -737,6 +743,7 @@ impl Opens {
                     r.members.remove(&s);
                     r.basis.remove(&s);
                     r.stopped.remove(&s);
+                    r.walking.remove(&s);
                 }
                 for d in self.dirty.values_mut() {
                     d.members.remove(&s);
@@ -788,6 +795,7 @@ impl Opens {
             reported: Positions::default(),
             ending: BTreeSet::new(),
             walks: BTreeMap::new(),
+            rewalk: false,
             lost_to: None,
         };
         if bind.dialer {
@@ -851,7 +859,7 @@ impl Opens {
         } else {
             random16(ctx.holds.rng())
         };
-        self.records.insert(id, Record { r, actors, kept, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None });
+        self.records.insert(id, Record { r, actors, kept, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), walking: BTreeSet::new(), acked_pos: 0, own: OwnFilter::default(), peer: None });
         id
     }
 
@@ -1305,6 +1313,7 @@ impl Opens {
         // generation.
         c.tested_pos = c.tested_pos.min(r.acked_pos);
         c.test_due = true;
+        c.rewalk = true;
         if let Some(rid) = c.rec {
             let d = self.dirty(rid);
             d.core = true;
@@ -1345,16 +1354,26 @@ impl Opens {
         let Some(r) = self.records.get(&rid) else { return };
         let Some(pf) = r.peer.clone() else { return };
         let (rr, bind, from) = (r.r, c.bind, c.tested_pos);
-        let pending = self.changed.after(from);
+        let mut pending = self.changed.after(from);
+        // a walk not open here: the source's credentials may have moved (spec/sync-ids.md §6 Walk)
+        if c.rewalk && !r.walking.is_empty() {
+            let have: BTreeSet<SyncId> = pending.iter().copied().collect();
+            pending.extend(r.walking.iter().filter(|s| !have.contains(s)));
+        }
         let end = self.changed.end;
         let mut sent = Vec::new();
         let mut items = Vec::new();
         let mut cut = false;
+        // each S tested: whether it is walked here and not open (a sync holder that showed nothing)
+        let mut walk: Vec<(SyncId, bool)> = Vec::new();
         for s in pending {
             if self.member(conn, &s).is_some() {
                 continue;
             }
-            let Some(adm) = self.admissible(ctx, conn, &s) else { continue };
+            let Some(adm) = self.admissible(ctx, conn, &s) else {
+                walk.push((s, false));
+                continue;
+            };
             self.work.tested += 1;
             let mut hit = false;
             for t in &adm.tests {
@@ -1390,15 +1409,20 @@ impl Opens {
             } else if !hit && adm.j == J::SyncHolder {
                 self.behind_item(ctx, conn, &s, &adm, &mut items, &mut sent);
             }
+            walk.push((s, !hit && adm.j == J::SyncHolder));
             if items.len() >= MAX_OFFER_ITEMS {
                 cut = true;
                 break;
             }
         }
+        for (s, on) in walk {
+            self.set_walking(conn, s, on);
+        }
         let Some(c) = self.conns.get_mut(&conn) else { return };
         if !cut {
             c.tested_pos = end;
             c.test_due = false;
+            c.rewalk = false;
         }
         items.truncate(MAX_OFFER_ITEMS);
         sent.truncate(MAX_OFFER_ITEMS);
@@ -1659,9 +1683,20 @@ impl Opens {
         self.members(conn).get(s)
     }
 
+    /// Whether S is walked at `conn`'s peer and not open there, in its record.
+    fn set_walking(&mut self, conn: ConnId, s: SyncId, on: bool) {
+        let Some(rid) = self.conns.get(&conn).and_then(|c| c.rec) else { return };
+        let Some(r) = self.records.get_mut(&rid) else { return };
+        let moved = if on { r.walking.insert(s) } else { r.walking.remove(&s) };
+        if moved {
+            self.dirty(rid).members.insert(s);
+        }
+    }
+
     fn open(&mut self, conn: ConnId, s: SyncId, m: Member, beacon: Option<[u8; 32]>, moved: &mut Vec<Moved>) {
         let Some(rid) = self.conns.get(&conn).and_then(|c| c.rec) else { return };
         let Some(r) = self.records.get_mut(&rid) else { return };
+        r.walking.remove(&s);
         r.members.insert(s, m);
         r.basis.insert(s, beacon);
         let rejoin = r.stopped.remove(&s).unwrap_or(Rejoin::Held);

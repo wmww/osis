@@ -1,13 +1,13 @@
 //! Opens' rows in a peer's record (spec/sync-opens.md §3): the record's own state (`acked_pos`,
 //! this side's filter generations, the peer's filter's shape), the peer's filter by generation,
-//! each member of the shared set with the beacon it was opened by, and where each member that
-//! left rejoins. A record in use is held in memory while a connection holds it; its changes are
+//! each member of the shared set with the beacon it was opened by, where each member that left
+//! rejoins, and each sync ID walked there and not open. A record in use is held in memory while a connection holds it; its changes are
 //! written at the end of the node's step (`Opens::flush`), after streams wrote the positions
 //! they move, so a crash between the two leaves opens' older word, which streams' rows cover
 //! (a member left is where streams stopped it; a rejoin's cursor is kept until opens' own write).
 
 use super::{Member, OwnFilter, PeerFilter, Record, Rejoin};
-use crate::store::rows::tag::{FILTER, MEMBER, OPENS, REJOIN};
+use crate::store::rows::tag::{FILTER, MEMBER, OPENS, REJOIN, WALK};
 use crate::types::{Credential, RecordId, SourceClass};
 use osis_base::SyncId;
 use osis_crypto::Epoch;
@@ -184,7 +184,7 @@ pub(super) fn encode_values(values: &[u64]) -> Vec<u8> {
 /// and its filter's entries): what a connection taking it needs.
 pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId) -> Res<Option<Record>> {
     let Some(rec) = t.record(id)? else { return Ok(None) };
-    let mut r = Record { r: rec.r, actors: rec.actors, kept: true, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None };
+    let mut r = Record { r: rec.r, actors: rec.actors, kept: true, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), walking: BTreeSet::new(), acked_pos: 0, own: OwnFilter::default(), peer: None };
     if let Some(v) = t.record_get_wide_row(id, OPENS, b"")? {
         let mut d = Rd(&v);
         r.acked_pos = d.u64()?;
@@ -215,6 +215,9 @@ pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId) -> Res<Option<Record>
     for (s, _, v) in t.record_tag_rows(id, REJOIN)? {
         r.stopped.insert(s, decode_rejoin(&v)?);
     }
+    for (s, ..) in t.record_tag_rows(id, WALK)? {
+        r.walking.insert(s);
+    }
     Ok(Some(r))
 }
 
@@ -244,6 +247,11 @@ pub(super) fn write(t: &mut Transaction<'_>, id: &RecordId, r: &Record, d: Dirty
         match r.stopped.get(&s) {
             Some(j) => t.record_put_row(id, REJOIN, &s, b"", encode_rejoin(j))?,
             None => drop(t.record_remove_row(id, REJOIN, &s, b"")?),
+        }
+        if r.walking.contains(&s) {
+            t.record_put_row(id, WALK, &s, b"", Vec::new())?;
+        } else {
+            t.record_remove_row(id, WALK, &s, b"")?;
         }
     }
     Ok(())

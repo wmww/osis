@@ -202,7 +202,13 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
                     }
                 }
             }
-            Holding::Unread => c = Creds::kept_unread(&*unread.credentials(s)?),
+            // with no head (nothing registered yet) or stranded it holds S and shows nothing: S is
+            // still in the sync set, so its `changed_at` moves and the peer hears a generation
+            Holding::Unread => {
+                if let Some(uc) = unread.credentials(s) {
+                    c = Creds::kept_unread(&uc);
+                }
+            }
         }
         Some(Arc::new(c))
     }

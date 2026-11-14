@@ -49,6 +49,10 @@ fn a_granted_thing_is_read_once_accepted_spec_sync_inbox_2() {
 /// or after a run: `later`), node 0 writes again: node 1 keeps the thing unread with S's genesis
 /// registered and both writes held.
 fn kept_unread(later: bool) {
+    kept_unread_away(later, false)
+}
+
+fn kept_unread_away(later: bool, away: bool) {
     let mut w = contacts();
     let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
     let ak = Ak::new("u:v.0").unwrap();
@@ -67,8 +71,16 @@ fn kept_unread(later: bool) {
     if later {
         w.run();
     }
+    if away {
+        w.partition(0, 1);
+        w.run();
+    }
     file(&mut w, 1, Vec::new(), vec![t]);
     w.run();
+    if away {
+        w.heal();
+        w.run();
+    }
     write(&mut w, Some(t), "y");
     w.run();
     let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
@@ -88,13 +100,20 @@ fn a_sync_grant_is_kept_unread_with_the_writes_spec_sync_ids_6() {
     kept_unread(false);
 }
 
-// spec/sync-ids.md §6 (walk): as above, the user accepting after node 0 first tested S at node 1
-// (its Register of genesis then refused: node 1 did not sync S yet): node 0 never tests S there
-// again, so nothing is registered or held. Fails: issues/sync-walk-reopen.md.
+// spec/sync-ids.md §6 (walk: tested again at each arrival of the source's filter): as above, the
+// user accepting after node 0 first tested S at node 1 (its Register of genesis then refused:
+// node 1 did not sync S yet): S joins node 1's sync set with no head, its `changed_at` moves, its
+// next filter arrives at node 0, which walks S again and registers genesis.
 #[test]
-#[ignore = "fails: issues/sync-walk-reopen.md"]
 fn a_sync_grant_accepted_later_is_kept_unread_with_the_writes_spec_sync_ids_6() {
     kept_unread(true);
+}
+
+// spec/sync-ids.md §6 (walk: tested again at each arrival of the source's filter): as above, the
+// user accepting while node 0 is out of reach: the walk lasts in their record, so the next connection asks Behind again.
+#[test]
+fn a_sync_grant_accepted_while_away_is_kept_unread_with_the_writes_spec_sync_ids_6() {
+    kept_unread_away(true, true);
 }
 
 // spec/sync-inbox.md §2 (Re-send: until seen taken): a grant, its removal and a grant again,
