@@ -439,6 +439,9 @@ pub struct World {
     /// Checks after every step that every entry waiting for a read secret is parked
     /// (`Node::lost_parks`): parking opens what re-reading every entry would.
     pub parks: bool,
+    /// Nodes added from now on record every row and blob their disks are given (`forensic`,
+    /// `recorded`), for what an attacker holding a device or watching a store learns.
+    pub record: bool,
     /// Restarts in place after a device crash (`DiskFault::Crash`), so far.
     pub crashes: u64,
     /// The differential's state: things made, values written, commits handed to the reference.
@@ -481,6 +484,7 @@ impl World {
             seen: Vec::new(),
             stepped: Vec::new(),
             parks: false,
+            record: false,
             crashes: 0,
             history: history::Made::default(),
             fixture: None,
@@ -584,6 +588,11 @@ impl World {
         let i = self.nodes.len();
         let seed = self.seed();
         let disks = Disks::new();
+        if self.record {
+            for b in [&disks.engine.0, &disks.store.0] {
+                b.record_history();
+            }
+        }
         let clock = Arc::new(NodeClock { world: self.clock.clone(), skew: AtomicI64::new(0) });
         let store = Store::open(Box::new(disks.store.0.clone()), Box::new(disks.store.1.clone()), Box::new(SeededRng::from_u64(seed ^ 1))).expect("store");
         let c: Arc<dyn Clock> = clock.clone();
@@ -612,6 +621,22 @@ impl World {
     /// Node `i`'s engine, for reads. A write goes through `write`.
     pub fn engine(&mut self, i: usize) -> &mut Engine {
         self.nodes.get_mut(i).expect("no such node").node.engine()
+    }
+
+    /// What an attacker holding node `i`'s device recovers (`Engine::forensic`: every row and
+    /// blob its engine's and store's disks were given since it was added under `record`).
+    pub fn forensic(&mut self, i: usize) -> Vec<osis_store::Recovered> {
+        assert!(self.record, "forensic needs a recording world");
+        let n = self.nodes.get_mut(i).expect("no such node");
+        let (eb, sb) = (n.disks.engine.0.clone(), n.disks.store.0.clone());
+        n.node.engine().forensic(&eb, &sb).expect("forensic")
+    }
+
+    /// Node `i`'s store device (sync's store per sync ID): every row it was ever given (under
+    /// `record`), the live rows and the live blobs.
+    pub fn recorded(&self, i: usize) -> (Vec<(Vec<u8>, Vec<u8>)>, Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>) {
+        let b = &self.node(i).disks.store.0;
+        (b.history(), b.dump(), b.blob_history().into_iter().filter_map(|(_, x)| x).collect())
     }
 
     /// Node `i`'s store, for reads.
@@ -961,6 +986,7 @@ impl World {
             seen: Vec::new(),
             stepped: Vec::new(),
             parks: self.parks,
+            record: self.record,
             crashes: 0,
             history: self.history.clone(),
             fixture: None,

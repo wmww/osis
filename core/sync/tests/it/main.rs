@@ -10,6 +10,7 @@ mod keep;
 mod leave;
 mod life;
 mod links;
+mod metadata;
 mod session;
 mod siblings;
 mod sims;

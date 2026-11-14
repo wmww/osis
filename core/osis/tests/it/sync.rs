@@ -562,3 +562,43 @@ fn an_unsynced_write_goes_out_before_the_copy_goes_spec_sync_set_3() {
     assert!(matches!(name(&a, t).as_deref(), None | Some("first")), "then forgotten here");
     assert!(!a.status().unwrap().groups.contains_key(&t), "synced no more");
 }
+
+// spec/permissions.md §3 (removing a node: a departure rotates its account's roles), spec/sync-inbox.md
+// §2: an outside reader of a group the account writes reads the account's writes from before and
+// after one of the account's nodes is removed (Fathom's report on main: it read none of them).
+#[test]
+fn an_outsider_reads_the_accounts_writes_across_a_node_removal_spec_permissions_3() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (a, b) = paired(&net, &c);
+    let o = on(&net, 32, &c);
+    o.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
+    drive(&net, a.import_contact(&o.contact_card().unwrap())).unwrap();
+    drive(&net, o.import_contact(&a.contact_card().unwrap())).unwrap();
+    let mut w = a.write();
+    let g = w.create().unwrap();
+    w.group(a.home()).add(osis::Member::Subgroup(g)).unwrap();
+    w.at(g, osis::core::NAME).set(&"before".to_string()).unwrap();
+    w.commit().unwrap();
+    a.grant(g, o.me(), Role::Read, osis::GrantOpts::default()).unwrap();
+    for _ in 0..5 {
+        net.run();
+    }
+    o.accept_invite(g, o.home()).unwrap();
+    for _ in 0..5 {
+        net.run();
+    }
+    assert_eq!(name(&o, g).as_deref(), Some("before"), "the outsider reads the group");
+    a.remove_node(b.node(), osis::SetRoleOpts::default()).unwrap();
+    for _ in 0..5 {
+        net.run();
+    }
+    assert_eq!(name(&o, g).as_deref(), Some("before"), "the write before the removal still read");
+    let mut w = a.write();
+    w.at(g, osis::core::NAME).set(&"after".to_string()).unwrap();
+    w.commit().unwrap();
+    for _ in 0..5 {
+        net.run();
+    }
+    assert_eq!(name(&o, g).as_deref(), Some("after"), "the write after the removal read");
+}

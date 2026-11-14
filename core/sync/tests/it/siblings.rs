@@ -235,3 +235,41 @@ fn a_siblings_self_removal_waits_and_drops_at_both_siblings_spec_perm_3() {
     w.run();
     assert_ne!(w.engine(2).get(&t, &ak).unwrap(), Some(Value::Str("after".into())), "node 2 reads nothing after");
 }
+
+// spec/permissions.md §3 (removing a node of an account: a departure, rotating the account's
+// roles), spec/sync-inbox.md §2: node 1 writes a thing node 0's account reads; node 1 removes its
+// sibling node 2 from the account; node 0 still reads the write from before and reads one after.
+// The API flow is osis `sync::an_outsider_reads_the_accounts_writes_across_a_node_removal_*`.
+#[test]
+#[ignore = "issues/outsider-reads-nothing-after-node-removal.md"]
+fn repro_an_outsider_reads_the_accounts_writes_across_a_node_removal() {
+    let mut w = siblings();
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let ak = Ak::new("u:v.0").unwrap();
+    let set = |w: &mut World, t: Option<Tid>, v: &str| {
+        w.write(1, |e| {
+            let mut m = Mutation::new();
+            let t = t.unwrap_or_else(|| e.new_thing(&mut m, a1));
+            m.set(t, &ak, &Value::Str(v.into())).unwrap();
+            e.commit(m).unwrap();
+            t
+        })
+    };
+    let t = set(&mut w, None, "before");
+    file(&mut w, 1, vec![t], Vec::new());
+    w.write(1, |e| e.grant(&t, &a0, &edge(Role::Read))).unwrap();
+    w.run();
+    file(&mut w, 0, Vec::new(), vec![t]);
+    w.run();
+    assert_eq!(w.engine(0).get(&t, &ak).unwrap(), Some(Value::Str("before".into())));
+    let held: Vec<_> = w.engine(0).commit_ids();
+    let (n2, d) = (w.engine(2).tid(), w.engine(1).account().unwrap().unwrap().1);
+    w.write(1, |e| e.demote(&d, &Demotion { holder: n2, new: None, retain: None })).unwrap();
+    w.run();
+    let lost: Vec<_> = held.iter().filter(|c| !w.engine(0).commit_ids().contains(c)).collect();
+    assert!(lost.is_empty(), "node 0 dropped {} commits it held", lost.len());
+    assert_eq!(w.engine(0).get(&t, &ak).unwrap(), Some(Value::Str("before".into())), "the write before the removal");
+    set(&mut w, Some(t), "after");
+    w.run();
+    assert_eq!(w.engine(0).get(&t, &ak).unwrap(), Some(Value::Str("after".into())), "the write after the removal");
+}
