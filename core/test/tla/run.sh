@@ -149,16 +149,24 @@ instances=(
   "netblind net MCBlind BN_whole.cfg fail"
   "netblind net MCBlind BN_cover.cfg fail"
   "netblind net MCBlind BN_known.cfg fail"
-  "netopen net MCOpen O_rk.cfg pass"               # issues/sync-rewrite.md: each side opens only on its own proof
-  "netopen net MCOpen O_kk.cfg pass"
-  "netopen net MCOpen O_rk_pair.cfg fail"          # witness: a reader and a store open both ways on one connection
-  "netopen net MCOpen O_kk_pair.cfg fail"          # witness: two stores open both ways on one connection
-  "netopen net MCOpen ON_side.cfg fail"            # negative control: no side byte, a signature is reflected or relayed
-  "netopen net MCOpen ON_answer.cfg fail"          # negative control: a tag on a public value opens
-  "netopen net MCOpen ON_old.cfg fail"             # negative control: an older step's sync key answers (a removed holder)
-  "netopen net MCOpen ON_proofpub.cfg fail"        # negative control: the proof's match from the public sync key
-  "netopen net MCOpen O_nolisten.cfg pass"         # rejected option: listeners never sign is safe ...
-  "netopen net MCOpen O_nolisten_kk.cfg pass"      # ... and two stores never open both ways on one connection
+  "netopen net MCOpen O_rk.cfg pass"               # issues/sync-rewrite.md, the open rule: a reader and a store
+  "netopen net MCOpen O_kk.cfg pass"               # ... two stores
+  "netopen net MCOpen O_rx.cfg pass"               # ... a reader and a link holder
+  "netopen net MCOpen O_pub.cfg pass"              # ... Adv holds only public values
+  "netopen net MCOpen ON_side.cfg fail"            # negative control: no side byte, a signature is reflected
+  "netopen net MCOpen ON_answer.cfg fail"          # negative control: a Hit on a public value opens
+  "netopen net MCOpen ON_old.cfg fail"             # negative control: an older step's sync key answers
+  "netopen net MCOpen ON_proofpub.cfg fail"        # negative control: the proof from the public sync key
+  "netopen net MCOpen ON_proofold.cfg fail"        # negative control: an older step's proof counts
+  "netopen net MCOpen ON_linkold.cfg fail"         # negative control: a removed static entry counts
+  "netopen net MCOpen ON_jnow.cfg fail"            # negative control: J from the roster the node started with
+  "netopen net MCOpen ON_endj.cfg fail"            # negative control: an open by J outlives a removal
+  "netopen net MCOpen ON_endsync.cfg fail"         # negative control: an open by sync key outlives the head's event
+  "netopen net MCOpen ON_endproof.cfg fail"        # negative control: an open by proof outlives the rotation
+  "netopen net MCOpen ON_endlink.cfg fail"         # negative control: an open by static entry outlives its removal
+  "netopen net MCOpen ON_departed.cfg fail"        # finding: without the departed clause a removal does not end opens at once
+  "netopen net MCOpen ON_dialer.cfg fail"          # negative control: the dialer trusts the key it dialed
+  "netopen net MCOpen ON_nolisten.cfg fail"        # negative control (Live): listeners never sign
 )
 
 module=${1:-}
