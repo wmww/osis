@@ -156,10 +156,10 @@ fn synced_of(lp: &mut LocalPeer, at: usize, i: usize, d: Tid) -> Option<Tid> {
     lp.peers[at].engine.get_typed(&d, &ct::SYNCED).unwrap().and_then(|m| m.get(&n).copied())
 }
 
-// spec/sync-set.md §1 (a later node learns its synced group in the pairing reply: a copy of the
-// pairing node's synced group's items and subgroups): the new node reads its own from the reply
-// alone; pairing it again while that group stays under home writes none, and once the group is
-// cut from D (spec/sync-set.md §1 Limit: "until it is paired again"), a new one.
+// spec/sync-set.md §1 (Home stays under it): a later node learns its synced group in the pairing
+// reply, a copy of the pairing node's synced group's items and subgroups: the new node reads its
+// own from the reply alone; pairing it again while that group stays under home writes none, and
+// once the group is cut from D ("until it is paired again"), a new one.
 #[test]
 fn pairing_reply_carries_the_new_nodes_synced_group_spec_sync_set_1() {
     let (mut lp, d) = account_two_nodes();
