@@ -16,11 +16,12 @@ use osis_proto::msg::{Id, NODE_IDS};
 const RESEND_MS: u64 = 30_000;
 
 /// A dial not up this long after it went is closed as failed and redialed after its pause (ms).
-/// Minor consequence: the transport ends a silent connect itself at QUIC's idle timeout per
-/// handshake (a relay's, then the relayed one: two of them), so this only cuts a driver or
-/// transport that never answers; the same liveness bound as a request that does not move
-/// (`STALL_TIMEOUT_MS`). 0 closes every dial before it comes up; infinity lets one unanswered
-/// dial stall its peer for good.
+/// Minor consequence: a working connect takes a few round trips, and a QUIC handshake ends at
+/// the transport's idle timeout (60 s) of silence; what follows a relay's handshake (its answer,
+/// TLS over the forwarded stream) rides a kept-alive connection with no bound of its own, so
+/// this cuts a relay or peer that never answers, or a driver that never reports; the same
+/// liveness bound as a request that does not move (`STALL_TIMEOUT_MS`). 0 closes every dial
+/// before it comes up; infinity lets one unanswered dial stall its peer for good.
 pub(crate) const DIAL_TIMEOUT_MS: u64 = osis_proto::window::STALL_TIMEOUT_MS;
 
 /// Whether a request for `k` on `c` is still unanswered (the id it went under, 0 for none), or
