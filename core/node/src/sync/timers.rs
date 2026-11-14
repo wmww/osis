@@ -39,6 +39,10 @@ impl SyncEngine {
         for l in self.conns.values_mut().flat_map(|c| c.labels.values_mut()) {
             l.last_sync = l.last_sync.min(now);
         }
+        for d in self.conns.values_mut().filter_map(|c| c.dial.as_mut()) {
+            d.since = d.since.min(now);
+        }
+        self.dials_timed_out(out);
         // what waited for a time (a copy left to its author, a relay wait, a step's back-off)
         let later = self.settle_at.split_off(&now.saturating_add(1));
         let due: BTreeSet<LabelId> = std::mem::replace(&mut self.settle_at, later).into_values().flatten().collect();
@@ -130,6 +134,10 @@ impl SyncEngine {
         for c in self.conns.values() {
             if let Some(d) = c.dial.as_ref().filter(|_| c.is_ready()) {
                 at(d.next_ping);
+            }
+            // a dial not up closes at its bound (`dials_timed_out`)
+            if let Some(d) = c.dial.as_ref().filter(|_| !c.up()) {
+                at(d.since.saturating_add(conn::DIAL_TIMEOUT_MS));
             }
             for l in c.labels.values() {
                 // a label not open re-tries after `resync_ms`; an open one needs no time of its

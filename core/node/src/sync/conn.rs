@@ -15,6 +15,14 @@ use osis_proto::msg::{Id, NODE_IDS};
 /// 0 retries at every pass, infinity never retries on this connection (the next one does).
 const RESEND_MS: u64 = 30_000;
 
+/// A dial not up this long after it went is closed as failed and redialed after its pause (ms).
+/// Minor consequence: the transport ends a silent connect itself at QUIC's idle timeout per
+/// handshake (a relay's, then the relayed one: two of them), so this only cuts a driver or
+/// transport that never answers; the same liveness bound as a request that does not move
+/// (`STALL_TIMEOUT_MS`). 0 closes every dial before it comes up; infinity lets one unanswered
+/// dial stall its peer for good.
+pub(crate) const DIAL_TIMEOUT_MS: u64 = osis_proto::window::STALL_TIMEOUT_MS;
+
 /// Whether a request for `k` on `c` is still unanswered (the id it went under, 0 for none), or
 /// was given less than `RESEND_MS` before `now`.
 pub(crate) fn in_flight(c: &Conn, m: &BTreeMap<(LabelId, osis_base::BlobId), (u64, Id)>, k: (LabelId, osis_base::BlobId), now: u64) -> bool {
@@ -203,6 +211,8 @@ pub(crate) struct Dial {
     pub address: Address,
     /// The pause before this dial (`lost` doubles it while dials fail).
     pub pause: u64,
+    /// When it was dialed (wall ms): not up `DIAL_TIMEOUT_MS` later, it is closed (`dials_timed_out`).
+    pub since: u64,
     /// When the next Ping goes (`PING_INTERVAL_MS`), and the Pongs' clock samples.
     pub next_ping: u64,
     pub clock: osis_proto::ClockSamples,
@@ -210,8 +220,8 @@ pub(crate) struct Dial {
 
 impl Conn {
     /// A connection this node dialed to `key` at `address`, not up yet.
-    fn dialing(key: [u8; 32], address: Address, pause: u64) -> Conn {
-        let dial = Dial { key, address, pause, next_ping: 0, clock: Default::default() };
+    fn dialing(key: [u8; 32], address: Address, pause: u64, since: u64) -> Conn {
+        let dial = Dial { key, address, pause, since, next_ping: 0, clock: Default::default() };
         Conn::new(Some(dial), None, super::Tier::Keyed)
     }
 
@@ -433,8 +443,18 @@ impl SyncEngine {
             let pause = self.retry.remove(&key).map_or(0, |(_, _, p)| p);
             let conn = self.next_conn;
             self.next_conn += 1;
-            self.conns.insert(conn, Conn::dialing(key, addr.clone(), pause));
+            self.conns.insert(conn, Conn::dialing(key, addr.clone(), pause, now));
             out.push(Action::Dial { conn, address: addr });
+        }
+    }
+
+    /// Closes dials not up `DIAL_TIMEOUT_MS` after they went, as if they failed: the usual
+    /// pause, then a redial (a driver or transport that never answers one stalls nobody).
+    pub(super) fn dials_timed_out(&mut self, out: &mut Vec<Action>) {
+        let now = self.now();
+        let late: Vec<ConnId> = self.conns.iter().filter(|(_, c)| !c.up() && c.dial.as_ref().is_some_and(|d| d.since.saturating_add(DIAL_TIMEOUT_MS) <= now)).map(|(id, _)| *id).collect();
+        for conn in late {
+            self.close(conn, out);
         }
     }
 

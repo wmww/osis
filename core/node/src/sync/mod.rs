@@ -1161,6 +1161,40 @@ mod tests {
         }
     }
 
+    // A dial the driver never answers is closed at `DIAL_TIMEOUT_MS` and redialed after its
+    // pause; its `Up` arriving after that closes the session it names and changes nothing.
+    #[test]
+    fn an_unanswered_dial_is_closed_and_redialed() {
+        let lp = one_peer();
+        let p = lp.peers.into_iter().next().unwrap();
+        let clock = p.clock.clone();
+        let host = Address { url: "quic://host:1".into(), key: [7; 32] };
+        let cfg = SyncConfig { hosts: vec![host], ..SyncConfig::default() };
+        let mut s = SyncEngine::new(super::host::on_hub(p), Box::new(osis_crypto::SeededRng::from_u64(1)), cfg).unwrap();
+        let dials = |acts: &[Action]| acts.iter().filter_map(|a| if let Action::Dial { conn, .. } = a { Some(*conn) } else { None }).collect::<Vec<_>>();
+        let closes = |acts: &[Action], c: ConnId| acts.iter().filter(|a| matches!(a, Action::Close { conn } if *conn == c)).count();
+        let [first] = dials(&s.handle(Event::Tick))[..] else { panic!("one dial") };
+        // the wake asks for a tick at the bound; before it, nothing closes or dials
+        assert!(s.next_wake().is_some_and(|t| t <= s.now() + conn::DIAL_TIMEOUT_MS));
+        clock.advance(conn::DIAL_TIMEOUT_MS - 1);
+        let acts = s.handle(Event::Tick);
+        assert!(dials(&acts).is_empty() && closes(&acts, first) == 0, "within the bound the dial waits");
+        clock.advance(1);
+        let acts = s.handle(Event::Tick);
+        assert_eq!(closes(&acts, first), 1, "past the bound the dial closes");
+        assert!(!s.conns.contains_key(&first));
+        // redialed after the usual pause for a dial that never came up
+        clock.advance(s.cfg.retry_ms);
+        let again = dials(&s.handle(Event::Tick));
+        assert_eq!(again.len(), 1, "redialed once");
+        assert_ne!(again[0], first);
+        // the first dial's late Up: its session closes, the new dial is untouched
+        let acts = s.handle(Event::Up { conn: first, hub: 9 });
+        assert!(acts.iter().any(|a| matches!(a, Action::Hub { conn: 9, down: osis_host::Down::Close })), "a late Up closes its session");
+        assert!(!s.conns.contains_key(&first) && !s.hub_conns.contains_key(&9), "and keeps nothing of it");
+        assert_eq!(s.conns.len(), 1);
+    }
+
     // spec/sync.md §5: a deposit is kept until each of its hosts answers it, also across a
     // restart; one blob queued under two labels at one host is two deposits.
     #[test]
