@@ -52,8 +52,10 @@ The first-seen rule for an account's forked signing chain (spec/permissions.md Â
 
 | Run | Worlds | Failing checks |
 |---|---|---|
-| `-- 300000 forks` | 300,000 (254,176 with X forking after its removal, 211,101 of them revoking A or B; 16,751 with two honest merges made at once) | 0 |
-| `-- 8000 forks-stand` | 8,000 | 808,048 (X's forks count beside its removal) |
+| `-- 300000 forks` | 300,000 (254,178 with X forking after its removal, 211,165 of them revoking A or B; 15,638 with two honest merges made at once) | 0 |
+| `-- 8000 forks-stand` | 8,000 | 801,270 (X's forks count beside its removal) |
 | `-- 8000 forks-blind` | 8,000 | 32,090 (warnings with no thief; honest nodes split) |
 
-Counted, not failures (300,000 worlds): at an outsider holding the removal but following an unaware sibling's rotation boxed to X (received first), X's writes there count until a merge: 3.16M node-prefixes; at P's nodes, X's write at an open epoch an unaware sibling boxed to it: 12,824; nodes left on X's side when settled (received X's fork first, users not switching): 684,000 node-worlds, each warned; a warning that goes when a later rotation stops a rejection (one signed at its epoch on the rejected line): 407. Merge races converge once nodes act in turn (the settle); nothing bounds rounds of merges made at once.
+Counted, not failures (300,000 worlds): at an outsider holding the removal but following an unaware sibling's rotation boxed to X (received first), X's writes there count until a merge: 3.15M node-prefixes; at P's nodes, X's write at an open epoch an unaware sibling boxed to it: 15,147; nodes left on X's side when settled (received X's fork first, users not switching): 630,178 node-worlds, each warned; a warning that goes when a later rotation stops a rejection (one signed at its epoch on the rejected line): 919.
+
+Rejected for P's nodes (each failed here): judging as outsiders do (`forks-blind`); placing with a conflict relation (a later arrival in a line changes earlier decisions, and a plain fork held first outweighs its maker's removal: the honest devices split); revocations that drop earlier ones and revive (oscillates when a removed node's revocation hits its own line). Merge races converge once nodes act in turn (the settle); nothing bounds rounds of merges made at once.

@@ -7,12 +7,14 @@
 //! (a rotation is held only with its chain and every fork it names, so a line is whole when
 //! placed; a rotation the node's user chose has its line placed first). A placed rotation is
 //! **disregarded** when a rotation on its line rejects or is rejected by a followed one, or
-//! when a followed rotation beside it (neither on the other's line) **ends** it: at a node
-//! outside the account every such one; at a node of the account, which reads the devices
-//! list, one whose line removes the minter of a rotation on its line (beside that removal)
-//! or the other way round, or whose line rejects one on its line or the other way round.
-//! Otherwise it is followed with its whole line (a merge naming a disregarded fork brings it
-//! back). Followed rotations count; nothing else does (checked: the §5.4 rejection fixpoint
+//! when a followed rotation is beside it (neither on the other's line); otherwise it is
+//! followed with its whole line (a merge naming a disregarded fork brings it back). That is
+//! the rule outside the account, where a removed device's fork looks like any other. A node of
+//! the account reads who minted each rotation and whom each removes (the devices list): the
+//! revocations take effect in the order it came to hold them, each only while its own line
+//! stands (no rotation on it minted by a node an earlier revocation removed, beside that
+//! removal), and it follows every rotation whose line stands: two of its devices' rotations
+//! made at once both count, and a plain fork of a removed device never outweighs its removal. Followed rotations count; nothing else does (checked: the §5.4 rejection fixpoint
 //! over the followed ones voids none). A disregarded rotation rejecting or rejected by a
 //! counting one is the warning ("the account has forked"). Nothing reads `ts`; checks read
 //! only what was placed before, so a later arrival never reopens a decision.
@@ -25,19 +27,20 @@
 //! policy (not an input of judgment): a node of P signs at its preferred head; whenever it
 //! acts it rotates if it holds a counting head other than its preferred one whose seed it
 //! holds (naming it: a merge; one it cannot sign at is left to a node that can, as superseding
-//! it unnamed would reject a line it follows) or a rotation that does not count and that no
-//! counting one supersedes (superseding it unnamed: a rejection), and lists its own writes at
-//! every other epoch. A node of P on X's side
+//! it unnamed would reject a line it follows) or a rotation that does not count, that no
+//! counting one rejects and that it has not superseded before (superseding it unnamed: a
+//! rejection), and lists its own writes at every other epoch. A node of P on X's side
 //! switches to the honest line in the settle phase (its user, told).
 //!
 //! Properties, at every node and every prefix of its receipts:
 //! - Revocation holds: where A's removal of X counts, no rotation X made after it counts, and
 //!   no write of X's does at a node outside P (at P's nodes a write at an open epoch an
 //!   unaware sibling boxed to X counts until the merge: counted).
-//! - No flip: outside P the followed set only grows (but at a switch); at P's nodes the
-//!   removals followed only grow.
+//! - No flip: outside P the followed set only grows (but at a switch); at P's nodes a removal
+//!   followed stops counting only once a node on its rotation's line is removed (a removed
+//!   node removes no one).
 //! - No false alarm: with no rotation by X there is never a warning.
-//! - Settled (everything delivered, honest nodes acted in turn): every node holds the warning
+//! - Settled (everything delivered, honest nodes acted in turn): every node but X holds the warning
 //!   when X made a rotation after its removal; every node on the honest side (A's removal
 //!   counts) has one head, the same one, and counts every honest write (B's writes made
 //!   unaware, at the first epoch and at its own rotation, among them).
@@ -134,6 +137,8 @@ pub struct View {
     /// At P's nodes: (node, epoch) removals the counting rotations carry.
     pub removed: BTreeSet<(usize, u32)>,
     pub warning: bool,
+    /// Held rotations a counting one rejects.
+    pub rejected: BTreeSet<u32>,
     /// Writes (content, listings) that count.
     pub valid: BTreeSet<u32>,
     pub chosen: Option<u32>,
@@ -199,7 +204,39 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
     // reopens an earlier decision.
     let mut placed: BTreeSet<u32> = BTreeSet::new();
     let mut followed: BTreeSet<u32> = BTreeSet::new();
-    for &r in &order {
+    let control = CONTROL.load(std::sync::atomic::Ordering::Relaxed);
+    if own && control == 0 {
+        // a node of P reads who made each rotation and whom it removes. The revocations it
+        // takes are a consistent set, built in the order it came to hold them: one is taken
+        // when no revocation taken (nor itself) hits a rotation on its line nor it one on theirs (hits: removes
+        // its minter, the rotation beside that removal). It follows every rotation whose line no
+        // revocation taken hits and holds no revocation not taken
+        let stands = |r: u32, removed: &BTreeSet<(usize, u32)>| {
+            j0.line(r).iter().all(|q| {
+                let m = w.item(*q).author;
+                removed.iter().filter(|(y, _)| *y == m).all(|(_, e)| *e != 0 && j0.on(*q, *e))
+            })
+        };
+        let mut taken: Vec<u32> = Vec::new();
+        for &r in &order {
+            let Some((at, _, _, Some(y))) = w.rot(r) else { continue };
+            let mine: BTreeSet<(usize, u32)> = [(y, at)].into();
+            let with: BTreeSet<(usize, u32)> = j.removed.union(&mine).copied().collect();
+            if stands(r, &with) && taken.iter().all(|q| stands(*q, &mine)) {
+                taken.push(r);
+                j.removed.insert((y, at));
+            }
+        }
+        let revocation = |q: &u32| matches!(w.rot(*q), Some((_, _, _, Some(_))));
+        for &r in &order {
+            if stands(r, &j.removed) && j0.line(r).iter().filter(|q| revocation(q)).all(|q| taken.contains(q)) {
+                followed.insert(r);
+            } else {
+                j.disregarded.insert(r);
+            }
+        }
+    }
+    for &r in order.iter().filter(|_| !(own && control == 0)) {
         placed.insert(r);
         if followed.contains(&r) {
             continue;
@@ -217,7 +254,6 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
                 j0.line(x).iter().any(|p| rej(*q, *p) || removal.is_some_and(|(y, e)| w.item(*p).author == y && !(e != 0 && on(*p, e))))
             })
         };
-        let control = CONTROL.load(std::sync::atomic::Ordering::Relaxed);
         let blind = !own || control == 2;
         // a line rejecting or rejected by a followed rotation ends it too: a merge cannot carry
         // a rejection of the followed line in (nor a fork the followed line rejects)
@@ -291,6 +327,7 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
             None => a.cmp(b),
         }
     }).unwrap();
+    j.rejected = j.chain.iter().copied().filter(|q| j.counting.iter().any(|m| rejects(*m, *q))).collect();
     j.warning = j.chain.iter().filter(|q| !j.counting.contains(q)).any(|q| j.counting.iter().any(|m| rejects(*m, *q) || rejects(*q, *m)));
     // writes: open epoch, or named by a counting listing (a least fixpoint)
     let epoch_held = |e: u32| e == 0 || j.chain.contains(&e);
@@ -330,7 +367,9 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
     // a counting head it cannot sign at (its seed not boxed here) is left to a node that can:
     // superseding it unnamed would reject a line this node follows
     let others: Vec<u32> = j.heads.iter().copied().filter(|x| *x != h && *x != 0 && has_seed(w, &j, n, *x)).collect();
-    let unanswered: Vec<u32> = j.chain.iter().copied().filter(|q| !j.counting.contains(q) && !j.counting.iter().any(|s| w.rot(*s).unwrap().2.contains(q))).collect();
+    // answered: a counting rotation rejects it, or this node superseded it already (a
+    // rotation contested from below cannot be rejected from there: once is enough)
+    let unanswered: Vec<u32> = j.chain.iter().copied().filter(|q| !j.counting.contains(q) && !j.rejected.contains(q) && !w.items.iter().any(|i| i.author == n && i.recv[n] <= now && matches!(&i.kind, Kind::Rot { sup, .. } if sup.contains(q)))).collect();
     let mut head = h;
     if removes.is_some() || !others.is_empty() || !unanswered.is_empty() {
         let names = others.clone();
@@ -570,7 +609,10 @@ pub fn check(w0: &World, st: &mut Stats) {
                     if v >= OWN && !p.followed.is_subset(&j.followed) {
                         fail(format!("node {} at {now}: followed shrank {:?} -> {:?}", NAMES[v], p.followed, j.followed), st);
                     }
-                    if v < OWN && !p.removed.iter().all(|r| j.removed.contains(r)) {
+                    // a removal stops counting only with its remover's removal (a removed node
+                    // removes no one): never back and forth between two nodes' revocations
+                    let remover_gone = |(y, e): &(usize, u32)| w.items.iter().any(|i| matches!(i.kind, Kind::Rot { at, removes: Some(z), .. } if at == *e && z == *y) && j.lines.get(&i.id).is_some_and(|l| l.iter().any(|q| j.removed_node(w.item(*q).author))));
+                    if v < OWN && !p.removed.iter().all(|r| j.removed.contains(r) || remover_gone(r)) {
                         fail(format!("node {} at {now}: removals followed shrank {:?} -> {:?}", NAMES[v], p.removed, j.removed), st);
                     }
                 }
@@ -584,7 +626,8 @@ pub fn check(w0: &World, st: &mut Stats) {
         if j.disregarded.iter().any(|r| !w.item(*r).hostile && w.item(*r).author != X) {
             st.disregarded_honest += 1;
         }
-        if x_rot {
+        // (X's own view aside: it judges its own forks as it likes)
+        if x_rot && v != X {
             if j.warning {
                 st.warned_final += 1;
             } else {
@@ -770,5 +813,22 @@ mod tests {
         all_at(&mut w, &m, 12);
         let j = judge(&w, R1, 12);
         assert!(j.valid.contains(&c1) && j.valid.contains(&c2) && j.heads.len() == 1 && !j.warning, "{j:?}");
+    }
+
+    // T, a node of P, holds X's plain fork (revoking no one) before A's removal of X: the
+    // removal is the first revocation it sees, so it disregards the fork; R1, outside, cannot
+    // tell the fork from any rotation and follows it
+    #[test]
+    fn a_node_of_the_account_takes_a_removal_over_a_plain_fork_held_first() {
+        let mut w = World::default();
+        let made = act(&mut w, A, 1, Some(X), false);
+        w.removal = made[0];
+        let f = fork(&mut w, 0, 1, None);
+        all_at(&mut w, &[f], 2);
+        all_at(&mut w, &made, 3);
+        let j = judge(&w, T, 3);
+        assert!(j.counting.contains(&w.removal) && !j.counting.contains(&f));
+        let j = judge(&w, R1, 3);
+        assert!(j.counting.contains(&f) && !j.counting.contains(&w.removal));
     }
 }
