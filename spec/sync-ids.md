@@ -1,0 +1,154 @@
+# Sync: sync IDs and the store
+> Summary: Area 2: blobs, sync IDs and their role keys, steps and claim sets, `sync.0`, the node's store per sync ID, and the operations a store takes (Register, Behind, stamps, wraps, Delete, expiry, relay-only, caps).
+
+**Principle:** a sync ID belongs to its thing: made once from the thing's own secrets, its keys derived from the thing's current role secrets, its path of steps verifiable from genesis by any node without trusting a peer. A store takes only what verifies under its own head.
+
+## 1. Blobs
+- A **blob** is one of:
+  - an encrypted commit (header plus unpurged deltas; spec/commits.md);
+  - an encrypted chunk, tree node or page (spec/data-model.md §6, spec/crdt.md §8, a header list spec/commits.md §1);
+  - an inbox blob (spec/sync-inbox.md §2).
+- A node keeping S unread cannot tell them apart except as §5 states.
+- **Layout**: **clear prefix** || ciphertext. The prefix holds a salt, an optional expiry `T`, the blob's **class** and the delete-key commitments, one per level (spec/crypto.md §7). Ciphertext: spec/crypto.md §5. Bytes, padding, **Blob ID** and the `MAX_BLOB` bound: spec/wire.md §5.
+- An add event or fetch answer whose bytes do not hash to its blob ID is ignored, whoever sends it.
+- **Class**: durable, ephemeral or relay-only, set as spec/wire.md §5 states. Every node holds ephemeral entries in memory only and relay-only ones not at all (§5, §6).
+- **Several blobs of one commit**: one commit may travel as several blobs (purge rewrites, certificate copies, concurrent re-encryptions): same header and commit ID, each with its own key, salt and ID.
+- **Prefix of a commit encryption**: every encryption of a commit computes its prefix from the header and the aspects its sections list (spec/wire.md §4):
+  - expiry = the commit's `expires`;
+  - one commitment group per distinct delete-key set among those aspects, blinded by the new salt (spec/crypto.md §7; spec/wire.md §5);
+  - a header-only blob (spec/commits.md §5) has neither.
+- **Chunk reuse**: a chunk reused by a later delta keeps its blob and prefix, unless it must be re-encrypted.
+  - It is re-encrypted when one of these holds:
+    - its expiry is earlier than the new delta's;
+    - its commitments to the thing's delete keys (levels 1 and 3) are not exactly those of the keys the reusing delta lists;
+    - it commits to a level-2 key other than the reusing delta's, and that delta lists no level-2 key or only a level-2 key;
+    - its link's salt or delete keys are not what its prefix bears (spec/data-model.md §6): a reused link is copied verbatim.
+  - Beside a level-1 or level-3 key an author-chain commitment need not match.
+  - The link alone decides it: its link blind and the thing give the commitments (spec/crypto.md §7), whichever commit introduced the chunk and whether the node ever held that commit.
+- **Repair** of a chunk or tree node blob:
+  - A node repairs the blob when all of these hold:
+    - a held, unexpired delta of the node's own commit or compaction snapshot links the blob through its large values' trees;
+    - every source of S it reached has deleted the blob (a purger that had not seen the reuse), and its own store no longer holds it;
+    - the node may write the aspect and holds the blob.
+  - It judges these by its view once it has applied every entry of S it can open (those it learned of with the deletion included) and holds no commit pending (not parked) on the aspect.
+  - To repair, it writes each large position of the aspect's current value whose tree holds the blob again, whole and without a reset (`put_new`, spec/crdt.md §5.6), reusing every other chunk and re-encrypting that blob, with that delta's retention and expiry (a snapshot's: the aspect's default retention, no expiry).
+  - How often is local policy.
+
+## 2. Sync IDs and role keys
+- **One sync ID per actor**: a commit that gives a thing role secrets of its own (spec/permissions.md §3) MUST also create its sync ID (unless it already has one) and record it in `sync.0`, in that one commit. That sync ID is the thing's **home sync ID**, for its life: holders are removed, the sync ID is never replaced or retired.
+  - So every holder of a role on a thing with secrets of its own syncs it through that sync ID, whatever else holds the thing.
+  - A plain thing has none: it syncs under the sync IDs of the groups holding it (spec/sync-judgement.md §1). Key actors (nodes, link keys) have no role secrets of their own and so no sync ID: a link key reaches its K's sync ID from its link text (§3 static entry), a node through its account's secrets or pairing.
+  - The home closure holds the actor thing and what its `group.0` lists, nothing by record chain.
+  - The nearest actor with a home sync ID up a group's record chain carries that group's `sync.0` and `created.0` writes, while the record edges between them stand at the writer (spec/sync-judgement.md §1).
+  - A link's sync ID is its K's home sync ID.
+- **Sync ID** value: derived from the genesis step's delete public key (spec/wire.md §8). The genesis step derives from the admin secret current when the sync ID is created.
+- **Role keys**: Ed25519 keys, the first three from the thing's own role secrets (spec/crypto.md §3):
+  - **sync** `kdf("sync key", sync secret, "")`: every holder of sync or above derives it (spec/permissions.md §1);
+  - **write** `kdf("sync write", write secret, "")`;
+  - **delete** `kdf("sync delete", admin secret, "")`;
+  - **deposit** `kdf("sync deposit", deposit seed, sync ID)`, from the deposit seed of the thing's actor (spec/crypto.md §3).
+- **Sync proof** of a sync key: `kdf("sync proof", s, "")`, `s` the 32-byte seed of that sync key. Only a holder of the sync secret computes it; holding the public sync key gives nothing.
+- **What sync gives**: the sync key, so its holder opens S at peers (spec/sync-opens.md §4), pulls it, holds it and serves it; its store takes entries stamped under its head's write key and deposits by spec/sync-inbox.md §3, removes an entry only on a Delete signed by the needed keys or at expiry (§6), reads nothing and holds no roster (spec/sync-judgement.md §6).
+- **Who grants sync**: the one grant rule (spec/permissions.md §2): an admin, or a holder whose grant carries `invite` at sync or above.
+- **Removing a sync holder** is a departure that rotates the sync role (spec/permissions.md §3): the head's sync key moves with the next step, ending every open by the old key (spec/sync-opens.md §6). Removing a reader rotates read and sync.
+- **What a sync holder learns**: the thing's tid and sync IDs, the granting account, the path with its claim-set size padded to a power of two, entry counts, sizes and timing, and which accounts' nodes open S with it; never the roster, content or members. Through holder actors: a grant to G on H boxes H's sync secret to G's sync keyset, and a sync holder of G never learns H's sync ID.
+- A sync grant on D makes nobody a node of the account: a node of P is a node key actor holding read or above on D.
+
+## 3. Steps and claim sets
+- **Steps**: a tree. Layout, signature and **Step ID**: spec/wire.md §8.
+  - A step holds: sync ID, `prev` (the step ID of its parent; none in the genesis step), the four public keys (sync, write, delete, deposit), a fresh X25519 **step key**, BLAKE3 of the **claim set** (which holds the **entry boxes**), and a signature by the parent's delete key (the genesis step by its own).
+  - Each step is carried with its claim set.
+  - Every node holding S has one **head** per S: a node reading S the newest step its `sync.0` records (§4); a node keeping S unread the newest step registered with it (§6 Register).
+  - Only an admin issues a step (§6 Steps). An admin MAY issue a step without a rotation (same role keys, fresh step key) to list readers granted since its parent, key actors in particular.
+- **Claim set** of a step: padded with random keys to a power of two, in random order. It lists each **reader** M of the registered read epoch (the registrar's newest read epoch at registration): every actor holding its read secret as the registrar knows it at registration (the holders of boxes carrying it, the first admin included while its record edge stands; a holder re-sealed later opens by sync key).
+  - A reader is listed by its claim public key (derivation: spec/wire.md §8). M's X25519 key is the X25519 half of its read-role KEM key in the newest `keys.0` of M the registrar holds (a key actor: its single KEM key; an account: its newest open epoch's, spec/crypto.md §3). A non-contributory DH result omits M.
+  - A reader that is a key actor other than a node or an account (a link key) is listed instead by its **static entry** (spec/wire.md §8), the same 32 bytes.
+  - The registrar erases the step private key after signing.
+  - M derives its claim key from its own private key and the step key; it tries each keyset epoch it has held.
+- **Entry boxes** of a step: one for each reader that is a key actor other than a node or an account (a link key), sealed to its KEM key (spec/crypto.md §4 sealed form; AD = (sync ID, step key)). Layout: spec/wire.md §7.
+  - It holds the epoch's read secret and, when the epoch supersedes one whose secret the registrar holds, the secret of the one with the greatest n, ties by lowest nonce (what its rotation commit is wrapped under, spec/crypto.md §5), and the sync secret whose sync key the step registers (its holder checks it derives the step's sync key).
+  - A key actor holding no secret of the thing reads S from the current step; the rotation commit's history box (spec/crypto.md §4) opens the rest.
+  - Each secret names its epoch of the thing (spec/crypto.md §4); it is held as that epoch's secret, which establishes nothing.
+  - Other readers get none: they read the rotations they missed in order (spec/crypto.md §5), or a re-seal (spec/sync-inbox.md §2).
+- **Role keys in use**: a node acts at a peer keeping S unread with the role keys of the epochs that peer's head registers; it derives them from the matching epochs it holds. Every holder of a key in use holds the older secrets through the history boxes, except a holder granted without history, which opens only from its grant's step on: a walk (§6) never strands it for an older step.
+
+## 4. `sync.0`
+- **`sync.0`** on a thing with secrets of its own: `map<sync ID, { steps: map<step ID, step> }>`. Role-class, admin-only.
+  - Each step is held with its claim set and entry boxes, which an admin MAY drop once the step has been superseded for `ROLE_KEEP` (counted from the `ts` of the write recording its first child).
+  - **Owner**: a node takes an entry of a thing g's `sync.0` as g's sync ID only when some step on a verified path from the sync ID's genesis step (each step signed by its parent's delete key, the genesis by its own, whose delete key hashes to the sync ID) bears the sync key of a sync secret of g the node holds. It ignores any other entry wherever it reads `sync.0`; forgetting g without g's secrets, it keeps what a thing it keeps owns. While the node holds no sync secret of g's own (it reads g by derived secrets, spec/crypto.md §3), it takes g's entries as sync ID hints (spec/sync-inbox.md §2).
+  - A step enters `sync.0` only by an admin's write; no node records a step on a peer's word.
+  - A `sync.0` write on a group is also logged under the home sync ID of the nearest actor up the group's record chain that has one.
+  - One role commit may carry the `sync.0` deltas of many things.
+
+## 5. The store per sync ID
+A node keeps one store of ciphertext for all the sync IDs it holds, read and kept unread alike; plaintext and everything derived from a secret is the engine's, above the store. The store is the truth for ciphertext and the engine's view a cache of it: after a crash between the two, a row with no engine state is derived again and engine state with no row is dropped.
+
+Per sync ID:
+- **Path**: the steps from the genesis step to the head (§3): every step's role keys, step key, `prev` and signature; each step's claim set and entry boxes until it has been superseded for `ROLE_KEEP`, longer by policy. A node reading S holds the path its `sync.0` records; a node keeping S unread the path registered with it.
+- **Entries**: blob ID; wrap or, for chunk/tree/page and inbox blobs, a random filler; stamp or none; deposited flag; the peer that brought it (for an unstamped entry); optional pending deletion time.
+- **Tombstones** (blob ID) of deleted entries, kept `TOMBSTONE_LIFETIME`; an ephemeral entry's `MAX_DRIFT`, in memory.
+- Its events go in the store's one node log (spec/sync-streams.md §3).
+
+Across sync IDs:
+- Blob bytes are stored once per node and deleted when no sync ID references them; a blob fetched under one sync ID is taken under every other held sync ID whose entries name it.
+- Ephemeral entries and their tombstones are held in memory only and lost at a restart. Relay-only blobs are never held.
+- The code holding the store decrypts nothing and judges no open: every secret lives above it.
+- **Caps** (`caps^.0`, spec/data-model.md §9: `policy` and per-sync-ID `caps`, local policy) govern only the sync IDs the node keeps unread and count only their entries; a sync ID moving between read and kept unread is counted again. A reader's own sync IDs take nothing from the room others may use.
+- **Peer budget**: an unstamped entry that gives the node nothing held (it does not open, or opens to a commit not judged or known only for a part dropped as invalid) counts its size against the peer that brought it, within a bound per peer (local policy); past it such entries are not kept. The bringing peer is stored with the entry, so the charges survive a restart.
+
+## 6. Operations at a store
+Each operation names a sync ID S. Writes are signed with the role keys of the receiving store's head; a Delete needs S open on the connection (spec/sync-opens.md §4).
+
+- **Steps** (who issues and registers):
+  - Only an admin issues a step: when it holds, for some role, an established epoch newer than the one its recorded head registers (spec/permissions.md §3 next-step triggers), a child of its recorded head, recorded in `sync.0` in the same commit. No step is issued or registered under a head this node has not recorded.
+  - A node reading S registers at each source that keeps S unread (an open by a store credential, spec/sync-opens.md §4) the recorded steps after that source's head, in order: each only once that source's stream showed it holding the role commits of the thing's actor the step's epochs depend on (the rotations of the epochs it registers and of those they supersede), which the registrar logs stamped under the source's head for it to pull. A remover logs the removal and the new `keys.0` first (spec/permissions.md §3).
+  - Any reader holding the recorded path moves a source on an older step, not only an admin; Register needs no secret and no open, and is relayable by any node.
+  - A deposit-only step (a new deposit key, no other role newer) waits while the node misses a valid `keys.0` part of the thing's actor that it knows of.
+  - No rotation answers a fork: sibling steps stand until a step due for another reason lists past them.
+- **Register** (delete key of the parent): taken only for a sync ID the node keeps unread (spec/sync.md §3) and in its sync set; a node reading S refuses every Register of S (code 14: its path comes from `sync.0` alone), as does a node not syncing S.
+  - Accept a genesis step only if its delete key hashes to the sync ID and the node holds no step of S.
+  - Accept a step whose `prev` is the head.
+  - Otherwise refuse anything else (a step with another `prev`, an operation under keys of a step it does not hold) with code 9 and nothing more (other codes: spec/wire.md §11.2). A refused registration never carries the head (a registrar learns it from the stream where S is open, or by Behind items).
+  - A step is registered with its claim set when the registrar holds it (it MUST hash to the step's). A step held without its set serves no claims at it.
+  - **Storage caps**: a step and its claim set count toward the sync ID's and the store's caps (the claim set until it is dropped, §5). Past them:
+    - a genesis step is refused (code 12);
+    - a child step is accepted without its claim set (it serves no claims);
+    - a child step past them even without its set is accepted at most once per sync ID per a policy interval (local policy, non-zero), else refused (code 12), and never refused for a cap otherwise.
+  - **Refused for now** (codes 4, 12): the registrar keeps its open and registers again after a back-off (local policy, bounded), never at once.
+  - A restart of S at a registrar (S dropped and synced again) forgets what it registered where.
+- **Credential and walk** (a reader moving a source along the path): TODO(area 2): rewrite the old Credential, Walk, Behind and provisional-open-head rules (`git show HEAD~:spec/sync.md` §5 Opens; notes/sync-rewrite-inputs.md area 2 lines 57-63) as consequences of one rule: a reader opens S at a source by the credential of the newest step it records that the source shows, else asks Behind by a credential of the source's step and verifies every step returned under its parent; every answer moves a holder at most one sync key past what it showed. Keep the bytes (spec/wire.md §11.2 Behind) and the limits: one answer per sync key crossed; a step with a dropped claim set opens nothing (stranded, spec/permissions.md §4); a head's child is never recorded on a peer's word; a walk tests every recorded branch deepest first. About 2 KB.
+- **Behind** (an Offer item, spec/wire.md §11.2): an open signature by a credential key of the step it names: its sync key, a claim of its claim set, or the signing key of a key actor whose static entry the set lists. Naming no step: a sync key (the newest step bearing it), or a key actor's signing key (the head). A node keeping S unread answers:
+  - naming a step on its path other than its head whose credential the key is (a claim or static entry only while it holds the step's claim set): the steps after it on its path, in order, through the first whose sync key is not the named step's (without claim sets);
+  - naming none, by a sync key a step of its path other than its head bears: the step after the newest such step;
+  - naming none, by a key actor's signing key whose static entry its head's claim set lists: the head's entry box for that entry and the path from genesis, as a Static item's Hit is answered (spec/sync-opens.md §5);
+  - a sync ID it does not keep: code 13; anything else code 14, carrying nothing.
+  - The Behind answers of one Offer carry at most ⌊`REPLY_BUDGET` / 326⌋ steps in all (spec/wire.md §11.2), a path in a grant included: an item reaching that bound is answered with the steps it reached; reaching it with none, or a grant past it, code 4 (refused for now: asked again after a back-off).
+- **Stamp**: a signature under S's write key, domain `"osis v1 stamp"` (spec/crypto.md §2), over (sync ID, blob ID, wrap). A node taking the entry checks it against the write key of its head; stamps already taken stay valid across new steps.
+- **Role entries**: an entry deletes are judged by (spec/sync-judgement.md §2: a role commit, a commit carrying a request, or a blob such a commit links) is stamped, or signed as a deposit, under `"osis v1 role entry"` in place of the domain above; a node keeping S unread checks either domain alike, and takes a role entry outside S's and its store's caps (it counts toward neither): a stamped one with no bound of its own, a deposited one within the deposit budget. A reader that holds an entry and is shown it under another valid stamp keeps the lower (as bytes), so two writers stamping it under either domain settle on one. Limit: a writer may stamp any entry so, past the caps.
+- **Taking a stamped entry**: a node keeping S unread takes the stamped entries it pulls (spec/sync-streams.md §4) by these rules, each with wrap and stamp.
+  - Anyone holding a stamped entry may relay it. A stamp under a superseded write key is refused (code 9): such an entry goes as a deposit (spec/sync-inbox.md §3).
+  - Refused: a bad stamp; a blob whose prefix expiry has passed; a blob ID with a tombstone; an oversized blob; an ephemeral blob past S's ephemeral cap (code 12).
+  - A stamped entry of a deposited entry's blob ID replaces its wrap and stamp and clears its deposited flag.
+  - A stamped entry's wrap and stamp never change while it lives: taking its blob ID again changes nothing and logs no event, as does a deposit of a held blob ID.
+- **Relay-only** entry: the blob is not stored. It goes on to S's other holders by the stream (spec/sync-streams.md §4, a Stream with no cursor) and leaves no entry, log event, tombstone or expiry.
+  - Refused:
+    - without an expiry or with one more than `2 × MAX_DRIFT` ahead (code 1);
+    - at or past its expiry (code 7);
+    - above `MAX_RELAY_BLOB` (code 3);
+    - past S's relay rate (code 4).
+  - A node keeping S unread pushes a blob ID once per sync ID until its expiry (a repeat is answered OK and pushed to nobody), remembering a bounded number of them (past it the earliest-expiring is forgotten).
+- **Wraps**:
+  - **A node holding the blob's key**: it takes only a wrap opening to that key. An entry a source holds stamped, under any step's write key, under any other wrap counts as lacking at that source (spec/sync-judgement.md §2) for as long as the source holds it; a wrap that does not open at a source gets a fresh encryption there. A wrap opening under no read secret held counts so only until a read secret arrives under which it opens to the blob's key.
+  - **A node holding no key**: it keeps its wrap unless one of these holds:
+    - the new one opens under a held read secret and its own does not;
+    - its own opened to a key the blob refused;
+    - neither opens and the new one is stamped and its own is not.
+  - At a node holding no key, an entry stamped at a source under a wrap that does not open while the node's own does counts as lacking there; when a new wrap that opens replaces another, entries at the sources that gave the other count as lacking there too.
+- **Delete**: taken at a node keeping S unread only on a connection where S is open by a store credential (its head's sync key, a claim or a static entry, spec/sync-opens.md §4), else refused whole (code 8); by the delete key, or of one entry by delete keys of levels: one delete signature per commitment group of the blob's prefix, each verifying under that group's commitment at its level (spec/crypto.md §7; one signature may cover several groups committing to the same key), plus a signature under the head's write key when any level is 3 (thing write secret), else its sync key; any other is refused. An empty group (a `nobody` delta's, or a header list's of a commit listing no level-2 key) is never covered: such a blob goes by the delete key or at its expiry. Between readers no Delete is sent: each deletes in its own store by its own judgement (spec/sync-judgement.md §3).
+  - Removal leaves a tombstone for `TOMBSTONE_LIFETIME`.
+- **Expiry**: at the prefix's `T` every node deletes the entry outright: no tombstone.
+- **Caps at a node keeping S unread**: it caps storage per sync ID and the memory of ephemeral entries per sync ID (and in total), counting each entry's, log record's and tombstone's overhead besides its blob.
+  - An ephemeral entry past its cap is refused (code 12).
+  - At the total cap the sync ID using most gives way: its oldest entries, deleted with no tombstone.
+  - It may rate-limit deletes, deposits, registrations (code 4) and relay-only entries per sync ID.
+  - Pulled stamped entries are refused for room alone (spec/sync-streams.md §4 Full); rates bound deposits, deletes, registrations and relays, which are refused for now.
