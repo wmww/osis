@@ -187,11 +187,14 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         return Ok(j);
     }
     let own = g.own(s, c)?;
+    // a destroying request under S told destroyed stays until its expiry (§5 Emptying), its part
+    // on the destroyed thing dropped or not
+    let request = mine.told.get(s).is_some_and(|req| req.contains(c));
     // an entry whose blob holds a part dropped here for good is must-not-hold itself, whatever
     // the body's verdict (spec/sync-judgement.md §1): it leaves, and the body counts as unlogged
     let mut stale = Vec::new();
     for e in &own {
-        if g.dropped(&e.blob)? {
+        if !request && g.dropped(&e.blob)? {
             stale.push(e.blob);
         }
     }
@@ -223,6 +226,10 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
             }
             (Some(f), v)
         }
+    };
+    let verdict = match request {
+        true => Verdict::May,
+        false => verdict,
     };
     j.verdict = verdict.clone();
     j.role = verdict == Verdict::Must && f.as_ref().is_some_and(|f| f.own && f.role);

@@ -106,14 +106,36 @@ fn a_released_thing_reads_absent_at_every_node_spec_commits_5() {
 }
 
 // spec/commits.md §5 (Destruction: once no request is in force and nothing needs it, it keeps
-// nothing, and every entry under its own sync IDs is must-not-hold), spec/sync-ids.md §6: past the
-// request's window (`ROLE_KEEP`), S's entries (record blobs included, spec/sync-judgement.md §2)
-// leave node 0's and node 2's stores and node 1's, which keeps S unread; once the deletes are
-// past their tombstones, node 0 forgets S and t's secrets (spec/sync-judgement.md §5 Emptying).
+// nothing, and every entry under its own sync IDs is must-not-hold), spec/sync-judgement.md §5
+// (Emptying: but the destroying requests, which leave at their expiry): past a purge's window
+// (`ROLE_KEEP`), S keeps only the request's entries at node 0's, node 2's and node 1's stores
+// (node 1 keeps S unread; record blobs gone too, spec/sync-judgement.md §2). The purge has no
+// expiry: S stays with it, so a node away for the window learns of the destruction.
 #[test]
-fn a_destroyed_things_sync_id_empties_past_its_window_spec_commits_5() {
+fn a_destroyed_things_sync_id_empties_but_its_request_past_its_window_spec_sync_judgement_5() {
     let (mut w, t, s) = three();
-    purge_thing(&mut w, 0, t);
+    let q = purge_thing(&mut w, 0, t);
+    w.run();
+    w.advance(ROLE_KEEP_MS + 60_000);
+    w.run();
+    let request = w.engine(0).commit_blobs(&q).unwrap();
+    for i in 0..3 {
+        let left: Vec<_> = w.store(i).entries(&s).unwrap().into_iter().filter(|e| !request.contains(&e.blob)).collect();
+        assert!(left.is_empty(), "node {i} holds {} entries under S but the request's", left.len());
+    }
+    assert!(w.store(1).entries(&s).unwrap().iter().any(|e| request.contains(&e.blob)), "node 1 lost the request");
+    assert!(w.engine(0).destruction(&t).unwrap().is_some_and(|d| d.requests == vec![q]), "the purge is a destroying request");
+}
+
+// spec/sync-judgement.md §5 (Emptying: the requests leave at their expiry; forgets the sync IDs
+// once its sources are heard out with nothing known there, only then the thing's secrets):
+// released, past the request's expiry S empties at every store and, past the deletes'
+// tombstones, node 0 forgets S and t's secrets.
+#[test]
+#[ignore = "issues/destroyed-sync-id-never-left.md"]
+fn repro_a_released_things_sync_id_empties_and_is_forgotten_spec_sync_judgement_5() {
+    let (mut w, t, s) = three();
+    w.write(0, |e| e.release(&[t])).unwrap().expect("a release request");
     w.run();
     w.advance(ROLE_KEEP_MS + 60_000);
     w.run();
@@ -122,6 +144,27 @@ fn a_destroyed_things_sync_id_empties_past_its_window_spec_commits_5() {
         assert!(left.is_empty(), "node {i} holds {} entries under S", left.len());
     }
     w.cap = 200_000;
+    w.advance(TOMBSTONE_LIFETIME_MS);
+    w.run();
+    assert_eq!(w.engine(0).sync_holder(&s).unwrap(), None, "node 0 still syncs S");
+    assert!(w.engine(0).epochs(&t).is_none(), "node 0 still holds t's secrets");
+}
+
+// spec/sync-judgement.md §5 (Emptying), spec/sync-status.md §1 (heard out), as a lifecycle duty
+// reads it (no peer sharing S: heard out at once): a node alone gives t secrets of its own,
+// releases it and, past the request's expiry, forgets S and t's secrets.
+#[test]
+fn a_node_alone_forgets_a_released_things_sync_id_spec_sync_judgement_5() {
+    let mut w = world(0, 1);
+    let _ = play(&mut w, &[New(0), Run], String::new());
+    let t = w.history.things[0].0;
+    w.write(0, |e| e.give_own_secrets(&t)).unwrap();
+    w.run();
+    let s = w.engine(0).home_sync_id(&t).unwrap().expect("t's own sync ID");
+    w.write(0, |e| e.release(&[t])).unwrap().expect("a release request");
+    w.run();
+    w.advance(ROLE_KEEP_MS + 60_000);
+    w.run();
     w.advance(TOMBSTONE_LIFETIME_MS);
     w.run();
     assert_eq!(w.engine(0).sync_holder(&s).unwrap(), None, "node 0 still syncs S");

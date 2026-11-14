@@ -218,7 +218,7 @@ impl Ground for Live<'_, '_> {
         Ok(self.streams.known().list(*at, s)?.into_iter().collect())
     }
     fn heard_out(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(self.status.heard_out(s, &NetView { streams: self.streams, unread: self.unread }))
+        self.status.heard_out_or_alone(self.opens, self.cx.store, s, &NetView { streams: self.streams, unread: self.unread })
     }
     fn stand(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Option<Stand>> {
         self.cx.store.stand(*at, s, &c.0)

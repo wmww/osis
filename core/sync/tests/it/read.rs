@@ -1054,6 +1054,30 @@ fn emptying_keeps_the_requests() {
     assert_eq!(w.at_k(S, cid(1)), 0);
 }
 
+// spec/sync-judgement.md §5 (Emptying: everything but the destroying requests is must-not-hold;
+// they leave at their expiry): told, an own entry of the request whose part on the destroyed
+// thing is dropped here stays, and so does the request at K.
+#[test]
+fn emptying_keeps_a_request_whose_part_is_dropped_here_spec_sync_judgement_5() {
+    let mut w = at_k_must_hold();
+    w.hold(cid(3), &[S], uncovered());
+    w.exchange();
+    let own = w.own_blobs(S, cid(3));
+    assert!(!own.is_empty(), "the request logged here");
+    // its thing keeps nothing: told, the request's part on it dropped here
+    w.g.doom.insert(S, Arc::new(Destruction { requests: vec![cid(3)], ..Default::default() }));
+    for b in &own {
+        w.g.dropped.insert(*b, ());
+    }
+    w.stream();
+    w.settle();
+    w.exchange();
+    assert_eq!(w.own_blobs(S, cid(3)), own, "the request left the own store");
+    assert_eq!(w.at_k(S, cid(3)), 1, "the request deleted at K");
+    assert_eq!(w.at_k(S, cid(1)), 0, "told: the rest emptied at K");
+    assert_eq!(w.read.verdict(&S, &cid(3)), Some(Verdict::May));
+}
+
 // spec/sync-judgement.md §5 (it forgets the sync IDs once its sources): told and emptied, it forgets S
 // only once its sources are heard out with no entry and no tombstone known there: not while the
 // request lives at K (DN_forget).

@@ -136,7 +136,8 @@ pub trait Ground {
     fn seen_all(&mut self, at: &Source, s: &SyncId) -> Result<BTreeSet<BlobId>>;
     /// A delete at a source of S is known within its tombstone (`TOMBSTONE_LIFETIME`).
     fn deletes_known(&mut self, s: &SyncId) -> Result<bool>;
-    /// Every source of S heard out (spec/sync-status.md §1).
+    /// Every source of S heard out (spec/sync-status.md §1), at once with no peer sharing S
+    /// (`Status::heard_out_or_alone`).
     fn heard_out(&mut self, s: &SyncId) -> Result<bool>;
     fn stand(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Option<Stand>>;
 

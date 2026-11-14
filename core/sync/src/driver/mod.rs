@@ -691,7 +691,7 @@ impl Node {
             let net = NetView { streams: &self.streams, unread: &self.unread };
             let (status, opens, store) = (&self.status, &self.opens, &self.store);
             // a sync ID no peer shares is heard out at once (the rule a leave's wait reads)
-            acted |= self.life.settle(&mut self.engine, &self.store, |s| Ok(!opens.shared(store, s, |_| false)? || status.heard_out(s, &net)))?;
+            acted |= self.life.settle(&mut self.engine, &self.store, |s| status.heard_out_or_alone(opens, store, s, &net))?;
             // the engine read its store again (a forgetting drop): every feed followed is stale,
             // so the settle ends and the step restarts the modules (`engine_reloaded`)
             if !acted || self.engine.loads() != self.driver.engine_loads {

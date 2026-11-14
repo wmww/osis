@@ -606,6 +606,13 @@ impl Status {
         heard_out(srcs.iter().map(|(c, src)| (!net.full(src.at, s) && !net.refusing(src.at, s), net.caught_since(*c, s).is_some())))
     }
 
+    /// S heard out for what waits on it (a lifecycle duty, emptying a destroyed thing's sync ID):
+    /// at once when no peer shares it (`Opens::shared`: no connection has it open, no kept record
+    /// lists it), so a node alone waits for none; else `heard_out`.
+    pub fn heard_out_or_alone(&self, opens: &Opens, store: &crate::store::Store, s: &SyncId, net: &impl Net) -> Result<bool> {
+        Ok(!opens.shared(store, s, |_| false)? || self.heard_out(s, net))
+    }
+
     /// Whether own commit `c` is held elsewhere under every read sync ID it has a body under
     /// (§2); false while it has none here.
     pub fn held(&self, c: &CommitId) -> bool {
