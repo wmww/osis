@@ -7,7 +7,7 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` store r
 | prefix | holds |
 |---|---|
 | `seed`, `hlc` | the node seed; the last `ts` issued or seen |
-| `c/`+commit | applied commit records: a head (`index::record_head`, version 1: received, origin, dropped parts with what each keeps (`Hold::Dropped`), stripped parts and whether each leftover keeps own values (`Hold::Leftover`), the canonical bytes of the header's linked lists), then the current blob. A held header is whole in its record (its list blobs go at the commit's expiry, spec/wire.md §5), so no open reads them |
+| `c/`+commit | applied commit records: a head (`index::record_head`, version 1: received, origin (a repair's own commit marked, `Meta::repair`), dropped parts with what each keeps (`Hold::Dropped`), stripped parts and whether each leftover keeps own values (`Hold::Leftover`), the canonical bytes of the header's linked lists), then the current blob. A held header is whole in its record (its list blobs go at the commit's expiry, spec/wire.md §5), so no open reads them |
 | `t/`+tid | creation records |
 | `a/`+aspect | aspects with a state (`aspects.0`) |
 | `v/`+aspect | value-less deltas (expired, purged): the join-time strip list |

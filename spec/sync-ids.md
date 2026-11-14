@@ -28,11 +28,11 @@
   - The link alone decides it: its link blind and the thing give the commitments (spec/crypto.md §7), whichever commit introduced the chunk and whether the node ever held that commit.
 - **Repair** of a chunk or tree node blob:
   - A node repairs the blob when all of these hold:
-    - a held, unexpired delta of the node's own commit or compaction snapshot links the blob through its large values' trees;
+    - a held, unexpired delta of the node's own commit or compaction snapshot links the blob through its large values' trees, the commit not itself a repair (what a repair encrypts afresh only it links, so a source deleting it refuses it: no purger missed a reuse);
     - some source of S it reached has deleted the blob (a purger that had not seen the reuse) and none shows it present;
     - the node may write the aspect and holds the blob.
   - It judges these by its view once it has applied every entry of S it can open (those it learned of with the deletion included) and holds no commit pending (not parked) on the aspect.
-  - To repair, it writes each large position of the aspect's current value whose tree holds the blob again, whole and without a reset (`put_new`, spec/crdt.md §5.6), reusing every other chunk and re-encrypting that blob, with that delta's retention and expiry (a snapshot's: the aspect's default retention, no expiry).
+  - To repair, it writes each large position of the aspect's current value whose tree holds the blob again, whole and without a reset (`put_new`, spec/crdt.md §5.6), reusing every other chunk and re-encrypting the blobs it repairs (one commit for those of one own commit), with that delta's retention and expiry (a snapshot's: the aspect's default retention, no expiry).
   - How often is local policy.
 
 ## 2. Sync IDs and role keys
