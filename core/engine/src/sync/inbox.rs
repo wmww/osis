@@ -67,10 +67,12 @@ fn waiting_of(b: &[u8]) -> Result<WaitingBlob> {
 /// followed only while the blob is unexpired). Goes with the thing (`forget`).
 pub(crate) const HINTS: &[u8] = b"ih/";
 
-/// Keeps `s` as `t`'s hinted sync ID until `expires` (`None`: drops it).
+/// Keeps `s` as `t`'s hinted sync ID until `expires` (`None`: drops it). Keeping the hint held
+/// writes nothing (an inbox blob taken again moves nothing that read the hints).
 pub(crate) fn set_hint(tx: &mut Tx<'_>, t: &Tid, s: Option<(SyncId, WallMs)>) -> Result<()> {
     let k = [HINTS, t.as_bytes()].concat();
     match s {
+        Some(h) if tx.core.ix.inbox_hints.get(t) == Some(&h) => {}
         Some((s, expires)) => {
             tx.txn.put_local(&k, &[&s.0[..], &expires.0.to_be_bytes()].concat(), Shred::No)?;
             tx.core.ix.inbox_hints.insert(*t, (s, expires));
@@ -158,6 +160,11 @@ impl Engine {
     /// (spec/sync-inbox.md §1: a blob is tried under each): the recipient, the blob's expiry, what
     /// it carries. `None`: none opens it.
     fn open_inbox_bytes(&mut self, s: &SyncId, bytes: &[u8]) -> Option<(Tid, WallMs, Inbox)> {
+        // a blob whose prefix no inbox blob has (a commit's, under the inbox's own sync ID) is
+        // opened by no key: told from its bytes alone, so it reads nothing that moves
+        if !osis_label::Prefix::parse(bytes).is_ok_and(|p| p.inbox_shaped()) {
+            return None;
+        }
         let actors = self.inbox_actors().get(s).cloned().unwrap_or_default();
         for a in actors {
             let kems: Vec<KemSecret> = match self.core.accounts.contains_key(&a) {
@@ -165,6 +172,7 @@ impl Engine {
                 false => self.core.epochs(&a).map(|e| e.role(Role::Read).held_newest_first().into_iter().map(|(_, s)| osis_crypto::role_kem(s)).collect()).unwrap_or_default(),
             };
             for kem in &kems {
+                osis_base::costs::count("inbox: open tried", 1);
                 if let Ok((p, inbox)) = open_inbox_item(bytes, &a, kem) {
                     return Some((a, p.expiry().unwrap_or(WallMs(0)), inbox));
                 }

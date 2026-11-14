@@ -1,9 +1,9 @@
 //! The reference-model differential (harness::history): random histories over a few nodes, at
 //! quiet every reader reads as a single engine handed every commit directly, and no needed body
 //! is deleted everywhere. Fresh worlds per seed; `OSIS_SYNC_SEED`/`OSIS_SYNC_SEEDS` pick the
-//! seeds (default: 1,000 under `OSIS_FULL=1`, 4 at small size, cut below a tenth while a history
-//! costs about ten times what notes/sync-test-harness.md budgets, issues/sync-test-cost.md); a
-//! failure prints the history as a script, `OSIS_SYNC_SHRINK=1` shrinks it.
+//! seeds (default: 20 at small size, 1,000 under `OSIS_FULL=1`: what notes/sync-test-harness.md's
+//! differential budget buys, issues/sync-test-cost.md); a failure prints the history as a
+//! script, `OSIS_SYNC_SHRINK=1` shrinks it.
 
 use crate::harness::history::{Gives, check, check_readers, hand, hand_all, history, world};
 use crate::harness::{Step, World, play, shrinking};
@@ -88,7 +88,7 @@ fn a_history_replays_from_its_seed() {
 // reference, no needed body is deleted everywhere.
 #[test]
 fn histories_converge() {
-    let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", sized(4, 1000));
+    let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", sized(20, 1000));
     seeds.run("histories_converge", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |s| converges(s, NODES, STEPS, true));
 }
 
@@ -96,7 +96,7 @@ fn histories_converge() {
 // network, so a failure there is sync's rules, not its recovery.
 #[test]
 fn clean_histories_converge() {
-    let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", sized(4, 1000));
+    let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", sized(20, 1000));
     seeds.run("clean_histories_converge", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |s| converges(s, NODES, STEPS, false));
 }
 

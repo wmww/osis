@@ -267,6 +267,9 @@ pub fn open_inbox_blob(blob: &[u8], recipient: &Tid, kem: &KemSecret) -> Result<
 pub fn open_inbox_item(blob: &[u8], recipient: &Tid, kem: &KemSecret) -> Result<(Prefix, Inbox), Error> {
     crate::blob::check_size(blob)?;
     let prefix = Prefix::parse(blob)?;
+    if !prefix.inbox_shaped() {
+        return Err(Error::Malformed("not an inbox blob prefix"));
+    }
     let pt = open_inbox(blob, prefix.len(), recipient, kem)?;
     Ok((prefix, Inbox::from_value(decode(&pt, &OBJECT_LIMITS)?)?))
 }

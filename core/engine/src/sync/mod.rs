@@ -675,6 +675,11 @@ impl Engine {
         Ok(self.core.ix.blob_parts.get(b).map(|x| x.0))
     }
 
+    /// Whether commit `c` is held here (applied or judged).
+    pub fn holds_commit(&mut self, c: &CommitId) -> bool {
+        self.core.ix.commits.contains_key(c)
+    }
+
     /// The blobs of commit `c` opened or sealed here.
     pub fn commit_blobs(&mut self, c: &CommitId) -> Result<Arc<Vec<BlobId>>> {
         Ok(Arc::new(self.core.ix.commit_blobs.get(c).into_iter().flatten().copied().collect()))
@@ -700,6 +705,7 @@ impl Engine {
     /// judges it again (spec/sync-inbox.md §2 Taking); `accepted`: the user accepted it
     /// (spec/sync-set.md §4). `None`: its bytes are not held or nothing here opens it.
     pub fn take_inbox(&mut self, s: &SyncId, blob: &BlobId, accepted: bool) -> Result<Option<InboxOpened>> {
+        osis_base::costs::count("inbox: take", 1);
         let b = *blob;
         let Some(bytes) = self.run(|tx| tx.blobs.get(&b))? else { return Ok(None) };
         self.take_inbox_bytes(s, blob, &bytes, accepted)

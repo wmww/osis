@@ -327,7 +327,7 @@ fn inbox_facts(taken: Option<Taken>, c: u32, writer: bool, expiry: u64) -> Facts
 #[test]
 fn writer_stamps_taken_inbox_blob_in_place_spec_sync_inbox_2() {
     let now = WallMs(T0);
-    let stamps = |f: &Facts| matches!(act_of(f, now), Act::StampInbox(_));
+    let stamps = |f: &Facts| matches!(act_of(f, now), Act::StampInbox(..));
     let a = inbox_facts(Some(Taken::Applied), 1, true, LIFE);
     assert!(stamps(&a));
     let twin = Facts { stamped: Some(BlobId([9; 32])), ..inbox_facts(Some(Taken::Applied), 1, true, LIFE) };

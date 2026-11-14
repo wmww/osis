@@ -135,6 +135,10 @@ impl Prefix {
     pub fn expiry(&self) -> Option<WallMs> {
         self.expiry
     }
+    /// Whether the prefix is an inbox blob's (spec/wire.md §9): an expiry and no commitments.
+    pub fn inbox_shaped(&self) -> bool {
+        self.expiry.is_some() && self.groups.is_empty()
+    }
     /// The commitment groups in prefix order.
     pub fn groups(&self) -> &[Group] {
         &self.groups

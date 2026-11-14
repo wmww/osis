@@ -720,7 +720,13 @@ impl crate::Engine {
         if hints.is_empty() {
             return Ok(());
         }
+        // an applied commit's hints are judged at once (a hint once kept stays, so taking the
+        // same payload again writes nothing); only an unapplied one waits as a candidate
         self.run(|tx| {
+            if tx.core.ix.commits.contains_key(&c) {
+                tx.core.keep_hints(&c, hints);
+                return Ok(());
+            }
             let cands = &mut tx.core.ix.hint_candidates;
             if !cands.contains_key(&c) {
                 if cands.len() >= MAX_HINT_COMMITS
@@ -730,7 +736,6 @@ impl crate::Engine {
                 }
                 cands.insert(c, hints);
             }
-            tx.core.promote_hints();
             Ok(())
         })
     }
@@ -740,27 +745,33 @@ impl crate::Engine {
 const MAX_HINT_COMMITS: usize = 64;
 
 impl Core {
-    /// Keeps the hints of candidate commits that applied: a thing's hint only from a commit
-    /// touching it with valid deltas, by an author with admin on it at the commit's `ts`, and
-    /// only while no hint and no `keys.0` with keysets is held for it (the first stays).
+    /// Keeps the hints of candidate commits that applied (`keep_hints`).
     pub(crate) fn promote_hints(&mut self) {
         let applied: Vec<CommitId> = self.ix.hint_candidates.keys().filter(|c| self.ix.commits.contains_key(c)).copied().collect();
         for c in applied {
             let Some(hints) = self.ix.hint_candidates.remove(&c) else { continue };
-            let Some(m) = self.ix.commits.get(&c) else { continue };
-            let h = m.header.clone();
-            let ok: Vec<(Tid, Value)> = hints
-                .into_iter()
-                .filter(|(t, _)| {
-                    let mut touched = h.aspects_on(t).peekable();
-                    touched.peek().is_some() && touched.all(|i| m.valid_at(i))
-                })
-                .filter(|(t, _)| crate::engine::write::role_of(self, &h.author, t, h.ts) == Some(Role::Admin))
-                .collect();
-            for (t, v) in ok {
-                if !self.ix.delete_hints.contains_key(&t) && !self.ix.own_keys.contains(&t) {
-                    self.ix.delete_hints.insert(t, v);
-                }
+            self.keep_hints(&c, hints);
+        }
+    }
+
+    /// Keeps the hints of applied commit `c` that are valid: a thing's hint only from a commit
+    /// touching it with valid deltas, by an author with admin on it at the commit's `ts`, and
+    /// only while no hint and no `keys.0` with keysets is held for it (the first stays, so
+    /// keeping the same hints again writes nothing).
+    fn keep_hints(&mut self, c: &CommitId, hints: Vec<(Tid, Value)>) {
+        let Some(m) = self.ix.commits.get(c) else { return };
+        let h = m.header.clone();
+        let ok: Vec<(Tid, Value)> = hints
+            .into_iter()
+            .filter(|(t, _)| {
+                let mut touched = h.aspects_on(t).peekable();
+                touched.peek().is_some() && touched.all(|i| m.valid_at(i))
+            })
+            .filter(|(t, _)| crate::engine::write::role_of(self, &h.author, t, h.ts) == Some(Role::Admin))
+            .collect();
+        for (t, v) in ok {
+            if !self.ix.delete_hints.contains_key(&t) && !self.ix.own_keys.contains(&t) {
+                self.ix.delete_hints.insert(t, v);
             }
         }
     }
