@@ -449,6 +449,45 @@ fn a_dialers_proof_ends_at_the_next_sync_key_spec_sync_5() {
     assert_eq!(kept(&mut net, p, &l), held, "nothing after the rotation reaches p");
 }
 
+// spec/sync.md §10 (Admissible: the proof of the newest step `label.0` records), §5 Opens: after a rotation the reader's filter shows the new step's proof and no older step's,
+// though the dialer holds both secrets; a sync holder then removed keeps its sync secrets, and
+// the filter to it, a known actor still, shows no proof of any.
+#[test]
+fn only_the_newest_steps_proof_is_in_a_readers_filter_spec_sync_10() {
+    let (mut net, a, p, g, l) = dialing_node(true);
+    net.group(a, &[(p, Role::Read)], &[]);
+    net.run();
+    let at = net.tid(a);
+    let rs = recipients_of(net.engine(a), &[(at, Role::Admin)]);
+    rotation(net.engine(a), g, &rs, 61, false);
+    net.run();
+    net.advance(61_000);
+    assert_eq!(net.group_labels(a).into_iter().find(|(_, x)| x.id == l).unwrap().1.steps.len(), 2, "a step under the new sync key");
+    let proofs = |net: &mut Net, n: usize| -> Vec<[u8; 32]> {
+        let held = net.engine(n).epochs(&g).map(|e| e.sync.held_newest_first().into_iter().map(|(_, s)| osis_crypto::label_role_seed(osis_crypto::LabelRole::Sync, s)).collect::<Vec<_>>()).unwrap_or_default();
+        held.iter().map(osis_crypto::kdf::sync_proof).collect()
+    };
+    let shown = |net: &mut Net, v: &[[u8; 32]]| -> Vec<bool> {
+        let mut q = crate::shared::dial_as(net, p, a, CHALLENGE);
+        let filter = filter_of(&shared_of(&send(net, a, &mut q, Message::NoRecord { id: 1 << 31 })));
+        v.iter().map(|v| filter.1.binary_search(&beacon_value(&beacon(v, &l.0, &r_of(&q)), filter.0)).is_ok()).collect()
+    };
+    let (held, new) = (proofs(&mut net, p), proofs(&mut net, a)[0]);
+    assert!(held.len() > 1 && held.contains(&new), "p holds the new sync secret and an older one");
+    let old: Vec<[u8; 32]> = held.into_iter().filter(|v| *v != new).collect();
+    let mut all = vec![new];
+    all.extend(&old);
+    let got = shown(&mut net, &all);
+    assert!(got[0], "the filter shows the newest step's proof");
+    assert!(!got[1..].iter().any(|x| *x), "and no older step's: {got:?}");
+    let pt = net.tid(p);
+    remove_holder(net.engine(a), g, pt, &rs, 62);
+    net.run();
+    net.advance(61_000);
+    let got = shown(&mut net, &all);
+    assert!(!got.iter().any(|x| *x), "no proof to a removed sync holder: {got:?}");
+}
+
 // spec/sync.md §10 (Stream, a store's presence), §6: a reader judges a peer that cannot read L
 // and dialed it as a source of L, as one it dialed: what it must not hold there is deleted there
 // (a purge's deletes reach the dialer's store).
