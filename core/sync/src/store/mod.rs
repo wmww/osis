@@ -26,6 +26,7 @@ pub(crate) mod rows;
 mod follow;
 
 pub use follow::Follow;
+pub(crate) use follow::awaits;
 pub use path::{Behind, Cred};
 pub use rows::{Source, Tombstone, Usage};
 

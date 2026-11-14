@@ -644,10 +644,11 @@ impl Streams {
                     }
                     return;
                 }
-                // kept to open as secrets arrive (store::Follow), an unstamped one within the
-                // source's peer budget (spec/sync-ids.md §5; spec/sync-streams.md §4 Fill order);
-                // one that can never open here is not kept
-                Ok(Opening::NotOpen) if ctx.ground.rank(&s, &b, &wrap) != Rank::Never => {
+                // kept to open as secrets arrive, or as what its commit awaits arrives
+                // (store::Follow), an unstamped one within the source's peer budget
+                // (spec/sync-ids.md §5; spec/sync-streams.md §4 Fill order; spec/commits.md §4
+                // Unjudgeable); one that can never open here is not kept
+                Ok(o @ (Opening::Awaits | Opening::NotOpen)) if o == Opening::Awaits || ctx.ground.rank(&s, &b, &wrap) != Rank::Never => {
                     let src = self.pull.get(&conn).map(|p| p.src);
                     if let Err(e) = ctx.store.log(&s, e, Some(bytes.to_vec()), src) {
                         return self.failed(Err(e));

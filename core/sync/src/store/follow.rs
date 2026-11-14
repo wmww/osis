@@ -1,16 +1,19 @@
 //! What the store follows of the engine (notes/sync-boundary.md, store): the sync set per key
 //! (`SetFollow`), the node's caps, and the served path of each sync ID read here (its thing's
-//! `sync.0` record, spec/sync-ids.md §5), each an `Effects` value, so a step costs what moved.
+//! `sync.0` record, spec/sync-ids.md §5), each an `Effects` value, so a step costs what moved;
+//! and the held entries whose commit the engine could not judge yet, opened again as commits
+//! arrive (`Awaiting`).
 
 use super::Store;
 use crate::set::SetFollow;
 use crate::types::{Holding, Result};
-use osis_base::memo::Effects;
-use osis_base::{SyncId, Tid, WallMs};
+use osis_base::memo::{Effects, Feed};
+use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::Epoch;
 use osis_engine::Engine;
-use osis_engine::sync::{Caps, Path};
-use std::collections::BTreeMap;
+use osis_engine::sync::{Caps, Opened, Path};
+use osis_engine::{Ingested, Reason};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -23,13 +26,73 @@ pub struct Follow {
     /// open are opened again as they move.
     creds: Effects<SyncId, Vec<Epoch>>,
     read: BTreeMap<SyncId, Tid>,
+    awaiting: Awaiting,
+}
+
+/// Held entries that opened to a commit the engine could not judge and kept nothing of
+/// (`Ingested::Awaits`: its author's chain, or a record, not held yet): opened again whenever
+/// a commit is held here, until it gives something held or leaves the store (spec/commits.md
+/// §4 Unjudgeable: fetched again when what it awaits arrives; the entry stays in the store
+/// meanwhile, an unstamped one charged to its peer, spec/sync-ids.md §5 Peer budget). The set
+/// is memory: a start opens every held entry whose commit is not held once (`open_unopened`),
+/// which finds them again.
+#[derive(Clone, Default)]
+struct Awaiting {
+    /// Entries the store took from now on (`Store::entry_feed`), and commits held from now on
+    /// (`Engine::commit_feed`); both start at the first settle.
+    entries: Option<Feed<(SyncId, BlobId)>>,
+    commits: Option<Feed<CommitId>>,
+    set: BTreeSet<(SyncId, BlobId)>,
+}
+
+/// Whether an open left the entry's commit unjudged (nothing of it kept).
+pub(crate) fn awaits(o: &Opened) -> bool {
+    matches!(o, Opened::Commit(_, Ingested::Awaits(_, Reason::MissingChain(_) | Reason::UnknownCreated(_))))
+}
+
+impl Awaiting {
+    /// Takes up entries the store took that opened to an unjudged commit, then, when a commit
+    /// was held since the last settle, opens each again. Whether one opened.
+    fn settle(&mut self, engine: &mut Engine, store: &mut Store) -> Result<bool> {
+        let entries = self.entries.get_or_insert_with(|| store.entry_feed());
+        for (s, b) in entries.added() {
+            // a body the store took (streams' pull, open_unopened) that opened to a commit the
+            // engine holds nothing of: it awaits
+            let Some(e) = store.entry(&s, &b)? else { continue };
+            if !e.own && engine.blob_commit(&b)?.is_some_and(|c| !engine.holds_commit(&c)) {
+                self.set.insert((s, b));
+            }
+        }
+        let held = match self.commits.as_mut() {
+            Some(f) => !f.added().is_empty(),
+            None => {
+                self.commits = Some(engine.commit_feed());
+                false
+            }
+        };
+        if !held || self.set.is_empty() {
+            return Ok(false);
+        }
+        let mut opened = false;
+        for (s, b) in std::mem::take(&mut self.set) {
+            let (Some(e), Some(bytes)) = (store.entry(&s, &b)?, store.bytes(&b)?) else { continue };
+            let o = engine.open_entry(&s, &b, &e.wrap, &bytes)?;
+            if awaits(&o) {
+                self.set.insert((s, b));
+            } else if matches!(o, Opened::Commit(..)) {
+                store.uncharge(&s, &b)?;
+                opened = true;
+            }
+        }
+        Ok(opened)
+    }
 }
 
 impl Default for Follow {
     fn default() -> Follow {
         let mut caps = Effects::new("store: caps");
         caps.want(());
-        Follow { set: SetFollow::new("store: sync set"), caps, paths: Effects::new("store: paths"), creds: Effects::new("store: read secrets"), read: BTreeMap::new() }
+        Follow { set: SetFollow::new("store: sync set"), caps, paths: Effects::new("store: paths"), creds: Effects::new("store: read secrets"), read: BTreeMap::new(), awaiting: Awaiting::default() }
     }
 }
 
@@ -63,8 +126,10 @@ impl Follow {
         // fresh follow finds S still kept unread in the store and opens it all again
         for s in raised {
             for e in store.entries(&s)? {
-                if let Some(bytes) = store.bytes(&e.blob)? {
-                    engine.open_entry(&s, &e.blob, &e.wrap, &bytes)?;
+                if let Some(bytes) = store.bytes(&e.blob)?
+                    && awaits(&engine.open_entry(&s, &e.blob, &e.wrap, &bytes)?)
+                {
+                    self.awaiting.set.insert((s, e.blob));
                 }
             }
         }
@@ -126,23 +191,28 @@ impl Follow {
             if was.is_some_and(|w| now.iter().all(|e| w.contains(e))) {
                 continue;
             }
-            acted |= open_unopened(engine, store, &s)?;
+            acted |= open_unopened(engine, store, &s, &mut self.awaiting.set)?;
         }
+        acted |= self.awaiting.settle(engine, store)?;
         acted |= store.settle_at(now)?;
         Ok(acted)
     }
 }
 
-/// Opens S's held entries the engine has not opened (kept as they did not open, or a peer's);
-/// one that opens is off its peer budget (spec/sync-ids.md §5). Whether one opened.
-fn open_unopened(engine: &mut Engine, store: &mut Store, s: &SyncId) -> Result<bool> {
+/// Opens S's held entries whose commit is not held here (kept as they did not open, or awaiting
+/// a chain, or a peer's); one that gives something held is off its peer budget (spec/sync-ids.md
+/// §5), one whose commit is still unjudged joins `awaiting`. Whether one opened.
+fn open_unopened(engine: &mut Engine, store: &mut Store, s: &SyncId, awaiting: &mut BTreeSet<(SyncId, BlobId)>) -> Result<bool> {
     let mut opened = false;
     for e in store.entries(s)? {
-        if e.own || engine.blob_commit(&e.blob)?.is_some() {
+        if e.own || engine.blob_commit(&e.blob)?.is_some_and(|c| engine.holds_commit(&c)) {
             continue;
         }
         let Some(bytes) = store.bytes(&e.blob)? else { continue };
-        if matches!(engine.open_entry(s, &e.blob, &e.wrap, &bytes)?, osis_engine::sync::Opened::Commit(..) | osis_engine::sync::Opened::Linked) {
+        let o = engine.open_entry(s, &e.blob, &e.wrap, &bytes)?;
+        if awaits(&o) {
+            awaiting.insert((*s, e.blob));
+        } else if matches!(o, Opened::Commit(..) | Opened::Linked) {
             store.uncharge(s, &e.blob)?;
             opened = true;
         }

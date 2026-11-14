@@ -224,14 +224,25 @@ fn a_reader_granted_again_through_a_failed_write_reads_spec_sync_streams_4() {
     crate::convergence::converge(468073306024, 3, &[New(0), Grant(0, 0, 2, Gives::Syncs), Write(0, 0), Disk(1, 20, Fail), Write(0, 0), Remove(0, 0, 2), Grant(0, 0, 1, Gives::Reads), Remove(0, 0, 1), Grant(0, 0, 1, Gives::Reads)], String::new());
 }
 
-// spec/requirements.md Convergence: a writer removed after a write that reached its granter, and
-// a reader granted then, read alike: the new reader reads the removed writer's last write.
-// Found by the full-size differential (clean seed 188669321708, shrunk); fails:
-// issues/sync-removed-writers-write.md.
+// spec/commits.md §4 (Unjudgeable: fetched again when what it awaits arrives): a reader granted
+// after a writer's removal pulls that writer's last write before the grant that leads from the
+// writer to the thing; the engine keeps nothing of it, so sync keeps the entry and opens it
+// again once that grant is held, and the new reader reads the write. Found by the full-size
+// differential (clean seed 188669321708, shrunk).
 #[test]
-#[ignore = "fails: issues/sync-removed-writers-write.md"]
-fn a_reader_granted_after_a_writers_removal_reads_its_last_write() {
+fn a_reader_granted_after_a_writers_removal_reads_its_last_write_spec_commits_4() {
     use crate::harness::Step::*;
     use crate::harness::history::Gives;
     crate::convergence::converge(188669321708, 3, &[New(0), New(0), New(0), Grant(0, 2, 1, Gives::Writes), Run, Write(1, 2), Run, Remove(0, 2, 1), Grant(0, 2, 2, Gives::Reads)], String::new());
+}
+
+// spec/sync-inbox.md §2 (Re-send): a holder of sync alone, removed, then granted read while cut
+// off from its granter, reads the thing once healed. Found by the full-size differential (faulty
+// seed 188669321550, shrunk); fails: issues/sync-removed-sync-holder-read.md.
+#[test]
+#[ignore = "fails: issues/sync-removed-sync-holder-read.md"]
+fn a_sync_holder_removed_and_granted_read_while_away_reads() {
+    use crate::harness::Step::*;
+    use crate::harness::history::Gives;
+    crate::convergence::converge(188669321550, 3, &[New(1), Grant(1, 0, 2, Gives::Syncs), Run, Remove(1, 0, 2), Partition(1, 2), Grant(1, 0, 2, Gives::Reads)], String::new());
 }

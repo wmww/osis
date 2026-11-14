@@ -80,6 +80,9 @@ pub const ASKED_MS: u64 = crate::session::STALL_TIMEOUT_MS;
 pub enum Opening {
     Taken,
     NotOpen,
+    /// It opened to a commit the engine cannot judge yet and kept nothing of (spec/commits.md §4
+    /// Unjudgeable): kept, and opened again as commits arrive (`store::Follow`).
+    Awaits,
     /// It opened and is bad, or its bytes are not its ID's: asked again elsewhere.
     Bad,
 }
@@ -409,6 +412,7 @@ struct EngineGround<'a> {
 impl Ground for EngineGround<'_> {
     fn open(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening> {
         match self.engine.open_entry(s, &e.blob, &e.wrap, bytes) {
+            Ok(o) if crate::store::awaits(&o) => Ok(Opening::Awaits),
             Ok(Opened::Commit(..) | Opened::Linked | Opened::Inbox(_)) => Ok(Opening::Taken),
             Ok(Opened::NotOpen) | Err(osis_engine::Error::NotBuilt(_)) => Ok(Opening::NotOpen),
             Ok(Opened::Bad) => Ok(Opening::Bad),
