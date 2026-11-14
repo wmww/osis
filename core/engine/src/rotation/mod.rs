@@ -692,7 +692,10 @@ fn finalize_due(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, done:
 /// three roles from its derived epochs (those of the next actor up its record chain: rotated
 /// first where this node can, the history boxes carry them), boxed to its current holders (its
 /// first admin included; not one whose grant this node may finalize, `ended_holders`), with a
-/// `keys.0` carrying the keysets and a fresh deposit seed. Nothing when it has them already.
+/// `keys.0` carrying the keysets and a fresh deposit seed, delivered by inbox to each holder it
+/// boxes (none held a box before it), the first admin included: this node may not sync it, and
+/// its sync IDs must learn the thing's own secrets (spec/permissions.md §3, Own secrets add only).
+/// Nothing when it has them already.
 pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()> {
     own_secrets_listing(tx, t, &[], done)
 }
@@ -700,9 +703,8 @@ pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()
 /// `own_secrets`, its genesis step listing `also` besides the holders it boxes (a link's key,
 /// granted next).
 pub(crate) fn own_secrets_listing(tx: &mut Tx<'_>, t: Tid, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<()> {
-    if let Some((c, rot, _)) = own_secrets_rot(tx, t, also, done)? {
-        record(tx, t, &rot)?;
-        done.add(c);
+    if let Some((c, rot, to)) = own_secrets_rot(tx, t, also, done)? {
+        recorded(tx, t, c, &rot, &to, done)?;
     }
     Ok(())
 }
@@ -788,9 +790,7 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
 /// first under the labels above the thing (its new `keys.0`).
 fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
     let mut done = Done::default();
-    let Some((c, rot, mut to)) = own_secrets_rot(tx, t, &[], &mut done)? else { return Ok(done) };
-    let up = tx.core.first_admin(&t);
-    to.retain(|m| Some(*m) != up);
+    let Some((c, rot, to)) = own_secrets_rot(tx, t, &[], &mut done)? else { return Ok(done) };
     recorded(tx, t, c, &rot, &to, &mut done)?;
     Ok(done)
 }

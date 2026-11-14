@@ -1391,15 +1391,15 @@ mod tests {
         // one n); A (removed), X and Z (readers) do nothing; nothing more once T has them
         let runs: Vec<(usize, Owed)> = (0..5).map(|i| own_due_done(&mut lp, i, &g, &t)).collect();
         assert_eq!(runs.iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 0, 0, 1, 0]);
-        // each admin's rotation goes to Z directly (it holds no box at a current epoch of T),
-        // never to T's first admin G (it reads the derived epochs), and first under T's labels; Z,
-        // given only B's, holds T's new epochs
+        // each admin's rotation goes to every holder it boxes, none holding a box at a current
+        // epoch of T: Z directly, T's first admin G by its inbox like any holder (spec/permissions.md
+        // §3, Own secrets add only), and first under T's labels; Z, given only B's, holds T's new epochs
         for i in [0usize, 3] {
             let ds = &runs[i].1;
-            let to: Vec<Tid> = ds.iter().map(|(to, _)| *to).collect();
-            assert_eq!(to, vec![z], "peer {i}: delivered to Z only");
+            let to: std::collections::BTreeSet<Tid> = ds.iter().map(|(to, _)| *to).collect();
+            assert_eq!(to, std::collections::BTreeSet::from([z, g]), "peer {i}: delivered to Z and G");
         }
-        let commits = runs[3].1[0].1.clone();
+        let commits = runs[3].1.iter().find(|(to, _)| *to == z).unwrap().1.clone();
         for c in commits {
             let pk = lp.peers[3].engine.package(&c).unwrap().unwrap();
             lp.deliver(4, &pk).unwrap();
