@@ -579,26 +579,16 @@ impl Osis {
                         f(db, Change { tid, ak, value: v, origin: Origin::Initial });
                     }
                 }
-                Delivery::Aspect { tid, ak, origin, value } if value.is_err() || last.get(&ak) != Some(&digest(&value)) => {
-                    last.insert(ak.clone(), digest(&value));
-                    f(db, Change { tid, ak, value, origin });
-                }
-                // every aspect it showed or holds now, read again: those that differ are told
+                Delivery::Aspect { tid, ak, origin, value } => tell_changed(&mut last, db, Change { tid, ak, value, origin }, &mut f),
+                // every aspect it showed or holds now, read again
                 Delivery::Reread => {
                     let reads: Vec<(Ak, Result<Option<Value>>)> = db.read_local(|r| {
                         let mut aks: BTreeSet<Ak> = last.keys().cloned().collect();
                         aks.extend(r.aspects(tid).unwrap_or_default());
-                        aks.into_iter().map(|ak| {
-                            let v = r.value(tid, &ak);
-                            (ak, v)
-                        }).collect()
+                        aks.into_iter().map(|ak| (ak.clone(), r.value(tid, &ak))).collect()
                     });
                     for (ak, value) in reads {
-                        if value.is_ok() && last.get(&ak) == Some(&digest(&value)) {
-                            continue;
-                        }
-                        last.insert(ak.clone(), digest(&value));
-                        f(db, Change { tid, ak, value, origin: Origin::Derived(crate::DerivedFrom::Recovered) });
+                        tell_changed(&mut last, db, Change { tid, ak, value, origin: Origin::Derived(crate::DerivedFrom::Recovered) }, &mut f);
                     }
                 }
                 Delivery::Moved => f(db, Change { tid, ak: osis_schema::core_types::TID.name(), value: Err(crate::sources::moved()), origin: Origin::Initial }),
@@ -844,5 +834,14 @@ impl crate::handle::ReadOnly {
             d.send(l.seq, Msg::Moved(id));
         }
         sub
+    }
+}
+
+/// `on_thing_change`'s `f` hears `c` when it differs from the last value it heard there (an error
+/// always).
+fn tell_changed(last: &mut BTreeMap<Ak, Option<crate::watch::Digest>>, db: &Osis, c: Change<Value>, f: &mut impl FnMut(&Osis, Change<Value>)) {
+    if c.value.is_err() || last.get(&c.ak) != Some(&digest(&c.value)) {
+        last.insert(c.ak.clone(), digest(&c.value));
+        f(db, c);
     }
 }

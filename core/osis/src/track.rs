@@ -221,8 +221,7 @@ impl ReadOnly {
         };
         let mine = move |id: CommitId| only.is_none_or(|c| c == id);
         if let Source::Node(r) = self.source_address(a)? {
-            return self.track_remote(key, |gate| {
-                let w = Arc::downgrade(&set);
+            return self.track_remote(key, |gate, w| {
                 self.node_on_commits(&r, a.clone(), Box::new(move |db, e| match e {
                     crate::CommitEvent::Ended(_) => gate.ended(&w, db),
                     crate::CommitEvent::Commit { id, .. } if !mine(id) => {}
@@ -253,16 +252,15 @@ impl ReadOnly {
 
     /// On a tracking handle: the status read next is listened to, as `on_status_change` follows it.
     pub(crate) fn track_status(&self) -> Result<()> {
-        let Some(set) = self.tracking.clone() else { return Ok(()) };
-        self.track_remote("status".into(), |gate| {
-            let w = Arc::downgrade(&set);
+        self.track_remote("status".into(), |gate, w| {
             Ok(self.status_feed(Box::new(move |db, _| gate.called_fire(&w, db, false))))
         })
     }
 
-    /// A read at a connected node: subscribes first (its listener, once), then the caller reads;
-    /// a write in between fires one extra time. The node's own Notify compares values.
-    fn track_remote(&self, key: String, sub: impl FnOnce(Arc<Gate>) -> Result<Subscription>) -> Result<()> {
+    /// A read heard through a whole subscription (at a connected node, or the status feed):
+    /// subscribes first (its listener, once), then the caller reads; a write in between fires one
+    /// extra time. The subscription compares values.
+    fn track_remote(&self, key: String, sub: impl FnOnce(Arc<Gate>, Weak<SetInner>) -> Result<Subscription>) -> Result<()> {
         let Some(set) = self.tracking.clone() else { return Ok(()) };
         let pass = set.pass.load(Ordering::Acquire);
         let mut g = lock(&set.listeners);
@@ -273,7 +271,7 @@ impl ReadOnly {
         }
         drop(g);
         let gate = Gate::new(None);
-        let s = sub(gate.clone())?;
+        let s = sub(gate.clone(), Arc::downgrade(&set))?;
         let old = lock(&set.listeners).insert(key, Listener { sub: s, gate, pass, reads: 1 });
         drop(old);
         Ok(())
@@ -281,27 +279,21 @@ impl ReadOnly {
 
     /// A value read at a connected node: listened to through the node's aspect subscription.
     pub(crate) fn track_remote_value(&self, r: &Arc<crate::port::client::Connection>, tid: Tid, ak: &Ak, path: &osis_schema::Path, key: String) -> Result<()> {
-        let Some(set) = self.tracking.clone() else { return Ok(()) };
-        self.track_remote(key, |gate| {
-            let w = Arc::downgrade(&set);
+        self.track_remote(key, |gate, w| {
             self.node_on_change(r, tid, ak.clone(), path.clone(), Box::new(move |db, c| gate.change(&w, db, c.value.is_err(), c.origin == Origin::Initial)))
         })
     }
 
     /// A read of a thing's aspects at a connected node: heard through its thing subscription.
     pub(crate) fn track_remote_thing(&self, r: &Arc<crate::port::client::Connection>, tid: Tid, key: String) -> Result<()> {
-        let Some(set) = self.tracking.clone() else { return Ok(()) };
-        self.track_remote(key, |gate| {
-            let w = Arc::downgrade(&set);
+        self.track_remote(key, |gate, w| {
             self.node_on_thing_change(r, tid, Box::new(move |db, c| gate.change(&w, db, c.value.is_err(), c.origin == Origin::Initial)))
         })
     }
 
     /// Grants read at a connected node: heard through its grants subscription.
     pub(crate) fn track_remote_grants(&self, r: &Arc<crate::port::client::Connection>, tid: Tid, key: String) -> Result<()> {
-        let Some(set) = self.tracking.clone() else { return Ok(()) };
-        self.track_remote(key, |gate| {
-            let w = Arc::downgrade(&set);
+        self.track_remote(key, |gate, w| {
             self.node_on_answer(r, tid, crate::port::client::grants_filter(tid), Box::new(move |db, g: Result<crate::read::Grants>| gate.called_fire(&w, db, g.is_err())))
         })
     }
