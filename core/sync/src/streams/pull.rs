@@ -154,7 +154,7 @@ fn class(rank: Rank, deposited: bool) -> Option<(u8, u64)> {
 
 fn entry_of(b: BlobId, wrap: Wrap, stamp: Option<Stamp>, bytes: &[u8]) -> Entry {
     let (class, expires) = Prefix::parse(bytes).map_or((Class::Durable, None), |p| (p.class(), p.expiry()));
-    Entry { blob: b, wrap, stamp, deposited: stamp.is_none(), own: false, class, expires }
+    Entry { blob: b, wrap, stamp, deposited: stamp.is_none(), own: false, role: false, class, expires }
 }
 
 impl Streams {

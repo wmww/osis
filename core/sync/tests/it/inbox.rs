@@ -279,7 +279,7 @@ impl T {
 
     fn join(&mut self, c: ConnId, s: SyncId, class: SourceClass, step: Option<StepId>) {
         self.net.members.insert((c, s), Member { class, by: Credential::SyncKey, until: None, step });
-        self.inbox.moved(&Moved::Joined(c, s), &self.net);
+        self.inbox.moved(&Moved::Joined(c, s, osis_sync::opens::Rejoin::Held), &self.net);
         self.settle();
     }
 

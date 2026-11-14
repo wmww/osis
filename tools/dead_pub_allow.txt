@@ -259,32 +259,17 @@ osis-engine::invitations  deferred: sync rebuild skeleton (issues/sync-rewrite.m
 osis-engine::note_complete_pass  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::own_commits  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::waiting_held_elsewhere  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-sync::agreed  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); streams gates its Pull on it (spec/sync-opens.md §3)
-<<<<<<< HEAD
-=======
-osis-sync::drop_entry  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-sync::ItemAnswer  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-sync::take_delete  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::take_deposit  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-sync::take_register  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
->>>>>>> 9ba6038cb (sync-streams: streams per (connection, member): Pull and PullReply with cursors, joins in pages, follow pushes by seq, Applied and reported positions, until, known per source, Fetch one source at a time in fill order, Full and Refused, ephemeral listings, Sources for Streams; SN_* controls as tests)
 osis-sync::proofs_done  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); opens refuses a Resume before the proofs with it
 osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::take_deposit  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-sync::take_stamped  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::clock_offset  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); status reports a large offset as a diagnostic (spec/sync-streams.md §1)
 osis-store::record_rows  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a module's rows in a peer record (streams' known, read's deletes owed)
-osis-sync::read_memory  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); streams' call (the log's memory part)
-osis-sync::read_sync  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); streams' call (a join)
-osis-sync::lift_tombstone  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-judgement.md §4)
 osis-sync::saw_deleted  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-judgement.md §4)
 osis-sync::seen_deleted  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-judgement.md §4)
 osis-sync::serve_path  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (a read S's served head)
 osis-sync::uncharge  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-ids.md §5 Peer budget)
 osis-sync::take_deposit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
-osis-sync::take_stamped  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
-osis-sync::take_register  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
-osis-sync::ItemAnswer  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::dial_hints  deferred: the driver's dial candidates read it (notes/sync-boundary.md, driver)

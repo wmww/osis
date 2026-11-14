@@ -204,7 +204,7 @@ impl Side {
     /// A durable entry of its own logged under a read S.
     fn log(&mut self, s: SyncId, n: usize) -> BlobId {
         let (b, bytes) = blob(n, Class::Durable);
-        let e = Entry { blob: b, wrap: [n as u8; WRAP_LEN], stamp: None, deposited: false, own: true, class: Class::Durable, expires: None };
+        let e = Entry { blob: b, wrap: [n as u8; WRAP_LEN], stamp: None, deposited: false, own: true, role: false, class: Class::Durable, expires: None };
         assert_eq!(self.store.log(&s, e, Some(bytes), None).unwrap(), Code::OK);
         b
     }
@@ -365,7 +365,7 @@ impl Sid {
         let w = [3u8; WRAP_LEN];
         let key = if good { label_role_key(LabelRole::Write, &self.write) } else { label_role_key(LabelRole::Write, &Secret32::from_bytes([0xee; 32])) };
         let stamp = osis_label::sign_stamp(&key, &self.id, &b, &w, false);
-        let e = Entry { blob: b, wrap: w, stamp: Some(stamp), deposited: false, own: false, class: Class::Durable, expires: None };
+        let e = Entry { blob: b, wrap: w, stamp: Some(stamp), deposited: false, own: false, role: false, class: Class::Durable, expires: None };
         // a bad stamp is planted as a read S's own entry would be: the server serves what it holds
         if good {
             assert_eq!(side.store.take_stamped(&self.id, &e, bytes).unwrap(), Code::OK);
@@ -816,7 +816,7 @@ fn ephemeral_listed_and_gone_with_the_connection_spec_sync_streams_4() {
     let s = sid(1);
     p.a.hold(s, Holding::Read);
     let (e, bytes) = blob(120, Class::Ephemeral);
-    let entry = Entry { blob: e, wrap: [7; WRAP_LEN], stamp: None, deposited: false, own: true, class: Class::Ephemeral, expires: None };
+    let entry = Entry { blob: e, wrap: [7; WRAP_LEN], stamp: None, deposited: false, own: true, role: false, class: Class::Ephemeral, expires: None };
     assert_eq!(p.a.store.log(&s, entry, Some(bytes), None).unwrap(), Code::OK);
     p.b.hold(s, Holding::Read);
     p.a.join(p.now, s);

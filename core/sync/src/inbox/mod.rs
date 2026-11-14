@@ -232,7 +232,7 @@ impl Net for Links<'_> {
         self.opens.members(conn).get(s).cloned()
     }
     fn present(&self, conn: ConnId, s: &SyncId, b: &BlobId) -> bool {
-        self.streams.known(conn, s).present.contains(b)
+        self.streams.knows(self.streams.source(self.opens, conn), Some(conn), s, b)
     }
     fn filter_generation(&self, conn: ConnId) -> u64 {
         self.opens.filter_arrivals(conn)
@@ -334,12 +334,13 @@ impl Inbox {
     /// A member joined or left a connection's shared set.
     pub fn moved(&mut self, m: &Moved, net: &impl Net) {
         match *m {
-            Moved::Joined(conn, s) => {
+            Moved::Joined(conn, s, _) => {
                 self.deliveries.opened(conn, &s, net);
                 self.offers.joined(conn, &s, net);
                 self.register.joined(conn, s);
             }
             Moved::Left(conn, s) => self.register.left(conn, &s),
+            Moved::Until(..) => {}
         }
     }
 
