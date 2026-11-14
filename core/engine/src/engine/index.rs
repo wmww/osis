@@ -16,7 +16,7 @@ use super::{Core, Meta, Tx, records, scan_table};
 use osis_store::Transaction;
 use crate::error::{Error, Result};
 use crate::events::Origin;
-use osis_base::{CommitId, Role, Tid, Ts, Value, WallMs};
+use osis_base::{BlobId, CommitId, Role, Tid, Ts, Value, WallMs};
 use osis_crdt::Dot;
 use osis_schema::Codec;
 use osis_schema::core_types::BoxKey;
@@ -653,7 +653,7 @@ pub(crate) struct RecordHead {
     pub received: WallMs,
     pub origin: Origin,
     /// `Meta::repair`.
-    pub repair: bool,
+    pub repair: Option<Arc<BTreeSet<BlobId>>>,
     pub signed: osis_commit::Signed,
     pub dropped: BTreeMap<usize, super::Dropped>,
     pub stripped: BTreeSet<usize>,
@@ -675,11 +675,18 @@ impl RecordHead {
 }
 
 pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
-    let mut w = records::Wr::new().u8(1).u64(m.received.0).u8(match (m.origin, m.repair) {
-        (Origin::Local, false) => 0,
+    let mut w = records::Wr::new().u8(1).u64(m.received.0).u8(match (m.origin, &m.repair) {
+        (Origin::Local, None) => 0,
         (Origin::Remote, _) => 1,
-        (Origin::Local, true) => 2,
+        (Origin::Local, Some(_)) => 2,
     });
+    // a repair's blobs encrypted afresh
+    if let (Origin::Local, Some(fresh)) = (m.origin, &m.repair) {
+        w = w.u32(fresh.len() as u32);
+        for b in fresh.iter() {
+            w = w.raw(&b.0);
+        }
+    }
     w = w.raw(&m.signed.to_bytes()).u32(m.dropped_parts().count() as u32);
     for (a, d) in m.dropped_parts() {
         let role = d.role.map_or(0, |r| 1 + r as u8);
@@ -808,9 +815,16 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
     }
     let received = WallMs(r.u64()?);
     let (origin, repair) = match r.u8()? {
-        0 => (Origin::Local, false),
-        1 => (Origin::Remote, false),
-        2 => (Origin::Local, true),
+        0 => (Origin::Local, None),
+        1 => (Origin::Remote, None),
+        2 => {
+            let n = r.u32()? as usize;
+            let mut fresh = BTreeSet::new();
+            for _ in 0..n {
+                fresh.insert(BlobId(r.take(32)?.try_into().map_err(|_| Error::Corrupt("commit record repair"))?));
+            }
+            (Origin::Local, Some(Arc::new(fresh)))
+        }
         _ => return Err(Error::Corrupt("commit record origin")),
     };
     let signed = osis_commit::Signed::from_kept(r.arr()?);
@@ -1056,7 +1070,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, repair: head.repair, signed: head.signed, valid, hold });
+        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, repair: head.repair.clone(), signed: head.signed, valid, hold });
         crate::apply::note_stands_in(tx.core, &id);
         tx.core.index_validity(&id);
     }
@@ -1155,10 +1169,11 @@ mod tests {
         let back: Vec<Hold> = parts.iter().enumerate().map(|(ai, p)| Hold::stored(ai, &mut head, p & 32 != 0, p & 64 != 0, p & 128 != 0)).collect();
         assert_eq!(back, states.to_vec());
         // an own commit and an own repair (`Meta::repair`) read back as written
-        assert!(head.origin == crate::events::Origin::Local && !head.repair);
-        meta.repair = true;
+        assert!(head.origin == crate::events::Origin::Local && head.repair.is_none());
+        let fresh: std::collections::BTreeSet<osis_base::BlobId> = [osis_base::BlobId([7; 32]), osis_base::BlobId([9; 32])].into();
+        meta.repair = Some(std::sync::Arc::new(fresh.clone()));
         let (head, _) = super::parse_head(&super::record_head(&meta)).unwrap();
-        assert!(head.origin == crate::events::Origin::Local && head.repair);
+        assert!(head.origin == crate::events::Origin::Local && head.repair.as_deref() == Some(&fresh));
         // memory only: read back as a plain missing part
         meta.hold[6] = Hold::Missing(Missing::ToFetch);
         let row = super::meta_row(&e.core, &id, &meta);

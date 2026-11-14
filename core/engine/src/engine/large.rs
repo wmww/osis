@@ -590,11 +590,24 @@ impl Engine {
         if m.aspects.is_empty() {
             return Ok(None);
         }
+        // what it encrypts afresh: the blobs its things' live trees reach after it and not before
+        // (every other chunk is reused from the tree it rewrites)
+        let written: BTreeSet<Tid> = m.aspects.keys().map(|(t, _)| *t).collect();
+        let mut before = BTreeSet::new();
+        for t in &written {
+            before.extend(self.live_trees(t)?.blobs);
+        }
         let Some(id) = self.commit(m)? else { return Ok(None) };
-        // marked a repair: what it wrote afresh is never repaired again (spec/sync-ids.md §1)
+        let mut fresh = BTreeSet::new();
+        for t in &written {
+            fresh.extend(self.live_trees(t)?.blobs.into_iter().filter(|b| !before.contains(b)));
+        }
+        // marked a repair with what it wrote afresh: that is never repaired by way of it, the
+        // chunks it reused are (spec/sync-ids.md §1)
+        let fresh = Arc::new(fresh);
         self.run(|tx| {
             let Some(mut meta) = tx.core.ix.commits.get(&id).cloned() else { return Ok(()) };
-            meta.repair = true;
+            meta.repair = Some(fresh.clone());
             if let Some(blob) = tx.get_commit(&id)? {
                 tx.put_commit(&id, &blob, &meta, osis_store::Shred::No, None)?;
             }
