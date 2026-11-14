@@ -167,9 +167,9 @@ fn made_under_g_or_handed_to_g_reach_alike_spec_permissions_3() {
 
 // spec/sync-set.md §2 (key home), spec/permissions.md §3 (Own secrets add only): X, made under G
 // and listed nowhere, and C, made under X, go under G's sync ID to G's reader and to its
-// sync-only holder (kept unread: what G's readers log there). X given secrets of its own stays
-// there (its key home is still G); C moves to X's own sync ID, which a node syncs once G is
-// walked in its synced closure (a subgroup), not while G is reached only as an item.
+// sync-only holder (kept unread: what G's readers log there). X given secrets of its own: both
+// stay there (G's closure holds X by its key home, C by X's), and C goes under X's own sync ID
+// too, which a node syncs however its synced closure reaches G (here G is filed as an item).
 #[test]
 fn dependants_go_under_their_key_home_spec_sync_set_2() {
     let (mut lp, _, g, _) = setup();
@@ -186,10 +186,8 @@ fn dependants_go_under_their_key_home_spec_sync_set_2() {
     spread(&mut lp);
     let sx = lp.peers[0].engine.home_sync_id(&x).unwrap().unwrap();
     let s = synced(&mut lp, 1, 0);
-    assert!(s.contains(&(sg, x)) && !s.contains(&(sg, c)), "X stays under G's sync ID, C leaves it");
-    assert!(!lp.peers[1].engine.sync_set().unwrap().ids.contains_key(&sx), "G an item: X's own sync ID is not walked");
-    crate::facade::accept(&mut lp, 1, g);
-    assert_eq!(lp.peers[1].engine.sync_set().unwrap().ids.get(&sx), Some(&(x, Holding::Read)), "G a subgroup: X's own sync ID synced");
+    assert!(s.contains(&(sg, x)) && s.contains(&(sg, c)), "X and C stay under G's sync ID");
+    assert_eq!(lp.peers[1].engine.sync_set().unwrap().ids.get(&sx), Some(&(x, Holding::Read)), "G an item: X's own sync ID synced");
     assert!(synced(&mut lp, 1, 0).contains(&(sx, c)), "C under X's sync ID");
 }
 
@@ -214,11 +212,23 @@ fn a_key_home_moves_with_its_subtree_alone_spec_sync_set_2() {
         osis_base::costs::take();
         e.give_own_secrets(&x).unwrap();
         let k = osis_base::costs::take();
-        assert!(e.closure(&x).contains(&c) && !e.closure(&g).contains(&c) && e.closure(&g).contains(&x));
+        assert!(e.closure(&x).contains(&c) && e.closure(&g).contains(&c) && e.closure(&g).contains(&x));
         let count = |name: &str| k.iter().find(|r| r.0 == name).map_or(0, |r| r.2);
         (count("group index: rehome"), count("group index"))
     }
     let small = cost(20);
     assert_eq!(small, cost(200));
     assert_eq!(small.0, 2, "X and C rehomed");
+}
+
+// spec/sync-set.md §2 (key home): a key actor is no key home: a group listing an account
+// holds nothing made under the account through it.
+#[test]
+fn a_key_actor_is_no_key_home_spec_sync_set_2() {
+    let (mut lp, ps) = people(1);
+    let x = thing_of(&mut lp, 0, ps[0]);
+    let g = thing_of(&mut lp, 0, ps[0]);
+    add_item(&mut lp, 0, g, ps[0]);
+    let c = lp.peers[0].engine.closure(&g);
+    assert!(c.contains(&ps[0]) && !c.contains(&x), "G's closure: {c:?}");
 }

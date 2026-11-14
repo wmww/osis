@@ -313,8 +313,9 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
     let (body, draft) = (key(&db, "app:k.0"), key(&db, "app:ke+.0"));
     let (f, item) = db
         .commit_with(|w| {
-            let f = w.create_with_content(db.home())?;
-            let item = w.create_with_content(db.home())?;
+            // node-local: made under the account, no key home carries them (spec/sync-set.md §2)
+            let f = w.create_with_content(db.me())?;
+            let item = w.create_with_content(db.me())?;
             keeps(w, item);
             w.group(f).add(osis::Member::Item(item))?;
             Ok((f, item))

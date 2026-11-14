@@ -930,11 +930,17 @@ fn a_thing_read_through_its_key_home_arrives_listed_nowhere_there_spec_sync_set_
 }
 
 // spec/sync-set.md §2 (key home), spec/permissions.md §3 (Own secrets add only): node 1 files Y
-// as a subgroup and reads it; X (made under Y) and C (made under X) are listed nowhere and reach
-// node 1 under Y's sync ID. X then gets secrets of its own: X stays under Y's sync ID and C moves
-// to X's own, which node 1 syncs through Y; both keep arriving.
+// (as a subgroup, or as an item) and reads it; X (made under Y) and C (made under X) are listed
+// nowhere and reach node 1 under Y's sync ID. X then gets secrets of its own: both stay under Y's
+// sync ID and C goes under X's own too, which node 1 syncs through Y either way; both keep
+// arriving.
 #[test]
 fn dependants_keep_arriving_when_their_key_home_moves_spec_sync_set_2() {
+    keep_arriving(false);
+    keep_arriving(true);
+}
+
+fn keep_arriving(as_item: bool) {
     let mut w = contacts();
     let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
     let ak = Ak::new("u:v.0").unwrap();
@@ -954,10 +960,14 @@ fn dependants_keep_arriving_when_their_key_home_moves_spec_sync_set_2() {
     });
     file(&mut w, 0, Vec::new(), vec![y]);
     w.run();
-    file(&mut w, 1, Vec::new(), vec![y]);
+    if as_item {
+        file(&mut w, 1, vec![y], Vec::new());
+    } else {
+        file(&mut w, 1, Vec::new(), vec![y]);
+    }
     w.run();
     let reads = |w: &mut World, v: [&str; 2]| [x, c].map(|t| w.engine(1).get(&t, &ak).unwrap()) == v.map(|s| Some(Value::Str(s.into())));
-    assert!(reads(&mut w, ["x", "c"]), "X and C arrive under Y's sync ID");
+    assert!(reads(&mut w, ["x", "c"]), "X and C arrive under Y's sync ID (Y an item: {as_item})");
     w.write(0, |e| e.give_own_secrets(&x)).unwrap();
     w.write(0, |e| {
         let mut m = Mutation::new();
@@ -966,5 +976,5 @@ fn dependants_keep_arriving_when_their_key_home_moves_spec_sync_set_2() {
         e.commit(m).unwrap();
     });
     w.run();
-    assert!(reads(&mut w, ["x2", "c2"]), "both arrive after X has secrets of its own");
+    assert!(reads(&mut w, ["x2", "c2"]), "both arrive after X has secrets of its own (Y an item: {as_item})");
 }

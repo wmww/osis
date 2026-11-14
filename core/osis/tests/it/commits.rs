@@ -395,7 +395,8 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     let db = db(0);
     typed_any(&db, &["t:x.0", "t:y.0"]);
     let (x, y) = (ak("t:x.0"), ak("t:y.0"));
-    let mk = |db: &Osis| db.commit_with(|w| { let g = w.create_with_content(db.home())?; keep_all(w, g); Ok(g) }).unwrap();
+    // node-local groups: made under the account, no key home carries them (spec/sync-set.md §2)
+    let mk = |db: &Osis| db.commit_with(|w| { let g = w.create_with_content(db.me())?; keep_all(w, g); Ok(g) }).unwrap();
     let (f, f2, f3) = (mk(&db), mk(&db), mk(&db));
     let t = db.commit_with(|w| { let t = w.create_in(db.me(), &[f])?; keep_all(w, t); w.at(t, kept(&db, &x.clone())).set(&Value::Int(1))?; Ok(t) }).unwrap();
     let created = db.created(t).unwrap().unwrap().id;
@@ -438,7 +439,8 @@ fn undo_of_creation_resets_ephemeral_aspects_spec_crdt_4_6() {
     let db = db(0);
     typed_any(&db, &["t:made.0"]);
     let k = ak("app:draft+.0");
-    let mk = |db: &Osis| db.commit_with(|w| { let g = w.create_with_content(db.home())?; keep_all(w, g); Ok(g) }).unwrap();
+    // node-local groups: made under the account, no key home carries them (spec/sync-set.md §2)
+    let mk = |db: &Osis| db.commit_with(|w| { let g = w.create_with_content(db.me())?; keep_all(w, g); Ok(g) }).unwrap();
     let (f, f2) = (mk(&db), mk(&db));
     let e = db
         .commit_with(|w| {

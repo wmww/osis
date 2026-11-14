@@ -698,7 +698,8 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
     // node anyway); placing a durable thing persists the group
     let home_item = w.create_with_content(db.home()).unwrap();
     w.group(db.home()).add(osis::Member::Item(home_item)).unwrap();
-    let lost = w.create_with_content(db.home()).unwrap();
+    // made under the account: no key home carries it (spec/sync-set.md §2)
+    let lost = w.create_with_content(db.me()).unwrap();
     w.group(g).add(osis::Member::Item(lost)).unwrap();
     w.commit().unwrap();
     db.settle();
@@ -797,7 +798,8 @@ fn membership_reaching_no_synced_group_fails_spec_api_writes() {
     let g = w.create_in(db.me(), &[home]).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
-    let x = w.create_with_content(db.home()).unwrap();
+    // made under the account: no key home carries it (spec/sync-set.md §2)
+    let x = w.create_with_content(db.me()).unwrap();
     w.group(g).add(osis::Member::Item(x)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("as a subgroup")));
     assert!(!db.has_content(x).unwrap() && db.created(x).unwrap().is_none(), "nothing applied");
