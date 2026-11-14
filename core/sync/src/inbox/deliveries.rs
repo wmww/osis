@@ -151,7 +151,9 @@ impl Deliveries {
                     if !live {
                         self.send(h, offers, k, s)?;
                     }
-                    if self.sent.get(&k).is_some_and(|x| x.s == s) && took_own(h.engine, &s)? {
+                    if let Some(x) = self.sent.get(&k).copied().filter(|x| x.s == s)
+                        && took_own(h, &x)?
+                    {
                         h.engine.delivered(&k.0, &k.1)?;
                         self.forget(h, offers, &k)?;
                     }
@@ -280,11 +282,14 @@ fn judge(engine: &mut Engine, seen: &Stamped<Key, BTreeSet<(SyncId, Option<osis_
     })
 }
 
-/// spec/sync-inbox.md §2 Re-send (the sender reads the inbox): a blob logged here under an inbox
-/// this node reads is taken here (this node holds its commit), so the delivery ends once sent;
-/// the inbox's other readers get the logged blob by syncing the inbox.
-fn took_own(engine: &mut Engine, s: &SyncId) -> Result<bool> {
-    Ok(matches!(engine.sync_holding(s)?, Some((_, osis_engine::sync::Holding::Read))))
+/// spec/sync-inbox.md §2 Re-send (the sender writes and reads the inbox): a blob logged stamped
+/// here under an inbox this node reads is taken here (this node holds its commit), so the
+/// delivery ends once sent; the inbox's other readers and its sources pull the stamped entry. A
+/// deposited one is not: its Deposit item would go moot with the delivery, and a source keeping
+/// the inbox unread gets it by that item alone.
+fn took_own(h: &mut Here<'_>, x: &Sent) -> Result<bool> {
+    let reads = matches!(h.engine.sync_holding(&x.s)?, Some((_, osis_engine::sync::Holding::Read)));
+    Ok(reads && h.store.entry(&x.s, &x.blob)?.is_some_and(|e| !e.deposited))
 }
 
 /// spec/sync-inbox.md §2 Re-send: an open of a sync ID the blob names, the recipient proven,

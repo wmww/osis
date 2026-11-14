@@ -104,7 +104,8 @@ pub trait Ground {
     /// Opens the entry's wrap and takes what the blob holds (`Engine::open_entry`).
     fn open(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening>;
     /// Whether blob `b` was taken here before and fetching it again brings nothing: it opened to
-    /// a commit held here, not pending (spec/sync-streams.md §4 Bodies).
+    /// a commit held here, not pending, with no part it carries missing (spec/sync-streams.md §4
+    /// Bodies).
     fn taken(&mut self, b: &BlobId) -> bool {
         let _ = b;
         false
@@ -447,10 +448,7 @@ impl Ground for EngineGround<'_> {
     }
 
     fn taken(&mut self, b: &BlobId) -> bool {
-        match self.engine.blob_commit(b) {
-            Ok(Some(c)) => self.engine.holds_commit(&c) && !self.engine.pends(&c),
-            _ => false,
-        }
+        self.engine.blob_taken(b)
     }
 
     fn unkept(&mut self, store: &crate::store::Store, b: &BlobId) -> Result<()> {

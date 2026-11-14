@@ -753,6 +753,14 @@ impl Engine {
         Ok(self.core.ix.blob_parts.get(b).map(|x| x.0))
     }
 
+    /// Whether held blob `b` brings nothing fetched again (spec/sync-streams.md §4 Bodies): it
+    /// opened here to a commit held, not pending, none of whose parts `b` carries is missing.
+    pub fn blob_taken(&mut self, b: &BlobId) -> bool {
+        let Some(x) = self.core.ix.blob_parts.get(b).cloned() else { return false };
+        let Some(m) = self.core.ix.commits.get(&x.0) else { return false };
+        !self.core.ix.pending.contains_key(&x.0) && !x.1.iter().any(|ai| m.missing(*ai))
+    }
+
     /// Whether commit `c` is held here (applied or judged).
     pub fn holds_commit(&mut self, c: &CommitId) -> bool {
         self.core.ix.commits.contains_key(c)
