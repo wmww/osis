@@ -1276,8 +1276,9 @@ fn a_pass_begun_before_a_role_commit_does_not_count_spec_perm_3() {
     assert!(!e.passes_wanted().unwrap().contains_key(&s));
 }
 
-// spec/sync-set.md §2 (links being redeemed): a link followed is this session's, as the key it
-// holds; the engine reading its store again (`reload`, after a forgetting drop) keeps it, so K's
+// spec/sync-set.md §2 (A received grant syncs nothing until the account lists its thing: a link's
+// sync ID is read while the redeemer redeems the link): a link followed is this session's, as the
+// key it holds; the engine reading its store again (`reload`, after a forgetting drop) keeps it, so K's
 // sync ID stays in the sync set and nothing it syncs leaves for a round.
 #[test]
 fn a_followed_link_stays_across_a_reload_spec_sync_set_2() {
