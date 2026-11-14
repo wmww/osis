@@ -139,3 +139,42 @@ fn unsyncing_on_one_sibling_leaves_the_other_its_copy_spec_sync_set_3() {
     assert_eq!(w.engine(2).get(&t, &ak).unwrap(), Some(Value::Str("y".into())), "node 2 keeps it");
     assert_eq!(w.engine(1).get(&t, &ak).unwrap(), None, "node 1 still not");
 }
+
+// spec/permissions.md §3 (Lost access: whichever node of the account made it), spec/sync-status.md
+// §2: node 1 leaves a thing both siblings read while node 0, which shares it, is away; node 2
+// applies the removal from node 1 and waits as node 1 does (node 0's record holds S: a peer away),
+// through a restart, then drops its secrets and stops syncing S once node 0 holds the removal,
+// so node 0's later write never reaches it.
+#[test]
+fn a_siblings_self_removal_waits_and_drops_at_both_siblings_spec_perm_3() {
+    let (mut w, t, ak) = listed();
+    let a1 = w.node(1).account.unwrap();
+    let s = w.engine(2).sync_ids(&t).unwrap()[0].id;
+    w.partition(0, 1);
+    w.partition(0, 2);
+    w.flush();
+    let c = w.write(1, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap().commits[0];
+    w.flush();
+    assert!(w.engine(2).commit_ids().contains(&c), "node 2 holds the removal");
+    w.power_off(2);
+    w.power_on(2);
+    w.run();
+    for i in [1, 2] {
+        assert!(w.engine(i).waiting_removals().unwrap().contains(&c), "node {i} waits: node 0 shares S, away");
+        assert!(w.engine(i).epochs(&t).is_some_and(|x| x.read.holds_any()), "node {i} keeps its secrets while it waits");
+    }
+    w.heal();
+    w.run();
+    for i in [1, 2] {
+        assert!(!w.engine(i).waiting_removals().unwrap().contains(&c), "node {i}: node 0 holds it");
+        assert!(w.engine(i).epochs(&t).is_none_or(|x| x.read.held().next().is_none()), "node {i} dropped");
+        assert!(w.store(i).synced(&s).is_none(), "node {i} stopped syncing S");
+    }
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Str("after".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    assert_ne!(w.engine(2).get(&t, &ak).unwrap(), Some(Value::Str("after".into())), "node 2 reads nothing after");
+}
