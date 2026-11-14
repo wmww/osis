@@ -1,0 +1,8 @@
+# Who may attach a sync ID and dial hint to a thing through a boxes payload
+> Summary: A boxes payload taken whole adds its sync IDs and dial hint to every thing it boxes, and the sender's authority on that thing is never checked (a node below read cannot). A connected author (a role on anything the node syncs, or a contact) can so attach its own label and address to any thing the node syncs; and a closure-listed thing granted by an author not connected never learns its sync ID.
+> Priority: normal
+> Tags: security, sync, engine
+
+- Connected is contact-level trust (spec/sync-inbox.md §2 Taking): a member of any group the user syncs, signing as itself, boxes a listed thing T with a secret, sync ID and address of its own; T's sync record gains them (storage under T, dials to the forger's address). Same for a removed node of a member account: the carried rotation line verifies any fork it signs, whatever the node holds (spec/permissions.md §5.4 Limit covers its commits, not this).
+- Stuck grant: a thing in a synced closure through a group the node reads (not accepted by the user, so never an invitation) granted sync by an author not connected there gets sync secrets from the listing and no sync ID, ever: nothing vouches and the user is shown nothing to accept.
+- Options: whole takes add sync IDs only for things the author holds a role on as this node judges (none for a thing kept unread: then needs accept or stamp); list a closure thing whose payload waits as an invitation so the user can accept it; or a sync ID carrier a sync holder can verify (issues/sync-unbuilt.md, sync holder's grant copy).
