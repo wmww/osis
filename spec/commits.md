@@ -53,7 +53,7 @@ Encoding: spec/wire.md §4. Fields:
     - a snapshot one as a compaction snapshot, covering held bodies (§5, spec/sync-compaction.md §2);
     - a relay-only one is delivered and never held (spec/sync-compaction.md §2).
 - An **ephemeral snapshot** is a compaction snapshot like any (spec/crdt.md §8, §5).
-  - Its delta is the writer's state of the aspect, every author's writes under their stamps, with the tables over the sources that occur in it, the values of deltas with an `expires` value-less (spec/crdt.md §8: none is covered).
+  - Its delta is the writer's state of the aspect, every author's writes under their stamps, with the tables over the sources that occur in it, the values of deltas with an `expires` value-less (spec/crdt.md §8: none is covered), a `secrets.0` snapshot without the records at epochs its writer has not verified (spec/crypto.md §4).
 - **Storage class**: an aspect's storage class is given by its AK's markers (spec/data-model.md §2), alike at every node. A part is bad when it is on:
   - an AK that is not an ephemeral aspect (`+` and `.`) in an ephemeral commit that is not relay-only;
   - an AK that is not an ephemeral signal (`+` and `~`) in a relay-only commit;
@@ -167,7 +167,7 @@ Every delta carries **retention** on the wire: who may purge it (its purgeable-b
   - A body holding no delta is covered (a lasting header is must-hold all the same, spec/sync-judgement.md §2), unless it is session-form and the snapshot's frontier has an entry for its session short of its counters (no entry: the snapshot holds no write of the session, spec/crdt.md §8).
   - A body not held is not covered by a snapshot holding any of its writes value-less, unless the node holds them value-less past the delta's expiry (§6): a copy stripped for a purge that fell, or written by a node holding a request this one does not, gives no value.
   - A delta with an expiry held with its values is judged by the join like any body: a snapshot carries its values value-less (spec/crdt.md §8), so covers it only once none of them lives. One not held is not covered until the node holds it value-less (past T, spec/crdt.md §4.7); from then on its leftover is judged by the join.
-  - A snapshot written from a node's whole state of an aspect covers every body of it the node had applied, except a delta with an expiry holding a live value.
+  - A snapshot written from a node's whole state of an aspect covers every body of it the node had applied, except a delta with an expiry holding a live value and a `secrets.0` delta writing a record the snapshot leaves out (spec/crypto.md §4).
 - A cover drops a delta's body only when it covers it and the body is past its keep bounds (judged per delta; Keep bounds): a live delta (The setting, Kept while live) as a replaced one, durable or ephemeral alike.
 - Limit: a snapshot cannot give back what it replaced. A dropped delta's values live on as its cover's copies, which a purge request naming it holds value-less (Purge); but once dropped, a purge that later falls, or another later judgment that would read the delta alone, restores nothing beyond those copies.
 

@@ -1134,7 +1134,7 @@ fn finalize_without_secret_rotates_history_added_spec_permissions_2() {
 
 /// The rotations every peer of `lp` makes on `g` per round (`ensure_rotated` at each, then a
 /// sync), until a round makes none.
-fn rounds_to_settle(lp: &mut LocalPeer, g: Tid) -> Vec<usize> {
+pub(super) fn rounds_to_settle(lp: &mut LocalPeer, g: Tid) -> Vec<usize> {
     let mut out = Vec::new();
     loop {
         // what is due at once, then what a complete pass decides
@@ -1942,7 +1942,7 @@ fn unmet_epoch_withdrawn_by_its_maker_spec_crypto_4() {
 }
 
 /// Puts `k` = `v` on `g`'s content aspect `x:m.0` by peer `i`.
-fn put_on(lp: &mut LocalPeer, i: usize, g: Tid, k: &str, v: i64) {
+pub(super) fn put_on(lp: &mut LocalPeer, i: usize, g: Tid, k: &str, v: i64) {
     lp.advance(7);
     let mut m = Mutation::new();
     let path = vec![osis_crdt::PathSeg::Key(osis_base::Value::Str(k.into()))];
@@ -1951,7 +1951,7 @@ fn put_on(lp: &mut LocalPeer, i: usize, g: Tid, k: &str, v: i64) {
 }
 
 /// Whether peer `i` reads key `k` on `g`'s `x:m.0`.
-fn reads_key(lp: &mut LocalPeer, i: usize, g: Tid, k: &str) -> bool {
+pub(super) fn reads_key(lp: &mut LocalPeer, i: usize, g: Tid, k: &str) -> bool {
     let v = lp.peers[i].engine.get(&g, &osis_base::Ak::new("x:m.0").unwrap()).unwrap();
     matches!(v, Some(osis_base::Value::Map(m)) if m.contains_key(&osis_base::Value::Str(k.into())))
 }
@@ -2007,10 +2007,10 @@ fn withdrawn_epoch_content_reaches_its_box_holders_only_spec_crypto_4() {
     }
 }
 
-// spec/crypto.md §4 (A node compacts `secrets.0` only while every epoch its state keys is
+// spec/crypto.md §4 (A `secrets.0` compaction snapshot leaves out records at epochs not
 // established, names aside), spec/commits.md §5: a withdrawn epoch (names unmet at every holder of
-// its secret) keeps its boxes in `secrets.0` for good, so a gate reading names stopped its holders'
-// compaction for good. Invariant: a holder compacts, drops the covered bodies and still reads what
+// its secret) keeps its boxes in `secrets.0` for good, and they are carried (names aside), so its
+// holders cover and drop them. Invariant: a holder compacts, drops the covered bodies and still reads what
 // was written under e_R; a node granted after and fed by it judges every `secrets.0` part and the
 // current epochs as the compactor does. Randomized over the compactor, which aspects it compacts,
 // the clock, restarts and arrival order.

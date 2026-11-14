@@ -515,11 +515,15 @@ pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     crate::flows::save_epochs(tx, &a.tid)
 }
 
-/// The `secrets.0` compaction gate (spec/crypto.md §4).
-pub(crate) fn may_compact(core: &Core, actor: &Tid, state: &Fragment) -> bool {
-    let Some(s) = state.read().and_then(|v| crate::engine::secrets::secrets_value(&v)) else { return false };
+/// What a `secrets.0` compaction snapshot carries (spec/crypto.md §4): `state` less every entry
+/// at an epoch not established here, names aside (`osis_keys::unvouched`), so the snapshot bases
+/// only what this node verified; the commits writing those stay beside it, uncovered.
+pub(crate) fn vouched_only(core: &Core, actor: &Tid, state: &mut Fragment) {
+    let Some(s) = state.read().and_then(|v| crate::engine::secrets::secrets_value(&v)) else { return };
     let e = core.epochs(actor).unwrap_or_default();
-    osis_keys::may_compact_secrets(&s, &e).unwrap_or(false)
+    let Ok(out) = osis_keys::unvouched(&s, &e) else { return };
+    state.leave_out(0, &out.boxes.iter().map(|k| k.to_value()).collect::<Vec<_>>());
+    state.leave_out(1, &out.history.iter().map(|k| k.to_value()).collect::<Vec<_>>());
 }
 
 /// A held commit's `secrets.0` delta became valid again (re-grant): applied as received.

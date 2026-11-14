@@ -1,10 +1,10 @@
 # Rotation, claim steps, re-seal (TLA+)
 > Summary: TLC model of read-role rotation for one actor and its label at one host (spec/crypto.md §3–§5, spec/sync-ids.md §2/§5, spec/permissions.md §3–§4, spec/commits.md §2): epochs established by names (the removals a rotation's rotator held), frozen coverage (an epoch covers exactly the departures it names), a removal withheld forever from one admin, forced and eager rotation, forks, removal carried in its rotation, grants, re-registration after uploading the rotation chain, opens by sync key and claims, claim-set drops, stranded heartbeats (also on a refused claim), re-seal after a complete pass (by inbox and under the label), rotation by inbox to holders without a box at the epoch before, per-node box knowledge, co-reader peers, planted boxes (reading-only secrets). Holder actors are Depth0.tla's (depth-0 sealing, rule 4 for cycles); timed edges and finalizes Finalize.tla's. Written from spec/ alone.
 
-Files: `Rotation.tla` (the model; constants come straight from each `.cfg`), `ASSUMPTIONS.md`, `AMBIGUITIES.md` (the findings). `Depth0.tla`, `Finalize.tla`, `Cover.tla`, `Lockout.tla`, `Cut.tla`, `Account.tla` and `Withdrawn.tla` are separate models (sections below).
+Files: `Rotation.tla` (the model; constants come straight from each `.cfg`), `ASSUMPTIONS.md`, `AMBIGUITIES.md` (the findings). `Depth0.tla`, `Finalize.tla`, `Cover.tla`, `Lockout.tla`, `Cut.tla`, `Account.tla`, `Withdrawn.tla` and `Planted.tla` are separate models (sections below).
 
 ## Run
-`../run.sh rotation` (and `depth0`, `lockout`, `cut`, `finalize`, `cover`, `account`, `withdrawn`) runs a model's listed instances, each model about a minute or less at one worker on a quiet box; `../run.sh <module> <cfg>...` runs others by name. It fetches TLC into `~/.cache/tla/` if missing. By hand, from this directory (Java 11+):
+`../run.sh rotation` (and `depth0`, `lockout`, `cut`, `finalize`, `cover`, `account`, `withdrawn`, `planted`) runs a model's listed instances, each model about a minute or less at one worker on a quiet box; `../run.sh <module> <cfg>...` runs others by name. It fetches TLC into `~/.cache/tla/` if missing. By hand, from this directory (Java 11+):
 ```
 java -XX:+UseParallelGC -cp ~/.cache/tla/tla2tools.jar tlc2.TLC -workers 1 \
   -metadir ../../../../target/tlc-states -config MC_grant.cfg Rotation
@@ -265,3 +265,14 @@ A demotes admin a2 (D); a2, unaware, removes reader M (W); R, holding W alone, r
 | `W_waitall_live` | waitall; invariants, LiveM | **fails** LiveM (expected: a3 or a4 away for good) | 19,084 | 4 s |
 | `W_regrant_live` | regrant; invariants, LiveM | **fails** LiveM (expected: nothing writes RG) | 6,336 | 3 s |
 | `W_joiners` | joiners; invariants, LiveN | pass | 5,888 | 2 s |
+
+## Planted.tla: what a `secrets.0` snapshot carries (spec/crypto.md §4; notes/crypto.md, What a `secrets.0` snapshot vouches for)
+A reader's history add (Hp, at p) and a writer's box (Bp, at q) sit at epochs no valid rotation made; genuine rotations R1..R3 make g1..g3 (R_k's keyset writes g_k and lists g_(k-1)), and an admin's grant Gr at g3 may reach a node before R3. Admins A and C compact once each (dropping what their snapshot covers); F only receives. A holds every commit at first; the others get commits from A while it holds them and snapshots from anyone, in any order. A node verifies e by a held rotation commit of e or a held snapshot carrying an entry at e. `Rule`: `leaveout` (the build: leave out entries at unverified epochs; cover a commit only when every entry is carried), `wait` (compact only while everything keyed is verified), `all` (carry everything), `drop` (leave out and cover every held commit), `keyset` (carry everything; a snapshot bases only epochs a held keyset writes or lists). `NoLaunder`: no node verifies a planted epoch. `NoLoss`: no node's live genuine entries shrink. `Compacts`: both admins compact. `Based`: every genuine epoch a node keys is eventually verified there. `Converge`: every node ends with every entry. Names are set aside (each holder judges them), so a withdrawn epoch is a genuine one here.
+
+| cfg | rule | result | states | time |
+|---|---|---|---|---|
+| `P_leaveout` | leaveout; every property | pass | 145,520 | 171 s |
+| `P_wait` | wait; Compacts | **fails** (expected: a plant blocks C for good) | 53,152 | 14 s |
+| `P_all` | all; NoLaunder | **fails** (expected: A's snapshot keys p) | 2 | 1 s |
+| `P_drop` | drop; NoLoss | **fails** (expected: C compacts holding Gr before R3, killing Gr's box) | 100 | 1 s |
+| `P_keyset` | keyset; Based | **fails** (expected: A drops R1, keys.0 keeps only R3's keyset, F never bases g1) | 83,469 | 64 s |

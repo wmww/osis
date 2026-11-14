@@ -170,7 +170,7 @@ impl Sim {
             let mut sv = v.clone();
             osis_keys::snapshot_keyed(&self.s, osis_base::CommitId([1; 32]), &mut sv).unwrap();
             sv.establish(&osis_keys::AllHeld);
-            assert!(osis_keys::may_compact_secrets(&self.s, &sv).unwrap());
+            assert!(osis_keys::unvouched(&self.s, &sv).unwrap().is_empty());
             for r in ROLES.into_iter().filter(|r| r <= role) {
                 assert_eq!(sv.role(r).newest_held().map(|x| x.0), self.view.role(r).newest(), "holder {i} role {r:?}");
             }

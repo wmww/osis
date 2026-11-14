@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Established epochs (spec/crypto.md §4; spec/permissions.md §3 re-seal): the TLC traces of
 //! core/test/tla/rotation/AMBIGUITIES.md (R9, `MC_reorder`), snapshot establishment, the `secrets.0`
-//! compaction gate.
+//! records a compaction snapshot carries.
 
 use crate::common::Applied;
 use crate::common;
@@ -10,7 +10,7 @@ use osis_base::{Role, Tid};
 use osis_keys::aspects::{box_key, history_key, to_schema};
 use osis_keys::{
     ActorEpochs, Departure, KeysWrite, Holder, Names, Opener, Provenance, Recipient, Rotation, box_holder, ingest,
-    may_compact_secrets, reseal_needed, uncovered, roles_up_to, rotate, snapshot_keyed,
+    unvouched, reseal_needed, uncovered, roles_up_to, rotate, snapshot_keyed,
 };
 use osis_crypto::Epoch;
 use osis_schema::core_types::Secrets;
@@ -141,7 +141,7 @@ fn r9_reseal_before_rotation_commit() {
     assert!(a2v.read.secret(&e1).is_some());
     assert!(!a2v.read.is_established(&e1));
     assert_eq!(a2v.read.current(), vec![w.e0]);
-    assert!(!may_compact_secrets(&s2, &a2v).unwrap());
+    assert!(!unvouched(&s2, &a2v).unwrap().is_empty());
 
     // In the window a2 re-seals and grants at e0 only.
     let g = actor_rcpt(tid(5), Role::Read, &person(0x50));
@@ -209,9 +209,9 @@ fn reorder_holding_e2_without_e1() {
     assert!(a2v.read.secret(&e1).is_some() && a2v.read.secret(&e2).is_some());
     assert!(!a2v.read.is_established(&e1) && !a2v.read.is_established(&e2));
     assert_eq!(a2v.read.current(), vec![w.e0]);
-    // the compaction gate sets names aside: e2's rotation commit is held, and a receiver holding
+    // a snapshot carries what is verified names aside: e2's rotation commit is held, and a receiver holding
     // e2's secret judges its names itself
-    assert!(may_compact_secrets(&s2, &a2v).unwrap());
+    assert!(unvouched(&s2, &a2v).unwrap().is_empty());
 
     // A complete pass with m1 still a holder as a2 sees it: no re-seal, and none boxes e2.
     let holders = [
@@ -235,7 +235,7 @@ fn reorder_holding_e2_without_e1() {
     assert_eq!(a2v.read.provenance(&e1), Some(Provenance::Rotated));
     assert_eq!(a2v.read.provenance(&e2), Some(Provenance::Rotated));
     assert_eq!(a2v.read.current(), vec![e2]);
-    assert!(may_compact_secrets(&s3, &a2v).unwrap());
+    assert!(unvouched(&s3, &a2v).unwrap().is_empty());
 }
 
 // spec/crypto.md §4 (snapshot establishment; names: the departing commit), spec/permissions.md
@@ -256,7 +256,7 @@ fn snapshot_established_needs_departure() {
     let rc = actor_rcpt(g, Role::Read, &ge);
     v.establish(&Holding(BTreeSet::new()));
     assert!(!v.read.is_established(&e1), "the removal not held");
-    assert!(may_compact_secrets(&s1, &v).unwrap(), "names aside, a held snapshot keys e1");
+    assert!(unvouched(&s1, &v).unwrap().is_empty(), "names aside, a held snapshot keys e1");
     // e0 (keyed by its history box, its names met) is current: boxed there only
     assert_eq!(v.read.current(), vec![w.e0]);
     let out = box_holder(&w.a, &v, &hist(&w.a, &v, &s1), &rc, &read(), &mut w.rng).unwrap().unwrap();
@@ -265,7 +265,7 @@ fn snapshot_established_needs_departure() {
     v.establish(&Holding([cid(4)].into()));
     assert_eq!(v.read.provenance(&e1), Some(Provenance::Rotated));
     assert_eq!(v.read.current(), vec![e1]);
-    assert!(may_compact_secrets(&s1, &v).unwrap());
+    assert!(unvouched(&s1, &v).unwrap().is_empty());
     // a reader lacks sync boxes too (the test boxes read alone)
     assert_eq!(reseal_needed(&s1, &v, &holders), vec![(g, [Role::Sync, Role::Read].into_iter().collect())]);
     assert!(box_holder(&w.a, &v, &hist(&w.a, &v, &s1), &rc, &read(), &mut w.rng).unwrap().is_some());

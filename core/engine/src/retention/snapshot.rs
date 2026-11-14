@@ -671,9 +671,9 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
     if tx.state(&tid, &ak)?.is_none() {
         return Ok(None);
     }
-    let Some(st) = snapshot_state(tx, &tid, &ak)? else { return Ok(None) };
-    if ak.as_str() == "secrets.0" && !crate::apply::keys::may_compact(tx.core, &tid, &st) {
-        return Err(Error::Misuse("secrets.0 keys an epoch not established here (spec/crypto.md §4)"));
+    let Some(mut st) = snapshot_state(tx, &tid, &ak)? else { return Ok(None) };
+    if ak.as_str() == "secrets.0" {
+        crate::apply::keys::vouched_only(tx.core, &tid, &mut st);
     }
     let valid_on = |c: &CommitId| claims(tx.core, c, &tid, &ak);
     // frontiers cover only counters whose writes this state reflects: applied, valid, of

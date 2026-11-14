@@ -357,7 +357,7 @@ impl RoleEpochs {
 
     /// The epochs established with the names condition dropped (spec/crypto.md §4): what a node
     /// holding none of the role's secrets counts established, and what a `secrets.0` compaction
-    /// snapshot may key (`may_compact_secrets`).
+    /// snapshot may key (`unvouched`).
     pub fn established_names_aside(&self) -> BTreeMap<Epoch, Provenance> {
         self.established_by(|_| true)
     }

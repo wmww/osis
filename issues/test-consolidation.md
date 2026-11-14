@@ -129,7 +129,7 @@ Format: `file:line test | action | why safe | confidence`.
 ### Category 3: cross-crate duplication
 - **host `hub.rs` vs proto `loopback`.** Two host tests (`deposits_and_budget`, `deletes_and_tombstones`) run the same scripts as their loopback twins; only the store differs, and host `agrees_with_reference_and_replays` ties the two stores. Delete the host copies after moving their unique asserts (deposit count, tombstone lifetime) into loopback. Medium.
 - keys `covers.rs grant_raced_by_rotation` | delete | node `flows::reseal_raced_grant` | medium
-- keys `props.rs departures_and_current_holders` | maybe delete | a keys-level copy of engine `rotation::tests_property`; its unique part is the `snapshot_keyed` / `may_compact_secrets` check | low
+- keys `props.rs departures_and_current_holders` | maybe delete | a keys-level copy of engine `rotation::tests_property`; its unique part is the `snapshot_keyed` / `unvouched` check | low
 - node `listing.rs:136 page_stops_at_its_byte_bound` | delete | covered by osis `listing::page_bound_counts_large_values` | medium-high
 - node `receive.rs:147 drift_parks` | delete | sim `drift_parks_until_clock_catches_up` and engine `clock::hlc_rules` | medium
 - node `encodings.rs:99 sequences_converge` | delete | `held_set_decides` and `crdt_equals_model` | medium

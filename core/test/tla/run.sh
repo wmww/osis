@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, account, withdrawn, netstream, netshared, netblind, netopen, nethold, netdestroy, netkeep
+#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, account, withdrawn, planted, netstream, netshared, netblind, netopen, nethold, netdestroy, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker); with cfg names: those instances instead (the larger ones
 #   in the module's README, by hand), judged only if listed below.
@@ -110,6 +110,11 @@ instances=(
   "withdrawn rotation Withdrawn W_waitall_live.cfg fail" # negative control: waiting for every admin is safe and stalls
   "withdrawn rotation Withdrawn W_regrant_live.cfg fail" # an explicit re-grant of M unlocks it safely but nothing makes one
   "withdrawn rotation Withdrawn W_joiners.cfg pass"     # later holders only, M left out by names: safe and live for them
+  "planted rotation Planted P_leaveout.cfg pass"    # a secrets.0 snapshot leaves out records at epochs its writer has not verified (spec/crypto.md §4)
+  "planted rotation Planted P_wait.cfg fail"        # negative control: waiting for every keyed epoch stops compaction for good
+  "planted rotation Planted P_all.cfg fail"         # negative control: carrying everything bases a planted epoch
+  "planted rotation Planted P_drop.cfg fail"        # negative control: covering what was left out loses a genuine grant's box
+  "planted rotation Planted P_keyset.cfg fail"      # negative control: keyset-vouched basis loses older epochs once keys.0 compacts
   "account rotation Account Acc_descent.cfg pass"   # an account epoch covers a removal by descent (spec/crypto.md §4 Encrypting under)
   "account rotation Account Acc_order.cfg fail"     # negative control: judged by order, an ignorant fork ordered after the removal covers it
   "account rotation Account Acc_nomet.cfg fail"     # negative control: a seed taken under a D epoch whose names are unmet extends a line past a removal its maker does not hold
