@@ -27,11 +27,11 @@ fn grants(core: &Core, also: &[Tid]) -> Vec<osis_keys::Grant<Order>> {
     let mut grants = Vec::new();
     let actors = |m: &Tid| !core.is_key_actor(m);
     for t in core.timelines.things() {
-        let Some(tl) = core.timelines.get(t) else { continue };
-        if !tl.edges_at(None).holders(t).any(|(m, _)| actors(m)) {
+        let Some(on) = core.timelines.on(t) else { continue };
+        if !on.holders().iter().any(|(m, _)| actors(m)) {
             continue;
         }
-        for (h, since) in tl.standing_since(t) {
+        for (h, since) in on.standing_since() {
             if actors(&h) {
                 grants.push(Grant { order: (1, since), target: *t, holder: h });
             }
@@ -48,9 +48,25 @@ fn grants(core: &Core, also: &[Tid]) -> Vec<osis_keys::Grant<Order>> {
 }
 
 /// The keyless grants (target, holder) among those this node holds (`grants`,
-/// `osis_keys::key_access`; `Core::key_access`).
+/// `osis_keys::key_access`), kept by the timelines (`held::Timelines::keyless`).
 pub(crate) fn key_access(core: &Core) -> Arc<BTreeSet<(Tid, Tid)>> {
-    core.key_access.get(&(), || Arc::new(osis_keys::key_access(grants(core, &[]))))
+    core.timelines.keyless()
+}
+
+/// The keyless grants among the actor grants of one component's timeline `tl`: each holder
+/// actor's standing on each thing (`Timeline::standing_since_all`, record edges included), as
+/// `grants` gathers them. A keyless grant closes a cycle of actor grants (`osis_keys::key_access`),
+/// and a cycle lies in one component, so the union over components is the answer over all.
+pub(crate) fn keyless_in(tl: &osis_perm::Timeline) -> BTreeSet<(Tid, Tid)> {
+    let mut grants = Vec::new();
+    for (t, on) in tl.standing_since_all() {
+        for (h, since) in on {
+            if !tl.records().is_key(&h) {
+                grants.push(Grant { order: (1, since), target: t, holder: h });
+            }
+        }
+    }
+    osis_keys::key_access(grants)
 }
 
 /// `who`'s role on `a` now for keys (spec/crypto.md §4, Holds: `At::KEYS`, every `until`
@@ -58,12 +74,7 @@ pub(crate) fn key_access(core: &Core) -> Arc<BTreeSet<(Tid, Tid)>> {
 /// only: a keyless grant gives no read through it (spec/requirements.md Permissions), so a party
 /// holding `a` only so has left it.
 pub(crate) fn role_for_keys(core: &Core, who: &Tid, a: &Tid) -> Option<Role> {
-    let tl = core.timelines.get(a)?;
-    let keyless = key_access(core);
-    if keyless.is_empty() {
-        return tl.role(who, a, osis_perm::At::KEYS);
-    }
-    tl.roles_without(who, osis_perm::At::KEYS, &keyless).get(a).copied()
+    core.timelines.roles_on(a, osis_perm::At::KEYS, &key_access(core)).get(who).copied()
 }
 
 /// Whether holder `h` of `a` has key access to it (`keyed_role`).

@@ -185,14 +185,14 @@ pub(crate) fn discard(core: &mut Core) {
 /// rollback clears; validity flags are restored with the commits).
 pub(crate) fn restored(core: &mut Core) {
     let trust = core.sides.trust();
-    core.timelines.change().set_trust(&core.ix.held, trust);
+    core.timelines.change(|t| t.set_trust(&core.ix.held, trust));
 }
 
 /// Feeds the recorded sides to the walk as its trust set; the things whose validity may have
 /// changed wait for `rejudge_all` as after any timeline change.
 fn feed(core: &mut Core) {
     let trust = core.sides.trust();
-    let changed = core.timelines.change().set_trust(&core.ix.held, trust);
+    let changed = core.timelines.change(|t| t.set_trust(&core.ix.held, trust));
     core.timelines_changed(changed);
     core.role_changed();
 }
@@ -212,7 +212,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         tx.core.sides = Sides::decode(&b)?;
         let trust = tx.core.sides.trust();
         if !trust.is_empty() {
-            tx.core.timelines.change().set_trust(&tx.core.ix.held, trust);
+            tx.core.timelines.change(|t| t.set_trust(&tx.core.ix.held, trust));
         }
     }
     Ok(())

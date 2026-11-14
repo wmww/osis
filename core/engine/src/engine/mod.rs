@@ -11,6 +11,7 @@ pub(crate) mod decoded;
 pub(crate) mod edits;
 pub(crate) mod groups;
 pub(crate) mod held;
+pub(crate) use held::On;
 pub mod listing;
 pub(crate) mod index;
 pub(crate) mod journal;
@@ -1007,9 +1008,6 @@ pub struct Core {
     /// What this node's account's epochs were last judged from (`flows::account::refresh_epochs`);
     /// empty after an open, when the persisted judgment stands.
     pub(crate) epochs_judged_from: Option<crate::flows::account::JudgedFrom>,
-    /// The keyless actor grants (target, holder) over those held (`rotation::members::key_access`;
-    /// `memo`): O(edges) to build.
-    pub(crate) key_access: memo::Memo<(), Arc<BTreeSet<(Tid, Tid)>>>,
     /// Per actor, each holder for keys at its role and its role with key access
     /// (`rotation::members::key_roles`; `memo`): a walk of its holders through destroyed actors.
     pub(crate) key_roles: memo::Memo<Tid, Arc<crate::rotation::members::KeyRoles>>,
@@ -1331,7 +1329,6 @@ impl Core {
             account_views: self.account_views.clone(),
             account_epochs_of: self.account_epochs_of.clone(),
             epochs_judged_from: self.epochs_judged_from.clone(),
-            key_access: self.key_access.clone(),
             key_roles: self.key_roles.clone(),
             acting_of: self.acting_of.clone(),
             inbox_actors: self.inbox_actors.clone(),
@@ -1983,7 +1980,6 @@ impl Core {
             published: _,
             head_keys: _,
             holders_named: _,
-            key_access: _,
             key_roles: _,
             inbox_actors: _,
             acting_of: _,
@@ -2176,7 +2172,6 @@ impl Core {
             account_views: memo::Memo::new("account view"),
             account_epochs_of: memo::Memo::new("account epochs"),
             epochs_judged_from: None,
-            key_access: memo::Memo::new("key access"),
             key_roles: memo::Memo::new("key roles"),
             acting_of: memo::Memo::new("acting"),
             inbox_actors: memo::Memo::new("inbox actors"),

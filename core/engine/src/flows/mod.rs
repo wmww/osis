@@ -227,8 +227,8 @@ impl Core {
     /// included while it stands (with no timeline here, nothing wrote it: the first admin alone).
     pub fn current_holders(&self, actor: &Tid) -> Vec<(Tid, Role, Option<WallMs>)> {
         let ts = now_ts(self);
-        match self.timelines.get(actor) {
-            Some(tl) => tl.roster(actor, At::now(ts)).into_iter().map(|(m, e)| (m, e.role, e.until)).collect(),
+        match self.timelines.on(actor) {
+            Some(on) => on.roster(At::now(ts)).into_iter().map(|(m, e)| (m, e.role, e.until)).collect(),
             None => self.first_admin(actor).map(|a| (a, Role::Admin, None)).into_iter().collect(),
         }
     }
@@ -259,8 +259,8 @@ impl Core {
     /// holders in their place): every edge on it by `rotation::key_role`, its record edge
     /// included while it stands.
     pub(crate) fn edge_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
-        match self.timelines.get(actor) {
-            Some(tl) => tl.edges_at(None).holders(actor).filter_map(|(m, e)| Some((*m, crate::rotation::key_role(Some(e))?))).collect(),
+        match self.timelines.on(actor) {
+            Some(on) => on.holders().into_iter().filter_map(|(m, e)| Some((m, crate::rotation::key_role(Some(&e))?))).collect(),
             None => self.first_admin(actor).map(|a| (a, Role::Admin)).into_iter().collect(),
         }
     }

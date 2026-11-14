@@ -5,7 +5,7 @@ use super::Engine;
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid};
 use osis_store::Shred;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One row of `Engine::body_page`.
 #[doc(hidden)]
@@ -706,8 +706,8 @@ fn commit_digest(m: &super::Meta) -> (CommitDigest, (&osis_base::WallMs, &crate:
 }
 
 /// The role timelines' verdicts `Core::perm_digest` shows: per held thing its roster (`None`: no
-/// timeline), then every applied and dropped edge write.
-type PermParts = (Vec<(Tid, Option<BTreeMap<Tid, osis_perm::Edge>>)>, BTreeMap<osis_perm::WriteId, osis_perm::Applied>, BTreeMap<osis_perm::WriteId, osis_perm::Point>);
+/// timeline), then every applied and dropped edge write, and the keyless actor grants.
+type PermParts = (Vec<(Tid, Option<BTreeMap<Tid, osis_perm::Edge>>)>, BTreeMap<osis_perm::WriteId, osis_perm::Applied>, BTreeMap<osis_perm::WriteId, osis_perm::Point>, BTreeSet<(Tid, Tid)>);
 
 impl super::Core {
     /// `Engine::index_digest`.
@@ -776,13 +776,17 @@ impl super::Core {
             applied.extend(tl.applied().iter().map(|(k, v)| (*k, *v)));
             dropped.extend(tl.dropped().iter().map(|(k, v)| (*k, *v)));
         }
-        (rosters, applied, dropped)
+        let keyless = match &full {
+            Some(tl) => crate::rotation::members::keyless_in(tl),
+            None => (*self.timelines.keyless()).clone(),
+        };
+        (rosters, applied, dropped, keyless)
     }
 
     /// `Engine::perm_digest`.
     pub(crate) fn perm_digest(&self, from_scratch: bool) -> String {
         use std::fmt::Write;
-        let (rosters, applied, dropped) = self.perm_parts(from_scratch);
+        let (rosters, applied, dropped, keyless) = self.perm_parts(from_scratch);
         let mut out = String::new();
         for (t, r) in rosters {
             let _ = match r {
@@ -790,7 +794,7 @@ impl super::Core {
                 None => writeln!(out, "{t:?} no timeline"),
             };
         }
-        let _ = writeln!(out, "applied {applied:?}\ndropped {dropped:?}");
+        let _ = writeln!(out, "applied {applied:?}\ndropped {dropped:?}\nkeyless {keyless:?}");
         out
     }
 }
