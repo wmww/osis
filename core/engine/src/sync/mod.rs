@@ -15,6 +15,7 @@ pub(crate) mod held;
 pub(crate) mod inbox;
 pub(crate) mod records;
 mod set;
+mod signing;
 
 pub use inbox::WaitingBlob;
 pub use osis_label::DialHint;
@@ -200,6 +201,17 @@ pub struct EntryBoxSecrets {
     pub read: (Epoch, Secret32),
     pub superseded: Option<(Epoch, Secret32)>,
     pub sync: (Epoch, Secret32),
+}
+
+/// The keys this node signs entries of a sync ID with (spec/sync-inbox.md §2-§4).
+#[derive(Clone, Default)]
+pub struct Signers {
+    /// Its head's write key, established here: stamps.
+    pub stamp: Option<SigningSecret>,
+    /// The deposit key its head bears, from a held deposit seed.
+    pub deposit: Option<SigningSecret>,
+    /// Its head's delete key, established here: clearing deposits.
+    pub delete: Option<SigningSecret>,
 }
 
 /// A thing this node keeps a sync record of (spec/sync.md §3 Kept unread).
@@ -566,6 +578,34 @@ impl Engine {
     /// node holder (sent `c` itself) or one whose inbox key is not known here.
     pub fn inbox_blob(&mut self, c: &CommitId, holder: &Tid, rng: &mut dyn NodeRng) -> Result<Option<Vec<u8>>> {
         self.inbox_blob_now(c, holder, rng)
+    }
+
+    /// The sync IDs delivery (`c`, `holder`)'s blob names (spec/wire.md §9 position 1): an open
+    /// of one by the holder shows it took the delivery (spec/sync-inbox.md §2 Re-send).
+    pub fn delivery_names(&mut self, c: &CommitId, holder: &Tid) -> Result<Arc<Vec<SyncId>>> {
+        self.delivery_names_now(c, holder)
+    }
+
+    /// The keys this node signs entries of `s` with; `actor`: the actor whose deposit seed
+    /// signs a deposit to its inbox when this node records no head of `s`.
+    pub fn signers(&mut self, s: &SyncId, actor: Option<&Tid>) -> Result<Signers> {
+        self.signers_now(s, actor)
+    }
+
+    /// The commit a held blob opened or was sealed as (`blob_parts`' row).
+    pub fn blob_commit(&mut self, b: &BlobId) -> Result<Option<CommitId>> {
+        Ok(self.core.ix.blob_parts.get(b).map(|x| x.0))
+    }
+
+    /// The blobs of commit `c` opened or sealed here.
+    pub fn commit_blobs(&mut self, c: &CommitId) -> Result<Arc<Vec<BlobId>>> {
+        Ok(Arc::new(self.core.ix.commit_blobs.get(c).into_iter().flatten().copied().collect()))
+    }
+
+    /// The role commits recorded step `step` of `s` depends on (spec/sync-ids.md §6 Steps): a
+    /// store source must hold each before the step is registered there.
+    pub fn step_needs(&mut self, s: &SyncId, step: &StepId) -> Result<Arc<Vec<CommitId>>> {
+        self.step_needs_now(s, step)
     }
 
     /// The commits logged with role commit `c` wherever it is logged (spec/crypto.md §4 Carried).
