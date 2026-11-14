@@ -764,3 +764,44 @@ fn repro_a_passed_until_rotates_before_the_next_encryption_spec_crypto_4() {
     assert_ne!(read(&mut w), e0, "rotated before encrypting");
     assert_ne!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("after".into())), "the departed reader reads nothing new");
 }
+
+// spec/permissions.md §2 (tied edge removed): a node holding a current tied grant (G, T) whose
+// element is dead in G's `group.0` removes the edge when it may: node 0, admin of both, takes t
+// out of g with g's tied write grant on t standing; after a complete pass of t's sync ID (node 2
+// reads t) the edge is gone at both nodes.
+#[test]
+#[ignore = "issues/tied-edge-never-removed.md"]
+fn repro_a_dead_tie_is_removed_after_a_pass_spec_permissions_2() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, world};
+    let mut w = world(0, 3);
+    w.cap = 20_000;
+    let _ = crate::harness::play(&mut w, &[New(0), New(0), Grant(0, 1, 2, Gives::Reads), Run], String::new());
+    let (g, t) = (w.history.things[0].0, w.history.things[1].0);
+    w.write(0, |e| {
+        e.give_own_secrets(&g).unwrap();
+        let mut x = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+        x.items.insert(t);
+        let mut m = Mutation::new();
+        m.set(g, &ct::GROUP, &x).unwrap();
+        e.commit(m).unwrap();
+        let tie = e.placement(&t, &g, false).unwrap().unwrap();
+        e.grant(&t, &g, &ct::Edge { tied: Some(osis_engine::flows::tied::tie_ct(tie)), ..edge(Role::Write) }).unwrap();
+    });
+    w.run();
+    assert!(w.engine(2).roster(&t).contains_key(&g), "the tied grant reached node 2");
+    w.write(0, |e| {
+        let mut x = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+        x.items.retain(|y| *y != t);
+        let mut m = Mutation::new();
+        m.set(g, &ct::GROUP, &x).unwrap();
+        e.commit(m).unwrap();
+        assert!(e.tied_unplaced(&Default::default(), &Default::default(), true).unwrap().contains(&(t, g)), "the tie is dead");
+    });
+    w.run();
+    w.advance(60_000);
+    w.run();
+    for i in [0, 2] {
+        assert!(!w.engine(i).roster(&t).contains_key(&g), "node {i}: g's tied edge on t stands");
+    }
+}
