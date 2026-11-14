@@ -7,6 +7,7 @@ osis-host cannot reach decryption (`host_blind`), and no test can bind the real 
 announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`), and only the engine's `apply::checked`
 vouches for checked delta bytes (`checked_bytes`), and every tools/known_failures.txt line names
 an existing issue file, an existing test or sim scenario and a valid pattern (`known_failures`),
+and every list under git's union merge has no duplicate line and a stale-line check (`union_lists`),
 and no code names a thing's destruction by the old word "ended" (`ended_names`), and every pointer into notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and no core `pub`
 item is used only by its own crate's tests or not at all unless tools/dead_pub_allow.txt lists it (tools/dead_pub.py).
 Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
@@ -364,6 +365,36 @@ def known_failures():
         if name.split("::")[-1] not in fns:
             yield f"{gate_failures.KNOWN}: {name}: no such test"
 
+# Line lists under git's union merge (.gitattributes `merge=union`): a hunk both sides changed keeps
+# both, so a line both sides added comes twice (`union_lists` refuses it) and a line one side removed
+# beside the other's change comes back: each list needs a check that refuses a stale line, named here.
+UNION_STALE = {
+    "tools/known_failures.txt": "known_failures: no such issue file, test or sim scenario",
+    "tools/dead_pub_allow.txt": "dead_pub: no longer dead",
+    "core/base/testenv-known.txt": "env_vars: nothing reads it",
+}
+
+def union_lists():
+    for line in read(os.path.join(ROOT, ".gitattributes")).splitlines():
+        f = line.split()
+        if not f or f[0].startswith("#") or "merge=union" not in f[1:]:
+            continue
+        path = f[0]
+        if path not in UNION_STALE:
+            yield f".gitattributes: {path} has merge=union but no stale-line check (UNION_STALE in tools/policy.py)"
+        if not os.path.isfile(os.path.join(ROOT, path)):
+            yield f".gitattributes: {path}: no such file"
+            continue
+        seen = {}
+        for n, item in enumerate(open(os.path.join(ROOT, path)), 1):
+            item = item.strip()
+            if not item or item.startswith("#"):
+                continue
+            if item in seen:
+                yield f"{path}:{n}: duplicate of line {seen[item]} (drop one)"
+            else:
+                seen[item] = n
+
 # issues/deprecated-terms.md (Tess): a thing is destroyed (released, purged or expired), never
 # ended: a thing is not a time period. The old names of that concept may not come back in code.
 # "ended" and "ending" stay for what does end: a grant's or edge's `until`, a stream, a pass, a
@@ -395,6 +426,7 @@ errs.extend(doc_refs.check())
 errs.extend(ended_names())
 errs.extend(dead_pub.check())
 errs.extend(known_failures())
+errs.extend(union_lists())
 errs.extend(test_copies())
 errs.extend(checked_bytes())
 errs.extend(real_lan_tests())

@@ -152,6 +152,8 @@ def allowlist():
         key, _, reason = line.partition(" ")
         if not reason.strip():
             bad.append(f"tools/dead_pub_allow.txt:{i}: `{key}` has no reason")
+        if key in entries and entries[key] != reason.strip():  # two sides listing it (a union merge)
+            bad.append(f"tools/dead_pub_allow.txt:{i}: `{key}` listed twice with different reasons (keep one)")
         entries[key] = reason.strip()
     return entries, bad
 

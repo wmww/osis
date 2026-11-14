@@ -102,6 +102,11 @@ PLANTS = [
      "impl PlantedType {}\npub fn planted_live() {}\n#[cfg(test)]\nmod planted_t { fn f() { super::planted_test_only(); } }\n"),
     ("core/perm/src/lib.rs", None, "\nfn planted_user() { osis_crdt::planted_live(); }\n"),
     ("tools/dead_pub_allow.txt", None, "osis-crdt::not_a_planted_item  test hook\n"),
+    # union_lists: a duplicate line in each union-merged list, a key listed twice, a union list unchecked
+    ("tools/dead_pub_allow.txt", None, "osis-crdt::not_a_planted_item  test hook\nosis-crdt::not_a_planted_item  table\n"),
+    ("core/base/testenv-known.txt", None, f"{V}BENCH_MS\n"),
+    ("tools/known_failures.txt", None, f"planted::no_such_test_fn - {ISSUE} x\n"),
+    (".gitattributes", None, "notes/time-limits.md merge=union\n"),
 ]
 
 EXPECT = [  # regexes the output must hold
@@ -154,6 +159,11 @@ EXPECT = [  # regexes the output must hold
     r"pub fn osis-crdt::planted_test_only is used only",
     r"pub struct osis-crdt::PlantedType is used only",
     r"tools/dead_pub_allow\.txt: osis-crdt::not_a_planted_item is no longer dead",
+    r"tools/dead_pub_allow\.txt:\d+: duplicate of line \d+",
+    r"tools/dead_pub_allow\.txt:\d+: `osis-crdt::not_a_planted_item` listed twice with different reasons",
+    r"core/base/testenv-known\.txt:\d+: duplicate of line \d+",
+    r"tools/known_failures\.txt:\d+: duplicate of line \d+",
+    r"\.gitattributes: notes/time-limits\.md has merge=union but no stale-line check",
 ]
 ABSENT = [  # near misses: what the plants show must not be reported
     r"libs/chat/src/lib\.rs: calls a dispute query",
