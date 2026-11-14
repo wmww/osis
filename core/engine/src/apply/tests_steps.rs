@@ -220,3 +220,42 @@ fn failing_answer_never_blocks_ingest() {
     assert!(!lp.peers[2].engine.core.ix.addenda_due.contains(&r), "answered");
     assert_eq!(addenda_by(&lp, 2, t), 1);
 }
+
+// spec/commits.md §4: a pending commit dropped as bad at its re-examination leaves nothing of it
+// behind, the leftovers its waiting parts kept (a held purge strips one, `strip_purged`) included.
+#[test]
+fn bad_pending_commit_forgets_its_leftovers() {
+    let (mut lp, (c1, c2)) = LocalPeer::cached("apply::tests_steps::pending_then_applied", pending_setup);
+    let pks = lp.packages(0).unwrap();
+    let pk = |c: CommitId| pks.iter().find(|p| p.id == c).unwrap();
+    let e = &mut lp.peers[1].engine;
+    e.ingest(&pk(c1).bytes, pk(c1).blobs.clone()).unwrap();
+    e.ingest(&pk(c2).bytes, pk(c2).blobs.clone()).unwrap();
+    assert!(e.core.ix.pending.contains_key(&c2), "ahead of the clock: waits");
+    // each waiting part held value-less, as a purge falling while it waits leaves it
+    let h = e.run(|tx| Ok(osis_commit::CommitBlob::decode_stored(&tx.txn.get_pending(&c2)?.unwrap().1).unwrap().header)).unwrap();
+    let leftovers = |e: &mut Engine| {
+        e.run(|tx| {
+            let mut n = 0;
+            for (ai, a) in h.aspects.iter().enumerate() {
+                n += usize::from(crate::retention::leftover::get(tx, &a.tid, &a.ak, &c2, ai)?.is_some());
+            }
+            Ok(n)
+        })
+        .unwrap()
+    };
+    e.run(|tx| {
+        for (ai, a) in h.aspects.iter().enumerate() {
+            crate::retention::leftover::put(tx, &a.tid, &a.ak, &c2, ai, &crate::retention::leftover::Leftover { fragment: Default::default(), gives: None })?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert!(leftovers(e) > 0);
+    e.core.step_fault = fault(Step::Commit, false, 0);
+    lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+    lp.peers[1].reexamine().unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert!(!e.core.ix.commits.contains_key(&c2) && !e.core.ix.pending.contains_key(&c2), "dropped as bad");
+    assert_eq!(leftovers(e), 0, "its leftovers went with it");
+}
