@@ -35,8 +35,7 @@ impl Engine {
         {
             f.must_not = self.card_must_not(c, &h, &node);
         }
-        let bodies = self.sync_bodies_now(c)?;
-        let (Some(b), Some(m), Some(h)) = (bodies.get(s).cloned(), self.core.ix.commits.get(c).cloned(), self.header(c)) else { return Ok(f) };
+        let (Some(b), Some(m), Some(h)) = (self.sync_body_now(s, c)?, self.core.ix.commits.get(c).cloned(), self.header(c)) else { return Ok(f) };
         f.own = m.origin == crate::events::Origin::Local;
         f.repair = m.repair;
         f.role = h.kind.is_role() || m.view.purges;
@@ -148,8 +147,7 @@ impl Engine {
     /// not judged yet) or `s` carries no body of `c`. An entry under S being fetched or pending is
     /// sync's to know; one not counted here only widens this set, toward keeping.
     fn blob_only(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<PartSet>> {
-        let bodies = self.sync_bodies_now(c)?;
-        let (Some(b), Some(h)) = (bodies.get(s), self.header(c)) else { return Ok(None) };
+        let (Some(b), Some(h)) = (self.sync_body_now(s, c)?, self.header(c)) else { return Ok(None) };
         let keeps = self.part_keeps(c)?;
         let mut out = PartSet::new();
         for ai in &b.parts {
@@ -185,7 +183,7 @@ impl Engine {
     pub(crate) fn strict_subset_now(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool> {
         let Some(mine) = self.core.ix.blob_parts.get(b).cloned() else { return Ok(false) };
         let (c, parts) = (mine.0, &mine.1);
-        let Some(copy) = self.sync_bodies_now(&c)?.get(s).map(|m| m.copy) else { return Ok(false) };
+        let Some(copy) = self.sync_body_now(s, &c)?.map(|m| m.copy) else { return Ok(false) };
         // a blob of the other kind holds no body of it here (a certificate copy beside the shared
         // blob carries parts S's readers cannot open there, whatever this node opens of it)
         if mine.2 != copy {
@@ -205,7 +203,7 @@ impl Engine {
     /// `there`, the blobs of `c` held where the delete was) and no held purge request signed by
     /// ones that could hold the right names a delta of it without dropping it.
     pub(crate) fn neither_now(&mut self, s: &SyncId, c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool> {
-        let Some(meta) = self.sync_bodies_now(c)?.get(s).cloned() else { return Ok(false) };
+        let Some(meta) = self.sync_body_now(s, c)? else { return Ok(false) };
         if meta.certificate {
             return Ok(false);
         }

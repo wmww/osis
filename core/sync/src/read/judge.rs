@@ -90,9 +90,17 @@ pub(crate) struct Mine<'a> {
     pub roles: &'a Stamped<SyncId, BTreeSet<CommitId>>,
     pub told: &'a Stamped<SyncId, Arc<BTreeSet<CommitId>>>,
     pub clock: &'a Clock,
+    /// Each (S, commit)'s body at S, as `Read::bodies` last settled it.
+    pub metas: &'a Stamped<(SyncId, CommitId), BodyMeta>,
 }
 
 impl Mine<'_> {
+    /// Commit `c`'s body at `s` (`Ground::bodies`), a read of that pair alone: a body coming or
+    /// going at another sync ID moves no judgement here.
+    fn meta(&self, s: &SyncId, c: &CommitId) -> Option<&BodyMeta> {
+        self.metas.get(&(*s, *c))
+    }
+
     /// `t` has come (the answer moves when the clock reaches it).
     fn reached(&self, t: u64) -> bool {
         t <= self.clock.until(Some(t))
@@ -162,7 +170,6 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         j.idle = true;
         return Ok(j);
     }
-    let bodies = g.bodies(c)?;
     let own = g.own(s, c)?;
     // an entry whose blob holds a part dropped here for good is must-not-hold itself, whatever
     // the body's verdict (spec/sync-judgement.md §1): it leaves, and the body counts as unlogged
@@ -181,7 +188,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         }
     }
     let live: Vec<BlobId> = held.iter().copied().filter(|b| !subsets.contains(b)).collect();
-    let (f, verdict) = match bodies.get(s) {
+    let (f, verdict) = match mine.meta(s, c) {
         None if !g.closure_settled(s)? => (None, Verdict::Unjudged),
         None => (None, Verdict::MustNot(Why::OutsideRequired)),
         Some(meta) => {
@@ -213,7 +220,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
             }
         }
     }
-    j.idle = bodies.get(s).is_none() && own.is_empty() && !g.present_anywhere(s, c)?;
+    j.idle = mine.meta(s, c).is_none() && own.is_empty() && !g.present_anywhere(s, c)?;
     j.acts.extend(stale.iter().chain(&subsets).map(|b| Act::DropOwn(*b)));
     if verdict == Verdict::Unjudged {
         return Ok(j);
@@ -343,7 +350,7 @@ pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId,
         return Ok(t);
     }
     let (Some(head), Some(creds)) = (src.head, creds.as_deref()) else { return Ok(t) };
-    let f = match g.bodies(c)?.contains_key(s) {
+    let f = match mine.meta(s, c).is_some() {
         true => Some(g.facts(s, c)?),
         false => None,
     };
@@ -399,7 +406,7 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen
     let blobs: Vec<BlobId> = if why {
         seen.present.iter().copied().collect()
     } else {
-        let copy = g.bodies(c)?.get(s).is_some_and(|m| m.copy);
+        let copy = mine.meta(s, c).is_some_and(|m| m.copy);
         let mut out = duplicates(g, seen, copy)?;
         // a strict subset of another entry of it there (§2), which carries it there
         for b in &seen.present {
@@ -463,7 +470,7 @@ fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, se
     // every own entry of it was deleted there or is there short of what only a blob carries:
     // logged again once per change of ground, but not a
     // body expiring within MAX_DRIFT
-    let expires = g.bodies(c)?.get(s).and_then(|m| m.expires);
+    let expires = mine.meta(s, c).and_then(|m| m.expires);
     if expires.is_some_and(|e| mine.reached(e.0.saturating_sub(MAX_DRIFT_MS))) {
         return Ok(());
     }
@@ -487,7 +494,7 @@ pub(crate) fn doom(g: &mut impl Ground, mine: &Mine, told_before: bool, s: &Sync
     let requests: BTreeSet<CommitId> = d.requests.iter().copied().collect();
     let mut over = true;
     for r in &requests {
-        let exp = g.bodies(r)?.get(s).and_then(|m| m.expires);
+        let exp = mine.meta(s, r).and_then(|m| m.expires);
         over &= exp.is_some_and(|e| mine.reached(e.0));
     }
     let sources = g.sources(s)?;

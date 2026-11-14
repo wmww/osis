@@ -25,7 +25,7 @@ fn edge_value(e: &Edge) -> Value {
 impl Core {
     pub(crate) fn roster_of(&self, thing: &Tid) -> BTreeMap<Tid, Edge> {
         let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
-        self.timelines.get(thing).map(|tl| tl.roster(thing, At::now(ts))).unwrap_or_default()
+        self.timelines.on(thing).map(|on| on.roster(At::now(ts))).unwrap_or_default()
     }
 }
 

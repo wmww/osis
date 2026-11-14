@@ -168,7 +168,7 @@ impl Engine {
     pub fn inbox_actors(&mut self) -> Arc<BTreeMap<SyncId, Vec<Tid>>> {
         let read = |e: &mut Engine| {
             let mut by: BTreeMap<SyncId, Vec<Tid>> = BTreeMap::new();
-            for a in e.core.ix.secrets.keys().chain(e.core.accounts.keys()).copied().collect::<BTreeSet<_>>() {
+            for a in e.core.ix.secrets.keys_held().chain(e.core.accounts.keys()).copied().collect::<BTreeSet<_>>() {
                 if let Some(l) = e.get_typed(&a, &ct::KEYS)?.and_then(|k| k.inbox).map(|i| i.sync_id) {
                     by.entry(l).or_default().push(a);
                 }
@@ -177,6 +177,18 @@ impl Engine {
         };
         // a `keys.0` the store refused to read: no inbox known now, read again at the next ask
         Memo::get_in(self, |e| &e.core.inbox_actors, &(), read).unwrap_or_default()
+    }
+
+    /// The actors whose inbox is sync ID `s` (`inbox_actors`' entry): a read of that entry alone
+    /// (`Core::inboxes`), up to date when asked; `refresh_inboxes` brings it up to date for
+    /// followers.
+    pub(crate) fn inbox_actors_at(&mut self, s: &SyncId) -> Vec<Tid> {
+        osis_base::memo::Spread::get_in(self, |e| &e.core.inboxes, s, |e| Ok::<_, ()>(e.inbox_actors().as_ref().clone())).ok().flatten().unwrap_or_default()
+    }
+
+    /// Brings `Core::inboxes` up to date (`inbox_actors_at`).
+    pub(crate) fn refresh_inboxes(&mut self) {
+        let _ = osis_base::memo::Spread::refresh_in(self, |e| &e.core.inboxes, |e| Ok::<_, ()>(e.inbox_actors().as_ref().clone()));
     }
 
     /// The sync IDs `g` owns as its `sync.0` records them (`owns`), each with its recorded path;

@@ -184,10 +184,8 @@ impl Engine {
                 out.add(c, self.parts_of(&c, &BTreeSet::from([k]), &["keys.0"]));
             }
         }
-        if let Some(tl) = self.core.timelines.get(g) {
-            let certs = tl.certificates(&me, g);
-            self.cert_parts(&certs, &mut out);
-        }
+        let certs = self.core.timelines.certificates(&me, g);
+        self.cert_parts(&certs, &mut out);
         // and to each actor it has acted for (`validity::acts_for`): usually on the chain to
         // `g` already, the node reaching `g` through it
         for a in self.core.acting().iter() {
@@ -204,39 +202,37 @@ impl Engine {
     }
 
     /// What a sync ID of `g` holds as certificates, whoever logs them (spec/permissions.md §4,
-    /// spec/sync-judgement.md §2): this node's own (`certificates`); every node's chain
-    /// certificates for `g`, which each node syncing it logs (`Timeline::certificates_into`
-    /// `g`: what ever reaches it); the author's chain of each held commit on a thing of `g`'s
-    /// closure its actor may read, which goes with the commit (`certificate_authors`); and under
-    /// D's home every card commit of D's other nodes. Nothing else: a chain into an item of the
-    /// closure that no write there needs (a private group's roster holding a role on the item) is
-    /// none of S's readers'. Parts the closure's bodies carry are `sync_bodies`' to leave out. A
-    /// memo per thing: it reads role commits, records, cards and who wrote on the closure's
-    /// things, never content.
-    pub fn sync_certificates(&mut self, g: &Tid) -> Arc<Certs> {
-        Memo::get_in(self, |e| &e.core.sync_certs, g, |e| Ok::<_, ()>(Arc::new(e.sync_certificates_read(g)))).unwrap_or_default()
-    }
-
-    fn sync_certificates_read(&mut self, g: &Tid) -> Certs {
-        let mut out = self.certificates(g);
-        if let Some(tl) = self.core.timelines.get(g) {
-            let found = tl.certificates_into(&BTreeSet::from([*g]));
-            self.cert_parts(&found, &mut out);
-        }
+    /// spec/sync-judgement.md §2): the union of `g`'s pieces (`Piece`): `g`'s own
+    /// (`own_piece`); the author's chain of each held commit on a thing of `g`'s closure its actor
+    /// may read, which goes with the commit (`certificate_authors`, `chain_piece`); and under an
+    /// actor's inbox its grant copies (`grant_copy`, one per thing it is named on). Nothing else:
+    /// a chain into an item of the closure that no write there needs (a private group's roster
+    /// holding a role on an item under S) is none of S's readers'. Parts the closure's bodies carry
+    /// are `sync_bodies`' to leave out. Derived whole, O(all of it): what sync reads is
+    /// `sync::certified`, kept per piece; this is what it is checked against.
+    #[cfg(test)]
+    pub(crate) fn sync_certificates(&mut self, g: &Tid) -> Certs {
+        let mut out = self.own_piece(g);
         for (a, x) in self.certificate_authors(g) {
-            let Some(tl) = self.core.timelines.get(&x) else { continue };
-            let found = tl.certificates(&a, &x);
-            self.cert_parts(&found, &mut out);
+            out.extend(self.chain_piece(&a, &x));
         }
-        // the grant copies of each actor whose inbox is a sync ID of `g` (spec/sync-inbox.md §5)
         for a in self.inbox_actors_of(g) {
             let things: Vec<Tid> = self.core.ix.held.named_on(&a).filter(|t| **t != a).copied().collect();
-            osis_base::costs::count("sync: grant copies listed", things.len() as u64);
             for t in things {
-                let copy = self.grant_copy(&a, &t);
-                out.extend((*copy).clone());
+                out.extend(self.grant_copy(&a, &t));
             }
         }
+        out
+    }
+
+    /// `g`'s own certificates as a read thing (`sync_certificates`): this node's own
+    /// (`certificates`); every node's chain certificates for `g`, which each node syncing it logs
+    /// (`Timelines::certificates_into` `g`: what ever reaches it); and under D's home every card
+    /// commit of D's other nodes. Reads role commits, records and cards, never content.
+    pub(crate) fn own_piece(&mut self, g: &Tid) -> Certs {
+        let mut out = self.certificates(g);
+        let found = self.core.timelines.certificates_into(g);
+        self.cert_parts(&found, &mut out);
         if self.core.account_devices().is_some_and(|(_, d)| d == *g) {
             let me = self.tid();
             for (n, _) in self.core.key_holders(g) {
@@ -258,11 +254,33 @@ impl Engine {
         out
     }
 
+    /// Author `a`'s chain certificates for `x` (spec/permissions.md §4, a commit's author's
+    /// chain), the parts and records they name: read from the paths into `x` alone
+    /// (`Timelines::certificates`).
+    pub(crate) fn chain_piece(&mut self, a: &Tid, x: &Tid) -> Certs {
+        let mut out = Certs::default();
+        let found = self.core.timelines.certificates(a, x);
+        self.cert_parts(&found, &mut out);
+        out
+    }
+
+    /// The (author, thing) pairs whose author's chain goes under a sync ID of `g` with the
+    /// author's writes (spec/permissions.md §4, a commit's author's chain): each author of a held
+    /// commit on a thing of `g`'s closure its actor may read (`Indexes::authors_on`). A commit
+    /// acting for another actor needs no more: the author's chain to the thing runs through it.
+    /// A node author's chain (its card) goes under D's home alone, with D's nodes' cards.
+    #[cfg(test)]
+    fn certificate_authors(&mut self, g: &Tid) -> Vec<(Tid, Tid)> {
+        let ctx = self.body_ctx(g);
+        let things: Vec<Tid> = ctx.closure.iter().filter(|t| self.reads(&ctx, t)).copied().collect();
+        let pairs: Vec<(Tid, Tid)> = things.into_iter().flat_map(|x| self.core.ix.authors_on.get(&x).into_iter().flatten().map(move |a| (*a, x)).collect::<Vec<_>>()).collect();
+        pairs.into_iter().filter(|(a, _)| !self.is_node(a).unwrap_or(false)).collect()
+    }
+
     /// The actors whose inbox (spec/sync-inbox.md §1) is a sync ID `g` owns.
-    fn inbox_actors_of(&mut self, g: &Tid) -> Vec<Tid> {
+    pub(crate) fn inbox_actors_of(&mut self, g: &Tid) -> Vec<Tid> {
         let Ok(owned) = self.owned_sync_ids(g) else { return Vec::new() };
-        let inboxes = self.inbox_actors();
-        let mut out: Vec<Tid> = owned.iter().filter_map(|o| inboxes.get(&o.id)).flatten().copied().collect();
+        let mut out: Vec<Tid> = owned.iter().flat_map(|o| self.inbox_actors_at(&o.id)).collect();
         out.sort();
         out.dedup();
         out
@@ -280,12 +298,7 @@ impl Engine {
     /// §2). Nothing for a commit not applied here. One per (actor, thing), read from `t`'s edges
     /// alone (`Timelines::on`): a newer write replaces it, and the older copy leaves the required
     /// set.
-    pub fn grant_copy(&mut self, a: &Tid, t: &Tid) -> Arc<Certs> {
-        let k = (*a, *t);
-        Memo::get_in(self, |e| &e.core.grant_copies, &k, |e| Ok::<_, ()>(Arc::new(e.grant_copy_read(a, t)))).unwrap_or_default()
-    }
-
-    fn grant_copy_read(&mut self, a: &Tid, t: &Tid) -> Certs {
+    pub fn grant_copy(&mut self, a: &Tid, t: &Tid) -> Certs {
         let mut out = Certs::default();
         // the newest applied edge write naming `a` on `t`, and whether `a` read `t` just before it
         let Some((c, read_before)) = self.core.timelines.on(t).and_then(|on| {
@@ -356,18 +369,6 @@ impl Engine {
             certs.records.insert(*t);
         }
         Some(certs)
-    }
-
-    /// The (author, thing) pairs whose author's chain goes under a sync ID of `g` with the
-    /// author's writes (spec/permissions.md §4, a commit's author's chain): each author of a held
-    /// commit on a thing of `g`'s closure its actor may read (`Indexes::authors_on`). A commit
-    /// acting for another actor needs no more: the author's chain to the thing runs through it.
-    /// A node author's chain (its card) goes under D's home alone, with D's nodes' cards.
-    fn certificate_authors(&mut self, g: &Tid) -> Vec<(Tid, Tid)> {
-        let ctx = self.body_ctx(g);
-        let things: Vec<Tid> = ctx.closure.iter().filter(|t| self.reads(&ctx, t)).copied().collect();
-        let pairs: Vec<(Tid, Tid)> = things.into_iter().flat_map(|x| self.core.ix.authors_on.get(&x).into_iter().flatten().map(move |a| (*a, x)).collect::<Vec<_>>()).collect();
-        pairs.into_iter().filter(|(a, _)| !self.is_node(a).unwrap_or(false)).collect()
     }
 
     /// The destroyed actors held here on an authority path into `g`'s closure (spec/commits.md §5
@@ -504,10 +505,7 @@ impl Engine {
     /// `node`'s chain certificates for `t` with the record chains of both up to their key
     /// actors, timeline or not.
     pub(super) fn chain_to(&self, node: &Tid, t: &Tid) -> osis_perm::Certificates {
-        let mut cs = match self.core.timelines.get(t) {
-            Some(tl) => tl.certificates(node, t),
-            None => osis_perm::Certificates::default(),
-        };
+        let mut cs = self.core.timelines.certificates(node, t);
         for x in [t, node] {
             for step in self.core.record_chain(x) {
                 match step {

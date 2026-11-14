@@ -1702,28 +1702,58 @@ fn a_removal_replaces_the_grant_copy_spec_sync_inbox_5() {
     assert_eq!(copied_aks(&mut lp, &r, &copy), BTreeSet::from(["roles.0".to_string()]));
 }
 
+/// The certificate pieces `follow` derives (`sync::certified`) after `change`, on peer 0 of
+/// `lp`, once everything before it is followed.
+fn pieces_derived(lp: &mut LocalPeer, change: impl FnOnce(&mut LocalPeer)) -> u64 {
+    lp.peers[0].engine.follow().unwrap();
+    change(lp);
+    osis_base::costs::take();
+    lp.peers[0].engine.follow().unwrap();
+    osis_base::costs::take().iter().find(|x| x.0 == "sync: certificate pieces derived").map_or(0, |x| x.2)
+}
+
 // spec/sync-inbox.md §5 (Grant copy: one per thing an edge write names the actor on): a new
-// thing the actor is named on moves the inbox's certificates by its own copy; counted at n and
-// 10n things.
+// thing the actor is named on adds its own copy under the actor's inbox and derives no other;
+// counted at n and 10n things.
 #[test]
-#[ignore = "issues/certificates-whole-set-cost.md: the inbox's certificates list every grant copy"]
 fn a_new_grant_copy_lists_in_proportion_to_change_spec_sync_inbox_5() {
-    let listed = |n: usize| {
+    let derived = |n: usize| {
         let (mut lp, ps) = people(1);
         for _ in 0..n {
             thing_of(&mut lp, 0, ps[0]);
         }
-        let e = &mut lp.peers[0].engine;
-        let inbox = e.inbox_of(&ps[0]).expect("an inbox");
-        let g = e.sync_owner(&inbox).unwrap().expect("its owner");
-        e.sync_certificates(&g);
-        thing_of(&mut lp, 0, ps[0]);
-        let e = &mut lp.peers[0].engine;
-        osis_base::costs::take();
-        e.sync_certificates(&g);
-        osis_base::costs::take().iter().find(|x| x.0 == "sync: grant copies listed").map_or(0, |x| x.2)
+        pieces_derived(&mut lp, |lp| {
+            thing_of(lp, 0, ps[0]);
+        })
     };
-    crate::scale::flat("grant copies listed", listed(3), listed(30));
+    crate::scale::flat("certificate pieces derived", derived(3), derived(30));
+}
+
+// spec/sync-inbox.md §5 (Grant copy), spec/permissions.md §4: an account granted read on n
+// things (each grant copy carries the thing's keys and chains) re-derives, for a grant on one
+// more and for a rotation of one of them, the pieces that thing's paths and keys make, not one
+// per thing; counted at n and 10n things.
+#[test]
+fn an_account_named_on_many_things_derives_in_proportion_to_change_spec_sync_inbox_5() {
+    let derived = |n: usize| {
+        let (mut lp, ps) = people(2);
+        let grant = |lp: &mut LocalPeer| {
+            let t = thing_of(lp, 1, ps[1]);
+            lp.peers[1].engine.grant(&t, &ps[0], &edge_of(Role::Read)).unwrap();
+            lp.sync(1, 0).unwrap();
+            t
+        };
+        let things: Vec<Tid> = (0..n).map(|_| grant(&mut lp)).collect();
+        let one = pieces_derived(&mut lp, |lp| {
+            grant(lp);
+        });
+        let rotated = pieces_derived(&mut lp, |lp| {
+            lp.peers[1].engine.demote(&things[0], &Demotion { holder: ps[0], new: Some(edge_of(Role::Sync)), retain: None }).unwrap();
+            lp.sync(1, 0).unwrap();
+        });
+        one + rotated
+    };
+    crate::scale::flat("certificate pieces derived", derived(3), derived(30));
 }
 
 // spec/commits.md §4 (Records: learned once something awaits it; Examined again): a pending

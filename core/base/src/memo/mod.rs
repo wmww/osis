@@ -950,6 +950,10 @@ impl<K: Ord + Hash, V> Stamped<K, V> {
         self.stamps.wrote(k, false);
         self.map.remove(k)
     }
+    /// A handle reading this map's keys (`Reader`, as `get` reads them).
+    pub fn reader(&self) -> Reader {
+        self.stamps.reader()
+    }
 }
 
 /// A clock outside the journal (node-sync's time) whose readers say how long their answer
@@ -1073,6 +1077,10 @@ impl<T: Ord + Hash> StampedSet<T> {
     pub fn remove(&mut self, t: &T) -> bool {
         self.stamps.wrote(t, false);
         self.set.remove(t)
+    }
+    /// A handle reading this set's items (`Reader`, as `contains` reads them).
+    pub fn reader(&self) -> Reader {
+        self.stamps.reader()
     }
 }
 

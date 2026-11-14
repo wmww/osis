@@ -560,7 +560,7 @@ fn put_aspect_map<V: Rec + Clone>(txn: &mut Transaction<'_>, name: &[u8], m: &JM
 }
 
 /// `put_map` of a map of sets: a row per (key, item).
-fn put_setmap<K: Rec + Ord + Clone + std::hash::Hash, T: Rec + Ord + Clone>(txn: &mut Transaction<'_>, name: &[u8], s: &JSetMap<K, T>, all: bool) -> Result<()> {
+fn put_setmap<K: Rec + Ord + Clone + std::hash::Hash + Send + Sync + 'static, T: Rec + Ord + Clone>(txn: &mut Transaction<'_>, name: &[u8], s: &JSetMap<K, T>, all: bool) -> Result<()> {
     let items = if all { s.iter().flat_map(|(k, x)| x.iter().map(|t| (k.clone(), t.clone()))).collect() } else { s.logged() };
     put_rows(txn, name, items, |(k, t)| s.get(k).is_some_and(|x| x.contains(t)).then(Vec::new))
 }
@@ -933,6 +933,8 @@ pub(crate) fn update_timelines_saved(tx: &mut Tx<'_>) -> Result<()> {
     let txn = &mut tx.txn;
     let core = &mut *tx.core;
     let changed = core.timelines.update_touched_cached(&core.ix.held, &touched, &mut |r| txn.table_get(t, r.as_bytes()).ok().flatten(), VERSION.as_bytes());
+    let ever = core.ix.held.take_ever();
+    core.timelines.ever_moved(&ever);
     core.timelines_changed(changed);
     Ok(())
 }

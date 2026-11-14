@@ -357,16 +357,16 @@ impl Engine {
 
     // Held parts and bodies
 
-    /// Brings the facade values kept per entry (`memo::Spread`: `Core::published`; each read thing's certificates per commit, `certified`) up to date
-    /// with what moved since the last call: whether any entry moved. Each refreshes itself when
-    /// asked, but an `Effects` key that read an entry goes due only once the entry is written, so
-    /// a module calls this before its `due()` (the driver, before each module's settle and until
-    /// it moves nothing). Not done at each transaction's end: each refresh derives a whole walk
-    /// (the sync set, every labeled thing's chain, a component's certificates), so a burst of n
-    /// transactions between two sync steps would cost n walks, not one (notes/engine.md).
+    /// Brings the facade values kept per entry (`Core::published`, per labeled thing; each read
+    /// thing's certificates per piece and commit, `certified`) up to date with what moved since
+    /// the last call: whether any entry moved. Each refreshes itself when asked, but an `Effects`
+    /// key that read an entry goes due only once the entry is written, so a module calls this
+    /// before its `due()` (the driver, before each module's settle and until it moves nothing).
+    /// Not done at each transaction's end: the read things come from the sync set, a whole walk,
+    /// so a burst of n transactions between two sync steps would cost n walks, not one
+    /// (notes/engine.md).
     pub fn follow(&mut self) -> Result<bool> {
-        let core = &self.core;
-        let moved = core.published.refresh(|| crate::labeling::published_all(core));
+        let moved = self.follow_published();
         Ok(self.follow_certificates()? | moved)
     }
 

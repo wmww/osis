@@ -73,13 +73,13 @@ pub(crate) fn forget_blob(tx: &mut Tx<'_>, s: &SyncId, b: &BlobId) -> Result<()>
 
 impl Engine {
     /// The records sync ID `s` carries as certificates (spec/permissions.md §4): those its
-    /// certificates name (`sync_certificates`) whose `created.0` no closure body there carries
+    /// certificates name (`certified_records`) whose `created.0` no closure body there carries
     /// (a thing of the closure its actor reads), held here.
     pub(crate) fn certificate_records_now(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<Tid>>> {
         let Some(t) = self.read_thing(s)? else { return Ok(Arc::default()) };
-        let certs = self.sync_certificates(&t);
+        let records = self.certified_records(&t)?;
         let ctx = self.body_ctx(&t);
-        let out = certs.records.iter().filter(|x| !(ctx.closure.contains(x) && self.reads(&ctx, x)) && self.core.created(x).is_some()).copied().collect();
+        let out = records.iter().filter(|x| !(ctx.closure.contains(x) && self.reads(&ctx, x)) && self.core.created(x).is_some()).copied().collect();
         Ok(Arc::new(out))
     }
 

@@ -42,6 +42,9 @@ pub struct Held {
     ids: BTreeMap<CommitId, Arc<RoleCommit>>,
     log: Vec<Undo>,
     touched: BTreeSet<Tid>,
+    /// Things whose edge writes (any validity) or record changed since `take_ever`: what a chain
+    /// walk reads of them (`Timelines::ever_moved`); `touched` also names a commit's author.
+    ever: BTreeSet<Tid>,
     /// The same, for `take_moved`.
     moved: BTreeSet<Tid>,
     /// Things whose creation record `create` added since `take_records`.
@@ -57,11 +60,16 @@ pub struct Held {
     records_read: Stamps,
     /// Stamps everything else, per key of each map (`Row`).
     rest: Stamps,
+    /// Stamps each (holder, thing) pair of `holders` as it comes or goes (`is_named`,
+    /// `pairs_feed`).
+    pairs: Stamps,
 }
 
 /// A key of `Held`'s maps, as `Held::rest` stamps it.
 #[derive(Hash)]
 enum Row<'a> {
+    /// The holders named on anything (`holders`): moved as one comes or goes.
+    Holders,
     Commits(&'a Tid),
     Holder(&'a Tid),
     Named(&'a Tid),
@@ -94,7 +102,7 @@ impl Held {
     /// The actors named as a holder on some thing (edge writes, a creation record naming its
     /// first admin).
     pub fn holders(&self) -> impl Iterator<Item = &Tid> {
-        self.rest.read_all();
+        self.rest.read(&Row::Holders);
         self.holders.keys()
     }
     /// Edge commits with a write on `t`, of any validity.
@@ -106,6 +114,18 @@ impl Held {
     pub fn named_on(&self, holder: &Tid) -> impl Iterator<Item = &Tid> {
         self.rest.read(&Row::Holder(holder));
         self.holders.get(holder).into_iter().flat_map(|m| m.keys())
+    }
+
+    /// Whether `holder` is named on `thing` (`named_on`), a read of that pair alone.
+    pub fn is_named(&self, holder: &Tid, thing: &Tid) -> bool {
+        self.pairs.read(&(*holder, *thing));
+        self.holders.get(holder).is_some_and(|m| m.contains_key(thing))
+    }
+
+    /// A reader's cursor over the (holder, thing) pairs named from now on (`is_named`): one
+    /// named and then undone is given too.
+    pub fn pairs_feed(&self) -> osis_base::memo::Feed<(Tid, Tid)> {
+        self.pairs.feed()
     }
 
     /// Holders named on `thing` (edge writes, a creation record naming its first admin).
@@ -270,21 +290,29 @@ impl Held {
             self.count(now, true);
         }
         self.touched.insert(t);
+        self.ever.insert(t);
         self.moved.insert(t);
         old
     }
 
     fn count(&mut self, pairs: Vec<(Tid, Tid)>, add: bool) {
         for (m, t) in pairs {
+            if !self.holders.contains_key(&m) {
+                self.rest.wrote(&Row::Holders, true);
+            }
             let e = self.holders.entry(m).or_default();
             let n = e.entry(t).or_default();
             if add {
                 *n += 1;
+                if *n == 1 {
+                    self.pairs.wrote_added(&(m, t), true, true);
+                }
                 self.named.entry(t).or_default().insert(m);
             } else {
                 *n = n.saturating_sub(1);
                 if *n == 0 {
                     e.remove(&t);
+                    self.pairs.wrote(&(m, t), false);
                     self.unnamed.insert(m);
                     if let Some(x) = self.named.get_mut(&t) {
                         x.remove(&m);
@@ -296,6 +324,7 @@ impl Held {
             }
             if e.is_empty() {
                 self.holders.remove(&m);
+                self.rest.wrote(&Row::Holders, true);
             }
             self.rest.wrote(&Row::Holder(&m), self.holders.contains_key(&m));
             self.rest.wrote(&Row::Named(&t), self.named.contains_key(&t));
@@ -328,6 +357,7 @@ impl Held {
             self.rest.wrote(&Row::Commits(t), true);
         }
         self.moved.extend(targets.iter().copied());
+        self.ever.extend(targets.iter().copied());
         self.touched.extend(targets);
         self.touched.insert(c.author);
         self.moved.insert(c.author);
@@ -350,6 +380,7 @@ impl Held {
             }
             self.rest.wrote(&Row::Commits(&o.target), self.commits.contains_key(&o.target));
             self.touched.insert(o.target);
+            self.ever.insert(o.target);
             self.moved.insert(o.target);
         }
         self.count(named(&c), false);
@@ -410,6 +441,7 @@ impl Held {
             }
             let targets: Vec<Tid> = c.ops.iter().map(|o| o.target).chain([c.author]).collect();
             self.moved.extend(targets.iter().copied());
+            self.ever.extend(targets.iter().copied());
             self.touched.extend(targets);
         }
     }
@@ -449,6 +481,11 @@ impl Held {
     /// Things whose held inputs changed since the last call.
     pub fn take_touched(&mut self) -> BTreeSet<Tid> {
         std::mem::take(&mut self.touched)
+    }
+
+    /// Things whose edge writes or record changed since the last call (`ever`).
+    pub fn take_ever(&mut self) -> BTreeSet<Tid> {
+        std::mem::take(&mut self.ever)
     }
 }
 
@@ -528,6 +565,9 @@ enum Read {
     Into(Tid),
     /// The edge writes held on a thing, applied or not: moved by any change of its held inputs.
     Held(Tid),
+    /// The edge writes held on a thing, any validity, and its record: what a chain walk reads of
+    /// it (`certificates`), moved by `ever_moved`.
+    Ever(Tid),
     /// The set of things with a timeline.
     Things,
     /// `Timelines::keyless`: moved when it changes.
@@ -633,6 +673,32 @@ impl Timelines {
         roles
     }
 
+    /// `node`'s chain certificates for `thing` (`Timeline::certificates`), read by what they are
+    /// made of: the held inputs of each thing that ever reaches `thing` and of each thing whose
+    /// record goes (`Read::Held`), so a change elsewhere in the component moves none of it. Empty
+    /// without a timeline, read as the set of things.
+    pub fn certificates(&self, node: &Tid, thing: &Tid) -> osis_perm::Certificates {
+        self.chains(thing, |tl| tl.certificates(node, thing), Some(node))
+    }
+
+    /// Every node's chain certificates for `thing` (`Timeline::certificates_into`), read as
+    /// `certificates` is.
+    pub fn certificates_into(&self, thing: &Tid) -> osis_perm::Certificates {
+        self.chains(thing, |tl| tl.certificates_into(&BTreeSet::from([*thing])), None)
+    }
+
+    fn chains(&self, thing: &Tid, f: impl FnOnce(&osis_perm::Timeline) -> osis_perm::Certificates, node: Option<&Tid>) -> osis_perm::Certificates {
+        let Some(tl) = self.of.get(thing) else {
+            self.stamps.read(&Read::Things);
+            return osis_perm::Certificates::default();
+        };
+        let out = f(tl);
+        for t in tl.ever_into(thing).iter().chain(&out.created).chain(node) {
+            self.stamps.read(&Read::Ever(*t));
+        }
+        out
+    }
+
     /// `node`'s effective role on `thing` at `at` (`roles_on`).
     pub fn role(&self, node: &Tid, thing: &Tid, at: osis_perm::At) -> Option<Role> {
         self.roles_on(thing, at, &BTreeSet::new()).get(node).copied()
@@ -696,6 +762,14 @@ impl Timelines {
             k.retain(|x| !old.contains(x));
             k.extend(new);
             self.stamps.wrote(&Read::Keyless, true);
+        }
+    }
+
+    /// Stamps the things whose edge writes or record the last update was given changed
+    /// (`Held::take_ever`), once the timelines read them.
+    pub fn ever_moved(&mut self, things: &BTreeSet<Tid>) {
+        for t in things {
+            self.stamps.wrote(&Read::Ever(*t), true);
         }
     }
 

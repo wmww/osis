@@ -89,7 +89,6 @@ osis-engine::own_older  deferred: sync rebuild (issues/sync-rewrite.md Phase 3);
 osis-engine::part_valueless  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::parts_genuine  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::put_memory_blobs  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::reads_in  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::records_awaited_by  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::redeliver_named  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::removal_certificates  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync

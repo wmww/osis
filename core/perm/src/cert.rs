@@ -102,6 +102,13 @@ impl Timeline {
         out
     }
 
+    /// Every thing that ever reaches `thing`, `thing` included (the walk `certificates_into`
+    /// makes): `certificates(_, thing)` and `certificates_into` of it read the held inputs of
+    /// these and the records of what they name, nothing else (a path into `thing` lies within it).
+    pub fn ever_into(&self, thing: &Tid) -> BTreeSet<Tid> {
+        self.input.ever_back([*thing])
+    }
+
     /// What a verifier needs to judge edge write `id` as this timeline does: its author's
     /// chains to the target and to the holder (a self-removal's authority) and the holder's
     /// chain to the target with that edge's history.

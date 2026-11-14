@@ -71,6 +71,11 @@ pub struct Read {
     /// The time as judgements read it: an answer valid until `t` moves when the clock reaches it.
     clock: Clock,
     bodies: Effects<CommitId, Arc<BTreeMap<SyncId, BodyMeta>>>,
+    /// Each commit's bodies as `bodies` last settled them, and the same per (S, commit): what a
+    /// judgement reads (`Mine::meta`), so a body coming or going at one sync ID moves the
+    /// judgements of that pair alone.
+    settled: BTreeMap<CommitId, Arc<BTreeMap<SyncId, BodyMeta>>>,
+    metas: Stamped<(SyncId, CommitId), BodyMeta>,
     judged: Effects<(SyncId, CommitId), Judged>,
     toward: Effects<(SyncId, CommitId, Source), Toward>,
     dooms: Effects<SyncId, (Doom, BTreeSet<Act>)>,
@@ -101,6 +106,8 @@ impl Default for Read {
         Read {
             clock: Clock::default(),
             bodies: Effects::new("read: bodies"),
+            settled: BTreeMap::new(),
+            metas: Stamped::default(),
             judged: Effects::new("read: judged"),
             toward: Effects::new("read: toward"),
             dooms: Effects::new("read: doom"),
@@ -170,6 +177,13 @@ impl Read {
         }
         for c in self.bodies.due() {
             let Some((_, now)) = self.bodies.try_settle(&c, || g.bodies(&c))? else { continue };
+            let was = self.settled.insert(c, now.clone()).unwrap_or_default();
+            for s in was.keys().filter(|s| !now.contains_key(*s)) {
+                self.metas.remove(&(*s, c));
+            }
+            for (s, m) in now.iter().filter(|(s, m)| was.get(*s) != Some(*m)) {
+                self.metas.insert((*s, c), m.clone());
+            }
             for s in now.keys() {
                 self.judged.want((*s, c));
                 self.dooms.want(*s);
@@ -181,7 +195,7 @@ impl Read {
         let mut acted = false;
         for s in self.dooms.due() {
             let told_before = self.told.contains_key(&s);
-            let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock };
+            let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas };
             let Some((was, (doom, acts))) = self.dooms.try_settle(&s, || judge::doom(g, &mine, told_before, &s))? else { continue };
             let before = was.map(|(_, a)| a).unwrap_or_default();
             acted = true;
@@ -243,7 +257,7 @@ impl Read {
             }
             for k in due {
                 let (s, c) = k;
-                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock };
+                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas };
                 let Some((was, now)) = self.judged.try_settle(&k, || judge::body(g, &mine, &s, &c))? else { continue };
                 if self.verdicts.get(&k) != Some(&now.verdict) {
                     self.verdicts.insert(k, now.verdict.clone());
@@ -298,7 +312,7 @@ impl Read {
             }
             for k in due {
                 let (s, c, at) = k;
-                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock };
+                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas };
                 let Some((was, now)) = self.toward.try_settle(&k, || judge::toward(g, &mine, &s, &c, &at))? else { continue };
                 if now.idle {
                     self.toward.unwant(&k);

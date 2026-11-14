@@ -93,9 +93,7 @@ impl Engine {
         let mut out = BTreeMap::new();
         for g in self.body_things(c)? {
             let ThingSync::Read(ids) = self.thing_sync_now(&g)? else { continue };
-            let ctx = self.body_ctx(&g);
-            for b in self.bodies_under(&ctx, c, true)? {
-                let meta = BodyMeta { parts: b.parts.iter().copied().collect(), expires: b.expires.map(WallMs), order: b.order, copy: b.to_label, certificate: false, header_only: b.parts.is_empty() };
+            if let Some(meta) = self.closure_body(&g, c)? {
                 for s in &ids {
                     out.insert(*s, meta.clone());
                 }
@@ -103,6 +101,26 @@ impl Engine {
         }
         self.certificate_bodies(c, &mut out)?;
         Ok(Arc::new(out))
+    }
+
+    /// Commit `c`'s body at read sync ID `s` (`sync_bodies`' entry for `s`), read from `s`'s
+    /// thing alone: a body coming or going at another sync ID moves nothing here.
+    pub(crate) fn sync_body_now(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<BodyMeta>> {
+        let Some(t) = self.read_thing(s)? else { return Ok(None) };
+        if self.body_things(c)?.contains(&t)
+            && let Some(meta) = self.closure_body(&t, c)?
+        {
+            return Ok(Some(meta));
+        }
+        let Some(named) = self.certified_of(c, &t)? else { return Ok(None) };
+        self.certificate_body(c, &t, &named)
+    }
+
+    /// Commit `c`'s closure body under read thing `g`'s sync IDs, if any.
+    fn closure_body(&mut self, g: &Tid, c: &CommitId) -> Result<Option<BodyMeta>> {
+        let ctx = self.body_ctx(g);
+        let last = self.bodies_under(&ctx, c, true)?.pop();
+        Ok(last.map(|b| BodyMeta { parts: b.parts.iter().copied().collect(), expires: b.expires.map(WallMs), order: b.order, copy: b.to_label, certificate: false, header_only: b.parts.is_empty() }))
     }
 
     /// Adds to `out` the certificate bodies of commit `c` (spec/sync-judgement.md §1-§2,
@@ -113,37 +131,43 @@ impl Engine {
     /// request is asked, so content never reads the certificates. Where a sync ID carries a
     /// closure body of `c`, that body is its one body there (`certificate_reading`).
     fn certificate_bodies(&mut self, c: &CommitId, out: &mut BTreeMap<SyncId, BodyMeta>) -> Result<()> {
-        let Some(h) = self.header(c) else { return Ok(()) };
-        if !h.has_request() && !h.aspects.iter().any(|a| matches!(a.ak.as_str(), "roles.0" | "keys.0" | "node.0" | "reach.0" | "created.0")) {
-            return Ok(());
-        }
-        let id = *c;
-        let held: PartSet = osis_base::memo::Memo::get_in(self, |e| &e.core.bodies, &id, |e| e.body_with(&id, false))?.map(|b| b.parts.into_iter().collect()).unwrap_or_default();
-        let (expires, order) = (osis_commit::blob_expiry(&h).map(WallMs), crate::labeling::fetch_order(&h));
         let closure: BTreeSet<SyncId> = out.keys().copied().collect();
         for (t, named, ids) in self.certified(c)? {
             let ids: Vec<SyncId> = ids.into_iter().filter(|s| !closure.contains(s)).collect();
             if ids.is_empty() {
                 continue;
             }
-            let parts: PartSet = match named.parts.is_empty() {
-                false => {
-                    let ctx = self.body_ctx(&t);
-                    let carried = self.body_carried(&ctx, &h);
-                    named.parts.iter().copied().filter(|ai| held.contains(ai) && !carried.contains(ai)).collect()
-                }
-                true => PartSet::new(),
-            };
-            if parts.is_empty() && !named.header {
-                continue;
-            }
-            let header_only = parts.is_empty();
-            let meta = BodyMeta { parts, expires, order, copy: true, certificate: true, header_only };
+            let Some(meta) = self.certificate_body(c, &t, &named)? else { continue };
             for s in ids {
                 out.insert(s, meta.clone());
             }
         }
         Ok(())
+    }
+
+    /// The certificate body of commit `c` under read thing `t`'s sync IDs, from what `t`'s
+    /// certificates name of it (`certificate_bodies`).
+    fn certificate_body(&mut self, c: &CommitId, t: &Tid, named: &super::certified::Named) -> Result<Option<BodyMeta>> {
+        let Some(h) = self.header(c) else { return Ok(None) };
+        if !h.has_request() && !h.aspects.iter().any(|a| matches!(a.ak.as_str(), "roles.0" | "keys.0" | "node.0" | "reach.0" | "created.0")) {
+            return Ok(None);
+        }
+        let id = *c;
+        let parts: PartSet = match named.parts.is_empty() {
+            false => {
+                let held: PartSet = osis_base::memo::Memo::get_in(self, |e| &e.core.bodies, &id, |e| e.body_with(&id, false))?.map(|b| b.parts.into_iter().collect()).unwrap_or_default();
+                let ctx = self.body_ctx(t);
+                let carried = self.body_carried(&ctx, &h);
+                named.parts.iter().copied().filter(|ai| held.contains(ai) && !carried.contains(ai)).collect()
+            }
+            true => PartSet::new(),
+        };
+        if parts.is_empty() && !named.header {
+            return Ok(None);
+        }
+        let (expires, order) = (osis_commit::blob_expiry(&h).map(WallMs), crate::labeling::fetch_order(&h));
+        let header_only = parts.is_empty();
+        Ok(Some(BodyMeta { parts, expires, order, copy: true, certificate: true, header_only }))
     }
 
     /// The thing whose read sync ID `s` is here (`ThingSync::Read`).
@@ -164,8 +188,7 @@ impl Engine {
     /// certificate's author's other blobs) is the judgement's to add: `sole_certificate` is false
     /// here.
     pub(crate) fn body_facts_now(&mut self, s: &SyncId, c: &CommitId) -> Result<BodyFacts> {
-        let bodies = self.sync_bodies_now(c)?;
-        let Some(b) = bodies.get(s) else { return Ok(BodyFacts { required: false, closure: false, dropped: None, kept: false, covered: Some(false), sole_certificate: false, lasting_header: false }) };
+        let Some(b) = self.sync_body_now(s, c)? else { return Ok(BodyFacts { required: false, closure: false, dropped: None, kept: false, covered: Some(false), sole_certificate: false, lasting_header: false }) };
         let (Some(m), Some(h)) = (self.core.ix.commits.get(c).cloned(), self.header(c)) else { return Err(Error::UnknownCommit(*c)) };
         let dropped = b.parts.iter().find_map(|ai| m.dropped(*ai).map(|d| d.why));
         let now = self.now().0;
@@ -268,7 +291,7 @@ impl Engine {
     /// A held blob not tombstoned under `s` is the store's to log verbatim (`rewrap`).
     pub(crate) fn seal_body_now(&mut self, s: &SyncId, c: &CommitId, held: &[HeldBlob], rng: &mut dyn NodeRng) -> Result<Option<(crate::labeling::Sealed, Wrap)>> {
         let Some(t) = self.read_thing(s)? else { return Ok(None) };
-        if let Some(meta) = self.sync_bodies_now(c)?.get(s).filter(|m| m.certificate).cloned() {
+        if let Some(meta) = self.sync_body_now(s, c)?.filter(|m| m.certificate) {
             return self.seal_certificate(&t, c, &meta, rng);
         }
         let ctx = self.body_ctx(&t);
@@ -358,9 +381,8 @@ impl Engine {
         // a certificate copy of the same parts is one blob wrapped under each sync ID needing
         // them (spec/sync-judgement.md §1 Certificate blobs); a per-sync-ID copy never is shared,
         // even as a certificate of the same parts elsewhere: `from` holds `b` as a certificate too
-        let bodies = self.sync_bodies_now(c)?;
-        let Some(meta) = bodies.get(to).cloned() else { return Ok(None) };
-        let from_certificate = bodies.get(from).is_some_and(|m| m.certificate && m.parts == meta.parts);
+        let Some(meta) = self.sync_body_now(to, c)? else { return Ok(None) };
+        let from_certificate = self.sync_body_now(from, c)?.is_some_and(|m| m.certificate && m.parts == meta.parts);
         let certificate = meta.certificate && from_certificate && self.blob_copy_now(b) == Some(true) && self.blob_parts_now(b).as_ref() == Some(&meta.parts);
         if !certificate && (self.blob_copy_now(b) != Some(false) || meta.copy) {
             return Ok(None);

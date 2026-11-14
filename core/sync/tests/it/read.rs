@@ -1053,6 +1053,8 @@ fn untold_leaves_and_logs_again_once() {
     let mut m = meta();
     m.expires = Some(WallMs(10));
     w.g.bodies.insert(cid(3), Arc::new([(S, m)].into()));
+    // a request is held like any commit: read follows its bodies
+    w.g.added.push(cid(3));
     w.g.doom.insert(S, Arc::new(Destruction { requests: vec![cid(3)], ..Default::default() }));
     w.settle();
     assert!(!w.g.sent.contains(&Sent::Forget(S)));
@@ -1243,6 +1245,8 @@ fn forget_counts_every_source() {
     let mut m = meta();
     m.expires = Some(WallMs(10));
     w.g.bodies.insert(cid(3), Arc::new([(S, m)].into()));
+    // a request is held like any commit: read follows its bodies
+    w.g.added.push(cid(3));
     w.g.now = 11;
     w.settle();
     assert!(w.sent().any(|m| *m == Sent::Delete(k2, b)));
@@ -1328,8 +1332,8 @@ fn judged_per_event(n: usize) -> (u64, u64) {
 
 // spec/sync.md §2 (work in proportion to change): over the real engine, a write and a role
 // change on one thing re-judge the (sync ID, commit) pairs they moved, never every pair held: the
-// same judgements after n and 10n commits under other sync IDs (each thing's certificates read
-// its whole component, so they are followed per commit, `Engine::follow`).
+// same judgements after n and 10n commits under other sync IDs (the engine's values kept per key
+// are brought up to date by `Engine::follow`).
 #[test]
 fn an_event_on_one_sync_id_judges_what_it_moved() {
     let (a, b) = (judged_per_event(2), judged_per_event(20));
@@ -1454,4 +1458,49 @@ fn a_freed_link_is_dropped_deleted_at_stores_then_done_spec_sync_compaction_1() 
     w.settle();
     assert!(w.g.sent.contains(&Sent::FreedDone(bid(10))), "{:?}", w.g.sent);
     assert!(!w.g.freed.contains_key(&(bid(10), t)));
+}
+
+/// The bodies and judgements read settles (`read: bodies`, `read: judged`) and the engine's settles of what is published and certified
+/// (`labeling::published`, `sync::certified`) node 0 makes for one more thing published under an
+/// actor G of its account (a labeled thing whose first admin is G, in no group: its `sync.0` and
+/// `created.0` commits go under G's sync IDs as published), after `n` such things, run to quiet.
+fn judged_per_publish(n: usize) -> u64 {
+    let mut w = crate::harness::history::world(0, 1);
+    let account = w.node(0).account.expect("an account");
+    let g = w.write(0, |e| {
+        let mut m = osis_engine::Mutation::new();
+        let g = e.new_thing(&mut m, account);
+        e.commit(m).expect("made");
+        e.give_own_secrets(&g).expect("secrets of its own");
+        g
+    });
+    w.run();
+    let publish = |w: &mut crate::harness::World| {
+        w.write(0, |e| {
+            let mut m = osis_engine::Mutation::new();
+            let t = e.new_thing(&mut m, g);
+            e.commit(m).expect("made");
+            e.give_own_secrets(&t).expect("secrets of its own");
+        });
+        w.run();
+    };
+    for _ in 0..n {
+        publish(&mut w);
+    }
+    osis_base::costs::take();
+    publish(&mut w);
+    assert_eq!(w.engine(0).published_under(&g).len(), n + 1, "each published under G");
+    // bodies and judgements, and the engine's keys of what is published and certified that moved
+    let counted = ["read: bodies", "read: judged", "published", "sync: certified things", "sync: certified inboxes", "sync: certified authored", "sync: certified pieces"];
+    osis_base::costs::take().iter().filter(|(k, _, _)| counted.contains(k)).map(|(_, _, n)| n).sum()
+}
+
+// spec/sync.md §2 (Work in proportion to change), spec/sync-judgement.md §1 (Entitlement: a part
+// published there): a thing coming to be published under G judges its own
+// commits, not every body under G's sync IDs, and moves no other thing's publisher, inbox or
+// certificates: the same counts after n and 10n such things.
+#[test]
+fn a_thing_published_under_an_actor_judges_what_it_moved_spec_sync_2() {
+    let (a, b) = (judged_per_publish(2), judged_per_publish(20));
+    assert_eq!(a, b, "judgements per publish grow with the things published before");
 }

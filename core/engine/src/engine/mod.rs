@@ -1019,14 +1019,9 @@ pub struct Core {
     /// `Engine::holders_named` per commit (`memo`): an admin's pass reads it for every inbox
     /// copy, and it decodes role parts.
     pub(crate) holders_named: memo::Memo<CommitId, Arc<BTreeMap<usize, BTreeSet<Tid>>>>,
-    /// `Engine::sync_certificates` per thing (`memo`): every commit's bodies read it.
-    pub(crate) sync_certs: memo::Memo<Tid, Arc<crate::labeling::Certs>>,
     /// What each read thing's certificates name, per commit (`sync::certified`): `sync_bodies`
     /// reads one commit's row.
     pub(crate) certified: crate::sync::certified::Certified,
-    /// `Engine::grant_copy` per (actor, thing) (`memo`): a sync ID's certificates read one per
-    /// thing its inbox actor is named on, so a grant moves only its own.
-    pub(crate) grant_copies: memo::Memo<(Tid, Tid), Arc<crate::labeling::Certs>>,
     /// `rotation::departures` per actor (`memo`).
     pub(crate) departures: memo::Memo<Tid, Vec<osis_keys::Departure>>,
     /// The holders lacking a box of each actor (`rotation::reseal_candidates`, `memo`): O(roster)
@@ -1053,6 +1048,9 @@ pub struct Core {
     acting_of: memo::Memo<(), Arc<Vec<Tid>>>,
     /// `Engine::inbox_actors` (`memo`).
     pub(crate) inbox_actors: memo::Memo<(), Arc<BTreeMap<SyncId, Vec<Tid>>>>,
+    /// `inbox_actors`' entries (`memo::Spread`, `Engine::inbox_actors_at`): a reader of one inbox
+    /// moves only when its actors do (the map moves as any actor gains secrets).
+    pub(crate) inboxes: memo::Spread<SyncId, Vec<Tid>>,
     /// Page indexes of the cached states kept paged in the store.
     pub pages: HashMap<(Tid, Ak), pages::StatePages>,
     pub timelines: held::Timelines,
@@ -1318,9 +1316,9 @@ pub struct Core {
     pub(crate) sync_ids: memo::Memo<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
     /// `Engine::passes_wanted` (`memo`).
     pub(crate) passes_wanted: memo::Memo<(), Arc<BTreeMap<SyncId, WallMs>>>,
-    /// `Engine::published_under` for every actor (`memo::Spread`): it walks every labeled thing's
-    /// record chain, which moves at most role events, while an actor's entry rarely does.
-    pub(crate) published: memo::Spread<Tid, Arc<BTreeSet<Tid>>>,
+    /// `Engine::published_under` for every actor, followed per labeled thing
+    /// (`labeling::published`).
+    pub(crate) published: crate::labeling::published::Published,
     /// `Engine::held_links` (`memo`).
     pub(crate) links: memo::Memo<(), std::sync::Arc<Vec<crate::flows::HeldLink>>>,
     /// Groups the handle reads and writes at another node (`osis` sources): what is here of them
@@ -1346,9 +1344,7 @@ impl Core {
             sync_set: self.sync_set.clone(),
             dial_peers: self.dial_peers.clone(),
             holders_named: self.holders_named.clone(),
-            sync_certs: self.sync_certs.clone(),
             certified: self.certified.clone(),
-            grant_copies: self.grant_copies.clone(),
             departures: self.departures.clone(),
             reseal_scans: self.reseal_scans.clone(),
             store_rows: self.store_rows.clone(),
@@ -1360,6 +1356,7 @@ impl Core {
             key_roles: self.key_roles.clone(),
             acting_of: self.acting_of.clone(),
             inbox_actors: self.inbox_actors.clone(),
+            inboxes: self.inboxes.clone(),
             pages: self.pages.clone(),
             timelines: self.timelines.clone(),
             sides: self.sides.clone(),
@@ -1513,7 +1510,7 @@ impl Core {
     /// The held commits with a delta on `t`, by author.
     pub fn on_thing(&self, t: &Tid) -> impl Iterator<Item = CommitId> + '_ {
         let t = *t;
-        self.ix.by_thing.range((t, Tid::from_bytes([0; 15]))..).take_while(move |((x, _), _)| *x == t).flat_map(|(_, s)| s.iter().copied())
+        self.ix.by_thing.run(actor_run(&t), (t, Tid::from_bytes([0; 15]))..).take_while(move |((x, _), _)| *x == t).flat_map(|(_, s)| s.iter().copied())
     }
 
     /// Notes what a timeline update changed (`osis_perm::Changed`): a role at any point moves
@@ -1549,7 +1546,7 @@ impl Core {
     fn by_authors<'a>(index: &'a JSetMap<(Tid, Tid), CommitId>, under: &'a BTreeSet<Tid>, authors: &'a BTreeSet<Tid>) -> impl Iterator<Item = CommitId> + 'a {
         under.iter().flat_map(move |t| {
             let t = *t;
-            index.range((t, Tid::from_bytes([0; 15]))..).take_while(move |((x, _), _)| *x == t).filter(|((_, a), _)| authors.contains(a)).flat_map(|(_, s)| s.iter().copied())
+            index.run(actor_run(&t), (t, Tid::from_bytes([0; 15]))..).take_while(move |((x, _), _)| *x == t).filter(|((_, a), _)| authors.contains(a)).flat_map(|(_, s)| s.iter().copied())
         })
     }
 
@@ -1561,7 +1558,7 @@ impl Core {
     /// The held commits acting for `actor` by another author (a range of `by_actor`).
     pub fn acting_for(&self, actor: &Tid) -> impl Iterator<Item = CommitId> + '_ {
         let a = *actor;
-        self.ix.by_actor.range((a, Tid::from_bytes([0; 15]))..).take_while(move |((x, _), _)| *x == a).flat_map(|(_, s)| s.iter().copied())
+        self.ix.by_actor.run(actor_run(&a), (a, Tid::from_bytes([0; 15]))..).take_while(move |((x, _), _)| *x == a).flat_map(|(_, s)| s.iter().copied())
     }
 
     /// The actors this node has acted for in a held commit: its chain certificates for them go
@@ -1570,7 +1567,7 @@ impl Core {
     pub fn acting(&self) -> Arc<Vec<Tid>> {
         self.acting_of.get(&(), || {
             let me = self.me();
-            Arc::new(self.ix.by_actor.keys().filter(|(_, au)| Some(*au) == me).map(|(a, _)| *a).collect())
+            Arc::new(self.ix.by_actor.keys_held().filter(|(_, au)| Some(*au) == me).map(|(a, _)| *a).collect())
         })
     }
 
@@ -1581,12 +1578,12 @@ impl Core {
 
     /// Every keyset of actor `m` a valid body of which is noted (`Indexes::keysets`), held or not.
     pub(crate) fn keysets_noted(&self, m: &Tid) -> impl Iterator<Item = (osis_base::Role, osis_crypto::Epoch, &HeldKeyset)> {
-        self.ix.keysets.range((*m, osis_base::Role::Sync, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *m).map(|(k, v)| (k.1, k.2, v))
+        self.ix.keysets.run(actor_run(m), (*m, osis_base::Role::Sync, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *m).map(|(k, v)| (k.1, k.2, v))
     }
 
     /// Every epoch of actor `a` a valid `keys.0` body records a box at (`Indexes::sealed`).
     pub(crate) fn sealed_noted(&self, a: &Tid) -> impl Iterator<Item = (osis_base::Role, osis_crypto::Epoch, &SealedAt)> {
-        self.ix.sealed.range((*a, osis_base::Role::Sync, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *a).map(|(k, v)| (k.1, k.2, v))
+        self.ix.sealed.run(actor_run(a), (*a, osis_base::Role::Sync, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *a).map(|(k, v)| (k.1, k.2, v))
     }
 
     /// Held valid keyset `e` of role `r` of actor `m` (spec/crypto.md §4, Held keyset): a valid
@@ -1711,6 +1708,8 @@ impl Core {
         let touched = self.ix.held.take_touched();
         if !touched.is_empty() {
             let changed = self.timelines.update_touched(&self.ix.held, &touched);
+            let ever = self.ix.held.take_ever();
+            self.timelines.ever_moved(&ever);
             self.timelines_changed(changed);
             self.lifetimes_rights = true;
             if self.detect {
@@ -1844,6 +1843,8 @@ impl Core {
         let touched = self.ix.held.take_touched();
         if !touched.is_empty() {
             self.timelines.update_touched(&self.ix.held, &touched);
+            let ever = self.ix.held.take_ever();
+            self.timelines.ever_moved(&ever);
             crate::sides::discard(self);
         }
         if sides_back {
@@ -1912,13 +1913,12 @@ impl Core {
             sync_set: _,
             dial_peers: _,
             holders_named: _,
-            sync_certs: _,
             // followed (`Effects`): what a rollback restores moves its reads, so the next follow
             // indexes again
             certified: _,
-            grant_copies: _,
             key_roles: _,
             inbox_actors: _,
+            inboxes: _,
             acting_of: _,
             sync_ids: _,
             passes_wanted: _,
@@ -2101,9 +2101,7 @@ impl Core {
             sync_set: memo::Memo::new("sync: sync set"),
             dial_peers: memo::Memo::new("sync: dial peers"),
             holders_named: memo::Memo::new("holders named: read"),
-            sync_certs: memo::Memo::new("sync: certificates"),
             certified: Default::default(),
-            grant_copies: memo::Memo::new("sync: grant copies"),
             departures: memo::Memo::new("departures"),
             reseal_scans: memo::Memo::new("reseal: scan"),
             rotation_seq: 0,
@@ -2113,6 +2111,7 @@ impl Core {
             key_roles: memo::Memo::new("key roles"),
             acting_of: memo::Memo::new("acting"),
             inbox_actors: memo::Memo::new("inbox actors"),
+            inboxes: memo::Spread::new("inboxes"),
             pages: HashMap::new(),
             timelines: held::Timelines::default(),
             sides: crate::sides::Sides::default(),
@@ -2127,7 +2126,13 @@ impl Core {
             stale_all: true,
             dirty: false,
             key_salt,
-            ix: Indexes::default(),
+            ix: Indexes {
+                keysets: JMap::by_run(|k| actor_run(&k.0)),
+                sealed: JMap::by_run(|k| actor_run(&k.0)),
+                by_thing: JSetMap::by_run(|k| actor_run(&k.0)),
+                by_actor: JSetMap::by_run(|k| actor_run(&k.0)),
+                ..Indexes::default()
+            },
             waits: crate::apply::Waits::default(),
             schemas: JMap::default(),
             events: Events::default(),
@@ -2214,7 +2219,7 @@ impl Core {
             walks: Default::default(),
             sync_ids: memo::Memo::new("sync IDs of"),
             passes_wanted: memo::Memo::new("sync: passes wanted"),
-            published: memo::Spread::new("published"),
+            published: Default::default(),
             links: memo::Memo::new("held links"),
             sourced_elsewhere: BTreeSet::new(),
         }
@@ -3060,6 +3065,14 @@ pub(crate) fn clear_table(txn: &mut Transaction<'_>, t: osis_store::Table, start
 }
 
 /// `(head, blob)`.
+/// The run of a thing's entries in a map keyed by thing first (`JMap::by_run`).
+fn actor_run(a: &Tid) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    a.hash(&mut h);
+    h.finish()
+}
+
 pub(crate) fn decode_commit_record(v: &[u8]) -> Result<CommitRecord> {
     let (head, rest) = index::parse_head(v)?;
     let mut blob = CommitBlob::decode_stored(rest).map_err(|_| Error::Corrupt("commit blob"))?;
