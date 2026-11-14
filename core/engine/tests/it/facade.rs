@@ -689,6 +689,103 @@ fn a_loss_behind_a_done_self_removal_drops_at_the_trigger_spec_perm_3() {
     assert!(e.epochs(&t).is_none_or(|x| x.read.held().next().is_none()), "dropped");
 }
 
+/// Whether node `i` holds a read secret of `t`.
+fn reads(lp: &LocalPeer, i: usize, t: &Tid) -> bool {
+    lp.peers[i].engine.epochs(t).is_some_and(|x| x.read.holds_any())
+}
+
+/// Tells node `i` sync is done with every removal it waits on.
+fn all_done(lp: &mut LocalPeer, i: usize) {
+    let e = &mut lp.peers[i].engine;
+    for c in e.waiting_removals().unwrap().iter() {
+        e.removal_done(c).unwrap();
+    }
+    assert!(e.waiting_removals().unwrap().is_empty(), "node {i}");
+}
+
+// spec/permissions.md §3 (Lost access: a self-removal by itself, its account or a key actor it
+// holds): another account's removal of this account is no wait of its; an own removal that
+// leaves a path drops nothing when done; a done told for a commit not waited on drops nothing.
+#[test]
+fn only_an_own_self_removal_waits_and_done_drops_only_the_lost_spec_perm_3() {
+    let (mut lp, a, t) = siblings_granted();
+    let b = lp.peers[2].engine.account().unwrap().unwrap().0;
+    let g = thing_of(&mut lp, 2, b);
+    lp.peers[2].engine.grant(&g, &a, &edge_of(Role::Read)).unwrap();
+    lp.peers[2].engine.grant(&t, &g, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    let other = lp.peers[2].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
+    spread(&mut lp);
+    for i in [0, 1] {
+        assert!(lp.peers[i].engine.waiting_removals().unwrap().is_empty(), "node {i}: another account's removal is no wait");
+        lp.peers[i].engine.removal_done(&other).unwrap();
+        assert!(reads(&lp, i, &t), "node {i}: a done not waited on drops nothing");
+    }
+    lp.peers[2].engine.grant(&t, &a, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    let own = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
+    spread(&mut lp);
+    for i in [0, 1] {
+        assert!(lp.peers[i].engine.waiting_removals().unwrap().contains(&own), "node {i} waits on the own removal");
+        all_done(&mut lp, i);
+        assert!(reads(&lp, i, &t), "node {i} still reads through the group: nothing dropped");
+    }
+}
+
+// spec/permissions.md §3 (Lost access): both siblings remove their account from a thing while
+// apart; once each holds both removals and sync is done with what it waits on, each drops.
+#[test]
+fn siblings_removing_at_once_both_drop_spec_perm_3() {
+    let (mut lp, a, t) = siblings_granted();
+    for i in [0, 1] {
+        lp.peers[i].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap();
+        lp.advance(10);
+    }
+    spread(&mut lp);
+    for i in [0, 1] {
+        assert!(!lp.peers[i].engine.waiting_removals().unwrap().is_empty(), "node {i} waits");
+        assert!(reads(&lp, i, &t), "node {i} keeps it while it waits");
+        all_done(&mut lp, i);
+        assert!(!reads(&lp, i, &t), "node {i} dropped");
+    }
+}
+
+// spec/permissions.md §3 (Lost access): a re-grant applied while a sibling's removal waits
+// keeps the secrets when the removal is done.
+#[test]
+fn a_regrant_during_the_wait_keeps_the_secrets_spec_perm_3() {
+    let (mut lp, a, t) = siblings_granted();
+    let c = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
+    spread(&mut lp);
+    assert!(lp.peers[1].engine.waiting_removals().unwrap().contains(&c));
+    lp.advance(10);
+    lp.peers[2].engine.grant(&t, &a, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    for i in [0, 1] {
+        all_done(&mut lp, i);
+        lp.peers[i].engine.drop_lost_due().unwrap();
+        assert!(reads(&lp, i, &t), "node {i} re-granted: kept");
+    }
+}
+
+// spec/permissions.md §3 (Lost access): a crash after the drop and before the removal leaves
+// the wait (`removal_done`'s order) finds it waiting after a restart; done again clears it.
+#[test]
+fn a_crash_between_drop_and_clear_is_done_again_spec_perm_3() {
+    let (mut lp, a, t) = siblings_granted();
+    let c = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
+    spread(&mut lp);
+    let e = &mut lp.peers[1].engine;
+    let lost: Vec<Tid> = e.lost_leaving().unwrap().actors.into_keys().collect();
+    assert!(lost.contains(&t), "t lost behind the removal");
+    e.forget_lost(osis_engine::rotation::LostScope::Only(&lost)).unwrap();
+    lp.peers[1].restart(1).unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(*e.waiting_removals().unwrap(), BTreeSet::from([c]), "still waiting after the restart");
+    assert!(!reads(&lp, 1, &t));
+    all_done(&mut lp, 1);
+}
+
 // spec/sync-judgement.md §1-§2: a commit's body under each read sync ID whose closure holds it,
 // with its facts; this node's own commits under it.
 #[test]
