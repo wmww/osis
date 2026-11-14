@@ -626,7 +626,7 @@ impl SyncEngine {
         let full = self.label_at(conn, &l).is_some_and(|x| x.full);
         let mut deposits = Vec::new();
         let on_head = p.id == own.id;
-        let again = self.encrypt_again(source, own, (sends, behind), bodies, snaps, left)?;
+        let again = self.encrypt_again(source, own, (sends, behind, full), bodies, snaps, left)?;
         let (mut lacking, mut refused_here) = (0, 0);
         for o in sends.iter().chain(&again) {
             if !lacks(self, &o.id) {
@@ -732,9 +732,9 @@ impl SyncEngine {
     /// source pulls the new one. While a role commit this node must hold waits for its relay
     /// (`behind`), the deleter may judge by an older role view: nothing is encrypted again and
     /// the label's role commits are placed at once instead (`relay_now`), so the source learns
-    /// them first (issues: churn seed 361's storm); nor while the source lacks one of this
-    /// node's own (`roles_lacking_at`).
-    fn encrypt_again(&mut self, source: PeerKey, own: &Head, (sends, behind): (&[Out], bool), bodies: &[Body], snaps: &Snaps, left: &mut Left) -> Result<Vec<Out>> {
+    /// them first (issues: churn seed 361's storm); nor while the source, unless `full`, lacks one
+    /// of this node's own (`roles_lacking_at`).
+    fn encrypt_again(&mut self, source: PeerKey, own: &Head, (sends, behind, full): (&[Out], bool, bool), bodies: &[Body], snaps: &Snaps, left: &mut Left) -> Result<Vec<Out>> {
         let (g, l) = (own.g, own.l);
         let mut again = Vec::new();
         let mut note = Note::default();
@@ -771,8 +771,9 @@ impl SyncEngine {
                 self.relay_now.insert(l);
                 continue;
             }
-            // as a placement again past this node's own store's delete (`body_sends`)
-            if self.roles_lacking_at(&source, &l, own_roles.get_or_insert_with(|| self.own_roles(&l))) {
+            // as a placement again past this node's own store's delete (`body_sends`): nothing
+            // waits for a full source (`LabelAt::full`)
+            if !full && self.roles_lacking_at(&source, &l, own_roles.get_or_insert_with(|| self.own_roles(&l))) {
                 continue;
             }
             // a body deleted there (not one under a useless wrap) goes as a placement again
