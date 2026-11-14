@@ -6,7 +6,7 @@
 //! destruction clears the row (`queue_with_listers`), so a release request that fails to be written is
 //! judged again (`judge_lifetimes`).
 //!
-//! Judged from what the node holds, per thing: **known** (a live minting held, not a kept copy),
+//! Judged from what the node holds, per thing: **known** (a live minting held, read by a held path),
 //! **destroyed** (a destruction held), else **unknown**. The judgment of one thing is a walk up its list
 //! through retainers that reference what is below them, stopping at the first standalone or
 //! unknown thing (`walk`). No liveness is cached: the kept state is the work list (`WORK`: things
@@ -50,10 +50,18 @@ pub enum Status {
 }
 
 /// `t` as the judgment reads it; `gone`: released in this run.
+///
+/// Invariant: a thing no held path reads (`forget::read_path`) is never known, so a retainer this
+/// node cannot read is unknown and keeps what lists it. Its `created.0` may be held (lost access
+/// keeps it, `forget::KEPT`; certificate and chain parts bring it; a kept copy), but its reference
+/// rows are not: the index holds none of a thing it cannot read, and that absence is no evidence
+/// of "does not reference". Read as known, a member removed from a folder would release, at every
+/// node, its own things listing the folder (node `lifetimes::a_member_removed_from_a_retainer_releases_nothing`).
+/// Destroyed stays positive evidence (a held destruction, judged by its right), read or not.
 pub(crate) fn status(core: &Core, t: &Tid, gone: &BTreeSet<Tid>) -> Status {
     if gone.contains(t) || core.destroyed(t) {
         Status::Destroyed
-    } else if core.exists(t) && core.mintings(t).next().is_some() && crate::retention::forget::copy_of(core, t).is_none() {
+    } else if core.exists(t) && core.mintings(t).next().is_some() && crate::retention::forget::read_path(core, t) {
         Status::Known
     } else {
         Status::Unknown

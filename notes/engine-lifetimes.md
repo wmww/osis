@@ -5,7 +5,7 @@
 A walk reads only the current held state, so a release never rests on a queue or a cache: a missed queue only leaks. The kept state is three local row sets: `lw/` (work: things a change touched), `lh/` (held: their walk read a thing not heard out) and `lp/` (pending: judged unreachable, not destroyed here: right not held, or its release request not applied yet).
 
 ## Reading
-- Status (`lifetimes::status`): destroyed (`Core::destroyed`, or released earlier in the run), known (`exists`, a minting held, not a kept copy `forget::copy_of`), else unknown.
+- Status (`lifetimes::status`): destroyed (`Core::destroyed`, or released earlier in the run), known (`exists`, a minting held, a held path reads it: `forget::read_path`, which a kept copy fails), else unknown. An unread thing is never known: lost access, a kept copy, certificate and chain parts all leave its `created.0` held with no reference rows, and read as known it would release what lists it (invariant at `status`).
 - List: `retainers^.0` read whole as `set<tid>`; absent or not a set of tids: standalone (kept).
 - References: the reference index (notes/engine-refs.md): a durable row from R to X other than `retainers^.0` (`refs::references`); listers: X's `retainers^.0` rows (`refs::listers`).
 - The walk (`walk`, as held-model `walk`): up the list through known retainers referencing what is below them; unknown or standalone: kept. A pending thing is walked through, never read as failed: `pending` is stale for a thing the same run made reachable (held-model `a_stale_pending_thing_is_walked_through`).

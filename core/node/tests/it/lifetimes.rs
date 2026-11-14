@@ -834,3 +834,53 @@ fn things_released_together_are_forgotten_whole() {
     }
     assert!(e.header(&req).is_none() && e.header(&made).is_none(), "both commits gone whole");
 }
+
+// notes/lifetimes.md (The judgment: an unknown retainer keeps; Interactions: Removal, lost access):
+// b, a writer of folder f, makes d under its own account (so b may destroy it), lets f read it,
+// lists f as d's retainer and f references d. a removes b from f: b forgets f but keeps f's
+// `created.0`, and holds no reference row from f. f is unread at b, so unknown: b releases
+// nothing, and d lives at every node, where f's remaining member reads it
+#[test]
+fn a_member_removed_from_a_retainer_releases_nothing() {
+    let (mut net, host, [a, b], f, []) = crate::net::hosted::<2, 0>(&[(1, osis_base::Role::Write)], [], true);
+    let tb = net.tid(b);
+    let home = vec![net.address(host)];
+    let e = net.engine(b);
+    let mut m = Mutation::new();
+    let d = e.new_thing(&mut m, tb);
+    m.set(d, &crate::common::REG, &Value::Str("kept".into())).unwrap();
+    e.commit(m).unwrap().unwrap();
+    let done = net.engine(b).give_own_secrets_on(&d, &home).unwrap();
+    let acts = net.sync(b).carry_out(done).unwrap();
+    net.actions(b, acts);
+    net.grant(b, d, f, osis_base::Role::Read);
+    net.run();
+    let e = net.engine(b);
+    let mut m = Mutation::new();
+    list(&mut m, d, Some([f].into()));
+    refs(&mut m, f, Value::Set([Value::Tid(d)].into()));
+    let mut items = e.get_typed(&f, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(d);
+    m.set(f, &ct::GROUP, &items).unwrap();
+    e.commit(m).unwrap().unwrap();
+    net.run();
+    for n in [a, b] {
+        assert_eq!(net.engine(n).lifetime_status(&d), Status::Known, "node {n}");
+        assert_eq!(net.read(n, d), Some(Value::Str("kept".into())), "node {n}");
+    }
+    let done = net.engine(a).demote(&f, &osis_node::flows::Demotion { holder: tb, new: None, retain: None }).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    net.run();
+    assert!(!net.engine(b).may_read(&tb, &f), "b lost f");
+    for n in [a, b] {
+        let e = net.engine(n);
+        assert_eq!(e.lifetime_status(&d), Status::Known, "node {n}: d not released");
+        assert!(e.lifetimes_pending().unwrap().is_empty(), "node {n}");
+        assert_eq!(net.read(n, d), Some(Value::Str("kept".into())), "node {n} reads d");
+    }
+    assert_eq!(net.engine(b).lifetime_status(&f), Status::Unknown, "b: f unread, unknown");
+}
