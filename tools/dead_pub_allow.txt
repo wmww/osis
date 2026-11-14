@@ -123,7 +123,6 @@ osis-proto::OFFSET_DIAGNOSTIC_MS  deferred: sync rebuild (issues/sync-rewrite.md
 osis-schema::TID  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::changed_after  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::changed_labels  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::log_head_at  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::log_heads  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::table_len  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-transport::connections_between  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -188,7 +187,6 @@ osis-sync::clock_offset  deferred: sync rebuild (issues/sync-rewrite.md Phase 3)
 osis-sync::status_of  deferred: the osis API reads one sync ID's status (sync rebuild integration, issues/sync-rewrite.md Phase 3)
 osis-sync::set_record_budget  test hook: a small RECORD_BUDGET to drive eviction
 osis-engine::destructions  facade: osis-sync's modules call it (notes/sync-facade.md)
-osis-engine::known_actors  facade: osis-sync's modules call it (notes/sync-facade.md)
 osis-engine::logged_with  facade: osis-sync's modules call it (notes/sync-facade.md)
 osis-engine::own_certificates  facade: osis-sync's modules call it (notes/sync-facade.md)
 osis-engine::sync_record_feed  facade: osis-sync's modules call it (notes/sync-facade.md)
@@ -199,5 +197,4 @@ osis-engine::inbox_blob_without_chain  test hook: engine integration tests carry
 osis-engine::reseal_after_pass  test hook: engine integration tests carry deliveries and passes as sync would
 osis-keys::PermGraph  deferred: the reach of a lowering for role entries first (spec/sync-judgement.md §3), the read module's
 osis-sync::set_sync_set  test hook (tests/it: a store holding sync IDs without an engine)
-osis-engine::reseal_due  deferred: the re-seal trigger the driver runs at a complete pass's end (issues/sync-unbuilt.md, facade); not wired yet
 osis-engine::history_complete  deferred: the osis API's history completeness (spec/sync-status.md §3); not wired yet

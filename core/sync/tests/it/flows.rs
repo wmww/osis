@@ -408,7 +408,7 @@ fn an_ended_members_until_is_the_superseding_rotations_entry_spec_sync_opens_6()
     assert_eq!(w.member_until(0, &s, &Credential::SyncKey), end(&w), "a credential with no epoch at a reader: the log's end");
 }
 
-// spec/sync-opens.md §6 (at a node keeping S unread, `until` is the position of its head's event):
+// spec/sync-opens.md §6 (the position of its head's event): an ended member's `until` at a node keeping S unread;
 // node 1 keeps S unread with S's genesis registered.
 #[test]
 fn an_ended_member_at_a_node_keeping_s_unread_ends_at_its_heads_event_spec_sync_opens_6() {
