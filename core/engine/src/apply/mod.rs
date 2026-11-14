@@ -1673,21 +1673,18 @@ impl Engine {
                 let pending = &tx.core.ix.pending;
                 tx.core.memory_waits.retain(|id| pending.contains_key(id));
                 for id in ids {
-                    // a memory commit waits for node-sync, which applies it within its label's
-                    // room (`apply_waiting_memory`)
-                    if tx.core.memory_waits.contains(&id) {
-                        tx.core.waits.memory_woken.wrote_added(&id, true, true);
-                        continue;
-                    }
-                    tx.core.waits.examined += 1;
-                    if let Some(b) = read_pending(tx, &id)? {
-                        if b.header.ephemeral.is_some() {
-                            tx.core.memory_waits.insert(id);
-                            tx.core.waits.memory_woken.wrote_added(&id, true, true);
+                    // a memory commit waits for node-sync, which applies it within its sync ID's
+                    // room (`apply_waiting_memory`): woken, it is stamped for it
+                    if !tx.core.memory_waits.contains(&id) {
+                        tx.core.waits.examined += 1;
+                        let Some(b) = read_pending(tx, &id)? else { continue };
+                        if b.header.ephemeral.is_none() {
+                            blobs.push((id, b));
                             continue;
                         }
-                        blobs.push((id, b));
+                        tx.core.memory_waits.insert(id);
                     }
+                    tx.core.waits.memory_woken.wrote_added(&id, true, true);
                 }
                 blobs.sort_by_key(|(_, b)| (!b.header.kind.is_role(), b.header.ts));
                 tx.core.touch();
