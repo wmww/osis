@@ -161,6 +161,25 @@ fn validate_expiry_purge_retention() {
     assert!(invalid(&x).to_string().contains("role-class"));
 }
 
+// spec/wire.md §4 (a purge item on `created.0` by commit or by author), spec/commits.md §5
+// (Destruction: an item on `created.0` names every minting): only the whole-aspect item is valid
+// there; by commit or by author is bad input.
+#[test]
+fn validate_purge_created_whole_only_spec_wire_4() {
+    let created = Ak::new(crate::retention::CREATED).unwrap();
+    let with = |item: PurgeItem| {
+        let mut x = sample_header();
+        x.purge.push(item);
+        x
+    };
+    with(PurgeItem::Aspect { tid: t(3), ak: created.clone() }).validate().unwrap();
+    let by_commit = with(PurgeItem::Commit { tid: t(3), ak: created.clone(), ts: ts(1), src: osis_crdt::Source::commit(CommitId([7; 32])) });
+    assert!(invalid(&by_commit).to_string().contains("created.0"));
+    let by_author = with(PurgeItem::Author { tid: t(3), ak: created, actor: t(4) });
+    assert!(invalid(&by_author).to_string().contains("created.0"));
+    with(PurgeItem::Author { tid: t(3), ak: Ak::new("app:title.0").unwrap(), actor: t(4) }).validate().unwrap();
+}
+
 // spec/wire.md §4: a part's retention is `by` alone: every class round-trips; an unknown class, or
 // one as a list, is malformed.
 #[test]

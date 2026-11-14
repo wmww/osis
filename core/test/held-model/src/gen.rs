@@ -339,7 +339,9 @@ pub fn history(seed: u64, n: usize) -> Held {
                 target = commits[r.below(commits.len() as u64) as usize].clone();
             }
             let tp = target.parts[0].clone();
-            let item = match r.below(3) {
+            // only the whole aspect names a thing's mintings (spec/wire.md §4)
+            let k = r.below(3);
+            let item = match if tp.aspect == Aspect::CREATED { 1 } else { k } {
                 0 => PurgeItem::Commit { commit: target.id, thing: tp.thing, aspect: tp.aspect },
                 1 => PurgeItem::Aspect { thing: tp.thing, aspect: tp.aspect },
                 _ => PurgeItem::Author { thing: tp.thing, aspect: tp.aspect, author: target.actor },

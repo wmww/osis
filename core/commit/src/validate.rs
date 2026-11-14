@@ -127,6 +127,10 @@ impl Header {
             if self.purge.iter().any(|p| is_role_class(p.ak().as_str())) {
                 return Err(Error::Invalid("purge request naming role-class deltas"));
             }
+            // a thing is destroyed or not: only a whole-aspect item names its mintings (spec/commits.md §5 Destruction)
+            if self.purge.iter().any(|p| p.ak().as_str() == CREATED && !matches!(p, PurgeItem::Aspect { .. })) {
+                return Err(Error::Invalid("purge item on created.0 by commit or by author"));
+            }
             if self.purge.iter().filter(|p| matches!(p, PurgeItem::Author { .. })).count() > osis_base::format::MAX_AUTHOR_ITEMS {
                 return Err(Error::Invalid("too many purge items by author"));
             }

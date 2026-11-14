@@ -62,7 +62,7 @@ fn expired_creation_destroys_the_thing_spec_commits_6() {
 // node without the right does not
 #[test]
 fn purged_creation_destroys_the_thing_spec_commits_5() {
-    let item = PurgeItem::Commit { commit: CREATION_ID + T, thing: T, aspect: Aspect::CREATED };
+    let item = PurgeItem::Aspect { thing: T, aspect: Aspect::CREATED };
     let w = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
     let hd = held(5, vec![made(None), w.clone(), purge(20, FIRST_ADMIN, 2, item)]);
     let o = evaluate(&hd);
@@ -150,7 +150,7 @@ fn purging_one_creation_leaves_the_others_of_its_commit_spec_commits_5() {
     let mut c = made(None);
     let other = Part { thing: OTHER, ..c.parts[0].clone() };
     c.parts.push(other);
-    let item = PurgeItem::Commit { commit: CREATION_ID + T, thing: T, aspect: Aspect::CREATED };
+    let item = PurgeItem::Aspect { thing: T, aspect: Aspect::CREATED };
     let hd = held(5, vec![c, w(10, T, 1), w(11, OTHER, 2), purge(20, FIRST_ADMIN, 2, item)]);
     let o = evaluate(&hd);
     assert_eq!(o.destroyed, [T].into());

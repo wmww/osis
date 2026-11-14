@@ -94,7 +94,7 @@ Header fields by position:
 4. `ts` (spec/crdt.md §2.2). 5. `form`: 0 commit form, or `[1, nonce]` session form with the session's 16-byte nonce (spec/commits.md §3).
 6. `expires`: `Opt(T)`, the commit's expiry, wall ms (spec/commits.md §6).
 7. `aspects`: `[Aspect+]` sorted by the canonical bytes of `[tid, ak]`, distinct.
-8. `purge`: `[PurgeItem*]` sorted by canonical bytes, distinct; empty when there is no purge request. `[tid, ak]` names every delta on that aspect of every commit with a smaller `ts`; `[tid, ak, actor]` those of them whose commit's purge actor is `actor` (spec/permissions.md §6: the actor its header names); `[tid, ak, ts, source]` the delta on that aspect of the commit stamped `ts` whose own writes are `source`'s (spec/crdt.md §2.1: 31 bytes, a session; 32, a commit-form commit's ID; else bad input), one commit per stamp and source on an aspect (spec/commits.md §5 Purge).
+8. `purge`: `[PurgeItem*]` sorted by canonical bytes, distinct; empty when there is no purge request. `[tid, ak]` names every delta on that aspect of every commit with a smaller `ts`; `[tid, ak, actor]` those of them whose commit's purge actor is `actor` (spec/permissions.md §6: the actor its header names); `[tid, ak, ts, source]` the delta on that aspect of the commit stamped `ts` whose own writes are `source`'s (spec/crdt.md §2.1: 31 bytes, a session; 32, a commit-form commit's ID; else bad input), one commit per stamp and source on an aspect (spec/commits.md §5 Purge); on `created.0` only `[tid, created.0]` (it names every minting, spec/commits.md §5 Destruction).
 9. `undoes`: `Opt(commit_id)`.
 10. `blind`: 16 random bytes (spec/crypto.md §7).
 11. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1), at most one at level 2 (the author chain); a key no aspect lists is bad input.
@@ -136,6 +136,7 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`
   - a content compaction snapshot's delta without fixed retention whose `by` is not writer;
   - `expires` or a purge item on a role commit;
   - a purge item naming a role-class aspect;
+  - a purge item on `created.0` by commit or by author;
   - more than `MAX_AUTHOR_ITEMS` purge items by author;
   - a frontier outside a role commit (kind 1).
 

@@ -95,8 +95,9 @@ impl Minting {
     /// mintings travel with its record): it cannot end before `lower` could. It expires no
     /// earlier (`None`: never), and whoever may purge it may purge `lower`: `lower`'s set holds
     /// the admins where this one's does, its author where this one's does with the same actor,
-    /// every writer where this one's does. Open: an item by commit or by author names one
-    /// minting and not the other (issues/minting-standin-narrow-items.md).
+    /// every writer where this one's does. No request ends one minting alone: the only purge
+    /// item on `created.0` is the whole aspect (`Header::validate`), so whatever ends this one ends
+    /// `lower`.
     pub fn stands_in_for(&self, lower: &Minting) -> bool {
         let expires = match (self.expires, lower.expires) {
             (None, _) => true,
