@@ -333,7 +333,39 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   - **`max_reply`** is in `SMALL_REPLY..=REPLY_BUDGET`.
     - A Reply whose message exceeds it is replaced by `[1, 5, max_reply]`.
     - A delivery whose Notify would exceed its Sub's `max_reply` is sent as `[2, source]`, and a Notify still exceeding it as `[1]`.
-  - **Methods**: `method`, `arg`, `filter`, `value` and `detail` are defined by the method table (notes/client-port.md until stable).
+  - **Methods**: one line per row, `[arg*] -> value`; a method not listed is `[1, 11, text]`. Every row answers as its session's actor (above). The forms of a read result, path, write op, origin and commit: notes/client-port.md §2 until stable. `Opt(x)` is `[]` or `[x]`; a stamp is `[commit id, actor, ts, received]`.
+
+    | method | row | args -> value |
+    |---|---|---|
+    | 0 | whoami | `[] -> [me, node, home]` |
+    | 1 | get | `[tid, ak, path] -> read result` |
+    | 2 | aspects | `[tid] -> [ak*]` |
+    | 3 | has content | `[tid] -> bool` |
+    | 4 | holds | `[tid] -> bool` (its creation is held) |
+    | 5 | groups of | `[tid] -> [[item_of*], [subgroup_of*], [within*]]`, only groups the actor may read |
+    | 6 | grants | `[tid] -> [[holder, role, Opt(until), Opt(may_grant), with_membership]*]` |
+    | 7 | role on | `[tid] -> Opt(role)`, the actor's |
+    | 8 | created | `[tid] -> Opt(stamp)` |
+    | 9 | changed | `[tid] -> Opt(stamp)` |
+    | 10 | write | `[nonce, actor, [ak*], [op*], Opt(expiry)] -> Opt(commit)` |
+    | 11 | undo | `[nonce, scope] -> Opt(commit)`, scope `[0, tid]`, `[1, [[tid, ak]*]]` or `[2, group]` |
+    | 12 | redo | `[nonce, scope] -> Opt(commit)` |
+    | 13 | revert | `[nonce, commit id] -> commit` |
+    | 14 | undo target | `[scope] -> Opt(commit)` |
+    | 15 | redo target | `[scope] -> Opt(commit)` |
+    | 19 | settle | `[] -> []`, after every Notify for changes before it |
+    | 20 | now | `[] -> wall ms` |
+    | 21 | status | `[] -> [connected, [[tid, state, not_taking, leaving]*]]`, state 0 synced, 1 syncing, 2 not connected, 3 stranded; for a client actor only the things it may read, `connected` the connections with one of them open |
+    | 22 | holders | `[tid] -> [[actor, kind, role, Opt(until), [through*]]*]`, kind 0 actor, 1 link, 2 key; nothing behind an actor the actor may not read |
+
+    | filter | Reply | Notify `[0, value]` |
+    |---|---|---|
+    | `[0, tid, ak, path]` | read result | `[read result, origin]`; `[2, max_reply]` above it |
+    | `[1, tid]` | `[[ak, read result]*]`, the aspects present | `[ak, read result, origin]`; `[2, [ak, max_reply]]` above it |
+    | `[2, tid]` | as row 6 | as row 6 |
+    | `[3]` | as row 21 | as row 21 |
+
+    A Notify goes only when its value reads otherwise than the last one sent (an error read always goes), read as the actor when it is sent.
   - **Outcome error codes**: an unknown method is `[1, 11, text]`.
 
     | code | meaning | detail |

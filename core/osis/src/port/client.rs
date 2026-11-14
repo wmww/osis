@@ -565,6 +565,9 @@ impl ReadOnly {
     }
 }
 
+/// One aspect a thing watch tells: its key, value and origin.
+type Told = (Ak, Result<Option<Value>>, Origin);
+
 /// A delivery's `limit` (a `[2, source]` Notify of a value filter).
 fn limit_of(source: &Value) -> usize {
     source.as_uint().map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX))
@@ -676,7 +679,7 @@ impl crate::Osis {
         let filter = Value::List(vec![Value::uint(super::filter::THING), Value::Tid(tid)]);
         let mut last: BTreeMap<Ak, Option<crate::watch::Digest>> = BTreeMap::new();
         self.remote_sub(std::slice::from_ref(at), filter, true, move |db, _, got| {
-            let told: Result<Vec<(Ak, Result<Option<Value>>, Origin)>> = match got {
+            let told: Result<Vec<Told>> = match got {
                 // every aspect now; one told before and absent now is told absent
                 Pushed::Initial(v) => list(v, "aspects").and_then(|all| {
                     let mut now = BTreeMap::new();
