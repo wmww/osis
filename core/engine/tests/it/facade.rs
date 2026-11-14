@@ -2054,3 +2054,25 @@ fn an_accept_with_a_forgers_offer_held_keeps_the_genuine_too_spec_sync_3() {
     want.sort();
     assert_eq!(r.sync_ids, want, "both offers' sync IDs: the genuine one kept");
 }
+
+// spec/sync.md §3 (A kept sync ID: an accept keeps none the record keeps for another thing),
+// spec/sync-set.md §4: a forger's offer of its own thing naming the sync ID of a thing the
+// account keeps unread is no invitation, and accepted anyway keeps that sync ID for the kept
+// thing alone: the forger's thing (its tid sorting first) never holds it.
+#[test]
+fn an_accepted_offer_takes_no_kept_sync_id_from_another_thing_spec_sync_3() {
+    let (mut lp, ps, t, s) = kept();
+    let u = (0..64).map(|_| thing_of(&mut lp, 2, ps[2])).find(|u| *u < t).expect("a tid sorting before t");
+    let done = lp.peers[2].engine.grant(&u, &ps[1], &edge_of(Role::Sync)).unwrap();
+    let blob = lp.inbox_blobs(2, &done).unwrap().into_iter().find(|(h, _)| *h == ps[1]).unwrap().1;
+    let (mut p, _) = boxes_of(&mut lp, 1, &blob);
+    p.things[0].sync_id = Some(s);
+    p.grant = None;
+    let b = boxes_by_hand(&mut lp, 1, &p);
+    assert_eq!(lp.peers[1].engine.take_inbox_blob(&b, false).unwrap().unwrap().taken, Taken::Offered);
+    assert!(!lp.peers[1].engine.invitations().unwrap().iter().any(|i| i.thing == u), "no invitation");
+    accept(&mut lp, 1, u);
+    let e = &mut lp.peers[1].engine;
+    assert!(!matches!(e.thing_sync(&u).unwrap(), ThingSync::Unread(ids) if ids.contains(&s)), "the forger's thing holds no kept sync ID");
+    assert_eq!(e.sync_set().unwrap().ids.get(&s), Some(&(t, Holding::Unread)), "t keeps its sync ID");
+}

@@ -462,7 +462,7 @@ fn unkept_offers(core: &crate::engine::Core, now: WallMs) -> BTreeMap<Tid, (Role
     for o in core.ix.offers.values().filter(|o| o.expires > now) {
         for x in &o.things {
             let Some(s) = x.sync_id else { continue };
-            if core.ix.sync_kept.get(&x.tid).is_some_and(|k| k.ids.contains(&s)) {
+            if core.ix.sync_kept.get(&x.tid).is_some_and(|k| k.ids.contains(&s)) || kept_elsewhere(core, &s, &x.tid) {
                 continue;
             }
             let e = out.entry(x.tid).or_insert((x.role, o.from));
@@ -488,10 +488,17 @@ impl crate::engine::Core {
     }
 }
 
+/// Whether the account's sync record keeps `s` for a thing other than `t`: no accept keeps it
+/// for `t` (spec/sync.md §3 A kept sync ID), so an offer naming it is no invitation.
+fn kept_elsewhere(core: &crate::engine::Core, s: &SyncId, t: &Tid) -> bool {
+    core.ix.record_ids.get(s).is_some_and(|x| x.iter().any(|o| o != t))
+}
+
 /// Keeps in the account's sync record the sync IDs the boxes payloads held unexpired at `now`
-/// name for `t` (an accept, spec/sync.md §3).
+/// name for `t` (an accept, spec/sync.md §3), but one kept for another thing.
 fn keep_offered(tx: &mut Tx<'_>, t: &Tid, now: WallMs) -> Result<()> {
-    let ids: BTreeSet<SyncId> = tx.core.ix.offered.get(t).into_iter().flatten().filter_map(|b| tx.core.ix.offers.get(b)).filter(|o| o.expires > now).flat_map(|o| o.things.iter().filter(|x| x.tid == *t).filter_map(|x| x.sync_id)).collect();
+    let core = &*tx.core;
+    let ids: BTreeSet<SyncId> = core.ix.offered.get(t).into_iter().flatten().filter_map(|b| core.ix.offers.get(b)).filter(|o| o.expires > now).flat_map(|o| o.things.iter().filter(|x| x.tid == *t).filter_map(|x| x.sync_id)).filter(|s| !kept_elsewhere(core, s, t)).collect();
     let ids: Vec<SyncId> = ids.into_iter().collect();
     super::records::keep_in(tx, t, &ids, [])?;
     Ok(())
