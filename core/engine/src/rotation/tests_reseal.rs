@@ -696,3 +696,57 @@ fn copy_read_below_a_cut_keeps_its_floor_spec_crypto_5() {
         panic!("given {}: N opens P's fresh encryption of w0 from before its cut (content {content})", given.len());
     }
 }
+
+// spec/crypto.md §5 (Passing on), spec/sync-ids.md §1 (Repair): a repair writes the aspect's
+// current value again under V's own epoch, so it carries state as a snapshot does and waits as one
+// does. V wrote a large value; R, after removing M, edits it under e_R, reusing V's chunks. V,
+// holding e_R's box but not W, repairs the reused chunks only once W makes e_R established, and M
+// reads none of R's edit through the repair.
+#[test]
+fn relink_without_the_removal_leaks_nothing_spec_crypto_5() {
+    let big_ak = Ak::new("x:big.0").unwrap();
+    let (mut lp, g, tids) = granted(5, &[(A2, Role::Admin), (M, Role::Read), (R, Role::Admin), (V, Role::Admin)]);
+    let mut v = vec![0u8; 256 << 10];
+    osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(9), &mut v);
+    let mut m = Mutation::new();
+    m.set(g, &big_ak, &Value::Bytes(v.clone())).unwrap();
+    lp.peers[V].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[A2].clock.advance(5_000);
+    let before = commit_ids(&mut lp, A2);
+    lp.peers[A2].engine.demote(&g, &Demotion { holder: tids[M], new: None, retain: None }).unwrap();
+    let w_commits: BTreeSet<CommitId> = commit_ids(&mut lp, A2).difference(&before).copied().collect();
+    lp.sync(A2, R).unwrap();
+    lp.peers[R].clock.advance(10_000);
+    rotate_leaving_out(&mut lp, R, g, &BTreeSet::from([Role::Read]), &[]);
+    let n = v.len();
+    v[n - 4..].copy_from_slice(b"by R");
+    lp.advance(7);
+    let mut m = Mutation::new();
+    m.set(g, &big_ak, &Value::Bytes(v.clone())).unwrap();
+    let w = lp.peers[R].commit(m).unwrap().unwrap();
+    let entry = lp.sealed(R, &[w]).unwrap();
+    send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
+    lp.deliver_sealed(V, &entry).unwrap();
+    let read_v = |lp: &mut LocalPeer, i: usize| match lp.peers[i].engine.get(&g, &big_ak).unwrap() {
+        Some(Value::Link(l)) => lp.peers[i].engine.read_large(&g, &l).ok(),
+        x => x,
+    };
+    assert_eq!(read_v(&mut lp, V), Some(Value::Bytes(v.clone())), "V reads R's edit by e_R's box");
+    let lost = lp.peers[V].engine.live_trees(&g).unwrap().blobs;
+    let r = lp.peers[V].engine.relink(&lost, &[g].into(), &mut |_, _| true).unwrap();
+    if let Some(c) = r {
+        let pks = lp.sealed(V, &[c]).unwrap();
+        lp.deliver_sealed(M, &pks).unwrap();
+        assert_ne!(read_v(&mut lp, M), Some(Value::Bytes(v.clone())), "M reads R's edit through V's repair");
+    }
+    assert_eq!(r, None, "V repairs R's edit under its own epoch with e_R not established");
+    // W arrives: V repairs, and M reads nothing of R's edit through it
+    for pk in lp.packages(A2).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
+        let _ = lp.deliver(V, &pk);
+    }
+    let c = lp.peers[V].engine.relink(&lost, &[g].into(), &mut |_, _| true).unwrap().expect("a repair once e_R is established");
+    let pks = lp.sealed(V, &[c]).unwrap();
+    lp.deliver_sealed(M, &pks).unwrap();
+    assert_ne!(read_v(&mut lp, M), Some(Value::Bytes(v)), "M reads R's edit through V's repair");
+}
