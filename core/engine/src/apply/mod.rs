@@ -185,8 +185,9 @@ impl<'a> PartsRead<'a> {
 /// decoded whole: their readers (perm's edges, rotations, creation records, the addenda index)
 /// read them whole, and they hold rosters of thousands, or a frontier's worth of commit IDs, not
 /// millions of elements; the rest are streamed.
-#[derive(Default)]
 pub(crate) struct Parts {
+    /// The commit's signature, checked (`signature`).
+    pub signed: osis_commit::Signed,
     pub whole: Vec<(usize, Decoded)>,
     pub streamed: Vec<Streamed>,
     /// Held parts that wait alone (spec/commits.md §4).
@@ -317,6 +318,26 @@ fn epoch_key(core: &crate::engine::Core, author: &Tid, epoch: Option<CommitId>, 
     }
 }
 
+/// Whether `sigs` are commit `id`'s signatures under `key` (spec/crypto.md §2): their verdict, or
+/// `None`. The one door to a commit's signature check, so a node checks each commit's once.
+///
+/// Invariant: a commit is treated as verified only if these exact signature bytes verified under
+/// this exact key. A verdict (`osis_commit::Signed`) is a hash of the key, the signed digest and
+/// the signature, made only by a check, by the signer, or kept with the commit: the held commit's
+/// (`Meta::signed`, the verdict on the signatures its record holds) and `known` (one this
+/// ingest already reached, or the signer's own) answer only when they are the verdict on exactly
+/// these bytes and key; a copy with other signature bytes, or a key resolved otherwise since
+/// (another record or epoch key for its author), is checked anew.
+pub(crate) fn signature(core: &crate::engine::Core, id: &CommitId, sigs: &osis_commit::Sigs, key: &VerifyingKey, known: Option<osis_commit::Signed>) -> Option<osis_commit::Signed> {
+    // the held verdict only spares the check, its answer is the check's: read unrecorded, so no
+    // memo asking moves with the commit's meta
+    let held = osis_base::memo::unrecorded(|| core.ix.commits.get(id).map(|m| m.signed));
+    if let Some(s) = known.into_iter().chain(held).find(|s| s.vouches(id, sigs, key)) {
+        return Some(s);
+    }
+    osis_commit::verify_signature(id, sigs, key).ok()
+}
+
 /// Whether `sigs` are `author`'s for commit `id` at epoch `epoch` (`None` for a key actor other
 /// than an account, spec/wire.md §4), from what is held: `false` when that cannot be told.
 pub fn signed_at(core: &crate::engine::Core, id: &CommitId, author: &Tid, epoch: Option<CommitId>, sigs: &osis_commit::Sigs) -> bool {
@@ -324,29 +345,30 @@ pub fn signed_at(core: &crate::engine::Core, id: &CommitId, author: &Tid, epoch:
     if *account != epoch.is_some() || *account != sigs.inner.is_some() {
         return false;
     }
-    epoch_key(core, author, epoch, public_key).ok().flatten().is_some_and(|vk| osis_commit::verify_signature(id, sigs, &vk).is_ok())
+    epoch_key(core, author, epoch, public_key).ok().flatten().is_some_and(|vk| signature(core, id, sigs, &vk, None).is_some())
 }
 
 /// Whether `blob`'s signature is its author's (`author_key`), the author's record from `record`:
 /// `None` when that cannot be told yet (no record, an epoch not held).
 pub(crate) fn signed_by_author(core: &crate::engine::Core, blob: &CommitBlob, id: &CommitId, record: Option<&CreationRecord>) -> Option<bool> {
     match author_key(core, &blob.header, &blob.sigs, record?) {
-        Ok(Some(vk)) => Some(osis_commit::verify_signature(id, &blob.sigs, &vk).is_ok()),
+        Ok(Some(vk)) => Some(signature(core, id, &blob.sigs, &vk, None).is_some()),
         Ok(None) => None,
         Err(_) => Some(false),
     }
 }
 
-fn check_signature(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId, vk: &VerifyingKey) -> Result<()> {
+/// `signature` of `blob`, bad input when it fails.
+fn check_signature(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId, vk: &VerifyingKey, known: Option<osis_commit::Signed>) -> Result<osis_commit::Signed> {
     let _s = osis_base::costs::span("examine: signature");
-    if let Err(e) = osis_commit::verify_signature(id, &blob.sigs, vk) {
+    let Some(s) = signature(tx.core, id, &blob.sigs, vk, known) else {
         // the first copy's signature, kept while the author was away: a true copy may be held
         if tx.core.ix.pending.contains_key(id) {
             tx.core.redeliver.insert(*id);
         }
-        return Err(e.into());
-    }
-    Ok(())
+        return Err(osis_commit::Error::BadSignature.into());
+    };
+    Ok(s)
 }
 
 /// The stored bytes of pending commit `id`, decoded: `None` when they are gone (it pends no
@@ -400,7 +422,8 @@ fn still_waits(tx: &mut Tx<'_>, b: &CommitBlob) -> Result<bool> {
     Ok(matches!(author_key(tx.core, &b.header, &b.sigs, author), Ok(None)))
 }
 
-/// Checks a commit and decodes its parts, or says why it waits.
+/// Checks a commit and decodes its parts, or says why it waits. `known`: its signature's
+/// verdict reached before, if any (`signature`).
 ///
 /// Invariant (delivery-shape independence, spec/commits.md §4): what applies is a function of the
 /// parts held and everything else held, never of which came first or which came together. One rule
@@ -421,14 +444,14 @@ fn still_waits(tx: &mut Tx<'_>, b: &CommitBlob) -> Result<bool> {
 ///
 /// Every wait only ends as the held set grows, so the applied parts are the least fixpoint of a
 /// monotone rule, one result for every order (osis-node `order::held_set_decides` plays them).
-pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, skip: &BTreeSet<usize>, origin: Origin) -> Result<Exam> {
+pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, skip: &BTreeSet<usize>, origin: Origin, mut known: Option<osis_commit::Signed>) -> Result<Exam> {
     if !blob.header.is_resolved() {
         // a held author's signature first: a false one costs no list. An author's record carried
         // by this commit waits for the lists: only the aspects say which part holds it
         if let Some(rec) = tx.core.created(&blob.header.author).cloned()
             && let Some(vk) = author_key(tx.core, &blob.header, &blob.sigs, &rec)?
         {
-            check_signature(tx, blob, id, &vk)?;
+            known = Some(check_signature(tx, blob, id, &vk, known)?);
         }
         let Some(dedup) = tx.core.dedup(&blob.header.actor) else { return Ok(Exam::Awaits(Reason::UnknownCreated(blob.header.actor))) };
         match blob.header.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup) {
@@ -511,7 +534,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         throw_out_parts(tx, blob, id, &unjudged)?;
         return Ok(Exam::Pending(Reason::Epoch(h.epoch.unwrap_or(osis_commit::FIRST_EPOCH))));
     };
-    check_signature(tx, blob, id, &vk)?;
+    let signed = check_signature(tx, blob, id, &vk, known)?;
     h.validate()?;
     // a frontier that does not decode is bad input, never a demotion without one (spec/wire.md
     // §4 field 12)
@@ -536,7 +559,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::CollidingRecord, tids: vec![*t], commit: Some(*id), peer: Some(h.author), detail: String::new() }, now);
         }
     }
-    let mut out = Parts::default();
+    let mut out = Parts { signed, whole: Vec::new(), streamed: Vec::new(), waiting: None, unjudged: BTreeMap::new(), unjudged_parts: Vec::new(), bad: None, stripped: Vec::new() };
     let mut interner = Interner::new();
     // tests let a local writer break the writer rules, to test receivers
     let rules = !(tx.core.skip_writer_rules && Some(h.author) == tx.core.me());
@@ -760,7 +783,7 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
     if tx.core.memory_tx
         && origin == Origin::Remote
         && tx.core.ix.commits.contains_key(&id)
-        && let Some(out) = memory::memory_gate(tx, &mut blob, &id)?
+        && let Some(out) = memory::memory_gate(tx, &mut blob, &id, &mut None)?
     {
         return Ok(out);
     }
@@ -768,15 +791,16 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
         return late_parts(tx, &id, blob);
     }
     blob = with_pending(tx, &id, blob)?;
+    let mut known = None;
     if tx.core.memory_tx
         && origin == Origin::Remote
-        && let Some(out) = memory::memory_gate(tx, &mut blob, &id)?
+        && let Some(out) = memory::memory_gate(tx, &mut blob, &id, &mut known)?
     {
         return Ok(out);
     }
     let received = tx.now();
     let _s = osis_base::costs::span("examine");
-    let out = match examine(tx, &mut blob, &id, &BTreeSet::new(), origin)? {
+    let out = match examine(tx, &mut blob, &id, &BTreeSet::new(), origin, known)? {
         Exam::Ready(mut parts) => {
             let w = parts.waiting.take();
             // parts its pending copy threw out (`throw_out_parts`) wait as slots of the applied commit
@@ -1006,7 +1030,8 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
         let sigs = blob.sigs.clone();
         let mut merged = merge_parts(old, blob);
         // a true copy's signatures replace the first once its author is known here, by what this
-        // copy brought (its `created.0`) or by anything else
+        // copy brought (its `created.0`) or by anything else: other bytes than the kept ones,
+        // so checked as such
         if sigs != merged.sigs {
             let carried = carried_records(&merged.header, &merged, id);
             let author = tx.core.created(&merged.header.author).cloned().or_else(|| carried.get(&merged.header.author).cloned());
@@ -1044,7 +1069,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
     }
     let mut merged = merge_parts(held, blob.clone());
     let _s = osis_base::costs::span("examine");
-    let out = match examine(tx, &mut merged, id, &skip, Origin::Remote)? {
+    let out = match examine(tx, &mut merged, id, &skip, Origin::Remote, None)? {
         // nothing joins: the late parts keep waiting under the applied commit
         Exam::Ready(Parts { waiting: Some(w), whole, streamed, unjudged, .. }) if whole.is_empty() && streamed.is_empty() && unjudged.is_empty() => {
             blob.parts = w.parts;
@@ -1125,11 +1150,12 @@ fn held_and_skip(tx: &mut Tx<'_>, id: &CommitId) -> Result<(CommitBlob, BTreeSet
     Ok((held, skip))
 }
 
-/// Applies a commit this node just built (no signature check: it signed it).
-pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, received: WallMs) -> Result<()> {
+/// Applies a commit this node just built, `signed` its signature's verdict (no signature
+/// check: it signed it).
+pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, signed: osis_commit::Signed, received: WallMs) -> Result<()> {
     let id = blob.id();
     let mut b = blob.clone();
-    match examine(tx, &mut b, &id, &BTreeSet::new(), Origin::Local)? {
+    match examine(tx, &mut b, &id, &BTreeSet::new(), Origin::Local, Some(signed))? {
         Exam::Ready(parts) if parts.waiting.is_some() => Err(Error::Misuse("own commit not applicable: a part waits")),
         // a node never writes a part others would drop
         Exam::Ready(Parts { bad: Some(e), .. }) if !tx.core.skip_writer_rules => Err(e),
@@ -2356,6 +2382,64 @@ mod tests {
                 assert!(matches!(r, Err(crate::Error::Permission { tid }) if tid == cur));
                 assert_eq!(p0.engine.commit_ids().len(), before);
             }
+        }
+    }
+
+    // spec/crypto.md §2: a node checks each commit's signature once. Invariant (`signature`): a
+    // commit is treated as verified only if these exact signature bytes verified under the key
+    // that signed them. The writer checks none (it signed them); a receiver one per commit, at n
+    // and 10n commits, asked again (`parts_genuine`, `signed_at`) or after a restart none; a copy
+    // with forged signature bytes after the genuine one, and the genuine bytes under another key,
+    // are refused.
+    #[test]
+    fn a_commit_signature_is_checked_once_per_node_spec_crypto_2() {
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.me();
+        let ak = Ak::new("x:a.0").unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        lp.peers[0].commit(m).unwrap();
+        lp.sync_all().unwrap();
+        let verifies = || osis_base::costs::take().iter().find(|c| c.0 == osis_crypto::Domain::Commit.verify_cost()).map_or(0, |c| c.2);
+        let held = |lp: &mut LocalPeer, id: &osis_base::CommitId| (*lp.peers[1].engine.run(|tx| tx.get_commit(id)).unwrap().unwrap()).clone();
+        let mut ids = Vec::new();
+        for (round, n) in [3, 30].into_iter().enumerate() {
+            verifies();
+            let mut new = Vec::new();
+            for i in 0..n {
+                let mut m = Mutation::new();
+                m.set(t, &ak, &Value::Int(i)).unwrap();
+                new.push(lp.peers[0].commit(m).unwrap().unwrap());
+            }
+            assert_eq!(verifies(), 0, "the writer signed them");
+            for id in &new {
+                let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
+                assert_eq!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(*id));
+                let b = held(&mut lp, id);
+                assert_eq!(lp.peers[1].engine.parts_genuine(&b), Some(true));
+                assert!(super::signed_at(&lp.peers[1].engine.core, id, &b.header.author, b.header.epoch, &b.sigs));
+            }
+            assert_eq!(verifies(), n as u64, "round {round}: one per commit at the receiver");
+            ids.extend(new);
+        }
+        lp.peers[1].restart(7).unwrap();
+        verifies();
+        for id in &ids {
+            let b = held(&mut lp, id);
+            assert_eq!(lp.peers[1].engine.parts_genuine(&b), Some(true));
+        }
+        assert_eq!(verifies(), 0, "kept with the record across a restart");
+        let other = lp.peers[1].engine.core.account.get().unwrap();
+        for id in &ids {
+            let genuine = held(&mut lp, id);
+            let mut forged = genuine.clone();
+            forged.sigs.signature.0[0] ^= 1;
+            let e = &mut lp.peers[1].engine;
+            assert_eq!(e.parts_genuine(&forged), Some(false), "forged signature bytes");
+            assert!(!super::signed_at(&e.core, id, &genuine.header.author, genuine.header.epoch, &forged.sigs));
+            assert!(super::signed_at(&e.core, id, &genuine.header.author, Some(osis_commit::FIRST_EPOCH), &genuine.sigs));
+            assert!(!super::signed_at(&e.core, id, &other, Some(osis_commit::FIRST_EPOCH), &genuine.sigs), "the genuine bytes under another key");
         }
     }
 

@@ -85,14 +85,15 @@ pub(crate) fn new_parts_bound(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<u64>
 /// it kept, no chunk of it fetched. Admitted, its value trees are fetched at once
 /// (`reach::Walks::trees_of`). Without a room (a re-examination) it is left waiting: node-sync
 /// applies waiting memory commits itself, each within the room its label has then
-/// (`Engine::apply_waiting_memory`). `None`: go on.
-pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId) -> Result<Option<crate::Ingested>> {
+/// (`Engine::apply_waiting_memory`). `None`: go on, the verdict on its signature in `signed`
+/// when it was checked (`examine` takes it on).
+pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, signed: &mut Option<osis_commit::Signed>) -> Result<Option<crate::Ingested>> {
     let pending = tx.core.ix.pending.get(id).cloned();
     // only a commit its author signed is kept waiting (as `examine` keeps one): an author not
     // held makes it unjudgeable there, nothing kept; an epoch not held, pending unverified there
     let Some(author) = tx.core.created(&blob.header.author).cloned() else { return Ok(None) };
     if let Some(vk) = super::author_key(tx.core, &blob.header, &blob.sigs, &author)? {
-        super::check_signature(tx, blob, id, &vk)?;
+        *signed = Some(super::check_signature(tx, blob, id, &vk, None)?);
     }
     if !blob.header.is_resolved() {
         // no dedup secret: examine finds it unjudgeable before it decodes anything

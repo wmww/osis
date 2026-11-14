@@ -85,6 +85,8 @@ pub struct Built {
     pub commit: CommitBlob,
     /// Blobs written for linked header lists; they go wherever the commit's blob goes.
     pub list_blobs: Vec<BlobId>,
+    /// Its signature, by the key it was built with: verified by construction.
+    pub signed: crate::Signed,
 }
 
 fn build_err(e: Error) -> Error {
@@ -206,7 +208,8 @@ impl CommitBuilder {
         if blob_bound(&commit) > self.max_blob {
             return Err(Error::Build(COMMIT_PAST_BLOB));
         }
-        Ok(Built { commit, list_blobs })
+        let signed = crate::Signed::of(&id, &commit.sigs, &key.verifying_key());
+        Ok(Built { commit, list_blobs, signed })
     }
 }
 

@@ -56,6 +56,23 @@ impl Domain {
             Domain::RoleEntry => "osis v1 role entry",
         }
     }
+    /// The `osis_base::costs` count a verification in this domain adds to.
+    pub const fn verify_cost(self) -> &'static str {
+        match self {
+            Domain::Commit => "verify: commit",
+            Domain::LabelRegister => "verify: label register",
+            Domain::LabelOpen => "verify: label open",
+            Domain::Stamp => "verify: stamp",
+            Domain::Deposit => "verify: deposit",
+            Domain::Delete => "verify: delete",
+            Domain::LanAnnounce => "verify: lan announce",
+            Domain::Possession => "verify: possession",
+            Domain::Inner => "verify: inner",
+            Domain::Merge => "verify: merge",
+            Domain::ConnectionProof => "verify: connection proof",
+            Domain::RoleEntry => "verify: role entry",
+        }
+    }
     fn message(self, digest: &[u8; 32]) -> Vec<u8> {
         let mut m = Vec::with_capacity(self.as_str().len() + 32);
         m.extend_from_slice(self.as_str().as_bytes());
@@ -118,6 +135,7 @@ impl VerifyingKey {
     }
     /// Strict verification of `sig` over `domain || digest`.
     pub fn verify(&self, domain: Domain, digest: &[u8; 32], sig: &Signature) -> Result<(), Error> {
+        osis_base::costs::count(domain.verify_cost(), 1);
         let s = ed25519_dalek::Signature::from_bytes(&sig.0);
         self.0.verify_strict(&domain.message(digest), &s).map_err(|_| Error::BadSignature)
     }

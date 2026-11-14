@@ -1,6 +1,8 @@
-# A receiving node checks each commit's signature about five times
-> Summary: Counted in the node sync tests (notes/sync-test-harness.md, measured costs): each commit's signature is verified about 5 times per receiving node (13.6 checks per write with two receivers), at about 0.43 M instructions per verify. Structural waste in ingest: a commit's signature should be checked once per node, its result memoized with the commit.
+# Node-sync checks an entry's upload stamp several times per node
+> Summary: A commit's signature is checked once per node (notes/engine.md, Signature verdicts), but node-sync verifies the upload stamp of each synced entry about three times per write across the nodes (plus the host's one at upload), at about 0.43 M instructions each: the same (key, digest, signature) checked again where a verdict kept with the entry would answer.
 > Priority: normal
-> Tags: engine, performance
+> Tags: sync, performance
 
-Find every verify call reached from ingest, judgement and re-judgement for one commit (count with a counter in a debug test, at n and 10n commits) and make the verified state part of the commit's memoized record (Tess: structural efficiency, one memoization system, no ad-hoc caches). A re-check that guards against a different input (e.g. a changed key set) must say so; if none does, the checks collapse to one.
+Counted with `Domain::verify_cost` counters, a writer and a reader through a host (`hosted::<2, 1>`), one register write per step, at 5 and 50 writes (per write, flat): stamp 4.3 (`proto::session` upload check at the host 1.1, `sync/inbound.rs` `signed_by` 2.2, `sync/pass/mod.rs` the `stamped` check 1.0), delete 1.0 (the host's check of each delete request: distinct requests, not repeats), commit 1.0 (the reader's one), possession 0.16.
+
+Left for the sync rewrite (coordinator Capstan; node-sync, host and proto session code were frozen when commit signatures were fixed): an entry's stamp is a function of its bytes and the head's write key, so its verdict belongs with the entry where it enters (as `Signed` is kept with a commit), keyed by exactly what verified (the key included: a head key resolved otherwise later is checked anew). A re-check that guards a different input says so.

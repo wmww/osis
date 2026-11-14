@@ -635,6 +635,7 @@ pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::ap
 pub(crate) struct RecordHead {
     pub received: WallMs,
     pub origin: Origin,
+    pub signed: osis_commit::Signed,
     pub dropped: BTreeMap<usize, super::Dropped>,
     pub stripped: BTreeSet<usize>,
     pub valued: BTreeSet<usize>,
@@ -659,7 +660,7 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
         Origin::Local => 0,
         Origin::Remote => 1,
     });
-    w = w.u32(m.dropped_parts().count() as u32);
+    w = w.raw(&m.signed.to_bytes()).u32(m.dropped_parts().count() as u32);
     for (a, d) in m.dropped_parts() {
         let role = d.role.map_or(0, |r| 1 + r as u8);
         w = w.u32(a as u32).u8(u8::from(d.as_cover()) | role << 2 | u8::from(d.overreach) << 5 | u8::from(d.why == super::DropFor::Invalid) << 6).u32(d.covered_by.len() as u32);
@@ -791,6 +792,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
     }
     let received = WallMs(r.u64()?);
     let origin = if r.u8()? == 0 { Origin::Local } else { Origin::Remote };
+    let signed = osis_commit::Signed::from_kept(r.arr()?);
     let mut dropped = BTreeMap::new();
     for _ in 0..r.u32()? {
         let a = r.u32()? as usize;
@@ -845,7 +847,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         let f = *osis_commit::ListField::ALL.get(<usize as From<u8>>::from(r.u8()?)).ok_or(Error::Corrupt("header list field"))?;
         lists.push((f, r.bytes()?.to_vec()));
     }
-    Ok((RecordHead { received, origin, dropped, stripped, valued, lists }, r.rest()))
+    Ok((RecordHead { received, origin, signed, dropped, stripped, valued, lists }, r.rest()))
 }
 
 /// Writes the given changes (`all`: everything) of the indexes to the persisted index.
@@ -1036,7 +1038,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, hold });
+        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, signed: head.signed, valid, hold });
         crate::apply::note_stands_in(tx.core, &id);
         tx.core.index_validity(&id);
     }

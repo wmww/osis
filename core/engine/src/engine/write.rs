@@ -717,7 +717,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         tx.core.forged = Some(built.commit.encode());
     }
     let received = tx.now();
-    crate::apply::apply_local(tx, &built.commit, received)?;
+    crate::apply::apply_local(tx, &built.commit, built.signed, received)?;
     Ok(id)
 }
 
