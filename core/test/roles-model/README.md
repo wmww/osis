@@ -30,7 +30,7 @@ One account P (node 0 the remover, X = 1, Y = 2, maybe a sibling), witness write
 Hand tests (`cargo test -p roles-model --lib epochs`) state the properties of the build plan's steps 4 and 5 on small worlds; `removed_node_holding_a_sibling_epoch` is the minimal sibling-epoch world; `any_node_supersedes_a_sibling_epoch_with_the_remover_gone` and `a_standing_fork_loses_no_write_when_its_writer_goes` the minimal worlds for no designated rotator and for `World::ends`.
 
 ### Results
-Recorded before the first-seen sides (`forks`); after them a 592-world run (`-- 600 epochs`, 22 s) passes every hard check (merges owed for honest forks asked in the settle only), and a 20,000-world run did not end within 33 min (some worlds are far slower: not chased). Re-run the table's rows before relying on them.
+Recorded before the first-seen sides (`forks`); after them a 592-world run (`-- 600 epochs`, 22 s) passes every hard check (merges owed for honest forks asked in the settle only), and larger runs do not end within the heavy limit: a few worlds grow to 100-135 items and 30+ rotations (X re-forking after every rotation of P's, each answered), and both generating one (up to 170 s; `Builder::due`/`forked` judge the chain at every tick) and checking it (every observer and prefix) take minutes, as `World::follow` is about quartic in items (`minted` scans every item inside the per-line, per-removal loops). No merge race: the settle's rounds are capped. Index `minted` and the line sets once per judgment before re-running the table. Re-run the table's rows before relying on them.
 
 | Run | Worlds | Hard failures |
 |---|---|---|
