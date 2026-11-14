@@ -73,8 +73,8 @@ fn apply_orders_closes_and_the_wake_last() {
     assert_eq!(r.0, ["send 2", "dial 3", "send 1", "close 1", "wake 4"]);
 }
 
-// spec: none (test harness): a script plays on a fixture copy; partitions, power loss and time
-// leave the world quiet and its nodes as they were.
+// spec: none (test harness): a script plays on a fixture copy; partitions, power loss (the node
+// reopens over its disks) and time leave the world quiet and its nodes as they were.
 #[test]
 fn a_script_plays_on_a_fixture() {
     use crate::harness::{Step, play};
@@ -83,4 +83,5 @@ fn a_script_plays_on_a_fixture() {
     let steps = [Step::Partition(0, 1), Step::Run, Step::PowerOff(1), Step::Advance(60_000), Step::PowerOn(1), Step::Heal, Step::Run];
     play(&mut w, &steps, "world::a_script_plays_on_a_fixture".into());
     assert_eq!((w.node(0).account, w.node(1).account), accounts);
+    assert_eq!(w.engine(1).account_tid(), accounts.1, "the reopened node reads its own account");
 }

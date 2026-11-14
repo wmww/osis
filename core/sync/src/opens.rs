@@ -5,10 +5,11 @@
 //! (durable, its row keeping the digest of the value it was advanced for). Settle: per S,
 //! `admissible(s)` is an effect over the engine's `read_credentials(s)` or unread's
 //! `credentials(s)`; a moved value advances `changed_at(s)`, re-judges S's members on every
-//! connection, and makes filter additions and tests due. Depends on session, store, unread,
-//! engine (J, credentials, known actors). Not built: every call below.
+//! connection, and makes filter additions and tests due. Every member that joins or leaves a
+//! connection's shared set is reported as a `Moved`, which the driver hands to streams. Depends
+//! on session, store, unread, engine (J, credentials, known actors). Not built: every call below.
 
-use crate::session::{Incoming, Session};
+use crate::session::{Incoming, Sessions};
 use crate::types::{ConnId, Credential, Cx, Position, RecordId, Result, SourceClass};
 use crate::unread::Unread;
 use osis_base::{SyncId, WallMs};
@@ -26,6 +27,15 @@ pub struct Member {
     pub step: Option<StepId>,
 }
 
+/// A change of a connection's shared set: the driver hands each to `Streams::moved`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Moved {
+    /// S became a member on `conn` (newly open, or open again).
+    Joined(ConnId, SyncId),
+    /// S stopped being a member on `conn` (ended to its `until`, closed, or the connection ended).
+    Left(ConnId, SyncId),
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Opens {
     members: BTreeMap<ConnId, BTreeMap<SyncId, Member>>,
@@ -34,20 +44,18 @@ pub struct Opens {
 static NO_MEMBERS: BTreeMap<SyncId, Member> = BTreeMap::new();
 
 impl Opens {
-    /// The peer proved itself: Resume or NoRecord, then Digest.
-    pub fn on_proved(&mut self, cx: &mut Cx, conn: ConnId, s: &mut Session) {
-        let _ = (cx, conn, s);
+    /// `Proved` (Resume or NoRecord, then Digest); Resume, Digest, Members, Beacons, Offer,
+    /// Shared, Lost.
+    pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, conn: ConnId, m: Incoming, moved: &mut Vec<Moved>) {
+        let _ = (cx, sessions, conn, m, moved);
     }
 
-    /// Resume, Digest, Members, Beacons, Offer, Shared, Lost.
-    pub fn on_message(&mut self, cx: &mut Cx, conn: ConnId, s: &mut Session, m: Incoming) {
-        let _ = (cx, conn, s, m);
-    }
-
-    /// A connection ended.
-    pub fn on_closed(&mut self, cx: &mut Cx, conn: ConnId) {
+    /// A connection ended: each of its members left.
+    pub fn on_closed(&mut self, cx: &mut Cx, conn: ConnId, moved: &mut Vec<Moved>) {
         let _ = cx;
-        self.members.remove(&conn);
+        if let Some(members) = self.members.remove(&conn) {
+            moved.extend(members.into_keys().map(|s| Moved::Left(conn, s)));
+        }
     }
 
     pub fn members(&self, conn: ConnId) -> &BTreeMap<SyncId, Member> {
@@ -55,14 +63,14 @@ impl Opens {
     }
 
     /// The peer's record: where streams, read and store keep their per-peer rows.
-    pub fn record(&mut self, conn: ConnId) -> Option<RecordId> {
+    pub fn record(&self, conn: ConnId) -> Option<RecordId> {
         let _ = conn;
         None
     }
 
-    /// Whether anything acted.
-    pub fn settle(&mut self, cx: &mut Cx, unread: &Unread) -> Result<bool> {
-        let _ = (cx, unread);
+    /// Whether anything acted (a member that moved is in `moved`).
+    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, unread: &Unread, moved: &mut Vec<Moved>) -> Result<bool> {
+        let _ = (cx, sessions, unread, moved);
         Ok(false)
     }
 

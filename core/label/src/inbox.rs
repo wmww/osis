@@ -31,7 +31,7 @@ pub struct InboxThing {
     pub delete_keys: Option<(VerifyingKey, VerifyingKey)>,
 }
 
-/// `InboxPayload := [CommitBlobPlaintext, [[tid, Opt([label_id, [address*]]),
+/// `InboxPayload := [CommitBlobPlaintext, [[tid, Opt([sync_id, [address*]]),
 /// Opt([admin_pk, write_pk])]*], [CommitBlobPlaintext*], [creation*]]`, things sorted by tid,
 /// distinct, records ascending by tid, distinct.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,7 +112,7 @@ impl InboxPayload {
     }
 }
 
-/// `StrandedNotice := ["stranded", label_id, holder, [CommitBlobPlaintext*], [creation*]]`
+/// `StrandedNotice := ["stranded", sync_id, holder, [CommitBlobPlaintext*], [creation*]]`
 /// (spec/wire.md §9): holder `holder` is stranded on label `label` (spec/permissions.md §4), with
 /// the holder's current `keys.0` commits and their authors' chains (`HolderKeys`). It carries no
 /// role commit.

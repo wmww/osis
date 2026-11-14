@@ -37,14 +37,17 @@ impl Node {
     pub fn open(engine: Engine, store: Store, cfg: SyncConfig, rng: Box<dyn NodeRng>) -> Result<Node>;
     #[must_use] pub fn handle(&mut self, input: Input) -> Vec<Out>;
     pub fn engine(&mut self) -> &mut Engine;          // the osis handle's writes and reads
-    pub fn status(&mut self) -> Arc<StatusView>;      // a memo value (Status below)
+    pub fn status(&self) -> Arc<StatusView>;          // as of the last step (Status below)
     pub fn wait(&mut self, scope: Scope) -> Waiting;  // Done | Pending | Never(why)
 }
 pub trait Links { fn dial(&mut self, conn: ConnId, to: &Address); fn send(&mut self, conn: ConnId, bytes: &[u8]); fn close(&mut self, conn: ConnId); fn wake(&mut self, at: WallMs); }
 pub fn apply(out: Vec<Out>, links: &mut impl Links);   // the one place outputs are carried out
 ```
-- `handle` routes the input to its module (bytes: `Session::receive`, then each message to the module `Incoming::to` names; a message no module takes closes the connection), then **settles**: every module's `settle` (each returns `Result<bool>`, whether it acted) in the order store, unread, read, inbox, opens, streams, status, again while one acted, then collects sessions' bytes and the earliest wake (each module's `next_wake`, `Engine::next_timer`, the memo clock's next `until`). A settle error closes every connection (a store failure's reopen is the driver's).
-- `apply` carries out sends and dials in the order made, then closes (a closing node's owed Applied goes first, spec/sync-streams.md §4 Reports), then one `Links::wake`, the earliest given. A step gives at most one `Wake`, last, and `Links::wake` replaces the node's earlier one, so no older wake overwrites a newer (an early wake costs one idle `Tick`). Outputs made outside `handle` (`status`, `wait`) are held and returned by the next `handle`.
+- `handle` routes the input to its module (bytes: `Session::receive`, then each message to the module `Incoming::to` names; a message no module takes closes the connection), then **settles**: every module's `settle` (each returns `Result<bool>`, whether it acted) in the order store, unread, opens, read, inbox, streams, status (opens first among the sending modules, so the others act on this round's shared set), again while one acted, then collects sessions' bytes and the earliest wake (each module's `next_wake`, `Engine::next_timer`, the memo clock's next `until`). A settle error closes every connection (a store failure's reopen is the driver's).
+- **Sending**: the driver owns every `Session` in one `session::Sessions`; each entry point and `settle` of a module that sends (opens, streams, read, inbox) takes `&mut Sessions` and sends on the connection it acts on. Nothing is sent from outside a step.
+- **Members moving**: opens reports each member that joins or leaves a connection's shared set as a `Moved` (out-parameter of its `on_message`, `on_closed` and `settle`); the driver hands each to `Streams::moved` at once. Opens never calls streams; streams never diffs the shared set.
+- **The settle loop ends** because `acted` means only that a module changed something another reads (a store row, an engine write, a member moved), each an `Effects` value moving to a new settled value; a round runs again only while values move. Two modules undoing each other's acts would loop forever in one step: nothing in the product bounds it, and the harness fails a step past `ROUND_CAP` rounds (`Node::rounds`, tests only).
+- `apply` carries out sends and dials in the order made, then closes (a closing node's owed Applied goes first, spec/sync-streams.md §4 Reports), then one `Links::wake`, the earliest given. A step gives at most one `Wake`, last, and `Links::wake` replaces the node's earlier one, so no older wake overwrites a newer (an early wake costs one idle `Tick`). Only `handle` makes outputs: `status` and `wait` read.
 - The node's time is its engine's clock; `Tick { now }` says a wake came due (`now` moves it forward only).
 - **No engine events as input.** After the osis handle writes it calls `handle(Wrote)`, which only settles: what the write changed reaches sync through the memos it moved. `Engine::subscribe_durable` stays for the API's listeners only.
 - A store failure closes every connection and reopens the node from the store (inputs note, store-reopen); the effects' acted values are not durable (but `changed_at`, below), so a start or reopen settles every key once: the same reload spec/sync-judgement.md §3 names for forgetting.
@@ -63,21 +66,22 @@ impl Session {
     pub fn proven(&self) -> &Proven;                  // account at epoch, key actors, own node
     pub fn take_bytes(&mut self) -> Vec<u8>;
 }
-pub enum Incoming { Request(RequestId, Message), Reply(RequestId, Message), Push(Message) }
+pub enum Incoming { Proved, Request(RequestId, Message), Reply(RequestId, Message), Push(Message) }   // Proved: the peer's proofs are done
 impl Incoming { pub fn to(&self) -> Option<To> }   // To { Opens, Streams, Inbox }: the module that takes it
+impl Sessions { pub fn get(&self, c: ConnId) -> Option<&Session>; pub fn get_mut(&mut self, c: ConnId) -> Option<&mut Session>; pub fn conns(&self) -> impl Iterator<Item = ConnId>; }  // the driver's; insert, remove, bytes taken by it
 pub struct Proven { pub account: Option<(Tid, Epoch)>, pub actors: Vec<Tid>, pub own_node: bool }
 pub struct Close(pub &'static str);
 ```
 **2. `opens`: records, agreement, the shared set** (spec/sync-opens.md §2-§6, spec/sync-ids.md §6 Walk). State: records (durable, in the store's record rows, `RECORD_BUDGET` LRU), per connection the members, filter generations sent and received, Offer in flight, walk state; `changed_at` per S (durable). Depends on session, store, unread (its credentials), engine (J, credentials, known actors).
 ```rust
 impl Opens {
-    pub fn on_proved(&mut self, cx: &mut Cx, conn: ConnId, s: &mut Session);   // Resume / NoRecord, then Digest
-    pub fn on_message(&mut self, cx: &mut Cx, conn: ConnId, s: &mut Session, m: Incoming);  // Resume, Digest, Members, Beacons, Offer, Shared, Lost
-    pub fn on_closed(&mut self, cx: &mut Cx, conn: ConnId);   // after streams' on_close of each member
+    pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, conn: ConnId, m: Incoming, moved: &mut Vec<Moved>);  // Proved (Resume / NoRecord, then Digest), Resume, Digest, Members, Beacons, Offer, Shared, Lost
+    pub fn on_closed(&mut self, cx: &mut Cx, conn: ConnId, moved: &mut Vec<Moved>);   // each member Left
     pub fn members(&self, conn: ConnId) -> &BTreeMap<SyncId, Member>;
-    pub fn record(&mut self, conn: ConnId) -> Option<RecordId>;     // where streams, read and store keep their per-peer rows
-    pub fn settle(&mut self, cx: &mut Cx, unread: &Unread) -> Result<bool>;
+    pub fn record(&self, conn: ConnId) -> Option<RecordId>;     // where streams, read and store keep their per-peer rows
+    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, unread: &Unread, moved: &mut Vec<Moved>) -> Result<bool>;
 }
+pub enum Moved { Joined(ConnId, SyncId), Left(ConnId, SyncId) }   // Left: ended to its until, closed, or the connection ended
 pub struct Member { pub class: SourceClass, pub by: Credential, pub until: Option<Position>, pub step: Option<StepId> }
 ```
 Settle: per S, `admissible(s)` is an effect over the engine's `read_credentials(s)` or unread's `credentials(s)`; a moved value advances `changed_at(s)`, re-judges members of S on every connection (ending or closing them), and makes filter additions and tests due. The durable `changed_at` row keeps the digest of the value it was advanced for, so a restart advances it only for a value that moved.
@@ -97,7 +101,7 @@ impl Store {   // Clone: a handle
     pub fn take_register(&mut self, s: &SyncId, step: Step, claims: Option<ClaimSet>) -> Result<Code>;
     pub fn behind(&self, s: &SyncId, item: &BehindItem) -> Result<Answer>;   // BehindItem, DepositItem, Answer: in store until osis-proto's msg holds them
     pub fn path(&self, s: &SyncId) -> Option<Arc<Path>>;          // a kept-unread S's registered path
-    pub fn read_log(&self, members: &Members, from: Option<&Cursor>, max: usize) -> Result<LogRead>;
+    pub fn read_log(&self, members: &BTreeMap<SyncId, Option<Position>>, from: Option<&Cursor>, max: usize) -> Result<LogRead>;  // each member and its `until`
     pub fn shred(&mut self, s: &SyncId) -> Result<()>;            // leaving: keys and wraps erased
     pub fn settle(&mut self, engine: &mut Engine, now: WallMs) -> Result<bool>;   // not over Cx: Cx holds the store
 }
@@ -107,7 +111,7 @@ Expiry and caps giving way run in its `settle`; every row change stamps (osis-st
 **4. `read`: judgement for read sync IDs** (spec/sync-judgement.md §1-§5, spec/sync-compaction.md §1). State: the `Effects` below; the stand of "logged again once", the deletes seen and the deletes owed per source, in that source's record. Depends on engine (bodies, facts, seal, keys, destruction), store, opens (members, records), streams (`known`).
 ```rust
 impl Read {
-    pub fn settle(&mut self, cx: &mut Cx, opens: &Opens, streams: &Streams) -> Result<bool>;
+    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams) -> Result<bool>;
     pub fn verdict(&self, s: &SyncId, c: &CommitId) -> Option<Verdict>;   // for status and inbox
 }
 pub enum Verdict { Must, May, MustNot(Why), Unjudged }
@@ -125,29 +129,28 @@ impl Unread {
 **6. `streams`: streams and flow control** (spec/sync-streams.md §3-§6). State: per connection and member the cursor, joins, `seq`, owed bodies, fetches in flight, reports; `known` per source and S (durable in the record for a peer with one). Depends on session, store, opens (members), engine (`open_entry`, `wants`).
 ```rust
 impl Streams {
-    pub fn on_open(&mut self, cx: &mut Cx, conn: ConnId, s: SyncId);
-    pub fn on_close(&mut self, cx: &mut Cx, conn: ConnId, s: &SyncId, stopped: Option<Cursor>);
-    pub fn on_message(&mut self, cx: &mut Cx, conn: ConnId, s: &mut Session, m: Incoming);  // Pull, PullReply, Stream, Applied, Fetch
+    pub fn moved(&mut self, cx: &mut Cx, sessions: &mut Sessions, m: Moved);   // a join due, or a stream stopped where it stands
+    pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, conn: ConnId, m: Incoming);  // Pull, PullReply, Stream, Applied, Fetch
     pub fn known(&self, conn: ConnId, s: &SyncId) -> &Known;   // what that source's stream showed
     pub fn caught_up(&self, conn: ConnId, s: &SyncId) -> bool;
     pub fn import(&mut self, cx: &mut Cx, bundle: &mut dyn std::io::Read) -> Result<()>;  // a source with no cursor
-    pub fn settle(&mut self, cx: &mut Cx) -> Result<bool>;
+    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens) -> Result<bool>;
 }
 ```
 **7. `inbox`: inbox, deposits, steps and Register** (spec/sync-inbox.md, spec/sync-ids.md §6 Steps). State: per delivery its re-sends; Deposit items in flight and back-offs; Register attempts per (source, S); stranded notices sent. Depends on engine (deliveries, inbox blobs, taking, promotion, keys), store, opens, streams.
 ```rust
 impl Inbox {
-    pub fn settle(&mut self, cx: &mut Cx, opens: &Opens, streams: &Streams) -> Result<bool>;
-    pub fn on_message(&mut self, cx: &mut Cx, conn: ConnId, s: &mut Session, m: Incoming);  // Deposit and Register answers (ItemAnswer each)
+    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams) -> Result<bool>;
+    pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, conn: ConnId, m: Incoming);  // Deposit and Register answers (ItemAnswer each)
     pub fn redeem(&mut self, cx: &mut Cx, link: &Link) -> Waiting;             // first contact
 }
 ```
 **8. `status`** (spec/sync-status.md). State: complete passes begun per S; held-elsewhere reports (durable, kept while the entry is). Depends on opens, streams, read, engine.
 ```rust
 impl Status {
-    pub fn view(&mut self, cx: &mut Cx) -> Arc<StatusView>;   // per S: sources and their state, passes waiting; idle
-    pub fn wait(&mut self, cx: &mut Cx, scope: Scope) -> Waiting;
-    pub fn settle(&mut self, cx: &mut Cx, opens: &Opens, streams: &Streams) -> Result<bool>;  // tells the engine of complete passes and own commits held elsewhere
+    pub fn view(&self) -> Arc<StatusView>;   // as of the last settle; per S: sources and their state, passes waiting; idle
+    pub fn wait(&self, engine: &mut Engine, scope: Scope) -> Waiting;
+    pub fn settle(&mut self, cx: &mut Cx, opens: &Opens, streams: &Streams, read: &Read) -> Result<bool>;  // keeps the view; tells the engine of complete passes and own commits held elsewhere
 }
 ```
 **9. `driver`: the node, dials, timers, outputs** (spec/sync-opens.md §1, spec/sync-transport.md). State: connections and their sessions, dial candidates (`reach.0`, `dial.0`, grant hints, link sharers, configured addresses, discovery), redial times, dial timeouts, one connection per pair. Owns `Node`, `Input`, `apply` and `TransportLinks<T: osis_transport::Transport>` (tokio). Depends on every module.
@@ -210,7 +213,7 @@ impl<K> Feed<K> { pub fn added(&mut self) -> Vec<K>; }
   `settle` records what `f` read, as a memo does, and indexes each (container, key) read to `k`; each `Stamps` keeps a log of the keys written since its oldest live mark, so `due` costs the writes since the last call times their readers, never the keys followed. A `Feed` is a cursor of one reader over an index's own log: nobody drains it and nothing writes it by hand, which is what separates it from a take-queue.
 - **Subscribing, in `read`:**
 ```rust
-fn settle(&mut self, cx: &mut Cx, opens: &Opens, streams: &Streams) {
+fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams) {
     for c in self.new_commits.added() { self.bodies.want(c) }           // Feed over the engine's held-commit index
     for c in self.bodies.due() {
         if let Some((was, now)) = self.bodies.settle(&c, || cx.engine.sync_bodies(&c)) {

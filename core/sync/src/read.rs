@@ -9,6 +9,7 @@
 //! Not built: every call below.
 
 use crate::opens::Opens;
+use crate::session::Sessions;
 use crate::streams::Streams;
 use crate::types::{Cx, Result};
 use osis_base::{CommitId, SyncId, WallMs};
@@ -39,8 +40,8 @@ pub struct Read {}
 
 impl Read {
     /// Whether anything acted.
-    pub fn settle(&mut self, cx: &mut Cx, opens: &Opens, streams: &Streams) -> Result<bool> {
-        let _ = (cx, opens, streams);
+    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams) -> Result<bool> {
+        let _ = (cx, sessions, opens, streams);
         Ok(false)
     }
 

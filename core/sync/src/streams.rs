@@ -4,8 +4,9 @@
 //! reports; `known` per source and S (durable in the record for a peer with one). Depends on
 //! session, store, opens (members), engine (`open_entry`, `wants`). Not built: every call below.
 
-use crate::session::{Incoming, Session};
-use crate::types::{ConnId, Cursor, Cx, Error, Result};
+use crate::opens::{Moved, Opens};
+use crate::session::{Incoming, Sessions};
+use crate::types::{ConnId, Cx, Error, Result};
 use osis_base::{BlobId, SyncId, WallMs};
 use std::collections::BTreeSet;
 
@@ -21,19 +22,15 @@ static NOTHING_KNOWN: Known = Known { present: BTreeSet::new() };
 pub struct Streams {}
 
 impl Streams {
-    /// S opened on `conn`.
-    pub fn on_open(&mut self, cx: &mut Cx, conn: ConnId, s: SyncId) {
-        let _ = (cx, conn, s);
-    }
-
-    /// S closed on `conn`, its stream stopped at `stopped`.
-    pub fn on_close(&mut self, cx: &mut Cx, conn: ConnId, s: &SyncId, stopped: Option<Cursor>) {
-        let _ = (cx, conn, s, stopped);
+    /// A member joined (its join is due) or left (its stream stops where it stands) a
+    /// connection's shared set; the connection may be gone already.
+    pub fn moved(&mut self, cx: &mut Cx, sessions: &mut Sessions, m: Moved) {
+        let _ = (cx, sessions, m);
     }
 
     /// Pull, PullReply, Stream, Applied, Fetch.
-    pub fn on_message(&mut self, cx: &mut Cx, conn: ConnId, s: &mut Session, m: Incoming) {
-        let _ = (cx, conn, s, m);
+    pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, conn: ConnId, m: Incoming) {
+        let _ = (cx, sessions, opens, conn, m);
     }
 
     /// What that source's stream showed.
@@ -54,8 +51,8 @@ impl Streams {
     }
 
     /// Whether anything acted.
-    pub fn settle(&mut self, cx: &mut Cx) -> Result<bool> {
-        let _ = cx;
+    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens) -> Result<bool> {
+        let _ = (cx, sessions, opens);
         Ok(false)
     }
 

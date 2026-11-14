@@ -22,13 +22,13 @@ const FORMAT: u64 = 1;
 /// One bundle record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Record {
-    /// `[1, label_id, [[step, Opt(claim_set)]+]]`: the path from the genesis step to the head.
+    /// `[1, sync_id, [[step, Opt(claim_set)]+]]`: the path from the genesis step to the head.
     Path { label: SyncId, steps: Vec<(Step, Option<ClaimSet>)> },
     /// `[2, blob]`: before the first entry naming it, once per bundle.
     Blob(Vec<u8>),
-    /// `[3, label_id, blob_id, wrap, Opt(stamp)]`; no stamp: deposited.
+    /// `[3, sync_id, blob_id, wrap, Opt(stamp)]`; no stamp: deposited.
     Entry { label: SyncId, blob: BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature> },
-    /// `[4, label_id, blob_id]`.
+    /// `[4, sync_id, blob_id]`.
     Delete { label: SyncId, blob: BlobId },
     /// A record of a kind this build does not know: skipped.
     Unknown(u64),

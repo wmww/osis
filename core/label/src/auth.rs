@@ -12,7 +12,7 @@ use osis_base::{BlobId, SyncId, Value};
 use osis_crypto::{DeleteSecret, Domain, LabelRole, Signature, SigningSecret, VerifyingKey, verify_delete};
 
 /// Digest of a stamp, deposit or publish authorization: BLAKE3 of canonical
-/// `[label_id, blob_id, wrap]`.
+/// `[sync_id, blob_id, wrap]`.
 pub fn entry_digest(label: &SyncId, blob: &BlobId, wrap: &[u8]) -> [u8; 32] {
     osis_base::hash::hash(&encode(&Value::List(vec![Value::bytes(&label.0), Value::bytes(&blob.0), Value::bytes(wrap)])))
 }
@@ -73,7 +73,7 @@ pub struct DeleteItem {
     pub sig: Signature,
 }
 
-/// Digest of a delete: BLAKE3 of canonical `[label_id, blob_id, [level*]]`.
+/// Digest of a delete: BLAKE3 of canonical `[sync_id, blob_id, [level*]]`.
 pub fn delete_digest(label: &SyncId, blob: &BlobId, levels: &[Level]) -> [u8; 32] {
     let v = Value::List(vec![Value::bytes(&label.0), Value::bytes(&blob.0), Value::List(levels.iter().map(|l| Value::Int(i64::from(*l))).collect())]);
     osis_base::hash::hash(&encode(&v))

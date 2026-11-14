@@ -28,6 +28,12 @@ use std::sync::Arc;
 /// (`World::cap`). The rule-test layer's cap (notes/sync-test-harness.md, Enforcement).
 pub const RULE_CAP: u64 = 2_000;
 
+/// Settle rounds one step may take before the world panics: a settle loop that never ends is
+/// two modules undoing each other's acts. A round runs again only for an act a module reads, so
+/// a step takes a few. At 0 every step fails; at infinity such a loop hangs the test instead of
+/// failing it.
+pub const ROUND_CAP: u64 = 16;
+
 /// How far ahead `run` looks for a wake before it calls the world quiet: an hour of simulated
 /// time (`World::horizon_ms`). At 0, quiet is an empty queue, timers never run; at infinity a
 /// node with a periodic timer is never quiet and runs into the delivery cap.
@@ -36,9 +42,35 @@ pub const HORIZON_MS: u64 = 3_600_000;
 /// The world's start time (any fixed value).
 pub const START: WallMs = WallMs(1_700_000_000_000);
 
+/// A node's durable state (engine and store, each a backend and its root record): it survives a
+/// power loss, and the node reopens over it.
+#[derive(Clone)]
+struct Disks {
+    engine: (MemoryBackend, MemoryRoot),
+    store: (MemoryBackend, MemoryRoot),
+}
+
+impl Disks {
+    fn new() -> Disks {
+        Disks { engine: (MemoryBackend::new(), MemoryRoot::new()), store: (MemoryBackend::new(), MemoryRoot::new()) }
+    }
+
+    fn power_cut(&self) {
+        self.engine.0.power_cut();
+        self.store.0.power_cut();
+    }
+
+    /// Tests of copies: inside the same `osis_base::copying` as the node's copy, so the copy's
+    /// handles are the copied node's.
+    fn test_copy(&self) -> Disks {
+        Disks { engine: (self.engine.0.test_copy(), self.engine.1.test_copy()), store: (self.store.0.test_copy(), self.store.1.test_copy()) }
+    }
+}
+
 /// One world node.
 pub struct WNode {
     node: Node,
+    disks: Disks,
     pub key: NodeKey,
     /// Its account (`Engine::create_account`).
     pub account: Option<Tid>,
@@ -250,9 +282,10 @@ impl World {
     pub fn add_bare_node(&mut self) -> usize {
         let i = self.nodes.len();
         let seed = self.seed();
-        let store = Store::open(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), Box::new(SeededRng::from_u64(seed ^ 1))).expect("store");
+        let disks = Disks::new();
+        let store = Store::open(Box::new(disks.store.0.clone()), Box::new(disks.store.1.clone()), Box::new(SeededRng::from_u64(seed ^ 1))).expect("store");
         let clock: Arc<dyn Clock> = self.clock.clone();
-        let engine = Engine::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), store.cipher(), osis_engine::Config::default(), clock, Box::new(SeededRng::from_u64(seed))).expect("engine");
+        let engine = Engine::create(Box::new(disks.engine.0.clone()), Box::new(disks.engine.1.clone()), store.cipher(), osis_engine::Config::default(), clock, Box::new(SeededRng::from_u64(seed))).expect("engine");
         let mut key = [0u8; 32];
         self.rng.fill_bytes(&mut key);
         let key = NodeKey(key);
@@ -261,7 +294,7 @@ impl World {
         self.net.reach.listen(i, key.0);
         self.net.online.push(true);
         self.net.accepted.push(0);
-        self.nodes.push(WNode { node, key, account: None });
+        self.nodes.push(WNode { node, disks, key, account: None });
         self.deliver(i, Input::Tick { now: self.now() });
         i
     }
@@ -282,8 +315,8 @@ impl World {
         t
     }
 
-    pub fn status(&mut self, i: usize) -> Arc<osis_sync::status::StatusView> {
-        self.nodes.get_mut(i).expect("no such node").node.status()
+    pub fn status(&self, i: usize) -> Arc<osis_sync::status::StatusView> {
+        self.node(i).node.status()
     }
 
     /// Node `i`'s address: its dialable key and what it lists in `reach.0`.
@@ -298,11 +331,15 @@ impl World {
             let flowing: Vec<Seen> = self.net.queue.iter().take(8).map(|(n, x)| Seen::of(*n, x)).collect();
             panic!("storm: past {} deliveries; still flowing (first 8 of {}): {flowing:?}; wakes {:?}", self.cap, self.net.queue.len(), self.net.wakes);
         }
+        let seen = Seen::of(i, &input);
         if self.trace {
-            self.seen.push(Seen::of(i, &input));
+            self.seen.push(seen.clone());
         }
         let n = self.nodes.get_mut(i).expect("no such node");
         let out = n.node.handle(input);
+        if n.node.rounds() > ROUND_CAP {
+            panic!("settle loop: {} rounds in one step ({seen:?})", n.node.rounds());
+        }
         apply(out, &mut NodeLinks { net: &mut self.net, node: i });
     }
 
@@ -372,7 +409,8 @@ impl World {
     }
 
     /// Node `i` loses power: its connections are cut (peers told), its wake and inputs in flight
-    /// to it are lost. It keeps its stores (a restart in place is the node's own concern).
+    /// to it are lost, and so is all it held in memory: it reopens over what reached its disks
+    /// (`MemoryBackend::power_cut`), and is stepped again at `power_on`.
     pub fn power_off(&mut self, i: usize) {
         self.net.cut(i, false);
         self.net.wakes.remove(&i);
@@ -380,6 +418,15 @@ impl World {
         if let Some(o) = self.net.online.get_mut(i) {
             *o = false;
         }
+        let seed = self.seed();
+        let clock: Arc<dyn Clock> = self.clock.clone();
+        let n = self.nodes.get_mut(i).expect("no such node");
+        n.disks.power_cut();
+        let d = &n.disks;
+        let store = Store::open(Box::new(d.store.0.clone()), Box::new(d.store.1.clone()), Box::new(SeededRng::from_u64(seed ^ 1))).expect("store reopens");
+        let engine = Engine::open(Box::new(d.engine.0.clone()), Box::new(d.engine.1.clone()), store.cipher(), osis_engine::Config::default(), clock, Box::new(SeededRng::from_u64(seed))).expect("engine reopens");
+        let cfg = n.node.config().clone();
+        n.node = Node::open(engine, store, cfg, Box::new(SeededRng::from_u64(seed ^ 2))).expect("node reopens");
     }
 
     pub fn power_on(&mut self, i: usize) {
@@ -394,7 +441,7 @@ impl World {
         let clock = Arc::new(ManualClock::new(self.now()));
         let dyn_clock: Arc<dyn Clock> = clock.clone();
         let nodes = osis_base::copying::copying(|| {
-            self.nodes.iter().map(|n| WNode { node: n.node.test_copy(dyn_clock.clone()).expect("node copy"), key: n.key, account: n.account }).collect()
+            self.nodes.iter().map(|n| WNode { node: n.node.test_copy(dyn_clock.clone()).expect("node copy"), disks: n.disks.test_copy(), key: n.key, account: n.account }).collect()
         });
         World { clock, rng: self.rng.test_copy(), nodes, net: self.net.clone(), deliveries: 0, cap: self.cap, horizon_ms: self.horizon_ms, trace: self.trace, seen: Vec::new(), fixture: None }
     }

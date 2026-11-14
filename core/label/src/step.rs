@@ -8,7 +8,7 @@ use osis_base::format::{MAX_CLAIMS, MAX_MESSAGE, MAX_OBJECT_DEPTH};
 use osis_base::{SyncId, Tid, Value};
 use osis_crypto::{
     BoxForm, BoxSlot, CryptoRngCore, Domain, EntryItem, Epoch, KemPublicKey, KemSecret, LabelRole, Secret32, Signature, SigningSecret,
-    VerifyingKey, X25519Secret, claim_key, deposit_key, label_id, label_role_key, open_entry, seal_entry, static_entry,
+    VerifyingKey, X25519Secret, claim_key, deposit_key, label_role_key, open_entry, seal_entry, static_entry, sync_id,
 };
 use osis_schema::Codec;
 use osis_schema::core_types::{SealedBox, SecretBox, Sealed};
@@ -63,7 +63,7 @@ impl StepKeys {
 
 /// Label ID of the label whose genesis derives from `admin` (spec/sync-ids.md §2).
 pub fn genesis_label(admin: &Secret32) -> SyncId {
-    label_id(&label_role_key(LabelRole::Delete, admin).verifying_key())
+    sync_id(&label_role_key(LabelRole::Delete, admin).verifying_key())
 }
 
 /// Index into `candidates` of the role secret whose label key is `pk`: which held
@@ -157,7 +157,7 @@ impl Step {
         if self.prev.is_some() {
             return Err(Error::Verify("genesis step has prev"));
         }
-        if label_id(&self.keys.delete) != self.label {
+        if sync_id(&self.keys.delete) != self.label {
             return Err(Error::Verify("genesis delete key does not hash to the label ID"));
         }
         self.keys.delete.verify(Domain::LabelRegister, &self.digest(), &self.sig).map_err(|_| Error::Verify("step signature"))
@@ -331,7 +331,7 @@ pub fn register_with(parent: Parent, keys: StepKeys, readers: &[Reader], read: (
             if own.verifying_key() != keys.delete {
                 return Err(Error::Verify("genesis signer is not the step's delete key"));
             }
-            (label_id(&keys.delete), None, own)
+            (sync_id(&keys.delete), None, own)
         }
         Parent::Child { step, delete } => {
             if delete.verifying_key() != step.keys.delete {

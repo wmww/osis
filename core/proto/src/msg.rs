@@ -117,7 +117,10 @@ pub struct Pull {
     pub ephemeral: bool,
 }
 
-/// `PullReply [42, id, [[sync_id, event]*], Opt(cursor), whole, trimmed, more, report, [join*]]`.
+/// `PullReply [42, id, [[sync_id, event]*], Opt(cursor), whole, trimmed, more, report, [join*]]`:
+/// `trimmed` (with `whole`): a cursor the Pull named is on this store's history below its
+/// deletion horizon, so deletions since it are not all in the log. `joins` are the Pull's joins
+/// not in the stream at `cursor`: still in pages at their own cursor, or (none) not shared here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PullReply {
     pub id: Id,

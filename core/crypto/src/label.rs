@@ -51,7 +51,7 @@ pub fn deposit_key(deposit_seed: &Secret32, label: &SyncId) -> SigningSecret {
 }
 
 /// Label ID = BLAKE3("osis v1 label id" || genesis delete key)[..16].
-pub fn label_id(genesis_delete: &VerifyingKey) -> SyncId {
+pub fn sync_id(genesis_delete: &VerifyingKey) -> SyncId {
     let mut h = blake3::Hasher::new();
     h.update(LABEL_ID.as_bytes()).update(&genesis_delete.to_bytes());
     let mut id = [0u8; 16];
@@ -59,7 +59,7 @@ pub fn label_id(genesis_delete: &VerifyingKey) -> SyncId {
     SyncId(id)
 }
 
-/// Claim key pair: seed `kdf("label claim", DH(own, their), label_id || step_key)`. The registrar
+/// Claim key pair: seed `kdf("label claim", DH(own, their), sync_id || step_key)`. The registrar
 /// passes the step private key and M's X25519 key; M passes its private key and the step key.
 /// A non-contributory DH omits M.
 pub fn claim_key(own: &X25519Secret, their: &[u8; 32], label: &SyncId, step_key: &[u8; 32]) -> Result<SigningSecret, Error> {
@@ -77,7 +77,7 @@ pub fn static_entry(label: &SyncId, signing: &VerifyingKey) -> [u8; 32] {
     *h.finalize().as_bytes()
 }
 
-/// Digest of an open: BLAKE3(canonical `[side, label_id, challenge, static_key]`) (spec/wire.md
+/// Digest of an open: BLAKE3(canonical `[side, sync_id, challenge, static_key]`) (spec/wire.md
 /// §11.2), `side` the signer's (`by_listener`: 0 the dialer, 1 the listener), `challenge` the
 /// other side's Hello challenge. Invariant, as for `proof_digest`: an open signature made as one
 /// side verifies as no other, so a peer that copies this side's challenge into its own Hello
@@ -124,7 +124,7 @@ mod tests {
         assert_eq!(pk(LabelRole::Delete), expect.verifying_key());
         let seed = Secret32::from_bytes([1; 32]);
         assert_ne!(deposit_key(&seed, &SyncId([1; 16])).verifying_key(), deposit_key(&seed, &SyncId([2; 16])).verifying_key());
-        let id = label_id(&pk(LabelRole::Delete));
+        let id = sync_id(&pk(LabelRole::Delete));
         let mut h = blake3::Hasher::new();
         h.update(b"osis v1 label id").update(&pk(LabelRole::Delete).to_bytes());
         assert_eq!(id.0, h.finalize().as_bytes()[..16]);

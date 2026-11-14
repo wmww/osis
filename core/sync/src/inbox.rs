@@ -5,7 +5,7 @@
 //! promotion, keys), store, opens, streams. Not built: every call below.
 
 use crate::opens::Opens;
-use crate::session::{Incoming, Session};
+use crate::session::{Incoming, Sessions};
 use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Result, Waiting};
 use osis_base::{BlobId, SyncId, WallMs};
@@ -25,14 +25,14 @@ pub struct Inbox {}
 
 impl Inbox {
     /// Whether anything acted.
-    pub fn settle(&mut self, cx: &mut Cx, opens: &Opens, streams: &Streams) -> Result<bool> {
-        let _ = (cx, opens, streams);
+    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams) -> Result<bool> {
+        let _ = (cx, sessions, opens, streams);
         Ok(false)
     }
 
     /// Deposit and Register answers (`ItemAnswer` each).
-    pub fn on_message(&mut self, cx: &mut Cx, conn: ConnId, s: &mut Session, m: Incoming) {
-        let _ = (cx, conn, s, m);
+    pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, conn: ConnId, m: Incoming) {
+        let _ = (cx, sessions, conn, m);
     }
 
     /// First contact through a link.

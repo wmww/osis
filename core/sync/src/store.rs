@@ -11,7 +11,7 @@
 //! Not built: every call below. Until it is, the handle is an `osis_store::BlobArea` (blob bytes
 //! only) so an engine can run on it.
 
-use crate::types::{Cursor, Entry, Error, RecordId, Result};
+use crate::types::{Cursor, Entry, Error, Position, RecordId, Result};
 use osis_base::{BlobId, SyncId, WallMs};
 use osis_engine::Engine;
 use osis_engine::sync::Path;
@@ -51,9 +51,6 @@ pub struct BehindItem {
 pub enum Answer {
     Code(Code),
 }
-
-/// The members a log read covers.
-pub type Members = BTreeMap<SyncId, crate::opens::Member>;
 
 /// One node's store.
 #[derive(Clone)]
@@ -127,7 +124,9 @@ impl Store {
         None
     }
 
-    pub fn read_log(&self, members: &Members, from: Option<&Cursor>, max: usize) -> Result<LogRead> {
+    /// A read of the node log for a connection's shared set: each member S and the `until` it
+    /// is served to when ended.
+    pub fn read_log(&self, members: &BTreeMap<SyncId, Option<Position>>, from: Option<&Cursor>, max: usize) -> Result<LogRead> {
         let _ = (members, from, max);
         Err(Error::NotBuilt("store::read_log"))
     }

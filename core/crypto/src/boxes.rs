@@ -113,7 +113,7 @@ impl BoxSlot {
         }
     }
 
-    /// AD `[actor, holder, role, n, nonce, form]` or `[label_id, step_key, form]`.
+    /// AD `[actor, holder, role, n, nonce, form]` or `[sync_id, step_key, form]`.
     pub fn ad(&self, form: BoxForm) -> Result<Vec<u8>, Error> {
         Ok(encode(&Value::List(self.ad_items(form)?)))
     }
