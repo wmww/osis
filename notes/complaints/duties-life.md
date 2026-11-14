@@ -1,0 +1,4 @@
+# duties-life
+- Reaching "an applied commit's part awaits a record" in a sync world took an hour and never worked: creations rank order 0 and come first, a reader keeps no entry of a held commit, and read's one fetch again hides the gap whenever the record lands in the same reply. The engine-level LocalPeer test reproduced it in minutes; brief such items engine-first.
+- The brief asked for a hook per duty "the Effects way" for the woken part, but the area's own issue (applied-commit-unjudgeable-part.md) says the fix is the engine's carrier and to delete `Wakes`; a feed would have been a second wait-and-retry place. Check an item's own issue before briefing the mechanism.
+- `tools/mutate.py` over the sync binary runs past the Bash tool's 120 s default: run it in the background.

@@ -687,7 +687,7 @@ fn delete_waits_for_carrier_in_known() {
     assert_eq!(w.deletes(), 1);
 }
 
-// spec/commits.md §5 (keep at least): a body covered and dropped is deleted at K only `MAX_DRIFT`
+// spec/commits.md §5 (unread delete margin): a body covered and dropped is deleted at K only `MAX_DRIFT`
 // past its keep-at-least bound, on this node's clock; the own log drops it at once.
 #[test]
 fn covered_delete_waits_max_drift_spec_commits_5() {
