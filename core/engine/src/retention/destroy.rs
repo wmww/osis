@@ -93,10 +93,10 @@ pub struct Minting {
 impl Minting {
     /// Whether this minting, kept, may stand in for `lower`, dropped (spec/commits.md §5, A thing's
     /// mintings travel with its record): it cannot end before `lower` could. It expires no
-    /// earlier (`None`: never), and whoever may purge it may purge `lower` (a request on a
-    /// thing's creation names a minting whatever its stamp): `lower`'s set holds the admins
-    /// where this one's does, its author where this one's does with the same actor, every writer
-    /// where this one's does.
+    /// earlier (`None`: never), and whoever may purge it may purge `lower`: `lower`'s set holds
+    /// the admins where this one's does, its author where this one's does with the same actor,
+    /// every writer where this one's does. Open: an item by commit or by author names one
+    /// minting and not the other (issues/minting-standin-narrow-items.md).
     pub fn stands_in_for(&self, lower: &Minting) -> bool {
         let expires = match (self.expires, lower.expires) {
             (None, _) => true,
@@ -151,13 +151,12 @@ fn creation_requests<'a>(core: &'a Core, t: &'a Tid) -> impl Iterator<Item = (Co
 /// `created.0`, found among the commits on `t`: a request has a delta on each thing it names).
 fn per_minting(core: &Core, t: &Tid) -> Vec<Held> {
     let requests: Vec<(CommitId, &Header)> = creation_requests(core, t).collect();
-    let held = core.mintings(t).map(|(c, ai)| {
-        // no header held: purgeable by every writer as its own author, so it stands in for none
-        let none = Held { at: (c, ai), expires: None, class: PurgeBy::Writer, actor: *t, by: Vec::new() };
-        let Some(m) = core.ix.commits.get(&c) else { return none };
-        let Some(a) = m.header.aspects.get(ai) else { return none };
+    // `Core::mintings` lists held commits alone: each has its header
+    let held = core.mintings(t).filter_map(|(c, ai)| {
+        let m = core.ix.commits.get(&c)?;
+        let a = m.header.aspects.get(ai)?;
         let by = requests.iter().filter(|(pc, p)| super::purge::stands(core, p, pc, a, &m.header, &c)).map(|(pc, p)| Point { ts: p.ts, node: p.author, commit: *pc }).collect();
-        Held { at: (c, ai), expires: m.header.expires, class: a.retention.by, actor: m.header.actor, by }
+        Some(Held { at: (c, ai), expires: m.header.expires, class: a.retention.by, actor: m.header.actor, by })
     });
     held.collect()
 }

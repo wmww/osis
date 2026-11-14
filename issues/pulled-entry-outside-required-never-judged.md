@@ -1,0 +1,7 @@
+# A pulled entry of a body outside S's required set is never judged
+> Summary: read wants a body's judgement at S only where `Engine::sync_bodies` lists S, so an entry pulled from a reader peer of a commit never required under S here gets no verdict and stays in the own store for good, spreading to every node pulling from it (spec/sync-judgement.md §2: must-not-hold).
+> Priority: normal
+> Tags: sync
+
+- Seen in `destruction::a_remint_expiring_earlier_keeps_the_lower_copy_spec_commits_5`: node 1 purges its only held minting of t (the remint has not reached it yet), so t is destroyed there and the request is logged under D (correct: a destroyed thing's requests travel). Node 2 pulls it; there t was never destroyed, so S is not in `sync_bodies(q)` and `Read::verdict(S, q)` is `None`. The remint reaches node 1, t lives, node 1 drops its own entry (`MustNot(OutsideRequired)`), but node 2 keeps the pulled one and node 0, joining later, pulls it from node 2.
+- `judge::body` already gives `MustNot(OutsideRequired)` with no meta and goes idle once nothing of it is left; only the key is missing. `seen_added` drops a blob whose commit is not known yet (unopened), and opening a pulled blob of a commit already held adds nothing to the commit feed, so neither feed covers it: read needs a feed of own-store entries whose commit becomes known (and a start judging every held entry's commit at its S).
