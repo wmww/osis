@@ -634,7 +634,7 @@ impl World {
 
     /// Node `i`'s store device (sync's store per sync ID): every row it was ever given (under
     /// `record`), the live rows and the live blobs.
-    pub fn recorded(&self, i: usize) -> (Vec<(Vec<u8>, Vec<u8>)>, Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>) {
+    pub fn recorded(&self, i: usize) -> (Vec<osis_store::KeyValue>, Vec<osis_store::KeyValue>, Vec<Vec<u8>>) {
         let b = &self.node(i).disks.store.0;
         (b.history(), b.dump(), b.blob_history().into_iter().filter_map(|(_, x)| x).collect())
     }
