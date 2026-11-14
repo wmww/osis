@@ -78,8 +78,6 @@ pub const DELETE_NONCE: &str = "delete nonce";
 pub const LINK_BLIND: &str = "link blind";
 /// A linked blob's commitments' blind, from its link blind and its thing (spec/crypto.md §7).
 pub const THING_BLIND: &str = "thing blind";
-/// A keyset's possession key (spec/crypto.md §4, Holder actors).
-pub const POSSESSION: &str = "possession key";
 /// Label role keys (spec/sync-ids.md §2).
 pub const LABEL_SYNC: &str = "label sync";
 pub const LABEL_WRITE: &str = "label write";
@@ -98,10 +96,10 @@ pub const BEACON_REPLY: &str = "beacon reply";
 pub const SYNC_PROOF: &str = "sync proof";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 36] = [
+pub const PURPOSES: [&str; 35] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, WRAP, SECTION,
     DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, LABEL_SYNC, LABEL_WRITE, LABEL_DELETE, LABEL_DEPOSIT, LABEL_CLAIM,
-    POSSESSION, INNER_SECRET, INNER, BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF,
+    INNER_SECRET, INNER, BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF,
 ];
 
 // Full derive_key contexts used directly (not through `kdf`).
@@ -236,7 +234,7 @@ mod tests {
         all.extend(Domain::ALL.iter().map(|d| d.as_str().to_string()));
         let set: BTreeSet<&String> = all.iter().collect();
         assert_eq!(set.len(), all.len());
-        assert_eq!(all.len(), PURPOSES.len() + 5 + 12);
+        assert_eq!(all.len(), PURPOSES.len() + 5 + Domain::ALL.len());
     }
 
     // spec/crypto.md §1: kdf = keyed_hash(derive_key("osis v1 " + purpose, secret), input).

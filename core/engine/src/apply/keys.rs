@@ -56,7 +56,7 @@ pub(crate) fn keysets_of(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<Keys
 
 /// A `keys.0` body read: the keysets it writes, typed (whole keysets: a rotation replaces the
 /// field), and each as noted (`KeysetRec`: its role, epoch, listed epochs, KEM key (suite 1),
-/// possession key, names digest and left-out keysets).
+/// names digest, left-out and sealed-at keysets and carried demotions).
 #[derive(Clone)]
 pub(crate) struct KeysBody {
     pub write: KeysWrite,
@@ -74,10 +74,9 @@ impl KeysBody {
                 let lists = ks.supersedes.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect();
                 let ct::KemKey::X25519MlKem768(b) = &ks.kem_key;
                 let kem = (ks.suite == osis_keys::SUITE).then(|| osis_crypto::KemPublicKey::from_slice(b).ok()).flatten();
-                let ct::SigningKey::Ed25519(p) = &ks.possession_key;
-                let possession = osis_crypto::VerifyingKey::from_slice(p).ok();
                 let left_out = ks.left_out.iter().flat_map(|(m, xs)| xs.iter().filter_map(|x| Some((*m, osis_keys::aspects::from_schema(x).ok()?)))).collect();
-                Some(KeysetRec { role: *role, epoch, lists, kem, possession, names: ks.names, left_out })
+                let sealed_at = ks.sealed_at.iter().flat_map(|(m, xs)| xs.iter().filter_map(|x| Some((*m, osis_keys::aspects::from_schema(x).ok()?)))).collect();
+                Some(KeysetRec { role: *role, epoch, lists, kem, names: ks.names, left_out, sealed_at, demotions: ks.demotions.iter().copied().collect(), demotes: ks.demotes })
             })
             .collect();
         KeysBody { write, recs }
@@ -145,37 +144,19 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, id: &CommitId, actor: &T
         if held.kem.is_none() {
             held.kem = k.kem.clone();
         }
-        if let Some(p) = k.possession {
-            held.possession.entry(p).and_modify(|x| *x = (*x).min(at)).or_insert(at);
-        }
         held.since = Some(held.since.map_or(at, |x| x.min(at)));
         held.names.insert((k.names, h.author));
         for (m, x) in &k.left_out {
             held.left_out.entry(*m).or_default().insert(*x);
         }
+        for (m, x) in &k.sealed_at {
+            held.sealed_at.entry(*m).or_default().insert(*x);
+        }
+        held.demotions.extend(k.demotions.iter().copied());
+        held.demotes |= k.demotes;
         if held != before || !core.ix.keysets.contains_key(&key) {
             core.ix.keysets.insert(key, held);
             core.touch();
-            keyset_changed(core, actor);
-        }
-    }
-}
-
-/// A held valid keyset of `actor` changed: possession (`validity::possessed`) is judged again for
-/// the role commits writing `secrets.0` or `keys.0` of what boxes it (`boxes_to`) and of what it
-/// holds a role on or is first admin of (a rotation's proofs name keysets of those holders; their
-/// commits only: a thing's other deltas do not depend on it).
-pub(crate) fn keyset_changed(core: &mut Core, actor: &Tid) {
-    let mut things: std::collections::BTreeSet<Tid> = core.ix.boxes_to.get(actor).into_iter().flatten().map(|x| x.0).collect();
-    things.extend(core.ix.held.first_admin_of(actor).copied());
-    if let Some(tl) = core.timelines.get(actor) {
-        things.extend(tl.edges_at(None).targets(actor).copied());
-    }
-    for ak in ["secrets.0", "keys.0"] {
-        let Ok(ak) = osis_base::Ak::new(ak) else { return };
-        for t in &things {
-            let ids: Vec<CommitId> = core.ix.by_aspect.get(&(*t, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-            core.stale_commits.extend(ids);
         }
     }
 }
@@ -190,8 +171,7 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
     tx.core.touch();
     tx.core.ix.epoch_intro.retain(|(a, _, _), _| !actors.contains(a));
     for a in actors {
-        keyset_changed(tx.core, a);
-        let held: Vec<(Role, osis_crypto::Epoch)> = tx.core.keysets_of(a).map(|x| (x.0, x.1)).collect();
+        let held: Vec<(Role, osis_crypto::Epoch)> = tx.core.keysets_noted(a).map(|x| (x.0, x.1)).collect();
         for (r, e) in held {
             tx.core.ix.keysets.remove(&(*a, r, e));
         }

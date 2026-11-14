@@ -215,7 +215,7 @@ fn lying_box(f: &mut Forked, holder: osis_base::Tid, keyset: Option<(osis_crypto
 }
 
 // notes/crypto.md, Costs (spec/crypto.md §1, spec/wire.md §7): a sealed box is about 1.2 KB, a
-// symmetric one 49 bytes plus its epoch, and to a holder actor its 64-byte possession signature.
+// symmetric one 49 bytes plus its epoch.
 #[test]
 fn sizes() {
     let mut f = forked();
@@ -464,7 +464,7 @@ fn account_keys_publish_the_epochs_public_keys_spec_crypto_3() {
     assert_eq!(k.key, Some(KemKey::X25519MlKem768(e.kem.public().as_bytes().to_vec())));
 }
 
-// spec/crypto.md §3, §4, spec/wire.md §7: a box to an account names its epoch, sealed or symmetric, and opens by that epoch's seed alone; its possession signature verifies under the epoch's signing key
+// spec/crypto.md §3, §4, spec/wire.md §7: a box to an account names its epoch, sealed or symmetric, and opens by that epoch's seed alone
 #[test]
 fn box_to_an_account_names_its_epoch_spec_crypto_4() {
     let rg = &mut rng(0);
@@ -484,14 +484,10 @@ fn box_to_an_account_names_its_epoch_spec_crypto_4() {
         let (opened, failed) = open_boxes(&a, &s, &Opener::Account { holder: p, keys: &seeds });
         assert!(failed.is_empty(), "{failed:?}");
         assert_eq!(opened.len(), ROLES.len());
-        for (k, b) in s.boxes.iter().filter(|(k, _)| k.holder == p) {
+        for (_, b) in s.boxes.iter().filter(|(k, _)| k.holder == p) {
             match (b, &writer_holds) {
                 (SecretBox::Sealed(x), None) => assert_eq!(x.keyset, Some(to_schema(&name))),
-                (SecretBox::Symmetric(x), Some(_)) => {
-                    assert_eq!(x.epoch, to_schema(&name));
-                    let shown = osis_keys::possession::Shown::of(&a, k, b).unwrap();
-                    assert!(shown.verifies(&vk), "by the epoch's signing key");
-                }
+                (SecretBox::Symmetric(x), Some(_)) => assert_eq!(x.epoch, to_schema(&name)),
                 _ => panic!("wrong form"),
             }
         }

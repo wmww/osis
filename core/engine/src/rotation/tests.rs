@@ -327,7 +327,7 @@ fn rotate_unboxed(lp: &mut LocalPeer, i: usize, a: Tid, roles: &[Role], keep: Op
             let held = tx.core.epochs(&a).unwrap();
             let holders = super::recipients(tx, &tx.core.writer().unwrap(), &a, &[(me, keep)])?;
             let mut m = Mutation::new();
-            let rot = super::rotation_into(tx, &mut m, a, &roles, &held, &holders, false)?;
+            let rot = super::rotation_into(tx, &mut m, a, &roles, &held, &holders, crate::rotation::Departs::No)?;
             crate::engine::Engine::commit_tx(tx, m)?;
             super::record(tx, a, &rot)
         })
@@ -365,7 +365,7 @@ fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
             let held = tx.core.epochs(&g).unwrap();
             let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &[(b, Some(Role::Read))])?;
             let mut m = Mutation::new();
-            let rot = super::rotation_into(tx, &mut m, g, &[Role::Write].into(), &held, &holders, false)?;
+            let rot = super::rotation_into(tx, &mut m, g, &[Role::Write].into(), &held, &holders, crate::rotation::Departs::No)?;
             crate::engine::Engine::commit_tx(tx, m)?;
             super::record(tx, g, &rot)
         })
@@ -414,7 +414,7 @@ fn forked_role_resealed_without_a_node_holding_every_fork_spec_permissions_3() {
                 let held = tx.core.epochs(&g).unwrap();
                 let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &[(other, Some(Role::Read))])?;
                 let mut m = Mutation::new();
-                let rot = super::rotation_into(tx, &mut m, g, &[Role::Write].into(), &held, &holders, false)?;
+                let rot = super::rotation_into(tx, &mut m, g, &[Role::Write].into(), &held, &holders, crate::rotation::Departs::No)?;
                 crate::engine::Engine::commit_tx(tx, m)?;
                 super::record(tx, g, &rot)
             })
@@ -443,7 +443,7 @@ fn forked_role_resealed_without_a_node_holding_every_fork_spec_permissions_3() {
 }
 
 // spec/permissions.md §3 (re-seal: the trigger boxes the epochs the holder lacks a box at),
-// spec/crypto.md §4 (Authority: a box replaced is a removal): B and D, writers of G, rotate its
+// spec/crypto.md §4 (Boxes: a box replaced is a removal): B and D, writers of G, rotate its
 // write concurrently, D leaving B out. A, holding both forks, re-seals B (the trigger's re-seals
 // alone) at D's fork alone: B's box at its own fork stays as it was
 // (a re-seal replacing it removed a box, which a re-sealer holding its role through a holder
@@ -828,7 +828,7 @@ pub(super) fn rotate_leaving_out(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTr
         let held = tx.core.epochs(&g).unwrap();
         let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &skip)?;
         let mut m = Mutation::new();
-        let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, false)?;
+        let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, crate::rotation::Departs::No)?;
         crate::engine::Engine::commit_tx(tx, m)?;
         super::record(tx, g, &r)
     });
@@ -844,7 +844,7 @@ pub(super) fn rotate_unchecked(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTree
             let held = tx.core.epochs(&g).unwrap();
             let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &[])?;
             let mut m = Mutation::new();
-            let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, false)?;
+            let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, crate::rotation::Departs::No)?;
             m.unchecked();
             tx.core.skip_writer_rules = true;
             let c = crate::engine::Engine::commit_tx(tx, m);
@@ -1471,7 +1471,7 @@ fn forks_unboxed_with_departure_rotate_lacking_secrets_spec_crypto_4() {
                     let held = tx.core.epochs(&g).unwrap();
                     let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &[(other, None)])?;
                     let mut m = Mutation::new();
-                    let rot = super::rotation_into(tx, &mut m, g, &[Role::Read].into(), &held, &holders, false)?;
+                    let rot = super::rotation_into(tx, &mut m, g, &[Role::Read].into(), &held, &holders, crate::rotation::Departs::No)?;
                     crate::engine::Engine::commit_tx(tx, m)?;
                     super::record(tx, g, &rot)?;
                     Ok(rot.rotated[0].epoch)
@@ -1857,7 +1857,7 @@ fn withdrawn_epoch_compacts_judged_alike_spec_crypto_4() {
         if rng.next(2) == 0 {
             lp.peers[c].restart(seed).unwrap();
         }
-        dropped += super::tests_authority::drop_covered(&mut lp, c, g);
+        dropped += drop_covered(&mut lp, c, g);
         if rng.next(2) == 0 {
             lp.peers[c].restart(seed + 100).unwrap();
         }
@@ -1883,10 +1883,55 @@ fn withdrawn_epoch_compacts_judged_alike_spec_crypto_4() {
         // the snapshot vouches for no names: N, granted after, still never gets e_R (R9); what it
         // reads of "w" proves nothing here, as `packages` carry c's opened commits in the clear
         assert!(read(&lp, 4).reading_secret(&e_r).is_none(), "seed {seed}: N, granted after, holds e_R's secret");
-        let differ: Vec<_> = super::tests_authority::secrets_verdicts(&lp, c, 4, g).into_iter().filter(|(_, a, b)| a != b).collect();
+        let differ: Vec<_> = secrets_verdicts(&lp, c, 4, g).into_iter().filter(|(_, a, b)| a != b).collect();
         assert!(differ.is_empty(), "seed {seed}: compactor {c} and N judge `secrets.0` parts differently: {differ:?}");
     }
     assert!(dropped > 0, "no compactor dropped a covered body");
+}
+
+/// Node-sync's covered drop (`CoverPass`, as `SyncEngine::compact_now` runs it, role snapshots
+/// included) over `t`'s `keys.0` and `secrets.0` at peer `i`: each held body (not a snapshot) that
+/// a held valid snapshot covers drops once past its keep bound (`Engine::drop_from`); one kept for
+/// good leaves the cover candidates (`Engine::settle_kept`). Returns how many dropped.
+pub(super) fn drop_covered(lp: &mut LocalPeer, i: usize, t: Tid) -> usize {
+    let e = &mut lp.peers[i].engine;
+    let now = e.now().0;
+    let mut n = 0;
+    for ak in ["keys.0", "secrets.0"].map(|k| osis_base::Ak::new(k).unwrap()) {
+        let k = (t, ak.clone());
+        let snaps: Vec<osis_base::CommitId> = e.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| crate::retention::bounds::valid_snapshot_held(&e.core, s, &t, &ak)).collect();
+        let bodies: Vec<osis_base::CommitId> = e.core.durable_on(&k).filter(|c| e.header(c).is_some_and(|h| !h.kind.is_compaction())).collect();
+        for c in bodies {
+            for s in &snaps {
+                if !e.droppable_if_covered(&c, &t, &ak) || e.covered(s, &c, &t, &ak).unwrap() != Some(true) {
+                    continue;
+                }
+                let due = e.drop_from(&c, &t, &ak).unwrap();
+                // kept for good: out of the aspect's cover candidates until its bound may move
+                if due >= osis_commit::FOREVER {
+                    e.settle_kept(&c, &t, &ak);
+                }
+                if due <= now {
+                    e.drop_body(&c, &t, &ak).unwrap();
+                    n += 1;
+                }
+                break;
+            }
+        }
+    }
+    n
+}
+
+/// Each commit with a `secrets.0` part on `t` held at both peers `i` and `j`, with that part's
+/// verdict at each.
+pub(super) fn secrets_verdicts(lp: &LocalPeer, i: usize, j: usize, t: Tid) -> Vec<(osis_base::CommitId, bool, bool)> {
+    let held = |k: usize, c: &osis_base::CommitId| {
+        let m = lp.peers[k].engine.core.ix.commits.get(c)?;
+        let ai = m.view.aspects.iter().position(|x| x.tid == t && x.ak.as_str() == "secrets.0")?;
+        m.holds(ai).then(|| m.valid_at(ai))
+    };
+    let ids: Vec<osis_base::CommitId> = lp.peers[i].engine.commit_ids();
+    ids.into_iter().filter_map(|c| Some((c, held(i, &c)?, held(j, &c)?))).collect()
 }
 
 /// Whether A (peer 0) may encrypt under an epoch of `g` that M (2) opens from `from`'s state.

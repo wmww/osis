@@ -246,29 +246,6 @@ fn grant_boxes_at_the_open_epoch_spec_crypto_4() {
     }
 }
 
-// spec/crypto.md §4 (Possession key): an account's possession key at an epoch is that epoch's signing key, and it counts only for a commit ordered after the epoch's rotation
-#[test]
-fn possession_key_is_the_epochs_signing_key_spec_crypto_4() {
-    let mut lp = peers(2);
-    let (a, bytes) = created(&mut lp);
-    let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
-    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
-    let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([78; 32]));
-    let e = &mut lp.peers[1].engine;
-    e.ingest(&bytes, Vec::new()).unwrap();
-    let rec = e.core.created(&a.account).unwrap().clone();
-    let ts = Ts::make(e.now(), 0).unwrap();
-    e.ingest(&rotation(rec, &first, &next, ts), Vec::new()).unwrap();
-    let v = e.core.account_view(&a.account).unwrap();
-    let point = |t: Ts, c: u8| osis_perm::Point { ts: t, node: a.account, commit: CommitId([c; 32]) };
-    let (before, after) = (point(Ts::make(WallMs(ts.wall_ms().0 - 1), 0).unwrap(), 0), point(Ts::make(WallMs(ts.wall_ms().0 + 1), 0).unwrap(), 0));
-    let name = account_epoch(1, &next.signing.verifying_key()).unwrap();
-    assert_eq!(v.possession_key(&name, &after), Some(next.signing.verifying_key()));
-    assert_eq!(v.possession_key(&name, &before), None, "before its rotation it shows nothing");
-    let first_name = account_epoch(0, &first.signing.verifying_key()).unwrap();
-    assert_eq!(v.possession_key(&first_name, &before), Some(first.signing.verifying_key()));
-}
-
 // spec/crdt.md §2.2: one node signing as two accounts writes under nonces no reader can link
 #[test]
 fn two_accounts_of_one_node_have_unlinked_sessions_spec_crdt_2() {
@@ -315,9 +292,9 @@ fn account_session_nonce_is_new_after_a_restart_spec_crdt_2() {
     assert_ne!(nonce(&lp), before);
 }
 
-// spec/crypto.md §4 (Possession; Carried): an account's rotation is judged like an actor's new keyset: a role commit of what boxes it is judged again on arrival, and a box at the new epoch carries that rotation
+// spec/crypto.md §4 (Carried): a box at an account's new epoch carries that epoch's rotation
 #[test]
-fn a_rotation_rejudges_possession_and_is_carried_spec_crypto_4() {
+fn a_box_at_an_account_epoch_carries_its_rotation_spec_crypto_4() {
     let mut lp = peers(2);
     let (a, bytes) = created(&mut lp);
     let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
@@ -335,11 +312,6 @@ fn a_rotation_rejudges_possession_and_is_carried_spec_crypto_4() {
     let s = e.run(|tx| crate::flows::secrets_in(tx, &t)).unwrap();
     let w = osis_keys::SecretsWrite { boxes: s.boxes.iter().filter(|(k, _)| k.holder == a.account).map(|(k, b)| (k.clone(), b.clone())).collect(), removed: Default::default(), history: Default::default() };
     assert_eq!(crate::rotation::members::carried(&e.core, &w, None), vec![id], "the box's epoch travels with it");
-    let boxing: Vec<CommitId> = e.core.ix.by_aspect.get(&(t, Ak::new("secrets.0").unwrap())).unwrap().iter().map(|x| x.1).collect();
-    let m = e.core.ix.commits.get(&id).unwrap().clone();
-    e.core.stale_commits.clear();
-    e.core.note_rotation(&m);
-    assert!(boxing.iter().all(|c| e.core.stale_commits.contains(c)), "the commits boxing the account are judged again");
 }
 
 // the signing chain is built once per change of what it is built from (the rotations, the seeds
@@ -374,7 +346,7 @@ fn account_view_is_built_once_per_rotation() {
     for _ in 0..5 {
         assert_eq!(e.core.account_delete_key(&a.account).unwrap(), next.signing.verifying_key());
     }
-    assert_eq!(builds(), 3, "once for the rotation, once each as D's roster and the seeds held (the side of a node of the account) went");
+    assert_eq!(builds(), 2, "once for the rotation, once as what the node judges it by went (it left)");
 }
 
 // spec/sync-inbox.md §2 (invite request): the request gate reads an author's signature at the header's epoch: a commit signed at the first epoch verifies only there

@@ -515,9 +515,43 @@ impl Header {
     }
 }
 
-/// Verifies the author's signature of `sigs` for commit `id` (spec/crypto.md §2).
-pub fn verify_signature(id: &CommitId, sigs: &crate::Sigs, key: &VerifyingKey) -> Result<(), Error> {
-    key.verify(Domain::Commit, &sigs.digest(id), &sigs.signature).map_err(|_| Error::BadSignature)
+/// Verifies the author's signature of `sigs` for commit `id` (spec/crypto.md §2): what it
+/// vouches for, kept with the commit so the same bytes are never checked again.
+pub fn verify_signature(id: &CommitId, sigs: &crate::Sigs, key: &VerifyingKey) -> Result<Signed, Error> {
+    key.verify(Domain::Commit, &sigs.digest(id), &sigs.signature).map_err(|_| Error::BadSignature)?;
+    Ok(Signed::of(id, sigs, key))
+}
+
+/// A commit signature that verified: the hash of the key, the digest it signs (the commit ID,
+/// with an account's inner and merge signatures) and the signature bytes. It vouches only for
+/// those exact bytes under that exact key (`vouches`): a copy of the commit with other signature
+/// bytes, or the same bytes judged under another key, is not covered. Made only by
+/// `verify_signature`, by the signer (`Built::signed`), or read back from where one was kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Signed([u8; 32]);
+
+impl Signed {
+    pub(crate) fn of(id: &CommitId, sigs: &crate::Sigs, key: &VerifyingKey) -> Signed {
+        let mut b = Vec::with_capacity(32 + 32 + 64);
+        b.extend_from_slice(key.as_bytes());
+        b.extend_from_slice(&sigs.digest(id));
+        b.extend_from_slice(&sigs.signature.0);
+        Signed(osis_base::hash::hash(&b))
+    }
+
+    /// Whether this is the verdict on `sigs` of commit `id` under `key`.
+    pub fn vouches(&self, id: &CommitId, sigs: &crate::Sigs, key: &VerifyingKey) -> bool {
+        *self == Signed::of(id, sigs, key)
+    }
+
+    pub fn to_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// One kept by this node (`to_bytes`): never bytes a peer sent.
+    pub fn from_kept(b: [u8; 32]) -> Signed {
+        Signed(b)
+    }
 }
 
 /// Verifies a merge's signature at a fork's epoch, by the key that fork mints (spec/crypto.md §9).

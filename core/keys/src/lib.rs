@@ -1,6 +1,6 @@
 //! osis-keys: per-role epochs with forks, `keys.0` and `secrets.0` writes, box production and
 //! opening, history boxes, derived secrets, the covers rule, holder actors (sealing, staleness, key
-//! access), possession, the things a removal reaches, wrap epoch
+//! access), the things a removal reaches, wrap epoch
 //! choice, label epochs and delete keys (spec/crypto.md §3–§5, §7; spec/permissions.md §3).
 //! Layer 3 (notes/architecture.md). Notes: notes/crypto.md (osis-keys).
 #![forbid(unsafe_code)]
@@ -15,7 +15,6 @@ pub mod error;
 pub mod names;
 pub mod open;
 pub mod planner;
-pub mod possession;
 pub mod produce;
 pub mod wrap;
 
@@ -31,4 +30,4 @@ pub use osis_crypto::Epoch;
 pub use planner::{Graph, PermGraph, reached};
 pub use delete::{delete_candidates, delete_key};
 pub use wrap::{newer_than_head, registered_epoch, registered_key, registration_epochs, wrap_epoch};
-pub use produce::{HistoryBox, HistoryBoxes, HolderKeys, LeftOut, Recipient, Rotated, Rotation, box_holder, box_keysets, history_adds, history_boxes, reseal_holder, roles_up_to, rotate, rotate_leaving_out, symmetric_box};
+pub use produce::{Carried, HistoryBox, HistoryBoxes, HolderKeys, LeftOut, Recipient, Rotated, Rotation, box_holder, box_keysets, history_adds, history_boxes, reseal_holder, roles_up_to, rotate, rotate_leaving_out, symmetric_box};

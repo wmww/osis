@@ -239,7 +239,7 @@ impl Engine {
             let keep: BTreeSet<CommitId> = waiting.iter().chain(&trees).copied().collect();
             tx.core.walks.walks.retain(|c, _| keep.contains(c));
             for id in &waiting {
-                let Some(b) = tx.txn.get_pending(id)?.and_then(|(_, bytes)| CommitBlob::decode_stored(&bytes).ok()) else { continue };
+                let Some(b) = tx.txn.get_pending(id)?.and_then(|p| CommitBlob::decode_stored(&p.bytes).ok()) else { continue };
                 let w = kept(tx, id, &b, false)?;
                 out.reached.extend(w.reached);
                 out.missing.extend(w.missing.into_keys());

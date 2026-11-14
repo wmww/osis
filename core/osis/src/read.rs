@@ -356,12 +356,27 @@ impl Reader<'_> {
         }
     }
 
-    /// The grants on `thing`.
+    /// The grants on `thing`, shown only to a reader of it (`shows_roster`).
     pub fn grants(&self, thing: Tid) -> Grants {
-        if self.hidden(thing) {
+        if !self.shows_roster(thing) {
             return Grants::new();
         }
         self.e.roster(&thing).into_iter().map(|(m, e)| (m, Grant { role: e.role, until: e.until, may_grant: e.invite, with_membership: e.tied.is_some() })).collect()
+    }
+
+    /// Whether `thing`'s roster is shown here: to a reader of it, or of the target a link's actor
+    /// stands for (its joiners are the target's). A node holds edge writes of actors it does not
+    /// read (its holders' chains, the demotions their keysets carry, spec/crypto.md §4), which are
+    /// not its to show.
+    pub(crate) fn shows_roster(&self, thing: Tid) -> bool {
+        if self.hidden(thing) {
+            return false;
+        }
+        if self.actor.is_some() {
+            return true;
+        }
+        let reads = |t: &Tid| self.e.role_on(t) >= Some(osis_base::Role::Read);
+        reads(&thing) || self.e.core.created(&thing).and_then(|r| r.link_target()).is_some_and(|t| reads(&t))
     }
 
     /// This node's effective role on `tid` now (`None`: no access); the acting actor's when
@@ -474,7 +489,9 @@ impl ReadOnly {
         Ok(d.items.into_iter().map(Member::Item).chain(d.subgroups.into_iter().map(Member::Subgroup)).collect())
     }
 
-    /// The roles granted on `thing`, by holder. Whoever holds through those: `holders`.
+    /// The roles granted on `thing`, by holder; empty unless this node reads `thing` (or the
+    /// thing a link's actor stands for): a node holds others' grants it is not entitled to show.
+    /// Whoever holds through those: `holders`.
     pub fn grants(&self, thing: Tid) -> Result<Grants> {
         if let Some(at) = self.remote(thing, "grants")? {
             return crate::port::codec::grants_from(self.remote_call(&at, crate::port::method::GRANTS, vec![Value::Tid(thing)], crate::port::VALUE_REPLY)?);
@@ -629,7 +646,7 @@ impl Osis {
             let mut last = r.grants(thing);
             Box::new(move |db, d| match d {
                 Delivery::Initial => f(db, Ok(last.clone())),
-                Delivery::Grants => match db.grants(thing) {
+                Delivery::Grants | Delivery::Due => match db.grants(thing) {
                     Ok(r) if r == last => {}
                     Ok(r) => {
                         last = r.clone();

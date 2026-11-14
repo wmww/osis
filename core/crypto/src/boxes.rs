@@ -127,14 +127,6 @@ impl BoxSlot {
             BoxSlot::Entry { label, step_key, .. } => vec![Value::Bytes(label.0.to_vec()), Value::Bytes(step_key.to_vec()), form],
         })
     }
-
-    /// The digest a symmetric box's possession signature signs (spec/wire.md §7): BLAKE3 of
-    /// the canonical `[actor, holder, role, n, nonce, form, wrap]`.
-    pub fn possession_digest(&self, epoch_s: Epoch, wrap: &[u8]) -> Result<[u8; 32], Error> {
-        let mut items = self.ad_items(BoxForm::Symmetric { epoch_s })?;
-        items.push(Value::Bytes(wrap.to_vec()));
-        Ok(*blake3::hash(&encode(&Value::List(items))).as_bytes())
-    }
 }
 
 /// The role secret a sealed box carries.

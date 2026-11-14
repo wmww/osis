@@ -144,22 +144,32 @@ impl Rec for super::HeldKeyset {
     fn to(&self) -> Value {
         let kem = Value::List(self.kem.iter().map(|k| Value::bytes(k.as_bytes())).collect());
         let lists: Vec<osis_crypto::Epoch> = self.lists.iter().copied().collect();
-        let possession = Value::List(self.possession.iter().map(|(k, p)| Value::List(vec![Value::bytes(k.as_bytes()), p.to()])).collect());
         let since = Value::List(self.since.iter().map(Rec::to).collect());
         let names = Value::List(self.names.iter().map(|(d, a)| Value::List(vec![Value::bytes(d), Value::bytes(a.as_bytes())])).collect());
         let left_out = Value::List(self.left_out.iter().flat_map(|(m, xs)| xs.iter().map(|x| Value::List(vec![Value::bytes(m.as_bytes()), x.to()]))).collect());
-        Value::List(vec![lists.to(), kem, possession, since, names, left_out])
+        let sealed_at = Value::List(self.sealed_at.iter().flat_map(|(m, xs)| xs.iter().map(|x| Value::List(vec![Value::bytes(m.as_bytes()), x.to()]))).collect());
+        let demotions = Value::List(self.demotions.iter().map(|c| Value::bytes(&c.0)).collect());
+        Value::List(vec![lists.to(), kem, since, names, left_out, sealed_at, demotions, Value::Bool(self.demotes)])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(f) = v else { return None };
-        let [lists, kem, possession, since, names, left_out] = f.as_slice() else { return None };
-        let Value::List(left_out) = left_out else { return None };
-        let mut out: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>> = BTreeMap::new();
-        for x in left_out {
-            let Value::List(p) = x else { return None };
-            let [Value::Bytes(m), e] = p.as_slice() else { return None };
-            out.entry(Tid::from_bytes(m.as_slice().try_into().ok()?)).or_default().insert(Rec::from(e)?);
-        }
+        let [lists, kem, since, names, left_out, sealed_at, Value::List(demotions), Value::Bool(demotes)] = f.as_slice() else { return None };
+        let by_holder = |x: &Value| -> Option<BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>> {
+            let Value::List(x) = x else { return None };
+            let mut out: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>> = BTreeMap::new();
+            for y in x {
+                let Value::List(p) = y else { return None };
+                let [Value::Bytes(m), e] = p.as_slice() else { return None };
+                out.entry(Tid::from_bytes(m.as_slice().try_into().ok()?)).or_default().insert(Rec::from(e)?);
+            }
+            Some(out)
+        };
+        let sealed_at = by_holder(sealed_at)?;
+        let demotions = demotions.iter().map(|x| match x {
+            Value::Bytes(b) => Some(osis_base::CommitId(<[u8; 32]>::try_from(b.as_slice()).ok()?)),
+            _ => None,
+        }).collect::<Option<BTreeSet<_>>>()?;
+        let out = by_holder(left_out)?;
         let Value::List(names) = names else { return None };
         let names = names
             .iter()
@@ -171,17 +181,6 @@ impl Rec for super::HeldKeyset {
                 _ => None,
             })
             .collect::<Option<BTreeSet<_>>>()?;
-        let Value::List(possession) = possession else { return None };
-        let possession = possession
-            .iter()
-            .map(|x| match x {
-                Value::List(p) => match p.as_slice() {
-                    [Value::Bytes(b), p] => Some((osis_crypto::VerifyingKey::from_slice(b).ok()?, Rec::from(p)?)),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect::<Option<BTreeMap<osis_crypto::VerifyingKey, osis_perm::Point>>>()?;
         let since = match since {
             Value::List(x) => match x.as_slice() {
                 [] => None,
@@ -199,7 +198,7 @@ impl Rec for super::HeldKeyset {
             _ => return None,
         };
         let lists: Vec<osis_crypto::Epoch> = Rec::from(lists)?;
-        Some(super::HeldKeyset { lists: lists.into_iter().collect(), kem, possession, since, names, left_out: out })
+        Some(super::HeldKeyset { lists: lists.into_iter().collect(), kem, since, names, left_out: out, sealed_at, demotions, demotes: *demotes })
     }
 }
 impl Rec for BoxKey {
@@ -636,6 +635,7 @@ pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::ap
 pub(crate) struct RecordHead {
     pub received: WallMs,
     pub origin: Origin,
+    pub signed: osis_commit::Signed,
     pub dropped: BTreeMap<usize, super::Dropped>,
     pub stripped: BTreeSet<usize>,
     pub valued: BTreeSet<usize>,
@@ -660,7 +660,7 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
         Origin::Local => 0,
         Origin::Remote => 1,
     });
-    w = w.u32(m.dropped_parts().count() as u32);
+    w = w.raw(&m.signed.to_bytes()).u32(m.dropped_parts().count() as u32);
     for (a, d) in m.dropped_parts() {
         let role = d.role.map_or(0, |r| 1 + r as u8);
         w = w.u32(a as u32).u8(u8::from(d.as_cover()) | role << 2 | u8::from(d.overreach) << 5 | u8::from(d.why == super::DropFor::Invalid) << 6).u32(d.covered_by.len() as u32);
@@ -677,20 +677,21 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
                 Some(x) => w.u8(1).bytes(x.as_bytes()),
                 None => w.u8(0),
             };
-            w = match &k.possession {
-                Some(x) => w.u8(1).raw(x.as_bytes()),
-                None => w.u8(0),
-            };
             w = w.raw(&k.names).u32(k.left_out.len() as u32);
             for (m, x) in &k.left_out {
                 w = w.raw(m.as_bytes()).u64(x.n()).raw(x.nonce());
             }
+            w = w.u32(k.sealed_at.len() as u32);
+            for (m, x) in &k.sealed_at {
+                w = w.raw(m.as_bytes()).u64(x.n()).raw(x.nonce());
+            }
+            w = w.u32(k.demotions.len() as u32);
+            for c in &k.demotions {
+                w = w.raw(&c.0);
+            }
+            w = w.u8(u8::from(k.demotes));
         }
         w = w.u8(u8::from(d.stands_in)).u64(d.hosts_from);
-        w = match &d.shown {
-            None => w.u8(0),
-            Some(x) => put_showing(w.u8(1), x),
-        };
     }
     w = w.u32(m.stripped_parts().count() as u32);
     for a in m.stripped_parts() {
@@ -739,65 +740,11 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
             w = w.u8(1).bytes(&osis_base::encode(&f.to_value()));
         }
     }
-    // what its `secrets.0` and `keys.0` parts show for possession (`Indexes::shown`): an input of their
-    // judgment, as the rotation roles above are
-    let shown: Vec<(usize, &Arc<super::Showing>)> = (0..m.valid.len()).filter_map(|ai| Some((ai, core.ix.shown.get(&(*id, ai))?))).collect();
-    w = w.u32(shown.len() as u32);
-    for (ai, x) in shown {
-        w = put_showing(w.u32(ai as u32), x);
-    }
     w.take()
 }
 
-/// What a part shows (`Showing`), in a meta row or a dropped part's record.
-fn put_showing(w: records::Wr, x: &super::Showing) -> records::Wr {
-    let top = match x.top {
-        None => 0,
-        Some(r) => 1 + r as u8,
-    };
-    let mut w = w.u8(u8::from(x.rotates)).u8(top).u32(x.removed.len() as u32);
-    for (m, r) in &x.removed {
-        w = w.raw(m.as_bytes()).u8(*r as u8);
-    }
-    w = w.u32(x.shown.len() as u32);
-    for b in &x.shown {
-        w = w.raw(b.holder.as_bytes()).u8(b.role as u8).u64(b.keyset.n()).raw(b.keyset.nonce());
-        w = match &b.signed {
-            Some((d, sig)) => w.u8(1).raw(d).raw(sig),
-            None => w.u8(0),
-        };
-    }
-    w
-}
-
-fn read_showing(r: &mut records::Rd<'_>) -> Result<super::Showing> {
-    let role = |b: u8| Role::ALL.get(<usize as From<u8>>::from(b)).copied().ok_or(Error::Corrupt("shown role"));
-    let rotates = r.u8()? != 0;
-    let top = match r.u8()? {
-        0 => None,
-        b => Some(role(b - 1)?),
-    };
-    let mut removed = Vec::new();
-    for _ in 0..r.u32()? {
-        let m = Tid::from_bytes(r.arr()?);
-        removed.push((m, role(r.u8()?)?));
-    }
-    let mut shown = Vec::new();
-    for _ in 0..r.u32()? {
-        let holder = Tid::from_bytes(r.arr()?);
-        let role = role(r.u8()?)?;
-        let keyset = osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("shown epoch"))?;
-        let signed = if r.u8()? != 0 { Some((r.arr()?, r.arr()?)) } else { None };
-        shown.push(osis_keys::possession::Shown { holder, role, keyset, signed });
-    }
-    Ok(super::Showing { rotates, top, removed, shown, checked: Default::default() })
-}
-
-/// What a commit's parts show, by part (`Indexes::shown`), as a `METAS` row keeps it.
-type PartsShown = Vec<(usize, super::Showing)>;
-
-/// A `METAS` row's part bytes, view and what its parts show.
-fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View, PartsShown)> {
+/// A `METAS` row's part bytes and view.
+fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
     let mut r = records::Rd::new(row);
     if r.u8()? != 1 {
         return Err(Error::Corrupt("meta row version"));
@@ -833,13 +780,8 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View, PartsShown)> {
         }
         _ => return Err(Error::Corrupt("meta row frontier")),
     };
-    let mut shown = Vec::new();
-    for _ in 0..r.u32()? {
-        let ai = r.u32()? as usize;
-        shown.push((ai, read_showing(&mut r)?));
-    }
     r.end()?;
-    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, purges, epoch }, shown))
+    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, purges, epoch }))
 }
 
 /// A commit record's head and its blob bytes.
@@ -850,6 +792,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
     }
     let received = WallMs(r.u64()?);
     let origin = if r.u8()? == 0 { Origin::Local } else { Origin::Remote };
+    let signed = osis_commit::Signed::from_kept(r.arr()?);
     let mut dropped = BTreeMap::new();
     for _ in 0..r.u32()? {
         let a = r.u32()? as usize;
@@ -868,20 +811,28 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
             }
             let key = || Error::Corrupt("dropped keyset key");
             let kem = if r.u8()? != 0 { Some(osis_crypto::KemPublicKey::from_slice(r.bytes()?).map_err(|_| key())?) } else { None };
-            let possession = if r.u8()? != 0 { Some(osis_crypto::VerifyingKey::from_bytes(&r.arr()?).map_err(|_| key())?) } else { None };
             let names = r.arr()?;
             let mut left_out = Vec::new();
             for _ in 0..r.u32()? {
                 let m = Tid::from_bytes(r.arr()?);
                 left_out.push((m, osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped keyset epoch"))?));
             }
-            keysets.push(super::KeysetRec { role, epoch: e, lists, kem, possession, names, left_out });
+            let mut sealed_at = Vec::new();
+            for _ in 0..r.u32()? {
+                let m = Tid::from_bytes(r.arr()?);
+                sealed_at.push((m, osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped keyset epoch"))?));
+            }
+            let mut demotions = Vec::new();
+            for _ in 0..r.u32()? {
+                demotions.push(CommitId(r.arr()?));
+            }
+            let demotes = r.u8()? != 0;
+            keysets.push(super::KeysetRec { role, epoch: e, lists, kem, names, left_out, sealed_at, demotions, demotes });
         }
         let stands_in = r.u8()? != 0;
         let hosts_from = r.u64()?;
-        let shown = if r.u8()? != 0 { Some(std::sync::Arc::new(read_showing(&mut r)?)) } else { None };
         let role = Role::ALL.get(<usize as From<u8>>::from((flags >> 2) & 7).wrapping_sub(1)).copied();
-        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 64 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, hosts_from, stands_in, role, overreach: flags & 32 != 0, keysets, shown, superseded_by: BTreeSet::new() });
+        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 64 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, hosts_from, stands_in, role, overreach: flags & 32 != 0, keysets, superseded_by: BTreeSet::new() });
     }
     let (mut stripped, mut valued) = (BTreeSet::new(), BTreeSet::new());
     for _ in 0..r.u32()? {
@@ -896,21 +847,20 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         let f = *osis_commit::ListField::ALL.get(<usize as From<u8>>::from(r.u8()?)).ok_or(Error::Corrupt("header list field"))?;
         lists.push((f, r.bytes()?.to_vec()));
     }
-    Ok((RecordHead { received, origin, dropped, stripped, valued, lists }, r.rest()))
+    Ok((RecordHead { received, origin, signed, dropped, stripped, valued, lists }, r.rest()))
 }
 
 /// Writes the given changes (`all`: everything) of the indexes to the persisted index.
 fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     let c = &*tx.core;
     let txn = &mut tx.txn;
-    // a commit's parts row carries their validity, rotation roles, grant overreach and showing
+    // a commit's parts row carries their validity, rotation roles and grant overreach
     let ids: Vec<CommitId> = if all {
         c.ix.commits.keys().copied().collect()
     } else {
         let mut s: BTreeSet<CommitId> = c.ix.commits.logged().into_iter().collect();
         s.extend(c.ix.rotation_role.logged().into_iter().map(|k| k.0));
         s.extend(c.ix.grant_overreach.logged().into_iter().map(|k| k.0));
-        s.extend(c.ix.shown.logged().into_iter().map(|k| k.0));
         s.into_iter().collect()
     };
     if !ids.is_empty() {
@@ -1059,10 +1009,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     let fault = tx.core.header_fault.clone();
     for (id, mut head, bytes) in recs {
         let row = rows.remove(&id).ok_or(Error::Corrupt("meta row missing"))?;
-        let (parts, view, shown) = parse_meta_row(&row)?;
-        for (ai, x) in shown {
-            tx.core.ix.shown.insert((id, ai), Arc::new(x));
-        }
+        let (parts, view) = parse_meta_row(&row)?;
         let mut valid = Vec::with_capacity(parts.len());
         let mut hold = Vec::with_capacity(parts.len());
         for (ai, p) in parts.iter().enumerate() {
@@ -1090,7 +1037,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, hold });
+        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, signed: head.signed, valid, hold });
         crate::apply::note_stands_in(tx.core, &id);
         tx.core.index_validity(&id);
     }
@@ -1182,13 +1129,13 @@ mod tests {
         let head = super::record_head(&meta);
         let row = super::meta_row(&e.core, &id, &meta);
         let (mut head, _) = super::parse_head(&head).unwrap();
-        let (parts, _, _) = super::parse_meta_row(&row).unwrap();
+        let (parts, _) = super::parse_meta_row(&row).unwrap();
         let back: Vec<Hold> = parts.iter().enumerate().map(|(ai, p)| Hold::stored(ai, &mut head, p & 32 != 0, p & 64 != 0, p & 128 != 0)).collect();
         assert_eq!(back, states.to_vec());
         // memory only: read back as a plain missing part
         meta.hold[6] = Hold::Missing(Missing::ToFetch);
         let row = super::meta_row(&e.core, &id, &meta);
-        let (parts, _, _) = super::parse_meta_row(&row).unwrap();
+        let (parts, _) = super::parse_meta_row(&row).unwrap();
         assert_eq!(parts[6] & (32 | 64 | 128), 32);
     }
 }

@@ -504,7 +504,7 @@ fn tree_in_one_commit_spec_permissions_1() {
     w.commit().unwrap().unwrap();
     deliver(&a, &b);
     for (i, t) in [x, y, z].into_iter().enumerate() {
-        assert_eq!(b.grants(t).unwrap().get(&[a.me(), x, y][i]).map(|e| e.role), Some(Role::Admin), "its first admin");
+        assert_eq!(b.engine(|e| e.roster(&t)).get(&[a.me(), x, y][i]).map(|e| e.role), Some(Role::Admin), "its first admin");
         assert!(b.created(t).unwrap().is_some());
         assert_eq!(b.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), Some(Value::Int(i as i64)));
     }

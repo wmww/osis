@@ -5,7 +5,7 @@ target marked `test = false` / `doctest = false` has unit tests / doctests that 
 and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name, and no
 test can bind the real LAN port or
 announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`), and only the engine's `apply::checked`
-vouches for checked delta bytes (`checked_bytes`), and every tools/known_failures.txt line names
+vouches for checked delta bytes (`checked_bytes`), and signature verdicts are read back only where kept (`kept_verdicts`), and every tools/known_failures.txt line names
 an existing issue file, an existing test or sim scenario and a valid pattern (`known_failures`),
 and every list under git's union merge has no duplicate line and a stale-line check (`union_lists`),
 and no code names a thing's destruction by the old word "ended" (`ended_names`), and every pointer into notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and no core `pub`
@@ -309,6 +309,20 @@ def checked_bytes():
     if n != 1:
         yield f"core/engine/src/apply/mod.rs: {n} Checked::verified uses, want 1 (apply::checked)"
 
+# notes/engine.md (Signature verdicts): `osis_commit::Signed` vouches that signature bytes verified
+# on this node. Product code reads one back from bytes only where this node kept it: a commit
+# record's head (`engine/index.rs`) and a pending copy's row (`apply/mod.rs`, `kept_verdict`).
+FROM_KEPT = re.compile(r"\bSigned::from_kept\b")
+FROM_KEPT_USES = {"core/engine/src/engine/index.rs": 1, "core/engine/src/apply/mod.rs": 1}
+
+def kept_verdicts():
+    for rel, n in product_lines(FROM_KEPT, lambda rel: rel in FROM_KEPT_USES or rel == "core/commit/src/header.rs" or os.path.basename(rel).startswith("tests_")):
+        yield f"{rel}:{n}: osis_commit::Signed read back outside where this node keeps verdicts (notes/engine.md, Signature verdicts)"
+    for rel, want in FROM_KEPT_USES.items():
+        n = len(FROM_KEPT.findall(code_of(os.path.join(ROOT, rel))))
+        if n != want:
+            yield f"{rel}: {n} Signed::from_kept uses, want {want}"
+
 def known_failures():
     names, bad = gate_failures.known(ROOT)
     yield from bad
@@ -388,6 +402,7 @@ errs.extend(known_failures())
 errs.extend(union_lists())
 errs.extend(test_copies())
 errs.extend(checked_bytes())
+errs.extend(kept_verdicts())
 errs.extend(real_lan_tests())
 errs.extend(peer_ticks())
 errs.extend(env_vars())

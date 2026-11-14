@@ -34,7 +34,7 @@ Other store kinds (osis-store's catalog):
 
 ## Index tables
 Rebuildable `node/*` tables (`engine/index.rs`), an index, never the truth: a store whose index fails to read is rebuilt from the commit records.
-- `node/metas`: per commit a byte per part (valid, the rotation role it needs, a grant's overreach), the header's `View`, and what its `secrets.0` and `keys.0` parts show for possession (`Indexes::shown`). Every input of a part's judgment that comes from its body is in the row, so a fast open judges a held part as the running node did.
+- `node/metas`: per commit a byte per part (valid, the rotation role it needs, a grant's overreach), and the header's `View`. Every input of a part's judgment that comes from its body is in the row, so a fast open judges a held part as the running node did.
 - `node/boxes to`, `node/epoch intro`, `node/keysets`, `node/delete hints`, `node/required`, `node/snapshots` (per aspect, with frontiers), `node/edges`, `node/walks`, `node/refs to` and `node/refs from` (the reference index, notes/engine-refs.md).
 
 ## Open (`apply::load`)

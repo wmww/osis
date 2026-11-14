@@ -233,7 +233,7 @@ fn bad_pending_commit_forgets_its_leftovers() {
     e.ingest(&pk(c2).bytes, pk(c2).blobs.clone()).unwrap();
     assert!(e.core.ix.pending.contains_key(&c2), "ahead of the clock: waits");
     // each waiting part held value-less, as a purge falling while it waits leaves it
-    let h = e.run(|tx| Ok(osis_commit::CommitBlob::decode_stored(&tx.txn.get_pending(&c2)?.unwrap().1).unwrap().header)).unwrap();
+    let h = e.run(|tx| Ok(osis_commit::CommitBlob::decode_stored(&tx.txn.get_pending(&c2)?.unwrap().bytes).unwrap().header)).unwrap();
     let leftovers = |e: &mut Engine| {
         e.run(|tx| {
             let mut n = 0;

@@ -357,6 +357,11 @@ impl Engine {
         for cs in &found {
             self.cert_parts(cs, &mut out);
         }
+        // a keyset is held only with the demotions it carries (spec/crypto.md §4, Carried
+        // demotions)
+        for t in parts.iter().filter_map(|ai| h.aspects.get(*ai)).filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid).collect::<Vec<_>>() {
+            self.carried_demotions(&t, c, &mut out);
+        }
         if let Some(p) = out.commits.get_mut(c) {
             p.retain(|x| !parts.contains(x));
         }
@@ -367,7 +372,7 @@ impl Engine {
 
     /// The commits, parts and records certificates `certs` name (spec/permissions.md §4), added to
     /// `out`: edge writes projected to their edge deltas on the chain's things, the record of
-    /// each thing and the current `keys.0` of each actor.
+    /// each thing and the current `keys.0` of each actor, with the demotions its keysets carry.
     pub(super) fn cert_parts(&mut self, certs: &osis_perm::Certificates, out: &mut Certs) {
         let all: BTreeSet<Tid> = certs.created.iter().copied().collect();
         for c in &certs.commits {
@@ -377,10 +382,42 @@ impl Engine {
         for t in &certs.keys {
             for c in self.current_keys(t) {
                 out.add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["keys.0"]));
+                self.carried_demotions(t, &c, out);
             }
         }
         for t in &certs.created {
             self.minting_evidence(t, out);
+        }
+    }
+
+    /// The demotions the keysets of `t` that commit `c` introduces carry (spec/crypto.md §4,
+    /// Carried demotions): each listed commit's `roles.0` parts with its author's chains, and
+    /// `c`'s own `roles.0` parts where a keyset says `c` demotes, added to `out`: a receiver holds
+    /// those keysets only with them. Each demotion's chain once per `out` (a chain may name a
+    /// keyset carrying it back: holder actors may form a cycle).
+    fn carried_demotions(&mut self, t: &Tid, c: &CommitId, out: &mut Certs) {
+        let mut carried: BTreeSet<CommitId> = BTreeSet::new();
+        for (r, e, x) in self.core.keysets_noted(t) {
+            if self.core.ix.epoch_intro.get(&(*t, r, e)).is_some_and(|i| i.1 == *c) {
+                carried.extend(x.demotions.iter().copied());
+                if x.demotes {
+                    carried.insert(*c);
+                }
+            }
+        }
+        for d in carried {
+            let Some(h) = self.header(&d) else { continue };
+            let things: BTreeSet<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == "roles.0").map(|a| a.tid).collect();
+            let parts = self.parts_of(&d, &things, &["roles.0"]);
+            let fresh = !out.commits.get(&d).is_some_and(|p| parts.is_subset(p));
+            out.add(d, parts);
+            if !fresh {
+                continue;
+            }
+            for x in things.into_iter().chain([h.actor]) {
+                let cs = self.chain_to(&h.author, &x);
+                self.cert_parts(&cs, out);
+            }
         }
     }
 

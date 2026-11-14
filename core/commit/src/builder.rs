@@ -85,6 +85,8 @@ pub struct Built {
     pub commit: CommitBlob,
     /// Blobs written for linked header lists; they go wherever the commit's blob goes.
     pub list_blobs: Vec<BlobId>,
+    /// Its signature, by the key it was built with: verified by construction.
+    pub signed: crate::Signed,
 }
 
 fn build_err(e: Error) -> Error {
@@ -206,7 +208,12 @@ impl CommitBuilder {
         if blob_bound(&commit) > self.max_blob {
             return Err(Error::Build(COMMIT_PAST_BLOB));
         }
-        Ok(Built { commit, list_blobs })
+        // the writer checks its own signature once before anything leaves it (outside the counted
+        // costs): a signing bug or a fault in signing fails here, and a faulty Ed25519 signature
+        // is never published (it can leak the key)
+        let signed = osis_base::costs::paused(|| crate::verify_signature(&id, &commit.sigs, &key.verifying_key()).ok());
+        let Some(signed) = signed else { return Err(Error::Build("a commit signature that does not verify")) };
+        Ok(Built { commit, list_blobs, signed })
     }
 }
 

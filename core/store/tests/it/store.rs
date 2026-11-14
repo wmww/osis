@@ -6,7 +6,7 @@ use crate::common;
 use common::*;
 use osis_base::{BlobId, CommitId};
 use osis_crypto::SeededRng;
-use osis_store::{AspectUnit, Error, Fault, MemoryBackend, MemoryRoot, PendingKind, Shred, Store, StoreConfig};
+use osis_store::{AspectUnit, Error, Fault, MemoryBackend, MemoryRoot, Pending, PendingKind, Shred, Store, StoreConfig};
 
 // spec/commits.md §4: all writes of a transaction commit together; dropping it aborts.
 #[test]
@@ -71,11 +71,12 @@ fn pending_commits() {
     let mut t = s.transaction(&mut rng).unwrap();
     for i in 0..10u8 {
         let k = if i % 3 == 0 { PendingKind::Parked } else { PendingKind::Pending };
-        t.put_pending(&CommitId([i; 32]), k, &vec![i; 300]).unwrap();
+        t.put_pending(&CommitId([i; 32]), k, (i % 2 == 0).then_some([i; 32]), &vec![i; 300]).unwrap();
     }
-    assert_eq!(t.get_pending(&CommitId([3; 32])).unwrap(), Some((PendingKind::Parked, vec![3; 300])));
+    assert_eq!(t.get_pending(&CommitId([3; 32])).unwrap(), Some(Pending { kind: PendingKind::Parked, verdict: None, bytes: vec![3; 300] }));
+    assert_eq!(t.get_pending(&CommitId([6; 32])).unwrap(), Some(Pending { kind: PendingKind::Parked, verdict: Some([6; 32]), bytes: vec![6; 300] }));
     let page = t.pending(Some(&CommitId([4; 32])), 3).unwrap();
-    assert_eq!(page.iter().map(|(c, _, _)| c.0[0]).collect::<Vec<_>>(), vec![5, 6, 7]);
+    assert_eq!(page.iter().map(|(c, _)| c.0[0]).collect::<Vec<_>>(), vec![5, 6, 7]);
     assert!(t.remove_pending(&CommitId([5; 32]), Shred::No).unwrap());
     assert!(!t.remove_pending(&CommitId([5; 32]), Shred::No).unwrap());
     t.commit().unwrap();

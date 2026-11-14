@@ -258,20 +258,6 @@ pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
     if due.is_empty() && fell.is_empty() && again.is_empty() {
         return Ok(());
     }
-    // the things whose holders for keys these were (named on them, or on a destroyed actor so
-    // named): possession counts their frozen holders in their place (spec/crypto.md §4, Holder
-    // actors, Destroyed), so their verdicts are judged again
-    let mut seen: BTreeSet<Tid> = due.union(&fell).copied().collect();
-    let mut work: Vec<Tid> = seen.iter().copied().collect();
-    while let Some(t) = work.pop() {
-        let on: Vec<Tid> = tx.core.ix.held.named_on(&t).copied().filter(|x| *x != t).collect();
-        for x in on {
-            tx.core.stale_things.insert(x);
-            if tx.core.destroyed_actor(&x) && seen.insert(x) {
-                work.push(x);
-            }
-        }
-    }
     // known again or destroyed: judged, with what lists it
     for t in due.iter().chain(&fell) {
         super::lifetimes::queue_with_listers(tx, t)?;

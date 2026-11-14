@@ -376,8 +376,9 @@ impl ReadOnly {
     /// listed once per way: the shortest to each grant it holds them by, and a longer one when it
     /// gives more, so its best role and latest end are among its entries. Who holds through an actor:
     /// `holders` of that actor, or those here with it in `through`. Grants one level down, with
-    /// `may_grant` and whether a grant goes with a membership: `grants`. On a client with its own actor,
-    /// what that actor may read: nothing behind an actor it may not read.
+    /// `may_grant` and whether a grant goes with a membership: `grants`. Nothing behind an actor
+    /// this node (on a client with its own actor, that actor) does not read: its roster is not
+    /// shown here (`grants`).
     pub fn holders(&self, target: Tid) -> Result<Vec<Holder>> {
         if let Some(at) = self.remote(target, "holders")? {
             return crate::port::codec::holders_from(self.remote_call(&at, crate::port::method::HOLDERS, vec![osis_base::Value::Tid(target)], crate::port::VALUE_REPLY)?);

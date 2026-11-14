@@ -229,3 +229,64 @@ fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     assert!(holds(&a, a.me()) && !holds(&a, b.me()), "each party stands with itself");
     assert!(holds(&b, b.me()) && !holds(&b, a.me()));
 }
+
+/// Carries every node's commits to every other, then settles each.
+fn mesh(dbs: &[&osis::Osis]) {
+    for (i, from) in dbs.iter().enumerate() {
+        for (j, to) in dbs.iter().enumerate() {
+            if i != j {
+                deliver(from, to);
+            }
+        }
+    }
+    for d in dbs {
+        d.settle();
+    }
+}
+
+// spec/requirements.md Permissions (a role M holds on G never depends on who is in M),
+// spec/crypto.md §4 (Carried demotions): Carol reads G, which team M (Bob's, Alice a reader of it
+// too) writes; Bob removes Erin, a writer of M. Carol's node holds the removal with M's new keyset
+// (it is how G's writers count Erin out), but it shows her no roster of M, before or after: only
+// G's, and M's to Bob. Once Carol reads M her watch on M's grants hears its roster, and hears it
+// hidden once she reads it no more.
+#[test]
+fn a_parents_reader_sees_no_roster_of_its_member_team_spec_crypto_4() {
+    let (alice, bob, carol, erin) = (db(1), db(2), db(3), db(4));
+    let all = [&alice, &bob, &carol, &erin];
+    mesh(&all);
+    let m = bob.commit_with(|w| w.create()).unwrap();
+    bob.grant(m, erin.me(), Role::Write, Default::default()).unwrap();
+    bob.grant(m, alice.me(), Role::Read, Default::default()).unwrap();
+    mesh(&all);
+    let g = alice.commit_with(|w| w.create()).unwrap();
+    alice.grant(g, m, Role::Write, Default::default()).unwrap();
+    alice.grant(g, carol.me(), Role::Read, Default::default()).unwrap();
+    mesh(&all);
+    assert!(carol.grants(g).unwrap().contains_key(&m), "G's roster shows to its reader");
+    assert!(carol.grants(m).unwrap().is_empty(), "no roster of M");
+    bob.set_role(m, erin.me(), None, SetRoleOpts::default()).unwrap();
+    mesh(&all);
+    assert!(!bob.grants(m).unwrap().contains_key(&erin.me()), "Erin left M");
+    assert!(carol.grants(m).unwrap().is_empty(), "no roster of M once Erin left");
+    assert!(carol.holders(g).unwrap().iter().all(|h| h.actor != erin.me()), "nor through G's holders");
+    // once Carol reads M (a roster change on M's way in, not on M's), her watch on M's grants
+    // hears its roster
+    let t = bob.commit_with(|w| w.create()).unwrap();
+    bob.grant(m, t, Role::Read, Default::default()).unwrap();
+    mesh(&all);
+    let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let h = heard.clone();
+    let _sub = carol.on_grants_change(m, move |_, r| h.lock().unwrap().push(r.unwrap())).unwrap();
+    bob.grant(t, carol.me(), Role::Read, Default::default()).unwrap();
+    mesh(&all);
+    assert_eq!(carol.role_on(m).unwrap(), Some(Role::Read), "Carol reads M through T");
+    assert!(carol.grants(m).unwrap().contains_key(&t), "M's roster shows to its reader");
+    assert!(heard.lock().unwrap().last().is_some_and(|g| g.contains_key(&t)), "her watch heard it: {:?}", heard.lock().unwrap());
+    // and once she no longer reads M (T's roster changed, M's not), it hears the roster hidden
+    bob.set_role(t, carol.me(), None, SetRoleOpts::default()).unwrap();
+    mesh(&all);
+    assert_eq!(carol.role_on(m).unwrap(), None, "Carol left T");
+    assert!(carol.grants(m).unwrap().is_empty(), "no roster of M");
+    assert!(heard.lock().unwrap().last().is_some_and(|g| g.is_empty()), "her watch heard it hidden: {:?}", heard.lock().unwrap());
+}

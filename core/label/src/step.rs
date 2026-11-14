@@ -568,7 +568,7 @@ pub(crate) mod tests {
         assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[1; 32]), sealed.clone())])).is_ok());
         assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[9; 32]), sealed)])).is_err());
         // an entry box is sealed (spec/wire.md §7)
-        let sym = SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: osis_schema::core_types::Epoch { n: 1, nonce: [0; 32] }, wrap: vec![0; 49], possession: None }).to_value();
+        let sym = SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: osis_schema::core_types::Epoch { n: 1, nonce: [0; 32] }, wrap: vec![0; 49] }).to_value();
         assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[1; 32]), sym)])).is_err());
         assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[1; 32]), Value::Int(0))])).is_err());
         assert!(ClaimSet::from_value(&set(Value::List(vec![Value::bytes(&[0; 31])]), vec![])).is_err());

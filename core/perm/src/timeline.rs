@@ -775,6 +775,12 @@ impl Timeline {
     pub fn demotions(&self, node: &Tid, thing: &Tid) -> &[Demotion] {
         self.walked.demotions.get(&(*node, *thing)).map_or(&[], |v| v.as_slice())
     }
+    /// The explicit demotions on `thing` (§5.1 step 4) of a node that holds the demoted role
+    /// there no more at the end (a re-grant ends what a demotion keeps out, §5.2), each with its
+    /// node. O(every demotion recorded).
+    pub fn demotions_in_effect(&self, thing: &Tid) -> impl Iterator<Item = (&Tid, &Demotion)> {
+        self.walked.demotions.iter().filter(move |(k, _)| k.1 == *thing).flat_map(move |((x, t), ds)| ds.iter().filter(move |d| self.role(x, t, At::END) < Some(d.below)).map(move |d| (x, d)))
+    }
     /// Whom role commit `commit` demotes below write, on which things: (node, thing) pairs
     /// (what a writer answers with addenda, §5.2). O(every demotion recorded).
     pub fn demoted_below_write(&self, commit: &CommitId) -> Vec<(Tid, Tid)> {
@@ -1003,13 +1009,6 @@ impl Timeline {
     pub fn roles_of(&self, node: &Tid, at: At) -> BTreeMap<Tid, Role> {
         let edges = self.edges_at(at.point);
         View::at(&edges, at.ts).roles_from(node)
-    }
-
-    /// `roles_of` over paths that never pass through a thing of `avoid` (`node`'s role on it
-    /// aside).
-    pub fn roles_avoiding(&self, node: &Tid, at: At, avoid: &BTreeSet<Tid>) -> BTreeMap<Tid, Role> {
-        let edges = self.edges_at(at.point);
-        View::at(&edges, at.ts).roles_from_avoiding(node, avoid)
     }
 
     /// `roles_of` over the edges not in `skip`, each named (target, holder).

@@ -14,8 +14,6 @@ pub enum Domain {
     Stamp,
     Deposit,
     Delete,
-    /// A box's possession signature, by a keyset's possession key (spec/crypto.md §4).
-    Possession,
     /// A node's inner signature over an account's commit ID (spec/permissions.md §5.5).
     Inner,
     /// A merge's signature at a fork's epoch, over the merge's commit ID (spec/crypto.md §9).
@@ -30,14 +28,13 @@ pub enum Domain {
 }
 
 impl Domain {
-    pub const ALL: [Domain; 12] = [
+    pub const ALL: [Domain; 11] = [
         Domain::Commit,
         Domain::LabelRegister,
         Domain::LabelOpen,
         Domain::Stamp,
         Domain::Deposit,
         Domain::Delete,
-        Domain::Possession,
         Domain::Inner,
         Domain::Merge,
         Domain::ConnectionProof,
@@ -52,12 +49,27 @@ impl Domain {
             Domain::Stamp => "osis v1 upload",
             Domain::Deposit => "osis v1 deposit",
             Domain::Delete => "osis v1 delete",
-            Domain::Possession => "osis v1 possession",
             Domain::Inner => "osis v1 inner",
             Domain::Merge => "osis v1 merge",
             Domain::ConnectionProof => "osis v1 connection proof",
             Domain::RoleEntry => "osis v1 role entry",
             Domain::Removal => "osis v1 removal",
+        }
+    }
+    /// The `osis_base::costs` count a verification in this domain adds to.
+    pub const fn verify_cost(self) -> &'static str {
+        match self {
+            Domain::Commit => "verify: commit",
+            Domain::LabelRegister => "verify: label register",
+            Domain::LabelOpen => "verify: label open",
+            Domain::Stamp => "verify: stamp",
+            Domain::Deposit => "verify: deposit",
+            Domain::Delete => "verify: delete",
+            Domain::Inner => "verify: inner",
+            Domain::Merge => "verify: merge",
+            Domain::ConnectionProof => "verify: connection proof",
+            Domain::RoleEntry => "verify: role entry",
+            Domain::Removal => "verify: removal",
         }
     }
     fn message(self, digest: &[u8; 32]) -> Vec<u8> {
@@ -122,6 +134,7 @@ impl VerifyingKey {
     }
     /// Strict verification of `sig` over `domain || digest`.
     pub fn verify(&self, domain: Domain, digest: &[u8; 32], sig: &Signature) -> Result<(), Error> {
+        osis_base::costs::count(domain.verify_cost(), 1);
         let s = ed25519_dalek::Signature::from_bytes(&sig.0);
         self.0.verify_strict(&domain.message(digest), &s).map_err(|_| Error::BadSignature)
     }

@@ -172,10 +172,10 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     }
     // pending and parked commits (and late parts waiting under an applied commit's ID)
     let mut pend = Vec::new();
-    tx.each_pending(|id, k, bytes| pend.push((id, k, bytes)))?;
-    for (id, k, bytes) in pend {
+    tx.each_pending(|id, p| pend.push((id, p)))?;
+    for (id, p) in pend {
         // unreadable by this build: its header names nothing we can judge
-        let Ok(blob) = CommitBlob::decode_stored(&bytes) else { continue };
+        let Ok(blob) = CommitBlob::decode_stored(&p.bytes) else { continue };
         // a kept copy's content takes nothing new: what waits goes too
         let mut ais: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, a)| frozen(tx.core, &a.tid, &a.ak)).map(|(ai, _)| ai).collect();
         ais.extend(lost_aspects(tx.core, &lost, &blob.header, &mut memo));
@@ -185,7 +185,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
         // a grant that may still apply keeps its boxes (applied later without them, the node
         // would hold the role and no secret), marked sealed: read as candidates again, they
         // would keep the lost secrets for good
-        let grants = crate::rotation::boxes_kept(tx.core, &blob, &id, held);
+        let grants = crate::rotation::boxes_kept(tx.core, &blob, &id, held, crate::apply::kept_verdict(&p));
         let kept: Vec<(usize, Tid)> = ais.iter().filter_map(|ai| blob.header.aspects.get(*ai).filter(|a| a.ak.as_str() == "secrets.0" && grants.contains(&a.tid)).map(|a| (*ai, a.tid))).collect();
         for (ai, x) in kept {
             ais.remove(&ai);
@@ -202,7 +202,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
         }
         tx.txn.remove_pending(&id, Shred::Yes)?;
         if !rest.parts.is_empty() {
-            tx.txn.put_pending(&id, k, &rest.encode())?;
+            tx.txn.put_pending(&id, p.kind, p.verdict, &rest.encode())?;
         }
     }
     // aspect units and per-aspect records

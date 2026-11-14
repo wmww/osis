@@ -211,7 +211,9 @@ impl Engine {
     fn sender_connected(&mut self, blob: &CommitBlob, id: &CommitId) -> Result<bool> {
         let author = blob.header.author;
         let record = self.core.created(&author).cloned();
-        if !matches!(record, Some(osis_base::CreationRecord::KeyActor { .. })) || crate::apply::signed_by_author(&self.core, blob, id, record.as_ref()) != Some(true) {
+        // a held commit's signature was checked once here, its verdict kept with it
+        let known = self.core.ix.commits.get(id).map(|m| m.signed);
+        if !matches!(record, Some(osis_base::CreationRecord::KeyActor { .. })) || crate::apply::signed_by_author(&self.core, blob, id, record.as_ref(), known) != Some(true) {
             return Ok(false);
         }
         let set = self.sync_set_now()?;

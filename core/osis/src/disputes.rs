@@ -123,7 +123,8 @@ impl Osis {
         self.local("disputes")?;
         self.locked(|l| {
             let (ds, left) = l.engine().disputes(LIST_MAX);
-            let mut out: Vec<Dispute> = ds.iter().map(Dispute::of).collect();
+            // over a thing this node reads: another's roster is not its to show (`grants`)
+            let mut out: Vec<Dispute> = ds.iter().filter(|d| l.engine().role_on(&d.target) >= Some(osis_base::Role::Read)).map(Dispute::of).collect();
             out.extend(l.engine().account_disputes().iter().map(|a| Dispute::of_account(a.account, &a.lines, a.side, a.chosen)));
             Ok((out, left))
         })
@@ -135,7 +136,10 @@ impl Osis {
         self.local("on_dispute")?;
         Ok(self.subscribe(Filter::Disputes, false, |_| {
             Box::new(move |db, d| {
-                if let Delivery::Dispute(x) = d {
+                // as `disputes` lists them: over a thing this node reads
+                if let Delivery::Dispute(x) = d
+                    && !matches!(&x, Dispute::Removal { target, .. } if db.role_on(*target).ok().flatten() < Some(osis_base::Role::Read))
+                {
                     f(db, x)
                 }
             })

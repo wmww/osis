@@ -518,7 +518,7 @@ fn watch(l: &mut Locked, read_limit: usize, actor: Option<Tid>, w: Watched, limi
             let first = codec::grants_to(&r.grants(t));
             let mut last = first.clone();
             let tell: Tell = Box::new(move |db, d| {
-                if !matches!(d, Delivery::Grants) {
+                if !matches!(d, Delivery::Grants | Delivery::Due) {
                     return Vec::new();
                 }
                 let now = codec::grants_to(&read_as(db, actor, |r| r.grants(t)));

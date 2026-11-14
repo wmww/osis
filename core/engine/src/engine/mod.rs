@@ -71,6 +71,8 @@ pub struct Meta {
     pub header: LazyHeader,
     pub received: WallMs,
     pub origin: Origin,
+    /// Its held signatures' verdict (`apply::signature`), kept in its record's head.
+    pub signed: osis_commit::Signed,
     /// Validity per aspect (spec/permissions.md §5.2).
     pub valid: Vec<bool>,
     /// What this node holds of each part, by aspect index (`Hold`).
@@ -158,82 +160,10 @@ pub struct Dropped {
     /// `epoch_intro` candidates; every valid one's are held keysets (`keysets`, spec/crypto.md
     /// §4), and an invalid one's held invalid.
     pub keysets: Vec<KeysetRec>,
-    /// What a role commit's `secrets.0` or `keys.0` body showed for possession
-    /// (`Indexes::shown`).
-    pub shown: Option<Arc<Showing>>,
     /// A memory part vanished as superseded (spec/sync-compaction.md §2): the later parts of its author's
     /// that superseded it (the lane's carriers once its commit is forgotten). Never stored:
     /// memory commits are not.
     pub superseded_by: BTreeSet<CommitId>,
-}
-
-/// What a role commit's part shows for possession (spec/crypto.md §4, Holder actors), read from
-/// its bodies (`validity::note_required`). A `keys.0` part: whether it writes a keyset (a
-/// rotation), and the proofs its keysets carry. A `secrets.0` part: whether it writes more than
-/// entries, the boxes it removes, and what each box to a holder names and signs. A judgment of
-/// the body alone; the keysets that verify it and the roles it is judged by are read when
-/// judging.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Showing {
-    pub rotates: bool,
-    /// A `keys.0` part: the highest role whose keyset it writes (what its rotation needs, at
-    /// least write: spec/permissions.md §3).
-    pub top: Option<osis_base::Role>,
-    /// (holder, role) of each box it removes.
-    pub removed: Vec<(Tid, osis_base::Role)>,
-    pub shown: Vec<osis_keys::possession::Shown>,
-    /// The verdicts of `shown`'s signatures under the keys judging asked them of.
-    pub checked: Verdicts,
-}
-
-/// A part's possession signatures checked (`Shown::verifies`), by (digest, signature, key): a
-/// function of those bytes alone, kept while the part's `Showing` is, so judging the part again
-/// checks no signature again. Equal to any other: it says nothing of the part.
-#[derive(Default)]
-pub struct Verdicts(std::sync::Mutex<HashMap<Signed, bool>>);
-
-/// A signature's digest and bytes, and the key it was checked under.
-type Signed = ([u8; 32], [u8; 64], [u8; 32]);
-
-impl Verdicts {
-    fn verdicts(&self) -> std::sync::MutexGuard<'_, HashMap<Signed, bool>> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// `s.verifies(pk)`, checked once.
-    pub fn verifies(&self, s: &osis_keys::possession::Shown, pk: &osis_crypto::VerifyingKey) -> bool {
-        let Some((d, sig)) = &s.signed else { return false };
-        let k = (*d, *sig, pk.to_bytes());
-        if let Some(v) = self.verdicts().get(&k) {
-            return *v;
-        }
-        let v = {
-            let _s = osis_base::costs::span("possession: signature");
-            s.verifies(pk)
-        };
-        self.verdicts().insert(k, v);
-        v
-    }
-}
-
-impl Clone for Verdicts {
-    fn clone(&self) -> Verdicts {
-        Verdicts(std::sync::Mutex::new(self.verdicts().clone()))
-    }
-}
-
-impl PartialEq for Verdicts {
-    fn eq(&self, _: &Verdicts) -> bool {
-        true
-    }
-}
-
-impl Eq for Verdicts {}
-
-impl std::fmt::Debug for Verdicts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Verdicts")
-    }
 }
 
 /// The coverers the dropped parts of `m` name (`Dropped::covered_by`).
@@ -253,40 +183,46 @@ impl Dropped {
 }
 
 /// A keyset a `keys.0` body wrote: its role, epoch, the epochs its supersedes list names, its
-/// KEM public key (`None`: another suite, or malformed: never sealed to) and its possession key
-/// (`None`: malformed: verifies nothing).
+/// KEM public key (`None`: another suite, or malformed: never sealed to) and the demotions it
+/// carries (spec/crypto.md §4, Carried demotions).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KeysetRec {
     pub role: osis_base::Role,
     pub epoch: osis_crypto::Epoch,
     pub lists: Vec<osis_crypto::Epoch>,
     pub kem: Option<osis_crypto::KemPublicKey>,
-    pub possession: Option<osis_crypto::VerifyingKey>,
     /// The digest of the rotation's names it publishes (spec/crypto.md §4).
     pub names: osis_keys::NamesDigest,
     /// The keysets of holder actors it records its rotation left them out at (spec/crypto.md §4,
     /// Left out).
     pub left_out: Vec<(Tid, osis_crypto::Epoch)>,
+    /// The keysets of holder actors its rotation's boxes name (spec/crypto.md §4, Stale).
+    pub sealed_at: Vec<(Tid, osis_crypto::Epoch)>,
+    /// The other commits' demotions it carries, and whether its own commit is one.
+    pub demotions: Vec<CommitId>,
+    pub demotes: bool,
 }
 
-/// A held valid keyset (`Indexes::keysets`): the epochs the supersedes lists of the bodies
-/// writing it name, joined, its KEM key (the first such body's of suite 1 noted), the
-/// possession keys those bodies publish, each with the key of the earliest body publishing it
-/// (any of them verifies a possession signature or proof made after it, spec/crypto.md §4: a
-/// body other than the keyset's rotation is a forgery, within its limit), the key of its
-/// earliest body (Authority reads a keyset as held just before a commit's key), and the names
-/// digests they publish, each with its body's author (what binds a history entry to a rotator,
-/// spec/crypto.md §4: a forger's body binds entries to the forger), and the left-out keysets they
-/// record, joined (Seal reads them at the actor's current epochs).
+/// A valid keyset body noted (`Indexes::keysets`): the epochs the supersedes lists of the bodies
+/// writing it name, joined, its KEM key (the first such body's of suite 1 noted), the key of its
+/// earliest body (Seal's order fallback and the order rule read it), the names digests they
+/// publish, each with its body's author (what binds a history entry to a rotator,
+/// spec/crypto.md §4: a forger's body binds entries to the forger), the left-out and sealed-at
+/// keysets they record, joined (Seal and Stale read them at the actor's current epochs: a node
+/// holding none of its boxes judges them so), and the demotions they carry,
+/// joined (spec/crypto.md §4, Carried demotions: `demotes`, its rotation commit is one). Held
+/// only once those are (`Core::keyset`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeldKeyset {
     pub lists: BTreeSet<osis_crypto::Epoch>,
     pub kem: Option<osis_crypto::KemPublicKey>,
-    pub possession: BTreeMap<osis_crypto::VerifyingKey, osis_perm::Point>,
     /// The key of its earliest valid body; `None` only before one is noted.
     pub since: Option<osis_perm::Point>,
     pub names: BTreeSet<(osis_keys::NamesDigest, Tid)>,
     pub left_out: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>,
+    pub sealed_at: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>,
+    pub demotions: BTreeSet<CommitId>,
+    pub demotes: bool,
 }
 
 impl HeldKeyset {
@@ -304,7 +240,7 @@ impl Meta {
     /// says (`Hold::stored`).
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, mut head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
         let hold = (0..valid.len()).map(|ai| Hold::stored(ai, &mut head, missing.contains(&ai), false, false)).collect();
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, hold }
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, signed: head.signed, valid, hold }
     }
     /// The index of aspect `(tid, ak)` in the commit.
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
@@ -904,9 +840,6 @@ indexes! {
     /// `secrets.0` parts of role commits that write beyond their grantees' boxes (an invite
     /// grant may carry only those, spec/permissions.md §2).
     pub grant_overreach: JSet<(CommitId, usize)>,
-    /// What held (or dropped, `Dropped::shown`) `secrets.0` parts of role commits show for
-    /// possession, by commit and aspect index (`Showing`).
-    pub shown: JMap<(CommitId, usize), Arc<Showing>>,
     /// Keyed boxes per holder: holder -> (actor, box key), from `secrets.0` entries seen.
     pub boxes_to: JSetMap<Tid, (Tid, osis_base::Value)>,
     /// Every held `addenda.0` delta (spec/permissions.md §5.2, Addenda), by (thing, commit):
@@ -1590,9 +1523,30 @@ impl Core {
         })
     }
 
-    /// The held valid keysets of actor `m`: (role, epoch, what is held of it).
+    /// The held valid keysets of actor `m`: (role, epoch, what is held of it) (`keyset`).
     pub(crate) fn keysets_of(&self, m: &Tid) -> impl Iterator<Item = (osis_base::Role, osis_crypto::Epoch, &HeldKeyset)> {
+        self.keysets_noted(m).filter(|(r, e, v)| self.carried_held(&(*m, *r, *e), v))
+    }
+
+    /// Every keyset of actor `m` a valid body of which is noted (`Indexes::keysets`), held or not.
+    pub(crate) fn keysets_noted(&self, m: &Tid) -> impl Iterator<Item = (osis_base::Role, osis_crypto::Epoch, &HeldKeyset)> {
         self.ix.keysets.range((*m, osis_base::Role::Sync, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *m).map(|(k, v)| (k.1, k.2, v))
+    }
+
+    /// Held valid keyset `e` of role `r` of actor `m` (spec/crypto.md §4, Held keyset): a valid
+    /// body of it noted (`Indexes::keysets`), and the demotions it carries held here (Carried
+    /// demotions): until then it counts as not arrived, so nothing seals to it, finds a box
+    /// stale by it, or descends through it.
+    pub(crate) fn keyset(&self, m: &Tid, r: osis_base::Role, e: &osis_crypto::Epoch) -> Option<&HeldKeyset> {
+        let k = (*m, r, *e);
+        self.ix.keysets.get(&k).filter(|v| self.carried_held(&k, v))
+    }
+
+    /// Whether this node holds the demotions keyset `k` (actor, role, epoch) carries: the edge
+    /// writes of each commit it lists, and of its rotation commit when that demotes too.
+    fn carried_held(&self, k: &(Tid, osis_base::Role, osis_crypto::Epoch), v: &HeldKeyset) -> bool {
+        let held = |c: &CommitId| self.ix.held.edge_commit(c).is_some();
+        v.demotions.iter().all(held) && (!v.demotes || self.ix.epoch_intro.get(k).is_some_and(|x| held(&x.1)))
     }
 
     /// The first time after now that a grant's `until` or a role commit's `ts` falls due in the
@@ -2292,8 +2246,6 @@ impl Core {
             self.rotation_seq = self.rotation_seq.saturating_add(1);
             self.ix.rotations.insert(m.view.author, self.rotation_seq);
             self.ix.epochs_due.insert(m.view.author);
-            // what possession reads of the account changed, as for an actor's keyset
-            crate::apply::keyset_changed(self, &m.view.author);
         }
     }
 
@@ -2946,15 +2898,15 @@ impl Tx<'_> {
         self.txn.local_stamp(&records::commit_key(id))
     }
 
-    /// Every stored pending or parked copy, a page at a time: commit, kind, bytes.
-    pub(crate) fn each_pending(&mut self, mut f: impl FnMut(CommitId, osis_store::PendingKind, Vec<u8>)) -> Result<()> {
+    /// Every stored pending or parked copy, a page at a time.
+    pub(crate) fn each_pending(&mut self, mut f: impl FnMut(CommitId, osis_store::Pending)) -> Result<()> {
         let mut after: Option<CommitId> = None;
         loop {
             let page = self.txn.pending(after.as_ref(), SCAN_PAGE)?;
             let n = page.len();
-            for (id, k, bytes) in page {
+            for (id, p) in page {
                 after = Some(id);
-                f(id, k, bytes);
+                f(id, p);
             }
             if n < SCAN_PAGE {
                 return Ok(());

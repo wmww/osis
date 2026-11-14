@@ -119,6 +119,16 @@ pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> os
     osis_keys::Names { list, departs }
 }
 
+/// The demotions a rotation of `a` carries (spec/crypto.md §4, Carried demotions): the commits
+/// of the explicit demotions on `a` held here that took a party below write or admin there, its
+/// own or through an actor below `a` at any depth (the walk records a demotion on everything the
+/// lowered edge's target reaches, spec/permissions.md §5.1 step 4), and that the party has not
+/// regained. A reader's removal records none: it stays hidden from what holds `a`.
+pub(crate) fn carried(core: &Core, a: &Tid) -> BTreeSet<osis_base::CommitId> {
+    let Some(tl) = core.timelines.get(a) else { return BTreeSet::new() };
+    tl.demotions_in_effect(a).map(|(_, d)| d.point.commit).collect()
+}
+
 /// Departures from `a` itself (spec/crypto.md §4): each holder whose edge (`edge_logs`) gave it
 /// more than the edge holds it at now and than it holds now (`Core::key_holders`), shown by that
 /// edge (a destroyed holder actor's edge stands, and its departure is its box's); and, shown by nothing (no
@@ -183,10 +193,10 @@ pub(crate) fn departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
 
 /// The roles of `a` that `who` (this node, a key actor it signs as, or a holder actor) may
 /// rotate now (spec/permissions.md §3, Who rotates): write and above rotates its role and below,
-/// over grants with key access only. A role through a keyless grant is a role, but its holder
-/// never gets the secret of the holder actor it reaches `a` through at that role, so no rotation
-/// or re-seal of `a` by it shows that actor (spec/crypto.md §4, Possession): every node judges
-/// it invalid.
+/// over grants with key access only. A role through a keyless grant is a role (a rotation by it
+/// is valid), but its holder never gets the secret of the holder actor it reaches `a` through,
+/// so holds none of `a`'s epochs to judge a rotation due by: it leaves rotating to those that do
+/// (spec/crypto.md §4, Key access).
 pub fn may_rotate(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
     let Some(tl) = core.timelines.get(a) else { return BTreeSet::new() };
     let at = At::now(now_ts(core));

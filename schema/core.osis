@@ -124,11 +124,6 @@ aspect addenda.0: map<blob, frontier>;
 // secret can read what the actor shares, whoever holds the sync secret can hold and serve it. Changing who holds a role means making new secrets
 // (a new epoch) and giving them to the remaining holders (spec/crypto.md).
 
-/// ed25519: 64 bytes.
-type signature = enum {
-    ed25519 1 (blob),
-};
-
 /// A public encryption key. x25519_mlkem768: the X25519 then the ML-KEM-768 public key, 1216 bytes.
 type kem_key = enum {
     x25519_mlkem768 1 (blob),
@@ -155,22 +150,19 @@ type keyset = struct {
     delete_key 3: signing_key,
     /// The earlier epochs this one replaces.
     supersedes 4: set<epoch>,
-    /// Lets a holder prove it has the secret.
-    possession_key 5: signing_key,
     /// 32-byte digest of the names this change of secrets records.
-    names 6: blob,
-    /// Per holder actor the rotator holds the role through, that it holds a secret of it
-    /// (spec/crypto.md §4).
-    proofs 7: map<tid, possession_proof>,
+    names 5: blob,
     /// Per holder actor this change of secrets left out of the role, the keysets of it it was
     /// left out at: nobody seals it at a keyset not past each (spec/crypto.md §4).
-    left_out 8: map<tid, set<epoch>>,
-};
-
-/// A signature over a keyset by the possession key of a holder actor's keyset (spec/wire.md §7).
-type possession_proof = struct {
-    keyset 0: epoch,
-    signature 1: signature,
+    left_out 6: map<tid, set<epoch>>,
+    /// Per holder actor this change of secrets boxes at the role, the keysets of it its box names
+    /// (spec/crypto.md §4, Stale).
+    sealed_at 7: map<tid, set<epoch>>,
+    /// 32-byte IDs of other commits demoting a writer or admin of the actor or of an actor
+    /// below it, which travel with the keyset (spec/crypto.md §4, Carried demotions).
+    demotions 8: set<blob>,
+    /// Whether this keyset's own commit is such a demotion.
+    demotes 9: bool,
 };
 
 /// Where others can drop things for an actor: its 16-byte home sync ID (spec/sync-inbox.md §1).
@@ -213,7 +205,6 @@ type box = enum {
     symmetric 1 (struct {
         epoch 0: epoch,
         wrap 1: blob,
-        possession 2: option<signature>,
     }),
     joint 2 (struct {
         keysets 0: set<epoch>,

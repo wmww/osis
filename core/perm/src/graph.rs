@@ -638,30 +638,23 @@ impl<'a> View<'a> {
         self.roles_expiring(x).0
     }
 
-    /// `roles_from` over paths that never pass through a thing of `avoid` (its own role on it
-    /// aside).
-    pub fn roles_from_avoiding(&self, x: &Tid, avoid: &BTreeSet<Tid>) -> BTreeMap<Tid, Role> {
-        self.roles_walk(x, Some(avoid), &BTreeSet::new()).0
-    }
-
     /// `roles_from` over the edges not in `skip`, each named (target, holder).
     pub fn roles_from_without(&self, x: &Tid, skip: &BTreeSet<(Tid, Tid)>) -> BTreeMap<Tid, Role> {
-        self.roles_walk(x, None, skip).0
+        self.roles_walk(x, skip).0
     }
 
     /// `roles_from` and the earliest `until` of an edge it followed: the answer holds at any
     /// later ts before that, while no edge of a node it reaches changes.
     pub(crate) fn roles_expiring(&self, x: &Tid) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
-        self.roles_walk(x, None, &BTreeSet::new())
+        self.roles_walk(x, &BTreeSet::new())
     }
 
-    /// `roles_expiring`, not walking on from `avoid` nor over an edge in `skip` (target, holder).
-    fn roles_walk(&self, x: &Tid, avoid: Option<&BTreeSet<Tid>>, skip: &BTreeSet<(Tid, Tid)>) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
-        let through = |t: &Tid| avoid.is_none_or(|a| !a.contains(t));
+    /// `roles_expiring`, not walking over an edge in `skip` (target, holder).
+    fn roles_walk(&self, x: &Tid, skip: &BTreeSet<(Tid, Tid)>) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
         let mut expires: Option<WallMs> = None;
         let mut best: BTreeMap<Tid, Role> = BTreeMap::from([(*x, Role::Admin)]);
         for level in Role::ALL.into_iter().rev() {
-            let mut stack: Vec<Tid> = best.iter().filter(|&(t, &r)| r == level && through(t)).map(|(t, _)| *t).collect();
+            let mut stack: Vec<Tid> = best.iter().filter(|&(_, &r)| r == level).map(|(t, _)| *t).collect();
             while let Some(e) = stack.pop() {
                 self.each_target(&e, |t, edge| {
                     if edge.alive_at(self.ts) && !skip.contains(&(*t, e)) {
@@ -669,7 +662,7 @@ impl<'a> View<'a> {
                         let (y, v) = (*t, level.min(edge.role));
                         if best.get(&y).is_none_or(|&b| v > b) {
                             best.insert(y, v);
-                            if v == level && through(&y) {
+                            if v == level {
                                 stack.push(y);
                             }
                         }
