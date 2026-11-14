@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: node, permissions, performance
 
-Counted: osis-node `scale::grant_is_flat_in_content_commits` (open reads every header: O(commits)); `scale::validity_flip_is_linear_spec_permissions_5_2` (a rebuild from every body). What is built: notes/engine-validity-rejudge.md, notes/engine-validity-rebuild.md, notes/engine-store.md Open.
+Counted: osis-node `scale::grant_is_flat_in_content_commits` (open reads every header: O(commits)); `scale::validity_flip_is_linear_and_invalid_arrival_flat_spec_permissions_5_2` (a rebuild from every body). What is built: notes/engine-validity-rejudge.md, notes/engine-validity-rebuild.md, notes/engine-store.md Open.
 
 - **Re-judging.** A commit perm evaluates anew (a holder new to the component joins it, an out-of-order or dropping write) visits every delta of the component: about 1 µs each, mostly the walk over `by_thing` and the commit metas plus perm's query for deltas before their author's standing. Skipping deltas whose answer cannot change needs perm to report, per evaluation, which (node, thing) answers moved: perm's timeline update, out of node's reach.
 - **Valid again.** Rebuilding the aspect from held bodies stops at a whole-value write (`Fragment::settled_above`), but an aspect written in parts (a map's entries, a list's inserts) reads every body (O(aspect history), 60-170 µs per body), and so does a fallen write that superseded another in the state. A bounded re-merge needs an index of which bodies hold writes superseded by each delta.

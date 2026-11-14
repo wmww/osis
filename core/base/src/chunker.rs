@@ -32,12 +32,25 @@ impl ChunkParams {
     /// The format's parameters.
     pub const FORMAT: ChunkParams = ChunkParams { min: CHUNK_MIN, max: CHUNK_MAX, mask_bits: CHUNK_MASK_BITS };
 
-    /// One gear step; true if `n` bytes with hash `h` meet the content condition.
-    fn step(&self, gear: &[u64; 256], h: &mut u64, n: usize, b: u8) -> bool {
+    /// Of `len` bytes going on from `n` in a chunk, how many lead bytes need no hashing: a byte
+    /// counted at most `min - 64` is shifted out of the 64-bit `h` by the time `n >= min`, before
+    /// any cut looks at `h`, so its step changes no cut (spec/wire.md §6 holds exactly).
+    fn unhashed(&self, n: usize, len: usize) -> usize {
+        self.min.saturating_sub(64).saturating_sub(n).min(len)
+    }
+
+    /// The bits of `h` the content condition needs zero: its top `mask_bits`.
+    fn mask(&self) -> u64 {
+        !u64::MAX.checked_shr(self.mask_bits).unwrap_or(0)
+    }
+
+    /// One gear step; true if `n` bytes with hash `h` meet the content condition (`mask`).
+    #[inline(always)]
+    fn step(&self, gear: &[u64; 256], mask: u64, h: &mut u64, n: usize, b: u8) -> bool {
         #[allow(clippy::indexing_slicing)] // u8 index into a 256-entry table
         let g = gear[usize::from(b)];
         *h = (*h << 1).wrapping_add(g);
-        n >= self.min && h.checked_shr(64 - self.mask_bits).unwrap_or(0) == 0
+        *h & mask == 0 && n >= self.min
     }
 }
 
@@ -66,13 +79,18 @@ impl Chunker {
     /// `data` belongs to the current chunk.
     pub fn next_boundary(&mut self, data: &[u8]) -> Option<usize> {
         let gear = &*GEAR;
-        for (i, &b) in data.iter().enumerate() {
-            self.n += 1;
-            if self.params.step(gear, &mut self.h, self.n, b) || self.n >= self.params.max {
+        let p = self.params;
+        let (skip, mask) = (p.unhashed(self.n, data.len()), p.mask());
+        let (mut h, n0) = (self.h, self.n);
+        let mut n = n0 + skip;
+        for &b in data.get(skip..).unwrap_or(&[]) {
+            n += 1;
+            if p.step(gear, mask, &mut h, n, b) || n >= p.max {
                 self.reset();
-                return Some(i + 1);
+                return Some(n - n0);
             }
         }
+        (self.h, self.n) = (h, n);
         None
     }
 
@@ -129,10 +147,19 @@ impl PageCutter {
             return;
         }
         let gear = &*GEAR;
-        for &b in bytes {
-            self.n = self.n.saturating_add(1);
-            self.hit |= self.params.step(gear, &mut self.h, self.n, b);
+        let p = self.params;
+        let (skip, mask) = (p.unhashed(self.n, bytes.len()), p.mask());
+        let (mut h, end) = (self.h, self.n.saturating_add(bytes.len()));
+        let mut n = self.n + skip;
+        for &b in bytes.get(skip..).unwrap_or(&[]) {
+            n = n.saturating_add(1);
+            if p.step(gear, mask, &mut h, n, b) {
+                // the page closes after this element: the rest only counts
+                self.hit = true;
+                break;
+            }
         }
+        (self.h, self.n) = (h, end);
     }
 
     /// Ends the current element. True if the page closes after it; the cutter then starts a new page.
@@ -156,6 +183,8 @@ mod tests {
     use proptest::prelude::*;
 
     const SMALL: ChunkParams = ChunkParams { min: 64, max: 1024, mask_bits: 8 };
+    /// `min` past 64: the lead bytes of each chunk and page go unhashed (`ChunkParams::unhashed`).
+    const MID: ChunkParams = ChunkParams { min: 300, max: 2000, mask_bits: 7 };
 
     /// splitmix64 stream: fixed pseudo-random test input.
     fn data(seed: u64, len: usize) -> Vec<u8> {
@@ -228,11 +257,16 @@ mod tests {
             }
         }
 
-        // spec/wire.md §6: incremental feeding equals one-shot.
+        // spec/wire.md §6: incremental feeding equals one-shot, and both the rule as written
+        // (1-byte elements make pages plain chunks).
         #[test]
         fn incremental_equals_one_shot(seed: u64, len in 0usize..10_000, pieces in prop::collection::vec(1usize..3000, 1..8)) {
             let d = data(seed, len);
-            prop_assert_eq!(incremental(&d, SMALL, &pieces), chunk_lengths(&d, SMALL));
+            for p in [SMALL, MID] {
+                let l = chunk_lengths(&d, p);
+                prop_assert_eq!(&incremental(&d, p, &pieces), &l);
+                prop_assert_eq!(l, pages_reference(&d, &vec![1; len], p));
+            }
         }
 
         // spec/wire.md §6: boundaries depend only on content: a prefix edit leaves later chunks
@@ -261,22 +295,24 @@ mod tests {
         #[test]
         fn pages_match_rule(seed: u64, sizes in prop::collection::vec(1usize..400, 0..100), split in 1usize..50) {
             let d = data(seed, sizes.iter().sum());
-            let mut c = PageCutter::new(SMALL);
-            let (mut got, mut pos) = (Vec::new(), 0);
-            for &s in &sizes {
-                for piece in d[pos..pos + s].chunks(split) {
-                    c.feed(piece);
+            for p in [SMALL, MID] {
+                let mut c = PageCutter::new(p);
+                let (mut got, mut pos) = (Vec::new(), 0);
+                for &s in &sizes {
+                    for piece in d[pos..pos + s].chunks(split) {
+                        c.feed(piece);
+                    }
+                    pos += s;
+                    let n = c.pending();
+                    if c.end_element() {
+                        got.push(n);
+                    }
                 }
-                pos += s;
-                let n = c.pending();
-                if c.end_element() {
-                    got.push(n);
+                if c.pending() > 0 {
+                    got.push(c.pending());
                 }
+                prop_assert_eq!(got, pages_reference(&d, &sizes, p));
             }
-            if c.pending() > 0 {
-                got.push(c.pending());
-            }
-            prop_assert_eq!(got, pages_reference(&d, &sizes, SMALL));
         }
     }
 

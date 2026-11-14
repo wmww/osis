@@ -956,22 +956,17 @@ fn snapshot_first(n: usize) -> Work {
     w
 }
 
-// spec/permissions.md §5.2, spec/crdt.md §4.6 (un-merge a function of the held set); spec/
-// requirements.md, Scale: a revoke flipping one add invalid among n and 10n held commits
-// rebuilds the aspect from its held bodies (every change but a valid join is a rebuild, one
-// path: a rare event may cost O(the aspect's bodies)); its other counted work is linear at most.
+// spec/permissions.md §5.2, spec/crdt.md §4.6 (un-merge a function of the held set; it takes
+// exactly an invalid delta's own writes); spec/requirements.md, Scale: among n and 10n held
+// commits, a revoke flipping one add invalid rebuilds the aspect from its held bodies (every
+// change but a valid join is a rebuild, one path: a rare event may cost O(the aspect's bodies)),
+// its other counted work linear at most; an invalid add arriving takes nothing and reads no held
+// body.
 #[test]
-fn validity_flip_is_linear_spec_permissions_5_2() {
+fn validity_flip_is_linear_and_invalid_arrival_flat_spec_permissions_5_2() {
     let (a, b) = (validity_flip(30), validity_flip(300));
     all_linear("a revoke flipping an add", &a[0], &b[0]);
     flat("a revoke flipping an add: commits re-judged", a[0].n("rejudge: a commit"), b[0].n("rejudge: a commit"));
-}
-
-// spec/crdt.md §4.6 (un-merge takes exactly an invalid delta's own writes), spec/requirements.md,
-// Scale: an invalid add arriving among n held commits takes nothing and reads no held body.
-#[test]
-fn invalid_arrival_is_flat_spec_crdt_4_6() {
-    let (a, b) = (validity_flip(30), validity_flip(300));
     all_flat("an invalid add arriving", &a[1], &b[1]);
 }
 

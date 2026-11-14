@@ -20,7 +20,7 @@ Default tests, against spec/requirements.md (Scale): each runs one operation at 
 | first sync by a peer that cannot read L | `scale::first_sync_is_linear` (30 / 300) | commits ingested, bodies and entries judged linear; nothing examined again |
 | late deltas and deaths | `scale::late_delta_deaths_are_flat_spec_crdt_4_8` (30 / 300) | every span, death walks and replaced reads flat |
 | judging every body of an aspect | `scale::judging_every_body_reads_each_once_spec_commits_5` | bodies read for deaths and replaced reads per judgment 1 / 1 (`HeldWrites`) |
-| validity flip | `scale::validity_flip_is_linear_spec_permissions_5_2`, `invalid_arrival_is_flat_spec_crdt_4_6` | a flip rebuilds the aspect once, commits re-judged flat; an invalid arrival reads no other body |
+| validity flip | `scale::validity_flip_is_linear_and_invalid_arrival_flat_spec_permissions_5_2` | a flip rebuilds the aspect once, commits re-judged flat; an invalid arrival reads no other body |
 | snapshots | `scale::snapshot_join_is_flat_spec_permissions_5_2`, `commits_after_their_snapshot_are_linear_spec_permissions_5_2`, `kept_snapshots_stay_within_their_window_spec_commits_5`, `dropped_snapshot_frontier_is_linear_spec_commits_5` | a snapshot join linear (O(state)), the next delta flat; snapshots held stay at the D window; a dropped snapshot costs about 35 B of frontier |
 | addenda | `scale::addenda_rejudge_spec_permissions_5_2` | a member joining a holder re-judges nothing per commit; with an addendum held the thing is judged whole (linear) |
 | purge requests | `scale::purge_rejudge_is_linear_in_requests_spec_permissions_6` | a join flat; a requester's fall and rise rebuild the aspect once |
