@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, authority, account, netstream, netshared, netblind, netopen, nethold, netdestroy, netkeep
+#   <module>: sync, sides, rotation, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, authority, account, withdrawn, netstream, netshared, netblind, netopen, nethold, netdestroy, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker); with cfg names: those instances instead (the larger ones
 #   in the module's README, by hand), judged only if listed below.
@@ -91,6 +91,13 @@ instances=(
   "authority rotation AuthorityMC A_order_nobase.cfg pass" # keysets read as of the commit's key (spec/crypto.md §4, Possession)
   "authority rotation AuthorityMC A_order_3.cfg pass"
   "authority rotation AuthorityMC A_held_nobase.cfg fail" # negative control: keysets read as held now give two fixpoints
+  "withdrawn rotation Withdrawn W_met.cfg pass"         # a withdrawn epoch's secret goes nowhere: no leak (spec/crypto.md §4 Uses)
+  "withdrawn rotation Withdrawn W_met_live.cfg fail"    # the stated limit: M and later holders never get it
+  "withdrawn rotation Withdrawn W_refuted.cfg fail"     # negative control: passing a refuted epoch on leaks where a re-grant is unseen
+  "withdrawn rotation Withdrawn W_wait.cfg fail"        # negative control: waiting for the re-granter leaks where another admin's demotion is unseen
+  "withdrawn rotation Withdrawn W_waitall_live.cfg fail" # negative control: waiting for every admin is safe and stalls
+  "withdrawn rotation Withdrawn W_regrant_live.cfg fail" # an explicit re-grant of M unlocks it safely but nothing makes one
+  "withdrawn rotation Withdrawn W_joiners.cfg pass"     # later holders only, M left out by names: safe and live for them
   "account rotation Account Acc_descent.cfg pass"   # an account epoch covers a removal by descent (spec/crypto.md §4 Encrypting under)
   "account rotation Account Acc_order.cfg fail"     # negative control: judged by order, an ignorant fork ordered after the removal covers it
   "account rotation Account Acc_nomet.cfg fail"     # negative control: a seed taken under a D epoch whose names are unmet extends a line past a removal its maker does not hold

@@ -209,7 +209,9 @@ fn reorder_holding_e2_without_e1() {
     assert!(a2v.read.secret(&e1).is_some() && a2v.read.secret(&e2).is_some());
     assert!(!a2v.read.is_established(&e1) && !a2v.read.is_established(&e2));
     assert_eq!(a2v.read.current(), vec![w.e0]);
-    assert!(!may_compact_secrets(&s2, &a2v).unwrap());
+    // the compaction gate sets names aside: e2's rotation commit is held, and a receiver holding
+    // e2's secret judges its names itself
+    assert!(may_compact_secrets(&s2, &a2v).unwrap());
 
     // A complete pass with m1 still a holder as a2 sees it: no re-seal, and none boxes e2.
     let holders = [
@@ -254,7 +256,7 @@ fn snapshot_established_needs_departure() {
     let rc = actor_rcpt(g, Role::Read, &ge);
     v.establish(&Holding(BTreeSet::new()));
     assert!(!v.read.is_established(&e1), "the removal not held");
-    assert!(!may_compact_secrets(&s1, &v).unwrap());
+    assert!(may_compact_secrets(&s1, &v).unwrap(), "names aside, a held snapshot keys e1");
     // e0 (keyed by its history box, its names met) is current: boxed there only
     assert_eq!(v.read.current(), vec![w.e0]);
     let out = box_holder(&w.a, &v, &hist(&w.a, &v, &s1), &rc, &read(), &mut w.rng).unwrap().unwrap();

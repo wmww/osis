@@ -44,15 +44,10 @@ def known(root=ROOT):
     path = os.path.join(root, KNOWN)
     if not os.path.exists(path):
         return names, [f"{KNOWN}: missing"]
-    seen = set()
-    for n, line in enumerate(open(path), 1):
+    for n, line in enumerate(open(path), 1):  # policy.py refuses a duplicate line
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        if line in seen:  # a union merge (.gitattributes) of two sides adding the same line
-            errs.append(f"{KNOWN}:{n}: duplicate line")
-            continue
-        seen.add(line)
         f = line.split(None, 3)
         if len(f) != 4:
             errs.append(f"{KNOWN}:{n}: want `NAME REPRO ISSUE PATTERN`, got {line!r}")

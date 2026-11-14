@@ -253,16 +253,12 @@ osis-engine::invitations  deferred: sync rebuild skeleton (issues/sync-rewrite.m
 osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::take_deposit  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::proofs_done  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); opens refuses a Resume before the proofs with it
-osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-sync::take_deposit  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::clock_offset  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); status reports a large offset as a diagnostic (spec/sync-streams.md §1)
 osis-store::record_rows  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a module's rows in a peer record (streams' known, read's deletes owed)
 osis-sync::saw_deleted  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-judgement.md §4)
 osis-sync::seen_deleted  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-judgement.md §4)
 osis-sync::serve_path  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (a read S's served head)
 osis-sync::uncharge  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-ids.md §5 Peer budget)
-osis-sync::take_deposit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
-osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::dial_hints  deferred: the driver's dial candidates read it (notes/sync-boundary.md, driver)
 osis-sync::set_config  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); the osis handle changes `Config::dial` through it (integration)
 osis-sync::status_of  deferred: the osis API reads one sync ID's status (sync rebuild integration, issues/sync-rewrite.md Phase 3)

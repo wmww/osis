@@ -10,6 +10,7 @@ Usage: tools/loc.py [--all] [--files CRATE]
   --all          include vendored crates (libs/kit/patches)
   --files CRATE  per-file breakdown for one crate (name or path)
 """
+import bisect
 import os
 import re
 import subprocess
@@ -98,14 +99,7 @@ def analyze(path):
         line_starts.append(line_starts[-1] + len(line) + 1)
 
     def line_of(pos):
-        lo, hi = 0, len(line_starts) - 1
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            if line_starts[mid] <= pos:
-                lo = mid
-            else:
-                hi = mid - 1
-        return lo
+        return bisect.bisect_right(line_starts, pos) - 1
 
     test, mods, whole = set(), [], False
     for m in re.finditer(r"#(!?)\[", s):

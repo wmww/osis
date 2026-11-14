@@ -1,5 +1,5 @@
 """The workspace's crates and Rust sources, as tools/policy.py, dead_pub.py and loc.py read them."""
-import glob, os, re, tomllib
+import functools, glob, os, re, tomllib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -7,6 +7,29 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def toml(path):
     with open(path, "rb") as f:
         return tomllib.load(f)
+
+
+@functools.cache
+def read(path):
+    """`path`'s text, read once per run (the checks share it)."""
+    with open(path, errors="replace") as f:
+        return f.read()
+
+
+@functools.cache
+def _loose(pat):
+    r"""`pat` without its `\b`s, which matches wherever `pat` does; `pat` itself where dropping one
+    could narrow it (in a negative lookaround), or the text may not be a `\b` (`[\b]`, `\\b`)."""
+    s = pat.pattern
+    if "(?" in s or "[" in s or "\\\\" in s:
+        return pat
+    return re.compile(s.replace(r"\b", ""), pat.flags)
+
+
+def has(pat, text):
+    r"""Whether `pat` matches in `text`, fast: sre scans quickly only for a pattern that starts with a
+    literal, which a leading `\b` hides; `_loose` rejects a text first, scanning fast."""
+    return bool(_loose(pat).search(text) and pat.search(text))
 
 
 def members(extra=()):
@@ -98,7 +121,7 @@ def sanitize(src, fill="x"):
     quotes kept; newlines and offsets kept."""
 
     def blank(s, c=" "):
-        return "".join("\n" if ch == "\n" else c for ch in s)
+        return "\n".join(c * len(part) for part in s.split("\n"))
 
     out, last = [], 0
     for kind, s, e, a, b in lex(src):

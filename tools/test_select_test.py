@@ -124,16 +124,22 @@ write("core/top/new.rs", "// new\n")
 t = out()
 check("diff from merge-base", t, "paths: 2", "crates touched: osis-leaf, osis-top", "leaf_large", "top_exhaustive")
 
-# --emit: the gate's `build` and `run` lines, builds first, with the same packages and offset
-lines = out("--emit", "--paths", "core/mid/src/lib.rs").splitlines()
+# --emit FILE: the gate's `build` and `run` lines appended to FILE, builds first, with the same
+# packages and offset; the report still printed
+emitted = os.path.abspath("emitted")
+write(emitted, "kept\n")
+check("--emit report", out("--emit", emitted, "--paths", "core/mid/src/lib.rs"), "crates selected")
+lines = open(emitted).read().splitlines()
 kinds = [l.split(" ", 1)[0] for l in lines]
-if kinds != ["build", "build", "run", "run"]:
+if kinds != ["kept", "build", "build", "run", "run"]:
     print(f"FAIL --emit: line kinds {kinds}\n" + "\n".join(lines))
     fails = 1
 check("--emit", "\n".join(lines), "build cargo test --locked -p osis-mid -p osis-top --tests --no-run", "build cargo build --locked --bin sim-sweep",
       "run gate.properties env ", "OSIS_ORDER_START=7 ", "run gate.sim cargo run --locked --bin sim-sweep -- --seeds 15 --from 7",
       absent=["paths:", "crates selected"])
-check("--emit nothing", out("--emit", "--paths", "notes/a.md"), absent=["build", "run"])
+write(emitted, "")
+out("--emit", emitted, "--paths", "notes/a.md")
+check("--emit nothing", open(emitted).read(), absent=["build", "run"])
 
 # --all: every crate, whatever the diff
 t = out("--all")

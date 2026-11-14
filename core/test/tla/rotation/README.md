@@ -1,10 +1,10 @@
 # Rotation, claim steps, re-seal (TLA+)
 > Summary: TLC model of read-role rotation for one actor and its label at one host (spec/crypto.md §3–§5, spec/sync-ids.md §2/§5, spec/permissions.md §3–§4, spec/commits.md §2): epochs established by names (the removals a rotation's rotator held), frozen coverage (an epoch covers exactly the departures it names), a removal withheld forever from one admin, forced and eager rotation, forks, removal carried in its rotation, grants, re-registration after uploading the rotation chain, opens by sync key and claims, claim-set drops, stranded heartbeats (also on a refused claim), re-seal after a complete pass (by inbox and under the label), rotation by inbox to holders without a box at the epoch before, per-node box knowledge, co-reader peers, planted boxes (reading-only secrets). Holder actors are Depth0.tla's (depth-0 sealing, rule 4 for cycles); timed edges and finalizes Finalize.tla's. Written from spec/ alone.
 
-Files: `Rotation.tla` (the model; constants come straight from each `.cfg`), `ASSUMPTIONS.md`, `AMBIGUITIES.md` (the findings). `Depth0.tla`, `Finalize.tla`, `Cover.tla`, `Lockout.tla`, `Cut.tla`, `Authority.tla` and `Account.tla` are separate models (sections below).
+Files: `Rotation.tla` (the model; constants come straight from each `.cfg`), `ASSUMPTIONS.md`, `AMBIGUITIES.md` (the findings). `Depth0.tla`, `Finalize.tla`, `Cover.tla`, `Lockout.tla`, `Cut.tla`, `Authority.tla`, `Account.tla` and `Withdrawn.tla` are separate models (sections below).
 
 ## Run
-`../run.sh rotation` (and `depth0`, `lockout`, `cut`, `finalize`, `cover`, `authority`, `account`) runs a model's listed instances, each model about a minute or less at one worker on a quiet box; `../run.sh <module> <cfg>...` runs others by name. It fetches TLC into `~/.cache/tla/` if missing. By hand, from this directory (Java 11+):
+`../run.sh rotation` (and `depth0`, `lockout`, `cut`, `finalize`, `cover`, `authority`, `account`, `withdrawn`) runs a model's listed instances, each model about a minute or less at one worker on a quiet box; `../run.sh <module> <cfg>...` runs others by name. It fetches TLC into `~/.cache/tla/` if missing. By hand, from this directory (Java 11+):
 ```
 java -XX:+UseParallelGC -cp ~/.cache/tla/tla2tools.jar tlc2.TLC -workers 1 \
   -metadir ../../../../target/tlc-states -config MC_grant.cfg Rotation
@@ -239,3 +239,16 @@ spec/crypto.md §4 (Possession, Authority): a rotation failing Authority is inva
 | `A_order_base` | by hand: 2-cycle, `"order"`, both actors with base keysets | pass | 30,216 | 9 s |
 | `A_held_base` | by hand: as A_order_base, `"held"` | **fails** `OneResult` (r2 of M names r3's keyset of S, r3 of S names r2's of M, both signatures bad: each is valid iff the other is invalid) | 26,442 | 11 s |
 | `A_held_3` | by hand: 3-cycle, `"held"` | **fails** `Ends` (three rotations boxing nobody, each valid iff the next actor has no valid keyset: no fixpoint, re-judging loops) | 65,376 | 80 s |
+
+## Withdrawn.tla: a withdrawn epoch's secret (spec/crypto.md §4 Unsuperseded and withdraw; notes/crypto.md)
+A demotes admin a2 (D); a2, unaware, removes reader M (W); R, holding W alone, rotates read (e_R, naming W, boxing A and R, not M) and writes under it; R grants N read later. Worlds (chosen initially): `none`; `G`, a3 holding D re-granted a2 between D and W (W applies again); `X`, a4 demoted A before D (D void, W applies). a3, a4 and an explicit re-grant of M by A after W (RG) have no fairness: they may stay away for good. A node holding e_R passes it on (to M, to N) by `Rule`: `met` (established: the build), `refuted` (also where W is held and applies nothing), `regrant` (also where refuted and RG held), `wait` (also where refuted and a3 attested what it holds), `waitall` (a3 and a4), `joiners` (as `met` for M; for N also where refuted, M kept out by e_R's names). `NoLeakM`: M is handed e_R only where W applies nothing in the world's commits, or on a re-grant the hander holds valid (an admin's grant concurrent with its own unseen demotion: the stated limit of spec/crypto.md §4 Boxes). `LiveM`: in world `none` M gets e_R. `LiveN`: N gets e_R. Result: no rule is both safe and live for M (the two-world argument: while a3 or a4 is away, A and R hold the same commits in two worlds that need opposite answers).
+
+| cfg | rule | result | states | time |
+|---|---|---|---|---|
+| `W_met` | met; NoLeakM, NoLeakN | pass | 5,888 | 4 s |
+| `W_met_live` | met; LiveM, LiveN | **fails** (expected: the stated limit) | 5,888 | 4 s |
+| `W_refuted` | refuted; NoLeakM | **fails** (expected: world G, G unseen) | 40 | 1 s |
+| `W_wait` | wait; NoLeakM | **fails** (expected: world X, a4's demotion of A unseen) | 3,159 | 1 s |
+| `W_waitall_live` | waitall; invariants, LiveM | **fails** LiveM (expected: a3 or a4 away for good) | 19,084 | 4 s |
+| `W_regrant_live` | regrant; invariants, LiveM | **fails** LiveM (expected: nothing writes RG) | 6,336 | 3 s |
+| `W_joiners` | joiners; invariants, LiveN | pass | 5,888 | 2 s |

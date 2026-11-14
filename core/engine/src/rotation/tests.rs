@@ -1783,6 +1783,128 @@ fn unmet_epoch_withdrawn_by_its_maker_spec_crypto_4() {
     assert!(read(&lp, 2).secret(&newest).is_some(), "M holds the newest read epoch");
 }
 
+/// Puts `k` = `v` on `g`'s content aspect `x:m.0` by peer `i`.
+fn put_on(lp: &mut LocalPeer, i: usize, g: Tid, k: &str, v: i64) {
+    lp.advance(7);
+    let mut m = Mutation::new();
+    let path = vec![osis_crdt::PathSeg::Key(osis_base::Value::Str(k.into()))];
+    m.op(g, &osis_base::Ak::new("x:m.0").unwrap(), osis_crdt::PathOp { path, op: osis_crdt::Op::Put(osis_base::Value::Int(v)) }).unwrap();
+    lp.peers[i].commit(m).unwrap();
+}
+
+/// Whether peer `i` reads key `k` on `g`'s `x:m.0`.
+fn reads_key(lp: &mut LocalPeer, i: usize, g: Tid, k: &str) -> bool {
+    let v = lp.peers[i].engine.get(&g, &osis_base::Ak::new("x:m.0").unwrap()).unwrap();
+    matches!(v, Some(osis_base::Value::Map(m)) if m.contains_key(&osis_base::Value::Str(k.into())))
+}
+
+/// `unmet_epoch_withdrawn_by_its_maker`'s shape with N (4) not yet a holder, settled (e_R
+/// withdrawn), then A writes "after". R's write of "w" under e_R before D reaches it, as its label
+/// entry (sealed at writing): made on a copy of the world, so no peer holds it but by this blob.
+/// Returns e_R and that entry.
+fn withdrawn_shape() -> (LocalPeer, Tid, Vec<Tid>, osis_crypto::Epoch, Vec<crate::local_peer::SealedPackage>) {
+    let (mut lp, g, tids) = granted(5, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin)]);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    lp.peers[1].clock.advance(5_000);
+    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.sync(1, 3).unwrap();
+    lp.peers[3].clock.advance(10_000);
+    rotate_leaving_out(&mut lp, 3, g, &BTreeSet::from([Role::Read]), &[]);
+    let e_r = newest_read(&lp, 3, g).unwrap();
+    let mut at_write = lp.copy().unwrap();
+    let before = commit_ids(&mut at_write, 3);
+    put_on(&mut at_write, 3, g, "w", 1);
+    let w: Vec<_> = commit_ids(&mut at_write, 3).difference(&before).copied().collect();
+    let entry = at_write.sealed(3, &w).unwrap();
+    assert_eq!(entry.len(), 1, "R's write sealed alone, nothing due first");
+    lp.sync_all().unwrap();
+    rounds_to_settle(&mut lp, g);
+    put_on(&mut lp, 0, g, "after", 2);
+    lp.sync_all().unwrap();
+    (lp, g, tids, e_r, entry)
+}
+
+// spec/requirements.md Permissions (Limit: a removal voided by its author's concurrent demotion),
+// spec/crypto.md §4 (Uses: established only): what R wrote under e_R while it held a2's removal
+// of M applying (W) reaches only e_R's box holders. M, a reader all along once D arrives, and N,
+// granted after, read what came after and never "w": e_R's names are met at no holder of its
+// secret, so it goes in no history box (a node lacking a re-grant of a2 ordered between D and W
+// would otherwise hand M content written while M was removed).
+#[test]
+fn withdrawn_epoch_content_reaches_its_box_holders_only_spec_crypto_4() {
+    let (mut lp, g, tids, e_r, entry) = withdrawn_shape();
+    lp.peers[0].engine.grant(&g, &tids[4], &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    rounds_to_settle(&mut lp, g);
+    for p in 0..5 {
+        lp.deliver_sealed(p, &entry).unwrap();
+    }
+    for p in [0, 1, 3] {
+        assert!(reads_key(&mut lp, p, g, "w"), "e_R's box holder {p} reads what R wrote under it");
+    }
+    for p in [2, 4] {
+        assert!(lp.peers[p].engine.epochs(&g).unwrap().read.reading_secret(&e_r).is_none(), "peer {p} holds e_R's secret");
+        assert!(reads_key(&mut lp, p, g, "after"), "peer {p} reads what came after");
+        assert!(!reads_key(&mut lp, p, g, "w"), "peer {p}, boxed nowhere at e_R, reads what R wrote under it");
+    }
+}
+
+// spec/crypto.md §4 (A node compacts `secrets.0` only while every epoch its state keys is
+// established, names aside), spec/commits.md §5: a withdrawn epoch (names unmet at every holder of
+// its secret) keeps its boxes in `secrets.0` for good, so a gate reading names stopped its holders'
+// compaction for good. Invariant: a holder compacts, drops the covered bodies and still reads what
+// was written under e_R; a node granted after and fed by it judges every `secrets.0` part and the
+// current epochs as the compactor does. Randomized over the compactor, which aspects it compacts,
+// the clock, restarts and arrival order.
+#[test]
+fn withdrawn_epoch_compacts_judged_alike_spec_crypto_4() {
+    let mut dropped = 0;
+    for seed in 0..6u64 {
+        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x2545_f491_4f6c_dd1d);
+        let (mut lp, g, tids, e_r, entry) = withdrawn_shape();
+        let c = [0, 3][rng.next(2) as usize];
+        let (keys, secrets) = (osis_base::Ak::new("keys.0").unwrap(), osis_base::Ak::new("secrets.0").unwrap());
+        lp.advance(1 + rng.next(1000));
+        if rng.next(2) == 0 {
+            lp.peers[c].engine.snapshot(&g, &keys).unwrap().unwrap();
+        }
+        lp.peers[c].engine.snapshot(&g, &secrets).expect("a withdrawn epoch blocks compaction").unwrap();
+        lp.advance(osis_base::format::ROLE_KEEP_MS + 1 + rng.next(3) * 86_400_000);
+        if rng.next(2) == 0 {
+            lp.peers[c].restart(seed).unwrap();
+        }
+        dropped += super::tests_authority::drop_covered(&mut lp, c, g);
+        if rng.next(2) == 0 {
+            lp.peers[c].restart(seed + 100).unwrap();
+        }
+        assert!(lp.peers[c].engine.epochs(&g).unwrap().read.reading_secret(&e_r).is_some(), "seed {seed}: compactor {c} lost e_R's secret");
+        // R's entry under e_R, arriving now, still opens there
+        lp.deliver_sealed(c, &entry).unwrap();
+        assert!(reads_key(&mut lp, c, g, "w"), "seed {seed}: compactor {c} reads nothing R wrote under e_R");
+        // N, granted now, gets what c holds, in some order
+        lp.peers[0].engine.grant(&g, &tids[4], &edge(Role::Read)).unwrap();
+        lp.sync(0, c).unwrap();
+        let mut pks = lp.packages(c).unwrap();
+        for k in (1..pks.len()).rev() {
+            pks.swap(k, rng.next(k as u64 + 1) as usize);
+        }
+        for _ in 0..2 {
+            for pk in &pks {
+                let _ = lp.peers[4].receive(&pk.bytes, pk.blobs.clone());
+            }
+        }
+        let read = |lp: &LocalPeer, p: usize| lp.peers[p].engine.epochs(&g).unwrap().read.clone();
+        assert_eq!(read(&lp, 4).current(), read(&lp, c).current(), "seed {seed}: N and compactor {c} count different current read epochs");
+        assert!(reads_key(&mut lp, 4, g, "after"), "seed {seed}: N reads nothing of what came after");
+        // the snapshot vouches for no names: N, granted after, still never gets e_R (R9); what it
+        // reads of "w" proves nothing here, as `packages` carry c's opened commits in the clear
+        assert!(read(&lp, 4).reading_secret(&e_r).is_none(), "seed {seed}: N, granted after, holds e_R's secret");
+        let differ: Vec<_> = super::tests_authority::secrets_verdicts(&lp, c, 4, g).into_iter().filter(|(_, a, b)| a != b).collect();
+        assert!(differ.is_empty(), "seed {seed}: compactor {c} and N judge `secrets.0` parts differently: {differ:?}");
+    }
+    assert!(dropped > 0, "no compactor dropped a covered body");
+}
+
 /// Whether A (peer 0) may encrypt under an epoch of `g` that M (2) opens from `from`'s state.
 fn removed_reader_reads(lp: &mut LocalPeer, g: Tid, tids: &[Tid], from: usize) -> bool {
     removed_opens(lp, g, tids, from, Role::Read)
@@ -2337,3 +2459,4 @@ fn derived_written_goes_with_its_destroyed_thing() {
     assert!(!written(&lp), "its record too");
     lp.peers[0].engine.check_index();
 }
+

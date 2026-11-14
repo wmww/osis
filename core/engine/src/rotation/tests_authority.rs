@@ -280,7 +280,7 @@ fn route_removal_proved_leaks_nothing_spec_crypto_4() {
 /// Covered drops (role snapshots included) over `t`'s `keys.0` and `secrets.0` at peer `i`: each held body (not a snapshot) that
 /// a held valid snapshot covers drops once past its keep bound (`Engine::drop_from`); one kept for
 /// good leaves the cover candidates (`Engine::settle_kept`). Returns how many dropped.
-fn drop_covered(lp: &mut LocalPeer, i: usize, t: Tid) -> usize {
+pub(super) fn drop_covered(lp: &mut LocalPeer, i: usize, t: Tid) -> usize {
     let e = &mut lp.peers[i].engine;
     let now = e.now().0;
     let mut n = 0;
@@ -311,7 +311,7 @@ fn drop_covered(lp: &mut LocalPeer, i: usize, t: Tid) -> usize {
 
 /// Each commit with a `secrets.0` part on `t` held at both peers `i` and `j`, with that part's
 /// verdict at each.
-fn secrets_verdicts(lp: &LocalPeer, i: usize, j: usize, t: Tid) -> Vec<(CommitId, bool, bool)> {
+pub(super) fn secrets_verdicts(lp: &LocalPeer, i: usize, j: usize, t: Tid) -> Vec<(CommitId, bool, bool)> {
     let held = |k: usize, c: &CommitId| {
         let m = lp.peers[k].engine.core.ix.commits.get(c)?;
         let ai = m.view.aspects.iter().position(|x| x.tid == t && x.ak.as_str() == "secrets.0")?;

@@ -125,7 +125,7 @@ Terms in this section depend on each other; each is defined once, under its bold
     - the node holds a valid rotation commit of e (its own included) with both its `keys.0` and `secrets.0` deltas on the actor, or a compaction snapshot of `secrets.0` that keys a box or history box with e;
     - e's n is at most 2^62, or the node holds another established epoch of r with n at least e's n − 1;
     - if the node holds e's secret (other than for reading only), some live entry of e's history box that opens under that secret has its names met.
-- A node compacts `secrets.0` only while every epoch its state keys is established.
+- A node compacts `secrets.0` only while every epoch its state keys would be established were the names condition dropped.
 - **Current**: a role's current epochs are its established epochs that no established rotation superseded.
 - **Unsuperseded**: the epochs that would be current at the node were the names condition of Established dropped (as a node holding none of their secrets counts them). One unsuperseded and not current has names the node does not meet, and is current wherever its secret is not held.
 - A derived epoch (§3) of a thing with secrets of its own that some held commit encrypts under is current too unless a rotation lists it (its history box carries it): its writer, which wrote before it held the thing's own epochs, rotates (a current epoch it wrote under that no rotation lists makes its rotation due). Other derived epochs of the base actor's later epochs are none of the thing's.

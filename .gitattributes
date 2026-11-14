@@ -1,6 +1,7 @@
-# known_failures.txt gets lines added at its end by concurrent reviews: union keeps both sides of a
-# conflicting hunk. A line both sides added comes twice, which tools/gate_failures.py refuses; a line
-# one side removed beside the other's addition comes back, which tools/policy.py refuses once the fix
-# deleted its issue. Not for notes/time-limits.md: a digest deleting hits beside an append would
-# bring the hits back.
+# One-item-per-line lists that concurrent branches add to: union merge keeps both sides of a
+# conflicting hunk. A line both sides added comes twice and a line one side removed beside the
+# other's change comes back; tools/policy.py (`union_lists`) refuses both. Not for
+# notes/time-limits.md: a digest deleting hits beside an append would bring the hits back.
 tools/known_failures.txt merge=union
+tools/dead_pub_allow.txt merge=union
+core/base/testenv-known.txt merge=union
