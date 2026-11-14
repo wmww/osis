@@ -58,7 +58,7 @@ Every timed run has a CPU limit (tight: other work barely moves CPU-s) and a wal
 | `rebuild` | 70 | 13 |  | an osis-base edit, `cargo build --all-targets` (`tools/limits.py run rebuild cargo build --all-targets`): one comment line, warm, 330-390 / 41-53 s at load 9-14 (notes/time-limits.md, Investigations) |
 | `build` | 55 | 10 | `gate` | the gate's builds: 8-108 / 4-42 s with nothing below the branch's top crates changed since the target's build; any change below osis-engine 330 / 41 s at best, 500-1350 / 70-370 s in gates |
 | `default-tests` | 700 | 50 | `gate.hold` | `cargo test --no-fail-fast`, built: 1190 / 123 s at load 16 (per test and binary: notes/testing.md, Default-test cost) |
-| `gate.checks` | 5 | 3 | `gate` | the instant checks: 6 / 6 s (policy_test.py 3 s of it) |
+| `gate.checks` | 5 | 3 | `gate` | the instant checks: 9 / 11 s at load 1 (gate_select_test.sh 3 / 5 s, policy_test.py 3 / 3 s) |
 | `gate.clippy` | 20 | 4 | `gate` | core clippy, warm: 15 / 5 s |
 | `gate.gui-lint` | 5 | 1 | `gate` | the GUI's clippy after core's: 4 / 2 s |
 | `gate.unify` | 20 | 3 | `gate` | the unification check: 241 / 13 s |
