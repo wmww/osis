@@ -36,6 +36,7 @@
 
 mod known;
 mod pull;
+mod relay;
 mod serve;
 
 pub use known::{Known, Refusal, Row as KnownRow};
@@ -83,6 +84,10 @@ pub enum Opening {
     /// It opened to a commit that pends here (spec/commits.md §4 Pending storage): the entry is
     /// kept as its carrier (`store::Follow`).
     Pends,
+    /// It opened to an ephemeral commit now held here, costing this much held: the entry is
+    /// kept, counted at that against S's memory cap (spec/sync-compaction.md §2 Caps), so the
+    /// next one opened has the room left.
+    Memory(u64),
     /// It opened and is bad, or its bytes are not its ID's: asked again elsewhere.
     Bad,
 }
@@ -112,6 +117,21 @@ pub trait Ground {
     }
     /// The body's place in the fill order.
     fn rank(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Rank;
+    /// This node's own relay-only commits not sent yet, sealed per read sync ID
+    /// (`Engine::take_relays`).
+    fn own_relays(&mut self) -> Result<Vec<osis_engine::sync::Relay>> {
+        Ok(Vec::new())
+    }
+    /// A relay-only blob received under read S, opened and delivered (`Engine::open_relay`).
+    fn open_relay(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<osis_engine::sync::RelayOpened> {
+        let _ = (s, e, bytes);
+        Ok(osis_engine::sync::RelayOpened::NotOpen)
+    }
+    /// A stamp of entry `b` of S under its wrap, where this node writes S's head.
+    fn stamp(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Option<osis_proto::Stamp> {
+        let _ = (s, b, wrap);
+        None
+    }
     /// An entry that opened to a pending commit was not kept (`store::release`).
     fn unkept(&mut self, store: &crate::store::Store, b: &BlobId) -> Result<()> {
         let _ = (store, b);
@@ -181,6 +201,8 @@ pub struct Streams {
     /// end, the peer applied every message served to it), with when the Pull the last reply
     /// answered was sent: status follows it per connection (`caught_up`).
     caught: Stamped<ConnId, WallMs>,
+    /// Relay-only blobs taken, per sync ID until their expiry, and each S's relay rate.
+    relays: osis_proto::RelayGate,
     /// A store failure this step met: `settle` fails the step with it.
     fault: Option<osis_store::Error>,
     work: Work,
@@ -189,7 +211,7 @@ pub struct Streams {
 impl Streams {
     /// Streams over the node's store: where a record source's place and word live.
     pub fn new(store: Store) -> Streams {
-        Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew: store.anew_feed(), known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), room: BTreeMap::new(), caught: Stamped::default(), fault: None, work: Work::default() }
+        Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew: store.anew_feed(), known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), room: BTreeMap::new(), caught: Stamped::default(), relays: osis_proto::RelayGate::default(), fault: None, work: Work::default() }
     }
 
     /// Tests only (world copies): reads the copy's store.
@@ -381,7 +403,8 @@ impl Streams {
     /// Settles every connection: pushes under `follow`, Pulls and Fetches due, room regained.
     pub fn tick(&mut self, ctx: &mut Ctx) -> Result<bool> {
         self.forget_shredded();
-        let mut acted = self.room_grew(ctx)?;
+        let mut acted = self.send_relays(ctx)?;
+        acted |= self.room_grew(ctx)?;
         acted |= self.fetch_anew(ctx);
         let conns: BTreeSet<ConnId> = self.serve.keys().chain(self.pull.keys()).copied().collect();
         for c in conns {
@@ -429,7 +452,7 @@ impl Sources for Streams {
 /// Runs `f` over the product's `Ctx`.
 fn product(cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, reported: &mut Vec<Reported>, f: impl FnOnce(&mut Ctx)) {
     let now = cx.now;
-    let mut ground = EngineGround { engine: cx.engine, store: cx.store.clone() };
+    let mut ground = EngineGround { engine: cx.engine, store: cx.store.clone(), rng: &mut *cx.rng };
     let mut ctx = Ctx { store: cx.store, ground: &mut ground, wire: sessions, shared: opens, now, reported };
     f(&mut ctx);
 }
@@ -439,21 +462,37 @@ struct EngineGround<'a> {
     engine: &'a mut Engine,
     /// For S's memory room (`store::open_entry`).
     store: crate::store::Store,
+    /// For sealing own relay-only commits.
+    rng: &'a mut dyn osis_crypto::NodeRng,
 }
 
 impl Ground for EngineGround<'_> {
     fn open(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening> {
         match crate::store::open_entry(self.engine, &self.store, s, &e.blob, &e.wrap, bytes) {
             Ok(o) if crate::store::pends(self.engine, &e.blob, &o) => Ok(Opening::Pends),
+            Ok(Opened::Commit(c, _)) if self.engine.holds_memory(&c) => Ok(Opening::Memory(self.engine.memory_charge(&c)?)),
             Ok(Opened::Commit(..) | Opened::Linked | Opened::Inbox(_) | Opened::Records(_)) => Ok(Opening::Taken),
             Ok(Opened::NotOpen) | Err(crate::types::Error::Engine(osis_engine::Error::NotBuilt(_))) => Ok(Opening::NotOpen),
             Ok(Opened::Bad) => Ok(Opening::Bad),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e),
         }
     }
 
     fn taken(&mut self, b: &BlobId) -> bool {
         self.engine.blob_taken(b)
+    }
+
+    fn own_relays(&mut self) -> Result<Vec<osis_engine::sync::Relay>> {
+        Ok(self.engine.take_relays(&mut *self.rng)?)
+    }
+
+    fn open_relay(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<osis_engine::sync::RelayOpened> {
+        Ok(self.engine.open_relay(s, &e.blob, &e.wrap, bytes)?)
+    }
+
+    fn stamp(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Option<osis_proto::Stamp> {
+        let w = self.engine.signers(s, None).ok()?.stamp?;
+        Some(osis_label::sign_stamp(&w, s, b, wrap, false))
     }
 
     fn unkept(&mut self, store: &crate::store::Store, b: &BlobId) -> Result<()> {

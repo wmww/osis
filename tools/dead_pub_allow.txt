@@ -34,7 +34,6 @@ osis-engine::body_min_ts  deferred: durable-compaction/chunk-blind (retention/bo
 osis-engine::account_rotations  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::all_forgettable  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::drop_lost_secrets  test hook: engine tests drop every lost actor at once (an app driving the engine alone); sync drops per actor (`removal_done`, `drop_lost_due`)
-osis-engine::apply_waiting_memory  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::aspect_commit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::body_page  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::carried_dots  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -55,8 +54,6 @@ osis-engine::header_body  deferred: sync rebuild (issues/sync-rewrite.md Phase 3
 osis-engine::held_key_actors  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::hold_lists  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::inbox_of_actor  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::ingest_memory  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::ingest_relay  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::ingest_valid  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::invalid_writes  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::is_writer  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -75,9 +72,6 @@ osis-engine::local_census  deferred: sync rebuild (issues/sync-rewrite.md Phase 
 osis-engine::local_rows_naming  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::may_last_on  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::memory_body_held  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::memory_bound  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::memory_charge  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::memory_pending  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::mintings_of  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::name_redeliver  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::named_holders  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -98,7 +92,6 @@ osis-engine::settled_slots  deferred: sync rebuild (issues/sync-rewrite.md Phase
 osis-engine::store_dump  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::take_blind  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::take_forged  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::take_signals  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::take_ts  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::tree_missing  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-keys::secret_count  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -106,7 +99,6 @@ osis-label::in_memory  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); 
 osis-label::match_secret  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-label::prefix_bytes  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-label::seal_stranded_notice  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::admit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); `RelayGate` gates relay-only entries (spec/sync-ids.md §6 Relay-only) once streams relays them
 osis-proto::MAX_BEHIND_STEPS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-proto::OFFSET_DIAGNOSTIC_MS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-schema::TID  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -140,7 +132,6 @@ osis-engine::held_parts  test hook (tests/it)
 osis-engine::index_current  test hook (tests/it)
 osis-engine::linked_blobs  test hook (tests/it)
 osis-engine::links_due  test hook (tests/it)
-osis-engine::memory_blob  test hook (tests/it)
 osis-engine::next_link_expiry  test hook (tests/it)
 osis-engine::own_held_before  test hook (tests/it)
 osis-engine::own_session_form  test hook (tests/it)

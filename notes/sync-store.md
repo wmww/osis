@@ -23,7 +23,7 @@ A peer's record holds other modules' rows (osis-store `record_put_row(id, tag, s
 `settle_at` expires entries (no tombstone, no event), ends tombstones and aged stand rows after `TOMBSTONE_LIFETIME`, drops claim sets superseded for `ROLE_KEEP`, sweeps the log's deletion events, and lets the unread sync ID using most give way past the total cap.
 
 ## Caps and policy
-`Policy` (`Policy::from_caps`) reads each value from `caps^.0`'s `policy` by field name, defaults where it names nothing; per-thing caps replace `entries` and `bytes`. Caps apply to sync IDs kept unread only; role entries count toward none. The deposit budget is the policy's raised to `osis_proto::limits::deposit_budget` for the head's claim-set size. A child step past the caps is taken at most once per `register_every_ms` per sync ID (spec/sync-ids.md §6 Storage caps).
+`Policy` (`Policy::from_caps`) reads each value from `caps^.0`'s `policy` by field name, defaults where it names nothing; per-thing caps replace `entries` and `bytes`. Caps apply to sync IDs kept unread only, but `memory_bytes`, which also bounds what a reader holds of S's ephemeral commits (`memory_room`; an entry of a held one counts at `Engine::memory_charge`, at least its bytes: `set_memory_charge`); role entries count toward none. The deposit budget is the policy's raised to `osis_proto::limits::deposit_budget` for the head's claim-set size. A child step past the caps is taken at most once per `register_every_ms` per sync ID (spec/sync-ids.md §6 Storage caps).
 
 ## What peers can make it keep
 - A Delete of an entry not held writes nothing, so tombstones never outnumber what was held.

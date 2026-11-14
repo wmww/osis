@@ -502,7 +502,7 @@ impl Streams {
         self.stage(ctx, conn, batch);
     }
 
-    /// A Stream: with no cursor, Full and Refused events (and relay-only entries, not built);
+    /// A Stream: with no cursor, Full and Refused events and relay-only entries;
     /// with one, applied only in `seq` order since the last PullReply, else a gap read again at
     /// the next PullReply (spec/sync-streams.md §4 Pushes).
     pub(super) fn on_stream(&mut self, ctx: &mut Ctx, conn: ConnId, st: Stream) {
@@ -529,6 +529,14 @@ impl Streams {
                         let Ok(Some(e)) = ctx.store.entry(&s, &b) else { continue };
                         let head = self.known.head(src, &s);
                         ops.push((src, Op::Refused(s, b, Refusal { code, stamp: e.stamp, head })));
+                    }
+                    // a relay-only entry (spec/sync-streams.md §4 Relay-only entries); any other
+                    // announcement with no cursor is ignored
+                    Event::Added { blob_id, blob: Some(bytes), wrap, stamp } => {
+                        let e = entry_of(blob_id, wrap, stamp, &bytes);
+                        if e.class == Class::Relay {
+                            self.relay_in(ctx, conn, s, e, bytes);
+                        }
                     }
                     _ => {}
                 }
@@ -696,6 +704,16 @@ impl Streams {
                         Ok(_) => {}
                         Err(e) => return self.failed(Err(e)),
                     }
+                }
+                // an ephemeral commit held: its entry is kept, off the peer's budget, counted at
+                // what the commit costs held
+                Ok(Opening::Memory(n)) => {
+                    let src = self.pull.get(&conn).map(|p| p.src);
+                    let r = ctx.store.log(&s, e, Some(bytes.to_vec()), src).and_then(|_| ctx.store.uncharge(&s, &b));
+                    if let Err(e) = r {
+                        return self.failed(Err(e));
+                    }
+                    ctx.store.set_memory_charge(&s, &b, n);
                 }
                 Ok(_) => {}
                 Err(e) => return self.failed(Err(e)),

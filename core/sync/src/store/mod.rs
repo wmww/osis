@@ -594,7 +594,7 @@ impl Store {
 
     /// Ephemeral entry `b` of S names a held commit from another node costing `n` held here
     /// (`Engine::memory_charge`): S's memory usage counts it at that, or at its bytes if more.
-    pub fn set_memory_charge(&mut self, s: &SyncId, b: &BlobId, n: u64) {
+    pub fn set_memory_charge(&self, s: &SyncId, b: &BlobId, n: u64) {
         self.lock().mem.set_estimate(s, b, n);
     }
 

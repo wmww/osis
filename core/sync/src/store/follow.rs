@@ -50,9 +50,16 @@ struct Carriers {
 }
 
 /// `Engine::open_entry` of entry `b` of read S, an ephemeral commit within the room S's memory
-/// cap leaves (`Store::memory_room`). The one way sync opens an entry.
+/// cap leaves (`Store::memory_room`); one held, its entry here counts at what it costs held. The
+/// one way sync opens an entry.
 pub(crate) fn open_entry(engine: &mut Engine, store: &Store, s: &SyncId, b: &BlobId, wrap: &crate::types::Wrap, bytes: &[u8]) -> Result<Opened> {
-    Ok(engine.open_entry(s, b, wrap, bytes, store.memory_room(s))?)
+    let o = engine.open_entry(s, b, wrap, bytes, store.memory_room(s))?;
+    if let Opened::Commit(c, _) = &o
+        && engine.holds_memory(c)
+    {
+        store.set_memory_charge(s, b, engine.memory_charge(c)?);
+    }
+    Ok(o)
 }
 
 /// Waiting memory commit `c`, woken by what it awaited, applied within the room of a read sync

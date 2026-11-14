@@ -1,6 +1,6 @@
 //! Ephemeral signals (notes/ephemeral.md Ephemeral signals, spec/sync-compaction.md §2 relay-only commits):
 //! an ephemeral signal write is a delta in an ephemeral commit marked relay-only, built here from
-//! one write's ephemeral signal writes, pushed by hosts to the label's current subscribers and
+//! one write's ephemeral signal writes, sealed per sync ID (`Engine::take_relays`), passed on by sync to every peer sharing it and
 //! held by nobody. A received one is verified like any commit, its valid parts told to history
 //! watches once (`Delivered`, bounded), and nothing of it kept.
 
@@ -70,8 +70,8 @@ impl Engine {
         Ok(Written { id, ts })
     }
 
-    /// The relay-only commits of own ephemeral signal writes not yet sent.
-    pub fn take_signals(&mut self) -> Vec<EphCommit> {
+    /// The relay-only commits of own ephemeral signal writes not yet sent (`take_relays`).
+    pub(crate) fn take_signals(&mut self) -> Vec<EphCommit> {
         std::mem::take(&mut self.eph.signals)
     }
 

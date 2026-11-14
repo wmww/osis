@@ -1519,10 +1519,8 @@ impl Engine {
     /// cost more (`memory::new_parts_bound`, from their bytes, their pages' and their values'
     /// roots) it is `TooLarge`, nothing
     /// of it decoded, held or kept waiting (`memory::memory_gate`). One that waits is applied
-    /// only by `apply_waiting_memory`, within the room then. Hidden: no production caller until received ephemeral
-    /// commits leave `ingest_ephemeral`; `ingest` refuses them so a
-    /// writer cannot slip one in through the durable lane meanwhile.
-    #[doc(hidden)]
+    /// only by `apply_waiting_memory`, within the room then. Sync reaches it through
+    /// `open_entry`; `ingest` refuses an ephemeral commit.
     pub fn ingest_memory(&mut self, bytes: &[u8], room: u64) -> Result<Ingested> {
         self.ingest_class(bytes, Vec::new(), None, Some(room), &[])
     }

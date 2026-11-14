@@ -22,6 +22,8 @@ pub use pieces::PieceLink;
 pub(crate) mod recblobs;
 pub(crate) use recblobs::with_chains;
 pub(crate) mod records;
+mod relay;
+pub use relay::{Relay, RelayOpened};
 mod set;
 mod signing;
 #[cfg(test)]
@@ -32,7 +34,6 @@ pub use osis_label::DialHint;
 
 use crate::apply::reach::Wants;
 use crate::engine::DropFor;
-use crate::ephemeral::EphCommit;
 use crate::error::{Error, Result};
 use crate::labeling::{Certs, HeadKeys, Sealed};
 use crate::{Engine, Ingested};
@@ -357,14 +358,6 @@ impl Engine {
     /// past it); a durable blob ignores it.
     pub fn open_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], room: u64) -> Result<Opened> {
         self.open_entry_now(s, blob, wrap, bytes, room)
-    }
-
-    /// A relay-only commit (spec/sync-compaction.md §2): `Some` when new here (passed on).
-    pub fn ingest_relay(&mut self, bytes: &[u8]) -> Result<Option<EphCommit>> {
-        let blob = osis_commit::CommitBlob::decode(bytes)?;
-        let id = blob.id();
-        let kept = blob.clone();
-        Ok(self.ingest_relay_blob(blob)?.then_some(EphCommit { id, blob: kept }))
     }
 
     /// What to fetch: pages and header lists before apply.
