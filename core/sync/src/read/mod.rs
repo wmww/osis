@@ -443,6 +443,19 @@ impl Read {
         self.pieces.followed()
     }
 
+    /// Tests: the minting copies ranked, one per (S, minting, thing) in S's required set as a
+    /// minting copy (spec/commits.md §5 A thing's mintings travel with its record).
+    #[doc(hidden)]
+    pub fn mintings_ranked(&self) -> usize {
+        self.mints.len()
+    }
+
+    /// Tests: whether thing `t`'s minting copies under `s` are followed.
+    #[doc(hidden)]
+    pub fn ranks_thing(&self, s: &SyncId, t: &Tid) -> bool {
+        self.mintings.wants(&(*s, *t))
+    }
+
     /// When a judgement read up to a time (an expiry) moves next.
     pub fn next_wake(&self) -> Option<WallMs> {
         self.clock.next().map(WallMs)

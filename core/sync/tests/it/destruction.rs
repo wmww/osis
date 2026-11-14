@@ -207,7 +207,7 @@ fn holds(w: &mut World, i: usize, s: &SyncId, c: &CommitId) -> bool {
 }
 
 // spec/commits.md §5 (A thing's mintings travel with its record: the witness is logged where no
-// entry holds a minting of its standing; a lower copy goes where one of the witness's standing
+// entry holds a minting of its standing, a lower copy goes where one of the witness's standing
 // expiring later is held), spec/sync-judgement.md §2: siblings 1 and 2 sync D; t's record goes
 // under D as a certificate, minted at node 1 with an expiry. Node 2 mints t again, durable: the
 // two nodes' witnesses differ until node 1 holds the new minting, then both judge it the witness,
@@ -235,8 +235,7 @@ fn two_nodes_with_different_witnesses_keep_the_same_copy_spec_commits_5() {
 }
 
 // spec/commits.md §5 (A thing's mintings travel with its record; Destruction: a destroyed thing a
-// live thing needs keeps its record and requests, and its witness and requests go with its
-// record), spec/sync-judgement.md §2: node 1 destroys t, which u (in D) names first admin; a
+// live thing needs keeps its record and requests), spec/sync-judgement.md §2: node 1 destroys t, which u (in D) names first admin; a
 // sibling paired later holds t's record, its value-less witness and the request, and judges t
 // destroyed as node 1 does.
 #[test]

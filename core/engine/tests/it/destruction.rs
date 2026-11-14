@@ -35,7 +35,7 @@ fn keeps(lp: &mut LocalPeer, t: &Tid) -> bool {
 }
 
 // spec/commits.md §5 (Destruction: a destroyed thing keeps its record while a held thing needs
-// it: a dependent, by a held creation record naming it first admin; whatever needed it letting go
+// it: a dependent, by a held creation record naming it first admin, whatever needed it letting go
 // of it, however it goes, it keeps nothing then either): t, u's first admin, destroyed, keeps its
 // record past the request's window while u lives; u destroyed too, past its window t keeps
 // nothing.
@@ -55,7 +55,7 @@ fn a_dependent_keeps_a_destroyed_things_record_spec_commits_5() {
 }
 
 // spec/commits.md §5 (Destruction: a held thing needs a destroyed thing it references in a live
-// durable value other than in `group.0`; whatever needed it letting go, it keeps nothing): r
+// durable value other than in `group.0`, whatever needed it letting go, it keeps nothing): r
 // references t in a value and g lists it in `group.0`; t destroyed keeps its record past the
 // window while r's value names it, and nothing once r's value no longer does (g's listing needs
 // nothing).
@@ -85,8 +85,8 @@ fn a_reference_keeps_a_destroyed_thing_but_a_group_does_not_spec_commits_5() {
 }
 
 // spec/commits.md §5 (A thing's mintings travel with its record: a minting's standing, valued
-// ones after value-less ones, then by end (an expiry before none); the witness is the highest),
-// spec/sync-judgement.md §2 (a header-only copy of a minting its witness supersedes): t, u's first
+// ones after value-less ones, then by end (an expiry before none), the witness is the highest),
+// spec/sync-judgement.md §2 (a header-only copy of a minting its thing's witness supersedes): t, u's first
 // admin and outside D's closure, minted expiring and then again durable: the durable one is the
 // witness, and each minting has a header-only copy in D's required set as a minting of t, which
 // sync ranks (`BodyMeta::mints`); a copy of the witness alone would leave the other outside it,

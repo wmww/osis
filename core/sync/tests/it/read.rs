@@ -2046,7 +2046,7 @@ impl W {
 }
 
 // spec/commits.md §5 (A thing's mintings travel with its record: a node logs a thing's witness
-// only where no entry there holds a minting of the same standing; a header-only copy goes where an
+// only where no entry there holds a minting of the same standing, a header-only copy goes where an
 // entry there holds a minting of the witness's standing expiring later and it stands lower):
 // T's copy minted with `expires` 100 (a peer's entry here and at K) and its durable witness: the
 // witness is logged, and once it is held there the lower copy leaves here and is deleted at K.
@@ -2069,7 +2069,7 @@ fn the_witness_is_logged_and_a_lower_copy_goes_spec_commits_5() {
 }
 
 // spec/commits.md §5 (A thing's mintings travel with its record: logged only where no entry there
-// holds a minting of the same standing; the copies under a sync ID are its witness and its ties):
+// holds a minting of the same standing, the copies under a sync ID are its witness and its ties):
 // two durable mintings of T tie; one held there keeps the witness (the lower commit ID) unlogged
 // and both are kept; once it leaves, the witness is logged.
 #[test]
@@ -2089,7 +2089,7 @@ fn a_tie_held_keeps_the_witness_unlogged_spec_commits_5() {
 }
 
 // spec/commits.md §5 (A thing's mintings travel with its record: a lower copy goes only where an
-// entry holds a minting of the witness's standing expiring later (none: never); one lacking a
+// entry holds a minting of the witness's standing expiring later (none: never), one lacking a
 // request ranks a minting no lower than one holding it does): T's durable copy, dropped here by a
 // request stamped at 50 a peer may lack, stands below the witness expiring at 100 and is kept; one
 // expiring at 80 instead goes.
@@ -2120,4 +2120,20 @@ fn a_destroyed_things_witness_that_went_is_logged_again_spec_commits_5() {
     w.g.drop_own(&S, &b, &cid(1)).unwrap();
     w.settle();
     assert_eq!(w.logs(S, cid(1)), 2, "logged again");
+}
+
+// spec/commits.md §5 (A thing's mintings travel with its record): read ranks a minting only while
+// its header-only copy is in S's required set as one: a copy leaving it (T's record no longer
+// goes under S) leaves nothing ranked, and with none left the thing is no longer followed.
+#[test]
+fn a_minting_copy_leaving_the_required_set_leaves_nothing_ranked_spec_commits_5() {
+    let mut w = W::new();
+    w.mintings(&[minting(1, true, End::Never, None), minting(2, true, End::Never, None)]);
+    assert_eq!(w.read.mintings_ranked(), 2);
+    for (c, left) in [(1, 1), (2, 0)] {
+        w.g.bodies.insert(cid(c), Arc::new(BTreeMap::new()));
+        w.settle();
+        assert_eq!(w.read.mintings_ranked(), left, "after cid({c}) left");
+        assert_eq!(w.read.ranks_thing(&S, &T), left > 0, "after cid({c}) left");
+    }
 }
