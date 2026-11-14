@@ -1022,6 +1022,9 @@ pub struct Core {
     /// What each read thing's certificates name, per commit (`sync::certified`): `sync_bodies`
     /// reads one commit's row.
     pub(crate) certified: crate::sync::certified::Certified,
+    /// `Engine::grant_copy` per (actor, thing) (`memo`): a sync ID's certificates read one per
+    /// thing its inbox actor is named on, so a grant moves only its own.
+    pub(crate) grant_copies: memo::Memo<(Tid, Tid), Arc<crate::labeling::Certs>>,
     /// `rotation::departures` per actor (`memo`).
     pub(crate) departures: memo::Memo<Tid, Vec<osis_keys::Departure>>,
     /// The holders lacking a box of each actor (`rotation::reseal_candidates`, `memo`): O(roster)
@@ -1343,6 +1346,7 @@ impl Core {
             holders_named: self.holders_named.clone(),
             sync_certs: self.sync_certs.clone(),
             certified: self.certified.clone(),
+            grant_copies: self.grant_copies.clone(),
             departures: self.departures.clone(),
             reseal_scans: self.reseal_scans.clone(),
             store_rows: self.store_rows.clone(),
@@ -1910,6 +1914,7 @@ impl Core {
             // followed (`Effects`): what a rollback restores moves its reads, so the next follow
             // indexes again
             certified: _,
+            grant_copies: _,
             key_roles: _,
             inbox_actors: _,
             acting_of: _,
@@ -2096,6 +2101,7 @@ impl Core {
             holders_named: memo::Memo::new("holders named: read"),
             sync_certs: memo::Memo::new("sync: certificates"),
             certified: Default::default(),
+            grant_copies: memo::Memo::new("sync: grant copies"),
             departures: memo::Memo::new("departures"),
             reseal_scans: memo::Memo::new("reseal: scan"),
             rotation_seq: 0,

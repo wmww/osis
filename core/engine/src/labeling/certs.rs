@@ -228,6 +228,14 @@ impl Engine {
             let found = tl.certificates(&a, &x);
             self.cert_parts(&found, &mut out);
         }
+        // the grant copies of each actor whose inbox is a sync ID of `g` (spec/sync-inbox.md §5)
+        for a in self.inbox_actors_of(g) {
+            let things: Vec<Tid> = self.core.ix.held.named_on(&a).filter(|t| **t != a).copied().collect();
+            for t in things {
+                let copy = self.grant_copy(&a, &t);
+                out.extend((*copy).clone());
+            }
+        }
         if self.core.account_devices().is_some_and(|(_, d)| d == *g) {
             let me = self.tid();
             for (n, _) in self.core.key_holders(g) {
@@ -247,6 +255,106 @@ impl Engine {
             }
         }
         out
+    }
+
+    /// The actors whose inbox (spec/sync-inbox.md §1) is a sync ID `g` owns.
+    fn inbox_actors_of(&mut self, g: &Tid) -> Vec<Tid> {
+        let Ok(owned) = self.owned_sync_ids(g) else { return Vec::new() };
+        let inboxes = self.inbox_actors();
+        let mut out: Vec<Tid> = owned.iter().filter_map(|o| inboxes.get(&o.id)).flatten().copied().collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Actor `a`'s grant copy for thing `t` (spec/sync-inbox.md §5), logged under `a`'s inbox: the
+    /// newest edge write naming `a` on `t` the timeline applies (a removal included: it tells `a`'s
+    /// other nodes the grant ended), projected as the grant's inbox blob projects it (spec/sync-
+    /// inbox.md §2, `inbox_blob`): one boxing `a` gives its `secrets.0` part on `t`, with its
+    /// `roles.0` part while `a` reads `t`; one not boxing `a` (a removal or lowering) its `roles.0`
+    /// part, none when `a`'s edge was below read before it and `a` reads `t` neither now (a sync
+    /// holder's). While `a` reads `t`, also what the blob carries beside it (`carried_chain`),
+    /// every commit writing `t`'s `sync.0` with its author's chain, and `t`'s records with their
+    /// mintings; below read, nothing more (a sync holder learns none of them, spec/sync-ids.md
+    /// §2). Nothing for a commit not applied here. One per (actor, thing), read from `t`'s edges
+    /// alone (`Timelines::on`): a newer write replaces it, and the older copy leaves the required
+    /// set.
+    pub fn grant_copy(&mut self, a: &Tid, t: &Tid) -> Arc<Certs> {
+        let k = (*a, *t);
+        Memo::get_in(self, |e| &e.core.grant_copies, &k, |e| Ok::<_, ()>(Arc::new(e.grant_copy_read(a, t)))).unwrap_or_default()
+    }
+
+    fn grant_copy_read(&mut self, a: &Tid, t: &Tid) -> Certs {
+        let mut out = Certs::default();
+        // the newest applied edge write naming `a` on `t`, and whether `a` read `t` just before it
+        let Some((c, read_before)) = self.core.timelines.on(t).and_then(|on| {
+            let (_, c, _) = on.held().filter(|(w, _, o)| o.holder == *a && on.is_applied(w)).max_by_key(|(_, c, _)| c.point())?;
+            Some((c.id, on.edge_at(a, Some(c.point())).is_some_and(|e| e.role >= osis_base::Role::Read)))
+        }) else {
+            return out;
+        };
+        if self.core.ix.pending.contains_key(&c) || !self.core.ix.commits.contains_key(&c) {
+            return out;
+        }
+        let on = BTreeSet::from([*t]);
+        let boxes = {
+            let named = self.holders_named(&c);
+            self.parts_of(&c, &on, &["secrets.0"]).iter().any(|ai| named.get(ai).is_some_and(|hs| hs.contains(a)))
+        };
+        let reads = self.core.role_now(a, t) >= Some(osis_base::Role::Read);
+        let aks: &[&str] = match (boxes, reads) {
+            // a lowering or removal of a reader; a sync holder's is sent none
+            (false, _) if read_before || reads => &["roles.0"],
+            (false, _) => return out,
+            (true, true) => &["roles.0", "secrets.0"],
+            (true, false) => &["secrets.0"],
+        };
+        let parts = self.parts_of(&c, &on, aks);
+        if !reads {
+            out.add(c, parts);
+            return out;
+        }
+        let boxed = if boxes { on.clone() } else { BTreeSet::new() };
+        let Some(chain) = self.carried_chain(&c, &parts, &boxed) else { return out };
+        out.extend(chain);
+        out.add(c, parts);
+        for (x, ais) in self.aspect_commits(t, "sync.0") {
+            if let Some(chain) = self.carried_chain(&x, &ais, &BTreeSet::new()) {
+                out.extend(chain);
+            }
+            out.add(x, ais);
+        }
+        out.records.extend(self.core.record_chain(t).filter_map(|s| s.thing()));
+        let records: Vec<Tid> = out.records.iter().copied().collect();
+        for x in records {
+            self.minting_evidence(&x, &mut out);
+        }
+        out.records.retain(|x| self.core.created(x).is_some());
+        out
+    }
+
+    /// The author's chain an inbox blob of commit `c` carries for its `parts` (spec/wire.md §9
+    /// position 2), and a grant copy with it (spec/sync-inbox.md §5): `author_chain` without any
+    /// `keys.0` but the author's own, plus the current `keys.0` commits of each thing in `boxed`
+    /// (those it boxes the recipient on), each projected to that delta, with their records.
+    /// `None` while `c` is pending.
+    pub(crate) fn carried_chain(&mut self, c: &CommitId, parts: &Parts, boxed: &BTreeSet<Tid>) -> Option<Certs> {
+        let author = self.header(c)?.author;
+        let mut certs = self.author_chain(c, parts)?;
+        for (x, ps) in certs.commits.iter_mut() {
+            let Some(h) = self.header(x) else { continue };
+            ps.retain(|ai| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() != "keys.0" || a.tid == author));
+        }
+        certs.commits.retain(|_, p| !p.is_empty());
+        for t in boxed {
+            for k in self.current_keys(t) {
+                if let Some(ai) = self.header(&k).and_then(|h| h.aspect_index(t, "keys.0")) {
+                    certs.commits.entry(k).or_default().insert(ai);
+                }
+            }
+            certs.records.insert(*t);
+        }
+        Some(certs)
     }
 
     /// The (author, thing) pairs whose author's chain goes under a sync ID of `g` with the

@@ -287,26 +287,14 @@ impl Engine {
     /// it on, projected to that delta (spec/wire.md §9 position 2).
     fn chain_values(&mut self, c: &CommitId, blob: &CommitBlob, holder: &Tid) -> Result<(Vec<Value>, Vec<osis_base::CreationRecord>)> {
         let parts: crate::labeling::Parts = blob.parts.iter().map(|p| p.ai).collect();
-        let Some(mut certs) = self.author_chain(c, &parts) else { return Ok((Vec::new(), Vec::new())) };
         let boxed: BTreeSet<Tid> = crate::apply::keys::pending_secrets_writes(blob, c).into_iter().filter(|(_, w)| w.boxes.keys().any(|k| k.holder == *holder)).map(|(t, _)| t).collect();
-        let mut boxed_keys: BTreeSet<(CommitId, usize)> = BTreeSet::new();
-        for t in boxed {
-            for k in self.current_keys(&t) {
-                if let Some(ai) = self.header(&k).and_then(|h| h.aspect_index(&t, "keys.0")) {
-                    certs.commits.entry(k).or_default().insert(ai);
-                    boxed_keys.insert((k, ai));
-                }
-                certs.records.insert(t);
-            }
-        }
-        let author = blob.header.author;
+        let Some(certs) = self.carried_chain(c, &parts, &boxed) else { return Ok((Vec::new(), Vec::new())) };
         let mut out = Vec::new();
         for (x, ps) in &certs.commits {
             let id = *x;
             let Some(full) = self.read(|tx| tx.get_commit(&id))? else { continue };
             let mut b = Arc::unwrap_or_clone(full);
-            let keep: BTreeSet<usize> = ps.iter().copied().filter(|ai| b.header.aspects.get(*ai).is_some_and(|a| a.ak.as_str() != "keys.0" || a.tid == author || boxed_keys.contains(&(id, *ai)))).collect();
-            b.parts.retain(|p| keep.contains(&p.ai));
+            b.parts.retain(|p| ps.contains(&p.ai));
             if b.parts.is_empty() {
                 continue;
             }

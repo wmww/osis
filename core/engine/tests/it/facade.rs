@@ -1499,4 +1499,55 @@ fn marking_an_add_costs_its_size_spec_sync_set_2() {
     };
     let (small, big) = (cost(20), cost(200));
     assert!(small > 0 && big <= 11 * small, "walks up {small} at 20, {big} at 200");
+
+/// The aspects of the parts `copy` names of commit `c`.
+fn copied_aks(lp: &mut LocalPeer, c: &osis_base::CommitId, copy: &osis_engine::labeling::Certs) -> BTreeSet<String> {
+    let h = commit_of(lp, 0, c).header;
+    copy.commits.get(c).into_iter().flatten().map(|ai| h.aspects[*ai].ak.as_str().to_string()).collect()
+}
+
+// spec/sync-inbox.md §5 (Grant copy), spec/sync-judgement.md §2 (required set: under an actor's
+// inbox, its grant copies): a reader's grant copy is the grant's `roles.0` and `secrets.0` parts on
+// the thing (and its keyset, the first grant's: the thing's current `keys.0`), with the thing's
+// `sync.0` commits and record; a node of the grantee that took the
+// grant holds it as a certificate body under the grantee's inbox.
+#[test]
+fn a_readers_grant_copy_carries_the_grant_spec_sync_inbox_5() {
+    let (mut lp, t, p1, g, blob) = granted(Role::Read);
+    let copy = lp.peers[0].engine.grant_copy(&p1, &t);
+    let aks = copied_aks(&mut lp, &g, &copy);
+    assert!(aks.contains("roles.0") && aks.contains("secrets.0"), "{aks:?}");
+    let sync0 = lp.peers[0].engine.aspect_commits(&t, "sync.0");
+    assert!(!sync0.is_empty() && sync0.iter().all(|(c, ais)| copy.commits.get(c).is_some_and(|p| p.is_superset(ais))), "the thing's sync.0 parts");
+    assert!(copy.records.contains(&t), "the thing's record");
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(e.take_inbox_blob(&blob, true).unwrap().map(|o| o.taken), Some(Taken::Applied));
+    let inbox = e.inbox_of(&p1).expect("an inbox");
+    let body = e.sync_bodies(&g).unwrap().get(&inbox).cloned().expect("a body under the inbox");
+    assert!(body.certificate, "a certificate copy");
+}
+
+// spec/sync-inbox.md §5 (Grant copy: as the inbox blob projects it), spec/sync-ids.md §2 (What a
+// sync holder learns): a holder of sync alone's grant copy is its `secrets.0` part alone, no
+// record, step or chain; its removal copies nothing.
+#[test]
+fn a_sync_holders_grant_copy_is_its_box_alone_spec_sync_inbox_5() {
+    let (mut lp, t, p1, g, _) = granted(Role::Sync);
+    let copy = lp.peers[0].engine.grant_copy(&p1, &t);
+    assert_eq!(copy.commits.keys().copied().collect::<Vec<_>>(), vec![g]);
+    assert_eq!(copied_aks(&mut lp, &g, &copy), BTreeSet::from(["secrets.0".to_string()]));
+    assert!(copy.records.is_empty() && copy.headers.is_empty());
+    lp.peers[0].engine.demote(&t, &Demotion { holder: p1, new: None, retain: None }).unwrap();
+    assert!(lp.peers[0].engine.grant_copy(&p1, &t).is_empty(), "a sync holder's removal");
+}
+
+// spec/sync-inbox.md §5 (Grant copy: a newer edge write replaces it): a reader's removal is its
+// copy, the removal's `roles.0` part; the grant's leaves.
+#[test]
+fn a_removal_replaces_the_grant_copy_spec_sync_inbox_5() {
+    let (mut lp, t, p1, g, _) = granted(Role::Read);
+    let r = *lp.peers[0].engine.demote(&t, &Demotion { holder: p1, new: None, retain: None }).unwrap().commits.last().unwrap();
+    let copy = lp.peers[0].engine.grant_copy(&p1, &t);
+    assert!(!copy.commits.contains_key(&g), "the grant left");
+    assert_eq!(copied_aks(&mut lp, &r, &copy), BTreeSet::from(["roles.0".to_string()]));
 }
