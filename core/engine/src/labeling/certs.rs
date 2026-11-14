@@ -322,9 +322,11 @@ impl Engine {
     pub fn current_keys(&self, t: &Tid) -> BTreeSet<CommitId> {
         // per role: the newest n, its keysets' rotation commits, the commits recording boxes there
         let mut newest: BTreeMap<osis_base::Role, (u64, BTreeSet<CommitId>, BTreeSet<CommitId>)> = BTreeMap::new();
+        let mut intros = BTreeSet::new();
         for (r, e, _) in self.core.keysets_of(t) {
             let (r, e) = (&r, &e);
             let Some((_, c)) = self.core.ix.epoch_intro.get(&(*t, *r, *e)) else { continue };
+            intros.insert(*c);
             let n = newest.entry(*r).or_default();
             if e.n() > n.0 {
                 *n = (e.n(), BTreeSet::new(), BTreeSet::new());
@@ -336,9 +338,10 @@ impl Engine {
         }
         let rotations: BTreeSet<CommitId> = newest.values().flat_map(|x| x.1.iter().copied()).collect();
         let records: BTreeSet<CommitId> = newest.values().flat_map(|x| x.2.iter().copied()).collect();
-        // the newest other than a grant's or re-seal's records (those are listed already): what
+        // the newest but one writing only box records (a grant's or re-seal's, at any epoch): what
         // carries the inbox and deposit seed
-        let card = self.latest_where(t, "keys.0", |c| rotations.contains(c) || !records.contains(c));
+        let recorders: BTreeSet<CommitId> = self.core.sealed_noted(t).flat_map(|x| x.2.by.iter().copied()).collect();
+        let card = self.latest_where(t, "keys.0", |c| intros.contains(c) || !recorders.contains(c));
         rotations.iter().chain(&records).copied().chain(card).collect()
     }
 

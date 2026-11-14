@@ -2077,3 +2077,37 @@ fn a_grants_records_do_not_grow_with_the_actor_spec_crypto_4() {
     let (small, large) = (records(2), records(20));
     assert_eq!((small, large), (2, 2), "read and sync, one current epoch each");
 }
+
+// spec/crypto.md §4 (Carried: with the keysets a commit's boxes name go those epochs' box
+// records; Stale): G's grant boxing A at its epoch e places under G's labels, beside e's
+// rotation commit, the commit recording A's box to team M at e (M's grant on A). A node reading
+// G's labels but none of A's holds e's records so. Certificates carry A's newest keysets only, so
+// for a keyset of A below its newest n (a fork G seals jointly) this is the one way they arrive.
+#[test]
+fn a_keysets_records_travel_with_it_spec_crypto_4() {
+    let mut lp = synced(2);
+    let m = group(&mut lp, 1);
+    lp.sync_all().unwrap();
+    let a = group(&mut lp, 0);
+    let c = *lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap().commits.last().unwrap();
+    assert!(lp.peers[0].engine.core.sealed_noted(&a).any(|x| x.2.by.contains(&c)), "M's grant records its box");
+    let g = group(&mut lp, 0);
+    let done = lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
+    let placed = done.deliveries.iter().any(|x| matches!(x, crate::flows::Delivery::First { commits, under } if under == &vec![g] && commits.contains(&c)));
+    assert!(placed, "M's record placed under G's labels with A's keyset: {:?}", done.deliveries);
+}
+
+// spec/permissions.md §4 (current `keys.0` commits: the newest writing more than box records):
+// a deposit seed refresh, then team grants on A recording their boxes; A's current `keys.0`
+// commits still carry the refresh (the inbox and deposit seed a stranded report deposits under).
+#[test]
+fn box_records_do_not_displace_the_newest_card_spec_permissions_4() {
+    let mut lp = synced(2);
+    let m = group(&mut lp, 1);
+    lp.sync_all().unwrap();
+    let a = group(&mut lp, 0);
+    let seed = *lp.peers[0].engine.refresh_deposit_seed(&a).unwrap().commits.last().unwrap();
+    lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    let keys = lp.peers[0].engine.current_keys(&a);
+    assert!(keys.contains(&seed), "the deposit seed refresh among A's current keys.0 commits");
+}
