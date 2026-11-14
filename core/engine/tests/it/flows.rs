@@ -585,10 +585,10 @@ fn removal_erasure_crash_safe_spec_perm_3() {
 #[test]
 fn applied_removal_triggers_forgetting_spec_perm_3() {
     let mut x = lost_setup();
-    assert!(x.lp.peers[1].engine.lost_due());
+    assert!(x.lp.peers[1].engine.role_duties_due());
     let lost: BTreeSet<Tid> = x.lp.peers[1].engine.role_duties().unwrap().into_iter().collect();
     assert!(lost.contains(&x.d) && lost.contains(&x.f) && !lost.contains(&x.e), "{lost:?}");
-    assert!(!x.lp.peers[1].engine.lost_due());
+    assert!(!x.lp.peers[1].engine.role_duties_due());
     assert_forgotten(&mut x);
     // idempotent
     assert!(x.lp.peers[1].engine.role_duties().unwrap().is_empty());
@@ -601,11 +601,11 @@ fn applied_removal_triggers_forgetting_spec_perm_3() {
 fn lost_access_trigger_survives_restart_spec_perm_3() {
     let mut x = lost_setup();
     reopen(&mut x.lp, 1).unwrap();
-    assert!(x.lp.peers[1].engine.lost_due());
+    assert!(x.lp.peers[1].engine.role_duties_due());
     assert!(x.lp.peers[1].engine.role_duties().unwrap().contains(&x.d));
     assert_forgotten(&mut x);
     reopen(&mut x.lp, 1).unwrap();
-    assert!(!x.lp.peers[1].engine.lost_due());
+    assert!(!x.lp.peers[1].engine.role_duties_due());
     assert_forgotten(&mut x);
 }
 

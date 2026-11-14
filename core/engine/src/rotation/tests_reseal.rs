@@ -823,7 +823,7 @@ fn a_write_after_a_passed_until_waits_for_the_finalize_spec_permissions_2() {
     let w = put(&mut lp, 0, g, "after");
     let parts = lp.peers[0].engine.body(&w).unwrap().unwrap().parts;
     assert!(lp.peers[0].engine.wrap_secret(&g, Some((&w, &parts))).unwrap().is_none(), "no wrap before the finalize");
-    assert!(lp.peers[0].engine.lost_due(), "the `until` is due on the work list");
+    assert!(lp.peers[0].engine.role_duties_due(), "the `until` is due on the work list");
     lp.peers[0].engine.role_duties().unwrap();
     assert_ne!(newest_read(&lp, 0, g), old, "the finalize rotated read");
     assert!(lp.peers[0].engine.wrap_secret(&g, Some((&w, &parts))).unwrap().is_some(), "then the write wraps");

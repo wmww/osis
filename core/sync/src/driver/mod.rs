@@ -95,6 +95,8 @@ struct Driver {
     restarts: u64,
     /// The engine store's writes of unknown outcome as of the last look (`engine_reloaded`).
     engine_unknown: u64,
+    /// `Engine::loads` as of the last look (`engine_reloaded`).
+    engine_loads: u64,
     /// What the client port's owner has to answer or forget (`Node::port`).
     port: Vec<PortEvent>,
     /// Outputs made outside a step (`Node::redeem`), carried out with the next step's.
@@ -177,7 +179,7 @@ impl Node {
     pub fn open(engine: Engine, store: Store, cfg: SyncConfig, rng: Box<dyn NodeRng>) -> Result<Node> {
         let now = engine.now();
         let store_handle = store.clone();
-        let mut driver = Driver::default();
+        let mut driver = Driver { engine_loads: engine.loads(), ..Driver::default() };
         driver.dials.set_node(cfg.key.map(|k| k.0), &cfg.policy);
         Ok(Node { engine, store, rng, cfg, now, rounds: 0, driver, opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::new(store_handle), inbox: Inbox::default(), status: Status::default(), leave: Leave::default(), life: Life::default() })
     }
@@ -192,7 +194,7 @@ impl Node {
         self.engine_reloaded(&mut out);
         // the compaction trigger runs at each step (spec/sync-compaction.md §1): what its snapshots
         // cover is judged by the settle after it
-        let r = self.step(input, &mut out).and_then(|()| self.engine.compactions().map(drop).map_err(Error::from)).and_then(|()| self.settle(&mut out)).and_then(|()| self.lost(&mut out)).and_then(|()| self.flush());
+        let r = self.step(input, &mut out).and_then(|()| self.engine.compactions().map(drop).map_err(Error::from)).and_then(|()| self.settle(&mut out)).and_then(|()| self.flush());
         // a durable commit since the restart ends the stretch, whatever this step did
         if self.driver.failing.is_some_and(|f| self.committed() > f.committed) {
             self.driver.failing = None;
@@ -690,7 +692,9 @@ impl Node {
             let (status, opens, store) = (&self.status, &self.opens, &self.store);
             // a sync ID no peer shares is heard out at once (the rule a leave's wait reads)
             acted |= self.life.settle(&mut self.engine, &self.store, |s| Ok(!opens.shared(store, s, |_| false)? || status.heard_out(s, &net)))?;
-            if !acted {
+            // the engine read its store again (a forgetting drop): every feed followed is stale,
+            // so the settle ends and the step restarts the modules (`engine_reloaded`)
+            if !acted || self.engine.loads() != self.driver.engine_loads {
                 return Ok(());
             }
         }
@@ -749,46 +753,29 @@ impl Node {
         }
     }
 
-    /// The engine's store had a write whose outcome was unknown since the last look: the engine
-    /// reads its whole store again (`Engine::run` does at its next transaction), which replaces
-    /// every index the modules follow (memo feeds, stamps): every connection closes and the
-    /// modules start again from the store, as at an open (spec/sync-ids.md §5: the store is the
-    /// truth after a failure). Whether it did.
+    /// The engine read its store again since the last look (`Engine::loads`: a write of unknown
+    /// outcome, or a drop that forgot things: lost access, a self-removal placed, unsyncing,
+    /// spec/sync-judgement.md §3), which replaces every index the modules follow (memo feeds,
+    /// stamps): every connection closes and the modules start again from the store, as at an open
+    /// (spec/sync-ids.md §5: the store is the truth after a failure). One rule for every reload:
+    /// the settle ends at the round it happened in (`settle`), and the step restarts here. Whether
+    /// it restarted.
     fn engine_reloaded(&mut self, out: &mut Vec<Out>) -> bool {
         let unknown = self.engine.store_writes().unknown;
-        if unknown == self.driver.engine_unknown {
+        if unknown == self.driver.engine_unknown && self.engine.loads() == self.driver.engine_loads {
             return false;
         }
         self.driver.engine_unknown = unknown;
-        if let Err(e) = self.engine.run(|_| Ok(())) {
+        // a write of unknown outcome: the engine reads its store at its next transaction
+        let r = self.engine.run(|_| Ok(()));
+        self.driver.engine_loads = self.engine.loads();
+        if let Err(e) = r {
             self.failed(e.into(), out);
             return true;
         }
         self.close_all(out);
         self.restart_modules(out);
         true
-    }
-
-    /// spec/permissions.md §3 (Lost access): the engine's lost-access trigger, due when a role
-    /// commit applied from elsewhere (or an `until` passed, `next_lost_due` being a wake) left
-    /// actors this node may no longer read (`Engine::lost_due`, its work list written by that
-    /// change): their secrets drop. What the drop moved is settled again.
-    fn lost(&mut self, out: &mut Vec<Out>) -> Result<()> {
-        if !self.engine.lost_due() {
-            return Ok(());
-        }
-        // a finalize or rotation it wrote is logged by the settle after it, as any own commit
-        let loads = self.engine.loads();
-        self.engine.role_duties()?;
-        if self.engine.loads() == loads {
-            return self.settle(out);
-        }
-        // the forget read the engine's store again (spec/sync-judgement.md §3: the reload
-        // forgetting names), replacing every index the modules follow: they start again from the
-        // store, as after a write of unknown outcome
-        self.close_all(out);
-        self.restart_modules(out);
-        Ok(())
     }
 
     fn close_all(&mut self, out: &mut Vec<Out>) {
@@ -801,7 +788,7 @@ impl Node {
 
     /// The earliest wake any module, the store or the engine needs.
     fn next_wake(&mut self) -> Option<WallMs> {
-        let engine = self.engine.next_timer().ok().flatten().into_iter().chain(self.engine.next_lost_due()).min().map(WallMs);
+        let engine = self.engine.next_timer().ok().flatten().map(WallMs);
         let clock = self.engine.clock_next();
         [self.driver.sessions.next_wake(), self.driver.dials.next_wake(), self.store.next_wake(), self.opens.next_wake(), self.read.next_wake(), self.unread.next_wake(), self.streams.next_wake(), self.inbox.next_wake(), self.status.next_wake(), engine, clock].into_iter().flatten().min()
     }

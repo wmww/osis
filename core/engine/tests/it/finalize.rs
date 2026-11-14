@@ -207,7 +207,7 @@ fn a_finalize_lets_the_guest_hear_out_spec_permissions_2() {
     let (done, _) = lp.peers[1].engine.ensure_rotated(&t).unwrap();
     assert_eq!(done.commits.len(), 1, "finalized");
     spread(&mut lp);
-    assert!(lp.peers[2].engine.lost_due());
+    assert!(lp.peers[2].engine.role_duties_due());
     let r = lp.peers[2].engine.forget_lost(LostScope::Due).unwrap();
     assert!(r.actors.is_empty() && r.leaving, "heard out first");
     assert!(lp.peers[2].engine.lost_leaving().unwrap().timed.contains_key(&t));

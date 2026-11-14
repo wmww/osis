@@ -11,6 +11,15 @@
 //!   sharing the group) releases at once, and one whose sharing peers are away releases nothing
 //!   under what they share.
 //!
+//! - **Role duties** (spec/permissions.md §2 Finalize, §3 Required rotation and Lost access): the
+//!   engine's `role_duties` (finalizes and rotations owed before this node next encrypts, then the
+//!   lost-access drop) runs when `Engine::role_duties_due` (its work list and the memo clock up to
+//!   its first entry, stamped) settles true: a role commit applied from elsewhere, or an `until`
+//!   passing with nothing written (the clock's wake).
+//!
+//! A duty whose drop forgot things makes the engine read its store again (`Engine::loads`): the
+//! driver ends the settle and restarts the modules (notes/sync-driver.md, Failures).
+//!
 //! State: the sync IDs synced here with their things (`SyncsFollow`), each one's heard-out value
 //! and whether one became heard out since the last judgment. Bounded by the sync IDs synced; a
 //! restart settles every key afresh (every held thing is judged again once heard out).
@@ -36,13 +45,17 @@ pub struct Life {
     last: (bool, bool),
     /// A sync ID became heard out since the last judgment: the held things are judged again.
     newly: bool,
+    /// `Engine::role_duties_due`, as last settled.
+    roles: Effects<(), bool>,
 }
 
 impl Default for Life {
     fn default() -> Life {
         let mut due = Effects::new("life: lifetimes due");
         due.want(());
-        Life { syncs: SyncsFollow::default(), ids: BTreeMap::new(), heard: Effects::new("life: heard out"), heard_now: BTreeMap::new(), due, last: (false, false), newly: false }
+        let mut roles = Effects::new("life: role duties due");
+        roles.want(());
+        Life { syncs: SyncsFollow::default(), ids: BTreeMap::new(), heard: Effects::new("life: heard out"), heard_now: BTreeMap::new(), due, last: (false, false), newly: false, roles }
     }
 }
 
@@ -53,10 +66,26 @@ impl std::fmt::Debug for Life {
 }
 
 impl Life {
-    /// Follows what moved; judges lifetimes when due. `heard_out(s)`: S heard out now (stamped
-    /// reads; no peer sharing S counts as heard out). Whether it judged (the engine's rows moved:
+    /// Follows what moved; runs each duty when due. `heard_out(s)`: S heard out now (stamped
+    /// reads; no peer sharing S counts as heard out). Whether one ran (the engine's rows moved:
     /// the next round settles them).
-    pub fn settle(&mut self, engine: &mut Engine, store: &Store, mut heard_out: impl FnMut(&SyncId) -> Result<bool>) -> Result<bool> {
+    pub fn settle(&mut self, engine: &mut Engine, store: &Store, heard_out: impl FnMut(&SyncId) -> Result<bool>) -> Result<bool> {
+        // the role duties first: a finalize or rotation goes before anything encrypts again
+        if !self.roles.due().is_empty()
+            && let Some((_, true)) = self.roles.settle(&(), || engine.role_duties_due())
+        {
+            if let Err(e) = engine.role_duties() {
+                // due again at the next settle (the failing step restarts anyway)
+                self.roles.unwant(&());
+                self.roles.want(());
+                return Err(e.into());
+            }
+            return Ok(true);
+        }
+        self.lifetimes(engine, store, heard_out)
+    }
+
+    fn lifetimes(&mut self, engine: &mut Engine, store: &Store, mut heard_out: impl FnMut(&SyncId) -> Result<bool>) -> Result<bool> {
         for (s, was, now) in self.syncs.settle(store) {
             if let Some((t, _)) = was
                 && let Some(ids) = self.ids.get_mut(&t)

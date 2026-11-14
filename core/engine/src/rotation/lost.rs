@@ -672,31 +672,33 @@ impl Engine {
         self.run(|tx| mark_lost_due(tx, [*t]))
     }
 
-    /// Whether the lost-access trigger has work due now (`role_duties`).
-    pub fn lost_due(&self) -> bool {
+    /// Whether `role_duties` has work due now: a stamped read of the work list and of the memo
+    /// clock up to its first entry, so a follower (sync's `Life`) is due again when either moves,
+    /// and the clock's next wake (`clock_next`) is that entry's time.
+    pub fn role_duties_due(&self) -> bool {
         debug_assert_eq!(self.core.ix.lost_due.len(), self.core.ix.lost_due_at.len());
-        let now = self.now().0;
-        self.core.ix.lost_due_at.first().is_some_and(|(at, _)| *at <= now)
+        let Some(&(at, _)) = self.core.ix.lost_due_at.first() else { return false };
+        self.core.time.until(Some(at)) >= at
     }
 
-    /// When the lost-access trigger's next entry not due now comes due (engine ms): an edge's
-    /// `until` on a listed target passes, or a plausible pending grant keeping an actor ages
-    /// out. Every scope arms these, so the trigger judges then with no other role commit
-    /// arriving.
+    /// When the work list's next entry not due now comes due (engine ms): an edge's `until` on a
+    /// listed target passes, or a plausible pending grant keeping an actor ages out. Every scope
+    /// arms these, so the duties run then with no other role commit arriving (an app driving the
+    /// engine alone wakes at it; node-sync follows `role_duties_due` on the memo clock).
     pub fn next_lost_due(&self) -> Option<u64> {
         let now = self.now().0;
         self.core.ix.lost_due_at.iter().map(|(at, _)| *at).find(|at| *at > now)
     }
 
     /// The duties a role change makes due, on the targets of received role commits applied or
-    /// whose `until` passed (the work list, `lost_due`): first what this node owes before it next
+    /// whose `until` passed (the work list, `role_duties_due`): first what this node owes before it next
     /// encrypts under each, where it may write it (`ensure_rotated`: the finalize of a grant past
     /// its `until`, spec/permissions.md §2; a departure's required rotation, §3), logged as its own
     /// commits; then the lost-access trigger (§3): drops the secrets of the actors they touched that this
     /// node lost read access to by every path, unless a held pending grant reaches them, or its
     /// own self-removal or an `until` passing alone is behind the loss (`lost_leaving`), and
-    /// forgets what only those read. node-sync runs it every step and wakes at
-    /// `next_lost_due`; an app driving the engine alone calls it after ingesting and when
+    /// forgets what only those read. node-sync runs it when `role_duties_due` moves to true
+    /// (`Life`); an app driving the engine alone calls it after ingesting and when
     /// `next_lost_due` passes. Returns the actors dropped. The wrap gate refuses meanwhile
     /// (`wrap_blocked`), so a write made before this runs waits for it.
     pub fn role_duties(&mut self) -> Result<Vec<Tid>> {

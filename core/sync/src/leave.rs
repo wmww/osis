@@ -19,7 +19,8 @@
 //! key over its own commits or entries (O(own writes under S)). At a start, every sync ID with
 //! rows in the store, not synced, that this node's keys still hold (`Engine::sync_holder`), left
 //! while the node was down: it waits as above (the store is the truth after a restart). Nothing of
-//! this module's is durable.
+//! this module's is durable. A restart of the modules (the engine read its store again) finds a
+//! waiting S the same way: out of the sync set, its entry still synced.
 
 use crate::set::{Held, SetFollow, SetGround};
 use crate::types::{Holding, Result};
@@ -40,7 +41,7 @@ pub trait Ground: SetGround {
     fn synced(&mut self, s: &SyncId) -> Option<Held>;
     /// Sets it (`Store::set_holdings`; `None`: not synced).
     fn set_synced(&mut self, s: &SyncId, now: Option<Held>);
-    /// The sync IDs whose store holds rows (`Store::held_ids`).
+    /// The sync IDs whose store holds rows (`Store::held_ids`) or that are listed synced.
     fn stored(&mut self) -> Result<BTreeSet<SyncId>>;
     /// S's thing and how this node's keys let it hold S, whatever lists it (`Engine::sync_holder`).
     fn holder(&mut self, s: &SyncId) -> Result<Option<Held>>;
@@ -118,18 +119,20 @@ impl Leave {
             }
         }
         if !self.swept {
-            // rows of a sync ID not synced that this node's keys still hold: it left while the
-            // node was down (another account's inbox this node deposits to is none)
+            // rows of a sync ID out of the sync set that this node's keys still hold: it left
+            // while the node was down, or before a restart of the modules (its entry still
+            // synced, waiting); another account's inbox this node deposits to is none
             for s in g.stored()? {
-                if g.synced(&s).is_some() {
+                if self.set.holds(&s) || self.waiting.contains_key(&s) {
                     continue;
                 }
-                if let Some(h) = g.holder(&s)? {
+                let Some(h) = g.synced(&s).map_or_else(|| g.holder(&s), |h| Ok(Some(h)))? else { continue };
+                if g.synced(&s).is_none() {
                     g.set_synced(&s, Some(h));
-                    self.waiting.insert(s, h);
-                    self.wait.want(s);
                     acted = true;
                 }
+                self.waiting.insert(s, h);
+                self.wait.want(s);
             }
             self.swept = true;
         }
@@ -222,7 +225,9 @@ impl Ground for Live<'_, '_> {
         self.cx.store.set_holdings(&[(*s, now)]);
     }
     fn stored(&mut self) -> Result<BTreeSet<SyncId>> {
-        self.cx.store.held_ids()
+        let mut ids = self.cx.store.held_ids()?;
+        ids.extend(self.cx.store.syncs().into_keys());
+        Ok(ids)
     }
     fn holder(&mut self, s: &SyncId) -> Result<Option<Held>> {
         Ok(self.cx.engine.sync_holder(s)?)

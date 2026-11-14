@@ -105,6 +105,11 @@ impl SetFollow {
         SetFollow { closure, things: BTreeSet::new(), thing: Effects::new(name), ids_of: BTreeMap::new(), by_sync: BTreeMap::new(), held: BTreeMap::new(), touched: BTreeSet::new() }
     }
 
+    /// Whether `s` is in the sync set, as last settled.
+    pub fn holds(&self, s: &SyncId) -> bool {
+        self.held.contains_key(s)
+    }
+
     /// The sync IDs whose entry moved since the last call, each with its entry now (`None`: it
     /// left the sync set).
     pub fn settle(&mut self, g: &mut impl SetGround) -> Result<Vec<(SyncId, Option<Held>)>> {
