@@ -508,7 +508,7 @@ mod tests {
         Tid::from_bytes([n; 15])
     }
 
-    // spec/crypto.md §4 (Holders for keys, Destroyed): a destroyed actor reached at a lesser role first
+    // spec/crypto.md §4 (Holders for keys; Destroyed): a destroyed actor reached at a lesser role first
     // and at a greater one later puts its holders at the greater, whatever the walk's order
     #[test]
     fn destroyed_holder_reached_two_ways_takes_the_greater_role_spec_crypto_4() {

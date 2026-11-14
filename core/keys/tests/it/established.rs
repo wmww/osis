@@ -121,7 +121,7 @@ impl World {
     }
 }
 
-// spec/crypto.md §4 (established; history boxes of established secrets only), spec/sync-ids.md §6 (steps): register before logging, spec/permissions.md §3–§4 (stranded, re-seal); TLC R9: a1
+// spec/crypto.md §4 (Established; History box): history boxes of established secrets only, spec/sync-ids.md §6 (steps): register before logging, spec/permissions.md §3–§4 (stranded; re-seal); TLC R9: a1
 // re-seals a2 at e1 before e1's commit reaches a2. a2 holds e1's secret but not the removal: it
 // boxes e1 nowhere (re-seal, grant, history box), so m1 opens nothing of e1 through a2's fork.
 #[test]
@@ -237,7 +237,7 @@ fn reorder_holding_e2_without_e1() {
     assert!(may_compact_secrets(&s3, &a2v).unwrap());
 }
 
-// spec/crypto.md §4 (snapshot establishment; names: the departing commit), spec/permissions.md
+// spec/crypto.md §4 (Established; Names): by a compaction snapshot; names: the departing commit, spec/permissions.md
 // §3: a node holding only a compaction snapshot keying e1, made by m1's removal R1, does not use
 // e1 while it does not hold R1. Once it does, e1 is established and a raced grantee is re-sealed
 // at it like at any other.
@@ -285,8 +285,8 @@ fn planted(w: &mut World, n: u64) -> (Epoch, Secrets) {
     (e, s)
 }
 
-// spec/crypto.md §4 (a rotation's n is 1 + the greatest n it supersedes; a pending commit's
-// secrets are kept for reading only): epochs seen only in an unchecked commit (an unopenable box,
+// spec/crypto.md §4 (Rotation; Reading-only secrets): a rotation's n is 1 + the greatest n it supersedes; a pending commit's
+// secrets are kept for reading only: epochs seen only in an unchecked commit (an unopenable box,
 // a reading-only candidate) or named by an applied box without establishing are never a base for
 // n, even at the top of the int range; an unchecked source leaves nothing behind once dropped.
 #[test]
@@ -317,7 +317,7 @@ fn planted_epochs_never_base_a_rotation() {
     assert!(v.read.get(&other).is_some(), "an entry the pending commit did not give stays");
 }
 
-// spec/crypto.md §4 (headroom): an applied rotation commit or a snapshot naming an epoch above
+// spec/crypto.md §4 (Established): headroom, e's n at most 2^62: an applied rotation commit or a snapshot naming an epoch above
 // `MAX_FREE_N` establishes it only next to an established epoch at n-1 or above, so a writer
 // jumping to the top of the int range blocks no later rotation; a jump within the headroom
 // establishes and later rotations count up from it.
@@ -346,7 +346,7 @@ fn jumped_epochs_keep_rotation_possible() {
     assert!(v.read.is_established(&next) && !v.read.is_established(&skip));
 }
 
-// spec/crypto.md §3, §4 (headroom): a writer of the base actor jumped its epochs past `MAX_FREE_N`;
+// spec/crypto.md §3, §4 (Established): headroom, e's n at most 2^62: a writer of the base actor jumped its epochs past `MAX_FREE_N`;
 // a thing switching to secrets of its own still starts its chain at `MAX_FREE_N` at most (derived
 // epochs are capped below it), so a holder holding no secret of the base actor establishes the switch from the
 // rotation commit alone and the headroom rule needs nothing it cannot check.
@@ -379,7 +379,7 @@ fn switch_under_jumped_base_establishes_at_holders() {
     }
 }
 
-// spec/crypto.md §4 (a secret learned only from a pending commit is kept for reading): a pending
+// spec/crypto.md §4 (Reading-only secrets): a secret learned only from a pending commit is kept for reading: a pending
 // commit's history box at an epoch the node holds checked (forgeable by any ex-holder of it)
 // lists epochs that stay reading-only (bounded), supersede nothing, and leave with the commit.
 #[test]
@@ -401,7 +401,7 @@ fn pending_history_box_plants_nothing() {
     assert!(v.read.get(&top).is_none());
 }
 
-// spec/crypto.md §4 (established by an applied valid rotation commit): a holder writing e0's
+// spec/crypto.md §4 (Established): established by an applied valid rotation commit: a holder writing e0's
 // keyset again in a later valid commit (with a history box of its own) that is then found invalid
 // leaves e0 established by its genuine rotation commit.
 #[test]

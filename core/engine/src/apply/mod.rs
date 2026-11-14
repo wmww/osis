@@ -2252,8 +2252,7 @@ mod tests {
         assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write));
     }
 
-    // spec/permissions.md §1 (a first admin holds admin on its things; record chains within
-    // MAX_CHAIN_DEPTH), §5: a writer creates A under X, B under A and C under B in one commit;
+    // spec/permissions.md §1 (record edge; record chain; max_chain_depth), §5: a writer creates A under X, B under A and C under B in one commit;
     // the commit is valid wherever applied. Under a first admin the writer may not write, the same
     // tree fails the local check, as does a chain of new things past MAX_CHAIN_DEPTH.
     #[test]

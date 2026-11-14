@@ -124,7 +124,7 @@ fn rotation_held_before_the_removal() {
     assert!(reseal_needed(&s, &v, &[Holder { holder: k, role: Role::Write }]).is_empty());
 }
 
-// spec/crypto.md §4 (boxes decide nothing; study C2): an epoch whose rotation left M unboxed
+// spec/crypto.md §4 (Boxes decide nothing), study C2: an epoch whose rotation left M unboxed
 // (its rotator had not read M's grant) does not cover M's later removal: a re-sealer that knows
 // the grant but not the removal boxes M there. Only an epoch naming the removal covers it; one
 // whose names are not met here covers nothing; a departure no rotation can name (`at` none)

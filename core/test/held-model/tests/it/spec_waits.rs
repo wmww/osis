@@ -26,7 +26,7 @@ fn unknown_author_record_throws_the_commit_out_spec_commits_4() {
     assert!(!act(&hd, &o, None).commits.iter().any(|c| c.id == 10));
 }
 
-// spec/commits.md §4 (A held part waits, Apply), notes/expiry-creation-design.md §3: a part on a
+// spec/commits.md §4 (unjudgeable), notes/expiry-creation-design.md §3: a part on a
 // thing with no creation held is not held, alone; a commit holding only such parts is thrown out
 #[test]
 fn part_on_unknown_thing_is_not_held_spec_commits_4() {
@@ -151,7 +151,7 @@ fn only_part_unjudgeable_is_thrown_out_spec_commits_4() {
     }
 }
 
-// spec/commits.md §4 (Pending, Order independence): nothing waits for a part, the header included.
+// spec/commits.md §4 (pending; order independence): nothing waits for a part, the header included.
 // A purge request whose only part is parked applies, so it reads alike with that part held parked
 // and with it not held: the two states a node reaches when a destruction drops the parked part
 // and then falls before the part is fetched again (held-model seed 428367310133 against the

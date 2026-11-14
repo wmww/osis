@@ -185,8 +185,7 @@ fn sample(shape: Shape) -> usize {
     orders.len()
 }
 
-// spec/permissions.md §5 (validity is a deterministic function of the held set), §5.2 (a write
-// a demotion's frontier misses is invalid whatever order it arrives in), spec/crdt.md §4.6:
+// spec/permissions.md §5 (validity is a deterministic function of the commits a node holds), §5.2 (lists its commit, whatever their order), spec/crdt.md §4.6:
 // frontiers before (backdated), inside and after the writer's writes; children of the demoted
 // actor created in one commit, a grandchild in a later commit or in theirs; a demotion by an admin other than the
 // first admin; a commit naming a former leaf.

@@ -157,15 +157,15 @@ fn right_now(h: &Held, c: &Commit, p: &Part) -> bool {
 }
 
 // One settled history per seed, four properties of it:
-// spec/commits.md §5 (Never received, Dropping a body), spec/crdt.md §4.7: dropping and stripping
+// spec/commits.md §5 (never received; dropping a body), spec/crdt.md §4.7: dropping and stripping
 // what the fates say changes no read, and leaves no value of a purged or expired write.
-// spec/commits.md §5 (purge on replace, keep at least; The setting): once a node
+// spec/commits.md §5 (purge on replace; keep at least; the setting): once a node
 // holding the right has acted, it holds no body under purge on replace (its covering snapshot
 // dropped it), no body is dropped before a purge request's floor but by purge, and history()
 // shows no body the node may drop.
 // spec/commits.md §5, §6, spec/crdt.md §2.2: the clock changes the output only at the deadlines it
 // lists (unparking, expiry, a body leaving history), so an adapter checking at each sees every change.
-// spec/commits.md §5 (Covered, Signals): each drop a node may make changes no read and no
+// spec/commits.md §5 (covered; signals): each drop a node may make changes no read and no
 // history(): a covered body, and a signal's out of history, read alike held or not.
 #[test]
 fn settled_histories_keep_their_laws_spec_commits_5() {
@@ -258,7 +258,7 @@ fn signal_history(h: &Held, gone: &BTreeSet<(ThingId, Aspect)>) -> BTreeMap<(Thi
     evaluate(h).history.into_iter().filter(|(k, _)| k.1.signal && !gone.contains(k)).collect()
 }
 
-// spec/requirements.md (Deterministic), spec/commits.md §5 (Covered, Signals), spec/permissions.md §5.2: a
+// spec/requirements.md (Deterministic), spec/commits.md §5 (covered; signals), spec/permissions.md §5.2: a
 // commit arriving after the node acted on the rest reads as one held from the start, once a body
 // whose cover or purge fell is fetched again; a part gone at its expiry while waiting excepted
 #[test]

@@ -65,8 +65,7 @@ fn a_removal_keeps_a_copy_as_it_says_spec_permissions_3() {
     }
 }
 
-// spec/permissions.md §3 (Retain: The copy: a later part is not joined; a role with a secret
-// again ends the copy): a copy stays as it was while the thing moves on; granted again, the node
+// spec/permissions.md §3 (the copy; a later part on it is not joined; a role on a with a secret of it again ends the copy): a copy stays as it was while the thing moves on; granted again, the node
 // is a holder again and keeps no copy. (Fetching the parts it refused meanwhile is sync's.)
 #[test]
 fn a_regrant_ends_a_copy_spec_permissions_3() {
@@ -85,8 +84,7 @@ fn a_regrant_ends_a_copy_spec_permissions_3() {
     assert_eq!(bob.at(t, x()).get().unwrap(), Some(s("after")));
 }
 
-// spec/permissions.md §3 (Retain: an ended grant says what the thing's default says; The copy:
-// a later part is not joined; it cannot write it): a grant ending at its `until` under a default
+// spec/permissions.md §3 (retain; an ended grant says; the copy; a later part on it is not joined; cannot write it): a grant ending at its `until` under a default
 // that retains leaves a copy; what is written after never reaches it, and the node writes
 // nothing there, durable or ephemeral. (Ephemeral commits travel only by sync: whether one
 // reaches a copy waits for it.)

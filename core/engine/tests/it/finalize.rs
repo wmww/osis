@@ -202,7 +202,7 @@ fn concurrent_finalizes_converge_spec_permissions_2() {
     }
 }
 
-// spec/permissions.md §2 (an `until` passing, Finalize), §3 (Lost access): a finalize counts as
+// spec/permissions.md §2 (an `until` passing; finalize), §3 (Lost access): a finalize counts as
 // the `until` it finalizes at the guest: arriving while the guest hears its labels out, it drops
 // nothing at once; an explicit removal would.
 #[test]

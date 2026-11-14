@@ -260,7 +260,7 @@ fn held_of(lp: &mut LocalPeer, i: usize, d: Tid, k: CommitId) -> Held {
     (e.role_on(&d), epochs, vals, e.pending().len(), parts)
 }
 
-// spec/commits.md §4 (a delta arriving later joins its applied commit), spec/wire.md §9: an
+// spec/commits.md §4 (is joined on arrival): a delta arriving later joins its applied commit, spec/wire.md §9: an
 // inbox chain's `keys.0` projection of a commit is that commit with its other parts absent: the
 // full commit arriving after it, or before it, ends as if the projection never came.
 #[test]
@@ -332,7 +332,7 @@ fn grant_carries_history_spec_crypto_4() {
 
 // spec/permissions.md §3; spec/commits.md §2: a removal and the target's rotation are one
 // commit; the removed holder holds no secret of the new epoch and drops what it lost.
-// spec/crypto.md §4 (removed holder), spec/permissions.md §3 (drop lost secrets)
+// spec/crypto.md §4 (Departure): removed holder, spec/permissions.md §3 (drop lost secrets)
 #[test]
 fn removal_rotates_spec_perm_3() {
     let (mut lp, ps) = people(3);
@@ -513,8 +513,8 @@ fn removal_erases_lost_content_spec_perm_3() {
     }
 }
 
-// spec/permissions.md §3 (drop lost secrets); spec/commits.md §4 (a transaction lands whole or
-// not at all): a crash at any write of the drop leaves bob, reopened, before it (dropping again
+// spec/permissions.md §3 (drop lost secrets); spec/commits.md §4 (applies in one storage transaction): a transaction lands whole or
+// not at all: a crash at any write of the drop leaves bob, reopened, before it (dropping again
 // forgets) or after it, never between
 #[test]
 fn removal_erasure_crash_safe_spec_perm_3() {
@@ -560,7 +560,7 @@ fn applied_removal_triggers_forgetting_spec_perm_3() {
     assert_forgotten(&mut x);
 }
 
-// spec/permissions.md §3 (a node that learns it lost read access MUST drop): the work list is
+// spec/permissions.md §3 (drop lost secrets): the work list is
 // durable, so a restart between the removal's apply and the trigger still forgets.
 #[test]
 fn lost_access_trigger_survives_restart_spec_perm_3() {
@@ -588,8 +588,8 @@ fn removal_with_another_path_keeps_all_spec_perm_3() {
     }
 }
 
-// spec/crypto.md §4 (secrets read from a pending commit's boxes are kept for reading),
-// spec/permissions.md §3 (only lost access drops secrets): a grant bob holds but has not applied
+// spec/crypto.md §4 (Reading-only secrets): secrets read from a pending commit's boxes are kept for reading,
+// spec/permissions.md §3 (lost access; keeps its boxes through the drop): a grant bob holds but has not applied
 // is no loss when an unrelated removal applies, by the trigger or by hand; it applies later.
 #[test]
 fn pending_grant_survives_unrelated_removal_spec_perm_3() {
@@ -612,7 +612,7 @@ fn pending_grant_survives_unrelated_removal_spec_perm_3() {
     assert_eq!(x.lp.peers[1].engine.get(&g, &ak("t:reg.0")).unwrap(), Some(s("new")));
 }
 
-// spec/crypto.md §4 (a secret from an unchecked box is kept for reading only),
+// spec/crypto.md §4 (Reading-only secrets): a secret from an unchecked box is kept for reading only,
 // spec/permissions.md §3: a planted grant (bad signature, unjudgeable while its author is
 // unknown) yields reading-only secrets; once it proves bad and is dropped, they go.
 #[test]
@@ -889,8 +889,8 @@ fn intermediate_grantor_covered_spec_perm_5_1() {
     }
 }
 
-// spec/crdt.md §8 (absorbed commits count only with a held header), spec/permissions.md §5.1,
-// §5.2 (a valid snapshot vouches for what it carries): reader M leaves and X rotates M away; X's
+// spec/crdt.md §8 (frontiers and absorbed are no receipts): absorbed commits count only with a held header, spec/permissions.md §5.1,
+// §5.2 (a valid s vouches for every write it carries): reader M leaves and X rotates M away; X's
 // rotation is compacted away: Alice snapshots `secrets.0` and `keys.0`, so hosts drop its blobs,
 // header included, and late joiner Bob gets only the snapshots. Bob cannot tell the absorbed
 // commit from one X signed ahead, so his removal of X does not list it; Alice, still holding it,
@@ -978,7 +978,7 @@ fn nodes_and_alice_built() -> (LocalPeer, Tid, Tid, SyncId) {
     (lp, p.devices, pa, home)
 }
 
-// spec/permissions.md §3, spec/crypto.md §4 (holder actors: stale; the cascade): node d1
+// spec/permissions.md §3, spec/crypto.md §4 (Holder actors; Stale): the cascade: node d1
 // removed from account P, P a writer of team T, T a writer of doc U. No departure is U's; before
 // P's other node encrypts under U it rotates T (its box to P stale), then U (its box to T
 // stale); d1 holds neither new secret.
@@ -1043,7 +1043,7 @@ fn commit_form_redemption_canonical_spec_crdt_3_2() {
     }
 }
 
-// spec/crdt.md §2.2 (a commit the node makes is never parked, whoever signs it): a redeemer
+// spec/crdt.md §2.2 (a commit the node makes itself is never parked): a redeemer
 // whose clock went back two hours after it saw the sharer's commits redeems: the join, signed by
 // the link key, is stamped by its HLC, two hours ahead of its wall clock.
 #[test]
@@ -1597,7 +1597,7 @@ fn unheld_holder_judged_by_keyset_spec_crypto_4() {
     assert!(rot.commits.is_empty() && still.is_empty(), "late rotates nothing: {still:?}");
 }
 
-// spec/permissions.md §3 (holder actors, a self-removal carries no rotation), spec/crypto.md §4
+// spec/permissions.md §3 (holder actors; carries no rotation), spec/crypto.md §4
 // (Encrypting under: an epoch boxing a holder actor at a blocked keyset; Seal): o0 leaves K1 by
 // self-removal (no rotation). late, a reader of K1 and a writer of C through K2, may not rotate
 // K1 and nothing departed from C, but C's read epoch boxes K1 at a keyset missing o0's departure:
@@ -2064,8 +2064,8 @@ fn stranger_secrets(lp: &mut LocalPeer, t: Tid, secrets: &ct::Secrets) -> Vec<u8
     cb.build(&keys.signing, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
 }
 
-// spec/crypto.md §4 (a rotation's n is 1 + the greatest n it supersedes; a pending commit's
-// secrets are kept for reading only): a stranger's pending commit boxing alice's actor at the top
+// spec/crypto.md §4 (Rotation; Reading-only secrets): a rotation's n is 1 + the greatest n it supersedes; a pending commit's
+// secrets are kept for reading only: a stranger's pending commit boxing alice's actor at the top
 // of the int range, plus a hundred unopenable boxes at huge epochs, neither grows alice's
 // epoch records nor stops her removing bob (the removal's rotation counts up from her own
 // established epoch), across a restart.
@@ -2167,8 +2167,7 @@ fn removed_node_frontier_lists_uncovered_acting_spec_perm_5_1() {
     assert_eq!(lp.peers[0].engine.get(&y, &reg).unwrap(), Some(s("as p")));
 }
 
-// spec/permissions.md §5.1 (a frontier leaves out only what the demoter's compaction could drop
-// now), spec/commits.md §5 (role-class deltas kept `ROLE_KEEP` after replaced): M leaves t twice
+// spec/permissions.md §5.1 (frontier; a commit is listed whether a still holds its body, dropped it or compacted it), spec/commits.md §5 (role-class body has a keep at least of `ROLE_KEEP` after replaced): M leaves t twice
 // by self-removal, and admin X rotates t after each. Alice snapshots `secrets.0` and `keys.0`,
 // covering both rotations. Removing X, she lists X's first rotation (its keysets replaced inside
 // `ROLE_KEEP`), so it stays valid; the second, live and covered, is left out.
@@ -2242,7 +2241,7 @@ fn recovered(lp: &mut LocalPeer, d: Tid, holder: Tid) -> osis_crypto::Epoch {
     cur[0]
 }
 
-// spec/crypto.md §4 (rotating needs no secret), spec/permissions.md §3: a writer rotates `d` to
+// spec/crypto.md §4 (rotating needs only the right to rotate), spec/permissions.md §3: a writer rotates `d` to
 // itself; no other node holds a current secret. The admin removes it like any holder: the
 // frontier lists the rotation, which stays valid; the removal's rotation lists the vandal's
 // epoch, superseding it unread, and carries the epoch before in its history box. The other
@@ -2275,7 +2274,7 @@ fn writer_rotating_to_itself_recovered_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0]));
 }
 
-// spec/crypto.md §4 (rotating needs no secret), spec/permissions.md §3: two writers each
+// spec/crypto.md §4 (rotating needs only the right to rotate), spec/permissions.md §3: two writers each
 // rotate `d` from the same epoch boxing only themselves. Removing either rotates at once over
 // both forks, boxing the kept writer; removing the second rotates again. Either order; neither
 // vandal reads the last epoch.
@@ -2317,8 +2316,7 @@ fn two_writer_lockout_recovered_spec_perm_3() {
     }
 }
 
-// spec/crypto.md §4 (rotating needs no secret; an epoch whose secret the node lacks covers
-// nothing): the vandal rotates to itself, then leaves. Its leaving carries no rotation; the
+// spec/crypto.md §4 (rotating needs only the right to rotate; an epoch whose secret a node lacks covers nothing): the vandal rotates to itself, then leaves. Its leaving carries no rotation; the
 // admin, lacking every current secret, finds its departure uncovered and rotates before its
 // next write, superseding the vandal's epoch unread. Nobody else need act.
 #[test]
@@ -2347,7 +2345,7 @@ fn vandal_that_left_recovered_by_due_rotation_spec_crypto_4() {
     assert_eq!(sealed_write(&mut lp, 0, d, "again"), BTreeSet::from([2, 3]));
 }
 
-// spec/crypto.md §4 (rotating needs no secret; History box), spec/permissions.md §3: the vandal
+// spec/crypto.md §4 (rotating needs only the right to rotate; History box), spec/permissions.md §3: the vandal
 // rotates to itself while an honest writer's concurrent rotation misses the admin; the admin
 // holds both. Removing the vandal rotates over both epochs, the honest one unread; the honest
 // writer, boxed, adds its epoch to the re-key's history after a pass, so the admin and the
@@ -2404,7 +2402,7 @@ fn vandal_rotating_twice_recovered_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0]));
 }
 
-// spec/permissions.md §3, spec/crypto.md §4 (forks, merge): two admins re-key concurrently;
+// spec/permissions.md §3, spec/crypto.md §4 (Forks stand; merge): two admins re-key concurrently;
 // both list the vandal's epoch and fork with one n; every remaining holder agrees on the
 // current epochs and holds them all once a merge or re-seal settles.
 #[test]
@@ -2434,7 +2432,7 @@ fn concurrent_rekeys_fork_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0, 3]));
 }
 
-// spec/crypto.md §4 (rotating needs no secret), spec/permissions.md §3: the vandal also holds
+// spec/crypto.md §4 (rotating needs only the right to rotate), spec/permissions.md §3: the vandal also holds
 // write on `d` through its own actor `t`. Removing `t` rotates over the vandal's epoch but boxes
 // the vandal, a writer still; removing the vandal rotates again, and it reads nothing after.
 #[test]
@@ -2461,7 +2459,7 @@ fn vandal_with_second_path_recovered_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0]));
 }
 
-// spec/permissions.md §3, spec/crypto.md §4 (sealing a holder actor): a team actor holding
+// spec/permissions.md §3, spec/crypto.md §4 (Holder actors; Seal): a team actor holding
 // read on `d` is locked out with the rest; the re-key's rotation seals it again, so the
 // team's first admin reads the new epoch through it.
 #[test]
@@ -2579,8 +2577,7 @@ fn rotation_missing_admin_recovered_spec_perm_3() {
     assert!(lp.peers[3].engine.epochs(&d).unwrap().read.reading_secret(&ev).is_some(), "the joiner reads ev after the member's add");
 }
 
-// spec/permissions.md §3 (required rotation through a holder actor), spec/crypto.md §4 (Stale;
-// rotating needs no secret): the vandal locks `d`, then rotates `t` (on which `d` holds write)
+// spec/permissions.md §3 (required rotation; holder actors), spec/crypto.md §4 (Stale; rotating needs only the right to rotate): the vandal locks `d`, then rotates `t` (on which `d` holds write)
 // boxing `d` at its own epoch of `d`. The admin's removal of it from `d` recovers `d`; `t`'s box
 // to `d` at the vandal's keyset is then stale, so the admin rotates `t` before encrypting under
 // it, lacking its current secret: the member reads both.
@@ -2651,7 +2648,7 @@ fn frontier_lists_covered_deltas_of_every_retention_spec_perm_5_1() {
     }
 }
 
-// spec/permissions.md §1 (first admins), §3; spec/wire.md §3: account 0
+// spec/permissions.md §1 (first admin), §3; spec/wire.md §3: account 0
 // creates O (a chat) with itself as first admin: its creation commit
 // carries `created.0` alone, and O derives from account 0's secrets until the first grant gives
 // it secrets of its own. It grants account 1 admin, accounts 2 and 3 write. Its admins are

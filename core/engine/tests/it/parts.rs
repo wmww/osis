@@ -890,7 +890,7 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
     assert_eq!(p.engine.pending(), vec![]);
 }
 
-// spec/commits.md §4 (Pending, Order independence): nothing waits for a part, the header included.
+// spec/commits.md §4 (pending; order independence): nothing waits for a part, the header included.
 // A purge request whose only part is parked applies, from the whole blob or from a header-only copy
 // first (as a node holds it after a destruction dropped the part and fell): the write it names reads
 // alike, and the part waits under the applied commit.

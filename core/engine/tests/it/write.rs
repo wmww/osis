@@ -135,7 +135,7 @@ fn authority_checked_before_signing_spec_perm_1() {
 }
 
 // notes/local-store.md: everything survives a restart (reload from the store).
-// spec/commits.md §4 (one storage transaction per apply: state survives a reopen)
+// spec/commits.md §4 (applies in one storage transaction): state survives a reopen
 #[test]
 fn restart_keeps_state() {
     let mut p = peer(0);
@@ -159,7 +159,7 @@ fn restart_keeps_state() {
     assert!(matches!(h.form, osis_commit::Form::Session(_)) && h.form != first.form, "another session");
 }
 
-// spec/crdt.md §4.1, §8 (a large state pages; the join of its pages is the state); notes/local-store.md,
+// spec/crdt.md §4.1, §8 (paging is mandatory above the threshold; pages are joined independently); notes/local-store.md,
 // Units: a large state is kept as pages and an edit rewrites only the pages
 // it touched; spec/requirements.md, Scale (a change inside a huge value costs O(change)). Seeded
 // random puts, removals and bulk inserts (page splits) into a paged map and a paged set, checked
@@ -347,7 +347,7 @@ const WIDE_SRC: &str = concat!(
 );
 const WIDE_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("w:wide.0", &WIDE);
 
-// spec/commits.md §1 (delta fits a blob), spec/crdt.md §8: a struct of many near-`CHUNK_THRESHOLD`
+// spec/commits.md §1 (a delta pages): delta fits a blob, spec/crdt.md §8: a struct of many near-`CHUNK_THRESHOLD`
 // registers (no field chunked) outgrows one blob, so its field map is paged: the write commits,
 // syncs as pages and reads back whole.
 #[test]
@@ -411,8 +411,8 @@ fn large_list_edit_chunked_spec_dm_6() {
     assert!((300_000..380_000).contains(&wrote), "duplicate items wrote {wrote} B");
 }
 
-// spec/crdt.md §5.7 (`edit` resolved at base's indices around its change), §8; spec/data-model.md
-// §6 (large items as links): list edits of a paged list with large items (above
+// spec/crdt.md §5.7 (index paths never go on the wire): `edit` resolved at base's indices around its change, §8; spec/data-model.md
+// §6 (must be chunked): large items as links: list edits of a paged list with large items (above
 // CHUNK_THRESHOLD), each in a new session, write on the pages loaded what they write with the
 // list loaded whole: two peers from one seed, one cold and one reading the list whole before
 // each edit, make the same commits. Edits against the current read load a few pages and never
@@ -535,9 +535,7 @@ fn op_at(p: &mut Peer, t: osis_base::Tid, a: &Ak, path: Vec<PathSeg>, op: Op) ->
     p.commit(m).unwrap().is_some()
 }
 
-// spec/crdt.md §5.5 (add of a live value writes nothing; remove resets its elements), §5.6
-// (remove and put by key), spec/data-model.md §6 (a set element or map key above
-// CHUNK_THRESHOLD is held as a link, equal by content hash): by value over 128 KiB, in small
+// spec/crdt.md §5.5 (add v; remove v): add of a live value writes nothing; remove resets its elements, §5.6 (writes into a key): remove and put by key, spec/data-model.md §6 (set element or map key whose canonical encoding exceeds `CHUNK_THRESHOLD`; equality of a large value is equality of its keyed content hash): by value over 128 KiB, in small
 // and paged states, in the session that wrote it and in new ones.
 #[test]
 fn large_values_by_value_spec_crdt_5_5() {
@@ -588,7 +586,7 @@ fn large_values_by_value_spec_crdt_5_5() {
 static TEXTS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("write-text.osis", "revision 1; aspect w:text.0: text;\n");
 const TEXT_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("w:text.0", &TEXTS);
 
-// spec/crdt.md §5.7 (ops by index), §6.1 (a new insert lands right after its anchor), §4.6
+// spec/crdt.md §5.7 (index paths never go on the wire): ops by index, §6.1 (a newer insert at the same anchor goes nearer the anchor), §4.6
 // (undo), §8: local inserts and deletes by index into a paged text, each in a new session, load a
 // few pages (resolved through the stored placement; an insert only its record's); undos of them, also in new sessions,
 // restore the text; reads by index and whole reads agree with a plain-string model throughout,
@@ -672,8 +670,8 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
     assert_eq!(p.engine.get(&t, &a).unwrap(), Some(Value::Str(model.iter().collect())));
 }
 
-// spec/crdt.md §4.2 and §5.7 (`replace` and `remove_aspect` leave the old elements as bare
-// anchors), §6, §8: a paged text (80 KB, some 30 pages) replaced by another (its old records left bare, merged
+// spec/crdt.md §4.2 and §5.7 (old elements lose every write below): `replace` and `remove_aspect` leave the old elements as bare
+// anchors, §6, §8: a paged text (80 KB, some 30 pages) replaced by another (its old records left bare, merged
 // into range records), then edited by index and read by range, each in a new session, agrees
 // with a plain-string model and with a whole read; after `remove_aspect` it reads absent, and a
 // new text over the twice-reset anchors edits and reads alike.
@@ -757,7 +755,7 @@ fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
     edits(&mut p, &mut model, "after remove_aspect");
 }
 
-// spec/crdt.md §4.6 (restores the prior read; never wipes others' writes it has seen): a struct
+// spec/crdt.md §4.6 (read as it did just before that commit): never wipes others' writes it has seen: a struct
 // aspect is present; one commit creates its map field (absent before) with entries sorting first;
 // many more entries follow, so the field is paged. In a new session the undo of the first commit
 // removes its entries only: the field reads the others, though the delta touches only its pages.

@@ -485,7 +485,7 @@ fn local_rights_check_spec_permissions_1() {
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
 }
 
-// spec/permissions.md §1 (the record chain confers write), §5; notes/api.md Writes: one commit
+// spec/permissions.md §1 (record edge; names as first admin), §5; notes/api.md Writes: one commit
 // creates A, B under A and C under B; another node applying the commit holds all three.
 // A thing under one the writer may not write is still refused.
 #[test]
@@ -1057,8 +1057,7 @@ fn newest(db: &Osis, t: osis::Tid) -> osis::internals::RawCommitId {
     listed(db, osis::Scope::Thing(t))[0].stamp.id.raw()
 }
 
-// spec/crdt.md §5.6 (a path op into a key with no live entry creates it; concurrent creations
-// read as their join), notes/api.md Writes (path ops): two nodes of one account each add to a
+// spec/crdt.md §5.6 (an op whose remaining path is empty or starts with a key creates one; concurrent creations of one key are two entries read as their join), notes/api.md Writes (path ops): two nodes of one account each add to a
 // set under an absent map key; both elements survive the merge.
 #[test]
 fn path_op_into_absent_key_spec_crdt_5_6() {
@@ -1085,7 +1084,7 @@ fn path_op_into_absent_key_spec_crdt_5_6() {
     assert_eq!(b.at(t, osis::DynamicAspectKey::untyped(r)).get().unwrap(), Some(want));
 }
 
-// spec/commits.md §2 (`created.0` is carried by the first commit and by covering snapshots),
+// spec/commits.md §2 (a compaction snapshot or ephemeral commit never carries it),
 // notes/api.md Reads (`created`): a later compaction snapshot does not replace the creating
 // commit; a node holding the snapshot without that commit reports none.
 #[test]
@@ -1559,7 +1558,7 @@ fn w_ephemeral(db: &Osis, t: osis::Tid) -> osis::CommitId {
     w.commit().unwrap().unwrap().stamp.id
 }
 
-// spec/data-model.md §5 (standard types); notes/api.md Keys: a description sees through aliases and generics to what a type is, `timestamp`, `date` and the like by their own words; what a schema cannot declare never reaches it
+// spec/data-model.md §3 (standard named types); notes/api.md Keys: a description sees through aliases and generics to what a type is, `timestamp`, `date` and the like by their own words; what a schema cannot declare never reaches it
 #[test]
 fn value_type_through_aliases_and_generics_api_design() {
     use osis::ValueType as V;
@@ -1634,7 +1633,7 @@ fn commit_place_of_any_time_api_design() {
     assert_eq!((end.commit(), c.pos().commit()), (None, Some(c.stamp.id)));
 }
 
-// spec/crdt.md §4.7 (an element shows while not removed and it holds a live value), spec/commits.md
+// spec/crdt.md §4.7 (live only while it holds a live value), spec/commits.md
 // §6, notes/api.md Writes (`expires`): a disappearing message's reaction, a lasting write inside
 // its entry by another node, outlives it; at T only the message's own text goes, at both nodes
 #[test]
@@ -1669,7 +1668,7 @@ fn a_reaction_outlives_a_disappearing_message_spec_crdt_4_7() {
     }
 }
 
-// spec/crdt.md §4.7 (a removal is no live value), spec/commits.md §6: a lasting removal inside a
+// spec/crdt.md §4.7 (live only while it holds a live value; carry no app data): a removal is no live value, spec/commits.md §6: a lasting removal inside a
 // disappearing message keeps nothing: at T the whole message goes
 #[test]
 fn a_removal_does_not_outlive_a_disappearing_message_spec_crdt_4_7() {

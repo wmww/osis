@@ -207,7 +207,7 @@ mod tests {
         assert!(e.core.ix.forgotten.get(&(g, ak("t:m+.0"))).is_some(), "an undo still counts them (`undo::replaced_kept`)");
     }
 
-    // spec/commits.md §4 (overlapping counters void both commits): two opens of one store under
+    // spec/commits.md §4 (counter ranges on one aspect overlap are both invalid): two opens of one store under
     // one session nonce (a copy opened alike) write the same counter of a memory aspect; both
     // are void at the node they reach. Forgotten, each takes its `void` row with it: the
     // persisted index opens as a rebuild computes it.

@@ -147,7 +147,7 @@ fn set_ops(n: usize) -> Vec<(u64, u64)> {
     out
 }
 
-// spec/crdt.md §5.5 (set ops resolved by value), §8; spec/requirements.md, Scale: adding and
+// spec/crdt.md §5.5 (add v; remove v): set ops resolved by value, §8; spec/requirements.md, Scale: adding and
 // removing by value in a paged set, each op in a new session, loads and writes only its pages
 // (the value index), at n and 10n elements.
 #[test]
@@ -332,7 +332,7 @@ fn text_ops(n: usize) -> Vec<(u64, u64, u64)> {
     out
 }
 
-// spec/crdt.md §5.7 (ops resolve by index against the placement), §6, §8; spec/requirements.md,
+// spec/crdt.md §5.7 (index paths never go on the wire): ops resolve by index against the placement, §6, §8; spec/requirements.md,
 // Scale: in a paged text of n and 10n chars, each op in a new session: a read of 100 chars, an
 // insert, a delete, a move, an edit as a text session writes it, an undo, loads and writes only
 // its pages and placement rows (through the stored placement).
@@ -579,7 +579,7 @@ fn all_linear(what: &str, small: &Work, big: &Work) {
     linear(&format!("{what}: store bytes written"), small.io.written_bytes, big.io.written_bytes);
 }
 
-// spec/commits.md §5 (replaced, judged from the held set), spec/crdt.md §4.8; spec/requirements.md,
+// spec/commits.md §5 (when a body was replaced), spec/crdt.md §4.8; spec/requirements.md,
 // Scale (no operation O(history)): a set of n and 10n one-element commits, then a delta by
 // another writer older than all of them, and one 5 commits late, each arriving and the first
 // commit judged: in an unbounded set, a keep-at-least one, and that one compacted. Every counted
@@ -678,8 +678,7 @@ fn snapshot_first(n: usize) -> Work {
     w
 }
 
-// spec/permissions.md §5.2, spec/crdt.md §4.6 (un-merge a function of the held set; it takes
-// exactly an invalid delta's own writes); spec/requirements.md, Scale: among n and 10n held
+// spec/permissions.md §5.2, spec/crdt.md §4.6 (function of the held set; exactly the writes of invalid deltas are removed); spec/requirements.md, Scale: among n and 10n held
 // commits, a revoke flipping one add invalid rebuilds the aspect from its held bodies (every
 // change but a valid join is a rebuild, one path: a rare event may cost O(the aspect's bodies)),
 // its other counted work linear at most; an invalid add arriving takes nothing and reads no held
@@ -692,7 +691,7 @@ fn validity_flip_is_linear_and_invalid_arrival_flat_spec_permissions_5_2() {
     all_flat("an invalid add arriving", &a[1], &b[1]);
 }
 
-// spec/permissions.md §5.2 (a valid snapshot's copies govern a held original); spec/
+// spec/permissions.md §5.2 (copies; also where the receiver holds the write's own delta); spec/
 // requirements.md, Scale: B holds n and 10n set elements as one delta, then joins the first
 // admin's snapshot of them (a snapshot is O(state): linear), then one ordinary delta (flat), in an
 // unbounded and a keep-at-least set.
@@ -706,8 +705,7 @@ fn snapshot_join_is_flat_spec_permissions_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (a held delta's writes compared with a snapshot's copies, indexed
-// once); spec/requirements.md, Scale: a fresh node holding the snapshot of n and 10n one-element
+// spec/permissions.md §5.2 (copies; never compared with it); spec/requirements.md, Scale: a fresh node holding the snapshot of n and 10n one-element
 // commits, then getting the commits, does linear work, not quadratic.
 #[test]
 fn commits_after_their_snapshot_are_linear_spec_permissions_5_2() {
@@ -806,8 +804,7 @@ fn kept_snapshots(edits: usize) -> (usize, Work) {
     (snaps.len(), last.unwrap())
 }
 
-// spec/commits.md §5 (keep for D, a snapshot replaced at the latest death among the writes no
-// later snapshot carries); spec/requirements.md, Scale: a kept set edited n and 10n times keeps
+// spec/commits.md §5 (for a duration D after replaced; a snapshot's at the latest death among the writes it carries that no held valid snapshot stamped later carries); spec/requirements.md, Scale: a kept set edited n and 10n times keeps
 // the snapshots of its D window, not all; judging them reads each whole, O(the set's state),
 // and walks flat (death walks, replaced reads).
 #[test]
@@ -846,7 +843,7 @@ fn judge_every_body(n: usize) -> (u64, Work) {
     (ids.len() as u64, w)
 }
 
-// spec/commits.md §5 (when a body was replaced, judged from the held set); spec/requirements.md,
+// spec/commits.md §5 (when a body was replaced); spec/requirements.md,
 // Scale: judging every held body of an aspect of n and 10n bodies, a judgment reads about one
 // held body for the deaths it dates (`deaths: a body`), not the bodies after it.
 #[test]
@@ -892,7 +889,7 @@ fn purge_rejudge(n: usize) -> [Work; 3] {
     [step(&mut lp, z, Some(Role::Write)), step(&mut lp, x, None), step(&mut lp, x, Some(Role::Admin))]
 }
 
-// spec/permissions.md §6 (a request counts while its requester's right stands); spec/
+// spec/permissions.md §6 (a role counts toward the right exactly when); spec/
 // requirements.md, Scale: on an aspect of n and 10n kept commits with n/10 named purge requests,
 // a join with no request does flat work; the requester's removal and re-grant, which make every
 // request fall or rise together, rebuild the aspect once (after every verdict, not once per
@@ -935,7 +932,7 @@ fn dropped_frontier(k: usize) -> (usize, usize) {
     (f.commits.len(), osis_base::encode(&f.to_value()).len())
 }
 
-// spec/commits.md §5 (a snapshot dropped at its bound stands in), spec/permissions.md §5.1:
+// spec/permissions.md §5.1 (a commit is listed whether A still holds its body, dropped it or compacted it), spec/permissions.md §5.1:
 // a node holding a writer's work only through k and 10k dropped snapshots lists each in its
 // demotion frontier by ID: linear, at most 40 B per snapshot.
 #[test]
@@ -1005,7 +1002,7 @@ fn long_aspect(n: usize) -> [Work; 3] {
     [one, recv, fall]
 }
 
-// spec/requirements.md, Scale (no operation O(history)); spec/commits.md §5 (keep forever): one
+// spec/requirements.md, Scale (no operation O(history)); spec/commits.md §5 (kept while live): keep forever: one
 // aspect of n and 10n kept writes by several writers (a chat's messages): a write and its
 // arrival do flat work; removing a writer, whose writes fall, at most linear.
 #[test]

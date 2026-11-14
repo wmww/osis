@@ -1083,7 +1083,7 @@ mod tests {
         }
     }
 
-    // spec/crdt.md §4.6 (an invalid delta loses only its own writes), spec/commits.md §5
+    // spec/crdt.md §4.6 (exactly the writes of invalid deltas are removed), spec/commits.md §5
     // Forgetting: a commit forgotten for a part dropped as invalid stands for nothing an undo may
     // have replaced, as at a node that never received it. A puts `k` keeping history; R, a reader
     // of the thing, writes `x` past its rules; A drops it invalid, forgets it, and still

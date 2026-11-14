@@ -573,7 +573,7 @@ mod tests {
     use osis_base::{Ak, Role, Value, WallMs};
     use osis_schema::core_types as ct;
 
-    // spec/permissions.md §4 (certificates and cards are the current valid writes), §5.2: a
+    // spec/permissions.md §4 (current `keys.0` commits; holder card): certificates and cards are the current valid writes, §5.2: a
     // later write by a node without the role (here a reader; anyone's on another node's card)
     // is invalid and never stands for the newest commit on the aspect: admins would otherwise
     // delete the real one as superseded.

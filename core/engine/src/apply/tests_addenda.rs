@@ -96,7 +96,7 @@ fn unsynced_removal_witnessed_by_a_writer_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (Addenda, rule 2): an edit a writer received only after the removal's
+// spec/permissions.md §5.2 (addenda; writing; that it had received by r's `ts`): an edit a writer received only after the removal's
 // `ts` is not vouched for.
 #[test]
 fn received_after_the_removal_is_not_vouched_for_spec_perm_5_2() {
@@ -113,7 +113,7 @@ fn received_after_the_removal_is_not_vouched_for_spec_perm_5_2() {
     assert!(!valid(&lp, 0, &e, t, "x:e.0"));
 }
 
-// spec/permissions.md §5.2 (Addenda, rule 5): Carol vouched for Bob's edit; Alice then removes Carol without having received
+// spec/permissions.md §5.2 (addenda; itself vouched for by other addenda or not): Carol vouched for Bob's edit; Alice then removes Carol without having received
 // Carol's addendum, so it falls and the edit with it; Dave, a writer who received Carol's addendum
 // before her removal, vouches for the addendum in turn, and the edit is back everywhere.
 #[test]
@@ -139,7 +139,7 @@ fn a_fallen_addendum_is_vouched_for_in_turn_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (Addenda, rule 1): a reader's addendum vouches for nothing, however it
+// spec/permissions.md §5.2 (addenda; w held write on n just before a's key): a reader's addendum vouches for nothing, however it
 // got written.
 #[test]
 fn a_readers_addendum_counts_for_nothing_spec_perm_5_2() {
@@ -163,7 +163,7 @@ fn a_readers_addendum_counts_for_nothing_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.1 (a frontier of any size), §5.2 (Addenda): the remover's frontier
+// spec/permissions.md §5.1 (frontier; which its own addenda list instead), §5.2 (Addenda): the remover's frontier
 // lists what fits its list bound; the rest it lists in its own addenda, so a kick keeps every
 // edit it received whatever their number.
 #[test]
@@ -262,7 +262,7 @@ fn build_team() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
     (lp, n, team, r, e)
 }
 
-// spec/permissions.md §5.2 (Addenda, Acting per part): a lying writer of N (Mallory, received
+// spec/permissions.md §5.2 (addenda; acting): a lying writer of N (Mallory, received
 // Bob's write after the removal) vouches for the part on N; Bob still writes T, so the Acting
 // part needs no vouching and the write counts. The same as a lying witness for a removed
 // holder acting for itself: a writer can always vouch for the removed side's earlier writes on

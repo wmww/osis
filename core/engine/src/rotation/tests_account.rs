@@ -315,7 +315,7 @@ fn account_session_nonce_is_new_after_a_restart_spec_crdt_2() {
     assert_ne!(nonce(&lp), before);
 }
 
-// spec/crypto.md §4 (Possession, Carried): an account's rotation is judged like an actor's new keyset: a role commit of what boxes it is judged again on arrival, and a box at the new epoch carries that rotation
+// spec/crypto.md §4 (Possession; Carried): an account's rotation is judged like an actor's new keyset: a role commit of what boxes it is judged again on arrival, and a box at the new epoch carries that rotation
 #[test]
 fn a_rotation_rejudges_possession_and_is_carried_spec_crypto_4() {
     let mut lp = peers(2);
@@ -471,7 +471,7 @@ fn addendum(lp: &mut LocalPeer, peer: usize, t: Tid, r: CommitId, lists: &[Commi
     lp.peers[peer].commit(mu).unwrap();
 }
 
-// spec/permissions.md §5.5 (Epoch rule, Addenda against a rotation): once an outsider holds a
+// spec/permissions.md §5.5 (epoch rule; addenda against a rotation): once an outsider holds a
 // rotation closing an account's epoch, the account's write there reads as absent and its grant
 // gives nothing; a writer's addendum against the rotation listing both brings the write back,
 // never the grant; a restart reads the same
@@ -549,7 +549,7 @@ fn rotation_judges_its_epochs_once_and_writes_stay_flat() {
     assert_eq!(large.2, 0, "and builds no signing chain");
 }
 
-// spec/permissions.md §5.5 (every arrival order): a witness's addendum held before the rotation
+// spec/permissions.md §5.5 (addenda against a rotation): every arrival order: a witness's addendum held before the rotation
 // it is keyed by saves the write as one held after it does; reopened and rebuilt, the index
 // reads the same
 #[test]

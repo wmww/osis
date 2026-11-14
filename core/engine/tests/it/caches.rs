@@ -154,7 +154,7 @@ fn new_things_between_opens_still_restore() {
     assert!(smaller, "no new thing below the saved root");
 }
 
-// spec/commits.md §4 (all or none); spec: none (rebuildable caches): a crash at any durable write
+// spec/commits.md §4 (applies in one storage transaction): all or none; spec: none (rebuildable caches): a crash at any durable write
 // of a content commit and then of edge writes that save their component's walk, then open: the
 // open resumes the walk saved before, and computes what a rebuild of what landed computes
 #[test]

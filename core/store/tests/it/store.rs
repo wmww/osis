@@ -520,7 +520,7 @@ fn put_x(dev: &dyn Device, rng: &mut SeededRng) -> Store {
     s
 }
 
-// spec/commits.md §4 (notes/local-store.md, Failed writes): a commit reported landed is
+// spec/commits.md §4 (applies in one storage transaction), notes/local-store.md Failed writes: a commit reported landed is
 // durable. A write whose sync fails reads as written but a power cut drops it (as a failed fsync
 // does), at any durable write of a commit, plain or shredding: the outcome is unknown (`Err`),
 // the store recovers in place on its own at the next transaction, reading what the disk holds,
@@ -571,7 +571,7 @@ fn a_commit_whose_sync_failed_is_never_reported_landed() {
     }
 }
 
-// spec/commits.md §4 (notes/local-store.md, Failed writes): a spill whose sync failed leaves
+// spec/commits.md §4 (applies in one storage transaction), notes/local-store.md Failed writes: a spill whose sync failed leaves
 // what the backend reads unknown as a commit's does; the next transaction recovers in place at
 // the last commit, and what it commits survives a power cut.
 #[test]

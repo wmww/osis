@@ -234,7 +234,7 @@ fn paged_struct_field_converges() {
     assert_eq!(lp.peers[1].engine.get_at(&t, &ak("t:book.0"), &[PathSeg::Field(0), PathSeg::Key(k.clone())]).unwrap(), model.get(&k).cloned());
 }
 
-// spec/crdt.md §8 (the join of a state's pages is the state), notes/local-store.md Units: a
+// spec/crdt.md §8 (pages are joined independently): the join of a state's pages is the state, notes/local-store.md Units: a
 // received delete arrives as one range record spanning many pages of a paged text; every page
 // it covers is rewritten, so the state survives a restart.
 #[test]
@@ -323,7 +323,7 @@ fn range_reads_by_index_spec_crdt_5_7() {
     }
 }
 
-// spec/crdt.md §5.7 (Read by index): a reversed range reads empty, from the whole sequence and
+// spec/crdt.md §5.7 (the linearization): Read by index: a reversed range reads empty, from the whole sequence and
 // through a paged one's stored placement in a new session.
 #[test]
 fn reversed_range_reads_empty_spec_crdt_5_7() {
@@ -339,7 +339,7 @@ fn reversed_range_reads_empty_spec_crdt_5_7() {
     assert_eq!(lp.peers[0].engine.get_range(&t, &ak("t:list.0"), &[], reversed.clone()).unwrap(), Some(Value::List(Vec::new())));
 }
 
-// spec/crdt.md §5.6 (a removed key reads absent), §5.7: a range read under a removed map key
+// spec/crdt.md §5.6 (a removal prunes the creation): a removed key reads absent, §5.7: a range read under a removed map key
 // holding a paged text reads absent, as a read at that key does, in the session and a new one.
 #[test]
 fn range_under_removed_key_absent_spec_crdt_5_6() {

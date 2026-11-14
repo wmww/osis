@@ -290,7 +290,7 @@ pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool
 }
 
 proptest! {
-    /// §5.7, §6 (`seq_lin`): a text bootstrapped from a snapshot takes inserts anchored at every
+    /// §5.7, §6 (a deterministic function of state), `seq_lin`: a text bootstrapped from a snapshot takes inserts anchored at every
     /// kind of element, undeletes of parts of deleted runs, deletes and moves like the model, and
     /// the cached placement follows writes that split a range record.
     #[test]
@@ -298,7 +298,7 @@ proptest! {
         snapshot_then_edit(crate::testutil::rng(seed | 1), false, 30);
     }
 
-    /// §6.1, §7 (`seq_lin`): the same over a text upgraded from a string (embedded characters,
+    /// §6.1, §7 (embedding), `seq_lin`: the same over a text upgraded from a string (embedded characters,
     /// `Derived` dots and anchors at them, held or virtual).
     #[test]
     fn snapshot_slots_edits_match_model_spec_7(seed in any::<u64>()) {
@@ -306,11 +306,11 @@ proptest! {
     }
 }
 
-/// §6 (`seq_lin`): writes splitting a range record of a snapshot-bootstrapped text, or anchoring
+/// §6 (a deterministic function of state), `seq_lin`: writes splitting a range record of a snapshot-bootstrapped text, or anchoring
 /// inside one, are followed by the cached placement, not rebuilt (each kind of split alone:
-/// `ranges_split_where_writes_land_spec_6`). §6.1, §7 (`seq_lin`): writes on embedded characters
+/// `ranges_split_where_writes_land_spec_6`). §6.1, §7 (embedding), `seq_lin`: writes on embedded characters
 /// (`Derived` dots) of an upgraded text, and inserts anchored at them, are followed too.
-/// §6, §8 (`seq_place`): a placement held in part (a node's stored one: blocks and dot-map
+/// §6, §8 (pages are joined independently), `seq_place`: a placement held in part (a node's stored one: blocks and dot-map
 /// chunks loaded on a miss) over records held in part (pages loaded on a miss) follows the
 /// joins a whole one follows, and what it writes back reads as a whole pass. Fixed seeds.
 #[test]
@@ -424,7 +424,7 @@ fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
     assert_eq!(snap(&boot).read(), whole.read());
 }
 
-/// §7 (`seq_lin`): joins at a `Slots` position that leave its register and effective reset as
+/// §7 (embedding), `seq_lin`: joins at a `Slots` position that leave its register and effective reset as
 /// they are (text edits of a text upgraded from a string) follow the text slot's cached
 /// placement and read like the model (the join itself is checked against a whole pass).
 #[test]
@@ -1055,7 +1055,7 @@ fn rejects_overlapping_runs_spec_3_3() {
 }
 
 proptest! {
-    /// spec/commits.md §5 (a body's live writes, judged by origin dot): `holds_owned` answers as
+    /// spec/commits.md §5 (a live write of a body): a body's live writes, judged by origin dot: `holds_owned` answers as
     /// `writes` does, over range records and `Derived` dots too (random histories, as held and
     /// through a snapshot).
     #[test]
@@ -1103,7 +1103,7 @@ fn self_anchored_insert_placed_spec_6_2() {
 }
 
 
-/// §6, §8 (`seq_place`): the placement of a sequence with no records, stored and loaded in part,
+/// §6, §8 (pages are joined independently), `seq_place`: the placement of a sequence with no records, stored and loaded in part,
 /// lists its dot map's first chunk, so a join's misses name only chunks the stored form holds
 /// (the whole map had none; fuzz: seq_ops).
 #[test]

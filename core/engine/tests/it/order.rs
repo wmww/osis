@@ -3018,8 +3018,7 @@ fn held_set_decides_at(sizes: Vec<Size>) {
 }
 
 // spec/requirements.md Decentralization (Deterministic: a node's state and its judgment of every
-// write are functions of the data it holds, never of arrival order); spec/commits.md §4, §5
-// (purge, required retention, history modes, keep for D), §6; spec/crdt.md §4.6, §4.7, §4.8,
+// write are functions of the data it holds, never of arrival order); spec/commits.md §4, §5 (purge; keep at least; the setting; for a duration D after replaced), §6; spec/crdt.md §4.6, §4.7, §4.8,
 // §5.7; spec/permissions.md §1, §2, §3, §4, §5, §5.1, §5.2 (addenda), §6: one generator
 // (`generate`), every node in every order judged by `node_checks` against the node keeping
 // every body and against held-model.
@@ -3076,7 +3075,7 @@ fn seq_death_delete_first_spec_crdt_4_8() {
     assert!(death((0..b).chain([b + 1, b]).collect()).is_some(), "the delete held first dates it");
 }
 
-// spec/crdt.md §5.6 (the records of one dot are one entry for superseding), spec/commits.md §5:
+// spec/crdt.md §5.6 (the records of a dot are one entry), spec/commits.md §5:
 // an expiring put of k0, a kept write of k1, a snapshot (k0's records
 // key-erased, value-less), then a put into k0's entry (nested writes, keyed). A node holding the
 // snapshot and the later put, not the expiring put, dates the snapshot's body at the later put: its
@@ -3276,7 +3275,7 @@ fn undelete_with_snapshot_of_deleted_spec_crdt_5_7() {
     assert_eq!(read([n - 1, n - 2]), Some(Value::Str("v5".into())));
 }
 
-// spec/commits.md §5, spec/crdt.md §4.8 (replaced, a function of the held set): three writes of
+// spec/commits.md §5, spec/crdt.md §4.8 (when a body was replaced from the bodies a node holds; the order of arrival does not matter): three writes of
 // a kept register (kept after replaced, `base_setting`), X < Y < Z; X is
 // replaced at Y and Y at Z, delivered in order or Z first.
 #[test]
@@ -3360,8 +3359,8 @@ fn text_redelete_replaced_at_delete_after_undelete_spec_commits_5() {
     assert_eq!(p.engine.replaced_at(&ins, &t, &text).unwrap(), Some(redel));
 }
 
-// spec/commits.md §5 (a snapshot carries a dying write only when its body holds a write of its
-// stamp): A puts entry k0 (a struct) in a kept map and undoes it; B, holding both, compacts (its
+// spec/commits.md §5 (a snapshot's at the latest death among the writes it carries): a snapshot carries a dying write only when its body holds a write of its
+// stamp: A puts entry k0 (a struct) in a kept map and undoes it; B, holding both, compacts (its
 // snapshot holds nothing of the put's stamp); C, holding the put alone, sets a field of k0 after
 // the snapshot. A node taking the field write, the snapshot, the undo and the put last dates the
 // put's field dead at C's write while holding the snapshot, which never carried it: the snapshot
@@ -3386,8 +3385,8 @@ fn snapshot_after_late_dated_death_not_credited_spec_commits_5() {
     assert_eq!(p.engine.replaced_at(&ids[2], &t, &a).unwrap(), None, "not replaced");
 }
 
-// spec/commits.md §5 (a body dropped for its keep bounds counts as never received; a snapshot
-// dropped other than as covered still stands in): B's write kills A's
+// spec/commits.md §5 (never received; a compaction snapshot's part dropped other than as covered still counts): a body dropped for its keep bounds counts as never received; a snapshot
+// dropped other than as covered still stands in: B's write kills A's
 // purge-on-replace write (and so A's snapshot of it) where it arrives before B's demotion, which
 // makes it invalid; the snapshot dropped there still stands in (`stands_in`) and leaves the
 // snapshot indexes until a copy arrives again and joins.
@@ -3409,8 +3408,8 @@ fn snapshot_dropped_before_flip_joins_again_spec_commits_5() {
     assert_eq!(order_checks(&played, &order), Ok(()));
 }
 
-// spec/commits.md §5 (a snapshot's carried write killed by a lower-stamped write dies for it at
-// its `ts`; a copy of a body dropped for its keep bounds joins again): A's
+// spec/commits.md §5 (when a body was replaced; a copy that arrives again joins as a late part): a snapshot's carried write killed by a lower-stamped write dies for it at
+// its `ts`; a copy of a body dropped for its keep bounds joins again: A's
 // purge-on-replace snapshot carries B's entry, which B's undo (stamped before the snapshot, unseen
 // by A) killed; A's demotion of B then makes the undo invalid. Held after the undo, the snapshot
 // dropped (keeping its frontiers); with the demotion first, it stays. A drop before a flip,
@@ -3575,7 +3574,7 @@ fn cover_leftover_outlives_its_cover_spec_perm_5_2() {
     assert_eq!(after, None, "the leftover from the cover's copies stays: the value-less winner");
 }
 
-// spec/crdt.md §4.7 (a copy arriving after T is stripped and joined): a part of an expired
+// spec/crdt.md §4.7 (strips the value from any copy that arrives later): a part of an expired
 // delta arriving after T, later than the rest of its commit (dropped at expiry while missing),
 // joins value-less (was skipped: the whole commit hid "old", the split one showed it).
 #[test]
@@ -3731,7 +3730,7 @@ fn kill_and_purge_in_one_commit_keeps_leftover_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 (keep for D, a snapshot at its latest death): A puts entry k0 in a kept
+// spec/commits.md §5 (for a duration D after replaced; a snapshot's at the latest death among the writes it carries): A puts entry k0 in a kept
 // map; A compacts (S1); B sets a field of k0 (its first death); C, not holding B's write,
 // writes k1 and compacts twice, both snapshots carrying k0's dead field again; A removes k0 (the
 // rest of it dies). S1 is replaced at the removal, not at C's second snapshot: copies of a dead
@@ -3764,7 +3763,7 @@ fn kept_snapshot_replaced_at_latest_death_any_order_spec_commits_5() {
     assert!(judged > 0);
 }
 
-// spec/commits.md §5 (keep for D): C's text snapshot (B's insert, C's delete; B re-deleted it
+// spec/commits.md §5 (for a duration D after replaced): C's text snapshot (B's insert, C's delete; B re-deleted it
 // concurrently) is replaced at B's re-delete, as held-model dates it, not at A's later insert
 // (`held::keep_for_d`'s count dated later).
 #[test]

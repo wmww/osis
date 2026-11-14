@@ -326,6 +326,7 @@ A commit of account P names the epoch it is signed at (spec/wire.md §4); §5.4 
   - An actor that lost write on the thing gives no author's right until it regains it.
 - A role counts toward the right exactly when a delta of its holder needing that role at the request's key would be valid (§5.2): a demotion whose frontier does not list the request takes the right however early its `ts`; one that lists it leaves the purge standing; a re-grant gives the right back to a request made in the gap, as to its writes.
 - **A purge request** drops a named delta iff its author held that right at the request's time and, when it acts for another actor (its header actor), so did that actor. Of a delta whose header the node does not hold, the class and actor are those the held snapshots carrying it state (spec/commits.md §5 Purge, Without the header). Each delta of a request by whole aspect or by author is judged alone, so the class of one never widens the others (a writer's request by author leaves that author's `admin` deltas).
+- A node does not sign a purge request that would drop none of the held deltas it names.
 - **Judgment** follows the role timeline the node holds, in any arrival order:
   - A named delta a request comes to drop is dropped then.
   - A delta held as its leftover for a request when no held request drops it any more counts as never received (spec/commits.md §5): its leftover is set aside and it is no longer held value-less, the node fetches it again where present and pulls it when a holder logs it again (spec/sync-judgement.md §3).

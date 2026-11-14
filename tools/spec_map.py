@@ -8,10 +8,10 @@ and uncited tests.
 
 Anchors: a citation `spec/<file>.md §N (anchor)` names one rule of §N. Every MUST sentence must
 match a RULES entry (by a substring of the sentence), else it is listed as unanchored. A rule is
-tested when a test cites its anchor, issued when an issue in issues/ does. In the files of
-ANCHOR_CHECKED a test's anchor must name its rule: be a RULES anchor of §N, or appear in the text
-of §N or its subsections (ignoring case and markup), else `--gaps` reports it as stray, so moving
-or rewording a rule cannot silently orphan the tests citing it.
+tested when a test cites its anchor, issued when an issue in issues/ does. A test's anchor must
+name its rule: be a RULES anchor of §N, or appear in the text of §N or its subsections (ignoring
+case and markup), else `--gaps` reports it as stray, so moving or rewording a rule cannot silently
+orphan the tests citing it.
 
 A test's citations: `spec/<file>.md §N[.M]` in the comment or attribute lines right above it
 (a bare `§N` refers to the last file named there, else to the file header's); without any, the
@@ -24,7 +24,7 @@ Usage (repo root):
   python3 tools/spec_map.py            write notes/testing-map.md (generated, gitignored)
   python3 tools/spec_map.py --uncited  exit 1 if some test cites nothing (CI)
   python3 tools/spec_map.py --gaps     exit 1 if a MUST or rule has neither a test nor an issue,
-                                       or a test's anchor names no rule (ANCHOR_CHECKED)
+                                       or a test's anchor names no rule
 Tests: tools/spec_map_test.py."""
 import glob, os, re, sys
 
@@ -41,14 +41,15 @@ SHOWN = 8
 HEADING = re.compile(r"^#{2,4}\s+(\d+(?:\.\d+)*)\.?\s+(.*)")
 
 
-# A section of an outside standard ("RFC 8949 §4.2.1"), not of a spec file.
-RFC = re.compile(r"RFC\s*\d+\s*\(?\s*$")
+# A section of an outside standard ("RFC 8949 §4.2.1") or of a note (a §N right after a notes/ path), not of a
+# spec file.
+OUTSIDE = re.compile(r"(?:RFC\s*\d+|(?<![\w/])(?!spec/)[\w-]+/[\w/-]*\.md)\s*\(?\s*$")
 
 
 def citations(text, default_file=None):
     out, cur = [], default_file
     for m in CITE.finditer(text):
-        if RFC.search(text, 0, m.start()):
+        if OUTSIDE.search(text, 0, m.start()):
             continue
         if m.group(1):
             cur = m.group(1)
@@ -234,9 +235,6 @@ def rules():
     return items, problems, shoulds
 
 
-# Spec files whose test anchors must name a rule of their section (stray_anchors). The other
-# files' anchors are free text until their citations are fixed (issues/spec-anchors-rest.md).
-ANCHOR_CHECKED = ("spec/sync.md", "spec/sync-", "spec/wire.md")
 MARKUP = re.compile(r"[\s`*_]+")
 
 
@@ -245,7 +243,7 @@ def norm(s):
 
 
 def stray_anchors(tests, sents, rule_keys):
-    """A problem per test citation in ANCHOR_CHECKED whose anchor is neither a RULES anchor of its
+    """A problem per test citation whose anchor is neither a RULES anchor of its
     section nor names rules of it: an anchor is rule names separated by `;`, each `name` or `name:
     gloss`, and each name must be text of the section or its subsections (fail closed: an anchor
     nothing matches is reported)."""
@@ -258,7 +256,7 @@ def stray_anchors(tests, sents, rule_keys):
     out = []
     for t in tests:
         for f, s, a in sorted(set(t["cites"]), key=str):
-            if a and f.startswith(ANCHOR_CHECKED) and (f, s, a) not in rule_keys and not all(norm(n.split(":")[0]) in text.get((f, s), "") for n in a.split(";")):
+            if a and (f, s, a) not in rule_keys and not all(norm(n.split(":")[0]) in text.get((f, s), "") for n in a.split(";")):
                 out.append(f"stray anchor: `{t['id']}` cites {f} §{s} ({a}), which names no rule there")
     return out
 

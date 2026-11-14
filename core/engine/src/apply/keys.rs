@@ -749,8 +749,7 @@ mod tests {
         }
     }
 
-    // spec/crypto.md §4 (opening `secrets.0`; reading-only secrets of unchecked boxes; history
-    // keys with several live entries): random grants, demotions and rotations by several admins,
+    // spec/crypto.md §4 (Reading-only secrets; a reader tries each live entry of a history key): opening `secrets.0`, unchecked boxes: random grants, demotions and rotations by several admins,
     // carried by inbox blobs (pending until their chain arrives) and partial deliveries. Every
     // per-entry ingestion of a `secrets.0` change is checked against ingesting the whole state
     // (the engine fails the operation where the whole state teaches more).
@@ -851,7 +850,7 @@ mod tests {
         assert!(held(&lp, &t2), "read once a place is free");
     }
 
-    // spec/crypto.md §4 (pending boxes are read for reading only), apply::waits: what a pending
+    // spec/crypto.md §4 (Reading-only secrets): pending boxes are read for reading only, apply::waits: what a pending
     // commit's boxes teach depends only on what its wait follows. Here the grant on `a` (first
     // admin `u`, whose epochs the grantee holds) waits for `a`'s record; `u`'s establishment
     // changing (computed from applied commits and roles) wakes no wait, so reading the boxes again
@@ -1104,7 +1103,7 @@ mod tests {
         assert_eq!(lp.peers[1].engine.core.role_now(&b, &t), None);
     }
 
-    // spec/permissions.md §3 (a node that lost read access drops those secrets),
+    // spec/permissions.md §3 (drop lost secrets),
     // spec/requirements.md Deletion: a pending commit boxing the removed node, by an author with
     // no right to grant on the thing, keeps nothing: it is held until it applies, so it would
     // keep the secrets for good.
@@ -1118,7 +1117,7 @@ mod tests {
         assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("x:a.0").unwrap()).unwrap(), None);
     }
 
-    // spec/permissions.md §3 (a deposit-only step waits for a pending `keys.0` write): only one
+    // spec/permissions.md §3 (unapplied `keys.0` write of the actor signed by a current admin): only one
     // signed by an admin of the actor counts; one whose author nobody can check (anyone can send
     // it) would hold the step back for good.
     #[test]
@@ -1204,7 +1203,7 @@ mod tests {
         lp.peers[1].engine.core.ix.secrets.get(t).map_or(0, |e| osis_keys::ROLES.iter().map(|r| e.role(*r).held_newest_first().len()).max().unwrap_or(0))
     }
 
-    // spec/crypto.md §4 (secrets from pending commits kept as reading candidates): a flood of
+    // spec/crypto.md §4 (Reading-only secrets): secrets from pending commits kept as reading candidates: a flood of
     // bogus pending commits from throwaway authors leaves at most the shared unknown-author
     // pool (`MAX_READING_PER_AUTHOR`), within the role's `MAX_READING`.
     #[test]
@@ -1251,8 +1250,8 @@ mod tests {
         assert!(lp.peers[0].engine.core.ix.secrets.get(&x).is_none_or(|e| !e.read.holds_any()));
     }
 
-    // spec/crypto.md §3 (a thing has secrets of its own while a valid `keys.0` part wrote a
-    // keyset), §4 (secrets of an invalid commit are kept for reading only): admin A of G grants
+    // spec/crypto.md §3 (secrets of its own): a thing has secrets of its own while a valid `keys.0` part wrote a
+    // keyset, §4 (Reading-only secrets): secrets of an invalid commit are kept for reading only: admin A of G grants
     // X on G's plain thing T (T's first `keys.0`, a rotation from derived epochs) after G's first
     // admin removed A. Once A's grant is invalid, every node derives T from G again (encrypting under
     // G's epoch rotated past A, not A's), delete base G, open = rebuild; peer 3 had A's commit
@@ -1461,7 +1460,7 @@ mod tests {
         (n, ds)
     }
 
-    // spec/permissions.md §2 (a node boxes nothing to a holder whose grant it may finalize), §3:
+    // spec/permissions.md §2 (finalize; boxes that holder nothing meanwhile), §3:
     // as `valid_grant_under_invalid_keyset_leaves_thing_plain_*`, but Z's grant on T is timed and
     // past its `until` at B when B gives T secrets of its own again: Z is boxed nothing and
     // delivered nothing (its grant is finalized, not renewed).

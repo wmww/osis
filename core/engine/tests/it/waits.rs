@@ -131,7 +131,7 @@ fn writer(lp: &mut LocalPeer, t: Tid, to: usize) {
     sync(lp, 0, to);
 }
 
-// spec/commits.md §5, spec/crdt.md §8 (a delta with an expiry is never covered): a snapshot lists
+// spec/commits.md §5, spec/crdt.md §8 (a delta with an expiry is covered only once none of its values lives): a snapshot lists
 // a live expiring part this node never received, carrying none of its value, as a holder's does:
 // the part stays to join when it comes, before its T.
 #[test]
@@ -295,7 +295,7 @@ fn creation_record_then_the_rest_join_spec_commits_4() {
     assert!(e.pending().is_empty(), "{:?}", e.pending());
 }
 
-// spec/commits.md §4 (a part waits alone): a page away holds back only its part, not the thing's
+// spec/commits.md §4 (a waiting part waits alone): a page away holds back only its part, not the thing's
 // other part, synced or not. spec/crdt.md §8, spec/commits.md §1: a delta above PAGE_TARGET pages;
 // its pages travel as blobs its delta links and the receiver applies it identically.
 #[test]
@@ -330,7 +330,7 @@ fn pages_away_hold_back_only_their_part_spec_commits_4() {
     }
 }
 
-// spec/commits.md §4 (what a node syncs decides nothing): a commit across things, one thing's part
+// spec/commits.md §4 (order independence; nothing waits for a part): what a node syncs decides nothing: a commit across things, one thing's part
 // away. A node syncing that thing first and one learning it after the other part applied both show
 // that part; the part away joins when it comes.
 #[test]
@@ -359,7 +359,7 @@ fn cross_thing_part_shows_whatever_is_synced_spec_commits_4() {
     assert_eq!(read(false), read(true));
 }
 
-// spec/commits.md §4 (a node never waits for a part): a writer of a synced group lists a thing the
+// spec/commits.md §4 (nothing waits for a part): a writer of a synced group lists a thing the
 // node never reads. A commit across it and a held thing shows the held thing's part at once.
 #[test]
 fn listed_thing_never_read_holds_nothing_back_spec_commits_4() {
@@ -591,7 +591,7 @@ fn expired_list_element_survives_unmerge_spec_crdt_4_6() {
     assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("edited")])), "un-merged");
 }
 
-// spec/crdt.md §4.7 (a snapshot carries the delta's list creations value-less, before and after T),
+// spec/crdt.md §4.7 (snapshots carry the delta's value-carrying writes value-less): a snapshot carries the delta's list creations value-less, before and after T,
 // spec/permissions.md §5.2: a snapshot from past T joins at a node before T still holding the body,
 // whose valued copy wins: the element reads there until its own T.
 #[test]

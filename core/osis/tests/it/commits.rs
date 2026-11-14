@@ -292,7 +292,7 @@ fn field(id: u64) -> osis::Step {
     osis::Step::Field(id)
 }
 
-// spec/crdt.md §4.6 (restores the prior read): undoing the first write into a spot that did not
+// spec/crdt.md §4.6 (read as it did just before that commit): undoing the first write into a spot that did not
 // exist (a struct field's set, a set in an enum payload, a list) makes it absent again, so the
 // read equals the read before; another's write into it already held when undoing stays.
 #[test]
@@ -523,7 +523,7 @@ fn creation_revert_found_by_created_scope_api_commits() {
     assert_eq!(e.iter().map(|e| (e.stamp.id, e.in_effect, e.reverted_by.clone())).collect::<Vec<_>>(), vec![(c, false, vec![r.stamp.id])]);
 }
 
-// spec/crdt.md §2.2 (commits order by hybrid time, then ID); notes/api.md Commits: commits of one millisecond keep their order: a moment's places hold them all, and paging by a commit's place loses none
+// spec/crdt.md §2.2 (total order on stamps): commits order by hybrid time, then ID; notes/api.md Commits: commits of one millisecond keep their order: a moment's places hold them all, and paging by a commit's place loses none
 #[test]
 fn one_moment_many_commits_lose_none_api_commits() {
     let c = clock();

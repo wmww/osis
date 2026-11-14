@@ -111,8 +111,8 @@ fn eph_decoded_memory() {
     println!("decoded memory ({}): {commits} commits x {per} entries: {} KiB encoded (held {} KiB), RSS +{rss} KiB: {:.1}x, {} B per write", shape, blob_bytes / 1024, held / 1024, rss as f64 * 1024.0 / blob_bytes.max(1) as f64, rss * 1024 / writes as u64);
 }
 
-// spec/crdt.md §4.7, spec/commits.md §5 (an expired ephemeral delta is held as its leftover until a
-// snapshot covers it): what a holder keeps per expired ephemeral commit, and that a snapshot frees
+// spec/crdt.md §4.7, spec/commits.md §5 (an expired one is held as its leftover): an expired ephemeral delta is held as its leftover until a
+// snapshot covers it: what a holder keeps per expired ephemeral commit, and that a snapshot frees
 // it. `x` writes `OSIS_EPH_COMMITS` commits, each one expiring list element (a disappearing
 // message: never superseded), `b` holds them. Past their expiry `b` holds their leftovers; `x`
 // expires them too, its compaction trigger weighs the leftovers and writes a snapshot, `b` takes

@@ -177,7 +177,7 @@ proptest! {
         prop_assert_eq!(read_str(&a.state), model.iter().collect::<String>());
     }
 
-    /// §4.5, §7 (`Batch` layered view): a commit of several text ops on a state from a
+    /// §4.5, §7 (write into the slot of their schema's encoding), `Batch` layered view: a commit of several text ops on a state from a
     /// concurrent history (sometimes upgraded from a string, a `Slots` position, and sometimes
     /// bootstrapped from a snapshot, so with range records) reads like the same ops on a plain
     /// string; the layered view of the state under the batch is checked against state + net
@@ -440,7 +440,7 @@ fn hostile_moves(base: &Fragment, sibs: usize, moves: usize) -> (Fragment, Fragm
     (b.state, d)
 }
 
-/// §6 (`seq_lin`), spec/requirements.md Scale (a change costs O(change)): joins of small
+/// §6 (a deterministic function of state), `seq_lin`, spec/requirements.md Scale (a change costs O(change)): joins of small
 /// received deltas (an insert, a delete, a move) into a text of `runs` insert runs at random
 /// places follow the cached placement: no whole pass, and `follow`'s work units grow far below
 /// linearly from n to 10n runs (counted: about √n, the block walk).
@@ -547,7 +547,7 @@ fn replaces_keep_state_flat_spec_4_2() {
     assert_eq!(records(100), records(10));
 }
 
-/// §6 (`seq_lin`): typing and deleting at random places, joined by another replica, keeps the
+/// §6 (a deterministic function of state), `seq_lin`: typing and deleting at random places, joined by another replica, keeps the
 /// cached placement (no whole pass) and it equals a whole pass.
 #[test]
 fn cached_placement_follows_typing_spec_6() {
@@ -1100,7 +1100,7 @@ fn wired(d: &Fragment, src: &Source, range: CounterRange, t: u64) -> Fragment {
     decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment
 }
 
-/// §6 (`seq_lin`), §3.3 rule 3: deltas joined as received from the wire (a delete of several
+/// §6 (a deterministic function of state), `seq_lin`, §3.3 rule 3: deltas joined as received from the wire (a delete of several
 /// elements is one range record over several state records) keep the cached placement, equal
 /// to a whole pass after every join.
 #[test]
@@ -1130,7 +1130,7 @@ fn cached_placement_follows_wire_deltas_spec_6() {
     assert!(kept + 2 >= joins, "kept {kept} of {joins}");
 }
 
-/// §6.2 (`seq_lin`): writers moving, typing and deleting concurrently (the same range moved by
+/// §6.2 (incremental implementations must produce the same result), `seq_lin`: writers moving, typing and deleting concurrently (the same range moved by
 /// several, cycles included), joined from the wire by a replica that reads in between: the
 /// cached placement follows the moves that close no cycle and equals a whole pass after every
 /// join; all converge.
@@ -1204,7 +1204,7 @@ fn cached_placement_follows_moves_spec_6_2() {
     assert!(kept * 4 >= moves * 3, "followed {kept} of {moves}");
 }
 
-/// §6 (`seq_lin`): hostile deltas of moves to HEAD below 250 newer HEAD siblings cost about a
+/// §6 (a deterministic function of state), `seq_lin`: hostile deltas of moves to HEAD below 250 newer HEAD siblings cost about a
 /// whole pass in placement work, counted in `follow`'s work units (rows and blocks looked at, a
 /// skipped sibling 8) and whole passes: more than max(√n, 64) moves rebuild at once; fewer
 /// stop at the work budget max(n, 1024) and rebuild. Either way at most one pass, and the
@@ -1235,7 +1235,7 @@ fn hostile_moves_join_bounded_spec_6() {
     }
 }
 
-/// §6 (`seq_lin`): a delta of flag writes each splitting one long deleted chain (a range record
+/// §6 (a deterministic function of state), `seq_lin`: a delta of flag writes each splitting one long deleted chain (a range record
 /// at the root) with a deep subtree below it: each cut shifts the subtree's depths; the work
 /// stays within the budget plus one cut, or the count cap rebuilds before any work.
 #[test]
@@ -1357,7 +1357,7 @@ fn batch_keeps_sequence_view_spec_4_5() {
 }
 
 
-// spec/crdt.md §6 (placement), §5.7 (Read): after joins that insert, delete and move, the
+// spec/crdt.md §6 (a deterministic function of state), §5.7 (Read): after joins that insert, delete and move, the
 // placement holds the visible elements of a whole pass in order, and reads by index
 // (`visible_range`, `read_elems`) read what the whole read does.
 #[test]
@@ -1523,7 +1523,7 @@ fn resolved_ops_on_embedded_text_and_skew_spec_6_1() {
     assert_eq!(after[ai + 1].0.src, session_of(5), "the newer sibling places first");
 }
 
-/// §5.7 Ops, §6, §8 (`seq_place`): ops by index (insert, delete, move, paste; two in one commit)
+/// §5.7 Ops, §6, §8 (pages are joined independently), `seq_place`: ops by index (insert, delete, move, paste; two in one commit)
 /// on a sequence held in part as a node holds a paged one (records in pages, the placement's
 /// blocks and dot-map chunks loaded on a miss and the ops run again) write what they write on
 /// the whole state, loading part of it; so do an edit and a `Set`, and a read held in part
@@ -1779,7 +1779,7 @@ fn edited(r: &mut Rng, base: &Value, ty: &Ty) -> Value {
     }
 }
 
-/// §5.7 Ops, §6.1, §8 (`seq_place`): larger random histories than
+/// §5.7 Ops, §6.1, §8 (pages are joined independently), `seq_place`: larger random histories than
 /// `index_ops_on_partial_placement_match_whole_spec_5_7` (many blocks), ops by index whose
 /// commit ts is often below stamps already at their anchor (clock skew, a carried write), piles
 /// of concurrent inserts from many writers at one index (more siblings than a block), and the
@@ -1910,7 +1910,7 @@ fn partial_placement_skew_piles_and_joins_spec_6_1() {
     assert!(followed * 10 > joins * 7, "{followed} of {joins} joins followed in part");
 }
 
-/// §5.7 Ops, §8 (`seq_place`, notes/api.md `edit`): on a text of many blocks held in part, an
+/// §5.7 Ops, §8 (pages are joined independently), `seq_place`, notes/api.md `edit`: on a text of many blocks held in part, an
 /// edit against the current read (what a text session writes) loads only the blocks and records
 /// around its change and writes what it writes on the whole state; one against a stale read (a
 /// concurrent change elsewhere) or of the whole text matches whole, also equal.
@@ -1980,7 +1980,7 @@ fn edit_on_partial_placement_loads_its_window_spec_5_7() {
     assert!(few >= 20 && stale_whole >= 3, "{few} edits at their window, {stale_whole} stale edits matched whole");
 }
 
-/// §6.1 (siblings by edge stamp, newest first), §8 (`seq_place`): a placement keeps a stamp at
+/// §6.1 (greatest first): siblings by edge stamp, newest first, §8 (pages are joined independently), `seq_place`: a placement keeps a stamp at
 /// or above every position write's, so a join of an insert stamped above it (a node's own
 /// commit) places the run right after its anchor without looking at the anchor's children's
 /// records: on a text held in part whose chars have children from another writer, such joins
@@ -2015,7 +2015,7 @@ fn newest_stamp_skips_children_records_spec_6_1() {
     assert!(fewer >= 10 && with < without, "{with} pages with the bound, {without} without, fewer in {fewer} joins");
 }
 
-/// §6.1 (siblings by edge stamp, newest first): a commit inserting x, moving an element right
+/// §6.1 (greatest first): siblings by edge stamp, newest first: a commit inserting x, moving an element right
 /// after x, then inserting y right after x (y newest, x's run continues with it) places y
 /// before the moved element; joined into a placed copy (whole and held in part) it follows
 /// as a whole pass does, though the move is newer than everything before the commit.
@@ -2041,7 +2041,7 @@ fn newest_move_onto_new_element_spec_6_1() {
     assert_eq!(got[9..13], format!("jxy{}", &text[49..50]));
 }
 
-/// §5.7 Ops, §8 (`seq_place`, notes/api.md `edit`): the list form of
+/// §5.7 Ops, §8 (pages are joined independently), `seq_place`, notes/api.md `edit`: the list form of
 /// `edit_on_partial_placement_loads_its_window_spec_5_7`: on a list of many blocks held in part,
 /// an edit against the current read loads only the blocks and records around its change
 /// (`edit_window`'s stretch, where a node reads the links it lends) and writes what it writes on
@@ -2119,7 +2119,7 @@ fn list_edit_on_partial_placement_loads_its_window_spec_5_7() {
     assert!(few >= 20 && stale_whole >= 2, "{few} edits at their window, {repeats} repeated, {stale_whole} stale edits matched whole");
 }
 
-/// §5.7, §9 (notes/api.md `edit`): an edit resolved at its window writes what one matched against
+/// §5.7, §9 (identity), notes/api.md `edit`: an edit resolved at its window writes what one matched against
 /// the whole read writes, on random texts (runs of one char, periodic, words, random) after
 /// concurrent changes (same-length replaces, shifts across the window, inserts) and random local
 /// edits; at its window it lands at base's own indices. They differ only where whole's LCS, in a
@@ -2414,7 +2414,7 @@ fn removed_anchor_goes_charless_spec_4_5() {
     }
 }
 
-/// §4.1 copy order, §6 (`seq_lin`): a forged copy of an element's chosen position write (one
+/// §4.1 copy order, §6 (a deterministic function of state), `seq_lin`: a forged copy of an element's chosen position write (one
 /// stamp, another anchor: two writers sharing a source and clock move one char apart), joined
 /// into a replica whose placement is cached, with or without another writer's concurrent move:
 /// the cached placement equals a whole pass and both orders join alike.

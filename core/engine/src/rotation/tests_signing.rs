@@ -381,7 +381,7 @@ fn a_listing_names_nothing_once_its_epoch_closes_unnamed_spec_permissions_5_5() 
     assert_eq!(incremental, Some(Value::Str("p".into())), "the listing's epoch closed unnamed: the write counts for nothing");
 }
 
-// spec/permissions.md §5.5 (Listings, Nothing waits for a thing list): a listing at an epoch a
+// spec/permissions.md §5.5 (listings; nothing waits for a thing list): a listing at an epoch a
 // later rotation closes counts once that rotation's thing list naming it arrives, and then names
 // what it names: the sibling's write it lists counts again, as a rebuild of the index reads it
 #[test]
@@ -456,7 +456,7 @@ fn lost_node_opens_nothing_through_a_team_its_account_reads_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[t, x], l, start), Vec::<Tid>::new());
 }
 
-// spec/crypto.md §4 (Encrypting under, an account's epochs; Seal): a node of P holding a removal
+// spec/crypto.md §4 (Encrypting under; Account keysets; Seal): a node of P holding a removal
 // from D but not yet P's rotation for it seals P at no epoch the removed node holds: it leaves P
 // out of X until that rotation arrives.
 #[test]
@@ -478,7 +478,7 @@ fn node_knowing_a_removal_seals_its_account_at_no_epoch_before_its_rotation_spec
     assert!(!openable(&mut lp, 2, &[x], l, start).contains(&(x, Role::Read, w)), "L opens nothing of X's new epoch");
 }
 
-// spec/crypto.md §4 (Encrypting under, an account's epochs): order is not knowledge. N1 (peer 0)
+// spec/crypto.md §4 (Encrypting under; Account keysets): order is not knowledge. N1 (peer 0)
 // removes lost node L (peer 1) from D, rotating P (r1). N2 (peer 3), not holding that, later
 // removes Y (peer 4): its rotation r2 of P, ordered after L's removal, seals r2's seed under D's
 // epoch boxing L. T's admin (peer 5) moves T onto r2; N3 (peer 2) holds X boxing T and receives
@@ -520,7 +520,7 @@ fn an_ignorant_fork_ordered_after_a_removal_covers_nothing_spec_crypto_4() {
     assert!(!openable(&mut lp, 2, &[t, x], l, known).contains(&(x, Role::Read, w)), "L opens nothing N3 writes under X");
 }
 
-// spec/crypto.md §4 (Encrypting under, an account's epochs): as the ignorant fork above, but N3
+// spec/crypto.md §4 (Encrypting under; Account keysets): as the ignorant fork above, but N3
 // never receives N2's commits: it holds L's removal, r1 and T's keyset boxing P at r2, which it
 // cannot open (only r2's seed does). Sealing T there is judged by T's box to N3's own account at
 // an epoch whose rotation it does not hold, so it shows no cover of L's removal: N3 rotates X
@@ -557,7 +557,7 @@ fn a_keyset_boxing_the_account_at_an_epoch_not_held_is_not_sealed_to_spec_crypto
     assert!(!openable(&mut lp, 2, &[t, x], l, known).contains(&(x, Role::Read, w)), "L opens nothing N3 writes under X");
 }
 
-// spec/crypto.md §9 (a node takes a seed up only under an established epoch of D): N1 (peer 0)
+// spec/crypto.md §9 (Seeds): a node takes a seed up only under an established epoch of D: N1 (peer 0)
 // removes Y (peer 4, rotation r0), then L (peer 1, r1; the D epoch it mints, which r1's seed sits
 // under, names both removals). N2 (peer 2) holds L's removal and r1 but not Y's removal: that D
 // epoch opens for it but is not established, so it takes up no seed of r1 and signs nothing at
@@ -594,7 +594,7 @@ fn a_seed_under_a_devices_epoch_not_established_is_not_taken_up_spec_crypto_9() 
     assert!(!boxes.keys().any(|k| k.role == Role::Read && k.epoch == under && gone.contains(&k.holder)), "Y and Z open no new seed");
 }
 
-// spec/permissions.md §3 (a removal's rotation), spec/crypto.md §4 (an account's epochs): a removal
+// spec/permissions.md §3 (a node's removal from d), spec/crypto.md §4 (an account's epoch e is blocked): a removal
 // is covered only by a rotation D's roster authorizes. N1 (peer 0) removes L (peer 1); N2 (peer
 // 2) then removes N1, so N1's rotation no longer covers L's removal and N2's next rotation names
 // it again: the epoch it mints covers both removals, so N2 seals P at it.
@@ -694,7 +694,7 @@ fn a_removed_nodes_reforks_hide_nothing_spec_permissions_5_4() {
     }
 }
 
-// spec/permissions.md §5.4 (Open, Doubt): every head is open, so a reader the removed node's
+// spec/permissions.md §5.4 (open; doubt): every head is open, so a reader the removed node's
 // fork reached before the removal and the rotation rejecting the earlier fork loses nothing: the
 // account's write on that rotation's line counts there as anywhere, and nothing is told (no
 // dispute, only a fork until a node of the account rejects it). The next rotation rejects the
@@ -769,7 +769,7 @@ fn a_node_follows_the_merge_over_a_removed_nodes_earlier_rotation_spec_permissio
     assert_eq!(lp.peers[1].engine.core.account_view(&a.account).unwrap().preferred(), m, "node 1 after a rebuild");
 }
 
-// spec/permissions.md §5.5 (Epoch rule, Listings): an honest node's writes at a removed node's
+// spec/permissions.md §5.5 (epoch rule; listings): an honest node's writes at a removed node's
 // rotation outlive it. Laptop (node 2) rotates offline while phone (node 0) removes it; tablet
 // (node 1) got the laptop's rotation first and wrote at its epoch. The phone's merge rejects the
 // laptop's rotation, so its epoch is void; the tablet's listing names its own write there, and
@@ -932,7 +932,7 @@ fn the_lowest_heads_node_gone_for_good_leaves_nothing_waiting_spec_permissions_5
     assert_eq!(read(&mut lp, 4, t), Some(Value::Str("after".into())), "after a rebuild");
 }
 
-// spec/permissions.md §5.5 (Cutoff, Honest nodes of P): a removed node removes no one for good.
+// spec/permissions.md §5.5 (cutoff; honest nodes of p): a removed node removes no one for good.
 // The laptop (node 2) removes the tablet (node 1) with its rotation x0; the phone (node 0) has
 // removed the laptop (R) and gets the laptop's removal and x0 after R. The phone's rotation
 // rejects x0 unnamed and does not name the tablet's removal again (it received it after R

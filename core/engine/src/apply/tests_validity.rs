@@ -50,7 +50,7 @@ mod tests {
         let ai = h.aspects.iter().position(|a| a.ak.as_str() == "secrets.0").unwrap();
         assert!(lp.peers[0].engine.core.ix.grant_overreach.contains(&(id, ai)));
     }
-    // spec/permissions.md §2 (an edge change is remove + put): a received `roles.0` delta
+    // spec/permissions.md §2 (writing inside an entry it does not create is bad input; a new entry holding the whole grant): a received `roles.0` delta
     // writing inside an entry it did not create is bad input, whoever signed it.
     #[test]
     fn nested_holders_write_is_bad_input_spec_perm_2() {
@@ -72,7 +72,7 @@ mod tests {
         assert!(matches!(lp.peers[1].receive(&pk.bytes, pk.blobs), Err(crate::Error::BadInput(_))));
         assert_eq!(lp.peers[1].engine.roster(&t).get(&b).map(|e| e.role), Some(Role::Write));
     }
-    // spec/permissions.md §2, spec/commits.md §4 (late deltas): an invite holder's grant whose
+    // spec/permissions.md §2, spec/commits.md §4 (is joined on arrival): an invite holder's grant whose
     // `secrets.0` part boxes beyond its grantee is invalid whatever the arrival order; here the
     // `roles.0` part arrives first and the overreaching `secrets.0` part joins late.
     #[test]
@@ -514,7 +514,7 @@ mod keys_tests {
         lp.peers[i].engine.core.skip_writer_rules = false;
     }
 
-    // spec/permissions.md §3 (a writer rotates read and write; the admin keyset is an admin's),
+    // spec/permissions.md §3 (who rotates; a write or reset of the whole value),
     // spec/crypto.md §3: a write or reset of the whole `keys.0` or `secrets.0` value replaces the
     // admin fields and every box: an admin's write, invalid from a writer
     #[test]

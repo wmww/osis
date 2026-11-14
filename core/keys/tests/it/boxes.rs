@@ -107,7 +107,7 @@ fn grant_to_key_actor() {
     assert!(f.forks.iter().all(|e| kv.read.secret(e).is_some()));
 }
 
-// spec/crypto.md §4, spec/permissions.md §3 (re-seal trigger): a rotation of one role removes and
+// spec/crypto.md §4, spec/permissions.md §3 (re-seal; the other roles keep their epochs): a rotation of one role removes and
 // writes boxes of that role only, so a key-actor holder's write rotation leaves its boxes at
 // both read forks, and the trigger finds nothing to re-seal.
 #[test]

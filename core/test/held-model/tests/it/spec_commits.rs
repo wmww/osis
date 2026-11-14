@@ -215,7 +215,7 @@ fn covered_equal_snapshots_lower_id_covers_spec_sync_7() {
     assert_eq!(o.fates[&(12, 0)], Fate::Keep(KeepWhy::Plain));
 }
 
-// spec/commits.md §5 (The setting, keep until T): never compacted before T, droppable after; the
+// spec/commits.md §5 (the setting; until a time T): never compacted before T, droppable after; the
 // replaced write shows in history() until T
 #[test]
 fn keep_until_blocks_compaction_spec_commits_5() {
@@ -265,7 +265,7 @@ fn live_delta_kept_to_its_live_bound_spec_commits_5() {
     assert_eq!(live(vec![setting(5, 0, OTHER, KEPT)], 3).0, dropped);
 }
 
-// spec/commits.md §5 (The setting, keep D after replaced): no node drops a body earlier than D
+// spec/commits.md §5 (the setting; for a duration D after replaced): no node drops a body earlier than D
 // after the earliest valid replacing write it holds, by its signed ts, and history() shows the
 // replaced write until then; readers and writers holding the same data judge alike
 #[test]
@@ -298,7 +298,7 @@ fn keep_after_replaced_limits_the_compactor_spec_commits_5() {
     assert_eq!(o.history[&(T, REG)].len(), 2);
 }
 
-// spec/commits.md §5 (The setting, Out of history; notes/engine-retention-history.md Tess's decisions, 4): a body out of history drops
+// spec/commits.md §5 (the setting; out of history), notes/engine-retention-history.md Tess's decisions, 4: a body out of history drops
 // under any valid writer's cover, the right or not; under purge on replace only a right holder's
 // cover forces the drop, and a right holder owes one until it is held
 #[test]

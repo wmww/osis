@@ -1824,7 +1824,7 @@ mod tests {
         assert!(e.core.ix.commits.get(&c).unwrap().stripped(0), "the purged part is held as its leftover");
     }
 
-    // spec/commits.md §5 (Own replaces, Purge): a whole replace held as its leftover stays one
+    // spec/commits.md §5 (own replaces; purge): a whole replace held as its leftover stays one
     // through a fall and a rise of its purge. The fall makes the part missing (its leftover set
     // aside), and a missing part says nothing of `whole` (`Hold::Missing`); the rise adopts the
     // leftover and judges the replace on it, as a load from the commit records does
@@ -1882,7 +1882,7 @@ mod tests {
         lp.peers[2].engine.check_index();
     }
 
-    // spec/commits.md §5 (Own replaces, Purge): an own replace gone missing at its purge's fall
+    // spec/commits.md §5 (own replaces; purge): an own replace gone missing at its purge's fall
     // is no cover: a body dropped under it and one other own replace is missing again, as at a
     // node that holds the same commits and never saw the fall. W writes C0, then whole replaces
     // C2, C3; C0 is dropped as covered; the admin X purges C2; the owner removes X before hearing

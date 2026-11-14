@@ -70,7 +70,7 @@ fn sets(db: &Osis, t: osis::Tid, name: &str, vs: &[i64]) -> osis::CommitId {
     last.unwrap()
 }
 
-// spec/commits.md §7 (Kept history only; Tess): on an aspect no setting keeps, no
+// spec/commits.md §7 (kept history only), Tess's decision: on an aspect no setting keeps, no
 // write is undone, a first set and an insert (which take nothing back) included: refused at once,
 // its body held, by `undo_target`, `undo` and `revert` alike, nothing written; the same from a
 // second node of the account holding the commits, and after a reopen; ephemeral writes alike.
@@ -195,7 +195,7 @@ fn undo_alike_held_or_compacted_spec_crdt_4_6() {
     }
 }
 
-// spec/commits.md §7 (Kept history only; Tess): what only takes away what it made
+// spec/commits.md §7 (kept history only), Tess's decision: what only takes away what it made
 // (a list insert) undoes and redoes while the setting keeps it, and is refused once it leaves
 // history by the setting's bound (the list is kept until a time `T`), its body still held: the
 // setting decides, never compaction. With history a first register set undoes to absent and

@@ -168,7 +168,7 @@ fn self_removal_uncovered_spec_crypto_4() {
     leaver_uncovered(Forge::None);
 }
 
-// spec/crypto.md §4 (covers; Met, departs mark): W's self-removal puts an entry at the current
+// spec/crypto.md §4 (Covers; Met; Departs mark): W's self-removal puts an entry at the current
 // read epoch naming its own mark; the mark establishes, never covers.
 #[test]
 fn self_removal_own_mark_entry_spec_crypto_4() {
@@ -184,7 +184,7 @@ fn self_removal_listed_by_backdated_entry_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (covers: a rotation commit counts while its author holds the role),
-// spec/permissions.md §3 (a self-removal carries no rotation): W's self-removal rotates to fresh
+// spec/permissions.md §3 (self-removal; carries no rotation): W's self-removal rotates to fresh
 // epochs boxed to the others. W made those secrets and holds nothing now.
 #[test]
 fn self_removal_rotating_spec_crypto_4() {
@@ -199,8 +199,7 @@ fn self_removal_backdated_rotation_spec_crypto_4() {
     leaver_uncovered(Forge::Backdated);
 }
 
-// spec/crypto.md §4 (Holds: over grants with key access; Departure, maker; Covers: the departs
-// mark's author holds r), spec/requirements.md Permissions (a keyless grant gives no read through
+// spec/crypto.md §4 (Holds; Departure; maker; Covers): over grants with key access; the departs mark's author holds r, spec/requirements.md Permissions (a keyless grant gives no read through
 // it): W writes G and is first admin of H; G reads H, then H reads G (closing the cycle:
 // keyless). W's self-removal rotates read and write, its departs mark naming itself. W still
 // holds read on G through H, but keyless: it reads nothing through it, so its rotation covers
@@ -231,15 +230,14 @@ fn leaver_through_keyless_grant_spec_crypto_4() {
     }
 }
 
-// spec/permissions.md §3 (a `secrets.0` delta needs write): a reader's backdated entry listing
+// spec/permissions.md §3 (a `secrets.0` delta needs; at least write): a reader's backdated entry listing
 // its self-removal writes nothing there.
 #[test]
 fn reader_self_removal_listed_entry_spec_crypto_4() {
     leaver_uncovered_as(Role::Read, Forge::Listed);
 }
 
-// spec/crypto.md §4 (Covers: the tail write taking the holder below the role is one that applies;
-// a dropped write lowering it applies nothing and pins nothing). Admin P4 demotes admin P1 to read (K); P1, not knowing,
+// spec/crypto.md §4 (Covers; tail): the tail write taking the holder below the role is one that applies; a dropped write lowering it applies nothing and pins nothing. Admin P4 demotes admin P1 to read (K); P1, not knowing,
 // self-removes (S); the first admin, not knowing K, demotes P4 to read (D), whose audit drops K. Admin
 // Q holds K and D but not S: P1 is admin again there, and Q's rotation for P4 boxes P1, naming D.
 // At the first admin P1's departure is S's, which Q's epochs do not name: the first admin rotates.

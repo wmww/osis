@@ -171,7 +171,7 @@ fn paging_limits_accept_valid_spec_8() {
     assert_eq!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap().fragment, s);
 }
 
-/// §4.6 (restores the prior read): undo steps back through repeated writes of one register:
+/// §4.6 (read as it did just before that commit): undo steps back through repeated writes of one register:
 /// once the second write is undone the register reads the first value again, so undoing the
 /// first writes the value before it; redo steps forward again. Another writer's value in
 /// between stops the chain (the register no longer reads what the first write wrote).

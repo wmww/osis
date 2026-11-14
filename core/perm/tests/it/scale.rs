@@ -211,7 +211,7 @@ fn repro_late_write_rejudges_flat() {
     assert!(a.iter().zip(&b).all(|(a, b)| *b <= 3 * a + 5), "{a:?} -> {b:?}");
 }
 
-// spec/requirements.md Scale, spec/permissions.md §3 (record chains up to `MAX_CHAIN_DEPTH`): a
+// spec/requirements.md Scale, spec/permissions.md §1 (record chain; max_chain_depth): a
 // record chain of depth d (each thing's first admin the previous), one holder granted at the top,
 // 100 edge writes at the leaf: the walk steps through each commit once at any depth.
 #[test]
@@ -289,8 +289,7 @@ fn repro_evaluate_with_drops_linear() {
     assert!(b.0 <= 15 * a.0, "{a:?} -> {b:?}");
 }
 
-// spec/requirements.md Scale (no operation O(history)), spec/permissions.md §5.1 (demotion
-// scope): a demotion's scope (`Timeline::demotion_scope`: the walk copied, the demotion
+// spec/requirements.md Scale (no operation O(history)), spec/permissions.md §5.1 (demotes; aspects in question): a demotion's scope (`Timeline::demotion_scope`: the walk copied, the demotion
 // appended) on the org with drops, removing a holder from a doc and an admin from the root, with
 // an empty frontier and one listing all held: placed walking a bounded number of commits, except
 // the admin's removal under an empty frontier, whose audit drops what it puts in question and
@@ -319,8 +318,7 @@ fn demotion_scope_walks_at_most_the_history() {
     assert!(b[2] <= 15 * a[2] && b[2] <= *commits, "{a:?} -> {b:?}");
 }
 
-// spec/requirements.md Scale (no operation O(total data)), spec/permissions.md §3 (a record edge in
-// force by its record alone): n plain things under one actor: evaluating walks only the role
+// spec/requirements.md Scale (no operation O(total data)), spec/permissions.md §1 (record edge; applies by the tid alone): n plain things under one actor: evaluating walks only the role
 // commits, not the leaves; one more leaf through `update_touched` walks nothing.
 #[test]
 fn record_leaves_walk_nothing_per_leaf() {

@@ -332,7 +332,7 @@ fn beaten_and_pruned_die_spec_4_8() {
     assert_eq!(dead(&b, &Fragment::Struct(reset)), vec![(Kind::Value, st(2, 2))]);
 }
 
-/// §5.7 (`pos` keeps the beaten `cur` as `prev`): one move writes the position of two elements
+/// §5.7 (the two greatest position writes): `pos` keeps the beaten `cur` as `prev`: one move writes the position of two elements
 /// with one stamp; a later move of one of them kills that element's position write alone,
 /// though its record keeps it.
 #[test]
@@ -369,7 +369,7 @@ fn text_flag_below_creation_dies_kept_in_record_spec_4_8() {
     assert!(both.winners().iter().all(|w| w.kind != Kind::Delete));
 }
 
-/// §4.8 (an element deleted): deleting one char of an insert kills that element's creation
+/// §4.8 (its element deleted or tombstoned): deleting one char of an insert kills that element's creation
 /// alone, though its record keeps it.
 #[test]
 fn text_creation_dies_at_delete_kept_in_record_spec_4_8() {
@@ -390,7 +390,7 @@ fn text_creation_dies_at_delete_kept_in_record_spec_4_8() {
     assert!(join(&ab, &Fragment::Seq(un)).winners().contains(&gone[0]));
 }
 
-/// §5.6 (a dot's records are one entry): one put writes k1 and k2 under one stamp; k1's value
+/// §5.6 (the records of a dot are one entry): one put writes k1 and k2 under one stamp; k1's value
 /// held value-less in its key-erased record (a snapshot's copy of an expiring put) is beaten by
 /// a later write in the keyed record: k1's write is dead, k2's not, though each record keeps
 /// its own.

@@ -805,7 +805,7 @@ mod tests {
         assert!(y.is_established(&ep(2, 0)));
     }
 
-    // spec/crypto.md §4 (headroom): an epoch past 2^62 is established only beside an established
+    // spec/crypto.md §4 (Established): headroom, e's n at most 2^62: an epoch past 2^62 is established only beside an established
     // one at n-1 or above.
     #[test]
     fn headroom() {

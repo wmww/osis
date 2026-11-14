@@ -1,4 +1,4 @@
-//! spec/permissions.md §1 (first admins), §2 (self-removal, `until`, finalize, invites), §5.2 (acting),
+//! spec/permissions.md §1 (first admin), §2 (self-removal, `until`, finalize, invites), §5.2 (acting),
 //! §7 (links).
 use crate::util::*;
 use held_model::gen::{ACCOUNT, LINK_K, LINK_L, REG};
@@ -24,7 +24,7 @@ fn self_removal_needs_no_authority_and_audits_nothing_spec_permissions_2() {
     assert!(!o.valid[&(11, 0)]);
 }
 
-// spec/permissions.md §2 (`until`, Finalize): a timed edge ends at its `until`; a frontier-less
+// spec/permissions.md §2 (`until`; finalize): a timed edge ends at its `until`; a frontier-less
 // removal applies only past it
 #[test]
 fn until_ends_an_edge_and_finalize_applies_only_past_it_spec_permissions_2() {
@@ -60,7 +60,7 @@ fn invite_grant_up_to_the_invite_spec_permissions_2() {
     assert!(!o.valid[&(6, 0)]);
 }
 
-// spec/permissions.md §7 (Redeem, Single use, Finalized): L invite-grants a node on K and removes its
+// spec/permissions.md §7 (redeem; single use; finalized): L invite-grants a node on K and removes its
 // own edge; the sharer's explicit removal of L audits L's grants its frontier leaves out
 #[test]
 fn link_redeem_and_finalize_spec_permissions_7() {
@@ -91,7 +91,7 @@ fn link_redeem_and_finalize_spec_permissions_7() {
     assert!(o.valid[&(7, 0)] && o.valid[&(10, 0)]);
 }
 
-// spec/permissions.md §1 (first admins), §5.2: authority through an account actor's record edge; an admin
+// spec/permissions.md §1 (first admin), §5.2: authority through an account actor's record edge; an admin
 // of the account loses it with an explicit demotion
 #[test]
 fn record_edge_through_an_account_spec_permissions_1() {

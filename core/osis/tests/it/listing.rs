@@ -69,7 +69,7 @@ fn ids(evs: &[CommitEvent]) -> Vec<(CommitId, bool)> {
     evs.iter().filter_map(|e| if let CommitEvent::Commit { id, commit } = e { Some((*id, commit.is_some())) } else { None }).collect()
 }
 
-// spec/permissions.md §5.2 (a valid commit's actor is its author), notes/api.md Commits: through
+// spec/permissions.md §5.2 (acting), notes/api.md Commits: through
 // the API a page carries value, author, times, kind and validity; the listener tells a new commit
 // with no read of a page; a page past the cap ends early and says more.
 #[test]
@@ -317,7 +317,7 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     assert_eq!(db.at(t, untyped(ak("t:m+.0"))).get().unwrap(), None);
 }
 
-// spec/data-model.md §6 (large values), notes/api.md Commits: a page is bounded in the bytes of its values, a link's once materialized, so
+// spec/data-model.md §6 (holds the root link), notes/api.md Commits: a page is bounded in the bytes of its values, a link's once materialized, so
 // it fits what a reply carries: it ends early, says more, and the next page goes on. A value above
 // the bound alone reads as too large, its commit in its place.
 #[test]
@@ -347,7 +347,7 @@ fn page_bound_counts_large_values() {
     assert_eq!(part(&huge.commits[0], t, &k).body, Body::TooLarge { limit: 3 << 20 });
 }
 
-// spec/commits.md §5 (fixed retention, a request alone carries no `expires`): a setting with an
+// spec/commits.md §5 (fixed retention; which carries no `expires`): a setting with an
 // expiry on every aspect reaches no `purge.0`, so delete for everyone still works in a
 // disappearing chat; a request beside a write of the thing goes under that write, with its expiry
 // (an edit purging old text).
@@ -377,7 +377,7 @@ fn purge_takes_no_setting_expiry_spec_commits_5() {
     assert!(got.commits.iter().any(|k| k.stamp.id == b && part(k, t, &msg()).body == Body::Purged { by: done.stamp.id, actor: Some(db.me()) }), "{got:?}");
 }
 
-// spec/commits.md §5 (a writer does not undo `retention^.0`), notes/api.md `has_content`: a setting is no content: a delete leaves it in force and the thing reads deleted; undoing the creation likewise
+// spec/commits.md §5 (does not undo it): a writer does not undo `retention^.0`, notes/api.md `has_content`: a setting is no content: a delete leaves it in force and the thing reads deleted; undoing the creation likewise
 #[test]
 fn setting_is_no_content_spec_commits_5() {
     use osis::internals::schema::core_types as ct;

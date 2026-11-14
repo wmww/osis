@@ -169,7 +169,7 @@ fn snapshot_covers_one_reaching_further_spec_commits_5() {
     assert_eq!(e.get(&t, &tags).unwrap(), Some(Value::Set([s("a"), s("b")].into())));
 }
 
-// spec/commits.md §4 (a node never waits for a part), spec/crdt.md §8: A's commit c writes the
+// spec/commits.md §4 (nothing waits for a part), spec/crdt.md §8: A's commit c writes the
 // register and a tag; B, syncing the thing, gets c without its tags part and W's snapshot of the
 // tags, written without c: c applies at B (the register shows), and its tags part joins when it
 // comes, the snapshot holding nothing of its session.

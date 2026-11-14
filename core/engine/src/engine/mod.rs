@@ -3846,7 +3846,7 @@ mod tests {
         });
     }
 
-    // spec/commits.md §4 (one storage transaction per commit): a transaction whose store commit
+    // spec/commits.md §4 (applies in one storage transaction): a transaction whose store commit
     // fails leaves every journaled index (`Indexes`) and the timelines as they were, for local
     // commits and for received ones, applied or pending.
     #[test]

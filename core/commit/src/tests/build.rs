@@ -334,7 +334,7 @@ impl osis_crdt::View for Wide {
     }
 }
 
-// spec/commits.md §1 (delta fits a blob), spec/crdt.md §8: a struct of many registers just
+// spec/commits.md §1 (a delta pages): delta fits a blob, spec/crdt.md §8: a struct of many registers just
 // under the chunk threshold pages its field map, so its delta fits a blob; left unpaged it would
 // not and is refused. A small blob bound and page parameters stand in for the format's (65
 // fields, MAX_BLOB / 64 each).
@@ -410,7 +410,7 @@ fn purge_rewrite() {
     assert!(prefix_groups(&c.header, []).unwrap().is_empty());
 }
 
-// spec/commits.md §1 (the whole commit fits `MAX_BLOB`, or the writer refuses it): the
+// spec/commits.md §1 (commit fits a blob): the
 // writer's bound counts a section per thing and a commitment group per key set, not per
 // aspect: 2500 things of three writes each build, and seal well within it.
 #[test]

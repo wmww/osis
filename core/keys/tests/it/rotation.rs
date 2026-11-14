@@ -205,7 +205,7 @@ fn boxes_by_role(rot: &osis_keys::Rotation) -> std::collections::BTreeMap<Role, 
     out
 }
 
-// spec/permissions.md §3, spec/crypto.md §4 (count, not time): with n readers and n holders of
+// spec/permissions.md §3, spec/crypto.md §4 (a rotation writes new boxes for every current holder): counted, not timed: with n readers and n holders of
 // sync alone besides the admin, removing a sync holder rotates sync alone, one box per holder
 // (2n + 1); removing a reader rotates sync and read, the sync secret's share every holder's box
 // (2n + 1) beside the readers' read boxes (n + 1). At 10n each count is 10x the holders' part:

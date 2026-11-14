@@ -224,7 +224,7 @@ fn of(b: Tid, d: Tid) -> DemotionScope {
     DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) }
 }
 
-// spec/permissions.md §5.1 (a frontier lists commit IDs, never counters), §5.2, Tess's decision
+// spec/permissions.md §5.1 (frontier; as commit ids, never counters), §5.2, Tess's decision
 // (a): Bob writes, Alice overwrites it, compacts (Bob's write is dead, so the snapshot carries
 // nothing of his) and removes him, her frontier listing nothing (the snapshot covers his commit).
 // Bob then signs a newer commit on the counters his first one used. A fresh node holding the
@@ -337,7 +337,7 @@ fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
     }
 }
 
-// spec/permissions.md §5.1 (what A had received as of T): a backdated frontier lists Bob's
+// spec/permissions.md §5.1 (frontier; had received of x's writes as of t): a backdated frontier lists Bob's
 // commits Alice received by its cutoff, not those received after.
 // spec/permissions.md §5.1 (frontier received)
 #[test]
@@ -361,7 +361,7 @@ fn backdated_frontier_lists_by_cutoff_spec_perm_5_1() {
     assert!(f.commits.contains(&one) && f.commits.contains(&two), "{f:?}");
 }
 
-// spec/commits.md §3, §4 (counter reuse): role commits use commit form and a session-form one
+// spec/commits.md §3, §4 (counter ranges on one aspect overlap are both invalid): role commits use commit form and a session-form one
 // is bad input, so a node cannot void its own grant by later reusing its counters (overlapping
 // session ranges void both commits): Bob keeps the edge Alice gave him.
 #[test]
@@ -518,7 +518,7 @@ fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
     cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
-// spec/permissions.md §5.2 (acting for an actor): Bob, a writer of D, signs a write naming
+// spec/permissions.md §5.2 (acting): Bob, a writer of D, signs a write naming
 // Carol as its actor though he holds no write on her. Receivers judge it invalid, so it can
 // never read as Carol's; the same write naming Bob himself is valid.
 #[test]
@@ -535,7 +535,7 @@ fn forged_actor_invalid_spec_perm_5_2() {
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("as bob")));
 }
 
-// spec/permissions.md §5.2 (acting for an actor), spec/commits.md §4 (order independence):
+// spec/permissions.md §5.2 (acting), spec/commits.md §4 (order independence):
 // Dave (3), with no right on D, grants Bob write on himself; Bob writes D acting for Dave.
 // Alice gets the write before the grant (invalid: Bob cannot act for Dave as far as she knows)
 // and judges it valid once the grant arrives, though nothing about D changed.
@@ -695,7 +695,7 @@ fn admin_only_aspect_needs_admin_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.1 (a demotion's frontier covers the aspects it puts in question): an
+// spec/permissions.md §5.1 (frontier; aspects in question): an
 // admin's `^` write the demoter had received stays valid when it demotes that admin to write;
 // one it had not received goes
 #[test]
@@ -746,7 +746,7 @@ fn admin_only_snapshot_by_writer_invalid_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (a valid compaction snapshot vouches for the writes it carries):
+// spec/permissions.md §5.2 (compaction snapshot; vouches for every write it carries):
 // Alice compacts Bob's edits, then revokes him with a frontier that covers "mon", not "x". The
 // snapshot vouches for "x": Alice (holding Bob's commit, invalid now) and Dave (holding only
 // the snapshot) keep both, whether the revoke arrives after the snapshot or before it, across a
@@ -810,9 +810,7 @@ fn frontier_of(src: &osis_crdt::Source, ctr: u64) -> osis_crdt::Frontiers {
     fr
 }
 
-// spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries, and its writes
-// join like any write), spec/crdt.md §5.6 (the records of one dot are one entry, its greatest
-// creation the one): a writer's snapshot carrying two entries under Bob's dots dated before his
+// spec/permissions.md §5.2 (a valid s vouches for every write it carries; its writes join like any write), spec/crdt.md §5.6 (the records of a dot are one entry; creation by stamp): a writer's snapshot carrying two entries under Bob's dots dated before his
 // grant shows them (nothing judges them as Bob's), with the first admin's write it carries; one
 // copying a dot of Bob's held commit under another key and an older `ts` loses its creation to
 // Bob's, so only Bob's entry shows.
@@ -870,7 +868,7 @@ fn snapshot_future_stamp_refused_spec_crdt_8() {
     lp.peers[0].receive(&ok, Vec::new()).unwrap();
 }
 
-// spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries): Dave holds
+// spec/permissions.md §5.2 (a valid s vouches for every write it carries): Dave holds
 // Bob's tag only inside Alice's compaction snapshot, which arrives before Bob's grant: the
 // write shows at once, its index persisted equals a rebuild from the commit records, and it
 // stays once the grant arrives, across a restart.
@@ -944,8 +942,7 @@ fn put_at(lp: &mut LocalPeer, i: usize, t: Tid, path: &[&str], v: Value) {
     lp.peers[i].commit(m).unwrap().unwrap();
 }
 
-// spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries; Tess's
-// decision, notes/permissions.md "Snapshots vouch"): Bob, removed, creates entries
+// spec/permissions.md §5.2 (a valid s vouches for every write it carries), Tess's decision, notes/permissions.md "Snapshots vouch": Bob, removed, creates entries
 // "early" and "late" offline; Carol, not yet aware, writes inside "late" and compacts. Her
 // snapshot vouches for Bob's entries: Dave, holding only Alice's and Carol's commits, and Alice,
 // who also holds Bob's commit (invalid), both keep them with Carol's write.
@@ -954,7 +951,7 @@ fn entry_created_after_demotion_spec_perm_5_2() {
     entry_created_after_demotion(true);
 }
 
-// spec/crdt.md §4.6 (un-merge is a function of the held set), spec/permissions.md §5.2: as
+// spec/crdt.md §4.6 (function of the held set), spec/permissions.md §5.2: as
 // `entry_created_after_demotion_spec_perm_5_2`, with Dave receiving Carol's write inside "late"
 // before her snapshot (dated after it, as spec/crdt.md §8 requires): alike.
 #[test]
@@ -1013,8 +1010,8 @@ fn entry_created_after_demotion(snapshot_first: bool) {
     assert_eq!(read(&mut lp, 0), read(&mut lp, 3), "Dave, rebuilt");
 }
 
-// spec/crdt.md §4.6 (a record a valid snapshot holds, by its dot, stays with the valid writes
-// nested in it), §5.6 (a keyed record is live only with its dot's creation in it): Bob, removed,
+// spec/crdt.md §4.6 (a valid snapshot's copies): a record a valid snapshot holds, by its dot, stays with the valid writes
+// nested in it, §5.6 (a keyed record whose dot's creation is held): Bob, removed,
 // creates entry "late" offline; Carol writes inside it, then sends a snapshot carrying Bob's
 // creation under another key ("evil"). The snapshot holds Bob's dot, so "late" keeps Carol's
 // write, but no creation under "late" is left: only the snapshot's key shows, in every order.
@@ -1148,7 +1145,7 @@ fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_engine::Resu
     lp.peers[i].commit(m)
 }
 
-// spec/permissions.md §1 (paths climb record links and edges), §4 (chain certificates): n0 is first
+// spec/permissions.md §1 (a path climbs role grants, record edges included), §4 (chain certificates): n0 is first
 // admin of A, A writes B, B admin of C (n1 first admin of B and C). n0's write on C applies at n0 and a receiver; a
 // node with no path may not write C. A fresh receiver given n0's certificates for C but A's
 // raw record (the record-link step) holds nothing of the write until that record arrives.
@@ -1257,7 +1254,7 @@ fn index_of(e: &osis_engine::Engine) -> osis_engine::engine::IndexDigest {
     e.index_digest().without_held()
 }
 
-// spec/permissions.md §2 (an edge change is remove + put): a write inside a holder's entry
+// spec/permissions.md §2 (writing inside an entry it does not create is bad input; a new entry holding the whole grant): a write inside a holder's entry
 // is refused, so field changes cannot compose (was: a change adding `until`, then one raising
 // the role, left an admin edge with no `until`); written as remove + put, each change is the
 // whole edge.
@@ -1546,8 +1543,7 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
     }
 }
 
-// spec/crdt.md §4.6 (un-merge is a function of the held set), spec/commits.md §4 (a late
-// delta joins on arrival): Bob, removed, puts entry "late", text "BB" and a register in one
+// spec/crdt.md §4.6 (function of the held set), spec/commits.md §4 (is joined on arrival): Bob, removed, puts entry "late", text "BB" and a register in one
 // commit; Carol writes inside "late" and between Bob's chars. Dave gets Bob's commit with only
 // its register part, the rest later, Carol's commit anywhere among them: Bob's creation and chars
 // go, Carol's map write stays in a record with no creation (read hidden), as at Eve, who held
@@ -1646,9 +1642,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     assert!(!shown(&seen[0][0]), "elsewhere: {}", seen[0][0]);
 }
 
-// spec/permissions.md §5.2 (a valid snapshot speaks for current state alone: its writes join
-// like any write, never compared with their own delta's; authors and times come only from
-// held commits), spec/crdt.md §4.1 (copy order): Bob writes "real" (commit C); Carol, a
+// spec/permissions.md §5.2 (copies; a valid snapshot speaks for current state alone; never compared with it; a node attributes a write's author and time only to a commit it holds), spec/crdt.md §4.1 (copy order): Bob writes "real" (commit C); Carol, a
 // writer, sends a snapshot carrying C's dot and `ts` with another value. Nodes holding C (after
 // or before the snapshot) read the greater copy by the copy order; a node holding only the
 // snapshot reads its copy, and once it holds C reads as the others. Only the holders of C
@@ -1746,7 +1740,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
 // spec/permissions.md §5.2: Carol's snapshot carries Bob's write value-less, as an honest one
 // taken after a purge not yet seen here would. Where Bob's commit is held its value stays;
 // a node holding only the snapshot reads the write as absent until it holds the commit.
-// spec/commits.md §5 (covering copies: payload compared only where the body's write has one):
+// spec/commits.md §5 (a value-less write of the body): covering copies: payload compared only where the body's write has one:
 // the value-less copy is covered by a later snapshot holding the write valued, as joining it
 // changes nothing (else no honest snapshot would ever cover it while the write lives); covering
 // is the join test, so the value-less copy never covers the valued body.
@@ -1932,8 +1926,7 @@ fn snapshot_copy_of_a_delta_never_held_counts_spec_perm_5_2() {
 }
 
 
-// spec/commits.md §5 (covering copies: the snapshot holds each live write of the body with the
-// body's payload), spec/crdt.md §4.1 (copy order): a writer's snapshot copying a held write with
+// spec/commits.md §5 (the snapshot holds each live write of the body with the body's payload), spec/crdt.md §4.1 (copy order): a writer's snapshot copying a held write with
 // another value covers neither that write's body nor the honest snapshot carrying it, whichever
 // copy wins; the honest snapshot, stamped earlier, never covers it.
 #[test]
@@ -2093,8 +2086,7 @@ fn snapshot_covers_write_inside_earlier_entry_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.covered(&snap, &c, &t, &map).unwrap(), Some(true));
 }
 
-// spec/requirements.md, Threat model; spec/permissions.md §5.2 (a snapshot is valid only if its
-// author could write the aspect at it): a reader's snapshot of the first admin's state plus an entry
+// spec/requirements.md, Threat model; spec/permissions.md §5.2 (compaction snapshot; judged as its author's delta of that aspect): a reader's snapshot of the first admin's state plus an entry
 // at a counter the first admin never used gives nothing, before or after the first admin's commit, across a
 // restart, and covers nothing although it copies the commit exactly.
 #[test]
@@ -2133,7 +2125,7 @@ fn reader_snapshot_gives_nothing_either_order_spec_perm_5_2() {
     assert_eq!(lp.peers[3].engine.get(&t, &m_ak).unwrap(), want, "after a restart");
 }
 
-// spec/permissions.md §5.1 (frontier), §5.2 (snapshot authority): Carol, a writer, compacts the
+// spec/permissions.md §5.1 (frontier), §5.2 (compaction snapshot): Carol, a writer, compacts the
 // tags; Dave holds Bob's tag only inside her snapshot. Alice then demotes Carol: with a frontier
 // listing the snapshot (Alice had received it) Dave keeps Bob's tag; with one that does not, the
 // snapshot is stripped like Carol's other writes and Bob's tag goes at Dave (Alice, holding Bob's
@@ -2216,8 +2208,7 @@ fn reader_copy_voids_no_valid_carrier_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (an invalid snapshot gives nothing; a received delta's dots take no
-// copies), §5.1: a writer's snapshot, made after its author's demotion and backdated before it,
+// spec/permissions.md §5.2 (an invalid s gives nothing), §5.1: a writer's snapshot, made after its author's demotion and backdated before it,
 // carries an extra element under a dropped commit-form commit's `Commit(C)`. It never shows,
 // whether the demotion (frontier not listing it) or the snapshot arrived first (was
 // issue snapshot-copy-residue (closed): one held set, two states).
@@ -2314,8 +2305,7 @@ fn valid_carrier_dropped_alike_either_order_spec_perm_5_2() {
     assert_eq!(got[0], BTreeSet::from(["bob".to_string()]));
 }
 
-// spec/permissions.md §5.2 (a valid snapshot's writes join like any write, whether or not the
-// delta carrying their dots was received, held or dropped): a valid writer's snapshot copying a
+// spec/permissions.md §5.2 (copies; its writes join like any write; wherever held): a valid writer's snapshot copying a
 // dropped commit-form commit C's writes plus an element under a `Commit(C)` dot C did not use.
 // The extra element shows, whether the snapshot arrived before the drop or after, also after a
 // rebuild of the aspect, an honest snapshot without it and a restart, as at a node that never
@@ -2392,9 +2382,7 @@ fn snapshot_extra_dot_of_dropped_delta_joins_alike_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries; revocation is
-// exact where no valid snapshot carries the write; Tess's decision "Snapshots vouch",
-// notes/permissions.md), spec/requirements.md Permissions: Bob's "mon" reaches Alice;
+// spec/permissions.md §5.2 (a valid s vouches for every write it carries): revocation is exact where no valid snapshot carries the write; Tess's decision "Snapshots vouch", notes/permissions.md, spec/requirements.md Permissions: Bob's "mon" reaches Alice;
 // his "x" reaches only Carol, who compacts the tags before she learns of his removal; his "y"
 // reaches only Carol after her compaction. Alice removes Bob with what she received. "x" stays,
 // "y" goes, alike at Alice, at Carol, at a new node holding everything but Bob's own commits,
@@ -2527,7 +2515,7 @@ fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (a snapshot turned invalid gives nothing), spec/crdt.md §4.6: Bob's tag
+// spec/permissions.md §5.2 (a snapshot that turns invalid; gives nothing), spec/crdt.md §4.6: Bob's tag
 // reaches fresh nodes only through snapshots: Alice's honest one and Carol's carrying another
 // value under Bob's dot and `ts`. Alice then removes Carol with a frontier not listing Carol's.
 // Whether Carol's copy came first (valid) or after the removal, the state ends alike: Alice's copy
@@ -3072,7 +3060,7 @@ fn listed_part_alike_in_any_order_spec_commits_4() {
     }
 }
 
-// spec/permissions.md §5.1 (frontier as of T), §5.2: a snapshot's frontiers count as received
+// spec/permissions.md §5.1 (frontier; as of t), §5.2: a snapshot's frontiers count as received
 // from when its part arrived, not its header: a late part of Carol's snapshot S (Bob's tag
 // reaching the node only through it, his header held) is not in a frontier backdated to before
 // it came.
@@ -3236,8 +3224,7 @@ fn padded_durable_created_refused_spec_commits_2() {
     assert!(matches!(lp.peers[0].engine.snapshot(&x, &ak("created.0")), Err(osis_engine::Error::Misuse(_))));
 }
 
-// spec/crdt.md §8 (a snapshot's frontier is no receipt), spec/permissions.md §5.2
-// (a valid snapshot vouches for what it carries): Bob's tags are compacted into Carol's snapshot S
+// spec/crdt.md §8 (frontiers and absorbed are no receipts), spec/permissions.md §5.2 (a valid s vouches for every write it carries): Bob's tags are compacted into Carol's snapshot S
 // and their blobs gone, so late admin Dan holds only S and his removal of Bob does not cover
 // them; Alice and Carol, still holding Bob's commits, judge them invalid, but S keeps the tags at
 // every node, fresh ones in either order included.
@@ -3297,8 +3284,7 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
 
 
 
-// spec/permissions.md §5.1 (what A had received as of T; covered commits left out only under a
-// snapshot that vouches after the demotion): Alice receives Bob's write before a backdated
+// spec/permissions.md §5.1 (frontier; had received of x's writes as of t; a commit is listed whether a still holds its body, dropped it or compacted it): Alice receives Bob's write before a backdated
 // revoke's cut and Bob's own snapshot covering it after. The snapshot is not listed (received
 // late), so it is invalid after the removal; the write must be listed and stay.
 #[test]
@@ -3322,7 +3308,7 @@ fn backdated_frontier_lists_write_covered_after_cut_spec_perm_5_1() {
     assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("bob")), "received by the cut, should stay");
 }
 
-// spec/permissions.md §5.1 (a frontier lists every received commit, compacted or not),
+// spec/permissions.md §5.1 (frontier; a commit is listed whether a still holds its body, dropped it or compacted it),
 // notes/frontier-study.md: Bob writes a kept register twice and Carol, any writer, snapshots it
 // just before Alice removes Bob. The snapshot keeps only "two"; Alice lists both, so Bob's
 // superseded "one" stays valid where held; a new node never given it reads alike. Past the
@@ -3431,7 +3417,7 @@ fn forge_on(lp: &mut LocalPeer, k: Tid, a: &str) -> osis_commit::CommitBlob {
     cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit
 }
 
-// spec/permissions.md §4 (a node card), §5.2: whether a key
+// spec/permissions.md §4 (holder card), §5.2: whether a key
 // actor is a node reads its valid state, never a header's aspect list. A stranger's commit
 // writing `node.0` on a link key, header only (it applies, its part invalid)
 // or whole (its part waits), leaves the key a key actor: its boxes keep the static form, it gets no
@@ -3551,7 +3537,7 @@ fn forge_parts(lp: &mut LocalPeer, by: usize, holder: usize, parts: &[ForgedPart
     blob
 }
 
-// spec/crdt.md §4.6 (restores the prior read): undo steps back through an earlier undo (z, a, b;
+// spec/crdt.md §4.6 (read as it did just before that commit): undo steps back through an earlier undo (z, a, b;
 // b undone to a; undoing a writes z). A stranger's commit naming that undo or listing the aspect
 // later changes nothing: an undo of it sent header only, a later change sent header only, an undo
 // of it validly writing only the stranger's own thing.

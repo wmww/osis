@@ -321,7 +321,7 @@ mod tests {
         assert_eq!(seal_keyset(&k, &set(&[ep(9, 9)]), &set(&[]), &out(&[])), Seal::At(BTreeSet::from([ep(3, 0)])));
     }
 
-    // spec/crypto.md §4 (Seal, Left out): a keyset A's current keysets record M was left out at
+    // spec/crypto.md §4 (Seal; Left out): a keyset A's current keysets record M was left out at
     // is not sealed to, nor any keyset not descending from it; none: left out, never a wait; a
     // left-out keyset not held valid does not count.
     #[test]
@@ -394,7 +394,7 @@ mod tests {
         assert!(stale(&ep(2, 8), &k, &none));
     }
 
-    // spec/crypto.md §4 (Tainted, knowing re-key): epochs boxing a holder with a keyless grant.
+    // spec/crypto.md §4 (Tainted; knowing re-key): epochs boxing a holder with a keyless grant.
     #[test]
     fn boxing_keyless_epochs() {
         let boxes = vec![(t(1), ep(1, 1)), (t(2), ep(1, 1)), (t(2), ep(2, 2)), (t(3), ep(3, 3))];

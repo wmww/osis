@@ -85,8 +85,7 @@ fn removal(lp: &mut LocalPeer, i: usize, t: Tid, d: Tid) -> Vec<osis_base::Commi
     lp.peers[i].engine.demote(&t, &Demotion { holder: d, new: None, retain: None }).unwrap().commits
 }
 
-// spec/crypto.md §4 (holder actors: stale), spec/permissions.md §3 (required rotation through
-// A's keyset): a node removed 12 actors below G0 (G11 in G10 ... in G0). No departure is G0's,
+// spec/crypto.md §4 (holder actors: stale), spec/permissions.md §3 (required rotation; required through a's keyset): a node removed 12 actors below G0 (G11 in G10 ... in G0). No departure is G0's,
 // but each level's box to the one below is stale once that one rotates, so the cascade rotates
 // every level, bottom-up, and the removed node holds none of it.
 #[test]
@@ -221,7 +220,7 @@ fn keyless_holder_never_resealed_spec_crypto_4() {
     assert_eq!(settle(&mut lp, &[0], &[b, p, q]), 0);
 }
 
-// spec/crypto.md §4 (key access; model `D0_fa_flip`), spec/permissions.md §1: T's first admin is
+// spec/crypto.md §4 (Key access), model `D0_fa_flip`, spec/permissions.md §1: T's first admin is
 // X, so T's grant on X closes a cycle through the record edge and is keyless (X boxes T nothing).
 // Another admin of T removes X's record edge: T's grant is the only link left, it gains key
 // access, and X's admin re-seals T; nothing leaks to X's side meanwhile and nobody is locked out.
@@ -256,7 +255,7 @@ fn grant_on_first_admin_keyless_until_record_edge_goes_spec_crypto_4() {
     assert!(all_boxed(&mut lp, 0, &[x, t]));
 }
 
-// spec/crypto.md §4, spec/permissions.md §3 (model `D0_nc_below`): X and Y readers of each
+// spec/crypto.md §4, spec/permissions.md §3 (role cycles; required rotation), model `D0_nc_below`: X and Y readers of each
 // other (X granted on Y first, Y's grant on X keyless), Z a reader of X, D a reader of Z: D reads
 // Z, X and Y. D's removal from Z makes X's box to Z stale, then Y's to X: the cascade rotates
 // each once (Y in the same step as X, `rotate_above`), nothing is re-sealed, and D opens no epoch
@@ -286,7 +285,7 @@ fn departure_below_cycle_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &all, d, start), Vec::<Tid>::new());
 }
 
-// spec/permissions.md §3 (Role cycles; each admin acts alone): X (peer 0's) and Y (peer 2's)
+// spec/permissions.md §3 (role cycles): each admin acts alone: X (peer 0's) and Y (peer 2's)
 // readers of each other, no common admin, Y granted on X first (X on Y keyless); D a reader of
 // Y reads both. Peer 2 removes D: Y rotates. Peer 0, once it holds that, finds X's box to Y stale
 // and rotates X. D opens neither, at either peer; the cycle settles.
@@ -322,7 +321,7 @@ fn cycle_with_disjoint_admins_converges_spec_permissions_3() {
     assert_eq!(settle(&mut lp, &[0, 2], &[x, y]), 0, "settled");
 }
 
-// spec/crypto.md §4, spec/permissions.md §3 (model `D0_nc2`): X (peer 0's) and Y (peer 2's)
+// spec/crypto.md §4, spec/permissions.md §3 (role cycles), model `D0_nc2`: X (peer 0's) and Y (peer 2's)
 // readers of each other, Y first; D leaves X and E leaves Y concurrently, each by its actor's
 // admin, neither knowing the other. Once each holds both, the cycle settles: no lockout (every
 // holder with key access boxed, N of X and M of Y read what they hold roles on) and neither D
@@ -429,7 +428,7 @@ fn member_world(d_role: Role) -> MemberWorld {
     (lp, a, m, c_m, k0, kk, start)
 }
 
-// spec/crypto.md §4 (Seal: anchored, rule 1; merge, rule 3; model `D0_member_anchor`): A seals
+// spec/crypto.md §4 (Seal; Anchors; Forks stand): anchored until a merge; model `D0_member_anchor`: A seals
 // M at m1's knowing keyset kk. Z, not knowing D left, forks M twice from before (F2, newest by
 // n, not descending from kk); A holds F2 valid and newer, yet its next rotation seals M at kk,
 // never at F2, so D opens no epoch of A made since its removal, not even by a history box. m1
@@ -470,7 +469,7 @@ fn ignorant_fork_anchored_until_merge_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[m, a], d, start), Vec::<Tid>::new());
 }
 
-// spec/crypto.md §4 (merge, rule 3; model `D0_member_anchor`): m1 removes D (kk1) and rotates M
+// spec/crypto.md §4 (Forks stand; Stale): merge; model `D0_member_anchor`: m1 removes D (kk1) and rotates M
 // again (kk2, n 3). Z, not knowing, forks M from before (F, n 2): it loses the (n, nonce) order
 // to kk2 at m1, so only merge supersedes it. A gets F first and seals M there (D opens it: the
 // stated limit, a keyset written without knowing the removal). m1, holding F, rotates while F
@@ -531,7 +530,7 @@ fn forked_anchors() -> (LocalPeer, Tid, Tid, Epoch, Epoch) {
     (lp, m, a, k1, k2)
 }
 
-// spec/crypto.md §4 (Seal: jointly where the anchors fork; model `Joint.tla` `J_safety`): A's two
+// spec/crypto.md §4 (Seal; jointly): where the anchors fork; model `Joint.tla` `J_safety`: A's two
 // current epochs anchor M at k1 and k2. m1 removes reader D from M (k3, listing k1 only), ordered
 // before k2 (m2's clock is ahead), so a1, holding neither secret, judges k2 by order as covering
 // it (`fork_missing_a_known_removal_seals_jointly_spec_crypto_4`: ordered after). a1,
@@ -563,8 +562,7 @@ fn forked_anchors_seal_jointly_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 3, &[m, a], d, start), Vec::<Tid>::new());
 }
 
-// spec/permissions.md §3 (a removal carries its rotation), spec/crypto.md §4 (Seal: jointly; model
-// `Joint.tla` `J_gone`, `J_stay`): A's anchors for M fork, and M's admins m1 and m2, the only
+// spec/permissions.md §3 (the rotation of a's roles it requires are one role commit), spec/crypto.md §4 (Seal; jointly), model `Joint.tla` `J_gone`, `J_stay`: A's anchors for M fork, and M's admins m1 and m2, the only
 // nodes that may rotate M, are gone for good. a1 removes a2 from A: the removal carries A's
 // rotation, M sealed jointly at both forks; nothing is left due, so a1 writes under A. a2 opens
 // nothing of the new epoch; reader D of M, boxed at both forks, reads it.
@@ -588,8 +586,7 @@ fn forked_holder_with_its_admins_gone_rotates_spec_permissions_3() {
     assert!(lp.peers[1].engine.core.key_holders(&m).iter().any(|h| h.0 == d));
 }
 
-// spec/crypto.md §4 (Seal: a joint box held back by departures only where every keyset it names
-// misses one; Encrypting under: by order; model `JointRule.tla`): as
+// spec/crypto.md §4 (Seal; Encrypting under): a joint box held back by departures only where every keyset it names misses one, judged by order; model `JointRule.tla`: as
 // `forked_anchors_seal_jointly_spec_crypto_4`, with m1's removal of D ordered after k2, so k2
 // misses a departure a1 knows. k3 covers it, so a1 seals M jointly at k2 and k3 at once: D,
 // lacking k3, opens none of it, and m2 reads A with no rotation of M (M's admins may all be gone).
@@ -616,7 +613,7 @@ fn fork_missing_a_known_removal_seals_jointly_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 3, &[m, a], d, start), Vec::<Tid>::new());
 }
 
-// spec/crypto.md §4 (Encrypting under: the box clause; a joint box judged as a whole): as
+// spec/crypto.md §4 (Encrypting under; a joint box only when every epoch it names is): the box clause: as
 // `fork_missing_a_known_removal_seals_jointly_spec_crypto_4`, a1's epoch w boxes M jointly at k2
 // and k3. m2 (lacking k3) makes N with a1 a reader; a1 grants N on A (w boxes N), then m2 grants M
 // on N, sealed at k2 alone. D opens k2, so N's epoch, so w: a1 may not encrypt under w though the
@@ -641,8 +638,7 @@ fn keyset_in_joint_box_reached_alone_blocks_spec_crypto_4() {
     assert!(blocked_at(&mut lp, 3, a).contains(&Role::Read), "w reaches k2 alone through N");
 }
 
-// spec/crypto.md §4 (Seal: a joint box held back where every keyset it names misses a departure;
-// model `JointRule.tla` `NoPooledLeak`): A's anchors for M fork at k1 and k2 (as
+// spec/crypto.md §4 (Seal): a joint box held back where every keyset it names misses a departure; model `JointRule.tla` `NoPooledLeak`: A's anchors for M fork at k1 and k2 (as
 // `forked_anchors`), and a1 reads M too, so it judges M's keysets by their history. m1 removes D1
 // (k3, listing k1) and m2 removes D2 (k4, listing k2) concurrently: each fork misses the other's
 // removal. D1 opens k4 and D2 k3, so pooled they would open a joint box at k3 and k4: a1 leaves
@@ -691,8 +687,7 @@ fn each_fork_missing_a_different_removal_leaves_holder_out_spec_crypto_4() {
     }
 }
 
-// spec/crypto.md §4 (Held keyset: valid; Descends; Stale: held invalid; model
-// `D0_member_forge`): D, an admin of M, forges M's keyset X_d (listing kk) after its removal. R
+// spec/crypto.md §4 (Held keyset; Descends; Stale): a forged keyset is held invalid; model `D0_member_forge`: D, an admin of M, forges M's keyset X_d (listing kk) after its removal. R
 // (peer 0) lacks the removal: X_d is valid there, descends from kk, and R seals A at it (D
 // opens R's epoch: the stated limit). W (peer 4) holds the removal and X_d: X_d is invalid
 // there, so R's box at it is stale and W rotates before encrypting, never sealing at X_d. Once
@@ -744,8 +739,7 @@ fn forged_keyset_invalid_where_removal_arrived_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[m, a], d, start), Vec::<Tid>::new());
 }
 
-// spec/crypto.md §4 (Carried; model `Carry`: a node learning an epoch learns the keysets its
-// boxes name with it): peer 0 seals A's holder M at m1's knowing keyset kk and places kk's
+// spec/crypto.md §4 (Carried), model `Carry`: a node learning an epoch learns the keysets its boxes name with it: peer 0 seals A's holder M at m1's knowing keyset kk and places kk's
 // commit under A's label with its rotation. W (peer 4, A's other admin) gets peer 0's commits
 // but not kk's (a host withholding the carried commit): kk is no anchor there (not held), so W's
 // next rotation of A seals M at k0, which D opens (the stated limit: W holds no knowing keyset
@@ -834,8 +828,7 @@ fn grant_to_unrotated_holder_stated_limit_spec_permissions_3() {
     }
 }
 
-// spec/crypto.md §4 (key access judged over the grants held; Tainted, 4b; the knowing re-key;
-// model `D0_nc_hide_taint_lean`): Y holds X (granted first, by peer 0), X holds Y (later, by
+// spec/crypto.md §4 (Key access; Tainted; knowing re-key): judged over the grants held; model `D0_nc_hide_taint_lean`: Y holds X (granted first, by peer 0), X holds Y (later, by
 // peer 2, Y's admin, which lacks the earlier grant): peer 2 takes its grant as keyed and boxes Y
 // to X, a key cycle. Peer 0 holds both: Y's keyset boxes X, which has no key access to Y, so it
 // is tainted: peer 0 never seals X to it and its box at it is stale. D, removed from X by peer 0,
@@ -881,7 +874,7 @@ fn hidden_grant_tainted_keyset_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[x, y], d, start), Vec::<Tid>::new());
 }
 
-// spec/crypto.md §4 (key access judged over the grants held; the knowing re-key, rule 4): Y
+// spec/crypto.md §4 (Key access; knowing re-key): judged over the grants held: Y
 // holds X (granted first, by peer 0), X holds Y (later, by peer 2, which lacks the earlier
 // grant): peer 2 boxes Y to X, a key cycle, with nothing departed and no keyset stale. Once the
 // earlier grant reaches peer 2, its grant is keyless there and peer 2 re-keys Y without X.
@@ -1085,8 +1078,7 @@ fn reader_junk_boxes_force_no_rotation_spec_crypto_4() {
     assert_eq!(newest_read(&lp, 0, g), Some(e0));
 }
 
-// spec/crypto.md §4 (merge, rule 3; model `D0_nc_2adm`, the shape that broke the candidate
-// rules before rule 4): X (peer 0's) holds Y keyless, Y (admins y1 = peer 2, y2 = peer 3)
+// spec/crypto.md §4 (Forks stand; Stale): merge; model `D0_nc_2adm`: X (peer 0's) holds Y keyless, Y (admins y1 = peer 2, y2 = peer 3)
 // holds X, D a reader of Y. y1 removes D (knowing keyset kk); y2, not knowing, rotates Y (an
 // ignorant fork F). Peer 0 holding both seals X at kk or F as rule 1 gives; once y1 merges F,
 // peer 0's box is stale and it moves: D opens no newest epoch, nothing locks out.
@@ -1127,7 +1119,7 @@ fn second_admin_ignorant_fork_in_cycle_spec_crypto_4() {
     assert!(!c_y.is_empty());
 }
 
-// spec/crypto.md §4 (rotating needs no secret; History box), spec/permissions.md §3: P writes A
+// spec/crypto.md §4 (rotating needs only the right to rotate; History box), spec/permissions.md §3: P writes A
 // only through holder actor M (first admin: peer 2). A's first admin rotates A's read leaving M
 // out (Seal found no keyset; here by hand), so P holds A's write but no current read. E, a
 // writer of A, leaves by itself: the read epoch P lacks covers nothing, so P rotates read and
@@ -1193,7 +1185,7 @@ fn lacking_write() -> (LocalPeer, Tid, Tid) {
     (lp, a, m)
 }
 
-// spec/crypto.md §4 (rotating needs no secret; History box), spec/permissions.md §3: F, an admin
+// spec/crypto.md §4 (rotating needs only the right to rotate; History box), spec/permissions.md §3: F, an admin
 // of A, leaves by itself. P rotates all three roles of A, the write epoch it lacks superseded
 // unread; A's first admin, holding it, adds it to P's write epoch's history.
 #[test]
@@ -1234,7 +1226,7 @@ fn removal_lacking_rotated_secret_rotates_spec_permissions_3() {
     assert!(e.write.newest_held().is_some() && !e.write.is_current(&lacked), "the epoch P lacked is superseded");
 }
 
-// spec/crypto.md §4 (Possession, Writers), spec/permissions.md §3: P is A's admin only through
+// spec/crypto.md §4 (Possession; Writers), spec/permissions.md §3: P is A's admin only through
 // holder actor M (first admin: peer 2), which rotates M leaving P out, so P holds M's new keyset
 // but not its secret and cannot show M. P's removal of F goes alone (its rotation would fail
 // Authority everywhere), the departure uncovered; once M's admin re-seals P on M, P's due
@@ -1270,7 +1262,7 @@ fn removal_without_possession_goes_alone_spec_crypto_4() {
     assert!(blocked_at(&mut lp, 0, a).is_empty(), "A's first admin holds P's rotation, covering");
 }
 
-// spec/crypto.md §4 (Possession, Writers): the writer's Authority check reads the boxes its
+// spec/crypto.md §4 (Possession; Writers): the writer's Authority check reads the boxes its
 // rotation writes, as every receiver judges them. P is A's admin only through holder actor M; M's
 // admin rotates M's write role leaving P out, so P holds M's read and admin secrets but not its
 // new write one. A's write boxes to M are stale, so P's write rotation of A is due; it would box
@@ -1361,8 +1353,7 @@ fn own_removal_from_holder_actor_keeps_sealing_it_spec_crypto_4() {
     assert!(!leaked(&mut lp, 2, &[t, x], e, e_held).contains(&x), "E opens nothing new");
 }
 
-// spec/crypto.md §4 (Encrypting under: an epoch whose secret the node lacks is judged by order;
-// model `D0_order`): X administers A, which M holds; X holds none of M's secrets. E leaves M by
+// spec/crypto.md §4 (Encrypting under): an epoch whose secret the node lacks is judged by order; model `D0_order`: X administers A, which M holds; X holds none of M's secrets. E leaves M by
 // self-removal, so M does not rotate. X knows the departure; M's keyset was made before it, so it
 // cannot cover it: X's next rotation of A leaves M out (E opens nothing of it). Once M's rotation
 // for the departure reaches X, X seals M there again, and E opens nothing of A's new epochs.
@@ -1393,8 +1384,7 @@ fn departure_from_an_unread_holder_is_judged_by_order_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[m, a], e, start), Vec::<Tid>::new());
 }
 
-// spec/crypto.md §4 (Encrypting under: the box clause follows every box the node holds; model
-// `D0_readers_out`): G {R, A}, A {a1, M}, M {m1, R, E}. m1 removes E from M; R, G's admin, holds
+// spec/crypto.md §4 (Encrypting under): the box clause follows every box the node holds; model `D0_readers_out`: G {R, A}, A {a1, M}, M {m1, R, E}. m1 removes E from M; R, G's admin, holds
 // M's new keyset but may not rotate A, whose box to M names M's old one. G's epoch boxes A at a
 // keyset E opens, so R rotates G leaving A out and E opens nothing R writes under G; once a1
 // moves A onto M's new keyset, R seals A again.
@@ -1429,7 +1419,7 @@ fn box_walk_passes_actors_the_node_may_not_rotate_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[m, a, g], e, start), Vec::<Tid>::new());
 }
 
-// spec/crypto.md §4 (Holds: over grants with key access; Departure, maker), spec/requirements.md
+// spec/crypto.md §4 (Holds; Departure; maker): over grants with key access, spec/requirements.md
 // Permissions (a keyless grant gives no read through it): A and M in a cycle (M holds write on
 // A first, so A's grant on M is keyless: M boxes A nothing). P writes A, so M through it, but
 // reads nothing of M. Demoted to read on A, P, unaware, rotates M (its maker holds M's epoch with
@@ -1593,7 +1583,7 @@ fn co_writer_seals_no_keyset_with_a_stale_box_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[m, a, g], e, start), vec![a], "E opens only A, which a1 never rotates");
 }
 
-// spec/crypto.md §4 (Seal, Stale; the limit for a departure from a holder actor M' of M): the
+// spec/crypto.md §4 (Seal; Stale; a departure from a holder actor M' of M): the
 // world above, but W rotates G before any node knowing the removal does, so no keyset of G
 // records A left out. W holds M's knowing keyset, so A's epoch's box to M is stale there one level
 // below A, and W leaves A out of G's new epoch: E opens none of it.
@@ -1623,7 +1613,7 @@ fn removal_alone(lp: &mut LocalPeer, i: usize, t: Tid, d: Tid) {
         .unwrap();
 }
 
-// spec/crypto.md §4 (Seal, Left out; model `D0_readers_g2_mark`): G {R, W, A}, A {a1, M},
+// spec/crypto.md §4 (Seal; Left out), model `D0_readers_g2_mark`: G {R, W, A}, A {a1, M},
 // M {m1, R, E}. m1 removes E from M alone: M keeps the keyset E opens, so W, G's other admin
 // reading neither A nor M, can tell nothing of it. R knows the removal, so rotates G leaving A out
 // at A's keyset, and G's keyset records it; W then does not re-seal A there (each re-seal made
@@ -1663,7 +1653,7 @@ fn co_writer_reseals_no_holder_left_out_spec_crypto_4() {
     assert_ne!(sealed_at(&mut lp, 4, g, a), None);
 }
 
-// spec/crypto.md §4 (Seal, Left out; model `D0_above_g2_mark`): G {a1, W, A}, A {a1, E}. a1
+// spec/crypto.md §4 (Seal; Left out), model `D0_above_g2_mark`: G {a1, W, A}, A {a1, E}. a1
 // removes E from A alone and rotates G leaving A out at A's keyset E opens; W, reading not A and
 // lacking the removal (so not judging A's keyset by order), does not re-seal A there. Once a1
 // rotates A, W re-seals A at that keyset.
@@ -1699,7 +1689,7 @@ fn removal_alone_left_out_stays_out_at_co_writer_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[a, g], e, start), Vec::<Tid>::new());
 }
 
-// spec/permissions.md §3 (re-seal), spec/crypto.md §4 (Possession, Encrypting under): a re-seal
+// spec/permissions.md §3 (re-seal), spec/crypto.md §4 (Possession; Encrypting under): a re-seal
 // pass reads its candidates after the rotations and finalizes due first. X admins G, which M
 // reads; X writes M only through H, whose newest keyset X lacks the secret of (H rotated leaving
 // X out, M boxing H there), so X's finalize of Y's ended edge on M goes without its rotation and
@@ -1757,7 +1747,7 @@ fn reseal_candidates_follow_the_clock_spec_permissions_2() {
     assert!(after.iter().all(|c| c.0 != m), "M's grant ended: a departure due, no re-seal: {after:?}");
 }
 
-// spec/crypto.md §4 (Possession, Authority; Key access): a role reached only through a
+// spec/crypto.md §4 (Possession; Authority; Key access): a role reached only through a
 // keyless grant makes no valid rotation, whatever roles it rotates. Cycle G -> H -> M -> G (M
 // admin on G, H admin on M, then G admin on H: keyless). X writes G and reads H, so writes M only
 // through G's keyless grant on H: it holds H's read secret, never its write one. Its rotations
@@ -1941,7 +1931,7 @@ fn frozen_holder_through_a_keyless_grant_is_boxed_nothing_spec_crypto_4() {
     assert!(boxes(&mut lp, 1, g, x), "G boxes X");
 }
 
-// spec/crypto.md §4 (Holders for keys, Destroyed; Key access): a frozen holder's role for keys
+// spec/crypto.md §4 (Holders for keys; Destroyed; Key access): a frozen holder's role for keys
 // with key access is the greatest over paths with key access at every grant, the lesser role
 // along the way. M holds X read through T and admin through T2 and U, where U's grant on T2 is
 // keyless (T2 holds U first); once all three are destroyed, X's admin boxes M read alone: the

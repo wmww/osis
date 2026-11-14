@@ -360,7 +360,7 @@ fn expired_late_part_unrecoverable_spec_crdt_4_7() {
     assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "expired content recovered from the late part");
 }
 
-// spec/commits.md §4 (a commit with no part held applies as its header alone): peer 1 gets peer 0's
+// spec/commits.md §4 (a commit with no part held, or whose every held part waits, applies as its header alone): peer 1 gets peer 0's
 // expiring write on a thing whose creation record it lacks, past T: nothing of it is kept (spec/commits.md
 // §4 Unjudgeable), whether peer 1 syncs the thing or not; fetched again with its record, the part
 // past T counts as never received and the commit applies as its header.
@@ -924,7 +924,7 @@ fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 (holding a body as its leftover destroys every copy of its values), spec/crdt.md
+// spec/commits.md §5 (holding one as its leftover destroys every copy of its values), spec/crdt.md
 // §4.7: a snapshot stripped for one purged delta still carries the other values it copied; a second
 // request purging one of those replaces the leftover, and the old leftover row's bytes must go with
 // it (was: the row was overwritten unshredded, so the old page kept the value).
@@ -1035,7 +1035,7 @@ fn big_put(lp: &mut LocalPeer, i: usize, t: Tid, key: &str, val: &str, purge: Op
     lp.peers[i].commit(m).unwrap().unwrap()
 }
 
-// spec/commits.md §5 (a purge destroys every local copy of the values it names), spec/crdt.md §4.7:
+// spec/commits.md §5 (holding one as its leftover destroys every copy of its values), spec/crdt.md §4.7:
 // a snapshot's leftover keeps the other values it copied and stays held through its purge's fall,
 // so a second request purging one of those strips it there too and leaves no copy behind.
 // spec/commits.md §5: the leftover indexes as an open rebuilding the index reads it.

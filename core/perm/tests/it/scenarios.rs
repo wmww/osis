@@ -508,7 +508,7 @@ fn residue_classifies_sticky_and_genuine_spec_perm_5() {
     assert_eq!(residue(&tl).len(), 1);
 }
 
-/// §5.1 (OSIS_PERM_SEED=3313): n2 removes n1 from P unseen, so n1's grant of admin on G to n2
+/// §5.1 (demotes; audits), OSIS_PERM_SEED=3313: n2 removes n1 from P unseen, so n1's grant of admin on G to n2
 /// does not apply and n2's own lowering of that edge to write is a raise through P's record
 /// edge, which k's removal of n2 audits. That removal also drops n2's removal of n1; on the
 /// restart n1's grant applies, so at k's removal n2 keeps admin on G by that grant: no fall on
@@ -533,7 +533,7 @@ fn self_removal_dropped_with_sticky_residue_spec_permissions_5_1() {
     assert_eq!(residue(&tl), std::collections::BTreeSet::from([WriteId(lower, 0)]));
 }
 
-/// §5.1 (OSIS_PERM_SEED=1900002, joint): n1's removal of n2's admin on A0 drops n2's grant of
+/// §5.1 (demotes; one joint computation), OSIS_PERM_SEED=1900002: n1's removal of n2's admin on A0 drops n2's grant of
 /// admin on A1 to n0, which made n0's grant of that admin on A0 apply: sticky residue, and
 /// n0's demotion of n2 on A1 does not apply.
 #[test]
@@ -558,7 +558,7 @@ fn sticky_residue_of_dropped_grant_spec_permissions_5_1() {
     assert!(!tl.is_applied(&WriteId(demote, 0)));
 }
 
-/// §5.1 (OSIS_PERM_SEED=52011, joint): n0 (admin on A0, so on A1 through A1's record edge)
+/// §5.1 (is no fall; one joint computation), OSIS_PERM_SEED=52011: n0 (admin on A0, so on A1 through A1's record edge)
 /// grants itself admin on A1, then removes A1 from A0; n1, seeing neither, demotes n0 on A0.
 /// That audit sees the removal in effect: n0 falls on A0, which drops the removal; on A1 its
 /// own grant keeps its class (one class: a path lost while another keeps it is no fall), so
@@ -592,7 +592,7 @@ fn audit_drops_removal_not_self_grant_spec_permissions_5_1() {
     assert_eq!(residue(&tl), std::collections::BTreeSet::from([WriteId(rm, 0)]));
 }
 
-/// §5.1 (OSIS_PERM_SEED=89000): n1 (admin on P, so on G) grants n2 admin on P at 4, then sets
+/// §5.1 (demotes; audits), OSIS_PERM_SEED=89000: n1 (admin on P, so on G) grants n2 admin on P at 4, then sets
 /// n2's edge on G to write at 8, unaware of n2's leave of G at 2. n2 holds G through P at 8, so
 /// that write is no fall and audits nothing; k's removal of n1 at 12 drops both n1 writes, and
 /// n2's leave stands.

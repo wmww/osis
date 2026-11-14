@@ -279,7 +279,7 @@ mod tests {
         Diagnostic { kind, tids: vec![Tid::from_bytes([n; 15])], commit: None, peer, detail: String::new() }
     }
 
-    // spec/versioning.md §5 (a mismatched typed read reports a diagnostic): a flood of one local
+    // spec/versioning.md §5 (reports the path as a diagnostic): a flood of one local
     // kind leaves the others reported; a peer's flood is capped across kinds
     #[test]
     fn local_rate_limit_per_kind_spec_versioning_5() {

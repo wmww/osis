@@ -34,7 +34,7 @@ fn shown(db: &Osis, c: Tid, id: CommitId) -> (String, bool) {
     (text(&p.body), p.edited.is_some())
 }
 
-// notes/chat.md Create, spec/commits.md §2 (one commit applies whole), spec/commits.md §5 (The
+// notes/chat.md Create, spec/commits.md §6 (a write is one commit), spec/commits.md §5 (The
 // setting): a chat is one commit holding its record, its settings and its `retention^.0`
 // (messages kept for good, the disappearing expiry, replacements refused when editing is off,
 // the retain default), this account its admin; a purge set chat cannot keep is `Invalid`,
@@ -92,7 +92,7 @@ fn edit_modes_spec_permissions_5_2() {
     }
 }
 
-// notes/chat.md Edit, spec/permissions.md §6 (purge sets): an edit is of one's own message only
+// notes/chat.md Edit, spec/permissions.md §6 (the right; a delta's retention names who may purge it): an edit is of one's own message only
 // (another's is `Invalid`); a writer the purge set does not let purge (`Admin`) edits all the same
 // and the old text stays; where it does (author or admin), the old text goes. Bob's node is
 // Alice's chat's writer, commits carried by hand.

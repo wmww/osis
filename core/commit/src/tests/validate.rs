@@ -112,7 +112,7 @@ fn validate_role_commit() {
     assert!(invalid(&x).to_string().contains("roles.0"));
 }
 
-// spec/commits.md §5 (`nobody` is for `created.0` and fixed retention alone), §6 (one expiry per commit): a
+// spec/commits.md §5 (on any other delta it is bad): `nobody` is for `created.0` and fixed retention alone, §6 (one per commit): a
 // `nobody` content delta is bad input, `retention^.0` beside any delta is not; an expiring commit
 // carries no fixed-retention aspect.
 #[test]

@@ -12,21 +12,21 @@ fn ok(name: &str, seed: u64) -> Report {
 }
 
 // spec/requirements.md (convergence under any delivery order, duplicates, partial receipt);
-// spec/permissions.md §1 (an account's nodes as admins of the account actor).
+// spec/permissions.md §1 (node of p).
 #[test]
 fn two_nodes_converge() {
     let r = ok("two_nodes", 0);
     assert!(r.writes > 20 && r.dropped > 0, "{r:?}");
 }
 
-// spec/requirements.md (convergence); spec/crdt.md §2.3 (counters never reused).
+// spec/requirements.md (convergence); spec/crdt.md §2.3 (its own counter): counters never reused.
 #[test]
 fn three_nodes_random_delivery() {
     let r = ok("three_random", 0);
     assert!(r.writes > 20 && r.dropped > 0 && r.parked > 0, "{r:?}");
 }
 
-// spec/commits.md §4 (a commit applies in one transaction); spec/crdt.md §2.2, §2.3: a crash at any
+// spec/commits.md §4 (applies in one storage transaction); spec/crdt.md §2.2, §2.3: a crash at any
 // durable write recovers, the HLC and counters continue without reuse, nodes converge. Also
 // checks seed replay: the same seed gives the same run.
 #[test]

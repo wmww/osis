@@ -48,7 +48,7 @@ fn signal_kept_while_in_history_spec_commits_5() {
     assert_eq!(fate(&held(1, vec![reg(10, FIRST_ADMIN, 1, SIG, Retention::PLAIN, 7)]), 10), Fate::MayDrop(DropWhy::PastBound), "no setting");
 }
 
-// spec/commits.md §5 (Signals, Purge), §6: purge and expiry act per write; the leftover may go
+// spec/commits.md §5 (signals; purge), §6: purge and expiry act per write; the leftover may go
 // once out of history
 #[test]
 fn signal_purge_and_expiry_per_write_spec_commits_5() {

@@ -72,7 +72,7 @@ fn purge(t: Tid, secret: osis_base::CommitId) -> Mutation {
     m
 }
 
-// spec/commits.md §4 (all or none), §5 (purge), spec/crdt.md §2.3 (counters): a crash at any
+// spec/commits.md §4 (applies in one storage transaction): all or none, §5 (purge), spec/crdt.md §2.3 (counters): a crash at any
 // write of a purging commit leaves the node, reopened, at the state before or after it, never
 // between; it then commits on, and a commit that did land keeps its counters
 #[test]
@@ -126,7 +126,7 @@ fn crash_every_write_of_a_purging_commit() {
     }
 }
 
-// spec/commits.md §4 (all or none): one failed write (`Fault::Fail`: the device stays up) at any
+// spec/commits.md §4 (applies in one storage transaction): all or none: one failed write (`Fault::Fail`: the device stays up) at any
 // write of a purging commit fails it or lands it, as its answer says; the node reads as a fresh
 // open of its store would (`check_index`, and reads against a restart's), and its next write
 // works with no restart
@@ -165,7 +165,7 @@ fn a_failed_write_at_any_write_of_a_purging_commit_needs_no_restart() {
     }
 }
 
-// spec/commits.md §4 (all or none; notes/local-store.md, Failed writes): a failed sync
+// spec/commits.md §4 (applies in one storage transaction): all or none, notes/local-store.md Failed writes: a failed sync
 // (`Fault::Unsynced`: the device stays up) at any write of a purging commit leaves its outcome
 // unknown; with no restart the node reads as a fresh open of its store would and its next write
 // works, and every write answered `Ok` survives a later power cut
@@ -208,7 +208,7 @@ fn a_failed_sync_at_any_write_of_a_purging_commit_needs_no_restart() {
     }
 }
 
-// spec/crdt.md §2.1 (a session per open; two copies of one store are two sessions),
+// spec/crdt.md §2.1 (a new start is a new session; two copies of one store running at once),
 // spec/commits.md §4: two live copies of one store (an old phone kept in use, a backup restored
 // beside the original) write the same aspect concurrently; neither commit is void and both
 // copies read alike once exchanged.
@@ -250,7 +250,7 @@ fn two_live_copies_of_one_store_converge_spec_crdt_2_1() {
     assert_eq!(e.state(&t, &ak).unwrap(), r.state(&t, &ak).unwrap());
 }
 
-// spec/commits.md §4 (all or none), notes/local-store.md (Ciphertext store): a crash at any write
+// spec/commits.md §4 (applies in one storage transaction): all or none, notes/local-store.md (Ciphertext store): a crash at any write
 // of a commit whose value is chunked, between the ciphertext store's commit and the engine's
 // included, leaves the node, reopened, at the state before or after it, the value whole; one that
 // did not land leaves no blob behind (`Engine::settle_blobs` releases what it held)

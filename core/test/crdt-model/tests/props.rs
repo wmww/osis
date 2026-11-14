@@ -296,7 +296,7 @@ proptest! {
         }
     }
 
-    /// spec/commits.md §5 (live write, Covered): a state holds each of its writes and covers each alone.
+    /// spec/commits.md §5 (live write; covered): a state holds each of its writes and covers each alone.
     #[test]
     fn state_holds_and_covers_its_writes_spec_commits_5(seed in any::<u64>()) {
         for ty in [kitchen_sink(), Ty::Text] {
@@ -1280,7 +1280,7 @@ fn set_element_is_a_register_spec_3_2() {
     assert!(decode_delta(&enc(&bad), &mut wcx()).is_err());
 }
 
-/// spec/crdt.md §3.2 (entry creation `Ci`), §2.1, §8: a snapshot of a commit-form writer's map carries each
+/// spec/crdt.md §3.2 (creation stamps): entry creation `Ci`, §2.1, §8: a snapshot of a commit-form writer's map carries each
 /// entry's creation commit, and one of a session's map its writes under the session source with the session's
 /// frontier; both round-trip, and a writer's own creations carry no `Ci`.
 #[test]

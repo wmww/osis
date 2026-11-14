@@ -471,7 +471,7 @@ impl<K: Ord + Clone + Hash + Debug, K2: Ord + Clone + Debug, V: Clone + Debug> J
 mod tests {
     use super::*;
 
-    // spec/commits.md §4 (one storage transaction per commit): undoing the journal restores the
+    // spec/commits.md §4 (applies in one storage transaction): undoing the journal restores the
     // indexes as they were before the transaction, whatever mix of changes it made.
     #[test]
     fn rollback_restores_spec_commits_4() {

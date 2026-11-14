@@ -22,7 +22,7 @@ fn local(y: i64, m: i64, d: i64, h: i64, min: i64) -> i64 {
     date(y, m, d) * DAY + h * 60 * MIN + min * MIN
 }
 
-// spec/data-model.md §3 (`date` = days since 1970-01-01, proleptic Gregorian, no zone).
+// spec/data-model.md §3 (days since 1970-01-01 in the proleptic Gregorian calendar).
 #[test]
 fn civil_dates_are_days_since_the_epoch() {
     assert_eq!(date(1970, 1, 1), 0);

@@ -663,7 +663,7 @@ fn absent_spot_ops() -> Vec<(&'static str, PathOp)> {
     ]
 }
 
-/// §4.6 (restores the prior read): undoing the first write into a spot that did not exist makes
+/// §4.6 (read as it did just before that commit): undoing the first write into a spot that did not exist makes
 /// it absent again (a set, an enum payload's field, a list, a text, a counter).
 #[test]
 fn undo_makes_absent_again_spec_4_6() {
@@ -675,7 +675,7 @@ fn undo_makes_absent_again_spec_4_6() {
     }
 }
 
-/// §4.6 (restores the prior read): another writer's different value written into the spot after
+/// §4.6 (read as it did just before that commit): another writer's different value written into the spot after
 /// the undone commit made it (absent before), held when undoing, blocks the reset: only the undone
 /// write goes.
 #[test]

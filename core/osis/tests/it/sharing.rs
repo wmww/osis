@@ -10,7 +10,7 @@ fn s(x: &str) -> Value {
     Value::Str(x.into())
 }
 
-// spec/crypto.md §7 (a writer lists the thing's delete keys), notes/api.md Rights: a role whose
+// spec/crypto.md §7 (Header list): a writer lists the thing's delete keys, notes/api.md Rights: a role whose
 // delete keys are not here yet (no inbox hint, the thing's `keys.0` in a later batch: another node
 // of the grantee's account, a group's grant learned from its certificate copy) reads as `Read`
 // and a content write on it is `Permission`, until the keys come; then both say the role. An
@@ -161,7 +161,7 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
     assert_eq!(alice.links_of(t).unwrap().len(), 1, "a leave ends no link");
 }
 
-// spec/permissions.md §6 (purge rights checked before signing): a purge request that would drop
+// spec/permissions.md §6 (a node does not sign a purge request): a purge request that would drop
 // none of the held deltas it names is refused `Permission`, nothing written; under the default
 // (admins only) a writer purges none, not even its own; one written `author_or_admin` it purges.
 #[test]

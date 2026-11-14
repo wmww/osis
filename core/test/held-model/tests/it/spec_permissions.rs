@@ -45,7 +45,7 @@ fn regrant_revives_writes_spec_permissions_5_2() {
     assert_eq!(o.valid[&(11, 0)], true);
 }
 
-// spec/permissions.md §5.1 (step 4): an edge admin's fall audits its edge writes the frontier leaves out
+// spec/permissions.md §5.1 (demotes; every applied write of it audits first): an edge admin's fall audits its edge writes the frontier leaves out
 #[test]
 fn demotion_audits_edge_admin_grants_spec_permissions_5_1() {
     let cs = |f: Vec<CommitId>| {
@@ -65,7 +65,7 @@ fn demotion_audits_edge_admin_grants_spec_permissions_5_1() {
     assert_eq!(o.valid[&(10, 0)], true);
 }
 
-// spec/permissions.md §5.1 (step 4): every applied write of a commit audits before the walk
+// spec/permissions.md §5.1 (demotes; every applied write of it audits first): every applied write of a commit audits before the walk
 // restarts, so its part order decides nothing. Thing 41's first admin is 40, 40's is node 0;
 // node 0 makes node 1 admin on 40 (#5) and gives itself admin on 41 (#6). Node 1's commit #7
 // lowers node 0 to read on both: its write on 40 drops #5 (so #7 no longer applies), its write

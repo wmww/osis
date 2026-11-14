@@ -1736,7 +1736,7 @@ mod tests {
         Value::Map((0..n).map(|i| (Value::Int(i), Value::Int(i * x))).collect())
     }
 
-    // spec/commits.md §5 (a dropped body leaves no local index entry derived from it): the key
+    // spec/commits.md §5 (every local index entry derived from it): the key
     // index rows of a removed key's entry go (shredded) when the bodies holding it are dropped;
     // the other keys' rows stay; rows are keyed hashes (another salt finds nothing).
     #[test]
@@ -1770,8 +1770,7 @@ mod tests {
         assert_ne!(k5, key_row(&other, &Value::Int(5), None));
     }
 
-    // spec/crdt.md §5.5 (add and remove by value), spec/data-model.md §6 (links compare by
-    // content hash), spec/commits.md §5 (a dropped body leaves no index entry derived from it):
+    // spec/crdt.md §5.5 (add v; remove v), spec/data-model.md §6 (equality of a large value is equality of its keyed content hash), spec/commits.md §5 (every local index entry derived from it):
     // a paged set's value index finds a value's elements, a link by its hash alone; the rows of
     // a removed value go with the bodies holding it.
     #[test]
@@ -1819,8 +1818,7 @@ mod tests {
         assert_eq!(op_paths(&[PathOp { path: vec![PathSeg::Key(st)], op: Op::Put(Value::Int(2)) }], &mut |v| Ok(v.clone())).unwrap(), None);
     }
 
-    // spec/crdt.md §5.5 (add and remove by value), spec/data-model.md §6 (links equal by
-    // content hash): ops by value over the pages a paged set's index finds write what they write
+    // spec/crdt.md §5.5 (add v; remove v), spec/data-model.md §6 (equality of a large value is equality of its keyed content hash): ops by value over the pages a paged set's index finds write what they write
     // over the whole state, for floats, links (alone and nested), enums, empty values, with a
     // concurrent writer's elements joined in.
     #[test]
@@ -2088,7 +2086,7 @@ mod tests {
         fresh.visible_range(0..usize::MAX).unwrap()
     }
 
-    // spec/crdt.md §5.7 (ops by index), §6 (the placement is a function of state), §8: a paged
+    // spec/crdt.md §5.7 (index paths never go on the wire): ops by index, §6 (a deterministic function of state), §8: a paged
     // text or list keeps its placement in the store, exactly a whole pass of the state's: random
     // inserts, deletes and moves by two writers (one writing against an old state: concurrent,
     // joined as received), each in the running session or a fresh one, written page by page;
@@ -2516,7 +2514,7 @@ mod tests {
         assert_eq!(whole.read(), st.read());
     }
 
-    // spec/crdt.md §5.7 (list element edits, ops resolve by index), §6, §8: a path stepping into
+    // spec/crdt.md §5.7 (list element edits; index paths never go on the wire), §6, §8: a path stepping into
     // a paged list's element by index, to read it (`ensure_path`, as `get_at`) or to write inside
     // it (`attach_ops`), each in a new session, loads the element's block and page through the
     // stored placement, not the list: what it reads and writes equals the whole state's, and the
@@ -2681,7 +2679,7 @@ mod tests {
         txn.table_range(t, &set.prefix(), Some(&set.id.saturating_add(1).to_be_bytes()), 10_000).unwrap().len()
     }
 
-    // spec/crdt.md §6 (the placement is a function of state); notes/local-store.md (Units): a
+    // spec/crdt.md §6 (a deterministic function of state); notes/local-store.md (Units): a
     // sequence's stored placement is rebuildable: a damaged or missing summary or block row reads as damaged, and laid out anew
     // from the whole sequence it reads by index again.
     #[test]
@@ -2732,7 +2730,7 @@ mod tests {
         }
     }
 
-    // spec/crdt.md §6 (the placement is a function of state); notes/local-store.md (Units): a
+    // spec/crdt.md §6 (a deterministic function of state); notes/local-store.md (Units): a
     // damaged stored block or dot-map chunk (garbage, truncated, another block's rows) never
     // panics or misplaces: a cold op writes what it writes on the whole state, a received join
     // keeps the state exact, and the next read by index reads the whole pass's order (laid out

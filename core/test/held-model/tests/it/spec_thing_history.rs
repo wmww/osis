@@ -341,7 +341,7 @@ fn ev_a_later_setting_never_brings_back() {
     }
 }
 
-// spec/commits.md §5 (The setting, In force): a setting acts from its own stamp: before it, held or not,
+// spec/commits.md §5 (the setting; in force): a setting acts from its own stamp: before it, held or not,
 // it changes nothing of a body replaced before it (one replaced after it, ahead of the clock, is
 // governed by it: AMBIGUITIES 68)
 #[test]
@@ -364,7 +364,7 @@ fn ev_a_later_setting_acts_from_its_stamp() {
     }
 }
 
-// spec/commits.md §5 (The setting, In force): a setting is in force from its own commit on: one in the
+// spec/commits.md §5 (the setting; in force): a setting is in force from its own commit on: one in the
 // replacing commit governs the body it replaces
 #[test]
 fn ev_in_force_from_its_own_commit() {
@@ -376,7 +376,7 @@ fn ev_in_force_from_its_own_commit() {
     assert!(listed(&h, REG).is_empty());
 }
 
-// spec/commits.md §5 (The setting, In force; notes/engine-retention-history.md Tess's decisions, 3): settings are in force by key from their own
+// spec/commits.md §5 (the setting; in force), notes/engine-retention-history.md Tess's decisions, 3: settings are in force by key from their own
 // stamps, whatever order they are held in. From a newer setting's stamp on, a node also holding
 // an older-stamped one shows what a node holding only the newer shows, unless the older set purge
 // on replace and the newer keeps (one way: then neither keeps anything). Of two admins' settings at
@@ -432,7 +432,7 @@ fn ev_a_late_setting_can_reshow_a_held_body() {
     assert!(listed(&world(3, &[long, short], false, bodies()), REG).is_empty());
 }
 
-// spec/commits.md §5 (Purge on replace; notes/engine-retention-history.md Tess's decisions, 3): content replaced under purge on replace
+// spec/commits.md §5 (purge on replace), notes/engine-retention-history.md Tess's decisions, 3: content replaced under purge on replace
 // is never history, however late a node dates the replacement (holding fewer bodies)
 #[test]
 fn ev_purge_on_replace_content_is_never_history_however_dated() {
@@ -452,7 +452,7 @@ fn ev_purge_on_replace_content_is_never_history_however_dated() {
     assert!(reached > 0);
 }
 
-// spec/commits.md §5 (The setting, One way): the greenfield counterexample, judged by `evaluate`: a keep
+// spec/commits.md §5 (the setting; one way): the greenfield counterexample, judged by `evaluate`: a keep
 // after purge on replace keeps nothing, so a node dating the replacement after the keep shows none
 #[test]
 fn ev_keep_after_purge_on_replace_keeps_nothing() {
@@ -575,7 +575,7 @@ fn ev_nothing_late_dropping_loses_no_history() {
     assert!(dropped > 0);
 }
 
-// spec/commits.md §5 (The setting, Dropped stays dropped): in any arrival order, late, a node
+// spec/commits.md §5 (the setting; dropped stays dropped): in any arrival order, late, a node
 // dropping at the first allowed moment never shows what a node holding everything does not, and
 // what it lacks it dropped itself
 #[test]

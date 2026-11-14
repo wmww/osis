@@ -654,7 +654,7 @@ fn rejects_list_run_past_chunk_max_spec_3_3() {
     assert!(e.to_string().contains("not canonical"), "{e}");
 }
 
-/// spec/permissions.md §5.2 (a received delta's writes count from it alone), spec/crdt.md §5.6:
+/// spec/permissions.md §5.2 (a delta's writes count while it is valid; copies), spec/crdt.md §5.6:
 /// a snapshot carrying an entry another node created, holding only a held delta's write inside
 /// it, stripped of that delta's copies keeps the creation, so its join gives the entry its
 /// creation stamp whether the delta joined before or after (it once pruned the entry with the
@@ -732,7 +732,7 @@ fn copies_under_two_keys_expire_alike_spec_4_7() {
     assert_eq!(strip(&join(&strip(&a), &b)), late, "the other");
 }
 
-/// spec/commits.md §5 (a body's live writes): a removed map entry's tombstone, keyed by its dot,
+/// spec/commits.md §5 (an element's or entry's tombstone is not one of its creator's): a removed map entry's tombstone, keyed by its dot,
 /// holds the remover's reset, not the creator's write.
 #[test]
 fn entry_tombstone_is_no_live_write_spec_commits_5() {

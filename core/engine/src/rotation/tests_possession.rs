@@ -339,7 +339,7 @@ fn a_possession_signature_is_checked_once_spec_crypto_4() {
     assert_eq!(checked(), 0, "every part judged again");
 }
 
-// spec/crypto.md §4 (Possession, Writers): a rotation of read alone needs write (the right to
+// spec/crypto.md §4 (Possession; Writers): a rotation of read alone needs write (the right to
 // rotate), and shows X1 at write only by a keyset of write. W, writing G only through X1, so
 // rotates G's write with its read: valid at every node, its write keyset proving X1 by X1's write
 // keyset. Read alone (its read keyset proving X1 at read only) is invalid at every node.

@@ -923,7 +923,7 @@ fn elementless_write_keeps_entry_creation_spec_crdt_5_6() {
     });
 }
 
-/// spec/commits.md §5 (when replaced, never of paging): a snapshot of a map whose `big` entry
+/// spec/commits.md §5 (when a body was replaced): when replaced, never of paging: a snapshot of a map whose `big` entry
 /// holds a paged map streams `big`'s creation on every page's path. A root reset kills every
 /// write of it, then a register write replaces the map. Each write died once, at the reset: the
 /// snapshot is replaced there, as its fill delta is, not at the register write.
