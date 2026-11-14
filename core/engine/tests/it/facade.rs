@@ -1092,3 +1092,26 @@ fn a_certificate_copy_is_one_blob_under_every_sync_id_spec_sync_judgement_1() {
     }
     assert!(lp.peers[0].engine.epochs(&u).is_some_and(|ep| ep.read.held().any(|(x, _)| wrap_opens_under(&lp, 0, &u, &x, &sealed.id, &to))), "wrapped under u's epoch");
 }
+
+// spec/commits.md §4 (Records: learned once something awaits it): a loose record is learned when
+// a commit by its actor arrives, the author's record being what that commit awaits.
+#[test]
+fn a_loose_author_record_is_learned_when_its_commit_comes_spec_commits_4() {
+    let mut lp = crate::common::net_bare(2, 5);
+    let a = lp.peers[0].engine.create_account().unwrap().0.account;
+    let b = lp.peers[1].engine.create_account().unwrap().0.account;
+    let t = thing_of(&mut lp, 0, a);
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    let s0 = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let rec = lp.peers[1].engine.core.created(&b).cloned().unwrap();
+    let (id, bytes, wrap) = record_blob_by_hand(&mut lp, 0, &t, std::slice::from_ref(&rec));
+    assert!(matches!(lp.peers[0].engine.open_entry(&s0, &id, &wrap, &bytes).unwrap(), osis_engine::sync::Opened::Records(_)));
+    assert!(lp.peers[0].engine.core.created(&b).is_none() && lp.peers[0].engine.carries_loose(&id));
+    let u = thing_of(&mut lp, 1, b);
+    let mut m = Mutation::new();
+    m.set(u, &REG, &s("later")).unwrap();
+    let c = lp.peers[1].engine.commit(m).unwrap().unwrap();
+    let cb = lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap();
+    lp.peers[0].engine.ingest(&cb, Vec::new()).unwrap();
+    assert_eq!(lp.peers[0].engine.core.created(&b), Some(&rec), "the author's record, awaited");
+}
