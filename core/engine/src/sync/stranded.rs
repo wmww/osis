@@ -8,8 +8,8 @@
 //! met at the end of the next complete pass of the actor's sync IDs like the re-seal trigger.
 //!
 //! - Sending side: `stranded(s)` (S read here, a current read epoch of its thing known and none
-//!   held), with the holder this node reads the actor through, its current `keys.0` commits and
-//!   the step's sync key; `holder_keys(holder)` (the report's keys); `stranded_notice` (the inbox
+//!   held), or `stranding(s, step)` where sync judged it (a walk stopped), with the holder this
+//!   node reads the actor through, its current `keys.0` commits and the step's sync key; `holder_keys(holder)` (the report's keys); `stranded_notice` (the inbox
 //!   blob to an admin); `writer_of(s, proven)` (who a Stranded message goes to).
 //! - Receiving side: `take_stranded(s, holder, keys)` (a Stranded message, or a stranded notice
 //!   taken from this node's inbox): the keys taken (`take_holder_keys`) and the ask recorded
@@ -143,16 +143,24 @@ impl Engine {
     /// epoch of S's thing is known here and none is held. `None` otherwise, or for a sync ID not
     /// read here. Whether a complete pass came first is sync's (it reads this at a heard-out S).
     pub fn stranded(&mut self, s: &SyncId) -> Result<Option<Stranding>> {
-        let Some((t, o)) = self.read_sync_id(s)? else { return Ok(None) };
+        let Some((t, _)) = self.read_sync_id(s)? else { return Ok(None) };
         let Some(e) = self.core.epochs(&t) else { return Ok(None) };
         let read = e.role(Role::Read);
         let current = read.current();
         if current.is_empty() || current.iter().any(|ep| read.secret(ep).is_some()) {
             return Ok(None);
         }
+        self.stranding(s, None)
+    }
+
+    /// The report of this node stranded on read sync ID `s` where sync judged it (spec/permissions.md
+    /// §4: a walk stopped at a store source, spec/sync-ids.md §6 Walk), naming `step`, the sync key
+    /// of the step it stopped at (none: its recorded head). `None` for a sync ID not read here.
+    pub fn stranding(&mut self, s: &SyncId, step: Option<[u8; 32]>) -> Result<Option<Stranding>> {
+        let Some((t, o)) = self.read_sync_id(s)? else { return Ok(None) };
         let actor = self.core.reader_of(&t);
         let holder = self.own_holder(&actor);
-        let step = o.path.steps.last().map_or([0; 32], |(st, _)| st.keys.sync.to_bytes());
+        let step = step.unwrap_or_else(|| o.path.steps.last().map_or([0; 32], |(st, _)| st.keys.sync.to_bytes()));
         let me = self.core.account.get();
         let admins = self.core.key_holders(&actor).into_iter().filter(|(m, r)| *r == Role::Admin && Some(*m) != me).map(|(m, _)| m).collect();
         Ok(Some(Stranding { actor, holder, step, keys: self.current_keys(&holder), admins }))
