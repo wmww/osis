@@ -4,3 +4,5 @@
 - No end-to-end check of a grant without history exists above the engine (the sync side is not built): an osis-chat test of it reads nothing yet, so it is committed ignored.
 - Review: a newcomer test passed for the wrong reason: `synced(3)` plus `sync_all` after a write hands the future newcomer that write raw, before any cut. Write pre-cut content after the last `sync_all` and deliver it to the others by hand.
 - Review: finding why an osis-chat test reads nothing needed a temporary engine eprintln (no osis-level view of what a node holds pending and why).
+- Review 2: a `git commit -a` for an unrelated issue edit swept in uncommitted test work; commit the test work (wip) before any other commit.
+- Review 2: the streamed `covered` and its oracle disagreed (Some(false) vs None) on a body with an expiry neither held nor value-less beside a snapshot not held; only a random differential calling `covered` on dropped snapshots reached it.

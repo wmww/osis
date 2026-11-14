@@ -25,6 +25,11 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     }
     let part = crate::apply::held_part(tx, s, sai)?;
     let held = crate::apply::held_fragment(tx, c, cai)?;
+    // a body with an expiry neither held nor value-less: not covered, whether or not the
+    // snapshot is held (as `covered_join` judges it before reading the snapshot)
+    if held.is_none() && tx.core.ix.commits.get(c).is_some_and(|m| m.header.aspects.get(cai).is_some() && m.header.expires.is_some()) && !super::valueless(tx.core, c, cai) {
+        return Ok(Some(false));
+    }
     if let (Some(m), Some(Decoded::Snapshot(sn))) = (tx.core.ix.commits.get(c), &part) {
         let h = &m.header;
         if held.is_none() && h.aspects.get(cai).is_some_and(|a| super::snapshot::unseen_by(&sn.frontiers, h, c, a.hi)) {
@@ -42,9 +47,6 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     let Some(snap) = part.map(Decoded::into_fragment) else { return Ok(None) };
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
     let Some(mut body) = held else {
-        if m.header.aspects.get(cai).is_some_and(|_| m.header.expires.is_some() && !super::valueless(tx.core, c, cai)) {
-            return Ok(Some(false));
-        }
         let own = super::writes_of(&m.header, c, cai);
         let mut none = BTreeSet::new();
         snap.valueless_dots(&mut none);
