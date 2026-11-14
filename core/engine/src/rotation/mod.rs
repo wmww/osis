@@ -1141,3 +1141,5 @@ mod tests_authority;
 mod tests_departs;
 #[cfg(test)]
 mod tests_property;
+#[cfg(test)]
+mod tests_reseal;

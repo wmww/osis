@@ -614,6 +614,9 @@ pub(crate) fn may_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts
         return Ok(MayWrite::No);
     }
     let Ok(node) = tx.core.writer_for(tid) else { return Ok(MayWrite::No) };
+    if is_content(ak.as_str()) && !carried_passes_on(tx, tid, ak)? {
+        return Ok(MayWrite::Later);
+    }
     let skip = tx.core.skip_writer_rules;
     let need = match (skip, memory) {
         (true, true) => None,
@@ -621,6 +624,23 @@ pub(crate) fn may_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts
         (false, _) => Some(crate::engine::write::snapshot_role(ak.as_str())),
     };
     crate::engine::write::may_write(tx, node, tid, ak.as_str(), need, ts)
+}
+
+/// Whether every write a snapshot of `(tid, ak)` would carry from a held body may go under this
+/// node's epoch (`labeling::opened::passes_on`): a write it read only under an epoch not
+/// established here waits for that epoch (its withheld removal arriving) or stays uncompacted.
+fn carried_passes_on(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
+    let held: Vec<(CommitId, usize)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter_map(|(_, c)| {
+        let m = tx.core.ix.commits.get(c)?;
+        let ai = m.aspect(tid, ak)?;
+        matches!(m.hold.get(ai), Some(crate::engine::Hold::Body { .. } | crate::engine::Hold::Leftover { .. })).then_some((*c, ai))
+    }).collect();
+    for (c, ai) in held {
+        if !crate::labeling::opened::passes_on(tx, &c, ai, tid, ak.as_str())? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// `Engine::snapshot` in `tx` (`memory`: the aspect is ephemeral, `tx` in the memory class):

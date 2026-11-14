@@ -65,6 +65,9 @@ pub struct OpenedBlob {
     pub commit: CommitBlob,
     pub ais: Vec<usize>,
     pub sealed: Vec<Section>,
+    /// Every section as it came, opened or not: what a fresh encryption of the commit copies
+    /// verbatim (`Engine::seal`'s `extra`, spec/crypto.md §5 Passing on).
+    pub sections: Vec<Section>,
     /// A section opened under the blob key: a copy (`seal_to`), never copied into another
     /// encryption.
     pub copy: bool,
@@ -250,7 +253,7 @@ impl Engine {
     /// nearest member (a member given secrets of its own since the section was sealed holds the
     /// derived epoch in its history). `last`: the previous chain of this blob opening and its
     /// answer (a commit's sections in one group share a chain: derived once, memory bounded).
-    fn chain_epochs(&self, chain: &[Tid], last: &mut Option<(Vec<Tid>, Vec<Arc<ActorEpochs>>)>) -> Vec<Arc<ActorEpochs>> {
+    pub(super) fn chain_epochs(&self, chain: &[Tid], last: &mut Option<(Vec<Tid>, Vec<Arc<ActorEpochs>>)>) -> Vec<Arc<ActorEpochs>> {
         if let Some((o, v)) = last.as_ref()
             && o == chain
         {
@@ -281,17 +284,20 @@ impl Engine {
         out
     }
 
-    /// Seals a body as a fresh blob (spec/sync-judgement.md §1, spec/wire.md §4): one section per thing
-    /// among the commit's held parts, each under that thing's read secret (a plain thing's
-    /// derives from its base actor's by tid, spec/crypto.md §3, so a thing given secrets of its own
-    /// later opens its earlier sections by its history; `wrap_secret`: the newest current
-    /// epoch, a rotation's under the epoch it supersedes), the sections of `extra` (those this
-    /// node could not open, from a held blob of the commit) copied verbatim; the prefix commits
-    /// to the delete-key groups of every section's aspects. A part whose thing's current secret
-    /// this node does not hold is left out (a key actor's own record or card, which travels as a
+    /// Seals a body as a fresh blob (spec/sync-judgement.md §1, spec/wire.md §4; a fresh blob key,
+    /// salt and blob ID): one section per thing among the commit's held parts that may go under
+    /// an epoch of this node's choosing (`opened::passes_on`, spec/crypto.md §5 Passing on), each
+    /// under that thing's read secret (a plain thing's derives from its base actor's by tid,
+    /// spec/crypto.md §3, so a thing given secrets of its own later opens its earlier sections by
+    /// its history; `wrap_secret`: the newest current epoch, a rotation's under the epoch it
+    /// supersedes); for the other parts the sections of `extra` (held sections of the commit,
+    /// opened or not) copied verbatim where none of their parts is held stripped or dropped; the
+    /// prefix commits to the delete-key groups of every section's aspects. A part neither covers
+    /// is left out (one another wrote that this node read only under an epoch not established
+    /// here; a key actor's own record or card, whose current secret it lacks, which travels as a
     /// certificate copy), unless the body needs it (`b.parts`): then `None`, nothing is sealed
-    /// now. A plain thing's derived epoch sealed under is noted (`note_sealed`, spec/crypto.md §4
-    /// Current).
+    /// now. A plain thing's derived epoch sealed under is noted (`note_sealed`, spec/crypto.md
+    /// §4 Current).
     pub fn seal(&mut self, b: &Body, class: osis_label::Class, extra: &[Section], rng: &mut dyn CryptoRngCore) -> Result<Option<Sealed>> {
         let pt = self.body_plaintext(b)?;
         if pt.is_empty() {
@@ -301,17 +307,28 @@ impl Engine {
         let resolved = self.resolved_header(&c);
         let things: Vec<Tid> = resolved.aspects.iter().map(|a| a.tid).collect();
         let id = c.id();
+        // a held section goes as it came only where it carries what this node holds of it: none
+        // of its parts held stripped or dropped (a purge's or an expiry's leftover)
+        let whole: Vec<Section> = {
+            let m = self.core.ix.commits.get(&id);
+            extra.iter().filter(|s| s.ais.iter().all(|ai| m.is_none_or(|m| matches!(m.hold.get(*ai), None | Some(crate::engine::Hold::Body { .. } | crate::engine::Hold::Missing(_)))))).cloned().collect()
+        };
         let mut under = Vec::new();
         let env = osis_commit::seal_commit(
             &c,
             |ai| things.get(ai).copied(),
             |t, parts| {
                 let t = (*t)?;
+                // another's write goes under this node's epoch only where `opened::passes_on`
+                // (its invariant), else as a held section of it or not at all
+                if !self.passes_on_all(&id, &resolved, parts).ok()? {
+                    return None;
+                }
                 let (e, s) = self.wrap_under(&t, Some((&id, parts))).ok().flatten()?;
                 under.push((t, e));
                 Some((s, self.section_chain(&t)))
             },
-            extra,
+            &whole,
             rng,
         )?;
         let s = frame_envelope(&env, &resolved, class, rng, &c)?;
@@ -373,7 +390,20 @@ impl Engine {
             v.push(key.clone());
             v
         })?;
-        Ok(OpenedBlob { plaintext: opened.commit.encode(), commit: opened.commit, ais, sealed: opened.sealed, copy })
+        // the epoch each section under a read secret opened under (`labeling::opened`)
+        if let Some(h) = &header {
+            let mut under = Vec::new();
+            for sec in &env.sections {
+                let Some(t) = thing_of(sec) else { continue };
+                if opened.sealed.contains(sec) || osis_crypto::unwrap_section(key, &id, &sec.wrap).is_ok() {
+                    continue;
+                }
+                let Some((e, _)) = self.read_epochs(&t, &sec.chain).into_iter().find(|(_, s)| osis_crypto::unwrap_section(s, &id, &sec.wrap).is_ok()) else { continue };
+                under.push((e, opened.commit.parts.iter().filter(|p| sec.ais.contains(&p.ai)).collect::<Vec<_>>()));
+            }
+            self.note_opened(h, &under);
+        }
+        Ok(OpenedBlob { plaintext: opened.commit.encode(), commit: opened.commit, ais, sealed: opened.sealed, sections: env.sections, copy })
     }
 
     /// The bodies a group's label must hold from its closure (spec/sync-judgement.md §1): held commits
@@ -557,7 +587,8 @@ impl Engine {
     /// The read secret a commit is wrapped under at a label of `g` (spec/crypto.md §5): the
     /// newest current read epoch held, except a rotation commit of the actor `g`'s secrets
     /// derive from, which goes under the newest epoch its rotation supersedes. `None`: no
-    /// current secret held (stranded: nothing is placed).
+    /// current secret held (stranded: nothing is placed), or a part of `c` it carries this node
+    /// may not pass on under an epoch of its choosing (spec/crypto.md §5 Passing on).
     pub fn wrap_secret(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>) -> Result<Option<Secret32>> {
         Ok(self.wrap_under(g, c)?.map(|(_, s)| s))
     }
@@ -565,6 +596,14 @@ impl Engine {
     /// `wrap_secret` with its epoch.
     fn wrap_under(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>) -> Result<Option<(Epoch, Secret32)>> {
         let Some(e) = self.epochs(g) else { return Ok(None) };
+        // the wrap gates the header, and a copy's whole content: under this node's epoch only
+        // where every part it carries may go so and the commit's header may (`Engine::passes_on_parts`,
+        // spec/crypto.md §5 Passing on)
+        if let Some((c, parts)) = c
+            && !self.passes_on_parts(c, parts)?
+        {
+            return Ok(None);
+        }
         if let Some((c, parts)) = c
             && self.carries_secrets(g, c, parts)
             && let Some(ep) = self.rotation_wrap_epoch(g, c)?

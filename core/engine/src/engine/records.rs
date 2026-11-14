@@ -76,6 +76,10 @@ pub const OWN_KEYS: &[u8] = b"g/";
 /// yet carried by a rotation of it (`Indexes::derived_written`, `rotation::merge`): `dw/` + tid +
 /// the epoch's n (8 bytes, big endian) + nonce, empty.
 pub const DERIVED_WRITTEN: &[u8] = b"dw/";
+/// The epochs sections of commits another wrote opened under, per part (`labeling::opened`):
+/// `ou/` + commit ID + aspect index (4 bytes, big endian) + the epoch's n (8 bytes, big endian)
+/// + nonce; the value a byte (1: the delta checked against its header) and the delta's hash.
+pub const OPENED_UNDER: &[u8] = b"ou/";
 /// Suspect aspects (`retention::suspect`): `q/` + aspect key, le64 wall ms last
 /// raised, then per body its commit ID, aspect index and `Why` bits.
 pub const SUSPECT: &[u8] = b"q/";
