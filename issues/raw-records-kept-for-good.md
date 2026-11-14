@@ -1,7 +1,7 @@
 # Raw records are kept for good
 > Summary: Every creation record a node learns raw (`Engine::learn_records`, from a record blob or an inbox payload) is stored as a `t/` row for good, whether or not anything held needs it; a label's writer (or an admitted inbox sender) can grow every reader's record table.
 > Priority: low
-> Tags: engine, node-sync
+> Tags: engine
 
 - A record proves itself by its hash, so learning one needs no authority, but nothing drops a raw record whose thing the node never holds a creation or part of. Record blobs are certificate blobs (no delete key), and their records outlive them at every reader.
 - The same holds for a released thing's record placed as evidence (spec/permissions.md §4) while something needed it: once the node forgets the thing (spec/commits.md §5 Forgetting) its record stays in record blobs at hosts and in the nodes' `Kind::Records` entries, the one trace of it left.

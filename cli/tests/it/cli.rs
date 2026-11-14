@@ -725,7 +725,7 @@ fn group_and_splice_commands() {
     assert_eq!(s.code(&["op", &schema, "t:made.0", "", "splice"]), 2, "a range");
 }
 
-// Audit rows 3 and 12 (issues/no-server-audit.md), spec/permissions.md §7: with no saved peers
+// No-server audit rows 3 and 12 (issues/sync-rewrite.md Phase 4), spec/permissions.md §7: with no saved peers
 // the CLI still makes a link, a chat link and a contact card; a store with no peers is not a dead end.
 #[test]
 #[ignore = "issues/sync-rewrite.md"]

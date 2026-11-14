@@ -9,7 +9,7 @@
 ## Names
 - Thing lists (`Engine::hold_lists`; `Engine::ingest_with_lists` holds a batch's list blobs before its rotation applies) and `listing.0` deltas (`lists::note_listing`) become name rows (`tn/` commit‖thing‖source, `tb/` source‖commit‖thing). Certs stay for good (`tl/`), as role commits do.
 - A name is judged once its source is held: a rotation's lists are kept before it applies (`ingest_with_lists`, own writes) and it may wait for a head not here, so `put_names` marks a named commit due only when its source is held (a listing is indexed before its names are noted); a rotation's arrival judges what it names (`refresh_epochs`, a rotation whose count moved), whatever arrived while it waited.
-- A list for a rotation not held is not kept: node-sync keeps the entry as `Kind::List { held: false }` until the rotation arrives.
+- A list for a rotation not held is not kept: sync keeps the entry as `Kind::List { held: false }` until the rotation arrives.
 - Inner and merge signatures are kept per rotation (`ix.rotation_sigs`, persisted); merge signatures are verified at chain build (`osis_commit::verify_merge`).
 
 ## Heads and sides
@@ -31,7 +31,7 @@
 ## Writing (`flows/signing.rs`)
 - Removing a node from D rotates the account in the same transaction (`rotate_in`; thing lists inline only).
 - Every rotation applied is due an answer, a listing or addenda (`ix.rotations_due`, `rd/`).
-- What the chain owes (`rotations_due`, any node of the account, none designated) is decided at the end of a complete pass of D's labels (`Engine::signing_due`, node-sync's re-seal pass), so a removal and its rotation arriving apart do not fork: a removed node's fork no authorized rotation supersedes yet (`unanswered`, once a rotation naming its maker's removal is held: rejecting earlier would reject the removal's own parent), a blocked head, or a removal no authorized rotation names that this node may name (its own, by the cutoff, or named by a standing rotation). A removal named only by a removed node's fork is not named again (`a_removed_nodes_removal_named_only_by_its_fork_is_not_named_again_spec_permissions_5_5`).
+- What the chain owes (`rotations_due`, any node of the account, none designated) is decided at the end of a complete pass of D's labels (`Engine::signing_due`, sync's re-seal pass), so a removal and its rotation arriving apart do not fork: a removed node's fork no authorized rotation supersedes yet (`unanswered`, once a rotation naming its maker's removal is held: rejecting earlier would reject the removal's own parent), a blocked head, or a removal no authorized rotation names that this node may name (its own, by the cutoff, or named by a standing rotation). A removal named only by a removed node's fork is not named again (`a_removed_nodes_removal_named_only_by_its_fork_is_not_named_again_spec_permissions_5_5`).
 - Several nodes owing the same rotation each make one; the fork stands (`concurrent_rotations_fork_and_every_node_supersedes_them_spec_crypto_9`). A removed node's every re-fork costs one rotation per node of the account online, never a listing (unauthorized rotations are answered by the rotation superseding them).
 - Pairing carries the rotations with their lists (`Package::lists`), so D's earlier commits count at the new node.
 - D is sealed to its nodes only (`Core::seals_to`). A node off D's roster drops the account's seeds and what it read as the account (`signing::leave_if_removed`; lost access and retain read `Core::member`, not `me`).

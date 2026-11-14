@@ -1,7 +1,7 @@
 # Dropped bodies coming back: make it simple and robust
 > Summary: Tess's rule stands (a drop a later validity flip undoes counts as never received; the body rejoins from any copy; none left means gone alike); build it robustly, spending download and CPU freely in this rare case. Built: one rebuild path, leftovers as held bodies, the debug rebuild check. Left: holders re-upload (3), brute-force refetch (4), a reference model (6), revoker snapshots (7).
 > Priority: normal
-> Tags: engine, node-sync, tests
+> Tags: engine, tests
 
 Most arrival-order bugs (notes/testing.md What finds bugs, notes/convergence-study.md) come from the implementation, not the rule: finding a copy is unreliable (hosts may delete in the same sync; the revoker may not hold it; a node without the revocation deletes a re-upload again); drops stack (expiry, covers turning invalid); "nobody has it" looks like "not yet", so repair backstops can loop (seed 5288: a re-snapshot every 6 h).
 

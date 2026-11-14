@@ -4,7 +4,7 @@
 A task is a branch in a warm worktree; the branch proves itself there (notes/gate.md); main only fast-forwards and is never built. Much past What things should cost means something is broken. Process: notes/coordination.md.
 
 ## Layout
-- `core/` holds the library crates in unprefixed directories with prefixed package names (`core/node` is osis-node); `core/test/` the test infrastructure (sim, vectors, fuzz, crdt-model, roles-model, held-model, tla); `libs/` what some but not all users of osis want (`libs/chat` osis-chat, core; `libs/kit` osis-kit, GUI); `schema/` the first-party schema files; `cli/` the CLI. Further projects are top-level directories depending only on the `osis` crate.
+- `core/` holds the library crates in unprefixed directories with prefixed package names (`core/engine` is osis-engine); `core/test/` the test infrastructure (sim, vectors, fuzz, crdt-model, roles-model, held-model, tla); `libs/` what some but not all users of osis want (`libs/chat` osis-chat, core; `libs/kit` osis-kit, GUI); `schema/` the first-party schema files; `cli/` the CLI. Further projects are top-level directories depending only on the `osis` crate.
 - **One workspace** (root `Cargo.toml`): one `Cargo.lock`, one `deny.toml`, one `target/`, one copy of osis. `default-members` is core, so a bare `cargo build`/`test`/`clippy` never compiles the GUI. The GUI (`libs/kit/` osis-kit, `app/` osis-app, `app/android` osis-android) builds only when named with `-p`; `--workspace` means core and GUI. Its `[patch]` entries (libs/kit/patches/, vendored, not members) are in the root manifest. The GUI build reuses core's artifacts (Feature unification). Core depends on nothing in it; it depends on `osis`, `osis-schema` and `osis-chat` only.
 
 ## Worktrees
@@ -21,7 +21,7 @@ Every new combination of profile, features, `RUSTFLAGS`, `CARGO_INCREMENTAL` or 
 - **Lint**: `cargo clippy --all-targets -- -D warnings`. GUI: `cargo clippy -p osis-kit -p osis-app -p osis-android --all-targets -- -D warnings` (right after core's clippy it re-lints only kit and app; a `cargo check` instead re-checks every osis crate in a unit set apart from clippy's), `cargo test -p osis-kit -p osis-app`, `cargo run -p osis-app -- DIR`.
 - **A property or by-hand test by name**: `cargo test -p <crate> --test it -- --ignored <name>` (or `cargo test --tests -- --ignored <name>`: `--tests` skips the doctests). Seeds and env vars: notes/test-harnesses.md.
 - **Sim**: `cargo run --bin sim-sweep -- --seeds N --budget-secs T` (notes/test-sim.md).
-- **Networking** (by hand): `tools/heavy cargo test --no-fail-fast --tests -- --ignored driver:: runtime:: quic relay lan --skip repro_`, always filtered (unfiltered it runs every ignored test; a `repro_` fails by design).
+- **Networking** (by hand): `tools/heavy cargo test --no-fail-fast --tests -- --ignored quic relay lan --skip repro_`, always filtered (unfiltered it runs every ignored test; a `repro_` fails by design).
 - **Release**: never inside a task (scaling is checked by counting work: notes/test-scale.md). Memory checks and `cargo bench` are the coordinator's, alone: `cargo test --release -p <crate> --test it -- --ignored <filter>`.
 - **Old vs new**: `tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME | --lib CRATE] [--patch FILE]... [--take PATH]...` builds REV's test binary in your worktree and copies it to OUT (default osis-node `it`; `--lib osis-engine`: its unit-test binary, run it from `core/engine`). A new test against an old REV: `--take core/node/tests/it/x.rs` (root-relative) or `--patch FILE` (a `git diff`), undone after. Needs a clean tree (wip-commit); checks REV out detached and your branch back (also on failure); the next build recompiles what REV changed. The binary keeps your worktree's manifest dirs, so fixtures are read from the checked-out tree. Refuses the main checkout. Compare under `tools/icount` (notes/test-harnesses.md, Measuring).
 - **Jobs**: capped per invocation at the physical core count in the user-level `~/.cargo/config.toml` (`[build] jobs = N`; changes no artifacts), never per command (`--jobs`).
@@ -29,7 +29,7 @@ Every new combination of profile, features, `RUSTFLAGS`, `CARGO_INCREMENTAL` or 
 
 ## Feature unification
 A package's features are the union of what everything in the build asks for, so `-p X` resolves differently from `--workspace` unless every crate's features are the same in both, and then rebuilds part of the tree as a second artifact set (cargo's `resolver.feature-unification = "workspace"` would fix it but is unstable). The rules that keep it selection-invariant:
-- No feature a member turns on that another build of the crate leaves off: optional features only for the default `driver` nobody turns off. QUIC, the LAN loop, redb and `OsRng` are unconditional.
+- No feature a member turns on that another build of the crate leaves off: optional features only in the GUI (`accessibility`, off by default). QUIC, the LAN loop, redb and `OsRng` are unconditional.
 - Third-party features go in `[workspace.dependencies]`, the same for every member (tokio's set, blake3 `zeroize`, ed25519-dalek `hazmat`); dev-dependencies add no features to a normal dependency.
 - Pins: where a crate higher up enables features on a shared low dependency (quinn-proto: rand's defaults; libcrux-platform: libc's; x25519-dalek: zeroize's derive; the GUI stack: bitflags `serde`, num-traits `libm`, tracing defaults), osis-base lists that dependency at the workspace's features, unused (crdt-model, which has no osis-base, as dev-dependencies). The reverse for the GUI: osis-kit pins regex-syntax at proptest's defaults. The pins cost core builds a few small crates once.
 - Build-time units never share a unit with run-time ones: `[profile.dev.build-override]` gives them a profile of their own. Otherwise cargo merges a build-time and a run-time unit of the same crate when profiles and features match, the merged unit takes the run-time `lto = "off"`, and which crates merge depends on the selection (unicode-ident is a run-time dependency of naga, so in GUI builds only): a GUI build would compile every osis crate a second time. Neither `[profile.dev.package."*"]` nor `build-override` can set `lto`, and pinning unicode-ident would hold only until the next such crate; dropping `lto = "off"` would also fix it (Tess's call). Cost: about 20 small crates built once per side.
@@ -109,14 +109,13 @@ Warm worktree. Compare CPU-s, wall follows load. More than about 3x the CPU-s: s
 | what | expect |
 |---|---|
 | no-op `cargo build` / `cargo test --no-run` | 0.2 s / 0.3 s |
-| one-line edit, `cargo test --no-run`: osis-node / osis-engine | 2.5 s / 30-70 s, about 200 CPU-s (osis-engine lib and its unit tests in parallel, then osis-node `it`); osis-engine lib alone 10-30 s (ostrich) |
+| one-line edit, `cargo test --no-run`: osis-engine | 30-70 s, about 200 CPU-s; osis-engine lib alone 10-30 s (ostrich) |
 | edit osis-base, `cargo build --all-targets` / then `cargo test --no-run` | 40 s, 314 CPU-s / 230-280 CPU-s (ostrich) |
 | clippy after a one-line edit | 3-8 s, then the GUI lint 3 s |
 | clean `cargo build`; then `--all-targets`; first clippy | 82 s; +53 s; +17 s |
 | first GUI build, `cargo build --workspace --all-targets` on a built core | 183 s, 1240 CPU-s (168 units, none of them core) |
-| sim sweep, heaviest scenarios per seed | `concurrent_writers`, `future_format`, `work_sets`, `link_race` |
 | release `cargo test --release --no-run`: clean / after an edit (thin LTO relinks every test binary) | about 5 / 4 min at load 10-16 (ostrich) |
 | `core/test/tla/run.sh <module>` | under 3 min each at one worker on a quiet box |
-| test executables relinked by an osis-node or osis-engine edit | the ten above it |
+| test executables relinked by an osis-engine edit | the ten above it |
 
 Signs of unravelling: a build on a tree built minutes ago compiles more than the touched crates and their dependents; `target/` dirs growing by GB per day; tool calls lasting exactly 10 minutes; a "wait for X" shell loop; `--jobs`, `--release` or `--features` creeping into commands; the unification check failing; a timing test running in dev; a long build whose CPU-s are normal but wall is 10x (`IDL` in `ps -o cls`: Scheduler above).

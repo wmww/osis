@@ -291,7 +291,7 @@ The new sync asks narrow questions (per sync ID: held commits and their bodies, 
 |---|---|---|
 | `labeling::certs::boxed_by` | replace | keep the read rule (follow a payload's sync ID only for a thing the commit gave a read secret of); drop its sync invariant |
 | `apply::keys::learn_secret` | replace | keep for read secrets from an entry box (links); a sync secret goes to the sync record, not engine state |
-| `flows::edges::inbox_chain`, `deliver_parts` | replace | the chain and `keys.0` go only to readers; a sync grant carries its box and sync IDs (issues/stranded-holder-unread.md) |
+| `flows::edges::inbox_chain`, `deliver_parts` | replace | the chain and `keys.0` go only to readers; a sync grant carries its box and sync IDs (stranded-holder-unread (old issue, at 1dcacb6b0)) |
 | `labeling::actors::inbox`, `inbox_actors` | keep / replace | `inbox` keep; `inbox_actors` replace: readers' actors only (audit row Inbox actors) |
 | `Engine::note_delete_hints`, `own_delete_keys` | keep | delete keys an inbox payload names (spec/wire.md §9), for holders that delete |
 | `flows::{inbox_kem, inbox_of_actor}`, `Engine::account_kems` | keep | sealing and opening inbox blobs |

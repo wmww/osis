@@ -1230,8 +1230,8 @@ impl Engine {
     }
 
     /// Whether commit `c` is known with no part held, only for a part dropped while invalid
-    /// (`kept_invalid`): what node-sync keeps of it is its header, charged to its source like
-    /// input not judged yet (notes/node-sync.md, Input giving nothing).
+    /// (`kept_invalid`): sync keeps of it its header, charged to its source like input not
+    /// judged yet.
     pub fn kept_invalid(&self, c: &CommitId) -> bool {
         self.core.ix.commits.get(c).is_some_and(kept_invalid)
     }

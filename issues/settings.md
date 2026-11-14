@@ -60,7 +60,7 @@ node data thing
 
 ## Spec and notes to update
 - spec/data-model.md §9 and `schema/core.osis`: `settings.0`, `node.0`'s `data` field, where `host^.0` and `clients^.0` live. spec/crypto.md §3 and spec/wire.md §3: the derived nonce.
-- notes/serving.md (remote configuration), notes/api.md, notes/app.md and `schema/ui.osis` (windows, look), notes/growth.md (check for a new row).
+- notes/api.md, notes/app.md and `schema/ui.osis` (windows, look), notes/growth.md (check for a new row).
 - issues/app-group-helper.md: drop theme and mode from its duplicate rules.
 
 ## Tests (what users observe)

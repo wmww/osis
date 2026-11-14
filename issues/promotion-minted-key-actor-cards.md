@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: security, sync
 
-Probe: `promotion::a_readers_minted_key_actors_cards_are_not_promoted_spec_sync_5` (ignored; 20 of 20 stamped, 4 KB each).
+Probe (old sync, at 1dcacb6b0): `promotion::a_readers_minted_key_actors_cards_are_not_promoted_spec_sync_5`, 20 of 20 stamped, 4 KB each; the rebuilt sync keeps the class (spec/sync-inbox.md §4 Promotion), so its tests should keep the probe.
 
 Why not "cards only of authors of commits the label must hold": a node authors nothing but its own card (its account authors the rest), so a pure reader node's card would never be stamped. It would sit deposited, count toward the clearing cap (32 per host), and be cleared and re-deposited past it; co-readers find nodes by it (`pending_bound::reader_flood_of_pending_stays_within_the_cap_spec_sync_3`, `sync_more::certificates_spec_permissions_4`, `local_serve::deposit_promoted_on_local_label_spec_sync_5`, `inbox_life::readers_burst_under_a_group_inbox_stays_spec_sync_5`, `wrap_poison::useless_*` all fail under that rule).
 

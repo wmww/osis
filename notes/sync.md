@@ -1,21 +1,25 @@
 # Sync: design reasons
-> Summary: Index of the sync notes, then why spec/sync.md is shaped as it is at its core: one blob per commit, groups and labels, label keys, entitlement, sections, certificate blobs, self-certifying label IDs, the blob prefix, stamps and first-stamped-wins, delete keys and their levels, retention on the wire; rejected designs at that level, policy defaults, open items. Not here: label access and re-seal (notes/label-access.md), deletion and convergence (notes/sync-convergence.md), inbox and deposits (notes/inbox.md), anything about code (the implementation notes below).
+> Summary: Index of the sync notes, then why spec/sync.md is shaped as it is at its core: one blob per commit, groups and labels, label keys, entitlement, sections, certificate blobs, self-certifying label IDs, the blob prefix, stamps and first-stamped-wins, delete keys and their levels, retention on the wire; rejected designs at that level, policy defaults, open items. Tess's node decisions. Not here: label access and re-seal (notes/label-access.md), deletion and convergence (notes/sync-convergence.md), inbox and deposits (notes/inbox.md), the code (notes/sync-boundary.md).
 
 The requirements behind sync: spec/requirements.md, Data a node cannot read and Deletion. The rules: spec/sync.md. Byte layouts: spec/wire.md.
 
 ## The sync notes
 - notes/sync.md (this): core design reasons, policy defaults, open items.
-- notes/label-access.md: steps, sync-key gating, claim keys, opens, re-seal, entry boxes and static entries; lockout and stranding limits; node sync's open and registration.
-- notes/sync-convergence.md: the convergence rule, compaction, purge, carriers, tombstones, header-only blobs, why no recycle bin; node sync's deletion judgments and their invariants.
-- notes/inbox.md: deposits and their budget, the inbox (grants, invites, clearing, stamping, hints), delivery of flows' results (outbox, crash safety), relay wait and promotion.
+- notes/sync-boundary.md: the osis-sync crate's modules and its interface to the engine; notes/sync-test-harness.md: the harness its tests run on.
+- notes/label-access.md: steps, sync-key gating, claim keys, opens, re-seal, entry boxes and static entries; lockout and stranding limits.
+- notes/sync-convergence.md: the convergence rule, compaction, purge, carriers, tombstones, header-only blobs, why no recycle bin.
+- notes/inbox.md: deposits and their budget, the inbox (grants, invites, clearing, stamping), delivery of flows' results, promotion.
 - notes/unreadable-data.md: what a node learns about data it cannot read, and the choices that keep it that small.
-- notes/sync-protocol.md: why the wire is so, osis-proto (client and serving engines, reply caps) and osis-label.
-- notes/flow-control.md: request window, push holding, stall timeouts, the hub's per-input bounds and turns.
-- notes/serving.md: hosting as a node feature, osis-host (store, policy, hub, driver), hosting in the node, host abuse.
-- notes/node-sync.md: node sync as built: module map, records, the pass, certificates, inbound, handed-off groups, junk copies, first sync, simulator invariants.
-- notes/node-sync-work-sets.md: what a pass judges and when a label passes (work sets, idle labels, many labels), with measured costs.
-- notes/networking.md (transports, reachability, first contact) and notes/peers.md (co-reader peers, LAN routes, co-reader serving, local passes).
+- notes/sync-protocol.md: why the wire is so, osis-proto (frames, Hello, messages and their decode caps) and osis-label.
+- notes/networking.md: transports, reachability, first contact.
 - notes/growth.md: every known cause of permanent growth, sync's included.
+
+## Nodes (Tess)
+- **One kind of node**: same binary, run the same way, on a laptop or a rented machine, with any mix of data it reads and data it cannot. Reading is per sync ID (a read secret held or not), so one node may read some groups and keep others unread; a machine that reads its own configuration group and keeps everything else unread is one osis instance.
+- **No separate program**: keeping data for others is part of the node, started by the one long-running command (`osis serve`), configured by osis data on the node's own thing (spec/data-model.md §9), so any admin of the node (the account's nodes) configures it remotely; it is never in the node card.
+- **The node's store of ciphertext is a shredding `Store`**: a node keeping S unread may read other sync IDs on the same machine, so wraps and blobs surviving a delete in freed pages would break spec/requirements.md Deletion (notes/local-store.md).
+- **No connection count limit** (Tess; spec/sync-transport.md §5 served connections): a count picked from memory per connection would mislead (that memory is not a fixed amount in practice) and refuse devices past it on large rosters. Later work: a node that detects low memory sheds load (refusing or closing connections, evicting caches).
+- **A child step past the caps** (spec/sync-ids.md §6 Register, Storage caps): a refused rotation would leave a removed holder's open and write keys valid at that node, and anyone may fill a node to its total cap; only a sync ID's own admin spends that room, so outsiders cannot starve an honest rotation, and growth past the caps is at most one bare step (about 300 B) per sync ID per interval. Rejected: forgetting old steps instead (a path walk from genesis is how a node verifies a head it has not recorded).
 
 ## Blobs, groups and labels
 - **One commit ID, one blob per commit, a random key per blob.** A commit has one ID whatever groups contain it, so sharing history adds wraps and never re-encrypts.
@@ -33,10 +37,9 @@ The requirements behind sync: spec/requirements.md, Data a node cannot read and 
 ## Stamps and the write path
 - **Stamps** (read must not give upload): the author's signature sits inside the ciphertext, so the label write key is the only writer proof a host can check. Signing (label ID, blob ID, wrap) and storing the signature beside the wrap lets anyone relay a writer-vouched entry (LAN-first flows, host to host by push, bundles) while readers originate nothing; covering the wrap means a relaying reader can spoil nothing. Stamps check against the current step, so a removed writer's stamps die with the rotation its removal already does.
 - **Deposits** carry what a reader legitimately needs under a label: a provisional entry under a per-label budget, readable at once by co-readers, promoted by a writer's stamped re-upload, which frees the budget (notes/inbox.md). Rejected: upload under the write key alone (loses relay); per-holder upload keys (linkable).
-- **A stamped entry never changes at a host** (spec/sync-ids.md §6). Every writer shares one write key and a host cannot read a wrap, so it can tell nothing about a re-upload: last-wrap-wins let one member hide any message from every node not holding its key (reproduced). No honest node re-wraps a held stamped entry (`place` skips a blob already under the label; a pass sends only what a host lacks), so first-stamped-wins costs nothing and needs no replacement rate limit: one wrap per entry, no number to pick. A stamped upload over a deposit still replaces, or any reader could keep a writer's wrap out.
+- **A stamped entry never changes at a host** (spec/sync-ids.md §6). Every writer shares one write key and a host cannot read a wrap, so it can tell nothing about a re-upload: last-wrap-wins let one member hide any message from every node not holding its key (reproduced). No honest node re-wraps a held stamped entry, so first-stamped-wins costs nothing and needs no replacement rate limit: one wrap per entry, no number to pick. A stamped upload over a deposit still replaces, or any reader could keep a writer's wrap out.
   - Residual race: only a first upload at a host can put a useless wrap there, so the attacker must hold the blob from another host or promote a deposit first. It loses at a reader to any other host's wrap and to a holder's fresh encryption (the path for a tombstoned ID; `gone` marks the entry). The fresh copy goes to that host alone, where it is first by construction, so the race cannot repeat there.
-  - Residual gaps: a wrong-key wrap heard before the body's bytes (not inline: a blob that crossed the connection already) displaces a good wrap heard next from another host; the entry goes `Bad` when the bytes come and that reader waits for a key holder's fresh encryption (a host's wrap is heard once per stream position).
-  - An honest wrap under an epoch the node lacks (two writers placing one blob under a new label across a rotation) looks like garbage when heard: a `doubts` row (`y/3`) keeps the wrap while the host holds the entry, and goes once a secret arrives that opens it. Rotation commits go first in a host's log and are checked with the batch, and a node lacking the head's epoch does nothing at that host, so it acts on a doubt only when the rotation has not reached that host at all (the entry goes, one fresh copy under its older epoch): every holder of the new epoch holds the older by history boxes, and the node held that blob's key already. No hold-off: garbage and an unknown epoch look the same, and a time limit would be a guess.
+  - An honest wrap under an epoch the node lacks (two writers logging one blob under a new label across a rotation) looks like garbage when heard; every holder of the new epoch holds the older by history boxes. No hold-off: garbage and an unknown epoch look the same, and a time limit would be a guess.
   - Rejected: several wraps per entry (writers share a key, so any bound fills with the attacker's garbage); key-check values or commitments in the blob (a blob is shared across labels and epochs, and the host still cannot check); holders re-uploading the same blob (with replacement it never settles and leaves a window, without it it is a no-op); asking co-readers (needs reach the reader may not have); an OK variant saying "another wrap is held" (a subscribed sender hears the add before its ack, and a bare code cannot tell a useless wrap from another epoch's).
 
 ## Delete keys
@@ -58,11 +61,10 @@ The requirements behind sync: spec/requirements.md, Data a node cannot read and 
 - Deposit budget and deposit order: notes/inbox.md. `TOMBSTONE_LIFETIME` 30 days (notes/sync-convergence.md). `INBOX_LIFETIME` 90 days (format constant, matching `ROLE_KEEP`).
 - Fetching from a node that cannot read them, a client cannot put permission commits first before decrypting, so it downloads everything and applies role commits first.
 - Clients may batch uploads to blur timing.
-- Diagnostics: a clock offset of more than a few seconds against a dialed peer (`ClockSkew`; node sync estimates it from its Pings on a dialed connection, `ClockSamples` after three Pongs, reported above `OFFSET_DIAGNOSTIC_MS` 5 s; the only use of the estimate); an ephemeral commit not applied for the node's cap; an ephemeral upload a host refused for its cap.
+- Diagnostics: a clock offset of more than a few seconds against a peer (`ClockSkew`, the only use of the estimate: nothing a peer sends moves a node's clock); an ephemeral commit not applied for the node's cap; an ephemeral upload a node refused for its cap.
 - Repair of a deleted chunk (spec/sync-ids.md §1) runs at most once per aspect per back-off interval, doubling.
-- Handshakes have no deadline beyond the transport's idle timeout; a listener bounds the handshakes in progress (notes/networking.md); a host closes a connection with no Hello after `hello_ms` (notes/serving.md).
-- LAN routes: notes/peers.md.
+- Handshakes have no deadline beyond the transport's idle timeout; a listener bounds the handshakes in progress (notes/networking.md).
 
 ## Open
 - Partial restore from hosts: `label.0` writes of groups go under the home label of the nearest labeled actor up their record chain (a table of contents of labels); a subgroup's content is restorable alone only when it has its own label.
-- Host abuse limits: notes/serving.md, Abuse.
+- **Abuse limits** (open; deferred until a real problem, Tess): stamps (only writers add content), a deposit budget, caps and rate limits per sync ID bound a stranger, but any writer can fill a sync ID's cap with junk a node keeping it unread cannot tell from data. Per-holder limits would need pseudonymous holder keys (linkable uploads, forbidden) or anonymous credentials (zkgroup-class crypto). If paying accounts come, the credential goes to one node bound to (node, sync ID), never into the relayed `label.0` chain. Relaying: issues/p2p-own.md.

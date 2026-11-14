@@ -134,7 +134,7 @@ Format: `file:line test | action | why safe | confidence`.
 - node `receive.rs:147 drift_parks` | delete | sim `drift_parks_until_clock_catches_up` and engine `clock::hlc_rules` | medium
 - node `encodings.rs:99 sequences_converge` | delete | `held_set_decides` and `crdt_equals_model` | medium
 - node `encodings.rs:27 every_encoding_converges` | keep unless held-model is shown to reach enum and bounded counters | medium-low
-- sim `no_server.rs:329` (row 15) | delete | covered by osis `sync::wait_synced_waits_on_a_group_with_nobody_connected`; update row 15 of issues/no-server-audit.md | medium
+- sim `no_server.rs:329` (row 15) | delete | covered by osis `sync::wait_synced_waits_on_a_group_with_nobody_connected` | medium
 - node `retention.rs:1872` vs engine `retention/mod.rs:1182 delta_live_follows_validity` | the same scenario at two layers; add `delta_live` asserts to the node test and drop the engine one | low
 - node `validity::carol_variant` first half duplicates engine `tests_addenda::unsynced_removal_witnessed_by_a_writer` | trim the node half, keep the engine one (the precise test) | medium
 
@@ -212,5 +212,5 @@ Width, open: crdt `tests_winners` (`seq_winners_from_scratch`, `winners_from_scr
 - **Doc follow-ups if the removals land:**
   - notes/crdt.md "Beside it" list
   - notes/engine-validity-rebuild.md (names `unmerge_spec_4_6`)
-  - issues/no-server-audit.md row 15
+  - the no-server audit's row 15 (issues/sync-rewrite.md Phase 4)
 

@@ -1,9 +1,0 @@
-# Unsettled-view delete rules lack small reproducers
-> Summary: two delete rules (spec/sync-judgement.md §2 strict subset judged only in a settled view; §7 Carriers: a delta dropped as covered leaves a host only with its cover there) have no default test that fails without them (nor does the purge exemption from §7 Carriers): both need a node to judge a pass while a fetch is out, which the node test net does not stage. Only sim seeds cover them (work_sets setup 963785799942, seeds 963785799948 and 963785799951).
-> Priority: low
-> Tags: tests, sync
-
-- Each rule loops (delete and place again) without it: the dropper deletes for a reason the holder cannot see yet (the cover, or the write that killed the delta, it has not fetched).
-- Why the net does not stage it: a connected node gets every blob inline in pushes (`inline_limit` = `MAX_BLOB`), so it never has a fetch out at a pass; `trickle_hosts` and `bare_blobs` tried, neither left a fetch asked when the pass ran. A net knob holding back one blob's bytes from a node's pushes and fetch replies while the node still lists it (asked, unanswered) would do it.
-- Shapes: strict subset: writer A drops delta d1 of B's commit {d1, d2} under its cover S and places the rewrite {d2}; B, fetching S, must not delete {d2}. Cover first: A's write kills B's; A's cover S covers both; while A fetches an entry, S stays local and B's body must stay at the host.
-- Also without a failing test: a purged delta dropped as covered needs no carrier (§7 Carriers, "not purged"). Every staged purge leaves its cover (or the purger's re-snapshot) at the host, so the delete never waited in practice; it waits only when the cover never reached the host. Shape: the purge-right holder drops d under a cover S the host refuses or never gets, then purges d; d's blob must leave the host at once.

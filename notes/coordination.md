@@ -113,7 +113,7 @@ Seed-breadth runs reach what per-branch sizes never do. They detect design smell
 Commands (the full set; an area run takes its own items), under `nice -n 19`:
 - `cargo run --bin sim-sweep -- --seeds 150 --from <F> --budget-secs 3600` (every scenario in `osis_sim::SCENARIOS`; at load 30-45 it reached 78 of 150 seeds in 3600 s). A seed past `OSIS_SEED_TIMEOUT_SECS` CPU-seconds (default 600) is named hung; one still running at the end exits the sweep (101) after naming it. A sweep cut by its budget says so only in its per-scenario seed counts: log the seeds that ran.
 - Every property not named below: `OSIS_FULL=1 PROPTEST_CASES=256 cargo test -- --include-ignored --skip sweep --skip repro_ --skip _probe --skip memory:: --skip multi_gb_value_streams` (memory checks run alone, notes/test-scale.md; proptest's seed cannot be rotated).
-- `OSIS_FULL=1 OSIS_ORDER_START=<S> cargo test -p osis-node --test it -- --ignored order::held_set_decides_` (plain and exhaustive, 80 seeds each).
+- `OSIS_FULL=1 OSIS_ORDER_START=<S> cargo test -p osis-engine --test it -- --ignored order::held_set_decides_` (plain and exhaustive, 80 seeds each).
 - `OSIS_PERM_SEED=<P> cargo test -p osis-perm` (only osis-perm reads it) and `OSIS_PERM_SEED=<P> cargo test -p osis-perm --test it -- --ignored differential:: queries:: incremental::`.
 - `OSIS_CRDT_SEED=<C> cargo test -p osis-crdt -- --include-ignored --skip repro_ --skip hostile_moves --skip shrink_script`.
 - Every seed-ranged harness has a `_large` twin (notes/test-harnesses.md Seed runners).
