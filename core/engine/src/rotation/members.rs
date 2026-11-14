@@ -318,7 +318,7 @@ fn sealing_at(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Resul
 fn seal_blocked(tx: &mut Tx<'_>, who: &Tid, m: &Tid, r: Role, ks: &BTreeSet<Epoch>, deps: &[osis_keys::Departure]) -> Result<BTreeSet<Epoch>> {
     let mut why = BTreeMap::new();
     for k in ks {
-        if let Some(b) = super::blocking(tx, who, m, r, k, deps, super::Walk::Seal)? {
+        if let Some(b) = super::blocking(tx, who, m, r, k, deps, super::Walk::Encrypt)? {
             why.insert(*k, b);
         }
     }

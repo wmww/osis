@@ -2060,6 +2060,80 @@ fn late_sealer_judges_an_earlier_grant_by_its_record_spec_crypto_4() {
     assert_eq!(x(&dave, mid), None, "Dave reads what Frank wrote after his removal");
 }
 
+// spec/crypto.md §4 (Encrypting under: the box clause judges a stale box at an epoch whose secret
+// the node lacks, as Seal does): as `late_sealer_judges_an_earlier_grant_by_its_record_spec_crypto_4`
+// with nothing removed from G. Frank, holding none of A's boxes but M's keyset superseding the one
+// A's grant box (and its record) names, does not write under G's epoch boxing A there: he rotates
+// G leaving A out, and Dave, removed from M, opens nothing Frank writes. Bob, back, rotates A; A
+// is sealed again and Carol reads it all.
+#[test]
+fn writer_judges_a_stale_box_below_before_writing_spec_crypto_4() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let [alice, bob, carol, dave, erin, frank] = [1, 2, 3, 4, 5, 6].map(|i| w.account(i, &[host]));
+    w.run();
+    let card = |w: &mut World, from: &Osis, to: &Osis| {
+        let c = from.contact_card().unwrap();
+        w.run();
+        w.until(to.import_contact(&c), 1000, 10).unwrap()
+    };
+    let alice_at_bob = card(&mut w, &alice, &bob);
+    let bob_at_carol = card(&mut w, &bob, &carol);
+    let dave_at_carol = card(&mut w, &dave, &carol);
+    let erin_at_carol = card(&mut w, &erin, &carol);
+    let frank_at_alice = card(&mut w, &frank, &alice);
+    let m = group(&carol);
+    let n = group(&carol);
+    carol.grant(m, bob_at_carol, Role::Read, Default::default()).unwrap();
+    carol.grant(m, dave_at_carol, Role::Read, Default::default()).unwrap();
+    carol.grant(n, bob_at_carol, Role::Read, Default::default()).unwrap();
+    carol.grant(n, erin_at_carol, Role::Read, Default::default()).unwrap();
+    w.run();
+    let a = group(&bob);
+    bob.grant(a, alice_at_bob, Role::Read, Default::default()).unwrap();
+    w.run();
+    let g = group(&alice);
+    alice.grant(g, a, Role::Read, Default::default()).unwrap();
+    w.run();
+    alice.leave(alice.me(), a).unwrap();
+    let settle = |w: &mut World, rounds: usize| {
+        for _ in 0..rounds {
+            w.advance(70_000);
+            w.run();
+        }
+    };
+    settle(&mut w, 3);
+    bob.grant(a, m, Role::Read, Default::default()).unwrap();
+    settle(&mut w, 2);
+    bob.grant(a, n, Role::Read, Default::default()).unwrap();
+    settle(&mut w, 3);
+    alice.grant(g, frank_at_alice, Role::Admin, Default::default()).unwrap();
+    settle(&mut w, 3);
+    let before = item(&frank, g, g, "before");
+    w.run();
+    assert_eq!(x(&carol, before), Some(s("before")));
+    assert_eq!(x(&dave, before), Some(s("before")));
+    // Dave, removed, keeps every secret he holds: G's read epochs among them
+    let dave_g = held_read(&dave, g);
+    let under = |db: &Osis| db.engine(|e| e.epochs(&g).and_then(|x| x.read.newest()).map(|ep| (ep.n(), *ep.nonce()))).unwrap();
+    w.set_online(&bob, false);
+    w.set_online(&alice, false);
+    carol.set_role(m, dave_at_carol, None, Default::default()).unwrap();
+    settle(&mut w, 3);
+    let mid = item(&frank, g, g, "mid");
+    w.run();
+    assert!(!dave_g.contains(&under(&frank)), "Dave opens what Frank wrote after his removal");
+    assert_eq!(sealed_keyset(&frank, g, a), None, "A left out of G");
+    w.set_online(&bob, true);
+    settle(&mut w, 6);
+    let after = item(&frank, g, g, "after");
+    settle(&mut w, 2);
+    assert!(sealed_keyset(&frank, g, a).is_some(), "A sealed again");
+    assert_eq!(x(&carol, mid), Some(s("mid")));
+    assert_eq!(x(&carol, after), Some(s("after")));
+    assert!(!dave_g.contains(&under(&frank)));
+}
+
 /// Bob's two nodes joined Alice's group `g` by her link: (laptop, phone, g, K).
 fn joined_twice(w: &mut World) -> (Osis, Osis, Osis, Tid, Tid) {
     let host = w.add_host();

@@ -39,12 +39,10 @@ pub(crate) use lost::{arm_untils, boxes_kept, load_lost_due, mark_lost_due, may_
 /// How far `blocked_epoch` follows boxes to holder actors (spec/crypto.md §4, Encrypting under).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Walk {
-    /// For encrypting under: through every holder actor whose boxes this node holds, rights
-    /// aside (what a departed party opens does not depend on who may rotate).
+    /// For encrypting under, sealing a holder actor at a keyset included: through every holder
+    /// actor whose boxes this node holds, rights aside (what a departed party opens does not
+    /// depend on who may rotate), a stale box at any epoch walked blocking.
     Encrypt,
-    /// For sealing a holder actor into an actor this node rotates or grants on: as `Encrypt`, and
-    /// a stale box at any epoch walked blocks (the sealer is that actor's rotator).
-    Seal,
     /// For placing role commits and certificates under labels (spec/sync-judgement.md §1): through the
     /// holder actors this node may rotate only, so a node that may not rotate an actor still
     /// places the keysets and revokes that tell that actor's rotators (node-sync's pass).
@@ -67,21 +65,23 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure],
 }
 
 /// Whether `who` may not encrypt under epoch `e` of role `r` of `a` (spec/crypto.md §4,
-/// encrypting under), `deps` the departures from `a` counted: `e` does not cover one of them
-/// (`uncovered`); or `who` may rotate `r` and `e` has a stale box to a holder actor (rule 2) or
-/// boxes a holder past its key access to `a` (rule 4); or `e` boxes a holder actor M at a
-/// keyset of M under which `who` may not encrypt, by this same rule with every departure from M
-/// this node knows (sealing at that keyset was encrypting under it). Stale and keyless bind
-/// rotators only: they say a rotation is due, not that a departed party opens `e`. Sealing a
-/// holder actor at keyset `e` (`Walk::Seal`, from `members::sealed`) is held back too by a stale
-/// box at any epoch walked, whoever may rotate it and whether or not its secret is held: the
-/// sealer rotates the actor sealed into, and a co-writer that cannot judge M's departure would
-/// otherwise re-seal M where a knowing node left it out, over and over. The box clause follows
-/// every box at an epoch whose secret this node holds (`Walk::Encrypt`: what a departed party
-/// opens does not depend on who may rotate), or for placing only those of actors
-/// it may rotate (`Walk::Place`): a node that may not rotate places its chain certificates (and
-/// revokes) under the actor's labels meanwhile, the holder actors' new `keys.0` among them, which
-/// is how the rotators learn of the staleness. Only epochs whose secret this node holds are
+/// encrypting under; sealing a holder actor at keyset `e` is encrypting under it), `deps` the
+/// departures from `a` counted: `e` does not cover one of them (`uncovered`); or `e`, or an
+/// epoch the walk follows from it, has a stale box to a holder actor (rule 2), whoever may rotate
+/// it and whether or not its secret is held; or `who` may rotate `r` and `e` boxes a holder past
+/// its key access to `a` (rule 4); or `e` boxes a holder actor M at a keyset of M under which
+/// `who` may not encrypt, by this same rule with every departure from M this node knows (sealing
+/// at that keyset was encrypting under it). A stale box names a keyset its own holder actor has
+/// moved past: what that keyset's departed party opens, the epoch boxing it hands on, and past an
+/// epoch whose secret this node lacks it is all the node can judge (a writer of G holding M's
+/// new keyset but none of A's secrets would otherwise write under G's epoch boxing A at an epoch
+/// boxing M at the old one). Keyless binds rotators only: it says a rotation is due, not that a
+/// departed party opens `e`. The box clause follows every box at an epoch whose secret this node
+/// holds (`Walk::Encrypt`: what a departed party opens does not depend on who may rotate), or for
+/// placing only those of actors it may rotate, stale boxes binding only those rotators
+/// (`Walk::Place`): a node that may not rotate places its chain certificates (and revokes) under
+/// the actor's labels meanwhile, the holder actors' new `keys.0` among them, which is how the
+/// rotators learn of the staleness. Only epochs whose secret this node holds are
 /// walked past (it reads that actor's labels, so it learns the actor's next keyset and re-seals
 /// it), and only other parties' departures count (`others`); past any other epoch (but for
 /// placing) only a box to this node's own account is judged, at any depth: an account epoch it
@@ -147,11 +147,11 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
                 return Ok(Some(Block::Departure));
             }
         }
-        // sealing at a keyset whose epoch, or one it boxes, names a superseded keyset hands the
-        // new secret to what that keyset's departed party opens; the box and keysets are state,
-        // so judged without the epoch's secret; an account boxes only its key actors, which have
-        // no keysets to go stale (its `secrets.0` is not read for it)
-        if read && walk == Walk::Seal && !tx.core.is_account(&x) && members::stale_at(tx, &x, r, &k)? {
+        // encrypting under an epoch that boxes, at any depth, a superseded keyset hands the secret
+        // to what that keyset's departed party opens; the box and keysets are state, so judged
+        // without the epoch's secret; an account boxes only its key actors, which have no keysets
+        // to go stale (its `secrets.0` is not read for it)
+        if read && walk == Walk::Encrypt && !tx.core.is_account(&x) && members::stale_at(tx, &x, r, &k)? {
             return Ok(Some(Block::Box));
         }
         let next = if !read || !tx.core.epochs(&x).is_some_and(|ep| ep.role(r).is_established(&k) && ep.role(r).secret(&k).is_some()) {
@@ -175,7 +175,7 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
             false
         } else {
             let rotator = may_rotate(tx.core, who, &x).contains(&r);
-            if rotator && (members::stale_at(tx, &x, r, &k)? || members::keyless_at(tx, &x, r, &k)?) {
+            if rotator && ((walk == Walk::Place && members::stale_at(tx, &x, r, &k)?) || members::keyless_at(tx, &x, r, &k)?) {
                 return Ok(Some(Block::Box));
             }
             if !rotator && walk == Walk::Place {
@@ -1262,6 +1262,8 @@ mod tests;
 mod tests_members;
 #[cfg(test)]
 mod tests_carried;
+#[cfg(test)]
+mod tests_deep;
 #[cfg(test)]
 mod tests_departs;
 #[cfg(test)]

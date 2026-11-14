@@ -1567,6 +1567,26 @@ fn blind_sealer_leaves_out_at_a_stale_box_below_spec_crypto_4() {
     assert!(!leaked(&mut lp, 4, &[m, a, g], e, start).contains(&g), "E opens none of G's new epoch");
 }
 
+// spec/crypto.md §4 (Encrypting under: a stale box at any epoch the walk follows): the world
+// above, nobody but W acting after the removal. W holds none of A's or M's secrets but M's knowing
+// keyset, so A's epoch's box to M, one level below G, is stale there: W may not write under G's
+// epoch boxing A at it (E opens it through A), and rotates G leaving A out first.
+#[test]
+fn writer_rotates_past_a_stale_box_below_before_writing_spec_crypto_4() {
+    let (mut lp, m, a, g) = co_writer_world();
+    let e = lp.peers[3].engine.me();
+    let start = held_by(&lp, 3, &[m, a, g]);
+    removal(&mut lp, 2, m, e);
+    lp.sync_all().unwrap();
+    assert!(lp.peers[4].engine.epochs(&a).is_none_or(|x| x.read.held().next().is_none()), "W holds none of A's secrets");
+    assert!(blocked_at(&mut lp, 4, g).contains(&Role::Read), "G's epoch blocked at W");
+    let rot = lp.peers[4].engine.ensure_rotated(&g).unwrap().0.commits.len();
+    assert_eq!(rot, 1, "W rotates G");
+    assert!(blocked_at(&mut lp, 4, g).is_empty());
+    assert_eq!(sealed_at(&mut lp, 4, g, a), None, "A left out");
+    assert!(!leaked(&mut lp, 4, &[m, a, g], e, start).contains(&g), "E opens none of G's new epoch");
+}
+
 /// Peer `i` removes `d` from `t` alone (no rotation, as by a remover that may not rotate).
 fn removal_alone(lp: &mut LocalPeer, i: usize, t: Tid, d: Tid) {
     lp.peers[i]
