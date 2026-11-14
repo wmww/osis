@@ -38,13 +38,16 @@ pub struct GroupLabel {
 /// a label hint is its sender's.
 pub(crate) fn owns(epochs: Option<&ActorEpochs>, id: &LabelId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
     let Some(e) = epochs else { return false };
-    let held: Vec<_> = e.sync.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s).verifying_key()).collect();
-    let bearing: Vec<&StepId> = steps.iter().filter(|(_, (s, _))| held.contains(&s.keys.sync)).map(|(k, _)| k).collect();
+    let held: BTreeSet<[u8; 32]> = e.sync.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s).verifying_key().to_bytes()).collect();
+    // the genesis first (every holder holds the older secrets, so usually it bears one): one
+    // step verified, not a path per bearing step
+    let mut bearing: Vec<(bool, &StepId)> = steps.iter().filter(|(_, (s, _))| held.contains(&s.keys.sync.to_bytes())).map(|(k, (s, _))| (s.prev.is_some(), k)).collect();
     if bearing.is_empty() {
         return false;
     }
+    bearing.sort();
     let plain: BTreeMap<StepId, Step> = steps.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
-    bearing.into_iter().any(|k| osis_label::path_to(&plain, k).is_ok_and(|p| p.first().is_some_and(|g| g.label == *id)))
+    bearing.into_iter().any(|(_, k)| osis_label::path_to(&plain, k).is_ok_and(|p| p.first().is_some_and(|g| g.label == *id)))
 }
 
 fn group_label(g: &Tid, id: &LabelId, l: &ct::Label) -> Option<Arc<GroupLabel>> {

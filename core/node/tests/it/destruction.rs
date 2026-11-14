@@ -1804,7 +1804,8 @@ fn a_destroyed_things_own_label_is_emptied_before_its_secrets_go_spec_commits_5(
 // own record, every step verifying). No step of ul bears a sync key of t's secrets, so b and c,
 // holding both, take ul as u's alone: t lists no ul there, and once t is released and its labels
 // emptied, ul is never emptied nor forgotten with them (without the check: b empties ul as t's
-// and the sync of ul never goes quiet): b keeps ul's sync state and the host u's entries
+// and the sync of ul never goes quiet): b keeps ul's sync state and the host u's entries. a names
+// ul in plain p's `label.0` too, taken unjudged (no sync secret of p's own): u still syncs
 #[test]
 fn a_label_named_in_another_groups_label_0_is_ignored_spec_sync_2() {
     let Setup { mut net, a, b, c, g } = setup();
@@ -1821,13 +1822,25 @@ fn a_label_named_in_another_groups_label_0_is_ignored_spec_sync_2() {
     let rec = net.engine(a).get_typed(&u, &ct::LABEL).unwrap().unwrap().remove(&ul).unwrap();
     let mut m = Mutation::new();
     m.op(t, &ct::LABEL, PathOp { path: vec![osis_crdt::PathSeg::Key(ul.to_value())], op: Op::Set(rec.to_value()) }).unwrap();
+    // and in plain p's: a plain thing has no label
+    let (p, _) = made(&mut net, a, g);
+    m.op(p, &ct::LABEL, PathOp { path: vec![osis_crdt::PathSeg::Key(ul.to_value())], op: Op::Set(rec.to_value()) }).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     for n in [a, b, c] {
+        assert!(net.engine(n).get_typed(&p, &ct::LABEL).unwrap().unwrap().contains_key(&ul), "node {n}: p's label.0 names ul");
         assert!(net.engine(n).get_typed(&t, &ct::LABEL).unwrap().unwrap().contains_key(&ul), "node {n}: t's label.0 names ul");
         let ls: Vec<_> = net.engine(n).group_labels(&t).unwrap().into_iter().map(|l| l.id).collect();
         assert_eq!(ls, vec![tl], "node {n}: t's labels are its own alone");
     }
+    // p, plain, takes ul unjudged (spec/sync.md §2, Owner: no sync secret of p's own): u's
+    // writes still travel under ul between b and c
+    net.write(c, u, "w");
+    net.run();
+    assert_eq!(net.engine(b).get_typed(&u, &REG).unwrap(), Some(s("w")), "u syncs at b");
+    net.write(b, u, "z");
+    net.run();
+    assert_eq!(net.engine(c).get_typed(&u, &REG).unwrap(), Some(s("z")), "u syncs at c");
     let rows = |net: &mut Net| net.engine(b).local_rows_naming(&ul.0).unwrap().len();
     assert!(rows(&mut net) > 0 && !net.host_ids(0, &ul).is_empty(), "b syncs ul, the host holds u's commits");
     net.engine(c).release(&[t]).unwrap().unwrap();
