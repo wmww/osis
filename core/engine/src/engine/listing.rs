@@ -181,7 +181,13 @@ pub(super) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(a) = m.view.aspects.get(ai) else { return Ok(None) };
     let (tid, ak, valid, own) = (a.tid, a.ak.clone(), m.valid_at(ai), Some(m.view.author) == me);
+    let below = a.replaces.map(|_| a.original_floor);
     if !valid && !own {
+        return Ok(None);
+    }
+    // an edit of a fire below this node's floor (from before its grant without history) is a
+    // version of a past fire: listed nowhere, as the fire is not (spec/commits.md §5 Signals)
+    if below.is_some_and(|f| f < own_floor(tx.core, &tid)) {
         return Ok(None);
     }
     let here = part_here(tx, c, ai)?;
@@ -196,6 +202,12 @@ pub(super) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
         _ => in_kept_history(tx, c, &tid, &ak, now)?,
     };
     Ok(kept.then_some((valid, here)))
+}
+
+/// This node's floor on the actor whose secrets `tid` reads by (spec/crypto.md §4, A party's
+/// floor): 0 on an actor never cut.
+fn own_floor(core: &crate::engine::Core, tid: &Tid) -> u64 {
+    core.secret_actor(tid).and_then(|a| core.epochs(&a)).map_or(0, |e| e.read.own_floor())
 }
 
 /// Whether part `ai` of `c` is listed (`listed`).

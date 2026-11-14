@@ -563,6 +563,10 @@ pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<boo
     if past_signal_bound(tx.core, &m.header, ai, tx.now().0) {
         return Ok(false);
     }
+    // an expiring snapshot past its expiry: a copy brings back nothing it may hold
+    if m.header.kind.is_compaction() && m.header.expires.is_some_and(|t| t <= tx.now().0) {
+        return Ok(false);
+    }
     if m.stripped(ai) {
         return Ok(gone_of(tx.core, &m.header, c, ai).is_empty());
     }
@@ -769,6 +773,29 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
     Ok(Some(k))
 }
 
+/// Expiring snapshot part `ai` of `c` past its expiry (spec/crdt.md §4.7, §8): held as its
+/// leftover, every copy value-less, and its aspect rebuilt from the held bodies (another may hold
+/// a write valued: its own delta, a snapshot expiring later). The aspect, when held.
+fn expire_snapshot(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Tid, Ak)>> {
+    let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
+    let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(None) };
+    if !m.holds(ai) || m.bare(ai) {
+        return Ok(None);
+    }
+    let mut body: Option<Fragment> = None;
+    let gives = crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
+        body.get_or_insert_default().join(f);
+        Ok(())
+    })?
+    .flatten();
+    let Some(mut body) = body else { return Ok(None) };
+    tx.core.touch();
+    body.strip(&|_| true);
+    put_leftover(tx, c, ai, m, body, gives)?;
+    crate::apply::rebuild(tx, &a.tid, &a.ak)?;
+    Ok(Some((a.tid, a.ak)))
+}
+
 /// Snapshot part `ai` of `c` carries a copy of a value of a write on its aspect's value-less list
 /// (spec/crdt.md §4.7 Copies, spec/commits.md §5): held as its leftover from now on, those copies
 /// value-less. Store only: the state took the copies stripped (`apply::join_into_state`), or the
@@ -817,7 +844,9 @@ fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::
     // whole replace by its leftover, as a load from the commit records reads it
     let whole_replace = m.whole(ai) || !m.holds(ai) && gives.is_none() && snapshot::whole_replace(&m, &a.ak, &body);
     leftover::put(tx, &a.tid, &a.ak, c, ai, &leftover::Leftover { fragment: body, gives })?;
-    let valued = gone_of(tx.core, &m.header, c, ai).is_empty();
+    // an expiring snapshot past its expiry holds no value (`expire_snapshot`)
+    let ended = m.header.kind.is_compaction() && m.header.expires.is_some_and(|t| t <= tx.now().0);
+    let valued = gone_of(tx.core, &m.header, c, ai).is_empty() && !ended;
     if m.stripped(ai) && m.valued(ai) == valued {
         return Ok(());
     }
@@ -896,6 +925,15 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
         strip_pending(tx, c, ai)?;
     }
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
+    // an expiring snapshot has no writes of its own: at its expiry its copies' values go, its
+    // body held as its leftover (spec/crdt.md §4.7); the writes stay, valued wherever another
+    // body holds them so
+    if !purged
+        && m.header.kind.is_compaction()
+        && let Some(k) = expire_snapshot(tx, c, ai)?
+    {
+        changed.insert(k);
+    }
     let own = writes_of(&m.header, c, ai);
     if let Some(k) = make_leftover(tx, c, ai, &own, &[], !purged)? {
         changed.insert(k);

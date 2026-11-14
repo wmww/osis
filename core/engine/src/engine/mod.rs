@@ -406,6 +406,8 @@ pub struct AspectView {
     pub hi: u64,
     /// The fire it claims to replace (spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
+    /// That fire's floor as its writer read it (`osis_commit::AspectEntry::original_floor`).
+    pub original_floor: u64,
 }
 
 impl View {
@@ -420,7 +422,7 @@ impl View {
             actor: h.actor,
             linked: h.links != osis_commit::Links::default(),
             memory: h.ephemeral.is_some(),
-            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, replaces: a.replaces }).collect(),
+            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, replaces: a.replaces, original_floor: a.original_floor }).collect(),
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
             purges: h.has_request(),
             epoch: h.epoch,
@@ -570,7 +572,7 @@ fn fallback_header(v: &View) -> Header {
         ts: v.ts,
         form: v.form,
         expires: None,
-        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, retention: Default::default(), keys: Vec::new(), hash: [0; 32], replaces: a.replaces }).collect(),
+        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, retention: Default::default(), keys: Vec::new(), hash: [0; 32], replaces: a.replaces, original_floor: a.original_floor }).collect(),
         purge: Vec::new(),
         undoes: None,
         blind: [0; 16],

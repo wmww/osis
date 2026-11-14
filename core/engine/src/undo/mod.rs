@@ -12,7 +12,7 @@
 pub(crate) mod touch;
 
 use crate::engine::write::{CommitPlan, Resolved, build_one, check_acts, check_authority};
-use crate::engine::{Core, Engine, Mutation, Tx};
+use crate::engine::{Core, Engine, Mutation, Owned, Tx};
 use crate::ephemeral::Written;
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Header, Kind};
@@ -253,12 +253,18 @@ fn resets_whole(d: &Decoded) -> bool {
 }
 
 /// The expiry of the write dotted `d` in `(tid, ak)` an undo copies back (`undo_expiring`): its
-/// held commit's (`None`: none). An ephemeral write no held commit carries: a plain write of this
+/// held commit's, else that of the held expiring snapshots carrying it (`carried`, from
+/// `retention::snapshot::expiring_carriers`), the latest (`None`: none). An ephemeral write no held commit carries: a plain write of this
 /// open's sessions never expires (covered by a snapshot); another session's expired or was
 /// superseded (`Some(0)`: a session's write held nowhere vanished whole, spec/crdt.md §4.7).
-fn copied_expiry(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> Option<u64> {
+fn copied_expiry(core: &Core, tid: &Tid, ak: &Ak, carried: &[(u64, Owned)], d: &Dot) -> Option<u64> {
     if let Some(e) = core.write_expiry(tid, ak, d) {
         return e;
+    }
+    // a value held from an expiring snapshot alone (no delta of it known: a holder granted
+    // without history) lives as long as its longest-lived carrier (spec/crdt.md §4.7)
+    if let Some(t) = carried.iter().filter(|(_, o)| o.owns(d)).map(|(t, _)| *t).max() {
+        return Some(t);
     }
     match d.src.author().kind() {
         osis_crdt::SourceKind::Session(s) if ak.ephemeral() && !core.own_plain(&s.node, &s.nonce) => Some(0),
@@ -349,14 +355,16 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Ts, confined: 
     let mut parts = Vec::new();
     for (a, delta, source) in undone_parts(tx, &target, ts, writers)? {
         let (tid, ak) = (a.tid, a.ak.clone());
+        let carried: Vec<(u64, Owned)> = crate::retention::snapshot::expiring_carriers(tx, &tid, &ak)?.into_iter().flat_map(|(t, os)| os.into_iter().filter(|o| matches!(o, Owned::Dots { .. })).map(move |o| (t, o))).collect();
+        let held = carried.clone();
         let strip = move |core: &Core, f: &mut Fragment| {
             crate::apply::strip_valueless(core, &tid, &ak, f);
-            f.strip(&|d| copied_expiry(core, &tid, &ak, d).is_some_and(|t| t <= wall));
+            f.strip(&|d| copied_expiry(core, &tid, &ak, &held, d).is_some_and(|t| t <= wall));
         };
         let pre = kept_before(tx, &a.tid, &a.ak, (h.ts, target), &delta, &strip)?;
         #[cfg(debug_assertions)]
         let whole = if compared() { Some(osis_base::costs::paused(|| kept_all(tx, &a.tid, &a.ak, (h.ts, target), &strip))?) } else { None };
-        parts.push(Undoing { a, delta, source, pre, #[cfg(debug_assertions)] whole });
+        parts.push(Undoing { a, delta, source, pre, carried, #[cfg(debug_assertions)] whole });
     }
     let [plain, expiring] = [tx.core.session.nonce, tx.core.expiring.nonce];
     let mut nonce = plain;
@@ -450,6 +458,8 @@ struct Undoing {
     delta: Fragment,
     source: Source,
     pre: Fragment,
+    /// The values held from expiring snapshots, with their expiries (`copied_expiry`).
+    carried: Vec<(u64, Owned)>,
     /// Debug builds, when `compared`: the whole join of kept history before it, which must give
     /// the same undo.
     #[cfg(debug_assertions)]
@@ -463,7 +473,7 @@ fn inverse(tx: &mut Tx<'_>, parts: &[Undoing], mut unmade: BTreeMap<(Tid, Ak), V
     let mut deltas = Vec::new();
     let mut copies = Copies::new();
     for p in parts {
-        let Undoing { a, delta, source, pre, .. } = p;
+        let Undoing { a, delta, source, pre, carried, .. } = p;
         let undone = Undone { delta, source, range: CounterRange { lo: a.lo, hi: a.hi } };
         let schema = schema_of(tx.core, &a.ak);
         // the undo reads the current state along the delta's paths, or whole where the aspect was
@@ -485,7 +495,7 @@ fn inverse(tx: &mut Tx<'_>, parts: &[Undoing], mut unmade: BTreeMap<(Tid, Ak), V
             let state = tx.core.states.get(&(a.tid, a.ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
             let w = Writer::new(ts, own.clone(), lo).keyed_removals(osis_schema::core_types::is_role_class(a.ak.as_str()));
             let core = &*tx.core;
-            let expiry = |d: &Dot| copied_expiry(core, &a.tid, &a.ak, d);
+            let expiry = |d: &Dot| copied_expiry(core, &a.tid, &a.ak, carried, d);
             let out = undo_expiring(w, &undone, state, pre.clone(), schema.as_deref(), &a.ak, ts.wall_ms().0, &expiry)?;
             #[cfg(debug_assertions)]
             if let Some(whole) = &p.whole {
@@ -503,7 +513,7 @@ fn inverse(tx: &mut Tx<'_>, parts: &[Undoing], mut unmade: BTreeMap<(Tid, Ak), V
         };
         if let Some((f, r, e)) = out {
             copies.extend(e);
-            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, replaces: None, frontiers: None, chunks: Vec::new() });
+            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, replaces: None, original_floor: 0, frontiers: None, chunks: Vec::new() });
             // joined into the delta just pushed, so its counters stay the last allocated
             if let Some(ops) = unmade.remove(&(a.tid, a.ak.clone())) {
                 unmake_one(tx, (a.tid, a.ak.clone()), ops, ts, &own, nonce, &mut deltas)?;
@@ -606,7 +616,7 @@ fn unmake_one(tx: &mut Tx<'_>, (tid, ak): (Tid, Ak), ops: Vec<PathOp>, ts: Ts, o
             d.fragment.join(f);
             d.hi = r.hi;
         }
-        _ => deltas.push(Resolved { tid, ak, fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, replaces: None, frontiers: None, chunks: Vec::new() }),
+        _ => deltas.push(Resolved { tid, ak, fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, replaces: None, original_floor: 0, frontiers: None, chunks: Vec::new() }),
     }
     Ok(())
 }

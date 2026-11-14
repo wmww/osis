@@ -45,6 +45,7 @@ pub(crate) fn sample_header() -> Header {
             keys: vec![0, 1],
             hash: [9; 32],
             replaces: Some(CommitId([8; 32])),
+            original_floor: 3,
         }],
         purge: vec![],
         undoes: Some(CommitId([4; 32])),

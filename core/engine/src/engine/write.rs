@@ -30,6 +30,8 @@ pub(crate) struct AspectMut {
     pub default_expiry: Option<u64>,
     /// The fire this write replaces (spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
+    /// That fire's floor as this node reads it (`osis_commit::AspectEntry::original_floor`).
+    pub original_floor: u64,
 }
 
 /// Creation records of a commit by tid (each `tid` is a hash: computed once).
@@ -448,6 +450,8 @@ pub(crate) struct Resolved {
     pub expires: Option<u64>,
     /// The fire this delta replaces (spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
+    /// That fire's floor (`osis_commit::AspectEntry::original_floor`).
+    pub original_floor: u64,
     /// A snapshot delta's frontiers, absorbed commits and facts (spec/crdt.md §8).
     pub frontiers: Option<(osis_crdt::Frontiers, std::collections::BTreeMap<osis_base::CommitId, Tid>, osis_crdt::Facts)>,
     /// Chunk blobs of large values the delta introduces.
@@ -520,6 +524,8 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, tid: &Tid, a
     };
     let expires = match kind {
         Kind::Content => osis_commit::retention::write_expires(ak.as_str(), ts, defaults.as_ref(), e)?,
+        // an expiring snapshot's: the expiry of the values it carries (spec/crdt.md §8)
+        Kind::ContentSnapshot => e,
         _ => None,
     };
     Ok((retention, expires))
@@ -669,7 +675,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         }
         // hostile test authors only (`Engine::commit_forged`): the header hashes what is sent
         let bytes = if tx.core.forge_bad.contains(&(d.tid, d.ak.clone())) { osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Int(1)])) } else { bytes };
-        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, retention, replaces: d.replaces });
+        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, retention, replaces: d.replaces, original_floor: d.original_floor });
     }
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, plan.actor, plan.form);
     b.expires = plan.expires;
@@ -865,6 +871,13 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
                 }
                 // an edit ends with its original (spec/commits.md §5 Signals)
                 am.expires = am.expires.or_else(|| tx.core.ix.commits.get(&o).and_then(|m| m.header.expires));
+                // the original's floor (the floor of the epoch it was opened or written under): a
+                // node granted without history after it lists the edit nowhere, as it holds no
+                // version of the original (spec/commits.md §5 Signals, spec/crypto.md §4)
+                am.original_floor = match tx.core.ix.commits.get(&o).and_then(|m| m.aspect(&tid, &ak)) {
+                    Some(oai) => crate::labeling::opened::part_floor(tx, &o, oai, &tid)?.unwrap_or(0),
+                    None => 0,
+                };
             }
             settle(tx.core, memory, kind, ts, &tid, &ak, am.schema.as_deref(), am.replaces.is_some(), am.retention, am.expires)?
         };
@@ -993,7 +1006,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if let Some(s) = &am.schema {
             keep_schema(tx, s, false)?;
         }
-        let r = Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, replaces: am.replaces, frontiers: None, chunks };
+        let r = Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, replaces: am.replaces, original_floor: am.original_floor, frontiers: None, chunks };
         deltas.push(r);
     }
     if deltas.is_empty() && plan.purge.is_empty() {

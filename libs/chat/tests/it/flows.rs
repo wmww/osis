@@ -1055,3 +1055,29 @@ fn odd_ids_from_another_writer_fail_no_read() {
     w.run();
     assert!(texts(&a, c).contains(&"better".to_string()));
 }
+
+// notes/chat.md Edit, spec/commits.md §5 Signals, spec/crypto.md §4 (State at a cut): Carol,
+// added without history, reads the chat's messages from her grant on, and no edit of an earlier
+// one: Alice's fix of a message from before shows to Bob, never to Carol as a new message.
+// Ignored until node-sync carries a history-less grant (issues/history-less-grant.md, Sync side:
+// Carol reads nothing of the chat yet); the engine's `from_now_lists_no_edit_of_an_earlier_message_spec_commits_5`
+// checks the rule meanwhile.
+#[test]
+#[ignore = "needs the sync side of grants without history (issues/history-less-grant.md)"]
+fn from_now_participant_sees_no_edit_of_an_earlier_message_spec_commits_5() {
+    let (mut w, [a, b, n]) = accounts::<3>();
+    let bob = meet(&mut w, &a, &b);
+    let carol = meet(&mut w, &a, &n);
+    let c = create(&a, &Options { edit: Some(EditMode::Keep), ..Options::default() }).unwrap();
+    a.grant(c, bob, Role::Write, Default::default()).unwrap();
+    w.run();
+    let o = post(&a, c, "tpyo").unwrap();
+    w.run();
+    a.grant(c, carol, Role::Write, osis::GrantOpts { reads: osis::Reads::FromNow, ..Default::default() }).unwrap();
+    w.run();
+    edit(&a, c, o, "typo").unwrap();
+    post(&a, c, "welcome").unwrap();
+    w.run();
+    assert_eq!(texts(&b, c), ["typo", "welcome"]);
+    assert_eq!(texts(&n, c), ["welcome"], "Carol sees an edit of a message from before her grant");
+}

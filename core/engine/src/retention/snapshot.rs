@@ -95,9 +95,10 @@ pub(crate) fn carried_meets(core: &Core, tid: &Tid, ak: &Ak, own: &[Owned]) -> b
     core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().any(|s| s.4.meets(own))
 }
 
-/// The state of `(tid, ak)` a snapshot of it carries: this node's state with the values of
-/// deltas with an expiry held value-less (spec/crdt.md §8: a snapshot never carries them, so
-/// covers one only once it is held value-less, `covered`).
+/// The state of `(tid, ak)` a snapshot of it carries: this node's state with every value whose
+/// lifetime ends held value-less (spec/crdt.md §8: an unexpiring snapshot carries no value of a
+/// delta with an expiry, nor one it holds only from an expiring snapshot, so its copy never
+/// outlives the value; covers one only once it is held value-less, `covered`).
 pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
     let mut expiring: Vec<Owned> = tx
         .core
@@ -114,13 +115,90 @@ pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Opti
             Owned::of(&m.header, c, ai)
         })
         .collect();
+    // values held from an expiring snapshot alone (a holder granted without history holds no
+    // delta of them): its copies end at its expiry (spec/crdt.md §4.7)
+    expiring.extend(expiring_carriers(tx, tid, ak)?.into_values().flatten().filter(|o| matches!(o, Owned::Dots { .. })));
     let Some(mut st) = tx.state(tid, ak)?.cloned() else { return Ok(None) };
     if !expiring.is_empty() {
         // sorted: a lookup per dot (`sorted_owns`), not a scan of every expiring delta
         expiring.sort();
+        expiring.dedup();
         st.strip(&|d| super::sorted_owns(&expiring, d));
     }
     Ok(Some(st))
+}
+
+/// The bodies of `(tid, ak)` held here, valid, whose values live and end at an expiry still ahead,
+/// by that expiry: each as the writes whose values it gives (spec/crdt.md §4.7, §8): a delta's own
+/// writes; an expiring snapshot's valued copies, as exact dots (it has no writes of its own).
+pub(crate) fn expiring_carriers(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeMap<u64, Vec<Owned>>> {
+    let now = tx.now().0;
+    let held: Vec<(CommitId, usize, u64, bool)> = tx
+        .core
+        .ix
+        .by_aspect
+        .get(&(*tid, ak.clone()))
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, c)| {
+            let m = tx.core.ix.commits.get(c)?;
+            let ai = m.aspect(tid, ak)?;
+            let t = m.header.expires.filter(|t| *t > now)?;
+            let valued = m.holds(ai) && !m.bare(ai) && m.valid_at(ai) && !super::valueless(tx.core, c, ai);
+            valued.then_some((*c, ai, t, m.header.kind.is_compaction()))
+        })
+        .collect();
+    let mut out: BTreeMap<u64, Vec<Owned>> = BTreeMap::new();
+    for (c, ai, t, snapshot) in held {
+        if !snapshot {
+            let Some(m) = tx.core.ix.commits.get(&c) else { continue };
+            out.entry(t).or_default().extend(Owned::of(&m.header, &c, ai));
+            continue;
+        }
+        let mut dots: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
+        crate::apply::each_held_piece(tx, &c, ai, &mut |_, f| {
+            f.each_valued(&mut |d| {
+                dots.entry(d.src.clone()).or_default().insert(d.ctr);
+            });
+            Ok(())
+        })?;
+        out.entry(t).or_default().extend(dots.into_iter().map(|(src, ctrs)| Owned::Dots { src, ctrs: ctrs.into_iter().collect() }));
+    }
+    Ok(out)
+}
+
+/// State at a cut (spec/crypto.md §4), beside the snapshot from this node's whole state, which
+/// carries every expiring value value-less: for each expiry still ahead of a body of `owed`
+/// holding values, a snapshot expiring then, carrying of this node's state the writes whose values
+/// the bodies ending then give (`expiring_carriers`), valued (spec/crdt.md §8). It ends with them
+/// at every node, read or not, so a holder granted without history reads each value while it
+/// lives and never after. Its tables claim nothing (frontiers 0, nothing absorbed): it carries
+/// part of the state. The snapshots written.
+pub(crate) fn write_expiring(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owed: &BTreeSet<CommitId>) -> Result<Vec<CommitId>> {
+    let carriers = expiring_carriers(tx, tid, ak)?;
+    if carriers.is_empty() {
+        return Ok(Vec::new());
+    }
+    let due: BTreeSet<u64> = owed.iter().filter_map(|c| tx.core.ix.commits.get(c).and_then(|m| m.header.expires)).filter(|t| carriers.contains_key(t)).collect();
+    let node = tx.core.writer_for(tid)?;
+    let mut out = Vec::new();
+    for t in due {
+        let Some(own) = carriers.get(&t) else { continue };
+        let Some(st) = tx.state(tid, ak)?.cloned() else { break };
+        let mut part = st;
+        part.remove_writes(&|d| !own.iter().any(|o| o.owns(d)));
+        // canonical form (`remove_writes` leaves it to a join)
+        let mut f = Fragment::default();
+        f.join(part);
+        let mut any = false;
+        f.each_valued(&mut |_| any = true);
+        if !any {
+            continue;
+        }
+        let ts = tx.core.hlc.next();
+        out.push(build_snapshot(tx, *tid, ak.clone(), f, ts, node, Frontiers::default(), Default::default(), Some(t))?);
+    }
+    Ok(out)
 }
 
 /// Whether frontiers `fr` list the session of commit `c` (header `h`, a session-form commit
@@ -451,8 +529,10 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     // counted: tests read how many pairs are joined
     let _s = osis_base::costs::span("covered: join");
     let (Some(sai), Some(cai)) = (aspect_index(tx.core, s, tid, ak), aspect_index(tx.core, c, tid, ak)) else { return Ok(None) };
-    // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2)
-    if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) {
+    // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2); an expiring
+    // one's copies end at its expiry, sooner than a body's may: it covers nothing either
+    // (spec/commits.md §5 Covered)
+    if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || tx.core.ix.commits.get(s).is_some_and(|m| m.header.kind.is_compaction() && m.header.expires.is_some()) {
         return Ok(Some(false));
     }
     // a snapshot stamped later settles the suspect flags of more commits than this one
@@ -689,23 +769,23 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
             absorbed.insert(*c, m.header.author);
         }
     }
-    build_snapshot(tx, tid, ak, st, ts, node, frontiers, absorbed).map(Some)
+    build_snapshot(tx, tid, ak, st, ts, node, frontiers, absorbed, None).map(Some)
 }
 
 /// Writes and applies by `node` at `ts` the snapshot of `(tid, ak)` carrying `st`, its tables
 /// cut to the sources that occur in `st` (spec/crdt.md §8: a reader takes an absent source as
 /// one with no write left, so a frontier never grows with sessions gone by), with the facts of
-/// the commits it carries.
+/// the commits it carries, expiring at `expires` (an expiring snapshot, `write_expiring`).
 #[allow(clippy::too_many_arguments)]
-fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: Fragment, ts: Ts, node: Tid, mut frontiers: Frontiers, mut absorbed: std::collections::BTreeMap<CommitId, Tid>) -> Result<CommitId> {
+pub(crate) fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: Fragment, ts: Ts, node: Tid, mut frontiers: Frontiers, mut absorbed: std::collections::BTreeMap<CommitId, Tid>, expires: Option<u64>) -> Result<CommitId> {
     let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
     let traced = osis_crdt::sources_of(&st, &osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0))?;
     frontiers.retain(&traced);
     absorbed.retain(|c, _| traced.contains(&osis_crdt::Source::commit(*c)));
     let facts = facts_of(tx, &tid, &ak, &st)?;
     let retention = osis_commit::retention::snapshot_retention(ak.as_str());
-    let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, rotation: None };
-    let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, replaces: None, frontiers: Some((frontiers, absorbed, facts)), chunks: Vec::new() };
+    let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires, restores: false, rotation: None };
+    let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires, replaces: None, original_floor: 0, frontiers: Some((frontiers, absorbed, facts)), chunks: Vec::new() };
     build_and_apply(tx, plan, vec![d])
 }
 
@@ -760,7 +840,19 @@ fn owed_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Error>>
         }
         return Ok(None);
     }
-    Ok(tx.step(crate::engine::Step::Resnapshot, |tx| tx.in_class(memory, |tx| write_snapshot(tx, tid, ak, memory))).err())
+    // a holder granted without history holds none of the expiring bodies below its floor: their
+    // values go beside the snapshot, in snapshots ending with them (`write_expiring`)
+    Ok(tx
+        .step(crate::engine::Step::Resnapshot, |tx| {
+            tx.in_class(memory, |tx| {
+                write_snapshot(tx, tid, ak, memory)?;
+                if floor > 0 {
+                    write_expiring(tx, tid, ak, &held)?;
+                }
+                Ok(())
+            })
+        })
+        .err())
 }
 
 impl Engine {
@@ -858,7 +950,7 @@ impl Engine {
             if hi > 1 {
                 frontiers.insert(&own, hi - 1);
             }
-            build_snapshot(tx, tid, ak, st, ts, node, frontiers, Default::default()).map(Some)
+            build_snapshot(tx, tid, ak, st, ts, node, frontiers, Default::default(), None).map(Some)
         })
     }
 

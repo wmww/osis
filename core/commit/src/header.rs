@@ -128,6 +128,9 @@ pub struct AspectEntry {
     pub hash: [u8; 32],
     /// The fire this delta claims to replace (a durable signal's, spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
+    /// The floor of that fire as its writer read it (spec/commits.md §5 Signals): a node whose
+    /// own floor on the thing's actor is above it lists the delta nowhere. 0 without `replaces`.
+    pub original_floor: u64,
 }
 
 /// A delete key with its level (spec/crypto.md §7); a valid Ed25519 key once decoded. Its order
@@ -370,8 +373,17 @@ fn put_aspect(out: &mut Vec<u8>, a: &AspectEntry) {
     put_uint(out, a.retention.by as u64);
     put_idxs(out, &a.keys);
     put_bytes(out, &a.hash);
-    put_array(out, usize::from(a.replaces.is_some()));
-    a.replaces.iter().for_each(|c| put_bytes(out, &c.0));
+    // `[]`, `[id]`, or `[id, floor]` with the floor above 0 (spec/wire.md §4)
+    match a.replaces {
+        None => put_array(out, 0),
+        Some(c) => {
+            put_array(out, if a.original_floor > 0 { 2 } else { 1 });
+            put_bytes(out, &c.0);
+            if a.original_floor > 0 {
+                put_uint(out, a.original_floor);
+            }
+        }
+    }
 }
 
 fn put_key(out: &mut Vec<u8>, t: &DeleteKey) {
@@ -614,12 +626,19 @@ fn read_aspect(r: &mut Reader<'_>) -> Result<AspectEntry, Error> {
     let (tid, ak, lo, hi) = (read_tid(r)?, read_ak(r)?, r.uint()?, r.uint()?);
     let (retention, keys) = (read_retention(r)?, read_idxs(r)?);
     let hash = r.fixed::<32>()?;
-    let replaces = match r.array()? {
-        0 => None,
-        1 => Some(CommitId(r.fixed::<32>()?)),
+    let (replaces, original_floor) = match r.array()? {
+        0 => (None, 0),
+        1 => (Some(CommitId(r.fixed::<32>()?)), 0),
+        2 => {
+            let c = CommitId(r.fixed::<32>()?);
+            match r.uint()? {
+                0 => return Err(Error::Malformed("aspect replaces floor 0")),
+                f => (Some(c), f),
+            }
+        }
         _ => return Err(Error::Malformed("aspect replaces arity")),
     };
-    Ok(AspectEntry { tid, ak, lo, hi, retention, keys, hash, replaces })
+    Ok(AspectEntry { tid, ak, lo, hi, retention, keys, hash, replaces, original_floor })
 }
 
 fn read_key(r: &mut Reader<'_>, check: bool) -> Result<DeleteKey, Error> {

@@ -741,9 +741,12 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     }
     for a in &v.aspects {
         let ak = a.ak.as_str().as_bytes();
-        w = w.raw(a.tid.as_bytes()).raw(&(ak.len() as u16).to_be_bytes()).raw(ak).u64(a.lo).u64(a.hi).u8(u8::from(a.replaces.is_some()));
+        w = w.raw(a.tid.as_bytes()).raw(&(ak.len() as u16).to_be_bytes()).raw(ak).u64(a.lo).u64(a.hi).u8(u8::from(a.replaces.is_some()) | (u8::from(a.original_floor > 0) << 1));
         if let Some(c) = &a.replaces {
             w = w.raw(&c.0);
+        }
+        if a.original_floor > 0 {
+            w = w.u64(a.original_floor);
         }
     }
     match &v.frontier {
@@ -780,7 +783,8 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         let (tid, ak) = (r.tid()?, r.ak()?);
         let (lo, hi, bits) = (r.u64()?, r.u64()?, r.u8()?);
         let replaces = if bits & 1 != 0 { Some(CommitId(r.arr()?)) } else { None };
-        aspects.push(super::AspectView { tid, ak, lo, hi, replaces });
+        let original_floor = if bits & 2 != 0 { r.u64()? } else { 0 };
+        aspects.push(super::AspectView { tid, ak, lo, hi, replaces, original_floor });
     }
     let frontier = match r.u8()? {
         0 => None,

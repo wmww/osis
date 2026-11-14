@@ -920,10 +920,12 @@ fn content(lp: &mut LocalPeer, i: usize, g: Tid) -> BTreeSet<String> {
 // commits on `g` only as `g`'s labels carry them, sealed: it reads the same roster as A, holds no
 // read secret below its cut, holds no content commit from before it (written by anyone, beside
 // the cut included, whatever a peer encrypts again) nor unwraps one's label entry (its header),
-// yet reads the same current state as A. Fails without roles secrets in history entries (N misses
-// every role commit before its cut), with content wrapped under the roles secret (N unwraps what
-// came before) or also sealed there, or without the floor clause of Passing on (N holds what came
-// before), and without the state at a cut (N misses state from before it).
+// yet reads the same current state as A, expiring values included, before and after they end.
+// Fails without roles secrets in history entries (N misses every role commit before its cut),
+// with content wrapped under the roles secret (N unwraps what came before) or also sealed there,
+// or without the floor clause of Passing on (N holds what came before), and without the state
+// at a cut (N misses state from before it) or its expiring snapshots (N misses a value that has
+// not ended).
 #[test]
 fn newcomer_reads_the_roster_from_sealed_labels_spec_crypto_4() {
     let cut = osis_base::testenv::run_seeds("rotation::tests_cut::newcomer_reads_the_roster_from_sealed_labels_spec_crypto_4", &NEWCOMER_SEEDS, false, cut_replay("newcomer_reads_the_roster_from_sealed_labels_large_spec_crypto_4"), newcomer_reads_the_roster);
@@ -974,7 +976,14 @@ fn newcomer_reads_the_roster(seed: u64) -> bool {
         }
         let admin = rng.next(2) as usize;
         if done.is_none() {
-            put(&mut lp, admin, g, &format!("before{step}"));
+            // some values expire: the newcomer reads each until it ends (expiring snapshots)
+            match rng.next(3) {
+                0 => {
+                    let t = lp.peers[admin].engine.now().0 + 1_000 * (1 + rng.next(60));
+                    put_expiring(&mut lp, admin, g, &format!("before{step}"), t);
+                }
+                _ => put(&mut lp, admin, g, &format!("before{step}")),
+            }
         }
         let x = tids[2 + rng.next(3) as usize];
         match rng.next(6) {
@@ -1034,6 +1043,10 @@ fn newcomer_reads_the_roster(seed: u64) -> bool {
     let read = content(&mut lp, 5, g);
     assert!(read.contains("after"), "seed {seed}: N does not read A's write after its cut");
     assert_eq!(read, content(&mut lp, 0, g), "seed {seed}: N reads another state than A");
+    for step in [30_000, 60_000] {
+        lp.advance(step);
+        assert_eq!(content_now(&mut lp, 5, g), content_now(&mut lp, 0, g), "seed {seed}: N reads another state than A {step} ms on");
+    }
     true
 }
 
@@ -1410,4 +1423,220 @@ fn cut_snapshot_of_a_large_value_reuses_its_chunks_spec_crypto_4() {
     assert!(s.bytes.len() < 2048, "the snapshot carries the value: {} bytes", s.bytes.len());
     assert!(s.blobs.iter().all(|(b, _)| tree.contains(b)), "the snapshot encrypts a chunk again");
     assert_eq!(lp.peers[0].engine.live_trees(&g).unwrap().blobs.into_iter().collect::<BTreeSet<_>>(), tree, "the value's tree changed");
+}
+
+/// Peer `i` writes key `k` on `g`'s `x:m.0`, expiring at `t` (wall ms), a commit of its own.
+fn put_expiring(lp: &mut LocalPeer, i: usize, g: Tid, k: &str, t: u64) {
+    let ak = osis_base::Ak::new("x:m.0").unwrap();
+    let mut m = crate::Mutation::new();
+    m.op(g, &ak, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(osis_base::Value::Str(k.into()))], op: osis_crdt::Op::Put(osis_base::Value::Int(1)) }).unwrap();
+    m.expires(g, &ak, osis_base::WallMs(t)).unwrap();
+    lp.peers[i].commit(m).unwrap();
+}
+
+/// `content` after peer `i`'s due timers ran.
+fn content_now(lp: &mut LocalPeer, i: usize, g: Tid) -> BTreeSet<String> {
+    lp.peers[i].tick().unwrap();
+    content(lp, i, g)
+}
+
+/// Delivers to peer `to` every role commit peer `from` holds, raw.
+fn roles_to(lp: &mut LocalPeer, from: usize, to: usize) {
+    for pk in lp.packages(from).unwrap() {
+        if osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header.kind == osis_commit::Kind::Role {
+            let _ = lp.peers[to].receive(&pk.bytes, pk.blobs.clone());
+        }
+    }
+}
+
+fn keys(v: &[&str]) -> BTreeSet<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+// spec/crypto.md §4 (State at a cut), spec/crdt.md §8 (expiring snapshots), Tess: a holder
+// granted without history reads the current state, expiring values included, each until it
+// ends. A writes "plain", "soon" (expiring in 10 s) and "later" (in 100 s), then cuts for N (a
+// writer). N reads all three, then each goes at its expiry at N as at A. N, which holds those
+// values from the cut's expiring snapshots alone, compacts: P, a holder with history that gets
+// only N's snapshot, never reads an expiring value from it. Fails without the expiring
+// snapshots (N reads neither "soon" nor "later") and with N's snapshot carrying the values it
+// holds from them (P reads them for good).
+#[test]
+fn from_now_reads_expiring_values_until_they_end_spec_crypto_4() {
+    let mut lp = synced(3);
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let now = lp.peers[0].engine.now().0;
+    put(&mut lp, 0, g, "plain");
+    put_expiring(&mut lp, 0, g, "soon", now + 10_000);
+    put_expiring(&mut lp, 0, g, "later", now + 100_000);
+    let mut label = Label::default();
+    label.place(&mut lp, g, &[0]);
+    let done = lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Write), History::None).unwrap();
+    label.note(&done);
+    label.place(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &label);
+    assert_eq!(content(&mut lp, 2, g), keys(&["plain", "soon", "later"]), "N misses an expiring value");
+    let ak = osis_base::Ak::new("x:m.0").unwrap();
+    let snap = lp.peers[2].engine.snapshot(&g, &ak).unwrap().expect("N compacts");
+    roles_to(&mut lp, 0, 1);
+    let pk = lp.peers[2].engine.package(&snap).unwrap().unwrap();
+    lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    lp.advance(20_000);
+    assert_eq!(content_now(&mut lp, 0, g), keys(&["plain", "later"]));
+    assert_eq!(content_now(&mut lp, 2, g), keys(&["plain", "later"]), "N reads another state than A once one value ended");
+    lp.advance(100_000);
+    assert_eq!(content_now(&mut lp, 0, g), keys(&["plain"]));
+    assert_eq!(content_now(&mut lp, 2, g), keys(&["plain"]), "N reads a value past its expiry");
+    assert_eq!(content_now(&mut lp, 1, g), keys(&["plain"]), "N's snapshot hands P a value past its expiry");
+    // a stale copy of the expiring snapshots arriving later brings nothing back
+    lp.deliver_sealed(2, &label.held).unwrap();
+    assert_eq!(content_now(&mut lp, 2, g), keys(&["plain"]), "a late copy of an expiring snapshot brings its value back");
+}
+
+/// Peer `i` fires `t` on `g`'s `x:msg~0`, replacing `o` if given.
+fn say(lp: &mut LocalPeer, i: usize, g: Tid, t: &str, o: Option<osis_base::CommitId>) -> osis_base::CommitId {
+    let ak = osis_base::Ak::new("x:msg~0").unwrap();
+    let mut m = crate::Mutation::new();
+    m.op(g, &ak, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Set(osis_base::Value::Str(t.into())) }).unwrap();
+    if let Some(o) = o {
+        m.replaces(g, &ak, o).unwrap();
+    }
+    lp.peers[i].commit(m).unwrap().unwrap()
+}
+
+/// The fires peer `i` lists on `g`'s `x:msg~0` (an honored version under its original), each
+/// with the text it reads as.
+fn fires(lp: &mut LocalPeer, i: usize, g: Tid) -> Vec<(osis_base::CommitId, String)> {
+    let ak = osis_base::Ak::new("x:msg~0").unwrap();
+    let e = &mut lp.peers[i].engine;
+    let (parts, _) = e.held_parts(&g, &ak, crate::engine::listing::CommitFrom::Oldest, 100, usize::MAX).unwrap();
+    let mut out = Vec::new();
+    for p in parts {
+        if e.listed_at(&p.id, &[(g, ak.clone())]).unwrap() {
+            let row = e.commit_row(&p.id, &|_, _| true, usize::MAX).unwrap().unwrap();
+            out.push((p.id, format!("{:?}", row.parts.first().map(|x| &x.body))));
+        }
+    }
+    out
+}
+
+// spec/commits.md §5 Signals, spec/crypto.md §4 (State at a cut), Tess: a holder granted without
+// history sees no past message, nor a later edit of one. A says "typo" before cutting for N and
+// fixes it after (an edit, `replaces`), then says "welcome": N lists "welcome" alone, A both. P,
+// a reader with history holding the fix but not the message it edits (gone from history, never
+// fetched), still lists the fix as a message of its own. Fails without the original's floor on
+// the edit (N lists the fix as a new message).
+#[test]
+fn from_now_lists_no_edit_of_an_earlier_message_spec_commits_5() {
+    let mut lp = synced(3);
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let g = group(&mut lp, 0);
+    let msg_ak = osis_base::Ak::new("x:msg~0").unwrap();
+    let mut m = crate::Mutation::new();
+    m.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(msg_ak, osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None })).unwrap();
+    let setting = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Read)).unwrap();
+    let typo = say(&mut lp, 0, g, "typo", None);
+    let mut label = Label::default();
+    label.place(&mut lp, g, &[0]);
+    let done = lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Write), History::None).unwrap();
+    label.note(&done);
+    let fix = say(&mut lp, 0, g, "fixed", Some(typo));
+    let welcome = say(&mut lp, 0, g, "welcome", None);
+    label.place(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &label);
+    assert_eq!(fires(&mut lp, 0, g).iter().map(|x| x.0).collect::<Vec<_>>(), vec![typo, welcome], "A lists the message (as its fix) and the welcome");
+    assert!(fires(&mut lp, 0, g)[0].1.contains("fixed"), "A reads the fix");
+    assert_eq!(fires(&mut lp, 2, g).iter().map(|x| x.0).collect::<Vec<_>>(), vec![welcome], "N lists an edit of a message from before its grant");
+    // P: every role commit, the setting and the fix alone
+    roles_to(&mut lp, 0, 1);
+    for c in [setting, fix] {
+        let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    }
+    assert_eq!(fires(&mut lp, 1, g).iter().map(|x| x.0).collect::<Vec<_>>(), vec![fix], "P, with history, lists no fix whose message it lacks");
+}
+
+// spec/crdt.md §4.6 (an undo never extends a value's lifetime), §4.7, §8: N, granted without
+// history (a writer), holds A's value 1 of register `x:r.0` from the cut's expiring snapshot
+// alone, no delta of it. A sets it to 2 after the cut; N undoes that, writing 1 back: the undo
+// expires with the value it copies, which N knows only from the snapshot. Fails with the
+// snapshot's expiry not read (the value written back lasts for good).
+#[test]
+fn from_now_undo_writes_back_an_expiring_value_with_its_expiry_spec_crdt_4() {
+    let mut lp = synced(2);
+    let n = lp.peers[1].engine.me();
+    let g = group(&mut lp, 0);
+    let ak = osis_base::Ak::new("x:r.0").unwrap();
+    let mut m = crate::Mutation::new();
+    m.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(ak.clone(), osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None })).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    let set = |lp: &mut LocalPeer, i: usize, v: i64, t: Option<u64>| {
+        lp.advance(10);
+        let mut m = crate::Mutation::new();
+        m.op(g, &ak, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Set(osis_base::Value::Int(v)) }).unwrap();
+        if let Some(t) = t {
+            m.expires(g, &ak, osis_base::WallMs(t)).unwrap();
+        }
+        lp.peers[i].commit(m).unwrap().unwrap()
+    };
+    let now = lp.peers[0].engine.now().0;
+    set(&mut lp, 0, 1, Some(now + 100_000));
+    let mut label = Label::default();
+    label.place(&mut lp, g, &[0]);
+    let done = lp.peers[0].engine.grant_with(&g, &n, &edge(Role::Write), History::None).unwrap();
+    label.note(&done);
+    let two = set(&mut lp, 0, 2, None);
+    label.place(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 1, g, &done, &label);
+    let r = |lp: &mut LocalPeer| lp.peers[1].engine.get(&g, &ak).unwrap();
+    assert_eq!(r(&mut lp), Some(osis_base::Value::Int(2)));
+    lp.advance(10);
+    let mut m = crate::Mutation::new();
+    m.undo(two);
+    lp.peers[1].commit(m).unwrap();
+    assert_eq!(r(&mut lp), Some(osis_base::Value::Int(1)), "N's undo writes back the value before");
+    lp.advance(200_000);
+    lp.peers[1].tick().unwrap();
+    assert_eq!(r(&mut lp), None, "N's undo keeps a value past its expiry");
+}
+
+// spec/commits.md §5 Covered, spec/crdt.md §8: who can write an expiring snapshot's expiry. H, a
+// writer, writes one carrying A's lasting value "x" valued and ending in 10 s (any writer may:
+// a valid snapshot vouches for what it carries). B, a reader holding A's delta, never counts the
+// delta covered by it, so past that expiry B still reads "x": a forged expiry drops no value
+// early at an honest node holding the value's own delta. Fails with expiring snapshots covering.
+#[test]
+fn forged_expiring_snapshot_ends_no_lasting_value_spec_commits_5() {
+    let mut lp = synced(3);
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    put(&mut lp, 0, g, "x");
+    lp.sync_all().unwrap();
+    let ak = osis_base::Ak::new("x:m.0").unwrap();
+    let t = lp.peers[1].engine.now().0 + 10_000;
+    let forged = lp.peers[1]
+        .engine
+        .run(|tx| {
+            let st = tx.state(&g, &ak)?.cloned().unwrap();
+            let (ts, node) = (tx.core.hlc.next(), tx.core.writer_for(&g)?);
+            crate::retention::snapshot::build_snapshot(tx, g, ak.clone(), st, ts, node, Default::default(), Default::default(), Some(t))
+        })
+        .unwrap();
+    let pk = lp.peers[1].engine.package(&forged).unwrap().unwrap();
+    lp.peers[2].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    let held: Vec<osis_base::CommitId> = edits_on(&lp, 2, g).into_iter().collect();
+    // node-sync drops each body a held snapshot covers
+    for c in &held {
+        if lp.peers[2].engine.covered(&forged, c, &g, &ak).unwrap() == Some(true) {
+            lp.peers[2].engine.drop_body(c, &g, &ak).unwrap();
+        }
+    }
+    lp.advance(20_000);
+    assert_eq!(content_now(&mut lp, 2, g), keys(&["x"]), "a forged expiry ends a lasting value at B");
 }
