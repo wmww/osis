@@ -100,26 +100,23 @@ fn a_self_removal_shared_only_with_a_sibling_drops_at_once_spec_perm_3() {
     assert!(w.engine(1).epochs(&t).is_none_or(|e| e.read.held().next().is_none()), "dropped");
 }
 
-// spec/sync-inbox.md §2 (Taking: a boxes payload, for each thing it boxes the recipient on that
-// is in a synced group's closure, a sibling node that accepted it listing the thing there, that
-// thing's boxes alone): a stranger grants account 1 sync on a thing; neither sibling takes it
-// (an invite request) until node 1's user accepts it in node 1's synced group; then node 2, whose
-// own synced group does not list it, takes its boxes too.
+// spec/sync-inbox.md §2 (Taking: its sender is connected; a boxes payload, taken, gives the sync
+// secrets of its boxes with its sync IDs): the stranger redeemed account 1's contact card, so it
+// holds read on the profile both siblings sync and is connected at each: a grant of sync to
+// account 1 is no invite request at either node, and node 2 takes it with its own synced group
+// not listing the thing. (An accept on one sibling taking at the other:
+// `flows::a_sync_grant_accepted_on_one_node_is_taken_at_its_sibling_spec_sync_inbox_2`.)
 #[test]
-fn a_siblings_accept_makes_the_other_take_a_boxes_payload_spec_sync_inbox_2() {
+fn a_contacts_boxes_payload_is_taken_at_both_siblings_spec_sync_inbox_2() {
     let mut w = stranger_siblings();
     let (t, _) = granted(&mut w, Role::Sync);
     for i in [1, 2] {
         let inv = w.engine(i).invitations().unwrap();
-        assert!(inv.iter().any(|x| x.thing == t && !x.taken), "node {i}: an invite request: {inv:?}");
-        assert!(w.engine(i).sync_record(&t).unwrap().is_none(), "node {i} took nothing");
+        assert!(!inv.iter().any(|x| x.thing == t && !x.taken), "node {i}: no invite request: {inv:?}");
+        assert!(w.engine(i).sync_record(&t).unwrap().is_some(), "node {i} took it");
     }
-    list_own(&mut w, 1, t, true);
-    w.flush();
-    assert!(w.engine(1).sync_record(&t).unwrap().is_some(), "node 1 took it");
     let g2 = synced_group(&mut w, 2);
     assert!(!w.engine(2).get_typed(&g2, &ct::GROUP).unwrap().unwrap().subgroups.contains(&t), "node 2's own group lists it not");
-    assert!(w.engine(2).sync_record(&t).unwrap().is_some(), "node 2 took it by node 1's accept");
 }
 
 // spec/sync-set.md §3 (Unsyncing: whoever holds it elsewhere): each sibling lists a thing in its
