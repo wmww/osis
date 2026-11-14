@@ -320,7 +320,7 @@ fn request_ids_spec_wire_11_2() {
     assert_eq!(ms.iter().map(Msg::id).collect::<Vec<_>>(), [a, b, c, d], "sent in the order made, each with its id");
 }
 
-// spec/sync-streams.md §1 (Requester): at most `WINDOW` in flight, a request counting its frame and
+// spec/sync-streams.md §1 (flow control): at most `WINDOW` in flight, a request counting its frame and
 // its reply allowance; the next goes once one is answered, in the order made; one always goes.
 #[test]
 fn window_spec_sync_streams_1() {
@@ -474,7 +474,7 @@ fn other_bytes_move_the_stall_clock_spec_sync_streams_1() {
     assert_eq!(p.ds.deadline(), Some(WallMs(T0.0 + 1000 + STALL_TIMEOUT_MS)), "a push moved it");
 }
 
-// spec/sync-transport.md §1 (Hello), spec/sync-opens.md §1 (Dial timeout): a connection whose peer
+// spec/sync-transport.md §1, spec/sync-opens.md §1 (Dial timeout): a connection whose peer
 // sends no Hello closes `STALL_TIMEOUT_MS` after it came up; a dial not up `DIAL_TIMEOUT_MS` after
 // it started closes as failed. A world of two connected nodes ends quiet: no deadline left.
 #[test]
