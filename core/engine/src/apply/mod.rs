@@ -415,8 +415,10 @@ fn still_waits(tx: &mut Tx<'_>, b: &CommitBlob) -> Result<bool> {
 /// - it hashes but is bad by itself (`judge_part`): the author signed garbage, and those bytes are
 ///   the only ones that can ever hash there, so no later copy can differ and no mark is needed. It
 ///   never applies and is dropped alone.
-/// - it waits (its thing's record or chain, its pages, a linked frontier, parked): alone. The
-///   commit's other parts apply, and its header with none: it joins when its wait ends.
+/// - it waits (its pages, parked): alone. The commit's other parts apply, and its header with
+///   none: it joins when its wait ends.
+/// - it cannot be judged yet (its thing's record or chain, the author's reach): thrown out, its
+///   boxes read, fetched again when what it awaits arrives; the other parts apply.
 ///
 /// Every wait only ends as the held set grows, so the applied parts are the least fixpoint of a
 /// monotone rule, one result for every order (osis-node `order::held_set_decides` plays them).
@@ -1027,9 +1029,8 @@ fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
 
 /// A delta of an already applied commit, arriving later, is joined on arrival (spec/commits.md
 /// §4); dropped and stripped parts stay so, but for those a copy may replace
-/// (`retention::takes_late`). Late deltas that wait
-/// (their thing's `created.0`, chain or pages) are kept pending under the commit's ID and
-/// joined once they apply.
+/// (`retention::takes_late`). Late deltas that wait (their pages, parked) are kept pending
+/// under the commit's ID and joined once they apply; unjudgeable ones are thrown out.
 fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<Ingested> {
     let (held, skip) = held_and_skip(tx, id)?;
     blob = with_pending(tx, id, blob)?;
