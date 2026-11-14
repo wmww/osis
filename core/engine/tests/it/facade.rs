@@ -2381,6 +2381,15 @@ fn a_forgers_earlier_accept_takes_no_sync_id_from_a_later_thing_spec_sync_3() {
     assert_eq!(e.kept_records(&s).unwrap().len(), 2, "both records keep s");
     lp.peers[1].restart(5).unwrap();
     assert_eq!(lp.peers[1].engine.sync_set().unwrap().ids.get(&s), Some(&(t, Holding::Unread)), "a restart changes nothing");
+    // closed (spec/sync.md §3: removed with its ties from every entry keeping it): s leaves both,
+    // u's entry whole, and nothing ties s to t if an accept keeps it again
+    let e = &mut lp.peers[1].engine;
+    for (x, _) in e.kept_records(&s).unwrap() {
+        assert!(e.close_kept(&x, &s).unwrap());
+    }
+    assert!(e.kept_records(&s).unwrap().is_empty() && !e.sync_set().unwrap().ids.contains_key(&s), "s closed");
+    assert!(e.sync_record(&u).unwrap().is_none(), "u's entry went whole");
+    assert!(e.sync_record(&t).unwrap().is_none_or(|r| !r.tied.contains(&s)), "t's tie went with s");
 }
 
 // spec/sync.md §3 (Sync record: a closed sync ID leaves its thing's entry, entries otherwise only

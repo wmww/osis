@@ -50,9 +50,28 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("caps", "caps^.0", CAPS.encode(&Caps { policy: BTreeMap::from([("cap_bytes".to_string(), 1000)]), things: BTreeMap::from([(tid(33), ThingCaps { entries: 5, bytes: 6 })]) })),
         ("synced", "synced^.0", SYNCED.encode(&BTreeMap::from([(tid(31), tid(32))]))),
         ("acted", "acted^.0", ACTED.encode(&BTreeSet::from([tid(37)]))),
+        ("kept", "kept^.0", KEPT.encode(&BTreeMap::from([(tid(38), Kept { ids: BTreeSet::from([SyncId([39; 16])]), secrets: BTreeMap::from([(epoch(3), [40; 32])]), tied: BTreeSet::from([SyncId([39; 16])]) })]))),
         ("clients", "clients^.0", CLIENTS.encode(&BTreeMap::from([(tid(34), Client { secret_hash: [35; 32], until: Some(WallMs(1_700_000_000_000)) })]))),
         ("group", "group.0", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),
     ]
+}
+
+/// Every struct in `v` (a Rust type's encoding, which writes every field) has exactly the field
+/// IDs its schema type `ty` declares.
+fn same_fields(sc: &Schema, v: &Value, ty: &Type, name: &str) {
+    match (sc.expand(ty).unwrap().as_ref(), v) {
+        (Type::Struct(st), Value::Map(m)) => {
+            let ids: BTreeSet<Value> = st.fields.keys().map(|i| Value::Int(*i as i64)).collect();
+            assert_eq!(m.keys().cloned().collect::<BTreeSet<_>>(), ids, "{name}: struct fields");
+            for (i, f) in &st.fields {
+                same_fields(sc, m.get(&Value::Int(*i as i64)).unwrap(), &f.ty, name);
+            }
+        }
+        (Type::Map(_, t), Value::Map(m)) => m.values().for_each(|x| same_fields(sc, x, t, name)),
+        (Type::List(t), Value::List(l)) => l.iter().for_each(|x| same_fields(sc, x, t, name)),
+        (Type::Set(t), Value::Set(l)) => l.iter().for_each(|x| same_fields(sc, x, t, name)),
+        _ => {}
+    }
 }
 
 #[test]
@@ -62,6 +81,9 @@ fn core_aspects_round_trip_spec_data_model_9() {
         // Every sample is a valid write of its aspect's schema type...
         if ak != "created.0" {
             validate_write(sc, &v, &sc.aspects[ak].ty).unwrap_or_else(|e| panic!("{name}: {e}"));
+            // ...whose Rust type has exactly the schema's struct fields (schema/core.osis and
+            // core_types are written apart: a field one lacks fails here)
+            same_fields(sc, &v, &sc.aspects[ak].ty, name);
         }
         // ...and survives the canonical round trip through its typed key.
         let bytes = osis_base::encode(&v);
@@ -82,6 +104,7 @@ fn core_aspects_round_trip_spec_data_model_9() {
             "caps^.0" => CAPS.encode(&CAPS.decode(v).unwrap()),
             "synced^.0" => SYNCED.encode(&SYNCED.decode(v).unwrap()),
             "acted^.0" => ACTED.encode(&ACTED.decode(v).unwrap()),
+            "kept^.0" => KEPT.encode(&KEPT.decode(v).unwrap()),
             "clients^.0" => CLIENTS.encode(&CLIENTS.decode(v).unwrap()),
             "group.0" => GROUP.encode(&GROUP.decode(v).unwrap()),
             _ => panic!("{ak}"),
