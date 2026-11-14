@@ -1,7 +1,6 @@
-//! The product's ground: the engine's facade, the store, opens' members and streams' `known`.
-//! Not built (each answers `NotBuilt`): notes/sync-boundary.md (4. `read`, Before read runs in a
-//! node) lists each. Read runs only once every call is built (`READY`): a call failing in the
-//! middle of a settle fails the node's step, closing every connection.
+//! The product's ground: the engine's facade, the store, the sources of each S (`views`, as opens
+//! moved them) and streams' `known` (notes/sync-boundary.md, 4. `read`, Read in a node). A call
+//! failing in the middle of a settle fails the node's step, closing every connection.
 
 use super::Why;
 use super::ground::{BlobInfo, Facts, Ground, Seen, SrcView};

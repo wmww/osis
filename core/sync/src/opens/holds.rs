@@ -278,7 +278,7 @@ impl Holds for NodeHolds<'_, '_> {
         let max = osis_proto::limits::REPLY_BUDGET / 326;
         let mut last = SharedItem::code(Code::DECLINED);
         for c in &creds {
-            match self.cx.store.behind(&item.sync_id, item.step.as_ref(), c, max as usize) {
+            match self.cx.store.behind(&item.sync_id, item.step.as_ref(), c, max) {
                 Ok((Code::OK, grant)) => return SharedItem { grant, ..SharedItem::code(Code::OK) },
                 Ok((code, _)) => last = SharedItem::code(code),
                 // a store failure refuses for now: the asker asks again after a back-off

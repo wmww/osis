@@ -125,7 +125,7 @@ fn a_reader_granted_again_reads_what_a_snapshot_carries_spec_sync_judgement_3() 
     crate::convergence::converge(78, 3, &[New(0), Write(0, 0), Grant(0, 0, 2, Gives::Reads), Grant(0, 0, 2, Gives::Reads), Remove(0, 0, 2), Write(0, 0), Grant(0, 0, 2, Gives::Reads)], String::new());
 }
 
-// As above, with a failed write at the grantee (faulty seed 77).
+// spec/sync-inbox.md §2 (Re-send): as above, with a failed write at the grantee (faulty seed 77).
 #[test]
 #[ignore = "fails: issues/sync-convergence-leftovers.md"]
 fn a_writer_granted_again_after_a_failed_write_reads_spec_sync_inbox_2() {
@@ -135,7 +135,8 @@ fn a_writer_granted_again_after_a_failed_write_reads_spec_sync_inbox_2() {
     crate::convergence::converge(77, 3, &[New(2), Disk(0, 1, Fail), New(1), New(1), Write(1, 1), Grant(1, 1, 0, Gives::Writes), Remove(1, 1, 0), Grant(1, 1, 0, Gives::Writes)], String::new());
 }
 
-// As above, the grantee off while it is granted, removed and granted again (faulty seed 93).
+// spec/sync-inbox.md §2 (Re-send): as above, the grantee off while it is granted, removed and
+// granted again (faulty seed 93).
 #[test]
 #[ignore = "fails: issues/sync-convergence-leftovers.md"]
 fn a_reader_off_through_a_grant_a_removal_and_a_grant_again_reads_spec_sync_inbox_2() {

@@ -41,7 +41,6 @@ osis-engine::await_reading  deferred: sync rebuild (issues/sync-rewrite.md Phase
 osis-engine::body_carried  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::body_page  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::carried_dots  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::closure_whole  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::commit_in_memory_hostile  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::compact_memory_now  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::compaction_load  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -105,9 +104,6 @@ osis-engine::resign_forged  deferred: sync rebuild (issues/sync-rewrite.md Phase
 osis-engine::revoke_certificates  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::rotated_already  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::seal_plain  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::seal_to  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::set_sync_records  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::set_app_record  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::settled_slots  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::store_dump  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::take_blind  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -122,9 +118,6 @@ osis-label::match_secret  deferred: sync rebuild (issues/sync-rewrite.md Phase 3
 osis-label::prefix_bytes  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-label::seal_stranded_notice  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::admit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); `RelayGate` gates relay-only entries (spec/sync-ids.md §6 Relay-only) once streams relays them
-osis-proto::CLOSED  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::INVALID  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::IN_USE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::MAX_BEHIND_STEPS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-proto::MAX_SUBS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::NOT_UNDOABLE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -149,8 +142,6 @@ osis-transport::set_dial_ms  deferred: sync rebuild (issues/sync-rewrite.md Phas
 osis-transport::set_lan_loss  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis::accept_invite  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
 osis::rotate_peer_address  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
-osis-engine::accept_inbox  test hook (tests/it)
-osis-engine::account_holder_keys  test hook (tests/it)
 osis-engine::bear  test hook (tests/it)
 osis-engine::commit_forged  test hook (tests/it)
 osis-engine::copy_awaits  test hook (tests/it)
@@ -200,17 +191,12 @@ osis-engine::write_addenda  test hook (tests/it)
 
 # The sync rebuild's skeleton (notes/sync-boundary.md): each module's owner uses or removes these.
 osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-sync::take_deposit  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::proofs_done  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); opens refuses a Resume before the proofs with it
 osis-sync::clock_offset  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); status reports a large offset as a diagnostic (spec/sync-streams.md §1)
-osis-sync::saw_deleted  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-judgement.md §4)
-osis-sync::seen_deleted  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-judgement.md §4)
-osis-sync::serve_path  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (a read S's served head)
 osis-sync::uncharge  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-ids.md §5 Peer budget)
 osis-sync::dial_hints  deferred: the driver's dial candidates read it (notes/sync-boundary.md, driver)
 osis-sync::status_of  deferred: the osis API reads one sync ID's status (sync rebuild integration, issues/sync-rewrite.md Phase 3)
 osis-sync::set_record_budget  test hook: a small RECORD_BUDGET to drive eviction
-osis-engine::delivery_feed  facade: osis-sync's modules call it (notes/sync-boundary.md, What sync calls on the engine)
 osis-engine::destructions  facade: osis-sync's modules call it (notes/sync-boundary.md, What sync calls on the engine)
 osis-engine::known_actors  facade: osis-sync's modules call it (notes/sync-boundary.md, What sync calls on the engine)
 osis-engine::logged_with  facade: osis-sync's modules call it (notes/sync-boundary.md, What sync calls on the engine)
@@ -222,3 +208,4 @@ osis-engine::owed_to  test hook: engine integration tests carry deliveries and p
 osis-engine::inbox_blob_without_chain  test hook: engine integration tests carry deliveries and passes as sync would
 osis-engine::reseal_after_pass  test hook: engine integration tests carry deliveries and passes as sync would
 osis-keys::PermGraph  deferred: the reach of a lowering for role entries first (spec/sync-judgement.md §3), the read module's
+osis-sync::set_sync_set  test hook (tests/it: a store holding sync IDs without an engine)

@@ -541,15 +541,6 @@ fn flip_flag_on(lp: &mut LocalPeer, t: Tid, asp: &Ak, body: &CommitId) {
     for p in packages(lp, 0).into_iter().filter(|p| p.id == fall) {
         lp.deliver(1, &p).unwrap();
     }
-    {
-        let e = &mut lp.peers[1].engine;
-        for id in e.commit_ids() {
-            let h = e.header(&id).unwrap();
-            if h.aspects.iter().any(|x| x.ak == *asp) {
-                let m = e.core.ix.commits.get(&id).unwrap();
-            }
-        }
-    }
     assert!(lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == *asp), "flagged");
 }
 
