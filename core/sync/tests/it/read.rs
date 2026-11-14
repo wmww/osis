@@ -88,6 +88,7 @@ enum Sent {
     Delete(ConnId, BlobId),
     Deposit(ConnId, BlobId),
     Forget(SyncId),
+    Fetch(ConnId, BlobId),
 }
 
 /// K: a node keeping S unread. It pulls what it lacks of a writer's store (a tombstoned blob ID
@@ -274,6 +275,11 @@ impl Ground for Fake {
                 self.tombs.insert(k, t.into_iter().filter(|x| x != b).collect());
             }
         }
+        Ok(())
+    }
+    fn fetch(&mut self, at: &SrcView, s: &SyncId, b: &BlobId) -> Result<()> {
+        let _ = s;
+        self.sent.push(Sent::Fetch(at.conn, *b));
         Ok(())
     }
     fn delete(&mut self, at: &SrcView, s: &SyncId, b: &BlobId, key: &SigningSecret) -> Result<()> {
@@ -832,6 +838,34 @@ fn missing_again_lifts_own_tombstones() {
     f.missing = true;
     w.judge(S, cid(1), f);
     assert_eq!(w.g.tombs.get(&(S, cid(1))).cloned(), Some(vec![]));
+}
+
+// spec/sync-judgement.md §3 (Dropped bodies: a body counting as never received again is fetched
+// again where present): a body dropped here (no own entry, no tombstone) that counts missing is
+// fetched from each source whose stream shows an entry of it, a source joining later included,
+// and logged only once it is held again. Fails without the Fetch act (nothing re-announces an
+// entry a stream already applied).
+#[test]
+fn missing_body_is_fetched_where_present() {
+    let mut w = W::new();
+    w.source(S, Source::Conn(RC), RC, false);
+    w.hold(cid(1), &[S], uncovered());
+    let b = w.own_blobs(S, cid(1))[0];
+    w.g.own.insert((S, cid(1)), Vec::new());
+    w.g.put_seen((Source::Conn(RC), S, cid(1)), Seen { present: [b].into(), deleted: BTreeSet::new() });
+    let logs = w.g.logged.len();
+    let mut f = uncovered();
+    f.missing = true;
+    w.judge(S, cid(1), f);
+    assert!(w.g.sent.iter().any(|m| *m == Sent::Fetch(RC, b)), "fetched at the reader showing it: {:?}", w.g.sent);
+    assert_eq!(w.g.logged.len(), logs, "nothing logged while the body is missing");
+    let rc2 = ConnId(RC.0 + 100);
+    w.source(S, Source::Conn(rc2), rc2, false);
+    w.g.put_seen((Source::Conn(rc2), S, cid(1)), Seen { present: [b].into(), deleted: BTreeSet::new() });
+    w.settle();
+    assert!(w.g.sent.iter().any(|m| *m == Sent::Fetch(rc2, b)), "a source joining that shows it is asked too");
+    w.judge(S, cid(1), uncovered());
+    assert_eq!(w.g.logged.len(), logs + 1, "logged once held again");
 }
 
 // spec/sync-judgement.md §4 (the stand's state): durable (forget-lost-mem): a start (or the reload a forget

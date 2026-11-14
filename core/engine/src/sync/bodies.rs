@@ -120,7 +120,7 @@ impl Engine {
         for g in self.body_things(c)? {
             let ThingSync::Read(ids) = self.thing_sync_now(&g)? else { continue };
             let ctx = self.body_ctx(&g);
-            for b in self.commit_bodies_under(&ctx, c)? {
+            for b in self.bodies_under(&ctx, c, true)? {
                 let meta = BodyMeta { parts: b.parts.iter().copied().collect(), expires: b.expires.map(WallMs), order: b.order, copy: b.to_label, certificate: false, header_only: b.parts.is_empty() };
                 for s in &ids {
                     out.insert(*s, meta.clone());

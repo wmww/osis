@@ -145,6 +145,9 @@ pub trait Ground {
     /// The entry leaves the own log, its tombstone noting `c`.
     fn drop_own(&mut self, s: &SyncId, b: &BlobId, c: &CommitId) -> Result<()>;
     fn lift(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;
+    /// Entry `b` of S fetched from the source (streams' Fetch, spec/sync-judgement.md §3 Dropped
+    /// bodies): a body counting missing again.
+    fn fetch(&mut self, at: &SrcView, s: &SyncId, b: &BlobId) -> Result<()>;
     /// A Delete of `b` at the source, signed by `key` (its head's delete key).
     fn delete(&mut self, at: &SrcView, s: &SyncId, b: &BlobId, key: &SigningSecret) -> Result<()>;
     /// `c`'s body given to a source this node does not stamp for (spec/sync-judgement.md §3

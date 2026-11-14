@@ -264,18 +264,49 @@ fn a_reader_granted_through_an_unsynced_write_reads_spec_sync_ids_5() {
     crate::convergence::converge(188669321416, 3, &[New(1), Write(1, 0), Write(1, 0), Write(1, 0), Disk(1, 24, Unsynced), Write(1, 0), Write(1, 0), Grant(1, 0, 0, Gives::Reads)], String::new());
 }
 
-// spec/requirements.md Convergence (what a node holds does not depend on arrival order),
-// spec/permissions.md §5.2 (Addenda: a demoted writer's writes another writer had received by the
-// demotion's ts survive): a writer's write made just before its removal, received by the other
-// writer, is read by that writer and the reference but not by the remover, which holds every
-// commit they hold. Found by the full-size differential (clean seed 347110580059, shrunk);
-// issues/sync-removed-write-by-arrival.md.
+// spec/sync-judgement.md §3 (Dropped bodies: a body counting as never received again is fetched
+// again where present), spec/requirements.md Convergence: node 0 grants nodes 1 and 2 write; in
+// one fresh millisecond node 1 writes v5 and node 0, not having seen it, removes node 1, so both
+// carry the same `ts` and their authors' tids order them (here v5 first). Node 2 receives v5
+// before the removal and writes an addendum listing it; node 0 drops v5 as invalid on arrival,
+// then the addendum makes it valid again and its body counts missing: node 0 fetches it again
+// from a source showing it. At quiet the readers (0 and 2) hold the same commits but bodies a
+// snapshot held by both covers, and all read v5 (spec/permissions.md §5.2 Addenda; main's engine
+// reads the same: core/node/tests/it/validity.rs
+// `a_removed_writers_last_write_reads_alike_at_every_holder_spec_perm_5_2`). Under the rule that
+// a write at its removal's own `ts` counts as before it and survives exactly when an addendum
+// lists it, the value is v5 too: node 2's addendum lists it. Found by the full-size differential
+// (clean seed 347110580059, shrunk).
 #[test]
-#[ignore = "fails: issues/sync-removed-write-by-arrival.md"]
-fn a_removed_writers_last_write_reads_alike_at_every_holder() {
+fn a_removed_writers_last_write_reads_alike_at_every_holder_spec_sync_judgement_3() {
     use crate::harness::Step::*;
     use crate::harness::history::Gives;
-    crate::convergence::converge(347110580059, 3, &[New(1), New(0), Write(0, 1), Grant(0, 1, 1, Gives::Writes), Write(0, 1), Grant(0, 1, 2, Gives::Writes), Run, Write(1, 1), Remove(0, 1, 1)], String::new());
+    use std::collections::BTreeSet;
+    let steps = [New(1), New(0), Write(0, 1), Grant(0, 1, 1, Gives::Writes), Write(0, 1), Grant(0, 1, 2, Gives::Writes), Run, Write(1, 1), Remove(0, 1, 1)];
+    crate::convergence::converge(347110580059, 3, &steps, String::new());
+    let mut w = crate::harness::history::world(347110580059, 3);
+    w.cap = 200_000;
+    let _script = crate::harness::play(&mut w, &steps, String::new());
+    for s in [Lossy(crate::harness::Loss::NONE), Heal, PowerOn(0), PowerOn(1), PowerOn(2), Run] {
+        crate::harness::step(&mut w, &s);
+    }
+    let t = w.history.things[1].0;
+    let v5 = w.history.values["v5"];
+    let (alice, bob) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    assert!(bob < alice, "the seed orders v5 before the removal");
+    let ak = crate::harness::history::value_ak();
+    for i in [0, 2] {
+        assert_eq!(w.engine(i).get(&t, &ak).unwrap(), Some(Value::Str("v5".into())), "node {i} reads v5");
+        assert!(w.engine(i).commit_bytes(&v5).unwrap().is_some(), "node {i} holds v5's body");
+    }
+    // the commits on the thing each reader holds; a difference is only a body a snapshot both hold covers
+    let on = |w: &mut World, i: usize| -> BTreeSet<_> { w.engine(i).commit_ids().into_iter().filter(|c| w.engine(i).header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t))).collect() };
+    let (h0, h2) = (on(&mut w, 0), on(&mut w, 2));
+    let snaps: Vec<_> = h0.intersection(&h2).filter_map(|c| w.engine(0).header(c)).filter(|h| h.kind.is_compaction()).map(|h| h.ts).collect();
+    for c in h0.symmetric_difference(&h2) {
+        let h = w.engine(0).header(c).or_else(|| w.engine(2).header(c)).unwrap();
+        assert!(!h.kind.is_role() && !h.kind.is_compaction() && snaps.iter().any(|ts| *ts > h.ts), "readers differ by {c:?}, which no snapshot both hold covers");
+    }
 }
 
 // spec/sync-inbox.md §2 (Re-send: a commit sealed under an older epoch shows nothing): a sync

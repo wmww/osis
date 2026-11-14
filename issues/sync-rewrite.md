@@ -97,7 +97,6 @@ One agent writes a note `sync-boundary` in notes/: the interface between the eng
   - promote-covered-only-deposit: a deposit whose parts a held snapshot carries is not promoted.
   - host-takes-inline-before-owed: a node keeping S unread logs a removal before content announced after it, even when the content's bytes come inline first (spec/permissions.md §3).
   - refused-memory-entry-holds-label-unsettled: an ephemeral entry refused for the memory cap holds no deletion or repair judgement of S unsettled.
-  - reopened-entries-at-readers: entries a covered drop's undo reopens are fetched again at a node whose only sources are readers.
   - relink-queue-lost-at-restart, suspect-repair-per-launch, pass-sources-restart: a restart forgets no chunk repair, writes no snapshot per launch for a report none can settle, and drops no source a removal's wait counts.
   - pulled-refusal-lost: a refusal of a pulled entry lost with its connection is learned again on reconnect.
   - doubted-head-exhausted: a doubted open head whose Behind walk finds no earlier credential still learns the peer's later head without a reconnect.

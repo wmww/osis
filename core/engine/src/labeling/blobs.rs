@@ -527,6 +527,13 @@ impl Engine {
     /// with the parts its actor may read among those inside the closure (or published there),
     /// when there are any; else, for a lasting commit, its header alone.
     pub fn commit_bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId) -> Result<Vec<Body>> {
+        self.bodies_under(ctx, id, false)
+    }
+
+    /// `commit_bodies_under`, `missing` parts included (spec/sync-judgement.md §3 Dropped bodies:
+    /// a part counting as never received again is still the body's, to fetch again): what the
+    /// sync judgement reads (`sync_bodies`). A body of missing parts alone has no plaintext.
+    pub(crate) fn bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId, missing: bool) -> Result<Vec<Body>> {
         drop(osis_base::costs::span("pass: bodies of a commit"));
         let id = *id;
         // the view: the header is decoded only for bodies the cache misses
@@ -535,7 +542,22 @@ impl Engine {
             return Ok(Vec::new());
         }
         let touches = h.aspects.iter().any(|a| ctx.closure.contains(&a.tid));
-        let body = Memo::get_in(self, |e| &e.core.bodies, &id, |e| e.body_with(&id, false))?;
+        let mut body = Memo::get_in(self, |e| &e.core.bodies, &id, |e| e.body_with(&id, false))?;
+        let gone: Vec<usize> = if missing { self.core.ix.commits.get(&id).map(|m| m.missing_parts().collect()).unwrap_or_default() } else { Vec::new() };
+        if !gone.is_empty() {
+            body = match body {
+                Some(mut b) => {
+                    b.parts.extend(gone);
+                    b.parts.sort_unstable();
+                    b.parts.dedup();
+                    Some(b)
+                }
+                None => match self.header(&id) {
+                    Some(full) => Some(Body { commit: id, parts: gone, expires: osis_commit::blob_expiry(&full), blind: full.blind, plaintext: Vec::new(), role_commit: full.kind.is_role(), order: fetch_order(&full), to_label: false }),
+                    None => None,
+                },
+            };
+        }
         let mut out = Vec::new();
         if let Some(mut b) = body {
             let published = |ai: usize| h.aspects.get(ai).is_some_and(|a| !ctx.closure.contains(&a.tid) && ctx.published.contains(&a.tid) && matches!(a.ak.as_str(), "sync.0" | "created.0"));

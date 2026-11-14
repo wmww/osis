@@ -129,12 +129,14 @@ fn note<K: Ord, V>(moved: &mut Moved<K, V>, k: K, was: Option<V>, now: V) {
 }
 
 impl Read {
-    /// The product's step: over the engine, store, opens' members and streams' `known`.
-    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, status: &crate::status::Status, unread: &crate::unread::Unread) -> Result<bool> {
+    /// The product's step: over the engine, store, opens' members and streams' `known`. Entries
+    /// to fetch again (a body counting missing again) go to `fetches`, for streams.
+    #[allow(clippy::too_many_arguments)]
+    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, status: &crate::status::Status, unread: &crate::unread::Unread, fetches: &mut Vec<(ConnId, SyncId, osis_base::BlobId)>) -> Result<bool> {
         let mut commits = self.commits.take();
         let mut feeds = std::mem::take(&mut self.feeds);
         let views = std::mem::take(&mut self.views);
-        let r = self.settle_on(&mut Live { cx, sessions, opens, streams, status, unread, commits: &mut commits, views: &views, feeds: &mut feeds });
+        let r = self.settle_on(&mut Live { cx, sessions, opens, streams, status, unread, commits: &mut commits, views: &views, feeds: &mut feeds, fetches });
         self.commits = commits;
         self.feeds = feeds;
         self.views = views;
@@ -330,6 +332,11 @@ impl Read {
             }
             (Act::DropOwn(b), Some(c)) => g.drop_own(s, &b, c)?,
             (Act::Lift(b), _) => g.lift(s, &b)?,
+            (Act::Fetch { at, conn, blob }, _) => {
+                if let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) {
+                    g.fetch(&src, s, &blob)?;
+                }
+            }
             (Act::Delete { at, conn, head, blob }, _) => {
                 let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) else { return Ok(()) };
                 let key = g.credentials(s)?.and_then(|cr| cr.keys.get(&head).and_then(|k| k.delete.clone()));

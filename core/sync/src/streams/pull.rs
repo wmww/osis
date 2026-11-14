@@ -612,6 +612,29 @@ impl Streams {
         }
     }
 
+    /// Entry `b` of S queued for fetching on `conn` outside any message (`Streams::fetch_again`):
+    /// only while S is a member there and this node lacks the bytes and holds no tombstone of it.
+    /// Its wrap comes with the reply; until then it ranks as a body that opens, after the rest.
+    pub(super) fn refetch(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, b: BlobId) {
+        if !ctx.shared.members(conn).contains_key(&s) || ctx.store.holding(&s) != Some(Holding::Read) {
+            return;
+        }
+        if ctx.store.bytes(&b).ok().flatten().is_some() || ctx.store.tombstone(&s, &b).ok().flatten().is_some() {
+            return;
+        }
+        let Some(p) = self.pull.get_mut(&conn) else { return };
+        // an earlier take of the same body settled it here; it is not held now
+        p.failed.remove(&b);
+        p.settled.remove(&(s, b));
+        if !p.queue.values().any(|x| *x == (s, b)) {
+            p.arrivals += 1;
+            let key = (2, u64::MAX, u64::MAX - p.arrivals);
+            p.queue.insert(key, (s, b));
+        }
+        self.fetch(ctx, conn);
+        self.track(ctx, conn);
+    }
+
     fn tell(&mut self, conn: ConnId, s: SyncId, e: Event) {
         if let Some(p) = self.pull.get_mut(&conn) {
             p.tell.push((s, e));

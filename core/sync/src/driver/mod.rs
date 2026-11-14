@@ -648,7 +648,14 @@ impl Node {
             self.moved(&mut moved, out);
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
-            acted |= self.read.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status, &self.unread)?;
+            let mut fetches = Vec::new();
+            acted |= self.read.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status, &self.unread, &mut fetches)?;
+            for (conn, s, b) in fetches {
+                let mut cx = cx!(self, out);
+                self.streams.fetch_again(&mut cx, &mut self.driver.sessions, &self.opens, conn, s, b, &mut self.driver.reported);
+            }
+            let mut cx = cx!(self, out);
+            let sessions = &mut self.driver.sessions;
             acted |= self.inbox.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status)?;
             acted |= self.streams.settle(&mut cx, sessions, &self.opens, &mut self.driver.reported)?;
             self.reports(out);

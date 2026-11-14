@@ -10,7 +10,7 @@ use crate::store::{Source, Stand};
 use crate::status::{NetView, Status};
 use crate::streams::Streams;
 use crate::unread::Unread;
-use crate::types::{Cx, Entry, Result};
+use crate::types::{ConnId, Cx, Entry, Result};
 use osis_base::memo::Feed;
 use osis_base::{BlobId, CommitId, SyncId, WallMs};
 use osis_crypto::SigningSecret;
@@ -38,6 +38,8 @@ pub struct Live<'a, 'b> {
     pub commits: &'a mut Option<Feed<CommitId>>,
     pub views: &'a super::views::Views,
     pub feeds: &'a mut Feeds,
+    /// Entries to fetch again, per connection (`Act::Fetch`): the driver hands them to streams.
+    pub fetches: &'a mut Vec<(ConnId, SyncId, BlobId)>,
 }
 
 
@@ -231,6 +233,10 @@ impl Ground for Live<'_, '_> {
     }
     fn lift(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         self.cx.store.lift_tombstone(s, b)?;
+        Ok(())
+    }
+    fn fetch(&mut self, at: &SrcView, s: &SyncId, b: &BlobId) -> Result<()> {
+        self.fetches.push((at.conn, *s, *b));
         Ok(())
     }
     fn delete(&mut self, at: &SrcView, s: &SyncId, b: &BlobId, key: &SigningSecret) -> Result<()> {

@@ -23,6 +23,9 @@ pub(crate) enum Act {
     DropOwn(BlobId),
     /// The body counts missing again: its own tombstone ends (§4, §3 Dropped bodies).
     Lift(BlobId),
+    /// The body counts missing again: an entry of it a source's stream shows present is fetched
+    /// there (§3 Dropped bodies), by streams.
+    Fetch { at: Source, conn: ConnId, blob: BlobId },
     /// A Delete at a source keeping S unread, by its head's delete key (§3 Deletes, §5 Emptying).
     Delete { at: Source, conn: ConnId, head: StepId, blob: BlobId },
     /// Logged again once past a delete at the source (§4), a fresh encryption: `old` leaves the
@@ -190,9 +193,15 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     };
     j.verdict = verdict.clone();
     j.role = verdict == Verdict::Must && f.as_ref().is_some_and(|f| f.own && f.role);
-    // a body counting missing again: its own tombstones end, so it is fetched again
+    // a body counting missing again: its own tombstones end, and it is fetched again where a
+    // source shows an entry of it present (a source joining or showing one judges it again)
     if f.as_ref().is_some_and(|f| f.missing) {
         j.acts.extend(g.own_tombstones(s, c)?.into_iter().map(Act::Lift));
+        for src in g.sources(s)?.iter() {
+            for b in g.seen(&src.at, s, c)?.present {
+                j.acts.insert(Act::Fetch { at: src.at, conn: src.conn, blob: b });
+            }
+        }
     }
     j.idle = bodies.get(s).is_none() && own.is_empty() && !g.present_anywhere(s, c)?;
     j.acts.extend(stale.iter().chain(&subsets).map(|b| Act::DropOwn(*b)));
@@ -207,7 +216,8 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     if matches!(verdict, Verdict::MustNot(_)) || dropped_here {
         j.acts.extend(live.iter().map(|b| Act::DropOwn(*b)));
     }
-    if verdict == Verdict::Must && live.is_empty() && g.pullable(s)? {
+    // a body counting missing is logged once it is held again
+    if verdict == Verdict::Must && live.is_empty() && !f.as_ref().is_some_and(|f| f.missing) && g.pullable(s)? {
         j.acts.insert(Act::Log);
     }
     Ok(j)

@@ -213,6 +213,14 @@ impl Streams {
         product(cx, sessions, opens, reported, |ctx| self.again(ctx, conn));
     }
 
+    /// Entry `b` of S fetched from the source on `conn` though no message in hand owes it: a body
+    /// counting missing again that the source's stream showed present (read's word,
+    /// spec/sync-judgement.md §3 Dropped bodies).
+    #[allow(clippy::too_many_arguments)]
+    pub fn fetch_again(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, conn: ConnId, s: SyncId, b: BlobId, reported: &mut Vec<Reported>) {
+        product(cx, sessions, opens, reported, |ctx| self.refetch(ctx, conn, s, b));
+    }
+
     /// A source with no cursor: a bundle (spec/sync-streams.md §6).
     pub fn import(&mut self, cx: &mut Cx, bundle: &mut dyn std::io::Read) -> Result<()> {
         let _ = (cx, bundle);
