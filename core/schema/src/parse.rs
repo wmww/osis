@@ -199,7 +199,7 @@ impl<'a> Parser<'a> {
                     let kat = self.here();
                     let Tok::Ak(ak) = self.next() else { return self.err_at(kat, "expected an AK (a:b.0)") };
                     let (name, version) = match Ak::new(ak.as_str()) {
-                        Ok(a) => (unmarked(&ak), a.version()),
+                        Ok(a) => (a.unmarked().to_string(), a.version()),
                         Err(_) => return self.err_at(kat, format!("invalid AK {ak}")),
                     };
                     let want = respell(&name, ephemeral, admin, signal, version);
@@ -537,14 +537,6 @@ fn any_value(lit: &Lit) -> Result<Value, String> {
         Lit::Map(items) => Value::Map(items.iter().map(|(a, b)| Ok((any_value(a)?, any_value(b)?))).collect::<Result<_, String>>()?),
         Lit::Ident(..) => return Err("case names need an enum type".into()),
     })
-}
-
-/// An AK up to its markers: its tid and name segments (`a:b+^.1` → `a:b`).
-pub(crate) fn unmarked(ak: &str) -> String {
-    let body = ak.trim_end_matches(|c: char| c.is_ascii_digit());
-    let body = body.strip_suffix(['.', '~']).unwrap_or(body);
-    let body = body.strip_suffix('^').unwrap_or(body);
-    body.strip_suffix('+').unwrap_or(body).to_string()
 }
 
 /// The AK of `name` and `version` with the markers the keywords give.

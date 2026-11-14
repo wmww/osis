@@ -21,7 +21,7 @@ use osis_commit::RotationHeader;
 use osis_commit::thing_list::{ListIds, ThingCert, ThingList};
 use osis_crypto::{AccountEpochKeys, Secret32, SigningSecret, VerifyingKey};
 use osis_perm::epochs::{fit_list, list_leaf, list_tree};
-use osis_schema::Codec;
+use osis_schema::{Codec, RawKey};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -152,8 +152,7 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], done: &mut D
     tx.rng.fill_bytes(&mut dep);
     k.deposit_seed = Some(dep);
     m.set(p, &ct::KEYS, &k)?;
-    let ak = osis_base::Ak::new("account.0").map_err(|_| Error::Misuse("ak"))?;
-    let mut acct: ct::Account = tx.state(&held.devices, &ak)?.and_then(osis_crdt::Fragment::read).and_then(|x| osis_schema::Codec::from_value(&x).ok()).unwrap_or_default();
+    let mut acct = tx.state(&held.devices, &ct::ACCOUNT.name())?.and_then(osis_crdt::Fragment::read).and_then(|x| ct::ACCOUNT.decode(&x).ok()).unwrap_or_default();
     acct.seeds.insert(signing.to_bytes().to_vec(), ct::AccountSeed { seed: seed.expose().to_vec(), under: osis_keys::aspects::to_schema(&under) });
     m.set(held.devices, &ct::ACCOUNT, &acct)?;
     let lists = leaves.into_iter().zip(paths).map(|((i, l), path)| (i, path.siblings, l)).collect();
@@ -219,8 +218,7 @@ pub(crate) fn take_seeds(tx: &mut Tx<'_>, d: &Tid) -> Result<()> {
     if !tx.core.of_devices(d) {
         return Ok(());
     }
-    let ak = osis_base::Ak::new("account.0").map_err(|_| Error::Misuse("ak"))?;
-    let Some(acct) = tx.state(d, &ak)?.and_then(osis_crdt::Fragment::read).and_then(|x| <ct::Account as osis_schema::Codec>::from_value(&x).ok()) else { return Ok(()) };
+    let Some(acct) = tx.state(d, &ct::ACCOUNT.name())?.and_then(osis_crdt::Fragment::read).and_then(|x| ct::ACCOUNT.decode(&x).ok()) else { return Ok(()) };
     let mut keys = a.keys.clone();
     keys.extend(usable_seeds(tx.core, d, acct, &a.keys));
     if keys.len() != a.keys.len() {

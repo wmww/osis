@@ -4,7 +4,8 @@ use osis_base::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A type expression. `Named` covers schema types and the standard named types (`option`,
-/// `markdown`, `timestamp`, `duration`); `Param` is a parameter of the enclosing type definition.
+/// `markdown`, `timestamp`, ...: `Schema::instantiate`); `Param` is a parameter of the enclosing
+/// type definition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
     String,

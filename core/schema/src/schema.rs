@@ -120,20 +120,19 @@ impl Schema {
     /// One expansion step of a named type (standard or declared): a declared one without
     /// parameters is its body as declared (typed reads expand every node they walk).
     fn instantiate<'a>(&'a self, n: &str, args: &[Type]) -> Result<Cow<'a, Type>, String> {
-        let arity = |k: usize| if args.len() == k { Ok(()) } else { Err(format!("{n} takes {k} type argument(s), got {}", args.len())) };
-        match n {
-            "option" => {
-                arity(1)?;
-                Ok(Cow::Owned(Type::option_body(args.first().cloned().unwrap_or(Type::Any))))
-            }
-            "markdown" => arity(0).map(|_| Cow::Owned(Type::Text)),
-            "timestamp" | "duration" | "date" | "localtime" => arity(0).map(|_| Cow::Owned(Type::Int)),
+        let (k, t) = match n {
+            "option" => (1, Cow::Owned(Type::option_body(args.first().cloned().unwrap_or(Type::Any)))),
+            "markdown" => (0, Cow::Owned(Type::Text)),
+            "timestamp" | "duration" | "date" | "localtime" => (0, Cow::Owned(Type::Int)),
             _ => {
                 let def = self.types.get(n).ok_or_else(|| format!("unknown type {n}"))?;
-                arity(def.params.len())?;
-                Ok(if def.params.is_empty() { Cow::Borrowed(&def.body) } else { Cow::Owned(def.body.subst(&def.params, args)) })
+                (def.params.len(), if def.params.is_empty() { Cow::Borrowed(&def.body) } else { Cow::Owned(def.body.subst(&def.params, args)) })
             }
+        };
+        if args.len() != k {
+            return Err(format!("{n} takes {k} type argument(s), got {}", args.len()));
         }
+        Ok(t)
     }
 
     /// Expands named types at the head until a structure (or a parameter of an enclosing
@@ -222,16 +221,17 @@ impl Schema {
         let mut unmarked: BTreeMap<(String, u64), &str> = BTreeMap::new();
         for (ak, def) in &self.aspects {
             let item = format!("aspect {ak}");
-            let name = crate::parse::unmarked(ak);
-            if let Ok(a) = Ak::new(ak.as_str()) && let Some(other) = unmarked.insert((name.clone(), a.version()), ak) {
+            let parsed = Ak::new(ak.as_str());
+            let name = parsed.as_ref().map_or("", Ak::unmarked);
+            if let Ok(a) = &parsed && let Some(other) = unmarked.insert((name.to_string(), a.version()), ak) {
                 bad(&item, format!("differs from {other} only in markers: a change of markers takes a new version (spec/data-model.md §2)"));
             }
-            let markers = match Ak::new(ak.as_str()) {
+            let markers = match &parsed {
                 Ok(_) if crate::core_types::is_core_key(ak) != core => {
                     bad(&item, "a schema declares core AKs (one name segment, no tid) only, or app AKs (two or more, or a tid) only".into());
                     Markers::default()
                 }
-                Ok(_) => Ak::markers_of(ak),
+                Ok(a) => Ak::markers_of(a.as_str()),
                 Err(_) => {
                     bad(&item, "invalid AK".into());
                     Markers::default()
@@ -259,10 +259,12 @@ impl Schema {
                 bad(&item, "an ephemeral signal is held by nobody: nothing to expire".into());
             }
             for s in &def.succeeds {
-                if s == ak || Ak::new(s.as_str()).is_err() {
-                    bad(&item, format!("invalid succeeds {s}"));
-                } else if crate::parse::unmarked(s) == name {
-                    bad(&item, format!("succeeds {s}: a higher version succeeds the lower ones already; `succeeds` names other names"));
+                match Ak::new(s.as_str()) {
+                    Ok(a) if s != ak && a.unmarked() == name => {
+                        bad(&item, format!("succeeds {s}: a higher version succeeds the lower ones already; `succeeds` names other names"))
+                    }
+                    Ok(_) if s != ak => {}
+                    _ => bad(&item, format!("invalid succeeds {s}")),
                 }
             }
         }
@@ -322,15 +324,8 @@ impl Schema {
     fn check_syntax(&self, ty: &Type, params: &[String], bad: &mut dyn FnMut(String)) {
         match ty {
             Type::Named(n, args) => {
-                let k = match n.as_str() {
-                    "option" => Some(1),
-                    "markdown" | "timestamp" | "duration" | "date" | "localtime" => Some(0),
-                    _ => self.types.get(n).map(|d| d.params.len()),
-                };
-                match k {
-                    None => bad(format!("unknown type {n}")),
-                    Some(k) if k != args.len() => bad(format!("{n} takes {k} type argument(s), got {}", args.len())),
-                    Some(_) => {}
+                if let Err(e) = self.instantiate(n, args) {
+                    bad(e);
                 }
                 for a in args {
                     self.check_syntax(a, params, bad);

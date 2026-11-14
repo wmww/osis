@@ -4,8 +4,8 @@
 //! per declared signal.
 //! Usable from `build.rs` (`generate`) or the `osis-schema-gen` binary.
 //!
-//! Mapping: string, text, markdown → `String`; blob → `Vec<u8>`; int, timestamp, duration →
-//! `i64`; float → `Float` (bit pattern, so every generated type is `Ord`); tid → `Tid`;
+//! Mapping: string, text, markdown → `String`; blob → `Vec<u8>`; int, timestamp, duration,
+//! date, localtime → `i64`; float → `Float` (bit pattern, so every generated type is `Ord`); tid → `Tid`;
 //! any → `Value`; option → `Option`; list, set, map → `Vec`, `BTreeSet`, `BTreeMap`; wrappers →
 //! their inner type; a recursive type outside a collection is boxed. Inline structs and enums
 //! are named after their position (`NoteTyping`, `BoxSealed`).
@@ -282,16 +282,8 @@ fn field_ident(name: &str) -> String {
 
 /// Whether every key shares its first name segment (dropped from the constant names then).
 fn shared_first_segment<'a>(keys: impl Iterator<Item = &'a String>) -> bool {
-    let mut first: Option<String> = None;
-    for k in keys {
-        let f = Ak::new(k.as_str()).ok().and_then(|a| a.segments().next().map(str::to_string)).unwrap_or_default();
-        match &first {
-            None => first = Some(f),
-            Some(x) if *x == f => {}
-            Some(_) => return false,
-        }
-    }
-    first.is_some()
+    let first = |k: &String| Ak::new(k.as_str()).ok().and_then(|a| a.segments().next().map(str::to_string)).unwrap_or_default();
+    keys.map(first).collect::<BTreeSet<_>>().len() == 1
 }
 
 /// `note:last_opened.0` → `LAST_OPENED` (shared first segment dropped); a later version adds

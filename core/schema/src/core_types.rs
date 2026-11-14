@@ -342,25 +342,11 @@ pub fn setting_fits(s: &RetentionSetting) -> bool {
     s.rules.len() <= osis_base::format::MAX_RETENTION_ENTRIES
 }
 
-/// `group.0`: a field never written reads empty, its default in the
-/// schema. A first member so needs no write of the other field, which beside a concurrent add
-/// would risk it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Group {
-    pub items: BTreeSet<Tid>,
-    pub subgroups: BTreeSet<Tid>,
-}
-
-#[doc(hidden)]
-impl Codec for Group {
-    fn to_value(&self) -> Value {
-        rt::struct_value(vec![(0, self.items.to_value()), (1, self.subgroups.to_value())])
-    }
-    fn from_value(v: &Value) -> Result<Self, PathError> {
-        let m = rt::struct_map(v)?;
-        let set = |id: u64| if m.contains_key(&id.to_value()) { rt::field(m, id) } else { Ok(BTreeSet::new()) };
-        Ok(Group { items: set(0)?, subgroups: set(1)? })
-    }
+codec_struct! {
+    /// `group.0`: a field never written reads empty, its default in the schema. A first member
+    /// so needs no write of the other field, which beside a concurrent add would risk it.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Group { 0 items: BTreeSet<Tid>, 1 subgroups: BTreeSet<Tid> }
 }
 codec_struct! {
     /// A tag's own settings.
@@ -375,22 +361,11 @@ codec_struct! {
     pub struct AccountSeed { 0 seed: Vec<u8>, 1 under: Epoch }
 }
 
-/// `account.0` on an account's devices actor (spec/data-model.md §9): per epoch, its signing
-/// public key to its seed.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Account {
-    pub seeds: BTreeMap<Vec<u8>, AccountSeed>,
-}
-
-#[doc(hidden)]
-impl Codec for Account {
-    fn to_value(&self) -> Value {
-        rt::struct_value(vec![(0, self.seeds.to_value())])
-    }
-    fn from_value(v: &Value) -> Result<Self, PathError> {
-        let m = rt::struct_map(v)?;
-        Ok(Account { seeds: if m.contains_key(&0u64.to_value()) { rt::field(m, 0)? } else { BTreeMap::new() } })
-    }
+codec_struct! {
+    /// `account.0` on an account's devices actor (spec/data-model.md §9): per epoch, its signing
+    /// public key to its seed (empty when never written, its default in the schema).
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Account { 0 seeds: BTreeMap<Vec<u8>, AccountSeed> }
 }
 
 /// `listing.0`: a rotation's commit ID to the commit IDs a listing names (spec/permissions.md §5.5).

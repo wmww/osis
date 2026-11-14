@@ -321,6 +321,10 @@ impl Ak {
         let p = self.parsed();
         self.0.get(p.names..p.end).unwrap_or("").split(':').filter(|s| !s.is_empty())
     }
+    /// The key up to its markers: tid and name segments (`a:b+^.1` is `a:b`).
+    pub fn unmarked(&self) -> &str {
+        self.0.get(..self.parsed().end).unwrap_or("")
+    }
     /// The aspect version, the digits ending the key.
     pub fn version(&self) -> u64 {
         self.parsed().version

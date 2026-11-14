@@ -1,6 +1,5 @@
 //! Errors (notes/architecture.md §3).
 
-use crate::path::PathError;
 use osis_base::{Classified, ErrorClass};
 
 /// A schema source error at file, line, column.
@@ -26,8 +25,6 @@ pub enum Error {
     Parse(ParseError),
     /// A schema value (spec/data-model.md §10) is malformed or invalid. BadInput.
     Form(String),
-    /// A typed read or write validation failed; class per kind.
-    Path(PathError),
     /// Code generation cannot express the schema. Local.
     Codegen(String),
     /// Reading or writing a file (codegen tool). Local.
@@ -37,7 +34,6 @@ pub enum Error {
 osis_base::impl_error!(Error {
     Parse(e) => ("{e}"),
     Form(m) => ("schema value: {m}"),
-    Path(e) => ("{e}"),
     Codegen(m) => ("codegen: {m}"),
     Io(m) => ("io: {m}"),
 });
@@ -46,7 +42,6 @@ impl Classified for Error {
     fn class(&self) -> ErrorClass {
         match self {
             Error::Form(_) => ErrorClass::BadInput,
-            Error::Path(e) => e.class(),
             Error::Parse(_) | Error::Codegen(_) | Error::Io(_) => ErrorClass::Local,
         }
     }
@@ -55,11 +50,5 @@ impl Classified for Error {
 impl From<ParseError> for Error {
     fn from(e: ParseError) -> Error {
         Error::Parse(e)
-    }
-}
-
-impl From<PathError> for Error {
-    fn from(e: PathError) -> Error {
-        Error::Path(e)
     }
 }
