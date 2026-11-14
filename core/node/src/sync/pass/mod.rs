@@ -495,7 +495,7 @@ impl SyncEngine {
         // from here yet
         let mut behind = false;
         if own {
-            sends = self.body_sends(p, &bodies, &snaps, &snapping, &mut left, (&mut behind, &w.lacked))?;
+            sends = self.body_sends(p, &bodies, &snaps, &snapping, &mut left, &mut behind)?;
             self.relay_now.remove(&l);
             let ours: BTreeSet<BlobId> = sends.iter().filter(|o| o.fresh).map(|o| o.id).collect();
             let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
@@ -738,6 +738,7 @@ impl SyncEngine {
         let (g, l) = (own.g, own.l);
         let mut again = Vec::new();
         let mut note = Note::default();
+        let mut own_roles = None;
         for o in sends {
             let Some(Touch::Commit(c)) = o.of else { continue };
             // gone there: deleted, or held under a wrap of no use (`set_gone`)
@@ -771,7 +772,7 @@ impl SyncEngine {
                 continue;
             }
             // as a placement again past this node's own store's delete (`body_sends`)
-            if self.roles_lacking_at(&source, &l, sends) {
+            if self.roles_lacking_at(&source, &l, own_roles.get_or_insert_with(|| self.own_roles(&l))) {
                 continue;
             }
             // a body deleted there (not one under a useless wrap) goes as a placement again

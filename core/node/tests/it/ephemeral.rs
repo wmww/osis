@@ -6320,6 +6320,62 @@ fn header_only_list_keeps_what_it_may_list_spec_sync_6() {
     assert_eq!(net.eph_read(b, w, STATE), Some(s("v")));
 }
 
+// spec/sync.md §6 (Placed again once): writer b's snapshot S2 of the group's list covers its S1,
+// and b deletes S1 at a restarted host the admin cannot reach. The admin, not holding S2, demotes
+// b while cut off, placing its role commits with no source to judge them at; reconnected, it
+// learns of S1's delete in a pass before it has read the host to its end. It places S1 again only
+// once the host holds those role commits (refused there until the demotion's step registers),
+// whichever pass placed them: placed first, b deletes it by its old role, that delete stands at
+// the admin's head, and b, whose S2 fell, never lists w again. The other group's label shares the
+// connection, so the admin's passes run while it reads
+// (`ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6` seed 8)
+#[test]
+fn placement_again_waits_for_role_commits_placed_earlier_spec_sync_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let addr = net.hosts[host].address.clone();
+    net.group(a, &[(b, Role::Write)], &[host]);
+    let g = net.group_at(a, &[(b, Role::Write)], vec![addr]);
+    net.run();
+    let tb = net.tid(b);
+    let gak = osis_base::Ak::new("group.0").unwrap();
+    let (w, _) = made_window(&mut net, b, g, "v");
+    local(&mut net, b);
+    net.run();
+    net.advance(30_000);
+    net.run();
+    let acts = net.sync(b).compact_now(&g, &gak).unwrap();
+    net.actions(b, acts);
+    net.run();
+    assert_eq!(net.eph_read(a, w, STATE), Some(s("v")));
+    // a loses the host and cannot dial it again for a while
+    net.blocked.insert((a, host));
+    net.restart_host(host);
+    net.run();
+    made_window(&mut net, b, g, "u");
+    let acts = net.sync(b).compact_now(&g, &gak).unwrap();
+    net.actions(b, acts);
+    local(&mut net, b);
+    net.run();
+    net.advance(30_000);
+    net.run();
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.blocked.remove(&(a, host));
+    for _ in 0..4 {
+        net.advance(15_000);
+    }
+    assert!(net.engine(a).groups_of(&w).contains(&g));
+    assert_eq!(net.engine(a).groups_of(&w), net.engine(b).groups_of(&w), "b lists w again");
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("v")));
+}
+
 // spec/crdt.md §4.6: an ephemeral undo or redo needs the rights of a write, and leaves the nodes alike.
 #[test]
 fn ephemeral_reverts_within_rights_alike_spec_crdt_4_6() {
