@@ -1855,3 +1855,33 @@ fn a_claim_open_ended_by_a_head_move_opens_at_the_new_head_spec_sync_5() {
     assert!(net.sync(b).shared_members(cn).contains(&l), "open again");
     assert_eq!(net.sync(b).pass_stats().behind_sent - behind, 0, "no Behind item");
 }
+
+// spec/sync.md §3 (an inbox payload's label followed only for a thing the commit gave a read
+// secret of), §10 Shared set: Bob, granted sync alone by his inbox (the grant judged by the chain
+// it carries), keeps g's label unread: the credentials he offers of it are the head's, which a
+// reader opening it at his node matches, never the empty read credentials of a followed hint.
+#[test]
+fn a_sync_grant_by_inbox_offers_the_heads_credentials_spec_sync_10() {
+    let (mut net, host, a, b, _, bob, g, _) = alice_and_bob();
+    let l = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    // b keeps g's label for others: its store holds the label's path, copied from the host
+    let path = net.host_path(host, &l);
+    {
+        let hub = net.sync(b).hub_store();
+        let mut hub = hub.lock().unwrap();
+        hub.set_admission(osis_host::Admission::Open, Default::default());
+        for st in path {
+            osis_proto::LabelStore::push_step(&mut *hub, &l, st, None).unwrap();
+        }
+    }
+    let edge = ct::Edge { role: Role::Sync, until: None, invite: None, tied: None };
+    let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(b).role_on(&g), Some(Role::Sync));
+    let creds = net.sync(b).credentials(&[l]).unwrap();
+    assert!(creds[&l].iter().any(|c| matches!(c, osis_node::sync::credentials::Credential::SyncKey(_))), "the head's sync key: {} credentials", creds[&l].len());
+}
