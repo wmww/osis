@@ -457,6 +457,20 @@ fn frames(b: &[u8]) -> String {
     if v.is_empty() { format!("<{} bytes>", b.len()) } else { v.join(" | ") }
 }
 
+/// The kinds of the proto messages in a run of bytes (storm reports).
+fn kinds(b: &[u8]) -> String {
+    let mut d = osis_proto::FrameDecoder::default();
+    d.push(b);
+    let mut v = Vec::new();
+    while let Ok(Some(f)) = d.next_frame() {
+        v.push(match osis_proto::Message::decode(&f) {
+            Ok(m) => format!("{m:?}").split([' ', '(', '{']).next().unwrap_or_default().to_string(),
+            Err(_) => format!("<{} bytes>", f.len()),
+        });
+    }
+    if v.is_empty() { format!("<{} bytes>", b.len()) } else { v.join(" ") }
+}
+
 /// The messages in `b`, a stream push counted by its events (`Report::sent_events`).
 fn sent_events(b: &[u8]) -> u64 {
     let mut d = osis_proto::FrameDecoder::default();
@@ -1251,6 +1265,9 @@ impl NetSim {
             && Dice::keyed(self.seed, "dup", &[id, dir as u64, if compared() { at } else { self.seq }]).pct(self.cfg.faults.dup_pct)
         {
             self.report.duplicated = self.report.duplicated.saturating_add(1);
+            if self.verbose {
+                self.note(format!("link {id} -> {to:?}: sent twice"));
+            }
             let copy = Payload::Bytes(b.clone());
             self.push(id, to, at, copy);
         }
@@ -1639,6 +1656,14 @@ impl NetSim {
         let m = self.queue.remove(k);
         self.report.delivered = self.report.delivered.saturating_add(1);
         let alive = self.links.contains_key(&m.link);
+        if self.verbose {
+            let what = match &m.what {
+                Payload::Bytes(b) => kinds(b),
+                Payload::Up { .. } => "Up".to_string(),
+                Payload::Down => "Down".to_string(),
+            };
+            self.note(format!("link {} delivers to {:?}: {what}{}", m.link, m.to, if alive { "" } else { " (link gone: lost)" }));
+        }
         let now = self.now();
         match (m.to, m.what) {
             // a dial that failed or was cut before it was up, else its hub session ends
@@ -1749,11 +1774,26 @@ impl NetSim {
                 self.observe()?;
                 let heads = check::log_heads(self);
                 self.watch = true;
+                // what the storm carries: messages by receiving end, link and kind, with the first
+                let mut carried: BTreeMap<String, (u64, String)> = BTreeMap::new();
                 for _ in 0..400 {
-                    self.deliver_next()?;
+                    let Some(k) = self.next_head(u64::MAX, u64::MAX) else { break };
+                    if let Some(m) = self.queue.get(k) {
+                        let (kind, first) = match &m.what {
+                            Payload::Bytes(b) => (kinds(b), Some(b)),
+                            Payload::Up { .. } => ("Up".to_string(), None),
+                            Payload::Down => ("Down".to_string(), None),
+                        };
+                        let e = carried.entry(format!("link {} -> {:?}: {kind}", m.link, m.to)).or_insert_with(|| (0, first.map(|b| clip(&frames(b), 300)).unwrap_or_default()));
+                        e.0 += 1;
+                    }
+                    self.deliver(k)?;
                 }
+                let mut carried: Vec<_> = carried.into_iter().collect();
+                carried.sort_by_key(|(_, (n, _))| std::cmp::Reverse(*n));
+                let carried: Vec<String> = carried.iter().take(12).map(|(k, (n, first))| format!("  {n}x {k}{}", if first.is_empty() { String::new() } else { format!("; first: {first}") })).collect();
                 let churn = check::churn(self, &heads);
-                return Err(self.fail(format!("message storm: {STORM} deliveries without the queue emptying; meanwhile {churn:?}")));
+                return Err(self.fail(format!("message storm: {STORM} deliveries without the queue emptying; the next 400 carried (most first):\n{}\nmeanwhile at the hosts {churn:?}", carried.join("\n"))));
             }
         }
         Ok(())

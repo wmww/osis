@@ -2035,6 +2035,12 @@ fn dump_order(played: &Played, order: &[usize]) {
             Some(h) => {
                 let aspects: Vec<String> = h.aspects.iter().map(|a| format!("{:?} {}", a.tid, a.ak.as_str())).collect();
                 let _ = writeln!(out, "#{i} {:?} peer {who} {:?} {:?} {:?}: {}", pk.id, h.kind, h.form, h.ts, aspects.join(", "));
+                if h.links.purge.is_some() && h.purge.is_empty() {
+                    let _ = writeln!(out, "  purges by link (unresolved)");
+                }
+                for item in &h.purge {
+                    let _ = writeln!(out, "  purges {}", purge_item(played, &p, item));
+                }
             }
             None => {
                 let _ = writeln!(out, "#{i} {:?} peer {who}: no header", pk.id);
@@ -2055,6 +2061,25 @@ fn dump_order(played: &Played, order: &[usize]) {
         }
     });
     eprintln!("{out}");
+}
+
+/// A purge list item for `dump_order`, a `Commit` item with the packs it names (`p` holds the
+/// order's headers).
+fn purge_item(played: &Played, p: &Peer, item: &osis_commit::PurgeItem) -> String {
+    use osis_commit::PurgeItem::*;
+    match item {
+        Commit { tid, ak, ts, src } => {
+            // a commit-form source is the commit's ID; a session's, its stamp on the aspect
+            let names = |q: &Package| match src.kind() {
+                osis_crdt::SourceKind::Commit(id) => q.id == *id,
+                _ => p.engine.header(&q.id).is_some_and(|h| h.ts == *ts && h.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak)),
+            };
+            let named: Vec<String> = played.packs.iter().enumerate().filter(|(_, q)| names(q)).map(|(j, _)| format!("#{j}")).collect();
+            format!("commit {tid:?} {} {ts:?} {src:?}: {}", ak.as_str(), if named.is_empty() { "no pack this order holds".to_string() } else { named.join(" ") })
+        }
+        Aspect { tid, ak } => format!("aspect {tid:?} {} (every earlier delta)", ak.as_str()),
+        Author { tid, ak, actor } => format!("author {tid:?} {} by {actor:?} (every earlier delta)", ak.as_str()),
+    }
 }
 
 /// Every permutation of `0..n` (n small).
@@ -2582,24 +2607,32 @@ fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<S
     Ok(seen)
 }
 
-/// Drops steps while the history still fails; the shortest failing history found. A `settled`
-/// history keeps its settling tail whole: one cut short settles nothing.
+/// Drops steps while the history still fails, pass after pass until a whole pass drops none (a
+/// removal redraws the seed's orders and held sets, so a step one pass kept may go in the next):
+/// a failing history no single step can leave. A `settled` history keeps its settling tail
+/// whole: one cut short settles nothing.
 fn shrink(threads: usize, seed: u64, mut steps: Vec<Step>, cfg: Cfg) -> (Vec<Step>, String) {
     let mut err = check_on(threads, seed, &steps, cfg).unwrap_err();
     let tail = if cfg.settled { settled(Vec::new()).len() } else { 0 };
-    let mut i = 0;
-    while i + tail < steps.len() {
-        let mut fewer = steps.clone();
-        fewer.remove(i);
-        match check_on(threads, seed, &fewer, cfg) {
-            Err(e) => {
-                steps = fewer;
-                err = e;
+    loop {
+        let before = steps.len();
+        let mut i = 0;
+        while i + tail < steps.len() {
+            let mut fewer = steps.clone();
+            fewer.remove(i);
+            match check_on(threads, seed, &fewer, cfg) {
+                Err(e) => {
+                    steps = fewer;
+                    err = e;
+                }
+                Ok(_) => i += 1,
             }
-            Ok(_) => i += 1,
+        }
+        eprintln!("seed {seed}: shrink pass {before} -> {} steps", steps.len());
+        if steps.len() == before {
+            return (steps, err);
         }
     }
-    (steps, err)
 }
 
 /// What a seed leans toward, by `seed % 8`: every feature is drawn in every history, each from its

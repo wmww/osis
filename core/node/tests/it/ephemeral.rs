@@ -1954,11 +1954,88 @@ fn window_world_on(mut net: Net, single: bool, cap: u64) -> (Net, (Vec<usize>, V
     (net, (hosts, nodes, g, w))
 }
 
+/// A step of a random window run, as a script `window_replay` plays (node and host numbers are
+/// the world's).
+#[derive(Clone, Copy, Debug)]
+enum W {
+    /// Node `n` sets `k{k}` to `v{v}` in the window's notes.
+    Write { n: usize, k: u64, v: u64 },
+    Online { n: usize, on: bool },
+    /// Node `n` cut off from host `s` (`blocked`) or let through again.
+    Block { n: usize, s: usize, blocked: bool },
+    Restart { n: usize },
+    HostRestart { s: usize },
+    /// The clock moves `ms` and everything settles (`Net::advance`).
+    Advance { ms: u64 },
+    /// Host `s`'s answers and pushes held back (`slow`) or released.
+    Slow { s: usize, slow: bool },
+    /// One hop of delivery: every node fed once, one round.
+    OneHop,
+    /// Everything settles.
+    Run,
+}
+
+/// The world of a random window run of `seed`: `churn_world`, or for odd seeds (and `single`) one
+/// with a random ephemeral cap at the first host, from nothing fitting to the whole state fitting.
+fn window_run_world(seed: u64, single: bool) -> (Net, Vec<usize>, Vec<usize>, Tid, u64) {
+    let cap = [0, 1_500, 4_000, 8_000, 16_000, 64_000][(seed / 2 % 6) as usize];
+    let capped = single || seed % 2 == 1;
+    // built once per (single, cap) (`Net::cached`)
+    let (net, (hosts, nodes, _, w)) = if !capped { churn_world() } else { Net::cached(&format!("ephemeral::window_world/{single}/{cap}"), || window_world(single, cap)) };
+    (net, hosts, nodes, w, cap)
+}
+
+/// Plays one step of a window run.
+fn window_step(net: &mut Net, nodes: &[usize], w: Tid, restarts: &mut u64, script: &mut Script<W>, a: W) {
+    script.push(a, String::new());
+    match a {
+        W::Write { n, k, v } => {
+            // not `note`: an offline node must not see events (its dials would hang)
+            let mut m = Mutation::new();
+            m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(&format!("k{k}")))], op: Op::Set(s(&format!("v{v}"))) }).unwrap();
+            net.engine(n).write(m).unwrap();
+        }
+        W::Online { n, on } => net.set_online(n, on),
+        W::Block { n, s, blocked } => {
+            if !blocked {
+                net.blocked.remove(&(n, s));
+            } else if net.blocked.insert((n, s)) && net.conn_to(n, s).is_some() {
+                let on = net.nodes[n].online;
+                net.set_online(n, false);
+                net.set_online(n, on);
+            }
+        }
+        W::Restart { n } => {
+            *restarts += 1;
+            let on = net.nodes[n].online;
+            net.restart(n, *restarts);
+            net.set_online(n, on);
+        }
+        W::HostRestart { s } => net.restart_host(s),
+        W::Advance { ms } => net.advance(ms),
+        W::Slow { s, slow } => {
+            if slow {
+                net.held_hosts.insert(s);
+            } else if net.held_hosts.remove(&s) {
+                net.release();
+            }
+        }
+        W::OneHop => {
+            for n in nodes {
+                net.feed(*n, Event::Local);
+            }
+            net.round();
+        }
+        W::Run => net.run(),
+    }
+}
+
 /// `single`: one host only, always capped (what it holds is all others get): holders read
 /// alike unless an entry a holder has stays out of it because it genuinely does not fit there.
 /// `inflight`: half the steps end after one hop of delivery instead of settling, so later
 /// writes meet entries not yet pulled (coalesced, spec/sync.md §9), and the second host is
-/// at times slow (its messages held back for some steps).
+/// at times slow (its messages held back for some steps). A failure prints the run as a
+/// `window_replay` script.
 fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut rnd = move |n: u64| {
@@ -1967,21 +2044,11 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
         x ^= x << 17;
         x % n
     };
-    // odd seeds (and `single`): a random ephemeral cap at the first host, from nothing fitting
-    // to the whole state fitting
-    let cap = [0, 1_500, 4_000, 8_000, 16_000, 64_000][(seed / 2 % 6) as usize];
-    let capped = single || seed % 2 == 1;
-    // the world before the steps: built once per (single, cap) (`Net::cached`), uncapped at two
-    // hosts it is `churn_world`
-    let (mut net, (hosts, nodes, _, w)) = if !capped {
-        churn_world()
-    } else {
-        Net::cached(&format!("ephemeral::window_world/{single}/{cap}"), || window_world(single, cap))
-    };
+    let (mut net, hosts, nodes, w, cap) = window_run_world(seed, single);
     // the hosts in the order made: s1 (capped, if any) then s2
     let (s1, s2) = (0, 1);
     let mut restarts = 100;
-    let mut log = Vec::new();
+    let mut script = Script::new("W", format!("window_replay({seed}, {single}, &script)"));
     // in-flight steps from a stream of their own as well
     let mut z = seed.wrapping_mul(0x94d0_49bb_1331_11eb) | 1;
     let mut irnd = move || {
@@ -1992,74 +2059,52 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     };
     for step in 0..40 {
         let n = nodes[rnd(4) as usize];
-        match rnd(10) {
-            0..=4 => {
-                let (k, v) = (format!("k{}", rnd(5)), format!("v{step}"));
-                log.push(format!("{n} writes {k}={v}"));
-                // not `note`: an offline node must not see events (its dials would hang)
-                let mut m = Mutation::new();
-                m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(&k))], op: Op::Set(s(&v)) }).unwrap();
-                net.engine(n).write(m).unwrap();
-            }
-            5 => {
-                let on = !net.nodes[n].online;
-                log.push(format!("{n} online {on}"));
-                net.set_online(n, on);
-            }
+        let a = match rnd(10) {
+            0..=4 => W::Write { n, k: rnd(5), v: step },
+            5 => W::Online { n, on: !net.nodes[n].online },
             6 => {
                 let s = if rnd(2) == 0 || single { s1 } else { s2 };
-                let blocked = !net.blocked.remove(&(n, s));
-                if blocked {
-                    net.blocked.insert((n, s));
-                    if net.conn_to(n, s).is_some() {
-                        let on = net.nodes[n].online;
-                        net.set_online(n, false);
-                        net.set_online(n, on);
-                    }
-                }
-                log.push(format!("{n} blocked from {s} {blocked}"));
+                W::Block { n, s, blocked: !net.blocked.contains(&(n, s)) }
             }
-            7 => {
-                restarts += 1;
-                log.push(format!("{n} restarts"));
-                let on = net.nodes[n].online;
-                net.restart(n, restarts);
-                net.set_online(n, on);
-            }
-            8 if rnd(4) == 0 => {
-                let s = if rnd(2) == 0 || single { s1 } else { s2 };
-                log.push(format!("host {s} restarts"));
-                net.restart_host(s);
-            }
-            _ => {
-                log.push("advance".into());
-                net.advance(1_000 + rnd(20_000));
-                continue;
-            }
+            7 => W::Restart { n },
+            8 if rnd(4) == 0 => W::HostRestart { s: if rnd(2) == 0 || single { s1 } else { s2 } },
+            _ => W::Advance { ms: 1_000 + rnd(20_000) },
+        };
+        window_step(&mut net, &nodes, w, &mut restarts, &mut script, a);
+        if matches!(a, W::Advance { .. }) {
+            continue;
         }
         // a slow host: its answers and pushes held back for a while
         if inflight && !single && irnd() && irnd() {
-            if net.held_hosts.remove(&s2) {
-                log.push(format!("host {s2} answers"));
-                net.release();
-            } else {
-                log.push(format!("host {s2} slow"));
-                net.held_hosts.insert(s2);
-            }
+            let slow = !net.held_hosts.contains(&s2);
+            window_step(&mut net, &nodes, w, &mut restarts, &mut script, W::Slow { s: s2, slow });
         }
-        if inflight && irnd() {
-            log.push("one hop".into());
-            for n in &nodes {
-                net.feed(*n, Event::Local);
-            }
-            net.round();
-        } else {
-            net.run();
-        }
+        let settle = if inflight && irnd() { W::OneHop } else { W::Run };
+        window_step(&mut net, &nodes, w, &mut restarts, &mut script, settle);
     }
+    window_end(net, &hosts, &nodes, w, seed, single, cap);
+}
+
+/// Plays `steps` (a failing window run's script) on seed `seed`'s world and judges the end as the
+/// random run does.
+fn window_replay(seed: u64, single: bool, steps: &[W]) {
+    let (mut net, hosts, nodes, w, cap) = window_run_world(seed, single);
+    let mut restarts = 100;
+    let mut script = Script::new("W", format!("window_replay({seed}, {single}, &script)"));
+    for a in steps {
+        window_step(&mut net, &nodes, w, &mut restarts, &mut script, *a);
+    }
+    window_end(net, &hosts, &nodes, w, seed, single, cap);
+}
+
+/// A window run's end: the network heals and settles, then every holder reads alike (`single`:
+/// past a genuine refusal, holders of the same commits) and each writer's held bodies stay within
+/// their compaction bound.
+fn window_end(mut net: Net, hosts: &[usize], nodes: &[usize], w: Tid, seed: u64, single: bool, cap: u64) {
+    let s1 = 0;
     net.blocked.clear();
     net.release();
-    for n in &nodes {
+    for n in nodes {
         net.set_online(*n, true);
     }
     for _ in 0..4 {
@@ -2083,11 +2128,10 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
             if !pending(&mut net).1 {
                 break;
             }
-            log.push("periodic pass".into());
             net.advance(61_000);
         }
     }
-    let holders = nodes.clone();
+    let holders = nodes.to_vec();
     for n in &holders {
         assert!(synced(&mut net, *n, w), "seed {seed}: node {n} holds the window in no labeled closure");
     }
@@ -2115,7 +2159,7 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
         drop(store);
         let stale: Vec<_> = plain.iter().filter(|b| !held.contains(b)).collect();
         if !stale.is_empty() {
-            panic!("seed {seed}: the full host keeps entries {stale:?} no node holds (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &hosts, &l, w));
+            panic!("seed {seed}: the full host keeps entries {stale:?} no node holds (cap {cap})\n{}", lane_dump(&mut net, nodes, hosts, &l, w));
         }
     }
     // past a refusal, holders of the same plain commits still read alike (a node's state is its
@@ -2131,14 +2175,14 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     for (n, got, h) in &reads[1..] {
         let Some((m, want, _)) = reads.iter().find(|(_, _, h2)| !refused || h2 == h) else { continue };
         if got != want {
-            panic!("seed {seed}: node {n} differs from node {m} (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &hosts, &l, w));
+            panic!("seed {seed}: node {n} differs from node {m} (cap {cap})\n{}", lane_dump(&mut net, nodes, hosts, &l, w));
         }
     }
     // spec/sync.md §9 §7 (compaction trigger): the bodies each writer holds of an aspect within `FACTOR`
     // times a snapshot of it and one in flight
-    for n in &nodes {
+    for n in nodes {
         for x in net.engine(*n).compaction_load().unwrap() {
-            assert!(x.held <= osis_node::retention::compact::FACTOR * x.snapshot + x.largest, "seed {seed}: node {n} holds {} B of {} on {:?}, snapshot {} B\n{}", x.held, x.ak, x.tid, x.snapshot, log.join("\n"));
+            assert!(x.held <= osis_node::retention::compact::FACTOR * x.snapshot + x.largest, "seed {seed}: node {n} holds {} B of {} on {:?}, snapshot {} B", x.held, x.ak, x.tid, x.snapshot);
         }
     }
 }
@@ -2178,7 +2222,99 @@ fn random_window_one_capped_host_spec_sync_9() {
 
 /// A property random-window run: OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START (default 0).
 fn eph_large(name: &str, single: bool, inflight: bool) {
-    eph_seeds().run(name, |seed| eph_replay(name, seed), |seed| random_window_run_on(seed, single, inflight));
+    eph_seeds().run(name, |seed| eph_replay(name, seed), |seed| shrinking(|| random_window_run_on(seed, single, inflight), |h: &[W]| window_replay(seed, single, h)));
+}
+
+thread_local! {
+    /// A shrink's replays print nothing (`shrinking`).
+    static QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The steps of the last run that panicked on this thread (`Script`).
+    static FAILED: std::cell::RefCell<Option<Box<dyn std::any::Any>>> = std::cell::RefCell::new(None);
+}
+
+/// A random run's steps as a script, each with what it did: printed as Rust, with the call that
+/// replays it, when the run panics (notes/test-harnesses.md, Env vars and seeds).
+struct Script<A: std::fmt::Debug + Clone + 'static> {
+    kind: &'static str,
+    replay: String,
+    steps: Vec<(A, String)>,
+}
+
+impl<A: std::fmt::Debug + Clone + 'static> Script<A> {
+    fn new(kind: &'static str, replay: String) -> Self {
+        Script { kind, replay, steps: Vec::new() }
+    }
+
+    fn push(&mut self, a: A, note: String) {
+        self.steps.push((a, note));
+    }
+}
+
+impl<A: std::fmt::Debug + Clone + 'static> Drop for Script<A> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        if !QUIET.get() {
+            let mut out = format!("the run as a script (ephemeral.rs: {}; OSIS_EPH_SHRINK=1 shrinks it):\nlet script = {{\n    use {}::*;\n    vec![\n", self.replay, self.kind);
+            for (a, note) in &self.steps {
+                out.push_str(&format!("        {a:?},{}\n", if note.is_empty() { String::new() } else { format!(" // {note}") }));
+            }
+            out.push_str("    ]\n};");
+            eprintln!("{out}");
+        }
+        let steps: Vec<A> = self.steps.iter().map(|x| x.0.clone()).collect();
+        FAILED.set(Some(Box::new(steps)));
+    }
+}
+
+/// Runs `run`; with `OSIS_EPH_SHRINK=1`, a failing run's script is shrunk by dropping steps while
+/// `replay` still fails, pass after pass until none drops, and the shrunk run fails as the seed's
+/// failure, printing its script.
+fn shrinking<A: std::fmt::Debug + Clone + 'static>(run: impl FnOnce(), replay: impl Fn(&[A])) {
+    use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+    if !osis_base::testenv::u64_var("OSIS_EPH_SHRINK").is_some_and(|n| n != 0) {
+        return run();
+    }
+    let Err(first) = catch_unwind(AssertUnwindSafe(run)) else { return };
+    let Some(mut steps) = FAILED.take().and_then(|b| b.downcast::<Vec<A>>().ok()).map(|b| *b) else { resume_unwind(first) };
+    // a hook that stays silent for a shrink's replays, installed once for the process
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !QUIET.get() {
+                prev(info)
+            }
+        }));
+    });
+    let fails = |h: &[A]| {
+        QUIET.set(true);
+        let failed = catch_unwind(AssertUnwindSafe(|| replay(h))).is_err();
+        QUIET.set(false);
+        FAILED.take();
+        failed
+    };
+    let n = steps.len();
+    loop {
+        let before = steps.len();
+        let mut i = 0;
+        while i < steps.len() {
+            let mut fewer = steps.clone();
+            fewer.remove(i);
+            if fails(&fewer) {
+                steps = fewer;
+            } else {
+                i += 1;
+            }
+        }
+        if steps.len() == before {
+            break;
+        }
+    }
+    eprintln!("shrunk from {n} to {} steps; the shrunk run:", steps.len());
+    replay(&steps);
+    resume_unwind(first)
 }
 
 fn eph_seeds() -> osis_base::testenv::Seeds {
@@ -2233,12 +2369,253 @@ fn random_window_inflight_large() {
 
 const FLAG: &str = "win:flag+.0";
 
+/// A step of a random churn run, as a script `churn_replay` plays: `i` is a writer (node
+/// `nodes[i]`), host numbers are the world's. A write's values are `v{step}`, `f{step}` and
+/// `r{step}`, expiring `exp` ms after it when given; a key is the writer's own tid (0) or `k{key}`.
+#[derive(Clone, Copy, Debug)]
+enum C {
+    /// Into the cursor map, an entry per op (`Set` when `.1`, else `Put`); the flag too with `flag`.
+    Writes { i: usize, step: u64, exp: Option<u64>, ops: [Option<(u64, bool)>; 2], flag: bool },
+    Flags { i: usize, step: u64, exp: Option<u64> },
+    /// The cursor map replaced by `{key: r{step}}` (`replace`), else entry `key` removed.
+    Reset { i: usize, step: u64, exp: Option<u64>, key: u64, replace: bool },
+    /// The writer reverts its last write (since its last restart).
+    Undo { i: usize },
+    /// The first admin demotes the writer to read, or (`back`) grants it write again.
+    Demote { i: usize, back: bool },
+    Online { i: usize, on: bool },
+    Block { i: usize, host: usize, blocked: bool },
+    Restart { i: usize },
+    HostRestart { host: usize },
+    /// The clock moves `ms` and everything settles (`Net::advance`).
+    Advance { ms: u64 },
+    /// One hop of delivery from the writer.
+    OneHop { i: usize },
+    /// Everything settles.
+    Run,
+    /// The clock alone moves `ms`.
+    Clock { ms: u64 },
+}
+
+/// A churn run's world and what its steps leave for the next.
+struct Churn {
+    net: Net,
+    hosts: Vec<usize>,
+    nodes: Vec<usize>,
+    g: Tid,
+    w: Tid,
+    tids: Vec<Tid>,
+    demoted: BTreeSet<usize>,
+    last: BTreeMap<usize, CommitId>,
+    restarts: u64,
+    /// When each expiring value dies (`v{step}`, `f{step}`, `r{step}`): no node reads one at or past it.
+    dies: BTreeMap<String, u64>,
+    script: Script<C>,
+}
+
+impl Churn {
+    fn new(seed: u64) -> Churn {
+        let (mut net, (hosts, nodes, g, w)) = churn_world();
+        let tids: Vec<Tid> = nodes.iter().map(|n| net.tid(*n)).collect();
+        let script = Script::new("C", format!("churn_replay({seed}, &script)"));
+        Churn { net, hosts, nodes, g, w, tids, demoted: BTreeSet::new(), last: BTreeMap::new(), restarts: 100, dies: BTreeMap::new(), script }
+    }
+
+    fn edge(role: Role) -> osis_schema::core_types::Edge {
+        osis_schema::core_types::Edge { role, until: None, invite: None, tied: None }
+    }
+
+    fn key(&self, i: usize, r: u64) -> Value {
+        if r == 0 { s(&self.tids[i].to_string()) } else { s(&format!("k{r}")) }
+    }
+
+    fn step(&mut self, a: C) {
+        let w = self.w;
+        let mut note = String::new();
+        let write = match a {
+            C::Writes { i, step, exp, ops, flag } => {
+                let mut m = Mutation::new();
+                for (k, set) in ops.into_iter().flatten() {
+                    // a `Set` writes into the entry at the key, another writer's included
+                    let v = s(&format!("v{step}"));
+                    let op = if set { Op::Set(v) } else { Op::Put(v) };
+                    m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(self.key(i, k))], op }).unwrap();
+                }
+                if flag {
+                    m.set(w, &eph(FLAG), &s(&format!("f{step}"))).unwrap();
+                }
+                Some((i, step, exp, m))
+            }
+            C::Flags { i, step, exp } => {
+                let mut m = Mutation::new();
+                m.set(w, &eph(FLAG), &s(&format!("f{step}"))).unwrap();
+                Some((i, step, exp, m))
+            }
+            C::Reset { i, step, exp, key, replace } => {
+                let op = if replace { Op::Replace(Value::Map([(self.key(i, key), s(&format!("r{step}")))].into())) } else { Op::Remove(self.key(i, key)) };
+                let mut m = Mutation::new();
+                m.op(w, &eph(CURSOR), PathOp { path: vec![], op }).unwrap();
+                Some((i, step, exp, m))
+            }
+            C::Undo { i } => {
+                if let Some(c) = self.last.remove(&self.nodes[i]) {
+                    note = format!("{:?}", self.net.engine(self.nodes[i]).revert_commit(c, self.tids[i]));
+                }
+                None
+            }
+            C::Demote { i, back } => {
+                let (n0, g) = (self.nodes[0], self.g);
+                let done = if back {
+                    self.demoted.remove(&i);
+                    self.net.engine(n0).grant(&g, &self.tids[i], &Self::edge(Role::Write)).unwrap()
+                } else {
+                    self.demoted.insert(i);
+                    let d = osis_node::flows::Demotion { holder: self.tids[i], new: Some(Self::edge(Role::Read)), retain: None };
+                    self.net.engine(n0).demote(&g, &d).unwrap()
+                };
+                let acts = self.net.sync(n0).carry_out(done).unwrap();
+                self.net.actions(n0, acts);
+                None
+            }
+            C::Online { i, on } => {
+                self.net.set_online(self.nodes[i], on);
+                None
+            }
+            C::Block { i, host, blocked } => {
+                let n = self.nodes[i];
+                if !blocked {
+                    self.net.blocked.remove(&(n, host));
+                } else if self.net.blocked.insert((n, host)) && self.net.conn_to(n, host).is_some() {
+                    let on = self.net.nodes[n].online;
+                    self.net.set_online(n, false);
+                    self.net.set_online(n, on);
+                }
+                None
+            }
+            C::Restart { i } => {
+                let n = self.nodes[i];
+                self.restarts += 1;
+                self.last.remove(&n);
+                let on = self.net.nodes[n].online;
+                self.net.restart(n, self.restarts);
+                self.net.set_online(n, on);
+                None
+            }
+            C::HostRestart { host } => {
+                self.net.restart_host(host);
+                None
+            }
+            C::Advance { ms } | C::Clock { ms } => {
+                if matches!(a, C::Advance { .. }) {
+                    self.net.advance(ms);
+                } else {
+                    self.net.clock.advance(ms);
+                }
+                self.script.push(a, note);
+                self.expiry_check();
+                return;
+            }
+            C::OneHop { i } => {
+                self.net.feed(self.nodes[i], Event::Local);
+                self.net.round();
+                None
+            }
+            C::Run => {
+                self.net.run();
+                None
+            }
+        };
+        if let Some((i, step, exp, mut m)) = write {
+            let n = self.nodes[i];
+            if let Some(e) = exp {
+                for ak in [CURSOR, FLAG] {
+                    let _ = m.expires(w, &eph(ak), osis_base::WallMs(self.net.now() + e));
+                }
+            }
+            // a demoted writer that knows it is refused
+            let r = self.net.engine(n).write(m);
+            note = if r.is_ok() { "ok" } else { "refused" }.into();
+            if let Ok(Some(wr)) = &r {
+                self.last.insert(n, wr.id);
+            }
+            if let (Ok(_), Some(e)) = (&r, exp) {
+                for v in ["v", "f", "r"] {
+                    self.dies.insert(format!("{v}{step}"), self.net.now() + e);
+                }
+            }
+        }
+        self.script.push(a, note);
+    }
+
+    /// Expiry is a hard upper bound on visibility (spec/crdt.md §4.7): read as the API reads
+    /// (after `expire_due`), no node shows a value at or past its write's expiry, online or not.
+    fn expiry_check(&mut self) {
+        let (net, w) = (&mut self.net, self.w);
+        let now = net.now();
+        for &n in &self.nodes {
+            net.sync(n).expire_due();
+            for ak in [CURSOR, FLAG] {
+                let read = format!("{:?}", net.eph_read(n, w, ak));
+                for (v, at) in &self.dies {
+                    if *at <= now && read.contains(&format!("{v:?}")) {
+                        panic!("node {n} reads {v} {} ms past its expiry: {read}", now - at);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Once every writer may write again and the network healed, every holder reads the same.
+    fn end(mut self, seed: u64) {
+        for i in std::mem::take(&mut self.demoted) {
+            self.step(C::Demote { i, back: true });
+        }
+        let (hosts, nodes, w) = (self.hosts.clone(), self.nodes.clone(), self.w);
+        let net = &mut self.net;
+        net.blocked.clear();
+        net.release();
+        for n in &nodes {
+            net.set_online(*n, true);
+        }
+        for _ in 0..4 {
+            net.advance(15_000);
+        }
+        net.advance(61_000);
+        // holders read alike once quiet: a leftover reaches a node that missed its write only in a
+        // writer's snapshot, written once the aspect has been quiet (spec/sync.md §7 Trigger)
+        net.advance(osis_node::retention::compact::QUIET_MS);
+        net.advance(61_000);
+        let holders: Vec<usize> = nodes.iter().copied().filter(|n| synced(net, *n, w)).collect();
+        let Some(&h0) = holders.first() else { return };
+        let l = net.label(h0);
+        let held = |net: &mut Net, n: usize| -> BTreeSet<osis_base::CommitId> { net.engine(n).memory_commits().into_iter().map(|x| x.0).collect() };
+        let mut reads = Vec::new();
+        for n in &holders {
+            reads.push((*n, net.eph_read(*n, w, CURSOR), net.eph_read(*n, w, FLAG), held(net, *n)));
+        }
+        let all: Vec<String> = reads.iter().map(|(n, c, f, h)| format!("node {n}: {c:?} {f:?} holds {}", h.len())).collect();
+        let (m, c0, f0, h0) = reads[0].clone();
+        for (n, c, f, h) in &reads[1..] {
+            if (c, f) != (&c0, &f0) {
+                panic!(
+                    "seed {seed}: node {n} reads {c:?} {f:?}, node {m} {c0:?} {f0:?}\nheld only at {n}: {:?}\nheld only at {m}: {:?}\n{}\n{}",
+                    h.difference(&h0).collect::<Vec<_>>(),
+                    h0.difference(h).collect::<Vec<_>>(),
+                    all.join("\n"),
+                    lane_dump(net, &nodes, &hosts, &l, w)
+                );
+            }
+        }
+    }
+}
+
 /// One random run of superseded expiring writes (spec/sync.md §9): four writers on two hosts
 /// make expiring and plain writes at a few shared and own keys of a map and to a register
 /// (several ops per batch, sometimes two aspects), removals and replaces (resets), undos of
 /// their own changes, demotions and promotions of writers, with partitions and node and host
 /// restarts; once every writer may write again and the network healed, every holder reads the
-/// same, a once-demoted author included. Whether a node drops a superseded part must depend only on what it holds.
+/// same, a once-demoted author included. Whether a node drops a superseded part must depend only
+/// on what it holds. A failure prints the run as a `churn_replay` script.
 fn random_churn_run(seed: u64) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut rnd = move |n: u64| {
@@ -2247,199 +2624,60 @@ fn random_churn_run(seed: u64) {
         x ^= x << 17;
         x % n
     };
-    let (mut net, (hosts, nodes, g, w)) = churn_world();
-    let tids: Vec<Tid> = nodes.iter().map(|n| net.tid(*n)).collect();
-    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
-    let mut demoted: BTreeSet<usize> = BTreeSet::new();
-    let mut last: BTreeMap<usize, CommitId> = BTreeMap::new();
-    let mut restarts = 100;
-    let mut log = Vec::new();
-    // when each expiring value dies (`v{step}`, `f{step}`, `r{step}`): no node reads one at or past it
-    let mut dies: BTreeMap<String, u64> = BTreeMap::new();
+    let mut c = Churn::new(seed);
     for step in 0..60 {
         let i = rnd(4) as usize;
-        let n = nodes[i];
-        let has = net.engine(n).core.created(&w).is_some();
+        let n = c.nodes[i];
+        let has = c.net.engine(n).core.created(&c.w).is_some();
         // 90 s expires before the end; the others outlive the run
         let exp = [Some(90_000), Some(1_200_000), Some(2_400_000), None][rnd(4) as usize];
-        let key = |r: u64| if r == 0 { s(&tids[i].to_string()) } else { s(&format!("k{r}")) };
-        let mut m = Mutation::new();
-        let what = match rnd(12) {
-            _ if !has => "",
+        let a = match rnd(12) {
+            _ if !has => None,
             0..=4 => {
-                for _ in 0..1 + rnd(2) {
-                    // a `Set` writes into the entry at the key, another writer's included
-                    let v = s(&format!("v{step}"));
-                    let op = if rnd(3) == 0 { Op::Set(v) } else { Op::Put(v) };
-                    let k = key(rnd(3));
-                    log.push(format!("  {k:?} {op:?}"));
-                    m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(k)], op }).unwrap();
+                let mut ops = [None; 2];
+                for o in ops.iter_mut().take(1 + rnd(2) as usize) {
+                    let set = rnd(3) == 0;
+                    *o = Some((rnd(3), set));
                 }
-                if rnd(4) == 0 {
-                    m.set(w, &eph(FLAG), &s(&format!("f{step}"))).unwrap();
-                }
-                "writes"
+                Some(C::Writes { i, step, exp, ops, flag: rnd(4) == 0 })
             }
-            5 => {
-                m.set(w, &eph(FLAG), &s(&format!("f{step}"))).unwrap();
-                "flags"
-            }
+            5 => Some(C::Flags { i, step, exp }),
             6 => {
-                let op = if rnd(4) == 0 { Op::Replace(Value::Map([(key(rnd(3)), s(&format!("r{step}")))].into())) } else { Op::Remove(key(rnd(3))) };
-                log.push(format!("  {op:?}"));
-                m.op(w, &eph(CURSOR), PathOp { path: vec![], op }).unwrap();
-                "resets"
+                let replace = rnd(4) == 0;
+                Some(C::Reset { i, step, exp, key: rnd(3), replace })
             }
-            7 => {
-                if let Some(c) = last.remove(&n) {
-                    let r = net.engine(n).revert_commit(c, tids[i]);
-                    log.push(format!("{n} undoes its last: {r:?}"));
+            7 => c.last.contains_key(&n).then_some(C::Undo { i }),
+            8 if i > 0 && c.net.nodes[c.nodes[0]].online => Some(C::Demote { i, back: c.demoted.contains(&i) }),
+            8 | 9 => Some(match rnd(4) {
+                0 => C::Online { i, on: !c.net.nodes[n].online },
+                1 => {
+                    let host = c.hosts[rnd(2) as usize];
+                    C::Block { i, host, blocked: !c.net.blocked.contains(&(n, host)) }
                 }
-                ""
-            }
-            8 if i > 0 && net.nodes[nodes[0]].online => {
-                let done = if demoted.remove(&i) {
-                    log.push(format!("{n} promoted"));
-                    net.engine(nodes[0]).grant(&g, &tids[i], &edge(Role::Write)).unwrap()
-                } else {
-                    demoted.insert(i);
-                    log.push(format!("{n} demoted"));
-                    let d = osis_node::flows::Demotion { holder: tids[i], new: Some(edge(Role::Read)), retain: None };
-                    net.engine(nodes[0]).demote(&g, &d).unwrap()
-                };
-                let acts = net.sync(nodes[0]).carry_out(done).unwrap();
-                net.actions(nodes[0], acts);
-                ""
-            }
-            8 | 9 => {
-                match rnd(4) {
-                    0 => {
-                        let on = !net.nodes[n].online;
-                        log.push(format!("{n} online {on}"));
-                        net.set_online(n, on);
-                    }
-                    1 => {
-                        let host = hosts[rnd(2) as usize];
-                        let blocked = !net.blocked.remove(&(n, host));
-                        if blocked {
-                            net.blocked.insert((n, host));
-                            if net.conn_to(n, host).is_some() {
-                                let on = net.nodes[n].online;
-                                net.set_online(n, false);
-                                net.set_online(n, on);
-                            }
-                        }
-                        log.push(format!("{n} blocked from {host} {blocked}"));
-                    }
-                    2 => {
-                        restarts += 1;
-                        log.push(format!("{n} restarts"));
-                        last.remove(&n);
-                        let on = net.nodes[n].online;
-                        net.restart(n, restarts);
-                        net.set_online(n, on);
-                    }
-                    _ => {
-                        let host = hosts[rnd(2) as usize];
-                        log.push(format!("host {host} restarts"));
-                        net.restart_host(host);
-                    }
-                }
-                ""
-            }
+                2 => C::Restart { i },
+                _ => C::HostRestart { host: c.hosts[rnd(2) as usize] },
+            }),
             _ => {
-                log.push("advance".into());
-                net.advance(500 + rnd(10_000));
-                churn_expiry_check(&mut net, &nodes, w, &dies, seed, step, &log);
+                c.step(C::Advance { ms: 500 + rnd(10_000) });
                 continue;
             }
         };
-        if !what.is_empty() {
-            if let Some(e) = exp {
-                for ak in [CURSOR, FLAG] {
-                    let _ = m.expires(w, &eph(ak), osis_base::WallMs(net.now() + e));
-                }
-            }
-            // a demoted writer that knows it is refused
-            let r = net.engine(n).write(m);
-            log.push(format!("{n} {what} step {step} expiring {exp:?}: {}", if r.is_ok() { "ok" } else { "refused" }));
-            if let Ok(Some(wr)) = &r {
-                last.insert(n, wr.id);
-            }
-            if let (Ok(_), Some(e)) = (&r, exp) {
-                for v in ["v", "f", "r"] {
-                    dies.insert(format!("{v}{step}"), net.now() + e);
-                }
-            }
+        if let Some(a) = a {
+            c.step(a);
         }
-        if rnd(2) == 0 {
-            net.feed(n, Event::Local);
-            net.round();
-        } else {
-            net.run();
-        }
-        net.clock.advance(1 + rnd(40));
-        churn_expiry_check(&mut net, &nodes, w, &dies, seed, step, &log);
+        c.step(if rnd(2) == 0 { C::OneHop { i } } else { C::Run });
+        c.step(C::Clock { ms: 1 + rnd(40) });
     }
-    // every writer may write again, the network heals
-    for i in std::mem::take(&mut demoted) {
-        log.push(format!("{} promoted", nodes[i]));
-        let done = net.engine(nodes[0]).grant(&g, &tids[i], &edge(Role::Write)).unwrap();
-        let acts = net.sync(nodes[0]).carry_out(done).unwrap();
-        net.actions(nodes[0], acts);
-    }
-    net.blocked.clear();
-    net.release();
-    for n in &nodes {
-        net.set_online(*n, true);
-    }
-    for _ in 0..4 {
-        net.advance(15_000);
-    }
-    net.advance(61_000);
-    // holders read alike once quiet: a leftover reaches a node that missed its write only in a
-    // writer's snapshot, written once the aspect has been quiet (spec/sync.md §7 Trigger)
-    net.advance(osis_node::retention::compact::QUIET_MS);
-    net.advance(61_000);
-    let holders: Vec<usize> = nodes.iter().copied().filter(|n| synced(&mut net, *n, w)).collect();
-    let Some(&h0) = holders.first() else { return };
-    let l = net.label(h0);
-    let held = |net: &mut Net, n: usize| -> BTreeSet<osis_base::CommitId> { net.engine(n).memory_commits().into_iter().map(|x| x.0).collect() };
-    let mut reads = Vec::new();
-    for n in &holders {
-        reads.push((*n, net.eph_read(*n, w, CURSOR), net.eph_read(*n, w, FLAG), held(&mut net, *n)));
-    }
-    let all: Vec<String> = reads.iter().map(|(n, c, f, h)| format!("node {n}: {c:?} {f:?} holds {}", h.len())).collect();
-    let (m, c0, f0, h0) = reads[0].clone();
-    for (n, c, f, h) in &reads[1..] {
-        if (c, f) != (&c0, &f0) {
-            panic!(
-                "seed {seed}: node {n} reads {c:?} {f:?}, node {m} {c0:?} {f0:?}\nheld only at {n}: {:?}\nheld only at {m}: {:?}\n{}\n{}\n{}",
-                h.difference(&h0).collect::<Vec<_>>(),
-                h0.difference(h).collect::<Vec<_>>(),
-                all.join("\n"),
-                log.join("\n"),
-                lane_dump(&mut net, &nodes, &hosts, &l, w)
-            );
-        }
-    }
+    c.end(seed);
 }
 
-/// Expiry is a hard upper bound on visibility (spec/crdt.md §4.7): read as the API reads (after
-/// `expire_due`), no node shows a value at or past its write's expiry, online or not.
-fn churn_expiry_check(net: &mut Net, nodes: &[usize], w: Tid, dies: &BTreeMap<String, u64>, seed: u64, step: u64, log: &[String]) {
-    let now = net.now();
-    for &n in nodes {
-        net.sync(n).expire_due();
-        for ak in [CURSOR, FLAG] {
-            let read = format!("{:?}", net.eph_read(n, w, ak));
-            for (v, at) in dies {
-                if *at <= now && read.contains(&format!("{v:?}")) {
-                    panic!("seed {seed} step {step}: node {n} reads {v} {} ms past its expiry: {read}\n{}", now - at, log.join("\n"));
-                }
-            }
-        }
+/// Plays `steps` (a failing churn run's script) and judges the end as the random run does.
+fn churn_replay(seed: u64, steps: &[C]) {
+    let mut c = Churn::new(seed);
+    for a in steps {
+        c.step(*a);
     }
+    c.end(seed);
 }
 
 // spec/sync.md §9 (superseded expiring writes, randomized): holders read alike after random
@@ -2456,7 +2694,7 @@ fn random_churn_converges_spec_sync_9() {
 #[ignore]
 fn random_churn_converges_large() {
     let name = "ephemeral::random_churn_converges_large";
-    eph_seeds().run(name, |seed| eph_replay(name, seed), random_churn_run);
+    eph_seeds().run(name, |seed| eph_replay(name, seed), |seed| shrinking(|| random_churn_run(seed), |h: &[C]| churn_replay(seed, h)));
 }
 
 // spec/permissions.md §6 (a part dropped while invalid is fetched again once valid; random churn
