@@ -168,6 +168,8 @@ pub struct Streams {
     places: BTreeMap<Source, pull::Place>,
     /// Sync IDs the store shredded: dropped from every place kept in memory.
     shreds: osis_base::memo::Feed<SyncId>,
+    /// Sync IDs kept unread whose dropped copy is fetched anew (`Store::set_unheld`).
+    anew: osis_base::memo::Feed<SyncId>,
     known: Known,
     /// Blobs asked from some source, and when (one source at a time).
     asked: BTreeMap<BlobId, (ConnId, WallMs)>,
@@ -187,7 +189,7 @@ pub struct Streams {
 impl Streams {
     /// Streams over the node's store: where a record source's place and word live.
     pub fn new(store: Store) -> Streams {
-        Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), room: BTreeMap::new(), caught: Stamped::default(), fault: None, work: Work::default() }
+        Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew: store.anew_feed(), known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), room: BTreeMap::new(), caught: Stamped::default(), fault: None, work: Work::default() }
     }
 
     /// Tests only (world copies): reads the copy's store.
@@ -380,6 +382,7 @@ impl Streams {
     pub fn tick(&mut self, ctx: &mut Ctx) -> Result<bool> {
         self.forget_shredded();
         let mut acted = self.room_grew(ctx)?;
+        acted |= self.fetch_anew(ctx);
         let conns: BTreeSet<ConnId> = self.serve.keys().chain(self.pull.keys()).copied().collect();
         for c in conns {
             acted |= self.push(ctx, c)?;

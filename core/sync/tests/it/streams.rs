@@ -841,6 +841,32 @@ fn full_told_then_room_again_spec_sync_streams_4() {
     assert!(matches!(p.sent_by_b(41).last().unwrap(), Msg::Pull(q) if q.joins == vec![(k.id, None)]), "pulled again from the start");
 }
 
+// spec/sync-judgement.md §6 (Stops: a box of its head's sync secret keeps S again, and it fetches
+// S anew): a node keeping S unread takes S, its head moves past its keys (its copy dropped), then
+// back within them: it pulls S again from the start and holds what it dropped. Moving past its
+// keys alone pulls nothing.
+#[test]
+fn kept_again_fetches_anew_spec_sync_judgement_6() {
+    let mut p = Pair::new();
+    let k = Sid::new(10);
+    k.keep(&mut p.a);
+    k.keep(&mut p.b);
+    let x = k.stamped(&mut p.a, 3000, true);
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run();
+    assert!(p.b.store.entry(&k.id, &x).unwrap().is_some());
+    let pulls = p.sent_by_b(41).len();
+    p.b.store.set_unheld(&k.id, true).unwrap();
+    p.run();
+    assert!(p.b.store.entry(&k.id, &x).unwrap().is_none(), "its copy dropped");
+    assert!(!p.sent_by_b(41).iter().skip(pulls).any(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])), "nothing pulled while past its keys");
+    p.b.store.set_unheld(&k.id, false).unwrap();
+    p.run();
+    assert!(p.sent_by_b(41).iter().skip(pulls).any(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])), "pulled again from the start");
+    assert!(p.b.store.entry(&k.id, &x).unwrap().is_some(), "what it dropped held again");
+}
+
 // spec/sync-streams.md §4 (Refused): an entry refused for anything but room is told with its code;
 // the peer keeps the refusal with the entry's stamp and head, and counts code 6 as deleted there.
 #[test]

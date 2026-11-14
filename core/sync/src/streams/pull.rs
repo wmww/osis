@@ -736,20 +736,42 @@ impl Streams {
         for s in &grew {
             self.room.remove(s);
             for c in self.holders.get(s).cloned().unwrap_or_default() {
-                let Some(p) = self.pull.get_mut(&c) else { continue };
-                if p.told_full.remove(s) {
+                if let Some(p) = self.pull.get_mut(&c)
+                    && p.told_full.remove(s)
+                {
                     p.tell.push((*s, Event::Full(false)));
                 }
-                p.join(*s, None);
-                let src = p.src;
-                let place = self.place(ctx.store, src);
-                place.at_stream.remove(s);
-                place.stopped.remove(s);
-                place.joining.insert(*s, None);
-                self.save(ctx, src, &[*s], false, Vec::new());
             }
+            self.pull_anew(ctx, *s);
         }
         Ok(!grew.is_empty())
+    }
+
+    /// S kept unread whose dropped copy is fetched anew (spec/sync-judgement.md §6 Stops: a box
+    /// of its head's sync secret keeps S again): pulled again from the start at every source.
+    pub(super) fn fetch_anew(&mut self, ctx: &mut Ctx) -> bool {
+        let anew = self.anew.added();
+        for s in &anew {
+            self.pull_anew(ctx, *s);
+        }
+        !anew.is_empty()
+    }
+
+    /// S pulled from the start: from each source pulling it now, and from the start at its next
+    /// join wherever this node's place already passed (kept in memory).
+    fn pull_anew(&mut self, ctx: &mut Ctx, s: SyncId) {
+        let pulling: BTreeMap<Source, ConnId> = self.holders.get(&s).into_iter().flatten().filter_map(|c| self.pull.get(c).map(|p| (p.src, *c))).collect();
+        let srcs: BTreeSet<Source> = self.places.iter().filter(|(_, pl)| pl.at_stream.contains(&s) || pl.stopped.contains_key(&s) || pl.joining.contains_key(&s)).map(|(src, _)| *src).chain(pulling.keys().copied()).collect();
+        for src in srcs {
+            if let Some(p) = pulling.get(&src).and_then(|c| self.pull.get_mut(c)) {
+                p.join(s, None);
+            }
+            let place = self.place(ctx.store, src);
+            place.at_stream.remove(&s);
+            place.stopped.remove(&s);
+            place.joining.insert(s, None);
+            self.save(ctx, src, &[s], false, Vec::new());
+        }
     }
 
     /// Sends Fetches while fewer than `FETCHES_OUT` are out: one sync ID's bodies of one fill

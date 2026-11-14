@@ -521,6 +521,11 @@ impl Store {
         self.lock().mem.shreds.feed()
     }
 
+    /// Sync IDs whose dropped copy is to be fetched anew (`set_unheld`).
+    pub fn anew_feed(&self) -> osis_base::memo::Feed<SyncId> {
+        self.lock().mem.anew.feed()
+    }
+
     /// Blob `b`'s bytes, whoever holds them.
     pub fn bytes(&self, b: &BlobId) -> Result<Option<Vec<u8>>> {
         let mut g = self.lock();
@@ -1121,11 +1126,14 @@ impl Store {
     /// S kept unread moved to (`true`) or off (`false`) a head whose sync key this node holds no
     /// box for (spec/sync-judgement.md §6): moving there drops its copy of S (every entry, with
     /// no deletion event: it was no delete; its path and tombstones stay), and while there it
-    /// takes no entry, deposit or Delete, as with no head.
+    /// takes no entry, deposit or Delete, as with no head. Moving off it, S is fetched anew
+    /// (`anew_feed`): its sources' positions passed the entries dropped.
     pub fn set_unheld(&mut self, s: &SyncId, unheld: bool) -> Result<()> {
         let mut g = self.lock();
         if !unheld {
-            g.unheld.remove(s);
+            if g.unheld.remove(s) {
+                g.mem.anew.wrote_added(s, true, true);
+            }
             return Ok(());
         }
         if !g.unheld.insert(*s) {

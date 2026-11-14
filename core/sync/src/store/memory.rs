@@ -55,6 +55,9 @@ pub(crate) struct Memory {
     /// Every sync ID shredded (`Store::shred`): a `Feed<SyncId>` over it tells the modules that
     /// keep S in memory per record (opens, streams) to drop it.
     pub shreds: Stamps,
+    /// Every sync ID kept unread whose head came back within its keys (`Store::set_unheld`
+    /// false after true): a `Feed<SyncId>` over it tells streams to fetch S anew.
+    pub anew: Stamps,
     /// Every blob no entry names any more, durable or in memory: a `Feed<BlobId>` over it tells
     /// the store's follow that a commit's last carrier may have gone (spec/commits.md §4 Pending
     /// storage).
