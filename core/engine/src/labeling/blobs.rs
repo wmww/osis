@@ -316,7 +316,7 @@ impl Engine {
                 let t = (*t)?;
                 // another's write goes under this node's epoch only where `opened::passes_on`
                 // (its invariant), else as a held section of it or not at all
-                if !self.passes_on_all(&id, parts).ok()? {
+                if !self.passes_on_all(&id, &resolved, parts).ok()? {
                     return None;
                 }
                 let (e, s) = self.wrap_under(&t, Some((&id, parts))).ok().flatten()?;

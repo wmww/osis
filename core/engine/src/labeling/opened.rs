@@ -158,6 +158,29 @@ pub(crate) fn persist(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
     Ok(())
 }
 
+/// Lets go of the rows of commit `c`'s parts held with no content (dropped, or value-less):
+/// nothing of them is encrypted again, and kept they would follow the bodies' churn
+/// (`Tx::put_commit`, with its record `m`).
+pub(crate) fn prune(tx: &mut Tx<'_>, c: &CommitId, m: &crate::engine::Meta) -> Result<()> {
+    let empty = |ai: usize| matches!(m.hold.get(ai), Some(Hold::Leftover { valued: false, .. } | Hold::Dropped(_)));
+    if !(0..m.hold.len()).any(empty) {
+        return Ok(());
+    }
+    let prefix = [records::OPENED_UNDER, c.0.as_slice()].concat();
+    let mut gone = Vec::new();
+    tx.scan(&prefix, |k, _| {
+        let ai = k.get(..4).and_then(|b| b.try_into().ok()).map(u32::from_be_bytes);
+        if ai.is_some_and(|ai| empty(ai as usize)) {
+            gone.push([prefix.as_slice(), k].concat());
+        }
+        Ok(())
+    })?;
+    for k in gone {
+        tx.txn.remove_local(&k, Shred::Yes)?;
+    }
+    Ok(())
+}
+
 /// One opening of a part: the part, its epoch, whether its delta was checked against the
 /// header, and the delta's hash.
 type Opening = (usize, Epoch, bool, [u8; 32]);
@@ -234,8 +257,8 @@ pub(crate) fn passes_on(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid, ak: &
 
 /// Whether this node may wrap a blob of commit `c` (its header) under an epoch of its own
 /// choosing: its own, one with no content part, or one each of whose content parts it opened
-/// has a genuine opening under an epoch established here now (its rows outlive the part's
-/// body, so a lasting header of a body this node read is judged by them).
+/// has a genuine opening under an epoch established here now (a part dropped or held
+/// value-less keeps none: Open paths in issues/reseal-under-own-epoch-leaks.md).
 fn header_passes(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header) -> Result<bool> {
     if tx.core.ix.commits.get(c).is_some_and(|m| m.origin == Origin::Local) {
         return Ok(true);
@@ -289,10 +312,10 @@ impl Engine {
         })
     }
 
-    /// `passes_on` for each part of `ais` of held commit `c` (a fresh encryption's section).
-    pub(super) fn passes_on_all(&mut self, c: &CommitId, ais: &[usize]) -> Result<bool> {
+    /// `passes_on` for each part of `ais` of commit `c` (header `h`; a fresh encryption's
+    /// section).
+    pub(super) fn passes_on_all(&mut self, c: &CommitId, h: &osis_commit::Header, ais: &[usize]) -> Result<bool> {
         let c = *c;
-        let Some(h) = self.header(&c) else { return Ok(false) };
         self.read(|tx| {
             for ai in ais {
                 let Some(a) = h.aspects.get(*ai) else { return Ok(false) };

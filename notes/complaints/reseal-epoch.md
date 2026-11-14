@@ -5,3 +5,4 @@
 - Reproducer briefs that say "deliver everything of R's" with LocalPeer's plain `sync` bypass sections entirely; tests of what was opened under which epoch must deliver the write as its sealed entry.
 - Review: openings kept in memory until `put_commit` were lost by a restart while the commit was pending, and an absent opening read as "read in no section": fail-open. State absence-means-allowed rules only where absence cannot come from lost bookkeeping.
 - Review: LocalPeer's plain delivery (no sections) is the engine tests' main harness, so a fail-closed rule on unsectioned content breaks 13 unrelated compaction tests; harness realism decides which security rule is buildable.
+- Review: the gate's first run failed 12 NEW (relay-only signals, a growth count): `passes_on_all` looked up a held header and a relay-only commit built here is never held. Unit tests of the engine alone missed both.
