@@ -1345,8 +1345,8 @@ fn a_role_commit_on_a_holder_wants_a_pass_of_what_it_holds_spec_permissions_3() 
     assert!(since.is_some_and(|x| x > began), "t's sync ID wanted from the role commit on M: {since:?}");
 }
 
-// spec/permissions.md §3 (When it learns it: the removed node keeps the secrets through its pass),
-// spec/crypto.md §5 (the removal's rotation leaves it out): while peer 1, removed from t, still
+// spec/permissions.md §3 (When it learns it: the removed node keeps the secrets through its pass,
+// the removal's rotation leaving it out): while peer 1, removed from t, still
 // holds t's old secrets and acts as a reader of t's sync ID, a write peer 0 makes after the
 // removal opens nothing at peer 1.
 #[test]

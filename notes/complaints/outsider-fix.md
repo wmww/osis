@@ -4,3 +4,4 @@
 - A full-crate test run in the background while editing/building left stale artifacts and 27 spurious doc-test failures (E0460 "found possibly newer version of crate").
 - A cost regression (pieces judged 28 -> 60) came from a module restart after an engine reload: the reload dropped the engine's followed links, so link sync IDs left the sync set for a round and waited a pass. Found only by probing restarts; nothing reports "a module restart saw these sync IDs leave".
 - Three coordinator rebases mid-task (regrant-drop, outsider-lists, review-3), each with spec/issue conflicts on the same lines.
+- (review) The preamble forbids `git reset --soft` to squash, so folding a reviewer's own wip-probe commits took a diff/reset/apply round trip.
