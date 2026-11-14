@@ -398,7 +398,18 @@ fn retry_pending(tx: &mut Tx<'_>, id: CommitId, b: CommitBlob) -> Result<Option<
     match tx.step(Step::Commit, |tx| ingest_blob(tx, b, Origin::Remote)) {
         Ok(out) => Ok(Some(out)),
         Err(e) if e.class() == ErrorClass::BadInput => {
-            drop_pending(tx, &id)?;
+            // a kept first copy proved junk (named in `examine`): a true copy may be held, so the
+            // name and what was opened of the commit stay for its carriers to bring it again
+            // (`Engine::redelivered` lets them go after)
+            match tx.core.redeliver.contains(&id) {
+                true => {
+                    crate::retention::forget_waiting_leftovers(tx, &id)?;
+                    unpend(tx, &id)?;
+                }
+                false => {
+                    drop_pending(tx, &id)?;
+                }
+            }
             keys::forget_unchecked(tx, &id)?;
             // secrets read from its boxes go unless something else reads them
             crate::rotation::mark_lost_due(tx, things)?;
@@ -1267,6 +1278,16 @@ impl Engine {
     /// true copy the first one kept out may be held by the sync layer (`with_pending`).
     pub fn take_redeliver(&mut self) -> BTreeSet<CommitId> {
         std::mem::take(&mut self.core.redeliver)
+    }
+
+    /// The carriers of commit `id`, named by `take_redeliver`, were opened again: what was kept
+    /// of it for that (its opened blobs) goes unless it is held or pending now.
+    pub fn redelivered(&mut self, id: &CommitId) -> Result<()> {
+        if self.core.ix.commits.contains_key(id) || self.core.ix.pending.contains_key(id) || self.core.redeliver.contains(id) {
+            return Ok(());
+        }
+        let id = *id;
+        self.run(|tx| crate::labeling::opened::forget(tx, &id))
     }
 
     /// Names commit `id` for `take_redeliver`.

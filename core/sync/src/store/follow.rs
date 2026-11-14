@@ -83,6 +83,12 @@ impl Carriers {
                 }
             }
         }
+        // a kept copy of a commit proved junk (spec/commits.md §4 Copies: the node judges again
+        // the copies of the commit it holds as blobs): every entry naming a blob of it opens again
+        for c in engine.take_redeliver() {
+            acted |= reopen(engine, store, &c)?;
+            engine.redelivered(&c)?;
+        }
         let held = match self.commits.as_mut() {
             Some(f) => f.added(),
             None => {
@@ -219,6 +225,21 @@ impl Follow {
         acted |= store.settle_at(now)?;
         Ok(acted)
     }
+}
+
+/// Opens again every entry in the store naming a blob of commit `c` (`Engine::take_redeliver`).
+/// Whether one opened.
+fn reopen(engine: &mut Engine, store: &mut Store, c: &CommitId) -> Result<bool> {
+    let mut opened = false;
+    for b in engine.commit_blobs(c)?.iter() {
+        let Some(bytes) = store.bytes(b)? else { continue };
+        for s in store.naming(b)? {
+            let Some(e) = store.entry(&s, b)? else { continue };
+            engine.open_entry(&s, b, &e.wrap, &bytes)?;
+            opened = true;
+        }
+    }
+    Ok(opened)
 }
 
 /// Opens S's held entries whose commit is neither held nor pending here (kept as they did not

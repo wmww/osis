@@ -390,3 +390,39 @@ fn role_commits_before_their_creation_pend_then_apply_spec_commits_4() {
     assert!(!e.roster(&t).contains_key(&ps[2]));
     assert_eq!(lp.peers[2].redelivered, 0, "nothing fetched again");
 }
+
+// spec/commits.md §4 (Unjudgeable: a pending commit keeps its unjudgeable parts; Copies: it keeps
+// the first copy of each delta it could not check, a copy that proves not to match goes and the
+// node judges again the copies it holds as blobs): a write awaiting its thing's record arrives
+// first as a junk copy (its delta's bytes replaced), then true; neither can be checked, so the
+// junk one is kept. Once the record comes the junk goes and the commit is named for its carriers
+// to bring again (sync opens every entry naming it again, `store::follow`); the true copy then
+// gives the write.
+#[test]
+fn junk_first_while_a_record_is_away_goes_once_it_comes_spec_commits_4() {
+    let mut lp = net(2, 0);
+    let t = new_thing(&mut lp, 0);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("true")).unwrap();
+    let w = lp.peers[0].commit(m).unwrap().unwrap();
+    let pks = packages(&mut lp, 0);
+    let c = creation_of(&mut lp, &pks, t);
+    for p in &pks[..c] {
+        lp.deliver(1, p).unwrap();
+    }
+    let true_copy = pks.iter().find(|p| p.id == w).unwrap().bytes.clone();
+    let mut junk = CommitBlob::decode(&true_copy).unwrap();
+    let ai = junk.header.aspects.iter().position(|a| a.tid == t && a.ak.as_str() == "t:reg.0").unwrap();
+    let p = junk.parts.iter_mut().find(|p| p.ai == ai).unwrap();
+    p.delta = osis_base::encode(&Value::List(vec![Value::Int(2)]));
+    let e = &mut lp.peers[1].engine;
+    assert!(matches!(e.ingest(&junk.encode(), Vec::new()).unwrap(), Ingested::Pending(_, Reason::UnknownCreated(x)) if x == t));
+    assert!(matches!(e.ingest(&true_copy, Vec::new()).unwrap(), Ingested::Pending(..)));
+    e.take_redeliver();
+    e.ingest(&pks[c].bytes, pks[c].blobs.clone()).unwrap();
+    e.reexamine().unwrap();
+    assert!(e.take_redeliver().contains(&w), "named for its carriers");
+    assert_ne!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("true")), "the junk copy gave nothing");
+    e.ingest(&true_copy, Vec::new()).unwrap();
+    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("true")));
+}

@@ -197,6 +197,9 @@ impl Peer {
                 }
                 self.note(&d.bytes, &d.blobs, &r);
             }
+            for c in &again {
+                self.engine.redelivered(c)?;
+            }
         }
     }
 
