@@ -249,6 +249,6 @@ A demotes admin a2 (D); a2, unaware, removes reader M (W); R, holding W alone, r
 | `W_met_live` | met; LiveM, LiveN | **fails** (expected: the stated limit) | 5,888 | 4 s |
 | `W_refuted` | refuted; NoLeakM | **fails** (expected: world G, G unseen) | 40 | 1 s |
 | `W_wait` | wait; NoLeakM | **fails** (expected: world X, a4's demotion of A unseen) | 3,159 | 1 s |
-| `W_waitall_live` | waitall; invariants, LiveM | **fails** LiveM (expected: a3 or a4 away for good) | 12,687 | 4 s |
+| `W_waitall_live` | waitall; invariants, LiveM | **fails** LiveM (expected: a3 or a4 away for good) | 19,084 | 4 s |
 | `W_regrant_live` | regrant; invariants, LiveM | **fails** LiveM (expected: nothing writes RG) | 6,336 | 3 s |
 | `W_joiners` | joiners; invariants, LiveN | pass | 5,888 | 2 s |

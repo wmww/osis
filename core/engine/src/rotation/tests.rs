@@ -1896,6 +1896,9 @@ fn withdrawn_epoch_compacts_judged_alike_spec_crypto_4() {
         let read = |lp: &LocalPeer, p: usize| lp.peers[p].engine.epochs(&g).unwrap().read.clone();
         assert_eq!(read(&lp, 4).current(), read(&lp, c).current(), "seed {seed}: N and compactor {c} count different current read epochs");
         assert!(reads_key(&mut lp, 4, g, "after"), "seed {seed}: N reads nothing of what came after");
+        // the snapshot vouches for no names: N, granted after, still never gets e_R (R9); what it
+        // reads of "w" proves nothing here, as `packages` carry c's opened commits in the clear
+        assert!(read(&lp, 4).reading_secret(&e_r).is_none(), "seed {seed}: N, granted after, holds e_R's secret");
         let differ: Vec<_> = super::tests_authority::secrets_verdicts(&lp, c, 4, g).into_iter().filter(|(_, a, b)| a != b).collect();
         assert!(differ.is_empty(), "seed {seed}: compactor {c} and N judge `secrets.0` parts differently: {differ:?}");
     }
@@ -2456,3 +2459,4 @@ fn derived_written_goes_with_its_destroyed_thing() {
     assert!(!written(&lp), "its record too");
     lp.peers[0].engine.check_index();
 }
+
