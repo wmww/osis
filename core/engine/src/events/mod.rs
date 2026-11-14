@@ -83,9 +83,9 @@ pub enum Event {
     /// An admin dispute was detected and a side taken by default (`crate::sides`): `author`'s
     /// edge write `op` of `commit` lowering `holder` on `target`, `trust`: this node sides with it.
     DisputeDetected { commit: CommitId, op: u32, holder: Tid, target: Tid, author: Tid, trust: bool },
-    /// Account `account`'s signing chain came to be read in doubt here, in a dispute
-    /// (`Chain::dispute`): its heads `lines`, of which this node prefers `side`
-    /// (spec/permissions.md §5.4).
+    /// Account `account`'s signing chain came to be told forked here (`Chain::warning`: a line
+    /// beside the one followed rejects it or is rejected by it): its versions `lines`, of which
+    /// this node follows `side` (spec/permissions.md §5.4, Warning).
     AccountDisputed { account: Tid, lines: Vec<CommitId>, side: CommitId },
     Diagnostic(Diagnostic),
 }

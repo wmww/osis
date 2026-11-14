@@ -66,10 +66,13 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
     }
 }
 
-/// A rotation's inner and merge signatures, for the signing chain (`Indexes::rotation_sigs`).
-pub(crate) fn note_rotation_sigs(core: &mut Core, h: &osis_commit::Header, id: &CommitId, sigs: &osis_commit::Sigs) {
-    if h.rotation.is_some() {
-        core.ix.rotation_sigs.insert(*id, Arc::new(crate::engine::RotationSigs { inner: sigs.inner, merge: sigs.merge.clone() }));
+/// A rotation's inner and merge signatures, and an account's role commit's on its devices actor
+/// (who made a removal), for the signing chain (`Indexes::role_sigs`). Only the account's nodes
+/// hold its devices actor.
+pub(crate) fn note_role_sigs(core: &mut Core, h: &osis_commit::Header, id: &CommitId, sigs: &osis_commit::Sigs) {
+    let on_devices = || h.epoch.is_some() && h.kind == osis_commit::Kind::Role && h.aspects.iter().any(|a| core.devices_of(&a.tid) == Some(h.author));
+    if h.rotation.is_some() || on_devices() {
+        core.ix.role_sigs.insert(*id, Arc::new(crate::engine::RoleSigs { inner: sigs.inner, merge: sigs.merge.clone() }));
     }
 }
 
@@ -576,7 +579,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         );
     }
     index_commit(tx.core, &id, &view);
-    note_rotation_sigs(tx.core, &blob.header, &id, &blob.sigs);
+    note_role_sigs(tx.core, &blob.header, &id, &blob.sigs);
     validity::note_addenda(tx.core, &h, &id, &parts.whole);
     if tx.core.accounts.contains_key(&h.author) && origin == Origin::Remote {
         tx.core.signing_due = true;

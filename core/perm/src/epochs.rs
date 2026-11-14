@@ -14,7 +14,7 @@
 //! `Timeline::vouching`'s, fed each addendum's `EpochStanding`. Lists and listings save whole
 //! commits (role commits among them), so the timeline reads `counts`, which no addendum moves.
 
-use crate::chain::{Chain, Rotation};
+use crate::chain::{Chain, Devices, Rotation};
 use osis_base::cbor::head_len;
 use osis_base::format::LIST_TREE_DEPTH;
 use osis_base::hash::Hasher;
@@ -76,13 +76,13 @@ pub struct Epochs<E, T> {
 }
 
 impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
-    /// Judges the account with first epoch `root`: its held `rotations` under `side` and
-    /// `received` (only those held with their chain take part, `Chain::new`) and the held thing
-    /// lists and listings naming its commits.
-    pub fn new(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, side: Option<E>, received: &[E], lists: &[ThingList<E, T>], listings: &[Listing<E, T>]) -> Epochs<E, T> {
+    /// Judges the account with first epoch `root`: its held `rotations` as `Chain::new` places
+    /// them (`chosen`, `received`, `devices`) and the held thing lists and listings naming its
+    /// commits.
+    pub fn new<M: Ord + Copy>(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, chosen: Option<E>, received: &[E], devices: Option<&Devices<E, M>>, lists: &[ThingList<E, T>], listings: &[Listing<E, T>]) -> Epochs<E, T> {
         let rotations: Vec<Rotation<E>> = rotations.into_iter().collect();
         let held: BTreeSet<E> = rotations.iter().map(|r| r.id).chain([root]).collect();
-        let chain = Chain::new(root, rotations, side, received);
+        let chain = Chain::new(root, rotations, chosen, received, devices);
         let held: Vec<E> = held.into_iter().filter(|e| chain.holds(e)).collect();
         let open = held.iter().filter(|e| chain.open(e)).copied().collect();
         let mut e = Epochs { chain, open, closers: BTreeMap::new(), named: BTreeSet::new() };

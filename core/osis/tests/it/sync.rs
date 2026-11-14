@@ -1838,3 +1838,64 @@ fn logged(w: &World, label: &osis_base::LabelId) -> usize {
         osis_store::NodeEvent::Deleted { label: l, .. } => l == *label,
     }).count()
 }
+
+// spec/permissions.md §5.4 (Placing): a stolen device keeps writing as the account after its
+// removal. Bob, holding the removal first, never counts what it writes after, whatever it
+// forks; once the account's device rejects its fork Bob is told (`Dispute::Account`), and the
+// default side (the line held first) survives a restart. Bob's switch to the thief's version
+// holds, and a switch back reads the account's line again.
+#[test]
+#[ignore = "an outsider reads none of the account's writes after a node removal here, main too: issues/outsider-reads-nothing-after-node-removal.md"]
+fn a_stolen_devices_writes_stop_counting_after_its_removal_spec_permissions_5_4() {
+    let (mut w, host, [da, bob]) = hosted_accounts([1, 2]);
+    let join = osis::internals::pair(w.cfg(3, &[host]), &da.pair_offer().unwrap()).unwrap();
+    let (_, reply) = da.pair_accept(join.request()).unwrap();
+    let phone = join.finish(&reply).unwrap();
+    w.run();
+    let g = group(&da);
+    let card = bob.contact_card().unwrap();
+    w.run();
+    let b = w.until(da.import_contact(&card), 1000, 10).unwrap();
+    da.grant(g, b, Role::Read, Default::default()).unwrap();
+    let t = item(&da, g, g, "before");
+    let settle = |w: &mut World| {
+        for _ in 0..4 {
+            w.advance(60_000);
+            w.run();
+        }
+    };
+    settle(&mut w);
+    // the phone is stolen: offline, it is removed, and the laptop writes on
+    w.set_online(&phone, false);
+    da.remove_node(phone.node(), SetRoleOpts::default()).unwrap();
+    let set = |db: &Osis, v: &str| {
+        let mut wr = db.write();
+        wr.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s(v)).unwrap();
+        wr.commit().unwrap();
+    };
+    set(&da, "after");
+    settle(&mut w);
+    assert_eq!(x(&bob, t), Some(s("after")));
+    // the thief writes later and revokes the laptop
+    set(&phone, "thief");
+    let _ = phone.remove_node(da.node(), SetRoleOpts::default());
+    w.set_online(&phone, true);
+    settle(&mut w);
+    assert_eq!(x(&bob, t), Some(s("after")), "the thief's write counts nowhere the removal came first");
+    let (ds, _) = bob.disputes().unwrap();
+    let told = ds.iter().find(|d| matches!(d, osis::Dispute::Account { .. })).cloned().expect("told the account has forked");
+    let osis::Dispute::Account { account, versions, side, chosen, id } = told.clone() else { unreachable!() };
+    assert!(account == da.me() && !chosen && versions.len() >= 2, "{told:?}");
+    // a restart reads the same
+    let bob = w.restart(bob, w.cfg(2, &[host]));
+    settle(&mut w);
+    assert_eq!(x(&bob, t), Some(s("after")));
+    // switching to the thief's version reads it; switching back reads the account's line
+    let thief = versions.iter().copied().find(|v| osis::Side::Version(*v) != side).unwrap();
+    bob.choose_side(id, osis::Side::Version(thief)).unwrap();
+    settle(&mut w);
+    assert_eq!(x(&bob, t), Some(s("thief")));
+    bob.choose_side(id, side).unwrap();
+    settle(&mut w);
+    assert_eq!(x(&bob, t), Some(s("after")));
+}

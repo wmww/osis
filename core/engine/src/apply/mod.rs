@@ -1992,7 +1992,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let id = b.id();
             let parts = examine_stored(tx, &b.header, &b.parts, &id)?;
             let read = PartsRead::of(&b.header, &parts);
-            atomic::note_rotation_sigs(tx.core, &b.header, &id, &b.sigs);
+            atomic::note_role_sigs(tx.core, &b.header, &id, &b.sigs);
             validity::note_required(tx.core, &b.header, &id, &read);
             validity::note_settings(tx.core, &b.header, &id, &parts);
             validity::note_addenda(tx.core, &b.header, &id, &parts);

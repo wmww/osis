@@ -1,15 +1,21 @@
 //! An account's signing chain (spec/crypto.md §9, spec/permissions.md §5.4): which held
-//! rotations count, which epochs are open (every head), the preferred head, and account-level
-//! disputes. A pure function of the held rotations, the side and the receipt order; nothing
-//! here reads `ts`, counters or signatures (the caller checks those and states the result in
-//! `Rotation::signed`).
+//! rotations a node follows, the open head, and the warning. A pure function of the held
+//! rotations, the order the node came to hold them, the rotation its user chose and (at a node
+//! of the account) what its devices list says of them; nothing here reads `ts`, counters or
+//! signatures (the caller checks those and states the result in `Rotation::signed` and
+//! `Devices`).
 //!
-//! Principle: forks stand. Every head is open and every other epoch closed; nothing merges a
-//! fork for being one (the next rotation for any reason supersedes every head). Only a dispute
-//! (lines rejecting each other) is read by side: each node's, by default the party whose line it
-//! received first. The preferred head (on the side's line, else received first) is where a node
-//! of the account signs, never what counts. `joins` (descent from every anchor) is the key
-//! level's anchoring rule (osis-keys `seal_keyset`).
+//! Principle: the first revocation seen holds. A node places the rotations in the order it came
+//! to hold them (each with its chain and every fork it names; the chosen rotation's line first).
+//! Outside the account it follows each with its line unless it is beside one already followed
+//! (a removed device's fork looks like any other); a node of the account reads who minted each
+//! rotation and whom each removes, takes the revocations first-seen as a consistent set and
+//! follows what they leave standing, so two of its devices' rotations made at once stand side
+//! by side until a merge joins them. Followed rotations
+//! count; nothing else does, so a removed device's fork from an epoch it still holds never
+//! counts where its removal came first. A rejected line beside the followed one is the
+//! warning. `joins` (descent from every anchor) is the key level's anchoring rule (osis-keys
+//! `seal_keyset`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -56,8 +62,19 @@ pub struct Rotation<E> {
     pub signed: BTreeSet<E>,
 }
 
-/// The chain as one node judges it: the held rotations under its side, read along the head it
-/// follows.
+/// What a node of the account reads of its devices list D (spec/permissions.md §5.4,
+/// Following, at a node of P): per held rotation, the node that minted it (its inner signature; none when it does not
+/// open to a node, which the account's nodes judge as anyone outside does) and the nodes whose
+/// removal from D it carries (signed at the epoch it rotates, by its minter); and D's grants
+/// (node, epoch signed at), which put a node removed at an epoch the grant descends from back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Devices<E, M> {
+    pub minter: BTreeMap<E, M>,
+    pub removes: BTreeMap<E, BTreeSet<M>>,
+    pub grants: BTreeSet<(M, E)>,
+}
+
+/// The chain as one node judges it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chain<E> {
     root: E,
@@ -66,51 +83,136 @@ pub struct Chain<E> {
     lines: BTreeMap<E, BTreeSet<E>>,
     /// (m, r): held rotation m rejects held rotation r.
     rejects: BTreeSet<(E, E)>,
+    /// The followed rotations: these count.
     counting: BTreeSet<E>,
-    parties: BTreeSet<E>,
-    /// The side taken: the one given, else the default.
-    side: Option<E>,
+    /// The held rotations placed in conflict with a followed one.
+    disregarded: BTreeSet<E>,
+    /// The user's choice, if held.
+    chosen: Option<E>,
     /// The counting epochs no counting rotation descends from.
     heads: BTreeSet<E>,
-    /// Of the heads holding the side (all when none does), the one received first.
+    /// Of the heads, the one whose line holds the earliest-placed rotation of those on exactly
+    /// one of two lines.
     preferred: E,
+    /// The disregarded tips in a rejection with a counting rotation.
+    contested: BTreeSet<E>,
 }
 
 impl<E: Ord + Copy> Chain<E> {
-    /// Judges `rotations` (the held ones, one record each) under `side`: the rotation the node
-    /// sides with, if set (by the node's user, or a node of the account's own: its roster's
-    /// line); else the default, from `received` (the held rotations in receipt order, earliest
-    /// first; one missing from it ranks after every one in it). A rotation counts as held only
-    /// with its chain back to the root (over the epochs it is signed at, spec/permissions.md
-    /// §5.4); the rest are pending and take part in nothing (`holds`).
-    pub fn new(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, side: Option<E>, received: &[E]) -> Chain<E> {
+    /// Judges `rotations` (the held ones, one record each) as a node that holds them in the
+    /// order `received` (earliest first; one missing ranks after every one in it) and whose
+    /// user chose `chosen`; `devices` at a node of the account (`None` elsewhere). A rotation
+    /// counts as held only with its chain back to the root and every fork it names, each so
+    /// held (spec/permissions.md §5.4); the rest are pending and take part in nothing (`holds`).
+    pub fn new<M: Ord + Copy>(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, chosen: Option<E>, received: &[E], devices: Option<&Devices<E, M>>) -> Chain<E> {
+        let rank = ranks(received);
+        let rank_of = |r: &E| rank.get(r).copied().unwrap_or(usize::MAX);
         let mut pending: BTreeMap<E, Rotation<E>> = rotations.into_iter().filter(|r| r.id != root).map(|r| (r.id, r)).collect();
         let mut rots: BTreeMap<E, Rotation<E>> = BTreeMap::new();
-        while let Some(&id) = pending.values().find(|r| r.at == root || rots.contains_key(&r.at)).map(|r| &r.id) {
+        // when each came to be held with its chain: its own receipt or a parent's, the later
+        let mut when: BTreeMap<E, usize> = BTreeMap::new();
+        let held = |rots: &BTreeMap<E, Rotation<E>>, e: &E| *e == root || rots.contains_key(e);
+        while let Some(id) = pending.values().find(|r| held(&rots, &r.at) && r.names.iter().all(|n| held(&rots, n))).map(|r| r.id) {
             if let Some(r) = pending.remove(&id) {
+                let w = std::iter::once(&r.at).chain(&r.names).filter_map(|p| when.get(p)).fold(rank_of(&id), |a, b| a.max(*b));
+                when.insert(id, w);
                 rots.insert(id, r);
             }
         }
-        let mut c = Chain { root, rots, lines: BTreeMap::new(), rejects: BTreeSet::new(), counting: BTreeSet::new(), parties: BTreeSet::new(), side: None, heads: BTreeSet::new(), preferred: root };
+        let mut c = Chain { root, rots, lines: BTreeMap::new(), rejects: BTreeSet::new(), counting: BTreeSet::new(), disregarded: BTreeSet::new(), chosen: None, heads: BTreeSet::new(), preferred: root, contested: BTreeSet::new() };
         c.lines = c.rots.keys().map(|&r| (r, c.line_of(r))).collect();
-        c.rejects = c.rejections();
-        c.parties = c.contesting();
-        let rank = ranks(received);
-        c.side = side.filter(|s| c.rots.contains_key(s)).or_else(|| c.first_line(&c.parties, &rank));
-        c.counting = c.count(c.side);
+        c.chosen = chosen.filter(|s| c.rots.contains_key(s));
+        let mut order: Vec<E> = c.rots.keys().copied().collect();
+        order.sort_by_key(|r| (!c.chosen.is_some_and(|s| c.on_line(s, *r)), when.get(r).copied().unwrap_or(usize::MAX), *r));
+        match devices {
+            Some(d) => c.follow_as_node(&order, d),
+            None => c.follow_outside(&order),
+        }
+        c.disregarded.retain(|r| !c.counting.contains(r));
+        c.rejects = c.rejections(&c.rots.keys().copied().collect());
         c.heads = c.heads_of();
-        let on_side: BTreeSet<E> = c.heads.iter().copied().filter(|h| c.side.is_some_and(|s| c.on_line(*h, s))).collect();
-        c.preferred = c.first_line(if on_side.is_empty() { &c.heads } else { &on_side }, &rank).unwrap_or(root);
+        let pos: BTreeMap<E, usize> = order.iter().enumerate().map(|(i, r)| (*r, i)).collect();
+        c.preferred = c.first_line(&c.heads, &pos).unwrap_or(root);
+        let rejected = |x: &E| c.counting.iter().any(|m| c.rejects.contains(&(*m, *x)) || c.rejects.contains(&(*x, *m)));
+        let contested: BTreeSet<E> = c.rots.keys().copied().filter(|x| !c.counting.contains(x) && rejected(x)).collect();
+        c.contested = contested.iter().copied().filter(|x| !contested.iter().any(|y| y != x && c.on_line(*x, *y))).collect();
         c
     }
 
-    /// Among `candidates`, the one preferred to every other: h is preferred to g when the
-    /// earliest-received rotation on exactly one of their lines is on h's (receipt ties by ID).
-    /// A total order: the lines' rotations by receipt read as one binary number each.
-    fn first_line(&self, candidates: &BTreeSet<E>, rank: &BTreeMap<E, usize>) -> Option<E> {
+    /// Outside the account: in order, each rotation is followed with its line unless a
+    /// followed one is beside it (neither on the other's line), or a rotation on its line
+    /// rejects or is rejected by a followed one (a merge cannot carry in a rejection of the
+    /// followed line). Each check reads only what was placed before, so a later arrival never
+    /// reopens a decision.
+    fn follow_outside(&mut self, order: &[E]) {
+        let mut placed: BTreeSet<E> = BTreeSet::new();
+        for &r in order {
+            placed.insert(r);
+            if self.counting.contains(&r) {
+                continue;
+            }
+            let rejects = self.rejections(&placed);
+            let line = self.lines.get(&r).cloned().unwrap_or_default();
+            let rejected = line.iter().any(|q| self.counting.iter().any(|k| rejects.contains(&(*q, *k)) || rejects.contains(&(*k, *q))));
+            if rejected || self.counting.iter().any(|k| !self.on_line(*k, r) && !self.on_line(r, *k)) {
+                self.disregarded.insert(r);
+                continue;
+            }
+            self.counting.extend(line);
+        }
+    }
+
+    /// At a node of the account, which reads who minted each rotation and whom each removes:
+    /// the revocations (rotations carrying a removal) it takes are a consistent set, built in
+    /// order: one is taken when no revocation taken, nor itself, hits a rotation on its line,
+    /// nor it one on a taken one's line. It follows every rotation whose line none taken hits
+    /// and holds no revocation not taken. So its devices' rotations made at once all count, a
+    /// removed device's plain fork never outweighs the removal, and of two revocations hitting
+    /// each other the one held first holds.
+    fn follow_as_node<M: Ord + Copy>(&mut self, order: &[E], d: &Devices<E, M>) {
+        let removals = |r: &E| -> BTreeSet<(M, E)> { self.rots.get(r).map(|x| d.removes.get(r).into_iter().flatten().map(|m| (*m, x.at)).collect()).unwrap_or_default() };
+        let mut taken: Vec<E> = Vec::new();
+        let mut removed: BTreeSet<(M, E)> = BTreeSet::new();
+        for r in order.iter().filter(|r| d.removes.get(r).is_some_and(|x| !x.is_empty())) {
+            let mine = removals(r);
+            let with: BTreeSet<(M, E)> = removed.union(&mine).copied().collect();
+            if self.stands(*r, &with, d) && taken.iter().all(|q| self.stands(*q, &mine, d)) {
+                taken.push(*r);
+                removed = with;
+            }
+        }
+        for &r in order {
+            if self.stands(r, &removed, d) && self.lines.get(&r).into_iter().flatten().filter(|q| d.removes.get(q).is_some_and(|x| !x.is_empty())).all(|q| taken.contains(q)) {
+                self.counting.insert(r);
+            } else {
+                self.disregarded.insert(r);
+            }
+        }
+    }
+
+    /// Whether no removal of `removed` (node, epoch it is signed at) hits a rotation on `r`'s
+    /// line: removes its minter while the rotation is beside it (not on the line of the epoch
+    /// the removal is signed at: made after it), unless the rotation descends from an epoch (on
+    /// its line, not itself) at which D grants that node again, one descending from the
+    /// removal's. A rotation whose minter no node of the account reads is hit by nothing and
+    /// stands by nothing: it never stands.
+    fn stands<M: Ord + Copy>(&self, r: E, removed: &BTreeSet<(M, E)>, d: &Devices<E, M>) -> bool {
+        self.lines.get(&r).into_iter().flatten().all(|p| {
+            let Some(m) = d.minter.get(p) else { return false };
+            removed.iter().filter(|(y, _)| y == m).all(|(_, e)| {
+                *e != self.root && self.on_line(*p, *e)
+                    || d.grants.iter().any(|(n, g)| n == m && g != e && g != p && self.on_line(*e, *g) && self.on_line(*g, *p))
+            })
+        })
+    }
+
+    /// Of `candidates`, the one whose line holds the earliest-placed rotation (by `pos`; ties by
+    /// ID) of those on exactly one of two lines. A total order: the lines' rotations by place
+    /// read as one binary number each.
+    fn first_line(&self, candidates: &BTreeSet<E>, pos: &BTreeMap<E, usize>) -> Option<E> {
         let empty = BTreeSet::new();
         let line = |c: &E| self.lines.get(c).unwrap_or(&empty);
-        let key = |r: &E| (rank.get(r).copied().unwrap_or(usize::MAX), *r);
+        let key = |r: &E| (pos.get(r).copied().unwrap_or(usize::MAX), *r);
         let order = |a: &E, b: &E| {
             let (la, lb) = (line(a), line(b));
             let first = la.symmetric_difference(lb).min_by_key(|r| key(r));
@@ -123,19 +225,13 @@ impl<E: Ord + Copy> Chain<E> {
         candidates.iter().min_by(|a, b| order(a, b)).copied()
     }
 
-    /// Of held `candidates`, the one whose line `received` (earliest first) brought first, as
-    /// the default side picks (`first_line`).
-    pub fn prefer(&self, candidates: &BTreeSet<E>, received: &[E]) -> Option<E> {
-        self.first_line(candidates, &ranks(received))
-    }
-
     /// The counting epochs no counting rotation descends from: the root alone when no rotation
     /// counts.
     fn heads_of(&self) -> BTreeSet<E> {
         if self.counting.is_empty() {
             return [self.root].into();
         }
-        self.counting.iter().copied().filter(|h| !self.counting.iter().any(|x| x != h && self.on_line(*x, *h))).collect()
+        self.counting.iter().copied().filter(|h| !self.counting.iter().any(|x| x != h && self.on_line(*h, *x))).collect()
     }
 
     /// The named forks rotation `m` accepts: held, and signed at their epoch.
@@ -155,9 +251,9 @@ impl<E: Ord + Copy> Chain<E> {
         self.rots.contains_key(&r.at).then_some(r.at).into_iter().chain(self.accepts(r)).collect()
     }
 
-    /// Whether `x` is on held rotation `r`'s line.
-    fn on_line(&self, r: E, x: E) -> bool {
-        self.lines.get(&r).is_some_and(|l| l.contains(&x))
+    /// Whether `x` is on held rotation `r`'s line (the root is on every line).
+    fn on_line(&self, x: E, r: E) -> bool {
+        x == self.root || self.lines.get(&r).is_some_and(|l| l.contains(&x))
     }
 
     fn line_of(&self, r: E) -> BTreeSet<E> {
@@ -166,23 +262,20 @@ impl<E: Ord + Copy> Chain<E> {
         line
     }
 
-    /// Every (m, r) with m rejecting r: m supersedes r's epoch and no held rotation signed at
-    /// `m.at`, m included, shares a line with r (a line is contested only from below: one signed
-    /// at e rejects nothing on a line through e; nor its own line, which holds the rotation
-    /// minting `m.at` and every fork m accepts).
-    fn rejections(&self) -> BTreeSet<(E, E)> {
+    /// Every (m, r) among `among` with m rejecting r: m supersedes r's epoch and no rotation of
+    /// `among` signed at `m.at`, m included, shares a line with r (a line is contested only
+    /// from below: one signed at e rejects nothing on a line through e; nor its own line, which
+    /// holds the rotation minting `m.at` and every fork m accepts).
+    fn rejections(&self, among: &BTreeSet<E>) -> BTreeSet<(E, E)> {
         let mut signed_by: BTreeMap<E, Vec<E>> = BTreeMap::new();
-        for s in self.rots.values() {
+        for s in among.iter().filter_map(|s| self.rots.get(s)) {
             for e in self.signed_at(s) {
                 signed_by.entry(e).or_default().push(s.id);
             }
         }
         let mut out = BTreeSet::new();
-        for m in self.rots.values() {
-            for &r in &m.supersedes {
-                if !self.rots.contains_key(&r) {
-                    continue;
-                }
+        for m in among.iter().filter_map(|m| self.rots.get(m)) {
+            for &r in m.supersedes.iter().filter(|r| **r != m.id && among.contains(r)) {
                 let through = signed_by.get(&m.at).into_iter().flatten().any(|s| self.on_line(*s, r) || self.on_line(r, *s));
                 if !through {
                     out.insert((m.id, r));
@@ -190,54 +283,6 @@ impl<E: Ord + Copy> Chain<E> {
             }
         }
         out
-    }
-
-    /// Which rotations count, well-founded: seeded by the side (whatever rejects a rotation on
-    /// its line is void), then a rotation is decided once its parent and every rotation
-    /// rejecting it are: void if the parent is void or a counting one rejects it, else
-    /// counting. A contest no side settles stays undecided and counts for nothing.
-    fn count(&self, side: Option<E>) -> BTreeSet<E> {
-        let mut status: BTreeMap<E, Option<bool>> = self.rots.keys().map(|&r| (r, None)).collect();
-        if let Some(line) = side.and_then(|s| self.lines.get(&s)) {
-            for &(m, r) in &self.rejects {
-                if line.contains(&r) {
-                    status.insert(m, Some(false));
-                }
-            }
-        }
-        loop {
-            let mut changed = false;
-            for (&r, rot) in &self.rots {
-                if status.get(&r).is_some_and(Option::is_some) {
-                    continue;
-                }
-                let parent = if rot.at == self.root { Some(true) } else { status.get(&rot.at).copied().unwrap_or(Some(false)) };
-                let rejectors: Vec<Option<bool>> = self.rejects.iter().filter(|(_, x)| *x == r).map(|(m, _)| status.get(m).copied().flatten()).collect();
-                let decided = if parent == Some(false) || rejectors.contains(&Some(true)) {
-                    Some(false)
-                } else if parent == Some(true) && rejectors.iter().all(|s| *s == Some(false)) {
-                    Some(true)
-                } else {
-                    None
-                };
-                if decided.is_some() {
-                    status.insert(r, decided);
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        status.into_iter().filter(|(_, s)| *s == Some(true)).map(|(r, _)| r).collect()
-    }
-
-    /// Rotations in a mutual contest: a rejects a rotation on b's line other than itself, and b
-    /// one on a's.
-    fn contesting(&self) -> BTreeSet<E> {
-        let contests = |a: E, b: E| self.lines.get(&b).into_iter().flatten().any(|&c| c != a && self.rejects.contains(&(a, c)));
-        let ids: Vec<E> = self.rots.keys().copied().collect();
-        ids.iter().copied().filter(|&a| ids.iter().any(|&b| a != b && contests(a, b) && contests(b, a))).collect()
     }
 
     /// Whether epoch `e` is held: the root, or minted by a rotation held with its chain. A
@@ -274,29 +319,37 @@ impl<E: Ord + Copy> Chain<E> {
         self.lines.get(r)
     }
 
-    /// The rotations in an account-level dispute (mutually rejecting lines); empty when none.
-    pub fn parties(&self) -> &BTreeSet<E> {
-        &self.parties
+    /// The tips of the held lines beside the followed one that a counting rotation rejects or
+    /// that reject one: the versions of the account's history the node is told of. Empty when
+    /// none.
+    pub fn contested(&self) -> &BTreeSet<E> {
+        &self.contested
     }
 
-    pub fn dispute(&self) -> bool {
-        !self.parties.is_empty()
+    /// Whether the node is told the account has forked (`contested` is not empty).
+    pub fn warning(&self) -> bool {
+        !self.contested.is_empty()
     }
 
-    /// The side taken: the one given, else in a dispute the party whose line holds the
-    /// rotations not on every party's line received first.
-    pub fn side(&self) -> Option<E> {
-        self.side
+    /// The user's choice, if held.
+    pub fn chosen(&self) -> Option<E> {
+        self.chosen
+    }
+
+    /// Whether held rotation `r` was placed in conflict with the followed rotations.
+    pub fn disregarded(&self, r: &E) -> bool {
+        self.disregarded.contains(r)
     }
 
     /// The heads: the counting epochs no counting rotation descends from, every one open. More
-    /// than one is a fork, which stands.
+    /// than one (only at a node of the account: its devices' rotations made at once) is owed a
+    /// merge.
     pub fn heads(&self) -> &BTreeSet<E> {
         &self.heads
     }
 
-    /// The preferred head: among the heads whose line holds the side (all of them when none
-    /// does), the one whose line holds the rotations not on every one's line received first.
+    /// The preferred head, where a node of the account signs: of the heads, the one whose line
+    /// holds the earliest-placed rotation not on every one's line.
     pub fn preferred(&self) -> E {
         self.preferred
     }

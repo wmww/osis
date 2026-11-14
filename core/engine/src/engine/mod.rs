@@ -727,7 +727,7 @@ indexes! {
     pub epochs: JMap<Tid, Arc<crate::flows::account::JudgedEpochs>>,
     /// Per held rotation of an account, its inner and merge signatures (spec/wire.md §4), read
     /// when the chain is built (`Core::account_view`). Persisted.
-    pub rotation_sigs: JMap<CommitId, Arc<RotationSigs>>,
+    pub role_sigs: JMap<CommitId, Arc<RoleSigs>>,
     /// Held commits of accounts per (account, epoch they are signed at).
     pub by_epoch: JSetMap<(Tid, CommitId), CommitId>,
     /// Held commits of accounts a thing list or listing may name otherwise since they were last
@@ -919,10 +919,11 @@ pub(crate) struct StepFault {
 /// Whether a commit listener is on a thing (`Engine::listen_commits`).
 pub type CommitListeners = Arc<dyn Fn(&Tid) -> bool + Send + Sync>;
 
-/// A held rotation's signatures beyond its outer one (`Indexes::rotation_sigs`): its sealed inner
-/// signature (who minted it, read by the account's nodes) and its merge signatures.
+/// A held role commit's signatures beyond its outer one (`Indexes::role_sigs`): its sealed
+/// inner signature (which node made it, read by the account's nodes) and, a rotation, its merge
+/// signatures.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RotationSigs {
+pub struct RoleSigs {
     pub inner: Option<[u8; osis_crypto::INNER_LEN]>,
     pub merge: Vec<osis_crypto::Signature>,
 }

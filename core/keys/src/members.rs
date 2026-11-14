@@ -20,7 +20,7 @@ pub struct Keysets {
     /// The key of each held valid keyset's earliest held valid body, where known (an account's
     /// chain is whole: none).
     pub since: BTreeMap<Epoch, osis_perm::Point>,
-    /// Every valid keyset is current (an account's: its heads, forks standing): the seal goes
+    /// Every valid keyset is current (an account's: the heads it follows): the seal goes
     /// jointly at every one that is or descends from each anchor, never at one of them alone, so
     /// a removed node holding a head beside its removal opens nothing the others do not.
     pub heads: bool,

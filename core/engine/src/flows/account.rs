@@ -21,6 +21,10 @@ use osis_schema::core_types::{self as ct, Edge, KemKey, Keys, SigningKey};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+/// An account's edge writes on its devices actor (`Core::devices_edges`): removals as (node
+/// removed, epoch signed at, node that made it), grants as (node, epoch signed at).
+type DevicesEdges = (Vec<(Tid, CommitId, Tid)>, BTreeSet<(Tid, CommitId)>);
+
 /// An account this node signs as (`Engine::hold_account`).
 #[derive(Clone, Debug)]
 pub struct HeldAccount {
@@ -50,8 +54,9 @@ struct EpochPublic {
 
 /// What the chain of this node's account is read from besides the commits held
 /// (`Core::judged_from`): its `Indexes::rotations` entry, the side chosen, the number of its
-/// seeds held and D's roster.
-pub(crate) type JudgedFrom = (u64, Option<CommitId>, usize, Vec<Tid>);
+/// seeds held, D's roster and the number of D's role commits held (whom `Devices` says each
+/// rotation removes).
+pub(crate) type JudgedFrom = (u64, Option<CommitId>, usize, Vec<Tid>, usize);
 
 /// An account's signing chain as this node holds it.
 #[derive(Debug, PartialEq)]
@@ -62,19 +67,17 @@ pub(crate) struct AccountView {
     rule: Epochs<CommitId, Tid>,
     /// The held rotations as the chain reads them.
     rotations: Vec<Rotation<CommitId>>,
-    /// The side the chain is read under: chosen here, else (a node of the account) the preferred
-    /// tip of the rotations D's roster authorizes (`authorized`), else none (the chain's default).
-    side: Option<CommitId>,
-    /// The held rotations in receipt order, earliest first (ties by ID).
+    /// The rotation this node's user chose (`Engine::choose_line`), if any.
+    chosen: Option<CommitId>,
+    /// The held rotations in receipt order, earliest first (one millisecond's by ID).
     received: Vec<CommitId>,
+    /// This node's account: what D says of the rotations (`osis_perm::Devices`).
+    devices: Option<osis_perm::Devices<CommitId, Tid>>,
     /// This node's account: the held rotations D's roster authorizes, minted (by inner
     /// signature) by a node D holds as current, with that node, whose line holds no rotation
-    /// beside a removal of its minter from D (spec/permissions.md §5.4, Nodes of P).
+    /// beside a removal of its minter from D (spec/permissions.md §5.4, Authorizes): what this
+    /// node names, rejects and owes, never what counts.
     authorized: BTreeMap<CommitId, Tid>,
-    /// This node's account: the held rotations beside a removal of their minter (by inner
-    /// signature), with that node: a removed node's forks. One its removal's line holds (made
-    /// before it) is never a head.
-    removed_minted: BTreeMap<CommitId, Tid>,
     /// This node's account: the held rotations no rotation on whose line is beside a removal of
     /// its minter (current or not): a removed node's word from before its removal stands.
     standing: BTreeSet<CommitId>,
@@ -139,15 +142,17 @@ impl AccountView {
     /// The heads: counting epochs no counting rotation descends from, ascending, every one open.
     /// By descent, never by a supersedes list, which its rotator writes as it likes (a removed
     /// node's fork superseding the epoch that closed it would hide that epoch from the next
-    /// rotation). More than one is a fork, which stands.
+    /// rotation). More than one (only at a node of the account) is owed a merge.
     pub(crate) fn heads(&self) -> Vec<CommitId> {
         self.rule.chain().heads().iter().copied().collect()
     }
 
-    /// The chain as this node reads it when it tells its user, in a dispute (`Chain::dispute`):
-    /// the heads, and the preferred one.
+    /// The chain as this node reads it when it tells its user the account has forked
+    /// (`Chain::warning`: a line beside the followed one rejects it or is rejected by it): the
+    /// versions (the preferred head, then the tips of those lines) and the one followed.
     pub(crate) fn doubt(&self) -> Option<(Vec<CommitId>, CommitId)> {
-        self.rule.chain().dispute().then(|| (self.heads(), self.preferred()))
+        let c = self.rule.chain();
+        c.warning().then(|| (std::iter::once(c.preferred()).chain(c.contested().iter().copied()).collect(), c.preferred()))
     }
 
     /// The preferred head: where this node signs (spec/permissions.md §5.4).
@@ -165,10 +170,9 @@ impl AccountView {
         self.rule.chain().line(r)
     }
 
-    /// The node that minted held rotation `r` when `r` is beside its removal (this node's
-    /// account only).
-    pub(crate) fn removed_minter(&self, r: &CommitId) -> Option<Tid> {
-        self.removed_minted.get(r).copied()
+    /// Whether held rotation `r` was placed in conflict with the line this node follows.
+    pub(crate) fn disregarded(&self, r: &CommitId) -> bool {
+        self.rule.chain().disregarded(r)
     }
 
     /// Whether held rotation `r` stands for D's roster though its minter may be removed since:
@@ -410,7 +414,11 @@ impl Core {
     fn judged_from(&self, p: &Tid) -> JudgedFrom {
         let a = self.accounts.get(p);
         let roster = a.map(|a| self.key_holders(&a.devices).into_iter().map(|(m, _)| m).collect()).unwrap_or_default();
-        (self.ix.rotations.get(p).copied().unwrap_or(0), self.sides.account(p), a.map_or(0, |a| a.keys.len()), roster)
+        let edges = match (a, osis_base::Ak::new("roles.0")) {
+            (Some(a), Ok(roles)) => self.ix.by_aspect.get(&(a.devices, roles)).map_or(0, |x| x.len()),
+            _ => 0,
+        };
+        (self.ix.rotations.get(p).copied().unwrap_or(0), self.sides.account(p), a.map_or(0, |a| a.keys.len()), roster, edges)
     }
 
     /// Per node of account `p`'s devices actor `d`, the epochs `p`'s counting edge writes on it
@@ -437,6 +445,30 @@ impl Core {
         verify_inner(&VerifyingKey::from_slice(public_key).ok()?, &id.0, &sig).then_some(node)
     }
 
+    /// Account `p`'s held edge writes on its devices actor, counting or not (`Devices` is what
+    /// decides which count), each made by a node whose inner signature opens here: each removal
+    /// as (node removed, epoch signed at, node that made it) and each grant to a node other
+    /// than its maker as (node, epoch signed at).
+    fn devices_edges(&self, p: &Tid, a: &HeldAccount, epochs: &BTreeMap<CommitId, EpochPublic>) -> DevicesEdges {
+        let (mut removals, mut grants) = (Vec::new(), BTreeSet::new());
+        let Ok(roles) = osis_base::Ak::new("roles.0") else { return (removals, grants) };
+        for (_, c) in self.ix.by_aspect.get(&(a.devices, roles)).into_iter().flatten() {
+            let Some(rc) = self.ix.held.edge_commit(c).filter(|rc| rc.author == *p) else { continue };
+            let Some(e) = self.ix.commits.get(c).and_then(|m| m.view.epoch) else { continue };
+            let Some(maker) = self.ix.role_sigs.get(c).and_then(|s| s.inner).and_then(|inner| self.inner_signer(a, &epochs.get(&e)?.signing, c, &inner)) else { continue };
+            for o in rc.ops.iter().filter(|o| o.target == a.devices) {
+                // a node puts no one back but another (a removed node re-adding itself at an
+                // epoch it holds is no re-add)
+                if o.edge.is_some() && o.holder != maker {
+                    grants.insert((o.holder, e));
+                } else if o.edge.is_none() {
+                    removals.push((o.holder, e, maker));
+                }
+            }
+        }
+        (removals, grants)
+    }
+
     fn build_account_view(&self, p: &Tid) -> Option<AccountView> {
         let first = match self.created(p) {
             Some(CreationRecord::KeyActor { public_key, account: true, .. }) => VerifyingKey::from_slice(public_key).ok()?,
@@ -457,59 +489,61 @@ impl Core {
         }
         // a merge accepts a named fork only by that fork's signature (spec/crypto.md §9)
         let signed = |id: &CommitId, r: &osis_commit::RotationHeader| -> BTreeSet<CommitId> {
-            let Some(sigs) = self.ix.rotation_sigs.get(id) else { return BTreeSet::new() };
+            let Some(sigs) = self.ix.role_sigs.get(id) else { return BTreeSet::new() };
             r.names.iter().zip(sigs.merge.iter()).filter(|(n, s)| epochs.get(*n).is_some_and(|e: &EpochPublic| osis_commit::verify_merge(id, s, &e.signing))).map(|(n, _)| *n).collect()
         };
         let rotations: Vec<Rotation<CommitId>> = rots.iter().map(|(id, at, r)| Rotation { id: *id, at: *at, supersedes: r.supersedes.iter().copied().collect(), names: r.names.iter().copied().collect(), signed: signed(id, r) }).collect();
+        // the order this node came to hold them in: by receipt, one millisecond's by ID
         let mut order: Vec<(osis_base::WallMs, CommitId)> = rots.iter().filter_map(|(id, ..)| Some((self.ix.commits.get(id)?.received, *id))).collect();
         order.sort();
         let received: Vec<CommitId> = order.into_iter().map(|x| x.1).collect();
         let chosen = self.sides.account(p);
-        let mut rule = Epochs::new(FIRST_EPOCH, rotations.clone(), chosen, &received, &[], &[]);
-        // a node of the account sides with the line D's roster authorizes, as its merges read it:
-        // of the held rotations D's roster authorizes, the tips, the preferred among them
-        // (spec/permissions.md §5.4, Nodes of P)
-        let mut side = chosen;
-        let mut authorized = BTreeMap::new();
-        let mut removed_minted = BTreeMap::new();
-        let mut standing = BTreeSet::new();
-        if let Some(a) = self.accounts.get(p) {
-            let roster: BTreeSet<Tid> = self.key_holders(&a.devices).into_iter().map(|(m, _)| m).collect();
-            let c = rule.chain();
-            let minters: BTreeMap<CommitId, Tid> = rots.iter().filter(|(id, ..)| c.holds(id)).filter_map(|(id, at, ..)| {
-                let inner = self.ix.rotation_sigs.get(id)?.inner?;
+        // a node of the account reads D: who minted each rotation, whom each removes (spec/
+        // permissions.md §5.4, Following, at a node of P)
+        let devices = self.accounts.get(p).map(|a| {
+            let at: BTreeMap<&CommitId, &CommitId> = rots.iter().map(|(id, at, _)| (id, at)).collect();
+            let minter: BTreeMap<CommitId, Tid> = rots.iter().filter_map(|(id, at, ..)| {
+                let inner = self.ix.role_sigs.get(id)?.inner?;
                 Some((*id, self.inner_signer(a, &epochs.get(at)?.signing, id, &inner)?))
             }).collect();
+            let (removals, grants) = self.devices_edges(p, a, &epochs);
+            let mut removes: BTreeMap<CommitId, BTreeSet<Tid>> = BTreeMap::new();
+            // a removal is carried by its maker's rotation of the epoch it is signed at
+            for (node, e, maker) in removals {
+                for (r, m) in &minter {
+                    if *m == maker && at.get(r).is_some_and(|x| **x == e) {
+                        removes.entry(*r).or_default().insert(node);
+                    }
+                }
+            }
+            osis_perm::Devices { minter, removes, grants }
+        });
+        let rule = Epochs::new(FIRST_EPOCH, rotations.clone(), chosen, &received, devices.as_ref(), &[], &[]);
+        let mut authorized = BTreeMap::new();
+        let mut standing = BTreeSet::new();
+        if let (Some(a), Some(dv)) = (self.accounts.get(p), devices.as_ref()) {
+            let roster: BTreeSet<Tid> = self.key_holders(&a.devices).into_iter().map(|(m, _)| m).collect();
+            let c = rule.chain();
             // a rotation stands for the roster unless it is beside a removal of its minter: for
             // each, the removal's epoch descends from it (made before), or it descends from a
             // later re-grant's epoch (made after)
             let roster_epochs = self.roster_epochs(p, &a.devices);
             let descends = |x: &CommitId, e: &CommitId| *e == FIRST_EPOCH || c.line(x).is_some_and(|l| l.contains(e));
             let stands = |r: &CommitId| {
-                let Some((removals, grants)) = minters.get(r).and_then(|n| roster_epochs.get(n)) else { return true };
+                let Some((removals, grants)) = dv.minter.get(r).and_then(|n| roster_epochs.get(n)) else { return true };
                 removals.iter().all(|e| *e != FIRST_EPOCH && descends(e, r) || grants.iter().any(|g| g != e && descends(g, e) && descends(r, g)))
             };
-            for (id, n) in &minters {
+            for (id, n) in dv.minter.iter().filter(|(id, _)| c.holds(id)) {
                 let line_stands = c.line(id).is_some_and(|l| l.iter().all(stands));
                 if line_stands {
                     standing.insert(*id);
-                }
-                if !stands(id) {
-                    removed_minted.insert(*id, *n);
                 }
                 if roster.contains(n) && line_stands {
                     authorized.insert(*id, *n);
                 }
             }
-            if chosen.is_none() {
-                let tips: BTreeSet<CommitId> = authorized.keys().copied().filter(|t| !authorized.keys().any(|x| x != t && c.line(x).is_some_and(|l| l.contains(t)))).collect();
-                side = c.prefer(&tips, &received);
-                if side.is_some() {
-                    rule = Epochs::new(FIRST_EPOCH, rotations.clone(), side, &received, &[], &[]);
-                }
-            }
         }
-        let mut v = AccountView { rule, rotations, side, received, authorized, removed_minted, standing, epochs, by_name: BTreeMap::new() };
+        let mut v = AccountView { rule, rotations, chosen, received, devices, authorized, standing, epochs, by_name: BTreeMap::new() };
         // a name repeated (two rotations minting one key) is read as its lowest ID
         for (id, e) in v.epochs.iter().filter(|(id, _)| v.rule.chain().epoch_counts(id)) {
             if let Some(name) = v.name(e) {
@@ -603,7 +637,8 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
             by_account.entry(m.view.author).or_default().insert(c);
         }
     }
-    // this node's account: its side moves with D's roster (`AccountView::authorized_by`)
+    // this node's account: what D says moves its chain (`osis_perm::Devices`) and what it
+    // authorizes (`AccountView::authorized_by`)
     if let Some((p, from)) = tx.core.account.get().filter(|p| tx.core.accounts.contains_key(p)).map(|p| (p, tx.core.judged_from(&p))).filter(|(_, from)| tx.core.epochs_judged_from.as_ref() != Some(from)) {
         // after an open the persisted judgment stands: judged again, sealed to as before
         if tx.core.epochs_judged_from.replace(from).is_some() {
@@ -681,7 +716,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
             }
         }
         let listings: Vec<osis_perm::Listing<CommitId, Tid>> = listings.into_iter().filter_map(|((s, t), commits)| Some(osis_perm::Listing { listing: commit_of(&s)?, thing: t, commits })).collect();
-        let rule = Epochs::new(FIRST_EPOCH, v.rotations.iter().cloned(), v.side, &v.received, &lists, &listings);
+        let rule = Epochs::new(FIRST_EPOCH, v.rotations.iter().cloned(), v.chosen, &v.received, v.devices.as_ref(), &lists, &listings);
         let mut named: BTreeSet<CommitId> = was.as_ref().map(|j| j.named.clone()).unwrap_or_default();
         for c in &cands {
             named.remove(c);
@@ -693,8 +728,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
                 named.insert(*c);
             }
         }
-        // a node of the account reads its roster's line: it is never in doubt
-        let doubt = v.doubt().filter(|_| !tx.core.accounts.contains_key(&p));
+        let doubt = v.doubt();
         let judged = Arc::new(JudgedEpochs { epochs: now, named, doubt: doubt.is_some() });
         if was.as_deref() == Some(&*judged) {
             continue;

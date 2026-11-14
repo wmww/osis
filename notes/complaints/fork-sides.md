@@ -1,0 +1,6 @@
+# fork-sides
+- A python `str.replace` with an empty `old` (an `index` slice that ran backwards) inserted the new text between every character of roles-model epochs.rs (5.6M lines); recovered by replacing the inserted text with nothing. Check slices are non-empty before replacing.
+- roles-model `epochs` hand tests and search take minutes in debug once chain judgment places rotations (`random_worlds_hold` ~7 min single-threaded); it read as a hang.
+- The engine signing tests ran with a frozen clock, so every receipt shared one millisecond and receipt order fell back to commit ID; `send` now advances 1 ms.
+- The osis-level removal scenario reads nothing at an outsider on main too (issues/outsider-reads-nothing-after-node-removal.md); found only by building main's test binary with `tools/bin-at --take`.
+- `roles-model -- 20000 epochs` under `tools/heavy` ran past the heavy wall limit (33 min, stopped) where 600 worlds took 22 s: some worlds are far slower after the first-seen change (not chased; README there says so).

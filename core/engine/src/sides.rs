@@ -248,8 +248,8 @@ impl crate::engine::Engine {
         (out.into_values().collect(), left)
     }
 
-    /// The accounts whose signing chain this node reads in doubt (as told by
-    /// `Event::AccountDisputed`), and those it chose a line in, with the heads and the line
+    /// The accounts whose signing chain this node is told has forked (as by
+    /// `Event::AccountDisputed`), and those it chose a line in, with the versions and the one
     /// followed (spec/permissions.md §5.4).
     pub fn account_disputes(&self) -> Vec<AccountDisputeInfo> {
         let doubted = self.core.ix.epochs.iter().filter(|(_, j)| j.doubt()).map(|(p, _)| *p);
@@ -258,14 +258,15 @@ impl crate::engine::Engine {
             .filter_map(|p| {
                 let v = self.core.account_view(&p)?;
                 let chosen = self.core.sides.account(&p);
-                Some(AccountDisputeInfo { account: p, lines: v.heads(), side: v.preferred(), chosen: chosen.is_some() })
+                let lines = v.doubt().map_or_else(|| vec![v.preferred()], |d| d.0);
+                Some(AccountDisputeInfo { account: p, lines, side: v.preferred(), chosen: chosen.is_some() })
             })
             .collect()
     }
 
     /// Follows the line of `line`, a rotation of account `account` held with its chain, in its
-    /// signing chain (spec/permissions.md §5.4: the side overrides the default and holds against
-    /// a merge rejecting it), until chosen again. `UnknownCommit` when it is no such rotation.
+    /// signing chain (spec/permissions.md §5.4: its line is placed first, so it holds against
+    /// whatever rejects it), until chosen again. `UnknownCommit` when it is no such rotation.
     pub fn choose_line(&mut self, account: Tid, line: CommitId) -> Result<()> {
         if !self.core.account_view(&account).is_some_and(|v| v.is_rotation(&line) && v.holds(&line)) {
             return Err(Error::UnknownCommit(line));

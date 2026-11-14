@@ -68,9 +68,10 @@ pub enum Dispute {
     /// exists on, else whichever write it held first.
     Removal { id: DisputeId, target: Tid, author: Tid, holder: Tid, commit: CommitId, side: Side, chosen: bool },
     /// Over `account`'s history, which forked into versions ending in `versions` (as when a device
-    /// removed from the account keeps writing as it): the node reads one, by default the one it
-    /// received first. Told only when that may be wrong; the account's own devices read the
-    /// version their device list holds.
+    /// removed from the account keeps writing as it): the node reads one, by default the one
+    /// whose change it held first, and keeps it until its user chooses another. Told once one
+    /// version rejects another. The account's own devices read who made each change: a removed
+    /// device's version never outweighs its removal there, unless it removed them first.
     Account { id: DisputeId, account: Tid, versions: Vec<CommitId>, side: Side, chosen: bool },
 }
 
