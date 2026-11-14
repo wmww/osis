@@ -208,7 +208,7 @@ ClaimSet := [[claim+], {entry: box}]
   ```
   InboxPayload := [CommitBlobPlaintext, [[tid, Opt(sync_id), Opt([admin_pk, write_pk])]*], [CommitBlobPlaintext*], [creation*], Opt([dialable, [url*]])]
   ```
-  - **Position 0**: the role commit with the parts about the recipient (§4): to a recipient holding sync alone on every thing position 1 names, its `secrets.0` parts only (spec/sync-inbox.md §2).
+  - **Position 0**: the role commit with the parts about the recipient (§4): to a recipient holding less than read on every thing position 1 names, those things' `secrets.0` parts only; a lowering or removal, its `roles.0` parts only (spec/sync-inbox.md §2).
   - **Position 1**: for each thing it names, sorted by tid: if the thing has a sync ID of its own (its `sync.0`, never a group's holding it), that sync ID and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7).
   - **Positions 2 and 3**: empty unless a thing the commit touches has no sync ID of its own and the recipient reads it now, as the sender judges it. A recipient holding less than read on every thing the commit touches (sync alone, or removed) gets them empty: the box and the sync IDs are all it takes (spec/sync-inbox.md §2). Otherwise they hold, a chain that would not fit the blob left out:
     - the author's chain certificates for the carried parts (spec/permissions.md §4): its commits, each projected to its chain deltas and without any `keys.0` but the author's own, in position 2, and its creation records, ascending by tid and distinct, in position 3;

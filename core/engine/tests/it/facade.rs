@@ -137,10 +137,11 @@ fn inbox_parts(lp: &mut LocalPeer, to: usize, blob: &[u8]) -> (BTreeSet<String>,
 
 // spec/sync-inbox.md §2 (What it carries about G: to a holder of sync alone, the `secrets.0` part), spec/sync-ids.md §2
 // (What a sync holder learns: the thing's tid, never its record, roster edges, keysets or steps):
-// a grant and a later rotation carry only the `secrets.0` part; a reader's grant carries more.
+// a grant and a later rotation carry only the `secrets.0` part, and a grant sent after its holder
+// was removed carries no more; a reader's grant carries more.
 #[test]
 fn a_sync_holder_is_sent_its_boxes_only_spec_sync_inbox_2() {
-    let (mut lp, ps) = people(3);
+    let (mut lp, ps) = people(4);
     let t = thing_of(&mut lp, 0, ps[0]);
     let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Sync)).unwrap();
     let blob = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[1]).unwrap().1;
@@ -156,6 +157,13 @@ fn a_sync_holder_is_sent_its_boxes_only_spec_sync_inbox_2() {
     let done = lp.peers[0].engine.demote(&t, &Demotion { holder: ps[2], new: None, retain: None }).unwrap();
     let rot = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[1]).expect("the rotation boxes peer 1").1;
     assert_eq!(inbox_parts(&mut lp, 1, &rot).0, BTreeSet::from(["secrets.0".to_string()]));
+    lp.peers[1].engine.take_inbox_blob(&rot, true).unwrap();
+    assert_eq!(lp.peers[1].engine.sync_record(&t).unwrap().unwrap().secrets.len(), 2, "the rotation's sync secret taken");
+    // removed before its grant went: still the boxes alone
+    let done = lp.peers[0].engine.grant(&t, &ps[3], &edge_of(Role::Sync)).unwrap();
+    lp.peers[0].engine.demote(&t, &Demotion { holder: ps[3], new: None, retain: None }).unwrap();
+    let late = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[3]).expect("still owed").1;
+    assert_eq!(inbox_parts(&mut lp, 3, &late).0, BTreeSet::from(["secrets.0".to_string()]));
 }
 
 // spec/sync-inbox.md §2 (invite request: an untaken blob, not applied, nothing followed),

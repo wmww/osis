@@ -154,19 +154,20 @@ impl Engine {
             return Ok(None);
         }
         let (h, id) = (*holder, *c);
-        // a holder of sync alone gets the boxes' part only (spec/sync-inbox.md §2): no edge,
-        // keyset, step or record (the part's keys still name each holder boxed:
-        // issues/sync-holder-roster.md)
-        let sync_alone = !o.things.is_empty() && o.things.iter().all(|t| self.core.role_now(holder, t) == Some(Role::Sync));
+        let reads = o.things.iter().any(|t| self.core.role_now(holder, t) >= Some(Role::Read));
         let Some((blob, things)) = self.read(|tx| {
             if crate::flows::edges::inbox_kem(tx, &h)?.is_none() {
                 return Ok(None);
             }
             let Some(full) = tx.get_commit(&id)? else { return Ok(None) };
             let mut blob = Arc::unwrap_or_clone(full);
-            if o.edge_only || sync_alone {
+            // a removal: its edges; a recipient below read on every thing named (sync alone, or
+            // removed since): those things' boxes only, no edge, keyset, step or record
+            // (spec/sync-inbox.md §2; the part still names each holder boxed:
+            // issues/sync-holder-roster.md)
+            if o.edge_only || !reads {
                 let ak = if o.edge_only { "roles.0" } else { "secrets.0" };
-                let keep: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, a)| a.ak.as_str() == ak).map(|(i, _)| i).collect();
+                let keep: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, a)| a.ak.as_str() == ak && (o.edge_only || o.things.contains(&a.tid))).map(|(i, _)| i).collect();
                 blob.parts.retain(|p| keep.contains(&p.ai));
             }
             let mut things = Vec::new();
@@ -182,7 +183,6 @@ impl Engine {
         else {
             return Ok(None);
         };
-        let reads = o.things.iter().any(|t| self.core.role_now(holder, t) >= Some(Role::Read));
         // a recipient below read on every thing gets the boxes and sync IDs only (spec/wire.md §9
         // positions 2-3): no chain, no `keys.0`
         let (chain, records) = if reads && with_chain { self.chain_values(&id, &blob, holder)? } else { (Vec::new(), Vec::new()) };
