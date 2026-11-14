@@ -77,6 +77,9 @@ pub struct Read {
     /// Per S, the records it carries as certificates that no own record blob carries
     /// (spec/permissions.md §4): one record blob of them is logged as they move.
     records: Effects<SyncId, Arc<RecordsMissing>>,
+    /// Per S, whether this node's step of S is due with the rotations it registers logged here
+    /// (`Ground::step_ready`): issued then, whatever connections are open.
+    steps: Effects<SyncId, bool>,
     verdicts: Stamped<(SyncId, CommitId), Verdict>,
     /// Own role commits S must hold (§3 Role entries first).
     roles: Stamped<SyncId, BTreeSet<CommitId>>,
@@ -99,6 +102,7 @@ impl Default for Read {
             toward: Effects::new("read: toward"),
             dooms: Effects::new("read: doom"),
             records: Effects::new("read: records"),
+            steps: Effects::new("read: steps"),
             verdicts: Stamped::default(),
             roles: Stamped::default(),
             told: Stamped::default(),
@@ -166,6 +170,7 @@ impl Read {
                 self.judged.want((*s, c));
                 self.dooms.want(*s);
                 self.records.want(*s);
+                self.steps.want(*s);
             }
             // a sync ID no longer carrying it stays followed until nothing of it is left there
         }
@@ -205,6 +210,23 @@ impl Read {
             }
             if !now.records.is_empty() {
                 g.log_records(&s, &now.records)?;
+                acted = true;
+            }
+        }
+        // the step due of each S, once the rotations it registers are logged here (spec/sync-ids.md
+        // §6 Steps); tried again whenever what it read moves while ready (a role blocked here
+        // issues nothing until the rotation that unblocks it)
+        for s in self.steps.due() {
+            if !g.reads(&s)? {
+                self.steps.unwant(&s);
+                continue;
+            }
+            let mut ready = false;
+            run(&mut self.steps, &s, || {
+                ready = g.step_ready(&s)?;
+                Ok(ready)
+            })?;
+            if ready && g.issue_step(&s)? {
                 acted = true;
             }
         }

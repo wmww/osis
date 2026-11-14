@@ -1303,3 +1303,43 @@ fn an_unchanged_filter_asks_behind_on_nothing_spec_sync_ids_6() {
     assert_eq!(behinds_per_arrival(2), vec![2, 0, 0]);
     assert_eq!(behinds_per_arrival(20), vec![20, 0, 0]);
 }
+
+// spec/sync-ids.md §6 (Walk: Test): a reader tests its recorded steps' credentials deepest first,
+// then the sync key of each sync secret it holds, newest first, each distinct credential once: a
+// held sync key no recorded step bears is tested (by no step), one a step bears only at its step.
+#[test]
+fn a_reader_tests_each_held_sync_key_after_its_steps_spec_sync_ids_6() {
+    use osis_crypto::{Epoch, LabelRole, Secret32, SeededRng, label_role_key};
+    use osis_engine::labeling::HeadKeys;
+    use osis_engine::sync::{Path, ReadCredentials};
+    use osis_label::{Parent, StepKeys};
+    use osis_sync::opens::cred::Tested;
+    use osis_sync::opens::holds::walk_tests;
+    let thing = osis_base::Tid::from_bytes([3; 15]);
+    let admin = Secret32::from_bytes([0xab; 32]);
+    let (old, new) = (Secret32::from_bytes([1; 32]), Secret32::from_bytes([2; 32]));
+    let id = osis_label::genesis_label(&admin);
+    let keys = StepKeys::derive(&old, &old, &admin, &Secret32::from_bytes([9; 32]), &id);
+    let read = Epoch::derive(&thing, osis_base::Role::Read, 0, &old).unwrap();
+    let se = |n: u64, x: &Secret32| Epoch::derive(&thing, osis_base::Role::Sync, n, x).unwrap();
+    let d = label_role_key(LabelRole::Delete, &admin);
+    let (genesis, _) = osis_label::register(Parent::Genesis(&d), keys, &[], (&thing, read, &old), (se(0, &old), &old), &mut SeededRng::from_u64(0)).unwrap();
+    let k = |x: &Secret32| label_role_key(LabelRole::Sync, x);
+    let mut rc = ReadCredentials::default();
+    rc.keys.insert(genesis.id(), HeadKeys { sync: Some(k(&old)), epochs: [Some(se(0, &old)), None, None], ..HeadKeys::default() });
+    rc.sync_keys = vec![(se(1, &new), k(&new)), (se(0, &old), k(&old))];
+    let path = Path { steps: vec![(genesis.clone(), None)] };
+    let tests = walk_tests(&rc, &path, &mut |_| None);
+    let got: Vec<(Option<osis_label::StepId>, [u8; 32])> = tests
+        .iter()
+        .map(|(t, _)| match t {
+            Tested::SyncKey { step, key } => (*step, key.verifying_key().to_bytes()),
+            other => panic!("only sync keys: {other:?}"),
+        })
+        .collect();
+    let pk = |x: &Secret32| k(x).verifying_key().to_bytes();
+    assert_eq!(got, vec![(Some(genesis.id()), pk(&old)), (None, pk(&new))]);
+    // no recorded path: every held sync key, newest first
+    let bare: Vec<_> = walk_tests(&rc, &Path::default(), &mut |_| None).into_iter().map(|(t, _)| t.step()).collect();
+    assert_eq!(bare, vec![None, None]);
+}

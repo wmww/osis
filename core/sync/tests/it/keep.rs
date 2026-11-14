@@ -28,20 +28,19 @@ fn add_to_d(w: &mut World, i: usize, t: Tid) {
 }
 
 /// Node 0 grants its contact node 1's account sync on a thing of its synced group, which node
-/// 1's user lists; a write is held there; node 0 removes node 1 and issues the step of the
-/// removal's rotation (no admin issues one on its own yet: issues/sync-unbuilt.md), which it
-/// registers at node 1. Each step through the product's dials and connections, checked on the
-/// way (spec/sync-opens.md §1: node 0 dials node 1 by its dial list, node 1 dials node 0 by the
+/// 1's user lists; a write is held there; node 0 removes node 1, logs the removal's rotation,
+/// then issues its step (nothing by hand) and registers it at node 1. Each step through the product's dials and connections, checked on the way
+/// (spec/sync-opens.md §1: node 0 dials node 1 by its dial list, node 1 dials node 0 by the
 /// grant's hint).
 fn kept_then_removed() -> (World, Tid, SyncId) {
     let (mut w, t, s) = kept();
     let a1 = w.node(1).account.unwrap();
+    let before = w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.len();
     w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap();
     w.run();
-    let head = w.store(1).head(&s).unwrap().expect("a head").id();
-    let (step, _) = w.write(0, |e| e.issue_step(&t, &s, &head, false)).unwrap();
-    assert!(step.is_some(), "the removal's step");
-    w.run();
+    let path = w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.clone();
+    assert_eq!(path.steps.len(), before + 1, "the removal's step issued");
+    assert_eq!(w.store(1).head(&s).unwrap().map(|h| h.id()), path.steps.last().map(|(st, _)| st.id()), "and registered at node 1");
     (w, t, s)
 }
 
@@ -108,7 +107,7 @@ fn a_delete_key_holder_never_deletes_a_needed_certificate_at_an_unread_source_sp
 }
 
 // spec/sync-judgement.md §6 (Keeps; Stops), spec/sync-inbox.md §2 (Logging), spec/sync-ids.md
-// §6 (Taking a stamped entry; Walk: moving it, genesis first), spec/sync-opens.md §1 (whom to
+// §6 (Steps: an admin issues the step due; Taking a stamped entry; Walk: moving it, genesis first), spec/sync-opens.md §1 (whom to
 // dial), §4 (Admissible: with no head, its newest sync secret's key): `kept_then_removed`: the
 // removal's step reaches node 1's head, whose sync key it holds no box for: its copy of S goes
 // (its path and record stay), it shows nothing, and a write after the removal reaches it not.
@@ -232,14 +231,32 @@ fn taking_an_inbox_blob_again_moves_nothing_spec_sync_inbox_2() {
     assert!(applied > 0, "the grant's inbox blob was taken");
 }
 
-// spec/sync-ids.md §6 (Steps; Walk), spec/sync-judgement.md §6 (Keeps): after
-// `kept_then_removed` node 0 grants node 1 sync again; node 1 holds only the new sync epoch's
-// secret, so S's path must reach a step under that epoch's sync key for node 1 to open at its
-// head. Fails (issues/sync-unbuilt.md, opens and inbox): node 0 tests only its recorded steps'
-// sync keys, not each sync secret it holds, so nothing opens; and no admin issues a step after
-// the removal's rotation, so a genesis registered there would strand node 1.
+// spec/sync-ids.md §6 (Steps: an admin issues a step after logging the rotation commits it
+// registers), spec/permissions.md §3: with node 1, the only node keeping S unread, powered off,
+// node 0's removal of it records the step with no connection open; once node 1 is on, the step
+// reaches its head.
 #[test]
-#[ignore = "fails: issues/sync-unbuilt.md (opens: held sync secrets tested; inbox: steps issued)"]
+fn a_removal_issues_its_step_with_no_connection_spec_sync_ids_6() {
+    let (mut w, t, s) = kept();
+    let a1 = w.node(1).account.unwrap();
+    let path = |w: &mut World| w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.clone();
+    let before = path(&mut w).steps.len();
+    w.power_off(1);
+    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap();
+    w.run();
+    let p = path(&mut w);
+    assert_eq!(p.steps.len(), before + 1, "the removal's step, with node 1 off");
+    w.power_on(1);
+    w.run();
+    assert_eq!(w.store(1).head(&s).unwrap().map(|h| h.id()), p.steps.last().map(|(st, _)| st.id()), "registered at node 1 once on");
+}
+
+// spec/sync-ids.md §6 (Steps; Walk: Test), spec/sync-judgement.md §6 (Keeps): after
+// `kept_then_removed` node 0 grants node 1 sync again; node 1 holds only the new sync epoch's
+// secret, which no recorded step bears. Node 0 tests the sync key of each sync secret it holds,
+// so S opens at node 1, and registers the path to the removal's step (issued once its rotation
+// was logged), so node 1 reaches the head under its new sync key.
+#[test]
 fn a_store_granted_again_after_its_removal_reaches_the_head_spec_sync_ids_6() {
     let (mut w, t, s) = kept_then_removed();
     let a1 = w.node(1).account.unwrap();

@@ -5,7 +5,6 @@
 
 use super::{Done, ak, home_sync_id};
 use crate::rotation;
-use osis_keys::ROLES;
 use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use crate::Mutation;
@@ -182,6 +181,60 @@ pub(crate) fn owned_in(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::SyncIds> {
     Ok(labels)
 }
 
+/// Whether a child of recorded head `head` is due at an admin holding `epochs`, its actor's
+/// deposit seed `deposit` (spec/sync-ids.md §6 Steps): the head's admin epoch, held and
+/// established here, when it holds a sync, write or admin epoch newer than the head registers,
+/// the seed derives another deposit key than the head's, or `fresh`; never while it lacks the
+/// newest secret of a role (it could not sign the step).
+pub(crate) fn due_at(epochs: &ActorEpochs, head: &Step, deposit: &Secret32, fresh: bool) -> Option<Epoch> {
+    let at = LabelRole::ALL.map(|r| osis_keys::registered_epoch(epochs, r, head.keys.get(r)));
+    let head_admin = at[2].filter(|e| epochs.role(Role::Admin).is_established(e))?;
+    registration_epochs(epochs)?;
+    let deposit_key = osis_crypto::deposit_key(deposit, &head.label).verifying_key();
+    (fresh || osis_keys::newer_than_head(epochs, at) || head.keys.deposit != deposit_key).then_some(head_admin)
+}
+
+/// What a due step of `g`'s sync ID `l` is issued from (`step_due`).
+pub(crate) struct Due {
+    head: Step,
+    admin: Secret32,
+    deposit: Secret32,
+    epochs: std::sync::Arc<ActorEpochs>,
+}
+
+/// Whether this node issues a step of `g`'s sync ID `l` now (spec/sync-ids.md §6 Steps,
+/// spec/permissions.md §3 next-step triggers): it is an admin of `g` holding its recorded head's
+/// epochs, the head's admin epoch established, and it holds a sync, write or admin epoch newer
+/// than the head registers, or its actor's deposit seed derives another deposit key than the
+/// head's (or `fresh`). The step is a child of the recorded head, never of a step it has not
+/// recorded.
+pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId, fresh: bool) -> Result<Option<Due>> {
+    let Ok(me) = tx.core.writer() else { return Ok(None) };
+    if tx.core.role_now(&me, g) != Some(Role::Admin) {
+        return Ok(None);
+    }
+    let owned = owned_in(tx, g)?;
+    let Some(rec) = owned.get(l) else { return Ok(None) };
+    let steps = sync_steps(rec)?;
+    let Some((head, _)) = crate::labeling::actors::head_of(&steps).and_then(|h| steps.get(&h).cloned()) else { return Ok(None) };
+    let Some(epochs) = tx.core.epochs(g) else { return Ok(None) };
+    let deposit = deposit_seed(tx, g)?;
+    let Some(head_admin) = due_at(&epochs, &head, &deposit, fresh) else { return Ok(None) };
+    let admin = epochs.role(Role::Admin).secret(&head_admin).cloned().ok_or(Error::Misuse("head admin secret"))?;
+    Ok(Some(Due { head, admin, deposit, epochs }))
+}
+
+/// The step due of `g`'s sync ID `l` (`step_due`), put into `m`: a child of its recorded head at
+/// the newest epochs with the current readers.
+fn step_into(tx: &mut Tx<'_>, m: &mut Mutation, g: Tid, l: SyncId, fresh: bool) -> Result<Option<(Step, ClaimSet)>> {
+    let Some(due) = step_due(tx, &g, &l, fresh)? else { return Ok(None) };
+    let [_, (re, _), _, _] = registration_epochs(&due.epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
+    let rs = readers(tx, &g, &re)?;
+    let (step, set) = issue(tx, &g, &due.epochs, Some((&due.head, &due.admin)), &rs, &due.deposit)?;
+    put_step(m, g, l, &step, &set, false)?;
+    Ok(Some((step, set)))
+}
+
 impl Engine {
     /// Refreshes `actor`'s deposit seed (spec/crypto.md §3, a MAY: a departed holder can then no
     /// longer deposit under its labels, nor can a holder that has not read the new `keys.0`).
@@ -190,67 +243,32 @@ impl Engine {
         let a = self.core.home_owner(actor);
         let mut done = Done::default();
         let c = self.run(|tx| {
-            let mut seed = [0u8; 32];
-            tx.rng.fill_bytes(&mut seed);
             let mut m = Mutation::new();
-            m.op(a, &ct::KEYS, PathOp { path: vec![PathSeg::Field(5)], op: Op::Set(Some(seed).to_value()) })?;
+            rotation::fresh_deposit_seed(tx, &mut m, a)?;
             Engine::commit_tx(tx, m)
         })?;
         done.add(c);
         Ok(done)
     }
 
-    /// The step an admin issues at a node keeping `group`'s sync ID `label` unread whose head is
-    /// `head` (spec/sync-ids.md §6 Steps): when it holds the head's epochs and an established
-    /// epoch newer than the head's, or the head's deposit key is not the one the actor's deposit
-    /// seed derives (refreshed), a child at its newest epochs with the current readers, recorded
-    /// in `sync.0` (a role commit; sync logs the rotation commits first, then registers). `None` when nothing is newer, or when it does not hold the head's epochs (it
-    /// walks first). `fresh`: issue a step without a rotation (to list readers granted since).
-    pub fn issue_step(&mut self, group: &Tid, label: &SyncId, head: &StepId, fresh: bool) -> Result<(Option<(Step, ClaimSet)>, Done)> {
-        let (g, l, h) = (*group, *label, *head);
-        let mut done = Done::default();
-        let step = self.run(|tx| {
-            let me = tx.core.writer()?;
-            if tx.core.role_now(&me, &g) != Some(Role::Admin) {
+    /// Issues the step of `group`'s sync ID `label` (spec/sync-ids.md §6 Steps): the step due
+    /// (`step_due`), or with `fresh` one without a rotation (a MAY: to list readers granted since
+    /// its parent). `None` when none is due or a role is blocked here (the step comes with the
+    /// rotation that is made). Sync calls it once the rotations it registers are logged
+    /// (`Engine::due_step`).
+    pub fn issue_step(&mut self, group: &Tid, label: &SyncId, fresh: bool) -> Result<Option<(Step, ClaimSet)>> {
+        let (g, l) = (*group, *label);
+        self.run(|tx| {
+            let Ok(me) = tx.core.writer() else { return Ok(None) };
+            if !rotation::blocked_roles(tx, &me, &g)?.is_empty() {
                 return Ok(None);
             }
-            // signing a step and sealing entry boxes encrypt under the group's epochs
-            rotation::require_covered(tx, me, g, &ROLES.into_iter().collect(), &mut done)?;
-            let owned = owned_in(tx, &g)?;
-            let rec = owned.get(&l).ok_or(Error::Misuse("unknown sync ID"))?;
-            let steps = sync_steps(rec)?;
-            let (head, _) = steps.get(&h).ok_or(Error::Misuse("unknown head step"))?.clone();
-            let epochs = tx.core.epochs(&g).ok_or(Error::Misuse("no secrets held for the group"))?;
-            // the head's epochs per role, where held
-            let at = LabelRole::ALL.map(|l| osis_keys::registered_epoch(&epochs, l, head.keys.get(l)));
-            let [_, _, Some(head_admin)] = at else { return Ok(None) };
-            let deposit = deposit_seed(tx, &g)?;
-            let deposit_key = osis_crypto::deposit_key(&deposit, &head.label).verifying_key();
-            if !fresh && !osis_keys::newer_than_head(&epochs, at) && head.keys.deposit == deposit_key {
-                return Ok(None);
-            }
-            if !epochs.role(Role::Admin).is_established(&head_admin) {
-                return Ok(None);
-            }
-            let admin_secret = epochs.role(Role::Admin).secret(&head_admin).cloned().ok_or(Error::Misuse("head admin secret"))?;
-            let [(se, _), (re, _), (we, _), (ae, _)] = registration_epochs(&epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
-            // a child of the head already recorded at these epochs (another admin's, or this
-            // node's own for another peer): reused, so one rotation gives one step
-            if !fresh {
-                let current = |c: &Step| c.keys.deposit == deposit_key && LabelRole::ALL.into_iter().zip([se, we, ae]).all(|(l, e)| osis_keys::registered_epoch(&epochs, l, c.keys.get(l)) == Some(e));
-                if let Some((c, Some(set))) = steps.values().filter(|(c, _)| c.prev == Some(h) && current(c)).min_by_key(|(c, _)| c.id()) {
-                    return Ok(Some((c.clone(), set.clone())));
-                }
-            }
-            let rs = readers(tx, &g, &re)?;
-            let (step, set) = issue(tx, &g, &epochs, Some((&head, &admin_secret)), &rs, &deposit)?;
             let mut m = Mutation::new();
-            put_step(&mut m, g, l, &step, &set, false)?;
+            let Some(out) = step_into(tx, &mut m, g, l, fresh)? else { return Ok(None) };
             drop_old_claims(tx, &mut m, g)?;
-            done.add(Engine::commit_tx(tx, m)?);
-            Ok(Some((step, set)))
-        })?;
-        Ok((step, done))
+            Engine::commit_tx(tx, m)?;
+            Ok(Some(out))
+        })
     }
 
     /// `drop_old_claims` into `m`, a `sync.0` write of `group` by this admin.

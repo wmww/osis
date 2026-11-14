@@ -285,6 +285,22 @@ impl Ground for Live<'_, '_> {
         }
         Ok(())
     }
+    fn step_ready(&mut self, s: &SyncId) -> Result<bool> {
+        let Some(needs) = self.cx.engine.due_step(s)? else { return Ok(false) };
+        for c in needs.iter() {
+            let mut logged = false;
+            for b in self.cx.engine.commit_blobs(c)?.iter() {
+                logged |= self.cx.store.entry(s, b)?.is_some_and(|e| e.stamp.is_some());
+            }
+            if !logged {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+    fn issue_step(&mut self, s: &SyncId) -> Result<bool> {
+        Ok(self.cx.engine.issue_due_step(s)?.is_some())
+    }
     fn log_records(&mut self, s: &SyncId, records: &BTreeSet<osis_base::Tid>) -> Result<()> {
         let Some((blob, bytes, wrap)) = self.cx.engine.seal_records(s, records, self.cx.rng)? else { return Ok(()) };
         let e = own_entry(self.cx, s, blob, wrap, Class::Durable)?;

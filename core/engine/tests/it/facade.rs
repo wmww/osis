@@ -201,10 +201,6 @@ fn a_box_after_a_new_step_extends_the_record_spec_sync_judgement_6() {
     lp.peers[0].engine.grant(&t, &ps[2], &edge_of(Role::Read)).unwrap();
     // removing peer 2 rotates read and sync: the rotation boxes peer 1 at the new sync epoch
     let done = lp.peers[0].engine.demote(&t, &Demotion { holder: ps[2], new: None, retain: None }).unwrap();
-    let s = first.sync_ids[0];
-    let ids = lp.peers[0].engine.sync_ids(&t).unwrap();
-    let (_, step) = (ids[0].id, ids[0].path.steps.last().unwrap().0.clone());
-    let _ = lp.peers[0].engine.issue_step(&t, &s, &step.id(), false).unwrap();
     for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
         if h == ps[1] {
             lp.peers[1].engine.take_inbox_blob(&b, true).unwrap();
@@ -213,6 +209,32 @@ fn a_box_after_a_new_step_extends_the_record_spec_sync_judgement_6() {
     let after = lp.peers[1].engine.sync_record(&t).unwrap().unwrap();
     assert!(first.secrets.keys().all(|e| after.secrets.contains_key(e)), "nothing lost");
     assert!(after.secrets.len() > first.secrets.len(), "the new sync epoch's secret");
+}
+
+// spec/sync-ids.md §6 (Steps: an admin issues a step when it holds an epoch newer than its
+// recorded head registers, a child of that head, after logging the rotation commits it registers):
+// nothing is due until a removal rotates; then the step is due, naming the removal's rotation
+// among what it registers, and its issue records a child of the recorded head at the new sync
+// epoch, after which nothing is due; a fresh step is a further child.
+#[test]
+fn a_step_is_due_after_a_rotation_spec_sync_ids_6() {
+    let (mut lp, ps) = people(3);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let head = |lp: &mut LocalPeer| lp.peers[0].engine.sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.last().unwrap().0.clone();
+    assert!(lp.peers[0].engine.due_step(&s).unwrap().is_none(), "nothing newer");
+    let before = head(&mut lp);
+    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: ps[1], new: None, retain: None }).unwrap();
+    let needs = lp.peers[0].engine.due_step(&s).unwrap().expect("the rotation's step is due");
+    assert!(needs.contains(done.commits.last().unwrap()), "it registers the removal's rotation");
+    let step = lp.peers[0].engine.issue_due_step(&s).unwrap().expect("issued");
+    assert_eq!((step.prev, head(&mut lp).id()), (Some(before.id()), step.id()), "a child of the recorded head, recorded");
+    let sync = lp.peers[0].engine.epochs(&t).unwrap().sync.newest_held().map(|(_, x)| x.clone()).unwrap();
+    assert_eq!(step.keys.sync, osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, &sync).verifying_key(), "at the new sync epoch");
+    assert!(lp.peers[0].engine.due_step(&s).unwrap().is_none(), "nothing due after it");
+    let (fresh, _) = lp.peers[0].engine.issue_step(&t, &s, true).unwrap().expect("a fresh step");
+    assert_eq!((fresh.prev, head(&mut lp).id()), (Some(step.id()), fresh.id()));
 }
 
 // spec/sync-inbox.md §2 (Re-send: until the sender has seen the recipient take it, a commit by

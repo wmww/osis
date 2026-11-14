@@ -13,6 +13,9 @@
 //! event does). Nothing is registered at a source on a step `sync.0` does not record (a sibling,
 //! or a step past it).
 //!
+//! Steps are issued by the engine with the rotations that make them (spec/sync-ids.md §6
+//! Steps); this module only registers recorded ones.
+//!
 //! Work follows change: one `Effects` key per (connection, S) open by a store credential, judged
 //! again when what it read moved (the recorded path, the step's needs, their presence at the
 //! source, this module's own progress there).

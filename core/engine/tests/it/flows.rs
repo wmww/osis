@@ -1678,9 +1678,9 @@ fn registration_step_after_rotation_spec_sync_5() {
     let d1 = lp.peers[0].engine.tid();
     let labels = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap();
     let genesis = osis_label::StepId(*labels.get(&card).unwrap().steps.keys().next().unwrap());
-    assert!(lp.peers[1].engine.issue_step(&p, &card, &genesis, false).unwrap().0.is_none(), "nothing newer");
+    assert!(lp.peers[1].engine.issue_step(&p, &card, false).unwrap().is_none(), "nothing newer");
     lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, retain: None }).unwrap();
-    let (step, set) = lp.peers[1].engine.issue_step(&p, &card, &genesis, false).unwrap().0.unwrap();
+    let (step, set) = lp.peers[1].engine.issue_step(&p, &card, false).unwrap().unwrap();
     let parent = osis_label::parse_record(&labels.get(&card).unwrap().steps[&genesis.0]).unwrap().0;
     step.verify_child(&parent).unwrap();
     let claims = |i: usize| step.claim_key(lp.peers[i].engine.identity().keys().kem.x25519()).unwrap().verifying_key().to_bytes();
@@ -1703,8 +1703,6 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
     let card = lp.peers[2].engine.home_sync_id(&t).unwrap().unwrap();
     spread(&mut lp);
     assert_ne!(pp, p);
-    let labels = lp.peers[2].engine.get_typed(&t, &ct::SYNC).unwrap().unwrap();
-    let genesis = osis_label::StepId(*labels.get(&card).unwrap().steps.keys().next().unwrap());
     let old = lp.peers[2].engine.deposit_seed(&t).unwrap().unwrap();
     let done = lp.peers[2].engine.demote(&t, &Demotion { holder: pp, new: None, retain: None }).unwrap();
     let new = lp.peers[2].engine.deposit_seed(&t).unwrap().unwrap();
@@ -1712,7 +1710,7 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
     let removal = *done.commits.last().unwrap();
     let h = lp.peers[2].engine.header(&removal).unwrap();
     assert!(h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "roles.0") && h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "keys.0"), "in the removal's rotation commit");
-    let (step, _) = lp.peers[2].engine.issue_step(&t, &card, &genesis, false).unwrap().0.unwrap();
+    let (step, _) = lp.peers[2].engine.issue_step(&t, &card, false).unwrap().unwrap();
     assert_eq!(step.keys.deposit, osis_crypto::deposit_key(&new, &card).verifying_key());
 }
 
@@ -1724,15 +1722,15 @@ fn refreshed_deposit_seed_issues_step_spec_sync_5() {
     let labels = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap();
     let genesis = osis_label::StepId(*labels.get(&card).unwrap().steps.keys().next().unwrap());
     let parent = osis_label::parse_record(&labels.get(&card).unwrap().steps[&genesis.0]).unwrap().0;
-    assert!(lp.peers[1].engine.issue_step(&p, &card, &genesis, false).unwrap().0.is_none(), "nothing newer");
+    assert!(lp.peers[1].engine.issue_step(&p, &card, false).unwrap().is_none(), "nothing newer");
     lp.peers[1].engine.refresh_deposit_seed(&p).unwrap();
     let new = lp.peers[1].engine.deposit_seed(&p).unwrap().unwrap();
-    let (step, _) = lp.peers[1].engine.issue_step(&p, &card, &genesis, false).unwrap().0.unwrap();
+    let (step, _) = lp.peers[1].engine.issue_step(&p, &card, false).unwrap().unwrap();
     step.verify_child(&parent).unwrap();
     assert_eq!(step.keys.deposit, osis_crypto::deposit_key(&new, &card).verifying_key());
     assert_ne!(step.keys.deposit, parent.keys.deposit);
     assert_eq!((step.keys.sync, step.keys.write, step.keys.delete), (parent.keys.sync, parent.keys.write, parent.keys.delete));
-    assert!(lp.peers[1].engine.issue_step(&p, &card, &step.id(), false).unwrap().0.is_none(), "registered: nothing due");
+    assert!(lp.peers[1].engine.issue_step(&p, &card, false).unwrap().is_none(), "registered: nothing due");
 }
 
 // spec/crypto.md §4 (forks): two admins removing different holders concurrently fork the read
@@ -1896,8 +1894,8 @@ fn write_link_rotates_as_signer_spec_perm_3() {
 }
 
 // spec/crypto.md §4, spec/sync-ids.md §6: signing a step and sealing its entry boxes encrypt under
-// the group's epochs: after a node left the account that administers the team, the team rotates
-// before an admin issues its next step.
+// the group's epochs: after a node left the account that administers the team, no step is issued
+// until the team rotates (its roles blocked meanwhile); then its step is, at the new epochs.
 #[test]
 fn issue_step_after_inside_removal_spec_sync_5() {
     let (mut lp, p, pa, _) = nodes_and_alice();
@@ -1907,10 +1905,10 @@ fn issue_step_after_inside_removal_spec_sync_5() {
     spread(&mut lp);
     let t0 = newest_read(&lp, 1, t).unwrap();
     let label = lp.peers[1].engine.home_sync_id(&t).unwrap().unwrap();
-    let labels = lp.peers[1].engine.get_typed(&t, &ct::SYNC).unwrap().unwrap();
-    let genesis = osis_label::StepId(*labels.get(&label).unwrap().steps.keys().next().unwrap());
     lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, retain: None }).unwrap();
-    let (step, _) = lp.peers[1].engine.issue_step(&t, &label, &genesis, false).unwrap().0.unwrap();
+    assert!(lp.peers[1].engine.issue_step(&t, &label, false).unwrap().is_none(), "the team has not rotated: nothing");
+    lp.peers[1].engine.ensure_rotated(&t).unwrap();
+    let (step, _) = lp.peers[1].engine.issue_step(&t, &label, false).unwrap().unwrap();
     let t1 = newest_read(&lp, 1, t).unwrap();
     assert_ne!(t0, t1);
     let (_, sync) = lp.peers[1].engine.epochs(&t).unwrap().sync.newest_held().map(|(e, s)| (e, s.clone())).unwrap();

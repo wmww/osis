@@ -147,6 +147,7 @@ impl Engine {
         }
         c.roster = self.roster_digest(&t);
         if let Some(e) = self.core.epochs(&t) {
+            c.sync_keys = e.role(Role::Sync).held_newest_first().into_iter().map(|(ep, x)| (ep, osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, x))).collect();
             for (step, _) in o.path.steps.iter().rev() {
                 let sync = e.role(Role::Sync).held_newest_first().into_iter().find(|(_, x)| osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, x).verifying_key() == step.keys.sync);
                 if let Some((_, x)) = sync {

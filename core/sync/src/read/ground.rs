@@ -177,6 +177,18 @@ pub trait Ground {
         let _ = (s, records);
         Ok(())
     }
+    /// Whether this node's step of S is due and each role commit it registers is logged under S
+    /// in the own store (spec/sync-ids.md §6 Steps: issued after logging the rotations it
+    /// registers, so they are stamped under the head a store keeping S unread holds).
+    fn step_ready(&mut self, s: &SyncId) -> Result<bool> {
+        let _ = s;
+        Ok(false)
+    }
+    /// Issues the step due of S (`step_ready`): whether one was issued.
+    fn issue_step(&mut self, s: &SyncId) -> Result<bool> {
+        let _ = s;
+        Ok(false)
+    }
 }
 
 /// `Ground::records_missing`.

@@ -13,13 +13,13 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 ## opens
 - Records' named actors (spec/sync-opens.md §3: a record is honoured only while a proven actor it names is known here now) are judged at a connection's proof alone; a live connection keeps its record when the actor stops being known.
 - Static entries claimed in the walk's tests (`Tested::Static` always has no step).
-- A reader's walk tests only its recorded steps' credentials, not the sync key of each sync secret it holds (spec/sync-ids.md §6 Test): a node keeping S unread granted at an epoch no recorded step bears is never opened (`keep::a_store_granted_again_after_its_removal_reaches_the_head_spec_sync_ids_6`, ignored).
 
 ## store and streams
 - Fetching an unjudgeable body again (spec/commits.md §4 Unjudgeable, spec/sync-judgement.md §3 Dropped bodies): needs byte-less entries (a body counting missing is fetched again through `Streams::fetch_again`, notes/sync-read.md); until then an awaiting entry keeps its bytes (notes/sync-store.md).
 - Refused (spec/sync-streams.md §4): a refused entry is not offered again once the refusing node's head moved. The genesis Register goes out at a store source's open before anything of S is served there, so entries reach a head; a genesis refused for now (4, 12), or any later head move, leaves the entries refused meanwhile untaken there until a new stamp.
 - Fill order again (spec/sync-streams.md §4 Fill order, 4): a body queued as not opening keeps its last place when a read secret of S arrives; it should park under S's read secrets and be ranked again then, as the store's parked entries are (notes/sync.md Arriving early).
 - Relay-only entries; the engine's linked blobs (`Engine::wants`: pages and header lists before apply); bundle import (`Streams::import`); `Rank::Never` (a keyset without history: the facade has no call for it).
+- A source that drops S and keeps it again (shred, then listed again) is still at the step its stream last named for a registrar that joins it again from a stored position: the source's log forgot S's events (`log_forget`), so no head event or deletion clears it there, and nothing is registered (spec/sync-streams.md §3 names no event for a head gone). Reachable by unlisting and listing the thing again at that node: it takes nothing until a registrar with no stored position there registers the genesis step. A listing from the start that names no head could clear it (`known`'s head replaced like presence).
 
 ## read
 - `SrcView::role_unheld` is always false: deletes toward a source do not wait for a role commit it lacks.
@@ -32,7 +32,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.
 - A decline stamping in place.
 - Opens' members are not stamped, so a source's step moving reaches Register only through its next join.
-- No admin issues a step (spec/sync-ids.md §6 Steps; `Engine::issue_step` is called by nothing but tests): a rotation never reaches a path, so a holder granted after one stops at the genesis registered there (the same ignored test), and a node keeping S unread that was removed keeps its copy (its head never moves past its keys; keep.rs issues the step by hand).
+- A deposit-only step (a refreshed seed, no newer role epoch) is issued without the waits spec/permissions.md §3 and spec/sync-ids.md §6 put on it (every entry it can open opened at the sources it reaches; no valid `keys.0` part of the actor missing; `flows::sync_ids::due_at`).
 
 ## status and API
 - Covered by a snapshot at a source (spec/sync-status.md §2): needs the engine's covering snapshots of a commit; a body a source dropped under a snapshot before showing it never counts (an under-claim).

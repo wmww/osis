@@ -16,7 +16,7 @@ It reads exactly the facade's `sync_things`/`thing_sync(t)` (whether the synced 
 ## Work follows change
 The closure through one `Effects` key, diffed on change (O(closure) per closure change); each thing's `thing_sync` through its own; each S's judgement through one key reading its record, path and own entries, so a head move or a box judges only its own S. `set_unheld` runs only when the verdict changed; the store's mark is in memory and a start re-judges every S before anything opens.
 
-End to end over connections: core/sync/tests/it/keep.rs (a sync grant kept unread, opened by the grantee's own test with its grant's sync key, the path registered from genesis, a write held; the removal's step registered by hand with `issue_step`, the copy dropped, a later write not taken).
+End to end over connections: core/sync/tests/it/keep.rs (a sync grant kept unread, opened by the grantee's own test with its grant's sync key, the path registered from genesis, a write held; the removal's step issued by node 0 and registered, the copy dropped, a later write not taken; granted again, the head reached under the new sync key).
 
 ## Reasons
 - One rule, no removal message: the head moving past every key the node holds is what a removal does to it (the removal rotates sync), and a Register is verified on its path, so no other proof is needed. A late box costs a re-fetch, not data a reader holds (Tess: predictable over keeping "in case").

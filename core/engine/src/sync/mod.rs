@@ -230,6 +230,9 @@ pub struct ReadCredentials {
     /// deepest first: the head's is what a reader shows, the rest what the walk tests
     /// (spec/sync-ids.md §6 Walk).
     pub proofs: Vec<(StepId, [u8; 32])>,
+    /// The sync key of each sync secret of S's thing held here, newest first, with its epoch:
+    /// tested after the recorded steps' credentials (spec/sync-ids.md §6 Test).
+    pub sync_keys: Vec<(Epoch, SigningSecret)>,
 }
 
 /// The secrets an entry box held (spec/sync-ids.md §3 Entry boxes).
@@ -746,6 +749,44 @@ impl Engine {
     /// store source must hold each before the step is registered there.
     pub fn step_needs(&mut self, s: &SyncId, step: &StepId) -> Result<Arc<Vec<CommitId>>> {
         self.step_needs_now(s, step)
+    }
+
+    /// The step due of `s` here (spec/sync-ids.md §6 Steps, spec/permissions.md §3): `Some` with
+    /// the role commits it would register (the rotations of the newest sync, write and admin
+    /// epochs and of those they supersede) when this node is an admin of S's thing holding an
+    /// epoch newer than its recorded head registers, or a refreshed deposit seed. Sync issues it
+    /// (`issue_due_step`) once each of those commits is logged under S here, so they are stamped
+    /// under the head a store keeping S unread holds.
+    pub fn due_step(&mut self, s: &SyncId) -> Result<Option<Arc<Vec<CommitId>>>> {
+        let Some(t) = self.sync_owner_of(s)? else { return Ok(None) };
+        let Ok(me) = self.core.writer() else { return Ok(None) };
+        if self.core.role_now(&me, &t) != Some(Role::Admin) {
+            return Ok(None);
+        }
+        let Some(o) = self.owned_sync_ids(&t)?.iter().find(|o| o.id == *s && !o.hint).cloned() else { return Ok(None) };
+        let Some((head, _)) = o.path.steps.last() else { return Ok(None) };
+        let (Some(epochs), Some(seed)) = (self.core.epochs(&t), self.deposit_seed(&t)?) else { return Ok(None) };
+        if crate::flows::sync_ids::due_at(&epochs, head, &seed, false).is_none() {
+            return Ok(None);
+        }
+        let mut out = std::collections::BTreeSet::new();
+        for r in [Role::Sync, Role::Write, Role::Admin] {
+            let re = epochs.role(r);
+            let Some(info) = re.newest().and_then(|e| re.get(&e)) else { continue };
+            out.extend(info.rotations.keys().copied());
+            for x in &info.supersedes {
+                if let Some(i) = re.get(x) {
+                    out.extend(i.rotations.keys().copied());
+                }
+            }
+        }
+        Ok(Some(Arc::new(out.into_iter().collect())))
+    }
+
+    /// Issues the step due of `s` (`due_step`, `issue_step`), recorded in its thing's `sync.0`.
+    pub fn issue_due_step(&mut self, s: &SyncId) -> Result<Option<Step>> {
+        let Some(t) = self.sync_owner_of(s)? else { return Ok(None) };
+        Ok(self.issue_step(&t, s, false)?.map(|(st, _)| st))
     }
 
     /// The commits logged with role commit `c` wherever it is logged (spec/crypto.md §4 Carried).

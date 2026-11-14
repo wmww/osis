@@ -688,17 +688,6 @@ fn finalize_due(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, done:
     flows::edges::finalize_in(tx, who, a, &ended, &Keep::kept(keep, &a), done)
 }
 
-/// `ensure_rotated`, failing when `roles` stay blocked: for what encrypts under the epochs
-/// (steps, entry boxes, content), not for a grant or re-seal (a box carrying a secret is
-/// encrypted under its recipient's key, spec/crypto.md §4, Encrypting under).
-pub(crate) fn require_covered(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>, done: &mut Done) -> Result<()> {
-    let still = ensure_rotated(tx, who, a, done)?;
-    if roles.iter().any(|r| still.contains(r)) {
-        return Err(Error::Misuse("an epoch to encrypt under does not cover a known departure (another node must rotate first)"));
-    }
-    Ok(())
-}
-
 /// Gives `t` secrets of its own (spec/permissions.md §3, spec/crypto.md §3): a rotation of all
 /// three roles from its derived epochs (those of the next actor up its record chain: rotated
 /// first where this node can, the history boxes carry them), boxed to its current holders (its

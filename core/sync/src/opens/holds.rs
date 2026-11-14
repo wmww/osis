@@ -8,8 +8,8 @@ use crate::types::{Credential, Cursor, Cx, Holding, Position};
 use crate::unread::{Unread, UnreadCredentials};
 use osis_base::{SyncId, Tid};
 use osis_crypto::Epoch;
-use osis_engine::sync::J;
-use osis_label::Step;
+use osis_engine::sync::{J, Path, ReadCredentials};
+use osis_label::{Step, StepId};
 use osis_proto::{BehindItem, Code, DepositItem, Grant, SharedItem};
 use osis_base::memo::Effects;
 use std::sync::Arc;
@@ -187,19 +187,8 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
                 {
                     c.shows.push((Shown::Proof(*p), None));
                 }
-                // the walk's tests (spec/sync-ids.md §6 Walk): the recorded steps deepest first,
-                // each by its sync key when held, else its claim key
-                if let Some(path) = path_of(cx, s) {
-                    for (step, _) in path.steps.iter().rev() {
-                        let id = step.id();
-                        let keys = rc.keys.get(&id);
-                        if let Some(k) = keys.and_then(|k| k.sync.clone()) {
-                            c.tests.push((Tested::SyncKey { step: Some(id), key: k }, keys.and_then(|k| k.epochs[0])));
-                        } else if let Ok(Some(k)) = cx.engine.claim_key(s, &id) {
-                            c.tests.push((Tested::Claim { step: id, key: k, sync: step.keys.sync.to_bytes() }, None));
-                        }
-                    }
-                }
+                let path = path_of(cx, s).unwrap_or_default();
+                c.tests.extend(walk_tests(&rc, &path, &mut |id| cx.engine.claim_key(s, id).ok().flatten()));
                 if let Some(head) = &rc.head {
                     let keys = rc.keys.get(&head.id());
                     if let Some(k) = keys.and_then(|k| k.sync.clone()) {
@@ -219,6 +208,31 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
         }
         Some(Arc::new(c))
     }
+}
+
+/// A reader's walk tests (spec/sync-ids.md §6 Test): the credentials of its recorded steps,
+/// deepest first, each by its sync key when held, else its claim key (`claim`); then the sync key
+/// of each sync secret it holds, newest first, so a store granted at an epoch no recorded step
+/// bears opens; each distinct credential once.
+pub fn walk_tests(rc: &ReadCredentials, path: &Path, claim: &mut dyn FnMut(&StepId) -> Option<osis_crypto::SigningSecret>) -> Vec<(Tested, Option<Epoch>)> {
+    let mut out = Vec::new();
+    let mut keys = std::collections::BTreeSet::new();
+    for (step, _) in path.steps.iter().rev() {
+        let id = step.id();
+        let held = rc.keys.get(&id);
+        if let Some(k) = held.and_then(|k| k.sync.clone()) {
+            keys.insert(k.verifying_key().to_bytes());
+            out.push((Tested::SyncKey { step: Some(id), key: k }, held.and_then(|k| k.epochs[0])));
+        } else if let Some(k) = claim(&id) {
+            out.push((Tested::Claim { step: id, key: k, sync: step.keys.sync.to_bytes() }, None));
+        }
+    }
+    for (e, k) in &rc.sync_keys {
+        if keys.insert(k.verifying_key().to_bytes()) {
+            out.push((Tested::SyncKey { step: None, key: k.clone() }, Some(*e)));
+        }
+    }
+    out
 }
 
 /// An ended member's `until` (spec/sync-opens.md §6): kept unread, the position of S's head
