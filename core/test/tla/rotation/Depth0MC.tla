@@ -81,7 +81,7 @@ rBogusMade == {<<"W", "G", "made">>}
 rBogusBack == {<<"W", "G", "back">>}
 \* ... or W rotates X1 itself past X1's knowing keyset, then G (Rogue)
 rRogue == {<<"W", "X1", "G">>}
-\* sealed at judged alone: the rm shape under P, G holding P's role; p1, P's
+\* box records judged alone: the rm shape under P, G holding P's role; p1, P's
 \* one admin, writes P and holds G's and X1's keysets (certificates) but none
 \* of their boxes, never syncing X1 or X2: it judges G's epochs by their
 \* records alone (BoxBlind)
@@ -92,8 +92,19 @@ pLearners == r0Learners \cup {"p1"}
 pNoSync == rNoSync \cup {<<"p1", "X1">>, <<"p1", "X2">>, <<"a1", "P">>, <<"b", "P">>}
 pG == rG \o << <<"P", "G">> >>
 pBlind == {<<"p1", "G">>, <<"p1", "X1">>}
-\* ... W's rotations of G record no keyset of X1 (sealed_at forged)
+\* ... W's rotations of G record no keyset of X1 (a writer records what it likes)
 pLie == {<<"W", "G">>}
+\* grant boxes recorded (spec/crypto.md \S 4 Stale): the P shape with X1
+\* granted on G after G's first epoch (a1's re-seal is the grant: Hidden), W a
+\* reader of X2 that b removes; p1 holds none of G's or X1's boxes
+gLearners == {"a1", "b", "p1"}
+gHide == {<<"p1", <<"G", "X1">> >>}
+\* ... the grant first, then the removal (as the osis repro): a grant made after
+\* it by a1, which never learns X2's keysets, boxes X1 where W reads it (the
+\* stated limit: a departure two levels down reaches a1 only as X1's keyset)
+gGrantFirst == done' = done \/ rs # {}
+\* ... a1's re-seals and rotations of G record no keyset of X1
+gLie == {<<"a1", "G">>}
 \* blind box in a cycle (D0_box_ok): 3-cycle,
 \* B in A, C in B, A in C; p the admin of A and B (so p holds a role on C
 \* through A), q of C; p removes D from A. In order B in A, A in C, then C in

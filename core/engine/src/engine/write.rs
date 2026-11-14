@@ -304,7 +304,7 @@ pub(crate) fn snapshot_role(ak: &str) -> Role {
 }
 
 pub fn role_of(core: &Core, node: &Tid, tid: &Tid, ts: Ts) -> Option<Role> {
-    core.timelines.get(tid)?.role(node, tid, At::now(ts))
+    core.timelines.role(node, tid, At::now(ts))
 }
 
 /// Looks up the creation record of a thing not yet held: the commit's own.

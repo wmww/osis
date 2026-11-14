@@ -168,7 +168,6 @@ fn an_offline_siblings_write_counts_by_its_listing_spec_permissions_5_5() {
 #[test]
 fn a_listing_waits_for_its_things_delete_keys_spec_permissions_5_5() {
     let (mut lp, a, _) = world(4, 3);
-    let keys = Ak::new("keys.0").unwrap();
     // the outsider's thing `u`: the account writes there by a raw edge write, then a grant by the
     // flow gives `u` secrets of its own, its `keys.0` in that commit
     let q = lp.peers[3].engine.me();
@@ -178,7 +177,7 @@ fn a_listing_waits_for_its_things_delete_keys_spec_permissions_5_5() {
     lp.peers[3].commit(m).unwrap();
     lp.peers[3].engine.grant(&u, &a.account, &edge(Role::Write)).unwrap();
     let pks = lp.packages(3).unwrap();
-    let carries = |id: &CommitId| lp.peers[3].engine.header(id).unwrap().aspects.iter().any(|h| h.tid == u && h.ak == keys);
+    let carries = |id: &CommitId| lp.peers[3].engine.writes_keyset(&u, id);
     let (key_pks, rest): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| carries(&pk.id));
     for pk in rest.iter().chain(&key_pks) {
         lp.deliver(1, pk).unwrap();

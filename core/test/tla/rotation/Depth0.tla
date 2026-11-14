@@ -142,7 +142,7 @@ GNow(dn) == GAll \ {<<dp[2], dp[1]>> : dp \in {q \in dn : ActDep(q)}}
 \* be learned before the keysets its boxes name (carried as separate blobs);
 \* FALSE: they come along
 Late == FALSE
-\* sealed at (spec/crypto.md \S 4, Stale): a rotation's keyset records the
+\* box records (spec/crypto.md \S 4, Stale): a rotation records the
 \* keyset it seals each holder actor at (pf, every node holding the keyset
 \* reads it), and a record naming a stale keyset makes its epoch stale as a
 \* box does
@@ -179,7 +179,7 @@ Possession == FALSE
 \* the newest keyset it holds the secret of, then rotates a sealing h at that
 \* keyset (notes/crypto.md, Carried demotions, the first leak)
 Rogue == {}
-\* sealed at, judged alone (spec/crypto.md \S 4 Stale, Seal): BoxBlind
+\* box records, judged alone (spec/crypto.md \S 4 Stale, Seal): BoxBlind
 \* {<<node, actor>>}: the node holds the actor's keysets (certificates under
 \* a target's label) and none of its boxes, so it judges the actor's epochs by
 \* their records (pf) alone; PfJudge: an epoch whose secret a node lacks is
@@ -187,10 +187,17 @@ Rogue == {}
 \* role on the actor); FALSE: such an epoch is judged by order only
 BoxBlind == {}
 PfJudge == FALSE
-\* LiePf {<<device, actor>>}: the device's rotations of the actor record no
-\* keyset (sealed_at is unsigned: a record naming nothing, or keysets nobody
-\* holds, or fresh ones, is never stale) while boxing as Seal gives it
+\* LiePf {<<device, actor>>}: the device's rotations and re-seals of the actor
+\* record no keyset (a writer records what it likes: a record naming nothing,
+\* or keysets nobody holds, or fresh ones, is never stale) while boxing as Seal
+\* gives it
 LiePf == {}
+\* box records, written by every box (spec/crypto.md \S 4 Stale): a re-seal (a
+\* grant too: a Hidden grant's box is a knowing admin's re-seal) records the
+\* keyset it boxes an actor at, and a node learning the re-seal holds the
+\* record whether or not it holds the box (BoxBlind); FALSE: only rotations
+\* record (a grant's or re-seal's record is missing)
+RsPf == TRUE
 \* spec/crypto.md §4 Encrypting under: a box carrying an epoch's secret is
 \* encrypted under its recipient's key, not under that epoch, so a re-seal
 \* boxes a current holder at every current epoch whose secret the node holds,
@@ -238,7 +245,7 @@ KK(k) == [t |-> "k", d |-> "", k |-> k]
 Idx(a) == CHOOSE i \in 1..Len(ActSeq) : ActSeq[i] = a
 InitKey(h) == IF h \in Acts THEN KK(Idx(h)) ELSE DK(h)
 
-VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged, race, out, pf (sealed at), bog];
+VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged, race, out, pf (box records), bog];
                   \* a box: [h, key, by (its sealer)]
           rs,     \* re-seal boxes: [e, h, key, by]
           ha,     \* history adds: <<e, f>>: an entry at epoch e carries f
@@ -362,6 +369,8 @@ StaleK(x, k) == k \in kn[x] /\ (~Valid(x, k) \/ Keyless(x, k)
 Prior(x, k, e) == k \in kn[x] /\ (k <= Len(ActSeq) \/ (k < e /\ ep[e].bog # "back"))
 StaleAt(x, e) == \/ \E b \in BoxesAt(x, e) : b.key.t = "k" /\ StaleK(x, b.key.k)
                  \/ \E k \in ep[e].pf : StaleK(x, k)
+                 \/ RsPf /\ \E r \in krs[x] : /\ r.e = e /\ r.key.t = "k" /\ <<r.by, ep[e].act>> \notin LiePf
+                                            /\ StaleK(x, r.key.k)
                  \/ AsOf /\ \E k \in ep[e].pf : ~Prior(x, k, e) /\ KOf(x, ep[k].act) # {}
 \* an epoch whose secret x lacks covers nothing (its history box is closed)
 Covers(x, e, a) == \A dp \in Known(x) : dp[2] = a => (e \in Sec(x) /\ dp \in ep[e].knows)
@@ -786,7 +795,10 @@ Write(x, a) ==
                                            \A h \in KeyAct(a) : (dp[2] = h \/ dp[2] \in HClos(h)) =>
                                              \E j \in kn[x] : ep[j].act = h /\ dp \in ep[j].kw}
                                    ELSE {},
-                           p12 |-> IF BoxBlind # {} /\ {r \in rs : r.e = e} \subseteq krs[x]
+                           p12 |-> IF /\ BoxBlind # {} /\ {r \in rs : r.e = e} \subseteq krs[x]
+                                      \* every re-seal record x could have learned (one not
+                                      \* yet arrived is a commit not held: the limit)
+                                      /\ \A r \in rs : Vis(x, ep[r.e].act) => r \in krs[x]
                                    THEN {dp \in done : dp[1] # x /\ DeepBeaten(x, a, dp)}
                                    ELSE {}]}
   /\ nw' = nw + 1

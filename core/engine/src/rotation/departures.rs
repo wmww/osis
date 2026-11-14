@@ -10,7 +10,7 @@
 //! with its `until` disregarded (`key_role`), so an edge past its `until` departs only by its
 //! removal (a finalize, spec/permissions.md §2).
 
-use crate::engine::{Core, Tx};
+use crate::engine::{Core, On, Tx};
 use crate::error::Result;
 use crate::flows::{now_ts, secrets_in};
 use osis_base::{Role, Tid};
@@ -60,10 +60,11 @@ fn key_of(p: &osis_perm::Point) -> osis_keys::Key {
 /// applied write before it set (it stands), and whether its author held write on `a` just before
 /// its point (`At::before`, as its authority is judged there: an author removed since still
 /// counts); its start is the edge before the first of them (the record edge). Only commits this
-/// node holds: names are met by holding them.
-pub(crate) fn edge_logs(core: &Core, tl: &Timeline, a: &Tid) -> BTreeMap<Tid, EdgeLog> {
-    let mut by: BTreeMap<Tid, Vec<(osis_perm::Point, WriteId, &RoleCommit, &EdgeOp)>> = BTreeMap::new();
-    for (w, mc, op) in tl.held_on(a) {
+/// node holds: names are met by holding them. The timeline is read whole only for a write
+/// applying nothing (its verdicts over other edges and its author's role are judged there).
+pub(crate) fn edge_logs<'t>(core: &Core, on: &On<'t>, a: &Tid) -> BTreeMap<Tid, EdgeLog> {
+    let mut by: BTreeMap<Tid, Vec<(osis_perm::Point, WriteId, &'t RoleCommit, &'t EdgeOp)>> = BTreeMap::new();
+    for (w, mc, op) in on.held() {
         if op.holder == *a || !core.ix.commits.contains_key(&mc.id) || core.ix.unresolved.contains(&mc.id) {
             continue;
         }
@@ -73,17 +74,18 @@ pub(crate) fn edge_logs(core: &Core, tl: &Timeline, a: &Tid) -> BTreeMap<Tid, Ed
         .map(|(m, mut ws)| {
             ws.sort_by_key(|x| x.0);
             let first = ws.first().map(|x| x.0);
-            let start_edge = first.and_then(|p| tl.edges_at(Some(p)).get(&m, a).copied());
+            let start_edge = first.and_then(|p| on.edge_at(&m, Some(p)));
             // the applied writes so far, each with the edge it set
             let mut set: Vec<Option<osis_perm::Edge>> = Vec::new();
             let mut writes = Vec::new();
             for (p, w, mc, op) in ws {
                 let role = key_role(op.edge.as_ref());
-                let applied = tl.is_applied(&w);
+                let applied = on.is_applied(&w);
                 let (takes, stands, counts) = if applied {
                     set.push(op.edge);
                     (true, true, false)
                 } else {
+                    let tl = on.whole();
                     let over = set.iter().rev().copied().find(|e| key_role(e.as_ref()) > role).unwrap_or(start_edge);
                     let takes = role < Some(Role::Admin) && tl.applies_over(&w, over);
                     let mut edges: Vec<Option<osis_perm::Edge>> = Vec::new();
@@ -111,8 +113,8 @@ pub(crate) fn edge_logs(core: &Core, tl: &Timeline, a: &Tid) -> BTreeMap<Tid, Ed
 /// ID).
 pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> osis_keys::Names {
     let mut list = BTreeSet::new();
-    if let Some(tl) = core.timelines.get(a) {
-        for (m, log) in edge_logs(core, tl, a) {
+    if let Some(on) = core.timelines.on(a) {
+        for (m, log) in edge_logs(core, &on, a) {
             list.extend(log.names(m));
         }
     }
@@ -143,8 +145,8 @@ pub(crate) fn carried(core: &Core, a: &Tid) -> BTreeSet<osis_base::CommitId> {
 fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
     let current: BTreeMap<Tid, Role> = tx.core.key_holders(a).into_iter().collect();
     let mut out = BTreeSet::new();
-    if let Some(tl) = tx.core.timelines.get(a) {
-        for (m, log) in edge_logs(tx.core, tl, a) {
+    if let Some(on) = tx.core.timelines.on(a) {
+        for (m, log) in edge_logs(tx.core, &on, a) {
             // what the edge holds it at now, or more by another path (a destroyed actor's stand-in)
             let from = above_role(current.get(&m).copied().max(log.now()));
             if let (Some(from), Some(upto)) = (from, log.most())

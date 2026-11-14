@@ -161,8 +161,8 @@ impl Engine {
     }
 
     fn held_links_read(&mut self) -> Result<Arc<Vec<HeldLink>>> {
-        let keep: Vec<Tid> = self.core.ix.by_aspect.keys().filter(|(_, a)| a.as_str() == LINK_SEED).map(|(t, _)| *t).collect();
         let ak = super::ak(LINK_SEED)?;
+        let keep: Vec<Tid> = self.core.ix.aspect_things.get(&ak).into_iter().flatten().copied().collect();
         let mut out = Vec::new();
         for t in keep {
             if let Some(Value::Map(m)) = self.get(&t, &ak)?

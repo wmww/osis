@@ -871,8 +871,8 @@ fn path_loss(run: &Run, o: usize, d: usize, t: Tid, r: Role) -> Option<CommitId>
 /// every tail write giving `r` or more that counts); else `departure_point`.
 fn tail_departure_point(run: &Run, o: usize, m: Tid, d: usize, r: Role) -> Option<osis_perm::Point> {
     let core = &run.lp.peers[o].engine.core;
-    let tl = core.timelines.get(&m)?;
-    let log = super::departures::edge_logs(core, tl, &m).remove(&run.tids[d]);
+    let on = core.timelines.on(&m)?;
+    let log = super::departures::edge_logs(core, &on, &m).remove(&run.tids[d]);
     let key = log.and_then(|l| osis_keys::Departure::holder(run.tids[d], r).edge(l).newest_needed(r));
     let point = key.and_then(|k| Some(osis_perm::Point { ts: osis_base::Ts::from_u64(k.ts)?, node: k.node, commit: k.commit }));
     point.or_else(|| departure_point(run, o, m, d, r))

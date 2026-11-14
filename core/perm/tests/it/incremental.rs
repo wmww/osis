@@ -25,6 +25,11 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
             if part.standing(n, &t, At::END) != full.standing(n, &t, At::END) {
                 return Some(format!("standing of {n:?} on {t:?}"));
             }
+            for at in [At::END, At::KEYS] {
+                if part.roles_on(&t, at).get(n).copied() != full.role(n, &t, at) {
+                    return Some(format!("role of {n:?} on {t:?} at {at:?}, walked backward"));
+                }
+            }
             if part.demotions(n, &t) != full.demotions(n, &t) {
                 return Some(format!("demotions of {n:?} on {t:?}"));
             }
@@ -41,11 +46,17 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
         if part.standing_since(&t) != full.standing_since(&t) {
             return Some(format!("standing since of {t:?}"));
         }
+        if part.standing_since_all().remove(&t).unwrap_or_default() != part.standing_since(&t) {
+            return Some(format!("standing since of {t:?} in one pass"));
+        }
         // the edge history too: roles before every applied write
         for a in full.applied().values() {
             for n in nodes {
                 if part.role(n, &t, At::before(a.point)) != full.role(n, &t, At::before(a.point)) {
                     return Some(format!("role of {n:?} on {t:?} before {:?}", a.point));
+                }
+                if part.roles_on(&t, At::before(a.point)).get(n).copied() != full.role(n, &t, At::before(a.point)) {
+                    return Some(format!("role of {n:?} on {t:?} before {:?}, walked backward", a.point));
                 }
                 // layer 2 there (re-grant's `first_held` is carried over `extend`)
                 let p = osis_perm::Point { node: *n, commit: osis_base::CommitId([0xee; 32]), ..a.point };

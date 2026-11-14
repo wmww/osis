@@ -6,8 +6,8 @@
 //! timeline reads it (`set_counted`): the filter runs before the timeline.
 //!
 //! Reads and changes are stamped for memos (`memo::Stamps`): a record by its thing
-//! (`created`), everything else as one whole. `Timelines` holds perm's timelines over it,
-//! stamped per thing.
+//! (`created`), everything else per key of each map. `Timelines` holds perm's timelines over
+//! it, its reads stamped by what they can see (`Read`).
 
 use super::journal::Journaled;
 use osis_base::memo::Stamps;
@@ -503,18 +503,40 @@ impl HeldSet for Held {
     }
 }
 
-/// perm's timelines over the held set (`Core::timelines`), stamped per thing: an update stamps
-/// the things whose inputs it was given and those whose timeline it evaluated or continued
-/// (`osis_perm::Timelines::changed`: every other thing's answers are unchanged).
+/// perm's timelines over the held set (`Core::timelines`), its reads stamped at the grain each
+/// sees (`Read`): a thing's whole timeline (`get`), what is written on a thing's edges (`on`),
+/// the roles on a thing (`roles_on`, `role`), each moved only by what it can see; and the
+/// keyless actor grants over them (`keyless`), kept up to date at each update.
 #[derive(Clone)]
 pub struct Timelines {
     of: osis_perm::Timelines,
     stamps: Stamps,
+    /// The keyless actor grants (target, holder): the union of each component's
+    /// (`rotation::members::keyless_in`, spec/crypto.md §4 Key access: a keyless grant closes a
+    /// cycle of actor grants, which lies in one component).
+    keyless: Arc<BTreeSet<(Tid, Tid)>>,
+}
+
+/// What a read of `Timelines` is stamped by.
+#[derive(Hash)]
+enum Read {
+    /// The timeline of a thing's component: moved by every update that evaluated or continued
+    /// it (`osis_perm::Timelines::changed`) or was given the thing.
+    Whole(Tid),
+    /// The history of the edges into a thing (its record edge included): moved by a change of
+    /// one (`osis_perm::Changed::edges`) or of its record.
+    Into(Tid),
+    /// The edge writes held on a thing, applied or not: moved by any change of its held inputs.
+    Held(Tid),
+    /// The set of things with a timeline.
+    Things,
+    /// `Timelines::keyless`: moved when it changes.
+    Keyless,
 }
 
 impl Default for Timelines {
     fn default() -> Self {
-        Timelines { of: osis_perm::Timelines::new(), stamps: Stamps::default() }
+        Timelines { of: osis_perm::Timelines::new(), stamps: Stamps::default(), keyless: Arc::default() }
     }
 }
 
@@ -526,35 +548,170 @@ impl std::ops::Deref for Timelines {
     }
 }
 
+/// A thing's edges in its timeline (`Timelines::on`): what is read of them depends on the
+/// history of the edges into it alone (spec/permissions.md §5.1: its roster, each holder's
+/// standing, the writes applied on them), and on the edge writes held on it (`held`).
+pub struct On<'a> {
+    tl: &'a osis_perm::Timeline,
+    thing: Tid,
+    stamps: &'a Stamps,
+}
+
+impl<'a> On<'a> {
+    /// The whole timeline, for what depends on more than the thing's edges (a write's
+    /// authority): read whole (`Timelines::get`).
+    pub fn whole(&self) -> &'a osis_perm::Timeline {
+        self.stamps.read(&Read::Whole(self.thing));
+        self.tl
+    }
+    /// The edge writes held on it, applied or not (`Timeline::held_on`).
+    pub fn held(&self) -> impl Iterator<Item = (osis_perm::WriteId, &'a RoleCommit, &'a osis_perm::EdgeOp)> + 'a {
+        self.stamps.read(&Read::Held(self.thing));
+        self.tl.held_on(&self.thing)
+    }
+    /// Whether one of them applies (`Timeline::is_applied`).
+    pub fn is_applied(&self, w: &osis_perm::WriteId) -> bool {
+        self.tl.is_applied(w)
+    }
+    /// `holder`'s edge on it just before `point` (`None`: now).
+    pub fn edge_at(&self, holder: &Tid, point: Option<osis_perm::Point>) -> Option<osis_perm::Edge> {
+        self.tl.edges_at(point).get(holder, &self.thing).copied()
+    }
+    /// Its holders by their current edges, its record edge included while it stands.
+    pub fn holders(&self) -> Vec<(Tid, osis_perm::Edge)> {
+        self.tl.edges_at(None).holders(&self.thing).map(|(m, e)| (*m, *e)).collect()
+    }
+    /// Its roster at `at` (`Timeline::roster`).
+    pub fn roster(&self, at: osis_perm::At) -> BTreeMap<Tid, osis_perm::Edge> {
+        self.tl.roster(&self.thing, at)
+    }
+    /// `Timeline::standing_since` of it.
+    pub fn standing_since(&self) -> BTreeMap<Tid, Option<osis_perm::Point>> {
+        self.tl.standing_since(&self.thing)
+    }
+}
+
 impl Timelines {
-    /// The timeline of the component holding `thing`.
+    /// The timeline of the component holding `thing`, read whole.
     pub fn get(&self, thing: &Tid) -> Option<&osis_perm::Timeline> {
-        self.stamps.read(thing);
+        self.stamps.read(&Read::Whole(*thing));
         self.of.get(thing)
     }
 
-    fn moved(&mut self, touched: &BTreeSet<Tid>) {
+    /// `thing`'s edges, read alone (`On`). `None` without a timeline, read as the set of things:
+    /// a thing gains one with no edge into it changing (a write naming it that sets nothing).
+    pub fn on(&self, thing: &Tid) -> Option<On<'_>> {
+        let Some(tl) = self.of.get(thing) else {
+            self.stamps.read(&Read::Things);
+            return None;
+        };
+        self.stamps.read(&Read::Into(*thing));
+        Some(On { tl, thing: *thing, stamps: &self.stamps })
+    }
+
+    /// Every node's effective role on `thing` at `at` over the edges not in `skip`, each named
+    /// (target, holder) (`Timeline::roles_on`): a walk back from it reads the edges into each
+    /// node that reaches it and nothing else, so the answer moves with those alone.
+    /// Empty without a timeline, read as the set of things.
+    pub fn roles_on(&self, thing: &Tid, at: osis_perm::At, skip: &BTreeSet<(Tid, Tid)>) -> Arc<BTreeMap<Tid, Role>> {
+        let Some(tl) = self.of.get(thing) else {
+            self.stamps.read(&Read::Things);
+            return Arc::default();
+        };
+        let roles = if skip.is_empty() { tl.roles_on(thing, at) } else { Arc::new(tl.roles_on_without(thing, at, skip)) };
+        for t in roles.keys() {
+            self.stamps.read(&Read::Into(*t));
+        }
+        roles
+    }
+
+    /// `node`'s effective role on `thing` at `at` (`roles_on`).
+    pub fn role(&self, node: &Tid, thing: &Tid, at: osis_perm::At) -> Option<Role> {
+        self.roles_on(thing, at, &BTreeSet::new()).get(node).copied()
+    }
+
+    /// The keyless actor grants held, (target, holder) (`rotation::members::key_access`).
+    pub fn keyless(&self) -> Arc<BTreeSet<(Tid, Tid)>> {
+        self.stamps.read(&Read::Keyless);
+        self.keyless.clone()
+    }
+
+    /// Every thing with a timeline, read as a set: what each one's are needs its own read.
+    pub fn things(&self) -> impl Iterator<Item = &Tid> {
+        self.stamps.read(&Read::Things);
+        self.of.things()
+    }
+
+    /// Stamps what an update given `touched` changed (`c`), from how many things had a timeline
+    /// before it (`had`).
+    fn moved(&mut self, touched: &BTreeSet<Tid>, c: &osis_perm::Changed, had: usize) {
         for t in touched.iter().chain(self.of.changed()) {
-            self.stamps.wrote(t, true);
+            self.stamps.wrote(&Read::Whole(*t), true);
+        }
+        for t in touched {
+            self.stamps.wrote(&Read::Held(*t), true);
+        }
+        // a record that came or went (`created` also names a thing only joining a component):
+        // its record edge
+        let records: BTreeSet<Tid> = c.created.intersection(touched).copied().collect();
+        for t in records.iter().chain(c.edges.iter().map(|(_, t)| t)) {
+            self.stamps.wrote(&Read::Into(*t), true);
+        }
+        let has = self.of.things().len();
+        debug_assert!(has >= had, "an update removed things from the timelines");
+        if has != had {
+            self.stamps.wrote(&Read::Things, true);
+        }
+        self.rekey(c, &records);
+    }
+
+    /// Brings `keyless` up to date with an update's changes (`c`, the records that came or went
+    /// `records`): each component holding the target of a changed edge of an actor (a holder
+    /// that is no key actor) or such a record is judged anew. Elsewhere no actor grant's standing
+    /// or order moved, and components only merging or splitting change no component's grants.
+    fn rekey(&mut self, c: &osis_perm::Changed, records: &BTreeSet<Tid>) {
+        let of = &self.of;
+        let actor = |h: &Tid, t: &Tid| of.get(t).is_some_and(|tl| !tl.records().is_key(h));
+        let mut comps: Vec<&osis_perm::Timeline> = Vec::new();
+        for t in c.edges.iter().filter(|(h, t)| actor(h, t)).map(|(_, t)| t).chain(records) {
+            if let Some(tl) = of.get(t)
+                && !comps.iter().any(|x| std::ptr::eq(*x, tl))
+            {
+                comps.push(tl);
+            }
+        }
+        let within = |t: &Tid| of.get(t).is_some_and(|tl| comps.iter().any(|x| std::ptr::eq(*x, tl)));
+        let old: BTreeSet<(Tid, Tid)> = self.keyless.iter().filter(|(t, _)| within(t)).copied().collect();
+        let new: BTreeSet<(Tid, Tid)> = comps.iter().flat_map(|tl| crate::rotation::members::keyless_in(tl)).collect();
+        if old != new {
+            let k = Arc::make_mut(&mut self.keyless);
+            k.retain(|x| !old.contains(x));
+            k.extend(new);
+            self.stamps.wrote(&Read::Keyless, true);
         }
     }
 
     pub fn update_touched(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>) -> osis_perm::Changed {
+        let had = self.of.things().len();
         let c = self.of.update_touched(held, touched);
-        self.moved(touched);
+        self.moved(touched, &c, had);
         c
     }
 
     pub fn update_touched_cached(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>, saved: &mut dyn FnMut(&Tid) -> Option<Vec<u8>>, salt: &[u8]) -> osis_perm::Changed {
+        let had = self.of.things().len();
         let c = self.of.update_touched_cached(held, touched, saved, salt);
-        self.moved(touched);
+        self.moved(touched, &c, had);
         c
     }
 
-    /// The timelines to change in a way that may move any thing's.
-    pub fn change(&mut self) -> &mut osis_perm::Timelines {
+    /// The timelines changed by `f` in a way that may move any thing's (a trust set switched):
+    /// every read moves and `keyless` is judged anew.
+    pub fn change<T>(&mut self, f: impl FnOnce(&mut osis_perm::Timelines) -> T) -> T {
         self.stamps.wrote_all();
-        &mut self.of
+        let out = f(&mut self.of);
+        self.keyless = Arc::new(self.of.each().flat_map(crate::rotation::members::keyless_in).collect());
+        out
     }
 
     /// The timelines' bookkeeping, which moves no timeline: dispute detection's switch and
@@ -669,6 +826,204 @@ mod tests {
         h.set_counted(c2.id, false);
         h.set_counted(c2.id, true);
         check(&h);
+    }
+
+    // spec: none (internal: notes/engine.md, Derived values). Each read of the timelines moves
+    // with what it can see: a thing's edges (`on`) and the roles on it with the edges into what
+    // reaches it, the writes held on a thing with them, the keyless grants with their value; a memo of each keeps the answer a fresh read
+    // gives through grants, a write applying nothing, removals, records, a cycle of actor grants
+    // and an undo, and a grant on one group reads nothing of another again.
+    #[test]
+    fn timeline_reads_move_with_what_they_read() {
+        use osis_base::memo::Memo;
+        use osis_perm::At;
+        type Answer = Vec<String>;
+        let read = |tl: &Timelines, (r, t): &(u8, Tid)| -> Answer {
+            match r {
+                0 => tl.on(t).map(|o| o.holders()).iter().map(|x| format!("{x:?}")).collect(),
+                1 => tl.on(t).map(|o| o.roster(At::END)).iter().map(|x| format!("{x:?}")).collect(),
+                2 => tl.on(t).map(|o| o.standing_since()).iter().map(|x| format!("{x:?}")).collect(),
+                3 => vec![format!("{:?}", tl.roles_on(t, At::KEYS, &tl.keyless()))],
+                4 => vec![format!("{:?}", tl.roles_on(t, At::END, &BTreeSet::new()))],
+                5 => tl.things().map(|x| format!("{x:?}")).collect(),
+                6 => tl.on(t).iter().flat_map(|o| o.held()).map(|x| format!("{x:?}")).collect(),
+                _ => vec![format!("{:?}", tl.keyless())],
+            }
+        };
+        let memo: Memo<(u8, Tid), Answer> = Memo::new("test timeline read");
+        let a: Vec<CreationRecord> = (0..4).map(actor).collect();
+        let at: Vec<Tid> = a.iter().map(|x| x.tid()).collect();
+        let (g1, g2, x, y, late) = (thing(at[0], 10), thing(at[0], 11), thing(at[0], 12), thing(at[0], 13), thing(at[3], 14));
+        let things: Vec<Tid> = at.iter().copied().chain([&g1, &g2, &x, &y, &late].map(|r| r.tid())).collect();
+        let (mut h, mut tl) = (Held::default(), Timelines::default());
+        let update = |h: &mut Held, tl: &mut Timelines| {
+            let touched = h.take_touched();
+            tl.update_touched(h, &touched);
+        };
+        let check = |tl: &Timelines| {
+            for t in &things {
+                for r in 0..8 {
+                    let k = (r, *t);
+                    assert_eq!(memo.get(&k, || read(tl, &k)), read(tl, &k), "read {r} of {t:?}");
+                }
+            }
+        };
+        let runs = || osis_base::costs::take().iter().filter(|x| x.0 == "test timeline read").map(|x| x.2).sum::<u64>();
+        for r in a.iter().chain([&g1, &g2, &x, &y]) {
+            h.create(r.clone());
+        }
+        update(&mut h, &mut tl);
+        check(&tl);
+        let c1 = grant(1, at[0], g1.tid(), at[1], Role::Write);
+        h.add_commit(c1.clone());
+        update(&mut h, &mut tl);
+        check(&tl);
+        osis_base::costs::take();
+        h.add_commit(grant(2, at[0], g2.tid(), at[2], Role::Write));
+        update(&mut h, &mut tl);
+        check(&tl);
+        // g2's holders, roster, standings, roles on it (twice) and writes held,
+        // and the writes held on its author (a held input of every thing the commit names);
+        // nothing of g1 or a1
+        assert_eq!(runs(), 7, "a grant on g2");
+        // a write by a party without authority applies nothing: held on g1, nothing else moves
+        h.add_commit(grant(5, at[3], g1.tid(), at[3], Role::Admin));
+        update(&mut h, &mut tl);
+        check(&tl);
+        // a cycle of actor grants: one of them is keyless
+        h.add_commit(grant(3, at[0], y.tid(), x.tid(), Role::Read));
+        update(&mut h, &mut tl);
+        check(&tl);
+        assert!(tl.keyless().is_empty());
+        h.add_commit(grant(4, at[0], x.tid(), y.tid(), Role::Read));
+        update(&mut h, &mut tl);
+        check(&tl);
+        assert_eq!(tl.keyless().len(), 1, "the later grant closing the cycle");
+        let m = h.mark();
+        h.remove(&c1.id);
+        h.forget_record(&g2.tid());
+        update(&mut h, &mut tl);
+        check(&tl);
+        h.rollback_to(m);
+        update(&mut h, &mut tl);
+        check(&tl);
+        h.remove(&grant(3, at[0], y.tid(), x.tid(), Role::Read).id);
+        update(&mut h, &mut tl);
+        check(&tl);
+        assert!(tl.keyless().is_empty());
+        // a thing new to the timelines: the set of them moves, and its record edge
+        h.create(late);
+        update(&mut h, &mut tl);
+        check(&tl);
+    }
+
+    // spec: none (internal: notes/engine.md, Derived values). The same, differential: random
+    // edge writes (grants, removals, retains, `until`s; authors with and without authority) over
+    // key actors and things under them and under each other, records created and forgotten,
+    // commits removed, counted or not, and undos; after each update a memo of every read through
+    // the timelines answers as a fresh read, and the keyless grants kept per component are those
+    // of one evaluation of everything (`osis_keys::key_access` over all actor grants).
+    #[test]
+    fn timeline_reads_match_a_fresh_read_through_random_writes() {
+        use osis_base::memo::Memo;
+        use osis_perm::{At, Timeline};
+        let (now, later) = (At::now(Ts::make(osis_base::WallMs(5), 0).unwrap()), At::now(Ts::make(osis_base::WallMs(9), 0).unwrap()));
+        let read = |tl: &Timelines, (r, t): &(u8, Tid)| -> String {
+            let on = || tl.on(t);
+            match r {
+                0 => format!("{:?}", on().map(|o| o.holders())),
+                1 => format!("{:?}", on().map(|o| o.roster(At::END))),
+                2 => format!("{:?}", on().map(|o| o.roster(now))),
+                3 => format!("{:?}", on().map(|o| o.standing_since())),
+                4 => format!("{:?}", on().map(|o| o.held().map(|(w, c, op)| (w, c.id, op.clone(), o.is_applied(&w), o.edge_at(&op.holder, Some(c.point())))).collect::<Vec<_>>())),
+                5 => format!("{:?}", tl.roles_on(t, At::END, &BTreeSet::new())),
+                6 => format!("{:?}", tl.roles_on(t, At::KEYS, &BTreeSet::new())),
+                7 => format!("{:?}", tl.roles_on(t, now, &BTreeSet::new())),
+                8 => format!("{:?}", tl.roles_on(t, At::KEYS, &tl.keyless())),
+                9 => format!("{:?}", tl.things().collect::<Vec<_>>()),
+                10 => format!("{:?}", tl.keyless()),
+                _ => format!("{:?}", tl.get(t).map(|x| (x.applied().clone(), x.dropped().clone()))),
+            }
+        };
+        let mut seed = 0x5eed_u64;
+        let mut rng = move |n: usize| -> usize {
+            seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = seed;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            ((z ^ (z >> 31)) % n as u64) as usize
+        };
+        let roles = [Role::Read, Role::Write, Role::Admin];
+        for world in 0..48u32 {
+            let memo: Memo<(u8, Tid), String> = Memo::new("test timeline random");
+            let keys: Vec<CreationRecord> = (0..3).map(actor).collect();
+            // things under key actors, then under things (depth up to 3)
+            let mut recs: Vec<CreationRecord> = keys.clone();
+            for n in 0..6u8 {
+                let admin = recs[rng(recs.len())].tid();
+                recs.push(thing(admin, 40 + n));
+            }
+            let all: Vec<Tid> = recs.iter().map(|r| r.tid()).collect();
+            let (mut h, mut tl) = (Held::default(), Timelines::default());
+            for r in recs.iter().filter(|_| rng(3) > 0) {
+                h.create(r.clone());
+            }
+            let (mut ids, mut marks, mut next) = (Vec::new(), Vec::new(), 0u64);
+            for step in 0..60 {
+                match rng(10) {
+                    0..=4 => {
+                        next += 1;
+                        let pick = |rng: &mut dyn FnMut(usize) -> usize| all[rng(all.len())];
+                        let (by, on, to) = (pick(&mut rng), pick(&mut rng), pick(&mut rng));
+                        let edge = match rng(6) {
+                            0 => None,
+                            1 => Some(Edge::kept_end()),
+                            2 => Some(Edge { until: Some(osis_base::WallMs(3 + rng(5) as u64)), ..Edge::new(roles[rng(3)]) }),
+                            _ => Some(Edge::new(roles[rng(3)])),
+                        };
+                        let mut c = grant(next, by, on, to, Role::Read);
+                        c.ts = Ts::make(osis_base::WallMs(1 + rng(4) as u64), next).unwrap();
+                        c.ops[0].edge = edge;
+                        ids.push(c.id);
+                        h.add_commit(c);
+                    }
+                    5 if !ids.is_empty() => h.remove(&ids[rng(ids.len())]),
+                    6 => {
+                        let r = &recs[rng(recs.len())];
+                        if h.created(&r.tid()).is_some() { h.forget_record(&r.tid()) } else { h.create(r.clone()) }
+                    }
+                    7 if !ids.is_empty() => h.set_counted(ids[rng(ids.len())], rng(2) == 0),
+                    8 => marks.push(h.mark()),
+                    _ => {
+                        if let Some(m) = marks.pop() {
+                            h.rollback_to(m);
+                        }
+                    }
+                }
+                let touched = h.take_touched();
+                tl.update_touched(&h, &touched);
+                for t in &all {
+                    for r in 0..12 {
+                        let k = (r, *t);
+                        assert_eq!(memo.get(&k, || read(&tl, &k)), read(&tl, &k), "world {world} step {step}: read {r} of {t:?}");
+                    }
+                }
+                let full = Timeline::evaluate(&h);
+                let mut grants = Vec::new();
+                for (t, on) in full.standing_since_all() {
+                    for (m, since) in on {
+                        if !matches!(h.created(&m), Some(CreationRecord::KeyActor { .. })) {
+                            grants.push(osis_keys::Grant { order: (1u8, since), target: t, holder: m });
+                        }
+                    }
+                }
+                assert_eq!(*tl.keyless(), osis_keys::key_access(grants), "world {world} step {step}: keyless grants");
+                // perm's walks kept per thing too, the clock moving past an `until` among them
+                for (t, at) in all.iter().filter(|t| tl.of.get(t).is_some()).flat_map(|t| [At::KEYS, now, later].map(|at| (t, at))) {
+                    assert_eq!(*tl.roles_on(t, at, &BTreeSet::new()), full.roles_on_without(t, at, &BTreeSet::new()), "world {world} step {step}: roles on {t:?} at {at:?}");
+                }
+            }
+        }
     }
 
     // spec/commits.md §4: a thing's possible admins are a function of what is held, in any order; more held only adds; what a signer outside them writes adds nothing, a chain of forgeries included.

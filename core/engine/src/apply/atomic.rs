@@ -77,6 +77,7 @@ pub(crate) fn note_rotation_sigs(core: &mut Core, h: &osis_commit::Header, id: &
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
     for a in &h.aspects {
         core.ix.by_aspect.insert((a.tid, a.ak.clone()), (h.ts, *id));
+        core.ix.aspect_things.insert(a.ak.clone(), a.tid);
         core.ix.by_thing.insert((a.tid, h.author), *id);
         core.ix.authors_on.insert(a.tid, h.author);
         if h.form.counted() && h.kind.has_own_writes() && a.lo < a.hi {

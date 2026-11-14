@@ -350,6 +350,164 @@ fn regrant_after_tag_removal_spec_crypto_4() {
     assert!(lp.peers[0].engine.ensure_rotated(&n).unwrap().1.is_empty(), "covered");
 }
 
+// spec/permissions.md §3 (No secret taken back: a box applied before the grant that makes it the
+// node's is taken once the grant applies): A grants N read (G) and
+// rotates (R, boxing N). N receives R before `g`'s creation, so R waits and its box is read as
+// pending (reading only); then the creation, so R applies while N holds no grant (its box kept
+// out); then G. N holds R's epoch as it does receiving them in order. Fails when only a box
+// giving a secret not held even for reading counts as kept out (the pending read hid it).
+#[test]
+fn box_applied_before_its_grant_is_taken_after_a_pending_read_spec_permissions_3() {
+    for late in [false, true] {
+        let mut lp = synced(2);
+        let (a, n) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let g = group(&mut lp, 0);
+        let grant: BTreeSet<_> = lp.peers[0].engine.grant(&g, &n, &edge(Role::Read)).unwrap().commits.into_iter().collect();
+        let r = lp.peers[0].engine.rotate_boxing_only(&[g], &[Role::Read], &[a, n]).unwrap().unwrap();
+        let e = newest_read(&lp, 0, g).unwrap();
+        let all = lp.packages(0).unwrap();
+        let (rest, g_pks): (Vec<_>, Vec<_>) = all.iter().filter(|pk| pk.id != r).partition(|pk| !grant.contains(&pk.id));
+        if late {
+            let rp = all.iter().find(|pk| pk.id == r).unwrap();
+            lp.peers[1].receive(&rp.bytes, rp.blobs.clone()).unwrap();
+            assert!(lp.peers[1].engine.epochs(&g).is_some_and(|x| x.read.reading_secret(&e).is_some()), "R's box is not read as pending");
+            for pk in rest {
+                lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+            }
+            assert!(lp.peers[1].engine.core.ix.commits.contains_key(&r), "R does not apply before G");
+            assert!(lp.peers[1].engine.epochs(&g).is_none_or(|x| x.read.secret(&e).is_none()), "N holds R's epoch before its grant");
+            for pk in g_pks {
+                lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+            }
+        } else {
+            for pk in all.iter().filter(|pk| pk.id != r).chain(all.iter().filter(|pk| pk.id == r)) {
+                lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+            }
+        }
+        assert!(lp.peers[1].engine.epochs(&g).is_some_and(|x| x.read.secret(&e).is_some()), "late {late}: N lacks R's epoch");
+    }
+}
+
+// spec/permissions.md §3 (No secret taken back: a node holds the secrets its roles give it, and
+// no others, whatever order commits arrive in): admins A (0) and B (1) and writer M (2) grant and remove reader N (3),
+// rotate, remove M and write, syncing among themselves at random, then settle; N and O (4, never
+// granted) receive nothing of `g` until the end, then every commit in a random order (each
+// again, as node-sync fetches what it threw out, until nothing applies; the lost-access trigger
+// run after each), every other order with `g`'s oldest commits (its creation among them) last,
+// so what waits for them is read as pending and released together. N holds the secrets of `g`
+// it holds receiving them in order: every current read epoch as a reader, nothing once removed;
+// O holds none. Packages travel unsealed here, so what a node can read is what it holds
+// secrets for. Fails when a pending read hides a kept-out box from `flows::retake`, without
+// `retake`, or with boxes taken past `may_take`.
+#[test]
+fn arrival_order_holds_alike_spec_permissions_3() {
+    const ORDERS: usize = 4;
+    for seed in 0..5u64 {
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ (seed + 1).wrapping_mul(0x2545_f491_4f6c_dd1d));
+        let mut lp = synced(5);
+        let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
+        let g = group(&mut lp, 0);
+        lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
+        lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Write)).unwrap();
+        for b in 1..3 {
+            lp.sync(0, b).unwrap();
+        }
+        let n = tids[3];
+        let (mut n_in, mut m_in) = (false, true);
+        let mut log = Vec::new();
+        for step in 0..7 {
+            let by = rng.next(2) as usize;
+            match rng.next(6) {
+                0 | 1 if !n_in => {
+                    lp.peers[by].engine.grant(&g, &n, &edge(Role::Read)).unwrap();
+                    n_in = true;
+                    log.push(format!("{by} grants N"));
+                }
+                0 => {
+                    lp.peers[by].engine.demote(&g, &Demotion { holder: n, new: None, retain: None }).unwrap();
+                    n_in = false;
+                    log.push(format!("{by} removes N"));
+                }
+                1 | 2 => {
+                    let r = lp.peers[by].engine.rotate_boxing_only(&[g], &[Role::Read, Role::Write], &tids[..4]).unwrap();
+                    log.push(format!("{by} rotates ({})", r.is_some()));
+                }
+                3 if m_in => {
+                    lp.peers[by].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+                    m_in = false;
+                    log.push(format!("{by} removes M"));
+                }
+                _ => {
+                    let w = if m_in && rng.next(2) == 0 { 2 } else { by };
+                    put_on(&mut lp, w, g, &format!("k{step}"), step);
+                    log.push(format!("{w} writes"));
+                }
+            }
+            let (a, b) = (rng.next(3) as usize, rng.next(3) as usize);
+            if a != b {
+                lp.sync(a, b).unwrap();
+                log.push(format!("sync {a}->{b}"));
+            }
+        }
+        // the authors settle among themselves (rotations due, re-seals)
+        for _ in 0..4 {
+            for (a, b) in [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)] {
+                lp.sync(a, b).unwrap();
+            }
+            for p in 0..3 {
+                let e = &mut lp.peers[p].engine;
+                e.ensure_rotated(&g).unwrap();
+                e.pass_end_rotations(&g).unwrap();
+                e.reseal_after_pass(&g).unwrap();
+            }
+        }
+        let all = lp.packages(0).unwrap();
+        let first_g = all.iter().position(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header.aspects.iter().any(|a| a.tid == g)).unwrap();
+        // whether N is a reader where every commit is held (the steps' guess is not: removals
+        // and grants cross)
+        let n_in = lp.peers[0].engine.core.role_now(&n, &g).is_some();
+        let deliver = |lp: &mut LocalPeer, order: &[usize]| {
+            for i in [3, 4] {
+                for _ in 0..=all.len() {
+                    let mut applied = false;
+                    for &j in order {
+                        applied |= matches!(lp.peers[i].receive(&all[j].bytes, all[j].blobs.clone()), Ok(crate::Ingested::Applied(_)));
+                        // the lost-access trigger, as node-sync runs it every step
+                        lp.peers[i].engine.drop_lost_due().unwrap();
+                    }
+                    if !applied {
+                        break;
+                    }
+                }
+            }
+        };
+        let held = |lp: &LocalPeer, i: usize| -> BTreeSet<Key> { held_secrets(&lp.peers[i], &[g]).into_keys().collect() };
+        let mut base = lp.copy().unwrap();
+        deliver(&mut base, &(0..all.len()).collect::<Vec<_>>());
+        let n_held = held(&base, 3);
+        assert!(held(&base, 4).is_empty(), "seed {seed}, in order: O holds secrets\n{log:?}");
+        // a reader holds every current read epoch, a removed one nothing
+        let cur_read: BTreeSet<Key> = base.peers[0].engine.epochs(&g).unwrap().read.current().into_iter().map(|e| (g, Role::Read, e)).collect();
+        assert!(if n_in { cur_read.is_subset(&n_held) } else { n_held.is_empty() }, "seed {seed}, in order: N (a reader {n_in}) holds otherwise than its role gives\n{log:?}");
+        for k in 0..ORDERS {
+            let mut order: Vec<usize> = (0..all.len()).collect();
+            for x in (1..order.len()).rev() {
+                order.swap(x, rng.next(x as u64 + 1) as usize);
+            }
+            if k % 2 == 1 {
+                let cut = first_g + 1 + rng.next(3) as usize;
+                order.sort_by_key(|j| *j < cut);
+            }
+            let mut w = lp.copy().unwrap();
+            deliver(&mut w, &order);
+            let got = held(&w, 3);
+            let what = format!("seed {seed} order {k} {order:?}, N in {n_in}\n{log:?}");
+            assert_eq!(got, n_held, "{what}: N holds otherwise than in order");
+            assert!(held(&w, 4).is_empty(), "{what}: O holds secrets");
+        }
+    }
+}
+
 // spec/permissions.md §3 (re-seal; replaces no box the holder has), spec/crypto.md §4 (forks stand): A and D rotate G's
 // write concurrently, D's rotation leaving writer B out, so B lacks a box and the secret at D's
 // fork. B, holding only A's fork, writes no re-seal of itself (before: one boxing A's fork alone

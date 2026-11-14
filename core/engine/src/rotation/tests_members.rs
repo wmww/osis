@@ -5,11 +5,11 @@
 //! (core/test/tla/rotation/Depth0.tla).
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{all_boxed, blocked_at, commit_ids, deliver_without_secrets, edge, group, held_by, leaked, newest_read, openable, rotate_leaving_out, rotate_unchecked, send_skipping, settle, synced};
+use super::tests::{Rng, all_boxed, blocked_at, commit_ids, deliver_without_secrets, edge, group, held_by, leaked, newest_read, openable, rotate_leaving_out, rotate_unchecked, send_skipping, settle, synced};
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
-use osis_base::{Role, Tid, WallMs};
+use osis_base::{CommitId, Role, Tid, WallMs};
 use osis_crypto::Epoch;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
@@ -1918,3 +1918,189 @@ fn frozen_holder_keyed_at_the_role_of_its_keyed_paths_spec_crypto_4() {
     assert!(super::members::keyless_holders(core, &x, Role::Admin).contains(&mm) && !super::members::keyless_holders(core, &x, Role::Read).contains(&mm));
 }
 
+
+/// Every box of `a`'s `secrets.0` state at peer `boxer` to a holder actor, at an epoch current
+/// there, missing from the box records peer `other` noted (`Indexes::sealed`): (holder, role,
+/// epoch) with the keysets it names. Empty where every box is recorded.
+fn unrecorded(lp: &mut LocalPeer, boxer: usize, other: usize, a: Tid) -> Vec<(Tid, Role, Epoch, Vec<Epoch>)> {
+    let Some(s) = lp.peers[boxer].engine.get_typed(&a, &ct::SECRETS).unwrap() else { return Vec::new() };
+    let Some(epochs) = lp.peers[boxer].engine.epochs(&a) else { return Vec::new() };
+    let core = &lp.peers[other].engine.core;
+    let mut out = Vec::new();
+    for (k, b) in &s.boxes {
+        let e = osis_keys::aspects::from_schema(&k.epoch).unwrap();
+        if !epochs.role(k.role).current().contains(&e) || (core.is_key_actor(&k.holder) && !core.is_account(&k.holder)) {
+            continue;
+        }
+        let ks = osis_keys::box_keysets(b);
+        let rec = core.ix.sealed.get(&(a, k.role, e)).and_then(|x| x.keysets.get(&k.holder));
+        if !ks.iter().all(|x| rec.is_some_and(|r| r.contains(x))) {
+            out.push((k.holder, k.role, e, ks));
+        }
+    }
+    out
+}
+
+/// One seed of `every_box_is_recorded_beside_it_spec_crypto_4`: G {a1, W, A}, A {a1, holder
+/// actors granted at random}, teams T0, T1 {t1, P, Q}. a1 grants teams and accounts on A, removes
+/// them, rotates and re-seals A; t1 removes and re-grants members (each removal rotates its
+/// team). After each step every box of A's current epochs to a holder actor (a team, an account)
+/// is recorded at W, G's admin.
+fn every_box_recorded(seed: u64) -> Vec<String> {
+    let mut lp = synced(5);
+    let [_, _, p, q, w] = std::array::from_fn(|i| lp.peers[i].engine.me());
+    let teams: Vec<Tid> = (0..2).map(|_| group(&mut lp, 1)).collect();
+    for t in &teams {
+        for h in [p, q] {
+            lp.peers[1].engine.grant(t, &h, &edge(Role::Read)).unwrap();
+        }
+    }
+    lp.sync_all().unwrap();
+    let a = group(&mut lp, 0);
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &w, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let mut bad = Vec::new();
+    for step in 0..12 {
+        let pick = rng.next(6);
+        let holder = match rng.next(4) {
+            0 => p,
+            1 => q,
+            n => teams[n as usize - 2],
+        };
+        let on_a = lp.peers[0].engine.roster(&a).contains_key(&holder);
+        let did = match pick {
+            0 | 1 if !on_a => format!("grant {holder:?}: {:?}", lp.peers[0].engine.grant(&a, &holder, &edge(Role::Read)).map(|d| d.commits.len())),
+            0 | 1 => format!("remove {holder:?}: {:?}", lp.peers[0].engine.demote(&a, &Demotion { holder, new: None, retain: None }).map(|d| d.commits.len())),
+            2 => {
+                let t = teams[rng.next(2) as usize];
+                let m = if rng.next(2) == 0 { p } else { q };
+                if lp.peers[1].engine.roster(&t).contains_key(&m) {
+                    format!("t1 removes {m:?} from {t:?}: {:?}", lp.peers[1].engine.demote(&t, &Demotion { holder: m, new: None, retain: None }).map(|d| d.commits.len()))
+                } else {
+                    format!("t1 grants {m:?} on {t:?}: {:?}", lp.peers[1].engine.grant(&t, &m, &edge(Role::Read)).map(|d| d.commits.len()))
+                }
+            }
+            3 => format!("a1 rotates: {:?}", lp.peers[0].engine.ensure_rotated(&a).map(|d| d.0.commits.len())),
+            4 => format!("t1 rotates: {:?}", teams.iter().map(|t| lp.peers[1].engine.ensure_rotated(t).map(|d| d.0.commits.len()).ok()).collect::<Vec<_>>()),
+            _ => format!("a1 re-seals: {:?}", lp.peers[0].engine.reseal_after_pass(&a).map(|d| d.commits.len())),
+        };
+        lp.sync_all().unwrap();
+        let missing = unrecorded(&mut lp, 0, 4, a);
+        if !missing.is_empty() {
+            bad.push(format!("seed {seed} step {step} ({did}): unrecorded at W {missing:?}"));
+        }
+    }
+    bad
+}
+
+// spec/crypto.md §4 (Stale: every box to a holder actor is recorded beside it, whoever writes it).
+// Randomized: grants, removals, rotations and re-seals of A's holder actors (teams and accounts),
+// and removals inside the teams; after each step W, G's admin, holds a record of every box at A's
+// current epochs naming the keysets the box names. Fails where a grant or re-seal records
+// nothing. (Which labels carry the records is the osis `sharing` tests': LocalPeer delivers every
+// commit.)
+#[test]
+fn every_box_is_recorded_beside_it_spec_crypto_4() {
+    let bad: Vec<String> = (0..6).flat_map(every_box_recorded).collect();
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+// spec/crypto.md §4 (Box records: whatever later bodies write at its key): a writer of A
+// replacing the record of an honest grant's box (naming a keyset nobody holds) hides nothing:
+// every node reads the records
+// of every valid body noted at the epoch, so the honest one still makes the epoch stale once the
+// team moves on. A false record can only add staleness, which A's next rotation ends.
+#[test]
+fn a_false_record_hides_no_honest_one_spec_crypto_4() {
+    let mut lp = synced(4);
+    let [_, _, w, d] = std::array::from_fn(|i| lp.peers[i].engine.me());
+    let team = group(&mut lp, 1);
+    lp.peers[1].engine.grant(&team, &d, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let a = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&a, &w, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&a, &team, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let e = newest_read(&lp, 0, a).unwrap();
+    let k = sealed_at(&mut lp, 0, a, team).unwrap();
+    let key = osis_keys::aspects::box_key(team, Role::Read, &e);
+    let fake = Epoch::derive(&team, Role::Read, 99, &osis_crypto::Secret32::from_bytes([5; 32])).unwrap();
+    lp.peers[2]
+        .engine
+        .run(|tx| {
+            let mut m = Mutation::new();
+            let w = osis_keys::SecretsWrite { sealed: [(key, BTreeSet::from([fake]))].into(), ..Default::default() };
+            crate::flows::put_secrets(&mut m, a, &w, false)?;
+            crate::engine::Engine::commit_tx(tx, m).map(|_| ())
+        })
+        .unwrap();
+    lp.sync_all().unwrap();
+    for i in [0, 3] {
+        let rec = lp.peers[i].engine.core.ix.sealed.get(&(a, Role::Read, e)).unwrap().keysets.get(&team).cloned().unwrap();
+        assert!(rec.contains(&k) && rec.contains(&fake), "peer {i}: both records read: {rec:?}");
+    }
+    // the team moves on: A's epoch is stale by the honest record
+    removal(&mut lp, 1, team, d);
+    lp.sync_all().unwrap();
+    let stale = lp.peers[3].engine.run(|tx| super::members::stale_at(tx, &a, Role::Read, &e)).unwrap();
+    assert!(stale, "A's epoch stale where its records are read");
+}
+
+// spec/crypto.md §4 (Stale), counted: a team's grant on A records only its own boxes, one per
+// role and current epoch, whatever A's size: the same at 2 and at 20 holder actors on A. (A
+// rotation records each holder actor it boxes, as it boxes each.)
+#[test]
+fn a_grants_records_do_not_grow_with_the_actor_spec_crypto_4() {
+    let records = |n: usize| {
+        let mut lp = synced(1);
+        let a = group(&mut lp, 0);
+        for _ in 0..n {
+            let t = group(&mut lp, 0);
+            lp.peers[0].engine.grant(&a, &t, &edge(Role::Read)).unwrap();
+        }
+        let t = group(&mut lp, 0);
+        let c = *lp.peers[0].engine.grant(&a, &t, &edge(Role::Read)).unwrap().commits.last().unwrap();
+        let core = &lp.peers[0].engine.core;
+        core.sealed_noted(&a).filter(|x| x.2.by.contains(&c)).count()
+    };
+    let (small, large) = (records(2), records(20));
+    assert_eq!((small, large), (2, 2), "read and sync, one current epoch each");
+}
+
+// spec/crypto.md §4 (Carried: with the keysets a commit's boxes name go those epochs' box
+// records; Stale): G's grant boxing A at its epoch e is logged (the sync facade's
+// `logged_with`), beside e's rotation commit, with the commit recording A's box to team M at e
+// (M's grant on A), whose `keys.0` holds a box record and no keyset. A node reading
+// G's labels but none of A's holds e's records so. Certificates carry A's newest keysets only, so
+// for a keyset of A below its newest n (a fork G seals jointly) this is the one way they arrive.
+#[test]
+fn a_keysets_records_travel_with_it_spec_crypto_4() {
+    let mut lp = synced(2);
+    let m = group(&mut lp, 1);
+    lp.sync_all().unwrap();
+    let a = group(&mut lp, 0);
+    let c = *lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap().commits.last().unwrap();
+    assert!(lp.peers[0].engine.core.sealed_noted(&a).any(|x| x.2.by.contains(&c)), "M's grant records its box");
+    let g = group(&mut lp, 0);
+    let done = lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
+    let with: BTreeSet<CommitId> = done.commits.iter().flat_map(|x| lp.peers[0].engine.logged_with(x).unwrap().iter().copied().collect::<Vec<_>>()).collect();
+    assert!(with.contains(&c), "M's record logged with G's grant of A, beside A's keyset: {with:?}");
+}
+
+// spec/permissions.md §4 (current `keys.0` commits: the newest writing more than box records):
+// a deposit seed refresh, then team grants on A recording their boxes; A's current `keys.0`
+// commits still carry the refresh (the inbox and deposit seed a stranded report deposits under).
+#[test]
+fn box_records_do_not_displace_the_newest_card_spec_permissions_4() {
+    let mut lp = synced(2);
+    let m = group(&mut lp, 1);
+    lp.sync_all().unwrap();
+    let a = group(&mut lp, 0);
+    let seed = *lp.peers[0].engine.refresh_deposit_seed(&a).unwrap().commits.last().unwrap();
+    lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    let keys = lp.peers[0].engine.current_keys(&a);
+    assert!(keys.contains(&seed), "the deposit seed refresh among A's current keys.0 commits");
+}

@@ -155,14 +155,11 @@ type keyset = struct {
     /// Per holder actor this change of secrets left out of the role, the keysets of it it was
     /// left out at: nobody seals it at a keyset not past each (spec/crypto.md §4).
     left_out 6: map<tid, set<epoch>>,
-    /// Per holder actor this change of secrets boxes at the role, the keysets of it its box names
-    /// (spec/crypto.md §4, Stale).
-    sealed_at 7: map<tid, set<epoch>>,
     /// 32-byte IDs of other commits demoting a writer or admin of the actor or of an actor
     /// below it, which travel with the keyset (spec/crypto.md §4, Carried demotions).
-    demotions 8: set<blob>,
+    demotions 7: set<blob>,
     /// Whether this keyset's own commit is such a demotion.
-    demotes 9: bool,
+    demotes 8: bool,
 };
 
 /// Where others can drop things for an actor: its 16-byte home sync ID (spec/sync-inbox.md §1).
@@ -185,6 +182,9 @@ aspect keys.0: struct {
     /// An account's current epoch's signing key (spec/crypto.md §3).
     signing 6: option<signing_key>,
     sync 7: option<keyset>,
+    /// Per box of the actor's secrets to a holder actor, keyed as that box, the keysets of the
+    /// holder it names: written with the box, whoever boxes (spec/crypto.md §4, Stale).
+    sealed 8: map<box_key, set<epoch>> = {},
 };
 
 type box_key = struct {

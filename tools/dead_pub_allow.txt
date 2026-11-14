@@ -20,7 +20,6 @@ osis-schema::GROUPS  table: one handle per core aspect
 osis-perm::applied_on_built  test hook: counts index builds
 osis-perm::certificate_set  test hook: certificate records as a held set
 osis-perm::force_shadow_guard  test hook: walks both shadow paths
-osis-perm::kept_end  test hook: the retain value a removal writes
 osis-perm::may_purge  test hook: §6 purge rights at a point (the engine asks `purge_stands`)
 osis-perm::set_general_only  test hook: the general path against the fast one
 osis-perm::trusted_active  test hook: trusted ops in force

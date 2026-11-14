@@ -368,8 +368,9 @@ pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
 }
 
 /// The role a `keys.0` or `secrets.0` delta needs (spec/permissions.md §3). `keys.0`: a writer
-/// rotates sync, read and write, only an admin the admin role; at least write. A delta that is not a
-/// plain struct (a write or reset of the whole value) replaces every field: admin.
+/// rotates sync, read and write, only an admin the admin role; a box record needs the role its
+/// key names, as its box does; at least write. A delta that is not a plain struct (a write or
+/// reset of the whole value) replaces every field: admin.
 fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
     match ak {
         "secrets.0" => return Some(secrets_role(f)),
@@ -379,14 +380,21 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
     if !f.is_plain_struct() {
         return Some(Role::Admin);
     }
+    let Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct) else { return Some(Role::Write) };
     // the admin keyset, a key actor's KEM key, the inbox and the deposit seed need admin
     // (spec/crypto.md §3: inbox and deposit seed by an admin); sync, read and write keysets
     // their rotator
-    let admin = match f.slot(osis_crdt::Encoding::Struct) {
-        Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) => (2..=5).any(|id| st.field(id).is_some()),
-        _ => false,
-    };
-    Some(if admin { Role::Admin } else { Role::Write })
+    if (2..=5).any(|id| st.field(id).is_some()) {
+        return Some(Role::Admin);
+    }
+    let Some(field) = st.field(crate::flows::SEALED) else { return Some(Role::Write) };
+    let Some(osis_crdt::SlotRef::Frag(Fragment::Map(m))) = field.slot(osis_crdt::Encoding::Map).filter(|_| !field.has_reset()) else { return Some(Role::Admin) };
+    let mut top = Role::Write;
+    for (_, _, k, _) in m.entries() {
+        let role = k.and_then(|k| typed(k, "box_key")).and_then(|k| ct::BoxKey::from_value(&k).ok()).map(|k| k.role);
+        top = top.max(role.unwrap_or(Role::Admin));
+    }
+    Some(top)
 }
 
 /// The role a `secrets.0` delta needs (spec/permissions.md §3, spec/crypto.md §4): at least
@@ -453,8 +461,8 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &s
     }
     for (ai, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() == "secrets.0" {
-            if crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, d.fragment(), &granted, &own)) {
+        if matches!(a.ak.as_str(), "secrets.0" | "keys.0") {
+            if crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, a.ak.as_str(), d.fragment(), &granted, &own)) {
                 core.ix.grant_overreach.remove(&(*id, *ai));
             } else {
                 core.ix.grant_overreach.insert((*id, *ai));
@@ -464,11 +472,11 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &s
 }
 
 /// Whether a `secrets.0` delta writes only the boxes of the holders `granted` puts on `actor`, at
-/// or below each one's role, and history boxes at or below the highest granted role, as puts
-/// only: entries this delta creates (`own` dots), no reset of the value, a field, a map or any
-/// entry (spec/permissions.md §2). Judged from
-/// the delta alone, so every node judges it alike whatever it holds.
-pub(super) fn grantee_boxes_only(actor: &Tid, f: &Fragment, granted: &BTreeMap<(Tid, Tid), Role>, own: &crate::engine::Owned) -> bool {
+/// or below each one's role, and history boxes at or below the highest granted role, or a
+/// `keys.0` delta only those boxes' records (field `SEALED`), as puts only: entries this delta
+/// creates (`own` dots), no reset of the value, a field, a map or any entry (spec/permissions.md
+/// §2). Judged from the delta alone, so every node judges it alike whatever it holds.
+pub(super) fn grantee_boxes_only(actor: &Tid, ak: &str, f: &Fragment, granted: &BTreeMap<(Tid, Tid), Role>, own: &crate::engine::Owned) -> bool {
     // a write or reset of the whole value removes every box
     if !f.is_plain_struct() {
         return false;
@@ -476,7 +484,11 @@ pub(super) fn grantee_boxes_only(actor: &Tid, f: &Fragment, granted: &BTreeMap<(
     let Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct) else { return false };
     let top = granted.iter().filter(|((t, _), _)| t == actor).map(|(_, r)| *r).max();
     let fits = |k: &ct::BoxKey| granted.get(&(*actor, k.holder)).is_some_and(|r| k.role <= *r);
-    for id in [0, 1] {
+    let fields: &[u64] = if ak == "keys.0" { &[crate::flows::SEALED] } else { &[0, 1] };
+    if ak == "keys.0" && st.field_ids().any(|id| id != crate::flows::SEALED) {
+        return false;
+    }
+    for &id in fields {
         let Some(field) = st.field(id) else { continue };
         // every entry new: created by this delta (its own dots), never a write into another's
         if !field.is_put_only_map(&|d| own.owns(d)) {
@@ -486,8 +498,8 @@ pub(super) fn grantee_boxes_only(actor: &Tid, f: &Fragment, granted: &BTreeMap<(
         for (_, _, k, _) in m.entries() {
             let Some(k) = k else { return false };
             let ok = match id {
-                0 => typed(k, "box_key").and_then(|k| ct::BoxKey::from_value(&k).ok()).is_some_and(|k| fits(&k)),
-                _ => typed(k, "history_key").and_then(|k| ct::HistoryKey::from_value(&k).ok()).is_some_and(|k| top.is_some_and(|t| k.role <= t)),
+                1 => typed(k, "history_key").and_then(|k| ct::HistoryKey::from_value(&k).ok()).is_some_and(|k| top.is_some_and(|t| k.role <= t)),
+                _ => typed(k, "box_key").and_then(|k| ct::BoxKey::from_value(&k).ok()).is_some_and(|k| fits(&k)),
             };
             if !ok {
                 return false;
@@ -802,7 +814,7 @@ impl<'a> Judge<'a> {
         // an applied invite grant carries the grantee's boxes (spec/permissions.md §1, §2): every
         // put on the thing applied as an invite grant (`grant_overreach` checked the boxes against
         // all of them), so a self-removal beside a failing put exempts nothing
-        if ak == "secrets.0"
+        if matches!(ak, "secrets.0" | "keys.0")
             && let Some(c) = tl.role_commit(id)
             && !core.ix.grant_overreach.contains(&(*id, ai))
         {

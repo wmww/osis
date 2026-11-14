@@ -5,7 +5,7 @@ use super::Engine;
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid};
 use osis_store::Shred;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One row of `Engine::body_page`.
 #[doc(hidden)]
@@ -407,6 +407,13 @@ impl Engine {
         })
     }
 
+    /// Whether held commit `c` introduces a keyset of `t` (its rotation, `Indexes::epoch_intro`):
+    /// not merely a `keys.0` part (a grant's box records write one too). Tests: delivering the
+    /// keyset commits apart.
+    pub fn writes_keyset(&self, t: &Tid, c: &CommitId) -> bool {
+        self.core.ix.epoch_intro.iter().any(|(k, v)| k.0 == *t && v.1 == *c)
+    }
+
     /// The state of `(tid, ak)` loaded afresh from the store, the cache left as it was. Tests:
     /// a cached state the store does not hold.
     #[cfg(test)]
@@ -657,12 +664,13 @@ impl<T: std::fmt::Debug + PartialEq + 'static> Table for T {
 }
 
 /// The indexes `IndexDigest::tables` holds as text, by name.
-fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 44] {
+fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 45] {
     [
         ("by_thing", &*ix.by_thing),
         ("authors_on", &*ix.authors_on),
         ("by_actor", &*ix.by_actor),
         ("by_aspect", &*ix.by_aspect),
+        ("aspect_things", &*ix.aspect_things),
         ("originals", &*ix.originals),
         ("versions", &*ix.versions),
         ("invalid", &*ix.invalid),
@@ -720,8 +728,8 @@ fn commit_digest(m: &super::Meta) -> (CommitDigest, (&osis_base::WallMs, &crate:
 }
 
 /// The role timelines' verdicts `Core::perm_digest` shows: per held thing its roster (`None`: no
-/// timeline), then every applied and dropped edge write.
-type PermParts = (Vec<(Tid, Option<BTreeMap<Tid, osis_perm::Edge>>)>, BTreeMap<osis_perm::WriteId, osis_perm::Applied>, BTreeMap<osis_perm::WriteId, osis_perm::Point>);
+/// timeline), then every applied and dropped edge write, and the keyless actor grants.
+type PermParts = (Vec<(Tid, Option<BTreeMap<Tid, osis_perm::Edge>>)>, BTreeMap<osis_perm::WriteId, osis_perm::Applied>, BTreeMap<osis_perm::WriteId, osis_perm::Point>, BTreeSet<(Tid, Tid)>);
 
 impl super::Core {
     /// `Engine::index_digest`.
@@ -790,13 +798,17 @@ impl super::Core {
             applied.extend(tl.applied().iter().map(|(k, v)| (*k, *v)));
             dropped.extend(tl.dropped().iter().map(|(k, v)| (*k, *v)));
         }
-        (rosters, applied, dropped)
+        let keyless = match &full {
+            Some(tl) => crate::rotation::members::keyless_in(tl),
+            None => (*self.timelines.keyless()).clone(),
+        };
+        (rosters, applied, dropped, keyless)
     }
 
     /// `Engine::perm_digest`.
     pub(crate) fn perm_digest(&self, from_scratch: bool) -> String {
         use std::fmt::Write;
-        let (rosters, applied, dropped) = self.perm_parts(from_scratch);
+        let (rosters, applied, dropped, keyless) = self.perm_parts(from_scratch);
         let mut out = String::new();
         for (t, r) in rosters {
             let _ = match r {
@@ -804,7 +816,7 @@ impl super::Core {
                 None => writeln!(out, "{t:?} no timeline"),
             };
         }
-        let _ = writeln!(out, "applied {applied:?}\ndropped {dropped:?}");
+        let _ = writeln!(out, "applied {applied:?}\ndropped {dropped:?}\nkeyless {keyless:?}");
         out
     }
 }

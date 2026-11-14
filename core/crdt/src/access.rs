@@ -24,6 +24,11 @@ impl crate::fragment::Struct {
     pub fn field(&self, id: u64) -> Option<&Fragment> {
         self.fields.get(&id)
     }
+
+    /// The ids of the fields it carries.
+    pub fn field_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.fields.keys().copied()
+    }
 }
 
 use std::collections::BTreeMap;

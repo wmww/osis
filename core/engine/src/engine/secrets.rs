@@ -330,10 +330,12 @@ impl Core {
         if unchecked.is_none() && !crate::rotation::may_take(self, actor) {
             for r in ROLES {
                 let was = before.as_ref().map(|b| b.role(r).clone()).unwrap_or_default();
-                // listed only for a secret kept out (epochs observed without one are no access,
-                // and listing them would list every actor the node cannot read)
+                // listed only for a held secret kept out (epochs observed without one are no
+                // access, and listing them would list every actor the node cannot read); one a
+                // pending read gave for reading only is not held, and goes once that commit is
+                // judged, so it counts as absent
                 let new = epochs.role(r);
-                untaken |= new.epochs().any(|(e, _)| new.reading_secret(e).is_some() && was.reading_secret(e).is_none());
+                untaken |= new.epochs().any(|(e, _)| new.secret(e).is_some() && was.secret(e).is_none());
                 *epochs.role_mut(r) = was;
             }
         }
@@ -494,7 +496,7 @@ impl NamesHeld<'_> {
     /// all stand here (`EdgeWrite::stands`: apply, or would over some edge before them; only
     /// their author's authority is judged), and there is one.
     fn stands(&self, key: &osis_keys::Key, holder: Option<&Tid>) -> bool {
-        let logs = self.logs.get_or_init(|| self.core.timelines.get(&self.actor).map(|tl| crate::rotation::departures::edge_logs(self.core, tl, &self.actor)).unwrap_or_default());
+        let logs = self.logs.get_or_init(|| self.core.timelines.on(&self.actor).map(|on| crate::rotation::departures::edge_logs(self.core, &on, &self.actor)).unwrap_or_default());
         let mut ws = logs.iter().filter(|(m, _)| holder.is_none_or(|h| h == *m)).flat_map(|(_, l)| l.writes.iter()).filter(|w| w.key == *key).peekable();
         ws.peek().is_some() && ws.all(|w| w.stands)
     }

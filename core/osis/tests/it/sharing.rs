@@ -29,11 +29,11 @@ fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
         // the first holder gives `t` secrets of its own: its `keys.0` goes in that commit
         alice.grant(t, carol.me(), Role::Read, Default::default()).unwrap();
         alice.grant(t, bob.me(), role, Default::default()).unwrap();
-        let keys = ak("keys.0");
+        // (a grant's `keys.0` part records its boxes: the keyset is the rotation's)
         let (later, now): (Vec<_>, Vec<_>) = alice.engine(|e| {
-            e.commit_ids().into_iter().map(|id| (e.header(&id).unwrap().aspects.iter().any(|a| a.tid == t && a.ak == keys), e.package(&id).unwrap().unwrap())).partition(|(k, _)| *k)
+            e.commit_ids().into_iter().map(|id| (e.writes_keyset(&t, &id), e.package(&id).unwrap().unwrap())).partition(|(k, _)| *k)
         });
-        assert_eq!(later.len(), 1, "one commit carries t's keys.0");
+        assert_eq!(later.len(), 1, "one commit carries t's keysets");
         for (_, pk) in &now {
             bob.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
         }

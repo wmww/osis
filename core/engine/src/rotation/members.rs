@@ -27,11 +27,11 @@ fn grants(core: &Core, also: &[Tid]) -> Vec<osis_keys::Grant<Order>> {
     let mut grants = Vec::new();
     let actors = |m: &Tid| !core.is_key_actor(m);
     for t in core.timelines.things() {
-        let Some(tl) = core.timelines.get(t) else { continue };
-        if !tl.edges_at(None).holders(t).any(|(m, _)| actors(m)) {
+        let Some(on) = core.timelines.on(t) else { continue };
+        if !on.holders().iter().any(|(m, _)| actors(m)) {
             continue;
         }
-        for (h, since) in tl.standing_since(t) {
+        for (h, since) in on.standing_since() {
             if actors(&h) {
                 grants.push(Grant { order: (1, since), target: *t, holder: h });
             }
@@ -48,9 +48,25 @@ fn grants(core: &Core, also: &[Tid]) -> Vec<osis_keys::Grant<Order>> {
 }
 
 /// The keyless grants (target, holder) among those this node holds (`grants`,
-/// `osis_keys::key_access`; `Core::key_access`).
+/// `osis_keys::key_access`), kept by the timelines (`held::Timelines::keyless`).
 pub(crate) fn key_access(core: &Core) -> Arc<BTreeSet<(Tid, Tid)>> {
-    core.key_access.get(&(), || Arc::new(osis_keys::key_access(grants(core, &[]))))
+    core.timelines.keyless()
+}
+
+/// The keyless grants among the actor grants of one component's timeline `tl`: each holder
+/// actor's standing on each thing (`Timeline::standing_since_all`, record edges included), as
+/// `grants` gathers them. A keyless grant closes a cycle of actor grants (`osis_keys::key_access`),
+/// and a cycle lies in one component, so the union over components is the answer over all.
+pub(crate) fn keyless_in(tl: &osis_perm::Timeline) -> BTreeSet<(Tid, Tid)> {
+    let mut grants = Vec::new();
+    for (t, on) in tl.standing_since_all() {
+        for (h, since) in on {
+            if !tl.records().is_key(&h) {
+                grants.push(Grant { order: (1, since), target: t, holder: h });
+            }
+        }
+    }
+    osis_keys::key_access(grants)
 }
 
 /// `who`'s role on `a` now for keys (spec/crypto.md §4, Holds: `At::KEYS`, every `until`
@@ -58,12 +74,7 @@ pub(crate) fn key_access(core: &Core) -> Arc<BTreeSet<(Tid, Tid)>> {
 /// only: a keyless grant gives no read through it (spec/requirements.md Permissions), so a party
 /// holding `a` only so has left it.
 pub(crate) fn role_for_keys(core: &Core, who: &Tid, a: &Tid) -> Option<Role> {
-    let tl = core.timelines.get(a)?;
-    let keyless = key_access(core);
-    if keyless.is_empty() {
-        return tl.role(who, a, osis_perm::At::KEYS);
-    }
-    tl.roles_without(who, osis_perm::At::KEYS, &keyless).get(a).copied()
+    core.timelines.roles_on(a, osis_perm::At::KEYS, &key_access(core)).get(who).copied()
 }
 
 /// Whether holder `h` of `a` has key access to it (`keyed_role`).
@@ -387,12 +398,13 @@ pub(crate) fn boxed_keysets(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Res
 }
 
 /// Whether `a`'s epoch `e` of role `r` has a stale box (spec/crypto.md §4, rule 2): a box of its
-/// `secrets.0` state to a holder actor, or a keyset of it its keyset records sealing that holder
-/// at (what a node holding none of `a`'s boxes judges by), naming a keyset of it held invalid,
-/// tainted, or listed by a held valid keyset of it.
+/// `secrets.0` state to a holder actor, or a keyset of it a box record of `a`'s `keys.0` names
+/// at `e` (what a node holding none of `a`'s boxes judges by: every box, whoever wrote it, is
+/// recorded beside it), naming a keyset of it held invalid, tainted, or listed by a held valid
+/// keyset of it.
 pub(crate) fn stale_at(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<bool> {
     let mut named: Vec<(Tid, Epoch)> = boxed_keysets(tx, a, r, e)?.into_iter().flat_map(|(m, ks)| ks.into_iter().map(move |k| (m, k))).collect();
-    named.extend(tx.core.keyset(a, r, e).into_iter().flat_map(|x| x.sealed_at.iter().flat_map(|(m, ks)| ks.iter().map(move |k| (*m, *k)))));
+    named.extend(tx.core.ix.sealed.get(&(*a, r, *e)).into_iter().flat_map(|x| x.keysets.iter().flat_map(|(m, ks)| ks.iter().map(move |k| (*m, *k)))));
     for (m, k) in named {
         let held = keysets_of(tx, &m, r, Some(&k))?;
         if osis_keys::stale(&k, &held, &tainted(tx, &m, r)?) {
@@ -426,7 +438,9 @@ pub(crate) fn carried(core: &Core, w: &osis_keys::SecretsWrite, keys: Option<&os
                 return Vec::new();
             }
             let carries = core.keyset(&m, r, &e).into_iter().flat_map(|x| x.demotions.iter().copied());
-            core.ix.epoch_intro.get(&(m, r, e)).map(|x| x.1).into_iter().chain(carries).collect::<Vec<_>>()
+            // the epoch's box records travel with its keyset (spec/crypto.md §4, Stale)
+            let records = core.ix.sealed.get(&(m, r, e)).into_iter().flat_map(|x| x.by.iter().copied());
+            core.ix.epoch_intro.get(&(m, r, e)).map(|x| x.1).into_iter().chain(carries).chain(records).collect::<Vec<_>>()
         })
         .collect();
     out.sort();

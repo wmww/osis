@@ -1626,7 +1626,7 @@ mod tests {
             let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
             lp.sync_all().unwrap();
             let (alice, bob, carol) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
-            let (x, keys) = (Ak::new("x:v.0").unwrap(), Ak::new("keys.0").unwrap());
+            let x = Ak::new("x:v.0").unwrap();
             let none = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
             let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
             // bob writes `t` by a raw edge write: `t` keeps its first admin's secrets
@@ -1653,7 +1653,7 @@ mod tests {
             lp.peers[0].engine.grant(&t, &carol, &edge(Role::Read)).unwrap();
             lp.peers[0].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
             let pks = lp.packages(0).unwrap();
-            let carries = |id: &CommitId| lp.peers[0].engine.header(id).unwrap().aspects.iter().any(|a| a.tid == t && a.ak == keys);
+            let carries = |id: &CommitId| lp.peers[0].engine.writes_keyset(&t, id);
             let (key_pks, other): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| carries(&pk.id));
             let (put_pks, rest): (Vec<_>, Vec<_>) = other.into_iter().partition(|pk| puts.contains(&pk.id));
             for pk in &rest {

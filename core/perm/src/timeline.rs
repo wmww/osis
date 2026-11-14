@@ -109,6 +109,10 @@ pub(crate) struct Memo {
     pub roles_now: Mutex<BTreeMap<Tid, RolesNow>>,
     /// Walks made for `roles_now` (a measure).
     pub roles_walks: std::sync::atomic::AtomicU64,
+    /// `roles_on` at `At::END`, per thing.
+    pub on_end: Mutex<BTreeMap<Tid, Arc<BTreeMap<Tid, Role>>>>,
+    /// `roles_on` on the current edges, per thing, as `roles_now` keeps its walks.
+    pub on_now: Mutex<BTreeMap<Tid, RolesNow>>,
     /// `ever_forward` per node `closure` met: the asker (a node asks for its own certificates at
     /// every pass) and the authors on its chains; and the walks made for it (a measure).
     pub forward: Mutex<BTreeMap<Tid, Arc<BTreeSet<Tid>>>>,
@@ -148,6 +152,8 @@ impl Clone for Memo {
             roles_end: get(&self.roles_end),
             roles_now: get(&self.roles_now),
             roles_walks: n(&self.roles_walks),
+            on_end: get(&self.on_end),
+            on_now: get(&self.on_now),
             forward: get(&self.forward),
             forward_walks: n(&self.forward_walks),
             certificates: get(&self.certificates),
@@ -897,6 +903,27 @@ impl Timeline {
         out
     }
 
+    /// `standing_since` of every thing of the component with a holder, in one pass over the
+    /// walk's history.
+    pub fn standing_since_all(&self) -> BTreeMap<Tid, BTreeMap<Tid, Option<Point>>> {
+        let mut out: BTreeMap<Tid, BTreeMap<Tid, Option<Point>>> = BTreeMap::new();
+        for (t, l) in self.input.records.links() {
+            if let osis_base::RecordLink::Admin(a) = l {
+                out.entry(*t).or_default().insert(*a, None);
+            }
+        }
+        for c in &self.walked.history {
+            let on = out.entry(c.target).or_default();
+            if c.edge.is_some_and(|e| !e.says_retain()) {
+                on.entry(c.holder).or_insert(Some(c.point));
+            } else {
+                on.remove(&c.holder);
+            }
+        }
+        out.retain(|_, hs| !hs.is_empty());
+        out
+    }
+
     /// The holders with no edge alive on `thing` at `ts` that the walk saw one of: how each one's
     /// edge ended, the point of its last write (`None`: its record edge, never written) and the
     /// role the edge last gave (a removal's value saying retain gives none: the role before it).
@@ -925,23 +952,67 @@ impl Timeline {
 
     /// Effective role (§1).
     pub fn role(&self, node: &Tid, thing: &Tid, at: At) -> Option<Role> {
+        self.roles_at(node, at).get(thing).copied()
+    }
+
+    /// Effective roles of `node` at `at` on every thing it reaches (`roles_of`), walked once
+    /// per node while the answer holds for the current edges (`roles_now`) and at the end.
+    fn roles_at(&self, node: &Tid, at: At) -> Arc<BTreeMap<Tid, Role>> {
         if at.point.is_none()
             && let Some(ts) = at.ts
         {
-            return self.roles_now(node, ts).get(thing).copied();
+            return self.roles_now(node, ts);
         }
         if at != At::END {
-            return self.roles_of(node, at).get(thing).copied();
+            return Arc::new(self.roles_of(node, at));
         }
         if let Some(r) = self.memo.roles_end.lock().ok().and_then(|m| m.get(node).cloned()) {
-            return r.get(thing).copied();
+            return r;
         }
         let r = Arc::new(self.roles_of(node, at));
-        let out = r.get(thing).copied();
         if let Ok(mut m) = self.memo.roles_end.lock() {
-            m.insert(*node, r);
+            m.insert(*node, r.clone());
         }
-        out
+        r
+    }
+
+    /// Every node's effective role on `thing` at `at`: `roles_at` read backward, by the widest
+    /// paths into `thing` (`View::roles_to`), so it walks only what reaches `thing`. Walked once
+    /// per thing while the answer holds for the current edges, and at the end.
+    pub fn roles_on(&self, thing: &Tid, at: At) -> Arc<BTreeMap<Tid, Role>> {
+        let none = BTreeSet::new();
+        if at.point.is_none()
+            && let Some(ts) = at.ts
+        {
+            let held = |e: &RolesNow| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
+            if let Some(r) = self.memo.on_now.lock().ok().and_then(|m| m.get(thing).filter(|e| held(e)).map(|e| e.0.clone())) {
+                return r;
+            }
+            let edges = self.edges_at(None);
+            let (r, expires) = View::at(&edges, Some(ts)).roles_to_expiring(thing, &none);
+            let r = Arc::new(r);
+            if let Ok(mut m) = self.memo.on_now.lock() {
+                m.insert(*thing, (r.clone(), ts, expires));
+            }
+            return r;
+        }
+        if at != At::END {
+            return Arc::new(self.roles_on_without(thing, at, &none));
+        }
+        if let Some(r) = self.memo.on_end.lock().ok().and_then(|m| m.get(thing).cloned()) {
+            return r;
+        }
+        let r = Arc::new(self.roles_on_without(thing, at, &none));
+        if let Ok(mut m) = self.memo.on_end.lock() {
+            m.insert(*thing, r.clone());
+        }
+        r
+    }
+
+    /// `roles_on` over the edges not in `skip`, each named (target, holder).
+    pub fn roles_on_without(&self, thing: &Tid, at: At, skip: &BTreeSet<(Tid, Tid)>) -> BTreeMap<Tid, Role> {
+        let edges = self.edges_at(at.point);
+        View::at(&edges, at.ts).roles_to_expiring(thing, skip).0
     }
 
     /// `node`'s roles on the current edges at `ts`, walked once per node while the answer holds:

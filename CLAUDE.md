@@ -23,7 +23,7 @@ Below the title each note, issue and specs should contain a one-line `> Summary:
 - Any change to app/ or libs/kit/ must pass notes/app.md (The rule): the app is divided by view, never by feature.
 - Any picked number (threshold, cap, timeout, grace period) must pass notes/arbitrary-values.md (what happens at 0 and at infinity?).
 - Refactor freely as needed. don't trust that existing code/comments/notes are necessarily correct, or existing design decisions are optimal.
-- Unless otherwise asked, commit, pull --rebase and push when you've completed your task. Only main is pushed: task branches stay local (every worktree shares the repo's branches), so never push a worktree branch.
+- Unless otherwise asked, commit, pull --rebase and push when you've completed your task. A non-main branch may be pushed when its name starts with the responsible coordinator's (e.g. `capstan-sync-rebuild`); that coordinator deletes it from GitHub once merged or dropped, so an orphan names whom to ask.
 - Include the "Co-Authored-By: <model>" in your commits, but not the link to a Claude session.
 - Commit to the current branch unless asked, don't make feature branches.
 - Don't worry about docs/ unless asked to, it's fine for docs/ to fall out of date, they will be updated on explicit request

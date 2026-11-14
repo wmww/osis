@@ -87,6 +87,32 @@ pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite, new_on
     for (k, h) in &w.history {
         put(m, 1, k.to_value(), Value::Bytes(h.clone()))?;
     }
+    // each box's record (spec/crypto.md §4, Stale), written as the box is
+    for (k, ks) in &w.sealed {
+        let v = ks.iter().map(osis_keys::aspects::to_schema).collect::<BTreeSet<ct::Epoch>>().to_value();
+        if new_only {
+            m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(SEALED), PathSeg::Key(k.to_value())], op: Op::Put(v) })?;
+        } else {
+            m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(SEALED)], op: Op::Remove(k.to_value()) })?;
+            m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(SEALED), PathSeg::Key(k.to_value())], op: Op::Set(v) })?;
+        }
+    }
+    Ok(())
+}
+
+/// `keys.0`'s field of box records (spec/crypto.md §4, Stale; spec/wire.md §7).
+pub(crate) const SEALED: u64 = 8;
+
+/// Removes from `m` the records of `actor`'s boxes `removed` that its `keys.0` state holds: a
+/// record goes with its box (a rotation removing the boxes at the epochs it supersedes).
+pub(crate) fn unseal(tx: &mut Tx<'_>, m: &mut Mutation, actor: Tid, removed: &BTreeSet<ct::BoxKey>) -> Result<()> {
+    if removed.is_empty() {
+        return Ok(());
+    }
+    let held = Core::keys_in(tx, &actor)?.map(|k| k.sealed).unwrap_or_default();
+    for k in removed.iter().filter(|k| held.contains_key(k)) {
+        m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(SEALED)], op: Op::Remove(k.to_value()) })?;
+    }
     Ok(())
 }
 
@@ -156,8 +182,8 @@ impl Core {
     /// included while it stands (with no timeline here, nothing wrote it: the first admin alone).
     pub fn current_holders(&self, actor: &Tid) -> Vec<(Tid, Role, Option<WallMs>)> {
         let ts = now_ts(self);
-        match self.timelines.get(actor) {
-            Some(tl) => tl.roster(actor, At::now(ts)).into_iter().map(|(m, e)| (m, e.role, e.until)).collect(),
+        match self.timelines.on(actor) {
+            Some(on) => on.roster(At::now(ts)).into_iter().map(|(m, e)| (m, e.role, e.until)).collect(),
             None => self.first_admin(actor).map(|a| (a, Role::Admin, None)).into_iter().collect(),
         }
     }
@@ -188,8 +214,8 @@ impl Core {
     /// holders in their place): every edge on it by `rotation::key_role`, its record edge
     /// included while it stands.
     pub(crate) fn edge_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
-        match self.timelines.get(actor) {
-            Some(tl) => tl.edges_at(None).holders(actor).filter_map(|(m, e)| Some((*m, crate::rotation::key_role(Some(e))?))).collect(),
+        match self.timelines.on(actor) {
+            Some(on) => on.holders().into_iter().filter_map(|(m, e)| Some((m, crate::rotation::key_role(Some(&e))?))).collect(),
             None => self.first_admin(actor).map(|a| (a, Role::Admin)).into_iter().collect(),
         }
     }
@@ -334,7 +360,7 @@ pub(crate) fn retake(tx: &mut Tx<'_>) -> Result<()> {
 /// epochs only grow, so no round cap is needed; a cap left deep chains unopened).
 fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
     let secrets_ak = ak("secrets.0")?;
-    let actors: BTreeSet<Tid> = tx.core.ix.by_aspect.keys().filter(|(_, a)| *a == secrets_ak).map(|(t, _)| *t).collect();
+    let actors: BTreeSet<Tid> = tx.core.ix.aspect_things.get(&secrets_ak).cloned().unwrap_or_default();
     loop {
         let mut any = false;
         for a in &actors {

@@ -59,13 +59,16 @@ impl Engine {
 
     /// `latest_on`, written by `author` when given.
     pub fn latest_by(&self, tid: &Tid, ak: &str, author: Option<&Tid>) -> Option<CommitId> {
+        self.latest_where(tid, ak, |c| author.is_none_or(|a| self.core.ix.commits.get(c).is_some_and(|m| m.header.author == *a)))
+    }
+
+    /// `latest_on` among the commits `keep` passes.
+    fn latest_where(&self, tid: &Tid, ak: &str, keep: impl Fn(&CommitId) -> bool) -> Option<CommitId> {
         let k = Ak::new(ak).ok()?;
         let held = self.core.ix.by_aspect.get(&(*tid, k))?;
         held.iter().rev().map(|(_, c)| *c).find(|c| {
             let Some(m) = self.core.ix.commits.get(c) else { return false };
-            !self.core.ix.pending.contains_key(c)
-                && author.is_none_or(|a| m.header.author == *a)
-                && m.view.aspect(tid, ak).is_some_and(|i| m.valid_at(i))
+            !self.core.ix.pending.contains_key(c) && keep(c) && m.view.aspect(tid, ak).is_some_and(|i| m.valid_at(i))
         })
     }
 
@@ -358,23 +361,35 @@ impl Engine {
         out
     }
 
-    /// The commits of `t`'s current `keys.0` (spec/permissions.md §4): the newest, and the rotation
-    /// commits of its newest keyset per role, forks included. The newest may be an inbox write
-    /// carrying no keyset, and a rotation of what `t` holds names `t`'s keyset (spec/crypto.md §4).
+    /// The commits of `t`'s current `keys.0` (spec/permissions.md §4): the newest, the rotation
+    /// commits of its newest keyset per role, forks included, and the commits recording boxes
+    /// at those keysets' epochs (spec/crypto.md §4, Stale: a grant's or re-seal's to a holder
+    /// actor). The newest may be an inbox write carrying no keyset, and a rotation of what `t`
+    /// holds names `t`'s keyset (spec/crypto.md §4).
     pub fn current_keys(&self, t: &Tid) -> BTreeSet<CommitId> {
-        let mut newest: BTreeMap<osis_base::Role, (u64, BTreeSet<CommitId>)> = BTreeMap::new();
+        // per role: the newest n, its keysets' rotation commits, the commits recording boxes there
+        let mut newest: BTreeMap<osis_base::Role, (u64, BTreeSet<CommitId>, BTreeSet<CommitId>)> = BTreeMap::new();
+        let mut intros = BTreeSet::new();
         for (r, e, _) in self.core.keysets_of(t) {
             let (r, e) = (&r, &e);
             let Some((_, c)) = self.core.ix.epoch_intro.get(&(*t, *r, *e)) else { continue };
+            intros.insert(*c);
             let n = newest.entry(*r).or_default();
             if e.n() > n.0 {
-                *n = (e.n(), BTreeSet::new());
+                *n = (e.n(), BTreeSet::new(), BTreeSet::new());
             }
             if e.n() == n.0 {
                 n.1.insert(*c);
+                n.2.extend(self.core.ix.sealed.get(&(*t, *r, *e)).into_iter().flat_map(|x| x.by.iter().copied()));
             }
         }
-        newest.into_values().flat_map(|(_, c)| c).chain(self.latest_on(t, "keys.0")).collect()
+        let rotations: BTreeSet<CommitId> = newest.values().flat_map(|x| x.1.iter().copied()).collect();
+        let records: BTreeSet<CommitId> = newest.values().flat_map(|x| x.2.iter().copied()).collect();
+        // the newest but one writing only box records (a grant's or re-seal's, at any epoch): what
+        // carries the inbox and deposit seed
+        let recorders: BTreeSet<CommitId> = self.core.sealed_noted(t).flat_map(|x| x.2.by.iter().copied()).collect();
+        let card = self.latest_where(t, "keys.0", |c| intros.contains(c) || !recorders.contains(c));
+        rotations.iter().chain(&records).copied().chain(card).collect()
     }
 
     /// `node`'s chain certificates for `t` with the record chains of both up to their key

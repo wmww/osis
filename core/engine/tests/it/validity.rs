@@ -3857,3 +3857,62 @@ fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
         assert_eq!(read(&mut lp), Some(s("abc")), "reopen {reopen}");
     }
 }
+
+// spec/requirements.md Convergence (holders of the same commits read alike), spec/permissions.md
+// §5.2 (Addenda: an addendum counts for the commits ordered before its removal) and §6: Alice
+// grants Bob and Carol write; in one fresh millisecond Bob writes v5 and Alice, not having seen
+// it, removes Bob, so both carry the same `ts` and their authors' tids order them. Carol receives
+// v5 before the removal (`carol_first`) or after it; then everyone exchanges everything, and a
+// fresh node is handed every commit. All read alike: v5 iff Carol received it first and it is
+// ordered before the removal (Bob's tid below Alice's), else v4; for every assignment of the
+// three peers. Ported from the sync rebuild's differential (clean seed 347110580059), where the
+// remover read v4 and the others v5 with v5 ordered after the removal.
+#[test]
+fn a_removed_writers_last_write_reads_alike_at_every_holder_spec_perm_5_2() {
+    for [a, b, c] in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+        for carol_first in [true, false] {
+            let mut lp = net(3, 0);
+            lp.sync_all().unwrap();
+            let t = new_thing(&mut lp, a);
+            let (alice, bob, carol) = (lp.peers[a].engine.me(), lp.peers[b].engine.me(), lp.peers[c].engine.me());
+            let write = |lp: &mut LocalPeer, i: usize, v: &str| {
+                let mut m = Mutation::new();
+                m.set(t, &REG, &s(v)).unwrap();
+                lp.peers[i].commit(m).unwrap().unwrap()
+            };
+            write(&mut lp, a, "v3");
+            lp.peers[a].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
+            write(&mut lp, a, "v4");
+            lp.peers[a].engine.grant(&t, &carol, &edge(Role::Write)).unwrap();
+            lp.sync_all().unwrap();
+            lp.advance(DAY);
+            let v5 = write(&mut lp, b, "v5");
+            let rm = lp.peers[a].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap().commits;
+            let ts = |lp: &LocalPeer, i: usize, id| lp.peers[i].engine.header(id).unwrap().ts;
+            assert!(rm.iter().all(|r| ts(&lp, a, r) == ts(&lp, b, &v5)), "v5 and the removal share a ts");
+            if carol_first {
+                sync(&mut lp, b, c);
+            }
+            sync(&mut lp, a, c);
+            for _ in 0..3 {
+                lp.sync_all().unwrap();
+            }
+            let mut pks: Vec<_> = (0..3).flat_map(|i| packages(&mut lp, i)).collect();
+            pks.sort_by_key(|p| p.id);
+            pks.dedup_by_key(|p| p.id);
+            lp.peers.push(osis_engine::local_peer::Peer::new(0x7e5, lp.peers[0].engine.now()).unwrap());
+            for _ in 0..2 {
+                for p in &pks {
+                    let _ = lp.deliver(3, p);
+                }
+            }
+            lp.peers[3].reexamine().unwrap();
+            let held: Vec<BTreeSet<_>> = (0..3).map(|i| lp.peers[i].engine.commit_ids().into_iter().collect()).collect();
+            let reads: Vec<_> = (0..4).map(|i| lp.peers[i].engine.get_typed(&t, &REG).unwrap()).collect();
+            let at = format!("Alice {a}, Bob {b}, Carol {c}, Carol first {carol_first}");
+            assert!(held.iter().all(|h| *h == held[0]), "{at}: every node holds the same commits");
+            let want = s(if carol_first && bob < alice { "v5" } else { "v4" });
+            assert!(reads.iter().all(|r| *r == Some(want.clone())), "{at}: every node and the fresh one read {want:?}; reads {reads:?}");
+        }
+    }
+}
