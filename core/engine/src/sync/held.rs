@@ -35,12 +35,18 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Self-removal `c` waits for sync (held elsewhere, or no peer to take it) before the secrets it
-/// gave up drop, in `c`'s own transaction.
-pub(crate) fn wait(tx: &mut Tx<'_>, c: CommitId) -> Result<()> {
-    if tx.core.ix.held_wait.insert(c) {
-        tx.txn.put_local(&[WAITING, &c.0].concat(), &[], Shred::No)?;
+/// Role commit `c`, applied in this transaction with edge writes on `rosters`, waits for sync
+/// (held elsewhere, or no peer to take it) when it is an own self-removal
+/// (`rotation::own_self_removal`): at every node of the account alike, the one that made it and
+/// the siblings that apply it (spec/permissions.md §3 Lost access: whichever node of the account
+/// made it). The secrets it lost stay meanwhile: the node must still seal it under the sync IDs
+/// it leaves.
+pub(crate) fn wait_if_own(tx: &mut Tx<'_>, c: &CommitId, rosters: &BTreeSet<Tid>) -> Result<()> {
+    if rosters.is_empty() || tx.core.ix.held_wait.contains(c) || !crate::rotation::own_self_removal(tx.core, c, rosters) {
+        return Ok(());
     }
+    tx.core.ix.held_wait.insert(*c);
+    tx.txn.put_local(&[WAITING, &c.0].concat(), &[], Shred::No)?;
     Ok(())
 }
 
@@ -50,22 +56,28 @@ impl Engine {
         Arc::new(self.core.ix.held_wait.iter().copied().collect())
     }
 
-    /// Sync is done waiting for `c` (held elsewhere, or no peer shares where it goes): the
-    /// secrets this node lost drop once no removal waits (`drop_lost_secrets`, spec/permissions.md
-    /// §3 Lost access).
+    /// Sync is done waiting for `c` (held elsewhere, or no peer shares where it goes): each
+    /// actor lost with no own self-removal behind it still waiting drops (`lost_leaving`, per
+    /// actor: one that cannot be placed holds back nothing else; spec/permissions.md §3 Lost
+    /// access). The drop goes first: a crash before `c` leaves the wait finds it waiting, and
+    /// sync tells it done again.
     pub(crate) fn removal_done_now(&mut self, c: &CommitId) -> Result<()> {
+        if !self.core.ix.held_wait.contains(c) {
+            return Ok(());
+        }
+        let leaving = self.lost_leaving()?;
+        let wait = &self.core.ix.held_wait;
+        let ready: Vec<Tid> = leaving.actors.iter().filter(|(_, cs)| cs.iter().all(|x| x == c || !wait.contains(x))).map(|(a, _)| *a).collect();
+        if !ready.is_empty() {
+            self.forget_lost(crate::rotation::LostScope::Only(&ready))?;
+        }
         let c = *c;
-        let was = self.run(|tx| {
-            let was = tx.core.ix.held_wait.remove(&c);
-            if was {
+        self.run(|tx| {
+            if tx.core.ix.held_wait.remove(&c) {
                 tx.txn.remove_local(&[WAITING, &c.0].concat(), Shred::No)?;
             }
-            Ok(was)
-        })?;
-        if was && self.core.ix.held_wait.is_empty() {
-            self.drop_lost_secrets()?;
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// A complete pass of `s` begun at `began` (engine ms) ended (spec/sync-status.md §1): kept

@@ -570,9 +570,10 @@ fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Dropped> {
         LostScope::Due => {
             let (mut lost, mut leaving) = (Vec::new(), false);
             for a in judged {
-                // its removal goes up first (spec/permissions.md §3), or its labels are heard
-                // out (§2): node-sync's `drop_left`
-                if !own_leaving(tx, &a)?.is_empty() {
+                // an own self-removal behind it still waiting for sync goes up first
+                // (spec/permissions.md §3: `Engine::removal_done` drops it), or its labels are
+                // heard out (§2)
+                if own_leaving(tx, &a)?.iter().any(|c| tx.core.ix.held_wait.contains(c)) {
                     leaving = true;
                 } else if lost_by_time(tx.core, &a) {
                     timed_since(tx, a)?;

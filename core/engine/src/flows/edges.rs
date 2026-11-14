@@ -432,11 +432,6 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     {
         done.add(Some(r));
     }
-    // the leaver drops what it lost once sync is done waiting for its removal (`waiting_removals`):
-    // it must still seal the removal under the sync IDs it leaves
-    if selfr && let Some(c) = c {
-        crate::sync::held::wait(tx, c)?;
-    }
     Ok(done)
 }
 

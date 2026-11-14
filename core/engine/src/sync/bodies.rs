@@ -225,8 +225,10 @@ impl Engine {
         Ok(this)
     }
 
-    /// This node's commits (written here) with a body under `s` (spec/sync-status.md §2):
-    /// O(things on `s`'s closure + its account's and node's commits on them).
+    /// This node's commits (written here) and the own self-removals sync waits on
+    /// (`waiting_removals`, a sibling's among them) with a body under `s` (spec/sync-status.md
+    /// §2): O(things on `s`'s closure + its account's and node's commits on them + removals
+    /// waiting).
     pub(crate) fn own_commits_now(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>> {
         let Some(t) = self.read_thing(s)? else { return Ok(Arc::new(BTreeSet::new())) };
         let closure = self.closure(&t);
@@ -238,6 +240,7 @@ impl Engine {
                 own.extend(ix.by_thing.get(&(*x, *a)).into_iter().flatten().filter(|c| ix.commits.get(*c).is_some_and(|m| m.origin == crate::events::Origin::Local)));
             }
         }
+        own.extend(ix.held_wait.iter());
         let ctx = self.body_ctx(&t);
         let mut out = BTreeSet::new();
         for c in own {

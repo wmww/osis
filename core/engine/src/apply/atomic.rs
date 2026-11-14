@@ -617,8 +617,9 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     let flipped = rejudged(tx, held_changed)?;
     let changed = j.changed;
     let rosters: BTreeSet<Tid> = if h.kind.is_role() { h.aspects.iter().filter(|a| validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect() } else { BTreeSet::new() };
-    // a received roster change may end this node's read access (spec/permissions.md §3); its own
-    // self-removals drop what they lost once placed (node-sync `drop_left`)
+    // a received roster change may end this node's read access (spec/permissions.md §3); an own
+    // self-removal, made here or at a sibling, drops what it lost once sync is done waiting
+    crate::sync::held::wait_if_own(tx, &id, &rosters)?;
     if origin != Origin::Local {
         crate::rotation::mark_lost_due(tx, rosters.iter().copied())?;
         // a rotation from before the removal, arriving after it, must not give a kept copy a secret
@@ -771,13 +772,14 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     super::keys::after_join(tx, &h, with_keys.all(), &meta.valid, pend)?;
     let flipped = rejudged(tx, held_changed)?;
     if edges {
-        let rosters: Vec<Tid> = h.aspects.iter().filter(|a| validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect();
+        let rosters: BTreeSet<Tid> = h.aspects.iter().filter(|a| validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect();
+        crate::sync::held::wait_if_own(tx, id, &rosters)?;
         if meta.origin != Origin::Local {
             crate::rotation::mark_lost_due(tx, rosters.iter().copied())?;
         } else {
             crate::rotation::arm_untils(tx, rosters.iter().copied())?;
         }
-        for thing in rosters.into_iter().collect::<BTreeSet<_>>() {
+        for thing in rosters {
             tx.core.events.queue(Event::Roster { thing });
         }
     }

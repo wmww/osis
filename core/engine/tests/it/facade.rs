@@ -597,6 +597,98 @@ fn a_self_removal_waits_for_sync_spec_perm_3() {
     assert!(e.waiting_removals().unwrap().is_empty());
 }
 
+/// Peers 0 and 1 nodes of one account (paired), peer 2 of another, which makes a thing and
+/// grants the first account write on it; everyone holds everything. The account and the thing.
+fn siblings_granted() -> (LocalPeer, Tid, Tid) {
+    let (lp, (a, t)) = LocalPeer::cached("facade::siblings_granted", || {
+        let mut lp = crate::common::net_bare(3, 0);
+        let a = lp.peers[0].engine.create_account().unwrap().0.account;
+        let n = lp.peers[1].engine.tid();
+        let card = lp.peers[1].engine.commit_ids();
+        crate::flows::send(&mut lp, 1, 0, &card);
+        let (_, sent) = lp.peers[0].engine.pair(&n).unwrap();
+        crate::flows::send(&mut lp, 0, 1, &sent);
+        lp.peers[1].engine.paired(&a).unwrap();
+        let b = lp.peers[2].engine.create_account().unwrap().0.account;
+        spread(&mut lp);
+        let t = thing_of(&mut lp, 2, b);
+        lp.peers[2].engine.grant(&t, &a, &edge_of(Role::Write)).unwrap();
+        spread(&mut lp);
+        for i in [0, 1] {
+            assert!(lp.peers[i].engine.epochs(&t).is_some_and(|x| x.read.holds_any()), "node {i} reads it");
+        }
+        (lp, (a, t))
+    });
+    (lp, a, t)
+}
+
+// spec/permissions.md §3 (Lost access: whichever node of the account made it), spec/sync-status.md
+// §2: node 0 removes its account from a thing; node 1, its sibling, applies the removal and waits
+// for sync as the writer does (through a restart and the lost-access trigger), then drops; the
+// other account's node waits on nothing.
+#[test]
+fn a_siblings_self_removal_waits_and_drops_alike_spec_perm_3() {
+    let (mut lp, a, t) = siblings_granted();
+    let c = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
+    spread(&mut lp);
+    assert!(lp.peers[0].engine.waiting_removals().unwrap().contains(&c), "the writer waits");
+    assert!(lp.peers[2].engine.waiting_removals().unwrap().is_empty(), "another account's node waits on nothing");
+    lp.peers[1].restart(1).unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert!(e.waiting_removals().unwrap().contains(&c), "the sibling waits too, through a restart");
+    e.drop_lost_due().unwrap();
+    assert!(e.epochs(&t).is_some_and(|x| x.read.holds_any()), "kept while it waits");
+    e.removal_done(&c).unwrap();
+    assert!(e.waiting_removals().unwrap().is_empty());
+    assert!(e.epochs(&t).is_none_or(|x| x.read.held().next().is_none()), "dropped");
+}
+
+// spec/permissions.md §3 (Lost access): each lost actor drops once the own self-removals behind
+// it are done; one still waiting holds back nothing else.
+#[test]
+fn a_self_removal_done_drops_its_own_loss_alone_spec_perm_3() {
+    let (mut lp, ps) = people(2);
+    let (t1, t2) = (thing_of(&mut lp, 0, ps[0]), thing_of(&mut lp, 0, ps[0]));
+    for t in [t1, t2] {
+        lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Write)).unwrap();
+    }
+    spread(&mut lp);
+    let e = &mut lp.peers[1].engine;
+    let c1 = e.demote(&t1, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
+    let c2 = e.demote(&t2, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
+    assert_eq!(*e.waiting_removals().unwrap(), BTreeSet::from([c1, c2]));
+    e.removal_done(&c1).unwrap();
+    assert!(e.epochs(&t1).is_none_or(|x| x.read.held().next().is_none()), "t1 dropped");
+    assert!(e.epochs(&t2).is_some_and(|x| x.read.holds_any()), "t2 waits on its own removal");
+    e.removal_done(&c2).unwrap();
+    assert!(e.epochs(&t2).is_none_or(|x| x.read.held().next().is_none()), "t2 dropped");
+}
+
+// spec/permissions.md §3 (Lost access): a self-removal sync is done with leaves no wait behind:
+// peer 1 leaves a thing it still reads through a group, then is removed from the group; the
+// lost-access trigger drops the thing.
+#[test]
+fn a_loss_behind_a_done_self_removal_drops_at_the_trigger_spec_perm_3() {
+    let (mut lp, ps) = people(2);
+    let (g, t) = (thing_of(&mut lp, 0, ps[0]), thing_of(&mut lp, 0, ps[0]));
+    let e = &mut lp.peers[0].engine;
+    e.grant(&g, &ps[1], &edge_of(Role::Read)).unwrap();
+    e.grant(&t, &g, &edge_of(Role::Read)).unwrap();
+    e.grant(&t, &ps[1], &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    let e = &mut lp.peers[1].engine;
+    let c = e.demote(&t, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
+    e.removal_done(&c).unwrap();
+    assert!(e.waiting_removals().unwrap().is_empty());
+    assert!(e.epochs(&t).is_some_and(|x| x.read.holds_any()), "read through the group");
+    spread(&mut lp);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: ps[1], new: None, retain: None }).unwrap();
+    spread(&mut lp);
+    let e = &mut lp.peers[1].engine;
+    e.drop_lost_due().unwrap();
+    assert!(e.epochs(&t).is_none_or(|x| x.read.held().next().is_none()), "dropped");
+}
+
 // spec/sync-judgement.md §1-§2: a commit's body under each read sync ID whose closure holds it,
 // with its facts; this node's own commits under it.
 #[test]

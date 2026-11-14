@@ -217,14 +217,35 @@ pub fn departures_placing(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Departure, Op
     Ok(departures(tx, a)?.into_iter().map(|d| { let c = own_leaving(tx.core, a, &d); (d, c) }).collect())
 }
 
-/// The commit of departure `d` from `a` when it is this node's own self-removal (spec/permissions.md §2): the newest applied write on the
-/// holder's edge there lowers it and it was made here or its author is this node, its account
-/// or a key actor it holds, whichever node of the account made it: each waits for it to be placed, so a sibling
-/// that pulled it from the maker keeps it until a source has it. From stored commits only, so
-/// a restart keeps it.
+/// The commit of departure `d` from `a` when it is this node's own self-removal
+/// (`own_leaving_write`): the newest applied write on the holder's edge there. From stored
+/// commits only, so a restart keeps it.
 fn own_leaving(core: &Core, a: &Tid, d: &Departure) -> Option<osis_base::CommitId> {
     let tl = core.timelines.get(a)?;
     let (mc, op) = edge_writes(tl, a).filter(|(_, op)| op.holder == d.holder).max_by_key(|(mc, _)| mc.point())?;
+    own_leaving_write(core, tl, a, mc, op).then_some(mc.id)
+}
+
+/// Whether applied write `op` of `mc` on `a`, the newest on the holder's edge there, is this
+/// node's own self-removal (spec/permissions.md §2, §3 Lost access): it lowers the edge, and it
+/// was made here or its author is this node, its account or a key actor it holds, whichever node
+/// of the account made it: each waits for it to be held elsewhere, so a sibling that pulled it
+/// from the maker keeps it until a source has it.
+fn own_leaving_write(core: &Core, tl: &Timeline, a: &Tid, mc: &RoleCommit, op: &EdgeOp) -> bool {
     let own = core.ix.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local) || mc.author == core.id.tid() || core.account.get() == Some(mc.author) || core.key_actors.contains_key(&mc.author);
-    (own && departure_of(tl, a, mc, op).is_some() && crate::apply::validity::self_removal(core, &mc.author, a, &op.holder, mc.ts)).then_some(mc.id)
+    own && departure_of(tl, a, mc, op).is_some() && crate::apply::validity::self_removal(core, &mc.author, a, &op.holder, mc.ts)
+}
+
+/// Whether applied role commit `c` is an own self-removal (`own_leaving_write`) on one of
+/// `targets`: the one rule for every node of the account, the one that made it and its
+/// siblings alike (`sync::held::wait`). Reads the targets' writes only for a commit by an own
+/// author.
+pub(crate) fn own_self_removal(core: &Core, c: &osis_base::CommitId, targets: &BTreeSet<Tid>) -> bool {
+    let Some(m) = core.ix.commits.get(c) else { return false };
+    let a = m.view.author;
+    if m.origin != crate::events::Origin::Local && a != core.id.tid() && core.account.get() != Some(a) && !core.key_actors.contains_key(&a) {
+        return false;
+    }
+    let newest = |tl: &Timeline, t: &Tid, h: &Tid| edge_writes(tl, t).filter(|(_, op)| op.holder == *h).max_by_key(|(mc, _)| mc.point()).map(|(mc, _)| mc.id);
+    targets.iter().any(|t| core.timelines.get(t).is_some_and(|tl| edge_writes(tl, t).any(|(mc, op)| mc.id == *c && newest(tl, t, &op.holder) == Some(*c) && own_leaving_write(core, tl, t, mc, op))))
 }
