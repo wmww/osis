@@ -76,22 +76,29 @@ impl Live<'_, '_> {
         Ok(e.stamp.is_some_and(|x| osis_label::verify_stamp(&w.verifying_key(), s, &e.blob, &e.wrap, &x).is_ok()))
     }
 
-    /// Entry `e` is of role commit `c` that a recorded step of S registers, stamped under that
-    /// step's parent: a source standing there takes it before the step is registered
-    /// (spec/sync-ids.md §6 Steps), so it keeps that stamp.
-    fn registers_step(&mut self, s: &SyncId, c: &CommitId, e: &Entry) -> Result<bool> {
-        let Some(stamp) = e.stamp else { return Ok(false) };
+    /// The parents of the recorded steps of S whose epochs depend on role commit `c`
+    /// (`Engine::step_needs`), earliest first: an entry of `c` keeps a stamp under one, so a
+    /// source standing there takes it before the step is registered (spec/sync-ids.md §6 Steps).
+    fn step_parents(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<osis_label::Step>> {
         if !self.cx.engine.read_facts(s, c)?.role {
-            return Ok(false);
+            return Ok(Vec::new());
         }
-        let Some(path) = self.cx.store.path(s)? else { return Ok(false) };
+        let Some(path) = self.cx.store.path(s)? else { return Ok(Vec::new()) };
+        let mut out = Vec::new();
         for w in path.steps.windows(2) {
             let [(parent, _), (step, _)] = w else { continue };
-            if osis_label::verify_stamp(&parent.keys.write, s, &e.blob, &e.wrap, &stamp).is_ok() && self.cx.engine.step_needs(s, &step.id())?.contains(c) {
-                return Ok(true);
+            if self.cx.engine.step_needs(s, &step.id())?.contains(c) {
+                out.push(parent.clone());
             }
         }
-        Ok(false)
+        Ok(out)
+    }
+
+    /// Entry `e` is of role commit `c` that a recorded step of S registers, stamped under that
+    /// step's parent (`step_parents`).
+    fn registers_step(&mut self, s: &SyncId, c: &CommitId, e: &Entry) -> Result<bool> {
+        let Some(stamp) = e.stamp else { return Ok(false) };
+        Ok(self.step_parents(s, c)?.iter().any(|p| osis_label::verify_stamp(&p.keys.write, s, &e.blob, &e.wrap, &stamp).is_ok()))
     }
 
     /// `c`'s body under `s` as a fresh encryption (logging again, a deposit, a body with no held
@@ -180,7 +187,19 @@ impl Ground for Live<'_, '_> {
     }
     fn restamp(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         let Some(e) = self.cx.store.entry(s, b)? else { return Ok(()) };
-        let Some(w) = stamp_key(self.cx, s)? else { return Ok(()) };
+        if stamp_key(self.cx, s)?.is_none() {
+            return Ok(());
+        }
+        // a role commit a recorded step registers under the earliest such step's parent whose
+        // write key is held (`registers_step`), anything else under the served head
+        let mut w = None;
+        if let Some(c) = self.cx.engine.blob_commit(b)? {
+            let creds = self.cx.engine.read_credentials(s)?;
+            for p in self.step_parents(s, &c)? {
+                w = w.or_else(|| creds.as_ref().and_then(|cr| cr.keys.get(&p.id())).and_then(|k| k.write.clone()));
+            }
+        }
+        let Some(w) = w.or(stamp_key(self.cx, s)?) else { return Ok(()) };
         let stamp = osis_label::sign_stamp(&w, s, b, &e.wrap, e.role);
         let own = e.own;
         self.cx.store.log(s, Entry { stamp: Some(stamp), deposited: false, own: true, ..e }, None, None)?;
