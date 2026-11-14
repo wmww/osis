@@ -1007,6 +1007,38 @@ pub fn contacts() -> World {
     })
 }
 
+/// `contacts` with node 2 paired to node 1's account (`World::pair`: the product's pairing,
+/// its synced group a copy of node 1's), quiet: two sibling nodes and a contact.
+pub fn siblings() -> World {
+    fixture("siblings", || {
+        let mut w = World::new(0);
+        w.add_node();
+        w.add_node();
+        history::introduce(&mut w);
+        w.pair(1);
+        w.run();
+        w
+    })
+}
+
+/// `siblings`, but only node 0's account imported account 1's contact card (account 1 holds
+/// nothing of account 0's: a stranger to it), quiet.
+pub fn stranger_siblings() -> World {
+    fixture("stranger siblings", || {
+        let mut w = World::new(0);
+        w.add_node();
+        w.add_node();
+        let card = w.make_link(1, w.node(1).profile.expect("a profile"), osis_base::Role::Read);
+        w.redeem(0, &card);
+        w.run();
+        assert_eq!(w.redeem(0, &card), osis_sync::types::Waiting::Done, "node 0 redeems node 1's card");
+        history::file(&mut w, 0, Vec::new(), vec![card.target]);
+        w.pair(1);
+        w.run();
+        w
+    })
+}
+
 /// One step of a scripted run: what a random layer generates and `play` replays. Printed as
 /// Rust on failure (`osis_base::testenv::Script`; `use crate::harness::script::*` brings every
 /// name a printed step uses).

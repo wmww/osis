@@ -886,16 +886,28 @@ impl Engine {
     /// that is not on the account's devices actor is granted admin there (spec/permissions.md
     /// §1: a grant of read or above on D makes a node of P); one that is (stranded) is re-sealed. Returns the
     /// commits to send it directly: the grant or re-seal, D's and P's certificates and D's
-    /// `label.0` commits (the new node downloads the rest under the home label). A holder of
-    /// sync alone on D is no node: it is granted admin as any other.
+    /// `label.0` commits (the new node downloads the rest under the home label), and last the
+    /// new node's synced group when the account lists none for it (spec/sync-set.md §1: a copy
+    /// of this node's synced group's items and subgroups). A holder of sync alone on D is no
+    /// node: it is granted admin as any other.
     pub fn pair(&mut self, node: &Tid) -> Result<(Done, Vec<CommitId>)> {
-        let d = self.account()?.ok_or(Error::Misuse("not a node of an account"))?.1;
+        let (p, d) = self.account()?.ok_or(Error::Misuse("not a node of an account"))?;
         let n = *node;
         if !self.knows(&n) {
             return Err(Error::UnknownThing(n));
         }
         let holder = self.roster(&d).get(&n).is_some_and(|e| e.role >= Role::Read && e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())));
         let done = if holder { self.reshare(&d, &n)? } else { self.grant(&d, &n, &admin_edge())? };
+        let listed = self.get_typed(&d, &ct::SYNCED)?.is_some_and(|m| m.contains_key(&n));
+        let synced = if listed {
+            None
+        } else {
+            let mine = match self.synced_group()? {
+                Some(g) => self.get_typed(&g, &ct::GROUP)?.unwrap_or_default(),
+                None => ct::Group::default(),
+            };
+            self.run(|tx| synced_group_in(tx, p, d, n, mine, None))?.1
+        };
         let mut all: Vec<CommitId> = self.certificates(&d).commits.into_keys().collect();
         let label = osis_base::Ak::new("sync.0").map_err(|_| Error::Misuse("ak"))?;
         all.extend(self.core.ix.by_aspect.get(&(d, label)).into_iter().flatten().map(|(_, c)| *c));
@@ -904,8 +916,10 @@ impl Engine {
         let seeds = osis_base::Ak::new("account.0").map_err(|_| Error::Misuse("ak"))?;
         all.extend(self.core.ix.by_aspect.get(&(d, seeds)).into_iter().flatten().map(|(_, c)| *c));
         all.sort_by_key(|c| self.header(c).map(|h| h.ts));
-        // the grant or re-seal last (owed to the node in its transaction: `deliveries`)
+        // the grant or re-seal last (owed to the node in its transaction: `deliveries`), then
+        // the synced group, which the grant lets it read
         all.extend(done.commits.iter().copied());
+        all.extend(synced);
         // each commit once, in the order collected
         let mut seen = BTreeSet::new();
         all.retain(|c| seen.insert(*c));
@@ -952,21 +966,24 @@ impl Core {
     }
 }
 
-/// This node's synced group (spec/sync-set.md §1): a plain group whose first admin is `d`, an item
-/// of `d`'s `group.0`, listing `d` as a subgroup, and `synced^.0` on `d` naming it for this node:
-/// one commit after the role commit, signed as account `p`. It also lists `profile` as an item of
-/// `d`: every node of the account syncs it (its dial list, spec/sync-set.md §1).
-fn synced_group_in(tx: &mut Tx<'_>, p: Tid, d: Tid, profile: Tid) -> Result<Tid> {
-    let me = tx.core.id.tid();
+/// Node `node`'s synced group (spec/sync-set.md §1): a plain group whose first admin is `d`
+/// holding `copy`'s items and subgroups and `d` as a subgroup, an item of `d`'s `group.0`, and
+/// `synced^.0` on `d` naming it for `node`: one commit, signed as account `p`. At the account's
+/// creation it also lists `profile` as an item of `d`: every node of the account syncs it (its
+/// dial list, spec/sync-set.md §1).
+fn synced_group_in(tx: &mut Tx<'_>, p: Tid, d: Tid, node: Tid, mut copy: ct::Group, profile: Option<Tid>) -> Result<(Tid, Option<CommitId>)> {
     let mut m = Mutation::new();
     let g = m.create(thing_record(d, &mut *tx.rng));
     m.sign_as(p);
-    m.set(g, &ct::GROUP, &ct::Group { items: BTreeSet::new(), subgroups: [d].into() })?;
+    copy.subgroups.insert(d);
+    m.set(g, &ct::GROUP, &copy)?;
     m.op(d, &ct::GROUP, PathOp { path: vec![PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(g)) })?;
-    m.op(d, &ct::GROUP, PathOp { path: vec![PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(profile)) })?;
-    m.op(d, &ct::SYNCED, PathOp { path: vec![PathSeg::Key(Value::Tid(me))], op: Op::Set(Value::Tid(g)) })?;
-    Engine::commit_tx(tx, m)?;
-    Ok(g)
+    if let Some(profile) = profile {
+        m.op(d, &ct::GROUP, PathOp { path: vec![PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(profile)) })?;
+    }
+    m.op(d, &ct::SYNCED, PathOp { path: vec![PathSeg::Key(Value::Tid(node))], op: Op::Set(Value::Tid(g)) })?;
+    let c = Engine::commit_tx(tx, m)?;
+    Ok((g, c))
 }
 
 fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: CreationRecord, keys: &AccountEpochKeys) -> Result<(Tid, Option<CommitId>)> {
@@ -992,7 +1009,8 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     m.set(d, &ct::ACCOUNT, &ct::Account { seeds: [(signing, ct::AccountSeed { seed: keys.seed().expose().to_vec(), under })].into() })?;
     let c = Engine::commit_tx(tx, m)?;
     rotation::record(tx, d, &rot)?;
-    synced_group_in(tx, p, d, profile)?;
+    let me = tx.core.id.tid();
+    synced_group_in(tx, p, d, me, ct::Group::default(), Some(profile))?;
     Ok((profile, c))
 }
 
