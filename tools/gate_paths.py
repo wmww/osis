@@ -45,7 +45,8 @@ def git(*args, check=True):
 
 
 def changed(base, rev):
-    """Every path changed from base to rev (None: the working tree, untracked files included)."""
+    """Every path changed from base to rev (None: the working tree, untracked files included); a
+    rename is both its paths, so a file moved from core into libs/kit/ still selects core."""
     out = git("diff", "--no-renames", "--name-only", "-z", base, *([rev] if rev else []), "--")
     if not rev:
         out += git("ls-files", "--others", "--exclude-standard", "-z")

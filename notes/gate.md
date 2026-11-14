@@ -5,7 +5,7 @@ The reviewer gates once per branch in the branch's worktree; a worker never does
 
 ## Running it
 `tools/gate.sh [--all] [--base REV] [--plan]` from the worktree root, after `git fetch && git rebase origin/main` and reading the rebase's result, and after checking that `git diff origin/main -- tools/known_failures.txt` shows only the branch's own change (its union merge can bring back a line the branch removed beside main's addition). No pipe, no `tools/heavy` around it (it takes the lock itself; a nested one refuses). In the background, end the wrapper with the gate's code and read the log's last line before merging: `tools/gate.sh > $L 2>&1; e=$?; echo gate=$e >> $L; exit $e` (`...; echo gate=$?` exits 0). It fetches origin/main and uses it as the base, never local main (coordinators push from worktrees, so local main lags; a diff against it counts other branches' merged work as this one's). It refuses a tree mid-rebase or with conflicts, and a HEAD that lacks origin/main.
-- `--base REV`: diff against REV instead of the merge base with origin/main. `--all`: select every crate (as on origin/main, or with no merge base). `--plan`: print `core= gui= unify= select=all|diff|none` and exit.
+- `--base REV`: diff against REV instead of the merge base with origin/main. `--all`: select every crate (as on origin/main, or with no merge base). `--plan`: print `core= gui= unify= select=all|diff|none` (and `doc=` with the comments path's doctest crates) and exit.
 - Exit 0 `== gate passed`; 3 `== gate FAILED, KNOWN failures only`; 1 `== gate FAILED: N NEW, M KNOWN`; 2 bad use or refused.
 - Then the coordinator fast-forwards main (notes/coordination.md, The task loop). Task branches are never pushed.
 
