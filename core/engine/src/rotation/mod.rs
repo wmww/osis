@@ -1061,7 +1061,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn reseal_after_pass(&mut self, actor: &Tid) -> Result<Done> {
         let now = self.now();
-        self.note_complete_pass(actor, now)?;
+        self.note_complete_pass_now(actor, now);
         self.reseal_due(actor)
     }
 
