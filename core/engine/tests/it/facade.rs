@@ -2371,8 +2371,8 @@ fn repro_a_forgers_earlier_accept_takes_no_sync_id_from_a_later_thing_spec_sync_
     assert_eq!(e.sync_set().unwrap().ids.get(&s), Some(&(t, Holding::Unread)), "s syncs t");
 }
 
-// spec/sync.md §3 (Sync record: a closed sync ID leaves its thing's entry; entries otherwise only
-// added), spec/crdt.md §5.6 (a map removal hides every nested write into the entry it removed):
+// spec/sync.md §3 (Sync record: a closed sync ID leaves its thing's entry, entries otherwise only
+// added), spec/crdt.md §5.6 (map: a removal hides every nested write into the entry it removed):
 // one node of an account closing the only sync ID of a thing's entry while another node of it
 // concurrently keeps a second sync ID of the thing leaves that keep standing at both.
 #[test]
