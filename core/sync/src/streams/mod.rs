@@ -357,14 +357,7 @@ impl Streams {
 
     /// Settles every connection: pushes under `follow`, Pulls and Fetches due, room regained.
     pub fn tick(&mut self, ctx: &mut Ctx) -> Result<bool> {
-        // S left this node (spec/sync-set.md §3): what its places hold of it goes, so a later
-        // join reads it from the start
-        for s in self.shreds.added() {
-            for place in self.places.values_mut() {
-                place.forget(&s);
-            }
-            self.known.forget_conns(&s);
-        }
+        self.forget_shredded();
         let mut acted = self.room_grew(ctx)?;
         let conns: BTreeSet<ConnId> = self.serve.keys().chain(self.pull.keys()).copied().collect();
         for c in conns {
@@ -376,6 +369,19 @@ impl Streams {
             return Err(e.into());
         }
         Ok(acted)
+    }
+
+    /// S left this node (spec/sync-set.md §3): what places and connections' sources hold of it
+    /// in memory goes (its rows went with the shred), so a later join reads it from the start.
+    /// Run before any place is read (`place`): a member leaving S later in the step of its shred
+    /// must find no position to keep, else it writes S's rows back after the shred.
+    pub(super) fn forget_shredded(&mut self) {
+        for s in self.shreds.added() {
+            for place in self.places.values_mut() {
+                place.forget(&s);
+            }
+            self.known.forget_conns(&s);
+        }
     }
 
     /// Notes a store failure: the step fails at the next settle.

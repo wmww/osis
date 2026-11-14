@@ -246,8 +246,9 @@ fn entry_of(b: BlobId, wrap: Wrap, stamp: Option<Stamp>, bytes: &[u8]) -> Entry 
 
 impl Streams {
     /// The source's place, held in memory while a connection pulls from it: a record's read from
-    /// its rows first.
+    /// its rows first. Never one of a shredded S (`forget_shredded`).
     fn place(&mut self, store: &Store, src: Source) -> &mut Place {
+        self.forget_shredded();
         if !self.places.contains_key(&src) {
             let p = match src {
                 Source::Record(rec) => match store.with_read(|t| Place::load(t, &rec)) {
