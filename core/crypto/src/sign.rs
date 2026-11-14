@@ -66,7 +66,6 @@ impl Domain {
             Domain::Deposit => "verify: deposit",
             Domain::Delete => "verify: delete",
             Domain::LanAnnounce => "verify: lan announce",
-            Domain::Possession => "verify: possession",
             Domain::Inner => "verify: inner",
             Domain::Merge => "verify: merge",
             Domain::ConnectionProof => "verify: connection proof",
