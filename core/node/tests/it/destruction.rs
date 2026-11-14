@@ -2711,3 +2711,52 @@ fn a_forgotten_teams_rotation_leaves_no_index_row_spec_commits_5() {
         net.engine(n).check_index();
     }
 }
+
+// spec/commits.md §5 (Destruction), spec/permissions.md §5.2 (Position) and §6: an admin of t by its
+// grant on t alone destroys t, and another admin, not having heard, removes it on t in the same
+// `ts`, its frontier omitting the request. The tie orders the request before the removal, which
+// takes its right: t lives at every node, whichever author's tid is lower and whichever of the
+// two each node took first (a node that applied the request first fetches what it dropped again,
+// spec/commits.md §5: A destruction that falls)
+#[test]
+fn a_destruction_and_its_requesters_removal_at_one_ts_read_alike_whatever_the_tids_spec_commits_5() {
+    for (req, dem) in [(1, 2), (2, 1)] {
+        for removal_first in [true, false] {
+            let (mut net, (n, g, t)) = Net::cached(&format!("destruction::tie/{req}"), move || {
+                let (mut net, _host, n, g, []) = hosted::<4, 0>(&[(1, Role::Admin), (2, Role::Admin), (3, Role::Write)], [], true);
+                let (t, _) = made(&mut net, n[0], g);
+                let tr = net.tid(n[req]);
+                set_edge(net.engine(n[0]), t, tr, Role::Admin);
+                demote(&mut net, n[0], g, tr, Role::Read);
+                net.run();
+                (net, (n, g, t))
+            });
+            let _ = g;
+            let tr = net.tid(n[req]);
+            for i in n {
+                net.set_online(i, false);
+            }
+            net.advance(10);
+            let rq = purge_thing(&mut net, n[req], t);
+            let mut m = Mutation::new();
+            let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+            m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(tr)) }).unwrap();
+            m.op(t, &ct::ROLES, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(tr))], op: Op::Set(edge.to_value()) }).unwrap();
+            m.frontier(ct::Frontier::default().to_value());
+            let rm = net.engine(n[dem]).commit(m).unwrap().unwrap();
+            let at = format!("requester {req}, remover {dem}, removal first {removal_first}");
+            assert_eq!(net.engine(n[req]).header(&rq).unwrap().ts, net.engine(n[dem]).header(&rm).unwrap().ts, "{at}: one ts");
+            let rq = net.engine(n[req]).package(&rq).unwrap().unwrap().bytes;
+            let rm = net.engine(n[dem]).package(&rm).unwrap().unwrap().bytes;
+            let lots = if removal_first { [&rm, &rq] } else { [&rq, &rm] };
+            for i in n {
+                for p in lots {
+                    let _ = net.engine(i).ingest(p, Vec::new());
+                    net.engine(i).reexamine().unwrap();
+                }
+                assert!(net.engine(i).knows(&t), "{at}: node {i}: t lives");
+                assert!(!net.engine(i).roster(&t).is_empty(), "{at}: node {i}: its roster");
+            }
+        }
+    }
+}

@@ -39,6 +39,13 @@ pub enum Validity {
     Invalid { by: Option<Point> },
 }
 
+/// Whether a delta of a commit stamped `ts` is valid by the re-grant bound `from`
+/// (`Timeline::valid_from`): judged at the start of its `ts` (§5.2, Position), it is after `p`
+/// only at a later `ts`.
+pub fn regranted(from: Option<Option<Point>>, ts: Ts) -> bool {
+    from.is_some_and(|b| b.is_none_or(|p| p <= Point::start(ts)))
+}
+
 impl Timeline {
     /// §5.2: is a delta on `thing` of the commit at `at` (its author node, `ts` and commit ID)
     /// valid, addenda aside (`Vouching`)? Judged at the start of its `ts` (§5.2, Position).
@@ -61,8 +68,8 @@ impl Timeline {
 
     /// Where `node`'s deltas on `thing` needing `required` start being valid whatever their
     /// commit (`delta_valid`'s re-grant case): `Some(None)` every one, `Some(Some(p))`
-    /// those at or after `p`, `None` no such bound (judge each with `delta_valid`). For judging
-    /// many deltas of one author at once.
+    /// those after `p` (`regranted`), `None` no such bound (judge each with `delta_valid`). For
+    /// judging many deltas of one author at once.
     pub fn valid_from(&self, node: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
         if self.role(node, thing, At::END) >= Some(required) { self.first_held(node, thing, required) } else { None }
     }
@@ -74,7 +81,7 @@ impl Timeline {
         let pos = Point::start(at.ts);
         // A re-grant makes valid *again*: only writes from the first point X held `required`
         // on the thing.
-        if self.valid_from(&x, thing, required).is_some_and(|s| s.is_none_or(|p| p <= pos)) {
+        if regranted(self.valid_from(&x, thing, required), at.ts) {
             return Validity::Valid;
         }
         let held = self.role(&x, thing, At::before(pos)) >= Some(required);

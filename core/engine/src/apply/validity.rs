@@ -735,11 +735,10 @@ impl<'a> Judge<'a> {
         }
         let tl = self.core.timelines.get(&h.actor);
         let from = *self.acts.entry((h.author, h.actor)).or_insert_with(|| tl.and_then(|tl| tl.valid_from(&h.author, &h.actor, Role::Write)));
-        let point = Point { ts: h.ts, node: h.author, commit: *id };
-        if from.is_some_and(|b| b.is_none_or(|b| b <= Point::start(h.ts))) {
+        if osis_perm::content::regranted(from, h.ts) {
             return true;
         }
-        acts_on(tl, h, id) || plain_commit(h) && self.vouched(&h.actor, point)
+        acts_on(tl, h, id) || plain_commit(h) && self.vouched(&h.actor, Point { ts: h.ts, node: h.author, commit: *id })
     }
 
     pub(crate) fn part(&mut self, h: &Header, id: &CommitId, ai: usize) -> bool {
@@ -796,7 +795,7 @@ impl<'a> Judge<'a> {
         if !core.ix.rotation_role.contains_key(&(*id, ai)) && ak != "secrets.0" {
             let required = required_role(ak);
             let from = *self.from.entry((h.author, required)).or_insert_with(|| tl.valid_from(&h.author, &a.tid, required));
-            if from.is_some_and(|b| b.is_none_or(|b| b <= Point::start(h.ts))) {
+            if osis_perm::content::regranted(from, h.ts) {
                 debug_assert!(self.valid_on(tl, h, id, ai, a), "valid_from disagrees with delta_valid");
                 return true;
             }

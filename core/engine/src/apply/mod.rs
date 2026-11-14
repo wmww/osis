@@ -741,11 +741,11 @@ fn thing_wait(
 ) -> Option<Reason> {
     // a destroyed thing is unknown, but for what judges its destruction written before it
     // (`retention::destroy`); a destruction by expiry keeps no record but for a dependent
-    let destroyed = |id: &CommitId| !crate::retention::destroy::judges_destruction(a.ak.as_str()) || a.ak.as_str() != osis_commit::retention::CREATED && crate::retention::destroy::Destruction::of(core, &a.tid).is_some_and(|e| e.after(h, id));
+    let destroyed = || !crate::retention::destroy::judges_destruction(a.ak.as_str()) || a.ak.as_str() != osis_commit::retention::CREATED && crate::retention::destroy::Destruction::of(core, &a.tid).is_some_and(|e| e.after(h));
     // destroyed for good: no minting is taken, and nothing on it without its record held (a
     // dependent's verdict brings it back, `retention::destroy::record_back`)
     let for_good = || core.ix.destroyed_for_good.contains(&a.tid) && (a.ak.as_str() == osis_commit::retention::CREATED || core.created(&a.tid).is_none());
-    if record(&a.tid).is_none() || core.destroyed(&a.tid) && destroyed(&h.id()) || for_good() {
+    if record(&a.tid).is_none() || core.destroyed(&a.tid) && destroyed() || for_good() {
         return Some(Reason::UnknownCreated(a.tid));
     }
     let mut chain = vec![a.tid];

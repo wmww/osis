@@ -3982,3 +3982,46 @@ fn a_removed_writers_write_forged_at_the_removals_ts_is_lost_everywhere_spec_per
         }
     }
 }
+
+// spec/permissions.md §5.1 (falls audit; security), §5.2 Position: Bob, an admin, is removed; a copy
+// of his node from before he learned of it grants Carol admin stamped at exactly the removal's
+// `ts`, sent only after the removal reached every node. Ordered before the removal or after it by
+// the tids, the grant is no part of the removal's frontier: Carol's role is what Alice gave her at
+// every node, whatever the tids.
+#[test]
+fn a_removed_admins_grant_forged_at_the_removals_ts_counts_nowhere_spec_perm_5_1() {
+    for [a, b, c] in [[0, 1, 2], [1, 0, 2], [2, 1, 0], [1, 2, 0]] {
+        let mut lp = net(3, 0);
+        lp.sync_all().unwrap();
+        let t = new_thing(&mut lp, a);
+        let (bob, carol) = (lp.peers[b].engine.me(), lp.peers[c].engine.me());
+        lp.peers[a].engine.grant(&t, &bob, &edge(Role::Admin)).unwrap();
+        lp.peers[a].engine.grant(&t, &carol, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(DAY);
+        let mut unaware = lp.peers[b].copy().unwrap();
+        let rm = lp.peers[a].engine.demote(&t, &osis_node::flows::Demotion { holder: bob, new: None, retain: None }).unwrap().commits;
+        for _ in 0..3 {
+            lp.sync_all().unwrap();
+        }
+        let fs = unaware.engine.grant(&t, &carol, &edge(Role::Admin)).unwrap().commits;
+        let f = *fs.last().unwrap();
+        let ts = unaware.engine.header(&f).unwrap().ts;
+        let at = format!("Alice {a}, Bob {b}, Carol {c}");
+        assert!(rm.iter().all(|r| lp.peers[a].engine.header(r).unwrap().ts == ts), "{at}: stamped at the removal's ts");
+        for f in &fs {
+            let pk = unaware.engine.package(f).unwrap().unwrap();
+            for i in 0..3 {
+                let _ = lp.deliver(i, &pk);
+            }
+        }
+        for _ in 0..3 {
+            lp.sync_all().unwrap();
+        }
+        for i in 0..3 {
+            assert!(lp.peers[i].engine.commit_ids().contains(&f), "{at}: peer {i} holds the forged grant");
+            assert_eq!(lp.peers[i].engine.roster(&t).get(&carol).map(|e| e.role), Some(Role::Read), "{at}: peer {i}: Carol's role");
+            assert_eq!(lp.peers[i].engine.roster(&t).get(&bob), None, "{at}: peer {i}: Bob removed");
+        }
+    }
+}

@@ -58,11 +58,12 @@ pub enum End {
 }
 
 impl End {
-    /// Whether a part of commit `id` (header `h`) is written after this end.
-    fn after(&self, h: &Header, id: &CommitId) -> bool {
+    /// Whether a part of a commit with header `h` is written after this end.
+    fn after(&self, h: &Header) -> bool {
         match self {
             End::At(x, None) => *x <= h.ts.wall_ms().0,
-            End::At(_, Some(p)) => *p < Point { ts: h.ts, node: h.author, commit: *id },
+            // stamped after the request: one at its `ts` is concurrent with it (spec/crdt.md §2.2)
+            End::At(_, Some(p)) => p.ts < h.ts,
             End::Never => false,
         }
     }
@@ -98,10 +99,10 @@ impl Destruction {
         witness(core, t).map(|w| Destruction(w.standing.end))
     }
 
-    /// Whether a part of commit `id` (header `h`) is written after the destruction: nobody writes a
+    /// Whether a part of a commit with header `h` is written after the destruction: nobody writes a
     /// thing after its destruction, so such a part is a part on an unknown thing, whatever its aspect.
-    pub(crate) fn after(&self, h: &Header, id: &CommitId) -> bool {
-        self.0.after(h, id)
+    pub(crate) fn after(&self, h: &Header) -> bool {
+        self.0.after(h)
     }
 }
 
@@ -371,7 +372,7 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
     // kept or not, an edge write on it stamped after its destruction goes (`Destruction::after`), judged
     // once while the late writes are still held
     let destruction = Destruction::of(tx.core, t);
-    let late = |core: &Core, id: &CommitId| destruction.as_ref().is_some_and(|e| core.ix.commits.get(id).is_some_and(|m| e.after(&m.header, id)));
+    let late = |core: &Core, id: &CommitId| destruction.as_ref().is_some_and(|e| core.ix.commits.get(id).is_some_and(|m| e.after(&m.header)));
     let edge_commits: Vec<CommitId> = tx.core.ix.held.commits_on(t).iter().map(|c| c.id).filter(|c| !keep || late(tx.core, c)).collect();
     for id in &edge_commits {
         let parts = crate::apply::edge_parts(tx, id)?;

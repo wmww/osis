@@ -82,8 +82,8 @@ fn names(p: &Header, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
 }
 
 /// Whether a snapshot this node would write as `who` stamped `ts` (author and actor `who`) holds
-/// the right over held body `(tid, ak)` of `c` (`holds_right` for a snapshot not written yet; its ID
-/// sorts after every commit of `who` at `ts`). A purge-on-replace cover asks it
+/// the right over held body `(tid, ak)` of `c` (`holds_right` for a snapshot not written yet: judged
+/// at the start of `ts`, its ID never counts). A purge-on-replace cover asks it
 /// (`replace::settle_none`).
 pub(super) fn would_hold_right(core: &Core, who: &Tid, ts: Ts, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
     let Some(m) = core.ix.commits.get(c) else { return false };

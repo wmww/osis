@@ -149,8 +149,9 @@ impl Timeline {
 }
 
 /// Verifies from certificates alone (§4) that `node`, a key actor whose tid commits to its
-/// key, held `required` on `thing` just before `at`. The signature is the caller's.
+/// key, held `required` on `thing` just before its commit at `at` (at the start of its `ts`,
+/// §5.2 Position). The signature is the caller's.
 pub fn verify(certs: &dyn HeldSet, node: &Tid, thing: &Tid, at: Point, required: Role) -> bool {
     let tl = Timeline::evaluate(certs);
-    tl.records().is_key(node) && tl.role(node, thing, At::before(at)) >= Some(required)
+    tl.records().is_key(node) && tl.role(node, thing, At::before(Point::start(at.ts))) >= Some(required)
 }
