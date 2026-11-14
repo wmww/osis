@@ -643,22 +643,24 @@ impl Node {
         let _ = self.store.gone(crate::store::Source::Conn(conn));
     }
 
-    /// Every module settled, again while one acted: opens before read and inbox, so they act on
-    /// this round's shared set.
+    /// Every module settled, again while one acted or the engine's per-entry values moved
+    /// (`Engine::follow`, before each module's settle: a module's `due` sees an entry move only
+    /// once it is refreshed): opens before read and inbox, so they act on this round's shared set.
     fn settle(&mut self, out: &mut Vec<Out>) -> Result<()> {
         let mut moved = Vec::new();
         loop {
             self.rounds += 1;
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
-            let mut acted = self.driver.store.settle(cx.engine, cx.store, cx.now)?;
+            let mut acted = cx.engine.follow()?;
+            acted |= self.driver.store.settle(cx.engine, cx.store, cx.now)?;
             acted |= self.unread.settle(&mut cx, &self.streams)?;
             acted |= self.opens.settle(&mut cx, sessions, &self.unread, &mut moved)?;
             self.moved(&mut moved, out);
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
             let mut fetches = Vec::new();
-            cx.engine.follow()?;
+            acted |= cx.engine.follow()?;
             acted |= self.read.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status, &self.unread, &mut fetches)?;
             for (conn, s, b) in fetches {
                 let mut cx = cx!(self, out);
@@ -666,7 +668,7 @@ impl Node {
             }
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
-            cx.engine.follow()?;
+            acted |= cx.engine.follow()?;
             acted |= self.inbox.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status)?;
             acted |= self.streams.settle(&mut cx, sessions, &self.opens, &mut self.driver.reported)?;
             self.reports(out);
