@@ -520,7 +520,8 @@ fn a_wait_on_deliveries_ends_once_the_grant_is_taken_spec_sync_inbox_2() {
 
 // spec/permissions.md §3 (Own secrets add only): node 0 makes group G (secrets of its own) and T
 // under it (plain, first admin G, an item of G); node 1's account reads G. T gets secrets of its
-// own, boxed to G like any holder: node 1 reads T's next write through G, with nothing granted on T.
+// own, boxed to G like any holder: node 1 reads T's next write through G, with nothing granted on T;
+// the delivery to G's inbox (node 0 reads it) ends once logged (spec/sync-inbox.md §2 Re-send).
 #[test]
 fn own_secrets_keep_a_reader_of_the_first_admin_reading_spec_perm_3() {
     let mut w = contacts();
@@ -544,7 +545,9 @@ fn own_secrets_keep_a_reader_of_the_first_admin_reading_spec_perm_3() {
     file(&mut w, 1, Vec::new(), vec![g]);
     w.run();
     assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("x".into())), "T read through G while plain");
-    w.write(0, |e| e.give_own_secrets(&t)).unwrap();
+    let owed = w.engine(0).give_own_secrets(&t).map(|_| w.engine(0).deliveries().unwrap()).unwrap();
+    assert!(owed.iter().any(|(_, to)| *to == g), "the rotation goes to G's inbox: {owed:?}");
+    w.deliver(0, osis_sync::types::Input::Wrote);
     w.write(0, |e| {
         let mut m = Mutation::new();
         m.set(t, &ak, &Value::Str("y".into())).unwrap();
@@ -552,4 +555,6 @@ fn own_secrets_keep_a_reader_of_the_first_admin_reading_spec_perm_3() {
     });
     w.run();
     assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("y".into())), "T read through G with secrets of its own");
+    // the rotation's delivery to G's inbox, which node 0 reads, ends once logged: owed neither twice nor for good
+    assert!(w.engine(0).deliveries().unwrap().is_empty(), "nothing owed: {:?}", w.engine(0).deliveries().unwrap());
 }
