@@ -679,7 +679,7 @@ fn watch_status_and_stranded_spec_permissions_3() {
     let (mut w, _, [da]) = hosted_accounts([1]);
     let (tx, rx) = std::sync::mpsc::channel();
     let _sub = da.on_status_change(move |_, st| {
-        let _ = tx.send(st.unwrap());
+        let _ = tx.send(st);
     }).unwrap();
     w.run();
     let home = da.home();

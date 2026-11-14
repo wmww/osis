@@ -280,7 +280,7 @@ fn a_status_listener_follows_a_group_at_its_node() {
     x.connect_p();
     x.to_node();
     let (tx, rx) = channel();
-    let _sub = x.p.on_status_change(move |_, s| drop(tx.send(s.unwrap()))).unwrap();
+    let _sub = x.p.on_status_change(move |_, s| drop(tx.send(s))).unwrap();
     let next_until = |what: &str, f: &dyn Fn(&osis::Status) -> bool| loop {
         let s = rx.recv_timeout(W).unwrap_or_else(|_| panic!("not reached: {what}"));
         if f(&s) {
@@ -331,7 +331,7 @@ fn a_status_listener_follows_a_group_at_its_node() {
     // a thin client's listener: the node's groups at the first call and at a change there
     let c = x.thin("c1");
     let (ct, cr) = channel();
-    let _c = c.on_status_change(move |_, s| drop(ct.send(s.unwrap()))).unwrap();
+    let _c = c.on_status_change(move |_, s| drop(ct.send(s))).unwrap();
     assert!(cr.recv_timeout(W).unwrap().groups.contains_key(&x.g), "the first call has it");
     x.net.partition("n", "s");
     x.set_n("n2");
@@ -348,7 +348,7 @@ fn status_in_a_callback_shows_a_group_at_its_node() {
     let (tx, rx) = channel();
     let g = x.g;
     let _sub = x.p.on_status_change(move |db, s| {
-        let _ = tx.send((s.unwrap().groups.get(&g).map(|s| s.state), db.status().unwrap().groups.get(&g).map(|s| s.state)));
+        let _ = tx.send((s.groups.get(&g).map(|s| s.state), db.status().unwrap().groups.get(&g).map(|s| s.state)));
     }).unwrap();
     let next_until = |what: &str, want: SyncState| loop {
         let (called, read) = rx.recv_timeout(W).unwrap_or_else(|_| panic!("not reached: {what}"));
@@ -1811,7 +1811,7 @@ fn status_and_diagnostic_watches_started_while_down_come_up() {
     assert!(matches!(c.on_grants_change(x.g, |_, _| {}), Err(Error::Network(_))));
     let (st, sr) = channel();
     let _st = c.on_status_change(move |_, s| {
-        let _ = st.send(s.unwrap().node_connections[0].connected);
+        let _ = st.send(s.node_connections[0].connected);
     }).unwrap();
     assert!(!sr.recv_timeout(W).unwrap(), "down, and says so");
     let (dt, dr) = channel();

@@ -1490,7 +1490,7 @@ impl Osis {
     /// Calls `f` with the status now (through the dispatcher) and on every change, a node that
     /// cannot be reached shown as such (`Status::node_connections`) and its groups absent until it
     /// is back.
-    pub fn on_status_change(&self, f: impl FnMut(&Osis, Result<Status>) + Send + 'static) -> Result<Subscription> {
+    pub fn on_status_change(&self, f: impl FnMut(&Osis, Status) + Send + 'static) -> Result<Subscription> {
         Ok(self.status_feed(Box::new(f)))
     }
 

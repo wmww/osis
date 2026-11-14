@@ -114,7 +114,7 @@ fn thin_client_reads_watches_posts_spec_client_port() {
 fn wait_state(db: &Osis, c: osis::Tid, done: impl Fn(&osis::GroupSync) -> bool) -> osis::GroupSync {
     const HANG: Duration = Duration::from_secs(300);
     let (tx, rx) = channel();
-    let _s = db.on_status_change(move |_, s| drop(tx.send(s.ok().and_then(|s| s.groups.get(&c).cloned())))).unwrap();
+    let _s = db.on_status_change(move |_, s| drop(tx.send(s.groups.get(&c).cloned()))).unwrap();
     let end = Instant::now() + HANG;
     let mut last = None;
     loop {

@@ -651,7 +651,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Status { watch: true } => {
             let raw = ctx.g.raw;
             let (mut f, rx) = page_sink(ctx.g.json, move |s: &osis::Status| (status_lines(s, raw).join(", "), status_json(s)));
-            let _sub = db.on_status_change(move |_, r| f(r))?;
+            let _sub = db.on_status_change(move |_, r| f(Ok(r)))?;
             stream_pages(ctx, &rx, None)
         }
         // `wait_synced` asks its peers to sync first: `sync` and `wait` are one call

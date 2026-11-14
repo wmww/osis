@@ -509,7 +509,7 @@ impl ReadOnly {
     /// status delivery (a local change, a connection's message, a connection going down or up, a
     /// change of the connections or group sources: `Locked::remerge`), and calls `f` when the
     /// result differs.
-    pub(crate) fn status_feed(&self, mut f: CallbackOf<Result<Status>>) -> Subscription {
+    pub(crate) fn status_feed(&self, mut f: CallbackOf<Status>) -> Subscription {
         // off the dispatcher, a connection not heard from yet is asked, so the first call has it
         let connections = self.follow_connections();
         if self.may_wait() {
@@ -532,7 +532,7 @@ impl ReadOnly {
                 let s = db.merged_status(local);
                 if last.as_ref() != Some(&s) {
                     last = Some(s.clone());
-                    f(db, Ok(s));
+                    f(db, s);
                 }
             });
             self.subscribe_in(l, Filter::Status, true, cb)
