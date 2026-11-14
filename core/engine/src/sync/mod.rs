@@ -495,6 +495,12 @@ impl Engine {
         self.read_credentials_now(s)
     }
 
+    /// The rotation commits superseding read epoch `e` of read sync ID `s` (spec/sync-opens.md §6:
+    /// a member opened by `e`'s read secret ends at the highest of their entries in S).
+    pub fn rotations_superseding(&mut self, s: &SyncId, e: &Epoch) -> Result<Vec<CommitId>> {
+        self.rotations_superseding_now(s, e)
+    }
+
     /// The claim key from this node's own read KEM key and the step key (spec/sync-ids.md §3).
     pub fn claim_key(&mut self, s: &SyncId, step: &StepId) -> Result<Option<SigningSecret>> {
         self.claim_key_now(s, step)

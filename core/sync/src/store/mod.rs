@@ -974,6 +974,11 @@ impl Store {
         self.lock().read(|t, _| Ok(t.log_entry_first(s, b)?))
     }
 
+    /// The position of S's head event in the log (none: no head logged).
+    pub fn head_at(&self, s: &SyncId) -> Result<Option<Position>> {
+        self.lock().read(|t, _| Ok(t.log_head_at(s)?))
+    }
+
     /// The log's last position and its deletion horizon (spec/sync-streams.md §3).
     pub fn log_bounds(&self) -> Result<(Position, Position)> {
         self.lock().read(|t, _| Ok((t.log_end()?, t.log_horizon()?)))

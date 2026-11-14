@@ -590,6 +590,11 @@ impl World {
         self.node(i).node.status()
     }
 
+    /// Where a member of S opened by `by` at node `i` would end if ended now (`Node::member_until`).
+    pub fn member_until(&mut self, i: usize, s: &osis_base::SyncId, by: &osis_sync::types::Credential) -> osis_sync::types::Position {
+        self.nodes.get_mut(i).expect("no such node").node.member_until(s, by)
+    }
+
     /// Where node `i`'s wait on `scope` stands now (`Node::wait`).
     pub fn wait(&mut self, i: usize, scope: osis_sync::types::Scope) -> osis_sync::types::Waiting {
         self.nodes.get_mut(i).expect("no such node").node.wait(scope)

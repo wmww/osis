@@ -50,11 +50,11 @@ fn a_granted_thing_is_read_once_accepted_spec_sync_inbox_2() {
 /// Node 0 makes a thing, grants node 1's account sync on it, node 1's user accepts it (at once,
 /// or after a run: `later`), node 0 writes again: node 1 keeps the thing unread with S's genesis
 /// registered and both writes held.
-fn kept_unread(later: bool) {
+fn kept_unread(later: bool) -> (World, osis_base::Tid) {
     kept_unread_away(later, false)
 }
 
-fn kept_unread_away(later: bool, away: bool) {
+fn kept_unread_away(later: bool, away: bool) -> (World, osis_base::Tid) {
     let mut w = contacts();
     let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
     let ak = Ak::new("u:v.0").unwrap();
@@ -91,6 +91,7 @@ fn kept_unread_away(later: bool, away: bool) {
     assert!(st.path(&s).unwrap().is_some(), "S's genesis registered");
     assert!(st.entries(&s).unwrap().len() >= 2, "both writes held");
     assert_eq!(w.engine(1).get(&t, &ak).unwrap(), None, "unread");
+    (w, t)
 }
 
 // spec/sync-ids.md §6 (walk: moving it, genesis first while the source's step is not known),
@@ -376,4 +377,43 @@ fn a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3() {
     w.run();
     let _script = crate::harness::play(&mut w, &[Partition(0, 1), Partition(1, 2), Partition(1, 3), Grant(0, 0, 2, Gives::Reads), Run, Remove(1, 0, 3), Run, Heal, Run, Write(0, 0), Run], String::new());
     check(&mut w);
+}
+
+// spec/sync-opens.md §6 (ended: `until`, the highest position at which an entry in S of a
+// rotation superseding that credential's epoch was first logged, else the node log's end): at
+// node 0 a member opened by node 1's read secret would end at the log's end while nothing
+// supersedes that epoch, and at the removal's rotation entry once node 1 is removed, whatever is
+// logged after it.
+#[test]
+fn an_ended_members_until_is_the_superseding_rotations_entry_spec_sync_opens_6() {
+    use osis_sync::types::Credential;
+    let (mut w, t, ak) = granted_and_read(Role::Read);
+    let s = w.engine(0).sync_ids(&t).unwrap()[0].id;
+    let e1 = *w.engine(0).epochs(&t).unwrap().read.current().last().unwrap();
+    let end = |w: &World| w.store(0).log_bounds().unwrap().0;
+    assert_eq!(w.member_until(0, &s, &Credential::ReadSecret(e1)), end(&w), "nothing supersedes it: the log's end");
+    let a1 = w.node(1).account.unwrap();
+    let c = w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap().commits[0];
+    w.run();
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Str("after".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    let blobs = w.engine(0).commit_blobs(&c).unwrap();
+    let at = blobs.iter().filter_map(|b| w.store(0).first_logged(&s, b).unwrap()).max().expect("the removal is logged under S");
+    assert!(at < end(&w), "a write logged after it");
+    assert_eq!(w.member_until(0, &s, &Credential::ReadSecret(e1)), at);
+    assert_eq!(w.member_until(0, &s, &Credential::SyncKey), end(&w), "a credential with no epoch at a reader: the log's end");
+}
+
+// spec/sync-opens.md §6 (at a node keeping S unread, `until` is the position of its head's event):
+// node 1 keeps S unread with S's genesis registered.
+#[test]
+fn an_ended_member_at_a_node_keeping_s_unread_ends_at_its_heads_event_spec_sync_opens_6() {
+    let (mut w, t) = kept_unread(false);
+    let s = w.engine(0).sync_ids(&t).unwrap()[0].id;
+    let head = w.store(1).head_at(&s).unwrap().expect("a head logged");
+    assert_eq!(w.member_until(1, &s, &osis_sync::types::Credential::SyncKey), head);
 }

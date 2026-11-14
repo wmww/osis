@@ -338,6 +338,35 @@ fn read_secret_beacons_only_to_known_actors_spec_sync_opens_4() {
     assert_eq!(filter_values(&sent).0.len(), 2, "known: the read secret too");
 }
 
+// spec/sync-opens.md §4 (audiences: judged at each generation), §2 (known actor): a peer whose
+// account becomes known on a live connection (a contact or roster change) gets the read secret's
+// beacon in a whole generation; nothing re-judges an audience while the known actors stay.
+#[test]
+fn a_peer_becoming_known_gets_the_read_secret_spec_sync_opens_4() {
+    let st = StepKeys::new(1, 0);
+    let mut r = Side::new(1);
+    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
+    r.settle();
+    let (mut adv, sent) = Adv::dials(&mut r, account(9), [2; 32]);
+    assert_eq!(filter_values(&sent).0.len(), 1, "unknown: the proof only");
+    let ack = |adv: &mut Adv, r: &mut Side, sent: &[(osis_sync::ConnId, Msg)]| {
+        for (_, m) in sent {
+            if let Msg::Beacons { id, .. } = m {
+                adv.send(r, Msg::Shared { id: *id, items: vec![osis_proto::SharedItem::code(Code::OK)] });
+            }
+        }
+    };
+    ack(&mut adv, &mut r, &sent);
+    let before = r.opens.work().audiences;
+    r.settle();
+    assert!(filter_values(&r.sent()).0.is_empty() && r.opens.work().audiences == before, "nothing moved: no generation, no audience judged");
+    r.table.know(tid(9));
+    r.settle();
+    let sent = r.sent();
+    let (values, _, base) = filter_values(&sent);
+    assert_eq!((values.len(), base), (2, None), "known now: a whole generation with the read secret");
+}
+
 // spec/sync-opens.md §5 (filter): additions naming a base the receiver does not hold are
 // answered 13; a page breaking the format is answered 2 and closes the connection.
 #[test]
@@ -750,7 +779,7 @@ fn change_one_of(n: u8) -> osis_sync::opens::Work {
     p.settle();
     assert!(p.a.open(p.ca, &sid(0)));
     let w = p.a.opens.work();
-    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
+    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds, audiences: w.audiences - before.audiences }
 }
 
 // spec/sync-opens.md §6: a change of one sync ID's credentials re-judges, tests and filters that
@@ -944,7 +973,7 @@ fn reconnect_with(n: u8) -> osis_sync::opens::Work {
     p.run();
     assert!(p.a.open(p.ca, &sid(0)));
     let w = p.a.opens.work();
-    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
+    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds, audiences: w.audiences - before.audiences }
 }
 
 // spec/sync-opens.md §3 (records): a known peer reconnecting with nothing changed costs the same

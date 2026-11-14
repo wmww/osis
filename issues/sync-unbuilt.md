@@ -11,8 +11,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - The node-wide bound on what served connections hold (spec/sync-transport.md §5 Served connections: requests waiting for the bound's room, reading paused, the largest holders closed); needs `Sessions` to hold answers back. Each connection is bounded alone.
 
 ## opens
-- `NodeHolds::until` answers 0 and `cursor_at` nothing: an ended member's `until` (spec/sync-opens.md §6) and a Lost's cursor are not computed from the log (`Store::cursor_at` exists).
-- `NodeHolds::due` reports no change of known actors (contacts, rosters): the audience (spec/sync-opens.md §4) and records' named actors are judged again only at the next generation or connection.
+- Records' named actors (spec/sync-opens.md §3: a record is honoured only while a proven actor it names is known here now) are judged at a connection's proof alone; a live connection keeps its record when the actor stops being known.
 - Static entries claimed in the walk's tests (`Tested::Static` always has no step).
 - A reader's walk tests only its recorded steps' credentials, not the sync key of each sync secret it holds (spec/sync-ids.md §6 Test): a node keeping S unread granted at an epoch no recorded step bears is never opened (`keep::a_store_granted_again_after_its_removal_reaches_the_head_spec_sync_ids_6`, ignored).
 

@@ -6,7 +6,7 @@
 use super::{Caps, Holding, OwnedSyncId, ReadCredentials, SyncSet, ThingCaps, ThingSync};
 use crate::engine::Engine;
 use crate::error::Result;
-use osis_base::{Role, SyncId, Tid};
+use osis_base::{CommitId, Role, SyncId, Tid};
 use osis_crypto::{Epoch, Secret32, SigningSecret, X25519Secret};
 use osis_label::StepId;
 use osis_schema::core_types as ct;
@@ -168,6 +168,16 @@ impl Engine {
             true => read.held_newest_first().into_iter().take(1).map(|(ep, s)| (ep, s.clone())).collect(),
             false => current,
         }
+    }
+
+    /// The held valid rotation commits of read sync ID `s`'s thing whose established epoch
+    /// supersedes read epoch `e` (spec/sync-opens.md §6: an ended member's `until`); empty when
+    /// `s` is not read here or none does.
+    pub(crate) fn rotations_superseding_now(&mut self, s: &SyncId, e: &Epoch) -> Result<Vec<CommitId>> {
+        let Some((t, _)) = self.read_sync_id(s)? else { return Ok(Vec::new()) };
+        let Some(ep) = self.core.epochs(&t) else { return Ok(Vec::new()) };
+        let read = ep.role(Role::Read);
+        Ok(read.epochs().filter(|(_, i)| i.established.is_some() && i.superseded_epochs().contains(e)).flat_map(|(_, i)| i.rotations.keys().copied()).collect())
     }
 
     /// The thing whose sync ID `s` is, read here, with its record (`sync_ids`).

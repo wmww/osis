@@ -12,6 +12,7 @@ use osis_engine::sync::J;
 use osis_label::Step;
 use osis_proto::{BehindItem, Code, DepositItem, Grant, SharedItem};
 use osis_base::memo::Effects;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// One sync ID's credentials at this node, before a connection's J filters them
@@ -88,6 +89,9 @@ pub trait Holds {
     /// The sync IDs whose `Creds` may have moved since the last call (each settled again; the
     /// product's is the memo effects' `due`).
     fn due(&mut self) -> Vec<SyncId>;
+    /// Whether the actors known here (spec/sync-opens.md §2 Known actor: contacts, rosters) moved
+    /// since the last call: each connection's audience is judged again (§4 Audiences).
+    fn known_moved(&mut self) -> bool;
     /// S's credentials, `None` when S is not in the sync set.
     fn creds(&mut self, s: &SyncId) -> Option<Arc<Creds>>;
     /// The actors a connection's proofs count for now (spec/sync-opens.md §2): its account only
@@ -134,11 +138,14 @@ pub trait Holds {
 pub struct Fx {
     set: crate::set::SetFollow,
     creds: Effects<SyncId, Option<[u8; 32]>>,
+    known: Effects<(), Arc<BTreeSet<Tid>>>,
 }
 
 impl Default for Fx {
     fn default() -> Fx {
-        Fx { set: crate::set::SetFollow::new("opens sync set"), creds: Effects::new("opens credentials") }
+        let mut known = Effects::new("opens known actors");
+        known.want(());
+        Fx { set: crate::set::SetFollow::new("opens sync set"), creds: Effects::new("opens credentials"), known }
     }
 }
 
@@ -222,6 +229,28 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
     }
 }
 
+/// An ended member's `until` (spec/sync-opens.md §6): kept unread, the position of S's head
+/// event; read and opened by a read secret, the highest position at which an entry in S of a
+/// rotation superseding its epoch was first logged; else (or none such) the log's end. A
+/// credential with no epoch here (a sync key, claim, proof, static entry or deposit key at a
+/// reader) ends at the log's end.
+pub(crate) fn member_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate::types::Result<Position> {
+    let end = cx.store.log_bounds()?.0;
+    match (cx.engine.sync_holding(s)?, by) {
+        (Some((_, Holding::Unread)), _) => Ok(cx.store.head_at(s)?.unwrap_or(end)),
+        (Some((_, Holding::Read)), Credential::ReadSecret(e)) => {
+            let mut at = None;
+            for c in cx.engine.rotations_superseding(s, e)? {
+                for b in cx.engine.commit_blobs(&c)?.iter() {
+                    at = at.max(cx.store.first_logged(s, b)?);
+                }
+            }
+            Ok(at.unwrap_or(end))
+        }
+        _ => Ok(end),
+    }
+}
+
 impl Holds for NodeHolds<'_, '_> {
     fn rng(&mut self) -> &mut dyn osis_crypto::NodeRng {
         &mut *self.cx.rng
@@ -249,6 +278,27 @@ impl Holds for NodeHolds<'_, '_> {
         out
     }
 
+    fn known_moved(&mut self) -> bool {
+        if self.fx.known.due().is_empty() {
+            return false;
+        }
+        // a failing engine read is tried again at the next settle; nothing moved meanwhile
+        let engine = &mut *self.cx.engine;
+        let mut failed = false;
+        let moved = self.fx.known.settle(&(), || {
+            engine.known_actors().unwrap_or_else(|_| {
+                failed = true;
+                Arc::default()
+            })
+        });
+        if failed {
+            self.fx.known.unwant(&());
+            self.fx.known.want(());
+            return false;
+        }
+        moved.is_some()
+    }
+
     fn creds(&mut self, s: &SyncId) -> Option<Arc<Creds>> {
         node_creds(self.cx, self.unread, s)
     }
@@ -274,12 +324,13 @@ impl Holds for NodeHolds<'_, '_> {
         self.cx.engine.known_actor(actor)
     }
 
-    fn until(&mut self, _s: &SyncId, _by: &Credential) -> Position {
-        0
+    fn until(&mut self, s: &SyncId, by: &Credential) -> Position {
+        // a store failure ends the member at the log's end read before it (0: nothing served)
+        member_until(self.cx, s, by).unwrap_or(0)
     }
 
-    fn cursor_at(&mut self, _pos: Position) -> Option<Cursor> {
-        None
+    fn cursor_at(&mut self, pos: Position) -> Option<Cursor> {
+        self.cx.store.cursor_at(pos).ok().flatten()
     }
 
     fn grant(&mut self, s: &SyncId, entry: &[u8; 32]) -> Option<Grant> {
