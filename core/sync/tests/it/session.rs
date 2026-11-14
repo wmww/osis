@@ -58,7 +58,7 @@ fn ends() -> (End, End) {
             (0..2u64)
                 .map(|i| {
                     let (mut e, s) = open(i + 1, clock.clone());
-                    e.create_account(&[]).expect("account");
+                    e.create_account().expect("account");
                     (e, s)
                 })
                 .collect::<Vec<_>>()

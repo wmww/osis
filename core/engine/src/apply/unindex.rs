@@ -25,21 +25,6 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     for ai in 0..v.aspects.len() {
         unjudge_part(core, id, ai);
     }
-    // reported to the ephemeral lane with why, from what its dropped parts record: superseded
-    // if a part was (its author's to delete), else covered, else gone
-    if v.memory {
-        let superseders: BTreeSet<CommitId> = m.dropped_parts().flat_map(|(_, d)| d.superseded_by.iter().copied()).collect();
-        let mut by: BTreeSet<CommitId> = m.dropped_parts().map(|(_, d)| d).filter(|d| d.why == crate::engine::DropFor::Cover).flat_map(|d| d.covered_by.iter().copied()).collect();
-        let why = if !superseders.is_empty() {
-            by.extend(superseders);
-            crate::engine::MemoryDrop::Superseded { by }
-        } else if by.is_empty() {
-            crate::engine::MemoryDrop::Gone
-        } else {
-            crate::engine::MemoryDrop::Covered { by }
-        };
-        core.memory.dropped.push((*id, m.header.arc(), why));
-    }
     for (ai, a) in v.aspects.iter().enumerate() {
         let k = (a.tid, a.ak.clone());
         core.ix.by_aspect.remove(&k, &(v.ts, *id));

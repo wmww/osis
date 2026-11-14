@@ -94,7 +94,7 @@ impl Ground for Cx<'_> {
         Ok(self.engine.sync_records()?)
     }
     fn removal_notices(&mut self) -> Result<Arc<Vec<RemovalNotice>>> {
-        Ok(self.engine.removal_notices()?)
+        Ok(self.engine.all_removal_notices()?)
     }
     fn path(&mut self, s: &SyncId) -> Result<Option<Arc<Path>>> {
         Store::path(self.store, s)

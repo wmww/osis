@@ -1,9 +1,9 @@
-//! Labels as role writes (spec/sync-ids.md §2, spec/sync-ids.md §6): a group's genesis step and `label.0`
-//! record, registration steps an admin issues after rotations (at each host when it next
-//! syncs there, after uploading the role commits it registers: node-sync orders that),
-//! the claim set's readers, the deposit seed's refresh.
+//! Sync IDs as role writes (spec/sync-ids.md §2-§4, §6 Steps): a thing's genesis step and `sync.0`
+//! record, the steps an admin issues after rotations (registered at a node keeping the sync ID
+//! unread once it holds the role commits they register: sync orders that), the claim set's
+//! readers, the deposit seed's refresh.
 
-use super::{Done, ak, own_label};
+use super::{Done, ak, home_sync_id};
 use crate::rotation;
 use osis_keys::ROLES;
 use crate::engine::{Core, Engine, Tx};
@@ -13,7 +13,7 @@ use osis_base::{SyncId, Role, Tid, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::{Epoch, KemPublicKey, LabelRole, Secret32, VerifyingKey, label_role_key};
 use osis_keys::{ActorEpochs, registration_epochs};
-use osis_label::{Address, ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_label, label_steps, register_with, step_record};
+use osis_label::{ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_label, sync_steps, register_with, step_record};
 use osis_schema::core_types::{self as ct, KemKey};
 use osis_schema::{RawKey, Codec};
 
@@ -79,7 +79,7 @@ pub(crate) fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> 
     })
 }
 
-/// The deposit seed of the actor `group`'s labels derive from (spec/sync-ids.md §2).
+/// The deposit seed of the actor `group`'s sync IDs derive from (spec/sync-ids.md §2).
 fn deposit_seed(tx: &mut Tx<'_>, group: &Tid) -> Result<Secret32> {
     let actor = if tx.core.has_own_secrets(group) { *group } else { tx.core.first_admin(group).ok_or(Error::UnknownThing(*group))? };
     // a devices actor's labels derive from its account's seed
@@ -88,7 +88,7 @@ fn deposit_seed(tx: &mut Tx<'_>, group: &Tid) -> Result<Secret32> {
     Ok(Secret32::from_bytes(k))
 }
 
-/// Issues a step of `group` at the newest established epochs: a genesis step of a new label
+/// Issues a step of `group` at the newest established epochs: a genesis step of a new sync ID
 /// when `parent` is none, else a child of the parent step (signed by the parent's delete key,
 /// from the admin secret of the epoch it registers).
 pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, parent: Option<(&Step, &Secret32)>, readers: &[ReaderKey], deposit: &Secret32) -> Result<(Step, ClaimSet)> {
@@ -110,16 +110,16 @@ pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, parent: 
     Ok(register_with(p, keys, &rk, (group, re, rs), (se, ss), epochs.read.wrapped_under(&re), &mut *tx.rng)?)
 }
 
-/// `label.0` write: a new label of `group` with its genesis step, or a step added.
-pub(crate) fn put_label(m: &mut Mutation, group: Tid, label: SyncId, step: &Step, set: &ClaimSet, hosts: Option<&[Address]>) -> Result<()> {
-    match hosts {
-        Some(hosts) => {
-            let l = ct::Label { steps: [(step.id().0, step_record(step, Some(set)))].into_iter().collect(), hosts: hosts.to_vec() };
-            m.op(group, &ct::LABEL, PathOp { path: vec![PathSeg::Key(label.to_value())], op: Op::Set(l.to_value()) })?;
+/// `sync.0` write: a new sync ID of `group` with its genesis step (`genesis`), or a step added.
+pub(crate) fn put_step(m: &mut Mutation, group: Tid, label: SyncId, step: &Step, set: &ClaimSet, genesis: bool) -> Result<()> {
+    match genesis {
+        true => {
+            let l = ct::SyncEntry { steps: [(step.id().0, step_record(step, Some(set)))].into_iter().collect() };
+            m.op(group, &ct::SYNC, PathOp { path: vec![PathSeg::Key(label.to_value())], op: Op::Set(l.to_value()) })?;
         }
-        None => {
+        false => {
             let path = vec![PathSeg::Key(label.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(step.id().0.to_vec()))];
-            m.op(group, &ct::LABEL, PathOp { path, op: Op::Set(step_record(step, Some(set)).to_value()) })?;
+            m.op(group, &ct::SYNC, PathOp { path, op: Op::Set(step_record(step, Some(set)).to_value()) })?;
         }
     }
     Ok(())
@@ -127,14 +127,14 @@ pub(crate) fn put_label(m: &mut Mutation, group: Tid, label: SyncId, step: &Step
 
 /// Drops, in `m`, the claim sets (with their entry boxes) of `group`'s steps superseded for
 /// `ROLE_KEEP` (spec/sync-ids.md §4: an admin may): a step is superseded when the record of its
-/// first child was written, by that write's stamp. Folded into every `label.0` write an admin
+/// first child was written, by that write's stamp. Folded into every `sync.0` write an admin
 /// makes, so a group's records hold the sets of its recent steps only.
 pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid) -> Result<()> {
     let now = tx.core.now().0;
-    let Some(state) = tx.state(&group, &ak("label.0")?)?.cloned() else { return Ok(()) };
-    let labels = state.read().and_then(|v| ct::LABEL.decode(&v).ok()).unwrap_or_default();
-    for (label, rec) in &labels {
-        let Ok(steps) = label_steps(rec) else { continue };
+    let Some(state) = tx.state(&group, &ak("sync.0")?)?.cloned() else { return Ok(()) };
+    let ids = state.read().and_then(|v| ct::SYNC.decode(&v).ok()).unwrap_or_default();
+    for (label, rec) in &ids {
+        let Ok(steps) = sync_steps(rec) else { continue };
         // when each step's record was written
         let written = |id: &StepId| {
             let path = [PathSeg::Key(label.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(id.0.to_vec())), PathSeg::Field(0)];
@@ -147,53 +147,38 @@ pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid) -> 
             let superseded = steps.iter().filter(|(_, (c, _))| c.prev == Some(*id)).filter_map(|(c, _)| written(c)).min();
             if superseded.is_some_and(|t| t.saturating_add(osis_base::format::ROLE_KEEP_MS) <= now) {
                 let path = vec![PathSeg::Key(label.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(id.0.to_vec())), PathSeg::Field(1)];
-                m.op(group, &ct::LABEL, PathOp { path, op: Op::Replace(None::<Vec<u8>>.to_value()) })?;
+                m.op(group, &ct::SYNC, PathOp { path, op: Op::Replace(None::<Vec<u8>>.to_value()) })?;
             }
         }
     }
     Ok(())
 }
 
-/// A new label of `group` (its home label when `group` is an actor): genesis step at its
-/// newest epochs, written to `label.0` in `m`. Returns the label ID.
-pub(crate) fn new_label(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32, hosts: &[Address]) -> Result<SyncId> {
+/// The home sync ID of actor `group` (spec/sync-ids.md §2): genesis step at its newest epochs,
+/// written to `sync.0` in `m`. Returns the sync ID.
+pub(crate) fn new_sync_id(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32) -> Result<SyncId> {
     let (step, set) = issue(tx, &group, epochs, None, readers, deposit)?;
-    put_label(m, group, step.label, &step, &set, Some(hosts))?;
+    put_step(m, group, step.label, &step, &set, true)?;
     drop_old_claims(tx, m, group)?;
     Ok(step.label)
 }
 
-/// Names `label` on `hosts` as `actor`'s inbox in its `keys.0`, in `m` (spec/sync-inbox.md §1: in the
-/// commit that makes the label).
-pub(crate) fn name_inbox(m: &mut Mutation, actor: Tid, label: SyncId, hosts: &[Address]) -> Result<()> {
-    m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(ct::Inbox { label, hosts: hosts.to_vec() }).to_value()) })?;
+/// Names `sync_id` as `actor`'s inbox in its `keys.0`, in `m` (spec/sync-inbox.md §1: in the
+/// commit that makes the sync ID).
+pub(crate) fn name_inbox(m: &mut Mutation, actor: Tid, sync_id: SyncId) -> Result<()> {
+    m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(ct::Inbox { sync_id }).to_value()) })?;
     Ok(())
 }
 
-/// The hosts of the nearest sync ID up `t`'s record chain, for a new one of `t` (spec/sync-ids.md §2);
-/// none there, no hosts.
-pub(crate) fn inherited_hosts(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<Address>> {
-    for x in tx.core.standing_chain(t).into_iter().filter(|x| x != t) {
-        // an account has no label of its own: its inbox names the hosts of its devices actor's
-        if tx.core.is_account(&x) {
-            return Ok(Core::keys_in(tx, &x)?.and_then(|k| k.inbox).map(|i| i.hosts).unwrap_or_default());
-        }
-        if let Some((_, hosts)) = own_label(tx, &x)? {
-            return Ok(hosts);
-        }
-    }
-    Ok(Vec::new())
-}
-
-/// Whether a new label of actor `a` becomes its inbox (spec/sync-inbox.md §1): its `keys.0` names none.
+/// Whether a new sync ID of actor `a` becomes its inbox (spec/sync-inbox.md §1): its `keys.0` names none.
 pub(crate) fn takes_inbox(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
     Ok(Core::keys_in(tx, a)?.and_then(|k| k.inbox).is_none())
 }
 
-/// The labels `group`'s `label.0` records that it owns (`labeling::actors::owns`).
-pub(crate) fn labels_of(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::Labels> {
-    let mut labels = tx.state(group, &ak("label.0")?)?.and_then(Fragment::read).and_then(|v| ct::LABEL.decode(&v).ok()).unwrap_or_default();
-    labels.retain(|id, l| label_steps(l).is_ok_and(|s| tx.core.owns_label(group, id, &s)));
+/// The sync IDs `group`'s `sync.0` records that it owns (`labeling::actors::owns`).
+pub(crate) fn owned_in(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::SyncIds> {
+    let mut labels = tx.state(group, &ak("sync.0")?)?.and_then(Fragment::read).and_then(|v| ct::SYNC.decode(&v).ok()).unwrap_or_default();
+    labels.retain(|id, l| sync_steps(l).is_ok_and(|s| tx.core.owns_sync_id(group, id, &s)));
     Ok(labels)
 }
 
@@ -215,12 +200,11 @@ impl Engine {
         Ok(done)
     }
 
-    /// The step an admin issues at a host whose head is `head` of `group`'s label `label`
-    /// (spec/sync-ids.md §6): when it holds the head's epochs and an established epoch newer than
-    /// the head's, or the head's deposit key is not the one the actor's deposit seed derives
-    /// (refreshed), a child at its newest epochs with the current readers, recorded in `label.0`
-    /// (a role commit; node-sync uploads the rotation commits first, then registers, then
-    /// the rest). `None` when nothing is newer, or when it does not hold the head's epochs (it
+    /// The step an admin issues at a node keeping `group`'s sync ID `label` unread whose head is
+    /// `head` (spec/sync-ids.md §6 Steps): when it holds the head's epochs and an established
+    /// epoch newer than the head's, or the head's deposit key is not the one the actor's deposit
+    /// seed derives (refreshed), a child at its newest epochs with the current readers, recorded
+    /// in `sync.0` (a role commit; sync logs the rotation commits first, then registers). `None` when nothing is newer, or when it does not hold the head's epochs (it
     /// walks first). `fresh`: issue a step without a rotation (to list readers granted since).
     pub fn issue_step(&mut self, group: &Tid, label: &SyncId, head: &StepId, fresh: bool) -> Result<(Option<(Step, ClaimSet)>, Done)> {
         let (g, l, h) = (*group, *label, *head);
@@ -232,9 +216,9 @@ impl Engine {
             }
             // signing a step and sealing entry boxes encrypt under the group's epochs
             rotation::require_covered(tx, me, g, &ROLES.into_iter().collect(), &mut done)?;
-            let labels = labels_of(tx, &g)?;
-            let rec = labels.get(&l).ok_or(Error::Misuse("unknown label"))?;
-            let steps = label_steps(rec)?;
+            let owned = owned_in(tx, &g)?;
+            let rec = owned.get(&l).ok_or(Error::Misuse("unknown sync ID"))?;
+            let steps = sync_steps(rec)?;
             let (head, _) = steps.get(&h).ok_or(Error::Misuse("unknown head step"))?.clone();
             let epochs = tx.core.epochs(&g).ok_or(Error::Misuse("no secrets held for the group"))?;
             // the head's epochs per role, where held
@@ -251,7 +235,7 @@ impl Engine {
             let admin_secret = epochs.role(Role::Admin).secret(&head_admin).cloned().ok_or(Error::Misuse("head admin secret"))?;
             let [(se, _), (re, _), (we, _), (ae, _)] = registration_epochs(&epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
             // a child of the head already recorded at these epochs (another admin's, or this
-            // node's own for another host): reused, so one rotation gives one step
+            // node's own for another peer): reused, so one rotation gives one step
             if !fresh {
                 let current = |c: &Step| c.keys.deposit == deposit_key && LabelRole::ALL.into_iter().zip([se, we, ae]).all(|(l, e)| osis_keys::registered_epoch(&epochs, l, c.keys.get(l)) == Some(e));
                 if let Some((c, Some(set))) = steps.values().filter(|(c, _)| c.prev == Some(h) && current(c)).min_by_key(|(c, _)| c.id()) {
@@ -261,7 +245,7 @@ impl Engine {
             let rs = readers(tx, &g, &re)?;
             let (step, set) = issue(tx, &g, &epochs, Some((&head, &admin_secret)), &rs, &deposit)?;
             let mut m = Mutation::new();
-            put_label(&mut m, g, l, &step, &set, None)?;
+            put_step(&mut m, g, l, &step, &set, false)?;
             drop_old_claims(tx, &mut m, g)?;
             done.add(Engine::commit_tx(tx, m)?);
             Ok(Some((step, set)))
@@ -269,21 +253,21 @@ impl Engine {
         Ok((step, done))
     }
 
-    /// `drop_old_claims` into `m`, a `label.0` write of `group` by this admin.
+    /// `drop_old_claims` into `m`, a `sync.0` write of `group` by this admin.
     pub fn drop_old_claims(&mut self, m: &mut Mutation, group: &Tid) -> Result<()> {
         let g = *group;
         self.run(|tx| drop_old_claims(tx, m, g))
     }
 
-    /// The label of `group` with its hosts (`own_label`).
-    pub fn label_of(&mut self, group: &Tid) -> Result<Option<(SyncId, Vec<Address>)>> {
+    /// The home sync ID of `group` (`home_sync_id`).
+    pub fn home_sync_id(&mut self, group: &Tid) -> Result<Option<SyncId>> {
         let g = *group;
-        self.read(|tx| own_label(tx, &g))
+        self.read(|tx| home_sync_id(tx, &g))
     }
 }
 
-/// The label IDs `label.0` of `g` records, inside a transaction (unparsable: none).
-pub(crate) fn labels_in(tx: &mut Tx<'_>, g: &Tid) -> Result<Vec<SyncId>> {
-    let Some(v) = tx.state(g, &ak("label.0")?)?.and_then(Fragment::read) else { return Ok(Vec::new()) };
-    Ok(ct::LABEL.decode(&v).map(|m| m.into_keys().collect()).unwrap_or_default())
+/// The sync IDs `sync.0` of `g` records, owned or not, inside a transaction (unparsable: none).
+pub(crate) fn recorded_in(tx: &mut Tx<'_>, g: &Tid) -> Result<Vec<SyncId>> {
+    let Some(v) = tx.state(g, &ak("sync.0")?)?.and_then(Fragment::read) else { return Ok(Vec::new()) };
+    Ok(ct::SYNC.decode(&v).map(|m| m.into_keys().collect()).unwrap_or_default())
 }

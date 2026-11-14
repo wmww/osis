@@ -296,14 +296,6 @@ pub(super) fn leaked(lp: &mut LocalPeer, i: usize, actors: &[Tid], party: Tid, k
     actors.iter().filter(|t| newest_read(lp, i, **t).is_some_and(|e| o.contains(&(**t, Role::Read, e)))).copied().collect()
 }
 
-/// A complete pass of every actor's labels (re-seal decisions in tests).
-pub(super) struct Pass;
-impl crate::flows::SyncState for Pass {
-    fn complete_pass(&self, _: &Tid) -> bool {
-        true
-    }
-}
-
 /// Rounds of every peer of `admins` acting alone on every actor of `actors` (the cascade,
 /// then the re-seal trigger), synced after each, until nothing changes; the rounds taken.
 pub(super) fn settle(lp: &mut LocalPeer, admins: &[usize], actors: &[Tid]) -> usize {
@@ -312,7 +304,7 @@ pub(super) fn settle(lp: &mut LocalPeer, admins: &[usize], actors: &[Tid]) -> us
         for &p in admins {
             for x in actors {
                 n += lp.peers[p].engine.ensure_rotated(x).unwrap().0.commits.len();
-                n += lp.peers[p].engine.reseal_due(x, &Pass).unwrap().commits.len();
+                n += lp.peers[p].engine.reseal_after_pass(x).unwrap().commits.len();
             }
             lp.sync_all().unwrap();
         }
@@ -383,15 +375,15 @@ fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
     assert_eq!(e.write.current().len(), 2, "write forked");
     assert_eq!(e.write.current().iter().filter(|x| e.write.secret(x).is_some()).count(), 1, "B holds one fork");
     for pass in 0..3 {
-        assert!(lp.peers[1].engine.reseal_due(&g, &Pass).unwrap().commits.is_empty(), "B re-sealed itself on pass {pass}");
+        assert!(lp.peers[1].engine.reseal_after_pass(&g).unwrap().commits.is_empty(), "B re-sealed itself on pass {pass}");
         lp.sync_all().unwrap();
     }
-    assert_eq!(lp.peers[0].engine.reseal_due(&g, &Pass).unwrap().commits.len(), 1, "A re-seals B");
+    assert_eq!(lp.peers[0].engine.reseal_after_pass(&g).unwrap().commits.len(), 1, "A re-seals B");
     lp.sync_all().unwrap();
     // a re-seal or history add left due, once
     let mut rounds = Vec::new();
     loop {
-        let n: usize = (0..3).map(|p| lp.peers[p].engine.reseal_due(&g, &Pass).unwrap().commits.len()).sum();
+        let n: usize = (0..3).map(|p| lp.peers[p].engine.reseal_after_pass(&g).unwrap().commits.len()).sum();
         lp.sync_all().unwrap();
         rounds.push(n);
         if n == 0 || rounds.len() > 4 {
@@ -436,12 +428,12 @@ fn forked_role_resealed_without_a_node_holding_every_fork_spec_permissions_3() {
     }
     for _ in 0..3 {
         for p in [1, 2] {
-            lp.peers[p].engine.reseal_due(&g, &Pass).unwrap();
+            lp.peers[p].engine.reseal_after_pass(&g).unwrap();
         }
         lp.sync_all().unwrap();
     }
     for p in [1, 2] {
-        assert!(lp.peers[p].engine.reseal_due(&g, &Pass).unwrap().commits.is_empty(), "peer {p}: fixpoint");
+        assert!(lp.peers[p].engine.reseal_after_pass(&g).unwrap().commits.is_empty(), "peer {p}: fixpoint");
         let e = lp.peers[p].engine.epochs(&g).unwrap();
         assert!(e.write.current().iter().all(|x| e.write.secret(x).is_some()), "peer {p} holds both forks");
     }
@@ -501,7 +493,7 @@ fn orphaned_epoch_rotated_spec_crypto_4() {
     for _ in 0..3 {
         for p in 0..3 {
             lp.peers[p].engine.ensure_rotated(&g).unwrap();
-            lp.peers[p].engine.reseal_due(&g, &Pass).unwrap();
+            lp.peers[p].engine.reseal_after_pass(&g).unwrap();
         }
         lp.sync_all().unwrap();
     }
@@ -886,7 +878,7 @@ fn departures_settle(lp: &mut LocalPeer, g: Tid, was: [Option<Role>; 5]) {
         let mut n = 0;
         let concurrent = round % 2 == 1;
         for &p in &stay {
-            n += lp.peers[p].engine.reseal_due(&g, &Pass).unwrap().commits.len();
+            n += lp.peers[p].engine.reseal_after_pass(&g).unwrap().commits.len();
             n += lp.peers[p].engine.ensure_rotated(&g).unwrap().0.commits.len();
             if !concurrent {
                 lp.sync_all().unwrap();
@@ -967,7 +959,7 @@ fn finalize_without_secret_rotates_history_added_spec_permissions_2() {
     assert!(e.write.newest_held().is_some() && !e.write.is_current(&lacked), "the lacked epoch is superseded");
     assert!(e.write.secret(&lacked).is_none());
     lp.sync(2, 0).unwrap();
-    assert!(!lp.peers[0].engine.reseal_due(&g, &Pass).unwrap().commits.is_empty(), "A adds the superseded secret to X's history");
+    assert!(!lp.peers[0].engine.reseal_after_pass(&g).unwrap().commits.is_empty(), "A adds the superseded secret to X's history");
     lp.sync(0, 2).unwrap();
     assert!(lp.peers[2].engine.epochs(&g).unwrap().write.secret(&lacked).is_some(), "X holds it by history");
 }
@@ -1083,7 +1075,7 @@ fn finalize_without_its_until_unmet_spec_crypto_4() {
     let at_x = lp.peers[2].engine.epochs(&g).unwrap();
     assert!(at_x.read.secret(&e).is_some(), "X holds e's secret");
     assert!(!at_x.read.is_established(&e), "e established at X, where its finalize applies nothing");
-    lp.peers[2].engine.reseal_due(&g, &Pass).unwrap();
+    lp.peers[2].engine.reseal_after_pass(&g).unwrap();
     let to_d = ct::BoxKey { holder: tids[1], role: Role::Read, epoch: osis_keys::aspects::to_schema(&e) };
     let at_x = lp.peers[2].engine.run(|tx| crate::flows::secrets_in(tx, &g)).unwrap();
     assert!(!at_x.boxes.contains_key(&to_d), "X re-sealed e to D");
@@ -1287,7 +1279,7 @@ fn fork_sibling_reseal_spec_crypto_4() {
     let w = newest_read(&lp, 0, a).unwrap();
     assert_ne!(w, e1, "a1 rotated");
     send_skipping(&mut lp, 0, 1, &removal);
-    lp.peers[1].engine.reseal_due(&a, &Pass).unwrap();
+    lp.peers[1].engine.reseal_after_pass(&a).unwrap();
     assert!(openable(&mut lp, 1, &[a], tids[2], start.clone()).contains(&(a, Role::Read, e1)), "a2 re-sealed D at e1");
     assert!(!openable(&mut lp, 1, &[a], tids[2], start).contains(&(a, Role::Read, w)), "D opens the epoch a1 writes under");
 }
@@ -1416,7 +1408,7 @@ fn finalize_beside_renewal_settles_spec_crypto_4() {
         for i in 0..4 {
             lp.peers[i].clock.advance(1_000);
             let _ = lp.peers[i].engine.ensure_rotated(&g);
-            let _ = lp.peers[i].engine.reseal_due(&g, &Pass);
+            let _ = lp.peers[i].engine.reseal_after_pass(&g);
         }
     }
     lp.sync_all().unwrap();
@@ -1446,7 +1438,7 @@ fn renewed_holder_resealed_spec_crypto_4() {
         for i in 0..3 {
             lp.peers[i].clock.advance(1_000);
             let _ = lp.peers[i].engine.ensure_rotated(&g);
-            let _ = lp.peers[i].engine.reseal_due(&g, &Pass);
+            let _ = lp.peers[i].engine.reseal_after_pass(&g);
         }
     }
     lp.sync_all().unwrap();
@@ -1504,7 +1496,7 @@ fn forks_unboxed_with_departure_rotate_lacking_secrets_spec_crypto_4() {
     for _ in 0..4 {
         for p in [1, 2] {
             let _ = lp.peers[p].engine.ensure_rotated(&g);
-            let _ = lp.peers[p].engine.reseal_due(&g, &Pass);
+            let _ = lp.peers[p].engine.reseal_after_pass(&g);
         }
         lp.sync(1, 2).unwrap();
         lp.sync(2, 1).unwrap();
@@ -1624,7 +1616,7 @@ fn ended_holder_not_resealed_spec_permissions_2() {
     let me = tids[2];
     assert!(!lp.peers[2].engine.run(|tx| Ok(crate::flows::edges::finalizable(tx.core, &me, &g))).unwrap().is_empty(), "X may finalize D");
     let (e, _) = lp.peers[2].engine.epochs(&g).unwrap().read.newest_held().unwrap();
-    let _ = lp.peers[2].engine.reseal_due(&g, &Pass);
+    let _ = lp.peers[2].engine.reseal_after_pass(&g);
     let _ = lp.peers[2].engine.reshare(&g, &tids[1]);
     let d = tids[1];
     let _ = lp.peers[2].engine.run(|tx| super::reseal_one(tx, g, d, &BTreeSet::from([Role::Read]), super::Reseal::Missing));
@@ -1656,7 +1648,7 @@ fn forks_with_ended_edge_finalize_after_reseal_spec_permissions_2() {
     }
     for _ in 0..4 {
         for p in [1, 2] {
-            let _ = lp.peers[p].engine.reseal_due(&g, &Pass);
+            let _ = lp.peers[p].engine.reseal_after_pass(&g);
             let _ = lp.peers[p].engine.ensure_rotated(&g);
         }
         lp.sync(1, 2).unwrap();
@@ -2047,7 +2039,7 @@ fn raise_invalid_through_holder_actor_resealed_spec_crypto_4() {
     send_skipping(&mut lp, 0, 1, &dem);
     send_skipping(&mut lp, 3, 1, &dem);
     assert!(lp.peers[1].engine.core.role_now(&tids[2], &g).is_some(), "P still lacks D");
-    let _ = lp.peers[1].engine.reseal_due(&g, &Pass).unwrap();
+    let _ = lp.peers[1].engine.reseal_after_pass(&g).unwrap();
     lp.sync(1, 0).unwrap();
     assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A encrypts under an epoch M opens");
     lp.sync_all().unwrap();
@@ -2096,7 +2088,7 @@ fn raise_name_over_older_raise_resealed(r: Role) {
     assert!(!removed_opens(&mut lp, g, &tids, 0, r), "{r:?}: A's own rotation boxes M");
     send_skipping(&mut lp, 0, 3, &BTreeSet::new());
     assert_eq!(lp.peers[3].engine.core.role_now(&tids[2], &g), Some(r), "G3 holds M at R");
-    assert!(!lp.peers[3].engine.reseal_due(&g, &Pass).unwrap().commits.is_empty(), "R re-seals M at A's epoch");
+    assert!(!lp.peers[3].engine.reseal_after_pass(&g).unwrap().commits.is_empty(), "R re-seals M at A's epoch");
     send_skipping(&mut lp, 3, 0, &BTreeSet::new());
     send_skipping(&mut lp, 5, 0, &BTreeSet::new());
     assert!(!removed_opens(&mut lp, g, &tids, 0, r), "{r:?}: A encrypts under an epoch M opens");
@@ -2148,7 +2140,7 @@ fn drop_over_older_raise_resealed_spec_crypto_4() {
     assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A's own rotation boxes M");
     send_skipping(&mut lp, 0, 3, &t);
     assert_eq!(lp.peers[3].engine.core.role_now(&tids[2], &g), Some(Role::Read), "G3 holds M at R");
-    assert!(!lp.peers[3].engine.reseal_due(&g, &Pass).unwrap().commits.is_empty(), "R re-seals M at A's epoch");
+    assert!(!lp.peers[3].engine.reseal_after_pass(&g).unwrap().commits.is_empty(), "R re-seals M at A's epoch");
     send_skipping(&mut lp, 3, 0, &BTreeSet::new());
     send_skipping(&mut lp, 5, 0, &BTreeSet::new());
     assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A encrypts under an epoch M opens");
@@ -2221,7 +2213,7 @@ fn removal_by_demoted_admin_pins_nothing_spec_crypto_4() {
     send_skipping(&mut lp, 1, 4, &BTreeSet::new());
     send_skipping(&mut lp, 3, 4, &BTreeSet::new());
     assert_eq!(lp.peers[4].engine.core.role_now(&tids[2], &g), Some(Role::Read), "L2 applies nothing at V, M a reader");
-    let _ = lp.peers[4].engine.reseal_due(&g, &Pass).unwrap();
+    let _ = lp.peers[4].engine.reseal_after_pass(&g).unwrap();
     assert!(!openable(&mut lp, 4, &[g], tids[2], BTreeSet::new()).contains(&(g, Role::Read, x)), "V re-sealed M at X's epoch, L2 void there");
     send_skipping(&mut lp, 1, 0, &BTreeSet::new());
     send_skipping(&mut lp, 3, 0, &BTreeSet::new());
@@ -2271,7 +2263,7 @@ fn applied_name_void_elsewhere_through_holder_actor_spec_crypto_4() {
     send_skipping(&mut lp, 0, 4, &dem);
     assert!(lp.peers[4].engine.core.role_now(&tids[1], &g).is_none(), "Rp applies at V");
     assert_eq!(lp.peers[4].engine.core.role_now(&tids[2], &g), Some(Role::Read), "L applies nothing at V");
-    let _ = lp.peers[4].engine.reseal_due(&g, &Pass).unwrap();
+    let _ = lp.peers[4].engine.reseal_after_pass(&g).unwrap();
     let opens = openable(&mut lp, 4, &[g], tids[2], BTreeSet::new()).contains(&(g, Role::Read, x));
     assert!(!(opens && removed_reader_reads(&mut lp, g, &tids, 4)), "A encrypts under its epoch, which V re-sealed to M");
 }
@@ -2312,7 +2304,7 @@ fn departs_mark_void_elsewhere_through_holder_actor_spec_crypto_4() {
     send_skipping(&mut lp, 0, 4, &dem);
     assert_eq!(lp.peers[4].engine.core.role_now(&tids[1], &g), Some(Role::Write), "Dp applies at V");
     assert_eq!(lp.peers[4].engine.core.role_now(&tids[2], &g), Some(Role::Read), "L applies nothing at V");
-    let _ = lp.peers[4].engine.reseal_due(&g, &Pass).unwrap();
+    let _ = lp.peers[4].engine.reseal_after_pass(&g).unwrap();
     let opens = openable(&mut lp, 4, &[g], tids[2], BTreeSet::new()).contains(&(g, Role::Read, x));
     assert!(!(opens && removed_reader_reads(&mut lp, g, &tids, 4)), "A encrypts under P's epoch, which V re-sealed to M");
 }

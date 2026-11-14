@@ -5,9 +5,9 @@
 //! `Engine::ingest_memory` decodes nothing past the room it is given). The compaction trigger,
 //! durable and ephemeral alike: `retention::compact`.
 
-use crate::engine::{Engine, MemoryDrop, Tx};
+use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
-use osis_base::{Ak, CommitId, Tid};
+use osis_base::CommitId;
 use osis_commit::CommitBlob;
 use std::collections::BTreeSet;
 
@@ -196,24 +196,12 @@ impl Engine {
         self.core.ix.commits.iter().filter(|(_, m)| m.view.memory).map(|(id, m)| (*id, (0..m.view.aspects.len()).filter(|ai| m.holds(*ai)).count(), Some(m.view.author) == me)).collect()
     }
 
-    /// Memory commits forgotten since the last take, with their header and why (node-sync
-    /// releases their charge and deletes their entries at hosts where it may, `MemoryDrop`).
-    /// Only commits no longer held are listed.
-    pub fn take_memory_drops(&mut self) -> Vec<(CommitId, std::sync::Arc<osis_commit::Header>, MemoryDrop)> {
-        let d = std::mem::take(&mut self.core.memory.dropped);
-        d.into_iter().filter(|(c, _, _)| !self.holds_memory(c)).collect()
-    }
-
-    /// Aspects a held valid compaction snapshot of which turned invalid since the last take (a
-    /// compactor's demotion not listing it, spec/permissions.md §5.2), either class: node-sync
-    /// gets back what it covered (spec/sync-compaction.md §1 a snapshot turning invalid). A memory
-    /// snapshot's covered bodies were forgotten here and deleted at hosts by any writer, so a
-    /// writer that still holds a valid memory part of the aspect also writes a fresh snapshot of
-    /// what it holds (spec/sync-compaction.md §2 compaction): node-sync uploads it as a new commit (a host's
-    /// delete tombstone on the old entries does not stop it) and, stamped after every held
-    /// snapshot, nothing held covers it away here.
-    pub fn take_fallen(&mut self) -> Result<BTreeSet<(Tid, Ak)>> {
-        // taken only once every snapshot is written: an error leaves them for the next step
+    /// Writes a fresh snapshot of each aspect a held valid memory compaction snapshot turned
+    /// invalid on (`Core::fallen`; a compactor's demotion not listing it, spec/permissions.md
+    /// §5.2): its covered bodies were forgotten here and deleted at peers by any writer, so a
+    /// writer that still holds a valid memory part of the aspect writes what it holds
+    /// (spec/sync-compaction.md §2), stamped after every held snapshot. Run by `tick`.
+    pub(crate) fn resnapshot_fallen(&mut self) -> Result<()> {
         let out = self.core.fallen.clone();
         for (tid, ak) in &out {
             let holds_valid = self.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().any(|(_, c)| {
@@ -229,13 +217,6 @@ impl Engine {
             }
         }
         self.core.fallen.retain(|x| !out.contains(x));
-        Ok(out)
-    }
-
-    /// Aspects a held part of any commit (a cover, a killing write) turned invalid on since the
-    /// last take: node-sync's placements again past deletes made on such grounds go once more
-    /// (spec/sync-judgement.md §4 Logged again once).
-    pub fn take_fell(&mut self) -> BTreeSet<(Tid, Ak)> {
-        std::mem::take(&mut self.core.fell)
+        Ok(())
     }
 }

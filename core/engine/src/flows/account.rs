@@ -2,18 +2,18 @@
 //! devices actor D, its profile), holding its epoch seeds from D's `account.0`, and what signing
 //! as it and sealing to it read from the held signing chain.
 
-use super::labels::{ReaderKey, new_label};
-use super::{Delivery, Done, put_edge};
+use super::sync_ids::{ReaderKey, new_sync_id};
+use super::{Done, put_edge};
 use crate::engine::{Core, Engine, Tx, records};
 use crate::error::{Error, Result};
 use crate::identity::thing_record;
 use crate::rotation;
 use crate::Mutation;
-use osis_base::{CommitId, CreationRecord, Role, Tid, SIGNING_KEY_ED25519};
+use osis_base::{CommitId, CreationRecord, Role, Tid, Value, SIGNING_KEY_ED25519};
+use osis_crdt::{Op, PathOp, PathSeg};
 use osis_commit::{CommitBlob, FIRST_EPOCH};
 use osis_crypto::{AccountEpochKeys, Epoch, KemPublicKey, Secret32, VerifyingKey, open_inner, verify_inner};
 use osis_keys::{ActorEpochs, HolderKeys, Keysets, ROLES, Recipient, account_epoch, account_keysets};
-use osis_label::Address;
 use osis_store::Shred;
 use osis_perm::Point;
 use osis_perm::chain::Rotation;
@@ -795,9 +795,10 @@ fn admin_edge() -> Edge {
 
 impl Engine {
     /// Creates an account (spec/permissions.md §1): the account at its first epoch, its devices
-    /// actor D (secrets of its own boxed to this node, its home label on `hosts`, the epoch's
-    /// seed in `account.0`) and its profile, one commit signed as the account.
-    pub fn create_account(&mut self, hosts: &[Address]) -> Result<(CreatedAccount, Done)> {
+    /// actor D (secrets of its own boxed to this node, its home sync ID, the epoch's seed in
+    /// `account.0`) and its profile, one commit signed as the account; then this node's synced
+    /// group (`synced_group_in`).
+    pub fn create_account(&mut self) -> Result<(CreatedAccount, Done)> {
         let (seed, nonce, nonce_d) = self.run(|tx| {
             let mut n = [0u8; 32];
             tx.rng.fill_bytes(&mut n);
@@ -811,7 +812,7 @@ impl Engine {
         let d = d_record.tid();
         self.core.account.set(Some(p));
         self.core.accounts.insert(p, Arc::new(HeldAccount { devices: d, first: signing, keys: [(signing, keys.clone())].into() }));
-        let res = self.run(|tx| create_account_in(tx, record, d_record, &keys, hosts));
+        let res = self.run(|tx| create_account_in(tx, record, d_record, &keys));
         if res.is_err() {
             self.core.account.set(None);
             self.core.accounts.remove(&p);
@@ -905,47 +906,34 @@ impl Engine {
     /// commits to send it directly: the grant or re-seal, D's and P's certificates and D's
     /// `label.0` commits (the new node downloads the rest under the home label). A holder of
     /// sync alone on D is no node: it is granted admin as any other.
-    pub fn pair(&mut self, node: &Tid) -> Result<Done> {
+    pub fn pair(&mut self, node: &Tid) -> Result<(Done, Vec<CommitId>)> {
         let d = self.account()?.ok_or(Error::Misuse("not a node of an account"))?.1;
         let n = *node;
         if !self.knows(&n) {
             return Err(Error::UnknownThing(n));
         }
         let holder = self.roster(&d).get(&n).is_some_and(|e| e.role >= Role::Read && e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())));
-        let mut done = if holder { self.reshare(&d, &n)? } else { self.grant(&d, &n, &admin_edge())? };
+        let done = if holder { self.reshare(&d, &n)? } else { self.grant(&d, &n, &admin_edge())? };
         let mut all: Vec<CommitId> = self.certificates(&d).commits.into_keys().collect();
-        let label = osis_base::Ak::new("label.0").map_err(|_| Error::Misuse("ak"))?;
+        let label = osis_base::Ak::new("sync.0").map_err(|_| Error::Misuse("ak"))?;
         all.extend(self.core.ix.by_aspect.get(&(d, label)).into_iter().flatten().map(|(_, c)| *c));
         // the account's first commit: D's `account.0` and P's creation record; its rotations
         // (with their thing lists, `Package::lists`), so what they name counts at the new node
         let seeds = osis_base::Ak::new("account.0").map_err(|_| Error::Misuse("ak"))?;
         all.extend(self.core.ix.by_aspect.get(&(d, seeds)).into_iter().flatten().map(|(_, c)| *c));
         all.sort_by_key(|c| self.header(c).map(|h| h.ts));
-        for x in &done.deliveries {
-            if let Delivery::Direct { to, commits } = x
-                && *to == n
-            {
-                all.extend(commits.iter().copied());
-            }
-        }
+        // the grant or re-seal last (owed to the node in its transaction: `deliveries`)
+        all.extend(done.commits.iter().copied());
         // each commit once, in the order collected
         let mut seen = BTreeSet::new();
         all.retain(|c| seen.insert(*c));
-        // the grant's own direct send is replaced (crash-safe like the grant: `flows::owe`)
-        let (gone, kept): (Vec<Delivery>, Vec<Delivery>) = std::mem::take(&mut done.deliveries).into_iter().partition(|x| matches!(x, Delivery::Direct { to, .. } if *to == n));
-        done.deliveries = kept;
-        let x = self.run(|tx| {
-            super::unowe(tx, &gone)?;
-            super::owe(tx, Delivery::Direct { to: n, commits: all })
-        })?;
-        done.deliveries.push(x);
-        Ok(done)
+        Ok((done, all))
     }
 
     /// Pairing, new node side, after applying what `pair` sent: checks the grant put it on the
-    /// account's devices actor, joins account `p` and returns the certificate copy of `grant` to place under D's home
-    /// label (spec/sync-inbox.md §5).
-    pub fn paired(&mut self, p: &Tid, grant: &CommitId) -> Result<Done> {
+    /// account's devices actor and joins account `p`. Its grant copy under D's home sync ID is
+    /// the sync judgement's (spec/sync-inbox.md §5).
+    pub fn paired(&mut self, p: &Tid) -> Result<()> {
         let node = self.tid();
         let d = self.devices_held(p).ok_or(Error::UnknownThing(*p))?;
         if self.core.role_now(&node, &d) != Some(Role::Admin) {
@@ -953,10 +941,8 @@ impl Engine {
         }
         self.hold_account(p, &d)?;
         self.core.account.set(Some(*p));
-        self.save_account(p, &d)?;
-        let g = *grant;
-        let x = self.run(|tx| super::owe(tx, Delivery::Certificate { commits: vec![g], under: d }))?;
-        Ok(Done { deliveries: vec![x], ..Done::default() })
+        self.save_account(p, &d)
+
     }
 
     /// The devices actor of account `p` as held here: the thing with `account.0` whose first admin
@@ -984,7 +970,22 @@ impl Core {
     }
 }
 
-fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: CreationRecord, keys: &AccountEpochKeys, hosts: &[Address]) -> Result<(Tid, Option<CommitId>)> {
+/// This node's synced group (spec/sync-set.md §1): a plain group whose first admin is `d`, an item
+/// of `d`'s `group.0`, listing `d` as a subgroup, and `synced^.0` on `d` naming it for this node:
+/// one commit after the role commit, signed as account `p`.
+fn synced_group_in(tx: &mut Tx<'_>, p: Tid, d: Tid) -> Result<Tid> {
+    let me = tx.core.id.tid();
+    let mut m = Mutation::new();
+    let g = m.create(thing_record(d, &mut *tx.rng));
+    m.sign_as(p);
+    m.set(g, &ct::GROUP, &ct::Group { items: BTreeSet::new(), subgroups: [d].into() })?;
+    m.op(d, &ct::GROUP, PathOp { path: vec![PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(g)) })?;
+    m.op(d, &ct::SYNCED, PathOp { path: vec![PathSeg::Key(Value::Tid(me))], op: Op::Set(Value::Tid(g)) })?;
+    Engine::commit_tx(tx, m)?;
+    Ok(g)
+}
+
+fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: CreationRecord, keys: &AccountEpochKeys) -> Result<(Tid, Option<CommitId>)> {
     let p = record.tid();
     let me = tx.core.id.tid();
     let mut m = Mutation::new();
@@ -999,14 +1000,15 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     let after = rot.preview(&held)?;
     let mut dep = [0u8; 32];
     tx.rng.fill_bytes(&mut dep);
-    let label = new_label(tx, &mut m, d, &after, &[ReaderKey::Dh(node_kem.x25519())], &Secret32::from_bytes(dep), hosts)?;
-    m.set(p, &ct::KEYS, &Keys { inbox: Some(ct::Inbox { label, hosts: hosts.to_vec() }), deposit_seed: Some(dep), ..osis_keys::aspects::account_keys(keys) })?;
+    let sync_id = new_sync_id(tx, &mut m, d, &after, &[ReaderKey::Dh(node_kem.x25519())], &Secret32::from_bytes(dep))?;
+    m.set(p, &ct::KEYS, &Keys { inbox: Some(ct::Inbox { sync_id }), deposit_seed: Some(dep), ..osis_keys::aspects::account_keys(keys) })?;
     put_edge(&mut m, d, me, &admin_edge())?;
     let signing = keys.signing.verifying_key().to_bytes().to_vec();
     let under = osis_keys::aspects::to_schema(&rot.role(Role::Read).ok_or(Error::Misuse("D's first read epoch"))?.epoch);
     m.set(d, &ct::ACCOUNT, &ct::Account { seeds: [(signing, ct::AccountSeed { seed: keys.seed().expose().to_vec(), under })].into() })?;
     let c = Engine::commit_tx(tx, m)?;
     rotation::record(tx, d, &rot)?;
+    synced_group_in(tx, p, d)?;
     Ok((profile, c))
 }
 

@@ -419,7 +419,9 @@ fn create_add_delete_spec_data_model_8() {
     let b = w.create().unwrap();
     w.at(a, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.groups_of(a).unwrap().within.into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([folder, db.home()]));
+    // home is a subgroup of this node's synced group (spec/sync-set.md §1): what is within home is within it
+    let synced: BTreeSet<_> = db.groups_of(db.home()).unwrap().subgroup_of.into_iter().collect();
+    assert_eq!(db.groups_of(a).unwrap().within.into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([folder, db.home()]).union(&synced).copied().collect());
     assert!(db.groups_of(b).unwrap().within.is_empty());
     let mut w = db.write();
     w.group(folder).add(osis::Member::Item(b)).unwrap();
@@ -528,7 +530,7 @@ fn role_class_refused_spec_permissions_1() {
     let db = db(0);
     let t = db.me();
     let mut w = db.write();
-    assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(ak("label.0"))).remove(), Err(Error::Invalid(_))));
+    assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(ak("sync.0"))).remove(), Err(Error::Invalid(_))));
     assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(ak("roles.0"))).remove(), Err(Error::Invalid(_))));
     assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(ak("groups.0"))).remove(), Err(Error::Invalid(_))));
     // group.0 changes by the group calls alone: they check sync and clean up tied grants
@@ -763,11 +765,13 @@ fn groups_of_relations_spec_data_model_8() {
     let gs = db.groups_of(tag).unwrap();
     assert_eq!(gs.item_of, vec![g1]);
     assert_eq!(gs.subgroup_of.iter().copied().collect::<BTreeSet<_>>(), BTreeSet::from([g1, g2]));
-    assert_eq!(gs.within.iter().copied().collect::<BTreeSet<_>>(), BTreeSet::from([g1, home]), "an item's groups and those above them; not g2, which it is only a subgroup of");
+    // home is a subgroup of this node's synced group (spec/sync-set.md §1)
+    let synced: BTreeSet<_> = db.groups_of(home).unwrap().subgroup_of.into_iter().collect();
+    assert_eq!(gs.within.iter().copied().collect::<BTreeSet<_>>(), BTreeSet::from([g1, home]).union(&synced).copied().collect(), "an item's groups and those above them; not g2, which it is only a subgroup of");
     let gx = db.groups_of(x).unwrap();
     assert_eq!(gx.item_of, vec![tag]);
     assert!(gx.subgroup_of.is_empty());
-    assert_eq!(gx.within.iter().copied().collect::<BTreeSet<_>>(), BTreeSet::from([tag, g1, g2, home]));
+    assert_eq!(gx.within.iter().copied().collect::<BTreeSet<_>>(), BTreeSet::from([tag, g1, g2, home]).union(&synced).copied().collect());
     let mut w = db.write();
     w.delete(tag).unwrap();
     w.commit().unwrap();

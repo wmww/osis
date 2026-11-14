@@ -3,15 +3,15 @@
 //! the frontier, inbox delivery and acceptance
 //! (spec/sync-inbox.md §2, spec/crypto.md §5).
 
-use super::{Delivery, Done, inbox_of, now_ts, own_label, put_edge, put_secrets};
+use super::{Done, now_ts, put_edge, put_secrets};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use crate::rotation;
 use crate::Mutation;
 use osis_commit::CommitBlob;
-use osis_base::{CommitId, CreationRecord, Role, Tid, WallMs};
+use osis_base::{CommitId, Role, Tid, WallMs};
 use osis_keys::{Departure, ROLES, box_holder, roles_up_to};
-use osis_label::{InboxLabel, InboxPayload, InboxThing, open_inbox_blob, seal_inbox_blob};
+
 use osis_perm::{At, Edge as PermEdge};
 use osis_schema::core_types::{self as ct, Edge};
 use std::collections::BTreeSet;
@@ -71,11 +71,11 @@ pub enum Parts {
     Edge,
 }
 
-/// The deliveries of a role commit about `holder` (spec/permissions.md §2): an inbox
-/// blob for an actor, the commit itself over a direct connection for a node, nothing for a
-/// link key (it reads its label by static entry).
-pub(crate) fn deliver_to(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid]) -> Result<Vec<Delivery>> {
-    deliver_parts(tx, holder, c, things, Parts::All, Vec::new(), Vec::new())
+/// Owes `holder` an inbox delivery of role commit `c` about it (spec/permissions.md §2,
+/// spec/sync-inbox.md §2): an inbox blob for an actor, the commit itself over a connection for a
+/// node, nothing for a link key (it reads its sync ID by static entry).
+pub(crate) fn deliver_to(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid]) -> Result<()> {
+    crate::sync::deliveries::owe(tx, holder, c, things, false)
 }
 
 /// The KEM key an inbox blob to `actor` is sealed to (spec/crypto.md §5): an account's current
@@ -85,47 +85,6 @@ pub(crate) fn inbox_kem(tx: &mut Tx<'_>, actor: &Tid) -> Result<Option<osis_cryp
     let key = if tx.core.is_account(actor) { keys.and_then(|k| k.key) } else { keys.and_then(|k| k.read).map(|ks| ks.kem_key) };
     let Some(ct::KemKey::X25519MlKem768(b)) = key else { return Ok(None) };
     Ok(Some(osis_crypto::KemPublicKey::from_slice(&b)?))
-}
-
-/// `deliver_to` with the carried `parts` and the author's `chain` for them (`CommitBlobPlaintext`
-/// values and raw `records`, spec/wire.md §9). A flow seals with no chain: node-sync seals again from the record it
-/// keeps (`SyncRecords::note_unsent`), with the chain, when it sends.
-pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], parts: Parts, chain: Vec<osis_base::Value>, records: Vec<CreationRecord>) -> Result<Vec<Delivery>> {
-    if tx.core.is_key_actor(&holder) && !tx.core.is_account(&holder) {
-        let is_node = super::super::flows::is_node(tx, &holder)?;
-        return Ok(if is_node { vec![super::owe(tx, Delivery::Direct { to: holder, commits: vec![c] })?] } else { Vec::new() });
-    }
-    let Some((_, inbox)) = inbox_of(tx, &holder)? else { return Ok(Vec::new()) };
-    // sealed to an account's current epoch KEM key, another actor's newest read keyset
-    let to = holder;
-    let Some(kem) = inbox_kem(tx, &holder)? else { return Ok(Vec::new()) };
-    let mut blob = std::sync::Arc::unwrap_or_clone(tx.get_commit(&c)?.ok_or(Error::UnknownCommit(c))?);
-    if parts == Parts::Edge {
-        let keep: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, a)| a.ak.as_str() == "roles.0").map(|(i, _)| i).collect();
-        blob.parts.retain(|p| keep.contains(&p.ai));
-    }
-    let commit = osis_base::decode(&blob.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB })
-        .map_err(|_| Error::Corrupt("commit blob"))?;
-    let mut ts: Vec<InboxThing> = Vec::new();
-    let mut seen = BTreeSet::new();
-    for t in things {
-        if seen.insert(*t) {
-            let label = own_label(tx, t)?.map(|(id, hosts)| InboxLabel { id, hosts });
-            let delete_keys = crate::engine::secrets::own_delete_keys(tx, t)?;
-            ts.push(InboxThing { tid: *t, label, delete_keys });
-        }
-    }
-    ts.sort_by_key(|t| t.tid);
-    let payload = InboxPayload { commit, things: ts, chain, records };
-    let now = tx.now();
-    let blob = seal_inbox_blob(&to, &kem, &payload, now, &mut *tx.rng)?;
-    let resend = super::Resend { holder, commit: c, things: things.to_vec(), edge_only: parts == Parts::Edge };
-    // its record in the commit's own transaction: node-sync sends it from there, also after a
-    // crash before it is sent (spec/sync-judgement.md §1, spec/sync-ids.md §6)
-    if let Some(r) = tx.core.sync_records {
-        r.note_unsent(tx, holder, c, things.to_vec(), parts == Parts::Edge)?;
-    }
-    Ok(vec![Delivery::Inbox { to, inbox, blob, resend }])
 }
 
 /// A grant or a raise of `holder`'s edge on `target` by `who` (this node, or a held key actor
@@ -145,7 +104,6 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     let role = tx.core.role_now(&who, &target);
     let admin = crate::engine::secrets::usable_role(tx, &target, role)? == Some(Role::Admin);
     // a non-writer of the target's label deposits its invite grant (spec/sync-judgement.md §1)
-    let deposit = role < Some(Role::Write);
     let ts = now_ts(tx.core);
     let old = tx.core.timelines.get(&target).and_then(|tl| tl.roster(&target, At::now(ts)).get(&holder).copied());
     let invite = tx.core.timelines.get(&target).and_then(|tl| tl.invite(&who, &target, At::now(ts)));
@@ -220,13 +178,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     let c = Engine::commit_tx(tx, m)?;
     done.add(c);
     if let Some(c) = c {
-        done.deliveries.extend(deliver_to(tx, holder, c, &[target])?);
-        if deposit {
-            done.deliveries.push(super::owe(tx, Delivery::Deposit { commit: c, under: target })?);
-        }
-        if let Some(w) = &boxes {
-            rotation::carry(tx, target, w, None, &mut done)?;
-        }
+        deliver_to(tx, holder, c, &[target])?;
     }
     Ok(done)
 }
@@ -381,10 +333,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     }
     done.add(c);
     if let Some(c) = c {
-        // a removal of another actor G's edge (explicit, or a self-removal by an admin of G,
-        // lowering too) leaves G's closure bodies
-        let gone_from = if new_role.is_none() || selfr { &removing[..] } else { removing.get(1..).unwrap_or_default() };
-        lowered_deliveries(tx, who, target, c, rot.as_ref(), &unreached, &removing, gone_from, &mut done)?;
+        lowered_deliveries(tx, target, c, &unreached, &removing)?;
     }
     // a node's removal from its account's devices actor: the account's epoch rotates next, in
     // this transaction (spec/permissions.md §3)
@@ -395,43 +344,23 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         && let Some(r) = super::signing::rotate_in(tx, p, &[], &mut done)?
     {
         done.add(Some(r));
-        done.deliveries.push(super::owe(tx, Delivery::First { commits: vec![r], under: vec![target] })?);
     }
-    // the leaver drops what it lost once the removal is placed (`Done::drop_lost`): it must
-    // still seal the removal under the labels it leaves
-    done.drop_lost |= selfr;
+    // the leaver drops what it lost once its removal is held elsewhere (`waiting_held_elsewhere`):
+    // it must still seal the removal under the sync IDs it leaves
+    if selfr && let Some(c) = c {
+        crate::sync::held::wait(tx, c)?;
+    }
     Ok(done)
 }
 
-/// The deliveries of role commit `c` by `who` lowering edges on `target` (spec/permissions.md §2,
-/// §3): the inbox copy to each holder in `lowered`, the rotation `rot` by inbox to `unreached`,
-/// placement before any other upload under every label the first lowered party could read (the
-/// target and what its roles open), and, for each actor in `gone_from` (its edge removed, not the
-/// author's own), under the labels holding it: it leaves its closure bodies (it reads the target
-/// no more) and the target may have left it already (an unplace), so its holders learn it there
-/// (its inbox reaches only its admins).
-#[allow(clippy::too_many_arguments)]
-fn lowered_deliveries(tx: &mut Tx<'_>, who: Tid, target: Tid, c: CommitId, rot: Option<&osis_keys::Rotation>, unreached: &[Tid], lowered: &[Tid], gone_from: &[Tid], done: &mut Done) -> Result<()> {
-    let ts = now_ts(tx.core);
+/// The deliveries of role commit `c` lowering edges on `target` (spec/permissions.md §2, §3):
+/// the commit's `roles.0` parts to each holder in `lowered` (with removal signatures where it
+/// ends one's role), the rotation `rot` by inbox to `unreached`.
+fn lowered_deliveries(tx: &mut Tx<'_>, target: Tid, c: CommitId, unreached: &[Tid], lowered: &[Tid]) -> Result<()> {
     for x in lowered {
-        done.deliveries.extend(deliver_parts(tx, *x, c, &[target], Parts::Edge, Vec::new(), Vec::new())?);
+        crate::sync::deliveries::owe(tx, *x, c, &[target], true)?;
     }
-    done.deliveries.extend(rotation::deliver_rotation(tx, target, Some(c), unreached)?);
-    let graph = osis_keys::PermGraph { timeline: tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?, at: At::now(ts) };
-    let mut under: Vec<Tid> = lowered.first().map(|h| osis_keys::reached(&graph, target, *h).into_iter().collect()).unwrap_or_default();
-    if let Err(i) = under.binary_search(&target) {
-        under.insert(i, target);
-    }
-    done.deliveries.push(super::owe(tx, Delivery::First { commits: rotation::placed_with(c, rot.map(|r| &r.names)), under })?);
-    if let Some(r) = rot {
-        rotation::carry(tx, target, &r.secrets, Some(&r.keys), done)?;
-    }
-    for x in gone_from {
-        if *x != who && !tx.core.is_key_actor(x) {
-            done.deliveries.push(super::owe(tx, Delivery::Removal { commit: c, under: *x })?);
-        }
-    }
-    Ok(())
+    rotation::deliver_rotation(tx, target, Some(c), unreached)
 }
 
 /// The edges on `target` that `who` (this node, or a key actor it signs as) may finalize now
@@ -512,7 +441,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     done.add(c);
     if let Some(c) = c {
         let removed: Vec<Tid> = ended.iter().map(|x| x.0).collect();
-        lowered_deliveries(tx, who, target, c, rot.as_ref(), &unreached, &removed, &removed, done)?;
+        lowered_deliveries(tx, target, c, &unreached, &removed)?;
     }
     Ok(())
 }
@@ -633,49 +562,4 @@ impl Engine {
         let d = d.clone();
         self.run(|tx| demote_in(tx, signer, t, &d, others, frontier))
     }
-
-    /// Opens an inbox blob addressed to an actor or account this node holds the keys of
-    /// (spec/sync-inbox.md §2), takes the author's chain it carries as node sync does (`inbox_chain`),
-    /// applies the role commit it carries and returns the things it
-    /// names with their labels, plus the certificate copy to place under that actor's home
-    /// label (a grant this node accepts).
-    pub fn accept_inbox(&mut self, blob: &[u8]) -> Result<(Vec<InboxThing>, Done)> {
-        let mut candidates: Vec<(Tid, osis_crypto::KemSecret)> = Vec::new();
-        for (a, e) in self.core.ix.secrets.iter() {
-            for (_, s) in e.role(Role::Read).held_newest_first() {
-                candidates.push((*a, osis_crypto::role_kem(s)));
-            }
-        }
-        for a in self.core.accounts.keys().copied().collect::<Vec<_>>() {
-            candidates.extend(self.account_kems(&a).into_iter().map(|k| (a, k)));
-        }
-        let mut opened = None;
-        for (a, kem) in &candidates {
-            if let Ok((_, p)) = open_inbox_blob(blob, a, kem) {
-                opened = Some((*a, p));
-                break;
-            }
-        }
-        let (a, p) = opened.ok_or(Error::Misuse("no held read secret opens this inbox blob"))?;
-        let (bytes, things, chain, records) = p.split();
-        let id = CommitBlob::decode(&bytes)?.id();
-        self.learn_records(records)?;
-        // the author's chain first, as node-sync takes it (spec/wire.md §9): a chain commit is
-        // judged alone, its refusal refuses nothing else
-        for (plain, _) in inbox_chain(chain) {
-            if let Err(e) = self.ingest(&plain, Vec::new()) && osis_base::Classified::class(&e) == osis_base::ErrorClass::Local {
-                return Err(e);
-            }
-        }
-        self.ingest(&bytes, Vec::new())?;
-        self.note_delete_hints(id, &things)?;
-        let mut done = Done::default();
-        // an account's home is its devices actor: its grants' copies go under D's home label
-        let home = self.core.accounts.get(&a).map_or(a, |x| x.devices);
-        if self.core.ix.commits.contains_key(&id) {
-            done.deliveries.push(self.run(|tx| super::owe(tx, Delivery::Certificate { commits: vec![id], under: home }))?);
-        }
-        Ok((things, done))
-    }
 }
-

@@ -5,7 +5,7 @@
 //! (core/test/tla/rotation/Depth0.tla).
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Pass, all_boxed, blocked_at, commit_ids, deliver_without_secrets, edge, group, held_by, leaked, newest_read, openable, rotate_leaving_out, rotate_unchecked, send_skipping, settle, synced};
+use super::tests::{all_boxed, blocked_at, commit_ids, deliver_without_secrets, edge, group, held_by, leaked, newest_read, openable, rotate_leaving_out, rotate_unchecked, send_skipping, settle, synced};
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -214,7 +214,7 @@ fn keyless_holder_never_resealed_spec_crypto_4() {
     let (done, still) = lp.peers[0].engine.ensure_rotated(&b).unwrap();
     assert!(still.is_empty(), "{still:?}");
     assert_eq!(done.commits.len(), 2, "P, then B");
-    assert!(lp.peers[0].engine.reseal_due(&q, &Pass).unwrap().commits.is_empty(), "P has no key access to Q");
+    assert!(lp.peers[0].engine.reseal_after_pass(&q).unwrap().commits.is_empty(), "P has no key access to Q");
     assert!(!boxes(&mut lp, 0, q, p));
     assert!(lp.peers[0].engine.ensure_rotated(&b).unwrap().0.commits.is_empty(), "no churn around the cycle");
     assert_eq!(settle(&mut lp, &[0], &[b, p, q]), 0);
@@ -241,12 +241,12 @@ fn grant_on_first_admin_keyless_until_record_edge_goes_spec_crypto_4() {
     lp.peers[0].clock.advance(1);
     lp.peers[0].engine.grant(&t, &d, &edge(Role::Admin)).unwrap();
     lp.sync(0, 1).unwrap();
-    assert!(lp.peers[1].engine.reseal_due(&x, &Pass).unwrap().commits.is_empty(), "nothing to re-seal while the record edge stands");
+    assert!(lp.peers[1].engine.reseal_after_pass(&x).unwrap().commits.is_empty(), "nothing to re-seal while the record edge stands");
     lp.peers[1].clock.advance(1);
     removal(&mut lp, 1, t, x);
     lp.sync(1, 0).unwrap();
     assert!(!lp.peers[0].engine.roster(&t).contains_key(&x), "X's record edge is gone");
-    let done = lp.peers[0].engine.reseal_due(&x, &Pass).unwrap();
+    let done = lp.peers[0].engine.reseal_after_pass(&x).unwrap();
     assert!(!done.commits.is_empty(), "X re-seals T: its grant has key access now");
     assert!(boxes(&mut lp, 0, x, t));
     lp.sync(0, 1).unwrap();
@@ -753,8 +753,9 @@ fn lacking_carried_keyset_spec_crypto_4() {
     send_skipping(&mut lp, 1, 0, &BTreeSet::new());
     let (done, _) = lp.peers[0].engine.ensure_rotated(&a).unwrap();
     assert_eq!(sealed_at(&mut lp, 0, a, m), Some(kk));
-    let carried = done.deliveries.iter().any(|x| matches!(x, crate::flows::Delivery::First { commits, under } if under == &vec![a] && commits.iter().any(|c| c_m.contains(c))));
-    assert!(carried, "kk's commit placed under A's label with the rotation: {:?}", done.deliveries);
+    let rot = *done.commits.last().unwrap();
+    let with = lp.peers[0].engine.logged_with(&rot).unwrap();
+    assert!(with.iter().any(|c| c_m.contains(c)), "kk's commit logged with the rotation: {with:?}");
     send_skipping(&mut lp, 0, 4, &c_m);
     assert!(!lp.peers[4].engine.core.ix.keysets.contains_key(&(m, Role::Read, kk)), "W lacks kk");
     assert!(blocked_at(&mut lp, 4, a).is_empty(), "an unheld keyset is not stale");
@@ -1253,7 +1254,7 @@ fn removal_without_possession_goes_alone_spec_crypto_4() {
     assert!(!blocked_at(&mut lp, 1, a).is_empty(), "the departure is uncovered");
     assert!(lp.peers[1].engine.ensure_rotated(&a).unwrap().0.commits.is_empty(), "P rotates A without showing M");
     lp.sync_all().unwrap();
-    assert!(!lp.peers[2].engine.reseal_due(&m, &Pass).unwrap().commits.is_empty(), "M's admin re-seals P");
+    assert!(!lp.peers[2].engine.reseal_after_pass(&m).unwrap().commits.is_empty(), "M's admin re-seals P");
     lp.sync_all().unwrap();
     let (done, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
     assert!(!done.commits.is_empty(), "P rotates A once it shows M");
@@ -1289,7 +1290,7 @@ fn authority_counts_only_rotated_roles_spec_crypto_4() {
     assert!(done.commits.is_empty(), "P waits: its rotation could not show M");
     assert!(still.contains(&Role::Write), "{still:?}");
     lp.sync_all().unwrap();
-    assert!(!lp.peers[2].engine.reseal_due(&m, &Pass).unwrap().commits.is_empty(), "M's admin re-seals P");
+    assert!(!lp.peers[2].engine.reseal_after_pass(&m).unwrap().commits.is_empty(), "M's admin re-seals P");
     lp.sync_all().unwrap();
     let (done, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
     assert!(!done.commits.is_empty(), "P rotates A once it shows M");
@@ -1481,7 +1482,7 @@ fn lowered_holder_adds_no_history_above_its_role_spec_crypto_4() {
     assert_eq!(lp.peers[1].engine.core.role_now(&w, &g), Some(Role::Read), "W knows its demotion");
     let e = lp.peers[1].engine.epochs(&g).unwrap();
     assert!(e.write.current().iter().all(|c| e.write.secret(c).is_some()), "W holds the current write epoch");
-    let done = lp.peers[1].engine.reseal_due(&g, &Pass).unwrap();
+    let done = lp.peers[1].engine.reseal_after_pass(&g).unwrap();
     assert!(done.commits.is_empty(), "no write history from a reader");
 }
 
@@ -1574,7 +1575,7 @@ fn co_writer_seals_no_keyset_with_a_stale_box_spec_crypto_4() {
     for _ in 0..3 {
         let rot = lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.len();
         lp.sync_all().unwrap();
-        let reseal = lp.peers[4].engine.reseal_due(&g, &Pass).unwrap().commits.len();
+        let reseal = lp.peers[4].engine.reseal_after_pass(&g).unwrap().commits.len();
         lp.sync_all().unwrap();
         counts.push((rot, reseal));
     }
@@ -1631,7 +1632,7 @@ fn co_writer_reseals_no_holder_left_out_spec_crypto_4() {
     for _ in 0..3 {
         let rot = lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.len();
         lp.sync_all().unwrap();
-        let reseal = lp.peers[4].engine.reseal_due(&g, &Pass).unwrap().commits.len();
+        let reseal = lp.peers[4].engine.reseal_after_pass(&g).unwrap().commits.len();
         lp.sync_all().unwrap();
         counts.push((rot, reseal));
     }
@@ -1677,13 +1678,13 @@ fn removal_alone_left_out_stays_out_at_co_writer_spec_crypto_4() {
     send_skipping(&mut lp, 0, 1, &removal);
     assert!(lp.peers[1].engine.departures(&a).unwrap().is_empty(), "W lacks the removal");
     assert!(lp.peers[1].engine.epochs(&a).is_none_or(|x| x.read.held().next().is_none()), "W holds none of A's secrets");
-    assert_eq!(lp.peers[1].engine.reseal_due(&g, &Pass).unwrap().commits.len(), 0, "W re-seals nothing");
+    assert_eq!(lp.peers[1].engine.reseal_after_pass(&g).unwrap().commits.len(), 0, "W re-seals nothing");
     lp.sync_all().unwrap();
     assert_eq!(sealed_at(&mut lp, 1, g, a), None);
     assert!(!leaked(&mut lp, 0, &[a, g], e, start.clone()).contains(&g), "E opens nothing a1 writes under G");
     lp.peers[0].engine.ensure_rotated(&a).unwrap();
     lp.sync_all().unwrap();
-    assert_eq!(lp.peers[1].engine.reseal_due(&g, &Pass).unwrap().commits.len(), 1, "W re-seals A at its knowing keyset");
+    assert_eq!(lp.peers[1].engine.reseal_after_pass(&g).unwrap().commits.len(), 1, "W re-seals A at its knowing keyset");
     lp.sync_all().unwrap();
     assert_eq!(sealed_at(&mut lp, 1, g, a), newest_read(&lp, 0, a));
     assert_eq!(leaked(&mut lp, 0, &[a, g], e, start), Vec::<Tid>::new());
@@ -1715,14 +1716,14 @@ fn reseal_candidates_follow_the_finalize_before_them_spec_permissions_3() {
     lp.peers[1].clock.advance(1_000);
     let cands = lp.peers[1].engine.run(|tx| super::reseal_candidates(tx, &g)).unwrap();
     assert!(cands.iter().any(|c| c.0 == m), "M is a candidate before the finalize: {cands:?}");
-    lp.peers[1].engine.reseal_due(&g, &Pass).unwrap();
+    lp.peers[1].engine.reseal_after_pass(&g).unwrap();
     assert!(lp.peers[1].engine.departures(&m).unwrap().iter().any(|d| d.holder == y), "X finalized Y alone");
     assert_eq!(sealed_at(&mut lp, 1, g, m), None, "M is left out at X");
     lp.sync_all().unwrap();
     lp.advance(1_000);
     assert!(!lp.peers[0].engine.ensure_rotated(&m).unwrap().0.commits.is_empty(), "M's admin covers Y's departure");
     lp.sync_all().unwrap();
-    lp.peers[1].engine.reseal_due(&g, &Pass).unwrap();
+    lp.peers[1].engine.reseal_after_pass(&g).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(sealed_at(&mut lp, 1, g, m), newest_read(&lp, 0, m));
 }

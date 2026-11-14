@@ -618,34 +618,6 @@ pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     crate::rotation::mark_lost_due(tx, lost)
 }
 
-/// For an opened inbox commit `id`: per thing, the holders its `roles.0` parts name and its
-/// `secrets.0` boxes key to, decoded unverified (`Engine::hint_actors`).
-pub fn inbox_named(blob: &osis_commit::CommitBlob, id: &CommitId) -> std::collections::BTreeMap<Tid, Vec<Tid>> {
-    let mut out: std::collections::BTreeMap<Tid, Vec<Tid>> = std::collections::BTreeMap::new();
-    for a in blob.header.aspects.iter().map(|a| a.tid).collect::<std::collections::BTreeSet<_>>() {
-        out.entry(a).or_default().extend(pending_grantees(blob, id, &a));
-    }
-    for (a, w) in pending_secrets_writes(blob, id) {
-        out.entry(a).or_default().extend(w.boxes.into_keys().map(|k| k.holder));
-    }
-    out
-}
-
-/// The holders a held, not applied role commit's `roles.0` parts on `on` put an edge
-/// for, decoded unverified.
-pub(crate) fn pending_grantees(blob: &osis_commit::CommitBlob, id: &CommitId, on: &Tid) -> Vec<Tid> {
-    let mut out = Vec::new();
-    for (_, d) in pending_deltas(blob, id, |a| a.ak.as_str() == "roles.0" && a.tid == *on) {
-        let Some(m) = map(Some(&d)) else { continue };
-        for (_, _, k, f) in m.entries() {
-            if let (Some(Value::Tid(t)), Some(_)) = (k, f.and_then(Fragment::read)) {
-                out.push(*t);
-            }
-        }
-    }
-    out
-}
-
 /// The `secrets.0` writes of a held, not applied role commit, per actor, decoded
 /// unverified (what `read_pending_boxes` reads; the lost-access trigger's pending grants).
 pub(crate) fn pending_secrets_writes(blob: &osis_commit::CommitBlob, id: &CommitId) -> Vec<(Tid, SecretsWrite)> {
@@ -671,7 +643,7 @@ fn pending_deltas(blob: &osis_commit::CommitBlob, id: &CommitId, keep: impl Fn(&
 }
 
 impl crate::engine::Engine {
-    /// Records a read or sync secret learned from a label's entry box (a link key opening
+    /// Records a read or sync secret learned from an entry box (a link key opening
     /// by static entry, spec/sync-ids.md §3) when it is the secret of epoch `e` of `g`'s role `r` (spec/crypto.md
     /// §4; anyone holding the head's step key, a removed admin among them, can write the box, so
     /// it establishes nothing). False when it is not, or when the node lost `g` (`rotation::may_learn`,
@@ -681,6 +653,14 @@ impl crate::engine::Engine {
             return Ok(false);
         }
         let g = *g;
+        // a sync secret of a thing this node does not read goes to its sync record, not thing
+        // state (spec/sync-judgement.md §6)
+        if r == Role::Sync && !self.core.epochs(&g).is_some_and(|x| x.role(Role::Read).holds_any()) {
+            return self.run(|tx| {
+                let ids: Vec<osis_base::SyncId> = crate::flows::home_sync_id(tx, &g)?.into_iter().collect();
+                crate::sync::records::note_sync_secrets(tx, &g, &ids, [(e, secret)])
+            });
+        }
         self.run(|tx| {
             tx.core.touch();
             tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
@@ -698,7 +678,7 @@ impl crate::engine::Engine {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
-    use crate::flows::{Delivery, Demotion, Done};
+    use crate::flows::{Demotion, Done};
 
     /// A thing whose first admin is `admin`, made by peer `i`.
     fn thing_of(lp: &mut LocalPeer, i: usize, admin: Tid) -> Tid {
@@ -732,19 +712,14 @@ mod tests {
 
     /// A flow's direct sends and inbox blobs to the peers.
     fn carry(lp: &mut LocalPeer, from: usize, done: &Done) {
-        for d in &done.deliveries {
-            match d {
-                Delivery::Direct { to, commits } => {
-                    if let Some(i) = lp.peers.iter().position(|p| p.engine.me() == *to) {
-                        send(lp, from, i, commits);
-                    }
-                }
-                Delivery::Inbox { blob, .. } => {
-                    for i in (0..lp.peers.len()).filter(|i| *i != from) {
-                        let _ = lp.peers[i].engine.accept_inbox(blob);
-                    }
-                }
-                _ => {}
+        for (to, commits) in lp.owed_to(from, done).unwrap() {
+            if let Some(i) = lp.peers.iter().position(|p| p.engine.me() == to || p.engine.tid() == to) {
+                send(lp, from, i, &commits);
+            }
+        }
+        for (_, blob) in lp.inbox_blobs(from, done).unwrap() {
+            for i in (0..lp.peers.len()).filter(|i| *i != from) {
+                let _ = lp.peers[i].engine.take_inbox_blob(&blob, true);
             }
         }
     }
@@ -755,11 +730,10 @@ mod tests {
     // (the engine fails the operation where the whole state teaches more).
     #[test]
     fn per_entry_secrets_ingestion_equals_whole_state_spec_crypto_4() {
-        let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
         let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
         for seed in 0..4u64 {
             let mut lp = LocalPeer::new(4, 530 + seed, WallMs(1_700_000_000_000)).unwrap();
-            let ps: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.create_account(&hosts).unwrap().0.account).collect();
+            let ps: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.create_account().unwrap().0.account).collect();
             spread(&mut lp);
             for p in &mut lp.peers {
                 p.engine.core.check_ingest = true;
@@ -1396,20 +1370,18 @@ mod tests {
         // spec/permissions.md §3: at the end of a complete pass of G's labels, each admin (the
         // first admin's node, B) gives T secrets of its own again, boxing Z (concurrently: a fork at
         // one n); A (removed), X and Z (readers) do nothing; nothing more once T has them
-        let runs: Vec<(usize, Vec<Delivery>)> = (0..5).map(|i| own_due_done(&mut lp, i, &g, &t)).collect();
+        let runs: Vec<(usize, Owed)> = (0..5).map(|i| own_due_done(&mut lp, i, &g, &t)).collect();
         assert_eq!(runs.iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 0, 0, 1, 0]);
         // each admin's rotation goes to Z directly (it holds no box at a current epoch of T),
         // never to T's first admin G (it reads the derived epochs), and first under T's labels; Z,
         // given only B's, holds T's new epochs
         for i in [0usize, 3] {
             let ds = &runs[i].1;
-            let to: Vec<Tid> = ds.iter().filter_map(|d| if let Delivery::Direct { to, .. } = d { Some(*to) } else { None }).collect();
+            let to: Vec<Tid> = ds.iter().map(|(to, _)| *to).collect();
             assert_eq!(to, vec![z], "peer {i}: delivered to Z only");
-            assert!(!ds.iter().any(|d| matches!(d, Delivery::Inbox { .. })), "peer {i}");
-            assert!(ds.iter().any(|d| matches!(d, Delivery::First { under, .. } if under.contains(&t))), "peer {i}: first under T");
         }
-        let Some(Delivery::Direct { commits, .. }) = runs[3].1.iter().find(|d| matches!(d, Delivery::Direct { .. })) else { unreachable!() };
-        for c in commits.clone() {
+        let commits = runs[3].1[0].1.clone();
+        for c in commits {
             let pk = lp.peers[3].engine.package(&c).unwrap().unwrap();
             lp.deliver(4, &pk).unwrap();
         }
@@ -1448,14 +1420,17 @@ mod tests {
         own_due_done(lp, i, actor, t).0
     }
 
-    /// `own_due` with the deliveries made.
-    fn own_due_done(lp: &mut LocalPeer, i: usize, actor: &Tid, t: &Tid) -> (usize, Vec<Delivery>) {
+    /// Deliveries owed for some commits, by holder.
+    type Owed = Vec<(Tid, Vec<CommitId>)>;
+
+    /// `own_due` with the deliveries owed for the commits made, by holder.
+    fn own_due_done(lp: &mut LocalPeer, i: usize, actor: &Tid, t: &Tid) -> (usize, Owed) {
         let (mut n, mut ds) = (0, Vec::new());
         for x in lp.peers[i].engine.own_secrets_candidates(actor) {
             assert_eq!(x, *t, "peer {i}: only T");
             let done = lp.peers[i].engine.give_own_secrets_again(&x).unwrap();
             n += done.commits.len();
-            ds.extend(done.deliveries);
+            ds.extend(lp.owed_to(i, &done).unwrap());
         }
         (n, ds)
     }
@@ -1491,7 +1466,7 @@ mod tests {
         assert!(!crate::flows::edges::finalizable(&lp.peers[3].engine.core, &b, &t).is_empty(), "B may finalize Z");
         let (n, ds) = own_due_done(&mut lp, 3, &g, &t);
         assert_eq!(n, 1, "B gives T secrets of its own again");
-        assert!(!ds.iter().any(|d| matches!(d, Delivery::Direct { to, .. } if *to == z)), "delivered to Z");
+        assert!(!ds.iter().any(|(to, _)| *to == z), "delivered to Z");
         // a box standing at an earlier epoch (one the rotation does not hold established) is one
         // Z opened already; none at the new own secrets
         let s = lp.peers[3].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();

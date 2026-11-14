@@ -287,7 +287,7 @@ impl Mutation {
 /// (`secrets.0`, `keys.0`) and other content.
 pub(crate) fn required_role(ak: &str) -> Role {
     match ak {
-        "roles.0" | "label.0" => Role::Admin,
+        "roles.0" | "sync.0" => Role::Admin,
         _ if Ak::markers_of(ak).admin_only => Role::Admin,
         _ => Role::Write,
     }

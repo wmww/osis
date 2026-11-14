@@ -1106,6 +1106,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let mut fresh = false;
     let current = tx.core.current_sessions();
     let accounts: BTreeSet<Tid> = tx.core.accounts.keys().copied().collect();
+    let mut falls: Vec<(Tid, Ak)> = Vec::new();
     for (id, now) in news {
         let Some(m) = tx.core.ix.commits.get_mut(&id) else { continue };
         let h = m.header.clone();
@@ -1122,8 +1123,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
             {
                 flipped.insert((x.tid, x.ak.clone()));
                 tx.core.compaction.weigh((x.tid, x.ak.clone()));
-                // what it covered comes back through node-sync (`Engine::take_fallen`)
-                if *a && m.view.kind.is_compaction() {
+                // a memory snapshot's covered bodies were forgotten: a fresh one is written
+                // (`memory::resnapshot_fallen`)
+                if *a && m.view.kind.is_compaction() && m.view.memory {
                     tx.core.fallen.insert((x.tid, x.ak.clone()));
                 }
                 if *b {
@@ -1133,7 +1135,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                     }
                 } else {
                     fell.entry((x.tid, x.ak.clone())).or_default().push((id, ai));
-                    tx.core.fell.insert((x.tid, x.ak.clone()));
+                    falls.push((x.tid, x.ak.clone()));
                 }
                 if x.ak.as_str() == "secrets.0" {
                     secrets_flips.push((id, ai, *b));
@@ -1147,6 +1149,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         tx.core.index_validity(&id);
     }
     drop(judge);
+    for (t, ak) in falls {
+        crate::sync::falls::fell(tx, &t, &ak)?;
+    }
     // an own write of the current sessions fell: later writes go under fresh ones, past the hole
     // (`Core::fresh_session`)
     if fresh {

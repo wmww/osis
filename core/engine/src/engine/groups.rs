@@ -283,13 +283,13 @@ impl Engine {
 impl super::Core {
     /// `Engine::carried`.
     pub(crate) fn carried(&self, t: &Tid) -> bool {
-        self.ix.groups.enclosing(t).iter().any(|g| self.ix.labeled.contains(g))
+        self.ix.groups.enclosing(t).iter().any(|g| self.ix.sync_recorded.contains(g))
     }
 
     /// Before group `g` stops listing the subgroups `cut`: those cut while a synced group
     /// carries `g` (`cut_subs`), whatever cut them (a write here or elsewhere, an expiry).
     pub(crate) fn note_cut(&mut self, g: &Tid, cut: &[Tid]) {
-        if !cut.is_empty() && self.ix.groups.above(g).iter().any(|a| self.ix.labeled.contains(a)) {
+        if !cut.is_empty() && self.ix.groups.above(g).iter().any(|a| self.ix.sync_recorded.contains(a)) {
             self.cut_subs.extend(cut.iter().copied());
         }
     }

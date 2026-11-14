@@ -11,7 +11,7 @@
 //! forks, departures, forgeries, cycles); every feature stays on its own draws.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Key, Pass, Rng, Via, edge, group, openable, opens_by, opens_in};
+use super::tests::{Key, Rng, Via, edge, group, openable, opens_by, opens_in};
 use super::tests_departs::{Forge, leave};
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -195,7 +195,7 @@ impl Run {
     /// many commits it wrote.
     fn reseal(&mut self, p: usize, t: Tid) -> crate::Result<usize> {
         let before = self.lp.peers[p].engine.get_typed(&t, &ct::SECRETS).ok().flatten().unwrap_or_default();
-        let n = self.lp.peers[p].engine.reseal_due(&t, &Pass)?.commits.len();
+        let n = self.lp.peers[p].engine.reseal_after_pass(&t)?.commits.len();
         let after = self.lp.peers[p].engine.get_typed(&t, &ct::SECRETS).ok().flatten().unwrap_or_default();
         let held = super::tests::commit_ids(&mut self.lp, p);
         use osis_keys::aspects::from_schema;

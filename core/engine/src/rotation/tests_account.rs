@@ -20,7 +20,7 @@ fn peers(n: usize) -> LocalPeer {
 }
 
 fn created(lp: &mut LocalPeer) -> (CreatedAccount, Vec<u8>) {
-    let (a, done) = lp.peers[0].engine.create_account(&[]).unwrap();
+    let (a, done) = lp.peers[0].engine.create_account().unwrap();
     let bytes = lp.peers[0].engine.commit_bytes(&done.commits[0]).unwrap().unwrap();
     (a, bytes)
 }
@@ -239,9 +239,9 @@ fn grant_boxes_at_the_open_epoch_spec_crypto_4() {
     let s = e.run(|tx| crate::flows::secrets_in(tx, &t)).unwrap();
     let named: Vec<_> = s.boxes.iter().filter(|(k, _)| k.holder == a.account).map(|(_, b)| osis_keys::box_keysets(b)).collect();
     assert!(!named.is_empty() && named.iter().all(|x| *x == [name]), "{named:?}");
-    let key = e.run(|tx| crate::flows::labels::reader_key(tx, &a.account)).unwrap();
+    let key = e.run(|tx| crate::flows::sync_ids::reader_key(tx, &a.account)).unwrap();
     match key {
-        Some(crate::flows::labels::ReaderKey::Dh(x)) => assert_eq!(x, next.kem.public().x25519(), "the open epoch's key"),
+        Some(crate::flows::sync_ids::ReaderKey::Dh(x)) => assert_eq!(x, next.kem.public().x25519(), "the open epoch's key"),
         _ => panic!("a claim key"),
     }
 }
@@ -280,8 +280,8 @@ fn two_accounts_of_one_node_have_unlinked_sessions_spec_crdt_2() {
         let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
         lp.peers[0].engine.header(&c).unwrap().form
     };
-    let (x, _) = lp.peers[0].engine.create_account(&[]).unwrap();
-    let (y, _) = lp.peers[0].engine.create_account(&[]).unwrap();
+    let (x, _) = lp.peers[0].engine.create_account().unwrap();
+    let (y, _) = lp.peers[0].engine.create_account().unwrap();
     let (fx, fy) = (write(&mut lp, &x, 1), write(&mut lp, &y, 1));
     let own = lp.peers[0].engine.core.session.nonce;
     let (Form::Session(nx), Form::Session(ny)) = (fx, fy) else { panic!("session form") };
@@ -305,7 +305,7 @@ fn two_accounts_of_one_node_have_unlinked_sessions_spec_crdt_2() {
 #[test]
 fn account_session_nonce_is_new_after_a_restart_spec_crdt_2() {
     let mut lp = peers(1);
-    let (a, _) = lp.peers[0].engine.create_account(&[]).unwrap();
+    let (a, _) = lp.peers[0].engine.create_account().unwrap();
     let nonce = |lp: &LocalPeer| {
         let c = &lp.peers[0].engine.core;
         c.nonce_as(&a.account, c.session.nonce)
@@ -347,7 +347,7 @@ fn a_rotation_rejudges_possession_and_is_carried_spec_crypto_4() {
 #[test]
 fn account_view_is_built_once_per_rotation() {
     let mut lp = peers(1);
-    let (a, _) = lp.peers[0].engine.create_account(&[]).unwrap();
+    let (a, _) = lp.peers[0].engine.create_account().unwrap();
     let write = |lp: &mut LocalPeer| {
         let mut m = crate::Mutation::new();
         m.sign_as(a.account);

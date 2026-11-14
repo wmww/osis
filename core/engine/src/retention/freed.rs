@@ -184,7 +184,7 @@ pub(crate) fn settle_due(tx: &mut Tx<'_>) -> Result<()> {
         fs.extend(rows(tx, &key(&b, &t))?);
     }
     let j = judge(tx, fs)?;
-    tx.core.freed_new.extend(j.freed.iter().map(|f| f.link.blob));
+    let _ = j;
     Ok(())
 }
 
@@ -383,12 +383,6 @@ impl Engine {
         })
     }
 
-    /// The blobs judged freed since the last call (`Core::freed_new`): node-sync releases them
-    /// and judges their entries again.
-    pub fn take_freed_new(&mut self) -> BTreeSet<BlobId> {
-        std::mem::take(&mut self.core.freed_new)
-    }
-
     /// The node blobs freed-set judgments wait for (`Core::freed_waits`): to fetch.
     pub fn freed_wants(&self) -> impl Iterator<Item = &BlobId> + '_ {
         self.core.freed_waits.keys()
@@ -401,12 +395,6 @@ impl Engine {
         }
         self.run(|tx| {
             for (t, b) in done {
-                // a destroyed thing's secrets held for this delete are judged again
-                if let Some(v) = tx.txn.get_local(&key(b, t))? {
-                    let f = Freed::decode(&[&b.0[..], t.as_bytes()].concat(), &v)?;
-                    let keyed = [f.tid, f.author].into_iter().filter(|x| tx.core.ix.destroyed_secrets.contains(x));
-                    tx.core.destroyed_secrets_due.extend(keyed.collect::<Vec<_>>());
-                }
                 tx.txn.remove_local(&key(b, t), Shred::Yes)?;
             }
             Ok(())
@@ -505,7 +493,7 @@ mod tests {
         // judged in the drop's transaction: no key of a freed piece stays (spec/commits.md §5)
         assert!(e.freed_links().unwrap().iter().all(|f| f.judged && f.link.key == [0; 32]), "freed links keep no key");
         assert_eq!(e.freed_wants().count(), 0);
-        assert_eq!(e.take_freed_new(), want, "handed to node-sync as judged");
+        assert!(want.iter().all(|b| e.is_freed(b).unwrap()), "freed as judged (`Engine::freed`)");
         assert!(j.freed.iter().all(|f| f.borne && f.tid == t && !f.link.del.is_empty()), "held, borne, deletable by its keys");
         assert!(j.freed.iter().all(|f| e.freed_delete_secrets(f).len() == f.link.del.len()), "the writer holds every key its links name");
         // judged again: the same set
@@ -580,7 +568,7 @@ mod tests {
         let (mut lp, t, a, cs) = three_replaces();
         let e = &mut lp.peers[0].engine;
         e.drop_body(&cs[0], &t, &a).unwrap();
-        let freed = e.take_freed_new();
+        let freed: BTreeSet<BlobId> = judge_all(e).freed.iter().map(|f| f.link.blob).collect();
         assert!(!freed.is_empty());
         let root = e.run(|tx| part_links(tx, &cs[1], 0)).unwrap()[0];
         let bytes = e.blob(&root.blob).unwrap().unwrap();

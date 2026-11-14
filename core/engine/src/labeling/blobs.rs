@@ -113,7 +113,7 @@ pub struct BodyCtx {
 impl BodyCtx {
     /// Whether a commit (its `View`) may have bodies under the group's labels.
     pub(crate) fn touches(&self, v: &crate::engine::View) -> bool {
-        v.aspects.iter().any(|a| self.closure.contains(&a.tid) || self.published.contains(&a.tid) && matches!(a.ak.as_str(), "label.0" | "created.0"))
+        v.aspects.iter().any(|a| self.closure.contains(&a.tid) || self.published.contains(&a.tid) && matches!(a.ak.as_str(), "sync.0" | "created.0"))
     }
 }
 
@@ -215,6 +215,11 @@ impl Engine {
         let key = osis_crypto::BlobKey::fresh(rng);
         let env = osis_commit::seal_commit(&c, |_| (), |_, _| Some((key.secret().clone(), Vec::new())), &[], rng)?;
         framed(key, &env, &resolved, class, rng, &c).map(Some)
+    }
+
+    /// `section_chain`, for a fresh encryption sealed elsewhere (`sync::bodies`).
+    pub(crate) fn section_chain_of(&self, t: &Tid) -> Vec<Tid> {
+        self.section_chain(t)
     }
 
     /// The derivation chain a section lists for thing `t` (spec/wire.md §4): from its first admin
@@ -407,7 +412,7 @@ impl Engine {
         let core = &self.core;
         let mut ids: BTreeSet<CommitId> = ctx.closure.iter().flat_map(|t| core.on_thing(t)).collect();
         for t in ctx.published.iter() {
-            for ak in ["label.0", "created.0"] {
+            for ak in ["sync.0", "created.0"] {
                 let Ok(ak) = osis_base::Ak::new(ak) else { continue };
                 ids.extend(core.ix.by_aspect.get(&(*t, ak)).into_iter().flatten().map(|x| x.1));
             }
@@ -503,7 +508,7 @@ impl Engine {
         let body = Memo::get_in(self, |e| &e.core.bodies, &id, |e| e.body_with(&id, false))?;
         let mut out = Vec::new();
         if let Some(mut b) = body {
-            let published = |ai: usize| h.aspects.get(ai).is_some_and(|a| !ctx.closure.contains(&a.tid) && ctx.published.contains(&a.tid) && matches!(a.ak.as_str(), "label.0" | "created.0"));
+            let published = |ai: usize| h.aspects.get(ai).is_some_and(|a| !ctx.closure.contains(&a.tid) && ctx.published.contains(&a.tid) && matches!(a.ak.as_str(), "sync.0" | "created.0"));
             let inside = |ai: usize| h.aspects.get(ai).is_some_and(|a| touches && ctx.closure.contains(&a.tid)) || published(ai);
             let parts: Vec<usize> = b.parts.iter().copied().filter(|ai| inside(*ai)).collect();
             let readable = self.readable_parts(ctx, &id, &parts);
@@ -545,7 +550,7 @@ impl Engine {
     /// it reads, not per pass.
     pub fn published_under(&mut self, g: &Tid) -> std::sync::Arc<std::collections::BTreeSet<Tid>> {
         let core = &self.core;
-        let all = core.published.get(&(), || std::sync::Arc::new(published_by_actor(core, &core.ix.labeled).into_iter().map(|(k, v)| (k, std::sync::Arc::new(v))).collect()));
+        let all = core.published.get(&(), || std::sync::Arc::new(published_by_actor(core, &core.ix.sync_recorded).into_iter().map(|(k, v)| (k, std::sync::Arc::new(v))).collect()));
         all.get(g).cloned().unwrap_or_default()
     }
 

@@ -131,7 +131,8 @@ impl Joining {
             for (bytes, blobs, lists) in pks {
                 e.ingest_with_lists(&bytes, blobs, None, &lists)?;
             }
-            e.paired(&account, &grant).map_err(|_| Error::Invalid("pairing reply: this node was not made a node of the account".into()))
+            let _ = grant;
+            e.paired(&account).map_err(|_| Error::Invalid("pairing reply: this node was not made a node of the account".into()))
         })?;
         Ok(self.db)
     }
@@ -179,18 +180,12 @@ impl Osis {
             for (bytes, blobs, lists) in pks {
                 x.engine().ingest_with_lists(&bytes, blobs, None, &lists)?;
             }
-            let done = x.engine().pair(&node)?;
+            let (done, send) = x.engine().pair(&node)?;
             let grant = *done.commits.last().ok_or(Error::Invalid("pairing made no commit".into()))?;
             // what the new node needs of it goes in the reply
             let mut mine = Vec::new();
-            for d in &done.deliveries {
-                if let osis_engine::flows::Delivery::Direct { to, commits } = d
-                    && *to == node
-                {
-                    for c in commits {
-                        mine.extend(x.engine().package(c)?);
-                    }
-                }
+            for c in &send {
+                mine.extend(x.engine().package(c)?);
             }
             Ok((grant, mine))
         })?;

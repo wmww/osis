@@ -503,7 +503,7 @@ impl World {
         let i = self.add_bare_node();
         let account = {
             let e = self.engine(i);
-            e.create_account(&[]).expect("account").0.account
+            e.create_account().expect("account").0.account
         };
         if let Some(n) = self.nodes.get_mut(i) {
             n.account = Some(account);

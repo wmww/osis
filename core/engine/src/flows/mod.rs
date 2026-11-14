@@ -6,13 +6,13 @@
 //!
 //! Flows build role commits with `Mutation` (`sign_as` for a held link key,
 //! `frontier`, `unchecked` where perm's invite and self-removal rules decide authority) and
-//! return what must travel as `Delivery` values: node-sync places them (inbox blobs, direct
-//! sends, placement before any other upload). Where a decision needs sync state (a complete pass
-//! of an actor's labels) node-sync implements `SyncState`.
+//! return the commits written; an inbox delivery a commit owes is recorded in its transaction
+//! (`sync::deliveries::owe`). Where a decision needs sync state (a complete pass of an actor's
+//! sync IDs) it reads what sync noted (`Engine::note_complete_pass`).
 
 pub mod addenda;
 pub mod edges;
-pub(crate) mod labels;
+pub(crate) mod sync_ids;
 pub(crate) mod links;
 mod create;
 pub(crate) mod account;
@@ -35,7 +35,6 @@ use osis_base::{Ak, CommitId, CreationRecord, SyncId, Role, Tid, Value, WallMs};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
 use osis_keys::{KeysWrite, HolderKeys, Recipient, SecretsWrite};
-use osis_label::Address;
 use osis_perm::At;
 use osis_schema::core_types::{self as ct, Inbox, Keys, Secrets};
 use osis_schema::{RawKey, Codec};
@@ -43,78 +42,11 @@ use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// Something a flow produced that must travel (node-sync carries it out).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Delivery {
-    /// An inbox blob for actor `to` (spec/sync-inbox.md §2): placed under `inbox.label` by deposit, or
-    /// by upload when the sender holds that label's write key; `resend` seals it again.
-    Inbox { to: Tid, inbox: Inbox, blob: Vec<u8>, resend: Resend },
-    /// Commits for node `to` over a direct connection (pairing; a node has no inbox).
-    Direct { to: Tid, commits: Vec<CommitId> },
-    /// Commits to place, in the same sync and before any other upload, under every label the
-    /// node tracks of the things listed (a removal and the affected actors' new `keys.0`,
-    /// spec/permissions.md §3), stamped or by deposit.
-    First { commits: Vec<CommitId>, under: Vec<Tid> },
-    /// A certificate copy to place under the home label of `under` (spec/sync-inbox.md §5: a grantee
-    /// node accepting a grant; deposit unless writer).
-    Certificate { commits: Vec<CommitId>, under: Tid },
-    /// A commit to place under the label of `under`, by deposit (a non-writer of that label: an
-    /// invite grant, spec/sync-judgement.md §1).
-    Deposit { commit: CommitId, under: Tid },
-    /// A removal or lowering of actor `under`'s edge, placed under every label holding `under`
-    /// as a certificate copy without its `secrets.0` and `keys.0` deltas (spec/permissions.md §2:
-    /// those are for the target's remaining holders; a refreshed deposit seed is not the
-    /// departed's to read).
-    Removal { commit: CommitId, under: Tid },
-}
-
-/// What seals an inbox delivery again (spec/sync-inbox.md §2: re-sent after `INBOX_LIFETIME` while
-/// the holder has not acted): the holder, the commit, the things named, whether only its
-/// `roles.0` parts went (a removal).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Resend {
-    pub holder: Tid,
-    pub commit: CommitId,
-    pub things: Vec<Tid>,
-    pub edge_only: bool,
-}
-
-/// What node-sync knows that flows need (notes/engine-roles.md, Flows hooks).
-pub trait SyncState {
-    /// A complete pass of `actor`'s labels (the log of every host and peer it syncs them with
-    /// read to its end) since the last role commit of the actor applied from elsewhere
-    /// (spec/permissions.md §3).
-    fn complete_pass(&self, actor: &Tid) -> bool;
-}
-
-/// A flow's result: the commits written and what must travel.
+/// A flow's result: the commits written. What travels is derived from them: inbox deliveries
+/// owed in their transactions (`sync::deliveries`), bodies by the sync judgement.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Done {
     pub commits: Vec<CommitId>,
-    pub deliveries: Vec<Delivery>,
-    /// A self-removal: drop the secrets this node lost once the commit is placed (sync arms that; the lost-access trigger leaves such losses, an app driving the
-    /// engine alone calls `Engine::drop_lost_secrets`).
-    pub drop_lost: bool,
-}
-
-/// Records `d` with node-sync in the running transaction, the one whose commit owes it
-/// (`SyncRecords::owe`), and returns it: every delivery but an inbox blob (recorded by
-/// `SyncRecords::note_unsent`) is made through here.
-pub(crate) fn owe(tx: &mut Tx<'_>, d: Delivery) -> Result<Delivery> {
-    if let Some(r) = tx.core.sync_records {
-        r.owe(tx, &d, true)?;
-    }
-    Ok(d)
-}
-
-/// Drops the records of `ds` (`owe`): a flow that replaces what an inner transaction owed.
-pub(crate) fn unowe(tx: &mut Tx<'_>, ds: &[Delivery]) -> Result<()> {
-    if let Some(r) = tx.core.sync_records {
-        for d in ds {
-            r.owe(tx, d, false)?;
-        }
-    }
-    Ok(())
 }
 
 impl Done {
@@ -123,8 +55,6 @@ impl Done {
     }
     pub(crate) fn extend(&mut self, o: Done) {
         self.commits.extend(o.commits);
-        self.deliveries.extend(o.deliveries);
-        self.drop_lost |= o.drop_lost;
     }
 }
 
@@ -312,11 +242,10 @@ pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inb
     Ok(Core::keys_in(tx, holder)?.and_then(|k| k.inbox).map(|i| (*holder, i)))
 }
 
-/// The label of `tid` (two admins giving it secrets at once made two: the higher ID) of those it
-/// owns (`labels::labels_of`): ID, hosts.
-pub(crate) fn own_label(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(SyncId, Vec<Address>)>> {
-    let labels = labels::labels_of(tx, tid)?;
-    Ok(labels.into_iter().next_back().map(|(id, l)| (id, l.hosts)))
+/// The home sync ID of `tid` (two admins giving it secrets at once made two: the higher ID) of
+/// those it owns (`sync_ids::owned_in`).
+pub(crate) fn home_sync_id(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<SyncId>> {
+    Ok(sync_ids::owned_in(tx, tid)?.into_keys().next_back())
 }
 
 /// Whether key actor `t` is a node (it has a `node.0` card), not a link key.

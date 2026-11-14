@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Aspects of a forgotten thing that stay: what perm judges others' writes by, no content and
 /// no secret.
-const KEPT: [&str; 5] = ["created.0", "retention^.0", "roles.0", "keys.0", "label.0"];
+const KEPT: [&str; 5] = ["created.0", "retention^.0", "roles.0", "keys.0", "sync.0"];
 
 /// What goes of a thing `forget` reaches.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -51,7 +51,7 @@ pub struct Forgotten {
     /// Commits deleted whole.
     pub commits: BTreeSet<CommitId>,
     /// The forgotten aspect indices of each commit with a forgotten part (those of `commits`
-    /// too): node sync drops the blobs holding one (`SyncRecords::forget` for the stored ones).
+    /// too): node sync drops the blobs holding one .
     pub parts: BTreeMap<CommitId, BTreeSet<usize>>,
 }
 
@@ -234,24 +234,22 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     // (`labeling::actors::owns`; the forgotten ones' secrets are gone, so judged from the owner's
     // side): another's label a forgotten group's admin named takes nothing of its owner's here
     for g in out.things.clone() {
-        out.labels.extend(crate::flows::labels::labels_in(tx, &g)?);
+        out.labels.extend(crate::flows::sync_ids::recorded_in(tx, &g)?);
     }
     if !out.labels.is_empty() {
-        let kept: Vec<Tid> = tx.core.ix.labeled.iter().filter(|g| !out.things.contains(g)).copied().collect();
+        let kept: Vec<Tid> = tx.core.ix.sync_recorded.iter().filter(|g| !out.things.contains(g)).copied().collect();
         for g in kept {
-            for l in crate::flows::labels::labels_of(tx, &g)?.keys() {
+            for l in crate::flows::sync_ids::owned_in(tx, &g)?.keys() {
                 out.labels.remove(l);
             }
         }
     }
     // the pieces the forgotten parts reach that no kept source of their thing links (a link
     // its blob does not bear releases nothing, `freed::lost`; their freed sets go), then the
-    // sync records and the blob ciphertexts nothing kept names
+    // blob ciphertexts nothing kept names (the store per sync ID drops its entries as their
+    // bodies leave `sync_bodies`)
     let pieces = super::freed::lost(tx, &out.things, links, &aspects, &parts)?;
-    let mut gone = match tx.core.sync_records {
-        Some(r) => r.forget(tx, &out.labels, &out.things, &out.commits, &parts, pieces.clone())?,
-        None => pieces.clone(),
-    };
+    let mut gone = pieces.clone();
     // a blob of a forgotten label that a kept source of a forgotten thing links stays (a kept
     // copy's content, an erased thing's kept aspects): its labels gone, nothing fetches it again
     for t in out.things.clone() {

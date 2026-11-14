@@ -8,6 +8,17 @@
 //! the boundary note's table, until the engine is reshaped for it. Built: `ingest_relay`,
 //! `wants`, `freed`, `next_timer`, `tick`, `set_now`, `clock_next`, `known_actor`, `provers`, `own_node`, `own_node_key`, `key_open`.
 
+pub(crate) mod bodies;
+pub(crate) mod deliveries;
+pub(crate) mod falls;
+pub(crate) mod held;
+pub(crate) mod inbox;
+pub(crate) mod records;
+mod set;
+
+pub use inbox::WaitingBlob;
+pub use osis_label::DialHint;
+
 use crate::apply::reach::Wants;
 use crate::engine::DropFor;
 use crate::ephemeral::EphCommit;
@@ -51,12 +62,13 @@ pub enum Opened {
 /// What taking an inbox blob did (spec/sync-inbox.md §2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboxOpened {
-    pub commit: CommitId,
+    /// The role commit (`None`: a stranded notice, no role commit to take).
+    pub commit: Option<CommitId>,
     pub taken: Taken,
     /// Sync IDs of things whose box in the blob opened (spec/sync-inbox.md §2 hints).
     pub hints: Vec<(Tid, SyncId)>,
-    /// The address the payload names to dial.
-    pub dial: Option<Address>,
+    /// The sending node's dial hint (spec/wire.md §9 position 4), for dialing only.
+    pub dial: Option<DialHint>,
 }
 
 /// Whether the inbox blob's grant applied.
@@ -103,10 +115,17 @@ pub struct BodyFacts {
     pub lasting_header: bool,
 }
 
-/// A destroyed thing's emptying (spec/sync-judgement.md §5): its destroying requests, by expiry alone.
+/// A destroyed thing keeping nothing whose secrets are held for deletes alone
+/// (spec/sync-judgement.md §5).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Destruction {
+    /// Its destroying requests; none: destroyed by expiry alone (told at once).
     pub requests: Vec<CommitId>,
+    /// Its own sync IDs, emptied once told.
+    pub sync_ids: Vec<SyncId>,
+    /// The held commits keyed by it (a part on it or acting for it): their entries anywhere are
+    /// deleted by its keys before `forget_destroyed`.
+    pub keyed: BTreeSet<CommitId>,
 }
 
 /// Whether a writer may promote a deposited commit (spec/sync-inbox.md §4).
@@ -124,6 +143,19 @@ pub struct SyncSet {
     pub ids: BTreeMap<SyncId, (Tid, Holding)>,
     /// Things in the synced group's closure with no sync ID this node may hold.
     pub unsyncable: BTreeSet<Tid>,
+}
+
+/// How this node syncs one thing of its synced group's closure (spec/sync-set.md §2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ThingSync {
+    /// Read: its home sync ID (a destroyed thing being emptied: its own sync IDs).
+    Read(Vec<SyncId>),
+    /// Kept unread: the sync IDs its sync record names.
+    Unread(Vec<SyncId>),
+    /// Secrets of its own, neither a read nor a sync secret held (`Unsyncable`).
+    Unsyncable,
+    /// No secrets of its own: it travels under the sync IDs of the groups holding it.
+    Plain,
 }
 
 /// How a node holds a sync ID (spec/sync.md §3).
@@ -153,6 +185,13 @@ pub struct ReadCredentials {
     pub read_secrets: Vec<(Epoch, Secret32)>,
     /// Static entries of S's roster (link keys).
     pub statics: BTreeSet<[u8; 32]>,
+    /// A digest of S's roster as J judges it (its reader actor's holders for keys, each with its
+    /// role): moves with every grant, change or removal, rotated or not (spec/sync-opens.md §4).
+    pub roster: [u8; 32],
+    /// The sync proof (spec/sync-ids.md §2) of each recorded step whose sync key this node holds,
+    /// deepest first: the head's is what a reader shows, the rest what the walk tests
+    /// (spec/sync-ids.md §6 Walk).
+    pub proofs: Vec<(StepId, [u8; 32])>,
 }
 
 /// The secrets an entry box held (spec/sync-ids.md §3 Entry boxes).
@@ -217,6 +256,12 @@ pub struct ThingCaps {
     pub bytes: u64,
 }
 
+/// The sync IDs a `sync.0` state records, owned or not.
+pub(crate) fn recorded_ids(f: &osis_crdt::Fragment) -> BTreeSet<SyncId> {
+    use osis_schema::RawKey;
+    f.read().and_then(|v| osis_schema::core_types::SYNC.decode(&v).ok()).map(|m| m.into_keys().collect()).unwrap_or_default()
+}
+
 fn not_built<T>(what: &'static str) -> Result<T> {
     Err(Error::NotBuilt(what))
 }
@@ -226,8 +271,7 @@ impl Engine {
 
     /// Opens an entry's wrap with a held read secret and takes what the blob holds.
     pub fn open_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8]) -> Result<Opened> {
-        let _ = (s, blob, wrap, bytes);
-        not_built("open_entry")
+        self.open_entry_now(s, blob, wrap, bytes)
     }
 
     /// A relay-only commit (spec/sync-compaction.md §2): `Some` when new here (passed on).
@@ -247,53 +291,56 @@ impl Engine {
 
     /// Per sync ID of the sync set whose required set holds a body of `c`: that body.
     pub fn sync_bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
-        let _ = c;
-        not_built("sync_bodies")
+        self.sync_bodies_now(c)
     }
 
     pub fn body_facts(&mut self, s: &SyncId, c: &CommitId) -> Result<BodyFacts> {
-        let _ = (s, c);
-        not_built("body_facts")
+        self.body_facts_now(s, c)
     }
 
-    /// The parts an opened blob holds.
+    /// This node's own certificates under `s` (spec/permissions.md §4), to log there.
+    pub fn own_certificates(&mut self, s: &SyncId) -> Result<Arc<Certs>> {
+        self.own_certificates_now(s)
+    }
+
+    /// The parts an opened or sealed blob holds (as opened or sealed here).
     pub fn blob_parts(&mut self, b: &BlobId) -> Result<Option<PartSet>> {
-        let _ = b;
-        not_built("blob_parts")
+        Ok(self.blob_parts_now(b))
     }
 
     /// `c`'s body under `s` sealed, with its wrap for `s`.
     pub fn seal_body(&mut self, s: &SyncId, c: &CommitId, rng: &mut dyn NodeRng) -> Result<Option<(Sealed, Wrap)>> {
-        let _ = (s, c, rng);
-        not_built("seal_body")
+        self.seal_body_now(s, c, rng)
     }
 
     /// Falls of held parts on the aspect so far (durable; spec/sync-judgement.md §4 compares marks).
     pub fn fall_mark(&mut self, thing: &Tid, ak: &Ak) -> Result<u64> {
-        let _ = (thing, ak);
-        not_built("fall_mark")
+        Ok(self.fall_mark_now(thing, ak))
     }
 
     /// This node's commits and self-removals with a body under `s` (spec/sync-status.md §2).
     pub fn own_commits(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>> {
-        let _ = s;
-        not_built("own_commits")
+        self.own_commits_now(s)
     }
 
+    /// The destroyed things whose secrets are held for deletes alone (`destruction` of each).
+    pub fn destructions(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
+        Ok(self.destroyed_now())
+    }
+
+    /// A destroyed thing's emptying (spec/sync-judgement.md §5); `None` unless `thing` is one.
     pub fn destruction(&mut self, thing: &Tid) -> Result<Option<Arc<Destruction>>> {
-        let _ = thing;
-        not_built("destruction")
+        self.destruction_now(thing)
     }
 
-    /// Drops a destroyed thing's secrets, last (spec/sync-judgement.md §5).
+    /// Sync emptied `thing`'s own sync IDs and knows no entry keyed by it: its secrets drop, last
+    /// (spec/sync-judgement.md §5).
     pub fn forget_destroyed(&mut self, thing: &Tid) -> Result<()> {
-        let _ = thing;
-        not_built("forget_destroyed")
+        self.forget_destroyed_now(thing)
     }
 
     pub fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote> {
-        let _ = (s, c);
-        not_built("promotable")
+        self.promotable_now(s, c)
     }
 
     /// Whether `b` is a freed link's blob.
@@ -303,51 +350,122 @@ impl Engine {
 
     // Keys and secrets for a sync ID
 
+    /// The node's sync set (spec/sync-set.md §2), whole: `sync_things` and `thing_sync` of each.
+    /// For listing; a module follows `sync_things` and `thing_sync` per thing.
     pub fn sync_set(&mut self) -> Result<Arc<SyncSet>> {
-        not_built("sync_set")
+        self.sync_set_now()
     }
 
+    /// The things the sync set is judged over: the synced group's closure (the same `Arc` while
+    /// it does not change) and destroyed things being emptied.
+    pub fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
+        self.sync_things_now()
+    }
+
+    /// How this node syncs thing `t` (read, kept unread, unsyncable, plain); reads only `t`'s keys.
+    pub fn thing_sync(&mut self, t: &Tid) -> Result<ThingSync> {
+        self.thing_sync_now(t)
+    }
+
+    /// The thing owning sync ID `s` here by its `sync.0`.
+    pub fn sync_owner(&mut self, s: &SyncId) -> Result<Option<Tid>> {
+        self.sync_owner_of(s)
+    }
+
+    /// The sync IDs `thing` owns by its `sync.0` (spec/sync-ids.md §4 Owner), each with its
+    /// recorded path; hints while this node holds no sync secret of the thing's own.
     pub fn sync_ids(&mut self, thing: &Tid) -> Result<Arc<Vec<OwnedSyncId>>> {
-        let _ = thing;
-        not_built("sync_ids")
+        self.owned_sync_ids(thing)
     }
 
+    /// What this node opens and acts with as a reader of `s` (`None`: it does not read `s`).
     pub fn read_credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {
-        let _ = s;
-        not_built("read_credentials")
+        self.read_credentials_now(s)
     }
 
     /// The claim key from this node's own read KEM key and the step key (spec/sync-ids.md §3).
     pub fn claim_key(&mut self, s: &SyncId, step: &StepId) -> Result<Option<SigningSecret>> {
-        let _ = (s, step);
-        not_built("claim_key")
+        self.claim_key_now(s, step)
     }
 
     /// Opens an entry box for a key actor this node acts for (a link).
-    pub fn open_entry_box(&mut self, s: &SyncId, step: &Step, entry: &[u8; 32], sealed: &[u8]) -> Result<Option<EntryBoxSecrets>> {
-        let _ = (s, step, entry, sealed);
-        not_built("open_entry_box")
+    /// Opens the entry box of `thing`'s sync ID `s` at `step` for static entry `entry` (spec/sync-
+    /// ids.md §3 Entry boxes), when it is a key actor this node holds (a link key): the secrets it
+    /// carries, each checked to name its epoch of `thing` and learned (`learn_secret`). `None`
+    /// when no held key actor has that entry or the box does not open.
+    pub fn open_entry_box(&mut self, s: &SyncId, thing: &Tid, step: &Step, entry: &[u8; 32], sealed: &[u8]) -> Result<Option<EntryBoxSecrets>> {
+        use osis_schema::Codec;
+        let Ok(v) = osis_base::decode(sealed, &osis_base::Limits { max_depth: 8, max_bytes: sealed.len() }) else { return Ok(None) };
+        let Ok(b) = osis_schema::core_types::SecretBox::from_value(&v) else { return Ok(None) };
+        let ids: Vec<Arc<crate::identity::Identity>> = self.core.key_actors.values().cloned().collect();
+        for id in ids {
+            if osis_crypto::static_entry(s, &id.keys().signing.verifying_key()) != *entry {
+                continue;
+            }
+            let Ok(item) = osis_label::open_entry_box(&b, step, &id.keys().kem, thing) else { return Ok(None) };
+            self.learn_secret(thing, osis_base::Role::Read, item.epoch, item.secret.clone())?;
+            if let Some((e, x)) = &item.earlier {
+                self.learn_secret(thing, osis_base::Role::Read, *e, x.clone())?;
+            }
+            self.learn_secret(thing, osis_base::Role::Sync, item.sync.0, item.sync.1.clone())?;
+            return Ok(Some(EntryBoxSecrets { read: (item.epoch, item.secret), superseded: item.earlier, sync: item.sync }));
+        }
+        Ok(None)
     }
 
+    /// The sync records of things this node keeps unread (spec/sync-judgement.md §6): each
+    /// thing's sync IDs and sync secrets by epoch, from boxes sealed to its own key. Whole: a
+    /// start lists them, then follows `sync_record_feed` and `sync_record` per thing.
     pub fn sync_records(&mut self) -> Result<Arc<BTreeMap<Tid, SyncRecord>>> {
-        not_built("sync_records")
+        Ok(self.sync_records_now())
     }
 
+    /// `thing`'s sync record; reads only its key (an `Effects` value per thing).
+    pub fn sync_record(&mut self, thing: &Tid) -> Result<Option<Arc<SyncRecord>>> {
+        Ok(self.sync_record_now(thing))
+    }
+
+    /// A cursor over the things whose sync record is made from now on (`memo::Feed`).
+    pub fn sync_record_feed(&self) -> osis_base::memo::Feed<Tid> {
+        self.core.ix.sync_records.feed()
+    }
+
+    /// Drops `thing`'s sync record (its removal reached this node, or it left S).
     pub fn drop_sync_record(&mut self, thing: &Tid) -> Result<()> {
-        let _ = thing;
-        not_built("drop_sync_record")
+        let t = *thing;
+        self.run(|tx| records::drop_record(tx, &t))
     }
 
     // Grants, removals, peers
 
+    /// J of a peer's proven actors for `s` (spec/sync-opens.md §4), from the rosters held here:
+    /// a reader of `s`'s thing, a holder of sync alone, departed (every grant path ended), or
+    /// unknown. `Unknown` for a sync ID this node does not read.
     pub fn judge_peer(&mut self, s: &SyncId, proven: &[Tid]) -> Result<J> {
-        let _ = (s, proven);
-        not_built("judge_peer")
+        let Some(t) = self.sync_owner_of(s)? else { return Ok(J::Unknown) };
+        let reader = self.core.reader_of(&t);
+        Ok(match self.core.judge(proven.iter().copied()).of(&t) {
+            crate::labeling::Judgment::Holder => J::Reader,
+            crate::labeling::Judgment::Departed => J::Departed,
+            crate::labeling::Judgment::Unknown if proven.iter().any(|x| self.core.role_now(x, &reader) == Some(osis_base::Role::Sync)) => J::SyncHolder,
+            crate::labeling::Judgment::Unknown => J::Unknown,
+        })
     }
 
+    /// Whether read epoch `epoch` of `s`'s thing covers every departure this node knows from it
+    /// (spec/sync-opens.md §4: a departed peer opens by a read secret only of an epoch that does
+    /// not cover its departure). False for a sync ID this node does not read.
     pub fn covers_departures(&mut self, s: &SyncId, epoch: Epoch) -> Result<bool> {
-        let _ = (s, epoch);
-        not_built("covers_departures")
+        let Some(t) = self.sync_owner_of(s)? else { return Ok(false) };
+        let a = self.core.reader_of(&t);
+        let deps = self.departures(&a)?;
+        Ok(!self.read(|tx| crate::rotation::uncovered(tx, &a, osis_base::Role::Read, &epoch, &deps))?)
+    }
+
+    /// The actors known here (spec/sync-opens.md §2 Known actor), whole, a memo value over the
+    /// rosters: a module following it re-judges what a contact or roster change moves.
+    pub fn known_actors(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
+        Ok(self.known_actors_now())
     }
 
     /// Whether actor `a` is known here (spec/sync-opens.md §2).
@@ -418,46 +536,84 @@ impl Engine {
         not_built("dial_peers")
     }
 
+    /// The inbox deliveries owed and not seen taken (spec/sync-inbox.md §2), whole: a start lists
+    /// them, then follows `delivery_feed` and `delivery_taken` per delivery. A delivery to a node
+    /// (pairing) is its commit sent over a connection; to an actor, `inbox_blob`.
     pub fn deliveries(&mut self) -> Result<Arc<BTreeSet<(CommitId, Tid)>>> {
-        not_built("deliveries")
+        Ok(self.deliveries_now())
     }
 
+    /// A cursor over the deliveries owed from now on (`memo::Feed`).
+    pub fn delivery_feed(&self) -> osis_base::memo::Feed<(CommitId, Tid)> {
+        self.core.ix.owed_inbox.feed()
+    }
+
+    /// Whether this node saw `holder` take delivery `c` (a commit of the holder's on a thing it
+    /// names; an open the blob names at this node is sync's to see). Reads only its keys.
     pub fn delivery_taken(&mut self, c: &CommitId, holder: &Tid) -> Result<bool> {
-        let _ = (c, holder);
-        not_built("delivery_taken")
+        Ok(self.delivery_taken_now(c, holder))
     }
 
-    pub fn inbox_blob(&mut self, c: &CommitId, holder: &Tid, rng: &mut dyn NodeRng) -> Result<Option<Sealed>> {
-        let _ = (c, holder, rng);
-        not_built("inbox_blob")
+    /// The inbox blob of delivery (`c`, `holder`), sealed now (spec/wire.md §9): `None` for a
+    /// node holder (sent `c` itself) or one whose inbox key is not known here.
+    pub fn inbox_blob(&mut self, c: &CommitId, holder: &Tid, rng: &mut dyn NodeRng) -> Result<Option<Vec<u8>>> {
+        self.inbox_blob_now(c, holder, rng)
     }
 
-    pub fn take_inbox(&mut self, s: &SyncId, blob: &BlobId, accepted: bool) -> Result<InboxOpened> {
-        let _ = (s, blob, accepted);
-        not_built("take_inbox")
+    /// The commits logged with role commit `c` wherever it is logged (spec/crypto.md §4 Carried).
+    pub fn logged_with(&mut self, c: &CommitId) -> Result<Arc<Vec<CommitId>>> {
+        Ok(Arc::new(self.logged_with_now(c)?))
     }
 
-    pub fn removal_notices(&mut self) -> Result<Arc<Vec<RemovalNotice>>> {
-        not_built("removal_notices")
+    /// The inbox sync ID of actor `a` (spec/sync-inbox.md §1): the one its `keys.0` names.
+    pub fn inbox_of(&mut self, a: &Tid) -> Option<SyncId> {
+        self.inbox(a)
     }
 
+    /// Takes the inbox blob `blob` held under `s` (its bytes from the ciphertext store), or
+    /// judges it again (spec/sync-inbox.md §2 Taking); `accepted`: the user accepted it
+    /// (spec/sync-set.md §4). `None`: its bytes are not held or nothing here opens it.
+    pub fn take_inbox(&mut self, s: &SyncId, blob: &BlobId, accepted: bool) -> Result<Option<InboxOpened>> {
+        let b = *blob;
+        let Some(bytes) = self.run(|tx| tx.blobs.get(&b))? else { return Ok(None) };
+        self.take_inbox_bytes(s, blob, &bytes, accepted)
+    }
+
+    /// The removal notices held in this node's inbox (spec/wire.md §9 position 5): unverified
+    /// here; `unread` verifies each under a step of its path (spec/sync-judgement.md §6 Stops).
+    pub fn removal_notices(&mut self, s: &SyncId) -> Result<Arc<Vec<RemovalNotice>>> {
+        Ok(self.removal_notices_now(s))
+    }
+
+    /// Every removal notice held, whole: a start's listing (then `removal_notices` per sync ID).
+    pub fn all_removal_notices(&mut self) -> Result<Arc<Vec<RemovalNotice>>> {
+        Ok(self.all_removal_notices_now())
+    }
+
+    /// The invitations waiting for the user (spec/sync-set.md §4).
     pub fn invitations(&mut self) -> Result<Arc<Vec<Invitation>>> {
-        not_built("invitations")
+        self.invitations_now()
     }
 
+    /// This node's self-removals waiting to be held elsewhere (spec/sync-status.md §2): the
+    /// secrets they gave up drop once each is.
     pub fn waiting_held_elsewhere(&mut self) -> Result<Arc<BTreeSet<CommitId>>> {
-        not_built("waiting_held_elsewhere")
+        Ok(self.waiting_held_elsewhere_now())
     }
 
+    /// Sync saw self-removal `c` held elsewhere (spec/sync-status.md §2).
     pub fn held_elsewhere(&mut self, c: &CommitId) -> Result<()> {
-        let _ = c;
-        not_built("held_elsewhere")
+        self.held_elsewhere_now(c)
     }
 
-    /// A complete pass of `s` begun at `began` ended (spec/sync-status.md §1).
+    /// A complete pass of `s` begun at `began` ended (spec/sync-status.md §1): the re-seal and
+    /// history-add trigger (`reseal_due`) of `s`'s thing's reader actor runs on it.
     pub fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
-        let _ = (s, began);
-        not_built("note_complete_pass")
+        if let Some(t) = self.sync_owner_of(s)? {
+            let actor = self.core.reader_of(&t);
+            self.note_complete_pass_now(&actor, began);
+        }
+        Ok(())
     }
 
     // Timers and config
@@ -473,7 +629,8 @@ impl Engine {
         self.core.time.set(now.0);
     }
 
+    /// `caps^.0` of this node (spec/sync-ids.md §5 Caps).
     pub fn caps(&mut self) -> Result<Arc<Caps>> {
-        not_built("caps")
+        self.caps_now()
     }
 }

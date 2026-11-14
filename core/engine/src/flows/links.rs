@@ -4,8 +4,8 @@
 //! invite grant signed as L, single use with L's self-removal in the same commit), bearer use,
 //! finalization and revoking a joiner are demotions by a sharer node.
 
-use super::labels::ReaderKey;
-use super::{Delivery, Done, put_edge};
+use super::sync_ids::ReaderKey;
+use super::{Done, put_edge};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use crate::flows::edges::grant_in;
@@ -53,7 +53,7 @@ pub struct LinkSpec {
 
 impl Engine {
     /// Creates a link to `spec.target` for actor `sharer` (an actor this node is admin of):
-    /// K (first admin `sharer`, secrets of its own, home label on `spec.hosts` listing L by
+    /// K (first admin `sharer`, secrets of its own, home sync ID listing L by
     /// static entry), L (key actor from a fresh seed, `created.0` and `keys.0` signed by itself),
     /// L's edge (r, invite r, `until`) on K with its boxes, K's edge on the target, and a
     /// sharer-only thing keeping the seed. Returns the link and the seed thing.
@@ -262,7 +262,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     done.add(Engine::commit_tx(tx, m)?);
     // K's secrets, its home label listing L, its inbox: one commit
     let lvk = lkeys.signing.verifying_key();
-    rotation::own_secrets_on(tx, k, Some(&spec.hosts), &[ReaderKey::Static(lvk, lkeys.kem.public().clone())], &mut done)?;
+    rotation::own_secrets_listing(tx, k, &[ReaderKey::Static(lvk, lkeys.kem.public().clone())], &mut done)?;
     // L's edge (r, invite r, until) with its boxes
     let epochs = tx.core.epochs(&k).ok_or(Error::Misuse("K's secrets"))?;
     let rcpt = Recipient { holder: l, role: spec.role, keys: HolderKeys::KeyActor { kem: lkeys.kem.public().clone(), seed: None } };
@@ -272,12 +272,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), tied: None })?;
     super::put_secrets(&mut m, k, &boxes, false)?;
     done.add(Engine::commit_tx(tx, m)?);
-    let label = super::own_label(tx, &k)?.ok_or(Error::Misuse("K's sync ID"))?.0;
-    // L's card under K's label: a redeemer holds only the seed, and verifiers of L's commits
-    // need L's `created.0`
-    if let Some(c) = lc {
-        done.deliveries.push(super::owe(tx, Delivery::Certificate { commits: vec![c], under: k })?);
-    }
+    let label = super::home_sync_id(tx, &k)?.ok_or(Error::Misuse("K's sync ID"))?;
     // a joiner's removal from K reads K's default: the target's now
     if crate::apply::validity::retain_now(tx.core, &spec.target) {
         let mut m = Mutation::new();

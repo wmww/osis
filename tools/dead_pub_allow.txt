@@ -37,15 +37,12 @@ osis-engine::all_forgettable  deferred: sync rebuild (issues/sync-rewrite.md Pha
 osis-engine::apply_waiting_memory  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::aspect_commit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::aspect_commits  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::author_chain  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::await_reading  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::body_carried  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::body_page  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::carried_dots  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::child_of  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::closure_whole  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::commit_in_memory_hostile  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::commits_keyed_by  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::compact_memory_now  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::compaction_load  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::copy_stale  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -55,8 +52,6 @@ osis-engine::coverers_of  deferred: sync rebuild (issues/sync-rewrite.md Phase 3
 osis-engine::delete_item  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::delete_secrets_of  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::destroyed_records_awaited  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::drop_destroyed_secrets  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::emptying_things  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::ephemeral_session  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::flag_suspect  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::forget_commits  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -65,11 +60,10 @@ osis-engine::freed_delete_secrets  deferred: sync rebuild (issues/sync-rewrite.m
 osis-engine::freed_done  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::freed_wants  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::group_labels  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
+osis-engine::give_own_secrets_again  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::header_body  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::held_key_actors  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::hint_actors  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::hold_lists  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::inbox_named  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::inbox_of_actor  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::ingest_memory  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::ingest_relay  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -83,9 +77,7 @@ osis-engine::judge_lost  deferred: sync rebuild (issues/sync-rewrite.md Phase 3)
 osis-engine::keep_bearer  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::keys_write_unapplied  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::label_bodies  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::labels_emptied  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::lasting_role_on  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::learn_secret  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::left_at_hosts  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::lifetime_status  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::lifetimes_pending  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -117,17 +109,11 @@ osis-engine::rotated_already  deferred: sync rebuild (issues/sync-rewrite.md Pha
 osis-engine::seal_plain  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::seal_to  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::set_sync_records  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
+osis-engine::set_app_record  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::settled_slots  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::static_listed  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::store_dump  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::take_blind  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::take_destroyed_secrets_due  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::take_fallen  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::take_fell  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::take_forged  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::take_freed_new  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::take_memory_drops  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::take_pended  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::take_signals  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::take_ts  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::tied_unplaced  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -145,6 +131,7 @@ osis-proto::OUTCOME_UNKNOWN  deferred: sync rebuild (issues/sync-rewrite.md Phas
 osis-proto::TYPE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::UNSYNCED  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-schema::HOST  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
+osis-proto::stream_event_len  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-schema::TID  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::changed_after  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::changed_labels  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -163,15 +150,14 @@ osis-transport::set_lan_loss  deferred: sync rebuild (issues/sync-rewrite.md Pha
 osis::accept_invite  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
 osis::rotate_peer_address  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
 osis-engine::accept_inbox  test hook (tests/it)
+osis-engine::account_holder_keys  test hook (tests/it)
 osis-engine::bear  test hook (tests/it)
-osis-engine::boxed_by  test hook (tests/it)
 osis-engine::commit_forged  test hook (tests/it)
 osis-engine::copy_awaits  test hook (tests/it)
 osis-engine::damage_edges  test hook (tests/it)
 osis-engine::damage_walks  test hook (tests/it)
 osis-engine::deliver_sealed  test hook (tests/it)
 osis-engine::drop_from  test hook (tests/it)
-osis-engine::drop_lost_secrets  test hook (tests/it)
 osis-engine::droppable_if_covered  test hook (tests/it)
 osis-engine::edge_write_applied  test hook (tests/it)
 osis-engine::edges_rows  test hook (tests/it)
@@ -180,12 +166,10 @@ osis-engine::finalize_link  test hook (tests/it)
 osis-engine::get_full  test hook (tests/it)
 osis-engine::get_range  test hook (tests/it)
 osis-engine::give_own_secrets  test hook (tests/it)
-osis-engine::give_own_secrets_on  test hook (tests/it)
 osis-engine::held_bodies  test hook (tests/it)
 osis-engine::held_parts  test hook (tests/it)
 osis-engine::index_current  test hook (tests/it)
 osis-engine::issue_step  test hook (tests/it)
-osis-engine::label_of  test hook (tests/it)
 osis-engine::linked_blobs  test hook (tests/it)
 osis-engine::links_due  test hook (tests/it)
 osis-engine::live_trees  test hook (tests/it)
@@ -202,7 +186,6 @@ osis-engine::rebuild_state  test hook (tests/it)
 osis-engine::refresh_deposit_seed  test hook (tests/it)
 osis-engine::relink  test hook (tests/it)
 osis-engine::removal_scope  test hook (tests/it)
-osis-engine::reseal_due  test hook (tests/it)
 osis-engine::rotate_boxing_only  test hook (tests/it)
 osis-engine::set_syncing  test hook (tests/it)
 osis-engine::set_walk_cache_min  test hook (tests/it)
@@ -218,6 +201,11 @@ osis-engine::without_held  test hook (tests/it)
 osis-engine::write_addenda  test hook (tests/it)
 
 # The sync rebuild's skeleton (notes/sync-boundary.md): each module's owner uses or removes these.
+osis-engine::delivery_taken  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
+osis-engine::held_elsewhere  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
+osis-engine::invitations  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
+osis-engine::own_commits  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
+osis-engine::waiting_held_elsewhere  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::take_deposit  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::proofs_done  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); opens refuses a Resume before the proofs with it
@@ -229,3 +217,19 @@ osis-sync::uncharge  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); re
 osis-sync::dial_hints  deferred: the driver's dial candidates read it (notes/sync-boundary.md, driver)
 osis-sync::status_of  deferred: the osis API reads one sync ID's status (sync rebuild integration, issues/sync-rewrite.md Phase 3)
 osis-sync::set_record_budget  test hook: a small RECORD_BUDGET to drive eviction
+osis-engine::delivery_feed  facade: osis-sync's modules call it (notes/sync-boundary.md, What sync calls on the engine)
+osis-engine::destructions  facade: osis-sync's modules call it (notes/sync-boundary.md, What sync calls on the engine)
+osis-engine::known_actors  facade: osis-sync's modules call it (notes/sync-boundary.md, What sync calls on the engine)
+osis-engine::logged_with  facade: osis-sync's modules call it (notes/sync-boundary.md, What sync calls on the engine)
+osis-engine::own_certificates  facade: osis-sync's modules call it (notes/sync-boundary.md, What sync calls on the engine)
+osis-engine::sync_owner  facade: osis-sync's modules call it (notes/sync-boundary.md, What sync calls on the engine)
+osis-engine::sync_record  facade: osis-sync's modules call it (notes/sync-boundary.md, What sync calls on the engine)
+osis-engine::sync_record_feed  facade: osis-sync's modules call it (notes/sync-boundary.md, What sync calls on the engine)
+osis-engine::sync_things  facade: osis-sync's modules call it (notes/sync-boundary.md, What sync calls on the engine)
+osis-engine::thing_sync  facade: osis-sync's modules call it (notes/sync-boundary.md, What sync calls on the engine)
+osis-engine::carry_deliveries  test hook: engine integration tests carry deliveries and passes as sync would
+osis-engine::inbox_blobs  test hook: engine integration tests carry deliveries and passes as sync would
+osis-engine::owed_to  test hook: engine integration tests carry deliveries and passes as sync would
+osis-engine::inbox_blob_without_chain  test hook: engine integration tests carry deliveries and passes as sync would
+osis-engine::reseal_after_pass  test hook: engine integration tests carry deliveries and passes as sync would
+osis-keys::PermGraph  deferred: the reach of a lowering for role entries first (spec/sync-judgement.md §3), the read module's

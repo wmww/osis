@@ -18,10 +18,9 @@ mod tests_account;
 #[cfg(test)]
 mod tests_signing;
 
-use osis_label::Address;
 use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
-use crate::flows::{self, Delivery, Done, SyncState, put_keysets, put_secrets, save_epochs, secrets_in};
+use crate::flows::{self, Done, put_keysets, put_secrets, save_epochs, secrets_in};
 use crate::Mutation;
 use osis_base::{Role, Tid};
 use osis_keys::{ActorEpochs, Departure, HistoryBoxes, ROLES, Recipient, Rotation};
@@ -234,7 +233,7 @@ pub(crate) fn keyset_departures(tx: &mut Tx<'_>, x: &Tid) -> Result<Vec<Departur
 /// ordered after the removal by a node not holding it sealed its seed under D's epoch the
 /// removed node opens). A departure no keyset of `x` held is known to cover leaves `x` out
 /// until one is (a stranded report carries it, spec/permissions.md §4).
-fn uncovered(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &[Departure]) -> Result<bool> {
+pub(crate) fn uncovered(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &[Departure]) -> Result<bool> {
     if tx.core.is_account(x) {
         // only the account's own nodes hold D's departures
         let (Some(d), Some(v)) = (tx.core.accounts.get(x).map(|h| h.devices), tx.core.account_view(x)) else { return Ok(false) };
@@ -489,14 +488,13 @@ pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<
 }
 
 /// The inbox (a node: direct) deliveries of rotation commit `c` of `a` to `holders`.
-pub(crate) fn deliver_rotation(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, holders: &[Tid]) -> Result<Vec<Delivery>> {
-    let mut out = Vec::new();
+pub(crate) fn deliver_rotation(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, holders: &[Tid]) -> Result<()> {
     if let Some(c) = c {
         for m in holders {
-            out.extend(flows::edges::deliver_to(tx, *m, c, &[a])?);
+            flows::edges::deliver_to(tx, *m, c, &[a])?;
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Records a rotation this node made (spec/crypto.md §4: its own epochs are established).
@@ -541,39 +539,12 @@ fn rotate_boxing(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>, hold
     Ok(done)
 }
 
-/// Records rotation `rot` of `a`, committed as `c`, into `done` with its deliveries: by inbox to
-/// `to`; first under the labels above `a`, which must learn its new `keys.0`
-/// (spec/permissions.md §3), with the commits its names name; and under `a`'s own labels the
-/// keyset commits its boxes to holder actors name (spec/crypto.md §4, Carried).
+/// Records rotation `rot` of `a`, committed as `c`, into `done` with its inbox deliveries to
+/// `to`.
 fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotation, to: &[Tid], done: &mut Done) -> Result<()> {
     record(tx, a, rot)?;
     done.add(c);
-    done.deliveries.extend(deliver_rotation(tx, a, c, to)?);
-    if let Some(c) = c {
-        let under = above(tx.core, &a);
-        done.deliveries.push(flows::owe(tx, Delivery::First { commits: placed_with(c, Some(&rot.names)), under })?);
-        carry(tx, a, &rot.secrets, Some(&rot.keys), done)?;
-    }
-    Ok(())
-}
-
-/// The keyset commits the boxes `w` of `a` name, and those a rotation's keysets `keys` record
-/// holder actors were left out at (`members::carried`), placed first under `a`'s labels
-/// (spec/crypto.md §4, Carried): `a`'s writers judge those keysets from them (stale, Seal).
-pub(crate) fn carry(tx: &mut Tx<'_>, a: Tid, w: &osis_keys::SecretsWrite, keys: Option<&osis_keys::KeysWrite>, done: &mut Done) -> Result<()> {
-    let commits = members::carried(tx.core, w, keys);
-    if !commits.is_empty() {
-        done.deliveries.push(flows::owe(tx, Delivery::First { commits, under: vec![a] })?);
-    }
-    Ok(())
-}
-
-/// Commit `c` (a rotation) and the commits `names` (its names) name: placed together, first,
-/// under each label `c` goes under (spec/crypto.md §4, names), so whoever reads `c` there can
-/// meet them.
-pub(crate) fn placed_with(c: osis_base::CommitId, names: Option<&osis_keys::Names>) -> Vec<osis_base::CommitId> {
-    let named: BTreeSet<osis_base::CommitId> = names.into_iter().flat_map(|n| n.list.iter().map(|n| n.key.commit)).filter(|x| *x != c).collect();
-    std::iter::once(c).chain(named).collect()
+    deliver_rotation(tx, a, c, to)
 }
 
 /// Things whose labels must learn a rotated actor's new `keys.0`: what it is a holder of and
@@ -745,14 +716,13 @@ pub(crate) fn require_covered(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSe
 /// first admin included; not one whose grant this node may finalize, `ended_holders`), with a
 /// `keys.0` carrying the keysets and a fresh deposit seed. Nothing when it has them already.
 pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()> {
-    own_secrets_on(tx, t, None, &[], done)
+    own_secrets_listing(tx, t, &[], done)
 }
 
-/// `own_secrets` with the sync ID on `hosts` (`None`: those of the nearest sync ID up its record
-/// chain, spec/sync-ids.md §2) and listing `also` besides the holders it boxes (a link's key, granted
-/// next).
-pub(crate) fn own_secrets_on(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[crate::flows::labels::ReaderKey], done: &mut Done) -> Result<()> {
-    if let Some((c, rot, _)) = own_secrets_rot(tx, t, hosts, also, done)? {
+/// `own_secrets`, its genesis step listing `also` besides the holders it boxes (a link's key,
+/// granted next).
+pub(crate) fn own_secrets_listing(tx: &mut Tx<'_>, t: Tid, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<()> {
+    if let Some((c, rot, _)) = own_secrets_rot(tx, t, also, done)? {
         record(tx, t, &rot)?;
         done.add(c);
     }
@@ -762,7 +732,7 @@ pub(crate) fn own_secrets_on(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>,
 /// `own_secrets` up to its commit, not yet recorded: the commit, the rotation, and the
 /// holders it boxes that held no box at a current read epoch before it (`unreached`).
 type OwnRot = (Option<osis_base::CommitId>, Rotation, Vec<Tid>);
-fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[crate::flows::labels::ReaderKey], done: &mut Done) -> Result<Option<OwnRot>> {
+fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<Option<OwnRot>> {
     if tx.core.has_own_secrets(&t) || tx.core.is_key_actor(&t) {
         return Ok(None);
     }
@@ -791,25 +761,20 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[c
     let deposit = fresh_deposit_seed(tx, &mut m, t)?;
     // the rule (spec/sync-ids.md §2): role secrets of its own and its one sync ID, its home and inbox,
     // in this one commit
-    let (label, at) = match crate::flows::own_label(tx, &t)? {
-        Some((label, at)) => (label, at),
+    let sync_id = match crate::flows::home_sync_id(tx, &t)? {
+        Some(id) => id,
         None => {
-            let at = match hosts {
-                Some(h) => h.to_vec(),
-                None => crate::flows::labels::inherited_hosts(tx, &t)?,
-            };
             let mut readers = Vec::new();
             for r in &holders.holders {
-                readers.extend(crate::flows::labels::reader_key(tx, &r.holder)?);
+                readers.extend(crate::flows::sync_ids::reader_key(tx, &r.holder)?);
             }
             let after = rot.preview(&held)?;
             let readers: Vec<_> = readers.into_iter().chain(also.iter().cloned()).collect();
-            let label = crate::flows::labels::new_label(tx, &mut m, t, &after, &readers, &deposit, &at)?;
-            (label, at)
+            crate::flows::sync_ids::new_sync_id(tx, &mut m, t, &after, &readers, &deposit)?
         }
     };
-    if crate::flows::labels::takes_inbox(tx, &t)? {
-        crate::flows::labels::name_inbox(&mut m, t, label, &at)?;
+    if crate::flows::sync_ids::takes_inbox(tx, &t)? {
+        crate::flows::sync_ids::name_inbox(&mut m, t, sync_id)?;
     }
     let to = unreached(tx, &t, &rot)?;
     let c = Engine::commit_tx(tx, m)?;
@@ -845,7 +810,7 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
 /// first under the labels above the thing (its new `keys.0`).
 fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
     let mut done = Done::default();
-    let Some((c, rot, mut to)) = own_secrets_rot(tx, t, None, &[], &mut done)? else { return Ok(done) };
+    let Some((c, rot, mut to)) = own_secrets_rot(tx, t, &[], &mut done)? else { return Ok(done) };
     let up = tx.core.first_admin(&t);
     to.retain(|m| Some(*m) != up);
     recorded(tx, t, c, &rot, &to, &mut done)?;
@@ -968,9 +933,8 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
     if let Some(c) = c {
         // an account's own nodes read it under the label it is written to
         if holder != me {
-            done.deliveries.extend(flows::edges::deliver_to(tx, holder, c, &[a])?);
+            flows::edges::deliver_to(tx, holder, c, &[a])?;
         }
-        carry(tx, a, &w, None, &mut done)?;
     }
     Ok(done)
 }
@@ -1020,9 +984,6 @@ pub(crate) fn add_history(tx: &mut Tx<'_>, a: Tid) -> Result<Done> {
     m.unchecked();
     let c = Engine::commit_tx(tx, m)?;
     done.add(c);
-    if let Some(c) = c {
-        done.deliveries.push(flows::owe(tx, Delivery::First { commits: vec![c], under: vec![a] })?);
-    }
     Ok(done)
 }
 
@@ -1051,7 +1012,7 @@ impl Engine {
             let mut done = Done::default();
             let me = tx.core.writer()?;
             let still = ensure_rotated(tx, me, a, &mut done)?;
-            if done.commits.is_empty() && done.deliveries.is_empty() && !done.drop_lost {
+            if done.commits.is_empty() {
                 out = Some(still);
             }
             Err::<(), _>(Error::Misuse(ASKED))
@@ -1070,23 +1031,12 @@ impl Engine {
 
     /// Gives `thing` secrets of its own (spec/permissions.md §3), with its one sync ID in the same
     /// commit (spec/sync-ids.md §2): before its first holder other than its first admin, or before it
-    /// is made a holder of anything. The sync ID's hosts: those of the nearest sync ID up its
-    /// record chain.
+    /// is made a holder of anything.
     pub fn give_own_secrets(&mut self, thing: &Tid) -> Result<Done> {
         let t = *thing;
         self.run(|tx| {
             let mut done = Done::default();
             own_secrets(tx, t, &mut done)?;
-            Ok(done)
-        })
-    }
-
-    /// `give_own_secrets` with the sync ID on `hosts`.
-    pub fn give_own_secrets_on(&mut self, thing: &Tid, hosts: &[Address]) -> Result<Done> {
-        let t = *thing;
-        self.run(|tx| {
-            let mut done = Done::default();
-            own_secrets_on(tx, t, Some(hosts), &[], &mut done)?;
             Ok(done)
         })
     }
@@ -1107,12 +1057,21 @@ impl Engine {
         self.run(|tx| own_secrets_delivered(tx, t))
     }
 
+    /// `reseal_due` after a complete pass noted now (tests: the pass sync would note).
+    #[doc(hidden)]
+    pub fn reseal_after_pass(&mut self, actor: &Tid) -> Result<Done> {
+        let now = self.now();
+        self.note_complete_pass(actor, now)?;
+        self.reseal_due(actor)
+    }
+
     /// Makes the rotations of `actor` nothing waits for (`pass_end_rotations`: withdraws), re-seals the
     /// holders of `actor` the trigger names and adds the history its current epochs lack
-    /// (spec/permissions.md §3, spec/crypto.md §4 History box), decided at the end of a complete
-    /// pass of its labels (`sync`); nothing otherwise.
-    pub fn reseal_due(&mut self, actor: &Tid, sync: &dyn SyncState) -> Result<Done> {
-        if !sync.complete_pass(actor) {
+    /// (spec/permissions.md §3, spec/crypto.md §4 History box), once a complete pass of its sync
+    /// IDs began after every role commit on it received from elsewhere (`note_complete_pass`);
+    /// nothing otherwise.
+    pub fn reseal_due(&mut self, actor: &Tid) -> Result<Done> {
+        if !self.complete_pass(actor) {
             return Ok(Done::default());
         }
         let a = *actor;

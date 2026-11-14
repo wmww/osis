@@ -878,7 +878,6 @@ fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, bytes: &[u8], reason:
     if tx.core.ix.pending.get(id) != Some(&reason) {
         tx.core.ix.pending.insert(*id, reason);
     }
-    tx.core.pended.insert(*id);
     Ok(())
 }
 
@@ -1203,11 +1202,6 @@ impl Engine {
     /// true copy the first one kept out may be held by the sync layer (`with_pending`).
     pub fn take_redeliver(&mut self) -> BTreeSet<CommitId> {
         std::mem::take(&mut self.core.redeliver)
-    }
-
-    /// Commits stored pending since the last call (node-sync's `sweep_pending`).
-    pub fn take_pended(&mut self) -> BTreeSet<CommitId> {
-        std::mem::take(&mut self.core.pended)
     }
 
     /// Names commit `id` for `take_redeliver`.
@@ -1616,20 +1610,6 @@ impl Engine {
         self.core.ix.pending.iter().map(|(k, v)| (*k, v.clone())).collect()
     }
 
-    /// The actors a label of `thing` known only by a hint is for (spec/sync-ids.md §6: claims on a
-    /// step not verified yet): its applied holders, the holders its applied `secrets.0` boxes
-    /// (one may read it through an actor a rotation boxed, with no grant held), and `named`,
-    /// what the inbox blobs that named the label say of it (`keys::inbox_named`); those this
-    /// node is or holds secrets of.
-    pub fn hint_actors(&mut self, thing: &Tid, named: impl IntoIterator<Item = Tid>) -> Result<std::collections::BTreeSet<Tid>> {
-        let mut out: std::collections::BTreeSet<Tid> = self.get_typed(thing, &osis_schema::core_types::ROLES)?.unwrap_or_default().into_keys().collect();
-        out.extend(self.get_typed(thing, &osis_schema::core_types::SECRETS)?.unwrap_or_default().boxes.into_keys().map(|k| k.holder));
-        out.extend(named);
-        let me = self.core.me();
-        out.retain(|t| Some(*t) == me || self.core.ix.secrets.contains_key(t));
-        Ok(out)
-    }
-
     /// The stored bytes of a held commit (applied: its current blob; pending or parked: as
     /// received), for relaying.
     pub fn commit_bytes(&mut self, id: &CommitId) -> Result<Option<Vec<u8>>> {
@@ -1744,17 +1724,24 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     tx.core.ix.destroyed_for_good.extend(destroyed_for_good);
     let destroyed_secrets = tx.scan_keys(records::DESTROYED_SECRETS, "destroyed secrets", Tid::from_bytes)?;
     tx.core.ix.destroyed_secrets.extend(destroyed_secrets);
-    let mut labels = Vec::new();
-    tx.scan(records::DESTROYED_LABELS, |k, v| {
-        let t = Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("destroyed labels"))?);
+    let mut kept = Vec::new();
+    tx.scan(records::DESTROYED_SYNC_IDS, |k, v| {
+        let t = Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("destroyed sync IDs"))?);
         let lim = osis_base::Limits { max_depth: 16, max_bytes: v.len() };
-        let v = osis_base::decode(&v, &lim).map_err(|_| Error::Corrupt("destroyed labels"))?;
-        labels.push((t, crate::labeling::actors::group_labels_in(&t, &v)));
+        let v = osis_base::decode(&v, &lim).map_err(|_| Error::Corrupt("destroyed sync IDs"))?;
+        kept.push((t, v));
         Ok(())
     })?;
-    for (t, ls) in labels {
-        tx.core.ix.destroyed_labels.insert(t, ls);
+    for (t, v) in kept {
+        let ids = crate::labeling::actors::owned_in_value(tx.core, &t, &v);
+        tx.core.ix.destroyed_sync_ids.insert(t, std::sync::Arc::new(ids));
     }
+    crate::sync::records::load(tx)?;
+    crate::sync::inbox::load(tx)?;
+    crate::sync::deliveries::load(tx)?;
+    crate::sync::held::load(tx)?;
+    crate::sync::falls::load(tx)?;
+    crate::sync::bodies::load(tx)?;
     let addenda_due = tx.scan_keys(records::ADDENDA_DUE, "addenda due", CommitId)?;
     tx.core.ix.addenda_due.extend(addenda_due);
     let rotations_due = tx.scan_keys(records::ROTATIONS_DUE, "listings due", CommitId)?;
@@ -2001,8 +1988,17 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             // takes them up after (`Engine::take_account`), a reload keeps those held
             "account.0" => {}
             // a state-list row is a state (`Tx::derive`)
-            "label.0" => {
-                tx.core.ix.labeled.insert(tid);
+            "sync.0" => {
+                tx.core.ix.sync_recorded.insert(tid);
+                if let Some(f) = tx.state(&tid, &ak)?.cloned() {
+                    let ids = crate::sync::recorded_ids(&f);
+                    for s in &ids {
+                        tx.core.ix.sync_recorders.insert(*s, tid);
+                    }
+                    if !ids.is_empty() {
+                        tx.core.ix.sync_recorded_ids.insert(tid, ids);
+                    }
+                }
             }
             _ => atomic::observe_state(tx, &tid, &ak)?,
         }

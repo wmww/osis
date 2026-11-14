@@ -537,9 +537,6 @@ impl Engine {
         let mut done = Done::default();
         let c = self.run(|tx| rotations_due(tx, &mut done))?;
         done.add(c);
-        if let (Some(r), Some((_, d))) = (c, self.core.account_devices()) {
-            done.deliveries.push(self.run(|tx| super::owe(tx, super::Delivery::First { commits: vec![r], under: vec![d] }))?);
-        }
         Ok(done)
     }
 }

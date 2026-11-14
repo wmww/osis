@@ -3,7 +3,7 @@
 //! spec/crypto.md §9): a removal from D rotates the account with thing lists; listings, a
 //! witness's addenda and merges name what the rotation's list could not.
 
-use crate::flows::{CreatedAccount, Delivery, Demotion, Done};
+use crate::flows::{CreatedAccount, Demotion, Done};
 use crate::local_peer::LocalPeer;
 use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_schema::core_types as ct;
@@ -20,33 +20,23 @@ fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId]) {
     }
 }
 
-fn carry(lp: &mut LocalPeer, from: usize, done: &Done) {
-    for d in &done.deliveries {
-        if let Delivery::Direct { to, commits } = d
-            && let Some(i) = lp.peers.iter().position(|p| p.engine.tid() == *to)
-        {
-            send(lp, from, i, commits);
-        }
-    }
-}
-
 /// Peers `0..nodes` are nodes of account P (created on 0, the others paired); the rest each
 /// create an account of their own. Peer 0 makes thing `t` (`x:a.0` = "p") and grants the first
 /// outsider's account write there. All synced. Returns (lp, P, t).
 fn world(n: usize, nodes: usize) -> (LocalPeer, CreatedAccount, Tid) {
     let (lp, (a, t)) = LocalPeer::cached(&format!("rotation::tests_signing::world/{n}/{nodes}"), || {
         let mut lp = LocalPeer::new_bare(n, 0, WallMs(1_700_000_000_000)).unwrap();
-        let (a, _) = lp.peers[0].engine.create_account(&[]).unwrap();
+        let (a, _) = lp.peers[0].engine.create_account().unwrap();
         for i in 1..nodes {
             let node = lp.peers[i].engine.tid();
             let ids = lp.peers[i].engine.commit_ids();
             send(&mut lp, i, 0, &ids);
-            let done = lp.peers[0].engine.pair(&node).unwrap();
-            carry(&mut lp, 0, &done);
-            lp.peers[i].engine.paired(&a.account, &done.commits[0]).unwrap();
+            let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
+            send(&mut lp, 0, i, &all);
+            lp.peers[i].engine.paired(&a.account).unwrap();
         }
         for i in nodes..n {
-            lp.peers[i].engine.create_account(&[]).unwrap();
+            lp.peers[i].engine.create_account().unwrap();
         }
         lp.sync_all().unwrap();
         let mut m = crate::Mutation::new();
@@ -853,10 +843,10 @@ fn a_re_added_nodes_later_rotation_is_authorized_spec_permissions_5_4() {
     send(&mut lp, 0, 2, &done.commits);
     lp.advance(5);
     let node = lp.peers[2].engine.tid();
-    let done = lp.peers[0].engine.pair(&node).unwrap();
-    carry(&mut lp, 0, &done);
+    let (done, all) = lp.peers[0].engine.pair(&node).unwrap();
+    send(&mut lp, 0, 2, &all);
     send(&mut lp, 0, 1, &done.commits);
-    lp.peers[2].engine.paired(&a.account, &done.commits[0]).unwrap();
+    lp.peers[2].engine.paired(&a.account).unwrap();
     lp.sync_all().unwrap();
     lp.advance(5);
     let r = remove(&mut lp, 2, a.devices, 1);

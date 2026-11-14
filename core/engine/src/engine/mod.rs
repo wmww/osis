@@ -826,9 +826,27 @@ indexes! {
     /// Destroyed things keeping nothing whose own secrets are held for node-sync's deletes alone
     /// (`records::DESTROYED_SECRETS`, `retention::destroy::hold_secrets`).
     pub destroyed_secrets: JSet<Tid>,
-    /// Destroyed things' labels kept for node-sync to empty once they keep nothing
-    /// (`records::DESTROYED_LABELS`, `retention::destroy::keep_labels`).
-    pub destroyed_labels: JMap<Tid, Vec<Arc<crate::labeling::GroupLabel>>>,
+    /// Destroyed things' own sync IDs kept for emptying once they keep nothing
+    /// (`records::DESTROYED_SYNC_IDS`, `retention::destroy::keep_sync_ids`).
+    pub destroyed_sync_ids: JMap<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
+    /// Sync records of things this node keeps unread (`sync::records`, spec/sync-judgement.md §6).
+    pub sync_records: JMap<Tid, Arc<crate::sync::SyncRecord>>,
+    /// Removal notices inbox blobs to this node carried, per sync ID by blob (`sync::records`).
+    pub removal_notices: JMap<SyncId, Arc<BTreeMap<osis_base::BlobId, crate::sync::records::HeldNotice>>>,
+    /// Inbox deliveries owed per (commit, holder) (`sync::deliveries`).
+    pub owed_inbox: JMap<(CommitId, Tid), Arc<crate::sync::deliveries::Owed>>,
+    /// The read epoch each commit's section of a thing is sealed under, as sealed or opened here
+    /// (`sync::bodies`).
+    pub section_epochs: JMap<(CommitId, Tid), osis_crypto::Epoch>,
+    /// The commit and parts each opened or sealed blob holds (`sync::bodies`).
+    pub blob_parts: JMap<osis_base::BlobId, Arc<(CommitId, crate::sync::PartSet)>>,
+    /// Fall marks per aspect (`sync::falls`, spec/sync-judgement.md §4): a count of events, not
+    /// derived from the commits held, so no rebuild compares it.
+    pub falls: JMap<(Tid, Ak), u64>,
+    /// Self-removals waiting to be held elsewhere (`sync::held`).
+    pub held_wait: JSet<CommitId>,
+    /// Inbox blobs held untaken (`sync::inbox`, spec/sync-inbox.md §2 invite requests).
+    pub waiting_inbox: JMap<osis_base::BlobId, Arc<crate::sync::WaitingBlob>>,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
     pub valueless: JMap<(Tid, Ak), Vec<Owned>>,
     /// Actors with secrets of their own whose epochs this node holds.
@@ -844,9 +862,14 @@ indexes! {
     /// Held commits whose `keys.0` part on a thing wrote a keyset in its body, any validity
     /// (`records::OWN_KEYS`): thing -> commits.
     pub keyset_parts: JSetMap<Tid, CommitId>,
-    /// Things with a `label.0` state (`Engine::labeled_groups`), kept with the state
+    /// Things with a `sync.0` state (`Engine::things_with_sync_ids`), kept with the state
     /// (`Tx::derive`).
-    pub labeled: JSet<Tid>,
+    pub sync_recorded: JSet<Tid>,
+    /// The things whose `sync.0` state records each sync ID, owned there or not (`Tx::derive`):
+    /// a sync ID finds its owner without a walk (`Engine::sync_owner`).
+    pub sync_recorders: JSetMap<SyncId, Tid>,
+    /// Per thing with a `sync.0` state, the sync IDs it records (`sync_recorders` inverted).
+    pub sync_recorded_ids: JMap<Tid, BTreeSet<SyncId>>,
     /// Admin and write delete keys of things an inbox payload named (`[admin, write]` bytes),
     /// listed until their `keys.0` arrives (spec/crypto.md §7, spec/wire.md §9): taken only from
     /// a commit that applied valid, by an admin of the thing, touching it; the first kept.
@@ -972,7 +995,6 @@ pub(crate) struct CoreMark {
     ix: IndexesMark,
     sides: (usize, usize),
     schemas: usize,
-    dropped: usize,
     written: usize,
     events: usize,
     commits_named: usize,
@@ -992,47 +1014,6 @@ pub(crate) struct CoreMark {
 /// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, author),
 /// and the bounds of what its held body carries valued and value-less (`retention::snapshot::Carried`).
 pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers, Vec<(CommitId, Tid)>, crate::retention::snapshot::Carried);
-
-impl MemoryDrop {
-    /// The commits whose entries carry the dropped one's writes, if any.
-    pub fn by(&self) -> Vec<CommitId> {
-        match self {
-            MemoryDrop::Covered { by } | MemoryDrop::Superseded { by } => by.iter().copied().collect(),
-            MemoryDrop::Gone | MemoryDrop::Awaits { .. } => Vec::new(),
-        }
-    }
-}
-
-/// Why a memory commit was forgotten (`MemorySync::dropped`): what node-sync does with its
-/// entries at hosts (notes/ephemeral.md Memory commits).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MemoryDrop {
-    /// Every held body covered by held valid memory snapshots (spec/commits.md §5): a writer
-    /// deletes its entries at a host once one of `by` is held there.
-    Covered { by: BTreeSet<CommitId> },
-    /// Superseded by its author's later expiring writes (spec/sync-compaction.md §2): its author deletes
-    /// its entries once one of `by` is held there.
-    Superseded { by: BTreeSet<CommitId> },
-    /// Expired, freed with its things (forgotten or deleted here), or replaced by a coalescing
-    /// snapshot of its own node's unsent writes (never uploaded): its entries, if any, are
-    /// deleted at once.
-    Gone,
-    /// A durable commit forgotten here while parts of it are on `things`, whose records are not
-    /// held (spec/commits.md §5 Forgetting): its entries stay at hosts, skipped here as awaiting
-    /// those records, as an unjudgeable entry's.
-    Awaits { things: Vec<Tid> },
-}
-
-/// What memory commits report to the ephemeral lane (node-sync) and to the local write path.
-/// `dropped` grows inside transactions and is cut back to its length at the start of a
-/// transaction or step that fails (`Core::rollback_to`); a reader checks a listed commit is still
-/// held before acting.
-#[derive(Clone, Default)]
-pub struct MemorySync {
-    /// Memory commits forgotten since the last take, with their header (node-sync deletes
-    /// their entries at hosts by it) and why (`Engine::take_memory_drops`).
-    pub dropped: Vec<(CommitId, Arc<osis_commit::Header>, MemoryDrop)>,
-}
 
 /// A decoded commit record: its head (received, origin, dropped parts) and blob.
 pub(crate) type CommitRecord = (index::RecordHead, CommitBlob);
@@ -1150,9 +1131,6 @@ pub struct Core {
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look.
     pub(crate) redeliver: BTreeSet<CommitId>,
-    /// Commits stored pending since node-sync last looked (`Engine::take_pended`): it drops those
-    /// no entry carries. Not journaled: one a rollback undid costs a look.
-    pub(crate) pended: BTreeSet<CommitId>,
     /// Aspects whose deltas `Engine::commit_forged` replaces by bytes that do not decode.
     pub(crate) forge_bad: BTreeSet<(Tid, Ak)>,
     /// Tests: the running transaction writes states no held body gives (`Engine::damage_index`:
@@ -1174,16 +1152,12 @@ pub struct Core {
     pub expiring: osis_crdt::Session,
     /// Sessions this open began after its first (`fresh_session`).
     pub later_sessions: u64,
-    /// What memory commits and things report to the ephemeral lane and the local write path.
-    pub memory: MemorySync,
     /// The compaction trigger's state (spec/sync-compaction.md §1 trigger), in memory.
     pub compaction: crate::retention::compact::Trigger,
-    /// Aspects a held valid compaction snapshot of either class turned invalid on since the last
-    /// take (`Engine::take_fallen`).
+    /// Aspects a held valid memory compaction snapshot turned invalid on, whose fresh snapshot
+    /// the next `Engine::tick` writes (`apply::memory::resnapshot_fallen`; `next_timer` is now
+    /// while any waits).
     pub fallen: BTreeSet<(Tid, Ak)>,
-    /// Aspects a held part of any commit turned invalid on since the last take
-    /// (`Engine::take_fell`).
-    pub fell: BTreeSet<(Tid, Ak)>,
     /// Set when a lazily held header failed to decode (`LazyHeader`): every later transaction
     /// fails (`Error::Corrupt`).
     pub header_fault: Arc<std::sync::atomic::AtomicBool>,
@@ -1289,12 +1263,6 @@ pub struct Core {
     /// Freed rows (thing, blob) whose judgment waits for a node blob not held, by that blob:
     /// judged again once it is (`retention::freed`). Memory only: a start judges every row.
     pub freed_waits: BTreeMap<osis_base::BlobId, BTreeSet<(Tid, osis_base::BlobId)>>,
-    /// Blobs judged freed since node-sync last took them (`Engine::take_freed_new`): their
-    /// bytes go and their entries are judged again.
-    pub freed_new: BTreeSet<osis_base::BlobId>,
-    /// Destroyed things whose held secrets node-sync judges again for dropping
-    /// (`Engine::take_destroyed_secrets_due`): newly held so, or a freed link of one gone.
-    pub destroyed_secrets_due: BTreeSet<Tid>,
     /// Subgroups cut this transaction from under a synced group (`Core::note_cut`): what they
     /// held is reported at its end where nothing carries it now (`Core::stranded_by_cut`); forgotten with
     /// the journal.
@@ -1348,15 +1316,14 @@ pub struct Core {
     pub memory_waits: BTreeSet<CommitId>,
     /// Walks of what waiting commits link, kept for node-sync (`Engine::blob_wants`).
     pub(crate) walks: crate::apply::reach::Walks,
-    /// `Engine::labels_of` per group (`memo`).
-    pub(crate) labels: memo::Memo<Tid, Vec<std::sync::Arc<crate::labeling::GroupLabel>>>,
+    /// `Engine::owned_sync_ids` per thing (`memo`).
+    pub(crate) sync_ids: memo::Memo<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
+    /// Complete passes sync noted, per actor: when the newest began (`sync::held`; memory only).
+    pub(crate) passes: BTreeMap<Tid, WallMs>,
     /// `Engine::published_under` for every actor (`memo`).
     pub(crate) published: memo::Memo<(), Published>,
     /// `Engine::held_links` (`memo`).
     pub(crate) links: memo::Memo<(), std::sync::Arc<Vec<crate::flows::HeldLink>>>,
-    /// The sync records this engine's transactions write or drop (`SyncRecords`), set by
-    /// node-sync (`Engine::set_sync_records`; `None`: no node-sync, no sync records).
-    pub sync_records: Option<&'static dyn SyncRecords>,
     /// Groups the handle reads and writes at another node (`osis` sources): what is here of them
     /// may be behind, syncing or not (`readable_by`).
     pub sourced_elsewhere: BTreeSet<Tid>,
@@ -1371,7 +1338,6 @@ impl Core {
     pub(crate) fn test_copy(&self, clock: Arc<dyn Clock>) -> Core {
         Core {
             ix: self.ix.clone(),
-            pended: self.pended.clone(),
             id: self.id.clone(),
             hlc: Hlc::new(clock, self.hlc.last()),
             states: self.states.clone(),
@@ -1427,10 +1393,8 @@ impl Core {
             session: self.session.clone(),
             expiring: self.expiring.clone(),
             later_sessions: self.later_sessions.clone(),
-            memory: self.memory.clone(),
             compaction: self.compaction.clone(),
             fallen: self.fallen.clone(),
-            fell: self.fell.clone(),
             header_fault: osis_base::copying::remap(&self.header_fault, |f| std::sync::atomic::AtomicBool::new(f.load(std::sync::atomic::Ordering::Relaxed))),
             #[cfg(test)]
             check_ingest: self.check_ingest.clone(),
@@ -1469,8 +1433,6 @@ impl Core {
             drop_due: self.drop_due.clone(),
             freed_due: self.freed_due.clone(),
             freed_waits: self.freed_waits.clone(),
-            freed_new: self.freed_new.clone(),
-            destroyed_secrets_due: self.destroyed_secrets_due.clone(),
             cut_subs: self.cut_subs.clone(),
             refold: self.refold.clone(),
             wakes: self.wakes.clone(),
@@ -1488,11 +1450,10 @@ impl Core {
             memory_room: self.memory_room,
             memory_waits: self.memory_waits.clone(),
             walks: self.walks.clone(),
-            #[cfg(debug_assertions)]
-            labels: self.labels.clone(),
+            sync_ids: self.sync_ids.clone(),
+            passes: self.passes.clone(),
             published: self.published.clone(),
             links: self.links.clone(),
-            sync_records: self.sync_records.clone(),
             sourced_elsewhere: self.sourced_elsewhere.clone(),
         }
     }
@@ -1500,21 +1461,6 @@ impl Core {
 
 /// `Core::published`: the published things per actor.
 pub(crate) type Published = std::sync::Arc<BTreeMap<Tid, std::sync::Arc<BTreeSet<Tid>>>>;
-
-/// Node-sync's records that engine transactions touch: an inbox delivery a flow's commit owes
-/// (`flows::edges`), its other deliveries (`flows::owe`) and what forgetting drops (`retention::forget`). Implemented by node-sync.
-pub trait SyncRecords: Sync {
-    /// Records the inbox delivery of `commit` to `holder` in the commit's own transaction, so
-    /// a crash before node-sync carries it out loses none.
-    fn note_unsent(&self, tx: &mut Tx<'_>, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()>;
-    /// Records a flow's placement or direct send (`flows::owe`; not an inbox delivery) in the
-    /// transaction that made it owed, or (`owed` false) drops that record: node-sync carries
-    /// out what is recorded at start, so a crash before it carries `d` out loses nothing.
-    fn owe(&self, tx: &mut Tx<'_>, d: &crate::flows::Delivery, owed: bool) -> Result<()>;
-    /// Removes the sync records of what is forgotten (`labels`, `things`, `commits`, `parts`)
-    /// and returns the blobs among those dropped and `extra` that no kept record names.
-    fn forget(&self, tx: &mut Tx<'_>, labels: &BTreeSet<osis_base::SyncId>, things: &BTreeSet<Tid>, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>, extra: BTreeSet<osis_base::BlobId>) -> Result<BTreeSet<osis_base::BlobId>>;
-}
 
 /// What brings back what the node could not judge (notes/expiry-creation-design.md §3).
 #[derive(Clone, Debug, Default)]
@@ -1800,7 +1746,6 @@ impl Core {
             ix: self.ix.mark(),
             sides: self.sides.mark(),
             schemas: self.schemas.mark(),
-            dropped: self.memory.dropped.len(),
             written: self.written.len(),
             events: self.events.queued(),
             commits_named: self.commits_named.len(),
@@ -1831,7 +1776,6 @@ impl Core {
             ("indexes", self.ix.mark() != m.ix),
             ("sides", self.sides.journaled() > m.sides.0 + m.sides.1),
             ("schemas", self.schemas.mark() != m.schemas),
-            ("memory.dropped", self.memory.dropped.len() != m.dropped),
             ("written", self.written.len() != m.written),
             ("events", self.events.queued() != m.events),
             ("commits_named", self.commits_named.len() != m.commits_named),
@@ -1872,7 +1816,6 @@ impl Core {
         self.waits.retake_rolled_back();
         self.ix.rollback_to(m.ix);
         self.schemas.rollback_to(m.schemas);
-        self.memory.dropped.truncate(m.dropped);
         // the timelines follow the restored held set; validity flags are restored with `commits`
         let touched = self.ix.held.take_touched();
         if !touched.is_empty() {
@@ -1909,7 +1852,6 @@ impl Core {
             killed: _,
             to_date: _,
             written: _,
-            memory: _,
             compaction: _,
             stale_things: _,
             stale_authors: _,
@@ -1922,7 +1864,6 @@ impl Core {
             // taken by node-sync, kept: a flip rolled back only reports once more (one more
             // placement again, one more relist)
             fallen: _,
-            fell: _,
             // a call's parameter (`memory_room`) and caches true of the store whatever a
             // rollback undoes (`memory_waits`: a pending row's class never changes; `walks`
             // checks what is held as it goes on)
@@ -1948,7 +1889,8 @@ impl Core {
             key_roles: _,
             inbox_actors: _,
             acting_of: _,
-            labels: _,
+            sync_ids: _,
+            passes: _,
             links: _,
             held_writes: _,
             replaced_dates: _,
@@ -1976,8 +1918,6 @@ impl Core {
             drop_due: _,
             freed_due: _,
             freed_waits: _,
-            freed_new: _,
-            destroyed_secrets_due: _,
             cut_subs: _,
             refold: _,
             none_due: _,
@@ -1990,7 +1930,6 @@ impl Core {
             wakes: _,
             resnapshots_due: _,
             redeliver: _,
-            pended: _,
             missed: _,
             timer_floor: _,
             hlc: _,
@@ -2023,7 +1962,6 @@ impl Core {
             signing_due: _,
             keep_bodies: _,
             list_bound: _,
-            sync_records: _,
             sourced_elsewhere: _,
             #[cfg(debug_assertions)]
             unchecked_tx: _,
@@ -2166,7 +2104,6 @@ impl Core {
             killed: Vec::new(),
             to_date: Vec::new(),
             redeliver: BTreeSet::new(),
-            pended: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
             #[cfg(debug_assertions)]
             unchecked_tx: false,
@@ -2176,10 +2113,8 @@ impl Core {
             session,
             expiring,
             later_sessions: 0,
-            memory: MemorySync::default(),
             compaction: Default::default(),
             fallen: Default::default(),
-            fell: Default::default(),
             header_fault: Arc::default(),
             #[cfg(test)]
             check_ingest: false,
@@ -2220,13 +2155,10 @@ impl Core {
             drop_due: BTreeSet::new(),
             freed_due: BTreeSet::new(),
             freed_waits: BTreeMap::new(),
-            freed_new: BTreeSet::new(),
-            destroyed_secrets_due: BTreeSet::new(),
             cut_subs: BTreeSet::new(),
             refold: BTreeSet::new(),
             wakes: None,
             resnapshots_due: BTreeSet::new(),
-            sync_records: None,
             missed: BTreeSet::new(),
             bodies: memo::Memo::new("label body"),
             live_bodies: memo::Memo::new("delta live"),
@@ -2240,8 +2172,8 @@ impl Core {
             memory_room: None,
             memory_waits: BTreeSet::new(),
             walks: Default::default(),
-            #[cfg(debug_assertions)]
-            labels: memo::Memo::new("labels of"),
+            sync_ids: memo::Memo::new("sync IDs of"),
+            passes: BTreeMap::new(),
             published: memo::Memo::new("published"),
             links: memo::Memo::new("held links"),
             sourced_elsewhere: BTreeSet::new(),
@@ -2884,12 +2816,24 @@ impl Tx<'_> {
     }
 
     /// Keeps the index derived from states at the state `f` of `(tid, ak)`, whatever wrote it:
-    /// `Indexes::labeled`.
+    /// `Indexes::sync_recorded`.
     fn derive(&mut self, tid: &Tid, ak: &Ak, f: Option<&Fragment>) {
-        if ak.as_str() == "label.0" {
+        if ak.as_str() == "sync.0" {
+            let before = self.core.ix.sync_recorded_ids.get(tid).cloned().unwrap_or_default();
+            let after = f.map(crate::sync::recorded_ids).unwrap_or_default();
+            match after.is_empty() {
+                true => self.core.ix.sync_recorded_ids.remove(tid),
+                false => self.core.ix.sync_recorded_ids.insert(*tid, after.clone()),
+            };
+            for s in before.difference(&after) {
+                self.core.ix.sync_recorders.remove(s, tid);
+            }
+            for s in after.difference(&before) {
+                self.core.ix.sync_recorders.insert(*s, *tid);
+            }
             match f {
-                Some(_) => self.core.ix.labeled.insert(*tid),
-                None => self.core.ix.labeled.remove(tid),
+                Some(_) => self.core.ix.sync_recorded.insert(*tid),
+                None => self.core.ix.sync_recorded.remove(tid),
             };
         }
     }
@@ -3360,11 +3304,6 @@ impl Engine {
         self.core.events.test_subscribe_with(pending, durable)
     }
 
-    /// Installs node-sync's records (`Core::sync_records`).
-    pub fn set_sync_records(&mut self, r: &'static dyn SyncRecords) {
-        self.core.sync_records = Some(r);
-    }
-
     /// What brings back what the node could not judge since the last call, keeping it from now
     /// on (a test peer's fetches again).
     #[doc(hidden)]
@@ -3605,12 +3544,10 @@ impl Engine {
     /// it was rebuilt from the commit records.
     fn load_fresh(&mut self, rebuild: bool) -> Result<Option<Vec<(Tid, Ak)>>> {
         let mut fresh = self.blank_core();
-        fresh.memory = std::mem::take(&mut self.core.memory);
         fresh.events = std::mem::take(&mut self.core.events);
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
         fresh.accounts = std::mem::take(&mut self.core.accounts);
         fresh.redeliver = std::mem::take(&mut self.core.redeliver);
-        fresh.pended = std::mem::take(&mut self.core.pended);
         fresh.waits = std::mem::take(&mut self.core.waits);
         fresh.wakes = self.core.wakes.take();
         self.core = fresh;
@@ -3636,7 +3573,6 @@ impl Engine {
         fresh.commit_listeners = self.core.commit_listeners.clone();
         fresh.skip_writer_rules = self.core.skip_writer_rules;
         fresh.walk_cache_min = self.core.walk_cache_min;
-        fresh.sync_records = self.core.sync_records;
         fresh.account.set(self.core.account.get());
         // caches keyed on it (the sync engine's labels and co-readers) never see an old value again
         fresh.generation = self.core.generation.wrapping_add(1);
@@ -3977,7 +3913,7 @@ mod tests {
         write(&mut m, g, "new");
         let c = lp.peers[0].commit(m).unwrap().unwrap();
         let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([7; 32])).verifying_key();
-        let hint = osis_label::InboxThing { tid: g, label: None, delete_keys: Some((dk, dk)) };
+        let hint = osis_label::InboxThing { tid: g, sync_id: None, delete_keys: Some((dk, dk)) };
         let e = &mut lp.peers[1].engine;
         e.note_delete_hints(c, &[hint]).unwrap();
         assert_eq!(e.core.ix.hint_candidates.len(), 1);

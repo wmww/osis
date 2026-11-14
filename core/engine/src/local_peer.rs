@@ -13,7 +13,7 @@ use osis_base::{BlobId, Classified, Clock, CommitId, Link, ManualClock, Tid, Wal
 use osis_commit::CommitBlob;
 use osis_crypto::SeededRng;
 use osis_store::{MemoryBackend, MemoryRoot};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -203,7 +203,7 @@ impl Peer {
     /// A fresh node at wall time `t`, its own account's only node.
     pub fn new(seed: u64, t: WallMs) -> Result<Peer> {
         let mut p = Peer::new_bare(seed, t)?;
-        p.engine.create_account(&[])?;
+        p.engine.create_account()?;
         p.engine.take_wakes();
         Ok(p)
     }
@@ -471,6 +471,57 @@ impl LocalPeer {
             Some(p) => p.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists),
             None => Ok(Ingested::Duplicate(pk.id)),
         }
+    }
+
+    /// The inbox blobs `from` owes for the commits of `done` (`Engine::inbox_blob`), by holder;
+    /// a node holder's are its commits sent directly (`direct`).
+    pub fn inbox_blobs(&mut self, from: usize, done: &crate::flows::Done) -> Result<Vec<(Tid, Vec<u8>)>> {
+        let Some(p) = self.peers.get_mut(from) else { return Ok(Vec::new()) };
+        let owed: Vec<(CommitId, Tid)> = p.engine.deliveries()?.iter().filter(|(c, _)| done.commits.contains(c)).copied().collect();
+        let mut out = Vec::new();
+        for (i, (c, h)) in owed.into_iter().enumerate() {
+            let mut rng = osis_crypto::SeededRng::from_u64(i as u64);
+            if let Some(b) = p.engine.inbox_blob(&c, &h, &mut rng)? {
+                out.push((h, b));
+            }
+        }
+        Ok(out)
+    }
+
+    /// The holders `from` owes a delivery of a commit of `done`, with those commits.
+    pub fn owed_to(&mut self, from: usize, done: &crate::flows::Done) -> Result<BTreeMap<Tid, Vec<CommitId>>> {
+        let Some(p) = self.peers.get_mut(from) else { return Ok(BTreeMap::new()) };
+        let mut out: BTreeMap<Tid, Vec<CommitId>> = BTreeMap::new();
+        for (c, h) in p.engine.deliveries()?.iter().filter(|(c, _)| done.commits.contains(c)) {
+            out.entry(*h).or_default().push(*c);
+        }
+        Ok(out)
+    }
+
+    /// Carries `from`'s owed inbox deliveries (`Engine::deliveries`) as sync would: a node's
+    /// commit to that peer directly, an actor's inbox blob to every other peer, which takes it
+    /// accepted (`Engine::take_inbox_blob`). Returns how many inbox blobs went.
+    pub fn carry_deliveries(&mut self, from: usize) -> Result<usize> {
+        let Some(p) = self.peers.get_mut(from) else { return Ok(0) };
+        let owed: Vec<(CommitId, Tid)> = p.engine.deliveries()?.iter().copied().collect();
+        let mut n = 0;
+        for (c, h) in owed {
+            if let Some(i) = self.peers.iter().position(|x| x.engine.tid() == h) {
+                if let Some(pk) = self.peers.get_mut(from).and_then(|p| p.engine.package(&c).transpose()).transpose()? {
+                    self.deliver(i, &pk)?;
+                }
+                continue;
+            }
+            let mut rng = osis_crypto::SeededRng::from_u64(n as u64);
+            let Some(blob) = self.peers.get_mut(from).map(|p| p.engine.inbox_blob(&c, &h, &mut rng)).transpose()?.flatten() else { continue };
+            n += 1;
+            for i in (0..self.peers.len()).filter(|i| *i != from) {
+                if let Some(p) = self.peers.get_mut(i) {
+                    let _ = p.engine.take_inbox_blob(&blob, true);
+                }
+            }
+        }
+        Ok(n)
     }
 
     /// Commits `from` holds, sealed (`Engine::seal_package`), after the rotations due before it

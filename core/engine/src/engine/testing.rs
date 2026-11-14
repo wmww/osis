@@ -657,7 +657,7 @@ impl<T: std::fmt::Debug + PartialEq + 'static> Table for T {
 }
 
 /// The indexes `IndexDigest::tables` holds as text, by name.
-fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 31] {
+fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 40] {
     [
         ("by_thing", &*ix.by_thing),
         ("by_actor", &*ix.by_actor),
@@ -684,9 +684,18 @@ fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 31] {
         ("void", &*ix.void),
         ("destroyed_for_good", &*ix.destroyed_for_good),
         ("destroyed_secrets", &*ix.destroyed_secrets),
-        ("destroyed_labels", &*ix.destroyed_labels),
+        ("destroyed_sync_ids", &*ix.destroyed_sync_ids),
+        ("sync_records", &*ix.sync_records),
+        ("removal_notices", &*ix.removal_notices),
+        ("waiting_inbox", &*ix.waiting_inbox),
+        ("owed_inbox", &*ix.owed_inbox),
+        ("held_wait", &*ix.held_wait),
+        ("section_epochs", &*ix.section_epochs),
+        ("blob_parts", &*ix.blob_parts),
         ("valueless", &*ix.valueless),
-        ("labeled", &*ix.labeled),
+        ("sync_recorded", &*ix.sync_recorded),
+        ("sync_recorders", &*ix.sync_recorders),
+        ("sync_recorded_ids", &*ix.sync_recorded_ids),
         ("epochs", &*ix.epochs),
         ("by_epoch", &*ix.by_epoch),
         ("covered_under", &*ix.covered_under),

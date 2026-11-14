@@ -38,7 +38,7 @@ use std::collections::BTreeSet;
 
 const CREATED: &str = osis_commit::retention::CREATED;
 const ROLES: &str = "roles.0";
-const LABEL: &str = "label.0";
+const SYNC: &str = "sync.0";
 
 /// Aspects whose parts a destroyed thing still takes (`thing_wait`), so its destruction is judged alike:
 /// its mintings, its frozen edges and the destroying requests' parts on it.
@@ -312,7 +312,7 @@ fn reopen_fallen(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     }
     unhold_secrets(tx, t)?;
     // its `label.0` parts come back with the rest
-    unkeep_labels(tx, t)?;
+    unkeep_sync_ids(tx, t)?;
     // reads of the thing and its roles move, and whatever waited on the thing is judged again
     tx.core.ix.held.record_back(*t);
     Ok(())
@@ -406,8 +406,8 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
     } else {
         Vec::new()
     };
-    if aspects.iter().any(|(ak, _)| ak.as_str() == LABEL) {
-        keep_labels(tx, t)?;
+    if aspects.iter().any(|(ak, _)| ak.as_str() == SYNC) {
+        keep_sync_ids(tx, t)?;
     }
     for (ak, commits) in aspects.iter().chain(&partly) {
         for c in commits {
@@ -512,10 +512,7 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
             crate::apply::unindex_commit(tx, &c)?;
             // as a node that never held it: no purge list names it (one on a thing never held)
             super::purge::unnote_requests(tx, &c, &header)?;
-            // node-sync deletes its entries at hosts where it may and forgets them once gone, as
-            // a memory commit's gone whole (`take_memory_drops`), or skips them awaiting a record
-            let why = if awaited.is_empty() { crate::engine::MemoryDrop::Gone } else { crate::engine::MemoryDrop::Awaits { things: awaited } };
-            tx.core.memory.dropped.push((c, header, why));
+            let _ = awaited;
             continue;
         }
         let mut m = m.clone();
@@ -574,50 +571,43 @@ fn hold_secrets(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
         return Ok(());
     }
     tx.core.ix.destroyed_secrets.insert(*t);
-    tx.core.destroyed_secrets_due.insert(*t);
     tx.txn.put_local(&[records::DESTROYED_SECRETS, t.as_bytes()].concat(), &[], Shred::No)?;
     Ok(())
 }
 
-/// Destroyed `t`'s `label.0` goes with its destruction: with secrets of its own held, its labels
-/// are kept (`records::DESTROYED_LABELS`) for node-sync to empty once it keeps nothing.
+/// Destroyed `t`'s `sync.0` goes with its destruction: with secrets of its own held, its own
+/// sync IDs are kept (`records::DESTROYED_SYNC_IDS`) for sync to empty once it keeps nothing.
 ///
 /// Invariant: once a destroyed thing keeps nothing here, everything under its own labels is
 /// must-not-hold for every holder: nothing it keeps lives there (what its dependents need of it
 /// travels under their labels, spec/commits.md §5 Destruction), and its closure, its required set
 /// there, is empty. So while it keeps nothing and this node holds its secrets
-/// (`Engine::emptying`), node-sync syncs those labels for that alone: a holder of the delete key of
-/// a label's newest step deletes every entry it knows there by it, and a label is done once its
-/// sources are heard out with no entry known there and no delete within its tombstone (a source
-/// that got an entry late announces it again meanwhile), or at once where this node holds no such
-/// key. Then the labels' sync state goes and the row with them (`Engine::labels_emptied`), and
-/// only then its secrets, which derive those keys (`Engine::drop_destroyed_secrets`). Not while it
-/// keeps: its destruction may still fall (a request in force), and what it dropped is fetched
-/// again from its labels' hosts. Limit: an entry a source announces past those tombstones, or a
-/// source never heard again, stays there; a label none of whose sources is heard again keeps its
-/// row, its sync state and the thing's secrets here as long.
-fn keep_labels(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
-    if tx.core.ix.secrets.get(t).is_none() || tx.core.ix.destroyed_labels.contains_key(t) {
+/// (`Engine::destruction`), sync syncs those sync IDs for that alone (spec/sync-judgement.md §5),
+/// and once they are emptied the row goes, and only then its secrets, which derive those keys
+/// (`Engine::forget_destroyed`). Not while it keeps: its destruction may still fall (a request in
+/// force), and what it dropped is fetched again.
+fn keep_sync_ids(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    if tx.core.ix.secrets.get(t).is_none() || tx.core.ix.destroyed_sync_ids.contains_key(t) {
         return Ok(());
     }
-    let Some(v) = tx.state(t, &crate::flows::ak(LABEL)?)?.and_then(osis_crdt::Fragment::read) else { return Ok(()) };
-    // the labels it owns (`Core::owns_label`): emptying another's would drop its state here
-    let ls: Vec<_> = crate::labeling::actors::group_labels_in(t, &v).into_iter().filter(|l| tx.core.owns_label(t, &l.id, &l.steps)).collect();
+    let Some(v) = tx.state(t, &crate::flows::ak(SYNC)?)?.and_then(osis_crdt::Fragment::read) else { return Ok(()) };
+    // the sync IDs it owns (`Core::owns_sync_id`): emptying another's would drop its state here
+    let ls = crate::labeling::actors::owned_in_value(tx.core, t, &v);
     if ls.is_empty() {
         return Ok(());
     }
     use osis_schema::RawKey;
-    let mut kept = osis_schema::core_types::LABEL.decode(&v).unwrap_or_default();
+    let mut kept = osis_schema::core_types::SYNC.decode(&v).unwrap_or_default();
     kept.retain(|id, _| ls.iter().any(|l| l.id == *id));
-    tx.txn.put_local(&[records::DESTROYED_LABELS, t.as_bytes()].concat(), &osis_base::encode(&osis_schema::core_types::LABEL.encode(&kept)), Shred::No)?;
-    tx.core.ix.destroyed_labels.insert(*t, ls);
+    tx.txn.put_local(&[records::DESTROYED_SYNC_IDS, t.as_bytes()].concat(), &osis_base::encode(&osis_schema::core_types::SYNC.encode(&kept)), Shred::No)?;
+    tx.core.ix.destroyed_sync_ids.insert(*t, std::sync::Arc::new(ls));
     Ok(())
 }
 
-/// `t`'s destruction fell, or node-sync emptied its labels: their row goes.
-fn unkeep_labels(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
-    if tx.core.ix.destroyed_labels.remove(t).is_some() {
-        tx.txn.remove_local(&[records::DESTROYED_LABELS, t.as_bytes()].concat(), Shred::No)?;
+/// `t`'s destruction fell, or sync emptied its own sync IDs: their row goes.
+fn unkeep_sync_ids(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    if tx.core.ix.destroyed_sync_ids.remove(t).is_some() {
+        tx.txn.remove_local(&[records::DESTROYED_SYNC_IDS, t.as_bytes()].concat(), Shred::No)?;
     }
     Ok(())
 }
@@ -631,58 +621,44 @@ fn unhold_secrets(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 }
 
 impl crate::engine::Engine {
-    /// The destroyed things whose own secrets are held for node-sync's deletes alone (`hold_secrets`)
-    /// to judge again since the last call: node-sync drops each (`drop_destroyed_secrets`) once it
-    /// knows no entry of a commit keyed by it.
-    pub fn take_destroyed_secrets_due(&mut self) -> BTreeSet<Tid> {
-        let due = std::mem::take(&mut self.core.destroyed_secrets_due);
-        due.into_iter().filter(|t| self.core.ix.destroyed_secrets.contains(t)).collect()
+    /// The destroyed things whose own secrets are held for deletes alone (`hold_secrets`): what
+    /// `destruction` describes.
+    pub(crate) fn destroyed_now(&self) -> std::sync::Arc<BTreeSet<Tid>> {
+        std::sync::Arc::new(self.core.ix.destroyed_secrets.iter().copied().collect())
     }
 
-    /// Whether node-sync empties destroyed `t`'s labels now (`keep_labels`): it keeps nothing, its
-    /// secrets held for node-sync alone, its labels kept.
-    pub fn emptying(&self, t: &Tid) -> bool {
-        self.core.ix.destroyed_secrets.contains(t) && self.core.ix.destroyed_labels.get(t).is_some()
+    /// Destroyed `t` keeping nothing whose secrets are held for deletes alone (spec/sync-judgement.md
+    /// §5): its destroying requests (none: by expiry alone), its own sync IDs being emptied
+    /// (`keep_sync_ids`), and the held commits keyed by it (a part on it or acting for it) whose
+    /// entries its delete keys may delete anywhere. `None` for anything else.
+    pub(crate) fn destruction_now(&mut self, t: &Tid) -> Result<Option<std::sync::Arc<crate::sync::Destruction>>> {
+        if !self.core.ix.destroyed_secrets.contains(t) {
+            return Ok(None);
+        }
+        let released = crate::flows::ak("released.0")?;
+        let requests = self.core.ix.by_aspect.get(&(*t, released)).into_iter().flatten().map(|(_, c)| *c).collect();
+        let sync_ids = self.core.ix.destroyed_sync_ids.get(t).map(|v| v.iter().map(|o| o.id).collect()).unwrap_or_default();
+        let keyed = self.core.on_thing(t).chain(self.core.acting_for(t)).collect();
+        Ok(Some(std::sync::Arc::new(crate::sync::Destruction { requests, sync_ids, keyed })))
     }
 
-    /// The things whose labels node-sync empties now (`emptying`).
-    pub fn emptying_things(&self) -> Vec<Tid> {
-        self.core.ix.destroyed_labels.keys().filter(|t| self.core.ix.destroyed_secrets.contains(t)).copied().collect()
-    }
-
-    /// Node-sync emptied destroyed `t`'s labels (`keep_labels`): their sync state goes with the
-    /// row keeping them (`SyncRecords::forget`, in one transaction), and its secrets are judged
-    /// again for dropping (`drop_destroyed_secrets`). The blobs no record names any more go.
-    pub fn labels_emptied(&mut self, t: &Tid) -> Result<()> {
+    /// Sync emptied destroyed `t`'s own sync IDs and knows no entry of a commit keyed by it, nor a
+    /// delete of one within its tombstone (spec/sync-judgement.md §5): the kept sync IDs go, then
+    /// its secrets, last (`drop_destroyed_secrets`).
+    pub(crate) fn forget_destroyed_now(&mut self, t: &Tid) -> Result<()> {
         let t = *t;
-        self.run(|tx| {
-            let labels: BTreeSet<osis_base::SyncId> = tx.core.ix.destroyed_labels.get(&t).into_iter().flatten().map(|l| l.id).collect();
-            unkeep_labels(tx, &t)?;
-            tx.core.destroyed_secrets_due.insert(t);
-            let gone = match tx.core.sync_records {
-                Some(r) => r.forget(tx, &labels, &BTreeSet::new(), &BTreeSet::new(), &Default::default(), BTreeSet::new())?,
-                None => BTreeSet::new(),
-            };
-            for b in &gone {
-                tx.blobs.release(b, tx.txn.is_memory())?;
-            }
-            Ok(())
-        })
+        self.run(|tx| unkeep_sync_ids(tx, &t))?;
+        self.drop_destroyed_secrets(&BTreeSet::from([t]))
     }
 
-    /// The held commits keyed by destroyed `t` (`hold_secrets`): with a part on it or acting for it.
-    pub fn commits_keyed_by(&self, t: &Tid) -> BTreeSet<CommitId> {
-        self.core.on_thing(t).chain(self.core.acting_for(t)).collect()
-    }
-
-    /// Drops the secrets of each of `ts` held for node-sync alone (`hold_secrets`), node-sync
-    /// knowing no entry of a commit keyed by it: its `k/` row and `Indexes::secrets` entry go.
-    /// One with a freed link left (`retention::freed`) stays: `freed_done` hands it back; so does
-    /// one whose labels node-sync still empties (`keep_labels`): `labels_emptied` hands it back. One whose
-    /// record is held again keeps them as its own.
-    pub fn drop_destroyed_secrets(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
+    /// Drops the secrets of each of `ts` held for deletes alone (`hold_secrets`), sync knowing
+    /// no entry of a commit keyed by it: its `k/` row and `Indexes::secrets` entry go. One with a
+    /// freed link left (`retention::freed`) or own sync IDs still kept (`keep_sync_ids`) stays
+    /// (sync calls `forget_destroyed` again as those go). One whose record is held again keeps
+    /// them as its own.
+    pub(crate) fn drop_destroyed_secrets(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
         // one whose labels node-sync still empties stays: the delete keys derive from them
-        let ts: Vec<Tid> = ts.iter().copied().filter(|t| self.core.ix.destroyed_secrets.contains(t) && self.core.ix.destroyed_labels.get(t).is_none()).collect();
+        let ts: Vec<Tid> = ts.iter().copied().filter(|t| self.core.ix.destroyed_secrets.contains(t) && self.core.ix.destroyed_sync_ids.get(t).is_none()).collect();
         if ts.is_empty() {
             return Ok(());
         }

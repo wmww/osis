@@ -592,7 +592,7 @@ impl Osis {
     pub fn create(store: Store, cfg: Config) -> Result<Osis> {
         cfg.check()?;
         let Fresh { mut engine, clock, sync } = fresh_engine(&store, &cfg)?;
-        let (a, _) = engine.create_account(&[])?;
+        let (a, _) = engine.create_account()?;
         engine.set_app_record(PROFILE, a.profile.as_bytes())?;
         let mut m = osis_engine::Mutation::new();
         m.set(a.devices, &ct::GROUP, &ct::Group::default())?;
@@ -826,7 +826,7 @@ fn lifetimes(e: &mut Engine) {
         if !due {
             return Ok(());
         }
-        let synced: std::collections::BTreeSet<Tid> = e.labeled_groups().into_iter().collect();
+        let synced: std::collections::BTreeSet<Tid> = e.things_with_sync_ids().into_iter().collect();
         e.judge_lifetimes(&|g| !synced.contains(g), false).map(drop)
     });
     if let Err(x) = r {

@@ -1,10 +1,12 @@
 //! Actors, entitlement and closure (spec/sync-ids.md §2, spec/sync-judgement.md §1, spec/sync-set.md §2): a thing's reader actor (the thing if it
-//! has secrets of its own, else its first admin), who may read it, a group's closure and its labels.
+//! has secrets of its own, else its first admin), who may read it, a group's closure and its
+//! sync IDs (`sync.0`).
 
 use osis_base::memo::Memo;
 use crate::engine::{Core, Engine};
 use crate::error::Result;
 use osis_base::{ChainStep, SyncId, Role, Tid};
+use crate::sync::{OwnedSyncId, Path};
 use osis_crypto::{LabelRole, label_role_key};
 use osis_keys::ActorEpochs;
 use osis_label::{ClaimSet, Step, StepId};
@@ -12,29 +14,17 @@ use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// A label of a group as its `label.0` records it (spec/sync-ids.md §4).
-#[derive(Clone, Debug, PartialEq)]
-pub struct GroupLabel {
-    pub group: Tid,
-    pub id: SyncId,
-    /// Steps by ID with their claim sets when recorded.
-    pub steps: BTreeMap<StepId, (Step, Option<ClaimSet>)>,
-}
-
-/// Whether label `id`, its steps as `steps` records them, belongs to the group whose epochs held
-/// here are `epochs` (spec/sync-ids.md §4, owner; `Core::owns_label`).
+/// Whether sync ID `id`, its steps as `steps` records them, belongs to the thing whose epochs held
+/// here are `epochs` (spec/sync-ids.md §4 Owner; `Core::owns_sync_id`).
 ///
-/// Invariant: an entry of g's `label.0` counts as g's label, on every path that reads it (the
-/// labels node-sync syncs, registers at, filters and empties once g is destroyed, g's own label
-/// and inbox, what goes when g is forgotten), only when some step on a verified path from the
-/// label's genesis step bears a sync key that a sync secret of g held here derives. Any admin of g
-/// writes g's `label.0` and may name any label there; the steps chain by signature to the genesis
-/// delete key, which the label ID commits to and only the owner's admins held, so a step bearing
-/// g's sync key is an owner admin's own word that g owns it. An entry failing this is ignored
-/// here, never judged invalid: the check turns on the secrets this node holds. While this node
-/// holds no sync secret of g's own (it reads g by derived secrets, which no step bears, until the
-/// commit giving g's own reaches it under these very labels) the entries are its admins' word, as
-/// a label hint is its sender's.
+/// Invariant: an entry of g's `sync.0` counts as g's sync ID, on every path that reads it, only
+/// when some step on a verified path from the sync ID's genesis step bears a sync key that a sync
+/// secret of g held here derives. Any admin of g writes g's `sync.0` and may name any sync ID
+/// there; the steps chain by signature to the genesis delete key, which the sync ID commits to and
+/// only the owner's admins held, so a step bearing g's sync key is an owner admin's own word that g
+/// owns it. An entry failing this is ignored here, never judged invalid: the check turns on the
+/// secrets this node holds. While this node holds no sync secret of g's own (it reads g by derived
+/// secrets, which no step bears) the entries are hints (`OwnedSyncId::hint`).
 pub(crate) fn owns(epochs: Option<&ActorEpochs>, id: &SyncId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
     let Some(e) = epochs else { return false };
     let held: BTreeSet<[u8; 32]> = e.sync.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s).verifying_key().to_bytes()).collect();
@@ -49,39 +39,62 @@ pub(crate) fn owns(epochs: Option<&ActorEpochs>, id: &SyncId, steps: &BTreeMap<S
     bearing.into_iter().any(|(_, k)| osis_label::path_to(&plain, k).is_ok_and(|p| p.first().is_some_and(|g| g.label == *id)))
 }
 
-fn group_label(g: &Tid, id: &SyncId, l: &ct::Label) -> Option<Arc<GroupLabel>> {
-    let steps = osis_label::label_steps(l).ok()?;
-    Some(Arc::new(GroupLabel { group: *g, id: *id, steps }))
+/// The recorded path of a sync ID from its steps (spec/sync-ids.md §5 Path): genesis to head, the
+/// head being the newest recorded step (`head_of`). `None` when no step's path verifies.
+pub(crate) fn recorded_path(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<Path> {
+    let head = head_of(steps)?;
+    let plain: BTreeMap<StepId, Step> = steps.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
+    let path = osis_label::path_to(&plain, &head).ok()?;
+    Some(Path { steps: path.into_iter().map(|s| { let c = steps.get(&s.id()).and_then(|(_, c)| c.clone()); (s, c) }).collect() })
 }
 
-/// The labels of `g` a `label.0` value `v` records, owned or not (`owns`); records that do not
-/// parse are skipped.
-pub(crate) fn group_labels_in(g: &Tid, v: &osis_base::Value) -> Vec<Arc<GroupLabel>> {
+/// The head a node reading S takes from its `sync.0` (spec/sync-ids.md §3 "the newest step its
+/// `sync.0` records"): of the tips whose path from genesis verifies, the deepest; ties (two admins
+/// stepping at once) by lowest step ID. The spec names no order for a forked tree: this is its
+/// simplest reading.
+pub(crate) fn head_of(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<StepId> {
+    let parents: BTreeSet<StepId> = steps.values().filter_map(|(s, _)| s.prev).collect();
+    let plain: BTreeMap<StepId, Step> = steps.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
+    steps.keys().filter(|k| !parents.contains(k)).filter_map(|k| Some((osis_label::path_to(&plain, k).ok()?.len(), *k))).min_by_key(|(n, k)| (std::cmp::Reverse(*n), *k)).map(|(_, k)| k)
+}
+
+/// The sync IDs a destroyed thing `g`'s kept `sync.0` value `v` records that `g` owns here
+/// (`Core::owns_sync_id`), each with its recorded path; records that do not parse are skipped.
+/// A destroyed thing's are its own, never hints: `hint` is false.
+pub(crate) fn owned_in_value(core: &Core, g: &Tid, v: &osis_base::Value) -> Vec<OwnedSyncId> {
     use osis_schema::RawKey;
-    ct::LABEL.decode(v).map(|m| m.iter().filter_map(|(id, l)| group_label(g, id, l)).collect()).unwrap_or_default()
+    let mut out = ct::SYNC.decode(v).map(|m| owned_in(core, g, &m)).unwrap_or_default();
+    for o in &mut out {
+        o.hint = false;
+    }
+    out
 }
 
-impl GroupLabel {
-    /// The tips of the step tree (the newest step of each branch).
-    pub fn tips(&self) -> Vec<StepId> {
-        let parents: BTreeSet<StepId> = self.steps.values().filter_map(|(s, _)| s.prev).collect();
-        self.steps.keys().filter(|k| !parents.contains(k)).copied().collect()
-    }
-
-    /// The step's child on the label's tree, if recorded (the first by ID when forked).
-    pub fn child_of(&self, id: &StepId) -> Option<&Step> {
-        self.steps.values().map(|(s, _)| s).find(|s| s.prev == Some(*id))
-    }
+/// `owned_in_value` of a decoded `sync.0`.
+pub(crate) fn owned_in(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedSyncId> {
+    let hint = !core.holds_own_sync(g);
+    m.iter()
+        .filter_map(|(id, l)| {
+            let steps = osis_label::sync_steps(l).ok()?;
+            if !core.owns_sync_id(g, id, &steps) {
+                return None;
+            }
+            Some(OwnedSyncId { id: *id, path: Arc::new(recorded_path(&steps)?), hint })
+        })
+        .collect()
 }
 
 impl Core {
-    /// Whether `g` owns label `id` here (`owns`): judged once this node holds a sync secret of
-    /// `g`'s own, else taken.
-    pub(crate) fn owns_label(&self, g: &Tid, id: &SyncId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
-        if !self.own_record(g).is_some_and(|e| e.sync.holds_any()) {
-            return true;
-        }
-        owns(self.epochs(g).as_deref(), id, steps)
+    /// Whether this node holds a sync secret of `g`'s own (`owns` judges `g`'s `sync.0` by it;
+    /// without one its entries are hints).
+    pub(crate) fn holds_own_sync(&self, g: &Tid) -> bool {
+        self.own_record(g).is_some_and(|e| e.sync.holds_any())
+    }
+
+    /// Whether `g` owns sync ID `id` here (`owns`): judged once this node holds a sync secret of
+    /// `g`'s own, else taken as a hint.
+    pub(crate) fn owns_sync_id(&self, g: &Tid, id: &SyncId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
+        !self.holds_own_sync(g) || owns(self.epochs(g).as_deref(), id, steps)
     }
 
     /// The reader actor of `t`, whose read role reads its deltas: `t` with secrets of its own,
@@ -139,14 +152,14 @@ impl Engine {
         self.core.ix.groups.closure(g)
     }
 
-    /// Things with a `label.0` state.
-    pub fn labeled_groups(&self) -> Vec<Tid> {
-        self.core.ix.labeled.iter().copied().collect()
+    /// Things with a `sync.0` state.
+    pub fn things_with_sync_ids(&self) -> Vec<Tid> {
+        self.core.ix.sync_recorded.iter().copied().collect()
     }
 
     /// The inbox of actor `a` (spec/sync-inbox.md §1): the sync ID its `keys.0` names.
     pub fn inbox(&mut self, a: &Tid) -> Option<SyncId> {
-        self.get_typed(a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox).map(|i| i.label)
+        self.get_typed(a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox).map(|i| i.sync_id)
     }
 
     /// The inboxes here (spec/sync-inbox.md §1): per sync ID, the actors with secrets held here whose
@@ -156,7 +169,7 @@ impl Engine {
         let read = |e: &mut Engine| {
             let mut by: BTreeMap<SyncId, Vec<Tid>> = BTreeMap::new();
             for a in e.core.ix.secrets.keys().chain(e.core.accounts.keys()).copied().collect::<BTreeSet<_>>() {
-                if let Some(l) = e.get_typed(&a, &ct::KEYS)?.and_then(|k| k.inbox).map(|i| i.label) {
+                if let Some(l) = e.get_typed(&a, &ct::KEYS)?.and_then(|k| k.inbox).map(|i| i.sync_id) {
                     by.entry(l).or_default().push(a);
                 }
             }
@@ -166,35 +179,18 @@ impl Engine {
         Memo::get_in(self, |e| &e.core.inbox_actors, &(), read).unwrap_or_default()
     }
 
-    /// Whether `g` has a label here.
-    pub fn labeled(&mut self, g: &Tid) -> bool {
-        !self.labels_of(g).is_empty()
-    }
-
-    /// The labels `label.0` of `g` records; records that do not parse are skipped.
-    pub fn group_labels(&mut self, g: &Tid) -> Result<Vec<GroupLabel>> {
-        Ok(self.labels_of(g).iter().map(|l| (**l).clone()).collect())
-    }
-
-    /// `group_labels`, shared: decoded once per write of the `label.0` (`Core::labels`). A
-    /// `label.0` the store refuses to read gives none, and is read again at the next ask.
-    pub fn labels_of(&mut self, g: &Tid) -> Vec<Arc<GroupLabel>> {
-        self.labels_read(g).unwrap_or_default()
-    }
-
-    /// `labels_of`, with a read the store refused as the error: what a memo reading labels
-    /// asks, so it keeps no answer built on a failed read.
-    pub fn labels_read(&mut self, g: &Tid) -> Result<Vec<Arc<GroupLabel>>> {
+    /// The sync IDs `g` owns as its `sync.0` records them (`owns`), each with its recorded path;
+    /// hints while this node holds no sync secret of `g`'s own. Decoded once per write of the
+    /// `sync.0` (`Core::sync_ids`). A destroyed thing keeping nothing has the ones its destruction
+    /// kept (`Indexes::destroyed_sync_ids`). A `sync.0` the store refuses to read is the error, read
+    /// again at the next ask.
+    pub(crate) fn owned_sync_ids(&mut self, g: &Tid) -> Result<Arc<Vec<OwnedSyncId>>> {
         if self.core.created(g).is_none() {
-            // a destroyed thing keeping nothing: the labels node-sync empties (`emptying`)
-            return Ok(if self.emptying(g) { self.core.ix.destroyed_labels.get(g).cloned().unwrap_or_default() } else { Vec::new() });
+            return Ok(self.core.ix.destroyed_sync_ids.get(g).cloned().unwrap_or_default());
         }
-        Memo::get_in(self, |e| &e.core.labels, g, |e| {
-            let mut out = Vec::new();
-            for (id, l) in &e.get_typed(g, &ct::LABEL)?.unwrap_or_default() {
-                out.extend(group_label(g, id, l).filter(|l| e.core.owns_label(g, &l.id, &l.steps)));
-            }
-            Ok::<_, crate::error::Error>(out)
+        Memo::get_in(self, |e| &e.core.sync_ids, g, |e| {
+            let m = e.get_typed(g, &ct::SYNC)?.unwrap_or_default();
+            Ok::<_, crate::error::Error>(Arc::new(owned_in(&e.core, g, &m)))
         })
     }
 }
