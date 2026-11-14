@@ -159,7 +159,8 @@ fn synced_of(lp: &mut LocalPeer, at: usize, i: usize, d: Tid) -> Option<Tid> {
 // spec/sync-set.md §1 (Home stays under it): a later node learns its synced group in the pairing
 // reply, a copy of the pairing node's synced group's items and subgroups: the new node reads its
 // own from the reply alone; pairing it again while that group stays under home writes none, and
-// once the group is cut from D ("until it is paired again"), a new one.
+// once the group is cut from D ("until it is paired again"), or for a listed group D did not
+// make, a new one.
 #[test]
 fn pairing_reply_carries_the_new_nodes_synced_group_spec_sync_set_1() {
     let (mut lp, d) = account_two_nodes();
@@ -182,6 +183,22 @@ fn pairing_reply_carries_the_new_nodes_synced_group_spec_sync_set_1() {
     let g2 = synced_of(&mut lp, 1, 1, d).unwrap();
     assert_ne!(g2, g1, "cut: a new one");
     assert!(lp.peers[1].engine.get_typed(&g2, &ct::GROUP).unwrap().unwrap().subgroups.contains(&d));
+    // a group under home that D did not make (its first admin another actor, as a since-removed
+    // device may write one into synced^.0; here the account): a new one
+    let e = &mut lp.peers[1].engine;
+    let account = e.account().unwrap().unwrap().0;
+    let mut m = Mutation::new();
+    let g3 = e.new_thing(&mut m, account);
+    m.set(g3, &ct::GROUP, &ct::Group { subgroups: [d].into(), ..Default::default() }).unwrap();
+    m.op(d, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Add(osis_base::Value::Tid(g3)) }).unwrap();
+    m.op(d, &ct::SYNCED, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(osis_base::Value::Tid(n))], op: osis_crdt::Op::Set(osis_base::Value::Tid(g3)) }).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    spread(&mut lp);
+    assert_eq!(synced_of(&mut lp, 0, 1, d), Some(g3), "g3 listed, under home");
+    let (_, again) = lp.peers[0].engine.pair(&n).unwrap();
+    send(&mut lp, 0, 1, &again);
+    let g4 = synced_of(&mut lp, 1, 1, d).unwrap();
+    assert_ne!(g4, g3, "not D's: a new one");
 }
 
 /// `n` peers, each with its own account actor (no pairing); everyone holds everyone's commits:

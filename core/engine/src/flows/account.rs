@@ -967,11 +967,13 @@ impl Core {
 }
 
 impl Engine {
-    /// Whether `synced^.0` on D lists a synced group for `node` that D's closure holds and whose
-    /// closure holds D (spec/sync-set.md §1, Home stays under it): one pairing need not replace.
+    /// Whether `synced^.0` on D lists a synced group for `node` whose first admin is D, that D's
+    /// closure holds and whose closure holds D (spec/sync-set.md §1, Home stays under it): one
+    /// pairing need not replace. A group another actor made (a since-removed device writing one
+    /// into `synced^.0`) is replaced, however it sits under home.
     fn under_home(&mut self, d: Tid, node: &Tid) -> Result<bool> {
         let Some(g) = self.get_typed(&d, &ct::SYNCED)?.and_then(|m| m.get(node).copied()) else { return Ok(false) };
-        Ok(self.closure(&g).contains(&d) && self.closure(&d).contains(&g))
+        Ok(self.core.first_admin(&g) == Some(d) && self.closure(&g).contains(&d) && self.closure(&d).contains(&g))
     }
 }
 
