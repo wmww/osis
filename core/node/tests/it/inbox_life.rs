@@ -1655,7 +1655,7 @@ fn a_sync_id_costs_the_same_at_any_count_spec_sync_2() {
             e.commit(m).unwrap();
             e.grant(&t, &bob, &edge).unwrap();
             let c = e.aspect_commit(&t, "label.0").unwrap().0;
-            assert_eq!(e.aspect_commit(&t, "keys.0").map(|x| x.0), Some(c), "secrets and sync ID in one commit");
+            assert!(e.writes_keyset(&t, &c), "secrets and sync ID in one commit");
             bytes += e.commit_bytes(&c).unwrap().unwrap().len();
         }
         assert_eq!(net.sync(a).labels().len() - before, n, "one sync ID per thing shared");

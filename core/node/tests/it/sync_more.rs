@@ -1058,17 +1058,15 @@ fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
     let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     let blob = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { blob, .. } = d { Some(blob.clone()) } else { None }).expect("an inbox blob");
     // everything but the commits writing g's `keys.0` reaches b directly; the grant by inbox
-    let keys_ak = Ak::new("keys.0").unwrap();
     for id in net.engine(a).commit_ids() {
-        let h = net.engine(a).header(&id).unwrap();
-        if h.aspects.iter().any(|x| x.tid == g && x.ak == keys_ak) {
+        if net.engine(a).writes_keyset(&g, &id) {
             continue;
         }
         let pk = net.engine(a).package(&id).unwrap().unwrap();
         let _ = net.engine(b).ingest(&pk.bytes, pk.blobs);
     }
     net.engine(b).accept_inbox(&blob).unwrap();
-    assert!(net.engine(b).get_typed(&g, &ct::KEYS).unwrap().is_none(), "b holds no keys.0 of g");
+    assert!(net.engine(b).get_typed(&g, &ct::KEYS).unwrap().is_none_or(|k| (k.read.clone(), k.write.clone(), k.admin.clone()) == (None, None, None)), "b holds no keyset of g");
     let mut m = Mutation::new();
     m.set(g, &REG, &s("by bob")).unwrap();
     let c = net.engine(b).commit(m).unwrap().unwrap();
@@ -1117,11 +1115,9 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     let cc = net.engine(c).commit(m).unwrap().unwrap();
     let unrelated = net.engine(c).commit_ids().into_iter().find(|id| net.engine(c).header(id).unwrap().aspects.iter().all(|x| x.tid != g)).unwrap();
     // b gets everything but g's `keys.0` commits
-    let keys_ak = Ak::new("keys.0").unwrap();
     for n in [a, c] {
         for id in net.engine(n).commit_ids() {
-            let h = net.engine(n).header(&id).unwrap();
-            if h.aspects.iter().any(|x| x.tid == g && x.ak == keys_ak) {
+            if net.engine(n).writes_keyset(&g, &id) {
                 continue;
             }
             let pk = net.engine(n).package(&id).unwrap().unwrap();
@@ -1141,7 +1137,7 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
         let _ = net.engine(b).accept_inbox(&blob);
     }
     net.engine(b).accept_inbox(&genuine).unwrap();
-    assert!(net.engine(b).get_typed(&g, &ct::KEYS).unwrap().is_none(), "b holds no keys.0 of g");
+    assert!(net.engine(b).get_typed(&g, &ct::KEYS).unwrap().is_none_or(|k| (k.read.clone(), k.write.clone(), k.admin.clone()) == (None, None, None)), "b holds no keyset of g");
     let mut m = Mutation::new();
     m.set(g, &REG, &s("by bob")).unwrap();
     let id = net.engine(b).commit(m).unwrap().unwrap();

@@ -41,15 +41,15 @@ fn reseal_reaches_grantee_left_out_spec_permissions_3() {
     }
     // the case: f1 rotated T, then wrote a re-seal (secrets, no keyset) of T
     let f1t = net.tid(f1);
-    let (keys, secrets) = (Ak::new("keys.0").unwrap(), Ak::new("secrets.0").unwrap());
+    let secrets = Ak::new("secrets.0").unwrap();
     let mut rotated = false;
     let mut resealed = false;
     for id in net.engine(f1).commit_ids() {
         let h = net.engine(f1).header(&id).unwrap();
-        let on = |ak: &Ak| h.aspects.iter().any(|a| a.tid == t && a.ak == *ak);
+        let keyset = net.engine(f1).writes_keyset(&t, &id);
         if h.author == f1t {
-            rotated |= on(&keys);
-            resealed |= on(&secrets) && !on(&keys);
+            rotated |= keyset;
+            resealed |= h.aspects.iter().any(|a| a.tid == t && a.ak == secrets) && !keyset;
         }
     }
     assert!(rotated && resealed, "f1 rotated T and re-sealed it");

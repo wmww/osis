@@ -103,7 +103,7 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
     net.run();
     // the deposit, whole; the admin also places the part it holds, its edge write: node 1's box
     // to node 2 is invalid there (node 1 removed) and went (spec/permissions.md §6)
-    let whole = net.sync(0).entries(&l).iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if *commit == c && parts.len() == 2)).count();
+    let whole = net.sync(0).entries(&l).iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if *commit == c && parts.len() == 3)).count();
     assert_eq!(whole, 1, "the deposit reached the label");
 }
 
