@@ -32,6 +32,9 @@ pub struct Held {
     holders: BTreeMap<Tid, BTreeMap<Tid, usize>>,
     /// Thing -> holders named on it (the same pairs as `holders`).
     named: BTreeMap<Tid, BTreeSet<Tid>>,
+    /// Thing -> holders an edge write puts a grant for on it, with counts: the edges a path may
+    /// climb (a removal names a holder but gives it none).
+    granted: BTreeMap<Tid, BTreeMap<Tid, usize>>,
     /// First admin -> the things whose creation record names it: the record chain's
     /// links down (spec/permissions.md §1).
     first_admin_of: BTreeMap<Tid, BTreeSet<Tid>>,
@@ -98,6 +101,12 @@ impl Held {
     pub fn holders_of(&self, thing: &Tid) -> impl Iterator<Item = &Tid> {
         self.rest_read.read_all();
         self.named.get(thing).into_iter().flatten()
+    }
+
+    /// Holders an edge write puts a grant for on `thing`, of any validity and whatever followed.
+    pub fn granted_on(&self, thing: &Tid) -> impl Iterator<Item = &Tid> {
+        self.rest_read.read_all();
+        self.granted.get(thing).into_iter().flat_map(|m| m.keys())
     }
 
     /// `from` and everything authority flows to from them: what they own, the things they are
@@ -280,6 +289,24 @@ impl Held {
         }
     }
 
+    fn count_granted(&mut self, c: &RoleCommit, add: bool) {
+        for o in c.ops.iter().filter(|o| o.edge.is_some()) {
+            let on = self.granted.entry(o.target).or_default();
+            let n = on.entry(o.holder).or_default();
+            if add {
+                *n += 1;
+            } else {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    on.remove(&o.holder);
+                }
+            }
+            if on.is_empty() {
+                self.granted.remove(&o.target);
+            }
+        }
+    }
+
     fn put_commit(&mut self, c: Arc<RoleCommit>) {
         let targets: BTreeSet<Tid> = c.ops.iter().map(|o| o.target).collect();
         for t in &targets {
@@ -290,6 +317,7 @@ impl Held {
         self.touched.insert(c.author);
         self.moved.insert(c.author);
         self.count(named(&c), true);
+        self.count_granted(&c, true);
         self.rest_read.wrote_all();
         self.ids.insert(c.id, c);
     }
@@ -309,6 +337,7 @@ impl Held {
             self.moved.insert(o.target);
         }
         self.count(named(&c), false);
+        self.count_granted(&c, false);
         Some(c)
     }
 
@@ -407,7 +436,7 @@ impl Held {
 impl Journaled for Held {
     #[cfg(test)]
     fn contents(&self) -> String {
-        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.first_admin_of, self.ids, self.uncounted)
+        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.granted, self.first_admin_of, self.ids, self.uncounted)
     }
     type Mark = usize;
     fn commit(&mut self) {

@@ -668,9 +668,10 @@ fn judge(h: &Held) -> (Outcome, Timeline) {
             let st = if c.expires.is_some() { dots.strip(t, a, st, &own) } else { st.clone() };
             // a write it holds that is dead in the state: not held there, or winning in the body
             // and held there but not winning (spec/crdt.md §4.8: a text element's creation under
-            // a winning delete, a position write beaten by a move)
+            // a winning delete or pruned by a reset while its element's record stays for a later
+            // flag, a position write beaten by a move)
             let (held, won, wins) = (keys(&st), winning(&st), winning(&b));
-            let gone: Vec<(Name, Frag)> = writes(&b).into_iter().filter(|(n, _)| !holds(&held, n) || [&held, &wins].iter().all(|x| x.contains(&death::key(n))) && !won.contains(&death::key(n))).collect();
+            let gone: Vec<(Name, Frag)> = writes(&b).into_iter().filter(|(n, _)| !holds(&held, n) || wins.contains(&death::key(n)) && !won.contains(&death::key(n))).collect();
             if gone.is_empty() || !covers(&st, &b) {
                 continue;
             }

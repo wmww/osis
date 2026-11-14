@@ -86,12 +86,6 @@ impl World {
         }
         v
     }
-    /// `t` and every thing below it by record chain.
-    pub fn below(&self, t: ThingId) -> Vec<ThingId> {
-        let mut v = vec![t];
-        v.extend(self.links.keys().copied().filter(|&x| x != t && self.chain_above(x).contains(&t)));
-        v
-    }
     /// The walk's initial state: every thing's record edge.
     pub fn initial(&self) -> Edges {
         self.links
@@ -296,8 +290,10 @@ impl Timeline {
                     };
                     // step 4: audits by an explicit write
                     if explicit {
+                        // n and every thing it reaches by edges, record edges included
+                        let down: Vec<ThingId> = world.reach(&edges, n, wall_).into_keys().collect();
                         for &x in actors.iter().filter(|&&x| x != a) {
-                            for m in world.below(n) {
+                            for &m in &down {
                                 let cb = world.class(&before, x, m, wall_);
                                 let ca = world.class(&edges, x, m, wall_);
                                 if ca >= cb {

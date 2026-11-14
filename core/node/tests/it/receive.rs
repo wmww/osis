@@ -103,6 +103,58 @@ fn pending_until_created_spec_commits_4() {
     assert!(lp2.peers[0].engine.pending().is_empty());
 }
 
+// spec/commits.md §4 (Unjudgeable): only a grant leads from its holder to a thing (a path climbs
+// grants, spec/permissions.md §1); a removal names its holder and leads nowhere. 1 makes t and u,
+// u's first admin t, removes from t the grant 0 never had, then grants 0 read; 0 forges one commit
+// granting itself admin on both. A node holding all but the grant: nothing leads from 0 to t or u
+// (the removal names 0), so it keeps nothing of the forgery; with the grant it does, and holds it
+// invalid: both rosters stay as 1 wrote them.
+#[test]
+fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::Codec;
+    use osis_schema::core_types::{Edge, ROLES};
+    let mut lp = net(3, 0);
+    let a = lp.peers[0].engine.me();
+    sync(&mut lp, 0, 1);
+    let t = new_thing(&mut lp, 1);
+    let mut m = Mutation::new();
+    let u = lp.peers[1].engine.new_thing(&mut m, t);
+    m.set(u, &REG, &s("u")).unwrap();
+    lp.peers[1].commit(m).unwrap();
+    lp.peers[1].engine.demote(&t, &osis_node::flows::Demotion { holder: a, new: None, retain: None }).unwrap();
+    // the grant that makes 0 able to sign, held back from 2 till the end
+    lp.peers[1].engine.grant(&t, &a, &Edge { role: Role::Read, until: None, invite: None, tied: None }).unwrap();
+    let grant = packages(&mut lp, 1).pop().unwrap();
+    for p in packages(&mut lp, 1) {
+        lp.deliver(0, &p).unwrap();
+    }
+    let mut m = Mutation::new();
+    for x in [t, u] {
+        m.op(x, &ROLES, PathOp { path: vec![], op: Op::Remove(Value::Tid(a)) }).unwrap();
+        m.op(x, &ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(a))], op: Op::Set(Edge { role: Role::Admin, until: None, invite: None, tied: None }.to_value()) }).unwrap();
+    }
+    let forged = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
+    let forged = packages(&mut lp, 0).into_iter().find(|p| p.id == forged).unwrap();
+    let rosters = |lp: &mut osis_node::local_peer::LocalPeer| [t, u].map(|x| lp.peers[2].engine.roster(&x));
+    for p in packages(&mut lp, 1).iter().chain(&packages(&mut lp, 0)).filter(|p| p.id != forged.id && p.id != grant.id) {
+        lp.deliver(2, p).unwrap();
+    }
+    let before = rosters(&mut lp);
+    let r = lp.deliver(2, &forged).unwrap();
+    assert!(matches!(r, Ingested::Awaits(_, Reason::MissingChain(x)) if x == a), "{r:?}");
+    assert!(!lp.peers[2].engine.commit_ids().contains(&forged.id));
+    assert_eq!(rosters(&mut lp), before);
+    // a grant leads from g's first admin to t, and through t's record to u
+    lp.deliver(2, &grant).unwrap();
+    let before = rosters(&mut lp);
+    assert_eq!(before[0].get(&a).map(|e| e.role), Some(Role::Read));
+    lp.deliver(2, &forged).unwrap();
+    assert!(lp.peers[2].engine.commit_ids().contains(&forged.id));
+    assert_eq!(rosters(&mut lp), before);
+    assert!(!before[1].contains_key(&a));
+}
+
 // spec/commits.md §4 (Unjudgeable): commits awaiting a thing's `created.0` apply once fetched
 // again with it; meanwhile commits applied in between judge none of them again
 // (spec/requirements.md, Scale: a first sync is O(commits), not O(commits × awaiting)).

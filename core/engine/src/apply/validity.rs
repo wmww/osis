@@ -340,11 +340,12 @@ pub(crate) fn add_role_commit(core: &mut Core, h: &View, id: &CommitId, parts: &
     }
 }
 
-/// Does a path of held edge writes and record links lead from `author` to a thing on `chain`?
-/// (The author's chain certificates, spec/permissions.md §1, §4: a path climbs role
-/// grants and record links, as perm's effective role counts them.) Searched backward from
-/// `chain`, as perm's `roles_to_any`: from a thing to its first admin and to the holders named on
-/// it, so the search stays within what has authority over the chain.
+/// Does a path of held grants and record links lead from `author` to a thing on `chain`
+/// (spec/commits.md §4 Unjudgeable)? A path climbs role grants and record links, as perm's
+/// effective role counts them (spec/permissions.md §1): a removal names a holder but leads
+/// nowhere. Searched backward from `chain`, as perm's `roles_to_any`: from a thing to its first
+/// admin and to the holders granted on it, so the search stays within what has authority over the
+/// chain.
 pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
     let held = &core.ix.held;
     let mut stack: Vec<Tid> = chain.to_vec();
@@ -354,7 +355,7 @@ pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
             Some(CreationRecord::Thing { admin, .. }) => Some(admin),
             _ => None,
         };
-        for y in first.into_iter().chain(held.holders_of(&t)) {
+        for y in first.into_iter().chain(held.granted_on(&t)) {
             if y == author {
                 return true;
             }

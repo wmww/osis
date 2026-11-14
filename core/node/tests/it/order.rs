@@ -4075,3 +4075,41 @@ fn purge_of_a_part_dropped_while_invalid_reads_alike_by_the_resnapshot_spec_comm
     order_checks(&played, &whole).unwrap();
     order_checks(&played, &whole.iter().rev().copied().collect::<Vec<_>>()).unwrap();
 }
+
+// spec/commits.md §4 Unjudgeable: 2 makes a record-only thing t2 and removes from it G's grant it
+// never had, then makes u under t2; 0 (G's first admin) forges one commit putting 2 write on t2
+// and u. The removal names G but leads nowhere, so nothing leads from 0 to t2 or u: every node
+// keeps nothing of the forgery, as held-model says (`receive::a_removal_leads_no_author_to_a_thing_spec_commits_4`).
+#[test]
+fn a_removal_leads_no_forger_to_two_record_linked_things_spec_commits_4() {
+    use Step::*;
+    let a = |s| Aim(Box::new(s));
+    let h = vec![RecordOnly { by: 0, under: None }, RecordOnly { by: 2, under: None }, a(RemoveFlow { by: 2, t: 2, holder: 3, lower: false }), Sync { from: 2, to: 0 }, a(New { by: 2, parent: 5, write: false }), Forged { by: 0, a: 6, b: 7, how: 2, op: 19, k: 1, v: 5 }];
+    check(5019, &h, Cfg { model: true, ..NAMED }).unwrap();
+}
+
+// spec/permissions.md §5.1 step 4: 0 grants G admin on its thing t and lowers its own record edge
+// there to write, so 0 is t's admin through G alone; 2 then removes 0 from G with a frontier
+// listing none of those writes. 0's class on t falls with it (t is reached from G by G's grant,
+// not by a record chain), so the grant and the lowering go to D and t reads its record edge
+// alone, as held-model (and roles-model's joint walk) judge it.
+#[test]
+fn a_removal_from_an_actor_audits_what_the_actors_grants_reach_spec_permissions_5_1() {
+    use Step::*;
+    let a = |s| Aim(Box::new(s));
+    let h = vec![RecordOnly { by: 0, under: None }, GrantFlow { by: 0, t: 1, holder: 2, role: Role::Admin }, RemoveFlow { by: 0, t: 1, holder: 0, lower: false }, NewTop { by: 0 }, a(GrantFlow { by: 0, t: 3, holder: 3, role: Role::Admin }), a(RemoveFlow { by: 0, t: 3, holder: 0, lower: true }), a(NestedItem { by: 0, other: 1, t: 4, k: 1, compact: false, also: false }), Sync { from: 1, to: 2 }, a(RemoveFlow { by: 2, t: 5, holder: 0, lower: false }), RecordOnly { by: 1, under: None }, Removals { by: 1, other: 0, v: 9 }];
+    check(197373046315, &h, Cfg { model: true, ..NAMED }).unwrap();
+}
+
+// spec/commits.md §5 Bodies and deaths: 2 types into a text, then undoes it twice: the first
+// undo resets the text above the insert, the second deletes its element, whose record outlives the
+// reset for that later flag. The insert's creation is pruned by the reset, so its body is replaced
+// at the reset and, out of history hours later, a node drops it under a writer's snapshot; held-model
+// agrees it is no live body.
+#[test]
+fn a_creation_pruned_under_a_later_delete_is_replaced_spec_commits_5() {
+    use Step::*;
+    let a = |s| Aim(Box::new(s));
+    let h = vec![a(Typed { by: 2, t: 1, op: 11, k: 1, v: 0 }), a(Undo { by: 2, back: 1 }), a(Undo { by: 2, back: 1 }), Advance { who: None, ms: 5500918 }, a(Compact { by: 0, t: 0, op: 23 })];
+    check(1117, &h, Cfg { model: true, clock: 2, away: true, ..NAMED }).unwrap();
+}
