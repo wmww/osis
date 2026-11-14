@@ -6,9 +6,9 @@
 
 use crate::store::{Source, Stand};
 use crate::types::{ConnId, Entry, Result};
-use osis_base::{BlobId, CommitId, SyncId, WallMs};
+use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::SigningSecret;
-use osis_engine::sync::{BodyFacts, BodyMeta, Destruction, PartSet, ReadCredentials};
+use osis_engine::sync::{BodyFacts, BodyMeta, Destruction, PartSet, Pieces, ReadCredentials};
 use osis_label::StepId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -178,6 +178,68 @@ pub trait Ground {
         let _ = (s, records);
         Ok(())
     }
+    /// The linked blobs of `c`'s body at S (`Engine::pieces`; spec/sync-judgement.md §1): held,
+    /// and missing as far as the held node and page blobs reach.
+    fn pieces(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Pieces>> {
+        let _ = (s, c);
+        Ok(Arc::default())
+    }
+    /// What the own store has of piece `b` under S.
+    fn piece(&mut self, s: &SyncId, b: &BlobId) -> Result<PieceAt> {
+        let _ = (s, b);
+        Ok(PieceAt::Absent)
+    }
+    /// What the source's stream showed of piece `b` under S: (present, deleted).
+    fn piece_seen(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<(bool, bool)> {
+        let _ = (at, s, b);
+        Ok((false, false))
+    }
+    /// Logs held piece `b` under S in the own store (filler wrap; a peer's entry of it becomes
+    /// own, off its peer budget).
+    fn log_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        let _ = (s, b);
+        Ok(())
+    }
+    /// The engine takes piece `b` from the store's entry of it under S (`Engine::take_piece`).
+    fn take_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        let _ = (s, b);
+        Ok(())
+    }
+    /// Repairs piece `b` of own commit `c` (spec/sync-ids.md §1 Repair, `Engine::relink`).
+    fn repair(&mut self, c: &CommitId, b: &BlobId) -> Result<()> {
+        let _ = (c, b);
+        Ok(())
+    }
+    /// Freed links judged freed since the last call (all of them at the first: a start).
+    fn freed_added(&mut self) -> Result<Vec<(BlobId, Tid)>> {
+        Ok(Vec::new())
+    }
+    /// Freed link `b` of thing `t` is in the set.
+    fn freed_link(&mut self, b: &BlobId, t: &Tid) -> Result<bool> {
+        let _ = (b, t);
+        Ok(false)
+    }
+    /// The sync IDs read here carrying thing `t` (`Engine::carrying`).
+    fn carrying(&mut self, t: &Tid) -> Result<BTreeSet<SyncId>> {
+        let _ = t;
+        Ok(BTreeSet::new())
+    }
+    /// The own store's entry of piece `b` under S leaves (a freed link's).
+    fn drop_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        let _ = (s, b);
+        Ok(())
+    }
+    /// A Delete of freed link `b` of `t` at the source, by the head's delete key where its held
+    /// prefix bore the link, else by level (spec/sync-compaction.md §1 Freed links).
+    fn delete_freed(&mut self, at: &SrcView, s: &SyncId, head: &StepId, b: &BlobId, t: &Tid) -> Result<()> {
+        let _ = (at, s, head, b, t);
+        Ok(())
+    }
+    /// Freed link `b` of `t` leaves the set: no entry of it is known here.
+    fn freed_done(&mut self, b: &BlobId, t: &Tid) -> Result<()> {
+        let _ = (b, t);
+        Ok(())
+    }
     /// Whether this node's step of S is due and each role commit it registers is logged under S
     /// in the own store (spec/sync-ids.md §6 Steps: issued after logging the rotations it
     /// registers, so they are stamped under the head a store keeping S unread holds).
@@ -190,6 +252,18 @@ pub trait Ground {
         let _ = s;
         Ok(false)
     }
+}
+
+/// What the own store has of a piece under S (`Ground::piece`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PieceAt {
+    Absent,
+    /// Logged by this node.
+    Own,
+    /// A peer's entry (pulled, not yet taken).
+    Peer,
+    /// Tombstoned: never logged again under that blob ID.
+    Tombstoned,
 }
 
 /// `Ground::records_missing`.

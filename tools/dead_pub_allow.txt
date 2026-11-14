@@ -51,8 +51,6 @@ osis-engine::destroyed_records_awaited  deferred: sync rebuild (issues/sync-rewr
 osis-engine::ephemeral_session  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::flag_suspect  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::forget_commits  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::freed_delete_secrets  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::freed_done  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::freed_wants  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::header_body  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::held_key_actors  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -146,7 +144,6 @@ osis-engine::held_parts  test hook (tests/it)
 osis-engine::index_current  test hook (tests/it)
 osis-engine::linked_blobs  test hook (tests/it)
 osis-engine::links_due  test hook (tests/it)
-osis-engine::live_trees  test hook (tests/it)
 osis-engine::memory_blob  test hook (tests/it)
 osis-engine::next_link_expiry  test hook (tests/it)
 osis-engine::own_held_before  test hook (tests/it)
@@ -157,7 +154,6 @@ osis-engine::purged_on  test hook (tests/it)
 osis-engine::rebuild_index  test hook (tests/it)
 osis-engine::rebuild_state  test hook (tests/it)
 osis-engine::refresh_deposit_seed  test hook (tests/it)
-osis-engine::relink  test hook (tests/it)
 osis-engine::removal_scope  test hook (tests/it)
 osis-engine::set_walk_cache_min  test hook (tests/it)
 osis-engine::settle_kept  test hook (tests/it)

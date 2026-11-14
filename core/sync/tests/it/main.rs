@@ -16,6 +16,7 @@ mod unread;
 mod status;
 mod store;
 mod opens;
+mod pieces;
 mod streams;
 mod world;
 mod driver;

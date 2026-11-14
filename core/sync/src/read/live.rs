@@ -3,7 +3,10 @@
 //! failing in the middle of a settle fails the node's step, closing every connection.
 
 use super::Why;
-use super::ground::{BlobInfo, Facts, Ground, RecordsMissing, Seen, SrcView};
+use super::ground::{BlobInfo, Facts, Ground, PieceAt, RecordsMissing, Seen, SrcView};
+use osis_engine::retention::freed::Freed;
+use osis_engine::sync::Pieces;
+use osis_label::StepId;
 use crate::opens::Opens;
 use crate::session::{Sessions, To};
 use crate::store::{Source, Stand};
@@ -12,7 +15,7 @@ use crate::streams::Streams;
 use crate::unread::Unread;
 use crate::types::{ConnId, Cx, Entry, Result};
 use osis_base::memo::Feed;
-use osis_base::{BlobId, CommitId, SyncId, WallMs};
+use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::SigningSecret;
 use osis_engine::sync::{BodyMeta, Destruction, HeldBlob, MustNot, ReadCredentials};
 use osis_label::{Class, DeleteItem};
@@ -25,6 +28,7 @@ use std::sync::Arc;
 pub struct Feeds {
     known: Option<Feed<crate::streams::KnownRow>>,
     views: Option<Feed<super::views::Row>>,
+    freed: Option<Feed<(BlobId, Tid)>>,
 }
 
 pub struct Live<'a, 'b> {
@@ -321,6 +325,102 @@ impl Ground for Live<'_, '_> {
         let e = own_entry(self.cx, s, blob, wrap, Class::Durable)?;
         self.cx.store.log(s, e, Some(bytes), None)?;
         Ok(())
+    }
+    fn pieces(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Pieces>> {
+        let Some(parts) = self.cx.engine.sync_bodies(c)?.get(s).map(|m| m.parts.clone()) else { return Ok(Arc::default()) };
+        Ok(self.cx.engine.pieces(c, &parts)?)
+    }
+    fn piece(&mut self, s: &SyncId, b: &BlobId) -> Result<PieceAt> {
+        Ok(match self.cx.store.entry(s, b)? {
+            Some(e) if e.own => PieceAt::Own,
+            Some(_) => PieceAt::Peer,
+            None if self.cx.store.tombstone(s, b)?.is_some() => PieceAt::Tombstoned,
+            None => PieceAt::Absent,
+        })
+    }
+    fn piece_seen(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<(bool, bool)> {
+        Ok((self.streams.known().knows(*at, s, b), self.cx.store.seen_deleted(*at, s, b)?))
+    }
+    fn log_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        if let Some(e) = self.cx.store.entry(s, b)? {
+            // a peer's entry of it (its wrap and stamp as they came) becomes own
+            if !e.own {
+                self.cx.store.log(s, Entry { own: true, ..e }, None, None)?;
+                self.cx.store.uncharge(s, b)?;
+            }
+            return Ok(());
+        }
+        let Some(bytes) = self.cx.store.bytes(b)? else { return Ok(()) };
+        let wrap = osis_crypto::filler_wrap(&mut *self.cx.rng);
+        // class and expiry come from the bytes' prefix
+        let e = own_entry(self.cx, s, *b, wrap, Class::Durable)?;
+        self.cx.store.log(s, e, Some(bytes), None)?;
+        Ok(())
+    }
+    fn take_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        let _ = s;
+        if let Some(bytes) = self.cx.store.bytes(b)? {
+            self.cx.engine.take_piece(b, bytes)?;
+        }
+        Ok(())
+    }
+    fn repair(&mut self, c: &CommitId, b: &BlobId) -> Result<()> {
+        let Some(h) = self.cx.engine.header(c) else { return Ok(()) };
+        let things: BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).collect();
+        // a rewrite refused (no write here now, a value too large) leaves it: a store failure fails
+        match self.cx.engine.relink(&[*b].into(), &things, &mut |_, _| true) {
+            Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+    fn freed_added(&mut self) -> Result<Vec<(BlobId, Tid)>> {
+        match self.feeds.freed.as_mut() {
+            Some(f) => Ok(f.added()),
+            None => {
+                self.feeds.freed = Some(self.cx.engine.freed_feed());
+                Ok(self.cx.engine.freed_rows())
+            }
+        }
+    }
+    fn freed_link(&mut self, b: &BlobId, t: &Tid) -> Result<bool> {
+        Ok(self.cx.engine.freed_link(b, t).is_some())
+    }
+    fn carrying(&mut self, t: &Tid) -> Result<BTreeSet<SyncId>> {
+        Ok(self.cx.engine.carrying(t)?)
+    }
+    fn drop_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        self.cx.store.drop_entry(s, b, Vec::new())?;
+        Ok(())
+    }
+    fn delete_freed(&mut self, at: &SrcView, s: &SyncId, head: &StepId, b: &BlobId, t: &Tid) -> Result<()> {
+        let Some(f) = self.cx.engine.freed_link(b, t) else { return Ok(()) };
+        let f: &Freed = &f;
+        let Some(keys) = self.cx.engine.read_credentials(s)?.and_then(|c| c.keys.get(head).cloned()) else { return Ok(()) };
+        let blob = f.link.blob;
+        let item = match (f.borne, &keys.delete) {
+            (true, Some(d)) => DeleteItem::sign(d, s, blob),
+            _ => {
+                let dks = self.cx.engine.freed_delete_secrets(f);
+                let refs: Vec<(osis_label::Level, &osis_crypto::DeleteSecret)> = dks.iter().map(|(l, d)| (*l, d)).collect();
+                let levels: Vec<osis_label::Level> = refs.iter().map(|x| x.0).collect();
+                let key = match osis_label::key_for_levels(&levels) {
+                    Ok(osis_crypto::LabelRole::Write) => keys.write.clone(),
+                    Ok(osis_crypto::LabelRole::Sync) if keys.sync_established => keys.sync.clone(),
+                    _ => None,
+                };
+                let (Some(key), false) = (key, refs.is_empty()) else { return Ok(()) };
+                let (salt, blind) = f.blinding();
+                let Ok(item) = DeleteItem::sign_by(&key, &refs, &salt, &blind, s, blob) else { return Ok(()) };
+                item
+            }
+        };
+        if let Some(session) = self.sessions.get_mut(at.conn) {
+            session.request(To::Read, Msg::Delete { id: 0, sync_id: *s, items: vec![item] });
+        }
+        Ok(())
+    }
+    fn freed_done(&mut self, b: &BlobId, t: &Tid) -> Result<()> {
+        Ok(self.cx.engine.freed_done(&[(*t, *b)])?)
     }
     fn forget(&mut self, s: &SyncId) -> Result<()> {
         let thing = self.thing(s)?;

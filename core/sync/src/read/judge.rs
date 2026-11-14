@@ -2,13 +2,13 @@
 //! (`toward`), and of S's destruction (`doom`), from the ground's values alone. Pure reads: `Read`
 //! runs these inside its effects and acts on what a new value adds.
 
-use super::ground::{Facts, Ground, Seen, SrcView};
+use super::ground::{Facts, Ground, PieceAt, Seen, SrcView};
 use super::{Verdict, Why};
 use crate::store::{Source, Stand};
 use crate::types::{ConnId, Result};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::memo::{Clock, Stamped};
-use osis_base::{BlobId, CommitId, SyncId};
+use osis_base::{BlobId, CommitId, SyncId, Tid};
 use osis_engine::sync::{BodyMeta, ReadCredentials};
 use osis_label::StepId;
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,6 +36,16 @@ pub(crate) enum Act {
     /// §5: S left (emptied and heard out, no delete key, or untold): forget it, then the thing's
     /// secrets.
     Forget,
+    /// A held piece of a must-hold body into the own store (§1: the same blob, a filler wrap).
+    LogPiece(BlobId),
+    /// A missing piece whose bytes the store holds (a peer's entry): taken by the engine.
+    TakePiece(BlobId),
+    /// A piece of an own body every source showing it deleted (spec/sync-ids.md §1 Repair).
+    Repair(BlobId),
+    /// A freed link's own entry leaves (spec/sync-compaction.md §1 Freed links).
+    DropPiece(BlobId),
+    /// A freed link deleted at a source keeping S unread whose stream shows it.
+    DeleteFreed { at: Source, conn: ConnId, head: StepId, blob: BlobId, thing: Tid },
 }
 
 /// One body's judgement at S, and what it calls for in the own store.
@@ -220,7 +230,92 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     if verdict == Verdict::Must && live.is_empty() && !f.as_ref().is_some_and(|f| f.missing) && g.pullable(s)? {
         j.acts.insert(Act::Log);
     }
+    if verdict == Verdict::Must {
+        pieces(g, &mut j, s, c, f.as_ref().is_some_and(|f| f.own))?;
+    }
     Ok(j)
+}
+
+/// The pieces of a must-hold body (§1: its linked blobs go under S beside it): a held one with no
+/// own entry is logged, a missing one is taken from a peer's entry here or fetched where a
+/// source shows it; and, for an own body, a held one every source showing it deleted and none
+/// present is repaired (spec/sync-ids.md §1 Repair), judged once S's sources are heard out.
+fn pieces(g: &mut impl Ground, j: &mut Judged, s: &SyncId, c: &CommitId, own: bool) -> Result<()> {
+    let p = g.pieces(s, c)?;
+    if p.held.is_empty() && p.missing.is_empty() {
+        return Ok(());
+    }
+    let pullable = g.pullable(s)?;
+    for b in &p.held {
+        if g.piece(s, b)? != PieceAt::Own && g.piece(s, b)? != PieceAt::Tombstoned && pullable {
+            j.acts.insert(Act::LogPiece(*b));
+        }
+    }
+    let sources = g.sources(s)?;
+    for b in &p.missing {
+        if g.piece(s, b)? == PieceAt::Peer {
+            j.acts.insert(Act::TakePiece(*b));
+            continue;
+        }
+        for src in sources.iter() {
+            if g.piece_seen(&src.at, s, b)?.0 {
+                j.acts.insert(Act::Fetch { at: src.at, conn: src.conn, blob: *b });
+            }
+        }
+    }
+    // repair: read only while a delete is known at a source of S and every source is heard out
+    // (every entry of S it can open applied)
+    if !own || !g.deletes_known(s)? || !g.heard_out(s)? {
+        return Ok(());
+    }
+    for b in &p.held {
+        let (mut deleted, mut present) = (false, false);
+        for src in sources.iter() {
+            let (p, d) = g.piece_seen(&src.at, s, b)?;
+            present |= p;
+            deleted |= d;
+        }
+        if deleted && !present {
+            j.acts.insert(Act::Repair(*b));
+        }
+    }
+    Ok(())
+}
+
+/// A freed link's acts per sync ID, and whether an entry of it is still known here.
+pub(crate) type Freed = (BTreeSet<(SyncId, Act)>, bool);
+
+/// What freed link `b` of thing `t` calls for (spec/sync-compaction.md §1 Freed links): under each
+/// sync ID read here carrying `t`, its own entry leaves and it is deleted at each source keeping
+/// S unread whose stream shows it. `true` with the acts: an entry of it is still known here (own,
+/// or at such a source).
+pub(crate) fn freed(g: &mut impl Ground, b: &BlobId, t: &Tid) -> Result<Freed> {
+    osis_base::costs::count("read: freed", 1);
+    let mut acts = BTreeSet::new();
+    let mut known = false;
+    if !g.freed_link(b, t)? {
+        return Ok((acts, false));
+    }
+    for s in g.carrying(t)? {
+        if !g.reads(&s)? {
+            continue;
+        }
+        if matches!(g.piece(&s, b)?, PieceAt::Own | PieceAt::Peer) {
+            known = true;
+            acts.insert((s, Act::DropPiece(*b)));
+        }
+        for src in g.sources(&s)?.iter() {
+            // a reader judges its own entries: only a store's count
+            if !src.store || !g.piece_seen(&src.at, &s, b)?.0 {
+                continue;
+            }
+            known = true;
+            if let Some(head) = src.head {
+                acts.insert((s, Act::DeleteFreed { at: src.at, conn: src.conn, head, blob: *b, thing: *t }));
+            }
+        }
+    }
+    Ok((acts, known))
 }
 
 /// What a body at S calls for at the source at `at` (§3 At a source keeping S unread; §4).

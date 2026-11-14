@@ -28,7 +28,7 @@ A link is the whole authority to read and to delete its blob: whoever holds the 
 - **Fetch and memory gate**: by walking what a commit links (`apply/reach.rs`, `Engine::blob_wants`); the gate is staged (commit blob, pages, roots' claimed lengths), lengths are claims enforced as resolved (spec/wire.md §6).
 - **Upload**: a body's walk (`Engine::body_links`).
 - **Trigger** (spec/sync-compaction.md §1): a body weighs the tree its links free (a walk stopping at blobs a live state links); the estimate grows per join by what the unlinked trees hold beyond the linked ones (a level-aligned walk, flat in value size); a snapshot weighs its encoded state alone.
-- **Repair** (spec/sync-ids.md §1): judged at the losing label's settled pass, after the deleting batch applies (notes/engine-paged.md); `Engine::relink` asks each thing of the closure whether its live states link the lost blob (the counted trees, `tree_refs::state_refs_in`; every thing of the closure is asked, a rare path).
+- **Repair** (spec/sync-ids.md §1): read judges each piece of an own body as the sources' streams show it deleted (notes/sync-read.md); `Engine::relink` asks only the commit's things whether their live states link it (notes/engine-paged.md).
 - **Relay-only commits** never page (spec/commits.md §2): a delta linking a page is bad input (`verify::NoPages`).
 - **Commit size**: no list bounds it; one commit blob (`MAX_BLOB`) does, which Tess judged ample (notes/whole-commits.md).
 

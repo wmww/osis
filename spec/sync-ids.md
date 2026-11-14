@@ -29,7 +29,7 @@
 - **Repair** of a chunk or tree node blob:
   - A node repairs the blob when all of these hold:
     - a held, unexpired delta of the node's own commit or compaction snapshot links the blob through its large values' trees;
-    - every source of S it reached has deleted the blob (a purger that had not seen the reuse), and its own store no longer holds it;
+    - some source of S it reached has deleted the blob (a purger that had not seen the reuse) and none shows it present;
     - the node may write the aspect and holds the blob.
   - It judges these by its view once it has applied every entry of S it can open (those it learned of with the deletion included) and holds no commit pending (not parked) on the aspect.
   - To repair, it writes each large position of the aspect's current value whose tree holds the blob again, whole and without a reset (`put_new`, spec/crdt.md §5.6), reusing every other chunk and re-encrypting that blob, with that delta's retention and expiry (a snapshot's: the aspect's default retention, no expiry).
@@ -149,7 +149,7 @@ Each operation names a sync ID S. Writes are signed with the role keys of the re
     - its own opened to a key the blob refused;
     - neither opens and the new one is stamped and its own is not.
   - At a node holding no key, an entry stamped at a source under a wrap that does not open while the node's own does counts as lacking there; when a new wrap that opens replaces another, entries at the sources that gave the other count as lacking there too.
-- **Delete**: taken at a node keeping S unread only on a connection where S is open by a store credential (its head's sync key, a claim or a static entry, spec/sync-opens.md §4), else refused whole (code 8); by the delete key, or of one entry by delete keys of levels: one delete signature per commitment group of the blob's prefix, each verifying under that group's commitment at its level (spec/crypto.md §7; one signature may cover several groups committing to the same key), plus a signature under the head's write key when any level is 3 (thing write secret), else its sync key; any other is refused. An empty group (a `nobody` delta's, or a header list's of a commit listing no level-2 key) is never covered: such a blob goes by the delete key or at its expiry. No Delete is sent between readers (spec/sync-judgement.md §3).
+- **Delete**: taken at a node keeping S unread only on a connection where S is open by a store credential (its head's sync key, a sync proof, a claim or a static entry, spec/sync-opens.md §4), else refused whole (code 8); by the delete key, or of one entry by delete keys of levels: one delete signature per commitment group of the blob's prefix, each verifying under that group's commitment at its level (spec/crypto.md §7; one signature may cover several groups committing to the same key), plus a signature under the head's write key when any level is 3 (thing write secret), else its sync key; any other is refused. An empty group (a `nobody` delta's, or a header list's of a commit listing no level-2 key) is never covered: such a blob goes by the delete key or at its expiry. No Delete is sent between readers (spec/sync-judgement.md §3).
   - Removal leaves a tombstone (§5).
 - **Expiry**: at the prefix's `T` every node deletes the entry outright: no tombstone.
 - **Caps at a node keeping S unread**: it caps storage per sync ID and the memory of ephemeral entries per sync ID (and in total), counting each entry's, log record's and tombstone's overhead besides its blob.

@@ -13,7 +13,9 @@ use osis_crypto::{LabelRole, Secret32, Signature, SigningSecret, label_role_key}
 use osis_engine::labeling::HeadKeys;
 use osis_engine::sync::{BodyFacts, BodyMeta, Destruction, ReadCredentials};
 use osis_label::{Class, Step, StepKeys};
-use osis_sync::read::{BlobInfo, Facts, Ground, Read, RecordsMissing, Seen, SrcView, Verdict, Why};
+use osis_sync::read::{BlobInfo, Facts, Ground, PieceAt, Read, RecordsMissing, Seen, SrcView, Verdict, Why};
+use osis_engine::sync::Pieces;
+use osis_base::Tid;
 use osis_sync::store::{Source, Stand};
 use osis_sync::types::{ConnId, Entry};
 use osis_sync::Result;
@@ -89,6 +91,12 @@ enum Sent {
     Deposit(ConnId, BlobId),
     Forget(SyncId),
     Fetch(ConnId, BlobId),
+    LogPiece(BlobId),
+    TakePiece(BlobId),
+    Repair(CommitId, BlobId),
+    DropPiece(BlobId),
+    DeleteFreed(ConnId, BlobId),
+    FreedDone(BlobId),
 }
 
 /// K: a node keeping S unread. It pulls what it lacks of a writer's store (a tombstoned blob ID
@@ -141,9 +149,62 @@ struct Fake {
     record_logs: Vec<(SyncId, BTreeSet<osis_base::Tid>)>,
     records_forgotten: Vec<(SyncId, BlobId)>,
     k: Kstore,
+    /// Pieces per body, what the own store has of each, what each source shows of each.
+    pieces: Stamped<(SyncId, CommitId), Arc<Pieces>>,
+    piece_at: Stamped<(SyncId, BlobId), PieceAt>,
+    piece_seen: Stamped<(Source, SyncId, BlobId), (bool, bool)>,
+    /// Freed links in the set (and a feed of those added), the sync IDs carrying each thing.
+    freed: Stamped<(BlobId, Tid), ()>,
+    freed_feed: Vec<(BlobId, Tid)>,
+    carrying: Stamped<Tid, BTreeSet<SyncId>>,
 }
 
 impl Ground for Fake {
+    fn pieces(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Pieces>> {
+        Ok(self.pieces.get(&(*s, *c)).cloned().unwrap_or_default())
+    }
+    fn piece(&mut self, s: &SyncId, b: &BlobId) -> Result<PieceAt> {
+        Ok(self.piece_at.get(&(*s, *b)).copied().unwrap_or(PieceAt::Absent))
+    }
+    fn piece_seen(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<(bool, bool)> {
+        Ok(self.piece_seen.get(&(*at, *s, *b)).copied().unwrap_or((false, false)))
+    }
+    fn log_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        self.sent.push(Sent::LogPiece(*b));
+        self.piece_at.insert((*s, *b), PieceAt::Own);
+        Ok(())
+    }
+    fn take_piece(&mut self, _s: &SyncId, b: &BlobId) -> Result<()> {
+        self.sent.push(Sent::TakePiece(*b));
+        Ok(())
+    }
+    fn repair(&mut self, c: &CommitId, b: &BlobId) -> Result<()> {
+        self.sent.push(Sent::Repair(*c, *b));
+        Ok(())
+    }
+    fn freed_added(&mut self) -> Result<Vec<(BlobId, Tid)>> {
+        Ok(std::mem::take(&mut self.freed_feed))
+    }
+    fn freed_link(&mut self, b: &BlobId, t: &Tid) -> Result<bool> {
+        Ok(self.freed.contains_key(&(*b, *t)))
+    }
+    fn carrying(&mut self, t: &Tid) -> Result<BTreeSet<SyncId>> {
+        Ok(self.carrying.get(t).cloned().unwrap_or_default())
+    }
+    fn drop_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        self.sent.push(Sent::DropPiece(*b));
+        self.piece_at.insert((*s, *b), PieceAt::Tombstoned);
+        Ok(())
+    }
+    fn delete_freed(&mut self, at: &SrcView, _s: &SyncId, _head: &osis_label::StepId, b: &BlobId, _t: &Tid) -> Result<()> {
+        self.sent.push(Sent::DeleteFreed(at.conn, *b));
+        Ok(())
+    }
+    fn freed_done(&mut self, b: &BlobId, t: &Tid) -> Result<()> {
+        self.sent.push(Sent::FreedDone(*b));
+        self.freed.remove(&(*b, *t));
+        Ok(())
+    }
     fn commits_added(&mut self) -> Result<Vec<CommitId>> {
         Ok(std::mem::take(&mut self.added))
     }
@@ -217,7 +278,8 @@ impl Ground for Fake {
     }
     fn deletes_known(&mut self, s: &SyncId) -> Result<bool> {
         let keys: Vec<(Source, SyncId, CommitId)> = self.seen.keys().filter(|(_, x, _)| x == s).copied().collect();
-        Ok(keys.iter().any(|k| self.seen.get(k).is_some_and(|v| !v.deleted.is_empty())))
+        let pieces: Vec<(Source, SyncId, BlobId)> = self.piece_seen.keys().filter(|(_, x, _)| x == s).copied().collect();
+        Ok(keys.iter().any(|k| self.seen.get(k).is_some_and(|v| !v.deleted.is_empty())) || pieces.iter().any(|k| self.piece_seen.get(k).is_some_and(|v| v.1)))
     }
     fn sources(&mut self, s: &SyncId) -> Result<Arc<Vec<SrcView>>> {
         Ok(self.sources.get(s).cloned().unwrap_or_default())
@@ -1271,4 +1333,107 @@ fn judged_per_event(n: usize) -> (u64, u64) {
 fn an_event_on_one_sync_id_judges_what_it_moved() {
     let (a, b) = (judged_per_event(2), judged_per_event(20));
     assert_eq!(a, b, "judgements per event grow with the commits under other sync IDs");
+}
+
+fn bid(i: u8) -> BlobId {
+    BlobId([i; 32])
+}
+
+/// A writer holding own body `cid(1)` under S with pieces `held` and `missing`.
+fn with_pieces(held: &[u8], missing: &[u8]) -> W {
+    let mut w = W::new();
+    let p = Pieces { held: held.iter().map(|i| bid(*i)).collect(), missing: missing.iter().map(|i| bid(*i)).collect() };
+    w.g.pieces.insert((S, cid(1)), Arc::new(p));
+    w.hold(cid(1), &[S], uncovered());
+    w
+}
+
+fn sent_of(w: &W, f: impl Fn(&Sent) -> bool) -> usize {
+    w.sent().filter(|m| f(m)).count()
+}
+
+// spec/sync-judgement.md §1 (chunk and tree-node blobs): they go under S as the same blobs;
+// each held piece of a must-hold body is logged once; one tombstoned under S never again; none of
+// a body that is not must-hold.
+#[test]
+fn pieces_of_a_must_hold_body_are_logged_once_spec_sync_judgement_1() {
+    let mut w = W::new();
+    w.g.piece_at.insert((S, bid(12)), PieceAt::Tombstoned);
+    w.g.pieces.insert((S, cid(1)), Arc::new(Pieces { held: [bid(10), bid(11), bid(12)].into(), missing: BTreeSet::new() }));
+    w.g.pieces.insert((S, cid(2)), Arc::new(Pieces { held: [bid(20)].into(), missing: BTreeSet::new() }));
+    w.hold(cid(1), &[S], uncovered());
+    w.hold(cid(2), &[S], covered(cid(9)));
+    w.exchange();
+    w.exchange();
+    assert_eq!(sent_of(&w, |m| matches!(m, Sent::LogPiece(_))), 2, "{:?}", w.g.sent);
+    assert!(w.g.sent.contains(&Sent::LogPiece(bid(10))) && w.g.sent.contains(&Sent::LogPiece(bid(11))));
+}
+
+// spec/sync-judgement.md §1 (chunk and tree-node blobs): a missing piece a
+// peer's entry here holds is taken from it; one a source shows is fetched there.
+#[test]
+fn a_missing_piece_is_taken_or_fetched_spec_sync_judgement_1() {
+    let mut w = W::new();
+    w.g.piece_at.insert((S, bid(10)), PieceAt::Peer);
+    w.g.piece_seen.insert((K, S, bid(11)), (true, false));
+    w.g.pieces.insert((S, cid(1)), Arc::new(Pieces { held: BTreeSet::new(), missing: [bid(10), bid(11), bid(12)].into() }));
+    w.hold(cid(1), &[S], uncovered());
+    assert!(w.g.sent.contains(&Sent::TakePiece(bid(10))), "{:?}", w.g.sent);
+    assert!(w.g.sent.contains(&Sent::Fetch(KC, bid(11))));
+    assert_eq!(sent_of(&w, |m| matches!(m, Sent::TakePiece(_) | Sent::Fetch(..))), 2, "nothing for one no source shows");
+}
+
+// spec/sync-ids.md §1 (Repair): a held piece of an own body that every source showing it deleted
+// (none present) is repaired once, judged with S's sources heard out; not while one shows it
+// present, nor for a body not this node's own.
+#[test]
+fn a_piece_every_source_deleted_is_repaired_once_spec_sync_ids_1() {
+    let mut w = with_pieces(&[10], &[]);
+    w.g.heard.insert(S, true);
+    w.source(S, Source::Conn(RC), RC, false);
+    w.g.piece_seen.insert((K, S, bid(10)), (false, true));
+    w.g.piece_seen.insert((Source::Conn(RC), S, bid(10)), (true, false));
+    w.settle();
+    assert_eq!(sent_of(&w, |m| matches!(m, Sent::Repair(..))), 0, "present at a reader source: not lost");
+    w.g.piece_seen.insert((Source::Conn(RC), S, bid(10)), (false, false));
+    w.g.heard.insert(S, false);
+    w.settle();
+    assert_eq!(sent_of(&w, |m| matches!(m, Sent::Repair(..))), 0, "not before S's sources are heard out");
+    w.g.heard.insert(S, true);
+    w.settle();
+    w.exchange();
+    assert_eq!(w.g.sent.iter().filter(|m| **m == Sent::Repair(cid(1), bid(10))).count(), 1, "{:?}", w.g.sent);
+    let mut other = with_pieces(&[10], &[]);
+    let mut f = uncovered();
+    f.own = false;
+    other.judge(S, cid(1), f);
+    other.g.heard.insert(S, true);
+    other.g.piece_seen.insert((K, S, bid(10)), (false, true));
+    other.settle();
+    assert_eq!(sent_of(&other, |m| matches!(m, Sent::Repair(..))), 0, "another's body is not repaired here");
+}
+
+// spec/sync-compaction.md §1 (Freed links): a freed link's own entry leaves, it is deleted at each
+// source keeping S unread that shows it (not at a reader source), and it leaves the set once no
+// entry of it is known here.
+#[test]
+fn a_freed_link_is_dropped_deleted_at_stores_then_done_spec_sync_compaction_1() {
+    let mut w = W::new();
+    let t = Tid::from_bytes([7; 15]);
+    w.source(S, Source::Conn(RC), RC, false);
+    w.g.carrying.insert(t, [S].into());
+    w.g.piece_at.insert((S, bid(10)), PieceAt::Own);
+    w.g.piece_seen.insert((K, S, bid(10)), (true, false));
+    w.g.piece_seen.insert((Source::Conn(RC), S, bid(10)), (true, false));
+    w.g.freed.insert((bid(10), t), ());
+    w.g.freed_feed.push((bid(10), t));
+    w.settle();
+    assert!(w.g.sent.contains(&Sent::DropPiece(bid(10))), "{:?}", w.g.sent);
+    assert_eq!(sent_of(&w, |m| matches!(m, Sent::DeleteFreed(..))), 1, "at K alone: {:?}", w.g.sent);
+    assert!(w.g.sent.contains(&Sent::DeleteFreed(KC, bid(10))));
+    assert!(!w.g.sent.contains(&Sent::FreedDone(bid(10))), "K still shows it");
+    w.g.piece_seen.insert((K, S, bid(10)), (false, true));
+    w.settle();
+    assert!(w.g.sent.contains(&Sent::FreedDone(bid(10))), "{:?}", w.g.sent);
+    assert!(!w.g.freed.contains_key(&(bid(10), t)));
 }

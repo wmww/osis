@@ -30,7 +30,7 @@ mod judge;
 mod live;
 mod views;
 
-pub use ground::{BlobInfo, Facts, Ground, RecordsMissing, Seen, SrcView};
+pub use ground::{BlobInfo, Facts, Ground, PieceAt, RecordsMissing, Seen, SrcView};
 pub use live::Live;
 
 use crate::opens::Opens;
@@ -40,7 +40,7 @@ use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Error, Result};
 use judge::{Act, Doom, Judged, Mine, Toward};
 use osis_base::memo::{Clock, Effects, Stamped};
-use osis_base::{CommitId, SyncId, WallMs};
+use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_engine::sync::BodyMeta;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -80,6 +80,9 @@ pub struct Read {
     /// Per S, whether this node's step of S is due with the rotations it registers logged here
     /// (`Ground::step_ready`): issued then, whatever connections are open.
     steps: Effects<SyncId, bool>,
+    /// Per freed link (blob, thing), what it calls for under each S carrying its thing, and
+    /// whether an entry of it is still known (spec/sync-compaction.md §1 Freed links).
+    freed: Effects<(BlobId, Tid), judge::Freed>,
     verdicts: Stamped<(SyncId, CommitId), Verdict>,
     /// Own role commits S must hold (§3 Role entries first).
     roles: Stamped<SyncId, BTreeSet<CommitId>>,
@@ -103,6 +106,7 @@ impl Default for Read {
             dooms: Effects::new("read: doom"),
             records: Effects::new("read: records"),
             steps: Effects::new("read: steps"),
+            freed: Effects::new("read: freed"),
             verdicts: Stamped::default(),
             roles: Stamped::default(),
             told: Stamped::default(),
@@ -301,6 +305,23 @@ impl Read {
                 self.act(g, &s, Some(&c), a)?;
             }
         }
+        // freed links: dropped here and deleted at the sources keeping S unread that show them,
+        // until no entry of them is known
+        for k in g.freed_added()? {
+            self.freed.want(k);
+        }
+        for k in self.freed.due() {
+            let Some((was, (acts, known))) = self.freed.try_settle(&k, || judge::freed(g, &k.0, &k.1))? else { continue };
+            acted = true;
+            let before = was.map(|w| w.0).unwrap_or_default();
+            for (s, a) in acts.difference(&before).cloned().collect::<Vec<_>>() {
+                self.act(g, &s, None, a)?;
+            }
+            if !known {
+                self.freed.unwant(&k);
+                g.freed_done(&k.0, &k.1)?;
+            }
+        }
         Ok(acted)
     }
 
@@ -381,6 +402,14 @@ impl Read {
                 }
             }
             (Act::Forget, _) => g.forget(s)?,
+            (Act::LogPiece(b), _) => g.log_piece(s, &b)?,
+            (Act::TakePiece(b), _) => g.take_piece(s, &b)?,
+            (Act::Repair(b), Some(c)) => g.repair(c, &b)?,
+            (Act::DropPiece(b), _) => g.drop_piece(s, &b)?,
+            (Act::DeleteFreed { at, conn, head, blob, thing }, _) => {
+                let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) else { return Ok(()) };
+                g.delete_freed(&src, s, &head, &blob, &thing)?;
+            }
             (_, None) => {}
         }
         Ok(())

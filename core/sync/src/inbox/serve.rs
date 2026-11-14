@@ -27,8 +27,9 @@ pub(super) fn request(h: &mut Here<'_>, net: &mut impl Net, conn: ConnId, id: Re
     net.answer(conn, id, reply);
 }
 
-/// A store credential: the head's sync key, a claim or a static entry (spec/sync-ids.md §6
-/// Delete, spec/sync-opens.md §4).
+/// A store credential: the head's sync key, a sync proof (the peer's answer to this node's own
+/// proof is keyed by S's sync proof), a claim or a static entry (spec/sync-ids.md §6 Delete,
+/// spec/sync-opens.md §4).
 fn store_credential(c: Credential) -> bool {
-    matches!(c, Credential::SyncKey | Credential::Claim | Credential::Static(_))
+    matches!(c, Credential::SyncKey | Credential::SyncProof | Credential::Claim | Credential::Static(_))
 }
