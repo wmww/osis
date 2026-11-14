@@ -109,13 +109,18 @@ impl Life {
         if !self.roles.due().is_empty()
             && let Some((_, true)) = self.roles.settle(&(), || engine.role_duties_due())
         {
-            if let Err(e) = engine.role_duties() {
-                // due again at the next settle (the failing step restarts anyway)
-                self.roles.unwant(&());
-                self.roles.want(());
-                return Err(e.into());
+            // a store failure fails the step (due again after its restart); any other error is
+            // this duty's alone: parked until what its value read moves (`isolate`)
+            match isolate(engine.role_duties()) {
+                Ok(Some(_)) => return Ok(true),
+                Ok(None) => {}
+                Err(e) => {
+                    // due again at the next settle (the failing step restarts anyway)
+                    self.roles.unwant(&());
+                    self.roles.want(());
+                    return Err(e);
+                }
             }
-            return Ok(true);
         }
         let acted = self.holders(engine)?;
         Ok(self.lifetimes(engine, store, heard_out)? || acted)
@@ -135,17 +140,19 @@ impl Life {
             self.owed.want(a);
         }
         let mut ran = false;
+        // one actor's error is its own: a store failure fails the step, any other parks that
+        // actor's key (settled, judged again when what it read moves) and the others go on
         for a in self.owed.due() {
-            match self.owed.try_settle(&a, || engine.role_duty_due(&a))? {
-                Some((_, true)) => {
-                    if let Err(e) = engine.ensure_rotated(&a) {
+            match self.owed.try_settle(&a, || isolate(engine.role_duty_due(&a)).map(|v| v.unwrap_or(false)))? {
+                Some((_, true)) => match isolate(engine.ensure_rotated(&a)) {
+                    Ok(done) => ran |= done.is_some(),
+                    Err(e) => {
                         // due again at the next settle (the failing step restarts anyway)
                         self.owed.unwant(&a);
                         self.owed.want(a);
-                        return Err(e.into());
+                        return Err(e);
                     }
-                    ran = true;
-                }
+                },
                 // no longer held: wanted again when it is (the feed)
                 Some((_, false)) if !engine.held_actors_has(&a) => self.owed.unwant(&a),
                 _ => {}
@@ -225,7 +232,7 @@ impl Life {
             // acted on whenever judged, not only when it changed: a write refused is tried again
             // when what the value read moves
             let mut gs = BTreeSet::new();
-            self.unties.try_settle(&t, || engine.untie_due(&t).inspect(|v| gs.clone_from(v)))?;
+            self.unties.try_settle(&t, || isolate(engine.untie_due(&t)).map(|v| v.unwrap_or_default()).inspect(|v| gs.clone_from(v)))?;
             for g in gs {
                 acted |= wrote(engine.untie(&t, &g))?;
             }
@@ -252,10 +259,36 @@ impl Life {
 
 /// A duty's write: a store failure fails the step; any other refusal writes nothing (the value
 /// is judged again when what it read moves). Whether it wrote.
+/// One duty's engine result, isolated: a store failure goes up (the step fails and restarts);
+/// any other error is that duty's alone, `None` (its key parked until what it read moves).
+fn isolate<T>(r: std::result::Result<T, osis_engine::Error>) -> Result<Option<T>> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(e @ osis_engine::Error::Store(_)) => Err(e.into()),
+        Err(_) => Ok(None),
+    }
+}
+
 fn wrote<T>(r: std::result::Result<T, osis_engine::Error>) -> Result<bool> {
     match r {
         Ok(_) => Ok(true),
         Err(e @ osis_engine::Error::Store(_)) => Err(e.into()),
         Err(_) => Ok(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::isolate;
+
+    // spec: none (failure isolation, notes/sync-driver.md Failures): one duty's engine error is
+    // its own: a store failure goes up (the step fails and restarts), any other parks that duty
+    // alone (`None`) so the others run.
+    #[test]
+    fn a_duty_error_is_its_own_unless_the_store_failed() {
+        assert_eq!(isolate(Ok::<u8, osis_engine::Error>(1)).unwrap(), Some(1));
+        assert_eq!(isolate(Err::<u8, _>(osis_engine::Error::Misuse("one actor"))).unwrap(), None);
+        assert!(isolate(Err::<u8, _>(osis_engine::Error::Store(osis_store::Error::Corrupt("disk")))).is_err());
     }
 }
