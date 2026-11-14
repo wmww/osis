@@ -46,12 +46,6 @@ impl Engine {
         self.core.epochs(t).is_some_and(|e| e.role(Role::Read).holds_any())
     }
 
-    /// Whether this node holds a read secret of `t`'s own (`Indexes::secrets`): a destroyed
-    /// thing's, held while its record is or not (`retention::destroy::hold_secrets`).
-    fn holds_own_read(&self, t: &Tid) -> bool {
-        self.core.ix.secrets.get(t).is_some_and(|e| e.role(Role::Read).holds_any())
-    }
-
     /// The things the sync set is judged over (spec/sync-set.md §2): the synced group's closure
     /// (the engine's closure `Arc`, the same while it does not change), with each destroyed thing
     /// whose own sync IDs are kept (`Indexes::destroyed_sync_ids`: from its destruction until they
@@ -77,9 +71,9 @@ impl Engine {
     /// while only its sync record is; a thing with secrets of its own and neither is unsyncable; a
     /// plain thing has none of its own. Reads only `t`'s keys.
     pub(crate) fn thing_sync_now(&mut self, t: &Tid) -> Result<ThingSync> {
-        if let Some(kept) = self.core.ix.destroyed_sync_ids.get(t).cloned()
-            && self.holds_own_read(t)
-        {
+        // kept only while its secrets are (`keep_sync_ids` needs them, which read its `sync.0`;
+        // `forget_destroyed` drops the row before them)
+        if let Some(kept) = self.core.ix.destroyed_sync_ids.get(t) {
             return Ok(ThingSync::Read(kept.iter().map(|o| o.id).collect()));
         }
         if self.core.has_own_secrets(t)

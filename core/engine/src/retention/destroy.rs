@@ -114,11 +114,18 @@ struct Held {
     by: Vec<Point>,
 }
 
+/// The held requests with an item on `t`'s `created.0` (purge or release), found among the
+/// commits on `t` (a request has a delta on each thing it names), with their headers. Held
+/// whether or not `t` keeps its mintings: a destroyed thing keeping nothing still holds them.
+fn creation_requests<'a>(core: &'a Core, t: &'a Tid) -> impl Iterator<Item = (CommitId, &'a Header)> + 'a {
+    let on_t = move |p: &Header| p.requests().iter().any(|i| i.tid() == t && i.ak().as_str() == CREATED);
+    core.on_thing(t).filter_map(move |pc| core.ix.commits.get(&pc).filter(|m| m.view.purges && on_t(&m.header)).map(|m| (pc, &*m.header)))
+}
+
 /// Each held minting of `t` (`Held`; its requests each a request with an item on `t`'s
 /// `created.0`, found among the commits on `t`: a request has a delta on each thing it names).
 fn per_minting(core: &Core, t: &Tid) -> Vec<Held> {
-    let on_t = |p: &Header| p.requests().iter().any(|i| i.tid() == t && i.ak().as_str() == CREATED);
-    let requests: Vec<(CommitId, &Header)> = core.on_thing(t).filter_map(|pc| core.ix.commits.get(&pc).filter(|m| m.view.purges && on_t(&m.header)).map(|m| (pc, &*m.header))).collect();
+    let requests: Vec<(CommitId, &Header)> = creation_requests(core, t).collect();
     let held = core.mintings(t).map(|(c, ai)| {
         let none = Held { at: (c, ai), expires: None, by: Vec::new() };
         let Some(m) = core.ix.commits.get(&c) else { return none };
@@ -619,8 +626,8 @@ impl crate::engine::Engine {
         if !self.core.ix.destroyed_secrets.contains(t) {
             return Ok(None);
         }
-        let released = crate::flows::ak("released.0")?;
-        let requests = self.core.ix.by_aspect.get(&(*t, released)).into_iter().flatten().map(|(_, c)| *c).collect();
+        // every request destroying it, purge or release (spec/sync-judgement.md §5 Telling)
+        let requests = creation_requests(&self.core, t).map(|(c, _)| c).collect();
         let sync_ids = self.core.ix.destroyed_sync_ids.get(t).map(|v| v.iter().map(|o| o.id).collect()).unwrap_or_default();
         let keyed = self.core.on_thing(t).chain(self.core.acting_for(t)).collect();
         Ok(Some(std::sync::Arc::new(crate::sync::Destruction { requests, sync_ids, keyed })))

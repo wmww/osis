@@ -674,8 +674,12 @@ impl Engine {
     /// thing that got secrets of its own, or one under a key actor this node holds: the rotation
     /// that gave it its own is wrapped under the derived epoch, spec/crypto.md §5).
     /// Each epoch's roles secret follows its secret (spec/crypto.md §4, Roles secrets), and one
-    /// held without its secret stands alone.
+    /// held without its secret stands alone. None of a destroyed thing whose secrets are held for
+    /// deletes alone (`retention::destroy::hold_secrets`): they open nothing new.
     pub fn read_secrets(&self, g: &Tid) -> Vec<Secret32> {
+        if self.core.ix.destroyed_secrets.contains(g) {
+            return Vec::new();
+        }
         let mut v: Vec<Secret32> = self.epochs(g).map(|e| e.read.opening_newest_first()).unwrap_or_default();
         // the first admin's epochs; a thing whose `created.0` is not here yet (a link's
         // person) may have any key actor held as first admin
@@ -728,7 +732,9 @@ impl Engine {
     /// held secret opens; stamps and deletes need an established epoch (spec/crypto.md §4), but for
     /// the delete key of a destroyed thing whose secrets are held for deletes alone
     /// (`retention::destroy::hold_secrets`): what established them went with it, and the step
-    /// bearing the key vouches for the secret (spec/sync-judgement.md §5 Emptying).
+    /// bearing the key vouches for the secret (spec/sync-judgement.md §5 Emptying). Its delete
+    /// key alone: its epochs established nowhere, nothing is wrapped under them (`wrap_under`),
+    /// and `read_secrets` gives none, so nothing new opens.
     pub fn head_keys(&mut self, g: &Tid, head: &Step) -> Result<HeadKeys> {
         Memo::get_in(self, |e| &e.core.head_keys, &(*g, head.id()), |e| e.head_keys_derived(g, head))
     }
