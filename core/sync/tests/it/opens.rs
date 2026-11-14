@@ -388,7 +388,7 @@ fn a_sync_key_open_ends_when_the_head_moves_spec_sync_opens_6() {
 }
 
 // spec/sync-opens.md §6 (reported positions): an Applied moves every member at the stream; an
-// ended member there closes with a Lost once the stream passes its `until`, and not before.
+// ended member there closes with a Lost naming `until` once the stream passes it, and not before.
 #[test]
 fn an_ended_member_closes_when_the_stream_passes_until_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
@@ -401,7 +401,8 @@ fn an_ended_member_closes_when_the_stream_passes_until_spec_sync_opens_6() {
     k.reported_stream(adv.peer, until - 1);
     assert!(k.open(adv.peer, &S));
     k.sent();
-    k.reported_stream(adv.peer, until);
+    // past `until`: the Lost names `until`, the lower (spec/sync-opens.md §6 Lost)
+    k.reported_stream(adv.peer, until + 5);
     assert!(!k.open(adv.peer, &S));
     assert!(matches!(&of_kind(&k.sent(), 38)[..], [Msg::Lost { items, .. }] if items[0] == (S, osis_proto::Cursor::new(until.to_be_bytes().to_vec()).ok())));
 }
