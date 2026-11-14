@@ -26,4 +26,4 @@ pub use frame::{FrameDecoder, encode_frame};
 pub use hello::{ClockSamples, Hello, OffsetSample, PROTOCOL_VERSION, estimate_offset, negotiate};
 pub use msg::{BehindItem, Code, Cursor, DepositItem, Event, Fetched, Flow, Grant, Id, Join, Msg, OfferItem, Pull, PullReply, Rejected, SharedItem, Stamp, Stream, SuspectEntry, Wrap};
 pub use prove::{ActorProof, Prover};
-pub use relay::{RelayGate, RelayLimits, RelayVerdict};
+pub use relay::{RelayGate, RelayLimits, RelaySource, RelayVerdict};

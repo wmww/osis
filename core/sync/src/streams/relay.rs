@@ -9,7 +9,7 @@ use crate::types::{ConnId, Entry};
 use osis_base::{BlobId, SyncId};
 use osis_engine::sync::{Holding, RelayOpened};
 use osis_label::Prefix;
-use osis_proto::{Event, Msg, RelayVerdict, Stream};
+use osis_proto::{Event, Msg, RelaySource, RelayVerdict, Stream};
 
 impl Streams {
     /// This node's own relay-only commits, sealed per read sync ID, pushed to every peer sharing
@@ -19,7 +19,8 @@ impl Streams {
         let acted = !relays.is_empty();
         for r in relays {
             let expiry = Prefix::parse(&r.bytes).ok().and_then(|p| p.expiry()).map(|t| t.0);
-            if self.relays.admit(&r.sync_id, &r.blob, r.bytes.len(), expiry, ctx.now.0) != RelayVerdict::Push {
+            let from = self.relay_source(&r.sync_id, None);
+            if self.relays.admit(&r.sync_id, from, &r.blob, r.bytes.len(), expiry, ctx.now.0) != RelayVerdict::Push {
                 continue;
             }
             let stamp = ctx.ground.stamp(&r.sync_id, &r.blob, &r.wrap);
@@ -28,12 +29,25 @@ impl Streams {
         Ok(acted)
     }
 
-    /// A relay-only blob that came in a Stream with no cursor from `conn` (a member there): taken
-    /// once, within its expiry and S's rate (`RelayGate`); a node reading S delivers a verified
-    /// new one and passes it on, a node keeping S unread passes on what it takes.
+    /// A relay-only blob that came in a Stream with no cursor from `conn` (a member there): its
+    /// bytes hashing to its ID; at a node keeping S unread, stamped under S's head write key (junk
+    /// only from S's writers, as for entries); taken once, within its expiry, S's rate and
+    /// `conn`'s share of it (`RelayGate`). A node reading S delivers a verified new one and passes
+    /// it on, a node keeping S unread passes on what it takes (spec/sync-ids.md §6 Relay-only).
     pub(super) fn relay_in(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, e: Entry, bytes: Vec<u8>) {
         let Some(holding) = ctx.store.holding(&s) else { return };
-        if self.relays.admit(&s, &e.blob, bytes.len(), e.expires.map(|t| t.0), ctx.now.0) != RelayVerdict::Push {
+        if osis_label::blob_id(&bytes) != e.blob {
+            return;
+        }
+        if holding != Holding::Read {
+            match ctx.store.stamp_vouches(&s, &e) {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(err) => return self.failed(Err(err)),
+            }
+        }
+        let from = self.relay_source(&s, Some(conn));
+        if self.relays.admit(&s, from, &e.blob, bytes.len(), e.expires.map(|t| t.0), ctx.now.0) != RelayVerdict::Push {
             return;
         }
         if holding == Holding::Read {
@@ -44,6 +58,11 @@ impl Streams {
             }
         }
         self.pass_on(ctx, Some(conn), s, e.blob, bytes, e.wrap, e.stamp);
+    }
+
+    /// `peer` (`None`: this node) as one of S's relay sources here: S's connections and this node.
+    fn relay_source(&self, s: &SyncId, peer: Option<ConnId>) -> RelaySource {
+        RelaySource { peer: peer.map(|c| c.0), of: self.holders.get(s).map_or(0, |h| h.len()) + 1 }
     }
 
     /// Pushes a relay-only entry to every connection where S is a member and not ended, but

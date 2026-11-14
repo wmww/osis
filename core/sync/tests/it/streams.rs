@@ -1462,26 +1462,32 @@ fn a_reconnect_after_a_restart_costs_the_same_at_10n_spec_sync_streams_4() {
 
 // ---- relay-only entries ----
 
-/// A side holding S (`h`) as a member on C and on a second connection D, quiet.
-fn relay_side(h: Holding) -> (Side, SyncId, ConnId) {
+/// A side holding sync ID `x` as `h` (kept unread: its genesis registered) as a member on C and on
+/// a second connection D, quiet.
+fn relay_side(x: &Sid, h: Holding) -> (Side, ConnId) {
     let mut a = Side::new(1);
-    let s = SyncId([7; 16]);
     let d = ConnId(2);
-    a.hold(s, h);
-    a.join_on(1_000, C, s, Rejoin::Held);
-    a.join_on(1_000, d, s, Rejoin::Held);
+    match h {
+        Holding::Unread => x.keep(&mut a),
+        _ => a.hold(x.id, h),
+    }
+    a.join_on(1_000, C, x.id, Rejoin::Held);
+    a.join_on(1_000, d, x.id, Rejoin::Held);
     a.pipe.out.clear();
-    (a, s, d)
+    (a, d)
 }
 
-/// A relay-only blob of S expiring at `expiry`, as a Stream with no cursor.
-fn relay_stream(s: SyncId, n: usize, expiry: u64) -> (BlobId, Msg) {
+/// A relay-only blob of `x` expiring at `expiry`, stamped under write secret `stamp` (none:
+/// unstamped), as a Stream with no cursor.
+fn relay_stream(x: &Sid, n: usize, expiry: u64, stamp: Option<&Secret32>) -> (BlobId, Msg) {
     let mut rng = SeededRng::from_u64(n as u64);
     let p = Prefix::for_keys([n as u8; 16], &[1; 16], Some(WallMs(expiry)), &[]).unwrap().with_class(Class::Relay);
     let (_, bytes) = osis_label::frame(&p, &vec![n as u8; n], &mut rng).unwrap();
     let b = osis_label::blob_id(&bytes);
-    let ev = Event::Added { blob_id: b, blob: Some(bytes), wrap: [0; WRAP_LEN], stamp: None };
-    (b, Msg::Stream(Box::new(osis_proto::Stream { events: vec![(s, ev)], cursor: None, report: false, seq: 0 })))
+    let wrap = [0; WRAP_LEN];
+    let stamp = stamp.map(|w| osis_label::sign_stamp(&label_role_key(LabelRole::Write, w), &x.id, &b, &wrap, false));
+    let ev = Event::Added { blob_id: b, blob: Some(bytes), wrap, stamp };
+    (b, Msg::Stream(Box::new(osis_proto::Stream { events: vec![(x.id, ev)], cursor: None, report: false, seq: 0 })))
 }
 
 /// The pushes of relay-only entry `b` a side sent on `c`.
@@ -1494,16 +1500,32 @@ fn relayed(side: &Side, c: ConnId, b: BlobId) -> usize {
 // came from, and drops a repeat; one past its expiry it drops.
 #[test]
 fn a_relay_only_entry_is_passed_on_once_to_the_other_peers_spec_sync_ids_6() {
-    let (mut a, s, d) = relay_side(Holding::Unread);
-    let (b, st) = relay_stream(s, 40, 61_000);
+    let x = Sid::new(0x60);
+    let (mut a, d) = relay_side(&x, Holding::Unread);
+    let (b, st) = relay_stream(&x, 40, 61_000, Some(&x.write));
     for _ in 0..2 {
-        a.with(1_000, |x, c| x.message(c, C, Incoming::Push(st.clone())));
+        a.with(1_000, |y, c| y.message(c, C, Incoming::Push(st.clone())));
     }
     assert_eq!(relayed(&a, d, b), 1, "passed on once");
     assert_eq!(relayed(&a, C, b), 0, "never back to its source");
-    let (late, st) = relay_stream(s, 41, 1_000);
-    a.with(1_000, |x, c| x.message(c, C, Incoming::Push(st)));
+    let (late, st) = relay_stream(&x, 41, 1_000, Some(&x.write));
+    a.with(1_000, |y, c| y.message(c, C, Incoming::Push(st)));
     assert_eq!(relayed(&a, d, late), 0, "at its expiry: dropped");
+}
+
+// spec/sync-ids.md §6 (Relay-only): a node keeping S unread passes on only a relay-only entry
+// stamped under its head's write key, so only S's writers make it pass anything on: one
+// unstamped or stamped under another key goes no further; a writer's does.
+#[test]
+fn a_node_keeping_s_unread_passes_on_only_a_writers_relay_spec_sync_ids_6() {
+    let x = Sid::new(0x60);
+    let other = Secret32::from_bytes([0xee; 32]);
+    for (n, stamp, passed) in [(40, None, 0), (41, Some(&other), 0), (42, Some(&x.write), 1)] {
+        let (mut a, d) = relay_side(&x, Holding::Unread);
+        let (b, st) = relay_stream(&x, n, 61_000, stamp);
+        a.with(1_000, |y, c| y.message(c, C, Incoming::Push(st)));
+        assert_eq!(relayed(&a, d, b), passed, "blob {n}");
+    }
 }
 
 // spec/sync-compaction.md §2 (Passing on): a node that reads S passes on a relay-only entry only
@@ -1511,11 +1533,12 @@ fn a_relay_only_entry_is_passed_on_once_to_the_other_peers_spec_sync_ids_6() {
 #[test]
 fn a_reader_passes_on_only_a_verified_new_relay_only_entry_spec_sync_compaction_2() {
     use osis_engine::sync::RelayOpened;
+    let x = Sid::new(0x60);
     for (opened, n, passed) in [(RelayOpened::New, 40, 1), (RelayOpened::Old, 41, 0), (RelayOpened::Bad, 42, 0)] {
-        let (mut a, s, d) = relay_side(Holding::Read);
+        let (mut a, d) = relay_side(&x, Holding::Read);
         a.table.relay = Some(opened);
-        let (b, st) = relay_stream(s, n, 61_000);
-        a.with(1_000, |x, c| x.message(c, C, Incoming::Push(st)));
+        let (b, st) = relay_stream(&x, n, 61_000, Some(&x.write));
+        a.with(1_000, |y, c| y.message(c, C, Incoming::Push(st)));
         assert_eq!(relayed(&a, d, b), passed, "{opened:?}");
     }
 }

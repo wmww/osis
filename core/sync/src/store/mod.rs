@@ -598,6 +598,12 @@ impl Store {
         self.lock().mem.set_estimate(s, b, n);
     }
 
+    /// Whether entry `e`'s stamp verifies under S's head write key (a relay-only entry at a
+    /// node keeping S unread, spec/sync-ids.md §6 Relay-only).
+    pub fn stamp_vouches(&self, s: &SyncId, e: &Entry) -> Result<bool> {
+        self.lock().read(|t, _| stamp_vouches(t, s, e))
+    }
+
     /// The head S's path ends at.
     pub fn head(&self, s: &SyncId) -> Result<Option<Step>> {
         self.lock().read(|t, _| Ok(path::head(t, s)?.map(|(_, st)| st)))
@@ -1446,8 +1452,6 @@ fn served(t: &mut Transaction<'_>, e: &LoggedEvent, until: Option<Position>) -> 
     })
 }
 
-/// Whether `size` more bytes charged to `src` pass its peer budget (spec/sync-ids.md §5 Peer
-/// budget): what its durable and ephemeral entries giving nothing held are charged so far.
 /// Whether entry `e`'s stamp verifies under S's head write key, in either domain.
 fn stamp_vouches(t: &mut Transaction<'_>, s: &SyncId, e: &Entry) -> Result<bool> {
     let Some(stamp) = e.stamp else { return Ok(false) };
@@ -1455,6 +1459,8 @@ fn stamp_vouches(t: &mut Transaction<'_>, s: &SyncId, e: &Entry) -> Result<bool>
     Ok(osis_label::verify_stamp(&head.keys.write, s, &e.blob, &e.wrap, &stamp).is_ok())
 }
 
+/// Whether `size` more bytes charged to `src` pass its peer budget (spec/sync-ids.md §5 Peer
+/// budget): what its durable and ephemeral entries giving nothing held are charged so far.
 fn over_peer_budget(t: &mut Transaction<'_>, env: &Env<'_>, src: Source, size: u64) -> Result<bool> {
     let mem = env.mem.charges.get(&src).copied().unwrap_or(0);
     Ok(source_charge(t, src)?.saturating_add(mem).saturating_add(size) > env.policy.peer_bytes)

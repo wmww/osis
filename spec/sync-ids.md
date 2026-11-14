@@ -141,7 +141,8 @@ Each operation names a sync ID S. Writes are signed with the role keys of the re
     - without an expiry or with one more than `2 × MAX_DRIFT` ahead (code 1);
     - at or past its expiry (code 7);
     - above `MAX_RELAY_BLOB` (code 3);
-    - past S's relay rate (code 4).
+    - at a node keeping S unread, without a stamp (Stamp, above) verifying under its head's write key, so only S's writers make it pass on anything (code 9);
+    - past S's relay rate, or past the equal share of it of the source it came from (each connection sharing S, and the node's own sends, one source each), so no source starves the others (code 4).
   - **Taken once**: every node holding S, reading it or keeping it unread, takes a relay-only blob ID once per sync ID until its expiry, and drops a repeat. It remembers a bounded number of them: past the bound the earliest-expiring is forgotten and its expiry becomes the sync ID's **floor**, at or below which relay-only blobs of that sync ID are dropped.
 - **Wraps**:
   - **A node holding the blob's key**: it takes only a wrap opening to that key. An entry a source holds stamped, under any step's write key, under any other wrap counts as lacking at that source (spec/sync-judgement.md §2) for as long as the source holds it; a wrap that does not open at a source gets a fresh encryption there. A wrap opening under no read secret held counts so only until a read secret arrives under which it opens to the blob's key.
