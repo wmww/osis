@@ -632,3 +632,33 @@ fn a_copy_is_never_logged_verbatim_elsewhere_spec_sync_judgement_1() {
     assert!(e.rewrap(&c, &shared.id, &su, &shared_wrap, &s).unwrap().is_none(), "a copy body is held only by a copy");
     assert!(e.rewrap(&c, &shared.id, &su, &shared_wrap, &su).unwrap().is_some(), "a shared blob for a shared body");
 }
+
+// spec/sync-inbox.md §2 (following a payload sync ID: one no applied `sync.0` records, only while
+// the blob is unexpired): a read grant whose payload names the recipient's own home sync ID
+// gives the granted thing no hint, so home stays D's in the sync set; an honest payload's hint
+// lasts across a restart until the blob's expiry.
+#[test]
+fn a_hint_is_no_recorded_sync_id_and_ends_with_its_blob_spec_sync_inbox_2() {
+    let (mut lp, t, _, g, blob) = granted(Role::Read);
+    let (_, d1) = lp.peers[1].engine.account().unwrap().unwrap();
+    let home1 = lp.peers[1].engine.home_sync_id(&d1).unwrap().unwrap();
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let commit = commit_of(&mut lp, 0, &g);
+    let forged = inbox_by_hand(&mut lp, 1, &commit, vec![osis_label::InboxThing { tid: t, sync_id: Some(home1), delete_keys: None }]);
+    let o = lp.peers[1].engine.take_inbox_blob(&forged, true).unwrap().expect("opens");
+    assert_eq!(o.taken, Taken::Applied);
+    assert!(o.hints.is_empty(), "home1 is recorded by D's sync.0: no hint");
+    add_item(&mut lp, 1, d1, t);
+    let e = &mut lp.peers[1].engine;
+    assert!(e.sync_ids(&t).unwrap().iter().all(|o| o.id != home1));
+    assert_eq!(e.sync_set().unwrap().ids.get(&home1), Some(&(d1, Holding::Read)));
+    // the honest blob names t's own sync ID: followed as a hint
+    let o = e.take_inbox_blob(&blob, true).unwrap().expect("opens");
+    assert_eq!(o.hints, vec![(t, s)]);
+    lp.peers[1].restart(5).unwrap();
+    let hinted = |lp: &mut LocalPeer| lp.peers[1].engine.sync_ids(&t).unwrap().iter().any(|o| o.id == s && o.hint);
+    assert!(hinted(&mut lp), "durable");
+    lp.advance(osis_base::format::INBOX_LIFETIME_MS + 1);
+    lp.peers[1].tick().unwrap();
+    assert!(!hinted(&mut lp), "the blob expired: no longer followed");
+}

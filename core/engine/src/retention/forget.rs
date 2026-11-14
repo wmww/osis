@@ -215,8 +215,11 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
         // unknown now: what lists it is judged again
         super::lifetimes::queue_with_listers(tx, t)?;
     }
-    // the things' history cursors and rows (`leaving`)
+    // the things' history cursors and rows (`leaving`), and the sync IDs inbox blobs hinted
     super::leaving::forget_things(tx, &out.things)?;
+    for t in &out.things {
+        crate::sync::inbox::set_hint(tx, t, None)?;
+    }
     // timers of forgotten parts
     let hit = |c: &CommitId, ai: usize| out.commits.contains(c) || parts.get(c).is_some_and(|s| s.contains(&ai));
     tx.remove_scanned(records::TIMER, |k| {

@@ -191,12 +191,15 @@ impl Engine {
         Memo::get_in(self, |e| &e.core.sync_ids, g, |e| {
             let m = e.get_typed(g, &ct::SYNC)?.unwrap_or_default();
             let mut out = owned_in(&e.core, g, &m);
-            // a sync ID a taken inbox blob named, until a `sync.0` here gives one (spec/sync-
-            // inbox.md §2): followed with no recorded path
+            // a sync ID a taken inbox blob named, until a `sync.0` here gives one, while no applied
+            // `sync.0` records it and the blob is unexpired (spec/sync-inbox.md §2): followed with
+            // no recorded path
             if out.is_empty()
-                && let Some(s) = e.core.ix.inbox_hints.get(g)
+                && let Some((s, expires)) = e.core.ix.inbox_hints.get(g).copied()
+                && !crate::sync::inbox::recorded(e, &s)
+                && e.core.time.until(Some(expires.0)) < expires.0
             {
-                out.push(OwnedSyncId { id: *s, path: Arc::new(crate::sync::Path::default()), hint: true });
+                out.push(OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), hint: true });
             }
             Ok::<_, crate::error::Error>(Arc::new(out))
         })

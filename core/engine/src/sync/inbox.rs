@@ -63,16 +63,17 @@ fn waiting_of(b: &[u8]) -> Result<WaitingBlob> {
 }
 
 /// `ih/` + thing: the sync ID a taken inbox blob named for a thing no applied `sync.0` gives one
-/// it owns (spec/sync-inbox.md §2 Following a payload sync ID).
+/// it owns, and the blob's prefix expiry (spec/sync-inbox.md §2 Following a payload sync ID:
+/// followed only while the blob is unexpired). Goes with the thing (`forget`).
 pub(crate) const HINTS: &[u8] = b"ih/";
 
-/// Keeps `s` as `t`'s hinted sync ID (`None`: drops it).
-pub(crate) fn set_hint(tx: &mut Tx<'_>, t: &Tid, s: Option<SyncId>) -> Result<()> {
+/// Keeps `s` as `t`'s hinted sync ID until `expires` (`None`: drops it).
+pub(crate) fn set_hint(tx: &mut Tx<'_>, t: &Tid, s: Option<(SyncId, WallMs)>) -> Result<()> {
     let k = [HINTS, t.as_bytes()].concat();
     match s {
-        Some(s) => {
-            tx.txn.put_local(&k, &s.0, Shred::No)?;
-            tx.core.ix.inbox_hints.insert(*t, s);
+        Some((s, expires)) => {
+            tx.txn.put_local(&k, &[&s.0[..], &expires.0.to_be_bytes()].concat(), Shred::No)?;
+            tx.core.ix.inbox_hints.insert(*t, (s, expires));
         }
         None => {
             if tx.core.ix.inbox_hints.remove(t).is_some() {
@@ -83,12 +84,19 @@ pub(crate) fn set_hint(tx: &mut Tx<'_>, t: &Tid, s: Option<SyncId>) -> Result<()
     Ok(())
 }
 
+/// Whether an applied `sync.0` records `s` (a payload naming it is no hint, spec/sync-inbox.md §2).
+pub(crate) fn recorded(e: &Engine, s: &SyncId) -> bool {
+    e.core.ix.sync_recorders.get(s).is_some_and(|x| !x.is_empty())
+}
+
 /// Loads the waiting inbox blobs and the hinted sync IDs (an open or reload).
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     let mut hints = Vec::new();
     tx.scan(HINTS, |k, v| {
         let bad = || Error::Corrupt("inbox hint");
-        hints.push((Tid::from_bytes(k.try_into().map_err(|_| bad())?), SyncId(v.as_slice().try_into().map_err(|_| bad())?)));
+        let (s, e) = (v.get(..16).ok_or_else(bad)?, v.get(16..).ok_or_else(bad)?);
+        let hint = (SyncId(s.try_into().map_err(|_| bad())?), WallMs(u64::from_be_bytes(e.try_into().map_err(|_| bad())?)));
+        hints.push((Tid::from_bytes(k.try_into().map_err(|_| bad())?), hint));
         Ok(())
     })?;
     for (t, s) in hints {
@@ -255,15 +263,16 @@ impl Engine {
             Err(_) => Taken::Refused,
         };
         self.note_delete_hints(id, &things)?;
-        // hints (spec/sync-inbox.md §2 Following a payload sync ID): a thing whose read or sync
-        // box opened, whose sync ID no applied `sync.0` records; at most one per blob
+        // hints (spec/sync-inbox.md §2 Following a payload sync ID): for a thing whose read or
+        // sync box opened and that it knows no sync ID of, a sync ID no applied `sync.0` records;
+        // at most one per blob, while the blob is unexpired
         let mut hints = Vec::new();
         if taken == Taken::Applied {
             for (t, sid) in &payload_ids {
-                if boxed.role(t).is_some() && !self.owned_sync_ids(t)?.iter().any(|o| !o.hint) {
+                if boxed.role(t).is_some() && !self.owned_sync_ids(t)?.iter().any(|o| !o.hint) && !recorded(self, sid) {
                     hints.push((*t, *sid));
                     let (t, sid) = (*t, *sid);
-                    self.run(|tx| set_hint(tx, &t, Some(sid)))?;
+                    self.run(|tx| set_hint(tx, &t, Some((sid, expires))))?;
                     break;
                 }
             }
