@@ -51,7 +51,7 @@ Not format constants (§11). Per-message caps: §11.2.
 | `MAX_SUBS` | 4096 live subscriptions per connection (§11.2) |
 | `MAX_CONNS_PER_CLIENT` | 8 authenticated sessions of one client actor (§11.2) |
 | `MAX_PROOFS` | 256 actor proofs in one Prove or Proved (§11.2) |
-| `MAX_ROTATIONS` | 256 account rotations in one Prove (§11.2) or one boxes payload (§9) |
+| `MAX_ROTATIONS` | 256 account rotations in one Prove (§11.2) |
 | `MAX_RESUME_TAGS` | ⌊(`MAX_MESSAGE` − 64) / 34⌋ tags in one Resume (§11.2; a tag's encoding is 34 bytes) |
 
 ### Node policy
@@ -217,14 +217,13 @@ ClaimSet := [[claim+], {entry: box}]
 - A recipient ingests the chain before the commit, only once the blob is taken (spec/sync-inbox.md §2), and only its records, `roles.0` and `keys.0` deltas and accounts' rotations.
 - **Boxes payload** (spec/sync-inbox.md §2): to a recipient holding less than read on every thing the commit names (sync alone, or removed since), in place of an `InboxPayload`, the recipient's own boxes of the role commit and nothing else of it:
   ```
-  BoxesPayload := ["boxes", commit_id, author, Opt(epoch_id), [BoxedThing+], Opt([dialable, [url*]]), signature, creation, [CommitBlobPlaintext*]]
+  BoxesPayload := ["boxes", Opt(GrantSig), [BoxedThing+], Opt([dialable, [url*]])]
+  GrantSig     := [author, Opt(epoch_id), signature]
   BoxedThing   := [tid, Opt(sync_id), [[role, epoch, box]+]]
   ```
-  - `commit_id` and `author`: the role commit's ID and its header's author; `epoch_id`: the epoch the author signs this payload at, as header position 14 names one (§4), present iff the author is an account.
+  - `GrantSig`: present iff the commit writes an edge naming the recipient (a grant); `author` the commit header's author, `epoch_id` the epoch the author signs at, as header position 14 names one (§4), present iff the author is an account; `signature` by the author's key (an account's: the signing key of epoch `epoch_id`) under `"osis v1 inbox boxes"` (spec/crypto.md §2) over BLAKE3 of the canonical bytes of `[recipient, author, Opt(epoch_id), [BoxedThing+]]`. It carries no creation record or rotation: it verifies only where the author's key is held (spec/sync-inbox.md §2 Taking).
   - `BoxedThing`, one per thing the commit's `secrets.0` deltas box the recipient on, sorted by tid, distinct: its sync ID as position 1 of `InboxPayload` names it, and each box of that thing's `secrets.0` delta keyed with the recipient as holder: the key's `role` and `epoch` and the `box` value (§7), sorted by the canonical bytes of `[role, epoch]`, distinct.
-  - Position 5: as position 4 of `InboxPayload`.
-  - `signature`: the author's key (an account's: the signing key of epoch `epoch_id`) under `"osis v1 inbox boxes"` (spec/crypto.md §2) over BLAKE3 of the canonical bytes of `[recipient, commit_id, author, Opt(epoch_id), [BoxedThing+]]`.
-  - Position 7: the author's creation record (§3), which hashes to `author`. Position 8: for an account, header-only copies (§4, no sections; one with a section is malformed) of its rotations from the first epoch to `epoch_id`, the first signed at the first epoch, each next at the epoch the one before mints, the last minting `epoch_id`; at most `MAX_ROTATIONS` (past it the payload is malformed); empty for a key actor or at the first epoch. The author's key at `epoch_id` is the record's key carried along them, each rotation's commit signature (§4) verifying under the key before it; rotations that do not form that line prove no key. A sender whose line is longer sends no boxes payload.
+  - Position 3: as position 4 of `InboxPayload`.
   - A receiver opens a box with the AD it rebuilds from the payload (`[tid, recipient, role, n, nonce, form]`, §7).
 - **Stranded notice** (spec/permissions.md §4): an inbox blob whose payload is `StrandedNotice := ["stranded", sync_id, holder, HolderKeys]` (flattened: `HolderKeys` is two positions) in place of an `InboxPayload`: the sync ID the holder (an actor tid) is stranded on, and its holder keys. It carries no role commit and asks only for a re-seal the recipient judges itself.
 - **Holder keys**: `HolderKeys := [CommitBlobPlaintext*], [creation*]`: the holder's current `keys.0` commits (spec/permissions.md §4), each projected to its `keys.0` delta on the holder, with their authors' chain certificates for those deltas, each projected to its chain deltas (as position 2 of `InboxPayload`); then that chain's creation records, ascending by tid, distinct. A receiver ingests only what is on things in the holder's authority chain as it judges it while taking them (spec/permissions.md §4): `keys.0` deltas on the named holder and on the authors of the holder's `keys.0` commits carried (their cards), records, and `roles.0` deltas, each kept only if judged valid; it ignores the rest.

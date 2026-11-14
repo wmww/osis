@@ -23,7 +23,7 @@
   - `"osis v1 sync open"` (an open signature, spec/sync-opens.md §4)
   - `"osis v1 stamp"` (stamps, spec/sync-ids.md §6)
   - `"osis v1 deposit"` (spec/sync-inbox.md §3)
-  - `"osis v1 inbox boxes"` (a boxes payload's signature by the role commit's author, spec/wire.md §9)
+  - `"osis v1 inbox boxes"` (a grant's boxes payload signed by its granter, spec/wire.md §9)
   - `"osis v1 role entry"` (a stamp or deposit signature of a role entry, in place of the two above, spec/sync-ids.md §6)
   - `"osis v1 delete"`
   - `"osis v1 connection proof"` (a connection proof, spec/wire.md §11.2: over the prover's role, the verifier's challenge and the listener's key)

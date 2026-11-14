@@ -20,8 +20,17 @@
 ## 3. Two holdings
 A node holds S of thing T, at each moment, by the secrets it holds of T:
 - **Read**: it holds a read secret of T. It judges every entry by the full rules (spec/sync-judgement.md §2-§5): what S must hold, may hold and must not hold, and acts on it.
-- **Kept unread**: it holds a sync secret of T and no read secret. Of T it holds only a **sync record** (T's tid, its sync IDs, and its sync secrets by epoch, each from a box sealed to its own account's key): no roster, chain, `keys.0`, commit or other state of what S carries. It keeps ciphertext, relays it, verifies stamps, deposit signatures and delete signatures, and follows only its own grant: the boxes sealed to it and the steps registered with it (spec/sync-judgement.md §6).
+- **Kept unread**: it holds a sync secret of T and no read secret. Of T it holds only its account's **sync record** (below): no roster, chain, `keys.0`, commit or other state of what S carries. It keeps ciphertext, relays it, verifies stamps, deposit signatures and delete signatures, and follows only its own grant: the boxes that open here and the steps registered with it (spec/sync-judgement.md §6).
 - One predicate decides: read exactly while a read secret of T is held. A change of holding never empties the store (spec/sync-judgement.md §6 Read and unread move).
+
+**Sync record.** Principle: a node keeping T unread trusts only its own account. T's sync IDs come only from the account's own judgement, and a sync secret only once a step on the node's own path of such a sync ID bears its sync key. Nothing the granter, a roster or a chain says is needed or used.
+- The account's sync record of T is its entry in `kept^.0` on its devices actor D (spec/data-model.md §9): T's **kept sync IDs** and its **recorded** sync secrets by epoch. Written by the account's nodes only, read by every node of the account, now or paired later, whatever inbox blobs have expired. Entries are only added.
+- **A kept sync ID** is added only by:
+  - an accept (spec/sync-set.md §4): the sync IDs every held boxes payload offering T names for T;
+  - the account's own reading: a node that stops reading T while holding a sync secret of it (spec/sync-judgement.md §6 Read and unread move) adds the sync IDs T owns as it judged them (spec/sync-ids.md §4 Owner) and the sync secrets of T it held.
+- **A recorded secret**: a node of the account adds the sync secret of epoch e of T that a box opening here gave (an inbox blob's, spec/sync-inbox.md §2; an entry box) once a step on its path of a kept sync ID (the steps registered with it, spec/sync-ids.md §6) bears that secret's sync key, unless recorded already. The secret is held as epoch e's (it names it, spec/crypto.md §4), which establishes nothing.
+- **Held sync secrets** of T at a node keeping it unread: its recorded ones and those of the boxes of T in the inbox blobs it holds unexpired (spec/sync-inbox.md §2), whichever sync ID those name. Only these open S, are shown (spec/sync-opens.md §4) and keep S (spec/sync-judgement.md §6).
+- It syncs only kept sync IDs (spec/sync-set.md §2).
 
 ## 4. Areas
 Each area has one principle; every rule in its file follows from it, and a rule whose reason does not follow from its principle is a defect of the rule, not an exception to the principle.

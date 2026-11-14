@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, account, withdrawn, planted, netstream, netshared, netblind, netopen, nethold, netdestroy, netkeep
+#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, account, withdrawn, planted, netstream, netshared, netblind, netopen, nethold, netdestroy, netkeep, nettrust
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker); with cfg names: those instances instead (the larger ones
 #   in the module's README, by hand), judged only if listed below.
@@ -252,6 +252,11 @@ instances=(
   "netkeep net MCKeep KN_shownone.cfg fail"        # negative control: past its keys, shows nothing (a later re-grant never re-fetches)
   "netkeep net MCKeep KN_take.cfg fail"            # negative control: takes at a head past its keys
   "netkeep net MCKeep KN_droppath.cfg fail"        # negative control: a stop shreds the path too (stops loop)
+  "nettrust net MCTrust U_all.cfg pass"            # a node keeping T unread trusts only its account: sync IDs by accept, secrets by a step of its path; the record in D (spec/sync.md §3)
+  "nettrust net MCTrust U_lowered.cfg pass"        # ... lowered from read: the record from its own reading
+  "nettrust net MCTrust UN_vouch.cfg fail"         # negative control: a sync ID on the sender's word (connected): the forger attaches its own (NoAttach)
+  "nettrust net MCTrust UN_any.cfg fail"           # negative control: a secret recorded unconfirmed: the forger plants one (NoPlant)
+  "nettrust net MCTrust UN_local.cfg fail"         # negative control: a record per node: a node joining after the boxes expired never syncs (Live)
 )
 
 module=${1:-}
@@ -262,7 +267,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|account|netstream|netshared|netblind|netopen|nethold|netdestroy|netkeep [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|account|netstream|netshared|netblind|netopen|nethold|netdestroy|netkeep|nettrust [cfg...]" >&2
   exit 2
 fi
 
