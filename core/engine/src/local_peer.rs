@@ -522,7 +522,8 @@ impl LocalPeer {
         }
     }
 
-    /// Sends everything `from` holds to `to` (in `ts` order).
+    /// Sends everything `from` holds to `to` (in `ts` order), but what `to` already took as a
+    /// duplicate that changed nothing and still holds whole (`Engine::holds_whole`).
     pub fn sync(&mut self, from: usize, to: usize) -> Result<()> {
         self.sync_changed(from, to).map(|_| ())
     }
@@ -551,6 +552,11 @@ impl LocalPeer {
             let key = (to, *hash);
             let at = self.peers.get(to).map(|p| p.engine.point());
             if at.is_some() && self.memo.duplicate.get(&key).copied() == at {
+                continue;
+            }
+            // once a no-op duplicate there, never sent again while `to` holds every body of it:
+            // what a sync sends is what the receiver lacks (a body-less part may come back late)
+            if self.memo.duplicate.contains_key(&key) && self.peers.get(to).is_some_and(|p| p.engine.holds_whole(&pk.id)) {
                 continue;
             }
             let dup = matches!(self.deliver(to, pk)?, Ingested::Duplicate(_));

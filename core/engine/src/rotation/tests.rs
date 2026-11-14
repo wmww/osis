@@ -1959,8 +1959,16 @@ pub(super) fn reads_key(lp: &mut LocalPeer, i: usize, g: Tid, k: &str) -> bool {
 /// `unmet_epoch_withdrawn_by_its_maker`'s shape with N (4) not yet a holder, settled (e_R
 /// withdrawn), then A writes "after". R's write of "w" under e_R before D reaches it, as its label
 /// entry (sealed at writing): made on a copy of the world, so no peer holds it but by this blob.
-/// Returns e_R and that entry.
+/// Returns e_R and that entry. Built once per test process, a copy each call.
 fn withdrawn_shape() -> (LocalPeer, Tid, Vec<Tid>, osis_crypto::Epoch, Vec<crate::local_peer::SealedPackage>) {
+    let (lp, (g, tids, e_r, entry)) = LocalPeer::cached("rotation::tests::withdrawn_shape", || {
+        let (lp, g, tids, e_r, entry) = build_withdrawn_shape();
+        (lp, (g, tids, e_r, entry))
+    });
+    (lp, g, tids, e_r, entry)
+}
+
+fn build_withdrawn_shape() -> (LocalPeer, Tid, Vec<Tid>, osis_crypto::Epoch, Vec<crate::local_peer::SealedPackage>) {
     let (mut lp, g, tids) = granted(5, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin)]);
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
     lp.peers[1].clock.advance(5_000);

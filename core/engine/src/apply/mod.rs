@@ -1706,6 +1706,12 @@ impl Engine {
         self.read(|tx| tx.blobs.get(&id))
     }
 
+    /// Whether commit `id` is applied, not pending, with the body of every part held: a copy
+    /// delivered again can bring nothing (`late_parts`).
+    pub(crate) fn holds_whole(&self, id: &CommitId) -> bool {
+        !self.core.ix.pending.contains_key(id) && self.core.ix.commits.get(id).is_some_and(|m| m.hold.iter().all(|h| matches!(h, crate::engine::Hold::Body { .. })))
+    }
+
     /// IDs of applied durable commits (no memory commit), in (`ts`, ID) order.
     pub fn commit_ids(&self) -> Vec<CommitId> {
         let mut v: Vec<(osis_base::Ts, CommitId)> = self.core.ix.commits.iter().filter(|(_, m)| !m.view.memory).map(|(id, m)| (m.view.ts, *id)).collect();

@@ -3,7 +3,7 @@
 //! party's nodes hold or can open from the actor's `secrets.0` (a new node of it included).
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Key, Pass, edge, group, openable, rotate_leaving_out, synced};
+use super::tests::{Key, Pass, edge, granted, group, openable, rotate_leaving_out, synced};
 use crate::flows::edges::History;
 use crate::local_peer::LocalPeer;
 use osis_base::{Role, Tid};
@@ -346,65 +346,81 @@ fn try_hostile(lp: &mut LocalPeer, i: usize, g: Tid, lists: &BTreeSet<Epoch>, fl
 // boxing rule off.
 #[test]
 fn nothing_before_a_cut_reaches_its_holder_spec_crypto_4() {
+    osis_base::testenv::run_seeds("rotation::tests_cut::nothing_before_a_cut_reaches_its_holder_spec_crypto_4", &NOTHING_BEFORE_SEEDS, false, cut_replay("nothing_before_a_cut_reaches_its_holder_large_spec_crypto_4"), nothing_before_a_cut);
+}
+
+/// The default test's seeds, a covering set: with the boxing or the carry rule off, every one of
+/// seeds 1-40 fails.
+const NOTHING_BEFORE_SEEDS: [u64; 3] = [1, 2, 3];
+
+/// Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds: OSIS_CUT_START,
+/// OSIS_CUT_SEEDS.
+#[test]
+#[ignore = "property"]
+fn nothing_before_a_cut_reaches_its_holder_large_spec_crypto_4() {
+    let s = osis_base::testenv::Seeds::from_env("OSIS_CUT_START", "OSIS_CUT_SEEDS", osis_base::testenv::large(1..201));
+    s.run("rotation::tests_cut::nothing_before_a_cut_reaches_its_holder_large_spec_crypto_4", cut_replay("nothing_before_a_cut_reaches_its_holder_large_spec_crypto_4"), nothing_before_a_cut);
+}
+
+/// The replay line of `test`'s seed `s` (a `_large` twin of this module).
+fn cut_replay(test: &'static str) -> impl Fn(u64) -> String + Sync {
+    move |s| format!("OSIS_CUT_START={s} OSIS_CUT_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_cut::{test}")
+}
+
+/// One seed of `nothing_before_a_cut_reaches_its_holder_spec_crypto_4`.
+fn nothing_before_a_cut(seed: u64) {
     let read = BTreeSet::from(READ);
-    for seed in 1..=12u64 {
-        let mut rng = super::tests::Rng(seed * 0x9e37_79b9 + 7);
-        let mut lp = synced(5);
-        let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
-        let g = group(&mut lp, 0);
-        lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
-        lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
-        lp.sync_all().unwrap();
-        let mut before: Vec<(usize, BTreeSet<Epoch>)> = Vec::new();
-        let cut_at = [rng.next(4) as usize, 4 + rng.next(4) as usize];
-        for step in 0..14 {
-            for (k, (who, role)) in [(3usize, Role::Read), (4, Role::Write)].into_iter().enumerate() {
-                if step == cut_at[k] {
-                    let known = read_epochs(&lp, g);
-                    if lp.peers[0].engine.grant_with(&g, &tids[who], &edge(role), History::None).is_ok() {
-                        before.push((who, known));
-                    }
+    let mut rng = super::tests::Rng(seed * 0x9e37_79b9 + 7);
+    let (mut lp, g, tids) = granted(5, &[(1, Role::Admin), (2, Role::Read)]);
+    let mut before: Vec<(usize, BTreeSet<Epoch>)> = Vec::new();
+    let cut_at = [rng.next(4) as usize, 4 + rng.next(4) as usize];
+    for step in 0..14 {
+        for (k, (who, role)) in [(3usize, Role::Read), (4, Role::Write)].into_iter().enumerate() {
+            if step == cut_at[k] {
+                let known = read_epochs(&lp, g);
+                if lp.peers[0].engine.grant_with(&g, &tids[who], &edge(role), History::None).is_ok() {
+                    before.push((who, known));
                 }
-            }
-            match rng.next(7) {
-                0 => rotate_leaving_out(&mut lp, 0, g, &read, &[]),
-                1 => rotate_leaving_out(&mut lp, 1, g, &read, &[]),
-                2 => {
-                    let (a, b) = (rng.next(5) as usize, rng.next(5) as usize);
-                    if a != b {
-                        lp.sync(a, b).unwrap();
-                    }
-                }
-                3 => {
-                    let p = rng.next(5) as usize;
-                    let _ = lp.peers[p].engine.reseal_due(&g, &Pass);
-                }
-                4 => {
-                    let p = rng.next(2) as usize;
-                    let _ = lp.peers[p].engine.ensure_rotated(&g);
-                }
-                5 => {
-                    let known: Vec<Epoch> = lp.peers[4].engine.epochs(&g).map(|e| e.read.epochs().map(|x| *x.0).collect()).unwrap_or_default();
-                    let lists: BTreeSet<Epoch> = known.iter().filter(|_| rng.next(2) == 0).copied().collect();
-                    let top = lists.iter().map(Epoch::n).max().unwrap_or(0) + 1;
-                    let floor = rng.next(top + 1);
-                    if !lists.is_empty() && before.iter().any(|(w, _)| *w == 4) {
-                        try_hostile(&mut lp, 4, g, &lists, floor);
-                    }
-                }
-                _ => lp.sync_all().unwrap(),
             }
         }
-        lp.sync_all().unwrap();
-        for p in [0, 1, 2] {
-            let _ = lp.peers[p].engine.reseal_due(&g, &Pass);
-        }
-        lp.sync_all().unwrap();
-        for (who, known) in &before {
-            for i in 0..5 {
-                let bad: Vec<Epoch> = reaches(&mut lp, i, g, tids[*who]).intersection(known).copied().collect();
-                assert!(bad.is_empty(), "seed {seed}: peer {i}'s state hands peer {who} {bad:?}, held before its cut");
+        match rng.next(7) {
+            0 => rotate_leaving_out(&mut lp, 0, g, &read, &[]),
+            1 => rotate_leaving_out(&mut lp, 1, g, &read, &[]),
+            2 => {
+                let (a, b) = (rng.next(5) as usize, rng.next(5) as usize);
+                if a != b {
+                    lp.sync(a, b).unwrap();
+                }
             }
+            3 => {
+                let p = rng.next(5) as usize;
+                let _ = lp.peers[p].engine.reseal_due(&g, &Pass);
+            }
+            4 => {
+                let p = rng.next(2) as usize;
+                let _ = lp.peers[p].engine.ensure_rotated(&g);
+            }
+            5 => {
+                let known: Vec<Epoch> = lp.peers[4].engine.epochs(&g).map(|e| e.read.epochs().map(|x| *x.0).collect()).unwrap_or_default();
+                let lists: BTreeSet<Epoch> = known.iter().filter(|_| rng.next(2) == 0).copied().collect();
+                let top = lists.iter().map(Epoch::n).max().unwrap_or(0) + 1;
+                let floor = rng.next(top + 1);
+                if !lists.is_empty() && before.iter().any(|(w, _)| *w == 4) {
+                    try_hostile(&mut lp, 4, g, &lists, floor);
+                }
+            }
+            _ => lp.sync_all().unwrap(),
+        }
+    }
+    lp.sync_all().unwrap();
+    for p in [0, 1, 2] {
+        let _ = lp.peers[p].engine.reseal_due(&g, &Pass);
+    }
+    lp.sync_all().unwrap();
+    for (who, known) in &before {
+        for i in 0..5 {
+            let bad: Vec<Epoch> = reaches(&mut lp, i, g, tids[*who]).intersection(known).copied().collect();
+            assert!(bad.is_empty(), "seed {seed}: peer {i}'s state hands peer {who} {bad:?}, held before its cut");
         }
     }
 }
@@ -412,7 +428,12 @@ fn nothing_before_a_cut_reaches_its_holder_spec_crypto_4() {
 /// Whether package `pk` has an aspect on `g` other than its creation record: one `g`'s labels
 /// carry sealed.
 fn on_g(pk: &crate::local_peer::Package, g: Tid) -> bool {
-    osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header.aspects.iter().any(|a| a.tid == g && a.ak.as_str() != "created.0")
+    aspect_on_g(&osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header, g)
+}
+
+/// `on_g` of a commit's header.
+fn aspect_on_g(h: &osis_commit::Header, g: Tid) -> bool {
+    h.aspects.iter().any(|a| a.tid == g && a.ak.as_str() != "created.0")
 }
 
 /// What `g`'s labels hold: each commit on `g` sealed once, by the first peer to place it, under
@@ -447,7 +468,8 @@ impl Label {
             if let Ok((d, _)) = lp.peers[p].engine.ensure_rotated(&g) {
                 self.note(&d);
             }
-            let ids: Vec<osis_base::CommitId> = lp.packages(p).unwrap().into_iter().filter(|pk| on_g(pk, g) && !self.placed.contains(&pk.id)).map(|pk| pk.id).collect();
+            let e = &lp.peers[p].engine;
+            let ids: Vec<osis_base::CommitId> = e.commit_ids().into_iter().filter(|id| !self.placed.contains(id) && e.header(id).is_some_and(|h| aspect_on_g(&h, g))).collect();
             if ids.is_empty() {
                 continue;
             }
@@ -902,92 +924,111 @@ fn content(lp: &mut LocalPeer, i: usize, g: Tid) -> BTreeSet<String> {
 // and without the state at a cut (N misses state from before it).
 #[test]
 fn newcomer_reads_the_roster_from_sealed_labels_spec_crypto_4() {
-    let mut checked = 0;
-    for seed in 1..=8u64 {
-        let mut rng = super::tests::Rng(seed * 0x2545_f491 + 3);
+    let cut = osis_base::testenv::run_seeds("rotation::tests_cut::newcomer_reads_the_roster_from_sealed_labels_spec_crypto_4", &NEWCOMER_SEEDS, false, cut_replay("newcomer_reads_the_roster_from_sealed_labels_large_spec_crypto_4"), newcomer_reads_the_roster);
+    assert!(cut.iter().filter(|c| **c).count() >= NEWCOMER_SEEDS.len() / 2, "only {cut:?} seeds cut");
+}
+
+/// The default test's seeds, a covering set: each cuts; with the boxing or the carry rule off
+/// every one of seeds 1-40 fails, without the state at a cut 34, without roles secrets in history
+/// entries 17 (these three among them).
+const NEWCOMER_SEEDS: [u64; 3] = [1, 3, 5];
+
+/// Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds: OSIS_CUT_START,
+/// OSIS_CUT_SEEDS.
+#[test]
+#[ignore = "property"]
+fn newcomer_reads_the_roster_from_sealed_labels_large_spec_crypto_4() {
+    let s = osis_base::testenv::Seeds::from_env("OSIS_CUT_START", "OSIS_CUT_SEEDS", osis_base::testenv::large(1..201));
+    s.run("rotation::tests_cut::newcomer_reads_the_roster_from_sealed_labels_large_spec_crypto_4", cut_replay("newcomer_reads_the_roster_from_sealed_labels_large_spec_crypto_4"), newcomer_reads_the_roster);
+}
+
+/// One seed of `newcomer_reads_the_roster_from_sealed_labels_spec_crypto_4`: whether A cut.
+fn newcomer_reads_the_roster(seed: u64) -> bool {
+    let mut rng = super::tests::Rng(seed * 0x2545_f491 + 3);
+    let among = [0usize, 1, 2, 3, 4];
+    let (mut lp, (g, tids)) = LocalPeer::cached("rotation::tests_cut::newcomer_reads_the_roster", || {
         let mut lp = synced(6);
         let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.me()).collect();
         let g = group(&mut lp, 0);
         lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
-        let among = [0usize, 1, 2, 3, 4];
         sync_among(&mut lp, &among);
-        let cut_at = rng.next(10) as usize;
-        let mut done = None;
-        let mut before = BTreeSet::new();
-        let mut label = Label::default();
-        label.place(&mut lp, g, &among);
-        for step in 0..14 {
-            if step == cut_at {
-                for p in among {
-                    before.extend(edits_on(&lp, p, g));
-                }
-                done = lp.peers[0].engine.grant_with(&g, &tids[5], &edge(Role::Read), History::None).ok();
-                done.iter().for_each(|d| label.note(d));
-                put(&mut lp, 0, g, "after");
-                label.place(&mut lp, g, &[0]);
-            }
-            let admin = rng.next(2) as usize;
-            if done.is_none() {
-                put(&mut lp, admin, g, &format!("before{step}"));
-            }
-            let x = tids[2 + rng.next(3) as usize];
-            match rng.next(6) {
-                0 => {
-                    let role = [Role::Read, Role::Write][rng.next(2) as usize];
-                    if let Ok(d) = lp.peers[admin].engine.grant(&g, &x, &edge(role)) {
-                        label.note(&d);
-                    }
-                }
-                1 => {
-                    if let Ok(d) = lp.peers[admin].engine.demote(&g, &crate::flows::Demotion { holder: x, new: None, retain: None }) {
-                        label.note(&d);
-                    }
-                }
-                2 => label.note(&rotate(&mut lp, admin, g)),
-                3 => {
-                    let (a, b) = (among[rng.next(5) as usize], among[rng.next(5) as usize]);
-                    if a != b {
-                        lp.sync(a, b).unwrap();
-                    }
-                }
-                _ => sync_among(&mut lp, &among),
-            }
-            // each peer places what it made or received soon after (a random one first)
-            let first = rng.next(5) as usize;
-            label.place(&mut lp, g, &[among[first]]);
-            label.place(&mut lp, g, &among);
-        }
-        let Some(done) = done else { continue };
-        checked += 1;
-        let cut = lp.peers[0].engine.epochs(&g).unwrap().read.held().map(|x| x.0).filter(|e| done.commits.iter().any(|c| lp.peers[0].engine.core.ix.epoch_intro.get(&(g, Role::Read, *e)).is_some_and(|(_, x)| x == c))).max_by_key(Epoch::n).unwrap();
-        settle_among(&mut lp, g, &among, &mut label);
-        label.place(&mut lp, g, &among);
-        // a peer encrypts again some commits it holds (node-sync seals a body again: a placement
-        // past a delete, a body with no held encryption)
-        let p = among[rng.next(5) as usize];
-        let again: Vec<osis_base::CommitId> = lp.packages(p).unwrap().into_iter().filter(|pk| on_g(pk, g) && rng.next(2) == 0).map(|pk| pk.id).collect();
-        label.held.extend(lp.sealed(p, &again).unwrap());
-        deliver_as_newcomer(&mut lp, 0, 5, g, &done, &label);
-        let roster = |lp: &LocalPeer, i: usize| lp.peers[i].engine.roster(&g).into_iter().map(|(h, e)| (h, e.role)).collect::<Vec<_>>();
-        if std::env::var("OSIS_CUT_DUMP").is_ok() && roster(&lp, 5) != roster(&lp, 0) {
-            let ne = lp.peers[5].engine.epochs(&g).unwrap();
+        (lp, (g, tids))
+    });
+    let cut_at = rng.next(10) as usize;
+    let mut done = None;
+    let mut before = BTreeSet::new();
+    let mut label = Label::default();
+    label.place(&mut lp, g, &among);
+    for step in 0..14 {
+        if step == cut_at {
             for p in among {
-                let e = lp.peers[p].engine.epochs(&g).unwrap();
-                let cur = e.read.current();
-                for (x, i) in e.read.epochs() {
-                    eprintln!("peer {p} {:?} n{} held {} cur {} est {} | N roles {} est {}", &x.nonce()[..2], x.n(), i.secret.is_some(), cur.contains(x), i.established.is_some(), ne.read.roles_secret(x).is_some(), ne.read.is_established(x));
+                before.extend(edits_on(&lp, p, g));
+            }
+            done = lp.peers[0].engine.grant_with(&g, &tids[5], &edge(Role::Read), History::None).ok();
+            done.iter().for_each(|d| label.note(d));
+            put(&mut lp, 0, g, "after");
+            label.place(&mut lp, g, &[0]);
+        }
+        let admin = rng.next(2) as usize;
+        if done.is_none() {
+            put(&mut lp, admin, g, &format!("before{step}"));
+        }
+        let x = tids[2 + rng.next(3) as usize];
+        match rng.next(6) {
+            0 => {
+                let role = [Role::Read, Role::Write][rng.next(2) as usize];
+                if let Ok(d) = lp.peers[admin].engine.grant(&g, &x, &edge(role)) {
+                    label.note(&d);
                 }
             }
+            1 => {
+                if let Ok(d) = lp.peers[admin].engine.demote(&g, &crate::flows::Demotion { holder: x, new: None, retain: None }) {
+                    label.note(&d);
+                }
+            }
+            2 => label.note(&rotate(&mut lp, admin, g)),
+            3 => {
+                let (a, b) = (among[rng.next(5) as usize], among[rng.next(5) as usize]);
+                if a != b {
+                    lp.sync(a, b).unwrap();
+                }
+            }
+            _ => sync_among(&mut lp, &among),
         }
-        assert_eq!(roster(&lp, 5), roster(&lp, 0), "seed {seed}: N's roster differs from A's");
-        let below: Vec<Epoch> = lp.peers[5].engine.epochs(&g).unwrap().read.held().map(|x| x.0).filter(|e| e.n() < cut.n()).collect();
-        assert!(below.is_empty(), "seed {seed}: N holds {below:?} below its cut {cut:?}");
-        holds_none(&lp, 5, &before, &format!("seed {seed}"));
-        let read = content(&mut lp, 5, g);
-        assert!(read.contains("after"), "seed {seed}: N does not read A's write after its cut");
-        assert_eq!(read, content(&mut lp, 0, g), "seed {seed}: N reads another state than A");
+        // each peer places what it made or received soon after (a random one first)
+        let first = rng.next(5) as usize;
+        label.place(&mut lp, g, &[among[first]]);
+        label.place(&mut lp, g, &among);
     }
-    assert!(checked >= 4, "only {checked} seeds cut");
+    let Some(done) = done else { return false };
+    let cut = lp.peers[0].engine.epochs(&g).unwrap().read.held().map(|x| x.0).filter(|e| done.commits.iter().any(|c| lp.peers[0].engine.core.ix.epoch_intro.get(&(g, Role::Read, *e)).is_some_and(|(_, x)| x == c))).max_by_key(Epoch::n).unwrap();
+    settle_among(&mut lp, g, &among, &mut label);
+    label.place(&mut lp, g, &among);
+    // a peer encrypts again some commits it holds (node-sync seals a body again: a placement
+    // past a delete, a body with no held encryption)
+    let p = among[rng.next(5) as usize];
+    let again: Vec<osis_base::CommitId> = lp.packages(p).unwrap().into_iter().filter(|pk| on_g(pk, g) && rng.next(2) == 0).map(|pk| pk.id).collect();
+    label.held.extend(lp.sealed(p, &again).unwrap());
+    deliver_as_newcomer(&mut lp, 0, 5, g, &done, &label);
+    let roster = |lp: &LocalPeer, i: usize| lp.peers[i].engine.roster(&g).into_iter().map(|(h, e)| (h, e.role)).collect::<Vec<_>>();
+    if std::env::var("OSIS_CUT_DUMP").is_ok() && roster(&lp, 5) != roster(&lp, 0) {
+        let ne = lp.peers[5].engine.epochs(&g).unwrap();
+        for p in among {
+            let e = lp.peers[p].engine.epochs(&g).unwrap();
+            let cur = e.read.current();
+            for (x, i) in e.read.epochs() {
+                eprintln!("peer {p} {:?} n{} held {} cur {} est {} | N roles {} est {}", &x.nonce()[..2], x.n(), i.secret.is_some(), cur.contains(x), i.established.is_some(), ne.read.roles_secret(x).is_some(), ne.read.is_established(x));
+            }
+        }
+    }
+    assert_eq!(roster(&lp, 5), roster(&lp, 0), "seed {seed}: N's roster differs from A's");
+    let below: Vec<Epoch> = lp.peers[5].engine.epochs(&g).unwrap().read.held().map(|x| x.0).filter(|e| e.n() < cut.n()).collect();
+    assert!(below.is_empty(), "seed {seed}: N holds {below:?} below its cut {cut:?}");
+    holds_none(&lp, 5, &before, &format!("seed {seed}"));
+    let read = content(&mut lp, 5, g);
+    assert!(read.contains("after"), "seed {seed}: N does not read A's write after its cut");
+    assert_eq!(read, content(&mut lp, 0, g), "seed {seed}: N reads another state than A");
+    true
 }
 
 // spec/crypto.md §4 (Roles secrets; model X_two, Alike): A cuts for N while B cuts for N2, each

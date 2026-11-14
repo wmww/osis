@@ -57,19 +57,24 @@ fn seen(p: &mut Peer, ids: &[CommitId], things: &[Tid]) -> Seen {
     (v, p.engine.pending().len(), r)
 }
 
-fn perms(n: usize) -> Vec<Vec<usize>> {
-    if n == 0 {
-        return vec![Vec::new()];
-    }
-    let mut out = Vec::new();
-    for p in perms(n - 1) {
-        for i in 0..=p.len() {
-            let mut q = p.clone();
-            q.insert(i, n - 1);
-            out.push(q);
-        }
-    }
-    out
+/// `check` on `p` after each arrival order of `rest` (with the order), walked as a tree: each
+/// prefix is received once, by a copy (`Peer::copy`) of the node at the prefix before it. Returns
+/// how many orders ran.
+fn each_order(mut p: Peer, rest: &[Package], order: &mut Vec<usize>, check: &mut dyn FnMut(&[usize], &mut Peer)) -> usize {
+    let left: Vec<usize> = (0..rest.len()).filter(|i| !order.contains(i)).collect();
+    let Some((&last, others)) = left.split_last() else {
+        check(order, &mut p);
+        return 1;
+    };
+    let mut next = |mut q: Peer, i: usize| {
+        q.receive(&rest[i].bytes, rest[i].blobs.clone()).unwrap();
+        order.push(i);
+        let n = each_order(q, rest, order, check);
+        order.pop();
+        n
+    };
+    let n: usize = others.iter().map(|&i| next(p.copy().unwrap(), i)).sum();
+    n + next(p, last)
 }
 
 /// The shape of a history: B's writes (1-2), the frontier's point (0: before B's writes,
@@ -183,15 +188,10 @@ fn sample(shape: Shape) -> usize {
     assert_eq!(seen(&mut lp.peers[2], &ids, &things), want, "C judges as A");
     // a fresh node per order: copies of one, a node apart from A, B and C
     let mut fresh = Peer::new(3, lp.peers[0].clock.now_wall_ms()).unwrap();
-    let orders = perms(rest.len());
-    for order in &orders {
-        let mut p = fresh.copy().unwrap();
-        for pk in base.iter().chain(order.iter().map(|&i| &rest[i])) {
-            p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
-        }
-        assert_eq!(seen(&mut p, &ids, &things), want, "arrival order {order:?}");
+    for pk in &base {
+        fresh.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
-    orders.len()
+    each_order(fresh, &rest, &mut Vec::new(), &mut |order, p| assert_eq!(seen(p, &ids, &things), want, "arrival order {order:?}"))
 }
 
 // spec/permissions.md §5 (validity is a deterministic function of the held set), §5.2 (a write
