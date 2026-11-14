@@ -883,7 +883,8 @@ impl Osis {
 
     /// Accepts an invitation: `thing` becomes a subgroup of `into`, a group this node syncs or
     /// one under it (`Invalid` otherwise), so every node of the account syncs it. The same write
-    /// as `w.group(into).add(Member::Subgroup(thing))`.
+    /// as `w.group(into).add(Member::Subgroup(thing))`, but also an accept where `into` lists
+    /// `thing` already (a sync grant on a thing filed here before).
     pub fn accept_invite(&self, thing: Tid, into: Tid) -> Result<()> {
         self.local("accept_invite")?;
         let synced = self.engine(|e| -> Result<bool> {
