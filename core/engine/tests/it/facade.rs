@@ -452,3 +452,63 @@ fn blob_rows_go_with_their_commit() {
     lp.peers[0].restart(9).unwrap();
     assert!(lp.peers[0].engine.blob_parts(&sealed.id).unwrap().is_none(), "its row gone too");
 }
+
+
+/// Whether `wrap` of blob `b` opens under peer `i`'s secret of read epoch `e` of `t`.
+fn wrap_opens_under(lp: &LocalPeer, i: usize, t: &Tid, e: &osis_crypto::Epoch, b: &osis_base::BlobId, wrap: &[u8]) -> bool {
+    let ep = lp.peers[i].engine.epochs(t).unwrap();
+    ep.read.secret(e).is_some_and(|x| osis_crypto::unwrap(x, b, wrap).is_ok())
+}
+
+// spec/crypto.md §5 (who wraps under what: a fresh encryption of a body wraps under the epoch
+// the commit was written under at S's thing, never the node's newest), spec/sync-judgement.md
+// §1: a reader that is no writer of S re-seals a shared blob and a per-sync-ID copy after a
+// rotation it holds; each wrap opens under the epoch it opened with, not the newer one. A copy's
+// wrap is its only key, so a newest-epoch wrap would hand it to whoever holds only that epoch.
+#[test]
+fn a_fresh_encryption_wraps_under_its_written_epoch_spec_crypto_5() {
+    let (mut lp, ps) = people(3);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    for p in [ps[1], ps[2]] {
+        let done = lp.peers[0].engine.grant(&t, &p, &edge_of(Role::Read)).unwrap();
+        for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
+            if let Some(i) = ps.iter().position(|x| *x == h) {
+                lp.peers[i].engine.take_inbox_blob(&b, true).unwrap();
+            }
+        }
+    }
+    // u: a thing t administers, with secrets of its own; a grant on it travels under t's sync ID
+    // as a copy (a role commit on another thing)
+    let u = thing_of(&mut lp, 0, t);
+    lp.peers[0].engine.give_own_secrets(&u).unwrap();
+    add_item(&mut lp, 0, t, u);
+    for i in 0..2 {
+        let (_, d) = lp.peers[i].engine.account().unwrap().unwrap();
+        add_item(&mut lp, i, d, t);
+    }
+    spread(&mut lp);
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let done = lp.peers[0].engine.grant(&u, &ps[1], &edge_of(Role::Read)).unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(7)).unwrap();
+    let plain = lp.peers[0].engine.commit(m).unwrap().unwrap();
+    let copy = *done.commits.iter().find(|c| lp.peers[0].engine.sync_bodies(c).unwrap().get(&s).is_some_and(|b| b.copy)).expect("the grant on u is a copy under t's sync ID");
+    let e1 = crate::flows::newest_read(&lp, 0, t).unwrap();
+    // peer 1 opens both from the blobs peer 0 logged under S
+    let mut rng = SeededRng::from_u64(5);
+    for c in [plain, copy] {
+        let (sealed, wrap) = lp.peers[0].engine.seal_body(&s, &c, &mut rng).unwrap().expect("peer 0 seals its own");
+        assert!(matches!(lp.peers[1].engine.open_entry(&s, &sealed.id, &wrap, &sealed.blob).unwrap(), osis_engine::sync::Opened::Commit(x, _) if x == c));
+    }
+    // removing peer 2 rotates read: peer 1 holds a newer epoch
+    lp.peers[0].engine.demote(&t, &Demotion { holder: ps[2], new: None, retain: None }).unwrap();
+    spread(&mut lp);
+    let e2 = crate::flows::newest_read(&lp, 1, t).unwrap();
+    assert_ne!(e1, e2, "peer 1 holds the rotation's epoch");
+    for (name, c) in [("shared blob", plain), ("copy", copy)] {
+        let (again, wrap) = lp.peers[1].engine.seal_body(&s, &c, &mut rng).unwrap().unwrap_or_else(|| panic!("{name}: sealed under its written epoch"));
+        assert!(wrap_opens_under(&lp, 1, &t, &e1, &again.id, &wrap), "{name}: wrapped under the epoch it was written under");
+        assert!(!wrap_opens_under(&lp, 1, &t, &e2, &again.id, &wrap), "{name}: not under the newest");
+    }
+}

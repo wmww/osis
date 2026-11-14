@@ -216,9 +216,10 @@ impl Engine {
         self.core.ix.blob_parts.get(b).map(|x| x.1.clone())
     }
 
-    /// The read epoch commit `c`'s section of thing `t` is re-sealed under (the security rule of
-    /// fresh encryptions): the epoch it was written under, as this node opened a blob of it or
-    /// sealed it; for a commit written here and never sealed, the epoch it is written under now
+    /// The read epoch commit `c`'s section of thing `t`, and its wrap under a sync ID of `t`, are
+    /// re-sealed under (the security rule of fresh encryptions, spec/crypto.md §5): the epoch it
+    /// was written under, as this node opened a blob of it (a section of `t`, else the wrap it
+    /// opened under) or sealed it; for a commit written here and never sealed, the epoch it is written under now
     /// (`wrap_secret`'s). Only an epoch established here, whose secret is held: else `None`, and
     /// nothing is sealed (a node holding a newer epoch without the removal that made it must not
     /// seal under it, nor seal another writer's section under an epoch it was not written under).
@@ -289,7 +290,9 @@ impl Engine {
             Some(sealed)
         };
         let Some(sealed) = sealed else { return Ok(None) };
-        let Some(w) = self.wrap_secret(&t, Some((c, &b.parts)))? else { return Ok(None) };
+        // the wrap (a copy's only key) by the same rule as a section: the epoch the commit was
+        // written under at S's thing, never this node's newest (spec/crypto.md §5)
+        let Some((_, w)) = self.section_epoch(c, &t, &b.parts)? else { return Ok(None) };
         let wrap = osis_crypto::wrap(&w, &sealed.id, &sealed.key, b.order)?;
         let (id, ps) = (*c, sealed.parts.iter().copied().collect::<PartSet>());
         let bid = sealed.id;
@@ -316,7 +319,7 @@ impl Engine {
         }
         let Some(t) = self.read_thing(s)? else { return Ok(Opened::NotOpen) };
         let secrets = self.read_secrets(&t);
-        let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), blob, wrap) else { return Ok(Opened::NotOpen) };
+        let Some((i, key)) = osis_label::unwrap_any(secrets.iter(), blob, wrap) else { return Ok(Opened::NotOpen) };
         let opened = match self.open_commit(bytes, &key) {
             Ok(o) => o,
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
@@ -332,8 +335,19 @@ impl Engine {
         if !opened.copy {
             self.note_section_epochs(&id, bytes, &key)?;
         }
+        // no section of S's thing gave its epoch (a copy, or sections on other things only): the
+        // epoch the entry's wrap opened under
+        let wrapped = match self.core.ix.section_epochs.get(&(id, t)) {
+            Some(_) => None,
+            None => secrets.get(i).and_then(|x| self.epochs(&t).and_then(|ep| ep.read.epochs().map(|(e, _)| *e).find(|e| ep.read.reading_secret(e).is_some_and(|y| y.expose() == x.expose())))),
+        };
         let b = *blob;
-        self.run(|tx| note_blob(tx, &b, &id, &parts))?;
+        self.run(|tx| {
+            if let Some(e) = &wrapped {
+                note_section(tx, &id, &t, e)?;
+            }
+            note_blob(tx, &b, &id, &parts)
+        })?;
         Ok(Opened::Commit(id, ingested))
     }
 

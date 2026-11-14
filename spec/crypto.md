@@ -217,10 +217,11 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
 - **Section** (per thing, inside a commit blob): its parts under a fresh random section key used once; the key under `kdf("section", read secret of the thing)` (own or derived, §3; the record chain it derives through is in the clear beside it) with a fresh random nonce, AD = the commit ID. Bytes: spec/wire.md §4. The epoch is chosen as for a wrap (below, the rotation exception included); a copy's one section (spec/sync-judgement.md §1) goes under `kdf("section", blob key)`, so the blob's wraps gate it.
 - **Order**: 0 for a commit with a purge request or a part on a role-class aspect, `created.0`, `retention^.0` or `group.0`, else the commit's `ts` (a header-only blob too). It is read only to order a node's first sync (spec/sync-streams.md §5), and a wrong one changes nothing else.
 - A wrap names no epoch: a reader tries the read secrets it holds, newest first.
-- **Who wraps under what**:
-  - A node logging an entry wraps under the newest current read epoch whose secret it holds (§4).
-  - A node holding no current secret logs nothing: it is stranded (spec/permissions.md §4).
+- **Who wraps under what** (wraps and sections alike: one rule):
+  - A commit's writer, encrypting it first, uses the newest current read epoch whose secret it holds (§4).
   - Exception: a commit carrying boxes of a read epoch e (a rotation) is wrapped, under every sync ID whose read secret derives from that actor's, under the read epoch e supersedes whose secret the rotator holds with the greatest n, ties by lowest nonce (n, not order n, §4).
+  - Any later encryption of a commit (a fresh blob of it by any node, its writer's too: logged again, a non-writer's deposit, a per-sync-ID copy) uses, per thing, the epoch the commit was written under there: a section the epoch its section of that thing opened under; a wrap under a sync ID the epoch the commit's section of the sync ID's thing opened under, else (a copy, or no section of that thing) the epoch the commit's entry under that sync ID was wrapped under; for a commit written here and not yet encrypted, the first rule. It refuses (encrypts nothing) when that epoch is not established here or was never seen. A held blob is logged again verbatim, never re-encrypted.
+  - A node holding no current secret logs nothing: it is stranded (spec/permissions.md §4).
 - A sync ID's role keys at a peer are those of the epochs the peer's head registers (spec/sync-ids.md §3).
 - **Inbox blob** (spec/sync-inbox.md §2): a role commit (header and deltas) about the recipient, plus the sync IDs of the things it names, sealed to the recipient actor's read-role KEM key. Bytes: spec/wire.md §9.
   - Its prefix expiry is a delivery lifetime (`INBOX_LIFETIME`), not a commit expiry.
