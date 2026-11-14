@@ -254,6 +254,13 @@ impl Side {
         self.settle();
     }
 
+    /// The peer's stream stands at `pos` (an Applied): every member at the stream stands there.
+    pub fn reported_stream(&mut self, conn: ConnId, pos: Position) {
+        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, now: self.now };
+        self.opens.reported(&mut ctx, Reported::Stream(conn, pos, pos.to_be_bytes().to_vec()), &mut self.moved);
+        self.settle();
+    }
+
     pub fn closed(&mut self, conn: ConnId) {
         self.opens.closed(conn, &mut self.moved);
     }

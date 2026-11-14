@@ -391,7 +391,6 @@ impl Streams {
                 p.failed.remove(b);
             }
             if let Some(bytes) = blob {
-                self.serve.entry(conn).or_default().crossed.insert(*b);
                 self.take_body(ctx, conn, *s, *b, *wrap, *stamp, bytes);
             } else if let Some(c) = self.wanted(ctx, conn, s, b, wrap, *stamp) {
                 batch.owed.push((*s, *b));
@@ -458,6 +457,8 @@ impl Streams {
             }
             return;
         }
+        // a body crosses a connection once: its bytes are not sent back on it
+        self.serve.entry(conn).or_default().crossed.insert(b);
         let e = entry_of(b, wrap, stamp, bytes);
         match ctx.store.holding(&s) {
             Some(Holding::Unread) if stamp.is_some() => {
@@ -584,34 +585,37 @@ impl Streams {
         }
     }
 
-    /// A FetchReply (or a Fetch skipped or refused: none of its IDs): what came is taken, what
-    /// came as none fails at this source, the rest of a prefix is asked again.
+    /// A FetchReply (or a Fetch skipped or refused: none of its IDs): the rest of a prefix is asked
+    /// again before what came is applied, so it stays asked and owed (a partial fill never counts
+    /// as caught up); what came is taken; a reply with none fails every ID at this source. An item
+    /// for an ID not asked is ignored.
     fn fetched(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, items: Vec<Fetched>) {
         let Some(p) = self.pull.get_mut(&conn) else { return };
         let Some((s, ids, c)) = p.fetches.remove(&id) else { return };
-        let answered: BTreeSet<BlobId> = items.iter().map(|f| f.blob_id).collect();
-        for b in &ids {
+        let mut items = items;
+        let mut seen = BTreeSet::new();
+        items.retain(|f| ids.contains(&f.blob_id) && seen.insert(f.blob_id));
+        let rest: Vec<BlobId> = if items.is_empty() { Vec::new() } else { ids.iter().filter(|b| !seen.contains(b)).copied().collect() };
+        if !rest.is_empty()
+            && let Some(again) = ctx.wire.request(conn, Msg::Fetch { id: 0, sync_id: s, max_reply: REPLY_BUDGET as u64, ids: rest.clone() })
+        {
+            for b in &rest {
+                self.asked.insert(*b, (conn, ctx.now));
+            }
+            p.fetches.insert(again, (s, rest, c));
+        }
+        let Some(p) = self.pull.get_mut(&conn) else { return };
+        if items.is_empty() {
+            p.failed.extend(ids.iter().copied());
+        }
+        for b in ids.iter().filter(|b| items.is_empty() || seen.contains(b)) {
             if self.asked.get(b).is_some_and(|(x, _)| *x == conn) {
                 self.asked.remove(b);
             }
         }
-        if items.is_empty() {
-            if let Some(p) = self.pull.get_mut(&conn) {
-                p.failed.extend(ids.iter().copied());
-            }
-        } else if let Some(p) = self.pull.get_mut(&conn) {
-            for b in ids.iter().filter(|b| !answered.contains(b)) {
-                p.arrivals += 1;
-                let key = (c, 0, u64::MAX - p.arrivals);
-                p.queue.insert(key, (s, *b));
-            }
-        }
         for f in items {
             match f.entry {
-                Some((bytes, wrap, stamp)) => {
-                    self.serve.entry(conn).or_default().crossed.insert(f.blob_id);
-                    self.take_body(ctx, conn, s, f.blob_id, wrap, stamp, &bytes);
-                }
+                Some((bytes, wrap, stamp)) => self.take_body(ctx, conn, s, f.blob_id, wrap, stamp, &bytes),
                 None => {
                     if let Some(p) = self.pull.get_mut(&conn) {
                         p.failed.insert(f.blob_id);

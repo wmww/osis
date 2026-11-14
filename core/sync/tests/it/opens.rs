@@ -7,7 +7,7 @@ use crate::harness::scripted::*;
 use osis_base::SyncId;
 use osis_engine::sync::J;
 use osis_proto::{Code, Msg, OfferItem};
-use osis_sync::opens::Moved;
+use osis_sync::opens::{Moved, Rejoin};
 use osis_sync::session::Proven;
 use osis_sync::types::{Credential, SourceClass};
 
@@ -123,6 +123,34 @@ fn a_digest_difference_closes_one_sided_members_spec_sync_opens_3() {
     p.run();
     assert!(p.b.moved.contains(&Moved::Left(p.cb, S)), "the one-sided member closed: {:?}", p.b.moved);
     assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "tested again and open");
+    assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::From(None))), "rejoined from the start: {:?}", p.b.moved);
+}
+
+// spec/sync-opens.md §6 (Lost): the receiver keeps the Lost's cursor (where the member stopped for
+// it, in the sender's log) and its rejoin reads from there; a member this side closed itself, or
+// left with its connection, rejoins from where its own stream holds it.
+#[test]
+fn a_rejoin_reads_from_the_losts_cursor_spec_sync_opens_6() {
+    let mut p = readers();
+    // b stored a's log at 7 for S (a learns it from b's Applied)
+    p.a.reported(p.ca, S, 7);
+    let c = p.a.table.creds[&S].as_ref().clone();
+    p.a.table.set(S, None);
+    p.a.settle();
+    p.run();
+    assert!(!p.b.open(p.cb, &S));
+    p.b.moved.clear();
+    p.a.table.set(S, Some(c));
+    p.a.settle();
+    p.run();
+    assert!(p.b.open(p.cb, &S));
+    assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::From(Some(7u64.to_be_bytes().to_vec())))), "{:?}", p.b.moved);
+    // a reconnect: the record's members rejoin as their streams hold them
+    p.close();
+    p.b.moved.clear();
+    p.connect(2, account(1), account(2));
+    p.run();
+    assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::Held)), "{:?}", p.b.moved);
 }
 
 // spec/sync-opens.md §4 (shared set): a side keeping no shared set yet answers its requests 14.
@@ -357,6 +385,25 @@ fn a_sync_key_open_ends_when_the_head_moves_spec_sync_opens_6() {
     assert!(!k.open(adv.peer, &S));
     let lost = of_kind(&k.sent(), 38);
     assert!(matches!(&lost[..], [Msg::Lost { items, .. }] if items[0].0 == S && items[0].1.is_some()));
+}
+
+// spec/sync-opens.md §6 (reported positions): an Applied moves every member at the stream; an
+// ended member there closes with a Lost once the stream passes its `until`, and not before.
+#[test]
+fn an_ended_member_closes_when_the_stream_passes_until_spec_sync_opens_6() {
+    let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
+    let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
+    adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
+    k.table.set(S, Some(store(&S, &s1, &[])));
+    k.settle();
+    let until = k.table.until;
+    assert!(k.moved.contains(&Moved::Ending(adv.peer, S)));
+    k.reported_stream(adv.peer, until - 1);
+    assert!(k.open(adv.peer, &S));
+    k.sent();
+    k.reported_stream(adv.peer, until);
+    assert!(!k.open(adv.peer, &S));
+    assert!(matches!(&of_kind(&k.sent(), 38)[..], [Msg::Lost { items, .. }] if items[0] == (S, osis_proto::Cursor::new(until.to_be_bytes().to_vec()).ok())));
 }
 
 // ON_endproof (spec/sync-opens.md §6): an open by a sync proof is re-judged at a rotation.

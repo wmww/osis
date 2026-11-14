@@ -19,7 +19,9 @@ use osis_sync::streams::{Ctx, Ground, Opening, Rank, Shared, Streams, Wire};
 use osis_sync::types::{ConnId, Credential, Entry, Result, SourceClass};
 use osis_sync::unread::Sources;
 use osis_sync::Store;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
+use std::rc::Rc;
 
 /// The one connection, as each side names it.
 const C: ConnId = ConnId(1);
@@ -27,15 +29,20 @@ const THING: Tid = Tid::from_bytes([0x51; 15]);
 
 // ---- the scripted parts ----
 
+/// What a side did, in order: bodies opened and requests sent (shared by its `Table` and `Pipe`).
+type Log = Rc<RefCell<Vec<(&'static str, u64)>>>;
+
 /// The engine's part: what opened, and each blob's fill rank.
 #[derive(Default)]
 struct Table {
     opened: Vec<BlobId>,
     rank: BTreeMap<BlobId, Rank>,
+    log: Log,
 }
 
 impl Ground for Table {
     fn open(&mut self, _s: &SyncId, e: &Entry, _bytes: &[u8]) -> Result<Opening> {
+        self.log.borrow_mut().push(("open", 0));
         self.opened.push(e.blob);
         Ok(Opening::Taken)
     }
@@ -67,10 +74,12 @@ struct Pipe {
     next: Id,
     /// Pushes refused (the push rule: no room).
     full: bool,
+    log: Log,
 }
 
 impl Wire for Pipe {
     fn request(&mut self, c: ConnId, mut m: Msg) -> Option<Id> {
+        self.log.borrow_mut().push(("request", m.kind()));
         self.next += 1;
         let id = TOP_BIT | self.next;
         m.set_id(id);
@@ -95,6 +104,8 @@ impl Wire for Pipe {
 struct Open {
     members: BTreeMap<ConnId, BTreeMap<SyncId, Member>>,
     record: Option<RecordId>,
+    /// Connections whose peer has a record of its own (another source than `record`).
+    records: BTreeMap<ConnId, RecordId>,
     positions: BTreeMap<ConnId, Positions>,
 }
 
@@ -107,8 +118,8 @@ impl Shared for Open {
     fn agreed(&self, _c: ConnId) -> bool {
         true
     }
-    fn record(&self, _c: ConnId) -> Option<RecordId> {
-        self.record
+    fn record(&self, c: ConnId) -> Option<RecordId> {
+        self.records.get(&c).copied().or(self.record)
     }
     fn reported(&self, c: ConnId, s: &SyncId) -> Option<osis_sync::types::Position> {
         self.members(c).get(s)?;
@@ -138,7 +149,8 @@ impl Side {
     fn new(seed: u64) -> Side {
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let store = Store::open(Box::new(backend.clone()), Box::new(root.clone()), Box::new(SeededRng::from_u64(seed))).unwrap();
-        Side { backend, root, store, streams: Streams::default(), table: Table::default(), pipe: Pipe::default(), open: Open { record: Some([seed as u8; 16]), ..Open::default() }, reported: Vec::new(), folded: 0, set: SyncSet::default() }
+        let log = Log::default();
+        Side { backend, root, store, streams: Streams::default(), table: Table { log: log.clone(), ..Table::default() }, pipe: Pipe { log, ..Pipe::default() }, open: Open { record: Some([seed as u8; 16]), ..Open::default() }, reported: Vec::new(), folded: 0, set: SyncSet::default() }
     }
 
     fn hold(&mut self, s: SyncId, h: Holding) {
@@ -229,22 +241,27 @@ impl Pair {
     /// Delivers until nothing moves, settling both sides between deliveries; `drop` loses a frame
     /// (a to b when its flag is true).
     fn run_with(&mut self, mut drop: impl FnMut(bool, &Msg) -> bool) {
+        self.run_on(&[C], |ab, _, m| drop(ab, m));
+    }
+
+    /// As `run_with`, over each of `conns` (each names the one connection at both sides).
+    fn run_on(&mut self, conns: &[ConnId], mut drop: impl FnMut(bool, ConnId, &Msg) -> bool) {
         for _ in 0..10_000 {
             let now = self.now;
             self.a.with(now, |s, c| s.tick(c).unwrap());
             self.b.with(now, |s, c| s.tick(c).unwrap());
-            let on_c = |out: &mut Vec<(ConnId, Frame)>| {
-                let (here, rest): (Vec<_>, Vec<_>) = std::mem::take(out).into_iter().partition(|(c, _)| *c == C);
+            let on = |out: &mut Vec<(ConnId, Frame)>| {
+                let (here, rest): (Vec<_>, Vec<_>) = std::mem::take(out).into_iter().partition(|(c, _)| conns.contains(c));
                 *out = rest;
-                here.into_iter().map(|(_, f)| f)
+                here
             };
-            let mut q: VecDeque<(bool, Frame)> = on_c(&mut self.a.pipe.out).map(|f| (true, f)).chain(on_c(&mut self.b.pipe.out).map(|f| (false, f))).collect();
+            let mut q: VecDeque<(bool, ConnId, Frame)> = on(&mut self.a.pipe.out).into_iter().map(|(c, f)| (true, c, f)).chain(on(&mut self.b.pipe.out).into_iter().map(|(c, f)| (false, c, f))).collect();
             if q.is_empty() {
                 return;
             }
-            while let Some((ab, f)) = q.pop_front() {
+            while let Some((ab, conn, f)) = q.pop_front() {
                 let m = f.msg();
-                if drop(ab, &m) {
+                if drop(ab, conn, &m) {
                     self.held.push((ab, f));
                     continue;
                 }
@@ -255,7 +272,7 @@ impl Pair {
                     Frame::Ans(id, _) => Incoming::Reply(To::Streams, id, m),
                     Frame::Push(_) => Incoming::Push(m),
                 };
-                to.with(now, |s, c| s.message(c, C, inc));
+                to.with(now, |s, c| s.message(c, conn, inc));
             }
         }
         panic!("streams did not settle");
@@ -814,6 +831,77 @@ fn an_ended_member_told_at_its_until_spec_sync_streams_4() {
     p.run();
     assert!(!knows(&p.b, p.b.src(), s, late), "nothing past until");
     assert!(p.sent_by_a(43).iter().any(|m| matches!(m, Msg::Stream(st) if st.events.is_empty() && st.report && st.cursor.is_some())));
+}
+
+// spec/sync-streams.md §4 (Bodies: the rest of an answered Fetch is asked before what came is
+// applied): a reply holding only a prefix leaves the rest asked and owed, so the message stays in
+// hand (no Applied, not caught up) until the rest comes.
+#[test]
+fn the_rest_of_a_fetch_is_asked_before_applying_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    let x: Vec<BlobId> = (0..3).map(|i| p.a.log(s, 40_000 + i)).collect();
+    p.shared_read(s);
+    p.run_with(|ab, m| ab && m.kind() == 20);
+    let held = std::mem::take(&mut p.held);
+    let [(_, Frame::Ans(id, bytes))] = held.as_slice() else { panic!("one FetchReply held: {held:?}") };
+    let Msg::FetchReply { items, .. } = Msg::decode(bytes).unwrap() else { panic!() };
+    assert_eq!(items.len(), 3, "one Fetch of the three");
+    // the server answers a prefix: the first body alone
+    p.b.table.log.borrow_mut().clear();
+    let first = vec![items[0].clone()];
+    p.b.with(p.now, |st, c| st.message(c, C, Incoming::Reply(To::Streams, *id, Msg::FetchReply { id: *id, items: first })));
+    assert_eq!(p.b.table.opened, [items[0].blob_id]);
+    assert_eq!(p.b.table.log.borrow().as_slice(), [("request", 19), ("open", 0)], "the rest asked, then the first applied");
+    let rest: Vec<BlobId> = p.b.pipe.out.iter().filter_map(|(_, f)| if let Msg::Fetch { ids, .. } = f.msg() { Some(ids) } else { None }).flatten().collect();
+    assert_eq!(rest.len(), 2);
+    assert!(!p.b.streams.caught_up(C, &s), "a partial fill is not caught up");
+    assert!(p.sent_by_b(44).is_empty(), "no Applied yet");
+    p.run();
+    assert!(x.iter().all(|b| p.b.table.opened.contains(b)));
+    assert!(p.b.streams.caught_up(C, &s));
+    assert!(!p.sent_by_b(44).is_empty());
+}
+
+// spec/sync-streams.md §4 (Bodies: from one source at a time, the next source sharing the sync ID
+// only when one fails): a source that lists a body and answers its Fetch with none hands it to the
+// next source, which alone is asked then.
+#[test]
+fn the_next_source_takes_over_when_one_fails_spec_sync_streams_4() {
+    const D: ConnId = ConnId(2);
+    let mut p = Pair::new();
+    let s = sid(1);
+    let x = p.a.log(s, 40_000);
+    p.a.hold(s, Holding::Read);
+    p.b.hold(s, Holding::Read);
+    // two sources at b: a's peer record on C, another on D (a serves both)
+    p.b.open.records.insert(D, [0xd; 16]);
+    p.a.open.records.insert(D, [0xe; 16]);
+    for c in [C, D] {
+        p.a.join_on(p.now, c, s, Rejoin::Held);
+        p.b.join_on(p.now, c, s, Rejoin::Held);
+    }
+    // the first source asked answers with nothing (it refuses: a lying listing)
+    let mut liar = None;
+    p.run_on(&[C, D], |ab, conn, m| {
+        if ab && m.kind() == 20 && liar.is_none_or(|l| l == conn) {
+            liar = Some(conn);
+            return true;
+        }
+        false
+    });
+    let liar = liar.expect("a fetch was answered");
+    let other = if liar == C { D } else { C };
+    assert_eq!(p.sent_by_b(19).len(), 1, "one source asked");
+    assert!(p.b.table.opened.is_empty());
+    let Some((_, Frame::Ans(id, _))) = p.held.pop() else { panic!() };
+    p.b.with(p.now, |st, c| st.message(c, liar, Incoming::Reply(To::Streams, id, Msg::FetchReply { id, items: Vec::new() })));
+    p.b.with(p.now, |st, c| st.tick(c).unwrap());
+    let asked: Vec<ConnId> = p.b.pipe.out.iter().filter(|(_, f)| f.msg().kind() == 19).map(|(c, _)| *c).collect();
+    assert_eq!(asked, [other], "the next source asked, at the next settle");
+    p.run_on(&[C, D], |_, _, _| false);
+    assert_eq!(p.b.table.opened, [x], "taken once, from the other source");
+    assert!(p.b.streams.caught_up(C, &s) && p.b.streams.caught_up(D, &s));
 }
 
 // spec/sync-streams.md §4 (Costs): a push costs the events since the cursor, whatever the log
