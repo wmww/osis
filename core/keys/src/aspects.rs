@@ -27,7 +27,7 @@ pub fn history_key(role: Role, epoch: &Epoch) -> HistoryKey {
 
 /// The keyset of a role epoch: its KEM public key `kdf("kem", secret)` and delete key
 /// (spec/crypto.md §3, §7), listing `supersedes` and the digest of the rotation's `names` (§4),
-/// with no left-out or sealed-at keysets or carried demotions yet (`produce::rotate` adds them).
+/// with no left-out keysets or carried demotions yet (`produce::rotate` adds them).
 pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>, names: &Names) -> Keyset {
     Keyset {
         epoch: to_schema(epoch),
@@ -37,7 +37,6 @@ pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>, na
         supersedes: supersedes.iter().map(to_schema).collect(),
         names: names.digest(),
         left_out: BTreeMap::new(),
-        sealed_at: BTreeMap::new(),
         demotions: BTreeSet::new(),
         demotes: false,
     }
@@ -58,12 +57,16 @@ fn superseded_of(ks: &Keyset) -> Result<BTreeSet<Epoch>, Error> {
     ks.supersedes.iter().map(from_schema).collect()
 }
 
-/// A write to `secrets.0`: boxes put, boxes removed, history boxes put (spec/crypto.md §4).
+/// A write to `secrets.0`: boxes put, boxes removed, history boxes put (spec/crypto.md §4); and
+/// the `keys.0` records of its boxes to holder actors, keyed as each box, naming the holder's
+/// keysets it names (`sealed`, spec/crypto.md §4 Stale: written with the box, whoever boxes,
+/// and gone with it).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SecretsWrite {
     pub boxes: BTreeMap<BoxKey, SecretBox>,
     pub removed: BTreeSet<BoxKey>,
     pub history: BTreeMap<HistoryKey, Vec<u8>>,
+    pub sealed: BTreeMap<BoxKey, BTreeSet<Epoch>>,
 }
 
 impl SecretsWrite {
@@ -82,13 +85,16 @@ impl SecretsWrite {
     pub fn extend(&mut self, other: SecretsWrite) {
         for k in &other.boxes {
             self.removed.remove(k.0);
+            self.sealed.remove(k.0);
         }
         for k in &other.removed {
             self.boxes.remove(k);
+            self.sealed.remove(k);
         }
         self.boxes.extend(other.boxes);
         self.removed.extend(other.removed);
         self.history.extend(other.history);
+        self.sealed.extend(other.sealed);
     }
 
     pub fn is_empty(&self) -> bool {

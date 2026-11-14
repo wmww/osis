@@ -310,7 +310,7 @@ fn a_box_at_an_account_epoch_carries_its_rotation_spec_crypto_4() {
     let t = actor_of(&mut lp, &a.account);
     let e = &mut lp.peers[1].engine;
     let s = e.run(|tx| crate::flows::secrets_in(tx, &t)).unwrap();
-    let w = osis_keys::SecretsWrite { boxes: s.boxes.iter().filter(|(k, _)| k.holder == a.account).map(|(k, b)| (k.clone(), b.clone())).collect(), removed: Default::default(), history: Default::default() };
+    let w = osis_keys::SecretsWrite { boxes: s.boxes.iter().filter(|(k, _)| k.holder == a.account).map(|(k, b)| (k.clone(), b.clone())).collect(), removed: Default::default(), history: Default::default(), sealed: Default::default() };
     assert_eq!(crate::rotation::members::carried(&e.core, &w, None), vec![id], "the box's epoch travels with it");
 }
 

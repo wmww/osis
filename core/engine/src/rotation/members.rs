@@ -398,12 +398,13 @@ pub(crate) fn boxed_keysets(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Res
 }
 
 /// Whether `a`'s epoch `e` of role `r` has a stale box (spec/crypto.md §4, rule 2): a box of its
-/// `secrets.0` state to a holder actor, or a keyset of it its keyset records sealing that holder
-/// at (what a node holding none of `a`'s boxes judges by), naming a keyset of it held invalid,
-/// tainted, or listed by a held valid keyset of it.
+/// `secrets.0` state to a holder actor, or a keyset of it a box record of `a`'s `keys.0` names
+/// at `e` (what a node holding none of `a`'s boxes judges by: every box, whoever wrote it, is
+/// recorded beside it), naming a keyset of it held invalid, tainted, or listed by a held valid
+/// keyset of it.
 pub(crate) fn stale_at(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<bool> {
     let mut named: Vec<(Tid, Epoch)> = boxed_keysets(tx, a, r, e)?.into_iter().flat_map(|(m, ks)| ks.into_iter().map(move |k| (m, k))).collect();
-    named.extend(tx.core.keyset(a, r, e).into_iter().flat_map(|x| x.sealed_at.iter().flat_map(|(m, ks)| ks.iter().map(move |k| (*m, *k)))));
+    named.extend(tx.core.ix.sealed.get(&(*a, r, *e)).into_iter().flat_map(|x| x.keysets.iter().flat_map(|(m, ks)| ks.iter().map(move |k| (*m, *k)))));
     for (m, k) in named {
         let held = keysets_of(tx, &m, r, Some(&k))?;
         if osis_keys::stale(&k, &held, &tainted(tx, &m, r)?) {
@@ -437,7 +438,9 @@ pub(crate) fn carried(core: &Core, w: &osis_keys::SecretsWrite, keys: Option<&os
                 return Vec::new();
             }
             let carries = core.keyset(&m, r, &e).into_iter().flat_map(|x| x.demotions.iter().copied());
-            core.ix.epoch_intro.get(&(m, r, e)).map(|x| x.1).into_iter().chain(carries).collect::<Vec<_>>()
+            // the epoch's box records travel with its keyset (spec/crypto.md §4, Stale)
+            let records = core.ix.sealed.get(&(m, r, e)).into_iter().flat_map(|x| x.by.iter().copied());
+            core.ix.epoch_intro.get(&(m, r, e)).map(|x| x.1).into_iter().chain(carries).chain(records).collect::<Vec<_>>()
         })
         .collect();
     out.sort();

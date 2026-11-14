@@ -37,6 +37,7 @@ pub(super) const METAS: &[u8] = b"node/metas";
 const BOXES_TO: &[u8] = b"node/boxes to";
 const EPOCH_INTRO: &[u8] = b"node/epoch intro";
 const KEYSETS: &[u8] = b"node/keysets";
+const SEALED: &[u8] = b"node/sealed";
 const DELETE_HINTS: &[u8] = b"node/delete hints";
 const RETENTION: &[u8] = b"node/retention";
 const ORIGINALS: &[u8] = b"node/originals";
@@ -146,30 +147,18 @@ impl Rec for super::HeldKeyset {
         let lists: Vec<osis_crypto::Epoch> = self.lists.iter().copied().collect();
         let since = Value::List(self.since.iter().map(Rec::to).collect());
         let names = Value::List(self.names.iter().map(|(d, a)| Value::List(vec![Value::bytes(d), Value::bytes(a.as_bytes())])).collect());
-        let left_out = Value::List(self.left_out.iter().flat_map(|(m, xs)| xs.iter().map(|x| Value::List(vec![Value::bytes(m.as_bytes()), x.to()]))).collect());
-        let sealed_at = Value::List(self.sealed_at.iter().flat_map(|(m, xs)| xs.iter().map(|x| Value::List(vec![Value::bytes(m.as_bytes()), x.to()]))).collect());
+        let left_out = by_holder_to(&self.left_out);
         let demotions = Value::List(self.demotions.iter().map(|c| Value::bytes(&c.0)).collect());
-        Value::List(vec![lists.to(), kem, since, names, left_out, sealed_at, demotions, Value::Bool(self.demotes)])
+        Value::List(vec![lists.to(), kem, since, names, left_out, demotions, Value::Bool(self.demotes)])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(f) = v else { return None };
-        let [lists, kem, since, names, left_out, sealed_at, Value::List(demotions), Value::Bool(demotes)] = f.as_slice() else { return None };
-        let by_holder = |x: &Value| -> Option<BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>> {
-            let Value::List(x) = x else { return None };
-            let mut out: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>> = BTreeMap::new();
-            for y in x {
-                let Value::List(p) = y else { return None };
-                let [Value::Bytes(m), e] = p.as_slice() else { return None };
-                out.entry(Tid::from_bytes(m.as_slice().try_into().ok()?)).or_default().insert(Rec::from(e)?);
-            }
-            Some(out)
-        };
-        let sealed_at = by_holder(sealed_at)?;
+        let [lists, kem, since, names, left_out, Value::List(demotions), Value::Bool(demotes)] = f.as_slice() else { return None };
         let demotions = demotions.iter().map(|x| match x {
             Value::Bytes(b) => Some(osis_base::CommitId(<[u8; 32]>::try_from(b.as_slice()).ok()?)),
             _ => None,
         }).collect::<Option<BTreeSet<_>>>()?;
-        let out = by_holder(left_out)?;
+        let out = by_holder_from(left_out)?;
         let Value::List(names) = names else { return None };
         let names = names
             .iter()
@@ -198,7 +187,35 @@ impl Rec for super::HeldKeyset {
             _ => return None,
         };
         let lists: Vec<osis_crypto::Epoch> = Rec::from(lists)?;
-        Some(super::HeldKeyset { lists: lists.into_iter().collect(), kem, since, names, left_out: out, sealed_at, demotions, demotes: *demotes })
+        Some(super::HeldKeyset { lists: lists.into_iter().collect(), kem, since, names, left_out: out, demotions, demotes: *demotes })
+    }
+}
+/// `[holder, epoch]` pairs of a by-holder set map.
+fn by_holder_to(x: &BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>) -> Value {
+    Value::List(x.iter().flat_map(|(m, xs)| xs.iter().map(|x| Value::List(vec![Value::bytes(m.as_bytes()), x.to()]))).collect())
+}
+fn by_holder_from(x: &Value) -> Option<BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>> {
+    let Value::List(x) = x else { return None };
+    let mut out: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>> = BTreeMap::new();
+    for y in x {
+        let Value::List(p) = y else { return None };
+        let [Value::Bytes(m), e] = p.as_slice() else { return None };
+        out.entry(Tid::from_bytes(m.as_slice().try_into().ok()?)).or_default().insert(Rec::from(e)?);
+    }
+    Some(out)
+}
+impl Rec for super::SealedAt {
+    fn to(&self) -> Value {
+        Value::List(vec![by_holder_to(&self.keysets), Value::List(self.by.iter().map(|c| Value::bytes(&c.0)).collect())])
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let Value::List(f) = v else { return None };
+        let [keysets, Value::List(by)] = f.as_slice() else { return None };
+        let by = by.iter().map(|x| match x {
+            Value::Bytes(b) => Some(osis_base::CommitId(<[u8; 32]>::try_from(b.as_slice()).ok()?)),
+            _ => None,
+        }).collect::<Option<BTreeSet<_>>>()?;
+        Some(super::SealedAt { keysets: by_holder_from(keysets)?, by })
     }
 }
 impl Rec for BoxKey {
@@ -681,10 +698,6 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
             for (m, x) in &k.left_out {
                 w = w.raw(m.as_bytes()).u64(x.n()).raw(x.nonce());
             }
-            w = w.u32(k.sealed_at.len() as u32);
-            for (m, x) in &k.sealed_at {
-                w = w.raw(m.as_bytes()).u64(x.n()).raw(x.nonce());
-            }
             w = w.u32(k.demotions.len() as u32);
             for c in &k.demotions {
                 w = w.raw(&c.0);
@@ -817,17 +830,12 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
                 let m = Tid::from_bytes(r.arr()?);
                 left_out.push((m, osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped keyset epoch"))?));
             }
-            let mut sealed_at = Vec::new();
-            for _ in 0..r.u32()? {
-                let m = Tid::from_bytes(r.arr()?);
-                sealed_at.push((m, osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped keyset epoch"))?));
-            }
             let mut demotions = Vec::new();
             for _ in 0..r.u32()? {
                 demotions.push(CommitId(r.arr()?));
             }
             let demotes = r.u8()? != 0;
-            keysets.push(super::KeysetRec { role, epoch: e, lists, kem, names, left_out, sealed_at, demotions, demotes });
+            keysets.push(super::KeysetRec { role, epoch: e, lists, kem, names, left_out, demotions, demotes });
         }
         let stands_in = r.u8()? != 0;
         let hosts_from = r.u64()?;
@@ -883,6 +891,7 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_setmap(txn, BOXES_TO, &c.ix.boxes_to, all)?;
     put_map(txn, EPOCH_INTRO, &c.ix.epoch_intro, all)?;
     put_map(txn, KEYSETS, &c.ix.keysets, all)?;
+    put_map(txn, SEALED, &c.ix.sealed, all)?;
     put_map(txn, DELETE_HINTS, &c.ix.delete_hints, all)?;
     put_map(txn, RETENTION, &c.ix.retention, all)?;
     put_setmap(txn, ORIGINALS, &c.ix.originals, all)?;
@@ -1057,6 +1066,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<(Tid, Role, osis_crypto::Epoch)>(tx, KEYSETS)? {
         tx.core.ix.keysets.insert(k, dec(&v)?);
+    }
+    for (k, v) in scan::<(Tid, Role, osis_crypto::Epoch)>(tx, SEALED)? {
+        tx.core.ix.sealed.insert(k, dec(&v)?);
     }
     for (k, v) in scan::<Tid>(tx, DELETE_HINTS)? {
         tx.core.ix.delete_hints.insert(k, dec(&v)?);

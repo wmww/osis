@@ -407,6 +407,13 @@ impl Engine {
         })
     }
 
+    /// Whether held commit `c` introduces a keyset of `t` (its rotation, `Indexes::epoch_intro`):
+    /// not merely a `keys.0` part (a grant's box records write one too). Tests: delivering the
+    /// keyset commits apart.
+    pub fn writes_keyset(&self, t: &Tid, c: &CommitId) -> bool {
+        self.core.ix.epoch_intro.iter().any(|(k, v)| k.0 == *t && v.1 == *c)
+    }
+
     /// The state of `(tid, ak)` loaded afresh from the store, the cache left as it was. Tests:
     /// a cached state the store does not hold.
     #[cfg(test)]

@@ -32,9 +32,8 @@ fn world(keys: bool) -> (LocalPeer, Tid, Vec<crate::local_peer::Package>) {
         m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(w))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
-        let keys_ak = Ak::new("keys.0").unwrap();
         let pks = lp.packages(0).unwrap();
-        let carries = |lp: &LocalPeer, id: &CommitId| lp.peers[0].engine.header(id).unwrap().aspects.iter().any(|h| h.tid == t && h.ak == keys_ak);
+        let carries = |lp: &LocalPeer, id: &CommitId| lp.peers[0].engine.writes_keyset(&t, id);
         let (held, rest): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| keys || !carries(&lp, &pk.id));
         for pk in &held {
             lp.deliver(1, pk).unwrap();

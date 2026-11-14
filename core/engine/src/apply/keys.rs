@@ -4,7 +4,7 @@
 //! invalid no longer counts, valid again is recorded again. `Core::own_epochs` establishes from
 //! these and the held commits (the names).
 
-use crate::engine::{Core, KeysetRec, Tx};
+use crate::engine::{Core, KeysetRec, SealedRec, Tx};
 use crate::error::Result;
 use osis_commit::{Decoded, Header, Kind};
 use osis_base::{CommitId, Role, Tid, Value};
@@ -55,12 +55,13 @@ pub(crate) fn keysets_of(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<Keys
 }
 
 /// A `keys.0` body read: the keysets it writes, typed (whole keysets: a rotation replaces the
-/// field), and each as noted (`KeysetRec`: its role, epoch, listed epochs, KEM key (suite 1),
-/// names digest, left-out and sealed-at keysets and carried demotions).
+/// field), each as noted (`KeysetRec`: its role, epoch, listed epochs, KEM key (suite 1), names
+/// digest, left-out keysets and carried demotions), and the box records it puts (`SealedRec`).
 #[derive(Clone)]
 pub(crate) struct KeysBody {
     pub write: KeysWrite,
     pub recs: Vec<KeysetRec>,
+    pub sealed: Vec<SealedRec>,
 }
 
 impl KeysBody {
@@ -75,12 +76,30 @@ impl KeysBody {
                 let ct::KemKey::X25519MlKem768(b) = &ks.kem_key;
                 let kem = (ks.suite == osis_keys::SUITE).then(|| osis_crypto::KemPublicKey::from_slice(b).ok()).flatten();
                 let left_out = ks.left_out.iter().flat_map(|(m, xs)| xs.iter().filter_map(|x| Some((*m, osis_keys::aspects::from_schema(x).ok()?)))).collect();
-                let sealed_at = ks.sealed_at.iter().flat_map(|(m, xs)| xs.iter().filter_map(|x| Some((*m, osis_keys::aspects::from_schema(x).ok()?)))).collect();
-                Some(KeysetRec { role: *role, epoch, lists, kem, names: ks.names, left_out, sealed_at, demotions: ks.demotions.iter().copied().collect(), demotes: ks.demotes })
+                Some(KeysetRec { role: *role, epoch, lists, kem, names: ks.names, left_out, demotions: ks.demotions.iter().copied().collect(), demotes: ks.demotes })
             })
             .collect();
-        KeysBody { write, recs }
+        KeysBody { write, recs, sealed: sealed_recs(body) }
     }
+}
+
+/// The box records a `keys.0` body puts (a delta's puts, a snapshot's live entries;
+/// spec/crypto.md §4, Stale), each naming the keysets its box names.
+fn sealed_recs(body: &Fragment) -> Vec<SealedRec> {
+    let Some(m) = map(field(body, crate::flows::SEALED)) else { return Vec::new() };
+    let set = Type::Set(Box::new(Type::Named("epoch".into(), Vec::new())));
+    let mut out: Vec<SealedRec> = m
+        .entries()
+        .filter_map(|(_, _, k, f)| {
+            let k = BoxKey::from_value(&typed(k?, "box_key")?).ok()?;
+            let v = typed_read(osis_schema::core_schema(), &f?.read()?, &set).ok()?;
+            let ks = std::collections::BTreeSet::<ct::Epoch>::from_value(&v).ok()?;
+            Some(SealedRec { role: k.role, epoch: osis_keys::aspects::from_schema(&k.epoch).ok()?, holder: k.holder, keysets: ks.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect() })
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// The boxes a `secrets.0` delta writes (removals aside): typed key and key value.
@@ -149,13 +168,26 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, id: &CommitId, actor: &T
         for (m, x) in &k.left_out {
             held.left_out.entry(*m).or_default().insert(*x);
         }
-        for (m, x) in &k.sealed_at {
-            held.sealed_at.entry(*m).or_default().insert(*x);
-        }
         held.demotions.extend(k.demotions.iter().copied());
         held.demotes |= k.demotes;
         if held != before || !core.ix.keysets.contains_key(&key) {
             core.ix.keysets.insert(key, held);
+            core.touch();
+        }
+    }
+}
+
+/// Notes the box records a valid `keys.0` body of `actor` (commit `id`) puts (`KeysBody::sealed`):
+/// what Stale reads at the epochs they key, and the commit placed with those epochs' keysets.
+pub(crate) fn note_sealed(core: &mut Core, id: &CommitId, actor: &Tid, recs: &[SealedRec]) {
+    for x in recs {
+        let key = (*actor, x.role, x.epoch);
+        let mut at = core.ix.sealed.get(&key).cloned().unwrap_or_default();
+        let before = at.clone();
+        at.keysets.entry(x.holder).or_default().extend(x.keysets.iter().copied());
+        at.by.insert(*id);
+        if at != before {
+            core.ix.sealed.insert(key, at);
             core.touch();
         }
     }
@@ -175,6 +207,10 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
         for (r, e) in held {
             tx.core.ix.keysets.remove(&(*a, r, e));
         }
+        let sealed: Vec<(Role, osis_crypto::Epoch)> = tx.core.sealed_noted(a).map(|x| (x.0, x.1)).collect();
+        for (r, e) in sealed {
+            tx.core.ix.sealed.remove(&(*a, r, e));
+        }
     }
     let ak = osis_base::Ak::new("keys.0").map_err(|_| crate::Error::Misuse("ak"))?;
     for a in actors {
@@ -189,7 +225,9 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
                 note_keysets(tx.core, &m.header, &id, a, &d.keysets);
             }
             if let Some(d) = super::held_part(tx, &id, ai)? {
-                note_keysets(tx.core, &m.header, &id, a, &KeysBody::of(d.fragment()).recs);
+                let body = KeysBody::of(d.fragment());
+                note_keysets(tx.core, &m.header, &id, a, &body.recs);
+                note_sealed(tx.core, &id, a, &body.sealed);
             }
         }
     }
@@ -401,6 +439,7 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &su
             && let Some(k) = parts.keys(i)
         {
             note_keysets(tx.core, h, id, &a.tid, &k.recs);
+            note_sealed(tx.core, id, &a.tid, &k.sealed);
         }
     }
     if h.kind != Kind::Role {

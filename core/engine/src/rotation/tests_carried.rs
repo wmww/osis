@@ -359,10 +359,12 @@ fn removed_member_reads_nothing_after_the_knowing_keyset_spec_crypto_4() {
 
 // The planted fault (the model's `Travel = FALSE`): B's rotation of X1 carries nothing, so A
 // holds the knowing keyset without the removal and counts W a writer of G. Then each way W acts
-// makes A write under an epoch W opens: the test above sees each leak.
+// makes A write under an epoch W opens: the test above sees each leak. Not W's re-seal: the
+// record of the box it replaces stays (spec/crypto.md §4 Stale reads every box record noted at
+// the epoch), so A finds the epoch stale whether or not it knows W left.
 #[test]
 fn keyset_carrying_nothing_leaks_spec_crypto_4() {
-    for how in ATTACKS {
+    for how in ATTACKS.into_iter().filter(|x| *x != Attack::Reseal) {
         let mut s = shape(2);
         let rm = removed(&mut s, W, Carry::Nothing);
         let w = s.me(W);
@@ -370,6 +372,10 @@ fn keyset_carrying_nothing_leaks_spec_crypto_4() {
         let known = attack(&mut s, how, &rm);
         assert!(a_writes_opened(&mut s, known), "{how:?}: the planted fault is seen");
     }
+    let mut s = shape(2);
+    let rm = removed(&mut s, W, Carry::Nothing);
+    let known = attack(&mut s, Attack::Reseal, &rm);
+    assert!(!a_writes_opened(&mut s, known), "the replaced box's record keeps G's epoch stale");
 }
 
 // spec/crypto.md §4 (Held keyset): a keyset is held only with the demotions it carries. A holds

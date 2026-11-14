@@ -197,8 +197,6 @@ pub struct KeysetRec {
     /// The keysets of holder actors it records its rotation left them out at (spec/crypto.md §4,
     /// Left out).
     pub left_out: Vec<(Tid, osis_crypto::Epoch)>,
-    /// The keysets of holder actors its rotation's boxes name (spec/crypto.md §4, Stale).
-    pub sealed_at: Vec<(Tid, osis_crypto::Epoch)>,
     /// The other commits' demotions it carries, and whether its own commit is one.
     pub demotions: Vec<CommitId>,
     pub demotes: bool,
@@ -208,9 +206,8 @@ pub struct KeysetRec {
 /// writing it name, joined, its KEM key (the first such body's of suite 1 noted), the key of its
 /// earliest body (Seal's order fallback and the order rule read it), the names digests they
 /// publish, each with its body's author (what binds a history entry to a rotator,
-/// spec/crypto.md §4: a forger's body binds entries to the forger), the left-out and sealed-at
-/// keysets they record, joined (Seal and Stale read them at the actor's current epochs: a node
-/// holding none of its boxes judges them so), and the demotions they carry,
+/// spec/crypto.md §4: a forger's body binds entries to the forger), the left-out keysets they
+/// record, joined (Seal reads them at the actor's current epochs), and the demotions they carry,
 /// joined (spec/crypto.md §4, Carried demotions: `demotes`, its rotation commit is one). Held
 /// only once those are (`Core::keyset`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -221,9 +218,28 @@ pub struct HeldKeyset {
     pub since: Option<osis_perm::Point>,
     pub names: BTreeSet<(osis_keys::NamesDigest, Tid)>,
     pub left_out: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>,
-    pub sealed_at: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>,
     pub demotions: BTreeSet<CommitId>,
     pub demotes: bool,
+}
+
+/// A box record a `keys.0` body writes (spec/crypto.md §4, Stale): the actor's box of `role` at
+/// `epoch` to holder actor `holder` names `keysets` of it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SealedRec {
+    pub role: osis_base::Role,
+    pub epoch: osis_crypto::Epoch,
+    pub holder: Tid,
+    pub keysets: Vec<osis_crypto::Epoch>,
+}
+
+/// The box records of one epoch of an actor noted from its valid `keys.0` bodies
+/// (`Indexes::sealed`): per holder actor the keysets they name, joined (Stale reads them: a node
+/// holding none of the actor's boxes judges its epoch so), and the commits whose bodies wrote
+/// them (placed with the epoch's keyset, spec/crypto.md §4 Carried).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SealedAt {
+    pub keysets: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>,
+    pub by: BTreeSet<CommitId>,
 }
 
 impl HeldKeyset {
@@ -836,6 +852,10 @@ indexes! {
     /// keyset a held valid `keys.0` body (a role commit's delta or a compaction snapshot; kept
     /// once dropped, `Dropped::keysets`) writes. `Core::keysets_of` reads one actor's.
     pub keysets: JMap<(Tid, osis_base::Role, osis_crypto::Epoch), HeldKeyset>,
+    /// The box records of each epoch (spec/crypto.md §4, Stale): (actor, role, epoch) for each
+    /// epoch a held valid `keys.0` body (a role commit's delta or a compaction snapshot) records
+    /// a box at.
+    pub sealed: JMap<(Tid, osis_base::Role, osis_crypto::Epoch), SealedAt>,
     /// The lost-access trigger's work list (`rotation::lost::LOST_DUE`): tid -> when due
     /// (engine ms; 0: now).
     pub lost_due: JMap<Tid, u64>,
@@ -1621,6 +1641,11 @@ impl Core {
     /// Every keyset of actor `m` a valid body of which is noted (`Indexes::keysets`), held or not.
     pub(crate) fn keysets_noted(&self, m: &Tid) -> impl Iterator<Item = (osis_base::Role, osis_crypto::Epoch, &HeldKeyset)> {
         self.ix.keysets.range((*m, osis_base::Role::Sync, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *m).map(|(k, v)| (k.1, k.2, v))
+    }
+
+    /// Every epoch of actor `a` a valid `keys.0` body records a box at (`Indexes::sealed`).
+    pub(crate) fn sealed_noted(&self, a: &Tid) -> impl Iterator<Item = (osis_base::Role, osis_crypto::Epoch, &SealedAt)> {
+        self.ix.sealed.range((*a, osis_base::Role::Sync, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *a).map(|(k, v)| (k.1, k.2, v))
     }
 
     /// Held valid keyset `e` of role `r` of actor `m` (spec/crypto.md §4, Held keyset): a valid

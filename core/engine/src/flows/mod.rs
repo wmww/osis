@@ -158,6 +158,32 @@ pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite, new_on
     for (k, h) in &w.history {
         put(m, 1, k.to_value(), Value::Bytes(h.clone()))?;
     }
+    // each box's record (spec/crypto.md §4, Stale), written as the box is
+    for (k, ks) in &w.sealed {
+        let v = ks.iter().map(osis_keys::aspects::to_schema).collect::<BTreeSet<ct::Epoch>>().to_value();
+        if new_only {
+            m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(SEALED), PathSeg::Key(k.to_value())], op: Op::Put(v) })?;
+        } else {
+            m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(SEALED)], op: Op::Remove(k.to_value()) })?;
+            m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(SEALED), PathSeg::Key(k.to_value())], op: Op::Set(v) })?;
+        }
+    }
+    Ok(())
+}
+
+/// `keys.0`'s field of box records (spec/crypto.md §4, Stale; spec/wire.md §7).
+pub(crate) const SEALED: u64 = 8;
+
+/// Removes from `m` the records of `actor`'s boxes `removed` that its `keys.0` state holds: a
+/// record goes with its box (a rotation removing the boxes at the epochs it supersedes).
+pub(crate) fn unseal(tx: &mut Tx<'_>, m: &mut Mutation, actor: Tid, removed: &BTreeSet<ct::BoxKey>) -> Result<()> {
+    if removed.is_empty() {
+        return Ok(());
+    }
+    let held = Core::keys_in(tx, &actor)?.map(|k| k.sealed).unwrap_or_default();
+    for k in removed.iter().filter(|k| held.contains_key(k)) {
+        m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(SEALED)], op: Op::Remove(k.to_value()) })?;
+    }
     Ok(())
 }
 

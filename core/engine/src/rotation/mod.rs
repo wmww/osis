@@ -461,6 +461,7 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
     let carried = osis_keys::Carried { demotions: departures::carried(tx.core, &a), demotes: departs == Departs::Demoting };
     let rot = osis_keys::rotate_leaving_out(&a, roles, held, &secrets, &boxing.holders, &boxing.left_out, &carried, &names, &mut *tx.rng)?;
     put_secrets(m, a, &rot.secrets, false)?;
+    flows::unseal(tx, m, a, &rot.secrets.removed)?;
     put_keysets(m, a, &rot.keys)?;
     Ok(rot)
 }

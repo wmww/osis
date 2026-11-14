@@ -1214,9 +1214,8 @@ mod tests {
         // bob gets the rest first
         lp.peers[0].engine.grant(&t, &c, &edge(Role::Read)).unwrap();
         lp.peers[0].engine.grant(&t, &b, &edge(Role::Write)).unwrap();
-        let keys = Ak::new("keys.0").unwrap();
         let pks = lp.packages(0).unwrap();
-        let carries = |id: &CommitId| lp.peers[0].engine.header(id).unwrap().aspects.iter().any(|x| x.tid == t && x.ak == keys);
+        let carries = |id: &CommitId| lp.peers[0].engine.writes_keyset(&t, id);
         let (key_pks, rest): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| carries(&pk.id));
         assert!(!key_pks.is_empty());
         for pk in &rest {

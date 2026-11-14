@@ -139,11 +139,11 @@ codec_struct! {
 }
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, delete key, the epochs its rotation
-    /// supersedes, names digest, the keysets of each holder actor its rotation left out at and
-    /// sealed at, and the demotions it carries: other commits', and whether its own commit is one
+    /// supersedes, names digest, the keysets of each holder actor its rotation left out at, and
+    /// the demotions it carries: other commits', and whether its own commit is one
     /// (spec/crypto.md §3, §4, §7, §8).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 delete_key: SigningKey, 4 supersedes: BTreeSet<Epoch>, 5 names: [u8; 32], 6 left_out: BTreeMap<Tid, BTreeSet<Epoch>>, 7 sealed_at: BTreeMap<Tid, BTreeSet<Epoch>>, 8 demotions: BTreeSet<CommitId>, 9 demotes: bool }
+    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 delete_key: SigningKey, 4 supersedes: BTreeSet<Epoch>, 5 names: [u8; 32], 6 left_out: BTreeMap<Tid, BTreeSet<Epoch>>, 7 demotions: BTreeSet<CommitId>, 8 demotes: bool }
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -194,12 +194,14 @@ codec_struct! {
 }
 codec_struct! {
     /// `keys.0`: keysets per role (actors other than key actors), a key actor's KEM key, inbox,
-    /// 32-byte deposit seed, an account's current epoch's signing key (`key` its KEM key).
+    /// 32-byte deposit seed, an account's current epoch's signing key (`key` its KEM key), and
+    /// per box to a holder actor, keyed as that box, the holder's keysets it names (spec/crypto.md
+    /// §4, Stale).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Keys {
         0 read: Option<Keyset>, 1 write: Option<Keyset>, 2 admin: Option<Keyset>,
         3 key: Option<KemKey>, 4 inbox: Option<Inbox>, 5 deposit_seed: Option<[u8; 32]>, 6 signing: Option<SigningKey>,
-        7 sync: Option<Keyset>,
+        7 sync: Option<Keyset>, 8 sealed: BTreeMap<BoxKey, BTreeSet<Epoch>>,
     }
 }
 codec_struct! {

@@ -98,7 +98,14 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
                 },
             },
         };
-        out.boxes.insert(box_key(holder, i.role, &i.epoch), b);
+        let key = box_key(holder, i.role, &i.epoch);
+        // a holder actor's keysets the box names, recorded beside it in `keys.0` where every
+        // node holding the actor's keysets reads them (spec/crypto.md §4, Stale): a node holding
+        // none of the actor's boxes judges its epochs stale by them
+        if !matches!(rcpt.keys, HolderKeys::KeyActor { .. }) {
+            out.sealed.insert(key.clone(), box_keysets(&b).iter().copied().collect());
+        }
+        out.boxes.insert(key, b);
     }
     Ok(Some(()))
 }
@@ -291,17 +298,6 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         let items: Vec<Item> = rotated.iter().filter(|x| x.role <= m.role).map(|x| Item { role: x.role, epoch: x.epoch, secret: &x.secret }).collect();
         if !items.is_empty() && box_items(actor, m, &items, rng, &mut secrets)?.is_none() {
             unboxed.push(m.holder);
-        }
-        // a holder actor's keysets its boxes name, recorded where every node holding the keyset
-        // reads them (spec/crypto.md §4, Stale): a node holding none of the actor's boxes judges
-        // its epoch stale by them
-        if !matches!(m.keys, HolderKeys::KeyActor { .. }) {
-            for x in &rotated {
-                let Some(b) = secrets.boxes.get(&box_key(m.holder, x.role, &x.epoch)) else { continue };
-                if let Some(ks) = keys.keysets.get_mut(&x.role) {
-                    ks.sealed_at.insert(m.holder, box_keysets(b).iter().map(to_schema).collect());
-                }
-            }
         }
     }
     Ok(Rotation { rotated, secrets, keys, unboxed, names: names.clone(), wrap })
