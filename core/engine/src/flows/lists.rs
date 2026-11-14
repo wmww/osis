@@ -98,7 +98,7 @@ pub(crate) fn keep_certs(tx: &mut Tx<'_>, certs: &[ThingCert]) -> Result<bool> {
         }
         new = true;
         tx.txn.put_local(&key, &encode_list_blob(std::slice::from_ref(c)), Shred::No)?;
-        tx.core.ix.lists_on.insert(c.list.thing, c.rotation);
+        tx.core.ix.lists_on.insert((c.list.thing, c.rotation));
         if let ListIds::Inline(ids) = &c.list.ids {
             put_names(tx, &c.rotation, &c.list.thing, ids.iter().copied())?;
         }
@@ -117,7 +117,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     for (t, r) in rows {
-        tx.core.ix.lists_on.insert(t, r);
+        tx.core.ix.lists_on.insert((t, r));
     }
     Ok(())
 }

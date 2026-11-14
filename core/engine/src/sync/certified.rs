@@ -250,7 +250,7 @@ impl Certified {
 
 impl Engine {
     /// The things whose certificates `Certified` keeps: those holding a read sync ID.
-    fn read_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
+    pub(crate) fn read_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         let set = self.sync_set()?;
         Ok(Arc::new(set.ids.values().filter(|(_, h)| *h == super::Holding::Read).map(|(t, _)| *t).collect()))
     }

@@ -814,12 +814,12 @@ indexes! {
     pub blob_parts: JMap<osis_base::BlobId, Arc<crate::sync::BlobOf>>,
     /// `blob_parts`' blobs per commit: they go with it (`sync::bodies::forget`).
     pub commit_blobs: JSetMap<CommitId, osis_base::BlobId>,
-    /// The certificate blobs sealed here per sync ID, each with what it carries
-    /// (`sync::certblobs`).
-    pub cert_blobs: JMap<SyncId, Arc<BTreeMap<osis_base::BlobId, crate::sync::Carried>>>,
-    /// Per thing, the rotations whose thing list for it is held here (`flows::lists`; kept for
-    /// good, as the lists are).
-    pub lists_on: JSetMap<Tid, CommitId>,
+    /// The certificate blobs sealed here per (sync ID, kind: records or a rotation's lists),
+    /// each with what it carries (`sync::certblobs`).
+    pub cert_blobs: JMap<(SyncId, crate::sync::CertKind), Arc<crate::sync::CertBlobs>>,
+    /// (thing, rotation) per thing list held here (`flows::lists`; kept for good, as the lists
+    /// are): `sync::listed` follows its feed.
+    pub lists_on: JSet<(Tid, CommitId)>,
     /// Fall marks per aspect (`sync::falls`, spec/sync-judgement.md §4): a count of events, not
     /// derived from the commits held, so no rebuild compares it.
     pub falls: JMap<(Tid, Ak), u64>,
@@ -1035,6 +1035,8 @@ pub struct Core {
     /// What each read thing's certificates name, per commit (`sync::certified`): `sync_bodies`
     /// reads one commit's row.
     pub(crate) certified: crate::sync::certified::Certified,
+    /// The thing lists each read thing's sync IDs carry, per rotation (`sync::listed`).
+    pub(crate) listed: crate::sync::listed::Listed,
     /// `rotation::departures` per actor (`memo`).
     pub(crate) departures: memo::Memo<Tid, Vec<osis_keys::Departure>>,
     /// The holders lacking a box of each actor (`rotation::reseal_candidates`, `memo`): O(roster)
@@ -1364,6 +1366,7 @@ impl Core {
             dial_peers: self.dial_peers.clone(),
             holders_named: self.holders_named.clone(),
             certified: self.certified.clone(),
+            listed: self.listed.clone(),
             departures: self.departures.clone(),
             reseal_scans: self.reseal_scans.clone(),
             store_rows: self.store_rows.clone(),
@@ -1935,6 +1938,7 @@ impl Core {
             // followed (`Effects`): what a rollback restores moves its reads, so the next follow
             // indexes again
             certified: _,
+            listed: _,
             key_roles: _,
             inbox_actors: _,
             inboxes: _,
@@ -2122,6 +2126,7 @@ impl Core {
             dial_peers: memo::Memo::new("sync: dial peers"),
             holders_named: memo::Memo::new("holders named: read"),
             certified: Default::default(),
+            listed: Default::default(),
             departures: memo::Memo::new("departures"),
             reseal_scans: memo::Memo::new("reseal: scan"),
             rotation_seq: 0,

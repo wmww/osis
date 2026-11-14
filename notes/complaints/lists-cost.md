@@ -1,0 +1,4 @@
+# lists-cost
+- The brief said every commit at a sync ID re-ran the lists check; measured (cert-blob settles over the outsider fixture), a plain write settled nothing. What did cost was each role change: ~30 settles of the whole per-S effect (closure walk, every rotation's wrap check, every own cert blob's store row) per node removal. Measure before trusting a review's cost claim.
+- The sync harness's `Rotate` step rotates a thing, which writes no thing lists; an account rotation needs a node removal, so counting list work at n rotations is only cheap inside the engine (`rotate_in` with `also`).
+- `costs::take` counts nothing unless the probe test calls it before the measured step on the same thread; a first probe that printed `[]` looked like "no work" until checked against a step known to do some.

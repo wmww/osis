@@ -17,10 +17,11 @@ pub(crate) mod facts;
 pub(crate) mod falls;
 pub(crate) mod held;
 pub(crate) mod inbox;
+pub(crate) mod listed;
 pub(crate) mod pieces;
 pub use pieces::PieceLink;
 pub(crate) mod certblobs;
-pub use certblobs::Carried;
+pub use certblobs::{CertBlobs, CertKind};
 pub(crate) use certblobs::with_chains;
 pub(crate) mod records;
 mod relay;
@@ -410,7 +411,7 @@ impl Engine {
     // Held parts and bodies
 
     /// Brings the facade values kept per entry (`Core::published`, per labeled thing; each read
-    /// thing's certificates per piece and commit, `certified`) up to date with what moved since
+    /// thing's certificates per piece and commit, `certified`; its thing lists per rotation, `listed`) up to date with what moved since
     /// the last call: whether any entry moved. Each refreshes itself when asked, but an `Effects`
     /// key that read an entry goes due only once the entry is written, so a module calls this
     /// before its `due()` (the driver, before each module's settle and until it moves nothing).
@@ -419,7 +420,8 @@ impl Engine {
     /// (notes/engine.md).
     pub fn follow(&mut self) -> Result<bool> {
         let moved = self.follow_published();
-        Ok(self.follow_certificates()? | moved)
+        let moved = self.follow_certificates()? | moved;
+        Ok(self.follow_lists()? | moved)
     }
 
     /// Per sync ID of the sync set whose required set holds a body of `c`: that body.
@@ -471,11 +473,23 @@ impl Engine {
         self.certificate_records_now(s)
     }
 
-    /// The thing lists `s` carries (spec/sync-judgement.md §1 List blobs), per rotation the
-    /// things whose lists go: a list blob of those no list blob of that rotation in the own store
+    /// The things whose held list of rotation `r` sync ID `s` carries (spec/sync-judgement.md §1
+    /// List blobs, `sync::listed`): a list blob of those no list blob of `r` in the own store
     /// carries is logged there.
-    pub fn certificate_lists(&mut self, s: &SyncId) -> Result<Arc<BTreeMap<CommitId, BTreeSet<Tid>>>> {
-        self.certificate_lists_now(s)
+    pub fn certificate_lists(&mut self, s: &SyncId, r: &CommitId) -> Result<Arc<BTreeSet<Tid>>> {
+        self.certificate_lists_now(s, r)
+    }
+
+    /// The rotations with a list `s` carries: where a reader starts following `s` (later ones
+    /// come from `lists_feed`).
+    pub fn list_rotations(&mut self, s: &SyncId) -> Result<Vec<CommitId>> {
+        self.list_rotations_now(s)
+    }
+
+    /// A cursor over the (read thing, rotation) pairs whose sync IDs come to carry a list of the
+    /// rotation (`memo::Feed`).
+    pub fn lists_feed(&self) -> osis_base::memo::Feed<(Tid, CommitId)> {
+        self.lists_feed_now()
     }
 
     /// Whether a record blob (`r` none) or a list blob of rotation `r` can be sealed under `s`
@@ -484,16 +498,17 @@ impl Engine {
         self.cert_wrap_now(s, r)
     }
 
-    /// Certificate blob `b` sealed here under `s` is in the own store no more: its row goes.
-    pub fn forget_cert_blob(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+    /// Certificate blob `b` of kind `r` sealed here under `s` is in the own store no more: its
+    /// row goes.
+    pub fn forget_cert_blob(&mut self, s: &SyncId, r: CertKind, b: &BlobId) -> Result<()> {
         let (s, b) = (*s, *b);
-        self.run(|tx| certblobs::forget_blob(tx, &s, &b))
+        self.run(|tx| certblobs::forget_blob(tx, &s, r, &b))
     }
 
-    /// The certificate blobs (record and list blobs) sealed here under `s`, each with what it
-    /// carries.
-    pub fn cert_blobs(&mut self, s: &SyncId) -> Result<Arc<BTreeMap<BlobId, Carried>>> {
-        Ok(self.cert_blobs_now(s))
+    /// The certificate blobs of kind `r` (record blobs: `None`; list blobs of a rotation) sealed
+    /// here under `s`, each with what it carries.
+    pub fn cert_blobs(&mut self, s: &SyncId, r: CertKind) -> Result<Arc<CertBlobs>> {
+        Ok(self.cert_blobs_now(s, r))
     }
 
     /// A record blob of `records` under `s` (spec/wire.md §3), its bytes and wrap.

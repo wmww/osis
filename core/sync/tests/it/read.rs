@@ -12,7 +12,7 @@ use osis_base::{BlobId, CommitId, SyncId, WallMs};
 use osis_crypto::{LabelRole, Secret32, Signature, SigningSecret, label_role_key};
 use osis_engine::labeling::HeadKeys;
 use osis_engine::retention::{End, Minting, Standing};
-use osis_engine::sync::{BodyFacts, BodyMeta, Destruction, ReadCredentials};
+use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, Destruction, ReadCredentials};
 use osis_label::{Class, Step, StepKeys};
 use osis_sync::read::{BlobInfo, Facts, Ground, PieceAt, Read, CertBlobsMissing, Seen, SrcView, Verdict, Why};
 use osis_engine::sync::PieceLink;
@@ -157,11 +157,14 @@ struct Fake {
     logged: Vec<(SyncId, CommitId, BlobId)>,
     /// Entries stamped in place.
     restamped: Vec<(SyncId, CommitId, BlobId)>,
-    /// Per S, the records and lists it carries that no own certificate blob does, and own
-    /// certificate blobs gone.
-    records: Stamped<SyncId, CertBlobsMissing>,
-    /// Record blobs logged, and rows of gone ones forgotten.
-    record_logs: Vec<(SyncId, BTreeSet<osis_base::Tid>)>,
+    /// Per (S, kind), the records or a rotation's lists it carries that no own certificate blob
+    /// does, and own certificate blobs gone.
+    records: Stamped<(SyncId, CertKind), CertBlobsMissing>,
+    /// Per S, the rotations with a list it carries (`list_rotations`); pairs the feed gives next.
+    rotations: BTreeMap<SyncId, Vec<CommitId>>,
+    lists_new: Vec<(SyncId, CommitId)>,
+    /// Certificate blobs logged, and rows of gone ones forgotten.
+    record_logs: CertLogs,
     records_forgotten: Vec<(SyncId, BlobId)>,
     k: Kstore,
     /// Roots per body, what lies below each held piece, what the own store has of each, what
@@ -291,21 +294,27 @@ impl Ground for Fake {
     fn pullable(&mut self, s: &SyncId) -> Result<bool> {
         Ok(!self.unpullable.contains_key(s))
     }
-    fn cert_blobs_missing(&mut self, s: &SyncId) -> Result<CertBlobsMissing> {
-        Ok(self.records.get(s).cloned().unwrap_or_default())
+    fn cert_blobs_missing(&mut self, s: &SyncId, r: CertKind) -> Result<CertBlobsMissing> {
+        Ok(self.records.get(&(*s, r)).cloned().unwrap_or_default())
     }
-    fn forget_cert_blobs(&mut self, s: &SyncId, gone: &BTreeSet<BlobId>) -> Result<()> {
+    fn list_rotations(&mut self, s: &SyncId) -> Result<Vec<CommitId>> {
+        Ok(self.rotations.get(s).cloned().unwrap_or_default())
+    }
+    fn lists_added(&mut self) -> Result<Vec<(SyncId, CommitId)>> {
+        Ok(std::mem::take(&mut self.lists_new))
+    }
+    fn forget_cert_blobs(&mut self, s: &SyncId, r: CertKind, gone: &BTreeSet<BlobId>) -> Result<()> {
         self.records_forgotten.extend(gone.iter().map(|b| (*s, *b)));
-        let mut r = self.records.get(s).cloned().unwrap_or_default();
-        r.gone.clear();
-        self.records.insert(*s, r);
+        let mut x = self.records.get(&(*s, r)).cloned().unwrap_or_default();
+        x.gone.clear();
+        self.records.insert((*s, r), x);
         Ok(())
     }
-    fn log_records(&mut self, s: &SyncId, records: &BTreeSet<osis_base::Tid>) -> Result<()> {
-        self.record_logs.push((*s, records.clone()));
-        let mut r = self.records.get(s).cloned().unwrap_or_default();
-        r.records.retain(|t| !records.contains(t));
-        self.records.insert(*s, r);
+    fn log_cert_blob(&mut self, s: &SyncId, r: CertKind, tids: &BTreeSet<osis_base::Tid>) -> Result<()> {
+        self.record_logs.push((*s, r, tids.clone()));
+        let mut x = self.records.get(&(*s, r)).cloned().unwrap_or_default();
+        x.missing.retain(|t| !tids.contains(t));
+        self.records.insert((*s, r), x);
         Ok(())
     }
     fn now(&self) -> WallMs {
@@ -1386,10 +1395,10 @@ fn an_emptied_sync_id_drops_its_record_blobs_and_logs_none() {
     let rb = BlobId([8; 32]);
     let r1 = osis_base::Tid::from_bytes([1; 15]);
     let mut w = released(false);
-    w.g.records.insert(S, CertBlobsMissing { records: [r1].into(), held: [rb].into(), ..Default::default() });
+    w.g.records.insert((S, None), CertBlobsMissing { missing: [r1].into(), held: [rb].into(), ..Default::default() });
     w.settle();
     assert!(!w.g.sent.contains(&Sent::DropBlob(rb)), "dropped before told");
-    assert_eq!(w.g.record_logs, vec![(S, [r1].into())]);
+    assert_eq!(w.g.record_logs, vec![(S, None, [r1].into())]);
     w.g.k.held.insert((S, BlobId([3; 32])), cid(3));
     w.g.logged.push((S, cid(3), BlobId([3; 32])));
     w.stream();
@@ -1517,17 +1526,17 @@ fn missing_records_are_logged_once_a_reader_can_pull() {
     let mut w = W::new();
     let (r1, r2) = (osis_base::Tid::from_bytes([1; 15]), osis_base::Tid::from_bytes([2; 15]));
     w.g.unpullable.insert(S, ());
-    w.g.records.insert(S, CertBlobsMissing { records: [r1].into(), ..Default::default() });
+    w.g.records.insert((S, None), CertBlobsMissing { missing: [r1].into(), ..Default::default() });
     w.hold(cid(1), &[S], uncovered());
     assert!(w.g.record_logs.is_empty(), "no reader can pull S yet");
     w.g.unpullable.remove(&S);
     w.settle();
-    assert_eq!(w.g.record_logs, vec![(S, [r1].into())]);
+    assert_eq!(w.g.record_logs, vec![(S, None, [r1].into())]);
     w.settle();
     assert_eq!(w.g.record_logs.len(), 1, "once");
-    w.g.records.insert(S, CertBlobsMissing { records: [r2].into(), gone: [BlobId([9; 32])].into(), ..Default::default() });
+    w.g.records.insert((S, None), CertBlobsMissing { missing: [r2].into(), gone: [BlobId([9; 32])].into(), ..Default::default() });
     w.settle();
-    assert_eq!(w.g.record_logs, vec![(S, [r1].into()), (S, [r2].into())]);
+    assert_eq!(w.g.record_logs, vec![(S, None, [r1].into()), (S, None, [r2].into())]);
     assert_eq!(w.g.records_forgotten, vec![(S, BlobId([9; 32]))]);
 }
 
@@ -2187,4 +2196,55 @@ fn a_minting_copy_leaving_the_required_set_leaves_nothing_ranked_spec_commits_5(
         assert_eq!(w.read.mintings_ranked(), left, "after cid({c}) left");
         assert_eq!(w.read.ranks_thing(&S, &T), left > 0, "after cid({c}) left");
     }
+}
+
+/// The certificate-blob settles (`read: certificate blobs`) for a plain commit and for one more
+/// rotation listing a thing S carries, after `n` rotations whose lists S carries; and the list
+/// blobs logged.
+type CertLogs = Vec<(SyncId, CertKind, BTreeSet<Tid>)>;
+
+fn list_settles(n: u8) -> (u64, u64, CertLogs) {
+    let mut w = W::new();
+    let t = Tid::from_bytes([7; 15]);
+    let rots: Vec<CommitId> = (0..n).map(|i| cid(100 + i)).collect();
+    w.g.rotations.insert(S, rots.clone());
+    for r in &rots {
+        w.g.records.insert((S, Some(*r)), CertBlobsMissing { missing: [t].into(), ..Default::default() });
+    }
+    w.hold(cid(1), &[S], uncovered());
+    w.settle();
+    assert_eq!(w.g.record_logs.len(), usize::from(n), "one list blob per rotation");
+    let settles = |w: &mut W, f: &dyn Fn(&mut W)| {
+        osis_base::costs::take();
+        f(w);
+        osis_base::costs::take().iter().filter(|(k, _, _)| *k == "read: certificate blobs").map(|(_, _, n)| n).sum::<u64>()
+    };
+    let plain = settles(&mut w, &|w| {
+        w.hold(cid(2), &[S], uncovered());
+        w.settle();
+    });
+    let r = cid(99);
+    let rotation = settles(&mut w, &|w| {
+        w.g.records.insert((S, Some(r)), CertBlobsMissing { missing: [t].into(), ..Default::default() });
+        w.g.lists_new.push((S, r));
+        w.hold(cid(3), &[S], uncovered());
+        w.settle();
+    });
+    w.settle();
+    let logs = w.g.record_logs.split_off(usize::from(n));
+    (plain, rotation, logs)
+}
+
+// spec/sync-judgement.md §1 (List blobs: wrapped per sync ID, one per rotation of the lists S
+// carries), spec/sync.md §2 (work in proportion to change): S's list blobs are followed per
+// rotation, so a plain commit settles none and a new rotation settles its own alone, logged once;
+// the same at n and 10n rotations.
+#[test]
+fn list_blobs_follow_each_rotation_alone_spec_sync_judgement_1() {
+    let (a, b) = (list_settles(3), list_settles(30));
+    assert_eq!((a.0, a.1), (b.0, b.1), "settles grow with the rotations S carries lists of");
+    // the new rotation's key alone: settled to log, and again as its own blob's row comes
+    assert_eq!((a.0, a.1), (0, 2));
+    let t = Tid::from_bytes([7; 15]);
+    assert_eq!(b.2, vec![(S, Some(cid(99)), [t].into())], "the new rotation's list blob, once");
 }

@@ -42,7 +42,7 @@ use crate::types::{ConnId, Cx, Error, Result};
 use judge::{Act, Doom, Judged, Mine, Toward};
 use osis_base::memo::{Clock, Effects, Stamped};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
-use osis_engine::sync::BodyMeta;
+use osis_engine::sync::{BodyMeta, CertKind};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -88,10 +88,13 @@ pub struct Read {
     mints: Stamped<(SyncId, CommitId, Tid), judge::Mint>,
     toward: Effects<(SyncId, CommitId, Source), Toward>,
     dooms: Effects<SyncId, (Doom, BTreeSet<Act>)>,
-    /// Per S, the records and thing lists it carries as certificates that no own record or
-    /// list blob carries (spec/permissions.md §4, spec/sync-judgement.md §1): one record blob of
-    /// them, and one list blob per rotation, is logged as they move.
-    cert_blobs: Effects<SyncId, Arc<CertBlobsMissing>>,
+    /// Per (S, kind), the records (`None`) or one rotation's thing lists (`Some(r)`) S carries
+    /// as certificates that no own certificate blob of the kind carries (spec/permissions.md §4,
+    /// spec/sync-judgement.md §1): one record blob of them, and one list blob per rotation, is
+    /// logged as they move. A rotation's key is followed from when S carries a list of it
+    /// (`Ground::lists_added`, or `list_rotations` as S is first followed), so each reads one
+    /// rotation's rows alone.
+    cert_blobs: Effects<(SyncId, CertKind), Arc<CertBlobsMissing>>,
     /// Per S, whether this node's step of S is due with the rotations it registers logged here
     /// (`Ground::step_ready`): issued then, whatever connections are open.
     steps: Effects<SyncId, bool>,
@@ -187,6 +190,8 @@ impl Read {
             r => r?,
         };
         self.clock.set(g.now().0);
+        // the lists feed runs from the first settle, before any S is first followed
+        let mut lists = g.lists_added()?;
         for c in added {
             self.bodies.want(c);
         }
@@ -207,7 +212,12 @@ impl Read {
             for s in now.keys() {
                 self.judged.want((*s, c));
                 self.dooms.want(*s);
-                self.cert_blobs.want(*s);
+                if !self.cert_blobs.wants(&(*s, None)) {
+                    self.cert_blobs.want((*s, None));
+                    for r in g.list_rotations(s)? {
+                        self.cert_blobs.want((*s, Some(r)));
+                    }
+                }
                 self.steps.want(*s);
             }
             // a sync ID no longer carrying it stays followed until nothing of it is left there
@@ -236,16 +246,22 @@ impl Read {
         // the records and thing lists each S carries, as one record blob and one list blob per
         // rotation of those its own store lacks, while a reader can pull it (spec/permissions.md
         // §4, spec/sync-judgement.md §1 List blobs, §3 Own store)
-        for s in self.cert_blobs.due() {
+        lists.extend(g.lists_added()?);
+        for (s, r) in lists {
+            if self.cert_blobs.wants(&(s, None)) {
+                self.cert_blobs.want((s, Some(r)));
+            }
+        }
+        for (s, r) in self.cert_blobs.due() {
             if !g.reads(&s)? {
-                self.cert_blobs.unwant(&s);
+                self.cert_blobs.unwant(&(s, r));
                 continue;
             }
             // pullable read inside: a sync ID a reader cannot pull yet is due again once it can
             let told = &self.told;
-            let Some((_, now)) = self.cert_blobs.try_settle(&s, || cert_blobs_missing(g, &s, told.contains_key(&s)).map(Arc::new))? else { continue };
+            let Some((_, now)) = self.cert_blobs.try_settle(&(s, r), || cert_blobs_missing(g, &s, r, told.contains_key(&s)).map(Arc::new))? else { continue };
             if !now.gone.is_empty() {
-                g.forget_cert_blobs(&s, &now.gone)?;
+                g.forget_cert_blobs(&s, r, &now.gone)?;
                 acted = true;
             }
             // under an emptied S, record blobs are must-not-hold (spec/sync-judgement.md §2, §5)
@@ -257,12 +273,8 @@ impl Read {
                 g.restamp(&s, b)?;
                 acted = true;
             }
-            if !now.records.is_empty() {
-                g.log_records(&s, &now.records)?;
-                acted = true;
-            }
-            for (r, things) in &now.lists {
-                g.log_lists(&s, r, things)?;
+            if !now.missing.is_empty() {
+                g.log_cert_blob(&s, r, &now.missing)?;
                 acted = true;
             }
         }
@@ -542,12 +554,12 @@ impl Read {
 /// so S is due again once it can). S `told` destroyed is being emptied (told only once its thing
 /// keeps nothing, `judge::doom`): it carries no certificate blob, and its own ones are to drop
 /// (`held`); else they stay.
-fn cert_blobs_missing(g: &mut impl Ground, s: &SyncId, told: bool) -> Result<CertBlobsMissing> {
+fn cert_blobs_missing(g: &mut impl Ground, s: &SyncId, r: CertKind, told: bool) -> Result<CertBlobsMissing> {
     if told {
-        return Ok(CertBlobsMissing { records: BTreeSet::new(), lists: BTreeMap::new(), stale: BTreeSet::new(), ..g.cert_blobs_missing(s)? });
+        return Ok(CertBlobsMissing { missing: BTreeSet::new(), stale: BTreeSet::new(), ..g.cert_blobs_missing(s, r)? });
     }
     match g.pullable(s)? {
-        true => Ok(CertBlobsMissing { held: BTreeSet::new(), ..g.cert_blobs_missing(s)? }),
+        true => Ok(CertBlobsMissing { held: BTreeSet::new(), ..g.cert_blobs_missing(s, r)? }),
         false => Ok(CertBlobsMissing::default()),
     }
 }
