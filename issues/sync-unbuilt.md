@@ -28,7 +28,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 
 ## inbox
 - A promotion's chain (`held::log_chain`: not built; the engine seals certificate copies, `sync_bodies`).
-- Leaving S does not stay a member of its shared sets while it waits (spec/sync-set.md §3): opens closes it once the engine's sync set drops it. Read: a commit not held elsewhere when S left keeps S waiting, its thing's copy kept, until synced again (notes/sync-leave.md). Kept unread: a deposit not yet present waits the same way.
+- Leaving S does not stay a member of its shared sets while it waits (spec/sync-set.md §3): opens closes it once the engine's sync set drops it. Read: a commit not held elsewhere when S left keeps S waiting, its thing's copy and rows kept and the write sent nowhere, until synced again: stuck (notes/sync-leave.md). Kept unread: a deposit not yet present waits the same way.
 - Stranded and Suspect are answered Ok and acted on by nobody (spec/permissions.md §4: the stranded holder's re-seal, the suspect repair).
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.
 - A decline stamping in place.

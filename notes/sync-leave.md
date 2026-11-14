@@ -13,6 +13,7 @@ One settle a round, after status (`Node::settle`), so the held-elsewhere marks o
 
 ## forget_local (engine, core/engine/src/sync/mod.rs, retention/forget.rs `Scope::Local`)
 - Forgets `t` and each thing whose secret actor is `t`, but those the synced group's closure holds (a plain thing listed elsewhere still syncs under that group). Same machinery as lost access (`retention::forget::forget`), fate `Local`: everything an erased thing loses but `secrets.0`, so the thing stays read and syncs again when listed; commits left with no part are deleted and fetched again, others keep their other parts (late parts join). Event cause `Unsynced` (`DerivedFrom::Unsynced`).
+- A thing under `t`'s secrets still in the closure syncs under `t`'s S, so S stays in the sync set and `t` is never unsynced; the closure exclusion matters only to a direct call. Things known only from pending commits are not named (their parts stay pending).
 - Cost: decodes every commit header and reloads the engine, like lost access. Unsyncing is rare; per thing.
 
 ## Reasons
@@ -21,4 +22,4 @@ One settle a round, after status (`Node::settle`), so the held-elsewhere marks o
 - Status's durable mark, not stream presence: a reader source shows what it holds by reported positions, which status already folds into the mark; once S leaves, opens drops it from records and no source is followed, so the mark is what the node knew.
 
 ## Not built
-- S does not stay a member of its shared sets while it waits (spec/sync-set.md §3): opens closes it as soon as the engine's sync set drops it. A commit not held elsewhere when S left keeps S waiting (its copy kept) until it is synced again. Same gap for kept unread leaving (issues/sync-unbuilt.md).
+- S does not stay a member of its shared sets while it waits (spec/sync-set.md §3): opens closes it as soon as the engine's sync set drops it. A commit not held elsewhere when S left keeps S waiting (its copy and store rows kept, the write sent nowhere) until it is synced again: a stuck state. Same gap for kept unread leaving (issues/sync-unbuilt.md).
