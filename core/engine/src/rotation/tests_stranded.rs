@@ -92,3 +92,49 @@ fn holder_keys_take_no_edge_write_off_the_chain_spec_permissions_4() {
     assert_eq!(lp.peers[0].engine.take_holder_keys(&t, &keys).unwrap(), 0);
     assert!(lp.peers[0].engine.header(&c).is_none(), "the grant on X not kept");
 }
+
+/// Peer 0's asks on `g`: (holder, met).
+fn asks(lp: &mut LocalPeer, g: Tid) -> Vec<(Tid, bool)> {
+    lp.peers[0].engine.core.ix.reseal_asks.iter().filter(|((a, _), _)| *a == g).map(|((_, m), k)| (*m, k.met)).collect()
+}
+
+/// Peer 0 takes a report from holder `m` on `g` (no keys) and runs a pass end's re-seals.
+fn report_and_pass(lp: &mut LocalPeer, g: Tid, m: Tid) {
+    let s = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
+    assert!(lp.peers[0].engine.take_stranded(&s, &m, &osis_label::HolderKeys::default()).unwrap(), "asked");
+    lp.peers[0].engine.reseal_run(&g).unwrap();
+}
+
+// spec/permissions.md §3 (Re-seal: none to a holder whose grant it may finalize), §4 (stranded):
+// an ask of a holder whose grant ended goes with the finalize the pass end writes, unmet.
+#[test]
+fn an_ended_holders_ask_goes_with_its_finalize_spec_permissions_4() {
+    let (mut lp, tids) = synced_tids(2);
+    let g = group(&mut lp, 0);
+    let until = lp.peers[0].engine.now().0 + 1_000;
+    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(osis_base::WallMs(until)), ..edge(Role::Read) }).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].clock.advance(2_000);
+    report_and_pass(&mut lp, g, tids[1]);
+    assert!(!lp.peers[0].engine.core.key_holders(&g).iter().any(|x| x.0 == tids[1]), "finalized");
+    assert_eq!(asks(&mut lp, g), Vec::new(), "its ask gone");
+}
+
+// spec/permissions.md §4 (stranded): an ask met is kept while its holder is current (the same
+// report asks nothing more), and goes once the holder is removed: asks are bounded by the current
+// holders, not by every holder there was.
+#[test]
+fn a_met_ask_goes_with_its_holder_spec_permissions_4() {
+    let (mut lp, g, tids) = granted(2, &[(1, Role::Read)]);
+    report_and_pass(&mut lp, g, tids[1]);
+    assert_eq!(asks(&mut lp, g), vec![(tids[1], true)], "met");
+    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.reseal_run(&g).unwrap();
+    assert_eq!(asks(&mut lp, g), Vec::new(), "gone with the holder");
+}
+
+fn synced_tids(n: usize) -> (LocalPeer, Vec<Tid>) {
+    let lp = super::tests::synced(n);
+    let tids = (0..n).map(|i| lp.peers[i].engine.me()).collect();
+    (lp, tids)
+}

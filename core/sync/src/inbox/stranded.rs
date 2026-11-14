@@ -1,4 +1,4 @@
-//! Stranded reports out (spec/permissions.md §4 Stranded, spec/sync-status.md §2 Stranded,
+//! Stranded reports out (spec/permissions.md §4 Stranded, spec/sync-status.md §3 Stranded,
 //! spec/wire.md §9 Stranded notice, §11.2 Stranded).
 //!
 //! Status says where this node is stranded (`Status::strandings`: a read S heard out with no
@@ -74,7 +74,7 @@ impl Sent {
 }
 
 /// A report's key: the step reached and the holder's current keys (spec/permissions.md §4: once
-/// per sync key of the newest step; spec/sync-status.md §2: again when the holder's keys move).
+/// per sync key of the newest step; spec/sync-status.md §3: again when the holder's keys move).
 fn report_key(st: &Stranding) -> [u8; 32] {
     let mut h = osis_base::hash::Hasher::new();
     h.update(&st.step).update(st.holder.as_bytes());

@@ -13,15 +13,17 @@
 //!   blob to an admin); `writer_of(s, proven)` (who a Stranded message goes to).
 //! - Receiving side: `take_stranded(s, holder, keys)` (a Stranded message, or a stranded notice
 //!   taken from this node's inbox): the keys taken (`take_holder_keys`) and the ask recorded
-//!   (rows `ra/`, durable), keyed by the holder's current `keys.0` commits as held after taking:
+//!   (rows `rs/`, durable), keyed by the holder's current `keys.0` commits as held after taking:
 //!   a report again with nothing new asks nothing (a notice taken again as its reads move, a
 //!   peer repeating a message). `passes_wanted` wants a pass of the actor's sync IDs from an
 //!   unmet ask on; `pass_end` re-seals each asked holder (`rotation::Reseal::Asked`: every
 //!   current epoch held, only where a box differs from the one Seal gives now) and marks the ask
-//!   met, or drops it for a holder no longer current.
+//!   met; one refused stays unmet, tried again at the actor's next pass end. An ask goes, met or
+//!   not, once its holder is no longer current (at a pass's end, which a role commit of the actor
+//!   begins) or this node loses or destroys the actor.
 //!
 //! Bounds: an ask per current holder of an actor this node may rotate (a report naming anything
-//! else records nothing); a report's work is O(its bytes): each commit it carries is judged and
+//! else records nothing; a holder that leaves is dropped at the next pass end); a report's work is O(its bytes): each commit it carries is judged and
 //! ingested at most once per pass of the chain loop, and the loop runs at most once per thing
 //! the chain gains.
 
@@ -36,8 +38,8 @@ use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// `ra/` + actor + holder: a re-seal a stranded report asked for (`Ask`).
-const ASKS: &[u8] = b"ra/";
+/// `rs/` + actor + holder: a re-seal a stranded report asked for (`Ask`).
+const ASKS: &[u8] = b"rs/";
 
 /// A re-seal asked for by a stranded report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,7 +71,7 @@ pub struct Stranding {
     /// The sync key of the newest step it reached (its recorded head; zeros recording none).
     pub step: [u8; 32],
     /// The holder's current `keys.0` commits: a report goes again when they move
-    /// (spec/sync-status.md §2 Stranded).
+    /// (spec/sync-status.md §3 Stranded).
     pub keys: BTreeSet<CommitId>,
     /// The actor's admins other than this node's account: where a stranded notice goes.
     pub admins: Vec<Tid>,
@@ -95,19 +97,31 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
 
 /// The holders of `a` with an unmet ask.
 pub(crate) fn asked(tx: &Tx<'_>, a: &Tid) -> Vec<Tid> {
-    tx.core.ix.reseal_asks.iter().filter(|((x, _), k)| x == a && !k.met).map(|((_, m), _)| *m).collect()
+    of_actor(tx, a).filter(|(_, k)| !k.met).map(|(m, _)| m).collect()
 }
 
-/// The ask for (`a`, `m`) met (`current`) or dropped (a holder no longer current).
-pub(crate) fn meet(tx: &mut Tx<'_>, a: &Tid, m: &Tid, current: bool) -> Result<()> {
+/// `a`'s asks, by holder.
+fn of_actor<'a>(tx: &'a Tx<'_>, a: &Tid) -> impl Iterator<Item = (Tid, Ask)> + 'a {
+    let a = *a;
+    tx.core.ix.reseal_asks.iter().filter(move |((x, _), _)| *x == a).map(|((_, m), k)| (*m, *k))
+}
+
+/// The ask for (`a`, `m`) met: kept, so the same report asks nothing more.
+pub(crate) fn meet(tx: &mut Tx<'_>, a: &Tid, m: &Tid) -> Result<()> {
     let Some(k) = tx.core.ix.reseal_asks.get(&(*a, *m)).copied() else { return Ok(()) };
-    if current {
-        let k = Ask { met: true, ..k };
-        tx.txn.put_local(&ask_key(a, m), &k.encode(), Shred::No)?;
-        tx.core.ix.reseal_asks.insert((*a, *m), k);
-    } else {
-        tx.txn.remove_local(&ask_key(a, m), Shred::No)?;
-        tx.core.ix.reseal_asks.remove(&(*a, *m));
+    let k = Ask { met: true, ..k };
+    tx.txn.put_local(&ask_key(a, m), &k.encode(), Shred::No)?;
+    tx.core.ix.reseal_asks.insert((*a, *m), k);
+    Ok(())
+}
+
+/// Drops `a`'s asks, met or not, of holders `keep` refuses (a holder no longer current at a pass's
+/// end; every one when this node loses the actor).
+pub(crate) fn drop_asks(tx: &mut Tx<'_>, a: &Tid, keep: impl Fn(&Tid) -> bool) -> Result<()> {
+    let gone: Vec<Tid> = of_actor(tx, a).map(|(m, _)| m).filter(|m| !keep(m)).collect();
+    for m in gone {
+        tx.txn.remove_local(&ask_key(a, &m), Shred::No)?;
+        tx.core.ix.reseal_asks.remove(&(*a, m));
     }
     Ok(())
 }
@@ -268,11 +282,11 @@ impl Engine {
                         _ => false,
                     })
                 };
-                let mut p = b.clone();
-                p.parts.retain(|x| on(x.ai));
-                if p.parts.is_empty() {
+                if !b.parts.iter().any(|x| on(x.ai)) {
                     continue;
                 }
+                let mut p = b.clone();
+                p.parts.retain(|x| on(x.ai));
                 done.insert(i);
                 osis_base::costs::count("stranded: holder keys judged", 1);
                 if self.ingest_valid(&p.encode())?.is_some() {

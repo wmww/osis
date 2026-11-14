@@ -158,7 +158,6 @@ impl Engine {
         let mut out = std::collections::BTreeMap::<String, (usize, usize)>::new();
         for (k, v) in rows {
             let end = k.iter().position(|b| *b == b'/').map_or(3.min(k.len()), |p| (p + 1).min(k.len()));
-            let end = if k.starts_with(b"y/") { 3.min(k.len()) } else { end };
             let e = out.entry(String::from_utf8_lossy(k.get(..end).unwrap_or(&k)).into_owned()).or_default();
             e.0 += 1;
             e.1 += k.len() + v.len();

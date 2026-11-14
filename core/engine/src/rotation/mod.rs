@@ -1257,18 +1257,19 @@ impl Engine {
                 done.extend(reseal_one(tx, a, m, &roles, Reseal::Missing)?);
             }
             // the re-seals stranded reports asked for (spec/permissions.md §4), each judged now:
-            // a holder no longer current, or one this node may no longer seal to, asks nothing
+            // an ask of a holder no longer current goes, met or not; one refused (nothing to seal
+            // to, the grant ended, a rewrite Authority refuses: issues/reshare-rewrite-refused.md)
+            // stays asked, tried again at the actor's next pass end, the rest of this one standing
+            let holders: BTreeMap<Tid, Role> = tx.core.key_holders(&a).into_iter().collect();
+            crate::sync::stranded::drop_asks(tx, &a, |m| holders.contains_key(m))?;
             for m in crate::sync::stranded::asked(tx, &a) {
-                let role = tx.core.key_holders(&a).into_iter().find(|x| x.0 == m).map(|x| x.1);
-                crate::sync::stranded::meet(tx, &a, &m, role.is_some())?;
-                let Some(role) = role else { continue };
-                let me = tx.core.writer()?;
+                let Some(role) = holders.get(&m).copied() else { continue };
                 let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= role && may_rotate(tx.core, &me, &a).contains(r)).collect();
-                // refused (nothing to seal to, the grant ended, a rewrite Authority refuses:
-                // issues/reshare-rewrite-refused.md): the ask is met all the same, the rest of the
-                // pass's end stands
                 match reseal_one(tx, a, m, &roles, Reseal::Asked) {
-                    Ok(d) => done.extend(d),
+                    Ok(d) => {
+                        done.extend(d);
+                        crate::sync::stranded::meet(tx, &a, &m)?;
+                    }
                     Err(Error::Misuse(_) | Error::Permission { .. }) => {}
                     Err(e) => return Err(e),
                 }

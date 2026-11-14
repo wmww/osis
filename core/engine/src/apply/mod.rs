@@ -1835,7 +1835,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         tx.core.ix.valueless.insert((tid, ak), crate::retention::decode_owned(&v)?);
     }
     let mut secrets = Vec::new();
-    tx.scan(b"k/", |k, v| {
+    tx.scan(crate::engine::records::SECRETS, |k, v| {
         let t = Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("secrets"))?);
         secrets.push((t, crate::engine::secrets::decode_epochs(&v)?));
         Ok(())

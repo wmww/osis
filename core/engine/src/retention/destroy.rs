@@ -664,7 +664,8 @@ impl crate::engine::Engine {
                 if tx.core.ix.secrets.remove(&t).is_some() {
                     tx.core.touch();
                 }
-                tx.txn.remove_local(&[b"k/".as_slice(), t.as_bytes()].concat(), Shred::Yes)?;
+                tx.txn.remove_local(&[crate::engine::records::SECRETS, t.as_bytes()].concat(), Shred::Yes)?;
+                crate::sync::stranded::drop_asks(tx, &t, |_| false)?;
             }
             Ok(())
         })

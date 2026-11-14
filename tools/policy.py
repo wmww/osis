@@ -404,6 +404,32 @@ def ended_names():
                 n = text.count("\n", 0, a) + 1
                 yield f"{rel}:{n}: `{m.group(0)}`: a thing is destroyed, not ended (issues/deprecated-terms.md)"
 
+# Local-row keys share one namespace per store (the engine's, sync's): each kind of row is a byte
+# constant, `const NAME: &[u8] = b"...";`, written nowhere else as a literal, and no key constant is
+# a prefix of another (a scan of one would read the other's rows). The engine's `node/` names are
+# index tables, a namespace of their own.
+ROW_STORES = {"engine": ("core/engine/src/",), "sync": ("core/sync/src/",)}
+ROW_CONST = re.compile(r'const (\w+): &\[u8\] = b"([^"]*)";')
+ROW_INLINE = re.compile(r'b"[A-Za-z]{1,3}/')
+
+def row_prefixes():
+    for store, tops in ROW_STORES.items():
+        keys = []
+        for path, rel in all_files():
+            if not rel.startswith(tops) or not rel.endswith(".rs"):
+                continue
+            text = code_of(path)
+            for m in ROW_CONST.finditer(text):
+                if not m.group(2).startswith("node/"):
+                    keys.append((m.group(2), f"{rel}:{text.count(chr(10), 0, m.start()) + 1} {m.group(1)}"))
+            for m in ROW_INLINE.finditer(ROW_CONST.sub("", text)):
+                yield f"{rel}: a row key `{m.group(0)}...` written as a literal (name it as a `const`, tools/policy.py row_prefixes)"
+        for i, (a, wa) in enumerate(keys):
+            for b, wb in keys[i + 1:]:
+                if a.startswith(b) or b.startswith(a):
+                    yield f"{store} store: row key {a!r} ({wa}) and {b!r} ({wb}) collide (one is a prefix of the other)"
+
+errs.extend(row_prefixes())
 errs.extend(doc_refs.check())
 errs.extend(ended_names())
 errs.extend(dead_pub.check())

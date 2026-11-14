@@ -11,6 +11,8 @@ pub const SEED: &[u8] = b"seed";
 pub const BLOB_SEQ: &[u8] = b"blobseq";
 /// The last `ts` issued or seen (the HLC survives restarts).
 pub const HLC: &[u8] = b"hlc";
+/// A thing's own secrets held (`Indexes::secrets`): `k/` + tid, its epochs.
+pub const SECRETS: &[u8] = b"k/";
 /// Applied commit records: `c/` + commit ID.
 pub const COMMIT: &[u8] = b"c/";
 /// Creation records: `t/` + tid.
