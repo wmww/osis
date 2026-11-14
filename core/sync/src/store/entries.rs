@@ -240,6 +240,7 @@ pub(crate) fn put_tomb(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b
     lift(t, env, s, b)?;
     t.put_local(&rows::tomb_at_key(tomb.at, s, b), &[], Shred::No)?;
     t.put_local(&rows::tomb_key(s, b), &tomb.encode(), Shred::No)?;
+    t.put_local(&[rows::TOMB_BY_BLOB, &b.0, &s.0].concat(), &[], Shred::No)?;
     add_usage(t, env, s, |u| u.bytes = u.bytes.saturating_add(TOMB_OVERHEAD))
 }
 
@@ -248,6 +249,7 @@ pub(crate) fn lift(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &B
     let Some(old) = tombstone(t, s, b)? else { return Ok(false) };
     t.remove_local(&rows::tomb_key(s, b), Shred::No)?;
     t.remove_local(&rows::tomb_at_key(old.at, s, b), Shred::No)?;
+    t.remove_local(&[rows::TOMB_BY_BLOB, &b.0, &s.0].concat(), Shred::No)?;
     add_usage(t, env, s, |u| u.bytes = u.bytes.saturating_sub(TOMB_OVERHEAD))?;
     Ok(true)
 }

@@ -6,7 +6,7 @@
 use super::known::{self, Op};
 use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, PENDING_CAP, RESYNC_MS, Rank, Refusal, Streams};
 use crate::opens::Rejoin;
-use crate::store::rows::tag::{AT_STREAM, CURSOR, JOINING, STOPPED};
+use crate::store::rows::tag::{AT_STREAM, CURSOR, JOIN_FROM};
 use crate::store::{Source, Store};
 use crate::types::{ConnId, Cursor, Entry, RecordId, Result};
 use osis_store::Transaction;
@@ -28,6 +28,10 @@ pub(super) struct Place {
     pub at_stream: StampedSet<SyncId>,
     pub joining: Stamped<SyncId, Option<Cursor>>,
     pub stopped: BTreeMap<SyncId, Option<Cursor>>,
+    /// Members whose rows hold another form of the same position (`effective`): a member at the
+    /// stream that left it, stopped at the stream's cursor, still stored as at it. Written with
+    /// the next cursor that moves (`Pulling::save`), before it could mean another position.
+    stale: BTreeSet<SyncId>,
 }
 
 impl Place {
@@ -40,6 +44,7 @@ impl Place {
             self.joining.remove(s);
         }
         self.stopped.remove(s);
+        self.stale.remove(s);
     }
 }
 
@@ -68,10 +73,8 @@ impl Place {
         for (s, ..) in t.record_tag_rows(rec, AT_STREAM)? {
             p.at_stream.insert(s);
         }
-        for (s, _, v) in t.record_tag_rows(rec, JOINING)? {
-            p.joining.insert(s, read_cursor(&v)?);
-        }
-        for (s, _, v) in t.record_tag_rows(rec, STOPPED)? {
+        // no connection at a load: a member not at the stream rejoins from where it stood
+        for (s, _, v) in t.record_tag_rows(rec, JOIN_FROM)? {
             p.stopped.insert(s, read_cursor(&v)?);
         }
         Ok(p)
@@ -84,13 +87,23 @@ impl Place {
         } else {
             t.record_remove_row(rec, AT_STREAM, s, b"")?;
         }
-        match self.joining.get(s) {
-            Some(c) => t.record_put_row(rec, JOINING, s, b"", opt_cursor(c))?,
-            None => drop(t.record_remove_row(rec, JOINING, s, b"")?),
+        match self.join_from(s) {
+            Some(c) => t.record_put_row(rec, JOIN_FROM, s, b"", opt_cursor(c)),
+            None => t.record_remove_row(rec, JOIN_FROM, s, b"").map(drop),
         }
-        match self.stopped.get(s) {
-            Some(c) => t.record_put_row(rec, STOPPED, s, b"", opt_cursor(c)),
-            None => t.record_remove_row(rec, STOPPED, s, b"").map(drop),
+    }
+
+    /// Where member `s` joins from, as stored: joining from it, or stopped there.
+    fn join_from(&self, s: &SyncId) -> Option<&Option<Cursor>> {
+        self.joining.get(s).or_else(|| self.stopped.get(s))
+    }
+
+    /// Where member `s` stands, whichever form its place takes: at the stream (its cursor), or
+    /// joining or stopped at its own. Rows holding the same position need no write.
+    fn effective(&self, s: &SyncId) -> Option<Option<Cursor>> {
+        match self.at_stream.contains(s) {
+            true => Some(self.cursor.clone()),
+            false => self.join_from(s).cloned(),
         }
     }
 }
@@ -290,7 +303,11 @@ impl Streams {
                 for s in ss {
                     p.write(t, &rec, s)?;
                 }
+                // a cursor moving: a member stored as at the stream that is not stands where it did
                 if cursor {
+                    for s in p.stale.iter().filter(|s| !ss.contains(s)) {
+                        p.write(t, &rec, s)?;
+                    }
                     t.record_put_wide_row(&rec, CURSOR, b"", opt_cursor(&p.cursor))?;
                 }
             }
@@ -300,6 +317,12 @@ impl Streams {
         if ok {
             for (at, op) in &rec_ops {
                 self.known.logged(*at, op);
+            }
+            if let Some(p) = self.places.get_mut(&src) {
+                match cursor {
+                    true => p.stale.clear(),
+                    false => p.stale.retain(|s| !ss.contains(s)),
+                }
             }
         }
         self.failed(r);
@@ -327,18 +350,28 @@ impl Streams {
                 }
             }
         };
-        // a join's cursor is its place from now on, durably: a restart joins from it again
+        // a join's cursor is its place from now on, durably: a restart joins from it again (a
+        // rejoin from where it was joining moves nothing, so writes nothing)
         let Some(c) = from else { return };
+        let was = place.effective(&s);
         place.stopped.remove(&s);
-        place.at_stream.remove(&s);
+        if place.at_stream.contains(&s) {
+            place.at_stream.remove(&s);
+        }
         if place.joining.get(&s) != Some(&c) {
             place.joining.insert(s, c.clone());
+        }
+        let moved = place.effective(&s) != was;
+        if !moved && matches!(src, Source::Record(_)) {
+            place.stale.insert(s);
         }
         if let Some(p) = self.pull.get_mut(&conn) {
             p.join(s, c);
             p.quiet = false;
         }
-        self.save(ctx, src, &[s], false, Vec::new());
+        if moved {
+            self.save(ctx, src, &[s], false, Vec::new());
+        }
     }
 
     /// A member left: its stream stops where it stands (its stored position kept for its rejoin);
@@ -350,6 +383,7 @@ impl Streams {
         let src = p.src;
         let held = ctx.store.holding(&s).is_some();
         let place = self.place(ctx.store, src);
+        let was = place.effective(&s);
         let at = if let Some(c) = place.joining.remove(&s) {
             Some(c)
         } else if place.at_stream.remove(&s) {
@@ -364,6 +398,12 @@ impl Streams {
             ops.push((Source::Conn(conn), Op::Forget(s)));
         } else if let Some(c) = at {
             place.stopped.insert(s, c);
+        }
+        if ops.is_empty() && place.effective(&s) == was {
+            if matches!(src, Source::Record(_)) {
+                place.stale.insert(s);
+            }
+            return;
         }
         self.save(ctx, src, &[s], false, ops);
     }
@@ -817,7 +857,7 @@ impl Streams {
         let pulling: BTreeMap<Source, ConnId> = self.holders.get(&s).into_iter().flatten().filter_map(|c| self.pull.get(c).map(|p| (p.src, *c))).collect();
         let stored = ctx.store.with_read(|t| {
             let mut out = BTreeSet::new();
-            for tag in [AT_STREAM, JOINING, STOPPED] {
+            for tag in [AT_STREAM, JOIN_FROM] {
                 out.extend(t.records_with_row(&s, tag, b"", usize::MAX)?);
             }
             Ok(out)
@@ -835,6 +875,7 @@ impl Streams {
             place.at_stream.remove(&s);
             place.stopped.remove(&s);
             place.joining.insert(s, None);
+            place.stale.remove(&s);
         }
         let places = &self.places;
         let r = ctx.store.with_tx(|t| {

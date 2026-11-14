@@ -706,3 +706,44 @@ pub(crate) fn doom(g: &mut impl Ground, mine: &Mine, told_before: bool, s: &Sync
     }
     Ok((Doom::Told { requests: Arc::new(requests) }, acts))
 }
+
+/// What a held commit calls for in the engine (spec/commits.md §5 Covered, Forgetting).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Local {
+    /// Not held: no longer followed.
+    #[default]
+    Gone,
+    /// Kept as it is.
+    Kept,
+    /// Parts to drop as covered (`Engine::covered_drops`).
+    Drop(Arc<Vec<(Tid, osis_base::Ak)>>),
+    /// Forgotten now.
+    Forget,
+}
+
+/// What held commit `c` calls for in the engine: its parts covered now drop (spec/commits.md §5
+/// Covered, Own replaces; spec/sync-compaction.md §1), and it is forgotten (§5 Forgetting) once
+/// the engine would forget it (`Ground::forgettable`) and no entry of a blob of it is known here
+/// under `at`, the sync IDs carrying a body of it (dropped parts included: `Ground::bodies`), or
+/// any other holding an entry or tombstone of one (`Ground::known_under`: a body whose sync IDs
+/// moved): none in the own store, no own tombstone (it ends `TOMBSTONE_LIFETIME` after the
+/// delete), none a source's stream shows.
+pub(crate) fn local(g: &mut impl Ground, c: &CommitId, at: &[SyncId]) -> Result<Local> {
+    osis_base::costs::count("read: local judged", 1);
+    match g.forgettable(c)? {
+        None => return Ok(Local::Gone),
+        Some(true) => {}
+        Some(false) => {
+            let drops = g.covered_drops(c)?;
+            return Ok(if drops.is_empty() { Local::Kept } else { Local::Drop(Arc::new(drops)) });
+        }
+    }
+    let mut under: BTreeSet<SyncId> = at.iter().copied().collect();
+    under.extend(g.known_under(c)?);
+    for s in &under {
+        if !g.own(s, c)?.is_empty() || !g.own_tombstones(s, c)?.is_empty() || g.present_anywhere(s, c)? {
+            return Ok(Local::Kept);
+        }
+    }
+    Ok(Local::Forget)
+}

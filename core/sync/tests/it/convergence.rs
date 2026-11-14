@@ -5,7 +5,7 @@
 //! differential budget buys, issues/sync-test-cost.md); a failure prints the history as a
 //! script, `OSIS_SYNC_SHRINK=1` shrinks it.
 
-use crate::harness::history::{Gives, check, check_readers, hand, hand_all, history, world};
+use crate::harness::history::{Gives, check, check_readers, hand, hand_all, history, value_held, world};
 use crate::harness::{Step, World, play, shrinking};
 use osis_base::testenv::{Seeds, u64_var};
 
@@ -183,11 +183,12 @@ fn the_oracle_catches_planted_faults() {
     let mut w = base.copy();
     hand(&mut w, 0, 2);
     assert!(caught(|| check(&mut w)).contains("node 2, never granted read on thing 0, reads it"));
-    // the value's body gone everywhere (its commit unknown to every node)
+    // the value's bodies gone everywhere: the body check finds the value read, never one no
+    // body carries
     let mut w = base;
+    let t = w.history.things[0].0;
     let last = w.history.values.keys().max_by_key(|v| v[1..].parse::<u64>().unwrap_or(0)).cloned().expect("a value");
-    w.history.values.insert(last, osis_base::CommitId([0xee; 32]));
-    assert!(caught(|| check(&mut w)).contains("is deleted everywhere"));
+    assert!(value_held(&mut w, &t, &last) && !value_held(&mut w, &t, "never written"));
 }
 
 // spec/sync-opens.md §1 (whom to dial): a differential world's nodes, contacts reading each

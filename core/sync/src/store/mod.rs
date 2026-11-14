@@ -557,6 +557,18 @@ impl Store {
         Ok(out)
     }
 
+    /// The sync IDs holding a durable tombstone of blob `b` (each within `TOMBSTONE_LIFETIME`:
+    /// the sweep lifts it then).
+    pub fn tombstoned_under(&self, b: &BlobId) -> Result<Vec<SyncId>> {
+        self.lock().read(|t, _| {
+            let mut v = Vec::new();
+            for (k, _) in t.scan_local(&[rows::TOMB_BY_BLOB, &b.0].concat(), b"", usize::MAX)? {
+                v.push(SyncId(k.get(k.len().saturating_sub(16)..).and_then(|x| x.try_into().ok()).unwrap_or_default()));
+            }
+            Ok(v)
+        })
+    }
+
     /// A cursor over the sync IDs shredded from now on (`shred`).
     pub fn shred_feed(&self) -> osis_base::memo::Feed<SyncId> {
         self.lock().mem.shreds.feed()

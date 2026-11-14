@@ -1319,3 +1319,28 @@ fn only_a_writers_stamp_verifies_spec_sync_inbox_2() {
     assert_eq!(st.take_register(&s.id, &g, Some(&c)).unwrap(), Code::OK);
     assert!(!st.stamp_verifies(&s.id, &b2).unwrap(), "under an earlier step's write key: no vouch");
 }
+
+// spec/commits.md §5 (Forgetting: no delete of one of its blobs within `TOMBSTONE_LIFETIME`): the
+// sync IDs holding a tombstone of a blob are known by the blob, from the drop until the tombstone
+// is lifted or ends.
+#[test]
+fn a_blobs_tombstones_are_known_by_the_blob_until_they_end_spec_commits_5() {
+    let dev = Dev::new();
+    let (s1, s2) = (Sid::new(1), Sid::new(2));
+    let mut st = dev.open();
+    st.set_sync_set(&holding(&[(&s1, Holding::Read), (&s2, Holding::Read)]));
+    let (b, x) = blob(100, Class::Durable, None, &[]);
+    let e = Entry { blob: b, wrap: wrap(1), stamp: None, deposited: false, own: true, role: false, class: Class::Durable, expires: None };
+    assert_eq!(st.log(&s1.id, e.clone(), Some(x), None).unwrap(), Code::OK);
+    assert_eq!(st.log(&s2.id, e, None, None).unwrap(), Code::OK);
+    assert!(st.tombstoned_under(&b).unwrap().is_empty());
+    st.drop_entry(&s1.id, &b, Vec::new()).unwrap();
+    st.drop_entry(&s2.id, &b, Vec::new()).unwrap();
+    let mut both = vec![s1.id, s2.id];
+    both.sort();
+    assert_eq!(st.tombstoned_under(&b).unwrap(), both);
+    st.lift_tombstone(&s1.id, &b).unwrap();
+    assert_eq!(st.tombstoned_under(&b).unwrap(), vec![s2.id]);
+    st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 1)).unwrap();
+    assert!(st.tombstoned_under(&b).unwrap().is_empty(), "ended with its tombstone");
+}

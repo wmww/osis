@@ -556,6 +556,26 @@ impl Ground for Live<'_, '_> {
     fn freed_done(&mut self, b: &BlobId, t: &Tid) -> Result<()> {
         Ok(self.cx.engine.freed_done(&[(*t, *b)])?)
     }
+    fn forgettable(&mut self, c: &CommitId) -> Result<Option<bool>> {
+        Ok(self.cx.engine.holds_commit(c).then(|| self.cx.engine.forgettable(c)))
+    }
+    fn known_under(&mut self, c: &CommitId) -> Result<BTreeSet<SyncId>> {
+        let mut out = BTreeSet::new();
+        for b in self.cx.engine.commit_blobs(c)?.iter() {
+            out.extend(self.cx.store.naming(b)?);
+            out.extend(self.cx.store.tombstoned_under(b)?);
+        }
+        Ok(out)
+    }
+    fn covered_drops(&mut self, c: &CommitId) -> Result<Vec<(Tid, osis_base::Ak)>> {
+        Ok(self.cx.engine.covered_drops(c)?)
+    }
+    fn drop_body(&mut self, c: &CommitId, t: &Tid, ak: &osis_base::Ak) -> Result<()> {
+        Ok(self.cx.engine.drop_body(c, t, ak)?)
+    }
+    fn forget_commits(&mut self, cs: &[CommitId]) -> Result<()> {
+        Ok(self.cx.engine.forget_commits(cs)?)
+    }
     fn forget(&mut self, s: &SyncId) -> Result<()> {
         let thing = self.thing(s)?;
         self.cx.store.shred(s)?;

@@ -179,6 +179,11 @@ struct Fake {
     carrying: Stamped<Tid, BTreeSet<SyncId>>,
     /// Each thing's held mintings.
     mintings: Stamped<Tid, Arc<Vec<Minting>>>,
+    /// Commits the engine would forget once no entry of them is known, and those forgotten.
+    forgettable: Stamped<CommitId, ()>,
+    forgotten: Vec<CommitId>,
+    /// Per commit, sync IDs holding an entry or tombstone of a blob of it (`known_under`).
+    known: Stamped<CommitId, BTreeSet<SyncId>>,
 }
 
 impl Ground for Fake {
@@ -269,6 +274,20 @@ impl Ground for Fake {
     }
     fn commits_added(&mut self) -> Result<Vec<CommitId>> {
         Ok(std::mem::take(&mut self.added))
+    }
+    fn forgettable(&mut self, c: &CommitId) -> Result<Option<bool>> {
+        Ok(self.bodies.contains_key(c).then(|| self.forgettable.contains_key(c)))
+    }
+    fn known_under(&mut self, c: &CommitId) -> Result<BTreeSet<SyncId>> {
+        Ok(self.known.get(c).cloned().unwrap_or_default())
+    }
+    fn forget_commits(&mut self, cs: &[CommitId]) -> Result<()> {
+        for c in cs {
+            self.forgotten.push(*c);
+            self.forgettable.remove(c);
+            self.bodies.remove(c);
+        }
+        Ok(())
     }
     fn bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
         Ok(self.bodies.get(c).cloned().unwrap_or_default())
@@ -2247,4 +2266,48 @@ fn list_blobs_follow_each_rotation_alone_spec_sync_judgement_1() {
     assert_eq!((a.0, a.1), (0, 2));
     let t = Tid::from_bytes([7; 15]);
     assert_eq!(b.2, vec![(S, Some(cid(99)), [t].into())], "the new rotation's list blob, once");
+}
+
+// spec/commits.md §5 (Forgetting: once every part dropped as covered, no entry of a blob of it
+// known and no delete of one within `TOMBSTONE_LIFETIME`): a commit the engine would forget is
+// kept while an own entry, an own tombstone or a source showing an entry of it is known under a
+// sync ID carrying it, and forgotten once none is, once.
+#[test]
+fn a_covered_commit_is_forgotten_once_no_entry_of_it_is_known_spec_commits_5() {
+    let mut w = W::new();
+    let c = cid(3);
+    let b = BlobId([3; 32]);
+    w.g.tombs.insert((S, c), vec![b]);
+    w.hold(c, &[S], covered(cid(4)));
+    w.g.forgettable.insert(c, ());
+    w.settle();
+    assert!(w.g.forgotten.is_empty(), "forgotten with its own tombstone known");
+    w.g.tombs.remove(&(S, c));
+    w.g.anywhere.insert((S, c), true);
+    w.settle();
+    assert!(w.g.forgotten.is_empty(), "forgotten while a source shows an entry");
+    w.g.anywhere.insert((S, c), false);
+    w.settle();
+    assert_eq!(w.g.forgotten, vec![c]);
+    w.settle();
+    assert_eq!(w.g.forgotten, vec![c], "once");
+}
+
+// spec/commits.md §5 (Forgetting: no delete of one of its blobs within `TOMBSTONE_LIFETIME`): a
+// tombstone under a sync ID that no longer carries a body of the commit (its body moved to S2)
+// keeps it until the tombstone ends.
+#[test]
+fn a_tombstone_where_the_body_no_longer_goes_keeps_the_commit_spec_commits_5() {
+    let mut w = W::new();
+    let c = cid(3);
+    w.g.tombs.insert((S, c), vec![BlobId([3; 32])]);
+    w.g.known.insert(c, [S].into());
+    w.hold(c, &[S2], covered(cid(4)));
+    w.g.forgettable.insert(c, ());
+    w.settle();
+    assert!(w.g.forgotten.is_empty(), "forgotten with a tombstone known under S");
+    w.g.tombs.remove(&(S, c));
+    w.g.known.insert(c, BTreeSet::new());
+    w.settle();
+    assert_eq!(w.g.forgotten, vec![c]);
 }

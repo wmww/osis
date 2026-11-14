@@ -304,6 +304,34 @@ pub trait Ground {
         let _ = (b, t);
         Ok(())
     }
+    /// Commit `c` as the engine judges it for forgetting (spec/commits.md §5 Forgetting,
+    /// `Engine::forgettable`): `None` once it is not held, else whether the engine would forget
+    /// it once no entry of it is known.
+    fn forgettable(&mut self, c: &CommitId) -> Result<Option<bool>> {
+        let _ = c;
+        Ok(Some(false))
+    }
+    /// The sync IDs where an entry or a tombstone of a blob of `c` is held here (`Store::naming`,
+    /// `Store::tombstoned_under`), whatever sync IDs carry a body of it now.
+    fn known_under(&mut self, c: &CommitId) -> Result<BTreeSet<SyncId>> {
+        let _ = c;
+        Ok(BTreeSet::new())
+    }
+    /// The held parts of `c` that drop as covered now (`Engine::covered_drops`).
+    fn covered_drops(&mut self, c: &CommitId) -> Result<Vec<(Tid, osis_base::Ak)>> {
+        let _ = c;
+        Ok(Vec::new())
+    }
+    /// Drops part `(t, ak)` of `c` as covered (`Engine::drop_body`).
+    fn drop_body(&mut self, c: &CommitId, t: &Tid, ak: &osis_base::Ak) -> Result<()> {
+        let _ = (c, t, ak);
+        Ok(())
+    }
+    /// Forgets commits `cs`, IDs included (`Engine::forget_commits`).
+    fn forget_commits(&mut self, cs: &[CommitId]) -> Result<()> {
+        let _ = cs;
+        Ok(())
+    }
     /// Whether this node's step of S is due and each role commit it registers is logged under S
     /// in the own store (spec/sync-ids.md §6 Steps: issued after logging the rotations it
     /// registers, so they are stamped under the head a store keeping S unread holds).

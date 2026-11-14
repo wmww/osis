@@ -662,7 +662,13 @@ impl Node {
             self.rounds += 1;
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
-            let mut acted = cx.engine.follow()?;
+            // inbox's start first: what it has the engine follow is part of the sync set, so only
+            // then does the engine let go of what it keeps for sync IDs not read
+            let mut acted = self.inbox.start(&mut cx)?;
+            if acted {
+                cx.engine.forget_unread()?;
+            }
+            acted |= cx.engine.follow()?;
             // leave first: what this node syncs, which every other module follows
             acted |= self.leave.settle(&mut crate::leave::Live { cx: &mut cx, sources: &self.streams, opens: &self.opens, status: &self.status })?;
             acted |= self.driver.store.settle(cx.engine, cx.store, cx.now)?;

@@ -1570,3 +1570,47 @@ fn a_reader_passes_on_only_a_verified_new_relay_only_entry_spec_sync_compaction_
         assert_eq!(relayed(&a, d, b), passed, "{opened:?}");
     }
 }
+
+// spec/sync-streams.md §4 (Joining: a member rejoins from where it stood), notes/growth.md (no
+// per-session growth): a member at the stream that leaves and rejoins from where it stood moves
+// no stored position: its side commits only the rejoin's reply (the stream's cursor), no row of
+// the member.
+#[test]
+fn a_rejoin_from_where_it_stood_writes_no_place_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    p.a.log(s, 100);
+    p.shared_read(s);
+    p.run();
+    let before = p.b.store.committed();
+    p.b.leave(p.now, s);
+    p.b.join(p.now, s);
+    p.run();
+    assert_eq!(p.b.store.committed(), before + 1, "commits for a leave and a rejoin from where S stood");
+}
+
+// spec/sync-streams.md §4 (Joining), SN_cursor: a member that left at the stream's cursor, still
+// stored as at it, is stored at that cursor once the stream moves on without it: after a restart
+// it rejoins from there and takes what came since.
+#[test]
+fn a_member_left_at_the_stream_rejoins_from_there_after_the_cursor_moved_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let (s1, s2) = (sid(1), sid(2));
+    p.a.log(s1, 100);
+    p.a.log(s2, 101);
+    p.shared_read(s1);
+    p.shared_read(s2);
+    p.run();
+    p.b.leave(p.now, s1);
+    p.run();
+    let z = p.a.log(s1, 102);
+    p.a.log(s2, 103);
+    p.now += 1_000;
+    p.run();
+    assert!(!knows(&p.b, p.b.src(), s1, z), "not pulled while left");
+    p.b.restart_all(9);
+    p.b.join(p.now, s2);
+    p.b.join(p.now, s1);
+    p.run();
+    assert!(knows(&p.b, p.b.src(), s1, z), "rejoined from where it stood, not from the moved cursor");
+}

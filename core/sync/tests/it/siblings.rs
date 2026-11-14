@@ -259,7 +259,10 @@ fn outsider_across_a_node_removal(mut w: World) {
     file(&mut w, 0, Vec::new(), vec![t]);
     w.run();
     assert_eq!(w.engine(0).get(&t, &ak).unwrap(), Some(Value::Str("before".into())));
-    let held: Vec<_> = w.engine(0).commit_ids();
+    // a content commit on another thing may be forgotten as covered meanwhile (a dial list
+    // replaced whole: spec/commits.md §5 Forgetting); t's and every role commit stay
+    let before: Vec<_> = w.engine(0).commit_ids();
+    let held: Vec<_> = before.iter().copied().filter(|c| w.engine(0).header(c).is_some_and(|h| h.kind.is_role() || h.aspects.iter().any(|a| a.tid == t))).collect();
     let (n2, d) = (w.engine(2).tid(), w.engine(1).account().unwrap().unwrap().1);
     w.write(1, |e| e.demote(&d, &Demotion { holder: n2, new: None, retain: None })).unwrap();
     w.run();
@@ -269,8 +272,8 @@ fn outsider_across_a_node_removal(mut w: World) {
     assert_eq!(w.engine(0).get(&t, &ak).unwrap(), Some(Value::Str("before".into())), "the write before the removal");
     // what an outsider learns of the account's lists: only lists of what it reads (t; the
     // account's profile and what the two share where they are contacts) and of the account
-    // (whose rotations are its certificates), naming only commits it holds: nothing of D or its
-    // nodes
+    // (whose rotations are its certificates), naming only commits it holds or held (one forgotten
+    // as covered since): nothing of D or its nodes
     let mine = w.engine(0).commit_ids();
     let rots = w.engine(1).account_rotations(&a1);
     assert!(rots.iter().any(|r| w.engine(1).rotation_lists(r).unwrap().iter().any(|(x, _)| *x == d)), "node 1 holds D's list");
@@ -278,7 +281,7 @@ fn outsider_across_a_node_removal(mut w: World) {
         for (x, ids) in w.engine(0).rotation_lists(&r).unwrap() {
             let reads = matches!(w.engine(0).thing_sync(&x).unwrap(), osis_engine::sync::ThingSync::Read(_));
             assert!(x == t || x == a1 || reads, "node 0 holds a thing list of {x:?} (d {d:?})");
-            assert!(ids.iter().all(|c| mine.contains(c)), "a list of {x:?} names a commit node 0 does not hold");
+            assert!(ids.iter().all(|c| mine.contains(c) || before.contains(c)), "a list of {x:?} names a commit node 0 never held");
         }
     }
     // nor D's record or the removed node's (spec/requirements.md: outsiders never learn an

@@ -103,6 +103,9 @@ pub struct Read {
     freed: Effects<(BlobId, Tid), judge::Freed>,
     /// The pieces the must-hold bodies link, per (S, piece) (spec/sync-judgement.md §1).
     pieces: pieces::Pieces,
+    /// Per held commit, what it calls for in the engine: covered parts dropped, then forgotten
+    /// (spec/commits.md §5 Covered, Forgetting; `judge::local`).
+    local: Effects<CommitId, judge::Local>,
     verdicts: Stamped<(SyncId, CommitId), Verdict>,
     /// Own role commits S must hold (§3 Role entries first).
     roles: Stamped<SyncId, BTreeSet<CommitId>>,
@@ -132,6 +135,7 @@ impl Default for Read {
             steps: Effects::new("read: steps"),
             freed: Effects::new("read: freed"),
             pieces: pieces::Pieces::default(),
+            local: Effects::new("read: local"),
             verdicts: Stamped::default(),
             roles: Stamped::default(),
             told: Stamped::default(),
@@ -209,6 +213,7 @@ impl Read {
                     self.mintings.want((*s, *t));
                 }
             }
+            self.local.want(c);
             for s in now.keys() {
                 self.judged.want((*s, c));
                 self.dooms.want(*s);
@@ -426,6 +431,34 @@ impl Read {
                 self.freed.unwant(&k);
                 g.freed_done(&k.0, &k.1)?;
             }
+        }
+        // covered parts dropped; commits forgotten once no entry of them is known here, in one
+        // engine transaction; a commit no longer held leaves read
+        let mut forget = Vec::new();
+        for c in self.local.due() {
+            let at: Vec<SyncId> = self.settled.get(&c).map(|m| m.keys().copied().collect()).unwrap_or_default();
+            let Some((_, now)) = self.local.try_settle(&c, || judge::local(g, &c, &at))? else { continue };
+            match now {
+                judge::Local::Gone => {
+                    self.local.unwant(&c);
+                    self.bodies.unwant(&c);
+                    for s in self.settled.remove(&c).into_iter().flat_map(|m| m.keys().copied().collect::<Vec<_>>()) {
+                        self.metas.remove(&(s, c));
+                    }
+                }
+                judge::Local::Drop(parts) => {
+                    for (t, ak) in parts.iter() {
+                        g.drop_body(&c, t, ak)?;
+                    }
+                    acted = true;
+                }
+                judge::Local::Forget => forget.push(c),
+                judge::Local::Kept => {}
+            }
+        }
+        if !forget.is_empty() {
+            g.forget_commits(&forget)?;
+            acted = true;
         }
         Ok(acted)
     }

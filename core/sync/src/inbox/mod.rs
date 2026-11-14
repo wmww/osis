@@ -149,16 +149,29 @@ impl Inbox {
         self.step(&mut here, &mut net)
     }
 
-    fn step(&mut self, h: &mut Here<'_>, net: &mut impl Net) -> Result<bool> {
-        let mut acted = false;
-        if !self.started {
-            self.links.start(h)?;
-            self.deliveries.start(h, &mut self.offers)?;
-            self.held.start(h, &mut self.offers)?;
-            self.reports.start(h)?;
-            self.started = true;
-            acted = true;
+    /// A start: what this module makes the engine follow (links being redeemed, deliveries) is
+    /// followed again from the store, before any module reads the sync set (`leave` judges what
+    /// left it by the set as it stands). Whether it started now.
+    pub fn start(&mut self, cx: &mut Cx) -> Result<bool> {
+        let Cx { engine, store, now, rng, .. } = cx;
+        let mut here = Here { engine, status: None, store, now: *now, rng: &mut **rng };
+        self.begin(&mut here)
+    }
+
+    fn begin(&mut self, h: &mut Here<'_>) -> Result<bool> {
+        if self.started {
+            return Ok(false);
         }
+        self.links.start(h)?;
+        self.deliveries.start(h, &mut self.offers)?;
+        self.held.start(h, &mut self.offers)?;
+        self.reports.start(h)?;
+        self.started = true;
+        Ok(true)
+    }
+
+    fn step(&mut self, h: &mut Here<'_>, net: &mut impl Net) -> Result<bool> {
+        let mut acted = self.begin(h)?;
         acted |= self.deliveries.settle(h, &mut self.offers)?;
         acted |= self.held.settle(h, &mut self.offers)?;
         acted |= self.links.settle(h)?;

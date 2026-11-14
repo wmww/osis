@@ -34,7 +34,6 @@ osis-engine::body_min_ts  deferred: durable-compaction/chunk-blind (retention/bo
 osis-engine::all_forgettable  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::drop_lost_secrets  test hook: engine tests drop every lost actor at once (an app driving the engine alone); sync drops per actor (`removal_done`, `drop_lost_due`)
 osis-engine::aspect_commit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::body_page  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::carried_dots  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::commit_in_memory_hostile  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::compact_memory_now  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -47,7 +46,6 @@ osis-engine::delete_secrets_of  deferred: sync rebuild (issues/sync-rewrite.md P
 osis-engine::destroyed_records_awaited  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::ephemeral_session  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::flag_suspect  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::forget_commits  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::freed_wants  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::header_body  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::held_key_actors  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -64,7 +62,6 @@ osis-engine::lasting_role_on  deferred: sync rebuild (issues/sync-rewrite.md Pha
 osis-engine::left_at_hosts  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::lifetime_status  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::lifetimes_pending  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::local_census  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::local_rows_naming  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::may_last_on  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::memory_body_held  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync

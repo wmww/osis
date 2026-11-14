@@ -453,11 +453,18 @@ fn at_check(w: &mut World, r: &mut Peer) -> String {
 }
 
 /// `check`'s reader clauses: every node that reads a thing per the reference reads as the
-/// reference (each must be on), and the commit of the value the reference reads is held by some
-/// node.
+/// reference (each must be on), and some node holds a body carrying the value the reference
+/// reads (`value_held`).
 pub fn check_readers(w: &mut World) {
     let mut r = reference(w);
     reader_clauses(w, &mut r);
+}
+
+/// Whether some node holds a body of thing `t`'s value that reads `v`: the commit that wrote
+/// it, or a snapshot it dropped under as covered (spec/commits.md §5 Covered), so it survives
+/// that commit being forgotten everywhere (Forgetting).
+pub fn value_held(w: &mut World, t: &Tid, v: &str) -> bool {
+    (0..w.len()).any(|i| w.engine(i).body_page(t, &value_ak(), true, 0, usize::MAX).unwrap_or_default().iter().any(|b| b.value == Some(Value::Str(v.into()))))
 }
 
 fn reader_clauses(w: &mut World, r: &mut Peer) {
@@ -468,11 +475,8 @@ fn reader_clauses(w: &mut World, r: &mut Peer) {
             assert!(w.online(i), "node {i}, a reader of thing {k}, is off at the check");
             assert_eq!(reads(w.engine(i), t), want, "node {i} reads thing {k} unlike the reference");
         }
-        if let Some(Value::Str(v)) = &want.value
-            && let Some(c) = w.history.values.get(v).copied()
-        {
-            let held = (0..w.len()).any(|i| w.engine(i).commit_bytes(&c).ok().flatten().is_some());
-            assert!(held, "thing {k}: the body of its value {v} (commit {c:?}) is deleted everywhere");
+        if let Some(Value::Str(v)) = &want.value {
+            assert!(value_held(w, t, v), "thing {k}: every body of its value {v} is deleted everywhere");
         }
     }
 }

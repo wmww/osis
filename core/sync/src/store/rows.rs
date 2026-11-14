@@ -10,7 +10,8 @@
 //! - `W/ src s b` an entry charged to a source (`source_bytes`): a connection's go when it closes
 //!   or at a start, a record's when the record is dropped; `V/ conn` the bytes charged to a
 //!   connection in all (a record's total is in the record).
-//! - `T/ s b` a tombstone (`Tomb`); `t/ at s b` tombstones by when they were made, for the sweep.
+//! - `T/ s b` a tombstone (`Tomb`); `t/ at s b` tombstones by when they were made, for the sweep;
+//!   `Y/ b s` the sync IDs holding a tombstone of blob `b` (whether a delete of it is recent here).
 //! - `x/ T s b` entries by prefix expiry, for the sweep.
 //! - `P/ s i` step `i` of S's path from genesis (`StepRow`); `Q/ s i` its claim set while held;
 //!   `q/ at s i` claim sets by when they may go.
@@ -36,6 +37,7 @@ pub(crate) const BROUGHT: &[u8] = b"B/";
 pub(crate) const CONN_TOTAL: &[u8] = b"V/";
 pub(crate) const TOMB: &[u8] = b"T/";
 pub(crate) const TOMB_AT: &[u8] = b"t/";
+pub(crate) const TOMB_BY_BLOB: &[u8] = b"Y/";
 pub(crate) const EXPIRY: &[u8] = b"x/";
 pub(crate) const STEP: &[u8] = b"P/";
 pub(crate) const CLAIMS: &[u8] = b"Q/";
@@ -64,12 +66,13 @@ pub(crate) mod tag {
     pub(crate) const FILTER: u8 = b'F';
     pub(crate) const MEMBER: u8 = b'M';
     pub(crate) const REJOIN: u8 = b'O';
-    // streams: the stream's cursor (record-wide), a member at it, a join's cursor, where a member
-    // that left stood; what the source showed: an entry present, its head, full, a refusal
+    // streams: the stream's cursor (record-wide), a member at it, where a member not at it
+    // joins from (joining, or stopped where it left: one row, so a member leaving one connection
+    // and joining another from where it stood writes nothing); what the source showed: an entry
+    // present, its head, full, a refusal
     pub(crate) const CURSOR: u8 = b'c';
     pub(crate) const AT_STREAM: u8 = b'a';
-    pub(crate) const JOINING: u8 = b'j';
-    pub(crate) const STOPPED: u8 = b'p';
+    pub(crate) const JOIN_FROM: u8 = b'j';
     pub(crate) const PRESENT: u8 = b'k';
     pub(crate) const HEAD: u8 = b'h';
     pub(crate) const FULL: u8 = b'f';
