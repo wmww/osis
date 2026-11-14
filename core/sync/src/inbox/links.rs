@@ -3,17 +3,19 @@
 //! `redeem` keeps the link durably (store rows `I/r/`, shredded: they hold the seed) and holds
 //! link key L for this start, so the node proves L, opens K by L's static entry (opens) and its
 //! boxes open; the sharer's dialable key and relays are dial hints. Once K's roster here lists L
-//! the join is written (`Ground::redeem`), once; the link is kept, and L held at every start,
+//! the join is written (`Engine::redeem`), once; the link is kept, and L held at every start,
 //! until the join is held at a source (a redeemer proves L until its join is there). So a redeem
 //! dropped or a restart before the join reached the sharer's node still completes
-//! (`redeem-dropped-before-delivery`).
+//! (`redeem-dropped-before-delivery`). "Held at a source" is status's view (spec/sync-status.md
+//! §2).
 //!
 //! Finalize is the sharer's engine's, on a complete pass of K's sync ID (status tells it).
 
-use super::{DialHint, Ground, Here, settled};
+use super::{DialHint, Here, settled};
 use crate::types::{Result, Waiting};
 use osis_base::memo::Effects;
 use osis_base::{CommitId, Tid};
+use osis_engine::Engine;
 use osis_label::ShareLink;
 use osis_store::Shred;
 use std::collections::BTreeMap;
@@ -67,7 +69,7 @@ impl Default for Redemptions {
 
 impl Redemptions {
     /// A start: every link being redeemed is held again.
-    pub(super) fn start<G: Ground>(&mut self, h: &mut Here<'_, G>) -> Result<()> {
+    pub(super) fn start(&mut self, h: &mut Here<'_>) -> Result<()> {
         for (k, v) in h.store.with_tx(|t| t.scan_local(ROWS, b"", usize::MAX))? {
             let Some(p) = Pending::decode(&v) else { continue };
             let Some(k) = k.get(ROWS.len()..).and_then(|x| <[u8; 15]>::try_from(x).ok()).map(Tid::from_bytes) else { continue };
@@ -76,8 +78,8 @@ impl Redemptions {
         Ok(())
     }
 
-    fn follow<G: Ground>(&mut self, h: &mut Here<'_, G>, k: Tid, p: Pending) -> Result<()> {
-        h.g.hold_link(&p.link)?;
+    fn follow(&mut self, h: &mut Here<'_>, k: Tid, p: Pending) -> Result<()> {
+        h.engine.hold_key_actor(p.link.seed.clone())?;
         match p.joined {
             None => self.ready.want(k),
             Some(_) => self.held.want(k),
@@ -87,7 +89,7 @@ impl Redemptions {
         Ok(())
     }
 
-    pub(super) fn redeem<G: Ground>(&mut self, h: &mut Here<'_, G>, link: &ShareLink) -> Result<Waiting> {
+    pub(super) fn redeem(&mut self, h: &mut Here<'_>, link: &ShareLink) -> Result<Waiting> {
         if let Some(p) = self.pending.get(&link.k) {
             return Ok(if p.joined.is_some() { Waiting::Done } else { Waiting::Pending });
         }
@@ -98,17 +100,18 @@ impl Redemptions {
         Ok(Waiting::Pending)
     }
 
-    pub(super) fn settle<G: Ground>(&mut self, h: &mut Here<'_, G>) -> Result<bool> {
+    pub(super) fn settle(&mut self, h: &mut Here<'_>) -> Result<bool> {
         let mut acted = false;
         for k in self.ready.due() {
             let Some(link) = self.pending.get(&k).map(|p| p.link.clone()) else {
                 self.ready.unwant(&k);
                 continue;
             };
-            let g = &mut *h.g;
-            let Some((_, true)) = settled(&mut self.ready, &k, false, || g.link_ready(&link))? else { continue };
+            let engine = &mut *h.engine;
+            let Some((_, true)) = settled(&mut self.ready, &k, false, || link_ready(engine, &link))? else { continue };
             self.ready.unwant(&k);
-            let Some(c) = h.g.redeem(&link)? else { continue };
+            let me = h.engine.me();
+            let Some(c) = h.engine.redeem(&link, &me, link.single_use)?.commits.first().copied() else { continue };
             let p = Pending { link, joined: Some(c) };
             let row = p.encode()?;
             h.store.with_tx(|t| t.put_local(&row_key(&k), &row, Shred::Yes))?;
@@ -121,8 +124,8 @@ impl Redemptions {
                 self.held.unwant(&k);
                 continue;
             };
-            let g = &mut *h.g;
-            let Some((_, true)) = settled(&mut self.held, &k, false, || g.held_elsewhere(&c))? else { continue };
+            let status = h.status;
+            let Some((_, true)) = settled(&mut self.held, &k, false, || Ok(status.is_some_and(|st| st.held(&c))))? else { continue };
             self.held.unwant(&k);
             self.pending.remove(&k);
             self.hints.remove(&k);
@@ -136,4 +139,10 @@ impl Redemptions {
     pub(super) fn hints(&self) -> impl Iterator<Item = &DialHint> {
         self.hints.values().flatten()
     }
+}
+
+/// K's roster here lists L alive: the join can be written.
+fn link_ready(engine: &mut Engine, link: &ShareLink) -> Result<bool> {
+    let l = osis_engine::identity::key_actor_tid(&link.seed);
+    Ok(engine.roster(&link.k).contains_key(&l))
 }

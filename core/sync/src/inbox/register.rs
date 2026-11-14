@@ -3,7 +3,7 @@
 //! A node reading S registers, at each connection where a source keeping S unread is open (a
 //! member of class `Store`), the steps its `sync.0` records after the source's step, in order,
 //! one Register out at a time; each only once the source's stream showed every role commit the
-//! step's epochs depend on (`Ground::step_needs`, present by `Net::present`). Ok moves on to the
+//! step's epochs depend on (`Engine::step_needs`, a blob of each present by `Net::present`). Ok moves on to the
 //! next; refused for now (4, 12) backs off (`offers::backoff_ms`) and registers again; any other
 //! refusal waits for the source's step to move (a refused Register changes no view; the next head
 //! event does). Nothing is registered at a source on a step `sync.0` does not record (a sibling,
@@ -14,11 +14,13 @@
 //! source, this module's own progress there).
 
 use super::offers::backoff_ms;
-use super::{Ground, Here, Net, settled};
+use super::{Here, Net, settled};
 use crate::session::RequestId;
 use crate::types::{ConnId, Result, SourceClass};
 use osis_base::memo::{Effects, Stamped};
 use osis_base::{SyncId, WallMs};
+use osis_engine::Engine;
+use osis_engine::sync::Path;
 use osis_label::{ClaimSet, Step, StepId};
 use osis_proto::{Code, Msg};
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,7 +29,7 @@ type Key = (ConnId, SyncId);
 
 /// What to do at one source of S.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Plan {
+pub enum Plan {
     Nothing,
     Wait,
     Send(Box<Step>, Option<ClaimSet>),
@@ -35,14 +37,14 @@ enum Plan {
 
 /// This node's registering at one source of S.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Progress {
+pub struct Progress {
     /// The last step registered there (answered Ok).
-    at: Option<StepId>,
-    out: bool,
+    pub at: Option<StepId>,
+    pub out: bool,
     /// Refused for now: until when, how many times in a row.
-    backoff: Option<(WallMs, u32)>,
+    pub backoff: Option<(WallMs, u32)>,
     /// Refused while the source stood at this step: nothing more until it moves.
-    stuck: Option<Option<StepId>>,
+    pub stuck: Option<Option<StepId>>,
 }
 
 #[derive(Clone)]
@@ -82,7 +84,7 @@ impl Register {
         self.wakes.retain(|(_, (c, _))| *c != conn);
     }
 
-    pub(super) fn settle<G: Ground>(&mut self, h: &mut Here<'_, G>, net: &mut impl Net) -> Result<bool> {
+    pub(super) fn settle(&mut self, h: &mut Here<'_>, net: &mut impl Net) -> Result<bool> {
         let mut acted = false;
         while let Some(&(t, k)) = self.wakes.first() {
             if t > h.now {
@@ -97,8 +99,8 @@ impl Register {
             }
         }
         for k in self.plans.due() {
-            let (g, progress) = (&mut *h.g, &self.progress);
-            let Some((_, plan)) = settled(&mut self.plans, &k, Plan::Nothing, || judge(g, &*net, progress, &k))? else { continue };
+            let (engine, progress) = (&mut *h.engine, &self.progress);
+            let Some((_, plan)) = settled(&mut self.plans, &k, Plan::Nothing, || judge(engine, &*net, progress, &k))? else { continue };
             let Plan::Send(step, claims) = plan else { continue };
             let (conn, s) = k;
             let source = net.member(conn, &s).and_then(|m| m.step);
@@ -142,23 +144,34 @@ impl Register {
     }
 }
 
-fn judge<G: Ground>(g: &mut G, net: &impl Net, progress: &Stamped<Key, Progress>, k: &Key) -> Result<Plan> {
+fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>, k: &Key) -> Result<Plan> {
     osis_base::costs::count("inbox: register judged", 1);
     let (conn, s) = k;
     let Some(member) = net.member(*conn, s).filter(|m| m.class == SourceClass::Store) else { return Ok(Plan::Nothing) };
-    let Some(path) = g.recorded_path(s)? else { return Ok(Plan::Nothing) };
+    let Some(t) = engine.sync_owner(s)? else { return Ok(Plan::Nothing) };
+    let Some(path) = engine.sync_ids(&t)?.iter().find(|o| o.id == *s && !o.hint).map(|o| o.path.clone()) else { return Ok(Plan::Nothing) };
     let p = progress.get(k).copied().unwrap_or_default();
-    if p.out || p.backoff.is_some() || p.stuck.is_some_and(|x| x == member.step) {
+    let mut needs_held = |step: &StepId| -> Result<bool> {
+        for c in engine.step_needs(s, step)?.iter() {
+            if !engine.commit_blobs(c)?.iter().any(|b| net.present(*conn, s, b)) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
+    plan(member.step, &path, &p, &mut needs_held)
+}
+
+/// spec/sync-ids.md §6 Steps (Register): at a source keeping S unread standing at step
+/// `source`, given this node's recorded `path` and its progress there, the next recorded step
+/// to register, once `held` says the source holds the role commits it depends on.
+pub fn plan(source: Option<StepId>, path: &Path, p: &Progress, held: &mut dyn FnMut(&StepId) -> Result<bool>) -> Result<Plan> {
+    if p.out || p.backoff.is_some() || p.stuck.is_some_and(|x| x == source) {
         return Ok(Plan::Wait);
     }
     let index = |id: &Option<StepId>| id.and_then(|id| path.steps.iter().position(|(st, _)| st.id() == id));
     // the source's step: its head event's, or a later one this node registered there
-    let Some(i) = index(&member.step).max(index(&p.at)) else { return Ok(Plan::Nothing) };
+    let Some(i) = index(&source).max(index(&p.at)) else { return Ok(Plan::Nothing) };
     let Some((next, claims)) = path.steps.get(i + 1) else { return Ok(Plan::Nothing) };
-    let needs = g.step_needs(s, &next.id())?;
-    if needs.iter().all(|b| net.present(*conn, s, b)) {
-        Ok(Plan::Send(Box::new(next.clone()), claims.clone()))
-    } else {
-        Ok(Plan::Wait)
-    }
+    if held(&next.id())? { Ok(Plan::Send(Box::new(next.clone()), claims.clone())) } else { Ok(Plan::Wait) }
 }

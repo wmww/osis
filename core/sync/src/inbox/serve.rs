@@ -2,12 +2,12 @@
 //! the store's rules), Stranded and Suspect (spec/wire.md §11.2: answered Ok whatever the
 //! receiver does with them).
 
-use super::{Ground, Here, Net};
+use super::{Here, Net};
 use crate::session::RequestId;
 use crate::types::{ConnId, Credential};
 use osis_proto::{Code, Msg};
 
-pub(super) fn request<G: Ground>(h: &mut Here<'_, G>, net: &mut impl Net, conn: ConnId, id: RequestId, m: Msg) {
+pub(super) fn request(h: &mut Here<'_>, net: &mut impl Net, conn: ConnId, id: RequestId, m: Msg) {
     let reply = match m {
         Msg::Register { sync_id, step, claim_set, .. } => {
             // a store failure answers refused: the node reopens from its store

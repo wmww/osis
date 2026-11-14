@@ -5,12 +5,12 @@
 //! judged by one `Effects` key over what it reads (the entry, the engine's verdicts), so a change
 //! costs what it touched (`inbox-full-walk-scale`: a contact's blobs up to the caps cost a change
 //! O(change)). Per entry:
-//! - under an inbox this node reads: taken (`Ground::take_inbox`, judged again as what it read
+//! - under an inbox this node reads: taken (`Engine::take_inbox`, judged again as what it read
 //!   moves); a deposited one whose commit applied is stamped in place by a writer of the inbox,
 //!   at most one blob per commit and none whose expiry is more than `INBOX_LIFETIME + 2 ×
 //!   MAX_DRIFT` ahead; its dial hint kept while it lives;
 //! - a deposit under a sync ID this node reads and writes: promoted (stamped, with the author's
-//!   chain logged as certificate copies) once `Ground::promotable` says so and it holds a part of
+//!   chain logged as certificate copies) once `Engine::promotable` says so and it holds a part of
 //!   the commit S must hold that no other entry of S holds stamped;
 //! - an own deposit: offered (`offers`, to the sources keeping S unread) until stamped or gone.
 //!
@@ -19,13 +19,15 @@
 //! again for S each time a deposit of S changed: O(S's deposits), which its deposit budget bounds.
 
 use super::offers::{Offers, Target};
-use super::{DialHint, Ground, Here, settled};
+use super::{DialHint, Here, settled};
+use crate::store::Store;
 use crate::types::{Entry, Holding, Result};
 use osis_base::format::{DEPOSITS_WAITING, DEPOSITS_WAITING_BYTES, INBOX_LIFETIME_MS, MAX_DRIFT_MS};
 use osis_base::memo::{Effects, Feed, Stamped, StampedSet};
 use osis_base::{BlobId, CommitId, SyncId, WallMs};
+use osis_engine::Engine;
 use osis_engine::labeling::Certs;
-use osis_engine::sync::{Promote, Taken};
+use osis_engine::sync::{InboxOpened, Opened, PartSet, Promote, Taken};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -33,7 +35,7 @@ type Key = (SyncId, BlobId);
 
 /// What one entry calls for.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum Act {
+pub enum Act {
     /// Not held (gone, expired, never there).
     Gone,
     /// Nothing: a stamped entry of a sync ID that is no inbox here.
@@ -73,7 +75,7 @@ impl Default for Held {
 
 impl Held {
     /// A start: every deposit held is judged once (inbox entries once the inboxes are known).
-    pub(super) fn start<G: Ground>(&mut self, h: &mut Here<'_, G>, _offers: &mut Offers) -> Result<()> {
+    pub(super) fn start(&mut self, h: &mut Here<'_>, _offers: &mut Offers) -> Result<()> {
         self.feed = Some(h.store.entry_feed());
         for (s, e) in h.store.all_deposits()? {
             self.judged.want((s, e.blob));
@@ -81,11 +83,11 @@ impl Held {
         Ok(())
     }
 
-    pub(super) fn settle<G: Ground>(&mut self, h: &mut Here<'_, G>, offers: &mut Offers) -> Result<bool> {
+    pub(super) fn settle(&mut self, h: &mut Here<'_>, offers: &mut Offers) -> Result<bool> {
         let mut acted = false;
         if !self.inbox_list.due().is_empty() {
-            let g = &mut *h.g;
-            if let Some((_, now)) = settled(&mut self.inbox_list, &(), Arc::default(), || g.inboxes())? {
+            let engine = &mut *h.engine;
+            if let Some((_, now)) = settled(&mut self.inbox_list, &(), Arc::default(), || Ok(Arc::new(engine.inbox_actors().keys().copied().collect())))? {
                 let gone: Vec<SyncId> = self.inboxes.iter().filter(|s| !now.contains(*s)).copied().collect();
                 for s in gone {
                     self.inboxes.remove(&s);
@@ -110,8 +112,8 @@ impl Held {
             let (inboxes, stamped) = (&self.inboxes, &self.stamped);
             let now_ms = h.now;
             let moved = {
-                let (g, store) = (&mut *h.g, &*h.store);
-                settled(&mut self.judged, &k, Act::Gone, || judge(g, store, inboxes, stamped, now_ms, &k))?
+                let (engine, store) = (&mut *h.engine, &*h.store);
+                settled(&mut self.judged, &k, Act::Gone, || judge(engine, store, inboxes, stamped, now_ms, &k))?
             };
             let Some((was, now)) = moved else { continue };
             acted = true;
@@ -126,7 +128,7 @@ impl Held {
         Ok(acted)
     }
 
-    fn act<G: Ground>(&mut self, h: &mut Here<'_, G>, offers: &mut Offers, k: &Key, now: &Act) -> Result<()> {
+    fn act(&mut self, h: &mut Here<'_>, offers: &mut Offers, k: &Key, now: &Act) -> Result<()> {
         let (s, b) = k;
         let deposit = matches!(now, Act::StampInbox(_) | Act::Promote(_) | Act::Offer | Act::Waiting { .. }) || matches!(now, Act::Inbox { stamped: false, .. });
         if deposit || matches!(self.acts.get(k), Some(Act::Offer | Act::Waiting { .. } | Act::Inbox { stamped: false, .. })) {
@@ -153,9 +155,9 @@ impl Held {
                 }
             }
             Act::Promote(chain) => {
-                if stamp(h, s, b)? {
+                // the author's chain goes beside it first; nothing promotes until it can
+                if log_chain(h, s, chain)? && stamp(h, s, b)? {
                     osis_base::costs::count("inbox: promoted", 1);
-                    h.g.log_chain(s, chain)?;
                 }
             }
             Act::Offer => offers.add(*s, *b, Target::Stores),
@@ -167,8 +169,8 @@ impl Held {
 
     /// Clears S's deposits past the bounds (spec/sync-inbox.md §4 Clearing deposits) when this
     /// node holds S's delete key.
-    fn clear<G: Ground>(&mut self, h: &mut Here<'_, G>, s: &SyncId) -> Result<bool> {
-        if h.g.signers(s, None)?.delete.is_none() {
+    fn clear(&mut self, h: &mut Here<'_>, s: &SyncId) -> Result<bool> {
+        if h.engine.signers(s, None)?.delete.is_none() {
             return Ok(false);
         }
         let mut idle = Vec::new();
@@ -183,19 +185,9 @@ impl Held {
             idle.push((e, size, request));
         }
         osis_base::costs::count("inbox: clearing read", idle.len() as u64);
-        let (mut n, mut bytes) = (idle.len(), idle.iter().map(|(_, b, _)| *b).sum::<u64>());
-        if n <= DEPOSITS_WAITING && bytes <= DEPOSITS_WAITING_BYTES as u64 {
-            return Ok(false);
-        }
-        idle.sort_by_key(|(e, _, request)| clearing_order(e, *request, h.now));
         let mut acted = false;
-        for (e, size, _) in idle {
-            if n <= DEPOSITS_WAITING && bytes <= DEPOSITS_WAITING_BYTES as u64 {
-                break;
-            }
-            h.store.drop_entry(s, &e.blob, Vec::new())?;
-            n -= 1;
-            bytes = bytes.saturating_sub(size);
+        for b in to_clear(idle, h.now) {
+            h.store.drop_entry(s, &b, Vec::new())?;
             acted = true;
         }
         Ok(acted)
@@ -214,13 +206,25 @@ impl Held {
     }
 }
 
-/// The order deposits are cleared in (spec/sync-inbox.md §4): every deposit but the invite
+/// spec/sync-inbox.md §4 Clearing deposits: of the deposits a holder of S's delete key can do
+/// nothing with (each with its size and whether it is an invite request), the ones it drops to
+/// keep at most `DEPOSITS_WAITING` and `DEPOSITS_WAITING_BYTES`: every deposit but the invite
 /// requests first, those with no expiry or one past the bound before the rest, then earliest to
-/// expire; then the invite requests, earliest to expire (an invite request counts toward the
-/// bounds and goes last).
-fn clearing_order(e: &Entry, request: bool, now: WallMs) -> (bool, bool, u64) {
-    let t = e.expires.map_or(u64::MAX, |t| t.0);
-    (request, within_bound(e.expires, now), t)
+/// expire; then the invite requests, earliest to expire (they count toward the bounds and go
+/// last).
+pub fn to_clear(mut idle: Vec<(Entry, u64, bool)>, now: WallMs) -> Vec<BlobId> {
+    let (mut n, mut bytes) = (idle.len(), idle.iter().map(|(_, b, _)| *b).sum::<u64>());
+    let mut out = Vec::new();
+    idle.sort_by_key(|(e, _, request)| (*request, within_bound(e.expires, now), e.expires.map_or(u64::MAX, |t| t.0)));
+    for (e, size, _) in idle {
+        if n <= DEPOSITS_WAITING && bytes <= DEPOSITS_WAITING_BYTES as u64 {
+            break;
+        }
+        out.push(e.blob);
+        n -= 1;
+        bytes = bytes.saturating_sub(size);
+    }
+    out
 }
 
 /// The prefix expiry is within `INBOX_LIFETIME + 2 × MAX_DRIFT` of `now` (spec/sync-inbox.md §2).
@@ -228,66 +232,125 @@ fn within_bound(expires: Option<WallMs>, now: WallMs) -> bool {
     expires.is_some_and(|t| t.0 <= now.0.saturating_add(INBOX_LIFETIME_MS + 2 * MAX_DRIFT_MS))
 }
 
-/// Deposit `b` of commit `c` holds a part of `c` S must hold that no other entry of S holds
-/// stamped (spec/sync-inbox.md §4 Promotion: one stamped copy per delta).
-fn adds_delta<G: Ground>(g: &mut G, store: &crate::store::Store, s: &SyncId, b: &BlobId, c: &CommitId) -> Result<bool> {
-    let (Some(need), Some(mut mine)) = (g.body_parts(s, c)?, g.blob_parts(b)?) else { return Ok(false) };
-    mine.retain(|p| need.contains(p));
-    for x in g.commit_blobs(c)?.iter().filter(|x| *x != b) {
-        if store.entry(s, x)?.is_some_and(|e| !e.deposited)
-            && let Some(held) = g.blob_parts(x)?
+/// spec/sync-inbox.md §4 Promotion (one stamped copy per delta): a deposit holding parts `mine`
+/// of a commit S must hold parts `need` of adds a delta when some part of `need` it holds is in
+/// none of the parts `stamped` (the other entries of S holding that commit stamped).
+pub fn adds_delta(need: &PartSet, mine: &PartSet, stamped: &[PartSet]) -> bool {
+    mine.iter().any(|p| need.contains(p) && !stamped.iter().any(|x| x.contains(p)))
+}
+
+/// What one held entry is judged on (spec/sync-inbox.md §2 Taking, Stamping in place, §4).
+#[derive(Clone, Debug)]
+pub struct Facts {
+    pub blob: BlobId,
+    pub deposited: bool,
+    pub own: bool,
+    pub expires: Option<WallMs>,
+    /// S is an inbox this node reads; then how taking the blob went (`None`: nothing here opens
+    /// it).
+    pub inbox: Option<Option<InboxOpened>>,
+    /// The blob already stamped for this inbox commit, if any (one per commit).
+    pub stamped: Option<BlobId>,
+    /// This node holds S's head write key.
+    pub writer: bool,
+    /// How this node holds S.
+    pub holding: Option<Holding>,
+    /// A deposit under a read S this node writes: the engine's word on promoting its commit and
+    /// whether it adds a delta (`adds_delta`).
+    pub promote: Option<(Promote, bool)>,
+}
+
+/// The act one held entry calls for, from its facts alone.
+pub fn act_of(f: &Facts, now: WallMs) -> Act {
+    if let Some(o) = &f.inbox {
+        let (taken, commit) = (o.as_ref().map(|o| o.taken), o.as_ref().and_then(|o| o.commit));
+        if f.deposited
+            && taken == Some(Taken::Applied)
+            && let Some(c) = commit
+            && within_bound(f.expires, now)
+            && f.stamped.is_none_or(|x| x == f.blob)
+            && f.writer
         {
-            mine.retain(|p| !held.contains(p));
+            return Act::StampInbox(c);
         }
+        let dial = o.as_ref().and_then(|o| o.dial.clone());
+        return Act::Inbox { stamped: !f.deposited, taken, commit, dial, expires: f.expires };
     }
-    Ok(!mine.is_empty())
+    if !f.deposited {
+        return Act::Nothing;
+    }
+    let mut never = false;
+    match &f.promote {
+        Some((Promote::Yes { chain }, true)) => return Act::Promote(chain.clone()),
+        Some((Promote::Never, _)) => never = true,
+        _ => {}
+    }
+    // an own deposit under a sync ID not held is an inbox blob to another's inbox: `deliveries`'
+    if f.own && f.holding.is_some() { Act::Offer } else { Act::Waiting { never } }
+}
+
+/// Logs a promoted commit's author's chain under S as this node's certificate copies: whether
+/// it did. Not built: the engine seals no certificate copy yet (notes/sync-boundary.md, inbox),
+/// so nothing is promoted.
+fn log_chain(h: &mut Here<'_>, s: &SyncId, chain: &Certs) -> Result<bool> {
+    let _ = (h, s, chain);
+    Ok(false)
 }
 
 /// Stamps entry `b` of S in place with this node's write key: whether it did.
-fn stamp<G: Ground>(h: &mut Here<'_, G>, s: &SyncId, b: &BlobId) -> Result<bool> {
+fn stamp(h: &mut Here<'_>, s: &SyncId, b: &BlobId) -> Result<bool> {
     let Some(e) = h.store.entry(s, b)? else { return Ok(false) };
-    let Some(w) = h.g.signers(s, None)?.stamp else { return Ok(false) };
+    let Some(w) = h.engine.signers(s, None)?.stamp else { return Ok(false) };
     let stamp = osis_label::sign_stamp(&w, s, b, &e.wrap, e.role);
     let code = h.store.log(s, Entry { stamp: Some(stamp), deposited: false, ..e }, None, None)?;
     Ok(code == osis_proto::Code::OK)
 }
 
-fn judge<G: Ground>(g: &mut G, store: &crate::store::Store, inboxes: &StampedSet<SyncId>, stamped: &Stamped<(SyncId, CommitId), BlobId>, now: WallMs, k: &Key) -> Result<Act> {
+/// The commit deposit `b` of S holds: as opened or sealed here, else opened now (a deposit a
+/// peer left is opened once, under a read S).
+fn deposit_commit(engine: &mut Engine, store: &Store, s: &SyncId, e: &Entry) -> Result<Option<CommitId>> {
+    if let Some(c) = engine.blob_commit(&e.blob)? {
+        return Ok(Some(c));
+    }
+    let Some(bytes) = store.bytes(&e.blob)? else { return Ok(None) };
+    Ok(match engine.open_entry(s, &e.blob, &e.wrap, &bytes)? {
+        Opened::Commit(c, _) => Some(c),
+        _ => None,
+    })
+}
+
+fn judge(engine: &mut Engine, store: &Store, inboxes: &StampedSet<SyncId>, stamped: &Stamped<(SyncId, CommitId), BlobId>, now: WallMs, k: &Key) -> Result<Act> {
     osis_base::costs::count("inbox: held judged", 1);
     let (s, b) = k;
     let Some(e) = store.entry(s, b)? else { return Ok(Act::Gone) };
+    let holding = store.holding(s);
+    let mut f = Facts { blob: *b, deposited: e.deposited, own: e.own, expires: e.expires, inbox: None, stamped: None, writer: false, holding, promote: None };
     if inboxes.contains(s) {
-        let o = g.take_inbox(s, b)?;
-        let (taken, commit) = (o.as_ref().map(|o| o.taken), o.as_ref().and_then(|o| o.commit));
-        if e.deposited
-            && let Some(o) = &o
-            && o.taken == Taken::Applied
-            && let Some(c) = o.commit
-            && within_bound(e.expires, now)
-            && stamped.get(&(*s, c)).is_none_or(|x| x == b)
-            && g.signers(s, None)?.stamp.is_some()
-        {
-            return Ok(Act::StampInbox(c));
-        }
-        let dial = o.and_then(|o| o.dial);
-        return Ok(Act::Inbox { stamped: !e.deposited, taken, commit, dial, expires: e.expires });
+        let o = engine.take_inbox(s, b, false)?;
+        f.stamped = o.as_ref().and_then(|o| o.commit).and_then(|c| stamped.get(&(*s, c)).copied());
+        f.writer = e.deposited && engine.signers(s, None)?.stamp.is_some();
+        f.inbox = Some(o);
+        return Ok(act_of(&f, now));
     }
-    if !e.deposited {
-        return Ok(Act::Nothing);
-    }
-    let mut never = false;
-    if store.holding(s) == Some(Holding::Read)
-        && g.signers(s, None)?.stamp.is_some()
-        && let Some(c) = g.blob_commit(s, b)?
-    {
-        match g.promotable(s, &c)? {
-            // one stamped copy per delta under S, however many encryptions are deposited
-            Promote::Yes { .. } if !adds_delta(g, store, s, b, &c)? => {}
-            Promote::Yes { chain } => return Ok(Act::Promote(chain)),
-            Promote::Never => never = true,
-            Promote::NotYet => {}
+    if e.deposited && holding == Some(Holding::Read) && engine.signers(s, None)?.stamp.is_some() {
+        f.writer = true;
+        if let Some(c) = deposit_commit(engine, store, s, &e)? {
+            let p = engine.promotable(s, &c)?;
+            let adds = matches!(p, Promote::Yes { .. }) && {
+                let need = engine.sync_bodies(&c)?.get(s).map(|m| m.parts.clone()).unwrap_or_default();
+                let mine = engine.blob_parts(b)?.unwrap_or_default();
+                let mut others = Vec::new();
+                for x in engine.commit_blobs(&c)?.iter().filter(|x| *x != b) {
+                    if store.entry(s, x)?.is_some_and(|e| !e.deposited)
+                        && let Some(held) = engine.blob_parts(x)?
+                    {
+                        others.push(held);
+                    }
+                }
+                adds_delta(&need, &mine, &others)
+            };
+            f.promote = Some((p, adds));
         }
     }
-    // an own deposit under a sync ID not held is an inbox blob to another's inbox: `deliveries`'
-    Ok(if e.own && store.holding(s).is_some() { Act::Offer } else { Act::Waiting { never } })
+    Ok(act_of(&f, now))
 }
