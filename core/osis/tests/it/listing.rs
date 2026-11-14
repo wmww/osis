@@ -321,6 +321,30 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     assert_eq!(db.at(t, untyped(ak("t:m+.0"))).get().unwrap(), None);
 }
 
+// spec/commits.md §5 Forgetting (a forgotten commit's name), Purge: a write with no history kept,
+// compacted and its commit forgotten (header and ID gone), is still purged by its ID: the snapshot
+// carrying it holds it value-less.
+#[test]
+fn purge_commit_reaches_a_forgotten_write_spec_commits_5() {
+    let db = db_at(0);
+    let t = thing(&db);
+    let k = ak("t:reg.0");
+    let x = commit_with(&db, |w| w.at(t, untyped(k.clone())).set(&s("secret"))).stamp.id;
+    db.engine(|e| {
+        let s = e.snapshot(&t, &k).unwrap().unwrap();
+        let on: Vec<_> = e.commit_ids().into_iter().filter(|c| *c != s && e.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t && a.ak == k))).collect();
+        for c in on {
+            e.drop_body(&c, &t, &k).unwrap();
+        }
+        let due: Vec<_> = e.commit_ids().into_iter().filter(|c| e.forgettable(c).unwrap()).collect();
+        assert!(!due.is_empty());
+        e.forget_commits(&due).unwrap();
+    });
+    assert_eq!(db.at(t, untyped(k.clone())).get().unwrap(), Some(s("secret")));
+    commit_with(&db, |w| w.at(t, untyped(k.clone())).purge(osis::Purge::Commit(x)));
+    assert_eq!(db.at(t, untyped(k.clone())).get().unwrap(), None);
+}
+
 // spec/data-model.md §6 (holds the root link), notes/api.md Commits: a page is bounded in the bytes of its values, a link's once materialized, so
 // it fits what a reply carries: it ends early, says more, and the next page goes on. A value above
 // the bound alone reads as too large, its commit in its place.

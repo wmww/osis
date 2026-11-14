@@ -197,6 +197,11 @@ pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()
                 break;
             }
         }
+        // a commit forgotten here whose copies a held snapshot carries: judged by its name, as by
+        // its header (`names`)
+        for t in core.forgotten_on(item.tid(), item.ak()).into_iter().filter(|t| reaches(item, t) && names_t(p, t)) {
+            rights.entry((t.by as u64, t.actor)).or_insert_with(|| holds_right_t(core, p, pc, &t));
+        }
         if !rights.is_empty() && !rights.values().any(|r| *r) {
             return Err(Error::Permission { tid: *item.tid() });
         }
@@ -596,11 +601,17 @@ pub(crate) fn rejudge_carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut
     }
     let mut want = Vec::new();
     for ((ts, src), c) in carried {
-        if c.stated.is_empty() || !super::snapshot::held_by_stamp(tx.core, tid, ak, ts, &src).is_empty() {
+        if !super::snapshot::held_by_stamp(tx.core, tid, ak, ts, &src).is_empty() {
             continue;
         }
         let core = &*tx.core;
-        if c.stated.iter().all(|(by, actor)| requests.standing_t(core, &Target::carried(*tid, ak.clone(), ts, src.clone(), *by, *actor)).is_some()) {
+        // a commit forgotten here is judged by its name (its header's facts), not the snapshots' word
+        let named = core.forgotten_by_stamp(tid, ak, ts, &src);
+        let stands = match named.is_empty() {
+            false => named.iter().all(|t| requests.standing_t(core, t).is_some()),
+            true => !c.stated.is_empty() && c.stated.iter().all(|(by, actor)| requests.standing_t(core, &Target::carried(*tid, ak.clone(), ts, src.clone(), *by, *actor)).is_some()),
+        };
+        if stands {
             want.push(Owned::Dots { src, ctrs: c.ctrs.into_iter().collect() });
         }
     }
@@ -791,10 +802,15 @@ pub(super) fn purge_arrived(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ai: usiz
 
 impl Core {
     /// The purge item naming held commit `c`'s delta on `(tid, ak)` by its stamp
-    /// (`PurgeItem::Commit`): its `ts` and own source. `None` when its header is not held.
+    /// (`PurgeItem::Commit`): its `ts` and own source, from its header, else from its name kept
+    /// since it was forgotten (`names`). `None` when neither is held.
     pub(crate) fn purge_item(&self, c: &CommitId, tid: Tid, ak: Ak) -> Option<PurgeItem> {
-        let h = &self.ix.commits.get(c)?.header;
-        Some(PurgeItem::Commit { tid, ak, ts: h.ts, src: h.form.own_source(h.author, *c) })
+        if let Some(m) = self.ix.commits.get(c) {
+            let h = &m.header;
+            return Some(PurgeItem::Commit { tid, ak, ts: h.ts, src: h.form.own_source(h.author, *c) });
+        }
+        let n = self.forgotten_name(c, &tid, &ak)?;
+        Some(PurgeItem::Commit { ts: n.ts, src: n.src.clone(), tid, ak })
     }
 }
 

@@ -139,3 +139,239 @@ fn a_wider_fact_never_covers_spec_commits_5() {
     assert_eq!(e.run(|tx| super::snapshot::covered_join(tx, &s2, &s1, &t, &reg())).unwrap(), Some(false), "the wider statement covers the honest one");
     assert_eq!(e.get(&t, &reg()).unwrap(), Some(Value::Str("SECRET".into())), "the liar's purge took another's admin-class write");
 }
+
+/// At peer `i`: every body a held valid snapshot of `ak` covers is dropped, then every
+/// forgettable commit forgotten (what node-sync's compaction does).
+fn compact_forget(lp: &mut LocalPeer, i: usize, t: Tid, ak: &Ak) {
+    let e = &mut lp.peers[i].engine;
+    for c in e.commit_ids() {
+        // refused (nothing changes) unless a held valid snapshot covers it
+        if e.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t && a.ak == *ak)) {
+            let _ = e.drop_body(&c, &t, ak);
+        }
+    }
+    let due: Vec<_> = e.commit_ids().into_iter().filter(|c| e.forgettable(c).unwrap()).collect();
+    e.forget_commits(&due).unwrap();
+}
+
+/// Admin `by`'s request purging commit `c` on `(t, ak)` by ID, through the writer's own check.
+fn purge_by_id(lp: &mut LocalPeer, by: usize, t: Tid, ak: &Ak, c: CommitId) -> crate::error::Result<Option<CommitId>> {
+    let mut m = Mutation::new();
+    m.set(t, &ct::PURGE, &lp.peers[by].engine.now()).unwrap();
+    m.purge_commit(c, t, ak.clone());
+    let r = lp.peers[by].commit(m);
+    lp.advance(1_000);
+    r
+}
+
+fn names_on(lp: &LocalPeer, i: usize, t: Tid, ak: &Ak) -> usize {
+    lp.peers[i].engine.core.ix.forgotten_names.get(&(t, ak.clone())).map_or(0, |m| m.len())
+}
+
+// spec/commits.md §5 Forgetting, Purge: a purge by ID of a write its node forgot under a cover
+// (header and ID gone) still reaches its value at every node: the purger (after a restart too),
+// the writer, and a late joiner holding only the snapshot and the request. Only that write: the
+// other aspect, written and forgotten alike, reads on.
+#[test]
+fn purge_by_id_reaches_a_forgotten_write_spec_commits_5() {
+    let other = Ak::new("x:b.0").unwrap();
+    for restart in [false, true] {
+        let (mut lp, t) = world();
+        let (c, s) = written(&mut lp, t, PurgeBy::Admin);
+        let mut m = Mutation::new();
+        m.set(t, &other, &Value::Str("KEEP".into())).unwrap();
+        lp.peers[1].commit(m).unwrap();
+        lp.advance(1_000);
+        let so = lp.peers[1].engine.snapshot(&t, &other).unwrap().unwrap();
+        lp.advance(1_000);
+        lp.sync(1, 0).unwrap();
+        // forgotten at the writer, then received again from the admin: its header decides again
+        compact_forget(&mut lp, 1, t, &reg());
+        assert_eq!(names_on(&lp, 1, t, &reg()), 1, "named at the writer");
+        lp.sync(0, 1).unwrap();
+        assert!(lp.peers[1].engine.commit_ids().contains(&c), "received again");
+        assert_eq!(names_on(&lp, 1, t, &reg()), 0, "held again: no name");
+        for i in [0, 1] {
+            compact_forget(&mut lp, i, t, &reg());
+            compact_forget(&mut lp, i, t, &other);
+            assert!(!lp.peers[i].engine.commit_ids().contains(&c), "forgotten at {i}");
+            assert_eq!(names_on(&lp, i, t, &reg()), 1, "named at {i}");
+        }
+        if restart {
+            lp.peers[0].restart(7).unwrap();
+        }
+        // the writer holds no right over an admin-class write: refused by its name, as by its header
+        assert!(matches!(purge_by_id(&mut lp, 1, t, &reg(), c), Err(crate::Error::Permission { .. })), "restart {restart}: the writer's purge");
+        let p = purge_by_id(&mut lp, 0, t, &reg(), c).unwrap().unwrap();
+        // the late joiner: the snapshots and the request, never the commit
+        for (from, id) in [(1, s), (1, so), (0, p)] {
+            let pk = lp.peers[from].engine.package(&id).unwrap().unwrap();
+            lp.deliver(2, &pk).unwrap();
+        }
+        lp.sync(0, 1).unwrap();
+        for i in 0..3 {
+            let e = &mut lp.peers[i].engine;
+            assert_ne!(e.get(&t, &reg()).unwrap(), Some(Value::Str("SECRET".into())), "restart {restart}: read at {i}");
+            assert_eq!(e.get(&t, &other).unwrap(), Some(Value::Str("KEEP".into())), "restart {restart}: the other write at {i}");
+        }
+        assert!(lp.peers[2].engine.purge_item(&c, t, reg()).is_none(), "the late joiner never held the header: no name");
+    }
+}
+
+// spec/commits.md §5 Forgetting, notes/growth.md: a name lives while a held snapshot carries a
+// write of it: overwritten and compacted again it goes, so a register overwritten n times holds
+// at most one name, in the index and in the store, the same after a restart.
+#[test]
+fn a_dead_write_keeps_no_name_spec_commits_5() {
+    let (mut lp, t) = world();
+    for n in 0..12 {
+        let mut m = Mutation::new();
+        m.set(t, &reg(), &Value::Int(n)).unwrap();
+        lp.peers[1].commit(m).unwrap();
+        lp.advance(1_000);
+        lp.peers[1].engine.snapshot(&t, &reg()).unwrap().unwrap();
+        lp.advance(1_000);
+        compact_forget(&mut lp, 1, t, &reg());
+        assert!(names_on(&lp, 1, t, &reg()) <= 1, "write {n}: {} names", names_on(&lp, 1, t, &reg()));
+        let rows = lp.peers[1].engine.local_census().unwrap().get("fn/").map_or(0, |x| x.0);
+        assert!(rows <= 1, "write {n}: {rows} rows");
+    }
+    assert_eq!(names_on(&lp, 1, t, &reg()), 1, "the live write's");
+    lp.peers[1].restart(3).unwrap();
+    assert_eq!(names_on(&lp, 1, t, &reg()), 1, "after a restart");
+    // overwritten again: the old snapshot leaving alone (nothing forgotten in its transaction)
+    // takes the name with it, before the new write is forgotten
+    let old = lp.peers[1].engine.core.ix.snapshots.get(&(t, reg())).unwrap()[0].1;
+    let mut m = Mutation::new();
+    m.set(t, &reg(), &Value::Int(99)).unwrap();
+    let last = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    lp.peers[1].engine.snapshot(&t, &reg()).unwrap().unwrap();
+    lp.advance(1_000);
+    lp.peers[1].engine.drop_body(&old, &t, &reg()).unwrap();
+    assert_eq!(names_on(&lp, 1, t, &reg()), 0, "the dead write's name");
+    compact_forget(&mut lp, 1, t, &reg());
+    assert!(!lp.peers[1].engine.commit_ids().contains(&last));
+    assert_eq!(names_on(&lp, 1, t, &reg()), 1, "only the live write's");
+}
+
+// spec/commits.md §5 Purge, Without the header: a node holding a forgotten commit's name judges
+// a request by the header's facts, not a snapshot's word: writer 3 states `nobody` for writer 1's
+// admin-class write, which would block the admin's purge by ID wherever only snapshots speak.
+#[test]
+fn a_name_judges_by_the_header_not_a_snapshots_word_spec_commits_5() {
+    let (mut lp, t) = LocalPeer::cached("retention::tests_carried::four", || {
+        let mut lp = LocalPeer::fresh(4, T0);
+        lp.sync_all().unwrap();
+        let me = |lp: &LocalPeer, i: usize| lp.peers[i].engine.me();
+        let mut m = Mutation::new();
+        let a = me(&lp, 0);
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        lp.peers[0].commit(m).unwrap();
+        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None, floor: None };
+        for (i, role) in [(1, Role::Write), (2, Role::Read), (3, Role::Write)] {
+            let who = me(&lp, i);
+            lp.peers[0].engine.grant(&t, &who, &edge(role)).unwrap();
+        }
+        lp.sync_all().unwrap();
+        lp.advance(60_000);
+        (lp, t)
+    });
+    let (c, _) = written(&mut lp, t, PurgeBy::Admin);
+    lp.sync(1, 3).unwrap();
+    let PurgeItem::Commit { ts, src, .. } = lp.peers[1].engine.purge_item(&c, t, reg()).unwrap() else { unreachable!() };
+    lp.peers[3].engine.core.lie_facts = Some([((ts, src), osis_crdt::Fact { by: PurgeBy::Nobody, actor: None })].into());
+    lp.peers[3].engine.snapshot(&t, &reg()).unwrap().unwrap();
+    lp.advance(1_000);
+    lp.sync(3, 0).unwrap();
+    compact_forget(&mut lp, 0, t, &reg());
+    assert!(!lp.peers[0].engine.commit_ids().contains(&c));
+    purge_by_id(&mut lp, 0, t, &reg(), c).unwrap().unwrap();
+    assert_ne!(lp.peers[0].engine.get(&t, &reg()).unwrap(), Some(Value::Str("SECRET".into())), "the liar's statement blocked the admin");
+}
+
+// Security invariant (spec/requirements.md Deletion, spec/commits.md §5 Purge): a purge naming a
+// write by ID reaches its value wherever held, and only that write's, whether or not its node
+// forgot the commit. Differential: two runs of the same random writes, compactions and purges by
+// ID, one forgetting every covered commit at once and one forgetting nothing, read alike at every
+// node, and no node reads a purged value.
+#[test]
+fn purge_by_id_reads_alike_forgotten_or_not_spec_commits_5() {
+    let aks: Vec<Ak> = ["x:a.0", "x:b.0", "x:c.0"].into_iter().map(|a| Ak::new(a).unwrap()).collect();
+    // purges by ID of a commit the purger forgot: the seeds must reach the name
+    let mut by_name = 0;
+    for seed in 0..2u64 {
+        let (mut runs, t) = {
+            let (lp, t) = world();
+            let mut b = lp;
+            let a = b.copy().unwrap();
+            (vec![a, b], t)
+        };
+        let mut rng = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        let mut next = |n: u64| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng % n
+        };
+        // per write: its commit in each run (IDs differ: each run draws its own blinds)
+        let mut written: Vec<([CommitId; 2], usize, i64)> = Vec::new();
+        let mut purged: Vec<i64> = Vec::new();
+        for step in 0..14i64 {
+            let (op, who, a) = (next(4), next(2) as usize, next(aks.len() as u64) as usize);
+            let pick = (!written.is_empty()).then(|| written[next(written.len() as u64) as usize]);
+            let mut ids = [CommitId([0; 32]); 2];
+            for (r, lp) in runs.iter_mut().enumerate() {
+                match op {
+                    0 | 1 => {
+                        let mut m = Mutation::new();
+                        m.set(t, &aks[a], &Value::Int(step)).unwrap();
+                        ids[r] = lp.peers[who].commit(m).unwrap().unwrap();
+                    }
+                    2 => {
+                        lp.peers[who].engine.snapshot(&t, &aks[a]).unwrap();
+                    }
+                    _ => {
+                        let Some((cs, a, v)) = pick else { continue };
+                        let c = cs[r];
+                        // the admin's request; in the forgetting run its header may be gone,
+                        // and with no held snapshot carrying the write (dead) its name too:
+                        // nothing of it is left to purge, so the reads below still agree
+                        let forgot = lp.peers[0].engine.header(&c).is_none();
+                        let r2 = purge_by_id(lp, 0, t, &aks[a], c);
+                        if r == 0 && forgot && r2.is_ok() {
+                            by_name += 1;
+                        }
+                        assert!(r2.is_ok() || (r == 0 && matches!(r2, Err(crate::Error::UnknownCommit(_)))), "seed {seed} step {step} run {r}: {r2:?}");
+                        if r == 0 {
+                            purged.push(v);
+                        }
+                    }
+                }
+                lp.advance(1_000);
+                lp.sync_all().unwrap();
+                lp.peers[0].engine.purge_resnapshots().unwrap();
+                lp.peers[1].engine.purge_resnapshots().unwrap();
+                lp.sync_all().unwrap();
+                if r == 0 {
+                    for i in 0..3 {
+                        for ak in &aks {
+                            compact_forget(lp, i, t, ak);
+                        }
+                    }
+                }
+            }
+            if op < 2 {
+                written.push((ids, a, step));
+            }
+            for i in 0..3 {
+                for ak in &aks {
+                    let got: Vec<Option<Value>> = runs.iter_mut().map(|lp| lp.peers[i].engine.get(&t, ak).unwrap()).collect();
+                    assert_eq!(got[0], got[1], "seed {seed} step {step}: node {i} {ak}, forgetting vs not");
+                    assert!(!purged.iter().any(|v| got[0] == Some(Value::Int(*v))), "seed {seed} step {step}: node {i} reads a purged value {:?}", got[0]);
+                }
+            }
+        }
+    }
+    assert!(by_name > 0, "no purge went through a name");
+}

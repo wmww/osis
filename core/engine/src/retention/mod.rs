@@ -47,6 +47,7 @@ pub mod lifetimes;
 pub(crate) mod forget;
 pub mod freed;
 pub(crate) mod memory;
+pub(crate) mod names;
 pub(crate) use snapshot::{reaches, snapshot_state};
 #[cfg(test)]
 pub(crate) use snapshot::write_snapshot;

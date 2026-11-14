@@ -41,6 +41,9 @@ pub const RESNAPSHOTS_OWED: &[u8] = b"ro/";
 /// Per aspect, the newest `ts` of a durable commit forgotten on it (`Indexes::forgotten`):
 /// `f/` + aspect key (`aspect_key`), gone with the thing.
 pub const FORGOTTEN: &[u8] = b"f/";
+/// A forgotten commit's name while a held snapshot carries its writes (`retention::names`):
+/// `fn/` + aspect key + commit ID, its stamp and purge facts.
+pub const FORGOTTEN_NAMES: &[u8] = b"fn/";
 /// Freed links (`retention::freed`): `fl/` + blob ID + tid, flags, the author's tid and the link,
 /// in the class of the body that freed them.
 pub const FREED: &[u8] = b"fl/";

@@ -466,6 +466,7 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
             tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
         }
         // as a node that never held it (spec/commits.md §5 Forgetting); no write on it is owed
+        super::names::forget_aspect(tx, t, ak)?;
         tx.core.ix.forgotten.remove(&k);
         tx.core.ix.resnapshots_owed.remove(t, ak);
         if tx.core.ix.valueless.get(&k).is_some() {
@@ -708,6 +709,7 @@ impl crate::engine::Engine {
 
 /// Every per-aspect row of `(t, ak)` goes, as on a node that never held a part of it.
 pub(super) fn forget_aspect_rows(tx: &mut Tx<'_>, t: &Tid, ak: &Ak) -> Result<()> {
+    super::names::forget_aspect(tx, t, ak)?;
     let k = (*t, ak.clone());
     tx.core.ix.forgotten.remove(&k);
     tx.core.ix.resnapshots_owed.remove(t, ak);

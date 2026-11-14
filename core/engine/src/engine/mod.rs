@@ -755,6 +755,10 @@ indexes! {
     /// (`apply::unindex_commit`): what stands for the forgotten parts an undo may have replaced
     /// (`undo::replaced_kept`). A durable commit's row persists (`records::FORGOTTEN`).
     pub forgotten: JMap<(Tid, Ak), Ts>,
+    /// Per aspect, the commits forgotten here whose writes a held snapshot of it still carries,
+    /// each with its stamp and purge facts from its header (`retention::names`,
+    /// `records::NAMES`): what a purge names it by and judges it by.
+    pub forgotten_names: JNested<(Tid, Ak), CommitId, crate::retention::names::Name>,
     /// Per (thing, aspect, author) the held parts of plain commits of a coverable aspect (`retention::snapshot::own_aspect`): what an own replace may cover, without
     /// walking the aspect (derived, as `Core::put_meta` keeps it).
     pub own_held: JSetMap<(Tid, Ak, Tid), (Ts, CommitId)>,
@@ -1273,6 +1277,9 @@ pub struct Core {
     /// Freed rows (thing, blob) added this transaction: judged at its end, once their states are
     /// rebuilt (`retention::freed::settle_due`).
     pub freed_due: BTreeSet<(Tid, osis_base::BlobId)>,
+    /// Aspects with a forgotten commit's name (`Indexes::forgotten_names`) whose held snapshots moved this
+    /// transaction: judged at its end (`retention::names::settle_due`).
+    pub forgotten_names_due: BTreeSet<(Tid, Ak)>,
     /// Freed rows (thing, blob) whose judgment waits for a node blob not held, by that blob:
     /// judged again once it is (`retention::freed`). Memory only: a start judges every row.
     pub freed_waits: BTreeMap<osis_base::BlobId, BTreeSet<(Tid, osis_base::BlobId)>>,
@@ -1459,6 +1466,7 @@ impl Core {
             cover_candidates: self.cover_candidates.clone(),
             drop_due: self.drop_due.clone(),
             freed_due: self.freed_due.clone(),
+            forgotten_names_due: self.forgotten_names_due.clone(),
             freed_waits: self.freed_waits.clone(),
             cut_subs: self.cut_subs.clone(),
             refold: self.refold.clone(),
@@ -1974,6 +1982,7 @@ impl Core {
             // entry against the restored state), and what a step only moves forward
             drop_due: _,
             freed_due: _,
+            forgotten_names_due: _,
             freed_waits: _,
             cut_subs: _,
             refold: _,
@@ -2231,6 +2240,7 @@ impl Core {
             settings_due: BTreeSet::new(),
             drop_due: BTreeSet::new(),
             freed_due: BTreeSet::new(),
+            forgotten_names_due: BTreeSet::new(),
             freed_waits: BTreeMap::new(),
             cut_subs: BTreeSet::new(),
             refold: BTreeSet::new(),
@@ -3536,6 +3546,10 @@ impl Engine {
                     r = r.and_then(|v| crate::retention::freed::settle_due(&mut tx).map(|_| v));
                 }
                 tx.core.freed_due.clear();
+                if r.is_ok() && !tx.core.forgotten_names_due.is_empty() {
+                    r = r.and_then(|v| crate::retention::names::settle_due(&mut tx).map(|_| v));
+                }
+                tx.core.forgotten_names_due.clear();
                 if r.is_ok() {
                     r = r.and_then(|v| listing::listing_moved(&mut tx).map(|_| v));
                 }

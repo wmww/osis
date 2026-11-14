@@ -63,6 +63,7 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
         } else {
             core.ix.snapshots.insert(k, v);
         }
+        crate::retention::names::snapshots_moved(core, tid, ak);
     }
 }
 
@@ -75,6 +76,7 @@ pub(crate) fn note_rotation_sigs(core: &mut Core, h: &osis_commit::Header, id: &
 
 /// Adds a commit to the per-aspect and session range indexes.
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
+    crate::retention::names::held_again(core, id, &h.aspects);
     for a in &h.aspects {
         core.ix.by_aspect.insert((a.tid, a.ak.clone()), (h.ts, *id));
         core.ix.aspect_things.insert(a.ak.clone(), a.tid);

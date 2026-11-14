@@ -23,6 +23,8 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     for ai in held {
         crate::retention::freed::free_part(tx, id, ai)?;
     }
+    // a held snapshot carrying its writes keeps its name (`retention::names`)
+    crate::retention::names::note(tx, id)?;
     let core = &mut *tx.core;
     let Some(m) = core.take_meta(id) else { return Ok(()) };
     let v = &m.view;
