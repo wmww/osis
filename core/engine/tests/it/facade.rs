@@ -973,8 +973,8 @@ fn record_blob_by_hand(lp: &mut LocalPeer, i: usize, t: &Tid, records: &[osis_ba
     (id, blob, wrap)
 }
 
-// spec/wire.md §3 (a creation record's tid is the hash of its encoding), spec/permissions.md §4
-// (records go raw in a record blob): a reader of S framing a record blob cannot plant a false
+// spec/wire.md §3 (creation record; Record blob), spec/permissions.md §4 (Chain certificates):
+// a record's tid is the hash of its encoding, records go raw in a record blob. A reader of S framing a record blob cannot plant a false
 // record for a thing it names: a record altered to name another first admin is a record of
 // another tid, and the receiver learns nothing of the thing; the genuine record, sealed by its
 // holder, is learned as it is.
@@ -989,7 +989,7 @@ fn a_forged_record_in_a_record_blob_names_no_other_thing_spec_wire_3() {
     let osis_base::CreationRecord::Thing { nonce, .. } = real.clone() else { panic!() };
     let forged = osis_base::CreationRecord::Thing { admin: lp.peers[1].engine.tid(), nonce, link: None };
     assert_ne!(forged.tid(), u);
-    let (id, blob, wrap) = record_blob_by_hand(&mut lp, 0, &d, &[forged.clone()]);
+    let (id, blob, wrap) = record_blob_by_hand(&mut lp, 0, &d, std::slice::from_ref(&forged));
     match lp.peers[1].engine.open_entry(&home, &id, &wrap, &blob).unwrap() {
         osis_engine::sync::Opened::Records(tids) => assert_eq!(tids, [forged.tid()].into()),
         o => panic!("{o:?}"),
@@ -1000,8 +1000,8 @@ fn a_forged_record_in_a_record_blob_names_no_other_thing_spec_wire_3() {
     assert_eq!(lp.peers[1].engine.core.created(&u), Some(&real));
 }
 
-// spec/permissions.md §4 (the records missing go as one record blob of the logging node's, while
-// held in its own store): what the engine keeps of a record blob it sealed under S lasts across a
+// spec/permissions.md §4 (Logging certificates: the records missing go as one record blob of the
+// logging node's, while held in its own store): what the engine keeps of a record blob it sealed under S lasts across a
 // restart, goes when its own entry does (`forget_record_blob`), and goes with S when S is read here
 // no more (`forget_read`; an open drops those of every sync ID not read).
 #[test]
@@ -1033,8 +1033,8 @@ fn record_blob_rows_go_with_their_sync_id_spec_perm_4() {
 }
 
 // spec/permissions.md §4 (Logging certificates: each node logs its account's chain certificates
-// for the sync ID's group and for each actor it acted for; a commit's author's chain goes with
-// it), spec/sync-judgement.md §2 (the required set holds those certificates, nothing more): x is
+// for the sync ID's group and for each actor it acted for, and a commit's author's chain goes
+// with it), spec/sync-judgement.md §2 (required set: those certificates, nothing more): x is
 // an item of t's closure that t reads; a private group h holds write on x, peer 1's account is in
 // h. h's roster is no chain into t, and nobody wrote on x through h: its edge write on h is not
 // under t's sync ID. Once peer 1 writes on x through h, its author's chain goes there.

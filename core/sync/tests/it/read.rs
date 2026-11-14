@@ -1049,8 +1049,8 @@ fn logs_only_while_a_reader_can_pull() {
     assert_eq!(w.logs(S, cid(1)), 1);
 }
 
-// spec/permissions.md §4 (the records missing go as one record blob of the logging node's, while
-// held in its own store), spec/sync-judgement.md §3 (own store: logged only while a reader can
+// spec/permissions.md §4 (Logging certificates: the records missing go as one record blob of the
+// logging node's, while held in its own store), spec/sync-judgement.md §3 (own store: logged only while a reader can
 // pull it): a sync ID's missing records are logged once as one record blob once a reader can pull
 // S, again only for what goes missing later; a sealed record blob's row whose own entry went is
 // forgotten.
