@@ -3,6 +3,7 @@
 
 mod harness;
 mod session;
+mod read;
 mod unread;
 mod store;
 mod opens;
