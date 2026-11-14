@@ -2107,6 +2107,57 @@ fn a_lower_copy_goes_only_below_a_later_expiry_spec_commits_5() {
     }
 }
 
+// spec/commits.md §5 (A thing's mintings travel with its record: a kept copy stands in for a
+// dropped one only if it cannot decide the thing's fate any earlier, so a lower copy goes only
+// below one whose purge rights are contained in its own): T's copy expiring at 80, purgeable by
+// `by` with actor `actor`, below its durable witness purgeable by the witness's set: it goes only
+// where whoever may purge the witness may purge it.
+#[test]
+fn a_lower_copy_goes_only_below_one_no_wider_to_purge_spec_commits_5() {
+    use osis_base::PurgeBy::*;
+    let (a, b) = (T, Tid::from_bytes([8; 15]));
+    let cases = [
+        ((Nobody, a), (Admin, a), true),
+        ((Admin, a), (Nobody, a), false),
+        ((Admin, a), (Admin, b), true),
+        ((AuthorOrAdmin, a), (Admin, a), false),
+        ((AuthorOrAdmin, a), (AuthorOrAdmin, a), true),
+        ((AuthorOrAdmin, a), (AuthorOrAdmin, b), false),
+        ((AuthorOrAdmin, a), (Writer, a), true),
+        ((Writer, a), (AuthorOrAdmin, a), false),
+        ((Writer, a), (Writer, b), false),
+        ((Writer, a), (Writer, a), true),
+    ];
+    for ((wby, wactor), (lby, lactor), goes) in cases {
+        let mut w = W::new();
+        w.g.own.insert((S, cid(2)), vec![peer_entry(12)]);
+        let witness = Minting { by: wby, actor: wactor, ..minting(1, true, End::Never, None) };
+        let lower = Minting { by: lby, actor: lactor, ..minting(2, true, End::At(80, None), Some(80)) };
+        w.mintings(&[witness, lower]);
+        assert_eq!(w.logs(S, cid(1)), 1, "the witness logged");
+        let want = if goes { Verdict::MustNot(Why::Superseded) } else { Verdict::May };
+        let case = format!("witness {wby:?} {wactor:?}, lower {lby:?} {lactor:?}");
+        assert_eq!(w.read.verdict(&S, &cid(2)), Some(want), "{case}");
+        assert_eq!(w.own_blobs(S, cid(2)).is_empty(), goes, "{case}");
+    }
+}
+
+// spec/commits.md §5 (A thing's mintings travel with its record: the lower copy goes only below
+// one expiring no earlier): T's copy value-less (a purge dropped it, held here) and durable,
+// below a witness expiring at 100, is kept; one expiring at 100 too goes.
+#[test]
+fn a_lower_copy_goes_below_an_expiry_no_earlier_spec_commits_5() {
+    for (expires, goes) in [(None, false), (Some(100), true), (Some(101), false)] {
+        let mut w = W::new();
+        w.g.own.insert((S, cid(2)), vec![peer_entry(12)]);
+        w.mintings(&[minting(1, true, End::At(100, None), Some(100)), minting(2, false, expires.map_or(End::Never, |x| End::At(x, None)), expires)]);
+        assert_eq!(w.logs(S, cid(1)), 1, "the witness logged");
+        let want = if goes { Verdict::MustNot(Why::Superseded) } else { Verdict::May };
+        assert_eq!(w.read.verdict(&S, &cid(2)), Some(want), "expires {expires:?}");
+        assert_eq!(w.own_blobs(S, cid(2)).is_empty(), goes, "expires {expires:?}");
+    }
+}
+
 // spec/commits.md §5 (A thing's mintings travel with its record: a copy of a destroyed thing's
 // witness a node logged before and that went is logged again while the sync ID needs the thing):
 // T destroyed (its one minting value-less), its witness's own entry gone, is logged again.

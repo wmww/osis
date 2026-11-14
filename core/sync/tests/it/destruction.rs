@@ -310,3 +310,104 @@ fn nodes_with_different_witnesses_never_each_drop_the_others_spec_commits_5() {
         assert!(e.header(&q).is_some(), "node {i} holds the request");
     }
 }
+
+/// At node `i`, t minted again (hostile: an honest writer mints once), purgeable by `by`, with
+/// `expires` when given.
+fn mint_again(w: &mut World, i: usize, t: Tid, by: osis_schema::PurgeBy, expires: Option<u64>) -> CommitId {
+    w.write(i, |e| {
+        let rec = e.core.created(&t).cloned().expect("the record held");
+        let mut m = Mutation::new();
+        m.create(rec);
+        m.retention(t, &ct::CREATED, osis_schema::Retention { by }).unwrap();
+        if let Some(x) = expires {
+            m.expires_all(osis_base::WallMs(x));
+        }
+        e.commit_hostile(m).unwrap().unwrap()
+    })
+}
+
+/// At node `i`, a purge of t's minting `c` alone (an item naming its stamp).
+fn purge_minting(w: &mut World, i: usize, t: Tid, c: CommitId) -> CommitId {
+    w.write(i, |e| {
+        let h = e.header(&c).expect("the minting's header");
+        let mut m = Mutation::new();
+        let now = e.now();
+        m.set(t, &ct::PURGE, &now).unwrap();
+        m.purge(PurgeItem::Commit { tid: t, ak: ct::CREATED.name(), ts: h.ts, src: h.form.own_source(h.author, c) });
+        e.commit(m).unwrap().unwrap()
+    })
+}
+
+/// Node 1's account grants node 0's account read on its D, which node 0's user accepts: node 0
+/// joins D's sync ID late, holding nothing of t but what D carries. Run to quiet.
+fn contact_joins(w: &mut World) {
+    let holder = w.node(0).account.expect("node 0's account");
+    let d = w.write(1, |e| {
+        let (_, d) = e.account().unwrap().unwrap();
+        let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, invite: None, tied: None, floor: None };
+        e.grant(&d, &holder, &edge).unwrap();
+        d
+    });
+    w.history.accepts.insert((d, 0));
+    w.run();
+    for _ in 0..2 {
+        crate::harness::history::accept(w);
+        w.run();
+    }
+}
+
+// spec/commits.md §5 (A thing's mintings travel with its record: a kept copy stands in for a
+// dropped one only if it cannot decide the thing's fate any earlier, so a lower copy goes only
+// below one whose purge rights are contained in its own): t (u's first admin, outside D) minted
+// at node 1 purgeable by admins, expiring; node 2 mints it again, durable, purgeable by its
+// author too, and purges that minting alone. Both copies stay under D, so node 0, joining D
+// later, holds both: handed the purge, it judges t live, as nodes 1 and 2 do.
+#[test]
+fn a_remint_wider_to_purge_keeps_the_lower_copy_spec_commits_5() {
+    let mut w = crate::harness::siblings();
+    w.cap = 20_000;
+    let far = w.engine(1).now().0 + 10 * ROLE_KEEP_MS;
+    let (t, first, s) = admin_outside(&mut w, 1, Some(far));
+    let again = mint_again(&mut w, 2, t, osis_schema::PurgeBy::AuthorOrAdmin, None);
+    w.run();
+    for i in [1, 2] {
+        assert_eq!(w.engine(i).witness(&t).map(|m| m.commit), Some(again), "node {i}: the durable minting is the witness");
+        assert!(holds(&mut w, i, &s, &first), "node {i}: the lower copy kept under D");
+    }
+    let q = purge_minting(&mut w, 2, t, again);
+    w.run();
+    contact_joins(&mut w);
+    assert!(holds(&mut w, 0, &s, &again), "node 0 holds the witness's copy under D");
+    assert!(w.engine(0).header(&q).is_none(), "node 0 lacks the request");
+    let pk = w.engine(2).package(&q).unwrap().expect("the request's package");
+    w.write(0, |e| e.ingest_with_lists(&pk.bytes, pk.blobs.clone(), None, &pk.lists).expect("the request"));
+    w.run();
+    assert!(w.engine(0).header(&q).is_some(), "node 0 holds the request");
+    for i in 0..3 {
+        assert!(!w.engine(i).destroyed(&t), "node {i}: t destroyed");
+    }
+}
+
+// spec/commits.md §5 (A thing's mintings travel with its record: a lower copy goes only below one
+// expiring no earlier): t (u's first admin, outside D) minted at node 1, durable; node 2 mints it
+// again expiring at E, purgeable by nobody; node 1 purges its own minting alone, so the expiring
+// one is the witness. The durable copy stays under D (the expiring one could end it first, were
+// the purge to fall or not reach a node): node 0, joining D later, holds both.
+#[test]
+fn a_remint_expiring_earlier_keeps_the_lower_copy_spec_commits_5() {
+    let mut w = crate::harness::siblings();
+    w.cap = 20_000;
+    let end = w.engine(1).now().0 + 2 * ROLE_KEEP_MS;
+    let (t, first, s) = admin_outside(&mut w, 1, None);
+    let again = mint_again(&mut w, 2, t, osis_schema::PurgeBy::Nobody, Some(end));
+    w.run();
+    purge_minting(&mut w, 1, t, first);
+    w.run();
+    for i in [1, 2] {
+        assert_eq!(w.engine(i).witness(&t).map(|m| m.commit), Some(again), "node {i}: the expiring minting is the witness");
+        assert!(holds(&mut w, i, &s, &first), "node {i}: the lower copy kept under D");
+    }
+    contact_joins(&mut w);
+    assert!(holds(&mut w, 0, &s, &again), "node 0 holds the witness's copy under D");
+    assert!(holds(&mut w, 0, &s, &first), "node 0 holds the lower copy under D");
+}

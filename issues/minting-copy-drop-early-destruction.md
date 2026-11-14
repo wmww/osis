@@ -1,9 +1,0 @@
-# A dropped minting copy lets a request destroy a live thing early
-> Summary: spec/commits.md §5 drops a lower minting copy under S below a held minting of the witness's standing expiring later, claiming what is left reads the thing live while it is. A request can end the kept minting without ending the dropped one (rights differ: the dropped one `nobody` or admin-only, the kept one its author's), so a node that never held the dropped copy and holds the request judges the thing destroyed while it is live.
-> Priority: low
-> Tags: security, sync, engine
-
-- Case: t's genuine minting G (admin-only or `nobody`, expiring at E) and H, minted again durable by a writer of t with `author_or_admin`. Under S (closure lacks t) every node drops G's copy (H is the witness and expires later). A node joining S after that pulls only H. The writer, a member of S, purges H and deposits the request's header under S: the joiner holds H value-less and nothing else, so it judges t destroyed at the request, before E. Past the request's window (`ROLE_KEEP`) it is destroyed there for good.
-- Heals within the window wherever a holder of G is online in S: G becomes its witness and it logs G again (a node that dropped G's copy keeps G's header, so siblings that synced before stay right; checked by hand: an S-only node holding G's header is not misled).
-- So a writer of t (not an admin) can destroy t at late joiners of a dependent's sync ID while every holder of G stays away past the window. Without the drop rule every node keeps G's copy and this cannot happen.
-- Fix option (spec rule, then `judge::rank`): drop a lower copy only below a kept minting whose purge rights are contained in its own (whoever can end the kept one can end the dropped one no later), so a request never leaves the dropped one standing higher. Needs `Minting` to carry retention and author.

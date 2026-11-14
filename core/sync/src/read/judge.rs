@@ -132,15 +132,15 @@ pub(crate) enum Mint {
     /// Kept where held, not logged.
     Keep,
     /// Lower than the witness, where an entry under S holds a minting of the witness's standing
-    /// expiring later: must-not-hold.
+    /// that may stand in for it: must-not-hold.
     Gone,
 }
 
 /// Each minting of `ms` (a thing's held mintings) under S where `held` says which have an entry
 /// there: the witness is logged unless another minting of its standing is held there; one
-/// standing lower goes where a minting of the witness's standing expiring later (`None`:
-/// never) is held there; the rest are kept. One lacking a request ranks a minting no lower than
-/// one holding it does, so what is left reads the thing live while it is.
+/// standing lower goes where a minting of the witness's standing that may stand in for it
+/// (`Minting::stands_in_for`) is held there; the rest are kept. One lacking a request ranks a
+/// minting no lower than one holding it does, so what is left reads the thing live while it is.
 pub(crate) fn rank(ms: &[Minting], mut held: impl FnMut(&CommitId) -> Result<bool>) -> Result<BTreeMap<CommitId, Mint>> {
     let mut out = BTreeMap::new();
     let Some(w) = osis_engine::retention::highest(ms) else { return Ok(out) };
@@ -150,15 +150,10 @@ pub(crate) fn rank(ms: &[Minting], mut held: impl FnMut(&CommitId) -> Result<boo
             top.push(*m);
         }
     }
-    let later = |x: Option<u64>, than: Option<u64>| match (x, than) {
-        (_, None) => false,
-        (None, Some(_)) => true,
-        (Some(a), Some(b)) => a > b,
-    };
     for m in ms {
         let v = if m.commit == w.commit {
             if top.iter().any(|x| x.commit != m.commit) { Mint::Keep } else { Mint::Log }
-        } else if m.standing < w.standing && top.iter().any(|x| later(x.expires, m.expires)) {
+        } else if m.standing < w.standing && top.iter().any(|x| x.stands_in_for(m)) {
             Mint::Gone
         } else {
             Mint::Keep
