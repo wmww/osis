@@ -122,6 +122,12 @@ impl Ground for Live<'_, '_> {
         self.cx.engine.pass_clock()
     }
     fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
-        Ok(self.cx.engine.note_complete_pass(s, began)?)
+        self.cx.engine.note_complete_pass(s, began)?;
+        // the re-seal trigger decides at a complete pass's end (spec/permissions.md §3 Complete
+        // pass): the engine re-seals and adds history once every sync ID of S's actor had one
+        if let Some(actor) = self.cx.engine.sync_owner(s)? {
+            self.cx.engine.reseal_due(&actor)?;
+        }
+        Ok(())
     }
 }

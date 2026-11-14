@@ -35,4 +35,4 @@ A write on one aspect moves only that aspect's commits' stamps, so only their ve
 - issues/sync-certificate-bodies.md (critical): `sync_bodies` lists no certificate body.
 - issues/reseal-under-own-epoch-leaks.md (Sync side): `seal_body`/`rewrap` to go through `Engine::seal` and `wrap_secret` with every held genuine section; `note_unwrapped` for header-only blobs.
 - issues/sync-passes-wanted-whole.md: `passes_wanted` is one whole memo. `invitations()` and `own_commits(s)` are whole values recomputed per call (O(things with secrets), O(closure things + own commits)).
-- issues/sync-unbuilt.md (facade): `prove_rotations`/`take_rotations`; the pass want of a role found gone (spec/permissions.md §2, which `lost_leaving` waits on); `reseal_due` is called by nobody at a complete pass's end.
+- issues/sync-unbuilt.md (facade): `prove_rotations`/`take_rotations`; the pass want of a role found gone (spec/permissions.md §2, which `lost_leaving` waits on).

@@ -42,7 +42,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 
 ## facade
 - The complete-pass want of a role found gone (spec/permissions.md §2, which `lost_leaving` waits on).
-- Nothing calls `Engine::reseal_due` at a complete pass's end (spec/permissions.md §3 Re-seal: a current holder without a box at a current epoch is never re-sealed by the trigger) or `history_complete` (spec/sync-status.md §3) from the API.
+- Nothing calls `history_complete` (spec/sync-status.md §3) from the API.
 
 ## Wire differs from spec
 - Domain and kdf strings in osis-crypto keep the old words where spec/crypto.md §2 and spec/wire.md §8 name new ones (`"osis v1 label id"` for `"osis v1 sync id"`, `"osis v1 label open"` for `"osis v1 sync open"`, `"osis v1 label register"`, kdf `"label sync"` and the other `LABEL_*` for `"sync key"`, `"sync claim"`, ...): a node built from the spec cannot open, verify or derive with this one. Rename with their vectors (issues/deprecated-terms.md, label).

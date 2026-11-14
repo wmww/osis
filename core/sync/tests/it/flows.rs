@@ -357,3 +357,23 @@ fn a_self_removal_drops_its_secrets_once_held_elsewhere_spec_sync_status_2() {
     assert!(w.engine(1).waiting_held_elsewhere().unwrap().is_empty(), "node 0 holds it");
     assert!(w.engine(1).epochs(&t).is_none_or(|e| e.read.held().next().is_none()), "dropped");
 }
+
+// spec/permissions.md §3 (Re-seal: a node that may rotate re-seals a current holder without a box
+// at a current epoch; Complete pass: it decides at the end of a complete pass of the actor's sync
+// IDs): node 0 grants node 2 read while node 1, an admin cut off from it, removes node 3 (a
+// rotation); once healed node 2 has no box at node 1's epoch, and an admin re-seals it at the end
+// of the complete pass a role commit from elsewhere began, so node 2 reads a write under it.
+#[test]
+fn a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, check, world};
+    let mut w = world(0, 4);
+    w.cap = 200_000;
+    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 3, Gives::Reads), Run], String::new());
+    let t = w.history.things[0].0;
+    let a1 = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t, &a1, &edge(Role::Admin))).unwrap();
+    w.run();
+    let _script = crate::harness::play(&mut w, &[Partition(0, 1), Partition(1, 2), Partition(1, 3), Grant(0, 0, 2, Gives::Reads), Run, Remove(1, 0, 3), Run, Heal, Run, Write(0, 0), Run], String::new());
+    check(&mut w);
+}
