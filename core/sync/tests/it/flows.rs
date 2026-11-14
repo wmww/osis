@@ -629,21 +629,20 @@ fn own_secrets_keep_a_reader_of_the_first_admin_reading_spec_perm_3() {
     assert!(w.engine(0).deliveries().unwrap().is_empty(), "nothing owed: {:?}", w.engine(0).deliveries().unwrap());
 }
 
-// spec/sync-inbox.md §5 (Grant copy), §2 (Re-send): node 0 grants account 1 read on a thing;
-// node 1 takes it and logs a grant copy under its D's home; node 2, account 1's second node, is
-// away until the inbox blob expired and node 0 is gone: it learns the grant from the copy alone
-// and lists the invitation.
-#[test]
-fn an_accounts_node_away_past_inbox_lifetime_gets_the_grant_spec_sync_inbox_5() {
+/// Node 0 grants account 1 read on a thing; node 1 takes it, and accepts it (`accept`) or not;
+/// node 2, account 1's second node, is away until the inbox blob expired and node 0 is gone, then
+/// comes back with node 1. Whether node 2 then lists the invitation, and whether it reads the thing.
+fn away_past_inbox_lifetime(accept: bool) -> (bool, bool) {
     let mut w = contacts();
     let n2 = w.pair(1);
     w.run();
     w.power_off(n2);
     let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let ak = Ak::new("u:v.0").unwrap();
     let t = w.write(0, |e| {
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, a0);
-        m.set(t, &Ak::new("u:v.0").unwrap(), &Value::Str("x".into())).unwrap();
+        m.set(t, &ak, &Value::Str("x".into())).unwrap();
         e.commit(m).unwrap();
         t
     });
@@ -652,13 +651,34 @@ fn an_accounts_node_away_past_inbox_lifetime_gets_the_grant_spec_sync_inbox_5() 
     w.run();
     let invited = |w: &mut World, i: usize| w.engine(i).invitations().unwrap().iter().any(|x| x.thing == t && x.role == Role::Read);
     assert!(invited(&mut w, 1), "node 1 took the grant");
+    if accept {
+        file(&mut w, 1, Vec::new(), vec![t]);
+        w.run();
+        assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("x".into())), "node 1 reads it");
+    }
     w.power_off(0);
     w.power_off(1);
     w.advance(osis_base::format::INBOX_LIFETIME_MS + 3 * osis_base::format::MAX_DRIFT_MS);
     w.power_on(1);
     w.power_on(n2);
     w.run();
-    assert!(invited(&mut w, n2), "node 2 lists the grant from node 1's copy");
+    let reads = w.engine(n2).get(&t, &ak).unwrap() == Some(Value::Str("x".into()));
+    (invited(&mut w, n2), reads)
+}
+
+// spec/sync-inbox.md §5 (Grant copy: kept once the account accepted the thing), spec/sync-set.md §4
+// (Accepting): node 1 accepts a grant; node 2, away past the inbox blob's lifetime, reads the thing.
+#[test]
+fn an_accepted_grant_reaches_a_node_away_past_inbox_lifetime_spec_sync_inbox_5() {
+    assert_eq!(away_past_inbox_lifetime(true), (false, true));
+}
+
+// spec/sync-inbox.md §5 (Grant copy: a grant from an author without write on the account, not
+// accepted, is no grant copy), §2 (Re-send): node 1 takes a grant and leaves it unaccepted; node
+// 2, away past the inbox blob's lifetime, never learns it.
+#[test]
+fn an_unaccepted_grant_expires_for_a_node_away_past_inbox_lifetime_spec_sync_inbox_5() {
+    assert_eq!(away_past_inbox_lifetime(false), (false, false));
 }
 
 /// Node 0 (account A) grants sync on a thing it made to account B (nodes 1 and 2) that never

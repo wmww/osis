@@ -205,7 +205,7 @@ impl Engine {
     /// spec/sync-judgement.md §2): the union of `g`'s pieces (`Piece`): `g`'s own
     /// (`own_piece`); the author's chain of each held commit on a thing of `g`'s closure its actor
     /// may read, which goes with the commit (`certificate_authors`, `chain_piece`); and under an
-    /// actor's inbox its grant copies (`grant_copy`, one per thing it is named on). Nothing else:
+    /// actor's inbox its grant copies (`kept_grant_copy`, one per thing it is named on). Nothing else:
     /// a chain into an item of the closure that no write there needs (a private group's roster
     /// holding a role on an item under S) is none of S's readers'. Parts the closure's bodies carry
     /// are `sync_bodies`' to leave out. Derived whole, O(all of it): what sync reads is
@@ -219,7 +219,7 @@ impl Engine {
         for a in self.inbox_actors_of(g) {
             let things: Vec<Tid> = self.core.ix.held.named_on(&a).filter(|t| **t != a).copied().collect();
             for t in things {
-                out.extend(self.grant_copy(&a, &t));
+                out.extend(self.kept_grant_copy(&a, &t));
             }
         }
         out
@@ -297,18 +297,11 @@ impl Engine {
     /// mintings; below read, nothing more (a sync holder learns none of them, spec/sync-ids.md
     /// §2). Nothing for a commit not applied here. One per (actor, thing), read from `t`'s edges
     /// alone (`Timelines::on`): a newer write replaces it, and the older copy leaves the required
-    /// set. Nothing unless its author held write on `a` at its `ts` (`posts_to`): a reader's grant
-    /// to `a` reaches `a`'s holders by its inbox blob alone.
+    /// set. Whether `a`'s inbox keeps it is `kept_grant_copy`'s.
     pub fn grant_copy(&mut self, a: &Tid, t: &Tid) -> Certs {
         let mut out = Certs::default();
-        // the newest applied edge write naming `a` on `t`, and whether `a` read `t` just before it
-        let Some((c, read_before)) = self.core.timelines.on(t).and_then(|on| {
-            let (_, c, _) = on.held().filter(|(w, _, o)| o.holder == *a && on.is_applied(w)).max_by_key(|(_, c, _)| c.point())?;
-            Some((c.id, on.edge_at(a, Some(c.point())).is_some_and(|e| e.role >= osis_base::Role::Read)))
-        }) else {
-            return out;
-        };
-        if self.core.ix.pending.contains_key(&c) || !self.core.ix.commits.contains_key(&c) || !self.posts_to(&c, a) {
+        let Some((c, read_before)) = self.newest_edge(a, t) else { return out };
+        if self.core.ix.pending.contains_key(&c) || !self.core.ix.commits.contains_key(&c) {
             return out;
         }
         let on = BTreeSet::from([*t]);
@@ -348,11 +341,33 @@ impl Engine {
         out
     }
 
-    /// Whether commit `c` may post into actor `a`'s space (spec/requirements.md: posting into a
-    /// shared space needs write on its actor): its author held write on `a` at `c`'s `ts`, as this
-    /// node judges it, as promotion judges its author (spec/sync-inbox.md §4).
-    fn posts_to(&self, c: &CommitId, a: &Tid) -> bool {
-        self.header(c).is_some_and(|h| crate::engine::write::role_of(&self.core, &h.author, a, h.ts) >= Some(osis_base::Role::Write))
+    /// Actor `a`'s grant copy for `t` as `a`'s inbox keeps it (spec/sync-inbox.md §5): `grant_copy`
+    /// once the newest edge write naming `a` there is `a`'s own to keep, else nothing (it reaches
+    /// `a`'s holders by its inbox blob alone, within the deposit budget). Its own: the author held
+    /// write on `a` at its `ts`, as promotion judges its author (§4); or `a` is this node's account
+    /// and accepted the thing (`acted^.0` on D lists it, spec/sync-set.md §4).
+    pub(crate) fn kept_grant_copy(&mut self, a: &Tid, t: &Tid) -> Certs {
+        let Some(h) = self.newest_edge(a, t).and_then(|(c, _)| self.header(&c)) else { return Certs::default() };
+        let writes = crate::engine::write::role_of(&self.core, &h.author, a, h.ts) >= Some(osis_base::Role::Write);
+        if writes || self.accepted(a, t) {
+            return self.grant_copy(a, t);
+        }
+        Certs::default()
+    }
+
+    /// The newest applied edge write naming `a` on `t`, and whether `a` read `t` just before it.
+    fn newest_edge(&self, a: &Tid, t: &Tid) -> Option<(CommitId, bool)> {
+        let on = self.core.timelines.on(t)?;
+        let (_, c, _) = on.held().filter(|(w, _, o)| o.holder == *a && on.is_applied(w)).max_by_key(|(_, c, _)| c.point())?;
+        Some((c.id, on.edge_at(a, Some(c.point())).is_some_and(|e| e.role >= osis_base::Role::Read)))
+    }
+
+    /// Whether `a` is this node's account and `acted^.0` on its D lists `t` (spec/sync-set.md §4).
+    fn accepted(&mut self, a: &Tid, t: &Tid) -> bool {
+        match self.core.account_devices() {
+            Some((acc, d)) if acc == *a => self.get_typed(&d, &osis_schema::core_types::ACTED).ok().flatten().is_some_and(|x| x.contains(t)),
+            _ => false,
+        }
     }
 
     /// The author's chain an inbox blob of commit `c` carries for its `parts` (spec/wire.md §9

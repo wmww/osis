@@ -45,7 +45,7 @@ pub(crate) enum Piece {
     /// Author `a`'s chain to `x` (`Engine::chain_piece`), under each read thing whose closure
     /// holds `x` and whose actor reads it.
     Chain(Tid, Tid),
-    /// Actor `a`'s grant copy for `x` (`Engine::grant_copy`), under each read thing owning `a`'s
+    /// Actor `a`'s grant copy for `x` (`Engine::kept_grant_copy`), under each read thing owning `a`'s
     /// inbox.
     Grant(Tid, Tid),
 }
@@ -271,7 +271,7 @@ impl Engine {
             Piece::Own(t) => self.own_piece(t),
             Piece::Chain(a, x) => self.chain_piece(a, x),
             Piece::Grant(a, x) if !self.core.ix.held.is_named(a, x) => return None,
-            Piece::Grant(a, x) => self.grant_copy(a, x),
+            Piece::Grant(a, x) => self.kept_grant_copy(a, x),
         }))
     }
 

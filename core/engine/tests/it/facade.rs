@@ -1848,8 +1848,8 @@ fn copied_aks(lp: &mut LocalPeer, c: &osis_base::CommitId, copy: &osis_engine::l
 // spec/sync-inbox.md §5 (Grant copy), spec/sync-judgement.md §2 (required set: under an actor's
 // inbox, its grant copies): a reader's grant copy is the grant's `roles.0` and `secrets.0` parts on
 // the thing (and its keyset, the first grant's: the thing's current `keys.0`), with the thing's
-// `sync.0` commits and record; a node of the grantee that took the
-// grant holds it as a certificate body under the grantee's inbox.
+// `sync.0` commits and record; a node of the grantee that took the grant holds it as a
+// certificate body under the grantee's inbox once the account accepted the thing, not before.
 #[test]
 fn a_readers_grant_copy_carries_the_grant_spec_sync_inbox_5() {
     let (mut lp, t, p1, g, blob) = granted(Role::Read);
@@ -1862,8 +1862,35 @@ fn a_readers_grant_copy_carries_the_grant_spec_sync_inbox_5() {
     let e = &mut lp.peers[1].engine;
     assert_eq!(e.take_inbox_blob(&blob, true).unwrap().map(|o| o.taken), Some(Taken::Applied));
     let inbox = e.inbox_of(&p1).expect("an inbox");
-    let body = e.sync_bodies(&g).unwrap().get(&inbox).cloned().expect("a body under the inbox");
+    assert!(!e.sync_bodies(&g).unwrap().contains_key(&inbox), "not accepted: no grant copy");
+    let synced = synced_group(&mut lp, 1);
+    listing(&mut lp, 1, synced, 1, t, true);
+    let body = lp.peers[1].engine.sync_bodies(&g).unwrap().get(&inbox).cloned().expect("accepted: a body under the inbox");
     assert!(body.certificate, "a certificate copy");
+}
+
+// spec/sync-inbox.md §5 (Grant copy: only one its author held write on the actor for, or the
+// account accepted), spec/requirements.md (a node that cannot read stores content only with a
+// writer's signature, beyond a small budget): peer 0 grants peer 1's account read on n things it
+// mints, and peer 1 takes every grant. None is a grant copy under peer 1's inbox, at n and at 10n.
+#[test]
+fn a_strangers_grants_add_nothing_to_the_accounts_inbox_spec_sync_inbox_5() {
+    let (mut lp, ps) = people(2);
+    let mut kept = |n: usize| -> usize {
+        let grants: Vec<_> = (0..n)
+            .map(|_| {
+                let t = thing_of(&mut lp, 0, ps[0]);
+                let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+                let blob = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[1]).unwrap().1;
+                lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
+                *done.commits.last().unwrap()
+            })
+            .collect();
+        let e = &mut lp.peers[1].engine;
+        let inbox = e.inbox_of(&ps[1]).expect("an inbox");
+        grants.iter().filter(|c| e.sync_bodies(c).unwrap().contains_key(&inbox)).count()
+    };
+    assert_eq!((kept(4), kept(40)), (0, 0));
 }
 
 // spec/sync-inbox.md §5 (Grant copy: as the inbox blob projects it), spec/sync-ids.md §2 (What a

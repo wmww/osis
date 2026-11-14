@@ -88,7 +88,8 @@ fn share_with(lp: &mut LocalPeer, i: usize, g: Tid, me: Tid) -> osis_base::Commi
 }
 
 // spec/sync-inbox.md §5 (Grant copy: only an edge write whose author held write on the actor at its
-// `ts`), spec/requirements.md (posting into a shared space needs write on its actor): reader peer
+// `ts`, or one the actor's account accepted), spec/requirements.md (posting into a shared space
+// needs write on its actor): reader peer
 // 1 of group g mints `DEPOSITS_WAITING + 8` things and grants g read on each; writer peer 0 shares
 // one of its own. At peer 0, none of the reader's grants is held under g's sync ID (a reader cannot
 // make g's writers keep what it mints), the writer's is.
