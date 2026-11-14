@@ -373,3 +373,79 @@ fn text_edit_random_against_reference() {
         assert!(ok, "shown {:?} remote {:?} new {:?} got {:?}", st(&sh), st(&remote), st(&new), st(&got));
     }
 }
+
+/// The `Uncommitted` diagnostics of `db`, as they arrive.
+fn uncommitted(db: &Osis) -> (osis::Subscription, Receiver<Tid>) {
+    let (tx, rx) = channel();
+    let sub = db
+        .on_diagnostic(move |_, d| {
+            if let osis::Diagnostic::Uncommitted { thing, .. } = d {
+                let _ = tx.send(thing);
+            }
+        })
+        .unwrap();
+    (sub, rx)
+}
+
+// A session whose thing was deleted, here or on another node of the account (carried by
+// `deliver`), drops its pending text when dropped and reports it (`Uncommitted`): it never
+// recreates the thing.
+#[test]
+fn text_session_after_a_delete_drops_its_edits() {
+    for remote in [false, true] {
+        let (a, b, _) = paired();
+        let (a, t, k) = setup(a);
+        b.register_schema("t.osis", SCHEMA).unwrap();
+        let s = open(&a, t, &k);
+        s.edit("", "hello").unwrap();
+        s.commit().unwrap();
+        deliver(&a, &b);
+        let (_d, rx) = uncommitted(&a);
+        s.edit("hello", "hello!").unwrap();
+        if remote {
+            b.commit_with(|w| w.delete(t)).unwrap();
+            deliver(&b, &a);
+        } else {
+            a.commit_with(|w| w.delete(t)).unwrap();
+        }
+        a.settle();
+        assert!(!a.has_content(t).unwrap(), "remote {remote}: deleted");
+        drop(s);
+        assert_eq!(recv(&rx), t, "remote {remote}");
+        deliver(&a, &b);
+        for d in [&a, &b] {
+            assert!(!d.has_content(t).unwrap(), "remote {remote}: not recreated");
+            assert_eq!(field(d, t, &k), None);
+        }
+    }
+}
+
+// A session whose commit is refused (its writer lowered to read by another node, carried by
+// `deliver`) says so at `commit` and keeps its edits; it commits them once it can write again;
+// dropped while it cannot, it reports them lost.
+#[test]
+fn text_session_refused_commit_keeps_edits() {
+    let (alice, bob) = (db(1), db(2));
+    deliver(&bob, &alice);
+    let (alice, t, _) = setup(alice);
+    bob.register_schema("t.osis", SCHEMA).unwrap();
+    let k = bob.aspect_key("n:body.0").unwrap();
+    let role = |r: osis::Role| {
+        alice.set_role(t, bob.me(), Some(r), osis::SetRoleOpts::default()).unwrap();
+        deliver(&alice, &bob);
+        bob.settle();
+    };
+    role(osis::Role::Read);
+    let s = open(&bob, t, &k);
+    s.edit("", "kept").unwrap();
+    assert!(matches!(s.commit(), Err(osis::Error::Permission { .. })));
+    assert_eq!(s.text(), "kept");
+    role(osis::Role::Write);
+    s.commit().unwrap().unwrap();
+    assert_eq!(field(&bob, t, &k).as_deref(), Some("kept"));
+    role(osis::Role::Read);
+    let (_d, rx) = uncommitted(&bob);
+    s.edit("kept", "lost kept").unwrap();
+    drop(s);
+    assert_eq!(recv(&rx), t);
+}

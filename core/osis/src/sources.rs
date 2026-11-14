@@ -77,11 +77,12 @@ impl ReadOnly {
 /// The path of the client socket of the store at `store` (`Osis::listen_socket`,
 /// `Osis::connect_socket`): under `$XDG_RUNTIME_DIR/osis/`, else `/tmp/osis-<uid>/` (made 0700 and
 /// checked), named by a hash of the store's path.
-pub(crate) fn socket_path(store: &Path) -> Result<std::path::PathBuf> {
+pub fn socket_path(store: &Path) -> Result<std::path::PathBuf> {
     socket_path_under(std::env::var_os("XDG_RUNTIME_DIR").as_deref().map(Path::new), store)
 }
 
-fn socket_path_under(runtime_dir: Option<&Path>, store: &Path) -> Result<std::path::PathBuf> {
+/// `socket_path` under `runtime_dir` (`None`: `/tmp/osis-<uid>/`).
+pub fn socket_path_under(runtime_dir: Option<&Path>, store: &Path) -> Result<std::path::PathBuf> {
     let uid = osis_transport::unix::own_uid().map_err(|e| Error::Storage(e.to_string()))?;
     let dir = match runtime_dir.filter(|d| !d.as_os_str().is_empty()) {
         Some(d) => d.join("osis"),
@@ -100,7 +101,7 @@ fn socket_path_under(runtime_dir: Option<&Path>, store: &Path) -> Result<std::pa
 
 /// Makes `dir` 0700 if missing, then checks it is a directory of `uid`'s, mode 0700, not a
 /// symlink; refuses it otherwise (another user's or a planted directory).
-fn socket_dir(dir: &Path, uid: u32) -> Result<()> {
+pub fn socket_dir(dir: &Path, uid: u32) -> Result<()> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     let mut b = std::fs::DirBuilder::new();
     b.mode(0o700);

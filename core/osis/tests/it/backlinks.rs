@@ -224,3 +224,45 @@ fn live_through_add_remove_expiry_purge() {
     assert_eq!(heard.take(&db), vec![vec![]], "purged");
 }
 
+
+// notes/api.md Backlinks, notes/listener-design.md (step 5), spec/permissions.md §5.1: a write
+// turning invalid with no new commit of its own (its writer removed with a frontier that omits
+// it) leaves the reference index and the backlinks page, and the listeners hear it: the
+// backlinks listener a page without it, the path listener `Derived(ValidityChanged)` at its path
+// and nothing beside it. Commits travel by `deliver`.
+#[test]
+fn a_validity_flip_reaches_backlinks_and_listeners_spec_permissions_5_1() {
+    let (alice, bob) = (db(1), db(2));
+    deliver(&bob, &alice);
+    let g = alice.commit_with(|w| w.create()).unwrap();
+    alice.grant(g, bob.me(), Role::Write, Default::default()).unwrap();
+    deliver(&alice, &bob);
+    bob.commit_with(|w| w.at(g, key("t:m.0")).path(p!["seen"]).set(&Value::Int(1))).unwrap();
+    deliver(&bob, &alice);
+    // the removal, which bob has not seen when he writes
+    alice.set_role(g, bob.me(), None, osis::SetRoleOpts { retain_copy: Some(true) }).unwrap();
+    let target = alice.home();
+    let heard = Heard::on(&bob, target, &BacklinkQuery::default());
+    let (tx, late) = std::sync::mpsc::channel();
+    let _l = bob.at(g, key("t:m.0")).path(p!["late"]).on_change::<Value>(move |_, c| tx.send((c.value, c.origin)).unwrap()).unwrap();
+    let (tx, seen) = std::sync::mpsc::channel();
+    let _s = bob.at(g, key("t:m.0")).path(p!["seen"]).on_change::<Value>(move |_, c| tx.send((c.value, c.origin)).unwrap()).unwrap();
+    bob.commit_with(|w| {
+        w.at(g, key("t:a.0")).set(&Value::Tid(target))?;
+        w.at(g, key("t:m.0")).path(p!["late"]).set(&Value::Int(2))
+    })
+    .unwrap();
+    let refs = |db: &Osis| db.engine(|e| e.references_from(&g).unwrap()).into_iter().any(|r| r.target == target);
+    assert!(refs(&bob), "valid where written");
+    assert!(heard.take(&bob).last().is_some_and(|p| p.contains(&bl(g, "t:a.0"))));
+    bob.settle();
+    assert_eq!(late.try_iter().last().map(|x| x.0), Some(Ok(Some(Value::Int(2)))));
+    let _ = seen.try_iter().count();
+    deliver(&alice, &bob);
+    bob.settle();
+    assert!(!refs(&bob), "invalid once the removal arrives");
+    assert!(!all(&bob, target).contains(&bl(g, "t:a.0")));
+    assert!(heard.take(&bob).last().is_some_and(|p| !p.contains(&bl(g, "t:a.0"))), "heard");
+    assert_eq!(late.try_iter().collect::<Vec<_>>(), vec![(Ok(None), osis::Origin::Derived(osis::DerivedFrom::ValidityChanged))]);
+    assert!(seen.try_iter().next().is_none(), "the entry beside it");
+}

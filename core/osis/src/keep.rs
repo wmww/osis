@@ -36,8 +36,9 @@ fn renew<K: ValueKey + Clone + Send + Sync + 'static>(db: WeakOsis, alive: Arc<A
             }
             let Some(h) = db.hold() else { return };
             let mut w = h.write();
-            // a failed rewrite is told as any write's (diagnostics); the next one tries again
-            let _ = w.at(tid, key.clone()).path(path.clone()).set(&v).and_then(|()| w.commit().map(drop));
+            // an overwrite: a `set` of the value it reads writes nothing, and the value would
+            // expire; a failed rewrite is told as any write's (diagnostics), the next one tries again
+            let _ = w.at(tid, key.clone()).path(path.clone()).overwrite(&v).and_then(|()| w.commit().map(drop));
             drop(h);
             renew(db, alive, tid, key, path, v, every);
         }),
@@ -59,7 +60,7 @@ impl<K: ValueKey + Clone + Send + Sync + 'static> PathRef<'_, '_, K> {
         }
         let v = value.to_value();
         let mut w = db.write();
-        w.at(tid, key.clone()).path(path.clone()).set(&v)?;
+        w.at(tid, key.clone()).path(path.clone()).overwrite(&v)?;
         w.commit()?;
         let alive = Arc::new(AtomicBool::new(true));
         renew(db.downgrade(), alive.clone(), tid, key.clone(), path.clone(), v, Duration::from_millis((exp / 2).max(1)));

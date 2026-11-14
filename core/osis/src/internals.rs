@@ -204,3 +204,7 @@ pub use crate::port::method as port_method;
 pub use osis_proto as proto;
 pub use osis_crypto::Secret32;
 pub use osis_label as label;
+
+/// The client socket's directory and path rules (`Osis::listen_socket`).
+pub use crate::sources::{socket_dir, socket_path, socket_path_under};
+pub use osis_transport::unix::{MAX_PATH as SOCKET_MAX_PATH, own_uid};

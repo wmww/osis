@@ -1698,3 +1698,53 @@ fn a_removal_does_not_outlive_a_disappearing_message_spec_crdt_4_7() {
         assert!(v.is_none() || v == Some(Value::Map(Default::default())), "nothing of the message stays: {v:?}");
     }
 }
+
+// notes/api.md Diagnostics (`NotSynced`), spec/sync-set.md §2 (closure): cutting a subgroup out
+// of the synced group (the home group) that was its only way there tells of it and the items it
+// strands; a subgroup whose membership expires strands what it held alike, told by the same
+// diagnostic; an item another way still carries is told of neither time.
+// spec: none (API surface, notes/api.md)
+#[test]
+fn a_cut_or_expiring_subgroup_tells_what_it_strands() {
+    let c = clock();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
+    let synced = db.home();
+    let k = osis::DynamicAspectKey::untyped(ak("t:x.0"));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _sub = db.on_diagnostic(move |_, d| {
+        if let osis::Diagnostic::NotSynced { thing, group: None, detail } = d {
+            let _ = tx.send((thing, detail));
+        }
+    }).unwrap();
+    let mut w = db.write();
+    let (cut, expiring) = (w.create().unwrap(), w.create().unwrap());
+    let (kept, in_cut, in_expiring) = (w.create_with_admin(synced).unwrap(), w.create().unwrap(), w.create().unwrap());
+    for t in [kept, in_cut, in_expiring] {
+        w.at(t, k.clone()).set(&Value::Int(1)).unwrap();
+    }
+    w.group(synced).add(osis::Member::Subgroup(cut)).unwrap();
+    w.group(synced).add(osis::Member::Item(kept)).unwrap();
+    w.group(cut).add(osis::Member::Item(in_cut)).unwrap();
+    w.group(cut).add(osis::Member::Item(kept)).unwrap();
+    w.commit().unwrap();
+    let mut w = db.write();
+    w.expires(osis::Expiry::In(std::time::Duration::from_secs(60)));
+    w.group(synced).add(osis::Member::Subgroup(expiring)).unwrap();
+    w.commit().unwrap();
+    commit_with(&db, |w| {
+        w.group(expiring).add(osis::Member::Item(in_expiring))?;
+        w.group(expiring).add(osis::Member::Item(kept))
+    });
+    db.settle();
+    assert_eq!(rx.try_iter().count(), 0, "all carried");
+    commit_with(&db, |w| w.group(synced).remove(osis::Member::Subgroup(cut)));
+    db.settle();
+    let by_write: Vec<_> = rx.try_iter().collect();
+    assert_eq!(by_write.iter().map(|d| d.0).collect::<BTreeSet<_>>(), BTreeSet::from([cut, in_cut]));
+    c.advance(61_000);
+    db.settle();
+    assert!(!db.members(synced).unwrap().contains(&osis::Member::Subgroup(expiring)), "it left by itself");
+    db.settle();
+    let detail = by_write[0].1.clone();
+    assert_eq!(rx.try_iter().collect::<BTreeSet<_>>(), BTreeSet::from([(expiring, detail.clone()), (in_expiring, detail)]));
+}
