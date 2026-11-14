@@ -26,7 +26,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - HN_fallany (a snapshot arriving invalid moves the fall mark as one held valid falling does) is the engine's `fall_mark`, untested end to end.
 
 ## inbox
-- A promotion's chain (`held::log_chain`: the engine seals no certificate copy, so nothing is promoted; with issues/sync-certificate-bodies.md).
+- A promotion's chain (`held::log_chain`: not built; the engine seals certificate copies, `sync_bodies`).
 - Stranded and Suspect are answered Ok and acted on by nobody (spec/permissions.md §4: the stranded holder's re-seal, the suspect repair).
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.
 - A decline stamping in place.
@@ -46,4 +46,4 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - osis-label's link carries a `hosts` list between K's sync ID and the peers that spec/wire.md §10 `Link` does not have.
 
 ## Own issues
-issues/sync-certificate-bodies.md, issues/reseal-under-own-epoch-leaks.md (Sync side), issues/sync-walk-reopen.md, issues/sync-link-first-contact.md, issues/group-source-hand-off.md.
+issues/reseal-under-own-epoch-leaks.md (Sync side), issues/sync-walk-reopen.md, issues/sync-link-first-contact.md, issues/group-source-hand-off.md, issues/sync-pending-unbounded-paths.md.

@@ -150,3 +150,30 @@ fn an_ended_link_is_not_redeemed_spec_permissions_7() {
     assert!(w.engine(0).read_credentials(&link.k_label).unwrap().is_none_or(|c| c.acting.is_empty()), "L not acted for");
 }
 
+
+
+// spec/permissions.md §7 (Redeem: the redeemer joins K once K's history is held): accounts 1
+// and 2 join K0 by node 0's link, account 0 joins K1 by node 1's link; node 2 then redeems node
+// 1's link. It opens K1 at node 1 and node 0, holds K1's whole roster with nothing pending, and
+// never writes its join (redeem stays Pending). Each pair alone, and every shorter order, joins.
+// Reproducer of issues/sync-link-first-contact.md (Contact cards in the differential).
+#[test]
+#[ignore = "sync-link-first-contact"]
+fn a_third_redeemer_sharing_another_link_joins_spec_permissions_7() {
+    let mut w = World::new(0);
+    for _ in 0..3 {
+        w.add_node();
+    }
+    w.run();
+    let links: Vec<ShareLink> = (0..3).map(|i| {
+        let p = w.node(i).profile.unwrap();
+        w.make_link(i, p, Role::Read)
+    }).collect();
+    for (j, i) in [(1, 0), (2, 0), (0, 1), (2, 1)] {
+        w.redeem(j, &links[i]);
+        w.run();
+        assert_eq!(w.redeem(j, &links[i]), Waiting::Done, "{j} redeems {i}'s link");
+        let a = w.node(j).account.unwrap();
+        assert!(w.engine(i).roster(&links[i].k).contains_key(&a), "{j}'s join held at {i}");
+    }
+}
