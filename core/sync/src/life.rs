@@ -291,15 +291,13 @@ impl Life {
     }
 }
 
-/// A duty's write: a store failure fails the step; any other refusal writes nothing (the value
-/// is judged again when what it read moves). Whether it wrote.
-/// One duty's engine result, isolated: a store failure goes up (the step fails and restarts);
-/// any other error is that duty's alone, `None` (its key parked until what it read moves).
 /// Held actor `a`'s drop is due and its complete pass done (`Life::drop_lost`).
 fn lost_now(engine: &mut Engine, a: &Tid) -> std::result::Result<bool, osis_engine::Error> {
     Ok(engine.lost_due(a)? && engine.lost_passed(a)?)
 }
 
+/// One duty's engine result, isolated: a store failure goes up (the step fails and restarts);
+/// any other error is that duty's alone, `None` (its key parked until what it read moves).
 fn isolate<T>(r: std::result::Result<T, osis_engine::Error>) -> Result<Option<T>> {
     match r {
         Ok(v) => Ok(Some(v)),
@@ -308,6 +306,8 @@ fn isolate<T>(r: std::result::Result<T, osis_engine::Error>) -> Result<Option<T>
     }
 }
 
+/// A duty's write: a store failure fails the step; any other refusal writes nothing (the value
+/// is judged again when what it read moves). Whether it wrote.
 fn wrote<T>(r: std::result::Result<T, osis_engine::Error>) -> Result<bool> {
     match r {
         Ok(_) => Ok(true),

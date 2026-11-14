@@ -914,12 +914,20 @@ pub(crate) enum Reseal {
 /// node must hold them, or the removal waits for good), with the keyset commits it names.
 pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<Role>, which: Reseal) -> Result<Done> {
     let mut done = Done::default();
+    reseal_one_into(tx, a, holder, roles, which, &mut done)?;
+    Ok(done)
+}
+
+/// `reseal_one` into `done`: the rotations it makes first stay in `done` (and stored) when the
+/// re-seal itself is refused after them.
+pub(crate) fn reseal_one_into(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<Role>, which: Reseal, done: &mut Done) -> Result<()> {
     // rotate first where due; then re-seal, blocked roles included: a box carrying a secret is
     // encrypted under its recipient's key (`members::sealed` leaves out a blocked keyset of a
     // holder actor), not under the epoch it carries (spec/crypto.md §4, Encrypting under), so
     // nobody new reads under a blocked epoch (`tests::grant_while_blocked_boxes_grantee_only_*`)
     let me = tx.core.writer()?;
-    ensure_rotated(tx, me, a, &mut done)?;
+    let before = done.commits.len();
+    ensure_rotated(tx, me, a, done)?;
     let epochs = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
     let secrets = secrets_in(tx, &a)?;
     let role = tx.core.key_holders(&a).into_iter().find(|(m, _)| *m == holder).map(|x| x.1).ok_or(Error::Misuse("not a current holder"))?;
@@ -927,7 +935,7 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
         return Err(Error::Misuse("the holder's grant has ended: it is finalized, not re-sealed"));
     }
     // a rotation just made boxed the holder at the new epoch already
-    let rotated = !done.commits.is_empty();
+    let rotated = done.commits.len() > before;
     let rcpt = match members::sealed(tx, &me, &a, &holder, role)? {
         Sealed::Boxed(r) => r,
         Sealed::Out => return Err(Error::Misuse("the holder has no key access or no keyset this node may seal it to")),
@@ -945,7 +953,7 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
         })
         .collect();
     if roles.is_empty() {
-        return Ok(done);
+        return Ok(());
     }
     let hist = history_boxes(tx, &me, &a)?;
     let w = match which {
@@ -957,7 +965,7 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
         && let Some(w) = &w
         && w.boxes.iter().all(|(k, b)| secrets.boxes.get(k).is_some_and(|x| osis_keys::box_keysets(x) == osis_keys::box_keysets(b)))
     {
-        return Ok(done);
+        return Ok(());
     }
     let Some(w) = w else {
         return Err(Error::Misuse("the holder's keyset is unknown"));
@@ -972,7 +980,7 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
             flows::edges::deliver_to(tx, holder, c, &[a])?;
         }
     }
-    Ok(done)
+    Ok(())
 }
 
 /// The history boxes `who` writes for `a`'s current epochs (`osis_keys::history_boxes`): what the
@@ -1267,11 +1275,9 @@ impl Engine {
             for m in crate::sync::stranded::asked(tx, &a) {
                 let Some(role) = holders.get(&m).copied() else { continue };
                 let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= role && may_rotate(tx.core, &me, &a).contains(r)).collect();
-                match reseal_one(tx, a, m, &roles, Reseal::Asked) {
-                    Ok(d) => {
-                        done.extend(d);
-                        crate::sync::stranded::meet(tx, &a, &m)?;
-                    }
+                // a rotation it makes before a refusal stays in `done`
+                match reseal_one_into(tx, a, m, &roles, Reseal::Asked, &mut done) {
+                    Ok(()) => crate::sync::stranded::meet(tx, &a, &m)?,
                     Err(Error::Misuse(_) | Error::Permission { .. }) => {}
                     Err(e) => return Err(e),
                 }
