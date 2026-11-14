@@ -12,9 +12,9 @@ use crate::error::{Error, Result};
 use osis_base::{CommitId, Role, Tid, Value};
 use osis_commit::CommitBlob;
 use osis_crypto::NodeRng;
-use osis_label::{DialHint, InboxPayload, InboxThing, seal_inbox_blob};
+use osis_label::{BoxedThing, BoxesPayload, DialHint, InboxPayload, InboxThing, seal_boxes_payload, seal_inbox_blob};
 use osis_store::Shred;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// `ow/` + commit ID + holder: an inbox delivery owed.
@@ -155,19 +155,20 @@ impl Engine {
         }
         let (h, id) = (*holder, *c);
         let reads = o.things.iter().any(|t| self.core.role_now(holder, t) >= Some(Role::Read));
+        // a recipient below read on every thing named (sync alone, or removed since): its own
+        // boxes, never the commit (spec/sync-inbox.md §2)
+        if !reads && !o.edge_only {
+            return self.boxes_blob(&id, &h, &o, rng);
+        }
         let Some((blob, things)) = self.read(|tx| {
             if crate::flows::edges::inbox_kem(tx, &h)?.is_none() {
                 return Ok(None);
             }
             let Some(full) = tx.get_commit(&id)? else { return Ok(None) };
             let mut blob = Arc::unwrap_or_clone(full);
-            // a removal: its edges; a recipient below read on every thing named (sync alone, or
-            // removed since): those things' boxes only, no edge, keyset, step or record
-            // (spec/sync-inbox.md §2; the part still names each holder boxed:
-            // issues/sync-holder-roster.md)
-            if o.edge_only || !reads {
-                let ak = if o.edge_only { "roles.0" } else { "secrets.0" };
-                let keep: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, a)| a.ak.as_str() == ak && (o.edge_only || o.things.contains(&a.tid))).map(|(i, _)| i).collect();
+            // a removal: its edges
+            if o.edge_only {
+                let keep: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, a)| a.ak.as_str() == "roles.0").map(|(i, _)| i).collect();
                 blob.parts.retain(|p| keep.contains(&p.ai));
             }
             let mut things = Vec::new();
@@ -183,14 +184,60 @@ impl Engine {
         else {
             return Ok(None);
         };
-        // a recipient below read on every thing gets the boxes and sync IDs only (spec/wire.md §9
-        // positions 2-3): no chain, no `keys.0`
         let (chain, records) = if reads && with_chain { self.chain_values(&id, &blob, holder)? } else { (Vec::new(), Vec::new()) };
         let commit = osis_base::decode(&blob.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB }).map_err(|_| Error::Corrupt("commit blob"))?;
         let payload = InboxPayload { commit, things, chain, records, dial: self.dial_hint()? };
         let now = self.now();
         let kem = self.read(|tx| crate::flows::edges::inbox_kem(tx, &h))?.ok_or(Error::Misuse("the holder's inbox key"))?;
         Ok(Some(seal_inbox_blob(holder, &kem, &payload, now, rng)?))
+    }
+
+    /// The boxes payload of delivery (`c`, `holder`) (spec/wire.md §9): `holder`'s boxes of `c`'s
+    /// `secrets.0` deltas on the things owed, each with its thing's sync ID, signed by `c`'s
+    /// author. `None` when it boxes `holder` on none of them or this node cannot sign as the
+    /// author.
+    fn boxes_blob(&mut self, c: &CommitId, holder: &Tid, o: &Owed, rng: &mut dyn NodeRng) -> Result<Option<Vec<u8>>> {
+        let (h, id) = (*holder, *c);
+        let Some((blob, kem, ids)) = self.read(|tx| {
+            let Some(kem) = crate::flows::edges::inbox_kem(tx, &h)? else { return Ok(None) };
+            let Some(blob) = tx.get_commit(&id)? else { return Ok(None) };
+            let mut ids = BTreeMap::new();
+            for t in &o.things {
+                ids.insert(*t, crate::flows::home_sync_id(tx, t)?);
+            }
+            Ok(Some((blob, kem, ids)))
+        })?
+        else {
+            return Ok(None);
+        };
+        let mut things = Vec::new();
+        for (t, w) in crate::apply::keys::pending_secrets_writes(&blob, &id) {
+            let Some(sync_id) = ids.get(&t) else { continue };
+            let boxes: Vec<_> = w.boxes.into_iter().filter(|(k, _)| k.holder == h).map(|(k, b)| (k.role, k.epoch, b)).collect();
+            if !boxes.is_empty() {
+                things.push(BoxedThing::new(t, *sync_id, boxes));
+            }
+        }
+        let author = blob.header.author;
+        if things.is_empty() {
+            return Ok(None);
+        }
+        let Some((epoch, key)) = self.author_signer(&author)? else { return Ok(None) };
+        let payload = BoxesPayload::signed(&h, id, author, epoch, things, self.dial_hint()?, &key);
+        let now = self.now();
+        Ok(Some(seal_boxes_payload(&h, &kem, &payload, now, rng)?))
+    }
+
+    /// The key this node signs as `author` with, and the epoch it names (an account's open
+    /// epoch): its account's, its own node's or a key actor's it acts for.
+    fn author_signer(&self, author: &Tid) -> Result<Option<(Option<CommitId>, osis_crypto::SigningSecret)>> {
+        if self.core.accounts.contains_key(author) {
+            return Ok(self.core.account_signing(author)?.map(|(e, k)| (Some(e), k.signing.clone())));
+        }
+        if *author == self.core.id.tid() {
+            return Ok(Some((None, self.core.id.keys().signing.clone())));
+        }
+        Ok(self.core.key_actors.get(author).map(|k| (None, k.keys().signing.clone())))
     }
 
     /// The commits logged with role commit `c` under the sync IDs it goes under (spec/crypto.md

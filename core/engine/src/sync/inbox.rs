@@ -12,7 +12,7 @@ use osis_base::{BlobId, CommitId, Role, SyncId, Tid, Value, WallMs};
 use osis_commit::CommitBlob;
 use osis_crypto::KemSecret;
 use osis_keys::Opener;
-use osis_label::{Inbox, InboxPayload, InboxRest, open_inbox_item};
+use osis_label::{BoxesPayload, Inbox, InboxPayload, InboxRest, open_inbox_item};
 use osis_schema::core_types as ct;
 use osis_schema::RawKey;
 use osis_store::Shred;
@@ -184,12 +184,27 @@ impl Engine {
 
     /// The secrets the boxes of commit `c` (`blob`) give recipient `a`, per thing.
     fn boxed_to(&self, a: &Tid, blob: &CommitBlob, c: &CommitId) -> Boxed {
+        self.open_boxes_of(a, crate::apply::keys::pending_secrets_writes(blob, c).into_iter().map(|(t, w)| {
+            let mut s = osis_schema::core_types::Secrets::default();
+            w.apply(&mut s);
+            (t, s)
+        }))
+    }
+
+    /// The secrets a boxes payload's boxes give its recipient `a`, per thing: each box opened
+    /// with the AD rebuilt from its thing, `a`, its role and epoch (spec/wire.md §9).
+    fn boxes_payload_to(&self, a: &Tid, p: &BoxesPayload) -> Boxed {
+        self.open_boxes_of(a, p.things.iter().map(|t| {
+            let boxes = t.boxes.iter().map(|(r, e, b)| (osis_schema::core_types::BoxKey { holder: *a, role: *r, epoch: e.clone() }, b.clone())).collect();
+            (t.tid, osis_schema::core_types::Secrets { boxes, history: BTreeMap::new() })
+        }))
+    }
+
+    fn open_boxes_of(&self, a: &Tid, per_thing: impl Iterator<Item = (Tid, osis_schema::core_types::Secrets)>) -> Boxed {
         let keys = self.core.account_keys_by_name(a);
         let epochs = self.core.epochs(a);
         let mut things: BTreeMap<Tid, Vec<osis_keys::Opened>> = BTreeMap::new();
-        for (t, w) in crate::apply::keys::pending_secrets_writes(blob, c) {
-            let mut s = osis_schema::core_types::Secrets::default();
-            w.apply(&mut s);
+        for (t, s) in per_thing {
             let opener = match (self.core.accounts.contains_key(a), epochs.as_deref()) {
                 (true, _) => Opener::Account { holder: *a, keys: &keys },
                 (false, Some(e)) => Opener::Actor { holder: *a, epochs: e },
@@ -217,12 +232,58 @@ impl Engine {
         if !matches!(record, Some(osis_base::CreationRecord::KeyActor { .. })) || crate::apply::signed_by_author(&self.core, blob, id, record.as_ref(), known) != Some(true) {
             return Ok(false);
         }
+        self.author_connected(&author)
+    }
+
+    /// Whether `author` has an effective role now on a thing in the sync set or up such a thing's
+    /// record chain (spec/sync-inbox.md §2 Taking, connected).
+    fn author_connected(&mut self, author: &Tid) -> Result<bool> {
         let set = self.sync_set_now()?;
         let mut things: BTreeSet<Tid> = BTreeSet::new();
         for (t, _) in set.ids.values() {
             things.extend(self.core.record_chain(t).filter_map(|s| s.thing()));
         }
-        Ok(things.iter().any(|t| self.core.role_now(&author, t).is_some()))
+        Ok(things.iter().any(|t| self.core.role_now(author, t).is_some()))
+    }
+
+    /// Takes boxes payload `p` to `a` (spec/sync-inbox.md §2 Taking): refused when its signature
+    /// fails under its author's key held here; taken when a thing it boxes `a` on is in a synced
+    /// group's closure, the user accepted it, or its signature verifies under a connected author's key; then
+    /// the sync secrets of its boxes that open go into their things' sync records with its sync
+    /// IDs and dial hint (spec/sync-judgement.md §6), and nothing else.
+    fn take_boxes(&mut self, s: &SyncId, blob: &BlobId, a: &Tid, expires: WallMs, p: BoxesPayload, accepted: bool) -> Result<Option<InboxOpened>> {
+        let id = p.commit;
+        let refused = |dial| Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Refused, hints: Vec::new(), dial }));
+        let verified = match crate::apply::signing_key_at(&self.core, &p.author, p.epoch) {
+            Ok(Some(k)) if p.verifies(a, &k) => true,
+            Ok(None) => false,
+            _ => return refused(None),
+        };
+        let boxed = self.boxes_payload_to(a, &p);
+        let listed = self.synced_closures()?;
+        let in_set = p.things.iter().any(|x| listed.contains(&x.tid));
+        let taken = in_set || accepted || (verified && self.author_connected(&p.author)?);
+        let b = *blob;
+        if !taken {
+            let w = WaitingBlob { sync_id: *s, commit: id, things: boxed.things.keys().filter_map(|t| Some((*t, boxed.role(t)?))).collect(), from: p.author, expires };
+            self.run(|tx| set_waiting(tx, &b, Some(w)))?;
+            return Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Waiting, hints: Vec::new(), dial: None }));
+        }
+        self.run(|tx| set_waiting(tx, &b, None))?;
+        let mut any = false;
+        for t in &p.things {
+            let secrets: Vec<_> = boxed.things.get(&t.tid).into_iter().flatten().filter(|o| o.role == Role::Sync && o.epoch.names(&t.tid, Role::Sync, &o.secret)).map(|o| (o.epoch, o.secret.clone())).collect();
+            if secrets.is_empty() {
+                continue;
+            }
+            any = true;
+            let (tid, ids) = (t.tid, t.sync_id.into_iter().collect::<Vec<_>>());
+            self.run(|tx| super::records::note_sync_secrets(tx, &tid, &ids, secrets, p.dial.as_ref()))?;
+        }
+        if !any {
+            return refused(p.dial);
+        }
+        Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Applied, hints: Vec::new(), dial: p.dial }))
     }
 
     /// Takes the inbox blob `bytes` (ID `blob`) held under `s`: see the module doc. `accepted`:
@@ -231,7 +292,11 @@ impl Engine {
         let Some((a, expires, inbox)) = self.open_inbox_bytes(s, bytes) else { return Ok(None) };
         // a stranded notice asks for a re-seal the recipient judges itself (spec/permissions.md
         // §4): not a role commit to take
-        let Inbox::Payload(p) = inbox else { return Ok(Some(InboxOpened { commit: None, taken: Taken::Refused, hints: Vec::new(), dial: None })) };
+        let p = match inbox {
+            Inbox::Payload(p) => p,
+            Inbox::Boxes(p) => return self.take_boxes(s, blob, &a, expires, p, accepted),
+            Inbox::Stranded(_) => return Ok(Some(InboxOpened { commit: None, taken: Taken::Refused, hints: Vec::new(), dial: None })),
+        };
         let (plain, rest) = InboxPayload::split(p);
         let InboxRest { things, chain, records, dial } = rest;
         let cb = CommitBlob::decode(&plain)?;

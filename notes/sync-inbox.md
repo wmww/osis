@@ -16,6 +16,7 @@ Spec: spec/sync-inbox.md, spec/sync-ids.md §6 Steps and Register, spec/wire.md 
 ## Taking inbox blobs
 - `held` calls `take_inbox` inside an `Effects` settle. A take that writes what it read would be due again at once, every round of every step; `take_inbox` writes nothing when taking again changes nothing (tests/it/keep.rs `taking_an_inbox_blob_again_moves_nothing_spec_sync_inbox_2`).
 - A take records every read of its ingest, so a blob whose commit applied is taken once: `held` keeps it in `taken` and, while the commit is held (`holds_commit`), judges it from that alone.
+- A recipient below read on every thing named gets a boxes payload (`deliveries::boxes_blob`, spec/wire.md §9): its boxes signed by the commit's author (`author_signer`: the account's open epoch, the node's or a key actor's key). `take_boxes` refuses one whose signature fails under a key held here, takes it by a connected author, a synced closure listing its thing or an accept, and writes only sync records; taking again answers the same (Applied while a sync box opens), so a writer of the inbox stamps it in place by the usual act.
 - An entry whose prefix no inbox blob has is told from its bytes before any key is read (`Prefix::inbox_shaped`): an inbox is its actor's home sync ID, so it holds the actor's commits too, which no inbox key opens.
 
 ## Durable

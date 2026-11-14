@@ -310,6 +310,19 @@ pub(crate) fn author_key(core: &crate::engine::Core, h: &osis_commit::Header, si
     epoch_key(core, &h.author, h.epoch, public_key)
 }
 
+/// Key actor `author`'s signing key at `epoch` (`None` for a key actor other than an account), as
+/// a commit's author key is found (`author_key`), for what it signs besides commits (a boxes
+/// payload, spec/wire.md §9). `Ok(None)`: its record or that epoch's rotation is not held; an
+/// error: no key actor's, or an epoch on another's than an account (or none on one).
+pub(crate) fn signing_key_at(core: &crate::engine::Core, author: &Tid, epoch: Option<CommitId>) -> Result<Option<VerifyingKey>> {
+    let Some(record) = core.created(author) else { return Ok(None) };
+    let CreationRecord::KeyActor { public_key, account, .. } = record else { return Err(Error::BadInput("author is not a key actor")) };
+    if *account != epoch.is_some() {
+        return Err(Error::BadInput("an epoch on a key actor other than an account, or none on one"));
+    }
+    epoch_key(core, author, epoch, public_key)
+}
+
 /// The key of `author`'s epoch `epoch` (`None`: a plain key actor's key), `public_key` its
 /// creation record's. `Ok(None)`: a rotation not held.
 fn epoch_key(core: &crate::engine::Core, author: &Tid, epoch: Option<CommitId>, public_key: &[u8]) -> Result<Option<VerifyingKey>> {

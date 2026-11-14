@@ -10,6 +10,7 @@
 - Reasons behind spec rules (spec/sync-inbox.md):
   - Re-send (§2) ends only on the recipient taking the blob (a commit writing a thing it names, an open of a sync ID it names): the recipient acting elsewhere proves nothing, as the blob may have been cleared.
   - A grant copy (§5) leaves out every `keys.0` but its author's: a verifier judges by creation records and edge writes, and a fresh deposit seed is not for that actor's readers. The copy is what lets the actor's other and future nodes and its readers find the grant.
+  - A holder below read gets a boxes payload, not a projection of the commit (spec/wire.md §9): the `secrets.0` part must stay whole to match the header's hash, so its box keys named every holder the commit boxes (each rotation showed a sync holder the roster) and the header every thing the commit touches; nor could the holder check the part against the header (the delta hash is keyed by a dedup secret it never gets). The author's signature binds the boxes to the recipient and the commit ID. A payload whose author's key is not held here is taken only by accept or a listed thing: a forged box there gives only a secret naming an epoch of the forger's (an epoch names its secret), which no step uses.
   - A node keeps offering its own deposit after losing read access (§3 Sending): other nodes may hold parts of that commit from elsewhere and wait for the rest.
   - Relay-only blobs are refused as deposits (§3, code 14): held by nobody, a reader's would be a write of its own, and readers write no ephemeral data.
 
