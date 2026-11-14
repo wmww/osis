@@ -79,8 +79,16 @@ impl Engine {
         {
             return Ok(ThingSync::Read(vec![home]));
         }
-        if let Some(r) = self.core.ix.sync_records.get(t) {
-            return Ok(ThingSync::Unread(r.sync_ids.clone()));
+        if let Some(r) = self.core.ix.sync_records.get(t).cloned() {
+            // a record's sync IDs are its payloads' word (spec/sync-inbox.md §2): one a held
+            // `sync.0` gives another thing is that thing's, never kept unread for this one
+            let mut ids = Vec::new();
+            for s in &r.sync_ids {
+                if self.sync_owner_of(s)?.is_none_or(|o| o == *t) {
+                    ids.push(*s);
+                }
+            }
+            return Ok(ThingSync::Unread(ids));
         }
         Ok(if self.core.has_own_secrets(t) { ThingSync::Unsyncable } else { ThingSync::Plain })
     }
@@ -91,7 +99,12 @@ impl Engine {
         for t in self.sync_things_now()?.iter() {
             match self.thing_sync_now(t)? {
                 ThingSync::Read(ids) => set.ids.extend(ids.into_iter().map(|s| (s, (*t, Holding::Read)))),
-                ThingSync::Unread(ids) => set.ids.extend(ids.into_iter().map(|s| (s, (*t, Holding::Unread)))),
+                // two records naming one sync ID (both owners unknown here): the first keeps it
+                ThingSync::Unread(ids) => {
+                    for s in ids {
+                        set.ids.entry(s).or_insert((*t, Holding::Unread));
+                    }
+                }
                 ThingSync::Unsyncable => {
                     set.unsyncable.insert(*t);
                 }

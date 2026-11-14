@@ -304,3 +304,115 @@ fn seal_body_never_guesses_a_section_epoch_spec_sync_judgement_1() {
     assert!(osis_label::unwrap_any(rc.read_secrets.iter().map(|x| &x.1), &sealed.id, &wrap).is_some(), "the wrap opens under home's read secret");
     let _ = ps;
 }
+
+/// The read epoch whose secret unwraps the section of `t` in sealed commit blob `bytes` (blob key
+/// `key`), among `t`'s epochs held at peer `i`.
+fn section_epoch_of(lp: &LocalPeer, i: usize, t: &Tid, c: &osis_base::CommitId, bytes: &[u8], key: &osis_crypto::Secret32) -> Option<osis_crypto::Epoch> {
+    let (_, pt) = osis_label::open(bytes, key).unwrap();
+    let env = osis_commit::Envelope::decode(&pt).unwrap();
+    let ep = lp.peers[i].engine.epochs(t).unwrap();
+    let found: Vec<_> = env.sections.iter().flat_map(|sec| ep.read.epochs().filter(|(e, _)| ep.read.secret(e).is_some_and(|s| osis_crypto::unwrap_section(s, c, &sec.wrap).is_ok())).map(|(e, _)| *e).collect::<Vec<_>>()).collect();
+    assert!(found.len() <= 1, "one section of the thing");
+    found.first().copied()
+}
+
+// spec/sync-judgement.md §1, §4 (a fresh encryption of another writer's body; the section-epoch
+// rule, issues/reseal-under-own-epoch-leaks.md): a reader holding a newer read epoch seals another
+// writer's section under the epoch it was written under (as it opened it), never under its
+// newest; a body it holds but never opened from a blob is refused (its written epoch unknown).
+#[test]
+fn seal_body_keeps_another_writers_section_epoch_spec_sync_judgement_1() {
+    let (mut lp, ps) = people(3);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    for p in [ps[1], ps[2]] {
+        let done = lp.peers[0].engine.grant(&t, &p, &edge_of(Role::Read)).unwrap();
+        for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
+            if let Some(i) = ps.iter().position(|x| *x == h) {
+                lp.peers[i].engine.take_inbox_blob(&b, true).unwrap();
+            }
+        }
+    }
+    for i in 0..2 {
+        let (_, d) = lp.peers[i].engine.account().unwrap().unwrap();
+        add_item(&mut lp, i, d, t);
+    }
+    spread(&mut lp);
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    // peer 0 writes c under epoch e1; peer 1 opens it from the blob peer 0 logged
+    let mut m = Mutation::new();
+    m.set(t, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(7)).unwrap();
+    let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
+    let e1 = crate::flows::newest_read(&lp, 0, t).unwrap();
+    let mut rng = SeededRng::from_u64(5);
+    let (sealed, wrap) = lp.peers[0].engine.seal_body(&s, &c, &mut rng).unwrap().expect("peer 0 seals its own");
+    assert!(matches!(lp.peers[1].engine.open_entry(&s, &sealed.id, &wrap, &sealed.blob).unwrap(), osis_engine::sync::Opened::Commit(x, _) if x == c));
+    // removing peer 2 rotates read: peer 1 holds a newer epoch
+    lp.peers[0].engine.demote(&t, &Demotion { holder: ps[2], new: None, retain: None }).unwrap();
+    spread(&mut lp);
+    let e2 = crate::flows::newest_read(&lp, 1, t).unwrap();
+    assert_ne!(e1, e2, "peer 1 holds the rotation's epoch");
+    let (again, _) = lp.peers[1].engine.seal_body(&s, &c, &mut rng).unwrap().expect("sealed under its written epoch");
+    assert_eq!(section_epoch_of(&lp, 1, &t, &c, &again.blob, &again.key), Some(e1), "the section under the epoch it was written under, not the newest");
+    // a body peer 1 holds but never opened from a blob: its written epoch is unknown here
+    let mut m = Mutation::new();
+    m.set(t, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(8)).unwrap();
+    let c2 = lp.peers[0].engine.commit(m).unwrap().unwrap();
+    spread(&mut lp);
+    assert!(lp.peers[1].engine.core.ix.commits.contains_key(&c2));
+    assert!(lp.peers[1].engine.seal_body(&s, &c2, &mut rng).unwrap().is_none(), "refused: never guessed");
+}
+
+/// Commit `c` as peer `i` stores it.
+fn commit_of(lp: &mut LocalPeer, i: usize, c: &osis_base::CommitId) -> osis_commit::CommitBlob {
+    let pk = lp.peers[i].engine.package(c).unwrap().expect("held");
+    osis_commit::CommitBlob::decode_stored(&pk.bytes).unwrap()
+}
+
+/// An inbox blob to peer `to`'s account carrying `commit` with `things`, sealed by hand (a
+/// sender's own payload: its sync IDs and its commit's header are its word).
+fn inbox_by_hand(lp: &mut LocalPeer, to: usize, commit: &osis_commit::CommitBlob, things: Vec<osis_label::InboxThing>) -> Vec<u8> {
+    let e = &mut lp.peers[to].engine;
+    let a = e.me();
+    let Some(ct::KemKey::X25519MlKem768(k)) = e.get_typed(&a, &ct::KEYS).unwrap().and_then(|k| k.key) else { panic!("the account's KEM key") };
+    let kem = osis_crypto::KemPublicKey::from_slice(&k).unwrap();
+    let v = osis_base::decode(&commit.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB }).unwrap();
+    let payload = osis_label::InboxPayload { commit: v, things, chain: Vec::new(), records: Vec::new(), dial: None, removals: Vec::new() };
+    let now = e.now();
+    osis_label::seal_inbox_blob(&a, &kem, &payload, now, &mut SeededRng::from_u64(11)).unwrap()
+}
+
+// spec/sync-inbox.md §2 Taking (connected: the commit's signature verifies under the author's
+// key): a sync grant whose header names a connected author it was not signed by is not taken
+// (a sync-alone blob is never ingested, so nothing else checks its signature).
+#[test]
+fn a_forged_author_is_not_connected_spec_sync_inbox_2() {
+    let (mut lp, t, pb, g, _) = granted(Role::Sync);
+    let mut forged = commit_of(&mut lp, 0, &g);
+    // peer 1's own account: connected (a role on its D), but it never signed this
+    forged.header.author = pb;
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap();
+    let blob = inbox_by_hand(&mut lp, 1, &forged, vec![osis_label::InboxThing { tid: t, sync_id: s, delete_keys: None }]);
+    let e = &mut lp.peers[1].engine;
+    let o = e.take_inbox_blob(&blob, false).unwrap().expect("opens");
+    assert_eq!(o.taken, Taken::Waiting, "the author's signature does not verify: an invite request");
+    assert!(e.sync_record(&t).unwrap().is_none(), "no sync record from an untaken blob");
+}
+
+// spec/sync-inbox.md §2 (a payload's sync IDs are the sender's word until a held `sync.0`
+// records them), spec/sync-set.md §2: a sync grant naming a sync ID that a held `sync.0` gives
+// another thing keeps nothing unread under it; that sync ID stays its owner's.
+#[test]
+fn a_payload_sync_id_of_another_thing_is_not_kept_unread_spec_sync_inbox_2() {
+    let (mut lp, t, _, g, _) = granted(Role::Sync);
+    let (_, d1) = lp.peers[1].engine.account().unwrap().unwrap();
+    let home1 = lp.peers[1].engine.home_sync_id(&d1).unwrap().unwrap();
+    let commit = commit_of(&mut lp, 0, &g);
+    let blob = inbox_by_hand(&mut lp, 1, &commit, vec![osis_label::InboxThing { tid: t, sync_id: Some(home1), delete_keys: None }]);
+    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
+    assert_eq!(lp.peers[1].engine.sync_record(&t).unwrap().expect("a sync record").sync_ids, vec![home1], "recorded as the payload named it");
+    add_item(&mut lp, 1, d1, t);
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Unread(Vec::new()), "home1 is D's");
+    assert_eq!(e.sync_set().unwrap().ids.get(&home1), Some(&(d1, Holding::Read)));
+}

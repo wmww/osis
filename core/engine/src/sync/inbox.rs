@@ -156,14 +156,16 @@ impl Engine {
         Boxed { things }
     }
 
-    /// Whether the sender of commit `blob` is connected (spec/sync-inbox.md §2 Taking): its author
-    /// a key actor whose record is held, with an effective role now on a thing in the sync set or
-    /// up such a thing's record chain. The commit's signature is the ingest's to check: one that
-    /// fails it is refused there. Limit: an account whose contact card was imported is not counted
-    /// (contact cards are not built).
-    fn sender_connected(&mut self, blob: &CommitBlob) -> Result<bool> {
+    /// Whether the sender of commit `blob` (`id`) is connected (spec/sync-inbox.md §2 Taking): its
+    /// author a key actor whose record is held, under whose key the commit's signature verifies
+    /// here (a sync-alone blob is never ingested: the header's author is the sender's word until
+    /// then), with an effective role now on a thing in the sync set or up such a thing's record
+    /// chain. Limit: an account whose contact card was imported is not counted (contact cards are
+    /// not built).
+    fn sender_connected(&mut self, blob: &CommitBlob, id: &CommitId) -> Result<bool> {
         let author = blob.header.author;
-        if !matches!(self.core.created(&author), Some(osis_base::CreationRecord::KeyActor { .. })) {
+        let record = self.core.created(&author).cloned();
+        if !matches!(record, Some(osis_base::CreationRecord::KeyActor { .. })) || crate::apply::signed_by_author(&self.core, blob, id, record.as_ref()) != Some(true) {
             return Ok(false);
         }
         let set = self.sync_set_now()?;
@@ -190,7 +192,7 @@ impl Engine {
         self.run(|tx| super::records::note_removals(tx, &b, expires, notices))?;
         let boxed = self.boxed_to(&a, &cb, &id);
         let held = self.core.ix.commits.contains_key(&id);
-        let taken = held || accepted || self.sender_connected(&cb)?;
+        let taken = held || accepted || self.sender_connected(&cb, &id)?;
         if !taken {
             let w = WaitingBlob { sync_id: *s, commit: id, things: boxed.things.keys().filter_map(|t| Some((*t, boxed.role(t)?))).collect(), from: cb.header.author, expires };
             self.run(|tx| set_waiting(tx, &b, Some(w)))?;

@@ -70,8 +70,8 @@ pub fn messages() -> VecFile {
     let top = i64::from(osis_proto::limits::TOP_BIT);
     let caps: Vec<(&str, Value, Value, usize, Vec<Value>)> = vec![
         ("delete of 1025 items", Value::List(vec![int(14), int(1), sync_id.clone(), list(&item, 1025)]), item.clone(), 1025, vec![]),
-        ("fetch of 1025 ids", Value::List(vec![int(19), int(1), sync_id.clone(), int(16_384), list(&id, 1025)]), id.clone(), 1025, vec![]),
-        ("fetch reply of 1025 items", Value::List(vec![int(20), int(1), list(&fetched, 1025)]), fetched.clone(), 1025, vec![]),
+        ("fetch of 1025 ids", Value::List(vec![int(19), int(top | 1), sync_id.clone(), int(16_384), list(&id, 1025)]), id.clone(), 1025, vec![]),
+        ("fetch reply of 1025 items", Value::List(vec![int(20), int(top | 1), list(&fetched, 1025)]), fetched.clone(), 1025, vec![]),
         ("members of 4097 sync IDs", Value::List(vec![int(46), int(0), list(&sync_id, 4097), Value::Bool(false)]), sync_id.clone(), 4097, vec![Value::Bool(false)]),
         ("lost of 1025 items", Value::List(vec![int(38), int(top | 1), list(&Value::List(vec![sync_id.clone(), Value::List(vec![])]), 1025)]), Value::List(vec![sync_id.clone(), Value::List(vec![])]), 1025, vec![]),
     ];
