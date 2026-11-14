@@ -1212,3 +1212,33 @@ fn forget_local_drops_content_keeps_secrets_spec_sync_set_3() {
     assert_eq!(e.get_typed(&t, &ct::NAME).unwrap().as_deref(), Some("own"), "arrived again");
     assert_eq!(e.get_typed(&under, &ct::NAME).unwrap().as_deref(), Some("under"));
 }
+
+// spec/sync-set.md §3 (Unsyncing): one commit writing an unsynced thing and a synced one (each
+// under its own secrets) keeps the synced thing's part and its own commits under its
+// sync ID; the unsynced thing's part joins late when the commit arrives again.
+#[test]
+fn forget_local_keeps_a_spanning_commits_synced_part_spec_sync_set_3() {
+    let (mut lp, ps) = people(1);
+    let (_, d) = lp.peers[0].engine.account().unwrap().unwrap();
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let v = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    lp.peers[0].engine.give_own_secrets(&v).unwrap();
+    add_item(&mut lp, 0, d, v);
+    let e = &mut lp.peers[0].engine;
+    let sv = e.home_sync_id(&v).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &ct::NAME, &"dropped".to_string()).unwrap();
+    m.set(v, &ct::NAME, &"kept".to_string()).unwrap();
+    let c = e.commit(m).unwrap().unwrap();
+    let bytes = e.commit_bytes(&c).unwrap().unwrap();
+    assert!(e.own_commits(&sv).unwrap().contains(&c));
+    e.forget_local(&t).unwrap();
+    assert_eq!(e.get_typed(&t, &ct::NAME).unwrap(), None);
+    assert_eq!(e.get_typed(&v, &ct::NAME).unwrap().as_deref(), Some("kept"), "the synced thing's part stays");
+    assert!(e.commit_bytes(&c).unwrap().is_some(), "the commit stays with its other part");
+    assert!(e.own_commits(&sv).unwrap().contains(&c), "still an own commit under the synced thing's sync ID");
+    e.ingest(&bytes, Vec::new()).unwrap();
+    assert_eq!(e.get_typed(&t, &ct::NAME).unwrap().as_deref(), Some("dropped"), "a late part");
+    assert_eq!(e.get_typed(&v, &ct::NAME).unwrap().as_deref(), Some("kept"));
+}
