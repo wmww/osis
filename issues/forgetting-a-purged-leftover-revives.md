@@ -1,0 +1,6 @@
+# Forgetting a purged leftover revives the write it killed
+> Summary: spec/commits.md §5 Forgetting's third rule (a commit held only value-less for a purge request goes, its value-less writes leaving the state) makes the write it replaced live again: osis `api::aspects_agrees_with_reads_after_a_purge` reads 1 after writing 1, writing 2 and purging 2, once node-sync forgets 2.
+> Priority: critical
+> Tags: engine, spec, sync
+
+Node-sync's read forgets every commit `Engine::forgettable` holds true of, `kept_purged` and `kept_invalid` included, as soon as no entry of it is known (a thing in no synced group: at once). A purged register write held value-less still kills the write before it (spec/crdt.md §4.7-4.8); forgotten, it no longer does, so a purge reads as an undo to the older value. The rule needs a condition (the leftover's kills carried by a cover, as rule 1's "dropped as covered") or forgetting must keep its value-less writes. Same family: `watch::a_commit_found_landed_after_a_failed_sync_reaches_watches` trips the engine's "stale validity left unjudged" debug check after a purge, and the purge listing and undo tests in core/osis/tests/it (commits, listing, sharing, undo, watch) find the purged commit unknown.
