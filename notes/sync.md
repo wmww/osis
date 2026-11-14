@@ -25,7 +25,7 @@ One kind of node: whether a node reads data is a property of the pair (node, S).
 2. `read` follows the engine's commit feed: the commit's `sync_bodies` say under which sync IDs S of the sync set it has a body; per (S, commit) it judges must-hold and logs an own entry (`seal_body`, stamped where this node writes S's head, else deposited) into the `store`, one transaction with its node-log event.
 3. The store's entry and log changes are stamped. On each connection where S is in the shared set (`opens`), `streams` serves the peer's Pull from the node log filtered by the shared set; with the peer following, the event goes as a push under `follow` with `seq`, the body inline up to `INLINE_LIMIT` or fetched.
 4. At the peer, `streams` applies messages in order once their bodies are held: a reader opens the entry (`Engine::open_entry`), which ingests the commit; a node keeping S unread verifies the stamp and logs it. The peer stores its cursor only then and reports it in an Applied.
-5. `status` at the writer sees the source caught up and, once the peer's stream showed the entry (or a reader reported a position past it), counts the commit held elsewhere (but see issues/sync-held-elsewhere.md).
+5. `status` at the writer sees the source caught up and, once the peer's stream showed the entry (or a reader reported a position past it), counts the commit held elsewhere.
 
 ## Spec areas in code
 | spec | code |

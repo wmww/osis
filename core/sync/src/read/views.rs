@@ -36,7 +36,7 @@ impl Views {
                 self.open.entry(*s).or_default().entry(at).or_default().insert(*conn, store);
                 self.wrote(*s, at);
             }
-            Moved::Left(conn, s) => {
+            Moved::Left(conn, s, _) => {
                 if let Some(at) = self.by_conn.remove(&(*conn, *s)) {
                     self.drop_conn(*s, at, *conn);
                 }

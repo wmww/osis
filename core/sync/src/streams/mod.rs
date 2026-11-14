@@ -284,7 +284,7 @@ impl Streams {
 
     /// A member moved.
     pub fn member_moved(&mut self, ctx: &mut Ctx, m: Moved) {
-        let (Moved::Joined(conn, ..) | Moved::Left(conn, _) | Moved::Until(conn, _)) = &m;
+        let (Moved::Joined(conn, ..) | Moved::Left(conn, ..) | Moved::Until(conn, _)) = &m;
         let conn = *conn;
         match m {
             Moved::Joined(conn, s, rejoin) => {
@@ -299,7 +299,7 @@ impl Streams {
                 }
                 self.run(ctx, conn);
             }
-            Moved::Left(conn, s) => {
+            Moved::Left(conn, s, _) => {
                 if let Some(set) = self.holders.get_mut(&s) {
                     set.remove(&conn);
                     if set.is_empty() {

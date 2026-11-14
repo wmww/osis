@@ -25,12 +25,12 @@ mod live;
 
 pub use live::{Live, NetView};
 
-use crate::opens::{Moved, Opens};
+use crate::opens::{LeftAt, Moved, Opens};
 use crate::read::{Read, Verdict};
 use crate::session::Sessions;
 use crate::store::Source;
 use crate::streams::Streams;
-use crate::types::{ConnId, Cx, Error, Holding, Position, RecordId, Result, Scope, SourceClass, Waiting};
+use crate::types::{ConnId, Cx, Holding, Position, RecordId, Result, Scope, SourceClass, Waiting};
 use crate::unread::Unread;
 use osis_base::memo::{Clock, Effects, Stamped, StampedSet};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
@@ -156,8 +156,9 @@ pub trait Ground: Net {
     fn self_removals(&mut self) -> Result<Arc<BTreeSet<CommitId>>>;
     /// Read's verdict on `c`'s body under S.
     fn verdict(&self, s: &SyncId, c: &CommitId) -> Option<Verdict>;
-    /// This node's own entries of `c` under S.
-    fn own_entries(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>>;
+    /// The entries of S here holding a blob of `c` (the engine's `commit_blobs`, the store's
+    /// entries: both stamped).
+    fn commit_entries(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>>;
     /// Where this node's log first held entry `b` of S.
     fn first_logged(&mut self, s: &SyncId, b: &BlobId) -> Result<Option<Position>>;
     /// Whether a source was recorded holding entry `b` of S, durably.
@@ -239,8 +240,10 @@ pub struct Status {
     pass_fx: Effects<SyncId, PassNow>,
     /// S owes another pass once the one under way ends.
     again: BTreeSet<SyncId>,
-    /// The engine's `own_commits` is not built: a wait cannot know own commits.
-    own_unbuilt: bool,
+    /// Sources that left since the last settle: what their streams showed still counts for held
+    /// elsewhere at that settle (a source closing S in the step that showed an entry, as a peer
+    /// judging this node departed by the self-removal it just applied does).
+    leaving: BTreeMap<SyncId, BTreeMap<ConnId, (Src, LeftAt)>>,
     work: Work,
 }
 
@@ -264,7 +267,7 @@ impl Default for Status {
             passes: Stamped::default(),
             pass_fx: Effects::new("status: pass"),
             again: BTreeSet::new(),
-            own_unbuilt: false,
+            leaving: BTreeMap::new(),
             work: Work::default(),
         }
     }
@@ -290,7 +293,7 @@ impl Status {
                 let src = Src { class: member.class, at: opens.record(conn).map_or(Source::Conn(conn), Source::Record), account: proven.and_then(|p| p.account()), own_node: proven.is_some_and(|p| p.node.is_some()) };
                 self.joined(s, conn, src);
             }
-            Moved::Left(conn, s) => self.left(s, conn),
+            Moved::Left(conn, s, at) => self.left(s, conn, at),
             Moved::Until(..) => {}
         }
     }
@@ -315,12 +318,12 @@ impl Status {
     }
 
     /// S stopped being a member on `conn` (closed, or the connection ended).
-    pub fn left(&mut self, s: SyncId, conn: ConnId) {
+    /// `at`: where the peer stood as it left, counted for held elsewhere at the next settle.
+    pub fn left(&mut self, s: SyncId, conn: ConnId, at: LeftAt) {
         let Some(was) = self.sources.get(&s).cloned() else { return };
         let mut now = (*was).clone();
-        if now.remove(&conn).is_none() {
-            return;
-        }
+        let Some(src) = now.remove(&conn) else { return };
+        self.leaving.entry(s).or_default().insert(conn, (src, at));
         if now.is_empty() {
             self.sources.remove(&s);
         } else {
@@ -340,6 +343,7 @@ impl Status {
         self.sync_set(g)?;
         self.count_lacking(g)?;
         acted |= self.held_elsewhere(g)?;
+        self.leaving.clear();
         acted |= self.passes(g, pulls)?;
         Ok(acted)
     }
@@ -351,7 +355,7 @@ impl Status {
         if self.set.due().is_empty() {
             return Ok(());
         }
-        let Some(set) = skip_unbuilt(whole(&mut self.set, || g.sync_set()))? else { return Ok(()) };
+        let Some(set) = whole(&mut self.set, || g.sync_set())? else { return Ok(()) };
         let gone: Vec<SyncId> = self.holding.keys().filter(|s| !set.ids.contains_key(*s)).copied().collect();
         for s in gone {
             self.holding.remove(&s);
@@ -393,8 +397,7 @@ impl Status {
                 continue;
             };
             self.work.lacking += 1;
-            let r = run(&mut self.lacking_fx, &k, || Ok(g.stamped(&s)?.iter().filter(|b| !g.knows(src.at, conn, &s, b)).count() as u64));
-            let Some(Some((_, n))) = skip_unbuilt(r.map(Some))? else { continue };
+            let Some((_, n)) = run(&mut self.lacking_fx, &k, || Ok(g.stamped(&s)?.iter().filter(|b| !g.knows(src.at, conn, &s, b)).count() as u64))? else { continue };
             self.lacking.insert(k, n);
         }
         Ok(())
@@ -406,7 +409,7 @@ impl Status {
         let mut acted = false;
         self.removals_fx.want(());
         if !self.removals_fx.due().is_empty()
-            && let Some(now) = skip_unbuilt(whole(&mut self.removals_fx, || g.self_removals()))?
+            && let Some(now) = whole(&mut self.removals_fx, || g.self_removals())?
         {
             let gone: Vec<CommitId> = self.removals.iter().filter(|c| !now.contains(*c)).copied().collect();
             for c in gone {
@@ -420,11 +423,7 @@ impl Status {
         }
         let mut moved = BTreeSet::new();
         for s in self.own_fx.due() {
-            let r = skip_unbuilt(run(&mut self.own_fx, &s, || g.own_commits(&s)).map(Some))?;
-            if r.is_none() {
-                self.own_unbuilt = true;
-            }
-            let Some(Some((_, now))) = r else { continue };
+            let Some((_, now)) = run(&mut self.own_fx, &s, || g.own_commits(&s))? else { continue };
             let was: Vec<CommitId> = self.by_commit.iter().filter(|(c, ids)| ids.contains(&s) && !now.contains(*c)).map(|(c, _)| *c).collect();
             let mut unheld = self.unheld.get(&s).map(|x| (**x).clone()).unwrap_or_default();
             for c in was {
@@ -444,9 +443,13 @@ impl Status {
         }
         for (s, c) in self.held_fx.due() {
             self.work.commits += 1;
-            let (all, removals) = (&self.sources, &self.removals);
-            let r = run(&mut self.held_fx, &(s, c), || held_at(g, &s, &c, all.get(&s).map_or(&NO_SOURCES, |x| &**x), removals.contains(&c)));
-            let Some(Some((_, now))) = skip_unbuilt(r.map(Some))? else { continue };
+            let (all, leaving, removals) = (&self.sources, &self.leaving, &self.removals);
+            let r = run(&mut self.held_fx, &(s, c), || {
+                let now = all.get(&s).map_or(&NO_SOURCES, |x| &**x);
+                let srcs = now.iter().map(|(k, v)| (*k, *v, None)).chain(leaving.get(&s).into_iter().flatten().map(|(k, (v, at))| (*k, *v, Some(*at))));
+                held_at(g, &s, &c, srcs, removals.contains(&c))
+            });
+            let Some((_, now)) = r? else { continue };
             if let Held::Yes(Some(b)) = now {
                 g.set_elsewhere(&s, &b)?;
                 acted = true;
@@ -464,7 +467,7 @@ impl Status {
             if held && !self.held.contains(&c) {
                 self.held.insert(c);
                 if self.removals.contains(&c) {
-                    skip_unbuilt(g.held_elsewhere(&c).map(Some))?;
+                    g.held_elsewhere(&c)?;
                     acted = true;
                 }
             } else if !held && self.held.contains(&c) {
@@ -492,7 +495,7 @@ impl Status {
         let mut acted = false;
         self.wanted_fx.want(());
         if !self.wanted_fx.due().is_empty()
-            && let Some(wanted) = skip_unbuilt(whole(&mut self.wanted_fx, || g.passes_wanted()))?
+            && let Some(wanted) = whole(&mut self.wanted_fx, || g.passes_wanted())?
         {
             for (s, since) in wanted.iter() {
                 match self.passes.get(s) {
@@ -520,7 +523,7 @@ impl Status {
             if now.done {
                 self.passes.remove(&s);
                 self.pass_fx.unwant(&s);
-                skip_unbuilt(g.note_complete_pass(&s, p.noted).map(Some))?;
+                g.note_complete_pass(&s, p.noted)?;
                 acted = true;
                 if self.again.remove(&s) {
                     self.begin(g, s, pulls)?;
@@ -589,13 +592,12 @@ impl Status {
 
     /// Where a wait on `scope` stands (§3): each sync ID in scope heard out with its own commits
     /// held elsewhere; never while one is unconnected. Reads only.
-    /// `ids_of`: the sync IDs carrying a thing (the engine's `sync_ids`).
+    /// `ids_of`: the sync IDs carrying a thing (the engine's `carrying`).
     pub fn wait(&self, net: &impl Net, scope: Scope, ids_of: impl FnOnce(&Tid) -> Result<Vec<SyncId>>) -> Waiting {
         let ids: Vec<SyncId> = match scope {
             Scope::All => self.holding.keys().copied().collect(),
             Scope::Thing(t) => match ids_of(&t) {
                 Ok(ids) => ids,
-                Err(e) if not_built(&e) => return Waiting::Never("engine: sync_ids not built"),
                 Err(_) => return Waiting::Pending,
             },
             Scope::Deliveries => return Waiting::Never("inbox: deliveries are inbox's wait"),
@@ -607,7 +609,6 @@ impl Status {
         for s in &ids {
             match self.of(s, net) {
                 Some(st) if st.synced() => {}
-                Some(SyncStatus { holding: Some(Holding::Read), unheld: None, .. }) if self.own_unbuilt => return Waiting::Never("engine: own_commits not built"),
                 _ => return Waiting::Pending,
             }
         }
@@ -631,25 +632,30 @@ impl Status {
 /// removal: not at this account's own nodes), or a reader reported a position at or past where
 /// this node's log first held it (for a member being ended, only an entry first logged at or below
 /// its `until`). A store's position says nothing of an entry: it applies past what it refused for
-/// room or does not pull (unstamped), so a store counts by its stream alone.
-fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: &BTreeMap<ConnId, Src>, removal: bool) -> Result<Held> {
+/// room or does not pull (unstamped), so a store counts by its stream alone. `sources`: each with
+/// where it stood as it left, for one that left since the last settle (its stream's word still
+/// counts: a report and the close that follows it come in one step).
+fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: impl Iterator<Item = (ConnId, Src, Option<LeftAt>)> + Clone, removal: bool) -> Result<Held> {
     match g.verdict(s, c) {
         Some(Verdict::Must) => {}
         Some(Verdict::May | Verdict::MustNot(_)) => return Ok(Held::Yes(None)),
         Some(Verdict::Unjudged) | None => return Ok(Held::No),
     }
-    for b in g.own_entries(s, c)? {
+    for b in g.commit_entries(s, c)? {
         if g.elsewhere(s, &b)? {
             return Ok(Held::Yes(None));
         }
         let first = g.first_logged(s, &b)?;
-        for (conn, src) in sources {
+        for (conn, src, left) in sources.clone() {
             if removal && src.own_node {
                 continue;
             }
-            let shown = g.knows(src.at, *conn, s, &b);
-            let reported = src.class == SourceClass::Reader
-                && first.is_some_and(|f| g.reported(*conn, s).is_some_and(|p| p >= f) && g.until(*conn, s).is_none_or(|u| f <= u));
+            let shown = g.knows(src.at, conn, s, &b);
+            let (at, until) = match left {
+                Some(l) => (l.reported, l.until),
+                None => (g.reported(conn, s), g.until(conn, s)),
+            };
+            let reported = src.class == SourceClass::Reader && first.is_some_and(|f| at.is_some_and(|p| p >= f) && until.is_none_or(|u| f <= u));
             if shown || reported {
                 return Ok(Held::Yes(Some(b)));
             }
@@ -694,25 +700,9 @@ fn run<K: std::hash::Hash + Eq + Clone, V: Clone + PartialEq + Default>(fx: &mut
         })
     });
     if let Some(e) = failed {
-        // a part not built stays so in this build: the key keeps the default, not due again
-        if !not_built(&e) {
-            fx.unwant(k);
-            fx.want(k.clone());
-        }
+        fx.unwant(k);
+        fx.want(k.clone());
         return Err(e);
     }
     Ok(moved)
-}
-
-/// A call status needs is not built (the engine facade, the store by commit): that part of
-/// status does nothing until it is.
-fn skip_unbuilt<T>(r: Result<Option<T>>) -> Result<Option<T>> {
-    match r {
-        Err(e) if not_built(&e) => Ok(None),
-        r => r,
-    }
-}
-
-fn not_built(e: &Error) -> bool {
-    matches!(e, Error::NotBuilt(_) | Error::Engine(osis_engine::Error::NotBuilt(_)))
 }

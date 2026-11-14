@@ -219,7 +219,7 @@ impl Side {
         if let Some(p) = self.open.positions.get_mut(&C) {
             p.forget(&s);
         }
-        self.with(now, |st, ctx| st.member_moved(ctx, Moved::Left(C, s)));
+        self.with(now, |st, ctx| st.member_moved(ctx, Moved::Left(C, s, Default::default())));
     }
 
     /// Member S's reported position on C.

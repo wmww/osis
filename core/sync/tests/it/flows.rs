@@ -5,6 +5,8 @@ use crate::harness::{World, contacts};
 use crate::harness::history::file;
 use osis_base::{Ak, Role, Value};
 use osis_engine::Mutation;
+use osis_engine::flows::Demotion;
+use osis_sync::types::{Scope, Waiting};
 use osis_schema::core_types as ct;
 
 fn edge(role: Role) -> ct::Edge {
@@ -287,4 +289,71 @@ fn a_member_granted_again_writing_before_it_takes_it_reads_it_spec_sync_inbox_2(
     use crate::harness::Step::*;
     use crate::harness::history::Gives;
     crate::convergence::converge(347110579992, 3, &[New(0), Write(0, 0), Grant(0, 0, 1, Gives::Syncs), Run, Grant(0, 0, 1, Gives::Writes), Remove(0, 0, 1), Run, Disk(1, 3, Fail), Grant(0, 0, 1, Gives::Reads), Write(1, 0)], String::new());
+
+/// Node 0 makes a thing in its synced group and grants node 1's account `role` on it; node 1
+/// accepts it and reads it.
+fn granted_and_read(role: Role) -> (World, osis_base::Tid, Ak) {
+    let mut w = contacts();
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let ak = Ak::new("u:v.0").unwrap();
+    let t = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a0);
+        m.set(t, &ak, &Value::Str("x".into())).unwrap();
+        e.commit(m).unwrap();
+        t
+    });
+    file(&mut w, 0, vec![t], Vec::new());
+    w.write(0, |e| e.grant(&t, &a1, &edge(role))).unwrap();
+    w.run();
+    file(&mut w, 1, Vec::new(), vec![t]);
+    w.run();
+    assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("x".into())));
+    (w, t, ak)
+}
+
+// spec/sync-status.md §2 (held elsewhere: an entry at a source that reads S, by its stream or a
+// reported position), §3 (synced: heard out and each own commit under S held elsewhere): the
+// writer's sync ID of a thing is not synced while its write is only here, and is once the reader
+// holds it. (A wait on the thing also covers node 0's home, which nobody else opens.)
+#[test]
+fn a_write_is_synced_once_a_reader_holds_it_spec_sync_status_3() {
+    let (mut w, t, ak) = granted_and_read(Role::Read);
+    let s = w.engine(0).sync_ids(&t).unwrap()[0].id;
+    let synced = |w: &World| w.status(0).get(&s).is_some_and(|x| x.synced());
+    w.run();
+    assert!(synced(&w), "everything written is held at node 1");
+    w.partition(0, 1);
+    w.run();
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Str("y".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    assert!(!synced(&w) && w.status(0)[&s].unheld == Some(1), "unconnected, the write only here");
+    w.heal();
+    w.run();
+    assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("y".into())));
+    assert!(synced(&w));
+    assert_eq!(w.wait(0, Scope::Thing(t)), Waiting::Pending, "node 0's home carries it too, unconnected");
+}
+
+// spec/sync-status.md §2 (held elsewhere), spec/permissions.md §3 (drops once that commit is
+// held elsewhere): node 1 leaves a thing it writes (a self-removal); it keeps its secrets while
+// node 0 is out of reach and drops them once node 0 holds the removal.
+#[test]
+fn a_self_removal_drops_its_secrets_once_held_elsewhere_spec_sync_status_2() {
+    let (mut w, t, _) = granted_and_read(Role::Write);
+    let a1 = w.node(1).account.unwrap();
+    w.partition(0, 1);
+    w.run();
+    let c = w.write(1, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap().commits[0];
+    w.run();
+    assert!(w.engine(1).waiting_held_elsewhere().unwrap().contains(&c), "only here");
+    assert!(w.engine(1).epochs(&t).is_some_and(|x| x.read.holds_any()), "kept while it waits");
+    w.heal();
+    w.run();
+    assert!(w.engine(1).waiting_held_elsewhere().unwrap().is_empty(), "node 0 holds it");
+    assert!(w.engine(1).epochs(&t).is_none_or(|e| e.read.held().next().is_none()), "dropped");
 }

@@ -472,6 +472,13 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.thing_sync, t, |e| e.thing_sync_now(t))
     }
 
+    /// The sync IDs held here carrying thing `t` (spec/sync-status.md §3: a wait on a thing):
+    /// its own and its enclosing groups', read or kept unread (spec/sync-judgement.md §1: a thing
+    /// travels under the sync IDs of itself and of the groups enclosing it).
+    pub fn carrying(&mut self, t: &Tid) -> Result<BTreeSet<SyncId>> {
+        Ok(self.carrying_now(t, false)?.into_iter().collect())
+    }
+
     /// The thing owning sync ID `s` here by its `sync.0`.
     pub fn sync_owner(&mut self, s: &SyncId) -> Result<Option<Tid>> {
         self.sync_owner_of(s)

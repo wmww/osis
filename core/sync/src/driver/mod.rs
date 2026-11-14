@@ -399,7 +399,7 @@ impl Node {
     pub fn wait(&mut self, scope: Scope) -> Waiting {
         let net = NetView { streams: &self.streams, unread: &self.unread };
         let engine = &mut self.engine;
-        self.status.wait(&net, scope, |t| Ok(engine.sync_ids(t)?.iter().map(|o| o.id).collect()))
+        self.status.wait(&net, scope, |t| Ok(engine.carrying(t)?.into_iter().collect()))
     }
 
     fn net(&self) -> NetView<'_> {

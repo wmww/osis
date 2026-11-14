@@ -1,13 +1,11 @@
-//! The product's ground: the engine's facade, the store, opens, streams, read and unread. Not
-//! built (each answers `NotBuilt`, so that part of status does nothing until it is): the store's
-//! own entries by commit (held elsewhere).
+//! The product's ground: the engine's facade, the store, opens, streams, read and unread.
 
 use super::{Ground, Net};
 use crate::opens::Opens;
 use crate::read::{Read, Verdict};
 use crate::store::Source;
 use crate::streams::Streams;
-use crate::types::{ConnId, Cx, Error, Position, RecordId, Result};
+use crate::types::{ConnId, Cx, Position, RecordId, Result};
 use crate::unread::Unread;
 use osis_base::{BlobId, CommitId, SyncId, WallMs};
 use osis_engine::sync::SyncSet;
@@ -96,9 +94,14 @@ impl Ground for Live<'_, '_> {
     fn verdict(&self, s: &SyncId, c: &CommitId) -> Option<Verdict> {
         self.read.verdict(s, c)
     }
-    fn own_entries(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>> {
-        let _ = (s, c);
-        Err(Error::NotBuilt("store: own entries by commit"))
+    fn commit_entries(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>> {
+        let mut out = Vec::new();
+        for b in self.cx.engine.commit_blobs(c)?.iter() {
+            if self.cx.store.entry(s, b)?.is_some() {
+                out.push(*b);
+            }
+        }
+        Ok(out)
     }
     fn first_logged(&mut self, s: &SyncId, b: &BlobId) -> Result<Option<Position>> {
         self.cx.store.first_logged(s, b)

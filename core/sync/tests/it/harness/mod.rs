@@ -590,6 +590,11 @@ impl World {
         self.node(i).node.status()
     }
 
+    /// Where node `i`'s wait on `scope` stands now (`Node::wait`).
+    pub fn wait(&mut self, i: usize, scope: osis_sync::types::Scope) -> osis_sync::types::Waiting {
+        self.nodes.get_mut(i).expect("no such node").node.wait(scope)
+    }
+
     /// Node `i`'s address: its dialable key and what it lists in `reach.0`.
     pub fn address(&self, i: usize) -> Address {
         Address { url: osis_transport::peer_url(&self.net.reach.items(i)), key: self.node(i).key.0 }

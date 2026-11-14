@@ -209,12 +209,21 @@ impl Engine {
     /// spec/sync-status.md §3 History complete for `thing`: a complete pass of every sync ID
     /// carrying it (its own and its enclosing groups' read here) noted.
     pub(crate) fn history_complete_now(&mut self, thing: &Tid) -> Result<bool> {
+        let ids = self.carrying_now(thing, true)?;
+        Ok(!ids.is_empty() && ids.iter().all(|s| self.core.ix.passes.contains_key(s)))
+    }
+
+    /// The sync IDs carrying `thing`: its own and its enclosing groups', read here (`read`), or
+    /// read or kept unread.
+    pub(crate) fn carrying_now(&mut self, thing: &Tid, read: bool) -> Result<BTreeSet<SyncId>> {
         let mut ids = BTreeSet::new();
         for x in std::iter::once(*thing).chain(self.enclosing(thing)) {
-            if let ThingSync::Read(v) = self.thing_sync_now(&x)? {
-                ids.extend(v);
+            match self.thing_sync_now(&x)? {
+                ThingSync::Read(v) => ids.extend(v),
+                ThingSync::Unread(v) if !read => ids.extend(v),
+                _ => {}
             }
         }
-        Ok(!ids.is_empty() && ids.iter().all(|s| self.core.ix.passes.contains_key(s)))
+        Ok(ids)
     }
 }

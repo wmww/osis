@@ -202,7 +202,7 @@ fn a_digest_difference_closes_one_sided_members_spec_sync_opens_3() {
     p.b.moved.clear();
     p.connect(2, account(1), account(2));
     p.run();
-    assert!(p.b.moved.contains(&Moved::Left(p.cb, S)), "the one-sided member closed: {:?}", p.b.moved);
+    assert!(p.b.moved.iter().any(|m| matches!(m, Moved::Left(c, S, _) if *c == p.cb)), "the one-sided member closed: {:?}", p.b.moved);
     assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "tested again and open");
     assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::From(None))), "rejoined from the start: {:?}", p.b.moved);
 }
@@ -1004,7 +1004,7 @@ fn a_better_route_wins_the_pair_spec_sync_opens_1() {
     assert!(!p.a.pipe.closed.iter().any(|(c, _)| *c == ca2) && !p.b.pipe.closed.iter().any(|(c, _)| *c == cb2));
     assert_eq!((p.a.opens.lost_to(ca1), p.b.opens.lost_to(cb1)), (Some(ca2), Some(cb2)));
     assert!(p.a.open(ca2, &S) && p.b.open(cb2, &S) && !p.a.open(ca1, &S));
-    assert!(p.a.moved.contains(&Moved::Left(ca1, S)));
+    assert!(p.a.moved.iter().any(|m| matches!(m, Moved::Left(c, S, _) if *c == ca1)));
 }
 
 // spec/sync-opens.md §1 (one connection per pair): among two of one rank the one with the smaller

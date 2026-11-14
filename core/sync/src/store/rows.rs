@@ -17,6 +17,8 @@
 //! - `H/ s` the length of S's path.
 //! - `U/ s` S's usage (`Usage`); `u/ !bytes s` sync IDs by bytes used, most first, for "the one using most".
 //! - `w/ at s tag key rec` rows a source's record holds of S that age out (stands, deletes seen).
+//! - `S/ s b` a source showed holding entry `b` of S (spec/sync-status.md §2 Held elsewhere),
+//!   kept while the entry is; a row of its own so recording it moves no reader of the entry.
 
 use crate::types::{Error, Result};
 use osis_base::{BlobId, SyncId, WallMs};
@@ -41,6 +43,7 @@ pub(crate) const AGING: &[u8] = b"w/";
 pub(crate) const HEAD: &[u8] = b"H/";
 /// Deposited (unstamped) entries per sync ID: what promotion, clearing and offering read.
 pub(crate) const DEPOSITED: &[u8] = b"D/";
+pub(crate) const ELSEWHERE: &[u8] = b"S/";
 
 /// The tags of the rows each module keeps in a peer's record (`osis_store::Transaction::
 /// record_put_row`, `record_put_wide_row` for a row about the record as a whole), one owner per
@@ -78,6 +81,9 @@ pub(crate) fn entry_key(s: &SyncId, b: &BlobId) -> Vec<u8> {
 }
 pub(crate) fn deposited_key(s: &SyncId, b: &BlobId) -> Vec<u8> {
     [DEPOSITED, &s.0, &b.0].concat()
+}
+pub(crate) fn elsewhere_key(s: &SyncId, b: &BlobId) -> Vec<u8> {
+    [ELSEWHERE, &s.0, &b.0].concat()
 }
 pub(crate) fn by_blob_key(b: &BlobId, s: &SyncId) -> Vec<u8> {
     [BY_BLOB, &b.0, &s.0].concat()
@@ -223,13 +229,11 @@ pub(crate) struct EntryRow {
     pub size: u64,
     /// Charged to this source (spec/sync-ids.md §5 Peer budget) while it gives nothing held.
     pub charged: Option<Source>,
-    /// A source showed holding it (spec/sync-status.md §2 Held elsewhere): kept while the entry is.
-    pub elsewhere: bool,
 }
 
 impl EntryRow {
     pub(crate) fn encode(&self) -> Vec<u8> {
-        let flags = u8::from(self.stamp.is_some()) | u8::from(self.deposited) << 1 | u8::from(self.own) << 2 | u8::from(self.role) << 3 | u8::from(self.elsewhere) << 4;
+        let flags = u8::from(self.stamp.is_some()) | u8::from(self.deposited) << 1 | u8::from(self.own) << 2 | u8::from(self.role) << 3;
         let mut w = W::default().raw(&self.wrap).u8(flags);
         if let Some(st) = &self.stamp {
             w = w.raw(&st.0);
@@ -262,7 +266,7 @@ impl EntryRow {
             _ => return Err(corrupt()),
         };
         r.end()?;
-        Ok(EntryRow { wrap, stamp, deposited: flags & 2 != 0, own: flags & 4 != 0, role: flags & 8 != 0, elsewhere: flags & 16 != 0, class, expires: (t != 0).then_some(WallMs(t)), size, charged })
+        Ok(EntryRow { wrap, stamp, deposited: flags & 2 != 0, own: flags & 4 != 0, role: flags & 8 != 0, class, expires: (t != 0).then_some(WallMs(t)), size, charged })
     }
 }
 

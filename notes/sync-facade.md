@@ -14,7 +14,7 @@ Every value call is a memo (or reads stamped rows), so a module reading it insid
 - **Keys**: `read_credentials(s)` (recorded path's head, role keys per recorded step, read secrets, statics, `roster` digest, `proofs` deepest first, `acting`), `claim_key`, `signers(s, actor)`, `open_grant`/`learn_grant`, `step_needs`.
 - **Peers**: `judge_peer(s, proven) -> J` (`Reader`, `SyncHolder`, `Departed`, `Unknown`), `covers_departures`, `known_actor`/`known_actors`, `provers` (proof order: node key, account at its open epoch, key actors by tid), `own_node`, `own_node_key`, `key_open`, `prove_rotations`/`take_rotations` (not built).
 - **Records and inbox**: `sync_records`/`sync_record(t)`/`sync_record_feed`, `stop_sync_record`, `removal_notices(s)`, `take_inbox(s, blob, accepted)`, `take_inbox_blob`, `invitations`, `inbox_of`, `inbox_blob`, `deliveries`/`delivery_feed`/`delivery_taken`/`delivery_names`/`delivered`, `logged_with(c)`.
-- **Status**: `waiting_held_elsewhere`/`held_elsewhere(c)` (a self-removal's secrets drop once held elsewhere), `passes_wanted`, `pass_clock`, `note_complete_pass`, `forget_pass`, `history_complete`.
+- **Status**: `carrying(t)` (the sync IDs held carrying t: its own and its enclosing groups'), `waiting_held_elsewhere`/`held_elsewhere(c)` (a self-removal's secrets drop once held elsewhere), `passes_wanted`, `pass_clock`, `note_complete_pass`, `forget_pass`, `history_complete`.
 - **Dials**: `dial_peers(s)`, `profile_of(a)`, `publish_reach`, `publishes_reach`.
 - **Time and config**: `next_timer`, `tick`, `set_now`, `clock_next`, `caps()` (`caps^.0` of this node).
 

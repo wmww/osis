@@ -68,7 +68,6 @@ fn on_a_network_no_wait_ends_unconnected_spec_sync_status_3() {
 // spec/sync-status.md §3 (waits): on a network, a wait on a thing whose sync IDs no node has
 // open stays pending (it runs to the caller's timeout), whatever time passes.
 #[test]
-#[ignore = "sync rewrite: the engine facade's sync_ids is not built here (branch sync-facade)"]
 fn wait_on_a_thing_nobody_has_open_stays_pending_spec_sync_status_3() {
     let c = clock();
     let net = ManualNet::new(c.clone());
@@ -351,9 +350,9 @@ fn paired(net: &ManualNet, c: &Arc<ManualClock>) -> (Osis, Osis) {
 }
 
 // spec/sync-set.md §1 (home under synced group): what one node of an account writes in its
-// home reaches its other nodes; `wait_synced` ends once the other node holds it.
+// home reaches its other nodes; `wait_synced` on a thing in home (carried by home's sync ID)
+// ends once the other node holds it.
 #[test]
-#[ignore = "sync rewrite: needs the engine facade (branch sync-facade)"]
 fn a_write_reaches_the_accounts_other_node_spec_sync_set_1() {
     let c = clock();
     let net = ManualNet::new(c.clone());

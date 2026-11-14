@@ -195,7 +195,7 @@ impl Inbox {
                 self.offers.joined(conn, &s, net);
                 self.register.joined(conn, s);
             }
-            Moved::Left(conn, s) => self.register.left(conn, &s),
+            Moved::Left(conn, s, _) => self.register.left(conn, &s),
             Moved::Until(..) => {}
         }
     }

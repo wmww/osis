@@ -17,9 +17,15 @@ pub(crate) type ConnRow = (crate::types::ConnId, SyncId, u8, Vec<u8>);
 #[derive(Hash)]
 struct Listing<'a>(&'a SyncId);
 
+/// The stamp key of an entry recorded held elsewhere.
+#[derive(Hash)]
+struct Elsewhere<'a>(&'a SyncId, &'a BlobId);
+
 #[derive(Clone, Default)]
 pub(crate) struct Memory {
     pub entries: BTreeMap<(SyncId, BlobId), EntryRow>,
+    /// Entries a source was recorded holding (spec/sync-status.md §2), kept while the entry is.
+    elsewhere: BTreeSet<(SyncId, BlobId)>,
     /// The memory log: per S, by counter, an entry added (`None`) or removed at a time.
     pub log: BTreeMap<(SyncId, u64), (BlobId, Option<WallMs>)>,
     /// Each entry's latest memory log event.
@@ -61,6 +67,19 @@ impl Memory {
         let lo = (*s, 0);
         let hi = (*s, u64::MAX);
         self.log.range(lo..=hi).filter(|(_, (_, gone))| gone.is_none()).filter_map(|(_, (b, _))| self.entries.get(&(*s, *b)).map(|r| (*b, r.clone()))).collect()
+    }
+
+    /// Whether a source was recorded holding entry `b` of S.
+    pub(crate) fn elsewhere(&self, s: &SyncId, b: &BlobId) -> bool {
+        self.stamps.read(&Elsewhere(s, b));
+        self.elsewhere.contains(&(*s, *b))
+    }
+
+    /// Records that a source holds entry `b` of S, if held here.
+    pub(crate) fn set_elsewhere(&mut self, s: &SyncId, b: &BlobId) {
+        if self.entries.contains_key(&(*s, *b)) && self.elsewhere.insert((*s, *b)) {
+            self.stamps.wrote(&Elsewhere(s, b), true);
+        }
     }
 
     pub(crate) fn usage(&self, s: &SyncId) -> Usage {
@@ -141,6 +160,9 @@ impl Memory {
     pub(crate) fn remove(&mut self, s: &SyncId, b: &BlobId, now: WallMs, tomb: bool, expired: bool) -> bool {
         let held = self.entries.remove(&(*s, *b));
         if let Some(row) = &held {
+            if self.elsewhere.remove(&(*s, *b)) {
+                self.stamps.wrote(&Elsewhere(s, b), true);
+            }
             self.count(s, row, false);
             if let Some(t) = row.expires {
                 self.expiry.remove(&(t, *s, *b));

@@ -121,7 +121,7 @@ impl Ground for Fake {
     fn verdict(&self, s: &SyncId, c: &CommitId) -> Option<Verdict> {
         self.verdicts.get(&(*s, *c)).cloned()
     }
-    fn own_entries(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>> {
+    fn commit_entries(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>> {
         Ok(self.entries.get(&(*s, *c)).cloned().unwrap_or_default())
     }
     fn first_logged(&mut self, s: &SyncId, b: &BlobId) -> Result<Option<Position>> {
@@ -246,8 +246,8 @@ fn heard_out_when_every_source_caught_up() {
     assert!(t.heard_out(S));
     let st = t.st.of(&S, &t.g).unwrap();
     assert_eq!(st.readers(), [tid(1)].into(), "two connections of one account: one reader");
-    t.st.left(S, A);
-    t.st.left(S, B);
+    t.st.left(S, A, Default::default());
+    t.st.left(S, B, Default::default());
     t.settle();
     assert!(!t.heard_out(S), "nobody connected: not heard out");
 }
@@ -271,7 +271,7 @@ fn full_or_refusing_source_named_not_waited_on() {
     t.settle();
     assert!(t.heard_out(S) && t.st.of(&S, &t.g).unwrap().sources[&B].refusing);
     // with only sources that do not take S, nothing is heard out
-    t.st.left(S, A);
+    t.st.left(S, A, Default::default());
     t.settle();
     assert!(!t.heard_out(S), "only a refusing source");
 }
@@ -298,6 +298,26 @@ fn lacking_counted_by_what_a_source_pulls() {
     assert_eq!(t.g.stamped_reads, reads, "nothing taken again while nothing moved");
 }
 
+// spec/sync-status.md §2 (held elsewhere: a report from a source): a reader's report and the
+// close that follows it in one step (a peer that judges this node departed by the self-removal it
+// just applied closes S at once) still count: the source's position as it left is judged at the
+// next settle, then nothing of it is kept.
+#[test]
+fn a_report_counts_when_its_source_leaves_in_the_same_step() {
+    use osis_sync::opens::LeftAt;
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.join(S, A, reader(RA, 1));
+    t.own(S, cid(1), blob(1), 5);
+    t.own(S, cid(2), blob(2), 7);
+    t.st.left(S, A, LeftAt { reported: Some(6), until: None });
+    t.settle();
+    assert!(t.st.held(&cid(1)), "reported at 6 as it left");
+    assert!(!t.st.held(&cid(2)), "first logged at 7, past the report");
+    t.st.left(S, B, LeftAt { reported: Some(9), until: None });
+    t.settle();
+    assert!(!t.st.held(&cid(2)), "a leave of no source counts for nothing");
+}
+
 // spec/sync-status.md §2 (held elsewhere): an own commit is held elsewhere once a source's stream
 // showed its entry or a source reported a position at or past where this node's log first held
 // it; the report is recorded on the entry and outlives the source's connection.
@@ -316,7 +336,7 @@ fn own_commit_held_elsewhere_by_report_or_presence() {
     t.settle();
     assert!(t.st.held(&cid(1)) && t.wait(S));
     assert!(t.g.elsewhere.contains(&(S, blob(1))), "recorded on the entry");
-    t.st.left(S, A);
+    t.st.left(S, A, Default::default());
     t.g.reported.remove(&(A, S));
     t.settle();
     assert!(t.st.held(&cid(1)), "the record outlives the source");

@@ -49,4 +49,4 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - osis-label's link carries a `hosts` list between K's sync ID and the peers that spec/wire.md §10 `Link` does not have.
 
 ## Own issues
-issues/sync-held-elsewhere.md, issues/sync-certificate-bodies.md, issues/reseal-under-own-epoch-leaks.md (Sync side), issues/sync-walk-reopen.md, issues/sync-link-first-contact.md, issues/group-source-hand-off.md.
+issues/sync-certificate-bodies.md, issues/reseal-under-own-epoch-leaks.md (Sync side), issues/sync-walk-reopen.md, issues/sync-link-first-contact.md, issues/group-source-hand-off.md.

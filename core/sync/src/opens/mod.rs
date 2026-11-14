@@ -64,17 +64,28 @@ pub struct Member {
 pub enum Moved {
     /// S became a member on `conn` (newly open, or open again), rejoining from where opens says.
     Joined(ConnId, SyncId, Rejoin),
-    /// S stopped being a member on `conn` (closed, or the connection ended).
-    Left(ConnId, SyncId),
+    /// S stopped being a member on `conn` (closed, or the connection ended), with where the peer
+    /// stood then.
+    Left(ConnId, SyncId, LeftAt),
     /// Member S's `until` was set or cleared.
     Until(ConnId, SyncId),
+}
+
+/// Where a member's peer stood as it left: what status still counts it holding (spec/sync-status.md
+/// §2: a report taken in the step that closed it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LeftAt {
+    /// Its reported position (spec/sync-opens.md §6 Lost).
+    pub reported: Option<Position>,
+    /// Its `until`, an ended member's.
+    pub until: Option<Position>,
 }
 
 impl Moved {
     /// The connection it moved on.
     pub fn conn(&self) -> ConnId {
         match self {
-            Moved::Joined(c, ..) | Moved::Left(c, _) | Moved::Until(c, _) => *c,
+            Moved::Joined(c, ..) | Moved::Left(c, ..) | Moved::Until(c, _) => *c,
         }
     }
 }
@@ -601,10 +612,11 @@ impl Opens {
     /// `conn` lets its record go: each member leaves it (the record keeps them); a record kept
     /// nowhere goes.
     fn release(&mut self, conn: ConnId, moved: &mut Vec<Moved>) {
-        let Some(rid) = self.conns.get_mut(&conn).and_then(|c| c.rec.take()) else { return };
+        let Some(c) = self.conns.get_mut(&conn) else { return };
+        let Some(rid) = c.rec.take() else { return };
         let Some(r) = self.records.get(&rid) else { return };
-        for s in r.members.keys() {
-            moved.push(Moved::Left(conn, *s));
+        for (s, m) in &r.members {
+            moved.push(Moved::Left(conn, *s, LeftAt { reported: c.reported.get(s).map(|(p, _)| *p), until: m.until }));
             if let Some(set) = self.holding.get_mut(s) {
                 set.remove(&conn);
             }
@@ -1765,9 +1777,8 @@ impl Opens {
     fn drop_member(&mut self, conn: ConnId, s: SyncId, keep: bool, moved: &mut Vec<Moved>) {
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let Some(r) = c.rec.and_then(|r| self.records.get_mut(&r)) else { return };
-        if r.members.remove(&s).is_none() {
-            return;
-        }
+        let Some(m) = r.members.remove(&s) else { return };
+        let at = LeftAt { reported: c.reported.get(&s).map(|(p, _)| *p), until: m.until };
         c.reported.forget(&s);
         self.reports.wrote(&conn, true);
         c.ending.remove(&s);
@@ -1776,7 +1787,7 @@ impl Opens {
         if let Some(set) = self.holding.get_mut(&s) {
             set.remove(&conn);
         }
-        moved.push(Moved::Left(conn, s));
+        moved.push(Moved::Left(conn, s, at));
         self.dirty_member(conn, s);
     }
 
