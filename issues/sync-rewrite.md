@@ -25,6 +25,7 @@ Tess's direction, which governs every choice below:
 - Efficiency is structural, designed in from the start, never profiling and shortcutting hot paths. Agents told to optimize used to add makeshift caches here and there; the real fix was a larger memoization system used everywhere. Each change does work in proportion to what changed.
 - Tests: the trade-off is coverage against runtime, not against writing time (agents write tests cheaply; tests run on every change). Build the harness so the marginal test is cheap, which buys more coverage.
 - Watch for architectural problems and antipatterns; fix them or record them for study. Nothing is right because it exists; a rule that stays has its reason documented.
+- Improve, simplify, rewrite or restructure adjacent code and interfaces as you go, especially where that helps the new code: push good decisions out to the surrounding pieces; never pull in their questionable decisions or vestigial cruft.
 
 ## Scope
 **Deleted (Phase 3):** `core/node/src/sync/` (about 30 files) and everything in `core/node` that only serves it; the stores and hub in `core/host` (rebuilt as the node's store per sync ID); the session and message layers of `core/proto` that the new design does not keep; the node test net (`core/node/tests/it/net`, its `Host` type and `add_host`), the node sync tests (about 85 files, 1,500 tests), the sync-shaped osis tests, and the sim's network model and scenarios (`core/test/sim/src/net`, `scenarios.rs`, `world.rs` keeper copies). Old sync TLA models stay only if Phase 1 reuses them.
