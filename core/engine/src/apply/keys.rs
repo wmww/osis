@@ -691,7 +691,7 @@ impl crate::engine::Engine {
         // thing state, and only beside a kept sync ID (spec/sync.md §3: the box derives the
         // head's sync key, so a step of the path bears it)
         if r == Role::Sync && !self.core.epochs(&g).is_some_and(|x| x.role(Role::Read).holds_any()) {
-            return self.run(|tx| crate::sync::records::keep_in(tx, &g, &[], [(e, secret)]));
+            return self.run(|tx| crate::sync::records::keep_in(tx, &g, &[], [(e, secret)], &[]));
         }
         self.run(|tx| {
             tx.core.touch();

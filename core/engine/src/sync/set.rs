@@ -92,10 +92,12 @@ impl Engine {
         }
         if let Some(r) = self.core.ix.sync_records.get(t).cloned() {
             // a record's sync IDs are its payloads' word (spec/sync-inbox.md §2): one a held
-            // `sync.0` gives another thing is that thing's, never kept unread for this one
+            // `sync.0` gives another thing is that thing's, never kept unread for this one; one
+            // kept for several things is synced for those tied to it when any is
             let mut ids = Vec::new();
             for s in &r.sync_ids {
-                if self.sync_owner_of(s)?.is_none_or(|o| o == *t) {
+                let kept = self.kept_records_now(s);
+                if self.sync_owner_of(s)?.is_none_or(|o| o == *t) && super::kept_things(s, &kept).any(|(x, _)| x == t) {
                     ids.push(*s);
                 }
             }
@@ -110,7 +112,7 @@ impl Engine {
         for t in self.sync_things_now()?.iter() {
             match self.thing_sync(t)? {
                 ThingSync::Read(ids) => set.ids.extend(ids.into_iter().map(|s| (s, (*t, Holding::Read)))),
-                // two records naming one sync ID (both owners unknown here): the first keeps it
+                // a sync ID synced for several things (`kept_things`): the first keeps it
                 ThingSync::Unread(ids) => {
                     for s in ids {
                         set.ids.entry(s).or_insert((*t, Holding::Unread));

@@ -237,10 +237,10 @@ codec_struct! {
     pub struct Caps { 0 policy: BTreeMap<String, u64>, 1 things: BTreeMap<Tid, ThingCaps> }
 }
 codec_struct! {
-    /// An account's sync record of a thing it keeps unread (spec/sync.md §3): its kept sync IDs
-    /// and recorded sync secrets by epoch.
+    /// An account's sync record of a thing it keeps unread (spec/sync.md §3): its kept sync IDs,
+    /// recorded sync secrets by epoch, and the kept sync IDs tied to it.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct Kept { 0 ids: BTreeSet<SyncId>, 1 secrets: BTreeMap<Epoch, [u8; 32]> }
+    pub struct Kept { 0 ids: BTreeSet<SyncId>, 1 secrets: BTreeMap<Epoch, [u8; 32]>, 2 tied: BTreeSet<SyncId> }
 }
 codec_struct! {
     /// One entry of `clients^.0` (spec/data-model.md §9): a thin client's secret hash and end.

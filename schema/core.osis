@@ -271,11 +271,12 @@ admin aspect synced^.0: map<tid, tid>;
 /// unsynced), on the devices actor (spec/sync-set.md §4).
 admin aspect acted^.0: set<tid>;
 
-/// What the account keeps of a thing it holds sync alone on: its sync IDs and sync secrets
-/// (spec/sync.md §3).
+/// What the account keeps of a thing it holds sync alone on: its sync IDs, sync secrets, and the
+/// sync IDs tied to it (spec/sync.md §3).
 type kept = struct {
     ids 0: set<blob>,
     secrets 1: map<epoch, blob>,
+    tied 2: set<blob>,
 };
 
 /// The account's sync records, by thing, on the devices actor (spec/sync.md §3).

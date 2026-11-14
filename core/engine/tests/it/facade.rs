@@ -218,7 +218,7 @@ fn kept() -> (LocalPeer, Vec<Tid>, Tid, osis_base::SyncId) {
     accept(&mut lp, 1, t);
     let e = &mut lp.peers[1].engine;
     let r = e.sync_record(&t).unwrap().expect("kept");
-    assert!(e.record_borne(&t, &keys_of(&r)).unwrap());
+    assert!(e.record_borne(&t, &s, &keys_of(&r)).unwrap());
     (lp, ps, t, s)
 }
 
@@ -260,19 +260,21 @@ fn an_accept_keeps_the_offered_sync_id_spec_sync_3() {
 #[test]
 fn a_secret_is_recorded_only_borne_spec_sync_3() {
     let (mut lp, t, _, _, blob) = granted(Role::Sync);
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
     let e = &mut lp.peers[1].engine;
     e.take_inbox_blob(&blob, false).unwrap();
     let junk: BTreeSet<[u8; 32]> = [[7; 32]].into();
-    assert!(!e.record_borne(&t, &junk).unwrap(), "not kept: nothing recorded");
+    assert!(!e.record_borne(&t, &s, &junk).unwrap(), "not kept: nothing recorded");
     accept(&mut lp, 1, t);
     let e = &mut lp.peers[1].engine;
-    assert!(!e.record_borne(&t, &junk).unwrap(), "a key no held secret derives");
+    assert!(!e.record_borne(&t, &s, &junk).unwrap(), "a key no held secret derives");
     assert!(e.sync_record(&t).unwrap().unwrap().recorded.is_empty());
     let r = e.sync_record(&t).unwrap().unwrap();
-    assert!(e.record_borne(&t, &keys_of(&r)).unwrap());
+    assert!(e.record_borne(&t, &s, &keys_of(&r)).unwrap());
     let r2 = e.sync_record(&t).unwrap().unwrap();
     assert_eq!(r2.recorded, r.secrets.keys().copied().collect(), "recorded");
-    assert!(!e.record_borne(&t, &keys_of(&r)).unwrap(), "recorded once");
+    assert!(r2.tied.contains(&s), "and s tied to t");
+    assert!(!e.record_borne(&t, &s, &keys_of(&r)).unwrap(), "recorded once");
 }
 
 /// A key actor of seed byte `n` no node holds, signing as `as_author`.
@@ -314,7 +316,7 @@ fn an_offer_after_the_accept_attaches_nothing_spec_sync_3() {
         let e = &mut lp.peers[1].engine;
         let r = e.sync_record(&t).unwrap().unwrap();
         assert_eq!((r.sync_ids.clone(), r.recorded.clone(), r.dials.clone()), (before.sync_ids.clone(), before.recorded.clone(), Vec::new()));
-        assert!(!e.record_borne(&t, &keys_of(&r)).unwrap(), "nothing new recorded");
+        assert!(!e.record_borne(&t, &s, &keys_of(&r)).unwrap(), "nothing new recorded");
     }
     let e = &mut lp.peers[1].engine;
     assert_eq!(e.sync_record(&t).unwrap().unwrap().sync_ids, vec![s], "only the accepted sync ID");
@@ -338,7 +340,7 @@ fn a_rotation_needs_no_accept_spec_sync_3() {
     let r = e.sync_record(&t).unwrap().unwrap();
     assert_eq!(r.sync_ids, vec![s]);
     assert!(r.secrets.len() > first.secrets.len() && first.secrets.keys().all(|x| r.secrets.contains_key(x)), "the new epoch held, nothing lost");
-    assert!(e.record_borne(&t, &keys_of(&r)).unwrap());
+    assert!(e.record_borne(&t, &s, &keys_of(&r)).unwrap());
     assert_eq!(e.sync_record(&t).unwrap().unwrap().recorded.len(), r.secrets.len());
 }
 
@@ -2164,12 +2166,12 @@ fn an_accept_with_a_forgers_offer_held_keeps_the_genuine_too_spec_sync_3() {
     assert_eq!(r.sync_ids, want, "both offers' sync IDs: the genuine one kept");
 }
 
-// spec/sync.md §3 (A kept sync ID: an accept keeps none the record keeps for another thing),
-// spec/sync-set.md §4: a forger's offer of its own thing naming the sync ID of a thing the
-// account keeps unread is no invitation, and accepted anyway keeps that sync ID for the kept
-// thing alone: the forger's thing (its tid sorting first) never holds it.
+// spec/sync.md §3 (A kept sync ID: an accept keeps every offered one; S's things: those tied to
+// it), spec/sync-hostile.md §2: a forger's offer of its own thing u naming the sync ID s of
+// a thing t the account keeps unread, s tied to t, accepted: u's record keeps s, but s is synced
+// for t alone, and u's tid sorting first changes nothing.
 #[test]
-fn an_accepted_offer_takes_no_kept_sync_id_from_another_thing_spec_sync_3() {
+fn a_thing_accepted_under_a_sync_id_tied_to_another_is_not_synced_under_it_spec_sync_3() {
     let (mut lp, ps, t, s) = kept();
     let u = (0..64).map(|_| thing_of(&mut lp, 2, ps[2])).find(|u| *u < t).expect("a tid sorting before t");
     let done = lp.peers[2].engine.grant(&u, &ps[1], &edge_of(Role::Sync)).unwrap();
@@ -2179,10 +2181,11 @@ fn an_accepted_offer_takes_no_kept_sync_id_from_another_thing_spec_sync_3() {
     p.grant = None;
     let b = boxes_by_hand(&mut lp, 1, &p);
     assert_eq!(lp.peers[1].engine.take_inbox_blob(&b, false).unwrap().unwrap().taken, Taken::Offered);
-    assert!(!lp.peers[1].engine.invitations().unwrap().iter().any(|i| i.thing == u), "no invitation");
     accept(&mut lp, 1, u);
     let e = &mut lp.peers[1].engine;
-    assert!(!matches!(e.thing_sync(&u).unwrap(), ThingSync::Unread(ids) if ids.contains(&s)), "the forger's thing holds no kept sync ID");
+    assert!(e.sync_record(&u).unwrap().is_some_and(|r| r.sync_ids == vec![s] && r.tied.is_empty()), "kept for u, not tied");
+    assert!(e.sync_record(&t).unwrap().is_some_and(|r| r.tied.contains(&s)), "tied to t");
+    assert_eq!(e.thing_sync(&u).unwrap(), ThingSync::Unread(Vec::new()), "u not synced under s");
     assert_eq!(e.sync_set().unwrap().ids.get(&s), Some(&(t, Holding::Unread)), "t keeps its sync ID");
 }
 
@@ -2342,14 +2345,13 @@ fn a_destroyed_thing_owes_no_role_commit_spec_sync_judgement_5() {
     assert!(!e.role_duty_due(&t).unwrap(), "keeping nothing: nothing owed on t");
 }
 
-// spec/sync.md §3 (A kept sync ID: an accept keeps none the record keeps for another thing),
-// spec/sync-hostile.md §2, notes/coordination.md (no rule that differs by arrival order): the
-// forger's offer of its own thing u naming the sync ID s of peer 0's t comes first, and the user
-// accepts u (an invitation: s is kept for nothing yet). The genuine offer of t arrives and is
-// accepted: t must keep s, its own sync ID, whatever was accepted before.
+// spec/sync.md §3 (A kept sync ID: an accept keeps every offered one; Tied; S's things), spec/sync-hostile.md §2, notes/coordination.md (no rule that differs by arrival order):
+// the forger's offer of its own thing u naming the sync ID s of peer 0's t comes first and the user
+// accepts u; the genuine offer of t comes and is accepted. t keeps s; untied, s is synced for both
+// (so the genuine admin finds t's key shown); a step bearing t's key ties t, never u (u's secrets
+// derive no step's key), and s is synced for t alone, as with the accepts the other way round.
 #[test]
-#[ignore = "issues/kept-sync-id-first-come.md"]
-fn repro_a_forgers_earlier_accept_takes_no_sync_id_from_a_later_thing_spec_sync_3() {
+fn a_forgers_earlier_accept_takes_no_sync_id_from_a_later_thing_spec_sync_3() {
     let (mut lp, ps) = people(3);
     let t = thing_of(&mut lp, 0, ps[0]);
     let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Sync)).unwrap();
@@ -2368,7 +2370,17 @@ fn repro_a_forgers_earlier_accept_takes_no_sync_id_from_a_later_thing_spec_sync_
     accept(&mut lp, 1, t);
     let e = &mut lp.peers[1].engine;
     assert!(e.sync_record(&t).unwrap().is_some_and(|r| r.sync_ids.contains(&s)), "t keeps its own sync ID");
+    assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Unread(vec![s]), "untied: synced for t");
+    assert_eq!(e.thing_sync(&u).unwrap(), ThingSync::Unread(vec![s]), "... and for u");
+    // the genuine step bears t's sync key, which u's held secrets do not derive
+    let step_keys = keys_of(&e.sync_record(&t).unwrap().unwrap());
+    assert!(!e.record_borne(&u, &s, &step_keys).unwrap(), "u not tied");
+    assert!(e.record_borne(&t, &s, &step_keys).unwrap(), "t tied");
+    assert_eq!(e.thing_sync(&u).unwrap(), ThingSync::Unread(Vec::new()), "u no longer synced under s");
     assert_eq!(e.sync_set().unwrap().ids.get(&s), Some(&(t, Holding::Unread)), "s syncs t");
+    assert_eq!(e.kept_records(&s).unwrap().len(), 2, "both records keep s");
+    lp.peers[1].restart(5).unwrap();
+    assert_eq!(lp.peers[1].engine.sync_set().unwrap().ids.get(&s), Some(&(t, Holding::Unread)), "a restart changes nothing");
 }
 
 // spec/sync.md §3 (Sync record: a closed sync ID leaves its thing's entry, entries otherwise only

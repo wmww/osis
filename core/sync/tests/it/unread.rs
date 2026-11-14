@@ -4,7 +4,8 @@
 //! rule. The module over a real engine (following the sync set) is tests/it/keep.rs; the store's
 //! side of a head past its keys (its copy dropped, nothing taken) is tests/it/store.rs.
 
-use osis_base::SyncId;
+use osis_base::{SyncId, Tid};
+use std::sync::Arc;
 use osis_crypto::{Epoch, LabelRole, Secret32, Signature, SigningSecret, label_role_key};
 use osis_engine::sync::{Path, SyncRecord};
 use osis_label::{Step, StepKeys};
@@ -58,19 +59,33 @@ struct Keep {
     held: Vec<u64>,
     /// The epochs of `held` the account's record holds (the rest from boxes payloads held).
     recorded: Vec<u64>,
+    /// Whether the record ties S to its thing.
+    tied: bool,
     path: Path,
+}
+
+/// The thing a `Keep` keeps S for.
+fn thing() -> Tid {
+    Tid::from_bytes([7; 15])
+}
+
+/// A record keeping `s` holding the sync secrets of `held` epochs (all recorded), tied or not.
+fn record(s: SyncId, held: &[u64], tied: bool) -> Arc<SyncRecord> {
+    let secrets = held.iter().map(|e| (epoch(*e), sync_secret(*e))).collect();
+    Arc::new(SyncRecord { sync_ids: vec![s], tied: if tied { [s].into() } else { Default::default() }, secrets, recorded: held.iter().map(|e| epoch(*e)).collect(), dials: Vec::new() })
 }
 
 impl Keep {
     /// Holding the sync secrets of `held` epochs, its head at step 0.
     fn new(held: &[u64]) -> Keep {
         let s = sync_id(0);
-        Keep { s, held: held.to_vec(), recorded: held.to_vec(), path: Path { steps: vec![(step(s, 0), None)] } }
+        Keep { s, held: held.to_vec(), recorded: held.to_vec(), tied: true, path: Path { steps: vec![(step(s, 0), None)] } }
     }
 
     fn kept(&self) -> osis_sync::unread::Kept {
-        let record = SyncRecord { sync_ids: vec![self.s], secrets: self.held.iter().map(|e| (epoch(*e), sync_secret(*e))).collect(), recorded: self.recorded.iter().map(|e| epoch(*e)).collect(), dials: Vec::new() };
-        judge(&Judged { record: Some(&record), steps: &self.path.steps })
+        let mut r = (*record(self.s, &self.held, self.tied)).clone();
+        r.recorded = self.recorded.iter().map(|e| epoch(*e)).collect();
+        judge(&Judged { s: self.s, records: &[(thing(), Arc::new(r))], steps: &self.path.steps })
     }
 
     /// A Register moves S's head to step `e`.
@@ -222,7 +237,45 @@ fn a_secret_is_recorded_once_its_path_bears_it_spec_sync_3() {
     k.recorded = vec![0];
     assert!(k.kept().borne.is_empty(), "epoch 1 has no step here yet, 9 never will");
     k.register(1);
-    assert_eq!(k.kept().borne, [key_bytes(1)].into(), "step 1 bears epoch 1");
+    assert_eq!(k.kept().borne, [(thing(), [key_bytes(0), key_bytes(1)].into())].into(), "step 1 bears epoch 1");
     k.recorded = vec![0, 1];
     assert!(k.kept().borne.is_empty(), "recorded: nothing more");
+    k.tied = false;
+    assert_eq!(k.kept().borne, [(thing(), [key_bytes(0), key_bytes(1)].into())].into(), "untied: its path ties it");
+}
+
+// spec/sync.md §3 (S's things: those tied to it when any is, else every thing keeping it; Tied: a
+// step on the path bearing a held secret's sync key), spec/sync-hostile.md §2: S kept
+// for a forger's thing u (its own key, epoch 9) and the genuine t (epoch 0), in either order.
+// Untied, S shows both, so the genuine admin finds it; a step bearing t's key ties t alone, after
+// which S shows only t's key. A holder of t's secret boxing it as u's ties both. NetTrust
+// `UN_untied` (S synced for every thing keeping it) fails this.
+#[test]
+fn a_sync_id_kept_for_two_things_is_synced_for_the_one_its_path_ties_spec_sync_3() {
+    let s = sync_id(0);
+    let u = Tid::from_bytes([1; 15]);
+    let t = thing();
+    let none: [(Step, Option<osis_label::ClaimSet>); 0] = [];
+    let path = [(step(s, 0), None)];
+    let (rt, ru) = (record(s, &[0], false), record(s, &[9], false));
+    for records in [vec![(u, ru.clone()), (t, rt.clone())], vec![(t, rt), (u, ru)]] {
+        let k = judge(&Judged { s, records: &records, steps: &none });
+        let mut want = vec![step(s, 9).keys.sync, step(s, 0).keys.sync];
+        assert_eq!(k.credentials.map(|c| sync_keys(&c)).unwrap_or_default(), want, "no head: both things' keys");
+        let k = judge(&Judged { s, records: &records, steps: &path });
+        assert_eq!(k.borne, [(t, [key_bytes(0)].into())].into(), "step 0 ties t alone");
+        // t tied (its own write moves the record)
+        let tied: Vec<_> = records.iter().map(|(x, r)| (*x, if *x == t { record(s, &[0], true) } else { r.clone() })).collect();
+        let k = judge(&Judged { s, records: &tied, steps: &none });
+        want.remove(0);
+        assert_eq!(k.credentials.map(|c| sync_keys(&c)).unwrap_or_default(), want, "only t's key once t is tied");
+        assert!(judge(&Judged { s, records: &tied, steps: &path }).borne.is_empty(), "u stays untied");
+    }
+    // t's genuine secret boxed as u's: the path bears it for both
+    let records = vec![(t, record(s, &[0], false)), (u, record(s, &[0, 9], false))];
+    let k = judge(&Judged { s, records: &records, steps: &path });
+    assert_eq!(k.borne.keys().copied().collect::<Vec<_>>(), { let mut v = vec![t, u]; v.sort(); v }, "both tied");
+    // ... also when t was tied first: a tie is judged for every record keeping S, not only S's things
+    let records = vec![(t, record(s, &[0], true)), (u, record(s, &[0, 9], false))];
+    assert_eq!(judge(&Judged { s, records: &records, steps: &path }).borne, [(u, [key_bytes(0)].into())].into(), "u tied after t");
 }

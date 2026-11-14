@@ -299,6 +299,8 @@ pub struct Signers {
 pub struct SyncRecord {
     /// The kept sync IDs (`kept^.0` on D).
     pub sync_ids: Vec<SyncId>,
+    /// The kept sync IDs tied to this thing (spec/sync.md §3 Tied).
+    pub tied: BTreeSet<SyncId>,
     /// The held sync secrets: the recorded ones and those of the boxes payloads held.
     pub secrets: BTreeMap<Epoch, Secret32>,
     /// Which of `secrets` are recorded.
@@ -307,6 +309,15 @@ pub struct SyncRecord {
     /// §2), distinct: for dialing only (spec/sync-opens.md §1). Every one, so an accepted
     /// forger's hint hides no granter's.
     pub dials: Vec<DialHint>,
+}
+
+/// The things sync ID `s` is synced for among those whose record keeps it (`kept`, each with
+/// its record): those tied to it when any is, else every one (spec/sync.md §3 A kept sync ID's
+/// things). So which thing came first never decides: a step this account verified does.
+pub fn kept_things<'a>(s: &SyncId, kept: &'a [(Tid, Arc<SyncRecord>)]) -> impl Iterator<Item = &'a (Tid, Arc<SyncRecord>)> + 'a {
+    let any_tied = kept.iter().any(|(_, r)| r.tied.contains(s));
+    let s = *s;
+    kept.iter().filter(move |(_, r)| !any_tied || r.tied.contains(&s))
 }
 
 /// J of a peer for S (spec/sync-opens.md §4).
@@ -716,11 +727,19 @@ impl Engine {
         self.core.ix.sync_records.feed()
     }
 
-    /// Records the held sync secrets of `thing` that a step on this node's path of a kept sync ID
-    /// of it bears (`borne`: those steps' sync keys) in the account's sync record (spec/sync.md
-    /// §3 A recorded secret). Returns whether it wrote.
-    pub fn record_borne(&mut self, thing: &Tid, borne: &BTreeSet<[u8; 32]>) -> Result<bool> {
-        self.record_borne_now(thing, borne)
+    /// What a step on this node's path of `s` bears of `thing`'s held sync secrets (`borne`:
+    /// the sync keys of those steps that a held secret of it derives), into the account's sync
+    /// record: `s` tied to `thing` (spec/sync.md §3 Tied) and each such secret recorded (A
+    /// recorded secret), those not yet. Nothing unless the record keeps `s` for `thing`. Returns
+    /// whether it wrote.
+    pub fn record_borne(&mut self, thing: &Tid, s: &SyncId, borne: &BTreeSet<[u8; 32]>) -> Result<bool> {
+        self.record_borne_now(thing, s, borne)
+    }
+
+    /// The records keeping sync ID `s`, by thing (`kept_things` picks those it is synced for);
+    /// reads only `s`'s key and those records'.
+    pub fn kept_records(&mut self, s: &SyncId) -> Result<Vec<(Tid, Arc<SyncRecord>)>> {
+        Ok(self.kept_records_now(s))
     }
 
     /// The account's sync record of `thing` keeps closed sync ID `s` no more (spec/sync.md §3,

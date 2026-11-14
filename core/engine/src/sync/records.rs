@@ -1,7 +1,9 @@
 //! The account's sync records (spec/sync.md §3 Sync record): a node keeping a thing unread
 //! trusts only its own account. Its sync IDs come from `kept^.0` on the account's D alone (an
-//! accept or the account's own reading wrote them); a sync secret is recorded there only once a
-//! step on this node's own path of such a sync ID bears its sync key. What a held boxes payload
+//! accept or the account's own reading wrote them); a sync secret is recorded there, and a kept
+//! sync ID tied to the thing, only once a step on this node's own path of that sync ID bears the
+//! sync key of a held secret of the thing. A sync ID kept for several things is synced for those
+//! tied to it when any is (`kept_things`), so no accept order decides. What a held boxes payload
 //! offers (`Offer`) is held only while the blob is: its secrets open and show S, its sync IDs and
 //! dial hint count only once kept.
 //!
@@ -202,7 +204,7 @@ pub(crate) fn observe_own(tx: &mut Tx<'_>) -> Result<()> {
 fn refresh(core: &mut Core, t: &Tid) {
     let kept = core.ix.sync_kept.get(t).cloned();
     let view = kept.filter(|k| !k.ids.is_empty()).map(|k| {
-        let mut r = SyncRecord { sync_ids: k.ids.iter().copied().collect(), ..SyncRecord::default() };
+        let mut r = SyncRecord { sync_ids: k.ids.iter().copied().collect(), tied: k.tied.clone(), ..SyncRecord::default() };
         for (e, s) in &k.secrets {
             if let Ok(e) = osis_keys::aspects::from_schema(e) {
                 r.secrets.insert(e, Secret32::from_bytes(*s));
@@ -244,15 +246,17 @@ fn refresh(core: &mut Core, t: &Tid) {
     }
 }
 
-/// Adds `ids` and the sync `secrets` of `t` (each checked to name its epoch of `t`'s sync role,
-/// spec/crypto.md §4) to the account's sync record of `t` (`kept^.0` on D), in a commit of the
-/// running transaction; nothing when they add nothing, or when no sync ID of `t` is kept after
-/// (a record holds secrets only beside a kept sync ID). Returns whether it wrote.
-pub(crate) fn keep_in(tx: &mut Tx<'_>, t: &Tid, ids: &[SyncId], secrets: impl IntoIterator<Item = (Epoch, Secret32)>) -> Result<bool> {
+/// Adds `ids`, the sync `secrets` of `t` (each checked to name its epoch of `t`'s sync role,
+/// spec/crypto.md §4) and the ties `tied` (each a sync ID kept after) to the account's sync
+/// record of `t` (`kept^.0` on D), in a commit of the running transaction; nothing when they add
+/// nothing, or when no sync ID of `t` is kept after (a record holds secrets only beside a kept
+/// sync ID). Returns whether it wrote.
+pub(crate) fn keep_in(tx: &mut Tx<'_>, t: &Tid, ids: &[SyncId], secrets: impl IntoIterator<Item = (Epoch, Secret32)>, tied: &[SyncId]) -> Result<bool> {
     let Some((_, d)) = tx.core.account_devices() else { return Ok(false) };
     let before = tx.core.ix.sync_kept.get(t).map(|k| (**k).clone()).unwrap_or_default();
     let mut k = before.clone();
     k.ids.extend(ids.iter().copied());
+    k.tied.extend(tied.iter().filter(|s| k.ids.contains(s)).copied());
     for (e, s) in secrets {
         if e.names(t, Role::Sync, &s) {
             k.secrets.insert(osis_keys::aspects::to_schema(&e), *s.expose());
@@ -267,16 +271,17 @@ pub(crate) fn keep_in(tx: &mut Tx<'_>, t: &Tid, ids: &[SyncId], secrets: impl In
     Ok(true)
 }
 
-/// Removes `s` from the account's sync record of `t` (a closed sync ID, spec/sync.md §3), and its
-/// recorded secrets once it keeps no sync ID: a write of what it removes into the entry, never a
-/// removal of the entry, which would hide every concurrent keep into it (spec/crdt.md §5.6).
-/// Returns whether it wrote.
+/// Removes `s`, with its tie, from the account's sync record of `t` (a closed sync ID,
+/// spec/sync.md §3), and its recorded secrets once it keeps no sync ID: a write of what it
+/// removes into the entry, never a removal of the entry, which would hide every concurrent keep
+/// into it (spec/crdt.md §5.6). Returns whether it wrote.
 pub(crate) fn unkeep_in(tx: &mut Tx<'_>, t: &Tid, s: &SyncId) -> Result<bool> {
     let Some((_, d)) = tx.core.account_devices() else { return Ok(false) };
     let Some(mut k) = tx.core.ix.sync_kept.get(t).map(|k| (**k).clone()) else { return Ok(false) };
     if !k.ids.remove(s) {
         return Ok(false);
     }
+    k.tied.remove(s);
     if k.ids.is_empty() {
         k.secrets.clear();
     }
@@ -304,21 +309,28 @@ impl Engine {
         Arc::new(self.core.ix.sync_records.iter().map(|(t, r)| (*t, (**r).clone())).collect())
     }
 
-    /// Records the held sync secrets of `thing` whose sync key one of `borne` is (the sync keys
-    /// of the steps on this node's path of a kept sync ID of it, spec/sync.md §3 A recorded
-    /// secret), those not recorded yet. Returns whether it wrote.
-    pub(crate) fn record_borne_now(&mut self, thing: &Tid, borne: &BTreeSet<[u8; 32]>) -> Result<bool> {
+    /// The records keeping `s`, by thing (`record_ids`).
+    pub(crate) fn kept_records_now(&self, s: &SyncId) -> Vec<(Tid, Arc<SyncRecord>)> {
+        let ix = &self.core.ix;
+        ix.record_ids.get(s).into_iter().flatten().filter_map(|t| Some((*t, ix.sync_records.get(t)?.clone()))).collect()
+    }
+
+    /// Ties `s` to `thing` and records the held sync secrets of `thing` whose sync key one of
+    /// `borne` is (the sync keys of the steps on this node's path of `s`, spec/sync.md §3 Tied,
+    /// A recorded secret), whatever is not there yet, while the record keeps `s` for `thing`.
+    /// Returns whether it wrote.
+    pub(crate) fn record_borne_now(&mut self, thing: &Tid, s: &SyncId, borne: &BTreeSet<[u8; 32]>) -> Result<bool> {
         let Some(r) = self.core.ix.sync_records.get(thing).cloned() else { return Ok(false) };
-        let new: Vec<(Epoch, Secret32)> = r
-            .secrets
-            .iter()
-            .filter(|(e, s)| !r.recorded.contains(e) && borne.contains(&osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, s).verifying_key().to_bytes()))
-            .map(|(e, s)| (*e, s.clone()))
-            .collect();
-        if new.is_empty() {
+        if !r.sync_ids.contains(s) {
             return Ok(false);
         }
-        let t = *thing;
-        self.run(|tx| keep_in(tx, &t, &[], new))
+        let bears = |x: &Secret32| borne.contains(&osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, x).verifying_key().to_bytes());
+        let new: Vec<(Epoch, Secret32)> = r.secrets.iter().filter(|(e, x)| !r.recorded.contains(e) && bears(x)).map(|(e, x)| (*e, x.clone())).collect();
+        let tie = !r.tied.contains(s) && r.secrets.values().any(bears);
+        if new.is_empty() && !tie {
+            return Ok(false);
+        }
+        let (t, s) = (*thing, *s);
+        self.run(|tx| keep_in(tx, &t, &[], new, &[s]))
     }
 }

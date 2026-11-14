@@ -259,6 +259,10 @@ instances=(
   "nettrust net MCTrust UN_vouch.cfg fail"         # negative control: a sync ID on the sender's word (connected): the forger attaches its own (NoAttach)
   "nettrust net MCTrust UN_any.cfg fail"           # negative control: a secret recorded unconfirmed: the forger plants one (NoPlant)
   "nettrust net MCTrust UN_local.cfg fail"         # negative control: a record per node: a node joining after the boxes expired never syncs (Live)
+  "nettrust net MCTrust U_other.cfg pass"          # ... a holder of S offers its own thing under S, accepted before or after T: S tied to T and synced for it alone
+  "nettrust net MCTrust U_relabel.cfg pass"        # ... a holder of T's sync secret boxes it as its own thing's under S: S tied to both, T keeps it
+  "nettrust net MCTrust UN_firstcome.cfg fail"     # negative control: an accept keeps no sync ID kept for another thing: a forger's thing accepted first keeps T from S (Live)
+  "nettrust net MCTrust UN_untied.cfg fail"        # negative control: a sync ID synced for every thing keeping it: S synced for the forger's thing though a step ties it to T (Owner)
 )
 
 module=${1:-}
