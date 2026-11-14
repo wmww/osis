@@ -604,6 +604,17 @@ impl Streams {
                 class(Rank::Unopened, false)
             }
             Holding::Read => {
+                // a stamp new to an entry held unstamped (stamped in place at a writer,
+                // spec/sync-inbox.md §2): logged on it, judged as any peer's stamp
+                if let (Some(st), Some(_)) = (stamp, &held)
+                    && let Ok(Some(e)) = ctx.store.entry(s, b)
+                    && e.stamp.is_none()
+                    && e.wrap == *wrap
+                {
+                    let src = self.pull.get(&conn).map(|p| p.src);
+                    let r = ctx.store.log(s, Entry { stamp: Some(st), deposited: false, ..e }, None, src).map(|_| ());
+                    self.failed(r);
+                }
                 if tomb || held.is_some() || ctx.ground.taken(b) {
                     return None;
                 }

@@ -1214,3 +1214,26 @@ fn a_stamp_vouches_only_under_the_head_spec_sync_ids_5() {
         assert_eq!((kept, left), (2, 1), "past the budget, at {n}: two kept");
     }
 }
+
+// spec/sync-inbox.md §2 Taking (a stamp verifying under a write key of the inbox's path): an entry a peer brought with a stamp no write
+// key of S's path verifies is held unflagged and charged, yet its stamp vouches for nothing; a
+// writer's stamp, and one under an earlier step's write key, do.
+#[test]
+fn only_a_writers_stamp_verifies_spec_sync_inbox_2() {
+    let dev = Dev::new();
+    let mut s = Sid::new(10);
+    let mut st = unread(&dev, &s);
+    let (b, bytes) = blob(100, Class::Durable, None, &[]);
+    let mut forged = stamped(&s, b, false);
+    let other = SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([9; 32]));
+    forged.stamp = Some(osis_label::sign_stamp(&other, &s.id, &b, &forged.wrap, false));
+    assert_eq!(st.log(&s.id, forged, Some(bytes.clone()), Some(Source::Conn(ConnId(1)))).unwrap(), Code::OK);
+    assert!(!st.entry(&s.id, &b).unwrap().unwrap().deposited, "held unflagged");
+    assert!(!st.stamp_verifies(&s.id, &b).unwrap(), "a stamp by no writer");
+    let (b2, bytes2) = blob(101, Class::Durable, None, &[]);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b2, false), bytes2).unwrap(), Code::OK);
+    assert!(st.stamp_verifies(&s.id, &b2).unwrap());
+    let (g, c) = s.rotate(11);
+    assert_eq!(st.take_register(&s.id, &g, Some(&c)).unwrap(), Code::OK);
+    assert!(st.stamp_verifies(&s.id, &b2).unwrap(), "under an earlier step's write key");
+}

@@ -321,8 +321,9 @@ pub fn file(w: &mut World, i: usize, items: Vec<Tid>, subgroups: Vec<Tid>) {
         g.items.extend(items);
         g.subgroups.extend(subgroups);
         let mut m = Mutation::new();
+        // as the product writes (`Engine::write`): an accept marks the invitation acted on
         if m.set(d, &osis_schema::core_types::GROUP, &g).is_ok() {
-            let _ = e.commit(m);
+            let _ = e.write(m);
         }
     });
 }

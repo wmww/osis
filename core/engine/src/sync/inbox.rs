@@ -24,7 +24,8 @@ use std::sync::Arc;
 pub(crate) const WAITING: &[u8] = b"iw/";
 
 /// An inbox blob held untaken: its commit, the things its boxes give the recipient with the role
-/// each gives, its author, its expiry.
+/// each gives, its author, its expiry; or one the user accepted here (`accepted`), kept until it
+/// expires as that accept (spec/sync-set.md §4), however it is taken.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WaitingBlob {
     pub sync_id: SyncId,
@@ -32,6 +33,7 @@ pub struct WaitingBlob {
     pub things: Vec<(Tid, Role)>,
     pub from: Tid,
     pub expires: WallMs,
+    pub accepted: bool,
 }
 
 fn waiting_value(w: &WaitingBlob) -> Value {
@@ -41,6 +43,7 @@ fn waiting_value(w: &WaitingBlob) -> Value {
         Value::List(w.things.iter().map(|(t, r)| Value::List(vec![Value::Tid(*t), Value::Int(i64::from(r.id()))])).collect()),
         Value::Tid(w.from),
         Value::Int(w.expires.0 as i64),
+        Value::Bool(w.accepted),
     ])
 }
 
@@ -48,7 +51,7 @@ fn waiting_of(b: &[u8]) -> Result<WaitingBlob> {
     let bad = || Error::Corrupt("waiting inbox blob");
     let v = osis_base::decode(b, &osis_base::Limits { max_depth: 6, max_bytes: b.len() }).map_err(|_| bad())?;
     let Value::List(f) = v else { return Err(bad()) };
-    let [Value::Bytes(s), Value::Bytes(c), Value::List(ts), Value::Tid(from), Value::Int(e)] = f.as_slice() else { return Err(bad()) };
+    let [Value::Bytes(s), Value::Bytes(c), Value::List(ts), Value::Tid(from), Value::Int(e), Value::Bool(accepted)] = f.as_slice() else { return Err(bad()) };
     let mut things = Vec::new();
     for t in ts {
         let Value::List(p) = t else { return Err(bad()) };
@@ -61,6 +64,7 @@ fn waiting_of(b: &[u8]) -> Result<WaitingBlob> {
         things,
         from: *from,
         expires: WallMs(u64::try_from(*e).map_err(|_| bad())?),
+        accepted: *accepted,
     })
 }
 
@@ -117,7 +121,17 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Keeps blob `blob` waiting as `w` (`None`: taken), as a take judges it; a blob the user
+/// accepted here stays accepted until it expires, whatever a take finds.
 fn set_waiting(tx: &mut Tx<'_>, blob: &BlobId, w: Option<WaitingBlob>) -> Result<()> {
+    match (tx.core.ix.waiting_inbox.get(blob).filter(|x| x.accepted).cloned(), w) {
+        (Some(_), None) => Ok(()),
+        (Some(_), Some(w)) => put_waiting(tx, blob, Some(WaitingBlob { accepted: true, ..w })),
+        (None, w) => put_waiting(tx, blob, w),
+    }
+}
+
+fn put_waiting(tx: &mut Tx<'_>, blob: &BlobId, w: Option<WaitingBlob>) -> Result<()> {
     let k = [WAITING, &blob.0].concat();
     match w {
         Some(w) if tx.core.ix.waiting_inbox.get(blob).is_some_and(|x| **x == w) => {}
@@ -138,7 +152,7 @@ fn set_waiting(tx: &mut Tx<'_>, blob: &BlobId, w: Option<WaitingBlob>) -> Result
 pub(crate) fn expire_waiting(tx: &mut Tx<'_>, now: WallMs) -> Result<()> {
     let gone: Vec<BlobId> = tx.core.ix.waiting_inbox.iter().filter(|(_, w)| w.expires <= now).map(|(b, _)| *b).collect();
     for b in gone {
-        set_waiting(tx, &b, None)?;
+        put_waiting(tx, &b, None)?;
     }
     Ok(())
 }
@@ -269,7 +283,7 @@ impl Engine {
         let b = *blob;
         // the things not taken stay an invite request
         let rest: Vec<(Tid, Role)> = boxed.things.keys().filter(|t| !take.iter().any(|x| x.tid == **t)).filter_map(|t| Some((*t, boxed.role(t)?))).collect();
-        let w = (!rest.is_empty()).then_some(WaitingBlob { sync_id: *s, commit: id, things: rest, from: p.author, expires });
+        let w = (!rest.is_empty()).then_some(WaitingBlob { sync_id: *s, commit: id, things: rest, from: p.author, expires, accepted: false });
         self.run(|tx| set_waiting(tx, &b, w))?;
         let dial = if whole { p.dial.as_ref() } else { None };
         let mut any = false;
@@ -294,6 +308,7 @@ impl Engine {
     /// node of the account took it, spec/sync-inbox.md §2 Taking).
     pub(crate) fn take_inbox_bytes(&mut self, s: &SyncId, blob: &BlobId, bytes: &[u8], vouched: bool) -> Result<Option<InboxOpened>> {
         let Some((a, expires, inbox)) = self.open_inbox_bytes(s, bytes) else { return Ok(None) };
+        let vouched = vouched || self.core.ix.waiting_inbox.get(blob).is_some_and(|w| w.accepted);
         // a stranded notice asks for a re-seal the recipient judges itself (spec/permissions.md
         // §4): not a role commit to take
         let p = match inbox {
@@ -310,7 +325,7 @@ impl Engine {
         let held = self.core.ix.commits.contains_key(&id);
         let taken = held || vouched || self.sender_connected(&cb, &id)?;
         if !taken {
-            let w = WaitingBlob { sync_id: *s, commit: id, things: boxed.things.keys().filter_map(|t| Some((*t, boxed.role(t)?))).collect(), from: cb.header.author, expires };
+            let w = WaitingBlob { sync_id: *s, commit: id, things: boxed.things.keys().filter_map(|t| Some((*t, boxed.role(t)?))).collect(), from: cb.header.author, expires, accepted: false };
             self.run(|tx| set_waiting(tx, &b, Some(w)))?;
             return Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Waiting, hints: Vec::new(), dial: None }));
         }
@@ -408,7 +423,7 @@ impl Engine {
         let next = self.core.ix.waiting_inbox.values().map(|w| w.expires.0).filter(|e| *e > now.0).min();
         self.core.time.until(next);
         let listed = self.synced_closures()?;
-        for w in self.core.ix.waiting_inbox.values().filter(|w| w.expires > now) {
+        for w in self.core.ix.waiting_inbox.values().filter(|w| w.expires > now && !w.accepted) {
             for (t, role) in w.things.iter().filter(|(t, _)| !listed.contains(t)) {
                 out.entry(*t).or_insert(Invitation { thing: *t, role: *role, from: w.from, taken: false, acted: acted.contains(t) });
             }
@@ -483,6 +498,13 @@ pub(crate) fn mark_acted(tx: &mut Tx<'_>) -> Result<()> {
     acted.retain(|t| waiting.contains(t) || tx.core.held_role(t).is_some());
     if acted.is_empty() {
         return Ok(());
+    }
+    // an accept: the user accepted every blob waiting here that offers a thing it lists
+    // (spec/sync-set.md §4; spec/sync-inbox.md §2 Taking), judged again as accepted
+    let accepted: BTreeSet<Tid> = acted.iter().filter(|t| tx.core.ix.groups.under(t, &roots)).copied().collect();
+    let blobs: Vec<(BlobId, WaitingBlob)> = tx.core.ix.waiting_inbox.iter().filter(|(_, w)| !w.accepted && w.things.iter().any(|(t, _)| accepted.contains(t))).map(|(b, w)| (*b, WaitingBlob { accepted: true, ..(**w).clone() })).collect();
+    for (b, w) in blobs {
+        put_waiting(tx, &b, Some(w))?;
     }
     // a thing marked already adds nothing: such a commit changes nothing and is not written
     let mut m = crate::Mutation::new();

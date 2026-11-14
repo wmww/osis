@@ -660,3 +660,49 @@ fn an_accounts_node_away_past_inbox_lifetime_gets_the_grant_spec_sync_inbox_5() 
     w.run();
     assert!(invited(&mut w, n2), "node 2 lists the grant from node 1's copy");
 }
+
+/// Node 0 (account A) grants sync on a thing it made to account B (nodes 1 and 2) that never
+/// imported A's card, so A is no connected author there; the grant waits as an invitation.
+fn sync_grant_from_a_stranger() -> (World, osis_base::Tid, osis_base::SyncId, usize) {
+    let mut w = World::new(0);
+    w.add_node();
+    w.add_node();
+    let n2 = w.pair(1);
+    w.run();
+    // A learns B's keys by hand and finds node 1 on the LAN: no role of A's anywhere B syncs
+    crate::harness::history::hand(&mut w, 1, 0);
+    w.discover(0, 1);
+    w.run();
+    let (a0, b) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let t = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a0);
+        m.set(t, &Ak::new("u:v.0").unwrap(), &Value::Str("x".into())).unwrap();
+        e.commit(m).unwrap();
+        t
+    });
+    file(&mut w, 0, vec![t], Vec::new());
+    w.write(0, |e| e.grant(&t, &b, &edge(Role::Sync))).unwrap();
+    w.run();
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    for i in [1, n2] {
+        let inv = w.engine(i).invitations().unwrap();
+        assert!(inv.iter().any(|x| x.thing == t && !x.taken && x.role == Role::Sync), "node {i}: an invite request: {inv:?}");
+    }
+    (w, t, s, n2)
+}
+
+// spec/sync-inbox.md §2 Taking (the user accepted it; a writer of the inbox stamped it: Stamping
+// in place), spec/sync-set.md §4 (accepting): a sync grant by an author not connected at the
+// recipient is an invite request at both of its account's nodes; the user accepts it on node 1,
+// which takes it whole (its sync ID) and stamps it in its inbox; node 2 takes the stamped blob
+// whole too: both keep the thing unread under the granter's sync ID.
+#[test]
+fn a_sync_grant_accepted_on_one_node_is_taken_at_its_sibling_spec_sync_inbox_2() {
+    let (mut w, t, s, n2) = sync_grant_from_a_stranger();
+    file(&mut w, 1, Vec::new(), vec![t]);
+    w.run();
+    for i in [1, n2] {
+        assert_eq!(w.engine(i).thing_sync(&t).unwrap(), osis_engine::sync::ThingSync::Unread(vec![s]), "node {i}");
+    }
+}

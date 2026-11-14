@@ -378,6 +378,49 @@ fn a_grant_from_an_unknown_author_is_taken_spec_sync_inbox_2() {
     assert_eq!(lp.peers[2].engine.thing_sync(&t).unwrap(), ThingSync::Unread(s.into_iter().collect()), "kept unread");
 }
 
+/// The user's accept of `t` as the product writes it (`Engine::write`): filed in D, the synced
+/// group's closure.
+fn accept(lp: &mut LocalPeer, i: usize, t: Tid) {
+    let (_, d) = lp.peers[i].engine.account().unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.op(d, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(1)], op: osis_crdt::Op::Add(osis_base::Value::Tid(t)) }).unwrap();
+    lp.peers[i].engine.write(m).unwrap().unwrap();
+}
+
+// spec/sync-inbox.md §2 Taking (the user accepted it), spec/sync-set.md §4 (accepting): an
+// invite request, read or sync, is taken whole once the user accepts its thing here, and stays
+// taken as judged again; a blob arriving after the accept is no accepted one.
+#[test]
+fn an_accept_takes_the_waiting_blob_spec_sync_set_4() {
+    for role in [Role::Read, Role::Sync] {
+        let (mut lp, t, _, g, blob) = granted(role);
+        let s = lp.peers[0].engine.home_sync_id(&t).unwrap();
+        let e = &mut lp.peers[1].engine;
+        assert_eq!(e.take_inbox_blob(&blob, false).unwrap().unwrap().taken, Taken::Waiting);
+        accept(&mut lp, 1, t);
+        let e = &mut lp.peers[1].engine;
+        for _ in 0..2 {
+            assert_eq!(e.take_inbox_blob(&blob, false).unwrap().unwrap().taken, Taken::Applied, "{role:?}");
+        }
+        if role == Role::Read {
+            assert!(e.core.ix.commits.contains_key(&g));
+        } else {
+            assert_eq!(e.sync_record(&t).unwrap().unwrap().sync_ids, s.into_iter().collect::<Vec<_>>());
+        }
+    }
+    // a payload by an author no node holds, arriving after the accept: listed, not accepted
+    let (mut lp, t, b, _, blob) = granted(Role::Sync);
+    let (real, _) = boxes_of(&mut lp, 1, &blob);
+    accept(&mut lp, 1, t);
+    let (proof, key) = stranger(7);
+    let mut things = real.things.clone();
+    things[0].sync_id = Some(osis_base::SyncId([0x77; 16]));
+    let p = osis_label::BoxesPayload::signed(&b, real.commit, proof, None, things, None, &key);
+    let late = boxes_by_hand(&mut lp, 1, &p);
+    assert_eq!(lp.peers[1].engine.take_inbox_blob(&late, false).unwrap().unwrap().taken, Taken::Waiting);
+    assert!(lp.peers[1].engine.sync_record(&t).unwrap().is_none_or(|r| r.sync_ids.is_empty()));
+}
+
 // spec/sync-inbox.md §2 (invite request: an untaken blob, not applied, nothing followed),
 // spec/sync-set.md §4 (invitations: listed untaken; accepting: takes it).
 #[test]

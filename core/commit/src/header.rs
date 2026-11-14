@@ -558,7 +558,8 @@ impl Signed {
 /// from nothing but `record` and `rotations`, the header-only copies of its rotations from the
 /// first epoch to `epoch`, each signed at the epoch the one before mints (spec/wire.md §9 boxes
 /// payload). `None` when they do not prove it: a record of no key actor or of the wrong kind for
-/// `epoch`, or a rotation signed at another epoch or not verifying under the key before it.
+/// `epoch`, or a rotation by another author, signed at another epoch or not verifying under the
+/// key before it.
 pub fn epoch_key(record: &osis_base::CreationRecord, epoch: Option<CommitId>, rotations: &[crate::CommitBlob]) -> Option<VerifyingKey> {
     let osis_base::CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key, account, .. } = record else { return None };
     if *account != epoch.is_some() || (epoch.is_none() && !rotations.is_empty()) {
@@ -568,7 +569,7 @@ pub fn epoch_key(record: &osis_base::CreationRecord, epoch: Option<CommitId>, ro
     for r in rotations {
         let h = &r.header;
         let rot = h.rotation.as_ref()?;
-        if h.epoch != Some(at) || verify_signature(&h.id(), &r.sigs, &key).is_err() {
+        if h.author != record.tid() || h.epoch != Some(at) || verify_signature(&h.id(), &r.sigs, &key).is_err() {
             return None;
         }
         (at, key) = (h.id(), rot.signing_key);

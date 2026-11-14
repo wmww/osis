@@ -363,8 +363,10 @@ fn judge(engine: &mut Engine, store: &Store, inboxes: &StampedSet<SyncId>, stamp
         // taken once: while its commit is held, nothing of the blob is opened or taken again
         let o = match taken.get(k) {
             Some((c, dial)) if engine.holds_commit(c) => Some(InboxOpened { commit: Some(*c), taken: Taken::Applied, hints: Vec::new(), dial: dial.clone() }),
-            // stamped: a writer of the inbox, a node of this account, took it (vouched)
-            _ => engine.take_inbox(s, b, !e.deposited)?,
+            // stamped by a writer of the inbox, a node of this account, that took it (vouched): a
+            // stamp verified here, never the deposited flag alone (a peer's stamp is kept
+            // unverified)
+            _ => engine.take_inbox(s, b, store.stamp_verifies(s, b)?)?,
         };
         f.stamped = o.as_ref().and_then(|o| o.commit).and_then(|c| stamped.get(&(*s, c)).copied());
         f.writer = e.deposited && engine.signers(s, None)?.stamp.is_some();
