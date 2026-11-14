@@ -191,8 +191,11 @@ pub(crate) fn takes_inbox(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
     Ok(Core::keys_in(tx, a)?.and_then(|k| k.inbox).is_none())
 }
 
+/// The labels `group`'s `label.0` records that it owns (`labeling::actors::owns`).
 pub(crate) fn labels_of(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::Labels> {
-    Ok(tx.state(group, &ak("label.0")?)?.and_then(Fragment::read).and_then(|v| ct::LABEL.decode(&v).ok()).unwrap_or_default())
+    let mut labels = tx.state(group, &ak("label.0")?)?.and_then(Fragment::read).and_then(|v| ct::LABEL.decode(&v).ok()).unwrap_or_default();
+    labels.retain(|id, l| label_steps(l).is_ok_and(|s| tx.core.owns_label(group, id, &s)));
+    Ok(labels)
 }
 
 impl Engine {

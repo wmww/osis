@@ -5,6 +5,8 @@ use osis_base::memo::Memo;
 use crate::engine::{Core, Engine};
 use crate::error::Result;
 use osis_base::{ChainStep, LabelId, Role, Tid};
+use osis_crypto::{LabelRole, label_role_key};
+use osis_keys::ActorEpochs;
 use osis_label::{Address, ClaimSet, Step, StepId};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,12 +22,37 @@ pub struct GroupLabel {
     pub hosts: Vec<Address>,
 }
 
+/// Whether label `id`, its steps as `steps` records them, belongs to the group whose epochs held
+/// here are `epochs` (spec/sync.md §2, Owner; `Core::owns_label`).
+///
+/// Invariant: an entry of g's `label.0` counts as g's label, on every path that reads it (the
+/// labels node-sync syncs, registers at, filters and empties once g is destroyed, g's own label
+/// and inbox, what goes when g is forgotten), only when some step on a verified path from the
+/// label's genesis step bears a sync key that a sync secret of g held here derives. Any admin of g
+/// writes g's `label.0` and may name any label there; the steps chain by signature to the genesis
+/// delete key, which the label ID commits to and only the owner's admins held, so a step bearing
+/// g's sync key is an owner admin's own word that g owns it. An entry failing this is ignored
+/// here, never judged invalid: the check turns on the secrets this node holds. While this node
+/// holds no sync secret of g's own (it reads g by derived secrets, which no step bears, until the
+/// commit giving g's own reaches it under these very labels) the entries are its admins' word, as
+/// a label hint is its sender's.
+pub(crate) fn owns(epochs: Option<&ActorEpochs>, id: &LabelId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
+    let Some(e) = epochs else { return false };
+    let held: Vec<_> = e.sync.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s).verifying_key()).collect();
+    let bearing: Vec<&StepId> = steps.iter().filter(|(_, (s, _))| held.contains(&s.keys.sync)).map(|(k, _)| k).collect();
+    if bearing.is_empty() {
+        return false;
+    }
+    let plain: BTreeMap<StepId, Step> = steps.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
+    bearing.into_iter().any(|k| osis_label::path_to(&plain, k).is_ok_and(|p| p.first().is_some_and(|g| g.label == *id)))
+}
+
 fn group_label(g: &Tid, id: &LabelId, l: &ct::Label) -> Option<Arc<GroupLabel>> {
     let steps = osis_label::label_steps(l).ok()?;
     Some(Arc::new(GroupLabel { group: *g, id: *id, steps, hosts: l.hosts.clone() }))
 }
 
-/// The labels of `g` a `label.0` value `v` records (`Engine::labels_read`); records that do not
+/// The labels of `g` a `label.0` value `v` records, owned or not (`owns`); records that do not
 /// parse are skipped.
 pub(crate) fn group_labels_in(g: &Tid, v: &osis_base::Value) -> Vec<Arc<GroupLabel>> {
     use osis_schema::RawKey;
@@ -46,6 +73,15 @@ impl GroupLabel {
 }
 
 impl Core {
+    /// Whether `g` owns label `id` here (`owns`): judged once this node holds a sync secret of
+    /// `g`'s own, else taken.
+    pub(crate) fn owns_label(&self, g: &Tid, id: &LabelId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
+        if !self.own_record(g).is_some_and(|e| e.sync.holds_any()) {
+            return true;
+        }
+        owns(self.epochs(g).as_deref(), id, steps)
+    }
+
     /// The reader actor of `t`, whose read role reads its deltas: `t` with secrets of its own,
     /// else the nearest record-chain actor that has them (a key actor is its own).
     pub fn reader_of(&self, t: &Tid) -> Tid {
@@ -154,7 +190,7 @@ impl Engine {
         Memo::get_in(self, |e| &e.core.labels, g, |e| {
             let mut out = Vec::new();
             for (id, l) in &e.get_typed(g, &ct::LABEL)?.unwrap_or_default() {
-                out.extend(group_label(g, id, l));
+                out.extend(group_label(g, id, l).filter(|l| e.core.owns_label(g, &l.id, &l.steps)));
             }
             Ok::<_, crate::error::Error>(out)
         })

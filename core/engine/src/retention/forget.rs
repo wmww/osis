@@ -230,9 +230,19 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
         let (c, t) = (CommitId(r.arr()?), r.tid()?);
         Ok(out.commits.contains(&c) || out.things.contains(&t))
     })?;
-    // labels of forgotten groups, from their `label.0` (kept)
+    // labels of forgotten groups, from their `label.0` (kept), but those a kept group owns
+    // (`labeling::actors::owns`; the forgotten ones' secrets are gone, so judged from the owner's
+    // side): another's label a forgotten group's admin named takes nothing of its owner's here
     for g in out.things.clone() {
         out.labels.extend(crate::flows::labels::labels_in(tx, &g)?);
+    }
+    if !out.labels.is_empty() {
+        let kept: Vec<Tid> = tx.core.ix.labeled.iter().filter(|g| !out.things.contains(g)).copied().collect();
+        for g in kept {
+            for l in crate::flows::labels::labels_of(tx, &g)?.keys() {
+                out.labels.remove(l);
+            }
+        }
     }
     // the pieces the forgotten parts reach that no kept source of their thing links (a link
     // its blob does not bear releases nothing, `freed::lost`; their freed sets go), then the

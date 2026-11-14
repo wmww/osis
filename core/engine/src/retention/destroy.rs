@@ -604,11 +604,15 @@ fn keep_labels(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
         return Ok(());
     }
     let Some(v) = tx.state(t, &crate::flows::ak(LABEL)?)?.and_then(osis_crdt::Fragment::read) else { return Ok(()) };
-    let ls = crate::labeling::actors::group_labels_in(t, &v);
+    // the labels it owns (`Core::owns_label`): emptying another's would drop its state here
+    let ls: Vec<_> = crate::labeling::actors::group_labels_in(t, &v).into_iter().filter(|l| tx.core.owns_label(t, &l.id, &l.steps)).collect();
     if ls.is_empty() {
         return Ok(());
     }
-    tx.txn.put_local(&[records::DESTROYED_LABELS, t.as_bytes()].concat(), &osis_base::encode(&v), Shred::No)?;
+    use osis_schema::RawKey;
+    let mut kept = osis_schema::core_types::LABEL.decode(&v).unwrap_or_default();
+    kept.retain(|id, _| ls.iter().any(|l| l.id == *id));
+    tx.txn.put_local(&[records::DESTROYED_LABELS, t.as_bytes()].concat(), &osis_base::encode(&osis_schema::core_types::LABEL.encode(&kept)), Shred::No)?;
     tx.core.ix.destroyed_labels.insert(*t, ls);
     Ok(())
 }

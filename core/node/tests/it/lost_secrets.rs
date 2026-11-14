@@ -403,3 +403,35 @@ fn a_copys_role_class_parts_are_never_stale_spec_permissions_3() {
     }
     assert!(accounts > 0);
 }
+
+// spec/sync.md §2 (Owner), spec/permissions.md §3 (lost access): a, an admin of t, names u's label
+// ul in t's `label.0`; r, a reader of both, loses t. Forgetting t, r keeps ul's sync state: ul is
+// owned by u, a group r keeps (judged from u's side: t's secrets are gone by then); without that,
+// every row naming ul goes with t
+#[test]
+fn forgetting_a_group_keeps_a_label_a_kept_group_owns_spec_sync_2() {
+    use osis_schema::Codec;
+    let (mut net, host, [a, r]) = hosted_nodes::<2>();
+    let t = net.group(a, &[(r, Role::Read)], &[host]);
+    let u = net.group(a, &[(r, Role::Read)], &[host]);
+    net.run();
+    net.write(a, u, "z");
+    net.run();
+    let ul = net.engine(r).group_labels(&u).unwrap().first().unwrap().id;
+    let rec = net.engine(a).get_typed(&u, &ct::LABEL).unwrap().unwrap().remove(&ul).unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &ct::LABEL, PathOp { path: vec![PathSeg::Key(ul.to_value())], op: Op::Set(rec.to_value()) }).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    assert!(net.engine(r).get_typed(&t, &ct::LABEL).unwrap().unwrap().contains_key(&ul), "r holds t's label.0 naming ul");
+    assert!(!net.engine(r).group_labels(&t).unwrap().iter().any(|l| l.id == ul), "and takes ul as u's alone");
+    let rows = |net: &mut Net| net.engine(r).local_rows_naming(&ul.0).unwrap().len();
+    let before = rows(&mut net);
+    assert!(before > 0, "r syncs ul");
+    let rt = net.tid(r);
+    net.engine(a).demote(&t, &osis_node::flows::Demotion { holder: rt, new: None, retain: None }).unwrap();
+    net.pair(a, r);
+    assert!(net.engine(r).drop_lost_due().unwrap().contains(&t), "r forgets t");
+    assert_eq!(rows(&mut net), before, "r keeps ul's sync state");
+    assert_eq!(net.read(r, u), Some(s("z")), "and reads u");
+}

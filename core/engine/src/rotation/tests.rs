@@ -1735,7 +1735,9 @@ fn epochs_are_derived_once_per_change_of_what_they_read() {
     }
     assert_eq!(derived(&mut lp), 0, "content commits, on it and elsewhere");
     lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
-    assert!(derived(&mut lp) > 0, "a grant on it");
+    // derived again during the grant (its labels judged, `labeling::actors::owns`) or at the ask
+    let during: u64 = osis_base::costs::take().iter().filter(|x| x.0 == "epochs").map(|x| x.2).sum();
+    assert!(during + derived(&mut lp) > 0, "a grant on it");
 }
 
 /// Peers: 0 = first admin A of `g`, 1 = admin a2, 2 = reader M, 3 = admin R. A removes M (L),

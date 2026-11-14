@@ -1800,6 +1800,57 @@ fn a_destroyed_things_own_label_is_emptied_before_its_secrets_go_spec_commits_5(
     }
 }
 
+// spec/sync.md §2 (Owner): a, an admin of t, names u's label ul in t's `label.0` (a copy of u's
+// own record, every step verifying). No step of ul bears a sync key of t's secrets, so b and c,
+// holding both, take ul as u's alone: t lists no ul there, and once t is released and its labels
+// emptied, ul is never emptied nor forgotten with them (without the check: b empties ul as t's
+// and the sync of ul never goes quiet): b keeps ul's sync state and the host u's entries
+#[test]
+fn a_label_named_in_another_groups_label_0_is_ignored_spec_sync_2() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let (t, _) = made(&mut net, a, g);
+    let (u, _) = made(&mut net, a, g);
+    let tb = net.tid(b);
+    net.grant(a, t, tb, Role::Admin);
+    net.grant(a, u, tb, Role::Admin);
+    net.write(b, t, "y");
+    net.write(b, u, "z");
+    net.run();
+    let label = |net: &mut Net, x: Tid| net.engine(b).group_labels(&x).unwrap().first().unwrap().id;
+    let (tl, ul) = (label(&mut net, t), label(&mut net, u));
+    let rec = net.engine(a).get_typed(&u, &ct::LABEL).unwrap().unwrap().remove(&ul).unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &ct::LABEL, PathOp { path: vec![osis_crdt::PathSeg::Key(ul.to_value())], op: Op::Set(rec.to_value()) }).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    for n in [a, b, c] {
+        assert!(net.engine(n).get_typed(&t, &ct::LABEL).unwrap().unwrap().contains_key(&ul), "node {n}: t's label.0 names ul");
+        let ls: Vec<_> = net.engine(n).group_labels(&t).unwrap().into_iter().map(|l| l.id).collect();
+        assert_eq!(ls, vec![tl], "node {n}: t's labels are its own alone");
+    }
+    let rows = |net: &mut Net| net.engine(b).local_rows_naming(&ul.0).unwrap().len();
+    assert!(rows(&mut net) > 0 && !net.host_ids(0, &ul).is_empty(), "b syncs ul, the host holds u's commits");
+    net.engine(c).release(&[t]).unwrap().unwrap();
+    let mut emptied = false;
+    for _ in 0..8 {
+        net.advance(osis_base::format::ROLE_KEEP_MS / 4);
+        let kept: Vec<_> = net.engine(b).core.ix.destroyed_labels.get(&t).into_iter().flatten().map(|l| l.id).collect();
+        assert!(!kept.contains(&ul), "b empties ul as t's: {kept:?}");
+        assert!(rows(&mut net) > 0, "b keeps ul's sync state");
+        if net.host_ids(0, &tl).is_empty() {
+            emptied = true;
+            break;
+        }
+    }
+    assert!(emptied, "t's label emptied at the host");
+    for _ in 0..4 {
+        net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS / 2);
+        assert!(rows(&mut net) > 0, "b keeps ul's sync state");
+    }
+    assert!(!net.host_ids(0, &ul).is_empty(), "the host keeps u's entries");
+    assert_eq!(net.engine(b).get_typed(&u, &REG).unwrap(), Some(s("z")), "u reads at b");
+}
+
 // spec/crypto.md §7 (level 2), spec/commits.md §5: b, admin of t (secrets of its own), writes on x
 // acting for t, purgeable by its author. b, a writer of x through g, holds no admin secret of x:
 // only t's write secret (level 2) deletes that write's entries. t and x are released together and

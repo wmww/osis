@@ -58,7 +58,8 @@
 - **Role keys in use**: a node talks to a host with the role keys of the epochs the host's head registers; it derives them from the matching epochs it holds (every holder holds all older secrets by the history boxes). A node whose epochs match no step the host holds opens under the credential of the newest step it shares with the host and walks from there (§5, Opens).
 - **`label.0`** on the group thing: `map<label ID, { steps: map<step ID, step>, hosts: list<address> }>`. Role-class. An address: §10.
   - Each step is held with its claim set and entry boxes, which an admin MAY drop once the step has been superseded for `ROLE_KEEP` (counted from the `ts` of the write recording its first child).
-  - Nodes log under, and sync, every label of the group.
+  - **Owner**: a node takes an entry of a group g's `label.0` as g's label only when some step on a verified path from the label's genesis step (each step signed by its parent's delete key, the genesis by its own, whose delete key hashes to the label ID) bears the sync key of a sync secret of g the node holds. It ignores any other entry wherever it reads `label.0`; forgetting g without g's secrets, it keeps what a group it keeps owns. While the node holds no sync secret of g's own (it reads g by derived secrets, spec/crypto.md §3), it takes g's entries as label hints.
+  - Nodes log under, and sync, every label the group owns.
   - A `label.0` write on a group is also published under the home label of the nearest actor up the group's record chain that has one.
   - One role commit may carry the `label.0` deltas of many groups.
 - **One sync ID per actor**: a commit that gives a thing role secrets of its own (spec/permissions.md §3) MUST also create its label (unless it already has one) and record it in `label.0`, in that one commit. That label is the thing's **home label**.
@@ -112,7 +113,7 @@
 - **Label hints**: the label an inbox blob names is its sender's word until a `label.0` the node holds records it.
   - Blobs naming one label under different things are tried in turn: under the first thing not failed since the label's last retry, at the hosts all of them name, each retried after `resync_ms`.
   - A hinted open by a sync key holds only at a head of that key, whatever the host answers.
-  - What a connection delivers under a label is read under the thing the label is opened under on that connection; elsewhere a label belongs to the group whose held `label.0` records it.
+  - What a connection delivers under a label is read under the thing the label is opened under on that connection; elsewhere a label belongs to the group that owns it by a held `label.0`.
 - **Invite requests**: a recipient node applies the commit of an opened inbox blob, and follows what it names, only once it **admits** the blob.
   - It admits the blob when either:
     - the commit is already held (applied, or an entry of it held; a sibling node that accepted it places its copy under the home label); or
