@@ -3,7 +3,7 @@
 //! writes (`Table::log`), never by asking every key; `Feed` is one reader's cursor over the keys
 //! a container added.
 
-use super::{Dep, Logged, Table, bucket, lock, recorded_frame};
+use super::{Dep, Logged, Table, bucket, copied, lock, recorded_frame};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -195,6 +195,42 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
     }
 }
 
+/// A table of this reader's, as a clone holds it: inside a world copy (`crate::copying`) the
+/// copy's table, whose log and marks are the original's (this reader's mark among them); outside
+/// one the same table, marked again at `at` for the clone.
+fn cloned_table(t: &Arc<Mutex<Table>>, at: u64) -> Arc<Mutex<Table>> {
+    if crate::copying::in_copy() {
+        return copied(t);
+    }
+    lock(t).mark(at);
+    t.clone()
+}
+
+/// A clone follows what the original follows, each value at the reads it was settled at, and
+/// reads the logs from where the original stands (inside a world copy, the copy's).
+impl<K: Hash + Eq + Clone, V: Clone> Clone for Effects<K, V> {
+    fn clone(&self) -> Self {
+        let dep = |d: &Dep| Dep { table: if crate::copying::in_copy() { copied(&d.table) } else { d.table.clone() }, ..d.clone() };
+        let followed = self.followed.iter().map(|(k, f)| (k.clone(), Followed { seq: f.seq, value: f.value.clone(), deps: f.deps.iter().map(dep).collect() })).collect();
+        let tables = self
+            .tables
+            .values()
+            .map(|ix| {
+                let table = cloned_table(&ix.table, ix.at);
+                (Arc::as_ptr(&table) as usize, Indexed { table, at: ix.at, whole: ix.whole.clone(), keys: ix.keys.clone(), buckets: ix.buckets.clone(), reads: ix.reads })
+            })
+            .collect();
+        Effects { name: self.name, followed, seq: self.seq, pending: self.pending.clone(), tables }
+    }
+}
+
+/// A clone reads on from where the original stands (inside a world copy, the copy's log).
+impl<K> Clone for Feed<K> {
+    fn clone(&self) -> Self {
+        Feed { table: cloned_table(&self.table, self.at), at: self.at, _k: PhantomData }
+    }
+}
+
 /// One reader's cursor over the keys a container added (`Stamps::wrote_added`) since the
 /// reader's mark: nobody drains it and nothing writes it by hand; the container's log keeps
 /// what the oldest cursor has not read.
@@ -351,6 +387,26 @@ mod tests {
         drop((a, b));
         add(4);
         assert!(lock(&s.0).log.is_empty() && lock(&s.0).marks.is_empty());
+    }
+
+    // spec: none (internal). A clone follows on from where the original stands, apart from it:
+    // each sees the writes after the clone, and dropping one keeps the other's log.
+    #[test]
+    fn a_clone_follows_on_its_own() {
+        let mut m: Stamped<u8, u8> = Stamped::default();
+        let mut e: Effects<u8, u8> = Effects::new("test cloned");
+        e.want(1);
+        e.due();
+        e.settle(&1, || m.get(&1).copied().unwrap_or(0));
+        let f = m.stamps.feed::<u8>();
+        let mut c = e.clone();
+        let mut g = f.clone();
+        m.insert(1, 1);
+        m.stamps.wrote_added(&7u8, true, true);
+        drop(e);
+        drop(f);
+        assert_eq!(c.due(), [1]);
+        assert_eq!(g.added(), [7]);
     }
 
     // spec: none (internal). The clock's next wake is the earliest `until` read and not passed,
