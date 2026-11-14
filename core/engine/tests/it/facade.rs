@@ -1031,3 +1031,71 @@ fn record_blob_rows_go_with_their_sync_id_spec_perm_4() {
     lp.peers[0].restart(10).unwrap();
     assert!(lp.peers[0].engine.record_blobs(&s).unwrap().is_empty(), "S not read at the open");
 }
+
+// spec/permissions.md §4 (Logging certificates: each node logs its account's chain certificates
+// for the sync ID's group and for each actor it acted for; a commit's author's chain goes with
+// it), spec/sync-judgement.md §2 (the required set holds those certificates, nothing more): x is
+// an item of t's closure that t reads; a private group h holds write on x, peer 1's account is in
+// h. h's roster is no chain into t, and nobody wrote on x through h: its edge write on h is not
+// under t's sync ID. Once peer 1 writes on x through h, its author's chain goes there.
+#[test]
+fn a_chain_goes_under_a_sync_id_only_for_its_group_or_a_write_there_spec_perm_4() {
+    let (mut lp, ps) = people(2);
+    let (_, d) = lp.peers[0].engine.account().unwrap().unwrap();
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    add_item(&mut lp, 0, d, t);
+    let x = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.give_own_secrets(&x).unwrap();
+    add_item(&mut lp, 0, t, x);
+    let h = thing_of(&mut lp, 0, ps[0]);
+    let e = &mut lp.peers[0].engine;
+    e.give_own_secrets(&h).unwrap();
+    e.grant(&x, &t, &edge_of(Role::Read)).unwrap();
+    e.grant(&x, &h, &edge_of(Role::Write)).unwrap();
+    let member = *e.grant(&h, &ps[1], &edge_of(Role::Write)).unwrap().commits.iter().find(|c| e.header(c).is_some_and(|hd| hd.aspects.iter().any(|a| a.tid == h && a.ak.as_str() == "roles.0"))).expect("the edge write on h");
+    let s = e.home_sync_id(&t).unwrap().unwrap();
+    assert_eq!(e.sync_holding(&s).unwrap(), Some((t, Holding::Read)));
+    assert!(e.sync_bodies(&member).unwrap().get(&s).is_none(), "h's roster is nobody's chain into t: {:?}", e.sync_bodies(&member).unwrap());
+    spread(&mut lp);
+    let mut m = Mutation::new();
+    m.set(x, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
+    lp.peers[1].engine.commit(m).unwrap().unwrap();
+    spread(&mut lp);
+    let e = &mut lp.peers[0].engine;
+    assert!(e.sync_bodies(&member).unwrap().get(&s).is_some_and(|b| b.certificate && b.copy), "the writer's chain to x: {:?}", e.sync_bodies(&member).unwrap());
+}
+
+// spec/sync-judgement.md §1 Certificate blobs (a node logging the same parts of a commit under
+// several sync IDs logs one blob, wrapped under each): the account's `keys.0` part of its creating
+// commit is a certificate under the sync IDs of t and u alike; the copy sealed under one is
+// wrapped for the other, under its own thing's epoch. Under D's home the commit is a closure body,
+// a per-sync-ID copy of other parts, never shared as either.
+#[test]
+fn a_certificate_copy_is_one_blob_under_every_sync_id_spec_sync_judgement_1() {
+    let (mut lp, ps) = people(1);
+    let (_, d) = lp.peers[0].engine.account().unwrap().unwrap();
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let u = thing_of(&mut lp, 0, ps[0]);
+    for x in [t, u] {
+        lp.peers[0].engine.give_own_secrets(&x).unwrap();
+        add_item(&mut lp, 0, d, x);
+    }
+    let e = &mut lp.peers[0].engine;
+    let ids = [d, t, u].map(|x| e.home_sync_id(&x).unwrap().unwrap());
+    let [home, s, su] = ids;
+    let keys = e.current_keys(&ps[0]);
+    let c = *keys.iter().find(|c| {
+        let b = e.sync_bodies(c).unwrap();
+        matches!((b.get(&s), b.get(&su)), (Some(x), Some(y)) if x.certificate && y.certificate && x.parts == y.parts)
+    }).expect("one certificate body under both");
+    let mut rng = SeededRng::from_u64(5);
+    let (sealed, wrap) = e.seal_body(&s, &c, &mut rng).unwrap().expect("sealed");
+    let to = e.rewrap(&c, &sealed.id, &s, &wrap, &su).unwrap().expect("the same blob under u's sync ID");
+    if e.sync_bodies(&c).unwrap().get(&home).is_some_and(|m| !m.certificate) {
+        let (copy, copy_wrap) = e.seal_body(&home, &c, &mut rng).unwrap().expect("the closure copy");
+        assert!(e.rewrap(&c, &copy.id, &home, &copy_wrap, &s).unwrap().is_none(), "a per-sync-ID copy is no certificate elsewhere");
+        assert!(e.rewrap(&c, &sealed.id, &s, &wrap, &home).unwrap().is_none(), "a certificate is no closure body");
+    }
+    assert!(lp.peers[0].engine.epochs(&u).is_some_and(|ep| ep.read.held().any(|(x, _)| wrap_opens_under(&lp, 0, &u, &x, &sealed.id, &to))), "wrapped under u's epoch");
+}

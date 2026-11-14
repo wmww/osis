@@ -403,9 +403,12 @@ impl Engine {
     /// them, wrapped as `wrap_secret` says for those parts (§1 Certificate blobs).
     pub(crate) fn rewrap_now(&mut self, c: &CommitId, b: &BlobId, from: &SyncId, from_wrap: &Wrap, to: &SyncId) -> Result<Option<Wrap>> {
         // a certificate copy of the same parts is one blob wrapped under each sync ID needing
-        // them (spec/sync-judgement.md §1 Certificate blobs); a per-sync-ID copy never is shared
-        let Some(meta) = self.sync_bodies_now(c)?.get(to).cloned() else { return Ok(None) };
-        let certificate = meta.certificate && self.blob_copy_now(b) == Some(true) && self.blob_parts_now(b).as_ref() == Some(&meta.parts);
+        // them (spec/sync-judgement.md §1 Certificate blobs); a per-sync-ID copy never is shared,
+        // even as a certificate of the same parts elsewhere: `from` holds `b` as a certificate too
+        let bodies = self.sync_bodies_now(c)?;
+        let Some(meta) = bodies.get(to).cloned() else { return Ok(None) };
+        let from_certificate = bodies.get(from).is_some_and(|m| m.certificate && m.parts == meta.parts);
+        let certificate = meta.certificate && from_certificate && self.blob_copy_now(b) == Some(true) && self.blob_parts_now(b).as_ref() == Some(&meta.parts);
         if !certificate && (self.blob_copy_now(b) != Some(false) || meta.copy) {
             return Ok(None);
         }

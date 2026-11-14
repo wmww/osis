@@ -34,6 +34,9 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         core.ix.by_aspect.remove(&k, &(v.ts, *id));
         core.ix.invalid.remove(&k, id);
         core.ix.by_thing.remove(&(a.tid, v.author), id);
+        if !core.ix.by_thing.contains_key(&(a.tid, v.author)) {
+            core.ix.authors_on.remove(&a.tid, &v.author);
+        }
         core.ix.dropped_snapshots.remove(&k, id);
         if v.form.counted() && v.kind.has_own_writes() && a.lo < a.hi {
             core.ix.ranges.remove(&(a.tid, a.ak.clone(), v.form.own_source(v.author, *id)), &(a.lo, *id));

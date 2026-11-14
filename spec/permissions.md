@@ -168,6 +168,7 @@
   - the records missing go as one record blob of the logging node's; a record blob logged by any node counts once opened, while it is held in the node's own store and at every source of the sync ID;
   - a certificate copy or closure blob logged by any node counts once the node has opened it as the same commit and checked each of its deltas against the header's delta hash (spec/commits.md §4), while it is held in the node's own store and at every source of the sync ID;
   - a blob of a rotation commit of the sync ID's actor (wrapped under the epoch it supersedes, spec/crypto.md §5) counts only if it opens under the newest read epoch.
+  - a commit under the sync ID on a thing of its closure brings its author's chain for that thing: any node holding the commit logs the parts no entry there holds. No other chain into a thing of the closure goes there (a chain of a holder of a role on an item that wrote nothing there, through things outside the closure, does not).
 - Deltas a sync ID's bodies carry (on things of its closure its actor may read, spec/sync-judgement.md §1) go as closure blobs, never as copies; every other delta of a chain goes as a copy.
 - A demotion or `keys.0` write by another node is its author's to log (§3); a node MAY wait up to `SETTLE_MS` after receiving one before copying it.
 - A promoter completes the chain it holds: a writer promotes a deposited commit only once its author's chain for it is under the sync ID, logging the missing parts itself (spec/sync-inbox.md §4).

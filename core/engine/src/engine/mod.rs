@@ -740,6 +740,10 @@ indexes! {
     pub own_replaces: JSetMap<(Tid, Ak, Tid), (Ts, CommitId)>,
     /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
     pub by_thing: JSetMap<(Tid, Tid), CommitId>,
+    /// `by_thing`'s keys per thing: the authors of held commits with a delta on it (a commit's
+    /// author's chain goes under each sync ID carrying it, `Engine::sync_certificates`). Moves
+    /// only as an author comes or goes.
+    pub authors_on: JSetMap<Tid, Tid>,
     /// Held commits per (header actor, author), where those differ: re-judging
     /// `validity::acts_for` when the actor's timeline changes, a demotion's frontier, the
     /// actors this node acts for (`Core::acting`).
