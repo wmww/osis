@@ -113,10 +113,7 @@ pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId)
         return Ok(Some(crate::Ingested::Pending(*id, pending.unwrap_or(crate::Reason::Unexamined))));
     };
     if new_parts_bound(tx, blob)? > room {
-        if pending.is_some() {
-            crate::retention::forget_waiting_leftovers(tx, id)?;
-            tx.txn.remove_pending(id, osis_store::Shred::Yes)?;
-            tx.core.ix.pending.remove(id);
+        if super::drop_pending(tx, id)? {
             super::keys::forget_unchecked(tx, id)?;
         }
         return Ok(Some(crate::Ingested::TooLarge(*id)));

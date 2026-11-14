@@ -9,13 +9,13 @@ use crate::engine::Core;
 use osis_base::{CommitId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Applied commits with a slot `thing_wait` holds back (`m.missing`), derived from held headers:
-/// not journaled, a wake a rollback undoes only costs a fetch. A slot no entry opened costs nothing:
-/// node-sync finds no entry for it.
 /// Headers of unjudgeable commits remembered in memory (`Waits`): a page of a very large backlog is
 /// the most a peer's input can keep; a restart loses them all and fetches again.
 const MAX_REMEMBERED: usize = 4096;
 
+/// Applied commits with a slot `thing_wait` holds back (`m.missing`), derived from held headers:
+/// not journaled, a wake a rollback undoes only costs a fetch. A slot no entry opened costs nothing:
+/// node-sync finds no entry for it.
 #[derive(Clone, Default)]
 pub(crate) struct Awaiting {
     by_record: BTreeMap<Tid, BTreeSet<CommitId>>,
@@ -219,7 +219,7 @@ pub(crate) fn wake(core: &mut Core) {
     // a thrown-out commit awaiting this record among others (the entry names only the first); a
     // pending one whose copy threw out a part (`throw_out_parts`) is delivered again from the
     // copies its carriers still hold
-    let mut again = Vec::new();
+    let mut again: Vec<CommitId> = Vec::new();
     for t in &records {
         for c in core.waits.on_record.get(t).into_iter().flatten() {
             if core.ix.commits.contains_key(c) {
@@ -232,7 +232,6 @@ pub(crate) fn wake(core: &mut Core) {
             }
         }
     }
-    core.redeliver.extend(std::mem::take(&mut again));
     if !moved.is_empty() {
         undropped.append(&mut core.waits.awaiting.reach);
         // a thrown-out commit with a reach wait (an author whose record is held) among others:
@@ -243,8 +242,8 @@ pub(crate) fn wake(core: &mut Core) {
                 again.extend(cs.iter().filter(|c| !core.ix.commits.contains_key(*c) && core.ix.pending.contains_key(*c)));
             }
         }
-        core.redeliver.extend(std::mem::take(&mut again));
     }
+    core.redeliver.extend(again);
     if let Some(ch) = &mut core.changed {
         ch.wakes.woken.extend(undropped);
         ch.wakes.records.extend(records);

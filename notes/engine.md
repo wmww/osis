@@ -61,7 +61,7 @@ osis-node (`core/node/src/sync`, notes/sync.md): `mod.rs` `SyncEngine`; `state.r
 A map by area; rustdoc has the full list.
 - Lifecycle: `Engine::create` (fresh identity: the node thing's `created.0` with `node.0`, then `keys.0`), `open` (load, re-examine pending), `reload`, `subscribe`/`subscribe_durable`, `app_record`/`set_app_record` (the `u/` records), `report(diagnostic)` (deduped like the engine's own).
 - Writing: `Mutation` built up and passed to `Engine::commit(m) -> Option<CommitId>` (notes/engine-apply.md, Writer side).
-- Receiving: `ingest`/`ingest_from`/`ingest_memory` -> `Ingested::{Applied, Duplicate, Pending, Awaits, Parked, TooLarge}`; `reexamine`, `set_syncing`, `tick` (expiry, purge floors, drift).
+- Receiving: `ingest`/`ingest_with_lists`/`ingest_memory` -> `Ingested::{Applied, Duplicate, Pending, Awaits, Parked, TooLarge}`; `reexamine`, `set_syncing`, `tick` (expiry, purge floors, drift).
 - Reads: `get`, `get_at` (a paged state loads the path's pages only), `get_range`, `read_large`/`read_large_max`, `next_chunk` (the API's `stream`), commit listings (`engine::listing`), `held_parts`.
 - Retention: node-sync judges deletions and re-snapshots from the commit index, no queue (`snapshot`, `covered`, `drop_body`, `part_keeps` per commit by aspect index, `delta_live`, `replaced_at`, `body_not_dropped`: true for a missing part too).
 - Undo: `revert` (spec/commits.md §7), `check_revertible(_as)`, `held_commits(scope)` for `osis` undo and redo, whose stacks live there.

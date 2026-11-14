@@ -131,12 +131,6 @@ pub(crate) struct Waiting {
     pub others: Vec<Reason>,
 }
 
-impl Waiting {
-    fn copy(&self) -> Waiting {
-        Waiting { parts: self.parts.clone(), reason: self.reason.clone(), others: self.others.clone() }
-    }
-}
-
 /// A part `examine` checked and keeps no content of: apply streams it again, one page at a
 /// time (issues/durable-decode-bound.md).
 pub(crate) struct Streamed {
@@ -377,9 +371,7 @@ fn retry_pending(tx: &mut Tx<'_>, id: CommitId, b: CommitBlob) -> Result<Option<
     match tx.step(Step::Commit, |tx| ingest_blob(tx, b, Origin::Remote)) {
         Ok(out) => Ok(Some(out)),
         Err(e) if e.class() == ErrorClass::BadInput => {
-            tx.txn.remove_pending(&id, Shred::Yes)?;
-            crate::retention::forget_waiting_leftovers(tx, &id)?;
-            tx.core.ix.pending.remove(&id);
+            drop_pending(tx, &id)?;
             keys::forget_unchecked(tx, &id)?;
             // secrets read from its boxes go unless something else reads them
             crate::rotation::mark_lost_due(tx, things)?;
@@ -784,8 +776,8 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
     let received = tx.now();
     let _s = osis_base::costs::span("examine");
     let out = match examine(tx, &mut blob, &id, &BTreeSet::new(), origin)? {
-        Exam::Ready(parts) => {
-            let w = parts.waiting.as_ref().map(Waiting::copy);
+        Exam::Ready(mut parts) => {
+            let w = parts.waiting.take();
             // parts its pending copy threw out (`throw_out_parts`) wait as slots of the applied commit
             let thrown = !tx.core.waits.records_of(&id).is_empty();
             tx.core.waits.unawaits(&id);
@@ -826,9 +818,7 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             // a stored copy judged unjudgeable (once judged, its bad parts dropped, it holds only
             // unjudgeable ones; pages resolved its header): nothing of it is kept (spec/commits.md
             // §4), and its carriers deliver it again, each copy thrown out as on arrival
-            if tx.core.ix.pending.contains_key(&id) {
-                crate::retention::forget_waiting_leftovers(tx, &id)?;
-                unpend(tx, &id)?;
+            if drop_pending(tx, &id)? {
                 tx.core.redeliver.insert(id);
             }
             tx.core.waits.awaits(id, blob.header.aspects.iter().map(|a| a.tid).collect());
@@ -936,6 +926,13 @@ fn unpend(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
     Ok(was)
 }
 
+/// The stored pending copy of `id` goes, with the leftovers its parts kept while they waited
+/// (read from it: first). Whether it was pending.
+fn drop_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
+    crate::retention::forget_waiting_leftovers(tx, id)?;
+    unpend(tx, id)
+}
+
 /// The parts of the stored pending copy of `id` past their expiry go, as their timers take them
 /// (`retention::expire_waiting`): what applies is a function of the arrivals and the clock, never
 /// of when ticks ran.
@@ -1038,8 +1035,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
     blob = with_pending(tx, id, blob)?;
     blob.parts.retain(|p| !skip.contains(&p.ai));
     if blob.parts.is_empty() {
-        crate::retention::forget_waiting_leftovers(tx, id)?;
-        unpend(tx, id)?;
+        drop_pending(tx, id)?;
         return Ok(Ingested::Duplicate(*id));
     }
     let mut merged = merge_parts(held, blob.clone());
@@ -1065,8 +1061,8 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             keys::read_pending_boxes(tx, &blob, id)?;
             Ingested::Pending(*id, w.reason)
         }
-        Exam::Ready(parts) => {
-            let w = parts.waiting.as_ref().map(Waiting::copy);
+        Exam::Ready(mut parts) => {
+            let w = parts.waiting.take();
             let waits = settle_waits(tx, id, &parts.unjudged);
             read_unjudged_boxes(tx, &merged, id, &parts.unjudged_parts)?;
             unpend(tx, id)?;
@@ -1326,7 +1322,7 @@ impl Engine {
     /// chunk and header-list blobs it references (ciphertexts by ID). Bad input is reported as
     /// a diagnostic and returned as an error; nothing of it is stored.
     pub fn ingest(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>) -> Result<Ingested> {
-        self.ingest_from(bytes, blobs, None)
+        self.ingest_class(bytes, blobs, None, None, &[])
     }
 
     /// `ingest` of a commit taken only for what it proves here (a stranded report's holder keys,
@@ -1382,12 +1378,7 @@ impl Engine {
         Ok(n)
     }
 
-    /// `ingest`, attributing diagnostics to `peer`.
-    pub fn ingest_from(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>) -> Result<Ingested> {
-        self.ingest_class(bytes, blobs, peer, None, &[])
-    }
-
-    /// `ingest_from` of an account's rotation with list blobs that came with it (under the
+    /// `ingest` of an account's rotation with list blobs that came with it (under the
     /// same label, spec/sync.md §3): the thing lists of this rotation among them that verify are
     /// held in the same transaction, before it applies, so what they name never reads as
     /// unlisted here. Others are left (`hold_lists`).
@@ -1461,11 +1452,6 @@ impl Engine {
         r
     }
 
-    /// Re-examines pending and parked commits until none applies (after new certificates or
-    /// `created.0` records, a change of what this node syncs, time passing, or an upgrade).
-    /// Role commits are tried first. A commit whose examination's inputs have not changed
-    /// since it was last examined is left out (`apply::waits`).
-    /// Pending commits `reexamine` read again so far (scale checks).
     /// Forgets reading-only secrets sourced from `id`: it was judged bad or its last entry left.
     pub fn forget_awaiting(&mut self, id: &CommitId) -> Result<()> {
         self.core.waits.unawaits(id);
@@ -1511,10 +1497,7 @@ impl Engine {
             // a memory commit's copy is the memory lane's, under its own share
             let Some((_, bytes)) = tx.txn.get_pending(&id)? else { return Ok(false) };
             let things: Vec<Tid> = CommitBlob::decode_stored(&bytes).ok().filter(|b| b.header.kind.is_role()).map(|b| b.header.aspects.iter().map(|a| a.tid).collect()).unwrap_or_default();
-            tx.core.touch();
-            crate::retention::forget_waiting_leftovers(tx, &id)?;
-            tx.txn.remove_pending(&id, Shred::Yes)?;
-            tx.core.ix.pending.remove(&id);
+            drop_pending(tx, &id)?;
             tx.core.waits.unawaits(&id);
             keys::forget_unchecked(tx, &id)?;
             // secrets read from its boxes go unless something else reads them
@@ -1528,10 +1511,14 @@ impl Engine {
         self.core.waits.sources().iter().copied().collect()
     }
 
+    /// Pending commits `reexamine` read again so far (scale checks).
     pub fn examined(&self) -> u64 {
         self.core.waits.examined
     }
 
+    /// Re-examines pending and parked commits until none applies (after new certificates or
+    /// `created.0` records, a change of what this node syncs, time passing, or an upgrade).
+    /// Role commits are tried first.
     pub fn reexamine(&mut self) -> Result<()> {
         let _s = osis_base::costs::span("reexamine");
         loop {
@@ -1623,7 +1610,7 @@ impl Engine {
         })
     }
 
-    /// Pending and parked commits with their reasons (parked ones as `Unexamined`).
+    /// Pending and parked commits with their reasons (`Unexamined` from a load until examined).
     pub fn pending(&self) -> Vec<(CommitId, Reason)> {
         self.core.ix.pending.iter().map(|(k, v)| (*k, v.clone())).collect()
     }
