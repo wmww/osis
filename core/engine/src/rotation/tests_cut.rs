@@ -350,7 +350,8 @@ fn nothing_before_a_cut_reaches_its_holder_spec_crypto_4() {
 }
 
 /// The default test's seeds, a covering set: with the boxing or the carry rule off, every one of
-/// seeds 1-40 fails.
+/// seeds 1-40 fails; with the carry rule's maker clause off 5 (2 among them), with a box allowed
+/// one floor low 23 (2).
 const NOTHING_BEFORE_SEEDS: [u64; 3] = [1, 2, 3];
 
 /// Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds: OSIS_CUT_START,
@@ -918,10 +919,11 @@ fn content(lp: &mut LocalPeer, i: usize, g: Tid) -> BTreeSet<String> {
 // (forks included); at a random step A cuts for N while B keeps going. N takes every peer's
 // commits on `g` only as `g`'s labels carry them, sealed: it reads the same roster as A, holds no
 // read secret below its cut, holds no content commit from before it (written by anyone, beside
-// the cut included, whatever a peer encrypts again), yet reads the same current state as A. Fails without roles secrets in
-// history entries (N misses every role commit before its cut), with content sealed and wrapped
-// under the roles secret or without the floor clause of Passing on (N holds what came before),
-// and without the state at a cut (N misses state from before it).
+// the cut included, whatever a peer encrypts again) nor unwraps one's label entry (its header),
+// yet reads the same current state as A. Fails without roles secrets in history entries (N misses
+// every role commit before its cut), with content wrapped under the roles secret (N unwraps what
+// came before) or also sealed there, or without the floor clause of Passing on (N holds what came
+// before), and without the state at a cut (N misses state from before it).
 #[test]
 fn newcomer_reads_the_roster_from_sealed_labels_spec_crypto_4() {
     let cut = osis_base::testenv::run_seeds("rotation::tests_cut::newcomer_reads_the_roster_from_sealed_labels_spec_crypto_4", &NEWCOMER_SEEDS, false, cut_replay("newcomer_reads_the_roster_from_sealed_labels_large_spec_crypto_4"), newcomer_reads_the_roster);
@@ -929,8 +931,9 @@ fn newcomer_reads_the_roster_from_sealed_labels_spec_crypto_4() {
 }
 
 /// The default test's seeds, a covering set: each cuts; with the boxing or the carry rule off
-/// every one of seeds 1-40 fails, without the state at a cut 34, without roles secrets in history
-/// entries 17 (these three among them).
+/// every one of seeds 1-40 fails, without the state at a cut 34, with content wrapped under the
+/// roles secret 34 (sealed there too, the same 34), without roles secrets in history entries 17 (these three
+/// among each), without the floor clause of Passing on 23 (1 and 5).
 const NEWCOMER_SEEDS: [u64; 3] = [1, 3, 5];
 
 /// Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds: OSIS_CUT_START,
@@ -1025,6 +1028,9 @@ fn newcomer_reads_the_roster(seed: u64) -> bool {
     let below: Vec<Epoch> = lp.peers[5].engine.epochs(&g).unwrap().read.held().map(|x| x.0).filter(|e| e.n() < cut.n()).collect();
     assert!(below.is_empty(), "seed {seed}: N holds {below:?} below its cut {cut:?}");
     holds_none(&lp, 5, &before, &format!("seed {seed}"));
+    // nor reads the header of one: the wrap gates it (spec/crypto.md §5 Passing on)
+    let open: Vec<_> = label.held.iter().filter(|pk| before.contains(&pk.id) && unwraps(&lp, 5, pk)).map(|pk| pk.id).collect();
+    assert!(open.is_empty(), "seed {seed}: N unwraps label entries from before its cut: {open:?}");
     let read = content(&mut lp, 5, g);
     assert!(read.contains("after"), "seed {seed}: N does not read A's write after its cut");
     assert_eq!(read, content(&mut lp, 0, g), "seed {seed}: N reads another state than A");
@@ -1103,6 +1109,11 @@ fn low_floor_waits_for_the_names_spec_crypto_4() {
 fn edits_on(lp: &LocalPeer, i: usize, g: Tid) -> BTreeSet<osis_base::CommitId> {
     let e = &lp.peers[i].engine;
     e.core.ix.commits.iter().filter(|(_, m)| !m.header.kind.is_compaction() && m.header.aspects.iter().any(|a| a.tid == g && osis_schema::core_types::is_content(a.ak.as_str()))).map(|(c, _)| *c).collect()
+}
+
+/// Whether peer `n` unwraps a blob key of sealed package `pk` with the secrets it holds.
+fn unwraps(lp: &LocalPeer, n: usize, pk: &crate::local_peer::SealedPackage) -> bool {
+    pk.entries.iter().any(|e| e.wraps.iter().any(|(a, w)| osis_label::unwrap_any(lp.peers[n].engine.read_secrets(a).iter(), &e.id, w).is_some()))
 }
 
 /// Asserts N (peer `n`) holds no commit of `before` (the content commits from before its cut):

@@ -442,14 +442,16 @@ struct BobWrite {
 // received before it by Alice (her frontier) or Carol (her addendum), whatever the tids.
 #[test]
 fn a_removed_writers_writes_read_alike_in_any_arrival_order_and_tie_spec_perm_5_2() {
-    let ties = osis_base::testenv::run_seeds("apply::tests_addenda::a_removed_writers_writes_read_alike_in_any_arrival_order_and_tie_spec_perm_5_2", &REMOVED_WRITER_SEEDS, false, removed_writer_replay, removed_writers_writes);
-    assert!((0..3).all(|t| ties.contains(&t)), "every tie case ran: {ties:?}");
+    let cases = osis_base::testenv::run_seeds("apply::tests_addenda::a_removed_writers_writes_read_alike_in_any_arrival_order_and_tie_spec_perm_5_2", &REMOVED_WRITER_SEEDS, false, removed_writer_replay, removed_writers_writes);
+    assert!((0..3).all(|t| cases.iter().any(|c| c.0 == t)), "every tie case ran: {cases:?}");
+    assert!([false, true].iter().all(|r| cases.iter().any(|c| c.1 == *r)), "with and without a re-grant: {cases:?}");
 }
 
-/// The default test's seeds, a covering set: every tie case; with a witness's addendum leaving
-/// out a write at the removal's `ts`, 11 of seeds 0-47 fail (the last four of these among them),
-/// with addenda ignored 18.
-const REMOVED_WRITER_SEEDS: [u64; 6] = [0, 3, 9, 13, 16, 21];
+/// The default test's seeds, a covering set: every tie case, with and without a re-grant; with a
+/// witness's addendum leaving out a write at the removal's `ts`, 11 of seeds 0-47 fail (9, 13, 16
+/// and 21 among them), with addenda ignored 18, with frontiers ignored 7 (0), with re-grants
+/// ignored 8 (4).
+const REMOVED_WRITER_SEEDS: [u64; 7] = [0, 3, 4, 9, 13, 16, 21];
 
 /// Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds: OSIS_ADDENDA_START,
 /// OSIS_ADDENDA_SEEDS.
@@ -465,8 +467,8 @@ fn removed_writer_replay(s: u64) -> String {
 }
 
 /// One seed of `a_removed_writers_writes_read_alike_in_any_arrival_order_and_tie_spec_perm_5_2`:
-/// its tie case.
-fn removed_writers_writes(seed: u64) -> usize {
+/// its tie case, and whether Bob was granted again.
+fn removed_writers_writes(seed: u64) -> (usize, bool) {
     let mut rng = (seed + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut below = |n: u64| {
         rng ^= rng << 13;
@@ -568,7 +570,7 @@ fn removed_writers_writes(seed: u64) -> usize {
         }
         assert_eq!(f.engine.get(&t, &ak("x:v.0")).unwrap(), want, "{at}: a fresh node, order {:?}", pks.iter().map(|p| p.id).collect::<Vec<_>>());
     }
-    tie
+    (tie, regrant)
 }
 
 // spec/requirements.md Convergence, spec/permissions.md §5.2 (Position, Addenda, Compaction
