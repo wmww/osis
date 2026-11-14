@@ -1433,6 +1433,49 @@ fn a_dead_tie_an_admin_of_g_alone_removes_at_once_spec_perm_2() {
     assert!(e.untie_due(&t).unwrap().is_empty() && !e.roster(&t).contains_key(&g), "removed");
 }
 
+// spec/permissions.md §2 Tied grants (as an explicit demotion when it has admin on T, else as a
+// self-removal), §2 (`until`: judged by the node's own clock): peer 1, admin of G, also holds
+// admin on T until a minute ahead. Its removal of the dead tie is explicit, waiting passes, while
+// that lasts; once the clock passes it, by time alone (a wake moves the value), a self-removal
+// due at once.
+#[test]
+fn a_dead_tie_is_due_at_once_when_admin_on_t_expires_spec_perm_2() {
+    let (mut lp, ps) = people(2);
+    let g = thing_of(&mut lp, 1, ps[1]);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[1].engine.give_own_secrets(&g).unwrap();
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    add_item(&mut lp, 1, g, t);
+    spread(&mut lp);
+    let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000);
+    let e = &mut lp.peers[0].engine;
+    let done = e.grant(&t, &ps[1], &ct::Edge { until: Some(until), ..edge_of(Role::Admin) }).unwrap();
+    let tie = e.placement(&t, &g, false).unwrap().unwrap();
+    e.grant(&t, &g, &ct::Edge { tied: Some(osis_engine::flows::tied::tie_ct(tie)), ..edge_of(Role::Write) }).unwrap();
+    for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
+        if h == ps[1] {
+            lp.peers[1].engine.take_inbox_blob(&b, true).unwrap();
+        }
+    }
+    spread(&mut lp);
+    let e = &mut lp.peers[1].engine;
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Remove(osis_base::Value::Tid(t)) }).unwrap();
+    e.commit(m).unwrap().unwrap();
+    assert_eq!(e.may_remove(&t, &g).unwrap(), Some(osis_engine::flows::Untie::Explicit), "admin on T");
+    let mut fx: osis_base::memo::Effects<(), BTreeSet<Tid>> = osis_base::memo::Effects::new("test unties");
+    fx.want(());
+    let (_, first) = fx.settle(&(), || e.untie_due(&t).unwrap()).unwrap();
+    assert!(first.is_empty(), "the explicit removal waits its passes");
+    lp.advance(61_000);
+    let e = &mut lp.peers[1].engine;
+    let now = e.now();
+    e.set_now(now);
+    assert_eq!(fx.due(), vec![()], "the admin grant's `until` passing moves it");
+    let (_, after) = fx.settle(&(), || e.untie_due(&t).unwrap()).unwrap();
+    assert_eq!(after, [g].into(), "a self-removal, due at once");
+}
+
 // spec/crypto.md §4 (names): a rotation names the edge writes its rotator held that pin a holder
 // below a role, and what it names travels with it: a removal's rotation logs with it the earlier
 // removal it names.

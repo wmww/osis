@@ -30,15 +30,16 @@
 //! The last two (holder duties) follow every thing a holder is named on (`Engine::role_things`,
 //! then its feed): what each value reads is stamped (records, timelines, placements, passes, the
 //! clock up to the next `until`), so a thing is judged again only when one of those moves. A
-//! holder duty's write refused for any reason but a store failure is left to the next move of
-//! what the value read.
+//! holder duty's write refused for any reason but a store failure is tried again at the next move
+//! of what the value read. A thing named a holder no more is followed no more (`untie_due` reads
+//! its holders, so it is due then).
 //!
 //! A duty whose drop forgot things makes the engine read its store again (`Engine::loads`): the
 //! driver ends the settle and restarts the modules (notes/sync-driver.md, Failures).
 //!
 //! State: the sync IDs synced here with their things (`SyncsFollow`), each one's heard-out value
 //! and whether one became heard out since the last judgment. Bounded by the sync IDs synced; the
-//! holder duties, two values per thing a holder is named on. A restart settles every key afresh
+//! holder duties, two values per thing named a holder here (unwanted when its last holder goes). A restart settles every key afresh
 //! (every held thing is judged again once heard out, every holder duty once).
 
 use crate::set::SyncsFollow;
@@ -198,7 +199,8 @@ impl Life {
     }
 
     /// The holder duties: each thing named a holder whose value moved, a joined link that ended
-    /// left, the tied edges due removed. Whether it wrote.
+    /// left, the tied edges due removed; a thing named a holder no more is followed no more.
+    /// Whether it wrote.
     fn holders(&mut self, engine: &mut Engine) -> Result<bool> {
         let added: Vec<Tid> = match &mut self.pairs {
             Some(f) => f.added().into_iter().map(|(_, t)| t).collect(),
@@ -213,18 +215,38 @@ impl Life {
             self.unties.want(t);
         }
         let mut acted = false;
-        for k in self.leaves.due() {
-            if let Some((_, true)) = self.leaves.settle(&k, || engine.joined_link_ended(&k)) {
-                acted |= wrote(engine.leave_link(&k))?;
-            }
-        }
+        // `untie_due` reads the thing's holders, so its key is due when the last one goes
         for t in self.unties.due() {
-            let Some((_, gs)) = self.unties.try_settle(&t, || engine.untie_due(&t))? else { continue };
+            if !engine.named_a_holder(&t) {
+                self.unties.unwant(&t);
+                self.leaves.unwant(&t);
+                continue;
+            }
+            // acted on whenever judged, not only when it changed: a write refused is tried again
+            // when what the value read moves
+            let mut gs = BTreeSet::new();
+            self.unties.try_settle(&t, || engine.untie_due(&t).inspect(|v| gs.clone_from(v)))?;
             for g in gs {
                 acted |= wrote(engine.untie(&t, &g))?;
             }
         }
+        for k in self.leaves.due() {
+            let mut ended = false;
+            self.leaves.settle(&k, || {
+                ended = engine.joined_link_ended(&k);
+                ended
+            });
+            if ended {
+                acted |= wrote(engine.leave_link(&k))?;
+            }
+        }
         Ok(acted)
+    }
+
+    /// Tests: whether a holder duty follows `t`.
+    #[doc(hidden)]
+    pub fn holder_duties_follow(&self, t: &Tid) -> bool {
+        self.leaves.wants(t) || self.unties.wants(t)
     }
 }
 

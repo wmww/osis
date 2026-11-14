@@ -93,4 +93,3 @@ fn a_covered_body_leaves_by_time_alone_spec_commits_5() {
         assert!(entries_of(&mut w, i, &s, &one).is_empty(), "node {i} still holds the covered body's entry");
     }
 }
-

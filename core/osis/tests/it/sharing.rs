@@ -290,3 +290,18 @@ fn a_parents_reader_sees_no_roster_of_its_member_team_spec_crypto_4() {
     assert!(carol.grants(m).unwrap().is_empty(), "no roster of M");
     assert!(heard.lock().unwrap().last().is_some_and(|g| g.is_empty()), "her watch heard it hidden: {:?}", heard.lock().unwrap());
 }
+
+// spec/permissions.md §2 Tied grants (a complete pass of every sync ID it reads whose bodies
+// carry a thing of the demotion's scope): a grant made with a membership (`add_with_grant`) goes
+// when the membership does, with no call for it. Alice, alone and admin of both, adds x to g
+// with a grant and takes it out again: x's own sync ID is not read here (x is in no synced
+// group), so no pass of it is waited on and the grant is gone at once.
+#[test]
+fn a_grant_with_a_membership_goes_with_it_spec_permissions_2() {
+    let alice = db(1);
+    let (g, x) = alice.commit_with(|w| Ok((w.create()?, w.create()?))).unwrap();
+    alice.add_with_grant(osis::Member::Item(x), g, Role::Read).unwrap();
+    assert!(alice.grants(x).unwrap().get(&g).is_some_and(|gr| gr.with_membership), "granted with the membership");
+    alice.commit_with(|w| w.group(g).remove(osis::Member::Item(x))).unwrap();
+    assert!(!alice.grants(x).unwrap().contains_key(&g), "the grant outlived the membership");
+}

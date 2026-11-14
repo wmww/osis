@@ -244,6 +244,12 @@ impl Node {
         &self.driver.dials
     }
 
+    /// Tests only: the lifecycle duties (`life`).
+    #[doc(hidden)]
+    pub fn life(&self) -> &Life {
+        &self.life
+    }
+
     /// Tests only: restarts in place after a store failure so far.
     #[doc(hidden)]
     pub fn restarts(&self) -> u64 {

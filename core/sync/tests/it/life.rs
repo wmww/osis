@@ -36,9 +36,9 @@ fn retained() -> (World, Tid, Tid) {
     (w, r, x)
 }
 
-/// Node 1 drops R's reference to X.
-fn unreference(w: &mut World, r: Tid) {
-    w.write(1, |e| {
+/// Node `i` drops R's reference to X.
+fn unreference(w: &mut World, i: usize, r: Tid) {
+    w.write(i, |e| {
         let mut m = Mutation::new();
         m.set(r, &v(), &Value::Str("none".into())).unwrap();
         e.commit(m).unwrap();
@@ -56,7 +56,7 @@ fn an_unreachable_thing_is_released_once_heard_out_spec_commits_5() {
     let (mut w, r, x) = retained();
     w.partition(1, 2);
     w.partition(0, 1);
-    unreference(&mut w, r);
+    unreference(&mut w, 1, r);
     w.flush();
     assert_eq!(w.engine(1).get(&x, &v()).unwrap(), Some(Value::Str("x".into())), "released offline");
     w.lie(2, Some(Lie::Withhold));
@@ -95,4 +95,33 @@ fn a_node_alone_releases_at_once_spec_commits_5() {
     });
     w.run();
     assert_eq!(w.engine(0).get(&x, &v()).unwrap(), None, "a node alone releases");
+}
+
+// spec/permissions.md §2, §7 (the holder duties' state: one value per thing named a holder): a
+// thing is followed while named a holder here and no longer. A node alone releases X; once X is
+// destroyed (its record and role commits gone), no holder duty follows it.
+#[test]
+fn a_destroyed_thing_is_followed_by_no_holder_duty_spec_permissions_2() {
+    let mut w = World::new(0);
+    w.add_node();
+    w.run();
+    let a = w.node(0).account.unwrap();
+    let (r, x) = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let r = e.new_thing(&mut m, a);
+        let x = e.new_thing(&mut m, a);
+        m.set(r, &v(), &Value::Tid(x)).unwrap();
+        m.set(x, &ct::RETAINERS, &BTreeSet::from([r])).unwrap();
+        e.commit(m).unwrap();
+        (r, x)
+    });
+    file(&mut w, 0, vec![r, x], Vec::new());
+    w.run();
+    assert!(w.node(0).node.life().holder_duties_follow(&x), "followed while held");
+    unreference(&mut w, 0, r);
+    w.run();
+    w.advance(osis_base::format::ROLE_KEEP_MS + 1);
+    w.run();
+    assert!(!w.engine(0).named_a_holder(&x), "X destroyed");
+    assert!(!w.node(0).node.life().holder_duties_follow(&x), "still followed once destroyed");
 }

@@ -283,3 +283,22 @@ fn a_joiner_leaves_k_once_its_edge_on_the_target_expired_spec_permissions_7() {
         assert!(!w.engine(i).roster(&link.k).contains_key(&a1), "node {i}: node 1's account still holds K");
     }
 }
+
+// spec/permissions.md §7 (joiner's leave reads K's edge on the target as the held role history
+// shows it now): node 0, cut off from node 1, takes K off its profile and grants it again; once
+// healed node 1 holds K's edge alive and its account stays in K (a hostile ordering of the
+// removal and the re-grant removes no live join).
+#[test]
+fn a_joiner_stays_when_k_was_granted_again_before_it_heard_spec_permissions_7() {
+    let (mut w, link) = redeemed();
+    let a1 = w.node(1).account.unwrap();
+    w.partition(0, 1);
+    w.write(0, |e| e.demote(&link.target, &osis_engine::flows::Demotion { holder: link.k, new: None, retain: None })).unwrap();
+    w.write(0, |e| e.grant(&link.target, &link.k, &osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None })).unwrap();
+    w.heal();
+    w.run();
+    assert!(w.engine(1).roster(&link.target).contains_key(&link.k), "K on the target at node 1");
+    for i in 0..2 {
+        assert!(w.engine(i).roster(&link.k).contains_key(&a1), "node {i}: node 1's account left K");
+    }
+}
