@@ -2404,7 +2404,7 @@ fn a_close_hides_no_concurrent_keep_of_the_thing_spec_sync_3() {
     let t = lp.peers[0].engine.tid();
     let (s1, s2) = (osis_base::SyncId([1; 16]), osis_base::SyncId([2; 16]));
     let keep = |lp: &mut LocalPeer, i: usize, ids: &[osis_base::SyncId]| {
-        let k = ct::Kept { ids: ids.iter().copied().collect(), secrets: Default::default() };
+        let k = ct::Kept { ids: ids.iter().copied().collect(), secrets: Default::default(), tied: Default::default() };
         let mut m = Mutation::new();
         m.op(d, &ct::KEPT, PathOp { path: vec![PathSeg::Key(osis_base::Value::Tid(t))], op: Op::Set(k.to_value()) }).unwrap();
         lp.peers[i].engine.commit(m).unwrap().unwrap();
