@@ -214,6 +214,8 @@ impl Node {
         let mut moved = Vec::new();
         self.opens.on_closed(&mut cx!(self, out), conn, &mut moved);
         self.moved(&mut moved, out);
+        // a store failure here reopens the node, whose start drops the same entries
+        let _ = self.store.gone(crate::store::Source::Conn(conn));
     }
 
     /// Every module settled, again while one acted: opens before read and inbox, so they act on

@@ -5,9 +5,13 @@
 //! writes stamp `stamps`, so a memo may read it.
 
 use super::rows::{EntryRow, Source, Usage};
+use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::memo::Stamps;
 use osis_base::{BlobId, SyncId, WallMs};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+
+/// A row a connection's source keeps: (connection, sync ID, owner tag, key).
+pub(crate) type ConnRow = (crate::types::ConnId, SyncId, u8, Vec<u8>);
 
 /// The stamp key of S's listing (any entry of S added or removed).
 #[derive(Hash)]
@@ -34,7 +38,9 @@ pub(crate) struct Memory {
     /// Bytes charged to each source by ephemeral entries and connections.
     pub charges: HashMap<Source, u64>,
     /// Rows a connection's source keeps for this connection only (stands, deletes seen).
-    pub conn_rows: HashMap<(crate::types::ConnId, SyncId, u8, Vec<u8>), Vec<u8>>,
+    pub conn_rows: HashMap<ConnRow, Vec<u8>>,
+    /// Those rows by when they were written: they end after `TOMBSTONE_LIFETIME` as a record's do.
+    pub conn_aging: BTreeSet<(WallMs, ConnRow)>,
     pub stamps: Stamps,
 }
 
@@ -167,7 +173,7 @@ impl Memory {
         self.log.retain(|(x, _), _| x != s);
         self.slot.retain(|(x, _), _| x != s);
         self.usage.remove(s);
-        self.conn_rows.retain(|(_, x, _, _), _| x != s);
+        self.conn_forget(|(_, x, _, _)| x != s);
         self.stamps.wrote(&Listing(s), true);
     }
 
@@ -206,13 +212,49 @@ impl Memory {
             self.moved(&s, &b);
             acted = true;
         }
+        while let Some((t, _)) = self.conn_aging.first() {
+            if t.0.saturating_add(TOMBSTONE_LIFETIME_MS) > now.0 {
+                break;
+            }
+            let Some((t, row)) = self.conn_aging.pop_first() else { break };
+            // a row written again since ages from its new time
+            if self.conn_rows.get(&row).is_some_and(|v| v.get(..8) == Some(&t.0.to_be_bytes()[..])) {
+                self.conn_rows.remove(&row);
+                self.stamps.wrote(&row, true);
+            }
+            acted = true;
+        }
         acted
     }
 
     pub(crate) fn next_due(&self) -> Option<WallMs> {
         let e = self.expiry.first().map(|x| x.0);
         let a = self.aging.first().map(|x| WallMs(x.0.0.saturating_add(osis_base::format::MAX_DRIFT_MS)));
-        e.into_iter().chain(a).min()
+        let c = self.conn_aging.first().map(|x| WallMs(x.0.0.saturating_add(TOMBSTONE_LIFETIME_MS)));
+        e.into_iter().chain(a).chain(c).min()
+    }
+
+    /// Writes (or with `None` removes) a connection's row, written at `at`.
+    pub(crate) fn conn_put(&mut self, row: ConnRow, val: Option<(WallMs, Vec<u8>)>) {
+        self.stamps.wrote(&row, true);
+        match val {
+            Some((at, v)) => {
+                self.conn_aging.insert((at, row.clone()));
+                self.conn_rows.insert(row, v);
+            }
+            None => drop(self.conn_rows.remove(&row)),
+        }
+    }
+
+    pub(crate) fn conn_get(&self, row: &ConnRow) -> Option<Vec<u8>> {
+        self.stamps.read(row);
+        self.conn_rows.get(row).cloned()
+    }
+
+    /// Drops connection `c`'s rows (it closed), or every connection's rows of S (S left).
+    pub(crate) fn conn_forget(&mut self, keep: impl Fn(&ConnRow) -> bool) {
+        self.conn_rows.retain(|r, _| keep(r));
+        self.conn_aging.retain(|(_, r)| keep(r));
     }
 
     /// What a connection's charges held (it closed): the ephemeral entries it brought that still

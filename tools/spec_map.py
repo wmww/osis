@@ -167,7 +167,7 @@ RULES = [
     ("spec/sync-ids.md", "6", "delete keys", "one delete signature per commitment group of the blob's prefix"),
     ("spec/sync-streams.md", "1", "flow control", "MUST NOT close a connection over unwritten bytes below"),
     ("spec/sync-judgement.md", "3", "between readers", "no Delete, Register or Deposit item is sent between readers"),
-    ("spec/sync-inbox.md", "3", "deposit budget", "one per sync ID for durable and ephemeral deposits"),
+    ("spec/sync-inbox.md", "3", "deposit budget", "one per sync ID, shared by its durable and ephemeral deposits"),
     ("spec/sync-inbox.md", "3", "deposit from anyone", "whatever the connection proved and whoever offers it"),
     ("spec/sync-set.md", "1", "home under synced group", "a node MUST NOT write a commit after which some node's synced group closure"),
     ("spec/sync-transport.md", "1", "node key check", "a client MUST check the node's key"),

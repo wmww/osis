@@ -8,7 +8,7 @@ use osis_crypto::{DeleteSecret, Epoch, KemSecret, LabelRole, Secret32, SeededRng
 use osis_engine::sync::{Caps, Holding, SyncSet};
 use osis_label::{ClaimSet, Class, DeleteItem, Parent, Prefix, Reader, Step, StepKeys};
 use osis_proto::{Code, DepositItem};
-use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot, NodeEvent};
+use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot, NodeEvent, RecordId};
 use osis_sync::store::{Cred, Source, Stand};
 use osis_sync::types::{ConnId, Entry};
 use osis_sync::Store;
@@ -133,21 +133,30 @@ fn events_of(st: &Store, s: &SyncId) -> Vec<NodeEvent> {
     st.read_sync(s, None, None, usize::MAX - 1).unwrap().events.into_iter().map(|e| e.event).collect()
 }
 
-// spec/sync-ids.md §6 (register): a genesis step is taken only into an empty path and only if
-// its delete key hashes to the sync ID; then only a child of the head; anything else is 9, and a
-// taken step moves the head (a head event in the log).
+// spec/sync-ids.md §6 (register), spec/wire.md §11.2 (Register): a genesis step is taken only
+// into an empty path and only if it verifies (else 1; a child into an empty path 13); then only a
+// child of the head (9 else), the head itself answered 0 with nothing changed; a step of another
+// sync ID is 2; a taken step moves the head (a head event in the log).
 #[test]
 fn register_takes_genesis_then_children_of_the_head_spec_sync_ids_6() {
     let dev = Dev::new();
     let mut s = Sid::new(10);
-    let mut st = unread(&dev, &s);
-    assert_eq!(st.take_register(&s.id, &s.steps[0].0, None).unwrap(), Code::NOT_HEAD_KEY, "a second genesis");
-    let other = Sid::new(40);
-    assert_eq!(st.take_register(&s.id, &other.steps[0].0, None).unwrap(), Code::DECLINED, "another sync ID's step");
+    let mut st = dev.open();
+    st.set_sync_set(&holding(&[(&s, Holding::Unread)]));
     let (c1, cs1) = s.rotate(60);
+    assert_eq!(st.take_register(&s.id, &c1, Some(&cs1)).unwrap(), Code::UNKNOWN_SYNC_ID, "a child into an empty path");
+    let mut forged = s.steps[0].0.clone();
+    forged.sig = c1.sig;
+    assert_eq!(st.take_register(&s.id, &forged, None).unwrap(), Code::REFUSED, "a genesis that does not verify");
+    let (g, gc) = s.steps[0].clone();
+    assert_eq!(st.take_register(&s.id, &g, Some(&gc)).unwrap(), Code::OK);
+    assert_eq!(st.take_register(&s.id, &g, None).unwrap(), Code::OK, "the head again");
+    let other = Sid::new(40);
+    assert_eq!(st.take_register(&s.id, &other.steps[0].0, None).unwrap(), Code::MALFORMED, "another sync ID's step");
     let (c2, cs2) = s.rotate(70);
     assert_eq!(st.take_register(&s.id, &c2, Some(&cs2)).unwrap(), Code::NOT_HEAD_KEY, "a step whose prev is not the head");
     assert_eq!(st.take_register(&s.id, &c1, Some(&cs1)).unwrap(), Code::OK);
+    assert_eq!(st.take_register(&s.id, &g, None).unwrap(), Code::NOT_HEAD_KEY, "a genesis past the empty path");
     assert_eq!(st.take_register(&s.id, &c2, Some(&cs2)).unwrap(), Code::OK);
     assert_eq!(st.head(&s.id).unwrap().as_ref(), Some(&c2));
     assert_eq!(st.path(&s.id).unwrap().unwrap().steps.len(), 3);
@@ -423,11 +432,31 @@ fn peer_budget_spec_sync_ids_5() {
     assert_eq!(st.take_deposit(&deposit(&s, &x2, false), Some(c)).unwrap(), Code::DEPOSIT_BUDGET_FULL);
     assert_eq!(st.take_deposit(&deposit(&s, &x3, false), Some(Source::Conn(ConnId(2)))).unwrap(), Code::OK, "another peer's own bound");
     st.uncharge(&s.id, &b3).unwrap();
-    st.closed(ConnId(1)).unwrap();
-    st.closed(ConnId(2)).unwrap();
+    st.gone(Source::Conn(ConnId(1))).unwrap();
+    st.gone(Source::Conn(ConnId(2))).unwrap();
     assert!(st.entry(&s.id, &b1).unwrap().is_none(), "what the closed connection brought went");
     assert!(st.entry(&s.id, &b3).unwrap().is_some(), "an entry giving something held stays");
     assert_eq!(st.take_deposit(&deposit(&s, &x2, false), Some(c)).unwrap(), Code::OK, "the charge went with it");
+    // a peer's record: its charges outlive its connections and go with the record
+    let rec = st.with_tx(|t| t.record_create([1; 32], &[])).unwrap();
+    let (b4, x4) = blob(1003, Class::Durable, None, &[]);
+    assert_eq!(st.take_deposit(&deposit(&s, &x4, false), Some(Source::Record(rec))).unwrap(), Code::OK);
+    st.gone(Source::Conn(ConnId(1))).unwrap();
+    assert!(st.entry(&s.id, &b4).unwrap().is_some(), "a record's charge outlives a connection");
+    st.gone(Source::Record(rec)).unwrap();
+    assert!(st.entry(&s.id, &b4).unwrap().is_none(), "a dropped record is a first contact");
+    // a reader's own judgement logging unstamped entries a peer brought: the same bound
+    let r = Sid::new(40);
+    let mut st = Dev::new().open();
+    st.set_sync_set(&holding(&[(&r, Holding::Read)]));
+    st.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), 1500)]), ..Caps::default() });
+    let unstamped = |b| Entry { blob: b, wrap: wrap(3), stamp: None, deposited: true, own: false, class: Class::Durable, expires: None };
+    let c = Source::Conn(ConnId(3));
+    assert_eq!(st.log(&r.id, unstamped(b1), Some(x1), Some(c)).unwrap(), Code::OK);
+    let (b2, x2) = blob(1001, Class::Durable, None, &[]);
+    assert_eq!(st.log(&r.id, unstamped(b2), Some(x2.clone()), Some(c)).unwrap(), Code::DEPOSIT_BUDGET_FULL, "past the peer's bound: not kept");
+    assert!(st.entry(&r.id, &b2).unwrap().is_none());
+    assert_eq!(st.log(&r.id, unstamped(b2), Some(x2), None).unwrap(), Code::OK, "an entry charged to nobody");
 }
 
 // spec/sync-ids.md §6 (delete opened): a Delete is taken at a node keeping S unread only on a
@@ -446,6 +475,47 @@ fn delete_needs_a_store_credential_spec_sync_ids_6() {
     assert!(st.entry(&s.id, &b).unwrap().is_none());
     assert!(st.tombstone(&s.id, &b).unwrap().unwrap().deleted);
     assert!(st.bytes(&b).unwrap().is_none(), "its bytes went with the last entry naming them");
+}
+
+// spec/wire.md §11.2 (Delete, not held): a Delete of an entry not held changes nothing: by the
+// delete key 0 where a tombstone of the blob exists (a repeat), else 1; by levels 1. So a peer
+// adds no row for a blob this node does not hold.
+#[test]
+fn delete_of_an_entry_not_held_changes_nothing_spec_wire_11_2() {
+    let dev = Dev::new();
+    let s = Sid::new(10);
+    let mut st = unread(&dev, &s);
+    let (b, x) = blob(100, Class::Durable, None, &[]);
+    let (never, _) = blob(101, Class::Durable, None, &[]);
+    st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap();
+    let del = |b| DeleteItem::sign(&s.delete(), &s.id, b);
+    let before = st.usage(&s.id).unwrap().0;
+    assert_eq!(st.take_delete(&s.id, &[del(never)], true).unwrap(), [Code::REFUSED]);
+    assert!(st.tombstone(&s.id, &never).unwrap().is_none(), "no tombstone for a blob never held");
+    assert_eq!(st.usage(&s.id).unwrap().0, before);
+    assert_eq!(st.take_delete(&s.id, &[del(b), del(b)], true).unwrap(), [Code::OK, Code::OK], "a repeat is idempotent");
+    let d2 = DeleteSecret::derive(&Secret32::from_bytes([21; 32]));
+    let by = DeleteItem::sign_by(&s.sync_key(), &[(2, &d2)], &[5; 16], &[1; 16], &s.id, b).unwrap();
+    assert_eq!(st.take_delete(&s.id, &[by], true).unwrap(), [Code::REFUSED], "by levels: the prefix is gone");
+}
+
+// spec/sync-ids.md §6 (Delete): checking a Delete reads the blob's prefix, never its ciphertext:
+// the bytes read do not grow with the blob (counted at n and 10n).
+#[test]
+fn delete_reads_only_the_prefix_spec_sync_ids_6() {
+    let read = |n: usize| {
+        let dev = Dev::new();
+        let s = Sid::new(10);
+        let mut st = unread(&dev, &s);
+        let (b, x) = blob(n, Class::Durable, None, &[]);
+        st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap();
+        osis_base::costs::take();
+        assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap(), [Code::OK]);
+        osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "store blob bytes read").map(|(.., n)| n).sum::<u64>()
+    };
+    let (a, b) = (read(10_000), read(100_000));
+    assert!(a > 0 && a <= 256);
+    assert_eq!(a, b, "bytes read: {a} for a blob of n, {b} for 10n");
 }
 
 // spec/sync-ids.md §6 (delete keys): a Delete by levels needs one delete signature per
@@ -597,6 +667,11 @@ fn caps_govern_unread_and_the_largest_gives_way_spec_sync_ids_6() {
     assert_eq!(st.entries(&s1.id).unwrap().len(), 3);
     let (eb, ex) = blob(1600, Class::Ephemeral, Some(MAX_DRIFT_MS), &[]);
     assert_eq!(st.take_stamped(&s1.id, &stamped(&s1, eb, false), ex).unwrap(), Code::STORAGE_CAP, "past S's memory cap");
+    // r kept unread from now: counted again, it passes the total and, using most, gives way
+    st.set_sync_set(&holding(&[(&s1, Holding::Unread), (&s2, Holding::Unread), (&r, Holding::Unread)]));
+    assert!(st.settle_at(WallMs(0)).unwrap());
+    assert!(st.entry(&r.id, &rb).unwrap().is_none(), "r gave way");
+    assert_eq!(st.entries(&s1.id).unwrap().len(), 3, "within the total again: nothing else went");
 }
 
 // spec/sync-streams.md §3 (Node log): one log over every sync ID; a read of members skips the
@@ -672,10 +747,12 @@ fn stands_live_in_the_record_spec_sync_judgement_4() {
     assert!(st.seen_deleted(src, &s.id, &BlobId([3; 32])).unwrap());
     assert_eq!(st.stand(conn, &s.id, b"body").unwrap(), None, "the connection's went with the start");
     st.set_stand(conn, &s.id, b"body", Some(&stand)).unwrap();
-    st.closed(ConnId(9)).unwrap();
+    st.gone(Source::Conn(ConnId(9))).unwrap();
     assert_eq!(st.stand(conn, &s.id, b"body").unwrap(), None, "and with its close");
+    st.set_stand(conn, &s.id, b"body", Some(&stand)).unwrap();
     st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 5)).unwrap();
     assert_eq!(st.stand(src, &s.id, b"body").unwrap(), None, "aged out");
+    assert_eq!(st.stand(conn, &s.id, b"body").unwrap(), None, "a connection's too, however long it lasts");
     assert!(!st.seen_deleted(src, &s.id, &BlobId([3; 32])).unwrap());
 }
 
@@ -702,29 +779,60 @@ fn shred_drops_everything_of_s_spec_sync_ids_5() {
     assert!(!st.seen_deleted(Source::Record(rec), &s.id, &b2).unwrap());
 }
 
-/// A sequence of store operations, each one transaction.
-fn ops(st: &mut Store, s: &Sid, step: usize) {
-    let (b, x) = blob(100 + step, Class::Durable, Some(5_000), &[]);
-    // the last step expires every entry
-    match if step == 7 { 3 } else { step % 3 } {
-        0 => drop(st.take_stamped(&s.id, &stamped(s, b, false), x).unwrap()),
-        1 => drop(st.take_deposit(&deposit(s, &x, false), Some(Source::Conn(ConnId(1)))).unwrap()),
-        2 => {
-            let (pb, _) = blob(100 + step - 2, Class::Durable, Some(5_000), &[]);
-            drop(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, pb)], true).unwrap());
+/// Every kind of durable store operation, each one transaction: what peers bring (a stamped entry,
+/// a deposit charged to a peer's record, a Delete, a Register), the node's own judgement (log,
+/// drop, lift, uncharge), the rows `read` keeps in a source's record, the sweeps (the caps giving
+/// way, expiry, tombstones and record rows ending) and leaving S. (What a record-less connection
+/// brought goes at every start, in the start's one transaction: each reopen below runs it.)
+const OPS: usize = 14;
+
+fn ops(st: &mut Store, s: &Sid, rec: RecordId, child: &(Step, ClaimSet), step: usize) {
+    let b = |i: usize| blob(100 + i, Class::Durable, Some(5_000), &[]);
+    let code = match step {
+        0 => st.take_stamped(&s.id, &stamped(s, b(0).0, false), b(0).1).unwrap(),
+        1 => st.take_deposit(&deposit(s, &b(1).1, false), Some(Source::Record(rec))).unwrap(),
+        2 => st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b(0).0)], true).unwrap()[0],
+        3 => {
+            let e = Entry { own: true, expires: Some(WallMs(5_000)), ..stamped(s, b(3).0, false) };
+            st.log(&s.id, e, Some(b(3).1), None).unwrap()
         }
-        _ => drop(st.settle_at(WallMs(5_000)).unwrap()),
-    }
+        4 => code_of(st.drop_entry(&s.id, &b(3).0, b"note".to_vec()).unwrap()),
+        5 => code_of(st.lift_tombstone(&s.id, &b(3).0).unwrap()),
+        6 => code_of(st.uncharge(&s.id, &b(1).0).is_ok()),
+        7 => code_of(st.set_stand(Source::Record(rec), &s.id, b"body", Some(&Stand { at: WallMs(0), logged: b(7).0, head: s.head().id(), deleted: false, ground: Vec::new() })).is_ok()),
+        8 => code_of(st.saw_deleted(Source::Record(rec), &s.id, &b(8).0).is_ok()),
+        9 => st.take_stamped(&s.id, &stamped(s, b(9).0, false), b(9).1).unwrap(),
+        10 => {
+            // the total cap gives way: S's oldest entries go
+            st.set_caps(&Caps { policy: BTreeMap::from([("total_bytes".to_string(), 1)]), ..Caps::default() });
+            let acted = st.settle_at(WallMs(1_000)).unwrap();
+            st.set_caps(&Caps::default());
+            code_of(acted)
+        }
+        11 => st.take_register(&s.id, &child.0, Some(&child.1)).unwrap(),
+        12 => code_of(st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 2_000)).unwrap()),
+        _ => code_of(st.shred(&s.id).is_ok()),
+    };
+    assert_eq!(code, Code::OK, "op {step}");
 }
 
-/// What the store holds of S that a reader observes: entries, tombstones, events, bytes.
-fn observe(st: &Store, s: &Sid, n: usize) -> String {
-    let mut out = format!("{:?}\n{:?}\n", st.entries(&s.id).unwrap(), events_of(st, &s.id));
+fn code_of(ok: bool) -> Code {
+    if ok { Code::OK } else { Code::REFUSED }
+}
+
+/// What the store holds of S that a reader observes: entries, tombstones, events, bytes, path,
+/// usage, and the rows `read` keeps of S in `rec`.
+fn observe(st: &Store, s: &Sid, rec: RecordId, n: usize) -> String {
+    let mut out = format!("{:?}\n{:?}\n{:?}\n", st.entries(&s.id).unwrap(), events_of(st, &s.id), st.path(&s.id).unwrap());
     for i in 0..n {
         let (b, _) = blob(100 + i, Class::Durable, Some(5_000), &[]);
         out += &format!("{:?} {:?}\n", st.tombstone(&s.id, &b).unwrap(), st.bytes(&b).unwrap().map(|v| v.len()));
     }
     out += &format!("{:?}", st.usage(&s.id).unwrap().0);
+    let b8 = blob(108, Class::Durable, Some(5_000), &[]).0;
+    out += &format!("\n{:?} {:?}", st.stand(Source::Record(rec), &s.id, b"body").unwrap(), st.seen_deleted(Source::Record(rec), &s.id, &b8).unwrap());
+    // the record's bytes: its rows, the peer's charge among them
+    out += &format!(" {}", st.clone().with_tx(|t| t.records_total()).unwrap());
     out
 }
 
@@ -734,58 +842,55 @@ fn observe(st: &Store, s: &Sid, n: usize) -> String {
 #[test]
 fn crash_at_every_write_is_before_or_after_spec_sync_streams_3() {
     let s = Sid::new(10);
-    const N: usize = 8;
-    for step in 0..N {
-        // reference: the state before and after `step`
+    let child = {
+        let mut s2 = Sid::new(10);
+        s2.rotate(60)
+    };
+    // a store holding S with a peer's record
+    let start = |dev: &Dev| {
+        let mut st = unread(dev, &s);
+        let rec = st.with_tx(|t| t.record_create([1; 32], &[])).unwrap();
+        (st, rec)
+    };
+    // the store after `ops` 0..n, reopened over its device
+    let reopened = |n: usize| {
         let dev = Dev::new();
-        let mut st = unread(&dev, &s);
-        for i in 0..step {
-            ops(&mut st, &s, i);
+        let (mut st, rec) = start(&dev);
+        for i in 0..n {
+            ops(&mut st, &s, rec, &child, i);
         }
-        let before = observe(&st, &s, N);
+        drop(st);
+        let mut st = dev.open();
+        st.set_sync_set(&holding(&[(&s, Holding::Unread)]));
+        observe(&st, &s, rec, OPS)
+    };
+    for step in 0..OPS {
+        let (before, after) = (reopened(step), reopened(step + 1));
+        assert_ne!(before, after, "step {step} changes what a reader observes");
+        let dev = Dev::new();
+        let (mut st, rec) = start(&dev);
+        for i in 0..step {
+            ops(&mut st, &s, rec, &child, i);
+        }
         let w0 = dev.faults.writes();
-        ops(&mut st, &s, step);
+        ops(&mut st, &s, rec, &child, step);
         let writes = dev.faults.writes() - w0;
         assert!(writes > 0, "step {step} writes durably");
-        let after = observe(&st, &s, N);
         drop(st);
         for k in 0..writes {
             let dev = Dev::new();
-            let mut st = unread(&dev, &s);
+            let (mut st, rec) = start(&dev);
             for i in 0..step {
-                ops(&mut st, &s, i);
+                ops(&mut st, &s, rec, &child, i);
             }
             dev.faults.at(k, Fault::Crash);
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ops(&mut st, &s, step)));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ops(&mut st, &s, rec, &child, step)));
             drop(st);
             dev.faults.revive();
             let mut st = dev.open();
             st.set_sync_set(&holding(&[(&s, Holding::Unread)]));
-            let got = observe(&st, &s, N);
-            // a deposit's connection ended with the crash: what it brought goes at the start
-            let after_restart = {
-                let dev2 = Dev::new();
-                let mut st2 = unread(&dev2, &s);
-                for i in 0..=step {
-                    ops(&mut st2, &s, i);
-                }
-                drop(st2);
-                let mut st2 = dev2.open();
-                st2.set_sync_set(&holding(&[(&s, Holding::Unread)]));
-                observe(&st2, &s, N)
-            };
-            let before_restart = {
-                let dev2 = Dev::new();
-                let mut st2 = unread(&dev2, &s);
-                for i in 0..step {
-                    ops(&mut st2, &s, i);
-                }
-                drop(st2);
-                let mut st2 = dev2.open();
-                st2.set_sync_set(&holding(&[(&s, Holding::Unread)]));
-                observe(&st2, &s, N)
-            };
-            assert!(got == before_restart || got == after_restart, "step {step}, crash at write {k} of {writes} (ran: {}):\n{got}\nbefore:\n{before}\nafter:\n{after}", r.is_ok());
+            let got = observe(&st, &s, rec, OPS);
+            assert!(got == before || got == after, "step {step}, crash at write {k} of {writes} (ran: {}):\n{got}\nbefore:\n{before}\nafter:\n{after}", r.is_ok());
         }
     }
 }
@@ -859,4 +964,47 @@ fn removal_and_expiry_cost_alike_at_any_size_spec_sync_ids_5() {
     let a = rows_read(|| assert!(small.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 1_000)).unwrap()));
     let b = rows_read(|| assert!(large.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 1_000)).unwrap()));
     assert_eq!(a, b, "ending a tombstone: {a} rows at n, {b} at 10n");
+}
+
+// The store's reads are memo-safe (notes/sync-boundary.md, the store's interface): an `Effects`
+// value over S's head, or S's entries (durable and ephemeral), is due exactly when a write moves
+// what it read, and never for writes elsewhere.
+#[test]
+fn store_values_are_due_when_their_rows_move() {
+    use osis_base::memo::Effects;
+    let dev = Dev::new();
+    let mut s = Sid::new(10);
+    let mut st = unread(&dev, &s);
+    let mut heads: Effects<SyncId, Option<Step>> = Effects::new("test heads");
+    let mut lists: Effects<SyncId, Vec<Entry>> = Effects::new("test entries");
+    heads.want(s.id);
+    lists.want(s.id);
+    let settle = |heads: &mut Effects<SyncId, Option<Step>>, lists: &mut Effects<SyncId, Vec<Entry>>, st: &Store| {
+        for k in heads.due() {
+            heads.settle(&k, || st.head(&k).unwrap());
+        }
+        for k in lists.due() {
+            lists.settle(&k, || st.entries(&k).unwrap());
+        }
+    };
+    settle(&mut heads, &mut lists, &st);
+    assert!(heads.due().is_empty() && lists.due().is_empty());
+    let (b, x) = blob(100, Class::Durable, None, &[]);
+    st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap();
+    assert_eq!(lists.due(), [s.id], "an entry added under S");
+    assert!(heads.due().is_empty(), "an entry moves no head");
+    settle(&mut heads, &mut lists, &st);
+    let (e, ex) = blob(101, Class::Ephemeral, Some(10 * MAX_DRIFT_MS), &[]);
+    st.take_stamped(&s.id, &stamped(&s, e, false), ex).unwrap();
+    assert_eq!(lists.due(), [s.id], "an ephemeral entry added under S");
+    settle(&mut heads, &mut lists, &st);
+    let other = Sid::new(40);
+    st.set_sync_set(&holding(&[(&s, Holding::Unread), (&other, Holding::Unread)]));
+    st.take_register(&other.id, &other.steps[0].0, None).unwrap();
+    let (o, ox) = blob(102, Class::Durable, None, &[]);
+    st.take_stamped(&other.id, &stamped(&other, o, false), ox).unwrap();
+    assert!(heads.due().is_empty() && lists.due().is_empty(), "writes under another sync ID");
+    let (c1, cs1) = s.rotate(60);
+    st.take_register(&s.id, &c1, Some(&cs1)).unwrap();
+    assert_eq!(heads.due(), [s.id], "a Register moved the head");
 }

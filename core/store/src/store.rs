@@ -892,10 +892,12 @@ impl Transaction<'_> {
     }
     /// Bytes `offset..offset+len` of a blob (streaming reads of large blobs).
     pub fn read_blob(&mut self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, Error> {
-        if let Some(b) = self.mem.o.blobs.get(id) {
-            return Ok(Some(crate::backend::blob_slice(b, offset, len)));
-        }
-        self.pager.txn_get_blob(&self.d, id, offset, len)
+        let v = match self.mem.o.blobs.get(id) {
+            Some(b) => Some(crate::backend::blob_slice(b, offset, len)),
+            None => self.pager.txn_get_blob(&self.d, id, offset, len)?,
+        };
+        osis_base::costs::count("store blob bytes read", v.as_ref().map_or(0, |v| v.len() as u64));
+        Ok(v)
     }
     /// A blob's byte length, without reading it.
     pub fn blob_len(&mut self, id: &BlobId) -> Result<Option<u64>, Error> {

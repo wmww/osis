@@ -27,7 +27,7 @@ mod rows;
 pub use path::{Behind, Cred};
 pub use rows::{Source, Tombstone, Usage};
 
-use crate::types::{ConnId, Cursor, Entry, Position, Result};
+use crate::types::{Cursor, Entry, Position, Result};
 use entries::Removal;
 use memory::Memory;
 use osis_base::format::{MAX_BLOB, TOMBSTONE_LIFETIME_MS};
@@ -120,8 +120,8 @@ impl Policy {
 /// A source's stand of "logged again once" for one body (spec/sync-judgement.md §4): the
 /// encryption logged again, the source's head it was logged at, whether a delete of it was seen,
 /// and the ground `read` compares (its fall marks), opaque here. Kept in the source's record,
-/// durably, until `at` is `TOMBSTONE_LIFETIME` old; toward a peer with no record, while the
-/// connection lasts.
+/// durably, until `at` is `TOMBSTONE_LIFETIME` old; toward a peer with no record, in memory
+/// while the connection lasts and no longer than that.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stand {
     pub at: WallMs,
@@ -253,6 +253,21 @@ fn check_blob(bytes: &[u8], b: &BlobId) -> std::result::Result<(Class, Option<Wa
     }
 }
 
+/// The clear prefix of held blob `b`, read alone (never the ciphertext): reads twice as much
+/// while the prefix runs past what was read, so at most twice its length. `None`: not held, or
+/// no prefix this build parses (no commitments).
+fn read_prefix(t: &mut Transaction<'_>, b: &BlobId) -> Result<Option<Prefix>> {
+    let mut n = 256usize;
+    loop {
+        let Some(v) = t.read_blob(b, 0, n)? else { return Ok(None) };
+        match Prefix::parse(&v) {
+            Ok(p) => return Ok(Some(p)),
+            Err(osis_label::Error::Malformed(_)) if v.len() == n && n < MAX_BLOB => n = n.saturating_mul(2),
+            Err(_) => return Ok(None),
+        }
+    }
+}
+
 fn expired(at: Option<WallMs>, now: WallMs) -> bool {
     at.is_some_and(|t| t.0 <= now.0)
 }
@@ -275,7 +290,7 @@ impl Store {
         let store = osis_store::Store::open_or_create(backend, root, osis_store::StoreConfig::default(), &mut *rng)?;
         let mut inner = Inner { store, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: HashMap::new() };
         inner.write(|t, env| {
-            for (k, _) in t.scan_local(rows::CONN, b"", usize::MAX)? {
+            for (k, _) in t.scan_local(&[rows::CHARGED, &[0]].concat(), b"", usize::MAX)? {
                 let (s, b) = rows::tail_ids(&k)?;
                 t.remove_local(&k, Shred::No)?;
                 entries::remove(t, env, &s, &b, Removal::Untombed)?;
@@ -304,17 +319,31 @@ impl Store {
     // Holdings and caps
 
     /// The node's sync set (`Engine::sync_set`): which sync IDs it holds, of which thing, read or
-    /// kept unread. A change counts the unread total again (spec/sync-ids.md §5 Caps).
+    /// kept unread. A sync ID moving between read and kept unread is counted again in the unread
+    /// total (spec/sync-ids.md §5 Caps); only the sync IDs whose holding moved stamp.
     pub fn set_sync_set(&mut self, set: &SyncSet) {
         let mut g = self.lock();
         if g.holdings == set.ids {
             return;
         }
-        for s in g.holdings.keys().chain(set.ids.keys()) {
+        let unread = |m: &BTreeMap<SyncId, (Tid, Holding)>, s: &SyncId| m.get(s).is_some_and(|(_, h)| *h == Holding::Unread);
+        let moved: std::collections::BTreeSet<SyncId> = g.holdings.keys().chain(set.ids.keys()).filter(|s| g.holdings.get(s) != set.ids.get(s)).copied().collect();
+        let recount: Vec<(SyncId, bool)> = moved.iter().filter(|s| unread(&g.holdings, s) != unread(&set.ids, s)).map(|s| (*s, unread(&set.ids, s))).collect();
+        for s in &moved {
             g.mem.stamps.wrote(&("holding", s), true);
         }
         g.holdings = set.ids.clone();
-        g.total = None;
+        if let Some(total) = g.total {
+            let counted = g.read(|t, _| {
+                let mut n = total;
+                for (s, now) in &recount {
+                    let b = entries::usage(t, s)?.bytes;
+                    n = if *now { n.saturating_add(b) } else { n.saturating_sub(b) };
+                }
+                Ok(n)
+            });
+            g.total = counted.ok();
+        }
     }
 
     /// The node's `caps^.0` (`Engine::caps`).
@@ -393,8 +422,9 @@ impl Store {
     /// Logs entry `e` under S in this node's own store (a reader's judgement or an own entry),
     /// with `bytes` unless held already; replaces the wrap, stamp and flags of one held. An
     /// unstamped one is charged to `from` (spec/sync-ids.md §5 Peer budget) until stamped or
-    /// `uncharge`d. Refused: a tombstoned blob ID (never logged again under it), an expired or
-    /// malformed blob, a relay-only one (never held).
+    /// `uncharge`d; a new one past `from`'s peer budget is not kept (5). Refused: a tombstoned
+    /// blob ID (never logged again under it), an expired or malformed blob, a relay-only one
+    /// (never held).
     pub fn log(&mut self, s: &SyncId, e: Entry, bytes: Option<Vec<u8>>, from: Option<Source>) -> Result<Code> {
         let mut g = self.lock();
         let b = e.blob;
@@ -423,12 +453,29 @@ impl Store {
                 return Ok(Code::OK);
             }
             let Some(bytes) = bytes.or_else(|| g.mem.blobs.get(&b).cloned()) else { return Ok(Code::MALFORMED) };
+            if let Some(src) = charged {
+                let size = bytes.len() as u64;
+                if g.read(|t, env| over_peer_budget(t, env, src, size))? {
+                    return Ok(Code::DEPOSIT_BUDGET_FULL);
+                }
+            }
             g.mem.insert(s, &b, row, bytes);
             return Ok(Code::OK);
         }
         g.write(|t, env| {
             if entries::tombstone(t, s, &b)?.is_some() {
                 return Ok(Code::TOMBSTONED);
+            }
+            if let Some(src) = charged
+                && entries::get(t, s, &b)?.is_none()
+            {
+                let size = match &bytes {
+                    Some(v) => Some(v.len() as u64),
+                    None => entries::bytes_len(t, env, &b)?,
+                };
+                if over_peer_budget(t, env, src, size.unwrap_or(0))? {
+                    return Ok(Code::DEPOSIT_BUDGET_FULL);
+                }
             }
             match entries::get(t, s, &b)? {
                 Some(old) => {
@@ -536,7 +583,7 @@ impl Store {
             }
             if let Some(old) = g.mem.read(s, &b).cloned() {
                 if old.stamp.is_none() {
-                    g.mem.change(s, &b, EntryRow { size: old.size, ..row });
+                    g.mem.change(s, &b, EntryRow { size: old.size, own: old.own, ..row });
                 }
                 return Ok(Code::OK);
             }
@@ -549,7 +596,7 @@ impl Store {
         g.write(|t, env| {
             if let Some(old) = entries::get(t, s, &b)? {
                 if old.stamp.is_none() {
-                    entries::change(t, env, s, &b, &old.clone(), EntryRow { size: old.size, ..row })?;
+                    entries::change(t, env, s, &b, &old.clone(), EntryRow { size: old.size, own: old.own, ..row })?;
                 }
                 return Ok(Code::OK);
             }
@@ -583,8 +630,7 @@ impl Store {
         let policy = g.policy.clone();
         let mem_usage = g.mem.usage(&s);
         let mem_held = g.mem.read(&s, &b).is_some() || g.mem.tombstoned(&s, &b);
-        let mem_charge = from.and_then(|f| g.mem.charges.get(&f).copied()).unwrap_or(0);
-        let checked = g.read(|t, _| {
+        let checked = g.read(|t, env| {
             let Some((hi, head)) = path::head(t, &s)? else { return Ok(Err(Code::RATE_LIMITED)) };
             if mem_held || entries::get(t, &s, &b)?.is_some() || entries::tombstone(t, &s, &b)?.is_some() {
                 return Ok(Err(Code::OK));
@@ -597,7 +643,7 @@ impl Store {
                 return Ok(Err(Code::DEPOSIT_BUDGET_FULL));
             }
             if let Some(src) = from
-                && source_charge(t, src)?.saturating_add(mem_charge).saturating_add(size) > policy.peer_bytes
+                && over_peer_budget(t, env, src, size)?
             {
                 return Ok(Err(Code::DEPOSIT_BUDGET_FULL));
             }
@@ -625,12 +671,15 @@ impl Store {
         })
     }
 
-    /// Delete items for S (spec/sync-ids.md §6 Delete): taken only at a node keeping S unread,
-    /// on a connection where S is open by a store credential (else every item 8); each by the
-    /// head's delete key, or by delete keys of levels covering every commitment group of the
-    /// blob's prefix with the head's write or sync key. A verified one removes the entry and
-    /// leaves a tombstone whether or not the entry was held (0); one verifying under an earlier
-    /// step's keys only is 9, any other 1. 13: S not held; 14: S read.
+    /// Delete items for S (spec/sync-ids.md §6 Delete, spec/wire.md §11.2 Delete): taken only at
+    /// a node keeping S unread, on a connection where S is open by a store credential (else every
+    /// item 8); each by the head's delete key, or by delete keys of levels covering every
+    /// commitment group of the blob's prefix with the head's write or sync key. A verified one
+    /// removes the entry, leaving a tombstone (0); for an entry not held it changes nothing: 0 by
+    /// the delete key where a tombstone of the blob exists (a repeat), else 1 (by levels always:
+    /// the prefix is gone), so no peer adds a row for a blob this node does not hold. One
+    /// verifying under an earlier step's keys only is 9, any other 1. 13: S not held; 14: S read.
+    /// One transaction for the durable items; each reads only its blob's prefix.
     pub fn take_delete(&mut self, s: &SyncId, items: &[DeleteItem], by_store_credential: bool) -> Result<Vec<Code>> {
         let mut g = self.lock();
         let all = |c: Code| Ok(vec![c; items.len()]);
@@ -643,43 +692,59 @@ impl Store {
             return all(Code::NOT_OPEN);
         }
         let now = g.now;
-        let mut out = Vec::with_capacity(items.len());
-        for d in items {
-            let b = d.blob;
-            let prefix = match g.mem.blobs.get(&b) {
-                Some(v) => Prefix::parse(v).ok(),
-                None => g.read(|t, _| Ok(t.get_blob(&b)?))?.and_then(|v| Prefix::parse(&v).ok()),
-            };
-            let verdict = g.read(|t, _| {
-                let Some((hi, head)) = path::head(t, s)? else { return Ok(Code::UNKNOWN_SYNC_ID) };
-                if d.verify(&head, prefix.as_ref()).is_ok() {
-                    return Ok(Code::OK);
-                }
-                for i in (0..hi).rev() {
-                    if let Some(st) = path::step(t, s, i)?
-                        && d.verify(&st, prefix.as_ref()).is_ok()
-                    {
-                        return Ok(Code::NOT_HEAD_KEY);
+        // ephemeral entries are judged and removed in memory, the rest in one transaction
+        let mut ephemeral = Vec::new();
+        let out = g.write(|t, env| {
+            let Some((hi, head)) = path::head(t, s)? else { return Ok(vec![Code::UNKNOWN_SYNC_ID; items.len()]) };
+            let mut out = Vec::with_capacity(items.len());
+            for d in items {
+                let b = d.blob;
+                let in_mem = env.mem.read(s, &b).is_some();
+                let prefix = match env.mem.blobs.get(&b) {
+                    Some(v) => Prefix::parse(v).ok(),
+                    None => read_prefix(t, &b)?,
+                };
+                let held = in_mem || entries::get(t, s, &b)?.is_some();
+                let code = if d.verify(&head, prefix.as_ref()).is_ok() {
+                    if in_mem {
+                        ephemeral.push(b);
+                        Code::OK
+                    } else if held {
+                        entries::remove(t, env, s, &b, Removal::Tomb(Tombstone { at: now, deleted: true, note: Vec::new() }))?;
+                        Code::OK
+                    } else if d.by.is_empty() && (env.mem.tombstoned(s, &b) || entries::tombstone(t, s, &b)?.is_some()) {
+                        Code::OK
+                    } else {
+                        Code::REFUSED
                     }
-                }
-                Ok(Code::REFUSED)
-            })?;
-            if verdict == Code::OK {
-                if g.mem.read(s, &b).is_some() {
-                    g.mem.remove(s, &b, now, true, false);
                 } else {
-                    g.write(|t, env| entries::remove(t, env, s, &b, Removal::Tomb(Tombstone { at: now, deleted: true, note: Vec::new() })))?;
-                }
+                    let mut earlier = false;
+                    for i in (0..hi).rev() {
+                        if let Some(st) = path::step(t, s, i)?
+                            && d.verify(&st, prefix.as_ref()).is_ok()
+                        {
+                            earlier = true;
+                            break;
+                        }
+                    }
+                    if earlier { Code::NOT_HEAD_KEY } else { Code::REFUSED }
+                };
+                out.push(code);
             }
-            out.push(verdict);
+            Ok(out)
+        })?;
+        for b in ephemeral {
+            g.mem.remove(s, &b, now, true, false);
         }
         Ok(out)
     }
 
-    /// A Register of `step` with its claim set (spec/sync-ids.md §6 Register). 14: S not kept
-    /// unread here (a reader's path comes from `sync.0` alone); 2: a claim set not hashing to the
-    /// step's; 9: not a genesis into an empty path nor a child of the head; 12: past the caps (a
-    /// genesis; a child past them even without its set, more than once per interval).
+    /// A Register of `step` with its claim set (spec/sync-ids.md §6 Register, spec/wire.md §11.2).
+    /// 14: S not kept unread here (a reader's path comes from `sync.0` alone); 2: a step of
+    /// another sync ID or a claim set not hashing to the step's; into an empty path 1 for a
+    /// genesis that does not verify, 13 for a child; 0 for the head again; 9: not a child of the
+    /// head; 12: past the caps (a genesis; a child past them even without its set, more than once
+    /// per interval).
     pub fn take_register(&mut self, s: &SyncId, step: &Step, claims: Option<&ClaimSet>) -> Result<Code> {
         let mut g = self.lock();
         let last = g.past_cap.get(s).copied();
@@ -779,19 +844,22 @@ impl Store {
         Ok(())
     }
 
-    /// A connection closed: the entries a peer with no record brought on it that still give
-    /// nothing held go (spec/sync-ids.md §5 Peer budget), and what was kept for it alone.
-    pub fn closed(&mut self, conn: ConnId) -> Result<()> {
+    /// A source went: a connection closed, or a peer's record was dropped (spec/sync-ids.md §5
+    /// Peer budget: a lost record is a first contact). The entries charged to it, those that
+    /// still give nothing held, go (fetched again where present), and what was kept for a
+    /// connection alone. One transaction.
+    pub fn gone(&mut self, src: Source) -> Result<()> {
         let mut g = self.lock();
         let now = g.now;
-        let src = Source::Conn(conn);
         for (s, b) in g.mem.charged_to(src) {
             g.mem.remove(&s, &b, now, false, false);
         }
         g.mem.charges.remove(&src);
-        g.mem.conn_rows.retain(|(c, ..), _| *c != conn);
+        if let Source::Conn(conn) = src {
+            g.mem.conn_forget(|(c, ..)| *c != conn);
+        }
         g.write(|t, env| {
-            for (k, _) in t.scan_local(&[rows::CONN, &conn.0.to_be_bytes()].concat(), b"", usize::MAX)? {
+            for (k, _) in t.scan_local(&[rows::CHARGED, &rows::source_bytes(src)].concat(), b"", usize::MAX)? {
                 let (s, b) = rows::tail_ids(&k)?;
                 entries::remove(t, env, &s, &b, Removal::Untombed)?;
             }
@@ -805,11 +873,7 @@ impl Store {
         let mut g = self.lock();
         match src {
             Source::Conn(c) => {
-                match val {
-                    Some((_, v)) => g.mem.conn_rows.insert((c, *s, tag, key.to_vec()), v),
-                    None => g.mem.conn_rows.remove(&(c, *s, tag, key.to_vec())),
-                };
-                g.mem.stamps.wrote(&(c, s, tag, key), true);
+                g.mem.conn_put((c, *s, tag, key.to_vec()), val);
                 Ok(())
             }
             Source::Record(rec) => g.write(|t, _| {
@@ -828,10 +892,7 @@ impl Store {
     fn source_get(&self, src: Source, s: &SyncId, tag: u8, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let mut g = self.lock();
         match src {
-            Source::Conn(c) => {
-                g.mem.stamps.read(&(c, s, tag, key));
-                Ok(g.mem.conn_rows.get(&(c, *s, tag, key.to_vec())).cloned())
-            }
+            Source::Conn(c) => Ok(g.mem.conn_get(&(c, *s, tag, key.to_vec()))),
             Source::Record(rec) => g.read(|t, _| Ok(t.record_get_row(&rec, tag, s, key)?)),
         }
     }
@@ -987,17 +1048,18 @@ fn served(t: &mut Transaction<'_>, e: &LoggedEvent, until: Option<Position>) -> 
     })
 }
 
+/// Whether `size` more bytes charged to `src` pass its peer budget (spec/sync-ids.md §5 Peer
+/// budget): what its durable and ephemeral entries giving nothing held are charged so far.
+fn over_peer_budget(t: &mut Transaction<'_>, env: &Env<'_>, src: Source, size: u64) -> Result<bool> {
+    let mem = env.mem.charges.get(&src).copied().unwrap_or(0);
+    Ok(source_charge(t, src)?.saturating_add(mem).saturating_add(size) > env.policy.peer_bytes)
+}
+
 /// Bytes charged to a source by durable entries.
 fn source_charge(t: &mut Transaction<'_>, src: Source) -> Result<u64> {
     match src {
         Source::Record(rec) => entries::record_charge(t, &rec),
-        Source::Conn(c) => {
-            let mut n = 0u64;
-            for (_, v) in t.scan_local(&[rows::CONN, &c.0.to_be_bytes()].concat(), b"", usize::MAX)? {
-                n = n.saturating_add(R::new(&v).u64()?);
-            }
-            Ok(n)
-        }
+        Source::Conn(c) => entries::conn_charge(t, c),
     }
 }
 

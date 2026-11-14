@@ -154,24 +154,27 @@ pub(crate) fn drop_claims(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId
     Ok(())
 }
 
-/// Register (spec/sync-ids.md §6): taken only for a sync ID kept unread in the sync set; a
-/// genesis step only into an empty path, else only a child of the head; within the caps, a child
-/// past them without its claim set, and past them even so at most once per `register_every_ms`.
+/// Register (spec/sync-ids.md §6, spec/wire.md §11.2 Register): 2 a step of another sync ID or a
+/// claim set of another hash; 14 a sync ID not kept unread in the sync set; into an empty path a
+/// genesis step that verifies (else 1; a child step 13); else the head again (0, nothing changes)
+/// or a child of the head (else 9); within the caps, a child past them without its claim set,
+/// and past them even so at most once per `register_every_ms`.
 pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, policy: &Policy, s: &SyncId, step: &Step, claims: Option<&ClaimSet>, last_past_cap: Option<WallMs>) -> Result<(Code, bool)> {
-    if env.holding(s) != Some(Holding::Unread) || step.label != *s {
-        return Ok((Code::DECLINED, false));
-    }
-    if claims.is_some_and(|c| c.hash() != step.claims_hash) {
+    if step.label != *s || claims.is_some_and(|c| c.hash() != step.claims_hash) {
         return Ok((Code::MALFORMED, false));
     }
-    let ok = match head(t, s)? {
-        None => step.verify_genesis().is_ok(),
-        Some((_, h)) => step.verify_child(&h).is_ok(),
-    };
-    if !ok {
-        return Ok((Code::NOT_HEAD_KEY, false));
+    if env.holding(s) != Some(Holding::Unread) {
+        return Ok((Code::DECLINED, false));
     }
     let genesis = step.prev.is_none();
+    match head(t, s)? {
+        None if !genesis => return Ok((Code::UNKNOWN_SYNC_ID, false)),
+        None if step.verify_genesis().is_err() => return Ok((Code::REFUSED, false)),
+        None => {}
+        Some((_, h)) if h.id() == step.id() => return Ok((Code::OK, false)),
+        Some((_, h)) if step.verify_child(&h).is_err() => return Ok((Code::NOT_HEAD_KEY, false)),
+        Some(_) => {}
+    }
     let fits = |t: &mut Transaction<'_>, env: &mut Env<'_>, add: u64| -> Result<bool> { env.room(t, s, 0, add) };
     let (keep_claims, past) = if fits(t, env, step_bytes(step, claims))? {
         (claims, false)

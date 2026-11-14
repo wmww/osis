@@ -615,9 +615,11 @@ impl Transaction<'_> {
 
     /// Drops least recently used records not in `in_use` until the total fits `budget`. If
     /// every record left is in use the total stays over: a record in use is not dropped from
-    /// under its connection. Returns how many went. O(records dropped and skipped).
-    pub fn records_evict(&mut self, budget: u64, in_use: &BTreeSet<RecordId>) -> Result<usize, Error> {
-        let mut evicted = 0;
+    /// under its connection. Returns the records that went (what their peers brought and that
+    /// was charged to them goes too: the caller tells the owner, osis-sync's store `gone`).
+    /// O(records dropped and skipped).
+    pub fn records_evict(&mut self, budget: u64, in_use: &BTreeSet<RecordId>) -> Result<Vec<RecordId>, Error> {
+        let mut evicted = Vec::new();
         let mut from: Vec<u8> = Vec::new();
         while self.record_meta()?.0 > budget {
             let rows = self.cat_scan(USED, &from, PAGE)?;
@@ -632,7 +634,7 @@ impl Transaction<'_> {
                 any = true;
                 if let Some(rec) = self.record(&id)? {
                     self.record_delete(rec)?;
-                    evicted += 1;
+                    evicted.push(id);
                 }
                 if self.record_meta()?.0 <= budget {
                     return Ok(evicted);

@@ -7,7 +7,9 @@
 //! - `X/ b s` the sync IDs whose entries name blob `b`: its bytes go once none does and the
 //!   engine holds it no more.
 //! - `G/ b` the engine holds blob `b` durably (`osis_store::CipherHost::hold`).
-//! - `W/ conn s b` an entry charged to a connection (no record): dropped when it closes, or at a start.
+//! - `W/ src s b` an entry charged to a source (`source_bytes`): a connection's go when it closes
+//!   or at a start, a record's when the record is dropped; `V/ conn` the bytes charged to a
+//!   connection in all (a record's total is in the record).
 //! - `T/ s b` a tombstone (`Tomb`); `t/ at s b` tombstones by when they were made, for the sweep.
 //! - `x/ T s b` entries by prefix expiry, for the sweep.
 //! - `P/ s i` step `i` of S's path from genesis (`StepRow`); `Q/ s i` its claim set while held;
@@ -25,7 +27,8 @@ use osis_store::RecordId;
 pub(crate) const ENTRY: &[u8] = b"E/";
 pub(crate) const BY_BLOB: &[u8] = b"X/";
 pub(crate) const ENGINE: &[u8] = b"G/";
-pub(crate) const CONN: &[u8] = b"W/";
+pub(crate) const CHARGED: &[u8] = b"W/";
+pub(crate) const CONN_TOTAL: &[u8] = b"V/";
 pub(crate) const TOMB: &[u8] = b"T/";
 pub(crate) const TOMB_AT: &[u8] = b"t/";
 pub(crate) const EXPIRY: &[u8] = b"x/";
@@ -50,8 +53,18 @@ pub(crate) fn by_blob_key(b: &BlobId, s: &SyncId) -> Vec<u8> {
 pub(crate) fn engine_key(b: &BlobId) -> Vec<u8> {
     [ENGINE, &b.0].concat()
 }
-pub(crate) fn conn_key(c: crate::types::ConnId, s: &SyncId, b: &BlobId) -> Vec<u8> {
-    [CONN, &c.0.to_be_bytes(), &s.0, &b.0].concat()
+/// A source as a key part: 0 and a connection, or 1 and a record.
+pub(crate) fn source_bytes(src: Source) -> Vec<u8> {
+    match src {
+        Source::Conn(c) => [&[0u8][..], &c.0.to_be_bytes()].concat(),
+        Source::Record(r) => [&[1u8][..], &r].concat(),
+    }
+}
+pub(crate) fn charged_key(src: Source, s: &SyncId, b: &BlobId) -> Vec<u8> {
+    [CHARGED, &source_bytes(src), &s.0, &b.0].concat()
+}
+pub(crate) fn conn_total_key(c: crate::types::ConnId) -> Vec<u8> {
+    [CONN_TOTAL, &c.0.to_be_bytes()].concat()
 }
 pub(crate) fn tomb_key(s: &SyncId, b: &BlobId) -> Vec<u8> {
     [TOMB, &s.0, &b.0].concat()

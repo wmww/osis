@@ -170,7 +170,7 @@ fn eviction_drops_the_least_recently_used_not_in_use_whole() {
     let mut t = s.transaction(&mut rng).unwrap();
     let total = t.records_total().unwrap();
     let in_use: BTreeSet<RecordId> = [c].into();
-    assert_eq!(t.records_evict(total - 1, &in_use).unwrap(), 1);
+    assert_eq!(t.records_evict(total - 1, &in_use).unwrap().len(), 1);
     assert!(t.record(&a).unwrap().is_none(), "the least recently used not in use goes");
     assert!(t.record(&c).unwrap().is_some(), "a record in use stays");
     assert!(t.record(&b).unwrap().is_some());

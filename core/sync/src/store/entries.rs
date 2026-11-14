@@ -91,9 +91,21 @@ pub(crate) fn record_charge(t: &mut Transaction<'_>, rec: &osis_store::RecordId)
     t.record_get_row(rec, CHARGES, &NO_SYNC_ID, b"")?.map_or(Ok(0), |v| R::new(&v).u64())
 }
 
+/// Bytes charged to connection `c` so far.
+pub(crate) fn conn_charge(t: &mut Transaction<'_>, c: crate::types::ConnId) -> Result<u64> {
+    t.get_local(&rows::conn_total_key(c))?.map_or(Ok(0), |v| R::new(&v).u64())
+}
+
 fn charge(t: &mut Transaction<'_>, r: &EntryRow, s: &SyncId, b: &BlobId, sign: bool) -> Result<()> {
-    match r.charged {
-        Some(Source::Record(rec)) => {
+    let Some(src) = r.charged else { return Ok(()) };
+    let k = rows::charged_key(src, s, b);
+    if sign {
+        t.put_local(&k, &r.size.to_be_bytes(), Shred::No)?;
+    } else {
+        t.remove_local(&k, Shred::No)?;
+    }
+    match src {
+        Source::Record(rec) => {
             let now = record_charge(t, &rec)?;
             let n = if sign { now.saturating_add(r.size) } else { now.saturating_sub(r.size) };
             if n == 0 {
@@ -102,15 +114,15 @@ fn charge(t: &mut Transaction<'_>, r: &EntryRow, s: &SyncId, b: &BlobId, sign: b
                 t.record_put_row(&rec, CHARGES, &NO_SYNC_ID, b"", W::default().u64(n).take())?;
             }
         }
-        Some(Source::Conn(c)) => {
-            let k = rows::conn_key(c, s, b);
-            if sign {
-                t.put_local(&k, &r.size.to_be_bytes(), Shred::No)?;
+        Source::Conn(c) => {
+            let now = conn_charge(t, c)?;
+            let n = if sign { now.saturating_add(r.size) } else { now.saturating_sub(r.size) };
+            if n == 0 {
+                t.remove_local(&rows::conn_total_key(c), Shred::No)?;
             } else {
-                t.remove_local(&k, Shred::No)?;
+                t.put_local(&rows::conn_total_key(c), &n.to_be_bytes(), Shred::No)?;
             }
         }
-        None => {}
     }
     Ok(())
 }

@@ -21,7 +21,6 @@ osis-perm::may_purge  test hook: §6 purge rights at a point (the engine asks `p
 osis-perm::set_general_only  test hook: the general path against the fast one
 osis-perm::trusted_active  test hook: trusted ops in force
 osis-store::record_lag  test hook: reads a lag without spending it (`record_take_lag`)
-osis-store::records_total  test hook: bytes RECORD_BUDGET bounds
 osis-transport::ADDRESS  table: the NAT kinds
 osis-transport::CONN_MEMORY  test hook: the resource bound the quic tests check
 osis-transport::relayed_keys  test hook
@@ -312,7 +311,6 @@ osis-sync::set_stand  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); r
 osis-sync::uncharge  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-ids.md §5 Peer budget)
 osis-sync::with_tx  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); opens' and streams' record rows
 osis-sync::drop_entry  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
-osis-sync::read_log  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
 osis-sync::take_delete  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
 osis-sync::take_deposit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
 osis-sync::take_register  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls

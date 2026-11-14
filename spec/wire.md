@@ -367,7 +367,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   | 0 | ok |
   | 1 | refused |
   | 2 | malformed |
-  | 3 | too large (a relay-only blob above `MAX_RELAY_BLOB`; an oversized message is answered as malformed, 2) |
+  | 3 | too large (a blob above `MAX_BLOB`, a relay-only blob above `MAX_RELAY_BLOB`; an oversized message is answered as malformed, 2) |
   | 4 | rate limited |
   | 5 | deposit budget full |
   | 6 | tombstoned |

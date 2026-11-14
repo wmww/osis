@@ -94,7 +94,7 @@ Across sync IDs:
 - Ephemeral entries and their tombstones are held in memory only and lost at a restart. Relay-only blobs are never held.
 - The code holding the store decrypts nothing and judges no open: every secret lives above it.
 - **Caps** (`caps^.0`, spec/data-model.md §9: `policy` and per-sync-ID `caps`, local policy) govern only the sync IDs the node keeps unread and count only their entries; a sync ID moving between read and kept unread is counted again. A reader's own sync IDs take nothing from the room others may use.
-- **Peer budget**: an unstamped entry that gives the node nothing held (it does not open, or opens to a commit not judged or known only for a part dropped as invalid) counts its size against the peer that brought it, within a bound per peer (local policy); past it such entries are not kept. The charges live in the bringing peer's record (spec/sync-opens.md §3), so they survive a restart. A peer with no record is charged per connection, and the entries it brought that still give nothing held are dropped when that connection closes, to be fetched again where present: dropping and fetching again beats a row keyed by a node key.
+- **Peer budget**: an unstamped entry that gives the node nothing held (it does not open, or opens to a commit not judged or known only for a part dropped as invalid) counts its size against the peer that brought it, within a bound per peer (local policy); past it such entries are not kept. The charges live in the bringing peer's record (spec/sync-opens.md §3), so they survive a restart. A peer with no record is charged per connection, and the entries it brought that still give nothing held are dropped when that connection closes, to be fetched again where present: dropping and fetching again beats a row keyed by a node key. A dropped record (a lost record is a first contact) drops so the entries charged to it.
 
 ## 6. Operations at a store
 Each operation names a sync ID S. Writes are signed with the role keys of the receiving store's head; a Delete needs S open on the connection (spec/sync-opens.md §4).
@@ -127,13 +127,13 @@ Each operation names a sync ID S. Writes are signed with the role keys of the re
   - naming a step on its path other than its head whose credential the key is (a claim or static entry only while it holds the step's claim set): the steps after it on its path, in order, through the first whose sync key is not the named step's (without claim sets);
   - naming none, by a sync key a step of its path other than its head bears: the step after the newest such step;
   - naming none, by a key actor's signing key whose static entry its head's claim set lists: the head's entry box for that entry and the path from genesis, as a Static item's Hit is answered (spec/sync-opens.md §5);
-  - a sync ID it does not keep: code 13; anything else code 14, carrying nothing.
+  - a sync ID it does not keep: code 13; anything else code 14, carrying nothing (a node reading S answers every Behind of S so).
   - The Behind answers of one Offer carry at most ⌊`REPLY_BUDGET` / 326⌋ steps in all (spec/wire.md §11.2), a path in a grant included: an item reaching that bound is answered with the steps it reached; reaching it with none, or a grant past it, code 4 (refused for now: asked again after a back-off).
 - **Stamp**: a signature under S's write key, domain `"osis v1 stamp"` (spec/crypto.md §2), over (sync ID, blob ID, wrap). A node taking the entry checks it against the write key of its head; stamps already taken stay valid across new steps.
 - **Role entries**: an entry deletes are judged by (spec/sync-judgement.md §2: a role commit, a commit carrying a request, or a blob such a commit links) is stamped, or signed as a deposit, under `"osis v1 role entry"` in place of the domain above; a node keeping S unread checks either domain alike, and takes a role entry outside S's and its store's caps (it counts toward neither): a stamped one with no bound of its own, a deposited one within the deposit budget. A reader that holds an entry and is shown it under another valid stamp keeps the lower (as bytes), so two writers stamping it under either domain settle on one. Limit: a writer may stamp any entry so, past the caps.
 - **Taking a stamped entry**: a node keeping S unread takes the stamped entries it pulls (spec/sync-streams.md §4) by these rules, each with wrap and stamp.
   - Anyone holding a stamped entry may relay it. A stamp under a superseded write key is refused (code 9): such an entry goes as a deposit (spec/sync-inbox.md §3).
-  - Refused: a bad stamp; a blob whose prefix expiry has passed; a blob ID with a tombstone; an oversized blob; an ephemeral blob past S's ephemeral cap (code 12).
+  - Refused: a bad stamp; a blob whose prefix expiry has passed; a blob ID with a tombstone; a blob above `MAX_BLOB` (code 3); an ephemeral blob past S's ephemeral cap (code 12).
   - A stamped entry of a deposited entry's blob ID replaces its wrap and stamp and clears its deposited flag.
   - A stamped entry's wrap and stamp never change while it lives: taking its blob ID again changes nothing and logs no event, as does a deposit of a held blob ID.
 - **Relay-only** entry: the blob is not stored. It goes on to S's other holders by the stream (spec/sync-streams.md §4, a Stream with no cursor) and leaves no entry, log event, tombstone or expiry.
@@ -155,6 +155,6 @@ Each operation names a sync ID S. Writes are signed with the role keys of the re
 - **Expiry**: at the prefix's `T` every node deletes the entry outright: no tombstone.
 - **Caps at a node keeping S unread**: it caps storage per sync ID and the memory of ephemeral entries per sync ID (and in total), counting each entry's, log record's and tombstone's overhead besides its blob.
   - An ephemeral entry past its cap is refused (code 12).
-  - At the total cap the sync ID using most gives way: its oldest entries, deleted with no tombstone.
+  - At the total cap the sync ID using most gives way: its oldest entries (by their latest log event), deleted with no tombstone; role entries never.
   - It may rate-limit deletes, deposits, registrations (code 4) and relay-only entries per sync ID.
   - Pulled stamped entries are refused for room alone (spec/sync-streams.md §4 Full); rates bound deposits, deletes, registrations and relays, which are refused for now.
