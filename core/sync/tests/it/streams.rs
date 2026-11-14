@@ -44,6 +44,8 @@ struct Table {
     unkept: Vec<BlobId>,
     /// Blobs taken before: a fetch of one brings nothing.
     taken: std::collections::BTreeSet<BlobId>,
+    /// What opening a relay-only blob gives (none: it does not open).
+    relay: Option<osis_engine::sync::RelayOpened>,
 }
 
 impl Ground for Table {
@@ -61,6 +63,9 @@ impl Ground for Table {
     }
     fn taken(&mut self, b: &BlobId) -> bool {
         self.taken.contains(b)
+    }
+    fn open_relay(&mut self, _s: &SyncId, _e: &Entry, _bytes: &[u8]) -> Result<osis_engine::sync::RelayOpened> {
+        Ok(self.relay.unwrap_or(osis_engine::sync::RelayOpened::NotOpen))
     }
 }
 
@@ -1453,4 +1458,64 @@ fn a_reconnect_after_a_restart_costs_the_same_at_10n_spec_sync_streams_4() {
     };
     let (small, large) = (at(10), at(100));
     assert!(large <= small + 32, "{small} bytes at n, {large} at 10n");
+}
+
+// ---- relay-only entries ----
+
+/// A side holding S (`h`) as a member on C and on a second connection D, quiet.
+fn relay_side(h: Holding) -> (Side, SyncId, ConnId) {
+    let mut a = Side::new(1);
+    let s = SyncId([7; 16]);
+    let d = ConnId(2);
+    a.hold(s, h);
+    a.join_on(1_000, C, s, Rejoin::Held);
+    a.join_on(1_000, d, s, Rejoin::Held);
+    a.pipe.out.clear();
+    (a, s, d)
+}
+
+/// A relay-only blob of S expiring at `expiry`, as a Stream with no cursor.
+fn relay_stream(s: SyncId, n: usize, expiry: u64) -> (BlobId, Msg) {
+    let mut rng = SeededRng::from_u64(n as u64);
+    let p = Prefix::for_keys([n as u8; 16], &[1; 16], Some(WallMs(expiry)), &[]).unwrap().with_class(Class::Relay);
+    let (_, bytes) = osis_label::frame(&p, &vec![n as u8; n], &mut rng).unwrap();
+    let b = osis_label::blob_id(&bytes);
+    let ev = Event::Added { blob_id: b, blob: Some(bytes), wrap: [0; WRAP_LEN], stamp: None };
+    (b, Msg::Stream(Box::new(osis_proto::Stream { events: vec![(s, ev)], cursor: None, report: false, seq: 0 })))
+}
+
+/// The pushes of relay-only entry `b` a side sent on `c`.
+fn relayed(side: &Side, c: ConnId, b: BlobId) -> usize {
+    side.pipe.out.iter().filter(|(x, f)| *x == c && matches!(f.msg(), Msg::Stream(st) if st.cursor.is_none() && st.events.iter().any(|(_, e)| matches!(e, Event::Added { blob_id, .. } if *blob_id == b)))).count()
+}
+
+// spec/sync-ids.md §6 (Taken once), spec/sync-streams.md §4 (Relay-only entries): a node keeping
+// S unread passes a relay-only entry on to every other peer sharing S, never back to the one it
+// came from, and drops a repeat; one past its expiry it drops.
+#[test]
+fn a_relay_only_entry_is_passed_on_once_to_the_other_peers_spec_sync_ids_6() {
+    let (mut a, s, d) = relay_side(Holding::Unread);
+    let (b, st) = relay_stream(s, 40, 61_000);
+    for _ in 0..2 {
+        a.with(1_000, |x, c| x.message(c, C, Incoming::Push(st.clone())));
+    }
+    assert_eq!(relayed(&a, d, b), 1, "passed on once");
+    assert_eq!(relayed(&a, C, b), 0, "never back to its source");
+    let (late, st) = relay_stream(s, 41, 1_000);
+    a.with(1_000, |x, c| x.message(c, C, Incoming::Push(st)));
+    assert_eq!(relayed(&a, d, late), 0, "at its expiry: dropped");
+}
+
+// spec/sync-compaction.md §2 (Passing on): a node that reads S passes on a relay-only entry only
+// when it verified it new; one delivered before, or that does not open, goes no further.
+#[test]
+fn a_reader_passes_on_only_a_verified_new_relay_only_entry_spec_sync_compaction_2() {
+    use osis_engine::sync::RelayOpened;
+    for (opened, n, passed) in [(RelayOpened::New, 40, 1), (RelayOpened::Old, 41, 0), (RelayOpened::Bad, 42, 0)] {
+        let (mut a, s, d) = relay_side(Holding::Read);
+        a.table.relay = Some(opened);
+        let (b, st) = relay_stream(s, n, 61_000);
+        a.with(1_000, |x, c| x.message(c, C, Incoming::Push(st)));
+        assert_eq!(relayed(&a, d, b), passed, "{opened:?}");
+    }
 }
