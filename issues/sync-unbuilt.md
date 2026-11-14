@@ -32,6 +32,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 ## inbox
 - A promotion's chain (`held::log_chain`: not built; the engine seals certificate copies, `sync_bodies`).
 - Stranded and Suspect are answered Ok and acted on by nobody (spec/permissions.md §4: the stranded holder's re-seal, the suspect repair).
+- A stranded node sends no Stranded message and deposits no stranded notice (spec/permissions.md §4 (stranded)): `unread` and `status` know S stranded, nothing tells an admin.
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.
 - A decline stamping in place.
 - Opens' members are not stamped, so a source's step moving reaches Register only through its next join.

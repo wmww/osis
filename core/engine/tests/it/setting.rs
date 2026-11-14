@@ -256,7 +256,7 @@ fn dropped_before_a_late_extension_is_not_fetched_spec_commits_5() {
     assert!(!listed(&mut lp.peers[0], &v1, d));
 }
 
-// spec/commits.md §5 (purge on replace cover; purge on replace drop): a setting arriving late at a
+// spec/commits.md §5 (purge on replace cover), §5 (purge on replace drop): a setting arriving late at a
 // writer holding a body it puts under purge on replace makes the writer cover it (one snapshot),
 // and the body goes
 #[test]
