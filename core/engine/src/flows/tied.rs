@@ -125,9 +125,12 @@ impl Engine {
 
     /// How this node may remove `holder`'s edge on `target` now, if at all: a self-removal
     /// (admin on the holder actor its only authority for it, spec/permissions.md §2), or an
-    /// explicit demotion (admin on the target, `usable_role`).
+    /// explicit demotion (admin on the target, `usable_role`). Reads the clock up to the next
+    /// `until` or role commit of the target's and the holder's components (an authority ending by
+    /// time alone moves it).
     pub fn may_remove(&mut self, target: &Tid, holder: &Tid) -> Result<Option<Untie>> {
         let Some(me) = self.core.me() else { return Ok(None) };
+        self.core.time.until(self.core.horizon([*target, *holder].into_iter()));
         if crate::apply::validity::self_removal(&self.core, &me, target, holder, now_ts(&self.core)) {
             return Ok(Some(Untie::SelfRemoval));
         }

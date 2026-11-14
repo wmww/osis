@@ -970,6 +970,12 @@ impl Engine {
         (held.pairs_feed(), held.holders().flat_map(|h| held.named_on(h)).copied().collect())
     }
 
+    /// Whether `t` is named a holder on now (`role_things`): a thing that is no longer has no
+    /// holder duty to follow (stamped: moves when its last holder goes).
+    pub fn named_a_holder(&self, t: &Tid) -> bool {
+        self.core.ix.held.holders_of(t).next().is_some()
+    }
+
     /// A complete pass of `s` begun at `began` (`pass_clock`) ended (spec/sync-status.md §1):
     /// kept durably, the last per sync ID; the re-seal and history-add trigger (`pass_end`) and
     /// history completeness read it.

@@ -6,7 +6,7 @@
 use super::{Holding, ThingSync};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
-use osis_base::{Ak, CommitId, Role, SyncId, Tid, WallMs};
+use osis_base::{Ak, CommitId, SyncId, Tid, WallMs};
 use std::collections::BTreeMap;
 use osis_store::Shred;
 use std::collections::BTreeSet;
@@ -178,13 +178,13 @@ impl Engine {
     }
 
     /// spec/permissions.md §2 Tied grants: per tied grant (G, T) this node holds dead and would
-    /// remove as an explicit demotion (admin on T), the sync IDs whose bodies carry a thing of the
-    /// demotion's pre-sync scope, from the last role commit of G or T applied from elsewhere.
+    /// remove as an explicit demotion (`may_remove`, as `untie_due` reads it), the sync IDs whose
+    /// bodies carry a thing of the demotion's pre-sync scope, from the last role commit of G or T
+    /// applied from elsewhere.
     fn tied_wants(&mut self) -> Result<Vec<(WallMs, BTreeSet<SyncId>)>> {
-        let Some(me) = self.core.me() else { return Ok(Vec::new()) };
         let mut out = Vec::new();
         for (t, g) in self.tied_unplaced(&BTreeSet::new(), &BTreeSet::new(), true)? {
-            if self.core.timelines.get(&t).and_then(|tl| tl.role(&me, &t, osis_perm::At::KEYS)) != Some(Role::Admin) {
+            if self.may_remove(&t, &g)? != Some(crate::flows::Untie::Explicit) {
                 continue;
             }
             out.push(self.tie_scope(&t, &g)?);
@@ -209,7 +209,8 @@ impl Engine {
     /// The read sync IDs whose bodies carry a thing of a demotion's pre-sync scope on `t`
     /// (spec/permissions.md §2, §5.3: the things the demoted authority gave write on, read as `t`
     /// and the things it encloses; spec/sync-judgement.md §1: a thing travels under the sync IDs
-    /// of itself and of the groups enclosing it).
+    /// of itself and of the groups enclosing it). Only those this node's sync set reads: a pass
+    /// of another is never noted (`note_complete_pass_now`), so waiting on it would wait forever.
     fn demotion_scope_sync_ids(&mut self, t: &Tid) -> Result<BTreeSet<SyncId>> {
         let mut things: BTreeSet<Tid> = self.closure(t).iter().copied().collect();
         things.insert(*t);
@@ -222,6 +223,8 @@ impl Engine {
                 out.extend(ids);
             }
         }
+        let set = self.sync_set()?;
+        out.retain(|s| set.ids.get(s).is_some_and(|(_, h)| *h == Holding::Read));
         Ok(out)
     }
 
