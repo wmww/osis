@@ -40,7 +40,7 @@
   - Every holder of a role on a thing with secrets of its own syncs it through that sync ID, whatever else holds the thing.
   - A plain thing has none: it syncs under the sync IDs of the groups holding it (spec/sync-judgement.md §1). Key actors (nodes, link keys) have no role secrets of their own and so no sync ID: a link key reaches its K's sync ID from its link text (§3 static entry), a node through its account's secrets or pairing.
   - The home closure holds the actor thing and what its `group.0` lists, nothing by record chain.
-  - The nearest actor with a home sync ID up a group's record chain carries that group's `sync.0` and `created.0` writes, while the record edges between them stand at the writer (spec/sync-judgement.md §1).
+  - The nearest actor with a home sync ID up the record chain of a thing with a home sync ID carries that thing's `sync.0` and `created.0` writes, while the record edges between them stand at the writer (spec/sync-judgement.md §1). An account, which has none, counts as its devices actor D.
   - A link's sync ID is its K's home sync ID.
 - **Sync ID** value: derived from the genesis step's delete public key (spec/wire.md §8). The genesis step derives from the admin secret current when the sync ID is created.
 - **Role keys**: Ed25519 keys, the first three from the thing's own role secrets (spec/crypto.md §3):

@@ -66,8 +66,9 @@ pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
 
 impl Engine {
     /// The things whose sync IDs may carry a body of commit `c`: those its parts are on, the
-    /// groups enclosing them, and for a `sync.0` or `created.0` part the nearest actor up its
-    /// thing's record chain with a home sync ID (spec/sync-ids.md §2).
+    /// groups enclosing them, and for a `sync.0` or `created.0` part on a labeled thing its
+    /// publisher (`Engine::publisher`, spec/sync-ids.md §2): the one rule `label_bodies_meta`'s
+    /// walk of a label follows too.
     fn body_things(&mut self, c: &CommitId) -> Result<BTreeSet<Tid>> {
         let Some(v) = self.core.ix.commits.get(c).map(|m| m.view.clone()) else { return Ok(BTreeSet::new()) };
         let mut out = BTreeSet::new();
@@ -75,12 +76,7 @@ impl Engine {
             out.insert(a.tid);
             out.extend(self.enclosing(&a.tid));
             if matches!(a.ak.as_str(), "sync.0" | "created.0") {
-                for x in self.core.standing_chain(&a.tid).into_iter().filter(|x| *x != a.tid) {
-                    if !self.owned_sync_ids(&x)?.is_empty() {
-                        out.insert(x);
-                        break;
-                    }
-                }
+                out.extend(self.publisher(&a.tid));
             }
         }
         Ok(out)
@@ -472,5 +468,37 @@ impl Engine {
             Some(chain) => Promote::Yes { chain },
             None => Promote::NotYet,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use crate::Mutation;
+    use crate::local_peer::LocalPeer;
+    use crate::sync::ThingSync;
+    use osis_base::WallMs;
+
+    // spec/sync-ids.md §2 (The nearest actor with a home sync ID): it carries a labeled thing's
+    // `sync.0`, an account counting as its devices actor D; a thing an account owns, given
+    // secrets of its own outside D's closure, has its `sync.0` commit's body under D's sync ID,
+    // as D's label walk lists it.
+    #[test]
+    fn an_account_things_sync_0_goes_under_d_spec_sync_ids_2() {
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let e = &mut lp.peers[0].engine;
+        let a = e.create_account().unwrap().0;
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a.account);
+        e.commit(m).unwrap();
+        let done = e.give_own_secrets(&t).unwrap();
+        assert!(!e.closure(&a.devices).contains(&t));
+        let ThingSync::Read(d_ids) = e.thing_sync(&a.devices).unwrap() else { panic!("D read here") };
+        let walked: std::collections::BTreeSet<_> = e.label_bodies_meta(&a.devices).unwrap().into_iter().map(|b| b.commit).collect();
+        let sync0 = osis_base::Ak::new("sync.0").unwrap();
+        let c = *done.commits.iter().find(|c| e.core.ix.commits.get(c).is_some_and(|m| m.view.aspects.iter().any(|x| x.tid == t && x.ak == sync0))).unwrap();
+        assert!(walked.contains(&c), "D's walk lists the commit");
+        let bodies = e.sync_bodies(&c).unwrap();
+        assert!(d_ids.iter().all(|s| bodies.contains_key(s)), "a body under D's sync IDs");
     }
 }

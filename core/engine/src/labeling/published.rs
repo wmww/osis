@@ -57,7 +57,7 @@ impl Engine {
     /// nearest labeled actor with secrets of its own up `h`'s record chain whose record edges up
     /// to it stand here (`Core::standing_chain`); an account has no label, so what is under it
     /// publishes under its devices actor's. `None` for a thing not labeled.
-    fn publisher(&self, h: &Tid) -> Option<Tid> {
+    pub(crate) fn publisher(&self, h: &Tid) -> Option<Tid> {
         let core = &self.core;
         if !core.ix.sync_recorded.contains(h) {
             return None;

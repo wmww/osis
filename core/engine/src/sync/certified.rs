@@ -68,8 +68,9 @@ struct Followers {
     inboxes: Effects<Tid, Arc<BTreeSet<Tid>>>,
     /// Per thing with authors (`Indexes::authors_on`), what it gives.
     authored: Effects<Tid, Arc<Authored>>,
-    /// Per piece placed somewhere, its certificates.
-    pieces: Effects<Piece, Arc<Certs>>,
+    /// Per piece placed somewhere, its certificates; `None` for a grant copy of a pair no longer
+    /// named (the piece goes).
+    pieces: Effects<Piece, Option<Arc<Certs>>>,
     /// New things with authors, new (holder, thing) pairs; `None` until the first follow.
     feeds: Option<Feeds>,
 }
@@ -263,12 +264,15 @@ impl Engine {
         Arc::new(Authored { authors, under })
     }
 
-    fn piece(&mut self, p: &Piece) -> Arc<Certs> {
-        Arc::new(match p {
+    /// Piece `p`'s certificates; `None` for a grant copy whose actor is no longer named on the
+    /// thing (`Held::is_named`, read per pair so the piece goes when the pair does).
+    fn piece(&mut self, p: &Piece) -> Option<Arc<Certs>> {
+        Some(Arc::new(match p {
             Piece::Own(t) => self.own_piece(t),
             Piece::Chain(a, x) => self.chain_piece(a, x),
+            Piece::Grant(a, x) if !self.core.ix.held.is_named(a, x) => return None,
             Piece::Grant(a, x) => self.grant_copy(a, x),
-        })
+        }))
     }
 
     /// Brings `Certified` up to date with what moved since the last call: work in proportion to
@@ -334,9 +338,12 @@ impl Engine {
         for x in f.authored.due() {
             let Some((_, now)) = f.authored.settle(&x, || self.authored(&x)) else { continue };
             let had = match now.authors.is_empty() {
-                // no author left: followed again once one comes (the feed)
                 true => {
-                    f.authored.unwant(&x);
+                    // followed while it has any author (one that is no node may come); with none,
+                    // again once one comes (the feed)
+                    if self.core.ix.authors_on.get(&x).is_none() {
+                        f.authored.unwant(&x);
+                    }
                     self.core.certified.authored.remove(&x)
                 }
                 false => self.core.certified.authored.insert(x, now.clone()),
@@ -358,15 +365,12 @@ impl Engine {
         for p in f.pieces.due() {
             osis_base::costs::count("sync: certificate pieces derived", 1);
             let Some((_, now)) = f.pieces.settle(&p, || self.piece(&p)) else { continue };
-            // a grant copy of a pair no longer named: gone until the feed names it again
-            if let Piece::Grant(a, x) = p
-                && now.is_empty()
-                && !self.core.ix.held.is_named(&a, &x)
-            {
-                self.drop_grant(f, a, x);
-                continue;
+            match (p, now) {
+                (_, Some(now)) => self.core.certified.reset(p, now),
+                // a grant copy of a pair no longer named: gone until the feed names it again
+                (Piece::Grant(a, x), None) => self.drop_grant(f, a, x),
+                (_, None) => {}
             }
-            self.core.certified.reset(p, now);
         }
         Ok(self.core.certified.wrote)
     }
@@ -514,15 +518,28 @@ mod tests {
             things.push(t);
         }
         let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
+        // a link's K, written first by the sharer node and then by L (an author that is no node)
+        let link: std::cell::RefCell<Option<osis_label::ShareLink>> = Default::default();
+        let k = || link.borrow().as_ref().unwrap().k;
         type Step<'a> = (&'a str, Box<dyn Fn(&mut LocalPeer) + 'a>);
         let steps: Vec<Step> = vec![
             ("grant read", Box::new(|lp: &mut LocalPeer| drop(lp.peers[0].engine.grant(&things[0], &a1.account, &edge(Role::Read)).unwrap()))),
             ("own secrets", Box::new(|lp: &mut LocalPeer| drop(lp.peers[0].engine.give_own_secrets(&things[1]).unwrap()))),
             ("grant write", Box::new(|lp: &mut LocalPeer| drop(lp.peers[0].engine.grant(&things[1], &a1.account, &edge(Role::Write)).unwrap()))),
+            ("link made", Box::new(|lp: &mut LocalPeer| {
+                let spec = crate::flows::LinkSpec { target: things[2], role: Role::Read, until: None, hosts: Vec::new(), peers: Vec::new(), single_use: false };
+                *link.borrow_mut() = Some(lp.peers[0].engine.create_link(&a0.account, &spec).unwrap().0);
+                lp.sync_all().unwrap();
+            })),
+            ("link redeemed", Box::new(|lp: &mut LocalPeer| {
+                let l = link.borrow().clone().unwrap();
+                lp.peers[1].engine.redeem(&l, &a1.account, false).unwrap();
+                lp.sync_all().unwrap();
+            })),
             ("filed in a group", Box::new(|lp: &mut LocalPeer| {
                 let e = &mut lp.peers[0].engine;
                 let mut m = Mutation::new();
-                m.set(things[1], &ct::GROUP, &ct::Group { items: [things[2]].into(), ..Default::default() }).unwrap();
+                m.set(things[1], &ct::GROUP, &ct::Group { items: [things[2], k()].into(), ..Default::default() }).unwrap();
                 e.commit(m).unwrap();
             })),
             ("synced", Box::new(|lp: &mut LocalPeer| lp.sync_all().unwrap())),
@@ -538,16 +555,96 @@ mod tests {
                 m.set(things[1], &ct::GROUP, &ct::Group::default()).unwrap();
                 e.commit(m).unwrap();
             })),
+            ("link's K taken out of D", Box::new(|lp: &mut LocalPeer| {
+                let e = &mut lp.peers[0].engine;
+                let mut m = Mutation::new();
+                m.op(a0.devices, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(crate::engine::groups::ITEMS)], op: osis_crdt::Op::Remove(Value::Tid(k())) }).unwrap();
+                e.commit(m).unwrap();
+            })),
             ("lowered", Box::new(|lp: &mut LocalPeer| drop(lp.peers[0].engine.demote(&things[0], &Demotion { holder: a1.account, new: Some(edge(Role::Sync)), retain: None }).unwrap()))),
             ("removed", Box::new(|lp: &mut LocalPeer| drop(lp.peers[0].engine.demote(&things[1], &Demotion { holder: a1.account, new: None, retain: None }).unwrap()))),
             ("synced again", Box::new(|lp: &mut LocalPeer| lp.sync_all().unwrap())),
         ];
         check(&mut lp.peers[0].engine, "start");
         check(&mut lp.peers[1].engine, "start");
+        // the authors' chains to K (L's among them) come under D and K, and leave D with K
+        let chains = |e: &Engine| -> BTreeSet<(Piece, Tid)> { e.core.certified.placed.iter().filter(|(p, _)| matches!(p, Piece::Chain(..))).flat_map(|(p, x)| x.under.iter().map(|t| (*p, *t))).collect() };
+        let (mut came, mut went) = (false, false);
         for (name, f) in &steps {
+            let was = chains(&lp.peers[0].engine);
             f(&mut lp);
             check(&mut lp.peers[0].engine, name);
             check(&mut lp.peers[1].engine, name);
+            let now = chains(&lp.peers[0].engine);
+            came |= now.difference(&was).next().is_some();
+            went |= was.difference(&now).next().is_some();
+        }
+        assert!(came && went, "chain pieces placed and taken away");
+    }
+
+    // spec/permissions.md §4, as above: random histories of grants, lowerings, removals, group
+    // filings, own secrets, links, grantee writes and syncs; after each step every read thing's
+    // pieces on both peers equal the whole derivation.
+    #[test]
+    fn pieces_keep_the_whole_derivation_through_random_histories_spec_permissions_4() {
+        for seed in 1..=2u64 {
+            let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let mut next = |n: usize| {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                (rng % n as u64) as usize
+            };
+            let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+            let a0 = lp.peers[0].engine.create_account().unwrap().0;
+            let a1 = lp.peers[1].engine.create_account().unwrap().0;
+            lp.sync_all().unwrap();
+            let ak = Ak::new("x:a.0").unwrap();
+            let mut things = Vec::new();
+            for i in 0..4 {
+                let e = &mut lp.peers[0].engine;
+                let mut m = Mutation::new();
+                let t = e.new_thing(&mut m, a0.account);
+                m.set(t, &ak, &Value::Int(i)).unwrap();
+                e.commit(m).unwrap();
+                things.push(t);
+            }
+            let roles = [Role::Sync, Role::Read, Role::Write, Role::Admin];
+            for step in 0..14 {
+                let t = things[next(things.len())];
+                let op = next(8);
+                let r = match op {
+                    0 => lp.peers[0].engine.grant(&t, &a1.account, &ct::Edge { role: roles[next(4)], until: None, invite: None, tied: None }).map(drop),
+                    1 => lp.peers[0].engine.demote(&t, &Demotion { holder: a1.account, new: None, retain: None }).map(drop),
+                    2 => lp.peers[0].engine.give_own_secrets(&t).map(drop),
+                    3 => {
+                        // file a random set of the others (and D, at times) in t
+                        let mut items: BTreeSet<Tid> = things.iter().copied().filter(|x| *x != t && next(2) == 0).collect();
+                        if next(3) == 0 {
+                            items.insert(a0.devices);
+                        }
+                        let mut m = Mutation::new();
+                        m.set(t, &ct::GROUP, &ct::Group { items, ..Default::default() }).unwrap();
+                        lp.peers[0].engine.commit(m).map(drop)
+                    }
+                    4 => {
+                        let mut m = Mutation::new();
+                        m.set(t, &ak, &Value::Int(step)).unwrap();
+                        lp.peers[1].commit(m).map(drop)
+                    }
+                    5 => {
+                        let spec = crate::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: Vec::new(), peers: Vec::new(), single_use: next(2) == 0 };
+                        lp.peers[0].engine.create_link(&a0.account, &spec).map(|(l, _, _)| l).and_then(|l| {
+                            lp.sync_all()?;
+                            lp.peers[1].engine.redeem(&l, &a1.account, l.single_use).map(drop)
+                        })
+                    }
+                    _ => lp.sync_all(),
+                };
+                let name = format!("seed {seed} step {step} op {op}: {}", if r.is_ok() { "done" } else { "refused" });
+                check(&mut lp.peers[0].engine, &name);
+                check(&mut lp.peers[1].engine, &name);
+            }
         }
     }
 }

@@ -1201,9 +1201,8 @@ pub struct Core {
     /// what needs their evidence may have gone.
     pub destroyed_due: BTreeSet<Tid>,
     /// Destroyed things kept here that a held thing may need (`retention::destroy::needs_evidence`,
-    /// `Engine::destroyed_needed`): a superset, read through `Core::destroyed_kept`; `None` until first
-    /// read after an open.
-    pub destroyed_kept: Option<BTreeSet<Tid>>,
+    /// `Engine::destroyed_needed`), read through `Core::destroyed_kept`.
+    pub(crate) destroyed_kept: DestroyedKept,
     /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
     /// when it ends (`apply::run_batched`).
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
@@ -1658,13 +1657,15 @@ impl Core {
     /// The destroyed things kept here that a held thing may need (`retention::destroy`): every destroyed
     /// thing with a held record once after an open, then kept by the destructions and the references
     /// moving to them (`apply_destructions`); `Engine::destroyed_needed` leaves out those it finds unneeded.
+    /// A read of the whole set: moved when a thing comes into it (`note_destroyed_kept`).
     pub fn destroyed_kept(&mut self) -> Vec<Tid> {
-        if self.destroyed_kept.is_none() {
+        self.destroyed_kept.stamps.read_all();
+        if self.destroyed_kept.set.is_none() {
             let all: BTreeSet<Tid> = self.ix.held.things().copied().filter(|t| self.destroyed(t)).collect();
-            self.destroyed_kept = Some(all);
+            self.destroyed_kept.set = Some(all);
         }
-        let kept: Vec<Tid> = self.destroyed_kept.iter().flatten().copied().filter(|t| self.destroyed(t) && self.created(t).is_some()).collect();
-        if let Some(s) = &mut self.destroyed_kept {
+        let kept: Vec<Tid> = self.destroyed_kept.set.iter().flatten().copied().filter(|t| self.destroyed(t) && self.created(t).is_some()).collect();
+        if let Some(s) = &mut self.destroyed_kept.set {
             s.retain(|t| kept.contains(t));
         }
         kept
@@ -1672,12 +1673,12 @@ impl Core {
 
     /// Notes destroyed thing `t` as kept here or not (`destroyed_kept`).
     pub(crate) fn note_destroyed_kept(&mut self, t: &Tid, kept: bool) {
-        if let Some(s) = &mut self.destroyed_kept {
-            if kept {
-                s.insert(*t);
-            } else {
-                s.remove(t);
-            }
+        let d = &mut self.destroyed_kept;
+        let Some(s) = &mut d.set else { return };
+        if !kept {
+            s.remove(t);
+        } else if s.insert(*t) {
+            d.stamps.moved();
         }
     }
 
@@ -2182,7 +2183,7 @@ impl Core {
             list_bound: osis_commit::MAX_LIST_BYTES,
             valueless_dirty: BTreeSet::new(),
             destroyed_due: BTreeSet::new(),
-            destroyed_kept: None,
+            destroyed_kept: DestroyedKept::default(),
             batched: None,
             touches: Default::default(),
             held_writes: memo::Memo::new("held writes"),
@@ -4021,4 +4022,14 @@ mod tests {
         p.restart(0).unwrap();
         assert_eq!(rev(&p).map(|r| r.0), Some(3), "registered again after a failed transaction");
     }
+}
+
+/// `Core::destroyed_kept`: a superset of the destroyed things kept here that a held thing may
+/// need, `None` until first read after an open (every destroyed thing held then). Stamped as one
+/// comes in, the only change a reader's other reads do not see: one leaves only once a read of it
+/// (`destroyed`, `created`, its references) found it gone or unneeded.
+#[derive(Clone, Default)]
+pub(crate) struct DestroyedKept {
+    set: Option<BTreeSet<Tid>>,
+    stamps: memo::Stamps,
 }
