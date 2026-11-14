@@ -723,6 +723,13 @@ impl Engine {
         self.record_borne_now(thing, borne)
     }
 
+    /// The account's sync record of `thing` keeps closed sync ID `s` no more (spec/sync.md §3,
+    /// spec/sync-judgement.md §6 Closes), its entry going whole once it keeps none. Returns
+    /// whether it wrote.
+    pub fn close_kept(&mut self, thing: &Tid, s: &SyncId) -> Result<bool> {
+        self.close_kept_now(thing, s)
+    }
+
     // Grants, removals, peers
 
     /// J of a peer's proven actors for `s` (spec/sync-opens.md §4), from the rosters held here:

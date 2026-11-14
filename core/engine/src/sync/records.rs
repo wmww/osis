@@ -267,7 +267,36 @@ pub(crate) fn keep_in(tx: &mut Tx<'_>, t: &Tid, ids: &[SyncId], secrets: impl In
     Ok(true)
 }
 
+/// Removes `s` from the account's sync record of `t` (a closed sync ID, spec/sync.md §3): the
+/// entry goes whole once it keeps no sync ID. Returns whether it wrote.
+pub(crate) fn unkeep_in(tx: &mut Tx<'_>, t: &Tid, s: &SyncId) -> Result<bool> {
+    let Some((_, d)) = tx.core.account_devices() else { return Ok(false) };
+    let Some(mut k) = tx.core.ix.sync_kept.get(t).map(|k| (**k).clone()) else { return Ok(false) };
+    if !k.ids.remove(s) {
+        return Ok(false);
+    }
+    let op = match k.ids.is_empty() {
+        true => Op::Remove(Value::Tid(*t)),
+        false => Op::Set(k.to_value()),
+    };
+    let path = match op {
+        Op::Remove(_) => Vec::new(),
+        _ => vec![PathSeg::Key(Value::Tid(*t))],
+    };
+    let mut m = crate::Mutation::new();
+    m.op(d, &ct::KEPT, PathOp { path, op })?;
+    crate::engine::write::commit_in(tx, m)?;
+    Ok(true)
+}
+
 impl Engine {
+    /// Closed sync ID `s` of `thing` leaves the account's sync record (spec/sync-judgement.md §6
+    /// Closes). Returns whether it wrote.
+    pub(crate) fn close_kept_now(&mut self, thing: &Tid, s: &SyncId) -> Result<bool> {
+        let (t, s) = (*thing, *s);
+        self.run(|tx| unkeep_in(tx, &t, &s))
+    }
+
     /// `thing`'s sync record view (spec/sync.md §3): reads only its key.
     pub(crate) fn sync_record_now(&self, thing: &Tid) -> Option<Arc<SyncRecord>> {
         self.core.ix.sync_records.get(thing).cloned()
