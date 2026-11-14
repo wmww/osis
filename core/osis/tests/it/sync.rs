@@ -103,7 +103,7 @@ fn listening_needs_a_network_and_a_socket_a_directory_spec_sync_transport_5() {
     assert_ne!(again[0].key(), addrs[0].key());
 }
 
-// spec/sync-transport.md §3 (`reach.0` lists; a node writes them each time it starts listening),
+// spec/sync-transport.md §3 (`reach.0` lists; each time it starts listening),
 // §5 (key change), spec/sync-set.md §1 (dial list: each node keeping its own entry): listening
 // publishes the node's global addresses in `reach.0` and its profile's dial list under its key;
 // a new key replaces its entry.
@@ -190,7 +190,7 @@ fn the_contact_card_is_a_read_link_to_the_profile_spec_sync_inbox_5() {
 }
 
 // spec/sync-set.md §1 (dial list; a node learns P's profile): from pairing: every node of the account knows the profile
-// (each writes its own `dial.0` entry there), a paired node from its offer,
+// (each writes its own `dial^.0` entry there), a paired node from its offer,
 // before any sync; reading it there before it arrives reads nothing, and its card works.
 #[test]
 fn a_paired_node_knows_the_accounts_profile_spec_sync_set_1() {

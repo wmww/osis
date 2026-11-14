@@ -120,9 +120,6 @@ fn a_sync_grant_writes_a_sync_record_only_spec_sync_judgement_6() {
     add_item(&mut lp, 1, d, t);
     let e = &mut lp.peers[1].engine;
     assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Unread(r.sync_ids.clone()));
-    e.drop_sync_record(&t).unwrap();
-    assert!(e.sync_record(&t).unwrap().is_none());
-    assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Plain, "no secret held of it");
 }
 
 // spec/sync-inbox.md §2 (invite request: an untaken blob, not applied, nothing followed),
@@ -169,6 +166,31 @@ fn a_removal_notice_reaches_a_sync_holder_spec_wire_9() {
     assert!(osis_label::verify_removal(&head.keys.delete, &n.sync_id, &Tid::from_bytes([1; 15]), &n.commit, n.epoch, &n.sig).is_err());
     assert!(osis_label::verify_removal(&head.keys.delete, &n.sync_id, &n.recipient, &n.commit, n.epoch + 1, &n.sig).is_err());
     assert!(osis_label::verify_removal(&head.keys.sync, &n.sync_id, &n.recipient, &n.commit, n.epoch, &n.sig).is_err());
+}
+
+// spec/sync-judgement.md §6 Stops (its notice keeps a box it covers from making a record): a
+// sync holder stopped by its removal's notice takes the old grant's blob again and makes no
+// record; a grant again (a newer sync epoch, past the notice's) makes one.
+#[test]
+fn a_stopped_holder_takes_its_old_grant_again_to_no_record_spec_sync_judgement_6() {
+    let (mut lp, t, pb, _, blob) = granted(Role::Sync);
+    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
+    let s = lp.peers[1].engine.sync_record(&t).unwrap().unwrap().sync_ids[0];
+    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: pb, new: None, retain: None }).unwrap();
+    let rm = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == pb).unwrap().1;
+    let e1 = &mut lp.peers[1].engine;
+    e1.take_inbox_blob(&rm, false).unwrap();
+    let n = e1.removal_notices(&s).unwrap()[0].clone();
+    e1.stop_sync_record(&t, &n).unwrap();
+    e1.take_inbox_blob(&blob, true).unwrap();
+    assert!(e1.sync_record(&t).unwrap().is_none(), "the old grant makes no record again");
+    lp.peers[1].restart(3).unwrap();
+    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
+    assert!(lp.peers[1].engine.sync_record(&t).unwrap().is_none(), "nor after a restart");
+    let again = lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Sync)).unwrap();
+    let b2 = lp.inbox_blobs(0, &again).unwrap().into_iter().find(|(h, _)| *h == pb).unwrap().1;
+    lp.peers[1].engine.take_inbox_blob(&b2, true).unwrap();
+    assert!(lp.peers[1].engine.sync_record(&t).unwrap().is_some(), "a grant again makes one");
 }
 
 // spec/sync-judgement.md §6 Stops ("a Register may move its head past the step the removal was

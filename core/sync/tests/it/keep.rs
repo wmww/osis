@@ -77,8 +77,8 @@ fn kept_then_removed() -> (World, Tid, SyncId) {
     (w, t, s)
 }
 
-// spec/sync-judgement.md §6 (keeps, stops), spec/sync-inbox.md §2 (logging, taking), spec/sync-ids.md
-// §6 (a store keeping S unread takes stamped entries), spec/sync-opens.md §1 (whom to dial):
+// spec/sync-judgement.md §6 (Keeps; Stops), spec/sync-inbox.md §2 (Logging), spec/sync-ids.md
+// §6 (Taking a stamped entry), spec/sync-opens.md §1 (whom to dial):
 // `kept_then_removed`: the removal's notice reaches node 1 as the grant did and stops it: S
 // shredded with its path.
 #[test]
@@ -92,7 +92,6 @@ fn grant_kept_unread_held_then_removed_and_shredded_spec_sync_judgement_6() {
 // spec/sync-judgement.md §6 (stops: the record dropped): after `kept_then_removed`, node 1 keeps
 // no record of the thing and does not sync S.
 #[test]
-#[ignore = "fails: issues/sync-retake-after-removal.md"]
 fn a_removed_sync_holder_keeps_no_record_spec_sync_judgement_6() {
     let (mut w, t, s) = kept_then_removed();
     assert!(w.engine(1).sync_record(&t).unwrap().is_none(), "the record dropped");

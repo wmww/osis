@@ -132,11 +132,25 @@ pub trait Peers {
 pub struct PeersFx {
     set: crate::set::SetFollow,
     peers: Effects<SyncId, Arc<Vec<Address>>>,
+    /// The inbox's dial hints (`Inbox::dial_hints`), read again only as they move.
+    hints: Effects<(), Arc<Vec<Address>>>,
 }
 
 impl Default for PeersFx {
     fn default() -> PeersFx {
-        PeersFx { set: crate::set::SetFollow::new("dials sync set"), peers: Effects::new("dial peers") }
+        let mut hints = Effects::new("dial hints");
+        hints.want(());
+        PeersFx { set: crate::set::SetFollow::new("dials sync set"), peers: Effects::new("dial peers"), hints }
+    }
+}
+
+impl PeersFx {
+    /// The inbox's dial hints when they moved since the last call (`hints` computes them).
+    pub fn hints_moved(&mut self, hints: impl FnOnce() -> Vec<Address>) -> Option<Arc<Vec<Address>>> {
+        if self.hints.due().is_empty() {
+            return None;
+        }
+        self.hints.settle(&(), || Arc::new(hints())).map(|(_, v)| v)
     }
 }
 
@@ -280,6 +294,18 @@ impl Dials {
             // its priority may have moved
             self.unwait(key);
             self.schedule(*key, WallMs(0));
+        }
+    }
+
+    /// Every dial peer and hint goes (the modules start again: they are offered afresh).
+    pub fn forget_peers(&mut self) {
+        for (s, addrs) in std::mem::take(&mut self.by_sync) {
+            for a in addrs.iter() {
+                self.withdraw(&Why::Sync(s), &a.key);
+            }
+        }
+        for a in std::mem::take(&mut self.hinted) {
+            self.withdraw(&Why::Hint, &a.key);
         }
     }
 
@@ -514,6 +540,12 @@ impl Dials {
     /// The candidate a dialed connection is to.
     pub fn dialed(&self, conn: ConnId) -> Option<[u8; 32]> {
         self.conns.get(&conn).copied()
+    }
+
+    /// Tests only: why `key` is a candidate.
+    #[doc(hidden)]
+    pub fn why(&self, key: &[u8; 32]) -> Vec<Why> {
+        self.cands.get(key).map(|c| c.why.keys().copied().collect()).unwrap_or_default()
     }
 
     /// Tests only: candidates kept, and the work counted so far.

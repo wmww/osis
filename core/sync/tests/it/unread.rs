@@ -106,7 +106,7 @@ impl Keep {
     }
 
     fn stops(&self) -> bool {
-        self.verdict() == Verdict::Stop
+        matches!(self.verdict(), Verdict::Stop(_))
     }
 }
 

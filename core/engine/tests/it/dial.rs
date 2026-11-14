@@ -76,7 +76,7 @@ fn own_nodes_while_their_sync_sets_intersect_spec_sync_opens_1() {
 }
 
 // spec/sync-opens.md §1 (whom to dial: the nodes of accounts holding sync or above on a sync ID
-// it syncs; where: their profile's `dial.0`): node 0 dials node 1 for a thing once node 1's
+// it syncs; where: their profile's `dial^.0`): node 0 dials node 1 for a thing once node 1's
 // account holds a role on it, and no longer once it is removed.
 #[test]
 fn accounts_holding_a_role_by_their_dial_list_spec_sync_opens_1() {
@@ -114,7 +114,7 @@ fn the_granter_of_what_it_keeps_unread_spec_sync_opens_1() {
 }
 
 // spec/sync-set.md §1 (dial list: each node keeping its own entry), spec/sync-transport.md §5
-// (key change: the node writes its `reach.0` and its `dial.0` entry for the new key): a new key
+// (key change: the node writes its `reach.0` and its `dial^.0` entry for the new key): a new key
 // replaces the node's entry; publishing again unchanged writes nothing.
 #[test]
 fn a_new_key_replaces_the_nodes_entry_spec_sync_transport_5() {
@@ -131,4 +131,33 @@ fn a_new_key_replaces_the_nodes_entry_spec_sync_transport_5() {
     assert_eq!(list[&key(1).to_vec()], vec![peer_url(&items(0))]);
     let me = e.tid();
     assert_eq!(e.get_typed(&me, &ct::REACH).unwrap().map(|r| r.dialable), Some(key(1)));
+}
+
+// spec/sync-set.md §1 (dial list: written by the account; `dial^.0` admin-only,
+// spec/data-model.md §1 `^`): a co-writer of P's profile cannot write its dial list (a delta
+// it forged anyway is invalid by spec/permissions.md §5.2): P's contact dials P's own nodes only.
+#[test]
+fn a_co_writer_cannot_plant_a_dial_list_spec_sync_set_1() {
+    let (mut lp, ps) = people(3);
+    publish(&mut lp, 0);
+    spread(&mut lp);
+    let profile = lp.peers[0].engine.profile_of(&ps[0]).expect("P's profile");
+    lp.peers[0].engine.grant(&profile, &ps[1], &edge_of(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&profile, &ps[2], &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    let mut list = ct::DialList::new();
+    list.insert(vec![0x66; 32], vec!["peer://198.51.100.1:4040".to_string()]);
+    let e1 = &mut lp.peers[1].engine;
+    let mut m = Mutation::new();
+    m.set(profile, &ct::DIAL, &list).unwrap();
+    assert!(matches!(e1.commit(m), Err(osis_engine::Error::Permission { .. })), "admin-only");
+    spread(&mut lp);
+    let e2 = &mut lp.peers[2].engine;
+    let held = e2.get_typed(&profile, &ct::DIAL).unwrap().unwrap_or_default();
+    assert_eq!(held.keys().cloned().collect::<Vec<_>>(), vec![key(0).to_vec()], "P's own entry only");
+    let d2 = e2.account().unwrap().unwrap().1;
+    let (_, s) = synced_thing(&mut lp, 2, d2);
+    let t = lp.peers[2].engine.sync_owner(&s).unwrap().unwrap();
+    lp.peers[2].engine.grant(&t, &ps[0], &edge_of(Role::Read)).unwrap();
+    assert_eq!(peers(&mut lp, 2, &s), vec![addr(0)]);
 }

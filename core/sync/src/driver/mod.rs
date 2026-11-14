@@ -473,8 +473,10 @@ impl Node {
         let now = self.now;
         let d = &mut self.driver;
         d.dials.settle_peers(&mut NodePeers { engine: &mut self.engine, fx: &mut d.fx }, now);
-        let hints: Vec<Address> = self.inbox.dial_hints().into_iter().filter_map(|h| Some(Address { url: h.urls.first()?.clone(), key: h.dialable })).collect();
-        d.dials.hint(&hints, now);
+        let inbox = &self.inbox;
+        if let Some(hints) = d.fx.hints_moved(|| inbox.dial_hints().into_iter().filter_map(|h| Some(Address { url: h.urls.first()?.clone(), key: h.dialable })).collect()) {
+            d.dials.hint(&hints, now);
+        }
         let changed = self.opens.changed_end();
         if changed != d.changed {
             d.changed = changed;
@@ -693,6 +695,9 @@ impl Node {
         self.status = Status::default();
         self.driver.changed = 0;
         self.driver.store = crate::store::Follow::default();
+        // the dial peers and hints follow the modules' and the engine's stamps afresh
+        self.driver.fx = dials::PeersFx::default();
+        self.driver.dials.forget_peers();
         if self.settle(out).and_then(|()| self.flush()).is_err() {
             self.close_all(out);
         }

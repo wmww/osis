@@ -13,7 +13,7 @@
 
 use super::{DialHint, Here, settled};
 use crate::types::{Result, Waiting};
-use osis_base::memo::Effects;
+use osis_base::memo::{Effects, Stamped};
 use osis_base::{CommitId, Tid};
 use osis_engine::Engine;
 use osis_label::ShareLink;
@@ -56,14 +56,15 @@ fn row_key(k: &Tid) -> Vec<u8> {
 #[derive(Clone)]
 pub(super) struct Redemptions {
     pending: BTreeMap<Tid, Pending>,
-    hints: BTreeMap<Tid, Vec<DialHint>>,
+    /// Stamped: the driver follows the dial hints as they move.
+    hints: Stamped<Tid, Vec<DialHint>>,
     ready: Effects<Tid, bool>,
     held: Effects<Tid, bool>,
 }
 
 impl Default for Redemptions {
     fn default() -> Self {
-        Redemptions { pending: BTreeMap::new(), hints: BTreeMap::new(), ready: Effects::new("inbox: link ready"), held: Effects::new("inbox: join held") }
+        Redemptions { pending: BTreeMap::new(), hints: Stamped::default(), ready: Effects::new("inbox: link ready"), held: Effects::new("inbox: join held") }
     }
 }
 
@@ -84,7 +85,10 @@ impl Redemptions {
             None => self.ready.want(k),
             Some(_) => self.held.want(k),
         }
-        self.hints.insert(k, link_hints(&p.link));
+        let hints = link_hints(&p.link);
+        if self.hints.get(&k) != Some(&hints) {
+            self.hints.insert(k, hints);
+        }
         self.pending.insert(k, p);
         Ok(())
     }
@@ -128,7 +132,9 @@ impl Redemptions {
             let Some((_, true)) = settled(&mut self.held, &k, false, || Ok(status.is_some_and(|st| st.held(&c))))? else { continue };
             self.held.unwant(&k);
             self.pending.remove(&k);
-            self.hints.remove(&k);
+            if self.hints.contains_key(&k) {
+                self.hints.remove(&k);
+            }
             h.store.with_tx(|t| t.remove_local(&row_key(&k), Shred::Yes))?;
             acted = true;
         }

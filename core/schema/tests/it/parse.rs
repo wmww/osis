@@ -24,7 +24,7 @@ fn core_schema_parses_spec_data_model_9() {
     let aks: Vec<&str> = s.aspects.keys().map(String::as_str).collect();
     for ak in [
         "tid.0", "aspects.0", "created.0", "roles.0", "keys.0", "secrets.0", "sync.0", "node.0",
-        "reach.0", "dial.0", "caps^.0", "synced^.0", "clients^.0", "group.0", "groups.0", "name.0", "body.0", "tag.0", "addenda.0", "account.0", "listing.0",
+        "reach.0", "dial^.0", "caps^.0", "synced^.0", "clients^.0", "group.0", "groups.0", "name.0", "body.0", "tag.0", "addenda.0", "account.0", "listing.0",
         "retainers^.0", "released.0",
     ] {
         assert!(aks.contains(&ak), "{ak}");

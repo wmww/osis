@@ -62,6 +62,9 @@ pub(super) struct Held {
     acts: BTreeMap<Key, Act>,
     /// The inbox blob stamped per (inbox, commit).
     stamped: Stamped<(SyncId, CommitId), BlobId>,
+    /// The dial hint of each inbox blob acted on that carries one (`hints`): stamped, so the
+    /// driver follows them as they move.
+    dials: Stamped<Key, DialHint>,
     /// Inbox blobs whose commit applied, with their dial hints: taken once (spec/sync-inbox.md
     /// §2 Taking), so judged again from the commit alone.
     taken: Stamped<Key, (CommitId, Option<DialHint>)>,
@@ -73,7 +76,7 @@ impl Default for Held {
     fn default() -> Self {
         let mut inbox_list = Effects::new("inbox: inboxes");
         inbox_list.want(());
-        Held { feed: None, inbox_list, inboxes: StampedSet::default(), judged: Effects::new("inbox: held"), acts: BTreeMap::new(), stamped: Stamped::default(), taken: Stamped::default(), clear_due: BTreeSet::new() }
+        Held { feed: None, inbox_list, inboxes: StampedSet::default(), judged: Effects::new("inbox: held"), acts: BTreeMap::new(), stamped: Stamped::default(), dials: Stamped::default(), taken: Stamped::default(), clear_due: BTreeSet::new() }
     }
 }
 
@@ -137,6 +140,16 @@ impl Held {
         let deposit = matches!(now, Act::StampInbox(..) | Act::Promote(_) | Act::Offer | Act::Waiting { .. }) || matches!(now, Act::Inbox { stamped: false, .. });
         if deposit || matches!(self.acts.get(k), Some(Act::Offer | Act::Waiting { .. } | Act::Inbox { stamped: false, .. })) {
             self.clear_due.insert(*s);
+        }
+        let dial = match now {
+            Act::Inbox { dial, .. } | Act::StampInbox(_, dial) => dial.as_ref(),
+            _ => None,
+        };
+        if self.dials.get(k) != dial {
+            match dial {
+                Some(d) => self.dials.insert(*k, d.clone()),
+                None => self.dials.remove(k),
+            };
         }
         match now {
             Act::Gone | Act::Nothing => {
@@ -219,10 +232,7 @@ impl Held {
 
     /// Dial hints of the inbox blobs held (spec/sync-inbox.md §2: for dialing only).
     pub(super) fn hints(&self) -> impl Iterator<Item = &DialHint> {
-        self.acts.values().filter_map(|a| match a {
-            Act::Inbox { dial: Some(d), .. } => Some(d),
-            _ => None,
-        })
+        self.dials.values()
     }
 
     pub(super) fn next_wake(&self) -> Option<WallMs> {

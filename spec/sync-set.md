@@ -9,7 +9,7 @@
 - **Home stays under it**: a node MUST NOT write a commit after which some node's synced group closure no longer holds D, or D's closure no longer holds that synced group, while each held the other before: the write is refused locally (`Invalid`). Limit: two concurrent writes each cutting one path leave that node following no change of its synced group until it is paired again.
 - Before a node has read its synced group (a fresh pairing), its sync set is home's closure.
 - Organizing groups ("on every node", "nodes with room") are plain groups listed under synced groups; they have no sync ID of their own role and no special rule. Which exist, and where an accept writes, is the app's or the node's policy.
-- **Dial list** `dial.0` on P's profile: each node's dialable key to its URLs, written by the account, each node keeping its own entry (writing it for its new key removes the one for its old); P's contacts read it for dialing only (spec/sync-opens.md §1). A node learns P's profile as it learns its synced group: at the account's creation, or from pairing (the offer names it), before the profile itself arrives.
+- **Dial list** `dial^.0` on P's profile: each node's dialable key to its URLs, written by the account, each node keeping its own entry (writing it for its new key removes the one for its old); P's contacts read it for dialing only (spec/sync-opens.md §1). A node learns P's profile as it learns its synced group: at the account's creation, or from pairing (the offer names it), before the profile itself arrives.
 - No group names a node: groups name accounts, never their holders' nodes.
 
 ## 2. Sync set

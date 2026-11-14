@@ -217,7 +217,8 @@ impl Inbox {
     }
 
     /// Dial hints from inbox blobs taken and links being redeemed: dial candidates
-    /// (spec/sync-opens.md §1), for dialing only.
+    /// (spec/sync-opens.md §1), for dialing only. Stamped reads: the driver follows them in an
+    /// `Effects` key, read again only as they move.
     pub fn dial_hints(&self) -> BTreeSet<DialHint> {
         self.held.hints().chain(self.links.hints()).cloned().collect()
     }

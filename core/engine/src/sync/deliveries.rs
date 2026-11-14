@@ -263,7 +263,7 @@ impl Engine {
     }
 
     /// This node's dial hint (spec/wire.md §9 position 4): its `reach.0` dialable key and URL, as
-    /// in its `dial.0` entry (`Engine::publish_reach`).
+    /// in its `dial^.0` entry (`Engine::publish_reach`).
     fn dial_hint(&mut self) -> Result<Option<DialHint>> {
         let me = self.core.id.tid();
         Ok(self.get_typed(&me, &osis_schema::core_types::REACH)?.map(|r| DialHint { dialable: r.dialable, urls: super::dial::urls_of(&r.items) }))

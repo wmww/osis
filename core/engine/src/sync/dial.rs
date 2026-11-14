@@ -1,5 +1,5 @@
 //! Whom a node dials and where (spec/sync-opens.md §1 Where to dial, Whom to dial): `dial_peers`
-//! per sync ID, from the dial records it holds (its own nodes' `reach.0`, contacts' `dial.0`, a
+//! per sync ID, from the dial records it holds (its own nodes' `reach.0`, contacts' `dial^.0`, a
 //! grant's dial hint in a sync record), and what this node publishes of itself
 //! (`publish_reach`). For dialing only, never proof.
 
@@ -12,7 +12,7 @@ use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// A node's URLs from its `reach.0` items: the one `peer://` URL listing them (what its `dial.0`
+/// A node's URLs from its `reach.0` items: the one `peer://` URL listing them (what its `dial^.0`
 /// entry and its grants' dial hints carry).
 pub(crate) fn urls_of(items: &[String]) -> Vec<String> {
     vec![peer_url(items)]
@@ -23,7 +23,7 @@ fn address(key: &[u8], urls: &[String]) -> Option<Address> {
     Some(Address { url: urls.first()?.clone(), key: key.try_into().ok()? })
 }
 
-/// Whether this node lists itself in its account's profile dial list (`dial.0`), so its
+/// Whether this node lists itself in its account's profile dial list (`dial^.0`), so its
 /// account's contacts can dial it. Every node does: the reversible reading while which nodes a
 /// profile lists is Tess's open question (notes/sync-rewrite-inputs.md, For Tess).
 fn lists_on_profile() -> bool {
@@ -97,16 +97,17 @@ impl Engine {
     }
 
     /// Account `a`'s profile (spec/permissions.md §1): the thing created with `a` (in the commit
-    /// creating it) whose first admin is `a`, other than its devices actor. `None` until that
-    /// commit is held here.
+    /// creating it, which `a` authors: a record needs no authority, so another author's commit
+    /// carrying `a`'s record again creates no profile of `a`'s) whose first admin is `a`, other
+    /// than its devices actor. `None` until that commit is held here.
     pub fn profile_of(&self, a: &Tid) -> Option<Tid> {
         let created = ct::CREATED.name();
-        let (_, c) = self.core.ix.by_aspect.get(&(*a, created.clone()))?.iter().next().copied()?;
-        let meta = self.core.ix.commits.get(&c)?;
+        let by = self.core.ix.by_aspect.get(&(*a, created.clone()))?;
+        let meta = by.iter().filter_map(|(_, c)| self.core.ix.commits.get(c)).find(|m| m.header.author == *a)?;
         meta.view.aspects.iter().filter(|x| x.ak == created && x.tid != *a).map(|x| x.tid).find(|x| self.core.first_admin(x) == Some(*a) && self.core.devices_of(x).is_none())
     }
 
-    /// Account `a`'s dial list: `dial.0` on its profile, as held here.
+    /// Account `a`'s dial list: `dial^.0` on its profile, as held here.
     fn dial_list(&mut self, a: &Tid) -> Result<ct::DialList> {
         let Some(p) = self.profile_of(a) else { return Ok(ct::DialList::new()) };
         Ok(self.get_typed(&p, &ct::DIAL)?.unwrap_or_default())
@@ -114,7 +115,7 @@ impl Engine {
 
     /// Publishes where this node is dialed (spec/sync-transport.md §3, §5 Key change): its
     /// `reach.0` (dialable key `dialable`, the `peer://` items it listens at, its account), and
-    /// its own entry in its account's profile dial list (`dial.0`, spec/sync-set.md §1) in place
+    /// its own entry in its account's profile dial list (`dial^.0`, spec/sync-set.md §1) in place
     /// of the one under its key before. Each only where it changed; the entry once the profile is
     /// held here (a node paired a moment ago writes it at a later call). A node of no account
     /// publishes nothing.

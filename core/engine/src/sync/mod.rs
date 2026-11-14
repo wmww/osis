@@ -511,10 +511,15 @@ impl Engine {
         self.core.ix.sync_records.feed()
     }
 
-    /// Drops `thing`'s sync record (its removal reached this node, or it left S).
-    pub fn drop_sync_record(&mut self, thing: &Tid) -> Result<()> {
+    /// Drops `thing`'s sync record as removal notice `n` (held, verified by the caller) stopped
+    /// this node keeping it: while `n` is held, no box of a sync epoch at or below its epoch
+    /// makes a record again (spec/sync-judgement.md §6 Stops).
+    pub fn stop_sync_record(&mut self, thing: &Tid, n: &RemovalNotice) -> Result<()> {
         let t = *thing;
-        self.run(|tx| records::drop_record(tx, &t))
+        self.run(|tx| {
+            records::count_notice(tx, n)?;
+            records::drop_record(tx, &t)
+        })
     }
 
     // Grants, removals, peers
@@ -615,7 +620,7 @@ impl Engine {
 
     /// The nodes this node may dial for S (spec/sync-opens.md §1 Whom to dial), each at the
     /// address it is known by here: of S read, the nodes of each account holding a role on S's
-    /// thing by that account's dial list (`dial.0` on its profile); of S kept unread, its granting
+    /// thing by that account's dial list (`dial^.0` on its profile); of S kept unread, its granting
     /// node (the newest grant's dial hint, kept in the sync record, spec/sync-inbox.md §2); either
     /// way this node's own other nodes whose synced group's closure holds S's thing, by their
     /// `reach.0` (the driver never dials its own key). A memo per sync ID; for dialing only, never

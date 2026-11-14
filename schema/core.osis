@@ -293,7 +293,7 @@ aspect reach.0: struct {
 /// The account's dial list, on its profile: each of its devices' 32-byte public key to the URLs
 /// it is dialed at (spec/sync-set.md §1), each device keeping its own entry. Its contacts read
 /// it, for dialing only.
-aspect dial.0: map<blob, list<string>>;
+admin aspect dial^.0: map<blob, list<string>>;
 
 /// Limits on what the device stores of one thing it keeps unread.
 type thing_caps = struct {

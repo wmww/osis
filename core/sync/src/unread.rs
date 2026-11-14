@@ -71,7 +71,7 @@ pub trait Sources {
 pub enum Verdict {
     Keep(Kept),
     /// A removal notice counts: drop the thing's sync IDs at once.
-    Stop,
+    Stop(RemovalNotice),
     /// Unlisted and every own entry is present at a source.
     Leave,
 }
@@ -95,8 +95,8 @@ pub struct Judged<'a> {
 pub fn judge(j: &Judged) -> Verdict {
     osis_base::costs::count("unread: judged", 1);
     let secrets: Vec<(VerifyingKey, &Secret32, u64)> = j.record.map(|r| r.secrets.iter().map(|(e, x)| (label_role_key(LabelRole::Sync, x).verifying_key(), x, e.n())).collect()).unwrap_or_default();
-    if j.notices.iter().any(|n| removal_counts(n, j.steps, &secrets)) {
-        return Verdict::Stop;
+    if let Some(n) = j.notices.iter().find(|n| removal_counts(n, j.steps, &secrets)) {
+        return Verdict::Stop(n.clone());
     }
     if !j.listed && j.own_elsewhere {
         return Verdict::Leave;
@@ -226,7 +226,7 @@ impl Unread {
                     cx.store.shred(&s)?;
                     self.forget(&s);
                 }
-                Verdict::Stop => {
+                Verdict::Stop(n) => {
                     // removed by another: every sync ID of the thing goes at once
                     let mut ids: Vec<SyncId> = cx.engine.sync_record(&thing)?.map(|r| r.sync_ids.clone()).unwrap_or_default();
                     ids.push(s);
@@ -238,7 +238,7 @@ impl Unread {
                             self.forget(id);
                         }
                     }
-                    cx.engine.drop_sync_record(&thing)?;
+                    cx.engine.stop_sync_record(&thing, &n)?;
                 }
             }
         }

@@ -155,9 +155,9 @@ fn a_read_grant_after_a_sync_removal_reaches_the_grantee_spec_sync_inbox_2() {
 
 // spec/sync-judgement.md §3 (own store), spec/sync-compaction.md §1: a reader removed and
 // granted again (no run between) reads the write made while it was removed. Found by the
-// differential (clean seed 78); fails: issues/sync-convergence-leftovers.md.
+// differential (clean seed 78): the grantee pulls under its older read secret and opens what it
+// kept once the newer one arrives.
 #[test]
-#[ignore = "fails: issues/sync-convergence-leftovers.md"]
 fn a_reader_granted_again_reads_what_a_snapshot_carries_spec_sync_judgement_3() {
     use crate::harness::Step::*;
     use crate::harness::history::Gives;
@@ -166,7 +166,6 @@ fn a_reader_granted_again_reads_what_a_snapshot_carries_spec_sync_judgement_3() 
 
 // spec/sync-inbox.md §2 (Re-send): as above, with a failed write at the grantee (faulty seed 77).
 #[test]
-#[ignore = "fails: issues/sync-convergence-leftovers.md"]
 fn a_writer_granted_again_after_a_failed_write_reads_spec_sync_inbox_2() {
     use crate::harness::DiskFault::Fail;
     use crate::harness::Step::*;
@@ -177,9 +176,20 @@ fn a_writer_granted_again_after_a_failed_write_reads_spec_sync_inbox_2() {
 // spec/sync-inbox.md §2 (Re-send): as above, the grantee off while it is granted, removed and
 // granted again (faulty seed 93).
 #[test]
-#[ignore = "fails: issues/sync-convergence-leftovers.md"]
 fn a_reader_off_through_a_grant_a_removal_and_a_grant_again_reads_spec_sync_inbox_2() {
     use crate::harness::Step::*;
     use crate::harness::history::Gives;
     crate::convergence::converge(93, 3, &[New(1), PowerOff(2), Run, Grant(1, 0, 2, Gives::Reads), Remove(1, 0, 2), Grant(1, 0, 2, Gives::Reads)], String::new());
+}
+
+// spec/sync-streams.md §4 (Fill order: what does not open is ranked again as secrets arrive): a
+// reader granted sync and read, removed, and granted read again after a sync holder's grant (no
+// run between) pulls S under its older read secret before the grant boxing the newer one is
+// taken; it keeps the entries that did not open and opens them when the secret arrives, so it
+// reads the sync holder's edge. Found by the differential (faulty seed 7).
+#[test]
+fn a_reader_opens_what_it_pulled_before_its_secret_spec_sync_streams_4() {
+    use crate::harness::Step::*;
+    use crate::harness::history::Gives;
+    crate::convergence::converge(7, 3, &[New(1), Grant(1, 0, 0, Gives::Syncs), Grant(1, 0, 0, Gives::Reads), Remove(1, 0, 0), Grant(1, 0, 2, Gives::Syncs), Grant(1, 0, 0, Gives::Reads)], String::new());
 }
