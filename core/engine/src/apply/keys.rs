@@ -636,19 +636,9 @@ pub fn inbox_named(blob: &osis_commit::CommitBlob, id: &CommitId) -> std::collec
 /// The holders a held, not applied role commit's `roles.0` parts on `on` put an edge
 /// for, decoded unverified.
 pub(crate) fn pending_grantees(blob: &osis_commit::CommitBlob, id: &CommitId, on: &Tid) -> Vec<Tid> {
-    let h = &blob.header;
     let mut out = Vec::new();
-    if !h.kind.is_role() || !h.is_resolved() {
-        return out;
-    }
-    let mut interner = osis_crdt::Interner::new();
-    for p in &blob.parts {
-        if h.aspects.get(p.ai).is_none_or(|a| a.ak.as_str() != "roles.0" || a.tid != *on) {
-            continue;
-        }
-        let Ok(cx) = osis_commit::delta_ctx(h, id, p.ai, &mut interner) else { continue };
-        let Ok(d) = osis_crdt::decode_delta(&p.delta, &cx, &mut interner, None) else { continue };
-        let Some(m) = map(Some(&d.fragment)) else { continue };
+    for (_, d) in pending_deltas(blob, id, |a| a.ak.as_str() == "roles.0" && a.tid == *on) {
+        let Some(m) = map(Some(&d)) else { continue };
         for (_, _, k, f) in m.entries() {
             if let (Some(Value::Tid(t)), Some(_)) = (k, f.and_then(Fragment::read)) {
                 out.push(*t);
@@ -661,20 +651,23 @@ pub(crate) fn pending_grantees(blob: &osis_commit::CommitBlob, id: &CommitId, on
 /// The `secrets.0` writes of a held, not applied role commit, per actor, decoded
 /// unverified (what `read_pending_boxes` reads; the lost-access trigger's pending grants).
 pub(crate) fn pending_secrets_writes(blob: &osis_commit::CommitBlob, id: &CommitId) -> Vec<(Tid, SecretsWrite)> {
+    pending_deltas(blob, id, |a| a.ak.as_str() == "secrets.0").into_iter().map(|(t, d)| (t, secrets_write(&d))).collect()
+}
+
+/// The deltas of a held, not applied role commit's parts whose header entry `keep` takes, with
+/// their things, decoded unverified; none while its header lists are not resolved.
+fn pending_deltas(blob: &osis_commit::CommitBlob, id: &CommitId, keep: impl Fn(&osis_commit::AspectEntry) -> bool) -> Vec<(Tid, Fragment)> {
     let h = &blob.header;
-    let mut out = Vec::new();
     if !h.kind.is_role() || !h.is_resolved() {
-        return out;
+        return Vec::new();
     }
     let mut interner = osis_crdt::Interner::new();
+    let mut out = Vec::new();
     for p in &blob.parts {
-        let Some(a) = h.aspects.get(p.ai) else { continue };
-        if a.ak.as_str() != "secrets.0" {
-            continue;
-        }
+        let Some(a) = h.aspects.get(p.ai).filter(|a| keep(a)) else { continue };
         let Ok(cx) = osis_commit::delta_ctx(h, id, p.ai, &mut interner) else { continue };
         let Ok(d) = osis_crdt::decode_delta(&p.delta, &cx, &mut interner, None) else { continue };
-        out.push((a.tid, secrets_write(&d.fragment)));
+        out.push((a.tid, d.fragment));
     }
     out
 }
