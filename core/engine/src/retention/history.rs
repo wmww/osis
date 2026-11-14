@@ -77,6 +77,11 @@ pub(crate) fn permanent(core: &Core, h: &osis_commit::Header, a: &osis_commit::A
     h.ephemeral.is_none() && h.expires.is_none() && osis_commit::retention::fixed_retention(a.ak.as_str()).is_none() && of(core, &a.tid, &a.ak).forever(now)
 }
 
+/// `permanent` read on the memo clock (`Kept::forever_now`).
+pub(crate) fn permanent_now(core: &Core, h: &osis_commit::Header, a: &osis_commit::AspectEntry) -> bool {
+    h.ephemeral.is_none() && h.expires.is_none() && osis_commit::retention::fixed_retention(a.ak.as_str()).is_none() && of(core, &a.tid, &a.ak).forever_now(&core.time)
+}
+
 impl Kept {
     /// The wall ms before which a body replaced at wall ms `replaced` is in history (0: never in
     /// it, as when replaced under no history or purge on replace); `None`: not replaced, so in
@@ -140,6 +145,15 @@ impl Kept {
     /// Whether a body replaced at wall ms `now` would never leave history.
     pub(crate) fn forever(&self, now: u64) -> bool {
         self.always || self.tl.kept_until(now) >= FOREVER
+    }
+
+    /// `forever` read on the memo clock: the answer holds until a setting dated later takes force.
+    pub(crate) fn forever_now(&self, time: &osis_base::memo::Clock) -> bool {
+        if self.always {
+            return true;
+        }
+        let now = time.until(None);
+        self.forever(time.until(self.tl.next_start(now)))
     }
 }
 

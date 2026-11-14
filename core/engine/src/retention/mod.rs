@@ -393,14 +393,16 @@ pub(crate) fn kept_invalid(m: &crate::engine::Meta) -> bool {
 /// a fall of the request finds its writes again (`unstrip`) and a copy is fetched, as one
 /// `kept_invalid` is. Either class: node-sync forgets it by the same rule
 /// (`Engine::forgettable`); a memory one is charged its own bytes until then.
-pub(crate) fn kept_purged(core: &Core, c: &CommitId, m: &crate::engine::Meta, now: u64) -> bool {
+pub(crate) fn kept_purged(core: &Core, c: &CommitId, m: &crate::engine::Meta) -> bool {
     if m.stripped_parts().next().is_none() || m.view.purges || m.view.kind != Kind::Content || core.ix.pending.contains_key(c) {
         return false;
     }
+    // read on the memo clock: the answer holds until the commit's expiry
+    let now = core.time.until(m.header.expires);
     let purged = |ai: usize| m.bare(ai) && m.header.aspects.get(ai).is_some_and(|a| held_purged(core, c, &a.tid, &a.ak, ai, now));
     let n = m.view.aspects.len();
     // a thing's first commit stays (its `created.0` part never drops)
-    let kept = |a: &osis_commit::AspectEntry| a.ak.as_str() == osis_commit::retention::CREATED || history::permanent(core, &m.header, a, now);
+    let kept = |a: &osis_commit::AspectEntry| a.ak.as_str() == osis_commit::retention::CREATED || history::permanent_now(core, &m.header, a);
     (0..n).any(purged) && (0..n).all(|ai| !m.holds(ai) || purged(ai)) && !m.header.aspects.iter().any(kept)
 }
 
@@ -1245,7 +1247,7 @@ impl Engine {
     /// charged its own bytes against its labels' caps until it is forgotten, not through its
     /// entries, which the purger deletes at hosts.
     pub fn kept_purged(&self, c: &CommitId) -> bool {
-        self.core.ix.commits.get(c).is_some_and(|m| kept_purged(&self.core, c, m, self.now().0))
+        self.core.ix.commits.get(c).is_some_and(|m| kept_purged(&self.core, c, m))
     }
 
     /// Whether commit `c` may be forgotten, ID included, once node-sync knows no entry of it
@@ -1263,7 +1265,7 @@ impl Engine {
         if core.ix.pending.contains_key(c) {
             return false;
         }
-        if kept_invalid(m) || kept_purged(core, c, m, self.now().0) {
+        if kept_invalid(m) || kept_purged(core, c, m) {
             return true;
         }
         if m.view.memory {
@@ -2107,5 +2109,32 @@ mod tests {
             handed
         };
         assert_eq!((work(4), work(40)), (3, 39), "one hand-down per forget");
+    }
+
+    // spec/commits.md §5 (Forgetting: parts held value-less for a purge request, not past its
+    // `expires`): whether a purged leftover is forgettable is read on the memo clock, with a wake
+    // at its expiry, so a reader following it is due then with nothing else moving.
+    #[test]
+    fn a_purged_leftover_wakes_its_reader_at_its_expiry_spec_commits_5() {
+        let mut lp = LocalPeer::new(1, 955, WallMs(1_700_000_000_000)).unwrap();
+        let a = lp.peers[0].engine.me();
+        let x = Ak::new("x:m.0").unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        lp.peers[0].commit(m).unwrap();
+        lp.advance(10);
+        let expires = lp.peers[0].engine.now().0 + 100_000;
+        let mut m = Mutation::new();
+        m.set(t, &x, &Value::Int(1)).unwrap();
+        m.expires_all(WallMs(expires));
+        let w = lp.peers[0].commit(m).unwrap().unwrap();
+        lp.advance(10);
+        let mut m = Mutation::new();
+        m.purge_commit(w, t, x.clone());
+        m.set(t, &x, &Value::Int(2)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let e = &mut lp.peers[0].engine;
+        assert!(e.kept_purged(&w), "held value-less for the purge");
+        assert_eq!(e.core.time.next(), Some(expires), "a wake at its expiry");
     }
 }

@@ -214,6 +214,12 @@ impl Timeline {
         best
     }
 
+    /// The first setting's wall ms later than `t`: until then a judgement at `t` of what
+    /// history keeps reads the same settings in force.
+    pub fn next_start(&self, t: u64) -> Option<u64> {
+        self.0.iter().map(|x| x.0).find(|x| *x > t)
+    }
+
     /// The wall ms before which a body replaced at `r` is in history: `out(r)` when a setting
     /// keeps it past `r`, else 0 (a body replaced under no history, or purge on replace, is out
     /// when replaced, whenever that is).
