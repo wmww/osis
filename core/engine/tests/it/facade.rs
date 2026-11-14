@@ -39,7 +39,8 @@ fn account_has_a_synced_group_and_reads_home_spec_sync_set_1() {
 }
 
 // spec/sync-ids.md §3 (claim key: a listed reader derives it from its own key and the step key),
-// §4 (owner, path), spec/sync-opens.md §4 (current read secrets; a roster digest J moves with).
+// §4 (owner), spec/sync-opens.md §4 (admissible: read secrets at a current epoch, the head's sync
+// proof).
 #[test]
 fn read_credentials_and_claim_key_spec_sync_ids_3() {
     let (mut lp, _) = people(1);
@@ -83,7 +84,7 @@ fn add_item(lp: &mut LocalPeer, i: usize, g: Tid, t: Tid) {
     lp.peers[i].engine.commit(m).unwrap().unwrap();
 }
 
-// spec/data-model.md §9 (`caps^.0` on the node thing), spec/sync-ids.md §5 Caps.
+// spec/data-model.md §9 (`caps^.0`: on the node thing), spec/sync-ids.md §5 (caps).
 #[test]
 fn caps_read_from_the_node_spec_sync_ids_5() {
     let (mut lp, _) = people(1);
@@ -124,8 +125,8 @@ fn a_sync_grant_writes_a_sync_record_only_spec_sync_judgement_6() {
     assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Plain, "no secret held of it");
 }
 
-// spec/sync-inbox.md §2 (an untaken blob is an invite request: not applied, nothing followed),
-// spec/sync-set.md §4 (invitations list it untaken; accepting takes it).
+// spec/sync-inbox.md §2 (invite request: an untaken blob, not applied, nothing followed),
+// spec/sync-set.md §4 (invitations: listed untaken; accepting: takes it).
 #[test]
 fn an_untaken_grant_is_an_invitation_spec_sync_set_4() {
     let (mut lp, t, _, g, blob) = granted(Role::Read);
@@ -227,7 +228,7 @@ fn a_box_after_a_new_step_extends_the_record_spec_sync_judgement_6() {
     assert!(after.secrets.len() > first.secrets.len(), "the new sync epoch's secret");
 }
 
-// spec/sync-inbox.md §2 (Re-send until the sender has seen the recipient take it: a commit by
+// spec/sync-inbox.md §2 (Re-send: until the sender has seen the recipient take it, a commit by
 // the recipient writing a thing the blob names).
 #[test]
 fn a_delivery_is_owed_until_taken_spec_sync_inbox_2() {
@@ -244,8 +245,8 @@ fn a_delivery_is_owed_until_taken_spec_sync_inbox_2() {
     assert!(!lp.peers[0].engine.deliveries().unwrap().contains(&(g, pb)));
 }
 
-// spec/permissions.md §3 (a self-remover keeps its secrets until its self-removal is held
-// elsewhere), spec/sync-status.md §2.
+// spec/permissions.md §3 (drops once that commit is held elsewhere: a self-remover keeps its
+// secrets until then), spec/sync-status.md §2.
 #[test]
 fn a_self_removal_waits_to_be_held_elsewhere_spec_perm_3() {
     let (mut lp, t, pb, _, blob) = granted(Role::Write);
@@ -282,12 +283,12 @@ fn bodies_and_facts_under_home_spec_sync_judgement_1() {
     assert!(e.own_commits(&home).unwrap().contains(&c));
 }
 
-// spec/sync-judgement.md §1 (a fresh encryption; the section-epoch rule, Fathom's reseal-leak
-// finding): a held commit this node neither wrote nor opened from a blob is never sealed (its
+// spec/crypto.md §5 (passing on: a fresh encryption under the epoch each section was written
+// under, refused where it is not established here): a held commit this node neither wrote nor opened from a blob is never sealed (its
 // written epoch unknown); an own commit is sealed under the epoch it is written under, and the
 // blob opens with its wrap under home's read secret.
 #[test]
-fn seal_body_never_guesses_a_section_epoch_spec_sync_judgement_1() {
+fn seal_body_never_guesses_a_section_epoch_spec_crypto_5() {
     let (mut lp, ps) = people(2);
     let (_, d0) = lp.peers[0].engine.account().unwrap().unwrap();
     let home = lp.peers[0].engine.home_sync_id(&d0).unwrap().unwrap();
@@ -315,12 +316,12 @@ fn section_epoch_of(lp: &LocalPeer, i: usize, t: &Tid, c: &osis_base::CommitId, 
     found.first().copied()
 }
 
-// spec/sync-judgement.md §1, §4 (a fresh encryption of another writer's body; the section-epoch
-// rule, Fathom's reseal-leak finding): a reader holding a newer read epoch seals another
-// writer's section under the epoch it was written under (as it opened it), never under its
-// newest; a body it holds but never opened from a blob is refused (its written epoch unknown).
+// spec/crypto.md §5 (passing on), spec/sync-judgement.md §4 (logs the body again once): a reader
+// holding a newer read epoch seals another writer's section under the epoch it was written under
+// (as it opened it), never under its newest; a body it holds but never opened from a blob is
+// refused (its written epoch unknown).
 #[test]
-fn seal_body_keeps_another_writers_section_epoch_spec_sync_judgement_1() {
+fn seal_body_keeps_another_writers_section_epoch_spec_crypto_5() {
     let (mut lp, ps) = people(3);
     let t = thing_of(&mut lp, 0, ps[0]);
     lp.peers[0].engine.give_own_secrets(&t).unwrap();
@@ -398,8 +399,8 @@ fn a_forged_author_is_not_connected_spec_sync_inbox_2() {
     assert!(e.sync_record(&t).unwrap().is_none(), "no sync record from an untaken blob");
 }
 
-// spec/sync-inbox.md §2 (a payload's sync IDs are the sender's word until a held `sync.0`
-// records them), spec/sync-set.md §2: a sync grant naming a sync ID that a held `sync.0` gives
+// spec/sync-inbox.md §2 (sync ID hints: the sender's word until a held `sync.0` records
+// them), spec/sync-set.md §2: a sync grant naming a sync ID that a held `sync.0` gives
 // another thing keeps nothing unread under it; that sync ID stays its owner's.
 #[test]
 fn a_payload_sync_id_of_another_thing_is_not_kept_unread_spec_sync_inbox_2() {
@@ -430,8 +431,8 @@ fn delivered_ends_a_delivery_spec_sync_inbox_2() {
     assert!(!lp.peers[0].engine.deliveries().unwrap().contains(&(g, pb)), "gone for good");
 }
 
-// spec/sync-judgement.md §1 (a fresh encryption under the epochs its sections were written
-// under; notes/sync-boundary.md seal_body): what this node keeps of a blob it sealed or opened
+// spec/crypto.md §5 (passing on: needs the epoch each section was written under, so what was
+// opened or sealed is kept): what this node keeps of a blob it sealed or opened
 // lasts across a restart and goes with its commit when that is forgotten.
 #[test]
 fn blob_rows_go_with_their_commit() {
@@ -552,8 +553,8 @@ fn a_step_needs_its_epochs_rotations_spec_sync_ids_6() {
     assert!(needs.iter().all(|c| e.core.ix.commits.contains_key(c)));
 }
 
-// spec/sync-judgement.md §2-§3 (what read judges a body on: own, role entries first), §4 (the
-// fall mark a stand compares), spec/sync-judgement.md §1 (a per-sync-ID copy is known as one).
+// spec/sync-judgement.md §2, §3 (own store; role entries first), §4 (falls of held parts: the
+// mark a stand compares), §1 (per-sync-ID copies: known as one).
 #[test]
 fn read_facts_of_own_and_role_commits_spec_sync_judgement_3() {
     let (mut lp, t, _, g, _) = granted(Role::Write);

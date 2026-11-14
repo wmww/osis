@@ -71,7 +71,7 @@ fn a_grant_again_after_a_removal_reaches_the_grantee_spec_sync_inbox_2() {
     crate::harness::history::check(&mut w);
 }
 
-// spec/sync-opens.md §3 (`changed_at` advances when a role on S changes): a reader removed, then
+// spec/sync-opens.md §3 (`changed_at`: advanced when a role on S changes): a reader removed, then
 // granted again after a write it could not read, opens S again (by J: no credential of its own
 // moved) and reads that write. Found by the differential.
 #[test]
@@ -84,7 +84,7 @@ fn a_reader_granted_again_opens_by_its_role_spec_sync_opens_3() {
     crate::harness::history::check(&mut w);
 }
 
-// spec/sync-ids.md §5 (the store is the truth after a failure): a write of node 1's whose sync
+// spec/sync-ids.md §5 (the store is the truth for ciphertext: so after a failure): a write of node 1's whose sync
 // failed (its outcome unknown) makes its engine read its store again, which replaces what sync
 // follows of it; sync starts again from the store, so a grant node 1 makes later still reaches
 // its grantee. Found by the differential.
@@ -95,10 +95,10 @@ fn sync_follows_an_engine_that_read_its_store_again_spec_sync_ids_5() {
     crate::convergence::converge(15, 3, &[New(2), Disk(1, 0, crate::harness::DiskFault::Unsynced), Grant(2, 0, 1, Gives::Syncs), New(1), New(1), New(1), Grant(1, 3, 2, Gives::Reads)], String::new());
 }
 
-// spec/sync.md §3 (kept unread to read opens what is there): a node keeping S unread, holding a
+// spec/sync-judgement.md §6 (read and unread move: a node raised to read opens what is there): a node keeping S unread, holding a
 // write there, raised to read reads it. Found by the differential.
 #[test]
-fn raised_from_sync_to_read_opens_what_is_held_spec_sync_3() {
+fn raised_from_sync_to_read_opens_what_is_held_spec_sync_judgement_6() {
     use crate::harness::Step::*;
     use crate::harness::history::Gives;
     crate::convergence::converge(5, 3, &[New(2), New(2), Grant(2, 1, 0, Gives::Syncs), Run, Grant(2, 1, 0, Gives::Reads)], String::new());

@@ -49,8 +49,8 @@ fn carry_deposits(w: &mut World, inbox: &SyncId) -> usize {
     n
 }
 
-// spec/sync-judgement.md §6 (keeps, stops), spec/sync-inbox.md §2 (logging, taking), spec/sync-ids.md
-// §6 (Register, a store keeping S unread takes stamped entries): node 0 grants node 1's account
+// spec/sync-judgement.md §6 (keeps; stops), spec/sync-inbox.md §2 (logging; taking), spec/sync-ids.md
+// §6 (register; taking a stamped entry): node 0 grants node 1's account
 // sync on a thing of its synced group; its inbox module logs the inbox blob deposited under node
 // 1's inbox; carried to node 1, node 1's inbox module takes it as an invitation, the user accepts
 // (a sync record, the thing kept unread once node 1 lists it); a step registered and a write stamped there are held; node 0

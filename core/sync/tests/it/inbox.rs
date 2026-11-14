@@ -457,7 +457,7 @@ fn registers_steps_after_source_step_spec_sync_ids_6() {
     assert_eq!(plan_at(&st, None, Progress::default(), &all), Plan::Nothing, "a source on a step not recorded");
 }
 
-// spec/sync-ids.md §6 (register refused for now): one Register out at a time; refused for now (4,
+// spec/sync-ids.md §6 (register; refused for now): one Register out at a time; refused for now (4,
 // 12) it waits for its back-off; any other refusal changes no view: nothing until the source's
 // step moves.
 #[test]
