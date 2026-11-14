@@ -36,7 +36,7 @@ impl World {
     /// First admin P (its secrets held: symmetric boxes), read holder M, write key-actor holder L.
     fn holders(&self) -> Vec<Recipient> {
         vec![
-            Recipient { holder: self.p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&self.pe)).unwrap().with_own(&self.pe) },
+            Recipient { holder: self.p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&self.pe)).unwrap().with_own(&self.pe), floor: 0 },
             actor_rcpt(self.m, Role::Read, &self.me),
             key_rcpt(self.l, Role::Write, &self.lseed),
         ]

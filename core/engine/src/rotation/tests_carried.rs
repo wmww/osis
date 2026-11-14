@@ -181,7 +181,7 @@ fn removed_with(s: &mut Shape, who: usize, carry: Carry, again: usize, order: Op
                     let holders = super::recipients(tx, &b, &x1, &[])?;
                     let secrets = crate::flows::secrets_in(tx, &x1)?;
                     let names = super::departures::names(tx.core, &x1, None);
-                    let rot = osis_keys::rotate_leaving_out(&x1, &roles, &held, &secrets, &holders.holders, &holders.left_out, &osis_keys::Carried::default(), &names, &mut *tx.rng).unwrap();
+                    let rot = osis_keys::rotate_leaving_out(&x1, &roles, &held, &secrets, &holders.holders, &holders.left_out, &osis_keys::Carried::default(), &names, false, &mut *tx.rng).unwrap();
                     let mut m = Mutation::new();
                     crate::flows::put_secrets(&mut m, x1, &rot.secrets, false)?;
                     crate::flows::put_keysets(&mut m, x1, &rot.keys)?;
@@ -242,7 +242,7 @@ fn forged(s: &mut Shape, a: Tid, m: Tid, to: Option<(Epoch, osis_crypto::KemPubl
             let mut holders = super::recipients(tx, &w, &a, &[])?.holders;
             if let Some((k, kem)) = &to {
                 holders.retain(|h| h.holder != m);
-                holders.push(Recipient { holder: m, role: Role::Write, keys: HolderKeys::Actor { keysets: [Role::Read, Role::Write].into_iter().map(|r| (r, vec![(*k, kem.clone())])).collect(), own: Default::default() } });
+                holders.push(Recipient { holder: m, role: Role::Write, keys: HolderKeys::Actor { keysets: [Role::Read, Role::Write].into_iter().map(|r| (r, vec![(*k, kem.clone())])).collect(), own: Default::default() }, floor: 0 });
             }
             let names = super::departures::names(tx.core, &a, None);
             let roles = BTreeSet::from([Role::Read, Role::Write]);
@@ -309,7 +309,7 @@ fn attack(s: &mut Shape, how: Attack, rm: &Removal) -> BTreeSet<Key> {
                     let held = tx.core.epochs(&g).unwrap();
                     let hist = super::history_boxes(tx, &tx.core.writer().unwrap(), &g)?;
                     let keys = HolderKeys::Actor { keysets: [Role::Read, Role::Write].into_iter().map(|r| (r, vec![(k, kem.clone())])).collect(), own: Default::default() };
-                    let rcpt = Recipient { holder: x1, role: Role::Write, keys };
+                    let rcpt = Recipient { holder: x1, role: Role::Write, keys, floor: 0 };
                     // (none where W holds no current epoch of G: B's cascade rotated G past it)
                     let Ok(Some(w)) = osis_keys::box_holder(&g, &held, &hist, &rcpt, &BTreeSet::from([Role::Read, Role::Write]), &mut *tx.rng) else { return Ok(()) };
                     let mut m = Mutation::new();

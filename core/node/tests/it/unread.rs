@@ -628,7 +628,7 @@ fn a_blob_under_two_sync_ids_is_taken_under_both_spec_sync_10() {
     let done = net.engine(a).give_own_secrets(&t).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     for g in [g1, g2] {
         let done = net.engine(a).grant(&t, &g, &edge).unwrap();
         let acts = net.sync(a).carry_out(done).unwrap();
@@ -883,7 +883,7 @@ fn edit_bytes(k: usize) -> usize {
     let done = net.engine(a).give_own_secrets(&t).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     for g in &gs {
         let done = net.engine(a).grant(&t, g, &edge).unwrap();
         let acts = net.sync(a).carry_out(done).unwrap();

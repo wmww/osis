@@ -34,7 +34,7 @@ impl Standing {
 }
 
 /// The value of a record edge in force (spec/permissions.md §1): admin, no `until`, no invite.
-pub const RECORD_EDGE: Edge = Edge { role: Role::Admin, until: None, invite: None, tied: None };
+pub const RECORD_EDGE: Edge = Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None };
 
 /// Record links of every thing with a verified `created.0`: each thing's first admin (or that
 /// it is a key actor), and the things each actor is first admin of.

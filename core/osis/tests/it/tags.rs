@@ -79,7 +79,7 @@ fn list(db: &Osis, tag: Tid) -> Result<(Vec<Tid>, Vec<Tid>)> {
 }
 
 fn grant_tag(db: &Osis, tag: Tid, person: Tid, role: Role, may_grant: Option<Role>) -> Result<()> {
-    db.grant(tag, person, role, GrantOpts { until: None, may_grant })
+    db.grant(tag, person, role, GrantOpts { until: None, may_grant, reads: osis::Reads::Kept })
 }
 
 // notes/tags.md (sharing a tag per item through one roster), spec/sync-judgement.md §1 (entitlement),

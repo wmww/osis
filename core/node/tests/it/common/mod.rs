@@ -174,7 +174,7 @@ pub fn new_thing_keeping(lp: &mut LocalPeer, i: usize, extra: &[(&str, osis_sche
 }
 
 pub fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, tied: None }
+    ct::Edge { role, until: None, invite: None, tied: None, floor: None }
 }
 
 /// Peer `i` writes `holder`'s edge on `thing` as remove + put (`None` removes it), with an
@@ -334,7 +334,7 @@ pub fn session_of(lp: &LocalPeer, i: usize) -> osis_commit::Form {
 /// Node `e` as a reader to box a secret to.
 pub fn read_recipient(e: &mut Engine) -> osis_keys::Recipient {
     let me = e.me();
-    osis_keys::Recipient { holder: me, role: Role::Read, keys: e.account_holder_keys(&me).unwrap() }
+    osis_keys::Recipient { holder: me, role: Role::Read, keys: e.account_holder_keys(&me).unwrap(), floor: 0 }
 }
 
 /// The stamp of a `forge_pending_grant` commit.

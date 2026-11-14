@@ -28,7 +28,7 @@ fn forked() -> Forked {
     let (a, p) = (tid(1), tid(2));
     let mut g = rng(0);
     let pe = person(0x20);
-    let admin = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe) };
+    let admin = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe), floor: 0 };
     let mut view = ActorEpochs::derived(&pe, &a);
     let mut s = Secrets::default();
     let r1 = rotate(&a, &roles_up_to(Role::Admin), &view, &s, std::slice::from_ref(&admin), &osis_keys::Names::default(), &mut g).unwrap();
@@ -96,7 +96,7 @@ fn grant_to_key_actor() {
     assert_eq!(kv.write.newest_held().map(|x| x.0), Some(ew));
     assert!(f.view.read.current().iter().all(|e| kv.read.secret(e).is_some()), "every read fork held");
     // Its seed holder writes symmetric boxes instead.
-    let sym = Recipient { holder: k, role: Role::Read, keys: HolderKeys::KeyActor { kem: osis_crypto::KeyActorKeys::from_seed(&seed).kem.public().clone(), seed: Some(seed.clone()) } };
+    let sym = Recipient { holder: k, role: Role::Read, keys: HolderKeys::KeyActor { kem: osis_crypto::KeyActorKeys::from_seed(&seed).kem.public().clone(), seed: Some(seed.clone()) }, floor: 0 };
     let w = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &sym, &roles_up_to(Role::Read), &mut f.rng).unwrap().unwrap();
     assert_eq!(w.boxes.len(), 3, "sync and both read forks");
     assert!(w.boxes.values().all(|b| matches!(b, SecretBox::Symmetric(x) if x.wrap.len() == 49)));
@@ -114,7 +114,7 @@ fn grant_to_key_actor() {
 fn rotation_keeps_other_roles_boxes() {
     let mut f = forked();
     let (p, pe) = (tid(2), person(0x20));
-    let admin = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe) };
+    let admin = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe), floor: 0 };
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
     let mut s = f.s.clone();
     box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &s), &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut f.rng).unwrap().unwrap().apply(&mut s);
@@ -142,7 +142,7 @@ fn reseal_to_newest_keyset() {
     let m = tid(3);
     let mut me = person(0x30);
     for (i, r) in ROLES.into_iter().enumerate() {
-        me.role_mut(r).set_history(ep(2, 0x31), BTreeSet::new(), [ep(1, 0x30)]);
+        me.role_mut(r).set_history(ep(2, 0x31), BTreeSet::new(), [ep(1, 0x30)], None);
         me.role_mut(r).set_established(ep(2, 0x31), osis_keys::Provenance::Fixed);
         me.role_mut(r).set_secret(ep(2, 0x31), Secret32::from_bytes([0x70 + i as u8; 32]));
     }
@@ -161,7 +161,7 @@ fn reseal_to_newest_keyset() {
     let (got, failed) = open_boxes(&f.a, &s, &Opener::Actor { holder: m, epochs: &me });
     assert_eq!((got.len(), failed.len()), (2, 0));
     // No keyset known: nothing is boxed.
-    let none = Recipient { holder: m, role: Role::Read, keys: HolderKeys::Actor { keysets: Default::default(), own: Default::default() } };
+    let none = Recipient { holder: m, role: Role::Read, keys: HolderKeys::Actor { keysets: Default::default(), own: Default::default() }, floor: 0 };
     assert!(box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &none, &read, &mut f.rng).unwrap().is_none());
     // A granter holding no current secret of a role cannot grant it.
     let mut stale = f.view.clone();
@@ -412,7 +412,7 @@ fn poisoned(f: &mut Forked) -> (osis_base::Tid, ActorEpochs, Secrets, osis_keys:
     let mut alts = osis_keys::HistoryAlts::new();
     for e in f.forks {
         let k = history_key(Role::Read, &e);
-        let lie = osis_crypto::seal_history(f.view.read.secret(&e).unwrap(), &f.a, Role::Read, &e, &garbage, &osis_keys::Names::default().to_value()).unwrap();
+        let lie = osis_crypto::seal_history(f.view.read.secret(&e).unwrap(), &f.a, Role::Read, &e, &osis_crypto::HistoryEntry { earlier: garbage.to_vec(), names: osis_keys::Names::default().to_value(), floor: 0, roles: Vec::new() }).unwrap();
         let genuine = std::mem::replace(s.history.get_mut(&k).unwrap(), lie.clone());
         alts.insert(k, vec![lie, genuine]);
     }
@@ -477,7 +477,7 @@ fn box_to_an_account_names_its_epoch_spec_crypto_4() {
     let e = std::sync::Arc::new(e);
     let seeds = [(name, e.clone())].into_iter().collect();
     for writer_holds in [None, Some(e.clone())] {
-        let r = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::Account { epoch: name, kem: e.kem.public().clone(), keys: writer_holds.clone() } };
+        let r = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::Account { epoch: name, kem: e.kem.public().clone(), keys: writer_holds.clone() }, floor: 0 };
         let rot = rotate(&a, &ROLES.into_iter().collect(), &held, &Default::default(), &[r], &Default::default(), &mut *rg).unwrap();
         let mut s = Secrets::default();
         rot.secrets.apply(&mut s);

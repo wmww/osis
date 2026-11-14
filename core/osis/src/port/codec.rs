@@ -8,7 +8,7 @@
 use crate::commits::{Address as At, Body, Commit, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, GroupsOf, Stamp, ThingStamp};
-use crate::share::{AccountNode, ContactCard, GrantOpts, GroupSync, Holder, HolderKind, Address, InviteId, LinkId, LinkInfo, Member, SetRoleOpts, ShareLink, Status, SyncScope, SyncState};
+use crate::share::{AccountNode, ContactCard, GrantOpts, GroupSync, Holder, HolderKind, Address, InviteId, LinkId, LinkInfo, Member, Reads, SetRoleOpts, ShareLink, Status, SyncScope, SyncState};
 use crate::account::{PairOffer, PairReply, PairRequest};
 use crate::clients::{Client, ClientSecret};
 use crate::serving::SyncId;
@@ -384,6 +384,7 @@ impl<A: Port, B: Port> Port for (A, B) {
 
 port_index!(Role, "role" { 0 Read, 1 Write, 2 Admin, 3 Sync });
 port_index!(HolderKind, "holder kind" { 0 Actor, 1 Link, 2 Key });
+port_index!(Reads, "reads" { 0 Kept, 1 FromNow, 2 All });
 port_index!(CommitKind, "commit kind" { 0 Content, 1 Revert, 2 Role, 3 Snapshot });
 port_index!(SyncState, "state" { 0 Synced, 1 Syncing, 2 NotConnected, 3 Refused, 4 Stranded });
 port_index!(DerivedFrom, "reason" { 0 ValidityChanged, 1 Expired, 2 Purged, 3 Arrived, 4 LostAccess, 5 Recovered });
@@ -426,7 +427,7 @@ port_struct!(GroupsOf { item_of, subgroup_of, within });
 port_struct!(Diagnostic { kind, tids, commit, peer, detail });
 port_struct!(CommitQuery { from, limit, actors, kinds, reverts, reverted_by, in_effect });
 port_struct!(CommitPage { commits, more, complete });
-port_struct!(GrantOpts { until, may_grant });
+port_struct!(GrantOpts { until, may_grant, reads });
 port_struct!(SetRoleOpts { retain_copy });
 port_struct!(Holder { actor, kind, role, until, through });
 port_struct!(LinkInfo { id, target, role, until, single_use });
@@ -507,17 +508,17 @@ impl Port for ThingStamp {
     }
 }
 
-/// `[[holder, role, Opt(until), Opt(may grant), with membership]*]`.
+/// `[[holder, role, Opt(until), Opt(may grant), with membership, from now]*]`.
 impl Port for Grants {
     fn to_port(&self) -> Value {
-        Value::List(self.iter().map(|(t, e)| Value::List(vec![t.to_port(), e.role.to_port(), e.until.to_port(), e.may_grant.to_port(), e.with_membership.to_port()])).collect())
+        Value::List(self.iter().map(|(t, e)| Value::List(vec![t.to_port(), e.role.to_port(), e.until.to_port(), e.may_grant.to_port(), e.with_membership.to_port(), e.from_now.to_port()])).collect())
     }
     fn from_port(v: Value) -> Result<Grants> {
         let mut out = Grants::new();
         for x in list(v)? {
             let mut a = Args::new(x)?;
             let t = a.tid()?;
-            let e = Grant { role: a.get()?, until: a.get()?, may_grant: a.get()?, with_membership: a.get()? };
+            let e = Grant { role: a.get()?, until: a.get()?, may_grant: a.get()?, with_membership: a.get()?, from_now: a.get()? };
             a.end()?;
             out.insert(t, e);
         }

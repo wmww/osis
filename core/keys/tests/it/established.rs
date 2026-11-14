@@ -361,7 +361,7 @@ fn switch_under_jumped_base_establishes_at_holders() {
         pe.role_mut(r).set_established(ep(high, 0x20), Provenance::Fixed);
     }
     let me = person(0x30);
-    let admin = Recipient { holder: p, role: Role::Admin, keys: osis_keys::HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe) };
+    let admin = Recipient { holder: p, role: Role::Admin, keys: osis_keys::HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe), floor: 0 };
     let holders = [admin, actor_rcpt(m, Role::Write, &me)];
     let rot = rotate(&a, &roles_up_to(Role::Admin), &ActorEpochs::derived(&pe, &a), &Secrets::default(), &holders, &osis_keys::Names::default(), &mut rng(0)).unwrap();
     let mut s = Secrets::default();
@@ -391,7 +391,7 @@ fn pending_history_box_plants_nothing() {
     // (a history box lists only epochs below its own)
     let planted = osis_crypto::Secret32::from_bytes([0xee; 32]);
     let top = Epoch::derive(&w.a, Role::Read, w.e0.n() - 1, &planted).unwrap();
-    let ct = osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &[(top, planted)], &osis_keys::Names::default().to_value()).unwrap();
+    let ct = osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &osis_crypto::HistoryEntry { earlier: vec![(top, planted)], names: osis_keys::Names::default().to_value(), floor: 0, roles: Vec::new() }).unwrap();
     let mut s = Secrets::default();
     s.history.insert(history_key(Role::Read, &w.e0), ct);
     let from = osis_keys::Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_base::CommitId([9; 32]) };
@@ -411,7 +411,7 @@ fn rewrite_then_invalidated_keeps_rotation() {
     let mut v = w.a2v.clone();
     let s0 = v.read.secret(&w.e0).unwrap().clone();
     let mut again = osis_keys::SecretsWrite::default();
-    again.history.insert(history_key(Role::Read, &w.e0), osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &[], &osis_keys::Names::default().to_value()).unwrap());
+    again.history.insert(history_key(Role::Read, &w.e0), osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: osis_keys::Names::default().to_value(), floor: 0, roles: Vec::new() }).unwrap());
     let ks = KeysWrite { keysets: [(Role::Read, osis_keys::keyset(&w.e0, &s0, &Default::default(), &Default::default()))].into_iter().collect() };
     assert!(again.applied(&mut v, cid(2), &ks).unwrap());
     assert_eq!(v.read.get(&w.e0).unwrap().rotations.len(), 2);

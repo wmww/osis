@@ -54,7 +54,7 @@ fn alice_and_bob_on(net: &mut Net, host: usize, a: usize, b: usize, extra: Vec<o
 }
 
 fn grant(net: &mut Net, a: usize, g: Tid, to: Tid) {
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &to, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -294,7 +294,7 @@ fn grant_undelivered(net: &mut Net, a: usize, b: usize, host: usize, home: &Labe
     use osis_node::flows::Delivery;
     net.set_online(b, false);
     let before = net.host_ids(host, home);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
     let c = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { resend, .. } = d { Some(resend.commit) } else { None }).expect("an inbox delivery");
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -362,7 +362,7 @@ fn holds(net: &mut Net, n: usize, c: &osis_base::CommitId) -> bool {
 /// Alice's grant on `g` to `bob`; the grant commit.
 fn grant_commit(net: &mut Net, a: usize, g: Tid, bob: Tid) -> osis_base::CommitId {
     use osis_node::flows::Delivery;
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
     let c = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { resend, .. } = d { Some(resend.commit) } else { None }).expect("an inbox delivery");
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -1059,7 +1059,7 @@ fn hint_turns_reach_the_group_large_spec_sync_3() {
 fn grant_payload_names_only_the_things_own_label_spec_wire_9() {
     let (mut net, _, a, b, _, bob, g, _) = alice_and_bob();
     let t = item_in(&mut net, a, g);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     let names = |on: Tid, net: &mut Net| {
         let done = net.engine(a).grant(&on, &bob, &edge).unwrap();
@@ -1480,7 +1480,7 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let mut readers = Vec::new();
     for i in 0..4 {
         let r = net.node(10 + i, &[host]);
@@ -1627,7 +1627,7 @@ fn a_home_label_is_named_the_inbox_spec_sync_2() {
     assert_eq!(net.engine(a).get_typed(&plain, &ct::KEYS).unwrap().and_then(|k| k.inbox), None, "a plain group names none");
     assert_eq!(net.engine(a).inbox(&plain), None, "and has no inbox: no fallback to its first admin's");
     // shared, it gets secrets of its own, and its label is named in the same commit
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&plain, &bob, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -1643,7 +1643,7 @@ fn a_home_label_is_named_the_inbox_spec_sync_2() {
 #[test]
 fn a_sync_id_costs_the_same_at_any_count_spec_sync_2() {
     let (mut net, _, a, _, alice, bob, _, _) = alice_and_bob();
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let per = |net: &mut Net, n: usize| {
         let before = net.sync(a).labels().len();
         let mut bytes = 0usize;
@@ -1734,7 +1734,7 @@ fn a_padded_record_blob_is_never_stamped_spec_sync_5() {
     net.actions(r, acts);
     net.run();
     net.pair(r, a);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&o, &p.account, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -1874,7 +1874,7 @@ fn a_sync_grant_by_inbox_offers_the_heads_credentials_spec_sync_10() {
             osis_proto::LabelStore::push_step(&mut *hub, &l, st, None).unwrap();
         }
     }
-    let edge = ct::Edge { role: Role::Sync, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Sync, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);

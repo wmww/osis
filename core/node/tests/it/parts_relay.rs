@@ -160,7 +160,7 @@ fn pending_entry_judged_unjudgeable_awaits_spec_commits_4() {
 }
 
 fn edge_op(holder: Tid) -> osis_crdt::PathOp {
-    osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(holder))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, tied: None })) }
+    osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(holder))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None })) }
 }
 
 // spec/commits.md §4, §5: a commit given one part applies it; a purge request naming that part drops

@@ -66,7 +66,7 @@ fn build(seed: u64) -> (LocalPeer, Tid) {
     for w in [1, 2, 3] {
         let w = lp.peers[w].engine.me();
         let mut m = Mutation::new();
-        m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, tied: None }.to_value()) }).unwrap();
+        m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap();
     }
     lp.sync_all().unwrap();

@@ -37,7 +37,7 @@ fn refused_inbox_deposit_retried_spec_sync_3() {
     let done = net.engine(a).give_own_secrets_on(&g, std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -90,7 +90,7 @@ fn invite_goes_after_the_labels_registration_spec_sync_3() {
     e.commit(m).unwrap();
     let done = net.engine(a).give_own_secrets_on(&g, std::slice::from_ref(&addr)).unwrap();
     let l = net.engine(a).label_of(&g).unwrap().unwrap().0;
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let mut acts = net.sync(a).carry_out(done).unwrap();
     let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     acts.extend(net.sync(a).carry_out(done).unwrap());
@@ -137,7 +137,7 @@ fn silent_host_of_the_label_holds_no_invite_back_spec_sync_3() {
     net.held_hosts.insert(silent);
     let done = net.engine(a).give_own_secrets_on(&g, &[addr, other]).unwrap();
     let l = net.engine(a).label_of(&g).unwrap().unwrap().0;
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let mut acts = net.sync(a).carry_out(done).unwrap();
     let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     acts.extend(net.sync(a).carry_out(done).unwrap());
@@ -176,7 +176,7 @@ fn persons() -> (Net, usize, usize, osis_base::Tid, osis_base::Tid, osis_base::T
     net.actions(a, acts);
     let item = net.item(a, g, g, "inside");
     net.run();
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -212,7 +212,7 @@ fn inbox_deposit_retried_for_hours_spec_sync_5() {
 
 /// `n` grants of label-less things of `alice` to `bob`, each as Alice's own commit; the things.
 fn grants(net: &mut Net, a: usize, alice: osis_base::Tid, bob: osis_base::Tid, n: usize) -> Vec<osis_base::Tid> {
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let mut things = Vec::new();
     for _ in 0..n {
         let e = net.engine(a);
@@ -414,7 +414,7 @@ fn cleared_share_sent_again_after_the_holder_acted_elsewhere_spec_sync_3() {
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -469,7 +469,7 @@ fn a_readers_invalid_fill_ends_with_an_admin_pass_spec_sync_5() {
     net.advance(15_000);
     let l = net.label(a);
     let tb = net.tid(b);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
     // b writes before it hears of its demotion: no peer takes them (none pulls b's store),
     // stamped under a write key the demotion's step supersedes

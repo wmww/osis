@@ -33,6 +33,9 @@ pub struct Edge {
     /// The placement of the target in its holder group this edge is tied to
     /// (spec/permissions.md §2): carried, never an authority.
     pub tied: Option<Tie>,
+    /// Granted without history: the read n the holder reads from (spec/crypto.md §4, Floors);
+    /// `None` is 0.
+    pub floor: Option<u64>,
 }
 
 /// The `group.0` element a tied edge names (spec/permissions.md §2): its creation stamp (`ts`,
@@ -55,7 +58,7 @@ pub enum TieSource {
 
 impl Edge {
     pub fn new(role: Role) -> Edge {
-        Edge { role, until: None, invite: None, tied: None }
+        Edge { role, until: None, invite: None, tied: None, floor: None }
     }
     /// The value a removal saying retain writes (spec/permissions.md §3): `until` 0, gone at every
     /// clock.
@@ -76,8 +79,8 @@ impl Edge {
     }
 }
 
-/// `new` removes `old` or lowers it in every component (role, invite, `until`): the shape of a
-/// self-removal (spec/permissions.md §2).
+/// `new` removes `old` or lowers it in every component (role, invite, `until`; a floor at least
+/// the old one: a lower floor hands history): the shape of a self-removal (spec/permissions.md §2).
 pub fn lowers(new: Option<&Edge>, old: Option<&Edge>) -> bool {
     match (new, old) {
         (None, _) => true,
@@ -88,7 +91,7 @@ pub fn lowers(new: Option<&Edge>, old: Option<&Edge>) -> bool {
                 (None, Some(_)) => false,
                 (Some(a), Some(b)) => a <= b,
             };
-            n.role <= o.role && n.invite <= o.invite && until_le
+            n.role <= o.role && n.invite <= o.invite && until_le && n.floor.unwrap_or(0) >= o.floor.unwrap_or(0)
         }
     }
 }

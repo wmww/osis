@@ -22,7 +22,7 @@ fn revoke_about_author_placed_spec_permissions_4() {
     net.name_inbox_elsewhere(b, x);
     net.pair(b, a);
     let g = net.group_at(a, &[], vec![net.address(host)]);
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &x, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -72,7 +72,7 @@ fn nested_departure_removed_writer_waits_spec_crypto_4() {
     let x1 = net.group_at(b, &[], vec![net.address(host)]);
     net.name_inbox_elsewhere(b, x2);
     net.name_inbox_elsewhere(b, x1);
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(b).grant(&x1, &x2, &edge).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
@@ -128,7 +128,7 @@ fn revoke_on_an_unrelated_thing_brings_no_keys() {
     let m = net.group_at(b, &[(w, Role::Read), (r, Role::Read)], vec![net.address(host)]);
     net.pair(b, a);
     let g = net.group_at(a, &[], vec![net.address(host)]);
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &x, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);

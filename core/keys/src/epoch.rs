@@ -70,6 +70,9 @@ pub struct EpochInfo {
     /// The names of each live entry of its history box opened under its secret (spec/crypto.md
     /// §4), set with `supersedes`.
     pub names: BTreeSet<Names>,
+    /// The greatest floor a live entry of its history box opened under its secret writes
+    /// (spec/crypto.md §4, Floors), set with `supersedes`; none opened: `None`.
+    pub floor: Option<u64>,
     /// Established (spec/crypto.md §4): `Fixed` and `Derived` set and persisted; `Rotated`
     /// computed from the held state (`RoleEpochs::establish`), never persisted. Unestablished
     /// epochs are kept for reading only: never current, supersede nothing, never encrypted
@@ -78,6 +81,11 @@ pub struct EpochInfo {
     /// Its secret: the one it names (spec/crypto.md §4, every source is checked by the nonce
     /// rule before it gets here).
     pub secret: Option<Secret32>,
+    /// Its roles secret (spec/crypto.md §4, Roles secrets) when known apart from its secret: from
+    /// a history entry opened. It opens the role parts and wraps sealed under the epoch, nothing
+    /// else; never encrypted under. Known only from pending commits (`reading` non-empty, its
+    /// secret not held), it is for opening alone, as a reading-only secret is.
+    pub roles: Option<Secret32>,
     /// The pending commits the secret is known from, when known only from such (their boxes, or
     /// history boxes opened with a secret so known): non-empty, the secret is kept for reading,
     /// never encrypted under, until an applied valid box or a history box opened with a secret
@@ -109,9 +117,9 @@ impl EpochInfo {
         self.supersedes.contains(e) || self.rotations.values().any(|r| r.contains(e))
     }
 
-    /// Its secret is known only from pending commits.
+    /// Its secret, or its roles secret, is known only from pending commits.
     pub fn is_reading_only(&self) -> bool {
-        self.secret.is_some() && !self.reading.is_empty()
+        (self.secret.is_some() || self.roles.is_some()) && !self.reading.is_empty()
     }
 
     /// Its secret when it may be encrypted under (not reading-only).
@@ -187,6 +195,22 @@ fn within_headroom(est: &BTreeMap<Epoch, Provenance>, e: &Epoch) -> bool {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RoleEpochs {
     map: BTreeMap<Epoch, EpochInfo>,
+    /// The floors of the read role (spec/crypto.md §4, Floors) as this node reads them, set on
+    /// the view (`set_floors`), never stored. `None`: no floors (every other role, a record):
+    /// every floor 0, the carry and boxing rules pass everything.
+    floors: Option<Box<Floors>>,
+}
+
+/// Floors as a node reads them (spec/crypto.md §4, Floors).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Floors {
+    /// Per epoch with a known floor (a live entry of its history box opened, or fixed or
+    /// derived): the greatest those entries write, at most its n.
+    known: BTreeMap<Epoch, u64>,
+    /// Per epoch whose maker's floor is known: that floor (its newest grant's).
+    makers: BTreeMap<Epoch, u64>,
+    /// This node's own floor on the actor.
+    own: u64,
 }
 
 impl RoleEpochs {
@@ -195,12 +219,14 @@ impl RoleEpochs {
         self.map.entry(e).or_default()
     }
 
-    /// Sets what `e`'s history box says (spec/crypto.md §4): the names of its live entries and
-    /// the epochs they list (only those below `e`'s n count), replacing what it said before.
-    pub fn set_history(&mut self, e: Epoch, names: BTreeSet<Names>, listed: impl IntoIterator<Item = Epoch>) {
+    /// Sets what `e`'s history box says (spec/crypto.md §4): the names of its live entries, the
+    /// epochs they list (only those below `e`'s n count) and the greatest floor they write,
+    /// replacing what it said before.
+    pub fn set_history(&mut self, e: Epoch, names: BTreeSet<Names>, listed: impl IntoIterator<Item = Epoch>, floor: Option<u64>) {
         let info = self.observe(e);
         info.names = names;
         info.supersedes = listed.into_iter().filter(|s| s.n() < e.n()).collect();
+        info.floor = floor;
     }
 
     /// `e`'s history box says nothing (no live entry opened under its secret held): it names and
@@ -209,6 +235,7 @@ impl RoleEpochs {
         if let Some(i) = self.map.get_mut(e) {
             i.names.clear();
             i.supersedes.clear();
+            i.floor = None;
         }
     }
 
@@ -219,6 +246,49 @@ impl RoleEpochs {
         let info = self.observe(e);
         info.secret = Some(secret);
         info.reading.clear();
+    }
+
+    /// Sets `e`'s roles secret, from a history entry opened under a secret not reading-only.
+    pub fn set_roles(&mut self, e: Epoch, roles: Secret32) {
+        let info = self.observe(e);
+        info.roles = Some(roles);
+        if info.secret.is_none() {
+            info.reading.clear();
+        }
+    }
+
+    /// Records a roles secret known only from pending commit `from` (a history entry opened under
+    /// a reading-only secret): for opening alone, within the reading-only bounds
+    /// (`set_reading_secret`); it goes with its last source.
+    pub fn set_reading_roles(&mut self, e: Epoch, roles: Secret32, from: Unchecked) {
+        match self.map.get_mut(&e) {
+            Some(i) if i.checked().is_some() || (i.roles.is_some() && i.reading.is_empty()) => return,
+            Some(i) if i.secret.is_some() || i.roles.is_some() => {
+                i.roles.get_or_insert(roles);
+                i.reading.insert(from);
+                return;
+            }
+            _ => {}
+        }
+        if !self.reading_room(&from) {
+            return;
+        }
+        let info = self.observe(e);
+        info.roles = Some(roles);
+        info.reading.insert(from);
+    }
+
+    /// `e`'s roles secret: derived from its secret when held (reading-only included), else as a
+    /// history entry carried it.
+    pub fn roles_secret(&self, e: &Epoch) -> Option<Secret32> {
+        let i = self.map.get(e)?;
+        i.secret.as_ref().map(osis_crypto::roles_secret).or_else(|| i.roles.clone())
+    }
+
+    /// The roles secret of every epoch whose secret (not reading-only) or roles secret is held,
+    /// ascending: what a history entry carries of the epochs below its own (spec/crypto.md §4).
+    pub fn held_roles(&self) -> Vec<(Epoch, Secret32)> {
+        self.map.iter().filter_map(|(e, i)| i.checked().map(osis_crypto::roles_secret).or_else(|| i.roles.clone().filter(|_| i.reading.is_empty())).map(|r| (*e, r))).collect()
     }
 
     /// Records a secret known only from pending commit `from` (spec/crypto.md §4): reading-only.
@@ -234,14 +304,19 @@ impl RoleEpochs {
             }
             _ => {}
         }
-        let reading = self.map.values().filter(|i| i.is_reading_only());
-        let (total, mine) = reading.fold((0, 0), |(t, m), i| (t + 1, m + usize::from(i.reading.iter().any(|u| u.author == from.author))));
-        if total >= MAX_READING || mine >= MAX_READING_PER_AUTHOR {
+        if !self.reading_room(&from) {
             return;
         }
         let info = self.observe(e);
         info.secret = Some(secret);
         info.reading.insert(from);
+    }
+
+    /// Whether a new epoch known only from `from` fits the reading-only bounds.
+    fn reading_room(&self, from: &Unchecked) -> bool {
+        let reading = self.map.values().filter(|i| i.is_reading_only());
+        let (total, mine) = reading.fold((0, 0), |(t, m), i| (t + 1, m + usize::from(i.reading.iter().any(|u| u.author == from.author))));
+        total < MAX_READING && mine < MAX_READING_PER_AUTHOR
     }
 
     /// Drops `commit` as a source of reading-only secrets (it applied, or was dropped as bad
@@ -254,6 +329,7 @@ impl RoleEpochs {
             if i.reading.len() != n {
                 if i.reading.is_empty() {
                     i.secret = None;
+                    i.roles = None;
                 }
                 touched.push(*e);
             }
@@ -404,14 +480,85 @@ impl RoleEpochs {
         self.map.values().any(|i| i.established.is_some() && i.supersedes(e))
     }
 
-    /// Current epochs: established and not superseded, ascending.
+    /// Current epochs: established, not superseded, and not below this node's own floor
+    /// (spec/crypto.md §4, Current), ascending.
     pub fn current(&self) -> Vec<Epoch> {
         let superseded: BTreeSet<&Epoch> = self.map.values().filter(|i| i.established.is_some()).flat_map(EpochInfo::superseded_iter).collect();
-        self.map.iter().filter(|(e, i)| i.established.is_some() && !superseded.contains(e)).map(|(e, _)| *e).collect()
+        self.map.iter().filter(|(e, i)| i.established.is_some() && !superseded.contains(e) && self.at_own_floor(e)).map(|(e, _)| *e).collect()
     }
 
     pub fn is_current(&self, e: &Epoch) -> bool {
-        self.is_established(e) && !self.superseded(e)
+        self.is_established(e) && !self.superseded(e) && self.at_own_floor(e)
+    }
+
+    /// Sets the floors this node reads (spec/crypto.md §4, Floors): `makers` the floor of each
+    /// epoch's maker where it is known, `own` this node's. Each epoch's floor is the greatest its
+    /// live history entries opened here write (only a holder of its secret writes one, so no
+    /// other party sets it), at most its n; a fixed or derived epoch's is 0; one with no entry
+    /// opened has none known.
+    pub fn set_floors(&mut self, makers: BTreeMap<Epoch, u64>, own: u64) {
+        let known = self
+            .map
+            .iter()
+            .filter_map(|(e, i)| if i.established.is_some_and(Provenance::sticky) { Some((*e, 0)) } else { i.floor.map(|w| (*e, w.min(e.n()))) })
+            .collect();
+        self.floors = Some(Box::new(Floors { known, makers, own }));
+    }
+
+    /// Whether floors are read for this role (the read role of an actor's view).
+    pub fn has_floors(&self) -> bool {
+        self.floors.is_some()
+    }
+
+    /// `e`'s floor as this node reads it (spec/crypto.md §4, Floors): 0 where unknown.
+    pub fn floor(&self, e: &Epoch) -> u64 {
+        self.floors.as_ref().and_then(|f| f.known.get(e)).copied().unwrap_or(0)
+    }
+
+    /// This node's own floor on the actor (0 without floors).
+    pub fn own_floor(&self) -> u64 {
+        self.floors.as_ref().map_or(0, |f| f.own)
+    }
+
+    fn at_own_floor(&self, e: &Epoch) -> bool {
+        self.floors.as_ref().is_none_or(|f| self.floor(e) >= f.own)
+    }
+
+    /// The boxing rule (spec/crypto.md §4): a holder of floor `holder` may be boxed at `e`.
+    pub fn allows(&self, e: &Epoch, holder: u64) -> bool {
+        self.floors.is_none() || self.floor(e) >= holder
+    }
+
+    /// The carry rule (spec/crypto.md §4): an entry at epoch `e` may carry `f`'s secret: `f`'s
+    /// floor is at least `e`'s and at least the floor of `e`'s maker. Never where `e`'s floor or
+    /// its maker's is unknown here.
+    pub fn carries(&self, e: &Epoch, f: &Epoch) -> bool {
+        let Some(fl) = &self.floors else { return true };
+        let (Some(fe), Some(fm)) = (fl.known.get(e), fl.makers.get(e)) else { return false };
+        let ff = self.floor(f);
+        ff >= *fe && ff >= *fm
+    }
+
+    /// The **dropped** epochs (spec/crypto.md §4, Floors): established, secret held, listed by a
+    /// held rotation that may not carry it (the carry rule at that rotation's epoch: what a cut
+    /// lists, a fork beside a cut that a later rotation lists). No history entry carries them on;
+    /// a grant with history boxes them, a holder of one boxes it to a holder lacking it (the tip
+    /// add). Ascending.
+    pub fn dropped(&self) -> Vec<Epoch> {
+        if self.floors.is_none() {
+            return Vec::new();
+        }
+        self.held_established()
+            .map(|(f, _)| f)
+            .filter(|f| !self.is_current(f) && self.map.iter().any(|(e, i)| i.rotations.values().any(|l| l.contains(f)) && !self.carries(e, f)))
+            .collect()
+    }
+
+    /// The carry rule for the entry of the epoch a rotation makes, of floor `floor` (its own epoch
+    /// is not in the view yet). Its maker's floor is at most `floor`, the greatest of its maker's
+    /// and its holders' (`rotate`), so `floor` alone decides.
+    pub fn carries_into(&self, floor: u64, f: &Epoch) -> bool {
+        self.floors.is_none() || self.floor(f) >= floor
     }
 
     /// `e`'s order n (spec/crypto.md §4): a derived epoch's is the base epoch's, any other's
@@ -489,6 +636,14 @@ impl RoleEpochs {
         let mut v: Vec<(Epoch, &Secret32)> = self.map.iter().filter_map(|(e, i)| i.secret.as_ref().map(|s| (*e, s))).collect();
         v.sort_by_key(|(e, _)| Reverse(self.by_order(e)));
         v
+    }
+
+    /// What opens a wrap or section sealed under an epoch of this role (spec/crypto.md §5), newest
+    /// first: per epoch its secret, if held (reading-only included), then its roles secret.
+    pub fn opening_newest_first(&self) -> Vec<Secret32> {
+        let mut v: Vec<(Epoch, &EpochInfo)> = self.map.iter().filter(|(_, i)| i.secret.is_some() || i.roles.is_some()).map(|(e, i)| (*e, i)).collect();
+        v.sort_by_key(|(e, _)| Reverse(self.by_order(e)));
+        v.into_iter().flat_map(|(_, i)| i.secret.iter().cloned().chain(i.secret.as_ref().map(osis_crypto::roles_secret).or_else(|| i.roles.clone()))).collect()
     }
 
     /// How many secrets are held, reading-only ones included.
@@ -578,7 +733,7 @@ impl ActorEpochs {
                 let re = a.role_mut(r);
                 re.set_secret(e, key_actor_role_secret(seed, r));
                 re.set_established(e, Provenance::Fixed);
-                re.set_history(e, BTreeSet::new(), sup);
+                re.set_history(e, BTreeSet::new(), sup, None);
             }
         }
         Ok(a)
@@ -624,8 +779,10 @@ impl ActorEpochs {
                     rotations: BTreeMap::new(),
                     snapshots: BTreeSet::new(),
                     names: BTreeSet::new(),
+                    floor: None,
                     established: i.established.map(|_| Provenance::Derived),
                     secret: ds.clone(),
+                    roles: None,
                     reading: i.reading.clone(),
                     order: Some(o.order(e)).filter(|&x| x != de.n()),
                 };
@@ -648,6 +805,7 @@ impl ActorEpochs {
     /// what the node holds, never stored), `Fixed` kept.
     pub fn into_record(mut self) -> ActorEpochs {
         for r in ROLES {
+            self.role_mut(r).floors = None;
             for i in self.role_mut(r).map.values_mut() {
                 i.established = i.established.filter(|p| *p == Provenance::Fixed);
             }
@@ -691,12 +849,30 @@ mod tests {
 
     // spec/crypto.md §4: current = not superseded by a held rotation; newest = greatest n, ties by
     // lowest nonce; forks kept.
+    // spec/crypto.md §4 (Roles secrets): a roles secret from a pending commit's entry opens, is
+    // carried by no entry this node writes, and goes with its last source; one from a checked
+    // entry is held for good.
+    #[test]
+    fn reading_roles_open_and_go_with_their_source() {
+        let mut r = RoleEpochs::default();
+        let u = Unchecked { author: Tid::from_bytes([1; 15]), commit: cid(1) };
+        let (e, f) = (ep(1, 1), ep(2, 2));
+        let rs = |b: u8| Secret32::from_bytes([b; 32]);
+        r.set_reading_roles(e, rs(7), u);
+        assert!(r.roles_secret(&e).is_some() && r.opening_newest_first().len() == 1);
+        assert!(r.held_roles().is_empty(), "a reading-only roles secret is carried on");
+        r.set_roles(f, rs(8));
+        assert_eq!(r.held_roles().iter().map(|x| x.0).collect::<Vec<_>>(), vec![f]);
+        assert!(r.drop_reading_from(&u.commit));
+        assert!(r.get(&e).is_none() && r.roles_secret(&f).is_some());
+    }
+
     #[test]
     fn current_and_newest() {
         let mut r = RoleEpochs::default();
         r.set_secret(ep(1, 0), Secret32::from_bytes([1; 32]));
-        r.set_history(ep(2, 5), BTreeSet::new(), [ep(1, 0)]);
-        r.set_history(ep(2, 3), BTreeSet::new(), [ep(1, 0)]);
+        r.set_history(ep(2, 5), BTreeSet::new(), [ep(1, 0)], None);
+        r.set_history(ep(2, 3), BTreeSet::new(), [ep(1, 0)], None);
         for e in [ep(1, 0), ep(2, 5), ep(2, 3)] {
             r.set_established(e, Provenance::Fixed);
         }
@@ -706,13 +882,13 @@ mod tests {
         assert_eq!(r.newest_secret().map(|x| x.0), Some(ep(1, 0)));
         r.set_secret(ep(2, 5), Secret32::from_bytes([2; 32]));
         assert_eq!(r.newest_held().map(|x| x.0), Some(ep(2, 5)));
-        r.set_history(ep(3, 9), BTreeSet::new(), [ep(2, 5)]);
+        r.set_history(ep(3, 9), BTreeSet::new(), [ep(2, 5)], None);
         r.set_established(ep(3, 9), Provenance::Fixed);
         assert_eq!(r.current(), vec![ep(2, 3), ep(3, 9)]);
         assert_eq!(r.newest(), Some(ep(3, 9)));
         // An unestablished rotation (not applied, pending or invalid) supersedes nothing and is not
         // current.
-        r.set_history(ep(4, 1), BTreeSet::new(), [ep(3, 9), ep(2, 3)]);
+        r.set_history(ep(4, 1), BTreeSet::new(), [ep(3, 9), ep(2, 3)], None);
         assert_eq!(r.current(), vec![ep(2, 3), ep(3, 9)]);
         r.set_rotation(ep(4, 1), cid(1), set(&[ep(3, 9), ep(2, 3)]));
         assert!(r.establish(&AllHeld));
@@ -774,7 +950,7 @@ mod tests {
         r.set_secret(ep(3, 0), Secret32::from_bytes([3; 32]));
         r.establish(&none);
         assert!(!r.is_established(&ep(3, 0)), "secret held, no history entry opened");
-        r.set_history(ep(3, 0), [names(&[7, 8], Some(3))].into(), []);
+        r.set_history(ep(3, 0), [names(&[7, 8], Some(3))].into(), [], None);
         r.establish(&none);
         assert!(!r.is_established(&ep(3, 0)));
         r.establish(&Holding { have: [3, 7].into() });
@@ -785,14 +961,14 @@ mod tests {
         r.establish(&all);
         assert!(r.is_established(&ep(3, 0)));
         // another entry (a forger holding e3) with fewer names: any entry met suffices
-        r.set_history(ep(3, 0), [names(&[7, 8], Some(3)), names(&[7], None)].into(), []);
+        r.set_history(ep(3, 0), [names(&[7, 8], Some(3)), names(&[7], None)].into(), [], None);
         r.establish(&Holding { have: [7].into() });
         assert!(r.is_established(&ep(3, 0)));
         // by snapshot alone, alike
         let mut x = RoleEpochs::default();
         x.set_snapshot(ep(4, 0), CommitId([4; 32]));
         x.set_secret(ep(4, 0), Secret32::from_bytes([4; 32]));
-        x.set_history(ep(4, 0), [names(&[7], Some(4))].into(), []);
+        x.set_history(ep(4, 0), [names(&[7], Some(4))].into(), [], None);
         x.establish(&Holding { have: [7].into() });
         assert!(!x.is_established(&ep(4, 0)));
         x.establish(&Holding { have: [4, 7].into() });
@@ -839,7 +1015,7 @@ mod tests {
         let mut base = ActorEpochs::default();
         base.read.set_secret(ep(1, 1), Secret32::from_bytes([1; 32]));
         base.read.set_secret(ep(1, 2), Secret32::from_bytes([2; 32]));
-        base.read.set_history(ep(2, 0), BTreeSet::new(), [ep(1, 1)]);
+        base.read.set_history(ep(2, 0), BTreeSet::new(), [ep(1, 1)], None);
         for e in [ep(1, 1), ep(1, 2), ep(2, 0)] {
             base.read.set_established(e, Provenance::Rotated);
         }
@@ -866,7 +1042,7 @@ mod tests {
             let s = |x: u8| Secret32::from_bytes([x; 32]);
             base.read.set_secret(ep(1, 1), s(b));
             base.read.set_secret(ep(2, 2), s(b ^ 0x80));
-            base.read.set_history(ep(2, 2), BTreeSet::new(), [ep(1, 1)]);
+            base.read.set_history(ep(2, 2), BTreeSet::new(), [ep(1, 1)], None);
             for e in [ep(1, 1), ep(2, 2)] {
                 base.read.set_established(e, Provenance::Rotated);
             }
@@ -892,7 +1068,7 @@ mod tests {
             base.read.set_secret(e, Secret32::from_bytes([7; 32]));
             base.read.set_established(e, Provenance::Rotated);
         }
-        base.read.set_history(b, BTreeSet::new(), [a]);
+        base.read.set_history(b, BTreeSet::new(), [a], None);
         let d = ActorEpochs::derived(&base, &t);
         assert_eq!(d.read.current().len(), 1);
     }
@@ -985,7 +1161,7 @@ mod tests {
             }
             for _ in 0..rnd(3) {
                 let (a, b) = (es[rnd(es.len() as u64) as usize], es[rnd(es.len() as u64) as usize]);
-                r.set_history(a, BTreeSet::new(), [b]);
+                r.set_history(a, BTreeSet::new(), [b], None);
             }
             for a in &es {
                 for b in &es {

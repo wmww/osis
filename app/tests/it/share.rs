@@ -96,7 +96,7 @@ fn reach_counts_an_edge_until_it_ends() {
     let (a, b) = two_people();
     let tag = osis_kit::facets::create(&a, "tag").unwrap();
     let until = Time(a.db.now().unwrap().0 + 86_400_000);
-    a.db.grant(tag, b.db.me(), Role::Read, GrantOpts { until: Some(until), may_grant: None }).unwrap();
+    a.db.grant(tag, b.db.me(), Role::Read, GrantOpts { until: Some(until), may_grant: None, reads: osis::Reads::Kept }).unwrap();
     assert_eq!(reach(&a, tag).unwrap().people.len(), 1);
 }
 

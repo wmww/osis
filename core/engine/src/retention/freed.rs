@@ -678,7 +678,7 @@ mod tests {
         let t1 = lp.peers[0].engine.new_thing(&mut m, me);
         let t2 = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
-        let read = Edge { role: Role::Read, until: None, invite: None, tied: None };
+        let read = Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
         for t in [t1, t2] {
             lp.peers[0].engine.grant(&t, &v, &read).unwrap();
         }

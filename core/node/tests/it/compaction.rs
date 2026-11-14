@@ -333,7 +333,7 @@ fn fallen_own_snapshot_gets_back(forgotten: bool) {
     }
     let want = map_of(&mut net, a, t);
     let tb = net.tid(b);
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -379,7 +379,7 @@ fn fallen_own_snapshot_lifts_own_tombstone_spec_sync_7() {
     net.set_online(b, false);
     net.wipe_host(host);
     let tb = net.tid(b);
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();

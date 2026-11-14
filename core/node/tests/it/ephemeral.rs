@@ -735,7 +735,7 @@ fn bridge_node_carries_between_hosts_spec_sync_6() {
 
 /// Admin `a` demotes `b` to read on `g` and carries the demotion out.
 fn demote_to_read(net: &mut Net, a: usize, b: usize, g: Tid) {
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: net.tid(b), new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -782,7 +782,7 @@ fn addendum_keeps_demoted_writers_ephemeral_write_spec_permissions_5_2() {
     net.run();
     assert_eq!(notes(&mut net, c, w), map(&[("b", "1")]));
     net.advance(10);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: net.tid(b), new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     net.set_online(a, true);
@@ -2423,7 +2423,7 @@ impl Churn {
     }
 
     fn edge(role: Role) -> osis_schema::core_types::Edge {
-        osis_schema::core_types::Edge { role, until: None, invite: None, tied: None }
+        osis_schema::core_types::Edge { role, until: None, invite: None, tied: None, floor: None }
     }
 
     fn key(&self, i: usize, r: u64) -> Value {
@@ -2711,7 +2711,7 @@ fn invalid_part_tombstoned_then_valid_fetched_spec_permissions_6() {
     let (a, b, c) = (nodes[0], nodes[1], nodes[2]);
     net.set_online(nodes[3], false);
     let tc = net.tid(c);
-    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
+    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None, floor: None };
     let role = |net: &mut Net, holder: Tid, r: Role| {
         let done = if r == Role::Write {
             net.engine(a).grant(&g, &holder, &edge(r)).unwrap()
@@ -2780,7 +2780,7 @@ fn superseded_part_beside_one_valid_again_fetched_spec_permissions_6() {
     let (a, b, c) = (nodes[0], nodes[1], nodes[2]);
     net.set_online(nodes[3], false);
     let tc = net.tid(c);
-    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
+    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None, floor: None };
     let role = |net: &mut Net, holder: Tid, r: Role| {
         let done = if r == Role::Write {
             net.engine(a).grant(&g, &holder, &edge(r)).unwrap()
@@ -2849,7 +2849,7 @@ fn delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
     let (a, b, c) = (nodes[0], nodes[1], nodes[2]);
     net.set_online(nodes[3], false);
     let tc = net.tid(c);
-    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
+    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None, floor: None };
     let demote = osis_node::flows::Demotion { holder: tc, new: Some(edge(Role::Read)), retain: None };
     let done = net.engine(a).demote(&g, &demote).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -2914,7 +2914,7 @@ fn a_stale_deleter_meets_one_re_placement_spec_sync_7() {
     net.set_online(d, false);
     net.run();
     let td = net.tid(d);
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let demote = osis_node::flows::Demotion { holder: td, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &demote).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -2963,7 +2963,7 @@ fn held_again_judged_by_the_join_not_its_forgotten_cover_spec_sync_9() {
         net.advance(60_000);
     }
     assert!(!net.engine(b).holds_memory(&x), "b forgot X under the two snapshots");
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let demote = osis_node::flows::Demotion { holder: net.tid(c), new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &demote).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -3052,7 +3052,7 @@ fn promoted_after_hosts_restart_reaches_hosts_spec_sync_6() {
     }
     net.advance(15_000);
     let tb = net.tid(b);
-    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
+    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None, floor: None };
     let demote = osis_node::flows::Demotion { holder: tb, new: Some(edge(Role::Read)), retain: None };
     let done = net.engine(a).demote(&g, &demote).unwrap();
     net.set_online(a, true);
@@ -4498,7 +4498,7 @@ fn demoted_writer_entry_stops_spec_sync_5() {
     net.run();
     note(&mut net, b, w, "b", "1");
     let bt = net.tid(b);
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: bt, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -5918,7 +5918,7 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     local(&mut net, a);
     net.run();
     assert!(net.engine(b).groups_of(&kept).contains(&g));
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -6040,7 +6040,7 @@ fn revert_run_with(seed: u64, restarts: bool) {
                 let i = rnd(2) as usize;
                 if !lost[i] {
                     lost[i] = true;
-                    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+                    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
                     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
                     let done = net.engine(a).demote(&groups[i], &d).unwrap();
                     let acts = net.sync(a).carry_out(done).unwrap();
@@ -6084,7 +6084,7 @@ fn fallen_snapshot_fetches_covered_back_spec_sync_9() {
     net.run();
     assert_eq!(net.eph_read(b, t, STATE), Some(s("x")));
     net.set_online(b, false);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -6124,7 +6124,7 @@ fn fallen_snapshot_lifts_own_tombstone_spec_sync_9() {
     net.advance(15_000);
     assert!(!memory_ids(&mut net, b).contains(&y), "covered by b's snapshot");
     net.restart_host(host);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -6155,7 +6155,7 @@ fn fallen_purge_lifts_own_tombstone_spec_sync_6() {
     net.engine(b).write(m).unwrap();
     local(&mut net, b);
     assert_eq!(net.eph_read(b, w, STATE), None, "purged at the deleter");
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: net.tid(b), new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -6211,7 +6211,7 @@ fn placement_again_waits_for_role_commits_spec_sync_6() {
     assert_eq!(net.eph_read(b, w, STATE), None, "purged at the deleter");
     net.restart(b, 7);
     net.restart_host(host);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -6255,7 +6255,7 @@ fn reader_alone_holding_a_value_deposits_it_spec_sync_6() {
     net.hide_blobs.entry(r).or_default().extend(hidden);
     net.run();
     assert!(entries(&mut net, r, x).is_empty(), "w deleted x at the host");
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: net.tid(w), new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -6303,7 +6303,7 @@ fn header_only_list_keeps_what_it_may_list_spec_sync_6() {
     net.actions(b, acts);
     local(&mut net, b);
     net.run();
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -6360,7 +6360,7 @@ fn placement_again_waits_for_role_commits_placed_earlier_spec_sync_6() {
     net.run();
     net.advance(30_000);
     net.run();
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -6638,7 +6638,7 @@ fn reader_copy_after_rotation_goes_as_a_deposit_spec_sync_5() {
     net.run();
     net.advance(15_000);
     let tb = net.tid(b);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -6685,7 +6685,7 @@ fn demoted_writer_deposits_none_of_its_writes_spec_sync_5() {
     let l = net.label(a);
     let room = net.deposit_room(host, &l);
     let tb = net.tid(b);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();

@@ -105,6 +105,9 @@ type edge = struct {
     invite 2: option<role>,
     /// The membership this grant goes with: taking the thing out of that group removes the grant.
     tied 3: option<tie>,
+    /// Granted without earlier history: the holder reads from this change of secrets on
+    /// (spec/crypto.md §4).
+    floor 4: option<int>,
 };
 
 /// Who holds which rights on the thing, by holder.

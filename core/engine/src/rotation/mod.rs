@@ -10,6 +10,7 @@
 //! dropping what this node lost read access to: `lost`.
 
 pub(crate) mod departures;
+pub(crate) mod floors;
 mod lost;
 pub(crate) mod members;
 pub(crate) mod merge;
@@ -288,8 +289,9 @@ enum Due {
 /// orphaned (`orphaned`), or is a derived read epoch this node wrote under (`merge::due`); one
 /// due only for current epochs whose secret this node lacks, where
 /// its new epoch boxes a rotator (`boxes_rotator`). With `Due::PassEnd` also when an unsuperseded
-/// epoch is not current here and `who` withdraws it. A fork alone is due nothing: it stands
-/// until the role next rotates (spec/crypto.md §4). No secret of the role is needed; the commit
+/// epoch is not current here and `who` withdraws it, or when a current read epoch's floor is
+/// below a holder's (`floors::low_floor_due`). A fork alone is due nothing else: it stands until
+/// the role next rotates (spec/crypto.md §4). No secret of the role is needed; the commit
 /// must be uploadable (`wrappable`), else the rotation waits for a re-seal.
 fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
     let may = may_rotate(tx.core, who, a);
@@ -325,6 +327,8 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<
         // epoch); withdraws by several fork, which stands
         let current = epochs.role(r).current();
         due = due || mode == Due::PassEnd && epochs.role(r).unsuperseded().iter().any(|e| !current.contains(e) && maker(tx.core, who, a, r, e).is_none_or(|m| m.me || !m.may_rotate));
+        // a current read epoch a holder's floor bars it from (spec/crypto.md §4, Floors)
+        due = due || mode == Due::PassEnd && r == Role::Read && floors::low_floor_due(tx, who, a)?;
         if due {
             out.insert(r);
         }
@@ -445,6 +449,13 @@ pub(crate) enum Departs {
 /// names mark it by `ts`, signer and blind, and the commit covers that departure itself
 /// (spec/crypto.md §4, covers).
 pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, boxing: &Boxing, departs: Departs) -> Result<Rotation> {
+    cut_into(tx, m, a, roles, held, boxing, departs, false)
+}
+
+/// `rotation_into`; `cut`: a grant without history's rotation (spec/crypto.md §4, Floors): its
+/// read history box carries no earlier secret and its floor is its own n.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, boxing: &Boxing, departs: Departs, cut: bool) -> Result<Rotation> {
     let secrets = secrets_in(tx, &a)?;
     let own = if departs != Departs::No {
         let ts = *m.ts.get_or_insert_with(|| tx.core.hlc.next());
@@ -459,7 +470,7 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
     };
     let names = departures::names(tx.core, &a, own);
     let carried = osis_keys::Carried { demotions: departures::carried(tx.core, &a), demotes: departs == Departs::Demoting };
-    let rot = osis_keys::rotate_leaving_out(&a, roles, held, &secrets, &boxing.holders, &boxing.left_out, &carried, &names, &mut *tx.rng)?;
+    let rot = osis_keys::rotate_leaving_out(&a, roles, held, &secrets, &boxing.holders, &boxing.left_out, &carried, &names, cut, &mut *tx.rng)?;
     put_secrets(m, a, &rot.secrets, false)?;
     flows::unseal(tx, m, a, &rot.secrets.removed)?;
     put_keysets(m, a, &rot.keys)?;
@@ -477,7 +488,11 @@ pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<
     let mut out: Vec<Tid> = rot.secrets.boxes.keys().map(|k| k.holder).filter(|m| *m != me).collect();
     out.sort();
     out.dedup();
-    out.retain(|m| !secrets.boxes.keys().any(|k| k.holder == *m && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| epochs.read.is_current(&e))));
+    // reached: boxed at the epoch the commit is wrapped under (a current one: held by box), or,
+    // with none, at a current epoch. A holder a floor bars from that epoch (spec/crypto.md §4,
+    // Floors: a fork beside its cut) is boxed at another and must take the commit by inbox
+    let wrap = rot.wrap_epoch();
+    out.retain(|m| !secrets.boxes.keys().any(|k| k.holder == *m && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| wrap.map_or(epochs.read.is_current(&e), |w| e == w))));
     Ok(out)
 }
 
@@ -538,7 +553,7 @@ fn rotate_boxing(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>, hold
 /// `to`; first under the labels above `a`, which must learn its new `keys.0`
 /// (spec/permissions.md §3), with the commits its names name; and under `a`'s own labels the
 /// keyset commits its boxes to holder actors name (spec/crypto.md §4, Carried).
-fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotation, to: &[Tid], done: &mut Done) -> Result<()> {
+pub(crate) fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotation, to: &[Tid], done: &mut Done) -> Result<()> {
     record(tx, a, rot)?;
     done.add(c);
     done.deliveries.extend(deliver_rotation(tx, a, c, to)?);
@@ -882,7 +897,9 @@ fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
         // holding the secret of an epoch the holder lacks a box at (`box_holder` boxes just
         // those held; a node may lack a fork's). Every re-seal adds a box until the forks end,
         // so the trigger settles.
-        let mut keep: BTreeSet<Role> = roles.into_iter().filter(|r| may.contains(r) && osis_keys::reseal_missing(&secrets, &epochs, &m, *r).iter().any(|e| epochs.role(*r).secret(e).is_some())).collect();
+        // and only at an epoch the holder's floor allows (spec/crypto.md §4, the boxing rule)
+        let floor = floors::holder_floor(tx.core, a, &m);
+        let mut keep: BTreeSet<Role> = roles.into_iter().filter(|r| may.contains(r) && osis_keys::reseal_missing(&secrets, &epochs, &m, *r).iter().any(|e| epochs.role(*r).secret(e).is_some() && epochs.role(*r).allows(e, floor))).collect();
         let Some(role) = holders.iter().find(|h| h.holder == m).map(|h| h.role) else { continue };
         if keep.is_empty() {
             continue;
@@ -981,6 +998,7 @@ pub(crate) fn history_boxes(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<Histo
     for ((r, e), h) in hist.iter_mut() {
         if blocked_epoch(tx, who, a, *r, e, &deps, Walk::Encrypt)? {
             h.earlier.retain(|x, _| h.listed.contains(x));
+            h.roles.retain(|x, _| h.roles_listed.contains(x));
         }
     }
     Ok(hist)
@@ -1015,6 +1033,75 @@ pub(crate) fn add_history(tx: &mut Tx<'_>, a: Tid) -> Result<Done> {
         done.deliveries.push(flows::owe(tx, Delivery::First { commits: vec![c], under: vec![a] })?);
     }
     Ok(done)
+}
+
+/// The tip add for `a` (spec/crypto.md §4, Floors): a node that may rotate read and holds a
+/// dropped epoch (one no history entry carries on: what a cut lists, a fork beside a cut) boxes
+/// it to each current holder of read its floor allows that cannot open it, as this node sees,
+/// from the live boxes and the entries it opens; and a holder re-added without history, each
+/// epoch its removal's rotation listed (`floors::readd_epochs`) alike. One commit; nothing when
+/// none lacks one.
+pub(crate) fn tip_add(tx: &mut Tx<'_>, a: Tid) -> Result<Done> {
+    let mut done = Done::default();
+    // no floors: nothing is dropped and nobody re-added without history
+    let Some(epochs) = tx.core.epochs(&a).filter(|e| e.read.has_floors()) else { return Ok(done) };
+    let dropped: BTreeSet<osis_crypto::Epoch> = epochs.read.dropped().into_iter().collect();
+    let me = tx.core.writer()?;
+    if !may_rotate(tx.core, &me, &a).contains(&Role::Read) {
+        return Ok(done);
+    }
+    let secrets = secrets_in(tx, &a)?;
+    let mut w = osis_keys::SecretsWrite::default();
+    for (x, role) in tx.core.key_holders(&a) {
+        if x == me || role < Role::Read {
+            continue;
+        }
+        let floor = floors::holder_floor(tx.core, &a, &x);
+        let readd = floors::readd_epochs(tx.core, &a, &x, &epochs);
+        let mut want: BTreeSet<osis_crypto::Epoch> = dropped.iter().filter(|t| epochs.read.allows(t, floor)).copied().collect();
+        want.extend(readd.into_iter().filter(|t| epochs.read.is_established(t) && epochs.read.secret(t).is_some()));
+        if want.is_empty() {
+            continue;
+        }
+        let opens = opened_from(&epochs, &secrets, &x);
+        want.retain(|t| !opens.contains(t));
+        if want.is_empty() {
+            continue;
+        }
+        let Sealed::Boxed(rcpt) = sealed(tx, &me, &a, &x, Role::Read)? else { continue };
+        // the floors were judged above: a re-added holder's listed epochs lie below its floor
+        let rcpt = osis_keys::Recipient { floor: 0, ..rcpt };
+        if let Some(b) = osis_keys::box_dropped(&a, &epochs, &rcpt, &want, &mut *tx.rng)? {
+            w.extend(b);
+        }
+    }
+    if w.is_empty() {
+        return Ok(done);
+    }
+    let mut m = Mutation::new();
+    put_secrets(&mut m, a, &w, false)?;
+    let c = Engine::commit_tx(tx, m)?;
+    done.add(c);
+    if let Some(c) = c {
+        done.deliveries.push(flows::owe(tx, Delivery::First { commits: vec![c], under: vec![a] })?);
+        carry(tx, a, &w, None, &mut done)?;
+    }
+    Ok(done)
+}
+
+/// The read epochs of the actor holder `x` opens from the live boxes `secrets` to it and, through
+/// them, the entries this node opens (`EpochInfo::supersedes`).
+fn opened_from(epochs: &ActorEpochs, secrets: &osis_schema::core_types::Secrets, x: &Tid) -> BTreeSet<osis_crypto::Epoch> {
+    let mut out: BTreeSet<osis_crypto::Epoch> = secrets.boxes.keys().filter(|k| k.holder == *x && k.role == Role::Read).filter_map(|k| osis_keys::aspects::from_schema(&k.epoch).ok()).collect();
+    let mut todo: Vec<osis_crypto::Epoch> = out.iter().copied().collect();
+    while let Some(e) = todo.pop() {
+        for f in epochs.read.get(&e).map(|i| i.supersedes.clone()).unwrap_or_default() {
+            if out.insert(f) {
+                todo.push(f);
+            }
+        }
+    }
+    out
 }
 
 impl Engine {
@@ -1125,6 +1212,7 @@ impl Engine {
                 done.extend(reseal_one(tx, a, m, &roles, Reseal::Missing)?);
             }
             done.extend(add_history(tx, a)?);
+            done.extend(tip_add(tx, a)?);
             Ok(done)
         })
     }
@@ -1169,6 +1257,8 @@ mod tests_members;
 mod tests_carried;
 #[cfg(test)]
 mod tests_departs;
+#[cfg(test)]
+mod tests_cut;
 #[cfg(test)]
 mod tests_property;
 #[cfg(test)]

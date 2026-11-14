@@ -724,7 +724,7 @@ fn only_a_valid_cover_drops_from_a_nodes_own_store_spec_sync_5() {
     // c, away, is made a reader; its snapshot of t, stamped after, covers nothing at a
     net.set_online(c, false);
     let tc = net.tid(c);
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: tc, new: Some(edge), retain: None };
     let done = net.engine(b).demote(&g, &d).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();

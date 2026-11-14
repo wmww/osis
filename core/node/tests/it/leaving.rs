@@ -133,7 +133,7 @@ fn timed_while_apart() -> (Net, [usize; 3], Tid, Tid) {
     net.group_at(c, &[(b, Role::Read)], vec![]);
     let until = osis_base::WallMs(net.now() + 3_600_000);
     let tb = net.tid(b);
-    let edge = osis_schema::core_types::Edge { role: Role::Write, until: Some(until), invite: None, tied: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Write, until: Some(until), invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &tb, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -256,7 +256,7 @@ fn an_until_under_no_host_a_co_reader_past_its_own_until_refuses_nothing_spec_pe
     for (n, ms) in [(b, 2 * 3_600_000), (c, 3_600_000)] {
         let until = osis_base::WallMs(net.now() + ms);
         let t = net.tid(n);
-        let edge = osis_schema::core_types::Edge { role: if n == b { Role::Write } else { Role::Read }, until: Some(until), invite: None, tied: None };
+        let edge = osis_schema::core_types::Edge { role: if n == b { Role::Write } else { Role::Read }, until: Some(until), invite: None, tied: None, floor: None };
         let done = net.engine(a).grant(&g, &t, &edge).unwrap();
         let acts = net.sync(a).carry_out(done).unwrap();
         net.actions(a, acts);

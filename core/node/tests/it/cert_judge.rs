@@ -134,7 +134,7 @@ fn account_reader(net: &mut Net, a: usize, r: usize, host: usize, until: Option<
     let g = net.group(a, &[], &[host]);
     let p = person(net, r, host);
     net.pair(r, a);
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until, invite: None, tied: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &p, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -200,7 +200,7 @@ fn regrant_after_until_reads_again_spec_permissions_2() {
     net.clock.advance(3_600_000);
     settle(&mut net);
     assert!(!net.engine(a).may_read(&p, &g), "the edge passed its until");
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &p, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);

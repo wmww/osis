@@ -164,7 +164,7 @@ pub(super) fn group(lp: &mut LocalPeer, i: usize) -> Tid {
 }
 
 pub(super) fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, tied: None }
+    ct::Edge { role, until: None, invite: None, tied: None, floor: None }
 }
 
 pub(super) fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypto::Epoch> {
@@ -264,7 +264,7 @@ pub(super) fn opens_by(lp: &LocalPeer, states: &[(Tid, ct::Secrets)], secrets: &
             for (k, c) in &s.history {
                 let Ok(e) = from_schema(&k.epoch) else { continue };
                 let Some(x) = out.contains_key(&(*a, k.role, e)).then(|| secrets.get(&(*a, k.role, e))).flatten() else { continue };
-                if let Ok((earlier, _)) = osis_crypto::open_history(x, a, k.role, &e, c) {
+                if let Ok(osis_crypto::HistoryEntry { earlier, .. }) = osis_crypto::open_history(x, a, k.role, &e, c) {
                     for (y, _) in earlier {
                         out.entry((*a, k.role, y)).or_insert(Via::History((*a, k.role, e)));
                     }
@@ -1516,7 +1516,7 @@ fn bad_rotation_parts_read_as_missing_spec_commits_4() {
 fn keyset_before_box_reads_only_spec_permissions_4() {
     let mut lp = synced(3);
     let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let admin = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
+    let admin = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None };
     let mut m = Mutation::new();
     let o = lp.peers[0].engine.new_thing(&mut m, a);
     lp.peers[0].commit(m).unwrap();
@@ -1704,12 +1704,12 @@ fn reader_history_add_valid_box_put_not_spec_permissions_3() {
         (e, s.clone())
     };
     let names = lp.peers[1].engine.run(|tx| Ok(tx.core.epochs(&g).unwrap().read.history_names(Role::Read, &e, &tx.core.names_held(&g)).unwrap())).unwrap();
-    let ct = osis_crypto::seal_history(&secret, &g, Role::Read, &e, &[], &names.to_value()).unwrap();
+    let ct = osis_crypto::seal_history(&secret, &g, Role::Read, &e, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: names.to_value(), floor: 0, roles: Vec::new() }).unwrap();
     let mut m = Mutation::new();
     let history = [(osis_keys::aspects::history_key(Role::Read, &e), ct)].into_iter().collect();
     crate::flows::put_secrets(&mut m, g, &osis_keys::SecretsWrite { history, ..Default::default() }, true).unwrap();
     let add = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
-    let rcpt = osis_keys::Recipient { holder: r, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: lp.peers[1].engine.identity().keys().kem.public().clone(), seed: None } };
+    let rcpt = osis_keys::Recipient { holder: r, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: lp.peers[1].engine.identity().keys().kem.public().clone(), seed: None }, floor: 0 };
     let w = lp.peers[1]
         .engine
         .run(|tx| {

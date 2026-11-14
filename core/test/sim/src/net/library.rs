@@ -82,7 +82,7 @@ fn snapshots(sim: &mut NetSim, n: usize, author: Tid, t: Tid) -> Res<BTreeSet<(C
 }
 
 fn demote(sim: &mut NetSim, n: usize, target: Tid, holder: Tid, new: Option<Role>) -> Res<()> {
-    let new = new.map(|role| ct::Edge { role, until: None, invite: None, tied: None });
+    let new = new.map(|role| ct::Edge { role, until: None, invite: None, tied: None, floor: None });
     let r = sim.engine(n)?.demote(&target, &Demotion { holder, new, retain: None });
     let done = r.map_err(|e| sim.fail(format!("node {n} demote: {e}")))?;
     sim.carry(n, done)

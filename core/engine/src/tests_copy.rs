@@ -10,7 +10,7 @@ use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::core_types as ct;
 
 fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, tied: None }
+    ct::Edge { role, until: None, invite: None, tied: None, floor: None }
 }
 
 fn put(lp: &mut LocalPeer, who: usize, t: Tid, x: &Ak, k: &str, v: i64) -> Option<CommitId> {

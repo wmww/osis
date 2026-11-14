@@ -381,6 +381,12 @@ fn sharing_commands_local_plan_cli_4() {
     assert_eq!(s.code(&["grant", &g, &stranger, "read"]), 3, "keys unknown: import a card first");
     assert_eq!(s.code(&["node", "rm", &stranger]), 0, "no node of this account: nothing to do");
     assert_eq!(s.code(&["grant", &g, "me", "superuser"]), 2);
+    // `--reads` (`osis::Reads`): from-now or all; from-now on a holder reading what came before
+    // is Invalid; all, or none given, keeps the grant reading everything
+    assert_eq!(s.code(&["grant", &g, "me", "admin", "--reads", "sometimes"]), 2);
+    assert_eq!(s.code(&["grant", &g, "me", "admin", "--reads", "from-now"]), 7);
+    assert_eq!(s.code(&["grant", &g, "me", "admin", "--reads", "all"]), 0);
+    assert!(!s.ok(&["grants", &g]).out.contains("from-now"));
     let st = s.ok(&["--json", "status"]).line().to_string();
     assert!(st.starts_with("{\"groups\":[") && st.ends_with("\"connected\":0,\"two_sources\":[]}"), "{st}");
     assert_eq!(s.ok(&["status"]).out.lines().next(), Some("connected 0"));

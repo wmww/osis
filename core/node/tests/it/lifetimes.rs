@@ -430,7 +430,7 @@ fn a_forgotten_released_thing_takes_its_role_commits() {
     e.commit(m).unwrap();
     let e = net.engine(a);
     let mut m = Mutation::new();
-    let edge = ct::Edge { role: osis_base::Role::Write, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: osis_base::Role::Write, until: None, invite: None, tied: None, floor: None };
     m.op(x, &ct::ROLES, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(tb))], op: Op::Set(osis_schema::Codec::to_value(&edge)) }).unwrap();
     let grant = e.commit(m).unwrap().unwrap();
     assert!(!e.roster(&x).is_empty());

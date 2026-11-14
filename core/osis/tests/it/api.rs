@@ -1979,3 +1979,27 @@ fn a_removal_does_not_outlive_a_disappearing_message_spec_crdt_4_7() {
         assert!(v.is_none() || v == Some(Value::Map(Default::default())), "nothing of the message stays: {v:?}");
     }
 }
+
+// notes/api.md (`Reads`; spec/crypto.md §4 Floors): a grant without history reads back as such; a
+// later grant keeps it unless it says `Reads::All` (never by default), and asking `FromNow` of a
+// holder that reads what came before is `Invalid`.
+#[test]
+fn from_now_grant_is_kept_until_a_grant_shows_everything() {
+    let db = common::db(41);
+    let g = db.commit_with(|w| w.create()).unwrap();
+    let n = db.node();
+    let opts = |reads| osis::GrantOpts { reads, ..Default::default() };
+    db.grant(g, n, Role::Read, opts(osis::Reads::FromNow)).unwrap();
+    assert!(db.grants(g).unwrap()[&n].from_now, "granted from now");
+    db.grant(g, n, Role::Write, Default::default()).unwrap();
+    assert!(db.grants(g).unwrap()[&n].from_now, "a raise by default keeps it");
+    db.grant(g, n, Role::Write, opts(osis::Reads::FromNow)).unwrap();
+    assert!(db.grants(g).unwrap()[&n].from_now, "a grant saying so keeps it");
+    db.set_role(g, n, Some(Role::Admin), Default::default()).unwrap();
+    assert!(db.grants(g).unwrap()[&n].from_now, "set_role raising keeps it");
+    db.grant(g, n, Role::Admin, opts(osis::Reads::All)).unwrap();
+    assert!(!db.grants(g).unwrap()[&n].from_now, "Reads::All shows everything");
+    db.grant(g, n, Role::Admin, Default::default()).unwrap();
+    assert!(!db.grants(g).unwrap()[&n].from_now, "kept: everything");
+    assert!(matches!(db.grant(g, n, Role::Admin, opts(osis::Reads::FromNow)), Err(Error::Invalid(_))), "a holder reading what came before");
+}

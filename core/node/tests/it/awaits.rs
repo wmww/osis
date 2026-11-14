@@ -23,7 +23,7 @@ fn grant_before_its_record_opens_then_applies_spec_commits_4() {
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &REG, &s("v")).unwrap();
     let rec = lp.peers[0].commit(m).unwrap().unwrap();
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let g = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
     let pg = lp.peers[0].engine.package(&g).unwrap().unwrap();
     assert!(matches!(lp.deliver(1, &pg).unwrap(), Ingested::Awaits(..)));
@@ -172,7 +172,7 @@ fn reach_arriving_applies_its_part_spec_commits_4() {
         let w = lp.peers[2].engine.me();
         let u = new_thing(&mut lp, 0);
         lp.sync(0, 1).unwrap();
-        let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+        let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
         let g = *lp.peers[0].engine.grant(&u, &w, &edge).unwrap().commits.last().unwrap();
         lp.sync(0, 2).unwrap();
         let (m, t) = loop {

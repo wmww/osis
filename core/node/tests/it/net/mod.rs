@@ -916,7 +916,7 @@ impl Net {
     /// Node `n` grants `holder` `role` on `target` (`Engine::grant`: secrets in the same step)
     /// and carries it out; the grant's commit. Tests that set up access use this, not `set_edge`.
     pub fn grant(&mut self, n: usize, target: Tid, holder: Tid, role: Role) -> CommitId {
-        let edge = ct::Edge { role, until: None, invite: None, tied: None };
+        let edge = ct::Edge { role, until: None, invite: None, tied: None, floor: None };
         let done = self.engine(n).grant(&target, &holder, &edge).unwrap();
         let c = *done.commits.last().unwrap();
         let acts = self.sync(n).carry_out(done).unwrap();
@@ -2062,24 +2062,24 @@ pub fn s(x: &str) -> Value {
 
 fn recipient(e: &mut Engine, t: Tid, role: Role) -> Recipient {
     if e.core.is_account(&t) {
-        return Recipient { holder: t, role, keys: e.account_holder_keys(&t).unwrap() };
+        return Recipient { holder: t, role, keys: e.account_holder_keys(&t).unwrap(), floor: 0 };
     }
     if t == e.tid() {
-        return Recipient { holder: t, role, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } };
+        return Recipient { holder: t, role, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None }, floor: 0 };
     }
     let k = e.get_typed(&t, &ct::KEYS).unwrap().unwrap();
     let mut keys = HolderKeys::from_keys(&k).unwrap();
     if let Some(own) = e.epochs(&t).filter(|_| matches!(keys, HolderKeys::Actor { .. })) {
         keys = keys.with_own(&own);
     }
-    Recipient { holder: t, role, keys }
+    Recipient { holder: t, role, keys, floor: 0 }
 }
 
 /// A bare edge write: no secrets with it, so the holder gets them only from a later repair (a
 /// plain thing's own secrets, `reseal` at a complete pass). Setting up access: `Net::grant`.
 pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, role: Role) -> CommitId {
     let mut m = Mutation::new();
-    let edge = ct::Edge { role, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role, until: None, invite: None, tied: None, floor: None };
     // remove + put (spec/permissions.md §2)
     m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
     m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge.to_value()) }).unwrap();

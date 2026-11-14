@@ -120,6 +120,7 @@ impl Core {
         let mut e = self.own_record(tid)?.clone();
         self.adopt_derived(tid, &mut e);
         e.establish(&self.names_held(tid));
+        crate::rotation::floors::set(self, tid, &mut e);
         Some(e)
     }
 
@@ -837,6 +838,8 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
                             Value::List(i.supersedes.iter().map(Epoch::to_wire).collect()),
                             Value::List(i.secret.iter().map(|s| Value::Bytes(s.expose().to_vec())).collect()),
                             Value::List(i.reading.iter().map(|u| Value::List(vec![Value::Bytes(u.author.as_bytes().to_vec()), Value::Bytes(u.commit.0.to_vec())])).collect()),
+                            Value::List(i.floor.iter().map(|f| Value::Int(i64::try_from(*f).unwrap_or(i64::MAX))).collect()),
+                            Value::List(i.roles.iter().map(|s| Value::Bytes(s.expose().to_vec())).collect()),
                         ])
                     })
                     .collect(),
@@ -916,7 +919,7 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
         let Value::List(items) = items else { return Err(bad()) };
         for it in items {
             let Value::List(f) = it else { return Err(bad()) };
-            let [e, Value::List(rotations), Value::List(snapshots), Value::List(names), Value::Bool(fixed), Value::List(sup), Value::List(sec), Value::List(reading)] = f.as_slice() else { return Err(bad()) };
+            let [e, Value::List(rotations), Value::List(snapshots), Value::List(names), Value::Bool(fixed), Value::List(sup), Value::List(sec), Value::List(reading), Value::List(floor), Value::List(roles)] = f.as_slice() else { return Err(bad()) };
             let e = Epoch::from_wire(e).map_err(|_| bad())?;
             let info = a.role_mut(*r).observe(e);
             for x in rotations {
@@ -944,6 +947,12 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
             if let [s] = sec.as_slice() {
                 info.secret = Some(secret(s)?);
             }
+            if let [f] = floor.as_slice() {
+                info.floor = Some(f.as_uint().ok_or_else(bad)?);
+            }
+            if let [s] = roles.as_slice() {
+                info.roles = Some(secret(s)?);
+            }
             for c in reading {
                 let Value::List(c) = c else { return Err(bad()) };
                 let [Value::Bytes(author), Value::Bytes(commit)] = c.as_slice() else { return Err(bad()) };
@@ -951,7 +960,7 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
                 let commit = osis_base::CommitId(commit.as_slice().try_into().map_err(|_| bad())?);
                 info.reading.insert(Unchecked { author, commit });
             }
-            if !info.reading.is_empty() && info.secret.is_none() {
+            if !info.reading.is_empty() && info.secret.is_none() && info.roles.is_none() {
                 return Err(bad());
             }
         }
@@ -998,7 +1007,7 @@ mod tests {
         a.read.set_rotation(e2, osis_base::CommitId([9; 32]), [Epoch::new(1, [3; 32]).unwrap()].into());
         let k = |n: u8| osis_keys::Key { ts: u64::from(n), node: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
         a.read.set_snapshot(e2, osis_base::CommitId([8; 32]));
-        a.read.set_history(e2, [osis_keys::Names { list: [Name::void(k(5), Tid::from_bytes([6; 15]))].into(), departs: Some(Own { ts: 7, author: Tid::from_bytes([7; 15]), blind: [0; 16] }) }].into(), [Epoch::new(1, [4; 32]).unwrap()]);
+        a.read.set_history(e2, [osis_keys::Names { list: [Name::void(k(5), Tid::from_bytes([6; 15]))].into(), departs: Some(Own { ts: 7, author: Tid::from_bytes([7; 15]), blind: [0; 16] }) }].into(), [Epoch::new(1, [4; 32]).unwrap()], None);
         let b = decode_epochs(&encode_epochs(&a)).unwrap();
         assert_eq!(b, a);
         assert!(b.read.is_reading_only(&e2) && b.read.secret(&e2).is_none());
@@ -1023,7 +1032,7 @@ mod tests {
         let mut seed = ActorEpochs::default();
         seed.read.set_secret(held, Secret32::from_bytes([1; 32]));
         let n = osis_keys::Names { list: [Name::applied(osis_keys::Key { ts: 1, node: actor, commit: osis_base::CommitId([1; 32]) }, actor)].into(), departs: None };
-        seed.read.set_history(unheld, [n].into(), [held]);
+        seed.read.set_history(unheld, [n].into(), [held], None);
         let core = &mut lp.peers[0].engine.core;
         core.ix.secrets.insert(actor, seed);
         let mut secrets = Secrets::default();

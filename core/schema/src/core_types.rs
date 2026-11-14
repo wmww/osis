@@ -133,9 +133,10 @@ codec_struct! {
 }
 codec_struct! {
     /// A role edge; `tied`: the membership of the target in its holder, a group, the edge goes
-    /// with (spec/permissions.md §2).
+    /// with (spec/permissions.md §2); `floor`: the read n its holder reads from, granted without
+    /// history (spec/crypto.md §4, Floors).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 tied: Option<Tie> }
+    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 tied: Option<Tie>, 4 floor: Option<u64> }
 }
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, delete key, the epochs its rotation

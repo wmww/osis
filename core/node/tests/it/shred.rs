@@ -1528,7 +1528,7 @@ fn waiting_snapshot_drops_a_purged_copy_spec_commits_5() {
         lp.sync_all().unwrap();
         let a = lp.peers[0].engine.me();
         let t = new_thing(&mut lp, 1);
-        let edge = osis_schema::core_types::Edge { role: osis_base::Role::Write, until: None, invite: None, tied: None };
+        let edge = osis_schema::core_types::Edge { role: osis_base::Role::Write, until: None, invite: None, tied: None, floor: None };
         lp.peers[1].engine.grant(&t, &a, &edge).unwrap();
         lp.sync(1, 0).unwrap();
         lp.advance(5);
@@ -1578,7 +1578,7 @@ fn waiting_snapshots_judged(n: usize) -> [u64; 4] {
     lp.sync_all().unwrap();
     let a = lp.peers[0].engine.me();
     let t = new_thing(&mut lp, 1);
-    let edge = osis_schema::core_types::Edge { role: osis_base::Role::Write, until: None, invite: None, tied: None };
+    let edge = osis_schema::core_types::Edge { role: osis_base::Role::Write, until: None, invite: None, tied: None, floor: None };
     lp.peers[1].engine.grant(&t, &a, &edge).unwrap();
     lp.sync(1, 0).unwrap();
     lp.advance(5);

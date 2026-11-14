@@ -14,7 +14,7 @@ fn ak(s: &str) -> Ak {
 }
 
 fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, tied: None }
+    ct::Edge { role, until: None, invite: None, tied: None, floor: None }
 }
 
 /// `n` peers; peer 0 makes thing `t` and grants peers 1.. `roles`; everyone synced.

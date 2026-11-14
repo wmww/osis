@@ -43,7 +43,7 @@ fn made(net: &mut Net, n: usize, g: Tid) -> (Tid, CommitId) {
 /// A demotion of `holder` on `thing` written by node `n` (an explicit write naming what it audited).
 fn demote(net: &mut Net, n: usize, thing: Tid, holder: Tid, role: Role) {
     let mut m = Mutation::new();
-    let edge = ct::Edge { role, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role, until: None, invite: None, tied: None, floor: None };
     m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
     m.op(thing, &ct::ROLES, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge.to_value()) }).unwrap();
     m.frontier(ct::Frontier::default().to_value());
@@ -471,7 +471,7 @@ fn a_destroyed_holder_stays_until_what_names_it_goes_spec_commits_5() {
     };
     let t = made(&mut lp, "t", now + 1_000);
     let x = made(&mut lp, "x", now + 5_000);
-    let admin = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
+    let admin = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None };
     crate::common::set_edge(&mut lp.peers[0].engine, x, t, Some(admin), None);
     lp.sync_all().unwrap();
     lp.advance(2_000);
@@ -525,7 +525,7 @@ fn a_destroyed_account_leaves_what_it_created_running_spec_commits_5() {
     net.actions(d, acts);
     net.run();
     net.pair(d, c);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(c).grant(&g, &dt, &edge).unwrap();
     let acts = net.sync(c).carry_out(done).unwrap();
     net.actions(c, acts);
@@ -574,7 +574,7 @@ fn a_node_joining_after_a_first_admin_was_destroyed_reads_its_dependents_spec_co
     net.actions(d, acts);
     net.run();
     net.pair(d, c);
-    let edge = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(c).grant(&g, &dt, &edge).unwrap();
     let acts = net.sync(c).carry_out(done).unwrap();
     net.actions(c, acts);
@@ -612,7 +612,7 @@ fn granted_later_as(net: &mut Net, by: usize, g: Tid, role: Role) -> usize {
     net.actions(d, acts);
     net.run();
     net.pair(d, by);
-    let edge = ct::Edge { role, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(by).grant(&g, &dt, &edge).unwrap();
     let acts = net.sync(by).carry_out(done).unwrap();
     net.actions(by, acts);
@@ -1299,7 +1299,7 @@ fn a_demotion_after_a_destruction_does_not_undo_it_spec_commits_5() {
         let destruction = net.engine(c).package(&destruction).unwrap().unwrap().bytes;
         net.advance(10);
         let mut m = Mutation::new();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
         m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(tc)) }).unwrap();
         m.op(t, &ct::ROLES, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(tc))], op: Op::Set(edge.to_value()) }).unwrap();
         m.frontier(ct::Frontier::default().to_value());
@@ -1428,7 +1428,7 @@ fn a_second_destruction_after_one_that_falls_destroys_the_thing_spec_commits_5()
             net.set_online(n, false);
         }
         let mut m = Mutation::new();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
         m.op(g, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(tb)) }).unwrap();
         m.op(g, &ct::ROLES, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(tb))], op: Op::Set(edge.to_value()) }).unwrap();
         m.frontier(ct::Frontier::default().to_value());
@@ -2031,7 +2031,7 @@ fn an_expired_retainers_child_is_judged_and_released_at_a_later_node_spec_commit
     net.run();
     net.pair(d, a);
     net.nodes[d].accepts = false;
-    let edge = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &made.account, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);

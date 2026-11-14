@@ -401,7 +401,7 @@ fn grant_by_inbox_end_to_end_spec_sync_3() {
             }
             t
         });
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
         let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
         assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::Inbox { .. })));
         let acts = net.sync(a).carry_out(done).unwrap();
@@ -1054,7 +1054,7 @@ fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
     let g = e.new_thing(&mut m, alice.account);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     let blob = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { blob, .. } = d { Some(blob.clone()) } else { None }).expect("an inbox blob");
     // everything but the commits writing g's `keys.0` reaches b directly; the grant by inbox
@@ -1104,7 +1104,7 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     let g = e.new_thing(&mut m, alice.account);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
     net.engine(a).grant(&g, &carl.account, &edge).unwrap();
     let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     let genuine = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { blob, .. } = d { Some(blob.clone()) } else { None }).expect("an inbox blob");
@@ -1360,7 +1360,7 @@ fn flip_after_drop(a_saw_kill: bool, kill_before_flip: bool) -> (Net, osis_base:
     assert_eq!(net.engine(a).get(&t, &gone).unwrap().is_some_and(|v| v == s("v0")), a_saw_kill);
     assert_eq!(net.engine(x).get(&t, &gone).unwrap(), Some(s("v1")), "the lowering's frontier leaves the killer out");
     let holder = net.tid(b);
-    let new = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let new = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(x).demote(&g, &Demotion { holder, new: Some(new), retain: None }).unwrap();
     let flip = done.commits.first().copied().unwrap();
     let acts = net.sync(x).carry_out(done).unwrap();

@@ -15,7 +15,7 @@ fn reg() -> Ak {
 }
 
 fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, tied: None }
+    ct::Edge { role, until: None, invite: None, tied: None, floor: None }
 }
 
 /// Admin 0 and writer 1 on a thing of 0. With `keys`, 1 holds every commit of 0; without, all but

@@ -307,7 +307,7 @@ impl Core {
 /// A recipient for boxes of `actor` to `holder` at `role`, from the holder's held `keys.0`.
 pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Recipient> {
     if tx.core.is_account(&holder) {
-        return Ok(Recipient { holder, role, keys: account::holder_keys(tx, &holder)? });
+        return Ok(Recipient { holder, role, keys: account::holder_keys(tx, &holder)?, floor: 0 });
     }
     let keys = Core::keys_in(tx, &holder)?;
     let keys = match (tx.core.is_key_actor(&holder), keys) {
@@ -327,7 +327,7 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
         }
         (false, None) => return Err(Error::Misuse("the holder has no secrets of its own")),
     };
-    Ok(Recipient { holder, role, keys })
+    Ok(Recipient { holder, role, keys, floor: 0 })
 }
 
 /// The inbox a role write about `holder` goes to (spec/sync-inbox.md §1): the one its `keys.0` names.

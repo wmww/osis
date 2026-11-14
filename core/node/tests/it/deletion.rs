@@ -383,7 +383,7 @@ fn reregistration_waits_and_sends_once_spec_sync_5() {
     net.pushed.clear();
     net.grant(a, t, tc, Role::Admin);
     // a demotion with no rotation (a hand-built edge write): g's rotation stays due
-    let read = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let read = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     crate::common::set_edge(net.engine(a), g, tc, Some(read), None);
     net.run();
     // (every reader's stream shows what it holds, so a peer is shown one entry by each reader,
@@ -1005,7 +1005,7 @@ fn second_label_gets_kept_bodies_spec_sync_6() {
 
 fn demote(net: &mut Net, a: usize, g: osis_base::Tid, holder: osis_base::Tid, to: Role) {
     use osis_node::flows::Demotion;
-    let new = ct::Edge { role: to, until: None, invite: None, tied: None };
+    let new = ct::Edge { role: to, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).demote(&g, &Demotion { holder, new: Some(new), retain: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -1820,7 +1820,7 @@ fn chunk_delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
     net.blocked.insert((a, host));
     net.drop_link(a, host);
     net.run();
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &tc, &edge).unwrap();
     let _ = net.sync(a).carry_out(done).unwrap();
     net.pair(a, c);
@@ -1873,7 +1873,7 @@ fn chunk_deletes_judged_after_their_batch_applies_spec_sync_1() {
         assert!(net.read(c, t).is_some(), "c reads b's value");
         net.set_online(b, false);
         if promoted {
-            let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+            let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
             let done = net.engine(a).grant(&g, &tc, &edge).unwrap();
             let acts = net.sync(a).carry_out(done).unwrap();
             net.actions(a, acts);

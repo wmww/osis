@@ -75,18 +75,19 @@ instances=(
   "lockout rotation Lockout L_rogue.cfg pass"    # notes/crypto.md (Lockouts)
   "lockout rotation Lockout L_none.cfg fail"     # negative control: no re-key
   "cut rotation Cut X_names.cfg pass"            # history cuts (issues/history-less-grant.md)
-  "cut rotation Cut X_race.cfg pass"
+  "cut rotation Cut X_race.cfg pass"             # ... and with them it does (Roster)
   "cut rotation Cut X_cut_old.cfg fail"          # negative control: no floor
   "cut rotation Cut X_cut_oldadd.cfg fail"       # negative control: the History add without the carry rule
   "cut rotation Cut X_cut_nocarry.cfg fail"      # negative control: carry rule off
   "cut rotation Cut X_cut_nofloor.cfg fail"      # negative control: boxing rule off
-  "cut rotation Cut X_names_noreplace.cfg fail"  # negative control: no re-placing of role commits
+  "cut rotation Cut X_names_noroles.cfg fail"    # negative control: entries carry no roles secrets
+  "cut rotation Cut X_race_noroles.cfg fail"     # negative control: a grant beside a cut with no rotation never reaches the newcomer without roles secrets
   "cut rotation Cut X_host.cfg pass"             # a hostile history-less writer rotating with any floor or listing
   "cut rotation Cut X_gone.cfg pass"
   "cut rotation Cut X_host_nomaker.cfg fail"     # negative control: the carry rule blind to e's maker
   "cut rotation Cut X_acc_nogfloor.cfg fail"     # negative control: a history-less admin grants history
   "cut rotation Cut X_cap_nocap.cfg fail"        # negative control: a floor above n
-  "cut rotation Cut X_host2_nolist.cfg fail"     # negative control: floors read as written
+  "cut rotation Cut X_host2_all.cfg fail"        # accepted lockout: a hostile writer's low-floor epoch after the cut misses the newcomer
   "cut rotation Cut X_readd_fresh.cfg pass"      # a re-added member's new node opens what it read before its removal
   "cut rotation Cut X_readd_fresh_noreadd.cfg fail" # negative control: the re-add boxes m only at the cut
   "cut rotation Cut X_two_strict.cfg fail"       # accepted: two history-less adds at once each read content beside the other's

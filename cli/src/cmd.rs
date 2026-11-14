@@ -29,6 +29,15 @@ pub(crate) fn parse_role(s: &str) -> anyhow::Result<Role> {
     ROLES.iter().find(|x| x.0 == s).map(|x| x.1).ok_or_else(|| usage(format!("role: sync, read, write or admin (got {s:?})")))
 }
 
+fn parse_reads(s: Option<&str>) -> anyhow::Result<osis::Reads> {
+    match s {
+        None => Ok(osis::Reads::Kept),
+        Some("from-now") => Ok(osis::Reads::FromNow),
+        Some("all") => Ok(osis::Reads::All),
+        Some(s) => Err(usage(format!("reads: from-now or all (got {s:?})"))),
+    }
+}
+
 /// A commit id, as `inspect` prints it.
 pub fn commit_text(c: &osis::internals::RawCommitId) -> String {
     CommitId::from(*c).to_string()
@@ -547,13 +556,13 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let r = db.role_on(ctx.tid(&t)?)?;
             ctx.emit(&[r.map_or("none", role_text).to_string()], J::obj([("role", J::opt(r.map(|r| J::str(role_text(r)))))]))
         }
-        Cmd::Grant { t, holder, role, until, may_grant } => {
+        Cmd::Grant { t, holder, role, until, may_grant, reads } => {
             let (t, m) = (ctx.tid(&t)?, ctx.tid(&holder)?);
             let role = match role {
                 Some(r) => parse_role(&r)?,
                 None => db.grants(t)?.get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such grant"))?,
             };
-            Ok(db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, may_grant: may_grant.as_deref().map(parse_role).transpose()? })?)
+            Ok(db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, may_grant: may_grant.as_deref().map(parse_role).transpose()?, reads: parse_reads(reads.as_deref())? })?)
         }
         Cmd::SetRole { t, holder, role, d } => {
             let role = if role == "none" { None } else { Some(parse_role(&role)?) };
@@ -1143,7 +1152,7 @@ fn grants_lines(r: &osis::Grants, raw: bool) -> Vec<String> {
     r.iter()
         .map(|(m, e)| {
             let until = e.until.map_or("-".into(), |u| ts_text(raw, u.0));
-            format!("{} {} {} {}{}", m.to_uri(), role_text(e.role), until, e.may_grant.map_or("-", role_text), if e.with_membership { " with-membership" } else { "" })
+            format!("{} {} {} {}{}", m.to_uri(), role_text(e.role), until, e.may_grant.map_or("-", role_text), if e.with_membership { " with-membership" } else { "" }) + if e.from_now { " from-now" } else { "" }
         })
         .collect()
 }
@@ -1151,7 +1160,7 @@ fn grants_lines(r: &osis::Grants, raw: bool) -> Vec<String> {
 fn grants_json(r: &osis::Grants) -> J {
     J::Arr(
         r.iter()
-            .map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("may_grant", J::opt(e.may_grant.map(|r| J::str(role_text(r))))), ("with_membership", J::Bool(e.with_membership))]))
+            .map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("may_grant", J::opt(e.may_grant.map(|r| J::str(role_text(r))))), ("with_membership", J::Bool(e.with_membership)), ("from_now", J::Bool(e.from_now))]))
             .collect(),
     )
 }

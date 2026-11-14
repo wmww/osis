@@ -171,9 +171,11 @@ fn structs_read_as_their_positions() {
     assert_eq!((page.commits.len(), page.more, page.complete), (2, true, false));
 
     let w = |n: u64| l(vec![u(n)]);
-    let o = same::<GrantOpts>(l(vec![w(5), w(1)]));
-    assert_eq!((o.until, o.may_grant), (Some(Time(5)), Some(Role::Write)));
-    assert_eq!(same::<GrantOpts>(l(vec![l(vec![]), l(vec![])])), GrantOpts::default());
+    let o = same::<GrantOpts>(l(vec![w(5), w(1), u(1)]));
+    assert_eq!((o.until, o.may_grant, o.reads), (Some(Time(5)), Some(Role::Write), osis::Reads::FromNow));
+    assert_eq!(same::<GrantOpts>(l(vec![l(vec![]), l(vec![]), u(2)])).reads, osis::Reads::All);
+    assert_eq!(same::<GrantOpts>(l(vec![l(vec![]), l(vec![]), u(0)])), GrantOpts::default());
+    refused::<GrantOpts>(l(vec![l(vec![]), l(vec![]), u(3)]));
     assert_eq!(same::<SetRoleOpts>(l(vec![l(vec![Value::Bool(true)])])).retain_copy, Some(true));
     assert_eq!(same::<SetRoleOpts>(l(vec![l(vec![])])).retain_copy, None);
     refused::<SetRoleOpts>(l(vec![]));
@@ -192,10 +194,11 @@ fn structs_read_as_their_positions() {
 
 #[test]
 fn maps_and_settings_read_as_their_rows() {
-    let rows = l(vec![l(vec![t(1), u(2), l(vec![u(5)]), l(vec![u(0)]), Value::Bool(true)]), l(vec![t(2), u(0), l(vec![]), l(vec![]), Value::Bool(false)])]);
+    let rows = l(vec![l(vec![t(1), u(2), l(vec![u(5)]), l(vec![u(0)]), Value::Bool(true), Value::Bool(true)]), l(vec![t(2), u(0), l(vec![]), l(vec![]), Value::Bool(false), Value::Bool(false)])]);
     let g = same::<Grants>(rows);
     assert_eq!(g[&Tid::from_bytes([1; 15])].may_grant, Some(Role::Read));
-    refused::<Grants>(l(vec![l(vec![t(1), u(2), l(vec![]), l(vec![])])]));
+    assert!(g[&Tid::from_bytes([1; 15])].from_now);
+    refused::<Grants>(l(vec![l(vec![t(1), u(2), l(vec![]), l(vec![]), Value::Bool(false)])]));
 
     let addr = osis::Address::new(&"mem://elsewhere".parse().unwrap(), [7; 32]).to_string();
     let status = l(vec![

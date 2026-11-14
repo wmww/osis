@@ -9,7 +9,7 @@ use crate::open::HistoryAlts;
 use crate::Error;
 use osis_base::{Role, Tid};
 use osis_crypto::{
-    AccountEpochKeys, BoxItem, BoxSlot, CryptoRngCore, Epoch, KemPublicKey, Secret32, key_actor_role_secret, open_history, seal_box, seal_history, seal_joint_box, wrap_symmetric_box,
+    AccountEpochKeys, BoxItem, BoxSlot, CryptoRngCore, Epoch, KemPublicKey, Secret32, key_actor_role_secret, open_history, seal_box, seal_history, HistoryEntry, seal_joint_box, wrap_symmetric_box,
 };
 use osis_schema::core_types::{BoxKey, JointBox, KemKey, Keys, Sealed, SealedBox, SecretBox, Secrets, SymmetricBox};
 use std::collections::{BTreeMap, BTreeSet};
@@ -61,12 +61,14 @@ impl HolderKeys {
     }
 }
 
-/// A holder to box: its tid, its role on the actor, its keys.
+/// A holder to box: its tid, its role on the actor, its keys, and its floor on the actor (spec/crypto.md
+/// §4, Floors: boxed only at read epochs whose floor is at least it).
 #[derive(Clone, Debug)]
 pub struct Recipient {
     pub holder: Tid,
     pub role: Role,
     pub keys: HolderKeys,
+    pub floor: u64,
 }
 
 /// One role secret to box.
@@ -147,6 +149,8 @@ pub struct Rotated {
     /// The epochs it supersedes, as a node holding its secret reads them from its commit: those
     /// its keyset lists (`SecretsWrite::rotation_commit`) and those its history box lists.
     pub supersedes: BTreeSet<Epoch>,
+    /// The floor its history box writes (spec/crypto.md §4, Floors; 0 but at read).
+    pub floor: u64,
 }
 
 /// The demotions every keyset of a rotation carries (spec/crypto.md §4, Carried demotions): the
@@ -189,7 +193,7 @@ impl Rotation {
     pub fn record(&self, epochs: &mut ActorEpochs) {
         for r in &self.rotated {
             let re = epochs.role_mut(r.role);
-            re.set_history(r.epoch, [self.names.clone()].into(), r.supersedes.iter().copied());
+            re.set_history(r.epoch, [self.names.clone()].into(), r.supersedes.iter().copied(), Some(r.floor));
             re.set_secret(r.epoch, r.secret.clone());
         }
     }
@@ -216,16 +220,15 @@ impl Rotation {
     }
 }
 
-/// The boxes a rotation of `roles` removes (spec/crypto.md §4): those keyed with a rotated role
-/// at an epoch whose secret its history box carries (held, established). A box at an epoch it
-/// cannot open, or whose rotation it lacks, stands: it still opens for its holder (which then
-/// adds that secret to the history, `history_adds`), and anchors and staleness read current
-/// epochs only.
-fn removals(roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets) -> Result<BTreeSet<BoxKey>, Error> {
+/// The boxes a rotation removes (spec/crypto.md §4): those keyed with a rotated role at an epoch
+/// whose secret its history box carries (`carried`). A box at an epoch it cannot open, does not
+/// hold established or may not carry (below a cut, spec/crypto.md §4 Floors) stands: it still
+/// opens for its holder (which then adds that secret to the history where the carry rule lets
+/// it, `history_adds`), and anchors and staleness read current epochs only.
+fn removals(carried: &BTreeMap<Role, BTreeSet<Epoch>>, held_secrets: &Secrets) -> Result<BTreeSet<BoxKey>, Error> {
     let mut out = BTreeSet::new();
-    for k in held_secrets.boxes.keys().filter(|k| roles.contains(&k.role)) {
-        let (re, e) = (held.role(k.role), from_schema(&k.epoch)?);
-        if re.secret(&e).is_some() && re.is_established(&e) {
+    for k in held_secrets.boxes.keys() {
+        if carried.get(&k.role).is_some_and(|c| from_schema(&k.epoch).is_ok_and(|e| c.contains(&e))) {
             out.insert(k.clone());
         }
     }
@@ -244,19 +247,21 @@ fn removals(roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets) 
 /// switch to secrets of its own); `held_secrets` the actor's `secrets.0`. Records no holder actor
 /// left out (`rotate_leaving_out`).
 pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets, holders: &[Recipient], names: &Names, rng: &mut dyn CryptoRngCore) -> Result<Rotation, Error> {
-    rotate_leaving_out(actor, roles, held, held_secrets, holders, &LeftOut::new(), &Carried::default(), names, rng)
+    rotate_leaving_out(actor, roles, held, held_secrets, holders, &LeftOut::new(), &Carried::default(), names, false, rng)
 }
 
 /// `rotate`, each rotated role's keyset recording `left_out` (the holder actors the rotation
 /// leaves out of it, with the keysets of each it was left out at: `LeftOut`) and carrying
-/// `carried` (`Carried`).
+/// `carried` (`Carried`). `cut`: a grant without history (spec/crypto.md §4, Floors): the read
+/// floor is its own n and its history box carries no earlier secret, so it removes no box.
 #[allow(clippy::too_many_arguments)]
-pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets, holders: &[Recipient], left_out: &LeftOut, carried: &Carried, names: &Names, rng: &mut dyn CryptoRngCore) -> Result<Rotation, Error> {
-    let removed = removals(roles, held, held_secrets)?;
+pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets, holders: &[Recipient], left_out: &LeftOut, carried: &Carried, names: &Names, cut: bool, rng: &mut dyn CryptoRngCore) -> Result<Rotation, Error> {
     let mut rotated = Vec::new();
-    let mut secrets = SecretsWrite { removed, ..SecretsWrite::default() };
+    let mut secrets = SecretsWrite::default();
     let mut keys = KeysWrite::default();
     let mut wrap = None;
+    let mut in_history: BTreeMap<Role, BTreeSet<Epoch>> = BTreeMap::new();
+    let mut floors: BTreeMap<Role, u64> = BTreeMap::new();
     for &r in roles {
         let re = held.role(r);
         // current and unsuperseded: an epoch whose names this node does not meet is current
@@ -271,15 +276,31 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         };
         let secret = Secret32::random(rng);
         let epoch = Epoch::derive(actor, r, n + 1, &secret)?;
-        let earlier: Vec<(Epoch, Secret32)> = re.held_established().filter(|(e, _)| e.n() <= n).map(|(e, s)| (e, s.clone())).collect();
+        // the floor (spec/crypto.md §4, Floors): a cut's own n; else the greatest floor among
+        // its maker and the holders it boxes (each boxed, none handed what lies below its own)
+        let cut = cut && r == Role::Read;
+        let floor = match (cut, re.has_floors()) {
+            (true, _) => n + 1,
+            (false, true) => holders.iter().filter(|m| m.role >= r).map(|m| m.floor).max().unwrap_or(0).max(re.own_floor()).min(n + 1),
+            (false, false) => 0,
+        };
+        let established: Vec<(Epoch, Secret32)> = re.held_established().filter(|(e, _)| e.n() <= n).map(|(e, s)| (e, s.clone())).collect();
         if r == Role::Read {
-            // the greatest n it supersedes whose secret is held: its history box lists every
-            // held established secret, so one exists whenever any read secret is held (the
-            // rotator may hold no current one). By n, not order n (spec/crypto.md §5): uploaders
-            // judge from the thing's own epochs, where derived ones keep no order n
-            wrap = newest_of(earlier.iter().map(|(e, _)| e));
+            // the greatest n it supersedes whose secret is held: one exists whenever any read
+            // secret is held (the rotator may hold no current one). By n, not order n
+            // (spec/crypto.md §5): uploaders judge from the thing's own epochs, where derived
+            // ones keep no order n
+            wrap = newest_of(established.iter().map(|(e, _)| e));
         }
-        secrets.history.insert(history_key(r, &epoch), seal_history(&secret, actor, r, &epoch, &earlier, &names.to_value())?);
+        // the carry rule (spec/crypto.md §4): what its floor lets in (its maker's is at most it);
+        // a cut's floor, its own n, none
+        let earlier: Vec<(Epoch, Secret32)> = established.into_iter().filter(|(e, _)| !cut && re.carries_into(floor, e)).collect();
+        in_history.insert(r, earlier.iter().map(|(e, _)| *e).collect());
+        floors.insert(r, floor);
+        // every earlier roles secret held, the carry rule aside (spec/crypto.md §4, Roles secrets)
+        let roles = re.held_roles().into_iter().filter(|(e, _)| e.n() <= n).collect();
+        let entry = HistoryEntry { earlier: earlier.clone(), names: names.to_value(), floor, roles };
+        secrets.history.insert(history_key(r, &epoch), seal_history(&secret, actor, r, &epoch, &entry)?);
         // the keyset lists its current epochs but derived ones (held only where the base actor's
         // secret is: superseded through the history box)
         let listed: BTreeSet<Epoch> = current.iter().filter(|e| re.provenance(e) != Some(Provenance::Derived)).copied().collect();
@@ -291,11 +312,14 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         ks.demotes = carried.demotes;
         keys.keysets.insert(r, ks);
         let supersedes = listed.iter().copied().chain(earlier.iter().map(|(e, _)| *e)).collect();
-        rotated.push(Rotated { role: r, epoch, secret, supersedes });
+        rotated.push(Rotated { role: r, epoch, secret, supersedes, floor });
     }
+    secrets.removed = removals(&in_history, held_secrets)?;
     let mut unboxed = Vec::new();
     for m in holders {
-        let items: Vec<Item> = rotated.iter().filter(|x| x.role <= m.role).map(|x| Item { role: x.role, epoch: x.epoch, secret: &x.secret }).collect();
+        // the boxing rule (spec/crypto.md §4): at a read epoch of floor at least the holder's
+        let allowed = |x: &&Rotated| !held.role(x.role).has_floors() || floors.get(&x.role).is_some_and(|f| *f >= m.floor);
+        let items: Vec<Item> = rotated.iter().filter(|x| x.role <= m.role).filter(allowed).map(|x| Item { role: x.role, epoch: x.epoch, secret: &x.secret }).collect();
         if !items.is_empty() && box_items(actor, m, &items, rng, &mut secrets)?.is_none() {
             unboxed.push(m.holder);
         }
@@ -316,6 +340,25 @@ pub struct HistoryBox {
     pub listed: BTreeSet<Epoch>,
     /// The epoch's names, copied from a met entry (a bound one first).
     pub names: Names,
+    /// The epoch's floor as this node reads it (spec/crypto.md §4, Floors), written again.
+    pub floor: u64,
+    /// Every earlier roles secret the entry carries apart from `earlier` (spec/crypto.md §4,
+    /// Roles secrets): those the live entries list and every one held.
+    pub roles: BTreeMap<Epoch, Secret32>,
+    /// The epochs whose roles secret the live entries list.
+    pub roles_listed: BTreeSet<Epoch>,
+}
+
+impl HistoryBox {
+    /// The entry it writes at its epoch.
+    fn entry(&self) -> HistoryEntry {
+        HistoryEntry {
+            earlier: self.earlier.iter().map(|(x, sx)| (*x, sx.clone())).collect(),
+            names: self.names.to_value(),
+            floor: self.floor,
+            roles: self.roles.iter().map(|(x, rx)| (*x, rx.clone())).collect(),
+        }
+    }
 }
 
 /// Per (role, current epoch) whose secret is held established: its history box as this node
@@ -336,37 +379,58 @@ pub fn history_boxes(actor: &Tid, held: &ActorEpochs, secrets: &Secrets, alts: &
             let k = history_key(r, &e);
             let mut earlier: BTreeMap<Epoch, Secret32> = BTreeMap::new();
             let mut listed = BTreeSet::new();
+            let mut roles: BTreeMap<Epoch, Secret32> = BTreeMap::new();
+            let mut roles_listed = BTreeSet::new();
             for ct in secrets.history.get(&k).into_iter().chain(alts.get(&k).into_iter().flatten()) {
-                let Ok((list, _)) = open_history(s, actor, r, &e, ct) else { continue };
-                for (x, sx) in list {
+                let Ok(h) = open_history(s, actor, r, &e, ct) else { continue };
+                for (x, sx) in h.earlier {
                     listed.insert(x);
                     earlier.insert(x, sx);
                 }
+                for (x, rx) in h.roles {
+                    roles_listed.insert(x);
+                    roles.insert(x, rx);
+                }
             }
-            for (x, sx) in re.held_established().filter(|(x, _)| x.n() < e.n() && !re.is_current(x)) {
+            // every earlier roles secret held, the carry rule aside (spec/crypto.md §4, Roles
+            // secrets)
+            for (x, rx) in re.held_roles().into_iter().filter(|(x, _)| x.n() < e.n()) {
+                roles.entry(x).or_insert(rx);
+            }
+            // the carry rule (spec/crypto.md §4): what the live entries list goes again as it is
+            // (every holder of e reads it already); what this node adds, only as e's floor and
+            // its maker's let in
+            for (x, sx) in re.held_established().filter(|(x, _)| x.n() < e.n() && !re.is_current(x) && re.carries(&e, x)) {
                 earlier.entry(x).or_insert_with(|| sx.clone());
             }
-            out.insert((r, e), HistoryBox { earlier, listed, names });
+            roles.retain(|x, _| !earlier.contains_key(x));
+            out.insert((r, e), HistoryBox { earlier, listed, names, floor: re.floor(&e), roles, roles_listed });
         }
     }
     out
 }
 
 /// A **history add** (spec/crypto.md §4): the history boxes of `hist` (this node's, for the
-/// epochs it may encrypt under) carrying an earlier secret no live entry lists, each written
-/// whole beside the entries there (a put of a new entry, resetting nothing: any holder of the
-/// epoch may add one). Empty when every secret held is listed already.
+/// epochs it may encrypt under) carrying an earlier secret or roles secret no live entry lists,
+/// each written whole beside the entries there (a put of a new entry, resetting nothing: any
+/// holder of the epoch may add one). Empty when every one held is listed already.
 pub fn history_adds(actor: &Tid, held: &ActorEpochs, hist: &HistoryBoxes) -> Result<SecretsWrite, Error> {
     let mut out = SecretsWrite::default();
     for ((r, e), h) in hist {
-        if h.earlier.keys().all(|x| h.listed.contains(x)) {
+        if !h.adds() {
             continue;
         }
         let Some(s) = held.role(*r).get(e).and_then(|i| i.checked()) else { continue };
-        let earlier: Vec<(Epoch, Secret32)> = h.earlier.iter().map(|(x, sx)| (*x, sx.clone())).collect();
-        out.history.insert(history_key(*r, e), seal_history(s, actor, *r, e, &earlier, &h.names.to_value())?);
+        out.history.insert(history_key(*r, e), seal_history(s, actor, *r, e, &h.entry())?);
     }
     Ok(out)
+}
+
+impl HistoryBox {
+    /// It carries a secret or roles secret no live entry lists (a history add is due).
+    pub fn adds(&self) -> bool {
+        self.earlier.keys().any(|x| !self.listed.contains(x)) || self.roles.keys().any(|x| !self.roles_listed.contains(x) && !self.listed.contains(x))
+    }
 }
 
 /// A grant or a re-share (spec/crypto.md §4, spec/permissions.md §3): `rcpt`'s boxes for `roles`
@@ -382,7 +446,26 @@ pub fn box_holder(
     roles: &BTreeSet<Role>,
     rng: &mut dyn CryptoRngCore,
 ) -> Result<Option<SecretsWrite>, Error> {
-    box_at(actor, held, hist, rcpt, roles, &|_, _| true, rng)
+    let mut out = box_at(actor, held, hist, rcpt, roles, &|_, _| true, rng)?;
+    // a grant with history also boxes each dropped epoch held that the holder's floor allows: no
+    // history entry carries it on (spec/crypto.md §4, Floors)
+    if let Some(w) = &mut out {
+        let re = held.role(Role::Read);
+        let items: Vec<Item> = re.dropped().into_iter().filter(|_| roles.contains(&Role::Read) && rcpt.role >= Role::Read).filter(|f| re.allows(f, rcpt.floor)).filter_map(|f| re.secret(&f).map(|s| Item { role: Role::Read, epoch: f, secret: s })).collect();
+        if box_items(actor, rcpt, &items, rng, w)?.is_none() {
+            return Ok(None);
+        }
+    }
+    Ok(out)
+}
+
+/// The **tip add** (spec/crypto.md §4, Floors): boxes of the dropped epochs `epochs` (secrets
+/// held) to `rcpt`, each that its floor allows. `Ok(None)` when a needed keyset is unknown.
+pub fn box_dropped(actor: &Tid, held: &ActorEpochs, rcpt: &Recipient, epochs: &BTreeSet<Epoch>, rng: &mut dyn CryptoRngCore) -> Result<Option<SecretsWrite>, Error> {
+    let re = held.role(Role::Read);
+    let items: Vec<Item> = epochs.iter().filter(|f| re.allows(f, rcpt.floor)).filter_map(|f| re.secret(f).map(|s| Item { role: Role::Read, epoch: *f, secret: s })).collect();
+    let mut out = SecretsWrite::default();
+    Ok(box_items(actor, rcpt, &items, rng, &mut out)?.map(|_| out))
 }
 
 /// The re-seal the trigger asks for (`reseal_needed`): `box_holder` at only the current epochs
@@ -415,7 +498,7 @@ fn box_at(
     for &r in roles.iter().filter(|r| **r <= rcpt.role) {
         let re = held.role(r);
         let mut any = false;
-        for e in re.current().into_iter().filter(|e| want(r, e)) {
+        for e in re.current().into_iter().filter(|e| want(r, e) && re.allows(e, rcpt.floor)) {
             if let Some(s) = re.secret(&e) {
                 items.push(Item { role: r, epoch: e, secret: s });
                 any = true;
@@ -431,8 +514,7 @@ fn box_at(
     }
     for i in &items {
         if let Some(h) = hist.get(&(i.role, i.epoch)) {
-            let earlier: Vec<(Epoch, Secret32)> = h.earlier.iter().map(|(x, sx)| (*x, sx.clone())).collect();
-            out.history.insert(history_key(i.role, &i.epoch), seal_history(i.secret, actor, i.role, &i.epoch, &earlier, &h.names.to_value())?);
+            out.history.insert(history_key(i.role, &i.epoch), seal_history(i.secret, actor, i.role, &i.epoch, &h.entry())?);
         }
     }
     Ok(Some(out))

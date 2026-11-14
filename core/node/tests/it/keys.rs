@@ -18,7 +18,7 @@ fn rcpt(lp: &mut LocalPeer, i: usize, role: Role) -> Recipient {
     let e = &mut lp.peers[i].engine;
     let holder = e.me();
     let keys = e.account_holder_keys(&holder).unwrap();
-    Recipient { holder, role, keys }
+    Recipient { holder, role, keys, floor: 0 }
 }
 
 /// Node 0 grants node 1 read on `a`: its boxes then give node 1 `a`'s secrets

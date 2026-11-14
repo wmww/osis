@@ -27,7 +27,7 @@ fn rotates_before_wrapping_after_until_spec_crypto_4() {
     net.pair(c, a);
     let ct_ = net.tid(c);
     let until = WallMs(net.now() + 1_000);
-    let done = net.engine(a).grant(&g, &ct_, &ct::Edge { role: Role::Read, until: Some(until), invite: None, tied: None }).unwrap();
+    let done = net.engine(a).grant(&g, &ct_, &ct::Edge { role: Role::Read, until: Some(until), invite: None, tied: None, floor: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     for (_, pks) in net.sync(a).take_direct() {
@@ -297,7 +297,7 @@ fn quiet_label() -> (Net, usize, usize, usize, Tid) {
 /// `a` gives `c` `role` on `g`; `b` applies it from `a` directly, not by the host.
 fn from_elsewhere(net: &mut Net, a: usize, b: usize, c: usize, g: Tid, role: Role) {
     let tc = net.tid(c);
-    let edge = ct::Edge { role, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &tc, &edge).unwrap();
     // b places it under the label too; that copy's push would end a pass of its own
     net.lose_deposits.extend(done.commits);
@@ -771,7 +771,7 @@ fn reader_copy_after_rotation_goes_as_a_deposit_durable_spec_sync_5() {
     net.advance(15_000);
     assert_eq!(net.read(a, t), Some(s("t")));
     let tb = net.tid(b);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -924,7 +924,7 @@ fn no_secret_of_the_heads_read_epoch_is_stranded_spec_sync_5() {
     net.pair(b, a);
     // B reads G directly too, so it syncs G's label and places M's new keyset there for A
     let g = net.group_at(a, &[(b, Role::Read)], vec![net.address(host)]);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let done = net.engine(a).grant(&g, &m, &edge).unwrap();
     carry(&mut net, a, done);
     net.pair(a, r);
@@ -1159,7 +1159,7 @@ fn walk_out_of_keys_is_stranded_spec_permissions_4() {
     // X away: the sharer grants X's account on K, removes L (X's account boxed at a key X cannot
     // open), and rotates again with a fresh deposit seed
     net.set_online(x, false);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let gd = net.engine(a).grant(&k, &px, &edge).unwrap();
     carry(&mut net, a, gd);
     let e = net.engine(a);
@@ -1496,7 +1496,7 @@ fn demoted_writers_refused_writes_take_no_deposit_budget_spec_sync_5() {
     let l = net.label(a);
     let before = net.deposit_room(host, &l);
     let tb = net.tid(b);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();

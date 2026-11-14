@@ -81,7 +81,7 @@ impl Sim {
     }
 
     fn holders(&self) -> Vec<Recipient> {
-        let mut v = vec![Recipient { holder: self.p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&self.pe)).unwrap().with_own(&self.pe) }];
+        let mut v = vec![Recipient { holder: self.p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&self.pe)).unwrap().with_own(&self.pe), floor: 0 }];
         v.extend(self.roster.iter().map(|(i, r)| self.rcpt(*i, *r)));
         v
     }

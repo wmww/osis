@@ -252,7 +252,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 - **h** Wake relay for background notifications (Tess: does not block).
 - **j** Per-sender key chains (Signal sender keys): per-message erasure, at the cost of a per-sender state per device and either a per-sender marker the nodes keeping the chat unread can link or trial decryption.
 - **m** Erasable per-device KEM keys with per-device boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and requirements line 48.
-- **n** History-less grant: a cut (a read rotation at the add carrying no history), a floor per keyset that history entries and boxes respect, role commits and chain certificates re-placed (issues/history-less-grant.md, model-checked); segments (footnote 33) are the fallback without core change.
+- **n** History-less grant: a cut (a read rotation at the add carrying no history), a floor per read epoch that history entries and boxes respect, role commits opened by every holder under roles secrets (issues/history-less-grant.md, model-checked); segments (footnote 33) are the fallback without core change.
 - **o** A node that stops fetching short of old messages (issues/partial-history-fetch.md); fetch is newest first (spec/sync-judgement.md §2).
 - **r** Pure readers place nothing under big labels: no chain certificates or node card from a reader unless asked (realms past a few thousand members).
 - **s** Default-off sync: a device holding a realm's secret does not sync the labels of the things the realm holds until the app chooses (a node syncs every label whose secret it holds, `SyncEngine::labels`).

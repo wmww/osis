@@ -135,6 +135,7 @@ Every delta carries **retention** on the wire: who may purge it (its purgeable-b
 - The entry governing an AK is its own in `rules`, else `default`; neither: no history promised.
 - It governs every aspect of the thing but those with fixed retention, memory aspects included. Each delta is judged as an admin-only delta at its key (spec/permissions.md §5.2); no other delta's validity depends on a setting.
 - Each `retention^.0` delta is read alone: its value is the whole setting; a delta not reading as the aspect's type, with a key in `rules` that is not an AK (spec/data-model.md §2) or with more than `MAX_RETENTION_ENTRIES` entries in `rules`, is no setting. A writer writes it whole (never by path, within those bounds, with no entry a write could not follow) and does not undo it.
+- A grant without history is followed by its author's write of the setting in force (spec/crypto.md §4 Floors), so its holder holds it without the earlier settings.
 - **In force**: the held valid settings of a thing ordered by key are its timeline; at wall time t the setting in force is the newest by key with `wall_ms(ts) <= t`, before the first none. A setting is in force from its own commit on.
 - **One way**: where an earlier setting of the timeline governs an AK with purge on replace, a later `keep` entry for that AK reads as no history.
 - **Replaced at** r: §5 Bodies and deaths; a signal's body at its own `ts`; a purged part, for listing, at its request's `ts`.

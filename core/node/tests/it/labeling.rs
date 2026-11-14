@@ -108,7 +108,8 @@ fn one_blob_prefix_groups_per_key_set_spec_wire_5() {
 }
 
 // spec/crypto.md §5: content is wrapped under the newest current read epoch; a rotation commit
-// under the epoch it supersedes, so the holders it seals to can open it.
+// under the epoch it supersedes, so the holders it seals to can open it, by that epoch's roles
+// secret (its parts are role parts, spec/crypto.md §4 Roles secrets).
 #[test]
 fn rotation_wrap_exception_spec_crypto_5() {
     let (mut net, [a, b]) = local_nodes::<2>();
@@ -122,7 +123,7 @@ fn rotation_wrap_exception_spec_crypto_5() {
     let after = e.epochs(&g).unwrap().read.newest_held().map(|(_, s)| s.clone()).unwrap();
     assert_ne!(before.expose(), after.expose());
     let parts: Vec<usize> = (0..e.header(&c).unwrap().aspects.len()).collect();
-    assert_eq!(e.wrap_secret(&g, Some((&c, &parts))).unwrap().unwrap().expose(), before.expose());
+    assert_eq!(e.wrap_secret(&g, Some((&c, &parts))).unwrap().unwrap().expose(), osis_crypto::roles_secret(&before).expose());
     assert_eq!(e.wrap_secret(&g, None).unwrap().unwrap().expose(), after.expose());
 }
 
@@ -198,7 +199,7 @@ fn registration_of_thousands_of_readers() {
     let a = e.new_thing(&mut m, me);
     e.commit(m).unwrap().unwrap();
     let all = BTreeSet::from(Role::ALL);
-    let own = [Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } }];
+    let own = [Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None }, floor: 0 }];
     let view = e.epochs(&a).unwrap();
     let r0 = rotate(&a, &all, &view, &Default::default(), &own, &osis_keys::Names::default(), &mut SeededRng::from_u64(2)).unwrap();
     let write = |m: &mut Mutation, r: &osis_keys::Rotation| {
@@ -228,8 +229,8 @@ fn registration_of_thousands_of_readers() {
             let h = e.new_thing(&mut m, me);
             let ks = ct::Keyset { kem_key: ct::KemKey::X25519MlKem768(kem.as_bytes().to_vec()), ..template.clone() };
             m.op(h, &ct::KEYS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Replace(Some(ks).to_value()) }).unwrap();
-            m.op(a, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(h))], op: Op::Set(ct::Edge { role: Role::Read, until: None, invite: None, tied: None }.to_value()) }).unwrap();
-            holders.push(Recipient { holder: h, role: Role::Read, keys: HolderKeys::Actor { keysets: [(Role::Read, vec![(ep, kem)])].into_iter().collect(), own: BTreeMap::new() } });
+            m.op(a, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(h))], op: Op::Set(ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None }.to_value()) }).unwrap();
+            holders.push(Recipient { holder: h, role: Role::Read, keys: HolderKeys::Actor { keysets: [(Role::Read, vec![(ep, kem)])].into_iter().collect(), own: BTreeMap::new() }, floor: 0 });
         }
         e.commit_hostile(m).unwrap().unwrap();
     }
