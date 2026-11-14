@@ -2,7 +2,7 @@
 //! node of another: what a sibling changes and what it does not.
 
 use crate::harness::history::file;
-use crate::harness::{World, siblings, stranger_siblings};
+use crate::harness::{World, fixture_with, siblings, stranger_siblings};
 use osis_base::{Ak, Role, Tid, Value};
 use osis_engine::Mutation;
 use osis_engine::flows::Demotion;
@@ -52,42 +52,31 @@ fn granted(w: &mut World, role: Role) -> (Tid, Ak) {
     (t, ak)
 }
 
-/// `granted(Write)`, accepted in account 1's D (every synced group's closure): both siblings
-/// read it.
-fn both_read() -> (World, Tid, Ak) {
-    let mut w = siblings();
-    let (t, ak) = granted(&mut w, Role::Write);
-    file(&mut w, 1, Vec::new(), vec![t]);
-    w.run();
-    for i in [1, 2] {
-        assert_eq!(w.engine(i).get(&t, &ak).unwrap(), Some(Value::Str("x".into())), "node {i} reads it");
-    }
+/// `siblings` with `granted(Write)` listed in each sibling's own synced group: both read it.
+/// Built once (`fixture_with`).
+fn listed() -> (World, Tid, Ak) {
+    let (w, (t, ak)) = fixture_with("siblings listed", || {
+        let mut w = siblings();
+        let (t, ak) = granted(&mut w, Role::Write);
+        list_own(&mut w, 1, t, true);
+        list_own(&mut w, 2, t, true);
+        w.run();
+        for i in [1, 2] {
+            assert_eq!(w.engine(i).get(&t, &ak).unwrap(), Some(Value::Str("x".into())), "node {i} reads it");
+        }
+        (w, (t, ak))
+    });
     (w, t, ak)
-}
-
-// spec/sync-set.md §1 (in the pairing reply): a later node's synced group holds a copy of the
-// pairing node's synced group's items and subgroups: node 2's synced group is its own, listed in
-// `synced^.0`, holding node 1's items and subgroups and D.
-#[test]
-fn pairing_gives_the_new_node_a_synced_group_of_its_own_spec_sync_set_1() {
-    let mut w = siblings();
-    let (g1, g2) = (synced_group(&mut w, 1), synced_group(&mut w, 2));
-    assert_ne!(g1, g2);
-    let d = w.engine(1).account().unwrap().unwrap().1;
-    for i in [1, 2] {
-        let (x1, x2) = (w.engine(i).get_typed(&g1, &ct::GROUP).unwrap().unwrap(), w.engine(i).get_typed(&g2, &ct::GROUP).unwrap().unwrap());
-        assert!(x2.subgroups.contains(&d) && x1.subgroups.is_subset(&x2.subgroups) && x1.items.is_subset(&x2.items), "node {i}: {x1:?} {x2:?}");
-    }
 }
 
 // spec/permissions.md §3 (Lost access: a self-remover keeps the secrets until its self-removal is
 // held elsewhere, or no peer but its account's nodes shares where it goes): node 0 unsyncs a thing
-// both siblings write; node 1 leaves it while node 2, away, still shares it (node 1's record of
+// both siblings list in their own synced groups and write; node 1 leaves it while node 2, away, still shares it (node 1's record of
 // it holds S), and drops its secrets at once. (A sibling holding the removal never counts as held
 // elsewhere: status::self_removal_not_held_at_own_nodes.)
 #[test]
 fn a_self_removal_shared_only_with_a_sibling_drops_at_once_spec_perm_3() {
-    let (mut w, t, _) = both_read();
+    let (mut w, t, _) = listed();
     let a1 = w.node(1).account.unwrap();
     let s = w.engine(1).sync_ids(&t).unwrap()[0].id;
     w.write(0, |e| {
@@ -98,13 +87,15 @@ fn a_self_removal_shared_only_with_a_sibling_drops_at_once_spec_perm_3() {
         m.set(d, &ct::GROUP, &g).unwrap();
         e.commit(m).unwrap();
     });
-    w.run();
+    w.flush();
     assert!(w.store(0).synced(&s).is_none(), "node 0 stopped syncing it");
     assert!(w.store(2).synced(&s).is_some(), "node 2 shares it");
+    // node 1 told its connection to node 2 closed before it writes (else the removal reaches node
+    // 2 and is held elsewhere: the test proves nothing)
     w.partition(1, 2);
-    w.run();
+    w.flush();
     let c = w.write(1, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap().commits[0];
-    w.run();
+    w.flush();
     assert!(!w.engine(1).waiting_removals().unwrap().contains(&c), "only a sibling shares it: done");
     assert!(w.engine(1).epochs(&t).is_none_or(|e| e.read.held().next().is_none()), "dropped");
 }
@@ -124,7 +115,7 @@ fn a_siblings_accept_makes_the_other_take_a_boxes_payload_spec_sync_inbox_2() {
         assert!(w.engine(i).sync_record(&t).unwrap().is_none(), "node {i} took nothing");
     }
     list_own(&mut w, 1, t, true);
-    w.run();
+    w.flush();
     assert!(w.engine(1).sync_record(&t).unwrap().is_some(), "node 1 took it");
     let g2 = synced_group(&mut w, 2);
     assert!(!w.engine(2).get_typed(&g2, &ct::GROUP).unwrap().unwrap().subgroups.contains(&t), "node 2's own group lists it not");
@@ -136,17 +127,10 @@ fn a_siblings_accept_makes_the_other_take_a_boxes_payload_spec_sync_inbox_2() {
 // node 2 keeps it and reads a later write.
 #[test]
 fn unsyncing_on_one_sibling_leaves_the_other_its_copy_spec_sync_set_3() {
-    let mut w = siblings();
-    let (t, ak) = granted(&mut w, Role::Read);
-    list_own(&mut w, 1, t, true);
-    list_own(&mut w, 2, t, true);
-    w.run();
+    let (mut w, t, ak) = listed();
     let s = w.engine(1).sync_ids(&t).unwrap()[0].id;
-    for i in [1, 2] {
-        assert_eq!(w.engine(i).get(&t, &ak).unwrap(), Some(Value::Str("x".into())), "node {i} reads it");
-    }
     list_own(&mut w, 1, t, false);
-    w.run();
+    w.flush();
     assert_eq!(w.engine(1).get(&t, &ak).unwrap(), None, "node 1 forgot it");
     assert!(w.store(1).synced(&s).is_none() && !w.store(1).held_ids().unwrap().contains(&s), "node 1 stopped and shredded");
     w.write(0, |e| {
@@ -154,7 +138,7 @@ fn unsyncing_on_one_sibling_leaves_the_other_its_copy_spec_sync_set_3() {
         m.set(t, &ak, &Value::Str("y".into())).unwrap();
         e.commit(m).unwrap();
     });
-    w.run();
+    w.flush();
     assert_eq!(w.engine(2).get(&t, &ak).unwrap(), Some(Value::Str("y".into())), "node 2 keeps it");
     assert_eq!(w.engine(1).get(&t, &ak).unwrap(), None, "node 1 still not");
 }

@@ -971,16 +971,29 @@ impl World {
 
 /// A copy of the world `build` makes, built once per process per `key` (a name for the build
 /// and every parameter it takes), through the product's own flows. A second live copy of one
-/// fixture in one test is refused.
+/// fixture in one test is refused; a fixture may be built on another.
 pub fn fixture(key: &str, build: impl FnOnce() -> World) -> World {
+    fixture_with(key, || (build(), ())).0
+}
+
+/// `fixture` with a value the build names (the things it made) handed out beside each copy.
+pub fn fixture_with<T: Clone + Send + 'static>(key: &str, build: impl FnOnce() -> (World, T)) -> (World, T) {
     LIVE.with(|l| {
         if !l.borrow_mut().insert(key.to_string()) {
             panic!("fixture {key}: a second live copy in one test");
         }
     });
-    let mut w = osis_base::copying::cached(key, build, |w: &mut World| w.copy());
+    let built = || {
+        let (mut w, x) = build();
+        // the kept original is no live copy of the fixture it was built on
+        if let Some(k) = w.fixture.take() {
+            LIVE.with(|l| l.borrow_mut().remove(&k));
+        }
+        (w, x)
+    };
+    let (mut w, x) = osis_base::copying::cached(key, built, |(w, x): &mut (World, T)| (w.copy(), x.clone()));
     w.fixture = Some(key.to_string());
-    w
+    (w, x)
 }
 
 /// Two nodes, each with an account of its own, quiet.
@@ -1011,23 +1024,18 @@ pub fn contacts() -> World {
 /// its synced group a copy of node 1's), quiet: two sibling nodes and a contact.
 pub fn siblings() -> World {
     fixture("siblings", || {
-        let mut w = World::new(0);
-        w.add_node();
-        w.add_node();
-        history::introduce(&mut w);
+        let mut w = contacts();
         w.pair(1);
         w.run();
         w
     })
 }
 
-/// `siblings`, but only node 0's account imported account 1's contact card (account 1 holds
-/// nothing of account 0's: a stranger to it), quiet.
+/// `two_nodes` with node 2 paired to node 1's account, and only node 0's account holding
+/// account 1's contact card (account 1 holds nothing of account 0's: a stranger to it), quiet.
 pub fn stranger_siblings() -> World {
     fixture("stranger siblings", || {
-        let mut w = World::new(0);
-        w.add_node();
-        w.add_node();
+        let mut w = two_nodes();
         let card = w.make_link(1, w.node(1).profile.expect("a profile"), osis_base::Role::Read);
         w.redeem(0, &card);
         w.run();
