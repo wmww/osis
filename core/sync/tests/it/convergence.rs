@@ -13,10 +13,16 @@ const NODES: usize = 3;
 const STEPS: usize = 40;
 
 /// The world a history plays on, the history played, then the checks; replayed by `replay`.
+/// The checks run at quiet: every history ends healed, every node on, faults off, run (so a
+/// shrunk history ends so too).
 pub(crate) fn converge(seed: u64, n: usize, steps: &[Step], replay: String) {
     let mut w = world(seed, n);
     w.cap = 200_000;
     let _script = play(&mut w, steps, replay);
+    let end: Vec<Step> = [Step::Lossy(crate::harness::Loss::NONE), Step::Heal].into_iter().chain((0..n).map(Step::PowerOn)).chain([Step::Run]).collect();
+    for s in &end {
+        crate::harness::step(&mut w, s);
+    }
     check(&mut w);
 }
 

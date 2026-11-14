@@ -57,3 +57,16 @@ fn a_granted_thing_is_read_once_accepted_spec_sync_inbox_2() {
     w.run();
     assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("y".into())));
 }
+
+// spec/sync-inbox.md §2 (Re-send: until seen taken): a grant, its removal and a grant again,
+// written before any of them reached the grantee, all reach it: it reads the thing (an open by
+// the first grant's read secret does not show the grant again taken). Found by the differential.
+#[test]
+fn a_grant_again_after_a_removal_reaches_the_grantee_spec_sync_inbox_2() {
+    use crate::harness::Step::*;
+    use crate::harness::history::Gives;
+    let mut w = crate::harness::history::world(15, 3);
+    w.cap = 200_000;
+    let _ = crate::harness::play(&mut w, &[New(2), Grant(2, 0, 1, Gives::Reads), Remove(2, 0, 1), Grant(2, 0, 1, Gives::Reads), Run], String::new());
+    crate::harness::history::check(&mut w);
+}

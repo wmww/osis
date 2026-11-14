@@ -15,9 +15,9 @@
 
 use super::offers::{Offers, Target};
 use super::{Here, Net, own_entry, settled};
-use crate::types::{ConnId, Result};
+use crate::types::{ConnId, Credential, Result};
 use osis_base::format::INBOX_LIFETIME_MS;
-use osis_base::memo::{Effects, Feed, StampedSet};
+use osis_base::memo::{Effects, Feed, Stamped};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_engine::Engine;
 use osis_proto::Code;
@@ -78,15 +78,16 @@ pub(super) struct Deliveries {
     judged: Effects<Key, Want>,
     wants: BTreeMap<Key, Want>,
     sent: BTreeMap<Key, Sent>,
-    /// Seen opening a sync ID its blob names (read by `judge`, so stamped).
-    seen: StampedSet<Key>,
+    /// The opens seen of a sync ID its blob names with the recipient proven, each by its
+    /// credential's read epoch (`None`: a store credential): read by `judge`, so stamped.
+    seen: Stamped<Key, BTreeSet<(SyncId, Option<osis_crypto::Epoch>)>>,
     /// Each blob sent by its expiry: sealed again then.
     resend: BTreeSet<(WallMs, Key)>,
 }
 
 impl Default for Deliveries {
     fn default() -> Self {
-        Deliveries { feed: None, names: BTreeMap::new(), by_name: BTreeMap::new(), judged: Effects::new("inbox: delivery"), wants: BTreeMap::new(), sent: BTreeMap::new(), seen: StampedSet::default(), resend: BTreeSet::new() }
+        Deliveries { feed: None, names: BTreeMap::new(), by_name: BTreeMap::new(), judged: Effects::new("inbox: delivery"), wants: BTreeMap::new(), sent: BTreeMap::new(), seen: Stamped::default(), resend: BTreeSet::new() }
     }
 }
 
@@ -184,7 +185,7 @@ impl Deliveries {
         }
         self.judged.unwant(k);
         self.wants.remove(k);
-        if self.seen.contains(k) {
+        if self.seen.contains_key(k) {
             self.seen.remove(k);
         }
         if let Some(old) = self.sent.remove(k) {
@@ -237,13 +238,23 @@ impl Deliveries {
     }
 
     /// S joined a connection's shared set: a delivery naming S whose recipient is proven there
-    /// was seen taken (spec/sync-inbox.md §2 Re-send).
+    /// is judged again on the credential that opened it (`judge`, spec/sync-inbox.md §2 Re-send).
     pub(super) fn opened(&mut self, conn: ConnId, s: &SyncId, net: &impl Net) {
         let Some(ks) = self.by_name.get(s) else { return };
+        let by = match net.member(conn, s).map(|m| m.by) {
+            Some(Credential::ReadSecret(e)) => Some(e),
+            Some(Credential::SyncKey | Credential::SyncProof | Credential::Claim) => None,
+            // J and static entries show nothing the delivery gave
+            _ => return,
+        };
         let actors = net.actors(conn);
-        for k in ks {
-            if actors.contains(&k.1) && !self.seen.contains(k) {
-                self.seen.insert(*k);
+        for k in ks.clone() {
+            if !actors.contains(&k.1) {
+                continue;
+            }
+            let mut v = self.seen.get(&k).cloned().unwrap_or_default();
+            if v.insert((*s, by)) {
+                self.seen.insert(k, v);
             }
         }
     }
@@ -254,13 +265,27 @@ impl Deliveries {
 
 }
 
-fn judge(engine: &mut Engine, seen: &StampedSet<Key>, k: &Key) -> Result<Want> {
+fn judge(engine: &mut Engine, seen: &Stamped<Key, BTreeSet<(SyncId, Option<osis_crypto::Epoch>)>>, k: &Key) -> Result<Want> {
     osis_base::costs::count("inbox: delivery judged", 1);
-    if seen.contains(k) || engine.delivery_taken(&k.0, &k.1)? {
+    if engine.delivery_taken(&k.0, &k.1)? || opened_taken(engine, seen.get(k))? {
         return Ok(Want::Taken);
     }
     Ok(match engine.inbox_of(&k.1) {
         Some(s) => Want::To(s),
         None => Want::Unreachable,
     })
+}
+
+/// spec/sync-inbox.md §2 Re-send: an open of a sync ID the blob names, the recipient proven,
+/// shows the delivery taken only by a credential the delivery's secrets give: a read secret at
+/// a current epoch of S's thing here (an older one opened before the grant was taken: a grant
+/// again after a removal), or a store credential (a holder of sync alone shows its head's).
+fn opened_taken(engine: &mut Engine, seen: Option<&BTreeSet<(SyncId, Option<osis_crypto::Epoch>)>>) -> Result<bool> {
+    for (s, by) in seen.into_iter().flatten() {
+        let Some(e) = by else { return Ok(true) };
+        if engine.read_credentials(s)?.is_some_and(|c| c.read_secrets.iter().any(|(x, _)| x == e)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
