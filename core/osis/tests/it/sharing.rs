@@ -2012,3 +2012,46 @@ fn a_fellow_joiner_cannot_end_anothers_link_spec_permissions_7() {
     assert_eq!(laptop.role_on(g).unwrap(), Some(Role::Read), "Bob was pushed off the link by Carol");
 }
 
+
+// spec/requirements.md Permissions (a role M holds on G never depends on who is in M),
+// spec/crypto.md §4 (Carried demotions): Carol reads G, which team M (Bob's, Alice a reader of it
+// too) writes; Bob removes
+// Erin, a writer of M. Carol's node holds the removal with M's new keyset (it is how G's writers
+// count Erin out), but it shows her no roster of M, before or after: only G's, and M's to Bob.
+#[test]
+fn a_parents_reader_sees_no_roster_of_its_member_team_spec_crypto_4() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let [alice, bob, carol, erin] = [1, 2, 3, 4].map(|i| w.account(i, &[host]));
+    w.run();
+    let card = |w: &mut World, from: &Osis, to: &Osis| {
+        let c = from.contact_card().unwrap();
+        w.run();
+        w.until(to.import_contact(&c), 1000, 10).unwrap()
+    };
+    let erin_at_bob = card(&mut w, &erin, &bob);
+    let alice_at_bob = card(&mut w, &alice, &bob);
+    let carol_at_alice = card(&mut w, &carol, &alice);
+    let m = group(&bob);
+    bob.grant(m, erin_at_bob, Role::Write, Default::default()).unwrap();
+    bob.grant(m, alice_at_bob, Role::Read, Default::default()).unwrap();
+    w.run();
+    let g = group(&alice);
+    alice.grant(g, m, Role::Write, Default::default()).unwrap();
+    alice.grant(g, carol_at_alice, Role::Read, Default::default()).unwrap();
+    w.run();
+    for _ in 0..3 {
+        w.advance(70_000);
+        w.run();
+    }
+    assert!(carol.grants(g).unwrap().contains_key(&m), "G's roster shows to its reader");
+    assert!(carol.grants(m).unwrap().is_empty(), "no roster of M");
+    bob.set_role(m, erin_at_bob, None, Default::default()).unwrap();
+    for _ in 0..3 {
+        w.advance(70_000);
+        w.run();
+    }
+    assert!(!bob.grants(m).unwrap().contains_key(&erin_at_bob), "Erin left M");
+    assert!(carol.grants(m).unwrap().is_empty(), "no roster of M once Erin left");
+    assert!(carol.holders(g).unwrap().iter().all(|h| h.actor != erin_at_bob), "nor through G's holders");
+}
