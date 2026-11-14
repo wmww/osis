@@ -60,7 +60,8 @@ pub(crate) enum Ctl {
     /// A step's outputs, in step order.
     Out(Vec<Out>),
     /// Listen under `secret` at `urls` in place of the URLs before (none: the same ones), and at
-    /// the client socket `socket` if given (it stays once given); every listener starts again.
+    /// the client socket `socket` if given (it stays once given); every listener starts again,
+    /// but for a first socket alone under the same key, which is added.
     Listen { urls: Option<Vec<String>>, socket: Option<String>, secret: StaticSecret, reply: oneshot::Sender<std::result::Result<Vec<osis_label::Address>, String>> },
 }
 
@@ -168,7 +169,8 @@ impl Net {
     }
 }
 
-/// What the driver task does before its loop: listen (direct sync), discover (LAN).
+/// What the driver task does before its loop: listen (direct sync: the first of `peer_urls`
+/// that listens), discover (LAN).
 pub(crate) struct Start {
     listen: Option<(Vec<String>, StaticSecret)>,
     discover: bool,
@@ -198,7 +200,7 @@ impl crate::Osis {
                 let multi = osis_transport::Multi { mem: cfg.app.internals.transport.clone(), quic: Some(osis_transport::Quic::new()), p2p: Some(osis_transport::P2p::new(osis_transport::QuicUdp::new()).lan(lan)), unix: Some(osis_transport::Unix), unix_dial: cfg.app.internals.thin };
                 let clock: Arc<dyn Clock> = self.inner.clock.clone();
                 let links = TransportLinks::new(Arc::new(multi), clock);
-                let start = Start { listen: cfg.direct_sync.then(|| (vec![osis_transport::peer_url(&relays)], secret)), discover: cfg.direct_sync && matches!(cfg.lan, Lan::On { .. }) };
+                let start = Start { listen: cfg.direct_sync.then(|| (peer_urls(&relays), secret)), discover: cfg.direct_sync && matches!(cfg.lan, Lan::On { .. }) };
                 let db = self.downgrade();
                 handle.spawn(drive(db, links, rx, start));
             }
@@ -289,16 +291,29 @@ async fn published(db: &WeakOsis, key: [u8; 32], addrs: &[osis_label::Address]) 
     }
 }
 
+/// The dialable listener's URLs, tried in order: the fixed port when free (another node on this
+/// host may hold it), else any; every address, then `relays`.
+fn peer_urls(relays: &[String]) -> Vec<String> {
+    [osis_transport::p2p::PORT, 0]
+        .map(|port| osis_transport::peer_url(&std::iter::once(format!("[::]:{port}")).chain(relays.iter().cloned()).collect::<Vec<_>>()))
+        .to_vec()
+}
+
 /// The driver task: steps the node on each input its links report (blocking work in place, the
 /// lock held only for the step) and carries out what each step gave, until the node goes.
 async fn drive<T: Transport>(db: WeakOsis, mut links: TransportLinks<T>, mut rx: mpsc::UnboundedReceiver<Ctl>, start: Start) {
-    let (mut urls, mut socket) = (Vec::new(), None::<String>);
+    let (mut urls, mut socket, mut key) = (Vec::new(), None::<String>, None);
     // a failed start is the node's to report: it syncs with what it dials meanwhile
-    if let Some((u, secret)) = start.listen {
-        if let Ok(a) = links.listen(&u, &secret).await {
-            published(&db, secret.public_key(), &a).await;
+    if let Some((candidates, secret)) = start.listen {
+        key = Some(secret.public_key());
+        for u in candidates {
+            if let Ok(a) = links.listen(std::slice::from_ref(&u), &secret).await {
+                published(&db, secret.public_key(), &a).await;
+                // listened again as bound, so a later listen (the client socket) keeps the port
+                urls = a.into_iter().map(|a| a.url).collect();
+                break;
+            }
         }
-        urls = u;
     }
     if start.discover {
         let _ = links.discover().await;
@@ -313,8 +328,18 @@ async fn drive<T: Transport>(db: WeakOsis, mut links: TransportLinks<T>, mut rx:
             c = rx.recv() => match c {
                 None => return,
                 Some(Ctl::Out(out)) => apply(out, &mut links),
+                // the client socket alone, under the key listened under, is added beside the
+                // listeners up: one just closed may not have freed its port yet
+                Some(Ctl::Listen { urls: None, socket: Some(s), secret, reply }) if socket.is_none() && key == Some(secret.public_key()) => {
+                    let r = links.listen(std::slice::from_ref(&s), &secret).await.map(|_| Vec::new()).map_err(|e| e.to_string());
+                    if r.is_ok() {
+                        socket = Some(s);
+                    }
+                    let _ = reply.send(r);
+                }
                 Some(Ctl::Listen { urls: new, socket: sock, secret, reply }) => {
                     links.stop_background();
+                    key = Some(secret.public_key());
                     let asked = new.is_some();
                     if let Some(u) = new {
                         urls = u;

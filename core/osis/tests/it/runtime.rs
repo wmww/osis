@@ -236,3 +236,26 @@ fn socket_dir_rules_spec_sync_transport_6() {
     std::fs::create_dir(&deep).unwrap();
     assert!(matches!(socket_path_under(Some(&deep), &store), Err(Error::Storage(_))));
 }
+
+// spec/sync-transport.md §3 (`peer://`), §6 (main session): a node with direct sync starts its dialable listener on the fixed port or, held by another node of this host, on
+// any; its client socket is added beside it, and listening at a URL after (as `osis serve` does)
+// works on both nodes.
+#[test]
+fn two_nodes_of_one_host_listen_spec_sync_transport_3() {
+    let dirs = [Dir::new("listen-a"), Dir::new("listen-b")];
+    let dbs: Vec<Osis> = dirs
+        .iter()
+        .map(|d| {
+            let mut o = at(&d.0, Runtime::Own);
+            o.cfg.lan = osis::Lan::Off;
+            osis::internals::create(o).unwrap()
+        })
+        .collect();
+    for db in &dbs {
+        db.listen_socket().unwrap();
+        db.listen(&["quic://127.0.0.1:0".parse().unwrap()]).unwrap();
+    }
+    for db in dbs {
+        assert_eq!(db.close().unwrap(), osis::Close::Closed);
+    }
+}
