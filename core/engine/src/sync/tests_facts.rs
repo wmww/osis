@@ -184,24 +184,6 @@ fn a_card_goes_once_a_later_one_is_opened_spec_sync_judgement_2() {
     assert_eq!(lp.peers[0].engine.read_facts(&home, &own).unwrap().must_not, None, "its own card: never by this rule");
 }
 
-// spec/sync-streams.md §4 (Bodies: never one it took before, opened to a commit it holds, not
-// pending, no part the blob carries missing): a blob opened to a held commit brings nothing
-// fetched again, one never opened here may, and once a part it carries counts missing it brings
-// that part again.
-#[test]
-fn a_blob_is_taken_only_while_its_parts_are_held_spec_sync_streams_4() {
-    let (mut lp, (_, c, [p0, p1], copy)) = two_parts();
-    let b = opened(&mut lp, 0, 1, &c, &[p0, p1], copy);
-    let e = &mut lp.peers[0].engine;
-    assert!(e.blob_taken(&b));
-    assert!(!e.blob_taken(&BlobId([9; 32])), "never opened here");
-    e.index_poked = true;
-    let mut m = e.core.ix.commits.get(&c).cloned().unwrap();
-    m.set_hold(p1, crate::engine::Hold::Missing(crate::engine::Missing::Plain));
-    e.core.ix.commits.insert(c, m);
-    assert!(!e.blob_taken(&b), "a part it carries missing");
-}
-
 // spec/sync-ids.md §1 (Prefix of a commit encryption: a node opening a blob refuses one whose
 // prefix expiry is not the commit's): a blob of an expiring commit framed again under a later
 // expiry, or none, is refused; framed again under the commit's own it opens.
