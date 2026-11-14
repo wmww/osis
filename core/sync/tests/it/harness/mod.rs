@@ -204,6 +204,10 @@ pub struct Net {
     cut_off: BTreeSet<(usize, usize)>,
     online: Vec<bool>,
     accepted: Vec<u64>,
+    /// What each node's LAN discovery found (`World::discover`): discovery finds it again when
+    /// the node comes back (a node remembers nothing of its discoveries over a restart, and LAN
+    /// discovery announces again).
+    pub discovered: BTreeSet<(usize, usize)>,
     /// Bytes carried so far.
     pub bytes: u64,
     /// Bytes each end sent on each connection: the transport takes them at once (no buffer), so
@@ -639,6 +643,7 @@ impl World {
 
     /// Node `i` discovers node `j` (its address), as LAN discovery hands it up.
     pub fn discover(&mut self, i: usize, j: usize) {
+        self.net.discovered.insert((i, j));
         let addr = self.address(j);
         self.deliver(i, Input::Discovered { addr });
     }
@@ -804,6 +809,11 @@ impl World {
             *o = true;
         }
         self.tick(i);
+        let found: Vec<usize> = self.net.discovered.iter().filter(|(x, _)| *x == i).map(|(_, j)| *j).collect();
+        for j in found {
+            let addr = self.address(j);
+            self.deliver(i, Input::Discovered { addr });
+        }
     }
 
     /// An exact copy sharing nothing with this world (`osis_base::copying`).
