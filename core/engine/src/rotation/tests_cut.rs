@@ -487,29 +487,33 @@ fn deliver_as_newcomer(lp: &mut LocalPeer, from: usize, to: usize, g: Tid, done:
     }
 }
 
-// spec/crypto.md §4 (Roles secrets; model X_names): A removes reader P, then cuts for N. N opens
-// nothing under `g`'s labels from before the cut but the `roles.0` sections, under the roles
-// secrets the cut's history entry carries: it meets the cut's names (P's removal) by them,
-// establishes the cut and reads it, and counts no epoch before it current.
+// spec/crypto.md §4 (Roles secrets; model X_names): A removes P, then cuts for N. N opens
+// nothing under `g`'s labels from before the cut but the role parts, under the roles secrets the
+// cut's history entry carries: it meets the cut's names (P's removal) by them, establishes the cut
+// and reads it, and counts no epoch before it current. With P a writer, the cut's keyset carries
+// P's demotion (Carried demotions): N holds that keyset only once it opened the demotion by those
+// same roles secrets, so its box at the cut must open before the keyset is held.
 #[test]
 fn cut_after_a_removal_establishes_at_the_newcomer_spec_crypto_4() {
-    let mut lp = synced(3);
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-    let g = group(&mut lp, 0);
-    let mut label = Label::default();
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Read)).unwrap();
-    label.place(&mut lp, g, &[0]);
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: None, retain: None }).unwrap();
-    label.place(&mut lp, g, &[0]);
-    let done = lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Read), History::None).unwrap();
-    let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
-    label.place(&mut lp, g, &[0]);
-    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &label);
-    let e = lp.peers[2].engine.epochs(&g).unwrap();
-    assert!(e.read.is_established(&cut), "N does not establish the cut");
-    assert_eq!(e.read.current(), vec![cut], "N's current epochs");
-    assert!(e.read.secret(&cut).is_some(), "N lacks the cut's secret");
+    for role in [Role::Read, Role::Write] {
+        let mut lp = synced(3);
+        let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+        let g = group(&mut lp, 0);
+        let mut label = Label::default();
+        lp.peers[0].engine.grant(&g, &tids[1], &edge(role)).unwrap();
+        label.place(&mut lp, g, &[0]);
+        lp.sync_all().unwrap();
+        lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+        label.place(&mut lp, g, &[0]);
+        let done = lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Read), History::None).unwrap();
+        let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+        label.place(&mut lp, g, &[0]);
+        deliver_as_newcomer(&mut lp, 0, 2, g, &done, &label);
+        let e = lp.peers[2].engine.epochs(&g).unwrap();
+        assert!(e.read.is_established(&cut), "{role:?}: N does not establish the cut");
+        assert_eq!(e.read.current(), vec![cut], "{role:?}: N's current epochs");
+        assert!(e.read.secret(&cut).is_some(), "{role:?}: N lacks the cut's secret");
+    }
 }
 
 /// Peers 0 = admin A, 1 = admin B (granted without history when `b_cut`, after M's removal),
