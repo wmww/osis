@@ -259,3 +259,30 @@ fn a_reader_granted_through_an_unsynced_write_reads_spec_sync_ids_5() {
     use crate::harness::history::Gives;
     crate::convergence::converge(188669321416, 3, &[New(1), Write(1, 0), Write(1, 0), Write(1, 0), Disk(1, 24, Unsynced), Write(1, 0), Write(1, 0), Grant(1, 0, 0, Gives::Reads)], String::new());
 }
+
+// spec/requirements.md Convergence (what a node holds does not depend on arrival order),
+// spec/permissions.md §5.2 (Addenda: a demoted writer's writes another writer had received by the
+// demotion's ts survive): a writer's write made just before its removal, received by the other
+// writer, is read by that writer and the reference but not by the remover, which holds every
+// commit they hold. Found by the full-size differential (clean seed 347110580059, shrunk);
+// issues/sync-removed-write-by-arrival.md.
+#[test]
+#[ignore = "fails: issues/sync-removed-write-by-arrival.md"]
+fn a_removed_writers_last_write_reads_alike_at_every_holder() {
+    use crate::harness::Step::*;
+    use crate::harness::history::Gives;
+    crate::convergence::converge(347110580059, 3, &[New(1), New(0), Write(0, 1), Grant(0, 1, 1, Gives::Writes), Write(0, 1), Grant(0, 1, 2, Gives::Writes), Run, Write(1, 1), Remove(0, 1, 1)], String::new());
+}
+
+// spec/sync-inbox.md §2 (Re-send): a sync
+// holder raised to write, removed, then granted read again while a durable write of its fails,
+// never gets the read grant: it reads the roster without its own edge. Found by the full-size
+// differential (faulty seed 347110579992, shrunk); issues/sync-grant-again-after-failed-write.md.
+#[test]
+#[ignore = "fails: issues/sync-grant-again-after-failed-write.md"]
+fn a_member_granted_again_through_a_failed_write_reads_its_grant() {
+    use crate::harness::DiskFault::Fail;
+    use crate::harness::Step::*;
+    use crate::harness::history::Gives;
+    crate::convergence::converge(347110579992, 3, &[New(0), Write(0, 0), Grant(0, 0, 1, Gives::Syncs), Run, Grant(0, 0, 1, Gives::Writes), Remove(0, 0, 1), Run, Disk(1, 3, Fail), Grant(0, 0, 1, Gives::Reads), Write(1, 0)], String::new());
+}
