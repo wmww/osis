@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, authority, account, netstream, netshared, netblind, netopen
+#   <module>: sync, sides, rotation, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, authority, account, netstream, netshared, netblind, netopen, nethold, netdestroy, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker); with cfg names: those instances instead (the larger ones
 #   in the module's README, by hand), judged only if listed below.
@@ -167,6 +167,39 @@ instances=(
   "netopen net MCOpen ON_departed.cfg fail"        # finding: without the departed clause a removal does not end opens at once
   "netopen net MCOpen ON_dialer.cfg fail"          # negative control: the dialer trusts the key it dialed
   "netopen net MCOpen ON_nolisten.cfg fail"        # negative control (Live): listeners never sign
+  "nethold net MCHold H_quiet.cfg pass"            # hold/log/delete per sync ID with the proposed fixes (net/README.md)
+  "nethold net MCHold H_head.cfg pass"
+  "nethold net MCHold H_meet.cfg pass"
+  "nethold net MCHold H_full1.cfg pass"            # a full store: a carrier it lacks counts as held
+  "nethold net MCHold H_full2.cfg pass"
+  "nethold net MCHold H_expire.cfg pass"           # tombstones expire
+  "nethold net MCHold H_host.cfg pass"             # a hostile writer deleting at K
+  "nethold net MCHold H_live.cfg pass"             # liveness: settles
+  "nethold net MCHold HN_stand.cfg fail"           # negative control: no stand, log-liar loop (Bounded)
+  "nethold net MCHold HN_standfall.cfg fail"       # negative control: stand blind to a fall, the cover fell and b stays deleted
+  "nethold net MCHold HN_fresh.cfg fail"           # negative control: logged again under the tombstoned blob ID
+  "nethold net MCHold HN_known.cfg fail"           # negative control: carrier from own store, not K's stream (Carried)
+  "nethold net MCHold HN_readers.cfg fail"         # negative control: a Delete between readers (NoLoss)
+  "nethold net MCHold HN_rolefirst.cfg fail"       # negative control: logged again before K takes x
+  "nethold net MCHold HN_full.cfg fail"            # negative control: a full store waits for a carrier it refuses
+  "nethold net MCHold HF_invalid.cfg fail"         # finding: spec text, a snapshot dropped as invalid blocks establishment
+  "nethold net MCHold HF_fallheld.cfg fail"        # finding: spec text, only a fall of a held part ends the stand
+  "nethold net MCHold HF_delview.cfg fail"         # finding: spec text, a deleter ignores a role commit K showed it
+  "nethold net MCHold HF_expire.cfg fail"          # finding: spec text, re-pull after tombstone expiry loops
+  "nethold net MCHold HF_capjunk.cfg fail"         # limit: an invalid body holds a full store's room
+  "nethold net MCHold HN_standhead.cfg pass"       # rule not needed here: stand ground without the head
+  "nethold net MCHold HN_snap.cfg pass"            # rule not needed here: no unheld-snapshot clause
+  "netdestroy net MCDestroy D_present.cfg pass"    # destruction and emptying (net/README.md)
+  "netdestroy net MCDestroy D_away.cfg pass"
+  "netdestroy net MCDestroy D_live.cfg pass"
+  "netdestroy net MCDestroy D_live2.cfg pass"
+  "netdestroy net MCDestroy DF_req.cfg fail"       # finding: spec text, emptying deletes the destroying request
+  "netdestroy net MCDestroy DN_told.cfg fail"      # negative control: emptying before told
+  "netdestroy net MCDestroy DN_stand.cfg fail"     # negative control: no stand, the released-team storm
+  "netdestroy net MCDestroy DN_forget.cfg fail"    # negative control: forget while an entry is known
+  "netkeep net MCKeep K_all.cfg pass"              # a node keeping S unread follows its own grant
+  "netkeep net MCKeep KN_drop.cfg fail"            # negative control: drop on a head move with no box
+  "netkeep net MCKeep KN_open.cfg fail"            # negative control: open by any held sync secret
 )
 
 module=${1:-}
@@ -177,7 +210,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|authority|account|netstream|netshared|netblind|netopen [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|authority|account|netstream|netshared|netblind|netopen|nethold|netdestroy|netkeep [cfg...]" >&2
   exit 2
 fi
 
