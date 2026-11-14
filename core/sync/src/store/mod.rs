@@ -1074,10 +1074,7 @@ impl Store {
             }
             Ok(())
         })?;
-        let blobs: Vec<BlobId> = g.mem.entries.keys().filter(|(x, _)| x == s).map(|(_, b)| *b).collect();
-        for b in blobs {
-            g.mem.remove(s, &b, now, false, true);
-        }
+        g.mem.drop_entries(s, now);
         Ok(())
     }
 

@@ -186,6 +186,21 @@ fn a_delivery_is_owed_until_taken_spec_sync_inbox_2() {
     assert!(!lp.peers[0].engine.deliveries().unwrap().contains(&(g, pb)));
 }
 
+// spec/sync-inbox.md §2 (What it carries about G): a removal of a grant of read or above; G
+// holding sync alone is sent none. Removing a sync holder owes it nothing, a reader is owed.
+#[test]
+fn a_removal_is_owed_to_a_reader_not_a_sync_holder_spec_sync_inbox_2() {
+    let (mut lp, ps) = people(3);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Sync)).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[2], &edge_of(Role::Read)).unwrap();
+    let owed = |lp: &mut LocalPeer, c: osis_base::CommitId, h: Tid| lp.peers[0].engine.deliveries().unwrap().contains(&(c, h));
+    let c = *lp.peers[0].engine.demote(&t, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits.last().unwrap();
+    assert!(!owed(&mut lp, c, ps[1]), "a sync holder's removal");
+    let c = *lp.peers[0].engine.demote(&t, &Demotion { holder: ps[2], new: None, retain: None }).unwrap().commits.last().unwrap();
+    assert!(owed(&mut lp, c, ps[2]), "a reader's removal");
+}
+
 // spec/sync-inbox.md §2 (Re-send: a commit sealed under an older epoch shows nothing): a writer
 // removed and granted write again, holding neither yet, writes under the epoch from before its
 // removal; that write, stamped after the grant, leaves the grant owed; one written once it holds

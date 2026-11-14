@@ -340,7 +340,8 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     }
     done.add(c);
     if let Some(c) = c {
-        lowered_deliveries(tx, target, c, &unreached, &removing)?;
+        let told: Vec<Tid> = std::iter::once((holder, old.map(|e| e.role))).chain(gone.iter().map(|(x, e)| (*x, Some(e.role)))).filter(|(_, r)| *r > Some(Role::Sync)).map(|(x, _)| x).collect();
+        lowered_deliveries(tx, target, c, &unreached, &told)?;
     }
     // a node's removal from its account's devices actor: the account's epoch rotates next, in
     // this transaction (spec/permissions.md §3)
@@ -361,8 +362,9 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
 }
 
 /// The deliveries of role commit `c` lowering edges on `target` (spec/permissions.md §2, §3):
-/// the commit's `roles.0` parts to each holder in `lowered`, the rotation `rot` by inbox to
-/// `unreached`.
+/// the commit's `roles.0` parts to each holder in `lowered` (the callers leave out a holder of
+/// sync alone: it acts on its boxes alone, spec/sync-judgement.md §6), the rotation `rot` by
+/// inbox to `unreached`.
 fn lowered_deliveries(tx: &mut Tx<'_>, target: Tid, c: CommitId, unreached: &[Tid], lowered: &[Tid]) -> Result<()> {
     for x in lowered {
         crate::sync::deliveries::owe(tx, *x, c, &[target], true)?;
@@ -446,7 +448,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     }
     done.add(c);
     if let Some(c) = c {
-        let removed: Vec<Tid> = ended.iter().map(|x| x.0).collect();
+        let removed: Vec<Tid> = ended.iter().filter(|x| x.1.role > Role::Sync).map(|x| x.0).collect();
         lowered_deliveries(tx, target, c, &unreached, &removed)?;
     }
     Ok(())

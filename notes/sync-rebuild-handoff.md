@@ -23,7 +23,7 @@ The rewrite (issues/sync-rewrite.md) is on the local branch `sync-rebuild`, neve
     - depth0 option B (Fathom, branch depth0, in review): a keyset counts as held only once its listed demotions' edge writes are held; whoever logs a keyset logs its demotions too (in the engine via author_chain, Carried and chain certificates). The facade's deliveries and the read module's logging keep that: keys.0 carries keysets plus demotion lists. Possession (key, domain, proofs, index) is deleted.
 
 ## Queue
-- After sync-transport and sync-foundation land in sync-rebuild: rename LabelId -> SyncId (osis-base and every user), crypto domains to the spec ("osis v1 stamp", "osis v1 sync open", "osis v1 sync step", "osis v1 sync id", kdf "sync key"...; add "osis v1 removal"), vectors regenerated.
+- After sync-transport and sync-foundation land in sync-rebuild: rename LabelId -> SyncId (osis-base and every user), crypto domains to the spec ("osis v1 stamp", "osis v1 sync open", "osis v1 sync step", "osis v1 sync id", kdf "sync key"...), vectors regenerated.
 - SETTLE_MS: undefined in code (engine's), named in node policy.
 - Restore engine-level scale::/growth::/memory:: tests the deletion dropped (from 680a85188 core/node/tests/it) into core/engine/tests/it; notes/test-scale.md "Checks to restore".
 - tools/bin-at defaults to -p osis-node (gone).

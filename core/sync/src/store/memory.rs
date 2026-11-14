@@ -200,16 +200,21 @@ impl Memory {
 
     /// Drops what S holds here (leaving S).
     pub(crate) fn forget(&mut self, s: &SyncId, now: WallMs) {
-        let blobs: Vec<BlobId> = self.entries.keys().filter(|(x, _)| x == s).map(|(_, b)| *b).collect();
-        for b in blobs {
-            self.remove(s, &b, now, false, true);
-        }
+        self.drop_entries(s, now);
         self.tombs.retain(|(x, _), _| x != s);
         self.log.retain(|(x, _), _| x != s);
         self.slot.retain(|(x, _), _| x != s);
         self.usage.remove(s);
         self.conn_forget(|(_, x, _, _)| x != s);
         self.stamps.wrote(&Listing(s), true);
+    }
+
+    /// Removes every in-memory entry of S, as expired (O(S's entries)).
+    pub(crate) fn drop_entries(&mut self, s: &SyncId, now: WallMs) {
+        let blobs: Vec<BlobId> = self.entries.range((*s, BlobId([0; 32]))..=(*s, BlobId([0xff; 32]))).map(|((_, b), _)| *b).collect();
+        for b in blobs {
+            self.remove(s, &b, now, false, true);
+        }
     }
 
     /// The memory log of S after counter `after`: each entry's latest event, `true` while present.

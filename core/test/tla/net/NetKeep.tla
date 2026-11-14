@@ -9,7 +9,7 @@
    rotation after boxes K again), and registers its steps in order at K while K shows a key G
    holds. Boxes and Registers arrive in any order. Content of step e is what G stamps for a head
    at e; K pulls it while open. With NoHead, K starts granted before any step is registered with
-   it, its first box on its way. With Inflate, a hostile box gives K a secret of a self-made epoch
+   it, its first box on its way. With FakeBox, a hostile box gives K a secret of a self-made epoch
    no step bears. Unlist: the account unlists the thing (K leaves: its store and path shredded,
    its record kept) and may list it again. *)
 EXTENDS Integers, FiniteSets
@@ -18,7 +18,7 @@ CONSTANTS
     MaxEp,          \* sync epochs after the first
     Regrant,        \* the granter may re-grant K once after removing it
     NoHead,         \* K starts with no head: no step registered, its first box on its way
-    Inflate,        \* a hostile box claims a self-made epoch
+    FakeBox,        \* a hostile box claims a self-made epoch
     KeepCopy,       \* control: K keeps its copy at a head past its keys
     ShowAll,        \* control: past its keys, K shows every held secret
     ShowNone,       \* control: past its keys, K shows nothing
@@ -96,7 +96,7 @@ GetBox(e) ==
 
 \* a hostile box: a self-made epoch no step bears
 GetFake ==
-    /\ Inflate /\ Fake \notin secrets
+    /\ FakeBox /\ Fake \notin secrets
     /\ secrets' = secrets \cup {Fake}
     /\ UNCHANGED <<epoch, removedAt, regrantAt, msgs, head, store, listed, relisted, stops>>
 
