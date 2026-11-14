@@ -47,16 +47,51 @@ pub struct Live<'a, 'b> {
 }
 
 
-/// The entry this node logs of its own under `s`: stamped where it writes S's head, else
+/// The write key of the head S's store serves, where this node holds it (established): what it
+/// stamps under. The served head, not the one `sync.0` records: the store's stream names a head
+/// (its head event) before any stamp under it, so a reader that holds the step's commit before
+/// it applies the stamp knows the key.
+fn stamp_key(cx: &mut Cx, s: &SyncId) -> Result<Option<SigningSecret>> {
+    let Some(head) = cx.store.head(s)? else { return Ok(None) };
+    Ok(cx.engine.read_credentials(s)?.and_then(|c| c.keys.get(&head.id()).and_then(|k| k.write.clone())))
+}
+
+/// The entry this node logs of its own under `s`: stamped where it writes S's served head, else
 /// deposited.
 fn own_entry(cx: &mut Cx, s: &SyncId, blob: BlobId, wrap: crate::types::Wrap, class: Class) -> Result<Entry> {
-    let stamp = cx.engine.signers(s, None)?.stamp.map(|w| osis_label::sign_stamp(&w, s, &blob, &wrap, false));
+    let stamp = stamp_key(cx, s)?.map(|w| osis_label::sign_stamp(&w, s, &blob, &wrap, false));
     Ok(Entry { blob, wrap, stamp, deposited: stamp.is_none(), own: true, role: false, class, expires: None })
 }
 
 impl Live<'_, '_> {
     fn thing(&mut self, s: &SyncId) -> Result<Option<osis_base::Tid>> {
         Ok(self.cx.store.synced(s).map(|(t, _)| t))
+    }
+
+    /// Entry `e` of S is stamped as this node logs it now: under its served head's write key
+    /// where it holds it (`stamp_key`, the key `own_entry` and `restamp` sign with, so a
+    /// restamped entry stands at once), any entry anywhere else.
+    fn under_head(&mut self, s: &SyncId, e: &Entry) -> Result<bool> {
+        let Some(w) = stamp_key(self.cx, s)? else { return Ok(true) };
+        Ok(e.stamp.is_some_and(|x| osis_label::verify_stamp(&w.verifying_key(), s, &e.blob, &e.wrap, &x).is_ok()))
+    }
+
+    /// Entry `e` is of role commit `c` that a recorded step of S registers, stamped under that
+    /// step's parent: a source standing there takes it before the step is registered
+    /// (spec/sync-ids.md §6 Steps), so it keeps that stamp.
+    fn registers_step(&mut self, s: &SyncId, c: &CommitId, e: &Entry) -> Result<bool> {
+        let Some(stamp) = e.stamp else { return Ok(false) };
+        if !self.cx.engine.read_facts(s, c)?.role {
+            return Ok(false);
+        }
+        let Some(path) = self.cx.store.path(s)? else { return Ok(false) };
+        for w in path.steps.windows(2) {
+            let [(parent, _), (step, _)] = w else { continue };
+            if osis_label::verify_stamp(&parent.keys.write, s, &e.blob, &e.wrap, &stamp).is_ok() && self.cx.engine.step_needs(s, &step.id())?.contains(c) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// `c`'s body under `s` as a fresh encryption (logging again, a deposit, a body with no held
@@ -140,11 +175,19 @@ impl Ground for Live<'_, '_> {
         }
         Ok(out)
     }
-    fn stands(&mut self, s: &SyncId, e: &Entry) -> Result<bool> {
-        if e.own || self.cx.engine.signers(s, None)?.stamp.is_none() {
-            return Ok(true);
+    fn stands(&mut self, s: &SyncId, c: &CommitId, e: &Entry) -> Result<bool> {
+        Ok(self.under_head(s, e)? || self.registers_step(s, c, e)?)
+    }
+    fn restamp(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        let Some(e) = self.cx.store.entry(s, b)? else { return Ok(()) };
+        let Some(w) = stamp_key(self.cx, s)? else { return Ok(()) };
+        let stamp = osis_label::sign_stamp(&w, s, b, &e.wrap, e.role);
+        let own = e.own;
+        self.cx.store.log(s, Entry { stamp: Some(stamp), deposited: false, own: true, ..e }, None, None)?;
+        if !own {
+            self.cx.store.uncharge(s, b)?;
         }
-        self.cx.store.stamp_vouches(s, e)
+        Ok(())
     }
     fn own_tombstones(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>> {
         let mut out = Vec::new();
@@ -318,11 +361,14 @@ impl Ground for Live<'_, '_> {
         lists.retain(|r, _| sealable.get(r) == Some(&true));
         let mut out = CertBlobsMissing { records, lists, ..CertBlobsMissing::default() };
         for (b, carried) in self.cx.engine.cert_blobs(s)?.iter() {
-            if !self.cx.store.entry(s, b)?.is_some_and(|e| e.own) {
+            let Some(e) = self.cx.store.entry(s, b)?.filter(|e| e.own) else {
                 out.gone.insert(*b);
                 continue;
-            }
+            };
             out.held.insert(*b);
+            if !self.under_head(s, &e)? {
+                out.stale.insert(*b);
+            }
             match carried {
                 Carried::Records(tids) => out.records.retain(|t| !tids.contains(t)),
                 Carried::Lists(r, tids) => {
@@ -377,8 +423,9 @@ impl Ground for Live<'_, '_> {
         Ok(self.cx.engine.piece_below(p)?)
     }
     fn piece(&mut self, s: &SyncId, b: &BlobId) -> Result<PieceAt> {
+        // an own entry stamped under no head this node writes is logged again (stamped in place)
         Ok(match self.cx.store.entry(s, b)? {
-            Some(e) if e.own => PieceAt::Own,
+            Some(e) if e.own && self.under_head(s, &e)? => PieceAt::Own,
             Some(_) => PieceAt::Peer,
             None if self.cx.store.tombstone(s, b)?.is_some() => PieceAt::Tombstoned,
             None => PieceAt::Absent,
@@ -392,8 +439,13 @@ impl Ground for Live<'_, '_> {
     }
     fn log_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         if let Some(e) = self.cx.store.entry(s, b)? {
-            // a peer's entry of it (its wrap and stamp as they came) becomes own
-            if !e.own {
+            // stamped in place where this node writes S's head, else a peer's entry of it (its
+            // wrap and stamp as they came) becomes own
+            if stamp_key(self.cx, s)?.is_some() {
+                if !e.own || !self.under_head(s, &e)? {
+                    self.restamp(s, b)?;
+                }
+            } else if !e.own {
                 self.cx.store.log(s, Entry { own: true, ..e }, None, None)?;
                 self.cx.store.uncharge(s, b)?;
             }

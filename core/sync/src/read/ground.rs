@@ -104,13 +104,18 @@ pub trait Ground {
 
     /// The entries of `c` in this node's own store of S.
     fn own(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<Entry>>;
-    /// Whether entry `e` of S stands as this node's log of its body (spec/sync-judgement.md §3
-    /// Own store: stamped where it writes S): one it logged, or, where it holds S's head write
-    /// key, one whose stamp verifies under it; anywhere else, any entry held.
-    fn stands(&mut self, s: &SyncId, e: &Entry) -> Result<bool> {
-        let _ = (s, e);
+    /// Whether entry `e` of `c`'s body under S stands as this node's log of it
+    /// (spec/sync-judgement.md §3 Own store: stamped where it writes S): where it holds S's head
+    /// write key, one stamped under that key (or a role commit a recorded step registers, stamped
+    /// under that step's parent, spec/sync-ids.md §6 Steps), own or a peer's alike; anywhere
+    /// else, any entry held.
+    fn stands(&mut self, s: &SyncId, c: &CommitId, e: &Entry) -> Result<bool> {
+        let _ = (s, c, e);
         Ok(true)
     }
+    /// Entry `b` of S stamped in place under S's head write key: the same blob and wrap, a new
+    /// stamp, this node's own from then on (off any peer budget).
+    fn restamp(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;
     /// This node's own tombstones of `c`'s entries under S.
     fn own_tombstones(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>>;
     /// Every entry of S in the own store, whatever it names (a forgotten commit's included).
@@ -304,7 +309,7 @@ pub trait Ground {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PieceAt {
     Absent,
-    /// Logged by this node.
+    /// Logged by this node, stamped as it logs now (`Ground::stands`'s head rule).
     Own,
     /// A peer's entry (pulled, not yet taken).
     Peer,
@@ -324,4 +329,7 @@ pub struct CertBlobsMissing {
     pub gone: BTreeSet<osis_base::BlobId>,
     /// Certificate blobs sealed here under S that the own store holds.
     pub held: BTreeSet<osis_base::BlobId>,
+    /// Of `held`, those not stamped under S's head write key where this node holds it
+    /// (`Ground::stands`): stamped in place.
+    pub stale: BTreeSet<osis_base::BlobId>,
 }

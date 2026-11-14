@@ -238,6 +238,10 @@ impl Read {
                 g.drop_blob(&s, b)?;
                 acted = true;
             }
+            for b in &now.stale {
+                g.restamp(&s, b)?;
+                acted = true;
+            }
             if !now.records.is_empty() {
                 g.log_records(&s, &now.records)?;
                 acted = true;
@@ -436,6 +440,7 @@ impl Read {
             (Act::Log, Some(c)) => {
                 g.log_own(s, c, false)?;
             }
+            (Act::Restamp(b), _) => g.restamp(s, &b)?,
             (Act::DropOwn(b), Some(c)) => g.drop_own(s, &b, c)?,
             (Act::Lift(b), _) => g.lift(s, &b)?,
             (Act::Take(b), _) => g.take(s, &b)?,
@@ -494,7 +499,7 @@ impl Read {
 /// (`held`); else they stay.
 fn cert_blobs_missing(g: &mut impl Ground, s: &SyncId, told: bool) -> Result<CertBlobsMissing> {
     if told {
-        return Ok(CertBlobsMissing { records: BTreeSet::new(), lists: BTreeMap::new(), ..g.cert_blobs_missing(s)? });
+        return Ok(CertBlobsMissing { records: BTreeSet::new(), lists: BTreeMap::new(), stale: BTreeSet::new(), ..g.cert_blobs_missing(s)? });
     }
     match g.pullable(s)? {
         true => Ok(CertBlobsMissing { held: BTreeSet::new(), ..g.cert_blobs_missing(s)? }),

@@ -131,6 +131,12 @@ pub trait Ground {
         let _ = (s, b, wrap);
         None
     }
+    /// The write key of the head S's `sync.0` records here (`ReadCredentials::head`), which the
+    /// store's served path follows.
+    fn head_write(&mut self, s: &SyncId) -> Option<osis_crypto::VerifyingKey> {
+        let _ = s;
+        None
+    }
     /// An entry that opened to a pending commit was not kept (`store::release`).
     fn unkept(&mut self, store: &crate::store::Store, b: &BlobId) -> Result<()> {
         let _ = (store, b);
@@ -497,6 +503,10 @@ impl Ground for EngineGround<'_> {
             crate::store::release(self.engine, store, &c)?;
         }
         Ok(())
+    }
+
+    fn head_write(&mut self, s: &SyncId) -> Option<osis_crypto::VerifyingKey> {
+        Some(self.engine.read_credentials(s).ok()??.head.as_ref()?.keys.write)
     }
 
     fn rank(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Rank {

@@ -612,22 +612,33 @@ impl Streams {
                 class(Rank::Unopened, false)
             }
             Holding::Read => {
-                // a stamp new to an entry held unstamped (stamped in place at a writer,
-                // spec/sync-inbox.md §2): logged on it, judged as any peer's stamp
-                if let (Some(st), Some(_)) = (stamp, &held)
-                    && let Ok(Some(e)) = ctx.store.entry(s, b)
-                    && e.stamp.is_none()
-                    && e.wrap == *wrap
-                {
-                    let src = self.pull.get(&conn).map(|p| p.src);
-                    let r = ctx.store.log(s, Entry { stamp: Some(st), deposited: false, ..e }, None, src).map(|_| ());
-                    self.failed(r);
-                }
                 if tomb || held.is_some() {
                     return None;
                 }
                 class(ctx.ground.rank(s, b, wrap), stamp.is_none())
             }
+        }
+    }
+
+    /// A stamp new to entry `b` of S held here under the same wrap, applied in stream order (the
+    /// step's commit a writer logged before stamping under it is held by then): logged on an
+    /// entry held unstamped (stamped in place at a writer, spec/sync-inbox.md §2), judged as any
+    /// peer's stamp; and one under the head S's `sync.0` records here (`Ground::head_write`, which
+    /// the store's served path follows) replaces a held one that is not (stamped in place on a
+    /// head move, spec/sync-judgement.md §3 Own store), vouched by that head (spec/sync-ids.md §5
+    /// Peer budget: one that does not verify replaces no stamp held).
+    fn new_stamp(&mut self, ctx: &mut Ctx, src: Source, s: &SyncId, b: &BlobId, wrap: &Wrap, stamp: &Stamp) {
+        let Ok(Some(e)) = ctx.store.entry(s, b) else { return };
+        if e.stamp == Some(*stamp) || e.wrap != *wrap || ctx.store.bytes(b).ok().flatten().is_none() {
+            return;
+        }
+        let head = ctx.ground.head_write(s);
+        let at_head = |x: &Stamp| head.is_some_and(|k| osis_label::verify_stamp(&k, s, b, wrap, x).is_ok());
+        let newer = at_head(stamp) && !e.stamp.as_ref().is_some_and(at_head);
+        if e.stamp.is_none() || newer {
+            let from = if newer { None } else { Some(src) };
+            let r = ctx.store.log(s, Entry { stamp: Some(*stamp), deposited: false, ..e }, None, from).map(|_| ());
+            self.failed(r);
         }
     }
 
@@ -973,7 +984,12 @@ impl Streams {
             }
             self.work.applied += 1;
             match e {
-                Event::Added { blob_id: b, blob, .. } => {
+                Event::Added { blob_id: b, blob, wrap, stamp } => {
+                    if let Some(st) = stamp
+                        && ctx.store.holding(s) == Some(Holding::Read)
+                    {
+                        self.new_stamp(ctx, src, s, b, wrap, st);
+                    }
                     let class = match blob {
                         Some(v) => Prefix::parse(v).map_or(Class::Durable, |p| p.class()),
                         None => ctx.store.entry(s, b).ok().flatten().map_or(Class::Durable, |e| e.class),

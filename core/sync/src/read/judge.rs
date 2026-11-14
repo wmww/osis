@@ -19,6 +19,9 @@ use std::sync::Arc;
 pub(crate) enum Act {
     /// The body into the own store (§3 Own store).
     Log,
+    /// Entry `b` of the body in the own store stamped in place under S's head write key (same
+    /// blob and wrap; §3 Own store), its own from then on.
+    Restamp(BlobId),
     /// The entry leaves the own log (§3 Own store: must-not-hold, or covered and dropped).
     DropOwn(BlobId),
     /// The body counts missing again: its own tombstone ends (§4, §3 Dropped bodies).
@@ -266,20 +269,30 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     if matches!(verdict, Verdict::MustNot(_)) || dropped_here {
         j.acts.extend(live.iter().map(|b| Act::DropOwn(*b)));
     }
-    // a body counting missing is logged once it is held again; a held entry it did not log
-    // stands as its log unless this node writes S and its stamp is not under S's head (then it
-    // is logged again verbatim, stamped in place)
-    if verdict == Verdict::Must && !f.as_ref().is_some_and(|f| f.missing) {
-        let mut logged = false;
+    // a body counting missing is logged once it is held again. Where this node writes S's head,
+    // an entry stands as its log only stamped under that head (`Ground::stands`): each own entry
+    // that does not is stamped in place, and with none of its own and none standing, the lowest
+    // peer's entry is (a head move restamps each body once; peers' duplicates are never stamped)
+    if verdict == Verdict::Must && !f.as_ref().is_some_and(|f| f.missing) && g.pullable(s)? {
+        let mut stands = false;
+        let mut restamp = Vec::new();
+        let mut peer = None;
         for e in own.iter().filter(|e| live.contains(&e.blob)) {
-            if g.stands(s, e)? {
-                logged = true;
-                break;
+            if g.stands(s, c, e)? {
+                stands = true;
+            } else if e.own {
+                restamp.push(e.blob);
+            } else {
+                peer = peer.or(Some(e.blob));
             }
         }
-        if !logged && g.pullable(s)? {
+        if !stands && restamp.is_empty() {
+            restamp.extend(peer);
+        }
+        if !stands && restamp.is_empty() {
             j.acts.insert(Act::Log);
         }
+        j.acts.extend(restamp.into_iter().map(Act::Restamp));
     }
     if verdict == Verdict::Must {
         j.roots = g.piece_roots(s, c)?;
@@ -504,8 +517,12 @@ fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, se
     }
     let own = g.own(s, c)?;
     if let Some(e) = own.iter().find(|e| !seen.deleted.contains(&e.blob) && !seen.present.contains(&e.blob)) {
-        // a writer's own store is pulled; a non-writer gives it
-        if !writer {
+        // a writer's own store is pulled; a non-writer gives it, but not to a source on an
+        // earlier step of the recorded path: the path is registered there first (spec/sync-ids.md
+        // §6 Steps), and what this node holds stamped under a later step is taken as it is
+        // once the source stands there
+        let behind = creds.head.as_ref().is_some_and(|h| h.id() != head) && creds.keys.contains_key(&head);
+        if !writer && !behind {
             t.acts.insert(Act::Deposit { at: src.at, conn: src.conn, blob: e.blob });
         }
         return Ok(());

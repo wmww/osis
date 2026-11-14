@@ -50,6 +50,11 @@ fn step(e: u64) -> Step {
     }
 }
 
+/// A stamp under step `e`'s write key, as the fake ground signs and checks it.
+fn stamp_at(e: u64) -> Signature {
+    Signature([e as u8 + 1; 64])
+}
+
 /// A reader's credentials at head step `e`: a writer, with the delete key when `delete`.
 fn creds(e: u64, writer: bool, delete: bool) -> Arc<ReadCredentials> {
     let hk = HeadKeys { sync: None, sync_established: true, write: writer.then(|| key(LabelRole::Write, e)), delete: delete.then(|| key(LabelRole::Delete, e)), deposit: None, epochs: [None; 3] };
@@ -149,6 +154,8 @@ struct Fake {
     next: u32,
     sent: Vec<Sent>,
     logged: Vec<(SyncId, CommitId, BlobId)>,
+    /// Entries stamped in place.
+    restamped: Vec<(SyncId, CommitId, BlobId)>,
     /// Per S, the records and lists it carries that no own certificate blob does, and own
     /// certificate blobs gone.
     records: Stamped<SyncId, CertBlobsMissing>,
@@ -193,10 +200,21 @@ impl Ground for Fake {
         self.sent.push(Sent::Take(*b));
         Ok(())
     }
-    fn stands(&mut self, s: &SyncId, e: &Entry) -> Result<bool> {
-        // a stamp stands for one under the head's write key here
-        let writes = self.creds.get(s).is_some_and(|c| c.head.as_ref().and_then(|h| c.keys.get(&h.id())).is_some_and(|k| k.write.is_some()));
-        Ok(e.own || e.stamp.is_some() || !writes)
+    fn stands(&mut self, s: &SyncId, _c: &CommitId, e: &Entry) -> Result<bool> {
+        Ok(self.head_stamp(s).is_none_or(|h| e.stamp == Some(h)))
+    }
+    fn restamp(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        let Some(h) = self.head_stamp(s) else { return Ok(()) };
+        let keys: Vec<(SyncId, CommitId)> = self.own.keys().filter(|(x, _)| x == s).copied().collect();
+        for k in keys {
+            let mut v = self.own.get(&k).cloned().unwrap_or_default();
+            if let Some(e) = v.iter_mut().find(|e| e.blob == *b) {
+                *e = Entry { stamp: Some(h), deposited: false, own: true, ..e.clone() };
+                self.own.insert(k, v);
+                self.restamped.push((k.0, k.1, *b));
+            }
+        }
+        Ok(())
     }
     fn take_piece(&mut self, _s: &SyncId, b: &BlobId) -> Result<()> {
         self.sent.push(Sent::TakePiece(*b));
@@ -353,7 +371,8 @@ impl Ground for Fake {
         b[4] = c.0[0];
         let blob = BlobId(b);
         let mut v = self.own(s, c)?;
-        v.push(Entry { blob, wrap: [0; osis_crypto::WRAP_LEN], stamp: None, deposited: false, own: true, role: false, class: Class::Durable, expires: None });
+        let stamp = self.head_stamp(s);
+        v.push(Entry { blob, wrap: [0; osis_crypto::WRAP_LEN], stamp, deposited: stamp.is_none(), own: true, role: false, class: Class::Durable, expires: None });
         self.own.insert((*s, *c), v);
         self.logged.push((*s, *c, blob));
         Ok(Some(blob))
@@ -407,6 +426,15 @@ impl Ground for Fake {
 }
 
 impl Fake {
+    /// The stamp this node signs under S's head write key, where it holds it: step `e`'s is
+    /// `stamp_at(e)`.
+    fn head_stamp(&self, s: &SyncId) -> Option<Signature> {
+        let c = self.creds.get(s)?;
+        let head = c.head.as_ref()?;
+        c.keys.get(&head.id())?.write.as_ref()?;
+        Some(stamp_at(head.step_key[0] as u64))
+    }
+
     /// A `known` row written: the feed and the per-commit presence follow it.
     fn put_seen(&mut self, k: (Source, SyncId, CommitId), v: Seen) {
         if self.seen.get(&k) == Some(&v) {
@@ -1038,19 +1066,65 @@ fn missing_body_held_here_is_taken_again_spec_sync_judgement_3() {
 
 // spec/sync-judgement.md §3 (Own store: a held blob verbatim, stamped when it writes S): an entry
 // pulled from a peer stands as this node's log of the body, so nothing is encrypted afresh, but
-// at a writer of S's head one not stamped under it is logged again (stamped in place).
+// at a writer of S's head one not stamped under it is stamped in place (same blob), and of two
+// such duplicates only one.
 #[test]
 fn a_peers_entry_stands_as_the_log_spec_sync_judgement_3() {
-    for (writer, stamped, logs) in [(true, true, 0), (false, false, 0), (true, false, 1)] {
+    let peer = |b: u8, stamped: bool| Entry { blob: BlobId([b; 32]), wrap: [0; osis_crypto::WRAP_LEN], stamp: stamped.then_some(stamp_at(0)), deposited: !stamped, own: false, role: false, class: Class::Durable, expires: None };
+    for (writer, stamped, restamps) in [(true, true, 0), (false, false, 0), (true, false, 1)] {
         let mut w = W::new();
         w.g.creds.insert(S, creds(0, writer, true));
-        let peer = Entry { blob: BlobId([66; 32]), wrap: [0; osis_crypto::WRAP_LEN], stamp: stamped.then_some(Signature([1; 64])), deposited: !stamped, own: false, role: false, class: Class::Durable, expires: None };
-        w.g.own.insert((S, cid(1)), vec![peer]);
+        w.g.own.insert((S, cid(1)), vec![peer(66, stamped), peer(67, stamped)]);
         let mut f = uncovered();
         f.own = false;
         w.hold(cid(1), &[S], f);
-        assert_eq!(w.g.logged.len(), logs, "writer {writer}, stamped {stamped}");
+        assert!(w.g.logged.is_empty(), "writer {writer}, stamped {stamped}: nothing encrypted afresh");
+        assert_eq!(w.g.restamped, vec![(S, cid(1), BlobId([66; 32]))][..restamps], "writer {writer}, stamped {stamped}");
     }
+}
+
+/// A writer of S at head 0 holding `n` own must-hold bodies under S, each logged once, then S's
+/// head moving to step 1.
+fn head_moved(n: u8) -> W {
+    let mut w = W::new();
+    for i in 0..n {
+        w.hold(CommitId([i, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), &[S], uncovered());
+    }
+    w.exchange();
+    assert_eq!(w.g.logged.len(), n as usize);
+    osis_base::costs::take();
+    w.g.creds.insert(S, creds(1, true, true));
+    w.settle();
+    w
+}
+
+// spec/sync-judgement.md §3 (Own store: stamped when it writes S, in place on a head move), spec/sync-ids.md
+// §6 (a stamp under a superseded write key is refused): at a writer, an own entry stands as its
+// log only stamped under S's head write key, so a head move stamps each own entry of a must-hold
+// body in place once (no fresh encryption, nothing deposited), judging each body once more and
+// no more, at n and 10n bodies; the next head move does it again.
+#[test]
+fn a_head_move_restamps_each_own_entry_once_spec_sync_judgement_3() {
+    let mut judged = Vec::new();
+    for n in [10u8, 100] {
+        let mut w = head_moved(n);
+        let costs = osis_base::costs::take();
+        judged.push(costs.iter().filter(|(k, _, _)| *k == "read: judged").map(|(_, _, x)| x).sum::<u64>());
+        assert_eq!(w.g.restamped.len(), n as usize, "each body's own entry once");
+        let blobs: BTreeSet<BlobId> = w.g.restamped.iter().map(|x| x.2).collect();
+        assert_eq!(blobs.len(), n as usize);
+        assert_eq!(w.g.logged.len(), n as usize, "nothing encrypted afresh");
+        assert!(!w.sent().any(|m| matches!(m, Sent::Deposit(..))), "nothing deposited");
+        assert!(w.g.own.iter().all(|(_, v)| v.iter().all(|e| e.stamp == Some(stamp_at(1)))), "every own entry under step 1's key");
+        w.settle();
+        assert_eq!(w.g.restamped.len(), n as usize, "a settle with no head move stamps nothing");
+        w.g.creds.insert(S, creds(2, true, true));
+        w.settle();
+        assert_eq!(w.g.restamped.len(), 2 * n as usize, "the next head move stamps each again");
+    }
+    // twice per body (the head move, then its restamp), each counted by the judgement and its
+    // effects
+    assert_eq!(judged, vec![4 * 10, 4 * 100], "judgements per body per head move");
 }
 
 // spec/sync-judgement.md §4 (the stand's state): durable (forget-lost-mem): a start (or the reload a forget
@@ -1089,6 +1163,22 @@ fn non_writer_deposits() {
     assert_eq!(w.g.sent, vec![Sent::Deposit(KC, b)]);
     w.exchange();
     assert_eq!(w.at_k(S, cid(1)), 1);
+}
+
+// spec/sync-judgement.md §3 (reader that is not a writer: nothing deposited at a source on an
+// earlier step of its recorded path), spec/sync-ids.md §6 (Steps): a non-writer whose `sync.0`
+// records step 1 gives K, standing at step 0, nothing until K stands at step 1.
+#[test]
+fn a_non_writer_deposits_nothing_at_a_source_behind_its_head_spec_sync_judgement_3() {
+    let mut w = W::new();
+    w.pulls = false;
+    w.g.creds.insert(S, creds(1, false, false));
+    w.hold(cid(1), &[S], uncovered());
+    w.settle();
+    assert!(!w.g.sent.iter().any(|m| matches!(m, Sent::Deposit(..))), "{:?}", w.g.sent);
+    w.edit_source(KC, |x| x.head = Some(step(1).id()));
+    let b = w.own_blobs(S, cid(1))[0];
+    assert!(w.g.sent.contains(&Sent::Deposit(KC, b)), "{:?}", w.g.sent);
 }
 
 // spec/sync-compaction.md §1 (duplicates): of two entries of one body at K the delete-key holder
