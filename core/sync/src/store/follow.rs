@@ -211,7 +211,7 @@ impl Follow {
             }
             if let Some((_, Some(p))) = r {
                 store.serve_path(&s, &p)?;
-                drop_unvouched(engine, store, &s)?;
+                charge_unvouched(engine, store, &s)?;
                 acted = true;
             }
         }
@@ -258,12 +258,13 @@ fn reopen(engine: &mut Engine, store: &mut Store, c: &CommitId) -> Result<bool> 
     Ok(opened)
 }
 
-/// Drops S's peer entries kept as carriers (their commit pending, or a record loose) whose stamp
-/// no longer vouches under S's served head (`Store::drop_unvouched`): a writer's pending input is
-/// vouched only while its write key is the head's, so what a removed writer stamped pends no
-/// longer than its removal (spec/commits.md §4 Pending storage). Their pending copies go as their
-/// blobs go unnamed (`Carriers`). At a start and each move of the head: O(entries of S).
-fn drop_unvouched(engine: &mut Engine, store: &mut Store, s: &SyncId) -> Result<()> {
+/// Charges S's peer entries kept as carriers (their commit pending, or a record loose) whose
+/// stamp no longer vouches under S's served head to the peer that brought them
+/// (`Store::charge_unvouched`): a stamp vouches only under the head, otherwise the entry is
+/// charged (spec/sync-ids.md §5 Peer budget). One past its peer's budget, or whose peer went, is
+/// not kept, and its pending copy goes as its blob goes unnamed (`Carriers`). At a start and each
+/// move of the head: O(entries of S).
+fn charge_unvouched(engine: &mut Engine, store: &mut Store, s: &SyncId) -> Result<()> {
     for e in store.entries(s)? {
         if e.own || e.stamp.is_none() {
             continue;
@@ -273,7 +274,7 @@ fn drop_unvouched(engine: &mut Engine, store: &mut Store, s: &SyncId) -> Result<
             None => engine.carries_loose(&e.blob),
         };
         if carries {
-            store.drop_unvouched(s, &e.blob)?;
+            store.charge_unvouched(s, &e.blob)?;
         }
     }
     Ok(())

@@ -588,14 +588,16 @@ impl Store {
             (Some(_), Some(_)) => g.read(|t, _| stamp_vouches(t, s, &e))?,
         };
         let charged = if vouched { None } else { from };
-        let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: e.deposited, own: e.own, role: e.role, class, expires, size: 0, charged };
+        let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: e.deposited, own: e.own, role: e.role, class, expires, size: 0, charged, brought: if vouched { from } else { None } };
+        // a vouched copy of a held one: off any charge, its bringer kept for when it stops vouching
+        let brought = |old: &EntryRow| if vouched { from.or(old.charged).or(old.brought) } else { old.brought };
         let stamp = |old: &EntryRow| if vouched || old.stamp.is_none() { e.stamp } else { old.stamp };
         if class == Class::Ephemeral {
             if g.mem.tombstoned(s, &b) {
                 return Ok(Code::TOMBSTONED);
             }
             if let Some(old) = g.mem.read(s, &b).cloned() {
-                let new = EntryRow { size: old.size, stamp: stamp(&old), charged: if vouched { None } else { old.charged }, own: old.own || e.own, role: old.role || e.role, ..row };
+                let new = EntryRow { size: old.size, stamp: stamp(&old), charged: if vouched { None } else { old.charged }, brought: brought(&old), own: old.own || e.own, role: old.role || e.role, ..row };
                 g.mem.change(s, &b, new);
                 return Ok(Code::OK);
             }
@@ -633,7 +635,7 @@ impl Store {
                         entries::bytes_arrived(t, env, &b)?;
                     }
                     let old = entries::get(t, s, &b)?.unwrap_or(old);
-                    let new = EntryRow { size: old.size, role: old.role || e.role, stamp: stamp(&old), charged: if vouched { None } else { old.charged }, own: old.own || e.own, ..row };
+                    let new = EntryRow { size: old.size, role: old.role || e.role, stamp: stamp(&old), charged: if vouched { None } else { old.charged }, brought: brought(&old), own: old.own || e.own, ..row };
                     entries::change(t, env, s, &b, &old, new)?;
                 }
                 None => entries::insert(t, env, s, &b, row, bytes)?,
@@ -663,26 +665,40 @@ impl Store {
         g.write(|t, env| entries::lift(t, env, s, b))
     }
 
-    /// Drops entry `b` of S, a peer's (not own, not charged), when its stamp no longer vouches
-    /// for it: it does not verify under S's head write key (spec/sync-ids.md §5 Peer budget: an
-    /// entry giving nothing held whose stamp does not vouch counts as unstamped, its bringer not
-    /// known here, so not kept). No tombstone: fetched again where present. Whether it went.
-    pub fn drop_unvouched(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
+    /// Entry `b` of S, a peer's kept uncharged, whose stamp no longer vouches (it does not verify
+    /// under S's head write key, spec/sync-ids.md §5 Peer budget): charged to the peer that
+    /// brought it, as an unstamped one. Past that peer's budget, or with its peer gone, it is not
+    /// kept (no tombstone: fetched again where present). Whether it was kept.
+    pub fn charge_unvouched(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
         let mut g = self.lock();
         let now = g.now;
         if let Some(old) = g.mem.read(s, b).cloned() {
             let e = entries::to_entry(*b, &old);
             if old.own || old.charged.is_some() || old.stamp.is_none() || g.read(|t, _| stamp_vouches(t, s, &e))? {
-                return Ok(false);
+                return Ok(true);
             }
-            return Ok(g.mem.remove(s, b, now, false, false));
+            if let Some(src) = old.brought
+                && !g.read(|t, env| over_peer_budget(t, env, src, old.size))?
+            {
+                g.mem.change(s, b, EntryRow { charged: Some(src), brought: None, ..old });
+                return Ok(true);
+            }
+            g.mem.remove(s, b, now, false, false);
+            return Ok(false);
         }
         g.write(|t, env| {
             let Some(old) = entries::get(t, s, b)? else { return Ok(false) };
             if old.own || old.charged.is_some() || old.stamp.is_none() || stamp_vouches(t, s, &entries::to_entry(*b, &old))? {
-                return Ok(false);
+                return Ok(true);
             }
-            entries::remove(t, env, s, b, Removal::Untombed)
+            if let Some(src) = old.brought
+                && !over_peer_budget(t, env, src, old.size)?
+            {
+                entries::change(t, env, s, b, &old.clone(), EntryRow { charged: Some(src), brought: None, ..old })?;
+                return Ok(true);
+            }
+            entries::remove(t, env, s, b, Removal::Untombed)?;
+            Ok(false)
         })
     }
 
@@ -690,13 +706,13 @@ impl Store {
     pub fn uncharge(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         let mut g = self.lock();
         if let Some(old) = g.mem.read(s, b).cloned() {
-            if old.charged.is_some() {
-                g.mem.change(s, b, EntryRow { charged: None, ..old });
+            if let Some(src) = old.charged {
+                g.mem.change(s, b, EntryRow { charged: None, brought: Some(src), ..old });
             }
             return Ok(());
         }
         g.write(|t, env| match entries::get(t, s, b)? {
-            Some(old) if old.charged.is_some() => entries::change(t, env, s, b, &old.clone(), EntryRow { charged: None, ..old }),
+            Some(old) if old.charged.is_some() => entries::change(t, env, s, b, &old.clone(), EntryRow { charged: None, brought: old.charged, ..old }),
             _ => Ok(()),
         })
     }
@@ -775,7 +791,7 @@ impl Store {
             Ok(r) => r,
             Err(c) => return Ok(c),
         };
-        let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: false, own: false, role, class, expires, size: 0, charged: None };
+        let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: false, own: false, role, class, expires, size: 0, charged: None, brought: None };
         if class == Class::Ephemeral {
             if g.mem.tombstoned(s, &b) {
                 return Ok(Code::TOMBSTONED);
@@ -853,7 +869,7 @@ impl Store {
             Ok(r) => r,
             Err(c) => return Ok(c),
         };
-        let row = EntryRow { wrap: d.wrap, stamp: None, deposited: true, own: false, role, class, expires, size: 0, charged: from };
+        let row = EntryRow { wrap: d.wrap, stamp: None, deposited: true, own: false, role, class, expires, size: 0, charged: from, brought: None };
         let caps = holding == Holding::Unread && !role;
         if class == Class::Ephemeral {
             if caps && !mem_room(&mut g, &s, size, now) {
@@ -1147,6 +1163,7 @@ impl Store {
             g.mem.remove(&s, &b, now, false, false);
         }
         g.mem.charges.remove(&src);
+        g.mem.forget_bringer(src);
         if let Source::Conn(conn) = src {
             g.mem.conn_forget(|(c, ..)| *c != conn);
         }
@@ -1156,6 +1173,13 @@ impl Store {
         for (k, _) in t.scan_local(&[rows::CHARGED, &rows::source_bytes(src)].concat(), b"", usize::MAX)? {
             let (s, b) = rows::tail_ids(&k)?;
             entries::remove(t, env, &s, &b, Removal::Untombed)?;
+        }
+        // what it brought uncharged names no bringer any more
+        for (k, _) in t.scan_local(&[rows::BROUGHT, &rows::source_bytes(src)].concat(), b"", usize::MAX)? {
+            let (s, b) = rows::tail_ids(&k)?;
+            if let Some(old) = entries::get(t, &s, &b)? {
+                entries::change(t, env, &s, &b, &old.clone(), EntryRow { brought: None, ..old })?;
+            }
         }
         Ok(())
     }

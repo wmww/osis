@@ -30,6 +30,7 @@ pub(crate) const ENTRY: &[u8] = b"E/";
 pub(crate) const BY_BLOB: &[u8] = b"X/";
 pub(crate) const ENGINE: &[u8] = b"G/";
 pub(crate) const CHARGED: &[u8] = b"W/";
+pub(crate) const BROUGHT: &[u8] = b"B/";
 pub(crate) const CONN_TOTAL: &[u8] = b"V/";
 pub(crate) const TOMB: &[u8] = b"T/";
 pub(crate) const TOMB_AT: &[u8] = b"t/";
@@ -100,6 +101,9 @@ pub(crate) fn source_bytes(src: Source) -> Vec<u8> {
 }
 pub(crate) fn charged_key(src: Source, s: &SyncId, b: &BlobId) -> Vec<u8> {
     [CHARGED, &source_bytes(src), &s.0, &b.0].concat()
+}
+pub(crate) fn brought_key(src: Source, s: &SyncId, b: &BlobId) -> Vec<u8> {
+    [BROUGHT, &source_bytes(src), &s.0, &b.0].concat()
 }
 pub(crate) fn conn_total_key(c: crate::types::ConnId) -> Vec<u8> {
     [CONN_TOTAL, &c.0.to_be_bytes()].concat()
@@ -229,6 +233,10 @@ pub(crate) struct EntryRow {
     pub size: u64,
     /// Charged to this source (spec/sync-ids.md §5 Peer budget) while it gives nothing held.
     pub charged: Option<Source>,
+    /// The peer that brought it while uncharged (its stamp vouched, or it gave something held):
+    /// charged to it once its stamp no longer vouches (`Store::charge_unvouched`); cleared when
+    /// that peer goes.
+    pub brought: Option<Source>,
 }
 
 impl EntryRow {
@@ -239,12 +247,12 @@ impl EntryRow {
             w = w.raw(&st.0);
         }
         w = w.u8(self.class as u8).u64(self.expires.map_or(0, |t| t.0)).u64(self.size);
-        match self.charged {
+        let src = |w: W, x: Option<Source>| match x {
             None => w.u8(0),
             Some(Source::Record(r)) => w.u8(1).raw(&r),
             Some(Source::Conn(c)) => w.u8(2).u64(c.0),
-        }
-        .take()
+        };
+        src(src(w, self.charged), self.brought).take()
     }
 
     pub(crate) fn decode(v: &[u8]) -> Result<EntryRow> {
@@ -259,14 +267,17 @@ impl EntryRow {
         };
         let t = r.u64()?;
         let size = r.u64()?;
-        let charged = match r.u8()? {
-            0 => None,
-            1 => Some(Source::Record(r.array()?)),
-            2 => Some(Source::Conn(crate::types::ConnId(r.u64()?))),
-            _ => return Err(corrupt()),
+        let mut src = || -> Result<Option<Source>> {
+            Ok(match r.u8()? {
+                0 => None,
+                1 => Some(Source::Record(r.array()?)),
+                2 => Some(Source::Conn(crate::types::ConnId(r.u64()?))),
+                _ => return Err(corrupt()),
+            })
         };
+        let (charged, brought) = (src()?, src()?);
         r.end()?;
-        Ok(EntryRow { wrap, stamp, deposited: flags & 2 != 0, own: flags & 4 != 0, role: flags & 8 != 0, class, expires: (t != 0).then_some(WallMs(t)), size, charged })
+        Ok(EntryRow { wrap, stamp, deposited: flags & 2 != 0, own: flags & 4 != 0, role: flags & 8 != 0, class, expires: (t != 0).then_some(WallMs(t)), size, charged, brought })
     }
 }
 

@@ -96,6 +96,15 @@ pub(crate) fn conn_charge(t: &mut Transaction<'_>, c: crate::types::ConnId) -> R
 }
 
 fn charge(t: &mut Transaction<'_>, r: &EntryRow, s: &SyncId, b: &BlobId, sign: bool) -> Result<()> {
+    // who brought an uncharged one, found again when that peer goes (`Store::gone`)
+    if let Some(src) = r.brought {
+        let k = rows::brought_key(src, s, b);
+        if sign {
+            t.put_local(&k, &[], Shred::No)?;
+        } else {
+            t.remove_local(&k, Shred::No)?;
+        }
+    }
     let Some(src) = r.charged else { return Ok(()) };
     let k = rows::charged_key(src, s, b);
     if sign {

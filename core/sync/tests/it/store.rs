@@ -1166,34 +1166,51 @@ fn a_forged_stamp_is_charged_as_unstamped_spec_sync_ids_5() {
     assert_eq!(st.entry(&s.id, &b2).unwrap().unwrap().stamp, stamped(&s, b2, false).stamp);
 }
 
-// spec/sync-ids.md §5 (Peer budget), spec/commits.md §4 (Pending storage): an entry kept as a
-// carrier under a stamp vouches only while its write key is the head's. Once the head moves (a
-// writer removed), one that still gives nothing held is not kept (`drop_unvouched`; no
-// tombstone), one stamped under the new head and one charged to a peer stay. n and 10n of them:
-// what stays does not grow with what the removed writer stamped.
+/// A reader holding `n` entries stamped under S's first head, brought by one peer, one entry that
+/// peer brought unstamped, and one brought by a peer gone since; after a head move, one stamped
+/// under the new head. With the peer's budget at `budget` (`None`: room for the unstamped one and
+/// two old ones), each old carrier charged (`charge_unvouched`): (old ones kept, the gone peer's
+/// kept, entries left once the first peer goes too).
+fn old_key_carriers(n: usize, budget: Option<u64>) -> (usize, bool, usize) {
+    let mut s = Sid::new(70);
+    let c = Source::Conn(ConnId(6));
+    let olds: Vec<(BlobId, Vec<u8>)> = (0..n).map(|i| blob(100 + i, Class::Durable, None, &[])).collect();
+    let (charged, xc) = blob(90, Class::Durable, None, &[]);
+    let budget = budget.unwrap_or((xc.len() + olds[0].1.len() + olds[1].1.len()) as u64);
+    let mut st = reader(&s, budget);
+    for (b, x) in &olds {
+        assert_eq!(st.log(&s.id, stamped(&s, *b, false), Some(x.clone()), Some(c)).unwrap(), Code::OK);
+    }
+    let unstamped = Entry { stamp: None, deposited: true, ..stamped(&s, charged, false) };
+    assert_eq!(st.log(&s.id, unstamped, Some(xc), Some(c)).unwrap(), Code::OK);
+    let (went, xw) = blob(92, Class::Durable, None, &[]);
+    assert_eq!(st.log(&s.id, stamped(&s, went, false), Some(xw), Some(Source::Conn(ConnId(7)))).unwrap(), Code::OK);
+    st.gone(Source::Conn(ConnId(7))).unwrap();
+    assert!(st.entry(&s.id, &went).unwrap().is_some(), "vouched: it stays with its peer gone");
+    s.rotate(80);
+    st.serve_path(&s.id, &osis_engine::sync::Path { steps: s.steps.iter().map(|(p, cs)| (p.clone(), Some(cs.clone()))).collect() }).unwrap();
+    let (fresh, xf) = blob(91, Class::Durable, None, &[]);
+    assert_eq!(st.log(&s.id, stamped(&s, fresh, false), Some(xf), Some(c)).unwrap(), Code::OK);
+    let kept = olds.iter().filter(|(b, _)| st.charge_unvouched(&s.id, b).unwrap()).count();
+    let went_kept = st.charge_unvouched(&s.id, &went).unwrap();
+    assert!(st.charge_unvouched(&s.id, &fresh).unwrap() && st.charge_unvouched(&s.id, &charged).unwrap(), "vouched, or charged already: unchanged");
+    assert_eq!(st.tombstone(&s.id, &olds[0].0).unwrap(), None, "none tombstoned");
+    st.gone(c).unwrap();
+    (kept, went_kept, st.entries(&s.id).unwrap().len())
+}
+
+// spec/sync-ids.md §5 (Peer budget), spec/commits.md §4 (Pending storage): a stamp vouches only
+// under the head; otherwise the entry is charged. After a head move each carrier the old write key
+// stamped is charged to the peer that brought it: within its budget all n and 10n stay (an honest
+// rotation loses none) and go with that peer as charged entries do; past it the rest are not kept,
+// so what stays does not grow with what was stamped. One whose peer went is not kept; one stamped
+// under the new head stays uncharged.
 #[test]
 fn a_stamp_vouches_only_under_the_head_spec_sync_ids_5() {
     for n in [3usize, 30] {
-        let mut s = Sid::new(70);
-        let mut st = reader(&s, 1 << 20);
-        let c = Source::Conn(ConnId(6));
-        let mut old = Vec::new();
-        for i in 0..n {
-            let (b, x) = blob(100 + i, Class::Durable, None, &[]);
-            assert_eq!(st.log(&s.id, stamped(&s, b, false), Some(x), Some(c)).unwrap(), Code::OK);
-            old.push(b);
-        }
-        let (charged, xc) = blob(90, Class::Durable, None, &[]);
-        let unstamped = Entry { stamp: None, deposited: true, ..stamped(&s, charged, false) };
-        assert_eq!(st.log(&s.id, unstamped, Some(xc), Some(c)).unwrap(), Code::OK);
-        s.rotate(80);
-        st.serve_path(&s.id, &osis_engine::sync::Path { steps: s.steps.iter().map(|(p, cs)| (p.clone(), Some(cs.clone()))).collect() }).unwrap();
-        let (fresh, xf) = blob(91, Class::Durable, None, &[]);
-        assert_eq!(st.log(&s.id, stamped(&s, fresh, false), Some(xf), Some(c)).unwrap(), Code::OK);
-        let dropped = [old.as_slice(), &[charged, fresh]].concat().iter().filter(|b| st.drop_unvouched(&s.id, b).unwrap()).count();
-        assert_eq!(dropped, n, "every entry the old write key stamped");
-        assert!(st.entry(&s.id, &fresh).unwrap().is_some() && st.entry(&s.id, &charged).unwrap().is_some());
-        assert_eq!(st.tombstone(&s.id, &old[0]).unwrap(), None, "fetched again where present");
-        assert_eq!(st.entries(&s.id).unwrap().len(), 2, "at {n}");
+        let (kept, went, left) = old_key_carriers(n, Some(1 << 20));
+        assert_eq!((kept, went, left), (n, false, 1), "within budget, at {n}: all charged, gone with their peer; the new head's stays");
+        let (kept, _, left) = old_key_carriers(n, None);
+        assert_eq!((kept, left), (2, 1), "past the budget, at {n}: two kept");
     }
 }

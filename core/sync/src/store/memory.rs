@@ -303,4 +303,11 @@ impl Memory {
     pub(crate) fn charged_to(&self, src: Source) -> Vec<(SyncId, BlobId)> {
         self.entries.iter().filter(|(_, r)| r.charged == Some(src)).map(|(k, _)| *k).collect()
     }
+
+    /// `src` went: the entries it brought uncharged name no bringer any more.
+    pub(crate) fn forget_bringer(&mut self, src: Source) {
+        for r in self.entries.values_mut().filter(|r| r.brought == Some(src)) {
+            r.brought = None;
+        }
+    }
 }
