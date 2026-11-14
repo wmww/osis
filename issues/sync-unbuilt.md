@@ -44,6 +44,8 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - The complete-pass want of a role found gone (spec/permissions.md §2, which `lost_leaving` waits on).
 - Nothing calls `history_complete` (spec/sync-status.md §3) from the API.
 
+- A blob's prefix commitment groups are checked against the commit's delete keys only when its header's linked lists resolve here (`Engine::open_commit`; spec/sync-ids.md §1, spec/crypto.md §7); its expiry is checked always. Until the lists resolve, a reader keeps and serves a blob framed under commitments of its framer's choosing: the thing's delete-key holders cannot delete it (their signatures match no commitment) while its framer can, until its expiry (an open after the lists resolve refuses it, but nothing opens it again for that alone). Fix: hold such a blob unopened (not served) until its lists resolve, then check.
+
 ## Wire differs from spec
 - Kdf strings in osis-crypto keep the old words where spec/wire.md §8 names new ones (`"osis v1 label id"` for `"osis v1 sync id"`, kdf `"label sync"` and the other `LABEL_*` for `"sync key"`, `"sync claim"`, ...): a node built from the spec cannot open, verify or derive with this one. Rename with their vectors (issues/deprecated-terms.md, label).
 - osis-label's link carries a `hosts` list between K's sync ID and the peers that spec/wire.md §10 `Link` does not have.
