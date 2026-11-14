@@ -208,6 +208,12 @@ impl Engine {
         self.core.ix.role_arrivals.get(actor).copied()
     }
 
+    /// Whether a complete pass of each of `ids` noted here began after pass place `since` (one
+    /// begun at it is not after it): the one comparison every rule waiting on a pass makes.
+    pub(crate) fn passed_after<'a>(&self, mut ids: impl Iterator<Item = &'a SyncId>, since: u64) -> bool {
+        ids.all(|s| self.core.ix.passes.get(s).is_some_and(|b| *b > since))
+    }
+
     /// Begins a complete pass: the next pass place, which the pass is noted with
     /// (`note_complete_pass_now`) and leaving compares with.
     pub(crate) fn begin_pass_now(&mut self) -> u64 {
@@ -247,7 +253,7 @@ impl Engine {
     /// Whether every pass tied grant (`t`, `g`)'s explicit demotion waits (`tie_scope`) is noted.
     pub(crate) fn tie_passes_done(&mut self, t: &Tid, g: &Tid) -> Result<bool> {
         let (since, ids) = self.tie_scope(t, g)?;
-        Ok(ids.iter().all(|s| self.core.ix.passes.get(s).is_some_and(|b| *b > since)))
+        Ok(self.passed_after(ids.iter(), since))
     }
 
     /// The read sync IDs whose bodies carry a thing of a demotion's pre-sync scope on `t`
@@ -278,7 +284,7 @@ impl Engine {
     pub(crate) fn complete_pass(&mut self, actor: &Tid) -> Result<bool> {
         let ThingSync::Read(ids) = self.thing_sync_now(actor)? else { return Ok(false) };
         let since = self.role_arrival(actor).max(self.asked_at(actor)).unwrap_or(0);
-        Ok(!ids.is_empty() && ids.iter().all(|s| self.core.ix.passes.get(s).is_some_and(|b| *b > since)))
+        Ok(!ids.is_empty() && self.passed_after(ids.iter(), since))
     }
 
     /// spec/sync-status.md §3 History complete for `thing`: a complete pass of every sync ID

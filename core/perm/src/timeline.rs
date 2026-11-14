@@ -924,6 +924,20 @@ impl Timeline {
         out
     }
 
+    /// The holders whose edge on `thing`, alive at `ts`, gives a role below one an earlier write
+    /// of it (or its record edge) gave: lowered, not ended (`ended`). O(the walk's history).
+    pub fn lowered(&self, thing: &Tid, ts: Ts) -> BTreeSet<Tid> {
+        let mut top: BTreeMap<Tid, Role> = self.input.records.first_admin(thing).map(|a| (a, RECORD_EDGE.role)).into_iter().collect();
+        for c in self.walked.history.iter().filter(|c| c.target == *thing) {
+            if let Some(e) = c.edge {
+                let r = top.entry(c.holder).or_insert(e.role);
+                *r = (*r).max(e.role);
+            }
+        }
+        let edges = self.edges_at(None);
+        top.into_iter().filter(|(m, r)| edges.get(m, thing).is_some_and(|e| e.alive_at(Some(ts)) && e.role < *r)).map(|(m, _)| m).collect()
+    }
+
     /// The holders with no edge alive on `thing` at `ts` that the walk saw one of: how each one's
     /// edge ended, the point of its last write (`None`: its record edge, never written) and the
     /// role the edge last gave (a removal's value saying retain gives none: the role before it).

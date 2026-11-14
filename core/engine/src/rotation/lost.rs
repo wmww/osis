@@ -138,12 +138,16 @@ fn over_held(core: &Core, a: &Tid) -> bool {
 
 /// Whether all that ended the node's (or a held key actor's) role on `a` is an `until` passing:
 /// walked with every edge's time ahead and every finalize undone (it counts as the `until` it
-/// finalizes, spec/permissions.md §2), a role is there. A removal saying its own retain is written
+/// finalizes, spec/permissions.md §2), a role giving what it holds is there. A removal saying its own retain is written
 /// with `until` 0, gone at every clock, so it never counts.
 pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
     let ts = osis_base::Ts::default();
     let Some(tl) = core.timelines.get(a) else { return false };
-    let role = |x: &Tid| tl.role_unfinalized(x, a, ts).is_some();
+    // a role giving what the node holds: read for read secrets (a lowering to sync with times
+    // ahead is no loss by time), sync for a sync-only holder
+    let reads = core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| *r != Role::Sync && e.role(*r).holds_any()));
+    let need = if reads { Role::Read } else { Role::Sync };
+    let role = |x: &Tid| tl.role_unfinalized(x, a, ts).is_some_and(|r| r >= need);
     core.member().as_ref().is_some_and(role) || core.key_actors.keys().any(role)
 }
 
@@ -490,16 +494,17 @@ fn reaching(core: &Core, a: &Tid) -> BTreeSet<Tid> {
 }
 
 /// Whether what this node holds says it lost `a` (spec/permissions.md §3: a node that learns it
-/// lost read access): an edge of it, a held key actor or an actor it reads ended on an actor whose
+/// lost read access): an edge of it, a held key actor or an actor it reads ended or lowered on an actor whose
 /// roles reach `a` (`reaching`), or reading-only secrets of it outlived their source commit.
 /// Secrets taken with no role yet (an entry box a link's redeemer
-/// opens before its grant applies, `may_learn`) are no loss until such an edge ends.
+/// opens before its grant applies, `may_learn`) are no loss until such an edge ends or lowers.
 fn loss_seen(core: &Core, a: &Tid) -> bool {
     let ts = now_ts(core);
     // reading-only secrets whose source commit is judged no more (dropped as bad input): what
     // made them readable is gone
     let stale = core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.reading.iter().any(|u| !core.waits.read_any(&u.commit)))));
-    stale || reaching(core, a).iter().any(|x| core.timelines.get(x).is_some_and(|tl| tl.ended(x, ts).keys().any(|h| ours(core, h))))
+    // an edge of ours ended, or lowered (to sync: it stays alive) on an actor reaching `a`
+    stale || reaching(core, a).iter().any(|x| core.timelines.get(x).is_some_and(|tl| tl.ended(x, ts).keys().chain(tl.lowered(x, ts).iter()).any(|h| ours(core, h))))
 }
 
 /// Whether held actor `a` is lost and its drop is this trigger's (spec/permissions.md §3): lost
@@ -636,7 +641,7 @@ impl Engine {
     pub fn lost_passed(&mut self, a: &Tid) -> Result<bool> {
         let crate::sync::ThingSync::Read(ids) = self.thing_sync(a)? else { return Ok(true) };
         let since = self.lost_cause(a);
-        Ok(ids.iter().all(|s| self.core.ix.passes.get(s).is_some_and(|b| *b > since)))
+        Ok(self.passed_after(ids.iter(), since))
     }
 
     /// The pass place of the newest role commit applied from elsewhere on an actor whose roles

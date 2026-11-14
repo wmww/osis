@@ -1310,6 +1310,9 @@ fn a_removed_reader_drops_once_a_pass_after_the_removal_ends_spec_permissions_3(
     assert!(e.lost_due(&t).unwrap(), "peer 1 lost t");
     e.note_complete_pass(&s, before).unwrap();
     assert!(!e.lost_passed(&t).unwrap(), "a pass begun before the removal arrived counts for nothing");
+    let at = *e.passes_wanted().unwrap().get(&s).expect("a pass after the removal wanted");
+    e.note_complete_pass(&s, at).unwrap();
+    assert!(!e.lost_passed(&t).unwrap(), "nor one at the removal's own place");
     assert!(e.epochs(&t).is_some_and(|x| x.read.holds_any()), "the secrets stay meanwhile");
     assert!(e.read_credentials(&s).unwrap().is_some(), "and it acts as a reader of t's sync ID");
     let after = e.begin_pass();
@@ -1317,6 +1320,71 @@ fn a_removed_reader_drops_once_a_pass_after_the_removal_ends_spec_permissions_3(
     assert!(e.lost_passed(&t).unwrap(), "a pass begun after it ended");
     assert!(e.drop_lost(&t).unwrap(), "dropped");
     assert!(e.epochs(&t).is_none_or(|x| !x.read.holds_any()));
+}
+
+// spec/permissions.md §3 (When it learns it: after the newest role commit applied from elsewhere
+// on the actor or an actor a role on which gives one on it): a role commit on M, which holds read
+// on t, wants a pass of t's sync ID from its arrival, though nothing on t arrived.
+#[test]
+fn a_role_commit_on_a_holder_wants_a_pass_of_what_it_holds_spec_permissions_3() {
+    let (mut lp, t) = grantee();
+    let (pa, pb) = (lp.peers[0].engine.account().unwrap().unwrap().0, lp.peers[1].engine.account().unwrap().unwrap().0);
+    let m = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &m, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    let e = &mut lp.peers[1].engine;
+    let sid = e.home_sync_id(&t).unwrap().unwrap();
+    let began = e.begin_pass();
+    for x in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
+        e.note_complete_pass(&x, began).unwrap();
+    }
+    assert!(!e.passes_wanted().unwrap().contains_key(&sid));
+    lp.peers[0].engine.grant(&m, &pb, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    let since = lp.peers[1].engine.passes_wanted().unwrap().get(&sid).copied();
+    assert!(since.is_some_and(|x| x > began), "t's sync ID wanted from the role commit on M: {since:?}");
+}
+
+// spec/permissions.md §3 (When it learns it: the removed node keeps the secrets through its pass),
+// spec/crypto.md §5 (the removal's rotation leaves it out): while peer 1, removed from t, still
+// holds t's old secrets and acts as a reader of t's sync ID, a write peer 0 makes after the
+// removal opens nothing at peer 1.
+#[test]
+fn a_removed_reader_opens_no_write_after_the_removal_while_it_waits_spec_permissions_3() {
+    let (mut lp, t) = grantee();
+    let pb = lp.peers[1].engine.account().unwrap().unwrap().0;
+    let sid = lp.peers[1].engine.home_sync_id(&t).unwrap().unwrap();
+    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: pb, new: None, retain: None }).unwrap();
+    spread(&mut lp);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("after")).unwrap();
+    let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
+    let mut rng = SeededRng::from_u64(11);
+    let (sealed, wrap) = lp.peers[0].engine.seal_body(&sid, &c, &[], &mut rng).unwrap().expect("peer 0 seals its write");
+    let e = &mut lp.peers[1].engine;
+    assert!(e.lost_due(&t).unwrap() && !e.lost_passed(&t).unwrap(), "peer 1 waits its pass");
+    assert!(e.read_credentials(&sid).unwrap().is_some(), "acting as a reader of t's sync ID");
+    assert!(matches!(e.open_entry(&sid, &sealed.id, &wrap, &sealed.blob, u64::MAX).unwrap(), osis_engine::sync::Opened::NotOpen), "the write after the removal stays sealed");
+}
+
+// spec/permissions.md §3 (Lost access: a node lowered below read drops the read secrets): a
+// lowering to sync leaves the edge alive; the drop is still due, and taken.
+#[test]
+fn a_lowering_to_sync_makes_the_drop_due_spec_permissions_3() {
+    let (mut lp, t, pb, _, blob) = granted(Role::Read);
+    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
+    spread(&mut lp);
+    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: pb, new: Some(edge_of(Role::Sync)), retain: None }).unwrap();
+    for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
+        if h == pb {
+            lp.peers[1].engine.take_inbox_blob(&b, true).unwrap();
+        }
+    }
+    spread(&mut lp);
+    let e = &mut lp.peers[1].engine;
+    assert!(e.lost_due(&t).unwrap(), "lowered to sync: the read secrets' drop is due");
+    e.role_duties().unwrap();
+    assert!(e.epochs(&t).is_none_or(|x| !x.read.holds_any()), "read secrets gone");
 }
 
 // spec/permissions.md §3 Complete pass, spec/sync-status.md §1: the want is derived from the role
