@@ -290,6 +290,7 @@ fn a_member_granted_again_writing_before_it_takes_it_reads_it_spec_sync_inbox_2(
     use crate::harness::Step::*;
     use crate::harness::history::Gives;
     crate::convergence::converge(347110579992, 3, &[New(0), Write(0, 0), Grant(0, 0, 1, Gives::Syncs), Run, Grant(0, 0, 1, Gives::Writes), Remove(0, 0, 1), Run, Disk(1, 3, Fail), Grant(0, 0, 1, Gives::Reads), Write(1, 0)], String::new());
+}
 
 /// Node 0 makes a thing in its synced group and grants node 1's account `role` on it; node 1
 /// accepts it and reads it.
