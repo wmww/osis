@@ -8,7 +8,8 @@ use super::tests::{commit_ids, edge, granted, newest_read, rotate_leaving_out, s
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::{LocalPeer, SealedPackage};
-use osis_base::{Ak, CommitId, Role, Tid, Value};
+use crate::sync::HeldBlob;
+use osis_base::{Ak, BlobId, CommitId, Role, SyncId, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use std::collections::BTreeSet;
 
@@ -365,4 +366,115 @@ fn openings_of_a_pending_write_survive_a_restart_spec_crypto_5() {
     assert!(!pks.iter().any(|p| p.id == w2), "V seals w2 it opened only under e_R");
     lp.deliver_sealed(M, &pks).unwrap();
     assert!(!reads(&mut lp, M, g, "w2"), "M reads R's write through V's fresh encryption");
+}
+
+// The sync facade's paths (`Engine::seal_body`, `rewrap`, `open_entry`): every fresh encryption
+// and wrap of a body goes through `Engine::seal` and `wrap_secret`.
+
+/// g's home sync ID and R's entry of `w` (`entry`) under it, as the sync store holds it.
+fn r_held(lp: &mut LocalPeer, g: Tid, w: CommitId, entry: &[SealedPackage]) -> (SyncId, HeldBlob) {
+    let s = lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap();
+    let e = &entry.iter().find(|p| p.id == w).unwrap().entries[0];
+    let wrap = e.wraps.iter().find(|(a, _)| *a == g).unwrap().1;
+    (s, HeldBlob { sync_id: s, wrap, bytes: e.blob.clone() })
+}
+
+/// V takes R's entry through the facade (`open_entry`, as sync takes an entry it pulled).
+fn v_takes(lp: &mut LocalPeer, s: &SyncId, w: CommitId, h: &HeldBlob) {
+    let id = osis_label::blob_id(&h.bytes);
+    let o = lp.peers[V].engine.open_entry(s, &id, &h.wrap, &h.bytes).unwrap();
+    assert!(matches!(o, crate::sync::Opened::Commit(c, _) if c == w), "V opens R's entry: {o:?}");
+}
+
+/// Whether M opens an entry V logs under g's sync ID (blob `id`, `bytes`, `wrap`): the wrap
+/// under a read secret M holds (it reads the header), and whether a part of it opens too.
+fn m_opens_entry(lp: &mut LocalPeer, g: Tid, w: CommitId, id: &BlobId, bytes: &[u8], wrap: &crate::sync::Wrap) -> (bool, bool) {
+    let m = &mut lp.peers[M].engine;
+    let Some((_, key)) = osis_label::unwrap_any(m.read_secrets(&g).iter(), id, wrap) else { return (false, false) };
+    let content = m.open_commit(bytes, &key).is_ok_and(|o| !o.commit.parts.is_empty());
+    m.openings_done(&w);
+    (true, content)
+}
+
+/// W reaches V: e_R is established there.
+fn w_arrives(lp: &mut LocalPeer, g: Tid, w_commits: &BTreeSet<CommitId>, e_r: &osis_crypto::Epoch) {
+    for pk in lp.packages(A2).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
+        let _ = lp.deliver(V, &pk);
+    }
+    assert!(lp.peers[V].engine.epochs(&g).unwrap().read.is_established(e_r));
+}
+
+// spec/crypto.md §5 (Passing on), spec/sync-judgement.md §1, §4 (a fresh encryption: logging
+// again, a deposit, a body with no held encryption): V takes R's entry of w through the facade,
+// lacking W. Its fresh encryption of w (`seal_body`, with R's entry as the held blob or with none)
+// is refused, so nothing of w goes under V's newest current epoch, which M holds. Once W arrives
+// V seals it, and M still opens nothing of it.
+#[test]
+fn facade_fresh_encryption_withheld_without_the_removal_spec_crypto_5() {
+    let (mut lp, g, w_commits, e_r, w, entry) = shape(false);
+    send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
+    let (s, held) = r_held(&mut lp, g, w, &entry);
+    v_takes(&mut lp, &s, w, &held);
+    assert!(reads(&mut lp, V, g, "w"));
+    assert!(!lp.peers[V].engine.epochs(&g).unwrap().read.is_established(&e_r));
+    let mut rng = osis_crypto::SeededRng::from_u64(21);
+    for given in [Vec::new(), vec![held.clone()]] {
+        if let Some((sealed, wrap)) = lp.peers[V].engine.seal_body(&s, &w, &given, &mut rng).unwrap() {
+            let (header, content) = m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap);
+            panic!("V sealed w lacking W (held blobs given: {}): M opens its header {header}, content {content}", given.len());
+        }
+    }
+    w_arrives(&mut lp, g, &w_commits, &e_r);
+    let (sealed, wrap) = lp.peers[V].engine.seal_body(&s, &w, &[held], &mut rng).unwrap().expect("V seals w once e_R is established");
+    assert_eq!(m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap), (false, false), "M opens V's fresh encryption of w");
+}
+
+// spec/crypto.md §5 (Passing on: the wrap of a blob carrying the part), spec/sync-judgement.md
+// §3 (Own store: a held blob verbatim under a wrap for S): V, lacking W, wraps R's held entry of
+// w for no sync ID (`rewrap`); once W arrives it does, under an epoch M lacks.
+#[test]
+fn facade_verbatim_wrap_withheld_without_the_removal_spec_crypto_5() {
+    let (mut lp, g, w_commits, e_r, w, entry) = shape(false);
+    send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
+    let (s, held) = r_held(&mut lp, g, w, &entry);
+    v_takes(&mut lp, &s, w, &held);
+    let id = osis_label::blob_id(&held.bytes);
+    if let Some(wrap) = lp.peers[V].engine.rewrap(&w, &id, &s, &held.wrap, &s).unwrap() {
+        let (header, content) = m_opens_entry(&mut lp, g, w, &id, &held.bytes, &wrap);
+        panic!("V wrapped R's entry lacking W: M opens its header {header}, content {content}");
+    }
+    w_arrives(&mut lp, g, &w_commits, &e_r);
+    let wrap = lp.peers[V].engine.rewrap(&w, &id, &s, &held.wrap, &s).unwrap().expect("V wraps R's entry once e_R is established");
+    assert_eq!(m_opens_entry(&mut lp, g, w, &id, &held.bytes, &wrap), (false, false));
+}
+
+// spec/crypto.md §5 (Passing on: the wrap gates the header): R logs a header-only blob of w
+// (a lasting header) under e_R; V, lacking W, takes it through the facade and never opens a
+// section of w. The epoch its wrap opened under counts as an opening of the header
+// (`note_unwrapped`), so V wraps the header for no sync ID, under no epoch of its choosing,
+// until W arrives; then M still opens nothing.
+#[test]
+fn facade_header_only_wrap_withheld_without_the_removal_spec_crypto_5() {
+    let (mut lp, g, w_commits, e_r, w, _) = shape(false);
+    send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
+    let r = &mut lp.peers[R].engine;
+    let mut body = r.body(&w).unwrap().unwrap();
+    body.parts.clear();
+    let hdr = r.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(22)).unwrap().unwrap();
+    let k = r.wrap_secret(&g, Some((&w, &[]))).unwrap().expect("R wraps its own");
+    let held = HeldBlob { sync_id: lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap(), wrap: osis_crypto::wrap(&k, &hdr.id, &hdr.key, 1).unwrap(), bytes: hdr.blob.clone() };
+    let s = held.sync_id;
+    v_takes(&mut lp, &s, w, &held);
+    assert!(!reads(&mut lp, V, g, "w"), "V holds w's header alone");
+    assert!(lp.peers[V].engine.wrap_secret(&g, Some((&w, &[]))).unwrap().is_none(), "V wraps w's header lacking W");
+    if let Some(wrap) = lp.peers[V].engine.rewrap(&w, &hdr.id, &s, &held.wrap, &s).unwrap() {
+        let (header, _) = m_opens_entry(&mut lp, g, w, &hdr.id, &hdr.blob, &wrap);
+        panic!("V wrapped w's header-only blob lacking W: M opens it {header}");
+    }
+    // after a restart too: the opening was written with the blob's ingest
+    lp.peers[V].restart(23).unwrap();
+    assert!(lp.peers[V].engine.wrap_secret(&g, Some((&w, &[]))).unwrap().is_none(), "the header opening lasts a restart");
+    w_arrives(&mut lp, g, &w_commits, &e_r);
+    let wrap = lp.peers[V].engine.rewrap(&w, &hdr.id, &s, &held.wrap, &s).unwrap().expect("V wraps the header once e_R is established");
+    assert_eq!(m_opens_entry(&mut lp, g, w, &hdr.id, &hdr.blob, &wrap), (false, false));
 }

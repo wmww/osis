@@ -799,9 +799,6 @@ indexes! {
     pub record_ids: JSetMap<SyncId, Tid>,
     /// Inbox deliveries owed per (commit, holder) (`sync::deliveries`).
     pub owed_inbox: JMap<(CommitId, Tid), Arc<crate::sync::deliveries::Owed>>,
-    /// The read epoch each commit's section of a thing is sealed under, as sealed or opened here
-    /// (`sync::bodies`).
-    pub section_epochs: JMap<(CommitId, Tid), osis_crypto::Epoch>,
     /// The commit and parts each opened or sealed blob holds (`sync::bodies`).
     pub blob_parts: JMap<osis_base::BlobId, Arc<(CommitId, crate::sync::PartSet, bool)>>,
     /// `blob_parts`' blobs per commit: they go with it (`sync::bodies::forget`).

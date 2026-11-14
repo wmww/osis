@@ -664,7 +664,7 @@ impl<T: std::fmt::Debug + PartialEq + 'static> Table for T {
 }
 
 /// The indexes `IndexDigest::tables` holds as text, by name.
-fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 44] {
+fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 43] {
     [
         ("by_thing", &*ix.by_thing),
         ("authors_on", &*ix.authors_on),
@@ -699,7 +699,6 @@ fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 44] {
         ("inbox_hints", &*ix.inbox_hints),
         ("owed_inbox", &*ix.owed_inbox),
         ("held_wait", &*ix.held_wait),
-        ("section_epochs", &*ix.section_epochs),
         ("blob_parts", &*ix.blob_parts),
         ("commit_blobs", &*ix.commit_blobs),
         ("record_blobs", &*ix.record_blobs),

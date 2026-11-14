@@ -220,11 +220,6 @@ impl Engine {
         framed(key, &env, &resolved, class, rng, &c).map(Some)
     }
 
-    /// `section_chain`, for a fresh encryption sealed elsewhere (`sync::bodies`).
-    pub(crate) fn section_chain_of(&self, t: &Tid) -> Vec<Tid> {
-        self.section_chain(t)
-    }
-
     /// The derivation chain a section lists for thing `t` (spec/wire.md §4): from its first admin
     /// up to and including the actor its read secret derives from; empty for a thing with
     /// secrets of its own or a key actor.

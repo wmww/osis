@@ -1,37 +1,26 @@
 //! What a sync ID carries of a commit, for readers (spec/sync-judgement.md §1-§2,
 //! spec/sync-inbox.md §4): each read sync ID's body of a held commit, the facts its judgement
-//! reads, this node's own commits under it, entries opened and sealed (the epoch each section is
-//! sealed under kept per commit and thing), and whether a writer may promote a deposit. The
-//! must-hold / may-hold / must-not-hold rule itself is `read`'s; these are its inputs.
+//! reads, this node's own commits under it, entries opened and sealed (the parts each blob holds),
+//! fresh encryptions (`seal_body`, spec/crypto.md §5 Passing on), and whether a writer may promote
+//! a deposit. The must-hold / may-hold / must-not-hold rule itself is `read`'s; these are its
+//! inputs.
 
-use super::{BodyFacts, BodyMeta, Opened, PartSet, Promote, ThingSync, Wrap};
+use super::{BodyFacts, BodyMeta, HeldBlob, Opened, PartSet, Promote, ThingSync, Wrap};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{BlobId, CommitId, Role, SyncId, Tid, WallMs};
-use osis_crypto::{Epoch, NodeRng, Secret32};
+use osis_crypto::NodeRng;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// `se/` + commit ID + tid: the read epoch commit's section of a thing is sealed under, as this
-/// node sealed or opened it (`section_epoch`).
-pub(crate) const SECTION_EPOCHS: &[u8] = b"se/";
 /// `bp/` + commit ID + blob ID: whether an opened or sealed blob of the commit is a per-sync-ID
 /// copy (one byte), then the parts it holds (`blob_parts`, `blob_copy`).
 pub(crate) const BLOB_PARTS: &[u8] = b"bp/";
 
-/// Loads the section epochs and blob parts (an open or reload).
+/// Loads the blob parts (an open or reload).
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
-    let bad = || Error::Corrupt("section epoch");
-    let mut rows = Vec::new();
-    tx.scan(SECTION_EPOCHS, |k, v| {
-        let c = CommitId(k.get(..32).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
-        let t = Tid::from_bytes(k.get(32..).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
-        let e = osis_base::decode(&v, &osis_base::Limits { max_depth: 4, max_bytes: v.len() }).map_err(|_| bad())?;
-        rows.push(((c, t), Epoch::from_wire(&e).map_err(|_| bad())?));
-        Ok(())
-    })?;
-    tx.core.ix.section_epochs.extend(rows);
+    let bad = || Error::Corrupt("blob parts");
     let mut parts = Vec::new();
     tx.scan(BLOB_PARTS, |k, v| {
         let c = CommitId(k.get(..32).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
@@ -48,21 +37,11 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-fn note_section(tx: &mut Tx<'_>, c: &CommitId, t: &Tid, e: &Epoch) -> Result<()> {
-    if tx.core.ix.section_epochs.get(&(*c, *t)) == Some(e) {
-        return Ok(());
-    }
-    // a memory commit's rows are memory, gone with it at a restart
-    let k = [SECTION_EPOCHS, &c.0, t.as_bytes()].concat();
-    tx.in_class(tx.is_memory_commit(c), |tx| Ok(tx.txn.put_local(&k, &osis_base::encode(&e.to_wire()), Shred::No)?))?;
-    tx.core.ix.section_epochs.insert((*c, *t), *e);
-    Ok(())
-}
-
 pub(super) fn note_blob(tx: &mut Tx<'_>, b: &BlobId, c: &CommitId, parts: &PartSet, copy: bool) -> Result<()> {
     if tx.core.ix.blob_parts.contains_key(b) {
         return Ok(());
     }
+    // a memory commit's rows are memory, gone with it at a restart
     let v: Vec<u8> = std::iter::once(u8::from(copy)).chain(parts.iter().flat_map(|p| (*p as u32).to_be_bytes())).collect();
     let k = [BLOB_PARTS, &c.0, &b.0].concat();
     tx.in_class(tx.is_memory_commit(c), |tx| Ok(tx.txn.put_local(&k, &v, Shred::No)?))?;
@@ -71,16 +50,11 @@ pub(super) fn note_blob(tx: &mut Tx<'_>, b: &BlobId, c: &CommitId, parts: &PartS
     Ok(())
 }
 
-/// Commit `c` is forgotten (`apply::unindex_commit`): its section epochs and blob parts go
-/// with it, in its transaction.
+/// Commit `c` is forgotten (`apply::unindex_commit`): its blob parts go with it, in its
+/// transaction.
 pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
-    let tids: Vec<Tid> = tx.core.ix.section_epochs.range((*c, Tid::from_bytes([0; 15]))..=(*c, Tid::from_bytes([0xff; 15]))).map(|((_, t), _)| *t).collect();
     let blobs: Vec<BlobId> = tx.core.ix.commit_blobs.get(c).into_iter().flatten().copied().collect();
     tx.in_class(tx.is_memory_commit(c), |tx| {
-        for t in tids {
-            tx.core.ix.section_epochs.remove(&(*c, t));
-            tx.txn.remove_local(&[SECTION_EPOCHS, &c.0, t.as_bytes()].concat(), Shred::No)?;
-        }
         for b in blobs {
             tx.core.ix.commit_blobs.remove(c, &b);
             tx.core.ix.blob_parts.remove(&b);
@@ -283,37 +257,16 @@ impl Engine {
         self.core.ix.blob_parts.get(b).map(|x| x.2)
     }
 
-    /// The read epoch commit `c`'s section of thing `t`, and its wrap under a sync ID of `t`, are
-    /// re-sealed under (the security rule of fresh encryptions, spec/crypto.md §5): the epoch it
-    /// was written under, as this node opened a blob of it (a section of `t`, else the wrap it
-    /// opened under) or sealed it; for a commit written here and never sealed, the epoch it is written under now
-    /// (`wrap_secret`'s). Only an epoch established here, whose secret is held: else `None`, and
-    /// nothing is sealed (a node holding a newer epoch without the removal that made it must not
-    /// seal under it, nor seal another writer's section under an epoch it was not written under).
-    /// The one place a fresh encryption picks a section's epoch.
-    fn section_epoch(&mut self, c: &CommitId, t: &Tid, parts: &[usize]) -> Result<Option<(Epoch, Secret32)>> {
-        let e = match self.core.ix.section_epochs.get(&(*c, *t)).copied() {
-            Some(e) => e,
-            None if self.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local) => {
-                let Some(s) = self.wrap_secret(t, Some((c, parts)))? else { return Ok(None) };
-                let Some(e) = self.epochs(t).and_then(|x| x.read.epochs().map(|(e, _)| *e).find(|e| x.read.secret(e).is_some_and(|k| k.expose() == s.expose()))) else { return Ok(None) };
-                e
-            }
-            None => return Ok(None),
-        };
-        let Some(ep) = self.epochs(t) else { return Ok(None) };
-        if !ep.read.is_established(&e) {
-            return Ok(None);
-        }
-        Ok(ep.read.secret(&e).map(|s| (e, s.clone())))
-    }
-
     /// `c`'s body under `s` as a fresh encryption, with its wrap for `s` (spec/sync-judgement.md
-    /// §1, §4: logging again, a non-writer's deposit, a body with no held encryption): a per-sync-
-    /// ID copy one section under its blob key; else each section under the epoch it was written
-    /// under (`section_epoch`), refused (`None`) when one is not established here. A held blob not
-    /// tombstoned under `s` is the store's to log verbatim; it never comes here.
-    pub(crate) fn seal_body_now(&mut self, s: &SyncId, c: &CommitId, rng: &mut dyn NodeRng) -> Result<Option<(crate::labeling::Sealed, Wrap)>> {
+    /// §1, §4: logging again, a non-writer's deposit, a body with no held encryption): the one
+    /// place sync encrypts a body (spec/crypto.md §5 Passing on). A per-sync-ID copy is one
+    /// section under its blob key (`seal_to`); else `Engine::seal` with every section of every
+    /// held genuine blob of `c` (`held`: shared blobs opened or sealed here, never a copy's), so
+    /// what this node may not encrypt under an epoch of its choosing goes as it came. The wrap is
+    /// `wrap_secret`'s for the parts the blob carries. `None`: nothing may be made now (a part
+    /// the body needs, or its header, this node read only under an epoch not established here).
+    /// A held blob not tombstoned under `s` is the store's to log verbatim (`rewrap`).
+    pub(crate) fn seal_body_now(&mut self, s: &SyncId, c: &CommitId, held: &[HeldBlob], rng: &mut dyn NodeRng) -> Result<Option<(crate::labeling::Sealed, Wrap)>> {
         let Some(t) = self.read_thing(s)? else { return Ok(None) };
         if let Some(meta) = self.sync_bodies_now(c)?.get(s).filter(|m| m.certificate).cloned() {
             return self.seal_certificate(&t, c, &meta, rng);
@@ -324,50 +277,53 @@ impl Engine {
             true => osis_label::Class::Ephemeral,
             false => osis_label::Class::Durable,
         };
-        let sealed = if b.to_label {
-            self.seal_to(&b, class, rng)?
-        } else {
-            let pt = self.body_plaintext(&b)?;
-            if pt.is_empty() {
-                return Ok(None);
+        let sealed = match b.to_label {
+            true => self.seal_to(&b, class, rng)?,
+            false => {
+                let sections = self.held_sections(c, held);
+                self.seal(&b, class, &sections, rng)?
             }
-            let blob = osis_commit::CommitBlob::decode_stored(&pt)?;
-            let resolved = self.resolved_header(&blob);
-            let things: Vec<Tid> = resolved.aspects.iter().map(|a| a.tid).collect();
-            let mut by: BTreeMap<Tid, Vec<usize>> = BTreeMap::new();
-            for p in &blob.parts {
-                if let Some(t) = things.get(p.ai) {
-                    by.entry(*t).or_default().push(p.ai);
-                }
-            }
-            let mut secrets: BTreeMap<Tid, (Epoch, Secret32, Vec<Tid>)> = BTreeMap::new();
-            for (x, ps) in &by {
-                let Some((e, k)) = self.section_epoch(c, x, ps)? else { return Ok(None) };
-                secrets.insert(*x, (e, k, self.section_chain_of(x)));
-            }
-            let env = osis_commit::seal_commit(&blob, |ai| things.get(ai).copied(), |x, _| secrets.get(&(*x)?).map(|(_, k, ch)| (k.clone(), ch.clone())), &[], rng)?;
-            let sealed = crate::labeling::frame_envelope(&env, &resolved, class, rng, &blob)?;
-            if b.parts.iter().any(|p| !sealed.parts.contains(p)) {
-                return Ok(None);
-            }
-            let id = *c;
-            self.run(|tx| {
-                for (x, (e, _, _)) in &secrets {
-                    note_section(tx, &id, x, e)?;
-                }
-                Ok(())
-            })?;
-            Some(sealed)
         };
         let Some(sealed) = sealed else { return Ok(None) };
-        // the wrap (a copy's only key) by the same rule as a section: the epoch the commit was
-        // written under at S's thing, never this node's newest (spec/crypto.md §5)
-        let Some((_, w)) = self.section_epoch(c, &t, &b.parts)? else { return Ok(None) };
+        if b.parts.iter().any(|p| !sealed.parts.contains(p)) {
+            return Ok(None);
+        }
+        let Some(w) = self.wrap_secret(&t, Some((c, &sealed.parts)))? else { return Ok(None) };
         let wrap = osis_crypto::wrap(&w, &sealed.id, &sealed.key, b.order)?;
         let (id, ps) = (*c, sealed.parts.iter().copied().collect::<PartSet>());
         let (bid, copy) = (sealed.id, b.to_label);
         self.run(|tx| note_blob(tx, &bid, &id, &ps, copy))?;
         Ok(Some((sealed, wrap)))
+    }
+
+    /// The sections of commit `c`'s held genuine blobs among `held` (each opened by its entry's
+    /// wrap under a read secret of its sync ID's thing): shared blobs of `c` opened or sealed
+    /// here, never a copy (a section under its blob key is never copied into another encryption,
+    /// spec/sync-judgement.md §1). Opened or not; one per aspect set, largest first, none sharing
+    /// an aspect with one taken (a commit's sections never overlap).
+    fn held_sections(&mut self, c: &CommitId, held: &[HeldBlob]) -> Vec<osis_commit::Section> {
+        let mut all = Vec::new();
+        for h in held {
+            let b = osis_label::blob_id(&h.bytes);
+            if self.core.ix.blob_parts.get(&b).is_none_or(|x| x.0 != *c || x.2) {
+                continue;
+            }
+            let Ok(Some(t)) = self.read_thing(&h.sync_id) else { continue };
+            let Some((_, key)) = osis_label::unwrap_any(self.read_secrets(&t).iter(), &b, &h.wrap) else { continue };
+            let Ok((_, pt)) = osis_label::open(&h.bytes, &key) else { continue };
+            let Ok(env) = osis_commit::Envelope::decode(&pt) else { continue };
+            if env.id() != *c {
+                continue;
+            }
+            all.extend(env.sections.into_iter().filter(|sec| osis_crypto::unwrap_section(&key, c, &sec.wrap).is_err()));
+        }
+        all.sort_by_key(|sec| std::cmp::Reverse(sec.ais.len()));
+        let mut seen = BTreeSet::new();
+        all.retain(|sec| sec.ais.iter().all(|ai| !seen.contains(ai)) && {
+            seen.extend(sec.ais.iter().copied());
+            true
+        });
+        all
     }
 
     /// Certificate body `meta` of commit `c` under a sync ID of thing `t`, sealed (spec/sync-
@@ -391,8 +347,8 @@ impl Engine {
 
     /// A wrap for `to` of held blob `b` of commit `c`, whose entry under `from` has wrap
     /// `from_wrap` (spec/sync-judgement.md §3 Own store: a held blob logged verbatim under a wrap
-    /// for S): the blob key and order from that wrap, wrapped under the epoch `c` was written
-    /// under at `to`'s thing (`section_epoch`). `None` when either wrap's epoch is not held, when
+    /// for S): the blob key and order from that wrap, wrapped as `wrap_secret` says for the parts
+    /// `b` carries (spec/crypto.md §5 Passing on). `None` when either wrap's epoch is not held, when
     /// `b` is not a shared blob opened or sealed here, or when `to`'s body of `c` is no shared
     /// blob's: a per-sync-ID copy is never shared with another sync ID, and only a copy holds a
     /// copy's body (spec/sync-judgement.md §1 Per-sync-ID copies). A certificate copy of exactly
@@ -412,18 +368,15 @@ impl Engine {
         let (Some(tf), Some(tt)) = (self.read_thing(from)?, self.read_thing(to)?) else { return Ok(None) };
         let Some((key, order)) = self.read_secrets(&tf).iter().find_map(|x| osis_crypto::unwrap_order(x, b, from_wrap).ok()) else { return Ok(None) };
         let parts: Vec<usize> = self.blob_parts_now(b).map(|p| p.into_iter().collect()).unwrap_or_default();
-        let w = match certificate {
-            true => self.wrap_secret(&tt, Some((c, &parts)))?,
-            false => self.section_epoch(c, &tt, &parts)?.map(|x| x.1),
-        };
-        let Some(w) = w else { return Ok(None) };
+        let Some(w) = self.wrap_secret(&tt, Some((c, &parts)))? else { return Ok(None) };
         Ok(Some(osis_crypto::wrap(&w, b, &key, order)?))
     }
 
     /// Opens entry `blob` (`bytes`, its `wrap`) logged under `s` and takes what it holds
     /// (spec/sync-ids.md §5, spec/sync-inbox.md §2): an inbox blob under an inbox of this node's;
-    /// a commit blob whose wrap opens under a held read secret of `s`'s thing, ingested, each
-    /// section's epoch kept (`section_epoch`); a chunk, tree node or page a held commit is
+    /// a commit blob whose wrap opens under a held read secret of `s`'s thing, opened
+    /// (`open_commit`, each section's opening kept) and ingested, the epoch its wrap opened under
+    /// kept as an opening of its header (`note_unwrapped`); a chunk, tree node or page a held commit is
     /// waiting for, stored.
     pub(crate) fn open_entry_now(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8]) -> Result<Opened> {
         if osis_label::blob_id(bytes) != *blob {
@@ -438,8 +391,7 @@ impl Engine {
             return Ok(Opened::Linked);
         }
         let Some(t) = self.read_thing(s)? else { return Ok(Opened::NotOpen) };
-        let secrets = self.read_secrets(&t);
-        let Some((i, key)) = osis_label::unwrap_any(secrets.iter(), blob, wrap) else { return Ok(Opened::NotOpen) };
+        let Some((_, key)) = osis_label::unwrap_any(self.read_secrets(&t).iter(), blob, wrap) else { return Ok(Opened::NotOpen) };
         let opened = match self.open_commit(bytes, &key) {
             Ok(o) => o,
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
@@ -453,52 +405,20 @@ impl Engine {
             }
         };
         let id = opened.commit.id();
+        // the epoch the wrap opened under: whoever unwraps an entry reads the header
+        // (`labeling::opened::header_passes`)
+        if let Some((e, _)) = self.read_epochs(&t, &[]).into_iter().find(|(_, x)| osis_crypto::unwrap(x, blob, wrap).is_ok()) {
+            self.note_unwrapped(&id, &t, &e);
+        }
         let parts: PartSet = opened.parts().into_iter().collect();
         let ingested = match self.ingest(&opened.plaintext, Vec::new()) {
             Ok(i) => i,
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
             Err(_) => return Ok(Opened::Bad),
         };
-        if !opened.copy {
-            self.note_section_epochs(&id, bytes, &key)?;
-        }
-        // no section of S's thing gave its epoch (a copy, or sections on other things only): the
-        // epoch the entry's wrap opened under
-        let wrapped = match self.core.ix.section_epochs.get(&(id, t)) {
-            Some(_) => None,
-            None => secrets.get(i).and_then(|x| self.epochs(&t).and_then(|ep| ep.read.epochs().map(|(e, _)| *e).find(|e| ep.read.reading_secret(e).is_some_and(|y| y.expose() == x.expose())))),
-        };
         let b = *blob;
-        self.run(|tx| {
-            if let Some(e) = &wrapped {
-                note_section(tx, &id, &t, e)?;
-            }
-            note_blob(tx, &b, &id, &parts, opened.copy)
-        })?;
+        self.run(|tx| note_blob(tx, &b, &id, &parts, opened.copy))?;
         Ok(Opened::Commit(id, ingested))
-    }
-
-    /// Keeps, per section of commit blob `bytes` (blob key `key`) on a thing this node reads, the
-    /// read epoch whose secret unwraps it (`section_epoch`).
-    fn note_section_epochs(&mut self, id: &CommitId, bytes: &[u8], key: &Secret32) -> Result<()> {
-        let (_, pt) = osis_label::open(bytes, key)?;
-        let env = osis_commit::Envelope::decode(&pt)?;
-        let Some(h) = self.header(id) else { return Ok(()) };
-        let mut found = Vec::new();
-        for sec in &env.sections {
-            let Some(t) = sec.ais.first().and_then(|ai| h.aspects.get(*ai)).map(|a| a.tid) else { continue };
-            let Some(ep) = self.epochs(&t) else { continue };
-            if let Some(e) = ep.read.epochs().map(|(e, _)| *e).find(|e| ep.read.secret(e).is_some_and(|s| osis_crypto::unwrap_section(s, id, &sec.wrap).is_ok())) {
-                found.push((t, e));
-            }
-        }
-        let c = *id;
-        self.run(|tx| {
-            for (t, e) in &found {
-                note_section(tx, &c, t, e)?;
-            }
-            Ok(())
-        })
     }
 
     /// Whether a writer may promote deposited commit `c` under `s` (spec/sync-inbox.md §4): only

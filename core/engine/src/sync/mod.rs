@@ -46,6 +46,15 @@ pub type Wrap = [u8; WRAP_LEN];
 /// The parts (aspect indexes) a blob holds.
 pub type PartSet = BTreeSet<usize>;
 
+/// A blob of a commit held in the sync store, with an entry's wrap of it under a sync ID: what a
+/// fresh encryption copies sections from (`Engine::seal_body`).
+#[derive(Clone, Debug)]
+pub struct HeldBlob {
+    pub sync_id: SyncId,
+    pub wrap: Wrap,
+    pub bytes: Vec<u8>,
+}
+
 /// The steps of a sync ID from its genesis step to its head, each with its claim set while held
 /// (spec/sync-ids.md §5 Path).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -432,9 +441,12 @@ impl Engine {
         Ok(self.blob_dropped_now(b))
     }
 
-    /// `c`'s body under `s` sealed, with its wrap for `s`.
-    pub fn seal_body(&mut self, s: &SyncId, c: &CommitId, rng: &mut dyn NodeRng) -> Result<Option<(Sealed, Wrap)>> {
-        self.seal_body_now(s, c, rng)
+    /// `c`'s body under `s` as a fresh encryption, with its wrap for `s`: the one place sync
+    /// encrypts a body (spec/crypto.md §5 Passing on). `held`: every blob of `c` the store holds
+    /// bytes of, each with an entry's wrap (its sections go as they came where this node may not
+    /// encrypt them). `None`: nothing may be made now; ask again when keys change.
+    pub fn seal_body(&mut self, s: &SyncId, c: &CommitId, held: &[HeldBlob], rng: &mut dyn NodeRng) -> Result<Option<(Sealed, Wrap)>> {
+        self.seal_body_now(s, c, held, rng)
     }
 
     /// A wrap for `to` of held blob `b` of commit `c`, from its entry's wrap under `from`: the

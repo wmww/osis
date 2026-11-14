@@ -463,13 +463,11 @@ fn bodies_and_facts_under_home_spec_sync_judgement_1() {
     assert!(e.own_commits(&home).unwrap().contains(&c));
 }
 
-// spec/crypto.md §5 (passing on: a fresh encryption under the epoch each section was written
-// under, refused where it is not established here): a held commit this node neither wrote nor opened from a blob is never sealed (its
-// written epoch unknown); an own commit is sealed under the epoch it is written under, and the
-// blob opens with its wrap under home's read secret.
+// spec/sync-judgement.md §1 (a fresh encryption of an own commit), spec/crypto.md §5 (who wraps
+// under what): the blob opens with its wrap under home's read secret, and its parts are noted.
 #[test]
-fn seal_body_never_guesses_a_section_epoch_spec_crypto_5() {
-    let (mut lp, ps) = people(2);
+fn seal_body_seals_an_own_commit_spec_crypto_5() {
+    let (mut lp, _) = people(2);
     let (_, d0) = lp.peers[0].engine.account().unwrap().unwrap();
     let home = lp.peers[0].engine.home_sync_id(&d0).unwrap().unwrap();
     let t = thing_of(&mut lp, 0, d0);
@@ -478,39 +476,39 @@ fn seal_body_never_guesses_a_section_epoch_spec_crypto_5() {
     m.set(t, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(5)).unwrap();
     let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
     let mut rng = SeededRng::from_u64(3);
-    let (sealed, wrap) = lp.peers[0].engine.seal_body(&home, &c, &mut rng).unwrap().expect("an own commit seals");
+    let (sealed, wrap) = lp.peers[0].engine.seal_body(&home, &c, &[], &mut rng).unwrap().expect("an own commit seals");
     assert_eq!(lp.peers[0].engine.blob_parts(&sealed.id).unwrap().map(|p| p.into_iter().collect::<Vec<_>>()), Some(sealed.parts.clone()));
     let rc = lp.peers[0].engine.read_credentials(&home).unwrap().unwrap();
     assert!(osis_label::unwrap_any(rc.read_secrets.iter().map(|x| &x.1), &sealed.id, &wrap).is_some(), "the wrap opens under home's read secret");
-    let _ = ps;
 }
 
-/// The read epoch whose secret unwraps the section of `t` in sealed commit blob `bytes` (blob key
-/// `key`), among `t`'s epochs held at peer `i`.
-fn section_epoch_of(lp: &LocalPeer, i: usize, t: &Tid, c: &osis_base::CommitId, bytes: &[u8], key: &osis_crypto::Secret32) -> Option<osis_crypto::Epoch> {
-    let (_, pt) = osis_label::open(bytes, key).unwrap();
-    let env = osis_commit::Envelope::decode(&pt).unwrap();
-    let ep = lp.peers[i].engine.epochs(t).unwrap();
-    let found: Vec<_> = env.sections.iter().flat_map(|sec| ep.read.epochs().filter(|(e, _)| ep.read.secret(e).is_some_and(|s| osis_crypto::unwrap_section(s, c, &sec.wrap).is_ok())).map(|(e, _)| *e).collect::<Vec<_>>()).collect();
-    assert!(found.len() <= 1, "one section of the thing");
-    found.first().copied()
+/// The parts of `bytes` (blob `id`, `wrap` under a sync ID of `t`) that open at peer `i`.
+fn parts_opened(lp: &mut LocalPeer, i: usize, t: &Tid, id: &osis_base::BlobId, bytes: &[u8], wrap: &[u8]) -> Vec<usize> {
+    let e = &mut lp.peers[i].engine;
+    let key = osis_label::unwrap_any(e.read_secrets(t).iter(), id, wrap).expect("the wrap opens").1;
+    let o = e.open_commit(bytes, &key).unwrap();
+    let c = o.commit.id();
+    e.openings_done(&c);
+    o.commit.parts.iter().map(|p| p.ai).collect()
 }
 
-// spec/crypto.md §5 (passing on), spec/sync-judgement.md §4 (logs the body again once): a reader
-// holding a newer read epoch seals another writer's section under the epoch it was written under
-// (as it opened it), never under its newest; a body it holds but never opened from a blob is
-// refused (its written epoch unknown).
+// spec/sync-judgement.md §1 (a section the node cannot open it copies verbatim when it encrypts
+// the commit again), spec/crypto.md §5 (Passing on: a held section of the commit, opened or not):
+// peer 0 writes c on t (peer 1 reads it) and u (peer 1 does not). Peer 1's fresh encryption of
+// c under t's sync ID, given the blob it took (`HeldBlob`), carries u's section as it came;
+// given none, it has nothing of u.
 #[test]
-fn seal_body_keeps_another_writers_section_epoch_spec_crypto_5() {
-    let (mut lp, ps) = people(3);
+fn seal_body_carries_held_sections_verbatim_spec_crypto_5() {
+    let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.give_own_secrets(&t).unwrap();
-    for p in [ps[1], ps[2]] {
-        let done = lp.peers[0].engine.grant(&t, &p, &edge_of(Role::Read)).unwrap();
-        for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
-            if let Some(i) = ps.iter().position(|x| *x == h) {
-                lp.peers[i].engine.take_inbox_blob(&b, true).unwrap();
-            }
+    let u = thing_of(&mut lp, 0, ps[0]);
+    for x in [t, u] {
+        lp.peers[0].engine.give_own_secrets(&x).unwrap();
+    }
+    let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
+        if h == ps[1] {
+            lp.peers[1].engine.take_inbox_blob(&b, true).unwrap();
         }
     }
     for i in 0..2 {
@@ -519,28 +517,24 @@ fn seal_body_keeps_another_writers_section_epoch_spec_crypto_5() {
     }
     spread(&mut lp);
     let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
-    // peer 0 writes c under epoch e1; peer 1 opens it from the blob peer 0 logged
     let mut m = Mutation::new();
-    m.set(t, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(7)).unwrap();
+    for x in [t, u] {
+        m.set(x, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(7)).unwrap();
+    }
     let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
-    let e1 = crate::flows::newest_read(&lp, 0, t).unwrap();
+    let ais = |x: Tid, e: &mut osis_engine::Engine| e.header(&c).unwrap().aspects.iter().position(|a| a.tid == x).unwrap();
+    let (at, au) = (ais(t, &mut lp.peers[0].engine), ais(u, &mut lp.peers[0].engine));
     let mut rng = SeededRng::from_u64(5);
-    let (sealed, wrap) = lp.peers[0].engine.seal_body(&s, &c, &mut rng).unwrap().expect("peer 0 seals its own");
+    let (sealed, wrap) = lp.peers[0].engine.seal_body(&s, &c, &[], &mut rng).unwrap().expect("peer 0 seals its own");
+    assert!(sealed.parts.contains(&au), "peer 0's blob carries u's part");
     assert!(matches!(lp.peers[1].engine.open_entry(&s, &sealed.id, &wrap, &sealed.blob).unwrap(), osis_engine::sync::Opened::Commit(x, _) if x == c));
-    // removing peer 2 rotates read: peer 1 holds a newer epoch
-    lp.peers[0].engine.demote(&t, &Demotion { holder: ps[2], new: None, retain: None }).unwrap();
-    spread(&mut lp);
-    let e2 = crate::flows::newest_read(&lp, 1, t).unwrap();
-    assert_ne!(e1, e2, "peer 1 holds the rotation's epoch");
-    let (again, _) = lp.peers[1].engine.seal_body(&s, &c, &mut rng).unwrap().expect("sealed under its written epoch");
-    assert_eq!(section_epoch_of(&lp, 1, &t, &c, &again.blob, &again.key), Some(e1), "the section under the epoch it was written under, not the newest");
-    // a body peer 1 holds but never opened from a blob: its written epoch is unknown here
-    let mut m = Mutation::new();
-    m.set(t, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(8)).unwrap();
-    let c2 = lp.peers[0].engine.commit(m).unwrap().unwrap();
-    spread(&mut lp);
-    assert!(lp.peers[1].engine.core.ix.commits.contains_key(&c2));
-    assert!(lp.peers[1].engine.seal_body(&s, &c2, &mut rng).unwrap().is_none(), "refused: never guessed");
+    let held = osis_engine::sync::HeldBlob { sync_id: s, wrap, bytes: sealed.blob.clone() };
+    let (again, w) = lp.peers[1].engine.seal_body(&s, &c, &[held], &mut rng).unwrap().expect("peer 1 seals c again");
+    assert_ne!(again.id, sealed.id, "a fresh blob");
+    let got = parts_opened(&mut lp, 0, &t, &again.id, &again.blob, &w);
+    assert!(got.contains(&at) && got.contains(&au), "u's section copied as it came: {got:?}");
+    let (bare, w) = lp.peers[1].engine.seal_body(&s, &c, &[], &mut rng).unwrap().expect("peer 1 seals its part of c");
+    assert!(!parts_opened(&mut lp, 0, &t, &bare.id, &bare.blob, &w).contains(&au), "with no held blob given, nothing of u");
 }
 
 /// Commit `c` as peer `i` stores it.
@@ -624,7 +618,7 @@ fn blob_rows_go_with_their_commit() {
     let mut m = Mutation::new();
     m.set(t, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(5)).unwrap();
     let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
-    let (sealed, _) = lp.peers[0].engine.seal_body(&home, &c, &mut SeededRng::from_u64(3)).unwrap().unwrap();
+    let (sealed, _) = lp.peers[0].engine.seal_body(&home, &c, &[], &mut SeededRng::from_u64(3)).unwrap().unwrap();
     lp.peers[0].restart(8).unwrap();
     assert!(lp.peers[0].engine.blob_parts(&sealed.id).unwrap().is_some(), "durable");
     lp.peers[0].engine.forget_commits(&[c]).unwrap();
@@ -640,14 +634,13 @@ fn wrap_opens_under(lp: &LocalPeer, i: usize, t: &Tid, e: &osis_crypto::Epoch, b
     ep.read.secret(e).is_some_and(|x| osis_crypto::unwrap(x, b, wrap).is_ok())
 }
 
-// spec/crypto.md §5 (who wraps under what: a fresh encryption of a body wraps under the epoch
-// the commit was written under at S's thing, never the node's newest), spec/sync-judgement.md
-// §1: a reader that is no writer of S re-seals a shared blob and a per-sync-ID copy after a
-// rotation it holds, and rewraps the held shared blob; each wrap opens under the epoch it opened
-// with, not the newer one. A copy's wrap is its only key, so a newest-epoch wrap would hand it
-// to whoever holds only that epoch.
+// spec/crypto.md §5 (who wraps under what; Passing on), spec/sync-judgement.md §1: a reader that
+// is no writer of S makes a fresh encryption of a shared blob and of a per-sync-ID copy after a
+// rotation that removed peer 2, and logs the held shared blob verbatim (`rewrap`): each wrap is
+// `wrap_secret`'s, under the newest epoch, which the removed peer lacks (a copy's wrap is its only
+// key).
 #[test]
-fn a_fresh_encryption_wraps_under_its_written_epoch_spec_crypto_5() {
+fn a_fresh_encryption_wraps_beyond_the_removed_spec_crypto_5() {
     let (mut lp, ps) = people(3);
     let t = thing_of(&mut lp, 0, ps[0]);
     lp.peers[0].engine.give_own_secrets(&t).unwrap();
@@ -680,7 +673,7 @@ fn a_fresh_encryption_wraps_under_its_written_epoch_spec_crypto_5() {
     let mut rng = SeededRng::from_u64(5);
     let mut held = Vec::new();
     for c in [plain, copy] {
-        let (sealed, wrap) = lp.peers[0].engine.seal_body(&s, &c, &mut rng).unwrap().expect("peer 0 seals its own");
+        let (sealed, wrap) = lp.peers[0].engine.seal_body(&s, &c, &[], &mut rng).unwrap().expect("peer 0 seals its own");
         assert!(matches!(lp.peers[1].engine.open_entry(&s, &sealed.id, &wrap, &sealed.blob).unwrap(), osis_engine::sync::Opened::Commit(x, _) if x == c));
         held.push((sealed.id, wrap));
     }
@@ -690,14 +683,14 @@ fn a_fresh_encryption_wraps_under_its_written_epoch_spec_crypto_5() {
     let e2 = crate::flows::newest_read(&lp, 1, t).unwrap();
     assert_ne!(e1, e2, "peer 1 holds the rotation's epoch");
     for (name, c) in [("shared blob", plain), ("copy", copy)] {
-        let (again, wrap) = lp.peers[1].engine.seal_body(&s, &c, &mut rng).unwrap().unwrap_or_else(|| panic!("{name}: sealed under its written epoch"));
-        assert!(wrap_opens_under(&lp, 1, &t, &e1, &again.id, &wrap), "{name}: wrapped under the epoch it was written under");
-        assert!(!wrap_opens_under(&lp, 1, &t, &e2, &again.id, &wrap), "{name}: not under the newest");
+        let (again, wrap) = lp.peers[1].engine.seal_body(&s, &c, &[], &mut rng).unwrap().unwrap_or_else(|| panic!("{name}: sealed"));
+        assert!(wrap_opens_under(&lp, 1, &t, &e2, &again.id, &wrap), "{name}: wrapped under the newest epoch");
+        assert!(!wrap_opens_under(&lp, 1, &t, &e1, &again.id, &wrap), "{name}: not under one the removed peer holds");
     }
     // the held shared blob logged verbatim again (`rewrap`): its wrap by the same rule
     let (b, w) = &held[0];
-    let again = lp.peers[1].engine.rewrap(&plain, b, &s, w, &s).unwrap().expect("its written epoch is held");
-    assert!(wrap_opens_under(&lp, 1, &t, &e1, b, &again) && !wrap_opens_under(&lp, 1, &t, &e2, b, &again), "rewrapped under the epoch it was written under");
+    let again = lp.peers[1].engine.rewrap(&plain, b, &s, w, &s).unwrap().expect("rewrapped");
+    assert!(wrap_opens_under(&lp, 1, &t, &e2, b, &again) && !wrap_opens_under(&lp, 1, &t, &e1, b, &again), "rewrapped under the newest epoch");
 }
 
 // spec/sync-inbox.md §2 (logging: a sender that does not write the inbox deposits under the
@@ -751,7 +744,7 @@ fn read_facts_of_own_and_role_commits_spec_sync_judgement_3() {
     let r = e.read_facts(&s, &g).unwrap();
     assert!(r.own && r.role, "the grant is an own role commit");
     assert_eq!(e.body_fall_mark(&c).unwrap(), 0, "nothing fell yet");
-    let (sealed, wrap) = e.seal_body(&s, &c, &mut SeededRng::from_u64(4)).unwrap().unwrap();
+    let (sealed, wrap) = e.seal_body(&s, &c, &[], &mut SeededRng::from_u64(4)).unwrap().unwrap();
     assert_eq!(e.blob_copy(&sealed.id).unwrap(), Some(false));
     // the held blob logged verbatim under the same sync ID: a wrap of the same key
     let again = e.rewrap(&c, &sealed.id, &s, &wrap, &s).unwrap().expect("its epoch is held");
@@ -805,8 +798,8 @@ fn a_copy_is_never_logged_verbatim_elsewhere_spec_sync_judgement_1() {
     let c = *done.commits.iter().find(|c| e.sync_bodies(c).unwrap().get(&s).is_some_and(|b| b.copy)).expect("a copy under t's sync ID");
     assert!(e.sync_bodies(&c).unwrap().get(&su).is_some_and(|b| !b.copy), "the shared blob under u's");
     let mut rng = SeededRng::from_u64(9);
-    let (copy, copy_wrap) = e.seal_body(&s, &c, &mut rng).unwrap().expect("the copy seals");
-    let (shared, shared_wrap) = e.seal_body(&su, &c, &mut rng).unwrap().expect("the shared blob seals");
+    let (copy, copy_wrap) = e.seal_body(&s, &c, &[], &mut rng).unwrap().expect("the copy seals");
+    let (shared, shared_wrap) = e.seal_body(&su, &c, &[], &mut rng).unwrap().expect("the shared blob seals");
     assert_eq!((e.blob_copy(&copy.id).unwrap(), e.blob_copy(&shared.id).unwrap()), (Some(true), Some(false)));
     assert!(e.rewrap(&c, &copy.id, &s, &copy_wrap, &su).unwrap().is_none(), "a copy goes under no other sync ID");
     assert!(e.rewrap(&c, &shared.id, &su, &shared_wrap, &s).unwrap().is_none(), "a copy body is held only by a copy");
@@ -907,7 +900,7 @@ fn another_nodes_card_is_in_the_required_set_spec_sync_judgement_2() {
     assert!(b.get(&home).is_some_and(|m| m.certificate && m.copy && !m.parts.is_empty()), "the card's certificate body under D's home: {b:?}");
     let f = e.body_facts(&home, &r).unwrap();
     assert!(f.required && !f.closure, "{f:?}");
-    let (sealed, wrap) = e.seal_body(&home, &r, &mut SeededRng::from_u64(1)).unwrap().expect("sealed as a certificate copy");
+    let (sealed, wrap) = e.seal_body(&home, &r, &[], &mut SeededRng::from_u64(1)).unwrap().expect("sealed as a certificate copy");
     assert_eq!(e.blob_copy(&sealed.id).unwrap(), Some(true));
     match lp.peers[1].engine.open_entry(&home, &sealed.id, &wrap, &sealed.blob).unwrap() {
         osis_engine::sync::Opened::Commit(c, _) => assert_eq!(c, r),
@@ -1284,10 +1277,10 @@ fn a_certificate_copy_is_one_blob_under_every_sync_id_spec_sync_judgement_1() {
         matches!((b.get(&s), b.get(&su)), (Some(x), Some(y)) if x.certificate && y.certificate && x.parts == y.parts)
     }).expect("one certificate body under both");
     let mut rng = SeededRng::from_u64(5);
-    let (sealed, wrap) = e.seal_body(&s, &c, &mut rng).unwrap().expect("sealed");
+    let (sealed, wrap) = e.seal_body(&s, &c, &[], &mut rng).unwrap().expect("sealed");
     let to = e.rewrap(&c, &sealed.id, &s, &wrap, &su).unwrap().expect("the same blob under u's sync ID");
     if e.sync_bodies(&c).unwrap().get(&home).is_some_and(|m| !m.certificate) {
-        let (copy, copy_wrap) = e.seal_body(&home, &c, &mut rng).unwrap().expect("the closure copy");
+        let (copy, copy_wrap) = e.seal_body(&home, &c, &[], &mut rng).unwrap().expect("the closure copy");
         assert!(e.rewrap(&c, &copy.id, &home, &copy_wrap, &s).unwrap().is_none(), "a per-sync-ID copy is no certificate elsewhere");
         assert!(e.rewrap(&c, &sealed.id, &s, &wrap, &home).unwrap().is_none(), "a certificate is no closure body");
     }

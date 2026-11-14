@@ -27,6 +27,11 @@
 //! ingest that keeps the commit (held or pending), and one that keeps nothing is fetched and
 //! opened again.
 //!
+//! A header is read by whoever unwraps an entry of the commit's blob, so the epoch an entry's wrap
+//! opened under (`note_unwrapped`, per thing of the sync ID) is an opening of the header: a
+//! header this node read only under epochs not established here is wrapped by it under none of
+//! its own (`header_passes`), whether it came header-only or its parts were dropped since.
+//!
 //! Storage: an opening rides in memory (`Core::openings`) from `Engine::open_commit` to the
 //! commit's next ingest, which writes it where the commit is then held or pending
 //! (`persist`) and lets go of it whatever the outcome; rows go with the commit's record
@@ -52,6 +57,14 @@ fn key(c: &CommitId, ai: usize, e: &Epoch) -> Vec<u8> {
     [records::OPENED_UNDER, c.0.as_slice(), &u32::try_from(ai).unwrap_or(u32::MAX).to_be_bytes(), &e.n().to_be_bytes(), e.nonce()].concat()
 }
 
+/// The part index a header opening's key carries in place of a part's (`note_unwrapped`).
+const HEADER: u32 = u32::MAX;
+
+/// A header opening: the epoch of thing `t` an entry's wrap of a blob of `c` opened under.
+fn header_key(c: &CommitId, t: &Tid, e: &Epoch) -> Vec<u8> {
+    [records::OPENED_UNDER, c.0.as_slice(), &HEADER.to_be_bytes(), t.as_bytes(), &e.n().to_be_bytes(), e.nonce()].concat()
+}
+
 fn value(genuine: bool, delta: &[u8]) -> Vec<u8> {
     [&[u8::from(genuine)][..], &osis_base::hash::hash(delta)].concat()
 }
@@ -73,7 +86,7 @@ impl Engine {
     /// The read epochs of thing `t` held here with their secrets: its own (or its derived ones),
     /// those derived from its first admin's, and those derived down a section's chain
     /// (`chain_epochs`): every secret `open_commit` tries.
-    pub(super) fn read_epochs(&self, t: &Tid, chain: &[Tid]) -> Vec<(Epoch, osis_crypto::Secret32)> {
+    pub(crate) fn read_epochs(&self, t: &Tid, chain: &[Tid]) -> Vec<(Epoch, osis_crypto::Secret32)> {
         let mut out: Vec<(Epoch, osis_crypto::Secret32)> = self.epochs(t).map(|e| e.read.held().map(|(ep, s)| (ep, s.clone())).collect()).unwrap_or_default();
         let mut from = |e: &ActorEpochs| {
             for (ep, s) in ActorEpochs::derived(e, t).read.held() {
@@ -110,7 +123,23 @@ impl Engine {
                 rows.push((key(&id, p.ai, e), value(genuine, &p.delta)));
             }
         }
-        // a held or pending commit opened again: only what its rows lack
+        self.keep_openings(&id, rows);
+    }
+
+    /// Records that an entry's wrap of a blob of commit `c` (another's) opened under read epoch
+    /// `e` of thing `t`, the sync ID's: an opening of its header (`header_passes`), kept like a
+    /// section's (`Core::openings` until the commit's next ingest writes it).
+    pub(crate) fn note_unwrapped(&mut self, c: &CommitId, t: &Tid, e: &Epoch) {
+        if self.core.ix.commits.get(c).is_some_and(|m| m.origin == Origin::Local) {
+            return;
+        }
+        self.keep_openings(c, vec![(header_key(c, t, e), vec![1])]);
+    }
+
+    /// Keeps `rows` of commit `id` in memory until its next ingest writes them: of a held or
+    /// pending commit opened again, only what its rows lack.
+    fn keep_openings(&mut self, id: &CommitId, mut rows: Rows) {
+        let id = *id;
         if !rows.is_empty() && (self.core.ix.commits.contains_key(&id) || self.core.ix.pending.contains_key(&id)) {
             let Ok(new) = self.read(|tx| {
                 let mut new = Vec::new();
@@ -203,14 +232,44 @@ fn openings(tx: &mut Tx<'_>, c: &CommitId, ai: Option<usize>) -> Result<Vec<Open
     };
     let mut out = Vec::new();
     let skip = whole.len();
+    let header = |k: &[u8]| k.get(skip..skip + 4) == Some(&HEADER.to_be_bytes()[..]);
     tx.scan(&prefix, |k, v| {
         let full = [prefix.as_slice(), k].concat();
-        out.push(row(full.get(skip..).unwrap_or_default(), &v)?);
+        if !header(&full) {
+            out.push(row(full.get(skip..).unwrap_or_default(), &v)?);
+        }
         Ok(())
     })?;
     for (k, v) in tx.core.openings.get(c).into_iter().flatten() {
-        if k.starts_with(&prefix) {
+        if k.starts_with(&prefix) && !header(k) {
             let r = row(k.get(skip..).unwrap_or_default(), v)?;
+            if !out.contains(&r) {
+                out.push(r);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The header openings of commit `c` recorded here, written or not (`note_unwrapped`): per row
+/// the sync ID's thing and the epoch an entry's wrap opened under.
+fn header_openings(tx: &mut Tx<'_>, c: &CommitId) -> Result<Vec<(Tid, Epoch)>> {
+    let prefix = [records::OPENED_UNDER, c.0.as_slice(), &HEADER.to_be_bytes()].concat();
+    let row = |k: &[u8]| -> Result<(Tid, Epoch)> {
+        let bad = || Error::Corrupt("opened under");
+        let (t, rest) = k.split_at_checked(15).ok_or_else(bad)?;
+        let (n, nonce) = rest.split_at_checked(8).ok_or_else(bad)?;
+        let e = Epoch::new(u64::from_be_bytes(n.try_into().map_err(|_| bad())?), nonce.try_into().map_err(|_| bad())?).map_err(|_| bad())?;
+        Ok((Tid::from_bytes(t.try_into().map_err(|_| bad())?), e))
+    };
+    let mut out = Vec::new();
+    tx.scan(&prefix, |k, _| {
+        out.push(row(k)?);
+        Ok(())
+    })?;
+    for (k, _) in tx.core.openings.get(c).into_iter().flatten() {
+        if let Some(rest) = k.strip_prefix(prefix.as_slice()) {
+            let r = row(rest)?;
             if !out.contains(&r) {
                 out.push(r);
             }
@@ -267,7 +326,8 @@ pub(crate) fn passes_on(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid, ak: &
 /// Whether this node may wrap a blob of commit `c` (its header) under an epoch of its own
 /// choosing: its own, one with no content part, or one each of whose content parts it opened
 /// has a genuine opening under an epoch established here now (a part dropped or held
-/// value-less keeps none: Open paths in issues/reseal-under-own-epoch-leaks.md).
+/// value-less keeps none) and, if an entry's wrap of it opened here, one such wrap's epoch is
+/// established here now (`note_unwrapped`: kept whatever is dropped).
 fn header_passes(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header) -> Result<bool> {
     if tx.core.ix.commits.get(c).is_some_and(|m| m.origin == Origin::Local) {
         return Ok(true);
@@ -275,6 +335,10 @@ fn header_passes(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header) -> Resu
     let content: Vec<(usize, Tid)> = h.aspects.iter().enumerate().filter(|(_, a)| is_content(a.ak.as_str())).map(|(ai, a)| (ai, a.tid)).collect();
     if content.is_empty() {
         return Ok(true);
+    }
+    let wraps = header_openings(tx, c)?;
+    if !wraps.is_empty() && !wraps.iter().any(|(t, e)| tx.core.read_established(t, e)) {
+        return Ok(false);
     }
     let all = openings(tx, c, None)?;
     for (ai, t) in content {
