@@ -4,7 +4,7 @@
 //! in the commit's own transaction (`owe`: which holders a rotation reaches depends on the boxes
 //! they held before it, which the commit alone does not show); everything else is derived from
 //! the commit when the blob is sealed: its parts, the things it names with their sync IDs and
-//! delete keys, the author's chain, removal signatures and this node's dial hint. Re-sends,
+//! delete keys, the author's chain and this node's dial hint. Re-sends,
 //! back-offs and the per-connection state are sync's (`inbox`).
 
 use crate::engine::{Engine, Tx};
@@ -181,9 +181,8 @@ impl Engine {
         // a recipient below read on every thing gets the boxes and sync IDs only (spec/wire.md §9
         // positions 2-3): no chain, no `keys.0`
         let (chain, records) = if reads && with_chain { self.chain_values(&id, &blob, holder)? } else { (Vec::new(), Vec::new()) };
-        let removals = self.removal_signatures(&id, holder, &things)?;
         let commit = osis_base::decode(&blob.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB }).map_err(|_| Error::Corrupt("commit blob"))?;
-        let payload = InboxPayload { commit, things, chain, records, dial: self.dial_hint()?, removals };
+        let payload = InboxPayload { commit, things, chain, records, dial: self.dial_hint()? };
         let now = self.now();
         let kem = self.read(|tx| crate::flows::edges::inbox_kem(tx, &h))?.ok_or(Error::Misuse("the holder's inbox key"))?;
         Ok(Some(seal_inbox_blob(holder, &kem, &payload, now, rng)?))
@@ -263,37 +262,6 @@ impl Engine {
         }
         let records = certs.records.iter().filter_map(|t| self.core.created(t).cloned()).collect();
         Ok((out, records))
-    }
-
-    /// Removal signatures (spec/wire.md §9 position 5): per named thing with a sync ID on which
-    /// `c` leaves `holder` no role (removed, or lowered below sync), by the delete key of the
-    /// newest step this node records, which it holds as an admin. None from a node holding no such
-    /// key.
-    fn removal_signatures(&mut self, c: &CommitId, holder: &Tid, things: &[InboxThing]) -> Result<Vec<(osis_base::SyncId, u64, osis_crypto::Signature)>> {
-        let mut out = Vec::new();
-        for t in things {
-            let Some(s) = t.sync_id else { continue };
-            if self.core.role_now(holder, &t.tid).is_some() {
-                continue;
-            }
-            let Some(o) = self.owned_sync_ids(&t.tid)?.iter().find(|o| o.id == s).cloned() else { continue };
-            let Some((head, _)) = o.path.steps.last() else { continue };
-            let Some(epoch) = self.boxed_sync_epoch(&t.tid, holder) else { continue };
-            if let Some(k) = self.head_keys(&t.tid, head)?.delete {
-                out.push((s, epoch, osis_label::sign_removal(&k, &s, holder, c, epoch)));
-            }
-        }
-        Ok(out)
-    }
-
-    /// The number of the newest sync epoch of `t` at which a `secrets.0` box this node applied
-    /// boxes `holder` (spec/wire.md §9 position 5: a removal signs at it). Read from every box
-    /// seen (`Indexes::boxes_to`), a box a later rotation removed included: the reading of "the
-    /// sender's applied state boxes the recipient" that a removal's own rotation does not hide.
-    fn boxed_sync_epoch(&self, t: &Tid, holder: &Tid) -> Option<u64> {
-        use osis_schema::Codec;
-        let boxes = self.core.ix.boxes_to.get(holder)?;
-        boxes.iter().filter(|(a, _)| a == t).filter_map(|(_, k)| osis_schema::core_types::BoxKey::from_value(k).ok()).filter(|k| k.role == Role::Sync).map(|k| k.epoch.n).max()
     }
 
     /// This node's dial hint (spec/wire.md §9 position 4): its `reach.0` dialable key and URL, as

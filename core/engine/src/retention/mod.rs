@@ -1159,8 +1159,7 @@ impl Engine {
             if !changed.is_empty() {
                 tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
             }
-            // inbox blobs expired: their removal notices and invite requests go
-            crate::sync::records::expire_notices(tx, osis_base::WallMs(now))?;
+            // inbox blobs expired: their invite requests go
             crate::sync::inbox::expire_waiting(tx, osis_base::WallMs(now))?;
             // quiet times passed: after the expiries, which end an aspect's quiet time
             tx.core.compaction.quiet_passed(now);
@@ -1189,7 +1188,7 @@ impl Engine {
             let part = first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _)| t);
             let aspect = tx.core.ix.leave_due.keys().next().copied();
             let live = Some(tx.core.compaction.next_at()).filter(|t| *t != u64::MAX);
-            let inbox = tx.core.ix.removal_notices.values().flat_map(|m| m.values()).map(|n| n.expires.0).chain(tx.core.ix.waiting_inbox.values().map(|w| w.expires.0)).min();
+            let inbox = tx.core.ix.waiting_inbox.values().map(|w| w.expires.0).min();
             let fallen = (!tx.core.fallen.is_empty()).then(|| tx.now().0);
             Ok(part.into_iter().chain(aspect).chain(live).chain(inbox).chain(fallen).min())
         })

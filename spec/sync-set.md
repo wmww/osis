@@ -24,7 +24,7 @@
 
 ## 3. Leaving
 - S leaves N's sync set when its thing leaves G_N's closure, or N stops holding any secret of it. One rule ends syncing it: N stops syncing S once what it logged itself under S is elsewhere, at once when it logged nothing there: reading S, each of its own commits with an entry under S is **held elsewhere** (spec/sync-status.md §2); keeping S unread, each entry it logged itself under S (its deposits) is present, by blob ID, at a source. While it waits, S stays a member of its shared sets as before.
-- A node removed by another holds no secret of the thing (spec/permissions.md §3 Lost access), can open S nowhere and stops at once. A self-remover keeps the secrets until its self-removal is held elsewhere (spec/permissions.md §3).
+- A node removed by another can open S nowhere: reading S, it holds no secret of the thing (spec/permissions.md §3 Lost access) and stops at once; keeping S unread, it drops its copy once its head moves past its keys (spec/sync-judgement.md §6 Stops). A self-remover keeps the secrets until its self-removal is held elsewhere (spec/permissions.md §3).
 - On stopping, N closes S on every connection, drops S from every record in that step (spec/sync-opens.md §3), and shreds S's entries in its store (keys and wraps erased); what S carried stays local data as the engine holds it.
 - Lowering from read to sync is no leaving: S becomes kept unread with its store (spec/sync.md §3).
 - A destroyed thing's own sync IDs stay in the sync set until emptied (spec/sync-judgement.md §5), whether or not the thing is still listed.

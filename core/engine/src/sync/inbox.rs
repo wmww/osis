@@ -1,12 +1,11 @@
 //! Taking inbox blobs (spec/sync-inbox.md §2) and the invitations they leave
 //! (spec/sync-set.md §4): an inbox blob opens under an actor whose `keys.0` names its sync ID as
-//! its inbox; its removal signatures are kept whatever else happens to it (`records`); its
-//! commit applies only once taken (held already, its sender connected, or the user accepted).
+//! its inbox; its commit applies only once taken (held already, its sender connected, or the user accepted).
 //! A taken blob boxing the recipient read applies as any commit; one boxing it sync alone writes a
 //! sync record and applies nothing (spec/sync-judgement.md §6: no engine state of what S carries).
 //! An untaken one waits, listed as an invitation, until judged again.
 
-use super::{InboxOpened, Invitation, RemovalNotice, Taken};
+use super::{InboxOpened, Invitation, Taken};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{BlobId, CommitId, Role, SyncId, Tid, Value, WallMs};
@@ -232,12 +231,10 @@ impl Engine {
         // §4): not a role commit to take
         let Inbox::Payload(p) = inbox else { return Ok(Some(InboxOpened { commit: None, taken: Taken::Refused, hints: Vec::new(), dial: None })) };
         let (plain, rest) = InboxPayload::split(p);
-        let InboxRest { things, chain, records, dial, removals } = rest;
+        let InboxRest { things, chain, records, dial } = rest;
         let cb = CommitBlob::decode(&plain)?;
         let id = cb.id();
-        let notices: Vec<RemovalNotice> = removals.into_iter().map(|(sync_id, epoch, sig)| RemovalNotice { sync_id, epoch, sig, recipient: a, commit: id }).collect();
         let b = *blob;
-        self.run(|tx| super::records::note_removals(tx, &b, expires, notices))?;
         let boxed = self.boxed_to(&a, &cb, &id);
         let held = self.core.ix.commits.contains_key(&id);
         let taken = held || accepted || self.sender_connected(&cb, &id)?;

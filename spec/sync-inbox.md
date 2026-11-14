@@ -10,7 +10,7 @@
 
 ## 2. Inbox blobs
 - **Inbox blob** (spec/crypto.md §5; layout and payload spec/wire.md §9): the parts about actor G of a role commit, boxed to G, with the sync IDs of the things it names that have sync IDs of their own.
-  - **What it carries about G**, any of: a grant with G's boxes (a sync grant: G's box of the sync secret, the payload naming the thing's sync IDs, so G derives their sync keys); a change or removal of G's grant (a **removal notice** when it lowers G below sync or removes it, carrying an admin's removal signature per sync ID it ends, spec/wire.md §9 position 5); a re-seal of G; a rotation boxing G where G held no box at the read epoch before it.
+  - **What it carries about G**, any of: a grant with G's boxes (a sync grant: G's box of the sync secret, the payload naming the thing's sync IDs, so G derives their sync keys); a change or removal of G's grant; a re-seal of G; a rotation boxing G where G held no box at the read epoch before it.
   - To a recipient holding less than read on a thing (sync alone, or removed), it carries the boxes and sync IDs only: never the author's chain or a `keys.0`.
   - The sending node's dialable key and URLs ride as a hint (spec/wire.md §9 position 4), for dialing only.
   - **Logging**: a writer of the inbox logs it stamped in its own store; any other sender logs it deposited in its own store and offers it as a Deposit item (§3). The inbox thing's admins may delete it earlier than its expiry.

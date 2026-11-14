@@ -20,7 +20,6 @@ pub fn inbox() -> VecFile {
         commit: Value::List(vec![Value::List(vec![]), Value::Bytes(vec![0; 64]), Value::List(vec![])]),
         things: vec![InboxThing { tid: Tid::from_bytes([0x03; 15]), sync_id: Some(SyncId([0x04; 16])), delete_keys: Some((osis_crypto::DeleteSecret::derive(&s32(0x07)).verifying_key(), osis_crypto::DeleteSecret::derive(&s32(0x08)).verifying_key())) }],
         dial: Some(DialHint { dialable: [0x06; 32], urls: vec!["quic://peer.example:4433".into()] }),
-        removals: Vec::new(),
     };
     let (salt, eph, m) = ([0x36u8; 16], [0x37u8; 32], [0x38u8; 32]);
     let now = WallMs(1_700_000_000_000);

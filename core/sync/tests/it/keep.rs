@@ -1,6 +1,6 @@
 //! Keeping S unread end to end, in a world of product nodes: a grant of sync on a group kept
-//! unread, a write logged there, pulled and held, then the removal noticed and the store
-//! shredded, through the engine facade and the modules wherever they are built; and the inbox
+//! unread, a write logged there, pulled and held, then the removal's step registered and the copy
+//! dropped, through the engine facade and the modules wherever they are built; and the inbox
 //! module's deliveries in a node (re-sent only at expiry, not at a restart).
 
 use crate::harness::history::hand_all;
@@ -28,13 +28,19 @@ fn add_to_d(w: &mut World, i: usize, t: Tid) {
 }
 
 /// Node 0 grants its contact node 1's account sync on a thing of its synced group, which node
-/// 1's user lists; a write is held there; node 0 removes node 1. Each step through the product's
-/// dials and connections, checked on the way (spec/sync-opens.md §1: node 0 dials node 1 by its
-/// dial list, node 1 dials node 0 by the grant's hint).
+/// 1's user lists; a write is held there; node 0 removes node 1 and issues the step of the
+/// removal's rotation (no admin issues one on its own yet: issues/sync-unbuilt.md), which it
+/// registers at node 1. Each step through the product's dials and connections, checked on the
+/// way (spec/sync-opens.md §1: node 0 dials node 1 by its dial list, node 1 dials node 0 by the
+/// grant's hint).
 fn kept_then_removed() -> (World, Tid, SyncId) {
     let (mut w, t, s) = kept();
     let a1 = w.node(1).account.unwrap();
     w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap();
+    w.run();
+    let head = w.store(1).head(&s).unwrap().expect("a head").id();
+    let (step, _) = w.write(0, |e| e.issue_step(&t, &s, &head, false)).unwrap();
+    assert!(step.is_some(), "the removal's step");
     w.run();
     (w, t, s)
 }
@@ -103,24 +109,24 @@ fn a_delete_key_holder_never_deletes_a_needed_certificate_at_an_unread_source_sp
 
 // spec/sync-judgement.md §6 (Keeps; Stops), spec/sync-inbox.md §2 (Logging), spec/sync-ids.md
 // §6 (Taking a stamped entry; Walk: moving it, genesis first), spec/sync-opens.md §1 (whom to
-// dial), §4 (Admissible: with no head, its newest sync secret's key):
-// `kept_then_removed`: the removal's notice reaches node 1 as the grant did and stops it: S
-// shredded with its path.
+// dial), §4 (Admissible: with no head, its newest sync secret's key): `kept_then_removed`: the
+// removal's step reaches node 1's head, whose sync key it holds no box for: its copy of S goes
+// (its path and record stay), it shows nothing, and a write after the removal reaches it not.
 #[test]
-fn grant_kept_unread_held_then_removed_and_shredded_spec_sync_judgement_6() {
-    let (mut w, _, s) = kept_then_removed();
-    assert_eq!(w.engine(1).removal_notices(&s).unwrap().len(), 1);
-    assert!(w.store(1).entries(&s).unwrap().is_empty(), "S shredded");
-    assert!(w.store(1).path(&s).unwrap().is_none(), "its path too");
-}
-
-// spec/sync-judgement.md §6 (stops: the record dropped): after `kept_then_removed`, node 1 keeps
-// no record of the thing and does not sync S.
-#[test]
-fn a_removed_sync_holder_keeps_no_record_spec_sync_judgement_6() {
+fn grant_kept_unread_held_then_removed_drops_its_copy_spec_sync_judgement_6() {
     let (mut w, t, s) = kept_then_removed();
-    assert!(w.engine(1).sync_record(&t).unwrap().is_none(), "the record dropped");
-    assert_eq!(w.engine(1).sync_holding(&s).unwrap(), None);
+    assert!(w.store(1).entries(&s).unwrap().is_empty(), "its copy dropped");
+    assert!(w.status(1)[&s].stranded, "at a head past its keys");
+    assert!(w.store(1).head(&s).unwrap().is_some() && w.engine(1).sync_record(&t).unwrap().is_some(), "path and record stay");
+    let c = w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &Ak::new("t:reg.0").unwrap(), &Value::Int(3)).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    w.run();
+    let blobs = w.engine(0).commit_blobs(&c).unwrap();
+    assert!(!blobs.iter().any(|b| w.store(1).entry(&s, b).ok().flatten().is_some()), "nothing after the removal");
+    assert!(w.store(1).entries(&s).unwrap().is_empty());
 }
 
 /// The own entries node `i` logged under `inbox`.

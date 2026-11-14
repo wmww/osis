@@ -326,6 +326,35 @@ fn stamped_entries_refused_and_taken_spec_sync_ids_6() {
     assert_eq!(st.take_stamped(&s.id, &good, bytes).unwrap(), Code::TOMBSTONED);
 }
 
+// spec/sync-judgement.md §6 (stops): at a head whose sync key it holds no box for, a node keeping
+// S unread drops its copy (durable and ephemeral entries, with no deletion event: it deleted
+// nothing) and keeps its path; there it takes no stamped entry (1), deposit (4) or Delete (13),
+// as with no head; back at a head it holds, it takes again. A node not told the head is past
+// its keys keeps and takes (the unheld mark is what stops it).
+#[test]
+fn a_head_past_its_keys_drops_the_copy_and_takes_nothing_spec_sync_judgement_6() {
+    let dev = Dev::new();
+    let s = Sid::new(10);
+    let mut st = unread(&dev, &s);
+    let (b, bytes) = blob(100, Class::Durable, None, &[]);
+    let (e, ebytes) = blob(101, Class::Ephemeral, Some(10_000), &[]);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes.clone()).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &Entry { class: Class::Ephemeral, expires: Some(WallMs(10_000)), ..stamped(&s, e, false) }, ebytes).unwrap(), Code::OK);
+    let events = events_of(&st, &s.id).len();
+    st.set_unheld(&s.id, true).unwrap();
+    assert!(st.entries(&s.id).unwrap().is_empty() && st.entry(&s.id, &e).unwrap().is_none(), "its copy dropped");
+    assert!(st.bytes(&b).unwrap().is_none(), "the bytes too");
+    assert!(st.head(&s.id).unwrap().is_some(), "its path stays");
+    assert!(events_of(&st, &s.id).len() <= events, "no deletion event");
+    let (c, cbytes) = blob(102, Class::Durable, None, &[]);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, c, false), cbytes.clone()).unwrap(), Code::REFUSED);
+    assert_eq!(st.take_deposit(&deposit(&s, &cbytes, false), None).unwrap(), Code::RATE_LIMITED);
+    assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, c)], true).unwrap(), [Code::UNKNOWN_SYNC_ID]);
+    st.set_unheld(&s.id, false).unwrap();
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, c, false), cbytes).unwrap(), Code::OK, "at a held head again");
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes).unwrap(), Code::OK, "re-fetched");
+}
+
 // spec/sync-ids.md §6 (Taking a stamped entry): a stamped entry of a deposited entry's blob ID
 // replaces its wrap and stamp and clears the flag; a stamped entry's wrap and stamp never change
 // after: taking it again changes nothing and logs no event.

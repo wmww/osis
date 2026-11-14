@@ -361,8 +361,8 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
 }
 
 /// The deliveries of role commit `c` lowering edges on `target` (spec/permissions.md §2, §3):
-/// the commit's `roles.0` parts to each holder in `lowered` (with removal signatures where it
-/// ends one's role), the rotation `rot` by inbox to `unreached`.
+/// the commit's `roles.0` parts to each holder in `lowered`, the rotation `rot` by inbox to
+/// `unreached`.
 fn lowered_deliveries(tx: &mut Tx<'_>, target: Tid, c: CommitId, unreached: &[Tid], lowered: &[Tid]) -> Result<()> {
     for x in lowered {
         crate::sync::deliveries::owe(tx, *x, c, &[target], true)?;

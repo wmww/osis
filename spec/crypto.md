@@ -25,7 +25,6 @@
   - `"osis v1 deposit"` (spec/sync-inbox.md §3)
   - `"osis v1 role entry"` (a stamp or deposit signature of a role entry, in place of the two above, spec/sync-ids.md §6)
   - `"osis v1 delete"`
-  - `"osis v1 removal"` (a removal signature in an inbox blob, spec/wire.md §9)
   - `"osis v1 connection proof"` (a connection proof, spec/wire.md §11.2: over the prover's role, the verifier's challenge and the listener's key)
   - `"osis v1 inner"` (a node's inner signature, input digest: the commit ID; spec/permissions.md §5.5)
   - `"osis v1 merge"` (a merge's signature at a fork's epoch, input digest: the merge's commit ID; §9)

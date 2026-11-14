@@ -1,15 +1,15 @@
 //! Kept unread (spec/sync-judgement.md §6, spec/sync-set.md §3): the judgement of one S over
 //! plain values (`unread::judge`), as the module reads them from the engine facade and the store.
 //! Each negative control of core/test/tla/net/NetKeep.tla has a test here that fails without its
-//! rule. The module over a real engine (following the sync set, a removal shredding S and
-//! dropping the record) is tests/it/keep.rs.
+//! rule. The module over a real engine (following the sync set) is tests/it/keep.rs; the store's
+//! side of a head past its keys (its copy dropped, nothing taken) is tests/it/store.rs.
 
-use osis_base::{CommitId, SyncId, Tid};
+use osis_base::SyncId;
 use osis_crypto::{Epoch, LabelRole, Secret32, Signature, SigningSecret, label_role_key};
-use osis_engine::sync::{Path, RemovalNotice, SyncRecord};
-use osis_label::{Step, StepKeys, sign_removal};
+use osis_engine::sync::{Path, SyncRecord};
+use osis_label::{Step, StepKeys};
 use osis_sync::unread::{Judged, Verdict, judge};
-const ME: Tid = Tid::from_bytes([7; 15]);
+
 
 fn sync_id(i: u32) -> SyncId {
     let mut b = [1u8; 16];
@@ -51,20 +51,13 @@ fn step(s: SyncId, e: u64) -> Step {
     }
 }
 
-/// A removal notice signed by `signer`, binding sync epoch `e` (the newest its sender boxed ME at).
-fn notice(s: SyncId, signer: &SigningSecret, e: u64) -> RemovalNotice {
-    let commit = CommitId([0xc0; 32]);
-    RemovalNotice { sync_id: s, epoch: e, sig: sign_removal(signer, &s, &ME, &commit, e), recipient: ME, commit }
-}
-
-/// One S kept unread: its record's sync epochs, its registered path's steps, the notices held,
-/// listed or not, and whether its own entries are present at a source.
+/// One S kept unread: its record's sync epochs, its registered path's steps, listed or not, and
+/// whether its own entries are present at a source.
 #[derive(Clone)]
 struct Keep {
     s: SyncId,
     held: Vec<u64>,
     path: Path,
-    notices: Vec<RemovalNotice>,
     listed: bool,
     own_elsewhere: bool,
 }
@@ -73,21 +66,17 @@ impl Keep {
     /// Holding the sync secrets of `held` epochs, its head at step 0.
     fn new(held: &[u64]) -> Keep {
         let s = sync_id(0);
-        Keep { s, held: held.to_vec(), path: Path { steps: vec![(step(s, 0), None)] }, notices: Vec::new(), listed: true, own_elsewhere: false }
+        Keep { s, held: held.to_vec(), path: Path { steps: vec![(step(s, 0), None)] }, listed: true, own_elsewhere: false }
     }
 
     fn verdict(&self) -> Verdict {
         let record = SyncRecord { sync_ids: vec![self.s], secrets: self.held.iter().map(|e| (epoch(*e), sync_secret(*e))).collect(), dial: None };
-        judge(&Judged { listed: self.listed, record: Some(&record), notices: &self.notices, steps: &self.path.steps, own_elsewhere: self.own_elsewhere })
+        judge(&Judged { listed: self.listed, record: Some(&record), steps: &self.path.steps, own_elsewhere: self.own_elsewhere })
     }
 
     /// A Register moves S's head to step `e`.
     fn register(&mut self, e: u64) {
         self.path.steps.push((step(self.s, e), None));
-    }
-
-    fn notify(&mut self, signer: &SigningSecret, e: u64) {
-        self.notices.push(notice(self.s, signer, e));
     }
 
     fn kept(&self) -> Option<osis_sync::unread::Kept> {
@@ -105,8 +94,9 @@ impl Keep {
         self.kept().is_some_and(|k| k.stranded)
     }
 
-    fn stops(&self) -> bool {
-        matches!(self.verdict(), Verdict::Stop(_))
+    /// The sync keys it shows.
+    fn shows(&self) -> Vec<osis_crypto::VerifyingKey> {
+        self.kept().and_then(|k| k.credentials).map(|c| sync_keys(&c)).unwrap_or_default()
     }
 }
 
@@ -123,31 +113,25 @@ fn keeps_and_opens_by_head_spec_sync_judgement_6() {
     assert!(!k.stranded());
 }
 
-// spec/sync-judgement.md §6 (stranded): a head moved to a step whose sync key no held secret
-// derives strands S (kept, its store too), and a box of the new secret ends it. NetKeep `KN_drop`
-// (a head move drops the store) fails this.
+// spec/sync-judgement.md §6 (stops), spec/sync-opens.md §4 (keeping S unread): a head moved to a
+// step whose sync key no held secret derives stops it (it holds and takes nothing there:
+// `stranded`, which the store obeys) and it shows no older key; a box of the head's secret
+// (a late box, or a re-grant at that epoch) keeps it again at the head. NetKeep `KN_keep` (keeps
+// the store at such a head) and `KN_open` (opens by any held secret) fail this.
 #[test]
-fn head_move_strands_and_keeps_store_spec_sync_judgement_6() {
+fn a_head_past_its_keys_stops_until_its_box_spec_sync_judgement_6() {
     let mut k = Keep::new(&[0]);
+    assert!(k.opens());
     k.register(1);
-    assert!(k.stranded(), "kept, stranded");
+    assert!(k.stranded(), "stopped: its copy goes");
+    assert!(!k.opens(), "epoch 0's secret is held, but step 0 bears it: removed, it shows nothing");
     k.held.push(1);
     assert!(!k.stranded());
-    assert_eq!(sync_keys(&k.kept().unwrap().credentials.unwrap()), vec![step(sync_id(0), 1).keys.sync]);
+    assert_eq!(k.shows(), vec![step(sync_id(0), 1).keys.sync]);
 }
 
 fn sync_keys(c: &osis_sync::unread::UnreadCredentials) -> Vec<osis_crypto::VerifyingKey> {
     c.keys.iter().map(|(k, _)| k.verifying_key()).collect()
-}
-
-// spec/sync-opens.md §4 (keeping S unread: shows its head's sync key): stranded, S opens by no
-// older secret it holds. NetKeep `KN_open` (opens by any held secret) fails this.
-#[test]
-fn stranded_opens_by_no_older_key_spec_sync_opens_4() {
-    let mut k = Keep::new(&[0]);
-    assert!(k.opens());
-    k.register(1);
-    assert!(!k.opens(), "epoch 0's secret is held, but the head is step 1's");
 }
 
 // spec/sync-opens.md §4 (keeping S unread: with no head, each sync secret it holds is its step),
@@ -169,139 +153,57 @@ fn no_head_opens_by_every_sync_secret_spec_sync_opens_4() {
     k.held.push(1);
     k.register(0);
     k.held.push(0);
-    assert_eq!(sync_keys(&k.kept().unwrap().credentials.unwrap()), vec![step(sync_id(0), 0).keys.sync], "at the head alone");
+    assert_eq!(k.shows(), vec![step(sync_id(0), 0).keys.sync], "at the head alone");
 }
 
-// spec/sync-judgement.md §6 (stops): a notice signed by no delete key of the path changes
-// nothing; a genuine one stops S. NetKeep `KN_sig` (the signature unchecked) fails this.
+// spec/sync-opens.md §4 (keeping S unread: at a head past its keys, the secrets no step of its
+// path bears), spec/sync-judgement.md §6 (stops): removed at step 1, then
+// re-granted after a further rotation (epoch 2, whose step is not registered here yet), it shows
+// epoch 2's key alone, at no step, taking nothing, so a reader holding it registers step 2; there
+// it keeps S again. NetKeep `KF_regrant` (showing nothing past its head) fails this.
 #[test]
-fn forged_removal_changes_nothing_spec_sync_judgement_6() {
-    let mut k = Keep::new(&[0]);
-    k.notify(&label_role_key(LabelRole::Delete, &secret(0xf0, 0)), 0);
-    let other = notice(sync_id(0), &delete_key(0), 0);
-    let sig = sign_removal(&delete_key(0), &sync_id(0), &Tid::from_bytes([8; 15]), &other.commit, 0);
-    k.notices.push(RemovalNotice { sig, ..other.clone() });
-    let sig = sign_removal(&delete_key(0), &sync_id(1), &ME, &other.commit, 0);
-    k.notices.push(RemovalNotice { sig, ..other.clone() });
-    let sig = sign_removal(&delete_key(0), &sync_id(0), &ME, &other.commit, 1);
-    k.notices.push(RemovalNotice { sig, ..other });
-    assert!(!k.stops() && k.opens(), "forged, or signed over another recipient, sync ID or epoch");
-    k.notify(&delete_key(0), 0);
-    assert!(k.stops());
-}
-
-// spec/sync-judgement.md §6 (stops): a removal signed at the step before the removing rotation
-// still stops a node whose head a Register moved past it before the notice arrived (stranded at
-// the new step). NetKeep `KF_late` (verifying under the head's delete key only) fails this.
-#[test]
-fn removal_signed_before_a_late_head_move_stops_spec_sync_judgement_6() {
+fn a_regrant_past_its_head_shows_the_new_key_spec_sync_opens_4() {
     let mut k = Keep::new(&[0]);
     k.register(1);
-    assert!(k.stranded());
-    k.notify(&delete_key(0), 0);
-    assert!(k.stops());
-}
-
-// spec/sync-judgement.md §6 (stops): a notice that does not verify yet is judged again at each
-// head move while held: one signed by the removing rotation's own step stops the node once that
-// step is registered.
-#[test]
-fn held_removal_judged_again_at_head_move_spec_sync_judgement_6() {
-    let mut k = Keep::new(&[0]);
-    k.notify(&delete_key(1), 0);
-    assert!(!k.stops(), "step 1 not registered yet");
-    k.register(1);
-    assert!(k.stops());
-}
-
-// spec/sync-judgement.md §6 (stops): the path checked runs from the newest step whose sync secret
-// is held: a notice signed by an older step's delete key does not stop a node holding a newer
-// step's secret.
-#[test]
-fn removal_below_newest_held_step_ignored_spec_sync_judgement_6() {
-    let mut k = Keep::new(&[0, 1]);
-    k.register(1);
-    assert!(!k.stranded());
-    k.notify(&delete_key(0), 1);
-    assert!(!k.stops() && k.opens());
-}
-
-// spec/sync-judgement.md §6 (stops): a notice binding a sync epoch older than one held is stale: K
-// removed at epoch 0 (the rotation to step 1 leaving it out) and re-granted at epoch 1 keeps S
-// when the removal's notice arrives after the re-grant's box, before or after step 1 is
-// registered; a removal of the re-grant stops it. NetKeep
-// `KF_regrant` (no epoch bound) fails this.
-#[test]
-fn removal_notice_stale_after_regrant_spec_sync_judgement_6() {
-    let mut k = Keep::new(&[0, 1]);
-    k.notify(&delete_key(0), 0);
-    assert!(!k.stops(), "the re-grant's box came first");
-    k.register(1);
-    assert!(!k.stops() && k.opens());
-    k.notify(&delete_key(1), 1);
-    assert!(k.stops(), "removed from the re-grant");
-}
-
-// spec/sync-judgement.md §6 (stops): a node that stopped on its removal and is re-granted later
-// keeps S again although the old notice is still in its inbox, before any step of its new secret
-// is registered, at the old step alone, and once the new step is. NetKeep
-// `KF_regrant` fails this.
-#[test]
-fn removal_notice_stale_after_stop_and_regrant_spec_sync_judgement_6() {
-    let mut k = Keep::new(&[0]);
-    k.notify(&delete_key(0), 0);
-    assert!(k.stops());
-    // re-granted at epoch 1: the record holds that epoch only; the store was shredded
-    k.held = vec![1];
-    k.path.steps.clear();
-    assert!(!k.stops());
-    k.register(0);
-    assert!(!k.stops() && k.stranded(), "re-granted, old notice held, step 1 not registered");
-    k.register(1);
-    assert!(!k.stops() && k.opens());
-}
-
-// spec/sync-judgement.md §6 (stops), spec/sync-hostile.md (inflated sync epochs): a box at a
-// self-made sync epoch past every real one makes every notice stale: the node keeps S (a wrong
-// keep, the stated limit), and a genuine notice it held counts once that box is gone.
-#[test]
-fn inflated_epoch_makes_removal_stale_spec_sync_judgement_6() {
-    let mut k = Keep::new(&[0, 1_000_000]);
-    k.notify(&delete_key(0), 0);
-    assert!(!k.stops() && k.opens(), "kept, opening by the head's secret");
-    k.held = vec![0];
-    assert!(k.stops());
-}
-
-// spec/sync-judgement.md §6 (stops), spec/wire.md §9 position 5: an epoch no step bears (a
-// rotation boxing the holder before another rotation removed it, steps issued only for the
-// newest epoch) still counts: the remover signs at the newest epoch it boxed the holder at, so
-// the notice is at or past every held epoch and stops it.
-#[test]
-fn removal_after_an_unstepped_rotation_stops_spec_sync_judgement_6() {
-    let mut k = Keep::new(&[0, 1]);
+    assert!(k.shows().is_empty(), "removed: nothing");
+    k.held.push(2);
+    assert!(k.stranded(), "still past its keys: holds and takes nothing");
+    let c = k.kept().and_then(|k| k.credentials).expect("shows the re-grant's key");
+    assert_eq!((c.step, c.deposit, sync_keys(&c)), (None, None, vec![step(sync_id(0), 2).keys.sync]));
     k.register(2);
-    assert!(k.stranded());
-    k.notify(&delete_key(2), 1);
-    assert!(k.stops());
+    assert!(!k.stranded());
+    assert_eq!(k.shows(), vec![step(sync_id(0), 2).keys.sync]);
 }
 
-// spec/sync-judgement.md §6 (stops): holding the sync secret of no step on its path, a node takes
-// a removal signed by its head's delete key only, not an older step's (which may be a removed
-// admin's).
+// spec/sync-opens.md §4, spec/sync-judgement.md §6: a node granted at epoch 2 whose path is
+// registered from genesis takes and holds nothing at steps 0 and 1 (its head past no key of its
+// own yet), showing its grant's key so the reader registers on; at step 2 it keeps S.
 #[test]
-fn removal_with_no_held_step_checks_head_only_spec_sync_judgement_6() {
+fn a_path_registered_from_genesis_takes_nothing_before_its_key_spec_sync_judgement_6() {
     let mut k = Keep::new(&[2]);
+    assert!(k.stranded());
+    assert_eq!(k.shows(), vec![step(sync_id(0), 2).keys.sync]);
     k.register(1);
     assert!(k.stranded());
-    k.notify(&delete_key(0), 2);
-    assert!(!k.stops(), "step 0 is below the head");
-    k.notify(&delete_key(1), 2);
-    assert!(k.stops());
+    k.register(2);
+    assert!(!k.stranded());
+}
+
+// spec/sync-hostile.md (a forged box teaches nothing): a box at a self-made epoch neither hides
+// the head's key nor keeps a removed node: at its head it shows the head's key alone; past its
+// keys it holds and takes nothing, showing only the self-made key, which no reader holds.
+// NetKeep `K_fake` checks the same over every order.
+#[test]
+fn a_box_at_a_self_made_epoch_keeps_nothing_spec_sync_hostile_1() {
+    let mut k = Keep::new(&[0, 1_000_000]);
+    assert_eq!(k.shows(), vec![step(sync_id(0), 0).keys.sync]);
+    k.register(1);
+    assert!(k.stranded(), "removed: its copy goes whatever box it holds");
+    assert_eq!(k.shows(), vec![label_role_key(LabelRole::Sync, &sync_secret(1_000_000)).verifying_key()]);
 }
 
 // spec/sync-set.md §3 (leaving): unlisted, a node keeping S unread stays (and keeps serving)
-// until each entry it logged itself is present at a source; a counted removal still stops it.
+// until each entry it logged itself is present at a source.
 #[test]
 fn leaves_once_own_entries_held_at_a_source_spec_sync_set_3() {
     let mut k = Keep::new(&[0]);

@@ -15,6 +15,7 @@
 - A node holding only S's public values opens nothing; a static item reflected through a second dial, or an older step's signature, opens nothing toward the peer.
 - A removed sync holder gets nothing after the rotation's step; a removed reader or revoked link learns at most one rotation past what it read.
 - A forged head or box, or a substituted box, teaches nothing; a forged grant is not offered again.
+- A node keeping S unread drops its copy only when a Register verified on its path moves its head (a head a peer names, a stream or a box moves nothing).
 - A peer that drops what it pulls cannot keep a node from idle: lacking counts only what a source pulls.
 - A peer lying in its own log (hiding a cover) costs at most one logging again per change of ground (spec/sync-judgement.md §4).
 
@@ -27,6 +28,8 @@
 - A peer can refuse role entries or hold requests open: what waits on it there (deletes, logging again) waits, the stall rule closes the connection (spec/sync-streams.md §1), and other sources are unaffected.
 - A writer may stamp any entry as a role entry past the caps (spec/sync-ids.md §6 Role entries). Anyone able to deposit can fill the deposit budget while no admin is online (spec/requirements.md). A lowered holder can delete at a node keeping S unread what its old role allowed until a writer logs it again (spec/permissions.md §6).
 - A dialer proves to any key it chose to dial (spec/sync-opens.md §2), so a key it was given by discovery or configuration learns its identity.
-- A node keeping S unread can be made to keep ciphertext of a removed grant until the removal notice reaches it, or for good when no admin signed one or the remover's state lacked its newest box (bounded by its caps and by its account unlisting the thing; spec/sync-judgement.md §6 Stops).
+- A node keeping S unread whose box of its head's sync secret arrives after that step's Register (a late box, or a grant again before its new box) drops its copy and fetches S again (spec/sync-judgement.md §6 Stops); what only it held is lost, what a reader holds is not.
+- A removed admin holding the delete key of a step on a node's path, before that node registered the step past it, can register there a child under a sync key the node holds no box for: the node drops its copy, and its head is on a branch no reader records, so it holds S again only once its account unlists and lists the thing again (leaving shreds its path).
 - A body dropped as invalid is never deleted at a peer (spec/sync-judgement.md §3 Deletes), so a writer's invalid entry can take a full store's room there until it expires or the caps give way.
-- Anyone able to seal a box to a node's account key can box it a sync secret of a thing it keeps unread at a self-made sync epoch past any real one; while that node holds the box, every removal notice of the thing's sync IDs is stale there (spec/sync-judgement.md §6 Stops). Cost: that node keeps S's ciphertext it already held, under its caps. It cannot make any node drop data, nor block any other node.
+- Anyone able to seal a box to a node's account key can box it a sync secret of a thing it keeps unread at a self-made sync epoch: the node shows that secret's sync key with no head or past its keys (spec/sync-opens.md §4), which no reader holds; it hides no genuine key and keeps no copy past a removal.
+- A node past its keys holding the sync secret of an epoch no step bears shows it, and a reader holding that secret opens S there; nothing moves (the node takes nothing).

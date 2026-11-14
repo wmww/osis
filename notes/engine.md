@@ -58,7 +58,7 @@ osis-engine (`core/engine/src`; each file's doc comment says more):
 | `events/` | `Event`, `Diagnostic`, `DiagnosticKind`, subscriber channels |
 | `ephemeral/` | the local write path of ephemeral aspects: unsent and delivered relay-only commits, signals (`signal.rs`) (notes/ephemeral.md) |
 | `labeling/` | reader actors, entitlement, closure, labels of a group (`actors.rs`); bodies, sealing, wraps, stamps, deposits, head keys, delete keys (`blobs.rs`); certificates and part bodies (`certs.rs`); a connection's judgment J (`judge.rs`) and proof exchange (`proofs.rs`) |
-| `sync/` | the facade sync reads the engine through, and the tables it keeps for sync: sync set, bodies and facts, sync records and removal notices, inbox takes and deliveries, passes and held elsewhere, dial peers, signing keys (notes/sync-facade.md) |
+| `sync/` | the facade sync reads the engine through, and the tables it keeps for sync: sync set, bodies and facts, sync records, inbox takes and deliveries, passes and held elsewhere, dial peers, signing keys (notes/sync-facade.md) |
 | `flows/` | `Done`, key actors (`mod.rs`); accounts and pairing (`account.rs`); the signing chain (`signing.rs`); thing lists (`lists.rs`); addenda (`addenda.rs`); grants, demotions, invite grants, self-removals, finalizes, inbox delivery (`edges.rs`); labels and registration steps (`labels.rs`); share links (`links.rs`); tied grants (`tied.rs`); creation by a record alone (`create.rs`) |
 | `rotation/` | the cascade, `rotation_due`, finalizes due, re-seals (`mod.rs`); `departures.rs`; holder actors (`members.rs`); the lost-access trigger (`lost.rs`) |
 | `local_peer.rs` | `LocalPeer`: engines exchanging commits directly (`Package`, `SealedPackage`; the simulator's seed, notes/test-sim.md) |

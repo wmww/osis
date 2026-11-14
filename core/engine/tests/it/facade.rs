@@ -140,86 +140,7 @@ fn an_untaken_grant_is_an_invitation_spec_sync_set_4() {
     assert!(!e.invitations().unwrap().iter().any(|i| i.thing == t && !i.taken));
 }
 
-// spec/wire.md §9 position 5, spec/sync-judgement.md §6 Stops: a removal below sync carries a
-// removal signature per sync ID, by the delete key of the newest step the sender records, at the
-// sync epoch it boxed the recipient at; the recipient keeps it whatever it takes, its recipient
-// the one the blob's AD names. A forged signature, or one for another recipient, verifies nowhere.
-#[test]
-fn a_removal_notice_reaches_a_sync_holder_spec_wire_9() {
-    let (mut lp, t, pb, _, blob) = granted(Role::Sync);
-    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
-    let s = lp.peers[1].engine.sync_record(&t).unwrap().unwrap().sync_ids[0];
-    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: pb, new: None, retain: None }).unwrap();
-    let rm = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == pb).expect("the removal's inbox blob").1;
-    let e1 = &mut lp.peers[1].engine;
-    let o = e1.take_inbox_blob(&rm, false).unwrap().unwrap();
-    assert_eq!(o.commit, done.commits.first().copied());
-    let ns = e1.removal_notices(&s).unwrap();
-    assert_eq!(ns.len(), 1, "kept whether or not taken");
-    let n = &ns[0];
-    assert_eq!((n.recipient, n.commit), (pb, done.commits[0]));
-    // verified under the delete key of a step on the path (here the head the sender recorded)
-    let path = lp.peers[0].engine.sync_ids(&t).unwrap()[0].path.clone();
-    let head = path.steps.last().unwrap().0.clone();
-    assert!(osis_label::verify_removal(&head.keys.delete, &n.sync_id, &n.recipient, &n.commit, n.epoch, &n.sig).is_ok());
-    // forged: another recipient, or another epoch, or a key off the path
-    assert!(osis_label::verify_removal(&head.keys.delete, &n.sync_id, &Tid::from_bytes([1; 15]), &n.commit, n.epoch, &n.sig).is_err());
-    assert!(osis_label::verify_removal(&head.keys.delete, &n.sync_id, &n.recipient, &n.commit, n.epoch + 1, &n.sig).is_err());
-    assert!(osis_label::verify_removal(&head.keys.sync, &n.sync_id, &n.recipient, &n.commit, n.epoch, &n.sig).is_err());
-}
-
-// spec/sync-judgement.md §6 Stops (its notice keeps a box it covers from making a record): a
-// sync holder stopped by its removal's notice takes the old grant's blob again and makes no
-// record; a grant again (a newer sync epoch, past the notice's) makes one.
-#[test]
-fn a_stopped_holder_takes_its_old_grant_again_to_no_record_spec_sync_judgement_6() {
-    let (mut lp, t, pb, _, blob) = granted(Role::Sync);
-    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
-    let s = lp.peers[1].engine.sync_record(&t).unwrap().unwrap().sync_ids[0];
-    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: pb, new: None, retain: None }).unwrap();
-    let rm = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == pb).unwrap().1;
-    let e1 = &mut lp.peers[1].engine;
-    e1.take_inbox_blob(&rm, false).unwrap();
-    let n = e1.removal_notices(&s).unwrap()[0].clone();
-    e1.stop_sync_record(&t, &n).unwrap();
-    e1.take_inbox_blob(&blob, true).unwrap();
-    assert!(e1.sync_record(&t).unwrap().is_none(), "the old grant makes no record again");
-    lp.peers[1].restart(3).unwrap();
-    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
-    assert!(lp.peers[1].engine.sync_record(&t).unwrap().is_none(), "nor after a restart");
-    let again = lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Sync)).unwrap();
-    let b2 = lp.inbox_blobs(0, &again).unwrap().into_iter().find(|(h, _)| *h == pb).unwrap().1;
-    lp.peers[1].engine.take_inbox_blob(&b2, true).unwrap();
-    assert!(lp.peers[1].engine.sync_record(&t).unwrap().is_some(), "a grant again makes one");
-}
-
-// spec/sync-judgement.md §6 Stops ("a Register may move its head past the step the removal was
-// signed at"): a notice signed at a step that is no longer the head still verifies under that
-// step's delete key, which stays on the path.
-#[test]
-fn a_notice_signed_at_an_older_step_verifies_on_the_path_spec_sync_judgement_6() {
-    let (mut lp, t, pb, _, blob) = granted(Role::Sync);
-    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
-    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: pb, new: None, retain: None }).unwrap();
-    let rm = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == pb).unwrap().1;
-    // the admin steps again after signing (a fresh step, no rotation)
-    let (s, head) = {
-        let ids = lp.peers[0].engine.sync_ids(&t).unwrap();
-        (ids[0].id, ids[0].path.steps.last().unwrap().0.clone())
-    };
-    let (step, _) = lp.peers[0].engine.issue_step(&t, &s, &head.id(), true).unwrap();
-    let step = step.expect("a child step").0;
-    assert_eq!(step.prev, Some(head.id()));
-    let e1 = &mut lp.peers[1].engine;
-    e1.take_inbox_blob(&rm, false).unwrap();
-    let n = e1.removal_notices(&s).unwrap()[0].clone();
-    let path = lp.peers[0].engine.sync_ids(&t).unwrap()[0].path.clone();
-    assert_eq!(path.steps.last().unwrap().0.id(), step.id(), "the head moved");
-    let on_path: Vec<_> = path.steps.iter().filter(|(x, _)| osis_label::verify_removal(&x.keys.delete, &n.sync_id, &n.recipient, &n.commit, n.epoch, &n.sig).is_ok()).map(|(x, _)| x.id()).collect();
-    assert!(on_path.contains(&head.id()), "verifies under the older step on the path");
-}
-
-// spec/sync-judgement.md §6 Keeps / Stranded: a box arriving after a new step (the rotation that
+// spec/sync-judgement.md §6 Keeps: a box arriving after a new step (the rotation that
 // stepped boxing the holder again) adds its epoch's sync secret to the record; nothing of the
 // first is lost.
 #[test]
@@ -428,7 +349,7 @@ fn inbox_by_hand(lp: &mut LocalPeer, to: usize, commit: &osis_commit::CommitBlob
     let Some(ct::KemKey::X25519MlKem768(k)) = e.get_typed(&a, &ct::KEYS).unwrap().and_then(|k| k.key) else { panic!("the account's KEM key") };
     let kem = osis_crypto::KemPublicKey::from_slice(&k).unwrap();
     let v = osis_base::decode(&commit.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB }).unwrap();
-    let payload = osis_label::InboxPayload { commit: v, things, chain: Vec::new(), records: Vec::new(), dial: None, removals: Vec::new() };
+    let payload = osis_label::InboxPayload { commit: v, things, chain: Vec::new(), records: Vec::new(), dial: None };
     let now = e.now();
     osis_label::seal_inbox_blob(&a, &kem, &payload, now, &mut SeededRng::from_u64(11)).unwrap()
 }

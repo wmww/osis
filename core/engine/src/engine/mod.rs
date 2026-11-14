@@ -791,8 +791,6 @@ indexes! {
     pub sync_records: JMap<Tid, Arc<crate::sync::SyncRecord>>,
     /// The things whose sync record names each sync ID (`sync_records` inverted).
     pub record_ids: JSetMap<SyncId, Tid>,
-    /// Removal notices inbox blobs to this node carried, per sync ID by blob (`sync::records`).
-    pub removal_notices: JMap<SyncId, Arc<BTreeMap<osis_base::BlobId, crate::sync::records::HeldNotice>>>,
     /// Inbox deliveries owed per (commit, holder) (`sync::deliveries`).
     pub owed_inbox: JMap<(CommitId, Tid), Arc<crate::sync::deliveries::Owed>>,
     /// The read epoch each commit's section of a thing is sealed under, as sealed or opened here

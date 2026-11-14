@@ -225,6 +225,9 @@ pub(crate) struct Inner {
     total: Option<u64>,
     /// When each sync ID last took a child step past its caps (spec/sync-ids.md §6).
     past_cap: BTreeMap<SyncId, WallMs>,
+    /// The sync IDs kept unread at a head whose sync key this node holds no box for
+    /// (spec/sync-judgement.md §6): they take no entry, as with no head (`unread` sets them).
+    unheld: BTreeSet<SyncId>,
 }
 
 impl Inner {
@@ -311,7 +314,7 @@ impl Store {
     /// record brought that still gave nothing held go: every connection ended with the last start.
     pub fn open(backend: Box<dyn osis_store::Backend>, root: Box<dyn osis_store::RootStorage>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Store> {
         let store = osis_store::Store::open_or_create(backend, root, osis_store::StoreConfig::default(), &mut *rng)?;
-        let mut inner = Inner { store, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: BTreeMap::new() };
+        let mut inner = Inner { store, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new() };
         inner.write(|t, env| {
             for (k, _) in t.scan_local(&[rows::CHARGED, &[0]].concat(), b"", usize::MAX)? {
                 let (s, b) = rows::tail_ids(&k)?;
@@ -722,12 +725,13 @@ impl Store {
         }
         let now = g.now;
         let size = bytes.len() as u64;
+        let unheld = g.unheld.contains(s);
         let verdict = g.read(|t, _| {
             if entries::tombstone(t, s, &b)?.is_some() {
                 return Ok(Err(Code::TOMBSTONED));
             }
             let Some(stamp) = e.stamp else { return Ok(Err(Code::REFUSED)) };
-            let Some((_, head)) = path::head(t, s)? else { return Ok(Err(Code::REFUSED)) };
+            let Some((_, head)) = path::head(t, s)?.filter(|_| !unheld) else { return Ok(Err(Code::REFUSED)) };
             match osis_label::verify_stamp(&head.keys.write, s, &b, &e.wrap, &stamp) {
                 Ok(role) => Ok(Ok(role)),
                 Err(_) if path::earlier_write(t, s, |k| osis_label::verify_stamp(k, s, &b, &e.wrap, &stamp).is_ok())? => Ok(Err(Code::NOT_HEAD_KEY)),
@@ -792,8 +796,9 @@ impl Store {
         let policy = g.policy.clone();
         let mem_usage = g.mem.usage(&s);
         let mem_held = g.mem.read(&s, &b).is_some() || g.mem.tombstoned(&s, &b);
+        let unheld = g.unheld.contains(&s);
         let checked = g.read(|t, env| {
-            let Some((hi, head)) = path::head(t, &s)? else { return Ok(Err(Code::RATE_LIMITED)) };
+            let Some((hi, head)) = path::head(t, &s)?.filter(|_| !unheld) else { return Ok(Err(Code::RATE_LIMITED)) };
             if mem_held || entries::get(t, &s, &b)?.is_some() || entries::tombstone(t, &s, &b)?.is_some() {
                 return Ok(Err(Code::OK));
             }
@@ -854,10 +859,11 @@ impl Store {
             return all(Code::NOT_OPEN);
         }
         let now = g.now;
+        let unheld = g.unheld.contains(s);
         // ephemeral entries are judged and removed in memory, the rest in one transaction
         let mut ephemeral = Vec::new();
         let out = g.write(|t, env| {
-            let Some((hi, head)) = path::head(t, s)? else { return Ok(vec![Code::UNKNOWN_SYNC_ID; items.len()]) };
+            let Some((hi, head)) = path::head(t, s)?.filter(|_| !unheld) else { return Ok(vec![Code::UNKNOWN_SYNC_ID; items.len()]) };
             let mut out = Vec::with_capacity(items.len());
             for d in items {
                 let b = d.blob;
@@ -1043,6 +1049,35 @@ impl Store {
         g.mem.forget(s, now);
         g.mem.shreds.wrote_added(s, true, true);
         g.past_cap.remove(s);
+        g.unheld.remove(s);
+        Ok(())
+    }
+
+    /// S kept unread moved to (`true`) or off (`false`) a head whose sync key this node holds no
+    /// box for (spec/sync-judgement.md §6): moving there drops its copy of S (every entry, with
+    /// no deletion event: it was no delete; its path and tombstones stay), and while there it
+    /// takes no entry, deposit or Delete, as with no head.
+    pub fn set_unheld(&mut self, s: &SyncId, unheld: bool) -> Result<()> {
+        let mut g = self.lock();
+        if !unheld {
+            g.unheld.remove(s);
+            return Ok(());
+        }
+        if !g.unheld.insert(*s) {
+            return Ok(());
+        }
+        let now = g.now;
+        g.write(|t, env| {
+            for (k, _) in t.scan_local(&[rows::ENTRY, &s.0].concat(), b"", usize::MAX)? {
+                let (_, b) = rows::tail_ids(&k)?;
+                entries::remove(t, env, s, &b, Removal::Expired)?;
+            }
+            Ok(())
+        })?;
+        let blobs: Vec<BlobId> = g.mem.entries.keys().filter(|(x, _)| x == s).map(|(_, b)| *b).collect();
+        for b in blobs {
+            g.mem.remove(s, &b, now, false, true);
+        }
         Ok(())
     }
 

@@ -20,7 +20,7 @@
 ## 3. Two holdings
 A node holds S of thing T, at each moment, by the secrets it holds of T:
 - **Read**: it holds a read secret of T. It judges every entry by the full rules (spec/sync-judgement.md §2-§5): what S must hold, may hold and must not hold, and acts on it.
-- **Kept unread**: it holds a sync secret of T and no read secret. Of T it holds only a **sync record** (T's tid, its sync IDs, and its sync secrets by epoch, each from a box sealed to its own account's key): no roster, chain, `keys.0`, commit or other state of what S carries. It keeps ciphertext, relays it, verifies stamps, deposit signatures and delete signatures, and follows only its own grant and removal (spec/sync-judgement.md §6).
+- **Kept unread**: it holds a sync secret of T and no read secret. Of T it holds only a **sync record** (T's tid, its sync IDs, and its sync secrets by epoch, each from a box sealed to its own account's key): no roster, chain, `keys.0`, commit or other state of what S carries. It keeps ciphertext, relays it, verifies stamps, deposit signatures and delete signatures, and follows only its own grant: the boxes sealed to it and the steps registered with it (spec/sync-judgement.md §6).
 - One predicate decides: read exactly while a read secret of T is held. A change of holding never empties the store (spec/sync-judgement.md §6 Read and unread move).
 
 ## 4. Areas

@@ -237,18 +237,14 @@ instances=(
   "netdestroy net MCDestroy DN_toldsrc.cfg fail"   # negative control: told by a reader, deletes at K before K holds the request
   "netdestroy net MCDestroy DN_forgetall.cfg fail" # negative control: forget counting K alone, not a reader source
   "netdestroy net MCDestroy DN_untold.cfg fail"    # negative control: untold leaves S keeping T
-  "netkeep net MCKeep K_all.cfg pass"              # a node keeping S unread follows its own grant
-  "netkeep net MCKeep KN_drop.cfg fail"            # negative control: drop on a head move with no box
-  "netkeep net MCKeep KN_open.cfg fail"            # negative control: open by any held sync secret
-  "netkeep net MCKeep KN_sig.cfg fail"             # negative control: a removal notice's signature unchecked, a forged one drops the store
-  "netkeep net MCKeep KF_late.cfg fail"            # finding: a notice signed before the removing step, arriving after it, never verifies
-  "netkeep net MCKeep KF_regrant.cfg fail"         # finding: the removal's old notice drops a re-granted K
-  "netkeep net MCKeep K_held.cfg pass"             # the spec's rule: fixes KF_late and KF_regrant
+  "netkeep net MCKeep K_all.cfg pass"              # a node keeping S unread follows its own grant: drops its copy at a head past its keys, a re-grant re-fetches
   "netkeep net MCKeep K_nohead.cfg pass"           # granted before any Register: no head, first box late
-  "netkeep net MCKeep KN_box.cfg fail"             # negative control: a held notice not judged again when a secret is taken
-  "netkeep net MCKeep KN_noheld.cfg pass"          # rule not needed here: no held step, any step to the head (head's alone)
-  "netkeep net MCKeep K_inflate.cfg pass"          # a hostile box inflating K's epochs never drops
-  "netkeep net MCKeep KL_inflate.cfg fail"         # stated limit: ... it keeps a removed grant (RemovedDrops)
+  "netkeep net MCKeep K_fake.cfg pass"             # a hostile box of a self-made epoch hides nothing and keeps nothing
+  "netkeep net MCKeep KN_keep.cfg fail"            # negative control: keeps its copy at a head past its keys
+  "netkeep net MCKeep KN_open.cfg fail"            # negative control: past its keys, shows every held secret
+  "netkeep net MCKeep KN_shownone.cfg fail"        # negative control: past its keys, shows nothing (a later re-grant never re-fetches)
+  "netkeep net MCKeep KN_take.cfg fail"            # negative control: takes at a head past its keys
+  "netkeep net MCKeep KN_droppath.cfg fail"        # negative control: a stop shreds the path too (stops loop)
 )
 
 module=${1:-}

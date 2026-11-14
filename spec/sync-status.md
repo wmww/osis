@@ -16,7 +16,7 @@
 
 ## 3. Status and waits
 - `status` per sync ID: unconnected, or its sources each with caught up, lacking (with counts), full, refusing, or stranded; while a complete pass of it waits, the recorded peers it waits for; and per node, idle when no request, fill or Hello is outstanding on any connection (a dialed session waiting for the peer's Hello is not idle).
-- A node keeping S unread reports S like any sync ID (its sources, its head, full, stranded).
+- A node keeping S unread reports S like any sync ID (its sources, its head, full), and stranded while its head is past its keys (spec/sync-judgement.md §6 Stops).
 - **Stranded** at a source: as spec/sync-ids.md §6 Walk defines; the node reports itself stranded there and sends its stranded notice (spec/permissions.md §4) again when its holder's current keys move.
 - `wait_synced(S)` ends when S is heard out and each of this node's own commits under S is held elsewhere; a writer's wait ends on a source keeping S unread showing the writer's entries in its stream (§2). A wait on a thing covers every sync ID carrying it, and runs to its timeout while one is unconnected or none is held; a wait on all covers every sync ID held. It never ends while S is unconnected.
 - **History complete** for a thing: a complete pass (§1) of every sync ID carrying it.

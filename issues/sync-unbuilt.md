@@ -31,7 +31,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.
 - A decline stamping in place.
 - Opens' members are not stamped, so a source's step moving reaches Register only through its next join.
-- No admin issues a step (spec/sync-ids.md §6 Steps; `Engine::issue_step` is called by nothing): a rotation never reaches a path, so a holder granted after one strands at the genesis registered there (the same ignored test).
+- No admin issues a step (spec/sync-ids.md §6 Steps; `Engine::issue_step` is called by nothing but tests): a rotation never reaches a path, so a holder granted after one stops at the genesis registered there (the same ignored test), and a node keeping S unread that was removed keeps its copy (its head never moves past its keys; keep.rs issues the step by hand).
 
 ## status and API
 - Covered by a snapshot at a source (spec/sync-status.md §2): needs the engine's covering snapshots of a commit; a body a source dropped under a snapshot before showing it never counts (an under-claim).

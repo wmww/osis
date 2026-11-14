@@ -31,7 +31,7 @@ use crate::error::{Error, Result};
 use crate::labeling::{Certs, HeadKeys, Sealed};
 use crate::{Engine, Ingested};
 use osis_base::{Ak, BlobId, CommitId, CreationRecord, Role, SyncId, Tid, WallMs};
-use osis_crypto::{Epoch, NodeRng, Secret32, Signature, SigningSecret, WRAP_LEN};
+use osis_crypto::{Epoch, NodeRng, Secret32, SigningSecret, WRAP_LEN};
 use osis_label::{Address, Step, StepId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -277,21 +277,6 @@ pub enum J {
     SyncHolder,
     Departed,
     Unknown,
-}
-
-/// A removal notice held in this node's inbox (spec/wire.md §9 position 5).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RemovalNotice {
-    pub sync_id: SyncId,
-    /// The newest sync epoch number the sender boxed the recipient at.
-    pub epoch: u64,
-    pub sig: Signature,
-    /// The blob's recipient as its AD bound it when it opened here (an actor this node acts
-    /// for), never a value of the payload: the signature binds it, so a notice to another
-    /// recipient re-sealed to this node verifies nowhere.
-    pub recipient: Tid,
-    /// The commit of the blob's position 0.
-    pub commit: CommitId,
 }
 
 /// An invitation waiting for the user (spec/sync-set.md §4).
@@ -589,17 +574,6 @@ impl Engine {
         self.core.ix.sync_records.feed()
     }
 
-    /// Drops `thing`'s sync record as removal notice `n` (held, verified by the caller) stopped
-    /// this node keeping it: while `n` is held, no box of a sync epoch at or below its epoch
-    /// makes a record again (spec/sync-judgement.md §6 Stops).
-    pub fn stop_sync_record(&mut self, thing: &Tid, n: &RemovalNotice) -> Result<()> {
-        let t = *thing;
-        self.run(|tx| {
-            records::count_notice(tx, n)?;
-            records::drop_record(tx, &t)
-        })
-    }
-
     // Grants, removals, peers
 
     /// J of a peer's proven actors for `s` (spec/sync-opens.md §4), from the rosters held here:
@@ -803,13 +777,6 @@ impl Engine {
         let Some(bytes) = self.run(|tx| tx.blobs.get(&b))? else { return Ok(None) };
         self.take_inbox_bytes(s, blob, &bytes, accepted)
     }
-
-    /// The removal notices held in this node's inbox (spec/wire.md §9 position 5): unverified
-    /// here; `unread` verifies each under a step of its path (spec/sync-judgement.md §6 Stops).
-    pub fn removal_notices(&mut self, s: &SyncId) -> Result<Arc<Vec<RemovalNotice>>> {
-        Ok(self.removal_notices_now(s))
-    }
-
 
     /// The invitations waiting for the user (spec/sync-set.md §4).
     pub fn invitations(&mut self) -> Result<Arc<Vec<Invitation>>> {
