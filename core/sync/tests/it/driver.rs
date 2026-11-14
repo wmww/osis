@@ -535,3 +535,29 @@ fn quic_loopback_smoke() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     rt.block_on(dial_up(osis_transport::Quic::new(), osis_transport::Quic::new(), "quic://127.0.0.1:0"));
 }
+
+// spec/sync-opens.md §1 (where to dial: addresses are priorities, never a filter): a node known
+// at a dial list's address and a configured one dials the first, and after that dial fails the
+// configured one; it stays at an address that came up.
+#[test]
+fn a_failed_address_gives_way_to_the_next_spec_sync_opens_1() {
+    let mut d = Dials::default();
+    let mut t = Table::default();
+    let stale = addr(1);
+    let configured = Address { url: "quic://10.0.0.2:4040".into(), key: stale.key };
+    t.set(SID, vec![stale.clone()]);
+    d.settle_peers(&mut t, T0);
+    d.configure(std::slice::from_ref(&configured), T0);
+    let first = d.dial(T0, MAX_PEERS);
+    assert_eq!(first.iter().map(|(_, a)| a.url.as_str()).collect::<Vec<_>>(), [stale.url.as_str()]);
+    d.ended(first[0].0, None, T0);
+    let later = WallMs(T0.0 + REDIAL_MS);
+    d.tick(later);
+    let second = d.dial(later, MAX_PEERS);
+    assert_eq!(second.iter().map(|(_, a)| a.url.as_str()).collect::<Vec<_>>(), [configured.url.as_str()]);
+    d.up(second[0].0);
+    d.ended(second[0].0, None, later);
+    let last = WallMs(later.0 + REDIAL_MS);
+    d.tick(last);
+    assert_eq!(d.dial(last, MAX_PEERS).iter().map(|(_, a)| a.url.as_str()).collect::<Vec<_>>(), [configured.url.as_str()], "an address that came up stays");
+}

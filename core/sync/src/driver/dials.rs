@@ -8,6 +8,9 @@
 //! discovered nodes. Reasons are priorities, never a filter on what opens: they order the dials,
 //! nothing else.
 //!
+//! A candidate known at several addresses dials them in turn, by priority, the next after each
+//! failed dial (spec/sync-opens.md §1: addresses are priorities, never a filter).
+//!
 //! One retry rule: a candidate not connected is due again `REDIAL_MS` after its last dial; one
 //! whose connection closed sharing nothing (keep or close) is **quiet**: due only after a change
 //! this node knows of that could make a peer share something (opens' `changed_at` moved), and
@@ -90,6 +93,8 @@ struct Cand {
     last: Option<WallMs>,
     /// Its connection closed sharing nothing: due only after a change.
     quiet: bool,
+    /// Its dials that failed: its next dial goes to its address of that turn (`address`).
+    failed: usize,
     /// Where it waits while idle: due now (its place), or at a time.
     wait: Option<Wait>,
 }
@@ -112,8 +117,17 @@ impl Cand {
         (self.rank(), self.last.map_or(0, |t| t.0.saturating_add(1)))
     }
 
+    /// Where its next dial goes: its addresses by priority, the next after each failed dial, so
+    /// an address that does not answer (a stale dial list) never hides one that does (a
+    /// configured address).
     fn address(&self) -> Option<&Address> {
-        self.why.values().next()
+        let mut addrs: Vec<&Address> = Vec::with_capacity(self.why.len());
+        for a in self.why.values() {
+            if !addrs.contains(&a) {
+                addrs.push(a);
+            }
+        }
+        addrs.get(self.failed % addrs.len().max(1)).copied()
     }
 }
 
@@ -257,7 +271,7 @@ impl Dials {
             return;
         }
         let key = to.key;
-        let c = self.cands.entry(key).or_insert_with(|| Cand { why: BTreeMap::new(), state: State::Idle, last: None, quiet: false, wait: None });
+        let c = self.cands.entry(key).or_insert_with(|| Cand { why: BTreeMap::new(), state: State::Idle, last: None, quiet: false, failed: 0, wait: None });
         let before = c.address().cloned();
         if c.why.insert(why, to).is_some() && c.address().cloned() == before {
             return;
@@ -444,6 +458,9 @@ impl Dials {
                 self.held.entry(w).or_default().insert(key);
             }
             (None, Some(c)) => {
+                if c.state == State::Dialing(conn) {
+                    c.failed = c.failed.wrapping_add(1);
+                }
                 c.quiet = quiet;
                 self.idle(key, now);
             }
