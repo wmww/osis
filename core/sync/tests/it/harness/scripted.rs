@@ -76,13 +76,14 @@ pub fn reader(s: &SyncId, read: &(Epoch, Secret32), step: &StepKeys, older: &[St
 /// What a node keeping S unread at head `head` holds: the product's own (`Creds::kept_unread`),
 /// with no claim set.
 pub fn store(head: &StepKeys) -> Creds {
-    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: Some(head.id), sync: head.sync.clone(), proof: Secret32::from_bytes(head.proof), deposit: Some(SigningSecret::from_seed(&Secret32::from_bytes(head.proof)).verifying_key()), claims: None })
+    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: Some(head.id), keys: vec![(head.sync.clone(), Secret32::from_bytes(head.proof))], deposit: Some(SigningSecret::from_seed(&Secret32::from_bytes(head.proof)).verifying_key()), claims: None })
 }
 
-/// What a node keeping S unread holds before any step is registered there, granted `step`'s sync
-/// secret: the product's own, with no head.
-pub fn store_no_head(step: &StepKeys) -> Creds {
-    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: None, sync: step.sync.clone(), proof: Secret32::from_bytes(step.proof), deposit: None, claims: None })
+/// What a node keeping S unread holds before any step is registered there, granted the sync
+/// secrets of `steps` (newest first): the product's own, with no head.
+pub fn store_no_head(steps: &[&StepKeys]) -> Creds {
+    let keys = steps.iter().map(|st| (st.sync.clone(), Secret32::from_bytes(st.proof))).collect();
+    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: None, keys, deposit: None, claims: None })
 }
 
 /// What a link holder holds: its own static entry to test, no secret of S.

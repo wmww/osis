@@ -14,9 +14,11 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - `NodeHolds::until` answers 0 and `cursor_at` nothing: an ended member's `until` (spec/sync-opens.md §6) and a Lost's cursor are not computed from the log (`Store::cursor_at` exists).
 - `NodeHolds::due` reports no change of known actors (contacts, rosters): the audience (spec/sync-opens.md §4) and records' named actors are judged again only at the next generation or connection.
 - Static entries claimed in the walk's tests (`Tested::Static` always has no step).
+- A reader's walk tests only its recorded steps' credentials, not the sync key of each sync secret it holds (spec/sync-ids.md §6 Test): a node keeping S unread granted at an epoch no recorded step bears is never opened (`keep::a_store_granted_again_after_its_removal_reaches_the_head_spec_sync_ids_6`, ignored).
 
 ## store and streams
 - Fetching an unjudgeable body again (spec/commits.md §4 Unjudgeable, spec/sync-judgement.md §3 Dropped bodies): needs byte-less entries and a refetch path; until then an awaiting entry keeps its bytes (notes/sync-store.md).
+- Refused (spec/sync-streams.md §4): a refused entry is not offered again once the refusing node's head moved. The genesis Register goes out at a store source's open before anything of S is served there, so entries reach a head; a genesis refused for now (4, 12), or any later head move, leaves the entries refused meanwhile untaken there until a new stamp.
 - Relay-only entries; the engine's linked blobs (`Engine::wants`: pages and header lists before apply); bundle import (`Streams::import`); `Rank::Never` (a keyset without history: the facade has no call for it).
 
 ## read
@@ -30,6 +32,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.
 - A decline stamping in place.
 - Opens' members are not stamped, so a source's step moving reaches Register only through its next join.
+- No admin issues a step (spec/sync-ids.md §6 Steps; `Engine::issue_step` is called by nothing): a rotation never reaches a path, so a holder granted after one strands at the genesis registered there (the same ignored test).
 
 ## status and API
 - Covered by a snapshot at a source (spec/sync-status.md §2): needs the engine's covering snapshots of a commit; a body a source dropped under a snapshot before showing it never counts (an under-claim).

@@ -1612,7 +1612,16 @@ impl Opens {
         let secret = matches!(shown, Shown::Read(..) | Shown::Proof(_));
         // A side accepts a Hit on a sync key, claim or static entry only while it holds the sync
         // secret of its step: its answer is signed by it.
-        let answer_sig = match (&adm.step, secret) {
+        // A Hit on a sync key is answered by that key, one of this side's steps' (a node keeping
+        // S unread with no head shows each sync secret's).
+        let own = match &shown {
+            Shown::SyncKey(pk) => adm.tests.iter().find_map(|t| match t {
+                Tested::SyncKey { key, .. } if key.verifying_key().to_bytes() == *pk => Some(key),
+                _ => None,
+            }),
+            _ => None,
+        };
+        let answer_sig = match (own.or(adm.step.as_ref()), secret) {
             (_, true) => None,
             (Some(k), false) => Some(bind.sign(k, &s)),
             (None, false) => return refuse,

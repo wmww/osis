@@ -103,12 +103,32 @@ fn a_store_granted_later_opens_with_no_head_spec_sync_opens_4() {
     p.run();
     assert!(!p.a.open(p.ca, &S));
     let tested = p.a.opens.work().tested;
-    p.b.table.set(S, Some(store_no_head(&st)));
+    p.b.table.set(S, Some(store_no_head(&[&st])));
     p.b.settle();
     p.run();
     assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "open both ways");
     assert_eq!(p.a.opens.members(p.ca)[&S].class, SourceClass::Store);
     assert_eq!(p.a.opens.work().tested, tested, "the reader tested nothing again");
+}
+
+// spec/sync-opens.md §4 (Admissible: keeping S unread with no head, each sync secret it holds is
+// its step), §5 (Proof an answer carries: a sync key's Hit by that key), spec/sync-hostile.md (a
+// box at a self-made epoch blocks no other open): a store with no head holding its grant's secret
+// and a newer one (a hostile box's) opens toward a reader of the grant's step that neither knows
+// nor shows a proof to it: the reader's sync key Hit is answered by that key, which it verifies.
+#[test]
+fn a_store_with_no_head_opens_by_its_grant_under_a_newer_box_spec_sync_opens_4() {
+    let (st, junk) = (StepKeys::new(1, 0), StepKeys::new(7, 9));
+    let mut r = Side::new(1);
+    let mut k = Side::new(2);
+    let mut rc = reader(&S, &read_secret(1, 0), &st, &[], &[], &[]);
+    rc.shows.retain(|(x, _)| !matches!(x, osis_sync::opens::cred::Shown::Proof(_)));
+    r.table.set(S, Some(rc));
+    k.table.set(S, Some(store_no_head(&[&junk, &st])));
+    let mut p = Pair::new(r, k, Proven::default(), Proven::default());
+    p.run();
+    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "open both ways");
+    assert_eq!(p.a.opens.members(p.ca)[&S].by, Credential::SyncKey);
 }
 
 // spec/sync-ids.md §6 (Walk: a refused Hit counts as none shown): a reader whose walk Hit at a

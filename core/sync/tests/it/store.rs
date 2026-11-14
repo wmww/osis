@@ -134,7 +134,7 @@ fn events_of(st: &Store, s: &SyncId) -> Vec<NodeEvent> {
 }
 
 // spec/sync-ids.md §6 (register), spec/wire.md §11.2 (Register): a genesis step is taken only
-// into an empty path and only if it verifies (else 1; a child into an empty path 13); then only a
+// into an empty path and only if it verifies, its delete key hashing to the sync ID (else 1; a child into an empty path 13); then only a
 // child of the head (9 else), the head itself answered 0 with nothing changed; a step of another
 // sync ID is 2; a taken step moves the head (a head event in the log).
 #[test]
@@ -148,6 +148,12 @@ fn register_takes_genesis_then_children_of_the_head_spec_sync_ids_6() {
     let mut forged = s.steps[0].0.clone();
     forged.sig = c1.sig;
     assert_eq!(st.take_register(&s.id, &forged, None).unwrap(), Code::REFUSED, "a genesis that does not verify");
+    // a genesis naming S, signed by a delete key that does not hash to S (a squat)
+    let squat = Sid::new(80);
+    let mut sq = squat.steps[0].0.clone();
+    sq.label = s.id;
+    sq.sig = squat.delete().sign(osis_crypto::Domain::LabelRegister, &sq.digest());
+    assert_eq!(st.take_register(&s.id, &sq, None).unwrap(), Code::REFUSED, "a genesis whose delete key is not S's");
     let (g, gc) = s.steps[0].clone();
     assert_eq!(st.take_register(&s.id, &g, Some(&gc)).unwrap(), Code::OK);
     assert_eq!(st.take_register(&s.id, &g, None).unwrap(), Code::OK, "the head again");

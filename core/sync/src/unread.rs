@@ -33,13 +33,13 @@ use std::sync::Arc;
 /// deposit key and claim set).
 #[derive(Clone, Debug)]
 pub struct UnreadCredentials {
-    /// Its step, whose sync key answers a Hit (spec/sync-opens.md §5 Proof): the head, or none
-    /// before any step is registered (the sync key of the newest sync secret held then).
+    /// Its step (spec/sync-opens.md §4 Admissible): the head, or none before any step is
+    /// registered (then each sync secret it holds counts as one).
     pub step: Option<StepId>,
-    /// The step's sync key.
-    pub sync: SigningSecret,
-    /// Its sync proof (spec/sync-ids.md §2).
-    pub proof: Secret32,
+    /// The sync key and sync proof (spec/sync-ids.md §2) of each of its steps: the head's alone,
+    /// or with no head those of every sync secret held, newest first. A Hit on a sync key is
+    /// answered by that key (spec/sync-opens.md §5 Proof).
+    pub keys: Vec<(SigningSecret, Secret32)>,
     /// The head's deposit key (public: a node keeping S unread signs no deposit).
     pub deposit: Option<VerifyingKey>,
     /// The head's claim set.
@@ -48,7 +48,10 @@ pub struct UnreadCredentials {
 
 impl PartialEq for UnreadCredentials {
     fn eq(&self, o: &UnreadCredentials) -> bool {
-        self.step == o.step && self.proof == o.proof && self.sync.verifying_key() == o.sync.verifying_key() && self.deposit == o.deposit && self.claims == o.claims
+        self.step == o.step
+            && self.keys.len() == o.keys.len()
+            && self.keys.iter().zip(&o.keys).all(|((a, p), (b, q))| p == q && a.verifying_key() == b.verifying_key())
+            && self.deposit == o.deposit && self.claims == o.claims
     }
 }
 
@@ -104,25 +107,20 @@ pub fn judge(j: &Judged) -> Verdict {
     if !j.listed && j.own_elsewhere {
         return Verdict::Leave;
     }
-    let creds = |step: Option<StepId>, secret: &Secret32, head: Option<&(Step, Option<ClaimSet>)>| {
-        Some(Arc::new(UnreadCredentials {
-            step,
-            sync: label_role_key(LabelRole::Sync, secret),
-            proof: Secret32::from_bytes(sync_proof(&label_role_seed(LabelRole::Sync, secret))),
-            deposit: head.map(|(h, _)| h.keys.deposit),
-            claims: head.and_then(|(_, c)| c.clone()),
-        }))
-    };
-    // no step registered yet: its step is the newest sync secret it holds (its grant's), so a
-    // reader's test finds S here and registers its path (spec/sync-opens.md §4 Admissible)
+    let key = |secret: &Secret32| (label_role_key(LabelRole::Sync, secret), Secret32::from_bytes(sync_proof(&label_role_seed(LabelRole::Sync, secret))));
+    // no step registered yet: each sync secret it holds counts as its step (its grant's among
+    // them), so a reader's test finds S here and registers its path, and a box at a self-made
+    // epoch hides no genuine one (spec/sync-opens.md §4 Admissible)
     let Some(head) = j.steps.last() else {
-        let newest = j.record.and_then(|r| r.secrets.values().next_back());
-        return Verdict::Keep(Kept { stranded: false, credentials: newest.and_then(|x| creds(None, x, None)) });
+        let keys: Vec<_> = j.record.map(|r| r.secrets.values().rev().map(key).collect()).unwrap_or_default();
+        let credentials = (!keys.is_empty()).then(|| Arc::new(UnreadCredentials { step: None, keys, deposit: None, claims: None }));
+        return Verdict::Keep(Kept { stranded: false, credentials });
     };
     let Some((_, secret, _)) = secrets.iter().find(|(k, _, _)| *k == head.0.keys.sync) else {
         return Verdict::Keep(Kept { stranded: true, credentials: None });
     };
-    Verdict::Keep(Kept { stranded: false, credentials: creds(Some(head.0.id()), secret, Some(head)) })
+    let credentials = UnreadCredentials { step: Some(head.0.id()), keys: vec![key(secret)], deposit: Some(head.0.keys.deposit), claims: head.1.clone() };
+    Verdict::Keep(Kept { stranded: false, credentials: Some(Arc::new(credentials)) })
 }
 
 /// spec/sync-judgement.md §6 Stops: the notice's epoch is at or past every sync epoch held (a

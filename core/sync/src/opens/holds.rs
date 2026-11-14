@@ -34,14 +34,16 @@ pub struct Creds {
 }
 
 impl Creds {
-    /// What a node keeping S unread holds (spec/sync-opens.md §4 Admissible): it shows its step's
-    /// sync key, the sync proof of it, and its head's deposit key and every key of the head's
-    /// claim set; it tests the sync key and the proof; its step answers a Hit on what it shows
-    /// (§5 Proof), so everything it shows it can accept.
+    /// What a node keeping S unread holds (spec/sync-opens.md §4 Admissible): it shows each of
+    /// its steps' sync key and the sync proof of it, and its head's deposit key and every key of
+    /// the head's claim set; it tests the sync keys and the proofs; its step answers a Hit on what
+    /// it shows (§5 Proof: a sync key by itself), so everything it shows it can accept.
     pub fn kept_unread(uc: &UnreadCredentials) -> Creds {
         let mut c = Creds { holding: Some(Holding::Unread), ..Creds::default() };
-        c.shows.push((Shown::SyncKey(uc.sync.verifying_key().to_bytes()), None));
-        c.shows.push((Shown::Proof(*uc.proof.expose()), None));
+        for (k, p) in &uc.keys {
+            c.shows.push((Shown::SyncKey(k.verifying_key().to_bytes()), None));
+            c.shows.push((Shown::Proof(*p.expose()), None));
+        }
         if let Some(d) = &uc.deposit {
             c.shows.push((Shown::Deposit(d.to_bytes()), None));
         }
@@ -49,9 +51,11 @@ impl Creds {
             c.shows.extend(cs.claims.iter().map(|k| (Shown::Claim(*k), None)));
             c.shows.extend(cs.entries.keys().map(|k| (Shown::Static(*k), None)));
         }
-        c.tests.push((Tested::SyncKey { step: uc.step, key: uc.sync.clone() }, None));
-        c.tests.push((Tested::Proof(*uc.proof.expose()), None));
-        c.step = Some((uc.sync.clone(), None));
+        for (k, p) in &uc.keys {
+            c.tests.push((Tested::SyncKey { step: uc.step, key: k.clone() }, None));
+            c.tests.push((Tested::Proof(*p.expose()), None));
+        }
+        c.step = uc.keys.first().map(|(k, _)| (k.clone(), None));
         c
     }
 

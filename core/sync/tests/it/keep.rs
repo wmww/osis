@@ -196,3 +196,22 @@ fn taking_an_inbox_blob_again_moves_nothing_spec_sync_inbox_2() {
     }
     assert!(applied > 0, "the grant's inbox blob was taken");
 }
+
+// spec/sync-ids.md §6 (Steps; Walk), spec/sync-judgement.md §6 (Keeps): after
+// `kept_then_removed` node 0 grants node 1 sync again; node 1 holds only the new sync epoch's
+// secret, so S's path must reach a step under that epoch's sync key for node 1 to open at its
+// head. Fails (issues/sync-unbuilt.md, opens and inbox): node 0 tests only its recorded steps'
+// sync keys, not each sync secret it holds, so nothing opens; and no admin issues a step after
+// the removal's rotation, so a genesis registered there would strand node 1.
+#[test]
+#[ignore = "fails: issues/sync-unbuilt.md (opens: held sync secrets tested; inbox: steps issued)"]
+fn a_store_granted_again_after_its_removal_reaches_the_head_spec_sync_ids_6() {
+    let (mut w, t, s) = kept_then_removed();
+    let a1 = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t, &a1, &edge(Role::Sync))).unwrap();
+    w.run();
+    assert_eq!(w.engine(1).sync_holding(&s).unwrap(), Some((t, Holding::Unread)), "kept unread again");
+    let path = w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.clone();
+    assert_eq!(w.store(1).head(&s).unwrap().map(|h| h.id()), path.steps.last().map(|(st, _)| st.id()), "S's path registered at node 1");
+    assert!(!w.status(1)[&s].stranded, "node 1 holds its head's sync secret");
+}

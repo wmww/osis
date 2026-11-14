@@ -85,7 +85,7 @@ TLC 2.19, 12 workers. Positive cfgs pass; each `*N_*` fails with the listed prop
 | D_meet, D_meetaway, D_meetlive | readers also each other's sources; b away then untold; settles | pass | 1,020, 1,182, 1,020 |
 | K_all | rotations, removal, a forged notice, unlisting, any arrival order (head-only signature rule) | pass | 1,179 |
 | K_held | ... re-grants, the spec's rule (the fixes of `KF_late` and `KF_regrant`), with `RemovedDrops` | pass | 5,328 |
-| K_nohead | ... granted before any step is registered (no head: opens by its newest secret, not stranded), first box late | pass | 13,098 |
+| K_nohead | ... granted before any step is registered (no head: opens by any secret it holds, not stranded), first box late | pass | 13,098 |
 | K_inflate | ... a hostile box claims a future epoch: `NoDropOnHeadMove`, `RemovedStops`, `StrandedOnlyWaiting` | pass (never a wrong drop) | 19,866 |
 | KN_noheld | holding no step's secret, a notice verifies under any step up to the head | pass (the head's-alone rule is not needed by any property here: the forger holds no delete key) | 13,230 |
 
