@@ -2124,11 +2124,11 @@ fn own_secrets_and_the_home_sync_id_come_in_one_commit_spec_sync_ids_2() {
     }
 }
 
-// spec/sync-judgement.md §5 (Telling: from its destruction a node holding a destroyed thing's
-// secrets keeps syncing its own sync IDs, logging the destroying requests there; Emptying: a
-// holder of the newest step's delete key deletes there; forgotten, they leave the sync set),
-// spec/sync-set.md §2: purged, t keeps (its request in force) and S stays read, carrying the
-// request; keeping nothing, S stays read with the head's delete key; forgotten, S goes.
+// spec/sync-judgement.md §5 (Telling) (Emptying), spec/sync-set.md §2: from its destruction a
+// node holding a destroyed thing's secrets keeps syncing its own sync IDs, logging the destroying
+// requests there; a holder of the newest step's delete key empties them. Purged, t keeps (its
+// request in force) and S stays read, carrying the request; keeping nothing, S stays read with
+// the head's delete key; forgotten, S goes.
 #[test]
 fn a_destroyed_things_sync_id_stays_read_until_forgotten_spec_sync_judgement_5() {
     let (mut lp, t, _, _, _) = granted(Role::Write);
