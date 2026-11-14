@@ -276,3 +276,137 @@ fn route_removal_proved_leaks_nothing_spec_crypto_4() {
     assert!(!openable(&mut lp, A1, &[a, m], f, known.clone()).contains(&(a, Role::Read, e)), "f opens a1's newest epoch of A");
     assert!(!openable(&mut lp, M1, &[m], f, known).contains(&(m, Role::Read, em)), "f opens m1's newest epoch of M");
 }
+
+/// Node-sync's covered drop (`CoverPass`, as `SyncEngine::compact_now` runs it, role snapshots
+/// included) over `t`'s `keys.0` and `secrets.0` at peer `i`: each held body (not a snapshot) that
+/// a held valid snapshot covers drops once past its keep bound (`Engine::drop_from`). Returns how
+/// many dropped.
+fn drop_covered(lp: &mut LocalPeer, i: usize, t: Tid) -> usize {
+    let e = &mut lp.peers[i].engine;
+    let now = e.now().0;
+    let mut n = 0;
+    for ak in ["keys.0", "secrets.0"].map(|k| osis_base::Ak::new(k).unwrap()) {
+        let k = (t, ak.clone());
+        let snaps: Vec<CommitId> = e.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| e.holds_valid_snapshot(s, &t, &ak)).collect();
+        let bodies: Vec<CommitId> = e.core.durable_on(&k).filter(|c| e.header(c).is_some_and(|h| !h.kind.is_compaction())).collect();
+        for c in bodies {
+            for s in &snaps {
+                if e.droppable_if_covered(&c, &t, &ak) && e.covered(s, &c, &t, &ak).unwrap() == Some(true) && e.drop_from(&c, &t, &ak).unwrap() <= now {
+                    e.drop_body(&c, &t, &ak).unwrap();
+                    n += 1;
+                    break;
+                }
+            }
+        }
+    }
+    n
+}
+
+/// Each commit with a `secrets.0` part on `t` held at both peers `i` and `j`, with that part's
+/// verdict at each.
+fn secrets_verdicts(lp: &LocalPeer, i: usize, j: usize, t: Tid) -> Vec<(CommitId, bool, bool)> {
+    let held = |k: usize, c: &CommitId| {
+        let m = lp.peers[k].engine.core.ix.commits.get(c)?;
+        let ai = m.view.aspects.iter().position(|x| x.tid == t && x.ak.as_str() == "secrets.0")?;
+        m.holds(ai).then(|| m.valid_at(ai))
+    };
+    let ids: Vec<CommitId> = lp.peers[i].engine.commit_ids();
+    ids.into_iter().filter_map(|c| Some((c, held(i, &c)?, held(j, &c)?))).collect()
+}
+
+// Invariant (spec/crypto.md §4 Authority, spec/commits.md §5 Keep bounds): every node holding a
+// commit's `secrets.0` part reaches the same verdict on it, whenever it joined. f's rotation of M
+// is valid only by its keysets' proof of S; m1 then rotates M again (f's keysets replaced),
+// compacts M's role-class aspects and runs the cover rule past `ROLE_KEEP` (restarting at random
+// around it). A node granted M afterwards gets what m1 holds: had m1 dropped the rotation's
+// `keys.0` part while holding its `secrets.0` part, the newcomer would read no proof and judge
+// that part invalid where m1 judges it valid, for good. Randomized over the rotations, which
+// aspects are compacted, the clock, restarts and arrival order.
+#[test]
+fn rotation_judged_alike_by_a_node_joining_after_compaction_spec_crypto_4() {
+    let mut reached = 0;
+    for seed in 0..6u64 {
+        let mut r = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x2545_f491_4f6c_dd1d;
+        let mut next = |n: u64| {
+            r ^= r << 13;
+            r ^= r >> 7;
+            r ^= r << 17;
+            r % n
+        };
+        let (mut lp, _, m, s) = half_shape();
+        let (c, _) = half_valid(&mut lp, m, s, true);
+        send_skipping(&mut lp, F, M1, &BTreeSet::new());
+        assert!(verdicts(&lp, M1, &c, m).iter().all(|(_, v)| *v), "seed {seed}: a proof of S counts");
+        // m1 rotates M again: f's keysets of read and write replaced
+        for _ in 0..=next(2) {
+            lp.advance(1 + next(1000));
+            let roles: BTreeSet<Role> = if next(2) == 0 { [Role::Read, Role::Write].into() } else { [Role::Sync, Role::Read, Role::Write, Role::Admin].into() };
+            lp.peers[M1].engine.run(|tx| super::rotate_now(tx, tx.core.writer().unwrap(), m, &roles)).unwrap();
+        }
+        lp.advance(1000);
+        let (keys, secrets) = (osis_base::Ak::new("keys.0").unwrap(), osis_base::Ak::new("secrets.0").unwrap());
+        lp.peers[M1].engine.snapshot(&m, &keys).unwrap().unwrap();
+        if next(2) == 0 {
+            lp.peers[M1].engine.snapshot(&m, &secrets).unwrap().unwrap();
+        }
+        lp.advance(osis_base::format::ROLE_KEEP_MS + 1 + next(3) * 86_400_000);
+        if next(2) == 0 {
+            lp.peers[M1].restart(seed).unwrap();
+        }
+        drop_covered(&mut lp, M1, m);
+        if next(2) == 0 {
+            lp.peers[M1].restart(seed + 100).unwrap();
+        }
+        // a node granted M now gets what m1 holds, in some order
+        let x = lp.peers.len();
+        let now = lp.peers[M1].engine.now();
+        lp.peers.push(crate::local_peer::Peer::new(700 + seed, now).unwrap());
+        lp.sync(x, M1).unwrap();
+        let xt = lp.peers[x].engine.me();
+        lp.peers[M1].engine.grant(&m, &xt, &super::tests::edge(Role::Read)).unwrap();
+        let mut pks = lp.packages(M1).unwrap();
+        for k in (1..pks.len()).rev() {
+            pks.swap(k, next(k as u64 + 1) as usize);
+        }
+        for _ in 0..2 {
+            for pk in &pks {
+                let _ = lp.peers[x].receive(&pk.bytes, pk.blobs.clone());
+            }
+        }
+        let got = secrets_verdicts(&lp, M1, x, m);
+        // m1 may have dropped f's `secrets.0` part too (its boxes and history entries replaced,
+        // covered): then nobody judges it
+        reached += usize::from(got.iter().any(|(id, ..)| *id == c));
+        let differ: Vec<_> = got.iter().filter(|(_, a, b)| a != b).collect();
+        assert!(differ.is_empty(), "seed {seed}: m1 and the newcomer judge differently: {differ:?} (f's rotation {c:?})");
+    }
+    assert!(reached > 0, "no run left f's boxes to judge");
+}
+
+// spec/commits.md §5 Keep bounds, spec/crypto.md §4 Held keyset: a1 holds f's rotation of M as a
+// certificate only (no `secrets.0` part), so its `keys.0` part judges nothing a1 holds and drops
+// as covered past `ROLE_KEEP` under m1's `keys.0` snapshot, while m1, holding the boxes, keeps it.
+// The dropped keyset still counts at a1 (`Dropped::keysets`): the drop judges again what the
+// keyset rebuild marked, nothing flips, and the index equals a rebuild, before and after a restart.
+#[test]
+fn keyset_drops_only_where_it_judges_nothing_held_spec_commits_5() {
+    let (mut lp, _, m, s) = half_shape();
+    let (c, _) = half_valid(&mut lp, m, s, true);
+    send_skipping(&mut lp, F, M1, &BTreeSet::new());
+    deliver_without_secrets(&mut lp, F, A1, m);
+    lp.advance(10);
+    lp.peers[M1].engine.run(|tx| super::rotate_now(tx, tx.core.writer().unwrap(), m, &[Role::Read, Role::Write].into())).unwrap();
+    lp.advance(10);
+    let keys = osis_base::Ak::new("keys.0").unwrap();
+    lp.peers[M1].engine.snapshot(&m, &keys).unwrap().unwrap();
+    deliver_without_secrets(&mut lp, M1, A1, m);
+    lp.advance(osis_base::format::ROLE_KEEP_MS + 10);
+    let before = verdicts(&lp, A1, &c, m);
+    assert_eq!(drop_covered(&mut lp, M1, m), 0, "m1 keeps the keyset its boxes are judged by");
+    assert!(drop_covered(&mut lp, A1, m) > 0 && !lp.peers[A1].engine.body_not_dropped(&c, &m, &keys), "a1 drops the certificate's keyset");
+    assert_eq!(verdicts(&lp, A1, &c, m), before, "nothing flips");
+    lp.peers[A1].engine.check_index();
+    lp.peers[A1].restart(9).unwrap();
+    assert_eq!(verdicts(&lp, A1, &c, m), before, "nor at a restart");
+    lp.peers[A1].engine.check_index();
+}

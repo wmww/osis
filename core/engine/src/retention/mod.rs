@@ -1334,6 +1334,9 @@ impl Engine {
         self.run(|tx| {
             let ai = aspect_index(tx.core, &c, &tid, &ak).ok_or(Error::UnknownCommit(c))?;
             drop_part_for(tx, &c, ai, DropFor::Cover)?;
+            // a judgment the dropped body fed is kept with it (`Dropped`), but a keyset rebuild
+            // marks its commits for judging again (as `drop_invalid`)
+            crate::apply::rejudged(tx, false)?;
             match tx.core.ix.commits.get(&c) {
                 Some(m) if !m.holds(ai) || m.bare(ai) => Ok(()),
                 _ => Err(Error::Misuse("no held valid snapshot covers the body")),
