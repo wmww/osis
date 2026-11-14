@@ -94,3 +94,12 @@ fn sync_follows_an_engine_that_read_its_store_again_spec_sync_ids_5() {
     use crate::harness::history::Gives;
     crate::convergence::converge(15, 3, &[New(2), Disk(1, 0, crate::harness::DiskFault::Unsynced), Grant(2, 0, 1, Gives::Syncs), New(1), New(1), New(1), Grant(1, 3, 2, Gives::Reads)], String::new());
 }
+
+// spec/sync.md §3 (kept unread to read opens what is there): a node keeping S unread, holding a
+// write there, raised to read reads it. Found by the differential.
+#[test]
+fn raised_from_sync_to_read_opens_what_is_held_spec_sync_3() {
+    use crate::harness::Step::*;
+    use crate::harness::history::Gives;
+    crate::convergence::converge(5, 3, &[New(2), New(2), Grant(2, 1, 0, Gives::Syncs), Run, Grant(2, 1, 0, Gives::Reads)], String::new());
+}

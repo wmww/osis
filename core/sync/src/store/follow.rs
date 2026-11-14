@@ -41,6 +41,8 @@ impl Follow {
     pub fn settle(&mut self, engine: &mut Engine, store: &mut Store, now: WallMs) -> Result<bool> {
         let moved = self.set.settle(engine)?;
         let mut acted = !moved.is_empty();
+        // kept unread to read opens what is there (spec/sync.md §3): every entry held, once
+        let raised: Vec<SyncId> = moved.iter().filter(|(s, now)| matches!(now, Some((_, Holding::Read))) && store.holding(s) == Some(Holding::Unread)).map(|(s, _)| *s).collect();
         for (s, now) in &moved {
             if let Some(t) = self.read.remove(s) {
                 self.paths.unwant(&(*s, t));
@@ -51,6 +53,13 @@ impl Follow {
             }
         }
         store.set_holdings(&moved);
+        for s in raised {
+            for e in store.entries(&s)? {
+                if let Some(bytes) = store.bytes(&e.blob)? {
+                    engine.open_entry(&s, &e.blob, &e.wrap, &bytes)?;
+                }
+            }
+        }
         if !self.caps.due().is_empty() {
             let mut failed = None;
             let r = self.caps.settle(&(), || {
