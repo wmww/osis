@@ -1160,6 +1160,9 @@ pub struct Core {
     /// Tests: the facts this node's snapshots state, over the true ones (`snapshot::facts_of`).
     #[cfg(test)]
     pub(crate) lie_facts: Option<osis_crdt::Facts>,
+    /// Tests: the original's floor this node's edits claim, over the true one (`commit_in`).
+    #[cfg(test)]
+    pub(crate) lie_floor: Option<u64>,
     /// Key actors other than the node whose seed this node holds for now (a link key from
     /// its card, a link key; role flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
@@ -1409,6 +1412,8 @@ impl Core {
             step_fault: self.step_fault.clone(),
             #[cfg(test)]
             lie_facts: self.lie_facts.clone(),
+            #[cfg(test)]
+            lie_floor: self.lie_floor,
             key_actors: self.key_actors.clone(),
             account: self.account.clone(),
             time: self.time.clone(),
@@ -2109,6 +2114,8 @@ impl Core {
             step_fault: _,
             #[cfg(test)]
             lie_facts: _,
+            #[cfg(test)]
+            lie_floor: _,
         } = c;
     }
 
@@ -2259,6 +2266,8 @@ impl Core {
             step_fault: None,
             #[cfg(test)]
             lie_facts: None,
+            #[cfg(test)]
+            lie_floor: None,
             key_actors: Default::default(),
             epochs_of: memo::Memo::new("epochs"),
             store_rows,

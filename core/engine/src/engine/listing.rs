@@ -181,14 +181,19 @@ pub(super) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(a) = m.view.aspects.get(ai) else { return Ok(None) };
     let (tid, ak, valid, own) = (a.tid, a.ak.clone(), m.valid_at(ai), Some(m.view.author) == me);
-    let below = a.replaces.map(|_| a.original_floor);
+    let edits = a.replaces.map(|o| (o, a.original_floor));
     if !valid && !own {
         return Ok(None);
     }
     // an edit of a fire below this node's floor (from before its grant without history) is a
-    // version of a past fire: listed nowhere, as the fire is not (spec/commits.md §5 Signals)
-    if below.is_some_and(|f| f < own_floor(tx.core, &tid)) {
-        return Ok(None);
+    // version of a past fire: listed nowhere, as the fire is not (spec/commits.md §5 Signals).
+    // The floor is its writer's claim, judged where the node can: an original held here opened
+    // at or above its floor is no past fire, whatever the edit says
+    if let Some((o, f)) = edits {
+        let floor = own_floor(tx.core, &tid);
+        if f < floor && !opened_at(tx, &o, &tid, &ak, floor)? {
+            return Ok(None);
+        }
     }
     let here = part_here(tx, c, ai)?;
     let now = tx.now().0;
@@ -208,6 +213,13 @@ pub(super) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
 /// floor): 0 on an actor never cut.
 fn own_floor(core: &crate::engine::Core, tid: &Tid) -> u64 {
     core.secret_actor(tid).and_then(|a| core.epochs(&a)).map_or(0, |e| e.read.own_floor())
+}
+
+/// Whether held commit `o`'s part on `(tid, ak)` was opened (or, this node's own, written) under
+/// an epoch of floor at least `floor` (`labeling::opened::part_floor`).
+fn opened_at(tx: &mut Tx<'_>, o: &CommitId, tid: &Tid, ak: &osis_base::Ak, floor: u64) -> Result<bool> {
+    let Some(oai) = tx.core.ix.commits.get(o).and_then(|m| m.aspect(tid, ak)) else { return Ok(false) };
+    Ok(crate::labeling::opened::part_floor(tx, o, oai, tid)?.is_some_and(|f| f >= floor))
 }
 
 /// Whether part `ai` of `c` is listed (`listed`).

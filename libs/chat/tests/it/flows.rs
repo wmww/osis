@@ -1059,8 +1059,8 @@ fn odd_ids_from_another_writer_fail_no_read() {
 // notes/chat.md Edit, spec/commits.md §5 Signals, spec/crypto.md §4 (State at a cut): Carol,
 // added without history, reads the chat's messages from her grant on, and no edit of an earlier
 // one: Alice's fix of a message from before shows to Bob, never to Carol as a new message.
-// Ignored until node-sync carries a history-less grant (issues/history-less-grant.md, Sync side:
-// Carol reads nothing of the chat yet); the engine's `from_now_lists_no_edit_of_an_earlier_message_spec_commits_5`
+// Ignored until node-sync logs the record blob of a thing made before a cut (issues/history-less-grant.md,
+// Records before the cut: every commit Carol gets waits on the chat's record); the engine's `from_now_lists_no_edit_of_an_earlier_message_spec_commits_5`
 // checks the rule meanwhile.
 #[test]
 #[ignore = "needs the sync side of grants without history (issues/history-less-grant.md)"]

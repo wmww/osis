@@ -1527,8 +1527,10 @@ fn fires(lp: &mut LocalPeer, i: usize, g: Tid) -> Vec<(osis_base::CommitId, Stri
 // history sees no past message, nor a later edit of one. A says "typo" before cutting for N and
 // fixes it after (an edit, `replaces`), then says "welcome": N lists "welcome" alone, A both. P,
 // a reader with history holding the fix but not the message it edits (gone from history, never
-// fetched), still lists the fix as a message of its own. Fails without the original's floor on
-// the edit (N lists the fix as a new message).
+// fetched), still lists the fix as a message of its own. A's edit of "welcome" claims too low a
+// floor (any writer may claim any): N, holding "welcome", reads the edit. Fails without the
+// original's floor on the edit (N lists the fix as a new message), and with the claim trusted
+// where the original is held (N reads "welcome" unedited).
 #[test]
 fn from_now_lists_no_edit_of_an_earlier_message_spec_commits_5() {
     let mut lp = synced(3);
@@ -1546,11 +1548,16 @@ fn from_now_lists_no_edit_of_an_earlier_message_spec_commits_5() {
     label.note(&done);
     let fix = say(&mut lp, 0, g, "fixed", Some(typo));
     let welcome = say(&mut lp, 0, g, "welcome", None);
+    // the welcome's edit claims a floor below N's: N, holding the welcome, judges it
+    lp.peers[0].engine.core.lie_floor = Some(0);
+    say(&mut lp, 0, g, "welcome!", Some(welcome));
+    lp.peers[0].engine.core.lie_floor = None;
     label.place(&mut lp, g, &[0]);
     deliver_as_newcomer(&mut lp, 0, 2, g, &done, &label);
     assert_eq!(fires(&mut lp, 0, g).iter().map(|x| x.0).collect::<Vec<_>>(), vec![typo, welcome], "A lists the message (as its fix) and the welcome");
     assert!(fires(&mut lp, 0, g)[0].1.contains("fixed"), "A reads the fix");
     assert_eq!(fires(&mut lp, 2, g).iter().map(|x| x.0).collect::<Vec<_>>(), vec![welcome], "N lists an edit of a message from before its grant");
+    assert!(fires(&mut lp, 2, g)[0].1.contains("welcome!"), "an edit's claimed floor hides it from N, which holds its message");
     // P: every role commit, the setting and the fix alone
     roles_to(&mut lp, 0, 1);
     for c in [setting, fix] {
@@ -1639,4 +1646,112 @@ fn forged_expiring_snapshot_ends_no_lasting_value_spec_commits_5() {
     }
     lp.advance(20_000);
     assert_eq!(content_now(&mut lp, 2, g), keys(&["x"]), "a forged expiry ends a lasting value at B");
+}
+
+// spec/crdt.md §4.7, §8, spec/crypto.md §4 (State at a cut): who can write an expiring
+// snapshot's expiry, at a holder granted without history. H, a writer, writes one carrying A's
+// lasting "x" and A's "e" (expiring in 10 s) valued, ending in 50 s, and A holds it when it cuts
+// for N. N reads "x" for good and "e" until 10 s, as A does. After the cut H sends N another,
+// ending in 40 s, carrying A's lasting register value 1; A sets the register to 2 and N undoes
+// that, writing back the 1 it holds from the cut's lasting snapshot: it lasts. An honest node
+// judges a value it holds from its own delta or a lasting body by them, never by an expiring
+// snapshot's claim. Fails with expiring snapshots' copies counted without that (A's cut carries
+// "e" until 50 s and drops "x" from its lasting snapshot, so N loses it at 50 s; N's undo
+// writes 1 back ending at 40 s).
+#[test]
+fn forged_expiring_snapshot_neither_ends_nor_extends_a_value_at_a_newcomer_spec_crdt_8() {
+    let mut lp = synced(3);
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    let (ak, reg) = (osis_base::Ak::new("x:m.0").unwrap(), osis_base::Ak::new("x:r.0").unwrap());
+    let set = |lp: &mut LocalPeer, v: i64| {
+        let mut m = crate::Mutation::new();
+        m.op(g, &reg, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Set(osis_base::Value::Int(v)) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    let mut m = crate::Mutation::new();
+    m.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(reg.clone(), osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None })).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    let now = lp.peers[0].engine.now().0;
+    put(&mut lp, 0, g, "x");
+    put_expiring(&mut lp, 0, g, "e", now + 10_000);
+    set(&mut lp, 1);
+    for pk in lp.packages(0).unwrap() {
+        let _ = lp.peers[1].receive(&pk.bytes, pk.blobs.clone());
+    }
+    // H's expiring snapshot of its whole state of `on`, ending at `t`
+    let forge = |lp: &mut LocalPeer, on: &osis_base::Ak, t: u64| {
+        let forged = lp.peers[1]
+            .engine
+            .run(|tx| {
+                let st = tx.state(&g, on)?.cloned().unwrap();
+                let (ts, node) = (tx.core.hlc.next(), tx.core.writer_for(&g)?);
+                crate::retention::snapshot::build_snapshot(tx, g, on.clone(), st, ts, node, Default::default(), Default::default(), Some(t))
+            })
+            .unwrap();
+        lp.peers[1].engine.package(&forged).unwrap().unwrap()
+    };
+    let pk = forge(&mut lp, &ak, now + 50_000);
+    lp.peers[0].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    let mut label = Label::default();
+    label.place(&mut lp, g, &[0]);
+    let done = lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Write), History::None).unwrap();
+    label.note(&done);
+    label.place(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &label);
+    assert_eq!(content(&mut lp, 2, g), keys(&["x", "e"]));
+    let r = |lp: &mut LocalPeer| lp.peers[2].engine.get(&g, &reg).unwrap();
+    assert_eq!(r(&mut lp), Some(osis_base::Value::Int(1)));
+    lp.advance(20_000);
+    assert_eq!(content_now(&mut lp, 0, g), keys(&["x"]));
+    assert_eq!(content_now(&mut lp, 2, g), keys(&["x"]), "a forged expiry extends a value at N");
+    let pk = forge(&mut lp, &reg, now + 40_000);
+    lp.peers[2].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    lp.advance(10);
+    let two = set(&mut lp, 2);
+    let pk = lp.peers[0].engine.package(&two).unwrap().unwrap();
+    lp.peers[2].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    lp.advance(10);
+    let mut m = crate::Mutation::new();
+    m.undo(two);
+    lp.peers[2].commit(m).unwrap();
+    assert_eq!(r(&mut lp), Some(osis_base::Value::Int(1)), "N's undo writes back the value before");
+    lp.advance(40_000);
+    assert_eq!(content_now(&mut lp, 2, g), keys(&["x"]), "a forged expiry ends a lasting value at N");
+    assert_eq!(r(&mut lp), Some(osis_base::Value::Int(1)), "a forged expiry ends the value N's undo writes back");
+}
+
+// spec/commits.md §5 Covered, spec/crdt.md §8: what a cut's expiring snapshots cost over many
+// cuts. A writes "e" (expiring in 100 s) and cuts for N, then for M: each cut writes an expiring
+// snapshot ending with "e", and the second covers the first (both end then), so one per expiry
+// and aspect stays however many cuts are made; neither covers "e"'s own delta (it may outlive an
+// expiring snapshot claiming a sooner end). Fails with expiring snapshots covering nothing (the
+// cuts' snapshots pile up until "e" ends).
+#[test]
+fn each_cut_replaces_the_last_cuts_expiring_snapshots_spec_commits_5() {
+    let mut lp = synced(3);
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let g = group(&mut lp, 0);
+    let ak = osis_base::Ak::new("x:m.0").unwrap();
+    let t = lp.peers[0].engine.now().0 + 100_000;
+    put_expiring(&mut lp, 0, g, "e", t);
+    let delta = *edits_on(&lp, 0, g).iter().next().unwrap();
+    let ending = |lp: &LocalPeer| -> Vec<osis_base::CommitId> {
+        let e = &lp.peers[0].engine;
+        e.core.ix.by_aspect.get(&(g, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|c| e.header(c).is_some_and(|h| h.kind.is_compaction() && h.expires == Some(t))).collect()
+    };
+    for to in &tids[1..] {
+        lp.advance(10);
+        lp.peers[0].engine.grant_with(&g, to, &edge(Role::Read), History::None).unwrap();
+    }
+    let x = ending(&lp);
+    assert_eq!(x.len(), 2, "each cut writes an expiring snapshot ending with the value");
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.covered(&x[1], &x[0], &g, &ak).unwrap(), Some(true), "a cut's expiring snapshot does not replace the last cut's");
+    assert_eq!(e.covered(&x[0], &x[1], &g, &ak).unwrap(), Some(false));
+    for s in &x {
+        assert_eq!(e.covered(s, &delta, &g, &ak).unwrap(), Some(false), "an expiring snapshot covers a delta");
+    }
 }

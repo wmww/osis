@@ -117,7 +117,7 @@ pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Opti
         .collect();
     // values held from an expiring snapshot alone (a holder granted without history holds no
     // delta of them): its copies end at its expiry (spec/crdt.md §4.7)
-    expiring.extend(expiring_carriers(tx, tid, ak)?.into_values().flatten().filter(|o| matches!(o, Owned::Dots { .. })));
+    expiring.extend(expiring_copies(tx, tid, ak)?.into_values().flatten());
     let Some(mut st) = tx.state(tid, ak)?.cloned() else { return Ok(None) };
     if !expiring.is_empty() {
         // sorted: a lookup per dot (`sorted_owns`), not a scan of every expiring delta
@@ -130,39 +130,77 @@ pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Opti
 
 /// The bodies of `(tid, ak)` held here, valid, whose values live and end at an expiry still ahead,
 /// by that expiry: each as the writes whose values it gives (spec/crdt.md §4.7, §8): a delta's own
-/// writes; an expiring snapshot's valued copies, as exact dots (it has no writes of its own).
+/// writes, and `expiring_copies`.
 pub(crate) fn expiring_carriers(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeMap<u64, Vec<Owned>>> {
     let now = tx.now().0;
-    let held: Vec<(CommitId, usize, u64, bool)> = tx
+    let mut out = expiring_copies(tx, tid, ak)?;
+    for (_, c) in tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten() {
+        let Some(m) = tx.core.ix.commits.get(c) else { continue };
+        let Some(ai) = m.aspect(tid, ak) else { continue };
+        let Some(t) = m.header.expires.filter(|t| *t > now && !m.header.kind.is_compaction()) else { continue };
+        if live_valued(tx.core, c, ai) {
+            out.entry(t).or_default().extend(Owned::of(&m.header, c, ai));
+        }
+    }
+    Ok(out)
+}
+
+/// Whether part `ai` of held commit `c` is held with its values, valid.
+fn live_valued(core: &Core, c: &CommitId, ai: usize) -> bool {
+    core.ix.commits.get(c).is_some_and(|m| m.holds(ai) && !m.bare(ai) && m.valid_at(ai) && !super::valueless(core, c, ai))
+}
+
+/// The valued copies of the expiring snapshots of `(tid, ak)` held here, valid, by their expiry
+/// still ahead, as exact dots (they have no writes of their own): of the writes this node knows
+/// no other lifetime of. Reads the aspect's snapshots alone. Invariant: an expiring snapshot's
+/// expiry is any writer's claim, so it decides only for a value held from expiring snapshots
+/// alone: a write whose own delta's header is held ends as that delta does, and one a lasting
+/// body holds valued lasts (else a forged expiring snapshot ends a lasting value, or extends an
+/// expiring one, in what an honest node writes from it: its snapshots, its undo).
+pub(crate) fn expiring_copies(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeMap<u64, Vec<Owned>>> {
+    let now = tx.now().0;
+    // each held valid snapshot with its values: its expiry, if any
+    let snaps: Vec<(CommitId, usize, Option<u64>)> = tx
         .core
         .ix
-        .by_aspect
+        .snapshots
         .get(&(*tid, ak.clone()))
         .into_iter()
         .flatten()
-        .filter_map(|(_, c)| {
-            let m = tx.core.ix.commits.get(c)?;
+        .filter_map(|x| {
+            let m = tx.core.ix.commits.get(&x.1)?;
             let ai = m.aspect(tid, ak)?;
-            let t = m.header.expires.filter(|t| *t > now)?;
-            let valued = m.holds(ai) && !m.bare(ai) && m.valid_at(ai) && !super::valueless(tx.core, c, ai);
-            valued.then_some((*c, ai, t, m.header.kind.is_compaction()))
+            let t = m.header.expires;
+            (t.is_none_or(|t| t > now) && live_valued(tx.core, &x.1, ai)).then_some((x.1, ai, t))
         })
         .collect();
     let mut out: BTreeMap<u64, Vec<Owned>> = BTreeMap::new();
-    for (c, ai, t, snapshot) in held {
-        if !snapshot {
-            let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-            out.entry(t).or_default().extend(Owned::of(&m.header, &c, ai));
-            continue;
-        }
-        let mut dots: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
-        crate::apply::each_held_piece(tx, &c, ai, &mut |_, f| {
-            f.each_valued(&mut |d| {
-                dots.entry(d.src.clone()).or_default().insert(d.ctr);
-            });
+    if snaps.iter().all(|x| x.2.is_none()) {
+        return Ok(out);
+    }
+    let mut lasting: BTreeSet<(osis_crdt::Source, u64)> = BTreeSet::new();
+    let mut expiring: Vec<(u64, Fragment)> = Vec::new();
+    for (s, ai, t) in snaps {
+        crate::apply::each_held_piece(tx, &s, ai, &mut |_, f| {
+            match t {
+                Some(t) => expiring.push((t, f)),
+                None => f.each_valued(&mut |d| {
+                    lasting.insert((d.src.clone(), d.ctr));
+                }),
+            }
             Ok(())
         })?;
-        out.entry(t).or_default().extend(dots.into_iter().map(|(src, ctrs)| Owned::Dots { src, ctrs: ctrs.into_iter().collect() }));
+    }
+    let mut dots: BTreeMap<u64, BTreeMap<osis_crdt::Source, BTreeSet<u64>>> = BTreeMap::new();
+    for (t, f) in &expiring {
+        f.each_valued(&mut |d| {
+            if tx.core.write_expiry(tid, ak, d).is_none() && !lasting.contains(&(d.src.clone(), d.ctr)) {
+                dots.entry(*t).or_default().entry(d.src.clone()).or_default().insert(d.ctr);
+            }
+        });
+    }
+    for (t, by) in dots {
+        out.insert(t, by.into_iter().map(|(src, ctrs)| Owned::Dots { src, ctrs: ctrs.into_iter().collect() }).collect());
     }
     Ok(out)
 }
@@ -418,6 +456,15 @@ pub(super) fn by_id(kind: Kind, form: Form) -> bool {
     form == Form::Commit && kind.has_own_writes()
 }
 
+/// Whether snapshot `s` may cover body `c` by their expiries (spec/commits.md §5 Covered): a
+/// lasting one any; an expiring one, whose copies end at its expiry, sooner than another body's
+/// may, only an expiring snapshot ending then (so each cut's expiring snapshots replace the last
+/// cut's: one per expiry and aspect stays).
+pub(crate) fn expiry_covers(core: &Core, s: &CommitId, c: &CommitId) -> bool {
+    let ends = |x: &CommitId| core.ix.commits.get(x).and_then(|m| m.header.expires.filter(|_| m.header.kind.is_compaction()));
+    ends(s).is_none_or(|t| ends(c) == Some(t))
+}
+
 /// Whether `c` is a compaction snapshot stamped later than `s`.
 pub(super) fn stamped_later(core: &Core, c: &CommitId, s: &CommitId) -> bool {
     let ts = |x: &CommitId| core.ix.commits.get(x).map(|m| m.view.ts);
@@ -530,9 +577,8 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     let _s = osis_base::costs::span("covered: join");
     let (Some(sai), Some(cai)) = (aspect_index(tx.core, s, tid, ak), aspect_index(tx.core, c, tid, ak)) else { return Ok(None) };
     // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2); an expiring
-    // one's copies end at its expiry, sooner than a body's may: it covers nothing either
-    // (spec/commits.md §5 Covered)
-    if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || tx.core.ix.commits.get(s).is_some_and(|m| m.header.kind.is_compaction() && m.header.expires.is_some()) {
+    // one only what ends with it (`expiry_covers`)
+    if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || !expiry_covers(tx.core, s, c) {
         return Ok(Some(false));
     }
     // a snapshot stamped later settles the suspect flags of more commits than this one

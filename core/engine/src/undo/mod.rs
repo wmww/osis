@@ -254,7 +254,7 @@ fn resets_whole(d: &Decoded) -> bool {
 
 /// The expiry of the write dotted `d` in `(tid, ak)` an undo copies back (`undo_expiring`): its
 /// held commit's, else that of the held expiring snapshots carrying it (`carried`, from
-/// `retention::snapshot::expiring_carriers`), the latest (`None`: none). An ephemeral write no held commit carries: a plain write of this
+/// `retention::snapshot::expiring_copies`), the latest (`None`: none). An ephemeral write no held commit carries: a plain write of this
 /// open's sessions never expires (covered by a snapshot); another session's expired or was
 /// superseded (`Some(0)`: a session's write held nowhere vanished whole, spec/crdt.md §4.7).
 fn copied_expiry(core: &Core, tid: &Tid, ak: &Ak, carried: &[(u64, Owned)], d: &Dot) -> Option<u64> {
@@ -355,7 +355,7 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Ts, confined: 
     let mut parts = Vec::new();
     for (a, delta, source) in undone_parts(tx, &target, ts, writers)? {
         let (tid, ak) = (a.tid, a.ak.clone());
-        let carried: Vec<(u64, Owned)> = crate::retention::snapshot::expiring_carriers(tx, &tid, &ak)?.into_iter().flat_map(|(t, os)| os.into_iter().filter(|o| matches!(o, Owned::Dots { .. })).map(move |o| (t, o))).collect();
+        let carried: Vec<(u64, Owned)> = crate::retention::snapshot::expiring_copies(tx, &tid, &ak)?.into_iter().flat_map(|(t, os)| os.into_iter().map(move |o| (t, o))).collect();
         let held = carried.clone();
         let strip = move |core: &Core, f: &mut Fragment| {
             crate::apply::strip_valueless(core, &tid, &ak, f);

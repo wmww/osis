@@ -878,6 +878,10 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
                     Some(oai) => crate::labeling::opened::part_floor(tx, &o, oai, &tid)?.unwrap_or(0),
                     None => 0,
                 };
+                #[cfg(test)]
+                if let Some(f) = tx.core.lie_floor {
+                    am.original_floor = f;
+                }
             }
             settle(tx.core, memory, kind, ts, &tid, &ak, am.schema.as_deref(), am.replaces.is_some(), am.retention, am.expires)?
         };
