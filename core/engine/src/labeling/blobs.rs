@@ -650,7 +650,7 @@ impl Engine {
     /// not still logs what tells their rotators); anything else by the encrypting walk, and also
     /// while this node holds a grant on `a` it may finalize (spec/permissions.md §2 Finalize: the
     /// finalize goes before its next commit encrypting under `a`; the driver's role duties write
-    /// it, `Engine::role_duties`). A key actor's epochs are its seed's: never blocked.
+    /// it, `Engine::role_duty_due`). A key actor's epochs are its seed's: never blocked.
     fn wrap_blocked(&mut self, a: &Tid, c: Option<&CommitId>) -> Result<bool> {
         if self.core.is_key_actor(a) {
             return Ok(false);

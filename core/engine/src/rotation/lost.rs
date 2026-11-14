@@ -64,7 +64,7 @@ fn arm_lost_due(tx: &mut Tx<'_>, t: Tid, at: u64) -> Result<()> {
 
 /// The earliest `until` ahead among the edges alive now on `t`: when the clock alone next ends
 /// a role there.
-fn next_until(core: &Core, t: &Tid) -> Option<u64> {
+pub(crate) fn next_until(core: &Core, t: &Tid) -> Option<u64> {
     let now = core.now().0;
     core.timelines.get(t)?.roster(t, At::now(now_ts(core))).values().filter_map(|e| e.until).map(|u| u.0).filter(|u| *u > now).min()
 }
@@ -558,15 +558,6 @@ fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Dropped> {
         LostScope::Kept(_) => Vec::new(),
         LostScope::Due => {
             let due = take_due(tx, tx.now().0)?;
-            // what the change makes due before this node next encrypts under each (spec/permissions.md
-            // §2 Finalize, §3 Required rotation): the finalize of a grant past its `until`, the
-            // rotation a departure requires, where this node may write them
-            if let Ok(me) = tx.core.writer() {
-                let mut done = crate::flows::Done::default();
-                for t in &due {
-                    super::ensure_rotated(tx, me, *t, &mut done)?;
-                }
-            }
             let core = &*tx.core;
             rejudge = core.ix.kept.iter().any(|(a, via)| due.iter().any(|t| via.contains(t) || reaches(core, t, a)));
             // a box opened late may have given a copy a secret: judged again, it goes
@@ -681,17 +672,15 @@ impl Engine {
         self.core.time.until(Some(at)) >= at
     }
 
-    /// The duties a role change makes due, on the targets of received role commits applied or
-    /// whose `until` passed (the work list, `role_duties_due`): first what this node owes before it next
-    /// encrypts under each, where it may write it (`ensure_rotated`: the finalize of a grant past
-    /// its `until`, spec/permissions.md §2; a departure's required rotation, §3), logged as its own
-    /// commits; then the lost-access trigger (§3): drops the secrets of the actors they touched that this
-    /// node lost read access to by every path, unless a held pending grant reaches them, or its
-    /// own self-removal or an `until` passing alone is behind the loss (`lost_leaving`), and
-    /// forgets what only those read. node-sync runs it when `role_duties_due` moves to true
-    /// (`Life`); an app driving the engine alone calls it after ingesting and when
-    /// `role_duties_due` turns true (its memo clock wake, `clock_next`). Returns the actors dropped. The wrap gate refuses meanwhile
-    /// (`wrap_blocked`), so a write made before this runs waits for it.
+    /// The lost-access trigger (spec/permissions.md §3) on the targets of received role commits
+    /// applied or whose `until` passed (the work list, `role_duties_due`): drops the secrets of
+    /// the actors they touched that this node lost read access to by every path, unless a held
+    /// pending grant reaches them, or its own self-removal or an `until` passing alone is behind
+    /// the loss (`lost_leaving`), and forgets what only those read. node-sync runs it when
+    /// `role_duties_due` moves to true (`Life`), after the role commits this node owes
+    /// (`role_duty_due`); an app driving the engine alone calls it after ingesting and when
+    /// `role_duties_due` turns true (its memo clock wake, `clock_next`). Returns the actors
+    /// dropped.
     pub fn role_duties(&mut self) -> Result<Vec<Tid>> {
         Ok(self.forget_lost(LostScope::Due)?.actors)
     }

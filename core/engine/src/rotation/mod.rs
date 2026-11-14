@@ -1085,6 +1085,38 @@ impl Engine {
         }
     }
 
+    /// The actors this node holds secrets of: the keys of the role duties (`role_duty_due`),
+    /// with `held_actors_feed` for those added later.
+    pub fn held_actors(&self) -> Vec<Tid> {
+        self.core.ix.secrets.keys_held().copied().collect()
+    }
+
+    /// Whether this node holds secrets of `actor` (`held_actors`).
+    pub fn held_actors_has(&self, actor: &Tid) -> bool {
+        self.core.ix.secrets.contains_key(actor)
+    }
+
+    /// A cursor over the actors whose secrets this node comes to hold from now on.
+    pub fn held_actors_feed(&self) -> osis_base::memo::Feed<Tid> {
+        self.core.ix.secrets.feed()
+    }
+
+    /// Whether this node owes a role commit on `actor` now (spec/permissions.md §2 Finalize, §3
+    /// Required rotation; spec/crypto.md §4 Encrypting under): `ensure_rotated` would write
+    /// something (the finalize of a grant past its `until`, a rotation a departure, a stale or
+    /// keyless box or a blocked epoch makes due, on `actor` or a holder actor below it). Derived
+    /// from the state alone, whatever made it due (an own commit, one received, a keyset or
+    /// record arriving, a restart), so a follower (sync's `Life`, one `Effects` key per held
+    /// actor) runs `ensure_rotated` when it settles true; its reads are stamped, and the memo
+    /// clock is read up to the earliest `until` ahead on `actor`, so its passing moves it.
+    pub fn role_duty_due(&mut self, actor: &Tid) -> Result<bool> {
+        if self.core.writer().is_err() || !self.core.ix.secrets.contains_key(actor) {
+            return Ok(false);
+        }
+        self.core.time.until(lost::next_until(&self.core, actor));
+        Ok(self.rotated_already(actor)?.is_none())
+    }
+
     /// The departures from `actor` its epochs must cover, as this node knows them.
     pub fn departures(&mut self, actor: &Tid) -> Result<Vec<Departure>> {
         let a = *actor;
