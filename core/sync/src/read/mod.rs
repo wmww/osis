@@ -478,6 +478,7 @@ impl Read {
                 judge::Local::Gone => {
                     self.local.unwant(&c);
                     self.bodies.unwant(&c);
+                    self.moved.remove(&c);
                     for s in self.settled.remove(&c).into_iter().flat_map(|m| m.keys().copied().collect::<Vec<_>>()) {
                         self.metas.remove(&(s, c));
                     }
