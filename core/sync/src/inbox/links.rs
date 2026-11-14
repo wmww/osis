@@ -2,8 +2,8 @@
 //!
 //! `redeem` keeps the link durably (store rows `I/r/`, shredded: they hold the seed) and follows
 //! it in the engine for this start (`Engine::follow_link`: L held, K's sync ID read in the sync
-//! set), so the node proves L, opens K by L's static entry (opens) and its boxes open; the sharer's dialable key and relays are dial hints. Once K's roster here lists L
-//! the join is written (`Engine::redeem`), once; the link is kept, and L held at every start,
+//! set), so the node proves L, opens K by L's static entry (opens) and its boxes open; the sharer's dialable key and relays are dial hints. Once the join can be written
+//! (`Engine::redeemable`: the target's roster lists K, K's lists L, K's keyset is held) it is written (`Engine::redeem`), once; the link is kept, and L held at every start,
 //! until the join is held at a source (a redeemer proves L until its join is there); then it is
 //! unfollowed and L forgotten. So a redeem
 //! dropped or a restart before the join reached the sharer's node still completes
@@ -59,9 +59,9 @@ fn row_key(k: &Tid) -> Vec<u8> {
 /// What a link not joined yet waits on.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Stage {
-    /// K's roster here does not list L yet.
+    /// The join cannot be written yet (`Engine::redeemable`).
     Waiting,
-    /// K's roster lists L: the join can be written.
+    /// The join can be written.
     Ready,
     /// The link has ended (`Engine::link_ended`): the redeemer stops.
     Ended,
@@ -133,14 +133,17 @@ impl Redemptions {
             if stage == Stage::Waiting {
                 continue;
             }
-            self.ready.unwant(&k);
             if stage == Stage::Ended {
+                self.ready.unwant(&k);
                 self.forget(h, &k)?;
                 acted = true;
                 continue;
             }
+            // kept wanted until the join is written: a failed write is tried again at the next
+            // change of what it read
             let me = h.engine.me();
             let Some(c) = h.engine.redeem(&link, &me, link.single_use)?.commits.first().copied() else { continue };
+            self.ready.unwant(&k);
             let p = Pending { link, joined: Some(c) };
             let row = p.encode()?;
             h.store.with_tx(|t| t.put_local(&row_key(&k), &row, Shred::Yes))?;
@@ -179,11 +182,10 @@ impl Redemptions {
     }
 }
 
-/// The link has ended, or K's roster here lists L: the join can be written.
+/// The link has ended, or the join can be written (`Engine::redeemable`).
 fn link_stage(engine: &mut Engine, link: &ShareLink) -> Result<Stage> {
     if engine.link_ended(link) {
         return Ok(Stage::Ended);
     }
-    let l = osis_engine::identity::key_actor_tid(&link.seed);
-    Ok(if engine.roster(&link.k).contains_key(&l) { Stage::Ready } else { Stage::Waiting })
+    Ok(if engine.redeemable(link) { Stage::Ready } else { Stage::Waiting })
 }

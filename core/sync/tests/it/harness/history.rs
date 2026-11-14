@@ -278,8 +278,8 @@ pub fn world(seed: u64, n: usize) -> World {
 /// and each node files every other account's profile in its account's D (what
 /// importing a contact card leaves, spec/sync-inbox.md §5: the granter is a known actor and a
 /// connected sender), all handed by hand before any history, so no history content travels this
-/// way. A stand-in for the contact exchange: replace it by contact cards once a link's first
-/// contact opens K (issues/sync-link-first-contact.md).
+/// way. A stand-in for the contact exchange: contact cards join, but a grant to the contact never
+/// reaches it after (issues/sync-link-first-contact.md, `links::a_grant_reaches_a_contact_by_card`).
 pub fn introduce(w: &mut World) {
     assert!(w.history.things.is_empty(), "introduce hands no content: before any history only");
     hand_all(w);
@@ -353,13 +353,23 @@ pub fn hand_all(w: &mut World) {
 }
 
 /// The reference: a single engine handed every commit any node wrote, again while one
-/// applies. Every commit any node holds now is handed too (what sync wrote).
+/// applies. Every commit any node holds now is handed too (what sync wrote), each node's copy of
+/// it: `harvest` keeps one copy per commit, perhaps a certificate copy (its header and some
+/// parts), and the engine joins the parts a later copy carries (spec/commits.md §4).
 pub fn reference(w: &mut World) -> Peer {
     for i in 0..w.len() {
         harvest(w, i);
     }
     let mut r = Peer::new_bare(0x005e_ed0f_5eed, w.now()).expect("reference");
-    let handed = w.history.handed.clone();
+    let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
+    let mut handed = Vec::new();
+    for pk in w.history.handed.clone() {
+        let id = pk.id;
+        handed.push(pk);
+        for &i in &on {
+            handed.extend(w.engine(i).package(&id).ok().flatten());
+        }
+    }
     for _ in 0..=handed.len() {
         let mut moved = false;
         for pk in &handed {

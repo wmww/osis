@@ -91,11 +91,29 @@ impl Engine {
         res
     }
 
+    /// Whether this node can write a link's join now (spec/permissions.md §7, Redeem steps 3-4):
+    /// the target's roster here lists K, K's lists L, both alive, and K's keyset is held (the join seals K's secrets to the
+    /// grantee). K's sync ID brings L's grant and K's keyset as separate bodies, the keyset's
+    /// wrapped under the epoch it supersedes and so fetched last: L listed says nothing of it.
+    pub fn redeemable(&mut self, link: &ShareLink) -> bool {
+        let l = crate::identity::key_actor_tid(&link.seed);
+        let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
+        // the target is the link text's word: K's grant on it held first (step 3)
+        let on_target = self.roster(&link.target).get(&link.k).is_some_and(|e| e.alive_at(Some(ts)));
+        on_target && self.roster(&link.k).get(&l).is_some_and(|e| e.alive_at(Some(ts))) && self.core.has_own_secrets(&link.k)
+    }
+
     fn redeem_in(&mut self, l: Tid, link: &ShareLink, grantee: Tid, single_use: bool) -> Result<Done> {
         let k = link.k;
         let edge = self.roster(&k).get(&l).copied().ok_or(Error::Misuse("the link is no holder of K (finalized or unknown)"))?;
         if !edge.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())) {
             return Err(Error::Misuse("the link expired"));
+        }
+        if !self.core.has_own_secrets(&k) {
+            return Err(Error::Misuse("K's keyset is not held here yet"));
+        }
+        if !self.roster(&link.target).get(&k).is_some_and(|e| e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default()))) {
+            return Err(Error::Misuse("K's grant on the link's target is not held here"));
         }
         let grant = Edge { role: edge.role, until: None, invite: None, tied: None };
         // L signs with its own role, so the grant deposits only below write
