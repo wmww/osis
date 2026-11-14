@@ -11,11 +11,14 @@
 //!   sharing the group) releases at once, and one whose sharing peers are away releases nothing
 //!   under what they share.
 //!
-//! - **Role duties** (spec/permissions.md §2 Finalize, §3 Required rotation and Lost access): the
-//!   engine's `role_duties` (finalizes and rotations owed before this node next encrypts, then the
-//!   lost-access drop) runs when `Engine::role_duties_due` (its work list and the memo clock up to
-//!   its first entry, stamped) settles true: a role commit applied from elsewhere, or an `until`
-//!   passing with nothing written (the clock's wake).
+//! - **Role duties** (spec/permissions.md §2 Finalize, §3 Required rotation and Lost access):
+//!   per actor this node holds secrets of, one `Effects` key over `Engine::role_duty_due` (a
+//!   value derived from the state: the finalize or rotation this node owes before it next
+//!   encrypts there, whatever made it due, own commits included, and the memo clock up to the
+//!   next `until`): `Engine::ensure_rotated` writes it when it settles true. Then the lost-access
+//!   drop (`Engine::role_duties`) runs when `Engine::role_duties_due` (its work list and the
+//!   memo clock up to its first entry, stamped) settles true: a role commit applied from
+//!   elsewhere, or an `until` passing with nothing written (the clock's wake).
 //!
 //! A duty whose drop forgot things makes the engine read its store again (`Engine::loads`): the
 //! driver ends the settle and restarts the modules (notes/sync-driver.md, Failures).
@@ -27,7 +30,7 @@
 use crate::set::SyncsFollow;
 use crate::store::Store;
 use crate::types::Result;
-use osis_base::memo::Effects;
+use osis_base::memo::{Effects, Feed};
 use osis_base::{SyncId, Tid};
 use osis_engine::Engine;
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,6 +50,11 @@ pub struct Life {
     newly: bool,
     /// `Engine::role_duties_due`, as last settled.
     roles: Effects<(), bool>,
+    /// The actors whose secrets the engine comes to hold (`None` before the first settle: every
+    /// one held then is wanted).
+    actors: Option<Feed<Tid>>,
+    /// Per actor held, `Engine::role_duty_due` as last settled.
+    owed: Effects<Tid, bool>,
 }
 
 impl Default for Life {
@@ -55,7 +63,7 @@ impl Default for Life {
         due.want(());
         let mut roles = Effects::new("life: role duties due");
         roles.want(());
-        Life { syncs: SyncsFollow::default(), ids: BTreeMap::new(), heard: Effects::new("life: heard out"), heard_now: BTreeMap::new(), due, last: (false, false), newly: false, roles }
+        Life { syncs: SyncsFollow::default(), ids: BTreeMap::new(), heard: Effects::new("life: heard out"), heard_now: BTreeMap::new(), due, last: (false, false), newly: false, roles, actors: None, owed: Effects::new("life: role duty owed") }
     }
 }
 
@@ -70,7 +78,11 @@ impl Life {
     /// reads; no peer sharing S counts as heard out). Whether one ran (the engine's rows moved:
     /// the next round settles them).
     pub fn settle(&mut self, engine: &mut Engine, store: &Store, heard_out: impl FnMut(&SyncId) -> Result<bool>) -> Result<bool> {
-        // the role duties first: a finalize or rotation goes before anything encrypts again
+        // the role duties first: a finalize or rotation goes before anything encrypts again,
+        // then the lost-access drop
+        if self.owe(engine)? {
+            return Ok(true);
+        }
         if !self.roles.due().is_empty()
             && let Some((_, true)) = self.roles.settle(&(), || engine.role_duties_due())
         {
@@ -83,6 +95,39 @@ impl Life {
             return Ok(true);
         }
         self.lifetimes(engine, store, heard_out)
+    }
+
+    /// Writes the role commits this node owes on each held actor whose `role_duty_due` moved
+    /// and settles true; whether any ran. O(actors added and keys moved).
+    fn owe(&mut self, engine: &mut Engine) -> Result<bool> {
+        let added = match &mut self.actors {
+            Some(f) => f.added(),
+            None => {
+                self.actors = Some(engine.held_actors_feed());
+                engine.held_actors()
+            }
+        };
+        for a in added {
+            self.owed.want(a);
+        }
+        let mut ran = false;
+        for a in self.owed.due() {
+            match self.owed.try_settle(&a, || engine.role_duty_due(&a))? {
+                Some((_, true)) => {
+                    if let Err(e) = engine.ensure_rotated(&a) {
+                        // due again at the next settle (the failing step restarts anyway)
+                        self.owed.unwant(&a);
+                        self.owed.want(a);
+                        return Err(e.into());
+                    }
+                    ran = true;
+                }
+                // no longer held: wanted again when it is (the feed)
+                Some((_, false)) if !engine.held_actors_has(&a) => self.owed.unwant(&a),
+                _ => {}
+            }
+        }
+        Ok(ran)
     }
 
     fn lifetimes(&mut self, engine: &mut Engine, store: &Store, mut heard_out: impl FnMut(&SyncId) -> Result<bool>) -> Result<bool> {

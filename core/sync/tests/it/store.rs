@@ -355,8 +355,8 @@ fn a_head_past_its_keys_drops_the_copy_and_takes_nothing_spec_sync_judgement_6()
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes).unwrap(), Code::OK, "re-fetched");
 }
 
-// spec/sync-judgement.md §6 (Stops: back within its keys or raised to read, it fetches S anew;
-// a restart between changes nothing): the drop's mark is durable: reopened after a crash, S
+// spec/sync-judgement.md §6 (Stops): back within its keys or raised to read, it fetches S anew,
+// a restart between changing nothing: the drop's mark is durable: reopened after a crash, S
 // still takes nothing, and leaving the mark tells streams to fetch S anew (`anew_feed`).
 #[test]
 fn a_dropped_copy_is_fetched_anew_after_a_restart_spec_sync_judgement_6() {

@@ -72,3 +72,46 @@ fn a_node_removed_by_another_drops_what_it_lost_spec_permissions_3() {
     assert!(w.engine(1).epochs(&t).is_none_or(|e| e.read.held().next().is_none()), "node 1 dropped the thing's read secrets");
     assert_eq!(w.engine(1).get(&t, &ak).unwrap(), None, "and its content");
 }
+
+// spec/permissions.md §3 (Required rotation: whoever may rotate does so before it next encrypts
+// under the actor), spec/crypto.md §4 (Encrypting under): node 1 makes thing t (its account A
+// the first admin, t shared with node 0's account) and removes its sibling node 2 from A's
+// devices actor. The rotations that removal makes due on t are this node's own to write with
+// nothing else arriving (also across a restart right after the removal): a later write to t is
+// sealed and logged under t's sync IDs.
+#[test]
+fn an_own_removal_makes_its_rotations_due_with_nothing_arriving_spec_permissions_3() {
+    use osis_base::{Ak, Value};
+    use osis_engine::Mutation;
+    for restart in [false, true] {
+        let mut w = crate::harness::siblings();
+        let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+        let ak = Ak::new("u:v.0").unwrap();
+        let t = w.write(1, |e| {
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, a1);
+            m.set(t, &ak, &Value::Str("x".into())).unwrap();
+            e.commit(m).unwrap();
+            t
+        });
+        crate::harness::history::file(&mut w, 1, vec![t], Vec::new());
+        w.write(1, |e| e.grant(&t, &a0, &crate::flows::edge(Role::Read))).unwrap();
+        w.run();
+        remove_node(&mut w, 1, 2);
+        if restart {
+            w.power_off(1);
+            w.power_on(1);
+        }
+        w.run();
+        assert!(w.engine(1).wrap_secret(&t, None).unwrap().is_some(), "restart {restart}: t's epoch open to encrypt under");
+        let c = w.write(1, |e| {
+            let mut m = Mutation::new();
+            m.set(t, &ak, &Value::Str("y".into())).unwrap();
+            e.commit(m).unwrap().unwrap()
+        });
+        w.run();
+        let homes: Vec<_> = w.engine(1).sync_bodies(&c).unwrap().keys().copied().collect();
+        let blobs = w.engine(1).commit_blobs(&c).unwrap();
+        assert!(!homes.is_empty() && homes.iter().all(|s| blobs.iter().any(|b| w.store(1).entry(s, b).ok().flatten().is_some())), "restart {restart}: the write logged under every sync ID of t");
+    }
+}

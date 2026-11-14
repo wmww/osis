@@ -285,10 +285,8 @@ fn dropped_then_granted_read(restart: bool) -> (World, Tid, SyncId) {
     (w, t, s)
 }
 
-// spec/sync-judgement.md §6 (Stops: its copy dropped at a head past its keys), §3 (Dropped
-// bodies: fetched again where present), spec/sync-set.md §3 (S read again is pulled from the
-// start): node 1, whose copy of S went at its removal's step, is granted read again: every source
-// pulls S from the start, so it reads the write it held before the drop, also after a restart
+// spec/sync-judgement.md §6 (Stops), §6 (Read and unread move): node 1, whose copy of S went
+// at its removal's step, is granted read again: every source pulls S from the start, so it reads the write it held before the drop, also after a restart
 // between the drop and the grant (the drop's mark and every stored place of S are durable).
 #[test]
 fn a_dropped_copy_granted_read_again_is_fetched_from_the_start_spec_sync_judgement_6() {
