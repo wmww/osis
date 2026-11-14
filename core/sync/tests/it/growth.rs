@@ -60,7 +60,7 @@ fn grows_nothing(gives: Gives, by: &[usize]) {
     flat(&n, &n10);
 }
 
-// spec/commits.md §5 (Own replaces, Forgetting), spec/requirements.md Scale: one writer replacing
+// spec/commits.md §5 Own replaces and Forgetting, spec/requirements.md Scale: one writer replacing
 // one register 6 and 60 times stores the same rows and bytes at the writer, a reader and a node
 // keeping S unread once tombstones have aged out.
 #[test]
@@ -69,7 +69,7 @@ fn repro_single_writer_replace_grows_nothing_spec_commits_5() {
     grows_nothing(Gives::Reads, &[0]);
 }
 
-// spec/commits.md §5 (Covered, Forgetting), spec/sync-compaction.md §1 (trigger): two writers
+// spec/commits.md §5 Covered and Forgetting, spec/sync-compaction.md §1 (trigger): two writers
 // replacing one register in turn store the same at 6 and 60 writes (automatic compaction covers
 // the other's writes).
 #[test]
