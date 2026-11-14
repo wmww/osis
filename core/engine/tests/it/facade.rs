@@ -2419,3 +2419,52 @@ fn a_close_hides_no_concurrent_keep_of_the_thing_spec_sync_3() {
         assert_eq!(r.map(|r| r.sync_ids.clone()), Some(vec![s2]), "node {i}: the concurrent keep stands, the closed one goes");
     }
 }
+
+// spec/sync-judgement.md §3 (Own store: a stamp vouches for the body under S, which the node
+// opened and checked, sections it cannot open going as they came), spec/commits.md §4 (Judged
+// alone): a blob of a commit on t (which peer 1 reads) and u (which it does not) whose section
+// of u is garbage opens at peer 1 as an encryption of the commit, carrying t's part alone, so a
+// writer of S keeps, serves and stamps it whatever u's section holds; u's readers judge that
+// section alone.
+#[test]
+fn a_section_the_node_cannot_open_goes_as_it_came_spec_sync_judgement_3() {
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let u = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
+        if h == ps[1] {
+            lp.peers[1].engine.take_inbox_blob(&b, true).unwrap();
+        }
+    }
+    for i in 0..2 {
+        let (_, d) = lp.peers[i].engine.account().unwrap().unwrap();
+        add_item(&mut lp, i, d, t);
+    }
+    spread(&mut lp);
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let ak = Ak::new("t:reg.0").unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &ak, &osis_base::Value::Int(7)).unwrap();
+    m.set(u, &ak, &osis_base::Value::Int(8)).unwrap();
+    let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
+    let mut rng = SeededRng::from_u64(9);
+    let (sealed, wrap) = lp.peers[0].engine.seal_body(&s, &c, &[], &mut rng).unwrap().expect("peer 0 seals its own");
+    let h = lp.peers[0].engine.header(&c).unwrap();
+    let (prefix, pt) = osis_label::open(&sealed.blob, &sealed.key).unwrap();
+    let mut env = osis_commit::Envelope::decode(&pt).unwrap();
+    let sec = env.sections.iter_mut().find(|x| x.ais.iter().any(|ai| h.aspects[*ai].tid == u)).expect("a section of u");
+    let n = sec.ciphertext.len();
+    sec.ciphertext[n / 2] ^= 1;
+    let (key, blob) = osis_label::frame_under(osis_crypto::BlobKey::fresh(&mut rng), &prefix, &env.encode()).unwrap();
+    let id = osis_label::blob_id(&blob);
+    let w = lp.peers[0].engine.wrap_secret(&t, None).unwrap().expect("a read epoch");
+    let fwrap = osis_crypto::wrap(&w, &id, &key, 0).unwrap();
+    let _ = wrap;
+    let got = lp.peers[1].engine.open_entry(&s, &id, &fwrap, &blob, u64::MAX).unwrap();
+    assert!(matches!(got, osis_engine::sync::Opened::Commit(x, _) if x == c), "{got:?}");
+    assert_eq!(lp.peers[1].engine.blob_commit(&id).unwrap(), Some(c));
+    let parts = lp.peers[1].engine.blob_parts(&id).unwrap().expect("opened");
+    assert!(parts.iter().all(|i| h.aspects[*i].tid == t) && !parts.is_empty(), "t's part alone: {parts:?}");
+}
