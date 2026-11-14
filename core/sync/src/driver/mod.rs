@@ -552,20 +552,27 @@ impl Node {
         }
     }
 
-    /// The end of a step: opens writes what changed of its records, and the records evicted past
-    /// `RECORD_BUDGET` take what was charged to them (every row of theirs went with them).
+    /// The end of a step: opens writes what changed of its records and evicts past
+    /// `RECORD_BUDGET` (each record with every row of it and what was charged to it).
     fn flush(&mut self) -> Result<()> {
-        for id in self.opens.flush(&mut self.store)? {
-            self.store.gone(crate::store::Source::Record(id))?;
-        }
-        Ok(())
+        self.opens.flush(&mut self.store).map(drop)
     }
 
     /// A step failed (a store failure): every connection closes, and the modules restart from
     /// the store, once per stretch until a commit of the store lands (scenario store-reopen).
     /// The store's memory part (ephemeral entries) stays as it is: a failure judges none of it.
+    /// Nothing the failed step queued goes (every step sends all it queued, so that is all a
+    /// session holds): a frame may tell of what the failure undid (an Applied of a cursor not
+    /// stored, a record answered but not written, opens' rows of the step); the peers see a
+    /// dropped connection, which every rule already survives.
     fn failed(&mut self, e: Error, out: &mut Vec<Out>) {
         let _ = e;
+        let conns: Vec<ConnId> = self.driver.sessions.conns().collect();
+        for c in conns {
+            if let Some(s) = self.driver.sessions.get_mut(c) {
+                drop(s.take_bytes());
+            }
+        }
         self.close_all(out);
         if let Some(f) = &mut self.driver.failing {
             f.wait = f.wait.saturating_mul(2).min(RETRY_MAX_MS);

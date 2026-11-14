@@ -210,6 +210,31 @@ fn a_store_failure_restarts_in_place_once_per_stretch() {
     let _ = &mut st;
 }
 
+// a failed step sends nothing it queued (notes/sync-boundary.md, driver): here a listener's
+// Hello, queued as the connection came up in a step whose store write failed; the dialer sees
+// a dropped connection, and the next dial comes up whole.
+#[test]
+fn a_failed_step_sends_nothing_it_queued() {
+    let mut w = two_nodes();
+    let t = w.now().0;
+    let mut st = w.node(1).store.clone();
+    let (d, dx) = blob(80, Class::Durable, t + 60_000);
+    assert_eq!(st.log(&SID, own(d, Class::Durable, t + 60_000), Some(dx), None).unwrap(), osis_proto::Code::OK);
+    // node 1's clock past the expiry: its next step writes it, and that write fails
+    w.skew(1, 61_000);
+    w.store_faults(1).at(0, Fault::Fail);
+    w.trace = true;
+    let a = w.address(1);
+    w.configure(0, |c| c.dial = vec![a]);
+    w.flush();
+    let failed: Vec<_> = w.stepped.iter().filter(|(i, f, _)| *i == 1 && *f).collect();
+    assert_eq!(failed.len(), 1, "{:?}", w.stepped);
+    assert_eq!(failed[0].2, 0, "the failed step sent nothing");
+    w.run();
+    assert!(st.entry(&SID, &d).unwrap().is_none(), "the retried write landed");
+    assert!(ups_to(&w, 0, 1) >= 1);
+}
+
 // ---- the dial rules alone, on `Dials` ----
 
 /// Dial peers per sync ID, set by the test.

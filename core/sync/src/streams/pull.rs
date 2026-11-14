@@ -9,7 +9,7 @@ use crate::opens::Rejoin;
 use crate::store::rows::tag::{AT_STREAM, CURSOR, JOINING, STOPPED};
 use crate::store::{Source, Store};
 use crate::types::{ConnId, Cursor, Entry, RecordId, Result};
-use osis_store::{NO_LABEL, Transaction};
+use osis_store::Transaction;
 use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, SyncId, WallMs};
 use osis_engine::sync::Holding;
@@ -49,7 +49,7 @@ impl Place {
     /// Record `rec`'s place as its rows hold it. O(its members and those that left).
     fn load(t: &mut Transaction<'_>, rec: &RecordId) -> std::result::Result<Place, osis_store::Error> {
         let mut p = Place::default();
-        if let Some(v) = t.record_get_row(rec, CURSOR, &NO_LABEL, b"")? {
+        if let Some(v) = t.record_get_wide_row(rec, CURSOR, b"")? {
             p.cursor = read_cursor(&v)?;
         }
         for (s, ..) in t.record_tag_rows(rec, AT_STREAM)? {
@@ -275,7 +275,7 @@ impl Streams {
                     p.write(t, &rec, s)?;
                 }
                 if cursor {
-                    t.record_put_row(&rec, CURSOR, &NO_LABEL, b"", opt_cursor(&p.cursor))?;
+                    t.record_put_wide_row(&rec, CURSOR, b"", opt_cursor(&p.cursor))?;
                 }
             }
             Ok(())
@@ -607,19 +607,23 @@ impl Streams {
         // a body crosses a connection once: its bytes are not sent back on it
         self.serve.entry(conn).or_default().crossed.insert(b);
         let e = entry_of(b, wrap, stamp, bytes);
+        // a store or engine failure takes nothing: the body stays owed (no cursor passes it) and
+        // the step fails
         match ctx.store.holding(&s) {
-            Some(Holding::Unread) if stamp.is_some() => {
-                let code = ctx.store.take_stamped(&s, &e, bytes.to_vec()).unwrap_or(Code::DECLINED);
-                self.refused(ctx, conn, s, b, code);
-            }
-            Some(Holding::Read) => {
-                if let Ok(Opening::Bad) = ctx.ground.open(&s, &e, bytes) {
+            Some(Holding::Unread) if stamp.is_some() => match ctx.store.take_stamped(&s, &e, bytes.to_vec()) {
+                Ok(code) => self.refused(ctx, conn, s, b, code),
+                Err(e) => return self.failed(Err(e)),
+            },
+            Some(Holding::Read) => match ctx.ground.open(&s, &e, bytes) {
+                Ok(Opening::Bad) => {
                     if let Some(p) = self.pull.get_mut(&conn) {
                         p.failed.insert(b);
                     }
                     return;
                 }
-            }
+                Ok(_) => {}
+                Err(e) => return self.failed(Err(e)),
+            },
             _ => {}
         }
         for c in self.holders.get(&s).into_iter().flatten().chain(std::iter::once(&conn)) {
@@ -843,8 +847,12 @@ impl Streams {
                 _ => {}
             }
         }
+        // a listing from the start stores no cursor until it is read to its end: one cut short (a
+        // connection lost, a restart) is read from the start again, so a listing that replaces
+        // presence is always a whole one (spec/sync-streams.md §4 Applying)
+        let mid_listing = batch.reply.as_ref().is_some_and(|r| r.more) && listing.is_some();
         let place = self.place(ctx.store, src);
-        let cursor = batch.cursor.is_some() || batch.reply.as_ref().is_some_and(|r| r.whole);
+        let cursor = (batch.cursor.is_some() || batch.reply.as_ref().is_some_and(|r| r.whole)) && !mid_listing;
         if cursor {
             place.cursor = batch.cursor.clone();
         }
@@ -863,9 +871,11 @@ impl Streams {
                 for (s, _) in &r.asked {
                     touched.push(*s);
                     match r.joins.get(s) {
-                        Some(Some(c)) => {
+                        // a join from the start keeps its stored start until it ends
+                        Some(Some(c)) if !join_listing.contains_key(s) => {
                             place.joining.insert(*s, Some(c.clone()));
                         }
+                        Some(Some(_)) => {}
                         Some(None) => {
                             place.joining.remove(s);
                             join_listing.remove(s);
@@ -895,10 +905,10 @@ impl Streams {
         }
         // what a listing from the start did not list, the source no longer holds
         for (s, l) in &listed {
-            for b in self.known.list(src, s) {
-                if !l.contains(&b) {
-                    ops.push((src, Op::Remove(*s, b)));
-                }
+            match self.known.list(src, s) {
+                Ok(held) => ops.extend(held.into_iter().filter(|b| !l.contains(b)).map(|b| (src, Op::Remove(*s, b)))),
+                // nothing is stored (no cursor, no Applied); the step fails
+                Err(e) => return self.failed(Err(e.into())),
             }
         }
         if let Some(p) = self.pull.get_mut(&conn) {
@@ -910,7 +920,11 @@ impl Streams {
             return;
         }
         let Some(p) = self.pull.get_mut(&conn) else { return };
+        // an Applied says the cursor and each join's position are stored: none while a listing
+        // from the start is under way
         if batch.report
+            && cursor
+            && p.join_listing.is_empty()
             && let Some(c) = batch.cursor
         {
             p.applied_owed = Some(c);

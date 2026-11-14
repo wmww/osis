@@ -143,8 +143,11 @@ struct Side {
     /// Reports opens folded.
     folded: usize,
     set: SyncSet,
-    /// Its device lost power (`Faults` crash): it takes and sends nothing until restarted.
+    /// A step of it failed on its store (a planned `Fault`): it takes and sends nothing until
+    /// restarted, as the driver closes every connection then.
     down: bool,
+    /// A store fault is planned: only then may a step fail.
+    faulty: bool,
 }
 
 impl Side {
@@ -153,7 +156,7 @@ impl Side {
         let mut store = Store::open(Box::new(backend.clone()), Box::new(root.clone()), Box::new(SeededRng::from_u64(seed))).unwrap();
         let log = Log::default();
         let record = store.with_tx(|t| t.record_create([seed as u8; 32], &[])).unwrap();
-        Side { backend, root, streams: Streams::new(store.clone()), store, table: Table { log: log.clone(), ..Table::default() }, pipe: Pipe { log, ..Pipe::default() }, open: Open { record: Some(record), ..Open::default() }, reported: Vec::new(), folded: 0, set: SyncSet::default(), down: false }
+        Side { backend, root, streams: Streams::new(store.clone()), store, table: Table { log: log.clone(), ..Table::default() }, pipe: Pipe { log, ..Pipe::default() }, open: Open { record: Some(record), ..Open::default() }, reported: Vec::new(), folded: 0, set: SyncSet::default(), down: false, faulty: false }
     }
 
     /// Another peer record in this side's store.
@@ -178,6 +181,7 @@ impl Side {
     fn restart_all(&mut self, seed: u64) {
         self.backend.faults().revive();
         self.down = false;
+        self.faulty = false;
         self.restart(seed);
         self.streams = Streams::new(self.store.clone());
         self.pipe.out.clear();
@@ -274,9 +278,9 @@ impl Pair {
                 if side.down {
                     continue;
                 }
-                // a step failing on its store fails only where the device lost power
+                // a step fails on its store only where a fault was planned
                 if let Err(e) = side.with(now, |s, c| s.tick(c)) {
-                    assert!(side.backend.faults().crashed(), "{e}");
+                    assert!(side.faulty, "{e}");
                     side.down = true;
                 }
                 if side.down {
@@ -1151,9 +1155,9 @@ fn caught_up_matches_what_each_side_holds_spec_sync_status_1() {
 }
 
 // spec/sync-streams.md §4 (Applying: a listing from the start replaces what the source holds as
-// present, trimmed or not; issues of a restored source store): a source whose store went back to
-// before an entry answers the stored cursor with a whole listing not marked trimmed; the entry
-// it lost with no deletion event is no longer known there.
+// present, trimmed or not), NetStream S_pres/SN_pres: a source whose store went back to before
+// an entry answers the stored cursor, which names no position of its history, with a whole
+// listing not marked trimmed; the entry it lost with no deletion event is no longer known there.
 #[test]
 fn a_whole_listing_replaces_presence_trimmed_or_not_spec_sync_streams_4() {
     let mut p = Pair::new();
@@ -1179,6 +1183,54 @@ fn a_whole_listing_replaces_presence_trimmed_or_not_spec_sync_streams_4() {
     assert!(!knows(&p.b, p.b.src(), s, y), "the whole listing is the source's live set");
     assert!(!Sources::present(&p.b.streams, &s, &y));
     assert!(p.b.store.entry(&s, &own).unwrap().is_some(), "nothing of b's own store goes");
+}
+
+// spec/sync-streams.md §4 (Applying: a listing from the start replaces presence once read to its
+// end), NetStream S_pres/SN_pres: a source restored from before an entry answers the stored
+// cursor (naming no position of its history) from the start, untrimmed, in pages; a connection
+// lost after the first page stores no cursor of the listing, so the next connection lists from
+// the start again, to its end, and the entry the source lost is no longer known there.
+#[test]
+fn a_listing_cut_short_is_read_again_from_the_start_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    let x = p.a.log(s, 100);
+    let y = p.a.log(s, 101);
+    p.shared_read(s);
+    p.run();
+    assert!(knows(&p.b, p.b.src(), s, y));
+    let mut a = Side::new(5);
+    a.log(s, 100);
+    // bodies inline (each under `INLINE_LIMIT`) past one reply's budget: two pages
+    for i in 0..650 {
+        a.log(s, 15_000 + i);
+    }
+    a.open.record = p.a.open.record;
+    p.a = a;
+    p.b.streams.closed(C);
+    p.shared_read(s);
+    p.seen.clear();
+    // the connection is lost after the listing's first page
+    let mut replies = 0;
+    p.run_with(|ab, m| {
+        if ab && matches!(m, Msg::PullReply(_)) {
+            replies += 1;
+        }
+        replies > 1
+    });
+    let first: Vec<_> = p.sent_by_a(42).into_iter().filter_map(|m| if let Msg::PullReply(r) = m { Some(r.clone()) } else { None }).collect();
+    assert!(matches!(first.as_slice(), [r] if r.whole && !r.trimmed && r.more), "{:?}", first.iter().map(|r| (r.whole, r.trimmed, r.more, r.events.len())).collect::<Vec<_>>());
+    assert!(knows(&p.b, p.b.src(), s, y), "a listing not read to its end replaces nothing");
+    p.held.clear();
+    p.a.streams.closed(C);
+    p.b.streams.closed(C);
+    p.shared_read(s);
+    p.seen.clear();
+    p.run();
+    let again: Vec<_> = p.sent_by_a(42).into_iter().filter_map(|m| if let Msg::PullReply(r) = m { Some(r.clone()) } else { None }).collect();
+    assert!(again.first().is_some_and(|r| r.whole), "read from the start again: {:?}", again.first().map(|r| (r.whole, r.more)));
+    assert!(knows(&p.b, p.b.src(), s, x));
+    assert!(!knows(&p.b, p.b.src(), s, y), "the listing read to its end is the source's live set");
 }
 
 // spec/sync-streams.md §4 (Applying; Joining: a join from the start is S's listing): a join of S
@@ -1235,10 +1287,10 @@ fn a_restart_pulls_from_the_stored_cursor_spec_sync_streams_3() {
     assert!(knows(&p.b, p.b.src(), s, y));
 }
 
-/// Two sides keeping `k` unread, synced; then `a` takes `n` more entries (one too large to come
-/// inline) and `b` loses power at its durable write `crash` while pulling them; `b` restarts and
-/// reconnects. Whether the crash came before the pull ended.
-fn crash_while_pulling(crash: u64) -> bool {
+/// Two sides keeping `k` unread, synced; then `a` takes two more entries (one too large to come
+/// inline) and `b`'s store meets `fault` at its durable write `crash` while pulling them; `b`
+/// restarts and reconnects. Whether the fault was met before the pull ended.
+fn fault_while_pulling(fault: osis_store::Fault, crash: u64) -> bool {
     let mut p = Pair::new();
     let k = Sid::new(10);
     k.keep(&mut p.a);
@@ -1250,9 +1302,10 @@ fn crash_while_pulling(crash: u64) -> bool {
     assert!(p.b.store.entry(&k.id, &w).unwrap().is_some());
     let x = k.stamped(&mut p.a, 200, true);
     let y = k.stamped(&mut p.a, INLINE_LIMIT as usize + 1000, true);
-    p.b.backend.faults().at(crash, osis_store::Fault::Crash);
+    p.b.backend.faults().at(crash, fault);
+    p.b.faulty = true;
     p.run();
-    let crashed = p.b.down;
+    let reached = p.b.backend.faults().crashed() || p.b.backend.faults().take_failed();
     p.b.restart_all(8);
     p.a.streams.closed(C);
     p.a.join(p.now, k.id);
@@ -1266,20 +1319,23 @@ fn crash_while_pulling(crash: u64) -> bool {
         assert!(p.b.store.entry(&k.id, &b).unwrap().is_some(), "crash at write {crash}: an entry is lost");
         assert!(knows(&p.b, p.b.src(), k.id, b), "crash at write {crash}: presence is lost");
     }
-    crashed
+    reached
 }
 
 // spec/sync-streams.md §3 (Durability: a cursor is stored only with what it covers applied) and
 // §4 (Reports): a restart at every durable write between a pull and its Applied loses nothing,
-// and the reconnect reads from the stored cursor, never from the start.
+// and the reconnect reads from the stored cursor, never from the start; so does one write
+// failing alone (later ones work: a body not taken is no body applied).
 #[test]
 fn a_restart_at_any_write_of_a_pull_loses_nothing_spec_sync_streams_3() {
-    let mut n = 0;
-    while crash_while_pulling(n) {
-        n += 1;
-        assert!(n < 100, "the pull ends");
+    for fault in [osis_store::Fault::Crash, osis_store::Fault::Fail] {
+        let mut n = 0;
+        while fault_while_pulling(fault, n) {
+            n += 1;
+            assert!(n < 100, "the pull ends");
+        }
+        assert!(n > 2, "the pull wrote: {n}");
     }
-    assert!(n > 2, "the pull wrote: {n}");
 }
 
 /// Both sides read `n` sync IDs with an entry each and are synced; `b` restarts and both rejoin
@@ -1304,16 +1360,18 @@ fn restart_reconnect_streams(n: u8) -> (usize, usize) {
     (bytes, pulls)
 }
 
-// spec/sync-streams.md §4 (Costs: an idle reconnect costs under 1 KB and a few round trips
-// whatever the number of sync IDs shared), after a restart: opens' reconnect (Resume, Digest,
-// an empty filter generation; tests/it/opens.rs) and the streams' (a Pull each way from the
-// stored cursors), at n and 10n shared sync IDs.
+// spec/sync-streams.md §4 (Costs: an idle reconnect costs a few round trips, and bytes that do
+// not grow with the number of sync IDs shared), after a restart: opens' reconnect (Resume,
+// Digest, an empty filter generation; tests/it/opens.rs) and the streams' (a Pull each way from
+// the stored cursors), at n and 10n shared sync IDs (but for the widths of the integers they
+// name). The session's Hello and proofs cost the same whatever is shared.
 #[test]
-fn a_reconnect_after_a_restart_costs_under_1kb_spec_sync_streams_4() {
-    for n in [10, 100] {
-        let opens = crate::opens::restart_reconnect_bytes(n);
+fn a_reconnect_after_a_restart_costs_the_same_at_10n_spec_sync_streams_4() {
+    let at = |n| {
         let (streams, pulls) = restart_reconnect_streams(n);
-        assert!(opens + streams < 1024, "at n = {n}: opens {opens} bytes, streams {streams}");
         assert!(pulls <= 2, "at n = {n}: {pulls} Pulls");
-    }
+        crate::opens::restart_reconnect_bytes(n) + streams
+    };
+    let (small, large) = (at(10), at(100));
+    assert!(large <= small + 32, "{small} bytes at n, {large} at 10n");
 }

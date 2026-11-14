@@ -946,7 +946,6 @@ fn a_restart_keeps_records_and_changed_at_spec_sync_opens_3() {
 // connection holds goes with every module's rows; the next connection is a first contact.
 #[test]
 fn an_evicted_record_goes_whole_and_is_a_first_contact_spec_sync_opens_3() {
-    use osis_store::NO_LABEL;
     use osis_sync::store::Source;
     let mut p = readers();
     let rid = p.a.opens.record(p.ca).unwrap();
@@ -962,7 +961,7 @@ fn an_evicted_record_goes_whole_and_is_a_first_contact_spec_sync_opens_3() {
     p.a.store.with_read(|t| {
         assert!(t.record(&rid)?.is_none());
         assert!(t.records_with_row(&S, b'M', b"", 10)?.is_empty(), "its members");
-        assert!(t.record_get_row(&rid, b'R', &NO_LABEL, b"")?.is_none(), "its own state");
+        assert!(t.record_get_wide_row(&rid, b'R', b"")?.is_none(), "its own state");
         assert!(t.records_with_row(&S, b'k', &[3; 32], 10)?.is_empty(), "streams' rows");
         Ok(())
     }).unwrap();
@@ -973,4 +972,132 @@ fn an_evicted_record_goes_whole_and_is_a_first_contact_spec_sync_opens_3() {
     assert!(p.log.iter().any(|(_, m)| matches!(m, Msg::Resumed { tag: None, .. })), "nothing to resume");
     assert!(p.log.iter().any(|(_, m)| matches!(m, Msg::Offer { .. })), "S is tested again");
     assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
+}
+
+// spec/sync-opens.md §3 (RECORD_BUDGET: a record in use is not dropped): a record a Resume in
+// flight lists is in use, so eviction past the budget spares it and the answer finds it; at the
+// listener a record evicted while the Resume is on its way matches nothing: a first contact.
+#[test]
+fn eviction_spares_a_record_a_resume_lists_spec_sync_opens_3() {
+    let mut p = readers();
+    let rid = p.a.opens.record(p.ca).unwrap();
+    p.close();
+    p.log.clear();
+    // a's Resume naming the record is on its way
+    p.connect(2, account(1), account(2));
+    p.a.opens.set_record_budget(0);
+    assert!(p.a.flush().is_empty(), "listed in a Resume out: in use");
+    p.run();
+    assert!(p.log.iter().any(|(_, m)| matches!(m, Msg::Resumed { tag: Some(_), .. })), "resumed");
+    assert_eq!(p.a.opens.record(p.ca), Some(rid));
+    assert!(!p.log.iter().any(|(_, m)| matches!(m, Msg::Offer { .. })), "no first contact");
+    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
+    p.close();
+    p.log.clear();
+    p.connect(3, account(1), account(2));
+    p.b.opens.set_record_budget(0);
+    assert_eq!(p.b.flush().len(), 1, "the listener's record, no connection holding it, goes");
+    p.run();
+    assert!(p.log.iter().any(|(_, m)| matches!(m, Msg::Resumed { tag: None, .. })), "nothing to resume");
+    assert!(p.log.iter().any(|(_, m)| matches!(m, Msg::Offer { .. })), "S is tested again");
+    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
+}
+
+/// `a` and `b` read S and meet; `a` loses power at the end of the `k`-th step in which it takes a
+/// message, before that step's records are written (`crash_taking`); then, with `leave`, `b`
+/// stops reading S once the two share it (a Lost naming where S stopped), `a` crashing at that
+/// Lost instead. Both connect again twice, `b` reading S again. Whether `a` crashed.
+fn crash_before_flush(k: usize, leave: bool) -> bool {
+    let st = StepKeys::new(1, 0);
+    let rs = read_secret(1, 0);
+    let mut a = knowing(1, 2);
+    let mut b = knowing(2, 1);
+    a.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
+    b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
+    a.settle();
+    b.settle();
+    let mut p = Pair::new(a, b, account(1), account(2));
+    let mut n = 0;
+    let mut crashed = false;
+    let mut left = false;
+    'run: loop {
+        let (fa, fb) = (p.a.sent(), p.b.sent());
+        if fa.is_empty() && fb.is_empty() {
+            if !leave || left {
+                break;
+            }
+            // a stored up to position 5 of b's log; b stops reading S
+            left = true;
+            p.b.reported(p.cb, S, 5);
+            p.b.table.set(S, None);
+            p.b.settle();
+            continue;
+        }
+        for (c, m) in fa {
+            if c == p.ca {
+                p.b.take(p.cb, incoming(m));
+            }
+        }
+        for (c, m) in fb {
+            if c != p.cb {
+                continue;
+            }
+            if n == k && (!leave || left) {
+                p.a.crash_taking(p.ca, incoming(m));
+                crashed = true;
+                break 'run;
+            }
+            if !leave || left {
+                n += 1;
+            }
+            p.a.take(p.ca, incoming(m));
+        }
+    }
+    p.b.closed(p.cb);
+    p.b.sent();
+    p.a.closed(p.ca);
+    if leave {
+        p.b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
+        p.b.settle();
+    }
+    for c in [2, 3] {
+        p.a.moved.clear();
+        p.log.clear();
+        p.connect(c, account(1), account(2));
+        p.run();
+        assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "crash at step {k}: S open both ways");
+        // where a's stream reads S again (its last join: the record's members join as held
+        // when a connection takes it, pulled only once the digests agree): never as it held it,
+        // once b's Lost (or a digest difference) said where S stopped
+        let last = p.a.moved.iter().rev().find_map(|m| match m {
+            Moved::Joined(_, s, r) if *s == S => Some(r.clone()),
+            _ => None,
+        });
+        if leave && c == 2 {
+            assert_ne!(last, Some(Rejoin::Held), "crash at step {k}: a rejoins S as its stream held it: {:?}", p.a.moved);
+        }
+        p.a.closed(p.ca);
+        p.b.closed(p.cb);
+        p.a.sent();
+        p.b.sent();
+    }
+    assert!(!p.log.iter().any(|(_, m)| matches!(m, Msg::Members { .. } | Msg::Offer { .. })), "crash at step {k}: the records agree again");
+    crashed
+}
+
+// spec/sync-opens.md §3 (records; agreement) and spec/sync-streams.md §3 (Durability: partial
+// loss is atomic per record): opens writes a record at its step's end, after what streams wrote
+// in the step; a power loss at the end of any step, before that write, leaves an older record
+// that the next connection's digest brings back to agreement, and a member the peer closed with
+// a Lost rejoins from where that Lost (or the digest) says, never from where the stream held it.
+#[test]
+fn a_crash_before_a_step_writes_its_records_spec_sync_opens_3() {
+    for leave in [false, true] {
+        let mut k = 0;
+        while crash_before_flush(k, leave) {
+            k += 1;
+            assert!(k < 50, "the exchange ends");
+        }
+        assert!(k > 1, "steps crashed: {k}");
+    }
 }

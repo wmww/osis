@@ -420,9 +420,12 @@ pub struct World {
     pub deliveries: u64,
     pub cap: u64,
     pub horizon_ms: u64,
-    /// Records every delivery in `seen` while set.
+    /// Records every delivery in `seen` while set, and each step's restarts and sends in
+    /// `stepped`.
     pub trace: bool,
     pub seen: Vec<Seen>,
+    /// Per step traced: the node, whether the step failed (a restart in place), its sends.
+    pub stepped: Vec<(usize, bool, usize)>,
     /// Restarts in place after a device crash (`DiskFault::Crash`), so far.
     pub crashes: u64,
     /// The differential's state: things made, values written, commits handed to the reference.
@@ -461,6 +464,7 @@ impl World {
             horizon_ms: HORIZON_MS,
             trace: false,
             seen: Vec::new(),
+            stepped: Vec::new(),
             crashes: 0,
             history: history::Made::default(),
             fixture: None,
@@ -594,7 +598,11 @@ impl World {
             }
         }
         let n = self.nodes.get_mut(i).expect("no such node");
+        let restarts = n.node.restarts();
         let mut out = n.node.handle(input);
+        if self.trace {
+            self.stepped.push((i, n.node.restarts() > restarts, out.iter().filter(|o| matches!(o, Out::Send(..))).count()));
+        }
         if n.node.rounds() > ROUND_CAP {
             panic!("settle loop: {} rounds in one step ({seen:?})", n.node.rounds());
         }
@@ -824,6 +832,7 @@ impl World {
             horizon_ms: self.horizon_ms,
             trace: self.trace,
             seen: Vec::new(),
+            stepped: Vec::new(),
             crashes: 0,
             history: self.history.clone(),
             fixture: None,

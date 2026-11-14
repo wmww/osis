@@ -7,7 +7,7 @@ use crate::common;
 use common::*;
 use osis_base::SyncId;
 use osis_crypto::SeededRng;
-use osis_store::{Fault, NO_LABEL, RecordId, Shred, Store};
+use osis_store::{Fault, RecordId, Shred, Store};
 use std::collections::BTreeSet;
 
 fn l(n: u8) -> SyncId {
@@ -31,7 +31,7 @@ fn crash_at_any_write_leaves_a_record_whole_or_absent() {
         let mut t = s.transaction(&mut rng).unwrap();
         let id = t.record_create([7; 32], &[tid(1), tid(2)]).unwrap();
         t.record_put_row(&id, b'm', &l(1), b"", b"member".to_vec()).unwrap();
-        t.record_put_row(&id, b'c', &NO_LABEL, b"", b"cur".to_vec()).unwrap();
+        t.record_put_wide_row(&id, b'c', b"", b"cur".to_vec()).unwrap();
         let _ = t.commit();
         drop(s);
         d.backend.faults().revive();
@@ -46,7 +46,7 @@ fn crash_at_any_write_leaves_a_record_whole_or_absent() {
                 false
             }
             [r] => {
-                assert_eq!(t.record_get_row(&r.id, b'c', &NO_LABEL, b"").unwrap().as_deref(), Some(b"cur".as_slice()), "crash at write {k}: a record without its row");
+                assert_eq!(t.record_get_wide_row(&r.id, b'c', b"").unwrap().as_deref(), Some(b"cur".as_slice()), "crash at write {k}: a record without its row");
                 assert_eq!(t.records_with_row(&l(1), b'm', b"", 10).unwrap(), [r.id], "crash at write {k}: a row without its index");
                 assert!(t.records_total().unwrap() > 0);
                 true
@@ -77,14 +77,14 @@ fn crash_at_any_write_keeps_a_row_with_its_applied_data() {
         let mut t = s.transaction(&mut rng).unwrap();
         t.put_local(b"applied", b"1", Shred::Yes).unwrap();
         t.log_added(l(3), osis_base::BlobId([1; 32])).unwrap();
-        t.record_put_row(&id, b'c', &NO_LABEL, b"", b"cur".to_vec()).unwrap();
+        t.record_put_wide_row(&id, b'c', b"", b"cur".to_vec()).unwrap();
         let _ = t.commit();
         drop(s);
         d.backend.faults().revive();
         let mut s = reopen(&d);
         let mut t = s.transaction(&mut rng).unwrap();
         let applied = t.get_local(b"applied").unwrap().is_some();
-        let cursor = t.record_get_row(&id, b'c', &NO_LABEL, b"").unwrap();
+        let cursor = t.record_get_wide_row(&id, b'c', b"").unwrap();
         assert_eq!(applied, cursor.is_some(), "crash at write {k}: a cursor and its data split");
         assert_eq!(applied, t.log_end().unwrap() > 0, "crash at write {k}: a cursor and the log's event split");
         seen_none |= !applied;
@@ -105,7 +105,7 @@ fn forgetting_a_sync_id_drops_it_from_every_record_in_one_step() {
     t.record_put_row(&a, b'k', &l(1), &[7; 32], vec![]).unwrap();
     t.record_put_row(&b, b'm', &l(1), b"", vec![1]).unwrap();
     t.record_put_row(&b, b'm', &l(2), b"", vec![1]).unwrap();
-    t.record_put_row(&b, b'c', &NO_LABEL, b"", vec![1]).unwrap();
+    t.record_put_wide_row(&b, b'c', b"", vec![1]).unwrap();
     t.commit().unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
     t.changed_forget(&l(1)).unwrap();
@@ -113,8 +113,12 @@ fn forgetting_a_sync_id_drops_it_from_every_record_in_one_step() {
     let mut t = s.transaction(&mut rng).unwrap();
     assert!(t.record_tag_rows(&a, b'm').unwrap().is_empty() && t.record_tag_rows(&a, b'k').unwrap().is_empty());
     assert_eq!(t.record_tag_rows(&b, b'm').unwrap().iter().map(|(x, ..)| *x).collect::<Vec<_>>(), [l(2)]);
-    assert!(t.record_get_row(&b, b'c', &NO_LABEL, b"").unwrap().is_some(), "a record-wide row stays");
+    assert!(t.record_get_wide_row(&b, b'c', b"").unwrap().is_some(), "a record-wide row stays");
     assert!(t.records_with_row(&l(1), b'm', b"", 10).unwrap().is_empty());
+    // a record-wide row is about no sync ID: no sync ID's leaving takes it, the all-zero one's
+    // neither
+    t.changed_forget(&l(0)).unwrap();
+    assert!(t.record_get_wide_row(&b, b'c', b"").unwrap().is_some());
 }
 
 // spec/sync-opens.md §3, RECORD_BUDGET: past the budget the least recently used record not in
@@ -128,7 +132,7 @@ fn eviction_drops_the_least_recently_used_not_in_use_whole() {
     let c = create(&mut s, &mut rng, 3, 3);
     let mut t = s.transaction(&mut rng).unwrap();
     t.record_put_row(&a, b'm', &l(1), b"", vec![1; 10]).unwrap();
-    t.record_put_row(&a, b'F', &NO_LABEL, &1u64.to_be_bytes(), vec![0; 1000]).unwrap();
+    t.record_put_wide_row(&a, b'F', &1u64.to_be_bytes(), vec![0; 1000]).unwrap();
     // b most recent, a next, c least
     t.record_used(&a, &[tid(1)]).unwrap();
     t.record_used(&b, &[tid(2)]).unwrap();
@@ -142,7 +146,7 @@ fn eviction_drops_the_least_recently_used_not_in_use_whole() {
     assert!(t.record(&c).unwrap().is_some(), "a record in use stays");
     assert!(t.record(&b).unwrap().is_some());
     assert!(t.records_of_actors(&[tid(1)]).unwrap().is_empty(), "with its actor rows");
-    assert!(t.record_tag_rows(&a, b'm').unwrap().is_empty() && t.record_tag_rows(&a, b'F').unwrap().is_empty(), "and its rows");
+    assert!(t.record_tag_rows(&a, b'm').unwrap().is_empty() && t.record_wide_rows(&a, b'F').unwrap().is_empty(), "and its rows");
     assert!(t.records_with_row(&l(1), b'm', b"", 10).unwrap().is_empty(), "and their index");
     assert!(t.records_total().unwrap() < total - 1000);
     // 0: only what is in use is left (a resource bound, a defined outcome)
@@ -159,7 +163,7 @@ fn a_copied_or_restored_store_keeps_its_records_as_of_the_copy() {
     let a = create(&mut s, &mut rng, 1, 1);
     let copy = d.copy();
     let mut t = s.transaction(&mut rng).unwrap();
-    t.record_put_row(&a, b'c', &NO_LABEL, b"", b"later".to_vec()).unwrap();
+    t.record_put_wide_row(&a, b'c', b"", b"later".to_vec()).unwrap();
     let b = t.record_create([2; 32], &[tid(1)]).unwrap();
     t.commit().unwrap();
     let mut c = reopen(&copy);
@@ -167,7 +171,7 @@ fn a_copied_or_restored_store_keeps_its_records_as_of_the_copy() {
     let held = t.records_of_actors(&[tid(1)]).unwrap();
     assert_eq!(held.len(), 1, "the record made after the copy is not in it");
     assert_eq!(held[0].r, [1; 32], "the pair key is the copy's own, as it was");
-    assert_eq!(t.record_get_row(&a, b'c', &NO_LABEL, b"").unwrap(), None, "and its rows as of the copy");
+    assert_eq!(t.record_get_wide_row(&a, b'c', b"").unwrap(), None, "and its rows as of the copy");
     assert!(t.record(&b).unwrap().is_none());
 }
 

@@ -42,7 +42,7 @@ impl Members for BTreeMap<SyncId, Option<Position>> {
     }
 }
 
-use crate::types::{Cursor, Entry, Position, Result};
+use crate::types::{Cursor, Entry, Position, RecordId, Result};
 use entries::Removal;
 use memory::Memory;
 use osis_base::format::{MAX_BLOB, TOMBSTONE_LIFETIME_MS};
@@ -53,7 +53,7 @@ use osis_label::{Class, ClaimSet, DeleteItem, Prefix, Step, StepId};
 use osis_proto::{Code, DepositItem};
 use osis_store::{Ciphertext, LogRead, LoggedEvent, NodeEvent, Shred, Suspended, Transaction};
 use rows::{EntryRow, R, W};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 /// Bytes an entry counts toward the caps beside its blob: its row, index rows and log record.
@@ -980,6 +980,31 @@ impl Store {
     /// connection alone. One transaction.
     pub fn gone(&mut self, src: Source) -> Result<()> {
         let mut g = self.lock();
+        Self::gone_memory(&mut g, src);
+        g.write(|t, env| Self::gone_durable(t, env, src))
+    }
+
+    /// Writes `f` (opens' rows of the records in use), then drops the records past `budget` that
+    /// are not `in_use` (`osis_store::Transaction::records_evict`) with what was charged to each
+    /// (as `gone`), all in one transaction: a record never goes leaving its peer's entries
+    /// charged to nobody. The records that went.
+    pub fn write_records(&mut self, budget: u64, in_use: &BTreeSet<RecordId>, f: impl FnOnce(&mut Transaction<'_>) -> std::result::Result<(), osis_store::Error>) -> Result<Vec<RecordId>> {
+        let mut g = self.lock();
+        let evicted = g.write(|t, env| {
+            f(t)?;
+            let evicted = t.records_evict(budget, in_use)?;
+            for id in &evicted {
+                Self::gone_durable(t, env, Source::Record(*id))?;
+            }
+            Ok(evicted)
+        })?;
+        for id in &evicted {
+            Self::gone_memory(&mut g, Source::Record(*id));
+        }
+        Ok(evicted)
+    }
+
+    fn gone_memory(g: &mut Inner, src: Source) {
         let now = g.now;
         for (s, b) in g.mem.charged_to(src) {
             g.mem.remove(&s, &b, now, false, false);
@@ -988,13 +1013,14 @@ impl Store {
         if let Source::Conn(conn) = src {
             g.mem.conn_forget(|(c, ..)| *c != conn);
         }
-        g.write(|t, env| {
-            for (k, _) in t.scan_local(&[rows::CHARGED, &rows::source_bytes(src)].concat(), b"", usize::MAX)? {
-                let (s, b) = rows::tail_ids(&k)?;
-                entries::remove(t, env, &s, &b, Removal::Untombed)?;
-            }
-            Ok(())
-        })
+    }
+
+    fn gone_durable(t: &mut Transaction<'_>, env: &mut Env<'_>, src: Source) -> Result<()> {
+        for (k, _) in t.scan_local(&[rows::CHARGED, &rows::source_bytes(src)].concat(), b"", usize::MAX)? {
+            let (s, b) = rows::tail_ids(&k)?;
+            entries::remove(t, env, &s, &b, Removal::Untombed)?;
+        }
+        Ok(())
     }
 
     // What a source's record keeps for `read` (spec/sync-judgement.md §4)

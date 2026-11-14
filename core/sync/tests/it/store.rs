@@ -415,6 +415,26 @@ fn deposits_from_anyone_spec_sync_inbox_3() {
     }
 }
 
+// spec/sync-opens.md §3 (a record dropped drops everything of that peer with it) and
+// spec/sync-ids.md §5 (Peer budget): a record evicted past `RECORD_BUDGET` takes what was charged
+// to it in the same transaction: a failed eviction leaves both, a landed one neither.
+#[test]
+fn an_evicted_record_takes_its_charges_at_once_spec_sync_opens_3() {
+    let dev = Dev::new();
+    let s = Sid::new(10);
+    let mut st = unread(&dev, &s);
+    let rec = st.with_tx(|t| t.record_create([1; 32], &[])).unwrap();
+    let (b, x) = blob(1003, Class::Durable, None, &[]);
+    assert_eq!(st.take_deposit(&deposit(&s, &x, false), Some(Source::Record(rec))).unwrap(), Code::OK);
+    let none = std::collections::BTreeSet::new();
+    dev.faults.at(0, Fault::Fail);
+    assert!(st.write_records(0, &none, |_| Ok(())).is_err());
+    assert!(st.with_read(|t| t.record(&rec)).unwrap().is_some() && st.entry(&s.id, &b).unwrap().is_some(), "a failed eviction leaves both");
+    assert_eq!(st.write_records(0, &none, |_| Ok(())).unwrap(), [rec]);
+    assert!(st.with_read(|t| t.record(&rec)).unwrap().is_none());
+    assert!(st.entry(&s.id, &b).unwrap().is_none(), "what the peer brought went with its record");
+}
+
 // spec/sync-ids.md §5 (Peer budget): unstamped entries giving nothing held count against the
 // peer that brought them, within a bound; past it they are not kept. A peer with no record is
 // charged per connection, and what it brought goes when the connection closes.

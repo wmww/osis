@@ -273,6 +273,16 @@ impl Side {
         self.settle();
     }
 
+    /// Takes one message and settles, then loses power before the step's end: opens' records of
+    /// that step are not written (what the store took in the step stays), nothing it sent goes,
+    /// and it restarts.
+    pub fn crash_taking(&mut self, conn: ConnId, m: Incoming) {
+        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, now: self.now };
+        self.opens.message(&mut ctx, conn, m, &mut self.moved);
+        self.opens.tick(&mut ctx, &mut self.moved);
+        self.restart();
+    }
+
     /// Takes one message, then settles.
     pub fn take(&mut self, conn: ConnId, m: Incoming) {
         let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, now: self.now };

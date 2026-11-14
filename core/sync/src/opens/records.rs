@@ -13,7 +13,7 @@ use osis_base::SyncId;
 use osis_crypto::Epoch;
 use osis_label::StepId;
 use osis_proto::filter::{decode_gcs, encode_gcs};
-use osis_store::{Error, NO_LABEL, Transaction};
+use osis_store::{Error, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What changed in a record since it was last written.
@@ -185,7 +185,7 @@ pub(super) fn encode_values(values: &[u64]) -> Vec<u8> {
 pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId) -> Res<Option<Record>> {
     let Some(rec) = t.record(id)? else { return Ok(None) };
     let mut r = Record { r: rec.r, actors: rec.actors, kept: true, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None };
-    if let Some(v) = t.record_get_row(id, OPENS, &NO_LABEL, b"")? {
+    if let Some(v) = t.record_get_wide_row(id, OPENS, b"")? {
         let mut d = Rd(&v);
         r.acked_pos = d.u64()?;
         let (generation, acked) = (d.u64()?, d.u64()?);
@@ -201,7 +201,7 @@ pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId) -> Res<Option<Record>
     if let Some(p) = r.peer.as_mut() {
         let end = 1u64.checked_shl(u32::from(p.f)).unwrap_or(u64::MAX);
         let mut values = Vec::new();
-        for (_, _, v) in t.record_tag_rows(id, FILTER)? {
+        for (_, v) in t.record_wide_rows(id, FILTER)? {
             values.extend(decode_gcs(&v, 0, end).map_err(|_| corrupt())?);
         }
         values.sort_unstable();
@@ -225,16 +225,16 @@ pub(super) fn write(t: &mut Transaction<'_>, id: &RecordId, r: &Record, d: Dirty
     }
     if let Some((whole, gens)) = d.filter {
         if whole {
-            for (_, k, _) in t.record_tag_rows(id, FILTER)? {
-                t.record_remove_row(id, FILTER, &NO_LABEL, &k)?;
+            for (k, _) in t.record_wide_rows(id, FILTER)? {
+                t.record_remove_wide_row(id, FILTER, &k)?;
             }
         }
         for (g, v) in gens {
-            t.record_put_row(id, FILTER, &NO_LABEL, &g.to_be_bytes(), v)?;
+            t.record_put_wide_row(id, FILTER, &g.to_be_bytes(), v)?;
         }
     }
     if d.core {
-        t.record_put_row(id, OPENS, &NO_LABEL, b"", encode_core(r))?;
+        t.record_put_wide_row(id, OPENS, b"", encode_core(r))?;
     }
     for s in d.members {
         match r.members.get(&s) {

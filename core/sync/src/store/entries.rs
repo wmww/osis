@@ -12,7 +12,6 @@ use osis_store::{Shred, Transaction};
 /// The record row of the bytes charged to a peer (spec/sync-ids.md §5 Peer budget): record-wide,
 /// charges are per peer, not per sync ID.
 use super::rows::tag::CHARGES;
-use osis_store::NO_LABEL as NO_SYNC_ID;
 
 /// How an entry leaves.
 #[derive(Clone, Debug)]
@@ -88,7 +87,7 @@ fn count(u: &mut Usage, r: &EntryRow, sign: bool) {
 
 /// Bytes charged to record `rec` so far.
 pub(crate) fn record_charge(t: &mut Transaction<'_>, rec: &osis_store::RecordId) -> Result<u64> {
-    t.record_get_row(rec, CHARGES, &NO_SYNC_ID, b"")?.map_or(Ok(0), |v| R::new(&v).u64())
+    t.record_get_wide_row(rec, CHARGES, b"")?.map_or(Ok(0), |v| R::new(&v).u64())
 }
 
 /// Bytes charged to connection `c` so far.
@@ -109,9 +108,9 @@ fn charge(t: &mut Transaction<'_>, r: &EntryRow, s: &SyncId, b: &BlobId, sign: b
             let now = record_charge(t, &rec)?;
             let n = if sign { now.saturating_add(r.size) } else { now.saturating_sub(r.size) };
             if n == 0 {
-                t.record_remove_row(&rec, CHARGES, &NO_SYNC_ID, b"")?;
+                t.record_remove_wide_row(&rec, CHARGES, b"")?;
             } else {
-                t.record_put_row(&rec, CHARGES, &NO_SYNC_ID, b"", W::default().u64(n).take())?;
+                t.record_put_wide_row(&rec, CHARGES, b"", W::default().u64(n).take())?;
             }
         }
         Source::Conn(c) => {

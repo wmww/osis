@@ -10,8 +10,10 @@
 //! goes with it; ephemeral entries are known only so (they have no log position and are lost at
 //! a restart without an event), under `Source::Conn`.
 //!
-//! A read of a record's rows that the store fails answers as if nothing were shown: the step's
-//! next write fails it.
+//! A read of a record's rows that the store fails answers as if nothing were shown, which only
+//! ever holds back an act (nothing is judged held elsewhere, left or registered on it); the
+//! one read whose absence would act, the presence a listing replaces, fails the step instead
+//! (`list`).
 
 use crate::store::Source;
 use crate::store::Store;
@@ -227,13 +229,17 @@ impl Known {
         self.by_blob.contains_key(&(*s, *b)) || self.read(|t| Ok(!t.records_with_row(s, PRESENT, &b.0, 1)?.is_empty()))
     }
 
-    /// What `src`'s stream showed present under S.
-    pub fn list(&self, src: Source, s: &SyncId) -> Vec<BlobId> {
+    /// What `src`'s stream showed present under S, or the store's failure: a listing replacing
+    /// presence reads it, and a list read as empty would keep presence the listing proved gone.
+    pub fn list(&self, src: Source, s: &SyncId) -> Result<Vec<BlobId>, osis_store::Error> {
         match src {
-            Source::Record(rec) => self.read(|t| t.record_rows(&rec, PRESENT, s, b"", usize::MAX).map(|rows| rows.into_iter().filter_map(|(k, _)| Some(BlobId(k.try_into().ok()?))).collect())),
+            Source::Record(rec) => self.store.with_read(|t| t.record_rows(&rec, PRESENT, s, b"", usize::MAX).map(|rows| rows.into_iter().filter_map(|(k, _)| Some(BlobId(k.try_into().ok()?))).collect())).map_err(|e| match e {
+                crate::types::Error::Store(e) => e,
+                _ => osis_store::Error::Corrupt("streams: known"),
+            }),
             Source::Conn(_) => {
                 self.stamps.read(&("l", src, s));
-                self.by_src.get(&(src, *s)).map(|x| x.iter().copied().collect()).unwrap_or_default()
+                Ok(self.by_src.get(&(src, *s)).map(|x| x.iter().copied().collect()).unwrap_or_default())
             }
         }
     }

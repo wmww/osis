@@ -11,9 +11,10 @@
 //!
 //! Rows, all catalog rows under `kind::RECORD`, keyed by a random ID so no row key holds r:
 //! `m` meta (total bytes, LRU sequence); `c id` the record; `a actor id` the actor index;
-//! `u seq id` least recently used first; `x id tag label key` a module's row about a sync ID
-//! (a record-wide row names `NO_LABEL`); `X label tag key id` its index: what leaves with the
-//! sync ID, and which records hold a row (`records_with_row`).
+//! `u seq id` least recently used first; `x id tag label key` a module's row about a sync ID;
+//! `X label tag key id` its index: what leaves with the sync ID, and which records hold a row
+//! (`records_with_row`); `w id tag key` a module's row about the record as a whole (no sync ID,
+//! no index).
 
 use crate::codec::{R, W};
 use crate::store::{PAGE, Shred, Transaction, kind, tail};
@@ -30,15 +31,13 @@ pub const RECORD_BUDGET: u64 = 256 * 1024 * 1024;
 /// A record's row ID: random, stays in this store.
 pub type RecordId = [u8; 16];
 
-/// The label of a record-wide row (one about no sync ID): no sync ID is all zeros.
-pub const NO_LABEL: SyncId = SyncId([0; 16]);
-
 const META: &[u8] = &[kind::RECORD, b'm'];
 const CORE: &[u8] = &[kind::RECORD, b'c'];
 const ACTOR: &[u8] = &[kind::RECORD, b'a'];
 const USED: &[u8] = &[kind::RECORD, b'u'];
 const ROW: &[u8] = &[kind::RECORD, b'x'];
 const ROW_INDEX: &[u8] = &[kind::RECORD, b'X'];
+const WIDE: &[u8] = &[kind::RECORD, b'w'];
 
 /// A module row of a record: its sync ID, key and value.
 pub type RecordRow = (SyncId, Vec<u8>, Vec<u8>);
@@ -71,6 +70,9 @@ fn row_key(id: &RecordId, tag: u8, l: &SyncId, key: &[u8]) -> Vec<u8> {
 }
 fn row_index_key(l: &SyncId, tag: u8, key: &[u8], id: &RecordId) -> Vec<u8> {
     [ROW_INDEX, &l.0, &[tag], key, id].concat()
+}
+fn wide_key(id: &RecordId, tag: u8, key: &[u8]) -> Vec<u8> {
+    [WIDE, id, &[tag], key].concat()
 }
 
 /// A row key's parts after `ROW id`: its tag, label and key.
@@ -116,6 +118,11 @@ impl Record {
 /// A row's share of the budget, its index row included.
 fn row_bytes(key: &[u8], value: &[u8]) -> u64 {
     (2 * key.len() + value.len()) as u64
+}
+
+/// A record-wide row's share of the budget (it has no index row).
+fn wide_bytes(key: &[u8], value: &[u8]) -> u64 {
+    (key.len() + value.len()) as u64
 }
 
 impl Transaction<'_> {
@@ -202,8 +209,8 @@ impl Transaction<'_> {
         self.record_store(&rec, before)
     }
 
-    /// Module `tag`'s row `key` about sync ID `l` (`NO_LABEL`: about the record) in record `id`
-    /// (one owner per tag), with its index row, in this transaction; counted in the record's
+    /// Module `tag`'s row `key` about sync ID `l` in record `id` (one owner per tag), with its
+    /// index row, in this transaction; counted in the record's
     /// bytes, gone with the record or with `l`. A record that is gone takes nothing: what it
     /// would say of the peer went with it.
     pub fn record_put_row(&mut self, id: &RecordId, tag: u8, l: &SyncId, key: &[u8], val: Vec<u8>) -> Result<(), Error> {
@@ -283,6 +290,48 @@ impl Transaction<'_> {
         }
     }
 
+    /// Module `tag`'s row `key` about record `id` as a whole (no sync ID), in this transaction;
+    /// counted in the record's bytes, gone with the record. A record that is gone takes nothing.
+    pub fn record_put_wide_row(&mut self, id: &RecordId, tag: u8, key: &[u8], val: Vec<u8>) -> Result<(), Error> {
+        let Some(mut rec) = self.record(id)? else { return Ok(()) };
+        let before = rec.cost();
+        let k = wide_key(id, tag, key);
+        if let Some(old) = self.cat_get(&k)? {
+            rec.row_bytes = rec.row_bytes.saturating_sub(wide_bytes(&k, &old));
+        }
+        rec.row_bytes += wide_bytes(&k, &val);
+        self.cat_put_to(&k, val, Shred::Yes, false)?;
+        self.record_store(&rec, before)
+    }
+
+    pub fn record_get_wide_row(&mut self, id: &RecordId, tag: u8, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        self.cat_get(&wide_key(id, tag, key))
+    }
+
+    /// Removes module `tag`'s record-wide row `key` in record `id`; whether it was there.
+    pub fn record_remove_wide_row(&mut self, id: &RecordId, tag: u8, key: &[u8]) -> Result<bool, Error> {
+        let k = wide_key(id, tag, key);
+        let Some(old) = self.cat_get(&k)? else { return Ok(false) };
+        self.cat_remove(&k, Shred::Yes)?;
+        if let Some(mut rec) = self.record(id)? {
+            let before = rec.cost();
+            rec.row_bytes = rec.row_bytes.saturating_sub(wide_bytes(&k, &old));
+            self.record_store(&rec, before)?;
+        }
+        Ok(true)
+    }
+
+    /// Module `tag`'s record-wide rows in record `id`, by key. Costs what it returns.
+    pub fn record_wide_rows(&mut self, id: &RecordId, tag: u8) -> Result<Vec<crate::KeyValue>, Error> {
+        let prefix = [WIDE, id, &[tag]].concat();
+        let mut out = Vec::new();
+        self.cat_each(&prefix, |_, k, v| {
+            out.push((k.get(prefix.len()..).unwrap_or_default().to_vec(), v));
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
     /// The node stopped holding `l`: every module row about it leaves every record, in this one
     /// transaction. O(rows about it).
     pub(crate) fn records_forget_label(&mut self, l: &SyncId) -> Result<(), Error> {
@@ -304,6 +353,7 @@ impl Transaction<'_> {
             t.cat_remove(&row_index_key(&l, tag, key, &id), Shred::No)?;
             t.cat_remove(&k, Shred::Yes).map(drop)
         })?;
+        self.cat_each(&[WIDE, &id].concat(), |t, k, _| t.cat_remove(&k, Shred::Yes).map(drop))?;
         for a in &rec.actors {
             self.cat_remove(&actor_key(a, &id), Shred::No)?;
         }

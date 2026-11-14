@@ -370,9 +370,9 @@ impl Opens {
     }
 
     /// The end of the node's step: what changed of each record is written, records past the
-    /// budget go (least recently used first, none a connection holds), and records no connection
-    /// holds leave memory. Returns the records that went (their charges go too: the driver's
-    /// `Store::gone`). A store failure met during the step fails it here.
+    /// budget go (least recently used first, none a connection holds) with what was charged to
+    /// them, in one transaction (`Store::write_records`), and records no connection holds leave
+    /// memory. Returns the records that went. A store failure met during the step fails it here.
     pub fn flush(&mut self, store: &mut Store) -> Result<Vec<RecordId>> {
         if let Some(e) = self.fault.take() {
             self.dirty.clear();
@@ -387,13 +387,13 @@ impl Opens {
         let dirty = std::mem::take(&mut self.dirty);
         let records = &self.records;
         let budget = self.budget;
-        let evicted = store.with_tx(|t| {
+        let evicted = store.write_records(budget, &in_use, |t| {
             for (id, d) in dirty {
                 if let Some(r) = records.get(&id).filter(|r| r.kept) {
                     records::write(t, &id, r, d)?;
                 }
             }
-            t.records_evict(budget, &in_use)
+            Ok(())
         })?;
         let held: BTreeSet<RecordId> = self.conns.values().filter_map(|c| c.rec).collect();
         self.records.retain(|id, r| !r.kept || held.contains(id));
