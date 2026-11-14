@@ -167,7 +167,7 @@ impl Ground for Live<'_, '_> {
         let mut out = Vec::new();
         // a blob this node never opened or sealed names no commit here: it is pulled, and its
         // commit known, once opened
-        for (_, at, s, b) in self.feeds.known.as_mut().map(|f| f.added()).unwrap_or_default() {
+        for (at, s, b) in self.feeds.known.as_mut().map(|f| f.added()).unwrap_or_default() {
             if let Some(c) = self.cx.engine.blob_commit(&b)? {
                 out.push((at, s, c));
             }
@@ -190,7 +190,7 @@ impl Ground for Live<'_, '_> {
         Ok(seen)
     }
     fn seen_all(&mut self, at: &Source, s: &SyncId) -> Result<BTreeSet<BlobId>> {
-        Ok(self.streams.known().list(*at, s).into_iter().collect())
+        Ok(self.streams.known().list(*at, s)?.into_iter().collect())
     }
     fn heard_out(&mut self, s: &SyncId) -> Result<bool> {
         Ok(self.status.heard_out(s, &NetView { streams: self.streams, unread: self.unread }))
