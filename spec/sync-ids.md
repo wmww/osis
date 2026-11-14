@@ -33,6 +33,7 @@
     - the node may write the aspect and holds the blob.
   - It judges these by its view once it has applied every entry of S it can open (those it learned of with the deletion included) and holds no commit pending (not parked) on the aspect.
   - To repair, it writes each large position of the aspect's current value whose tree holds the blob again, whole and without a reset (`put_new`, spec/crdt.md §5.6), reusing every other chunk and re-encrypting the blobs it repairs (one commit for those of one own commit), with that delta's retention and expiry (a snapshot's: the aspect's default retention, no expiry).
+  - A repair carries current state, as a snapshot does (spec/crypto.md §5 Passing on: the floors clause binds it not, the departures clause does): the live value at a position whose tree reaches the blob. A blob only replaced versions reach is history and is not repaired, even where its bytes match a live one's.
   - How often is local policy.
 
 ## 2. Sync IDs and role keys

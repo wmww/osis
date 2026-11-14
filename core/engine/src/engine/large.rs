@@ -568,7 +568,10 @@ impl Engine {
             }
             // judged with no commit pending on the aspect (spec/sync-ids.md §1), and, as a
             // snapshot, only while every write it would carry may go under this node's epoch
-            // (spec/crypto.md §5 Passing on): it waits otherwise
+            // (spec/crypto.md §5 Passing on): it waits otherwise. It writes the live value alone,
+            // where that value's tree reaches a lost blob (`relink_field`): current state, so
+            // the floor clause binds it not; a blob only replaced versions reach is never written
+            // (`a_repair_after_a_cut_passes_on_live_state_alone_spec_sync_ids_1`)
             let k = (tid, ak.clone());
             if self.read(|tx| Ok(pending_on(tx, &k.0, &k.1)? || (osis_schema::core_types::is_content(k.1.as_str()) && !crate::retention::snapshot::carried_passes_on(tx, &k.0, &k.1)?)))? {
                 continue;

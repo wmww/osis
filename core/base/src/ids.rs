@@ -425,7 +425,7 @@ byte_id!(
 /// Link to a chunk, tree node or page (spec/data-model.md §5-§6, spec/crypto.md §6): what reads
 /// the blob (content hash, blob ID, suite and key) and what deletes it (the prefix salt and the
 /// delete keys its commitments bear, the writer's claim). `Debug` hides the blob key.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Link {
     /// Keyed content hash of the canonical value the subtree encodes.
     pub hash: [u8; 32],
@@ -445,7 +445,7 @@ impl fmt::Debug for Link {
 
 /// The delete keys a linked blob's one commitment group bears, at most one per level 1 to 3
 /// (spec/crypto.md §7), as its writer claims them: `[DeleteKey*]` by level ascending.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct Del([Option<[u8; 32]>; 3]);
 
 impl Del {

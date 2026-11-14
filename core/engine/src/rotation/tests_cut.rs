@@ -1328,3 +1328,53 @@ fn cut_snapshot_of_a_large_value_reuses_its_chunks_spec_crypto_4() {
     assert!(s.blobs.iter().all(|(b, _)| tree.contains(b)), "the snapshot encrypts a chunk again");
     assert_eq!(lp.peers[0].engine.live_trees(&g).unwrap().blobs.into_iter().collect::<BTreeSet<_>>(), tree, "the value's tree changed");
 }
+
+static BIG: osis_schema::StaticSchema = osis_schema::StaticSchema::new("cutbig.osis", "revision 1; purgeable_by(author, admin) aspect k:b.0: blob;\n");
+
+// spec/sync-ids.md §1 (Repair carries current state), spec/crypto.md §5 (Passing on: floors):
+// after a cut, a repair is written as state is: it rewrites the aspect's live value where that
+// value's tree reaches a lost chunk, so the floor clause does not hold it back; a chunk only a
+// replaced version reaches (history, kept) is never passed on, under the cut's epoch or any.
+#[test]
+fn a_repair_after_a_cut_passes_on_live_state_alone_spec_sync_ids_1() {
+    let mut lp = synced(2);
+    let n = lp.peers[1].engine.me();
+    let g = group(&mut lp, 0);
+    let key: osis_schema::Aspect<osis_base::Value> = osis_schema::Aspect::new("k:b.0", &BIG);
+    let ak = osis_base::Ak::new("k:b.0").unwrap();
+    let mut m = crate::Mutation::new();
+    m.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(ak.clone(), osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None })).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    let mut v = vec![0u8; 256 << 10];
+    osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(9), &mut v);
+    let write = |lp: &mut LocalPeer, v: &[u8]| {
+        let mut m = crate::Mutation::new();
+        m.set(g, &key, &osis_base::Value::Bytes(v.to_vec())).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.peers[0].engine.live_trees(&g).unwrap().blobs
+    };
+    let first = write(&mut lp, &v);
+    let n_len = v.len();
+    v[n_len - 4..].copy_from_slice(b"edit");
+    let second = write(&mut lp, &v);
+    let replaced: BTreeSet<osis_base::BlobId> = first.difference(&second).copied().collect();
+    let shared: BTreeSet<osis_base::BlobId> = first.intersection(&second).copied().collect();
+    assert!(!replaced.is_empty() && !shared.is_empty(), "the edit reuses chunks and replaces some");
+    lp.peers[0].engine.grant_with(&g, &n, &edge(Role::Read), History::None).unwrap();
+    let lost: BTreeSet<osis_base::BlobId> = replaced.iter().chain(&shared).copied().collect();
+    let e = &mut lp.peers[0].engine;
+    assert!(replaced.iter().all(|b| e.read(|tx| tx.blobs.held(b)).unwrap()), "the replaced version is kept");
+    let c = e.relink(&lost, &[g].into(), &mut |_, _| true).unwrap().expect("a repair after the cut");
+    let now = e.live_trees(&g).unwrap().blobs;
+    assert!(now.is_disjoint(&lost), "the repair links no lost chunk");
+    let parts: crate::sync::PartSet = (0..e.header(&c).unwrap().aspects.len()).collect();
+    let mut linked = BTreeSet::new();
+    let mut todo = e.piece_roots(&c, &parts).unwrap();
+    while let Some(p) = todo.pop() {
+        if linked.insert(p.blob()) {
+            todo.extend(e.piece_below(&p).unwrap().map(|k| k.to_vec()).unwrap_or_default());
+        }
+    }
+    assert!(linked.is_disjoint(&replaced), "a chunk only the replaced version reaches is passed on");
+    assert!(!linked.is_empty() && linked.is_subset(&now), "the repair carries the live value");
+}

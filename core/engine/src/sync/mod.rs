@@ -18,7 +18,7 @@ pub(crate) mod falls;
 pub(crate) mod held;
 pub(crate) mod inbox;
 pub(crate) mod pieces;
-pub use pieces::Pieces;
+pub use pieces::PieceLink;
 pub(crate) mod recblobs;
 pub(crate) use recblobs::with_chains;
 pub(crate) mod records;
@@ -519,11 +519,17 @@ impl Engine {
         self.is_freed(b)
     }
 
-    /// The linked blobs of `c`'s body made of `parts` (spec/sync-judgement.md §1: chunk,
-    /// tree-node and page blobs its deltas link, header-list trees): held, and missing as far as
-    /// the held node and page blobs reach.
-    pub fn pieces(&mut self, c: &CommitId, parts: &PartSet) -> Result<Arc<Pieces>> {
-        self.pieces_now(c, parts)
+    /// The links of `c`'s body made of `parts` (spec/sync-judgement.md §1: the tree roots and pages
+    /// its deltas link, its header-list trees): where its pieces start.
+    pub fn piece_roots(&mut self, c: &CommitId, parts: &PartSet) -> Result<Vec<PieceLink>> {
+        self.piece_roots_now(c, parts)
+    }
+
+    /// What lies one step below piece `p`: `None` while its blob is not held; a node's or page's
+    /// links; nothing for a chunk. A memo per link (a node is immutable): moves only as the blob
+    /// is held or released.
+    pub fn piece_below(&mut self, p: &PieceLink) -> Result<Option<Arc<Vec<PieceLink>>>> {
+        self.piece_below_now(p)
     }
 
     /// Takes a piece's bytes (a blob a held body links, `pieces`' missing) from a store entry:
