@@ -1040,6 +1040,17 @@ impl Net {
         self.nodes[n].online = on;
     }
 
+    /// Node `n`, offline, handles `ev` on its own (its timers, its engine's steps): every dial it
+    /// makes fails, as a transport with no network reports, and its other actions go nowhere.
+    pub fn offline_handle(&mut self, n: usize, ev: Event) {
+        let sy = self.sync(n);
+        let dials = |acts: Vec<Action>| acts.into_iter().filter_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).collect::<Vec<_>>();
+        let mut down = dials(sy.handle(ev));
+        while let Some(d) = down.pop() {
+            down.extend(dials(sy.handle(Event::Down { conn: d })));
+        }
+    }
+
     /// Feeds an event to node `n` and queues its actions.
     pub fn feed(&mut self, n: usize, ev: Event) {
         if !self.nodes[n].online {
@@ -1644,11 +1655,8 @@ impl Net {
                 self.plinks.remove(&(n, dc)).map(|(m, pc)| self.plinks.remove(&(m, pc)));
                 self.links.remove(&(n, dc));
                 let _ = key;
-                if let Some(sy) = self.nodes[n].sync.as_mut() {
-                    let mut down = vec![c];
-                    while let Some(d) = down.pop() {
-                        down.extend(sy.handle(Event::Down { conn: d }).iter().filter_map(|a| if let Action::Dial { conn, .. } = a { Some(*conn) } else { None }));
-                    }
+                if self.nodes[n].sync.is_some() {
+                    self.offline_handle(n, Event::Down { conn: c });
                 }
             }
             Msg::Up(n, _, c, dc, key) => {

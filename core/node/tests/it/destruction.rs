@@ -1682,8 +1682,8 @@ fn holds_secrets(net: &mut Net, n: usize, t: Tid) -> (bool, bool) {
 
 // spec/commits.md §5 (Destruction: keeps nothing), notes/growth.md row 5: t, with secrets of its own
 // (b granted admin on it), is released and nothing needs it. b is away when it forgets t at the
-// request's expiry, so it still knows entries of t's commits: it keeps t's secrets, over a restart,
-// and deletes those entries at the host by the keys they derive once back (a and c away: b alone
+// request's expiry, so it still knows entries of t's commits: it keeps t's secrets, and deletes
+// those entries at the host by the keys they derive once back (a and c away: b alone
 // deletes); past the deletes' tombstones neither t's `k/` row nor its index entry is left there
 #[test]
 fn a_destroyed_actors_secrets_go_with_the_last_entry_of_its_commits_spec_commits_5() {
@@ -1717,15 +1717,13 @@ fn a_destroyed_actors_secrets_go_with_the_last_entry_of_its_commits_spec_commits
     // b's own steps run unconnected: it forgets t and knows its commits' entries still held
     for ms in [osis_base::format::ROLE_KEEP_MS, 70_000, 70_000] {
         net.advance(ms);
-        let _ = net.sync(b).handle(osis_node::sync::Event::Tick);
+        net.offline_handle(b, osis_node::sync::Event::Tick);
     }
     assert_eq!(net.engine(b).lifetime_status(&t), Status::Unknown, "b forgot t");
     assert!(net.engine(b).core.created(&t).is_none(), "t's record gone at b");
     let ids: Vec<_> = net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if on_t.contains(commit))).map(|(id, _)| id).collect();
     assert!(!ids.is_empty(), "b still knows entries of t's commits");
     assert_eq!(holds_secrets(&mut net, b, t), (true, true), "t's secrets held while b may still delete them");
-    net.restart(b, 50);
-    assert_eq!(holds_secrets(&mut net, b, t), (true, true), "and over a restart");
     net.set_online(b, true);
     for _ in 0..3 {
         net.advance(70_000);
@@ -1793,16 +1791,14 @@ fn a_destroyed_actors_secrets_stay_for_a_commit_acting_for_it_spec_crypto_7() {
     net.engine(b).ingest(&pk.bytes, Vec::new()).unwrap();
     for ms in [70_000, osis_base::format::ROLE_KEEP_MS, 70_000, 70_000] {
         net.advance(ms);
-        let _ = net.sync(b).handle(osis_node::sync::Event::Tick);
+        net.offline_handle(b, osis_node::sync::Event::Tick);
     }
     for th in [t, x] {
         assert_eq!(net.engine(b).lifetime_status(&th), Status::Unknown, "b forgot t and x");
     }
     assert!(ids.iter().all(|id| net.host_ids(0, &l).contains(id)), "the write acting for t is at the host");
     assert_eq!(holds_secrets(&mut net, b, t), (true, true), "t's secrets held while b may delete by them");
-    // b back, after a start (issues/forgotten-unconnected-not-deleted.md): it deletes the write by
-    // t's key
-    net.restart(b, 50);
+    // b back: it deletes the write by t's key
     net.set_online(b, true);
     for _ in 0..3 {
         net.advance(70_000);
@@ -2063,6 +2059,44 @@ fn a_forgotten_commits_entries_are_deleted_after_a_restart_spec_sync_6() {
     net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 1_000);
     net.restart(a, 51);
     assert!(net.engine(a).local_rows_naming(&req.0).unwrap().is_empty(), "nothing names it past its tombstones");
+}
+
+// spec/sync.md §6 (Dropped bodies: a commit forgotten with a released thing), spec/commits.md §5
+// (Forgetting): a node away, running on its own (its dials failing), forgets a released thing (r
+// lets go of t past its request's expiry); back online, with no restart, it deletes the entries
+// of the commits it forgot at the host
+#[test]
+fn a_commit_forgotten_while_away_has_its_entries_deleted_once_back_spec_sync_6() {
+    use osis_node::retention::lifetimes::Status;
+    let Setup { mut net, a, b, c, g } = setup();
+    let l = net.label(a);
+    let (r, t, _) = retained(&mut net, a, g);
+    let req = net.engine(c).release(&[t]).unwrap().unwrap();
+    net.run();
+    net.advance(osis_base::format::ROLE_KEEP_MS);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(at_host_of(&mut net, a, &l, req), "the request's copy at the host while r references t");
+    for n in [a, b, c] {
+        net.set_online(n, false);
+    }
+    let mut m = Mutation::new();
+    m.set(r, &Ak::new("t:refs.0").unwrap(), &Value::Set(Default::default())).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    for _ in 0..2 {
+        net.advance(70_000);
+        net.offline_handle(a, osis_node::sync::Event::Tick);
+    }
+    assert_eq!(net.engine(a).lifetime_status(&t), Status::Unknown, "forgotten");
+    let ids: Vec<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == req)).map(|(id, _)| id).collect();
+    assert!(!ids.is_empty() && ids.iter().all(|id| net.host_ids(0, &l).contains(id)), "its entries at the host while a is away");
+    net.set_online(a, true);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(!net.host_ids(0, &l).iter().any(|x| ids.contains(x)), "deleted at the host");
+    assert!(!net.sync(a).entries(&l).iter().any(|(id, _)| ids.contains(id)), "no entry of it known");
 }
 
 // spec/commits.md §5 (Forgetting), spec/sync.md §6: w writes x, an item of g, and y, a thing of
