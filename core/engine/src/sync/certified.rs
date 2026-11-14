@@ -257,7 +257,7 @@ impl Engine {
     }
 
     /// What thing `x` gives the read things (`Authored`): its authors that are no node, and the
-    /// read things whose closure holds it (`Groups::enclosing`) and whose actor reads it, each
+    /// read things whose closure holds it (`Groups::enclosing`) and whose actor reads it (`cert_reads_in`), each
     /// read per key.
     fn authored(&mut self, x: &Tid) -> Arc<Authored> {
         let authors: Vec<Tid> = self.core.ix.authors_on.get(x).into_iter().flatten().copied().collect();
@@ -265,7 +265,7 @@ impl Engine {
         if authors.is_empty() {
             return Arc::default();
         }
-        let under = self.core.ix.groups.enclosing(x).into_iter().filter(|t| self.core.certified.read.contains(t) && self.reads_in(t, x)).collect();
+        let under = self.core.ix.groups.enclosing(x).into_iter().filter(|t| self.core.certified.read.contains(t) && self.cert_reads_in(t, x)).collect();
         Arc::new(Authored { authors, under })
     }
 

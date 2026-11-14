@@ -278,7 +278,7 @@ impl Engine {
     #[cfg(test)]
     fn certificate_authors(&mut self, g: &Tid) -> Vec<(Tid, Tid)> {
         let ctx = self.body_ctx(g);
-        let things: Vec<Tid> = ctx.closure.iter().filter(|t| self.reads(&ctx, t)).copied().collect();
+        let things: Vec<Tid> = ctx.closure.iter().filter(|t| self.cert_reads_in(g, t)).copied().collect();
         let pairs: Vec<(Tid, Tid)> = things.into_iter().flat_map(|x| self.core.ix.authors_on.get(&x).into_iter().flatten().map(move |a| (*a, x)).collect::<Vec<_>>()).collect();
         pairs.into_iter().filter(|(a, _)| !self.is_node(a).unwrap_or(false)).collect()
     }

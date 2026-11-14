@@ -520,8 +520,21 @@ impl Engine {
     }
 
     fn actor_reads(&self, actor: &Tid, t: &Tid) -> bool {
-        // the readers of an account's devices actor are its nodes: they read what the account reads
-        let reader = self.core.devices_of(actor).unwrap_or(*actor);
+        // the readers of this node's account's devices actor are its nodes: they read what the
+        // account reads. Another account's devices actor reads as itself here: what this node
+        // seals, boxes or opens never reads another account's grants as ours.
+        let reader = self.core.account_devices().filter(|x| x.1 == *actor).map_or(*actor, |x| x.0);
+        self.core.may_read(&reader, &self.core.reader_of(t))
+    }
+
+    /// Whether the actor of group `g` reads `t` as every node judges it, for placing chain
+    /// certificates alone (spec/sync-judgement.md §1: a devices actor reads as its account,
+    /// whichever node judges it): any account's devices actor reads what its account reads, so
+    /// the chains placed under a sync ID are the same at every node. Never an access, sealing,
+    /// boxing or opening decision: there `reads_in`.
+    pub(crate) fn cert_reads_in(&self, g: &Tid, t: &Tid) -> bool {
+        let actor = self.group_actor(g);
+        let reader = self.core.devices_of(&actor).unwrap_or(actor);
         self.core.may_read(&reader, &self.core.reader_of(t))
     }
 
