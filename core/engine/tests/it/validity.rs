@@ -1180,7 +1180,7 @@ fn record_then_edge_chain_applies_spec_perm_1() {
     fresh.peers[0].engine.learn_records(others).unwrap();
     let pk = lp.peers[0].engine.package(&w).unwrap().unwrap();
     let r = fresh.deliver(0, &pk).unwrap();
-    assert!(matches!(r, Ingested::Awaits(..)), "{r:?}");
+    assert!(matches!(r, Ingested::Pending(_, osis_engine::Reason::MissingChain(_) | osis_engine::Reason::UnknownCreated(_))), "{r:?}");
     let ra = rec(&lp, &a);
     fresh.peers[0].engine.learn_records(vec![ra]).unwrap();
     // what was thrown out is fetched again once its record came
@@ -3204,14 +3204,14 @@ fn padded_durable_created_refused_spec_commits_2() {
         let t = ts(&mut lp, k as u64 + 1);
         let b = forge_created(&mut lp, 1, &rec, t, 1000 * (k as u64 + 1), &ops, typed).unwrap();
         // no record comes of it: until a record tells its hash the part cannot be judged
-        assert!(matches!(lp.peers[0].receive(&b, Vec::new()), Ok(Ingested::Awaits(..))), "typed {typed}");
+        assert!(matches!(lp.peers[0].receive(&b, Vec::new()), Ok(Ingested::Pending(_, osis_engine::Reason::MissingChain(_) | osis_engine::Reason::UnknownCreated(_)))), "typed {typed}");
         assert!(created(&mut lp).is_none());
     }
     let t = ts(&mut lp, 10);
     let one = forge_created(&mut lp, 1, &rec, t, 5000, &[PathOp { path: Vec::new(), op: Op::Set(r) }], true).unwrap();
     assert!(matches!(lp.peers[0].receive(&one, Vec::new()).unwrap(), Ingested::Applied(_)));
     assert_eq!(created(&mut lp), Some(rec.clone()));
-    assert!(lp.peers[0].engine.pending().is_empty(), "with the record the padded ones are bad, and go");
+    assert!(lp.peers[0].engine.pending().is_empty(), "with the record the padded ones are bad, and go: {:?}", lp.peers[0].engine.pending());
     send(&mut lp, 1, 0, &[honest]);
     assert_eq!(lp.peers[0].engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("x")));
     assert_eq!(created(&mut lp), Some(rec));
@@ -3438,7 +3438,7 @@ fn stranger_card_makes_no_node_spec_perm_4() {
             let id = blob.id();
             // whole, its part cannot be judged (author's reach); header only, it applies
             let got = lp.peers[0].receive(&blob.encode(), Vec::new()).unwrap();
-            assert!(got == Ingested::Applied(id) || (!header_only && matches!(got, Ingested::Awaits(..))), "header only {header_only}: {got:?}");
+            assert!(got == Ingested::Applied(id) || (!header_only && matches!(got, Ingested::Pending(_, osis_engine::Reason::MissingChain(_) | osis_engine::Reason::UnknownCreated(_)))), "header only {header_only}: {got:?}");
             assert!(!lp.peers[0].engine.is_node(&k).unwrap(), "header only {header_only}: a stranger's card makes no node");
         }
     }

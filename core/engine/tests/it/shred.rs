@@ -361,9 +361,9 @@ fn expired_late_part_unrecoverable_spec_crdt_4_7() {
 }
 
 // spec/commits.md §4 (a commit with no part held, or whose every held part waits, applies as its header alone): peer 1 gets peer 0's
-// expiring write on a thing whose creation record it lacks, past T: nothing of it is kept (spec/commits.md
-// §4 Unjudgeable); fetched again with its record, the part
-// past T counts as never received and the commit applies as its header.
+// expiring write on a thing whose creation record it lacks, past T: the part past T counts as
+// never received before the commit is judged, so the commit applies as its header at once, and
+// stays so once the record comes.
 #[test]
 fn partless_commit_applies_as_its_header_spec_commits_4() {
     let mut lp = net2();
@@ -375,9 +375,10 @@ fn partless_commit_applies_as_its_header_spec_commits_4() {
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == c).unwrap();
     lp.advance(120_000);
-    assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_engine::Ingested::Awaits(_, _)), "cannot be judged");
+    let r = lp.deliver(1, &pk).unwrap();
+    assert_eq!(r, osis_engine::Ingested::Applied(c), "its header alone");
     lp.sync(0, 1).unwrap();
-    assert!(lp.peers[1].engine.commit_ids().contains(&c) && lp.peers[1].engine.pending().iter().all(|x| x.0 != c));
+    assert!(lp.peers[1].engine.commit_ids().contains(&c) && lp.peers[1].engine.pending().iter().all(|x| x.0 != c), "{:?}", lp.peers[1].engine.pending());
     assert_eq!(lp.peers[1].engine.get_typed(&t, &BRIEF).unwrap(), None);
 }
 
@@ -1389,12 +1390,12 @@ fn record_of(lp: &mut LocalPeer, t: Tid) -> Vec<osis_engine::local_peer::Package
     lp.packages(0).unwrap().into_iter().filter(|p| osis_commit::CommitBlob::decode(&p.bytes).unwrap().header.aspects.iter().any(|a| a.tid == t)).collect()
 }
 
-// spec/commits.md §4 (Unjudgeable), §5 (Purge): a commit pending for its `ts`, one part on a thing
-// whose record is away, and a purge request naming that part (pending too, its part there thrown
-// out): no byte of the part is kept while the record is away. With the record the part comes again and is judged:
+// spec/commits.md §4 (Unjudgeable, Pending storage), §5 (Purge): a commit pending for its `ts`,
+// one part on a thing whose record is away, and a purge request naming that part (pending too):
+// the part waits in the pending copy while the record is away. With the record it is judged:
 // purged, or read as written when no request names it.
 #[test]
-fn pending_part_awaiting_its_record_keeps_no_byte_spec_commits_4() {
+fn pending_part_awaiting_its_record_is_judged_with_it_spec_commits_4() {
     for purge in [false, true] {
         let mut lp = net2();
         let t = new_thing(&mut lp, 0);
@@ -1417,7 +1418,6 @@ fn pending_part_awaiting_its_record_keeps_no_byte_spec_commits_4() {
             assert!(matches!(lp.deliver(1, &pp).unwrap(), osis_engine::Ingested::Pending(..)));
         }
         assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == c), "purge {purge}");
-        assert!(!recoverable(&mut lp.peers[1], b"SECRET-A2f6"), "purge {purge}: a part it cannot judge keeps no byte");
         for pk in &rec {
             lp.deliver(1, pk).unwrap();
         }

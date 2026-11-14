@@ -199,7 +199,7 @@ impl Waits {
 
 /// Names what the budget and new records free: `Wakes`. The start of
 /// `Engine::reexamine`.
-pub(crate) fn wake(core: &mut Core) {
+pub(crate) fn wake(core: &mut Core) -> BTreeSet<CommitId> {
     let records = core.ix.held.take_records();
     let moved = core.ix.held.take_moved();
     let room = core.reading_room();
@@ -214,19 +214,14 @@ pub(crate) fn wake(core: &mut Core) {
             undropped.extend(cs);
         }
     }
-    // a thrown-out commit awaiting this record among others (the entry names only the first); a
-    // pending one whose copy threw out a part (`throw_out_parts`) is delivered again from the
-    // copies its carriers still hold
-    let mut again: Vec<CommitId> = Vec::new();
+    // a commit awaiting this record among others (the entry names only the first): a pending one
+    // keeps every part (`throw_out_parts`), so it is examined again (`reread`), never fetched
     for t in &records {
         for c in core.waits.on_record.get(t).into_iter().flatten() {
             if core.ix.commits.contains_key(c) {
                 undropped.insert(*c);
             } else {
                 reread.push(*c);
-                if core.ix.pending.contains_key(c) {
-                    again.push(*c);
-                }
             }
         }
     }
@@ -237,17 +232,17 @@ pub(crate) fn wake(core: &mut Core) {
         for (t, cs) in &core.waits.on_record {
             if core.exists(t) {
                 reread.extend(cs.iter().filter(|c| !core.ix.commits.contains_key(*c)));
-                again.extend(cs.iter().filter(|c| !core.ix.commits.contains_key(*c) && core.ix.pending.contains_key(*c)));
             }
         }
     }
-    core.redeliver.extend(again);
+    let out: BTreeSet<CommitId> = reread.iter().copied().collect();
     if let Some(ch) = &mut core.wakes {
         ch.woken.extend(undropped);
         ch.records.extend(records);
         ch.moved |= !moved.is_empty();
         ch.reread.extend(reread);
     }
+    out
 }
 
 /// The commits reading-only secrets came from, after a load.

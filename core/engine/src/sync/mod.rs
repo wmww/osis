@@ -742,6 +742,12 @@ impl Engine {
         self.core.ix.commits.contains_key(c)
     }
 
+    /// Whether commit `c`, or parts of it, pend here (spec/commits.md §4: kept only while
+    /// something carries it, `forget_pending` once nothing does).
+    pub fn pends(&mut self, c: &CommitId) -> bool {
+        self.core.ix.pending.contains_key(c)
+    }
+
     /// The blobs of commit `c` opened or sealed here.
     pub fn commit_blobs(&mut self, c: &CommitId) -> Result<Arc<Vec<BlobId>>> {
         Ok(Arc::new(self.core.ix.commit_blobs.get(c).into_iter().flatten().copied().collect()))

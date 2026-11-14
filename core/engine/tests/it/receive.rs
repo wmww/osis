@@ -64,8 +64,8 @@ fn dedup_and_events_spec_commits_4() {
     assert!(changed.contains(&(t, ak("t:reg.0"))));
 }
 
-// spec/commits.md §4 (Unjudgeable): unknown `created.0` of the author or a touched thing: nothing
-// of the commit is kept; it applies once fetched with the record.
+// spec/commits.md §4 (Unjudgeable, Pending storage): unknown `created.0` of the author or a
+// touched thing: the commit pends, kept across a restart, and applies once the record comes.
 #[test]
 fn pending_until_created_spec_commits_4() {
     let mut lp = net(2, 0);
@@ -76,7 +76,7 @@ fn pending_until_created_spec_commits_4() {
     let pks = packages(&mut lp, 0);
     // the last commit first: its author's created.0 is unknown
     let r = lp.deliver(1, pks.last().unwrap()).unwrap();
-    assert!(matches!(r, Ingested::Awaits(_, Reason::MissingChain(_))), "{r:?}");
+    assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(_))), "{r:?}");
     let me = lp.peers[0].engine.me();
     let scope = osis_perm::DemotionScope { roles: Default::default(), content: [(me, [t].into())].into() };
     let now = lp.peers[1].engine.now();
@@ -87,20 +87,20 @@ fn pending_until_created_spec_commits_4() {
         lp.deliver(1, p).unwrap();
     }
     let r = lp.peers[1].receive(&pks.last().unwrap().bytes, Vec::new()).unwrap();
-    assert!(matches!(r, Ingested::Awaits(_, Reason::UnknownCreated(x)) if x == t), "{r:?}");
+    assert!(matches!(r, Ingested::Pending(_, Reason::UnknownCreated(x)) if x == t), "{r:?}");
     lp.deliver(1, &pks[c]).unwrap();
     assert!(lp.peers[1].engine.pending().is_empty());
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("second")));
-    // nothing is stored for it across a restart
+    // kept pending across a restart
     let mut m = Mutation::new();
     m.set(t, &REG, &s("third")).unwrap();
     lp.peers[0].commit(m).unwrap();
     let pk = packages(&mut lp, 0).pop().unwrap();
     let mut lp2 = net(1, 1); // a node apart from lp's (its own seeds)
-    assert!(matches!(lp2.deliver(0, &pk).unwrap(), Ingested::Awaits(..)));
-    assert!(lp2.peers[0].engine.pending().is_empty());
+    assert!(matches!(lp2.deliver(0, &pk).unwrap(), Ingested::Pending(_, osis_engine::Reason::MissingChain(_) | osis_engine::Reason::UnknownCreated(_))));
+    assert!(lp2.peers[0].engine.pending().iter().any(|(c, _)| *c == pk.id));
     lp2.peers[0].restart(99).unwrap();
-    assert!(lp2.peers[0].engine.pending().is_empty());
+    assert!(lp2.peers[0].engine.pending().iter().any(|(c, _)| *c == pk.id));
 }
 
 // spec/commits.md §4 (Unjudgeable): only a grant leads from its holder to a thing (a path climbs
@@ -142,7 +142,7 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
     }
     let before = rosters(&mut lp);
     let r = lp.deliver(2, &forged).unwrap();
-    assert!(matches!(r, Ingested::Awaits(_, Reason::MissingChain(x)) if x == a), "{r:?}");
+    assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(x)) if x == a), "{r:?}");
     assert!(!lp.peers[2].engine.commit_ids().contains(&forged.id));
     assert_eq!(rosters(&mut lp), before);
     // a grant leads from g's first admin to t, and through t's record to u
@@ -155,8 +155,8 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
     assert!(!before[1].contains_key(&a));
 }
 
-// spec/commits.md §4 (Unjudgeable): commits awaiting a thing's `created.0` apply once fetched
-// again with it; meanwhile commits applied in between judge none of them again
+// spec/commits.md §4 (Unjudgeable): commits awaiting a thing's `created.0` pend and apply once
+// it comes; meanwhile commits applied in between judge none of them again
 // (spec/requirements.md, Scale: a first sync is O(commits), not O(commits × awaiting)).
 #[test]
 fn pending_not_reexamined_while_unchanged_spec_commits_4() {
@@ -180,7 +180,7 @@ fn pending_not_reexamined_while_unchanged_spec_commits_4() {
     for (i, p) in pks[c + 1..].iter().enumerate() {
         let r = lp.deliver(1, p).unwrap();
         if i % 2 == 0 {
-            assert!(matches!(r, Ingested::Awaits(_, Reason::UnknownCreated(x)) if x == t), "{r:?}");
+            assert!(matches!(r, Ingested::Pending(_, Reason::UnknownCreated(x)) if x == t), "{r:?}");
         } else {
             assert!(matches!(r, Ingested::Applied(_)), "{r:?}");
         }
@@ -362,4 +362,31 @@ fn grantee_waits_for_grant_spec_commits_4() {
     assert_eq!(lp.peers[2].engine.get(&t, &ak("t:reg.0")).unwrap(), None, "before the grant nothing is judged");
     sync(&mut lp, 0, 2);
     assert_eq!(lp.peers[2].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("from b")));
+}
+
+// spec/commits.md §4 (Unjudgeable, Pending storage): role commits on a thing that come before its
+// creation pend, kept with their bytes; the creation coming last applies them all in one
+// re-examination, and nothing fetches them again.
+#[test]
+fn role_commits_before_their_creation_pend_then_apply_spec_commits_4() {
+    let (mut lp, ps) = crate::flows::people(3);
+    let t = crate::flows::thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[1], &crate::flows::edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[1], &crate::flows::edge_of(Role::Write)).unwrap();
+    let pks = packages(&mut lp, 0);
+    let c = creation_of(&mut lp, &pks, t);
+    let roles: Vec<_> = pks[c + 1..].iter().filter(|p| is_role(&lp.peers[0].engine, &p.id)).cloned().collect();
+    assert!(roles.len() >= 3, "the rotation and the grants");
+    for p in &roles {
+        let r = lp.peers[2].receive(&p.bytes, p.blobs.clone()).unwrap();
+        assert!(matches!(r, Ingested::Pending(_, Reason::UnknownCreated(x)) if x == t), "{r:?}");
+    }
+    assert_eq!(lp.peers[2].engine.pending().len(), roles.len(), "each kept pending");
+    lp.peers[2].receive(&pks[c].bytes, pks[c].blobs.clone()).unwrap();
+    let e = &mut lp.peers[2].engine;
+    assert!(e.pending().is_empty(), "{:?}", e.pending());
+    assert_eq!(e.roster(&t).get(&ps[1]).map(|x| x.role), Some(Role::Write));
+    assert!(e.roster(&t).get(&ps[2]).is_none());
+    assert_eq!(lp.peers[2].redelivered, 0, "nothing fetched again");
 }

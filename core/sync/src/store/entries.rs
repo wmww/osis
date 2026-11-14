@@ -246,6 +246,9 @@ pub(crate) fn lift(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &B
 /// no more (spec/sync-ids.md §5: bytes once per node).
 pub(crate) fn unref(t: &mut Transaction<'_>, env: &Env<'_>, b: &BlobId) -> Result<()> {
     let named = !t.scan_local(&[rows::BY_BLOB, &b.0].concat(), b"", 1)?.is_empty();
+    if !named {
+        env.mem.unnamed.wrote_added(b, true, true);
+    }
     if named || t.get_local(&rows::engine_key(b))?.is_some() || env.mem.engine.contains(b) {
         return Ok(());
     }

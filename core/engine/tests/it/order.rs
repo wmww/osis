@@ -3781,7 +3781,7 @@ fn record_from_drift_parked_creation_wakes_thrown_out_write_spec_commits_4() {
         p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
     p.clock.set(WallMs(ts - osis_base::format::MAX_DRIFT_MS - 1));
-    assert!(matches!(p.receive(&write.bytes, write.blobs.clone()).unwrap(), osis_engine::Ingested::Awaits(..)));
+    assert!(matches!(p.receive(&write.bytes, write.blobs.clone()).unwrap(), osis_engine::Ingested::Pending(_, osis_engine::Reason::MissingChain(_) | osis_engine::Reason::UnknownCreated(_))));
     assert!(matches!(p.receive(&creation.bytes, creation.blobs.clone()).unwrap(), osis_engine::Ingested::Pending(..)));
     p.clock.set(played.now);
     p.tick().unwrap();

@@ -80,9 +80,9 @@ pub const ASKED_MS: u64 = crate::session::STALL_TIMEOUT_MS;
 pub enum Opening {
     Taken,
     NotOpen,
-    /// It opened to a commit the engine cannot judge yet and kept nothing of (spec/commits.md §4
-    /// Unjudgeable): kept, and opened again as commits arrive (`store::Follow`).
-    Awaits,
+    /// It opened to a commit that pends here (spec/commits.md §4 Pending storage): the entry is
+    /// kept as its carrier (`store::Follow`).
+    Pends,
     /// It opened and is bad, or its bytes are not its ID's: asked again elsewhere.
     Bad,
 }
@@ -104,6 +104,11 @@ pub trait Ground {
     fn open(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening>;
     /// The body's place in the fill order.
     fn rank(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Rank;
+    /// An entry that opened to a pending commit was not kept (`store::release`).
+    fn unkept(&mut self, store: &crate::store::Store, b: &BlobId) -> Result<()> {
+        let _ = (store, b);
+        Ok(())
+    }
 }
 
 /// How streams reaches a connection. The product's is `Sessions`.
@@ -418,12 +423,19 @@ struct EngineGround<'a> {
 impl Ground for EngineGround<'_> {
     fn open(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening> {
         match self.engine.open_entry(s, &e.blob, &e.wrap, bytes) {
-            Ok(o) if crate::store::awaits(&o) => Ok(Opening::Awaits),
+            Ok(o) if crate::store::pends(self.engine, &o) => Ok(Opening::Pends),
             Ok(Opened::Commit(..) | Opened::Linked | Opened::Inbox(_)) => Ok(Opening::Taken),
             Ok(Opened::NotOpen) | Err(osis_engine::Error::NotBuilt(_)) => Ok(Opening::NotOpen),
             Ok(Opened::Bad) => Ok(Opening::Bad),
             Err(e) => Err(e.into()),
         }
+    }
+
+    fn unkept(&mut self, store: &crate::store::Store, b: &BlobId) -> Result<()> {
+        if let Some(c) = self.engine.blob_commit(b)? {
+            crate::store::release(self.engine, store, &c)?;
+        }
+        Ok(())
     }
 
     fn rank(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Rank {

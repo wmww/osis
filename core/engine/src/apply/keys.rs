@@ -869,7 +869,7 @@ mod tests {
                 let rot = osis_keys::rotate(&t, &[Role::Sync, Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut rng).unwrap();
                 let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
                 let bytes = forge_role_commit(lp, x, t, &rec, &v);
-                assert!(matches!(lp.peers[1].receive(&bytes, Vec::new()).unwrap(), crate::Ingested::Awaits(..)), "a bogus commit cannot be judged at the grantee");
+                assert!(matches!(lp.peers[1].receive(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(_, crate::Reason::MissingChain(_) | crate::Reason::UnknownCreated(_))), "a bogus commit cannot be judged at the grantee");
                 sent += 1;
             }
         }
@@ -926,7 +926,7 @@ mod tests {
         let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
         let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
         let bytes = forge_role_commit(lp, by, t, &rec, &v);
-        assert!(matches!(lp.peers[1].receive(&bytes, Vec::new()).unwrap(), crate::Ingested::Awaits(..)));
+        assert!(matches!(lp.peers[1].receive(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(_, crate::Reason::MissingChain(_) | crate::Reason::UnknownCreated(_))));
     }
 
     /// Peer 1 reads `t` (checked secrets), then is removed by peer 0; the removal applied.
@@ -1084,7 +1084,7 @@ mod tests {
         lp.peers[2].commit(m).unwrap();
         let c = *lp.peers[2].engine.refresh_deposit_seed(&t2).unwrap().commits.last().unwrap();
         let pk = lp.peers[2].engine.package(&c).unwrap().unwrap();
-        assert!(matches!(lp.deliver(1, &pk).unwrap(), crate::Ingested::Awaits(..)));
+        assert!(matches!(lp.deliver(1, &pk).unwrap(), crate::Ingested::Pending(_, crate::Reason::MissingChain(_) | crate::Reason::UnknownCreated(_))));
         assert!(!lp.peers[1].engine.keys_write_unapplied(&t2).unwrap(), "unchecked author");
         // the admin's own, held back by drift
         lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
@@ -1182,7 +1182,7 @@ mod tests {
         flood(&mut lp, t, 40);
         let before = candidates(&lp, &t);
         let p = lp.peers[0].engine.package(&g).unwrap().unwrap();
-        assert!(matches!(lp.deliver(1, &p).unwrap(), crate::Ingested::Awaits(..)), "the grant waits for the granter's chain");
+        assert!(matches!(lp.deliver(1, &p).unwrap(), crate::Ingested::Pending(_, crate::Reason::MissingChain(_) | crate::Reason::UnknownCreated(_))), "the grant waits for the granter's chain");
         assert_eq!(candidates(&lp, &t), before, "the pool is full: the grant's candidate waits");
         lp.sync(0, 1).unwrap();
         assert!(!lp.peers[1].engine.core.ix.pending.contains_key(&g), "the grant applied");

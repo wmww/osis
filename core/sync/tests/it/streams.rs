@@ -38,13 +38,21 @@ struct Table {
     opened: Vec<BlobId>,
     rank: BTreeMap<BlobId, Rank>,
     log: Log,
+    /// Every body opens to a commit that pends here.
+    pends: bool,
+    /// Bodies that opened to a pending commit and were not kept.
+    unkept: Vec<BlobId>,
 }
 
 impl Ground for Table {
     fn open(&mut self, _s: &SyncId, e: &Entry, _bytes: &[u8]) -> Result<Opening> {
         self.log.borrow_mut().push(("open", 0));
         self.opened.push(e.blob);
-        Ok(Opening::Taken)
+        Ok(if self.pends { Opening::Pends } else { Opening::Taken })
+    }
+    fn unkept(&mut self, _store: &Store, b: &BlobId) -> Result<()> {
+        self.unkept.push(*b);
+        Ok(())
     }
     fn rank(&mut self, _s: &SyncId, b: &BlobId, _w: &[u8; WRAP_LEN]) -> Rank {
         self.rank.get(b).copied().unwrap_or(Rank::Unopened)
@@ -832,6 +840,33 @@ fn refusals_told_and_kept_spec_sync_streams_4() {
     assert!(r.stamp.is_some());
     assert!(p.sent_by_b(43).iter().any(|m| matches!(m, Msg::Stream(st) if st.cursor.is_none() && st.events.contains(&(k.id, Event::Refused(good, Code::TOMBSTONED))))));
     assert!(!p.a.streams.known().knows(src, &k.id, &good), "6 counts as deleted there");
+}
+
+// spec/commits.md §4 (Pending storage: what pends from unvouched input is kept only while an entry
+// carries it, within the bounds per source), spec/sync-ids.md §5 (Peer budget): a reader takes
+// unstamped bodies from one peer that open to pending commits, each kept as its commit's carrier
+// charged to that peer, until the peer's budget is spent; past it the body is not kept and what
+// pends from it is let go (`unkept`). Another peer's carrier, charged to it, stays.
+#[test]
+fn a_flood_of_pending_commits_is_bounded_per_peer_spec_commits_4() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    let budget = 5 * 400;
+    p.a.store.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), budget)]), ..Caps::default() });
+    // another peer's carrier, charged to it
+    let other = Source::Conn(ConnId(9));
+    let (theirs, bytes) = blob(299, Class::Durable);
+    let e = Entry { blob: theirs, wrap: [1; WRAP_LEN], stamp: None, deposited: false, own: false, role: false, class: Class::Durable, expires: None };
+    assert_eq!(p.a.store.log(&s, e, Some(bytes), Some(other)).unwrap(), Code::OK);
+    let flood: Vec<BlobId> = (0..20).map(|i| p.b.log(s, 300 + i)).collect();
+    p.a.table.pends = true;
+    p.shared_read(s);
+    p.run();
+    let kept: Vec<BlobId> = flood.iter().copied().filter(|b| p.a.store.entry(&s, b).unwrap().is_some()).collect();
+    assert!(!kept.is_empty() && kept.len() < flood.len(), "kept within the budget: {}", kept.len());
+    assert_eq!(p.a.table.unkept.len() + kept.len(), flood.len(), "each one not kept is let go");
+    assert!(kept.iter().all(|b| !p.a.table.unkept.contains(b)));
+    assert!(p.a.store.entry(&s, &theirs).unwrap().is_some(), "the other peer's carrier stays");
 }
 
 // spec/sync-set.md §3 (keeping S unread, each entry it logged itself under S (its deposits) is present): `Sources::present` is what a source's stream showed.

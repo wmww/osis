@@ -54,6 +54,10 @@ pub(crate) struct Memory {
     /// Every sync ID shredded (`Store::shred`): a `Feed<SyncId>` over it tells the modules that
     /// keep S in memory per record (opens, streams) to drop it.
     pub shreds: Stamps,
+    /// Every blob no entry names any more, durable or in memory: a `Feed<BlobId>` over it tells
+    /// the store's follow that a commit's last carrier may have gone (spec/commits.md §4 Pending
+    /// storage).
+    pub unnamed: Stamps,
 }
 
 impl Memory {
@@ -179,6 +183,7 @@ impl Memory {
                 set.remove(s);
                 if set.is_empty() {
                     self.by_blob.remove(b);
+                    self.unnamed.wrote_added(b, true, true);
                     if !self.engine.contains(b) {
                         self.blobs.remove(b);
                     }

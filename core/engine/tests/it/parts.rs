@@ -592,10 +592,10 @@ fn wrong_class_delta_is_not_waited_for_spec_commits_4() {
 }
 
 // spec/commits.md §4 Unjudgeable: a commit pending for drift whose parts are one on a thing whose
-// record is unknown and one bad holds nothing once judged: no byte of it stays (it pends no more),
-// and it applies when the record comes (its carrier delivers it again).
+// record is unknown and one bad, once judged, pends for the record (its bad part gone), and
+// applies when the record comes.
 #[test]
-fn pending_commit_judged_unjudgeable_keeps_nothing_spec_commits_4() {
+fn pending_commit_judged_unjudgeable_awaits_its_record_spec_commits_4() {
     use crate::common::*;
     use osis_base::format::MAX_DRIFT_MS;
     let mut lp = net(2, 0);
@@ -612,21 +612,20 @@ fn pending_commit_judged_unjudgeable_keeps_nothing_spec_commits_4() {
     assert!(matches!(lp.peers[1].receive(&bytes, Vec::new()).unwrap(), Ingested::Pending(_, Reason::Drift)));
     lp.peers[1].clock.advance(2 * MAX_DRIFT_MS);
     lp.peers[1].tick().unwrap();
-    assert!(lp.peers[1].engine.pending().is_empty(), "thrown out once judged");
-    assert_eq!(lp.peers[1].redelivered, 1, "its carrier delivered again, to await");
+    assert!(lp.peers[1].engine.pending().iter().any(|(c, r)| *c == id && matches!(r, Reason::UnknownCreated(x) if *x == h)), "awaits h's record");
     assert!(!lp.peers[1].engine.commit_ids().contains(&id));
     for pk in packages(&mut lp, 0).into_iter().filter(|pk| pk.id != id) {
         lp.deliver(1, &pk).unwrap();
     }
-    assert!(lp.peers[1].engine.commit_ids().contains(&id), "fetched again with the record");
+    assert!(lp.peers[1].engine.commit_ids().contains(&id), "applied with the record: {:?}", lp.peers[1].engine.pending());
     assert_eq!(lp.peers[1].engine.get(&h, &ak("t:reg.0")).unwrap(), Some(s("h")));
 }
 
 // spec/commits.md §4 Unjudgeable: a commit pending for its linked aspect list, on a thing whose
-// record is unknown, holds nothing once the pages resolve its header: no byte of it stays, and it
-// applies when the record comes.
+// record is unknown, pends for the record once the pages resolve its header, and applies when
+// the record comes.
 #[test]
-fn pending_for_pages_then_unjudgeable_keeps_nothing_spec_commits_4() {
+fn pending_for_pages_then_unjudgeable_awaits_its_record_spec_commits_4() {
     use crate::common::*;
     let mut lp = net(2, 0);
     for pk in packages(&mut lp, 0) {
@@ -639,12 +638,12 @@ fn pending_for_pages_then_unjudgeable_keeps_nothing_spec_commits_4() {
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
     assert!(matches!(lp.peers[1].receive(&pk.bytes, Vec::new()).unwrap(), Ingested::Pending(_, Reason::WaitBlobs)));
-    assert!(matches!(lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap(), Ingested::Awaits(..)));
-    assert!(lp.peers[1].engine.pending().is_empty(), "thrown out once its header resolves");
+    assert!(matches!(lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap(), Ingested::Pending(_, osis_engine::Reason::MissingChain(_) | osis_engine::Reason::UnknownCreated(_))));
+    assert!(lp.peers[1].engine.pending().iter().any(|(c, r)| *c == id && matches!(r, Reason::UnknownCreated(x) if *x == h)), "awaits h's record once its header resolves");
     for pk in packages(&mut lp, 0).into_iter().filter(|pk| pk.id != id) {
         lp.deliver(1, &pk).unwrap();
     }
-    assert!(lp.peers[1].engine.commit_ids().contains(&id), "fetched again with the record");
+    assert!(lp.peers[1].engine.commit_ids().contains(&id), "applied with the record");
     assert_eq!(lp.peers[1].engine.get(&h, &a).unwrap(), Some(s("v")));
 }
 

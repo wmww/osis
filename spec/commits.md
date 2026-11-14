@@ -78,19 +78,19 @@ Encoding: spec/wire.md §4. Fields:
   - it is parked (spec/versioning.md §2);
   - its author is an account and the rotation minting the epoch it names is not held (spec/permissions.md §5.5);
   - its `ts` is more than `MAX_DRIFT` ahead (spec/crdt.md §2.2);
-  - a header list or frontier given by link (spec/wire.md §4) is not resolved.
+  - a header list or frontier given by link (spec/wire.md §4) is not resolved;
+  - it is unjudgeable (Unjudgeable).
 
   Nothing else makes it pending: what its parts wait for never holds its header (Apply).
 - **Pending storage**: a pending commit, and a held part that waits, is kept only while the node holds something carrying its commit: an entry of it under a sync ID, an inbox blob carrying it or its author's chain (spec/sync-judgement.md §1), or the newest stranded report on a sync ID naming a current holder whose keys carry it (spec/permissions.md §4). With none left it counts as never received until a carrier brings it again. Unstamped entries that give the node nothing held (unopened, parked, unjudgeable, their commit pending, or their commit known only for a part dropped as invalid, spec/permissions.md §6) count against its local bounds on unvouched input per sync ID and source; past them it keeps neither the entry nor what pends from it or is known of its commit, and reports that to the app.
-- **Unjudgeable**: a node keeps no part it cannot judge and keeps what it needs to fetch what judges it.
-  - A commit is unjudgeable while its author's or actor's `created.0` record is unknown; so is a held part while its thing's record or a record on its thing's chain (spec/permissions.md §1) is unknown, or the author is not on that chain and no path of record edges and grants leads from the author to it: a grant is an applied part's edge write putting a grant, whether the walk applies it or not; a removal leads nowhere.
-  - No byte of such a commit or part is kept past the pass that fetched it, whether its commit applies or pends: a pending commit's stored copy and every received blob holding the part go without it. A node judges one pass's fetch together: commits carrying `created.0` first, then role commits by `ts`; it discards only what is still unjudgeable at the end of the pass.
-  - Before discarding, the node reads the `secrets.0` boxes of what it opened (spec/crypto.md Reading-only secrets). Nothing else of it stays but which record the blob awaits.
-  - The node fetches a discarded commit or part again when what it awaits arrives; it is judged afresh and may await the next record.
-  - A commit with every held part unjudgeable holds nothing and is not applied, whatever would make it pending; a commit with some other part applies, the unjudgeable part counting as never received until it is fetched again.
+- **Unjudgeable**: a commit is unjudgeable while its author's or actor's `created.0` record is unknown, or while every held part of it is; a held part is unjudgeable while its thing's record or a record on its thing's chain (spec/permissions.md §1) is unknown, or the author is not on that chain and no path of record edges and grants leads from the author to it: a grant is an applied part's edge write putting a grant, whether the walk applies it or not; a removal leads nowhere.
+  - An unjudgeable commit pends, kept under Pending storage with its unjudgeable parts and its signature's verdict, and is examined again when what it awaits arrives (a record, an edge write leading to it); it may then await the next. A pending commit's unjudgeable parts stay in its stored copy.
+  - A copy of a part that hashes to its header entry, under its thing's record held or the record the part itself carries, replaces a stored first copy of that slot that does not.
+  - A part of an applied commit that is unjudgeable is not kept: it counts as never received, and the node keeps which record it awaits and fetches it again when that arrives; it is judged afresh.
+  - The node reads the `secrets.0` boxes of what it opened (spec/crypto.md Reading-only secrets).
   - A commit that awaits and whose expiry passes counts as never received, as for a node it never reached: it flags nothing (spec/permissions.md §4 Suspect), and the entry shows nothing here until a writer compacts.
   - A commit that awaits is as if it had not arrived: a deletion decided meanwhile (a covering snapshot's author dropped by it, a body removed) stands, and the deleted body counts as never received until it is fetched again.
-  - **Limits**: an insider can exhaust the reading-only budget and delay honest grants until its entries leave. A hostile writer with a k-aspect blob can cause k refetches by publishing k records one at a time.
+  - **Limits**: an insider can exhaust the reading-only budget and delay honest grants until its entries leave. A hostile writer with a k-aspect blob can cause k examinations by publishing k records one at a time. What a peer makes pend is bounded by the bounds on unvouched input per source (Pending storage), never by evicting another source's.
 
   A commit with no part held, or whose every held part waits, applies as its header alone, and counts as a commit on each aspect its header lists.
 - A held **part waits** while any of these holds:

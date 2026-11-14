@@ -26,7 +26,7 @@ pub(crate) mod rows;
 mod follow;
 
 pub use follow::Follow;
-pub(crate) use follow::awaits;
+pub(crate) use follow::{pends, release};
 pub use path::{Behind, Cred};
 pub use rows::{Source, Tombstone, Usage};
 
@@ -479,6 +479,38 @@ impl Store {
     /// flag changed (`(S, blob)`, in order; one undone comes too and reads absent).
     pub fn entry_feed(&self) -> osis_base::memo::Feed<(SyncId, BlobId)> {
         self.lock().mem.fed.feed()
+    }
+
+    /// A cursor over the blobs no entry names any more, from now on (an entry removed, expired or
+    /// shredded; one named again since comes too: the reader checks `named`).
+    pub fn unnamed_feed(&self) -> osis_base::memo::Feed<BlobId> {
+        self.lock().mem.unnamed.feed()
+    }
+
+    /// Whether an entry under any sync ID names blob `b` (durable or in memory).
+    pub fn named(&self, b: &BlobId) -> Result<bool> {
+        let mut g = self.lock();
+        if g.mem.by_blob.contains_key(b) {
+            return Ok(true);
+        }
+        g.read(|t, _| Ok(!t.scan_local(&[rows::BY_BLOB, &b.0].concat(), b"", 1)?.is_empty()))
+    }
+
+    /// The sync IDs whose entries name blob `b` (durable or in memory).
+    pub fn naming(&self, b: &BlobId) -> Result<Vec<SyncId>> {
+        let mut g = self.lock();
+        let mut out: Vec<SyncId> = g.mem.by_blob.get(b).into_iter().flatten().copied().collect();
+        let durable = g.read(|t, _| {
+            let mut v = Vec::new();
+            for (k, _) in t.scan_local(&[rows::BY_BLOB, &b.0].concat(), b"", usize::MAX)? {
+                v.push(SyncId(k.get(k.len().saturating_sub(16)..).and_then(|x| x.try_into().ok()).unwrap_or_default()));
+            }
+            Ok(v)
+        })?;
+        out.extend(durable);
+        out.sort();
+        out.dedup();
+        Ok(out)
     }
 
     /// A cursor over the sync IDs shredded from now on (`shred`).
