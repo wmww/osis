@@ -509,13 +509,13 @@ impl Store {
             return Ok(Code::EXPIRED);
         }
         let charged = if e.stamp.is_none() { from } else { None };
-        let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: e.deposited, own: e.own, role: e.role, class, expires, size: 0, charged };
+        let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: e.deposited, own: e.own, role: e.role, class, expires, size: 0, charged, elsewhere: false };
         if class == Class::Ephemeral {
             if g.mem.tombstoned(s, &b) {
                 return Ok(Code::TOMBSTONED);
             }
             if let Some(old) = g.mem.read(s, &b).cloned() {
-                let new = EntryRow { size: old.size, charged: if e.stamp.is_some() { None } else { old.charged }, own: old.own || e.own, role: old.role || e.role, ..row };
+                let new = EntryRow { size: old.size, charged: if e.stamp.is_some() { None } else { old.charged }, own: old.own || e.own, role: old.role || e.role, elsewhere: old.elsewhere, ..row };
                 g.mem.change(s, &b, new);
                 return Ok(Code::OK);
             }
@@ -553,7 +553,7 @@ impl Store {
                         entries::bytes_arrived(t, env, &b)?;
                     }
                     let old = entries::get(t, s, &b)?.unwrap_or(old);
-                    let new = EntryRow { size: old.size, role: old.role || e.role, charged: if e.stamp.is_some() { None } else { old.charged }, own: old.own || e.own, ..row };
+                    let new = EntryRow { size: old.size, role: old.role || e.role, charged: if e.stamp.is_some() { None } else { old.charged }, own: old.own || e.own, elsewhere: old.elsewhere, ..row };
                     entries::change(t, env, s, &b, &old, new)?;
                 }
                 None => entries::insert(t, env, s, &b, row, bytes)?,
@@ -593,6 +593,37 @@ impl Store {
         g.write(|t, env| match entries::get(t, s, b)? {
             Some(old) => entries::change(t, env, s, b, &old.clone(), EntryRow { charged: None, ..old }),
             None => Ok(()),
+        })
+    }
+
+    /// Where this node's log first held entry `b` of S (spec/sync-status.md §2: a source reporting
+    /// a position at or past it holds it); `None` with none in the log (an ephemeral entry).
+    pub fn first_logged(&self, s: &SyncId, b: &BlobId) -> Result<Option<Position>> {
+        self.lock().read(|t, _| Ok(t.log_entry_first(s, b)?))
+    }
+
+    /// Whether a source was recorded holding entry `b` of S (`set_elsewhere`).
+    pub fn elsewhere(&self, s: &SyncId, b: &BlobId) -> Result<bool> {
+        let mut g = self.lock();
+        if let Some(r) = g.mem.read(s, b) {
+            return Ok(r.elsewhere);
+        }
+        g.read(|t, _| Ok(entries::get(t, s, b)?.is_some_and(|r| r.elsewhere)))
+    }
+
+    /// Records that a source holds entry `b` of S (spec/sync-status.md §2: durable, kept while the
+    /// entry is). Nothing for an entry not held.
+    pub fn set_elsewhere(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        let mut g = self.lock();
+        if let Some(old) = g.mem.read(s, b).cloned() {
+            if !old.elsewhere {
+                g.mem.change(s, b, EntryRow { elsewhere: true, ..old });
+            }
+            return Ok(());
+        }
+        g.write(|t, env| match entries::get(t, s, b)? {
+            Some(old) if !old.elsewhere => entries::change(t, env, s, b, &old.clone(), EntryRow { elsewhere: true, ..old }),
+            _ => Ok(()),
         })
     }
 
@@ -643,14 +674,14 @@ impl Store {
             Ok(r) => r,
             Err(c) => return Ok(c),
         };
-        let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: false, own: false, role, class, expires, size: 0, charged: None };
+        let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: false, own: false, role, class, expires, size: 0, charged: None, elsewhere: false };
         if class == Class::Ephemeral {
             if g.mem.tombstoned(s, &b) {
                 return Ok(Code::TOMBSTONED);
             }
             if let Some(old) = g.mem.read(s, &b).cloned() {
                 if old.stamp.is_none() {
-                    g.mem.change(s, &b, EntryRow { size: old.size, own: old.own, ..row });
+                    g.mem.change(s, &b, EntryRow { size: old.size, own: old.own, elsewhere: old.elsewhere, ..row });
                 }
                 return Ok(Code::OK);
             }
@@ -663,7 +694,7 @@ impl Store {
         g.write(|t, env| {
             if let Some(old) = entries::get(t, s, &b)? {
                 if old.stamp.is_none() {
-                    entries::change(t, env, s, &b, &old.clone(), EntryRow { size: old.size, own: old.own, ..row })?;
+                    entries::change(t, env, s, &b, &old.clone(), EntryRow { size: old.size, own: old.own, elsewhere: old.elsewhere, ..row })?;
                 }
                 return Ok(Code::OK);
             }
@@ -720,7 +751,7 @@ impl Store {
             Ok(r) => r,
             Err(c) => return Ok(c),
         };
-        let row = EntryRow { wrap: d.wrap, stamp: None, deposited: true, own: false, role, class, expires, size: 0, charged: from };
+        let row = EntryRow { wrap: d.wrap, stamp: None, deposited: true, own: false, role, class, expires, size: 0, charged: from, elsewhere: false };
         let caps = holding == Holding::Unread && !role;
         if class == Class::Ephemeral {
             if caps && !mem_room(&mut g, &s, size, now) {

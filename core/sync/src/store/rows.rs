@@ -196,11 +196,13 @@ pub(crate) struct EntryRow {
     pub size: u64,
     /// Charged to this source (spec/sync-ids.md §5 Peer budget) while it gives nothing held.
     pub charged: Option<Source>,
+    /// A source showed holding it (spec/sync-status.md §2 Held elsewhere): kept while the entry is.
+    pub elsewhere: bool,
 }
 
 impl EntryRow {
     pub(crate) fn encode(&self) -> Vec<u8> {
-        let flags = u8::from(self.stamp.is_some()) | u8::from(self.deposited) << 1 | u8::from(self.own) << 2 | u8::from(self.role) << 3;
+        let flags = u8::from(self.stamp.is_some()) | u8::from(self.deposited) << 1 | u8::from(self.own) << 2 | u8::from(self.role) << 3 | u8::from(self.elsewhere) << 4;
         let mut w = W::default().raw(&self.wrap).u8(flags);
         if let Some(st) = &self.stamp {
             w = w.raw(&st.0);
@@ -233,7 +235,7 @@ impl EntryRow {
             _ => return Err(corrupt()),
         };
         r.end()?;
-        Ok(EntryRow { wrap, stamp, deposited: flags & 2 != 0, own: flags & 4 != 0, role: flags & 8 != 0, class, expires: (t != 0).then_some(WallMs(t)), size, charged })
+        Ok(EntryRow { wrap, stamp, deposited: flags & 2 != 0, own: flags & 4 != 0, role: flags & 8 != 0, elsewhere: flags & 16 != 0, class, expires: (t != 0).then_some(WallMs(t)), size, charged })
     }
 }
 
