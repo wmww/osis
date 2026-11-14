@@ -1699,7 +1699,9 @@ impl Engine {
                 }
                 Ok(progressed)
             })?;
-            if !progressed {
+            // a commit examined again may now await a record kept loose (`set_pending` named it
+            // due): learned at the next round's `promote_loose`, though nothing applied
+            if !progressed && !self.core.waits.loose.has_due() {
                 return Ok(());
             }
         }

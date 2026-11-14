@@ -1569,3 +1569,37 @@ fn a_new_grant_copy_lists_in_proportion_to_change_spec_sync_inbox_5() {
     };
     crate::scale::flat("grant copies listed", listed(3), listed(30));
 }
+
+// spec/commits.md §4 (Records: learned once something awaits it; Examined again): a pending
+// commit that, examined again for one record arriving, comes to await a second record kept
+// loose learns that one too, in the same `reexamine`, whichever record it awaits first.
+#[test]
+fn a_loose_record_awaited_after_another_arrives_is_learned_spec_commits_4() {
+    for loose_author in [false, true] {
+        let mut lp = crate::common::net_bare(2, 5);
+        let a = lp.peers[0].engine.create_account().unwrap().0.account;
+        let b = lp.peers[1].engine.create_account().unwrap().0.account;
+        let t = thing_of(&mut lp, 0, a);
+        lp.peers[0].engine.give_own_secrets(&t).unwrap();
+        let s0 = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+        let u = thing_of(&mut lp, 1, b);
+        let rb = lp.peers[1].engine.core.created(&b).cloned().unwrap();
+        let ru = lp.peers[1].engine.core.created(&u).cloned().unwrap();
+        let (loose, later) = if loose_author { (rb.clone(), ru.clone()) } else { (ru.clone(), rb.clone()) };
+        let mut m = Mutation::new();
+        m.set(u, &REG, &s("later")).unwrap();
+        let c = lp.peers[1].engine.commit(m).unwrap().unwrap();
+        let cb = lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap();
+        // the commit first, awaiting `later`'s record (the loose one is not yet known here)
+        lp.peers[0].engine.ingest(&cb, Vec::new()).unwrap();
+        let first = lp.peers[0].engine.pending().into_iter().find(|(x, _)| *x == c).map(|x| x.1);
+        let (id, bytes, wrap) = record_blob_by_hand(&mut lp, 0, &t, std::slice::from_ref(&loose));
+        lp.peers[0].engine.open_entry(&s0, &id, &wrap, &bytes).unwrap();
+        if lp.peers[0].engine.core.created(&loose.tid()).is_some() {
+            continue; // the commit awaited the loose one first: learned at once (the other test)
+        }
+        assert!(lp.peers[0].engine.carries_loose(&id), "loose: {first:?}");
+        lp.peers[0].engine.learn_records(vec![later.clone()]).unwrap();
+        assert_eq!(lp.peers[0].engine.core.created(&loose.tid()), Some(&loose), "loose_author {loose_author}: awaited once {:?} arrived, now {:?}", later.tid(), lp.peers[0].engine.pending().into_iter().find(|(x, _)| *x == c));
+    }
+}
