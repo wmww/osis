@@ -300,6 +300,14 @@ impl Engine {
         }
     }
 
+    /// Opens inbox blob `bytes` under whichever inbox here opens it, taking nothing (tests: what
+    /// a recipient learns from it).
+    #[doc(hidden)]
+    pub fn open_inbox_blob(&mut self, bytes: &[u8]) -> Option<Inbox> {
+        let ids: Vec<SyncId> = self.inbox_actors().keys().copied().collect();
+        ids.iter().find_map(|s| self.open_inbox_bytes(s, bytes)).map(|(_, _, i)| i)
+    }
+
     /// Takes inbox blob `bytes` under whichever inbox here opens it (tests: an inbox blob carried
     /// by hand, as sync would take it).
     #[doc(hidden)]
