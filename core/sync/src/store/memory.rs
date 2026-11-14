@@ -42,6 +42,9 @@ pub(crate) struct Memory {
     /// Those rows by when they were written: they end after `TOMBSTONE_LIFETIME` as a record's do.
     pub conn_aging: BTreeSet<(WallMs, ConnRow)>,
     pub stamps: Stamps,
+    /// Every entry added, or whose wrap, stamp or deposited flag changed, durable or in memory:
+    /// a `Feed<(SyncId, BlobId)>` over it is a reader's cursor of entries to judge (inbox).
+    pub fed: Stamps,
 }
 
 impl Memory {
@@ -114,6 +117,7 @@ impl Memory {
         self.entries.insert((*s, *b), row);
         self.event(s, b, None);
         self.moved(s, b);
+        self.fed.wrote_added(&(*s, *b), true, true);
     }
 
     /// Replaces an entry's row (its wrap, stamp, flags, charge).
@@ -125,6 +129,7 @@ impl Memory {
         self.entries.insert((*s, *b), new);
         if seen {
             self.event(s, b, None);
+            self.fed.wrote_added(&(*s, *b), true, true);
         }
         self.moved(s, b);
     }

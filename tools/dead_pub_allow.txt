@@ -29,7 +29,6 @@ osis-transport::set_max_steps  test hook: scheduler step cap
 
 osis-engine::body_min_ts  deferred: durable-compaction/chunk-blind (retention/bounds.rs)
 
-osis-base::DEPOSITS_WAITING_BYTES  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-commit::decode_record_blob  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-commit::encode_record_blob  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-crypto::connection_order  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -263,20 +262,23 @@ osis-engine::blob_parts  deferred: sync rebuild skeleton (issues/sync-rewrite.md
 osis-engine::delivery_taken  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::held_elsewhere  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::inbox_blob  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
+osis-engine::covers_departures  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
+osis-engine::fall_mark  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
+osis-engine::forget_destroyed  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::invitations  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::note_complete_pass  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::own_commits  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::promotable  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::take_inbox  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
+osis-engine::read_credentials  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
+osis-engine::seal_body  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
+osis-engine::sync_bodies  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::waiting_held_elsewhere  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::agreed  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); streams gates its Pull on it (spec/sync-opens.md §3)
 osis-sync::ItemAnswer  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-sync::take_delete  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::take_deposit  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-sync::take_register  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::take_stamped  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-sync::proofs_done  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); opens refuses a Resume before the proofs with it
 osis-sync::clock_offset  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); status reports a large offset as a diagnostic (spec/sync-streams.md §1)
 osis-store::record_rows  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a module's rows in a peer record (streams' known, read's deletes owed)
 osis-sync::read_memory  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); streams' call (the log's memory part)
@@ -288,7 +290,6 @@ osis-sync::uncharge  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); re
 osis-sync::with_tx  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); opens' and streams' record rows
 osis-sync::take_delete  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
 osis-sync::take_deposit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
-osis-sync::take_register  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
 osis-sync::take_stamped  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
-osis-sync::ItemAnswer  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
+osis-sync::dial_hints  deferred: the driver's dial candidates read it (notes/sync-boundary.md, driver)

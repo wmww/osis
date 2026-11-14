@@ -16,7 +16,7 @@
 use crate::inbox::Inbox;
 use crate::opens::{Moved, Opens};
 use crate::read::Read;
-use crate::session::{Session, Sessions, To};
+use crate::session::{Incoming, Session, Sessions, To};
 use crate::status::{Status, StatusView};
 use crate::store::Store;
 use crate::streams::Streams;
@@ -175,11 +175,14 @@ impl Node {
                 for m in ms {
                     let mut cx = cx!(self, out);
                     let sessions = &mut self.driver.sessions;
+                    if matches!(m, Incoming::Proved) {
+                        self.inbox.proved(conn, &crate::inbox::Links { sessions, opens: &self.opens, streams: &self.streams });
+                    }
                     match m.to() {
                         Some(To::Opens) => self.opens.on_message(&mut cx, sessions, &self.unread, conn, m, &mut moved),
                         Some(To::Streams) => self.streams.on_message(&mut cx, sessions, &self.opens, conn, m),
                         Some(To::Read) => self.read.on_message(&mut cx, sessions, conn, m),
-                        Some(To::Inbox) => self.inbox.on_message(&mut cx, sessions, conn, m),
+                        Some(To::Inbox) => self.inbox.on_message(&mut cx, sessions, &self.opens, &self.streams, conn, m),
                         None => {
                             close = true;
                             break;
@@ -204,6 +207,7 @@ impl Node {
     fn moved(&mut self, moved: &mut Vec<Moved>, out: &mut Vec<Out>) {
         let mut cx = cx!(self, out);
         for m in moved.drain(..) {
+            self.inbox.moved(&m, &crate::inbox::Links { sessions: &mut self.driver.sessions, opens: &self.opens, streams: &self.streams });
             self.streams.moved(&mut cx, &mut self.driver.sessions, m);
         }
     }
@@ -218,6 +222,7 @@ impl Node {
         let mut moved = Vec::new();
         self.opens.on_closed(&mut cx!(self, out), conn, &mut moved);
         self.moved(&mut moved, out);
+        self.inbox.on_closed(conn);
         // a store failure here reopens the node, whose start drops the same entries
         let _ = self.store.gone(crate::store::Source::Conn(conn));
     }

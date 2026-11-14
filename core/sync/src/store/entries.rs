@@ -31,7 +31,7 @@ pub(crate) fn get(t: &mut Transaction<'_>, s: &SyncId, b: &BlobId) -> Result<Opt
 }
 
 pub(crate) fn to_entry(b: BlobId, r: &EntryRow) -> Entry {
-    Entry { blob: b, wrap: r.wrap, stamp: r.stamp, deposited: r.deposited, own: r.own, class: r.class, expires: r.expires }
+    Entry { blob: b, wrap: r.wrap, stamp: r.stamp, deposited: r.deposited, own: r.own, role: r.role, class: r.class, expires: r.expires }
 }
 
 pub(crate) fn tombstone(t: &mut Transaction<'_>, s: &SyncId, b: &BlobId) -> Result<Option<Tombstone>> {
@@ -150,6 +150,10 @@ pub(crate) fn insert(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
     if let Some(at) = row.expires {
         t.put_local(&rows::expiry_key(at, s, b), &[], Shred::No)?;
     }
+    if row.deposited {
+        t.put_local(&rows::deposited_key(s, b), &[], Shred::No)?;
+    }
+    env.mem.fed.wrote_added(&(*s, *b), true, true);
     charge(t, &row, s, b, true)?;
     add_usage(t, env, s, |u| count(u, &row, true))?;
     if row.size > 0 {
@@ -174,7 +178,15 @@ pub(crate) fn change(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
         count(u, &new, true);
     })?;
     t.put_local(&rows::entry_key(s, b), &new.encode(), Shred::Yes)?;
+    match (old.deposited, new.deposited) {
+        (false, true) => t.put_local(&rows::deposited_key(s, b), &[], Shred::No)?,
+        (true, false) => drop(t.remove_local(&rows::deposited_key(s, b), Shred::No)?),
+        _ => {}
+    }
     let seen = (old.wrap, old.stamp, old.deposited) != (new.wrap, new.stamp, new.deposited);
+    if seen {
+        env.mem.fed.wrote_added(&(*s, *b), true, true);
+    }
     if seen && new.size > 0 {
         t.log_added(*s, *b)?;
     }
@@ -190,6 +202,9 @@ pub(crate) fn remove(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
         t.remove_local(&rows::by_blob_key(b, s), Shred::No)?;
         if let Some(at) = row.expires {
             t.remove_local(&rows::expiry_key(at, s, b), Shred::No)?;
+        }
+        if row.deposited {
+            t.remove_local(&rows::deposited_key(s, b), Shred::No)?;
         }
         charge(t, row, s, b, false)?;
         add_usage(t, env, s, |u| count(u, row, false))?;

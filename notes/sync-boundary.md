@@ -18,7 +18,7 @@ pub use osis_engine::sync::{Holding, Path, Wrap};   // Holding { Read, Unread }:
 pub use osis_store::RecordId;
 pub enum SourceClass { Store, Reader }         // spec/sync-opens.md §4
 pub enum Credential { ReadSecret(Epoch), SyncKey, SyncProof, Claim, Static([u8; 32]), Deposit, J }
-pub struct Entry { pub blob: BlobId, pub wrap: Wrap, pub stamp: Option<Signature>, pub deposited: bool, pub own: bool, pub class: Class, pub expires: Option<WallMs> }
+pub struct Entry { pub blob: BlobId, pub wrap: Wrap, pub stamp: Option<Signature>, pub deposited: bool, pub own: bool, pub role: bool, pub class: Class, pub expires: Option<WallMs> }   // role: signed under the role-entry domain
 pub enum SourceEvent { Present(Entry), Gone(BlobId), Head(Step), Full(bool), Refused(BlobId, Code) }
 pub enum Input { .. }                          // The step, below
 pub enum Out { Send(ConnId, Vec<u8>), Dial(ConnId, Address), Close(ConnId), Wake(WallMs) }
@@ -121,6 +121,9 @@ impl Store {   // Clone: a handle
     pub fn holding(&self, s: &SyncId) -> Option<Holding>;
     pub fn entry(&self, s: &SyncId, b: &BlobId) -> Result<Option<Entry>>;
     pub fn entries(&self, s: &SyncId) -> Result<Vec<Entry>>;          // durable then ephemeral (memo-safe)
+    pub fn deposits(&self, s: &SyncId) -> Result<Vec<Entry>>; pub fn all_deposits(&self) -> Result<Vec<(SyncId, Entry)>>;  // the deposited index (`D/`)
+    pub fn entry_feed(&self) -> Feed<(SyncId, BlobId)>;   // entries added, or whose wrap, stamp or deposited flag changed
+    pub fn blob_len(&self, b: &BlobId) -> Result<Option<u64>>;
     pub fn bytes(&self, b: &BlobId) -> Result<Option<Vec<u8>>>;
     pub fn tombstone(&self, s: &SyncId, b: &BlobId) -> Result<Option<Tombstone>>;   // { at, deleted, note }
     pub fn usage(&self, s: &SyncId) -> Result<(Usage, Usage)>;        // durable, memory
@@ -191,14 +194,19 @@ impl Streams {
     pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens) -> Result<bool>;
 }
 ```
-**7. `inbox`: inbox, deposits, steps and Register** (spec/sync-inbox.md, spec/sync-ids.md §6 Steps). State: per delivery its re-sends; Deposit items in flight and back-offs; Register attempts per (source, S); stranded notices sent. Depends on engine (deliveries, inbox blobs, taking, promotion, keys), store, opens, streams.
+**7. `inbox`: inbox, deposits, steps and Register** (spec/sync-inbox.md, spec/sync-ids.md §6 Steps and Register). Parts: `deliveries` (inbox blobs owed: logged stamped by a writer of the inbox, else deposited and offered; sealed again at the blob's expiry, a timer per delivery, or when the inbox moved; stopped once seen taken, by the engine's commit sign or an open of a named sync ID with the recipient proven), `offers` (Deposit items: one out per connection, refused for now backed off, one taken ends the others' back-off at that peer and S, 14 parked until the deposit key moves or the next filter), `held` (every entry through the store's entry feed: inbox blobs taken and stamped in place, deposits promoted, own deposits offered to store sources, clearing past `DEPOSITS_WAITING`), `register` (recorded steps after a store source's step, each once its stream showed the step's role commits), `serve` (Register, Delete, Stranded, Suspect), `links` (redeem kept durably until the join is held elsewhere). Durable: store rows `I/d/` (per delivery the blob sent and the open seen) and `I/r/` (links being redeemed, shredded). Seams: `inbox::Ground` (the engine calls it makes; `Eng` the product's) and `inbox::Net` (sessions, opens, streams; `Links` the product's), so tests/it/inbox.rs runs it on fakes over a real store.
 ```rust
 impl Inbox {
     pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams) -> Result<bool>;
-    pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, conn: ConnId, m: Incoming);  // Deposit and Register answers (ItemAnswer each)
-    pub fn redeem(&mut self, cx: &mut Cx, link: &Link) -> Waiting;             // first contact
+    pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, conn: ConnId, m: Incoming);  // requests Register/Delete/Stranded/Suspect; Shared and Register answers
+    pub fn proved(&mut self, conn: ConnId, net: &impl Net);   // driver, on Proved
+    pub fn moved(&mut self, m: &Moved, net: &impl Net);       // driver, beside streams
+    pub fn on_closed(&mut self, conn: ConnId);
+    pub fn redeem(&mut self, cx: &mut Cx, link: &ShareLink) -> Waiting;   // first contact
+    pub fn dial_hints(&self) -> BTreeSet<DialHint>;          // the driver's dial candidates
 }
 ```
+Engine calls `Ground` needs beyond the facade's table (each `NotBuilt` in `Eng`): `delivery_names(c, holder)` (the sync IDs the blob names), `signers(s, actor)` (stamp, deposit and delete keys of S's head; the deposit key from `actor`'s seed for another's inbox), `blob_commit(s, b)`, `log_chain(s, certs)` (a promotion's certificate copies), `step_needs(s, step)` (the blob IDs of the role commits a step's epochs depend on), `held_elsewhere(c)` (an own commit held at a source: status's). Not built: Stranded and Suspect are answered Ok and acted on by nobody (spec/permissions.md §4); clearing at sources keeping S unread (needs streams' `known` with the deposited flag); a decline stamping in place; `Net::filter_generation` (opens), so a refused Deposit item waits for a new deposit key only. `held` calls `take_inbox` inside an `Effects` settle (a command judged again as what it read moves): if the engine refuses writes there, the facade needs a pure judgement beside it.
 **8. `status`** (spec/sync-status.md). State: complete passes begun per S; held-elsewhere reports (durable, kept while the entry is). Depends on opens, streams, read, engine.
 ```rust
 impl Status {

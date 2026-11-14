@@ -119,7 +119,7 @@ fn wrap(n: u8) -> [u8; WRAP_LEN] {
 fn stamped(s: &Sid, b: BlobId, role: bool) -> Entry {
     let w = wrap(1);
     let stamp = osis_label::sign_stamp(&s.write_key(), &s.id, &b, &w, role);
-    Entry { blob: b, wrap: w, stamp: Some(stamp), deposited: false, own: false, class: Class::Durable, expires: None }
+    Entry { blob: b, wrap: w, stamp: Some(stamp), deposited: false, own: false, role, class: Class::Durable, expires: None }
 }
 
 fn deposit(s: &Sid, bytes: &[u8], role: bool) -> DepositItem {
@@ -450,7 +450,7 @@ fn peer_budget_spec_sync_ids_5() {
     let mut st = Dev::new().open();
     st.set_sync_set(&holding(&[(&r, Holding::Read)]));
     st.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), 1500)]), ..Caps::default() });
-    let unstamped = |b| Entry { blob: b, wrap: wrap(3), stamp: None, deposited: true, own: false, class: Class::Durable, expires: None };
+    let unstamped = |b| Entry { blob: b, wrap: wrap(3), stamp: None, deposited: true, own: false, role: false, class: Class::Durable, expires: None };
     let c = Source::Conn(ConnId(3));
     assert_eq!(st.log(&r.id, unstamped(b1), Some(x1), Some(c)).unwrap(), Code::OK);
     let (b2, x2) = blob(1001, Class::Durable, None, &[]);
@@ -585,7 +585,7 @@ fn bytes_once_per_node_spec_sync_ids_5() {
     let mut st = dev.open();
     st.set_sync_set(&holding(&[(&s1, Holding::Read), (&s2, Holding::Read)]));
     let (b, x) = blob(100, Class::Durable, None, &[]);
-    let e = Entry { blob: b, wrap: wrap(1), stamp: None, deposited: false, own: true, class: Class::Durable, expires: None };
+    let e = Entry { blob: b, wrap: wrap(1), stamp: None, deposited: false, own: true, role: false, class: Class::Durable, expires: None };
     assert_eq!(st.log(&s2.id, e.clone(), None, None).unwrap(), Code::OK);
     assert!(events_of(&st, &s2.id).is_empty(), "no bytes: not servable");
     assert_eq!(st.log(&s1.id, e.clone(), Some(x.clone()), None).unwrap(), Code::OK);
@@ -662,7 +662,7 @@ fn caps_govern_unread_and_the_largest_gives_way_spec_sync_ids_6() {
     assert!(st.tombstone(&s1.id, &first).unwrap().is_none(), "with no tombstone");
     // a read sync ID takes nothing from the room
     let (rb, rx) = blob(9000, Class::Durable, None, &[]);
-    let e = Entry { blob: rb, wrap: wrap(1), stamp: None, deposited: false, own: true, class: Class::Durable, expires: None };
+    let e = Entry { blob: rb, wrap: wrap(1), stamp: None, deposited: false, own: true, role: false, class: Class::Durable, expires: None };
     assert_eq!(st.log(&r.id, e, Some(rx), None).unwrap(), Code::OK);
     assert_eq!(st.entries(&s1.id).unwrap().len(), 3);
     let (eb, ex) = blob(1600, Class::Ephemeral, Some(MAX_DRIFT_MS), &[]);
@@ -1007,4 +1007,27 @@ fn store_values_are_due_when_their_rows_move() {
     let (c1, cs1) = s.rotate(60);
     st.take_register(&s.id, &c1, Some(&cs1)).unwrap();
     assert_eq!(heads.due(), [s.id], "a Register moved the head");
+}
+
+// spec: none (internal: notes/sync-boundary.md, store). The deposited index and the entry feed
+// follow every entry's flags: a deposit is listed until stamped or removed, durably; the feed
+// gives each entry added or changed, once per change.
+#[test]
+fn deposited_index_and_entry_feed_follow_entries() {
+    let dev = Dev::new();
+    let s = Sid::new(10);
+    let mut st = dev.open();
+    st.set_sync_set(&holding(&[(&s, Holding::Read)]));
+    let mut feed = st.entry_feed();
+    let (b, bytes) = blob(40, Class::Durable, None, &[]);
+    let e = Entry { blob: b, wrap: wrap(3), stamp: None, deposited: true, own: false, role: false, class: Class::Durable, expires: None };
+    assert_eq!(st.log(&s.id, e.clone(), Some(bytes), None).unwrap(), Code::OK);
+    assert_eq!(st.deposits(&s.id).unwrap().iter().map(|e| e.blob).collect::<Vec<_>>(), vec![b]);
+    assert_eq!(feed.added(), vec![(s.id, b)]);
+    assert_eq!(dev.open().all_deposits().unwrap().len(), 1, "durable");
+    st.log(&s.id, stamped(&s, b, false), None, None).unwrap();
+    assert!(st.deposits(&s.id).unwrap().is_empty() && dev.open().all_deposits().unwrap().is_empty());
+    assert_eq!(feed.added(), vec![(s.id, b)], "stamped: changed");
+    st.log(&s.id, stamped(&s, b, false), None, None).unwrap();
+    assert!(feed.added().is_empty(), "no change, nothing fed");
 }

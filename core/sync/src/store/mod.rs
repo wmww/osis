@@ -381,6 +381,54 @@ impl Store {
         Ok(out)
     }
 
+    /// The deposited (unstamped) entries of S, durable then ephemeral (stamped reads). O(S's
+    /// deposits), which its deposit budget and the peer budgets bound.
+    pub fn deposits(&self, s: &SyncId) -> Result<Vec<Entry>> {
+        let mut g = self.lock();
+        let mut out = g.read(|t, _| {
+            let mut out = Vec::new();
+            for (k, _) in t.scan_local(&[rows::DEPOSITED, &s.0].concat(), b"", usize::MAX)? {
+                let (_, b) = rows::tail_ids(&k)?;
+                if let Some(r) = entries::get(t, s, &b)? {
+                    out.push(entries::to_entry(b, &r));
+                }
+            }
+            Ok(out)
+        })?;
+        out.extend(g.mem.list(s).iter().filter(|(_, r)| r.deposited).map(|(b, r)| entries::to_entry(*b, r)));
+        Ok(out)
+    }
+
+    /// Every deposited entry held, with its sync ID (a start's listing). O(deposits held).
+    pub fn all_deposits(&self) -> Result<Vec<(SyncId, Entry)>> {
+        let mut g = self.lock();
+        let mut out = g.read(|t, _| {
+            let mut out = Vec::new();
+            for (k, _) in t.scan_local(rows::DEPOSITED, b"", usize::MAX)? {
+                let (s, b) = rows::tail_ids(&k)?;
+                if let Some(r) = entries::get(t, &s, &b)? {
+                    out.push((s, entries::to_entry(b, &r)));
+                }
+            }
+            Ok(out)
+        })?;
+        let mut mem: Vec<(SyncId, Entry)> = g.mem.entries.iter().filter(|(_, r)| r.deposited).map(|((s, b), r)| (*s, entries::to_entry(*b, r))).collect();
+        mem.sort_by_key(|(s, e)| (*s, e.blob));
+        out.extend(mem);
+        Ok(out)
+    }
+
+    /// The length of blob `b`'s bytes held, if any (sizing deposits, spec/sync-inbox.md §4).
+    pub fn blob_len(&self, b: &BlobId) -> Result<Option<u64>> {
+        self.lock().read(|t, env| entries::bytes_len(t, env, b))
+    }
+
+    /// A reader's cursor over the entries added from now on, or whose wrap, stamp or deposited
+    /// flag changed (`(S, blob)`, in order; one undone comes too and reads absent).
+    pub fn entry_feed(&self) -> osis_base::memo::Feed<(SyncId, BlobId)> {
+        self.lock().mem.fed.feed()
+    }
+
     /// Blob `b`'s bytes, whoever holds them.
     pub fn bytes(&self, b: &BlobId) -> Result<Option<Vec<u8>>> {
         let mut g = self.lock();
@@ -441,13 +489,13 @@ impl Store {
             return Ok(Code::EXPIRED);
         }
         let charged = if e.stamp.is_none() { from } else { None };
-        let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: e.deposited, own: e.own, role: false, class, expires, size: 0, charged };
+        let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: e.deposited, own: e.own, role: e.role, class, expires, size: 0, charged };
         if class == Class::Ephemeral {
             if g.mem.tombstoned(s, &b) {
                 return Ok(Code::TOMBSTONED);
             }
             if let Some(old) = g.mem.read(s, &b).cloned() {
-                let new = EntryRow { size: old.size, charged: if e.stamp.is_some() { None } else { old.charged }, own: old.own || e.own, ..row };
+                let new = EntryRow { size: old.size, charged: if e.stamp.is_some() { None } else { old.charged }, own: old.own || e.own, role: old.role || e.role, ..row };
                 g.mem.change(s, &b, new);
                 return Ok(Code::OK);
             }
@@ -485,7 +533,7 @@ impl Store {
                         entries::bytes_arrived(t, env, &b)?;
                     }
                     let old = entries::get(t, s, &b)?.unwrap_or(old);
-                    let new = EntryRow { size: old.size, role: old.role, charged: if e.stamp.is_some() { None } else { old.charged }, own: old.own || e.own, ..row };
+                    let new = EntryRow { size: old.size, role: old.role || e.role, charged: if e.stamp.is_some() { None } else { old.charged }, own: old.own || e.own, ..row };
                     entries::change(t, env, s, &b, &old, new)?;
                 }
                 None => entries::insert(t, env, s, &b, row, bytes)?,

@@ -70,6 +70,9 @@ pub struct Entry {
     pub deposited: bool,
     /// Logged by this node of its own.
     pub own: bool,
+    /// Stamped, or signed as a deposit, under the role-entry domain (spec/sync-ids.md §6 Role
+    /// entries).
+    pub role: bool,
     pub class: Class,
     pub expires: Option<WallMs>,
 }

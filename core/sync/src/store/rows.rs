@@ -39,6 +39,8 @@ pub(crate) const USAGE: &[u8] = b"U/";
 pub(crate) const BY_USE: &[u8] = b"u/";
 pub(crate) const AGING: &[u8] = b"w/";
 pub(crate) const HEAD: &[u8] = b"H/";
+/// Deposited (unstamped) entries per sync ID: what promotion, clearing and offering read.
+pub(crate) const DEPOSITED: &[u8] = b"D/";
 
 pub(crate) fn head_key(s: &SyncId) -> Vec<u8> {
     [HEAD, &s.0].concat()
@@ -46,6 +48,9 @@ pub(crate) fn head_key(s: &SyncId) -> Vec<u8> {
 
 pub(crate) fn entry_key(s: &SyncId, b: &BlobId) -> Vec<u8> {
     [ENTRY, &s.0, &b.0].concat()
+}
+pub(crate) fn deposited_key(s: &SyncId, b: &BlobId) -> Vec<u8> {
+    [DEPOSITED, &s.0, &b.0].concat()
 }
 pub(crate) fn by_blob_key(b: &BlobId, s: &SyncId) -> Vec<u8> {
     [BY_BLOB, &b.0, &s.0].concat()
