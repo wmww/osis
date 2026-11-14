@@ -1,3 +1,5 @@
 # cleanup-commit
 - `#[deprecated]` probe: clippy names an item by its module path inside the crate (`blob::CommitBlob`) and by its re-export outside (`osis_commit::CommitBlob`, `osis_label::...`), so the per-item tally needs the paths normalized before "no outside use" means anything; a deprecated struct also warns on every field access (noise). A small script in tools/ that runs the probe and prints unused/test-only items would save each cleanup agent rebuilding this.
 - Frozen sync code (core/node/src/sync) still calls `prefix_groups`/`prefix_expiry` separately, so a combined commit-prefix API can't replace them yet: it would only add code until Phase 3 lands.
+- Review: a differential of old vs new readers needed the old code pasted into a throwaway test module; a reusable "old version under test" pattern (e.g. a `tools/` script that vendors a file from a ref) would save it.
+- Gate over its limits on every wall line (419/220 s) at load 25; `build` alone 164/17 s wall, 811/93 CPU-s after the rebase onto main.
