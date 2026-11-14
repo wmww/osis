@@ -654,3 +654,66 @@ fn removing_a_node_lists_the_accounts_links_spec_permissions_7() {
     roles.sort();
     assert_eq!(roles, vec![Role::Read, Role::Write], "both links still work: {open:?}");
 }
+
+// spec/sync.md §3 (kept unread), spec/sync-set.md §4 (accepting), spec/permissions.md §7 (first
+// contact: a link reaches the redeemer through peers it shares K with): a node of a third account, granted
+// sync on a group and on its link's K and accepting both, relays the group between two accounts
+// that never connect to each other (the dogfood channel, notes/dogfood.md); the redeemer files
+// the thing to sync it.
+#[test]
+fn a_third_accounts_node_relays_a_group_it_keeps_unread_spec_sync_3() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let h = on(&net, 60, &c);
+    let addr = h.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap().remove(0);
+    let via = |seed| {
+        let mut o = cfg(seed, MemStore::new(), &c);
+        o.app.internals.net = Some(net.clone());
+        o.cfg.dial = vec![addr.clone()];
+        o.cfg.direct_sync = false;
+        osis::internals::create(o).unwrap()
+    };
+    let (a, b) = (via(61), via(62));
+    let mut w = a.write();
+    let t = w.create().unwrap();
+    w.group(a.home()).add(osis::Member::Subgroup(t)).unwrap();
+    w.at(t, osis::core::NAME).set(&"first".to_string()).unwrap();
+    w.commit().unwrap();
+    let link = a.make_link(t, Role::Write, LinkOpts::default()).unwrap();
+    drive(&net, a.import_contact(&h.contact_card().unwrap())).unwrap();
+    a.grant(t, h.me(), Role::Sync, osis::GrantOpts::default()).unwrap();
+    let k = a.links().unwrap().iter().find(|l| l.target == t).unwrap().id.actor();
+    a.grant(k, h.me(), Role::Sync, osis::GrantOpts::default()).unwrap();
+    for _ in 0..5 {
+        net.advance(1_000);
+    }
+    let inv = h.invitations().unwrap();
+    assert!(inv.iter().any(|i| i.thing == t && i.role == Role::Sync), "{inv:?}");
+    h.accept_invite(t, h.home()).unwrap();
+    h.accept_invite(k, h.home()).unwrap();
+    for _ in 0..5 {
+        net.advance(1_000);
+    }
+    assert!(h.status().unwrap().groups.contains_key(&t), "kept unread at h");
+    assert_eq!(drive(&net, b.redeem(&link)).unwrap(), t);
+    b.accept_invite(t, b.home()).unwrap();
+    for _ in 0..5 {
+        net.advance(1_000);
+    }
+    assert_eq!(name(&b, t).as_deref(), Some("first"));
+    let mut w = a.write();
+    w.at(t, osis::core::NAME).set(&"from a".to_string()).unwrap();
+    w.commit().unwrap();
+    for _ in 0..5 {
+        net.advance(1_000);
+    }
+    assert_eq!(name(&b, t).as_deref(), Some("from a"));
+    let mut w = b.write();
+    w.at(t, osis::core::NAME).set(&"from b".to_string()).unwrap();
+    w.commit().unwrap();
+    for _ in 0..5 {
+        net.advance(1_000);
+    }
+    assert_eq!(name(&a, t).as_deref(), Some("from b"));
+    assert_eq!((a.status().unwrap().connected, b.status().unwrap().connected), (1, 1), "each connected to h alone");
+}

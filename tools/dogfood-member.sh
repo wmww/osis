@@ -1,39 +1,76 @@
 #!/bin/sh
-# One coordinator's side of a dogfood build update (notes/dogfood.md, Update the build).
-#   tools/dogfood-member.sh build PIN              in a claimed worktree: build osis-cli at PIN into ~/osis-dogfood/bin/osis-SHORT
-#   tools/dogfood-member.sh create NAME PIN URL    new own store NAME-SHORT synced through URL, a new channel chat, its link
-#   tools/dogfood-member.sh join NAME PIN URL LINK new own store NAME-SHORT synced through URL, joined by LINK
-# The store dir keeps address, chat, link and cursor files: never commit them.
+# One box's side of a dogfood build update (notes/dogfood.md, Update the build).
+#   tools/dogfood-member.sh build PIN                  in a claimed worktree: build osis-cli at PIN into ~/osis-dogfood/bin/osis-SHORT
+#   tools/dogfood-member.sh host PIN LISTEN            the shared node: new store host-SHORT, its card and account, its daemon listening at LISTEN (quic://IP:PORT)
+#   tools/dogfood-member.sh create NAME PIN ADDR HOST  new own store NAME-SHORT dialing ADDR (URL#KEY), a new channel filed in home, its link,
+#                                                      sync grants on the channel and the link's K to the shared node's account (HOST: its host-SHORT dir copied here, or card and account files)
+#   tools/dogfood-member.sh accept PIN CHAT K          on the shared node: keep the channel and K unread (accepts the sync grants)
+#   tools/dogfood-member.sh join NAME PIN ADDR LINK    new own store NAME-SHORT dialing ADDR, joined by LINK through the shared node, filed in home
+# Store dirs keep address, chat, k, link, cursor (members) or card, account, address (host): never commit them.
 set -eu
 DF="$HOME/osis-dogfood"
 cmd=$1; shift
+short() { git rev-parse --short=9 "$1"; }
+need() { [ -x "$1" ] || { echo "no $1: run build first" >&2; exit 1; }; }
+fresh() { [ -e "$1" ] && { echo "$1 exists" >&2; exit 1; }; mkdir -m 700 "$1"; }
+# the daemon starts only after every direct command on the store has ended
+daemon() { systemd-run --user --unit "$1" "$2" -s "$3/store" --dial "$4" serve >/dev/null; }
 case $cmd in
 build)
-	pin=$1; short=$(git rev-parse --short=9 "$pin")
+	pin=$1
 	git checkout -q --detach "$pin"
 	cargo build -p osis-cli --bin osis
 	mkdir -p "$DF/bin"
-	cp target/debug/osis "$DF/bin/osis-$short"
-	echo "$DF/bin/osis-$short"
+	cp target/debug/osis "$DF/bin/osis-$(short "$pin")"
+	echo "$DF/bin/osis-$(short "$pin")"
 	;;
-create|join)
-	name=$1 pin=$2 url=$3; short=$(git rev-parse --short=9 "$pin")
-	bin="$DF/bin/osis-$short"; dir="$DF/$name-$short"
-	[ -x "$bin" ] || { echo "no $bin: run build first" >&2; exit 1; }
-	[ -e "$dir" ] && { echo "$dir exists" >&2; exit 1; }
-	mkdir -m 700 "$dir"
-	printf %s "$url" > "$dir/address"
-	"$bin" -s "$dir/store" init --peer "$url" >/dev/null
-	if [ "$cmd" = create ]; then
-		"$bin" -s "$dir/store" chat create --name channel > "$dir/chat"
-		"$bin" -s "$dir/store" chat link "$(cat "$dir/chat")" > "$dir/link"
-	else
-		"$bin" -s "$dir/store" chat join "$4" > "$dir/chat"
-	fi
-	# the daemon starts only after every direct command on the store has ended
-	systemd-run --user --unit "osis-$name-$short" "$bin" -s "$dir/store" serve >/dev/null
+host)
+	pin=$1 listen=$2; s=$(short "$pin"); bin="$DF/bin/osis-$s"; dir="$DF/host-$s"
+	need "$bin"; fresh "$dir"
+	"$bin" -s "$dir/store" init >/dev/null
+	"$bin" -s "$dir/store" whoami | awk '$1 == "me" { print $2 }' > "$dir/account"
+	# card commands do not run through a daemon: before it starts
+	"$bin" -s "$dir/store" card show > "$dir/card"
+	systemd-run --user --unit "osis-dogfood-host-$s" "$bin" -s "$dir/store" serve --listen "$listen" >/dev/null
 	sleep 2
-	"$bin" -s "$dir/store" --json chat read "$(cat "$dir/chat")" | tail -n 1 | sed 's/.*"cursor":"\([^"]*\)".*/\1/' > "$dir/cursor"
+	journalctl --user -u "osis-dogfood-host-$s" -o cat | grep -m1 '#' > "$dir/address"
+	echo "$dir"
+	;;
+create)
+	name=$1 pin=$2 addr=$3 host=$4; s=$(short "$pin"); bin="$DF/bin/osis-$s"; dir="$DF/$name-$s"
+	need "$bin"; fresh "$dir"
+	printf %s "$addr" > "$dir/address"
+	o() { "$bin" -s "$dir/store" --dial "$addr" --timeout 60s "$@"; }
+	"$bin" -s "$dir/store" init >/dev/null
+	o card import "$(cat "$host/card")" >/dev/null
+	o chat create --name channel > "$dir/chat"
+	c=$(cat "$dir/chat")
+	# a thing syncs only when a synced group's closure lists it
+	o group add home "$c" --subgroup >/dev/null
+	o chat link "$c" > "$dir/link"
+	o link ls "$c" | awk '{ print $1 }' > "$dir/k"
+	o grant "$c" "$(cat "$host/account")" sync
+	o grant "$(cat "$dir/k")" "$(cat "$host/account")" sync
+	"$bin" -s "$dir/store" --json chat read "$c" | tail -n 1 | sed 's/.*"cursor":"\([^"]*\)".*/\1/' > "$dir/cursor"
+	daemon "osis-$name-$s" "$bin" "$dir" "$addr"
+	echo "$dir"
+	;;
+accept)
+	pin=$1 c=$2 k=$3; s=$(short "$pin"); bin="$DF/bin/osis-$s"; dir="$DF/host-$s"
+	"$bin" -s "$dir/store" group add home "$c" --subgroup >/dev/null
+	"$bin" -s "$dir/store" group add home "$k" --subgroup >/dev/null
+	"$bin" -s "$dir/store" status
+	;;
+join)
+	name=$1 pin=$2 addr=$3 link=$4; s=$(short "$pin"); bin="$DF/bin/osis-$s"; dir="$DF/$name-$s"
+	need "$bin"; fresh "$dir"
+	printf %s "$addr" > "$dir/address"
+	o() { "$bin" -s "$dir/store" --dial "$addr" --timeout 120s "$@"; }
+	"$bin" -s "$dir/store" init >/dev/null
+	o chat join "$link" > "$dir/chat"
+	o group add home "$(cat "$dir/chat")" --subgroup >/dev/null
+	o --json chat read "$(cat "$dir/chat")" | tail -n 1 | sed 's/.*"cursor":"\([^"]*\)".*/\1/' > "$dir/cursor"
+	daemon "osis-$name-$s" "$bin" "$dir" "$addr"
 	echo "$dir"
 	;;
 *) echo "usage: see the header" >&2; exit 2 ;;
