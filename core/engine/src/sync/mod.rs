@@ -152,6 +152,8 @@ pub struct ReadFacts {
     pub must_not: Option<MustNot>,
     /// Written here.
     pub own: bool,
+    /// Written here by a repair (`Engine::relink`): its blobs are never repaired.
+    pub repair: bool,
     /// A role commit or a purge request (spec/sync-judgement.md §3 Role entries first).
     pub role: bool,
     /// Per delta needing a carrier, the commits one of which must be held where the body leaves

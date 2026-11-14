@@ -129,4 +129,7 @@ fn a_reused_chunk_a_purger_deleted_is_repaired_spec_sync_ids_1() {
     w.run();
     assert_eq!(read_big(&mut w, 0, &t), Some(Value::Bytes(v)), "node 0 reads the repaired value whole");
     assert!(reused.is_disjoint(&live(&mut w, 2, &t)), "node 2's value links no deleted chunk");
+    let own: Vec<CommitId> = w.engine(2).own_commits(&s).unwrap().iter().copied().collect();
+    let repairs = own.iter().filter(|c| w.engine(2).read_facts(&s, c).unwrap().repair).count();
+    assert_eq!(repairs, 1, "one commit, marked a repair: what it wrote is never repaired");
 }

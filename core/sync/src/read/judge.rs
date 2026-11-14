@@ -231,16 +231,17 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         j.acts.insert(Act::Log);
     }
     if verdict == Verdict::Must {
-        pieces(g, &mut j, s, c, f.as_ref().is_some_and(|f| f.own))?;
+        pieces(g, &mut j, s, c, f.as_ref().is_some_and(|f| f.own && !f.repair))?;
     }
     Ok(j)
 }
 
 /// The pieces of a must-hold body (§1: its linked blobs go under S beside it): a held one with no
 /// own entry is logged, a missing one is taken from a peer's entry here or fetched where a
-/// source shows it; and, for an own body, a held one every source showing it deleted and none
-/// present is repaired (spec/sync-ids.md §1 Repair), judged once S's sources are heard out.
-fn pieces(g: &mut impl Ground, j: &mut Judged, s: &SyncId, c: &CommitId, own: bool) -> Result<()> {
+/// source shows it; and, for an own body a repair did not write (`repairs`), a held one some
+/// source shows deleted and none present is repaired (spec/sync-ids.md §1 Repair), judged once
+/// S's sources are heard out.
+fn pieces(g: &mut impl Ground, j: &mut Judged, s: &SyncId, c: &CommitId, repairs: bool) -> Result<()> {
     let p = g.pieces(s, c)?;
     if p.held.is_empty() && p.missing.is_empty() {
         return Ok(());
@@ -265,7 +266,7 @@ fn pieces(g: &mut impl Ground, j: &mut Judged, s: &SyncId, c: &CommitId, own: bo
     }
     // repair: read only while a delete is known at a source of S and every source is heard out
     // (every entry of S it can open applied)
-    if !own || !g.deletes_known(s)? || !g.heard_out(s)? {
+    if !repairs || !g.deletes_known(s)? || !g.heard_out(s)? {
         return Ok(());
     }
     for b in &p.held {

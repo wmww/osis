@@ -70,6 +70,7 @@ fn uncovered() -> Facts {
         body: BodyFacts { required: true, closure: true, dropped: None, kept: false, covered: Some(false), sole_certificate: false, lasting_header: false },
         must_not: None,
         own: true,
+        repair: false,
         role: false,
         carriers: Vec::new(),
         later_unheld: Vec::new(),
@@ -178,8 +179,8 @@ impl Ground for Fake {
         self.sent.push(Sent::TakePiece(*b));
         Ok(())
     }
-    fn repair(&mut self, c: &CommitId, b: &BlobId) -> Result<()> {
-        self.sent.push(Sent::Repair(*c, *b));
+    fn repair(&mut self, c: &CommitId, b: &BTreeSet<BlobId>) -> Result<()> {
+        self.sent.extend(b.iter().map(|b| Sent::Repair(*c, *b)));
         Ok(())
     }
     fn freed_added(&mut self) -> Result<Vec<(BlobId, Tid)>> {
@@ -1411,6 +1412,23 @@ fn a_piece_every_source_deleted_is_repaired_once_spec_sync_ids_1() {
     other.g.piece_seen.insert((K, S, bid(10)), (false, true));
     other.settle();
     assert_eq!(sent_of(&other, |m| matches!(m, Sent::Repair(..))), 0, "another's body is not repaired here");
+}
+
+// spec/sync-ids.md §1 (Repair): a commit a repair wrote is never repaired: a source deleting what
+// it wrote afresh is refusing it, not a purger that missed a reuse, so a store refusing each
+// re-encryption makes this node write one repair per piece its other own commits link, not one
+// per refusal.
+#[test]
+fn a_repair_commit_is_never_repaired_spec_sync_ids_1() {
+    let mut w = with_pieces(&[10], &[]);
+    let mut f = uncovered();
+    f.repair = true;
+    w.judge(S, cid(1), f);
+    w.g.heard.insert(S, true);
+    w.g.piece_seen.insert((K, S, bid(10)), (false, true));
+    w.settle();
+    w.exchange();
+    assert_eq!(sent_of(&w, |m| matches!(m, Sent::Repair(..))), 0, "{:?}", w.g.sent);
 }
 
 // spec/sync-compaction.md §1 (Freed links): a freed link's own entry leaves, it is deleted at each

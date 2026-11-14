@@ -652,6 +652,8 @@ pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::ap
 pub(crate) struct RecordHead {
     pub received: WallMs,
     pub origin: Origin,
+    /// `Meta::repair`.
+    pub repair: bool,
     pub signed: osis_commit::Signed,
     pub dropped: BTreeMap<usize, super::Dropped>,
     pub stripped: BTreeSet<usize>,
@@ -673,9 +675,10 @@ impl RecordHead {
 }
 
 pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
-    let mut w = records::Wr::new().u8(1).u64(m.received.0).u8(match m.origin {
-        Origin::Local => 0,
-        Origin::Remote => 1,
+    let mut w = records::Wr::new().u8(1).u64(m.received.0).u8(match (m.origin, m.repair) {
+        (Origin::Local, false) => 0,
+        (Origin::Remote, _) => 1,
+        (Origin::Local, true) => 2,
     });
     w = w.raw(&m.signed.to_bytes()).u32(m.dropped_parts().count() as u32);
     for (a, d) in m.dropped_parts() {
@@ -804,7 +807,12 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         return Err(Error::Corrupt("commit record version"));
     }
     let received = WallMs(r.u64()?);
-    let origin = if r.u8()? == 0 { Origin::Local } else { Origin::Remote };
+    let (origin, repair) = match r.u8()? {
+        0 => (Origin::Local, false),
+        1 => (Origin::Remote, false),
+        2 => (Origin::Local, true),
+        _ => return Err(Error::Corrupt("commit record origin")),
+    };
     let signed = osis_commit::Signed::from_kept(r.arr()?);
     let mut dropped = BTreeMap::new();
     for _ in 0..r.u32()? {
@@ -855,7 +863,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         let f = *osis_commit::ListField::ALL.get(<usize as From<u8>>::from(r.u8()?)).ok_or(Error::Corrupt("header list field"))?;
         lists.push((f, r.bytes()?.to_vec()));
     }
-    Ok((RecordHead { received, origin, signed, dropped, stripped, valued, lists }, r.rest()))
+    Ok((RecordHead { received, origin, repair, signed, dropped, stripped, valued, lists }, r.rest()))
 }
 
 /// Writes the given changes (`all`: everything) of the indexes to the persisted index.
@@ -1046,7 +1054,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, signed: head.signed, valid, hold });
+        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, repair: head.repair, signed: head.signed, valid, hold });
         crate::apply::note_stands_in(tx.core, &id);
         tx.core.index_validity(&id);
     }
@@ -1108,8 +1116,8 @@ mod tests {
     use osis_base::{Ak, Value, WallMs};
 
     // spec: none (internal: notes/engine-store.md, the commit record and meta row). Every part
-    // state is stored as the record head and the meta row's bits and read back as it was, but
-    // `Missing::ToFetch`, a memory commit's mark, which no store keeps.
+    // state and the repair mark are stored as the record head and the meta row's bits and read
+    // back as they were, but `Missing::ToFetch`, a memory commit's mark, which no store keeps.
     #[test]
     fn every_part_state_reads_back_as_stored() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
@@ -1144,6 +1152,11 @@ mod tests {
         let (parts, _) = super::parse_meta_row(&row).unwrap();
         let back: Vec<Hold> = parts.iter().enumerate().map(|(ai, p)| Hold::stored(ai, &mut head, p & 32 != 0, p & 64 != 0, p & 128 != 0)).collect();
         assert_eq!(back, states.to_vec());
+        // an own commit and an own repair (`Meta::repair`) read back as written
+        assert!(head.origin == crate::events::Origin::Local && !head.repair);
+        meta.repair = true;
+        let (head, _) = super::parse_head(&super::record_head(&meta)).unwrap();
+        assert!(head.origin == crate::events::Origin::Local && head.repair);
         // memory only: read back as a plain missing part
         meta.hold[6] = Hold::Missing(Missing::ToFetch);
         let row = super::meta_row(&e.core, &id, &meta);

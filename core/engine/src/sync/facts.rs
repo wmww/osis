@@ -28,7 +28,7 @@ impl Engine {
     ///   gone, or found valid again).
     pub(crate) fn read_facts_now(&mut self, s: &SyncId, c: &CommitId) -> Result<ReadFacts> {
         let body: BodyFacts = self.body_facts_now(s, c)?;
-        let mut f = ReadFacts { body, must_not: None, own: false, role: false, carriers: Vec::new(), later_unheld: Vec::new(), missing: false };
+        let mut f = ReadFacts { body, must_not: None, own: false, repair: false, role: false, carriers: Vec::new(), later_unheld: Vec::new(), missing: false };
         // a card is judged by its header alone: it is no closure body of S (spec/permissions.md §4)
         if let Some(h) = self.header(c)
             && let Some(node) = self.card_node(s, &h)?
@@ -38,6 +38,7 @@ impl Engine {
         let bodies = self.sync_bodies_now(c)?;
         let (Some(b), Some(m), Some(h)) = (bodies.get(s).cloned(), self.core.ix.commits.get(c).cloned(), self.header(c)) else { return Ok(f) };
         f.own = m.origin == crate::events::Origin::Local;
+        f.repair = m.repair;
         f.role = h.kind.is_role() || m.view.purges;
         f.missing = b.parts.iter().any(|ai| m.missing(*ai));
         let (id, parts) = (*c, b.parts.clone());

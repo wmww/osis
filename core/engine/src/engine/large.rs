@@ -587,7 +587,18 @@ impl Engine {
         if m.aspects.is_empty() {
             return Ok(None);
         }
-        self.commit(m)
+        let Some(id) = self.commit(m)? else { return Ok(None) };
+        // marked a repair: what it wrote afresh is never repaired again (spec/sync-ids.md §1)
+        self.run(|tx| {
+            let Some(mut meta) = tx.core.ix.commits.get(&id).cloned() else { return Ok(()) };
+            meta.repair = true;
+            if let Some(blob) = tx.get_commit(&id)? {
+                tx.put_commit(&id, &blob, &meta, osis_store::Shred::No, None)?;
+            }
+            tx.core.put_meta(id, meta);
+            Ok(())
+        })?;
+        Ok(Some(id))
     }
 
     /// `relink` of one field: its ops, with the retention, expiry and schema of the newest held

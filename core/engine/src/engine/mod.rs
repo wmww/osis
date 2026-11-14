@@ -72,6 +72,9 @@ pub struct Meta {
     pub header: LazyHeader,
     pub received: WallMs,
     pub origin: Origin,
+    /// An own commit a repair wrote (`Engine::relink`, spec/sync-ids.md §1 Repair): its blobs are
+    /// never repaired.
+    pub repair: bool,
     /// Its held signatures' verdict (`apply::signature`), kept in its record's head.
     pub signed: osis_commit::Signed,
     /// Validity per aspect (spec/permissions.md §5.2).
@@ -257,7 +260,7 @@ impl Meta {
     /// says (`Hold::stored`).
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, mut head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
         let hold = (0..valid.len()).map(|ai| Hold::stored(ai, &mut head, missing.contains(&ai), false, false)).collect();
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, signed: head.signed, valid, hold }
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, repair: head.repair, signed: head.signed, valid, hold }
     }
     /// The index of aspect `(tid, ak)` in the commit.
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {

@@ -100,7 +100,7 @@ impl Ground for Live<'_, '_> {
             MustNot::CardSuperseded => Why::CardSuperseded,
             MustNot::CardEnded => Why::CardEnded,
         });
-        Ok(Facts { body: f.body, must_not, own: f.own, role: f.role, carriers: f.carriers, later_unheld: f.later_unheld, missing: f.missing })
+        Ok(Facts { body: f.body, must_not, own: f.own, repair: f.repair, role: f.role, carriers: f.carriers, later_unheld: f.later_unheld, missing: f.missing })
     }
     fn fall_mark(&mut self, _s: &SyncId, c: &CommitId) -> Result<u64> {
         Ok(self.cx.engine.body_fall_mark(c)?)
@@ -364,11 +364,11 @@ impl Ground for Live<'_, '_> {
         }
         Ok(())
     }
-    fn repair(&mut self, c: &CommitId, b: &BlobId) -> Result<()> {
+    fn repair(&mut self, c: &CommitId, b: &BTreeSet<BlobId>) -> Result<()> {
         let Some(h) = self.cx.engine.header(c) else { return Ok(()) };
         let things: BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).collect();
         // a rewrite refused (no write here now, a value too large) leaves it: a store failure fails
-        match self.cx.engine.relink(&[*b].into(), &things, &mut |_, _| true) {
+        match self.cx.engine.relink(b, &things, &mut |_, _| true) {
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => Err(e.into()),
             _ => Ok(()),
         }

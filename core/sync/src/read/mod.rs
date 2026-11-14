@@ -265,8 +265,16 @@ impl Read {
         for ((s, c), (was, now)) in judged {
             acted = true;
             let before = was.map(|w| w.acts).unwrap_or_default();
+            // a body's pieces to repair go in one commit (spec/sync-ids.md §1 Repair)
+            let mut repair = BTreeSet::new();
             for a in now.acts.difference(&before).cloned().collect::<Vec<_>>() {
-                self.act(g, &s, Some(&c), a)?;
+                match a {
+                    Act::Repair(b) => drop(repair.insert(b)),
+                    a => self.act(g, &s, Some(&c), a)?,
+                }
+            }
+            if !repair.is_empty() {
+                g.repair(&c, &repair)?;
             }
         }
         // what each body calls for at each source keeping S unread: the rows a source's stream
@@ -404,7 +412,7 @@ impl Read {
             (Act::Forget, _) => g.forget(s)?,
             (Act::LogPiece(b), _) => g.log_piece(s, &b)?,
             (Act::TakePiece(b), _) => g.take_piece(s, &b)?,
-            (Act::Repair(b), Some(c)) => g.repair(c, &b)?,
+            (Act::Repair(b), Some(c)) => g.repair(c, &[b].into())?,
             (Act::DropPiece(b), _) => g.drop_piece(s, &b)?,
             (Act::DeleteFreed { at, conn, head, blob, thing }, _) => {
                 let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) else { return Ok(()) };

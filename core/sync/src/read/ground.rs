@@ -25,6 +25,8 @@ pub struct Facts {
     pub must_not: Option<Why>,
     /// This node's own commit (`own_commits`).
     pub own: bool,
+    /// An own commit a repair wrote: its pieces are never repaired (spec/sync-ids.md §1 Repair).
+    pub repair: bool,
     /// A role commit or request (spec/sync-judgement.md §3 Role entries first).
     pub role: bool,
     /// Per delta needing a carrier (holding a live write, kept, or dropped as covered and not
@@ -205,8 +207,9 @@ pub trait Ground {
         let _ = (s, b);
         Ok(())
     }
-    /// Repairs piece `b` of own commit `c` (spec/sync-ids.md §1 Repair, `Engine::relink`).
-    fn repair(&mut self, c: &CommitId, b: &BlobId) -> Result<()> {
+    /// Repairs pieces `b` of own commit `c` in one commit (spec/sync-ids.md §1 Repair,
+    /// `Engine::relink`).
+    fn repair(&mut self, c: &CommitId, b: &BTreeSet<BlobId>) -> Result<()> {
         let _ = (c, b);
         Ok(())
     }
