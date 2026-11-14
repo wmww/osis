@@ -219,12 +219,28 @@ pub(crate) fn write_expiring(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owed: &BTreeSe
     }
     let due: BTreeSet<u64> = owed.iter().filter_map(|c| tx.core.ix.commits.get(c).and_then(|m| m.header.expires)).filter(|t| carriers.contains_key(t)).collect();
     let node = tx.core.writer_for(tid)?;
+    // every carried write, sorted (`sorted_owns`: a lookup per dot); the state cut to them once,
+    // so each expiry's part is cut from those writes alone, not from the whole state again
+    let sorted = |mut v: Vec<Owned>| {
+        v.sort();
+        v.dedup();
+        v
+    };
+    let all = sorted(due.iter().filter_map(|t| carriers.get(t)).flatten().cloned().collect());
+    let Some(mut rest) = tx.state(tid, ak)?.cloned() else { return Ok(Vec::new()) };
+    rest.remove_writes(&|d| !super::sorted_owns(&all, d));
     let mut out = Vec::new();
     for t in due {
-        let Some(own) = carriers.get(&t) else { continue };
-        let Some(st) = tx.state(tid, ak)?.cloned() else { break };
-        let mut part = st;
-        part.remove_writes(&|d| !own.iter().any(|o| o.owns(d)));
+        let Some(own) = carriers.get(&t).cloned().map(sorted) else { continue };
+        // stamped at or past its expiry (this node's clock ahead of its wall clock: a peer's
+        // fast clock read), a snapshot ending then is invalid (spec/commits.md §6) and its value
+        // has ended by the writer's clock: none is written, so its copy never outlives the value
+        let ts = tx.core.hlc.next();
+        if t <= ts.wall_ms().0 {
+            continue;
+        }
+        let mut part = rest.clone();
+        part.remove_writes(&|d| !super::sorted_owns(&own, d));
         // canonical form (`remove_writes` leaves it to a join)
         let mut f = Fragment::default();
         f.join(part);
@@ -233,7 +249,6 @@ pub(crate) fn write_expiring(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owed: &BTreeSe
         if !any {
             continue;
         }
-        let ts = tx.core.hlc.next();
         out.push(build_snapshot(tx, *tid, ak.clone(), f, ts, node, Frontiers::default(), Default::default(), Some(t))?);
     }
     Ok(out)

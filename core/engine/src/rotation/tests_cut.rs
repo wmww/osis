@@ -1755,3 +1755,29 @@ fn each_cut_replaces_the_last_cuts_expiring_snapshots_spec_commits_5() {
         assert_eq!(e.covered(s, &delta, &g, &ak).unwrap(), Some(false), "an expiring snapshot covers a delta");
     }
 }
+
+// spec/crypto.md §4 (State at a cut), spec/commits.md §6: A's clock reads ahead of its wall
+// clock (a peer's fast clock read) past "soon"'s expiry when it cuts for N. N still reads the
+// state: "plain" and "later" (whose expiring snapshot A stamps before its end); "soon" has ended
+// by A's clock, so no snapshot of it is written (one stamped at or past its expiry is invalid).
+// Fails with an expiring snapshot written for every expiry ahead of the wall clock (the cut's
+// whole step fails on the invalid one: N reads nothing at all).
+#[test]
+fn cut_with_a_clock_ahead_past_an_expiry_spec_crypto_4() {
+    let mut lp = synced(3);
+    let n = lp.peers[2].engine.me();
+    let g = group(&mut lp, 0);
+    lp.sync_all().unwrap();
+    let now = lp.peers[0].engine.now().0;
+    put(&mut lp, 0, g, "plain");
+    put_expiring(&mut lp, 0, g, "soon", now + 10_000);
+    put_expiring(&mut lp, 0, g, "later", now + 100_000);
+    lp.peers[0].engine.core.hlc.observe(osis_base::Ts::make(osis_base::WallMs(now + 20_000), 0).unwrap());
+    let mut label = Label::default();
+    label.place(&mut lp, g, &[0]);
+    let done = lp.peers[0].engine.grant_with(&g, &n, &edge(Role::Write), History::None).unwrap();
+    label.note(&done);
+    label.place(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &label);
+    assert_eq!(content(&mut lp, 2, g), keys(&["plain", "later"]), "N misses the state at its cut");
+}
