@@ -174,12 +174,7 @@ fn set(tx: &mut Tx<'_>, prefix: &[u8], t: &Tid, on: bool) -> Result<()> {
 }
 
 fn rows(tx: &mut Tx<'_>, prefix: &[u8]) -> Result<Vec<Tid>> {
-    let mut out = Vec::new();
-    tx.scan(prefix, |k, _| {
-        out.push(Tid::from_bytes(k.try_into().map_err(|_| crate::error::Error::Corrupt("lifetimes row"))?));
-        Ok(())
-    })?;
-    Ok(out)
+    tx.scan_keys(prefix, "lifetimes row", Tid::from_bytes)
 }
 
 /// What one judgment did.

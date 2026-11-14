@@ -104,11 +104,7 @@ pub(crate) fn load_lost_due(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     tx.core.ix.timed_lost.extend(v);
-    let mut b = Vec::new();
-    tx.scan(BEARERS, |k, _| {
-        b.push(Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("bearer record"))?));
-        Ok(())
-    })?;
+    let b = tx.scan_keys(BEARERS, "bearer record", Tid::from_bytes)?;
     tx.core.ix.bearers.extend(b);
     Ok(())
 }

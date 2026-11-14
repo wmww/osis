@@ -3139,6 +3139,17 @@ impl Tx<'_> {
         }
     }
 
+    /// The keys under `prefix`, each `N` bytes made a `T` by `of`; a key of another length is a
+    /// corrupt `what` row.
+    pub(crate) fn scan_keys<const N: usize, T>(&mut self, prefix: &[u8], what: &'static str, of: impl Fn([u8; N]) -> T) -> Result<Vec<T>> {
+        let mut out = Vec::new();
+        self.scan(prefix, |k, _| {
+            out.push(of(k.try_into().map_err(|_| Error::Corrupt(what))?));
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
     pub fn now(&self) -> WallMs {
         self.core.now()
     }

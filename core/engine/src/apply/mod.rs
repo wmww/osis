@@ -1736,30 +1736,14 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     for (_, r) in created {
         tx.core.ix.held.create(r);
     }
-    let mut syncing = Vec::new();
-    tx.scan(records::SYNCING, |k, _| {
-        syncing.push(Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("syncing"))?));
-        Ok(())
-    })?;
+    let syncing = tx.scan_keys(records::SYNCING, "syncing", Tid::from_bytes)?;
     tx.core.ix.syncing.extend(syncing);
-    let mut void = Vec::new();
-    tx.scan(records::VOID, |k, _| {
-        void.push(CommitId(k.try_into().map_err(|_| Error::Corrupt("void"))?));
-        Ok(())
-    })?;
+    let void = tx.scan_keys(records::VOID, "void", CommitId)?;
     tx.core.ix.void.extend(void);
-    let mut destroyed = Vec::new();
-    tx.scan(records::DESTROYED, |k, _| {
-        destroyed.push(Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("destroyed"))?));
-        Ok(())
-    })?;
-    tx.core.ix.destroyed_for_good.extend(destroyed);
-    let mut held = Vec::new();
-    tx.scan(records::DESTROYED_SECRETS, |k, _| {
-        held.push(Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("destroyed secrets"))?));
-        Ok(())
-    })?;
-    tx.core.ix.destroyed_secrets.extend(held);
+    let destroyed_for_good = tx.scan_keys(records::DESTROYED, "destroyed", Tid::from_bytes)?;
+    tx.core.ix.destroyed_for_good.extend(destroyed_for_good);
+    let destroyed_secrets = tx.scan_keys(records::DESTROYED_SECRETS, "destroyed secrets", Tid::from_bytes)?;
+    tx.core.ix.destroyed_secrets.extend(destroyed_secrets);
     let mut labels = Vec::new();
     tx.scan(records::DESTROYED_LABELS, |k, v| {
         let t = Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("destroyed labels"))?);
@@ -1771,18 +1755,10 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     for (t, ls) in labels {
         tx.core.ix.destroyed_labels.insert(t, ls);
     }
-    let mut due = Vec::new();
-    tx.scan(records::ADDENDA_DUE, |k, _| {
-        due.push(CommitId(k.try_into().map_err(|_| Error::Corrupt("addenda due"))?));
-        Ok(())
-    })?;
-    tx.core.ix.addenda_due.extend(due);
-    let mut due = Vec::new();
-    tx.scan(records::ROTATIONS_DUE, |k, _| {
-        due.push(CommitId(k.try_into().map_err(|_| Error::Corrupt("listings due"))?));
-        Ok(())
-    })?;
-    tx.core.ix.rotations_due.extend(due);
+    let addenda_due = tx.scan_keys(records::ADDENDA_DUE, "addenda due", CommitId)?;
+    tx.core.ix.addenda_due.extend(addenda_due);
+    let rotations_due = tx.scan_keys(records::ROTATIONS_DUE, "listings due", CommitId)?;
+    tx.core.ix.rotations_due.extend(rotations_due);
     crate::rotation::merge::load(tx)?;
     crate::retention::load_owed(tx)?;
     let mut vl = Vec::new();
