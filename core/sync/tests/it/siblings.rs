@@ -278,6 +278,9 @@ fn outsider_across_a_node_removal(mut w: World) {
             assert!(ids.iter().all(|c| mine.contains(c)), "a list of {x:?} names a commit node 0 does not hold");
         }
     }
+    // nor D's record or the removed node's (spec/requirements.md: outsiders never learn an
+    // account's devices)
+    assert!(w.engine(0).core.created(&d).is_none() && w.engine(0).core.created(&n2).is_none(), "node 0 holds D's or node 2's record");
     set(&mut w, Some(t), "after");
     w.run();
     assert_eq!(w.engine(0).get(&t, &ak).unwrap(), Some(Value::Str("after".into())), "the write after the removal");

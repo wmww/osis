@@ -302,3 +302,20 @@ fn a_joiner_stays_when_k_was_granted_again_before_it_heard_spec_permissions_7() 
         assert!(w.engine(i).roster(&link.k).contains_key(&a1), "node {i}: node 1's account left K");
     }
 }
+
+// spec/permissions.md §7 (joiner's leave: K's edge on the target past `until`, judged by the
+// node's own clock): as above, but node 1 is cut off from node 0 once it holds the edge, so
+// nothing arrives: the `until` passing alone makes node 1's account leave K there.
+#[test]
+fn a_joiner_leaves_k_by_its_clock_alone_spec_permissions_7() {
+    let (mut w, link) = redeemed();
+    let a1 = w.node(1).account.unwrap();
+    let until = osis_base::WallMs(w.now().0 + 60_000);
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: Some(until), invite: None, tied: None, floor: None };
+    w.write(0, |e| e.grant(&link.target, &link.k, &edge)).unwrap();
+    w.advance(1000);
+    assert!(w.engine(1).roster(&link.target).contains_key(&link.k) && w.engine(1).roster(&link.k).contains_key(&a1), "node 1 holds the edge, joined");
+    w.partition(0, 1);
+    w.advance(120_000);
+    assert!(!w.engine(1).roster(&link.k).contains_key(&a1), "node 1's account still holds K");
+}

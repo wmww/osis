@@ -1406,6 +1406,42 @@ fn a_dead_tie_wants_a_pass_of_its_scope_spec_perm_2() {
     assert!(lp.peers[0].engine.untie_due(&t).unwrap().is_empty(), "waits the new pass");
 }
 
+// spec/permissions.md §2 Tied grants (an explicit demotion waits a complete pass of every sync ID
+// it reads whose bodies carry a thing of the scope): T is also an item of group E, whose secrets
+// this node holds but which its sync set does not read. E's sync ID is no part of the wait (a
+// pass of it is never noted here), so a lone admin's removal is due once the passes of what it
+// reads are noted, not never.
+#[test]
+fn a_dead_tie_waits_no_pass_of_a_sync_id_not_read_here_spec_perm_2() {
+    let (mut lp, ps) = people(1);
+    let g = thing_of(&mut lp, 0, ps[0]);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let x = thing_of(&mut lp, 0, ps[0]);
+    let (_, d) = lp.peers[0].engine.account().unwrap().unwrap();
+    for y in [g, t] {
+        lp.peers[0].engine.give_own_secrets(&y).unwrap();
+        add_item(&mut lp, 0, d, y);
+    }
+    lp.peers[0].engine.give_own_secrets(&x).unwrap();
+    add_item(&mut lp, 0, x, t);
+    add_item(&mut lp, 0, g, t);
+    let e = &mut lp.peers[0].engine;
+    let sx = e.home_sync_id(&x).unwrap().unwrap();
+    assert!(!e.sync_set().unwrap().ids.contains_key(&sx), "E's sync ID is not read here");
+    let tie = e.placement(&t, &g, false).unwrap().unwrap();
+    e.grant(&t, &g, &ct::Edge { role: Role::Write, until: None, invite: None, tied: Some(osis_engine::flows::tied::tie_ct(tie)), floor: None }).unwrap();
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Remove(osis_base::Value::Tid(t)) }).unwrap();
+    e.commit(m).unwrap().unwrap();
+    assert_eq!(e.may_remove(&t, &g).unwrap(), Some(osis_engine::flows::Untie::Explicit));
+    assert!(!e.passes_wanted().unwrap().contains_key(&sx), "no pass of E's sync ID is wanted");
+    let now = e.pass_clock();
+    for s in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
+        e.note_complete_pass(&s, now).unwrap();
+    }
+    assert_eq!(e.untie_due(&t).unwrap(), [g].into(), "due once the passes of what it reads are noted");
+}
+
 // spec/permissions.md §2 Tied grants (else as a self-removal by an admin of G): peer 1, admin of
 // G alone, takes T out of G; the tied edge peer 0 granted G on T is due at once (`untie_due`),
 // waiting no pass, and gone once removed.

@@ -147,6 +147,30 @@ fn a_list_blob_before_its_rotation_is_held_as_it_arrives_spec_sync_judgement_1()
     assert_eq!(d0.first_diff(&lp.peers[2].engine.index_digest()), None, "rebuilt");
 }
 
+// spec/crypto.md §5 Who wraps under what (a rotation's thing lists wrap as it does: under the
+// newest read epoch of the thing current when it was made): an outsider removed from t, t
+// rotated, then the account rotated by a node removal; r's list of t wraps under t's epoch
+// after the outsider's removal, which it never held, while it held t's earlier epoch
+#[test]
+fn a_party_removed_before_the_rotation_cannot_open_its_list_spec_crypto_5() {
+    let (mut lp, a, t) = world(3, 2);
+    let o = lp.peers[2].engine.me();
+    let held = |lp: &LocalPeer, p: usize| -> Vec<[u8; 32]> {
+        let ta = lp.peers[p].engine.core.secret_actor(&t).unwrap();
+        lp.peers[p].engine.epochs(&ta).map(|e| e.read.held().map(|(_, s)| *s.expose()).collect()).unwrap_or_default()
+    };
+    assert!(!held(&lp, 2).is_empty(), "the outsider read t");
+    let before = held(&lp, 0).len();
+    lp.peers[0].engine.demote(&t, &Demotion { holder: o, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.ensure_rotated(&t).unwrap();
+    assert!(held(&lp, 0).len() > before, "the outsider's removal rotates t");
+    lp.advance(10);
+    let done = remove(&mut lp, 0, a.devices, 1);
+    let r = done.commits[1];
+    let w = lp.peers[0].engine.list_wrap_secret(&t, &r).expect("a wrap for r's list of t");
+    assert!(!held(&lp, 2).contains(w.expose()), "the removed outsider holds the list's epoch");
+}
+
 // spec/permissions.md §5.5: a rotation's list names ephemeral commits as durable ones: a
 // sibling's ephemeral write the rotator held still counts at an outsider once the rotation
 // closes its epoch; one the removed node writes after it does not
