@@ -239,7 +239,7 @@ fn a_siblings_self_removal_waits_and_drops_at_both_siblings_spec_perm_3() {
 // spec/permissions.md §3 (removing a node of an account: a departure, rotating the account's
 // roles), spec/sync-inbox.md §2: node 1 writes a thing node 0's account reads; node 1 removes its
 // sibling node 2 from the account; node 0 still reads the write from before and reads one after.
-// The API flow is osis `sync::an_outsider_reads_the_accounts_writes_across_a_node_removal_*`.
+// The API flow is osis `sync::repro_an_outsider_reads_the_accounts_writes_across_a_node_removal_*`.
 #[test]
 #[ignore = "issues/outsider-reads-nothing-after-node-removal.md"]
 fn repro_an_outsider_reads_the_accounts_writes_across_a_node_removal() {
