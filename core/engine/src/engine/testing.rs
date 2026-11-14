@@ -113,7 +113,7 @@ impl Engine {
                 let held = tx.core.epochs(a).ok_or(Error::Misuse("no secrets held for the actor"))?;
                 let mut holders = crate::rotation::recipients(tx, &tx.core.writer()?, a, &[])?;
                 holders.holders.retain(|r| boxed.contains(&r.holder));
-                rots.push((*a, crate::rotation::rotation_into(tx, &mut m, *a, &roles, &held, &holders, false)?));
+                rots.push((*a, crate::rotation::rotation_into(tx, &mut m, *a, &roles, &held, &holders, crate::rotation::Departs::No)?));
             }
             let c = Engine::commit_tx(tx, m)?;
             for (a, rot) in &rots {
@@ -657,7 +657,7 @@ impl<T: std::fmt::Debug + PartialEq + 'static> Table for T {
 }
 
 /// The indexes `IndexDigest::tables` holds as text, by name.
-fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 31] {
+fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 30] {
     [
         ("by_thing", &*ix.by_thing),
         ("by_actor", &*ix.by_actor),
@@ -669,7 +669,6 @@ fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 31] {
         ("ranges", &*ix.ranges),
         ("rotation_role", &*ix.rotation_role),
         ("grant_overreach", &*ix.grant_overreach),
-        ("shown", &*ix.shown),
         ("retention", &*ix.retention),
         ("addenda", &*ix.addenda),
         ("boxes_to", &*ix.boxes_to),

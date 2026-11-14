@@ -63,9 +63,8 @@ fn revoke_about_author_placed_spec_permissions_4() {
 // spec/crypto.md §4 (holder actors: stale): G <- X1 <- X2 <- {W, R}; X2's admin B, who does not
 // sync G, removes W from X2 (rotating X2), then rotates X1 (its box to X2 stale); R reads G
 // through two levels, may not rotate it, and is not held back by the stale box: it places X1's new
-// keys under G's label. W, still a writer of G through X1 in its own view and in that of G's admin
-// (who never learns W left X2), finds G's box to X1 stale too but holds no secret of X1's new
-// keyset, so it may not rotate G (spec/crypto.md §4, Possession): it waits, and G's admin rotates.
+// keys under G's label, with W's removal they carry (spec/crypto.md §4, Carried demotions), so G's
+// admin, who syncs no X2, counts W out, rotates, and W reads nothing written after.
 #[test]
 fn nested_departure_removed_writer_waits_spec_crypto_4() {
     let (mut net, host, [a, b, w, r]) = hosted_nodes::<4>();

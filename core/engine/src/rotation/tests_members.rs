@@ -38,7 +38,7 @@ fn rotate_skipping(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTreeSet<Role>, s
             let held = tx.core.epochs(&g).unwrap();
             let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &skip)?;
             let mut m = Mutation::new();
-            let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, false)?;
+            let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, crate::rotation::Departs::No)?;
             crate::engine::Engine::commit_tx(tx, m)?;
             super::record(tx, g, &r)
         })
@@ -1234,13 +1234,12 @@ fn removal_lacking_rotated_secret_rotates_spec_permissions_3() {
     assert!(e.write.newest_held().is_some() && !e.write.is_current(&lacked), "the epoch P lacked is superseded");
 }
 
-// spec/crypto.md §4 (Possession, Writers), spec/permissions.md §3: P is A's admin only through
-// holder actor M (first admin: peer 2), which rotates M leaving P out, so P holds M's new keyset
-// but not its secret and cannot show M. P's removal of F goes alone (its rotation would fail
-// Authority everywhere), the departure uncovered; once M's admin re-seals P on M, P's due
-// rotation of A follows and covers it.
+// spec/permissions.md §3, spec/crypto.md §4 (Seal; rotating needs only the right to rotate): P
+// is A's admin only through holder actor M (first admin: peer 2), which rotates M leaving P out,
+// so P holds M's new keyset but not its secret. P's removal of F carries A's rotation all the
+// same, sealing M to that keyset's KEM key: valid at every node, the departure covered.
 #[test]
-fn removal_without_possession_goes_alone_spec_crypto_4() {
+fn removal_through_a_holder_it_cannot_open_rotates_spec_crypto_4() {
     let mut lp = synced(6);
     let [p, f] = [1, 5].map(|i| lp.peers[i].engine.me());
     let a = group(&mut lp, 0);
@@ -1257,51 +1256,10 @@ fn removal_without_possession_goes_alone_spec_crypto_4() {
     let epochs = lp.peers[1].engine.epochs(&a);
     lp.peers[1].engine.demote(&a, &Demotion { holder: f, new: None, retain: None }).unwrap();
     assert!(!lp.peers[1].engine.core.current_holders(&a).iter().any(|(x, _, _)| *x == f), "F removed");
-    assert_eq!(lp.peers[1].engine.epochs(&a), epochs, "alone: P cannot show M");
-    assert!(!blocked_at(&mut lp, 1, a).is_empty(), "the departure is uncovered");
-    assert!(lp.peers[1].engine.ensure_rotated(&a).unwrap().0.commits.is_empty(), "P rotates A without showing M");
-    lp.sync_all().unwrap();
-    assert!(!lp.peers[2].engine.reseal_due(&m, &Pass).unwrap().commits.is_empty(), "M's admin re-seals P");
-    lp.sync_all().unwrap();
-    let (done, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
-    assert!(!done.commits.is_empty(), "P rotates A once it shows M");
-    assert!(still.is_empty(), "{still:?}");
+    assert_ne!(lp.peers[1].engine.epochs(&a), epochs, "with its rotation");
+    assert!(blocked_at(&mut lp, 1, a).is_empty(), "the departure covered at P");
     lp.sync_all().unwrap();
     assert!(blocked_at(&mut lp, 0, a).is_empty(), "A's first admin holds P's rotation, covering");
-}
-
-// spec/crypto.md §4 (Possession, Writers): the writer's Authority check reads the boxes its
-// rotation writes, as every receiver judges them. P is A's admin only through holder actor M; M's
-// admin rotates M's write role leaving P out, so P holds M's read and admin secrets but not its
-// new write one. A's write boxes to M are stale, so P's write rotation of A is due; it would box
-// M's write role sealed (P cannot sign for that keyset), and a box of a role it does not rotate
-// shows nothing. So P waits (write blocked) instead of committing a rotation every node, P
-// included, judges invalid; once re-sealed on M it rotates.
-#[test]
-fn authority_counts_only_rotated_roles_spec_crypto_4() {
-    let mut lp = synced(3);
-    let p = lp.peers[1].engine.me();
-    let a = group(&mut lp, 0);
-    let m = group(&mut lp, 2);
-    lp.sync_all().unwrap();
-    lp.peers[2].engine.grant(&m, &p, &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
-    rotate_skipping(&mut lp, 2, m, &BTreeSet::from([Role::Write]), &[p]);
-    lp.sync_all().unwrap();
-    let em = lp.peers[1].engine.epochs(&m).unwrap();
-    assert!(em.write.newest_held().is_none() && em.read.newest_held().is_some(), "P holds M's read secret, not its new write one");
-    assert!(blocked_at(&mut lp, 1, a).contains(&Role::Write), "A's write boxes to M are stale");
-    let (done, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
-    assert!(done.commits.is_empty(), "P waits: its rotation could not show M");
-    assert!(still.contains(&Role::Write), "{still:?}");
-    lp.sync_all().unwrap();
-    assert!(!lp.peers[2].engine.reseal_due(&m, &Pass).unwrap().commits.is_empty(), "M's admin re-seals P");
-    lp.sync_all().unwrap();
-    let (done, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
-    assert!(!done.commits.is_empty(), "P rotates A once it shows M");
-    assert!(still.is_empty(), "{still:?}");
 }
 
 /// Delivers peer `from`'s commits `ids` to peer `to` without any `keys.0` or `secrets.0` delta on
@@ -1531,7 +1489,7 @@ fn lowered_maker_rotates_once_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (holder actors: stale; rotation due): one cause, one rotation. D's removal
-// from G goes alone (no rotation, as while Authority fails); G's rotation, due at G's admin, makes T's
+// from G goes alone (no rotation, as by a remover that may not rotate); G's rotation, due at G's admin, makes T's
 // box to G stale at each of T's three admins. The admin rotates T in the same step
 // (`rotate_above`), so T's other admins, judging after, find nothing due: T moves one epoch,
 // unforked, where each admin rotating T for the stale box forked it three ways.
@@ -1609,7 +1567,7 @@ fn blind_sealer_leaves_out_at_a_stale_box_below_spec_crypto_4() {
     assert!(!leaked(&mut lp, 4, &[m, a, g], e, start).contains(&g), "E opens none of G's new epoch");
 }
 
-/// Peer `i` removes `d` from `t` alone (no rotation, as while Authority fails).
+/// Peer `i` removes `d` from `t` alone (no rotation, as by a remover that may not rotate).
 fn removal_alone(lp: &mut LocalPeer, i: usize, t: Tid, d: Tid) {
     lp.peers[i]
         .engine
@@ -1699,13 +1657,12 @@ fn removal_alone_left_out_stays_out_at_co_writer_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[a, g], e, start), Vec::<Tid>::new());
 }
 
-// spec/permissions.md §3 (re-seal), spec/crypto.md §4 (Possession, Encrypting under): a re-seal
-// pass reads its candidates after the rotations and finalizes due first. X admins G, which M
-// reads; X writes M only through H, whose newest keyset X lacks the secret of (H rotated leaving
-// X out, M boxing H there), so X's finalize of Y's ended edge on M goes without its rotation and
-// leaves M's keyset uncovered at X: M, lacking a box at G's newest epoch, is a candidate before
-// it and out after. The pass re-seals nothing (it does not fail); once M's admin rotates M, X
-// re-seals M at that keyset.
+// spec/permissions.md §3 (re-seal), spec/crypto.md §4 (Encrypting under): a re-seal pass reads
+// its candidates after the rotations and finalizes due first. X admins G, which M reads; X writes
+// M only through H, whose newest keyset X lacks the secret of (H rotated leaving X out, M boxing
+// H there). M, lacking a box at G's newest epoch, is a candidate; X's finalize of Y's ended edge
+// on M comes first and carries M's rotation (sealing H to its keyset's KEM key), so the pass
+// re-seals M at that new keyset, never at the one Y reads.
 #[test]
 fn reseal_candidates_follow_the_finalize_before_them_spec_permissions_3() {
     let mut lp = synced(3);
@@ -1725,16 +1682,13 @@ fn reseal_candidates_follow_the_finalize_before_them_spec_permissions_3() {
     lp.peers[1].clock.advance(1_000);
     let cands = lp.peers[1].engine.run(|tx| super::reseal_candidates(tx, &g)).unwrap();
     assert!(cands.iter().any(|c| c.0 == m), "M is a candidate before the finalize: {cands:?}");
+    let before = newest_read(&lp, 1, m);
     lp.peers[1].engine.reseal_due(&g, &Pass).unwrap();
-    assert!(lp.peers[1].engine.departures(&m).unwrap().iter().any(|d| d.holder == y), "X finalized Y alone");
-    assert_eq!(sealed_at(&mut lp, 1, g, m), None, "M is left out at X");
-    lp.sync_all().unwrap();
-    lp.advance(1_000);
-    assert!(!lp.peers[0].engine.ensure_rotated(&m).unwrap().0.commits.is_empty(), "M's admin covers Y's departure");
-    lp.sync_all().unwrap();
-    lp.peers[1].engine.reseal_due(&g, &Pass).unwrap();
-    lp.sync_all().unwrap();
-    assert_eq!(sealed_at(&mut lp, 1, g, m), newest_read(&lp, 0, m));
+    assert!(lp.peers[1].engine.core.current_holders(&m).iter().all(|(h, _, _)| *h != y), "X finalized Y");
+    assert!(blocked_at(&mut lp, 1, m).is_empty(), "its rotation covers Y's departure");
+    let now = newest_read(&lp, 1, m);
+    assert_ne!(now, before, "M rotated with the finalize");
+    assert_eq!(sealed_at(&mut lp, 1, g, m), now, "M re-sealed at X's new keyset");
 }
 
 // spec/permissions.md §2 (finalize), §3 (re-seal): a holder lacking a box is a re-seal candidate
@@ -1757,37 +1711,28 @@ fn reseal_candidates_follow_the_clock_spec_permissions_2() {
     assert!(after.iter().all(|c| c.0 != m), "M's grant ended: a departure due, no re-seal: {after:?}");
 }
 
-// spec/crypto.md §4 (Possession, Authority; Key access): a role reached only through a
-// keyless grant makes no valid rotation, whatever roles it rotates. Cycle G -> H -> M -> G (M
-// admin on G, H admin on M, then G admin on H: keyless). X writes G and reads H, so writes M only
-// through G's keyless grant on H: it holds H's read secret, never its write one. Its rotations
-// of M, read and write or write alone, show H at no role its write needs: invalid at every node,
-// so they fork nothing (a proof at read once made the first valid and the second not, so a fork
-// whose maker was X stayed forked when X merged write alone). Nor may X rotate M (`may_rotate`).
+// spec/crypto.md §4 (Key access: a keyless grant is a role all the same), spec/permissions.md §3
+// (Who rotates): P writes A directly and is admin of A only through M, whose grant on A is
+// keyless (A held M first), so P's rotations of A box M nothing. P's rotation of read (which also
+// refreshes A's deposit seed, an admin field judged by role) is valid.
 #[test]
-fn keyless_route_makes_no_valid_rotation_spec_crypto_4() {
+fn rotation_through_a_keyless_grant_is_valid_spec_crypto_4() {
     let mut lp = synced(2);
-    let x = lp.peers[1].engine.me();
-    let (g, m, h) = (group(&mut lp, 0), group(&mut lp, 0), group(&mut lp, 0));
-    lp.peers[0].engine.grant(&g, &m, &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&m, &h, &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&h, &g, &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&g, &x, &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&h, &x, &edge(Role::Read)).unwrap();
+    let p = lp.peers[1].engine.me();
+    let a = group(&mut lp, 0);
+    let m = group(&mut lp, 1);
     lp.sync_all().unwrap();
-    assert!(lp.peers[0].engine.run(|tx| Ok(super::members::key_access(tx.core).contains(&(h, g)))).unwrap(), "G's grant on H is keyless");
-    let (role, may) = lp.peers[0].engine.run(|tx| Ok((tx.core.role_now(&x, &m), super::may_rotate(tx.core, &x, &m)))).unwrap();
-    assert!(role == Some(Role::Write) && !may.contains(&Role::Write), "X writes M only through the keyless grant: {role:?} {may:?}");
-    let made = [BTreeSet::from([Role::Read, Role::Write]), BTreeSet::from([Role::Write])].map(|rot| rotate_unchecked(&mut lp, 1, m, &rot).0);
+    lp.peers[1].engine.grant(&m, &a, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
-    for i in 0..2 {
-        for c in &made {
-            let meta = lp.peers[i].engine.core.ix.commits.get(c).cloned().expect("held");
-            assert!(meta.view.aspects.iter().enumerate().filter(|(_, a)| a.tid == m).all(|(ai, _)| !meta.valid_at(ai)), "peer {i}: X's rotation of M valid");
-        }
-        assert_eq!(lp.peers[i].engine.epochs(&m).unwrap().write.current().len(), 1, "peer {i}: M's write forked");
-    }
-    assert!(blocked_at(&mut lp, 0, g).is_empty(), "G's admin may encrypt under G");
+    lp.peers[0].engine.grant(&a, &p, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[1].engine.core.role_now(&p, &a), Some(Role::Admin));
+    let before = commit_ids(&mut lp, 1);
+    lp.peers[1].engine.run(|tx| super::rotate_now(tx, p, a, &BTreeSet::from([Role::Read]))).unwrap();
+    let c = *commit_ids(&mut lp, 1).difference(&before).next().unwrap();
+    let meta = lp.peers[1].engine.core.ix.commits.get(&c).cloned().unwrap();
+    assert!(meta.view.aspects.iter().enumerate().filter(|(_, x)| x.tid == a).all(|(ai, _)| meta.valid_at(ai)));
 }
 
 // spec/permissions.md §3 (Who rotates), spec/crypto.md §4 (orphaned): a role through a keyless

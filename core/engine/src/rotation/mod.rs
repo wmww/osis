@@ -24,7 +24,7 @@ use crate::error::{Error, Result};
 use crate::flows::{self, Delivery, Done, SyncState, put_keysets, put_secrets, save_epochs, secrets_in};
 use crate::Mutation;
 use osis_base::{Role, Tid};
-use osis_keys::{ActorEpochs, Departure, HistoryBoxes, ROLES, Recipient, Rotation};
+use osis_keys::{ActorEpochs, Departure, HistoryBoxes, ROLES, Rotation};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -251,7 +251,7 @@ fn uncovered(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &[
     let core = &*tx.core;
     Ok(match core.epochs(x).filter(|ep| ep.role(r).is_established(k) && ep.role(r).secret(k).is_some()) {
         Some(epochs) => !osis_keys::uncovered(&epochs, r, k, deps, &core.names_held(x)).is_empty(),
-        None => core.ix.keysets.get(&(*x, r, *k)).is_some_and(|held| deps.iter().any(|d| d.concerns(r) && d.newest_needed(r).and_then(point).is_some_and(|p| held.held_before(&p)))),
+        None => core.keyset(x, r, k).is_some_and(|held| deps.iter().any(|d| d.concerns(r) && d.newest_needed(r).and_then(point).is_some_and(|p| held.held_before(&p)))),
     })
 }
 
@@ -426,15 +426,27 @@ pub(crate) fn refreshes_deposit(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSe
     roles.contains(&Role::Sync) && may_rotate(core, who, a).contains(&Role::Admin) && core.devices_of(a).is_none()
 }
 
+/// What the commit carrying a rotation of an actor departs from it (`rotation_into`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Departs {
+    No,
+    /// A holder's departure (a removal's or finalize's rotation): its names mark it.
+    Holder,
+    /// One that also demotes a writer or admin (an explicit lowering from write or above): its
+    /// keysets carry their own commit too (spec/crypto.md §4, Carried demotions).
+    Demoting,
+}
+
 /// The rotation of `roles` of `a` (boxes and left-out records from `recipients`), written into `m`, its
 /// history boxes carrying the secrets this node holds and the names of the departures from `a`
-/// it holds (`departures::names`). `held` is this node's view (derived epochs for the switch to
-/// secrets of its own). `departs`: the same commit makes a departure from `a` (a removal's
-/// rotation): its names mark it by `ts`, signer and blind, and the commit covers that departure itself
+/// it holds (`departures::names`), its keysets the demotions it holds in effect on `a`
+/// (`departures::carried`). `held` is this node's view (derived epochs for the switch to secrets
+/// of its own). `departs`: what the same commit departs from `a` (a removal's rotation): its
+/// names mark it by `ts`, signer and blind, and the commit covers that departure itself
 /// (spec/crypto.md §4, covers).
-pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, boxing: &Boxing, departs: bool) -> Result<Rotation> {
+pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, boxing: &Boxing, departs: Departs) -> Result<Rotation> {
     let secrets = secrets_in(tx, &a)?;
-    let own = if departs {
+    let own = if departs != Departs::No {
         let ts = *m.ts.get_or_insert_with(|| tx.core.hlc.next());
         let blind = *m.blind.get_or_insert_with(|| crate::engine::write::draw_blind(&mut *tx.rng));
         let author = match m.signer {
@@ -446,31 +458,11 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
         None
     };
     let names = departures::names(tx.core, &a, own);
-    let rot = osis_keys::rotate_leaving_out(&a, roles, held, &secrets, &boxing.holders, &boxing.left_out, &names, &mut *tx.rng)?;
+    let carried = osis_keys::Carried { demotions: departures::carried(tx.core, &a), demotes: departs == Departs::Demoting };
+    let rot = osis_keys::rotate_leaving_out(&a, roles, held, &secrets, &boxing.holders, &boxing.left_out, &carried, &names, &mut *tx.rng)?;
     put_secrets(m, a, &rot.secrets, false)?;
     put_keysets(m, a, &rot.keys)?;
     Ok(rot)
-}
-
-/// Whether `who` may rotate `roles` of `a` boxing `holders` (`members::authority`), needing the
-/// role every node judges the rotation's `secrets.0` delta by (`apply::validity::secrets_role`):
-/// the highest rotated, and at least write. A removal or finalize whose rotation fails it goes
-/// alone (`flows::edges::demote_in`).
-fn possessed(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>, holders: &[Recipient]) -> bool {
-    roles.iter().max().is_none_or(|top| members::authority(core, who, a, roles, (*top).max(Role::Write), holders))
-}
-
-/// The roles `who` rotates for a rotation of `roles` of `a` boxing `holders` (spec/crypto.md §4,
-/// Possession, Writers): `roles` where Authority holds; with write added where `roles` are below
-/// write (sync, read) and Authority holds only so (a holder actor `who` writes `a` through is
-/// shown at write only by a proof in a keyset of write); `None` where it fails either way: the
-/// rotation waits.
-pub(crate) fn shown_roles(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>, holders: &[Recipient]) -> Option<BTreeSet<Role>> {
-    if possessed(core, who, a, roles, holders) {
-        return Some(roles.clone());
-    }
-    let with_write: BTreeSet<Role> = roles.iter().copied().chain([Role::Write]).collect();
-    (roles.iter().all(|r| *r < Role::Write) && possessed(core, who, a, &with_write, holders)).then_some(with_write)
 }
 
 /// Holders a rotation `rot` of `a` boxes that hold no box at a current read epoch before it: its
@@ -530,7 +522,7 @@ fn rotate_boxing(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>, hold
     if who != tx.core.writer()? {
         m.sign_as(who);
     }
-    let rot = rotation_into(tx, &mut m, a, roles, &held, holders, false)?;
+    let rot = rotation_into(tx, &mut m, a, roles, &held, holders, Departs::No)?;
     if refreshes_deposit(tx.core, &who, &a, roles) {
         fresh_deposit_seed(tx, &mut m, a)?;
     }
@@ -551,7 +543,7 @@ fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotat
     done.deliveries.extend(deliver_rotation(tx, a, c, to)?);
     if let Some(c) = c {
         let under = above(tx.core, &a);
-        done.deliveries.push(flows::owe(tx, Delivery::First { commits: placed_with(c, Some(&rot.names)), under })?);
+        done.deliveries.push(flows::owe(tx, Delivery::First { commits: placed_with(c, Some(rot)), under })?);
         carry(tx, a, &rot.secrets, Some(&rot.keys), done)?;
     }
     Ok(())
@@ -568,12 +560,14 @@ pub(crate) fn carry(tx: &mut Tx<'_>, a: Tid, w: &osis_keys::SecretsWrite, keys: 
     Ok(())
 }
 
-/// Commit `c` (a rotation) and the commits `names` (its names) name: placed together, first,
-/// under each label `c` goes under (spec/crypto.md §4, names), so whoever reads `c` there can
-/// meet them.
-pub(crate) fn placed_with(c: osis_base::CommitId, names: Option<&osis_keys::Names>) -> Vec<osis_base::CommitId> {
-    let named: BTreeSet<osis_base::CommitId> = names.into_iter().flat_map(|n| n.list.iter().map(|n| n.key.commit)).filter(|x| *x != c).collect();
-    std::iter::once(c).chain(named).collect()
+/// Commit `c` (its rotation `rot`) with the commits `rot`'s names name and the demotions its
+/// keysets carry: placed together, first, under each label `c` goes under (spec/crypto.md §4,
+/// names, Carried demotions), so whoever reads `c` there can meet them, and holds its keysets.
+pub(crate) fn placed_with(c: osis_base::CommitId, rot: Option<&Rotation>) -> Vec<osis_base::CommitId> {
+    let named = rot.into_iter().flat_map(|r| r.names.list.iter().map(|n| n.key.commit));
+    let carried = rot.into_iter().flat_map(|r| r.keys.keysets.values()).flat_map(|ks| ks.demotions.iter().copied());
+    let with: BTreeSet<osis_base::CommitId> = named.chain(carried).filter(|x| *x != c).collect();
+    std::iter::once(c).chain(with).collect()
 }
 
 /// Things whose labels must learn a rotated actor's new `keys.0`: what it is a holder of and
@@ -692,13 +686,9 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, mode:
         if mine.is_empty() {
             continue;
         }
-        // a rotation due waits (its roles stay blocked) for want of possession: every node
-        // would judge it invalid
         let holders = recipients(tx, &who, &x, &[])?;
-        if let Some(mine) = shown_roles(tx.core, &who, &x, &mine, &holders.holders) {
-            done.extend(rotate_boxing(tx, who, x, &mine, &holders)?);
-            rotated.push(x);
-        }
+        done.extend(rotate_boxing(tx, who, x, &mine, &holders)?);
+        rotated.push(x);
     }
     Ok(rotated)
 }
@@ -787,7 +777,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[c
     let ended: Vec<(Tid, Option<Role>)> = ended_holders(tx.core, &who, &t).into_iter().map(|m| (m, None)).collect();
     let holders = recipients(tx, &who, &t, &ended)?;
     let mut m = Mutation::new();
-    let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, false)?;
+    let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, Departs::No)?;
     let deposit = fresh_deposit_seed(tx, &mut m, t)?;
     // the rule (spec/sync-ids.md §2): role secrets of its own and its one sync ID, its home and inbox,
     // in this one commit
@@ -980,7 +970,7 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
 /// entry. At an epoch blocked for `who` (`blocked_epoch`) only what the live entries list: a
 /// history entry is encrypted under its epoch (spec/crypto.md §4, Encrypting under), and a
 /// party the epoch does not cover opens it, so a grant or re-seal made while blocked (Seal
-/// waiting, Authority failing) copies the history and adds nothing to it.
+/// waiting, a remover that may not rotate) copies the history and adds nothing to it.
 pub(crate) fn history_boxes(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<HistoryBoxes> {
     let Some(epochs) = tx.core.epochs(a) else { return Ok(HistoryBoxes::new()) };
     let secrets = secrets_in(tx, a)?;
@@ -1175,9 +1165,7 @@ mod tests;
 #[cfg(test)]
 mod tests_members;
 #[cfg(test)]
-mod tests_possession;
-#[cfg(test)]
-mod tests_authority;
+mod tests_carried;
 #[cfg(test)]
 mod tests_departs;
 #[cfg(test)]

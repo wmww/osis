@@ -2088,7 +2088,7 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
     let w = osis_keys::box_holder(&d, &v, &osis_keys::HistoryBoxes::new(), &rc, &BTreeSet::from([Role::Read]), &mut osis_crypto::SeededRng::from_u64(5)).unwrap().unwrap();
     let mut s = ct::Secrets::default();
     w.apply(&mut s);
-    let junk = ct::SecretBox::Symmetric(ct::SymmetricBox { epoch: osis_keys::aspects::to_schema(&top), wrap: vec![0; 49], possession: None });
+    let junk = ct::SecretBox::Symmetric(ct::SymmetricBox { epoch: osis_keys::aspects::to_schema(&top), wrap: vec![0; 49] });
     for i in 0..100u64 {
         let e = osis_crypto::Epoch::new(i64::MAX as u64 - 1 - i, [2; 32]).unwrap();
         s.boxes.insert(osis_keys::aspects::box_key(pb, Role::Read, &e), junk.clone());

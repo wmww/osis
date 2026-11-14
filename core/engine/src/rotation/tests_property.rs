@@ -70,6 +70,9 @@ struct Run {
     /// Boxes a re-seal wrote to a holder actor at a keyset whose secret its writer lacked: the
     /// box (actor, role, epoch, holder actor), the keyset, and the commits the writer held.
     resealed: Vec<(BoxAt, Epoch, BTreeSet<CommitId>)>,
+    /// The holder actors (no peers) each rotation commit boxes, per role, each with the keyset
+    /// its box names, as its maker's state read just after it (`record`).
+    boxed: BTreeMap<(CommitId, Role), BTreeSet<(Tid, Epoch)>>,
     rng: Rng,
     /// Peers that forged: their nodes no longer act, and nothing is checked of them.
     hostile: BTreeSet<usize>,
@@ -104,7 +107,7 @@ impl Drop for Run {
 impl Run {
     fn new(lp: LocalPeer, actors: Vec<(Tid, usize)>, rng: Rng) -> Run {
         let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.me()).collect();
-        let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), resealed: Vec::new(), states: Vec::new(), state_step: Vec::new(), stale: BTreeSet::new(), secrets: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
+        let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), resealed: Vec::new(), boxed: BTreeMap::new(), states: Vec::new(), state_step: Vec::new(), stale: BTreeSet::new(), secrets: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
         run.log.push(format!("actors {:?} (owners), peers {:?}", run.actors, run.tids));
         run.note();
         run
@@ -243,7 +246,10 @@ impl Run {
                         let own = self.lp.peers[i].engine.core.ix.epoch_intro.get(&(t, r, *x)).map(|v| v.1);
                         let after = own.and_then(|c| self.after(i, &c));
                         // a peer reading a holder actor the epoch boxes reads it rightly
-                        let via = own.map(|c| self.boxed_actors(i, &c, t, r)).unwrap_or_default();
+                        let via = self.boxed_actors(i, t, r, x);
+                        if let Some(c) = own {
+                            self.boxed.insert((c, r), via.clone());
+                        }
                         // its maker holds what it made (a leaver rotating in its own
                         // self-removal): rule 1 judges who encrypts under it after
                         let below: BTreeSet<usize> = (0..N).filter(|d| *d != i && !access_at(self, i, *d, t, r, after) && !via.iter().any(|(m, _)| access_at(self, i, *d, *m, r, after))).collect();
@@ -268,13 +274,12 @@ impl Run {
         Some(osis_perm::Point { ts: h.ts, node: h.author, commit: CommitId([0xff; 32]) })
     }
 
-    /// The holder actors (no peers) commit `c` boxes or proves at role `r` of actor `a`, as peer
-    /// `i` read it, each with the keyset its box or proof names.
-    fn boxed_actors(&self, i: usize, c: &CommitId, a: Tid, r: Role) -> BTreeSet<(Tid, Epoch)> {
-        let core = &self.lp.peers[i].engine.core;
-        let Some(m) = core.ix.commits.get(c) else { return BTreeSet::new() };
-        let parts = m.view.aspects.iter().enumerate().filter(|(_, x)| x.tid == a).filter_map(|(ai, _)| core.ix.shown.get(&(*c, ai)));
-        parts.flat_map(|x| x.shown.iter().filter(|s| s.role == r && !self.tids.contains(&s.holder)).map(|s| (s.holder, s.keyset)).collect::<Vec<_>>()).collect()
+    /// The holder actors (no peers) epoch `e` of role `r` of actor `a` boxes in peer `i`'s
+    /// `secrets.0` state, each with the keyset its box names (each, for a joint box).
+    fn boxed_actors(&mut self, i: usize, a: Tid, r: Role, e: &Epoch) -> BTreeSet<(Tid, Epoch)> {
+        let s = self.lp.peers[i].engine.get_typed(&a, &ct::SECRETS).ok().flatten().unwrap_or_default();
+        let at = |k: &ct::BoxKey| k.role == r && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == *e);
+        s.boxes.iter().filter(|(k, _)| at(k) && !self.tids.contains(&k.holder)).flat_map(|(k, b)| osis_keys::box_keysets(b).into_iter().map(move |x| (k.holder, x))).collect()
     }
 
     /// Whether keyset `k` of role `r` of holder actor `m` is superseded where the commits `held`
@@ -288,7 +293,7 @@ impl Run {
     /// Whether a box to holder actor `m` at keyset `k` of role `r`, sealed by a rotator lacking
     /// `k`'s secret and holding the commits `held`, is within the stated limits for departed
     /// peer `d` (spec/crypto.md §4), read from the history at `o`. Seal leaves `m` out where `k`'s
-    /// rotation boxes or proves a keyset of a holder actor of `m` that a keyset the rotator held
+    /// rotation boxes a keyset of a holder actor of `m` that a keyset the rotator held
     /// supersedes (Stale), so a departure below `m` reaches the box only until such a keyset
     /// does (the limit for a departure from a holder actor of M). A departure from `m` itself is
     /// judged by order alone (the limit for an epoch whose secret the node lacks): within it
@@ -299,7 +304,7 @@ impl Run {
     fn excused(&self, o: usize, held: &BTreeSet<CommitId>, m: Tid, r: Role, k: &Epoch, d: usize) -> bool {
         let core = &self.lp.peers[o].engine.core;
         let Some((_, c)) = core.ix.epoch_intro.get(&(m, r, *k)) else { return true };
-        if held.contains(c) && self.boxed_actors(o, c, m, r).iter().any(|(m2, k2)| self.superseded(o, held, *m2, r, k2)) {
+        if held.contains(c) && self.boxed.get(&(*c, r)).into_iter().flatten().any(|(m2, k2)| self.superseded(o, held, *m2, r, k2)) {
             return false;
         }
         let Some(om) = self.actors.iter().find(|x| x.0 == m).map(|x| x.1) else { return true };
@@ -337,7 +342,7 @@ impl Run {
             let held = tx.core.epochs(&t).unwrap_or_default();
             let holders = super::recipients(tx, &tx.core.writer().unwrap(), &t, &skip)?;
             let mut m = Mutation::new();
-            let r = super::rotation_into(tx, &mut m, t, rot, &held, &holders, false)?;
+            let r = super::rotation_into(tx, &mut m, t, rot, &held, &holders, crate::rotation::Departs::No)?;
             crate::engine::Engine::commit_tx(tx, m)?;
             super::record(tx, t, &r)
         })

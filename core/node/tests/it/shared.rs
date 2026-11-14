@@ -617,7 +617,7 @@ fn a_forged_grant_is_not_offered_again_spec_sync_10() {
     msgs.extend(shared_of(&send(&mut net, t, &mut p, Message::Beacons { id: 40, generation: 1, base: None, f, lo: 0, hi: 1 << f, gcs: encode_gcs(&[beacon_value(&bcn, f)], 0), more: false })));
     let tag = beacon_reply(&entry, &kl.0, &bcn, (false, &LISTENER, &ch, &p.hello));
     let forged = osis_proto::msg::Grant {
-        entry_box: Some(osis_proto::msg::SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: osis_schema::core_types::Epoch { n: 1, nonce: [8; 32] }, wrap: vec![1; 48], possession: None })),
+        entry_box: Some(osis_proto::msg::SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: osis_schema::core_types::Epoch { n: 1, nonce: [8; 32] }, wrap: vec![1; 48] })),
         steps: vec![crate::hostile_host::foreign_step(3)],
     };
     let mut hits = 0;
@@ -673,7 +673,7 @@ fn answer_static_hit(grant: impl FnOnce(&mut Net, usize, LabelId, osis_base::Tid
 #[test]
 fn a_forged_head_and_box_teach_nothing_spec_sync_10() {
     let (diags, before, after) = answer_static_hit(|_, _, _, _, _| osis_proto::msg::Grant {
-        entry_box: Some(osis_proto::msg::SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: osis_schema::core_types::Epoch { n: 1, nonce: [8; 32] }, wrap: vec![1; 48], possession: None })),
+        entry_box: Some(osis_proto::msg::SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: osis_schema::core_types::Epoch { n: 1, nonce: [8; 32] }, wrap: vec![1; 48] })),
         steps: vec![crate::hostile_host::foreign_step(3)],
     });
     assert!(diags.iter().any(|x| x.contains("granted path does not verify")), "{diags:?}");

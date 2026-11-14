@@ -228,7 +228,6 @@ pub(crate) fn take_seeds(tx: &mut Tx<'_>, d: &Tid) -> Result<()> {
         tx.core.role_changed();
         // the epoch it can sign at may move
         tx.core.ix.epochs_due.insert(p);
-        crate::apply::keyset_changed(tx.core, &p);
     }
     Ok(())
 }

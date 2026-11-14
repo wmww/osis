@@ -25,10 +25,9 @@ pub fn history_key(role: Role, epoch: &Epoch) -> HistoryKey {
     HistoryKey { role, epoch: to_schema(epoch) }
 }
 
-/// The keyset of a role epoch: its KEM public key `kdf("kem", secret)`, delete key and
-/// possession key (spec/crypto.md §3, §7, §4), listing `supersedes` and the digest of the
-/// rotation's `names` (§4), with no possession proofs or left-out keysets yet (`produce::rotate`
-/// adds them).
+/// The keyset of a role epoch: its KEM public key `kdf("kem", secret)` and delete key
+/// (spec/crypto.md §3, §7), listing `supersedes` and the digest of the rotation's `names` (§4),
+/// with no left-out or sealed-at keysets or carried demotions yet (`produce::rotate` adds them).
 pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>, names: &Names) -> Keyset {
     Keyset {
         epoch: to_schema(epoch),
@@ -36,10 +35,11 @@ pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>, na
         suite: SUITE,
         delete_key: SigningKey::Ed25519(DeleteSecret::derive(secret).verifying_key().to_bytes().to_vec()),
         supersedes: supersedes.iter().map(to_schema).collect(),
-        possession_key: SigningKey::Ed25519(crate::possession::possession_key(secret).to_bytes().to_vec()),
         names: names.digest(),
-        proofs: BTreeMap::new(),
         left_out: BTreeMap::new(),
+        sealed_at: BTreeMap::new(),
+        demotions: BTreeSet::new(),
+        demotes: false,
     }
 }
 

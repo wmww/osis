@@ -425,30 +425,6 @@ fn entry_maps(f: &Fragment) -> Option<Vec<(u64, &osis_crdt::Map)>> {
     Some(out)
 }
 
-/// What a role commit's `secrets.0` delta on `actor` shows for possession (spec/crypto.md §4):
-/// whether it writes more than entries (`rotates`), the boxes it removes, and each box's keyset
-/// and signature.
-fn showing_of(actor: &Tid, f: &Fragment) -> crate::engine::Showing {
-    let w = super::keys::secrets_write(f);
-    let rotates = entry_maps(f).is_none();
-    let removed = w.removed.iter().map(|k| (k.holder, k.role)).collect();
-    let shown = w.boxes.iter().filter_map(|(k, b)| osis_keys::possession::Shown::of(actor, k, b)).collect();
-    crate::engine::Showing { rotates, top: None, removed, shown, checked: Default::default() }
-}
-
-/// What a role commit's `keys.0` delta on `actor` shows for possession (spec/crypto.md §4):
-/// whether it writes a keyset (a rotation), the highest role it writes one of, and the proofs its
-/// keysets carry.
-fn proofs_of(actor: &Tid, w: &osis_keys::KeysWrite) -> crate::engine::Showing {
-    let shown = w.keysets.iter().flat_map(|(r, ks)| osis_keys::possession::Shown::of_keyset(actor, *r, ks)).collect();
-    crate::engine::Showing { rotates: !w.keysets.is_empty(), top: w.keysets.keys().max().copied(), removed: Vec::new(), shown, checked: Default::default() }
-}
-
-/// Notes what part `ai` of `id` shows for possession (`Indexes::shown`).
-pub(crate) fn note_shown(core: &mut Core, id: &CommitId, ai: usize, x: Arc<crate::engine::Showing>) {
-    core.ix.shown.insert((*id, ai), x);
-}
-
 /// Records the roles `secrets.0` and `keys.0` deltas of a commit need, and the `secrets.0` parts
 /// of a role commit that write beyond its grantees' boxes. `read`: every held part of the
 /// commit (a late `secrets.0` part is judged with the `roles.0` part held before it).
@@ -464,28 +440,6 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &s
     }
     if h.kind != Kind::Role {
         return;
-    }
-    // a part's deltas (pages of one rotation) show together
-    let mut showing: BTreeMap<usize, crate::engine::Showing> = BTreeMap::new();
-    for (i, (ai, d)) in parts.iter().enumerate() {
-        let (Some(a), Decoded::Delta(d)) = (h.aspects.get(*ai), d) else { continue };
-        let x = match (a.ak.as_str(), read.keys(i)) {
-            ("secrets.0", _) => showing_of(&a.tid, &d.fragment),
-            (_, Some(k)) => proofs_of(&a.tid, &k.write),
-            _ => continue,
-        };
-        let e = showing.entry(*ai).or_insert_with(|| core.ix.shown.get(&(*id, *ai)).map(|x| (**x).clone()).unwrap_or_default());
-        e.rotates |= x.rotates;
-        e.top = e.top.max(x.top);
-        e.removed.extend(x.removed);
-        e.shown.extend(x.shown);
-    }
-    for (ai, mut x) in showing {
-        x.shown.sort();
-        x.shown.dedup();
-        x.removed.sort();
-        x.removed.dedup();
-        note_shown(core, id, ai, Arc::new(x));
     }
     // the edges this commit puts, per target: what an invite grant may box
     let mut granted: BTreeMap<(Tid, Tid), Role> = BTreeMap::new();
@@ -845,9 +799,6 @@ impl<'a> Judge<'a> {
         let core = self.core;
         let ak = a.ak.as_str();
         let point = Point { ts: h.ts, node: h.author, commit: *id };
-        if matches!(ak, "secrets.0" | "keys.0") && h.kind == Kind::Role && !possessed(core, tl, h, id, ai, a) {
-            return false;
-        }
         // an applied invite grant carries the grantee's boxes (spec/permissions.md §1, §2): every
         // put on the thing applied as an invite grant (`grant_overreach` checked the boxes against
         // all of them), so a self-removal beside a failing put exempts nothing
@@ -867,111 +818,6 @@ impl<'a> Judge<'a> {
         }
         required == Role::Write && plain_part(h, a) && self.vouched(&a.tid, point)
     }
-}
-
-/// What possession is judged by (`osis_keys::possession::View`): the roles and the held valid
-/// keysets just before a role commit's key on the actor's timeline (a keyset counts by a body
-/// ordered before it: validity follows the key order, so it has one result).
-struct Possession<'a> {
-    core: &'a Core,
-    tl: &'a osis_perm::Timeline,
-    at: At,
-    point: Point,
-    actor: Tid,
-    author: Tid,
-    /// The author's roles on paths not through the actor.
-    roles: BTreeMap<Tid, Role>,
-    /// The part's signatures checked so far.
-    checked: &'a crate::engine::Verdicts,
-}
-
-impl osis_keys::possession::View for Possession<'_> {
-    fn key_actor(&self, t: &Tid) -> bool {
-        self.core.is_key_actor(t) && !self.core.is_account(t)
-    }
-    fn shown_up_to(&self, t: &Tid, role: Role) -> Role {
-        if self.core.is_account(t) { Role::Admin } else { role }
-    }
-    fn author_on(&self, t: &Tid) -> Option<Role> {
-        self.roles.get(t).copied()
-    }
-    /// The roster before the commit, an actor destroyed before it (the commit is stamped after its
-    /// destruction) in place of its frozen holders, and so on (spec/crypto.md §4, Holder actors, Destroyed).
-    fn holder_actors(&self) -> BTreeSet<Tid> {
-        let held = |m: &Tid| self.core.is_account(m) || self.core.keysets_of(m).any(|(_, _, x)| x.held_before(&self.point));
-        let header = self.core.ix.commits.get(&self.point.commit).map(|m| m.header.clone());
-        let ended_before = |m: &Tid| {
-            self.core.destroyed_actor(m) && header.as_ref().is_some_and(|h| crate::retention::destroy::Destruction::of(self.core, m).is_some_and(|e| e.after(h, &self.point.commit)))
-        };
-        let mut out = BTreeSet::new();
-        let mut seen = BTreeSet::from([self.actor]);
-        let mut work = vec![self.actor];
-        while let Some(t) = work.pop() {
-            for m in self.tl.roster(&t, self.at).into_keys() {
-                if ended_before(&m) {
-                    if seen.insert(m) {
-                        work.push(m);
-                    }
-                } else if m != self.actor {
-                    out.insert(m);
-                }
-            }
-        }
-        out.retain(|m| *m != self.author && !self.key_actor(m) && held(m));
-        out
-    }
-    fn role_on_actor(&self, avoid: &BTreeSet<Tid>) -> Option<Role> {
-        self.tl.roles_avoiding(&self.author, self.at, avoid).get(&self.actor).copied()
-    }
-    fn keys(&self, m: &Tid, r: Role, k: &osis_crypto::Epoch) -> Option<Vec<osis_crypto::VerifyingKey>> {
-        if self.core.is_account(m) {
-            return self.core.account_view(m)?.possession_key(k, &self.point).map(|pk| vec![pk]);
-        }
-        let x = self.core.ix.keysets.get(&(*m, r, *k)).filter(|x| x.held_before(&self.point))?;
-        Some(x.possession.iter().filter(|(_, p)| **p < self.point).map(|(pk, _)| *pk).collect())
-    }
-    fn verifies(&self, s: &osis_keys::possession::Shown, pk: &osis_crypto::VerifyingKey) -> bool {
-        self.checked.verifies(s, pk)
-    }
-}
-
-/// Whether part `ai` (`secrets.0` or `keys.0` on `a`) of role commit `id` passes possession
-/// (spec/crypto.md §4, Holder actors, Authority), from what its bodies showed (`Indexes::shown`).
-/// A rotation (its `keys.0` part on `a` writes a keyset) is judged whole by the proofs its
-/// keysets carry: its `secrets.0` part shares the verdict, so a node holding the keysets alone
-/// (certificates) judges it alike. A `secrets.0` body held beside a `keys.0` part whose body
-/// never was is judged showing nothing; with neither body held there is nothing to judge. Any
-/// other `secrets.0` part is judged by its boxes when it removes a box or writes more than
-/// entries; anything else is not judged (a box alone never is).
-///
-/// Invariant (arrival-order independence): a function of `a`'s timeline (`stale_things` when it
-/// changes) and of the held valid keysets of the holders it boxes or proves and of `a`'s holders
-/// (`stale_commits` when they change, `apply::keys::keyset_changed`), read before its key.
-fn possessed(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
-    let ki = h.aspect_index(&a.tid, "keys.0");
-    let keys = ki.map(|ki| (ki, core.ix.shown.get(&(*id, ki))));
-    let own = || core.ix.rotation_role.get(&(*id, ai)).copied().unwrap_or(Role::Write);
-    // a rotation needs the right to rotate its highest rotated role (at least write)
-    let (x, rotation, needed) = match (a.ak.as_str(), keys) {
-        (_, Some((_, Some(k)))) if k.rotates => (k.clone(), true, k.top.map_or(Role::Write, |r| r.max(Role::Write))),
-        ("keys.0", _) => return true,
-        (_, Some((_, None))) if core.ix.shown.contains_key(&(*id, ai)) => (Arc::new(crate::engine::Showing::default()), true, own()),
-        (_, Some((_, None))) => return true,
-        _ => match core.ix.shown.get(&(*id, ai)) {
-            Some(x) => (x.clone(), x.rotates, own()),
-            None => return true,
-        },
-    };
-    if x.removed.is_empty() && !rotation {
-        return true;
-    }
-    let point = Point { ts: h.ts, node: h.author, commit: *id };
-    let at = At::before(point);
-    // the author's roles on holder actors not through `a` (a role on M through `a` is a cycle,
-    // read through a keyless grant: no secret of M to show)
-    let roles = tl.roles_avoiding(&h.author, at, &BTreeSet::from([a.tid]));
-    let v = Possession { core, tl, at, point, actor: a.tid, author: h.author, roles, checked: &x.checked };
-    osis_keys::possession::holds(&x.shown, &x.removed, rotation, needed, &v)
 }
 
 /// Re-judges the held deltas whose validity may have changed since the last call: those on the

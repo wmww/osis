@@ -81,32 +81,14 @@ pub(crate) fn setting_keeps(tx: &mut Tx<'_>, c: &CommitId, ai: usize, now: u64) 
 /// that replacement (wall ms, 0: none) for `at_clock`. A part's date and keep read only its
 /// aspect's writes and setting, so no other part of its commit keeps it (a purge-on-replace part
 /// goes under its cover whatever its commit's kept parts keep), a covered drop on one aspect
-/// moves no other part's bound, and a part on an aspect no setting keeps has none, but for a
-/// part another held part is judged by (`judged_by_held`). A part not replaced is kept while
-/// live where its aspect's setting says so (`live_keep`).
+/// moves no other part's bound, and a part on an aspect no setting keeps has none. A part not
+/// replaced is kept while live where its aspect's setting says so (`live_keep`).
 fn part_bounds(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<(u64, u64)> {
     let Some(a) = h.aspects.get(ai) else { return Ok((0, 0)) };
-    if judged_by_held(tx.core, h, c, a) {
-        return Ok((osis_commit::FOREVER, 0));
-    }
     let r = part_replaced_at(tx, h, c, ai)?.map(|t| t.wall_ms().0);
     let k = kept_until(tx.core, h, a, r);
     let k = if r.is_none() { k.max(live_keep(tx.core, c, ai, a)) } else { k };
     Ok((k, r.unwrap_or(0)))
-}
-
-/// Whether part `a` of `c` is a judgment input of another part of `c` this node holds, so kept
-/// while that part is (spec/commits.md §5 Keep bounds): a role commit's `keys.0` part on a thing,
-/// whose proofs (and whether it rotates at all) Authority judges the commit's `secrets.0` part
-/// on that thing by (spec/crypto.md §4). Dropped earlier, a node joining later would hold the
-/// `secrets.0` part alone and judge it otherwise than its holders, for good. No snapshot carries
-/// the proofs of a replaced keyset, so no cover stands in for it.
-fn judged_by_held(core: &Core, h: &Header, c: &CommitId, a: &osis_commit::AspectEntry) -> bool {
-    if h.kind != osis_commit::Kind::Role || a.ak.as_str() != "keys.0" {
-        return false;
-    }
-    let Some(m) = core.ix.commits.get(c) else { return false };
-    m.view.aspect(&a.tid, "secrets.0").is_some_and(|si| m.holds(si))
 }
 
 /// Until when part `ai` of `c` (`a`), not dated as replaced, is kept while live (spec/commits.md
@@ -545,10 +527,9 @@ impl Engine {
     }
 
     /// Body `(tid, ak)` of `c` is kept for good (its `drop_from` is past `FOREVER`: while live,
-    /// spec/commits.md §5 Kept while live, or a keyset while its boxes are held,
-    /// `judged_by_held`): it leaves the aspect's cover candidates (`Core::cover_judged_on`) until
-    /// a write of it dies, its aspect is rebuilt, its thing's setting changes or its commit's
-    /// `secrets.0` part on the thing drops.
+    /// spec/commits.md §5 Kept while live): it leaves the aspect's cover candidates
+    /// (`Core::cover_judged_on`) until a write of it dies, its aspect is rebuilt or its thing's
+    /// setting changes.
     pub fn settle_kept(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) {
         if let Some(s) = self.core.cover_candidates.get_mut(&(*tid, ak.clone())) {
             s.remove(c);

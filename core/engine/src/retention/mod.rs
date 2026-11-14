@@ -262,7 +262,6 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // a role-class body whole: what keys noted from it (`keys::keysets_of`, `forget_dropped`)
     let role_bodies: Vec<Fragment> = if is_role_class(a.ak.as_str()) { crate::apply::held_fragment(tx, c, ai)?.into_iter().collect() } else { Vec::new() };
     let keysets = crate::apply::keys::keysets_of(&m.header, ai, &role_bodies);
-    let shown = tx.core.ix.shown.get(&(*c, ai)).cloned();
     // what it links joins its thing's freed set first; an invalid body's stays at hosts with its
     // pieces, a refetch source (spec/permissions.md §6)
     if !invalid {
@@ -272,7 +271,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
     }
     // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received
-    m.set_hold(ai, Hold::Dropped(Dropped { covered_by, why, hosts_from, stands_in, role, overreach, keysets, shown, superseded_by: BTreeSet::new() }));
+    m.set_hold(ai, Hold::Dropped(Dropped { covered_by, why, hosts_from, stands_in, role, overreach, keysets, superseded_by: BTreeSet::new() }));
     if osis_schema::core_types::is_addenda(a.ak.as_str()) {
         crate::apply::validity::forget_addendum_body(tx.core, c, &a.tid);
     }
@@ -285,14 +284,6 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // a part not held is no cover candidate (`Core::cover_judged_on`)
     if let Some(s) = tx.core.cover_candidates.get_mut(&k) {
         s.remove(c);
-    }
-    // a role commit's `keys.0` part on the thing, kept for good while this part was held
-    // (`bounds::judged_by_held`), has its own bound again: a cover candidate again
-    if header.kind == osis_commit::Kind::Role && a.ak.as_str() == "secrets.0" {
-        let keys = osis_schema::core_types::KEYS.name();
-        if held_part(tx.core, c, &a.tid, &keys).is_some() {
-            tx.core.cover_candidates.entry((a.tid, keys)).or_default().insert(*c);
-        }
     }
     crate::apply::note_stands_in(tx.core, c);
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);

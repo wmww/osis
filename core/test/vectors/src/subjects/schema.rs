@@ -31,7 +31,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         (tid(7), Edge { role: Role::Admin, until: None, invite: None, tied: None }),
     ]);
     let keys = Keys {
-        read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]), possession_key: SigningKey::Ed25519(vec![7; 32]), names: [6; 32], proofs: BTreeMap::new(), left_out: BTreeMap::new() }),
+        read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]), names: [6; 32], left_out: BTreeMap::new(), sealed_at: BTreeMap::from([(tid(12), BTreeSet::from([epoch(3)]))]), demotions: BTreeSet::from([CommitId([7; 32])]), demotes: true }),
         inbox: Some(Inbox { label: LabelId([10; 16]), hosts: vec![Address { url: "quic://s.example:4433".into(), key: [11; 32] }] }),
         deposit_seed: Some([12; 32]),
         ..Keys::default()
@@ -42,7 +42,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
                 BoxKey { holder: tid(13), role: Role::Read, epoch: epoch(2) },
                 SecretBox::Sealed(SealedBox { keyset: Some(epoch(1)), suite: 1, sealed: Sealed::X25519MlKem768(vec![15; 40]) }),
             ),
-            (BoxKey { holder: tid(13), role: Role::Write, epoch: epoch(2) }, SecretBox::Symmetric(SymmetricBox { epoch: epoch(1), wrap: vec![16; 48], possession: Some(Signature::Ed25519(vec![17; 64])) })),
+            (BoxKey { holder: tid(13), role: Role::Write, epoch: epoch(2) }, SecretBox::Symmetric(SymmetricBox { epoch: epoch(1), wrap: vec![16; 48] })),
         ]),
         history: BTreeMap::from([(HistoryKey { role: Role::Read, epoch: epoch(1) }, vec![17; 64])]),
     };

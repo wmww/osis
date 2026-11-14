@@ -89,7 +89,7 @@ pub(super) fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::
             }
             Forge::Rotating => {
                 let holders = super::recipients(tx, &me, &g, &[(me, None)])?;
-                let rot = super::rotation_into(tx, &mut m, g, &[Role::Read, Role::Write].into(), &held, &holders, true)?;
+                let rot = super::rotation_into(tx, &mut m, g, &[Role::Read, Role::Write].into(), &held, &holders, crate::rotation::Departs::Holder)?;
                 assert!(rot.names.departs.is_some());
                 out.extend(rot.rotated.iter().map(|r| (r.role, r.epoch)));
             }
@@ -112,7 +112,7 @@ pub(super) fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::
                 _ => {
                     // its names list the self-removal: an applied write lowering its edge
                     let holders = super::recipients(tx, &me, &g, &[])?;
-                    let rot = super::rotation_into(tx, &mut m, g, &[Role::Read, Role::Write].into(), &held, &holders, false)?;
+                    let rot = super::rotation_into(tx, &mut m, g, &[Role::Read, Role::Write].into(), &held, &holders, crate::rotation::Departs::No)?;
                     if !rot.names.list.iter().any(|n| n.key.commit == c.unwrap()) {
                         return Err(crate::Error::Misuse("the backdated rotation does not name the self-removal"));
                     }
@@ -284,8 +284,7 @@ fn dropped_lowering_takes_nothing_spec_crypto_4() {
 // spec/permissions.md §2 (self-removal: authority through the holder does not count),
 // spec/crypto.md §4 (covers: a rotation commit counts while its author holds the role): group M
 // holds admin on A; P1, M's first admin, holds admin on A only through M. P1 demotes M to write in a
-// commit carrying a frontier and a rotation of admin and read (boxing M, which shows M:
-// Authority holds). It applies as a self-removal; P1 made the new admin secret and holds only
+// commit carrying a frontier and a rotation of admin and read (boxing M). It applies as a self-removal; P1 made the new admin secret and holds only
 // write after, so the first admin rotates admin again.
 #[test]
 fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
@@ -307,7 +306,7 @@ fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
             crate::flows::put_edge(&mut m_, a, m, &edge(Role::Write))?;
             m_.frontier(osis_schema::Codec::to_value(&ct::Frontier::default()));
             let holders = super::recipients(tx, &me, &a, &[(m, Some(Role::Write))])?;
-            let rot = super::rotation_into(tx, &mut m_, a, &[Role::Read, Role::Admin].into(), &held, &holders, true)?;
+            let rot = super::rotation_into(tx, &mut m_, a, &[Role::Read, Role::Admin].into(), &held, &holders, crate::rotation::Departs::Holder)?;
             assert!(rot.names.departs.is_some());
             tx.core.skip_writer_rules = true;
             let c = crate::engine::Engine::commit_tx(tx, m_);

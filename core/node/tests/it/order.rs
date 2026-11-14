@@ -3795,18 +3795,6 @@ fn keep_for_d_named(h: &[Step]) -> (usize, usize) {
     (judged, later)
 }
 
-// spec/crypto.md §4 Holder actors: what a rotation's `secrets.0` part shows for possession is
-// kept across a reopen (the persisted index), so the part is judged again alike after one: an
-// order-harness history over record-only things, in named orders (as made, a role commit's
-// `secrets.0` part judged anew after a reopen differs when `Indexes::shown` is not reloaded at open).
-#[test]
-fn possession_judged_alike_after_reopen_spec_crypto_4() {
-    use Step::*;
-    let a = |x: Step| Aim(Box::new(x));
-    let h = vec![RecordOnly { by: 0, under: None }, a(RecordOnly { by: 0, under: Some(0) }), a(Nested { by: 0, other: 1, t: 6, k: 1, text: false, compact: true, also: true }), a(GrantFlow { by: 0, t: 2, holder: 0, role: Role::Admin }), a(GrantFlow { by: 0, t: 4, holder: 2, role: Role::Read }), a(GrantFlow { by: 0, t: 6, holder: 3, role: Role::Admin }), a(RemoveFlow { by: 1, t: 4, holder: 3, lower: false })];
-    check(0, &h, Cfg { sync: true, late: true, ..NAMED }).unwrap();
-}
-
 // spec/permissions.md §5.1 (Trust set): 2 removes 0's record edge on G while 0, not having seen
 // it, lowers 2 to read. A node given 0's write first trusts it (its default side) until it takes
 // the walk's side; held-model has no trust set, so every delivery takes the walk's side before

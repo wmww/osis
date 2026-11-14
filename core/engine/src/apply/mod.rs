@@ -27,7 +27,6 @@ mod tests_steps;
 #[cfg(test)]
 mod tests_account;
 
-pub(crate) use keys::keyset_changed;
 pub(crate) use unindex::{unindex_commit, unjudge_part};
 pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
@@ -1895,12 +1894,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 if d.overreach {
                     tx.core.ix.grant_overreach.insert((id, ai));
                 }
-                if let Some(x) = &d.shown {
-                    validity::note_shown(tx.core, &id, ai, x.clone());
-                }
-                if let Some(a) = h.aspects.get(ai) {
-                    keys::note_keysets(tx.core, &h, &id, &a.tid, &d.keysets);
-                }
             }
             atomic::index_commit(tx.core, &id, &m.view);
             tx.core.put_meta(id, m);
@@ -1922,12 +1915,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).chain(stripped).collect();
             for ai in ais {
                 let Some(a) = blob.header.aspects.get(ai) else { continue };
-                let keys = a.ak.as_str() == "keys.0";
                 let mut carried = crate::retention::snapshot::Carried::default();
-                if let Some(g) = each_held_piece(tx, &id, ai, &mut |tx, f| {
-                    if keys {
-                        keys::note_keysets(tx.core, &blob.header, &id, &a.tid, &keys::keysets_of(&blob.header, ai, std::slice::from_ref(&f)));
-                    }
+                if let Some(g) = each_held_piece(tx, &id, ai, &mut |_, f| {
                     carried.add(&f);
                     Ok(())
                 })?
@@ -1963,13 +1952,11 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             if !b.header.kind.is_role() {
                 continue;
             }
-            for (i, (ai, d)) in parts.iter().enumerate() {
-                if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d) {
-                    if a.ak.as_str() == "secrets.0" {
-                        keys::note_boxes_to(tx.core, &a.tid, &d.fragment);
-                    } else if let Some(k) = read.keys(i) {
-                        keys::note_keysets(tx.core, &b.header, &id, &a.tid, &k.recs);
-                    }
+            for (ai, d) in &parts {
+                if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d)
+                    && a.ak.as_str() == "secrets.0"
+                {
+                    keys::note_boxes_to(tx.core, &a.tid, &d.fragment);
                 }
             }
             let v = tx.core.ix.commits.get(&id).map(|m| m.view.clone()).ok_or(Error::Corrupt("commit meta"))?;
@@ -2035,6 +2022,10 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     } else {
         tx.core.stale_all = true;
         validity::rejudge_all(tx, false)?;
+        // the held keysets from the valid `keys.0` parts, now judged (nothing judges by them
+        // before)
+        let actors: BTreeSet<Tid> = tx.core.ix.commits.values().flat_map(|m| m.view.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid)).collect();
+        keys::rebuild_keysets(tx, &actors)?;
     }
     if fast {
         return Ok(None);

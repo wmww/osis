@@ -15,7 +15,6 @@ use osis_crypto::{AccountEpochKeys, Epoch, KemPublicKey, Secret32, VerifyingKey,
 use osis_keys::{ActorEpochs, HolderKeys, Keysets, ROLES, Recipient, account_epoch, account_keysets};
 use osis_label::Address;
 use osis_store::Shred;
-use osis_perm::Point;
 use osis_perm::chain::Rotation;
 use osis_perm::{EpochStanding, Epochs};
 use osis_schema::core_types::{self as ct, Edge, KemKey, Keys, SigningKey};
@@ -47,8 +46,6 @@ struct EpochPublic {
     signing: VerifyingKey,
     kem: Option<KemPublicKey>,
     supersedes: Vec<CommitId>,
-    /// Its rotation's key (`None`: the first epoch, standing since the account's creation).
-    at: Option<Point>,
 }
 
 /// What the chain of this node's account is read from besides the commits held
@@ -102,14 +99,6 @@ impl AccountView {
     /// rotation mints, or one not held).
     pub(crate) fn rotation_named(&self, name: &Epoch) -> Option<CommitId> {
         self.by_name.get(name).copied().filter(|id| *id != FIRST_EPOCH)
-    }
-
-    /// The possession key of the epoch named `name` (spec/crypto.md §4: its signing key), where
-    /// that epoch's rotation is ordered before `point` (a keyset counts by a body before the
-    /// commit's key).
-    pub(crate) fn possession_key(&self, name: &Epoch, point: &Point) -> Option<VerifyingKey> {
-        let (_, e) = self.named(name)?;
-        e.at.as_ref().is_none_or(|a| a < point).then_some(e.signing)
     }
 
     /// Whether the counting epoch named `name` is held and descends from rotation `s`, D's
@@ -402,12 +391,6 @@ impl Core {
         self.created(t).is_some_and(CreationRecord::is_account)
     }
 
-    /// Whether `m` is a holder actor with keysets held (spec/crypto.md §4): an account, or an
-    /// actor other than a key actor with a keyset of its own.
-    pub(crate) fn is_holder_actor(&self, m: &Tid) -> bool {
-        self.is_account(m) || (!self.is_key_actor(m) && self.keysets_of(m).next().is_some())
-    }
-
     /// This node's account and its devices actor, when it holds the account.
     pub fn account_devices(&self) -> Option<(Tid, Tid)> {
         let p = self.account.get()?;
@@ -461,23 +444,23 @@ impl Core {
             None => self.accounts.get(p)?.first,
         };
         let ak = osis_base::Ak::new("keys.0").ok()?;
-        let rots: Vec<(CommitId, CommitId, osis_commit::RotationHeader, Point)> = self.ix.by_aspect.get(&(*p, ak)).into_iter().flatten().filter_map(|(_, c)| {
+        let rots: Vec<(CommitId, CommitId, osis_commit::RotationHeader)> = self.ix.by_aspect.get(&(*p, ak)).into_iter().flatten().filter_map(|(_, c)| {
             let m = self.ix.commits.get(c).filter(|m| m.view.author == *p)?;
-            Some((*c, m.header.epoch?, m.header.rotation.clone()?, Point { ts: m.header.ts, node: *p, commit: *c }))
+            Some((*c, m.header.epoch?, m.header.rotation.clone()?))
         }).collect();
-        let sup: BTreeMap<CommitId, Vec<CommitId>> = rots.iter().map(|(id, _, r, _)| (*id, r.supersedes.clone())).collect();
+        let sup: BTreeMap<CommitId, Vec<CommitId>> = rots.iter().map(|(id, _, r)| (*id, r.supersedes.clone())).collect();
         let heights = heights(&sup);
         let mut epochs = BTreeMap::new();
-        epochs.insert(FIRST_EPOCH, EpochPublic { height: Some(0), signing: first, kem: None, supersedes: Vec::new(), at: None });
-        for (id, _, r, point) in &rots {
-            epochs.insert(*id, EpochPublic { height: heights.get(id).copied().flatten(), signing: r.signing_key, kem: Some(r.kem_key.clone()), supersedes: r.supersedes.clone(), at: Some(*point) });
+        epochs.insert(FIRST_EPOCH, EpochPublic { height: Some(0), signing: first, kem: None, supersedes: Vec::new() });
+        for (id, _, r) in &rots {
+            epochs.insert(*id, EpochPublic { height: heights.get(id).copied().flatten(), signing: r.signing_key, kem: Some(r.kem_key.clone()), supersedes: r.supersedes.clone() });
         }
         // a merge accepts a named fork only by that fork's signature (spec/crypto.md §9)
         let signed = |id: &CommitId, r: &osis_commit::RotationHeader| -> BTreeSet<CommitId> {
             let Some(sigs) = self.ix.rotation_sigs.get(id) else { return BTreeSet::new() };
             r.names.iter().zip(sigs.merge.iter()).filter(|(n, s)| epochs.get(*n).is_some_and(|e: &EpochPublic| osis_commit::verify_merge(id, s, &e.signing))).map(|(n, _)| *n).collect()
         };
-        let rotations: Vec<Rotation<CommitId>> = rots.iter().map(|(id, at, r, _)| Rotation { id: *id, at: *at, supersedes: r.supersedes.iter().copied().collect(), names: r.names.iter().copied().collect(), signed: signed(id, r) }).collect();
+        let rotations: Vec<Rotation<CommitId>> = rots.iter().map(|(id, at, r)| Rotation { id: *id, at: *at, supersedes: r.supersedes.iter().copied().collect(), names: r.names.iter().copied().collect(), signed: signed(id, r) }).collect();
         let mut order: Vec<(osis_base::WallMs, CommitId)> = rots.iter().filter_map(|(id, ..)| Some((self.ix.commits.get(id)?.received, *id))).collect();
         order.sort();
         let received: Vec<CommitId> = order.into_iter().map(|x| x.1).collect();
@@ -625,7 +608,6 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
         // after an open the persisted judgment stands: judged again, sealed to as before
         if tx.core.epochs_judged_from.replace(from).is_some() {
             tx.core.ix.epochs_due.insert(p);
-            crate::apply::keyset_changed(tx.core, &p);
         }
     }
     for p in tx.core.ix.epochs_due.iter().copied().collect::<Vec<_>>() {
@@ -998,7 +980,7 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     let held = ActorEpochs::derived(&tx.core.account_epochs(&p).ok_or(Error::Misuse("account not held"))?, &d);
     let node_kem = tx.core.id.keys().kem.public().clone();
     let holders = rotation::Boxing { holders: vec![Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: node_kem.clone(), seed: None } }], left_out: Default::default() };
-    let rot = rotation::rotation_into(tx, &mut m, d, &ROLES.into_iter().collect(), &held, &holders, false)?;
+    let rot = rotation::rotation_into(tx, &mut m, d, &ROLES.into_iter().collect(), &held, &holders, crate::rotation::Departs::No)?;
     let after = rot.preview(&held)?;
     let mut dep = [0u8; 32];
     tx.rng.fill_bytes(&mut dep);

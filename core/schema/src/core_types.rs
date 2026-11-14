@@ -83,10 +83,6 @@ agility!(
     SigningKey, Ed25519, Some(32)
 );
 agility!(
-    /// `signature = enum { ed25519 1 (blob) }`, 64 bytes.
-    Signature, Ed25519, Some(64)
-);
-agility!(
     /// `kem_key = enum { x25519_mlkem768 1 (blob) }`, `pk_x || pk_m`, 1216 bytes.
     KemKey, X25519MlKem768, Some(1216)
 );
@@ -143,15 +139,11 @@ codec_struct! {
 }
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, delete key, the epochs its rotation
-    /// supersedes, possession key, names digest, possession proofs and the keysets of each holder
-    /// actor its rotation left out at (spec/crypto.md §3, §4, §7, §8).
+    /// supersedes, names digest, the keysets of each holder actor its rotation left out at and
+    /// sealed at, and the demotions it carries: other commits', and whether its own commit is one
+    /// (spec/crypto.md §3, §4, §7, §8).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 delete_key: SigningKey, 4 supersedes: BTreeSet<Epoch>, 5 possession_key: SigningKey, 6 names: [u8; 32], 7 proofs: BTreeMap<Tid, PossessionProof>, 8 left_out: BTreeMap<Tid, BTreeSet<Epoch>> }
-}
-codec_struct! {
-    /// A keyset's proof that its rotator holds a secret of a holder actor (spec/wire.md §7).
-    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct PossessionProof { 0 keyset: Epoch, 1 signature: Signature }
+    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 delete_key: SigningKey, 4 supersedes: BTreeSet<Epoch>, 5 names: [u8; 32], 6 left_out: BTreeMap<Tid, BTreeSet<Epoch>>, 7 sealed_at: BTreeMap<Tid, BTreeSet<Epoch>>, 8 demotions: BTreeSet<CommitId>, 9 demotes: bool }
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,10 +158,9 @@ codec_struct! {
     pub struct SealedBox { 0 keyset: Option<Epoch>, 1 suite: u64, 2 sealed: Sealed }
 }
 codec_struct! {
-    /// `epoch` of s; `wrap`; `possession`: the possession signature, iff the holder is not a
-    /// key actor (spec/wire.md §7, spec/crypto.md §4).
+    /// `epoch` of s; `wrap` (spec/wire.md §7).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct SymmetricBox { 0 epoch: Epoch, 1 wrap: Vec<u8>, 2 possession: Option<Signature> }
+    pub struct SymmetricBox { 0 epoch: Epoch, 1 wrap: Vec<u8> }
 }
 codec_struct! {
     /// `keysets`: the holder's keysets it is sealed to, nested in turn (spec/crypto.md §4, Seal).

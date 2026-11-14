@@ -273,7 +273,6 @@ impl crate::engine::Engine {
         self.run(|tx| {
             tx.core.sides.accounts.insert(account, line);
             tx.core.ix.epochs_due.insert(account);
-            crate::apply::keyset_changed(tx.core, &account);
             crate::apply::atomic::rejudged(tx, true)?;
             Ok(())
         })
