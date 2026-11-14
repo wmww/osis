@@ -77,7 +77,7 @@ fn a_node_removed_by_another_drops_what_it_lost_spec_permissions_3() {
 // under the actor), spec/crypto.md §4 (Encrypting under): node 1 makes thing t (its account A
 // the first admin, t shared with node 0's account) and removes its sibling node 2 from A's
 // devices actor. The rotations that removal makes due on t are this node's own to write with
-// nothing else arriving (also across a restart right after the removal): a later write to t is
+// nothing else arriving (also when written with its sync down: its start finds them owed): a later write to t is
 // sealed and logged under t's sync IDs.
 #[test]
 fn an_own_removal_makes_its_rotations_due_with_nothing_arriving_spec_permissions_3() {
@@ -97,10 +97,15 @@ fn an_own_removal_makes_its_rotations_due_with_nothing_arriving_spec_permissions
         crate::harness::history::file(&mut w, 1, vec![t], Vec::new());
         w.write(1, |e| e.grant(&t, &a0, &crate::flows::edge(Role::Read))).unwrap();
         w.run();
-        remove_node(&mut w, 1, 2);
         if restart {
+            // written with its sync down, so only a start finds the rotations owed
             w.power_off(1);
+            let n2 = w.engine(2).tid();
+            let d = w.engine(1).account().unwrap().unwrap().1;
+            w.engine(1).demote(&d, &Demotion { holder: n2, new: None, retain: None }).unwrap();
             w.power_on(1);
+        } else {
+            remove_node(&mut w, 1, 2);
         }
         w.run();
         assert!(w.engine(1).wrap_secret(&t, None).unwrap().is_some(), "restart {restart}: t's epoch open to encrypt under");
