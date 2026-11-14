@@ -132,6 +132,10 @@ pub struct BodyFacts {
     pub dropped: Option<DropFor>,
     /// A delta of it is kept (before its keep-at-least bound).
     pub kept: bool,
+    /// Wall ms from which a right holder may delete it at peers keeping S unread once covered
+    /// and dropped: `MAX_DRIFT` past the latest keep-at-least bound of its parts (0: at once;
+    /// spec/commits.md §5 Keep at least, spec/sync-compaction.md §1).
+    pub hosts_from: u64,
     /// Covered by a held valid snapshot under S; `None` while that cannot be judged yet.
     pub covered: Option<bool>,
     /// A certificate blob whose author has no other blob under S.
