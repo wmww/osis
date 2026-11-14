@@ -672,19 +672,17 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
         return Ok(None);
     }
     let Some(mut st) = snapshot_state(tx, &tid, &ak)? else { return Ok(None) };
-    if ak.as_str() == "secrets.0" {
-        crate::apply::keys::vouched_only(tx.core, &tid, &mut st);
-    }
+    let left_out = if ak.as_str() == "secrets.0" { crate::apply::keys::vouched_only(tx.core, &tid, &mut st)? } else { Default::default() };
     let valid_on = |c: &CommitId| claims(tx.core, c, &tid, &ak);
     // frontiers cover only counters whose writes this state reflects: applied, valid, of
     // the sessions that occur in it (spec/crdt.md §8: a session with no write left in the
     // state is pruned with them), from the held valid snapshots' frontiers on (`frontiers_now`)
     let (frontiers, _) = frontiers_now(tx, &tid, &ak, memory, &valid_on);
-    // commit-form commits whose valid writes the state reflects
+    // commit-form commits whose valid writes the state reflects, every one (none left out)
     let mut absorbed = std::collections::BTreeMap::new();
     for (_, c) in tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten() {
         let Some(m) = tx.core.ix.commits.get(c) else { continue };
-        if by_id(m.header.kind, m.header.form) && valid_on(c) {
+        if by_id(m.header.kind, m.header.form) && valid_on(c) && !left_out.contains(c) {
             absorbed.insert(*c, m.header.author);
         }
     }

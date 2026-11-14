@@ -198,3 +198,38 @@ fn unverified_genuine_entry_kept_beside_spec_crypto_4() {
     drop_covered(&mut lp, 3, g);
     assert!(gr.iter().all(|c| covered(&mut lp, 3, g, c)), "the grant stays uncovered once e is verified");
 }
+
+// spec/crdt.md §8 (`Absorbed`), spec/commits.md §5: a commit writing both a record a `secrets.0`
+// snapshot carries and one it leaves out is not absorbed by it, so a node holding the snapshot
+// but not the body judges the body not covered and fetches it. The shape: a write grant boxes N
+// at the new read epoch e (its rotation commit R not at admin C yet) and at the write epoch C
+// verified; C compacts, carrying the write box and leaving the read box out. Invariant: F,
+// holding C's snapshot and the grant's header alone, never judges the grant's `secrets.0` part
+// covered (else it never fetches it, and N's box at e is lost there). Fails without the fix: the
+// snapshot listed the grant in `Absorbed`, so F judged the unheld body covered.
+#[test]
+fn mixed_commit_not_absorbed_spec_crdt_8() {
+    let (mut lp, g, tids) = granted(6, &[(3, Role::Admin), (5, Role::Read)]);
+    let before: BTreeSet<CommitId> = lp.packages(0).unwrap().into_iter().map(|p| p.id).collect();
+    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
+    let e = newest_read(&lp, 0, g).unwrap();
+    let rot: BTreeSet<CommitId> = lp.packages(0).unwrap().into_iter().map(|p| p.id).filter(|c| !before.contains(c)).collect();
+    lp.peers[0].engine.grant(&g, &tids[4], &edge(Role::Write)).unwrap();
+    let gr: Vec<CommitId> = lp.packages(0).unwrap().into_iter().map(|p| p.id).filter(|c| !before.contains(c) && !rot.contains(c)).collect();
+    for pk in lp.packages(0).unwrap().into_iter().filter(|p| !rot.contains(&p.id)) {
+        let _ = lp.peers[3].receive(&pk.bytes, pk.blobs.clone());
+    }
+    assert!(!based(&lp, 3, g, &e), "e verified at C without its rotation commit");
+    let s = lp.peers[3].engine.snapshot(&g, &secrets_ak()).unwrap().unwrap();
+    let boxes = |lp: &mut LocalPeer, p: usize| lp.peers[p].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap().boxes;
+    assert!(boxes(&mut lp, 3).keys().any(|k| k.holder == tids[4] && k.role == Role::Write), "C lacks N's write box");
+    // F gets the snapshot whole and the grant as a header alone
+    let pk = lp.peers[3].engine.package(&s).unwrap().unwrap();
+    lp.peers[5].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    for c in &gr {
+        let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
+        let header = osis_commit::rewrite(&osis_commit::CommitBlob::decode(&pk.bytes).unwrap(), |_| true).encode();
+        let _ = lp.peers[5].receive(&header, Vec::new());
+        assert_ne!(lp.peers[5].engine.covered(&s, c, &g, &secrets_ak()).unwrap(), Some(true), "F judges the grant's unheld `secrets.0` body covered: N's box at e is never fetched");
+    }
+}

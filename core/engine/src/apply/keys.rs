@@ -517,13 +517,24 @@ pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
 
 /// What a `secrets.0` compaction snapshot carries (spec/crypto.md §4): `state` less every entry
 /// at an epoch not established here, names aside (`osis_keys::unvouched`), so the snapshot bases
-/// only what this node verified; the commits writing those stay beside it, uncovered.
-pub(crate) fn vouched_only(core: &Core, actor: &Tid, state: &mut Fragment) {
-    let Some(s) = state.read().and_then(|v| crate::engine::secrets::secrets_value(&v)) else { return };
+/// only what this node verified; the commits writing those stay beside it, uncovered. Those
+/// commits, which the snapshot must not list in `Absorbed` (spec/crdt.md §8: else a node holding
+/// the snapshot but not such a body judges it covered and never fetches what was left out).
+/// A state that does not read as `secrets.0` is refused, never carried whole.
+pub(crate) fn vouched_only(core: &Core, actor: &Tid, state: &mut Fragment) -> Result<std::collections::BTreeSet<CommitId>> {
+    const UNREAD: crate::Error = crate::Error::Misuse("secrets.0 state does not read (spec/crypto.md §4)");
+    let s = state.read().and_then(|v| crate::engine::secrets::secrets_value(&v)).ok_or(UNREAD)?;
     let e = core.epochs(actor).unwrap_or_default();
-    let Ok(out) = osis_keys::unvouched(&s, &e) else { return };
-    state.leave_out(0, &out.boxes.iter().map(|k| k.to_value()).collect::<Vec<_>>());
-    state.leave_out(1, &out.history.iter().map(|k| k.to_value()).collect::<Vec<_>>());
+    let out = osis_keys::unvouched(&s, &e).map_err(|_| UNREAD)?;
+    let mut dots = state.leave_out(0, &out.boxes.iter().map(|k| k.to_value()).collect::<Vec<_>>());
+    dots.extend(state.leave_out(1, &out.history.iter().map(|k| k.to_value()).collect::<Vec<_>>()));
+    Ok(dots
+        .iter()
+        .filter_map(|d| match osis_crdt::fact_source(&d.src).kind() {
+            osis_crdt::SourceKind::Commit(c) => Some(*c),
+            _ => None,
+        })
+        .collect())
 }
 
 /// A held commit's `secrets.0` delta became valid again (re-grant): applied as received.

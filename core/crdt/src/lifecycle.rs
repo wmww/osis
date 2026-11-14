@@ -24,17 +24,22 @@ impl Fragment {
     /// Leaves every live record of each key in `keys` out of the map at field `field` of this
     /// struct (a snapshot's state; nothing for another shape): a writer's choice of what its
     /// snapshot carries (spec/crdt.md §8). A body writing one is then not covered by the snapshot
-    /// (its join adds the record back, spec/commits.md §5), so it stays beside it.
-    pub fn leave_out(&mut self, field: u64, keys: &[osis_base::Value]) {
-        let Fragment::Struct(st) = self else { return };
-        let Some(Fragment::Map(m)) = st.fields.get_mut(&field) else { return };
+    /// (its join adds the record back, spec/commits.md §5), so it stays beside it, and is not
+    /// absorbed by it (§8). The origin dots of every write in the records left out.
+    pub fn leave_out(&mut self, field: u64, keys: &[osis_base::Value]) -> Vec<Dot> {
+        let Fragment::Struct(st) = self else { return Vec::new() };
+        let Some(Fragment::Map(m)) = st.fields.get_mut(&field) else { return Vec::new() };
+        let mut out = BTreeMap::new();
         for k in keys {
             let ids: Vec<Eid> = m.live_ids(k).into_iter().cloned().collect();
             for id in ids {
-                m.entries.remove(&id);
+                if let Some(e) = m.entries.remove(&id) {
+                    out.insert(id, e);
+                }
             }
         }
         m.reindex();
+        Fragment::Map(Map::new(m.meta.clone(), out)).writes().into_iter().map(|(d, _)| d).collect()
     }
 
     /// Adds to `out` the origin dot of every value-less write here (§4.7): a register write or
