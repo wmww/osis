@@ -27,7 +27,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - HN_fallany (a snapshot arriving invalid moves the fall mark as one held valid falling does) is the engine's `fall_mark`, untested end to end.
 
 ## inbox
-- A sync holder's grant copy is its box alone (spec/sync-inbox.md §5), naming no sync ID: another node of its account away past `INBOX_LIFETIME` learns the thing's sync ID from nothing, so it never keeps the thing. The spec lets a sync holder learn its sync IDs (spec/sync-ids.md §2), but a copied `sync.0` commit needs its author's chain, which a sync holder must not learn; a sync ID carrier for copies is undecided.
+- A sync holder's grant copy is its box alone (spec/sync-inbox.md §5), naming no sync ID: another node of its account away past `INBOX_LIFETIME` learns the thing's sync ID from nothing, so it never keeps the thing. The spec lets a sync holder learn its sync IDs (spec/sync-ids.md §2), but a copied `sync.0` commit needs its author's chain, which a sync holder must not learn; a sync ID carrier for copies is undecided. Simplest found: the sync holder's `secrets.0` box names the thing's sync IDs (sealed to it, which it may learn; followed as an inbox payload's hint, while the box's grant stands); the sync key alone opens nothing, as beacons are keyed by the sync ID (spec/sync-opens.md §5).
 - A promotion's chain (`held::log_chain`: not built; the engine seals certificate copies, `sync_bodies`).
 - Stranded and Suspect are answered Ok and acted on by nobody (spec/permissions.md §4: the stranded holder's re-seal, the suspect repair).
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.

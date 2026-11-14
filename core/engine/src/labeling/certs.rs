@@ -231,6 +231,7 @@ impl Engine {
         // the grant copies of each actor whose inbox is a sync ID of `g` (spec/sync-inbox.md §5)
         for a in self.inbox_actors_of(g) {
             let things: Vec<Tid> = self.core.ix.held.named_on(&a).filter(|t| **t != a).copied().collect();
+            osis_base::costs::count("sync: grant copies listed", things.len() as u64);
             for t in things {
                 let copy = self.grant_copy(&a, &t);
                 out.extend((*copy).clone());

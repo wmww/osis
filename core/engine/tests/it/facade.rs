@@ -1551,3 +1551,27 @@ fn a_removal_replaces_the_grant_copy_spec_sync_inbox_5() {
     assert!(!copy.commits.contains_key(&g), "the grant left");
     assert_eq!(copied_aks(&mut lp, &r, &copy), BTreeSet::from(["roles.0".to_string()]));
 }
+
+// spec/sync-inbox.md §5 (Grant copy: one per thing an edge write names the actor on): a new
+// thing the actor is named on moves the inbox's certificates by its own copy; counted at n and
+// 10n things.
+#[test]
+#[ignore = "issues/certificates-whole-set-cost.md: the inbox's certificates list every grant copy"]
+fn a_new_grant_copy_lists_in_proportion_to_change_spec_sync_inbox_5() {
+    let listed = |n: usize| {
+        let (mut lp, ps) = people(1);
+        for _ in 0..n {
+            thing_of(&mut lp, 0, ps[0]);
+        }
+        let e = &mut lp.peers[0].engine;
+        let inbox = e.inbox_of(&ps[0]).expect("an inbox");
+        let g = e.sync_owner(&inbox).unwrap().expect("its owner");
+        e.sync_certificates(&g);
+        thing_of(&mut lp, 0, ps[0]);
+        let e = &mut lp.peers[0].engine;
+        osis_base::costs::take();
+        e.sync_certificates(&g);
+        osis_base::costs::take().iter().find(|x| x.0 == "sync: grant copies listed").map_or(0, |x| x.2)
+    };
+    crate::scale::flat("grant copies listed", listed(3), listed(30));
+}
