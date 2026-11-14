@@ -459,6 +459,18 @@ impl Engine {
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
             Err(_) => return Ok(Opened::Bad),
         };
+        // a part that does not hash to its header entry is no part of the commit (spec/commits.md
+        // §4): the blob is no encryption of it, whatever the engine took of it (a forged copy of
+        // a held commit is a duplicate to apply), so no reader keeps, serves or stamps it
+        if let Some(h) = self.header(&id) {
+            let forged = opened.commit.parts.iter().any(|p| {
+                let Some(a) = h.aspects.get(p.ai) else { return true };
+                self.core.created(&a.tid).is_some_and(|r| osis_crypto::delta_hash(&osis_crypto::dedup_secret(r.nonce()), &p.delta) != a.hash)
+            });
+            if forged {
+                return Ok(Opened::Bad);
+            }
+        }
         let b = *blob;
         self.run(|tx| note_blob(tx, &b, &id, &parts, opened.copy))?;
         Ok(Opened::Commit(id, ingested))

@@ -2237,3 +2237,42 @@ fn a_destroyed_things_sync_id_stays_read_until_forgotten_spec_sync_judgement_5()
     assert_eq!(e.sync_holder(&s).unwrap(), None);
     assert!(!e.sync_set().unwrap().ids.contains_key(&s));
 }
+
+// spec/commits.md §4 (a part that does not hash to its header entry is no part of the commit),
+// spec/sync-judgement.md §3 (Own store: a reader keeps a pulled entry of a held commit as it came
+// and passes it on): a blob of a commit held here whose part does not hash to the header opens as
+// bad, so no reader keeps, serves or stamps it as an encryption of the commit.
+#[test]
+fn a_forged_copy_of_a_held_commit_opens_bad_spec_commits_4() {
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
+        if h == ps[1] {
+            lp.peers[1].engine.take_inbox_blob(&b, true).unwrap();
+        }
+    }
+    for i in 0..2 {
+        let (_, d) = lp.peers[i].engine.account().unwrap().unwrap();
+        add_item(&mut lp, i, d, t);
+    }
+    spread(&mut lp);
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(7)).unwrap();
+    let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
+    let mut rng = SeededRng::from_u64(9);
+    let (sealed, wrap) = lp.peers[0].engine.seal_body(&s, &c, &[], &mut rng).unwrap().expect("peer 0 seals its own");
+    assert!(matches!(lp.peers[1].engine.open_entry(&s, &sealed.id, &wrap, &sealed.blob, u64::MAX).unwrap(), osis_engine::sync::Opened::Commit(x, _) if x == c));
+    let mut forged = osis_commit::CommitBlob::decode(&lp.peers[0].engine.commit_bytes(&c).unwrap().unwrap()).unwrap();
+    for p in &mut forged.parts {
+        p.delta = osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Bytes(vec![1; 40])]));
+    }
+    let f = osis_engine::labeling::seal_plain(&forged.encode(), osis_label::Class::Durable, &mut rng).unwrap();
+    let w = lp.peers[0].engine.wrap_secret(&t, None).unwrap().expect("a read epoch");
+    let fwrap = osis_crypto::wrap(&w, &f.id, &f.key, 0).unwrap();
+    let got = lp.peers[1].engine.open_entry(&s, &f.id, &fwrap, &f.blob, u64::MAX).unwrap();
+    assert!(matches!(got, osis_engine::sync::Opened::Bad), "{got:?}");
+    assert_eq!(lp.peers[1].engine.blob_commit(&f.id).unwrap(), None, "no blob of c");
+}
