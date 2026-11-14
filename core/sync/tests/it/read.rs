@@ -13,7 +13,7 @@ use osis_crypto::{LabelRole, Secret32, Signature, SigningSecret, label_role_key}
 use osis_engine::labeling::HeadKeys;
 use osis_engine::sync::{BodyFacts, BodyMeta, Destruction, ReadCredentials};
 use osis_label::{Class, Step, StepKeys};
-use osis_sync::read::{Facts, Ground, Read, Seen, SrcView, Verdict, Why};
+use osis_sync::read::{BlobInfo, Facts, Ground, Read, Seen, SrcView, Verdict, Why};
 use osis_sync::store::{Source, Stand};
 use osis_sync::types::{ConnId, Entry};
 use osis_sync::Result;
@@ -89,7 +89,6 @@ enum Sent {
     Delete(ConnId, BlobId),
     Deposit(ConnId, BlobId),
     Forget(SyncId),
-    Leave(SyncId),
 }
 
 /// K: a node keeping S unread. It pulls what it lacks of a writer's store (a tombstoned blob ID
@@ -115,7 +114,19 @@ struct Fake {
     own: Stamped<(SyncId, CommitId), Vec<Entry>>,
     tombs: Stamped<(SyncId, CommitId), Vec<BlobId>>,
     sources: Stamped<SyncId, Arc<Vec<SrcView>>>,
+    srcs: Stamped<(SyncId, Source), SrcView>,
+    src_feed: Vec<(SyncId, Source)>,
     seen: Stamped<(Source, SyncId, CommitId), Seen>,
+    seen_feed: Vec<(Source, SyncId, CommitId)>,
+    anywhere: Stamped<(SyncId, CommitId), bool>,
+    /// S not read here, its closure not settled, or no reader can pull it.
+    unread: Stamped<SyncId, ()>,
+    unsettled: Stamped<SyncId, ()>,
+    unpullable: Stamped<SyncId, ()>,
+    /// Blobs held with other parts than `{0}`, as a copy, or without bytes (`None`).
+    blobs: Stamped<BlobId, Option<BlobInfo>>,
+    /// Whether each logging was a fresh encryption.
+    fresh: Vec<bool>,
     all: Stamped<(Source, SyncId), BTreeSet<BlobId>>,
     stands: Stamped<(Source, SyncId, CommitId), Stand>,
     heard: Stamped<SyncId, bool>,
@@ -144,8 +155,20 @@ impl Ground for Fake {
     fn destruction(&mut self, s: &SyncId) -> Result<Option<Arc<Destruction>>> {
         Ok(self.doom.get(s).cloned())
     }
+    fn reads(&mut self, s: &SyncId) -> Result<bool> {
+        Ok(!self.unread.contains_key(s))
+    }
+    fn closure_settled(&mut self, s: &SyncId) -> Result<bool> {
+        Ok(!self.unsettled.contains_key(s))
+    }
+    fn pullable(&mut self, s: &SyncId) -> Result<bool> {
+        Ok(!self.unpullable.contains_key(s))
+    }
     fn now(&self) -> WallMs {
         WallMs(self.now)
+    }
+    fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>> {
+        Ok(self.blobs.get(b).cloned().unwrap_or(Some(BlobInfo { parts: [0].into(), copy: false })))
     }
     fn own(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<Entry>> {
         Ok(self.own.get(&(*s, *c)).cloned().unwrap_or_default())
@@ -164,8 +187,20 @@ impl Ground for Fake {
     fn sources(&mut self, s: &SyncId) -> Result<Arc<Vec<SrcView>>> {
         Ok(self.sources.get(s).cloned().unwrap_or_default())
     }
+    fn source(&mut self, s: &SyncId, at: &Source) -> Result<Option<SrcView>> {
+        Ok(self.srcs.get(&(*s, *at)).cloned())
+    }
+    fn sources_added(&mut self) -> Result<Vec<(SyncId, Source)>> {
+        Ok(std::mem::take(&mut self.src_feed))
+    }
     fn seen(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Seen> {
         Ok(self.seen.get(&(*at, *s, *c)).cloned().unwrap_or_default())
+    }
+    fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, CommitId)>> {
+        Ok(std::mem::take(&mut self.seen_feed))
+    }
+    fn present_anywhere(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+        Ok(self.anywhere.get(&(*s, *c)).copied().unwrap_or(false))
     }
     fn seen_all(&mut self, at: &Source, s: &SyncId) -> Result<BTreeSet<BlobId>> {
         Ok(self.all.get(&(*at, *s)).cloned().unwrap_or_default())
@@ -176,7 +211,8 @@ impl Ground for Fake {
     fn stand(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Option<Stand>> {
         Ok(self.stands.get(&(*at, *s, *c)).cloned())
     }
-    fn log_own(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<BlobId>> {
+    fn log_own(&mut self, s: &SyncId, c: &CommitId, fresh: bool) -> Result<Option<BlobId>> {
+        self.fresh.push(fresh);
         self.next += 1;
         let mut b = [0u8; 32];
         b[..4].copy_from_slice(&self.next.to_be_bytes());
@@ -211,8 +247,8 @@ impl Ground for Fake {
         self.sent.push(Sent::Delete(at.conn, *b));
         Ok(())
     }
-    fn deposit(&mut self, at: &SrcView, s: &SyncId, b: &BlobId) -> Result<()> {
-        let _ = s;
+    fn deposit(&mut self, at: &SrcView, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<()> {
+        let _ = (s, c);
         self.sent.push(Sent::Deposit(at.conn, *b));
         Ok(())
     }
@@ -224,9 +260,35 @@ impl Ground for Fake {
         self.sent.push(Sent::Forget(*s));
         Ok(())
     }
-    fn leave(&mut self, s: &SyncId) -> Result<()> {
-        self.sent.push(Sent::Leave(*s));
-        Ok(())
+}
+
+impl Fake {
+    /// A `known` row written: the feed and the per-commit presence follow it.
+    fn put_seen(&mut self, k: (Source, SyncId, CommitId), v: Seen) {
+        if self.seen.get(&k) == Some(&v) {
+            return;
+        }
+        self.seen.insert(k, v);
+        self.seen_feed.push(k);
+        let (_, s, c) = k;
+        let any = self.seen.iter().any(|((_, x, y), v)| *x == s && *y == c && !v.present.is_empty());
+        if self.anywhere.get(&(s, c)).copied().unwrap_or(false) != any {
+            self.anywhere.insert((s, c), any);
+        }
+    }
+
+    fn set_sources(&mut self, s: SyncId, v: Vec<SrcView>) {
+        let old = self.sources.get(&s).cloned().unwrap_or_default();
+        for x in old.iter().filter(|x| !v.iter().any(|y| y.at == x.at)) {
+            self.srcs.remove(&(s, x.at));
+        }
+        for x in &v {
+            if self.srcs.get(&(s, x.at)) != Some(x) {
+                self.srcs.insert((s, x.at), x.clone());
+                self.src_feed.push((s, x.at));
+            }
+        }
+        self.sources.insert(s, Arc::new(v));
     }
 }
 
@@ -236,6 +298,8 @@ struct W {
     read: Read,
     /// K pulls this node's store (it is a writer at K's head).
     pulls: bool,
+    /// What K took of what was sent.
+    taken: Vec<Sent>,
 }
 
 impl W {
@@ -244,7 +308,7 @@ impl W {
         let mut g = Fake::default();
         g.creds.insert(S, creds(0, true, true));
         g.creds.insert(S2, creds(0, true, true));
-        let mut w = W { g, read: Read::default(), pulls: true };
+        let mut w = W { g, read: Read::default(), pulls: true, taken: Vec::new() };
         w.source(S, K, KC, true);
         w.source(S2, K, KC, true);
         w
@@ -254,14 +318,14 @@ impl W {
         let mut v = (*self.g.sources(&s).unwrap()).clone();
         v.retain(|x| x.conn != conn);
         v.push(SrcView { at, conn, store, head: Some(step(0).id()), full: false, role_unheld: false });
-        self.g.sources.insert(s, Arc::new(v));
+        self.g.set_sources(s, v);
     }
 
     fn edit_source(&mut self, conn: ConnId, f: impl Fn(&mut SrcView)) {
         for s in [S, S2] {
             let mut v = (*self.g.sources(&s).unwrap()).clone();
             v.iter_mut().filter(|x| x.conn == conn).for_each(&f);
-            self.g.sources.insert(s, Arc::new(v));
+            self.g.set_sources(s, v);
         }
         self.settle();
     }
@@ -295,6 +359,9 @@ impl W {
     fn exchange(&mut self) {
         self.settle();
         for m in std::mem::take(&mut self.g.sent) {
+            if matches!(m, Sent::Delete(c, _) | Sent::Deposit(c, _) if c == KC) {
+                self.taken.push(m.clone());
+            }
             match m {
                 Sent::Delete(c, b) if c == KC => {
                     for s in [S, S2] {
@@ -362,9 +429,7 @@ impl W {
             if let Some(old) = self.g.seen.get(&k) {
                 now.deleted.extend(old.deleted.iter().copied());
             }
-            if self.g.seen.get(&k) != Some(&now) {
-                self.g.seen.insert(k, now);
-            }
+            self.g.put_seen(k, now);
         }
         for s in [S, S2] {
             let all: BTreeSet<BlobId> = self.g.k.held.keys().filter(|(x, _)| *x == s).map(|(_, b)| *b).collect();
@@ -387,7 +452,7 @@ impl W {
             let mut v = self.g.seen.get(&k).cloned().unwrap_or_default();
             if !v.deleted.is_empty() {
                 v.deleted.clear();
-                self.g.seen.insert(k, v);
+                self.g.put_seen(k, v);
             }
         }
         self.g.stands = Stamped::default();
@@ -402,8 +467,13 @@ impl W {
         self.g.own(&s, &c).unwrap().into_iter().map(|e| e.blob).collect()
     }
 
+    /// Deletes sent so far, K's taken included.
     fn deletes(&self) -> usize {
-        self.g.sent.iter().filter(|m| matches!(m, Sent::Delete(..))).count()
+        self.sent().filter(|m| matches!(m, Sent::Delete(..))).count()
+    }
+
+    fn sent(&self) -> impl Iterator<Item = &Sent> {
+        self.taken.iter().chain(self.g.sent.iter())
     }
 
     /// Times `c` was logged under `s` (its first logging included).
@@ -515,7 +585,7 @@ fn no_delete_between_readers() {
     w.hold(cid(1), &[S], uncovered());
     let (b1, b2) = (w.own_blobs(S, cid(1))[0], w.own_blobs(S, cid(2))[0]);
     for (c, b) in [(cid(1), b1), (cid(2), b2)] {
-        w.g.seen.insert((Source::Conn(RC), S, c), Seen { present: [b].into(), deleted: BTreeSet::new() });
+        w.g.put_seen((Source::Conn(RC), S, c), Seen { present: [b].into(), deleted: BTreeSet::new() });
     }
     w.judge(S, cid(1), covered(cid(2)));
     assert!(!w.g.sent.iter().any(|m| matches!(m, Sent::Delete(c, _) if *c == RC)));
@@ -821,7 +891,7 @@ fn forget_waits_for_nothing_known() {
 }
 
 // spec/sync-judgement.md §5 (untold) (released-team): a node away for the whole window leaves S
-// deleting nothing; while it does not know of the destruction a delete at K costs it one logging
+// deleting nothing, once the window ends (no other event needed); while it does not know of the destruction a delete at K costs it one logging
 // again, not a loop (DN_stand).
 #[test]
 fn untold_leaves_and_logs_again_once() {
@@ -836,11 +906,12 @@ fn untold_leaves_and_logs_again_once() {
     w.g.bodies.insert(cid(3), Arc::new([(S, m)].into()));
     w.g.doom.insert(S, Arc::new(Destruction { requests: vec![cid(3)] }));
     w.settle();
-    assert!(!w.g.sent.contains(&Sent::Leave(S)));
+    assert!(!w.g.sent.contains(&Sent::Forget(S)));
+    // the window's end alone moves it: read's wake is the request's expiry
+    assert_eq!(w.read.next_wake(), Some(WallMs(10)));
     w.g.now = 11;
-    w.g.doom.insert(S, Arc::new(Destruction { requests: vec![cid(3)] }));
     w.settle();
-    assert!(w.g.sent.contains(&Sent::Leave(S)));
+    assert!(w.g.sent.contains(&Sent::Forget(S)));
     assert_eq!(w.deletes(), 0);
 }
 
@@ -869,4 +940,194 @@ fn work_follows_change() {
     }
     assert_eq!(costs[0], costs[1], "judgements per change grow with the bodies held");
     assert!(costs[0] <= 4, "{costs:?}");
+}
+
+// spec/sync-judgement.md §2 (header-only blob): a certificate is must-hold whatever snapshot
+// covers it: it neither leaves the own log nor is deleted at K as covered.
+#[test]
+fn must_hold_certificate_is_never_covered_and_dropped() {
+    let mut w = W::new();
+    w.hold(cid(2), &[S], uncovered());
+    let mut f = covered(cid(2));
+    f.body.closure = false;
+    w.hold(cid(1), &[S], f);
+    w.exchange();
+    w.exchange();
+    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Must));
+    assert_eq!(w.own_blobs(S, cid(1)).len(), 1);
+    assert_eq!(w.deletes(), 0);
+    assert_eq!(w.logs(S, cid(1)), 1, "logged and dropped in a loop");
+}
+
+// spec/sync-judgement.md §3 (deletes): a body dropped as invalid is never deleted at a peer,
+// whatever covers it (spec/permissions.md §6).
+#[test]
+fn invalid_body_is_never_deleted_at_k() {
+    let mut w = at_k_must_hold();
+    w.hold(cid(2), &[S], uncovered());
+    w.exchange();
+    let mut f = covered(cid(2));
+    f.body.dropped = Some(osis_engine::engine::DropFor::Invalid);
+    w.judge(S, cid(1), f);
+    w.exchange();
+    assert_eq!(w.deletes(), 0);
+    assert_eq!(w.at_k(S, cid(1)), 1);
+}
+
+// spec/sync-judgement.md §3 (own store): a must-hold body with no own entry is logged as a held
+// blob verbatim where one is (not fresh); logging again (§4) is always a fresh encryption.
+#[test]
+fn first_logging_is_verbatim_again_is_fresh() {
+    let mut w = at_k_must_hold();
+    w.k_delete(cid(1));
+    w.exchange();
+    assert_eq!(w.g.fresh, vec![false, true]);
+}
+
+// spec/sync-judgement.md §3 (own store): a node logs what S must hold only while a reader can
+// pull it from here; once one can, it logs it.
+#[test]
+fn logs_only_while_a_reader_can_pull() {
+    let mut w = W::new();
+    w.g.unpullable.insert(S, ());
+    w.hold(cid(1), &[S], uncovered());
+    assert_eq!(w.logs(S, cid(1)), 0);
+    w.g.unpullable.remove(&S);
+    w.settle();
+    assert_eq!(w.logs(S, cid(1)), 1);
+}
+
+// spec/sync-judgement.md §2 (outside the required set): while a group of the closure holds part
+// of its `group.0` only as a header, a body outside the closure is not judged, so nothing of it
+// is deleted at K; nor is anything judged under a sync ID this node does not read.
+#[test]
+fn nothing_judged_outside_an_unsettled_closure_or_an_unread_sync_id() {
+    let mut w = at_k_must_hold();
+    w.g.unsettled.insert(S, ());
+    w.g.bodies.insert(cid(1), Arc::new(BTreeMap::new()));
+    w.settle();
+    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Unjudged));
+    w.exchange();
+    assert_eq!(w.deletes(), 0);
+    w.g.unsettled.remove(&S);
+    w.exchange();
+    assert_eq!(w.deletes(), 1, "retag: outside the required set, deleted under the old sync ID");
+    // under a sync ID it does not read, nothing is judged
+    let mut w = at_k_must_hold();
+    w.g.unread.insert(S, ());
+    w.g.bodies.insert(cid(1), Arc::new(BTreeMap::new()));
+    w.exchange();
+    assert_eq!(w.deletes(), 0, "deleted under a sync ID it left");
+}
+
+// spec/sync-compaction.md §1 (duplicates): only entries of one commit with the same delta set are
+// duplicates, and one whose bytes are not held is none; where S's body is a per-sync-ID copy a
+// shared blob beside the copy goes whatever its ID.
+#[test]
+fn duplicates_by_delta_set_and_copy() {
+    let mut w = at_k_must_hold();
+    let (lo, hi) = (BlobId([0; 32]), BlobId([0xff; 32]));
+    w.g.blobs.insert(hi, Some(BlobInfo { parts: [0, 1].into(), copy: false }));
+    w.g.k.held.insert((S, hi), cid(1));
+    w.stream();
+    w.settle();
+    assert_eq!(w.deletes(), 0, "a blob of other parts deleted as a duplicate");
+    w.g.blobs.insert(hi, None);
+    w.settle();
+    assert_eq!(w.deletes(), 0, "an entry without bytes deleted as a duplicate");
+    // S's body is a copy: the shared blob (lower ID) goes beside it
+    let mut m = meta();
+    m.copy = true;
+    w.g.bodies.insert(cid(1), Arc::new([(S, m)].into()));
+    w.g.blobs.insert(hi, Some(BlobInfo { parts: [0].into(), copy: true }));
+    w.g.k.held.insert((S, lo), cid(1));
+    w.stream();
+    w.settle();
+    let shared: Vec<BlobId> = w.g.k.held.keys().filter(|(_, b)| *b != hi && *b != lo).map(|(_, b)| *b).collect();
+    let deleted: BTreeSet<BlobId> = w.g.sent.iter().filter_map(|m| if let Sent::Delete(_, b) = m { Some(*b) } else { None }).collect();
+    assert!(!deleted.contains(&hi), "the copy was deleted");
+    assert!(deleted.contains(&lo) && shared.iter().all(|b| deleted.contains(b)), "{deleted:?}");
+}
+
+// spec/sync-judgement.md §5 (forgets once heard out with no entry): an entry at any source, one
+// holding no destroying request included, keeps S; past the requests' expiry it is emptied there
+// too (no reader can be told any more), then S is forgotten.
+#[test]
+fn forget_counts_every_source() {
+    let mut w = released(true);
+    let k2 = ConnId(3);
+    w.source(S, Source::Conn(k2), k2, true);
+    let b = w.g.logged.iter().find(|(_, c, _)| *c == cid(1)).unwrap().2;
+    w.g.put_seen((Source::Conn(k2), S, cid(1)), Seen { present: [b].into(), deleted: BTreeSet::new() });
+    w.g.all.insert((Source::Conn(k2), S), [b].into());
+    w.g.heard.insert(S, true);
+    w.exchange();
+    w.g.k.held.clear();
+    w.stream();
+    w.expire_tombstones();
+    assert!(!w.g.sent.contains(&Sent::Forget(S)), "forgot while a source shows an entry");
+    assert!(!w.sent().any(|m| *m == Sent::Delete(k2, b)), "emptied a source not told");
+    let mut m = meta();
+    m.expires = Some(WallMs(10));
+    w.g.bodies.insert(cid(3), Arc::new([(S, m)].into()));
+    w.g.now = 11;
+    w.settle();
+    assert!(w.sent().any(|m| *m == Sent::Delete(k2, b)));
+}
+
+// spec/sync-judgement.md §3 (role entries first): at a start every commit is judged again, in no
+// set order; a delete still waits for an own role commit K lacks, whichever is judged first.
+#[test]
+fn role_entries_first_at_a_start() {
+    let mut w = W::new();
+    w.pulls = false;
+    w.hold(cid(9), &[S], uncovered());
+    w.hold(cid(2), &[S], uncovered());
+    for c in [cid(9), cid(2)] {
+        let b = w.own_blobs(S, c)[0];
+        w.g.k.held.insert((S, b), c);
+    }
+    w.stream();
+    // restart: the delete candidate (2) is judged before the role commit (7)
+    let mut f = uncovered();
+    f.role = true;
+    w.g.facts.insert((S, cid(7)), f);
+    w.g.bodies.insert(cid(7), Arc::new([(S, meta())].into()));
+    w.g.facts.insert((S, cid(2)), covered(cid(9)));
+    w.read = Read::default();
+    w.g.added = vec![cid(2), cid(9), cid(7)];
+    w.settle();
+    assert_eq!(w.deletes(), 0, "deleted before K took the role commit");
+}
+
+// spec/sync-judgement.md §3 (driven by events): a source's stream event judges that body at that
+// source alone, a reader source joining judges nothing, and a writer's store source joining
+// judges only what its stream shows: the same work at n and 10n sources.
+#[test]
+fn work_follows_sources() {
+    let mut costs = Vec::new();
+    for n in [3u32, 30] {
+        let mut w = W::new();
+        for i in 0..n {
+            let c = ConnId(100 + u64::from(i));
+            w.source(S, Source::Conn(c), c, i % 2 == 0);
+        }
+        for i in 0..20 {
+            w.hold(cid(i), &[S], uncovered());
+        }
+        w.exchange();
+        osis_base::costs::take();
+        w.k_delete(cid(3));
+        let c = ConnId(99);
+        w.source(S, Source::Conn(c), c, false);
+        w.settle();
+        let c = ConnId(98);
+        w.source(S, Source::Conn(c), c, true);
+        w.settle();
+        let taken = osis_base::costs::take();
+        let n = |name: &str| taken.iter().filter(|(k, _, _)| *k == name).map(|(_, _, n)| n).sum::<u64>();
+        costs.push((n("read: judged"), n("read: toward")));
+    }
+    assert_eq!(costs[0], costs[1], "work per source event grows with the sources");
+    assert!(costs[0].1 <= 4, "{costs:?}");
 }

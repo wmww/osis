@@ -8,37 +8,40 @@
 //! held part falling here). Models: core/test/tla/net/NetHold.tla, NetDestroy.tla.
 //!
 //! Per (S, commit) a judgement (`judge::body`) gives the body's `Verdict` (must-hold, may-hold,
-//! must-not-hold, unjudged) and the acts it calls for now: the own store logs what S must hold and
-//! drops what is must-not-hold or covered and dropped (no delete key needed); toward each source
-//! keeping S unread it deletes (carriers in that source's `known`, role entries first), deposits
-//! (not a writer), or logs again once past a delete, its stand durable in the source's record.
-//! Between readers nothing but streams. Per S a destruction judgement (`judge::doom`): told,
-//! emptying (the destroying requests kept until their expiry), forgetting, or leaving untold.
+//! must-not-hold, unjudged) and what the own store calls for: it logs what S must hold and drops
+//! what is must-not-hold or covered and dropped (no delete key needed). Per (S, commit, source)
+//! keeping S unread a second judgement (`judge::toward`) gives what that source calls for: deletes
+//! (carriers in its `known`, role entries first), deposits (not a writer there), or logging again
+//! once past a delete, its stand durable in the source's record. Between readers nothing but
+//! streams. Per S a destruction judgement (`judge::doom`): told, emptying (the destroying requests
+//! kept until their expiry), then forgetting; or, untold past the window, forgetting deleting
+//! nothing.
 //!
 //! Work follows change: each judgement is an `Effects` key over the ground's per-key memo
-//! values and stamped rows (`Ground`), and read acts only on what a new value adds; nothing
-//! re-judges every commit of S per step. A membership change of S re-judges S's followed commits
-//! once (every source's view of S moved). State: the effects and three stamped maps (own role
-//! commits S must hold, S told destroyed, S left); nothing durable of its own (stands live in the
-//! store's record rows), so a start judges every held commit once.
+//! values, stamped rows and read's clock (`Ground`), and read acts only on what a new value adds,
+//! once judging reached its fixpoint; nothing re-judges every commit of S per step. A source is
+//! judged by what its stream shows (`seen_added`), and for a non-writer there by every must-hold
+//! body as it joins. State: the effects, the clock and three stamped maps (verdicts, own role
+//! commits S must hold, S told destroyed); nothing durable of its own (stands live in the store's
+//! record rows), so a start judges every held commit once.
 
 pub mod ground;
 mod judge;
 mod live;
 
-pub use ground::{Facts, Ground, Seen, SrcView};
+pub use ground::{BlobInfo, Facts, Ground, Seen, SrcView};
 pub use live::Live;
 
 use crate::opens::Opens;
 use crate::session::{Incoming, Sessions};
-use crate::store::Stand;
+use crate::store::{Source, Stand};
 use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Error, Result};
-use judge::{Act, Doom, Judged, Mine};
-use osis_base::memo::{Effects, Stamped, StampedSet};
+use judge::{Act, Doom, Judged, Mine, Toward};
+use osis_base::memo::{Clock, Effects, Stamped};
 use osis_base::{CommitId, SyncId, WallMs};
 use osis_engine::sync::BodyMeta;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 /// A body's verdict at S (spec/sync-judgement.md §2).
@@ -65,28 +68,30 @@ pub enum Why {
 
 #[derive(Clone)]
 pub struct Read {
+    /// The time as judgements read it: an answer valid until `t` moves when the clock reaches it.
+    clock: Clock,
     bodies: Effects<CommitId, Arc<BTreeMap<SyncId, BodyMeta>>>,
     judged: Effects<(SyncId, CommitId), Judged>,
+    toward: Effects<(SyncId, CommitId, Source), Toward>,
     dooms: Effects<SyncId, (Doom, BTreeSet<Act>)>,
     verdicts: Stamped<(SyncId, CommitId), Verdict>,
     /// Own role commits S must hold (§3 Role entries first).
     roles: Stamped<SyncId, BTreeSet<CommitId>>,
     /// S told destroyed, and its destroying requests (kept until their expiry).
     told: Stamped<SyncId, Arc<BTreeSet<CommitId>>>,
-    /// S forgotten or left untold.
-    left: StampedSet<SyncId>,
 }
 
 impl Default for Read {
     fn default() -> Self {
         Read {
+            clock: Clock::default(),
             bodies: Effects::new("read: bodies"),
             judged: Effects::new("read: judged"),
+            toward: Effects::new("read: toward"),
             dooms: Effects::new("read: doom"),
             verdicts: Stamped::default(),
             roles: Stamped::default(),
             told: Stamped::default(),
-            left: StampedSet::default(),
         }
     }
 }
@@ -97,22 +102,37 @@ impl std::fmt::Debug for Read {
     }
 }
 
+/// The first value a settle saw for each key it moved, and the last: acts go on the difference
+/// once the judgements reach their fixpoint.
+type Moved<K, V> = HashMap<K, (Option<V>, V)>;
+
+fn note<K: std::hash::Hash + Eq, V>(moved: &mut Moved<K, V>, k: K, was: Option<V>, now: V) {
+    match moved.get_mut(&k) {
+        Some(m) => m.1 = now,
+        None => {
+            moved.insert(k, (was, now));
+        }
+    }
+}
+
 impl Read {
     /// The product's step: over the engine, store, opens' members and streams' `known`.
     pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams) -> Result<bool> {
         self.settle_on(&mut Live { cx, sessions, opens, streams })
     }
 
-    /// One settle over `g`: whether anything acted.
+    /// One settle over `g`: whether anything acted. Judging runs to a fixpoint (a verdict moving
+    /// the own role commits re-judges what waits on them) before anything acts, so the order the
+    /// keys come in (a start judges every one) never lets an act skip a rule.
     pub fn settle_on(&mut self, g: &mut impl Ground) -> Result<bool> {
         let added = match g.commits_added() {
             Err(e) if not_built(&e) => return Ok(false),
             r => r?,
         };
+        self.clock.set(g.now().0);
         for c in added {
             self.bodies.want(c);
         }
-        let mut acted = false;
         for c in self.bodies.due() {
             let Some((_, now)) = run(&mut self.bodies, &c, || g.bodies(&c))? else { continue };
             for s in now.keys() {
@@ -121,48 +141,107 @@ impl Read {
             }
             // a sync ID no longer carrying it stays followed until nothing of it is left there
         }
+        let mut acted = false;
         for s in self.dooms.due() {
             let told_before = self.told.contains_key(&s);
-            let Some((was, (doom, acts))) = run(&mut self.dooms, &s, || judge::doom(g, told_before, &s))? else { continue };
+            let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock };
+            let Some((was, (doom, acts))) = run(&mut self.dooms, &s, || judge::doom(g, &mine, told_before, &s))? else { continue };
             let before = was.map(|(_, a)| a).unwrap_or_default();
             acted = true;
             match &doom {
-                Doom::Told { requests } => {
-                    if self.told.get(&s) != Some(requests) {
-                        self.told.insert(s, requests.clone());
-                    }
+                Doom::Told { requests } if self.told.get(&s) != Some(requests) => {
+                    self.told.insert(s, requests.clone());
                 }
-                _ => {
-                    if self.told.contains_key(&s) {
-                        self.told.remove(&s);
-                    }
+                Doom::Told { .. } => {}
+                _ if self.told.contains_key(&s) => {
+                    self.told.remove(&s);
                 }
+                _ => {}
             }
             for a in acts.difference(&before).cloned().collect::<Vec<_>>() {
                 self.act(g, &s, None, a)?;
             }
         }
-        for k in self.judged.due() {
-            let (s, c) = k;
-            let mine = Mine { roles: &self.roles, told: &self.told, left: &self.left };
-            let moved = run(&mut self.judged, &k, || judge::body(g, &mine, &s, &c))?;
-            let Some((was, now)) = moved else { continue };
-            acted = true;
-            if self.verdicts.get(&k) != Some(&now.verdict) {
-                self.verdicts.insert(k, now.verdict.clone());
+        // the own judgement of each body, to its fixpoint
+        let mut judged: Moved<(SyncId, CommitId), Judged> = HashMap::new();
+        loop {
+            let due = self.judged.due();
+            if due.is_empty() {
+                break;
             }
-            self.set_role(&s, &c, now.role);
+            for k in due {
+                let (s, c) = k;
+                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock };
+                let Some((was, now)) = run(&mut self.judged, &k, || judge::body(g, &mine, &s, &c))? else { continue };
+                if self.verdicts.get(&k) != Some(&now.verdict) {
+                    self.verdicts.insert(k, now.verdict.clone());
+                    // a non-writer gives a must-hold body to each store source lacking it
+                    if now.verdict == Verdict::Must {
+                        for at in self.giving_to(g, &s)? {
+                            self.toward.want((s, c, at));
+                        }
+                    }
+                }
+                self.set_role(&s, &c, now.role && !now.idle);
+                if now.idle {
+                    self.judged.unwant(&k);
+                    self.verdicts.remove(&k);
+                }
+                note(&mut judged, k, was, now);
+            }
+        }
+        for ((s, c), (was, now)) in judged {
+            acted = true;
             let before = was.map(|w| w.acts).unwrap_or_default();
             for a in now.acts.difference(&before).cloned().collect::<Vec<_>>() {
                 self.act(g, &s, Some(&c), a)?;
             }
-            if now.idle {
-                self.judged.unwant(&k);
-                self.verdicts.remove(&k);
-                self.set_role(&s, &c, false);
+        }
+        // what each body calls for at each source keeping S unread: the rows a source's stream
+        // wrote, and a source joining or moving (a non-writer there gives every must-hold body)
+        for (at, s, c) in g.seen_added()? {
+            self.toward.want((s, c, at));
+        }
+        for (s, at) in g.sources_added()? {
+            if self.giving_to(g, &s)?.contains(&at) {
+                let must: Vec<CommitId> = self.verdicts.range((s, CommitId([0; 32]))..=(s, CommitId([0xff; 32]))).filter(|(_, v)| **v == Verdict::Must).map(|((_, c), _)| *c).collect();
+                for c in must {
+                    self.toward.want((s, c, at));
+                }
+            }
+        }
+        let mut toward: Moved<(SyncId, CommitId, Source), Toward> = HashMap::new();
+        loop {
+            let due = self.toward.due();
+            if due.is_empty() {
+                break;
+            }
+            for k in due {
+                let (s, c, at) = k;
+                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock };
+                let Some((was, now)) = run(&mut self.toward, &k, || judge::toward(g, &mine, &s, &c, &at))? else { continue };
+                if now.idle {
+                    self.toward.unwant(&k);
+                }
+                note(&mut toward, k, was, now);
+            }
+        }
+        for ((s, c, _), (was, now)) in toward {
+            acted = true;
+            let before = was.map(|w| w.acts).unwrap_or_default();
+            for a in now.acts.difference(&before).cloned().collect::<Vec<_>>() {
+                self.act(g, &s, Some(&c), a)?;
             }
         }
         Ok(acted)
+    }
+
+    /// The store sources of S where this node is no writer at their head (it gives them what it
+    /// must hold; a writer's store is pulled).
+    fn giving_to(&self, g: &mut impl Ground, s: &SyncId) -> Result<Vec<Source>> {
+        let creds = g.credentials(s)?;
+        let writer = |h: &osis_label::StepId| creds.as_ref().and_then(|c| c.keys.get(h)).is_some_and(|k| k.write.is_some());
+        Ok(g.sources(s)?.iter().filter(|x| x.store && !x.head.is_some_and(|h| writer(&h))).map(|x| x.at).collect())
     }
 
     /// Answers to its own requests: a Delete's codes reach `known` through the source's stream,
@@ -176,8 +255,9 @@ impl Read {
         self.verdicts.get(&(*s, *c)).cloned()
     }
 
+    /// When a judgement read up to a time (an expiry) moves next.
     pub fn next_wake(&self) -> Option<WallMs> {
-        None
+        self.clock.next().map(WallMs)
     }
 
     fn set_role(&mut self, s: &SyncId, c: &CommitId, on: bool) {
@@ -202,39 +282,32 @@ impl Read {
         osis_base::costs::count("read: acts", 1);
         match (a, c) {
             (Act::Log, Some(c)) => {
-                g.log_own(s, c)?;
+                g.log_own(s, c, false)?;
             }
             (Act::DropOwn(b), Some(c)) => g.drop_own(s, &b, c)?,
             (Act::Lift(b), _) => g.lift(s, &b)?,
             (Act::Delete { at, conn, head, blob }, _) => {
-                let Some(src) = g.sources(s)?.iter().find(|x| x.at == at && x.conn == conn).cloned() else { return Ok(()) };
+                let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) else { return Ok(()) };
                 let key = g.credentials(s)?.and_then(|cr| cr.keys.get(&head).and_then(|k| k.delete.clone()));
                 if let Some(key) = key {
                     g.delete(&src, s, &blob, &key)?;
                 }
             }
-            (Act::Deposit { at, conn, blob }, _) => {
-                if let Some(src) = g.sources(s)?.iter().find(|x| x.at == at && x.conn == conn).cloned() {
-                    g.deposit(&src, s, &blob)?;
+            (Act::Deposit { at, conn, blob }, Some(c)) => {
+                if let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) {
+                    g.deposit(&src, s, c, &blob)?;
                 }
             }
-            (Act::Again { at, head, ground, old, .. }, Some(c)) => {
+            (Act::Again { at, head, fall, old, .. }, Some(c)) => {
                 // a fresh encryption under this sync ID alone; its stand first, durably
-                if let Some(logged) = g.log_own(s, c)? {
-                    g.set_stand(&at, s, c, &Stand { at: g.now(), logged, head, deleted: false, ground: judge::ground_bytes(ground) })?;
+                if let Some(logged) = g.log_own(s, c, true)? {
+                    g.set_stand(&at, s, c, &Stand { at: g.now(), logged, head, fall })?;
                     for b in old {
                         g.drop_own(s, &b, c)?;
                     }
                 }
             }
-            (Act::Forget, _) => {
-                g.forget(s)?;
-                self.left.insert(*s);
-            }
-            (Act::Leave, _) => {
-                g.leave(s)?;
-                self.left.insert(*s);
-            }
+            (Act::Forget, _) => g.forget(s)?,
             (_, None) => {}
         }
         Ok(())
@@ -262,10 +335,4 @@ fn run<K: std::hash::Hash + Eq + Clone, V: Clone + PartialEq + Default>(fx: &mut
 /// it is.
 fn not_built(e: &Error) -> bool {
     matches!(e, Error::NotBuilt(_) | Error::Engine(osis_engine::Error::NotBuilt(_)))
-}
-
-impl Default for Judged {
-    fn default() -> Self {
-        Judged { verdict: Verdict::Unjudged, role: false, acts: BTreeSet::new(), idle: false }
-    }
 }

@@ -1,11 +1,8 @@
 //! The product's ground: the engine's facade, the store, opens' members and streams' `known`.
-//! Not built (each answers `NotBuilt`, so `Read` does nothing until it is): the engine's
-//! held-commit feed (a `Feed` over the commits it holds), the facts beside `BodyFacts`
-//! (`ground::Facts`), a body's fall mark (the facade's is per aspect; read needs it per commit),
-//! the store's entries and tombstones by commit, `known` by commit and whole (streams), heard
-//! out (status). Deposits and relays are inbox's Deposit items: not sent until inbox takes them.
+//! Not built (each answers `NotBuilt`, so `Read` does nothing until it is): notes/sync-boundary.md
+//! (4. `read`, Before read runs in a node) lists each.
 
-use super::ground::{Facts, Ground, Seen, SrcView};
+use super::ground::{BlobInfo, Facts, Ground, Seen, SrcView};
 use crate::opens::Opens;
 use crate::session::{Sessions, To};
 use crate::store::{Source, Stand};
@@ -45,7 +42,7 @@ impl Ground for Live<'_, '_> {
     }
     fn fall_mark(&mut self, s: &SyncId, c: &CommitId) -> Result<u64> {
         let _ = (s, c);
-        Err(Error::NotBuilt("read: fall mark per commit"))
+        Err(Error::NotBuilt("read: fall mark summed over a body's aspects"))
     }
     fn credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {
         Ok(self.cx.engine.read_credentials(s)?)
@@ -55,6 +52,17 @@ impl Ground for Live<'_, '_> {
             Some(t) => Ok(self.cx.engine.destruction(&t)?),
             None => Ok(None),
         }
+    }
+    fn reads(&mut self, s: &SyncId) -> Result<bool> {
+        Ok(self.cx.engine.sync_set()?.ids.get(s).is_some_and(|(_, h)| *h == osis_engine::sync::Holding::Read))
+    }
+    fn closure_settled(&mut self, s: &SyncId) -> Result<bool> {
+        let _ = s;
+        Err(Error::NotBuilt("engine: a closure's group.0 held as a header only"))
+    }
+    fn pullable(&mut self, s: &SyncId) -> Result<bool> {
+        let _ = s;
+        Err(Error::NotBuilt("read: reach.0 published or a connection sharing S"))
     }
     fn now(&self) -> WallMs {
         self.cx.now
@@ -68,11 +76,13 @@ impl Ground for Live<'_, '_> {
         Err(Error::NotBuilt("store: tombstones by commit"))
     }
     fn own_empty(&mut self, s: &SyncId) -> Result<bool> {
-        let _ = s;
         Ok(self.cx.store.entries(s)?.is_empty())
     }
-    fn deletes_known(&mut self, s: &SyncId) -> Result<bool> {
-        let _ = s;
+    fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>> {
+        let _ = b;
+        Err(Error::NotBuilt("engine: a held blob's parts and whether it is a copy"))
+    }
+    fn deletes_known(&mut self, _s: &SyncId) -> Result<bool> {
         Err(Error::NotBuilt("store: deletes seen per sync ID"))
     }
     fn sources(&mut self, s: &SyncId) -> Result<Arc<Vec<SrcView>>> {
@@ -84,6 +94,20 @@ impl Ground for Live<'_, '_> {
             }
         }
         Ok(Arc::new(out))
+    }
+    fn source(&mut self, s: &SyncId, at: &Source) -> Result<Option<SrcView>> {
+        let _ = (s, at);
+        Err(Error::NotBuilt("opens: one source's view per sync ID, stamped"))
+    }
+    fn sources_added(&mut self) -> Result<Vec<(SyncId, Source)>> {
+        Err(Error::NotBuilt("opens: a feed of source views written"))
+    }
+    fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, CommitId)>> {
+        Err(Error::NotBuilt("streams: a feed of known rows written"))
+    }
+    fn present_anywhere(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+        let _ = (s, c);
+        Err(Error::NotBuilt("streams: an entry of a commit present at some source"))
     }
     fn seen(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Seen> {
         let _ = (at, s, c, self.streams);
@@ -100,7 +124,10 @@ impl Ground for Live<'_, '_> {
     fn stand(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Option<Stand>> {
         self.cx.store.stand(*at, s, &c.0)
     }
-    fn log_own(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<BlobId>> {
+    fn log_own(&mut self, s: &SyncId, c: &CommitId, fresh: bool) -> Result<Option<BlobId>> {
+        if !fresh {
+            return Err(Error::NotBuilt("store: a held blob of a commit not tombstoned under S, logged verbatim"));
+        }
         let Some((sealed, wrap)) = self.cx.engine.seal_body(s, c, self.cx.rng)? else { return Ok(None) };
         let e = Entry { blob: sealed.id, wrap, stamp: None, deposited: false, own: true, class: Class::Durable, expires: None };
         let code = self.cx.store.log(s, e, Some(sealed.blob), None)?;
@@ -120,9 +147,9 @@ impl Ground for Live<'_, '_> {
         }
         Ok(())
     }
-    fn deposit(&mut self, at: &SrcView, s: &SyncId, b: &BlobId) -> Result<()> {
-        let _ = (at, s, b);
-        Ok(())
+    fn deposit(&mut self, at: &SrcView, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<()> {
+        let _ = (at, s, c, b);
+        Err(Error::NotBuilt("inbox: Deposit items (relay, or a fresh encryption by seal_body)"))
     }
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &CommitId, stand: &Stand) -> Result<()> {
         self.cx.store.set_stand(*at, s, &c.0, Some(stand))
@@ -134,8 +161,5 @@ impl Ground for Live<'_, '_> {
             self.cx.engine.forget_destroyed(&t)?;
         }
         Ok(())
-    }
-    fn leave(&mut self, s: &SyncId) -> Result<()> {
-        self.cx.store.shred(s)
     }
 }

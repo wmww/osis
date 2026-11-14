@@ -118,8 +118,8 @@ impl Policy {
 }
 
 /// A source's stand of "logged again once" for one body (spec/sync-judgement.md §4): the
-/// encryption logged again, the source's head it was logged at, whether a delete of it was seen,
-/// and the ground `read` compares (its fall marks), opaque here. Kept in the source's record,
+/// encryption logged again and the ground it was logged at: the source's head and the body's fall
+/// mark (`Engine::fall_mark`, summed over its aspects). Kept in the source's record,
 /// durably, until `at` is `TOMBSTONE_LIFETIME` old; toward a peer with no record, in memory
 /// while the connection lasts and no longer than that.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,17 +127,16 @@ pub struct Stand {
     pub at: WallMs,
     pub logged: BlobId,
     pub head: StepId,
-    pub deleted: bool,
-    pub ground: Vec<u8>,
+    pub fall: u64,
 }
 
 impl Stand {
     fn encode(&self) -> Vec<u8> {
-        W::default().u64(self.at.0).raw(&self.logged.0).raw(&self.head.0).u8(u8::from(self.deleted)).raw(&self.ground).take()
+        W::default().u64(self.at.0).raw(&self.logged.0).raw(&self.head.0).u64(self.fall).take()
     }
     fn decode(v: &[u8]) -> Result<Stand> {
         let mut r = R::new(v);
-        Ok(Stand { at: WallMs(r.u64()?), logged: BlobId(r.array()?), head: StepId(r.array()?), deleted: r.u8()? != 0, ground: r.rest().to_vec() })
+        Ok(Stand { at: WallMs(r.u64()?), logged: BlobId(r.array()?), head: StepId(r.array()?), fall: r.u64()? })
     }
 }
 

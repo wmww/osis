@@ -735,7 +735,7 @@ fn stands_live_in_the_record_spec_sync_judgement_4() {
     let s = Sid::new(10);
     let mut st = unread(&dev, &s);
     let rec = st.with_tx(|t| t.record_create([1; 32], &[])).unwrap();
-    let stand = Stand { at: WallMs(5), logged: BlobId([2; 32]), head: s.head().id(), deleted: true, ground: vec![1, 2] };
+    let stand = Stand { at: WallMs(5), logged: BlobId([2; 32]), head: s.head().id(), fall: 3 };
     let (src, conn) = (Source::Record(rec), Source::Conn(ConnId(9)));
     st.set_stand(src, &s.id, b"body", Some(&stand)).unwrap();
     st.set_stand(conn, &s.id, b"body", Some(&stand)).unwrap();
@@ -799,7 +799,7 @@ fn ops(st: &mut Store, s: &Sid, rec: RecordId, child: &(Step, ClaimSet), step: u
         4 => code_of(st.drop_entry(&s.id, &b(3).0, b"note".to_vec()).unwrap()),
         5 => code_of(st.lift_tombstone(&s.id, &b(3).0).unwrap()),
         6 => code_of(st.uncharge(&s.id, &b(1).0).is_ok()),
-        7 => code_of(st.set_stand(Source::Record(rec), &s.id, b"body", Some(&Stand { at: WallMs(0), logged: b(7).0, head: s.head().id(), deleted: false, ground: Vec::new() })).is_ok()),
+        7 => code_of(st.set_stand(Source::Record(rec), &s.id, b"body", Some(&Stand { at: WallMs(0), logged: b(7).0, head: s.head().id(), fall: 0 })).is_ok()),
         8 => code_of(st.saw_deleted(Source::Record(rec), &s.id, &b(8).0).is_ok()),
         9 => st.take_stamped(&s.id, &stamped(s, b(9).0, false), b(9).1).unwrap(),
         10 => {
