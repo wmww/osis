@@ -208,10 +208,11 @@ impl CommitBuilder {
         if blob_bound(&commit) > self.max_blob {
             return Err(Error::Build(COMMIT_PAST_BLOB));
         }
-        // the signer's verdict stands for a check nobody makes here; debug builds make it (outside
-        // the counted costs), so a signing bug fails at its writer, not at every receiver
-        let signed = crate::Signed::of(&id, &commit.sigs, &key.verifying_key());
-        debug_assert_eq!(osis_base::costs::paused(|| crate::verify_signature(&id, &commit.sigs, &key.verifying_key()).ok()), Some(signed), "a commit signature that does not verify");
+        // the writer checks its own signature once before anything leaves it (outside the counted
+        // costs): a signing bug or a fault in signing fails here, and a faulty Ed25519 signature
+        // is never published (it can leak the key)
+        let signed = osis_base::costs::paused(|| crate::verify_signature(&id, &commit.sigs, &key.verifying_key()).ok());
+        let Some(signed) = signed else { return Err(Error::Build("a commit signature that does not verify")) };
         Ok(Built { commit, list_blobs, signed })
     }
 }
