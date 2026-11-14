@@ -391,6 +391,40 @@ fn a_static_entry_hit_opens_only_for_its_proved_key_actor_spec_wire_11_2() {
     assert!(net.sync(a).shared_members(right.conn).contains(&label));
 }
 
+// spec/wire.md §11.2 (an open signature binds its signer's side), spec/sync.md §10 Offer
+// (issues/net-static-hit-to-dialer.md; model NetOpen `ON_side`): a reader holding a link's key
+// actor Hits its static entry by a Static item on a second dial whose Hello challenge is the
+// reader's own from a first; that item offered back on the first, where the hand dialer proves
+// only another key actor, opens nothing (without the side byte its signature verifies there)
+#[test]
+fn a_static_item_reflected_from_a_second_dial_opens_nothing_spec_sync_10() {
+    let (mut net, host, a, account, (_k, label, _l1, seed1)) = crate::net_judgment::linked();
+    let (_k2, _label2, _l2, seed2) = crate::net_judgment::link(&mut net, a, account);
+    net.engine(a).hold_key_actor(seed1.clone()).unwrap();
+    let carrier = net.node(2, &[host]);
+    let signing = osis_engine::Identity::from_seed(seed1).keys().signing.verifying_key();
+    let entry = osis_crypto::static_entry(&label, &signing);
+    let ch = [6; 32];
+    let mut first = proving_key_actor(&mut net, a, carrier, &seed2, ch);
+    // the second dial's challenge is the reader's on the first; its filter shows the entry
+    let mut second = dial_with(&mut net, a, first.hello);
+    let provers: Vec<osis_proto::Prover> = net.sync(carrier).provers(false).unwrap().into_iter().filter(|p| p.record.tid() == osis_engine::Identity::from_seed(seed2.clone()).tid()).collect();
+    prove(&mut net, a, &mut second, provers);
+    let mut msgs = shared_of(&send(&mut net, a, &mut second, Message::NoRecord { id: 1 << 31 }));
+    let r2 = *osis_crypto::kdf::pair_key(&first.hello, &second.hello).expose();
+    let f = filter_width(1);
+    let shown = beacon_value(&beacon(&entry, &label.0, &r2), f);
+    msgs.extend(shared_of(&send(&mut net, a, &mut second, Message::Beacons { id: 40, generation: 1, base: None, f, lo: 0, hi: 1 << f, gcs: encode_gcs(&[shown], 0), more: false })));
+    let items: Vec<OfferItem> = msgs.iter().filter_map(|m| if let Message::Offer { items, .. } = m { Some(items.clone()) } else { None }).flatten().collect();
+    let Some((key, sig)) = items.iter().find_map(|i| if let OfferItem::Static { key, sig, .. } = i { Some((*key, *sig)) } else { None }) else { panic!("a Hits the entry by a Static item: {msgs:?}") };
+    assert_eq!(key, signing.to_bytes());
+    let r1 = *osis_crypto::kdf::pair_key(&ch, &first.hello).expose();
+    let hit = beacon_hit(&entry, &label.0, &beacon(&entry, &label.0, &r1), (false, &LISTENER, &ch, &first.hello));
+    let ans = offer(&mut net, a, &mut first, vec![OfferItem::Static { hit, key, sig }]);
+    assert_eq!(ans, vec![(Code::NOT_ADMITTED, None)], "a's own signature, reflected");
+    assert!(!net.sync(a).shared_members(first.conn).contains(&label), "no member");
+}
+
 fn first_contact_cost(n: usize) -> (u64, u64, u64) {
     let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, b);

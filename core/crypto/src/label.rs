@@ -31,12 +31,18 @@ impl LabelRole {
 
 /// `kdf("label <role>", secret, "")` as an Ed25519 seed.
 pub fn label_role_key(role: LabelRole, secret: &Secret32) -> SigningSecret {
+    SigningSecret::from_seed(&label_role_seed(role, secret))
+}
+
+/// The seed of `label_role_key`: `kdf("label <role>", secret, "")`. A sync key's seed is what its
+/// proof derives from (`kdf::sync_proof`).
+pub fn label_role_seed(role: LabelRole, secret: &Secret32) -> Secret32 {
     let purpose = match role {
         LabelRole::Sync => kdf::LABEL_SYNC,
         LabelRole::Write => kdf::LABEL_WRITE,
         LabelRole::Delete => kdf::LABEL_DELETE,
     };
-    SigningSecret::from_seed(&kdf(purpose, secret.expose(), &[]))
+    kdf(purpose, secret.expose(), &[])
 }
 
 /// Deposit key `kdf("label deposit", deposit seed, label ID)`.
@@ -71,9 +77,13 @@ pub fn static_entry(label: &LabelId, signing: &VerifyingKey) -> [u8; 32] {
     *h.finalize().as_bytes()
 }
 
-/// Digest of an open: BLAKE3(canonical `[label_id, challenge, static_key]`) (spec/wire.md §11.2).
-pub fn open_digest(label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32]) -> [u8; 32] {
-    let v = Value::List(vec![Value::Bytes(label.0.to_vec()), Value::Bytes(challenge.to_vec()), Value::Bytes(static_key.to_vec())]);
+/// Digest of an open: BLAKE3(canonical `[side, label_id, challenge, static_key]`) (spec/wire.md
+/// §11.2), `side` the signer's (`by_listener`: 0 the dialer, 1 the listener), `challenge` the
+/// other side's Hello challenge. Invariant, as for `proof_digest`: an open signature made as one
+/// side verifies as no other, so a peer that copies this side's challenge into its own Hello
+/// cannot offer a signature it was sent back as its own (model `ON_side`).
+pub fn open_digest(by_listener: bool, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32]) -> [u8; 32] {
+    let v = Value::List(vec![Value::uint(u64::from(by_listener)), Value::Bytes(label.0.to_vec()), Value::Bytes(challenge.to_vec()), Value::Bytes(static_key.to_vec())]);
     *blake3::hash(&encode(&v)).as_bytes()
 }
 
@@ -86,13 +96,15 @@ pub fn proof_digest(by_listener: bool, challenge: &[u8; 32], listener_key: &[u8;
     *blake3::hash(&encode(&v)).as_bytes()
 }
 
-/// Open signature under `"osis v1 label open"` with the opened side's challenge and static key.
-pub fn sign_open(key: &SigningSecret, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Signature {
-    key.sign(Domain::LabelOpen, &open_digest(label, challenge, static_key))
+/// Open signature under `"osis v1 label open"` by the side `by_listener`, over the other side's
+/// Hello challenge and the listener's static key.
+pub fn sign_open(key: &SigningSecret, by_listener: bool, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Signature {
+    key.sign(Domain::LabelOpen, &open_digest(by_listener, label, challenge, static_key))
 }
 
-pub fn verify_open(key: &VerifyingKey, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32], sig: &Signature) -> Result<(), Error> {
-    key.verify(Domain::LabelOpen, &open_digest(label, challenge, static_key), sig)
+/// Verifies an open signature as made by the side `by_listener` (the peer's, at the verifier).
+pub fn verify_open(key: &VerifyingKey, by_listener: bool, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32], sig: &Signature) -> Result<(), Error> {
+    key.verify(Domain::LabelOpen, &open_digest(by_listener, label, challenge, static_key), sig)
 }
 
 #[cfg(test)]
@@ -140,12 +152,29 @@ mod tests {
     fn open_signature() {
         let k = label_role_key(LabelRole::Sync, &Secret32::from_bytes([1; 32]));
         let (l, c, s) = (LabelId([1; 16]), [2; 32], [3; 32]);
-        let sig = sign_open(&k, &l, &c, &s);
+        let sig = sign_open(&k, false, &l, &c, &s);
         let pk = k.verifying_key();
-        assert_eq!(verify_open(&pk, &l, &c, &s, &sig), Ok(()));
-        assert!(verify_open(&pk, &LabelId([9; 16]), &c, &s, &sig).is_err());
-        assert!(verify_open(&pk, &l, &[9; 32], &s, &sig).is_err());
-        assert!(verify_open(&pk, &l, &c, &[9; 32], &sig).is_err());
-        assert!(pk.verify(Domain::Stamp, &open_digest(&l, &c, &s), &sig).is_err());
+        assert_eq!(verify_open(&pk, false, &l, &c, &s, &sig), Ok(()));
+        assert!(verify_open(&pk, false, &LabelId([9; 16]), &c, &s, &sig).is_err());
+        assert!(verify_open(&pk, false, &l, &[9; 32], &s, &sig).is_err());
+        assert!(verify_open(&pk, false, &l, &c, &[9; 32], &sig).is_err());
+        assert!(pk.verify(Domain::Stamp, &open_digest(false, &l, &c, &s), &sig).is_err());
+        assert_eq!(label_role_key(LabelRole::Sync, &Secret32::from_bytes([1; 32])).verifying_key(), SigningSecret::from_seed(&label_role_seed(LabelRole::Sync, &Secret32::from_bytes([1; 32]))).verifying_key());
+    }
+
+    // spec/wire.md §11.2: an open signature binds its signer's side; one made by either side
+    // verifies only as that side's, so a signature sent to a peer is no signature of the peer's
+    // (on a connection whose challenges the peer copied, model `ON_side`).
+    #[test]
+    fn an_open_signature_binds_its_signers_side_spec_wire_11_2() {
+        let k = label_role_key(LabelRole::Sync, &Secret32::from_bytes([1; 32]));
+        let pk = k.verifying_key();
+        let (l, c, s) = (LabelId([1; 16]), [2; 32], [3; 32]);
+        for side in [false, true] {
+            let sig = sign_open(&k, side, &l, &c, &s);
+            assert_eq!(verify_open(&pk, side, &l, &c, &s, &sig), Ok(()));
+            assert!(verify_open(&pk, !side, &l, &c, &s, &sig).is_err(), "side {side}");
+        }
+        assert_ne!(open_digest(false, &l, &c, &s), open_digest(true, &l, &c, &s));
     }
 }

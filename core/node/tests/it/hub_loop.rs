@@ -188,7 +188,7 @@ impl Client {
         let value = sync.verifying_key().to_bytes();
         let b = beacon(&value, &l.id.0, &r);
         let hit = beacon_hit(&value, &l.id.0, &b, (false, &key, &dialer, &listener));
-        let sig = osis_crypto::sign_open(&sync, &l.id, &listener, &key);
+        let sig = osis_crypto::sign_open(&sync, false, &l.id, &listener, &key);
         let got = self.peer(Message::Offer { id: NODE_IDS | id, items: vec![OfferItem::Hit(hit, Some(sig))] }).await;
         let Some(Message::Shared { codes, .. }) = got.last() else { panic!("{got:?}") };
         let code = codes[0].clone();

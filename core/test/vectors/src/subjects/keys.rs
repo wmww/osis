@@ -57,6 +57,7 @@ pub fn seed() -> VecFile {
         for (n, r) in [("sync", LabelRole::Sync), ("write", LabelRole::Write), ("delete", LabelRole::Delete)] {
             c = c.with(&format!("{n}-public"), hex(&label_role_key(r, &seed).verifying_key().to_bytes()));
         }
+        c = c.with("sync-proof", hex(&osis_crypto::kdf::sync_proof(&osis_crypto::label_role_seed(LabelRole::Sync, &seed))));
         let id = label_id(&label_role_key(LabelRole::Delete, &seed).verifying_key());
         c = c.with("label-id-from-delete", hex(&id.0)).with("deposit-seed", hex(seed.expose())).with("deposit-public", hex(&deposit_key(&seed, &id).verifying_key().to_bytes()));
         cases.push(c);

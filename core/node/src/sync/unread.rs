@@ -175,8 +175,8 @@ impl SyncEngine {
     }
 
     /// The answer to a Behind item on `l` (spec/sync.md §5, Behind), its key `key` shown by `sig`,
-    /// an open signature over this side's Hello challenge and the listener's key (`challenge`,
-    /// `listener`): when `step` is not the head and `key` is a credential of it (its sync key, a
+    /// an open signature made as the peer's side (`by_listener`) over this side's Hello challenge
+    /// and the listener's key (`challenge`, `listener`): when `step` is not the head and `key` is a credential of it (its sync key, a
     /// claim of its held claim set, or a key actor's signing key whose static entry the set
     /// lists), the steps after it on the hub store's path through the first whose sync key is not
     /// its own (one sync key's run: an old credential learns one rotation past what it read);
@@ -187,7 +187,7 @@ impl SyncEngine {
     /// each step read takes one; spent, the answer is the steps read so far, none read refused for
     /// now.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn unread_behind(&mut self, l: &LabelId, step: Option<&osis_label::StepId>, key: &[u8; 32], sig: &Signature, challenge: &[u8; 32], listener: &[u8; 32], budget: &mut usize) -> Result<BehindAnswer> {
+    pub(crate) fn unread_behind(&mut self, l: &LabelId, step: Option<&osis_label::StepId>, key: &[u8; 32], sig: &Signature, by_listener: bool, challenge: &[u8; 32], listener: &[u8; 32], budget: &mut usize) -> Result<BehindAnswer> {
         if *budget == 0 {
             return Ok(BehindAnswer::ForNow);
         }
@@ -195,7 +195,7 @@ impl SyncEngine {
             return Ok(if self.things().contains_key(l) { BehindAnswer::Refused } else { BehindAnswer::Unknown });
         }
         let Ok(pk) = osis_crypto::VerifyingKey::from_slice(key) else { return Ok(BehindAnswer::Refused) };
-        if osis_crypto::verify_open(&pk, l, challenge, listener, sig).is_err() {
+        if osis_crypto::verify_open(&pk, by_listener, l, challenge, listener, sig).is_err() {
             return Ok(BehindAnswer::Refused);
         }
         let hub = self.hub();

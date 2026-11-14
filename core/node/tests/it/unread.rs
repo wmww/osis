@@ -52,15 +52,21 @@ fn setup() -> Setup {
     }
     net.run();
     let msgs = shared_of(&send(&mut net, b, &mut p, Message::NoRecord { id: 1 << 31 }));
+    let filter = filter_of(&msgs);
+    Setup { net, b, l, p, filter, read }
+}
+
+/// The filter among `msgs`: its width and values.
+fn filter_of(msgs: &[Message]) -> (u8, Vec<u64>) {
     let mut filter = (0, Vec::new());
-    for m in &msgs {
+    for m in msgs {
         if let Message::Beacons { f, lo, hi, gcs, .. } = m {
             filter.0 = *f;
             filter.1.extend(decode_gcs(gcs, *lo, *hi).unwrap());
         }
     }
     assert!(filter.0 > 0, "a filter: {msgs:?}");
-    Setup { net, b, l, p, filter, read }
+    filter
 }
 
 /// Stamped entry `e` of `l` taken into node `b`'s store by its rules, as pulled from a reader
@@ -103,7 +109,7 @@ fn hit(p: &Dialer, v: &[u8; 32], l: &LabelId) -> [u8; 32] {
 
 /// An open signature by `l`'s head sync key over the listener's challenge and key.
 fn open_sig(p: &Dialer, l: &Label) -> osis_crypto::Signature {
-    osis_crypto::sign_open(&l.head_keys().sync, &l.id, &p.hello, &LISTENER)
+    osis_crypto::sign_open(&l.head_keys().sync, false, &l.id, &p.hello, &LISTENER)
 }
 
 fn sync_value(l: &Label) -> [u8; 32] {
@@ -201,8 +207,8 @@ fn nothing_else_of_an_unread_filter_opens_spec_sync_10() {
     let mut s = setup();
     let l = s.l.id;
     let sync = sync_value(&s.l);
-    let other = osis_crypto::sign_open(&s.l.head_keys().write, &l, &s.p.hello, &LISTENER);
-    let elsewhere = osis_crypto::sign_open(&s.l.head_keys().sync, &l, &[1; 32], &LISTENER);
+    let other = osis_crypto::sign_open(&s.l.head_keys().write, false, &l, &s.p.hello, &LISTENER);
+    let elsewhere = osis_crypto::sign_open(&s.l.head_keys().sync, false, &l, &[1; 32], &LISTENER);
     let deposit = s.l.head_keys().deposit.verifying_key().to_bytes();
     let entry = osis_crypto::static_entry(&l, &s.l.key_actor.verifying_key());
     let sig = open_sig(&s.p, &s.l);
@@ -508,6 +514,33 @@ fn a_dialer_holding_only_the_public_sync_key_pulls_nothing_spec_sync_10() {
     assert!(net.sync(a).served_opened().values().all(|m| !m.contains(&l)), "L never opens where p dialed");
     assert_eq!(kept(&mut net, p, &l), before, "the dialer pulled nothing");
     assert_eq!(net.sync(a).pass_stats().hits_sent, hits, "the reader sent no Hit");
+}
+
+// spec/sync.md §10 (Admissible: a proof derives from its sync key's seed; Filter), model NetOpen
+// `ON_proofpub`: a peer holding every public value of L (each step's keys and claim set) and
+// proving an actor the reader knows dials a reader of L: no beacon those values give, the proof a
+// public sync key would derive included, is in the reader's filter, which shows L's proof (to a
+// holder of the sync secret). With the proof from the public key, it finds that proof.
+#[test]
+fn a_node_holding_only_the_public_keys_finds_no_proof_in_a_readers_filter_spec_sync_10() {
+    let (mut net, a, p, g, l) = dialing_node(false);
+    let mut q = crate::shared::dial_as(&mut net, p, a, CHALLENGE);
+    let filter = filter_of(&shared_of(&send(&mut net, a, &mut q, Message::NoRecord { id: 1 << 31 })));
+    let r = r_of(&q);
+    let shows = |v: &[u8; 32]| filter.1.binary_search(&beacon_value(&beacon(v, &l.0, &r), filter.0)).is_ok();
+    let gl = net.group_labels(a).into_iter().find(|(_, x)| x.id == l).unwrap().1;
+    let mut public: Vec<[u8; 32]> = Vec::new();
+    for (step, set) in gl.steps.values() {
+        let k = &step.keys;
+        let sync = k.sync.to_bytes();
+        public.extend([sync, *osis_crypto::kdf::kdf(osis_crypto::kdf::SYNC_PROOF, &sync, b"").expose(), k.write.to_bytes(), k.delete.to_bytes(), k.deposit.to_bytes()]);
+        public.extend(set.iter().flat_map(|s| s.claims.iter().copied()));
+    }
+    let found: Vec<&[u8; 32]> = public.iter().filter(|v| shows(v)).collect();
+    assert!(found.is_empty(), "{} of {} public values found", found.len(), public.len());
+    let seeds: Vec<osis_crypto::Secret32> = net.engine(a).epochs(&g).unwrap().sync.held_newest_first().into_iter().map(|(_, s)| osis_crypto::label_role_seed(osis_crypto::LabelRole::Sync, s)).collect();
+    let proof = gl.steps.values().flat_map(|(st, _)| seeds.iter().filter(move |x| osis_crypto::SigningSecret::from_seed(x).verifying_key() == st.keys.sync)).map(osis_crypto::kdf::sync_proof).next().expect("a holds L's sync secret");
+    assert!(shows(&proof), "the filter shows L's proof");
 }
 
 // spec/sync.md §10 (Stream): a peer that cannot read L, restored from a backup taken before a
@@ -989,7 +1022,7 @@ fn a_refused_entry_holds_no_delete_back_and_comes_again_once_the_head_moves_spec
 /// over the listener's challenge and key (or `sig` given).
 fn behind_item(p: &Dialer, l: &Label, i: usize, named: bool) -> OfferItem {
     let k = &l.keys[i].sync;
-    OfferItem::Behind { label: l.id, step: named.then(|| l.steps[i].id()), key: k.verifying_key().to_bytes(), sig: osis_crypto::sign_open(k, &l.id, &p.hello, &LISTENER) }
+    OfferItem::Behind { label: l.id, step: named.then(|| l.steps[i].id()), key: k.verifying_key().to_bytes(), sig: osis_crypto::sign_open(k, false, &l.id, &p.hello, &LISTENER) }
 }
 
 /// The answers to an Offer of `items`: each code and the grant carried, if any.
@@ -1026,12 +1059,12 @@ fn a_behind_item_gets_its_steps_child_spec_sync_5() {
     }
     let mut elsewhere = behind_item(p, l, 0, true);
     if let OfferItem::Behind { sig, .. } = &mut elsewhere {
-        *sig = osis_crypto::sign_open(&l.keys[0].sync, &l.id, &[1; 32], &LISTENER);
+        *sig = osis_crypto::sign_open(&l.keys[0].sync, false, &l.id, &[1; 32], &LISTENER);
     }
     let unknown = Label::new(0x52);
     // step 1's claim key of the reader its set lists
     let claim = l.steps[1].claim_key(&l.reader).unwrap();
-    let by_claim = |step: Option<osis_label::StepId>| OfferItem::Behind { label: l.id, step, key: claim.verifying_key().to_bytes(), sig: osis_crypto::sign_open(&claim, &l.id, &p.hello, &LISTENER) };
+    let by_claim = |step: Option<osis_label::StepId>| OfferItem::Behind { label: l.id, step, key: claim.verifying_key().to_bytes(), sig: osis_crypto::sign_open(&claim, false, &l.id, &p.hello, &LISTENER) };
     let items = vec![behind_item(p, l, 0, true), behind_item(p, l, 1, false), behind_item(p, l, 2, true), wrong_key, elsewhere, behind_item(p, &unknown, 0, true), by_claim(Some(l.steps[1].id())), by_claim(None)];
     let steps = l.steps.clone();
     let ans = behind_answers(&mut s, items);
@@ -1098,7 +1131,7 @@ fn a_revoked_link_learns_at_most_the_next_rotation_spec_sync_5() {
         let i = s.l.steps.len() - 1;
         request(&mut s.net, s.b, &mut s.p, |id| s.l.register(id, i));
     }
-    let by = |p: &Dialer, l: &Label, step: Option<osis_label::StepId>| OfferItem::Behind { label: l.id, step, key: l.key_actor.verifying_key().to_bytes(), sig: osis_crypto::sign_open(&l.key_actor, &l.id, &p.hello, &LISTENER) };
+    let by = |p: &Dialer, l: &Label, step: Option<osis_label::StepId>| OfferItem::Behind { label: l.id, step, key: l.key_actor.verifying_key().to_bytes(), sig: osis_crypto::sign_open(&l.key_actor, false, &l.id, &p.hello, &LISTENER) };
     let (p, l) = (&s.p, &s.l);
     let items = vec![by(p, l, Some(l.steps[0].id())), by(p, l, Some(l.steps[1].id()))];
     let steps = l.steps.clone();
@@ -1182,7 +1215,7 @@ fn a_behind_item_by_a_static_entry_gets_the_heads_box_spec_sync_5() {
     let mut s = setup();
     s.l.rotate(0x61);
     request(&mut s.net, s.b, &mut s.p, |id| s.l.register(id, 1));
-    let by = |p: &Dialer, l: &Label, k: &osis_crypto::SigningSecret, step: Option<osis_label::StepId>| OfferItem::Behind { label: l.id, step, key: k.verifying_key().to_bytes(), sig: osis_crypto::sign_open(k, &l.id, &p.hello, &LISTENER) };
+    let by = |p: &Dialer, l: &Label, k: &osis_crypto::SigningSecret, step: Option<osis_label::StepId>| OfferItem::Behind { label: l.id, step, key: k.verifying_key().to_bytes(), sig: osis_crypto::sign_open(k, false, &l.id, &p.hello, &LISTENER) };
     let stranger = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([0x77; 32]));
     let (p, l) = (&s.p, &s.l);
     let items = vec![by(p, l, &l.key_actor, None), by(p, l, &stranger, None), by(p, l, &l.key_actor, Some(l.steps[0].id()))];

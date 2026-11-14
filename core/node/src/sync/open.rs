@@ -154,6 +154,14 @@ impl SyncEngine {
         deepest_path(&gl.steps)?.last().map(|(s, _)| s.clone())
     }
 
+    /// The seed of `step`'s sync key (`osis_crypto::label_role_seed`) when this node holds the
+    /// epoch's sync secret: what the step's proof derives from (spec/sync.md §10, Admissible).
+    /// O(sync epochs held of `g`).
+    pub(crate) fn sync_seed(&mut self, g: &Tid, step: &Step) -> Option<osis_crypto::Secret32> {
+        let e = self.engine.epochs(g)?;
+        e.sync.held_newest_first().into_iter().map(|(_, s)| osis_crypto::label_role_seed(LabelRole::Sync, s)).find(|seed| SigningSecret::from_seed(seed).verifying_key() == step.keys.sync)
+    }
+
     /// The key a Hit on `step`'s credential signs with: its sync key when this node holds the
     /// epoch's sync secret, else this node's claim key on it (as `claimants`) while the step's
     /// claim set is held and lists it.

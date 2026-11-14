@@ -27,14 +27,17 @@ pub fn signatures() -> VecFile {
         );
     }
     let (l, c, s) = (LabelId([0x0a; 16]), [0x18u8; 32], [0x19u8; 32]);
-    cases.push(
-        case("label open", "spec/wire.md §11.2")
-            .with("seed", hex(s32(0x08).expose()))
-            .with("label-id", hex(&l.0))
-            .with("challenge", hex(&c))
-            .with("static-key", hex(&s))
-            .with("digest", hex(&open_digest(&l, &c, &s)))
-            .with("signature", hex(&sign_open(&sk, &l, &c, &s).0)),
-    );
+    for (name, by_listener) in [("label open by dialer", false), ("label open by listener", true)] {
+        cases.push(
+            case(name, "spec/wire.md §11.2")
+                .with("seed", hex(s32(0x08).expose()))
+                .with("side", if by_listener { "1" } else { "0" })
+                .with("label-id", hex(&l.0))
+                .with("challenge", hex(&c))
+                .with("static-key", hex(&s))
+                .with("digest", hex(&open_digest(by_listener, &l, &c, &s)))
+                .with("signature", hex(&sign_open(&sk, by_listener, &l, &c, &s).0)),
+        );
+    }
     VecFile { header: generated_header("sign", SPEC), cases }
 }

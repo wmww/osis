@@ -63,8 +63,9 @@ const JUDGED: u8 = 2;
 /// item), at a node that cannot read the sync ID.
 const SYNC: u8 = 3;
 const DEPOSIT: u8 = 4;
-/// A dialer's proof of a sync secret (`osis_crypto::kdf::sync_proof` of the sync key): the
-/// credential a dialer that cannot read L opens it at a reader by (spec/sync.md §5 Opens).
+/// A proof of a sync secret (`osis_crypto::kdf::sync_proof` of the sync key's seed): the
+/// credential a dialer that cannot read L opens it at a reader by (spec/sync.md §5 Opens). Its
+/// Hit and tag prove the secret as a read secret's do: no open signature.
 const PROOF: u8 = 5;
 
 /// An open by a sync key (this side's Hit at a peer that cannot read, or a dialer's proof): its
@@ -101,10 +102,8 @@ const TESTED: Which = Which { read: true, unread: false, sync: true, accepts: fa
 struct Cred {
     label: LabelId,
     class: u8,
+    /// The match value; for a sync key or a claim, the key an open signature verifies under.
     value: [u8; 32],
-    /// The key an open signature verifies under: the sync key a `PROOF` derives from, else
-    /// `value`.
-    key: [u8; 32],
     beacon: [u8; 32],
 }
 
@@ -573,16 +572,18 @@ impl SyncEngine {
         }
         // proof credentials by sync key, beside the rest
         let by_listener = self.records.shared.get(&conn).is_some_and(|s| s.by_listener);
-        let mut proofs: Vec<(LabelId, [u8; 32])> = Vec::new();
+        // each from its sync key's seed: a reader lacking the newest step's sync secret shows no
+        // proof (spec/sync.md §10, Admissible)
+        let mut proofs: Vec<(LabelId, osis_crypto::Secret32)> = Vec::new();
         if which.accepts && by_listener {
             for (g, l) in things.iter().filter(|(l, _)| wanted(l) && self.synced.ids.contains(l)).map(|(l, g)| (*g, *l)).collect::<Vec<_>>() {
-                if let Some(step) = self.newest_step(&g, &l) {
-                    proofs.push((l, step.keys.sync.to_bytes()));
+                if let Some(seed) = self.newest_step(&g, &l).and_then(|step| self.sync_seed(&g, &step)) {
+                    proofs.push((l, seed));
                 }
             }
         }
         if which.proves && !by_listener {
-            proofs.extend(self.shared_proof_keys(conn, only)?.into_iter().map(|(l, k)| (l, k.verifying_key().to_bytes())));
+            proofs.extend(self.shared_proof_keys(conn, only)?);
         }
         let mut judge = self.engine.core.judge(actors);
         let mut out = Vec::new();
@@ -603,15 +604,15 @@ impl SyncEngine {
                     Credential::DepositKey(_) => DEPOSIT,
                 };
                 let value = c.match_value();
-                out.push(Cred { label: l, class, value, key: value, beacon: beacon(&value, &l.0, &r) });
+                out.push(Cred { label: l, class, value, beacon: beacon(&value, &l.0, &r) });
             }
         }
-        for (l, key) in proofs {
+        for (l, seed) in proofs {
             if things.get(&l).is_some_and(|t| judge.of(t) == super::credentials::Judgment::Departed) {
                 continue;
             }
-            let value = osis_crypto::kdf::sync_proof(&key);
-            out.push(Cred { label: l, class: PROOF, value, key, beacon: beacon(&value, &l.0, &r) });
+            let value = osis_crypto::kdf::sync_proof(&seed);
+            out.push(Cred { label: l, class: PROOF, value, beacon: beacon(&value, &l.0, &r) });
         }
         Ok(out)
     }
@@ -858,9 +859,8 @@ impl SyncEngine {
         // a dialer proves the sync secret of each sync ID it keeps unread whose head's sync key
         // it derives, at each arrival too: a reader it dialed serves L to it only so
         // (spec/sync.md §5 Opens)
-        let proving = self.shared_proof_keys(conn, None)?;
         if sync_due {
-            let rest: BTreeSet<LabelId> = proving.keys().filter(|l| !labels.contains(l)).copied().collect();
+            let rest: BTreeSet<LabelId> = self.shared_proof_keys(conn, None)?.into_keys().filter(|l| !labels.contains(l)).collect();
             creds.extend(self.shared_creds(conn, Some(&rest), Which { read: false, unread: false, sync: false, accepts: false, proves: true })?);
         }
         // the key actors held: a static entry of one goes as a Static item, signed by it
@@ -873,7 +873,8 @@ impl SyncEngine {
         s.work.0 += 1;
         s.pending.tested = s.pending.tested.max(top);
         let side = (s.by_listener, &s.key, &s.dialer, &s.listener);
-        // a sync key's Hit signs the open over the peer's Hello challenge and the listener key
+        // a sync key's Hit signs the open as this side, over the peer's Hello challenge and the
+        // listener key
         let peer_challenge = if s.by_listener { s.dialer } else { s.listener };
         let Some(peer) = &s.peer else { return Ok(()) };
         let mut items = Vec::new();
@@ -900,19 +901,16 @@ impl SyncEngine {
             }
             let proof = match c.class {
                 SYNC => match signing.get(&c.label) {
-                    Some((_, k)) => Some(osis_crypto::sign_open(k, &c.label, &peer_challenge, &s.key)),
+                    Some((_, k)) => Some(osis_crypto::sign_open(k, s.by_listener, &c.label, &peer_challenge, &s.key)),
                     None => continue,
                 },
-                PROOF => match proving.get(&c.label) {
-                    Some(k) => Some(osis_crypto::sign_open(k, &c.label, &peer_challenge, &s.key)),
-                    None => continue,
-                },
+                // a proof's Hit is its own proof, as a read secret's
                 _ => None,
             };
             s.offered.insert(hit);
             let signer = (c.class == STATIC).then(|| signers.iter().find(|k| osis_crypto::static_entry(&c.label, &k.verifying_key()) == c.value)).flatten();
             match signer {
-                Some(k) => items.push(OfferItem::Static { hit, key: k.verifying_key().to_bytes(), sig: osis_crypto::sign_open(k, &c.label, &peer_challenge, &s.key) }),
+                Some(k) => items.push(OfferItem::Static { hit, key: k.verifying_key().to_bytes(), sig: osis_crypto::sign_open(k, s.by_listener, &c.label, &peer_challenge, &s.key) }),
                 None => items.push(OfferItem::Hit(hit, proof)),
             }
             asked.push(AskedItem::Hit(c));
@@ -926,10 +924,10 @@ impl SyncEngine {
     }
 
     /// On a connection this node dialed, the sync IDs it keeps unread (of `only`, when given)
-    /// whose head's sync key derives from a sync secret it holds, with that key: the Hit it
-    /// proves the secret by (spec/sync.md §10 Offer). None where the peer dialed. O(sync epochs
-    /// held + sync IDs kept unread).
-    fn shared_proof_keys(&mut self, conn: ConnId, only: Option<&BTreeSet<LabelId>>) -> Result<BTreeMap<LabelId, osis_crypto::SigningSecret>> {
+    /// whose head's sync key derives from a sync secret it holds, with that key's seed: what its
+    /// proof derives from (spec/sync.md §10 Admissible). None where the peer dialed. O(sync
+    /// epochs held + sync IDs kept unread).
+    fn shared_proof_keys(&mut self, conn: ConnId, only: Option<&BTreeSet<LabelId>>) -> Result<BTreeMap<LabelId, osis_crypto::Secret32>> {
         if self.records.shared.get(&conn).is_none_or(|s| s.by_listener) {
             return Ok(BTreeMap::new());
         }
@@ -937,11 +935,11 @@ impl SyncEngine {
         if unread.is_empty() {
             return Ok(BTreeMap::new());
         }
-        let mut held: BTreeMap<[u8; 32], osis_crypto::SigningSecret> = BTreeMap::new();
+        let mut held: BTreeMap<[u8; 32], osis_crypto::Secret32> = BTreeMap::new();
         for e in self.engine.core.ix.secrets.values() {
             for (_, secret) in e.sync.held_newest_first() {
-                let k = osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, secret);
-                held.insert(k.verifying_key().to_bytes(), k);
+                let seed = osis_crypto::label_role_seed(osis_crypto::LabelRole::Sync, secret);
+                held.insert(osis_crypto::SigningSecret::from_seed(&seed).verifying_key().to_bytes(), seed);
             }
         }
         let wanted = |l: &LabelId| only.is_none_or(|o| o.contains(l));
@@ -968,7 +966,7 @@ impl SyncEngine {
         let mut items = Vec::new();
         let mut asked = Vec::new();
         for (step, key) in asks {
-            let sig = osis_crypto::sign_open(&key, &l, &peer_challenge, &s.key);
+            let sig = osis_crypto::sign_open(&key, s.by_listener, &l, &peer_challenge, &s.key);
             let pk = key.verifying_key();
             items.push(OfferItem::Behind { label: l, step: step.as_ref().map(osis_label::Step::id), key: pk.to_bytes(), sig });
             asked.push(if by_static { AskedItem::Static(l, osis_crypto::static_entry(&l, &pk)) } else { AskedItem::Behind(l, step.map(Box::new)) });
@@ -1111,27 +1109,31 @@ impl SyncEngine {
         p.signing.values().any(|k| osis_crypto::VerifyingKey::from_slice(k).is_ok_and(|pk| osis_crypto::static_entry(l, &pk) == *value))
     }
 
-    /// Whether `key` is the key actor of static entry `c` and `sig` its open signature over this
-    /// side's Hello challenge and the listener's key (a Static item, spec/sync.md §10).
+    /// Whether `key` is the key actor of static entry `c` and `sig` its open signature made as
+    /// the peer's side over this side's Hello challenge and the listener's key (a Static item,
+    /// spec/sync.md §10). Invariant: a signature this side made verifies as no signature of the
+    /// peer's (the side byte), so one reflected back, on this connection or one whose challenge
+    /// the peer copied, opens nothing.
     fn static_signed(s: &Shared, c: &Cred, key: &[u8; 32], sig: &osis_crypto::Signature) -> bool {
         let challenge = if s.by_listener { &s.listener } else { &s.dialer };
-        osis_crypto::VerifyingKey::from_slice(key).is_ok_and(|pk| osis_crypto::static_entry(&c.label, &pk) == c.value && osis_crypto::verify_open(&pk, &c.label, challenge, &s.key, sig).is_ok())
+        osis_crypto::VerifyingKey::from_slice(key).is_ok_and(|pk| osis_crypto::static_entry(&c.label, &pk) == c.value && osis_crypto::verify_open(&pk, !s.by_listener, &c.label, challenge, &s.key, sig).is_ok())
     }
 
     /// Whether a Hit on credential `c` shows its class's proof (issues/net-shared-set.md, Offer):
-    /// a read secret's beacon is its own; a static entry's key actor is a proven actor of this
-    /// connection; a sync key's open signature (`proof`) verifies under it over this side's Hello
-    /// challenge and the listener's static key; a deposit key is never Hit.
+    /// a read secret's or a proof's beacon is its own (only a holder of the secret computes its
+    /// match value); a static entry's key actor is a proven actor of this connection; a sync
+    /// key's open signature (`proof`) verifies under it as made by the peer's side over this
+    /// side's Hello challenge and the listener's static key; a deposit key is never Hit.
     fn shared_hit_proved(&self, conn: ConnId, s: &Shared, c: &Cred, proof: Option<&osis_crypto::Signature>) -> bool {
         let challenge = if s.by_listener { &s.listener } else { &s.dialer };
-        let signed = || proof.is_some_and(|sig| osis_crypto::VerifyingKey::from_slice(&c.key).is_ok_and(|pk| osis_crypto::verify_open(&pk, &c.label, challenge, &s.key, sig).is_ok()));
+        let signed = || proof.is_some_and(|sig| osis_crypto::VerifyingKey::from_slice(&c.value).is_ok_and(|pk| osis_crypto::verify_open(&pk, !s.by_listener, &c.label, challenge, &s.key, sig).is_ok()));
         match c.class {
-            READ => true,
+            READ | PROOF => true,
             // a key actor's static entry by its proven actor; a claim of a head kept unread by
             // its open signature (spec/sync.md §5 Opens; a static entry is a hash, which no one
             // signs under)
             STATIC => self.shared_static_proved(conn, &c.label, &c.value) || signed(),
-            SYNC | PROOF => signed(),
+            SYNC => signed(),
             _ => false,
         }
     }
@@ -1198,13 +1200,13 @@ impl SyncEngine {
             codes.push(answer);
         }
         drop(judge);
-        let (challenge, listener) = (if s.by_listener { s.listener } else { s.dialer }, s.key);
+        let (challenge, listener, peer_side) = (if s.by_listener { s.listener } else { s.dialer }, s.key, !s.by_listener);
         // the steps one reply holds: Behind answers read no more per Offer (notes/flow-control.md,
         // Hub stall bounds)
         let full = osis_proto::session::REPLY_BUDGET / osis_proto::msg::MAX_STEP_WIRE;
         let mut budget = full;
         for (i, l, step, key, sig) in behinds {
-            let answer = match self.unread_behind(&l, step.as_ref(), &key, &sig, &challenge, &listener, &mut budget)? {
+            let answer = match self.unread_behind(&l, step.as_ref(), &key, &sig, peer_side, &challenge, &listener, &mut budget)? {
                 super::unread::BehindAnswer::Unknown => (Code::UNKNOWN_LABEL, None, None),
                 super::unread::BehindAnswer::ForNow => (Code::RATE_LIMITED, None, None),
                 super::unread::BehindAnswer::Refused => continue,

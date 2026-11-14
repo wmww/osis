@@ -97,7 +97,7 @@ pub const BEACON: &str = "beacon";
 pub const BEACON_HIT: &str = "beacon hit";
 /// The tag answering a Hit (`beacon_reply`).
 pub const BEACON_REPLY: &str = "beacon reply";
-/// A dialer's proof credential over a sync key (`sync_proof`).
+/// The proof credential of a sync key, from its seed (`sync_proof`).
 pub const SYNC_PROOF: &str = "sync proof";
 
 /// Every kdf purpose, for distinctness checks and vectors.
@@ -162,11 +162,13 @@ pub fn beacon(match_value: &[u8; 32], label: &[u8; 16], r: &[u8; 32]) -> [u8; 32
     *blake3::keyed_hash(kdf(BEACON, match_value, label).expose(), r).as_bytes()
 }
 
-/// The match value of a dialer's proof of the sync secret behind raw sync public key `sync`
-/// (spec/sync.md §10, Admissible): `kdf("sync proof", sync, "")`, so its beacon is never a sync
-/// key's own.
-pub fn sync_proof(sync: &[u8; 32]) -> [u8; 32] {
-    *kdf(SYNC_PROOF, sync, b"").expose()
+/// The match value of a proof of a sync secret (spec/sync.md §10, Admissible):
+/// `kdf("sync proof", seed, "")`, `seed` the sync key's (`label::label_role_seed`). Invariant:
+/// only a holder of that sync secret computes it, so its beacon, Hit and tag prove the secret as
+/// a read secret's do, and a node holding only L's public keys finds no proof in a filter (model
+/// `ON_proofpub`).
+pub fn sync_proof(seed: &Secret32) -> [u8; 32] {
+    *kdf(SYNC_PROOF, seed.expose(), b"").expose()
 }
 
 /// Which side a Hit or a tag is sent by and the connection it binds: `(by_listener, listener key,
