@@ -6,3 +6,5 @@
 - Review: finding why an osis-chat test reads nothing needed a temporary engine eprintln (no osis-level view of what a node holds pending and why).
 - Review 2: a `git commit -a` for an unrelated issue edit swept in uncommitted test work; commit the test work (wip) before any other commit.
 - Review 2: the streamed `covered` and its oracle disagreed (Some(false) vs None) on a body with an expiry neither held nor value-less beside a snapshot not held; only a random differential calling `covered` on dropped snapshots reached it.
+- Rebase: the `from-now-2` ref pointed at the first review's tip; the second review's commits sat detached in another worktree. Check the claimed ref against the reported tip before rebasing.
+- Rebase: a test plant named only in prose ("no roles secrets in history entries") is easy to plant half (the history box, not the rotation's own entry) and see 0 failures; the plants' exact sites are written nowhere.

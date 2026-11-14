@@ -934,9 +934,11 @@ fn newcomer_reads_the_roster_from_sealed_labels_spec_crypto_4() {
 
 /// The default test's seeds, a covering set: each cuts; with the boxing or the carry rule off
 /// every one of seeds 1-40 fails, without the state at a cut 34, with content wrapped under the
-/// roles secret 34 (sealed there too, the same 34), without roles secrets in history entries 17 (these three
-/// among each), without the floor clause of Passing on 23 (1 and 5).
-const NEWCOMER_SEEDS: [u64; 3] = [1, 3, 5];
+/// roles secret 34 (sealed there too, the same 34), without expiring snapshots at a cut or
+/// without stripping at an expiring snapshot's expiry 29 (the same 29; these four among each),
+/// without roles secrets in history entries 29 (1 and 5), without the floor clause of Passing on
+/// 22 (4).
+const NEWCOMER_SEEDS: [u64; 3] = [1, 4, 5];
 
 /// Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds: OSIS_CUT_START,
 /// OSIS_CUT_SEEDS.
