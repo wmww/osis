@@ -1925,7 +1925,7 @@ fn team_left_out_by_a_sealer_reading_none_of_it_reads_again_spec_crypto_4() {
     assert_eq!(x(&dave, after), None);
 }
 
-// As `team_left_out_by_a_sealer_reading_none_of_it_reads_again_spec_crypto_4`, M granted on A
+// spec/crypto.md §4 (Stale, Seal): as `team_left_out_by_a_sealer_reading_none_of_it_reads_again_spec_crypto_4`, M granted on A
 // after Alice left A: A's boxes to M are the grant's, written in no keyset's sealed-at record, so
 // Alice, holding none of A's boxes, keeps sealing A at its epoch boxing M at a keyset Dave holds.
 #[test]
