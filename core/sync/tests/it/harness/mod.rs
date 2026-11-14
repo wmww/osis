@@ -347,7 +347,7 @@ impl World {
         t
     }
 
-    pub fn status(&self, i: usize) -> Arc<osis_sync::status::StatusView> {
+    pub fn status(&self, i: usize) -> std::collections::BTreeMap<osis_base::SyncId, osis_sync::status::SyncStatus> {
         self.node(i).node.status()
     }
 

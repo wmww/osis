@@ -970,3 +970,43 @@ fn push_work_follows_the_events_not_the_log_spec_sync_streams_4() {
     assert_eq!(served(20), served(200));
     assert_eq!(served(20), 1);
 }
+
+// spec/sync-status.md §1 (caught up): a source is caught up once this side applied its stream to
+// the end and it reported every message served to it applied: an Applied lost on the way denies
+// it until a later one covers it.
+#[test]
+fn caught_up_needs_the_peers_applied_spec_sync_status_1() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    p.shared_read(s);
+    p.run();
+    assert!(p.a.streams.caught_up(C, &s) && p.b.streams.caught_up(C, &s));
+    p.a.log(s, 100);
+    // b's Applied to a is lost: b applied a's push, a does not know it
+    p.run_with(|ab, m| !ab && m.kind() == 44);
+    assert!(p.b.streams.caught_up(C, &s), "b read a's stream to its end");
+    assert!(!p.a.streams.caught_up(C, &s), "a served b a message b never reported applied");
+    p.b.log(s, 101);
+    p.a.log(s, 102);
+    p.run();
+    assert!(p.a.streams.caught_up(C, &s), "a later Applied covers it");
+}
+
+// spec/sync-status.md §1 (complete pass): a pass asks a fresh Pull (`pull_again`), and caught up
+// says when the Pull it rests on was sent: one from before the pass counts for nothing.
+#[test]
+fn caught_since_moves_with_a_fresh_pull_spec_sync_status_1() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    p.shared_read(s);
+    p.run();
+    let t0 = p.b.streams.caught_since(C, &s).unwrap();
+    p.now += 5_000;
+    let pulls = p.sent_by_b(41).len();
+    let now = p.now;
+    p.b.with(now, |st, cx| st.again(cx, C));
+    p.run();
+    assert_eq!(p.sent_by_b(41).len(), pulls + 1, "one fresh Pull");
+    let t1 = p.b.streams.caught_since(C, &s).unwrap();
+    assert!(t1 > t0 && t1 == WallMs(p.now));
+}

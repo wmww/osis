@@ -857,6 +857,12 @@ impl Sessions {
         out
     }
 
+    /// No request outstanding and no Hello awaited on any connection, no dial waiting
+    /// (spec/sync-status.md §3 idle): exactly when no deadline is kept. As of the last step's end.
+    pub fn idle(&self) -> bool {
+        self.deadlines.is_empty()
+    }
+
     /// The earliest deadline.
     pub fn next_wake(&self) -> Option<WallMs> {
         self.deadlines.first().map(|(at, _)| *at)

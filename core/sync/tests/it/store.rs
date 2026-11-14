@@ -1031,3 +1031,26 @@ fn deposited_index_and_entry_feed_follow_entries() {
     st.log(&s.id, stamped(&s, b, false), None, None).unwrap();
     assert!(feed.added().is_empty(), "no change, nothing fed");
 }
+
+// spec/sync-status.md §2 (recorded): a source's report that an own entry is held elsewhere is
+// recorded durably on the entry, kept across a restart and while the entry is, and a relogging
+// keeps it; it goes with the entry.
+#[test]
+fn held_elsewhere_kept_while_the_entry_is() {
+    let dev = Dev::new();
+    let s = Sid::new(10);
+    let mut st = unread(&dev, &s);
+    let (b, bytes) = blob(40, Class::Durable, None, &[]);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes.clone()).unwrap(), Code::OK);
+    assert!(!st.elsewhere(&s.id, &b).unwrap());
+    assert!(st.first_logged(&s.id, &b).unwrap().is_some());
+    st.set_elsewhere(&s.id, &b).unwrap();
+    assert!(st.elsewhere(&s.id, &b).unwrap());
+    let mut st = dev.open();
+    st.set_sync_set(&holding(&[(&s, Holding::Unread)]));
+    assert!(st.elsewhere(&s.id, &b).unwrap(), "durable");
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes).unwrap(), Code::OK);
+    assert!(st.elsewhere(&s.id, &b).unwrap(), "taking it again keeps the record");
+    assert!(st.drop_entry(&s.id, &b, Vec::new()).unwrap());
+    assert!(!st.elsewhere(&s.id, &b).unwrap(), "gone with the entry");
+}

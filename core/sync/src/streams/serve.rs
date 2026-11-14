@@ -45,6 +45,9 @@ pub(super) struct Serve {
     told_until: BTreeSet<SyncId>,
     /// The highest position an Applied reported.
     applied: Option<Position>,
+    /// The position of the last message sent asking a report: every message served is applied
+    /// once `applied` reaches it (spec/sync-status.md §1 caught up).
+    served: Option<Position>,
     /// Members reported at a position of their own (a join not merged yet).
     own: BTreeSet<SyncId>,
 }
@@ -226,6 +229,9 @@ impl Streams {
         }
         let cursor = wire_cursor(&read.cursor);
         let report = !page.events.is_empty() && cursor.is_some();
+        if report {
+            serve.served = Some(read.pos);
+        }
         Ok(PullReply { id, events: page.events, cursor, whole, trimmed, more: read.more, report, joins: reply_joins })
     }
 
@@ -347,6 +353,7 @@ impl Streams {
                 }
                 let s = self.serve.entry(conn).or_default();
                 s.follow = Some(Follow { cursor: read.cursor, pos: read.pos, seq: f.seq + 1 });
+                s.served = Some(read.pos);
                 s.crossed.extend(page.crossed);
                 s.eph.extend(page.eph);
                 if !page.full && !read.more {
@@ -377,6 +384,11 @@ impl Streams {
             break;
         }
         Ok(acted)
+    }
+
+    /// Whether the peer reported every message served to it applied (spec/sync-status.md §1).
+    pub(super) fn served_applied(&self, conn: ConnId) -> bool {
+        self.serve.get(&conn).is_none_or(|x| x.served.is_none_or(|p| x.applied.is_some_and(|a| a >= p)))
     }
 
     /// An Applied: the requester stored this cursor (spec/sync-opens.md §6 reported positions).

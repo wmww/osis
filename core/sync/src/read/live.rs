@@ -6,7 +6,9 @@ use super::ground::{BlobInfo, Facts, Ground, Seen, SrcView};
 use crate::opens::Opens;
 use crate::session::{Sessions, To};
 use crate::store::{Source, Stand};
+use crate::status::{NetView, Status};
 use crate::streams::Streams;
+use crate::unread::Unread;
 use crate::types::{Cx, Entry, Error, Result, SourceClass};
 use osis_base::{BlobId, CommitId, SyncId, WallMs};
 use osis_crypto::SigningSecret;
@@ -21,6 +23,8 @@ pub struct Live<'a, 'b> {
     pub sessions: &'a mut Sessions,
     pub opens: &'a Opens,
     pub streams: &'a Streams,
+    pub status: &'a Status,
+    pub unread: &'a Unread,
 }
 
 impl Live<'_, '_> {
@@ -118,8 +122,7 @@ impl Ground for Live<'_, '_> {
         Err(Error::NotBuilt("streams: known by source"))
     }
     fn heard_out(&mut self, s: &SyncId) -> Result<bool> {
-        let _ = s;
-        Err(Error::NotBuilt("status: heard out"))
+        Ok(self.status.heard_out(s, &NetView { streams: self.streams, unread: self.unread }))
     }
     fn stand(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Option<Stand>> {
         self.cx.store.stand(*at, s, &c.0)

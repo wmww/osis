@@ -6,6 +6,7 @@ mod inbox;
 mod session;
 mod read;
 mod unread;
+mod status;
 mod store;
 mod opens;
 mod streams;

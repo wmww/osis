@@ -7,6 +7,7 @@ use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, PENDING_CAP, RESY
 use crate::opens::Rejoin;
 use crate::store::Source;
 use crate::types::{ConnId, Cursor, Entry, Result};
+use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, SyncId, WallMs};
 use osis_engine::sync::Holding;
 use osis_label::{Class, Prefix};
@@ -20,8 +21,9 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 #[derive(Clone, Debug, Default)]
 pub(super) struct Place {
     pub cursor: Option<Cursor>,
-    pub at_stream: BTreeSet<SyncId>,
-    pub joining: BTreeMap<SyncId, Option<Cursor>>,
+    /// Stamped: status follows a member's caught up per (source, S) (`Streams::caught_up`).
+    pub at_stream: StampedSet<SyncId>,
+    pub joining: Stamped<SyncId, Option<Cursor>>,
     pub stopped: BTreeMap<SyncId, Option<Cursor>>,
 }
 
@@ -86,6 +88,12 @@ pub(super) struct Pulling {
     tell: Vec<(SyncId, Event)>,
     told_full: BTreeSet<SyncId>,
     applied_owed: Option<Cursor>,
+    /// When the Pull out was sent, and when the one the last reply answered was: a stream caught
+    /// up since a moment read its end from a Pull sent after it (spec/sync-status.md §1).
+    out_at: WallMs,
+    pub(super) answered_at: WallMs,
+    /// A Pull is wanted though nothing else is due (a complete pass, `Streams::pull_again`).
+    pub(super) again: bool,
 }
 
 impl Pulling {
@@ -116,6 +124,9 @@ impl Pulling {
             tell: Vec::new(),
             told_full: BTreeSet::new(),
             applied_owed: None,
+            out_at: WallMs(0),
+            answered_at: WallMs(0),
+            again: false,
         }
     }
 
@@ -275,7 +286,7 @@ impl Streams {
             inline_moved = want != p.inline && p.first_sent;
             p.inline = want;
         }
-        if p.first_sent && !p.more && !p.gap && !p.eph_next && p.joins.is_empty() && !inline_moved {
+        if p.first_sent && !p.more && !p.gap && !p.eph_next && p.joins.is_empty() && !inline_moved && !p.again {
             return;
         }
         let joins: Vec<(SyncId, Option<osis_proto::Cursor>)> = p.joins.iter().map(|(s, j)| (*s, j.cursor.clone().and_then(|c| osis_proto::Cursor::new(c).ok()))).collect();
@@ -284,8 +295,10 @@ impl Streams {
         let Some(id) = ctx.wire.request(conn, Msg::Pull(Box::new(pull))) else { return };
         p.first_sent = true;
         p.eph_next = false;
+        p.again = false;
         p.quiet = false;
         p.out = Some((id, asked));
+        p.out_at = ctx.now;
     }
 
     /// A reply to a request of this side's: a PullReply (or a Pull refused or skipped), a
@@ -317,6 +330,7 @@ impl Streams {
         p.gap = false;
         p.more = r.more;
         p.quiet = !r.more;
+        p.answered_at = p.out_at;
         if r.cursor.is_some() || r.whole {
             p.recv = r.cursor.clone().map(osis_proto::Cursor::into_bytes);
         }

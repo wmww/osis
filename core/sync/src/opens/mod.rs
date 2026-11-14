@@ -291,6 +291,8 @@ pub struct Opens {
     holding: BTreeMap<SyncId, BTreeSet<ConnId>>,
     /// The memo effects the product's `Holds` settles.
     fx: holds::Fx,
+    /// Stamped per connection as its reported positions move (`reported_at`: status follows it).
+    reports: osis_base::memo::Stamps,
     work: Work,
 }
 
@@ -397,9 +399,16 @@ impl Opens {
         self.conns.get(&conn).is_some_and(|c| c.phase == Phase::Running && c.agree == Agree::Done)
     }
 
+    /// The kept records holding S as a member (spec/sync-status.md §1: a complete pass waits for
+    /// each). O(records, at most `RECORD_BUDGET`): read only as a pass begins.
+    pub fn records_holding(&self, s: &SyncId) -> BTreeSet<RecordId> {
+        self.records.iter().filter(|(_, r)| r.kept && r.members.contains_key(s)).map(|(id, _)| *id).collect()
+    }
+
     /// Member S's reported position on `conn` (spec/sync-opens.md §6 Lost): none for a sync ID
     /// that is no member there.
     pub fn reported_at(&self, conn: ConnId, s: &SyncId) -> Option<&(Position, Cursor)> {
+        self.reports.read(&conn);
         self.member(conn, s)?;
         self.conns.get(&conn)?.reported.get(s)
     }
@@ -410,6 +419,7 @@ impl Opens {
         let conn = r.conn();
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let moved_one = c.reported.take(r);
+        self.reports.wrote(&conn, true);
         let check: Vec<SyncId> = match moved_one {
             Some(s) => c.ending.contains(&s).then_some(s).into_iter().collect(),
             None => c.ending.iter().copied().collect(),
@@ -1500,6 +1510,7 @@ impl Opens {
             return;
         }
         c.reported.forget(&s);
+        self.reports.wrote(&conn, true);
         c.ending.remove(&s);
         r.basis.remove(&s);
         r.stopped.insert(s, if keep { Rejoin::Held } else { Rejoin::From(None) });

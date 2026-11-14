@@ -41,6 +41,7 @@ use crate::session::{Incoming, Sessions, To};
 use crate::store::{Source, Store};
 use crate::types::{ConnId, Cx, Entry, Error, Position, RecordId, Result};
 use crate::unread::Sources;
+use osis_base::memo::Stamped;
 use osis_base::{BlobId, SyncId, WallMs};
 use osis_engine::Engine;
 use osis_engine::sync::Opened;
@@ -152,6 +153,10 @@ pub struct Streams {
     holders: BTreeMap<SyncId, BTreeSet<ConnId>>,
     /// Kept unread: entries refused for room per S, with S's bytes when the last was refused.
     room: BTreeMap<SyncId, (u64, BTreeSet<BlobId>)>,
+    /// The connections whose stream is caught up both ways (this side applied the peer's to its
+    /// end, the peer applied every message served to it), with when the Pull the last reply
+    /// answered was sent: status follows it per connection (`caught_up`).
+    caught: Stamped<ConnId, WallMs>,
     work: Work,
 }
 
@@ -174,6 +179,11 @@ impl Streams {
         let mut out = Ok(false);
         product(cx, sessions, opens, reported, |ctx| out = self.tick(ctx));
         out
+    }
+
+    /// A complete pass wants a fresh Pull on `conn` (`again`).
+    pub fn pull_again(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, conn: ConnId, reported: &mut Vec<Reported>) {
+        product(cx, sessions, opens, reported, |ctx| self.again(ctx, conn));
     }
 
     /// A source with no cursor: a bundle (spec/sync-streams.md §6).
@@ -205,11 +215,20 @@ impl Streams {
         self.known.knows(src, s, b) || conn.is_some_and(|c| Source::Conn(c) != src && self.known.knows(Source::Conn(c), s, b))
     }
 
-    /// Whether the stream of S on `conn` is caught up: at the stream, its last reply the end, no
-    /// gap, nothing in hand and no Pull out (spec/sync-streams.md §4; `SN_rearm`).
+    /// Whether the source on `conn` is caught up for S (spec/sync-status.md §1): this side's
+    /// stream of S there at the stream, its last reply the end, no gap, nothing in hand and no
+    /// Pull out (spec/sync-streams.md §4; `SN_rearm`), and the peer reported every message
+    /// served to it applied.
     pub fn caught_up(&self, conn: ConnId, s: &SyncId) -> bool {
-        let Some(p) = self.pull.get(&conn) else { return false };
-        p.caught_up() && self.places.get(&p.src).is_some_and(|pl| pl.at_stream.contains(s) && !pl.joining.contains_key(s))
+        self.caught_since(conn, s).is_some()
+    }
+
+    /// When the Pull was sent whose reply S's caught up on `conn` rests on: none while not caught
+    /// up. Stamped per connection and per (source, S).
+    pub fn caught_since(&self, conn: ConnId, s: &SyncId) -> Option<WallMs> {
+        let t = *self.caught.get(&conn)?;
+        let p = self.pull.get(&conn)?;
+        self.places.get(&p.src).is_some_and(|pl| pl.at_stream.contains(s) && !pl.joining.contains_key(s)).then_some(t)
     }
 
     /// Tests only: what a connection's pulling holds for its peer (messages in hand, queued and
@@ -238,10 +257,13 @@ impl Streams {
             _ => {}
         }
         self.run(ctx, conn);
+        self.track(conn);
     }
 
     /// A member moved.
     pub fn member_moved(&mut self, ctx: &mut Ctx, m: Moved) {
+        let (Moved::Joined(conn, ..) | Moved::Left(conn, _) | Moved::Until(conn, _)) = &m;
+        let conn = *conn;
         match m {
             Moved::Joined(conn, s, rejoin) => {
                 self.holders.entry(s).or_default().insert(conn);
@@ -267,6 +289,27 @@ impl Streams {
             }
             Moved::Until(conn, s) => self.served_ending(ctx, conn, s),
         }
+        self.track(conn);
+    }
+
+    /// Wants a Pull from the stream's cursor on `conn` though nothing else is due, sent once any
+    /// under way ends (a complete pass, spec/sync-status.md §1; spec/permissions.md §3).
+    pub fn again(&mut self, ctx: &mut Ctx, conn: ConnId) {
+        let Some(p) = self.pull.get_mut(&conn) else { return };
+        p.again = true;
+        self.run(ctx, conn);
+        self.track(conn);
+    }
+
+    /// Keeps `caught` for `conn` as its pulling and serving now stand.
+    fn track(&mut self, conn: ConnId) {
+        let now = self.pull.get(&conn).filter(|p| p.caught_up() && self.served_applied(conn)).map(|p| p.answered_at);
+        if self.caught.get(&conn).copied() != now {
+            match now {
+                Some(t) => self.caught.insert(conn, t),
+                None => self.caught.remove(&conn),
+            };
+        }
     }
 
     /// A connection ended (before opens reports its members left): what lasted it alone goes,
@@ -284,6 +327,7 @@ impl Streams {
             set.remove(&conn);
         }
         self.holders.retain(|_, v| !v.is_empty());
+        self.caught.remove(&conn);
     }
 
     /// Settles every connection: pushes under `follow`, Pulls and Fetches due, room regained.
@@ -293,6 +337,7 @@ impl Streams {
         for c in conns {
             acted |= self.push(ctx, c)?;
             self.run(ctx, c);
+            self.track(c);
         }
         Ok(acted)
     }

@@ -596,12 +596,6 @@ impl Store {
         })
     }
 
-    /// Where this node's log first held entry `b` of S (spec/sync-status.md §2: a source reporting
-    /// a position at or past it holds it); `None` with none in the log (an ephemeral entry).
-    pub fn first_logged(&self, s: &SyncId, b: &BlobId) -> Result<Option<Position>> {
-        self.lock().read(|t, _| Ok(t.log_entry_first(s, b)?))
-    }
-
     /// Whether a source was recorded holding entry `b` of S (`set_elsewhere`).
     pub fn elsewhere(&self, s: &SyncId, b: &BlobId) -> Result<bool> {
         let mut g = self.lock();

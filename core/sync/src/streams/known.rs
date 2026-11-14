@@ -101,6 +101,7 @@ impl Known {
         for k in gone {
             self.refused.remove(&k);
             self.stamps.wrote(&("r", k), false);
+            self.stamps.wrote(&("rs", k.0, k.1), false);
         }
     }
 
@@ -140,7 +141,15 @@ impl Known {
 
     pub fn set_refused(&mut self, src: Source, s: SyncId, b: BlobId, r: Refusal) {
         self.stamps.wrote(&("r", (src, s, b)), true);
+        self.stamps.wrote(&("rs", src, s), true);
         self.refused.insert((src, s, b), r);
+    }
+
+    /// Whether the source refused some entry of S it was offered (spec/sync-streams.md §4
+    /// Refused): status names it among those that do not take S.
+    pub fn refusing(&self, src: Source, s: &SyncId) -> bool {
+        self.stamps.read(&("rs", src, s));
+        self.refused.range((src, *s, BlobId([0; 32]))..=(src, *s, BlobId([0xff; 32]))).next().is_some()
     }
 
     pub fn refusal(&self, src: Source, s: &SyncId, b: &BlobId) -> Option<&Refusal> {

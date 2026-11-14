@@ -26,17 +26,18 @@ use crate::inbox::Inbox;
 use crate::opens::{Moved, Opens, Reported};
 use crate::read::Read;
 use crate::session::{Incoming, Session, Sessions, To};
-use crate::status::{Status, StatusView};
+use crate::status::{NetView, Status, SyncStatus};
 use crate::store::Store;
 use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Error, Input, Out, Result, Scope, SyncConfig, Waiting};
 use dials::{Dials, NodePeers, Why};
 use osis_base::Tid;
 use crate::unread::Unread;
-use osis_base::WallMs;
+use osis_base::{SyncId, WallMs};
 use osis_crypto::NodeRng;
 use osis_engine::Engine;
 use osis_label::Address;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Where a node's outputs go: a transport, or a test's network. Synchronous; what comes of each
@@ -209,13 +210,30 @@ impl Node {
         self.driver.sessions.get(c)
     }
 
-    /// Status as of the last step.
-    pub fn status(&self) -> Arc<StatusView> {
-        self.status.view()
+    /// How every sync ID held or shared stands, as of the last step (spec/sync-status.md §3).
+    /// O(sync IDs × their sources): `status_of` reads one.
+    pub fn status(&self) -> BTreeMap<SyncId, SyncStatus> {
+        self.status.all(&self.net())
+    }
+
+    /// How S stands, as of the last step: O(its sources).
+    pub fn status_of(&self, s: &SyncId) -> Option<SyncStatus> {
+        self.status.of(s, &self.net())
+    }
+
+    /// No request, fill or Hello outstanding on any connection (spec/sync-status.md §3).
+    pub fn idle(&self) -> bool {
+        self.driver.sessions.idle()
     }
 
     pub fn wait(&mut self, scope: Scope) -> Waiting {
-        self.status.wait(&mut self.engine, scope)
+        let net = NetView { streams: &self.streams, unread: &self.unread };
+        let engine = &mut self.engine;
+        self.status.wait(&net, scope, |t| Ok(engine.sync_ids(t)?.iter().map(|o| o.id).collect()))
+    }
+
+    fn net(&self) -> NetView<'_> {
+        NetView { streams: &self.streams, unread: &self.unread }
     }
 
     /// Tests only: the settle rounds the last step took (the harness caps them: a settle loop
@@ -366,6 +384,7 @@ impl Node {
     fn moved(&mut self, moved: &mut Vec<Moved>, out: &mut Vec<Out>) {
         let mut cx = cx!(self, out);
         for m in moved.drain(..) {
+            self.status.moved(&self.driver.sessions, &self.opens, &m);
             self.inbox.moved(&m, &crate::inbox::Links { sessions: &mut self.driver.sessions, opens: &self.opens, streams: &self.streams });
             let c = m.conn();
             self.driver.dials.sharing(c, !self.opens.members(c).is_empty());
@@ -423,12 +442,19 @@ impl Node {
             self.moved(&mut moved, out);
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
-            acted |= self.read.settle(&mut cx, sessions, &self.opens, &self.streams)?;
-            acted |= self.inbox.settle(&mut cx, sessions, &self.opens, &self.streams)?;
+            acted |= self.read.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status, &self.unread)?;
+            acted |= self.inbox.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status)?;
             acted |= self.streams.settle(&mut cx, sessions, &self.opens, &mut self.driver.reported)?;
             self.reports(out);
             let mut cx = cx!(self, out);
-            acted |= self.status.settle(&mut cx, &self.opens, &self.streams, &self.read)?;
+            let mut pulls = Vec::new();
+            acted |= self.status.settle(&mut cx, &self.opens, &self.streams, &self.read, &self.unread, &mut pulls)?;
+            for conn in pulls {
+                let mut cx = cx!(self, out);
+                self.streams.pull_again(&mut cx, &mut self.driver.sessions, &self.opens, conn, &mut self.driver.reported);
+                acted = true;
+            }
+            self.reports(out);
             if !acted {
                 return Ok(());
             }

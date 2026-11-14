@@ -144,6 +144,8 @@ pub trait Net {
 /// The product's `Ground`: the engine.
 pub struct Eng<'a> {
     pub engine: &'a mut Engine,
+    /// Status, at a settle: own commits held elsewhere.
+    pub status: Option<&'a crate::status::Status>,
 }
 
 fn not_built<T>(what: &'static str) -> Result<T> {
@@ -212,8 +214,11 @@ impl Ground for Eng<'_> {
         let me = self.engine.me();
         Ok(self.engine.redeem(link, &me, link.single_use)?.commits.first().copied())
     }
-    fn held_elsewhere(&mut self, _c: &CommitId) -> Result<bool> {
-        not_built("Engine::held_elsewhere (status: own commits held at a source)")
+    fn held_elsewhere(&mut self, c: &CommitId) -> Result<bool> {
+        match self.status {
+            Some(st) => Ok(st.held(c)),
+            None => not_built("status: held elsewhere outside a settle"),
+        }
     }
 }
 
@@ -279,9 +284,9 @@ pub struct Here<'a, G: Ground> {
 
 impl Inbox {
     /// Whether anything acted.
-    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams) -> Result<bool> {
+    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, status: &crate::status::Status) -> Result<bool> {
         let Cx { engine, store, now, rng, .. } = cx;
-        let mut here = Here { g: &mut Eng { engine }, store, now: *now, rng: &mut **rng };
+        let mut here = Here { g: &mut Eng { engine, status: Some(status) }, store, now: *now, rng: &mut **rng };
         let mut net = Links { sessions, opens, streams };
         self.step(&mut here, &mut net)
     }
@@ -308,7 +313,7 @@ impl Inbox {
     /// Register, Delete, Stranded and Suspect requests; Deposit and Register answers.
     pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, conn: ConnId, m: Incoming) {
         let Cx { engine, store, now, rng, .. } = cx;
-        let mut here = Here { g: &mut Eng { engine }, store, now: *now, rng: &mut **rng };
+        let mut here = Here { g: &mut Eng { engine, status: None }, store, now: *now, rng: &mut **rng };
         let mut net = Links { sessions, opens, streams };
         self.receive(&mut here, &mut net, conn, m);
     }
@@ -354,7 +359,7 @@ impl Inbox {
     /// elsewhere. `Done` once the join is written.
     pub fn redeem(&mut self, cx: &mut Cx, link: &ShareLink) -> Waiting {
         let Cx { engine, store, now, rng, .. } = cx;
-        let mut here = Here { g: &mut Eng { engine }, store, now: *now, rng: &mut **rng };
+        let mut here = Here { g: &mut Eng { engine, status: None }, store, now: *now, rng: &mut **rng };
         self.redeem_on(&mut here, link)
     }
 
