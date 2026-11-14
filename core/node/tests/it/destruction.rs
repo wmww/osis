@@ -2739,7 +2739,7 @@ fn a_destruction_and_its_requesters_removal_at_one_ts_read_alike_whatever_the_ti
             net.advance(10);
             let rq = purge_thing(&mut net, n[req], t);
             let mut m = Mutation::new();
-            let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+            let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
             m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(tr)) }).unwrap();
             m.op(t, &ct::ROLES, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(tr))], op: Op::Set(edge.to_value()) }).unwrap();
             m.frontier(ct::Frontier::default().to_value());
