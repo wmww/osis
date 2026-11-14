@@ -116,7 +116,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. `schem
 - `released.0` (`timestamp`): a release request's delta on each thing it releases (spec/commits.md §5 Destruction).
 - `retainers^.0` (`set<tid>`): the thing's retainer set (spec/requirements.md Data model); absent, the thing is a garbage-collection root. Admin-only, ordinary retention. What keeps a thing and when a node releases it: spec/commits.md §5 Lifetimes.
 - `group.0`, `groups.0`: §8. `tag.0` marks a group as a user-facing tag (§8).
-- **`caps^.0`**: the limits (`policy`, per-sync-ID `caps`) on what peers may make the node store of the sync IDs it keeps unread (spec/sync-ids.md §5); local policy, absent: the defaults. Never logged under a sync ID.
+- **`caps^.0`**: the limits (`policy`, per-thing `things`, applied to each sync ID the thing owns) on what peers may make the node store of the sync IDs it keeps unread (spec/sync-ids.md §5); local policy, absent: the defaults. Never logged under a sync ID.
 - **`synced^.0`** on an account's devices actor D: each node of the account to its synced group (spec/sync-set.md §1). Admin-only; it travels under home.
 - **`dial.0`** on an account's profile: `map<blob, list<text>>`, a node's dialable key to its URLs (spec/sync-set.md §1; spec/sync-opens.md §1); written by the account, each node keeping its own entry; read by contacts.
 - **`clients^.0`**: clients with an actor of their own, by client actor (spec/sync-transport.md §6). Never logged under a sync ID.

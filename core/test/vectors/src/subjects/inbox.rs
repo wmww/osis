@@ -7,7 +7,7 @@ use crate::file::VecFile;
 use crate::hex;
 use osis_base::{SyncId, Tid, Value, WallMs, encode};
 use osis_crypto::KemSecret;
-use osis_label::{Address, InboxLabel, InboxPayload, InboxThing, open_inbox_blob, seal_inbox_blob};
+use osis_label::{DialHint, InboxPayload, InboxThing, open_inbox_blob, seal_inbox_blob};
 
 const SPEC: &str = "spec/wire.md §9";
 
@@ -18,7 +18,9 @@ pub fn inbox() -> VecFile {
     let payload = InboxPayload {
         chain: Vec::new(), records: Vec::new(),
         commit: Value::List(vec![Value::List(vec![]), Value::Bytes(vec![0; 64]), Value::List(vec![])]),
-        things: vec![InboxThing { tid: Tid::from_bytes([0x03; 15]), label: Some(InboxLabel { id: SyncId([0x04; 16]), hosts: vec![Address { url: "quic://host.example:4433".into(), key: [0x06; 32] }] }), delete_keys: Some((osis_crypto::DeleteSecret::derive(&s32(0x07)).verifying_key(), osis_crypto::DeleteSecret::derive(&s32(0x08)).verifying_key())) }],
+        things: vec![InboxThing { tid: Tid::from_bytes([0x03; 15]), sync_id: Some(SyncId([0x04; 16])), delete_keys: Some((osis_crypto::DeleteSecret::derive(&s32(0x07)).verifying_key(), osis_crypto::DeleteSecret::derive(&s32(0x08)).verifying_key())) }],
+        dial: Some(DialHint { dialable: [0x06; 32], urls: vec!["quic://peer.example:4433".into()] }),
+        removals: Vec::new(),
     };
     let (salt, eph, m) = ([0x36u8; 16], [0x37u8; 32], [0x38u8; 32]);
     let now = WallMs(1_700_000_000_000);

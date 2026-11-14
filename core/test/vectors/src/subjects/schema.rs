@@ -32,7 +32,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
     ]);
     let keys = Keys {
         read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]), possession_key: SigningKey::Ed25519(vec![7; 32]), names: [6; 32], proofs: BTreeMap::new(), left_out: BTreeMap::new() }),
-        inbox: Some(Inbox { label: SyncId([10; 16]), hosts: vec![Address { url: "quic://s.example:4433".into(), key: [11; 32] }] }),
+        inbox: Some(Inbox { sync_id: SyncId([10; 16]) }),
         deposit_seed: Some([12; 32]),
         ..Keys::default()
     };
@@ -46,17 +46,14 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ]),
         history: BTreeMap::from([(HistoryKey { role: Role::Read, epoch: epoch(1) }, vec![17; 64])]),
     };
-    let labels: Labels = BTreeMap::from([(
-        SyncId([22; 16]),
-        Label { steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]), hosts: vec![] },
-    )]);
+    let sync_ids: SyncIds = BTreeMap::from([(SyncId([22; 16]), SyncEntry { steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]) })]);
     vec![
         ("created thing", "created.0", CREATED.encode(&CreationRecord::Thing { admin: tid(1), nonce: [2; 32], link: None })),
         ("created key actor", "created.0", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32], account: false })),
         ("holders", "roles.0", ROLES.encode(&holders)),
         ("keys", "keys.0", KEYS.encode(&keys)),
         ("secrets", "secrets.0", SECRETS.encode(&secrets)),
-        ("label", "label.0", LABEL.encode(&labels)),
+        ("sync", "sync.0", SYNC.encode(&sync_ids)),
         ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into() })),
         ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], items: vec!["https://relay.example".into()], account: None })),
         ("group", "group.0", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),

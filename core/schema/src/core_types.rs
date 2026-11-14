@@ -11,7 +11,7 @@ use osis_base::{Ak, CommitId, CreationRecord, SyncId, Role, Tid, Ts, Value, Wall
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
-pub const ROLE_CLASS: [&str; 6] = ["roles.0", "secrets.0", "keys.0", "label.0", "account.0", "listing.0"];
+pub const ROLE_CLASS: [&str; 6] = ["roles.0", "secrets.0", "keys.0", "sync.0", "account.0", "listing.0"];
 
 pub fn is_role_class(ak: &str) -> bool {
     ROLE_CLASS.contains(&ak)
@@ -161,7 +161,7 @@ codec_struct! {
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Inbox { 0 label: SyncId, 1 hosts: Vec<Address> }
+    pub struct Inbox { 0 sync_id: SyncId }
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -203,9 +203,9 @@ codec_struct! {
     pub struct StepRecord { 0 step: Vec<u8>, 1 claims: Option<Vec<u8>> }
 }
 codec_struct! {
-    /// A label of a synced group; steps by step ID.
+    /// One sync ID of a thing (`sync.0`, spec/sync-ids.md §4); steps by step ID.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Label { 0 steps: BTreeMap<[u8; 32], StepRecord>, 1 hosts: Vec<Address> }
+    pub struct SyncEntry { 0 steps: BTreeMap<[u8; 32], StepRecord> }
 }
 codec_struct! {
     /// `keys.0`: keysets per role (actors other than key actors), a key actor's KEM key, inbox,
@@ -231,23 +231,16 @@ codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Reach { 0 dialable: [u8; 32], 1 items: Vec<String>, 2 account: Option<Tid> }
 }
-codec_enum! {
-    /// Which groups a node keeps unread for others (it syncs the groups it reads whatever this
-    /// says): `Listed`, those `labels` names; `Open`, any group within the caps.
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub enum Admit { #[default] 0 Listed, 1 Open }
-}
 codec_struct! {
-    /// One group's limits at a node that cannot read it, in place of its policy's.
+    /// One thing's limits at a node keeping it unread, in place of the policy's.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct HostCaps { 0 entries: u64, 1 bytes: u64 }
+    pub struct ThingCaps { 0 entries: u64, 1 bytes: u64 }
 }
 codec_struct! {
-    /// `host^.0`: this node hosts (spec/data-model.md §9).
+    /// `caps^.0` (spec/data-model.md §9): what peers may make this node store of the sync IDs it
+    /// keeps unread; per-thing limits apply to each sync ID the thing owns.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct Host {
-        0 admit: Admit, 1 labels: BTreeSet<SyncId>, 3 policy: BTreeMap<String, u64>, 4 caps: BTreeMap<SyncId, HostCaps>,
-    }
+    pub struct Caps { 0 policy: BTreeMap<String, u64>, 1 things: BTreeMap<Tid, ThingCaps> }
 }
 codec_struct! {
     /// One entry of `clients^.0` (spec/data-model.md §9): a thin client's secret hash and end.
@@ -378,7 +371,7 @@ codec_struct! {
 pub type Listings = BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>;
 
 pub type Holders = BTreeMap<Tid, Edge>;
-pub type Labels = BTreeMap<SyncId, Label>;
+pub type SyncIds = BTreeMap<SyncId, SyncEntry>;
 
 pub const TID: Aspect<Tid> = Aspect::new("tid.0", &CORE);
 pub const ASPECTS: Aspect<BTreeSet<String>> = Aspect::new("aspects.0", &CORE);
@@ -389,12 +382,14 @@ pub type Addenda = BTreeMap<Vec<u8>, Frontier>;
 pub const ADDENDA: Aspect<Addenda> = Aspect::new(ADDENDA_AK, &CORE);
 pub const KEYS: Aspect<Keys> = Aspect::new("keys.0", &CORE);
 pub const SECRETS: Aspect<Secrets> = Aspect::new("secrets.0", &CORE);
-pub const LABEL: Aspect<Labels> = Aspect::new("label.0", &CORE);
+pub const SYNC: Aspect<SyncIds> = Aspect::new("sync.0", &CORE);
 pub const ACCOUNT: Aspect<Account> = Aspect::new("account.0", &CORE);
 pub const LISTING: Aspect<Listings> = Aspect::new("listing.0", &CORE);
 pub const NODE: Aspect<NodeInfo> = Aspect::new("node.0", &CORE);
 pub const REACH: Aspect<Reach> = Aspect::new("reach.0", &CORE);
-pub const HOST: Aspect<Host> = Aspect::new("host^.0", &CORE);
+pub const CAPS: Aspect<Caps> = Aspect::new("caps^.0", &CORE);
+/// `synced^.0` on an account's devices actor: each node to its synced group (spec/sync-set.md §1).
+pub const SYNCED: Aspect<BTreeMap<Tid, Tid>> = Aspect::new("synced^.0", &CORE);
 /// `clients^.0`: by client actor.
 pub const CLIENTS: Aspect<BTreeMap<Tid, Client>> = Aspect::new("clients^.0", &CORE);
 /// `retention^.0`: what the thing keeps of replaced content (spec/commits.md §5); fixed retention.

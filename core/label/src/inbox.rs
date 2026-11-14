@@ -2,38 +2,40 @@
 //! travels as its `CommitBlobPlaintext` value; osis-commit parses it (the only coupling to the
 //! commit layout, kept here).
 
-use crate::addr::{Address, address_from_value};
 use crate::cbor::{get_bytes, get_key, get_opt, get_tid, tid};
 use crate::blob::Prefix;
 use crate::step::OBJECT_LIMITS;
 use crate::Error;
 use osis_base::cbor::{decode, encode};
 use osis_base::format::INBOX_LIFETIME_MS;
+use osis_base::format::MAX_URL_BYTES;
 use osis_base::{CreationRecord, SyncId, Tid, Value, WallMs};
-use osis_crypto::{CryptoRngCore, KemPublicKey, KemSecret, VerifyingKey, open_inbox, seal_inbox};
-use osis_schema::Codec;
+use osis_crypto::{CryptoRngCore, KemPublicKey, KemSecret, Signature, VerifyingKey, open_inbox, seal_inbox};
 
-/// A label of the thing's own: its ID and peer addresses.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InboxLabel {
-    pub id: SyncId,
-    pub hosts: Vec<Address>,
-}
+/// At most this many URLs in an inbox blob's dial hint (spec/wire.md §9 position 4).
+pub const MAX_DIAL_URLS: usize = 16;
 
-/// A thing the commit names: its own label, if it has one (a label of a group holding it opens
-/// under that group's secrets, not this thing's), and for a thing with secrets of its own its
-/// current admin and write delete keys (spec/crypto.md §7), which the grantee lists until it
-/// holds the thing's `keys.0`.
+/// A thing the commit names: its own sync ID, if it has one (never a group's holding it), and
+/// for a thing with secrets of its own its current admin and write delete keys
+/// (spec/crypto.md §7), which the grantee lists until it holds the thing's `keys.0`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboxThing {
     pub tid: Tid,
-    pub label: Option<InboxLabel>,
+    pub sync_id: Option<SyncId>,
     pub delete_keys: Option<(VerifyingKey, VerifyingKey)>,
 }
 
-/// `InboxPayload := [CommitBlobPlaintext, [[tid, Opt([sync_id, [address*]]),
-/// Opt([admin_pk, write_pk])]*], [CommitBlobPlaintext*], [creation*]]`, things sorted by tid,
-/// distinct, records ascending by tid, distinct.
+/// The sending node's dialable key and URLs: a dial hint (spec/wire.md §9 position 4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DialHint {
+    pub dialable: [u8; 32],
+    pub urls: Vec<String>,
+}
+
+/// `InboxPayload := [CommitBlobPlaintext, [[tid, Opt(sync_id), Opt([admin_pk, write_pk])]*],
+/// [CommitBlobPlaintext*], [creation*], Opt([dialable, [url*]]), [[sync_id, sig]*]]`
+/// (spec/wire.md §9), things sorted by tid, distinct, records ascending by tid, distinct,
+/// removal signatures ascending by sync ID, distinct.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboxPayload {
     /// The role commit's `CommitBlobPlaintext` value (header, signature, parts about the
@@ -47,35 +49,40 @@ pub struct InboxPayload {
     /// The raw creation records of that chain (spec/permissions.md §4): a record proves itself by
     /// its hash.
     pub records: Vec<CreationRecord>,
+    pub dial: Option<DialHint>,
+    /// Removal signatures per sync ID of `things` the commit ends the recipient's grant on, each
+    /// with the sync epoch number it is signed at (`sign_removal`).
+    pub removals: Vec<(SyncId, u64, Signature)>,
 }
 
 impl InboxPayload {
     pub fn to_value(&self) -> Value {
         let mut things = Vec::with_capacity(self.things.len());
         for t in &self.things {
-            let label = match &t.label {
-                Some(l) => vec![Value::List(vec![Value::bytes(&l.id.0), Value::List(l.hosts.iter().map(Codec::to_value).collect())])],
-                None => Vec::new(),
-            };
             things.push(Value::List(vec![
                 tid(&t.tid),
-                Value::List(label),
+                Value::List(t.sync_id.iter().map(|s| Value::bytes(&s.0)).collect()),
                 Value::List(t.delete_keys.iter().map(|(a, w)| Value::List(vec![Value::bytes(&a.to_bytes()), Value::bytes(&w.to_bytes())])).collect()),
             ]));
         }
-        Value::List(vec![self.commit.clone(), Value::List(things), Value::List(self.chain.clone()), records_value(&self.records)])
+        let dial = self.dial.iter().map(|d| Value::List(vec![Value::bytes(&d.dialable), Value::List(d.urls.iter().map(|u| Value::Str(u.clone())).collect())])).collect();
+        let mut removals: Vec<&(SyncId, u64, Signature)> = self.removals.iter().collect();
+        removals.sort_by_key(|(s, _, _)| *s);
+        removals.dedup_by_key(|(s, _, _)| *s);
+        let removals = removals.into_iter().map(|(s, e, sig)| Value::List(vec![Value::bytes(&s.0), Value::Int(*e as i64), sig.to_value()])).collect();
+        Value::List(vec![self.commit.clone(), Value::List(things), Value::List(self.chain.clone()), records_value(&self.records), Value::List(dial), Value::List(removals)])
     }
 
     /// The commit's plaintext, its decoded form freed first so that decoding the plaintext again
     /// does not hold two decoded copies of a stranger's blob; and the rest.
-    pub fn split(self) -> (Vec<u8>, Vec<InboxThing>, Vec<Value>, Vec<CreationRecord>) {
-        (encode(&self.commit), self.things, self.chain, self.records)
+    pub fn split(self) -> (Vec<u8>, InboxRest) {
+        (encode(&self.commit), InboxRest { things: self.things, chain: self.chain, records: self.records, dial: self.dial, removals: self.removals })
     }
 
     /// Takes `v` apart without copying: it is a blob from anyone (`open_inbox_blob`).
     pub fn from_value(v: Value) -> Result<InboxPayload, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("inbox payload")) };
-        let Ok::<[Value; 4], _>([commit @ Value::List(_), Value::List(things), Value::List(chain), Value::List(records)]) = items.try_into() else { return Err(Error::Malformed("inbox payload")) };
+        let Ok::<[Value; 6], _>([commit @ Value::List(_), Value::List(things), Value::List(chain), Value::List(records), dial, Value::List(removals)]) = items.try_into() else { return Err(Error::Malformed("inbox payload")) };
         if !chain.iter().all(|c| matches!(c, Value::List(_))) {
             return Err(Error::Malformed("inbox chain"));
         }
@@ -84,15 +91,7 @@ impl InboxPayload {
         for t in &things {
             let Value::List(f) = t else { return Err(Error::Malformed("inbox thing")) };
             let [tid, label, keys] = f.as_slice() else { return Err(Error::Malformed("inbox thing")) };
-            let label = match get_opt(label, "inbox label")? {
-                None => None,
-                Some(Value::List(l)) => {
-                    let [id, Value::List(hosts)] = l.as_slice() else { return Err(Error::Malformed("inbox label")) };
-                    let hosts = hosts.iter().map(address_from_value).collect::<Result<_, _>>()?;
-                    Some(InboxLabel { id: SyncId(get_bytes(id, "inbox label")?), hosts })
-                }
-                Some(_) => return Err(Error::Malformed("inbox label")),
-            };
+            let sync_id = get_opt(label, "inbox sync ID")?.map(|v| get_bytes(v, "inbox sync ID").map(SyncId)).transpose()?;
             let key = |v: &Value| get_key(v, "inbox delete key");
             let delete_keys = match get_opt(keys, "inbox delete keys")? {
                 None => None,
@@ -106,10 +105,48 @@ impl InboxPayload {
             if out.last().is_some_and(|p| p.tid >= tid) {
                 return Err(Error::Malformed("inbox things not sorted by tid"));
             }
-            out.push(InboxThing { tid, label, delete_keys });
+            out.push(InboxThing { tid, sync_id, delete_keys });
         }
-        Ok(InboxPayload { commit, things: out, chain, records })
+        let dial = match get_opt(&dial, "inbox dial hint")? {
+            None => None,
+            Some(Value::List(d)) => {
+                let [k, Value::List(urls)] = d.as_slice() else { return Err(Error::Malformed("inbox dial hint")) };
+                if urls.len() > MAX_DIAL_URLS {
+                    return Err(Error::Malformed("inbox dial hint"));
+                }
+                let urls = urls
+                    .iter()
+                    .map(|u| match u {
+                        Value::Str(u) if u.len() <= MAX_URL_BYTES => Ok(u.clone()),
+                        _ => Err(Error::Malformed("inbox dial url")),
+                    })
+                    .collect::<Result<_, _>>()?;
+                Some(DialHint { dialable: get_bytes(k, "inbox dialable")?, urls })
+            }
+            Some(_) => return Err(Error::Malformed("inbox dial hint")),
+        };
+        let mut rs: Vec<(SyncId, u64, Signature)> = Vec::with_capacity(removals.len());
+        for r in &removals {
+            let Value::List(r) = r else { return Err(Error::Malformed("inbox removal")) };
+            let [s, e, sig] = r.as_slice() else { return Err(Error::Malformed("inbox removal")) };
+            let s = SyncId(get_bytes(s, "inbox removal sync ID")?);
+            if rs.last().is_some_and(|(p, _, _)| *p >= s) {
+                return Err(Error::Malformed("inbox removals not sorted by sync ID"));
+            }
+            rs.push((s, crate::cbor::get_uint(e, "inbox removal epoch")?, Signature::from_value(sig).map_err(|_| Error::Malformed("inbox removal signature"))?));
+        }
+        Ok(InboxPayload { commit, things: out, chain, records, dial, removals: rs })
     }
+}
+
+/// An inbox payload but its commit (`InboxPayload::split`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InboxRest {
+    pub things: Vec<InboxThing>,
+    pub chain: Vec<Value>,
+    pub records: Vec<CreationRecord>,
+    pub dial: Option<DialHint>,
+    pub removals: Vec<(SyncId, u64, Signature)>,
 }
 
 /// `StrandedNotice := ["stranded", sync_id, holder, [CommitBlobPlaintext*], [creation*]]`
@@ -244,15 +281,16 @@ mod tests {
     }
 
     fn payload() -> InboxPayload {
-        let a = Address { url: "quic://s".into(), key: [1; 32] };
         InboxPayload {
             chain: vec![Value::List(vec![Value::List(vec![]), Value::Int(1), Value::List(vec![])])],
             records: vec![CreationRecord::Thing { admin: Tid::from_bytes([4; 15]), nonce: [4; 32], link: None }],
             commit: Value::List(vec![Value::List(vec![]), Value::Int(0), Value::List(vec![])]),
             things: vec![
-                InboxThing { tid: Tid::from_bytes([1; 15]), label: Some(InboxLabel { id: SyncId([2; 16]), hosts: vec![a.clone()] }), delete_keys: None },
-                InboxThing { tid: Tid::from_bytes([3; 15]), label: None, delete_keys: Some((dk(1), dk(2))) },
+                InboxThing { tid: Tid::from_bytes([1; 15]), sync_id: Some(SyncId([2; 16])), delete_keys: None },
+                InboxThing { tid: Tid::from_bytes([3; 15]), sync_id: None, delete_keys: Some((dk(1), dk(2))) },
             ],
+            dial: Some(DialHint { dialable: [6; 32], urls: vec!["quic://s".into()] }),
+            removals: vec![(SyncId([2; 16]), 3, Signature::from_slice(&[7; 64]).unwrap())],
         }
     }
 
@@ -302,5 +340,8 @@ mod tests {
         assert!(InboxPayload::from_value(p.to_value()).is_err());
         assert!(InboxPayload::from_value(Value::List(vec![Value::Int(0), Value::List(vec![])])).is_err());
         assert_eq!(InboxPayload::from_value(payload().to_value()).unwrap(), payload());
+        let mut p = payload();
+        p.dial = Some(DialHint { dialable: [6; 32], urls: vec!["quic://s".into(); MAX_DIAL_URLS + 1] });
+        assert!(InboxPayload::from_value(p.to_value()).is_err());
     }
 }

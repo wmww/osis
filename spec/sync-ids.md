@@ -91,7 +91,7 @@ Per sync ID:
 Across sync IDs:
 - Blob bytes are stored once per node and deleted when no sync ID references them; a blob fetched under one sync ID is taken under every other held sync ID whose entries name it.
 - Ephemeral entries and their tombstones are held in memory only and lost at a restart. Relay-only blobs are never held.
-- **Caps** (`caps^.0`, spec/data-model.md §9: `policy` and per-sync-ID `caps`, local policy) govern only the sync IDs the node keeps unread and count only their entries; a sync ID moving between read and kept unread is counted again. A reader's own sync IDs take nothing from the room others may use.
+- **Caps** (`caps^.0`, spec/data-model.md §9: `policy` and per-thing `things`, applied to each sync ID the thing owns, local policy) govern only the sync IDs the node keeps unread and count only their entries; a sync ID moving between read and kept unread is counted again. A reader's own sync IDs take nothing from the room others may use.
 - **Peer budget**: an unstamped entry that gives the node nothing held (it does not open, or opens to a commit not judged or known only for a part dropped as invalid) counts its size against the peer that brought it, within a bound per peer (local policy); past it such entries are not kept. The charges live in the bringing peer's record (spec/sync-opens.md §3), so they survive a restart. A peer with no record is charged per connection, and the entries it brought that still give nothing held are dropped when that connection closes, to be fetched again where present. A dropped record (a lost record is a first contact) drops the entries charged to it.
 
 ## 6. Operations at a store

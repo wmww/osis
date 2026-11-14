@@ -145,19 +145,13 @@ type epoch = struct {
     nonce 1: blob,
 };
 
-/// A host: where to connect (a URL) and its 32-byte public key.
-type address = struct {
-    url 0: string,
-    key 1: blob,
-};
-
 /// The public keys of one role's secret at one epoch (spec/crypto.md §4).
 type keyset = struct {
     epoch 0: epoch,
     kem_key 1: kem_key,
     /// Which set of algorithms the secret is used with.
     suite 2: int,
-    /// Lets holders of the secret delete stored data at hosts (spec/crypto.md §7).
+    /// Lets holders of the secret delete stored data at nodes keeping it unread (spec/crypto.md §7).
     delete_key 3: signing_key,
     /// The earlier epochs this one replaces.
     supersedes 4: set<epoch>,
@@ -179,10 +173,9 @@ type possession_proof = struct {
     signature 1: signature,
 };
 
-/// Where others can drop things for an actor: a 16-byte label ID and the hosts holding it.
+/// Where others can drop things for an actor: its 16-byte home sync ID (spec/sync-inbox.md §1).
 type inbox = struct {
-    label 0: blob,
-    hosts 1: list<address>,
+    sync_id 0: blob,
 };
 
 /// An actor's public keys (spec/crypto.md §3).
@@ -194,7 +187,7 @@ aspect keys.0: struct {
     /// A key actor's one encryption key; an account's, its current epoch's.
     key 3: option<kem_key>,
     inbox 4: option<inbox>,
-    /// 32 bytes. Lets others add data for the actor at hosts without being able to read it
+    /// 32 bytes. Lets others add data for the actor at nodes keeping it unread without being able to read it
     /// (spec/sync-ids.md §2).
     deposit_seed 5: option<blob>,
     /// An account's current epoch's signing key (spec/crypto.md §3).
@@ -258,24 +251,27 @@ aspect account.0: struct {
 aspect listing.0: map<blob, set<blob>>;
 
 // ---- Syncing ----
-// A synced group is stored at hosts under a label: hosts hold encrypted data they cannot read,
-// and the label proves who may fetch and add to it (spec/sync-ids.md §2).
+// A thing with secrets of its own syncs under its home sync ID: nodes keeping it unread hold
+// encrypted data they cannot read, and its steps prove who may fetch and add to it
+// (spec/sync-ids.md §2).
 
-/// One registration step: tells hosts which keys may use the label from now on (spec/wire.md §8).
+/// One step: tells nodes keeping the sync ID unread which keys may use it from now on (spec/wire.md §8).
 type step_record = struct {
     step 0: blob,
     /// The readers it lets in.
     claims 1: option<blob>,
 };
 
-type label = struct {
-    /// Registration steps, by step ID.
+type sync_entry = struct {
+    /// Steps, by step ID.
     steps 0: map<blob, step_record>,
-    hosts 1: list<address>,
 };
 
-/// A synced group's labels, by 16-byte label ID.
-aspect label.0: map<blob, label>;
+/// A thing's sync IDs, by 16-byte sync ID (spec/sync-ids.md §4).
+aspect sync.0: map<blob, sync_entry>;
+
+/// Each node of the account to its synced group, on the devices actor (spec/sync-set.md §1).
+admin aspect synced^.0: map<tid, tid>;
 
 // ---- Devices ----
 // Each device running osis (a node) is itself a thing, with these aspects about it.
@@ -294,27 +290,19 @@ aspect reach.0: struct {
     account 2: option<tid>,
 };
 
-/// Which labels a host stores for others: those `labels` lists, or anyone's.
-type admit = enum {
-    listed 0,
-    open 1,
-};
-
-/// Limits on what a host stores for one label.
-type host_caps = struct {
+/// Limits on what the device stores of one thing it keeps unread.
+type thing_caps = struct {
     entries 0: int,
     bytes 1: int,
 };
 
-/// The device acts as a host, storing others' synced groups (spec/sync-ids.md §5); absent: it does not.
-admin aspect host^.0: struct {
-    admit 0: admit,
-    /// Label IDs (16 bytes) taken under `listed`.
-    labels 1: set<blob>,
+/// Limits on what peers may make the device store of the sync IDs it keeps unread
+/// (spec/sync-ids.md §5); absent: the defaults.
+admin aspect caps^.0: struct {
     /// Tuning settings by name.
-    policy 3: map<string, int>,
-    /// Per-label limits, by label ID.
-    caps 4: map<blob, host_caps>,
+    policy 0: map<string, int>,
+    /// Per-thing limits, applied to each sync ID the thing owns.
+    things 1: map<tid, thing_caps>,
 };
 
 /// A thin client: an app that uses this device's data from elsewhere instead of keeping its own.

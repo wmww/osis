@@ -1,10 +1,10 @@
-//! `label.0` (spec/sync-ids.md §4, spec/data-model.md §9): the aspect types are osis-schema's
-//! (`Label`, `StepRecord`, `Labels`); this module converts records to verified steps and claim
+//! `sync.0` (spec/sync-ids.md §4, spec/data-model.md §9): the aspect types are osis-schema's
+//! (`SyncEntry`, `StepRecord`, `SyncIds`); this module converts records to verified steps and claim
 //! sets and back.
 
 use crate::step::{ClaimSet, Step, StepId};
 use crate::Error;
-pub use osis_schema::core_types::{LABEL, Label, Labels, StepRecord};
+pub use osis_schema::core_types::{SYNC, StepRecord, SyncEntry, SyncIds};
 use std::collections::BTreeMap;
 
 /// A step record from a step and its claim set (when held).
@@ -28,8 +28,8 @@ pub(crate) fn parse_step(step: &[u8], claims: Option<&[u8]>) -> Result<(Step, Op
     Ok((step, claims))
 }
 
-/// The steps of a label by ID, each keyed by its own ID.
-pub fn label_steps(label: &Label) -> Result<BTreeMap<StepId, (Step, Option<ClaimSet>)>, Error> {
+/// The steps of a sync ID by ID, each keyed by its own ID.
+pub fn sync_steps(label: &SyncEntry) -> Result<BTreeMap<StepId, (Step, Option<ClaimSet>)>, Error> {
     let mut out = BTreeMap::new();
     for (id, r) in &label.steps {
         let (s, c) = parse_record(r)?;
@@ -41,9 +41,9 @@ pub fn label_steps(label: &Label) -> Result<BTreeMap<StepId, (Step, Option<Claim
     Ok(out)
 }
 
-/// Steps no other step of the label names as `prev`: the tips of each branch.
-pub fn tips(label: &Label) -> Result<Vec<StepId>, Error> {
-    let steps = label_steps(label)?;
+/// Steps no other step of the sync ID names as `prev`: the tips of each branch.
+pub fn tips(label: &SyncEntry) -> Result<Vec<StepId>, Error> {
+    let steps = sync_steps(label)?;
     let parents: std::collections::BTreeSet<StepId> = steps.values().filter_map(|(s, _)| s.prev).collect();
     Ok(steps.keys().filter(|k| !parents.contains(k)).copied().collect())
 }
@@ -56,8 +56,8 @@ mod tests {
     use osis_crypto::{Epoch, SeededRng};
     use osis_schema::Codec;
 
-    // spec/sync-ids.md §4, spec/data-model.md §9: `label.0` holds steps by ID with their claim sets;
-    // records round trip through the `label` value; paths and tips follow `prev`.
+    // spec/sync-ids.md §4, spec/data-model.md §9: `sync.0` holds steps by ID with their claim sets;
+    // records round trip through the `sync_entry` value; paths and tips follow `prev`.
     #[test]
     fn records() {
         let mut rng = SeededRng::from_u64(0);
@@ -66,13 +66,13 @@ mod tests {
         let (s0, c0) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
         let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
         let (s2, _) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
-        let mut label = Label { steps: BTreeMap::new(), hosts: vec![] };
+        let mut label = SyncEntry { steps: BTreeMap::new() };
         label.steps.insert(s0.id().0, step_record(&s0, Some(&c0)));
         label.steps.insert(s1.id().0, step_record(&s1, Some(&c1)));
         label.steps.insert(s2.id().0, step_record(&s2, None));
-        let back = Label::from_value(&label.to_value()).unwrap();
+        let back = SyncEntry::from_value(&label.to_value()).unwrap();
         assert_eq!(back, label);
-        let steps: BTreeMap<StepId, Step> = label_steps(&label).unwrap().into_iter().map(|(k, (s, _))| (k, s)).collect();
+        let steps: BTreeMap<StepId, Step> = sync_steps(&label).unwrap().into_iter().map(|(k, (s, _))| (k, s)).collect();
         assert_eq!(crate::step::path_to(&steps, &s1.id()).unwrap(), vec![s0.clone(), s1.clone()]);
         let mut t = tips(&label).unwrap();
         t.sort();
@@ -82,9 +82,9 @@ mod tests {
         // A claim set of another step, or a record under the wrong key, is rejected.
         let mut bad = label.clone();
         bad.steps.insert(s1.id().0, step_record(&s1, Some(&c0)));
-        assert!(label_steps(&bad).is_err());
+        assert!(sync_steps(&bad).is_err());
         let mut bad = label;
         bad.steps.insert([0; 32], step_record(&s1, None));
-        assert!(label_steps(&bad).is_err());
+        assert!(sync_steps(&bad).is_err());
     }
 }

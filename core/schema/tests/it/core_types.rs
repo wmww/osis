@@ -22,7 +22,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
     ]);
     let keys = Keys {
         read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]), possession_key: SigningKey::Ed25519(vec![7; 32]), names: [6; 32], proofs: BTreeMap::new(), left_out: BTreeMap::new() }),
-        inbox: Some(Inbox { label: SyncId([10; 16]), hosts: vec![Address { url: "quic://s.example:4433".into(), key: [11; 32] }] }),
+        inbox: Some(Inbox { sync_id: SyncId([10; 16]) }),
         deposit_seed: Some([12; 32]),
         ..Keys::default()
     };
@@ -36,25 +36,18 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ]),
         history: BTreeMap::from([(HistoryKey { role: Role::Read, epoch: epoch(1) }, vec![17; 64])]),
     };
-    let labels: Labels = BTreeMap::from([(
-        SyncId([22; 16]),
-        Label { steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]), hosts: vec![] },
-    )]);
+    let sync_ids: SyncIds = BTreeMap::from([(SyncId([22; 16]), SyncEntry { steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]) })]);
     vec![
         ("created thing", "created.0", CREATED.encode(&CreationRecord::Thing { admin: tid(1), nonce: [2; 32], link: None })),
         ("created key actor", "created.0", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32], account: false })),
         ("holders", "roles.0", ROLES.encode(&holders)),
         ("keys", "keys.0", KEYS.encode(&keys)),
         ("secrets", "secrets.0", SECRETS.encode(&secrets)),
-        ("label", "label.0", LABEL.encode(&labels)),
+        ("sync", "sync.0", SYNC.encode(&sync_ids)),
         ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into() })),
         ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], items: vec!["https://relay.example".into()], account: None })),
-        ("host", "host^.0", HOST.encode(&Host {
-            admit: Admit::Open,
-            labels: BTreeSet::from([SyncId([31; 16])]),
-            policy: BTreeMap::from([("cap_bytes".to_string(), 1000)]),
-            caps: BTreeMap::from([(SyncId([33; 16]), HostCaps { entries: 5, bytes: 6 })]),
-        })),
+        ("caps", "caps^.0", CAPS.encode(&Caps { policy: BTreeMap::from([("cap_bytes".to_string(), 1000)]), things: BTreeMap::from([(tid(33), ThingCaps { entries: 5, bytes: 6 })]) })),
+        ("synced", "synced^.0", SYNCED.encode(&BTreeMap::from([(tid(31), tid(32))]))),
         ("clients", "clients^.0", CLIENTS.encode(&BTreeMap::from([(tid(34), Client { secret_hash: [35; 32], until: Some(WallMs(1_700_000_000_000)) })]))),
         ("group", "group.0", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),
     ]
@@ -80,10 +73,11 @@ fn core_aspects_round_trip_spec_data_model_9() {
             "roles.0" => ROLES.encode(&ROLES.decode(v).unwrap()),
             "keys.0" => KEYS.encode(&KEYS.decode(v).unwrap()),
             "secrets.0" => SECRETS.encode(&SECRETS.decode(v).unwrap()),
-            "label.0" => LABEL.encode(&LABEL.decode(v).unwrap()),
+            "sync.0" => SYNC.encode(&SYNC.decode(v).unwrap()),
             "node.0" => NODE.encode(&NODE.decode(v).unwrap()),
             "reach.0" => REACH.encode(&REACH.decode(v).unwrap()),
-            "host^.0" => HOST.encode(&HOST.decode(v).unwrap()),
+            "caps^.0" => CAPS.encode(&CAPS.decode(v).unwrap()),
+            "synced^.0" => SYNCED.encode(&SYNCED.decode(v).unwrap()),
             "clients^.0" => CLIENTS.encode(&CLIENTS.decode(v).unwrap()),
             "group.0" => GROUP.encode(&GROUP.decode(v).unwrap()),
             _ => panic!("{ak}"),
