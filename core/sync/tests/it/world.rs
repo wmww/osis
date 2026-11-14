@@ -90,3 +90,47 @@ fn a_script_plays_on_a_fixture() {
     assert_eq!((w.node(0).account, w.node(1).account), accounts);
     assert_eq!(w.engine(1).account_tid(), accounts.1, "the reopened node reads its own account");
 }
+
+// spec: none (test harness): a shrink finds a planted failure among real steps in few candidates
+// (counted, not timed): node 1 skewed and left off, among 20 steps that play on a fixture copy.
+#[test]
+fn a_shrink_finds_a_planted_failure_in_few_candidates() {
+    use crate::harness::{Step::*, play};
+    let steps = vec![Advance(1_000), Run, Skew(0, 300), Cut(0, 1), Skew(1, 4_000), Run, PowerOff(1), Advance(5_000), PowerOn(1), Heal, Skew(0, 0), Run, Partition(0, 1), Advance(2_000), Run, Heal, PowerOff(1), Advance(500), Skew(0, -200), Run];
+    let fails = |h: &[crate::harness::Step]| {
+        let mut w = two_nodes();
+        let _script = play(&mut w, h, String::new());
+        w.node_now(1) != w.now() && !w.online(1)
+    };
+    assert!(fails(&steps));
+    let s = osis_base::testenv::shrink(steps, osis_base::testenv::SHRINK_CANDIDATES, fails, crate::harness::Step::simpler, |_: &[crate::harness::Step], _| {});
+    assert_eq!(s.steps, vec![Skew(1, 1), PowerOff(1)]);
+    assert!(s.candidates < 60, "{} candidates", s.candidates);
+}
+
+// spec: none (test harness): a shrink candidate past its delivery cap stops and counts as not
+// failing (`capped`); under the cap it runs as ever, and a world's own lower cap still panics as
+// a storm.
+#[test]
+fn a_shrink_candidate_past_its_cap_does_not_fail() {
+    use crate::harness::{Step::*, capped, contacts, play};
+    let steps = [PowerOff(1), PowerOn(1), Run];
+    let run = || {
+        let mut w = contacts();
+        let _script = play(&mut w, &steps, String::new());
+        w.deliveries
+    };
+    let made = capped(u64::MAX, run).expect("uncapped");
+    assert!(made > 3, "{made} deliveries");
+    assert_eq!(capped(3, run), None);
+    assert_eq!(capped(made, run), Some(made));
+    let storm = std::panic::catch_unwind(|| {
+        capped(made, || {
+            let mut w = contacts();
+            w.cap = 2;
+            let _ = play(&mut w, &steps, String::new());
+        })
+    });
+    let e = storm.expect_err("the world's own cap");
+    assert!(e.downcast_ref::<String>().is_some_and(|m| m.contains("storm")));
+}

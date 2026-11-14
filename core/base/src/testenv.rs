@@ -558,6 +558,26 @@ mod tests {
         assert_eq!(run.judge(Instant::now(), Duration::from_secs(1)), Err("ran past 1 s".to_string()));
         assert!(run_on(None, Instant::now()).judge(Instant::now(), Duration::from_secs(1)).is_ok());
     }
+
+    // a shrink counts its candidates and finds a planted failure's two steps among 40 in under
+    // a hundred, simpler forms included; a budget stops it with its progress (spec: none, test
+    // infrastructure)
+    #[test]
+    fn shrink_finds_a_planted_failure_in_few_candidates() {
+        let steps: Vec<u32> = (0..40).collect();
+        let fails = |h: &[u32]| h.contains(&7) && h.iter().any(|x| (30..=31).contains(x));
+        // 31 simplifies to 30 (still failing), 30 to nothing simpler
+        let simpler = |x: &u32| if *x == 31 { vec![30] } else { Vec::new() };
+        let mut seen = Vec::new();
+        let s = shrink(steps.clone(), SHRINK_CANDIDATES, fails, simpler, |h: &[u32], n| seen.push((h.len(), n)));
+        assert_eq!(s.steps, vec![7, 30]);
+        assert!(s.candidates < 100, "{} candidates", s.candidates);
+        assert!(seen.windows(2).all(|w| w[0].0 >= w[1].0 && w[0].1 < w[1].1), "progress shrinks: {seen:?}");
+        // halves keep 7 or 30-31 apart; the fourth candidate drops 10..20
+        let cut = shrink(steps, 4, fails, simpler, |_: &[u32], _| {});
+        assert_eq!(cut.candidates, 4);
+        assert_eq!(cut.steps.len(), 30);
+    }
 }
 
 thread_local! {
@@ -614,46 +634,45 @@ impl<A: std::fmt::Debug + Clone + 'static> Drop for Script<A> {
     }
 }
 
-/// Runs `run`, which records its steps in a `Script<A>`; with `shrink_var` set nonzero, a failing
-/// run's script is shrunk while `replay` still fails: chunks of steps dropped (halves down to
-/// single steps), then each step replaced by a `simpler` form, to a fixpoint; the shrunk run
-/// fails as the original failure, printing its script.
-pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: impl FnOnce(), replay: impl Fn(&[A]), simpler: impl Fn(&A) -> Vec<A>) {
-    use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-    if !u64_var(shrink_var).is_some_and(|n| n != 0) {
-        return run();
-    }
-    let Err(first) = catch_unwind(AssertUnwindSafe(run)) else { return };
-    let Some(mut steps) = FAILED.take().and_then(|b| b.downcast::<Vec<A>>().ok()).map(|b| *b) else { resume_unwind(first) };
-    // a hook that stays silent for a shrink's replays, installed once for the process
-    static HOOK: std::sync::Once = std::sync::Once::new();
-    HOOK.call_once(|| {
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            if !QUIET.get() {
-                prev(info)
-            }
-        }));
-    });
-    let fails = |h: &[A]| {
-        QUIET.set(true);
-        let failed = catch_unwind(AssertUnwindSafe(|| replay(h))).is_err();
-        QUIET.set(false);
-        FAILED.take();
-        failed
+/// Candidates one shrink tries (`shrink`) before it stops with the smallest failing run found.
+/// Counted, not timed, so a shrink ends alike under any load. At 0 nothing shrinks (the original
+/// run is printed); at infinity a shrink runs to its fixpoint, which for a long history whose
+/// candidates each cost seconds is many minutes. 150 shrinks a 40-step history to a few steps in
+/// about 100 (ddmin's halves, then single steps, then simpler forms).
+pub const SHRINK_CANDIDATES: u64 = 150;
+
+/// What `shrink` found: the smallest failing steps, and the candidates it tried.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shrunk<A> {
+    pub steps: Vec<A>,
+    pub candidates: u64,
+}
+
+/// Shrinks `steps`, which `fails`, while it still fails, trying at most `budget` candidates:
+/// chunks dropped ddmin-style (halves first, down to single steps, each size swept once while it
+/// drops something), then each step replaced by a `simpler` form, to a fixpoint. `found` sees
+/// each smaller failing run as it is found (a shrink cut short keeps its progress).
+pub fn shrink<A: Clone>(mut steps: Vec<A>, budget: u64, mut fails: impl FnMut(&[A]) -> bool, simpler: impl Fn(&A) -> Vec<A>, mut found: impl FnMut(&[A], u64)) -> Shrunk<A> {
+    let mut tried = 0u64;
+    let mut attempt = |h: &[A], tried: &mut u64| {
+        *tried += 1;
+        fails(h)
     };
-    let n = steps.len();
-    loop {
+    'fix: loop {
         let mut changed = false;
         let mut chunk = steps.len().div_ceil(2).max(1);
         loop {
             let mut i = 0;
             while i < steps.len() {
+                if tried >= budget {
+                    break 'fix;
+                }
                 let mut fewer = steps.clone();
                 fewer.drain(i..(i + chunk).min(steps.len()));
-                if fails(&fewer) {
+                if attempt(&fewer, &mut tried) {
                     steps = fewer;
                     changed = true;
+                    found(&steps, tried);
                 } else {
                     i += chunk;
                 }
@@ -666,13 +685,17 @@ pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: im
         for i in 0..steps.len() {
             let Some(step) = steps.get(i) else { break };
             for s in simpler(step) {
-                let mut tried = steps.clone();
-                if let Some(x) = tried.get_mut(i) {
+                if tried >= budget {
+                    break 'fix;
+                }
+                let mut simple = steps.clone();
+                if let Some(x) = simple.get_mut(i) {
                     *x = s;
                 }
-                if fails(&tried) {
-                    steps = tried;
+                if attempt(&simple, &mut tried) {
+                    steps = simple;
                     changed = true;
+                    found(&steps, tried);
                     break;
                 }
             }
@@ -681,7 +704,49 @@ pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: im
             break;
         }
     }
-    eprintln!("shrunk from {n} to {} steps; the shrunk run:", steps.len());
-    replay(&steps);
+    Shrunk { steps, candidates: tried }
+}
+
+/// Whether this thread is replaying a shrink's candidate (`shrinking`): harnesses keep it quiet.
+pub fn quiet() -> bool {
+    QUIET.get()
+}
+
+/// Runs `run`, which records its steps in a `Script<A>`; with `shrink_var` set nonzero, a failing
+/// run's script is shrunk (`shrink`, `SHRINK_CANDIDATES`) while `replay(steps, false)` still
+/// fails, each candidate replayed silent and once (`false`: the replay may skip checks of the run
+/// itself, such as playing it twice); each smaller failing script is printed as found, past
+/// libtest's capture. Then the shrunk run is replayed with `replay(steps, true)` and fails as the
+/// original failure, printing its script.
+pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: impl FnOnce(), replay: impl Fn(&[A], bool), simpler: impl Fn(&A) -> Vec<A>) {
+    use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+    if !u64_var(shrink_var).is_some_and(|n| n != 0) {
+        return run();
+    }
+    let Err(first) = catch_unwind(AssertUnwindSafe(run)) else { return };
+    let Some(steps) = FAILED.take().and_then(|b| b.downcast::<Vec<A>>().ok()).map(|b| *b) else { resume_unwind(first) };
+    // a hook that stays silent for a shrink's replays, installed once for the process
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !QUIET.get() {
+                prev(info)
+            }
+        }));
+    });
+    let fails = |h: &[A]| {
+        QUIET.set(true);
+        let failed = catch_unwind(AssertUnwindSafe(|| replay(h, false))).is_err();
+        QUIET.set(false);
+        FAILED.take();
+        failed
+    };
+    let n = steps.len();
+    let found = |h: &[A], tried: u64| visible(true, &format!("shrink: {} steps fail after {tried} candidates: {h:?}", h.len()));
+    let shrunk = shrink(steps, SHRINK_CANDIDATES, fails, simpler, found);
+    let cut = if shrunk.candidates >= SHRINK_CANDIDATES { " (budget spent: SHRINK_CANDIDATES)" } else { "" };
+    eprintln!("shrunk from {n} to {} steps in {} candidates{cut}; the shrunk run:", shrunk.steps.len(), shrunk.candidates);
+    replay(&shrunk.steps, true);
     resume_unwind(first)
 }

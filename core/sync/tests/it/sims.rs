@@ -36,7 +36,7 @@ fn sim(name: &str, body: impl Fn(u64) -> Vec<Step> + Sync, outcome: impl Fn(&mut
     seeds.run(name, |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {
         let steps: Vec<Step> = start().into_iter().chain(body(seed)).chain(end()).collect();
         let mut w = world(seed, 3);
-        w.cap = 200_000;
+        w.cap = crate::harness::STORM_CAP;
         let _script = play(&mut w, &steps, format!("sims::{name} (seed {seed})"));
         check(&mut w);
         outcome(&mut w);
@@ -107,7 +107,7 @@ fn a_reader_through_a_node_keeping_it_unread() {
     seeds.run("a_reader_through_a_node_keeping_it_unread", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {
         let steps: Vec<Step> = [start(), vec![PowerOff(1)], writes(1), vec![Write(0, 0), Run, Write(0, 0), Run, PowerOff(0), PowerOn(1), Run]].concat();
         let mut w = world(seed, 3);
-        w.cap = 200_000;
+        w.cap = crate::harness::STORM_CAP;
         let _script = play(&mut w, &steps, format!("sims::a_reader_through_a_node_keeping_it_unread (seed {seed})"));
         let mut r = reference(&mut w);
         reads_as(&mut w, &mut r, 0, 1);

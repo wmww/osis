@@ -408,11 +408,41 @@ pub fn reads_as(w: &mut World, r: &mut Peer, k: usize, i: usize) {
     assert_eq!(got, want, "node {i} reads thing {k} unlike the reference");
 }
 
-/// The checks at quiet (`check_readers`, `check_others`).
+/// The checks at quiet (`check_readers`, `check_others`); a failing one first prints what each
+/// node reads against the reference (`at_check`).
 pub fn check(w: &mut World) {
+    use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
     let mut r = reference(w);
-    reader_clauses(w, &mut r);
-    other_clauses(w, &mut r);
+    let checked = catch_unwind(AssertUnwindSafe(|| {
+        reader_clauses(w, &mut r);
+        other_clauses(w, &mut r);
+    }));
+    if let Err(e) = checked {
+        if !osis_base::testenv::quiet() {
+            eprintln!("{}", at_check(w, &mut r));
+        }
+        resume_unwind(e)
+    }
+}
+
+/// Per thing, the value and roster size the reference and each online node read; per node, how
+/// many of the commits handed to the reference it lacks.
+fn at_check(w: &mut World, r: &mut Peer) -> String {
+    let brief = |x: &Reads| format!("{} ({} roles)", x.value.as_ref().map_or("none".to_string(), |v| format!("{v:?}")), x.roles.len());
+    let mut out = String::from("at the check:");
+    let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
+    for (k, (t, maker)) in w.history.things.clone().iter().enumerate() {
+        out.push_str(&format!("\n  thing {k} (made by node {maker}): reference {}", brief(&reads(&mut r.engine, t))));
+        for &i in &on {
+            out.push_str(&format!("; node {i} {}", brief(&reads(w.engine(i), t))));
+        }
+    }
+    let handed = w.history.handed_ids.clone();
+    for &i in &on {
+        let held: BTreeSet<CommitId> = w.engine(i).commit_ids().into_iter().collect();
+        out.push_str(&format!("\n  node {i} lacks {} of {} handed commits", handed.difference(&held).count(), handed.len()));
+    }
+    out
 }
 
 /// `check`'s reader clauses: every node that reads a thing per the reference reads as the

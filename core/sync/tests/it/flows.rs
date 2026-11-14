@@ -128,7 +128,7 @@ fn a_grant_again_after_a_removal_reaches_the_grantee_spec_sync_inbox_2() {
     use crate::harness::Step::*;
     use crate::harness::history::Gives;
     let mut w = crate::harness::history::world(15, 3);
-    w.cap = 200_000;
+    w.cap = crate::harness::STORM_CAP;
     let _ = crate::harness::play(&mut w, &[New(2), Grant(2, 0, 1, Gives::Reads), Remove(2, 0, 1), Grant(2, 0, 1, Gives::Reads), Run], String::new());
     crate::harness::history::check(&mut w);
 }
@@ -141,7 +141,7 @@ fn a_reader_granted_again_opens_by_its_role_spec_sync_opens_3() {
     use crate::harness::Step::*;
     use crate::harness::history::Gives;
     let mut w = crate::harness::history::world(15, 3);
-    w.cap = 200_000;
+    w.cap = crate::harness::STORM_CAP;
     let _ = crate::harness::play(&mut w, &[New(2), Grant(2, 0, 1, Gives::Reads), Run, Remove(2, 0, 1), Run, Write(2, 0), Grant(2, 0, 1, Gives::Reads), Run], String::new());
     crate::harness::history::check(&mut w);
 }
@@ -327,7 +327,7 @@ fn a_removed_writers_last_write_reads_alike_at_every_holder_spec_sync_judgement_
     let steps = [New(1), New(0), Write(0, 1), Grant(0, 1, 1, Gives::Writes), Write(0, 1), Grant(0, 1, 2, Gives::Writes), Run, Write(1, 1), Remove(0, 1, 1)];
     crate::convergence::converge(347110580059, 3, &steps, String::new());
     let mut w = crate::harness::history::world(347110580059, 3);
-    w.cap = 200_000;
+    w.cap = crate::harness::STORM_CAP;
     let _script = crate::harness::play(&mut w, &steps, String::new());
     for s in [Lossy(crate::harness::Loss::NONE), Heal, PowerOn(0), PowerOn(1), PowerOn(2), Run] {
         crate::harness::step(&mut w, &s);
@@ -513,7 +513,7 @@ fn a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, check, world};
     let mut w = world(0, 4);
-    w.cap = 200_000;
+    w.cap = crate::harness::STORM_CAP;
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 3, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
     let a1 = w.node(1).account.unwrap();

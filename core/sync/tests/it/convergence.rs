@@ -26,10 +26,19 @@ pub(crate) fn sized(small: u64, full: u64) -> std::ops::Range<u64> {
 /// be identical: a history is a function of its seed (notes/sync-test-harness.md), so a failure
 /// replays and shrinks.
 pub(crate) fn converge(seed: u64, n: usize, steps: &[Step], replay: String) {
-    let played = |replay: String| {
+    converge_as(seed, n, steps, replay, true);
+}
+
+/// `converge`, the history played once when not `twice` (a shrink's candidates: determinism is
+/// checked on the run shrunk and on the shrunk run).
+fn converge_as(seed: u64, n: usize, steps: &[Step], replay: String, twice: bool) {
+    let played = |replay: String, again: bool| {
         let mut w = world(seed, n);
-        w.cap = 200_000;
-        w.trace = true;
+        if again {
+            w.untrace();
+        }
+        w.cap = crate::harness::STORM_CAP;
+        w.trace = twice;
         w.parks = true;
         let script = play(&mut w, steps, replay);
         let end: Vec<Step> = [Step::Lossy(crate::harness::Loss::NONE), Step::Heal].into_iter().chain((0..n).map(Step::PowerOn)).chain([Step::Run]).collect();
@@ -38,19 +47,20 @@ pub(crate) fn converge(seed: u64, n: usize, steps: &[Step], replay: String) {
         }
         (w, script)
     };
-    let (mut w, _script) = played(replay.clone());
-    let (again, _) = played(replay);
-    if let Some(i) = (0..w.seen.len().max(again.seen.len())).find(|&i| w.seen.get(i) != again.seen.get(i)) {
-        panic!("not deterministic: replay differs at delivery {i} of {}: {:?} then {:?}", w.seen.len(), w.seen.get(i), again.seen.get(i));
+    let (mut w, _script) = played(replay.clone(), false);
+    if twice {
+        let (again, _) = played(replay, true);
+        if let Some(i) = (0..w.seen.len().max(again.seen.len())).find(|&i| w.seen.get(i) != again.seen.get(i)) {
+            panic!("not deterministic: replay differs at delivery {i} of {}: {:?} then {:?}", w.seen.len(), w.seen.get(i), again.seen.get(i));
+        }
     }
-    drop(again);
     check(&mut w);
 }
 
 fn converges(seed: u64, n: usize, len: usize, faults: bool) {
     let h = history(seed, n, len, faults);
     let replay = |s: u64| format!("convergence::converge({s}, {n}, &script, String::new())");
-    shrinking(|| converge(seed, n, &h, replay(seed)), |steps| converge(seed, n, steps, replay(seed)));
+    shrinking(|| converge(seed, n, &h, replay(seed)), |steps, twice| converge_as(seed, n, steps, replay(seed), twice));
 }
 
 // spec: none (property: spec/requirements.md Convergence; spec/sync.md §4 area 4): one node
@@ -110,7 +120,7 @@ fn clean_histories_converge() {
 /// delivery without sync, so the oracle is checked on its own.
 fn handed(seed: u64, n: usize, steps: &[Step]) -> World {
     let mut w = world(seed, n);
-    w.cap = 200_000;
+    w.cap = crate::harness::STORM_CAP;
     for s in steps {
         crate::harness::step(&mut w, s);
         hand_all(&mut w);
@@ -153,7 +163,7 @@ fn the_oracle_catches_planted_faults() {
         }
     };
     let mut pre = world(0, NODES);
-    pre.cap = 200_000;
+    pre.cap = crate::harness::STORM_CAP;
     to1(&mut pre, &[New(0), Grant(0, 0, 1, Gives::Reads), Grant(0, 0, 2, Gives::Syncs), Write(0, 0)]);
     let mut base = pre.copy();
     to1(&mut base, &[Remove(0, 0, 1)]);

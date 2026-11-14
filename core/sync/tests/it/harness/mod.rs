@@ -17,6 +17,7 @@ pub mod history;
 pub mod lies;
 pub mod reach;
 pub mod scripted;
+pub mod trace;
 
 use lies::{Lie, Liar};
 use osis_base::testenv::Script;
@@ -35,6 +36,12 @@ use std::sync::atomic::{AtomicI64, Ordering};
 /// Deliveries one world may make before it panics as a storm, unless a test sets its own
 /// (`World::cap`). The rule-test layer's cap (notes/sync-test-harness.md, Enforcement).
 pub const RULE_CAP: u64 = 2_000;
+
+/// Deliveries a differential history, simulation or flow world may make before it panics as a
+/// storm: about 5x the most any default seed makes (5,800; median 740). At 0 every history
+/// storms; at infinity a livelock runs until the seed timeout (600 CPU-s) instead of failing in
+/// seconds.
+pub const STORM_CAP: u64 = 30_000;
 
 /// Settle rounds one step may take before the world panics: a settle loop that never ends is
 /// two modules undoing each other's acts. A round runs again only for an act a module reads, so
@@ -438,6 +445,8 @@ pub struct World {
     pub history: history::Made,
     /// The fixture this world is a copy of, live in this test.
     fixture: Option<String>,
+    /// The per-node trace (`OSIS_SYNC_TRACE`, `trace`); none when off.
+    tracer: Option<Box<trace::Tracer>>,
 }
 
 thread_local! {
@@ -475,6 +484,7 @@ impl World {
             crashes: 0,
             history: history::Made::default(),
             fixture: None,
+            tracer: trace::Tracer::from_env().map(Box::new),
         }
     }
 
@@ -646,6 +656,10 @@ impl World {
     /// Steps node `i` with `input` and carries out every output: the one place a node is stepped.
     pub fn deliver(&mut self, i: usize, input: Input) {
         self.deliveries += 1;
+        MOST.set(MOST.get().max(self.deliveries));
+        if CANDIDATE_CAP.get().is_some_and(|c| self.deliveries > c && c < self.cap) {
+            std::panic::panic_any(Capped);
+        }
         if self.deliveries > self.cap {
             let flowing: Vec<Seen> = self.net.queue.iter().take(8).map(|(n, x)| Seen::of(*n, x)).collect();
             panic!("storm: past {} deliveries; still flowing (first 8 of {}): {flowing:?}; wakes {:?}", self.cap, self.net.queue.len(), self.net.wakes);
@@ -653,6 +667,14 @@ impl World {
         let seen = Seen::of(i, &input);
         if self.trace {
             self.seen.push(seen.clone());
+        }
+        let traced = self.tracer.as_ref().is_some_and(|t| t.traces(i));
+        if traced && let Some(t) = self.tracer.as_mut() {
+            let conn = match &input {
+                Input::Up { conn, .. } | Input::Bytes { conn, .. } => Some(*conn),
+                _ => None,
+            };
+            t.received(i, &input, conn.and_then(|c| self.net.links.get(&(i, c))).map(|x| x.0));
         }
         if let Some(l) = self.liars.get_mut(&i) {
             match &input {
@@ -679,12 +701,43 @@ impl World {
         if let Some(l) = self.liars.get_mut(&i) {
             out = l.rewrite(out);
         }
+        if traced && let Some(t) = self.tracer.as_mut() {
+            let links = &self.net.links;
+            t.sent(i, &out, |c| links.get(&(i, c)).map(|x| x.0));
+        }
         apply(out, &mut NodeLinks { net: &mut self.net, node: i });
         self.crashed(i);
         if self.parks {
             let lost = self.nodes.get_mut(i).expect("no such node").node.lost_parks().expect("a full scan");
             assert!(lost.is_empty(), "node {i}: entries waiting for a read secret, not parked: {lost:?} ({seen:?})");
         }
+        if traced {
+            self.traced(i);
+        }
+    }
+
+    /// Stops this world's trace (`OSIS_SYNC_TRACE`): a replay that would print it again.
+    pub fn untrace(&mut self) {
+        self.tracer = None;
+    }
+
+    /// The trace of node `i`'s step: what it holds now against before, then the step's lines.
+    fn traced(&mut self, i: usize) {
+        let Some(mut t) = self.tracer.take() else { return };
+        let store = self.store(i);
+        let entries = store.held_ids().unwrap_or_default().into_iter().flat_map(|s| store.entries(&s).unwrap_or_default().into_iter().map(move |e| (s, e.blob))).collect();
+        let commits = self.engine(i).commit_ids().into_iter().collect();
+        t.applied(i, entries, commits);
+        let mut things = Vec::new();
+        for k in t.things() {
+            let Some((tid, maker)) = self.history.things.get(k).copied() else { continue };
+            things.push(tid.to_string());
+            for s in self.engine(maker).sync_ids(&tid).map(|v| v.iter().map(|o| trace::short(&o.id)).collect::<Vec<_>>()).unwrap_or_default() {
+                things.push(s);
+            }
+        }
+        t.flush(self.deliveries, self.now().0.saturating_sub(START.0), &things);
+        self.tracer = Some(t);
     }
 
     /// Whether node `i`'s device crashed (`DiskFault::Crash`); if so the node lost power at that
@@ -843,6 +896,9 @@ impl World {
     /// (`MemoryBackend::power_cut`; a crashed device powers up again), and is stepped again at
     /// `power_on`.
     pub fn power_off(&mut self, i: usize) {
+        if let Some(t) = self.tracer.as_mut().filter(|t| t.traces(i)) {
+            t.restarted(i);
+        }
         self.net.cut(i, false);
         self.net.wakes.remove(&i);
         self.net.queue.retain(|(n, _)| *n != i);
@@ -908,6 +964,7 @@ impl World {
             crashes: 0,
             history: self.history.clone(),
             fixture: None,
+            tracer: self.tracer.clone(),
         }
     }
 }
@@ -1068,7 +1125,10 @@ fn step_of(w: &mut World, s: &Step) -> String {
 /// check prints it too.
 pub fn play(w: &mut World, steps: &[Step], replay: String) -> Script<Step> {
     let mut script = Script::new("crate::harness::script", SHRINK_VAR, replay);
-    for s in steps {
+    for (k, s) in steps.iter().enumerate() {
+        if w.tracer.is_some() && !osis_base::testenv::quiet() {
+            eprintln!("step {k}: {s:?}");
+        }
         script.push(s.clone(), String::new());
         let note = step(w, s);
         if !note.is_empty() {
@@ -1078,8 +1138,53 @@ pub fn play(w: &mut World, steps: &[Step], replay: String) -> Script<Step> {
     script
 }
 
+/// A shrink candidate (`shrinking`) that makes more than this many times the deliveries of the
+/// run it shrinks counts as not failing: a storm the shrink made, not the failure (a failing run
+/// that storms meets its world's own cap first). At 1 a candidate that only delivers in another
+/// order may be cut; at infinity a livelocked candidate runs to its world's cap (`STORM_CAP`,
+/// several histories' worth).
+pub const SHRINK_STORM: u64 = 3;
+
+thread_local! {
+    /// The most deliveries any world on this thread has made (`shrinking` measures the run it
+    /// shrinks by it).
+    static MOST: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The delivery cap of the shrink candidate this thread plays (`capped`).
+    static CANDIDATE_CAP: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// The panic of a world past its candidate cap (`capped`).
+struct Capped;
+
+/// `f` with every world on this thread capped at `cap` deliveries: `None` when one went past
+/// it (its world's own cap, when lower, panics as a storm as ever).
+pub fn capped<T>(cap: u64, f: impl FnOnce() -> T) -> Option<T> {
+    use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+    let prev = CANDIDATE_CAP.replace(Some(cap));
+    let r = catch_unwind(AssertUnwindSafe(f));
+    CANDIDATE_CAP.set(prev);
+    match r {
+        Ok(t) => Some(t),
+        Err(e) if e.is::<Capped>() => None,
+        Err(e) => resume_unwind(e),
+    }
+}
+
 /// Runs `run` (which plays a script with `play`); with `OSIS_SYNC_SHRINK` set, a failure is
-/// shrunk by `replay` (`osis_base::testenv::shrinking`).
-pub fn shrinking(run: impl FnOnce(), replay: impl Fn(&[Step])) {
-    osis_base::testenv::shrinking(SHRINK_VAR, run, replay, Step::simpler);
+/// shrunk (`osis_base::testenv::shrinking`): each candidate played once by `replay(steps,
+/// false)` under a delivery cap of `SHRINK_STORM` times the most any world of `run` made
+/// (`capped`; past it the candidate does not fail), the shrunk run by `replay(steps, true)`.
+pub fn shrinking(run: impl FnOnce(), replay: impl Fn(&[Step], bool)) {
+    MOST.set(0);
+    let base = std::cell::Cell::new(None);
+    let candidate = |steps: &[Step], last: bool| {
+        if last {
+            return replay(steps, true);
+        }
+        // the run shrunk is measured before its first candidate plays
+        let most = base.get().unwrap_or_else(|| MOST.get());
+        base.set(Some(most));
+        let _ = capped(most.saturating_mul(SHRINK_STORM).max(1), || replay(steps, false));
+    };
+    osis_base::testenv::shrinking(SHRINK_VAR, run, candidate, Step::simpler);
 }
