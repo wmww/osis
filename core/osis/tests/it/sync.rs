@@ -603,3 +603,32 @@ fn repro_an_outsider_reads_the_accounts_writes_across_a_node_removal_spec_permis
     }
     assert_eq!(name(&o, g).as_deref(), Some("after"), "the write after the removal read");
 }
+
+// spec/permissions.md §7 (removed node's links): a removed node keeps the seeds of the account's
+// links, so `remove_node` lists the links still working, one made on the removed node included;
+// none for a node not of this account.
+#[test]
+fn removing_a_node_lists_the_accounts_links_spec_permissions_7() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (a, b) = paired(&net, &c);
+    let mut w = a.write();
+    let g = w.create().unwrap();
+    w.group(a.home()).add(osis::Member::Subgroup(g)).unwrap();
+    w.commit().unwrap();
+    for _ in 0..3 {
+        net.run();
+    }
+    a.make_link(g, Role::Read, LinkOpts::default()).unwrap();
+    b.make_link(g, Role::Write, LinkOpts::default()).unwrap();
+    for _ in 0..3 {
+        net.run();
+    }
+    assert_eq!(a.links().unwrap().len(), 2, "every node lists the account's links");
+    let stranger = on(&net, 33, &c);
+    assert!(a.remove_node(stranger.node(), osis::SetRoleOpts::default()).unwrap().is_empty(), "no node of this account");
+    let open = a.remove_node(b.node(), osis::SetRoleOpts::default()).unwrap();
+    let mut roles: Vec<Role> = open.iter().filter(|l| l.target == g).map(|l| l.role).collect();
+    roles.sort();
+    assert_eq!(roles, vec![Role::Read, Role::Write], "both links still work: {open:?}");
+}

@@ -250,3 +250,20 @@ fn a_link_redeemed_after_inbox_lifetime_joins_spec_sync_inbox_5() {
     let a1 = w.node(1).account.unwrap();
     assert!(w.engine(0).roster(&link.k).contains_key(&a1), "the join held at the sharer");
 }
+
+// spec/permissions.md §7 (joiner's leave): a node of the joining account writes its leave of K
+// once it holds K's edge on the link's target removed: node 0 takes K off its profile; node 1's
+// account leaves K, at node 1 and at node 0.
+#[test]
+#[ignore = "issues/joiner-leave-never-written.md"]
+fn repro_a_joiner_leaves_k_once_k_left_the_target_spec_permissions_7() {
+    let (mut w, link) = redeemed();
+    let a1 = w.node(1).account.unwrap();
+    assert!(w.engine(1).roster(&link.k).contains_key(&a1), "joined");
+    w.write(0, |e| e.demote(&link.target, &osis_engine::flows::Demotion { holder: link.k, new: None, retain: None })).unwrap();
+    w.run();
+    assert!(!w.engine(1).roster(&link.target).contains_key(&link.k), "K off the target at node 1");
+    for i in 0..2 {
+        assert!(!w.engine(i).roster(&link.k).contains_key(&a1), "node {i}: node 1's account still holds K");
+    }
+}
