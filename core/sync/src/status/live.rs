@@ -132,8 +132,13 @@ impl Ground for Live<'_, '_> {
     fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
         Ok(self.cx.engine.passes_wanted()?)
     }
-    fn leave_passes(&mut self) -> Arc<BTreeMap<SyncId, u64>> {
-        Arc::new(self.leave.passes_wanted())
+    fn module_passes(&mut self) -> Arc<BTreeMap<SyncId, u64>> {
+        let mut out = self.leave.passes_wanted();
+        for (s, w) in self.read.passes_wanted() {
+            let x = out.entry(s).or_default();
+            *x = (*x).max(w);
+        }
+        Arc::new(out)
     }
     fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<osis_engine::sync::Stranding>>> {
         Ok(self.cx.engine.stranded(s)?.map(Arc::new))

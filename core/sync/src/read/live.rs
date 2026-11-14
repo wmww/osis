@@ -30,7 +30,13 @@ pub struct Feeds {
     views: Option<Feed<super::views::Row>>,
     freed: Option<Feed<(BlobId, Tid)>>,
     lists: Option<Feed<(Tid, CommitId)>>,
+    /// The own store's entries, the blobs coming to name a commit and the commits coming to be
+    /// held (`entries_added`).
+    entries: Option<EntryFeeds>,
 }
+
+/// `Feeds::entries`: the store's entries, blobs opened or sealed, commits held.
+type EntryFeeds = (Feed<(SyncId, BlobId)>, Feed<BlobId>, Feed<CommitId>);
 
 pub struct Live<'a, 'b> {
     pub cx: &'a mut Cx<'b>,
@@ -65,6 +71,26 @@ fn own_entry(cx: &mut Cx, s: &SyncId, blob: BlobId, wrap: crate::types::Wrap, cl
 }
 
 impl Live<'_, '_> {
+    /// Of `at`, the read sync IDs whose own store holds an entry of blob `b` (all of them when
+    /// `None`), each with `b`'s commit where this node holds it (`entries_added`).
+    fn entries_of(&mut self, b: &BlobId, at: Option<SyncId>, out: &mut Vec<(SyncId, CommitId)>) -> Result<()> {
+        let Some(c) = self.cx.engine.blob_commit(b)? else { return Ok(()) };
+        if !self.cx.engine.holds_commit(&c) {
+            return Ok(());
+        }
+        let ids = match at {
+            Some(s) if self.cx.store.entry(&s, b)?.is_some() => vec![s],
+            Some(_) => Vec::new(),
+            None => self.cx.store.naming(b)?,
+        };
+        for s in ids {
+            if self.cx.store.holding(&s) == Some(osis_engine::sync::Holding::Read) {
+                out.push((s, c));
+            }
+        }
+        Ok(())
+    }
+
     fn thing(&mut self, s: &SyncId) -> Result<Option<osis_base::Tid>> {
         Ok(self.cx.store.synced(s).map(|(t, _)| t))
     }
@@ -132,6 +158,42 @@ impl Ground for Live<'_, '_> {
                 Ok(self.cx.engine.commit_ids())
             }
         }
+    }
+    fn place(&mut self) -> u64 {
+        self.cx.engine.pass_place()
+    }
+    fn passed(&mut self, s: &SyncId, since: u64) -> Result<bool> {
+        Ok(self.status.passed_since(s, since))
+    }
+    fn unlog(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        self.cx.store.unlog_entry(s, b)?;
+        Ok(())
+    }
+    fn entries_added(&mut self) -> Result<Vec<(SyncId, CommitId)>> {
+        let mut out = Vec::new();
+        let Some((entries, blobs, commits)) = self.feeds.entries.as_mut() else {
+            // a start: every entry of every held commit
+            self.feeds.entries = Some((self.cx.store.entry_feed(), self.cx.engine.blob_feed(), self.cx.engine.commit_feed()));
+            for c in self.cx.engine.commit_ids() {
+                for b in self.cx.engine.commit_blobs(&c)?.iter() {
+                    self.entries_of(b, None, &mut out)?;
+                }
+            }
+            return Ok(out);
+        };
+        let (entries, blobs, commits) = (entries.added(), blobs.added(), commits.added());
+        for (s, b) in entries {
+            self.entries_of(&b, Some(s), &mut out)?;
+        }
+        for b in blobs {
+            self.entries_of(&b, None, &mut out)?;
+        }
+        for c in commits {
+            for b in self.cx.engine.commit_blobs(&c)?.iter() {
+                self.entries_of(b, None, &mut out)?;
+            }
+        }
+        Ok(out)
     }
     fn bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
         Ok(self.cx.engine.sync_bodies(c)?)

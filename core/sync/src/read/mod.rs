@@ -111,6 +111,13 @@ pub struct Read {
     roles: Stamped<SyncId, BTreeSet<CommitId>>,
     /// S told destroyed, and its destroying requests (kept until their expiry).
     told: Stamped<SyncId, Arc<BTreeSet<CommitId>>>,
+    /// Per (S, commit), the pass place an entry of it last came into the own store of S; per
+    /// commit, the pass place what its bodies read last moved; per S, the newest place a
+    /// judgement outside S's required set waits a complete pass after (`judge::outside`, status
+    /// runs it: `passes_wanted`).
+    arrived: Stamped<(SyncId, CommitId), u64>,
+    moved: Stamped<CommitId, u64>,
+    waits: Stamped<SyncId, u64>,
     /// The engine's commits held, followed from the first settle (`Live`).
     commits: Option<osis_base::memo::Feed<CommitId>>,
     /// The sources of each S, as opens moved them.
@@ -139,6 +146,9 @@ impl Default for Read {
             verdicts: Stamped::default(),
             roles: Stamped::default(),
             told: Stamped::default(),
+            arrived: Stamped::default(),
+            moved: Stamped::default(),
+            waits: Stamped::default(),
             commits: None,
             views: views::Views::default(),
             feeds: live::Feeds::default(),
@@ -199,7 +209,19 @@ impl Read {
         for c in added {
             self.bodies.want(c);
         }
+        let place = g.place();
+        // a wait a complete pass ended is over (the judgements waiting read the pass themselves)
+        let waits: Vec<(SyncId, u64)> = self.waits.iter().map(|(s, w)| (*s, *w)).collect();
+        for (s, w) in waits {
+            if g.passed(&s, w)? {
+                self.waits.remove(&s);
+            }
+        }
         for c in self.bodies.due() {
+            // what it read moved: a judgement outside S waits a pass begun after now
+            if self.moved.get(&c) != Some(&place) {
+                self.moved.insert(c, place);
+            }
             let Some((_, now)) = self.bodies.try_settle(&c, || g.bodies(&c))? else { continue };
             let was = self.settled.insert(c, now.clone()).unwrap_or_default();
             for s in was.keys().filter(|s| !now.contains_key(*s)) {
@@ -227,10 +249,18 @@ impl Read {
             }
             // a sync ID no longer carrying it stays followed until nothing of it is left there
         }
+        // every entry held under S is judged under S, a body there or not (spec/sync-judgement.md
+        // §2: one of a commit S carries no body of is outside the required set)
+        for k in g.entries_added()? {
+            if self.arrived.get(&k) != Some(&place) {
+                self.arrived.insert(k, place);
+            }
+            self.judged.want(k);
+        }
         let mut acted = false;
         for s in self.dooms.due() {
             let told_before = self.told.contains_key(&s);
-            let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas, mints: &self.mints };
+            let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas, mints: &self.mints, arrived: &self.arrived, moved: &self.moved };
             let Some((was, (doom, acts))) = self.dooms.try_settle(&s, || judge::doom(g, &mine, told_before, &s))? else { continue };
             let before = was.map(|(_, a)| a).unwrap_or_default();
             acted = true;
@@ -326,7 +356,7 @@ impl Read {
             }
             for k in due {
                 let (s, c) = k;
-                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas, mints: &self.mints };
+                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas, mints: &self.mints, arrived: &self.arrived, moved: &self.moved };
                 let Some((was, now)) = self.judged.try_settle(&k, || judge::body(g, &mine, &s, &c))? else { continue };
                 if self.verdicts.get(&k) != Some(&now.verdict) {
                     self.verdicts.insert(k, now.verdict.clone());
@@ -338,9 +368,15 @@ impl Read {
                     }
                 }
                 self.set_role(&s, &c, now.role && !now.idle);
+                if let Some(w) = now.wait
+                    && self.waits.get(&s).is_none_or(|x| *x < w)
+                {
+                    self.waits.insert(s, w);
+                }
                 if now.idle {
                     self.judged.unwant(&k);
                     self.verdicts.remove(&k);
+                    self.arrived.remove(&k);
                 }
                 let links = |j: &Judged| (j.roots.to_vec(), j.repairs);
                 let (old, new) = (was.as_ref().map(links).unwrap_or_default(), links(&now));
@@ -400,7 +436,7 @@ impl Read {
             }
             for k in due {
                 let (s, c, at) = k;
-                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas, mints: &self.mints };
+                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas, mints: &self.mints, arrived: &self.arrived, moved: &self.moved };
                 let Some((was, now)) = self.toward.try_settle(&k, || judge::toward(g, &mine, &s, &c, &at))? else { continue };
                 if now.idle {
                     self.toward.unwant(&k);
@@ -477,6 +513,12 @@ impl Read {
         let _ = (cx, sessions, conn, m);
     }
 
+    /// Per S, the pass place a complete pass must begin after for a judgement outside S's
+    /// required set to be final (`judge::outside`): status runs it. A stamped read, whole.
+    pub fn passes_wanted(&self) -> BTreeMap<SyncId, u64> {
+        self.waits.iter().map(|(s, w)| (*s, *w)).collect()
+    }
+
     /// For status and inbox (stamped read).
     pub fn verdict(&self, s: &SyncId, c: &CommitId) -> Option<Verdict> {
         self.verdicts.get(&(*s, *c)).cloned()
@@ -532,6 +574,7 @@ impl Read {
             }
             (Act::Restamp(b), _) => g.restamp(s, &b)?,
             (Act::DropOwn(b), Some(c)) => g.drop_own(s, &b, c)?,
+            (Act::Unlog(b), _) => g.unlog(s, &b)?,
             (Act::Lift(b), _) => g.lift(s, &b)?,
             (Act::Take(b), _) => g.take(s, &b)?,
             (Act::Fetch { at, conn, blob }, _) => {

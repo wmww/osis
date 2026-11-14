@@ -425,7 +425,10 @@ fn no_request_ends_a_standing_in_minting_alone_spec_commits_5() {
 // expiring no earlier): t (u's first admin, outside D) minted at node 1, durable; node 2 mints it
 // again expiring at E, purgeable by nobody; node 1 purges t, which drops its own minting alone, so the expiring
 // one is the witness. The durable copy stays under D (the expiring one could end it first, were
-// the purge to fall or not reach a node): node 0, joining D later, holds both.
+// the purge to fall or not reach a node): node 0, joining D later, holds both. Node 1, the remint
+// not yet held, destroys t and logs the request under D; node 2, where t never died, pulls it:
+// outside D's required set there (spec/sync-judgement.md §2), it leaves every store of D once t
+// lives at node 1, and node 0 never holds it.
 #[test]
 fn a_remint_expiring_earlier_keeps_the_lower_copy_spec_commits_5() {
     let mut w = crate::harness::siblings();
@@ -434,13 +437,17 @@ fn a_remint_expiring_earlier_keeps_the_lower_copy_spec_commits_5() {
     let (t, first, s) = admin_outside(&mut w, 1, None);
     let again = mint_again(&mut w, 2, t, osis_schema::PurgeBy::Nobody, Some(end));
     w.run();
-    purge_thing(&mut w, 1, t);
+    let q = purge_thing(&mut w, 1, t);
     w.run();
     for i in [1, 2] {
         assert_eq!(w.engine(i).witness(&t).map(|m| m.commit), Some(again), "node {i}: the expiring minting is the witness");
         assert!(holds(&mut w, i, &s, &first), "node {i}: the lower copy kept under D");
+        assert!(!holds(&mut w, i, &s, &q), "node {i}: the request outside D's required set is dropped");
     }
     contact_joins(&mut w);
     assert!(holds(&mut w, 0, &s, &again), "node 0 holds the witness's copy under D");
     assert!(holds(&mut w, 0, &s, &first), "node 0 holds the lower copy under D");
+    for i in 0..3 {
+        assert!(!holds(&mut w, i, &s, &q), "node {i} holds the request under D");
+    }
 }

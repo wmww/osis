@@ -734,6 +734,17 @@ impl Store {
         g.write(|t, env| entries::remove(t, env, s, b, Removal::Tomb(Tombstone { at: now, deleted: false, note })))
     }
 
+    /// Drops entry `b` of S, judged outside S's required set here, with no tombstone: judged so
+    /// wrongly, it is logged or pulled again once required. Whether it was held.
+    pub fn unlog_entry(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
+        let mut g = self.lock();
+        let now = g.now;
+        if g.mem.read(s, b).is_some() {
+            return Ok(g.mem.remove(s, b, now, false, false));
+        }
+        g.write(|t, env| entries::remove(t, env, s, b, Removal::Untombed))
+    }
+
     /// Ends S's tombstone of `b` (spec/sync-judgement.md §4: a part counting missing again lifts
     /// this node's own tombstones). Whether there was one.
     pub fn lift_tombstone(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {

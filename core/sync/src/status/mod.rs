@@ -200,8 +200,10 @@ pub trait Ground: Net {
     /// The report of this node stranded on read S, its walk stopped at `step`
     /// (`Engine::stranding`).
     fn walk_stranding(&mut self, s: &SyncId, step: crate::opens::Stop) -> Result<Option<Arc<Stranding>>>;
-    /// The passes leaving sync IDs want, each after the pass place it left at (crate::leave).
-    fn leave_passes(&mut self) -> Arc<BTreeMap<SyncId, u64>> {
+    /// The passes other modules want, each after a pass place: a leaving sync ID's, after the
+    /// place it left at (crate::leave); read's, after its judgements outside S's required set
+    /// (`Read::passes_wanted`). The newer place where both want one.
+    fn module_passes(&mut self) -> Arc<BTreeMap<SyncId, u64>> {
         Arc::default()
     }
 }
@@ -278,8 +280,8 @@ pub struct Status {
     /// Per S held, the place (`Pass::seq`) of its last complete pass here: what a leaving S
     /// waits on (crate::leave). Goes with S.
     done: Stamped<SyncId, u64>,
-    /// The passes leave wants (`Ground::leave_passes`), whole.
-    left_fx: Effects<(), Arc<BTreeMap<SyncId, u64>>>,
+    /// The passes leave and read want (`Ground::module_passes`), whole.
+    modules_fx: Effects<(), Arc<BTreeMap<SyncId, u64>>>,
     /// S owes another pass once the one under way ends.
     again: BTreeSet<SyncId>,
     /// Sources that left since the last settle: what their streams showed still counts for held
@@ -312,7 +314,7 @@ impl Default for Status {
             stranding_fx: Effects::new("status: stranded"),
             strandings: Stamped::default(),
             done: Stamped::default(),
-            left_fx: Effects::new("status: passes leaving wants"),
+            modules_fx: Effects::new("status: passes modules want"),
             again: BTreeSet::new(),
             leaving: BTreeMap::new(),
             work: Work::default(),
@@ -613,10 +615,10 @@ impl Status {
                 }
             }
         }
-        // a pass of each leaving S begun after it left (crate::leave)
-        self.left_fx.want(());
-        if !self.left_fx.due().is_empty()
-            && let Some(wanted) = whole(&mut self.left_fx, || Ok(g.leave_passes()))?
+        // a pass of each S leave or read wants, begun after its place (crate::leave, read)
+        self.modules_fx.want(());
+        if !self.modules_fx.due().is_empty()
+            && let Some(wanted) = whole(&mut self.modules_fx, || Ok(g.module_passes()))?
         {
             for (s, since) in wanted.iter() {
                 if self.done.get(s).is_some_and(|d| d > since) {
@@ -647,7 +649,12 @@ impl Status {
                 self.passes.remove(&s);
                 self.pass_fx.unwant(&s);
                 self.done.insert(s, p.noted);
-                g.note_complete_pass(&s, p.noted)?;
+                // the engine is told of a pass's end only while it wants one of S: what its end
+                // decides (re-seals, history adds, owed rotations) runs on the engine's causes,
+                // not on a pass only leave or read wanted
+                if g.passes_wanted()?.contains_key(&s) {
+                    g.note_complete_pass(&s, p.noted)?;
+                }
                 acted = true;
                 if self.again.remove(&s) {
                     self.begin(g, s, pulls)?;

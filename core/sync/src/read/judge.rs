@@ -25,6 +25,9 @@ pub(crate) enum Act {
     Restamp(BlobId),
     /// The entry leaves the own log (§3 Own store: must-not-hold, or covered and dropped).
     DropOwn(BlobId),
+    /// The entry leaves the own log with no tombstone: judged outside S's required set
+    /// (`outside`), a judgement the node may make wrongly while what it reads moves.
+    Unlog(BlobId),
     /// The body counts missing again: its own tombstone ends (§4, §3 Dropped bodies).
     Lift(BlobId),
     /// The body counts missing again: an entry of it held here is opened again from the store
@@ -74,11 +77,14 @@ pub(crate) struct Judged {
     /// (`fresh`; spec/sync-ids.md §1).
     pub repairs: bool,
     pub fresh: Arc<BTreeSet<BlobId>>,
+    /// Outside S's required set as judged now, but not past a complete pass of S begun after this
+    /// pass place (`outside`): unjudged until one ends.
+    pub wait: Option<u64>,
 }
 
 impl Default for Judged {
     fn default() -> Self {
-        Judged { verdict: Verdict::Unjudged, role: false, acts: BTreeSet::new(), idle: false, roots: Arc::default(), repairs: false, fresh: Arc::default() }
+        Judged { verdict: Verdict::Unjudged, role: false, acts: BTreeSet::new(), idle: false, roots: Arc::default(), repairs: false, fresh: Arc::default(), wait: None }
     }
 }
 
@@ -121,6 +127,10 @@ pub(crate) struct Mine<'a> {
     /// Per (S, minting, thing) the header-only copy's place among the thing's mintings, as
     /// `Read::mintings` last settled them.
     pub mints: &'a Stamped<(SyncId, CommitId, Tid), Mint>,
+    /// Per (S, commit), the pass place an entry of it last came into the own store of S.
+    pub arrived: &'a Stamped<(SyncId, CommitId), u64>,
+    /// Per commit, the pass place what its bodies read (`Ground::bodies`) last moved.
+    pub moved: &'a Stamped<CommitId, u64>,
 }
 
 /// A header-only copy of a minting under S whose closure lacks its thing, by its standing among
@@ -200,6 +210,18 @@ impl Mine<'_> {
     fn reached(&self, t: u64) -> bool {
         t <= self.clock.until(Some(t))
     }
+}
+
+/// Outside S's required set as this node judges it now (spec/sync-judgement.md §2): final only
+/// past a complete pass of S begun after both an entry of it came and what its bodies read last
+/// moved (§1 Unjudged blobs: what arrives in that pass may still put it inside), else unjudged,
+/// with the place the wait runs from.
+fn outside(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -> Result<(Verdict, Option<u64>)> {
+    let since = mine.arrived.get(&(*s, *c)).copied().unwrap_or(0).max(mine.moved.get(c).copied().unwrap_or(0));
+    Ok(match g.passed(s, since)? {
+        true => (Verdict::MustNot(Why::OutsideRequired), None),
+        false => (Verdict::Unjudged, Some(since)),
+    })
 }
 
 /// spec/sync-judgement.md §2: what the body is at S.
@@ -291,7 +313,11 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     let live: Vec<BlobId> = held.iter().copied().filter(|b| !subsets.contains(b)).collect();
     let (f, verdict) = match mine.meta(s, c) {
         None if !g.closure_settled(s)? => (None, Verdict::Unjudged),
-        None => (None, Verdict::MustNot(Why::OutsideRequired)),
+        None => {
+            let (v, wait) = outside(g, mine, s, c)?;
+            j.wait = wait;
+            (None, v)
+        }
         Some(meta) => {
             let f = g.facts(s, c)?;
             let mut later_held = false;
@@ -303,6 +329,11 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
                 }
             }
             let mut v = classify(mine, &f, s, c, meta, later_held);
+            if v == Verdict::MustNot(Why::OutsideRequired) {
+                let (x, wait) = outside(g, mine, s, c)?;
+                v = x;
+                j.wait = wait;
+            }
             if mine.told.get(s).is_some_and(|req| !req.contains(c)) {
                 v = Verdict::MustNot(Why::Emptied);
             }
@@ -329,7 +360,12 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
             }
         }
     }
-    j.idle = mine.meta(s, c).is_none() && own.is_empty() && !g.present_anywhere(s, c)?;
+    let present = g.present_anywhere(s, c)?;
+    j.idle = mine.meta(s, c).is_none() && own.is_empty() && !present;
+    // a wait matters only where something of it is held here or at a source
+    if live.is_empty() && !present {
+        j.wait = None;
+    }
     j.acts.extend(stale.iter().chain(&subsets).map(|b| Act::DropOwn(*b)));
     if verdict == Verdict::Unjudged {
         return Ok(j);
@@ -339,7 +375,9 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         Some(f) => covered_dropped(&verdict, f, |x| Ok(!g.own(s, x)?.is_empty()))?,
         None => false,
     };
-    if matches!(verdict, Verdict::MustNot(_)) || dropped_here {
+    if verdict == Verdict::MustNot(Why::OutsideRequired) {
+        j.acts.extend(live.iter().map(|b| Act::Unlog(*b)));
+    } else if matches!(verdict, Verdict::MustNot(_)) || dropped_here {
         j.acts.extend(live.iter().map(|b| Act::DropOwn(*b)));
     }
     // a body counting missing is logged once it is held again. Where this node writes S's head,

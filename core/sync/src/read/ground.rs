@@ -86,6 +86,22 @@ pub struct BlobInfo {
 pub trait Ground {
     /// Commits the engine came to hold since the last call (all of them at the first: a start).
     fn commits_added(&mut self) -> Result<Vec<CommitId>>;
+    /// Entries of a read S in the own store whose commit this node holds, since the last call (all
+    /// of them at the first: a start): an entry added or changed, its blob coming to name a
+    /// commit (opened or sealed here), or that commit coming to be held. Each is judged under S
+    /// whether or not S carries a body of it (spec/sync-judgement.md §2: one it carries none of is
+    /// outside the required set). An entry of a commit not held (pending, parked) is not judged:
+    /// unjudged blobs are kept within the pending bounds (§1 Unjudged blobs).
+    fn entries_added(&mut self) -> Result<Vec<(SyncId, CommitId)>>;
+    /// The pass place now (`Engine::pass_place`): a complete pass of S counts for what happened
+    /// here only when begun after it (spec/sync-status.md §1).
+    fn place(&mut self) -> u64;
+    /// A complete pass of S begun after pass place `since` ended (`Status::passed_since`; a
+    /// stamped read).
+    fn passed(&mut self, s: &SyncId, since: u64) -> Result<bool>;
+    /// Entry `b` of S leaves the own store with no tombstone (judged outside S's required set
+    /// here: judged so wrongly, it is logged or pulled again once required).
+    fn unlog(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;
     /// Per sync ID of the sync set, `c`'s body there (`Engine::sync_bodies`).
     fn bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>>;
     fn facts(&mut self, s: &SyncId, c: &CommitId) -> Result<Facts>;

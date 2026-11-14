@@ -978,3 +978,40 @@ fn keep_arriving(as_item: bool) {
     w.run();
     assert!(reads(&mut w, ["x2", "c2"]), "both arrive after X has secrets of its own (Y an item: {as_item})");
 }
+
+// spec/sync-judgement.md §2 (the certificate blobs of spec/permissions.md §4, judged by the deltas
+// a blob holds), spec/permissions.md §4: writers of two accounts each log
+// their own chain certificates under the thing's sync ID as copies; through complete passes
+// neither drops or deletes the other's (no tombstone of one at either node).
+#[test]
+fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2() {
+    let (mut w, t, ak) = granted_and_read(Role::Write);
+    let s = w.engine(0).sync_ids(&t).unwrap()[0].id;
+    w.write(1, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Str("y".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
+    w.run();
+    // every certificate copy either node holds under S, whoever logged it
+    let mut copies = std::collections::BTreeSet::new();
+    for i in 0..2 {
+        let held: Vec<osis_base::BlobId> = w.store(i).entries(&s).unwrap().iter().map(|e| e.blob).collect();
+        copies.extend(held.into_iter().filter(|b| w.engine(i).blob_of(b).unwrap().is_some_and(|x| x.copy)));
+    }
+    let mut authors = std::collections::BTreeSet::new();
+    for b in &copies {
+        let e = w.engine(0);
+        if let Some(h) = e.blob_commit(b).unwrap().and_then(|c| e.header(&c)) {
+            authors.insert(h.author);
+        }
+    }
+    assert!(authors.len() >= 2, "copies of both accounts' chains: {authors:?}");
+    for b in &copies {
+        for j in 0..2 {
+            assert!(w.store(j).tombstone(&s, b).unwrap().is_none(), "node {j} dropped or deleted a certificate copy");
+        }
+    }
+}

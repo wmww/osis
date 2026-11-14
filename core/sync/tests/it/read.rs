@@ -124,6 +124,14 @@ struct Kstore {
 struct Fake {
     now: u64,
     added: Vec<CommitId>,
+    /// Own entries of held commits added (`Ground::entries_added`).
+    entries_feed: Vec<(SyncId, CommitId)>,
+    /// The pass place now, and per S the place the last complete pass began at (none: every
+    /// pass wanted has ended).
+    place: u64,
+    done: Stamped<SyncId, u64>,
+    /// Entries dropped with no tombstone (`Ground::unlog`).
+    unlogged: Vec<(SyncId, BlobId)>,
     bodies: Stamped<CommitId, Arc<BTreeMap<SyncId, BodyMeta>>>,
     facts: Stamped<(SyncId, CommitId), Facts>,
     marks: Stamped<(SyncId, CommitId), u64>,
@@ -288,6 +296,26 @@ impl Ground for Fake {
             self.bodies.remove(c);
         }
         Ok(())
+    }
+    fn place(&mut self) -> u64 {
+        self.place
+    }
+    fn passed(&mut self, s: &SyncId, since: u64) -> Result<bool> {
+        Ok(self.done.get(s).is_none_or(|d| *d > since))
+    }
+    fn unlog(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        self.unlogged.push((*s, *b));
+        let keys: Vec<(SyncId, CommitId)> = self.own.keys().filter(|(x, _)| x == s).copied().collect();
+        for k in keys {
+            if let Some(v) = self.own.get(&k).filter(|v| v.iter().any(|e| e.blob == *b)) {
+                let v: Vec<Entry> = v.iter().filter(|e| e.blob != *b).cloned().collect();
+                self.own.insert(k, v);
+            }
+        }
+        Ok(())
+    }
+    fn entries_added(&mut self) -> Result<Vec<(SyncId, CommitId)>> {
+        Ok(std::mem::take(&mut self.entries_feed))
     }
     fn bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
         Ok(self.bodies.get(c).cloned().unwrap_or_default())
@@ -2310,4 +2338,136 @@ fn a_tombstone_where_the_body_no_longer_goes_keeps_the_commit_spec_commits_5() {
     w.g.known.insert(c, BTreeSet::new());
     w.settle();
     assert_eq!(w.g.forgotten, vec![c]);
+}
+
+impl W {
+    /// Commit `c` held with its body under `ids` alone, and a peer's entry `b` of it pulled into
+    /// the own store of S at pass place `place`.
+    fn pulled(&mut self, c: CommitId, ids: &[SyncId], b: u8, place: u64) {
+        self.g.place = place;
+        self.g.bodies.insert(c, Arc::new(ids.iter().map(|s| (*s, meta())).collect()));
+        self.g.added.push(c);
+        self.g.own.insert((S, c), vec![peer_entry(b)]);
+        self.g.entries_feed.push((S, c));
+        self.settle();
+    }
+
+    /// A complete pass of S begun at pass place `at` ended.
+    fn pass(&mut self, at: u64) {
+        self.g.done.insert(S, at);
+        self.settle();
+    }
+}
+
+// spec/sync-judgement.md §2 (must-not-hold: outside the required set), §1 (Unjudged blobs): a
+// peer's entry pulled under S of a commit S carries no body of here is judged under S all the
+// same, but finally only past a complete pass of S begun after it came (status runs one: read
+// wants it); then it leaves the own store with no tombstone.
+#[test]
+fn a_pulled_entry_outside_the_required_set_leaves_after_a_pass_spec_sync_judgement_2() {
+    let mut w = W::new();
+    w.g.done.insert(S, 0);
+    let c = cid(40);
+    w.pulled(c, &[S2], 40, 5);
+    assert_eq!(w.read.verdict(&S, &c), Some(Verdict::Unjudged), "no pass since it came");
+    assert_eq!(w.read.passes_wanted().get(&S), Some(&5), "a pass of S begun after place 5 is wanted");
+    assert_eq!(w.g.own(&S, &c).unwrap().len(), 1, "kept while it waits");
+    w.pass(5);
+    assert_eq!(w.read.verdict(&S, &c), Some(Verdict::Unjudged), "a pass begun at its place counts not");
+    w.pass(6);
+    assert_eq!(w.read.verdict(&S, &c), None, "judged outside, dropped, no longer followed");
+    assert_eq!(w.g.unlogged, vec![(S, BlobId([40; 32]))], "dropped with no tombstone");
+    assert!(w.g.own_tombstones(&S, &c).unwrap().is_empty());
+    assert!(w.read.passes_wanted().is_empty(), "no pass wanted any more");
+}
+
+// spec/sync-judgement.md §1 (Unjudged blobs: kept while it cannot judge them): while S's closure is
+// not settled an entry is unjudged and wants no pass; settled, it waits a pass after what its
+// bodies read last moved: a move during the wait (its commit coming under S) keeps it.
+#[test]
+fn an_unjudgeable_entry_is_kept_then_judged_spec_sync_judgement_1() {
+    let mut w = W::new();
+    w.g.done.insert(S, 0);
+    w.g.unsettled.insert(S, ());
+    let c = cid(41);
+    w.pulled(c, &[S2], 41, 3);
+    assert_eq!(w.read.verdict(&S, &c), Some(Verdict::Unjudged));
+    assert!(w.read.passes_wanted().is_empty(), "nothing to wait for while it cannot judge");
+    w.g.unsettled.remove(&S);
+    w.settle();
+    assert_eq!(w.read.passes_wanted().get(&S), Some(&3));
+    // what its bodies read moves at place 7 and S carries it: must-hold, never dropped
+    w.g.place = 7;
+    w.g.bodies.insert(c, Arc::new([(S, meta()), (S2, meta())].into()));
+    w.settle();
+    w.pass(8);
+    assert_eq!(w.read.verdict(&S, &c), Some(Verdict::Must));
+    assert!(w.g.unlogged.is_empty(), "never dropped");
+    assert_eq!(w.g.own(&S, &c).unwrap().len(), 1);
+}
+
+// spec/sync-judgement.md §2, §3 (Own store): judged outside S wrongly (its bodies' inputs had
+// settled and a pass ended, then a later arrival puts it under S), the entry left untombed, so
+// the node logs the body again under S once S carries it (convergence::histories_converge seed 7:
+// ten such pairs before the wait and the untombed drop).
+#[test]
+fn an_entry_judged_outside_then_listed_is_held_again_spec_sync_judgement_2() {
+    let mut w = W::new();
+    w.g.done.insert(S, 0);
+    let c = cid(42);
+    w.pulled(c, &[S2], 42, 2);
+    w.pass(3);
+    assert!(w.g.own(&S, &c).unwrap().is_empty(), "dropped as outside");
+    w.g.place = 4;
+    w.g.bodies.insert(c, Arc::new([(S, meta()), (S2, meta())].into()));
+    w.settle();
+    assert_eq!(w.read.verdict(&S, &c), Some(Verdict::Must));
+    assert!(w.g.logged.iter().any(|(s, x, _)| *s == S && *x == c), "logged again under S");
+}
+
+// spec/sync-judgement.md §2: one pulled entry outside S costs the same judgements whatever else is
+// held (n and 10n bodies under S).
+#[test]
+fn a_pulled_entry_outside_s_costs_the_same_at_n_and_10n_spec_sync_judgement_2() {
+    let mut costs = Vec::new();
+    for n in [20u8, 200] {
+        let mut w = W::new();
+        w.g.done.insert(S, 0);
+        for i in 0..n {
+            let c = CommitId([i, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            w.g.bodies.insert(c, Arc::new([(S, meta())].into()));
+            w.g.added.push(c);
+        }
+        w.exchange();
+        osis_base::costs::take();
+        w.pulled(cid(250), &[S2], 250, 9);
+        w.pass(10);
+        let judged: u64 = osis_base::costs::take().iter().filter(|(k, _, _)| *k == "read: judged").map(|(_, _, n)| n).sum();
+        assert!(w.g.unlogged.iter().any(|(_, b)| *b == BlobId([250; 32])));
+        costs.push(judged);
+    }
+    assert_eq!(costs[0], costs[1], "judgements per pulled entry grow with the bodies held");
+    assert!(costs[0] <= 10, "{costs:?}");
+}
+
+// spec/sync-judgement.md §2 (outside the required set: only at the end of a complete pass begun
+// after what decides the commit's body under S last moved): a move of its bodies' inputs during
+// the wait (still not under S) waits for a pass begun after it.
+#[test]
+fn a_move_of_its_bodies_inputs_restarts_the_wait_spec_sync_judgement_2() {
+    let mut w = W::new();
+    w.g.done.insert(S, 0);
+    let c = cid(43);
+    w.pulled(c, &[S2], 43, 2);
+    w.g.place = 5;
+    let mut m = meta();
+    m.order = 2;
+    w.g.bodies.insert(c, Arc::new([(S2, m)].into()));
+    w.settle();
+    w.pass(4);
+    assert_eq!(w.read.verdict(&S, &c), Some(Verdict::Unjudged), "a pass begun before the move counts not");
+    assert_eq!(w.read.passes_wanted().get(&S), Some(&5));
+    w.pass(6);
+    assert_eq!(w.read.verdict(&S, &c), None);
+    assert_eq!(w.g.unlogged.len(), 1);
 }

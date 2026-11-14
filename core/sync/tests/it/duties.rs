@@ -55,6 +55,10 @@ fn a_rotation_owed_by_the_account_is_made_at_a_pass_end_spec_permissions_3() {
     });
     w.heal();
     w.run();
+    // a pass of D already under way when the removal arrives (read's, judging an entry outside
+    // D) ends before it: the next waits for nodes 2 and 3's records until its deadline
+    w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
+    w.run();
     let owed = w.write(0, |e| e.signing_due()).unwrap();
     assert!(owed.commits.is_empty(), "the merge rotation was made at the pass end, nothing owed: {owed:?}");
 }
