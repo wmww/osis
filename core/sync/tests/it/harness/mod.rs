@@ -954,6 +954,12 @@ pub const SHRINK_VAR: &str = "OSIS_SYNC_SHRINK";
 
 /// Plays one step on `w`; a note of what it did (empty: nothing to say).
 pub fn step(w: &mut World, s: &Step) -> String {
+    let note = step_of(w, s);
+    history::accept(w);
+    note
+}
+
+fn step_of(w: &mut World, s: &Step) -> String {
     match s {
         Step::Run => w.run(),
         Step::Advance(ms) => w.advance(*ms),

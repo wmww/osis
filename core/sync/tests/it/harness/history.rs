@@ -75,12 +75,29 @@ pub struct Made {
     pub hidden: BTreeMap<String, (usize, BTreeSet<usize>)>,
     /// Hand commits to the reference (`World::differential`); off, a step only writes.
     pub harvest: bool,
+    /// Things granted to a node's account, which its user accepts: each filed as a subgroup of
+    /// that node's D (`accept`) once the node is on, and again while a write of it was lost.
+    pub accepts: BTreeSet<(Tid, usize)>,
 }
 
 impl Made {
     fn value(&mut self) -> String {
         self.written += 1;
         format!("v{}", self.written)
+    }
+}
+
+/// Every user accepts what it was granted (spec/sync-set.md §4): each grant's thing not yet a
+/// subgroup of its grantee node's D is filed there, at the nodes on now.
+pub fn accept(w: &mut World) {
+    let pending: Vec<(Tid, usize)> = w.history.accepts.iter().copied().filter(|(_, i)| w.online(*i)).collect();
+    for (t, i) in pending {
+        let filed = w.engine(i).account().ok().flatten().is_some_and(|(_, d)| w.engine(i).get_typed(&d, &osis_schema::core_types::GROUP).ok().flatten().is_some_and(|g| g.subgroups.contains(&t)));
+        if filed {
+            w.history.accepts.remove(&(t, i));
+        } else {
+            file(w, i, Vec::new(), vec![t]);
+        }
     }
 }
 
@@ -123,6 +140,12 @@ pub fn step(w: &mut World, s: &Step) -> String {
                 let mut m = Mutation::new();
                 let t = e.new_thing(&mut m, admin);
                 m.set(t, &ak, &Value::Str(v.clone()))?;
+                // filed in its maker's D in the same commit (in every synced group's closure)
+                if let Some((_, d)) = e.account()? {
+                    let mut g = e.get_typed(&d, &osis_schema::core_types::GROUP)?.unwrap_or_default();
+                    g.items.insert(t);
+                    m.set(d, &osis_schema::core_types::GROUP, &g)?;
+                }
                 Ok((t, e.commit(m)?))
             }) {
                 Ok((t, c)) => {
@@ -164,6 +187,8 @@ pub fn step(w: &mut World, s: &Step) -> String {
                 }
                 // granted again: what it is shown from now on is the reference's to say
                 h.removals.remove(&(*k, *j));
+                // its user accepts it (spec/sync-set.md §4): filed as soon as the node is on
+                h.accepts.insert((t, *j));
                 h.hidden.retain(|_, (thing, nodes)| {
                     if thing == k {
                         nodes.remove(j);
