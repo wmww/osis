@@ -174,3 +174,73 @@ fn deep_departure_holds_large_spec_crypto_4() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_DEEP_START", "OSIS_DEEP_SEEDS", osis_base::testenv::large(0..1_000));
     s.run("rotation::tests_deep::deep_departure_holds_large_spec_crypto_4", replay, deep_history);
 }
+
+// spec/crypto.md §4 (Encrypting under: a stale box at any epoch the walk follows): churn below
+// costs G at most one rotation per rotation below, not one per write. G (peer 0, admin; peer 1, a
+// writer) holds A (peer 2's) holding M (peer 3's), M's readers 4 and 5 removed and granted again
+// in turn; partial syncs between. Every write rotates what is due first; A's admin acts every
+// `lag` changes (never at 0: A left out of G once, for good). G rotates at most once per rotation
+// below (M's or A's), and not at all once nothing below moves.
+#[test]
+fn churn_below_rotates_g_once_per_rotation_below_spec_crypto_4() {
+    for lag in [0, 2] {
+        let mut lp = synced(6);
+        let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.me()).collect();
+        let [g, a, m] = [0, 2, 3].map(|i| group(&mut lp, i));
+        lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
+        for t in &tids[4..6] {
+            lp.peers[3].engine.grant(&m, t, &edge(Role::Read)).unwrap();
+        }
+        lp.sync_all().unwrap();
+        lp.peers[2].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        let mut rng = Rng(0x5EED_u64.wrapping_add(lag as u64) | 1);
+        let (mut writes, mut g_rot, mut a_rot, mut m_rot) = (0, 0, 0, 0);
+        for change in 0..6usize {
+            let p = 4 + change / 2 % 2;
+            let n = if change % 2 == 0 {
+                lp.peers[3].engine.demote(&m, &Demotion { holder: tids[p], new: None, retain: None }).unwrap().commits.len()
+            } else {
+                lp.peers[3].engine.grant(&m, &tids[p], &edge(Role::Read)).unwrap();
+                0
+            };
+            m_rot += usize::from(n > 0);
+            if lag > 0 && change % lag == 0 {
+                lp.sync(3, 2).unwrap();
+                a_rot += lp.peers[2].engine.ensure_rotated(&a).unwrap().0.commits.len();
+            }
+            for _ in 0..4 {
+                let (x, y) = (rng.next(6) as usize, rng.next(6) as usize);
+                if x != y {
+                    lp.sync(x, y).unwrap();
+                }
+                let h = rng.next(2) as usize;
+                let from = rng.next(4) as usize;
+                if from != h {
+                    lp.sync(from, h).unwrap();
+                }
+                g_rot += lp.peers[h].engine.ensure_rotated(&g).unwrap().0.commits.len();
+                lp.peers[h].engine.reseal_due(&g, &Pass).unwrap();
+                writes += 1;
+            }
+        }
+        eprintln!("lag {lag}: {writes} writes, rotations: {m_rot} of M, {a_rot} of A, {g_rot} of G");
+        assert!(g_rot <= m_rot + a_rot, "lag {lag}: G rotated {g_rot} times over {writes} writes, M {m_rot}, A {a_rot}");
+        // quiet below: once settled, writes rotate nothing
+        lp.sync_all().unwrap();
+        for (p, x) in [(3, m), (2, a), (0, g), (1, g)] {
+            lp.peers[p].engine.ensure_rotated(&x).unwrap();
+            lp.peers[p].engine.reseal_due(&x, &Pass).unwrap();
+            lp.sync_all().unwrap();
+        }
+        let mut quiet = 0;
+        for h in [0, 1, 0, 1] {
+            quiet += lp.peers[h].engine.ensure_rotated(&g).unwrap().0.commits.len();
+            lp.peers[h].engine.reseal_due(&g, &Pass).unwrap();
+            lp.sync(h, 1 - h).unwrap();
+        }
+        assert_eq!(quiet, 0, "lag {lag}: {quiet} rotations of G with nothing changing below");
+    }
+}

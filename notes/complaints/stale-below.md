@@ -5,3 +5,4 @@
 - TLC model constants that a cfg may set to a string must not also be compared to TRUE (`PfJudge = "seal"` threw); add a separate boolean constant instead.
 - Running every D0 instance twice (two rule variants) at a 300 s cap held the heavy lock for well over an hour; most by-hand instances only time out. A per-instance budget list (which instances are worth a run per variant) would save that.
 - I ran two short TLC instances and two property runs (about 20 s each) outside `tools/heavy` while my own batch held the lock.
+- Review: a churn test of a few changes and writes over six `LocalPeer`s takes about 8 s at load 20; the cost is mostly syncs, so keep such counting tests to two or three short shapes.
