@@ -453,30 +453,38 @@ fn at_check(w: &mut World, r: &mut Peer) -> String {
 }
 
 /// `check`'s reader clauses: every node that reads a thing per the reference reads as the
-/// reference (each must be on), and some node holds a body carrying the value the reference
-/// reads (`value_held`).
+/// reference (each must be on), and some node holds a body the reference reads its value from
+/// (`bodies_reading`).
 pub fn check_readers(w: &mut World) {
     let mut r = reference(w);
     reader_clauses(w, &mut r);
 }
 
-/// Whether some node holds a body of thing `t`'s value that reads `v`: the commit that wrote
-/// it, or a snapshot it dropped under as covered (spec/commits.md §5 Covered), so it survives
-/// that commit being forgotten everywhere (Forgetting).
-pub fn value_held(w: &mut World, t: &Tid, v: &str) -> bool {
-    (0..w.len()).any(|i| w.engine(i).body_page(t, &value_ak(), true, 0, usize::MAX).unwrap_or_default().iter().any(|b| b.value == Some(Value::Str(v.into()))))
+/// The commits whose bodies the reference holds valid on thing `t`'s value reading `v`: the
+/// commit that wrote it and each valid snapshot carrying it (spec/commits.md §5 Covered), so the
+/// value survives that commit being forgotten everywhere (Forgetting). Taken from the generated
+/// history, never from the nodes under test.
+pub fn bodies_reading(r: &mut Peer, t: &Tid, v: &str) -> BTreeSet<CommitId> {
+    let page = r.engine.body_page(t, &value_ak(), true, 0, usize::MAX).expect("reference bodies");
+    page.into_iter().filter(|b| b.valid && b.value == Some(Value::Str(v.into()))).map(|b| b.id).collect()
+}
+
+/// Whether some node holds the body of one of `ids` on thing `t`'s value, reading `v`.
+pub fn held_somewhere(w: &mut World, t: &Tid, v: &str, ids: &BTreeSet<CommitId>) -> bool {
+    (0..w.len()).any(|i| w.engine(i).body_page(t, &value_ak(), true, 0, usize::MAX).unwrap_or_default().iter().any(|b| ids.contains(&b.id) && b.value == Some(Value::Str(v.into()))))
 }
 
 fn reader_clauses(w: &mut World, r: &mut Peer) {
     let things = w.history.things.clone();
     for (k, (t, _)) in things.iter().enumerate() {
         let want = reads(&mut r.engine, t);
+        if let Some(Value::Str(v)) = &want.value {
+            let ids = bodies_reading(r, t, v);
+            assert!(held_somewhere(w, t, v, &ids), "thing {k}: every body of its value {v} is deleted everywhere");
+        }
         for i in readers(w, k, &want) {
             assert!(w.online(i), "node {i}, a reader of thing {k}, is off at the check");
             assert_eq!(reads(w.engine(i), t), want, "node {i} reads thing {k} unlike the reference");
-        }
-        if let Some(Value::Str(v)) = &want.value {
-            assert!(value_held(w, t, v), "thing {k}: every body of its value {v} is deleted everywhere");
         }
     }
 }

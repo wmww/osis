@@ -5,7 +5,7 @@
 //! differential budget buys, issues/sync-test-cost.md); a failure prints the history as a
 //! script, `OSIS_SYNC_SHRINK=1` shrinks it.
 
-use crate::harness::history::{Gives, check, check_readers, hand, hand_all, history, value_held, world};
+use crate::harness::history::{Gives, bodies_reading, check, check_readers, hand, hand_all, history, reference, world};
 use crate::harness::{Step, World, play, shrinking};
 use osis_base::testenv::{Seeds, u64_var};
 
@@ -151,7 +151,7 @@ fn handed_histories_pass_the_reader_clauses() {
 // spec: none (test harness): the whole oracle passes delivery that keeps content from those that
 // may not read it, and catches each planted fault: a write never delivered to a reader; a later
 // write delivered to a removed reader; a write delivered to a node keeping the thing unread; the
-// body of the value read deleted everywhere.
+// bodies of the value read forgotten everywhere.
 #[test]
 fn the_oracle_catches_planted_faults() {
     use Step::*;
@@ -183,12 +183,17 @@ fn the_oracle_catches_planted_faults() {
     let mut w = base.copy();
     hand(&mut w, 0, 2);
     assert!(caught(|| check(&mut w)).contains("node 2, never granted read on thing 0, reads it"));
-    // the value's bodies gone everywhere: the body check finds the value read, never one no
-    // body carries
+    // every body the value is read from (its commit, or a snapshot carrying it) forgotten at
+    // every node
     let mut w = base;
     let t = w.history.things[0].0;
     let last = w.history.values.keys().max_by_key(|v| v[1..].parse::<u64>().unwrap_or(0)).cloned().expect("a value");
-    assert!(value_held(&mut w, &t, &last) && !value_held(&mut w, &t, "never written"));
+    let ids: Vec<_> = bodies_reading(&mut reference(&mut w), &t, &last).into_iter().collect();
+    assert!(!ids.is_empty());
+    for i in 0..w.len() {
+        w.engine(i).forget_commits(&ids).expect("forget");
+    }
+    assert!(caught(|| check(&mut w)).contains("every body of its value"));
 }
 
 // spec/sync-opens.md §1 (whom to dial): a differential world's nodes, contacts reading each
