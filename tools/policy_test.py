@@ -41,7 +41,7 @@ for pat, text in HAS_CASES:
 if has(re.compile(r"\bTrust\s*\{"), "NoTrust {"):
     fail("has: matched where the pattern does not")
 
-ISSUE = "issues/paired-peer-runtime-flake.md"
+ISSUE = "issues/sync-unbuilt.md"
 V = "OSIS" + "_"  # split, so this file names no variable env_vars would count
 # (path, old text or None to append, new text)
 PLANTS = [
@@ -61,10 +61,6 @@ PLANTS = [
     ("core/base/src/format.rs", None, f'\nconst _P: &str = "{V}PROBE_PLANTED";\n'),
     ("tools/gate.sh", None, f"\n# {V}PLANTED_UNKNOWN\n"),
     ("core/base/testenv-known.txt", None, f"{V}PLANTED_UNUSED\n"),
-    # host_blind
-    ("core/host/Cargo.toml", "[dependencies]\n", "[dependencies]\nosis-engine.workspace = true\n"),
-    ("core/host/src/lib.rs", None, "\nuse osis_crypto::OpenKey;\nuse osis_proto::*;\nuse osis_label::{blob_id, planted_label};\n"),
-    ("core/node/src/lib.rs", None, "\nuse osis_host::PlantedHost;\n"),
     # dispute_types
     ("core/crdt/src/lib.rs", None, "\nuse osis_perm::trust::Planted;\n"),
     ("core/store/src/lib.rs", None, "\nfn planted(x: X) { x.disputes(); }\n"),
@@ -73,16 +69,16 @@ PLANTS = [
     ("libs/chat/src/lib.rs", None, "\nuse osis_perm::Trust;\n"),
     ("libs/chat/src/lib.rs", None, "\nfn near_miss(x: X) { x.disputes(); }\n"),  # outside core: allowed
     # real_lan_tests
-    ("core/node/tests/it/awaits.rs", None, "\nfn planted_lan() { Lan::bind(4242); }\n"
+    ("core/sync/tests/it/life.rs", None, "\nfn planted_lan() { Lan::bind(4242); }\n"
      "fn planted_bare() { let _ = Config { runtime: Runtime::Own, x: 1 }; }\n"
      "fn planted_default() { let mut cfg = Config::default(); cfg.runtime = Runtime::Tokio; }\n"
      "fn near_miss() { Lan::bind(0); Lan::bind(s.port()); }\n"),
     ("core/transport/src/lib.rs", None, "\n#[cfg(test)]\nmod planted_lan { fn f() { Lan::bind(4243); } }\n"),
     ("cli/tests/it/cli.rs", None, "\nfn planted_cli() { Command::new(OSIS).arg(\"x\"); }\n"),
     # peer_ticks
-    ("core/node/tests/it/caches.rs", None, "\nfn planted(p: P) { p.engine.tick(); }\n"),
-    ("core/node/tests/it/compaction.rs", None, "\nfn planted(myself: P) { myself.engine.reexamine(); }\n"),
-    ("core/node/tests/it/corrupt.rs", None, "\nfn near_miss(&self) { self.engine.tick(); }\n"),
+    ("core/engine/tests/it/caches.rs", None, "\nfn planted(p: P) { p.engine.tick(); }\n"),
+    ("core/engine/tests/it/covered.rs", None, "\nfn planted(myself: P) { myself.engine.reexamine(); }\n"),
+    ("core/engine/tests/it/groups.rs", None, "\nfn near_miss(&self) { self.engine.tick(); }\n"),
     # test_copies, checked_bytes
     ("core/crypto/src/lib.rs", None, "\nfn planted(x: X) { x.test_copy(); }\n"),
     ("core/perm/src/lib.rs", None, "\nfn planted(b: B) { let _ = Checked(b); }\n"),
@@ -95,6 +91,8 @@ PLANTS = [
     ("schema/app.osis", None, "\n# EndedIn\n"),
     ("tools/prune-incremental.sh", None, "\n# Status::Ended\n"),
     ("core/test/tla/sync/MC.tla", None, "\n\\* NoLeakEnded"),
+    # row_prefixes
+    ("core/sync/src/life.rs", None, '\nconst PLANTED_ROW: &[u8] = b"zq/";\nconst PLANTED_SUB: &[u8] = b"zq/x";\nfn planted_inline() -> &\'static [u8] { b"zr/k" }\n'),
     # doc_refs
     ("notes/build.md", None, "\nSee notes/no-such-planted.md and notes/gate.md, Planted Nonexistent Section.\n"),
     # dead_pub
@@ -124,24 +122,18 @@ EXPECT = [  # regexes the output must hold
     r"OSIS[_]PROBE_PLANTED is a throwaway probe",
     r"OSIS[_]PLANTED_UNKNOWN is read but not in",
     r"OSIS[_]PLANTED_UNUSED is in core/base/testenv-known\.txt but nothing reads it",
-    r"core/host/Cargo\.toml: dependencies osis-engine is not one hosting may use",
-    r"core/host/src/lib\.rs: names OpenKey",
-    r"core/host/src/lib\.rs: osis_proto::\* is not for the host",
-    r"core/host/src/lib\.rs: osis_crypto::OpenKey is not on the host's allowlist",
-    r"core/host/src/lib\.rs: osis_label::planted_label is not on the host's allowlist",
-    r"core/node/src/lib\.rs: osis_host::PlantedHost is not the host's public surface",
     r"core/crdt/src/lib\.rs: names osis_perm::trust::Planted",
     r"core/store/src/lib\.rs: calls a dispute query",
     r"core/commit/src/lib\.rs: calls a dispute query",
     r"core/keys/src/lib\.rs: names the trust store",
     r"libs/chat/src/lib\.rs: names osis_perm::Trust",
-    r"core/node/tests/it/awaits\.rs: Lan::bind in a test on a fixed port: fn planted_lan",
-    r"core/node/tests/it/awaits\.rs: a test node from a bare Config is on the real LAN: Config \{ runtime",
-    r"core/node/tests/it/awaits\.rs: a test node from a bare Config is on the real LAN: let mut cfg",
+    r"core/sync/tests/it/life\.rs: Lan::bind in a test on a fixed port: fn planted_lan",
+    r"core/sync/tests/it/life\.rs: a test node from a bare Config is on the real LAN: Config \{ runtime",
+    r"core/sync/tests/it/life\.rs: a test node from a bare Config is on the real LAN: let mut cfg",
     r"core/transport/src/lib\.rs: Lan::bind in a test on a fixed port",
     r"cli/tests/it/cli\.rs: runs osis without --no-lan: fn planted_cli",
-    r"core/node/tests/it/caches\.rs:\d+: engine\.tick\(\)",
-    r"core/node/tests/it/compaction\.rs:\d+: engine\.tick\(\)",
+    r"core/engine/tests/it/caches\.rs:\d+: engine\.tick\(\)",
+    r"core/engine/tests/it/covered\.rs:\d+: engine\.tick\(\)",
     r"core/crypto/src/lib\.rs:\d+: a world-copy hook outside tests",
     r"core/perm/src/lib\.rs:\d+: osis_crdt::Checked built outside",
     r"core/engine/src/apply/mod\.rs: 2 Checked::verified uses, want 1",
@@ -153,6 +145,8 @@ EXPECT = [  # regexes the output must hold
     r"schema/app\.osis:\d+: `EndedIn`",
     r"tools/prune-incremental\.sh:\d+: `Status::Ended`",
     r"core/test/tla/sync/MC\.tla:\d+: `NoLeakEnded`",
+    r"sync store: row key 'zq/x' \(core/sync/src/life\.rs:\d+ PLANTED_SUB\) and 'zq/' \(core/sync/src/life\.rs:\d+ PLANTED_ROW\) collide|sync store: row key 'zq/' \(core/sync/src/life\.rs:\d+ PLANTED_ROW\) and 'zq/x' \(core/sync/src/life\.rs:\d+ PLANTED_SUB\) collide",
+    r"core/sync/src/life\.rs: a row key `b\"zr/\.\.\.` written as a literal",
     r"notes/build\.md:\d+: notes/no-such-planted\.md does not exist",
     r"notes/build\.md:\d+: notes/gate\.md, \"planted nonexistent section\": no such section",
     r"pub fn osis-crdt::planted_dead_fn is used only",
@@ -167,8 +161,8 @@ EXPECT = [  # regexes the output must hold
 ]
 ABSENT = [  # near misses: what the plants show must not be reported
     r"libs/chat/src/lib\.rs: calls a dispute query",
-    r"core/node/tests/it/awaits\.rs: Lan::bind in a test on a fixed port: fn near_miss",
-    r"core/node/tests/it/corrupt\.rs:\d+: engine",
+    r"core/sync/tests/it/life\.rs: Lan::bind in a test on a fixed port: fn near_miss",
+    r"core/engine/tests/it/groups\.rs:\d+: engine",
     r"osis-crdt::planted_live",
 ]
 
