@@ -504,3 +504,93 @@ fn facade_copy_read_content_withheld_without_the_removal_spec_crypto_5() {
     let (sealed, wrap) = lp.peers[V].engine.seal_body(&s, &w, &[held], &mut rng).unwrap().expect("V seals w once e_R is established");
     assert_eq!(m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap), (false, false));
 }
+
+// spec/crypto.md §5 (Passing on: a copy's content came under its wrap's epoch alone): R's write
+// w reaches V first as a per-sync-ID copy under h's sync ID (another thing R and V read, M does
+// not), so V reads it in no section of g. That opening counts for no epoch of g: V neither seals
+// w for g's sync ID nor snapshots it under its own epoch of g, which M holds; not even once W
+// arrives. Once V opens R's entry of w under e_R, established, it does, and M reads nothing.
+#[test]
+fn cross_thing_copy_content_never_resealed_spec_crypto_5() {
+    let (mut lp, g, w_commits, e_r, w, entry) = shape(false);
+    let h = super::tests::group(&mut lp, R);
+    let v_tid = lp.peers[V].engine.me();
+    lp.peers[R].engine.grant(&h, &v_tid, &edge(Role::Admin)).unwrap();
+    send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
+    let sh = lp.peers[V].engine.home_sync_id(&h).unwrap().expect("V syncs h");
+    let r = &mut lp.peers[R].engine;
+    let body = r.body(&w).unwrap().unwrap();
+    let copy = r.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(26)).unwrap().unwrap();
+    let k = r.wrap_secret(&h, Some((&w, &body.parts))).unwrap().expect("R wraps its own");
+    let copied = HeldBlob { sync_id: sh, wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
+    v_takes(&mut lp, &sh, w, &copied);
+    assert!(reads(&mut lp, V, g, "w"), "V reads w from the copy");
+    let s = lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap();
+    let mut rng = osis_crypto::SeededRng::from_u64(27);
+    for arrived in [false, true] {
+        if arrived {
+            w_arrives(&mut lp, g, &w_commits, &e_r);
+        }
+        if let Some((sealed, wrap)) = lp.peers[V].engine.seal_body(&s, &w, std::slice::from_ref(&copied), &mut rng).unwrap() {
+            let (header, content) = m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap);
+            panic!("W arrived {arrived}: V sealed w read from h's copy: M opens its header {header}, content {content}");
+        }
+        assert!(lp.peers[V].engine.snapshot(&g, &x()).is_err(), "W arrived {arrived}: V snapshots w read from h's copy");
+    }
+    let (_, held) = r_held(&mut lp, g, w, &entry);
+    v_takes(&mut lp, &s, w, &held);
+    let (sealed, wrap) = lp.peers[V].engine.seal_body(&s, &w, &[copied, held], &mut rng).unwrap().expect("V seals w once it opened R's section under e_R, established");
+    assert_eq!(m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap), (false, false));
+    let c = lp.peers[V].engine.snapshot(&g, &x()).unwrap().unwrap();
+    let pks = lp.sealed(V, &[c]).unwrap();
+    lp.deliver_sealed(M, &pks).unwrap();
+    assert!(!reads(&mut lp, M, g, "w"), "M reads w through V's snapshot");
+}
+
+// spec/crypto.md §5 (Passing on: a copy's content came under its wrap's epoch): V reads R's
+// write w only from a copy under g's own sync ID wrapped under e_R, not established at V. V's
+// snapshot of the aspect waits until W arrives; then M reads nothing of w through it.
+#[test]
+fn copy_read_content_not_snapshotted_without_the_removal_spec_crypto_5() {
+    let (mut lp, g, w_commits, e_r, w, _) = shape(false);
+    send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
+    let r = &mut lp.peers[R].engine;
+    let body = r.body(&w).unwrap().unwrap();
+    let copy = r.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(28)).unwrap().unwrap();
+    let k = r.wrap_secret(&g, Some((&w, &body.parts))).unwrap().expect("R wraps its own");
+    let held = HeldBlob { sync_id: lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap(), wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
+    let s = held.sync_id;
+    v_takes(&mut lp, &s, w, &held);
+    assert!(reads(&mut lp, V, g, "w"));
+    assert!(lp.peers[V].engine.snapshot(&g, &x()).is_err(), "V snapshots w read from a copy under e_R, not established");
+    w_arrives(&mut lp, g, &w_commits, &e_r);
+    let c = lp.peers[V].engine.snapshot(&g, &x()).unwrap().unwrap();
+    let pks = lp.sealed(V, &[c]).unwrap();
+    lp.deliver_sealed(M, &pks).unwrap();
+    assert!(!reads(&mut lp, M, g, "w"), "M reads w through V's snapshot");
+}
+
+// spec/crypto.md §5 (Passing on), spec/sync-judgement.md §1, §4: A, not knowing W, writes w0
+// under e0 (an epoch M holds, established at V); V opened A's entry of it under e0 and holds
+// e_R, not established. V's fresh encryption of w0 is made (A's section verbatim when given,
+// else sealed: e0 is established at V), and M reads w0 through it as it read A's own entry.
+#[test]
+fn old_epoch_section_sealed_while_newest_unestablished_spec_crypto_5() {
+    let (mut lp, g, w_commits, e_r, w, _) = shape(false);
+    send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
+    assert!(!lp.peers[V].engine.epochs(&g).unwrap().read.is_established(&e_r));
+    let w0 = put(&mut lp, A, g, "w0");
+    let entry = lp.sealed(A, &[w0]).unwrap();
+    let s = lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap();
+    let e = &entry.iter().find(|p| p.id == w0).unwrap().entries[0];
+    let held = HeldBlob { sync_id: s, wrap: e.wraps.iter().find(|(a, _)| *a == g).unwrap().1, bytes: e.blob.clone() };
+    v_takes(&mut lp, &s, w0, &held);
+    assert_eq!(m_opens_entry(&mut lp, g, w0, &e.id, &e.blob, &held.wrap), (true, true), "M reads A's entry of w0");
+    let mut rng = osis_crypto::SeededRng::from_u64(29);
+    for given in [vec![held.clone()], Vec::new()] {
+        let (sealed, wrap) = lp.peers[V].engine.seal_body(&s, &w0, &given, &mut rng).unwrap().expect("V seals w0, opened under e0, established");
+        assert!(!lp.peers[V].engine.open_commit(&sealed.blob, &sealed.key).unwrap().commit.parts.is_empty(), "V opens its fresh encryption");
+        let (_, content) = m_opens_entry(&mut lp, g, w0, &sealed.id, &sealed.blob, &wrap);
+        assert!(content, "given {}: M reads V's encryption of w0 as it reads A's", given.len());
+    }
+}

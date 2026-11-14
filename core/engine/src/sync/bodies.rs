@@ -409,6 +409,13 @@ impl Engine {
         // (`labeling::opened::header_passes`)
         if let Some((e, _)) = self.read_epochs(&t, &[]).into_iter().find(|(_, x)| osis_crypto::unwrap(x, blob, wrap).is_ok()) {
             self.note_unwrapped(&id, &t, &e);
+            // a copy's content came under that epoch alone (its section opens under the blob
+            // key): an opening of each of its parts under it, which counts only for a part of
+            // S's thing (`labeling::opened::passes_on`), so content read from a copy of another
+            // thing's sync ID never passes on under an epoch of the part's thing
+            if opened.copy && opened.commit.header.is_resolved() {
+                self.note_opened(&opened.commit.header, &[(e, opened.commit.parts.iter().collect())]);
+            }
         }
         let parts: PartSet = opened.parts().into_iter().collect();
         let ingested = match self.ingest(&opened.plaintext, Vec::new()) {

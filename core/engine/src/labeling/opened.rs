@@ -108,7 +108,7 @@ impl Engine {
 
     /// Records the epoch each opened section of a commit another wrote opened under, per content
     /// part (`key`), unless already written. A failed write records nothing (opening reads only).
-    pub(super) fn note_opened(&mut self, header: &osis_commit::Header, opened: &[(Epoch, Vec<&osis_commit::Part>)]) {
+    pub(crate) fn note_opened(&mut self, header: &osis_commit::Header, opened: &[(Epoch, Vec<&osis_commit::Part>)]) {
         let id = header.id();
         if self.core.ix.commits.get(&id).is_some_and(|m| m.origin == Origin::Local) {
             return;
