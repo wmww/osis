@@ -490,8 +490,8 @@ impl Engine {
     /// certificate copies of role-class parts on any thing): content (`is_content`) on a thing
     /// under an actor with secrets of its own that the group's actor may not read now, left by a
     /// revocation since the per-sync-ID copy was placed (spec/permissions.md §3). With any,
-    /// `open_entry` takes none of the copy (`Opened::NotOpen`), to be opened again once this node
-    /// holds secrets of its thing's secret actor (`Engine::await_reading`).
+    /// `open_entry` takes none of the copy (`Opened::NotOpen`): those parts come from a body under
+    /// their own thing's sync ID, which read fetches as missing once this node may hold it.
     /// Invariant: no part taken from a copy gives a node anything of an actor it cannot read now.
     /// Content is left out here; a role-class part is taken because each is judged as it is used:
     /// `secrets.0` boxes by `rotation::may_take` as they open, `label.0` entry boxes by
@@ -504,14 +504,6 @@ impl Engine {
         c.parts.iter().map(|p| p.ai).filter(|ai| h.aspects.get(*ai).is_some_and(stale)).collect()
     }
 
-    /// Fetch commit `c` again once this node holds secrets of the secret actor of any of its
-    /// parts `ais` (`copy_stale`): `Wakes` names it then.
-    pub fn await_reading(&mut self, c: &CommitId, h: &osis_commit::Header, ais: &BTreeSet<usize>) {
-        let actors: BTreeSet<Tid> = ais.iter().filter_map(|ai| h.aspects.get(*ai)).filter_map(|a| self.core.secret_actor(&a.tid)).collect();
-        for a in actors {
-            self.core.waits.awaits_reading(a, *c);
-        }
-    }
 
     /// Whether the actor of `ctx` may read `t` (spec/sync-judgement.md §1).
     pub(crate) fn reads(&self, ctx: &BodyCtx, t: &Tid) -> bool {

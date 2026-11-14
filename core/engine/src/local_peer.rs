@@ -173,7 +173,7 @@ impl Peer {
                 if d.carries {
                     return again.contains(&d.commit);
                 }
-                w.reopen_awaits || w.reread.contains(&d.commit) || w.woken.contains(&d.commit)
+                w.reopen_awaits || w.reread.contains(&d.commit)
             };
             let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.discarded).into_iter().partition(|d| due(d));
             self.discarded = later;

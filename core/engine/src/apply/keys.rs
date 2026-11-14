@@ -696,7 +696,6 @@ impl crate::engine::Engine {
         self.run(|tx| {
             tx.core.touch();
             tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
-            tx.core.read_again(&g);
             // what the secret opens: `g`'s own history boxes, then the boxes sealed to `g`
             let (s, alts) = (crate::flows::secrets_in(tx, &g)?, crate::flows::secrets_alts(tx, &g)?);
             tx.core.ingest_secrets(&g, &s, crate::engine::secrets::SecretsRead::State, &alts);

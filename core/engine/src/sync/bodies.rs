@@ -434,13 +434,9 @@ impl Engine {
         let id = opened.commit.id();
         // spec/permissions.md §3 (Lost access): a copy carrying content of a thing S's group actor
         // may not read now (left by a revocation since it was placed) gives nothing: none of it is
-        // taken, and it is fetched again once this node holds secrets of that thing's actor
-        if opened.copy {
-            let stale = self.copy_stale(&t, &opened.commit);
-            if !stale.is_empty() {
-                self.await_reading(&id, &opened.commit.header, &stale);
-                return Ok(Opened::NotOpen);
-            }
+        // taken (its parts come from a body under their own thing's sync ID)
+        if opened.copy && !self.copy_stale(&t, &opened.commit).is_empty() {
+            return Ok(Opened::NotOpen);
         }
         // the epoch the wrap opened under: whoever unwraps an entry reads the header
         // (`labeling::opened::header_passes`)

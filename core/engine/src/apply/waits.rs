@@ -241,10 +241,6 @@ pub(crate) struct Waits {
     pub held_feed: Option<osis_base::memo::Feed<CommitId>>,
     /// Tests: the next `wake` examines every pending commit, as a full scan (`Engine::lost_wakes`).
     pub every_due: bool,
-    /// Commits whose copy's parts on things this node cannot read were not taken
-    /// (`Engine::copy_stale`), by those things' secret actor: fetched again once the node holds
-    /// secrets of it (`read_again`). In memory: a restart fetches every missing part again.
-    unread: BTreeMap<Tid, BTreeSet<CommitId>>,
     /// Actors whose applied boxes gave secrets the node's roles did not give then
     /// (`rotation::may_take`): taken again once they do (`flows::retake`). In memory: the open's
     /// `reopen_all` (`take_account`) refuses and lists them again.
@@ -345,10 +341,6 @@ impl Waits {
         self.on_thing.contains_key(t)
     }
 
-    /// Commit `id` has parts not taken on content under `actor`, which the node cannot read.
-    pub fn awaits_reading(&mut self, actor: Tid, id: CommitId) {
-        self.unread.entry(actor).or_default().insert(id);
-    }
 
     /// An applied box of `actor` gave secrets the node's roles did not give.
     pub fn untaken(&mut self, actor: Tid) {
@@ -378,10 +370,6 @@ impl Waits {
         self.untaken.extend(self.retaking.drain(..));
     }
 
-    /// The commits waiting for the node to read `actor` (`awaits_reading`), taken.
-    pub fn read_again(&mut self, actor: &Tid) -> BTreeSet<CommitId> {
-        self.unread.remove(actor).unwrap_or_default()
-    }
 
     /// `id`'s reading-only secrets went, or it no longer awaits.
     pub fn forgot(&mut self, id: &CommitId) {

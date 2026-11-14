@@ -1478,9 +1478,6 @@ impl Core {
 pub struct Wakes {
     /// Commits whose boxes the reading-only budget now has room for.
     pub reread: BTreeSet<CommitId>,
-    /// Applied commits whose copies left out parts the node could not read, now readable
-    /// (`Waits::awaits_reading`).
-    pub woken: BTreeSet<CommitId>,
     /// Every awaiting entry is fetched again (a key actor taken up: boxes may open to it).
     pub reopen_awaits: bool,
 }

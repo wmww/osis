@@ -46,7 +46,7 @@
   - **Tombstones**: an ephemeral entry's tombstone lasts `MAX_DRIFT`, at every node alike (spec/sync-ids.md §5), and an announcement of a blob tombstoned here within that time is not fetched (spec/sync-judgement.md §3 Tombstones).
 - **Holding**: what differs from durable bodies is storage: every node holds the ephemeral commits it makes or receives, their blobs per sync ID and every record about them (entries, presence, tombstones, carriers), in memory only, never in its store or a bundle, until it restarts or they go (below).
   - **Verification**: a received one is verified as any commit (spec/commits.md §4) before its blob is kept, logged or served anywhere.
-    - One whose author's record, a part's thing's record or a chain it needs is not held is unjudgeable (spec/commits.md §4): nothing of it is kept; its entry counts against the node's cap below until it is fetched again.
+    - One whose author's record, a part's thing's record or a chain it needs is not held is unjudgeable (spec/commits.md §4 Unjudgeable): it waits in memory as a durable one waits in store, its unjudgeable parts in its pending copy, counted against the node's cap below, and is examined again when what it awaits arrives.
     - Parts are judged (spec/permissions.md §5.2); an invalid part is dropped as a durable one (spec/permissions.md §6) and counts against no cap.
     - A session-form one applies atomically and an invalid part is un-merged (spec/crdt.md §4.6).
     - A part past its `expires` is held as its leftover, value-less, at every node (spec/crdt.md §4.7), one arriving past it included.

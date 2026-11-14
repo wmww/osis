@@ -249,17 +249,7 @@ impl Core {
         }
         let Some(epochs) = epochs else { return false };
         self.ix.secrets.insert(*actor, epochs);
-        self.read_again(actor);
         true
-    }
-
-    /// The node holds secrets of `actor` again: the parts left out of copies while it could not
-    /// read what is under it are fetched again (`Waits::awaits_reading`).
-    pub(crate) fn read_again(&mut self, actor: &Tid) {
-        let again = self.waits.read_again(actor);
-        if let Some(ch) = &mut self.wakes {
-            ch.woken.extend(again);
-        }
     }
 
     /// Whether the reading-only budget has no room for `actor`, which holds nothing yet.
