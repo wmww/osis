@@ -101,7 +101,6 @@ pub struct Table {
     /// Epochs covering every departure, per S.
     pub covering: BTreeSet<(SyncId, Epoch)>,
     pub known: BTreeSet<Tid>,
-    pub statics: BTreeMap<SyncId, Vec<[u8; 32]>>,
     pub until: Position,
     /// What `take_grant` gives: the head's sync key, per S.
     pub grants: BTreeMap<SyncId, [u8; 32]>,
@@ -110,7 +109,7 @@ pub struct Table {
 
 impl Table {
     pub fn new(seed: u64) -> Table {
-        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), j: BTreeMap::new(), covering: BTreeSet::new(), known: BTreeSet::new(), statics: BTreeMap::new(), until: 100, grants: BTreeMap::new(), gives_grant: false }
+        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), j: BTreeMap::new(), covering: BTreeSet::new(), known: BTreeSet::new(), until: 100, grants: BTreeMap::new(), gives_grant: false }
     }
 
     /// S's credentials are now `c` (none: S left the sync set).
@@ -144,19 +143,20 @@ impl Holds for Table {
     fn creds(&mut self, s: &SyncId) -> Option<Arc<Creds>> {
         self.creds.get(s).cloned()
     }
-    fn judge(&mut self, s: &SyncId, proven: &Proven) -> J {
-        let actors = proven.account.iter().map(|(a, _)| *a).chain(proven.actors.iter().copied());
-        let js: Vec<J> = actors.filter_map(|a| self.j.get(&(*s, a)).copied()).collect();
+    fn actors(&mut self, proven: &Proven) -> Vec<Tid> {
+        let mut v = proven.actors();
+        v.sort();
+        v
+    }
+    fn judge(&mut self, s: &SyncId, actors: &[Tid]) -> J {
+        let js: Vec<J> = actors.iter().filter_map(|a| self.j.get(&(*s, *a)).copied()).collect();
         [J::Reader, J::SyncHolder, J::Departed].into_iter().find(|j| js.contains(j)).unwrap_or(J::Unknown)
     }
     fn covers_departures(&mut self, s: &SyncId, epoch: &Epoch) -> bool {
         self.covering.contains(&(*s, *epoch))
     }
-    fn known(&mut self, proven: &Proven) -> bool {
-        proven.own_node || proven.account.iter().map(|(a, _)| a).chain(&proven.actors).any(|a| self.known.contains(a))
-    }
-    fn proven_statics(&mut self, s: &SyncId, _proven: &Proven) -> Vec<[u8; 32]> {
-        self.statics.get(s).cloned().unwrap_or_default()
+    fn known_actor(&mut self, actor: &Tid) -> bool {
+        self.known.contains(actor)
     }
     fn until(&mut self, _s: &SyncId, _by: &Credential) -> Position {
         self.until
@@ -197,11 +197,22 @@ impl Wire for Pipe {
     fn bind(&self, c: ConnId) -> Option<(Bind, Proven)> {
         self.binds.get(&c).cloned()
     }
-    fn id(&mut self, _c: ConnId) -> Id {
-        self.next += 1;
-        self.next | osis_proto::limits::TOP_BIT
+    fn request(&mut self, c: ConnId, mut m: Msg) -> Id {
+        let id = if m.kind() == 40 {
+            osis_proto::limits::NO_RECORD_ID
+        } else {
+            self.next += 1;
+            self.next | osis_proto::limits::TOP_BIT
+        };
+        m.set_id(id);
+        self.sent.push((c, m));
+        id
     }
-    fn send(&mut self, c: ConnId, m: Msg) {
+    fn answer(&mut self, c: ConnId, to: Id, mut m: Msg) {
+        m.set_id(to);
+        self.sent.push((c, m));
+    }
+    fn push(&mut self, c: ConnId, m: Msg) {
         self.sent.push((c, m));
     }
     fn close(&mut self, c: ConnId, why: &'static str) {
@@ -261,18 +272,24 @@ impl Side {
 pub fn incoming(m: Msg) -> Incoming {
     match m.flow() {
         Flow::Request => Incoming::Request(m.id(), m),
-        Flow::Reply => Incoming::Reply(m.id(), m),
+        Flow::Reply => Incoming::Reply(osis_sync::session::To::Opens, m.id(), m),
         Flow::Push => Incoming::Push(m),
     }
 }
 
-/// A proven account at epoch 0.
-pub fn account(n: u8) -> Proven {
-    Proven { account: Some((Tid::from_bytes([n; 15]), epoch(0))), actors: Vec::new(), own_node: false }
+/// Account `n`'s creation record.
+fn account_record(n: u8) -> osis_base::CreationRecord {
+    osis_base::CreationRecord::KeyActor { alg: osis_base::SIGNING_KEY_ED25519, public_key: vec![n; 32], nonce: [n; 32], account: true }
 }
 
+/// Account `n`, proved.
+pub fn account(n: u8) -> Proven {
+    Proven { account: Some((account_record(n), [n; 32])), ..Proven::default() }
+}
+
+/// Account `n`'s tid.
 pub fn tid(n: u8) -> Tid {
-    Tid::from_bytes([n; 15])
+    account_record(n).tid()
 }
 
 /// One connection between two honest sides: `a` dialed `b`. Each gets the other's proofs.

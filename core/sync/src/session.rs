@@ -209,6 +209,8 @@ pub struct Session {
     unanswered: BTreeMap<RequestId, u64>,
     unanswered_bytes: u64,
     bytes: Vec<u8>,
+    /// Why a module closes this connection.
+    closing: Option<&'static str>,
     /// Bytes written on the connection so far (handed out or still in `bytes`), and taken by
     /// the transport.
     written: u64,
@@ -254,6 +256,7 @@ impl Session {
             unanswered: BTreeMap::new(),
             unanswered_bytes: 0,
             bytes: Vec::new(),
+            closing: None,
             written: 0,
             taken: 0,
             clock: ClockSamples::default(),
@@ -336,6 +339,23 @@ impl Session {
         }
         self.write(body);
         true
+    }
+
+    /// Pushes a message that never waits for room: opens' Digest and Members, once a connection
+    /// and bounded by a record's shared set.
+    pub fn push_now(&mut self, m: Msg) {
+        self.write(m.encode());
+    }
+
+    /// A module closes the connection: the peer broke the protocol (the driver closes it after
+    /// the message).
+    pub fn close(&mut self, why: &'static str) {
+        self.closing.get_or_insert(why);
+    }
+
+    /// Why a module closed the connection, if one did.
+    pub fn closing(&self) -> Option<&'static str> {
+        self.closing
     }
 
     /// What the peer proved: empty until `Incoming::Proved`.

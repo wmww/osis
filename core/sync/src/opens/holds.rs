@@ -6,7 +6,7 @@ use super::cred::{Shown, Tested};
 use crate::session::Proven;
 use crate::types::{Credential, Cursor, Cx, Holding, Position};
 use crate::unread::Unread;
-use osis_base::SyncId;
+use osis_base::{SyncId, Tid};
 use osis_crypto::Epoch;
 use osis_engine::sync::J;
 use osis_label::Step;
@@ -66,14 +66,15 @@ pub trait Holds {
     fn due(&mut self) -> Vec<SyncId>;
     /// S's credentials, `None` when S is not in the sync set.
     fn creds(&mut self, s: &SyncId) -> Option<Arc<Creds>>;
-    /// J of the peer's proven actors for S.
-    fn judge(&mut self, s: &SyncId, proven: &Proven) -> J;
+    /// The actors a connection's proofs count for now (spec/sync-opens.md §2): its account only
+    /// while the key it proved with is at an epoch open here, its node, its key actors; sorted.
+    fn actors(&mut self, proven: &Proven) -> Vec<Tid>;
+    /// J of a peer's proven actors (`actors`) for S.
+    fn judge(&mut self, s: &SyncId, actors: &[Tid]) -> J;
     /// Whether `epoch` of S's thing covers every departure this node knows of (spec/crypto.md §4).
     fn covers_departures(&mut self, s: &SyncId, epoch: &Epoch) -> bool;
-    /// Whether the peer proved an actor known here now (spec/sync-opens.md §2 Known actor).
-    fn known(&mut self, proven: &Proven) -> bool;
-    /// The static entries of S that a proven key actor of this connection is the key actor of.
-    fn proven_statics(&mut self, s: &SyncId, proven: &Proven) -> Vec<[u8; 32]>;
+    /// Whether `actor` is a known actor here now (spec/sync-opens.md §2 Known actor).
+    fn known_actor(&mut self, actor: &Tid) -> bool;
     /// An ended member's `until` (spec/sync-opens.md §6): the highest position at which an entry
     /// in S of a rotation superseding `by`'s epoch was first logged, else the node log's end; at
     /// a node keeping S unread the position of its head's event.
@@ -151,13 +152,11 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
                 }
             }
             Holding::Unread => {
-                let uc = unread.credentials(cx, s)?;
+                let uc = unread.credentials(s)?;
                 c.shows.push((Shown::SyncKey(uc.sync.verifying_key().to_bytes()), None));
                 c.shows.push((Shown::Proof(*uc.proof.expose()), None));
                 c.tests.push((Tested::Proof(*uc.proof.expose()), None));
-                if let Some(d) = &uc.deposit {
-                    c.shows.push((Shown::Deposit(d.verifying_key().to_bytes()), None));
-                }
+                c.shows.push((Shown::Deposit(uc.deposit.to_bytes()), None));
                 if let Some(cs) = &uc.claims {
                     c.shows.extend(cs.claims.iter().map(|k| (Shown::Claim(*k), None)));
                     c.shows.extend(cs.entries.keys().map(|k| (Shown::Static(*k), None)));
@@ -203,21 +202,25 @@ impl Holds for NodeHolds<'_, '_> {
         node_creds(self.cx, self.unread, s)
     }
 
-    fn judge(&mut self, s: &SyncId, proven: &Proven) -> J {
-        let actors: Vec<_> = proven.account.iter().map(|(a, _)| *a).chain(proven.actors.iter().copied()).collect();
-        self.cx.engine.judge_peer(s, &actors).unwrap_or(J::Unknown)
+    fn actors(&mut self, proven: &Proven) -> Vec<Tid> {
+        let engine = &mut *self.cx.engine;
+        let account = proven.account.as_ref().filter(|(r, k)| engine.key_open(r, k)).map(|(r, _)| r.tid());
+        let mut v: Vec<Tid> = account.into_iter().chain(proven.node).chain(proven.key_actors.keys().copied()).collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    fn judge(&mut self, s: &SyncId, actors: &[Tid]) -> J {
+        self.cx.engine.judge_peer(s, actors).unwrap_or(J::Unknown)
     }
 
     fn covers_departures(&mut self, s: &SyncId, epoch: &Epoch) -> bool {
         self.cx.engine.covers_departures(s, *epoch).unwrap_or(false)
     }
 
-    fn known(&mut self, proven: &Proven) -> bool {
-        proven.own_node || proven.account.iter().map(|(a, _)| a).chain(&proven.actors).any(|a| self.cx.engine.known_actor(a))
-    }
-
-    fn proven_statics(&mut self, _s: &SyncId, _proven: &Proven) -> Vec<[u8; 32]> {
-        Vec::new()
+    fn known_actor(&mut self, actor: &Tid) -> bool {
+        self.cx.engine.known_actor(actor)
     }
 
     fn until(&mut self, _s: &SyncId, _by: &Credential) -> Position {

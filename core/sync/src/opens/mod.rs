@@ -67,10 +67,12 @@ pub enum Moved {
 pub trait Wire {
     /// The connection's binding and the peer's proofs, once its proofs are done.
     fn bind(&self, c: ConnId) -> Option<(Bind, Proven)>;
-    /// A fresh shared-set request id (top bit set, spec/wire.md §11.2).
-    fn id(&mut self, c: ConnId) -> Id;
-    /// Sends a message (a request carrying an `id` from `id`, an answer, or a push).
-    fn send(&mut self, c: ConnId, m: Msg);
+    /// Sends a request; its id (top bit set, spec/wire.md §11.2; NoRecord's own) is chosen here.
+    fn request(&mut self, c: ConnId, m: Msg) -> Id;
+    /// Answers the peer's request `to`.
+    fn answer(&mut self, c: ConnId, to: Id, m: Msg);
+    /// Pushes Digest or Members: once a connection, never held back.
+    fn push(&mut self, c: ConnId, m: Msg);
     /// Closes the connection: the peer broke the protocol.
     fn close(&mut self, c: ConnId, why: &'static str);
 }
@@ -368,7 +370,7 @@ impl Opens {
         match m {
             Incoming::Proved => self.proved(ctx, conn, moved),
             Incoming::Request(id, m) => self.request(ctx, conn, id, m, moved),
-            Incoming::Reply(id, m) => self.reply(ctx, conn, id, m, moved),
+            Incoming::Reply(_, id, m) => self.reply(ctx, conn, id, m, moved),
             Incoming::Push(m) => self.push(ctx, conn, m, moved),
         }
         self.run(ctx, conn, moved);
@@ -459,8 +461,8 @@ impl Opens {
 
     fn proved(&mut self, ctx: &mut Ctx, conn: ConnId, moved: &mut Vec<Moved>) {
         let Some((bind, proven)) = ctx.wire.bind(conn) else { return };
-        let known = ctx.holds.known(&proven);
         let named = named_known(ctx.holds, &proven);
+        let known = peer_known(ctx.holds, &proven);
         let mut c = Conn {
             bind,
             proven,
@@ -496,11 +498,10 @@ impl Opens {
                 let (d, l) = (bind.own_challenge, bind.peer_challenge);
                 let tags = listed.iter().filter_map(|(_, id)| self.records.get(id)).map(|r| resume_tag(&r.r, &bind.listener_key, &d, &l)).collect();
                 let nonce = random32(ctx.holds.rng());
-                let id = ctx.wire.id(conn);
-                c.reqs.insert(id, Req::Resume);
                 c.phase = Phase::Resuming { nonce, listed: listed.into_iter().map(|(_, id)| id).collect() };
+                let id = ctx.wire.request(conn, Msg::Resume { id: 0, nonce, tags });
+                c.reqs.insert(id, Req::Resume);
                 self.conns.insert(conn, c);
-                ctx.wire.send(conn, Msg::Resume { id, nonce, tags });
             } else {
                 self.conns.insert(conn, c);
                 self.no_record(ctx, conn, moved);
@@ -514,9 +515,8 @@ impl Opens {
     /// connection's own pair key (spec/sync-opens.md §3).
     fn no_record(&mut self, ctx: &mut Ctx, conn: ConnId, moved: &mut Vec<Moved>) {
         let Some(c) = self.conns.get_mut(&conn) else { return };
-        let id = NO_RECORD_ID;
+        let id = ctx.wire.request(conn, Msg::NoRecord { id: NO_RECORD_ID });
         c.reqs.insert(id, Req::NoRecord);
-        ctx.wire.send(conn, Msg::NoRecord { id });
         self.run_unkept(ctx, conn, moved);
     }
 
@@ -559,7 +559,7 @@ impl Opens {
             // spec/sync-opens.md §3 Agreement: Digest first, from the record before anything else.
             let d = members_digest(&r.r, r.members.keys().map(|s| &s.0));
             c.agree = Agree::Sent(d);
-            ctx.wire.send(conn, Msg::Digest { digest: d });
+            ctx.wire.push(conn, Msg::Digest { digest: d });
         } else {
             c.agree = Agree::Done;
             c.peer_digest = true;
@@ -581,14 +581,14 @@ impl Opens {
             Msg::Resume { nonce, tags, .. } => self.resume(ctx, conn, id, nonce, &tags, moved),
             Msg::NoRecord { .. } => {
                 if self.conns.get(&conn).is_some_and(|c| c.phase == Phase::Waiting && !c.bind.dialer) {
-                    ctx.wire.send(conn, Msg::Shared { id, items: Vec::new() });
+                    ctx.wire.answer(conn, id, Msg::Shared { id, items: Vec::new() });
                     self.run_unkept(ctx, conn, moved);
                 } else {
-                    ctx.wire.send(conn, Msg::Error { id, code: Code::MALFORMED });
+                    ctx.wire.answer(conn, id, Msg::Error { id, code: Code::MALFORMED });
                 }
             }
             // spec/sync-opens.md §4: a side keeping no shared set yet answers 14.
-            Msg::Beacons { .. } | Msg::Offer { .. } | Msg::Lost { .. } if !running => ctx.wire.send(conn, Msg::Error { id, code: Code::DECLINED }),
+            Msg::Beacons { .. } | Msg::Offer { .. } | Msg::Lost { .. } if !running => ctx.wire.answer(conn, id, Msg::Error { id, code: Code::DECLINED }),
             Msg::Beacons { generation, base, f, lo, hi, gcs, more, .. } => self.beacons(ctx, conn, id, generation, base, f, (lo, hi), &gcs, more),
             Msg::Offer { items, .. } => self.offered(ctx, conn, id, items, moved),
             Msg::Lost { items, .. } => self.lost(ctx, conn, id, items, moved),
@@ -599,17 +599,17 @@ impl Opens {
     /// Listener: a Resume (spec/sync-opens.md §3).
     fn resume(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, dnonce: [u8; 32], tags: &[[u8; 32]], moved: &mut Vec<Moved>) {
         let Some(c) = self.conns.get(&conn) else {
-            ctx.wire.send(conn, Msg::Error { id, code: Code::MALFORMED });
+            ctx.wire.answer(conn, id, Msg::Error { id, code: Code::MALFORMED });
             return;
         };
         if c.phase != Phase::Waiting || c.bind.dialer {
-            ctx.wire.send(conn, Msg::Error { id, code: Code::MALFORMED });
+            ctx.wire.answer(conn, id, Msg::Error { id, code: Code::MALFORMED });
             return;
         }
         if c.named.is_empty() {
             // A connection whose dialer proved no known actor keeps no record: Error 1, and the
             // dialer sends NoRecord (spec/sync-opens.md §3).
-            ctx.wire.send(conn, Msg::Error { id, code: Code::REFUSED });
+            ctx.wire.answer(conn, id, Msg::Error { id, code: Code::REFUSED });
             return;
         }
         let bind = c.bind;
@@ -627,7 +627,7 @@ impl Opens {
             // On no match a new record, written before the answer goes.
             None => (self.new_record(ctx, *pair_key(&dnonce, &lnonce).expose(), actors, true), None),
         };
-        ctx.wire.send(conn, Msg::Resumed { id, nonce: lnonce, tag });
+        ctx.wire.answer(conn, id, Msg::Resumed { id, nonce: lnonce, tag });
         self.take(ctx, conn, rid, true, moved);
     }
 
@@ -691,7 +691,7 @@ impl Opens {
         }
         let n = chunks.len();
         for (i, page) in chunks.into_iter().enumerate() {
-            ctx.wire.send(conn, Msg::Members { sync_ids: page, more: i + 1 < n });
+            ctx.wire.push(conn, Msg::Members { sync_ids: page, more: i + 1 < n });
         }
     }
 
@@ -769,7 +769,7 @@ impl Opens {
         let Some(r) = self.records.get(&rid) else { return };
         let first = c.first;
         // spec/sync-opens.md §4 Audiences, judged now: a change of audience makes the generation whole.
-        let known = ctx.holds.known(&c.proven);
+        let known = peer_known(ctx.holds, &c.proven);
         let whole = c.whole_next || known != c.known || r.own.generation == 0 || (first && r.own.acked != r.own.generation);
         let ids: Vec<SyncId> = if whole {
             Vec::new()
@@ -820,10 +820,9 @@ impl Opens {
         c.adds.clear();
         let mut ids = BTreeSet::new();
         for p in pages(&values, f, REPLY_BUDGET / 2) {
-            let id = ctx.wire.id(conn);
+            let id = ctx.wire.request(conn, Msg::Beacons { id: 0, generation, base, f, lo: p.lo, hi: p.hi, gcs: p.gcs, more: p.more });
             ids.insert(id);
             c.reqs.insert(id, Req::Beacons { generation });
-            ctx.wire.send(conn, Msg::Beacons { id, generation, base, f, lo: p.lo, hi: p.hi, gcs: p.gcs, more: p.more });
         }
         c.gen_out = Some(GenOut { generation, pages: ids, refused: false, base_missing: false });
     }
@@ -880,7 +879,7 @@ impl Opens {
         let follows = c.peer_gen.as_ref().is_some_and(|p| p.generation == generation && p.f == f && p.base == base && p.next_lo == lo);
         let values = decode_gcs(gcs, lo, hi);
         if !fits || !(fresh || follows) || values.is_err() || (!more && hi != end) {
-            ctx.wire.send(conn, Msg::Error { id, code: Code::MALFORMED });
+            ctx.wire.answer(conn, id, Msg::Error { id, code: Code::MALFORMED });
             ctx.wire.close(conn, "a filter page breaking the format");
             return;
         }
@@ -888,7 +887,7 @@ impl Opens {
             let held = base.and_then(|b| r.peer.as_ref().filter(|p| p.generation == b));
             // Additions at another width than their base's break the format.
             if held.is_some_and(|p| p.f != f) {
-                ctx.wire.send(conn, Msg::Error { id, code: Code::MALFORMED });
+                ctx.wire.answer(conn, id, Msg::Error { id, code: Code::MALFORMED });
                 ctx.wire.close(conn, "filter additions at another width");
                 return;
             }
@@ -910,12 +909,12 @@ impl Opens {
         };
         let narrow = !more && p.base.is_none() && filter_width(p.values.len()).max(MIN_FILTER_WIDTH) != f;
         if p.held_base && (n > cap || narrow) {
-            ctx.wire.send(conn, Msg::Error { id, code: Code::MALFORMED });
+            ctx.wire.answer(conn, id, Msg::Error { id, code: Code::MALFORMED });
             ctx.wire.close(conn, "a filter breaking its width or entry count");
             return;
         }
         let code = if p.held_base { Code::OK } else { Code::UNKNOWN_SYNC_ID };
-        ctx.wire.send(conn, Msg::Shared { id, items: vec![SharedItem::code(code)] });
+        ctx.wire.answer(conn, id, Msg::Shared { id, items: vec![SharedItem::code(code)] });
         if more {
             return;
         }
@@ -948,7 +947,8 @@ impl Opens {
         creds.holding?;
         let c = self.conns.get(&conn)?;
         // spec/sync-opens.md §4 J: judged on the rosters held now, from what this connection proved.
-        let j = ctx.holds.judge(s, &c.proven);
+        let actors = ctx.holds.actors(&c.proven);
+        let j = ctx.holds.judge(s, &actors);
         let mut ok = |e: &Option<osis_crypto::Epoch>| j != J::Departed || e.as_ref().is_some_and(|e| ctx.holds.covers_departures(s, e));
         let shows = creds.shows.iter().filter(|(_, e)| ok(e)).map(|(x, _)| x.clone()).collect();
         let tests = creds.tests.iter().filter(|(_, e)| ok(e)).map(|(x, _)| x.clone()).collect();
@@ -1029,10 +1029,9 @@ impl Opens {
             self.rise(conn);
             return;
         }
-        let id = ctx.wire.id(conn);
+        let id = ctx.wire.request(conn, Msg::Offer { id: 0, items });
         c.reqs.insert(id, Req::Offer);
         c.offer = Some(sent);
-        ctx.wire.send(conn, Msg::Offer { id, items });
     }
 
     /// A Behind item for S toward a peer J judges a sync holder, when no walk credential was
@@ -1176,7 +1175,7 @@ impl Opens {
             };
             answers.push(a);
         }
-        ctx.wire.send(conn, Msg::Shared { id, items: answers });
+        ctx.wire.answer(conn, id, Msg::Shared { id, items: answers });
     }
 
     fn accept_hit(&mut self, ctx: &mut Ctx, conn: ConnId, hit: &[u8; 32], sig: Option<&osis_crypto::Signature>, signing: Option<[u8; 32]>, moved: &mut Vec<Moved>) -> SharedItem {
@@ -1185,7 +1184,7 @@ impl Opens {
         let Some((s, shown, beacon)) = c.shown.get(hit).cloned() else { return refuse };
         let (bind, proven) = (c.bind, c.proven.clone());
         // Only what this side's filter to this peer shows: a read secret only to a known actor.
-        if shown.secret_audience() && !ctx.holds.known(&proven) {
+        if shown.secret_audience() && !peer_known(ctx.holds, &proven) {
             return refuse;
         }
         // Judged on what this side holds now: a credential no longer shown proves nothing.
@@ -1196,7 +1195,7 @@ impl Opens {
         let proved = match (&shown, signing) {
             (Shown::Read(..) | Shown::Proof(_), None) => true,
             (Shown::SyncKey(k) | Shown::Claim(k), None) => sig.is_some_and(|g| bind.peer_signed(k, &s, g)),
-            (Shown::Static(e), None) => ctx.holds.proven_statics(&s, &proven).contains(e),
+            (Shown::Static(e), None) => proven_statics(&s, &proven).contains(e),
             (Shown::Static(e), Some(pk)) => osis_crypto::VerifyingKey::from_bytes(&pk).is_ok_and(|k| osis_crypto::static_entry(&s, &k) == *e) && sig.is_some_and(|g| bind.peer_signed(&pk, &s, g)),
             // A deposit key's Hit carries none and opens nothing.
             _ => false,
@@ -1235,8 +1234,8 @@ impl Opens {
         }
         let Some(c) = self.conns.get(&conn) else { return SharedItem::code(Code::DECLINED) };
         let proven = c.proven.clone();
-        let statics = ctx.holds.proven_statics(&s, &proven);
-        let known = ctx.holds.known(&proven);
+        let statics = proven_statics(&s, &proven);
+        let known = peer_known(ctx.holds, &proven);
         let found = hits.iter().filter_map(|h| c.shown.get(h).cloned()).find(|(hs, sh, _)| {
             *hs == s
                 && adm.shows.contains(sh)
@@ -1361,10 +1360,9 @@ impl Opens {
     fn send_lost(&mut self, ctx: &mut Ctx, conn: ConnId, items: Vec<(SyncId, Option<Cursor>)>) {
         let Some(c) = self.conns.get_mut(&conn) else { return };
         for chunk in items.chunks(MAX_OFFER_ITEMS) {
-            let id = ctx.wire.id(conn);
-            c.reqs.insert(id, Req::Lost);
             let items = chunk.iter().map(|(s, cur)| (*s, cur.clone().and_then(|b| osis_proto::Cursor::new(b).ok()))).collect();
-            ctx.wire.send(conn, Msg::Lost { id, items });
+            let id = ctx.wire.request(conn, Msg::Lost { id: 0, items });
+            c.reqs.insert(id, Req::Lost);
         }
     }
 
@@ -1396,7 +1394,7 @@ impl Opens {
                 answer.push((s, c));
             }
         }
-        ctx.wire.send(conn, Msg::Shared { id, items: vec![SharedItem::code(Code::OK); n] });
+        ctx.wire.answer(conn, id, Msg::Shared { id, items: vec![SharedItem::code(Code::OK); n] });
         if !answer.is_empty() {
             self.send_lost(ctx, conn, answer);
         }
@@ -1435,20 +1433,18 @@ impl Opens {
 /// The actors `p` proved that are known here now, sorted (spec/sync-opens.md §3: a record is
 /// honoured only while a proven actor of the session is named by it and known here now).
 fn named_known(holds: &mut dyn Holds, p: &Proven) -> Vec<Tid> {
-    let mut v: Vec<Tid> = Vec::new();
-    if let Some(a) = p.account
-        && holds.known(&Proven { account: Some(a), actors: Vec::new(), own_node: false })
-    {
-        v.push(a.0);
-    }
-    for a in &p.actors {
-        if holds.known(&Proven { account: None, actors: vec![*a], own_node: false }) {
-            v.push(*a);
-        }
-    }
-    v.sort();
-    v.dedup();
-    v
+    holds.actors(p).into_iter().filter(|a| holds.known_actor(a)).collect()
+}
+
+/// Whether the peer proved a known actor (spec/sync-opens.md §4 Audiences), judged now.
+fn peer_known(holds: &mut dyn Holds, p: &Proven) -> bool {
+    !named_known(holds, p).is_empty()
+}
+
+/// The static entries of S whose key actor the peer proved on this connection by its signing key
+/// (spec/sync-opens.md §5 Proof).
+fn proven_statics(s: &SyncId, p: &Proven) -> Vec<[u8; 32]> {
+    p.key_actors.values().filter_map(|k| osis_crypto::VerifyingKey::from_bytes(k).ok()).map(|k| osis_crypto::static_entry(s, &k)).collect()
 }
 
 fn random32(rng: &mut dyn NodeRng) -> [u8; 32] {
@@ -1467,16 +1463,24 @@ fn random16(rng: &mut dyn NodeRng) -> RecordId {
 impl Wire for Sessions {
     fn bind(&self, c: ConnId) -> Option<(Bind, Proven)> {
         let s = self.get(c)?;
-        Some((s.bind()?, s.proven().clone()))
+        let b = s.binding()?;
+        let (own, peer) = if s.dialer { (b.dialer_challenge, b.listener_challenge) } else { (b.listener_challenge, b.dialer_challenge) };
+        Some((Bind { dialer: s.dialer, own_challenge: own, peer_challenge: peer, listener_key: b.listener_key }, s.proven().clone()))
     }
 
-    fn id(&mut self, c: ConnId) -> Id {
-        self.get_mut(c).map_or(osis_proto::limits::TOP_BIT, |s| s.shared_id())
+    fn request(&mut self, c: ConnId, m: Msg) -> Id {
+        self.get_mut(c).map_or(0, |s| s.request(crate::session::To::Opens, m))
     }
 
-    fn send(&mut self, c: ConnId, m: Msg) {
+    fn answer(&mut self, c: ConnId, to: Id, m: Msg) {
         if let Some(s) = self.get_mut(c) {
-            s.send(m);
+            s.answer(to, m);
+        }
+    }
+
+    fn push(&mut self, c: ConnId, m: Msg) {
+        if let Some(s) = self.get_mut(c) {
+            s.push_now(m);
         }
     }
 
