@@ -355,7 +355,7 @@ fn deposit_commit(engine: &mut Engine, store: &Store, s: &SyncId, e: &Entry) -> 
         return Ok(Some(c));
     }
     let Some(bytes) = store.bytes(&e.blob)? else { return Ok(None) };
-    Ok(match engine.open_entry(s, &e.blob, &e.wrap, &bytes)? {
+    Ok(match crate::store::open_entry(engine, store, s, &e.blob, &e.wrap, &bytes)? {
         Opened::Commit(c, _) => Some(c),
         _ => None,
     })

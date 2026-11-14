@@ -45,6 +45,38 @@ struct Carriers {
     commits: Option<Feed<CommitId>>,
     /// Record blobs whose loose records were all learned (`Engine::loose_feed`).
     loose: Option<Feed<BlobId>>,
+    /// Waiting memory commits woken (`Engine::memory_woken_feed`).
+    woken: Option<Feed<CommitId>>,
+}
+
+/// `Engine::open_entry` of entry `b` of read S, an ephemeral commit within the room S's memory
+/// cap leaves (`Store::memory_room`). The one way sync opens an entry.
+pub(crate) fn open_entry(engine: &mut Engine, store: &Store, s: &SyncId, b: &BlobId, wrap: &crate::types::Wrap, bytes: &[u8]) -> Result<Opened> {
+    Ok(engine.open_entry(s, b, wrap, bytes, store.memory_room(s))?)
+}
+
+/// Waiting memory commit `c`, woken by what it awaited, applied within the room of a read sync
+/// ID an entry of it is under, its carrier's own count included (spec/sync-compaction.md §2
+/// Caps: checked again each time it is applied). One still waiting stays; one past the room is
+/// thrown out with nothing of it kept, its carriers released as their blobs go unnamed.
+fn apply_waiting(engine: &mut Engine, store: &Store, c: &CommitId) -> Result<bool> {
+    if !engine.memory_pending(c) {
+        return Ok(false);
+    }
+    for b in engine.commit_blobs(c)?.iter() {
+        for s in store.naming(b)? {
+            if store.holding(&s) != Some(Holding::Read) {
+                continue;
+            }
+            let own = match store.entry(&s, b)? {
+                Some(e) if !e.role => store.blob_len(b)?.unwrap_or(0).saturating_add(super::ENTRY_OVERHEAD),
+                _ => 0,
+            };
+            let applied = engine.apply_waiting_memory(c, store.memory_room(&s).saturating_add(own))?;
+            return Ok(matches!(applied, Some(osis_engine::Ingested::Applied(_))));
+        }
+    }
+    Ok(false)
 }
 
 /// Whether an open of entry `b` left its commit pending here, or a record it carries loose: the
@@ -101,6 +133,15 @@ impl Carriers {
         for c in engine.take_redeliver() {
             acted |= reopen(engine, store, &c)?;
             engine.redelivered(&c)?;
+        }
+        // a waiting memory commit applies only here, within its sync ID's room
+        match self.woken.as_mut() {
+            Some(f) => {
+                for c in f.added() {
+                    acted |= apply_waiting(engine, store, &c)?;
+                }
+            }
+            None => self.woken = Some(engine.memory_woken_feed()),
         }
         let held = match self.commits.as_mut() {
             Some(f) => f.added(),
@@ -189,7 +230,7 @@ impl Follow {
         for s in raised {
             for e in store.entries(&s)? {
                 if let Some(bytes) = store.bytes(&e.blob)? {
-                    engine.open_entry(&s, &e.blob, &e.wrap, &bytes)?;
+                    open_entry(engine, store, &s, &e.blob, &e.wrap, &bytes)?;
                 }
             }
         }
@@ -271,7 +312,7 @@ fn reopen(engine: &mut Engine, store: &mut Store, c: &CommitId) -> Result<bool> 
         let Some(bytes) = store.bytes(b)? else { continue };
         for s in store.naming(b)? {
             let Some(e) = store.entry(&s, b)? else { continue };
-            engine.open_entry(&s, b, &e.wrap, &bytes)?;
+            open_entry(engine, store, &s, b, &e.wrap, &bytes)?;
             opened = true;
         }
     }
@@ -329,7 +370,7 @@ fn open_parked(engine: &mut Engine, store: &mut Store, parked: &mut BTreeSet<Blo
             continue;
         };
         let Some(bytes) = store.bytes(&b)? else { continue };
-        let o = engine.open_entry(s, &b, &e.wrap, &bytes)?;
+        let o = open_entry(engine, store, s, &b, &e.wrap, &bytes)?;
         // still parked: what does not open yet, and a commit opened but thrown out
         let still = match o {
             Opened::NotOpen => true,

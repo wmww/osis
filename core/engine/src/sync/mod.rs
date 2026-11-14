@@ -352,9 +352,11 @@ fn not_built<T>(what: &'static str) -> Result<T> {
 impl Engine {
     // Ingest
 
-    /// Opens an entry's wrap with a held read secret and takes what the blob holds.
-    pub fn open_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8]) -> Result<Opened> {
-        self.open_entry_now(s, blob, wrap, bytes)
+    /// Opens an entry's wrap with a held read secret and takes what the blob holds. `room`: what
+    /// holding an ephemeral commit may cost under S's cap now (`ingest_memory`; `TooLarge`
+    /// past it); a durable blob ignores it.
+    pub fn open_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], room: u64) -> Result<Opened> {
+        self.open_entry_now(s, blob, wrap, bytes, room)
     }
 
     /// A relay-only commit (spec/sync-compaction.md §2): `Some` when new here (passed on).

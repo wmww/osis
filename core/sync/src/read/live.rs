@@ -75,6 +75,22 @@ impl Live<'_, '_> {
     }
 }
 
+impl Live<'_, '_> {
+    /// Own entry `b` of `c` logged under S (`code`): one of an ephemeral commit from another
+    /// node counts toward S's memory cap at what the commit costs held here
+    /// (spec/sync-compaction.md §2 Caps).
+    fn logged(&mut self, s: &SyncId, c: &CommitId, b: BlobId, code: osis_proto::Code) -> Result<Option<BlobId>> {
+        if code != osis_proto::Code::OK {
+            return Ok(None);
+        }
+        if self.cx.engine.holds_memory(c) && !self.cx.engine.read_facts(s, c)?.own {
+            let n = self.cx.engine.memory_charge(c)?;
+            self.cx.store.set_memory_charge(s, &b, n);
+        }
+        Ok(Some(b))
+    }
+}
+
 impl Ground for Live<'_, '_> {
     fn commits_added(&mut self) -> Result<Vec<CommitId>> {
         // the feeds start with the first settle: what each covers before is judged then
@@ -237,14 +253,14 @@ impl Ground for Live<'_, '_> {
                     let Some(wrap) = self.cx.engine.rewrap(c, b, from, &e.wrap, s)? else { continue };
                     let e = own_entry(self.cx, s, *b, wrap, e.class)?;
                     let code = self.cx.store.log(s, e, None, None)?;
-                    return Ok((code == osis_proto::Code::OK).then_some(*b));
+                    return self.logged(s, c, *b, code);
                 }
             }
         }
         let Some((sealed, wrap)) = self.fresh(s, c)? else { return Ok(None) };
         let e = own_entry(self.cx, s, sealed.id, wrap, class)?;
         let code = self.cx.store.log(s, e, Some(sealed.blob), None)?;
-        Ok((code == osis_proto::Code::OK).then_some(sealed.id))
+        self.logged(s, c, sealed.id, code)
     }
     fn drop_own(&mut self, s: &SyncId, b: &BlobId, c: &CommitId) -> Result<()> {
         self.cx.store.drop_entry(s, b, c.0.to_vec())?;

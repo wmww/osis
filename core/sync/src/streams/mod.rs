@@ -429,7 +429,7 @@ impl Sources for Streams {
 /// Runs `f` over the product's `Ctx`.
 fn product(cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, reported: &mut Vec<Reported>, f: impl FnOnce(&mut Ctx)) {
     let now = cx.now;
-    let mut ground = EngineGround { engine: cx.engine };
+    let mut ground = EngineGround { engine: cx.engine, store: cx.store.clone() };
     let mut ctx = Ctx { store: cx.store, ground: &mut ground, wire: sessions, shared: opens, now, reported };
     f(&mut ctx);
 }
@@ -437,14 +437,16 @@ fn product(cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, reported: &mut V
 /// The product's `Ground`: the engine's facade.
 struct EngineGround<'a> {
     engine: &'a mut Engine,
+    /// For S's memory room (`store::open_entry`).
+    store: crate::store::Store,
 }
 
 impl Ground for EngineGround<'_> {
     fn open(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening> {
-        match self.engine.open_entry(s, &e.blob, &e.wrap, bytes) {
+        match crate::store::open_entry(self.engine, &self.store, s, &e.blob, &e.wrap, bytes) {
             Ok(o) if crate::store::pends(self.engine, &e.blob, &o) => Ok(Opening::Pends),
             Ok(Opened::Commit(..) | Opened::Linked | Opened::Inbox(_) | Opened::Records(_)) => Ok(Opening::Taken),
-            Ok(Opened::NotOpen) | Err(osis_engine::Error::NotBuilt(_)) => Ok(Opening::NotOpen),
+            Ok(Opened::NotOpen) | Err(crate::types::Error::Engine(osis_engine::Error::NotBuilt(_))) => Ok(Opening::NotOpen),
             Ok(Opened::Bad) => Ok(Opening::Bad),
             Err(e) => Err(e.into()),
         }

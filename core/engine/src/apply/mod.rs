@@ -1678,12 +1678,14 @@ impl Engine {
                     // a memory commit waits for node-sync, which applies it within its label's
                     // room (`apply_waiting_memory`)
                     if tx.core.memory_waits.contains(&id) {
+                        tx.core.waits.memory_woken.wrote_added(&id, true, true);
                         continue;
                     }
                     tx.core.waits.examined += 1;
                     if let Some(b) = read_pending(tx, &id)? {
                         if b.header.ephemeral.is_some() {
                             tx.core.memory_waits.insert(id);
+                            tx.core.waits.memory_woken.wrote_added(&id, true, true);
                             continue;
                         }
                         blobs.push((id, b));
@@ -1736,6 +1738,13 @@ impl Engine {
             self.reexamine()?;
         }
         r
+    }
+
+    /// A cursor over waiting memory commits woken by what they awaited (a blob, their `ts`, an
+    /// epoch): each is applied only by `apply_waiting_memory`, within the room its sync ID's cap
+    /// leaves then (spec/sync-compaction.md §2 Caps).
+    pub fn memory_woken_feed(&self) -> osis_base::memo::Feed<CommitId> {
+        self.core.waits.memory_woken.feed()
     }
 
     /// Pending and parked commits with their reasons (`Unexamined` from a load until examined).

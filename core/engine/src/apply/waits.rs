@@ -231,6 +231,9 @@ pub(crate) struct Waits {
     pub loose: Loose,
     /// Stamps a carrier of loose records whose every record was learned (`Engine::loose_feed`).
     pub carried: osis_base::memo::Stamps,
+    /// Stamps a waiting memory commit woken by what it awaited (`Engine::memory_woken_feed`):
+    /// node-sync applies it within its sync ID's room (`apply_waiting_memory`).
+    pub memory_woken: osis_base::memo::Stamps,
     /// The next `reexamine` wakes `Wake::Open` (an open loaded the pending commits).
     pub open_due: bool,
     /// A blob was stored since the last `wake`: `Wake::Blobs` is due.

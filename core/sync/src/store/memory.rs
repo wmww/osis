@@ -41,6 +41,10 @@ pub(crate) struct Memory {
     /// The sync IDs whose ephemeral entries name each blob.
     pub by_blob: BTreeMap<BlobId, BTreeSet<SyncId>>,
     pub usage: BTreeMap<SyncId, Usage>,
+    /// What an entry of a held ephemeral commit from another node costs held here, past its
+    /// bytes (`Engine::memory_charge`; spec/sync-compaction.md §2 Caps): its usage counts the
+    /// larger.
+    estimate: BTreeMap<(SyncId, BlobId), u64>,
     /// Bytes charged to each source by ephemeral entries and connections.
     pub charges: BTreeMap<Source, u64>,
     /// Rows a connection's source keeps for this connection only (stands, deletes seen).
@@ -117,12 +121,13 @@ impl Memory {
         self.slot.insert((*s, *b), self.next);
     }
 
-    fn count(&mut self, s: &SyncId, r: &EntryRow, sign: bool) {
+    fn count(&mut self, s: &SyncId, b: &BlobId, r: &EntryRow, sign: bool) {
+        let held = self.estimate.get(&(*s, *b)).copied().unwrap_or(0).max(r.size);
         let u = self.usage.entry(*s).or_default();
         let op = |x: &mut u64, n: u64| *x = if sign { x.saturating_add(n) } else { x.saturating_sub(n) };
         if !r.role {
             op(&mut u.entries, 1);
-            op(&mut u.bytes, r.size + super::ENTRY_OVERHEAD);
+            op(&mut u.bytes, held + super::ENTRY_OVERHEAD);
         }
         if r.deposited {
             op(&mut u.deposits, 1);
@@ -144,9 +149,9 @@ impl Memory {
             self.expiry.insert((t, *s, *b));
         }
         if let Some(old) = self.entries.remove(&(*s, *b)) {
-            self.count(s, &old, false);
+            self.count(s, b, &old, false);
         }
-        self.count(s, &row, true);
+        self.count(s, b, &row, true);
         self.entries.insert((*s, *b), row);
         self.event(s, b, None);
         self.moved(s, b);
@@ -156,8 +161,8 @@ impl Memory {
     /// Replaces an entry's row (its wrap, stamp, flags, charge).
     pub(crate) fn change(&mut self, s: &SyncId, b: &BlobId, new: EntryRow) {
         let Some(old) = self.entries.remove(&(*s, *b)) else { return };
-        self.count(s, &old, false);
-        self.count(s, &new, true);
+        self.count(s, b, &old, false);
+        self.count(s, b, &new, true);
         let seen = (old.wrap, old.stamp, old.deposited) != (new.wrap, new.stamp, new.deposited);
         self.entries.insert((*s, *b), new);
         if seen {
@@ -167,6 +172,15 @@ impl Memory {
         self.moved(s, b);
     }
 
+    /// Sets what held entry `b` of S costs past its bytes (`estimate`); nothing for one not held.
+    pub(crate) fn set_estimate(&mut self, s: &SyncId, b: &BlobId, n: u64) {
+        let Some(row) = self.entries.get(&(*s, *b)).cloned() else { return };
+        self.count(s, b, &row, false);
+        self.estimate.insert((*s, *b), n);
+        self.count(s, b, &row, true);
+        self.stamps.wrote(&Listing(s), true);
+    }
+
     /// Removes an ephemeral entry (`tomb`: with a tombstone, `MAX_DRIFT`); `expired`: no event.
     pub(crate) fn remove(&mut self, s: &SyncId, b: &BlobId, now: WallMs, tomb: bool, expired: bool) -> bool {
         let held = self.entries.remove(&(*s, *b));
@@ -174,7 +188,8 @@ impl Memory {
             if self.elsewhere.remove(&(*s, *b)) {
                 self.stamps.wrote(&Elsewhere(s, b), true);
             }
-            self.count(s, row, false);
+            self.count(s, b, row, false);
+            self.estimate.remove(&(*s, *b));
             if let Some(t) = row.expires {
                 self.expiry.remove(&(t, *s, *b));
             }

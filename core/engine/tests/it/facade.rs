@@ -864,7 +864,7 @@ fn seal_body_carries_held_sections_verbatim_spec_crypto_5() {
     let mut rng = SeededRng::from_u64(5);
     let (sealed, wrap) = lp.peers[0].engine.seal_body(&s, &c, &[], &mut rng).unwrap().expect("peer 0 seals its own");
     assert!(sealed.parts.contains(&au), "peer 0's blob carries u's part");
-    assert!(matches!(lp.peers[1].engine.open_entry(&s, &sealed.id, &wrap, &sealed.blob).unwrap(), osis_engine::sync::Opened::Commit(x, _) if x == c));
+    assert!(matches!(lp.peers[1].engine.open_entry(&s, &sealed.id, &wrap, &sealed.blob, u64::MAX).unwrap(), osis_engine::sync::Opened::Commit(x, _) if x == c));
     let held = osis_engine::sync::HeldBlob { sync_id: s, wrap, bytes: sealed.blob.clone() };
     let (again, w) = lp.peers[1].engine.seal_body(&s, &c, &[held], &mut rng).unwrap().expect("peer 1 seals c again");
     assert_ne!(again.id, sealed.id, "a fresh blob");
@@ -1010,7 +1010,7 @@ fn a_fresh_encryption_wraps_beyond_the_removed_spec_crypto_5() {
     let mut held = Vec::new();
     for c in [plain, copy] {
         let (sealed, wrap) = lp.peers[0].engine.seal_body(&s, &c, &[], &mut rng).unwrap().expect("peer 0 seals its own");
-        assert!(matches!(lp.peers[1].engine.open_entry(&s, &sealed.id, &wrap, &sealed.blob).unwrap(), osis_engine::sync::Opened::Commit(x, _) if x == c));
+        assert!(matches!(lp.peers[1].engine.open_entry(&s, &sealed.id, &wrap, &sealed.blob, u64::MAX).unwrap(), osis_engine::sync::Opened::Commit(x, _) if x == c));
         held.push((sealed.id, wrap));
     }
     // removing peer 2 rotates read: peer 1 holds a newer epoch
@@ -1239,7 +1239,7 @@ fn another_nodes_card_is_in_the_required_set_spec_sync_judgement_2() {
     assert!(f.required && !f.closure, "{f:?}");
     let (sealed, wrap) = e.seal_body(&home, &r, &[], &mut SeededRng::from_u64(1)).unwrap().expect("sealed as a certificate copy");
     assert_eq!(e.blob_copy(&sealed.id).unwrap(), Some(true));
-    match lp.peers[1].engine.open_entry(&home, &sealed.id, &wrap, &sealed.blob).unwrap() {
+    match lp.peers[1].engine.open_entry(&home, &sealed.id, &wrap, &sealed.blob, u64::MAX).unwrap() {
         osis_engine::sync::Opened::Commit(c, _) => assert_eq!(c, r),
         o => panic!("{o:?}"),
     }
@@ -1450,13 +1450,13 @@ fn a_forged_record_in_a_record_blob_names_no_other_thing_spec_wire_3() {
     let forged = osis_base::CreationRecord::Thing { admin: lp.peers[1].engine.tid(), nonce, link: None };
     assert_ne!(forged.tid(), u);
     let (id, blob, wrap) = record_blob_by_hand(&mut lp, 0, &d, std::slice::from_ref(&forged));
-    match lp.peers[1].engine.open_entry(&home, &id, &wrap, &blob).unwrap() {
+    match lp.peers[1].engine.open_entry(&home, &id, &wrap, &blob, u64::MAX).unwrap() {
         osis_engine::sync::Opened::Records(tids) => assert_eq!(tids, [forged.tid()].into()),
         o => panic!("{o:?}"),
     }
     assert!(lp.peers[1].engine.core.created(&u).is_none(), "nothing learned of u");
     let (id, bytes, wrap) = lp.peers[0].engine.seal_records(&home, &[u].into(), &mut SeededRng::from_u64(3)).unwrap().expect("sealed");
-    assert!(matches!(lp.peers[1].engine.open_entry(&home, &id, &wrap, &bytes).unwrap(), osis_engine::sync::Opened::Records(_)));
+    assert!(matches!(lp.peers[1].engine.open_entry(&home, &id, &wrap, &bytes, u64::MAX).unwrap(), osis_engine::sync::Opened::Records(_)));
     assert!(lp.peers[1].engine.core.created(&u).is_none() && lp.peers[1].engine.carries_loose(&id), "nothing awaits u yet: loose");
     later_write_on(&mut lp, u);
     assert_eq!(lp.peers[1].engine.core.created(&u), Some(&real));
@@ -1488,7 +1488,7 @@ fn junk_records(n: usize) -> (usize, usize, usize, bool) {
     let (gb, gbytes, gwrap) = record_blob_by_hand(&mut lp, 0, &d, std::slice::from_ref(&real));
     assert_ne!(jb, gb);
     for (b, bytes, wrap) in [(&jb, &jbytes, &jwrap), (&gb, &gbytes, &gwrap)] {
-        assert!(matches!(lp.peers[1].engine.open_entry(&home, b, wrap, bytes).unwrap(), osis_engine::sync::Opened::Records(_)));
+        assert!(matches!(lp.peers[1].engine.open_entry(&home, b, wrap, bytes, u64::MAX).unwrap(), osis_engine::sync::Opened::Records(_)));
     }
     let carried = lp.peers[1].engine.loose_records();
     let learned = known(&lp);
@@ -1636,7 +1636,7 @@ fn a_loose_author_record_is_learned_when_its_commit_comes_spec_commits_4() {
     let s0 = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
     let rec = lp.peers[1].engine.core.created(&b).cloned().unwrap();
     let (id, bytes, wrap) = record_blob_by_hand(&mut lp, 0, &t, std::slice::from_ref(&rec));
-    assert!(matches!(lp.peers[0].engine.open_entry(&s0, &id, &wrap, &bytes).unwrap(), osis_engine::sync::Opened::Records(_)));
+    assert!(matches!(lp.peers[0].engine.open_entry(&s0, &id, &wrap, &bytes, u64::MAX).unwrap(), osis_engine::sync::Opened::Records(_)));
     assert!(lp.peers[0].engine.core.created(&b).is_none() && lp.peers[0].engine.carries_loose(&id));
     let u = thing_of(&mut lp, 1, b);
     let mut m = Mutation::new();
@@ -2008,7 +2008,7 @@ fn a_loose_record_awaited_after_another_arrives_is_learned_spec_commits_4() {
         lp.peers[0].engine.ingest(&cb, Vec::new()).unwrap();
         let first = lp.peers[0].engine.pending().into_iter().find(|(x, _)| *x == c).map(|x| x.1);
         let (id, bytes, wrap) = record_blob_by_hand(&mut lp, 0, &t, std::slice::from_ref(&loose));
-        lp.peers[0].engine.open_entry(&s0, &id, &wrap, &bytes).unwrap();
+        lp.peers[0].engine.open_entry(&s0, &id, &wrap, &bytes, u64::MAX).unwrap();
         if lp.peers[0].engine.core.created(&loose.tid()).is_some() {
             continue; // the commit awaited the loose one first: learned at once (the other test)
         }

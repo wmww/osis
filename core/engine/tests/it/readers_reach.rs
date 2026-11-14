@@ -124,7 +124,7 @@ fn a_removed_reader_never_learns_the_fresh_deposit_seed_spec_crypto_3() {
     let mut rng = SeededRng::from_u64(9);
     for c in &done.commits {
         let Some((sealed, wrap)) = lp.peers[0].engine.seal_body(&s, c, &[], &mut rng).unwrap() else { continue };
-        lp.peers[1].engine.open_entry(&s, &sealed.id, &wrap, &sealed.blob).unwrap();
+        lp.peers[1].engine.open_entry(&s, &sealed.id, &wrap, &sealed.blob, u64::MAX).unwrap();
     }
     let learned = lp.peers[1].engine.deposit_seed(&t).unwrap();
     assert!(learned.is_none_or(|x| x.expose() != new.expose()), "the removed reader holds the fresh seed");

@@ -2,6 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod convergence;
+mod ephemeral;
 mod faults;
 mod flows;
 mod growth;

@@ -26,7 +26,7 @@ pub(crate) mod rows;
 mod follow;
 
 pub use follow::Follow;
-pub(crate) use follow::{pends, release};
+pub(crate) use follow::{open_entry, pends, release};
 pub use path::{Behind, Cred};
 pub use rows::{Source, Tombstone, Usage};
 
@@ -581,6 +581,21 @@ impl Store {
         let mut g = self.lock();
         let m = g.mem.usage(s);
         Ok((g.read(|t, _| entries::usage(t, s))?, m))
+    }
+
+    /// What holding one more ephemeral commit under read S may cost now (spec/sync-compaction.md
+    /// §2 Caps, at a node for what it reads): S's memory cap less what S's ephemeral entries
+    /// count, each at least its bytes and an entry of a commit from another node at what it
+    /// costs held (`set_memory_charge`). Own entries count their bytes too (local policy).
+    pub fn memory_room(&self, s: &SyncId) -> u64 {
+        let g = self.lock();
+        g.policy.memory_bytes.saturating_sub(g.mem.usage(s).bytes)
+    }
+
+    /// Ephemeral entry `b` of S names a held commit from another node costing `n` held here
+    /// (`Engine::memory_charge`): S's memory usage counts it at that, or at its bytes if more.
+    pub fn set_memory_charge(&mut self, s: &SyncId, b: &BlobId, n: u64) {
+        self.lock().mem.set_estimate(s, b, n);
     }
 
     /// The head S's path ends at.

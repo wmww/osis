@@ -405,7 +405,7 @@ impl Engine {
     /// (`open_commit`, each section's opening kept) and ingested, the epoch its wrap opened under
     /// kept as an opening of its header (`note_unwrapped`); a chunk, tree node or page a held commit is
     /// waiting for, stored.
-    pub(crate) fn open_entry_now(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8]) -> Result<Opened> {
+    pub(crate) fn open_entry_now(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], room: u64) -> Result<Opened> {
         if osis_label::blob_id(bytes) != *blob {
             return Ok(Opened::Bad);
         }
@@ -455,7 +455,14 @@ impl Engine {
             }
         }
         let parts: PartSet = opened.parts().into_iter().collect();
-        let ingested = match self.ingest(&opened.plaintext, Vec::new()) {
+        // an ephemeral commit is held in memory, within the room S's cap leaves
+        // (spec/sync-compaction.md §2 Holding, Caps); a relay-only one is never an entry
+        let ingested = match opened.commit.header.ephemeral {
+            None => self.ingest(&opened.plaintext, Vec::new()),
+            Some(osis_commit::EphClass::Plain) => self.ingest_memory(&opened.plaintext, room),
+            Some(osis_commit::EphClass::Relay) => return Ok(Opened::Bad),
+        };
+        let ingested = match ingested {
             Ok(i) => i,
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
             Err(_) => return Ok(Opened::Bad),
