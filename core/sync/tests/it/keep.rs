@@ -269,3 +269,32 @@ fn a_store_granted_again_after_its_removal_reaches_the_head_spec_sync_ids_6() {
     assert_eq!(w.store(1).head(&s).unwrap().map(|h| h.id()), path.steps.last().map(|(st, _)| st.id()), "S's path registered at node 1");
     assert!(!w.status(1)[&s].stranded, "node 1 holds its head's sync secret");
 }
+
+/// `kept_then_removed`, node 1 restarted with its copy of S dropped, then granted read again.
+fn dropped_then_granted_read(restart: bool) -> (World, Tid, SyncId) {
+    let (mut w, t, s) = kept_then_removed();
+    assert!(w.store(1).entries(&s).unwrap().is_empty(), "its copy dropped");
+    if restart {
+        w.power_off(1);
+        w.power_on(1);
+        w.run();
+    }
+    let a1 = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t, &a1, &edge(Role::Read))).unwrap();
+    w.run();
+    (w, t, s)
+}
+
+// spec/sync-judgement.md §6 (Stops: its copy dropped at a head past its keys), §3 (Dropped
+// bodies: fetched again where present), spec/sync-set.md §3 (S read again is pulled from the
+// start): node 1, whose copy of S went at its removal's step, is granted read again: every source
+// pulls S from the start, so it reads the write it held before the drop, also after a restart
+// between the drop and the grant (the drop's mark and every stored place of S are durable).
+#[test]
+fn a_dropped_copy_granted_read_again_is_fetched_from_the_start_spec_sync_judgement_6() {
+    for restart in [false, true] {
+        let (mut w, t, s) = dropped_then_granted_read(restart);
+        assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some((t, Holding::Read)), "read again");
+        assert_eq!(w.engine(1).get(&t, &Ak::new("t:reg.0").unwrap()).unwrap(), Some(Value::Int(2)), "restart {restart}: the write from before the drop read");
+    }
+}

@@ -323,6 +323,15 @@ impl Store {
             }
             Ok(())
         })?;
+        // a copy dropped before the start takes nothing until judged again (`set_unheld`)
+        inner.unheld = inner.read(|t, _| {
+            let mut out = BTreeSet::new();
+            for (k, _) in t.scan_local(rows::DROPPED, b"", usize::MAX)? {
+                let id: [u8; 16] = k.get(rows::DROPPED.len()..).and_then(|x| x.try_into().ok()).ok_or(crate::types::Error::Store(osis_store::Error::Corrupt("sync store dropped copy")))?;
+                out.insert(SyncId(id));
+            }
+            Ok(out)
+        })?;
         Ok(Store(Arc::new(Mutex::new(inner))))
     }
 
@@ -1167,6 +1176,7 @@ impl Store {
             t.log_forget(*s)?;
             // S's rows in every record go with its `changed_at` (spec/sync-opens.md §3)
             t.changed_forget(s)?;
+            t.remove_local(&[rows::DROPPED, &s.0].concat(), Shred::No)?;
             Ok(())
         })?;
         g.mem.forget(s, now);
@@ -1176,11 +1186,19 @@ impl Store {
         Ok(())
     }
 
+    /// In `t` (streams' transaction moving every source's place of S back to the start): S's
+    /// dropped copy is fetched anew, its mark (`set_unheld`) goes.
+    pub(crate) fn clear_dropped(t: &mut Transaction<'_>, s: &SyncId) -> std::result::Result<(), osis_store::Error> {
+        t.remove_local(&[rows::DROPPED, &s.0].concat(), Shred::No).map(drop)
+    }
+
     /// S kept unread moved to (`true`) or off (`false`) a head whose sync key this node holds no
     /// box for (spec/sync-judgement.md §6): moving there drops its copy of S (every entry, with
     /// no deletion event: it was no delete; its path and tombstones stay), and while there it
-    /// takes no entry, deposit or Delete, as with no head. Moving off it, S is fetched anew
-    /// (`anew_feed`): its sources' positions passed the entries dropped.
+    /// takes no entry, deposit or Delete, as with no head. Moving off it (or read), S is fetched
+    /// anew (`anew_feed`): its sources' positions passed the entries dropped. The drop is marked
+    /// durably (`N/`) until streams moved every source's place of S back to the start
+    /// (`clear_dropped`), so a restart between finds S unheld, to be judged again.
     pub fn set_unheld(&mut self, s: &SyncId, unheld: bool) -> Result<()> {
         let mut g = self.lock();
         if !unheld {
@@ -1198,6 +1216,7 @@ impl Store {
                 let (_, b) = rows::tail_ids(&k)?;
                 entries::remove(t, env, s, &b, Removal::Expired)?;
             }
+            t.put_local(&[rows::DROPPED, &s.0].concat(), &[], Shred::No)?;
             Ok(())
         })?;
         g.mem.drop_entries(s, now);

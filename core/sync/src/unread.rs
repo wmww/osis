@@ -156,12 +156,13 @@ impl Unread {
                         self.judged.want(s);
                     }
                 }
-                // raised to read: no longer this module's (its store stays); stopped: shredded
+                // raised to read: no longer this module's (its store stays, a copy it dropped is
+                // fetched anew, also when dropped before a restart); stopped: shredded
                 _ => {
+                    if matches!(now, Some((_, Holding::Read))) {
+                        cx.store.set_unheld(&s, false)?;
+                    }
                     if self.followed.remove(&s).is_some() {
-                        if matches!(now, Some((_, Holding::Read))) {
-                            cx.store.set_unheld(&s, false)?;
-                        }
                         self.judged.unwant(&s);
                         if self.kept.contains_key(&s) {
                             self.kept.remove(&s);

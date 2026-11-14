@@ -787,20 +787,42 @@ impl Streams {
     }
 
     /// S pulled from the start: from each source pulling it now, and from the start at its next
-    /// join wherever this node's place already passed (kept in memory).
+    /// join at every source whose place passed it, those only stored included (a restart since),
+    /// in one transaction with the store's mark of a dropped copy (`Store::clear_dropped`).
+    /// O(the sources holding a place of S).
     fn pull_anew(&mut self, ctx: &mut Ctx, s: SyncId) {
         let pulling: BTreeMap<Source, ConnId> = self.holders.get(&s).into_iter().flatten().filter_map(|c| self.pull.get(c).map(|p| (p.src, *c))).collect();
-        let srcs: BTreeSet<Source> = self.places.iter().filter(|(_, pl)| pl.at_stream.contains(&s) || pl.stopped.contains_key(&s) || pl.joining.contains_key(&s)).map(|(src, _)| *src).chain(pulling.keys().copied()).collect();
-        for src in srcs {
-            if let Some(p) = pulling.get(&src).and_then(|c| self.pull.get_mut(c)) {
+        let stored = ctx.store.with_read(|t| {
+            let mut out = BTreeSet::new();
+            for tag in [AT_STREAM, JOINING, STOPPED] {
+                out.extend(t.records_with_row(&s, tag, b"", usize::MAX)?);
+            }
+            Ok(out)
+        });
+        let stored = match stored {
+            Ok(x) => x,
+            Err(e) => return self.failed(Err(e)),
+        };
+        let srcs: BTreeSet<Source> = self.places.iter().filter(|(_, pl)| pl.at_stream.contains(&s) || pl.stopped.contains_key(&s) || pl.joining.contains_key(&s)).map(|(src, _)| *src).chain(pulling.keys().copied()).chain(stored.into_iter().map(Source::Record)).collect();
+        for src in &srcs {
+            if let Some(p) = pulling.get(src).and_then(|c| self.pull.get_mut(c)) {
                 p.join(s, None);
             }
-            let place = self.place(ctx.store, src);
+            let place = self.place(ctx.store, *src);
             place.at_stream.remove(&s);
             place.stopped.remove(&s);
             place.joining.insert(s, None);
-            self.save(ctx, src, &[s], false, Vec::new());
         }
+        let places = &self.places;
+        let r = ctx.store.with_tx(|t| {
+            for src in &srcs {
+                if let (Source::Record(rec), Some(p)) = (src, places.get(src)) {
+                    p.write(t, rec, &s)?;
+                }
+            }
+            Store::clear_dropped(t, &s)
+        });
+        self.failed(r);
     }
 
     /// Sends Fetches while fewer than `FETCHES_OUT` are out: one sync ID's bodies of one fill

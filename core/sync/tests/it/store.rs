@@ -355,6 +355,26 @@ fn a_head_past_its_keys_drops_the_copy_and_takes_nothing_spec_sync_judgement_6()
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes).unwrap(), Code::OK, "re-fetched");
 }
 
+// spec/sync-judgement.md §6 (Stops: back within its keys or raised to read, it fetches S anew;
+// a restart between changes nothing): the drop's mark is durable: reopened after a crash, S
+// still takes nothing, and leaving the mark tells streams to fetch S anew (`anew_feed`).
+#[test]
+fn a_dropped_copy_is_fetched_anew_after_a_restart_spec_sync_judgement_6() {
+    let dev = Dev::new();
+    let s = Sid::new(10);
+    let mut st = unread(&dev, &s);
+    st.set_unheld(&s.id, true).unwrap();
+    drop(st);
+    let mut st = dev.open();
+    st.set_sync_set(&holding(&[(&s, Holding::Unread)]));
+    let (c, cbytes) = blob(102, Class::Durable, None, &[]);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, c, false), cbytes).unwrap(), Code::REFUSED, "still dropped after the restart");
+    let mut anew = st.anew_feed();
+    st.set_sync_set(&holding(&[(&s, Holding::Read)]));
+    st.set_unheld(&s.id, false).unwrap();
+    assert_eq!(anew.added(), vec![s.id], "fetched anew");
+}
+
 // spec/sync-ids.md §6 (Taking a stamped entry): a stamped entry of a deposited entry's blob ID
 // replaces its wrap and stamp and clears the flag; a stamped entry's wrap and stamp never change
 // after: taking it again changes nothing and logs no event.

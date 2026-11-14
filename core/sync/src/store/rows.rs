@@ -19,6 +19,8 @@
 //! - `w/ at s tag key rec` rows a source's record holds of S that age out (stands, deletes seen).
 //! - `S/ s b` a source showed holding entry `b` of S (spec/sync-status.md §2 Held elsewhere),
 //!   kept while the entry is; a row of its own so recording it moves no reader of the entry.
+//! - `N/ s` S's copy was dropped kept unread (`Store::set_unheld`): written with the drop, gone
+//!   once streams set every source's place of S back to the start (`clear_dropped`).
 
 use crate::types::{Error, Result};
 use osis_base::{BlobId, SyncId, WallMs};
@@ -45,6 +47,7 @@ pub(crate) const HEAD: &[u8] = b"H/";
 /// Deposited (unstamped) entries per sync ID: what promotion, clearing and offering read.
 pub(crate) const DEPOSITED: &[u8] = b"D/";
 pub(crate) const ELSEWHERE: &[u8] = b"S/";
+pub(crate) const DROPPED: &[u8] = b"N/";
 
 /// The tags of the rows each module keeps in a peer's record (`osis_store::Transaction::
 /// record_put_row`, `record_put_wide_row` for a row about the record as a whole), one owner per
