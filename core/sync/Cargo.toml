@@ -30,6 +30,5 @@ driver = ["dep:tokio"]
 
 [dev-dependencies]
 osis-commit.workspace = true
-osis-perm.workspace = true
 osis-schema.workspace = true
 osis-transport.workspace = true

@@ -174,11 +174,17 @@ fn a_node_alone_forgets_a_released_things_sync_id_spec_sync_judgement_5() {
 /// record goes under D's sync ID as a certificate (u's record chain) while D's closure lacks t.
 /// Run to quiet. Returns (t, t's minting, D's sync ID).
 fn admin_outside(w: &mut World, i: usize, expires: Option<u64>) -> (Tid, CommitId, SyncId) {
+    admin_outside_by(w, i, expires, osis_schema::PurgeBy::Admin)
+}
+
+/// `admin_outside` with t's minting purgeable by `by`.
+fn admin_outside_by(w: &mut World, i: usize, expires: Option<u64>, by: osis_schema::PurgeBy) -> (Tid, CommitId, SyncId) {
     let (t, m) = w.write(i, |e| {
         let me = e.me();
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, me);
         m.set(t, &value_ak(), &Value::Str("t".into())).unwrap();
+        m.retention(t, &ct::CREATED, osis_schema::Retention { by }).unwrap();
         if let Some(x) = expires {
             m.expires_all(osis_base::WallMs(x));
         }
@@ -253,4 +259,54 @@ fn a_destroyed_things_witness_reaches_a_late_node_spec_commits_5() {
     assert!(e.witness(&t).is_some_and(|m| m.commit == first && !m.standing.valued), "the late node holds t's value-less witness");
     assert!(e.header(&q).is_some(), "the late node holds the request");
     assert!(holds(&mut w, late, &s, &first), "the witness's copy under D at the late node");
+}
+
+// spec/commits.md §5 (A thing's mintings travel with its record: a lower copy goes only where an
+// entry holds a minting of the witness's standing expiring later, by any node judging so; one
+// lacking a request ranks a minting no lower than one holding it does), spec/sync-judgement.md
+// §2: siblings 1 and 2 sync D; t (u's first admin, outside D) is minted at node 1 expiring at E,
+// purgeable by nobody, and again at node 2, durable. Node 1 purges t's creation while it
+// withholds its log: the request drops node 2's minting alone, so node 1's witness is its own
+// and node 2's the durable one, each lower at the other. Node 1 keeps node 2's witness's copy
+// (it expires later), so the two never each drop what the other keeps; healed, and past E, both
+// judge t destroyed by the same witness.
+#[test]
+fn nodes_with_different_witnesses_never_each_drop_the_others_spec_commits_5() {
+    let mut w = crate::harness::siblings();
+    w.cap = 20_000;
+    let end = w.engine(1).now().0 + 2 * ROLE_KEEP_MS;
+    let (t, first, s) = admin_outside_by(&mut w, 1, Some(end), osis_schema::PurgeBy::Nobody);
+    let again = w.write(2, |e| {
+        let rec = e.core.created(&t).cloned().expect("node 2 holds t's record");
+        let mut m = Mutation::new();
+        m.create(rec);
+        e.commit_hostile(m).unwrap().unwrap()
+    });
+    w.run();
+    for i in [1, 2] {
+        assert_eq!(w.engine(i).witness(&t).map(|m| m.commit), Some(again), "node {i}: the durable minting is the witness");
+        assert!(holds(&mut w, i, &s, &again), "node {i}: the witness's copy under D");
+    }
+    w.lie(1, Some(crate::harness::lies::Lie::Withhold));
+    let q = purge_thing(&mut w, 1, t);
+    w.run();
+    let witness = |w: &mut World, i: usize| w.engine(i).witness(&t).map(|m| m.commit);
+    assert_eq!(witness(&mut w, 1), Some(first), "node 1: the request drops the durable minting alone");
+    assert_eq!(witness(&mut w, 2), Some(again), "node 2 lacks the request");
+    assert!(w.engine(2).header(&q).is_none(), "node 2 lacks the request");
+    assert!(holds(&mut w, 1, &s, &first), "node 1 logs its witness");
+    assert!(holds(&mut w, 1, &s, &again), "node 1 drops node 2's witness's copy");
+    assert!(holds(&mut w, 2, &s, &again), "node 2 drops its witness's copy");
+    w.lie(1, None);
+    w.run();
+    assert!(holds(&mut w, 1, &s, &first) && holds(&mut w, 1, &s, &again), "node 1 keeps both copies");
+    assert!(holds(&mut w, 2, &s, &again), "node 2 keeps its witness's copy");
+    w.advance(2 * ROLE_KEEP_MS + 1_000);
+    w.run();
+    for i in [1, 2] {
+        let e = w.engine(i);
+        assert!(e.destroyed(&t), "node {i}: t destroyed past E");
+        assert_eq!(e.witness(&t).map(|m| m.commit), Some(first), "node {i}: the expired minting is the witness");
+        assert!(e.header(&q).is_some(), "node {i} holds the request");
+    }
 }

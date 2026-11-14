@@ -2911,7 +2911,6 @@ dependencies = [
  "osis-crypto",
  "osis-engine",
  "osis-label",
- "osis-perm",
  "osis-proto",
  "osis-schema",
  "osis-store",

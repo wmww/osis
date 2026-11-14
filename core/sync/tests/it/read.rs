@@ -2095,7 +2095,7 @@ fn a_tie_held_keeps_the_witness_unlogged_spec_commits_5() {
 // expiring at 80 instead goes.
 #[test]
 fn a_lower_copy_goes_only_below_a_later_expiry_spec_commits_5() {
-    let by = osis_perm::Point { ts: osis_base::Ts::make(WallMs(50), 0).unwrap(), node: Tid::from_bytes([9; 15]), commit: cid(9) };
+    let by = osis_engine::retention::Point { ts: osis_base::Ts::make(WallMs(50), 0).unwrap(), node: Tid::from_bytes([9; 15]), commit: cid(9) };
     for (expires, goes) in [(None, false), (Some(80), true)] {
         let mut w = W::new();
         w.g.own.insert((S, cid(2)), vec![peer_entry(12)]);
