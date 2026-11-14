@@ -2,6 +2,7 @@
 > Summary: When a node removes its own account from T, its sibling (another node of the account) applies the removal but keeps T's secrets and keeps T listed for good, even after an outside co-reader holds the removal (spec/permissions.md §3 Lost access: every node of the account drops once it is held elsewhere). The engine's own trigger is right; both syncs lack the sibling half.
 > Priority: normal
 > Tags: sync, engine, security
+> Fixed on the sync rebuild branch (capstan-sync-rebuild, b487f5346: every node of the account waits on its account's self-removal; removal_done drops per lost actor). Delete this issue when that branch lands on main, which deletes the old node-sync too.
 
 **Engine (main), right**: the trigger (`drop_lost_due`) leaves a loss with an own self-removal behind it to sync at every node of the account alike: `rotation::departures::own_leaving` counts a commit authored by the account (every commit a node makes is), wherever it was made, so the sibling's `lost_leaving` lists T with the removal, as the writer's does.
 
