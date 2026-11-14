@@ -1367,7 +1367,9 @@ impl Engine {
         let id = blob.id();
         let ais: Vec<usize> = blob.parts.iter().map(|p| p.ai).collect();
         let mut refused = false;
+        let mut rotation = None;
         let r = self.run(|tx| {
+            rotation = hold_rotation_lists(tx, &blob, &[])?;
             let out = ingest_blob(tx, blob, Origin::Remote)?;
             refused = matches!(out, Ingested::Parked(_)) || (matches!(out, Ingested::Applied(_)) && !crate::labeling::judged_valid(tx.core, &id, &ais));
             if refused {
@@ -1381,6 +1383,9 @@ impl Engine {
         self.openings_done(&id);
         if refused {
             return Ok(None);
+        }
+        if let Some(id) = rotation.filter(|_| r.is_ok()) {
+            self.loose_lists_held(&id);
         }
         if let Ok(Ingested::Applied(_)) = &r {
             self.reexamine()?;
@@ -1479,16 +1484,8 @@ impl Engine {
             } else {
                 fresh = !tx.store_blobs(blobs)?.is_empty();
             }
-            if let Ok(b) = &decoded
-                && let Some(root) = b.header.rotation.as_ref().map(|r| r.list_root)
-                && !tx.core.ix.commits.contains_key(&b.id())
-            {
-                let id = b.id();
-                // with those that came beside it, the lists kept loose until it came
-                let loose = tx.core.waits.loose.lists_for(&id);
-                let certs: Vec<osis_commit::thing_list::ThingCert> = lists.iter().filter_map(|l| osis_commit::thing_list::decode_list_blob(l).ok()).flatten().chain(loose).filter(|c| c.rotation == id && crate::flows::lists::verifies(c, &root)).collect();
-                crate::flows::lists::keep_certs(tx, &certs)?;
-                rotation = Some(id);
+            if let Ok(b) = &decoded {
+                rotation = hold_rotation_lists(tx, b, lists)?;
             }
             match decoded {
                 Ok(blob) => {
@@ -1509,11 +1506,8 @@ impl Engine {
         if fresh && r.is_ok() {
             self.blobs_stored();
         }
-        // its loose lists are held: their carriers give something held now
         if let Some(id) = rotation.filter(|_| r.is_ok()) {
-            for b in self.core.waits.loose.lists_held(&id) {
-                self.core.waits.carried.wrote_added(&b, true, true);
-            }
+            self.loose_lists_held(&id);
         }
         // written where kept, or nothing of it is kept (`labeling::opened`)
         if let Some(id) = seen {
@@ -1530,6 +1524,14 @@ impl Engine {
             _ => {}
         }
         r
+    }
+
+    /// Rotation `id` came and its loose lists were held (`hold_rotation_lists`): their carriers
+    /// give something held now.
+    fn loose_lists_held(&mut self, id: &CommitId) {
+        for b in self.core.waits.loose.lists_held(id) {
+            self.core.waits.carried.wrote_added(&b, true, true);
+        }
     }
 
     /// Forgets reading-only secrets sourced from `id`: it was judged bad or its last entry left.
@@ -2276,6 +2278,23 @@ pub struct Creation {
     pub node: Tid,
     pub actor: Tid,
     pub received: WallMs,
+}
+
+/// An account rotation not held yet, as it is taken (every durable path: `ingest_class`,
+/// `ingest_valid`): its thing lists among `lists` (list blobs that came beside it) and those kept
+/// loose until it came (`Loose::lists_for`) that verify against its list root are held in the
+/// same transaction, before it applies, so what they name never reads as unlisted here. The
+/// rotation, whose loose lists' carriers `Engine::loose_lists_held` releases once it is kept.
+fn hold_rotation_lists(tx: &mut Tx<'_>, b: &CommitBlob, lists: &[Vec<u8>]) -> Result<Option<CommitId>> {
+    let Some(root) = b.header.rotation.as_ref().map(|r| r.list_root) else { return Ok(None) };
+    let id = b.id();
+    if tx.core.ix.commits.contains_key(&id) {
+        return Ok(None);
+    }
+    let loose = tx.core.waits.loose.lists_for(&id);
+    let certs: Vec<osis_commit::thing_list::ThingCert> = lists.iter().filter_map(|l| osis_commit::thing_list::decode_list_blob(l).ok()).flatten().chain(loose).filter(|c| c.rotation == id && crate::flows::lists::verifies(c, &root)).collect();
+    crate::flows::lists::keep_certs(tx, &certs)?;
+    Ok(Some(id))
 }
 
 #[cfg(test)]

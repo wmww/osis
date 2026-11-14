@@ -117,8 +117,16 @@ fn removal_rotates_the_account_and_its_lists_keep_its_writes_spec_permissions_5_
 // write the list names counts; the carrier then carries nothing loose, and a reopen and a
 // rebuild read the lists alike. A forged list of the same rotation, kept loose first, does not
 // keep the genuine one out (each is verified against the list root as the rotation arrives).
+// The same where the rotation comes on the path taken only for what it proves (`ingest_valid`, a
+// stranded report's holder keys).
 #[test]
 fn a_list_blob_before_its_rotation_is_held_as_it_arrives_spec_sync_judgement_1() {
+    for valid_only in [false, true] {
+        list_before_rotation(valid_only);
+    }
+}
+
+fn list_before_rotation(valid_only: bool) {
     let (mut lp, a, t) = world(3, 2);
     write(&mut lp, 1, t, "sibling");
     lp.sync_all().unwrap();
@@ -136,7 +144,10 @@ fn a_list_blob_before_its_rotation_is_held_as_it_arrives_spec_sync_judgement_1()
         assert_eq!(lp.peers[2].engine.take_list_blob(&carrier, l).unwrap(), Some(done.commits[1]));
     }
     assert!(lp.peers[2].engine.carries_loose(&carrier), "kept loose until its rotation");
-    lp.peers[2].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    match valid_only {
+        false => drop(lp.peers[2].receive(&pk.bytes, pk.blobs.clone()).unwrap()),
+        true => assert!(matches!(lp.peers[2].engine.ingest_valid(&pk.bytes).unwrap(), Some(crate::Ingested::Applied(_))), "taken"),
+    }
     assert!(!lp.peers[2].engine.carries_loose(&carrier), "held with its rotation");
     assert!(!lp.peers[2].engine.carries_loose(&junk), "the forged list goes as its rotation arrives");
     assert_eq!(read(&mut lp, 2, t), Some(Value::Str("sibling".into())), "the sibling's write was listed");
