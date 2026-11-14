@@ -265,9 +265,10 @@ pub(crate) fn judge(tx: &mut Tx<'_>, heard: &dyn Fn(&Tid) -> bool, held: bool, r
 impl crate::engine::Engine {
     /// Whether the lifetime judgment has work (`judge_lifetimes`): a thing queued, or the role
     /// timelines changed while a thing is pending; and whether a thing is held (waits for a
-    /// label to be heard out). Two store seeks.
+    /// label to be heard out). Two store seeks, stamped: an `Effects` value over it is due when
+    /// its rows or the rights mark move.
     pub fn lifetimes_due(&mut self) -> Result<(bool, bool)> {
-        let rights = self.core.lifetimes_rights;
+        let rights = self.core.lifetimes_rights.get();
         self.read(|tx| {
             let due = !tx.txn.scan_local(WORK, &[], 1)?.is_empty() || (rights && !tx.txn.scan_local(PENDING, &[], 1)?.is_empty());
             Ok((due, !tx.txn.scan_local(HELD, &[], 1)?.is_empty()))
@@ -285,9 +286,9 @@ impl crate::engine::Engine {
     /// next change of the role timelines or the next open, or once its list or a reference to
     /// it changes.
     pub fn judge_lifetimes(&mut self, heard: &dyn Fn(&Tid) -> bool, held: bool) -> Result<Judged> {
-        let rights = self.core.lifetimes_rights;
+        let rights = self.core.lifetimes_rights.get();
         let mut out = self.run(|tx| judge(tx, heard, held, rights))?;
-        self.core.lifetimes_rights = false;
+        self.core.lifetimes_rights.set(false);
         out.request = self.release(&out.release)?;
         Ok(out)
     }

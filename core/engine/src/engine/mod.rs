@@ -1104,8 +1104,9 @@ pub struct Core {
     /// Someone may listen to backlinks (`Engine::watch_references`).
     pub(crate) refs_watched: bool,
     /// The role timelines changed since the lifetime judgment last ran: its pending things are
-    /// judged again, a right may have come (`retention::lifetimes`).
-    pub(crate) lifetimes_rights: bool,
+    /// judged again, a right may have come (`retention::lifetimes`). Stamped: sync follows
+    /// `Engine::lifetimes_due`.
+    pub(crate) lifetimes_rights: osis_base::memo::Tracked<bool>,
     /// What `Core::commits_named` noted in the running transaction.
     commits_named: Vec<(Tid, Ak, CommitId)>,
     /// Whether a commit listener is on a thing (`Engine::listen_commits`).
@@ -1721,7 +1722,7 @@ impl Core {
             let ever = self.ix.held.take_ever();
             self.timelines.ever_moved(&ever);
             self.timelines_changed(changed);
-            self.lifetimes_rights = true;
+            self.lifetimes_rights.set(true);
             if self.detect {
                 crate::sides::after_update(self);
             }
@@ -2151,7 +2152,11 @@ impl Core {
             skip_writer_rules: false,
             commits_watched: false,
             refs_watched: false,
-            lifetimes_rights: true,
+            lifetimes_rights: {
+                let mut t = osis_base::memo::Tracked::default();
+                t.set(true);
+                t
+            },
             commits_named: Vec::new(),
             commit_listeners: None,
             listed_before: Vec::new(),
