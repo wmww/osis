@@ -247,12 +247,48 @@ pub fn world(seed: u64, n: usize) -> World {
     w
 }
 
-/// Every node learns every other node's account: `hand_all` before any history, so no content
-/// travels this way. A stand-in for the contact exchange: remove it once the inbox's link flow is
-/// wired (a link redeemed through the inbox), and introduce accounts that way.
+/// Every account becomes every other's contact: each grants every other read on its profile,
+/// and each node files its own profile and every other account's in its account's D (what
+/// importing a contact card leaves, spec/sync-inbox.md §5: the granter is a known actor and a
+/// connected sender), all handed by hand before any history, so no history content travels this
+/// way. A stand-in for the contact exchange: replace it by contact cards redeemed through the
+/// inbox's link flow once that is wired.
 pub fn introduce(w: &mut World) {
     assert!(w.history.things.is_empty(), "introduce hands no content: before any history only");
     hand_all(w);
+    let n = w.len();
+    let who: Vec<(Option<Tid>, Option<Tid>)> = (0..n).map(|i| (w.node(i).account, w.node(i).profile)).collect();
+    let read = Edge { role: Role::Read, until: None, invite: None, tied: None };
+    for (i, (_, p)) in who.iter().enumerate() {
+        let Some(p) = p else { continue };
+        for (j, (a, _)) in who.iter().enumerate() {
+            if let (true, Some(a)) = (i != j, a) {
+                w.write(i, |e| e.grant(p, a, &read)).expect("a profile grant");
+            }
+        }
+    }
+    hand_all(w);
+    for i in 0..n {
+        let own = who[i].1;
+        let others: Vec<Tid> = who.iter().enumerate().filter(|(j, _)| *j != i).filter_map(|(_, x)| x.1).collect();
+        file(w, i, own.into_iter().collect(), others);
+    }
+    hand_all(w);
+}
+
+/// Node `i` files `items` and `subgroups` in its account's D, in every synced group's closure of
+/// the account (a thing it made; an accepted one, spec/sync-set.md §4).
+pub fn file(w: &mut World, i: usize, items: Vec<Tid>, subgroups: Vec<Tid>) {
+    w.write(i, |e| {
+        let Some((_, d)) = e.account().ok().flatten() else { return };
+        let mut g = e.get_typed(&d, &osis_schema::core_types::GROUP).ok().flatten().unwrap_or_default();
+        g.items.extend(items);
+        g.subgroups.extend(subgroups);
+        let mut m = Mutation::new();
+        if m.set(d, &osis_schema::core_types::GROUP, &g).is_ok() {
+            let _ = e.commit(m);
+        }
+    });
 }
 
 /// Delivery without sync, by hand: every commit node `from` holds that node `to` lacks is

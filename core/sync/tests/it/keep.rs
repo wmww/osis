@@ -3,7 +3,7 @@
 //! shredded, through the engine facade and the modules wherever they are built; and the inbox
 //! module's deliveries in a node (re-sent only at expiry, not at a restart).
 
-use crate::harness::history::introduce;
+use crate::harness::history::hand_all;
 use crate::harness::{World, two_nodes};
 use osis_base::{Ak, Role, SyncId, Tid, Value};
 use osis_engine::Mutation;
@@ -60,7 +60,7 @@ fn carry_deposits(w: &mut World, inbox: &SyncId) -> usize {
 #[test]
 fn grant_kept_unread_held_then_removed_and_shredded_spec_sync_judgement_6() {
     let mut w = two_nodes();
-    introduce(&mut w);
+    hand_all(&mut w);
     let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
     let t = w.write(0, |e| {
         let mut m = Mutation::new();
@@ -132,7 +132,7 @@ fn own_logged(w: &World, i: usize, inbox: &SyncId) -> Vec<osis_base::BlobId> {
 #[test]
 fn a_delivery_goes_again_only_at_its_expiry_spec_sync_inbox_2() {
     let mut w = two_nodes();
-    introduce(&mut w);
+    hand_all(&mut w);
     let a1 = w.node(1).account.unwrap();
     let a0 = w.node(0).account.unwrap();
     let t = w.write(0, |e| {
