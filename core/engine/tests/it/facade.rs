@@ -1499,6 +1499,7 @@ fn marking_an_add_costs_its_size_spec_sync_set_2() {
     };
     let (small, big) = (cost(20), cost(200));
     assert!(small > 0 && big <= 11 * small, "walks up {small} at 20, {big} at 200");
+}
 
 /// The aspects of the parts `copy` names of commit `c`.
 fn copied_aks(lp: &mut LocalPeer, c: &osis_base::CommitId, copy: &osis_engine::labeling::Certs) -> BTreeSet<String> {
