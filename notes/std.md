@@ -21,7 +21,7 @@ Four kinds, three types:
 ## Contact (schema/contact.osis)
 The schema says what each aspect holds; the reasons:
 - Many small aspects, so a thing with only emails is a contact.
-- A **profile** is the same aspects on the account's profile thing (`Osis::profile()`: the contact card's target, a group of itself under its own label), so everyone holding the card reads it and keeps receiving changes (the import's bearer follow stays). `Osis::profile_of(account)` gives the profile a card import brought. The override is field by field (tests/it/contact.rs `view`).
+- A **profile** is the same aspects on the account's profile thing (`Osis::profile()`: the contact card's target, a group of itself under its own sync ID), so everyone holding the card reads it and keeps receiving changes (the import's bearer follow stays). `Osis::profile_of(account)` gives the profile a card import brought. The override is field by field (tests/it/contact.rs `view`).
 - Entries are keyed maps, not lists: concurrent additions merge and one entry's label is editable alone.
 - Left out of vCard on purpose: photo (a file type later), gender, language, timezone, geo, keys, sound, logo, categories (tags), and UID and revision bookkeeping, which belongs to the importing app.
 

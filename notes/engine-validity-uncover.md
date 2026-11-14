@@ -4,7 +4,7 @@
 ## The test
 A body dropped as covered (`Dropped::as_cover`) stays dropped while the test that dropped it (`snapshot::covered`) passes on what is held now; bodies dropped by expiry or purge stay dropped. It passes with:
 - **a carrying snapshot**: a coverer held with its body and valid, or itself dropped as covered under covers that carry it (`retention::coverers` walks the chain);
-- **or two own replaces**: any two valid held own replaces later than the body (`snapshot::own_covers`), recorded as its covers or not, so the test is a function of what is held. With one, a node deletes at hosts what a holder judges uncovered and uploads (sim `demotion_unsynced`, `one_own_replace_left_covers_nothing_spec_commits_5`); with only those it dropped under, it goes missing where a holder judges it covered (`any_two_held_own_replaces_keep_a_drop_spec_commits_5`).
+- **or two own replaces**: any two valid held own replaces later than the body (`snapshot::own_covers`), recorded as its covers or not, so the test is a function of what is held. With one, a node deletes at other nodes what a holder judges uncovered and logs again (`one_own_replace_left_covers_nothing_spec_commits_5`); with only those it dropped under, it goes missing where a holder judges it covered (`any_two_held_own_replaces_keep_a_drop_spec_commits_5`).
 
 ## When it runs
 Whenever a cover on the aspect may stop carrying: it turns invalid, arrives again judged invalid, or drops or goes missing other than as covered (`drop_part_for`, `unstrip`). A part failing the test is set missing, and the aspect rebuilt and flagged suspect (`Why::Uncovered`). It joins as a late part when it arrives again.
@@ -18,6 +18,6 @@ Whenever a cover on the aspect may stop carrying: it turns invalid, arrives agai
 - The chain is sound only because `covered` judges a held body by the join alone, not the frontier: a snapshot can carry writes past its own frontier (its writer held the body behind a session gap). By the frontier, a holder would call uncovered what a node that dropped the body calls covered, and re-place it every pass for the other to delete (`held_memory_body_past_a_snapshot_frontier_judged_by_the_join_*`).
 
 ## Fetching it back
-- sync (`Changed::undropped` → `reopen_undropped`, also at start, after a crash) turns the shredded entries back to `Unknown`, so a pass fetches them where present (`work.rs`). A holder finds the body uncovered, so must-hold, and uploads it again (sim `coverer_revoked`; `coverer_demoted_after_cover_drop_alike_*`, `covered_drop_coverer_and_remover_revoked_alike_*`).
-- Limit (spec/permissions.md §5.2): with no copy anywhere the write is gone at every node alike. Usually only a reader holds it then, and readers upload nothing.
+- The body counts missing again (`facts.missing`), so read fetches it where a source shows it (spec/sync-judgement.md §3 Dropped bodies; `Streams::fetch_again` is not built: issues/sync-unbuilt.md). A holder finds the body uncovered, so must-hold, and logs it again (`coverer_demoted_after_cover_drop_alike_*`, `covered_drop_coverer_and_remover_revoked_alike_*`).
+- Limit (spec/permissions.md §5.2): with no copy anywhere the write is gone at every node alike. Usually only a reader holds it then.
 - The order harness drops covered bodies at every sync step (`order.rs` `drop_covered`) and checks a reopen reads alike, so open-equals-rebuild covers un-drops.

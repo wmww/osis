@@ -2,7 +2,7 @@
 > Summary: How the engine un-merges and re-merges (spec/crdt.md §4.6): every validity flip, valid body drop, strip and re-arrival rebuilds the aspect from its held valid bodies; an invalid part rebuilds nothing; where a rebuild stops; checks; cost.
 
 ## Un-merge is skipping invalid bodies
-- Un-merge is by invalid delta, not by author (spec/crdt.md §4.6). Invalid bodies never travel, so a rule taking more than the delta's own writes would make reads depend on whom a node met first (`revokes::others_writes_in_an_invalid_record_read_alike_spec_crdt_4_6`).
+- Un-merge is by invalid delta, not by author (spec/crdt.md §4.6). Invalid bodies never travel, so a rule taking more than the delta's own writes would make reads depend on whom a node met first.
 - A non-snapshot delta carries no foreign stamps (spec/crdt.md §3.3; overlapping session ranges void both commits), so an invalid body holds only its own writes and a valid one none of an invalid delta's. So `rebuilt` joins every held valid body whole, leftovers included, and nothing of an invalid part.
 
 ## One path

@@ -212,13 +212,13 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 |---|---|---|
 | Does removing a member from the top realm remove them from every channel at once? | yes | yes |
 | Does one commit protect all new content from the removed member (channels re-key on the next sync)? | yes | yes⁴¹ |
-| Does cutting the removed member's upload and sync keys need an admin step per channel per node keeping the chat unread? | no | yes⁴¹! |
+| Does cutting the removed member's write and sync keys need an admin step per channel per node keeping the chat unread? | no | yes⁴¹! |
 | Can the removed member keep uploading junk to a channel until an admin steps it there? | no | yes! |
 | Removal under 10 MB upload at 1000 members and 100 channels? | yes | yes⁴² |
 | Removal under 10 MB upload at 100,000 members (nested rosters) and 100 channels? | yes | yes⁴² |
 | Does a member's lost device or leave cost the next poster the top realm's whole rotation? | no | yes! |
 | Is demoting a mod as cheap as a kick? | yes | no!⁴³ |
-| Does each member's device download every other member's chains and cards under the top realm's label? | no | yes⁴⁴! core r |
+| Does each member's device download every other member's chains and cards under the top realm's sync ID? | no | yes⁴⁴! core r |
 | Kick pre-sync across 100 channels under a minute? | yes | ? |
 | Can a mod mute one member in one channel while they hold the top realm? | yes | opt*⁴⁵ |
 | Can a mod ban one member from one channel while they hold the top realm? | yes | no! |
@@ -254,8 +254,8 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 - **m** Erasable per-device KEM keys with per-device boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and requirements line 48.
 - **n** History-less grant: a cut (a read rotation at the add carrying no history), a floor per read epoch that history entries and boxes respect, role commits opened by every holder under roles secrets (issues/history-less-grant.md, model-checked); segments (footnote 33) are the fallback without core change.
 - **o** A node that stops fetching short of old messages (issues/partial-history-fetch.md); fetch is newest first (spec/sync-judgement.md §2).
-- **r** Pure readers place nothing under big labels: no chain certificates or node card from a reader unless asked (realms past a few thousand members).
-- **s** Default-off sync: a device holding a realm's secret does not sync the labels of the things the realm holds until the app chooses (a node syncs every label whose secret it holds, `SyncEngine::labels`).
+- **r** Pure readers place nothing under big sync IDs: no chain certificates or node card from a reader unless asked (realms past a few thousand members).
+- **s** Default-off sync: a device holding a realm's secret does not sync the sync IDs of the things the realm holds until the app chooses (a node syncs its synced group's closure, spec/sync-set.md).
 
 ## Footnotes
 
@@ -273,25 +273,25 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 30. nothing is compacted; messages keep at least forever.
 31. `nobody` is bad on content and admins may always purge (spec/commits.md §5): junk is what an admin's purge by author erases.
 33. Segments: the admin creates a new chat, grants everyone plus the newcomer, and the old chat points to it (admin-only); old members' apps stitch the two. No core change; Tess's primary path is core n (notes/chat.md Left out).
-34. The new chat carries no pointer back; a tid is a bare reference and the old chat's label and the peers keeping it live under its own label.
+34. The new chat carries no pointer back; a tid is a bare reference and the old chat's sync ID and the peers keeping it live under its own sync ID.
 35. The pointer is a set, so old members stitch every branch; each newcomer sees only its branch; admins merge with a further segment.
-36. About 15 KB per member (grant boxes plus chain certificates under the new label): about 15 MB at 1000, estimated.
+36. About 15 KB per member (grant boxes plus chain certificates under the new sync ID): about 15 MB at 1000, estimated.
 38. admins may always purge (spec/commits.md §5): no setting makes a message undeletable.
 39. the header's actor is checked by validity (spec/permissions.md §5.2: the signing device holds write on the actor at the commit's key), so a valid commit's actor is its sender; that the actor itself could write on the chat is the ordinary validity of the device's write only when its path runs through the actor.
 40. with frontier heads (unbuilt); without them a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 1.9x10^6 messages.
-41. The removal and the top realm's rotation are one commit (2.7 KB per member); each child re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each child to register a step at each node keeping it unread; until then the removed member reads ciphertext and can upload.
+41. The removal and the top realm's rotation are one commit (2.7 KB per member); each child re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each child to register a step at each node keeping it unread; until then the removed member reads ciphertext and can log entries.
 42. At 1000: 2.7 MB plus about 11 KB per child, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top realm (100 boxes), then children; estimated.
-43. All three roles rotate on every realm and chat the mod administered, admins only; the ex-mod keeps delete keys until each label is stepped.
-44. Every syncing node places its chain (11.5 KB per account) and card (1.5 KB) under each label it reads: about 13 MB once at 1000; about 1.4 GB at 100,000.
+43. All three roles rotate on every realm and chat the mod administered, admins only; the ex-mod keeps delete keys until each sync ID is stepped.
+44. Every syncing node logs its chain (11.5 KB per account) and card (1.5 KB) under each sync ID it reads: about 13 MB once at 1000; about 1.4 GB at 100,000.
 45. By rights no: a role is the maximum over paths and `until` only ends a grant. Mods write a muted set with a time; honest clients hide and mods purge; a modified client posts on.
 46. Messages on a thing under the chat with an admin grant for the delete role (spec/permissions.md §1): purge without roster or lock; one more rotation per kick.
 47. Admin passes only through admin, and admins of a realm manage its roster; direct per-channel admin grants avoid it at one grant per channel.
 48. A sibling chat the members write carries the reactions; the app shows them under the announcement.
 49. Adding a channel is a grant for the realm on the chat, needing admin on the chat and on the realm's layout; a member creates a chat and asks an admin to add it.
-50. The realm's grants are its contents (every member holds them through the realm's inbox copies); names and categories are a chat-app layout aspect on the realm. Channels are not in the realm's group, so nothing of theirs is under its label.
-51. Grant the private channel only to a role realm. Left: the nodes keeping it unread see its label, a device-removal frontier head names its tid under public labels (frontier-study format), and a purge across children shows their tids.
+50. The realm's grants are its contents (every member holds them through the realm's inbox copies); names and categories are a chat-app layout aspect on the realm. Channels are not in the realm's group, so nothing of theirs is under its sync ID.
+51. Grant the private channel only to a role realm. Left: the nodes keeping it unread see its sync ID, a device-removal frontier head names its tid under public sync IDs (frontier-study format), and a purge across children shows their tids.
 52. Entry counts are drowned by certificates (no kind in the log); a latest-time register per child on the parent, written by posters, is the cheap source.
 53. Threads and forum posts are reply chains inside the channel, grouped by the app.
-54. A thing under the realm or holding a grant for it is in the realm; as a member of the realm's group it syncs under the realm's label, one with its own label syncs under that. With plain grants (notes/realms.md open question 1) a writer's removing it from the group only stops the auto-sync; removing it from the realm is an admin's grant removal.
+54. A thing under the realm or holding a grant for it is in the realm; as a member of the realm's group it syncs under the realm's sync ID, one with its own sync ID syncs under that. With plain grants (notes/realms.md open question 1) a writer's removing it from the group only stops the auto-sync; removing it from the realm is an admin's grant removal.
 55. Every thing's role history is kept forever and readable by its holders.
 56. Rights: lower the top realm's role on each child, one commit per child; one step only as a client-honored flag.

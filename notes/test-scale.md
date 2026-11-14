@@ -37,22 +37,19 @@ Default tests, against spec/requirements.md (Scale): each runs one operation at 
 | expiry | engine `scale::expiry_is_flat_spec_crdt_4_7` (40 / 400) | no rebuild, no body read but the expiring one; the snapshot's carried bound one entry per source |
 | chunks a compaction drops | engine `scale::chunk_drop_judgment_is_flat` (10 / 100 other bodies) | tree refs: 2 parts read, 15 links and blobs, at both |
 
-## Checks to restore
-Their tests went with the old sync (the node `scale::` and `growth::` tests, the sim's `scale::`, the host's); the last counts were these. Phase 4 of the sync rewrite counts them again against the new harness (issues/sync-rewrite.md, Phase 4); the old tests are at 680a85188 (core/node/tests/it/scale.rs, growth.rs).
+## Sync scale checks
+osis-sync's checks (core/sync/tests/it) count module work (`Work` counters, store rows) at n and 10n: `driver::dial_work_follows_change_spec_sync_opens_1`; `opens::a_credential_change_costs_the_same_at_n_and_10n_spec_sync_opens_6`, `a_credential_change_costs_per_connection_not_per_sync_id_spec_sync_opens_6`, `a_reconnect_costs_the_same_at_n_and_10n_spec_sync_opens_3`; `read::work_follows_change`, `work_follows_sources`; `status::work_follows_change`; `store::log_reads_cost_what_they_return_spec_sync_streams_3`, `removal_and_expiry_cost_alike_at_any_size_spec_sync_ids_5`; `streams::push_work_follows_the_events_not_the_log_spec_sync_streams_4`, `a_reconnect_after_a_restart_costs_the_same_at_10n_spec_sync_streams_4`; `flows::a_read_secret_arriving_examines_only_what_did_not_open_spec_sync_2`.
 
-| property | test it had | counted |
-|---|---|---|
-| sync pass per write | `scale::sync_pass_is_flat` (20 / 200 commits) | writer 1-2 passes, bodies, entries; reader 1; no full pass |
-| one pass per change, whatever the sources | `scale::one_pass_judges_a_change_for_every_source` (1 / 3 peers that cannot read L) | full passes and bodies judged equal; per-source checks linear |
-| sync pass per body | `scale::aspect_pass_is_flat` (10 / 100 keys) | flat; a body killed judges every entry of its label (`repro_kill_judges_label_entries`) |
-| role change across labels | `scale::role_change_judges_its_labels_only` | an unrelated edge judges nothing; a label's group edge re-judges that label alone |
-| first sync by a peer that cannot read L | `scale::first_sync_is_linear` (30 / 300) | commits ingested, bodies and entries judged linear; nothing examined again |
-| a change in a small group | `scale::a_change_costs_a_few_passes` | a few passes per node, flat in history; rotations judged once per role change (at most 8 runs), keep bounds once per change of a body |
-| stale walk, filters, catch-up | `scale::stale_walk_claims_are_flat`, `filter_tests_per_arrival_do_not_grow_with_steps`, `a_catch_up_takes_one_behind_item_per_rotation_spec_sync_5` | a walk past a missed rotation claims as the thing's named readers held, flat; one credential tested per filter arrival at n and 10n rotations; one Behind item per rotation crossed, nothing registered |
-| role entries under churn | `scale::role_entries_follow_role_churn` | role entries held grow with churn, not with the members each change boxes |
-| growth with writes | `growth::single_writer_replace_grows_nothing`, `several_writers_grow_nothing`, `several_writers_expiring_grow_nothing`, `own_cover_work_per_write_is_flat`, `a_writer_without_the_right_stays_flat`, `only_a_whole_own_replace_covers`, `own_replace_of_one_part_keeps_the_other`, `late_reader_and_restored_device_catch_up` | rows and bytes at writer, reader and host equal at n and 10n replaces once tombstones age out; cover work per write flat (durable covered bodies are dropped by sync, so these wait for it) |
-| many labels, chat members | sim `scale::label_costs_do_not_grow_with_labels`, `idle_labels_pass_only_when_due`, `an_edge_ending_passes_its_quiet_label`, `a_timed_wait_passes_its_label_alone`, `a_burst_of_shares_costs_each_about_once`, `post_reads_nothing_per_member`, `add_judges_nothing_per_message`, `joiner_reads_each_pending_commit_few_times`; chat `flows::post_cost_flat_in_history` | 762 B uploaded per post after 10 and 100 messages |
-| host batches | host `file::host_batch_writes_do_not_grow_with_entries` (100 / 1000 entries) | 64-upload and 64-delete batches, a single upload and delete: 3, 3, 4 durable writes at both |
+**Checks to restore**: sync-shaped counts with no test yet (issues/sync-rewrite.md, Phase 4; drop an item when its test lands):
+- a write's judgement flat in history at writer and reader, whatever the sources;
+- a role change judging only the sync IDs it touches;
+- a first sync by a node keeping S unread linear, nothing examined again;
+- a walk past missed rotations and filter arrivals flat in steps; one Behind item per rotation crossed;
+- role entries growing with churn, not with the members each change boxes;
+- rows and bytes at a writer, a reader and a node keeping S unread equal at n and 10n replaces once tombstones age out; cover work per write flat;
+- many sync IDs, idle ones costing nothing; a timed wait judging its sync ID alone;
+- a chat post's cost flat in history and members; a joiner reading each pending commit a few times;
+- a node keeping S unread writing a 64-entry log or delete batch in a few durable writes at any size.
 
 ## Size budgets and benches (core/bench)
 - Budgets: `core/bench/tests/it/budgets.rs`, each `#[test] #[ignore] fn budget_<name>()` calling `assert_budget(name, actual, budget)` with its source's number plus about 10%, citing the source; public APIs only. Live: `budget_creation_record`, `budget_minimal_commit` (commit blob plaintext of a header plus one register delta: 288 B against about 300), `budget_text_snapshot_ratio` (a synthetic typist's text snapshot: 2.89x at 100 edits per commit, 6.73x at 10, against 3.5x and 7x; notes/crdt.md, Text size). Pending: role boxes about 1.2 KB per holder and role (notes/crypto.md); revoke frontier after a long-held role.
@@ -65,5 +62,5 @@ By hand, release, each alone (they read the resident set): run with `GLIBC_TUNAB
 - osis `scale::multi_gb_value_streams` (`OSIS_LARGE_MIB`, store in a directory): peak RSS growth reading a value as a `ValueStream` (bound 64 MB); the write holds the value whole (issues/api-deferred.md).
 
 ## Performance budgets
-Coordinator-owned targets (Tess delegated; prefer simple, verifiable code that meets them over faster intricate code). At 10^4 commits per aspect and 10^4 things per group, release, a quiet box: a single local write, read or received commit under 50 ms; node open under 1 s; one sync pass after one new write under 100 ms; a late or out-of-order commit under 500 ms (a whole replay of one aspect is acceptable here); rare events (revocation) under a few seconds. Work beyond these is not pursued without a realistic scenario missing them; issues that only chase speed below them are closed as within budget.
-- A node keeping a sync ID unread (its own `Store`, redb and a file root, release, a laptop disk): 1 KiB entries at least 1000/s uploaded and 1000/s deleted in 64-entry batches; a single-entry upload batch plus a single-entry delete batch under 20 ms (about 4 fsyncs). Its count (host batches) is under Checks to restore.
+Coordinator-owned targets (Tess delegated; prefer simple, verifiable code that meets them over faster intricate code). At 10^4 commits per aspect and 10^4 things per group, release, a quiet box: a single local write, read or received commit under 50 ms; node open under 1 s; one sync step after one new write under 100 ms; a late or out-of-order commit under 500 ms (a whole replay of one aspect is acceptable here); rare events (revocation) under a few seconds. Work beyond these is not pursued without a realistic scenario missing them; issues that only chase speed below them are closed as within budget.
+- A node keeping a sync ID unread (its own `Store`, redb and a file root, release, a laptop disk): 1 KiB entries at least 1000/s logged and 1000/s deleted in 64-entry batches; a single-entry log batch plus a single-entry delete batch under 20 ms (about 4 fsyncs).
