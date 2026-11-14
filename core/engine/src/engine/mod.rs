@@ -1472,16 +1472,14 @@ impl Core {
 }
 
 
-/// What brings back what the node could not judge (notes/expiry-creation-design.md §3).
+/// What a test peer's fetch stand-in reads to fetch again what the engine kept nothing of
+/// (`local_peer::Peer::receive`).
 #[derive(Clone, Debug, Default)]
 pub struct Wakes {
-    /// Records added: entries awaiting them are fetched again.
-    pub records: BTreeSet<Tid>,
-    /// Held edges or record links moved: every reach wait is fetched again.
-    pub moved: bool,
     /// Commits whose boxes the reading-only budget now has room for.
     pub reread: BTreeSet<CommitId>,
-    /// Applied commits with a part awaiting what arrived.
+    /// Applied commits whose copies left out parts the node could not read, now readable
+    /// (`Waits::awaits_reading`).
     pub woken: BTreeSet<CommitId>,
     /// Every awaiting entry is fetched again (a key actor taken up: boxes may open to it).
     pub reopen_awaits: bool,
@@ -3644,7 +3642,7 @@ impl Engine {
             let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
             crate::apply::load(&mut tx, rebuild)
         };
-        crate::apply::load_awaiting(&mut self.core);
+        crate::apply::load_waits(&mut self.core);
         #[cfg(debug_assertions)]
         self.core.rebuilt_edges.clear();
         self.core.commit_journal();

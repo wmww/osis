@@ -1122,3 +1122,157 @@ fn an_expiry_passed_while_pending_sets_no_timer_spec_commits_4() {
     let now = lp.peers[1].engine.now().0;
     assert!(lp.peers[1].engine.next_timer().unwrap().is_none_or(|x| x > now), "nothing due once it passed");
 }
+
+/// Peer 0 makes `n` things (each by its own commit; thing i's first admin peer 0 or, mostly, an
+/// earlier one, so a record chain may be away), then `m` commits, commit i writing two of them and
+/// `u_i` (one of `m` things peer 1 syncs from the start: a part that applies, written by no other
+/// commit), the clock moving between. Peer 1 is given those commits straight (`Engine::ingest`,
+/// no fetch stand-in), each once, in `order`'s shuffle, restarted after the one at `restart`, no
+/// wake lost after any: whether what it reads equals what peer 0 reads, and what still pends.
+fn once_each(seed: u64, n: usize, m: usize) -> (Vec<Option<Value>>, Vec<Option<Value>>, usize) {
+    let mut rng = crate::order::Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let mut lp = net(2, 0);
+    let us: Vec<Tid> = (0..m).map(|_| new_thing(&mut lp, 0)).collect();
+    sync(&mut lp, 0, 1);
+    let me = lp.peers[0].engine.me();
+    let mut things = us.clone();
+    let mut ids = Vec::new();
+    for _ in 0..n {
+        lp.advance(10);
+        let admin = match rng.below(3) {
+            0 => me,
+            _ if things.len() == m => me,
+            _ => things[m + rng.below((things.len() - m) as u64) as usize],
+        };
+        let mut mu = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut mu, admin);
+        mu.set(t, &REG, &s("new")).unwrap();
+        ids.push(lp.peers[0].commit(mu).unwrap().unwrap());
+        things.push(t);
+    }
+    for (i, u) in us.iter().enumerate() {
+        lp.advance(10);
+        let mut mu = Mutation::new();
+        mu.set(*u, &REG, &s(&format!("u{i}"))).unwrap();
+        for _ in 0..2 {
+            let t = things[m + rng.below(n as u64) as usize];
+            mu.set(t, &REG, &s(&format!("{i}"))).unwrap();
+        }
+        ids.push(lp.peers[0].commit(mu).unwrap().unwrap());
+    }
+    let pks = packages(&mut lp, 0);
+    let mut order: Vec<_> = ids.iter().map(|c| pks.iter().find(|p| p.id == *c).unwrap().clone()).collect();
+    for i in (1..order.len()).rev() {
+        order.swap(i, rng.below(i as u64 + 1) as usize);
+    }
+    let restart = rng.below(order.len() as u64) as usize;
+    let read = |e: &mut osis_engine::Engine| things.iter().map(|t| e.get(t, &ak("t:reg.0")).unwrap()).collect::<Vec<_>>();
+    for (i, pk) in order.iter().enumerate() {
+        let e = &mut lp.peers[1].engine;
+        e.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+        // a full scan joins nothing the wakes left
+        let before = read(e);
+        assert_eq!(e.lost_wakes().unwrap(), Vec::new(), "seed {seed}: a wait ends only by its wake");
+        assert_eq!(read(e), before, "seed {seed}: a part's wait ends only by its wake");
+        if i == restart {
+            lp.peers[1].restart(seed).unwrap();
+        }
+    }
+    let want = read(&mut lp.peers[0].engine);
+    let got = read(&mut lp.peers[1].engine);
+    (want, got, lp.peers[1].engine.pending().len())
+}
+
+// spec/commits.md §4 (Unjudgeable; Pending storage), spec/requirements.md Deterministic: a part
+// of an applied commit on a thing whose record is away waits in the commit's pending copy (its
+// carrier kept) and joins when the record comes, the commit not given again; the facade names it
+// then (`unpended_feed`), so sync takes its carriers off their peers' budgets.
+#[test]
+fn an_applied_commits_part_joins_when_its_record_comes_spec_commits_4() {
+    let mut lp = net(2, 0);
+    let u = new_thing(&mut lp, 0);
+    sync(&mut lp, 0, 1);
+    let x = new_thing(&mut lp, 0);
+    let xc = packages(&mut lp, 0).into_iter().find(|p| lp.peers[1].engine.header(&p.id).is_none()).unwrap();
+    let mut m = Mutation::new();
+    m.set(u, &REG, &s("u")).unwrap();
+    m.set(x, &REG, &s("x")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let cp = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(e.ingest(&cp.bytes, Vec::new()).unwrap(), Ingested::Applied(c));
+    assert_eq!(e.get(&u, &ak("t:reg.0")).unwrap(), Some(s("u")), "the part held applies");
+    assert!(e.pends(&c), "the part away is kept with its commit: its carrier stays");
+    let mut unpended = e.unpended_feed();
+    e.ingest(&xc.bytes, Vec::new()).unwrap();
+    assert_eq!(e.get(&x, &ak("t:reg.0")).unwrap(), Some(s("x")), "joins once the record comes");
+    assert!(e.pending().is_empty(), "{:?}", e.pending());
+    assert_eq!(unpended.added(), vec![c], "sync is told: its carriers give something held now");
+}
+
+// spec/commits.md §4 (Unjudgeable; Examined again): an applied commit with parts on two things
+// whose records are away: each part joins when its own record comes, whichever comes first.
+#[test]
+fn each_waiting_part_joins_at_its_own_record_spec_commits_4() {
+    for first in [0, 1] {
+        let mut lp = net(2, 0);
+        let u = new_thing(&mut lp, 0);
+        sync(&mut lp, 0, 1);
+        let mut made = Vec::new();
+        for _ in 0..2 {
+            let t = new_thing(&mut lp, 0);
+            let pk = packages(&mut lp, 0).into_iter().find(|p| lp.peers[1].engine.header(&p.id).is_none() && !made.iter().any(|(_, q): &(Tid, osis_engine::local_peer::Package)| q.id == p.id)).unwrap();
+            made.push((t, pk));
+        }
+        let mut m = Mutation::new();
+        m.set(u, &REG, &s("u")).unwrap();
+        for (t, _) in &made {
+            m.set(*t, &REG, &s("c")).unwrap();
+        }
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let cp = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+        let e = &mut lp.peers[1].engine;
+        assert_eq!(e.ingest(&cp.bytes, Vec::new()).unwrap(), Ingested::Applied(c));
+        let (t, pk) = &made[first];
+        e.ingest(&pk.bytes, Vec::new()).unwrap();
+        assert_eq!(e.get(t, &ak("t:reg.0")).unwrap(), Some(s("c")), "{first}: its part joins, the other still away");
+        assert_eq!(e.lost_wakes().unwrap(), Vec::new());
+    }
+}
+
+// spec/commits.md §4 (Pending storage): the waiting part is kept only while a carrier is; with
+// its last carrier gone it counts as never received, and a copy brings it again.
+#[test]
+fn an_applied_commits_waiting_part_goes_with_its_carrier_spec_commits_4() {
+    let mut lp = net(2, 0);
+    let u = new_thing(&mut lp, 0);
+    sync(&mut lp, 0, 1);
+    let x = new_thing(&mut lp, 0);
+    let xc = packages(&mut lp, 0).into_iter().find(|p| lp.peers[1].engine.header(&p.id).is_none()).unwrap();
+    let mut m = Mutation::new();
+    m.set(u, &REG, &s("u")).unwrap();
+    m.set(x, &REG, &s("x")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let cp = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+    let e = &mut lp.peers[1].engine;
+    e.ingest(&cp.bytes, Vec::new()).unwrap();
+    assert!(e.forget_pending(&c).unwrap());
+    e.ingest(&xc.bytes, Vec::new()).unwrap();
+    assert_eq!(e.get(&x, &ak("t:reg.0")).unwrap(), Some(s("new")), "never received");
+    e.ingest(&cp.bytes, Vec::new()).unwrap();
+    assert_eq!(e.get(&x, &ak("t:reg.0")).unwrap(), Some(s("x")), "a copy brings it");
+    assert!(e.pending().is_empty(), "{:?}", e.pending());
+}
+
+// spec/commits.md §4 (Unjudgeable; Order independence), spec/requirements.md Deterministic: every
+// commit given once, in any order, with a restart anywhere: a waiting part is examined when what
+// it awaits arrives (`lost_wakes`), and once all are held nothing pends and the node reads what
+// the writer reads (record chains away included).
+#[test]
+fn every_part_given_once_joins_in_any_order_spec_commits_4() {
+    for seed in 0..24 {
+        let (want, got, left) = once_each(seed, 4, 3);
+        assert_eq!(got, want, "seed {seed}");
+        assert_eq!(left, 0, "seed {seed}: nothing pends");
+    }
+}

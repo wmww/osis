@@ -1922,10 +1922,10 @@ fn explain(played: &Played, held: &[usize], p: &mut Peer, what: &str) {
     for (c, why) in o.engine.pending() {
         let _ = writeln!(out, "keep pending #{:?}: {why:?}", pack(&c));
     }
-    // thrown out and not fetched again: no wake named what it awaits
+    // a copy of a missing part not fetched again: no wake named it
     for (who, q) in [("node", &*p), ("keep", &o)] {
         for d in q.discarded.iter().filter(|d| !d.carries()) {
-            let _ = writeln!(out, "{who} thrown out #{:?}: {}", pack(&d.commit), d.awaits.map_or("a part of an applied commit".into(), |t| format!("awaits {t:?}")));
+            let _ = writeln!(out, "{who} missing a part of #{:?}", pack(&d.commit));
         }
     }
     eprintln!("{out}");

@@ -55,8 +55,8 @@ pub enum DropWhy {
     /// history lists it, so a node may drop it, whole or leftover, and takes no copy of it again.
     PastBound,
     /// On a thing that does not exist here (no creation joined), or of a commit whose author
-    /// record or whose thing's record chain the node lacks: not held, and fetched again once
-    /// known (notes/expiry-creation-design.md §3 Throw out and revisit).
+    /// record or whose thing's record chain the node lacks: not applied, kept waiting until
+    /// known (notes/expiry-creation-design.md §3 Wait, don't judge).
     Unknown,
     /// On a destroyed thing (every creation of it joined is expired or purged): the node forgets the
     /// thing whole (notes/expiry-creation-design.md §3 Destruction).

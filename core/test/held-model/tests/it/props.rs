@@ -339,9 +339,9 @@ fn arrival_orders_read_alike_after_repair(seeds: Vec<u64>) {
     });
 }
 
-// notes/expiry-creation-design.md §3 (Throw out and revisit), spec/commits.md §4: a node given
-// every write before the creations of their things reads, once the creations come and it fetches
-// again what it threw out, as one given the creations first
+// notes/expiry-creation-design.md §3 (Wait, don't judge), spec/commits.md §4: a node given
+// every write before the creations of their things reads, once the creations come and what waited
+// joins, as one given the creations first
 #[test]
 fn creations_last_read_like_creations_first_spec_commits_4() {
     creations_last_read_like_creations_first(covering(SEEDS / 3, false));

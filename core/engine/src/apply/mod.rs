@@ -55,8 +55,8 @@ use std::sync::Arc;
 /// Why a commit is pending (spec/commits.md §4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
-    /// Unjudgeable (never pending, `Ingested::Awaits`): the record of the author or of a thing on
-    /// a record chain is missing, or nothing leads from the author to the thing.
+    /// Unjudgeable: the record of the author or of a thing on a record chain is missing, or nothing
+    /// leads from the author to the thing.
     MissingChain(Tid),
     /// Unjudgeable: the record of a thing whose part it holds, or of the actor, is unknown.
     UnknownCreated(Tid),
@@ -79,10 +79,8 @@ pub enum Ingested {
     Applied(CommitId),
     /// Already held (nothing new in it).
     Duplicate(CommitId),
+    /// Kept pending: the commit, or parts of an applied one (`Engine::pends`).
     Pending(CommitId, Reason),
-    /// Nothing kept: it cannot be judged yet (`Reason::MissingChain`, `UnknownCreated`). Its boxes
-    /// were read; node-sync fetches it again when what it awaits arrives (notes/expiry-creation-design.md §3).
-    Awaits(CommitId, Reason),
     /// Kept as bytes: this build cannot interpret part of it (spec/versioning.md §2).
     Parked(CommitId),
     /// A memory commit not held nor kept waiting: its parts could cost more decoded than the
@@ -97,7 +95,8 @@ pub(crate) enum Exam {
     Ready(Parts),
     /// The commit itself waits (its header lists, its epoch, drift): never for its parts.
     Pending(Reason),
-    /// A part or the commit cannot be judged and nothing else is held: thrown out (`Ingested::Awaits`).
+    /// The commit, or every held part of it, cannot be judged yet: it pends whole, parked under
+    /// what each part awaits (`pend_unjudgeable`).
     Awaits(Reason),
 }
 
@@ -192,12 +191,8 @@ pub(crate) struct Parts {
     pub signed: osis_commit::Signed,
     pub whole: Vec<(usize, Decoded)>,
     pub streamed: Vec<Streamed>,
-    /// Held parts that wait alone (spec/commits.md §4).
+    /// Held parts that wait alone (spec/commits.md §4): for pages, parked, or unjudgeable.
     pub waiting: Option<Waiting>,
-    /// Parts the commit applies without: unjudgeable, thrown out (`Ingested::Awaits`), with the
-    /// parts themselves, whose boxes are read before they go.
-    pub unjudged: BTreeMap<usize, Reason>,
-    pub unjudged_parts: Vec<osis_commit::Part>,
     /// Why the first part judged bad was (`examine`): dropped alone, or for a commit this node
     /// writes a refusal.
     pub bad: Option<Error>,
@@ -469,8 +464,8 @@ fn still_waits(tx: &mut Tx<'_>, b: &CommitBlob) -> Result<bool> {
 ///   never applies and is dropped alone.
 /// - it waits (its pages, parked): alone. The commit's other parts apply, and its header with
 ///   none: it joins when its wait ends.
-/// - it cannot be judged yet (its thing's record or chain, the author's reach): thrown out, its
-///   boxes read, fetched again when what it awaits arrives; the other parts apply.
+/// - it cannot be judged yet (its thing's record or chain, the author's reach): it waits alone
+///   as well, parked under what it awaits; with every held part so the commit pends whole.
 ///
 /// Every wait only ends as the held set grows, so the applied parts are the least fixpoint of a
 /// monotone rule, one result for every order (`tests/it` `order::held_set_decides` plays them).
@@ -499,10 +494,9 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if record(&h.actor).is_none() {
         return Ok(Exam::Awaits(Reason::UnknownCreated(h.actor)));
     }
-    // a part it cannot judge (its thing's record, record chain or the author's reach) goes; with
-    // every held part such the commit is unjudgeable, never pending (spec/commits.md §4): thrown
-    // out before a missing epoch or a `ts` ahead could keep its bytes. One pending that judges
-    // so later (its bad parts dropped, its pages resolving its header) goes then (`ingest_class`)
+    // a part it cannot judge (its thing's record, record chain or the author's reach) waits; with
+    // every held part such the commit is unjudgeable (spec/commits.md §4), found before a missing
+    // epoch or a `ts` ahead names another wait
     let mut unjudged: BTreeMap<usize, Reason> = BTreeMap::new();
     for (ai, a) in h.aspects.iter().enumerate() {
         if skip.contains(&ai) || blob.part(ai).is_none() {
@@ -559,9 +553,9 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let unjudgeable = unjudged.values().next().cloned().filter(|_| blob.parts.iter().all(|p| skip.contains(&p.ai) || unjudged.contains_key(&p.ai)));
     let Some(vk) = author_key(tx.core, &h, &blob.sigs, &author)? else {
         if let Some(r) = unjudgeable {
-            return Ok(throw_out(tx, id, &unjudged, r));
+            return Ok(pend_unjudgeable(tx, id, &unjudged, r));
         }
-        throw_out_parts(tx, blob, id, &unjudged)?;
+        note_unjudged(tx, id, &unjudged);
         return Ok(Exam::Pending(Reason::Epoch(h.epoch.unwrap_or(osis_commit::FIRST_EPOCH))));
     };
     let signed = check_signature(tx, blob, id, &vk, *known)?;
@@ -573,12 +567,12 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         return Err(Error::BadInput("a frontier that is not a frontier"));
     }
     if let Some(r) = unjudgeable {
-        return Ok(throw_out(tx, id, &unjudged, r));
+        return Ok(pend_unjudgeable(tx, id, &unjudged, r));
     }
     // the bound is for received commits, a sibling node's too (spec/crdt.md §2.2): this node's
     // own are as far ahead as its HLC, which a wall clock set back must not turn against them
     if origin != Origin::Local && h.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
-        throw_out_parts(tx, blob, id, &unjudged)?;
+        note_unjudged(tx, id, &unjudged);
         return Ok(Exam::Pending(Reason::Drift));
     }
     let mut aside = Aside::default();
@@ -590,7 +584,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::CollidingRecord, tids: vec![*t], commit: Some(*id), peer: Some(h.author), detail: String::new() }, now);
         }
     }
-    let mut out = Parts { signed, whole: Vec::new(), streamed: Vec::new(), waiting: None, unjudged: BTreeMap::new(), unjudged_parts: Vec::new(), bad: None, stripped: Vec::new() };
+    let mut out = Parts { signed, whole: Vec::new(), streamed: Vec::new(), waiting: None, bad: None, stripped: Vec::new() };
     let mut interner = Interner::new();
     // tests let a local writer break the writer rules, to test receivers
     let rules = !(tx.core.skip_writer_rules && Some(h.author) == tx.core.me());
@@ -630,8 +624,8 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         aside.add(wait, [p.ai]);
     }
     if !bad.is_empty() {
-        // only bad parts beside those its pending copy threw out (`throw_out_parts`): thrown out
-        // whole, as it would be judged with them
+        // only bad parts beside parts of it awaiting a record (`note_unjudged`): unjudgeable,
+        // as it would be judged with them
         if out.ais().is_empty() && aside.keys.is_empty() && unjudged.is_empty()
             && let Some(t) = tx.core.waits.records_of(id).iter().find(|t| tx.core.created(t).is_none())
         {
@@ -646,16 +640,16 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         let now = tx.now();
         tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(*id), peer: Some(h.author), detail }, now);
     }
-    // nothing else held and a part cannot be judged: thrown out whole
+    // nothing else held and a part cannot be judged: unjudgeable
     if out.ais().is_empty() && aside.keys.is_empty() && let Some(r) = unjudged.values().next().cloned() {
-        return Ok(throw_out(tx, id, &unjudged, r));
+        return Ok(pend_unjudgeable(tx, id, &unjudged, r));
     }
     // nothing waits for a part, the header included (spec/commits.md §4): with every held part
-    // waiting the commit applies as its header, the parts waiting under its ID
-    let (gone, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut blob.parts).into_iter().partition(|p| unjudged.contains_key(&p.ai));
-    blob.parts = rest;
-    out.unjudged = unjudged;
-    out.unjudged_parts = gone;
+    // waiting the commit applies as its header, the parts waiting under its ID. A part it cannot
+    // judge waits so too, for what it awaits (spec/commits.md §4 Unjudgeable, Pending storage)
+    for (ai, r) in unjudged {
+        aside.add(r, [ai]);
+    }
     if let Some(reason) = aside.reason {
         let (parts, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut blob.parts).into_iter().partition(|p| aside.keys.contains(&p.ai));
         blob.parts = rest;
@@ -666,17 +660,13 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     Ok(Exam::Ready(out))
 }
 
-/// The parts of pending commit `id` (`blob`) it cannot judge (`unjudged`) stay in the stored copy
-/// with the rest of it (spec/commits.md §4 Unjudgeable, Pending storage): their boxes read, the
-/// records they await noted (`waits`).
-fn throw_out_parts(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId, unjudged: &BTreeMap<usize, Reason>) -> Result<()> {
-    if unjudged.is_empty() {
-        return Ok(());
+/// The parts of commit `id`, pending for another reason, it cannot judge (`unjudged`) stay in the
+/// stored copy with the rest of it (spec/commits.md §4 Unjudgeable, Pending storage), the records
+/// they await noted (`waits`).
+fn note_unjudged(tx: &mut Tx<'_>, id: &CommitId, unjudged: &BTreeMap<usize, Reason>) {
+    if !unjudged.is_empty() {
+        tx.core.waits.awaits_records(*id, unjudged.values().filter_map(awaited));
     }
-    let parts: Vec<osis_commit::Part> = blob.parts.iter().filter(|p| unjudged.contains_key(&p.ai)).cloned().collect();
-    read_unjudged_boxes(tx, blob, id, &parts)?;
-    tx.core.waits.awaits_records(*id, unjudged.values().filter_map(awaited));
-    Ok(())
 }
 
 /// A part's leftover as the part joins: a snapshot's with its frontiers, `Absorbed` and facts.
@@ -687,10 +677,10 @@ pub(crate) fn leftover_part(l: crate::retention::leftover::Leftover) -> Decoded 
     }
 }
 
-/// Commit `id` thrown out whole, its parts unjudgeable for `unjudged` (the entry names `first`):
-/// judged afresh when any one of the records comes, as a part on another thing may apply
+/// Commit `id` unjudgeable, its held parts for `unjudged` (its reason names `first`): examined
+/// again when any one of the records comes, as a part on another thing may apply
 /// (spec/commits.md §4).
-fn throw_out(tx: &mut Tx<'_>, id: &CommitId, unjudged: &BTreeMap<usize, Reason>, first: Reason) -> Exam {
+fn pend_unjudgeable(tx: &mut Tx<'_>, id: &CommitId, unjudged: &BTreeMap<usize, Reason>, first: Reason) -> Exam {
     tx.core.waits.awaits_records(*id, unjudged.values().filter_map(awaited));
     Exam::Awaits(first)
 }
@@ -833,26 +823,13 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
     let out = match examine(tx, &mut blob, &id, &BTreeSet::new(), origin, &mut known)? {
         Exam::Ready(mut parts) => {
             let w = parts.waiting.take();
-            // parts its pending copy threw out (`throw_out_parts`) wait as slots of the applied commit
-            let thrown = !tx.core.waits.records_of(&id).is_empty();
             tx.core.waits.unawaits(&id);
-            let mut waits = settle_waits(tx, &id, &parts.unjudged);
-            read_unjudged_boxes(tx, &blob, &id, &parts.unjudged_parts)?;
             unpend(tx, &id)?;
             apply_verified(tx, &blob, parts, origin, received)?;
-            if thrown {
-                let still = missing_unjudged(tx.core, &id);
-                // a thrown-out part whose record came in this same pass (no wake saw the commit
-                // pending): its carriers bring it again now
-                if tx.core.ix.commits.get(&id).is_some_and(|m| m.missing_parts().any(|ai| m.missing_as(ai) != Some(crate::engine::Missing::Forgot) && !still.contains_key(&ai))) {
-                    tx.core.redeliver.insert(id);
-                }
-                waits |= settle_waits(tx, &id, &still);
-            }
             // what a part still waiting read of its boxes may be what opens what it waits for
             match w {
                 Some(w) => pend_aside(tx, &id, &blob, w)?,
-                None if !waits && settled_boxes(tx, &id) => keys::forget_unchecked(tx, &id)?,
+                None if settled_boxes(tx, &id) => keys::forget_unchecked(tx, &id)?,
                 None => {}
             }
             Ingested::Applied(id)
@@ -894,34 +871,18 @@ fn awaited(r: &Reason) -> Option<Tid> {
     }
 }
 
-/// The missing slots of applied commit `id` that cannot be judged here (`thing_wait`), with why.
-fn missing_unjudged(core: &crate::engine::Core, id: &CommitId) -> BTreeMap<usize, Reason> {
-    let Some(m) = core.ix.commits.get(id) else { return BTreeMap::new() };
-    let record = |t: &Tid| core.created(t).cloned();
-    let chain_rec = |t: &Tid, core: &crate::engine::Core| core.created(t).cloned();
-    // a slot forgotten with a released thing is dead, never fetched on its own (spec/commits.md §5 Forgetting)
-    m.missing_parts().filter(|ai| m.missing_as(*ai) != Some(crate::engine::Missing::Forgot)).filter_map(|ai| Some((ai, thing_wait(core, &m.header, m.header.aspects.get(ai)?, &record, &chain_rec)?))).collect()
-}
-
-/// Notes the slots of `id` it applied without (`Awaiting`), and whether any.
-fn settle_waits(tx: &mut Tx<'_>, id: &CommitId, unjudged: &BTreeMap<usize, Reason>) -> bool {
-    for r in unjudged.values() {
-        let held = matches!(r, Reason::MissingChain(t) if tx.core.created(t).is_some());
-        tx.core.waits.slot_waits(held, *id, r);
+/// The records the waiting parts `w` of applied commit `id` await, noted (`Waits::records_of`):
+/// its pending copy parks under each (`waits::wakes_of`), whatever its first reason.
+fn note_awaited(tx: &mut Tx<'_>, id: &CommitId, w: &Waiting) {
+    tx.core.waits.unawaits(id);
+    let records: Vec<Tid> = std::iter::once(&w.reason).chain(&w.others).filter_map(awaited).collect();
+    if !records.is_empty() {
+        tx.core.waits.awaits_records(*id, records.into_iter());
     }
-    !unjudged.is_empty()
-}
-
-/// Reads the boxes of the parts of `blob` an applied commit goes on without.
-fn read_unjudged_boxes(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId, parts: &[osis_commit::Part]) -> Result<()> {
-    if parts.is_empty() {
-        return Ok(());
-    }
-    keys::read_pending_boxes(tx, &CommitBlob { header: blob.header.clone(), sigs: blob.sigs.clone(), parts: parts.to_vec() }, id)
 }
 
 /// Whether `id` gave reading-only secrets that may go now: no `secrets.0` part of it is missing
-/// (a part thrown out earlier: its boxes may open what it awaits).
+/// (a part waiting: its boxes may open what it awaits).
 fn settled_boxes(tx: &Tx<'_>, id: &CommitId) -> bool {
     tx.core.waits.read_any(id) && !tx.core.ix.commits.get(id).is_some_and(|m| m.missing_parts().any(|ai| m.header.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "secrets.0")))
 }
@@ -957,9 +918,10 @@ fn tell_parked(tx: &mut Tx<'_>, id: &CommitId, things: Vec<Tid>, peer: Option<Ti
     tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::Parked, tids: things, commit: Some(*id), peer, detail: "from a newer format".into() }, now);
 }
 
-/// Keeps the parts of applied commit `id` that wait alone pending under its ID. `applied`: its
-/// blob. The `reexamine` an applied commit is followed by reads their boxes (`late_parts`).
+/// Keeps the parts of applied commit `id` that wait alone pending under its ID, parked under
+/// what each awaits (`note_awaited`), their boxes read as any pending copy's. `applied`: its blob.
 fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) -> Result<()> {
+    note_awaited(tx, id, &w);
     let mut rest = applied.clone();
     rest.parts = w.parts;
     // a part past its expiry counts as never received, a purged one is held value-less (`retention::pending_drops`)
@@ -972,7 +934,8 @@ fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) 
         return park(tx, id, &rest.encode(), rest.header.aspects.iter().map(|a| a.tid).collect(), Some(rest.header.author), Some(&rest.header));
     }
     // the applied commit's held verdict answers for these signatures (`signature`)
-    pend(tx, id, PendingKind::Pending, None, &rest.encode(), w.reason.clone(), Some(&rest.header))
+    pend(tx, id, PendingKind::Pending, None, &rest.encode(), w.reason.clone(), Some(&rest.header))?;
+    keys::read_pending_boxes(tx, &rest, id)
 }
 
 /// Commit `id` pends no more: its stored bytes go. Whether it was pending.
@@ -1116,8 +1079,8 @@ fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
 
 /// A delta of an already applied commit, arriving later, is joined on arrival (spec/commits.md
 /// §4); dropped and stripped parts stay so, but for those a copy may replace
-/// (`retention::takes_late`). Late deltas that wait (their pages, parked) are kept pending
-/// under the commit's ID and joined once they apply; unjudgeable ones are thrown out.
+/// (`retention::takes_late`). Late deltas that wait (their pages, parked, unjudgeable) are kept
+/// pending under the commit's ID and joined once they apply.
 fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<Ingested> {
     let (held, skip) = held_and_skip(tx, id)?;
     let (pending, mut known) = with_pending(tx, id, blob)?;
@@ -1131,7 +1094,8 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
     let _s = osis_base::costs::span("examine");
     let out = match examine(tx, &mut merged, id, &skip, Origin::Remote, &mut known)? {
         // nothing joins: the late parts keep waiting under the applied commit
-        Exam::Ready(Parts { waiting: Some(w), whole, streamed, unjudged, .. }) if whole.is_empty() && streamed.is_empty() && unjudged.is_empty() => {
+        Exam::Ready(Parts { waiting: Some(w), whole, streamed, .. }) if whole.is_empty() && streamed.is_empty() => {
+            note_awaited(tx, id, &w);
             blob.parts = w.parts;
             let n = blob.parts.len();
             crate::retention::pending_drops(tx, id, &mut blob, &merged.header)?;
@@ -1152,8 +1116,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
         }
         Exam::Ready(mut parts) => {
             let w = parts.waiting.take();
-            let waits = settle_waits(tx, id, &parts.unjudged);
-            read_unjudged_boxes(tx, &merged, id, &parts.unjudged_parts)?;
+            tx.core.waits.unawaits(id);
             unpend(tx, id)?;
             let ais = parts.ais();
             crate::retention::reopen_late(tx, id, &ais)?;
@@ -1167,12 +1130,14 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             }
             match w {
                 Some(w) => pend_aside(tx, id, &merged, w)?,
-                None if !waits && settled_boxes(tx, id) => keys::forget_unchecked(tx, id)?,
+                None if settled_boxes(tx, id) => keys::forget_unchecked(tx, id)?,
                 None => {}
             }
             Ingested::Applied(*id)
         }
-        Exam::Pending(r) => {
+        // every late part waits (`Exam::Awaits`: none can be judged, each one's record noted by
+        // `pend_unjudgeable`) or the commit's header does: kept pending under the applied commit
+        Exam::Pending(r) | Exam::Awaits(r) => {
             // what `examine` dropped of the late parts goes from the stored copy too
             blob.parts.retain(|p| merged.parts.binary_search_by_key(&p.ai, |x| x.ai).is_ok());
             let n = blob.parts.len();
@@ -1183,13 +1148,6 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             pend(tx, id, PendingKind::Pending, known, &blob.encode(), r.clone(), Some(&blob.header))?;
             keys::read_pending_boxes(tx, &blob, id)?;
             Ingested::Pending(*id, r)
-        }
-        // the waiting parts are thrown out; the commit stays applied
-        Exam::Awaits(r) => {
-            keys::read_pending_boxes(tx, &blob, id)?;
-            let held = matches!(&r, Reason::MissingChain(t) if tx.core.created(t).is_some());
-            tx.core.waits.slot_waits(held, *id, &r);
-            Ingested::Awaits(*id, r)
         }
     };
     Ok(out)
@@ -1337,8 +1295,7 @@ impl Engine {
     /// its expiry, or held pending value-less or gone for a request, `retention::strip_purged`)
     /// and nothing a copy may still be needed for:
     /// its every other part went too, is applied, or, where parts of it wait, is in the pending copy
-    /// alike, provably does not hash to its header entry, or cannot be judged (thrown out,
-    /// `copy_awaits`). Node-sync then forgets the copy's blob and key; one holding a true copy the
+    /// alike, or provably does not hash to its header entry. Node-sync then forgets the copy's blob and key; one holding a true copy the
     /// node lacks stays, as does every copy of a commit named for redelivery.
     pub fn spent_copy(&mut self, id: &CommitId, copy: &CommitBlob) -> Result<bool> {
         if self.core.redeliver.contains(id) {
@@ -1363,10 +1320,11 @@ impl Engine {
                 if held.parts.iter().any(|q| q.ai == p.ai && q.delta == p.delta) {
                     continue;
                 }
-                // junk, or on a thing whose record is away: thrown out (`throw_out_parts`), its
-                // carrier awaiting the record (`copy_awaits`)
+                // junk; one on a thing whose record is away may be the true copy of a slot the
+                // pending copy holds unchecked
                 let junk = match h.aspects.get(p.ai).map(|a| (a, tx.core.created(&a.tid))) {
-                    None | Some((_, None)) => true,
+                    None => true,
+                    Some((_, None)) => false,
                     Some((a, Some(r))) => osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != a.hash,
                 };
                 if !junk {
@@ -1375,37 +1333,6 @@ impl Engine {
             }
             Ok(gone)
         })
-    }
-
-    /// The records the parts `parts` of a copy of commit `id` await, where this node holds nothing
-    /// of them for that (spec/commits.md §4 Unjudgeable): a missing slot of the applied commit, or
-    /// one its pending copy threw out. Node-sync keeps no bytes of such a copy: the record's
-    /// arrival fetches it again.
-    pub fn copy_awaits(&mut self, id: &CommitId, parts: &[usize]) -> Result<Vec<Tid>> {
-        let core = &self.core;
-        if core.ix.commits.contains_key(id) {
-            return Ok(self.missing_awaits(id, parts));
-        }
-        if !core.ix.pending.contains_key(id) {
-            return Ok(Vec::new());
-        }
-        let id = *id;
-        self.run(|tx| {
-            let Some(b) = tx.txn.get_pending(&id)?.and_then(|p| CommitBlob::decode_stored(&p.bytes).ok()) else { return Ok(Vec::new()) };
-            if !b.header.is_resolved() {
-                return Ok(Vec::new());
-            }
-            let core = &*tx.core;
-            let record = |t: &Tid| core.created(t).cloned();
-            let chain_rec = |t: &Tid, core: &crate::engine::Core| core.created(t).cloned();
-            Ok(parts.iter().filter(|ai| b.part(**ai).is_none()).filter_map(|ai| thing_wait(core, &b.header, b.header.aspects.get(*ai)?, &record, &chain_rec)).filter_map(|r| awaited(&r)).collect())
-        })
-    }
-
-    /// The records the missing slots `parts` of applied commit `id` await (`copy_awaits`).
-    fn missing_awaits(&self, id: &CommitId, parts: &[usize]) -> Vec<Tid> {
-        let un = missing_unjudged(&self.core, id);
-        parts.iter().filter_map(|ai| un.get(ai)).filter_map(awaited).collect()
     }
 
     /// Whether commit `id` is named for redelivery (`take_redeliver` has not taken it yet).
@@ -1606,7 +1533,7 @@ impl Engine {
         self.core.waits.records_awaited().filter(|t| self.core.created(t).is_none() && self.core.destroyed(t)).copied().collect()
     }
 
-    /// The records commit `id`, thrown out whole, awaits: every part's (empty when not remembered).
+    /// The records the parts of pending commit `id` await (empty when not remembered).
     pub fn records_awaited_by(&self, id: &CommitId) -> Vec<Tid> {
         self.core.waits.records_of(id).to_vec()
     }
@@ -2169,20 +2096,12 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     Ok(Some(stale.into_iter().collect()))
 }
 
-/// Rebuilds what node-sync's wakes read after a load (`waits::Awaiting`, the commits reading-only
-/// secrets came from). From held headers: a missing slot whose record is held may wait for reach
-/// (no search at load; a wake only costs a look at the commit's entries).
-pub(crate) fn load_awaiting(core: &mut crate::engine::Core) {
-    // a load is no arrival: what the index replayed wakes nothing
+/// Rebuilds what the waits read after a load: the commits reading-only secrets came from. A load
+/// is no arrival: what the index replayed wakes nothing.
+pub(crate) fn load_waits(core: &mut crate::engine::Core) {
     core.ix.held.take_records();
     core.ix.held.take_moved();
     waits::load_reading(core);
-    let slots: Vec<(CommitId, Tid)> = core.ix.commits.iter().flat_map(|(c, m)| m.missing_parts().filter_map(|ai| m.header.aspects.get(ai)).map(|a| (*c, a.tid)).collect::<Vec<_>>()).collect();
-    for (c, t) in slots {
-        let known = core.created(&t).is_some();
-        let r = if known { Reason::MissingChain(t) } else { Reason::UnknownCreated(t) };
-        core.waits.slot_waits(known, c, &r);
-    }
 }
 
 /// Bytes to read decode-only, as checked: the delta of a part of a blob `examine` accepted

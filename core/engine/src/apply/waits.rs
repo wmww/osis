@@ -1,8 +1,6 @@
-//! What brings back what the node could not judge (notes/expiry-creation-design.md §3). Nothing
-//! is kept of an unjudgeable part or commit but the reading-only secrets its boxes open; sync
-//! fetches it again when what it awaits arrives. This module holds what names those fetches:
-//! `Wakes` and the applied commits with a slot
-//! waiting (`Awaiting`, derived from held headers).
+//! What brings back what waits (spec/commits.md §4): the one parking place of pending commits and
+//! of the waiting parts of applied ones (`Wake`, `Indexes::pend_on`), the records their parts
+//! await, loose records, and the reading-only budget's refusals.
 
 use super::Reason;
 use crate::engine::Core;
@@ -37,17 +35,7 @@ pub enum Wake {
 pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_commit::Header>) -> Vec<Wake> {
     let mut out = match r {
         Reason::Parked | Reason::Unexamined => vec![Wake::Open],
-        Reason::MissingChain(t) | Reason::UnknownCreated(t) => {
-            // every record a part of it awaits (`awaits_records`): any arriving may let a part apply;
-            // one held: a reach, which role commits bring (whichever part `t` names)
-            let recs: BTreeSet<Tid> = std::iter::once(*t).chain(core.waits.records_of(id).iter().copied()).collect();
-            let (held, unknown): (Vec<Tid>, Vec<Tid>) = recs.into_iter().partition(|x| core.created(x).is_some());
-            let mut out: Vec<Wake> = unknown.into_iter().map(Wake::Record).collect();
-            if !held.is_empty() {
-                out.push(Wake::Moved);
-            }
-            out
-        }
+        Reason::MissingChain(_) | Reason::UnknownCreated(_) => Vec::new(),
         Reason::Drift => match h {
             Some(h) => vec![Wake::At(h.ts.wall_ms().0.saturating_sub(osis_base::format::MAX_DRIFT_MS))],
             None => vec![Wake::Moved],
@@ -55,6 +43,18 @@ pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_c
         Reason::WaitBlobs => vec![Wake::Blobs],
         Reason::Epoch(e) => vec![Wake::Commit(*e), Wake::Moved],
     };
+    // every record a part of it awaits (`awaits_records`), whatever its first reason: any arriving
+    // may let a part apply; one held: a reach, which role commits bring (whichever part `t` names)
+    let first = match r {
+        Reason::MissingChain(t) | Reason::UnknownCreated(t) => Some(*t),
+        _ => None,
+    };
+    let recs: BTreeSet<Tid> = first.into_iter().chain(core.waits.records_of(id).iter().copied()).collect();
+    let (held, unknown): (Vec<Tid>, Vec<Tid>) = recs.into_iter().partition(|x| core.created(x).is_some());
+    out.extend(unknown.into_iter().map(Wake::Record));
+    if !held.is_empty() {
+        out.push(Wake::Moved);
+    }
     if let Some(h) = h {
         // an expiry already passed was run (`expire_stored`): no wake, or the clock is due for good
         if let Some(t) = h.expires.filter(|t| *t > core.now().0) {
@@ -96,15 +96,17 @@ pub(crate) fn set_pending(core: &mut Core, id: &CommitId, r: Option<(Reason, Opt
             }
         }
         None => {
-            core.ix.pending.remove(id);
+            if core.ix.pending.remove(id).is_some() && core.ix.commits.contains_key(id) {
+                core.waits.unpended.wrote_added(id, true, true);
+            }
         }
     }
 }
 
-/// Whether a commit here awaits record `t`: one pending, thrown out whole, or an applied commit's
-/// slot (what names a loose record, so it is learned).
+/// Whether a commit here awaits record `t`: one pending, or a waiting part of one (what names a
+/// loose record, so it is learned).
 pub(crate) fn awaits_record(core: &Core, t: &Tid) -> bool {
-    core.ix.pend_on.contains_key(&Wake::Record(*t)) || core.waits.awaiting.by_record.contains_key(t) || core.waits.on_record.contains_key(t)
+    core.ix.pend_on.contains_key(&Wake::Record(*t)) || core.waits.on_record.contains_key(t)
 }
 
 /// The first time a pending commit's `ts` comes within reach (`Wake::At`).
@@ -199,15 +201,6 @@ impl Loose {
 /// the most a peer's input can keep; a restart loses them all and fetches again.
 const MAX_REMEMBERED: usize = 4096;
 
-/// Applied commits with a slot `thing_wait` holds back (`m.missing`), derived from held headers:
-/// not journaled, a wake a rollback undoes only costs a fetch. A slot no entry opened costs nothing:
-/// node-sync finds no entry for it.
-#[derive(Clone, Default)]
-pub(crate) struct Awaiting {
-    by_record: BTreeMap<Tid, BTreeSet<CommitId>>,
-    reach: BTreeSet<CommitId>,
-}
-
 /// The budget's refused commits, and what reading-only secrets were read from: not journaled, and
 /// rebuilt at load (`load_reading`).
 #[derive(Clone, Default)]
@@ -218,13 +211,13 @@ pub(crate) struct Waits {
     refused: BTreeSet<CommitId>,
     /// Commits reading-only secrets came from.
     reading: BTreeSet<CommitId>,
-    pub awaiting: Awaiting,
     /// Unapplied commits an awaiting entry holds, by the things their headers touch
     /// (`Engine::awaits_on`). From headers seen, in memory: a restart fetches them again.
     on_thing: BTreeMap<Tid, BTreeSet<CommitId>>,
     things_of: BTreeMap<CommitId, Vec<Tid>>,
-    /// Commits thrown out whole by the records they await (every part's, not only the one the entry
-    /// names: any arriving may let a part apply), by record; in memory, with `things_of`.
+    /// Pending commits, and applied ones with parts waiting, by the records their parts await
+    /// (every part's, not only the one their reason names: any arriving may let a part apply); in
+    /// memory, with `things_of`, noted at each examination that pends them.
     on_record: BTreeMap<Tid, BTreeSet<CommitId>>,
     records_of: BTreeMap<CommitId, Vec<Tid>>,
     /// Records from record blobs nothing awaits yet (`Loose`).
@@ -234,6 +227,9 @@ pub(crate) struct Waits {
     /// Stamps a waiting memory commit woken by what it awaited (`Engine::memory_woken_feed`):
     /// node-sync applies it within its sync ID's room (`apply_waiting_memory`).
     pub memory_woken: osis_base::memo::Stamps,
+    /// Stamps a held commit whose waiting parts all joined or went: it pends no more
+    /// (`Engine::unpended_feed`). Not journaled: a reader judges each again.
+    pub unpended: osis_base::memo::Stamps,
     /// The next `reexamine` wakes `Wake::Open` (an open loaded the pending commits).
     pub open_due: bool,
     /// A blob was stored since the last `wake`: `Wake::Blobs` is due.
@@ -288,8 +284,9 @@ impl Waits {
         self.things_of.insert(id, things);
     }
 
-    /// `id`, thrown out whole, awaits each of `records`.
+    /// Parts of pending `id` await each of `records` (and nothing else noted before).
     pub fn awaits_records(&mut self, id: CommitId, records: impl Iterator<Item = Tid>) {
+        self.unawait_records(&id);
         self.make_room(&id);
         let records: Vec<Tid> = records.collect::<BTreeSet<_>>().into_iter().collect();
         for t in &records {
@@ -319,6 +316,10 @@ impl Waits {
                 }
             }
         }
+        self.unawait_records(id);
+    }
+
+    fn unawait_records(&mut self, id: &CommitId) {
         for t in self.records_of.remove(id).into_iter().flatten() {
             if let Some(s) = self.on_record.get_mut(&t) {
                 s.remove(id);
@@ -329,12 +330,12 @@ impl Waits {
         }
     }
 
-    /// The records something here awaits: an applied commit's slot, a commit thrown out whole.
+    /// The records the parts of commits here await (`awaits_records`).
     pub fn records_awaited(&self) -> impl Iterator<Item = &Tid> {
-        self.awaiting.by_record.keys().chain(self.on_record.keys())
+        self.on_record.keys()
     }
 
-    /// The records `id`, thrown out whole, awaits (`awaits_records`).
+    /// The records the parts of `id` await (`awaits_records`).
     pub fn records_of(&self, id: &CommitId) -> &[Tid] {
         self.records_of.get(id).map_or(&[], |v| v.as_slice())
     }
@@ -387,20 +388,6 @@ impl Waits {
         self.reading.remove(id);
         self.refused.remove(id);
     }
-
-    /// Slot of applied commit `id` waits for `r`: reach waits (`MissingChain` of a held record) by
-    /// `reach`, the others by the record.
-    pub fn slot_waits(&mut self, core_created: bool, id: CommitId, r: &Reason) {
-        match r {
-            Reason::UnknownCreated(t) | Reason::MissingChain(t) if !core_created => {
-                self.awaiting.by_record.entry(*t).or_default().insert(id);
-                self.loose.want(t);
-            }
-            _ => {
-                self.awaiting.reach.insert(id);
-            }
-        }
-    }
 }
 
 /// Names what the budget, new records and other arrivals free: `Wakes`, and the pending
@@ -420,27 +407,6 @@ pub(crate) fn wake(core: &mut Core) -> BTreeSet<CommitId> {
     for _ in 0..room {
         let Some(id) = core.waits.refused.pop_first() else { break };
         reread.push(id);
-    }
-    let mut undropped: BTreeSet<CommitId> = BTreeSet::new();
-    for t in &records {
-        if let Some(cs) = core.waits.awaiting.by_record.remove(t) {
-            undropped.extend(cs);
-        }
-    }
-    // a commit awaiting this record among others (the entry names only the first): a pending one
-    // keeps every part (`throw_out_parts`), so it is examined again (`reread`), never fetched
-    for t in &records {
-        for c in core.waits.on_record.get(t).into_iter().flatten() {
-            if core.ix.commits.contains_key(c) {
-                undropped.insert(*c);
-            } else {
-                reread.push(*c);
-            }
-        }
-    }
-    // a pending one awaiting a reach among records is parked under `Wake::Moved` too (`wakes_of`)
-    if !moved.is_empty() {
-        undropped.append(&mut core.waits.awaiting.reach);
     }
     let mut out: BTreeSet<CommitId> = reread.iter().copied().collect();
     // the pending commits parked under what arrived (`Wake`)
@@ -470,9 +436,6 @@ pub(crate) fn wake(core: &mut Core) -> BTreeSet<CommitId> {
     }
     out.retain(|c| core.ix.pending.contains_key(c));
     if let Some(ch) = &mut core.wakes {
-        ch.woken.extend(undropped);
-        ch.records.extend(records);
-        ch.moved |= !moved.is_empty();
         ch.reread.extend(reread);
     }
     out

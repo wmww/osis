@@ -116,7 +116,6 @@ osis-transport::set_lan_loss  deferred: sync rebuild (issues/sync-rewrite.md Pha
 osis::rotate_peer_address  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
 osis-engine::bear  test hook (tests/it)
 osis-engine::commit_forged  test hook (tests/it)
-osis-engine::copy_awaits  test hook (tests/it)
 osis-engine::damage_edges  test hook (tests/it)
 osis-engine::damage_walks  test hook (tests/it)
 osis-engine::deliver_sealed  test hook (tests/it)

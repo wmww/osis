@@ -417,6 +417,12 @@ impl Engine {
         self.core.ix.commits.feed()
     }
 
+    /// A cursor over the held commits that pended no more from now on (their waiting parts
+    /// joined or went, `memo::Feed`): each may be judged again (`pends`).
+    pub fn unpended_feed(&self) -> osis_base::memo::Feed<CommitId> {
+        self.core.waits.unpended.feed()
+    }
+
     /// The records `s` carries as certificates (spec/permissions.md §4): a record blob of those
     /// no record blob in the own store carries is logged there.
     pub fn certificate_records(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<Tid>>> {

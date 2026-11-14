@@ -36,13 +36,14 @@ pub struct Follow {
 /// engine keeps its pending copy only while an entry of it is in the store, an unstamped one
 /// charged to the peer that brought it (spec/sync-ids.md §5 Peer budget), so what one peer makes
 /// pend is bounded by its own budget. A blob no entry names any more lets its commit's pending
-/// copy go once no blob of it is named (`release`); a commit held here takes its entries off
-/// their peers' budgets. Nothing kept but the feeds' cursors: a start sweeps every pending commit
+/// copy go once no blob of it is named (`release`); a commit held here and pending no more (an
+/// applied one's waiting parts joined too) takes its entries off their peers' budgets. Nothing kept but the feeds' cursors: a start sweeps every pending commit
 /// once.
 #[derive(Clone, Default)]
 struct Carriers {
     unnamed: Option<Feed<BlobId>>,
-    commits: Option<Feed<CommitId>>,
+    /// Commits held, and held commits that pended no more (their waiting parts joined).
+    commits: Option<(Feed<CommitId>, Feed<CommitId>)>,
     /// Record blobs whose loose records were all learned (`Engine::loose_feed`).
     loose: Option<Feed<BlobId>>,
     /// Waiting memory commits woken (`Engine::memory_woken_feed`).
@@ -151,9 +152,9 @@ impl Carriers {
             None => self.woken = Some(engine.memory_woken_feed()),
         }
         let held = match self.commits.as_mut() {
-            Some(f) => f.added(),
+            Some((f, u)) => f.added().into_iter().chain(u.added()).collect(),
             None => {
-                self.commits = Some(engine.commit_feed());
+                self.commits = Some((engine.commit_feed(), engine.unpended_feed()));
                 Vec::new()
             }
         };

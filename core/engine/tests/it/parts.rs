@@ -77,12 +77,12 @@ fn chainless_part_waits_alone_spec_commits_4() {
     let (content, three) = (&hs[0], &hs[2]);
     let edge = content.base + 1;
     let (got, pending) = reads(content, &[edge]);
-    assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 0), "G applied, H awaits");
+    assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 1), "G applied, H's part waits in its pending copy");
     let (got, pending) = reads(content, &[]);
     assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 0), "the chain held: 1 only reads H, its write there judged invalid");
     let (got, pending) = reads(three, &[three.base + 2]);
     assert_eq!(got, vec![v("v1"), v("top"), v("v1")], "only H's part waits");
-    assert_eq!(pending, 0, "nothing kept");
+    assert_eq!(pending, 1, "kept pending under its applied commit");
 }
 
 // spec/commits.md §4: a commit's parts wait alone, so what a role commit does to one thing's
@@ -296,7 +296,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
             let _ = e.ingest(b, Vec::new());
         }
         e.reexamine().unwrap();
-        assert!(e.pending().is_empty(), "{name}: H's part cannot be judged: nothing stored");
+        assert_eq!(e.pending().iter().map(|x| x.0).collect::<Vec<_>>(), vec![id], "{name}: H's part cannot be judged: it waits in the applied commit's pending copy");
         assert!(e.commit_ids().contains(&id), "{name}: G's part applied");
         assert!(!e.core.ix.lost_due.contains_key(&h), "{name}: nothing forgotten for it");
         assert!(e.epochs(&h).is_some_and(|x| x.read.holds_any()), "{name}: the waiting part's box read");

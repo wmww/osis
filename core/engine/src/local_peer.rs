@@ -79,16 +79,14 @@ pub struct Discarded {
     bytes: Vec<u8>,
     blobs: Vec<(BlobId, Vec<u8>)>,
     pub commit: CommitId,
-    /// `None`: a part of an applied commit (`Wakes::woken`).
-    pub awaits: Option<Tid>,
-    /// A copy carrying a pending commit, as node-sync keeps its entry: delivered again when the
-    /// engine names the commit (`Engine::take_redeliver`), kept while the commit pends; once the
-    /// commit applied, kept as a copy of a part it misses (`awaits` `None`).
+    /// A copy carrying a pending commit (or parts of an applied one), as node-sync keeps its
+    /// entry: delivered again when the engine names the commit (`Engine::take_redeliver`), kept
+    /// while the commit pends; after, kept as a copy of a part it misses (`Wakes`).
     carries: bool,
 }
 
 impl Discarded {
-    /// Whether this is a pending commit's carrier, not a copy thrown out.
+    /// Whether this is a pending commit's carrier, not a copy of a missing part.
     pub fn carries(&self) -> bool {
         self.carries
     }
@@ -100,8 +98,9 @@ fn misses(core: &crate::engine::Core, id: &CommitId, bytes: &[u8]) -> bool {
 }
 
 impl Peer {
-    /// Receives a package and stands in for node-sync's fetches: what the engine threw out is
-    /// ingested again when `Wakes` names what it awaits. The test's `Engine::ingest` is what
+    /// Receives a package and stands in for node-sync's carriers and fetches: a carrier of what
+    /// pends is ingested again when the engine names its commit, a copy of a missing part when
+    /// `Wakes` names it. The test's `Engine::ingest` is what
     /// node-sync calls; only the fetching is played here.
     pub fn receive(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>) -> Result<Ingested> {
         self.receive_with(bytes, blobs, &[])
@@ -122,8 +121,7 @@ impl Peer {
     }
 
     /// Runs what is due (`Engine::tick`) and, as node-sync does after it, fetches again what
-    /// the engine threw out that it woke: a commit parked for drift that runs carries the record
-    /// a thrown-out one awaits.
+    /// the engine names (`wake`).
     pub fn tick(&mut self) -> Result<()> {
         self.engine.tick()?;
         self.wake()
@@ -134,29 +132,25 @@ impl Peer {
         self.wake()
     }
 
-    /// Keeps what node-sync would fetch again: a commit thrown out to await a chain or record,
-    /// or one held with a part of these bytes missing. Any earlier copy of the same bytes goes
+    /// Keeps what node-sync would keep or fetch again: a carrier of a pending commit, or a copy of
+    /// a held one with a part of these bytes missing. Any earlier copy of the same bytes goes
     /// (only decodable bytes are kept, so only those match).
     fn note(&mut self, bytes: &[u8], blobs: &[(BlobId, Vec<u8>)], r: &Result<Ingested>) {
         self.discarded.retain(|d| d.bytes != bytes);
         let Ok(i) = r else { return };
         let id = match i {
-            Ingested::Applied(x) | Ingested::Duplicate(x) | Ingested::Pending(x, _) | Ingested::Awaits(x, _) | Ingested::Parked(x) | Ingested::TooLarge(x) => *x,
+            Ingested::Applied(x) | Ingested::Duplicate(x) | Ingested::Pending(x, _) | Ingested::Parked(x) | Ingested::TooLarge(x) => *x,
         };
-        let applied = self.engine.core.ix.commits.get(&id);
-        if applied.is_none() && self.engine.core.ix.pending.contains_key(&id) {
-            self.discarded.push(Discarded { bytes: bytes.to_vec(), blobs: blobs.to_vec(), commit: id, awaits: None, carries: true });
+        if self.engine.core.ix.pending.contains_key(&id) {
+            self.discarded.push(Discarded { bytes: bytes.to_vec(), blobs: blobs.to_vec(), commit: id, carries: true });
             return;
         }
-        let awaits = match i {
-            Ingested::Awaits(_, crate::Reason::MissingChain(t) | crate::Reason::UnknownCreated(t)) if applied.is_none() => Some(*t),
-            // the blob decoded only where a held commit misses a part
-            _ if applied.is_some_and(|m| m.missing_parts().next().is_some() && CommitBlob::decode(bytes).is_ok_and(|b| b.parts.iter().any(|p| m.missing(p.ai)))) => None,
-            _ if misses(&self.engine.core, &id, bytes) => None,
-            _ => return,
-        };
+        // the blob decoded only where a held commit misses a part
+        if !misses(&self.engine.core, &id, bytes) {
+            return;
+        }
         self.discards += 1;
-        self.discarded.push(Discarded { bytes: bytes.to_vec(), blobs: blobs.to_vec(), commit: id, awaits, carries: false });
+        self.discarded.push(Discarded { bytes: bytes.to_vec(), blobs: blobs.to_vec(), commit: id, carries: false });
     }
 
     fn wake(&mut self) -> Result<()> {
@@ -179,10 +173,7 @@ impl Peer {
                 if d.carries {
                     return again.contains(&d.commit);
                 }
-                w.reopen_awaits || w.reread.contains(&d.commit) || match &d.awaits {
-                    Some(t) => w.records.contains(t) || (w.moved && core.exists(t)),
-                    None => w.woken.contains(&d.commit),
-                }
+                w.reopen_awaits || w.reread.contains(&d.commit) || w.woken.contains(&d.commit)
             };
             let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.discarded).into_iter().partition(|d| due(d));
             self.discarded = later;

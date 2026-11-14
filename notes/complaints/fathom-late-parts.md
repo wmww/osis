@@ -1,0 +1,3 @@
+# fathom-late-parts
+- `Engine::lost_wakes` counts only commits that stop pending: an applied commit with two waiting parts, one joining on a full scan, stays pending and is not reported. A read-before/after check around it was needed, and even then the randomized differential hid a missed record wake behind `Wake::Thing` wakes (a creation commit moving the thing's lists); only a hand-made two-records test caught that planted fault.
+- `JMap::feed` gives added keys only: a held commit whose waiting parts joined later never reached sync's carrier feed, so its entries stayed charged to their peer (a budget leak, also for pages). Needed a feed of its own (`Engine::unpended_feed`).

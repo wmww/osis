@@ -1437,8 +1437,8 @@ fn pending_part_awaiting_its_record_is_judged_with_it_spec_commits_4() {
 }
 
 // spec/commits.md §4 (Unjudgeable), §5: an applied commit with a purged part, a part waiting for its
-// pages and a part on a thing whose record is away: a copy of it holds nothing the node needs, so
-// node-sync forgets it (`spent_copy`), the part whose record is away awaiting it (`copy_awaits`).
+// pages and a part on a thing whose record is away: a copy of it holds nothing the node needs (the
+// parts that wait are in its pending copy), so node-sync forgets it (`spent_copy`).
 #[test]
 fn copy_of_a_purged_part_beside_an_unjudgeable_one_is_spent_spec_commits_5() {
     let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
@@ -1465,9 +1465,7 @@ fn copy_of_a_purged_part_beside_an_unjudgeable_one_is_spent_spec_commits_5() {
     let e = &mut lp.peers[1].engine;
     assert!(e.commit_ids().contains(&c) && e.pending().iter().any(|x| x.0 == c), "applied, its paged part waiting");
     let copy = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-    let parts: Vec<usize> = copy.parts.iter().map(|p| p.ai).collect();
     assert!(e.spent_copy(&c, &copy).unwrap(), "nothing of it needed");
-    assert_eq!(e.copy_awaits(&c, &parts).unwrap(), vec![t2]);
     assert!(!recoverable(&mut lp.peers[1], b"SECRET-C7d2"));
 }
 

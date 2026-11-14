@@ -364,7 +364,7 @@ impl Sim {
         let r = self.engine(i)?.ingest(&pkg.bytes, pkg.blobs.clone());
         let out = match r {
             Ok(x) => {
-                if matches!(x, Ingested::Pending(..) | Ingested::Parked(..) | Ingested::Awaits(..)) {
+                if matches!(x, Ingested::Pending(..) | Ingested::Parked(..)) {
                     self.report.parked = self.report.parked.saturating_add(1);
                 }
                 self.note(format!("node {i} ingest {:?}", x));
