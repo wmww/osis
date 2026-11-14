@@ -58,21 +58,30 @@ pub const X: usize = 2;
 pub const T: usize = 3;
 pub const R1: usize = 4;
 pub const R2: usize = 5;
-pub const N: usize = 6;
+/// A key actor X makes up (no observer): it seals inner signatures as Z with its old epochs'
+/// inner keys. Paired by X in plain sight before its removal in some worlds.
+pub const Z: usize = 6;
+pub const N: usize = 7;
 /// Nodes `0..OWN` are P's.
 pub const OWN: usize = 4;
 pub const NEVER: u32 = u32::MAX;
 
 /// Negative controls: 1 forks stand (nothing is disregarded, the rule before this one); 2 P's
-/// nodes judge as outsiders do (every beside rotation ends another).
+/// nodes judge as outsiders do (every beside rotation ends another); 3 any key actor that signs
+/// is a node and D's roster reads every grant at a counting epoch (a removed node's own
+/// included); 4 first-seen grants: a removed node's grant is hit only when held after its
+/// removal or signed beside it (issues/forged-minter.md, option 1).
 pub static CONTROL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-const NAMES: [&str; N] = ["A", "B", "X", "T", "R1", "R2"];
+const NAMES: [&str; N] = ["A", "B", "X", "T", "R1", "R2", "Z"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
     /// Signed at `at` (and at each fork it names), superseding `sup`, accepting the forks
-    /// `names`, carrying the removal of `removes` from the devices list (signed at `at`).
-    Rot { at: u32, names: Vec<u32>, sup: Vec<u32>, removes: Option<usize> },
+    /// `names`, carrying the removal of `removes` from the devices list (signed at `at`) with
+    /// its frontier `covers`: the removed node's D commits its remover held.
+    Rot { at: u32, names: Vec<u32>, sup: Vec<u32>, removes: Option<usize>, covers: Vec<u32> },
+    /// A grant of D to `to` (pairing), signed at `epoch` by `signer`.
+    Grant { to: usize },
     Content,
     /// The author's word that its writes `names` count.
     Listing { names: Vec<u32> },
@@ -83,6 +92,8 @@ pub struct Item {
     pub id: u32,
     pub kind: Kind,
     pub author: usize,
+    /// Whose inner signature it carries: its author, or a key actor X made up.
+    pub signer: usize,
     /// The epoch it is signed at (a rotation: its `at`); 0 the first.
     pub epoch: u32,
     pub t: u32,
@@ -108,17 +119,38 @@ impl World {
     }
     fn rot(&self, id: u32) -> Option<(u32, &[u32], &[u32], Option<usize>)> {
         match &self.item(id).kind {
-            Kind::Rot { at, names, sup, removes } => Some((*at, names, sup, *removes)),
+            Kind::Rot { at, names, sup, removes, .. } => Some((*at, names, sup, *removes)),
             _ => None,
         }
     }
+    fn covers(&self, id: u32) -> &[u32] {
+        match &self.item(id).kind {
+            Kind::Rot { covers, .. } => covers,
+            _ => &[],
+        }
+    }
     pub fn add(&mut self, kind: Kind, author: usize, epoch: u32, t: u32, boxed: [bool; N]) -> u32 {
+        self.add_as(kind, author, author, epoch, t, boxed)
+    }
+    /// `add` with the inner signature sealed as `signer`.
+    pub fn add_as(&mut self, kind: Kind, author: usize, signer: usize, epoch: u32, t: u32, boxed: [bool; N]) -> u32 {
         let id = self.items.len() as u32 + 1;
         let mut recv = [NEVER; N];
         recv[author] = t;
         let hostile = author == X && self.removal != 0 && t >= self.item(self.removal).t;
-        self.items.push(Item { id, kind, author, epoch, t, recv, hostile, boxed });
+        self.items.push(Item { id, kind, author, signer, epoch, t, recv, hostile, boxed });
         id
+    }
+    /// Z was paired by X before its removal and the removal's frontier covers that grant: Z is
+    /// a node as any other (stated limit: a thief's device paired in plain sight stays until it
+    /// is removed too).
+    pub fn z_paired(&self) -> bool {
+        self.removal != 0 && self.covers(self.removal).iter().any(|g| matches!(self.item(*g).kind, Kind::Grant { to: Z }) && self.item(*g).signer == X)
+    }
+    /// Made by X after its removal, signed as X or as a made-up key actor no removal covers.
+    pub fn hostile(&self, id: u32) -> bool {
+        let i = self.item(id);
+        i.hostile && !(i.signer == Z && self.z_paired())
     }
 }
 
@@ -136,12 +168,16 @@ pub struct View {
     pub preferred: u32,
     /// At P's nodes: (node, epoch) removals the counting rotations carry.
     pub removed: BTreeSet<(usize, u32)>,
+    /// At P's nodes: D's roster, whom an honest rotation boxes.
+    pub roster: BTreeSet<usize>,
     pub warning: bool,
     /// Held rotations a counting one rejects.
     pub rejected: BTreeSet<u32>,
     /// Writes (content, listings) that count.
     pub valid: BTreeSet<u32>,
     pub chosen: Option<u32>,
+    /// At a node of P: a followed rotation rejects another (a device that sided otherwise).
+    pub cross: bool,
 }
 
 impl View {
@@ -161,13 +197,37 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
     let own = v < OWN;
     let mut j = View::default();
     j.held = w.items.iter().filter(|i| i.recv[v] <= now).map(|i| i.id).collect();
-    // with its chain (a merge with every fork it names), and when it came to be held so
+    // at a node of P, when each key actor came to be known as a node: paired before the world,
+    // or the holder of a held grant by one known, once both are (removals aside: those decide
+    // what stands, not what is held)
+    let control = CONTROL.load(std::sync::atomic::Ordering::Relaxed);
+    let mut known: BTreeMap<usize, u32> = (0..OWN).map(|m| (m, 0)).collect();
+    if own && control == 0 {
+        loop {
+            let mut changed = false;
+            for g in j.held.iter().map(|id| w.item(*id)) {
+                let Kind::Grant { to } = g.kind else { continue };
+                let Some(t) = known.get(&g.signer).filter(|_| g.signer != to).map(|t| (*t).max(g.recv[v])) else { continue };
+                if known.get(&to).is_none_or(|k| t < *k) {
+                    known.insert(to, t);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+    // with its chain (a merge with every fork it names) and, at a node of P, its minter known,
+    // and when it came to be held so
     let mut when: BTreeMap<u32, u32> = BTreeMap::new();
     when.insert(0, 0);
     loop {
         let more: Vec<(u32, u32)> = j.held.iter().filter(|id| !when.contains_key(id)).filter_map(|id| {
             let (at, names, ..) = w.rot(*id)?;
-            std::iter::once(&at).chain(names).map(|p| when.get(p).copied()).try_fold(w.item(*id).recv[v], |a, t| t.map(|t| a.max(t))).map(|t| (*id, t))
+            let i = w.item(*id);
+            let first = known.get(&i.signer).map_or(i.recv[v], |k| i.recv[v].max(*k));
+            std::iter::once(&at).chain(names).map(|p| when.get(p).copied()).try_fold(first, |a, t| t.map(|t| a.max(t))).map(|t| (*id, t))
         }).collect();
         if more.is_empty() {
             break;
@@ -204,39 +264,73 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
     // reopens an earlier decision.
     let mut placed: BTreeSet<u32> = BTreeSet::new();
     let mut followed: BTreeSet<u32> = BTreeSet::new();
-    let control = CONTROL.load(std::sync::atomic::Ordering::Relaxed);
-    if own && control == 0 {
+    // what a node of P reads of D: the grants it holds (pairings), who signed each
+    let grants: Vec<&Item> = j0.held.iter().map(|id| w.item(*id)).filter(|i| matches!(i.kind, Kind::Grant { .. })).collect();
+    let to_of = |g: &Item| match g.kind { Kind::Grant { to } => to, _ => unreachable!() };
+    // removal (node, epoch, rotation carrying it) hits grant g by that node unless its frontier
+    // covers g (control 4: unless held before the removal and signed at an epoch strictly
+    // before the removal's, or at it)
+    let hit = |g: &Item, (y, e, rr): (usize, u32, u32)| -> bool {
+        y == g.signer && match control {
+            4 => if g.epoch == e { g.recv[v] > when[&rr] } else { !j0.on(g.epoch, e) },
+            _ => !w.covers(rr).contains(&g.id),
+        }
+    };
+    // the nodes: those paired before the world, and every holder of a grant no removal hits by
+    // a node other than itself (least fixpoint). Control 3: any key actor that signs.
+    let nodes_of = |removals: &[(usize, u32, u32)]| -> BTreeSet<usize> {
+        let mut nodes: BTreeSet<usize> = (0..OWN).collect();
+        if control == 3 {
+            nodes.insert(Z);
+            return nodes;
+        }
+        loop {
+            let more: Vec<usize> = grants.iter().filter(|g| to_of(g) != g.signer && nodes.contains(&g.signer) && !nodes.contains(&to_of(g)) && !removals.iter().any(|r| hit(g, *r))).map(|g| to_of(g)).collect();
+            if more.is_empty() {
+                return nodes;
+            }
+            nodes.extend(more);
+        }
+    };
+    let node_rule = own && matches!(control, 0 | 3 | 4);
+    if node_rule {
         // a node of P reads who made each rotation and whom it removes. The revocations it
         // takes are a consistent set, built in the order it came to hold them: one is taken
-        // when no revocation taken (nor itself) hits a rotation on its line nor it one on theirs (hits: removes
-        // its minter, the rotation beside that removal). It follows every rotation whose line no
-        // revocation taken hits and holds no revocation not taken
-        let stands = |r: u32, removed: &BTreeSet<(usize, u32)>| {
+        // when no revocation taken (nor itself) hits a rotation on its line nor it one on theirs
+        // (hits: removes its minter, the rotation beside that removal; a rotation whose minter
+        // is no node stands by none). It follows every rotation whose line no revocation taken
+        // hits and holds no revocation not taken
+        let stands = |r: u32, removals: &[(usize, u32, u32)]| {
+            let nodes = nodes_of(removals);
             j0.line(r).iter().all(|q| {
-                let m = w.item(*q).author;
-                removed.iter().filter(|(y, _)| *y == m).all(|(_, e)| *e != 0 && j0.on(*q, *e))
+                let m = w.item(*q).signer;
+                // made before the removal: on the line of the rotation carrying it (signed at
+                // the removal's epoch and at every fork it accepts)
+                nodes.contains(&m) && removals.iter().filter(|(y, ..)| *y == m).all(|(_, _, rr)| *q != *rr && j0.on(*q, *rr))
             })
         };
         let mut taken: Vec<u32> = Vec::new();
+        let mut removals: Vec<(usize, u32, u32)> = Vec::new();
         for &r in &order {
             let Some((at, _, _, Some(y))) = w.rot(r) else { continue };
-            let mine: BTreeSet<(usize, u32)> = [(y, at)].into();
-            let with: BTreeSet<(usize, u32)> = j.removed.union(&mine).copied().collect();
+            let mine = [(y, at, r)];
+            let with: Vec<(usize, u32, u32)> = removals.iter().chain(&mine).copied().collect();
             if stands(r, &with) && taken.iter().all(|q| stands(*q, &mine)) {
                 taken.push(r);
+                removals.push((y, at, r));
                 j.removed.insert((y, at));
             }
         }
         let revocation = |q: &u32| matches!(w.rot(*q), Some((_, _, _, Some(_))));
         for &r in &order {
-            if stands(r, &j.removed) && j0.line(r).iter().filter(|q| revocation(q)).all(|q| taken.contains(q)) {
+            if stands(r, &removals) && j0.line(r).iter().filter(|q| revocation(q)).all(|q| taken.contains(q)) {
                 followed.insert(r);
             } else {
                 j.disregarded.insert(r);
             }
         }
     }
-    for &r in order.iter().filter(|_| !(own && control == 0)) {
+    for &r in order.iter().filter(|_| !node_rule) {
         placed.insert(r);
         if followed.contains(&r) {
             continue;
@@ -307,11 +401,28 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
             break;
         }
     }
-    j.counting = status.into_iter().filter(|(_, s)| *s == Some(true)).map(|(r, _)| r).collect();
+    let fix: BTreeSet<u32> = status.into_iter().filter(|(_, s)| *s == Some(true)).map(|(r, _)| r).collect();
+    // at a node of P, every followed rotation counts (spec/permissions.md §5.4): its devices
+    // may side otherwise and supersede one it follows unnamed (counted, `View::cross`)
+    j.cross = node_rule && fix != j.followed;
+    j.counting = if node_rule { j.followed.clone() } else { fix };
     if own {
-        let counting = &j.counting;
-        j.removed = j.counting.iter().filter_map(|q| w.rot(*q).and_then(|(at, _, _, y)| y.map(|y| (y, at)))).collect();
-        let _ = counting;
+        let removals: Vec<(usize, u32, u32)> = j.counting.iter().filter_map(|q| w.rot(*q).and_then(|(at, _, _, y)| y.map(|y| (y, at, *q)))).collect();
+        j.removed = removals.iter().map(|(y, e, _)| (*y, *e)).collect();
+        // D's roster: the nodes (control 3: holders of any grant at a counting epoch) but those
+        // removed, a removed node back by a grant at an epoch descending from (and not) its
+        // removal's, by another node no removal hits (control 3: any grant, its own included)
+        let nodes = if control == 3 {
+            (0..OWN).chain(grants.iter().filter(|g| g.epoch == 0 || j.counting.contains(&g.epoch)).map(|g| to_of(g))).collect()
+        } else {
+            nodes_of(&removals)
+        };
+        let back = |m: usize, e: u32| grants.iter().any(|g| {
+            to_of(g) == m && g.epoch != e && j.on(e, g.epoch) && (g.epoch == 0 || j.counting.contains(&g.epoch))
+                && (control == 3 || g.signer != m && nodes.contains(&g.signer) && !removals.iter().any(|r| hit(g, *r)))
+        });
+        let roster = nodes.iter().copied().filter(|m| removals.iter().filter(|(y, ..)| y == m).all(|(_, e, _)| back(*m, *e))).collect();
+        j.roster = roster;
     }
     j.heads = j.counting.iter().copied().filter(|h| !j.counting.iter().any(|x| x != h && j.on(*h, *x))).collect();
     if j.heads.is_empty() {
@@ -350,9 +461,9 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
     j
 }
 
-/// Who holds the seed of epoch `e` at node `n` now.
+/// Who holds the seed of epoch `e` at node `n` now (X: also through Z, whose key it holds).
 fn has_seed(w: &World, j: &View, n: usize, e: u32) -> bool {
-    e == 0 || j.chain.contains(&e) && w.item(e).boxed[n]
+    e == 0 || j.chain.contains(&e) && (w.item(e).boxed[n] || n == X && w.item(e).boxed[Z])
 }
 
 /// Honest node `n` acts at `now`: rotates if owed (a removal, a fork among counting heads, an
@@ -375,16 +486,18 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
         let names = others.clone();
         let sup: Vec<u32> = std::iter::once(h).chain(others.iter().copied()).chain(unanswered.iter().copied()).collect();
         let mut boxed = [false; N];
-        for (m, b) in boxed.iter_mut().enumerate().take(OWN) {
-            *b = !j.removed_node(m) && Some(m) != removes;
+        for (m, b) in boxed.iter_mut().enumerate() {
+            *b = j.roster.contains(&m) && Some(m) != removes;
         }
-        head = w.add(Kind::Rot { at: h, names, sup, removes }, n, h, now, boxed);
+        // the removal's frontier: the removed node's D commits held here
+        let covers = removes.map(|y| w.items.iter().filter(|i| i.signer == y && i.recv[n] <= now && matches!(i.kind, Kind::Grant { .. })).map(|i| i.id).collect()).unwrap_or_default();
+        head = w.add(Kind::Rot { at: h, names, sup, removes, covers }, n, h, now, boxed);
         made.push(head);
     }
     if write {
         made.push(w.add(Kind::Content, n, head, now, [false; N]));
     }
-    let own: Vec<u32> = w.items.iter().filter(|i| i.author == n && i.epoch != head && !matches!(i.kind, Kind::Rot { .. }) && i.recv[n] <= now).map(|i| i.id).collect();
+    let own: Vec<u32> = w.items.iter().filter(|i| i.author == n && i.epoch != head && matches!(i.kind, Kind::Content | Kind::Listing { .. }) && i.recv[n] <= now).map(|i| i.id).collect();
     if !own.is_empty() {
         made.push(w.add(Kind::Listing { names: own }, n, head, now, [false; N]));
     }
@@ -397,8 +510,10 @@ fn deliver(w: &mut World, ids: &[u32], rng: &mut Rng, floor: &[u32; N]) {
     for id in ids {
         let i = &mut w.items[*id as usize - 1];
         let off = if i.author == B { floor[B] } else { 0 };
+        // D's commits go to P's nodes only
+        let d = matches!(i.kind, Kind::Grant { .. });
         for m in 0..N {
-            if m == i.author {
+            if m == i.author || m == Z || d && m >= OWN {
                 continue;
             }
             let d = match rng.below(6) {
@@ -424,7 +539,12 @@ pub fn random_world(rng: &mut Rng) -> World {
         let mut bx = all;
         bx[R1] = false;
         bx[R2] = false;
-        let id = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None }, X, 0, 0, bx);
+        let id = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, X, 0, 0, bx);
+        deliver(&mut w, &[id], rng, &floor);
+    }
+    // X pairs Z in plain sight, sometimes (the removal's frontier covers it if A holds it by then)
+    if rng.below(5) == 0 {
+        let id = w.add(Kind::Grant { to: Z }, X, 0, 0, [false; N]);
         deliver(&mut w, &[id], rng, &floor);
     }
     // A writes, then removes X at 1
@@ -455,23 +575,36 @@ pub fn random_world(rng: &mut Rng) -> World {
                 let held: Vec<u32> = std::iter::once(0).chain(j.chain.iter().copied().filter(|e| has_seed(&w, &j, X, *e))).collect();
                 let e = held[rng.below(held.len())];
                 let mut made = vec![];
-                if rng.below(3) > 0 {
-                    let removes = [None, Some(A), Some(B)][rng.below(3)];
-                    let names: Vec<u32> = if rng.below(4) == 0 { held.iter().copied().filter(|x| *x != e && *x != 0).take(1).collect() } else { vec![] };
-                    let mut sup = vec![e];
-                    sup.extend(names.iter().copied());
-                    let mut bx = [false; N];
-                    bx[X] = true;
-                    let r = w.add(Kind::Rot { at: e, names, sup, removes }, X, e, t, bx);
-                    made.push(r);
-                    if rng.below(2) == 0 {
-                        made.push(w.add(Kind::Content, X, r, t, [false; N]));
+                match rng.below(9) {
+                    0..=3 => {
+                        let removes = [None, Some(A), Some(B)][rng.below(3)];
+                        let names: Vec<u32> = if rng.below(4) == 0 { held.iter().copied().filter(|x| *x != e && *x != 0).take(1).collect() } else { vec![] };
+                        let mut sup = vec![e];
+                        sup.extend(names.iter().copied());
+                        let mut bx = [false; N];
+                        bx[X] = true;
+                        // signed as X, or as Z, a key actor it made up
+                        // (Z paired in plain sight is a node: what it signs is the stated limit)
+                        let signer = if rng.below(2) == 0 || w.z_paired() { X } else { Z };
+                        let covers = removes.map(|y| w.items.iter().filter(|i| i.signer == y && matches!(i.kind, Kind::Grant { .. })).map(|i| i.id).collect()).unwrap_or_default();
+                        let r = w.add_as(Kind::Rot { at: e, names, sup, removes, covers }, X, signer, e, t, bx);
+                        made.push(r);
+                        if rng.below(2) == 0 {
+                            made.push(w.add(Kind::Content, X, r, t, [false; N]));
+                        }
                     }
-                } else {
-                    let c = w.add(Kind::Content, X, e, t, [false; N]);
-                    made.push(c);
-                    if e != 0 && rng.below(2) == 0 {
-                        made.push(w.add(Kind::Listing { names: vec![c] }, X, e, t, [false; N]));
+                    4 | 5 => {
+                        let c = w.add(Kind::Content, X, e, t, [false; N]);
+                        made.push(c);
+                        if e != 0 && rng.below(2) == 0 {
+                            made.push(w.add(Kind::Listing { names: vec![c] }, X, e, t, [false; N]));
+                        }
+                    }
+                    // D edits at an epoch it holds (the first, backdated; an unaware sibling's):
+                    // pairing Z, re-adding itself, or Z re-adding it
+                    k => {
+                        let (to, signer) = [(Z, X), (X, X), (X, if w.z_paired() { X } else { Z })][k - 6];
+                        made.push(w.add_as(Kind::Grant { to }, X, signer, e, t, [false; N]));
                     }
                 }
                 deliver(&mut w, &made, rng, &floor);
@@ -494,8 +627,10 @@ pub fn random_world(rng: &mut Rng) -> World {
                     let j = judge(&w, B, t);
                     let h = j.preferred;
                     let mut bx = [false; N];
-                    bx[..OWN].fill(true);
-                    let r = w.add(Kind::Rot { at: h, names: vec![], sup: vec![h], removes: None }, B, h, t, bx);
+                    for m in &j.roster {
+                        bx[*m] = true;
+                    }
+                    let r = w.add(Kind::Rot { at: h, names: vec![], sup: vec![h], removes: None, covers: vec![] }, B, h, t, bx);
                     let c = w.add(Kind::Content, B, r, t, [false; N]);
                     deliver(&mut w, &[r, c], rng, &floor);
                 }
@@ -517,8 +652,11 @@ pub fn random_world(rng: &mut Rng) -> World {
 /// side first switches to A's removal, its user told) until none owes anything.
 pub fn settle(w: &mut World, settle: u32) -> u32 {
     for i in w.items.iter_mut() {
-        for r in i.recv.iter_mut() {
-            *r = (*r).min(settle.max(i.t));
+        let d = matches!(i.kind, Kind::Grant { .. });
+        for (m, r) in i.recv.iter_mut().enumerate() {
+            if m != Z && !(d && m >= OWN) {
+                *r = (*r).min(settle.max(i.t));
+            }
         }
     }
     let mut t = settle;
@@ -555,6 +693,12 @@ pub struct Stats {
     pub warned_final: u64,
     pub disregarded_honest: u64,
     pub races: u64,
+    /// Worlds where X signs as a key actor it made up after its removal.
+    pub forged: u64,
+    /// Node-prefixes of P where a followed rotation rejects another.
+    pub cross: u64,
+    /// Failing checks by node and kind.
+    pub kinds: BTreeMap<String, u64>,
     /// A rotation arriving that stops another rejecting (one signed at its epoch on a line
     /// with the rejected): the warning goes until a rotation rejects again.
     pub warning_went: u64,
@@ -564,21 +708,39 @@ pub fn check(w0: &World, st: &mut Stats) {
     let mut w = w0.clone();
     let end = settle(&mut w, 12);
     st.worlds += 1;
-    let x_rot = w.items.iter().any(|i| i.hostile && matches!(i.kind, Kind::Rot { .. }));
+    let x_rot = w.items.iter().any(|i| w.hostile(i.id) && matches!(i.kind, Kind::Rot { .. }));
     let x_any_rot = w.items.iter().any(|i| i.author == X && matches!(i.kind, Kind::Rot { .. }));
     if x_rot {
         st.forks += 1;
     }
-    if w.items.iter().any(|i| i.hostile && matches!(i.kind, Kind::Rot { removes: Some(_), .. })) {
+    if w.items.iter().any(|i| w.hostile(i.id) && matches!(i.kind, Kind::Rot { removes: Some(_), .. })) {
         st.fights += 1;
+    }
+    if w.items.iter().any(|i| i.signer == Z && w.hostile(i.id)) {
+        st.forged += 1;
     }
     let fail = |s: String, st: &mut Stats| {
         st.failures += 1;
-        if st.fail.len() < 3 {
+        // by node and kind (the message up to its first number after the node)
+        let (node, rest) = s.split_once(':').unwrap_or(("", &s));
+        let node = node.split(" at ").next().unwrap_or(node);
+        let kind: String = rest.chars().take_while(|c| !c.is_ascii_digit() && *c != '{' && *c != '(').collect();
+        let k = st.kinds.entry(format!("{node}:{kind}")).or_default();
+        *k += 1;
+        if *k == 1 && st.fail.len() < 8 {
             st.fail.push((s, w.clone()));
         }
     };
-    for v in 0..N {
+    // seeds stay away from X: a rotation an honest node makes while X's removal counts there
+    // boxes neither X nor a key actor X made up (Z paired in plain sight aside: stated limit)
+    let leaks = |b: &[bool; N]| b[X] || b[Z] && !w.z_paired();
+    for r in w.items.iter().filter(|i| matches!(i.kind, Kind::Rot { .. }) && [A, B, T].contains(&i.author)) {
+        let j = judge(&w, r.author, r.t);
+        if j.counting.contains(&w.removal) && leaks(&r.boxed) {
+            fail(format!("node {}: rotation {} boxes X ({:?}) where X's removal counts", NAMES[r.author], r.id, r.boxed), st);
+        }
+    }
+    for v in (0..N).filter(|v| *v != Z) {
         let mut prev: Option<View> = None;
         for now in 0..=end {
             let j = judge(&w, v, now);
@@ -586,19 +748,22 @@ pub fn check(w0: &World, st: &mut Stats) {
             if j.counting != j.followed && CONTROL.load(std::sync::atomic::Ordering::Relaxed) == 0 {
                 fail(format!("node {} at {now}: a followed rotation does not count {:?} {:?}", NAMES[v], j.followed, j.counting), st);
             }
+            if j.cross {
+                st.cross += 1;
+            }
             // revocation holds
             if j.counting.contains(&w.removal) {
-                if let Some(r) = j.counting.iter().find(|r| w.item(**r).hostile) {
+                if let Some(r) = j.counting.iter().find(|r| w.hostile(**r)) {
                     fail(format!("node {} at {now}: X's rotation {r} counts beside its removal", NAMES[v]), st);
                 }
-                if let Some(c) = j.valid.iter().find(|c| w.item(**c).hostile) {
+                if let Some(c) = j.valid.iter().find(|c| w.hostile(**c)) {
                     if v < OWN {
                         st.own_window += 1;
                     } else {
                         fail(format!("node {} at {now}: X's write {c} counts beside its removal", NAMES[v]), st);
                     }
                 }
-            } else if j.valid.iter().any(|c| w.item(*c).hostile) && v >= OWN && j.held.contains(&w.removal) {
+            } else if j.valid.iter().any(|c| w.hostile(*c)) && v >= OWN && j.held.contains(&w.removal) {
                 st.outside_window += 1;
             }
             if !x_any_rot && j.warning {
@@ -611,7 +776,7 @@ pub fn check(w0: &World, st: &mut Stats) {
                     }
                     // a removal stops counting only with its remover's removal (a removed node
                     // removes no one): never back and forth between two nodes' revocations
-                    let remover_gone = |(y, e): &(usize, u32)| w.items.iter().any(|i| matches!(i.kind, Kind::Rot { at, removes: Some(z), .. } if at == *e && z == *y) && j.lines.get(&i.id).is_some_and(|l| l.iter().any(|q| j.removed_node(w.item(*q).author))));
+                    let remover_gone = |(y, e): &(usize, u32)| w.items.iter().any(|i| matches!(i.kind, Kind::Rot { at, removes: Some(z), .. } if at == *e && z == *y) && j.lines.get(&i.id).is_some_and(|l| l.iter().any(|q| j.removed_node(w.item(*q).signer))));
                     if v < OWN && !p.removed.iter().all(|r| j.removed.contains(r) || remover_gone(r)) {
                         fail(format!("node {} at {now}: removals followed shrank {:?} -> {:?}", NAMES[v], p.removed, j.removed), st);
                     }
@@ -623,7 +788,7 @@ pub fn check(w0: &World, st: &mut Stats) {
             prev = Some(j);
         }
         let j = prev.unwrap();
-        if j.disregarded.iter().any(|r| !w.item(*r).hostile && w.item(*r).author != X) {
+        if j.disregarded.iter().any(|r| !w.hostile(*r) && w.item(*r).author != X) {
             st.disregarded_honest += 1;
         }
         // (X's own view aside: it judges its own forks as it likes)
@@ -640,6 +805,9 @@ pub fn check(w0: &World, st: &mut Stats) {
         }
         if j.heads.len() != 1 {
             fail(format!("node {}: settled with heads {:?}", NAMES[v], j.heads), st);
+        }
+        if let Some(h) = j.heads.iter().find(|h| **h != 0 && leaks(&w.item(**h).boxed)) {
+            fail(format!("node {}: settled at head {h}, whose seed X holds", NAMES[v]), st);
         }
         let honest: Vec<u32> = w.items.iter().filter(|i| i.author != X && matches!(i.kind, Kind::Content)).map(|i| i.id).collect();
         if let Some(c) = honest.iter().find(|c| !j.valid.contains(c)) {
@@ -659,7 +827,7 @@ pub fn check(w0: &World, st: &mut Stats) {
 pub fn print_world(w: &World) {
     for i in &w.items {
         let recv: Vec<String> = i.recv.iter().map(|r| if *r == NEVER { "-".into() } else { r.to_string() }).collect();
-        println!("  #{} {:?} by {} at e{} t{} recv [{}]{}", i.id, i.kind, NAMES[i.author], i.epoch, i.t, recv.join(" "), if i.hostile { " hostile" } else { "" });
+        println!("  #{} {:?} by {} as {} at e{} t{} recv [{}] boxed {:?}{}", i.id, i.kind, NAMES[i.author], NAMES[i.signer], i.epoch, i.t, recv.join(" "), i.boxed, if w.hostile(i.id) { " hostile" } else { "" });
     }
     for (n, t, c) in &w.switches {
         println!("  switch {} at {t} to {c}", NAMES[*n]);
@@ -691,6 +859,11 @@ pub fn run(samples: u64) -> u64 {
         all.warned_final += st.warned_final;
         all.disregarded_honest += st.disregarded_honest;
         all.races += st.races;
+        all.forged += st.forged;
+        all.cross += st.cross;
+        for (k, n) in st.kinds {
+            *all.kinds.entry(k).or_default() += n;
+        }
         all.failures += st.failures;
         all.warning_went += st.warning_went;
         all.fail.extend(st.fail);
@@ -698,7 +871,7 @@ pub fn run(samples: u64) -> u64 {
     let fails = all.failures;
     let shown = std::mem::take(&mut all.fail);
     println!("forks: {fails} failing checks; {all:?}");
-    for (s, w) in shown.iter().take(3) {
+    for (s, w) in shown.iter().filter(|(s, _)| std::env::var("FORKS_SHOW").map_or(true, |f| s.contains(&f))).take(3) {
         println!("FAIL {s}");
         print_world(w);
         let mut vs: Vec<usize> = NAMES.iter().position(|n| s.starts_with(&format!("node {n}:")) || s.starts_with(&format!("node {n} "))).into_iter().collect();
@@ -710,7 +883,7 @@ pub fn run(samples: u64) -> u64 {
             let end = settle(&mut w, 12);
             for now in 0..=end {
                 let j = judge(&w, v, now);
-                println!("  {} t{now}: followed {:?} disregarded {:?} counting {:?} heads {:?} removed {:?} warn {} chosen {:?}", NAMES[v], j.followed, j.disregarded, j.counting, j.heads, j.removed, j.warning, j.chosen);
+                println!("  {} t{now}: followed {:?} disregarded {:?} counting {:?} heads {:?} removed {:?} roster {:?} warn {} chosen {:?}", NAMES[v], j.followed, j.disregarded, j.counting, j.heads, j.removed, j.roster, j.warning, j.chosen);
             }
         }
     }
@@ -737,7 +910,7 @@ mod tests {
     fn fork(w: &mut World, at: u32, t: u32, removes: Option<usize>) -> u32 {
         let mut bx = [false; N];
         bx[X] = true;
-        w.add(Kind::Rot { at, names: vec![], sup: vec![at], removes }, X, at, t, bx)
+        w.add(Kind::Rot { at, names: vec![], sup: vec![at], removes, covers: vec![] }, X, at, t, bx)
     }
 
     // A removes X; R1 holds the removal first. X forks from the first epoch again and again,
@@ -804,7 +977,7 @@ mod tests {
         let c1 = w.add(Kind::Content, B, 0, 3, [false; N]);
         let mut bx = [false; N];
         bx[..OWN].fill(true);
-        let b = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None }, B, 0, 4, bx);
+        let b = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, B, 0, 4, bx);
         let c2 = w.add(Kind::Content, B, b, 5, [false; N]);
         all_at(&mut w, &[c1, b, c2], 10);
         let j = judge(&w, R1, 10);
@@ -830,5 +1003,132 @@ mod tests {
         assert!(j.counting.contains(&w.removal) && !j.counting.contains(&f));
         let j = judge(&w, R1, 3);
         assert!(j.counting.contains(&f) && !j.counting.contains(&w.removal));
+    }
+
+    fn boxed_to(ms: &[usize]) -> [bool; N] {
+        let mut bx = [false; N];
+        for m in ms {
+            bx[*m] = true;
+        }
+        bx
+    }
+
+    // A removed node holds its old epochs' inner key, so it seals inner signatures as Z, a key
+    // actor it makes up, and backdates a grant of D to Z at the first epoch, reaching B (offline)
+    // before the removal does. The removal's frontier does not cover that grant, so once a node
+    // of P holds the removal Z is no node there: its revocation of A stands nowhere and no
+    // honest rotation boxes it (spec/permissions.md §5.4, Following, at a node of P;
+    // issues/forged-minter.md)
+    #[test]
+    fn a_key_actor_the_removed_node_makes_up_is_no_node() {
+        let mut w = World::default();
+        let made = act(&mut w, A, 1, Some(X), false);
+        w.removal = made[0];
+        all_at(&mut w, &made, 5);
+        to(&mut w, made[0], X, NEVER);
+        let g = w.add_as(Kind::Grant { to: Z }, X, X, 0, 2, [false; N]);
+        all_at(&mut w, &[g], 3);
+        assert!(judge(&w, B, 3).roster.contains(&Z), "before the removal B takes Z as a node");
+        let f = w.add_as(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: Some(A), covers: vec![] }, X, Z, 0, 6, boxed_to(&[X]));
+        all_at(&mut w, &[f], 7);
+        for n in [A, B, T] {
+            let j = judge(&w, n, 7);
+            assert!(j.counting.contains(&w.removal) && !j.counting.contains(&f) && !j.roster.contains(&Z), "{}: {j:?}", NAMES[n]);
+        }
+        // B answers the forged fork; its rotation boxes neither X nor Z
+        let m = act(&mut w, B, 8, None, false);
+        let r = w.item(m[0]);
+        assert!(matches!(&r.kind, Kind::Rot { sup, .. } if sup.contains(&f)) && !r.boxed[X] && !r.boxed[Z], "{r:?}");
+    }
+
+    // B, unaware of X's removal, rotates and boxes X (stated limit). X grants D to itself at B's
+    // epoch, and again sealed as a key actor it made up: neither puts it back on D's roster,
+    // so the merge joining B's rotation to the removal boxes the honest nodes alone
+    // (issues/self-readd-at-sibling-epoch.md)
+    #[test]
+    fn a_removed_node_granting_itself_at_an_unaware_siblings_epoch_stays_off_the_roster() {
+        let mut w = World::default();
+        let made = act(&mut w, A, 1, Some(X), false);
+        w.removal = made[0];
+        all_at(&mut w, &made, 2);
+        for id in &made {
+            to(&mut w, *id, B, 6);
+            to(&mut w, *id, X, NEVER);
+        }
+        let rb = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, B, 0, 3, boxed_to(&[A, B, X, T]));
+        all_at(&mut w, &[rb], 4);
+        let g1 = w.add_as(Kind::Grant { to: X }, X, X, rb, 5, [false; N]);
+        let g2 = w.add_as(Kind::Grant { to: X }, X, Z, rb, 5, [false; N]);
+        all_at(&mut w, &[g1, g2], 6);
+        for n in [A, B, T] {
+            let j = judge(&w, n, 7);
+            assert!(j.counting.contains(&w.removal) && j.counting.contains(&rb) && !j.roster.contains(&X), "{}: {j:?}", NAMES[n]);
+        }
+        let m = act(&mut w, A, 8, None, false);
+        let r = w.item(m[0]);
+        assert!(matches!(&r.kind, Kind::Rot { names, .. } if names.contains(&rb)) && !r.boxed[X] && !r.boxed[Z], "{r:?}");
+    }
+
+    // A device the removed node paired in plain sight stays a node when the removal's frontier
+    // covers its grant (stated limit: it goes with its own removal); one the remover had not
+    // received is no node, as a removed writer's word its demotion's frontier leaves out is lost
+    // (spec/permissions.md §5.3)
+    #[test]
+    fn a_device_the_removed_node_paired_is_a_node_as_its_remover_held_it() {
+        for covered in [true, false] {
+            let mut w = World::default();
+            let g = w.add_as(Kind::Grant { to: Z }, X, X, 0, 0, [false; N]);
+            all_at(&mut w, &[g], if covered { 0 } else { 2 });
+            let made = act(&mut w, A, 1, Some(X), false);
+            w.removal = made[0];
+            all_at(&mut w, &made, 2);
+            assert_eq!(w.z_paired(), covered);
+            let f = w.add_as(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, X, Z, 0, 3, boxed_to(&[X, Z]));
+            all_at(&mut w, &[f], 4);
+            for n in [A, B, T] {
+                let j = judge(&w, n, 4);
+                assert_eq!((j.roster.contains(&Z), j.counting.contains(&f)), (covered, covered), "{} covered {covered}", NAMES[n]);
+            }
+        }
+    }
+
+    // X rotated offline before its removal, and A merges that rotation in the rotation carrying
+    // the removal (it holds its seed): X's rotation is on the removal's line, made before it, so
+    // the removal stands at every node (a removal hits only what is beside the rotation
+    // carrying it)
+    #[test]
+    fn a_removal_merging_its_targets_earlier_rotation_stands() {
+        let mut w = World::default();
+        let a0 = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, A, 0, 0, boxed_to(&[A, B, X, T]));
+        let x0 = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, X, 0, 0, boxed_to(&[A, B, X, T]));
+        all_at(&mut w, &[a0, x0], 0);
+        let made = act(&mut w, A, 1, Some(X), false);
+        w.removal = made[0];
+        assert!(matches!(&w.item(made[0]).kind, Kind::Rot { at, names, .. } if *at == a0 && names.contains(&x0)));
+        all_at(&mut w, &made, 2);
+        for n in [A, B, T, R1] {
+            let j = judge(&w, n, 2);
+            assert!(j.counting.contains(&w.removal) && j.heads == [w.removal].into(), "{}: {j:?}", NAMES[n]);
+        }
+    }
+
+    // A rotation counts as held at a node of P only once its minter is known as a node: B holds
+    // a revocation of A sealed as Z before any grant to Z, then the grant and A's removal of X
+    // together. Placed when Z came to be known, the revocation follows the removal, which
+    // leaves Z no node: B takes the removal (placed at its receipt, Z's revocation would come
+    // first and win)
+    #[test]
+    fn a_rotation_is_placed_once_its_minter_is_known() {
+        let mut w = World::default();
+        let made = act(&mut w, A, 1, Some(X), false);
+        w.removal = made[0];
+        all_at(&mut w, &made, 5);
+        to(&mut w, made[0], X, NEVER);
+        let f = w.add_as(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: Some(A), covers: vec![] }, X, Z, 0, 2, boxed_to(&[X]));
+        all_at(&mut w, &[f], 3);
+        let g = w.add_as(Kind::Grant { to: Z }, X, X, 0, 2, [false; N]);
+        all_at(&mut w, &[g], 5);
+        let j = judge(&w, B, 5);
+        assert!(j.counting.contains(&w.removal) && !j.counting.contains(&f), "{j:?}");
     }
 }
