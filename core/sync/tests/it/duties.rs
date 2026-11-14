@@ -115,3 +115,43 @@ fn an_own_removal_makes_its_rotations_due_with_nothing_arriving_spec_permissions
         assert!(!homes.is_empty() && homes.iter().all(|s| blobs.iter().any(|b| w.store(1).entry(s, b).ok().flatten().is_some())), "restart {restart}: the write logged under every sync ID of t");
     }
 }
+
+/// With `n` things of their own secrets made by node 0: the role duties judged (one per held
+/// actor, `Life`'s settles) in a quiet run and in the run after a restart, and the actors held.
+fn role_duties_judged(n: usize) -> (u64, u64, u64) {
+    let mut w = World::new(0);
+    w.add_node();
+    w.run();
+    let a = w.node(0).account.unwrap();
+    for _ in 0..n {
+        w.write(0, |e| {
+            let mut m = osis_engine::Mutation::new();
+            let t = e.new_thing(&mut m, a);
+            e.commit(m).unwrap();
+            e.give_own_secrets(&t).unwrap();
+        });
+    }
+    w.run();
+    let held = w.engine(0).held_actors().len() as u64;
+    let judged = || osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "life: role duty owed").map(|(.., n)| n).sum::<u64>();
+    judged();
+    w.run();
+    let quiet = judged();
+    w.power_off(0);
+    judged();
+    w.power_on(0);
+    w.run();
+    (quiet, judged(), held)
+}
+
+// spec/permissions.md §3 (Required rotation), notes/engine-lost-access.md (Owed role commits):
+// what a node owes is judged once per held actor at a start (no transaction: `role_duty_due`)
+// and not again while nothing it read moves, at n and 10n actors held.
+#[test]
+fn role_duties_are_judged_once_per_held_actor_at_a_start_spec_permissions_3() {
+    for n in [2, 20] {
+        let (quiet, start, held) = role_duties_judged(n);
+        assert!(held > n as u64, "every thing held, the account too: {held}");
+        assert_eq!((quiet, start), (0, held), "n = {n}");
+    }
+}

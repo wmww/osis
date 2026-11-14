@@ -647,19 +647,13 @@ fn secret_actor_up(core: &Core, a: &Tid) -> Option<Tid> {
 fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, mode: Due, done: &mut Done) -> Result<Vec<Tid>> {
     let mut rotated = Vec::new();
     let Some(a) = secret_actor_up(tx.core, &a) else { return Ok(rotated) };
-    let members = |tx: &mut Tx<'_>, x: &Tid| -> Vec<Tid> {
-        let ms: Vec<Tid> = tx.core.key_holders(x).into_iter().map(|m| m.0).filter(|m| m != x && !tx.core.is_key_actor(m) && tx.core.has_own_secrets(m)).collect();
-        let mut out: Vec<Tid> = ms.into_iter().filter(|m| members::keyed(tx.core, x, m) && !may_rotate(tx.core, &who, m).is_empty()).collect();
-        out.reverse();
-        out
-    };
     // depth-first, post-order, without recursion (chains have no depth bound)
     let mut entered = BTreeSet::from([a]);
-    let mut stack = vec![(a, members(tx, &a))];
+    let mut stack = vec![(a, below(tx.core, &who, &a))];
     while let Some((x, next)) = stack.last_mut() {
         if let Some(y) = next.pop() {
             if entered.insert(y) {
-                let f = members(tx, &y);
+                let f = below(tx.core, &who, &y);
                 stack.push((y, f));
             }
             continue;
@@ -676,6 +670,32 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, mode:
         rotated.push(x);
     }
     Ok(rotated)
+}
+
+/// The holder actors of `x` the downward cascade enters (`rotate_below`): keyed ones with secrets
+/// of their own that `who` may rotate, in the order the walk pops them.
+fn below(core: &Core, who: &Tid, x: &Tid) -> Vec<Tid> {
+    let ms: Vec<Tid> = core.key_holders(x).into_iter().map(|m| m.0).filter(|m| m != x && !core.is_key_actor(m) && core.has_own_secrets(m)).collect();
+    let mut out: Vec<Tid> = ms.into_iter().filter(|m| members::keyed(core, x, m) && !may_rotate(core, who, m).is_empty()).collect();
+    out.reverse();
+    out
+}
+
+/// Whether `ensure_rotated` would write a role commit on `a` (`Engine::role_duty_due`), judged
+/// without writing: some actor the downward cascade enters (`rotate_below`) has a finalize due
+/// or a rotation due. Its first write is one of those, so the state up to it is the state judged
+/// here; the upward cascade (`rotate_above`) follows only a rotation below.
+fn owed_below(tx: &mut Tx<'_>, who: Tid, a: Tid) -> Result<bool> {
+    let Some(a) = secret_actor_up(tx.core, &a) else { return Ok(false) };
+    let mut entered = BTreeSet::from([a]);
+    let mut next = vec![a];
+    while let Some(x) = next.pop() {
+        if !flows::edges::finalizable(tx.core, &who, &x).is_empty() || !rotation_due(tx, &who, &x, Due::Encrypt, &BTreeSet::new())?.is_empty() {
+            return Ok(true);
+        }
+        next.extend(below(tx.core, &who, &x).into_iter().filter(|y| entered.insert(*y)));
+    }
+    Ok(false)
 }
 
 /// The rotations nothing waits for, on `a` and the holder actors below it (`rotate_below`) by
@@ -1102,7 +1122,8 @@ impl Engine {
     }
 
     /// Whether this node owes a role commit on `actor` now (spec/permissions.md §2 Finalize, §3
-    /// Required rotation; spec/crypto.md §4 Encrypting under): `ensure_rotated` would write
+    /// Required rotation; spec/crypto.md §4 Encrypting under), judged without a transaction
+    /// (`owed_below`; debug builds check it against `rotated_already`): `ensure_rotated` would write
     /// something (the finalize of a grant past its `until`, a rotation a departure, a stale or
     /// keyless box or a blocked epoch makes due, on `actor` or a holder actor below it). Derived
     /// from the state alone, whatever made it due (an own commit, one received, a keyset or
@@ -1114,7 +1135,15 @@ impl Engine {
             return Ok(false);
         }
         self.core.time.until(lost::next_until(&self.core, actor));
-        Ok(self.rotated_already(actor)?.is_none())
+        let a = *actor;
+        let owed = self.read(|tx| {
+            let me = tx.core.writer()?;
+            owed_below(tx, me, a)
+        })?;
+        // the judgement is what a run would write (its own reads apart)
+        #[cfg(debug_assertions)]
+        osis_base::costs::paused(|| osis_base::memo::unrecorded(|| self.rotated_already(&a).map(|x| assert_eq!(owed, x.is_none(), "role_duty_due disagrees with ensure_rotated on {a:?}"))))?;
+        Ok(owed)
     }
 
     /// The departures from `actor` its epochs must cover, as this node knows them.
