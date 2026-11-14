@@ -183,9 +183,9 @@ impl Engine {
         let Some(b) = self.sync_body_now(s, c)? else { return Ok(BodyFacts { required: false, closure: false, dropped: None, kept: false, hosts_from: 0, covered: Some(false), sole_certificate: false, lasting_header: false }) };
         let (Some(m), Some(h)) = (self.core.ix.commits.get(c).cloned(), self.header(c)) else { return Err(Error::UnknownCommit(*c)) };
         let dropped = b.parts.iter().find_map(|ai| m.dropped(*ai).map(|d| d.why));
-        let now = self.now().0;
         let keeps = self.part_keeps(c)?;
-        let kept = b.parts.iter().any(|ai| keeps.get(*ai).is_some_and(|k| *k > now));
+        // a bound still ahead wakes the judgement when it passes (spec/sync.md §2)
+        let kept = b.parts.iter().any(|ai| keeps.get(*ai).is_some_and(|k| self.core.time.until(Some(*k)) < *k));
         // a dropped part's own bound as it dropped (`Dropped::hosts_from`), a held one's keep
         // bound plus `MAX_DRIFT` (spec/commits.md §5 Keep at least)
         let hosts_from = b.parts.iter().map(|ai| match m.dropped(*ai) {

@@ -109,7 +109,8 @@ pub(crate) fn live_keep(core: &Core, c: &CommitId, ai: usize, a: &osis_commit::A
 /// no earlier than replaced). Only a dated part has a replacement (`part_replaced_at`): where no
 /// setting keeps history for its aspect nothing is dated and it adds no bound.
 fn at_clock(core: &Core, (k, last): (u64, u64)) -> u64 {
-    if last > core.now().0 { k.max(last) } else { k }
+    // read with a wake at `last`: the bound moves when the clock passes it
+    if last > k && core.time.until(Some(last)) < last { last } else { k }
 }
 
 /// `part_bounds` of every part of `c`, by aspect index (`Engine::part_keeps`). A memo
