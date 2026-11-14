@@ -158,6 +158,9 @@ pub struct Invitation {
     pub from: Tid,
     /// This node took the grant's delivery: its keys are here.
     pub taken: bool,
+    /// This account acted on it before: accepted it, filed it outside the synced groups, or
+    /// stopped syncing it. False for an invitation not acted on yet.
+    pub acted: bool,
 }
 
 fn bad(what: &str) -> impl Fn(osis_label::Error) -> Error + '_ {
@@ -845,7 +848,7 @@ impl Osis {
     pub fn invitations(&self) -> Result<Vec<Invitation>> {
         self.local("invitations")?;
         let v = self.engine(|e| e.invitations())?;
-        Ok(v.iter().map(|i| Invitation { thing: i.thing, role: i.role, from: i.from, taken: i.taken }).collect())
+        Ok(v.iter().map(|i| Invitation { thing: i.thing, role: i.role, from: i.from, taken: i.taken, acted: i.acted }).collect())
     }
 
     /// Accepts an invitation: `thing` becomes a subgroup of `into`, a group this node syncs or

@@ -1251,3 +1251,125 @@ fn forget_local_keeps_a_spanning_commits_synced_part_spec_sync_set_3() {
     assert_eq!(e.get_typed(&t, &ct::NAME).unwrap().as_deref(), Some("dropped"), "a late part");
     assert_eq!(e.get_typed(&v, &ct::NAME).unwrap().as_deref(), Some("kept"));
 }
+
+/// Peer `i` lists (`on`) or cuts `t` in field `f` of group `g`, as an app writes (`Engine::write`).
+fn listing(lp: &mut LocalPeer, i: usize, g: Tid, f: u64, t: Tid, on: bool) {
+    let op = if on { osis_crdt::Op::Add(osis_base::Value::Tid(t)) } else { osis_crdt::Op::Remove(osis_base::Value::Tid(t)) };
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(f)], op }).unwrap();
+    lp.peers[i].engine.write(m).unwrap().unwrap();
+}
+
+/// Peer `i`'s synced group.
+fn synced_group(lp: &mut LocalPeer, i: usize) -> Tid {
+    let e = &mut lp.peers[i].engine;
+    let (_, d) = e.account().unwrap().unwrap();
+    *e.get_typed(&d, &ct::SYNCED).unwrap().unwrap().get(&e.tid()).unwrap()
+}
+
+/// Whether peer `i` lists `t` as an invitation, and if so whether as acted on.
+fn acted(lp: &mut LocalPeer, i: usize, t: Tid) -> Option<bool> {
+    lp.peers[i].engine.invitations().unwrap().iter().find(|x| x.thing == t).map(|x| x.acted)
+}
+
+/// `acted^.0` on peer `i`'s D.
+fn marks(lp: &mut LocalPeer, i: usize) -> BTreeSet<Tid> {
+    let e = &mut lp.peers[i].engine;
+    let (_, d) = e.account().unwrap().unwrap();
+    e.get_typed(&d, &ct::ACTED).unwrap().unwrap_or_default()
+}
+
+// spec/sync-set.md §4 (Acted: a new grant is not acted on, an accept marks it, an unsync lists it
+// again, acted on).
+#[test]
+fn accepting_then_unsyncing_marks_an_invitation_spec_sync_set_4() {
+    let (mut lp, t, _, _, blob) = granted(Role::Read);
+    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
+    assert_eq!(acted(&mut lp, 1, t), Some(false), "a new grant");
+    let g = synced_group(&mut lp, 1);
+    listing(&mut lp, 1, g, 1, t, true);
+    assert_eq!(acted(&mut lp, 1, t), None, "accepted: no invitation");
+    assert!(marks(&mut lp, 1).contains(&t), "the accept marks it");
+    listing(&mut lp, 1, g, 1, t, false);
+    assert_eq!(acted(&mut lp, 1, t), Some(true), "unsynced: an invitation acted on");
+    let before = lp.peers[1].engine.core.ix.commits.len();
+    listing(&mut lp, 1, g, 1, t, true);
+    listing(&mut lp, 1, g, 1, t, false);
+    assert_eq!(lp.peers[1].engine.core.ix.commits.len(), before + 2, "marked once: no second mark");
+}
+
+// spec/sync-set.md §4 (Acted: declining by filing the thing in a group outside every synced
+// group marks it).
+#[test]
+fn filing_outside_the_synced_groups_marks_spec_sync_set_4() {
+    let (mut lp, t, _, _, blob) = granted(Role::Read);
+    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
+    let e = &mut lp.peers[1].engine;
+    let (p, _) = e.account().unwrap().unwrap();
+    let mut m = Mutation::new();
+    let x = e.new_thing(&mut m, p);
+    m.op(x, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Add(osis_base::Value::Tid(t)) }).unwrap();
+    e.write(m).unwrap().unwrap();
+    assert_eq!(acted(&mut lp, 1, t), Some(true));
+    assert_eq!(marks(&mut lp, 1), BTreeSet::from([t]), "the new group it was filed in is not marked");
+}
+
+// spec/sync-set.md §4 (Acted: what a write creates, or moves inside the synced groups, is not
+// marked, and cutting a subgroup marks each thing its closure held that no synced group holds now).
+#[test]
+fn cutting_a_subgroup_marks_what_it_held_spec_sync_set_4() {
+    let (mut lp, ps) = people(1);
+    let g = synced_group(&mut lp, 0);
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let sub = e.new_thing(&mut m, ps[0]);
+    let t = e.new_thing(&mut m, ps[0]);
+    m.set(t, &REG, &s("x")).unwrap();
+    m.op(sub, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Add(osis_base::Value::Tid(t)) }).unwrap();
+    m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(1)], op: osis_crdt::Op::Add(osis_base::Value::Tid(sub)) }).unwrap();
+    e.write(m).unwrap().unwrap();
+    e.give_own_secrets(&t).unwrap();
+    // listed again inside the synced groups: no change of what is synced
+    listing(&mut lp, 0, g, 0, t, true);
+    listing(&mut lp, 0, g, 0, t, false);
+    assert!(marks(&mut lp, 0).is_empty(), "created or moved inside the synced groups: nothing marked");
+    listing(&mut lp, 0, g, 1, sub, false);
+    assert_eq!(acted(&mut lp, 0, t), Some(true), "own thing unsynced: an invitation acted on");
+    assert_eq!(marks(&mut lp, 0), BTreeSet::from([t]), "the plain subgroup has no role of its own");
+}
+
+// spec/sync-set.md §4 (Invitations: in no synced group closure; Acted: accepting an untaken
+// invitation marks it).
+#[test]
+fn accepting_an_untaken_invitation_marks_it_spec_sync_set_4() {
+    let (mut lp, t, _, _, blob) = granted(Role::Read);
+    lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap();
+    assert_eq!(acted(&mut lp, 1, t), Some(false));
+    let g = synced_group(&mut lp, 1);
+    listing(&mut lp, 1, g, 1, t, true);
+    assert_eq!(acted(&mut lp, 1, t), None, "listed: no invitation, taken or not");
+    assert!(marks(&mut lp, 1).contains(&t));
+}
+
+// spec/sync-set.md §2 (Cost: a `group.0` change that adds a subtree costs work in proportion to
+// that subtree): marking what a write acted on walks up O(n) for an add of n items.
+#[test]
+fn marking_an_add_costs_its_size_spec_sync_set_2() {
+    let (mut lp, ps) = people(1);
+    let g = synced_group(&mut lp, 0);
+    let mut cost = |n: usize| -> u64 {
+        let e = &mut lp.peers[0].engine;
+        let mut m = Mutation::new();
+        let sub = e.new_thing(&mut m, ps[0]);
+        for _ in 0..n {
+            let t = e.new_thing(&mut m, ps[0]);
+            m.op(sub, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Add(osis_base::Value::Tid(t)) }).unwrap();
+        }
+        m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(1)], op: osis_crdt::Op::Add(osis_base::Value::Tid(sub)) }).unwrap();
+        osis_base::costs::take();
+        e.write(m).unwrap().unwrap();
+        osis_base::costs::take().iter().find(|x| x.0 == "group index: walk up").map_or(0, |x| x.2)
+    };
+    let (small, big) = (cost(20), cost(200));
+    assert!(small > 0 && big <= 11 * small, "walks up {small} at 20, {big} at 200");
+}

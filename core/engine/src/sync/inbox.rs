@@ -13,6 +13,8 @@ use osis_commit::CommitBlob;
 use osis_crypto::KemSecret;
 use osis_keys::Opener;
 use osis_label::{Inbox, InboxPayload, InboxRest, open_inbox_item};
+use osis_schema::core_types as ct;
+use osis_schema::RawKey;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -322,38 +324,101 @@ impl Engine {
         Ok(None)
     }
 
-    /// The invitations (spec/sync-set.md §4): the things a held inbox blob boxes this node's
-    /// account or actors on, untaken, and the things the node holds a role on (secrets or a sync
-    /// record) that no node's synced group closure holds, taken. The granting account of a taken
-    /// one is the thing's first admin's account as this node knows it.
+    /// The invitations (spec/sync-set.md §4): the things no node's synced group closure holds
+    /// that a held inbox blob boxes this node's account or actors on (untaken) or that this node
+    /// holds a role on (`Core::held_role`, taken); each acted on while `acted^.0` on D lists it.
+    /// The granting account of a taken one is the thing's first admin's account as known here.
     pub(crate) fn invitations_now(&mut self) -> Result<Arc<Vec<Invitation>>> {
         let now = WallMs(self.core.time.get());
+        let acted = match self.core.account_devices() {
+            Some((_, d)) => self.get_typed(&d, &ct::ACTED)?.unwrap_or_default(),
+            None => BTreeSet::new(),
+        };
         let mut out: BTreeMap<Tid, Invitation> = BTreeMap::new();
         let next = self.core.ix.waiting_inbox.values().map(|w| w.expires.0).filter(|e| *e > now.0).min();
         self.core.time.until(next);
-        for w in self.core.ix.waiting_inbox.values().filter(|w| w.expires > now) {
-            for (t, role) in &w.things {
-                out.entry(*t).or_insert(Invitation { thing: *t, role: *role, from: w.from, taken: false });
-            }
-        }
         let listed = self.synced_closures()?;
-        let mut held: Vec<(Tid, Role)> = self.core.ix.sync_records.keys().map(|t| (*t, Role::Sync)).collect();
-        let me = self.core.me();
-        for t in self.core.ix.secrets.keys().copied().collect::<Vec<_>>() {
-            if self.core.is_key_actor(&t) || self.core.accounts.get(&t).is_some() || self.core.of_devices(&t) {
-                continue;
-            }
-            if let Some(r) = me.and_then(|m| self.core.role_now(&m, &t)) {
-                held.push((t, r));
+        for w in self.core.ix.waiting_inbox.values().filter(|w| w.expires > now) {
+            for (t, role) in w.things.iter().filter(|(t, _)| !listed.contains(t)) {
+                out.entry(*t).or_insert(Invitation { thing: *t, role: *role, from: w.from, taken: false, acted: acted.contains(t) });
             }
         }
-        for (t, role) in held {
-            if listed.contains(&t) {
+        let held: BTreeSet<Tid> = self.core.ix.sync_records.keys().chain(self.core.ix.secrets.keys()).copied().collect();
+        for t in held {
+            if listed.contains(&t) || out.contains_key(&t) {
                 continue;
             }
+            let Some(role) = self.core.held_role(&t) else { continue };
             let from = self.core.first_admin(&t).map(|a| self.core.home_owner(&a)).unwrap_or(t);
-            out.entry(t).or_insert(Invitation { thing: t, role, from, taken: true });
+            out.insert(t, Invitation { thing: t, role, from, taken: true, acted: acted.contains(&t) });
         }
         Ok(Arc::new(out.into_values().collect()))
     }
+}
+
+impl crate::engine::Core {
+    /// The role an invitation of `t` gives (spec/sync-set.md §4), whether or not a synced group
+    /// lists it: sync while this node holds a sync record of it; else the account's role on it,
+    /// when `t` has secrets held here and is no key actor, account or thing of D.
+    pub(crate) fn held_role(&self, t: &Tid) -> Option<Role> {
+        if self.ix.sync_records.contains_key(t) {
+            return Some(Role::Sync);
+        }
+        if !self.ix.secrets.contains_key(t) || self.is_key_actor(t) || self.accounts.get(t).is_some() || self.of_devices(t) {
+            return None;
+        }
+        self.role_now(&self.me()?, t)
+    }
+}
+
+/// Marks what local write `tx` acted on as invitations (spec/sync-set.md §4 Acted): each thing a
+/// held inbox blob offers or `held_role` gives a role (none the write created: a content commit
+/// gives no secrets) that was in no synced group's closure when the write began and is listed by
+/// it in a group (an accept, or filing it elsewhere), or that was in one and is in none after it
+/// (an unsync). Each is added to `acted^.0` on D, in a commit of its own in the same transaction.
+/// Costs nothing without a listing change; else a walk up from each thing listed and the
+/// subtrees cut (spec/sync-set.md §2 Cost).
+pub(crate) fn mark_acted(tx: &mut Tx<'_>) -> Result<()> {
+    let changed = tx.core.ix.groups.changed();
+    if changed.is_empty() {
+        return Ok(());
+    }
+    let Some((_, d)) = tx.core.account_devices() else { return Ok(()) };
+    let synced = tx.state(&d, &ct::SYNCED.name())?.and_then(osis_crdt::Fragment::read).and_then(|v| ct::SYNCED.decode(&v).ok());
+    let roots: BTreeSet<Tid> = match synced {
+        Some(m) if !m.is_empty() => m.into_values().collect(),
+        _ => [d].into(),
+    };
+    let groups = &tx.core.ix.groups;
+    let (mut listed, mut subs, mut items) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+    for (_, f, t, now) in changed {
+        if now {
+            listed.insert(t);
+        } else if f == crate::engine::groups::SUBGROUPS {
+            subs.insert(t);
+        } else {
+            items.insert(t);
+        }
+    }
+    // a cut subgroup takes its closure with it; a cut item only itself
+    let mut left = groups.closures_at_start(&subs);
+    left.extend(items);
+    let was_synced = groups.under_at_start(&listed.union(&left).copied().collect(), &roots);
+    let mut acted: BTreeSet<Tid> = listed.difference(&was_synced).copied().collect();
+    acted.extend(left.intersection(&was_synced).filter(|t| !groups.under(t, &roots)));
+    if acted.is_empty() {
+        return Ok(());
+    }
+    let waiting: BTreeSet<Tid> = tx.core.ix.waiting_inbox.values().flat_map(|w| w.things.iter().map(|(t, _)| *t)).collect();
+    acted.retain(|t| waiting.contains(t) || tx.core.held_role(t).is_some());
+    if acted.is_empty() {
+        return Ok(());
+    }
+    // a thing marked already adds nothing: such a commit changes nothing and is not written
+    let mut m = crate::Mutation::new();
+    for t in acted {
+        m.op(d, &ct::ACTED, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(Value::Tid(t)) })?;
+    }
+    crate::engine::write::commit_in(tx, m)?;
+    Ok(())
 }

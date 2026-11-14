@@ -51,7 +51,8 @@ impl Engine {
     /// thing's record is durable, so a `+` write on a thing created in the same batch is one), or
     /// signals beside either. A delete (`Mutation::deleting`) purges its things' ephemeral state
     /// in its durable commit (`write::delete_purges`), writing no memory commit. When the commit
-    /// or any op fails, nothing applies. `None` when no commit is written.
+    /// or any op fails, nothing applies. `None` when no commit is written. A durable write that
+    /// acts on an invitation also marks it on D, in a commit of its own (`sync::inbox::mark_acted`).
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
         let node = self.core.writer()?;
         let actor = m.actor.unwrap_or(node);
@@ -77,7 +78,9 @@ impl Engine {
             let ts = Ts::make(self.now(), 0).unwrap_or_default();
             let id = self.run(|tx| {
                 crate::engine::write::check_delete(tx, writers, &creates, &deleting, ts)?;
-                commit_in(tx, m)
+                let id = commit_in(tx, m)?;
+                crate::sync::inbox::mark_acted(tx)?;
+                Ok(id)
             })?;
             return Ok(id.map(|id| self.written(id)));
         }

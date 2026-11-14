@@ -602,6 +602,65 @@ impl Groups {
         gs.iter().flat_map(|g| self.reach_by(g, &listing)).collect()
     }
 
+    /// The listings the running transaction changed: (group, field, tid, listed now), each once.
+    pub(crate) fn changed(&self) -> Vec<(Tid, u64, Tid, bool)> {
+        let mut was: BTreeMap<(Tid, u64, Tid), bool> = BTreeMap::new();
+        for e in &self.log {
+            if let Logged::Listed(g, f, t, on) = e {
+                was.entry((*g, *f, *t)).or_insert(*on);
+            }
+        }
+        was.into_iter().filter(|((g, f, t), w)| self.listed(g, *f, t) != *w).map(|((g, f, t), w)| (g, f, t, !w)).collect()
+    }
+
+    /// Whether the closure of one of `roots` holds `t` (`enclosing`): O(the groups above `t`).
+    pub(crate) fn under(&self, t: &Tid, roots: &BTreeSet<Tid>) -> bool {
+        self.stamps.read_all();
+        self.under_by(t, roots, &|f, x| self.maps(f).1.get(x).into_iter().flatten().copied().collect())
+    }
+
+    /// `under` as the index stood when the running transaction began (its edits undone), for
+    /// each of `ts`: the journal is read once.
+    pub(crate) fn under_at_start(&self, ts: &BTreeSet<Tid>, roots: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+        self.stamps.read_all();
+        let mut was: BTreeMap<(u64, Tid, Tid), bool> = BTreeMap::new();
+        for e in &self.log {
+            if let Logged::Listed(g, f, x, on) = e {
+                was.entry((*f, *x, *g)).or_insert(*on);
+            }
+        }
+        let listed_in = |f: u64, x: &Tid| -> Vec<Tid> {
+            let mut l: BTreeSet<Tid> = self.maps(f).1.get(x).into_iter().flatten().copied().collect();
+            for ((_, _, g), on) in was.range((f, *x, TID_MIN)..=(f, *x, TID_MAX)) {
+                if *on {
+                    l.insert(*g);
+                } else {
+                    l.remove(g);
+                }
+            }
+            l.into_iter().collect()
+        };
+        ts.iter().filter(|t| self.under_by(t, roots, &listed_in)).copied().collect()
+    }
+
+    /// Whether `t` is one of `roots` or under one, by `listed_in` (field, tid -> the groups
+    /// listing it there): walks up from `t` and the groups listing it as an item.
+    fn under_by(&self, t: &Tid, roots: &BTreeSet<Tid>, listed_in: &dyn Fn(u64, &Tid) -> Vec<Tid>) -> bool {
+        let mut seen = BTreeSet::new();
+        let mut stack = listed_in(ITEMS, t);
+        stack.push(*t);
+        while let Some(x) = stack.pop() {
+            if roots.contains(&x) {
+                return true;
+            }
+            if seen.insert(x) {
+                stack.extend(listed_in(SUBGROUPS, &x));
+            }
+        }
+        osis_base::costs::count("group index: walk up", seen.len() as u64);
+        false
+    }
+
     /// Makes `edits` (each a change) to `g`'s listing and what derives from it: `moved` and the
     /// kept closures. The things whose enclosing groups may change are the tids edited and the
     /// closure of each subgroup edited, as it was: every edge edited starts at `g`, so what an

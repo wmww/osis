@@ -293,6 +293,8 @@ pub struct Invitation {
     pub role: Role,
     pub from: Tid,
     pub taken: bool,
+    /// The account acted on it before (`acted^.0` on D): accepted, filed elsewhere or unsynced.
+    pub acted: bool,
 }
 
 /// `caps^.0` of this node (spec/sync-ids.md §5 Caps).

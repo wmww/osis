@@ -32,9 +32,10 @@
 - A thing whose role the account lost stays listed in the synced group: the group holds what the account chose, the sync set filters it.
 
 ## 4. Invitations and accepting
-- A received grant is data the account holds; accepting is data it writes; core only lists. **Invitations**: the things with a sync ID the account holds a role on (by grant copies and rosters) that are in no node's synced group closure, each with its role, its granting account and whether its inbox blob was taken (spec/sync-inbox.md §2).
+- A received grant is data the account holds; accepting is data it writes; core only lists. **Invitations**: the things with a sync ID the account holds a role on (by grant copies and rosters) or a held inbox blob offers it that are in no node's synced group closure, each with its role, its granting account, whether its inbox blob was taken (spec/sync-inbox.md §2) and whether it is acted on (`acted^.0` lists it).
+- **Acted**: `acted^.0` on D (spec/data-model.md §9) lists the things the account acted on as invitations. A node writing a commit as the account adds to it, in the same transaction, in a commit of its own on D, each thing that would be an invitation by the role or blob held and that the write either lists in a group while it was in no synced group closure when the write began (an accept, or declining by filing it elsewhere), or takes out of every synced group closure that held it when the write began (unsyncing). Entries are only added; one per thing ever acted on.
 - **Accepting** writes the thing as a subgroup (never an item) of a synced group or of a group under one. The accept is a commit on that group's `group.0`, under home alone.
-- **Declining** is the app's: `leave` (a self-removal), or filing the thing in a group outside every synced group. Neither is a diagnostic or a status.
+- **Declining** is the app's: `leave` (a self-removal: the account then holds no role, so the thing is no invitation and nothing is marked), or filing the thing in a group outside every synced group (marked acted). Neither is a diagnostic or a status.
 - Importing a contact card accepts the profile it names.
 - A holder whose highest role on a thing is sync keeps no subgroups of it: a new subgroup is kept only once granted too.
 

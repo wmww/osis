@@ -386,6 +386,8 @@ pub const DIAL: Aspect<DialList> = Aspect::new("dial^.0", &CORE);
 pub const CAPS: Aspect<Caps> = Aspect::new("caps^.0", &CORE);
 /// `synced^.0` on an account's devices actor: each node to its synced group (spec/sync-set.md §1).
 pub const SYNCED: Aspect<BTreeMap<Tid, Tid>> = Aspect::new("synced^.0", &CORE);
+/// `acted^.0` on an account's devices actor: the things it acted on as invitations (spec/sync-set.md §4).
+pub const ACTED: Aspect<BTreeSet<Tid>> = Aspect::new("acted^.0", &CORE);
 /// `clients^.0`: by client actor.
 pub const CLIENTS: Aspect<BTreeMap<Tid, Client>> = Aspect::new("clients^.0", &CORE);
 /// `retention^.0`: what the thing keeps of replaced content (spec/commits.md §5); fixed retention.

@@ -49,6 +49,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("dial", "dial^.0", DIAL.encode(&BTreeMap::from([(vec![36; 32], vec!["peer://203.0.113.7:4040".to_string()])]))),
         ("caps", "caps^.0", CAPS.encode(&Caps { policy: BTreeMap::from([("cap_bytes".to_string(), 1000)]), things: BTreeMap::from([(tid(33), ThingCaps { entries: 5, bytes: 6 })]) })),
         ("synced", "synced^.0", SYNCED.encode(&BTreeMap::from([(tid(31), tid(32))]))),
+        ("acted", "acted^.0", ACTED.encode(&BTreeSet::from([tid(37)]))),
         ("clients", "clients^.0", CLIENTS.encode(&BTreeMap::from([(tid(34), Client { secret_hash: [35; 32], until: Some(WallMs(1_700_000_000_000)) })]))),
         ("group", "group.0", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),
     ]
@@ -80,6 +81,7 @@ fn core_aspects_round_trip_spec_data_model_9() {
             "dial^.0" => DIAL.encode(&DIAL.decode(v).unwrap()),
             "caps^.0" => CAPS.encode(&CAPS.decode(v).unwrap()),
             "synced^.0" => SYNCED.encode(&SYNCED.decode(v).unwrap()),
+            "acted^.0" => ACTED.encode(&ACTED.decode(v).unwrap()),
             "clients^.0" => CLIENTS.encode(&CLIENTS.decode(v).unwrap()),
             "group.0" => GROUP.encode(&GROUP.decode(v).unwrap()),
             _ => panic!("{ak}"),

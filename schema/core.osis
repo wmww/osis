@@ -264,6 +264,10 @@ aspect sync.0: map<blob, sync_entry>;
 /// Each node of the account to its synced group, on the devices actor (spec/sync-set.md §1).
 admin aspect synced^.0: map<tid, tid>;
 
+/// The things the account acted on as invitations (accepted, declined by filing elsewhere, or
+/// unsynced), on the devices actor (spec/sync-set.md §4).
+admin aspect acted^.0: set<tid>;
+
 // ---- Devices ----
 // Each device running osis (a node) is itself a thing, with these aspects about it.
 

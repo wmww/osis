@@ -403,6 +403,33 @@ fn importing_a_card_gives_the_account_spec_sync_inbox_5() {
     b.grant(t, a.me(), Role::Read, osis::GrantOpts::default()).unwrap();
 }
 
+// spec/sync-set.md §4 (Acted): a new grant is an invitation not acted on; accepted, it is no
+// invitation; unsynced, it is one again, acted on.
+#[test]
+fn an_unsynced_invitation_is_acted_on_spec_sync_set_4() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let a = on(&net, 52, &c);
+    a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
+    let b = on(&net, 53, &c);
+    drive(&net, b.import_contact(&a.contact_card().unwrap())).unwrap();
+    let mut w = b.write();
+    let t = w.create().unwrap();
+    w.commit().unwrap();
+    b.grant(t, a.me(), Role::Read, osis::GrantOpts::default()).unwrap();
+    for _ in 0..5 {
+        net.run();
+    }
+    let acted = |db: &Osis| db.invitations().unwrap().iter().find(|i| i.thing == t).map(|i| i.acted);
+    assert_eq!(acted(&a), Some(false), "a new grant: {:?}", a.invitations().unwrap());
+    a.accept_invite(t, a.home()).unwrap();
+    assert_eq!(acted(&a), None, "accepted");
+    let mut w = a.write();
+    w.group(a.home()).remove(osis::Member::Subgroup(t)).unwrap();
+    w.commit().unwrap();
+    assert_eq!(acted(&a), Some(true), "unsynced");
+}
+
 // spec/sync-streams.md §6 (a bundle is a one-way log replay): a bundle carries what a node holds of a group to another
 // node of the account by hand.
 #[test]
