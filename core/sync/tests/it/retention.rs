@@ -18,6 +18,8 @@ const HOUR_MS: u64 = 3_600_000;
 fn covered_in_history() -> (World, Tid, SyncId, CommitId) {
     let mut w = world(0, 3);
     w.cap = 20_000;
+    // `run` looks a minute ahead, never to the keep bound: only `advance` passes it
+    w.horizon_ms = 60_000;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
     let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
@@ -66,20 +68,23 @@ fn a_covered_body_in_history_stays_everywhere_spec_commits_5() {
 
 // spec/commits.md §5 (unread delete margin): right holders do not delete a body at a peer keeping
 // it unread before `MAX_DRIFT` past its leaving history, on their clock. Past the hour (out of
-// history) and within the margin, node 1 still holds it.
+// history) and within the margin, node 1 still holds it, while the writer and the reader, whose
+// own entries follow the keep bound alone, dropped theirs.
 #[test]
 fn a_body_out_of_history_stays_at_a_node_keeping_it_unread_for_the_margin_spec_commits_5() {
     let (mut w, _, s, one) = covered_in_history();
     w.advance(HOUR_MS + MAX_DRIFT_MS / 2);
     w.run();
+    for i in [0, 2] {
+        assert!(entries_of(&mut w, i, &s, &one).is_empty(), "node {i}: its entry outlived the keep bound");
+    }
     assert!(!entries_of(&mut w, 1, &s, &one).is_empty(), "deleted at node 1 within MAX_DRIFT of leaving history");
 }
 
 // spec/commits.md §5 (Keep bounds; Covered), spec/sync-judgement.md §3 (covered and dropped), spec/sync.md §2:
 // a covered body leaves the stores once out of history and past the margin, by time alone: no
-// later write moves it. (Control of the test above, which passes vacuously while this fails.)
+// later write moves it.
 #[test]
-#[ignore = "issues/keep-bound-sets-no-wake.md"]
 fn repro_a_covered_body_leaves_by_time_alone_spec_commits_5() {
     let (mut w, _, s, one) = covered_in_history();
     w.advance(HOUR_MS + MAX_DRIFT_MS + 60_000);
@@ -88,3 +93,4 @@ fn repro_a_covered_body_leaves_by_time_alone_spec_commits_5() {
         assert!(entries_of(&mut w, i, &s, &one).is_empty(), "node {i} still holds the covered body's entry");
     }
 }
+
