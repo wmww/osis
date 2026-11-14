@@ -257,18 +257,16 @@ impl Engine {
             let taken = if any || held { Taken::Applied } else { Taken::Refused };
             return Ok(Some(InboxOpened { commit: Some(id), taken, hints: Vec::new(), dial }));
         }
-        self.learn_records(records)?;
-        // the author's chain first: a chain commit is judged alone, its refusal refuses nothing else
-        for (c, _) in crate::flows::inbox_chain(chain) {
-            if let Err(e) = self.ingest(&c, Vec::new()) && osis_base::Classified::class(&e) == osis_base::ErrorClass::Local {
-                return Err(e);
-            }
+        let chain: Vec<Vec<u8>> = crate::flows::inbox_chain(chain).into_iter().map(|(c, _)| c).collect();
+        let mut taken = self.take_payload(&chain, &plain)?;
+        // its records learned only where what it brought awaits them (with their record chains),
+        // then taken again: a part thrown out for one joins (spec/commits.md §4 Pending storage)
+        let batch: BTreeMap<Tid, osis_base::CreationRecord> = records.into_iter().map(|r| (r.tid(), r)).filter(|(t, _)| self.core.created(t).is_none()).collect();
+        let seeds: Vec<Tid> = batch.keys().filter(|t| crate::apply::awaits_record(&self.core, t)).copied().collect();
+        let learn = super::with_chains(&self.core, seeds, &batch);
+        if self.learn_records(learn)? > 0 {
+            taken = self.take_payload(&chain, &plain)?;
         }
-        let taken = match self.ingest(&plain, Vec::new()) {
-            Ok(_) => Taken::Applied,
-            Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
-            Err(_) => Taken::Refused,
-        };
         self.note_delete_hints(id, &things)?;
         // hints (spec/sync-inbox.md §2 Following a payload sync ID): for a thing whose read or
         // sync box opened and that it knows no sync ID of, a sync ID no applied `sync.0` records;
@@ -285,6 +283,21 @@ impl Engine {
             }
         }
         Ok(Some(InboxOpened { commit: Some(id), taken, hints, dial }))
+    }
+
+    /// Ingests an inbox payload's chain commits, then its commit: a chain commit is judged alone,
+    /// its refusal refuses nothing else.
+    fn take_payload(&mut self, chain: &[Vec<u8>], plain: &[u8]) -> Result<Taken> {
+        for c in chain {
+            if let Err(e) = self.ingest(c, Vec::new()) && osis_base::Classified::class(&e) == osis_base::ErrorClass::Local {
+                return Err(e);
+            }
+        }
+        match self.ingest(plain, Vec::new()) {
+            Ok(_) => Ok(Taken::Applied),
+            Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => Err(e),
+            Err(_) => Ok(Taken::Refused),
+        }
     }
 
     /// Takes inbox blob `bytes` under whichever inbox here opens it (tests: an inbox blob carried

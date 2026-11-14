@@ -976,3 +976,83 @@ fn list_element_in_snapshot_before_expiry_reads_alike_spec_crdt_5_7() {
     assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), held);
 }
 
+
+/// Peer 1 holding `n` commits of peer 2's on peer 2's thing, each `ts` ahead past `MAX_DRIFT`
+/// (pending for drift); the examinations an unrelated arrival costs, those its `ts` coming
+/// within reach costs, and the pending left.
+fn drift_work(n: usize) -> (u64, u64, usize) {
+    let mut lp = net(3, 0);
+    let t = new_thing(&mut lp, 0);
+    sync(&mut lp, 0, 1);
+    let t2 = new_thing(&mut lp, 2);
+    sync(&mut lp, 2, 1);
+    lp.peers[2].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+    for i in 0..n {
+        let mut m = Mutation::new();
+        m.set(t2, &REG, &s(&format!("v{i}"))).unwrap();
+        let c = lp.peers[2].commit(m).unwrap().unwrap();
+        let pk = lp.peers[2].engine.package(&c).unwrap().unwrap();
+        assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Pending(_, Reason::Drift)));
+    }
+    let e0 = lp.peers[1].engine.examined();
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("unrelated")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(_)));
+    let e1 = lp.peers[1].engine.examined();
+    // its timer: the first `ts` within reach
+    let at = lp.peers[1].engine.next_timer().unwrap().expect("a wake for the drift");
+    assert!(at <= lp.peers[2].engine.now().0, "{at}");
+    lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+    lp.peers[1].tick().unwrap();
+    (e1 - e0, lp.peers[1].engine.examined() - e1, lp.peers[1].engine.pending().len())
+}
+
+// spec/commits.md §4 (Unjudgeable: examined again when what it awaits arrives), spec/requirements.md
+// Scale; notes/sync-facade.md (Pending: one parking place keyed by the missing thing): a commit
+// pending for its `ts` is examined by no arrival but the clock reaching it, so n and 10n of them
+// cost an unrelated arrival nothing, and each is examined once when its time comes.
+#[test]
+fn pending_commits_wake_only_for_what_they_await_spec_commits_4() {
+    for n in [3, 30] {
+        let (unrelated, due, left) = drift_work(n);
+        assert_eq!(unrelated, 0, "an unrelated arrival examines none of {n}");
+        assert_eq!(due as usize, n, "each of {n} examined once when its time comes");
+        assert_eq!(left, 0, "all applied");
+    }
+}
+
+/// Peer 1 holding `n` commits of each of two strangers (peers 2 and 3, never met), pending for
+/// their authors' records: the examinations learning peer 2's records costs, and what pends after.
+fn record_work(n: usize) -> (u64, usize) {
+    let mut lp = net(4, 0);
+    let mut recs = Vec::new();
+    for k in [2, 3] {
+        let t = new_thing(&mut lp, k);
+        for i in 0..n {
+            let mut m = Mutation::new();
+            m.set(t, &REG, &s(&format!("v{i}"))).unwrap();
+            let c = lp.peers[k].commit(m).unwrap().unwrap();
+            let pk = lp.peers[k].engine.package(&c).unwrap().unwrap();
+            let r = lp.deliver(1, &pk).unwrap();
+            assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(_) | Reason::UnknownCreated(_))), "{r:?}");
+        }
+        let me = lp.peers[k].engine.me();
+        recs.push([me, t].iter().filter_map(|x| lp.peers[k].engine.core.created(x).cloned()).collect::<Vec<_>>());
+    }
+    let e0 = lp.peers[1].engine.examined();
+    lp.peers[1].engine.learn_records(recs.swap_remove(0)).unwrap();
+    (lp.peers[1].engine.examined() - e0, lp.peers[1].engine.pending().len())
+}
+
+// spec/commits.md §4 (Unjudgeable), notes/sync-facade.md (Pending): a record arriving examines
+// only the commits parked under it, never those awaiting another.
+#[test]
+fn a_record_examines_only_what_awaits_it_spec_commits_4() {
+    for n in [3, 30] {
+        let (examined, left) = record_work(n);
+        assert!(examined as usize >= n && examined as usize <= 2 * n, "{examined} examinations for {n} awaiting the record, {n} awaiting another");
+        assert_eq!(left, n, "those of the other stranger still pend");
+    }
+}

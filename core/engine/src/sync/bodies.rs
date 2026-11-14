@@ -449,7 +449,7 @@ impl Engine {
             Err(_) => {
                 // a record blob (spec/wire.md §3): its records taken
                 let Ok((_, pt)) = osis_label::open(bytes, &key) else { return Ok(Opened::Bad) };
-                return Ok(match self.take_record_blob(&pt)? {
+                return Ok(match self.take_record_blob(blob, &pt)? {
                     Some(tids) => Opened::Records(tids),
                     None => Opened::Bad,
                 });

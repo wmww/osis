@@ -2,6 +2,7 @@
 //! The engine's facade for sync (`osis_engine::sync`, notes/sync-facade.md): each call against
 //! the spec rule it serves, over `LocalPeer` (commits and inbox blobs carried by hand).
 
+use crate::common::{REG, s};
 use crate::flows::{edge_of, people, spread, spread_sealed, thing_of};
 use osis_base::{Ak, Role, Tid};
 use osis_crypto::SeededRng;
@@ -909,11 +910,12 @@ fn record_blob_by_hand(lp: &mut LocalPeer, i: usize, t: &Tid, records: &[osis_ba
     (id, blob, wrap)
 }
 
-// spec/wire.md §3 (creation record; Record blob), spec/permissions.md §4 (Chain certificates):
-// a record's tid is the hash of its encoding, records go raw in a record blob. A reader of S framing a record blob cannot plant a false
-// record for a thing it names: a record altered to name another first admin is a record of
-// another tid, and the receiver learns nothing of the thing; the genuine record, sealed by its
-// holder, is learned as it is.
+// spec/wire.md §3 (creation record; Record blob), spec/permissions.md §4 (Chain certificates),
+// spec/commits.md §4 (Pending storage): a record's tid is the hash of its encoding, records go raw
+// in a record blob. A reader of S framing a record blob cannot plant a false record for a thing it
+// names: a record altered to name another first admin is a record of another tid, and the
+// receiver learns nothing of the thing; the genuine record, sealed by its holder, is kept loose
+// until a commit here awaits it, then learned as it is.
 #[test]
 fn a_forged_record_in_a_record_blob_names_no_other_thing_spec_wire_3() {
     let (mut lp, d) = crate::flows::account_two_nodes();
@@ -933,7 +935,60 @@ fn a_forged_record_in_a_record_blob_names_no_other_thing_spec_wire_3() {
     assert!(lp.peers[1].engine.core.created(&u).is_none(), "nothing learned of u");
     let (id, bytes, wrap) = lp.peers[0].engine.seal_records(&home, &[u].into(), &mut SeededRng::from_u64(3)).unwrap().expect("sealed");
     assert!(matches!(lp.peers[1].engine.open_entry(&home, &id, &wrap, &bytes).unwrap(), osis_engine::sync::Opened::Records(_)));
+    assert!(lp.peers[1].engine.core.created(&u).is_none() && lp.peers[1].engine.carries_loose(&id), "nothing awaits u yet: loose");
+    later_write_on(&mut lp, u);
     assert_eq!(lp.peers[1].engine.core.created(&u), Some(&real));
+    assert!(!lp.peers[1].engine.carries_loose(&id), "its carrier gives something held");
+}
+
+/// Peer 0 writes on `u` and peer 1 ingests that commit alone (`u`'s record not with it): it
+/// awaits `u`'s record there.
+fn later_write_on(lp: &mut LocalPeer, u: Tid) {
+    let mut m = Mutation::new();
+    m.set(u, &REG, &s("later")).unwrap();
+    let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
+    let bytes = lp.peers[0].engine.commit_bytes(&c).unwrap().unwrap();
+    lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap();
+}
+
+/// `n` junk records (things no commit names) and one genuine one in record blobs a reader of
+/// S frames, opened at peer 1, then the junk blob's entry gone: (loose records while carried,
+/// records learned, loose left, whether the genuine one was learned once awaited).
+fn junk_records(n: usize) -> (usize, usize, usize, bool) {
+    let (mut lp, d) = crate::flows::account_two_nodes();
+    let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
+    let a = lp.peers[0].engine.account().unwrap().unwrap().0;
+    let u = thing_of(&mut lp, 0, a);
+    let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
+    let junk: Vec<osis_base::CreationRecord> = (0..n).map(|i| osis_base::CreationRecord::Thing { admin: a, nonce: { let mut x = [9u8; 32]; x[..8].copy_from_slice(&(i as u64).to_be_bytes()); x }, link: None }).collect();
+    let known = |lp: &LocalPeer| junk.iter().filter(|r| lp.peers[1].engine.core.created(&r.tid()).is_some()).count();
+    let (jb, jbytes, jwrap) = record_blob_by_hand(&mut lp, 0, &d, &junk);
+    let (gb, gbytes, gwrap) = record_blob_by_hand(&mut lp, 0, &d, std::slice::from_ref(&real));
+    assert_ne!(jb, gb);
+    for (b, bytes, wrap) in [(&jb, &jbytes, &jwrap), (&gb, &gbytes, &gwrap)] {
+        assert!(matches!(lp.peers[1].engine.open_entry(&home, b, wrap, bytes).unwrap(), osis_engine::sync::Opened::Records(_)));
+    }
+    let carried = lp.peers[1].engine.loose_records();
+    let learned = known(&lp);
+    lp.peers[1].engine.forget_carrier(&jb);
+    let left = lp.peers[1].engine.loose_records();
+    later_write_on(&mut lp, u);
+    (carried, learned + known(&lp), left, lp.peers[1].engine.core.created(&u) == Some(&real))
+}
+
+// spec/commits.md §4 (Pending storage), spec/requirements.md (malicious readers only waste
+// storage; peer input never causes unbounded storage): records nothing here awaits are kept only
+// while their carrier is (its entry charged to the peer that brought it): n and 10n junk records
+// are never learned and go with their blob's entry, and they evict nothing another blob carries.
+#[test]
+fn junk_records_go_with_their_carrier_spec_commits_4() {
+    for n in [20, 200] {
+        let (carried, learned, left, genuine) = junk_records(n);
+        assert_eq!(carried, n + 1, "kept loose while carried");
+        assert_eq!(learned, 0, "never learned: nothing names them");
+        assert_eq!(left, 1, "gone with their carrier; the other blob's stays");
+        assert!(genuine, "the other blob's record, learned once awaited");
+    }
 }
 
 // spec/permissions.md §4 (Logging certificates: the records missing go as one record blob of the

@@ -922,6 +922,8 @@ fn drop_gone(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(T
 /// Writes the value-less lists changed in this transaction, each once however many parts joined it.
 pub(crate) fn persist_valueless(tx: &mut Tx<'_>) -> Result<()> {
     for (tid, ak) in std::mem::take(&mut tx.core.valueless_dirty) {
+        // pending copies writing on it are looked at again (`apply::Wake::Thing`)
+        tx.core.waits.lists_moved.insert(tid);
         match tx.core.ix.valueless.get(&(tid, ak.clone())) {
             Some(list) => {
                 let enc = encode_owned(list);
@@ -1141,7 +1143,7 @@ impl Engine {
             let now = tx.now().0;
             tx.core.compaction.passed(now);
             // the timers these put lower it again
-            tx.core.timer_floor = next.min(next_leave).min(tx.core.compaction.next_at());
+            tx.core.timer_floor = next.min(next_leave).min(tx.core.compaction.next_at()).min(crate::apply::next_at(tx.core).unwrap_or(u64::MAX));
             // their rebuilds once per aspect (`run_batched`); an expiry strips a state in place
             // only while no rebuild of it is asked (`apply::strip_state`)
             crate::apply::run_batched(tx, |tx| {
@@ -1190,7 +1192,9 @@ impl Engine {
             let live = Some(tx.core.compaction.next_at()).filter(|t| *t != u64::MAX);
             let inbox = tx.core.ix.waiting_inbox.values().map(|w| w.expires.0).min();
             let fallen = (!tx.core.fallen.is_empty()).then(|| tx.now().0);
-            Ok(part.into_iter().chain(aspect).chain(live).chain(inbox).chain(fallen).min())
+            // a commit pending for its `ts` ahead (`apply::Wake::At`)
+            let drift = crate::apply::next_at(tx.core);
+            Ok(part.into_iter().chain(aspect).chain(live).chain(inbox).chain(fallen).chain(drift).min())
         })
     }
 

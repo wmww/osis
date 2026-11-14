@@ -125,7 +125,7 @@ pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId,
 
 /// Memory commit `id` waits for blobs its header names, nothing of it decoded.
 fn wait(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId, signed: Option<osis_commit::Signed>) -> Result<crate::Ingested> {
-    super::pend(tx, id, osis_store::PendingKind::Pending, signed, &blob.encode(), crate::Reason::WaitBlobs)?;
+    super::pend(tx, id, osis_store::PendingKind::Pending, signed, &blob.encode(), crate::Reason::WaitBlobs, Some(&blob.header))?;
     Ok(crate::Ingested::Pending(*id, crate::Reason::WaitBlobs))
 }
 

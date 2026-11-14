@@ -15,6 +15,7 @@ pub(crate) mod falls;
 pub(crate) mod held;
 pub(crate) mod inbox;
 pub(crate) mod recblobs;
+pub(crate) use recblobs::with_chains;
 pub(crate) mod records;
 mod set;
 mod signing;

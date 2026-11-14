@@ -774,7 +774,13 @@ indexes! {
     /// Node- and session-form ranges per (tid, ak, own source): (lo, commit) -> hi. Keyed by
     /// commit too: equivocating commits of one range are all held (spec/commits.md §4).
     pub ranges: JNested<(Tid, Ak, osis_crdt::Source), (u64, CommitId), u64>,
+    /// Written only through `apply::waits::set_pending`, with `pend_on`.
     pub pending: JMap<CommitId, Reason>,
+    /// Pending commits by what they await (`apply::waits::Wake`): an arrival examines only those
+    /// parked under it. Derived from `pending`, never persisted.
+    pub pend_on: JSetMap<crate::apply::Wake, CommitId>,
+    /// `pend_on`'s keys per pending commit.
+    pub pend_keys: JMap<CommitId, Arc<Vec<crate::apply::Wake>>>,
     /// Link keys this node keeps reading as, their seed forgotten (`Engine::keep_bearer`,
     /// spec/permissions.md §7, Bearer use).
     pub bearers: JSet<Tid>,
@@ -3569,6 +3575,8 @@ impl Engine {
         fresh.accounts = std::mem::take(&mut self.core.accounts);
         fresh.redeliver = std::mem::take(&mut self.core.redeliver);
         fresh.waits = std::mem::take(&mut self.core.waits);
+        // a feed of the old index's commits: started again on the fresh one
+        fresh.waits.held_feed = None;
         fresh.wakes = self.core.wakes.take();
         self.core = fresh;
         let r = {

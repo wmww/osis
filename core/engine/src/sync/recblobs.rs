@@ -7,7 +7,7 @@
 use super::Wrap;
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
-use osis_base::{BlobId, SyncId, Tid};
+use osis_base::{BlobId, CreationRecord, SyncId, Tid};
 use osis_crypto::NodeRng;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
@@ -111,14 +111,64 @@ impl Engine {
         Ok(Some((id, blob, wrap)))
     }
 
-    /// Takes a record blob's plaintext `plain`: its records learned (a record proves itself by
-    /// its hash). Nothing of the blob is kept: a peer's record blob is not kept in the own store,
-    /// so it leaves no row (`record_blobs` holds what this node sealed). `None` when `plain` is no
-    /// record blob.
-    pub(crate) fn take_record_blob(&mut self, plain: &[u8]) -> Result<Option<BTreeSet<Tid>>> {
+    /// Takes a record blob's plaintext `plain`, the plaintext of blob `b` (a record proves itself
+    /// by its hash): the records something here awaits are learned, with those on their record
+    /// chains; the rest are kept loose, carried by `b` (spec/commits.md §4 Pending storage), and
+    /// learned once something awaits them (`Engine::promote_loose`). Nothing of the blob is kept
+    /// here: a peer's record blob is not kept in the own store, so it leaves no row
+    /// (`record_blobs` holds what this node sealed). `None` when `plain` is no record blob.
+    pub(crate) fn take_record_blob(&mut self, b: &BlobId, plain: &[u8]) -> Result<Option<BTreeSet<Tid>>> {
         let Ok(recs) = osis_commit::record_blob::decode_record_blob(plain) else { return Ok(None) };
         let tids: BTreeSet<Tid> = recs.iter().map(|r| r.tid()).collect();
-        self.learn_records(recs)?;
+        let batch: BTreeMap<Tid, CreationRecord> = recs.into_iter().map(|r| (r.tid(), r)).filter(|(t, _)| self.core.created(t).is_none()).collect();
+        let seeds: Vec<Tid> = batch.keys().filter(|t| crate::apply::awaits_record(&self.core, t)).copied().collect();
+        let learn = with_chains(&self.core, seeds, &batch);
+        let learned: BTreeSet<Tid> = learn.iter().map(|r| r.tid()).collect();
+        for (t, r) in batch {
+            if !learned.contains(&t) {
+                self.core.waits.loose.keep(*b, r);
+            }
+        }
+        self.learn_records(learn)?;
         Ok(Some(tids))
     }
+
+    /// Whether blob `b` carries a record kept loose here (its entry is kept as its carrier).
+    pub fn carries_loose(&self, b: &BlobId) -> bool {
+        self.core.waits.loose.carries(b)
+    }
+
+    /// A cursor over the carriers of loose records whose every record was learned since: each
+    /// gives something held now (`memo::Feed`).
+    pub fn loose_feed(&self) -> osis_base::memo::Feed<BlobId> {
+        self.core.waits.carried.feed()
+    }
+
+    /// No entry in the store carries blob `b` any more: the loose records only it carried go.
+    pub fn forget_carrier(&mut self, b: &BlobId) {
+        self.core.waits.loose.forget(b);
+    }
+
+    /// Loose records kept (scale checks).
+    pub fn loose_records(&self) -> usize {
+        self.core.waits.loose.len()
+    }
+}
+
+/// The records named by `seeds` not known here, with those on their record chains (each
+/// `Thing`'s first admin), from `batch` or the loose records.
+pub(crate) fn with_chains(core: &crate::engine::Core, seeds: Vec<Tid>, batch: &BTreeMap<Tid, CreationRecord>) -> Vec<CreationRecord> {
+    let mut out: BTreeMap<Tid, CreationRecord> = BTreeMap::new();
+    let mut stack = seeds;
+    while let Some(t) = stack.pop() {
+        if out.contains_key(&t) || core.created(&t).is_some() {
+            continue;
+        }
+        let Some(r) = batch.get(&t).or_else(|| core.waits.loose.get(&t)) else { continue };
+        if let CreationRecord::Thing { admin, .. } = r {
+            stack.push(*admin);
+        }
+        out.insert(t, r.clone());
+    }
+    out.into_values().collect()
 }

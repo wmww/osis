@@ -28,6 +28,8 @@ mod tests_steps;
 mod tests_account;
 
 pub(crate) use unindex::{unindex_commit, unjudge_part};
+pub use waits::Wake;
+pub(crate) use waits::{awaits_record, next_at, set_pending};
 pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
 #[cfg(debug_assertions)]
@@ -384,7 +386,7 @@ fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
     let _s = osis_base::costs::span("reexamine: read pending");
     expire_stored(tx, id)?;
     let Some(osis_store::Pending { kind, bytes, .. }) = tx.txn.get_pending(id)? else {
-        tx.core.ix.pending.remove(id);
+        set_pending(tx.core, id, None);
         return Ok(None);
     };
     let decode = if kind == PendingKind::Parked { CommitBlob::decode } else { CommitBlob::decode_stored };
@@ -851,7 +853,7 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             if blob.parts.len() != n {
                 return ingest_class(tx, blob, origin);
             }
-            pend(tx, &id, PendingKind::Pending, known, &blob.encode(), r.clone())?;
+            pend(tx, &id, PendingKind::Pending, known, &blob.encode(), r.clone(), Some(&blob.header))?;
             keys::read_pending_boxes(tx, &blob, &id)?;
             Ingested::Pending(id, r)
         }
@@ -864,7 +866,7 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             if blob.parts.len() != n {
                 return ingest_class(tx, blob, origin);
             }
-            pend(tx, &id, PendingKind::Pending, known, &blob.encode(), r.clone())?;
+            pend(tx, &id, PendingKind::Pending, known, &blob.encode(), r.clone(), Some(&blob.header))?;
             keys::read_pending_boxes(tx, &blob, &id)?;
             tx.core.waits.awaits(id, blob.header.aspects.iter().map(|a| a.tid).collect());
             Ingested::Pending(id, r)
@@ -915,21 +917,21 @@ fn settled_boxes(tx: &Tx<'_>, id: &CommitId) -> bool {
 
 /// Keeps commit `id` pending (`bytes` as stored) for `reason`, with its signature's verdict if
 /// one was reached (`signature`): no re-examination checks those bytes again.
-fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, signed: Option<osis_commit::Signed>, bytes: &[u8], reason: Reason) -> Result<()> {
+/// `h`: its header, where it decoded (`waits::wakes_of`).
+#[allow(clippy::too_many_arguments)]
+fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, signed: Option<osis_commit::Signed>, bytes: &[u8], reason: Reason, h: Option<&Header>) -> Result<()> {
     tx.core.touch();
     tx.txn.put_pending(id, kind, signed.map(osis_commit::Signed::to_bytes), bytes)?;
     // unchanged at a look that keeps it waiting: what read it holds (`Core::waiting_carries`)
-    if tx.core.ix.pending.get(id) != Some(&reason) {
-        tx.core.ix.pending.insert(*id, reason);
-    }
+    set_pending(tx.core, id, Some((reason, h)));
     Ok(())
 }
 
 /// Keeps commit `id` parked (`bytes` as stored, spec/versioning.md §2), telling the app the first
 /// time it parks (`tell_parked`).
-fn park(tx: &mut Tx<'_>, id: &CommitId, bytes: &[u8], things: Vec<Tid>, peer: Option<Tid>) -> Result<()> {
+fn park(tx: &mut Tx<'_>, id: &CommitId, bytes: &[u8], things: Vec<Tid>, peer: Option<Tid>, h: Option<&Header>) -> Result<()> {
     tell_parked(tx, id, things, peer);
-    pend(tx, id, PendingKind::Parked, None, bytes, Reason::Parked)
+    pend(tx, id, PendingKind::Parked, None, bytes, Reason::Parked, h)
 }
 
 /// Tells the app commit `id` waits for a newer format, unless it already waited for one: an update
@@ -956,16 +958,17 @@ fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) 
         return Ok(());
     }
     if w.reason == Reason::Parked {
-        return park(tx, id, &rest.encode(), rest.header.aspects.iter().map(|a| a.tid).collect(), Some(rest.header.author));
+        return park(tx, id, &rest.encode(), rest.header.aspects.iter().map(|a| a.tid).collect(), Some(rest.header.author), Some(&rest.header));
     }
     // the applied commit's held verdict answers for these signatures (`signature`)
-    pend(tx, id, PendingKind::Pending, None, &rest.encode(), w.reason.clone())
+    pend(tx, id, PendingKind::Pending, None, &rest.encode(), w.reason.clone(), Some(&rest.header))
 }
 
 /// Commit `id` pends no more: its stored bytes go. Whether it was pending.
 fn unpend(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
-    let was = tx.core.ix.pending.remove(id).is_some();
+    let was = tx.core.ix.pending.contains_key(id);
     if was {
+        set_pending(tx.core, id, None);
         tx.core.touch();
         tx.txn.remove_pending(id, Shred::Yes)?;
     }
@@ -1126,13 +1129,13 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             }
             let things = blob.header.aspects.iter().map(|a| a.tid).collect();
             if w.reason == Reason::Parked && w.others.is_empty() {
-                park(tx, id, &blob.encode(), things, Some(blob.header.author))?;
+                park(tx, id, &blob.encode(), things, Some(blob.header.author), Some(&blob.header))?;
                 return Ok(Ingested::Parked(*id));
             }
             if w.reason == Reason::Parked {
                 tell_parked(tx, id, things, Some(blob.header.author));
             }
-            pend(tx, id, PendingKind::Pending, known, &blob.encode(), w.reason.clone())?;
+            pend(tx, id, PendingKind::Pending, known, &blob.encode(), w.reason.clone(), Some(&blob.header))?;
             keys::read_pending_boxes(tx, &blob, id)?;
             Ingested::Pending(*id, w.reason)
         }
@@ -1166,7 +1169,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             if blob.parts.len() != n {
                 return late_parts(tx, id, blob);
             }
-            pend(tx, id, PendingKind::Pending, known, &blob.encode(), r.clone())?;
+            pend(tx, id, PendingKind::Pending, known, &blob.encode(), r.clone(), Some(&blob.header))?;
             keys::read_pending_boxes(tx, &blob, id)?;
             Ingested::Pending(*id, r)
         }
@@ -1445,7 +1448,16 @@ impl Engine {
     /// a record proves itself by its hash, so it needs no commit. Returns how many were new; what
     /// awaited them is judged again.
     pub fn learn_records(&mut self, records: Vec<CreationRecord>) -> Result<usize> {
-        let n = self.run(|tx| {
+        let n = self.learn_records_now(records)?;
+        if n > 0 {
+            self.reexamine()?;
+        }
+        Ok(n)
+    }
+
+    /// `learn_records` without the `reexamine` after.
+    fn learn_records_now(&mut self, records: Vec<CreationRecord>) -> Result<usize> {
+        self.run(|tx| {
             let mut n = 0;
             for r in records {
                 n += usize::from(atomic::learn_record(tx, r)?);
@@ -1455,11 +1467,19 @@ impl Engine {
                 atomic::rejudged(tx, true)?;
             }
             Ok(n)
-        })?;
-        if n > 0 {
-            self.reexamine()?;
+        })
+    }
+
+    /// Learns the loose records something here came to await, with the loose records on their
+    /// record chains (spec/commits.md §4 Pending storage). Whether one was learned.
+    fn promote_loose(&mut self) -> Result<bool> {
+        let due = self.core.waits.loose.take_due();
+        let seeds: Vec<Tid> = due.into_iter().filter(|t| self.core.waits.loose.get(t).is_some() && waits::awaits_record(&self.core, t)).collect();
+        if seeds.is_empty() {
+            return Ok(false);
         }
-        Ok(n)
+        let recs = crate::sync::with_chains(&self.core, seeds, &BTreeMap::new());
+        Ok(self.learn_records_now(recs)? > 0)
     }
 
     /// `ingest` of an account's rotation with list blobs that came with it (under the
@@ -1522,7 +1542,7 @@ impl Engine {
                 }
                 Err(e) if e.class() == ErrorClass::Parked => {
                     let id = raw_id(bytes)?;
-                    park(tx, &id, bytes, Vec::new(), peer)?;
+                    park(tx, &id, bytes, Vec::new(), peer, None)?;
                     Ok(Ingested::Parked(id))
                 }
                 Err(e) => Err(e.into()),
@@ -1542,6 +1562,8 @@ impl Engine {
                 self.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: raw_id(bytes).ok(), peer, detail: e.to_string() }, now);
             }
             Ok(Ingested::Applied(_)) => self.reexamine()?,
+            // it awaits a record kept loose: learned now (`promote_loose`)
+            _ if self.core.waits.loose.has_due() => self.reexamine()?,
             _ => {}
         }
         r
@@ -1611,15 +1633,17 @@ impl Engine {
         self.core.waits.examined
     }
 
-    /// Re-examines pending and parked commits until none applies (after new certificates or
-    /// `created.0` records, a change of what this node syncs, time passing, or an upgrade).
-    /// Role commits are tried first.
+    /// Re-examines the pending commits parked under what arrived since (`Wake`: a record, the
+    /// role inputs moving, a blob, the clock, an open) until none applies; nothing else is read.
+    /// Loose records something now awaits are learned first (`promote_loose`). Role commits are
+    /// tried first.
     pub fn reexamine(&mut self) -> Result<()> {
         let _s = osis_base::costs::span("reexamine");
         loop {
-            // whose boxes the reading-only budget has room for now: examined again, so read
-            let reread = waits::wake(&mut self.core);
-            let ids: Vec<CommitId> = self.core.ix.pending.keys().copied().collect();
+            self.promote_loose()?;
+            // the commits parked under what arrived, and those whose boxes the reading-only
+            // budget has room for now: examined again (`waits::wake`)
+            let ids: Vec<CommitId> = waits::wake(&mut self.core).into_iter().collect();
             if ids.is_empty() {
                 return Ok(());
             }
@@ -1632,10 +1656,6 @@ impl Engine {
                     // a memory commit waits for node-sync, which applies it within its label's
                     // room (`apply_waiting_memory`)
                     if tx.core.memory_waits.contains(&id) {
-                        continue;
-                    }
-                    // one awaiting a record still unknown here cannot apply: not read again
-                    if !reread.contains(&id) && matches!(tx.core.ix.pending.get(&id), Some(Reason::MissingChain(t) | Reason::UnknownCreated(t)) if tx.core.created(t).is_none()) {
                         continue;
                     }
                     tx.core.waits.examined += 1;
@@ -2040,8 +2060,10 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     let mut pend = Vec::new();
     tx.each_pending(|id, p| pend.push((id, p.kind)))?;
     for (id, k) in pend {
-        tx.core.ix.pending.insert(id, if k == PendingKind::Parked { Reason::Parked } else { Reason::Unexamined });
+        set_pending(tx.core, &id, Some((if k == PendingKind::Parked { Reason::Parked } else { Reason::Unexamined }, None)));
     }
+    // each examined once by the open's `reexamine`
+    tx.core.waits.open_due = true;
     // with every commit's validity (a rebuild's re-judging below re-derives what flips)
     let things: BTreeSet<Tid> = tx.core.ix.keyset_parts.keys().copied().collect();
     keys::refresh_own_keys(tx, &things, false)?;

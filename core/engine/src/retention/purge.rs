@@ -651,6 +651,8 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
 /// purge left whole covers them all (spec/commits.md §5 Purge). A refused or no-op request
 /// changes nothing, so it asks for no snapshot.
 pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+    // pending copies writing on what it names are looked at again (`apply::Wake::Thing`)
+    tx.core.waits.lists_moved.extend(h.requests().iter().map(|i| *i.tid()));
     for item in h.requests().iter() {
         // one that is not by name asks of every delta: the right once per class and actor, so a
         // request with none costs a look per delta

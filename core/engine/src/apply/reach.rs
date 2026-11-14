@@ -228,7 +228,7 @@ impl Engine {
     /// (fetched at once: they are held in memory at hosts). Costs the blobs that arrived since
     /// the last call, and a whole walk of a commit whose walk lacks nothing while it still waits.
     pub fn blob_wants(&mut self) -> Result<Wants> {
-        let waiting: Vec<CommitId> = self.core.ix.pending.iter().filter(|(_, r)| **r == super::Reason::WaitBlobs).map(|(c, _)| *c).collect();
+        let waiting: Vec<CommitId> = self.core.ix.pend_on.get(&super::Wake::Blobs).into_iter().flatten().copied().collect();
         if waiting.is_empty() && self.core.walks.trees.is_empty() {
             self.core.walks.walks.clear();
             return Ok(Wants::default());

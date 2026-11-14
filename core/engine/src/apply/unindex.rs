@@ -74,7 +74,7 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         tx.txn.remove_local(&records::own_keys_key(t, id), Shred::No)?;
     }
     let void = core.ix.void.remove(id);
-    core.ix.pending.remove(id);
+    super::set_pending(core, id, None);
     core.ix.unresolved.remove(id);
     core.stale_commits.remove(id);
     if void {

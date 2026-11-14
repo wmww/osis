@@ -273,6 +273,8 @@ impl crate::engine::Engine {
         }
         if !self.run(|tx| tx.store_blobs(blobs))?.is_empty() {
             self.blobs_stored();
+            // what waited for them (`apply::Wake::Blobs`)
+            self.reexamine()?;
         }
         Ok(())
     }
@@ -294,6 +296,7 @@ impl crate::engine::Engine {
     /// noted missing was re-delivered.
     pub fn blobs_stored(&mut self) {
         self.core.missed.clear();
+        self.core.waits.blobs_due = true;
     }
 
     /// A read of `tid`'s `ak` (its state, or with `entry` that commit's part) found a
