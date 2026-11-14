@@ -1401,7 +1401,7 @@ fn walk_answered(answer: osis_proto::SharedItem, bad: bool) -> (Side, Adv, osis_
 // credential it does not hold, stops there naming that step's sync key; one refused on every
 // step it had to try stops at its recorded head; an answer that does not verify teaches no step
 // and stops nothing; a source not keeping S (13) stops nothing; the stop goes with the
-// connection.
+// connection, and with S opened there by the peer's test.
 #[test]
 fn a_walk_stops_past_its_keys_or_refused_spec_sync_ids_6() {
     let ok = osis_proto::SharedItem::code(Code::OK);
@@ -1410,6 +1410,11 @@ fn a_walk_stops_past_its_keys_or_refused_spec_sync_ids_6() {
     assert!(of_kind(&r.sent(), 37).is_empty(), "nothing more asked");
     r.closed(adv.peer);
     assert_eq!(r.opens.walk_stop(&S), None, "the stop goes with the connection");
+    let (mut r, mut adv, _) = walk_answered(ok.clone(), false);
+    let hit = adv.hit_on(read_secret(1, 0).1.expose(), &S);
+    assert_eq!(adv.offer(&mut r, vec![OfferItem::Hit { hit, sig: None }])[0].code, Code::OK);
+    assert!(r.open(adv.peer, &S));
+    assert_eq!(r.opens.walk_stop(&S), None, "S opened there by the peer's test: no stop");
     let (mut r, ..) = walk_answered(osis_proto::SharedItem::code(Code::DECLINED), false);
     assert_eq!(r.opens.walk_stop(&S), Some(None), "refused on its only step: stopped at its head");
     assert!(of_kind(&r.sent(), 37).is_empty(), "each step asked once per walk");

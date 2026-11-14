@@ -19,8 +19,9 @@
 //! Work follows change: status's strandings are read whole through one `Effects` key (moved
 //! only when one is added, changes or goes); the connections proven are told by `proved` and
 //! `closed`. A send pass runs only on such a move, over the strandings (normally none) and the
-//! connections. Durable: per S stranded, the report key and whom it went to (store rows
-//! `I/x/`), so a restart sends nothing again; a row goes when S is stranded no more.
+//! connections. Durable: per S reported, the latest report key and whom it went to (store rows
+//! `I/x/`), so neither a restart nor a source reconnecting sends it again; a row goes when S is
+//! no longer read here (checked at a start and as strandings move), a new key replacing it.
 
 use super::offers::{Offers, Target};
 use super::{Here, Net};
@@ -115,6 +116,21 @@ impl Reports {
             let (Some(s), Some(sent)) = (row.get(ROWS.len()..).and_then(|x| Some(SyncId(x.try_into().ok()?))), Sent::decode(&v)) else { continue };
             self.sent.insert(s, sent);
         }
+        for s in self.sent.keys().copied().collect::<Vec<_>>() {
+            self.forget_unread(h, s)?;
+        }
+        Ok(())
+    }
+
+    /// Drops what S's report was sent to once S is no longer read here. Not on S merely judged
+    /// not stranded: that is also status not having judged it yet (a restart, a source
+    /// reconnecting), and the report goes once per key (spec/permissions.md §4).
+    fn forget_unread(&mut self, h: &mut Here<'_>, s: SyncId) -> Result<()> {
+        if h.engine.read_credentials(&s)?.is_some() {
+            return Ok(());
+        }
+        self.sent.remove(&s);
+        h.store.with_tx(|t| t.remove_local(&[ROWS, &s.0[..]].concat(), Shred::No))?;
         Ok(())
     }
 
@@ -148,10 +164,9 @@ impl Reports {
         {
             self.now = now;
             self.dirty = true;
-            let gone: Vec<SyncId> = self.sent.keys().filter(|s| !self.now.contains_key(*s)).copied().collect();
-            for s in gone {
-                self.sent.remove(&s);
-                h.store.with_tx(|t| t.remove_local(&[ROWS, &s.0[..]].concat(), Shred::No))?;
+            let unjudged: Vec<SyncId> = self.sent.keys().filter(|s| !self.now.contains_key(*s)).copied().collect();
+            for s in unjudged {
+                self.forget_unread(h, s)?;
             }
         }
         let mut acted = false;

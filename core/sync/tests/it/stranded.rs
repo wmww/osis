@@ -97,6 +97,17 @@ fn a_holder_with_no_writer_connected_leaves_a_notice_spec_permissions_4() {
     let s = w.engine(1).sync_ids(&g).unwrap()[0].id;
     assert!(w.status(1)[&s].stranded, "node 1 is stranded on G");
     assert_eq!(deposits(&w), before + 1, "one notice deposited under node 0's inbox");
+    // once per step's sync key (spec/permissions.md §4): neither node 2 reconnecting nor node 1
+    // restarting sends it again
+    w.cap = 2 * crate::harness::RULE_CAP;
+    w.cut(1, 2);
+    w.run();
+    assert_eq!(deposits(&w), before + 1, "no notice again at a reconnect");
+    w.power_off(1);
+    w.power_on(1);
+    w.run();
+    assert!(w.status(1)[&s].stranded, "still stranded on G");
+    assert_eq!(deposits(&w), before + 1, "no notice again at a restart");
     w.heal();
     w.run();
     assert_eq!(w.engine(1).get(&g, &ak).unwrap(), Some(Value::Str("left out".into())), "node 1 reads G again");
@@ -153,7 +164,8 @@ fn holder_keys_are_taken_only_where_a_reseal_may_follow_spec_permissions_4() {
 // unread; cut off from node 0, node 1 reaches only node 2, whose head moves to the step of a
 // rotation of G's sync and read roles leaving node 1's account out. Its walk at node 2 stops
 // past its keys, so with no source it is stranded and deposits a notice under node 0's inbox;
-// once node 0 is reachable it is re-sealed and reads.
+// once node 0 is reachable it is re-sealed and reads. Neither a reconnect nor a restart sends
+// it again.
 #[test]
 fn a_reader_reaching_only_a_store_past_its_keys_reports_spec_permissions_4() {
     let mut w = world(0, 3);
@@ -189,6 +201,17 @@ fn a_reader_reaching_only_a_store_past_its_keys_reports_spec_permissions_4() {
     assert_eq!(w.store(2).head(&s).unwrap().map(|h| h.id()), head, "node 2 at the rotation's step");
     assert!(w.status(1)[&s].stranded, "node 1 is stranded on G");
     assert_eq!(deposits(&w), before + 1, "one notice deposited under node 0's inbox");
+    // once per step's sync key (spec/permissions.md §4): neither node 2 reconnecting nor node 1
+    // restarting sends it again
+    w.cap = 2 * crate::harness::RULE_CAP;
+    w.cut(1, 2);
+    w.run();
+    assert_eq!(deposits(&w), before + 1, "no notice again at a reconnect");
+    w.power_off(1);
+    w.power_on(1);
+    w.run();
+    assert!(w.status(1)[&s].stranded, "still stranded on G");
+    assert_eq!(deposits(&w), before + 1, "no notice again at a restart");
     w.heal();
     w.run();
     assert_eq!(w.engine(1).get(&g, &ak).unwrap(), Some(Value::Str("left out".into())), "node 1 reads G again");

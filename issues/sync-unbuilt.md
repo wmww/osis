@@ -37,7 +37,6 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - Suspect lists and their repair (spec/permissions.md §4 Suspect, spec/sync-compaction.md §1 Repair): issues/sync-suspect.md.
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.
 - A decline stamping in place.
-- Stranded reports at a restart (`stranded.rs`): status's strandings start empty, so the first settle drops every `I/x/` row and a node still stranded reports again once status judges it so (a duplicate Stranded message or notice per restart). Needs the rows kept until status judged S (heard out, or a walk stopped) and found it not stranded.
 - Opens' members are not stamped, so a source's step moving reaches Register only through its next join.
 - A deposit-only step (a refreshed seed, no newer role epoch) is issued without the waits spec/permissions.md §3 and spec/sync-ids.md §6 put on it (every entry it can open opened at the sources it reaches; no valid `keys.0` part of the actor missing; `flows::sync_ids::due_at`).
 
