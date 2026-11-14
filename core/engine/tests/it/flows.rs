@@ -1043,8 +1043,8 @@ fn redeem_with_the_clock_set_back_spec_crdt_2() {
     assert_eq!(lp.peers[0].engine.roster(&link.k).get(&ps1).map(|e| e.role), Some(Role::Read));
 }
 
-// spec/permissions.md §7 (Redeem step 3: the target is the link text's word, unsigned): a
-// link naming a thing K holds no grant on is not redeemable and its redeem refuses; the true
+// spec/permissions.md §7 (Redeem): a link whose text names a thing K holds no grant on (the
+// target is the text's word, unsigned) is not redeemable and its redeem refuses; the true
 // target redeems.
 #[test]
 fn a_link_naming_another_target_grants_nothing_spec_permissions_7() {
