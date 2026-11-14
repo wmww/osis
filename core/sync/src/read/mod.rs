@@ -79,6 +79,8 @@ pub struct Read {
     roles: Stamped<SyncId, BTreeSet<CommitId>>,
     /// S told destroyed, and its destroying requests (kept until their expiry).
     told: Stamped<SyncId, Arc<BTreeSet<CommitId>>>,
+    /// The engine's commits held, followed from the first settle (`Live`).
+    commits: Option<osis_base::memo::Feed<CommitId>>,
 }
 
 impl Default for Read {
@@ -92,6 +94,7 @@ impl Default for Read {
             verdicts: Stamped::default(),
             roles: Stamped::default(),
             told: Stamped::default(),
+            commits: None,
         }
     }
 }
@@ -118,7 +121,10 @@ fn note<K: std::hash::Hash + Eq, V>(moved: &mut Moved<K, V>, k: K, was: Option<V
 impl Read {
     /// The product's step: over the engine, store, opens' members and streams' `known`.
     pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, status: &crate::status::Status, unread: &crate::unread::Unread) -> Result<bool> {
-        self.settle_on(&mut Live { cx, sessions, opens, streams, status, unread })
+        let mut commits = self.commits.take();
+        let r = self.settle_on(&mut Live { cx, sessions, opens, streams, status, unread, commits: &mut commits });
+        self.commits = commits;
+        r
     }
 
     /// One settle over `g`: whether anything acted. Judging runs to a fixpoint (a verdict moving

@@ -16,8 +16,8 @@ use std::sync::Arc;
 /// `se/` + commit ID + tid: the read epoch commit's section of a thing is sealed under, as this
 /// node sealed or opened it (`section_epoch`).
 pub(crate) const SECTION_EPOCHS: &[u8] = b"se/";
-/// `bp/` + commit ID + blob ID: the parts an opened or sealed blob of the commit holds
-/// (`blob_parts`).
+/// `bp/` + commit ID + blob ID: whether an opened or sealed blob of the commit is a per-sync-ID
+/// copy (one byte), then the parts it holds (`blob_parts`, `blob_copy`).
 pub(crate) const BLOB_PARTS: &[u8] = b"bp/";
 
 /// Loads the section epochs and blob parts (an open or reload).
@@ -36,12 +36,13 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     tx.scan(BLOB_PARTS, |k, v| {
         let c = CommitId(k.get(..32).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
         let b = BlobId(k.get(32..).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
-        let ps: PartSet = v.chunks(4).map(|x| x.try_into().map(u32::from_be_bytes).map(|n| n as usize).map_err(|_| bad())).collect::<Result<_>>()?;
-        parts.push((c, b, ps));
+        let (copy, rest) = v.split_first().ok_or_else(bad)?;
+        let ps: PartSet = rest.chunks(4).map(|x| x.try_into().map(u32::from_be_bytes).map(|n| n as usize).map_err(|_| bad())).collect::<Result<_>>()?;
+        parts.push((c, b, ps, *copy != 0));
         Ok(())
     })?;
-    for (c, b, ps) in parts {
-        tx.core.ix.blob_parts.insert(b, Arc::new((c, ps)));
+    for (c, b, ps, copy) in parts {
+        tx.core.ix.blob_parts.insert(b, Arc::new((c, ps, copy)));
         tx.core.ix.commit_blobs.insert(c, b);
     }
     Ok(())
@@ -58,14 +59,14 @@ fn note_section(tx: &mut Tx<'_>, c: &CommitId, t: &Tid, e: &Epoch) -> Result<()>
     Ok(())
 }
 
-fn note_blob(tx: &mut Tx<'_>, b: &BlobId, c: &CommitId, parts: &PartSet) -> Result<()> {
+fn note_blob(tx: &mut Tx<'_>, b: &BlobId, c: &CommitId, parts: &PartSet, copy: bool) -> Result<()> {
     if tx.core.ix.blob_parts.contains_key(b) {
         return Ok(());
     }
-    let v: Vec<u8> = parts.iter().flat_map(|p| (*p as u32).to_be_bytes()).collect();
+    let v: Vec<u8> = std::iter::once(u8::from(copy)).chain(parts.iter().flat_map(|p| (*p as u32).to_be_bytes())).collect();
     let k = [BLOB_PARTS, &c.0, &b.0].concat();
     tx.in_class(tx.is_memory_commit(c), |tx| Ok(tx.txn.put_local(&k, &v, Shred::No)?))?;
-    tx.core.ix.blob_parts.insert(*b, Arc::new((*c, parts.clone())));
+    tx.core.ix.blob_parts.insert(*b, Arc::new((*c, parts.clone(), copy)));
     tx.core.ix.commit_blobs.insert(*c, *b);
     Ok(())
 }
@@ -216,6 +217,11 @@ impl Engine {
         self.core.ix.blob_parts.get(b).map(|x| x.1.clone())
     }
 
+    /// Whether blob `b`, as opened or sealed here, is a per-sync-ID copy.
+    pub(crate) fn blob_copy_now(&self, b: &BlobId) -> Option<bool> {
+        self.core.ix.blob_parts.get(b).map(|x| x.2)
+    }
+
     /// The read epoch commit `c`'s section of thing `t`, and its wrap under a sync ID of `t`, are
     /// re-sealed under (the security rule of fresh encryptions, spec/crypto.md §5): the epoch it
     /// was written under, as this node opened a blob of it (a section of `t`, else the wrap it
@@ -295,9 +301,21 @@ impl Engine {
         let Some((_, w)) = self.section_epoch(c, &t, &b.parts)? else { return Ok(None) };
         let wrap = osis_crypto::wrap(&w, &sealed.id, &sealed.key, b.order)?;
         let (id, ps) = (*c, sealed.parts.iter().copied().collect::<PartSet>());
-        let bid = sealed.id;
-        self.run(|tx| note_blob(tx, &bid, &id, &ps))?;
+        let (bid, copy) = (sealed.id, b.to_label);
+        self.run(|tx| note_blob(tx, &bid, &id, &ps, copy))?;
         Ok(Some((sealed, wrap)))
+    }
+
+    /// A wrap for `to` of held blob `b` of commit `c`, whose entry under `from` has wrap
+    /// `from_wrap` (spec/sync-judgement.md §3 Own store: a held blob logged verbatim under a wrap
+    /// for S): the blob key and order from that wrap, wrapped under the epoch `c` was written
+    /// under at `to`'s thing (`section_epoch`). `None` when either wrap's epoch is not held.
+    pub(crate) fn rewrap_now(&mut self, c: &CommitId, b: &BlobId, from: &SyncId, from_wrap: &Wrap, to: &SyncId) -> Result<Option<Wrap>> {
+        let (Some(tf), Some(tt)) = (self.read_thing(from)?, self.read_thing(to)?) else { return Ok(None) };
+        let Some((key, order)) = self.read_secrets(&tf).iter().find_map(|x| osis_crypto::unwrap_order(x, b, from_wrap).ok()) else { return Ok(None) };
+        let parts: Vec<usize> = self.blob_parts_now(b).map(|p| p.into_iter().collect()).unwrap_or_default();
+        let Some((_, w)) = self.section_epoch(c, &tt, &parts)? else { return Ok(None) };
+        Ok(Some(osis_crypto::wrap(&w, b, &key, order)?))
     }
 
     /// Opens entry `blob` (`bytes`, its `wrap`) logged under `s` and takes what it holds
@@ -346,7 +364,7 @@ impl Engine {
             if let Some(e) = &wrapped {
                 note_section(tx, &id, &t, e)?;
             }
-            note_blob(tx, &b, &id, &parts)
+            note_blob(tx, &b, &id, &parts, opened.copy)
         })?;
         Ok(Opened::Commit(id, ingested))
     }

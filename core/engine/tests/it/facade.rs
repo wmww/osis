@@ -512,3 +512,63 @@ fn a_fresh_encryption_wraps_under_its_written_epoch_spec_crypto_5() {
         assert!(!wrap_opens_under(&lp, 1, &t, &e2, &again.id, &wrap), "{name}: not under the newest");
     }
 }
+
+// spec/sync-inbox.md §2 (logging: a sender that does not write the inbox deposits under the
+// recipient's deposit key; Re-send: the sync IDs the blob names, whose open by the recipient
+// shows it took the delivery).
+#[test]
+fn a_delivery_names_and_signs_for_the_recipients_inbox_spec_sync_inbox_2() {
+    let (mut lp, t, pb, g, _) = granted(Role::Sync);
+    let e = &mut lp.peers[0].engine;
+    let home = e.home_sync_id(&t).unwrap().unwrap();
+    assert_eq!(*e.delivery_names(&g, &pb).unwrap(), vec![home]);
+    let inbox = e.inbox_of(&pb).expect("the recipient's inbox");
+    let sg = e.signers(&inbox, Some(&pb)).unwrap();
+    assert!(sg.stamp.is_none() && sg.delete.is_none(), "no head of another's inbox recorded here");
+    let seed = e.deposit_seed(&pb).unwrap().expect("the recipient's deposit seed");
+    assert_eq!(sg.deposit.map(|k| k.verifying_key()), Some(osis_crypto::deposit_key(&seed, &inbox).verifying_key()));
+    // its own thing: the head's keys
+    let own = e.signers(&home, None).unwrap();
+    assert!(own.stamp.is_some() && own.delete.is_some() && own.deposit.is_some());
+}
+
+// spec/sync-ids.md §6 (steps: registered only once the source holds the role commits its epochs
+// depend on): the genesis step's needs are the rotations of its epochs, held here.
+#[test]
+fn a_step_needs_its_epochs_rotations_spec_sync_ids_6() {
+    let (mut lp, _) = people(1);
+    let e = &mut lp.peers[0].engine;
+    let (_, d) = e.account().unwrap().unwrap();
+    let ids = e.sync_ids(&d).unwrap();
+    let step = ids[0].path.steps[0].0.id();
+    let needs = e.step_needs(&ids[0].id, &step).unwrap();
+    assert!(!needs.is_empty());
+    assert!(needs.iter().all(|c| e.core.ix.commits.contains_key(c)));
+}
+
+// spec/sync-judgement.md §2-§3 (what read judges a body on: own, role entries first), §4 (the
+// fall mark a stand compares), spec/sync-judgement.md §1 (a per-sync-ID copy is known as one).
+#[test]
+fn read_facts_of_own_and_role_commits_spec_sync_judgement_3() {
+    let (mut lp, t, _, g, _) = granted(Role::Write);
+    let e = &mut lp.peers[0].engine;
+    let s = e.home_sync_id(&t).unwrap().unwrap();
+    let (_, d) = e.account().unwrap().unwrap();
+    add_item(&mut lp, 0, d, t);
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    m.set(t, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(5)).unwrap();
+    let c = e.commit(m).unwrap().unwrap();
+    let f = e.read_facts(&s, &c).unwrap();
+    assert!(f.own && !f.role && f.must_not.is_none() && !f.missing);
+    let r = e.read_facts(&s, &g).unwrap();
+    assert!(r.own && r.role, "the grant is an own role commit");
+    assert_eq!(e.body_fall_mark(&c).unwrap(), 0, "nothing fell yet");
+    let (sealed, wrap) = e.seal_body(&s, &c, &mut SeededRng::from_u64(4)).unwrap().unwrap();
+    assert_eq!(e.blob_copy(&sealed.id).unwrap(), Some(false));
+    // the held blob logged verbatim under the same sync ID: a wrap of the same key
+    let again = e.rewrap(&c, &sealed.id, &s, &wrap, &s).unwrap().expect("its epoch is held");
+    let rc = e.read_credentials(&s).unwrap().unwrap();
+    let key = |w: &[u8]| osis_label::unwrap_any(rc.read_secrets.iter().map(|x| &x.1), &sealed.id, w).map(|x| *x.1.expose());
+    assert_eq!(key(&again), key(&wrap));
+}

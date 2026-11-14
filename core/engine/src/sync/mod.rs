@@ -10,6 +10,7 @@
 
 pub(crate) mod bodies;
 pub(crate) mod deliveries;
+pub(crate) mod facts;
 pub(crate) mod falls;
 pub(crate) mod held;
 pub(crate) mod inbox;
@@ -114,6 +115,36 @@ pub struct BodyFacts {
     pub sole_certificate: bool,
     /// The lasting header of a commit lasting on a thing of the closure.
     pub lasting_header: bool,
+}
+
+/// A must-not-hold condition only the engine judges (spec/sync-judgement.md §2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MustNot {
+    Purged,
+    StrictSubset,
+    CardSuperseded,
+    CardEnded,
+}
+
+/// What `read` judges one body at a sync ID on beside `BodyFacts` (`read_facts`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadFacts {
+    pub body: BodyFacts,
+    pub must_not: Option<MustNot>,
+    /// Written here.
+    pub own: bool,
+    /// A role commit or a purge request (spec/sync-judgement.md §3 Role entries first).
+    pub role: bool,
+    /// Per delta needing a carrier, the commits one of which must be held where the body leaves
+    /// (spec/sync-compaction.md §1 Carriers).
+    pub carriers: Vec<BTreeSet<CommitId>>,
+    /// Snapshots of its aspects stamped later than it that this node does not hold, each with
+    /// whether it was judged invalid (spec/sync-judgement.md §2 established uncovered).
+    pub later_unheld: Vec<(CommitId, bool)>,
+    /// spec/sync-judgement.md §3 Neither.
+    pub neither: bool,
+    /// It counts as never received again (spec/sync-judgement.md §3 Dropped bodies).
+    pub missing: bool,
 }
 
 /// A destroyed thing keeping nothing whose secrets are held for deletes alone
@@ -310,6 +341,21 @@ impl Engine {
         self.body_facts_now(s, c)
     }
 
+    /// What `read` judges `c`'s body under `s` on beside `BodyFacts` (`ReadFacts`).
+    pub fn read_facts(&mut self, s: &SyncId, c: &CommitId) -> Result<ReadFacts> {
+        self.read_facts_now(s, c)
+    }
+
+    /// Falls of held parts on `c`'s aspects so far, summed over them (a body's stand mark).
+    pub fn body_fall_mark(&mut self, c: &CommitId) -> Result<u64> {
+        Ok(self.body_fall_mark_now(c))
+    }
+
+    /// A cursor over the commits held from now on (`memo::Feed`; a start lists `commit_ids`).
+    pub fn commit_feed(&self) -> osis_base::memo::Feed<CommitId> {
+        self.core.ix.commits.feed()
+    }
+
     /// This node's own certificates under `s` (spec/permissions.md §4), to log there.
     pub fn own_certificates(&mut self, s: &SyncId) -> Result<Arc<Certs>> {
         self.own_certificates_now(s)
@@ -323,6 +369,12 @@ impl Engine {
     /// `c`'s body under `s` sealed, with its wrap for `s`.
     pub fn seal_body(&mut self, s: &SyncId, c: &CommitId, rng: &mut dyn NodeRng) -> Result<Option<(Sealed, Wrap)>> {
         self.seal_body_now(s, c, rng)
+    }
+
+    /// A wrap for `to` of held blob `b` of commit `c`, from its entry's wrap under `from`: the
+    /// held blob logged verbatim under another sync ID (`None`: an epoch not held).
+    pub fn rewrap(&mut self, c: &CommitId, b: &BlobId, from: &SyncId, from_wrap: &Wrap, to: &SyncId) -> Result<Option<Wrap>> {
+        self.rewrap_now(c, b, from, from_wrap, to)
     }
 
     /// Falls of held parts on the aspect so far (durable; spec/sync-judgement.md §4 compares marks).
@@ -500,6 +552,13 @@ impl Engine {
         Ok(out)
     }
 
+    /// Whether this node publishes `reach.0` (a reader can pull from it, spec/sync-judgement.md
+    /// §3 Own store).
+    pub fn publishes_reach(&mut self) -> Result<bool> {
+        let me = self.core.id.tid();
+        Ok(self.get_typed(&me, &osis_schema::core_types::REACH)?.is_some())
+    }
+
     /// Whether `t` is another node of this node's account (spec/sync-opens.md §2: a node proof
     /// counts as the peer's node only then).
     pub fn own_node(&mut self, t: &Tid) -> bool {
@@ -590,6 +649,12 @@ impl Engine {
     /// signs a deposit to its inbox when this node records no head of `s`.
     pub fn signers(&mut self, s: &SyncId, actor: Option<&Tid>) -> Result<Signers> {
         self.signers_now(s, actor)
+    }
+
+    /// Whether a held blob, as opened or sealed here, is a per-sync-ID copy (spec/sync-judgement.md
+    /// §1; `None`: not opened or sealed here).
+    pub fn blob_copy(&mut self, b: &BlobId) -> Result<Option<bool>> {
+        Ok(self.blob_copy_now(b))
     }
 
     /// The commit a held blob opened or was sealed as (`blob_parts`' row).
