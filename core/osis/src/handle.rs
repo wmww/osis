@@ -775,7 +775,6 @@ impl ReadOnly {
         expire_due(g.engine());
         let stepped = g.stepped;
         let r = f(&mut g);
-        lifetimes(g.engine());
         if g.stepped == stepped && g.engine().store_writes().committed != before {
             g.handle(osis_sync::Input::Wrote);
         }
@@ -829,22 +828,6 @@ fn expire_due(e: &mut Engine) {
         && let Err(x) = e.tick()
     {
         e.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: format!("expiry timers: {x}") });
-    }
-}
-
-/// Judges thing lifetimes when work is queued (notes/lifetimes.md, The release): a thing is
-/// judged once every group holding it is heard out; with no sync, a group with a sync ID never
-/// is, so nothing under one is released. A failure is a diagnostic; the work stays queued.
-fn lifetimes(e: &mut Engine) {
-    let r = e.lifetimes_due().and_then(|(due, _)| {
-        if !due {
-            return Ok(());
-        }
-        let synced: std::collections::BTreeSet<Tid> = e.things_with_sync_ids().into_iter().collect();
-        e.judge_lifetimes(&|g| !synced.contains(g), false).map(drop)
-    });
-    if let Err(x) = r {
-        e.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: format!("lifetimes: {x}") });
     }
 }
 

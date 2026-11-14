@@ -2,7 +2,7 @@
 //!
 //! `Node::handle` is the whole of sync as a sans-IO step: it routes an input to its module (and
 //! each member opens reports moved to streams), then settles every module (leave, store, unread,
-//! opens, read, inbox, streams, status, again while one acted),
+//! opens, read, inbox, streams, status, life, again while one acted),
 //! then decides its dials (`dials`), closes what a module closed, and collects sessions' bytes
 //! and the earliest wake. `apply` is the one place outputs are carried out, through a `Links`:
 //! the product's transports (`links`) or a test's network. Sync never knows how a peer is reached.
@@ -32,6 +32,7 @@ use dials::{Dials, NodePeers, Why};
 use osis_base::Tid;
 use crate::unread::Unread;
 use crate::leave::Leave;
+use crate::life::Life;
 use osis_base::{SyncId, WallMs};
 use osis_crypto::NodeRng;
 use osis_engine::Engine;
@@ -160,6 +161,7 @@ pub struct Node {
     inbox: Inbox,
     status: Status,
     leave: Leave,
+    life: Life,
 }
 
 /// The `Cx` over a node's fields, borrowed apart from its modules.
@@ -177,7 +179,7 @@ impl Node {
         let store_handle = store.clone();
         let mut driver = Driver::default();
         driver.dials.set_node(cfg.key.map(|k| k.0), &cfg.policy);
-        Ok(Node { engine, store, rng, cfg, now, rounds: 0, driver, opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::new(store_handle), inbox: Inbox::default(), status: Status::default(), leave: Leave::default() })
+        Ok(Node { engine, store, rng, cfg, now, rounds: 0, driver, opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::new(store_handle), inbox: Inbox::default(), status: Status::default(), leave: Leave::default(), life: Life::default() })
     }
 
     /// One step: `input` taken, every module settled. The outputs must all reach `apply`.
@@ -683,6 +685,10 @@ impl Node {
                 acted = true;
             }
             self.reports(out);
+            // the lifecycle duties the engine judges (`life`), on what this round settled
+            let net = NetView { streams: &self.streams, unread: &self.unread };
+            let status = &self.status;
+            acted |= self.life.settle(&mut self.engine, &self.store, |s| status.heard_out(s, &net))?;
             if !acted {
                 return Ok(());
             }
@@ -731,6 +737,7 @@ impl Node {
         self.inbox = Inbox::default();
         self.status = Status::default();
         self.leave = Leave::default();
+        self.life = Life::default();
         self.driver.changed = 0;
         self.driver.store = crate::store::Follow::default();
         // the dial peers and hints follow the modules' and the engine's stamps afresh
@@ -799,6 +806,7 @@ impl Node {
                 inbox: self.inbox.clone(),
                 status: self.status.clone(),
                 leave: self.leave.clone(),
+                life: self.life.clone(),
             })
         })
     }

@@ -8,6 +8,7 @@ mod harness;
 mod inbox;
 mod keep;
 mod leave;
+mod life;
 mod links;
 mod session;
 mod siblings;
