@@ -177,8 +177,8 @@ fn a_third_redeemer_sharing_another_link_joins_spec_permissions_7() {
     }
 }
 
-// spec/sync-inbox.md §5 (Contact card), §2 (Inbox blob), spec/sync-opens.md §2 (Connection
-// proofs): nodes 0 and 1 exchange contact cards (each redeems the other's read link to its
+// spec/sync-inbox.md §5 (Contact card), §2 (Inbox blob), spec/sync-opens.md §2 (Order):
+// nodes 0 and 1 exchange contact cards (each redeems the other's read link to its
 // profile, and accepts the profile), then node 0 grants node 1's account read on a thing and
 // node 1 accepts it: node 1 reads it. The connection node 1 dialed by node 0's link proved node
 // 1's account too, held at node 0 before it knew the account, so the grant's inbox blob goes there.

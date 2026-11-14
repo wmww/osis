@@ -256,7 +256,7 @@ fn malformed_messages_spec_wire_11_1() {
     assert_eq!(ms, [Msg::Error { id: 5, code: Code::MALFORMED }, Msg::Error { id: 6, code: Code::UNSUPPORTED }, Msg::Error { id: 0, code: Code::MALFORMED }]);
 }
 
-// spec/sync-opens.md §2 (Order), §1 (Policy, by default every peer): the dialer proves first,
+// spec/sync-opens.md §2 (Order), §1 (Policy): by default the dialer proves first,
 // after the listener's Hello, and the listener answers with its own proofs, to a dialer of an
 // account it holds nothing of too; both report Proved, each having judged the other's account
 // (open at its first epoch where not held).
