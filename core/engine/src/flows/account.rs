@@ -887,9 +887,10 @@ impl Engine {
     /// §1: a grant of read or above on D makes a node of P); one that is (stranded) is re-sealed. Returns the
     /// commits to send it directly: the grant or re-seal, D's and P's certificates and D's
     /// `label.0` commits (the new node downloads the rest under the home label), and last the
-    /// new node's synced group when the account lists none for it (spec/sync-set.md §1: a copy
-    /// of this node's synced group's items and subgroups). A holder of sync alone on D is no
-    /// node: it is granted admin as any other.
+    /// new node's synced group (spec/sync-set.md §1: a copy of this node's synced group's items
+    /// and subgroups) unless the account lists one for it still under home (a re-sealed stranded
+    /// node keeps its own; one whose group was cut from home gets a new one: the spec's "until it
+    /// is paired again"). A holder of sync alone on D is no node: it is granted admin as any other.
     pub fn pair(&mut self, node: &Tid) -> Result<(Done, Vec<CommitId>)> {
         let (p, d) = self.account()?.ok_or(Error::Misuse("not a node of an account"))?;
         let n = *node;
@@ -898,8 +899,7 @@ impl Engine {
         }
         let holder = self.roster(&d).get(&n).is_some_and(|e| e.role >= Role::Read && e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())));
         let done = if holder { self.reshare(&d, &n)? } else { self.grant(&d, &n, &admin_edge())? };
-        let listed = self.get_typed(&d, &ct::SYNCED)?.is_some_and(|m| m.contains_key(&n));
-        let synced = if listed {
+        let synced = if self.under_home(d, &n)? {
             None
         } else {
             let mine = match self.synced_group()? {
@@ -963,6 +963,15 @@ impl Core {
         let v = self.account_view(&h.author)?;
         let e = v.epochs.get(&h.epoch?)?;
         self.inner_signer(a, &e.signing, &h.id(), inner)
+    }
+}
+
+impl Engine {
+    /// Whether `synced^.0` on D lists a synced group for `node` that D's closure holds and whose
+    /// closure holds D (spec/sync-set.md §1, Home stays under it): one pairing need not replace.
+    fn under_home(&mut self, d: Tid, node: &Tid) -> Result<bool> {
+        let Some(g) = self.get_typed(&d, &ct::SYNCED)?.and_then(|m| m.get(node).copied()) else { return Ok(false) };
+        Ok(self.closure(&g).contains(&d) && self.closure(&d).contains(&g))
     }
 }
 

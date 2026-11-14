@@ -150,6 +150,40 @@ fn account_and_pairing_spec_perm_1() {
     assert_eq!(e1.epochs(&d).unwrap().read.newest_held().unwrap().1, &read);
 }
 
+/// Peer `i`'s synced group as peer `at` reads `synced^.0` on D.
+fn synced_of(lp: &mut LocalPeer, at: usize, i: usize, d: Tid) -> Option<Tid> {
+    let n = lp.peers[i].engine.tid();
+    lp.peers[at].engine.get_typed(&d, &ct::SYNCED).unwrap().and_then(|m| m.get(&n).copied())
+}
+
+// spec/sync-set.md §1 (a later node learns its synced group in the pairing reply: a copy of the
+// pairing node's synced group's items and subgroups): the new node reads its own from the reply
+// alone; pairing it again while that group stays under home writes none, and once the group is
+// cut from D (spec/sync-set.md §1 Limit: "until it is paired again"), a new one.
+#[test]
+fn pairing_reply_carries_the_new_nodes_synced_group_spec_sync_set_1() {
+    let (mut lp, d) = account_two_nodes();
+    let g0 = synced_of(&mut lp, 0, 0, d).unwrap();
+    let g1 = synced_of(&mut lp, 1, 1, d).expect("the reply carries it");
+    assert_ne!(g0, g1);
+    let (x0, x1) = (lp.peers[0].engine.get_typed(&g0, &ct::GROUP).unwrap().unwrap(), lp.peers[1].engine.get_typed(&g1, &ct::GROUP).unwrap().unwrap());
+    assert!(x1.subgroups.contains(&d) && x0.subgroups.is_subset(&x1.subgroups) && x0.items.is_subset(&x1.items), "{x0:?} {x1:?}");
+    let n = lp.peers[1].engine.tid();
+    let (_, again) = lp.peers[0].engine.pair(&n).unwrap();
+    send(&mut lp, 0, 1, &again);
+    assert_eq!(synced_of(&mut lp, 1, 1, d), Some(g1), "under home: kept");
+    // the group cut from D (as two concurrent writes may leave it)
+    let mut m = Mutation::new();
+    m.set(g1, &ct::GROUP, &ct::Group::default()).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    spread(&mut lp);
+    let (_, again) = lp.peers[0].engine.pair(&n).unwrap();
+    send(&mut lp, 0, 1, &again);
+    let g2 = synced_of(&mut lp, 1, 1, d).unwrap();
+    assert_ne!(g2, g1, "cut: a new one");
+    assert!(lp.peers[1].engine.get_typed(&g2, &ct::GROUP).unwrap().unwrap().subgroups.contains(&d));
+}
+
 /// `n` peers, each with its own account actor (no pairing); everyone holds everyone's commits:
 /// built once per `n` (`LocalPeer::cached`).
 pub(crate) fn people(n: usize) -> (LocalPeer, Vec<Tid>) {
