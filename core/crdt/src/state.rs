@@ -640,24 +640,25 @@ impl Fragment {
         }
     }
 
-    /// Drops the chars of deleted text elements at any depth: what the wire carries (§3.3 rule 5).
+    /// Drops the chars of deleted text elements (their winning flag write a delete, §5.7) at any
+    /// depth: what the wire carries (§3.3 rule 5).
     pub(crate) fn drop_deleted_chars(&mut self) {
         self.seqs_mut(&mut |s| {
             for e in s.elems_mut().values_mut() {
-                if matches!(e.content, SeqContent::Char(_)) && e.deleted.as_ref().is_some_and(|d| d.1) {
+                if matches!(e.content, SeqContent::Char(_)) && e.deletes() {
                     e.content = SeqContent::None;
                 }
             }
         });
     }
 
-    /// Drops what §5.7 leaves to the node: the creation's char of a text element with a flag
-    /// write held (no read takes it there). Debug checks comparing states.
+    /// Drops what §5.7 leaves to the node: the creation's char of a text element under a winning
+    /// flag write (no read takes it there). Debug checks comparing states.
     #[doc(hidden)]
     pub fn drop_local_chars(&mut self) {
         self.seqs_mut(&mut |s| {
             for e in s.elems_mut().values_mut() {
-                if matches!(e.content, SeqContent::Char(_)) && e.deleted.is_some() {
+                if matches!(e.content, SeqContent::Char(_)) && e.win_flag().is_some() {
                     e.content = SeqContent::None;
                 }
             }

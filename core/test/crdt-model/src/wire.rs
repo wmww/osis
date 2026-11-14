@@ -304,19 +304,20 @@ fn nonzero(n: u64) -> Result<u64, Error> {
     }
 }
 
-/// Text: content goes on the wire for elements that are not deleted (§3.3 rule 5). List: for elements whose
-/// fragment exists (a reset element with newer nested writes included).
+/// Text: content goes on the wire for elements that are not deleted, their winning flag write no delete (§3.3
+/// rule 5, §5.7). List: for elements whose fragment exists (a reset element with newer nested writes included).
 fn has_content(e: &SeqElem) -> bool {
     match &e.content {
         Content::None => false,
-        Content::Char(_) => !e.deleted.as_ref().map_or(false, |d| d.1),
+        Content::Char(_) => !e.deletes(),
         Content::Frag(_) => true,
     }
 }
-/// "Carries something" (§3.3 rule 3): deleted (text) or reset (list), or has content. An undeleted text element
-/// whose char is gone (expired) carries nothing, so it never sits in a run whose `Content` would have to list it.
-fn carries(e: &SeqElem) -> bool {
-    e.deleted.as_ref().map_or(false, |d| d.1) || !matches!(e.content, Content::None)
+/// "Carries something" (§3.3 rule 3): deleted (text: by its winning flag write) or reset (list), or has content. A
+/// text element not deleted whose char is gone (expired) carries nothing, so it never sits in a run whose `Content`
+/// would have to list it.
+fn carries(e: &SeqElem, text: bool) -> bool {
+    (if text { e.deletes() } else { e.deleted.as_ref().map_or(false, |d| d.1) }) || !matches!(e.content, Content::None)
 }
 
 /// Maximal runs (§3.3 rule 3) as `(start, n)` over the dot-ordered elements. List runs are uniform in
@@ -331,7 +332,7 @@ fn runs(text: bool, v: &[(&Dot, &SeqElem)]) -> Vec<(usize, usize)> {
         while i + n < v.len() && n < MAX_RUN {
             let (d, e) = v[i + n];
             let (dp, _) = v[i + n - 1];
-            if d.source != d0.source || d.ctr != dp.ctr + 1 || carries(e) != carries(e0) || (!text && has_content(e) != has_content(e0)) {
+            if d.source != d0.source || d.ctr != dp.ctr + 1 || carries(e, text) != carries(e0, text) || (!text && has_content(e) != has_content(e0)) {
                 break;
             }
             let ok = if cr {
@@ -1191,7 +1192,7 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
                 if elems.iter().any(|e| e.created.is_none()) {
                     return Err(Error::Bad("text content without a creation"));
                 }
-                let live: Vec<usize> = (0..n).filter(|i| !elems[*i].deleted.as_ref().map_or(false, |d| d.1)).collect();
+                let live: Vec<usize> = (0..n).filter(|i| !elems[*i].deletes()).collect();
                 let cs: Vec<char> = s.chars().collect();
                 if cs.len() != live.len() {
                     return Err(Error::Bad("content length"));

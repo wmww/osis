@@ -337,7 +337,7 @@ pub(crate) fn overlay(acc: Seq, d: Seq, w: &Writer) -> Seq {
                     _ => SeqContent::None,
                 };
             }
-        } else if text && el.flag() {
+        } else if text && el.deletes() {
             // a deleted char is never carried (§3.3 rule 5)
             el.content = SeqContent::None;
             el.undel = None;
@@ -414,7 +414,7 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
                     reinsert.push((dot.clone(), v));
                 }
             }
-            Some((_, false)) if pre.is_some_and(SeqElem::flag) => {
+            Some((_, false)) if pre.is_some_and(SeqElem::deletes) => {
                 out.elems_mut().insert(dot.clone(), SeqElem { deleted: Some((r.clone(), true)), ..SeqElem::bare() });
             }
             _ => {}

@@ -421,14 +421,17 @@ fn seq<S: Sink>(out: &mut S, path: &mut Vec<Place>, s: &Seq) {
 
 fn item<S: Sink>(out: &mut S, path: &mut Vec<Place>, text: bool, d: &Dot, e: &SeqElem) {
     if let Some((c, _)) = &e.created
-        && (S::ALL || !(text && !d.src.is_derived() && e.flag()))
+        && (S::ALL || !(text && !d.src.is_derived() && e.deletes()))
     {
         out.put(path, Kind::Created, c);
     }
     for p in e.pos.iter().take(if S::ALL { e.pos.len() } else { 1 }).filter(|p| p.0.dot != *d) {
         out.put(path, Kind::Pos, &p.0);
     }
-    if let Some((f, del)) = &e.deleted {
+    // a text flag write below the creation is held, beaten (§5.7), as `prev` is
+    if let Some((f, del)) = &e.deleted
+        && (S::ALL || !text || e.win_flag().is_some())
+    {
         let kind = match (text, del) {
             (false, _) => Kind::ElemReset,
             (true, true) => Kind::Delete,

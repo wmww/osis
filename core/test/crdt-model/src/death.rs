@@ -52,6 +52,11 @@ pub fn winning(f: &Frag) -> BTreeSet<Name> {
                 for (d, el) in elems.iter_mut() {
                     el.pos.truncate(1);
                     let deleted = matches!((&el.deleted, &el.created), (Some((s, true)), Some((c, _))) if s >= c);
+                    // a text flag write below the creation is beaten by it (§5.7), as `prev` is
+                    if *text && matches!((&el.deleted, &el.created), (Some((s, _)), Some((c, _))) if s < c) {
+                        el.deleted = None;
+                        el.undel = None;
+                    }
                     if *text && deleted && !matches!(d.source, Source::Derived(_)) {
                         el.created = None;
                         el.pos.retain(|p| p.0.dot != *d);
@@ -162,7 +167,7 @@ pub fn valueless(f: &Frag) -> Vec<Stamp> {
                 for (d, el) in elems {
                     let derived = matches!(d.source, Source::Derived(_));
                     if let Some((c, _)) = &el.created {
-                        let deleted = el.deleted.as_ref().is_some_and(|x| x.1);
+                        let deleted = el.deletes();
                         if *text && !derived && !matches!(el.content, Content::Char(_)) && !deleted && !anchored.contains(d) {
                             out.push(c.clone());
                         }

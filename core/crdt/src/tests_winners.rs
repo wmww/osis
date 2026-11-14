@@ -352,6 +352,23 @@ fn move_beaten_as_cur_dies_kept_as_prev_spec_4_8() {
     assert!(ab.holds_stamp(&gone[0].stamp), "kept as `prev`");
 }
 
+/// §4.8, §5.7: a flag write below its element's creation (forged) is beaten by it and held, as
+/// `prev` is: it dies when the creation arrives, and the creation wins with its char.
+#[test]
+fn text_flag_below_creation_dies_kept_in_record_spec_4_8() {
+    let d = Dot::new(x(), 5);
+    let c = Stamp::new(ts(4), x(), 5);
+    let del = Stamp::new(ts(2), sess(Tid::from_bytes([2; 15])), 9);
+    let one = |el: SeqElem| Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(d.clone(), el)])));
+    let flag = one(SeqElem { deleted: Some((del.clone(), true)), ..SeqElem::bare() });
+    let created = one(SeqElem { created: Some((c.clone(), crate::seq::Anchor::Head)), content: SeqContent::Char('a'), pos: vec![(c, crate::seq::Anchor::Head, None)], ..SeqElem::bare() });
+    assert_eq!(dead(&flag, &created), vec![(Kind::Delete, del.clone())]);
+    let both = join(&flag, &created);
+    assert_eq!(both.read(), Some(s("a")));
+    assert!(both.holds_stamp(&del), "its record keeps it");
+    assert!(both.winners().iter().all(|w| w.kind != Kind::Delete));
+}
+
 /// §4.8 (an element deleted): deleting one char of an insert kills that element's creation
 /// alone, though its record keeps it.
 #[test]

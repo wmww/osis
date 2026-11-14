@@ -53,8 +53,9 @@ pub(crate) fn is_creation(p: &PosW, c: &(Stamp, Anchor)) -> bool {
 /// on forged copies: every char held is the payload of a stamped write (the creation's in
 /// `content`, an undelete's in `undel` with `deleted`), never re-attributed at join, and one
 /// creation write exists per dot (copies under other stamps are copies of it), so the record is
-/// a product of LWW registers and top-2 sets whatever the arrival order. A text flag write held
-/// beside the creation is never below it (prune drops it: one register for the char, §5.7).
+/// a product of LWW registers and top-2 sets whatever the arrival order. A text flag write below
+/// the creation is held, beaten (one register for the char by stamp, §5.7), as `prev` is; a range
+/// record is uniform in whether its flag write wins (`flag_cut`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeqElem {
     /// The creation write `(stamp, anchor)`; text content lives and dies with it.
@@ -213,11 +214,21 @@ impl SeqElem {
             _ => if let SeqContent::Char(c) = self.content { Some(c) } else { None },
         }
     }
-    /// A char the record holds for the element, shown or not (paste, undo): the undelete's, else
-    /// the creation's.
+    /// A char the record holds for the element, shown or not (paste, undo): the winning write's
+    /// first (an undelete's under a winning flag, else the creation's), else the other.
     pub(crate) fn held_char(&self) -> Option<char> {
         self.created.as_ref()?;
-        self.undel.or(if let SeqContent::Char(c) = self.content { Some(c) } else { None })
+        let c = if let SeqContent::Char(c) = self.content { Some(c) } else { None };
+        if self.win_flag().is_some() { self.undel.or(c) } else { c.or(self.undel) }
+    }
+    /// Text: the flag write winning the char register (§5.7): one at or above the creation, or
+    /// any without a creation held. One below the creation is held, beaten.
+    pub(crate) fn win_flag(&self) -> Option<&(Stamp, bool)> {
+        self.deleted.as_ref().filter(|f| self.created.as_ref().is_none_or(|c| f.0 >= c.0))
+    }
+    /// Text: deleted, its winning flag write a delete (§5.7).
+    pub(crate) fn deletes(&self) -> bool {
+        self.win_flag().is_some_and(|f| f.1)
     }
     /// An empty record (a delta's element edit or flag write fills it).
     pub(crate) fn bare() -> SeqElem {
@@ -244,16 +255,9 @@ impl SeqElem {
     }
 }
 
-/// Prunes one record's writes under `e` (§4.2, §5.7), and a text flag write its creation beats
-/// when that holds for the whole record (`prune_elems` splits a range it holds for in part);
-/// `false` if the record goes.
-fn prune_elem(dot: &Dot, el: &mut SeqElem, text: bool, e: Option<&Stamp>, ch: &mut Changes) -> bool {
+/// Prunes one record's writes under `e` (§4.2, §5.7); `false` if the record goes.
+fn prune_elem(el: &mut SeqElem, text: bool, e: Option<&Stamp>, ch: &mut Changes) -> bool {
     prune_fields(el, e, ch);
-    if text && beaten_from(dot, el) == Some(0) {
-        el.deleted = None;
-        el.undel = None;
-        ch.touch();
-    }
     let ee = if text { e.cloned() } else { max_opt(e.cloned(), el.reset()) };
     if let SeqContent::Frag(f) = &mut el.content {
         f.prune(ee.as_ref(), ch);
@@ -615,20 +619,21 @@ fn join_record(s: &mut Seq, dot: Dot, de: SeqElem, existing: bool, e: Option<&St
         }
     } else {
         let mut de = de;
-        if prune_elem(&dot, &mut de, text, e, ch) {
+        if prune_elem(&mut de, text, e, ch) {
             ch.touch();
             s.elems.insert(dot.clone(), de);
         }
     }
-    if text {
-        drop_beaten_flag(&mut s.elems, &dot, ch);
+    if text && let Some(k) = s.elems.get(&dot).and_then(|el| flag_cut(&dot, el)) {
+        split_at(&mut s.elems, &nth(&dot, k));
     }
 }
 
-/// For a text record whose flag write lies below a creation it holds: the first element created
-/// above the flag (element i of a range is created at `(ts, dot + i)`). The char is one register
-/// over the creation and the flag writes, so the creation beats such a flag (§5.7 Join).
-fn beaten_from(dot: &Dot, el: &SeqElem) -> Option<u64> {
+/// For a text range record whose creations straddle its flag write: the first element created
+/// above it (element i is created at `(ts, dot + i)`), from which the creation beats the flag
+/// (§5.7). Cut there by every join, as decoding cuts its records, a range record stays uniform in
+/// whether its flag wins.
+fn flag_cut(dot: &Dot, el: &SeqElem) -> Option<u64> {
     let (Some((c, _)), Some((f, _))) = (&el.created, &el.deleted) else { return None };
     let at = |i: u64| Stamp { ts: c.ts, dot: nth(dot, i) };
     let (mut lo, mut hi) = (0u64, el.span);
@@ -636,22 +641,7 @@ fn beaten_from(dot: &Dot, el: &SeqElem) -> Option<u64> {
         let mid = lo + (hi - lo) / 2;
         if at(mid) > *f { hi = mid } else { lo = mid + 1 }
     }
-    (lo < el.span).then_some(lo)
-}
-
-/// Drops the flag write of record `dot` where its creation beats it (`beaten_from`), splitting a
-/// range whose creations straddle the flag.
-fn drop_beaten_flag(elems: &mut Elems, dot: &Dot, ch: &mut Changes) {
-    let Some(k) = elems.get(dot).and_then(|el| beaten_from(dot, el)) else { return };
-    let from = nth(dot, k);
-    if k > 0 {
-        split_at(elems, &from);
-    }
-    if let Some(x) = elems.get_mut(&from) {
-        x.deleted = None;
-        x.undel = None;
-        ch.touch();
-    }
+    (lo > 0 && lo < el.span).then_some(lo)
 }
 
 /// Prunes every element record under effective reset `e`; records left with no write go (§4.2).
@@ -659,13 +649,7 @@ pub(crate) fn prune_elems(s: &mut Seq, e: Option<&Stamp>, ch: &mut Changes) {
     let text = s.text;
     let elems = s.elems_mut();
     cut_chains(elems, e);
-    if text {
-        let cuts: Vec<Dot> = elems.iter().filter_map(|(d, el)| beaten_from(d, el).filter(|k| *k > 0).map(|k| nth(d, k))).collect();
-        for x in cuts {
-            split_at(elems, &x);
-        }
-    }
-    elems.retain(|d, el| prune_elem(d, el, text, e, ch));
+    elems.retain(|_, el| prune_elem(el, text, e, ch));
 }
 
 /// Greatest stamp inside the elements; with `valued`, only presence-counting writes (§4.3).

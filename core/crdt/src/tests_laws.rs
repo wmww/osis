@@ -332,6 +332,68 @@ mod entry_copies {
         }
     }
 
+    /// §5.7 with §4.7: no creation prunes a flag. A forged embedded char's creation `a` above a
+    /// delete `b` of its element beats it, and `b` stays held; expiry takes `a` whole (§4.7
+    /// Embedded character) and leaves `b`, so strip(a ⊔ b) = strip(a) ⊔ strip(b), snapshot bytes
+    /// included, and the read before expiry shows `a`'s char.
+    #[test]
+    fn creation_above_a_flag_holds_it_through_expiry_spec_5_7() {
+        let x = Dot { source: Source::session(1, 0), ctr: 5 };
+        let d = Dot { source: Source::Derived(Box::new(x)), ctr: 1 };
+        let one = |el: SeqElem| Frag::Seq { text: true, c: Default::default(), elems: BTreeMap::from([(d.clone(), el)]) };
+        let a = one(SeqElem::new(Stamp { ts: (1 << 16) + 4, dot: d.clone() }, Anchor::Head, Content::Char('z')));
+        let b = one(SeqElem::flag(st(2, 17), true, None));
+        laws(&[a.clone(), b.clone()]);
+        let (fa, fb) = (frag(&a), frag(&b));
+        let ab = join(&fa, &fb);
+        assert_eq!(ab.read(), Some(osis_base::Value::Str("z".into())), "the creation beats the delete below it");
+        let strip = |f: &Fragment| {
+            let mut g = f.clone();
+            g.strip(&|_| true);
+            g
+        };
+        let (late, early) = (strip(&ab), join(&strip(&fa), &strip(&fb)));
+        assert_eq!(late, early);
+        assert_eq!(late, fb, "the delete stays, alone");
+        assert_eq!(snapshot_bytes(&late), snapshot_bytes(&early));
+    }
+
+    /// §3.2 Content, §3.3 rule 3, §5.7: a creation run whose stamps straddle its flag write (a
+    /// delete of elements 1-4 stamped at element 2's creation): elements 1-2 are deleted (their
+    /// chars never carried), 3-4 beat the delete and carry theirs, held whole or as range
+    /// records (chars gone). The snapshot encodes as the model's and decodes back.
+    #[test]
+    fn creation_run_straddling_its_flag_round_trips_spec_5_7() {
+        let src = Source::session(1, 0);
+        let dot = |c: u64| Dot { source: src.clone(), ctr: c };
+        let flag = Some((st(1, 2), true));
+        for chars in [true, false] {
+            let elems = (1..=4u64)
+                .map(|c| {
+                    let anchor = if c == 1 { Anchor::Head } else { Anchor::Dot(dot(c - 1)) };
+                    let ch = if chars && c > 2 { Content::Char(char::from(b'a' + c as u8)) } else { Content::None };
+                    let mut el = SeqElem::new(st(1, c), anchor, ch);
+                    el.deleted = flag.clone();
+                    (dot(c), el)
+                })
+                .collect();
+            let m = Frag::Seq { text: true, c: Default::default(), elems };
+            let f = frag(&m);
+            assert_eq!(f.read(), Some(osis_base::Value::Str(if chars { "de" } else { "" }.into())));
+            let mbytes = crdt_model::wire::encode_snapshot(&m, &[], [3; 16], &mut crdt_model::wire::Ctx::new(1 << 40, Source::session(250, 0), 1));
+            let bytes = snapshot_bytes(&f);
+            assert_eq!(bytes, mbytes, "the model's bytes");
+            let back = crate::codec::decode_snapshot(&bytes, &crate::tests_wire::snap_cx(), &mut crate::stamp::Interner::new(), None).unwrap();
+            assert_eq!(back.fragment, f, "round trip");
+            assert_eq!(join(&back.fragment, &f), f);
+        }
+    }
+
+    fn snapshot_bytes(f: &Fragment) -> Vec<u8> {
+        let s = crate::wire::Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Default::default() };
+        crate::codec::encode_snapshot(&s, &crate::tests_wire::snap_cx(), None).unwrap()
+    }
+
     /// A slot's copy of the register's write is the embedding of the register's winning copy
     /// (§7): a forged counter contribution copying `w` with a greater value (§4.1 copy order)
     /// goes, joined with `w` at one position or in two records of one entry.

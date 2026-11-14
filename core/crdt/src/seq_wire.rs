@@ -9,19 +9,20 @@ use crate::wire::{Dec, DeltaKind, Enc, MAX_RUN, as_array, as_uint};
 use osis_base::cbor::{Item, List, MAJOR_TEXT, head, put_array, put_bool, put_text, put_uint};
 use osis_base::format::{CHUNK_MAX, MAX_DELTA_BARE};
 
-/// Content goes on the wire for text elements not deleted (rule 5) and for list elements whose
-/// fragment exists.
+/// Content goes on the wire for text elements not deleted, their winning flag write no delete
+/// (rule 5, §5.7), and for list elements whose fragment exists.
 fn has_content(e: &SeqElem) -> bool {
     match &e.content {
         SeqContent::None => false,
-        SeqContent::Char(_) => !e.flag(),
+        SeqContent::Char(_) => !e.deletes(),
         SeqContent::Frag(_) => true,
     }
 }
 
-/// "Carries something" (rule 3): deleted (text) or reset (list), or has content.
-fn carries(e: &SeqElem) -> bool {
-    e.flag() || !matches!(e.content, SeqContent::None)
+/// "Carries something" (rule 3): deleted (text, by its winning flag write) or reset (list), or
+/// has content.
+fn carries(e: &SeqElem, text: bool) -> bool {
+    (if text { e.deletes() } else { e.flag() }) || !matches!(e.content, SeqContent::None)
 }
 
 /// A `FlagW` range being encoded: bounds, the write, an undelete's chars.
@@ -29,6 +30,10 @@ type FlagRange<'a> = (u64, u64, &'a (Stamp, bool), Option<String>);
 
 /// A `FlagW` range decoded: bounds, the write, an undelete's chars (one per element).
 type FlagRun = (u64, u64, (Stamp, bool), Option<Vec<char>>);
+
+/// A stretch of a decoded run between cuts: bounds, the flag write over it, its creations' `ts`,
+/// and whether that flag wins and deletes (§5.7).
+type Stretch<'a> = (u64, u64, Option<&'a FlagRun>, Option<Ts>, bool);
 
 /// The creation's char (what a run's `Content` lists; an undelete's copy rides its `FlagW`).
 fn creation_char(e: &SeqElem) -> Option<char> {
@@ -91,7 +96,7 @@ impl Runs {
 
     /// Whether record `(k, e)` continues the open run `o` (rule 3).
     fn continues(&self, o: &Open, k: &Dot, e: &SeqElem) -> bool {
-        if k.src != o.src || Some(k.ctr) != o.prev.ctr.checked_add(1) || carries(e) != o.carries || (!self.text && has_content(e) != o.content) {
+        if k.src != o.src || Some(k.ctr) != o.prev.ctr.checked_add(1) || carries(e, self.text) != o.carries || (!self.text && has_content(e) != o.content) {
             return false;
         }
         if o.creation {
@@ -121,7 +126,7 @@ impl Runs {
                     cx.note_dot(&a);
                 }
                 let deleted = e.deleted.clone();
-                self.open = Some(Open { src: k.src.clone(), carries: carries(e), content: has_content(e), creation: e.created.is_some(), valueless: e.valueless, pos_empty: e.pos.is_empty(), deleted, prev: d0, n: 0, parts: Vec::new(), fs: Vec::new(), nfs: 0, held: Default::default() });
+                self.open = Some(Open { src: k.src.clone(), carries: carries(e, self.text), content: has_content(e), creation: e.created.is_some(), valueless: e.valueless, pos_empty: e.pos.is_empty(), deleted, prev: d0, n: 0, parts: Vec::new(), fs: Vec::new(), nfs: 0, held: Default::default() });
             }
             let Some(o) = self.open.as_mut() else { return Err(Error::Malformed("run")) };
             let take = (e.span - off).min(MAX_RUN - o.n);
@@ -436,6 +441,45 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: List, cx: &mut Dec) -> Result<(), 
             }
             fws.push((i, j, (st, b), u));
         }
+        // records: cut wherever a property may change; elements with content stand alone
+        let mut cuts: Vec<u64> = vec![0, n];
+        cuts.extend(segs.iter().map(|x| x.0));
+        cuts.extend(pws.iter().flat_map(|x| [x.0, x.0 + 1]));
+        cuts.extend(fws.iter().flat_map(|x| [x.0, x.1 + 1]));
+        // and where a segment's creations pass a flag write (§5.7: one at or above the creation
+        // wins, one below is beaten), so a record is on one side of its flag (`seq::flag_cut`)
+        let beats = |ts: Ts, i: u64, f: &Stamp| Stamp { ts, dot: nth(&first, i) } > *f;
+        let mut si = 0usize;
+        for f in fws.iter().filter(|_| s.text) {
+            while segs.get(si).is_some_and(|x| x.0 + x.1 <= f.0) {
+                si += 1;
+            }
+            for sg in segs.iter().skip(si).take_while(|x| x.0 <= f.1) {
+                let (mut lo, mut hi) = (f.0.max(sg.0), (f.1 + 1).min(sg.0 + sg.1));
+                while lo < hi {
+                    let mid = lo + (hi - lo) / 2;
+                    if beats(sg.2, mid, &f.2.0) { hi = mid } else { lo = mid + 1 }
+                }
+                cuts.push(lo);
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        let mut parts: Vec<Stretch<'_>> = Vec::with_capacity(cuts.len());
+        let (mut si, mut fi) = (0usize, 0usize);
+        for w in cuts.windows(2) {
+            let [a, b] = *w else { continue };
+            while segs.get(si).is_some_and(|x| x.0 + x.1 <= a) {
+                si += 1;
+            }
+            while fws.get(fi).is_some_and(|x| x.1 < a) {
+                fi += 1;
+            }
+            let fw = fws.get(fi).filter(|x| x.0 <= a);
+            let ts = segs.get(si).map(|x| x.2);
+            let deletes = fw.is_some_and(|f| f.2.1 && ts.is_none_or(|ts| !beats(ts, a, &f.2.0)));
+            parts.push((a, b, fw, ts, deletes));
+        }
         // content: one char per element not deleted (text), one fragment per element (list)
         let mut chars: Option<std::str::Chars> = None;
         let mut frags: Option<List> = None;
@@ -446,7 +490,7 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: List, cx: &mut Dec) -> Result<(), 
                 if segs.is_empty() {
                     return Err(Error::Malformed("text content without a creation"));
                 }
-                let deleted: u64 = fws.iter().filter(|f| f.2.1).map(|f| f.1 - f.0 + 1).sum();
+                let deleted: u64 = parts.iter().filter(|p| p.4).map(|p| p.1 - p.0).sum();
                 let want = usize::try_from(n - deleted).map_err(|_| Error::Malformed("run length"))?;
                 match cs.chars().count().cmp(&want) {
                     std::cmp::Ordering::Less => return Err(Error::Malformed("content shorter than the run")),
@@ -463,27 +507,10 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: List, cx: &mut Dec) -> Result<(), 
             }
             _ => return Err(Error::Malformed("content")),
         }
-        // records: cut wherever a property may change; elements with content stand alone
-        let mut cuts: Vec<u64> = vec![0, n];
-        cuts.extend(segs.iter().map(|x| x.0));
-        cuts.extend(pws.iter().flat_map(|x| [x.0, x.0 + 1]));
-        cuts.extend(fws.iter().flat_map(|x| [x.0, x.1 + 1]));
-        cuts.sort_unstable();
-        cuts.dedup();
-        let (mut si, mut pi, mut fi) = (0usize, 0usize, 0usize);
-        for w in cuts.windows(2) {
-            let [a, b] = *w else { continue };
-            while segs.get(si).is_some_and(|x| x.0 + x.1 <= a) {
-                si += 1;
-            }
-            while fws.get(fi).is_some_and(|x| x.1 < a) {
-                fi += 1;
-            }
-            let fw = fws.get(fi).filter(|x| x.0 <= a);
+        let mut pi = 0usize;
+        for (a, b, fw, ts, flag) in parts {
             let deleted = fw.map(|x| x.2.clone());
             let undels = fw.and_then(|x| x.3.as_ref().map(|u| (x.0, u)));
-            let ts = segs.get(si).map(|x| x.2);
-            let flag = deleted.as_ref().is_some_and(|x| x.1);
             let single = frags.is_some() || chars.is_some() && !flag || undels.is_some();
             let mut at = a;
             while at < b {

@@ -71,7 +71,7 @@ impl Fragment {
                     match &el.content {
                         SeqContent::Frag(f) => f.valueless_dots(out),
                         // a range record: each element is its own value-less creation
-                        SeqContent::None if s.text && el.created.is_some() && !el.deleted.as_ref().is_some_and(|x| x.1) => {
+                        SeqContent::None if s.text && el.created.is_some() && !el.deletes() => {
                             out.extend((0..el.span).map(|k| crate::seq_span::nth(d, k).origin().clone()));
                         }
                         _ => {}
@@ -575,7 +575,7 @@ impl Visit for OriginDots<'_> {
         let (d, live) = match r {
             Rec::Elem(d, x) => (d, x.frag.is_some()),
             Rec::Entry(id, e) => (&id.dot, e.created.is_some() || e.frag.is_some()),
-            Rec::Seq(d, el) => (d, !el.deleted.as_ref().is_some_and(|x| x.1)),
+            Rec::Seq(d, el) => (d, !el.deletes()),
         };
         if !live {
             return Next::NoContent;

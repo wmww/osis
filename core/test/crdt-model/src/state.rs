@@ -144,6 +144,11 @@ impl SeqElem {
             _ => if let Content::Char(c) = self.content { Some(c) } else { None },
         }
     }
+    /// Text: deleted, its winning flag write a delete (§5.7): one at or above the creation, or any without a
+    /// creation held. A flag write below the creation is held, beaten.
+    pub fn deletes(&self) -> bool {
+        matches!(&self.deleted, Some((f, true)) if self.created.as_ref().map_or(true, |c| *f >= c.0))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -706,10 +711,8 @@ impl Frag {
                         el.created = None;
                         el.valueless = false;
                     }
-                    // a text flag write below the creation loses the char register to it (§5.7 Join)
-                    let floor = if *text { max_opt(e.cloned(), el.created.as_ref().map(|c| c.0.clone())) } else { e.cloned() };
                     if let Some(d) = &el.deleted {
-                        if !survives(&d.0, floor.as_ref()) {
+                        if !survives(&d.0, e) {
                             el.deleted = None;
                             el.undel = None;
                         }
@@ -1077,13 +1080,15 @@ pub fn num_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
     }
 }
 
-/// Drops the chars of deleted text elements at any depth: what the wire carries (§3.3 rule 5).
+/// Drops the chars of deleted text elements (their winning flag write a delete, §5.7) at any depth: what the wire
+/// carries (§3.3 rule 5).
 pub fn drop_deleted_chars(f: &mut Frag) {
     match f {
         Frag::Seq { elems, .. } => {
             for e in elems.values_mut() {
+                let deleted = e.deletes();
                 match &mut e.content {
-                    Content::Char(_) if e.deleted.as_ref().map_or(false, |d| d.1) => e.content = Content::None,
+                    Content::Char(_) if deleted => e.content = Content::None,
                     Content::Frag(x) => drop_deleted_chars(x),
                     _ => {}
                 }

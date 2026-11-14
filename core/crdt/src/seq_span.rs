@@ -1,9 +1,10 @@
 //! Range records: one record may stand for `span` consecutive elements of one source that are
 //! uniform: no content, no position write but the creation, one deleted write or element reset,
 //! and either no creation or a creation chain (one creation `ts`, element `i` anchored at element
-//! `i - 1`). Decoding allocates per run, not per element (a run of 2^16 deleted elements is a
-//! few bytes on the wire); join, prune and linearization split a range only where a write lands or
-//! anchors inside it. Element `i` of a record is `piece(.., i, 1)`.
+//! `i - 1`) on one side of its flag write (text: the flag wins for all or none, §5.7,
+//! `seq::flag_cut`). Decoding allocates per run, not per element (a run of 2^16 deleted elements
+//! is a few bytes on the wire); join, prune and linearization split a range only where a write
+//! lands or anchors inside it. Element `i` of a record is `piece(.., i, 1)`.
 //!
 //! Invariant: no record key lies inside another record's span. In dot order a `Derived(S, c)`
 //! dot sits between `(S, c)` and `(S, c + 1)`, so an `S` range never spans such a key; the record
@@ -188,7 +189,7 @@ pub(crate) fn expand(m: Elems) -> Elems {
 }
 
 /// Whether record `(d, e)` continues range record `(a, ea)`: the next dot, both uniform, the same
-/// deleted write, and both without creation or one creation chain.
+/// deleted write, both without creation or one creation chain, and one side of the flag write.
 #[cfg(any(test, fuzzing))]
 fn continues(a: &Dot, ea: &SeqElem, d: &Dot, e: &SeqElem) -> bool {
     let at = |x: &Dot, k: u64| x.src == a.src && Some(x.ctr) == a.ctr.checked_add(k);
@@ -197,7 +198,7 @@ fn continues(a: &Dot, ea: &SeqElem, d: &Dot, e: &SeqElem) -> bool {
         (Some((x, _)), Some((y, Anchor::Dot(p)))) => x.ts == y.ts && at(p, ea.span - 1),
         _ => false,
     };
-    uniform(a, ea) && uniform(d, e) && at(d, ea.span) && chain && ea.deleted == e.deleted && ea.valueless == e.valueless
+    uniform(a, ea) && uniform(d, e) && at(d, ea.span) && chain && ea.deleted == e.deleted && ea.valueless == e.valueless && ea.win_flag().is_some() == e.win_flag().is_some()
 }
 
 /// Merges adjacent uniform records into maximal ranges (tests: deltas and states built per
