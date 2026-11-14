@@ -244,6 +244,34 @@ fn a_boxes_payload_for_a_listed_thing_is_taken_spec_sync_inbox_2() {
     assert_eq!(o.taken, Taken::Applied, "taken again: the same answer");
 }
 
+// spec/sync-inbox.md §2 Taking (a boxes payload taken by a listed thing gives that thing's boxes
+// alone): a payload in an unknown author's name boxing a listed thing and another takes the
+// listed one's box; the other stays an invite request, with no sync record.
+#[test]
+fn a_listed_thing_takes_only_its_own_boxes_spec_sync_inbox_2() {
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let x = thing_of(&mut lp, 0, ps[0]);
+    let mut real = Vec::new();
+    for th in [t, x] {
+        let done = lp.peers[0].engine.grant(&th, &ps[1], &edge_of(Role::Sync)).unwrap();
+        let blob = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[1]).unwrap().1;
+        real.push(boxes_of(&mut lp, 1, &blob).0);
+    }
+    let things = real.iter().flat_map(|p| p.things.clone()).collect();
+    let key = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
+    let forged = osis_label::BoxesPayload::signed(&ps[1], real[0].commit, Tid::from_bytes([0x42; 15]), None, things, None, &key);
+    let (_, d) = lp.peers[1].engine.account().unwrap().unwrap();
+    add_item(&mut lp, 1, d, t);
+    let blob = boxes_by_hand(&mut lp, 1, &forged);
+    let o = lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap().unwrap();
+    assert_eq!(o.taken, Taken::Applied);
+    assert!(lp.peers[1].engine.sync_record(&t).unwrap().is_some());
+    assert!(lp.peers[1].engine.sync_record(&x).unwrap().is_none(), "an unlisted thing's box is not taken");
+    let inv = lp.peers[1].engine.invitations().unwrap();
+    assert!(inv.iter().any(|i| i.thing == x && !i.taken), "it stays an invite request");
+}
+
 // spec/sync-inbox.md §2 (invite request: an untaken blob, not applied, nothing followed),
 // spec/sync-set.md §4 (invitations: listed untaken; accepting: takes it).
 #[test]
@@ -343,6 +371,27 @@ fn a_removal_is_owed_to_a_reader_not_a_sync_holder_spec_sync_inbox_2() {
     assert!(!owed(&mut lp, c, ps[1]), "a sync holder's removal");
     let c = *lp.peers[0].engine.demote(&t, &Demotion { holder: ps[2], new: None, retain: None }).unwrap().commits.last().unwrap();
     assert!(owed(&mut lp, c, ps[2]), "a reader's removal");
+}
+
+// spec/sync-inbox.md §2 (What it carries about G: a removal of G's grant of read or above, its
+// `roles.0` parts; Taking: its sender connected): the removed reader applies it, though it boxes
+// nothing.
+#[test]
+fn a_readers_removal_is_taken_spec_sync_inbox_2() {
+    let (mut lp, t, pb, _, blob) = granted(Role::Read);
+    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
+    let (_, d) = lp.peers[1].engine.account().unwrap().unwrap();
+    add_item(&mut lp, 1, d, t);
+    spread(&mut lp);
+    assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Read));
+    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: pb, new: None, retain: None }).unwrap();
+    let c = *done.commits.last().unwrap();
+    let removal = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == pb).expect("a reader's removal is owed").1;
+    assert!(!lp.peers[1].engine.holds_commit(&c));
+    let o = lp.peers[1].engine.take_inbox_blob(&removal, false).unwrap().expect("opens");
+    assert_eq!(o.taken, Taken::Applied);
+    assert!(lp.peers[1].engine.holds_commit(&c));
+    assert_eq!(lp.peers[1].engine.role_on(&t), None);
 }
 
 // spec/sync-inbox.md §2 (Re-send: a commit sealed under an older epoch shows nothing): a writer

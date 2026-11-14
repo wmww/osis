@@ -119,6 +119,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
 fn set_waiting(tx: &mut Tx<'_>, blob: &BlobId, w: Option<WaitingBlob>) -> Result<()> {
     let k = [WAITING, &blob.0].concat();
     match w {
+        Some(w) if tx.core.ix.waiting_inbox.get(blob).is_some_and(|x| **x == w) => {}
         Some(w) => {
             tx.txn.put_local(&k, &osis_base::encode(&waiting_value(&w)), Shred::No)?;
             tx.core.ix.waiting_inbox.insert(*blob, Arc::new(w));
@@ -247,10 +248,11 @@ impl Engine {
     }
 
     /// Takes boxes payload `p` to `a` (spec/sync-inbox.md §2 Taking): refused when its signature
-    /// fails under its author's key held here; taken when a thing it boxes `a` on is in a synced
-    /// group's closure, the user accepted it, or its signature verifies under a connected author's key; then
-    /// the sync secrets of its boxes that open go into their things' sync records with its sync
-    /// IDs and dial hint (spec/sync-judgement.md §6), and nothing else.
+    /// fails under its author's key held here; taken whole when the user accepted it or its
+    /// signature verifies under a connected author's key, else for the things it boxes `a` on
+    /// that a synced group's closure lists; the sync secrets of the boxes taken that open go into
+    /// their things' sync records with its sync IDs and dial hint (spec/sync-judgement.md §6),
+    /// and nothing else.
     fn take_boxes(&mut self, s: &SyncId, blob: &BlobId, a: &Tid, expires: WallMs, p: BoxesPayload, accepted: bool) -> Result<Option<InboxOpened>> {
         let id = p.commit;
         let refused = |dial| Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Refused, hints: Vec::new(), dial }));
@@ -260,18 +262,21 @@ impl Engine {
             _ => return refused(None),
         };
         let boxed = self.boxes_payload_to(a, &p);
-        let listed = self.synced_closures()?;
-        let in_set = p.things.iter().any(|x| listed.contains(&x.tid));
-        let taken = in_set || accepted || (verified && self.author_connected(&p.author)?);
+        // accepted or by a connected author: every thing; else only those a synced group's
+        // closure lists (the signature unchecked, a box there gives nothing else)
+        let whole = accepted || (verified && self.author_connected(&p.author)?);
+        let listed = if whole { BTreeSet::new() } else { self.synced_closures()? };
+        let take: Vec<&osis_label::BoxedThing> = p.things.iter().filter(|x| whole || listed.contains(&x.tid)).collect();
         let b = *blob;
-        if !taken {
-            let w = WaitingBlob { sync_id: *s, commit: id, things: boxed.things.keys().filter_map(|t| Some((*t, boxed.role(t)?))).collect(), from: p.author, expires };
-            self.run(|tx| set_waiting(tx, &b, Some(w)))?;
+        // the things not taken stay an invite request
+        let rest: Vec<(Tid, Role)> = boxed.things.keys().filter(|t| !take.iter().any(|x| x.tid == **t)).filter_map(|t| Some((*t, boxed.role(t)?))).collect();
+        let w = (!rest.is_empty()).then(|| WaitingBlob { sync_id: *s, commit: id, things: rest, from: p.author, expires });
+        self.run(|tx| set_waiting(tx, &b, w))?;
+        if take.is_empty() {
             return Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Waiting, hints: Vec::new(), dial: None }));
         }
-        self.run(|tx| set_waiting(tx, &b, None))?;
         let mut any = false;
-        for t in &p.things {
+        for t in take {
             let secrets: Vec<_> = boxed.things.get(&t.tid).into_iter().flatten().filter(|o| o.role == Role::Sync && o.epoch.names(&t.tid, Role::Sync, &o.secret)).map(|o| (o.epoch, o.secret.clone())).collect();
             if secrets.is_empty() {
                 continue;
@@ -312,8 +317,9 @@ impl Engine {
         }
         self.run(|tx| set_waiting(tx, &b, None))?;
         let payload_ids: BTreeMap<Tid, SyncId> = things.iter().filter_map(|t| Some((t.tid, t.sync_id?))).collect();
-        // sync alone: the sync record, nothing applied (spec/sync-judgement.md §6)
-        if !boxed.reads() {
+        // boxes giving sync alone: the sync record, nothing applied (spec/sync-judgement.md §6);
+        // a payload boxing nothing (a removal's edges) is applied
+        if !boxed.things.is_empty() && !boxed.reads() {
             let mut any = false;
             for (t, opened) in &boxed.things {
                 let secrets: Vec<_> = opened.iter().filter(|o| o.role == Role::Sync).map(|o| (o.epoch, o.secret.clone())).collect();
