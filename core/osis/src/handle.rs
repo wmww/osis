@@ -137,8 +137,6 @@ pub(crate) struct Locked {
     /// Groups this node reads and writes at another node: its address, persisted as the `sources`
     /// record. See `crate::sources`.
     pub group_sources: BTreeMap<Tid, Address>,
-    /// The store failure the last status change met, told to status watches once.
-    pub status_failed: bool,
     /// The connections, the group sources or what a connection last said of sync changed: status
     /// watches hear the status again, to merge it anew (`Osis::on_status_change`).
     pub remerge: bool,
@@ -617,7 +615,7 @@ impl Osis {
         let group_sources = crate::sources::load_sources(sync.engine_mut())?;
         sync.engine_mut().core.sourced_elsewhere = group_sources.keys().copied().collect();
         let has_sources = !group_sources.is_empty();
-        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), connections: Vec::new(), group_sources, status_failed: false, remerge: false };
+        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), connections: Vec::new(), group_sources, remerge: false };
         let port = crate::port::serve::Port::new();
         let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, home, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, text_save: cfg.app.internals.text_save.clone(), transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.direct_sync, connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), has_sources: has_sources.into(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
@@ -768,9 +766,9 @@ impl ReadOnly {
     fn after(&self, l: &mut Locked, handled: bool) {
         // ephemeral writes on things in a labeled closure go out as ephemeral commits
         let any = self.drain(l) || l.sync.engine().has_memory_changes();
-        if std::mem::take(&mut l.remerge) && !l.status_failed {
+        if std::mem::take(&mut l.remerge) {
             l.seq += 1;
-            self.inner.dispatch.send(l.seq, Msg::Status(Ok(l.status.clone())));
+            self.inner.dispatch.send(l.seq, Msg::Status(l.status.clone()));
         }
         if any && !handled {
             let acts = l.sync.handle(SyncEvent::Local);
@@ -785,26 +783,16 @@ impl ReadOnly {
             }
             return;
         }
-        match crate::share::status_of(&mut l.sync) {
-            Ok(status) if status != l.status || l.status_failed => {
-                for (g, s) in &status.groups {
-                    if s.state == crate::share::SyncState::Stranded && l.status.groups.get(g).is_none_or(|o| o.state != s.state) {
-                        l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Stranded, tids: vec![*g], commit: None, peer: None, detail: "stranded: waiting for a re-seal".into() });
-                    }
+        let status = crate::share::status_of(&mut l.sync);
+        if status != l.status {
+            for (g, s) in &status.groups {
+                if s.state == crate::share::SyncState::Stranded && l.status.groups.get(g).is_none_or(|o| o.state != s.state) {
+                    l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Stranded, tids: vec![*g], commit: None, peer: None, detail: "stranded: waiting for a re-seal".into() });
                 }
-                l.status = status.clone();
-                l.status_failed = false;
-                l.seq += 1;
-                self.inner.dispatch.send(l.seq, Msg::Status(Ok(status)));
             }
-            Ok(_) => {}
-            // once: a store that cannot answer fails every call that asks it anyway
-            Err(e) if !l.status_failed => {
-                l.status_failed = true;
-                l.seq += 1;
-                self.inner.dispatch.send(l.seq, Msg::Status(Err(e)));
-            }
-            Err(_) => {}
+            l.status = status.clone();
+            l.seq += 1;
+            self.inner.dispatch.send(l.seq, Msg::Status(status));
         }
         self.drain(l);
         let Locked { waiters, sync, status, .. } = l;

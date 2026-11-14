@@ -418,11 +418,11 @@ pub(crate) fn groups_of_labels(labels: &[osis_node::sync::LabelStatus]) -> BTree
 }
 
 /// The status from the sync engine's labels (a group with several labels shows the worst).
-pub(crate) fn status_of(sync: &mut SyncEngine) -> Result<Status> {
+pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
     let skip = sync.handed_off().clone();
     let mut groups = groups_of_labels(&sync.label_status());
     groups.retain(|g, _| !skip.contains(g));
-    Ok(Status { connected: sync.connected(), groups, node_connections: Vec::new(), two_sources: BTreeSet::new() })
+    Status { connected: sync.connected(), groups, node_connections: Vec::new(), two_sources: BTreeSet::new() }
 }
 
 fn edge(role: Role, o: GrantOpts) -> ct::Edge {
@@ -477,10 +477,7 @@ fn carrying(sync: &mut SyncEngine, status: &Status, t: Tid) -> Vec<Tid> {
 /// nothing is left to wait for. Otherwise, carried by nothing, it waits, unless only handed-off
 /// groups hold it.
 fn group_synced(sync: &mut SyncEngine, t: Tid, was_carried: bool) -> Option<Result<()>> {
-    let st = match status_of(sync) {
-        Ok(st) => st,
-        Err(e) => return Some(Err(e)),
-    };
+    let st = status_of(sync);
     let groups = carrying(sync, &st, t);
     if groups.is_empty() {
         // held only by handed-off groups: nothing here will ever sync it
@@ -639,12 +636,12 @@ impl ReadOnly {
         self.track_status()?;
         let acting = self.acting;
         let local = self.locked(|x| {
-            let mut s = status_of(&mut x.sync)?;
+            let mut s = status_of(&mut x.sync);
             if let Some(a) = acting {
                 s.groups.retain(|g, _| x.sync.engine().readable_by(&a, g));
             }
-            Ok::<_, Error>(s)
-        })?;
+            s
+        });
         if acting.is_some() {
             return Ok(local);
         }
@@ -1490,12 +1487,11 @@ impl Osis {
         Ok(())
     }
 
-
     /// Calls `f` with the status now (through the dispatcher) and on every change, a node that
     /// cannot be reached shown as such (`Status::node_connections`) and its groups absent until it
-    /// is back. `Err`: the store could not say; the next status that can be read follows.
+    /// is back.
     pub fn on_status_change(&self, f: impl FnMut(&Osis, Result<Status>) + Send + 'static) -> Result<Subscription> {
-        self.status_feed(Box::new(f))
+        Ok(self.status_feed(Box::new(f)))
     }
 
     /// Resolves once every group in scope is `SyncState::Synced` and every pending delivery in
@@ -1543,7 +1539,8 @@ impl Osis {
                 self.sync_labels();
                 // a failure at once needs no runtime
                 let (first, carried) = self.locked(|x| {
-                    let carried = status_of(&mut x.sync).is_ok_and(|st| !carrying(&mut x.sync, &st, t).is_empty());
+                    let st = status_of(&mut x.sync);
+                    let carried = !carrying(&mut x.sync, &st, t).is_empty();
                     (group_synced(&mut x.sync, t, carried), carried)
                 });
                 if let Some(Err(e)) = first {

@@ -251,7 +251,7 @@ pub(crate) enum Delivery {
     Commit { id: CommitId, tids: Vec<Tid>, fired: Option<osis_node::engine::listing::CommitRow> },
     Diagnostic(Diagnostic),
     Dispute(crate::Dispute),
-    Status(Result<crate::share::Status>),
+    Status(crate::share::Status),
     Port(PortEvent),
     /// A text session's merged text.
     Text { text: String, edits: Vec<crate::text::Splice> },
@@ -268,7 +268,7 @@ pub(crate) enum Delivery {
 pub(crate) enum Msg {
     Event(Event),
     Initial(u64),
-    Status(Result<crate::share::Status>),
+    Status(crate::share::Status),
     /// A tracked read's address may have changed: for what names no event of the engine.
     Due(Watch),
     Port(u64, PortEvent),

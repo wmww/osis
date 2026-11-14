@@ -256,7 +256,7 @@ impl ReadOnly {
         let Some(set) = self.tracking.clone() else { return Ok(()) };
         self.track_remote("status".into(), |gate| {
             let w = Arc::downgrade(&set);
-            self.status_feed(Box::new(move |db, _| gate.called_fire(&w, db, false)))
+            Ok(self.status_feed(Box::new(move |db, _| gate.called_fire(&w, db, false))))
         })
     }
 

@@ -6,8 +6,8 @@
 //! unreachable source is that call's `Network`, not another source's answer. No source, result or
 //! membership is cached outside that table; a thing's groups are read from the engine's own index
 //! at each decision. (What a node last said of sync, `Heard`, is no call's answer: status reads
-//! that must not wait show it, as of its message.) The rule (`decide_in`), for a thing `t` and S = `t` and the groups holding it
-//! here:
+//! that must not wait show it, as of its message.) The rule (`decide_in`), for a thing `t` and
+//! S = `t` and the groups holding it here (`Engine::enclosing`):
 //! 1. a process with no store: its connections;
 //! 2. a group in S with a source node: that node, connected or not, whatever else holds `t`;
 //! 3. `t` known here: this engine;
@@ -35,10 +35,9 @@
 
 use crate::error::{Error, Result};
 use crate::handle::{Locked, Osis, ReadOnly};
-use crate::port::client::Connection;
+use crate::port::client::{CallbackOf, Connection};
 use crate::port::method;
 use crate::share::{Address, Status, SyncScope};
-use crate::port::client::CallbackOf;
 use crate::watch::{Callback, Delivery, Filter, Msg, PortEvent, Subscription, lock};
 use osis_proto::Payload;
 use osis_base::{CommitId as RawCommitId, Tid, Value};
@@ -114,18 +113,8 @@ fn touched_by(e: &Engine, id: RawCommitId) -> Option<Vec<Tid>> {
     e.header(&id).map(|h| h.aspects.iter().map(|a| a.tid).collect())
 }
 
-/// S of the module comment.
-fn scope_of(e: &Engine, t: Tid) -> BTreeSet<Tid> {
-    e.enclosing(&t)
-}
-
 fn node_named(l: &Locked, addr: &Address) -> Arc<Connection> {
     l.connections.iter().find(|r| r.addr == *addr).cloned().unwrap_or_else(|| Connection::absent(addr))
-}
-
-/// What `r` reports of sync now, if it can say.
-fn ask_status(r: &Connection) -> Option<Status> {
-    crate::port::codec::of(r.call(method::STATUS, vec![]).ok()?).ok()
 }
 
 /// What a connection's node last said of sync: one `filter::STATUS` subscription per connection,
@@ -143,7 +132,7 @@ pub(crate) struct Heard {
 /// The module comment's rule.
 fn decide_in(l: &mut Locked, client: bool, tid: Tid) -> Decided {
     if !client {
-        let s = scope_of(l.sync.engine(), tid);
+        let s = l.sync.engine().enclosing(&tid);
         if let Some(addr) = s.iter().find_map(|g| l.group_sources.get(g)) {
             return Decided::Node(node_named(l, addr));
         }
@@ -162,7 +151,7 @@ fn decide_in(l: &mut Locked, client: bool, tid: Tid) -> Decided {
 /// `t`, spec/sync.md §3) goes elsewhere: it syncs here, or goes to another node. Returns (the
 /// group with the source node, that group). A membership in a group that does not sync carries nothing: no holder of it misses a write.
 fn split_in(l: &mut Locked, tid: Tid) -> Option<(Tid, Tid)> {
-    let s = scope_of(l.sync.engine(), tid);
+    let s = l.sync.engine().enclosing(&tid);
     let (sourced, addr) = s.iter().find_map(|g| l.group_sources.get(g).map(|a| (*g, a.clone())))?;
     // `t`'s own sync ID is no other source: the sourced group's node, a holder of `t`, syncs it too
     let other = s.into_iter().filter(|g| *g != tid).find(|g| {
@@ -520,7 +509,7 @@ impl ReadOnly {
     /// status delivery (a local change, a connection's message, a connection going down or up, a
     /// change of the connections or group sources: `Locked::remerge`), and calls `f` when the
     /// result differs.
-    pub(crate) fn status_feed(&self, mut f: CallbackOf<Result<Status>>) -> Result<Subscription> {
+    pub(crate) fn status_feed(&self, mut f: CallbackOf<Result<Status>>) -> Subscription {
         // off the dispatcher, a connection not heard from yet is asked, so the first call has it
         let connections = self.follow_connections();
         if self.may_wait() {
@@ -529,7 +518,7 @@ impl ReadOnly {
             }
         }
         self.locked(|l| {
-            let mut first = Some(crate::share::status_of(&mut l.sync)?);
+            let mut first = Some(crate::share::status_of(&mut l.sync));
             let mut last: Option<Status> = None;
             let cb: Callback = Box::new(move |db, d| {
                 let local = match d {
@@ -537,12 +526,7 @@ impl ReadOnly {
                         Some(s) => s,
                         None => return,
                     },
-                    Delivery::Status(Ok(s)) => s,
-                    Delivery::Status(Err(e)) => {
-                        last = None;
-                        f(db, Err(e));
-                        return;
-                    }
+                    Delivery::Status(s) => s,
                     _ => return,
                 };
                 let s = db.merged_status(local);
@@ -551,7 +535,7 @@ impl ReadOnly {
                     f(db, Ok(s));
                 }
             });
-            Ok(self.subscribe_in(l, Filter::Status, true, cb))
+            self.subscribe_in(l, Filter::Status, true, cb)
         })
     }
 
@@ -595,7 +579,7 @@ impl ReadOnly {
 
 /// What `r` reports of sync now, asked; kept as what it last said until its subscription tells.
 fn heard_now(r: &Connection) -> Option<Status> {
-    let s = ask_status(r);
+    let s = r.call(method::STATUS, vec![]).ok().and_then(|v| crate::port::codec::of(v).ok());
     let mut h = lock(&r.heard);
     if !h.told {
         h.status = s.clone();

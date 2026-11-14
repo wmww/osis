@@ -1274,7 +1274,7 @@ impl Osis {
         };
         let judge = move |v: Value| -> Option<Result<()>> {
             use crate::share::SyncState as S;
-            // a Notify naming no status: the node's store could not say
+            // a Notify that decodes to no status tells nothing
             match c::of::<crate::Status>(v).ok()?.groups.get(&g).map(|s| s.state) {
                 None | Some(S::Synced) => Some(Ok(())),
                 Some(S::Stranded) => Some(Err(Error::Unsynced { groups: vec![g] })),
