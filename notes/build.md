@@ -65,6 +65,7 @@ Every timed run has a CPU limit (tight: other work barely moves CPU-s) and a wal
 | `gate.deny` | 5 | 1 | `gate` | schema check, deny, core bans: 3 / 2 s |
 | `gate.properties` | 530 | 34 | `gate.hold` | the selected properties: 705 / 54 s at load 35 (every crate: 43 tests) |
 | `gate.sim` | 410 | 20 | `gate.hold` | every sim scenario at 15 seeds: 695 / 56 s at load 26 |
+| `gate.doctests` | 55 | 10 |  | the comments path's doctests (notes/gate.md, Components pay for themselves): the changed crates' test build and their doctests, as `build` |
 | `gate.gui-tests` | 10 | 2 | `gate` | GUI tests: 72 / 20 s |
 | `gate.hold` | 1650 | 105 | `gate` | the gate's one heavy-lock hold: 2580 / 246 s at load 25 |
 | `gate` | 1780 | 130 |  | the whole gate but its lock wait: 2920 / 338 s at load 24; 5 minutes wall is Tess's cap, its CPU what 5 minutes at the box's usual 85% busy allows |

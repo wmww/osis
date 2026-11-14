@@ -80,28 +80,12 @@ core=1
 gui=1
 unify=1
 every=1
+doc=
 if [ -z "$all" ] && [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ]; then
   every=
-  # changed paths since the merge base, committed or not; a rename counts as delete + add, so a
-  # file moved out of core into libs/kit/ still selects the core steps; a name git quotes (non-ASCII,
-  # control characters) starts with '"'
-  changed=$(git diff --no-renames --name-only "$base" --)
-  changed="$changed
-$(git ls-files --others --exclude-standard)"
-  printf '%s\n' "$changed" | grep -q -v -e '^"\{0,1\}libs/kit/' -e '^"\{0,1\}app/' -e '^$' || core=
-  printf '%s\n' "$changed" | grep -q -e '^"\{0,1\}libs/kit/' -e '^"\{0,1\}app/' || gui=
-  # what decides feature resolution: any manifest, the lock, cargo's config
-  printf '%s\n' "$changed" | grep -q -e '^"\{0,1\}\(.*/\)\{0,1\}Cargo\.toml"\{0,1\}$' -e '^"\{0,1\}Cargo\.lock"\{0,1\}$' -e '^"\{0,1\}\.cargo/' || unify=
-  # docs: only Markdown under spec/, notes/, issues/, and no Rust source names a path there on a
-  # line that reads or includes a file; else everything
-  if [ -n "$core" ] && ! printf '%s\n' "$changed" | grep -q -v -e '^"\{0,1\}\(spec\|notes\|issues\)/.*\.md"\{0,1\}$' -e '^"\{0,1\}libs/kit/' -e '^"\{0,1\}app/' -e '^$'; then
-    readers=$(git grep -n -E '(include(_str|_bytes)?!|read_to_string|fs::read|File::open|\.join)\(.*(spec|notes|issues)/' -- '*.rs' | grep -v -e '^libs/kit/' -e '^app/' || true)
-    if [ -z "$readers" ]; then
-      core=docs
-    else
-      printf 'gate: docs-only diff, but these read spec/, notes/ or issues/ (add them to the docs step): full gate\n%s\n' "$readers" >&2
-    fi
-  fi
+  # the steps the paths changed since the merge base (committed or not) select: core= gui= unify= doc=
+  paths=$(python3 "$tools/gate_paths.py" "$base") || exit 2
+  eval "$paths"
 fi
 # what tools/test_select.py selects from: every crate when everything runs, else the diff from base
 if [ "$core" != 1 ]; then
@@ -111,7 +95,7 @@ elif [ -n "$every" ]; then
 else
   select=diff
 fi
-if [ -n "$plan" ]; then echo "core=${core:-0} gui=${gui:-0} unify=${unify:-0} select=$select"; exit 0; fi
+if [ -n "$plan" ]; then echo "core=${core:-0} gui=${gui:-0} unify=${unify:-0} select=$select${doc:+ doc=$doc}"; exit 0; fi
 # a branch not on origin's main gates code other than what merges: refuse it
 if [ -n "$om" ] && ! git merge-base --is-ancestor "$om" HEAD; then
   echo "gate: HEAD does not contain origin/main ($(git rev-list --count "HEAD..$om") commits behind): git rebase origin/main" >&2; exit 2
@@ -184,6 +168,7 @@ instant() {
   step sh tools/gate_select_test.sh
   step python3 tools/test_select_test.py
   step python3 tools/gate_failures_test.py
+  step python3 tools/gate_paths_test.py
   step python3 tools/limits_test.py
   step python3 tools/doc_refs_test.py
   step python3 tools/limits.py split
@@ -193,6 +178,19 @@ limited gate.checks instant
 if [ "$core" = docs ]; then
   if [ -n "$gui" ]; then gui_only "docs and GUI change"; fi
   passed 0 ", docs-only change: builds, tests, lints and deny skipped"
+  exit 0
+fi
+# comments only: no test reads one; clippy catches a comment that broke the code, the doctests a
+# changed doc comment's example
+if [ "$core" = comments ]; then
+  limited gate.clippy cargo clippy --all-targets --locked -- -D warnings
+  if [ -n "$doc" ]; then
+    echo "expect gate.doctests" >> "$sel"
+    # shellcheck disable=SC2046
+    tested gate.doctests "$tmp/doc.log" cargo test --doc --locked --no-fail-fast $(printf -- '-p %s ' $doc)
+  fi
+  if [ -n "$gui" ]; then gui_only "comments and GUI change"; fi
+  passed 0 ", comments-only change: builds, tests but doctests, and deny skipped"
   exit 0
 fi
 # the tests the gate runs, as `build CMD` and `run CMD` lines: the default tests, then the branch's

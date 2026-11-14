@@ -51,6 +51,15 @@ case_ "notes and kit" "core=docs gui=1 unify=0 select=none" "echo x >> notes/n.m
 case_ "notes file moved to the root" "core=1 gui=0 unify=0 select=diff" "git mv notes/n.md n.md"
 case_ "non-Markdown file under notes" "core=1 gui=0 unify=0 select=diff" "echo x > notes/v.txt"
 case_ "non-ASCII Markdown name under spec" "core=docs gui=0 unify=0 select=none" "echo x > \"spec/\$(printf '\\303\\251').md\""
+# the comments path (the classifier's own cases: tools/gate_paths_test.py)
+case_ "core comment" "core=comments gui=0 unify=0 select=none" "echo '// x' >> core/osis/a.rs"
+case_ "core comment mid-file" "core=comments gui=0 unify=0 select=none" "sed -i '3i // b' core/osis/a.rs"
+case_ "trailing comment" "core=1 gui=0 unify=0 select=diff" "sed -i 's|^5\$|5 // x|' core/osis/a.rs"
+case_ "comment line in a string" "core=1 gui=0 unify=0 select=diff" "printf '\"\\n// s\\n\"\\n' >> core/osis/a.rs"
+case_ "comments, notes and kit" "core=comments gui=1 unify=0 select=none" "echo '// x' >> core/osis/a.rs; echo x >> notes/n.md; echo x >> libs/kit/src/a.rs"
+case_ "new comment-only file" "core=1 gui=0 unify=0 select=diff" "echo '// x' > core/osis/c.rs"
+case_ "comment and a manifest" "core=1 gui=0 unify=1 select=diff" "echo '// x' >> core/osis/a.rs; echo x >> Cargo.toml"
+case_ "doc comment, no cargo metadata" "core=1 gui=0 unify=0 select=diff" "echo '/// x' >> core/osis/a.rs"
 case_ "gate itself" "core=1 gui=0 unify=0 select=diff" "echo '#' >> tools/gate.sh"
 case_ "kit and core" "core=1 gui=1 unify=0 select=diff" "echo x >> libs/kit/src/a.rs; echo x >> core/osis/a.rs"
 case_ "core deleted" "core=1 gui=0 unify=0 select=diff" "git rm -q core/osis/a.rs"
@@ -72,6 +81,9 @@ rm core/osis/new.rs
 echo x >> core/osis/a.rs
 check "uncommitted core edit" "core=1 gui=1 unify=0 select=diff"
 git checkout -q core/osis/a.rs
+echo '// x' >> core/osis/a.rs
+check "uncommitted core comment" "core=comments gui=1 unify=0 select=none"
+git checkout -q core/osis/a.rs
 echo x > core/osis/new.rs
 check "untracked core file" "core=1 gui=1 unify=0 select=diff"
 rm core/osis/new.rs
@@ -80,7 +92,7 @@ check "detached HEAD" "core=0 gui=1 unify=0 select=none"
 git checkout -q t
 # a source on main reading notes/: a notes-only branch then runs everything, naming it (last: main changes)
 git checkout -q main; echo 'let _ = std::fs::read_to_string("../notes/n.md");' > core/osis/r.rs; git add -A; git commit -qm reader; git push -q origin main
-case_ "notes only, a source reads notes" "gate: docs-only diff, but these read spec/, notes/ or issues/ (add them to the docs step): full gate
+case_ "notes only, a source reads notes" "gate: docs or comments diff, but these read spec/, notes/ or issues/ (add them to the docs step): full gate
 core/osis/r.rs:1:let _ = std::fs::read_to_string(\"../notes/n.md\");
 core=1 gui=0 unify=0 select=diff" "echo x >> notes/n.md"
 git checkout -q main; git checkout -qb fresh; echo x >> libs/kit/src/a.rs

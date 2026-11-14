@@ -39,27 +39,26 @@ def mod_paths(file, name):
     return [sub + ".rs", sub + os.sep]
 
 
-def sanitize(src, fill="x"):
-    """Comments blanked to spaces, string and char literal contents replaced by `fill`, their
-    quotes kept; newlines and offsets kept."""
+# what starts a comment or literal: a raw string only where no identifier runs into it
+_START = re.compile(r'//|/\*|(?<!\w)[bc]?r#*"|"|\'')
+_STR = re.compile(r'"(?:[^"\\]|\\.)*"', re.S)
+
+
+def lex(src):
+    """The comments and literals of `src` in order, as (kind, start, end, inner_start, inner_end):
+    kind `line` (a `//` comment, to its line's end), `block` (`/* */`, nested), `str` (a string,
+    raw or not, any prefix), `char`; inner is a literal's contents between its quotes, or the whole
+    comment. A `'` that starts no char literal (a lifetime, a label) is code."""
     out = []
     i, n = 0, len(src)
-    prev_ident = False  # previous char was part of an identifier
-
-    def blank(s, c=" "):
-        return "".join("\n" if ch == "\n" else c for ch in s)
-
-    while i < n:
-        c = src[i]
-        if c == "/" and src.startswith("//", i):
-            j = src.find("\n", i)
+    while (m := _START.search(src, i)):
+        s, t = m.start(), m.group()
+        if t == "//":
+            j = src.find("\n", s)
             j = n if j < 0 else j
-            out.append(blank(src[i:j]))
-            i = j
-            prev_ident = False
-            continue
-        if c == "/" and src.startswith("/*", i):
-            depth, j = 1, i + 2
+            out.append(("line", s, j, s, j))
+        elif t == "/*":
+            depth, j = 1, s + 2
             while j < n and depth:
                 if src.startswith("/*", j):
                     depth += 1
@@ -69,45 +68,42 @@ def sanitize(src, fill="x"):
                     j += 2
                 else:
                     j += 1
-            out.append(blank(src[i:j]))
-            i = j
-            prev_ident = False
-            continue
-        # raw strings: r"..", r#".."#, br, cr
-        if not prev_ident and c in "rbc":
-            m = re.match(r'(?:b|c)?r(#*)"', src[i:i + 300])
-            if m:
-                close = '"' + m.group(1)
-                start = i + m.end()
-                j = src.find(close, start)
-                j = n if j < 0 else j
-                out.append(src[i:start] + blank(src[start:j], fill) + close)
-                i = j + len(close)
-                prev_ident = False
-                continue
-        if c == '"':
-            j = i + 1
-            while j < n and src[j] != '"':
-                j += 2 if src[j] == "\\" else 1
-            out.append('"' + blank(src[i + 1:j], fill) + '"')
-            i = j + 1
-            prev_ident = False
-            continue
-        if c == "'":
-            # char literal ('a', '\n', '\u{..}') vs lifetime/label ('a)
-            if i + 1 < n and src[i + 1] == "\\":
-                j = src.find("'", i + 3)
-                j = n if j < 0 else j
-                out.append("'" + blank(src[i + 1:j], fill) + "'")
-                i = j + 1
-                prev_ident = False
-                continue
-            if i + 2 < n and src[i + 2] == "'":
-                out.append("'" + fill + "'")
-                i += 3
-                prev_ident = False
-                continue
-        out.append(c)
-        prev_ident = c.isalnum() or c == "_"
-        i += 1
+            out.append(("block", s, j, s, j))
+        elif t == '"':
+            # unterminated: to the end
+            j = (q.end() if (q := _STR.match(src, s)) else n)
+            out.append(("str", s, j, s + 1, j - 1 if q else n))
+        elif t != "'":
+            close = '"' + "#" * t.count("#")
+            j = src.find(close, m.end())
+            j = n if j < 0 else j
+            out.append(("str", s, j + len(close), m.end(), j))
+            j += len(close)
+        elif s + 1 < n and src[s + 1] == "\\":
+            j = src.find("'", s + 3)
+            j = n if j < 0 else j
+            out.append(("char", s, j + 1, s + 1, j))
+            j += 1
+        elif s + 2 < n and src[s + 2] == "'":
+            out.append(("char", s, s + 3, s + 1, s + 2))
+            j = s + 3
+        else:
+            j = s + 1
+        i = j
+    return out
+
+
+def sanitize(src, fill="x"):
+    """Comments blanked to spaces, string and char literal contents replaced by `fill`, their
+    quotes kept; newlines and offsets kept."""
+
+    def blank(s, c=" "):
+        return "".join("\n" if ch == "\n" else c for ch in s)
+
+    out, last = [], 0
+    for kind, s, e, a, b in lex(src):
+        out.append(src[last:s])
+        out.append(blank(src[s:e]) if kind in ("line", "block") else src[s:a] + blank(src[a:b], fill) + src[b:e])
+        last = e
+    out.append(src[last:])
     return "".join(out)
