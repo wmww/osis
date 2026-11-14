@@ -1,29 +1,36 @@
 //! The one sync test harness (notes/sync-test-harness.md): a deterministic world of product
 //! nodes (engine, store, `osis_sync::Node`) in one process, one manual clock that jumps to the
-//! next wake, a seeded rng, and a network of real encoded frames routed by the reachability
-//! model (`reach`). Every node output goes through `osis_sync::apply` into the network (`Net`,
-//! the test `Links`), and every node input through `World::deliver`, the one place a node is
-//! stepped: a test can reach a node's engine and status but never its `handle`, so no test can
-//! drop an output. Fixtures are worlds built once per process through the product's own flows
+//! next wake (each node reading it through its own skew), a seeded rng, and a network of real
+//! encoded frames routed by the reachability model (`reach`). Every node output goes through
+//! `osis_sync::apply` into the network (`Net`, the test `Links`), and every node input through
+//! `World::deliver`, the one place a node is stepped: a test can reach a node's engine and status
+//! but never its `handle`, so no test can drop an output. Faults are content-blind: the network
+//! loses, repeats and delays sends (`Loss`), partitions and cuts; a node's device fails a durable
+//! write (`DiskFault`) or loses power; a hostile node is an honest one whose frames pass through
+//! a `Lie` (`lies`). Fixtures are worlds built once per process through the product's own flows
 //! and copied per test (`fixture`). Random layers write a `Vec<Step>` and replay it with `play`;
 //! a failure prints the script, `OSIS_SYNC_SHRINK=1` shrinks it.
 
 #![allow(dead_code)]
 
+pub mod history;
+pub mod lies;
 pub mod reach;
 pub mod scripted;
 
+use lies::{Lie, Liar};
 use osis_base::testenv::Script;
 use osis_base::{Clock, ManualClock, Tid, WallMs};
 use osis_crypto::{RngCore, SeededRng};
 use osis_engine::Engine;
 use osis_label::Address;
-use osis_store::{MemoryBackend, MemoryRoot};
+use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot};
 use osis_sync::{ConnId, Input, Links, Node, NodeKey, Out, Store, SyncConfig, apply};
 use reach::{Reach, Route, Uplink, Who};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 /// Deliveries one world may make before it panics as a storm, unless a test sets its own
 /// (`World::cap`). The rule-test layer's cap (notes/sync-test-harness.md, Enforcement).
@@ -43,28 +50,46 @@ pub const HORIZON_MS: u64 = 3_600_000;
 /// The world's start time (any fixed value).
 pub const START: WallMs = WallMs(1_700_000_000_000);
 
-/// A node's durable state (engine and store, each a backend and its root record): it survives a
-/// power loss, and the node reopens over it.
+/// A node's clock: the world's, moved by the node's skew (`World::skew`).
+#[derive(Debug)]
+pub struct NodeClock {
+    world: Arc<ManualClock>,
+    skew: AtomicI64,
+}
+
+impl Clock for NodeClock {
+    fn now_wall_ms(&self) -> WallMs {
+        WallMs(self.world.now_wall_ms().0.saturating_add_signed(self.skew.load(Ordering::SeqCst)))
+    }
+}
+
+/// A node's durable state (engine and store, each a backend and its root record) on one device
+/// with one fault plan: it survives a power loss, and the node reopens over it.
 #[derive(Clone)]
 struct Disks {
     engine: (MemoryBackend, MemoryRoot),
     store: (MemoryBackend, MemoryRoot),
+    faults: Faults,
 }
 
 impl Disks {
     fn new() -> Disks {
-        Disks { engine: (MemoryBackend::new(), MemoryRoot::new()), store: (MemoryBackend::new(), MemoryRoot::new()) }
+        let f = Faults::new();
+        let pair = || (MemoryBackend::with_faults(f.clone()), MemoryRoot::with_faults(f.clone()));
+        Disks { engine: pair(), store: pair(), faults: f }
     }
 
     fn power_cut(&self) {
         self.engine.0.power_cut();
+        self.engine.1.power_cut();
         self.store.0.power_cut();
+        self.store.1.power_cut();
     }
 
     /// Tests of copies: inside the same `osis_base::copying` as the node's copy, so the copy's
-    /// handles are the copied node's.
+    /// handles are the copied node's (one plan stays one plan).
     fn test_copy(&self) -> Disks {
-        Disks { engine: (self.engine.0.test_copy(), self.engine.1.test_copy()), store: (self.store.0.test_copy(), self.store.1.test_copy()) }
+        Disks { engine: (self.engine.0.test_copy(), self.engine.1.test_copy()), store: (self.store.0.test_copy(), self.store.1.test_copy()), faults: self.faults.test_copy() }
     }
 }
 
@@ -74,6 +99,7 @@ pub struct WNode {
     disks: Disks,
     /// The node's store, the handle its node holds (tests reach its rows directly).
     pub store: Store,
+    clock: Arc<NodeClock>,
     pub key: NodeKey,
     /// Its account (`Engine::create_account`).
     pub account: Option<Tid>,
@@ -107,15 +133,69 @@ impl Seen {
     }
 }
 
-/// The network: links between world nodes, the queue of inputs in flight, the wakes asked.
+/// The network's content-blind faults, per send of bytes, each in thousandths: the send is lost
+/// and its connection resets (`drop`: an ordered stream never delivers past a hole, so both ends
+/// are told it closed); delivered twice in a row (`dup`); or held back 1..=`delay_ms` ms
+/// (`delay`), later bytes on its connection queued behind it, so delay reorders across
+/// connections, never within one. Drawn from the world's seed in send order; all zero, nothing
+/// is drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Loss {
+    pub drop: u16,
+    pub dup: u16,
+    pub delay: u16,
+    pub delay_ms: u64,
+}
+
+impl Loss {
+    pub const NONE: Loss = Loss { drop: 0, dup: 0, delay: 0, delay_ms: 0 };
+
+    fn none(&self) -> bool {
+        self.drop == 0 && self.dup == 0 && (self.delay == 0 || self.delay_ms == 0)
+    }
+}
+
+/// What a device does at a planned durable write (`osis_store::Fault`), named here so a printed
+/// script compiles with `use crate::harness::script::*`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiskFault {
+    /// The write fails without effect.
+    Fail,
+    /// It reads as written, but its sync fails: a power loss drops it.
+    Unsynced,
+    /// Power loss at that write: the node restarts in place over what reached its disks.
+    Crash,
+}
+
+impl DiskFault {
+    fn store(self) -> Fault {
+        match self {
+            DiskFault::Fail => Fault::Fail,
+            DiskFault::Unsynced => Fault::Unsynced,
+            DiskFault::Crash => Fault::Crash,
+        }
+    }
+}
+
+/// The network: links between world nodes, the inputs in flight (queued now, or held back to a
+/// time), the wakes asked.
 #[derive(Clone, Default)]
 pub struct Net {
     pub reach: Reach,
     /// Each end of each connection up: (node, its conn) -> (peer, the peer's conn).
     links: BTreeMap<(usize, ConnId), (usize, ConnId)>,
     queue: VecDeque<(usize, Input)>,
-    /// Each node's one wake (`Links::wake` replaces it).
+    /// Inputs held back (`Loss::delay`), by (due, order).
+    delayed: BTreeMap<(WallMs, u64), (usize, Input)>,
+    /// Per receiving end, the due time of its last held-back input: later ones wait behind it.
+    held_until: BTreeMap<(usize, ConnId), WallMs>,
+    held: u64,
+    /// The world's time, as the network last saw it.
+    now: WallMs,
+    /// Each node's one wake (`Links::wake` replaces it), in world time.
     wakes: BTreeMap<usize, WallMs>,
+    /// Each node's clock skew (`World::skew`): its wakes come in its own time.
+    skew: BTreeMap<usize, i64>,
     /// Node pairs a partition separates (lower index first).
     cut_off: BTreeSet<(usize, usize)>,
     online: Vec<bool>,
@@ -136,8 +216,20 @@ pub struct Net {
     pub dials: Vec<(usize, ConnId, [u8; 32])>,
     /// Every dial that came up: (dialer, target node).
     pub ups: Vec<(usize, usize)>,
+    pub loss: Loss,
+    /// What the faults did so far: (lost, repeated, held back).
+    pub faulted: (u64, u64, u64),
     rng_seed: u64,
     ephemerals: u64,
+    draws: u64,
+}
+
+/// splitmix64: one deterministic draw.
+fn mix(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
 }
 
 impl Net {
@@ -154,6 +246,38 @@ impl Net {
         let mut k = [0u8; 32];
         SeededRng::from_u64(self.rng_seed ^ self.ephemerals.rotate_left(17)).fill_bytes(&mut k);
         NodeKey(k)
+    }
+
+    /// The next fault draw, in 0..1000.
+    fn draw(&mut self) -> u64 {
+        self.draws += 1;
+        mix(self.rng_seed ^ self.draws.wrapping_mul(0x2545_f491_4f6c_dd1d)) % 1000
+    }
+
+    /// `input` to `to`'s end `tc`, `delay` ms from now and never before what that end already
+    /// waits for.
+    fn push(&mut self, to: usize, tc: ConnId, input: Input, delay: u64) {
+        let behind = self.held_until.get(&(to, tc)).copied().filter(|t| *t > self.now);
+        let due = WallMs(self.now.0.saturating_add(delay));
+        let due = behind.map_or(due, |b| b.max(due));
+        if due > self.now {
+            self.held += 1;
+            self.delayed.insert((due, self.held), (to, input));
+            self.held_until.insert((to, tc), due);
+        } else {
+            self.queue.push_back((to, input));
+        }
+    }
+
+    /// Moves every held-back input due by now to the queue, in order.
+    fn release(&mut self) {
+        while let Some(e) = self.delayed.first_entry() {
+            if e.key().0 > self.now {
+                break;
+            }
+            let (to, input) = e.remove();
+            self.queue.push_back((to, input));
+        }
     }
 
     fn dial(&mut self, from: usize, conn: ConnId, to: &Address) {
@@ -186,22 +310,53 @@ impl Net {
 
     fn send(&mut self, from: usize, conn: ConnId, bytes: &[u8]) {
         // bytes on a connection the peer already closed are lost, as on a transport
-        if let Some((to, tc)) = self.links.get(&(from, conn)).copied() {
-            self.bytes += bytes.len() as u64;
-            let w = self.written.entry((from, conn)).or_default();
-            *w += bytes.len() as u64;
-            let total = *w;
-            if !self.mute.contains(&from) && !self.deaf.contains(&to) {
-                self.queue.push_back((to, Input::Bytes { conn: tc, bytes: bytes.to_vec() }));
-            }
-            self.queue.push_back((from, Input::Taken { conn, bytes: total }));
+        let Some((to, tc)) = self.links.get(&(from, conn)).copied() else { return };
+        self.bytes += bytes.len() as u64;
+        let w = self.written.entry((from, conn)).or_default();
+        *w += bytes.len() as u64;
+        let total = *w;
+        if !self.mute.contains(&from) && !self.deaf.contains(&to) {
+            self.carry(from, conn, to, tc, bytes);
+        }
+        self.queue.push_back((from, Input::Taken { conn, bytes: total }));
+    }
+
+    /// `bytes` from `from`'s end `conn` to `to`'s end `tc`, through the faults.
+    fn carry(&mut self, from: usize, conn: ConnId, to: usize, tc: ConnId, bytes: &[u8]) {
+        let bytes = || Input::Bytes { conn: tc, bytes: bytes.to_vec() };
+        if self.loss.none() {
+            return self.push(to, tc, bytes(), 0);
+        }
+        let (l, r) = (self.loss, self.draw());
+        let (drop, dup, delay) = (u64::from(l.drop), u64::from(l.dup), u64::from(l.delay));
+        if r < drop {
+            self.faulted.0 += 1;
+            self.reset(from, conn);
+        } else if r < drop + dup {
+            self.faulted.1 += 1;
+            self.push(to, tc, bytes(), 0);
+            self.push(to, tc, bytes(), 0);
+        } else if r < drop + dup + delay && l.delay_ms > 0 {
+            self.faulted.2 += 1;
+            let d = 1 + self.draw() * l.delay_ms / 1000;
+            self.push(to, tc, bytes(), d);
+        } else {
+            self.push(to, tc, bytes(), 0);
         }
     }
 
     fn close(&mut self, from: usize, conn: ConnId) {
         if let Some((to, tc)) = self.links.remove(&(from, conn)) {
             self.links.remove(&(to, tc));
-            self.queue.push_back((to, Input::Closed { conn: tc }));
+            self.push(to, tc, Input::Closed { conn: tc }, 0);
+        }
+    }
+
+    /// The connection resets: both ends are told it closed.
+    fn reset(&mut self, from: usize, conn: ConnId) {
+        if self.links.contains_key(&(from, conn)) {
+            self.close(from, conn);
+            self.push(from, conn, Input::Closed { conn }, 0);
         }
     }
 
@@ -209,14 +364,19 @@ impl Net {
     fn cut(&mut self, n: usize, tell_self: bool) {
         let ends: Vec<_> = self.links.keys().filter(|(m, _)| *m == n).copied().collect();
         for (m, c) in ends {
-            if let Some((to, tc)) = self.links.remove(&(m, c)) {
-                self.links.remove(&(to, tc));
-                self.queue.push_back((to, Input::Closed { conn: tc }));
-                if tell_self {
-                    self.queue.push_back((m, Input::Closed { conn: c }));
-                }
+            if tell_self {
+                self.reset(m, c);
+            } else {
+                self.close(m, c);
             }
         }
+    }
+
+    /// The earliest wake of an online node or held-back input due by `until`.
+    fn next_due(&self, until: WallMs) -> Option<WallMs> {
+        let wake = self.wakes.iter().filter(|(n, _)| self.online.get(**n) == Some(&true)).map(|(_, at)| *at).min();
+        let held = self.delayed.keys().next().map(|k| k.0);
+        [wake, held].into_iter().flatten().min().filter(|at| *at <= until)
     }
 }
 
@@ -240,7 +400,9 @@ impl Links for NodeLinks<'_> {
     }
 
     fn wake(&mut self, at: WallMs) {
-        self.net.wakes.insert(self.node, at);
+        // the node's own time to the world's
+        let skew = self.net.skew.get(&self.node).copied().unwrap_or(0);
+        self.net.wakes.insert(self.node, WallMs(at.0.saturating_add_signed(-skew)));
     }
 }
 
@@ -250,6 +412,8 @@ pub struct World {
     rng: SeededRng,
     nodes: Vec<WNode>,
     pub net: Net,
+    /// Hostile nodes: each one's frames pass through its lie.
+    liars: BTreeMap<usize, Liar>,
     /// Deliveries so far; past `cap` the world panics as a storm.
     pub deliveries: u64,
     pub cap: u64,
@@ -257,6 +421,10 @@ pub struct World {
     /// Records every delivery in `seen` while set.
     pub trace: bool,
     pub seen: Vec<Seen>,
+    /// Restarts in place after a device crash (`DiskFault::Crash`), so far.
+    pub crashes: u64,
+    /// The differential's state: things made, values written, commits handed to the reference.
+    pub history: history::Made,
     /// The fixture this world is a copy of, live in this test.
     fixture: Option<String>,
 }
@@ -276,15 +444,43 @@ impl Drop for World {
 }
 
 impl World {
-    /// An empty world, its rng seeded by `seed` (0 in rule tests).
+    /// An empty world, its rng and its faults seeded by `seed` (0 in rule tests).
     pub fn new(seed: u64) -> World {
-        let mut net = Net { rng_seed: seed ^ 0x6e65_7421, ..Net::default() };
+        let mut net = Net { rng_seed: seed ^ 0x6e65_7421, now: START, ..Net::default() };
         net.reach = Reach::default();
-        World { clock: Arc::new(ManualClock::new(START)), rng: SeededRng::from_u64(seed), nodes: Vec::new(), net, deliveries: 0, cap: RULE_CAP, horizon_ms: HORIZON_MS, trace: false, seen: Vec::new(), fixture: None }
+        World {
+            clock: Arc::new(ManualClock::new(START)),
+            rng: SeededRng::from_u64(seed),
+            nodes: Vec::new(),
+            net,
+            liars: BTreeMap::new(),
+            deliveries: 0,
+            cap: RULE_CAP,
+            horizon_ms: HORIZON_MS,
+            trace: false,
+            seen: Vec::new(),
+            crashes: 0,
+            history: history::Made::default(),
+            fixture: None,
+        }
     }
 
+    /// The world's time.
     pub fn now(&self) -> WallMs {
         self.clock.now_wall_ms()
+    }
+
+    /// Node `i`'s time: the world's moved by its skew.
+    pub fn node_now(&self, i: usize) -> WallMs {
+        self.node(i).clock.now_wall_ms()
+    }
+
+    fn set_clock(&mut self, t: WallMs) {
+        if t > self.now() {
+            self.clock.set(t);
+        }
+        self.net.now = self.now();
+        self.net.release();
     }
 
     pub fn len(&self) -> usize {
@@ -315,9 +511,10 @@ impl World {
         let i = self.nodes.len();
         let seed = self.seed();
         let disks = Disks::new();
+        let clock = Arc::new(NodeClock { world: self.clock.clone(), skew: AtomicI64::new(0) });
         let store = Store::open(Box::new(disks.store.0.clone()), Box::new(disks.store.1.clone()), Box::new(SeededRng::from_u64(seed ^ 1))).expect("store");
-        let clock: Arc<dyn Clock> = self.clock.clone();
-        let engine = Engine::create(Box::new(disks.engine.0.clone()), Box::new(disks.engine.1.clone()), store.cipher(), osis_engine::Config::default(), clock, Box::new(SeededRng::from_u64(seed))).expect("engine");
+        let c: Arc<dyn Clock> = clock.clone();
+        let engine = Engine::create(Box::new(disks.engine.0.clone()), Box::new(disks.engine.1.clone()), store.cipher(), osis_engine::Config::default(), c, Box::new(SeededRng::from_u64(seed))).expect("engine");
         let mut key = [0u8; 32];
         self.rng.fill_bytes(&mut key);
         let key = NodeKey(key);
@@ -326,8 +523,8 @@ impl World {
         self.net.reach.listen(i, key.0);
         self.net.online.push(true);
         self.net.accepted.push(0);
-        self.nodes.push(WNode { node, disks, store, key, account: None });
-        self.deliver(i, Input::Tick { now: self.now() });
+        self.nodes.push(WNode { node, disks, store, clock, key, account: None });
+        self.tick(i);
         i
     }
 
@@ -335,15 +532,27 @@ impl World {
         self.nodes.get(i).expect("no such node")
     }
 
+    pub fn online(&self, i: usize) -> bool {
+        self.net.online.get(i) == Some(&true)
+    }
+
     /// Node `i`'s engine, for reads. A write goes through `write`.
     pub fn engine(&mut self, i: usize) -> &mut Engine {
         self.nodes.get_mut(i).expect("no such node").node.engine()
     }
 
-    /// Runs `f` on node `i`'s engine, then tells the node it wrote.
+    /// Node `i`'s store, for reads.
+    pub fn store(&self, i: usize) -> &Store {
+        self.node(i).node.store()
+    }
+
+    /// Runs `f` on node `i`'s engine, then tells the node it wrote (or, when the write crashed
+    /// its device, restarts it in place).
     pub fn write<T>(&mut self, i: usize, f: impl FnOnce(&mut Engine) -> T) -> T {
         let t = f(self.engine(i));
-        self.deliver(i, Input::Wrote);
+        if !self.crashed(i) {
+            self.deliver(i, Input::Wrote);
+        }
         t
     }
 
@@ -354,6 +563,11 @@ impl World {
     /// Node `i`'s address: its dialable key and what it lists in `reach.0`.
     pub fn address(&self, i: usize) -> Address {
         Address { url: osis_transport::peer_url(&self.net.reach.items(i)), key: self.node(i).key.0 }
+    }
+
+    fn tick(&mut self, i: usize) {
+        let now = self.node_now(i);
+        self.deliver(i, Input::Tick { now });
     }
 
     /// Steps node `i` with `input` and carries out every output: the one place a node is stepped.
@@ -367,15 +581,35 @@ impl World {
         if self.trace {
             self.seen.push(seen.clone());
         }
+        if let (Some(l), Input::Bytes { conn, bytes }) = (self.liars.get_mut(&i), &input) {
+            let nodes = &self.nodes;
+            l.heard(*conn, bytes, &|s, b| nodes.iter().any(|n| n.node.store().entry(s, b).ok().flatten().is_some_and(|e| e.role)));
+        }
         let n = self.nodes.get_mut(i).expect("no such node");
-        let out = n.node.handle(input);
+        let mut out = n.node.handle(input);
         if n.node.rounds() > ROUND_CAP {
             panic!("settle loop: {} rounds in one step ({seen:?})", n.node.rounds());
         }
         // one place of outputs (scenario no-host-chain): a step gives at most one wake, last
         let wakes = out.iter().filter(|o| matches!(o, Out::Wake(_))).count();
         assert!(wakes <= 1 && (wakes == 0 || matches!(out.last(), Some(Out::Wake(_)))), "a step's wake is one and last: {out:?}");
+        if let Some(l) = self.liars.get_mut(&i) {
+            out = l.rewrite(out);
+        }
         apply(out, &mut NodeLinks { net: &mut self.net, node: i });
+        self.crashed(i);
+    }
+
+    /// Whether node `i`'s device crashed (`DiskFault::Crash`); if so the node lost power at that
+    /// write and restarted in place.
+    fn crashed(&mut self, i: usize) -> bool {
+        if !self.node(i).disks.faults.crashed() {
+            return false;
+        }
+        self.crashes += 1;
+        self.power_off(i);
+        self.power_on(i);
+        true
     }
 
     /// Changes node `i`'s sync configuration, then steps it (`Input::Wrote`).
@@ -418,40 +652,45 @@ impl World {
         apply(out, &mut NodeLinks { net: &mut self.net, node: i });
     }
 
-    /// Delivers the next input in flight; whether there was one.
+    /// Delivers the next input in flight now; whether there was one.
     pub fn step(&mut self) -> bool {
         let Some((i, input)) = self.net.queue.pop_front() else { return false };
-        if self.net.online.get(i) == Some(&true) {
+        if self.online(i) {
             self.deliver(i, input);
         }
         true
     }
 
-    /// Delivers what is in flight, in order.
+    /// Delivers what is in flight now, in order.
     pub fn flush(&mut self) {
         while let Some((i, input)) = self.net.queue.pop_front() {
-            if self.net.online.get(i) == Some(&true) {
+            if self.online(i) {
                 self.deliver(i, input);
             }
         }
     }
 
-    /// Runs to quiet: delivers everything in flight, then jumps the clock to the earliest wake
-    /// within `horizon_ms` and ticks that node, until neither is left.
+    /// Moves the clock to `at` (when later), releases what is held back to then, and ticks the
+    /// node whose wake is earliest by then.
+    fn fire(&mut self, at: WallMs) {
+        self.set_clock(at);
+        let now = self.now();
+        let next = self.net.wakes.iter().filter(|(n, w)| **w <= now && self.net.online.get(**n) == Some(&true)).min_by_key(|(n, w)| (**w, **n)).map(|(n, _)| *n);
+        if let Some(n) = next {
+            self.net.wakes.remove(&n);
+            self.tick(n);
+        }
+    }
+
+    /// Runs to quiet: delivers everything in flight, then jumps the clock to the earliest wake or
+    /// held-back input within `horizon_ms`, until neither is left.
     pub fn run(&mut self) {
         let horizon = WallMs(self.now().0.saturating_add(self.horizon_ms));
         loop {
             self.flush();
-            let next = self.net.wakes.iter().filter(|(n, _)| self.net.online.get(**n) == Some(&true)).min_by_key(|(n, at)| (**at, **n)).map(|(n, at)| (*n, *at));
-            match next {
-                Some((n, at)) if at <= horizon => {
-                    self.net.wakes.remove(&n);
-                    if at > self.now() {
-                        self.clock.set(at);
-                    }
-                    self.deliver(n, Input::Tick { now: self.now() });
-                }
-                _ => return,
+            match self.net.next_due(horizon) {
+                Some(at) => self.fire(at),
+                None => return,
             }
         }
     }
@@ -461,25 +700,27 @@ impl World {
         let to = WallMs(self.now().0.saturating_add(ms));
         loop {
             self.flush();
-            let next = self.net.wakes.iter().filter(|(n, at)| **at <= to && self.net.online.get(**n) == Some(&true)).min_by_key(|(n, at)| (**at, **n)).map(|(n, at)| (*n, *at));
-            let Some((n, at)) = next else { break };
-            self.net.wakes.remove(&n);
-            if at > self.now() {
-                self.clock.set(at);
+            match self.net.next_due(to) {
+                Some(at) => self.fire(at),
+                None => break,
             }
-            self.deliver(n, Input::Tick { now: self.now() });
         }
-        self.clock.set(to);
+        self.set_clock(to);
+        self.flush();
     }
 
     /// Separates `a` and `b`: their connections are cut (both ends told), no dial between them
     /// connects.
     pub fn partition(&mut self, a: usize, b: usize) {
         self.net.cut_off.insert((a.min(b), a.max(b)));
+        self.cut(a, b);
+    }
+
+    /// Cuts the connections between `a` and `b`, both ends told; they may dial again.
+    pub fn cut(&mut self, a: usize, b: usize) {
         let ends: Vec<_> = self.net.links.iter().filter(|((m, _), (t, _))| (*m, *t) == (a, b)).map(|(k, _)| *k).collect();
         for (m, c) in ends {
-            self.net.close(m, c);
-            self.net.queue.push_back((m, Input::Closed { conn: c }));
+            self.net.reset(m, c);
         }
     }
 
@@ -487,20 +728,50 @@ impl World {
         self.net.cut_off.clear();
     }
 
+    /// Node `i`'s clock runs `ms` ahead of the world's (behind when negative) from now on.
+    pub fn skew(&mut self, i: usize, ms: i64) {
+        let old = self.net.skew.insert(i, ms).unwrap_or(0);
+        self.node(i).clock.skew.store(ms, Ordering::SeqCst);
+        // its wake stays at the same time of its own
+        if let Some(w) = self.net.wakes.get_mut(&i) {
+            *w = WallMs(w.0.saturating_add_signed(old - ms));
+        }
+    }
+
+    /// Node `i`'s device does `f` at its `n`-th durable write from now (0: the next).
+    pub fn disk_fault(&mut self, i: usize, n: u64, f: DiskFault) {
+        self.node(i).disks.faults.at(n, f.store());
+    }
+
+    /// Node `i`'s frames pass through `lie` from now on (`None`: it tells the truth again).
+    pub fn lie(&mut self, i: usize, lie: Option<Lie>) {
+        match lie {
+            Some(l) => self.liars.insert(i, Liar::new(l)),
+            None => self.liars.remove(&i),
+        };
+    }
+
     /// Node `i` loses power: its connections are cut (peers told), its wake and inputs in flight
     /// to it are lost, and so is all it held in memory: it reopens over what reached its disks
-    /// (`MemoryBackend::power_cut`), and is stepped again at `power_on`.
+    /// (`MemoryBackend::power_cut`; a crashed device powers up again), and is stepped again at
+    /// `power_on`.
     pub fn power_off(&mut self, i: usize) {
         self.net.cut(i, false);
         self.net.wakes.remove(&i);
         self.net.queue.retain(|(n, _)| *n != i);
+        self.net.delayed.retain(|_, (n, _)| *n != i);
+        self.net.held_until.retain(|(n, _), _| *n != i);
+        if let Some(l) = self.liars.get_mut(&i) {
+            *l = Liar::new(l.lie);
+        }
         if let Some(o) = self.net.online.get_mut(i) {
             *o = false;
         }
         let seed = self.seed();
-        let clock: Arc<dyn Clock> = self.clock.clone();
         let n = self.nodes.get_mut(i).expect("no such node");
+        n.disks.faults.revive();
         n.disks.power_cut();
+        let clock: Arc<dyn Clock> = n.clock.clone();
         let d = &n.disks;
         let store = Store::open(Box::new(d.store.0.clone()), Box::new(d.store.1.clone()), Box::new(SeededRng::from_u64(seed ^ 1))).expect("store reopens");
         let engine = Engine::open(Box::new(d.engine.0.clone()), Box::new(d.engine.1.clone()), store.cipher(), osis_engine::Config::default(), clock, Box::new(SeededRng::from_u64(seed))).expect("engine reopens");
@@ -510,27 +781,45 @@ impl World {
     }
 
     pub fn power_on(&mut self, i: usize) {
+        if self.online(i) {
+            return;
+        }
         if let Some(o) = self.net.online.get_mut(i) {
             *o = true;
         }
-        self.deliver(i, Input::Tick { now: self.now() });
+        self.tick(i);
     }
 
     /// An exact copy sharing nothing with this world (`osis_base::copying`).
     pub fn copy(&self) -> World {
         let clock = Arc::new(ManualClock::new(self.now()));
-        let dyn_clock: Arc<dyn Clock> = clock.clone();
         let nodes = osis_base::copying::copying(|| {
             self.nodes
                 .iter()
                 .map(|n| {
-                    let node = n.node.test_copy(dyn_clock.clone()).expect("node copy");
-                    let store = n.store.test_copy(dyn_clock.clone()).expect("store copy");
-                    WNode { node, disks: n.disks.test_copy(), store, key: n.key, account: n.account }
+                    let c = Arc::new(NodeClock { world: clock.clone(), skew: AtomicI64::new(n.clock.skew.load(Ordering::SeqCst)) });
+                    let dc: Arc<dyn Clock> = c.clone();
+                    let node = n.node.test_copy(dc.clone()).expect("node copy");
+                    let store = n.store.test_copy(dc).expect("store copy");
+                    WNode { node, disks: n.disks.test_copy(), store, clock: c, key: n.key, account: n.account }
                 })
                 .collect()
         });
-        World { clock, rng: self.rng.test_copy(), nodes, net: self.net.clone(), deliveries: 0, cap: self.cap, horizon_ms: self.horizon_ms, trace: self.trace, seen: Vec::new(), fixture: None }
+        World {
+            clock,
+            rng: self.rng.test_copy(),
+            nodes,
+            net: self.net.clone(),
+            liars: self.liars.clone(),
+            deliveries: 0,
+            cap: self.cap,
+            horizon_ms: self.horizon_ms,
+            trace: self.trace,
+            seen: Vec::new(),
+            crashes: 0,
+            history: self.history.clone(),
+            fixture: None,
+        }
     }
 }
 
@@ -560,7 +849,8 @@ pub fn two_nodes() -> World {
 }
 
 /// One step of a scripted run: what a random layer generates and `play` replays. Printed as
-/// Rust on failure (`osis_base::testenv::Script`).
+/// Rust on failure (`osis_base::testenv::Script`; `use crate::harness::script::*` brings every
+/// name a printed step uses).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
     /// Run to quiet.
@@ -569,15 +859,74 @@ pub enum Step {
     Advance(u64),
     Partition(usize, usize),
     Heal,
+    /// Cut the connections between two nodes (both told); they may dial again.
+    Cut(usize, usize),
     PowerOff(usize),
     PowerOn(usize),
+    /// The network's faults from now on.
+    Lossy(Loss),
+    /// A node's clock runs this many ms ahead of the world's (behind when negative).
+    Skew(usize, i64),
+    /// A node's device does this at its n-th durable write from now.
+    Disk(usize, u64, DiskFault),
+    /// A node's frames pass through this lie from now on.
+    Lies(usize, Lie),
+    /// A node tells the truth again.
+    Truth(usize),
+    /// The differential's writes (`history`): node i makes a thing (its account the first admin,
+    /// a value written); writes thing k; grants node j's account a role on thing k; removes node
+    /// j's account from thing k; rotates thing k's secrets.
+    New(usize),
+    Write(usize, usize),
+    Grant(usize, usize, usize, history::Gives),
+    Remove(usize, usize, usize),
+    Rotate(usize, usize),
+}
+
+/// Every name a printed script uses.
+#[allow(unused_imports)]
+pub mod script {
+    pub use super::DiskFault::*;
+    pub use super::Loss;
+    pub use super::Step::*;
+    pub use super::history::Gives::*;
+    pub use super::lies::Lie::*;
 }
 
 impl Step {
-    /// Simpler forms of this step, for shrinking.
+    /// Simpler forms of this step, for shrinking: shorter times, fewer faults, a later device
+    /// fault, a smaller skew, a lesser role.
     pub fn simpler(&self) -> Vec<Step> {
         match self {
             Step::Advance(ms) if *ms > 1 => vec![Step::Advance(ms / 2)],
+            Step::Lossy(l) if !l.none() => {
+                let mut v = Vec::new();
+                for (i, f) in [l.drop, l.dup, l.delay].into_iter().enumerate() {
+                    if f > 0 {
+                        let mut x = *l;
+                        let half = f / 2;
+                        match i {
+                            0 => x.drop = half,
+                            1 => x.dup = half,
+                            _ => x.delay = half,
+                        }
+                        v.push(Step::Lossy(x));
+                    }
+                }
+                if l.delay_ms > 1 {
+                    v.push(Step::Lossy(Loss { delay_ms: l.delay_ms / 2, ..*l }));
+                }
+                v
+            }
+            Step::Skew(i, ms) if *ms != 0 => vec![Step::Skew(*i, ms / 2)],
+            Step::Disk(i, n, f) => {
+                let mut v: Vec<Step> = (*f != DiskFault::Fail).then_some(Step::Disk(*i, *n, DiskFault::Fail)).into_iter().collect();
+                if *n > 0 {
+                    v.push(Step::Disk(*i, n / 2, *f));
+                }
+                v
+            }
+            Step::Grant(i, k, j, g) => g.lesser().map(|x| Step::Grant(*i, *k, *j, x)).into_iter().collect(),
             _ => Vec::new(),
         }
     }
@@ -586,21 +935,39 @@ impl Step {
 /// The variable that shrinks a failing script.
 pub const SHRINK_VAR: &str = "OSIS_SYNC_SHRINK";
 
+/// Plays one step on `w`; a note of what it did (empty: nothing to say).
+pub fn step(w: &mut World, s: &Step) -> String {
+    match s {
+        Step::Run => w.run(),
+        Step::Advance(ms) => w.advance(*ms),
+        Step::Partition(a, b) => w.partition(*a, *b),
+        Step::Heal => w.heal(),
+        Step::Cut(a, b) => w.cut(*a, *b),
+        Step::PowerOff(i) => w.power_off(*i),
+        Step::PowerOn(i) => w.power_on(*i),
+        Step::Lossy(l) => w.net.loss = *l,
+        Step::Skew(i, ms) => w.skew(*i, *ms),
+        Step::Disk(i, n, f) => w.disk_fault(*i, *n, *f),
+        Step::Lies(i, l) => w.lie(*i, Some(*l)),
+        Step::Truth(i) => w.lie(*i, None),
+        Step::New(..) | Step::Write(..) | Step::Grant(..) | Step::Remove(..) | Step::Rotate(..) => return history::step(w, s),
+    }
+    String::new()
+}
+
 /// Plays `steps` on `w`, recording each so a failure prints the script with `replay` (the call
-/// that replays it).
-pub fn play(w: &mut World, steps: &[Step], replay: String) {
-    let mut script = Script::new("crate::harness::Step", SHRINK_VAR, replay);
+/// that replays it). The script is returned: held while the caller checks the outcome, a failed
+/// check prints it too.
+pub fn play(w: &mut World, steps: &[Step], replay: String) -> Script<Step> {
+    let mut script = Script::new("crate::harness::script", SHRINK_VAR, replay);
     for s in steps {
         script.push(s.clone(), String::new());
-        match s {
-            Step::Run => w.run(),
-            Step::Advance(ms) => w.advance(*ms),
-            Step::Partition(a, b) => w.partition(*a, *b),
-            Step::Heal => w.heal(),
-            Step::PowerOff(i) => w.power_off(*i),
-            Step::PowerOn(i) => w.power_on(*i),
+        let note = step(w, s);
+        if !note.is_empty() {
+            script.note(note);
         }
     }
+    script
 }
 
 /// Runs `run` (which plays a script with `play`); with `OSIS_SYNC_SHRINK` set, a failure is

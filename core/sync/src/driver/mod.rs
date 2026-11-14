@@ -183,6 +183,11 @@ impl Node {
         &mut self.engine
     }
 
+    /// The node's store per sync ID, for reads (status views, tests).
+    pub fn store(&self) -> &Store {
+        &self.store
+    }
+
     pub fn config(&self) -> &SyncConfig {
         &self.cfg
     }

@@ -587,6 +587,13 @@ impl<A: std::fmt::Debug + Clone + 'static> Script<A> {
     pub fn push(&mut self, a: A, note: String) {
         self.steps.push((a, note));
     }
+
+    /// Sets the note of the last step recorded (what it did, learned once it ran).
+    pub fn note(&mut self, note: String) {
+        if let Some(last) = self.steps.last_mut() {
+            last.1 = note;
+        }
+    }
 }
 
 impl<A: std::fmt::Debug + Clone + 'static> Drop for Script<A> {

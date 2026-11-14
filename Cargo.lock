@@ -2911,6 +2911,7 @@ dependencies = [
  "osis-engine",
  "osis-label",
  "osis-proto",
+ "osis-schema",
  "osis-store",
  "osis-transport",
  "tokio",

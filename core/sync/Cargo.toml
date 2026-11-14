@@ -29,4 +29,5 @@ default = ["driver"]
 driver = ["dep:tokio"]
 
 [dev-dependencies]
+osis-schema.workspace = true
 osis-transport.workspace = true
