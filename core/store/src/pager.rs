@@ -1116,7 +1116,10 @@ impl Pager {
                     new_nodes.push(((level, idx), Some(node)));
                     Some(Entry { key, ver })
                 };
-                if old.is_some() || entry.is_some() {
+                // a node on a shredded path reaches its parent even when it held nothing before
+                // and holds nothing now (the old top emptied in a commit adding two levels), so the
+                // rotation reaches the root
+                if old.is_some() || entry.is_some() || rot {
                     next.entry(idx / arity).or_default().insert((idx % arity) as u32, entry);
                 }
                 if rot {
@@ -1415,6 +1418,35 @@ mod tests {
         assert_eq!(p.read(40).unwrap(), None);
     }
 
+    // spec/commits.md §5: dropping destroys every local copy; notes/local-store.md, Key tree: a shredded delete in a
+    // commit that adds two levels and leaves the old top empty still rotates the root, so the
+    // deleted unit is unrecoverable from every byte the device was ever given.
+    #[test]
+    fn a_shred_that_empties_the_old_top_while_growing_two_levels_rotates_the_root() {
+        let (b, r) = (MemoryBackend::new(), MemoryRoot::new());
+        b.record_history();
+        let cfg = StoreConfig { arity: 2, ..StoreConfig::default() };
+        let mut rng = SeededRng::from_u64(0);
+        let mut p = Pager::create(Box::new(b.clone()), Box::new(r), cfg, b"catalog".to_vec(), &mut rng).unwrap();
+        let mut d = p.begin().unwrap();
+        let s = p.alloc(&mut d).unwrap();
+        p.txn_write(&mut d, s, b"MARK-secret".to_vec(), false, &mut rng).unwrap();
+        p.commit(d, &mut rng).unwrap();
+        // two slots under the top alone; the next three take the tree to three levels
+        let mut d = p.begin().unwrap();
+        p.txn_delete(&mut d, 0, false);
+        p.txn_delete(&mut d, s, true);
+        for _ in 0..3 {
+            p.alloc(&mut d).unwrap();
+        }
+        let epoch = p.epoch();
+        p.commit(d, &mut rng).unwrap();
+        assert_eq!(p.epoch(), epoch + 1, "the root rotated");
+        let keys = p.forensic_keys().unwrap();
+        let found = crate::forensic::attack(&crate::Evidence::of(keys, &b), None);
+        assert!(!found.iter().any(|f| f.plain.windows(11).any(|w| w == b"MARK-secret")));
+    }
+
     // spec/commits.md §5; notes/local-store.md, Key tree: a unit spilled, written again and
     // deleted leaves no row at commit.
     #[test]
@@ -1589,6 +1621,131 @@ mod tests {
             padded += p;
         }
         println!("unit padding over {UNIT_MIN}..16 KiB: {:.2}% mean", 100.0 * (padded - plain) as f64 / plain as f64);
+    }
+
+    /// A step of `growth_erasure_and_crashes`: a new unit (or a bare allocation), a rewrite or a
+    /// delete of a live unit picked by index, with its shred flag.
+    #[derive(Clone, Debug)]
+    enum TreeOp {
+        New,
+        Alloc,
+        Write(usize, bool),
+        Delete(usize, bool),
+    }
+
+    fn tree_op() -> impl proptest::strategy::Strategy<Value = TreeOp> {
+        use proptest::prelude::*;
+        prop_oneof![
+            3 => Just(TreeOp::New),
+            1 => Just(TreeOp::Alloc),
+            2 => (any::<usize>(), any::<bool>()).prop_map(|(i, s)| TreeOp::Write(i, s)),
+            2 => (any::<usize>(), any::<bool>()).prop_map(|(i, s)| TreeOp::Delete(i, s)),
+        ]
+    }
+
+    proptest::proptest! {
+        // spec/requirements.md, Deletion; spec/commits.md §4, §5; notes/local-store.md, Key tree:
+        // random commits over a binary key tree that grows a level every few commits, with
+        // crashes at any durable write (and in the recovery after it), checked against a model:
+        // the store holds exactly the committed state (before or after a crashed commit, never
+        // between), a slot it never wrote reads as absent, no key is reachable twice from the
+        // root, and no version superseded by a committed shredded write or delete of its slot is
+        // recoverable from every byte the device was ever given with every key it yields now.
+        #[test]
+        fn growth_erasure_and_crashes(txns in proptest::collection::vec((proptest::collection::vec(tree_op(), 1..8), proptest::option::of(0u64..4)), 1..14)) {
+            use proptest::{prop_assert, prop_assert_eq};
+            let faults = crate::Faults::new();
+            let (b, r) = (MemoryBackend::with_faults(faults.clone()), MemoryRoot::with_faults(faults.clone()));
+            b.record_history();
+            let cfg = StoreConfig { arity: 2, ..StoreConfig::default() };
+            let mut rng = SeededRng::from_u64(0);
+            let mut p = Pager::create(Box::new(b.clone()), Box::new(r.clone()), cfg, b"catalog".to_vec(), &mut rng).unwrap();
+            let mark = |n: u64| format!("MARK{n:08}").into_bytes();
+            let (mut marks, mut live) = (0u64, BTreeMap::from([(0u64, b"catalog".to_vec())]));
+            // committed versions superseded without shredding, by slot; versions a shred erased
+            let mut pending: BTreeMap<u64, Vec<Vec<u8>>> = BTreeMap::new();
+            let mut erased: Vec<Vec<u8>> = Vec::new();
+            let mut slots = 1u64;
+            for (ops, crash) in txns {
+                let mut d = p.begin().unwrap();
+                let mut after = live.clone();
+                let mut shredded: BTreeMap<u64, bool> = BTreeMap::new();
+                for op in ops {
+                    let keys: Vec<u64> = after.keys().copied().collect();
+                    match op {
+                        TreeOp::New | TreeOp::Alloc => {
+                            let s = p.alloc(&mut d).unwrap();
+                            if matches!(op, TreeOp::New) {
+                                marks += 1;
+                                p.txn_write(&mut d, s, mark(marks), false, &mut rng).unwrap();
+                                after.insert(s, mark(marks));
+                            }
+                        }
+                        TreeOp::Write(i, sh) if !keys.is_empty() => {
+                            let s = keys[i % keys.len()];
+                            marks += 1;
+                            p.txn_write(&mut d, s, mark(marks), sh, &mut rng).unwrap();
+                            after.insert(s, mark(marks));
+                            *shredded.entry(s).or_default() |= sh;
+                        }
+                        TreeOp::Delete(i, sh) if !keys.is_empty() => {
+                            let s = keys[i % keys.len()];
+                            p.txn_delete(&mut d, s, sh);
+                            after.remove(&s);
+                            *shredded.entry(s).or_default() |= sh;
+                        }
+                        _ => {}
+                    }
+                }
+                let next_slots = d.meta.next_slot;
+                if let Some(n) = crash {
+                    faults.at(n, crate::Fault::Crash);
+                }
+                let ok = p.commit(d, &mut rng).is_ok();
+                let committed = if faults.crashed() || !ok {
+                    drop(p);
+                    faults.revive();
+                    // a crash in the recovery too
+                    faults.at(0, crate::Fault::Crash);
+                    drop(Pager::open(Box::new(b.clone()), Box::new(r.clone()), cfg));
+                    faults.revive();
+                    p = Pager::open(Box::new(b.clone()), Box::new(r.clone()), cfg).unwrap();
+                    let state: BTreeMap<u64, Vec<u8>> = (0..next_slots).filter_map(|s| p.read(s).unwrap().map(|v| (s, v))).collect();
+                    prop_assert!(state == live || state == after, "torn state after a crash");
+                    // a commit of allocations alone shows only in the slots allocated
+                    state == after && (state != live || p.meta().next_slot == next_slots)
+                } else {
+                    faults.revive();
+                    true
+                };
+                if committed {
+                    for (s, sh) in shredded {
+                        let old = live.get(&s).cloned();
+                        let earlier = pending.entry(s).or_default();
+                        earlier.extend(old);
+                        if sh {
+                            erased.append(earlier);
+                        }
+                    }
+                    live = after;
+                    slots = next_slots;
+                }
+                prop_assert_eq!(p.meta().next_slot, slots);
+                for s in 0..slots + 8 {
+                    prop_assert_eq!(p.read(s).unwrap(), live.get(&s).cloned(), "slot {}", s);
+                }
+                let keys = p.forensic_keys().unwrap();
+                prop_assert_eq!(keys.iter().collect::<BTreeSet<_>>().len(), keys.len(), "a key reached twice");
+                let found = crate::forensic::attack(&crate::Evidence::of(keys, &b), None);
+                let has = |m: &[u8]| found.iter().any(|f| f.plain.windows(m.len()).any(|w| w == m));
+                for m in live.values() {
+                    prop_assert!(has(m), "a live unit the attack cannot read: the attack is blind");
+                }
+                for m in &erased {
+                    prop_assert!(!has(m), "erased {} recoverable", String::from_utf8_lossy(m));
+                }
+            }
+        }
     }
 
     proptest::proptest! {

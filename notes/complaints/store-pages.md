@@ -1,3 +1,5 @@
 # store-pages
 - A store change that only draws fewer random keys failed nine node and osis tests: they assert orders that random ids decide (issues/osis-tests-depend-on-store-rng.md). Telling them from a real regression took a perturbation run on main per test (extra `Secret32::random` draws per commit); worth keeping in mind for any store or crypto change.
 - The issue's "180 pages per write" counted every AEAD seal of the run (commit blobs and boxes included) across three nodes; the store's share was about 101, now 48. Count with `osis_base::costs::count` at the seal site before chasing a number.
+- Review: the worker's tests grew the tree one level per commit only; a commit adding two levels while emptying the old top lost the shred's rotation (root key kept, the deleted unit recoverable). The forensic attack inside a random differential at arity 2 found it in about a quarter of 32-case runs; a key-tree change wants that differential from the worker, not the reviewer.
+- `PROPTEST_RNG_SEED=N` makes a proptest failure reproducible across runs; without it each run draws new cases.
