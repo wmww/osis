@@ -142,7 +142,7 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
     }
 
     /// `try_settle` of a value computed (with what it read, `frame`) while this was not borrowed:
-    /// for an owner inside what the function reads (`Cutoff::get_in`).
+    /// for an owner inside what the function reads (`Spread::refresh_in`).
     pub(super) fn settled<E>(&mut self, k: &K, out: Result<V, E>, frame: super::Frame) -> Result<Option<(Option<V>, V)>, E> {
         match out {
             Ok(now) => Ok(self.record(k, now, frame)),

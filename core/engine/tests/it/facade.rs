@@ -1093,7 +1093,8 @@ fn record_blob_rows_go_with_their_sync_id_spec_perm_4() {
 // with it), spec/sync-judgement.md §2 (required set: those certificates, nothing more): x is
 // an item of t's closure that t reads; a private group h holds write on x, peer 1's account is in
 // h. h's roster is no chain into t, and nobody wrote on x through h: its edge write on h is not
-// under t's sync ID. Once peer 1 writes on x through h, its author's chain goes there.
+// under t's sync ID. Once peer 1 writes on x through h, its author's chain goes there, and a
+// follower of the member commit's bodies is due after `Engine::follow` with nothing else asked.
 #[test]
 fn a_chain_goes_under_a_sync_id_only_for_its_group_or_a_write_there_spec_perm_4() {
     let (mut lp, ps) = people(2);
@@ -1118,9 +1119,17 @@ fn a_chain_goes_under_a_sync_id_only_for_its_group_or_a_write_there_spec_perm_4(
     spread(&mut lp);
     let mut m = Mutation::new();
     m.set(x, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
+    // a follower of the member commit's body under t's sync ID (sync's read): the write on x is
+    // another commit, yet it moves this one's certificates, so the key goes due once `follow`ed
+    let mut fx: osis_base::memo::Effects<(), bool> = osis_base::memo::Effects::new("test bodies");
+    fx.want(());
+    let e = &mut lp.peers[0].engine;
+    fx.settle(&(), || e.sync_bodies(&member).unwrap().contains_key(&s));
     lp.peers[1].engine.commit(m).unwrap().unwrap();
     spread(&mut lp);
     let e = &mut lp.peers[0].engine;
+    e.follow().unwrap();
+    assert_eq!(fx.due(), [()], "the member commit's certificates moved");
     assert!(e.sync_bodies(&member).unwrap().get(&s).is_some_and(|b| b.certificate && b.copy && b.parts.contains(&roles)), "the writer's chain to x: {:?}", e.sync_bodies(&member).unwrap());
 }
 

@@ -46,13 +46,16 @@ fn named(certs: &Certs, c: &CommitId) -> Option<Named> {
 
 impl Certified {
     /// `t`'s certificates moved from `was` to `now`: the rows of the commits either names.
-    fn index(&mut self, t: &Tid, was: &Certs, now: &Certs) {
+    /// Whether a row moved.
+    fn index(&mut self, t: &Tid, was: &Certs, now: &Certs) -> bool {
+        let mut moved = false;
         let commits: BTreeSet<&CommitId> = was.commits.keys().chain(&was.headers).chain(now.commits.keys()).chain(&now.headers).collect();
         for c in commits {
             let n = named(now, c);
             if named(was, c) == n {
                 continue;
             }
+            moved = true;
             let mut row = self.of.get(c).map(|r| (**r).clone()).unwrap_or_default();
             match n {
                 Some(n) => row.insert(*t, n),
@@ -64,6 +67,7 @@ impl Certified {
                 self.of.insert(*c, Arc::new(row));
             }
         }
+        moved
     }
 }
 
@@ -76,8 +80,8 @@ impl Engine {
 
     /// Brings `Certified` up to date with what moved since the last call: work in proportion to
     /// the things whose certificates' reads moved. Read by no caller: what a caller reads is the
-    /// rows (`certified`).
-    pub(crate) fn follow_certificates(&mut self) -> Result<()> {
+    /// rows (`certified`). Whether a row moved.
+    pub(crate) fn follow_certificates(&mut self) -> Result<bool> {
         let _u = Unrecorded::start();
         let mut things = std::mem::replace(&mut self.core.certified.things, Effects::new("sync: certified things"));
         let mut certs = std::mem::replace(&mut self.core.certified.certs, Effects::new("sync: certified"));
@@ -87,7 +91,8 @@ impl Engine {
         r
     }
 
-    fn follow_with(&mut self, things: &mut Effects<(), Arc<BTreeSet<Tid>>>, certs: &mut Effects<Tid, Arc<Certs>>) -> Result<()> {
+    fn follow_with(&mut self, things: &mut Effects<(), Arc<BTreeSet<Tid>>>, certs: &mut Effects<Tid, Arc<Certs>>) -> Result<bool> {
+        let mut moved = false;
         if !things.wants(&()) {
             things.want(());
         }
@@ -102,15 +107,15 @@ impl Engine {
         }
         for t in gone {
             if let Some((Some(was), _)) = certs.settle(&t, || Arc::new(Certs::default())) {
-                self.core.certified.index(&t, &was, &Certs::default());
+                moved |= self.core.certified.index(&t, &was, &Certs::default());
             }
             certs.unwant(&t);
         }
         for t in certs.due() {
             let Some((was, now)) = certs.settle(&t, || self.sync_certificates(&t)) else { continue };
-            self.core.certified.index(&t, &was.unwrap_or_default(), &now);
+            moved |= self.core.certified.index(&t, &was.unwrap_or_default(), &now);
         }
-        Ok(())
+        Ok(moved)
     }
 
     /// Per thing read here whose certificates name commit `c`, what they name of it, and the

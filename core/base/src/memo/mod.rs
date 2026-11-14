@@ -24,9 +24,9 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-mod cutoff;
 mod effects;
-pub use cutoff::{Cutoff, Spread};
+mod spread;
+pub use spread::Spread;
 pub use effects::{Effects, Feed};
 
 /// Absent keys share a stamp per bucket of their hash (`Table::absent`). Performance switch: at 1

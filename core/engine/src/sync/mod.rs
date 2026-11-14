@@ -342,14 +342,19 @@ impl Engine {
 
     // Held parts and bodies
 
-    /// Brings the per-commit rows `sync_bodies` reads of engine-wide derivations (each read
-    /// thing's certificates, `certified`; `Core::published`, `Core::sync_holding`) up to date with what moved since the last call: a
-    /// module calls it before its `due()`, so a key that read a row is due once the row moves.
-    pub fn follow(&mut self) -> Result<()> {
+    /// Brings the facade values kept per entry (`memo::Spread`: `Core::published`,
+    /// `Core::sync_holding`; each read thing's certificates per commit, `certified`) up to date
+    /// with what moved since the last call: whether any entry moved. Each refreshes itself when
+    /// asked, but an `Effects` key that read an entry goes due only once the entry is written, so
+    /// a module calls this before its `due()` (the driver, before each module's settle and until
+    /// it moves nothing). Not done at each transaction's end: each refresh derives a whole walk
+    /// (the sync set, every labeled thing's chain, a component's certificates), so a burst of n
+    /// transactions between two sync steps would cost n walks, not one (notes/engine.md).
+    pub fn follow(&mut self) -> Result<bool> {
         let core = &self.core;
-        core.published.refresh(|| crate::labeling::published_all(core));
-        osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.sync_holding, |e, s| e.sync_holding_now(s))?;
-        self.follow_certificates()
+        let mut moved = core.published.refresh(|| crate::labeling::published_all(core));
+        moved |= osis_base::memo::Spread::refresh_in(self, |e| &e.core.sync_holding, |e| Ok::<_, Error>(e.sync_set()?.ids.clone()))?;
+        Ok(self.follow_certificates()? | moved)
     }
 
     /// Per sync ID of the sync set whose required set holds a body of `c`: that body.
@@ -509,7 +514,7 @@ impl Engine {
     /// How this node holds sync ID `s`, and its thing (`sync_set`'s entry for `s`): a reader moves
     /// only when the answer does (`Core::sync_holding`).
     pub fn sync_holding(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
-        osis_base::memo::Cutoff::get_in(self, |e| &e.core.sync_holding, s, |e, s| e.sync_holding_now(s))
+        osis_base::memo::Spread::get_in(self, |e| &e.core.sync_holding, s, |e| Ok::<_, Error>(e.sync_set()?.ids.clone()))
     }
 
     /// The things the sync set is judged over: the synced group's closure (the same `Arc` while
