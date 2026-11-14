@@ -9,8 +9,10 @@ use crate::Error;
 use osis_base::cbor::{decode, encode};
 use osis_base::format::INBOX_LIFETIME_MS;
 use osis_base::format::MAX_URL_BYTES;
-use osis_base::{CreationRecord, SyncId, Tid, Value, WallMs};
-use osis_crypto::{CryptoRngCore, KemPublicKey, KemSecret, VerifyingKey, open_inbox, seal_inbox};
+use osis_base::{CommitId, CreationRecord, Role, SyncId, Tid, Value, WallMs};
+use osis_crypto::{CryptoRngCore, Domain, KemPublicKey, KemSecret, Signature, SigningSecret, VerifyingKey, open_inbox, seal_inbox};
+use osis_schema::Codec;
+use osis_schema::core_types::{Epoch, SecretBox};
 
 /// At most this many URLs in an inbox blob's dial hint (spec/wire.md §9 position 4).
 pub const MAX_DIAL_URLS: usize = 16;
@@ -61,8 +63,7 @@ impl InboxPayload {
                 Value::List(t.delete_keys.iter().map(|(a, w)| Value::List(vec![Value::bytes(&a.to_bytes()), Value::bytes(&w.to_bytes())])).collect()),
             ]));
         }
-        let dial = self.dial.iter().map(|d| Value::List(vec![Value::bytes(&d.dialable), Value::List(d.urls.iter().map(|u| Value::Str(u.clone())).collect())])).collect();
-        Value::List(vec![self.commit.clone(), Value::List(things), Value::List(self.chain.clone()), records_value(&self.records), Value::List(dial)])
+        Value::List(vec![self.commit.clone(), Value::List(things), Value::List(self.chain.clone()), records_value(&self.records), dial_value(self.dial.as_ref())])
     }
 
     /// The commit's plaintext, its decoded form freed first so that decoding the plaintext again
@@ -99,25 +100,33 @@ impl InboxPayload {
             }
             out.push(InboxThing { tid, sync_id, delete_keys });
         }
-        let dial = match get_opt(&dial, "inbox dial hint")? {
-            None => None,
-            Some(Value::List(d)) => {
-                let [k, Value::List(urls)] = d.as_slice() else { return Err(Error::Malformed("inbox dial hint")) };
-                if urls.len() > MAX_DIAL_URLS {
-                    return Err(Error::Malformed("inbox dial hint"));
-                }
-                let urls = urls
-                    .iter()
-                    .map(|u| match u {
-                        Value::Str(u) if u.len() <= MAX_URL_BYTES => Ok(u.clone()),
-                        _ => Err(Error::Malformed("inbox dial url")),
-                    })
-                    .collect::<Result<_, _>>()?;
-                Some(DialHint { dialable: get_bytes(k, "inbox dialable")?, urls })
+        Ok(InboxPayload { commit, things: out, chain, records, dial: dial_from(&dial)? })
+    }
+}
+
+/// `Opt([dialable, [url*]])` (spec/wire.md §9 position 4).
+fn dial_value(d: Option<&DialHint>) -> Value {
+    Value::opt(d.map(|d| Value::List(vec![Value::bytes(&d.dialable), Value::List(d.urls.iter().map(|u| Value::Str(u.clone())).collect())])))
+}
+
+fn dial_from(v: &Value) -> Result<Option<DialHint>, Error> {
+    match get_opt(v, "inbox dial hint")? {
+        None => Ok(None),
+        Some(Value::List(d)) => {
+            let [k, Value::List(urls)] = d.as_slice() else { return Err(Error::Malformed("inbox dial hint")) };
+            if urls.len() > MAX_DIAL_URLS {
+                return Err(Error::Malformed("inbox dial hint"));
             }
-            Some(_) => return Err(Error::Malformed("inbox dial hint")),
-        };
-        Ok(InboxPayload { commit, things: out, chain, records, dial })
+            let urls = urls
+                .iter()
+                .map(|u| match u {
+                    Value::Str(u) if u.len() <= MAX_URL_BYTES => Ok(u.clone()),
+                    _ => Err(Error::Malformed("inbox dial url")),
+                })
+                .collect::<Result<_, _>>()?;
+            Ok(Some(DialHint { dialable: get_bytes(k, "inbox dialable")?, urls }))
+        }
+        Some(_) => Err(Error::Malformed("inbox dial hint")),
     }
 }
 
@@ -199,20 +208,174 @@ impl StrandedNotice {
     }
 }
 
-/// What an inbox blob carries: a role commit with what it names, or a stranded notice.
+/// `BoxedThing := [tid, Opt(sync_id), [[role, epoch, box]+]]` (spec/wire.md §9): the
+/// recipient's boxes of a role commit on one thing, by (role, epoch), with its sync ID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoxedThing {
+    pub tid: Tid,
+    pub sync_id: Option<SyncId>,
+    /// Sorted by the canonical bytes of `[role, epoch]`, distinct, at least one.
+    pub boxes: Vec<(Role, Epoch, SecretBox)>,
+}
+
+fn box_order(r: &Role, e: &Epoch) -> Vec<u8> {
+    encode(&Value::List(vec![r.to_value(), e.to_value()]))
+}
+
+impl BoxedThing {
+    /// Sorts the boxes as the layout wants them.
+    pub fn new(tid: Tid, sync_id: Option<SyncId>, mut boxes: Vec<(Role, Epoch, SecretBox)>) -> BoxedThing {
+        boxes.sort_by_cached_key(|(r, e, _)| box_order(r, e));
+        boxes.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+        BoxedThing { tid, sync_id, boxes }
+    }
+
+    fn to_value(&self) -> Value {
+        let boxes = self.boxes.iter().map(|(r, e, b)| Value::List(vec![r.to_value(), e.to_value(), b.to_value()])).collect();
+        Value::List(vec![tid(&self.tid), Value::opt(self.sync_id.map(|s| Value::bytes(&s.0))), Value::List(boxes)])
+    }
+
+    fn from_value(v: &Value) -> Result<BoxedThing, Error> {
+        let bad = Error::Malformed("boxed thing");
+        let Value::List(f) = v else { return Err(bad) };
+        let [t, sync_id, Value::List(bs)] = f.as_slice() else { return Err(bad) };
+        let sync_id = get_opt(sync_id, "boxed thing sync ID")?.map(|v| get_bytes(v, "boxed thing sync ID").map(SyncId)).transpose()?;
+        let mut boxes = Vec::with_capacity(bs.len());
+        let mut last: Option<Vec<u8>> = None;
+        for b in bs {
+            let Value::List(x) = b else { return Err(Error::Malformed("boxed thing box")) };
+            let [r, e, b] = x.as_slice() else { return Err(Error::Malformed("boxed thing box")) };
+            let (r, e, b) = (Role::from_value(r), Epoch::from_value(e), SecretBox::from_value(b));
+            let (Ok(r), Ok(e), Ok(b)) = (r, e, b) else { return Err(Error::Malformed("boxed thing box")) };
+            let k = box_order(&r, &e);
+            if last.as_ref().is_some_and(|l| *l >= k) {
+                return Err(Error::Malformed("boxed thing boxes not sorted"));
+            }
+            last = Some(k);
+            boxes.push((r, e, b));
+        }
+        if boxes.is_empty() {
+            return Err(Error::Malformed("boxed thing with no box"));
+        }
+        Ok(BoxedThing { tid: get_tid(t, "boxed thing tid")?, sync_id, boxes })
+    }
+}
+
+/// `BoxesPayload := ["boxes", commit_id, author, Opt(epoch_id), [BoxedThing+], Opt([dialable,
+/// [url*]]), signature]` (spec/wire.md §9): to a recipient below read on every thing a role
+/// commit names, its own boxes of that commit, signed by the commit's author, in place of the
+/// commit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoxesPayload {
+    pub commit: CommitId,
+    pub author: Tid,
+    /// The epoch the author (an account) signs at; `None` for another key actor.
+    pub epoch: Option<CommitId>,
+    /// Sorted by tid, distinct, at least one.
+    pub things: Vec<BoxedThing>,
+    pub dial: Option<DialHint>,
+    pub signature: Signature,
+}
+
+impl BoxesPayload {
+    /// The payload, `things` sorted by tid, signed by `key` for `recipient`.
+    pub fn signed(recipient: &Tid, commit: CommitId, author: Tid, epoch: Option<CommitId>, mut things: Vec<BoxedThing>, dial: Option<DialHint>, key: &SigningSecret) -> BoxesPayload {
+        things.sort_by_key(|t| t.tid);
+        things.dedup_by_key(|t| t.tid);
+        let mut p = BoxesPayload { commit, author, epoch, things, dial, signature: Signature([0; 64]) };
+        p.signature = key.sign(Domain::InboxBoxes, &p.digest(recipient));
+        p
+    }
+
+    /// What the signature signs: BLAKE3 of `[recipient, commit_id, author, Opt(epoch_id), things]`.
+    fn digest(&self, recipient: &Tid) -> [u8; 32] {
+        let v = Value::List(vec![tid(recipient), Value::bytes(&self.commit.0), tid(&self.author), Value::opt(self.epoch.map(|e| Value::bytes(&e.0))), self.things_value()]);
+        osis_base::hash::hash(&encode(&v))
+    }
+
+    /// Whether the signature is `key`'s for `recipient`.
+    pub fn verifies(&self, recipient: &Tid, key: &VerifyingKey) -> bool {
+        key.verify(Domain::InboxBoxes, &self.digest(recipient), &self.signature).is_ok()
+    }
+
+    fn things_value(&self) -> Value {
+        Value::List(self.things.iter().map(BoxedThing::to_value).collect())
+    }
+
+    pub fn to_value(&self) -> Value {
+        Value::List(vec![
+            Value::Str("boxes".into()),
+            Value::bytes(&self.commit.0),
+            tid(&self.author),
+            Value::opt(self.epoch.map(|e| Value::bytes(&e.0))),
+            self.things_value(),
+            dial_value(self.dial.as_ref()),
+            self.signature.to_value(),
+        ])
+    }
+
+    pub fn from_value(v: &Value) -> Result<BoxesPayload, Error> {
+        let bad = Error::Malformed("boxes payload");
+        let Value::List(items) = v else { return Err(bad) };
+        let [Value::Str(k), commit, author, epoch, Value::List(ts), dial, sig] = items.as_slice() else { return Err(bad) };
+        if k != "boxes" {
+            return Err(bad);
+        }
+        let mut things: Vec<BoxedThing> = Vec::with_capacity(ts.len());
+        for t in ts {
+            let t = BoxedThing::from_value(t)?;
+            if things.last().is_some_and(|p| p.tid >= t.tid) {
+                return Err(Error::Malformed("boxed things not sorted by tid"));
+            }
+            things.push(t);
+        }
+        if things.is_empty() {
+            return Err(Error::Malformed("boxes payload with no thing"));
+        }
+        Ok(BoxesPayload {
+            commit: CommitId(get_bytes(commit, "boxes commit ID")?),
+            author: get_tid(author, "boxes author")?,
+            epoch: get_opt(epoch, "boxes epoch")?.map(|e| get_bytes(e, "boxes epoch").map(CommitId)).transpose()?,
+            things,
+            dial: dial_from(dial)?,
+            signature: Signature::from_value(sig).map_err(|_| Error::Malformed("boxes signature"))?,
+        })
+    }
+}
+
+/// What an inbox blob carries: a role commit with what it names, a recipient's boxes of one, or a
+/// stranded notice.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Inbox {
     Payload(InboxPayload),
+    Boxes(BoxesPayload),
     Stranded(StrandedNotice),
 }
 
 impl Inbox {
     pub fn from_value(v: Value) -> Result<Inbox, Error> {
         match &v {
-            Value::List(items) if matches!(items.first(), Some(Value::Str(_))) => StrandedNotice::from_value(&v).map(Inbox::Stranded),
+            Value::List(items) => match items.first() {
+                Some(Value::Str(k)) if k == "boxes" => BoxesPayload::from_value(&v).map(Inbox::Boxes),
+                Some(Value::Str(_)) => StrandedNotice::from_value(&v).map(Inbox::Stranded),
+                _ => InboxPayload::from_value(v).map(Inbox::Payload),
+            },
             _ => InboxPayload::from_value(v).map(Inbox::Payload),
         }
     }
+
+    pub fn to_value(&self) -> Value {
+        match self {
+            Inbox::Payload(p) => p.to_value(),
+            Inbox::Boxes(p) => p.to_value(),
+            Inbox::Stranded(p) => p.to_value(),
+        }
+    }
+}
+
+/// Seals a boxes payload to `recipient`'s newest read keyset KEM key, as `seal_inbox_blob`.
+pub fn seal_boxes_payload(recipient: &Tid, kem: &KemPublicKey, payload: &BoxesPayload, now: WallMs, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
+    seal(recipient, kem, &payload.to_value(), now, rng)
 }
 
 /// Seals a stranded notice to `recipient`'s newest read keyset KEM key, as `seal_inbox_blob`.
@@ -236,11 +399,11 @@ fn seal(recipient: &Tid, kem: &KemPublicKey, v: &Value, now: WallMs, rng: &mut d
 }
 
 /// Opens an inbox blob addressed to `recipient` with its read KEM secret: a role commit's
-/// payload (a stranded notice is an error here, `open_inbox_item`).
+/// payload (a boxes payload or stranded notice is an error here, `open_inbox_item`).
 pub fn open_inbox_blob(blob: &[u8], recipient: &Tid, kem: &KemSecret) -> Result<(Prefix, InboxPayload), Error> {
     match open_inbox_item(blob, recipient, kem)? {
         (p, Inbox::Payload(x)) => Ok((p, x)),
-        (_, Inbox::Stranded(_)) => Err(Error::Malformed("inbox payload")),
+        (_, Inbox::Stranded(_) | Inbox::Boxes(_)) => Err(Error::Malformed("inbox payload")),
     }
 }
 
@@ -310,6 +473,68 @@ mod tests {
         assert!(open_inbox_blob(&b, &r, &kem).is_err());
         let b = seal_inbox_blob(&r, kem.public(), &payload(), WallMs(1000), &mut rng).unwrap();
         assert_eq!(open_inbox_item(&b, &r, &kem).unwrap().1, Inbox::Payload(payload()));
+    }
+
+    fn boxes(signer: &SigningSecret, recipient: &Tid) -> BoxesPayload {
+        let e = |n: u64| Epoch { n, nonce: [n as u8; 32] };
+        let sym = |n: u64| SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: e(n), wrap: vec![n as u8; 49] });
+        let things = vec![
+            BoxedThing::new(Tid::from_bytes([3; 15]), None, vec![(Role::Sync, e(2), sym(2)), (Role::Sync, e(1), sym(1))]),
+            BoxedThing::new(Tid::from_bytes([1; 15]), Some(SyncId([2; 16])), vec![(Role::Sync, e(0), sym(0))]),
+        ];
+        BoxesPayload::signed(recipient, CommitId([7; 32]), Tid::from_bytes([8; 15]), Some(CommitId([9; 32])), things, Some(DialHint { dialable: [6; 32], urls: vec!["quic://s".into()] }), signer)
+    }
+
+    // spec/wire.md §9 (boxes payload), spec/crypto.md §2 ("osis v1 inbox boxes"): it seals and
+    // opens as an inbox blob, things by tid and boxes by (role, epoch); its signature is the
+    // signer's for that recipient and binds every box.
+    #[test]
+    fn boxes_payload_round_trip_and_signature() {
+        let mut rng = SeededRng::from_u64(0);
+        let kem = KemSecret::derive(&Secret32::from_bytes([9; 32]));
+        let r = Tid::from_bytes([5; 15]);
+        let key = SigningSecret::from_seed(&Secret32::from_bytes([4; 32]));
+        let p = boxes(&key, &r);
+        assert!(p.things.windows(2).all(|w| w[0].tid < w[1].tid) && p.things[1].boxes[0].1.n == 1);
+        let b = seal_boxes_payload(&r, kem.public(), &p, WallMs(1000), &mut rng).unwrap();
+        let (_, got) = open_inbox_item(&b, &r, &kem).unwrap();
+        assert_eq!(got, Inbox::Boxes(p.clone()));
+        assert!(open_inbox_blob(&b, &r, &kem).is_err(), "no role commit");
+        assert!(p.verifies(&r, &key.verifying_key()));
+        assert!(!p.verifies(&Tid::from_bytes([6; 15]), &key.verifying_key()), "another recipient");
+        let other = SigningSecret::from_seed(&Secret32::from_bytes([3; 32]));
+        assert!(!p.verifies(&r, &other.verifying_key()));
+        let mut forged = p.clone();
+        forged.things[0].boxes[0].2 = forged.things[1].boxes[0].2.clone();
+        assert!(!forged.verifies(&r, &key.verifying_key()), "a box swapped");
+        let mut forged = p.clone();
+        forged.commit = CommitId([1; 32]);
+        assert!(!forged.verifies(&r, &key.verifying_key()), "another commit");
+        let mut moved = p.clone();
+        moved.dial = None;
+        assert!(moved.verifies(&r, &key.verifying_key()), "the dial hint is not signed");
+    }
+
+    // spec/wire.md §9 (boxes payload): things sorted by tid, distinct, at least one; boxes sorted,
+    // distinct, at least one.
+    #[test]
+    fn boxes_payload_rejections() {
+        let r = Tid::from_bytes([5; 15]);
+        let key = SigningSecret::from_seed(&Secret32::from_bytes([4; 32]));
+        let p = boxes(&key, &r);
+        assert_eq!(BoxesPayload::from_value(&p.to_value()).unwrap(), p);
+        let mut q = p.clone();
+        q.things.reverse();
+        assert!(BoxesPayload::from_value(&q.to_value()).is_err());
+        let mut q = p.clone();
+        q.things[1].boxes.reverse();
+        assert!(BoxesPayload::from_value(&q.to_value()).is_err());
+        let mut q = p.clone();
+        q.things[0].boxes.clear();
+        assert!(BoxesPayload::from_value(&q.to_value()).is_err());
+        let mut q = p.clone();
+        q.things.clear();
+        assert!(BoxesPayload::from_value(&q.to_value()).is_err());
     }
 
     // spec/wire.md §9: things sorted by tid and distinct; layout positions.

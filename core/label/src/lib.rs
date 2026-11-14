@@ -25,7 +25,7 @@ pub use blob::{Class, Group, Level, Prefix, blob_id, check_size, frame, frame_un
 pub use chunks::{LargeParams, chunk_value, read_value, string_head};
 pub use bundle::{BundleEvent, BundleReader, BundleWriter, Importer, Record};
 pub use error::Error;
-pub use inbox::{DialHint, HolderKeys, Inbox, InboxPayload, InboxRest, InboxThing, MAX_DIAL_URLS, StrandedNotice, open_inbox_blob, open_inbox_item, seal_inbox_blob, seal_stranded_notice};
+pub use inbox::{BoxedThing, BoxesPayload, DialHint, HolderKeys, Inbox, InboxPayload, InboxRest, InboxThing, MAX_DIAL_URLS, StrandedNotice, open_inbox_blob, open_inbox_item, seal_boxes_payload, seal_inbox_blob, seal_stranded_notice};
 pub use labels::{StepRecord, SyncEntry, SyncIds, parse_record, step_record, sync_steps, tips};
 pub use link::{Peer, ShareLink};
 pub use step::{ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_label, match_secret, open_entry_box, path_to, register, register_with, verify_path};

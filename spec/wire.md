@@ -204,17 +204,27 @@ ClaimSet := [[claim+], {entry: box}]
 ## 9. Inbox blobs
 - **Inbox blob** (spec/crypto.md §5): prefix with expiry = the sender's wall ms + `INBOX_LIFETIME` and no commitments, then the raw bytes of a sealed box (§7, not a `sealed` value) to the recipient's newest read keyset KEM key.
 - AD = `[recipient, "inbox", prefix bytes]` (`"inbox"` a text string).
-- Payload: the padded (§5) canonical bytes of `InboxPayload`:
+- Payload: the padded (§5) canonical bytes of an `InboxPayload`, a `BoxesPayload` or a `StrandedNotice` (below):
   ```
   InboxPayload := [CommitBlobPlaintext, [[tid, Opt(sync_id), Opt([admin_pk, write_pk])]*], [CommitBlobPlaintext*], [creation*], Opt([dialable, [url*]])]
   ```
-  - **Position 0**: the role commit with the parts about the recipient (§4): to a recipient holding less than read on every thing position 1 names, those things' `secrets.0` parts only; a lowering or removal, its `roles.0` parts only (spec/sync-inbox.md §2).
+  - **Position 0**: the role commit with the parts about the recipient (§4); a lowering or removal, its `roles.0` parts only (spec/sync-inbox.md §2).
   - **Position 1**: for each thing it names, sorted by tid: if the thing has a sync ID of its own (its `sync.0`, never a group's holding it), that sync ID and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7).
-  - **Positions 2 and 3**: empty unless a thing the commit touches has no sync ID of its own and the recipient reads it now, as the sender judges it. A recipient holding less than read on every thing the commit touches (sync alone, or removed) gets them empty: the box and the sync IDs are all it takes (spec/sync-inbox.md §2). Otherwise they hold, a chain that would not fit the blob left out:
+  - **Positions 2 and 3**: empty unless a thing the commit touches has no sync ID of its own and the recipient reads it now, as the sender judges it. Otherwise they hold, a chain that would not fit the blob left out:
     - the author's chain certificates for the carried parts (spec/permissions.md §4): its commits, each projected to its chain deltas and without any `keys.0` but the author's own, in position 2, and its creation records, ascending by tid and distinct, in position 3;
     - when the commit boxes the recipient (a grant, a re-seal), the current `keys.0` commits (spec/permissions.md §4) of each thing it boxes it on, each projected to that delta, in position 2.
   - **Position 4**: the sending node's dialable key (32 bytes) and its URLs (each at most 256 bytes, at most 16), a dial hint for the recipient (spec/sync-inbox.md §2); absent when the sender publishes none.
 - A recipient ingests the chain before the commit, only once the blob is taken (spec/sync-inbox.md §2), and only its records, `roles.0` and `keys.0` deltas and accounts' rotations.
+- **Boxes payload** (spec/sync-inbox.md §2): to a recipient holding less than read on every thing the commit names (sync alone, or removed since), in place of an `InboxPayload`, the recipient's own boxes of the role commit and nothing else of it:
+  ```
+  BoxesPayload := ["boxes", commit_id, author, Opt(epoch_id), [BoxedThing+], Opt([dialable, [url*]]), signature]
+  BoxedThing   := [tid, Opt(sync_id), [[role, epoch, box]+]]
+  ```
+  - `commit_id` and `author`: the role commit's ID and its header's author; `epoch_id`: the epoch the author signs this payload at, as header position 14 names one (§4), present iff the author is an account.
+  - `BoxedThing`, one per thing the commit's `secrets.0` deltas box the recipient on, sorted by tid, distinct: its sync ID as position 1 of `InboxPayload` names it, and each box of that thing's `secrets.0` delta keyed with the recipient as holder: the key's `role` and `epoch` and the `box` value (§7), sorted by the canonical bytes of `[role, epoch]`, distinct.
+  - Position 5: as position 4 of `InboxPayload`.
+  - `signature`: the author's key (an account's: the signing key of epoch `epoch_id`) under `"osis v1 inbox boxes"` (spec/crypto.md §2) over BLAKE3 of the canonical bytes of `[recipient, commit_id, author, Opt(epoch_id), [BoxedThing+]]`.
+  - A receiver opens a box with the AD it rebuilds from the payload (`[tid, recipient, role, n, nonce, form]`, §7).
 - **Stranded notice** (spec/permissions.md §4): an inbox blob whose payload is `StrandedNotice := ["stranded", sync_id, holder, HolderKeys]` (flattened: `HolderKeys` is two positions) in place of an `InboxPayload`: the sync ID the holder (an actor tid) is stranded on, and its holder keys. It carries no role commit and asks only for a re-seal the recipient judges itself.
 - **Holder keys**: `HolderKeys := [CommitBlobPlaintext*], [creation*]`: the holder's current `keys.0` commits (spec/permissions.md §4), each projected to its `keys.0` delta on the holder, with their authors' chain certificates for those deltas, each projected to its chain deltas (as position 2 of `InboxPayload`); then that chain's creation records, ascending by tid, distinct. A receiver ingests only what is on things in the holder's authority chain as it judges it while taking them (spec/permissions.md §4): `keys.0` deltas on the named holder and on the authors of the holder's `keys.0` commits carried (their cards), records, and `roles.0` deltas, each kept only if judged valid; it ignores the rest.
 

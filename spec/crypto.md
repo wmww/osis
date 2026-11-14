@@ -23,6 +23,7 @@
   - `"osis v1 sync open"` (an open signature, spec/sync-opens.md §4)
   - `"osis v1 stamp"` (stamps, spec/sync-ids.md §6)
   - `"osis v1 deposit"` (spec/sync-inbox.md §3)
+  - `"osis v1 inbox boxes"` (a boxes payload's signature by the role commit's author, spec/wire.md §9)
   - `"osis v1 role entry"` (a stamp or deposit signature of a role entry, in place of the two above, spec/sync-ids.md §6)
   - `"osis v1 delete"`
   - `"osis v1 connection proof"` (a connection proof, spec/wire.md §11.2: over the prover's role, the verifier's challenge and the listener's key)
@@ -222,7 +223,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
   - A node holding no current secret logs nothing: it is stranded (spec/permissions.md §4).
   - Exception: a commit carrying boxes of a read epoch e (a rotation) is wrapped, under every sync ID whose read secret derives from that actor's, under the read epoch e supersedes whose secret the rotator holds with the greatest n, ties by lowest nonce (n, not order n, §4).
 - A sync ID's role keys at a peer are those of the epochs the peer's head registers (spec/sync-ids.md §3).
-- **Inbox blob** (spec/sync-inbox.md §2): a role commit (header and deltas) about the recipient, plus the sync IDs of the things it names, sealed to the recipient actor's read-role KEM key. Bytes: spec/wire.md §9.
+- **Inbox blob** (spec/sync-inbox.md §2): a role commit (header and deltas) about the recipient, plus the sync IDs of the things it names, sealed to the recipient actor's read-role KEM key; to a recipient below read, its boxes of the commit alone, signed by the author. Bytes: spec/wire.md §9.
   - Its prefix expiry is a delivery lifetime (`INBOX_LIFETIME`), not a commit expiry.
   - It has no blob key and its entry's wrap is filler.
 

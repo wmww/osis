@@ -23,10 +23,12 @@ pub enum Domain {
     /// A stamp or deposit signature of an entry deletes are judged by: a role commit or a
     /// request (spec/sync-ids.md §6, storage caps).
     RoleEntry,
+    /// A boxes payload's signature by its role commit's author (spec/wire.md §9).
+    InboxBoxes,
 }
 
 impl Domain {
-    pub const ALL: [Domain; 10] = [
+    pub const ALL: [Domain; 11] = [
         Domain::Commit,
         Domain::LabelRegister,
         Domain::LabelOpen,
@@ -37,6 +39,7 @@ impl Domain {
         Domain::Merge,
         Domain::ConnectionProof,
         Domain::RoleEntry,
+        Domain::InboxBoxes,
     ];
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -50,6 +53,7 @@ impl Domain {
             Domain::Merge => "osis v1 merge",
             Domain::ConnectionProof => "osis v1 connection proof",
             Domain::RoleEntry => "osis v1 role entry",
+            Domain::InboxBoxes => "osis v1 inbox boxes",
         }
     }
     /// The `osis_base::costs` count a verification in this domain adds to.
@@ -65,6 +69,7 @@ impl Domain {
             Domain::Merge => "verify: merge",
             Domain::ConnectionProof => "verify: connection proof",
             Domain::RoleEntry => "verify: role entry",
+            Domain::InboxBoxes => "verify: inbox boxes",
         }
     }
     fn message(self, digest: &[u8; 32]) -> Vec<u8> {
