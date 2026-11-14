@@ -599,8 +599,8 @@ fn applied_removal_triggers_forgetting_spec_perm_3() {
     assert_forgotten(&mut x);
 }
 
-// spec/permissions.md §3 (drop lost secrets): the work list is
-// durable, so a restart between the removal's apply and the trigger still forgets.
+// spec/permissions.md §3 (drop lost secrets): the drop is derived from what is held, so a
+// restart between the removal's apply and the drop still forgets.
 #[test]
 fn lost_access_trigger_survives_restart_spec_perm_3() {
     let mut x = lost_setup();
