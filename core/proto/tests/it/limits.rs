@@ -58,3 +58,31 @@ fn a_filter_page_is_counted_not_built_spec_wire_11_2() {
     assert!(gcs.len() < body.len());
     assert_eq!(Msg::decode(&page(&vec![7; n + 1]).encode()).unwrap_err().error, Error::Cap("filter entries"));
 }
+
+// spec/wire.md §13 (a message at most 2^20 CBOR data items in all): the items of the canonical
+// bytes a byte string carries count too, so a claim set or entry box of one-byte items, a few
+// bytes of the message's own items, is refused before it is built
+#[test]
+fn embedded_items_count_toward_the_message_spec_wire_13() {
+    let ones = |n: usize, tail: &[u8]| {
+        let mut b = vec![0x82, 0x9a];
+        b.extend_from_slice(&(n as u32).to_be_bytes());
+        b.extend(std::iter::repeat_n(0u8, n));
+        b.extend_from_slice(tail);
+        Value::Bytes(b)
+    };
+    let n = (1 << 20) + 1;
+    let ms = osis_proto::examples::messages();
+    let msg = |name: &str| ms.iter().find(|(m, _)| *m == name).map(|(_, m)| m.to_value()).unwrap();
+    let Value::List(mut register) = msg("register") else { panic!() };
+    register[4] = Value::List(vec![ones(n, &[0xa0])]);
+    let Value::List(mut shared) = msg("shared with an entry grant") else { panic!() };
+    let Value::List(items) = &mut shared[2] else { panic!() };
+    let Value::List(item) = &mut items[0] else { panic!() };
+    let Value::List(grant) = &mut item[2] else { panic!() };
+    let Value::List(g) = &mut grant[0] else { panic!() };
+    g[0] = Value::List(vec![ones(n, &[0x80])]);
+    for body in [register, shared] {
+        assert_eq!(Msg::decode(&cbor::encode(&Value::List(body))).unwrap_err().error, Error::Cap("message items"));
+    }
+}

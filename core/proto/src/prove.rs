@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn caps_fit_a_frame_spec_wire_11_2() {
         let proofs = vec![prover(8).sign(false, &[1; 32], &[2; 32]); crate::limits::MAX_PROOFS];
-        assert!(crate::encode_frame(&crate::Msg::Prove { id: 1, proofs }.encode()).len() <= osis_base::format::MAX_MESSAGE);
+        assert!(crate::encode_frame(&crate::Msg::Prove { id: 1, proofs, rotations: None }.encode()).len() <= osis_base::format::MAX_MESSAGE);
     }
 
     // spec/wire.md §11.2 Prove: encodes and decodes

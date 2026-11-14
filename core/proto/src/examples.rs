@@ -106,6 +106,11 @@ pub fn proof(b: u8) -> ActorProof {
     Prover { key, record }.sign(false, &CHALLENGE, &STATIC_KEY)
 }
 
+/// A rotation's header-only copy as Prove carries it; its contents are the engine's to judge.
+pub fn rotation() -> Value {
+    Value::List(vec![Value::List(vec![Value::uint(1)]), Value::Enum(1, Some(Box::new(Value::Bytes(vec![0x52; 64])))), Value::List(vec![]), Value::List(vec![]), Value::List(vec![])])
+}
+
 /// `(name, message)` for every kind, in kind order, plus variants of the sum types.
 pub fn messages() -> Vec<(&'static str, Msg)> {
     let f = Fixture::new(0x10);
@@ -154,7 +159,8 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
             },
         ),
         ("suspect", Msg::Suspect { id: 31, sync_id: l, entries: vec![SuspectEntry { thing: Tid::from_bytes([0x0c; 15]), ak: osis_base::Ak::new("t:reg.0").expect("an AK"), digest: [0x0d; 16] }] }),
-        ("prove", Msg::Prove { id: 32, proofs: vec![proof(0x32), proof(0x33)] }),
+        ("prove", Msg::Prove { id: 32, proofs: vec![proof(0x32), proof(0x33)], rotations: None }),
+        ("prove with rotations", Msg::Prove { id: 32, proofs: vec![proof(0x32)], rotations: Some(vec![rotation()]) }),
         ("proved", Msg::Proved { id: 32, proofs: vec![] }),
         ("resume", Msg::Resume { id: 34, nonce: [0x34; 32], tags: vec![[0x35; 32], [0x36; 32]] }),
         ("resumed", Msg::Resumed { id: 34, nonce: [0x37; 32], tag: Some([0x35; 32]) }),
@@ -259,6 +265,7 @@ pub fn rejections() -> Vec<(&'static str, &'static str, Vec<u8>)> {
         ("stranded with a holder as a tid value", "size", with(&m("stranded"), 3, Some(Value::Tid(Tid::from_bytes([0x0d; 15]))))),
         ("suspect with a digest of 32 bytes", "size", with(&m("suspect"), 3, Some(list(vec![list(vec![bytes(15, 0x0c), Value::Str("t:reg.0".into()), bytes(32, 0)])])))),
         ("prove with a key of 31 bytes", "size", with(&m("prove"), 2, Some(list(vec![list(vec![proof(1).record.to_value(), bytes(31, 0), bytes(64, 0)])])))),
+        ("prove with a rotation carrying a section", "shape", with(&m("prove with rotations"), 3, Some(list(vec![list(vec![list(vec![]), list(vec![]), list(vec![]), list(vec![]), list(vec![list(vec![])])])])))),
         ("proved as a push", "id", with(&m("proved"), 1, Some(int(0)))),
         ("resume with a tag of 31 bytes", "size", with(&m("resume"), 3, Some(list(vec![bytes(31, 0)])))),
         ("resumed with two tags", "shape", with(&m("resumed"), 3, Some(list(vec![bytes(32, 0), bytes(32, 0)])))),

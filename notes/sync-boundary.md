@@ -381,8 +381,8 @@ The new sync asks narrow questions (per sync ID: held commits and their bodies, 
 | osis-store: `Transaction::{put_blob, get_blob, read_blob, delete_blob, blob_len, suspend, table_len, random32}`, `Store::resume`, `prefix_end`, `Writes::{committed, failed}`, `test_copy*`, `Faults::test_copy` | keep | store primitives the new store per sync ID builds on |
 | osis-proto: `session`, `store` (`LabelStore`, `MemoryLabelStore`, `HeadKeys`, `EntryMeta`), `window`, `Session::*`, `Relayed` fields, `session::{deposit, pulled, reply_bound, PUSH_POLL_MS}` | delete | the old session layer (Scope) |
 | osis-proto: `filter` (`encode_gcs`, `decode_gcs`, `pages`, `beacon_value`, `BEACON_P`, `Page`) | keep | U4 |
-| osis-proto: `msg` (constants, `Grant`, `SuspectEntry`, `is_reply_kind`, `stream_event_size`), `Code::*` | replace | U4 |
-| osis-proto: `prove` (`verified`, `ActorProof`, `MAX_PROOFS`, `MAX_RESUME_TAGS`), `frame`, `hello`, `relay` (`RelayGate`, `RelayLimits`) | keep | actor proofs for opens, framing, the relay (below sync) |
+| osis-proto: `msg` | replaced | rewritten to spec/wire.md §11.2: `Msg` (sync IDs, `Prove` with `rotations`), `Code` (`NOT_OPEN`, `UNKNOWN_SYNC_ID`, `DECLINED`, `NOT_HEAD_KEY`, `DEPOSIT_BUDGET_FULL`), `Cursor`, `DepositItem`, `BehindItem`, `OfferItem`, `SharedItem`, `Grant`, `Event`, `Join`, `flow`, `peek_head`, `stream_event_len`; every limit in `limits` |
+| osis-proto: `prove` (`verified`, `ActorProof`), `frame`, `hello`, `relay` (`RelayGate`, `RelayLimits`) | keep | actor proofs for opens, framing, the relay (below sync); `MAX_PROOFS` and `MAX_RESUME_TAGS` are in `limits` |
 | osis: `internals::ManualNet::dbs`, `test_copy` | replace | the sim's world uses them; Phase 4's one harness decides its shape |
 
 ## Resolved

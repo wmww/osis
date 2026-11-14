@@ -265,7 +265,7 @@ impl ClaimSet {
             if !set.contains(&k) {
                 return Err(Error::Malformed("entry box key not in the claims"));
             }
-            out.insert(k, parse_box(b)?);
+            out.insert(k, entry_box_from_value(b)?);
         }
         Ok(ClaimSet { claims, entries: out })
     }
@@ -282,7 +282,9 @@ impl ClaimSet {
 
 /// A `box` value in the sealed form carrying no names (spec/wire.md §7), strictly: it must
 /// re-encode to itself.
-fn parse_box(v: &Value) -> Result<SecretBox, Error> {
+/// An entry box (spec/wire.md §7): a canonical `box` value in the sealed form (an unknown case
+/// parks).
+pub fn entry_box_from_value(v: &Value) -> Result<SecretBox, Error> {
     let b = SecretBox::from_value(v).map_err(|e| match e.kind {
         osis_schema::PathErrorKind::UnknownCase(c) => Error::Crypto(osis_crypto::Error::UnknownCase(c)),
         _ => Error::Malformed("entry box"),

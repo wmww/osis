@@ -5,7 +5,7 @@
 //! re-encodes to the bytes it came from.
 
 use crate::Error;
-use crate::api::{Outcome, Payload};
+use crate::api::{Outcome, Payload, value};
 use crate::dec::{self, Fields};
 use crate::limits::*;
 use crate::{ActorProof, SyncId};
@@ -13,6 +13,7 @@ use osis_base::{Ak, BlobId, Limits, Tid, Value, cbor};
 pub use osis_crypto::Signature;
 pub use osis_label::{ClaimSet, DeleteItem, HolderKeys, Step, StepId};
 use osis_schema::Codec;
+use std::cell::Cell;
 pub use osis_schema::core_types::SecretBox;
 
 pub const WRAP_LEN: usize = osis_crypto::WRAP_LEN;
@@ -235,7 +236,9 @@ pub enum Msg {
     /// that holder's holder keys (spec/wire.md §9).
     Stranded { id: Id, sync_id: SyncId, holder: Tid, keys: HolderKeys },
     Suspect { id: Id, sync_id: SyncId, entries: Vec<SuspectEntry> },
-    Prove { id: Id, proofs: Vec<ActorProof> },
+    /// `rotations`: the account's signed rotations the verifier may lack, as header-only copies
+    /// (spec/sync-opens.md §2), each a `CommitBlobPlaintext` value the engine judges.
+    Prove { id: Id, proofs: Vec<ActorProof>, rotations: Option<Vec<Value>> },
     Proved { id: Id, proofs: Vec<ActorProof> },
     Resume { id: Id, nonce: [u8; 32], tags: Vec<[u8; 32]> },
     Resumed { id: Id, nonce: [u8; 32], tag: Option<[u8; 32]> },
@@ -410,7 +413,8 @@ impl Msg {
                 vec![k, id, s(sync_id), Value::bytes(holder.as_bytes()), commits, records]
             }
             M::Suspect { sync_id, entries, .. } => vec![k, id, s(sync_id), Value::List(entries.iter().map(|e| Value::List(vec![Value::bytes(e.thing.as_bytes()), Value::Str(e.ak.as_str().to_string()), Value::bytes(&e.digest)])).collect())],
-            M::Prove { proofs, .. } | M::Proved { proofs, .. } => vec![k, id, Value::List(proofs.iter().map(ActorProof::to_value).collect())],
+            M::Prove { proofs, rotations, .. } => vec![k, id, proofs_value(proofs), Value::opt(rotations.as_ref().map(|r| Value::List(r.clone())))],
+            M::Proved { proofs, .. } => vec![k, id, proofs_value(proofs)],
             M::Resume { nonce, tags, .. } => vec![k, id, Value::bytes(nonce), Value::List(tags.iter().map(|t| Value::bytes(t)).collect())],
             M::Resumed { nonce, tag, .. } => vec![k, id, Value::bytes(nonce), Value::opt(tag.as_ref().map(|t| Value::bytes(t)))],
             M::Beacons { generation, base, f, lo, hi, gcs, more, .. } => vec![k, id, Value::uint(*generation), Value::opt(base.map(Value::uint)), Value::uint(u64::from(*f)), Value::uint(*lo), Value::uint(*hi), Value::bytes(gcs), Value::Bool(*more)],
@@ -433,8 +437,9 @@ impl Msg {
     }
 
     /// Decodes a frame body, enforcing every layout rule and cap of spec/wire.md §11.2 and the
-    /// limits of §13. Memory: the items are counted before anything is built, so a body of n
-    /// bytes builds at most `MAX_MESSAGE_ITEMS` values and about 56 n bytes (`cbor::decode`).
+    /// limits of §13. Memory: items are counted before they are built, those of the canonical
+    /// bytes a byte string carries (steps, claim sets, entry boxes) included, so a message builds
+    /// at most `MAX_MESSAGE_ITEMS` values in all beside its bytes.
     pub fn decode(body: &[u8]) -> Result<Msg, Rejected> {
         let bad = |error: Error| Rejected { kind: 0, id: 0, error };
         let limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_MESSAGE };
@@ -451,7 +456,23 @@ impl Msg {
             },
             _ => return Err(bad(Error::Malformed("message head"))),
         };
-        decode_body(kind, id, v).map_err(|error| Rejected { kind, id, error })
+        decode_body(kind, id, v, &Items(Cell::new(MAX_MESSAGE_ITEMS - items))).map_err(|error| Rejected { kind, id, error })
+    }
+}
+
+/// The CBOR items a message may still build (spec/wire.md §13: at most `MAX_MESSAGE_ITEMS` in
+/// all): canonical bytes carried in a byte string are counted against it before they are decoded.
+struct Items(Cell<usize>);
+
+impl Items {
+    /// `bytes` decoded at `depth`, once its items fit what is left.
+    fn decode(&self, bytes: &[u8], depth: usize) -> Result<Value, Error> {
+        let limits = Limits { max_depth: depth, max_bytes: MAX_MESSAGE };
+        let mut n = 0usize;
+        cbor::visit_items(bytes, &limits, &mut |_, _, _| n += 1)?;
+        let left = self.0.get().checked_sub(n).ok_or(Error::Cap("message items"))?;
+        self.0.set(left);
+        Ok(cbor::decode(bytes, &limits)?)
     }
 }
 
@@ -466,7 +487,7 @@ fn check_id(kind: u64, id: Id) -> Result<(), Error> {
     if ok { Ok(()) } else { Err(Error::Malformed("id")) }
 }
 
-fn decode_body(kind: u64, id: Id, v: Value) -> Result<Msg, Error> {
+fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
     check_id(kind, id)?;
     let mut f = Fields::range(v, 2, usize::MAX, "message")?;
     f.next()?;
@@ -476,7 +497,7 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Msg, Error> {
         1 => Msg::Ok { id },
         2 => Msg::Ping { id, wall_ms: f.uint()? },
         3 => Msg::Pong { id, wall_ms: f.uint()? },
-        7 => Msg::Register { id, sync_id: sync_id(&mut f)?, step: step(f.next()?)?, claim_set: f.opt()?.map(claim_set).transpose()? },
+        7 => Msg::Register { id, sync_id: sync_id(&mut f)?, step: step(f.next()?, n)?, claim_set: f.opt()?.map(|v| claim_set(v, n)).transpose()? },
         11 => Msg::Status { id, codes: f.list(1, MAX_DELETE_ITEMS, "status codes")?.into_iter().map(|v| dec::uint(v, "code").map(Code)).collect::<Result<_, _>>()? },
         14 => {
             let sync_id = sync_id(&mut f)?;
@@ -498,14 +519,14 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Msg, Error> {
             Msg::Stranded { id, sync_id, holder, keys: HolderKeys::from_values(&commits, &records)? }
         }
         31 => Msg::Suspect { id, sync_id: sync_id(&mut f)?, entries: f.list(1, usize::MAX, "suspect entries")?.into_iter().map(suspect_entry).collect::<Result<_, _>>()? },
-        32 => Msg::Prove { id, proofs: proofs(&mut f)? },
+        32 => Msg::Prove { id, proofs: proofs(&mut f)?, rotations: f.opt()?.map(rotations).transpose()? },
         33 => Msg::Proved { id, proofs: proofs(&mut f)? },
         34 => Msg::Resume { id, nonce: f.fixed()?, tags: f.list(0, MAX_RESUME_TAGS, "resume tags")?.into_iter().map(|v| dec::fixed(v, "tag")).collect::<Result<_, _>>()? },
         35 => Msg::Resumed { id, nonce: f.fixed()?, tag: f.opt()?.map(|v| dec::fixed(v, "tag")).transpose()? },
         36 => beacons(id, &mut f)?,
         37 => Msg::Offer { id, items: f.list(1, MAX_OFFER_ITEMS, "offer items")?.into_iter().map(offer_item).collect::<Result<_, _>>()? },
         38 => Msg::Lost { id, items: joins(f.list(1, MAX_OFFER_ITEMS, "lost items")?)? },
-        39 => Msg::Shared { id, items: f.list(1, MAX_OFFER_ITEMS, "shared items")?.into_iter().map(shared_item).collect::<Result<_, _>>()? },
+        39 => Msg::Shared { id, items: f.list(1, MAX_OFFER_ITEMS, "shared items")?.into_iter().map(|v| shared_item(v, n)).collect::<Result<_, _>>()? },
         40 => Msg::NoRecord { id },
         41 => Msg::Pull(Box::new(Pull {
             id,
@@ -517,14 +538,14 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Msg, Error> {
             ephemeral: f.bool()?,
         })),
         42 => {
-            let events = events(f.list(0, usize::MAX, "events")?)?;
+            let events = events(f.list(0, usize::MAX, "events")?, n)?;
             if events.iter().any(|(_, e)| cursorless_only(e)) {
                 return Err(Error::Malformed("full or refused event outside a Stream with no cursor"));
             }
             Msg::PullReply(Box::new(PullReply { id, events, cursor: opt_cursor_of(&mut f)?, whole: f.bool()?, trimmed: f.bool()?, more: f.bool()?, report: f.bool()?, joins: joins(f.list(0, usize::MAX, "joins")?)? }))
         }
         43 => {
-            let st = Stream { events: events(f.list(0, usize::MAX, "events")?)?, cursor: opt_cursor_of(&mut f)?, report: f.bool()?, seq: f.uint()? };
+            let st = Stream { events: events(f.list(0, usize::MAX, "events")?, n)?, cursor: opt_cursor_of(&mut f)?, report: f.bool()?, seq: f.uint()? };
             let ok = match st.cursor {
                 Some(_) => !st.events.iter().any(|(_, e)| cursorless_only(e)),
                 None => st.seq == 0 && !st.report,
@@ -567,17 +588,25 @@ fn beacons(id: Id, f: &mut Fields) -> Result<Msg, Error> {
     Ok(Msg::Beacons { id, generation, base, f: width, lo, hi, gcs, more: f.bool()? })
 }
 
-/// An embedded value: at most `MAX_VALUE_DEPTH` deep (spec/wire.md §13).
-fn value(v: Value) -> Result<Value, Error> {
-    if v.deeper_than(MAX_VALUE_DEPTH) {
-        return Err(Error::Malformed("value too deep"));
-    }
-    Ok(v)
-}
-
 /// `[actor_proof*]`, at most `MAX_PROOFS`: past it the message is refused whole.
 fn proofs(f: &mut Fields) -> Result<Vec<ActorProof>, Error> {
     f.list(0, MAX_PROOFS, "proofs")?.into_iter().map(ActorProof::from_value).collect()
+}
+
+fn proofs_value(proofs: &[ActorProof]) -> Value {
+    Value::List(proofs.iter().map(ActorProof::to_value).collect())
+}
+
+/// `[rotation*]`, at most `MAX_PROVE_ROTATIONS`: each a header-only copy
+/// `[Header, signature, Opt(inner), [signature*], []]` (spec/wire.md §4), judged by the engine.
+fn rotations(v: Value) -> Result<Vec<Value>, Error> {
+    dec::list(v, 0, MAX_PROVE_ROTATIONS, "rotations")?
+        .into_iter()
+        .map(|r| match &r {
+            Value::List(items) if items.len() == 5 && items.last().is_some_and(|s| matches!(s, Value::List(l) if l.is_empty())) => Ok(r),
+            _ => Err(Error::Malformed("rotation")),
+        })
+        .collect()
 }
 
 /// `suspect := [thing, ak, digest]`.
@@ -610,16 +639,18 @@ fn sync_id(f: &mut Fields) -> Result<SyncId, Error> {
     Ok(SyncId(f.fixed()?))
 }
 
-fn step(v: Value) -> Result<Step, Error> {
-    Ok(Step::parse(&dec::bytes(v, MAX_STEP_BYTES, "step")?)?)
+fn step(v: Value, n: &Items) -> Result<Step, Error> {
+    let bytes = dec::bytes(v, MAX_STEP_BYTES, "step")?;
+    Ok(Step::from_value(&n.decode(&bytes, MAX_OBJECT_DEPTH)?)?)
 }
 
 fn step_value(s: &Step) -> Value {
     Value::Bytes(s.to_bytes())
 }
 
-fn claim_set(v: Value) -> Result<ClaimSet, Error> {
-    Ok(ClaimSet::parse(&dec::bytes(v, osis_label::step::MAX_CLAIM_SET, "claim set")?)?)
+fn claim_set(v: Value, n: &Items) -> Result<ClaimSet, Error> {
+    let bytes = dec::bytes(v, osis_label::step::MAX_CLAIM_SET, "claim set")?;
+    Ok(ClaimSet::from_value(&n.decode(&bytes, MAX_OBJECT_DEPTH)?)?)
 }
 
 fn offer_item(v: Value) -> Result<OfferItem, Error> {
@@ -647,12 +678,12 @@ fn offer_item_value(i: &OfferItem) -> Value {
     })
 }
 
-fn shared_item(v: Value) -> Result<SharedItem, Error> {
+fn shared_item(v: Value, n: &Items) -> Result<SharedItem, Error> {
     let mut g = Fields::exact(v, 4, "shared item")?;
     let item = SharedItem {
         code: Code(g.uint()?),
         tag: g.opt()?.map(|v| dec::fixed(v, "tag")).transpose()?,
-        grant: g.opt()?.map(grant).transpose()?,
+        grant: g.opt()?.map(|v| grant(v, n)).transpose()?,
         sig: g.opt()?.map(|v| dec::fixed(v, "open signature").map(Signature)).transpose()?,
     };
     let carries = item.tag.is_some() || item.grant.is_some() || item.sig.is_some();
@@ -671,22 +702,17 @@ fn shared_item_value(i: &SharedItem) -> Value {
     ])
 }
 
-fn grant(v: Value) -> Result<Grant, Error> {
+fn grant(v: Value, n: &Items) -> Result<Grant, Error> {
     let mut f = Fields::exact(v, 2, "grant")?;
-    let entry_box = f.opt()?.map(entry_box).transpose()?;
-    let steps = f.list(1, usize::MAX, "grant steps")?.into_iter().map(step).collect::<Result<_, _>>()?;
+    let entry_box = f.opt()?.map(|v| entry_box(v, n)).transpose()?;
+    let steps = f.list(1, usize::MAX, "grant steps")?.into_iter().map(|v| step(v, n)).collect::<Result<_, _>>()?;
     Ok(Grant { entry_box, steps })
 }
 
-/// An entry box: a `box` value's canonical bytes, which its typed read re-encodes to.
-fn entry_box(v: Value) -> Result<SecretBox, Error> {
+/// An entry box: the canonical bytes of a `box` value in the sealed form (spec/wire.md §7).
+fn entry_box(v: Value, n: &Items) -> Result<SecretBox, Error> {
     let bytes = dec::bytes(v, MAX_MESSAGE, "entry box")?;
-    let v = cbor::decode(&bytes, &Limits { max_depth: MAX_VALUE_DEPTH, max_bytes: MAX_MESSAGE })?;
-    let e = SecretBox::from_value(&v).map_err(|_| Error::Malformed("entry box"))?;
-    if e.to_value() != v {
-        return Err(Error::Malformed("entry box"));
-    }
-    Ok(e)
+    Ok(osis_label::step::entry_box_from_value(&n.decode(&bytes, MAX_VALUE_DEPTH)?)?)
 }
 
 fn fetched(v: Value) -> Result<Fetched, Error> {
@@ -710,7 +736,7 @@ fn fetched_value(f: &Fetched) -> Value {
     Value::List(vec![Value::bytes(&f.blob_id.0), Value::opt(e)])
 }
 
-fn event(v: Value) -> Result<Event, Error> {
+fn event(v: Value, n: &Items) -> Result<Event, Error> {
     let mut f = Fields::range(v, 2, 5, "event")?;
     let e = match (f.uint()?, f.remaining()) {
         (0, 4) => Event::Added {
@@ -721,7 +747,7 @@ fn event(v: Value) -> Result<Event, Error> {
         },
         (1, 1) => Event::Deleted(BlobId(f.fixed()?)),
         (2, 1) => Event::Full(f.bool()?),
-        (3, 1) => Event::Head(step(f.next()?)?),
+        (3, 1) => Event::Head(step(f.next()?, n)?),
         (4, 2) => match (BlobId(f.fixed()?), Code(f.uint()?)) {
             (_, Code::OK | Code::STORAGE_CAP) => return Err(Error::Malformed("refused event code")),
             (b, c) => Event::Refused(b, c),
@@ -758,12 +784,12 @@ pub fn stream_event_len(e: &Event) -> usize {
     1 + bstr(16) + event
 }
 
-fn events(vs: Vec<Value>) -> Result<Vec<(SyncId, Event)>, Error> {
+fn events(vs: Vec<Value>, n: &Items) -> Result<Vec<(SyncId, Event)>, Error> {
     vs.into_iter()
         .map(|v| {
             let mut g = Fields::exact(v, 2, "stream event")?;
             let s = sync_id(&mut g)?;
-            let e = event(g.next()?)?;
+            let e = event(g.next()?, n)?;
             Ok((s, e))
         })
         .collect()
