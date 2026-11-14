@@ -430,6 +430,7 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
         tx.core.ix.secrets.remove(a);
         tx.txn.remove_local(&[crate::engine::records::SECRETS, a.as_bytes()].concat(), osis_store::Shred::Yes)?;
         crate::sync::stranded::drop_asks(tx, a, |_| false)?;
+        crate::sync::held::forget_actor(tx, a)?;
         let now = tx.now();
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::Removed, tids: vec![*a], commit: None, peer: None, detail: if kept.contains_key(a) { "lost read access: secrets dropped, a read-only copy kept" } else { "lost read access: secrets and what only they read dropped" }.into() }, now);
     }

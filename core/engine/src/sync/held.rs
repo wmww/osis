@@ -113,6 +113,19 @@ pub(crate) fn note_arrival(tx: &mut Tx<'_>, h: &osis_commit::Header) -> Result<(
     Ok(())
 }
 
+/// Actor `a`'s secrets go (a loss, a destruction): its role arrival and its loss's cause go with
+/// them, so nothing left names it.
+pub(crate) fn forget_actor(tx: &mut Tx<'_>, a: &Tid) -> Result<()> {
+    if tx.core.ix.role_arrivals.remove(a).is_some() {
+        tx.txn.remove_local(&[ARRIVALS, a.as_bytes()].concat(), Shred::No)?;
+    }
+    let c = Cause::Lost(*a);
+    if tx.core.ix.cause_at.remove(&c).is_some() {
+        tx.txn.remove_local(&c.key(), Shred::No)?;
+    }
+    Ok(())
+}
+
 /// Role commit `c`, applied in this transaction with edge writes on `rosters`, waits for sync
 /// (held elsewhere, or no peer to take it) when it is an own self-removal
 /// (`rotation::own_self_removal`): at every node of the account alike, the one that made it and

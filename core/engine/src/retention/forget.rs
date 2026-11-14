@@ -240,6 +240,8 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
     super::leaving::forget_things(tx, &out.things)?;
     for t in &out.things {
         crate::sync::inbox::set_hint(tx, t, None)?;
+        // its role arrival and loss place: nothing left names it
+        crate::sync::held::forget_actor(tx, t)?;
     }
     // timers of forgotten parts
     let hit = |c: &CommitId, ai: usize| out.commits.contains(c) || parts.get(c).is_some_and(|s| s.contains(&ai));

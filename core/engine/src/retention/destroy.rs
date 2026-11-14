@@ -699,6 +699,7 @@ impl crate::engine::Engine {
                 }
                 tx.txn.remove_local(&[crate::engine::records::SECRETS, t.as_bytes()].concat(), Shred::Yes)?;
                 crate::sync::stranded::drop_asks(tx, &t, |_| false)?;
+                crate::sync::held::forget_actor(tx, &t)?;
             }
             Ok(())
         })

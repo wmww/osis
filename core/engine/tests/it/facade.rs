@@ -1322,6 +1322,27 @@ fn a_removed_reader_drops_once_a_pass_after_the_removal_ends_spec_permissions_3(
     assert!(e.epochs(&t).is_none_or(|x| !x.read.holds_any()));
 }
 
+// spec/requirements.md (Deletion), spec/permissions.md §3 (Lost access: the node drops what it can
+// no longer read): the drop leaves no row naming the lost actor behind. Peer 1, removed from t,
+// kept the place a role commit on t arrived at and the place it judged the loss at; both go with
+// t's secrets.
+#[test]
+fn a_lost_actors_pass_rows_go_with_its_drop_spec_permissions_3() {
+    let (mut lp, t) = grantee();
+    let pb = lp.peers[1].engine.account().unwrap().unwrap().0;
+    let s = lp.peers[1].engine.home_sync_id(&t).unwrap().unwrap();
+    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: pb, new: None, retain: None }).unwrap();
+    spread(&mut lp);
+    let e = &mut lp.peers[1].engine;
+    assert!(e.lost_due(&t).unwrap() && !e.lost_passed(&t).unwrap(), "peer 1 waits its pass");
+    assert!(e.role_arrival_place(&t).is_some() && e.causes_judged() == 1, "the arrival and the loss are kept meanwhile");
+    let after = e.begin_pass();
+    e.note_complete_pass(&s, after).unwrap();
+    assert!(e.lost_passed(&t).unwrap() && e.drop_lost(&t).unwrap(), "dropped");
+    assert_eq!(e.role_arrival_place(&t), None, "no arrival row of t left");
+    assert_eq!(e.causes_judged(), 0, "no cause row of t left");
+}
+
 // spec/permissions.md §3 (When it learns it: a pass begun after it first judged the loss; a role
 // commit arriving later does not move that bar): peer 1, removed from t, judges the loss; a pass
 // begins; role commits on t arrive while it runs (peer 0 granting and removing another holder):
@@ -1349,9 +1370,7 @@ fn role_commits_after_the_loss_do_not_hold_the_drop_off_spec_permissions_3() {
     e.note_complete_pass(&s, began).unwrap();
     assert!(e.lost_passed(&t).unwrap(), "the pass begun after the loss was judged ends the wait");
     assert!(e.drop_lost(&t).unwrap(), "dropped");
-    assert_eq!(e.causes_judged(), 1, "the loss's place, until judged again or reopened");
-    crate::flows::reopen(&mut lp, 1).unwrap();
-    assert_eq!(lp.peers[1].engine.causes_judged(), 0, "an open forgets the place of a loss of an actor no longer held");
+    assert_eq!(e.causes_judged(), 0, "the loss's place goes with the drop");
 }
 
 // spec/permissions.md §3 (When it learns it: a loss that ends and comes again is judged afresh):
