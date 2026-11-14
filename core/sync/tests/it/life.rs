@@ -97,8 +97,8 @@ fn a_node_alone_releases_at_once_spec_commits_5() {
     assert_eq!(w.engine(0).get(&x, &v()).unwrap(), None, "a node alone releases");
 }
 
-// spec/permissions.md §2, §7 (the holder duties' state: one value per thing named a holder): a
-// thing is followed while named a holder here and no longer. A node alone releases X; once X is
+// spec/permissions.md §2 (Tied grants), §7 (Joiner's leave): the holder duties' state, one value
+// per thing named a holder: a thing is followed while named a holder here and no longer. A node alone releases X; once X is
 // destroyed (its record and role commits gone), no holder duty follows it.
 #[test]
 fn a_destroyed_thing_is_followed_by_no_holder_duty_spec_permissions_2() {

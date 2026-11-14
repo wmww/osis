@@ -155,6 +155,7 @@ osis-engine::write_addenda  test hook (tests/it)
 osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::proofs_done  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); opens refuses a Resume before the proofs with it
 osis-sync::pieces_followed  test hook: the bound of the pieces read follows (read::replaced_bodies_leave_no_pieces_followed_once_released)
+osis-sync::holder_duties_follow  test hook: the holder duties follow a thing only while it is named a holder (life::a_destroyed_thing_is_followed_by_no_holder_duty)
 osis-sync::clock_offset  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); status reports a large offset as a diagnostic (spec/sync-streams.md §1)
 osis-sync::status_of  deferred: the osis API reads one sync ID's status (sync rebuild integration, issues/sync-rewrite.md Phase 3)
 osis-sync::set_record_budget  test hook: a small RECORD_BUDGET to drive eviction

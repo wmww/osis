@@ -284,8 +284,8 @@ fn a_joiner_leaves_k_once_its_edge_on_the_target_expired_spec_permissions_7() {
     }
 }
 
-// spec/permissions.md §7 (joiner's leave reads K's edge on the target as the held role history
-// shows it now): node 0, cut off from node 1, takes K off its profile and grants it again; once
+// spec/permissions.md §7 (Joiner's leave): the held role history read as it shows K's edge on the
+// target now: node 0, cut off from node 1, takes K off its profile and grants it again; once
 // healed node 1 holds K's edge alive and its account stays in K (a hostile ordering of the
 // removal and the re-grant removes no live join).
 #[test]
