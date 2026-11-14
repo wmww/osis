@@ -15,11 +15,11 @@ use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 
 /// Node 0 makes thing 0 (a value, filed in its D) and gives it a sync ID of its own, granting
-/// node 1's account sync and node 2's write.
+/// node 1's account sync and node 2's write; both accept (after the first run) and sync.
 fn three() -> (World, Tid, SyncId) {
     let mut w = world(0, 3);
     w.cap = 20_000;
-    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Writes), Run], String::new());
+    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Writes), Run, Run], String::new());
     let t = w.history.things[0].0;
     let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
     assert!(w.engine(2).knows(&t) && w.engine(2).get(&t, &value_ak()).unwrap().is_some(), "node 2 reads t");
