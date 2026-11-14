@@ -1,0 +1,4 @@
+# restamp
+- spec_map anchors split on `;` and each piece must be section text: a gloss with a semicolon ("Own store: stamped when it writes S; it stamps in place") reads as two rule names and fails as stray. Use commas inside a gloss.
+- The fix looked one-line (drop `e.own`), but readers then kept the old stamp: a writer signing under the recorded head (`Engine::signers`) stamps entries ahead of its head event and of the step's commit, and a reader's stage-time stamp check ran before the step was held. Only the world test (3 accounts, `history::world(0, 3)`) showed it; `OSIS_SYNC_TRACE=<node>` plus a temporary `eprintln!` in a wip commit found it in minutes.
+- `Engine::step_needs` at a non-writer misses the write rotation (issues/registrar-misses-write-rotation.md); it showed up only as an unexplained deposit in the same world test.

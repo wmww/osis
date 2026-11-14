@@ -300,7 +300,7 @@ fn a_dropped_copy_granted_read_again_is_fetched_from_the_start_spec_sync_judgeme
 // spec/sync-judgement.md §3 (Own store: stamped when it writes S, a pulled entry stamped in place;
 // Reader that is not a writer), spec/sync-ids.md §6 (Taking a stamped entry: a stamp under a
 // superseded write key is refused; Steps: the registrar logs the rotation stamped under the
-// source's head): node 0 (admin) writes t three times while node 1, keeping t's sync ID S unread,
+// source's head): node 0 (admin) writes t three times and a large value while node 1, keeping t's sync ID S unread,
 // is off, then rotates t's write secret, issuing a step. Each own entry of node 0 stands stamped under
 // the new head, the rotations the step registers under the step before it. With node 0 off,
 // node 2 (a reader, no writer) registers the path at node 1, which takes the write node 0 logs as
@@ -326,7 +326,17 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
             e.commit(m).unwrap().unwrap()
         }));
     }
+    // a large value: its chunk and tree-node blobs go under S as own entries too
+    let mut big = vec![0u8; osis_base::format::CHUNK_THRESHOLD + 1];
+    osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(1), &mut big);
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &Ak::new("u:big.0").unwrap(), &Value::Bytes(big)).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
     w.run();
+    let pieces = w.store(0).entries(&s).unwrap().into_iter().filter(|e| e.own && w.engine(0).blob_commit(&e.blob).unwrap().is_none()).count();
+    assert!(pieces > 2, "pieces and record blobs logged: {pieces}");
     let path = |w: &mut World| w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.clone();
     let before = path(&mut w).steps.len();
     let a0 = w.node(0).account.unwrap();
