@@ -710,13 +710,27 @@ impl<'a> View<'a> {
 
     /// Every entity's highest effective role on any of `ys`.
     pub(crate) fn roles_to_any(&self, ys: &[Tid]) -> BTreeMap<Tid, Role> {
+        self.roles_back(ys, &BTreeSet::new()).0
+    }
+
+    /// `roles_to` over the edges not in `skip`, each named (target, holder), and the earliest
+    /// `until` of an edge it followed: the answer holds at any later ts before that, while no
+    /// edge into a node it reaches changes.
+    pub(crate) fn roles_to_expiring(&self, y: &Tid, skip: &BTreeSet<(Tid, Tid)>) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
+        self.roles_back(&[*y], skip)
+    }
+
+    /// `roles_to_any` over the edges not in `skip`, with the earliest `until` it followed.
+    fn roles_back(&self, ys: &[Tid], skip: &BTreeSet<(Tid, Tid)>) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
+        let mut expires: Option<WallMs> = None;
         let mut best: BTreeMap<Tid, Role> = ys.iter().map(|y| (*y, Role::Admin)).collect();
         let mut stack = ys.to_vec();
         while let Some(t) = stack.pop() {
             let Some(&level) = best.get(&t) else { continue };
             let mut up: Vec<(Tid, Role)> = Vec::new();
             self.each_holder(&t, |m, e| {
-                if e.alive_at(self.ts) {
+                if e.alive_at(self.ts) && !skip.contains(&(t, *m)) {
+                    expires = earliest(expires, e.until);
                     up.push((*m, level.min(e.role)));
                 }
             });
@@ -727,7 +741,7 @@ impl<'a> View<'a> {
                 }
             }
         }
-        best
+        (best, expires)
     }
 
     /// Effective invite on `n` given `x`'s roles (spec/permissions.md §2).
