@@ -805,3 +805,35 @@ fn repro_a_dead_tie_is_removed_after_a_pass_spec_permissions_2() {
         assert!(!w.engine(i).roster(&t).contains_key(&g), "node {i}: g's tied edge on t stands");
     }
 }
+
+// spec/permissions.md §3 (removal logged first): a node that removes a holder logs the removal,
+// in the same sync and before anything else it logs, under every sync ID the removed party could
+// read. Node 0 writes t, then removes node 2's account from t, before its sync steps: the
+// removal's entry under S is logged before the write's.
+#[test]
+#[ignore = "issues/removal-not-logged-first.md"]
+fn repro_a_removal_is_logged_before_what_was_written_before_it_spec_permissions_3() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, value_ak, world};
+    let mut w = world(0, 3);
+    w.cap = 20_000;
+    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let a2 = w.node(2).account.unwrap();
+    // both written before node 0's sync next steps: one sync logs both
+    let (c, r) = w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Str("before the removal".into())).unwrap();
+        let c = e.commit(m).unwrap().unwrap();
+        (c, e.demote(&t, &Demotion { holder: a2, new: None, retain: None }).unwrap().commits[0])
+    });
+    w.run();
+    let at = |w: &mut World, x: osis_base::CommitId| {
+        let es = w.store(0).entries(&s).unwrap();
+        let b = es.into_iter().find(|e| w.engine(0).blob_commit(&e.blob).ok().flatten() == Some(x)).expect("an own entry under S").blob;
+        w.store(0).first_logged(&s, &b).unwrap().expect("logged")
+    };
+    let (pc, pr) = (at(&mut w, c), at(&mut w, r));
+    assert!(pr < pc, "the removal ({pr:?}) logged before the write ({pc:?})");
+}
