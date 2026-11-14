@@ -847,6 +847,9 @@ indexes! {
     pub held_wait: JSet<CommitId>,
     /// Inbox blobs held untaken (`sync::inbox`, spec/sync-inbox.md §2 invite requests).
     pub waiting_inbox: JMap<osis_base::BlobId, Arc<crate::sync::WaitingBlob>>,
+    /// Per thing, the sync ID a taken inbox blob's payload named for it while no applied `sync.0`
+    /// records one it owns (`sync::inbox`, spec/sync-inbox.md §2 Following a payload sync ID).
+    pub inbox_hints: JMap<Tid, SyncId>,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
     pub valueless: JMap<(Tid, Ak), Vec<Owned>>,
     /// Actors with secrets of their own whose epochs this node holds.

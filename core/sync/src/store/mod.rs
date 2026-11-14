@@ -70,6 +70,8 @@ const PAGE: usize = 256;
 /// The record row tags this module owns: a source's stand of "logged again once", and the
 /// deletes seen there (spec/sync-judgement.md §4).
 use rows::tag::{SEEN, STAND};
+/// The stamp key `deletes_known` reads per sync ID.
+const DELETES_KNOWN: &str = "deletes known";
 
 /// The local policy the caps apply (`caps^.0`, spec/data-model.md §9; spec/sync-ids.md §5-§6):
 /// every value a resource bound against peers filling this node's store. Each is read from
@@ -1083,7 +1085,30 @@ impl Store {
     /// This node saw entry `b` of S deleted at `src`, now (spec/sync-judgement.md §3 Neither).
     pub fn saw_deleted(&mut self, src: Source, s: &SyncId, b: &BlobId) -> Result<()> {
         let now = self.lock().now;
-        self.source_put(src, s, SEEN, &b.0, Some((now, now.0.to_be_bytes().to_vec())))
+        self.source_put(src, s, SEEN, &b.0, Some((now, now.0.to_be_bytes().to_vec())))?;
+        self.lock().mem.stamps.wrote(&(DELETES_KNOWN, *s), true);
+        Ok(())
+    }
+
+    /// Whether this node saw some entry of S deleted at some source within `TOMBSTONE_LIFETIME`
+    /// (spec/sync-judgement.md §5: a destroyed thing's sync ID is forgotten only with none).
+    /// Brute force, O(the rows of deletes seen and stands of every source): read only on the
+    /// rare path of forgetting a destroyed thing's sync ID.
+    pub fn deletes_known(&self, s: &SyncId) -> Result<bool> {
+        let mut g = self.lock();
+        g.mem.stamps.read(&(DELETES_KNOWN, *s));
+        if g.mem.conn_rows.keys().any(|(_, x, tag, _)| x == s && *tag == SEEN) {
+            return Ok(true);
+        }
+        g.read(|t, _| {
+            for (k, _) in t.scan_local(rows::AGING, b"", usize::MAX)? {
+                let mut r = R::new(k.get(rows::AGING.len() + 8..).unwrap_or_default());
+                if (SyncId(r.array()?), r.u8()?) == (*s, SEEN) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
     }
 
     /// Whether this node saw entry `b` of S deleted at `src` within `TOMBSTONE_LIFETIME`.
@@ -1145,6 +1170,9 @@ impl Store {
                 // a row written again since ages from its new time
                 if t.record_get_row(&rec, tag, &s, &key)?.is_some_and(|v| v.get(..8) == Some(&at.to_be_bytes()[..])) {
                     t.record_remove_row(&rec, tag, &s, &key)?;
+                    if tag == SEEN {
+                        env.mem.stamps.wrote(&(DELETES_KNOWN, s), true);
+                    }
                 }
                 acted = true;
             }

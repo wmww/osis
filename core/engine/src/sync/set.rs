@@ -207,7 +207,9 @@ impl Engine {
     }
 
     pub(crate) fn sync_owner_of(&mut self, s: &SyncId) -> Result<Option<Tid>> {
-        let things: Vec<Tid> = self.core.ix.sync_recorders.get(s).into_iter().flatten().copied().collect();
+        let mut things: Vec<Tid> = self.core.ix.sync_recorders.get(s).into_iter().flatten().copied().collect();
+        // a thing a taken inbox blob named it for (O(hints held))
+        things.extend(self.core.ix.inbox_hints.iter().filter(|(_, x)| *x == s).map(|(t, _)| *t));
         for t in things {
             if self.owned_sync_ids(&t)?.iter().any(|o| o.id == *s) {
                 return Ok(Some(t));

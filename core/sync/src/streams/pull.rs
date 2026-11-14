@@ -259,6 +259,7 @@ impl Streams {
         let (rec_ops, conn_ops): (Vec<_>, Vec<_>) = ops.into_iter().partition(|(at, _)| matches!(at, Source::Record(_)));
         for (at, op) in conn_ops {
             self.known.apply_conn(at, std::slice::from_ref(&op));
+            self.known.logged(at, &op);
         }
         if rec_ops.is_empty() && !matches!(src, Source::Record(_)) {
             return true;
@@ -281,6 +282,11 @@ impl Streams {
             Ok(())
         });
         let ok = r.is_ok();
+        if ok {
+            for (at, op) in &rec_ops {
+                self.known.logged(*at, op);
+            }
+        }
         self.failed(r);
         ok
     }
@@ -500,7 +506,11 @@ impl Streams {
                 match e {
                     Event::Full(f) => ops.push((src, Op::Full(s, f))),
                     // code 6 counts as the entry deleted there
-                    Event::Refused(b, Code::TOMBSTONED) => ops.push((src, Op::Remove(s, b))),
+                    Event::Refused(b, Code::TOMBSTONED) => {
+                        ops.push((src, Op::Remove(s, b)));
+                        // a store failure loses this row only: the next delete seen there writes it again
+                        let _ = ctx.store.saw_deleted(src, &s, &b);
+                    }
                     Event::Refused(b, code) => {
                         let Ok(Some(e)) = ctx.store.entry(&s, &b) else { continue };
                         let head = self.known.head(src, &s);
@@ -842,6 +852,7 @@ impl Streams {
                 Event::Deleted(b) => {
                     ops.push((src, Op::Remove(*s, *b)));
                     ops.push((Source::Conn(conn), Op::Remove(*s, *b)));
+                    let _ = ctx.store.saw_deleted(src, s, b);
                 }
                 Event::Head(step) => ops.push((src, Op::Head(*s, step.id()))),
                 _ => {}

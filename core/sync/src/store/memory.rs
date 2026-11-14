@@ -226,6 +226,7 @@ impl Memory {
             if self.conn_rows.get(&row).is_some_and(|v| v.get(..8) == Some(&t.0.to_be_bytes()[..])) {
                 self.conn_rows.remove(&row);
                 self.stamps.wrote(&row, true);
+                self.stamps.wrote(&("deletes known", row.1), true);
             }
             acted = true;
         }

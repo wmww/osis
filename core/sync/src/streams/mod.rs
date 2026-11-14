@@ -38,7 +38,7 @@ mod known;
 mod pull;
 mod serve;
 
-pub use known::{Known, Refusal};
+pub use known::{Known, Refusal, Row as KnownRow};
 
 use crate::opens::{Member, Moved, Opens, Reported};
 use crate::session::{Incoming, Sessions, To};

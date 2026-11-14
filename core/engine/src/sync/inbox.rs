@@ -62,8 +62,38 @@ fn waiting_of(b: &[u8]) -> Result<WaitingBlob> {
     })
 }
 
-/// Loads the waiting inbox blobs (an open or reload).
+/// `ih/` + thing: the sync ID a taken inbox blob named for a thing no applied `sync.0` gives one
+/// it owns (spec/sync-inbox.md §2 Following a payload sync ID).
+pub(crate) const HINTS: &[u8] = b"ih/";
+
+/// Keeps `s` as `t`'s hinted sync ID (`None`: drops it).
+pub(crate) fn set_hint(tx: &mut Tx<'_>, t: &Tid, s: Option<SyncId>) -> Result<()> {
+    let k = [HINTS, t.as_bytes()].concat();
+    match s {
+        Some(s) => {
+            tx.txn.put_local(&k, &s.0, Shred::No)?;
+            tx.core.ix.inbox_hints.insert(*t, s);
+        }
+        None => {
+            if tx.core.ix.inbox_hints.remove(t).is_some() {
+                tx.txn.remove_local(&k, Shred::No)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Loads the waiting inbox blobs and the hinted sync IDs (an open or reload).
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
+    let mut hints = Vec::new();
+    tx.scan(HINTS, |k, v| {
+        let bad = || Error::Corrupt("inbox hint");
+        hints.push((Tid::from_bytes(k.try_into().map_err(|_| bad())?), SyncId(v.as_slice().try_into().map_err(|_| bad())?)));
+        Ok(())
+    })?;
+    for (t, s) in hints {
+        tx.core.ix.inbox_hints.insert(t, s);
+    }
     let mut rows = Vec::new();
     tx.scan(WAITING, |k, v| {
         rows.push((BlobId(k.try_into().map_err(|_| Error::Corrupt("waiting inbox blob"))?), waiting_of(&v)?));
@@ -230,8 +260,10 @@ impl Engine {
         let mut hints = Vec::new();
         if taken == Taken::Applied {
             for (t, sid) in &payload_ids {
-                if boxed.role(t).is_some() && !self.owned_sync_ids(t)?.iter().any(|o| o.id == *sid && !o.hint) {
+                if boxed.role(t).is_some() && !self.owned_sync_ids(t)?.iter().any(|o| !o.hint) {
                     hints.push((*t, *sid));
+                    let (t, sid) = (*t, *sid);
+                    self.run(|tx| set_hint(tx, &t, Some(sid)))?;
                     break;
                 }
             }

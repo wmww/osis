@@ -114,11 +114,17 @@ pub struct Known {
     full: BTreeSet<(Source, SyncId)>,
     refused: BTreeMap<(Source, SyncId, BlobId), Refusal>,
     stamps: Stamps,
+    /// Every presence row written (shown present or removed, any source): `feed` readers take
+    /// each (read, judging what a source showed of a commit).
+    log: Stamps,
 }
+
+/// A presence row as `Known::feed` names it.
+pub type Row = (Source, SyncId, BlobId);
 
 impl Known {
     pub(super) fn new(store: Store) -> Known {
-        Known { store, by_src: BTreeMap::new(), by_blob: BTreeMap::new(), heads: BTreeMap::new(), full: BTreeSet::new(), refused: BTreeMap::new(), stamps: Stamps::default() }
+        Known { store, by_src: BTreeMap::new(), by_blob: BTreeMap::new(), heads: BTreeMap::new(), full: BTreeSet::new(), refused: BTreeMap::new(), stamps: Stamps::default(), log: Stamps::default() }
     }
 
     /// Tests only (world copies): the copy's store.
@@ -134,6 +140,18 @@ impl Known {
         self.stamps.wrote(&("k", src, s, b), true);
         self.stamps.wrote(&("p", s, b), true);
         self.stamps.wrote(&("l", src, s), true);
+    }
+
+    /// `op` of `src` was applied (written durably, or in memory): a presence row goes to the feed.
+    pub(super) fn logged(&self, src: Source, op: &Op) {
+        if let Op::Add(s, b) | Op::Remove(s, b) = op {
+            self.log.wrote_added(&(src, *s, *b), true, true);
+        }
+    }
+
+    /// A cursor over the presence rows written from now on.
+    pub fn feed(&self) -> osis_base::memo::Feed<Row> {
+        self.log.feed()
     }
 
     /// Applies `ops` of a connection's source in memory (a record's go through `write`).

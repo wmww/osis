@@ -190,7 +190,15 @@ impl Engine {
         }
         Memo::get_in(self, |e| &e.core.sync_ids, g, |e| {
             let m = e.get_typed(g, &ct::SYNC)?.unwrap_or_default();
-            Ok::<_, crate::error::Error>(Arc::new(owned_in(&e.core, g, &m)))
+            let mut out = owned_in(&e.core, g, &m);
+            // a sync ID a taken inbox blob named, until a `sync.0` here gives one (spec/sync-
+            // inbox.md §2): followed with no recorded path
+            if out.is_empty()
+                && let Some(s) = e.core.ix.inbox_hints.get(g)
+            {
+                out.push(OwnedSyncId { id: *s, path: Arc::new(crate::sync::Path::default()), hint: true });
+            }
+            Ok::<_, crate::error::Error>(Arc::new(out))
         })
     }
 }
