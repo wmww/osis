@@ -1241,7 +1241,9 @@ impl Engine {
         let a = *actor;
         self.run(|tx| {
             let mut done = Done::default();
-            let me = tx.core.writer()?;
+            // a node removed from its account writes nothing as it (it may still hold the read
+            // secrets through the pass its drop waits for)
+            let Ok(me) = tx.core.writer() else { return Ok(done) };
             pass_end_rotations(tx, me, a, &mut done)?;
             let mut due = reseal_candidates(tx, &a)?;
             if !due.is_empty() {
@@ -1293,7 +1295,9 @@ impl Engine {
         let a = *actor;
         self.run(|tx| {
             let mut done = Done::default();
-            let me = tx.core.writer()?;
+            // a node removed from its account writes nothing as it (it may still hold the read
+            // secrets through the pass its drop waits for)
+            let Ok(me) = tx.core.writer() else { return Ok(done) };
             pass_end_rotations(tx, me, a, &mut done)?;
             Ok(done)
         })

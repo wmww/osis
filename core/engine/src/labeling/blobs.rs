@@ -664,7 +664,9 @@ impl Engine {
         };
         let a = *a;
         self.read(|tx| {
-            let who = tx.core.writer()?;
+            // a node removed from its account wraps nothing as it (it may still hold the read
+            // secrets through the pass its drop waits for)
+            let Ok(who) = tx.core.writer() else { return Ok(true) };
             if matches!(walk, crate::rotation::Walk::Encrypt) && !crate::flows::edges::finalizable(tx.core, &who, &a).is_empty() {
                 return Ok(true);
             }

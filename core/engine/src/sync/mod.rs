@@ -675,11 +675,12 @@ impl Engine {
         Ok(self.carrying_now(t, false)?.into_iter().collect())
     }
 
-    /// Whether this node knows the group whose closure it syncs (its synced group, or its
-    /// account's D before it has read one): before (a node pairing), its sync set is empty for want
-    /// of the group, not because anything left it, so nothing it holds counts as left.
+    /// Whether this node has known the group whose closure it syncs: it joined an account (made
+    /// or paired). Before (a node pairing), its sync set is empty for want of the group, not
+    /// because anything left it, so nothing it holds counts as left; a node removed from its
+    /// account since knows no group any more, and everything it held has left.
     pub fn sync_rooted(&mut self) -> Result<bool> {
-        Ok(self.sync_root()?.is_some())
+        Ok(self.core.account.get().is_some())
     }
 
     /// The thing owning sync ID `s` here by its `sync.0`.
