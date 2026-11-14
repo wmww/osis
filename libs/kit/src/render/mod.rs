@@ -724,7 +724,8 @@ impl Ui {
         let q = self.state.graph.peek(QUERY).trim().to_string();
         match classify(&q) {
             Paste::Link => self.start_redeem(rr, q),
-            Paste::Peer => self.status(rr, format!("peer {q}: {}", osis::Error::NotBuilt)),
+            // dial candidates are the app's start configuration (`Config::dial`), never stored
+            Paste::Peer => self.status(rr, format!("to dial {q}, start the app with --dial {q}")),
             Paste::Query => {
                 let dark = self.look.dark;
                 let cx = Cx::new(&self.data, &self.state, dark);

@@ -64,6 +64,9 @@ pub(crate) enum Ctl {
     Listen { urls: Option<Vec<String>>, socket: Option<String>, secret: StaticSecret, reply: oneshot::Sender<std::result::Result<Vec<osis_label::Address>, String>> },
 }
 
+/// Where the driver task runs and what it hears from the handle.
+pub(crate) type DriverStart = (tokio::runtime::Handle, mpsc::UnboundedReceiver<Ctl>);
+
 /// osis's own runtime, shut down without waiting when the node goes (from any thread, its own
 /// workers included).
 pub(crate) struct OwnRuntime(Option<tokio::runtime::Runtime>);
@@ -88,7 +91,7 @@ pub(crate) enum Net {
 
 impl Net {
     /// The net for `rt`, with the handle of the runtime the driver task runs on.
-    pub(crate) fn new(rt: &Runtime, manual: Option<&ManualNet>) -> Result<(Net, Option<(tokio::runtime::Handle, mpsc::UnboundedReceiver<Ctl>)>)> {
+    pub(crate) fn new(rt: &Runtime, manual: Option<&ManualNet>) -> Result<(Net, Option<DriverStart>)> {
         if let Some(m) = manual {
             return Ok((Net::Manual { net: m.clone(), index: usize::MAX }, None));
         }
@@ -171,7 +174,7 @@ pub(crate) struct Start {
 impl crate::Osis {
     /// Puts the node on its network: the driver task started (listening with direct sync,
     /// discovering with LAN on), or this node placed on a test's network.
-    pub(crate) fn go_online(&self, cfg: &crate::Config, driver: Option<(tokio::runtime::Handle, mpsc::UnboundedReceiver<Ctl>)>) -> Result<()> {
+    pub(crate) fn go_online(&self, cfg: &crate::Config, driver: Option<DriverStart>) -> Result<()> {
         let secret = self.locked(|l| StaticSecret::from_bytes(*l.secret.as_bytes()));
         match &self.inner.net {
             Net::Off => {}
@@ -307,6 +310,8 @@ struct Fabric {
     accepted: u64,
     /// Nodes cut off from the network: dials to and from them fail.
     offline: std::collections::BTreeSet<usize>,
+    /// Connections that came up at each node so far (tests: what dialed).
+    ups: BTreeMap<usize, usize>,
     /// Deliveries so far, against `cap`.
     deliveries: u64,
     cap: u64,
@@ -323,7 +328,7 @@ pub const MANUAL_HORIZON_MS: u64 = 3_600_000;
 impl ManualNet {
     /// A network whose nodes run on `clock` (give each node the same clock, `Knobs::clock`).
     pub fn new(clock: Arc<ManualClock>) -> ManualNet {
-        ManualNet(Arc::new(Mutex::new(Fabric { clock, nodes: Vec::new(), queue: VecDeque::new(), wakes: BTreeMap::new(), links: BTreeMap::new(), sent: BTreeMap::new(), accepted: 0, offline: Default::default(), deliveries: 0, cap: MANUAL_CAP })))
+        ManualNet(Arc::new(Mutex::new(Fabric { clock, nodes: Vec::new(), queue: VecDeque::new(), wakes: BTreeMap::new(), links: BTreeMap::new(), sent: BTreeMap::new(), ups: BTreeMap::new(), accepted: 0, offline: Default::default(), deliveries: 0, cap: MANUAL_CAP })))
     }
 
     /// A new node's place (`Osis::start`).
@@ -364,7 +369,12 @@ impl ManualNet {
         lock(&self.0).nodes.get(i).and_then(|n| n.0.as_ref()).and_then(WeakOsis::upgrade)
     }
 
-    /// The places of this network's nodes still open.
+    /// Connections that came up at node `i` so far.
+    pub fn ups(&self, i: usize) -> usize {
+        lock(&self.0).ups.get(&i).copied().unwrap_or(0)
+    }
+
+    /// The places of this network's nodes, open or not.
     pub fn len(&self) -> usize {
         lock(&self.0).nodes.len()
     }
@@ -464,6 +474,8 @@ impl Links for FabricLinks<'_> {
         eph[..8].copy_from_slice(&f.accepted.to_le_bytes());
         eph[31] = 0xee;
         f.queue.push_back((self.node, Input::Up { conn, peer: NodeKey(to.key), rank: 0, dialed: true, listener: NodeKey(to.key) }));
+        *f.ups.entry(self.node).or_default() += 1;
+        *f.ups.entry(t).or_default() += 1;
         f.queue.push_back((t, Input::Up { conn: acc, peer: NodeKey(eph), rank: 0, dialed: false, listener: NodeKey(to.key) }));
     }
 

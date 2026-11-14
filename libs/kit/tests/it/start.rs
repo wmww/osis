@@ -25,7 +25,7 @@ impl Window {
     }
 
     fn open_with(dir: &Path, data: Box<dyn Fn(osis::Osis) -> Result<Data, String>>) -> Window {
-        let mut ui = Start { dir: dir.to_path_buf(), peers: Vec::new(), waker: Waker::new(|| {}), data }.open();
+        let mut ui = Start { dir: dir.to_path_buf(), dial: Vec::new(), waker: Waker::new(|| {}), data }.open();
         let opts = RenderRootOptions {
             default_properties: Arc::new(osis_kit::masonry::theme::default_property_set()),
             use_system_fonts: false,

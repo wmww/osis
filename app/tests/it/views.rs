@@ -66,7 +66,7 @@ fn a_stale_viewed_as_falls_back() {
 
 /// A chat appears as any thing does: found, favorited, tagged, in a tag's cards with its name.
 #[test]
-#[ignore = "sync rewrite"]
+#[ignore = "sync rewrite: the things a store syncs come from status, whose sync set needs the engine facade (branch sync-facade)"]
 fn a_chat_is_an_ordinary_thing() {
     let d = data();
     let c = osis_chat::create(&d.db, &osis_chat::Options { name: "channel".into(), ..Default::default() }).unwrap();

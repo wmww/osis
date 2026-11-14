@@ -1,5 +1,5 @@
-//! `osis-app DIR [--peer ADDR]... [--demo] [--theme ID] [--auto|--light|--dark]`: opens the store
-//! in DIR (creating it, with its home group syncing with those peers, when DIR holds none) and shows the app;
+//! `osis-app DIR [--dial ADDR]... [--demo] [--theme ID] [--auto|--light|--dark]`: opens the store
+//! in DIR (creating it when DIR holds none), dialing those nodes, and shows the app;
 //! a store that cannot open shows why, in the window and on stderr.
 //! `--demo` adds demo data once; the look flags set the account's theme and mode (as the app's
 //! own picker does).
@@ -12,7 +12,7 @@ use osis_kit::theme::Theme;
 use osis_kit::window::App;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: osis-app DIR [--peer ADDR]... [--demo] [--theme ID] [--auto|--light|--dark]";
+const USAGE: &str = "usage: osis-app DIR [--dial ADDR]... [--demo] [--theme ID] [--auto|--light|--dark]";
 
 fn main() -> ExitCode {
     match run() {
@@ -26,12 +26,12 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
-    let (mut dir, mut peers, mut demo, mut theme, mut mode) = (None, Vec::new(), false, None, None);
+    let (mut dir, mut dial, mut demo, mut theme, mut mode) = (None, Vec::new(), false, None, None);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--peer" => {
-                let s = args.next().ok_or("--peer needs an address")?;
-                peers.push(s.parse().map_err(|e| format!("--peer {s}: {e}"))?);
+            "--dial" => {
+                let s = args.next().ok_or("--dial needs an address")?;
+                dial.push(s.parse().map_err(|e| format!("--dial {s}: {e}"))?);
             }
             "--demo" => demo = true,
             "--theme" => theme = Some(args.next().ok_or("--theme needs an id")?),
@@ -63,7 +63,7 @@ fn run() -> Result<(), String> {
         }
         Ok(data)
     };
-    let ui = Start { dir, peers, waker: app.waker(), data: Box::new(data) }.open();
+    let ui = Start { dir, dial, waker: app.waker(), data: Box::new(data) }.open();
     // from a terminal the error shows there too; the window offers to start fresh
     if let Some(e) = ui.error() {
         eprintln!("osis-app: {e}");

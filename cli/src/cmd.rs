@@ -9,7 +9,7 @@ use crate::{Ctx, exit, open, opt_ts, parse_ak, usage};
 use anyhow::{Context as _, anyhow};
 use osis::internals::Internals as _;
 use osis::{
-    Change, Store, CommitId, CommitKind, CommitQuery, DynamicAspectKey, Error, GrantOpts, LinkOpts, Member, Origin, Osis, Role, SetRoleOpts, SyncScope, SyncState, Tid, Value,
+    Change, Store, CommitId, CommitKind, CommitQuery, DynamicAspectKey, Error, GrantOpts, LinkOpts, Member, Origin, Osis, Role, SetRoleOpts, SyncScope, Tid, Value,
 };
 use std::future::Future;
 use std::io::BufRead;
@@ -100,28 +100,13 @@ pub(crate) fn confirm<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>
     race(ctx.timeout()?, f).unwrap_or_else(|| Err(Error::Network("could not confirm this link yet; trying again is safe".into()))).map_err(Into::into)
 }
 
-/// `wait_synced` within `limit`; past it `Network`, or the peers that do not admit a group (state
-/// `Refused`) when there are any.
+/// `wait_synced` within `limit`; past it `Network`.
 fn wait_sync(ctx: &Ctx<'_>, s: SyncScope, limit: Option<Duration>) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     match race(limit, db.wait_synced(s)) {
-        Some(r) => r.map_err(|e| not_admitted(&db, e)),
-        None => {
-            let refused = db.status().map(|st| st.groups.iter().filter(|(_, x)| x.state == SyncState::Refused).map(|(g, _)| *g).collect::<Vec<_>>()).unwrap_or_default();
-            Err(if refused.is_empty() { Error::Network("timed out".into()).into() } else { not_admitted(&db, Error::Unsynced { groups: refused }) })
-        }
+        Some(r) => Ok(r?),
+        None => Err(Error::Network("timed out".into()).into()),
     }
-}
-
-/// `e` with the peers that do not admit the groups it names (state `Refused`), if any.
-fn not_admitted(db: &Osis, e: Error) -> anyhow::Error {
-    let (Error::Unsynced { groups }, Ok(st)) = (&e, db.status()) else { return e.into() };
-    let hint: Vec<String> = groups
-        .iter()
-        .filter_map(|g| st.groups.get(g).filter(|x| x.state == SyncState::Refused).map(|x| (g, x)))
-        .flat_map(|(g, x)| x.refused_by.iter().map(move |h| format!("{h} does not admit group {} (yet)", g.to_uri())))
-        .collect();
-    if hint.is_empty() { e.into() } else { anyhow::Error::from(e).context(hint.join("; ")) }
 }
 
 /// `NAME\tTID` lines, each list under its name.
@@ -234,14 +219,13 @@ pub fn dispatch(cli: Cli, store: Option<Store>, stdin: &mut dyn BufRead, out: &m
         }
         _ => {}
     }
-    let seed = |list: &[String]| list.iter().map(|s| s.parse::<osis::Address>().map_err(anyhow::Error::from)).collect::<anyhow::Result<Vec<_>>>();
     let db = match &cli.cmd {
-        Cmd::Init { peer } => crate::create(&sel, &g, seed(peer)?)?,
-        Cmd::Pair(PairCmd::Join { offer, peer }) => {
+        Cmd::Init => crate::create(&sel, &g)?,
+        Cmd::Pair(PairCmd::Join { offer }) => {
             // the app carries two messages: print the request, read the reply
-            let cfg = crate::config(&g, crate::Network::Node);
+            let cfg = crate::config(&g, crate::Network::Node)?;
             let offer: osis::PairOffer = offer.parse()?;
-            let join = Osis::pair(sel.clone(), &seed(peer)?, &offer, cfg)?;
+            let join = Osis::pair(sel.clone(), &offer, cfg)?;
             writeln!(out, "{}", join.request())?;
             out.flush()?;
             let mut line = String::new();
@@ -300,7 +284,7 @@ fn one_write(ctx: &mut Ctx<'_>, c: ScriptCmd) -> anyhow::Result<()> {
 fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     match cmd {
-        Cmd::Init { .. } | Cmd::Pair(PairCmd::Join { .. }) => whoami(ctx),
+        Cmd::Init | Cmd::Pair(PairCmd::Join { .. }) => whoami(ctx),
         Cmd::Whoami => whoami(ctx),
         Cmd::Pair(PairCmd::Offer) => {
             // print the offer, read the new node's request, print the reply and its node
@@ -482,7 +466,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Chat(c) => crate::chat::run(ctx, c),
         Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => {
-            let l = db.make_link(ctx.tid(&t)?, parse_role(&role)?, LinkOpts { until: opt_ts(&until)?, single_use, direct: false })?;
+            let l = db.make_link(ctx.tid(&t)?, parse_role(&role)?, LinkOpts { until: opt_ts(&until)?, single_use })?;
             ctx.one("link", l)
         }
         Cmd::Link(LinkCmd::Redeem { link }) => {
@@ -560,8 +544,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Status { watch: false } => status(ctx),
         Cmd::Status { watch: true } => {
-            let raw = ctx.g.raw;
-            let (mut f, rx) = page_sink(ctx.g.json, move |s: &osis::Status| (status_lines(s, raw).join(", "), status_json(s)));
+            let (mut f, rx) = page_sink(ctx.g.json, move |s: &osis::Status| (status_lines(s).join(", "), status_json(s)));
             let _sub = db.on_status_change(move |_, r| f(Ok(r)))?;
             stream_pages(ctx, &rx, None)
         }
@@ -1067,28 +1050,27 @@ fn grants(ctx: &mut Ctx<'_>, t: &str) -> anyhow::Result<()> {
 
 fn status(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     let s = ctx.db.status()?;
-    let lines = status_lines(&s, ctx.g.raw);
+    let lines = status_lines(&s);
     ctx.emit(&lines, status_json(&s))
 }
 
-fn status_lines(s: &osis::Status, raw: bool) -> Vec<String> {
+fn status_lines(s: &osis::Status) -> Vec<String> {
     let groups = s.groups.iter().map(|(g, x)| {
-        let mut line = format!("{} {:?} {}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)));
+        let mut line = format!("{} {:?}", g.to_uri(), x.state);
         if x.leaving {
             line.push_str(" leaving");
         }
-        if !x.refused_by.is_empty() {
-            line.push_str(&format!(" refused by {}", x.refused_by.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ")));
+        if x.not_taking > 0 {
+            line.push_str(&format!(" not taking: {}", x.not_taking));
         }
         line
     });
-    // writes on these are refused until a group moves (Osis::group_source)
-    std::iter::once(format!("connected {}", s.connected)).chain(groups).chain(s.two_sources.iter().map(|t| format!("{} two sources: writes refused", t.to_uri()))).collect()
+    std::iter::once(format!("connected {}", s.connected)).chain(groups).collect()
 }
 
 fn status_json(s: &osis::Status) -> J {
-    let groups = s.groups.iter().map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0)))), ("leaving", J::Bool(x.leaving)), ("refused_by", J::strs(&x.refused_by))]));
-    J::obj([("groups", J::Arr(groups.collect())), ("connected", J::int(s.connected as u64)), ("two_sources", J::tids(&s.two_sources))])
+    let groups = s.groups.iter().map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("leaving", J::Bool(x.leaving)), ("not_taking", J::int(x.not_taking as u64))]));
+    J::obj([("groups", J::Arr(groups.collect())), ("connected", J::int(s.connected as u64))])
 }
 
 /// One diagnostic as `diag` prints it (text or a JSON line): its kind, what it names, its detail.
@@ -1386,31 +1368,21 @@ mod tests {
         use clap::Parser;
         for args in [&["osis", "--no-lan", "watch", "t", "a:b.0"][..], &["osis", "serve", "--no-lan"], &["osis", "--no-lan", "pair", "join", "x"]] {
             let cli = crate::args::Cli::try_parse_from(args).unwrap();
-            assert!(matches!(crate::config(&cli.g, super::network(&cli.cmd)).lan, osis::Lan::Off), "{args:?}");
+            assert!(matches!(crate::config(&cli.g, super::network(&cli.cmd)).unwrap().lan, osis::Lan::Off), "{args:?}");
         }
         let cli = crate::args::Cli::try_parse_from(["osis", "serve"]).unwrap();
-        assert!(matches!(crate::config(&cli.g, super::network(&cli.cmd)).lan, osis::Lan::On { .. }));
+        assert!(matches!(crate::config(&cli.g, super::network(&cli.cmd)).unwrap().lan, osis::Lan::On { .. }));
     }
 
-    // `status` shows split things apart from groups, in both forms.
+    // notes/api.md Sync configuration and status: `status` shows a thing's `leaving` and
+    // `not_taking`, in both forms.
     #[test]
-    fn status_lists_things_with_two_sources_apart_notes_cli() {
-        let t = osis::Tid::from_bytes([7; 15]);
-        let mut s = osis::Status::default();
-        s.two_sources.insert(t);
-        assert_eq!(super::status_lines(&s, true), vec!["connected 0".to_string(), format!("{} two sources: writes refused", t.to_uri())]);
-        assert_eq!(super::status_json(&s).text(), format!("{{\"groups\":[],\"connected\":0,\"two_sources\":[\"{}\"]}}", t.to_uri()));
-    }
-
-    // notes/api.md Sync configuration and status: `status` shows a group's `leaving` and `refused_by`, in both forms.
-    #[test]
-    fn status_shows_leaving_and_refused_by_notes_api() {
+    fn status_shows_leaving_and_not_taking_notes_api() {
         let g = osis::Tid::from_bytes([7; 15]);
-        let a = osis::Address::new(&"quic://h:1".parse().unwrap(), [8; 32]);
         let mut s = osis::Status::default();
-        s.groups.insert(g, osis::GroupSync { state: osis::SyncState::Refused, last_sync: None, refused_by: vec![a.clone()], leaving: true });
-        assert_eq!(super::status_lines(&s, true)[1], format!("{} Refused - leaving refused by {a}", g.to_uri()));
-        assert!(super::status_json(&s).text().contains(&format!("\"leaving\":true,\"refused_by\":[\"{a}\"]")));
+        s.groups.insert(g, osis::GroupSync { state: osis::SyncState::Syncing, not_taking: 2, leaving: true });
+        assert_eq!(super::status_lines(&s)[1], format!("{} Syncing leaving not taking: 2", g.to_uri()));
+        assert!(super::status_json(&s).text().contains("\"leaving\":true,\"not_taking\":2"));
     }
 
     // notes/cli.md Design: `edit`'s temp file is new (`create_new`), randomly named, owner-only.

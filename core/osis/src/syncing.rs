@@ -153,7 +153,7 @@ impl Osis {
     }
 
     /// A future that asks `check` now and after each sync step until it answers. With no
-    /// network an unanswered first ask fails `Network`: nothing will ever step the node.
+    /// network anything but success fails `Network` at once: nothing will ever step the node.
     pub(crate) fn waiting<R>(&self, check: impl FnMut(&Osis) -> Option<Result<R>> + Send + Unpin) -> Waiting<impl FnMut(&Osis) -> Option<Result<R>> + Send + Unpin> {
         Waiting { db: self.downgrade(), check, online: self.inner.net.online() }
     }
@@ -178,12 +178,11 @@ impl<R, F: FnMut(&Osis) -> Option<Result<R>> + Unpin> Future for Waiting<F> {
                 w.push(cx.waker().clone());
             }
         }
-        if let Some(r) = (self.check)(&db) {
-            return Poll::Ready(r);
+        match (self.check)(&db) {
+            Some(Ok(r)) => Poll::Ready(Ok(r)),
+            _ if !self.online => Poll::Ready(Err(Error::Network("no network: nothing would ever sync (Config.runtime)".into()))),
+            Some(Err(e)) => Poll::Ready(Err(e)),
+            None => Poll::Pending,
         }
-        if !self.online {
-            return Poll::Ready(Err(Error::Network("no network: nothing would ever sync (Config.runtime)".into())));
-        }
-        Poll::Pending
     }
 }

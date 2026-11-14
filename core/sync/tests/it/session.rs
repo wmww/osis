@@ -369,7 +369,7 @@ fn replies_go_to_their_sender_spec_wire_11_2() {
 }
 
 // spec: none (routing, notes/sync-boundary.md session): a request or push goes to the module of its
-// kind; the client port's go to none.
+// kind; the client port's requests go to the node's owner (`To::Port`), a Notify to none.
 #[test]
 fn routing_by_kind() {
     let s = osis_base::SyncId([1; 16]);
@@ -378,7 +378,9 @@ fn routing_by_kind() {
     assert_eq!(req(Msg::NoRecord { id: NO_RECORD_ID }), Some(To::Opens));
     assert_eq!(req(pull(SMALL_REPLY as u64)), Some(To::Streams));
     assert_eq!(req(Msg::Suspect { id: 1, sync_id: s, entries: Vec::new() }), Some(To::Inbox));
-    assert_eq!(req(Msg::Unsub { id: 1, sub_id: 2 }), None);
+    assert_eq!(req(Msg::Unsub { id: 1, sub_id: 2 }), Some(To::Port));
+    assert_eq!(req(Msg::Auth { id: 1, secret: None, session_id: [0; 16] }), Some(To::Port));
+    assert_eq!(Incoming::Push(Msg::Unsub { id: 1, sub_id: 2 }).to(), None);
     assert_eq!(Incoming::Push(Msg::Digest { digest: [0; 32] }).to(), Some(To::Opens));
     assert_eq!(Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(vec![1]).expect("cursor") }).to(), Some(To::Streams));
     assert_eq!(Incoming::Proved.to(), Some(To::Opens));

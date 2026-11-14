@@ -8,6 +8,8 @@ osis::on_dispute  public API: the dispute listener (crate docs, notes/listener-d
 osis::retaining  public API: keeps a thing alive from an aspect (the crate docs' example)
 osis::stream_work  test hook (internals)
 osis::faulty_store  test hook (internals)
+osis::port_answers  test hook (internals): the client port's answers without a transport
+osis::set_online  test hook (internals): `ManualNet` cuts a node off
 
 osis-base::TAG_STRUCT_RESERVED  table: the spec's reserved CBOR tags, named for the codec tests
 osis-crdt::cut_dots  the spec's Paste op (§5.7) takes its dots; the API's cut/paste is deferred (issues/api-deferred.md)
@@ -47,7 +49,6 @@ osis-engine::commit_in_memory_hostile  deferred: sync rebuild (issues/sync-rewri
 osis-engine::commits_keyed_by  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::compact_memory_now  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::compaction_load  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::compactions  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::copy_stale  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::counts_at_epoch  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::cover_judged_on  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -116,7 +117,6 @@ osis-engine::revoke_certificates  deferred: sync rebuild (issues/sync-rewrite.md
 osis-engine::rotated_already  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::seal_plain  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::seal_to  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::set_app_record  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::set_sync_records  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::settled_slots  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::static_listed  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -138,20 +138,12 @@ osis-label::in_memory  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); 
 osis-label::match_secret  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-label::prefix_bytes  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-label::seal_stranded_notice  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::CLOSED  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::INVALID  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::IN_USE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::MAX_BEHIND_STEPS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
-osis-proto::MAX_CONNS_PER_CLIENT  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-proto::MAX_SUBS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::NETWORK  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::NOT_UNDOABLE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::OFFSET_DIAGNOSTIC_MS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::OUTCOME_UNKNOWN  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::STORAGE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::TYPE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::UNKNOWN_ACTOR  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::UNKNOWN_THING  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::UNSYNCED  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-schema::HOST  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-schema::TID  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -176,7 +168,6 @@ osis-store::record_used  deferred: sync rebuild (issues/sync-rewrite.md Phase 3)
 osis-store::records_evict  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::records_of_actors  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::table_len  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-transport::connections  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-transport::connections_between  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-transport::disconnect  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-transport::lan_lost  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -187,16 +178,12 @@ osis-transport::run_on_tokio  deferred: sync rebuild (issues/sync-rewrite.md Pha
 osis-transport::set_dial_ms  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-transport::set_lan_loss  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis::accept_invite  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
-osis::decline_invite  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
-osis::invite_requests  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
 osis::rotate_peer_address  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
 osis-engine::accept_inbox  test hook (tests/it)
-osis-engine::account_holder_keys  test hook (tests/it)
 osis-engine::bear  test hook (tests/it)
 osis-engine::boxed_by  test hook (tests/it)
 osis-engine::commit_forged  test hook (tests/it)
 osis-engine::copy_awaits  test hook (tests/it)
-osis-engine::create_link  test hook (tests/it)
 osis-engine::damage_edges  test hook (tests/it)
 osis-engine::damage_walks  test hook (tests/it)
 osis-engine::deliver_sealed  test hook (tests/it)
@@ -249,7 +236,6 @@ osis-engine::without_held  test hook (tests/it)
 osis-engine::write_addenda  test hook (tests/it)
 
 # The sync rebuild's skeleton (notes/sync-boundary.md): each module's owner uses or removes these.
-osis-engine::invitations  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::take_deposit  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::proofs_done  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); opens refuses a Resume before the proofs with it
@@ -260,5 +246,4 @@ osis-sync::seen_deleted  deferred: sync rebuild (issues/sync-rewrite.md Phase 3)
 osis-sync::serve_path  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (a read S's served head)
 osis-sync::uncharge  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-ids.md §5 Peer budget)
 osis-sync::dial_hints  deferred: the driver's dial candidates read it (notes/sync-boundary.md, driver)
-osis-sync::set_config  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); the osis handle changes `Config::dial` through it (integration)
 osis-sync::status_of  deferred: the osis API reads one sync ID's status (sync rebuild integration, issues/sync-rewrite.md Phase 3)

@@ -349,18 +349,17 @@ fn an_untyped_index_past_the_limit_says_so() {
 }
 
 // CLI Sharing and roles, Sync, Identity and nodes: the local half of the
-// sharing commands on one store (no peers): links, cards, nodes, grants by error category,
-// status (bundles are binary: the localhost e2e).
+// sharing commands on one store (nobody to dial): links, cards, nodes, grants by error
+// category, status (bundles are binary: the localhost e2e).
 #[test]
-#[ignore = "sync rewrite"]
 fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();
     let g = s.ok(&["create", "--in", "me", "t:made.0", "true"]).line().to_string();
-    s.ok(&["group", "sync", &g]);
-    // spec/permissions.md §7: without peers a link reaches nobody unless direct (opt-in)
-    assert_eq!(s.code(&["link", "make", &g, "write", "--single-use"]), 7);
-    assert_eq!(s.code(&["card", "show"]), 7);
-    assert_eq!(s.ok(&["--json", "link", "ls", &g]).line(), "[]");
+    // spec/sync-inbox.md §6: `make_link` works on every node; the link names this node
+    let link = s.ok(&["link", "make", &g, "write", "--single-use"]).line().to_string();
+    assert!(link.starts_with("osis://link/"), "{link}");
+    assert!(s.ok(&["--json", "link", "ls", &g]).line().contains("\"single_use\":true"));
+    assert!(s.ok(&["card", "show"]).line().starts_with("osis://link/"));
     assert_eq!(s.ok(&["node", "ls"]).out.lines().count(), 1);
     let other = S::mem();
     let stranger = other.ok(&["whoami"]).out.lines().next().unwrap().split('\t').nth(1).unwrap().to_string();
@@ -368,7 +367,7 @@ fn sharing_commands_local_plan_cli_4() {
     assert_eq!(s.code(&["node", "rm", &stranger]), 0, "no node of this account: nothing to do");
     assert_eq!(s.code(&["grant", &g, "me", "superuser"]), 2);
     let st = s.ok(&["--json", "status"]).line().to_string();
-    assert!(st.starts_with("{\"groups\":[") && st.ends_with("\"connected\":0,\"two_sources\":[]}"), "{st}");
+    assert!(st.starts_with("{\"groups\":[") && st.ends_with("\"connected\":0}"), "{st}");
     assert_eq!(s.ok(&["status"]).out.lines().next(), Some("connected 0"));
     // CLI `group source G`: shows where G's calls go
     assert_eq!(s.ok(&["group", "source", &g]).out, "local\n");
@@ -610,7 +609,7 @@ fn clients_commands_plan_cli() {
 // only in groups no synced group holds (`NotSynced`), by `add-with-grant` (it syncs), for its
 // membership commit, before its grant gives the thing a sync ID, and by `group add` (local).
 #[test]
-#[ignore = "sync rewrite"]
+#[ignore = "sync rewrite: NotSynced needs the engine facade's sync IDs, not built here (branch sync-facade)"]
 fn verbose_prints_diagnostics_plan_cli_4() {
     let s = S::mem();
     let group = || s.ok(&["create", "t:made.0", "true"]).line().to_string();
@@ -630,7 +629,6 @@ fn verbose_prints_diagnostics_plan_cli_4() {
 
 // notes/cli.md Design (daemon), notes/client-port.md §5: a socket directory another user made first (here: one of the wrong mode) does not stop `serve`: it warns and serves without the client socket (the one test here that runs the binary)
 #[test]
-#[ignore = "sync rewrite"]
 fn serve_survives_a_bad_socket_dir() {
     use std::io::BufRead;
     use std::os::unix::fs::PermissionsExt;

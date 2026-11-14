@@ -107,7 +107,7 @@ fn page_and_listener() {
 // or per write, lists every write until its keep bound, then only the live one again; a signal key
 // lists no writes, a value key no fires.
 #[test]
-#[ignore = "sync rewrite"]
+#[ignore = "sync rewrite: a snapshot's covered durable bodies are dropped by read's judgement, whose engine facade is not built here (branch sync-facade)"]
 fn listed_while_in_read_or_kept_api_commits() {
     let c = clock();
     let db = osis::internals::create(cfg(0, osis::MemStore::new(), &c)).unwrap();

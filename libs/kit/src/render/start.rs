@@ -22,12 +22,12 @@ use osis::{Address, Osis};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// What a shell starts the UI with: the store's dir (made if missing), the peers a store made
-/// there syncs with (or an existing one lacks), the shell's waker, and the app's `Data` over an
+/// What a shell starts the UI with: the store's dir (made if missing), the nodes it dials
+/// (`Config::dial`), the shell's waker, and the app's `Data` over an
 /// opened store (an error shows on the failure screen).
 pub struct Start {
     pub dir: PathBuf,
-    pub peers: Vec<Address>,
+    pub dial: Vec<Address>,
     pub waker: Waker,
     pub data: Box<dyn Fn(Osis) -> Result<Data, String>>,
 }
@@ -47,7 +47,7 @@ impl Start {
         std::fs::create_dir_all(&self.dir).map_err(|e| unreadable(format!("{}: {e}", self.dir.display())))?;
         let w = self.waker.clone();
         // the store's own errors name it; `InUse` carries nothing, so it is named here
-        let db = crate::store::open(&self.dir, self.peers.clone(), Arc::new(move || w.wake())).map_err(|e| match e {
+        let db = crate::store::open(&self.dir, self.dial.clone(), Arc::new(move || w.wake())).map_err(|e| match e {
             osis::Error::InUse => Failure { error: format!("{}: {e}", self.dir.display()), fresh: false },
             e => unreadable(e.to_string()),
         })?;

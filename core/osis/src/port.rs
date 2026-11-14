@@ -66,7 +66,7 @@ pub(crate) fn serve(db: &ReadOnly) {
             match ev {
                 PortEvent::Closed(conn) => db.locked(|l| l.port.closed(conn)),
                 PortEvent::Request(conn, id, m) => {
-                    let answer = request(db, conn, m);
+                    let answer = request(db, conn, *m);
                     db.locked(|l| {
                         let o = l.node.port_answer(conn, id, answer);
                         l.out.extend(o);

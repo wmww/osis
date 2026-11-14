@@ -44,7 +44,6 @@ fn sync(a: &Osis, b: &Osis) {
 }
 
 #[test]
-#[ignore = "sync rewrite"]
 fn two_people_chat() {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
     let a = osis::internals::create(cfg(1, &clock)).unwrap();
@@ -82,7 +81,6 @@ fn two_people_chat() {
 /// What the CLI can do to a timeline the window shows: an edit (the newest text, marked, its
 /// replies quoting it), a delete, a sender with no name or a blank one.
 #[test]
-#[ignore = "sync rewrite"]
 fn edited_deleted_and_nameless() {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
     let a = osis::internals::create(cfg(1, &clock)).unwrap();
@@ -116,24 +114,25 @@ fn edited_deleted_and_nameless() {
     assert_eq!(got[3].reply_to, Some((first, "Alice: fixed".to_string())));
 }
 
-/// A store without a profile: reading the name writes nothing and sending works, nameless.
+/// Reading the name writes nothing; a sender with no name on its profile sends nameless, and its
+/// profile's name once it has one.
 #[test]
-fn store_without_a_profile_sends_without_a_name() {
+fn reading_the_name_writes_nothing() {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
     let a = osis::internals::create(cfg(0, &clock)).unwrap();
     let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
     let before = a.engine(|e| e.commit_ids().len());
     chat::my_name(&a).unwrap();
     assert_eq!(a.engine(|e| e.commit_ids().len()), before);
-    assert!(set_name(&a, "Alice").is_err());
     chat::send(&a, c, "", "hi", None).unwrap();
     assert_eq!(chat::recent(&a, c, 20).unwrap()[0].text, "hi");
+    set_name(&a, "Alice").unwrap();
+    assert_eq!(chat::my_name(&a).unwrap().as_deref(), Some("Alice"));
 }
 
 /// A link to a chat already here (pasted by its maker or a member) opens it without the link's
 /// peer; text that is no link still fails.
 #[test]
-#[ignore = "sync rewrite"]
 fn join_held_chat_opens_it() {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
     let a = osis::internals::create(cfg(1, &clock)).unwrap();
@@ -141,7 +140,7 @@ fn join_held_chat_opens_it() {
     sync(&a, &b);
     let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
     a.grant(c, b.me(), Role::Write, GrantOpts::default()).unwrap();
-    let link = a.make_link(c, Role::Write, LinkOpts { until: None, single_use: false, direct: false }).unwrap().to_string();
+    let link = a.make_link(c, Role::Write, LinkOpts { until: None, single_use: false }).unwrap().to_string();
     sync(&a, &b);
     for db in [a, b] {
         // the peer never answers: a held thing opens at once

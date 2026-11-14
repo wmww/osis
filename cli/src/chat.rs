@@ -151,7 +151,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
         }
         ChatCmd::Link { chat, role, single_use } => {
             let t = ctx.tid(&chat)?;
-            let l = db.make_link(t, parse_role(&role)?, LinkOpts { until: None, single_use, direct: false })?;
+            let l = db.make_link(t, parse_role(&role)?, LinkOpts { until: None, single_use })?;
             ctx.one("link", l)
         }
         ChatCmd::Join { link } => {

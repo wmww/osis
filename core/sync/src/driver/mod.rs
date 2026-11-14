@@ -102,7 +102,7 @@ struct Driver {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PortEvent {
     /// A request of the peer's (Auth, Call, Sub, Unsub): answered with `Node::port_answer`.
-    Request(ConnId, crate::session::RequestId, osis_proto::Msg),
+    Request(ConnId, crate::session::RequestId, Box<osis_proto::Msg>),
     /// A connection ended: its port session goes.
     Closed(ConnId),
 }
@@ -169,7 +169,9 @@ impl Node {
         self.now = self.now.max(self.engine.now());
         self.driver.sessions.set_now(self.now);
         self.rounds = 0;
-        let r = self.step(input, &mut out).and_then(|()| self.settle(&mut out));
+        // the compaction trigger runs at each step (spec/sync-compaction.md §1): what its snapshots
+        // cover is judged by the settle after it
+        let r = self.step(input, &mut out).and_then(|()| self.engine.compactions().map(drop).map_err(Error::from)).and_then(|()| self.settle(&mut out));
         // a durable commit since the restart ends the stretch, whatever this step did
         if self.driver.failing.is_some_and(|f| self.committed() > f.committed) {
             self.driver.failing = None;
@@ -258,18 +260,6 @@ impl Node {
         s.answer(id, m);
         let bytes = s.take_bytes();
         if bytes.is_empty() { Vec::new() } else { vec![Out::Send(conn, bytes)] }
-    }
-
-    /// Pushes a Notify on `conn` under the push rule (spec/sync-streams.md §2); `None`: no room
-    /// (or no such connection), push again after the transport took more.
-    #[must_use = "every output must reach `apply`"]
-    pub fn port_push(&mut self, conn: ConnId, m: osis_proto::Msg) -> Option<Vec<Out>> {
-        let s = self.driver.sessions.get_mut(conn)?;
-        if !s.push(m) {
-            return None;
-        }
-        let bytes = s.take_bytes();
-        Some(if bytes.is_empty() { Vec::new() } else { vec![Out::Send(conn, bytes)] })
     }
 
     /// Redeems a share link (spec/sync-inbox.md §6): first contact, kept until the join is held
@@ -451,7 +441,7 @@ impl Node {
                         Some(To::Inbox) => self.inbox.on_message(&mut cx, sessions, &self.opens, &self.streams, conn, m),
                         Some(To::Port) => {
                             if let Incoming::Request(id, m) = m {
-                                self.driver.port.push(PortEvent::Request(conn, id, m));
+                                self.driver.port.push(PortEvent::Request(conn, id, Box::new(m)));
                             }
                         }
                         None => {

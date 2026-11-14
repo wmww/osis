@@ -202,3 +202,5 @@ pub fn port_answers(db: &Osis, conn: u64, main: bool, msgs: Vec<osis_proto::Msg>
 
 pub use crate::port::method as port_method;
 pub use osis_proto as proto;
+pub use osis_crypto::Secret32;
+pub use osis_label as label;

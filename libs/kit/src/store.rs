@@ -22,22 +22,14 @@ use osis::{Config, Address, Member, Osis, ReadOnly, Result, Runtime, Store, Tid,
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// Opens the store in `dir`, creating it (with its home group syncing with `peers`) when `dir` holds
-/// none; an existing store syncs with `peers` too (`NotBuilt` with any). Sync runs on osis's own
-/// runtime over QUIC while the app runs. Watch callbacks run on the UI thread, in `db.settle()`: `wake` arranges for
+/// Opens the store in `dir`, creating it when `dir` holds none, dialing the nodes `dial` names
+/// (`Config::dial`). Sync runs on osis's own runtime while the app runs. Watch callbacks run on the UI thread, in `db.settle()`: `wake` arranges for
 /// one (`window::Waker`).
-pub fn open(dir: &Path, peers: Vec<Address>, wake: Arc<dyn Fn() + Send + Sync>) -> Result<Osis> {
-    let mut cfg = Config { runtime: Runtime::Own, ..Config::default() };
+pub fn open(dir: &Path, dial: Vec<Address>, wake: Arc<dyn Fn() + Send + Sync>) -> Result<Osis> {
+    let mut cfg = Config { runtime: Runtime::Own, dial, ..Config::default() };
     cfg.app.dispatch = osis::Dispatcher::Pump(wake);
     let store = Store::Dir(dir.to_path_buf());
-    if dir.join("db.redb").exists() {
-        if !peers.is_empty() {
-            return Err(osis::Error::NotBuilt);
-        }
-        Osis::open(store, cfg)
-    } else {
-        Osis::create(store, &peers, cfg)
-    }
+    if dir.join("db.redb").exists() { Osis::open(store, cfg) } else { Osis::create(store, cfg) }
 }
 
 /// The aspects that are the system's, not the user's: no view accounts for them, raw hides them.
@@ -247,12 +239,8 @@ impl Reader {
         for g in &groups {
             todo.extend(self.members(*g)?.iter().copied().map(Member::tid).filter(|t| !skip(t)));
         }
-        // the groups this store syncs: none while sync is not built
-        match self.db.status() {
-            Ok(s) => todo.extend(s.groups.into_iter().filter(|(t, g)| !g.leaving && !skip(t)).map(|(t, _)| t)),
-            Err(osis::Error::NotBuilt) => {}
-            Err(e) => return Err(e),
-        }
+        // the things this store syncs
+        todo.extend(self.db.status()?.groups.into_iter().filter(|(t, g)| !g.leaving && !skip(t)).map(|(t, _)| t));
         todo.extend(self.db.profile_of(home)?);
         while let Some(t) = todo.pop() {
             if !seen.insert(t) {

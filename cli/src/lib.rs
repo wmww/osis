@@ -160,15 +160,16 @@ pub(crate) enum Network {
 }
 
 /// The config of a command holding a store.
-fn config(g: &Global, net: Network) -> Config {
+fn config(g: &Global, net: Network) -> anyhow::Result<Config> {
     let mut c = Config { app: app_config(g), ..Config::default() };
     if net != Network::None {
         c.runtime = osis::Runtime::Own;
+        c.dial = g.dial.iter().map(|a| a.parse::<osis::Address>()).collect::<osis::Result<_>>()?;
     }
     if net != Network::Node || g.no_lan {
         c.lan = osis::Lan::Off;
     }
-    c
+    Ok(c)
 }
 
 /// The config of a command using a node out of process.
@@ -213,7 +214,7 @@ fn open(sel: &Store, g: &Global, net: Network, use_daemon: bool) -> anyhow::Resu
                 return Err(exit(8, format!("no store at {} (run osis init)", d.display())));
             }
             let login = connect_flags(g)?;
-            let db = match Osis::open(sel.clone(), config(g, net)) {
+            let db = match Osis::open(sel.clone(), config(g, net)?) {
                 Ok(db) => db,
                 Err(Error::InUse) if use_daemon => return daemon(d, g),
                 Err(e) => return Err(e.into()),
@@ -227,7 +228,7 @@ fn open(sel: &Store, g: &Global, net: Network, use_daemon: bool) -> anyhow::Resu
             }
             Ok(db)
         }
-        Store::Memory(_) => Osis::open(sel.clone(), config(g, net)).map_err(|e| match e {
+        Store::Memory(_) => Osis::open(sel.clone(), config(g, net)?).map_err(|e| match e {
             Error::Storage(m) if m.contains("not an osis store") => exit(8, "no store (run osis init)"),
             e => e.into(),
         }),
@@ -266,16 +267,16 @@ pub(crate) fn listen(sel: &Store, db: &Osis) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Creates a store with its home group syncing with `peers`; refuses a non-empty directory.
-fn create(sel: &Store, g: &Global, peers: Vec<osis::Address>) -> anyhow::Result<Osis> {
+/// Creates a store; refuses a non-empty directory.
+fn create(sel: &Store, g: &Global) -> anyhow::Result<Osis> {
     if let Store::Dir(d) = sel
         && d.read_dir().is_ok_and(|mut r| r.next().is_some())
     {
         return Err(exit(8, format!("{} is not empty", d.display())));
     }
-    // `init` runs sync only to reach the peers it is given
-    let net = if peers.is_empty() { Network::None } else { Network::Sync };
-    Ok(Osis::create(sel.clone(), &peers, config(g, net))?)
+    // `init` runs sync only to reach the nodes it is told to dial
+    let net = if g.dial.is_empty() { Network::None } else { Network::Sync };
+    Ok(Osis::create(sel.clone(), config(g, net)?)?)
 }
 
 /// Schema paths registered in `<store>/cli.toml`: `schemas = [ "path", ... ]`, one per line.

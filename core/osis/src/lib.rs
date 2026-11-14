@@ -343,7 +343,7 @@
 //! # use osis::{Config, MemStore, Osis, Store};
 //! let phone = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let offer = phone.pair_offer()?;
-//! let joining = Osis::pair(Store::Memory(MemStore::new()), &[], &offer, Config::default())?;
+//! let joining = Osis::pair(Store::Memory(MemStore::new()), &offer, Config::default())?;
 //! let (node, reply) = phone.pair_accept(joining.request())?;
 //! let laptop = joining.finish(&reply)?;
 //! assert_eq!(laptop.me(), phone.me());
@@ -511,7 +511,7 @@ pub use read::{AspectRef, Grant, Grants, GroupsOf, PathRef, Stamp, ThingStamp};
 pub use retention::{History, Retention};
 pub use share::{AccountNode, Address, ContactCard, GrantOpts, Holder, HolderKind, Invitation, LinkId, LinkInfo, LinkOpts, Member, SetRoleOpts, ShareLink, Url};
 pub use syncing::{GroupSync, Status, SyncScope, SyncState};
-pub use sources::{GroupSource, NodeLogin, NodeConnection};
+pub use sources::{GroupSource, NodeLogin};
 pub use text::{Splice, TextSession};
 pub use commits::{Body, Commit, CommitEvent, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};
 pub use value_type::{NestedType, RecordField, TypeCase, ValueType};

@@ -19,15 +19,6 @@ pub struct NodeLogin {
     pub secret: crate::ClientSecret,
 }
 
-/// A node this process is a client of, or that a group's source names, and whether the connection
-/// is up now (`Status::node_connections`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(missing_docs)]
-pub struct NodeConnection {
-    pub address: Address,
-    pub connected: bool,
-}
-
 /// Where a group's calls go (`Osis::group_source`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GroupSource {

@@ -42,6 +42,10 @@ pub struct Global {
     /// Do not announce this node on the local network or look for others there
     #[arg(long = "no-lan", global = true)]
     pub no_lan: bool,
+    /// A node to dial while this command runs, `URL#KEY` (repeatable): a dial candidate only,
+    /// never stored; what syncs is what both nodes hold
+    #[arg(long, global = true, value_name = "ADDR")]
+    pub dial: Vec<String>,
     /// Materialization bound in bytes
     #[arg(long, global = true, value_name = "BYTES")]
     pub limit: Option<usize>,
@@ -154,11 +158,7 @@ pub struct SetRoleFlags {
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
     /// Create a store: a new node, account and home group
-    Init {
-        /// A peer to sync with (repeatable)
-        #[arg(long, value_name = "ADDR")]
-        peer: Vec<String>,
-    },
+    Init,
     /// This store's account (also its home group) and node
     Whoami,
     /// Add a node to this account
@@ -475,12 +475,7 @@ pub enum PairCmd {
     /// Print an offer and wait for a new node to join
     Offer,
     /// Join as a new node (fresh store)
-    Join {
-        offer: String,
-        /// A peer to sync with (repeatable)
-        #[arg(long, value_name = "ADDR")]
-        peer: Vec<String>,
-    },
+    Join { offer: String },
 }
 
 #[derive(Subcommand, Debug)]
