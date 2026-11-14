@@ -10,7 +10,7 @@
 //! State, per connection, in memory: Hello and the challenges, proofs shown and proven, request
 //! ids and their order, the window, the stall clock, unanswered-in bytes, the bytes written and
 //! taken. Depends on osis-proto and the engine's proof calls (`provers`, `own_node_key`,
-//! `own_node`, `key_open`, `known_actor`, `account_tid`, `prove_rotations`, `take_rotations`).
+//! `own_node`, `key_open`, `account_tid`, `prove_rotations`, `take_rotations`).
 //! Not built: closing a connection where this node came to act for an actor it did not prove
 //! there (spec/sync-opens.md §1), and the engine's rotations in a Prove (`prove_rotations` and
 //! `take_rotations` are not built: none are sent, those received are not taken).
@@ -554,11 +554,15 @@ impl Session {
 
     /// The dialer's Prove (spec/sync-opens.md §2 Order): its node key when the key it dialed is
     /// a node of its account by `reach.0`, then its account with the account's rotations, then
-    /// its key actors.
+    /// its key actors; none where its policy proves nothing to this peer (`Policy::identify`).
     fn prove(&mut self, cx: &mut Cx) -> Result<(), Close> {
-        let own = cx.engine.own_node_key(&self.peer.0).map_err(|_| Close("engine"))?;
         let Some(b) = self.binding else { return Ok(()) };
-        let proofs = self.signed(cx, own, false, &b.listener_challenge)?;
+        let proofs = if cx.policy.identify(None) {
+            let own = cx.engine.own_node_key(&self.peer.0).map_err(|_| Close("engine"))?;
+            self.signed(cx, own, false, &b.listener_challenge)?
+        } else {
+            Vec::new()
+        };
         let rotations = if proofs.iter().any(|p| p.record.is_account()) {
             // the room the proofs leave, less the list's head (at most 9 bytes)
             let bare = Msg::Prove { id: MAX_ID as RequestId, proofs: proofs.clone(), rotations: Some(Vec::new()) }.encode().len();
@@ -641,8 +645,8 @@ impl Session {
         Ok(())
     }
 
-    /// The dialer's Prove at the listener: its proofs judged, then the listener's own, only if it
-    /// proved a known actor (spec/sync-opens.md §2 Order).
+    /// The dialer's Prove at the listener: its proofs judged, then the listener's own, by its
+    /// policy (spec/sync-opens.md §1 Policy, §2 Order).
     fn proved_to(&mut self, id: RequestId, proofs: Vec<ActorProof>, rotations: Option<Vec<osis_base::Value>>, cx: &mut Cx, ins: &mut Vec<Incoming>) -> Result<(), Close> {
         let Some(b) = self.binding.filter(|_| !self.dialer && self.proofs == Proofs::Proving) else {
             self.answer(id, Msg::Error { id, code: Code::MALFORMED });
@@ -655,10 +659,12 @@ impl Session {
             }
         }
         let proven = self.judge(cx, verified(proofs, false, &b.listener_challenge, &b.listener_key));
-        let known = proven.node.is_some() || proven.actors().iter().any(|a| cx.engine.known_actor(a));
+        if !cx.policy.sync_with(&proven) {
+            return Err(Close("policy"));
+        }
         let mine = cx.engine.account_tid();
         let own = proven.node.is_some() || (mine.is_some() && proven.account() == mine);
-        let proofs = if known { self.signed(cx, own, true, &b.dialer_challenge)? } else { Vec::new() };
+        let proofs = if cx.policy.identify(Some(&proven)) { self.signed(cx, own, true, &b.dialer_challenge)? } else { Vec::new() };
         self.proven = proven;
         self.proofs = Proofs::Done;
         self.answer(id, Msg::Proved { id, proofs });
@@ -700,6 +706,9 @@ impl Session {
             (32, Msg::Proved { proofs, .. }) => {
                 let Some(b) = self.binding else { return Ok(()) };
                 self.proven = self.judge(cx, verified(proofs, true, &b.dialer_challenge, &b.listener_key));
+                if !cx.policy.sync_with(&self.proven) {
+                    return Err(Close("policy"));
+                }
                 self.proofs = Proofs::Done;
                 ins.push(Incoming::Proved);
             }

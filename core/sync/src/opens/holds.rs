@@ -12,7 +12,6 @@ use osis_engine::sync::J;
 use osis_label::Step;
 use osis_proto::{BehindItem, Code, DepositItem, Grant, SharedItem};
 use osis_base::memo::Effects;
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// One sync ID's credentials at this node, before a connection's J filters them
@@ -89,9 +88,6 @@ pub trait Holds {
     /// The sync IDs whose `Creds` may have moved since the last call (each settled again; the
     /// product's is the memo effects' `due`).
     fn due(&mut self) -> Vec<SyncId>;
-    /// Whether the actors known here (spec/sync-opens.md §2 Known actor: contacts, rosters) moved
-    /// since the last call: each connection's audience is judged again (§4 Audiences).
-    fn known_moved(&mut self) -> bool;
     /// S's credentials, `None` when S is not in the sync set.
     fn creds(&mut self, s: &SyncId) -> Option<Arc<Creds>>;
     /// The actors a connection's proofs count for now (spec/sync-opens.md §2): its account only
@@ -101,8 +97,6 @@ pub trait Holds {
     fn judge(&mut self, s: &SyncId, actors: &[Tid]) -> J;
     /// Whether `epoch` of S's thing covers every departure this node knows of (spec/crypto.md §4).
     fn covers_departures(&mut self, s: &SyncId, epoch: &Epoch) -> bool;
-    /// Whether `actor` is a known actor here now (spec/sync-opens.md §2 Known actor).
-    fn known_actor(&mut self, actor: &Tid) -> bool;
     /// An ended member's `until` (spec/sync-opens.md §6): the highest position at which an entry
     /// in S of a rotation superseding `by`'s epoch was first logged, else the node log's end; at
     /// a node keeping S unread the position of its head's event.
@@ -138,14 +132,11 @@ pub trait Holds {
 pub struct Fx {
     set: crate::set::SetFollow,
     creds: Effects<SyncId, Option<[u8; 32]>>,
-    known: Effects<(), Arc<BTreeSet<Tid>>>,
 }
 
 impl Default for Fx {
     fn default() -> Fx {
-        let mut known = Effects::new("opens known actors");
-        known.want(());
-        Fx { set: crate::set::SetFollow::new("opens sync set"), creds: Effects::new("opens credentials"), known }
+        Fx { set: crate::set::SetFollow::new("opens sync set"), creds: Effects::new("opens credentials") }
     }
 }
 
@@ -279,27 +270,6 @@ impl Holds for NodeHolds<'_, '_> {
         out
     }
 
-    fn known_moved(&mut self) -> bool {
-        if self.fx.known.due().is_empty() {
-            return false;
-        }
-        // a failing engine read is tried again at the next settle; nothing moved meanwhile
-        let engine = &mut *self.cx.engine;
-        let mut failed = false;
-        let moved = self.fx.known.settle(&(), || {
-            engine.known_actors().unwrap_or_else(|_| {
-                failed = true;
-                Arc::default()
-            })
-        });
-        if failed {
-            self.fx.known.unwant(&());
-            self.fx.known.want(());
-            return false;
-        }
-        moved.is_some()
-    }
-
     fn creds(&mut self, s: &SyncId) -> Option<Arc<Creds>> {
         node_creds(self.cx, self.unread, s)
     }
@@ -319,10 +289,6 @@ impl Holds for NodeHolds<'_, '_> {
 
     fn covers_departures(&mut self, s: &SyncId, epoch: &Epoch) -> bool {
         self.cx.engine.covers_departures(s, *epoch).unwrap_or(false)
-    }
-
-    fn known_actor(&mut self, actor: &Tid) -> bool {
-        self.cx.engine.known_actor(actor)
     }
 
     fn until(&mut self, s: &SyncId, by: &Credential) -> Position {

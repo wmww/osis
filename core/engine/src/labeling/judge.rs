@@ -31,19 +31,6 @@ pub struct Judge<'a> {
 }
 
 impl Core {
-    /// The account `t` is private to: its reader actor is the account or the account's devices
-    /// actor, so only the account's nodes read it (spec/sync-opens.md §2, connection proofs).
-    pub fn private_to(&self, t: &Tid) -> Option<Tid> {
-        let r = self.reader_of(t);
-        if self.is_account(&r) { Some(r) } else { self.devices_owner(&r) }
-    }
-
-    /// The account whose devices actor `d` is: `d` has `account.0` and an account as first admin.
-    pub fn devices_owner(&self, d: &Tid) -> Option<Tid> {
-        let seeds = self.ix.by_aspect.contains_key(&(*d, osis_schema::core_types::ACCOUNT.name()));
-        self.first_admin(d).filter(|p| seeds && self.is_account(p))
-    }
-
     /// Whether `x` is another node of this node's account: not an account, holding read or above
     /// on the account's devices actor D through the rosters held here now (spec/permissions.md
     /// §1). A node removed from D is not, nor is a holder of sync alone.
@@ -84,22 +71,6 @@ impl Judge<'_> {
             }
         }
         Judgment::Unknown
-    }
-
-    /// Whether any actor is **known** here (spec/sync-opens.md §2, connection proofs): through the
-    /// rosters this node holds, it holds a role on a thing other than itself that is not private
-    /// to another account (`Core::private_to`). A node of another account is known only by the
-    /// account it proves: its node key goes only to its own account's nodes. A departed actor is
-    /// not (it holds nothing).
-    pub fn known(&self) -> bool {
-        self.actors.iter().any(|x| self.shares(x))
-    }
-
-    /// Whether `x` holds a role on a thing other than itself that is not private to another
-    /// account than this node's.
-    fn shares(&self, x: &Tid) -> bool {
-        let mine = self.core.account.get();
-        self.timeline(x).is_some_and(|tl| tl.roles_of(x, At::KEYS).keys().any(|t| t != x && self.core.private_to(t).is_none_or(|p| Some(p) == mine)))
     }
 }
 

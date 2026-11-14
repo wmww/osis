@@ -33,7 +33,7 @@ struct End {
 
 impl End {
     fn cx(&mut self) -> Cx<'_> {
-        Cx { engine: &mut self.engine, store: &mut self.store, now: self.now, rng: &mut self.rng, out: &mut self.out }
+        Cx { engine: &mut self.engine, store: &mut self.store, now: self.now, rng: &mut self.rng, out: &mut self.out, policy: &osis_sync::Policy {} }
     }
 
     fn account(&self) -> Option<Tid> {
@@ -256,27 +256,27 @@ fn malformed_messages_spec_wire_11_1() {
     assert_eq!(ms, [Msg::Error { id: 5, code: Code::MALFORMED }, Msg::Error { id: 6, code: Code::UNSUPPORTED }, Msg::Error { id: 0, code: Code::MALFORMED }]);
 }
 
-// spec/sync-opens.md §2 (Order): the dialer proves first, after the listener's Hello; a listener
-// that does not know any actor the dialer proved answers with no proofs; both report Proved, the
-// listener having judged the dialer's account (open at its first epoch where not held) and the
-// dialer nothing.
+// spec/sync-opens.md §2 (Order), §1 (Policy, by default every peer): the dialer proves first,
+// after the listener's Hello, and the listener answers with its own proofs, to a dialer of an
+// account it holds nothing of too; both report Proved, each having judged the other's account
+// (open at its first epoch where not held).
 #[test]
-fn unknown_dialer_gets_no_proofs_spec_sync_opens_2() {
+fn strangers_prove_to_each_other_spec_sync_opens_2() {
     let mut p = Pair::new();
     p.flow();
     assert!(matches!(p.l_in.as_slice(), [Incoming::Proved]), "{:?}", p.l_in);
     assert!(matches!(p.d_in.as_slice(), [Incoming::Proved]), "{:?}", p.d_in);
     assert_eq!(p.ls.proven().account(), p.d.account(), "the dialer's account");
-    assert_eq!(p.ds.proven(), &Default::default(), "the listener proved nothing to a stranger");
+    assert_eq!(p.ds.proven().account(), p.l.account(), "the listener's account");
     assert_eq!(p.ds.proved(), [p.d.account().expect("account")], "the dialer proved its account (not its node key: not its own node)");
-    assert!(p.ls.proved().is_empty());
+    assert_eq!(p.ls.proved(), [p.l.account().expect("account")]);
 }
 
-// spec/sync-opens.md §2 (order; its own node key only to nodes of its own account): a listener that knows the dialer's proved actor (here
-// its own account) answers with its proofs: its node key first (the dialer proved the listener's
-// account), then its account, each signed as the listener's over the dialer's challenge.
+// spec/sync-opens.md §2 (its own node key only to nodes of its own account): a listener whose
+// dialer proved the listener's own account answers with its node key first, then its account,
+// each signed as the listener's over the dialer's challenge.
 #[test]
-fn known_dialer_gets_proofs_spec_sync_opens_2() {
+fn own_account_dialer_gets_the_node_key_spec_sync_opens_2() {
     let (_, mut l, mut ls, _) = listener_with_scripted_dialer();
     let b = *ls.binding().expect("binding");
     let mine: Vec<ActorProof> = l.engine.provers(false).expect("provers").into_iter().map(|(key, record)| Prover { key, record }.sign(false, &b.listener_challenge, &LISTEN.0)).collect();

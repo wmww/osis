@@ -7,7 +7,7 @@
 - Identity and authorization come only from proofs on the connection (spec/sync-opens.md §2) and from verified data; a stream's `Deleted`, a refusal, a head the peer names, a payload sync ID and a hint are its word only.
 - Bad bytes are ignored; no peer input causes unbounded allocation, work, storage or diagnostics (spec/wire.md §13).
 - A filter breaking spec/wire.md §11.2 Beacons is answered Error 2 and closes the connection. One test pass in flight per peer.
-- Records, Resume, Beacons, Pull and Members floods are bounded by message size, `max_reply`, `RECORD_BUDGET` and the shared set; only a known actor can make records.
+- Records, Resume, Beacons, Pull and Members floods are bounded by message size, `max_reply`, `RECORD_BUDGET` and the shared set; only a peer that proved an actor makes a record.
 - An ephemeral commit is room-checked whole before any decode and waits only once its signature checks.
 - Unstamped entries a peer brings count against its peer budget (spec/sync-ids.md §5); deposits against the deposit budget (spec/sync-inbox.md §3).
 - Nothing reads a clock above the transport: a skewed peer affects only its own writes.
@@ -20,14 +20,14 @@
 - A peer lying in its own log (hiding a cover) costs at most one logging again per change of ground (spec/sync-judgement.md §4).
 
 ## 2. Stated limits
-- A revoked node of a known actor holds only the closed epoch's key; a verifier not yet holding the rotation counts its proof (the account signing fork window).
+- A revoked node of an account holds only the closed epoch's key; a verifier not yet holding the rotation counts its proof (the account signing fork window).
 - A node keeping S unread shows that it keeps S to anyone holding S's public values (its filter goes to every connection).
 - A depositor holding a team's `keys.0` but not its roster learns from 0 against 14 whether a node holds the team's inbox (team membership of that node's account).
 - A peer showing an actor's inbox deposit key (anyone holding that actor's `keys.0`) is offered the inbox blobs a connected node sends that actor (spec/sync-inbox.md §3): it learns that this connection's node sends to that inbox, when, and the blobs' padded sizes.
-- A known peer can force work linear in its filter per small message (each additions page re-sorts and tests; a Hit then Lost re-tests); there is no rate limit.
+- A peer can force work linear in its filter per small message (each additions page re-sorts and tests; a Hit then Lost re-tests); there is no rate limit.
 - A peer can refuse role entries or hold requests open: what waits on it there (deletes, logging again) waits, the stall rule closes the connection (spec/sync-streams.md §1), and other sources are unaffected.
 - A writer may stamp any entry as a role entry past the caps (spec/sync-ids.md §6 Role entries). Anyone able to deposit can fill the deposit budget while no admin is online (spec/requirements.md). A lowered holder can delete at a node keeping S unread what its old role allowed until a writer logs it again (spec/permissions.md §6).
-- A dialer proves to any key it chose to dial (spec/sync-opens.md §2), so a key it was given by discovery or configuration learns its identity.
+- Under the default policy a node proves its actors to every peer (spec/sync-opens.md §1 Policy), so any node it connects to, whoever dialed, learns its account. A peer proving fresh actors at each connection makes a record each time: past `RECORD_BUDGET` the least recently used records go, and their peers are read from the start at their next connection.
 - A node keeping S unread whose box of its head's sync secret arrives after that step's Register (a late box, or a grant again before its new box) drops its copy and fetches S again (spec/sync-judgement.md §6 Stops); what only it held is lost, what a reader holds is not.
 - A removed admin holding the delete key of a step on a node's path, before that node registered the step past it, can register there a child under a sync key the node holds no box for: the node drops its copy, and its head is on a branch no reader records, so it holds S again only once its account unlists and lists the thing again (leaving shreds its path).
 - A body dropped as invalid is never deleted at a peer (spec/sync-judgement.md §3 Deletes), so a writer's invalid entry can take a full store's room there until it expires or the caps give way.

@@ -98,12 +98,6 @@ impl Shown {
         }
     }
 
-    /// A read secret's beacon goes only to a peer that proved a known actor (spec/sync-opens.md
-    /// §4 Audiences).
-    pub fn secret_audience(&self) -> bool {
-        matches!(self, Shown::Read(..))
-    }
-
     pub fn credential(&self) -> Credential {
         match self {
             Shown::Read(e, _) => Credential::ReadSecret(*e),

@@ -261,21 +261,6 @@ impl Engine {
         osis_base::hash::hash(&osis_base::encode(&v))
     }
 
-    /// The actors known here (spec/sync-opens.md §2): each holding, through the rosters held, a
-    /// role on a thing other than itself that is not private to another account.
-    pub(crate) fn known_actors_now(&self) -> Arc<BTreeSet<Tid>> {
-        let mut out = BTreeSet::new();
-        let held = &self.core.ix.held;
-        for t in held.things() {
-            for m in held.holders_of(t) {
-                if !out.contains(m) && self.core.judge([*m]).known() {
-                    out.insert(*m);
-                }
-            }
-        }
-        Arc::new(out)
-    }
-
     /// `caps^.0` of this node (spec/data-model.md §9; absent: the defaults, an empty policy).
     pub(crate) fn caps_now(&mut self) -> Result<Arc<Caps>> {
         let me = self.core.id.tid();

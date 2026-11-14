@@ -102,9 +102,6 @@ pub struct Table {
     pub j: BTreeMap<(SyncId, Tid), J>,
     /// Epochs covering every departure, per S.
     pub covering: BTreeSet<(SyncId, Epoch)>,
-    pub known: BTreeSet<Tid>,
-    /// The known actors moved since `known_moved` was last asked (`know`).
-    known_moved: bool,
     pub until: Position,
     /// What `take_grant` gives: the head's sync key, per S.
     pub grants: BTreeMap<SyncId, [u8; 32]>,
@@ -115,7 +112,7 @@ pub struct Table {
 
 impl Table {
     pub fn new(seed: u64) -> Table {
-        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), j: BTreeMap::new(), covering: BTreeSet::new(), known: BTreeSet::new(), known_moved: false, until: 100, grants: BTreeMap::new(), gives_grant: false, taken: BTreeSet::new() }
+        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), j: BTreeMap::new(), covering: BTreeSet::new(), until: 100, grants: BTreeMap::new(), gives_grant: false, taken: BTreeSet::new() }
     }
 
     /// S's credentials are now `c` (none: S left the sync set).
@@ -125,12 +122,6 @@ impl Table {
             None => self.creds.remove(&s),
         };
         self.due.insert(s);
-    }
-
-    /// `actor` is a known actor here from now on (a contact, a roster): audiences move.
-    pub fn know(&mut self, actor: Tid) {
-        self.known.insert(actor);
-        self.known_moved = true;
     }
 
     /// Every sync ID held comes due again (a restart: the memos start over).
@@ -157,9 +148,6 @@ impl Holds for Table {
     fn due(&mut self) -> Vec<SyncId> {
         std::mem::take(&mut self.due).into_iter().collect()
     }
-    fn known_moved(&mut self) -> bool {
-        std::mem::take(&mut self.known_moved)
-    }
     fn creds(&mut self, s: &SyncId) -> Option<Arc<Creds>> {
         self.creds.get(s).cloned()
     }
@@ -174,9 +162,6 @@ impl Holds for Table {
     }
     fn covers_departures(&mut self, s: &SyncId, epoch: &Epoch) -> bool {
         self.covering.contains(&(*s, *epoch))
-    }
-    fn known_actor(&mut self, actor: &Tid) -> bool {
-        self.known.contains(actor)
     }
     fn until(&mut self, _s: &SyncId, _by: &Credential) -> Position {
         self.until

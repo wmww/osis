@@ -154,6 +154,7 @@ pub struct Cx<'a> {
     pub now: WallMs,
     pub rng: &'a mut dyn NodeRng,
     pub out: &'a mut Vec<Out>,
+    pub policy: &'a Policy,
 }
 
 /// Sync's errors.
@@ -203,10 +204,40 @@ pub struct SyncConfig {
     /// `max_peers` (spec/sync-opens.md §1): this node dials while fewer connections than this
     /// share something with it or are being dialed (`driver::MAX_PEERS` by default).
     pub max_peers: usize,
+    pub policy: Policy,
 }
 
 impl Default for SyncConfig {
     fn default() -> SyncConfig {
-        SyncConfig { key: None, dial: Vec::new(), max_peers: crate::driver::MAX_PEERS }
+        SyncConfig { key: None, dial: Vec::new(), max_peers: crate::driver::MAX_PEERS, policy: Policy::default() }
+    }
+}
+
+/// Which nodes this node dials, proves its actors to and syncs with (spec/sync-opens.md §1
+/// Policy): its account's choice, overridable per node. The one seam such a choice goes through:
+/// the dial candidates (`dial`), the session's proofs (`identify`) and whether a proven peer is
+/// kept (`sync_with`). Only the permissive policy exists, every answer yes; a configuration adds
+/// its options here and answers from them (and from what the engine holds, e.g. the account's
+/// contacts, once it takes the engine).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Policy {}
+
+impl Policy {
+    /// Whether this node dials `to`, a dial candidate: a node that dials nobody still serves.
+    pub fn dial(&self, _to: &Address) -> bool {
+        true
+    }
+
+    /// Whether this node proves its actors on a connection: as the dialer before anything is
+    /// proven (`peer` `None`), as the listener once the dialer's proofs are judged. Else it proves
+    /// none there, and keeps no record of the peer (spec/sync-opens.md §3).
+    pub fn identify(&self, _peer: Option<&crate::session::Proven>) -> bool {
+        true
+    }
+
+    /// Whether this node syncs with a peer that proved `peer`: else it closes the connection once
+    /// the proofs are judged.
+    pub fn sync_with(&self, _peer: &crate::session::Proven) -> bool {
+        true
     }
 }

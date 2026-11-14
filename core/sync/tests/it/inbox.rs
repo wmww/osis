@@ -212,7 +212,7 @@ fn inbox_blob_offered_to_recipient_spec_sync_inbox_3() {
 
 // spec/sync-inbox.md §3 (sending): an inbox blob also goes to a peer whose filter shows the
 // inbox's deposit key (a node keeping it unread shows it to every connection,
-// spec/sync-opens.md §4 Audiences), once that filter arrives; never to one showing another key.
+// spec/sync-opens.md §5 Filter), once that filter arrives; never to one showing another key.
 #[test]
 fn inbox_blob_offered_where_filter_shows_deposit_key_spec_sync_inbox_3() {
     let mut t = T::new();

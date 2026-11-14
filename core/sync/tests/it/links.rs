@@ -177,16 +177,12 @@ fn a_third_redeemer_sharing_another_link_joins_spec_permissions_7() {
     }
 }
 
-// spec/sync-inbox.md §5 (Contact card), §2 (Inbox blob), spec/sync-opens.md §2 (Known actor):
-// nodes 0 and 1 exchange contact cards (each redeems the other's read link to its
+// spec/sync-inbox.md §5 (Contact card), §2 (Inbox blob), spec/sync-opens.md §2 (Connection
+// proofs): nodes 0 and 1 exchange contact cards (each redeems the other's read link to its
 // profile, and accepts the profile), then node 0 grants node 1's account read on a thing and
-// node 1 accepts it: node 1 reads it. Fails: the connection node 1 dialed by node 0's link
-// proved L only, node 1's account was unknown to node 0 then and is never proved there after the
-// join, so the grant's inbox blob is offered to no connection (the recipient is not proven and
-// its inbox is not open there). Reproducer of issues/sync-link-first-contact.md (Contact cards
-// in the differential).
+// node 1 accepts it: node 1 reads it. The connection node 1 dialed by node 0's link proved node
+// 1's account too, held at node 0 before it knew the account, so the grant's inbox blob goes there.
 #[test]
-#[ignore = "sync-link-first-contact"]
 fn a_grant_reaches_a_contact_by_card_spec_sync_inbox_5() {
     use crate::harness::history::file;
     let mut w = two_nodes();

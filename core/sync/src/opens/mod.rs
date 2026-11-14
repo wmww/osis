@@ -125,12 +125,10 @@ pub struct Work {
     pub tested: u64,
     /// `Holds::creds` read.
     pub creds: u64,
-    /// Connections' audiences judged again (the actors known here moved).
-    pub audiences: u64,
 }
 
 /// A record (spec/sync-opens.md §3), as a connection holding it sees it. One kept nowhere
-/// (`kept` false) serves a connection that proved no known actor, and goes with it.
+/// (`kept` false) serves a connection on which either side proved no actor, and goes with it.
 #[derive(Clone, Debug)]
 struct Record {
     r: [u8; 32],
@@ -247,10 +245,8 @@ struct WalkState {
 struct Conn {
     bind: Bind,
     proven: Proven,
-    /// The peer proved a known actor (its read secrets' beacons may go to it), judged at its proof
-    /// and again at each move of the actors known here; a change makes the next generation whole.
-    known: bool,
-    /// The proven actors known here: what a record of this connection names (none: no record).
+    /// The actors the peer proved, as judged at its proof: what a record of this connection names
+    /// (none: no record).
     named: Vec<Tid>,
     phase: Phase,
     rec: Option<RecordId>,
@@ -492,8 +488,8 @@ impl Opens {
         self.records.get(&id).filter(|r| r.kept).map(|_| id)
     }
 
-    /// The actors `conn`'s proofs count for that are known here (what its record names), as
-    /// judged at its proofs (spec/sync-opens.md §2-§3).
+    /// The actors `conn`'s proofs count for (what its record names), as judged at its proofs
+    /// (spec/sync-opens.md §2-§3).
     pub fn proven(&self, conn: ConnId) -> &[Tid] {
         self.conns.get(&conn).map_or(&[], |c| &c.named)
     }
@@ -504,8 +500,8 @@ impl Opens {
         self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get(&r)).and_then(|r| r.peer.as_ref()).map_or(0, |p| p.arrived)
     }
 
-    /// Whether the peer's latest filter shows `key` as S's deposit key (spec/sync-opens.md §4
-    /// Audiences: a node keeping S unread shows it to every connection): a deposit of S may land
+    /// Whether the peer's latest filter shows `key` as S's deposit key (spec/sync-opens.md §5
+    /// Filter: a node keeping S unread shows it to every connection): a deposit of S may land
     /// there (filters have false positives: the answer tells).
     pub fn shows_deposit_key(&self, conn: ConnId, s: &SyncId, key: &[u8; 32]) -> bool {
         let Some(r) = self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get(&r)) else { return false };
@@ -688,21 +684,6 @@ impl Opens {
                 }
             }
         }
-        // spec/sync-opens.md §4 Audiences: judged again only when the actors known here moved
-        if ctx.holds.known_moved() {
-            let conns: Vec<ConnId> = self.conns.keys().copied().collect();
-            for conn in conns {
-                let Some(c) = self.conns.get(&conn) else { continue };
-                let known = peer_known(ctx.holds, &c.proven);
-                self.work.audiences += 1;
-                if let Some(c) = self.conns.get_mut(&conn)
-                    && c.known != known
-                {
-                    c.known = known;
-                    c.whole_next = true;
-                }
-            }
-        }
         for s in ctx.holds.due() {
             self.work.creds += 1;
             let now = ctx.holds.creds(&s);
@@ -789,12 +770,10 @@ impl Opens {
 
     fn proved(&mut self, ctx: &mut Ctx, conn: ConnId, moved: &mut Vec<Moved>) {
         let Some((bind, proven)) = ctx.wire.bind(conn) else { return };
-        let named = named_known(ctx.holds, &proven);
-        let known = peer_known(ctx.holds, &proven);
+        let named = ctx.holds.actors(&proven);
         let mut c = Conn {
             bind,
             proven,
-            known,
             named,
             phase: Phase::Waiting,
             rec: None,
@@ -819,8 +798,8 @@ impl Opens {
         };
         if bind.dialer {
             if !c.named.is_empty() {
-                // spec/sync-opens.md §3: Resume lists each record naming a proven actor known here
-                // now, most recent first.
+                // spec/sync-opens.md §3: Resume lists each record naming a proven actor of this
+                // session, most recent first.
                 let actors = c.named.clone();
                 let mut listed: Vec<(RecordId, [u8; 32])> = match ctx.store.with_read(|t| t.records_of_actors(&actors)) {
                     Ok(rs) => rs.into_iter().map(|r| (r.id, r.r)).collect(),
@@ -982,8 +961,8 @@ impl Opens {
             return;
         }
         if c.named.is_empty() {
-            // A connection whose dialer proved no known actor keeps no record: Error 1, and the
-            // dialer sends NoRecord (spec/sync-opens.md §3).
+            // A connection whose dialer proved no actor keeps no record: Error 1, and the dialer
+            // sends NoRecord (spec/sync-opens.md §3).
             ctx.wire.answer(conn, id, Msg::Error { id, code: Code::REFUSED });
             return;
         }
@@ -1151,9 +1130,6 @@ impl Opens {
         let Some(rid) = c.rec else { return };
         let Some(r) = self.records.get(&rid) else { return };
         let first = c.first;
-        // spec/sync-opens.md §4 Audiences: as judged at the proof and at each move of the actors
-        // known here (a change made the generation whole)
-        let known = c.known;
         let whole = c.whole_next || r.own.generation == 0 || (first && r.own.acked != r.own.generation);
         let ids: Vec<SyncId> = if whole {
             Vec::new()
@@ -1166,7 +1142,7 @@ impl Opens {
             return;
         }
         let (rr, room) = (r.r, r.own.whole.saturating_sub(r.own.added));
-        let mut beacons = if whole { None } else { Some(self.shown_beacons(ctx, conn, &ids, known, &rr)) };
+        let mut beacons = if whole { None } else { Some(self.shown_beacons(ctx, conn, &ids, &rr)) };
         // Additions bring at most the whole one's n entries in all (spec/wire.md §11.2): past it, whole.
         if beacons.as_ref().is_some_and(|b| b.len() as u64 > room) {
             beacons = None;
@@ -1176,7 +1152,7 @@ impl Opens {
             Some(b) => b,
             None => {
                 let all: Vec<SyncId> = self.changed.at.keys().copied().collect();
-                self.shown_beacons(ctx, conn, &all, known, &rr)
+                self.shown_beacons(ctx, conn, &all, &rr)
             }
         };
         let Some(r) = self.records.get_mut(&rid) else { return };
@@ -1208,13 +1184,12 @@ impl Opens {
         c.gen_out = Some(GenOut { generation, pages: ids, refused: false, base_missing: false });
     }
 
-    /// The beacons of the credentials `ids` show to this peer (spec/sync-opens.md §4 Audiences: a
-    /// read secret's only to a known actor).
-    fn shown_beacons(&mut self, ctx: &mut Ctx, conn: ConnId, ids: &[SyncId], known: bool, r: &[u8; 32]) -> Vec<[u8; 32]> {
+    /// The beacons of the credentials `ids` show (spec/sync-opens.md §5 Beacon).
+    fn shown_beacons(&mut self, ctx: &mut Ctx, conn: ConnId, ids: &[SyncId], r: &[u8; 32]) -> Vec<[u8; 32]> {
         let mut beacons = Vec::new();
         for s in ids {
             if let Some(adm) = self.admissible(ctx, conn, s) {
-                for sh in adm.shows.iter().filter(|sh| known || !sh.secret_audience()) {
+                for sh in &adm.shows {
                     self.work.beacons += 1;
                     beacons.push(beacon_of(sh.matched(), s, r));
                 }
@@ -1616,10 +1591,6 @@ impl Opens {
         let Some(c) = self.conns.get(&conn) else { return refuse };
         let Some((s, shown, beacon)) = c.shown.get(hit).cloned() else { return refuse };
         let (bind, proven) = (c.bind, c.proven.clone());
-        // Only what this side's filter to this peer shows: a read secret only to a known actor.
-        if shown.secret_audience() && !peer_known(ctx.holds, &proven) {
-            return refuse;
-        }
         // Judged on what this side holds now: a credential no longer shown proves nothing.
         let Some(adm) = self.admissible(ctx, conn, &s) else { return refuse };
         if !adm.shows.contains(&shown) {
@@ -1677,12 +1648,11 @@ impl Opens {
         let Some(c) = self.conns.get(&conn) else { return SharedItem::code(Code::DECLINED) };
         let proven = c.proven.clone();
         let statics = proven_statics(&s, &proven);
-        let known = c.known;
         let found = hits.iter().filter_map(|h| c.shown.get(h).cloned()).find(|(hs, sh, _)| {
             *hs == s
                 && adm.shows.contains(sh)
                 && match sh {
-                    Shown::Read(..) => known,
+                    Shown::Read(..) => true,
                     Shown::Static(e) => statics.contains(e),
                     _ => false,
                 }
@@ -1883,17 +1853,6 @@ impl Opens {
             self.dirty_core(conn);
         }
     }
-}
-
-/// The actors `p` proved that are known here now, sorted (spec/sync-opens.md §3: a record is
-/// honoured only while a proven actor of the session is named by it and known here now).
-fn named_known(holds: &mut dyn Holds, p: &Proven) -> Vec<Tid> {
-    holds.actors(p).into_iter().filter(|a| holds.known_actor(a)).collect()
-}
-
-/// Whether the peer proved a known actor (spec/sync-opens.md §4 Audiences), judged now.
-fn peer_known(holds: &mut dyn Holds, p: &Proven) -> bool {
-    !named_known(holds, p).is_empty()
 }
 
 /// The static entries of S whose key actor the peer proved on this connection by its signing key

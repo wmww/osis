@@ -52,7 +52,7 @@ use std::collections::BTreeSet;
 
 /// What this module reads of sessions, opens and streams, and how it sends.
 pub trait Net {
-    /// The known actors a connection's proofs count for (opens' `proven`).
+    /// The actors a connection's proofs count for (opens' `proven`).
     fn actors(&self, conn: ConnId) -> Vec<Tid>;
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member>;
     /// That source's step for S: the head its stream last named (spec/sync-ids.md §6 Walk).

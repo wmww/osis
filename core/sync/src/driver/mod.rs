@@ -163,7 +163,7 @@ pub struct Node {
 /// The `Cx` over a node's fields, borrowed apart from its modules.
 macro_rules! cx {
     ($n:expr, $out:expr) => {
-        Cx { engine: &mut $n.engine, store: &mut $n.store, now: $n.now, rng: &mut *$n.rng, out: $out }
+        Cx { engine: &mut $n.engine, store: &mut $n.store, now: $n.now, rng: &mut *$n.rng, out: $out, policy: &$n.cfg.policy }
     };
 }
 
@@ -174,7 +174,7 @@ impl Node {
         let now = engine.now();
         let store_handle = store.clone();
         let mut driver = Driver::default();
-        driver.dials.set_own(cfg.key.map(|k| k.0));
+        driver.dials.set_node(cfg.key.map(|k| k.0), &cfg.policy);
         Ok(Node { engine, store, rng, cfg, now, rounds: 0, driver, opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::new(store_handle), inbox: Inbox::default(), status: Status::default() })
     }
 
@@ -230,7 +230,7 @@ impl Node {
     /// The owner changed its configuration; the next step follows it (`Input::Wrote`).
     pub fn set_config(&mut self, cfg: SyncConfig) {
         self.cfg = cfg;
-        self.driver.dials.set_own(self.cfg.key.map(|k| k.0));
+        self.driver.dials.set_node(self.cfg.key.map(|k| k.0), &self.cfg.policy);
     }
 
     /// Where the node's dials stand.

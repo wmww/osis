@@ -22,4 +22,4 @@ pub use driver::{Links, Node, PortEvent, apply};
 #[cfg(feature = "driver")]
 pub use driver::links::TransportLinks;
 pub use store::Store;
-pub use types::{ConnId, Error, Input, NodeKey, Out, Result, SyncConfig};
+pub use types::{ConnId, Error, Input, NodeKey, Out, Policy, Result, SyncConfig};

@@ -13,18 +13,12 @@ use osis_sync::types::{Credential, SourceClass};
 
 const S: SyncId = SyncId([5; 16]);
 
-fn knowing(seed: u64, peer: u8) -> Side {
-    let mut s = Side::new(seed);
-    s.table.known.insert(tid(peer));
-    s
-}
-
-/// Two readers of S holding one read secret, each knowing the other's account.
+/// Two readers of S holding one read secret.
 fn readers() -> Pair {
     let st = StepKeys::new(1, 0);
     let rs = read_secret(1, 0);
-    let mut a = knowing(1, 2);
-    let mut b = knowing(2, 1);
+    let mut a = Side::new(1);
+    let mut b = Side::new(2);
     a.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
     b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
     a.settle();
@@ -94,8 +88,8 @@ fn a_reader_opens_a_store_at_its_step_spec_sync_opens_4() {
 #[test]
 fn a_store_granted_later_opens_with_no_head_spec_sync_opens_4() {
     let st = StepKeys::new(1, 0);
-    let mut r = knowing(1, 2);
-    let k = knowing(2, 1);
+    let mut r = Side::new(1);
+    let k = Side::new(2);
     r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
     r.table.judge_as(S, tid(2), J::SyncHolder);
     r.settle();
@@ -136,7 +130,7 @@ fn a_store_with_no_head_opens_by_its_grant_under_a_newer_box_spec_sync_opens_4()
 #[test]
 fn a_refused_walk_hit_asks_behind_spec_sync_ids_6() {
     let st = StepKeys::new(1, 0);
-    let mut r = knowing(1, 9);
+    let mut r = Side::new(1);
     r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
     r.table.judge_as(S, tid(9), J::SyncHolder);
     r.settle();
@@ -174,8 +168,8 @@ fn a_store_answers_a_hit_on_its_heads_sync_key_spec_sync_opens_5() {
 #[test]
 fn byrole_opens_on_j_spec_sync_opens_5() {
     let st = StepKeys::new(1, 0);
-    let mut a = knowing(1, 2);
-    let mut b = knowing(2, 1);
+    let mut a = Side::new(1);
+    let mut b = Side::new(2);
     a.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
     b.table.set(S, Some(reader(&S, &read_secret(9, 0), &StepKeys::new(9, 0), &[], &[], &[])));
     a.table.judge_as(S, tid(2), J::Reader);
@@ -262,8 +256,8 @@ fn a_shred_drops_where_a_member_stopped_spec_sync_opens_3() {
 #[test]
 fn a_member_closed_here_without_the_peers_lost_rejoins_from_the_start_spec_sync_opens_6() {
     let st = StepKeys::new(1, 0);
-    let mut a = knowing(1, 2);
-    let mut b = knowing(2, 1);
+    let mut a = Side::new(1);
+    let mut b = Side::new(2);
     a.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
     b.table.set(S, Some(reader(&S, &read_secret(9, 0), &StepKeys::new(9, 0), &[], &[], &[])));
     a.table.judge_as(S, tid(2), J::Reader);
@@ -301,7 +295,7 @@ fn no_shared_set_yet_answers_14_spec_sync_opens_4() {
 fn no_offer_before_the_peers_digest_spec_sync_opens_3() {
     let st = StepKeys::new(1, 0);
     let rs = read_secret(1, 0);
-    let mut r = knowing(1, 9);
+    let mut r = Side::new(1);
     r.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
     r.settle();
     // `r` dials Adv, which it knows: Resume.
@@ -321,50 +315,16 @@ fn no_offer_before_the_peers_digest_spec_sync_opens_3() {
     assert_eq!(offered_hits(&r.sent()), 1, "the Offer follows the Digest");
 }
 
-// spec/sync-opens.md §4 (audiences): a read secret's beacon goes only to a peer that proved a
-// known actor; a sync proof's to every connection.
+// spec/sync-opens.md §5 (Filter): every shown credential's beacon goes to every connection, one
+// whose peer proved no actor included: a read secret's and a sync proof's.
 #[test]
-fn read_secret_beacons_only_to_known_actors_spec_sync_opens_4() {
-    let st = StepKeys::new(1, 0);
-    let mut r = knowing(1, 9);
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
-    r.settle();
-    let (_adv, sent) = Adv::dials(&mut r, Proven::default(), [2; 32]);
-    assert_eq!(filter_values(&sent).0.len(), 1, "unknown: the proof only");
-    let mut r = knowing(1, 9);
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
-    r.settle();
-    let (_adv, sent) = Adv::dials(&mut r, account(9), [2; 32]);
-    assert_eq!(filter_values(&sent).0.len(), 2, "known: the read secret too");
-}
-
-// spec/sync-opens.md §4 (audiences: judged at each generation), §2 (known actor): a peer whose
-// account becomes known on a live connection (a contact or roster change) gets the read secret's
-// beacon in a whole generation; nothing re-judges an audience while the known actors stay.
-#[test]
-fn a_peer_becoming_known_gets_the_read_secret_spec_sync_opens_4() {
+fn every_beacon_goes_to_every_peer_spec_sync_opens_5() {
     let st = StepKeys::new(1, 0);
     let mut r = Side::new(1);
     r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
     r.settle();
-    let (mut adv, sent) = Adv::dials(&mut r, account(9), [2; 32]);
-    assert_eq!(filter_values(&sent).0.len(), 1, "unknown: the proof only");
-    let ack = |adv: &mut Adv, r: &mut Side, sent: &[(osis_sync::ConnId, Msg)]| {
-        for (_, m) in sent {
-            if let Msg::Beacons { id, .. } = m {
-                adv.send(r, Msg::Shared { id: *id, items: vec![osis_proto::SharedItem::code(Code::OK)] });
-            }
-        }
-    };
-    ack(&mut adv, &mut r, &sent);
-    let before = r.opens.work().audiences;
-    r.settle();
-    assert!(filter_values(&r.sent()).0.is_empty() && r.opens.work().audiences == before, "nothing moved: no generation, no audience judged");
-    r.table.know(tid(9));
-    r.settle();
-    let sent = r.sent();
-    let (values, _, base) = filter_values(&sent);
-    assert_eq!((values.len(), base), (2, None), "known now: a whole generation with the read secret");
+    let (_adv, sent) = Adv::dials(&mut r, Proven::default(), [2; 32]);
+    assert_eq!(filter_values(&sent).0.len(), 2, "the read secret and the proof");
 }
 
 // spec/sync-opens.md §5 (filter): additions naming a base the receiver does not hold are
@@ -404,7 +364,7 @@ fn a_resumed_record_sends_additions_first_spec_sync_opens_5() {
 fn a_refused_hit_is_tried_again_only_when_remarked_spec_sync_opens_5() {
     let st = StepKeys::new(1, 0);
     let rs = read_secret(1, 0);
-    let mut r = knowing(1, 9);
+    let mut r = Side::new(1);
     r.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
     r.settle();
     let (mut adv, sent) = Adv::dials(&mut r, account(9), [2; 32]);
@@ -623,7 +583,7 @@ fn a_static_open_ends_when_the_roster_drops_it_spec_sync_opens_6() {
 
 /// A reader R of S knowing Adv's account 9, dialed by Adv keeping no record, J of Adv `j`.
 fn reader_judging(j: J) -> (Side, Adv) {
-    let mut r = knowing(4, 9);
+    let mut r = Side::new(4);
     r.table.set(S, Some(reader(&S, &read_secret(1, 0), &StepKeys::new(1, 0), &[], &[], &[])));
     r.table.judge_as(S, tid(9), j);
     r.settle();
@@ -762,8 +722,8 @@ fn a_static_grant_is_taken_only_once_its_signature_verifies_spec_sync_opens_5() 
 /// The work of that change, at each side.
 fn change_one_of(n: u8) -> osis_sync::opens::Work {
     let st = StepKeys::new(1, 0);
-    let mut a = knowing(1, 2);
-    let mut b = knowing(2, 1);
+    let mut a = Side::new(1);
+    let mut b = Side::new(2);
     for i in 0..n {
         let rs = read_secret(i, 0);
         a.table.set(sid(i), Some(reader(&sid(i), &rs, &st, &[], &[], &[])));
@@ -779,7 +739,7 @@ fn change_one_of(n: u8) -> osis_sync::opens::Work {
     p.settle();
     assert!(p.a.open(p.ca, &sid(0)));
     let w = p.a.opens.work();
-    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds, audiences: w.audiences - before.audiences }
+    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
 }
 
 // spec/sync-opens.md §6: a change of one sync ID's credentials re-judges, tests and filters that
@@ -795,7 +755,7 @@ fn a_credential_change_costs_the_same_at_n_and_10n_spec_sync_opens_6() {
 // the honest side holds `n` sync IDs and `c` silent connections.
 fn change_with_conns(n: u8, c: u64) -> u64 {
     let st = StepKeys::new(1, 0);
-    let mut r = knowing(1, 9);
+    let mut r = Side::new(1);
     for i in 0..n {
         r.table.set(sid(i), Some(reader(&sid(i), &read_secret(i, 0), &st, &[], &[], &[])));
     }
@@ -854,21 +814,21 @@ fn an_ended_member_admissible_again_is_not_ended_spec_sync_opens_6() {
     assert_eq!(k.opens.members(adv.peer)[&S].until, None);
 }
 
-// spec/sync-opens.md §4 (audiences): a read secret's Hit from a peer that proved no known actor
-// opens nothing: R's filter to it does not show the secret, so R accepts no Hit on it (whoever
-// holds the secret), and so tells that peer nothing of S.
+// spec/sync-opens.md §4 (the rule: a secret credential), §5 (ByRole): a Hit or a ByRole Hit on a
+// read secret opens S whoever the peer proved, none at all included.
 #[test]
-fn a_read_secret_hit_from_an_unknown_peer_opens_nothing_spec_sync_opens_4() {
+fn a_read_secret_hit_opens_whoever_proved_spec_sync_opens_4() {
     let rs = read_secret(1, 0);
-    let mut r = Side::new(4);
-    r.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 0), &[], &[], &[])));
-    r.settle();
-    let (mut adv, _) = Adv::dials(&mut r, Proven::default(), [2; 32]);
-    let hit = OfferItem::Hit { hit: adv.hit_on(rs.1.expose(), &S), sig: None };
-    assert_eq!(adv.offer(&mut r, vec![hit.clone()])[0].code, Code::DECLINED);
-    let byrole = OfferItem::ByRole { sync_id: S, hits: vec![adv.hit_on(rs.1.expose(), &S)] };
-    assert_eq!(adv.offer(&mut r, vec![byrole])[0].code, Code::DECLINED);
-    assert!(!r.open(adv.peer, &S));
+    for byrole in [false, true] {
+        let mut r = Side::new(4);
+        r.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 0), &[], &[], &[])));
+        r.settle();
+        let (mut adv, _) = Adv::dials(&mut r, Proven::default(), [2; 32]);
+        let hit = adv.hit_on(rs.1.expose(), &S);
+        let item = if byrole { OfferItem::ByRole { sync_id: S, hits: vec![hit] } } else { OfferItem::Hit { hit, sig: None } };
+        assert_eq!(adv.offer(&mut r, vec![item])[0].code, Code::OK, "byrole {byrole}");
+        assert!(r.open(adv.peer, &S));
+    }
 }
 
 // spec/sync-opens.md §5 (opening): a Lost after an Offer names only a sync ID whose Hit the peer
@@ -877,7 +837,7 @@ fn a_read_secret_hit_from_an_unknown_peer_opens_nothing_spec_sync_opens_4() {
 #[test]
 fn no_lost_names_s_without_a_valid_tag_spec_sync_opens_5() {
     let rs = read_secret(1, 0);
-    let mut r = knowing(1, 9);
+    let mut r = Side::new(1);
     r.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 0), &[], &[], &[])));
     r.settle();
     let (mut adv, _) = Adv::dials(&mut r, account(9), [2; 32]);
@@ -917,7 +877,7 @@ fn a_filter_too_dense_closes_the_connection_spec_wire_11_2() {
 #[test]
 fn a_lost_for_an_unheld_sync_id_remarks_nothing_spec_sync_opens_5() {
     let rs = read_secret(1, 0);
-    let mut r = knowing(1, 9);
+    let mut r = Side::new(1);
     r.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 0), &[], &[], &[])));
     r.settle();
     let (mut adv, _) = Adv::dials(&mut r, account(9), [2; 32]);
@@ -934,18 +894,18 @@ fn a_lost_for_an_unheld_sync_id_remarks_nothing_spec_sync_opens_5() {
     assert_eq!(offered_hits(&r.sent()), 1, "a Lost for S re-marks it");
 }
 
-// spec/sync-opens.md §3 (pair key): a dialer that knows the listener sends Resume; a listener that
-// knows no actor the dialer proved answers Error 1, the dialer sends NoRecord, and the shared set
-// runs keeping no record at either side.
+// spec/sync-opens.md §3 (pair key): a dialer the listener proved an actor to sends Resume; a
+// listener the dialer proved no actor to (its policy proved none, `Policy::identify`) answers
+// Error 1, the dialer sends NoRecord, and the shared set runs keeping no record at either side.
 #[test]
-fn a_resume_to_a_listener_not_knowing_the_dialer_runs_unkept_spec_sync_opens_3() {
+fn a_resume_from_a_dialer_proving_nothing_runs_unkept_spec_sync_opens_3() {
     let st = StepKeys::new(1, 0);
     let rs = read_secret(1, 0);
-    let mut a = knowing(1, 2);
+    let mut a = Side::new(1);
     let mut b = Side::new(2);
     a.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
     b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
-    let mut p = Pair::new(a, b, account(1), account(2));
+    let mut p = Pair::new(a, b, Proven::default(), account(2));
     p.run();
     let from_b: Vec<&Msg> = p.log.iter().filter(|(a, _)| !a).map(|(_, m)| m).collect();
     assert!(from_b.iter().any(|m| matches!(m, Msg::Error { code: Code::REFUSED, .. })), "Error 1");
@@ -954,12 +914,21 @@ fn a_resume_to_a_listener_not_knowing_the_dialer_runs_unkept_spec_sync_opens_3()
     assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
 }
 
+// spec/sync-opens.md §3 (pair key): two nodes that each proved an actor keep one record, whether
+// or not either held anything of the other's before.
+#[test]
+fn strangers_proving_actors_keep_a_record_spec_sync_opens_3() {
+    let mut p = Pair::new(Side::new(1), Side::new(2), account(1), account(2));
+    p.run();
+    assert!(p.a.opens.record(p.ca).is_some() && p.b.opens.record(p.cb).is_some());
+}
+
 /// `a` holds `n` sync IDs, `b` one of them; they share it, close and connect again with nothing
 /// changed. The work of the reconnect at `a`.
 fn reconnect_with(n: u8) -> osis_sync::opens::Work {
     let st = StepKeys::new(1, 0);
-    let mut a = knowing(1, 2);
-    let mut b = knowing(2, 1);
+    let mut a = Side::new(1);
+    let mut b = Side::new(2);
     for i in 0..n {
         a.table.set(sid(i), Some(reader(&sid(i), &read_secret(i, 0), &st, &[], &[], &[])));
     }
@@ -973,7 +942,7 @@ fn reconnect_with(n: u8) -> osis_sync::opens::Work {
     p.run();
     assert!(p.a.open(p.ca, &sid(0)));
     let w = p.a.opens.work();
-    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds, audiences: w.audiences - before.audiences }
+    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
 }
 
 // spec/sync-opens.md §3 (records): a known peer reconnecting with nothing changed costs the same
@@ -1060,8 +1029,8 @@ fn crossed_first_dials_between_own_nodes_keep_one_spec_sync_opens_1() {
     let node = |n: u8, node: u8| Proven { node: Some(tid(node)), ..account(n) };
     let st = StepKeys::new(1, 0);
     let rs = read_secret(1, 0);
-    let mut a = knowing(1, 2);
-    let mut b = knowing(2, 1);
+    let mut a = Side::new(1);
+    let mut b = Side::new(2);
     a.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
     b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
     a.settle();
@@ -1088,8 +1057,8 @@ fn crossed_first_dials_between_own_nodes_keep_one_spec_sync_opens_1() {
 /// connect again with nothing changed. The bytes of every message the reconnect sent.
 pub(crate) fn restart_reconnect_bytes(n: u8) -> usize {
     let st = StepKeys::new(1, 0);
-    let mut a = knowing(1, 2);
-    let mut b = knowing(2, 1);
+    let mut a = Side::new(1);
+    let mut b = Side::new(2);
     for i in 1..=n {
         for x in [&mut a, &mut b] {
             x.table.set(sid(i), Some(reader(&sid(i), &read_secret(i, 0), &st, &[], &[], &[])));
@@ -1192,8 +1161,8 @@ fn eviction_spares_a_record_a_resume_lists_spec_sync_opens_3() {
 fn crash_before_flush(k: usize, leave: bool) -> bool {
     let st = StepKeys::new(1, 0);
     let rs = read_secret(1, 0);
-    let mut a = knowing(1, 2);
-    let mut b = knowing(2, 1);
+    let mut a = Side::new(1);
+    let mut b = Side::new(2);
     a.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
     b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
     a.settle();
@@ -1288,7 +1257,7 @@ fn a_crash_before_a_step_writes_its_records_spec_sync_opens_3() {
 /// additions), Adv an account J judges a sync holder of `n` sync IDs it does not keep (each
 /// Behind answered 13).
 fn behinds_per_arrival(n: u8) -> Vec<usize> {
-    let mut r = knowing(1, 9);
+    let mut r = Side::new(1);
     for i in 0..n {
         let s = SyncId([i; 16]);
         r.table.set(s, Some(reader(&s, &read_secret(i, 0), &StepKeys::new(i, 0), &[], &[], &[])));

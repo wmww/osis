@@ -231,13 +231,17 @@ pub struct Dials {
     next_conn: u64,
     /// This node's own dialable key: never dialed.
     own: Option<[u8; 32]>,
+    /// Whom it dials (`Policy::dial`): a candidate it refuses is never offered.
+    policy: crate::types::Policy,
     work: Work,
 }
 
 impl Dials {
-    /// This node's own key: never a candidate.
-    pub fn set_own(&mut self, key: Option<[u8; 32]>) {
+    /// This node's own key, never a candidate, and its policy (`Policy::dial`; a candidate offered
+    /// before it changed stays).
+    pub fn set_node(&mut self, key: Option<[u8; 32]>, policy: &crate::types::Policy) {
         self.own = key;
+        self.policy = policy.clone();
         if let Some(k) = key {
             for w in self.cands.get(&k).map(|c| c.why.keys().copied().collect::<Vec<_>>()).unwrap_or_default() {
                 self.withdraw(&w, &k);
@@ -247,7 +251,7 @@ impl Dials {
 
     /// `to` is a candidate for `why`; a new candidate or a new address for it is a change for it.
     pub fn offer(&mut self, why: Why, to: Address, now: WallMs) {
-        if Some(to.key) == self.own {
+        if Some(to.key) == self.own || !self.policy.dial(&to) {
             return;
         }
         let key = to.key;

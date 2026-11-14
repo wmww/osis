@@ -276,10 +276,10 @@ pub fn world(seed: u64, n: usize) -> World {
 
 /// Every account becomes every other's contact: each grants every other read on its profile,
 /// and each node files every other account's profile in its account's D (what
-/// importing a contact card leaves, spec/sync-inbox.md §5: the granter is a known actor and a
-/// connected sender), all handed by hand before any history, so no history content travels this
-/// way. A stand-in for the contact exchange: contact cards join, but a grant to the contact never
-/// reaches it after (issues/sync-link-first-contact.md, `links::a_grant_reaches_a_contact_by_card`).
+/// importing a contact card leaves, spec/sync-inbox.md §5), all handed by hand before any
+/// history, so no history content travels this way. A stand-in for the contact exchange by cards
+/// (`links::a_grant_reaches_a_contact_by_card`), which costs more here and fails two flows tests
+/// (issues/sync-link-first-contact.md).
 pub fn introduce(w: &mut World) {
     assert!(w.history.things.is_empty(), "introduce hands no content: before any history only");
     hand_all(w);

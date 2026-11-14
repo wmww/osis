@@ -601,17 +601,6 @@ impl Engine {
         Ok(!self.read(|tx| crate::rotation::uncovered(tx, &a, osis_base::Role::Read, &epoch, &deps))?)
     }
 
-    /// The actors known here (spec/sync-opens.md §2 Known actor), whole, a memo value over the
-    /// rosters: a module following it re-judges what a contact or roster change moves.
-    pub fn known_actors(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
-        Ok(self.known_actors_now())
-    }
-
-    /// Whether actor `a` is known here (spec/sync-opens.md §2).
-    pub fn known_actor(&mut self, a: &Tid) -> bool {
-        self.core.judge([*a]).known()
-    }
-
     /// The keys this node proves with on a connection, in proof order (spec/wire.md §11.2 Prove):
     /// its own node key first when `own_node` (the peer is a node of its account), then its
     /// account at its open epoch while it holds that epoch's seed, then the key actors it acts for
