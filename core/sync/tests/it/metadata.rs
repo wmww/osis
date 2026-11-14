@@ -11,10 +11,10 @@ use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 
 const MARK_A: &str = "plaintext-marker-alpha-7f3a91";
-const MARK_B: &str = "plaintext-marker-beta-c4e82d";
+pub(crate) const MARK_B: &str = "plaintext-marker-beta-c4e82d";
 const MAP_KEY: &str = "map-key-marker-5b0e66";
 
-fn value_ak() -> Ak {
+pub(crate) fn value_ak() -> Ak {
     Ak::new("u:secretvalue.0").unwrap()
 }
 
@@ -33,7 +33,13 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 /// Node 0 makes thing t (a value), grants node 1's account sync and node 2's write; both accept;
 /// node 2 writes another value and node 0 a map key; synced to quiet. Built once per process.
 fn scenario() -> (World, Tid, SyncId) {
-    let (w, (t, s)) = fixture_with("metadata scenario", || {
+    let (w, t, s, _) = scenario_b();
+    (w, t, s)
+}
+
+/// `scenario` and the commit of node 2's value (`MARK_B`).
+pub(crate) fn scenario_b() -> (World, Tid, SyncId, osis_base::CommitId) {
+    let (w, (t, s, b)) = fixture_with("metadata scenario", || {
         let mut w = World::new(0);
         w.record = true;
         w.cap = 3 * crate::harness::RULE_CAP;
@@ -57,10 +63,10 @@ fn scenario() -> (World, Tid, SyncId) {
         file(&mut w, 1, Vec::new(), vec![t]);
         file(&mut w, 2, Vec::new(), vec![t]);
         w.run();
-        w.write(2, |e| {
+        let b = w.write(2, |e| {
             let mut m = Mutation::new();
             m.set(t, &value_ak(), &Value::Str(MARK_B.into())).unwrap();
-            e.commit(m).unwrap();
+            e.commit(m).unwrap().unwrap()
         });
         w.write(0, |e| {
             let mut m = Mutation::new();
@@ -76,9 +82,9 @@ fn scenario() -> (World, Tid, SyncId) {
         let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
         assert_eq!(w.engine(1).thing_sync(&t).unwrap(), osis_engine::sync::ThingSync::Unread(vec![s]), "node 1 keeps t unread");
         assert!(w.store(1).entries(&s).unwrap().len() >= 4, "node 1 holds the writes");
-        (w, (t, s))
+        (w, (t, s, b))
     });
-    (w, t, s)
+    (w, t, s, b)
 }
 
 /// What node 1 must not learn: t's values, map key, content AKs and role secrets, the writers'

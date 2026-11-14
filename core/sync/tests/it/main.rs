@@ -13,6 +13,7 @@ mod links;
 mod metadata;
 mod session;
 mod siblings;
+mod shred;
 mod sims;
 mod read;
 mod unread;
