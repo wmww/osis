@@ -55,8 +55,19 @@ pub struct Held {
     uncounted: BTreeSet<CommitId>,
     /// Stamps `created`, per thing.
     records_read: Stamps,
-    /// Stamps everything else, as one.
-    rest_read: Stamps,
+    /// Stamps everything else, per key of each map (`Row`).
+    rest: Stamps,
+}
+
+/// A key of `Held`'s maps, as `Held::rest` stamps it.
+#[derive(Hash)]
+enum Row<'a> {
+    Commits(&'a Tid),
+    Holder(&'a Tid),
+    Named(&'a Tid),
+    Granted(&'a Tid),
+    FirstAdminOf(&'a Tid),
+    Id(&'a CommitId),
 }
 
 fn named(c: &RoleCommit) -> Vec<(Tid, Tid)> {
@@ -77,35 +88,35 @@ impl Held {
     /// The held things whose record names `t` as first admin (one link down the record
     /// chain).
     pub fn first_admin_of(&self, t: &Tid) -> impl Iterator<Item = &Tid> {
-        self.rest_read.read_all();
+        self.rest.read(&Row::FirstAdminOf(t));
         self.first_admin_of.get(t).into_iter().flatten()
     }
     /// The actors named as a holder on some thing (edge writes, a creation record naming its
     /// first admin).
     pub fn holders(&self) -> impl Iterator<Item = &Tid> {
-        self.rest_read.read_all();
+        self.rest.read_all();
         self.holders.keys()
     }
     /// Edge commits with a write on `t`, of any validity.
     pub fn commits_on(&self, t: &Tid) -> &[Arc<RoleCommit>] {
-        self.rest_read.read_all();
+        self.rest.read(&Row::Commits(t));
         self.commits.get(t).map(Vec::as_slice).unwrap_or_default()
     }
     /// Things `holder` is named on as a holder (edge writes, a creation record naming its first admin).
     pub fn named_on(&self, holder: &Tid) -> impl Iterator<Item = &Tid> {
-        self.rest_read.read_all();
+        self.rest.read(&Row::Holder(holder));
         self.holders.get(holder).into_iter().flat_map(|m| m.keys())
     }
 
     /// Holders named on `thing` (edge writes, a creation record naming its first admin).
     pub fn holders_of(&self, thing: &Tid) -> impl Iterator<Item = &Tid> {
-        self.rest_read.read_all();
+        self.rest.read(&Row::Named(thing));
         self.named.get(thing).into_iter().flatten()
     }
 
     /// Holders an edge write puts a grant for on `thing`, of any validity and whatever followed.
     pub fn granted_on(&self, thing: &Tid) -> impl Iterator<Item = &Tid> {
-        self.rest_read.read_all();
+        self.rest.read(&Row::Granted(thing));
         self.granted.get(thing).into_iter().flat_map(|m| m.keys())
     }
 
@@ -113,14 +124,13 @@ impl Held {
     /// named on as holders, transitively (spec/permissions.md §1: paths climb record links and
     /// role edges). A change of authority at `from` changes it only there.
     pub fn reach(&self, from: &BTreeSet<Tid>) -> BTreeSet<Tid> {
-        self.rest_read.read_all();
         let mut out = BTreeSet::new();
         let mut stack: Vec<Tid> = from.iter().copied().collect();
         while let Some(t) = stack.pop() {
             if !out.insert(t) {
                 continue;
             }
-            stack.extend(self.first_admin_of.get(&t).into_iter().flatten().copied());
+            stack.extend(self.first_admin_of(&t).copied());
             stack.extend(self.named_on(&t).copied());
         }
         out
@@ -224,11 +234,11 @@ impl Held {
 
     fn set_created(&mut self, t: Tid, r: Option<CreationRecord>) -> Option<CreationRecord> {
         self.records_read.wrote(&t, r.is_some());
-        self.rest_read.wrote_all();
         let old = match r {
             Some(r) => {
                 if let Some(up) = r.first_admin() {
                     self.first_admin_of.entry(up).or_default().insert(t);
+                    self.rest.wrote(&Row::FirstAdminOf(&up), true);
                 }
                 self.created.insert(t, r)
             }
@@ -243,6 +253,7 @@ impl Held {
             if s.is_empty() {
                 self.first_admin_of.remove(&up);
             }
+            self.rest.wrote(&Row::FirstAdminOf(&up), self.first_admin_of.contains_key(&up));
         }
         if same {
             // the same record: nothing perm reads changed
@@ -286,6 +297,8 @@ impl Held {
             if e.is_empty() {
                 self.holders.remove(&m);
             }
+            self.rest.wrote(&Row::Holder(&m), self.holders.contains_key(&m));
+            self.rest.wrote(&Row::Named(&t), self.named.contains_key(&t));
         }
     }
 
@@ -304,6 +317,7 @@ impl Held {
             if on.is_empty() {
                 self.granted.remove(&o.target);
             }
+            self.rest.wrote(&Row::Granted(&o.target), self.granted.contains_key(&o.target));
         }
     }
 
@@ -311,6 +325,7 @@ impl Held {
         let targets: BTreeSet<Tid> = c.ops.iter().map(|o| o.target).collect();
         for t in &targets {
             self.commits.entry(*t).or_default().push(c.clone());
+            self.rest.wrote(&Row::Commits(t), true);
         }
         self.moved.extend(targets.iter().copied());
         self.touched.extend(targets);
@@ -318,14 +333,14 @@ impl Held {
         self.moved.insert(c.author);
         self.count(named(&c), true);
         self.count_granted(&c, true);
-        self.rest_read.wrote_all();
+        self.rest.wrote(&Row::Id(&c.id), true);
         self.ids.insert(c.id, c);
     }
 
     /// Takes out the commit with this ID (exactly this Arc).
     fn take(&mut self, id: &CommitId) -> Option<Arc<RoleCommit>> {
         let c = self.ids.remove(id)?;
-        self.rest_read.wrote_all();
+        self.rest.wrote(&Row::Id(id), false);
         for o in &c.ops {
             if let Some(v) = self.commits.get_mut(&o.target) {
                 v.retain(|x| !Arc::ptr_eq(x, &c));
@@ -333,6 +348,7 @@ impl Held {
                     self.commits.remove(&o.target);
                 }
             }
+            self.rest.wrote(&Row::Commits(&o.target), self.commits.contains_key(&o.target));
             self.touched.insert(o.target);
             self.moved.insert(o.target);
         }
@@ -367,7 +383,7 @@ impl Held {
 
     /// The edge commit held under this ID.
     pub fn edge_commit(&self, id: &CommitId) -> Option<&RoleCommit> {
-        self.rest_read.read_all();
+        self.rest.read(&Row::Id(id));
         self.ids.get(id).map(|c| &**c)
     }
 
@@ -388,11 +404,14 @@ impl Held {
             self.uncounted.insert(id);
         }
         if let Some(c) = self.ids.get(&id) {
+            // what perm reads of its targets (`edge_commits`) moved
+            for o in &c.ops {
+                self.rest.wrote(&Row::Commits(&o.target), true);
+            }
             let targets: Vec<Tid> = c.ops.iter().map(|o| o.target).chain([c.author]).collect();
             self.moved.extend(targets.iter().copied());
             self.touched.extend(targets);
         }
-        self.rest_read.wrote_all();
     }
 
     /// Drops the commit with this ID.
@@ -464,13 +483,14 @@ impl Journaled for Held {
 
 impl HeldSet for Held {
     fn things(&self) -> Vec<Tid> {
-        self.rest_read.read_all();
+        self.rest.read_all();
+        self.records_read.read_all();
         let mut s: BTreeSet<Tid> = self.commits.keys().copied().collect();
         s.extend(self.created.keys().copied());
         s.into_iter().collect()
     }
     fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>> {
-        self.rest_read.read_all();
+        self.rest.read(&Row::Commits(thing));
         let Some(cs) = self.commits.get(thing) else { return Vec::new() };
         if self.uncounted.is_empty() {
             return cs.clone();
@@ -582,6 +602,74 @@ mod tests {
         }
     }
 
+
+    // spec: none (internal: notes/engine.md, Derived values). Each read of the held set is
+    // stamped by what it read: a memo of it keeps the answer a fresh read gives through any
+    // change and undo (an edge commit added, removed, counted or not; a record created or
+    // forgotten), and a change elsewhere reads nothing again.
+    #[test]
+    fn held_reads_move_with_what_they_read() {
+        use osis_base::memo::Memo;
+        // each read alone, by its index here: a memo reading two would move with either
+        let read = |h: &Held, (r, t): &(u8, Tid)| -> Vec<[u8; 32]> {
+            let ids = |cs: &[Arc<RoleCommit>]| cs.iter().map(|c| c.id.0).collect::<Vec<_>>();
+            let tids = |ts: &mut dyn Iterator<Item = &Tid>| ts.map(|t| *t.as_bytes()).map(|b| { let mut x = [0; 32]; x[..15].copy_from_slice(&b); x }).collect::<Vec<_>>();
+            match r {
+                0 => ids(h.commits_on(t)),
+                1 => ids(&HeldSet::edge_commits(h, t)),
+                2 => tids(&mut h.holders_of(t)),
+                3 => tids(&mut h.named_on(t)),
+                4 => tids(&mut h.granted_on(t)),
+                _ => tids(&mut h.first_admin_of(t)),
+            }
+        };
+        let memo: Memo<(u8, Tid), Vec<[u8; 32]>> = Memo::new("test held read");
+        let by_id: Memo<CommitId, Option<CommitId>> = Memo::new("test held commit");
+        let a: Vec<CreationRecord> = (0..3).map(actor).collect();
+        let at: Vec<Tid> = a.iter().map(|x| x.tid()).collect();
+        let (g, t) = (thing(at[0], 10), thing(at[1], 11));
+        let all = [at[0], at[1], at[2], g.tid(), t.tid()];
+        let mut h = Held::default();
+        let c1 = grant(1, at[0], g.tid(), at[1], Role::Admin);
+        let c2 = grant(2, at[1], t.tid(), at[2], Role::Write);
+        let check = |h: &Held| {
+            for id in [c1.id, c2.id] {
+                assert_eq!(by_id.get(&id, || h.edge_commit(&id).map(|c| c.id)), h.edge_commit(&id).map(|c| c.id), "{id:?}");
+            }
+            for x in &all {
+                for r in 0..6 {
+                    let k = (r, *x);
+                    assert_eq!(memo.get(&k, || read(h, &k)), read(h, &k), "read {r} of {x:?}");
+                }
+            }
+        };
+        let runs = || osis_base::costs::take().iter().filter(|x| x.0 == "test held read").map(|x| x.2).sum::<u64>();
+        for x in a.iter().chain([&g]) {
+            h.create(x.clone());
+        }
+        check(&h);
+        h.create(t.clone());
+        check(&h);
+        h.add_commit(c1.clone());
+        check(&h);
+        osis_base::costs::take();
+        h.add_commit(c2.clone());
+        check(&h);
+        // what reads g alone (and the first admins, unnamed on either commit) stays
+        assert_eq!(runs(), 4, "of t: its commits (twice) and holders; its new holder's things");
+        let m = h.mark();
+        h.set_counted(c2.id, false);
+        check(&h);
+        h.remove(&c1.id);
+        check(&h);
+        h.forget_record(&t.tid());
+        check(&h);
+        h.rollback_to(m);
+        check(&h);
+        h.set_counted(c2.id, false);
+        h.set_counted(c2.id, true);
+        check(&h);
+    }
 
     // spec/commits.md §4: a thing's possible admins are a function of what is held, in any order; more held only adds; what a signer outside them writes adds nothing, a chain of forgeries included.
     #[test]

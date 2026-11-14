@@ -1356,9 +1356,6 @@ pub struct Core {
     /// (`Engine::recheck`).
     #[cfg(debug_assertions)]
     pub(crate) rechecked: ((u64, u64, u64), BTreeSet<String>),
-    /// Debug builds: `Store::changes` when the running transaction began (`Tx::recheck`).
-    #[cfg(debug_assertions)]
-    pub(crate) tx_store: u64,
     /// `Engine::labels_of` per group (`memo`).
     pub(crate) labels: memo::Memo<Tid, Vec<std::sync::Arc<crate::labeling::GroupLabel>>>,
     /// `Engine::published_under` for every actor (`memo`).
@@ -1504,7 +1501,6 @@ impl Core {
             #[cfg(debug_assertions)]
             rechecked: self.rechecked.clone(),
             #[cfg(debug_assertions)]
-            tx_store: self.tx_store.clone(),
             labels: self.labels.clone(),
             published: self.published.clone(),
             links: self.links.clone(),
@@ -1939,7 +1935,6 @@ impl Core {
         let sides_back = self.sides.journaled() > m.sides.0 + m.sides.1;
         self.sides.rollback_to(m.sides);
         if self.changed_since(&m) {
-            self.decoded.clear();
             self.touches.clear();
             if self.memory_tx {
                 self.memory_generation += 1;
@@ -2042,13 +2037,15 @@ impl Core {
             tree_roots: _,
             departures: _,
             reseal_scans: _,
+            // decodes of commit records kept at each record's stamp (`decoded`): an undo
+            // stamps the rows it restores
+            decoded: _,
             // caches, dropped when anything changed (`states` and `pages` per written aspect)
             states: _,
             pages: _,
             rotation_seq: _,
             epochs_judged_from: _,
             waits: _,
-            decoded: _,
             touches: _,
             generation: _,
             // the store's count, read by `changed_since`
@@ -2116,7 +2113,6 @@ impl Core {
             #[cfg(debug_assertions)]
             rechecked: _,
             #[cfg(debug_assertions)]
-            tx_store: _,
             #[cfg(test)]
             check_ingest: _,
             #[cfg(test)]
@@ -2332,7 +2328,6 @@ impl Core {
             #[cfg(debug_assertions)]
             rechecked: Default::default(),
             #[cfg(debug_assertions)]
-            tx_store: 0,
             labels: memo::Memo::new("labels of"),
             published: memo::Memo::new("published"),
             links: memo::Memo::new("held links"),
@@ -2626,14 +2621,6 @@ impl Tx<'_> {
     pub fn set_memory(&mut self) {
         self.txn.set_memory(true);
         self.core.memory_tx = true;
-    }
-
-    /// `Engine::recheck` inside this transaction: its point is the store as the transaction
-    /// found it (`Core::tx_store`) and the generations, which every change it makes moves.
-    #[cfg(debug_assertions)]
-    pub(crate) fn recheck(&mut self, what: String) -> bool {
-        let at = (self.core.tx_store, self.core.generation, self.core.memory_generation);
-        self.core.recheck_at(at, what)
     }
 
     /// Runs `f` as work on data of class `memory`: rows it creates for a
@@ -3044,7 +3031,6 @@ impl Tx<'_> {
     /// they keep; then its blob), and for a role commit its `node/edges` row (`edges`: what the caller already
     /// read of `blob` with `edge_parts_of`, else decoded here).
     pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
-        self.core.decoded.forget(id);
         self.core.mark_changed(*id);
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
@@ -3068,7 +3054,6 @@ impl Tx<'_> {
 
     /// Removes a commit record (shredded) with what the index keeps beside it.
     pub fn remove_commit(&mut self, id: &CommitId) -> Result<()> {
-        self.core.decoded.forget(id);
         self.txn.remove_local(&records::commit_key(id), Shred::Yes)?;
         index::remove_edges(self, id)?;
         index::remove_addenda(self, id)
@@ -3079,15 +3064,22 @@ impl Tx<'_> {
     pub fn get_commit(&mut self, id: &CommitId) -> Result<Option<Arc<CommitBlob>>> {
         let key = records::commit_key(id);
         self.txn.noted_local(&key);
+        let at = self.txn.local_stamp(&key);
         let txn = &mut self.txn;
-        if let Some(b) = self.core.decoded.record(id, || osis_base::costs::paused(|| txn.get_local(&key)))? {
+        if let Some(b) = self.core.decoded.record(id, at, || osis_base::costs::paused(|| txn.get_local(&key)))? {
             return Ok(Some(b));
         }
         drop(osis_base::costs::span("commit read"));
         let Some(v) = self.txn.get_local(&key)? else { return Ok(None) };
         let b = Arc::new(decode_commit_record(&v)?.1);
-        self.core.decoded.keep_record(*id, b.clone(), &v);
+        self.core.decoded.keep_record(*id, at, b.clone(), &v);
         Ok(Some(b))
+    }
+
+    /// The change stamp of commit `id`'s record (`Transaction::local_stamp`): what `Core::decoded`
+    /// keeps its decodes at.
+    pub(crate) fn commit_stamp(&self, id: &CommitId) -> u64 {
+        self.txn.local_stamp(&records::commit_key(id))
     }
 
     /// Every stored pending or parked copy, a page at a time: commit, kind, bytes.
@@ -3513,10 +3505,6 @@ impl Engine {
         }
         let now = self.now().0;
         self.core.time.set(now);
-        #[cfg(debug_assertions)]
-        {
-            self.core.tx_store = self.store.changes();
-        }
         let start = self.core.mark();
         let txn = self.store.transaction(&mut self.store_rng)?;
         let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
@@ -3569,7 +3557,6 @@ impl Engine {
         #[cfg(debug_assertions)]
         {
             self.core.unchecked_tx = false;
-            self.core.tx_store = self.store.changes();
         }
         // debug builds: whether `check_index` runs after this transaction
         #[cfg(debug_assertions)]

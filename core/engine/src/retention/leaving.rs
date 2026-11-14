@@ -167,11 +167,12 @@ fn left(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place, now: u64) -> Result<()> {
         // not replaced (a snapshot's row set by a kill of writes it does not carry, a text creation
         // revived: a tick that tells nothing new; the death that replaces it sets the row again).
         // A row may be late: an earlier superseder of a dead write arriving moves no row
+        // (the date memo compares itself with a fresh judgment, `osis_base::memo` Checks)
         #[cfg(debug_assertions)]
-        if whole && tx.recheck(format!("leaving {tid:?} {ak:?}")) {
-            let fresh = osis_base::costs::paused(|| super::bounds::fresh_replaced_at(tx, &h, &c, ai))?;
+        if whole {
+            let dated = osis_base::costs::paused(|| osis_base::memo::unrecorded(|| super::bounds::dated_replaced_at(tx, &h, &c, ai)))?;
             let k = history::of(tx.core, tid, ak);
-            assert!(fresh.is_none_or(|f| leaves(&k, f) <= now), "{c:?} on {tid:?} {ak:?} left at row {p:?} while in history (replaced at {fresh:?})");
+            assert!(dated.is_none_or(|f| leaves(&k, f) <= now), "{c:?} on {tid:?} {ak:?} left at row {p:?} while in history (replaced at {dated:?})");
         }
         // one its purge floor keeps listed is told again then, by its floor's timer (`on_parts`)
         moved(tx, tid, ak, &c);

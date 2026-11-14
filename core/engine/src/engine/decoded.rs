@@ -2,9 +2,10 @@
 //!
 //! A record's blob and each of its decoded parts are functions of the record's bytes alone (a
 //! part also of its header and its thing's dedup secret, both fixed by the commit's ID, and of
-//! the pages its links name, fixed by each link's blob ID and hash), so they are kept from the
-//! first read until the record is written again or removed (`Tx::put_commit`,
-//! `Tx::remove_commit`: the only writers) or a changing transaction rolls back.
+//! the pages its links name, fixed by each link's blob ID and hash), so they are kept with the
+//! record row's change stamp (`Transaction::local_stamp`) and hold while it stands: a write, a
+//! removal or an undo of the record (a savepoint rolled back, an abort) moves it, so nothing
+//! drops an entry by hand.
 //!
 //! Debug builds keep with each entry the bytes it was decoded from and compare them with the
 //! bytes read now: the part in the record read at every hit, the record's stored bytes at its
@@ -17,6 +18,8 @@
 //! Beside them, a paged part's page index (`osis_crdt::PageIndex`, one entry per leaf page),
 //! found by its first read, so a read at some positions (`apply::held_part_at`) fetches only
 //! the pages holding them.
+//!
+//! Bounded by bytes, which a memo (`osis_base::memo`) is not: its values are whole bodies.
 
 use osis_base::CommitId;
 use osis_commit::{CommitBlob, Decoded, Part};
@@ -67,19 +70,31 @@ struct KeptIndex {
     from: Part,
 }
 
+/// What is kept of one commit's record, decoded at the record's stamp `at`.
+#[derive(Clone, Default)]
+struct Kept {
+    at: u64,
+    record: Option<KeptRecord>,
+    parts: BTreeMap<usize, KeptPart>,
+    indexes: BTreeMap<usize, KeptIndex>,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct DecodedCommits {
-    records: HashMap<CommitId, KeptRecord>,
-    parts: HashMap<CommitId, BTreeMap<usize, KeptPart>>,
-    indexes: HashMap<CommitId, BTreeMap<usize, KeptIndex>>,
+    commits: HashMap<CommitId, Kept>,
     bytes: usize,
 }
 
 impl DecodedCommits {
-    /// The kept blob of `id`. Debug builds, sampled (the module doc): `_stored` reads the
-    /// record's stored bytes now, which must be those it was decoded from.
-    pub(crate) fn record<E>(&self, id: &CommitId, _stored: impl FnOnce() -> Result<Option<Vec<u8>>, E>) -> Result<Option<Arc<CommitBlob>>, E> {
-        let Some(k) = self.records.get(id) else { return Ok(None) };
+    /// What is kept of `id` decoded at the record's stamp `at`, if any.
+    fn at(&self, id: &CommitId, at: u64) -> Option<&Kept> {
+        self.commits.get(id).filter(|k| k.at == at)
+    }
+
+    /// The kept blob of `id`, its record at stamp `at`. Debug builds, sampled (the module doc):
+    /// `_stored` reads the record's stored bytes now, which must be those it was decoded from.
+    pub(crate) fn record<E>(&self, id: &CommitId, at: u64, _stored: impl FnOnce() -> Result<Option<Vec<u8>>, E>) -> Result<Option<Arc<CommitBlob>>, E> {
+        let Some(k) = self.at(id, at).and_then(|k| k.record.as_ref()) else { return Ok(None) };
         #[cfg(debug_assertions)]
         if (k.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1).is_power_of_two() {
             assert!(_stored()?.as_ref() == Some(&k.stored), "decoded record of {id:?} went stale");
@@ -87,42 +102,53 @@ impl DecodedCommits {
         Ok(Some(k.blob.clone()))
     }
 
-    /// The kept decode of `p`, a part of the record of `id` as read now. Debug builds: it must
-    /// have been decoded from `p`.
-    pub(crate) fn part(&self, id: &CommitId, p: &Part) -> Option<Arc<Decoded>> {
-        let k = self.parts.get(id)?.get(&p.ai)?;
+    /// The kept decode of `p`, a part of the record of `id` as read now (at stamp `at`). Debug
+    /// builds: it must have been decoded from `p`.
+    pub(crate) fn part(&self, id: &CommitId, at: u64, p: &Part) -> Option<Arc<Decoded>> {
+        let k = self.at(id, at)?.parts.get(&p.ai)?;
         #[cfg(debug_assertions)]
         assert!(k.from == *p, "decoded part {} of {id:?} went stale", p.ai);
         Some(k.decoded.clone())
     }
 
-    /// Keeps `blob`, decoded from the record's stored bytes `stored`.
-    pub(crate) fn keep_record(&mut self, id: CommitId, blob: Arc<CommitBlob>, stored: &[u8]) {
-        if self.room(stored.len().saturating_add(Self::debug_copy(stored.len()))) {
-            self.records.insert(id, KeptRecord { blob, #[cfg(debug_assertions)] stored: stored.to_vec(), #[cfg(debug_assertions)] hits: Default::default() });
-        }
-    }
-
-    /// Keeps `decoded`, decoded from `p`.
-    pub(crate) fn keep_part(&mut self, id: CommitId, p: &Part, decoded: Arc<Decoded>) {
-        if self.room(decoded.fragment().approx_bytes().saturating_add(Self::debug_copy(p.delta.len()))) {
-            self.parts.entry(id).or_default().insert(p.ai, KeptPart { decoded, #[cfg(debug_assertions)] from: p.clone() });
-        }
-    }
-
-    /// The kept page index of `p`, a part of the record of `id` as read now.
-    pub(crate) fn page_index(&self, id: &CommitId, p: &Part) -> Option<Arc<PageIndex>> {
-        let k = self.indexes.get(id)?.get(&p.ai)?;
+    /// The kept page index of `p`, a part of the record of `id` as read now (at stamp `at`).
+    pub(crate) fn page_index(&self, id: &CommitId, at: u64, p: &Part) -> Option<Arc<PageIndex>> {
+        let k = self.at(id, at)?.indexes.get(&p.ai)?;
         #[cfg(debug_assertions)]
         assert!(k.from == *p, "page index of part {} of {id:?} went stale", p.ai);
         Some(k.index.clone())
     }
 
-    /// Keeps `index`, streamed from `p`.
-    pub(crate) fn keep_page_index(&mut self, id: CommitId, p: &Part, index: Arc<PageIndex>) {
-        if self.room(index.approx_bytes().saturating_add(Self::debug_copy(p.delta.len()))) {
-            self.indexes.entry(id).or_default().insert(p.ai, KeptIndex { index, #[cfg(debug_assertions)] from: p.clone() });
+    /// Keeps `blob`, decoded from the record's stored bytes `stored` at stamp `at`.
+    pub(crate) fn keep_record(&mut self, id: CommitId, at: u64, blob: Arc<CommitBlob>, stored: &[u8]) {
+        if self.room(stored.len().saturating_add(Self::debug_copy(stored.len()))) {
+            self.kept(id, at).record = Some(KeptRecord { blob, #[cfg(debug_assertions)] stored: stored.to_vec(), #[cfg(debug_assertions)] hits: Default::default() });
         }
+    }
+
+    /// Keeps `decoded`, decoded from `p` (the record at stamp `at`).
+    pub(crate) fn keep_part(&mut self, id: CommitId, at: u64, p: &Part, decoded: Arc<Decoded>) {
+        if self.room(decoded.fragment().approx_bytes().saturating_add(Self::debug_copy(p.delta.len()))) {
+            self.kept(id, at).parts.insert(p.ai, KeptPart { decoded, #[cfg(debug_assertions)] from: p.clone() });
+        }
+    }
+
+    /// Keeps `index`, streamed from `p` (the record at stamp `at`).
+    pub(crate) fn keep_page_index(&mut self, id: CommitId, at: u64, p: &Part, index: Arc<PageIndex>) {
+        if self.room(index.approx_bytes().saturating_add(Self::debug_copy(p.delta.len()))) {
+            self.kept(id, at).indexes.insert(p.ai, KeptIndex { index, #[cfg(debug_assertions)] from: p.clone() });
+        }
+    }
+
+    /// The entry of `id` at stamp `at`: one kept at another stamp is forgotten. The bytes it
+    /// held stay counted until the next `clear`: the count only decides when to forget, so it
+    /// may run ahead.
+    fn kept(&mut self, id: CommitId, at: u64) -> &mut Kept {
+        let k = self.commits.entry(id).or_default();
+        if k.at != at {
+            *k = Kept { at, ..Kept::default() };
+        }
+        k
     }
 
     /// The bytes debug builds keep beside an entry decoded from `n` bytes (none in release).
@@ -141,14 +167,6 @@ impl DecodedCommits {
         }
         self.bytes = self.bytes.saturating_add(n);
         true
-    }
-
-    /// The record of `id` is written or removed. The bytes it held stay counted until the next
-    /// `clear`: the count only decides when to forget, so it may run ahead.
-    pub(crate) fn forget(&mut self, id: &CommitId) {
-        self.records.remove(id);
-        self.parts.remove(id);
-        self.indexes.remove(id);
     }
 
     pub(crate) fn clear(&mut self) {
@@ -242,7 +260,8 @@ mod tests {
             bodies[1..].iter().for_each(&mut judge);
             let rest = osis_base::costs::take();
             let blob = e.run(|tx| tx.get_commit(&s)).unwrap().unwrap();
-            let index = e.core.decoded.page_index(&s, &blob.parts[0]).unwrap().approx_bytes();
+            let at = e.run(|tx| Ok(tx.commit_stamp(&s))).unwrap();
+            let index = e.core.decoded.page_index(&s, at, &blob.parts[0]).unwrap().approx_bytes();
             (count(&first, "stream: bytes"), count(&rest, "stream: bytes"), count(&rest, "apply: piece"), count(&rest, "covered: snapshot part bytes"), index)
         };
         let (small, large) = (judge(500), judge(5_000));

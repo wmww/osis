@@ -190,17 +190,11 @@ pub(super) fn dated_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: u
     if a.ak.signal() {
         return Ok(Some(h.ts));
     }
-    osis_base::memo::Memo::get_in(tx, |tx| &tx.core.replaced_dates, &(*c, ai), |tx| judge_replaced_at(tx, h, c, ai, false))
+    osis_base::memo::Memo::get_in(tx, |tx| &tx.core.replaced_dates, &(*c, ai), |tx| judge_replaced_at(tx, h, c, ai))
 }
 
-/// Debug builds: `dated_replaced_at` judged anew, no memo read (the aspect's held bodies too).
-#[cfg(debug_assertions)]
-pub(super) fn fresh_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<Ts>> {
-    osis_base::memo::unrecorded(|| judge_replaced_at(tx, h, c, ai, true))
-}
-
-/// `dated_replaced_at` judged anew (`fresh`: the held bodies read anew too).
-fn judge_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize, fresh: bool) -> Result<Option<Ts>> {
+/// `dated_replaced_at` judged anew.
+fn judge_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<Ts>> {
     let Some(a) = h.aspects.get(ai) else { return Ok(None) };
     let (tid, ak) = (a.tid, a.ak.clone());
     if held_part(tx.core, c, &tid, &ak) != Some(ai) || tx.core.ix.commits.get(c).is_none_or(|m| m.bare(ai) || !m.valid_at(ai)) {
@@ -212,7 +206,7 @@ fn judge_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize, fresh
     if dead.is_empty() {
         return Ok(None);
     }
-    let held = if fresh { Arc::new(read_held_writes(tx, &tid, &ak)?) } else { held_writes(tx, &tid, &ak)? };
+    let held = held_writes(tx, &tid, &ak)?;
     if h.kind.is_compaction() {
         dead.retain(|w| !held.carried.get(w).is_some_and(|v| v.iter().any(|(t, x)| *t > h.ts && x != c)));
     }

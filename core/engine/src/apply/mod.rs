@@ -1859,10 +1859,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         let mut bodies = Vec::new();
         let mut snaps = Vec::new();
         for (id, head, stored, bytes) in recs {
-            // read fresh at this point of the store: no cache hit to compare
-            #[cfg(debug_assertions)]
-            let _ = tx.recheck(format!("commit record {id:?}"));
-            tx.core.decoded.keep_record(id, stored.clone(), &bytes);
+            let at = tx.commit_stamp(&id);
+            tx.core.decoded.keep_record(id, at, stored.clone(), &bytes);
             let blob = Arc::unwrap_or_clone(stored);
             if blob.id() != id {
                 return Err(Error::Corrupt("commit record key"));
@@ -2142,7 +2140,8 @@ pub(crate) fn held_part_at(tx: &mut Tx<'_>, id: &CommitId, ai: usize, at: &osis_
         true => None,
         false => tx.get_commit(id)?.and_then(|b| b.part(ai).cloned()),
     };
-    let kept = stored.as_ref().and_then(|p| tx.core.decoded.page_index(id, p));
+    let stamp = tx.commit_stamp(id);
+    let kept = stored.as_ref().and_then(|p| tx.core.decoded.page_index(id, stamp, p));
     let wanted = kept.as_ref().map(|k| k.wanted(at));
     let want = wanted.as_ref().map(|w| move |path: &[osis_crdt::Step], x: osis_crdt::PageAt| w.wants(path, x));
     let mut part = osis_crdt::Fragment::default();
@@ -2155,7 +2154,7 @@ pub(crate) fn held_part_at(tx: &mut Tx<'_>, id: &CommitId, ai: usize, at: &osis_
         Ok(())
     })?;
     if let (Some(p), Some(x), Some(_)) = (&stored, index, &gives) {
-        tx.core.decoded.keep_page_index(*id, p, Arc::new(x));
+        tx.core.decoded.keep_page_index(*id, stamp, p, Arc::new(x));
     }
     Ok((part, gives))
 }
@@ -2175,14 +2174,15 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
     let Some(stored) = tx.get_commit(id)? else { return Ok(Vec::new()) };
     let Some((header, stripped)) = tx.core.ix.commits.get(id).map(|m| (m.header.clone(), m.stripped_parts().filter(|ai| keep(*ai)).collect::<Vec<_>>())) else { return Ok(Vec::new()) };
     // each stored part decoded once per write of the record (`Core::decoded`)
+    let at = tx.commit_stamp(id);
     let mut out = Vec::new();
     for p in stored.parts.iter().filter(|p| keep(p.ai)) {
-        let d = match tx.core.decoded.part(id, p) {
+        let d = match tx.core.decoded.part(id, at, p) {
             Some(d) => d,
             None => {
                 drop(osis_base::costs::span("part decode"));
                 let d = Arc::new(examine_stored(tx, &header, [p], id)?.pop().map(|x| x.1).ok_or(Error::Corrupt("stored delta"))?);
-                tx.core.decoded.keep_part(*id, p, d.clone());
+                tx.core.decoded.keep_part(*id, at, p, d.clone());
                 d
             }
         };

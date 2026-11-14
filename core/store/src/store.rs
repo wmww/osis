@@ -170,6 +170,9 @@ impl Stamping {
             None => self.families.iter().skip(KINDS).for_each(|t| t.read_prefix(p)),
         }
     }
+    fn stamp(&self, key: &[u8]) -> u64 {
+        family(key).and_then(|f| self.table(f)).map_or(0, |t| t.stamp(key))
+    }
     fn read_owner(&self, o: Owner) {
         if let Some(t) = self.table(o.0) {
             t.read_key(o.1);
@@ -503,6 +506,13 @@ impl Transaction<'_> {
     /// `noted_aspect` of local record `key` (the engine's decoded commit records).
     pub fn noted_local(&self, key: &[u8]) {
         self.st.s.read(&[&[kind::LOCAL], key].concat()[..]);
+    }
+
+    /// Local record `key`'s change stamp (`osis_base::memo::Stamps::stamp`), read by no memo:
+    /// equal at two times, the record was not written, removed or undone between (the engine's
+    /// decoded commit records check themselves by it).
+    pub fn local_stamp(&self, key: &[u8]) -> u64 {
+        self.st.s.stamp(&[&[kind::LOCAL], key].concat()[..])
     }
 
     /// Whether this transaction changed anything (rows in either layer, blobs).

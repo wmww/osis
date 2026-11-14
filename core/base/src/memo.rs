@@ -144,6 +144,12 @@ impl Stamps {
         t.keys.clear();
     }
 
+    /// Key `k`'s stamp now, read by no memo: equal at two times, `k` was not written or removed
+    /// between (a copy of what `k` held that checks itself, as `Store::local_stamp`'s callers).
+    pub fn stamp<Q: Hash + ?Sized>(&self, k: &Q) -> u64 {
+        lock(&self.0).stamp(Some(hash(k)))
+    }
+
     /// Counts the container's changes: equal at two times, nothing in it changed between.
     pub fn changes(&self) -> u64 {
         lock(&self.0).ver
