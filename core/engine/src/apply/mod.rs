@@ -28,7 +28,7 @@ mod tests_steps;
 mod tests_account;
 
 pub(crate) use keys::keyset_changed;
-pub(crate) use unindex::unindex_commit;
+pub(crate) use unindex::{unindex_commit, unjudge_part};
 pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
 #[cfg(debug_assertions)]

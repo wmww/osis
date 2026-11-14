@@ -2607,3 +2607,41 @@ fn a_minting_of_a_thing_purged_past_its_window_is_dropped_everywhere_spec_commit
         }
     }
 }
+
+// spec/commits.md §5 (Forgetting), spec/crypto.md §4 (an epoch's introducer is its rotation
+// commit): a team in g with secrets of its own and a commit written on its behalf, released and
+// forgotten at its request's expiry: its rotation goes with every index row it gave (the epochs
+// it introduced, the keysets it held, its parts' judgment), so a restart opens the index a
+// rebuild computes
+#[test]
+fn a_forgotten_teams_rotation_leaves_no_index_row_spec_commits_5() {
+    use osis_node::retention::lifetimes::Status;
+    let Setup { mut net, a, b, c, g } = setup();
+    let mut items = net.engine(c).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    let (t, _) = net
+        .engine(c)
+        .mint_actor(&g, |t| {
+            let mut m = Mutation::new();
+            m.set(t, &REG, &s("team"))?;
+            items.items.insert(t);
+            m.set(g, &ct::GROUP, &items)?;
+            Ok(m)
+        })
+        .unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("on its behalf")).unwrap();
+    m.act_as(t);
+    net.engine(c).commit(m).unwrap().unwrap();
+    net.run();
+    net.engine(c).release(&[t]).unwrap().unwrap();
+    net.run();
+    net.advance(osis_base::format::ROLE_KEEP_MS);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    for n in [a, b, c] {
+        assert_eq!(net.engine(n).lifetime_status(&t), Status::Unknown, "node {n}: forgotten");
+        net.restart(n, 70 + n as u64);
+        net.engine(n).check_index();
+    }
+}

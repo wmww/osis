@@ -22,6 +22,9 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     let core = &mut *tx.core;
     let Some(m) = core.take_meta(id) else { return Ok(()) };
     let v = &m.view;
+    for ai in 0..v.aspects.len() {
+        unjudge_part(core, id, ai);
+    }
     // reported to the ephemeral lane with why, from what its dropped parts record: superseded
     // if a part was (its author's to delete), else covered, else gone
     if v.memory {
@@ -77,6 +80,7 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     }
     let void = core.ix.void.remove(id);
     core.ix.pending.remove(id);
+    core.ix.unresolved.remove(id);
     core.stale_commits.remove(id);
     if void {
         tx.txn.remove_local(&[records::VOID, &id.0[..]].concat(), Shred::No)?;
@@ -104,8 +108,21 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
             None => crate::retention::off_valueless(tx, &a.tid, &a.ak, &owned),
         }
     }
-    tx.remove_commit(id)?;
-    super::keys::refresh_own_keys(tx, &keyed, true)
+    // what its `keys.0` parts gave (held or dropped: `Dropped::keysets`), re-derived from the
+    // parts still held, as a drop re-derives it (`keys::forget_dropped`)
+    let keys: BTreeSet<Tid> = v.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid).collect();
+    super::keys::rebuild_keysets(tx, &keys)?;
+    super::keys::refresh_own_keys(tx, &keys, false)?;
+    tx.remove_commit(id)
+}
+
+/// The rows part `ai` of `c`'s judgment derived (the roles its `secrets.0` or `keys.0` delta
+/// needs, what it shows for possession, a grant's overreach) go: the part went missing
+/// (`retention::reopen_in`) or its commit is forgotten.
+pub(crate) fn unjudge_part(core: &mut crate::engine::Core, c: &CommitId, ai: usize) {
+    core.ix.rotation_role.remove(&(*c, ai));
+    core.ix.shown.remove(&(*c, ai));
+    core.ix.grant_overreach.remove(&(*c, ai));
 }
 
 /// Coverer `id` forgotten: each part dropped under it is dropped from then on under what `id`'s

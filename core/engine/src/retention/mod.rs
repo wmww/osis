@@ -522,9 +522,7 @@ pub(super) fn reopen_in(tx: &mut Tx<'_>, c: &CommitId, m: &mut crate::engine::Me
         tx.core.ix.dropped_snapshots.remove(&(a.tid, a.ak.clone()), c);
     }
     m.set_hold(ai, Hold::Missing(Missing::Plain));
-    tx.core.ix.rotation_role.remove(&(*c, ai));
-    tx.core.ix.shown.remove(&(*c, ai));
-    tx.core.ix.grant_overreach.remove(&(*c, ai));
+    crate::apply::unjudge_part(tx.core, c, ai);
     // those are inputs of its judgment (`validity::rejudge_all` judges it again)
     tx.core.stale_commits.insert(*c);
 }
