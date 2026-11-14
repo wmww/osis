@@ -113,8 +113,11 @@ impl Ground for Live<'_, '_> {
         self.cx.store.set_elsewhere(s, b)
     }
     fn shared(&mut self, s: &SyncId) -> Result<bool> {
+        // own: a node of this account, or this account itself (a peer that proved only the
+        // account, its node unproven: a dialer lacking this node's `reach.0`)
         let engine = &mut *self.cx.engine;
-        self.opens.shared(self.cx.store, s, |t| engine.own_node(t))
+        let me = engine.account()?.map(|(p, _)| p);
+        self.opens.shared(self.cx.store, s, |t| Some(*t) == me || engine.own_node(t))
     }
     fn removal_done(&mut self, c: &CommitId) -> Result<()> {
         Ok(self.cx.engine.removal_done(c)?)
