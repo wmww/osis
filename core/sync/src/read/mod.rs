@@ -225,9 +225,15 @@ impl Read {
                 continue;
             }
             // pullable read inside: a sync ID a reader cannot pull yet is due again once it can
-            let Some((_, now)) = self.records.try_settle(&s, || records_missing(g, &s).map(Arc::new))? else { continue };
+            let told = &self.told;
+            let Some((_, now)) = self.records.try_settle(&s, || records_missing(g, &s, told.contains_key(&s)).map(Arc::new))? else { continue };
             if !now.gone.is_empty() {
                 g.forget_record_blobs(&s, &now.gone)?;
+                acted = true;
+            }
+            // under an emptied S, record blobs are must-not-hold (spec/sync-judgement.md §2, §5)
+            for b in &now.held {
+                g.drop_blob(&s, b)?;
                 acted = true;
             }
             if !now.records.is_empty() {
@@ -456,7 +462,7 @@ impl Read {
             (Act::LogPiece(b), _) => g.log_piece(s, &b)?,
             (Act::TakePiece(b), _) => g.take_piece(s, &b)?,
             (Act::Repair(_), _) => {}
-            (Act::DropPiece(b), _) => g.drop_piece(s, &b)?,
+            (Act::DropBlob(b), _) => g.drop_blob(s, &b)?,
             (Act::DeleteFreed { at, conn, head, blob, thing }, _) => {
                 let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) else { return Ok(()) };
                 g.delete_freed(&src, s, &head, &blob, &thing)?;
@@ -469,10 +475,15 @@ impl Read {
 
 /// Settles `k` with `f`; a failure leaves `k` due and is returned.
 /// `Ground::records_missing` while a reader can pull S, else nothing (`pullable` read inside, so
-/// S is due again once it can).
-fn records_missing(g: &mut impl Ground, s: &SyncId) -> Result<RecordsMissing> {
+/// S is due again once it can). S `told` destroyed is being emptied (told only once its thing
+/// keeps nothing, `judge::doom`): it carries no record, and its own record blobs are to drop
+/// (`held`); else they stay.
+fn records_missing(g: &mut impl Ground, s: &SyncId, told: bool) -> Result<RecordsMissing> {
+    if told {
+        return Ok(RecordsMissing { records: BTreeSet::new(), ..g.records_missing(s)? });
+    }
     match g.pullable(s)? {
-        true => g.records_missing(s),
+        true => Ok(RecordsMissing { held: BTreeSet::new(), ..g.records_missing(s)? }),
         false => Ok(RecordsMissing::default()),
     }
 }

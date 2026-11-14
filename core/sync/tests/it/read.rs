@@ -95,7 +95,7 @@ enum Sent {
     LogPiece(BlobId),
     TakePiece(BlobId),
     Repair(CommitId, BlobId),
-    DropPiece(BlobId),
+    DropBlob(BlobId),
     DeleteFreed(ConnId, BlobId),
     FreedDone(BlobId),
 }
@@ -200,8 +200,8 @@ impl Ground for Fake {
     fn carrying(&mut self, t: &Tid) -> Result<BTreeSet<SyncId>> {
         Ok(self.carrying.get(t).cloned().unwrap_or_default())
     }
-    fn drop_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
-        self.sent.push(Sent::DropPiece(*b));
+    fn drop_blob(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        self.sent.push(Sent::DropBlob(*b));
         self.piece_at.insert((*s, *b), PieceAt::Tombstoned);
         Ok(())
     }
@@ -1072,6 +1072,26 @@ fn forget_waits_for_nothing_known() {
     assert!(w.g.sent.contains(&Sent::Forget(S)));
 }
 
+// spec/sync-judgement.md §2 (a record blob by its records: never must-not-hold but under an
+// emptied sync ID), §5 (Emptying): before told, an own record blob stays and missing records are
+// logged; told, it leaves the own store and no record is logged, so S can be forgotten.
+#[test]
+fn an_emptied_sync_id_drops_its_record_blobs_and_logs_none() {
+    let rb = BlobId([8; 32]);
+    let r1 = osis_base::Tid::from_bytes([1; 15]);
+    let mut w = released(false);
+    w.g.records.insert(S, RecordsMissing { records: [r1].into(), held: [rb].into(), ..RecordsMissing::default() });
+    w.settle();
+    assert!(!w.g.sent.contains(&Sent::DropBlob(rb)), "dropped before told");
+    assert_eq!(w.g.record_logs, vec![(S, [r1].into())]);
+    w.g.k.held.insert((S, BlobId([3; 32])), cid(3));
+    w.g.logged.push((S, cid(3), BlobId([3; 32])));
+    w.stream();
+    w.settle();
+    assert!(w.g.sent.contains(&Sent::DropBlob(rb)), "an emptied S keeps its record blob");
+    assert_eq!(w.g.record_logs.len(), 1, "a record logged under an emptied S");
+}
+
 // spec/sync-judgement.md §5 (untold) (released-team): a node away for the whole window leaves S
 // deleting nothing, once the window ends (no other event needed); while it does not know of the destruction a delete at K costs it one logging
 // again, not a loop (DN_stand).
@@ -1191,7 +1211,7 @@ fn missing_records_are_logged_once_a_reader_can_pull() {
     let mut w = W::new();
     let (r1, r2) = (osis_base::Tid::from_bytes([1; 15]), osis_base::Tid::from_bytes([2; 15]));
     w.g.unpullable.insert(S, ());
-    w.g.records.insert(S, RecordsMissing { records: [r1].into(), gone: BTreeSet::new() });
+    w.g.records.insert(S, RecordsMissing { records: [r1].into(), ..RecordsMissing::default() });
     w.hold(cid(1), &[S], uncovered());
     assert!(w.g.record_logs.is_empty(), "no reader can pull S yet");
     w.g.unpullable.remove(&S);
@@ -1199,7 +1219,7 @@ fn missing_records_are_logged_once_a_reader_can_pull() {
     assert_eq!(w.g.record_logs, vec![(S, [r1].into())]);
     w.settle();
     assert_eq!(w.g.record_logs.len(), 1, "once");
-    w.g.records.insert(S, RecordsMissing { records: [r2].into(), gone: [BlobId([9; 32])].into() });
+    w.g.records.insert(S, RecordsMissing { records: [r2].into(), gone: [BlobId([9; 32])].into(), ..RecordsMissing::default() });
     w.settle();
     assert_eq!(w.g.record_logs, vec![(S, [r1].into()), (S, [r2].into())]);
     assert_eq!(w.g.records_forgotten, vec![(S, BlobId([9; 32]))]);
@@ -1634,7 +1654,7 @@ fn a_freed_link_is_dropped_deleted_at_stores_then_done_spec_sync_compaction_1() 
     w.g.freed.insert((bid(10), t), ());
     w.g.freed_feed.push((bid(10), t));
     w.settle();
-    assert!(w.g.sent.contains(&Sent::DropPiece(bid(10))), "{:?}", w.g.sent);
+    assert!(w.g.sent.contains(&Sent::DropBlob(bid(10))), "{:?}", w.g.sent);
     assert_eq!(sent_of(&w, |m| matches!(m, Sent::DeleteFreed(..))), 1, "at K alone: {:?}", w.g.sent);
     assert!(w.g.sent.contains(&Sent::DeleteFreed(KC, bid(10))));
     assert!(!w.g.sent.contains(&Sent::FreedDone(bid(10))), "K still shows it");

@@ -165,7 +165,7 @@ pub trait Ground {
 
     /// The records S carries as certificates that no record blob in the own store of S carries
     /// (spec/permissions.md §4 Logging certificates: the records missing), and the record blobs
-    /// sealed here under S that the own store holds no more.
+    /// sealed here under S that the own store holds no more, and those it holds.
     fn records_missing(&mut self, s: &SyncId) -> Result<RecordsMissing> {
         let _ = s;
         Ok(RecordsMissing::default())
@@ -239,8 +239,9 @@ pub trait Ground {
         let _ = t;
         Ok(BTreeSet::new())
     }
-    /// The own store's entry of piece `b` under S leaves (a freed link's).
-    fn drop_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+    /// The own store's entry `b` under S, of a blob naming no commit, leaves: a freed link's
+    /// piece, a record blob under an emptied S.
+    fn drop_blob(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         let _ = (s, b);
         Ok(())
     }
@@ -288,4 +289,6 @@ pub struct RecordsMissing {
     pub records: BTreeSet<osis_base::Tid>,
     /// Record blobs sealed here under S that the own store holds no more.
     pub gone: BTreeSet<osis_base::BlobId>,
+    /// Record blobs sealed here under S that the own store holds.
+    pub held: BTreeSet<osis_base::BlobId>,
 }

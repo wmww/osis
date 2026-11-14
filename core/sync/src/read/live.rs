@@ -287,10 +287,13 @@ impl Ground for Live<'_, '_> {
         self.cx.store.set_stand(*at, s, &c.0, Some(stand))
     }
     fn records_missing(&mut self, s: &SyncId) -> Result<RecordsMissing> {
-        let mut out = RecordsMissing { records: (*self.cx.engine.certificate_records(s)?).clone(), gone: BTreeSet::new() };
+        let mut out = RecordsMissing { records: (*self.cx.engine.certificate_records(s)?).clone(), ..RecordsMissing::default() };
         for (b, tids) in self.cx.engine.record_blobs(s)?.iter() {
             match self.cx.store.entry(s, b)?.is_some_and(|e| e.own) {
-                true => out.records.retain(|t| !tids.contains(t)),
+                true => {
+                    out.records.retain(|t| !tids.contains(t));
+                    out.held.insert(*b);
+                }
                 false => {
                     out.gone.insert(*b);
                 }
@@ -394,7 +397,7 @@ impl Ground for Live<'_, '_> {
     fn carrying(&mut self, t: &Tid) -> Result<BTreeSet<SyncId>> {
         Ok(self.cx.engine.carrying(t)?)
     }
-    fn drop_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+    fn drop_blob(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         self.cx.store.drop_entry(s, b, Vec::new())?;
         Ok(())
     }

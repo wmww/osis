@@ -8,7 +8,7 @@
 use crate::harness::Step::*;
 use crate::harness::history::{Gives, value_ak, world};
 use crate::harness::{World, play};
-use osis_base::format::ROLE_KEEP_MS;
+use osis_base::format::{ROLE_KEEP_MS, TOMBSTONE_LIFETIME_MS};
 use osis_base::{CommitId, SyncId, Tid, Value};
 use osis_commit::PurgeItem;
 use osis_engine::Mutation;
@@ -55,8 +55,7 @@ fn gone(w: &mut World, i: usize, t: Tid) {
 // holding the right is destroyed; in the same transaction the node drops every part on it), spec/sync-judgement.md §2:
 // node 0's purge of t's creation reaches node 2, which reads t absent, also after a restart.
 #[test]
-#[ignore = "issues/destroying-request-not-under-own-sync-id.md"]
-fn repro_a_purged_creation_destroys_the_thing_at_every_node_spec_commits_5() {
+fn a_purged_creation_destroys_the_thing_at_every_node_spec_commits_5() {
     let (mut w, t, _) = three();
     purge_thing(&mut w, 0, t);
     w.run();
@@ -73,8 +72,7 @@ fn repro_a_purged_creation_destroys_the_thing_at_every_node_spec_commits_5() {
 // after it is a part on an unknown thing): node 2, cut off, writes t after node 0 destroyed it;
 // back, its write is applied nowhere and t stays destroyed everywhere.
 #[test]
-#[ignore = "issues/destroying-request-not-under-own-sync-id.md"]
-fn repro_a_write_after_the_destruction_counts_nowhere_spec_commits_5() {
+fn a_write_after_the_destruction_counts_nowhere_spec_commits_5() {
     let (mut w, t, _) = three();
     w.partition(0, 2);
     w.partition(1, 2);
@@ -98,8 +96,7 @@ fn repro_a_write_after_the_destruction_counts_nowhere_spec_commits_5() {
 // destroyed thing reads as absent to every read and write), spec/permissions.md §6: node 0's
 // release of t reaches node 2, which reads it absent.
 #[test]
-#[ignore = "issues/destroying-request-not-under-own-sync-id.md"]
-fn repro_a_released_thing_reads_absent_at_every_node_spec_commits_5() {
+fn a_released_thing_reads_absent_at_every_node_spec_commits_5() {
     let (mut w, t, _) = three();
     w.write(0, |e| e.release(&[t])).unwrap().expect("a release request");
     w.run();
@@ -110,11 +107,11 @@ fn repro_a_released_thing_reads_absent_at_every_node_spec_commits_5() {
 
 // spec/commits.md §5 (Destruction: once no request is in force and nothing needs it, it keeps
 // nothing, and every entry under its own sync IDs is must-not-hold), spec/sync-ids.md §6: past the
-// request's window (`ROLE_KEEP`), S's entries leave node 0's and node 2's stores and node 1's,
-// which keeps S unread.
+// request's window (`ROLE_KEEP`), S's entries (record blobs included, spec/sync-judgement.md §2)
+// leave node 0's and node 2's stores and node 1's, which keeps S unread; once the deletes are
+// past their tombstones, node 0 forgets S and t's secrets (spec/sync-judgement.md §5 Emptying).
 #[test]
-#[ignore = "issues/destroying-request-not-under-own-sync-id.md"]
-fn repro_a_destroyed_things_sync_id_empties_past_its_window_spec_commits_5() {
+fn a_destroyed_things_sync_id_empties_past_its_window_spec_commits_5() {
     let (mut w, t, s) = three();
     purge_thing(&mut w, 0, t);
     w.run();
@@ -124,4 +121,9 @@ fn repro_a_destroyed_things_sync_id_empties_past_its_window_spec_commits_5() {
         let left = w.store(i).entries(&s).unwrap();
         assert!(left.is_empty(), "node {i} holds {} entries under S", left.len());
     }
+    w.cap = 200_000;
+    w.advance(TOMBSTONE_LIFETIME_MS);
+    w.run();
+    assert_eq!(w.engine(0).sync_holder(&s).unwrap(), None, "node 0 still syncs S");
+    assert!(w.engine(0).epochs(&t).is_none(), "node 0 still holds t's secrets");
 }

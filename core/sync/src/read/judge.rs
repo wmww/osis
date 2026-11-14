@@ -42,8 +42,9 @@ pub(crate) enum Act {
     TakePiece(BlobId),
     /// A piece of an own body every source showing it deleted (spec/sync-ids.md §1 Repair).
     Repair(BlobId),
-    /// A freed link's own entry leaves (spec/sync-compaction.md §1 Freed links).
-    DropPiece(BlobId),
+    /// An own entry of a blob naming no commit leaves: a freed link's (spec/sync-compaction.md §1
+    /// Freed links).
+    DropBlob(BlobId),
     /// A freed link deleted at a source keeping S unread whose stream shows it.
     DeleteFreed { at: Source, conn: ConnId, head: StepId, blob: BlobId, thing: Tid },
 }
@@ -325,7 +326,7 @@ pub(crate) fn freed(g: &mut impl Ground, b: &BlobId, t: &Tid) -> Result<Freed> {
         }
         if matches!(g.piece(&s, b)?, PieceAt::Own | PieceAt::Peer) {
             known = true;
-            acts.insert((s, Act::DropPiece(*b)));
+            acts.insert((s, Act::DropBlob(*b)));
         }
         for src in g.sources(&s)?.iter() {
             // a reader judges its own entries: only a store's count
