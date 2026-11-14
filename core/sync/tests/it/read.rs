@@ -219,7 +219,7 @@ impl Ground for Fake {
         b[4] = c.0[0];
         let blob = BlobId(b);
         let mut v = self.own(s, c)?;
-        v.push(Entry { blob, wrap: [0; osis_crypto::WRAP_LEN], stamp: None, deposited: false, own: true, class: Class::Durable, expires: None });
+        v.push(Entry { blob, wrap: [0; osis_crypto::WRAP_LEN], stamp: None, deposited: false, own: true, role: false, class: Class::Durable, expires: None });
         self.own.insert((*s, *c), v);
         self.logged.push((*s, *c, blob));
         Ok(Some(blob))

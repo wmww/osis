@@ -129,7 +129,7 @@ impl Ground for Live<'_, '_> {
             return Err(Error::NotBuilt("store: a held blob of a commit not tombstoned under S, logged verbatim"));
         }
         let Some((sealed, wrap)) = self.cx.engine.seal_body(s, c, self.cx.rng)? else { return Ok(None) };
-        let e = Entry { blob: sealed.id, wrap, stamp: None, deposited: false, own: true, class: Class::Durable, expires: None };
+        let e = Entry { blob: sealed.id, wrap, stamp: None, deposited: false, own: true, role: false, class: Class::Durable, expires: None };
         let code = self.cx.store.log(s, e, Some(sealed.blob), None)?;
         Ok((code == osis_proto::Code::OK).then_some(sealed.id))
     }

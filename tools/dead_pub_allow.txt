@@ -258,23 +258,11 @@ osis-engine::without_held  test hook (tests/it)
 osis-engine::write_addenda  test hook (tests/it)
 
 # The sync rebuild's skeleton (notes/sync-boundary.md): each module's owner uses or removes these.
-osis-engine::blob_parts  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::delivery_taken  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::held_elsewhere  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::inbox_blob  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::covers_departures  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::fall_mark  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::forget_destroyed  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::invitations  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::note_complete_pass  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::own_commits  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::promotable  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::take_inbox  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::read_credentials  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::seal_body  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::waiting_held_elsewhere  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::agreed  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); streams gates its Pull on it (spec/sync-opens.md §3)
-osis-sync::ItemAnswer  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::proofs_done  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); opens refuses a Resume before the proofs with it
 osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::take_deposit  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
@@ -287,8 +275,6 @@ osis-sync::saw_deleted  deferred: sync rebuild (issues/sync-rewrite.md Phase 3);
 osis-sync::seen_deleted  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-judgement.md §4)
 osis-sync::serve_path  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (a read S's served head)
 osis-sync::uncharge  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-ids.md §5 Peer budget)
-osis-sync::with_tx  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); opens' and streams' record rows
-osis-sync::take_delete  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
 osis-sync::take_deposit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
 osis-sync::take_stamped  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
 osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
