@@ -1131,7 +1131,7 @@ mod tests {
     // signed by an admin of the actor counts; one whose author nobody can check (anyone can send
     // it) would hold the step back for good.
     #[test]
-    fn keys_write_pending_needs_an_admin_spec_perm_3() {
+    fn keys_write_unapplied_needs_an_admin_spec_perm_3() {
         let (mut lp, t) = removed_reader();
         // a stranger's `keys.0` write on its own thing: its author's chain is unknown here
         let mut m = Mutation::new();
@@ -1141,14 +1141,32 @@ mod tests {
         let c = *lp.peers[2].engine.refresh_deposit_seed(&t2).unwrap().commits.last().unwrap();
         let pk = lp.peers[2].engine.package(&c).unwrap().unwrap();
         assert!(matches!(lp.deliver(1, &pk).unwrap(), crate::Ingested::Awaits(..)));
-        assert!(!lp.peers[1].engine.keys_write_pending(&t2).unwrap(), "unchecked author");
+        assert!(!lp.peers[1].engine.keys_write_unapplied(&t2).unwrap(), "unchecked author");
         // the admin's own, held back by drift
         lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
         let c = *lp.peers[0].engine.refresh_deposit_seed(&t).unwrap().commits.last().unwrap();
         let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
-        assert!(!lp.peers[1].engine.keys_write_pending(&t).unwrap());
+        assert!(!lp.peers[1].engine.keys_write_unapplied(&t).unwrap());
         assert!(matches!(lp.deliver(1, &pk).unwrap(), crate::Ingested::Pending(_, crate::Reason::Drift)));
-        assert!(lp.peers[1].engine.keys_write_pending(&t).unwrap(), "the admin's");
+        assert!(lp.peers[1].engine.keys_write_unapplied(&t).unwrap(), "the admin's");
+    }
+
+    // spec/sync.md §5 (a deposit-only step waits for an unapplied `keys.0` write): a held commit
+    // whose valid `keys.0` part is missing here is one (its body may give a newer seed, or secrets
+    // of the thing's own); the body arriving lets the step go
+    #[test]
+    fn keys_write_unapplied_counts_a_missing_part_spec_sync_5() {
+        let (mut lp, t) = removed_reader();
+        let c = *lp.peers[0].engine.refresh_deposit_seed(&t).unwrap().commits.last().unwrap();
+        let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        let cut = osis_commit::rewrite(&b, |ai| b.header.aspects.get(ai).is_some_and(|a| a.tid == t && a.ak.as_str() == "keys.0"));
+        assert!(!lp.peers[1].engine.keys_write_unapplied(&t).unwrap());
+        lp.peers[1].receive(&cut.encode(), pk.blobs.clone()).unwrap();
+        assert!(lp.peers[1].engine.commit_ids().contains(&c), "held, its keys.0 part missing");
+        assert!(lp.peers[1].engine.keys_write_unapplied(&t).unwrap(), "a missing part");
+        lp.deliver(1, &pk).unwrap();
+        assert!(!lp.peers[1].engine.keys_write_unapplied(&t).unwrap(), "joined");
     }
 
     /// Parts on `t`'s `secrets.0` of held commit `id` at peer 1.

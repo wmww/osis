@@ -260,12 +260,25 @@ pub(crate) fn boxes_kept(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_
 }
 
 impl Engine {
-    /// Whether a held, not applied commit (parked ones aside) writes `a`'s `keys.0`, signed
-    /// (`authentic`) by an admin of `a` now: a newer deposit seed may be on its way (node-sync
-    /// holds back a deposit-only step meanwhile). Anyone can send a pending commit naming any
-    /// aspect, so an unsigned one never counts: it would hold the step back for good.
-    pub fn keys_write_pending(&mut self, a: &Tid) -> Result<bool> {
-        let a = *a;
+    /// Whether a `keys.0` write deciding `g`'s label keys is held but not applied: a pending
+    /// commit (parked ones aside) writing the `keys.0` of the actor `g`'s secrets derive from,
+    /// signed (`authentic`) by an admin of it now, or a held commit whose valid `keys.0` part on
+    /// a thing from `g` up to that actor is missing (its body to be fetched: it may give that
+    /// thing secrets of its own). A newer deposit seed, or another actor's, may be on its way
+    /// (node-sync holds back a deposit-only step meanwhile). Anyone can send a pending commit
+    /// naming any aspect, so an unsigned one never counts: it would hold the step back for good.
+    pub fn keys_write_unapplied(&mut self, g: &Tid) -> Result<bool> {
+        let a = self.core.secret_actor(g).unwrap_or(*g);
+        let keys = osis_base::Ak::new("keys.0").map_err(|_| crate::Error::Misuse("ak"))?;
+        let core = &self.core;
+        let missing = |x: &Tid| {
+            let part = |m: &crate::engine::Meta| m.aspect(x, &keys).is_some_and(|ai| m.valid_at(ai) && matches!(m.missing_as(ai), Some(crate::engine::Missing::Plain | crate::engine::Missing::ToFetch)));
+            core.ix.by_aspect.get(&(*x, keys.clone())).into_iter().flatten().any(|(_, c)| core.ix.commits.get(c).is_some_and(part))
+        };
+        let below: Vec<Tid> = core.record_chain(g).map_while(|s| s.thing()).take_while(|x| *x != a).collect();
+        if below.iter().chain([&a]).any(missing) {
+            return Ok(true);
+        }
         let ids: Vec<osis_base::CommitId> = self.core.ix.pending.iter().filter(|(_, r)| **r != crate::Reason::Parked).map(|(c, _)| *c).collect();
         self.run(|tx| {
             for id in ids {

@@ -35,8 +35,8 @@ impl SyncEngine {
     }
 
     /// No entry under `l` this node can open, present at a source it is connected to that has
-    /// not said it lacks it, is unopened (in flight, or not fetched), and no pending commit by an
-    /// admin writes the actor's `keys.0` (`Engine::keys_write_pending`). Entries only a source out
+    /// not said it lacks it, is unopened (in flight, or not fetched), and no `keys.0` write that
+    /// decides `g`'s label keys is held unapplied (`Engine::keys_write_unapplied`). Entries only a source out
     /// of reach lists do not count: one that never comes back would hold the step back for good.
     pub(super) fn keys_caught_up(&mut self, g: &Tid, l: &LabelId) -> bool {
         let secrets = self.read_secrets(g);
@@ -45,8 +45,7 @@ impl SyncEngine {
         if unopened {
             return false;
         }
-        let a = self.keys_actor(g);
-        !self.engine.keys_write_pending(&a).unwrap_or(true)
+        !self.engine.keys_write_unapplied(g).unwrap_or(true)
     }
 
     /// Registration at a source (spec/sync.md §5, Register): a source on a step of the recorded

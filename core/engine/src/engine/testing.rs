@@ -669,6 +669,7 @@ fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 30] {
         ("ranges", &*ix.ranges),
         ("rotation_role", &*ix.rotation_role),
         ("grant_overreach", &*ix.grant_overreach),
+        ("shown", &*ix.shown),
         ("retention", &*ix.retention),
         ("addenda", &*ix.addenda),
         ("boxes_to", &*ix.boxes_to),

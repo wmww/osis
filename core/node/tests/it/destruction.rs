@@ -2641,6 +2641,8 @@ fn a_forgotten_teams_rotation_leaves_no_index_row_spec_commits_5() {
     }
     for n in [a, b, c] {
         assert_eq!(net.engine(n).lifetime_status(&t), Status::Unknown, "node {n}: forgotten");
+        // in memory as the forget left it (an open re-derives some rows on its own)
+        net.engine(n).check_index();
         net.restart(n, 70 + n as u64);
         net.engine(n).check_index();
     }
