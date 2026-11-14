@@ -89,7 +89,7 @@ impl Ground for Live<'_, '_> {
         Ok(self.cx.engine.own_commits(s)?)
     }
     fn self_removals(&mut self) -> Result<Arc<BTreeSet<CommitId>>> {
-        Ok(self.cx.engine.waiting_held_elsewhere()?)
+        Ok(self.cx.engine.waiting_removals()?)
     }
     fn verdict(&self, s: &SyncId, c: &CommitId) -> Option<Verdict> {
         self.read.verdict(s, c)
@@ -112,8 +112,12 @@ impl Ground for Live<'_, '_> {
     fn set_elsewhere(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         self.cx.store.set_elsewhere(s, b)
     }
-    fn held_elsewhere(&mut self, c: &CommitId) -> Result<()> {
-        Ok(self.cx.engine.held_elsewhere(c)?)
+    fn shared(&mut self, s: &SyncId) -> Result<bool> {
+        let engine = &mut *self.cx.engine;
+        self.opens.shared(self.cx.store, s, |t| engine.own_node(t))
+    }
+    fn removal_done(&mut self, c: &CommitId) -> Result<()> {
+        Ok(self.cx.engine.removal_done(c)?)
     }
     fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, WallMs>>> {
         Ok(self.cx.engine.passes_wanted()?)

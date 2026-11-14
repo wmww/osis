@@ -247,7 +247,7 @@ impl Ground for Live<'_, '_> {
         Ok(self.cx.store.entries(s)?.into_iter().filter(|e| e.own).all(|e| self.sources.present(s, &e.blob)))
     }
     fn shared(&mut self, s: &SyncId) -> Result<bool> {
-        self.opens.shared(self.cx.store, s)
+        self.opens.shared(self.cx.store, s, |_| false)
     }
     fn shred(&mut self, s: &SyncId) -> Result<()> {
         self.cx.store.shred(s)

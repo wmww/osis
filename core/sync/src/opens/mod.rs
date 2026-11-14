@@ -533,13 +533,25 @@ impl Opens {
 
     /// Whether some peer shares S with this node (spec/sync-set.md §3: a sync ID that left waits
     /// only while one could still take its own writes): S open on a connection up now, or a kept
-    /// record holding S as a member. Stamped per S (`peers`).
-    pub fn shared(&self, store: &Store, s: &SyncId) -> Result<bool> {
+    /// record holding S as a member. A peer one of whose proven actors is `skip` does not count
+    /// (a self-removal: this account's own nodes, spec/sync-status.md §2). Stamped per S
+    /// (`peers`); `skip` is the caller's to follow. O(connections and records holding S).
+    pub fn shared(&self, store: &Store, s: &SyncId, mut skip: impl FnMut(&Tid) -> bool) -> Result<bool> {
         self.peers.read(s);
-        if self.holding.get(s).is_some_and(|c| !c.is_empty()) {
+        let mut counts = |actors: &[Tid]| !actors.iter().any(&mut skip);
+        if self.holding.get(s).into_iter().flatten().any(|c| self.conns.get(c).is_some_and(|k| counts(&k.named))) {
             return Ok(true);
         }
-        Ok(!self.records_holding(store, s)?.is_empty())
+        for id in self.records_holding(store, s)? {
+            let actors = match self.records.get(&id) {
+                Some(r) => r.actors.clone(),
+                None => store.with_read(|t| t.record(&id))?.map(|r| r.actors).unwrap_or_default(),
+            };
+            if counts(&actors) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Member S's reported position on `conn` (spec/sync-opens.md §6 Lost): none for a sync ID

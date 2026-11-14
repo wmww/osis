@@ -67,6 +67,8 @@ struct Fake {
     entries: Stamped<(SyncId, CommitId), Vec<BlobId>>,
     first: Stamped<(SyncId, BlobId), Position>,
     elsewhere: StampedSet<(SyncId, BlobId)>,
+    /// Sync IDs some peer other than this account's own nodes shares (opens' `shared`).
+    shared: StampedSet<SyncId>,
     told_held: Vec<CommitId>,
     wanted: Stamped<(), Arc<BTreeMap<SyncId, WallMs>>>,
     passes: Vec<(SyncId, WallMs)>,
@@ -134,7 +136,10 @@ impl Ground for Fake {
         self.elsewhere.insert((*s, *b));
         Ok(())
     }
-    fn held_elsewhere(&mut self, c: &CommitId) -> Result<()> {
+    fn shared(&mut self, s: &SyncId) -> Result<bool> {
+        Ok(self.shared.contains(s))
+    }
+    fn removal_done(&mut self, c: &CommitId) -> Result<()> {
         self.told_held.push(*c);
         let mut r = self.removals.get(&()).map(|x| (**x).clone()).unwrap_or_default();
         r.remove(c);
@@ -392,6 +397,7 @@ fn ending_member_counts_up_to_its_until() {
 fn self_removal_not_held_at_own_nodes() {
     let mut t = T::new(&[(S, Holding::Read)]);
     let own = Src { own_node: true, ..reader(RA, 1) };
+    t.g.shared.insert(S); // another account's record holds S
     t.join(S, A, own);
     t.g.removals.insert((), Arc::new([cid(1)].into()));
     t.own(S, cid(1), blob(1), 1);
@@ -567,4 +573,95 @@ fn work_follows_change() {
     let (c10, l10) = work_for_one_report(100);
     assert_eq!((c1, l1), (c10, l10));
     assert!((1..=2).contains(&c1), "{c1}");
+}
+
+/// A node reading `ids` with self-removal `c` under each, logged as blob 1 at position 1.
+fn removal_under(ids: &[SyncId], c: CommitId) -> T {
+    let mut t = T::new(&ids.iter().map(|s| (*s, Holding::Read)).collect::<Vec<_>>());
+    t.g.removals.insert((), Arc::new([c].into()));
+    for s in ids {
+        t.g.verdicts.insert((*s, c), Verdict::Must);
+        t.g.entries.insert((*s, c), vec![blob(1)]);
+        t.g.first.insert((*s, blob(1)), 1);
+        t.g.own.insert(*s, Arc::new([c].into()));
+    }
+    t
+}
+
+// spec/permissions.md §3 (Lost access): a self-removal waits only while a peer shares it; with no
+// peer sharing S, the engine is told at once, whatever is held elsewhere.
+#[test]
+fn self_removal_no_peer_shares_done_at_once_spec_perm_3() {
+    let mut t = removal_under(&[S], cid(1));
+    t.settle();
+    assert!(!t.st.held(&cid(1)), "held nowhere");
+    assert_eq!(t.g.told_held, vec![cid(1)]);
+}
+
+// spec/permissions.md §3 (Lost access): a self-removal with a body under
+// no read sync ID here is done at once: nothing here could hand it to a peer.
+#[test]
+fn self_removal_under_no_sync_id_done_at_once_spec_perm_3() {
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.g.shared.insert(S);
+    t.g.removals.insert((), Arc::new([cid(1)].into()));
+    t.settle();
+    assert_eq!(t.g.told_held, vec![cid(1)]);
+}
+
+// spec/permissions.md §3 (Lost access): a kept record of another
+// account holding S keeps the self-removal waiting until that peer takes it, or the record goes.
+#[test]
+fn self_removal_waits_while_a_peer_shares_spec_perm_3() {
+    // the peer connects and takes it
+    let mut t = removal_under(&[S], cid(1));
+    t.g.shared.insert(S);
+    t.settle();
+    t.at(1_000_000);
+    assert!(t.g.told_held.is_empty(), "waits for the away peer, however long");
+    t.join(S, B, reader(RB, 2));
+    t.g.reported.insert((B, S), 1);
+    t.settle();
+    assert_eq!(t.g.told_held, vec![cid(1)]);
+    // the record goes: nobody left to take it
+    let mut t = removal_under(&[S], cid(1));
+    t.g.shared.insert(S);
+    t.settle();
+    assert!(t.g.told_held.is_empty());
+    t.g.shared.remove(&S);
+    t.settle();
+    assert_eq!(t.g.told_held, vec![cid(1)]);
+}
+
+// spec/permissions.md §3 (Lost access): done once, under each, it is
+// held elsewhere or no peer shares that sync ID; one shared and not held keeps it waiting.
+#[test]
+fn self_removal_judged_per_sync_id_spec_perm_3() {
+    let u = sid(2);
+    let mut t = removal_under(&[S, u], cid(1));
+    t.g.shared.insert(S);
+    t.g.shared.insert(u);
+    t.join(S, A, reader(RA, 2));
+    t.g.reported.insert((A, S), 1);
+    t.settle();
+    assert!(t.g.told_held.is_empty(), "held under S, u shared and not held");
+    t.g.shared.remove(&u);
+    t.settle();
+    assert_eq!(t.g.told_held, vec![cid(1)], "u shared by nobody");
+}
+
+// spec/permissions.md §3 (Lost access): a self-removal is judged when what it reads moves, never
+// on an idle settle.
+#[test]
+fn self_removal_judged_only_on_change() {
+    let mut t = removal_under(&[S], cid(1));
+    t.g.shared.insert(S);
+    t.settle();
+    let n = t.st.work().removals;
+    t.at(5);
+    t.at(10);
+    assert_eq!(t.st.work().removals, n, "nothing moved");
+    t.g.shared.remove(&S);
+    t.settle();
+    assert_eq!(t.st.work().removals, n + 1);
 }

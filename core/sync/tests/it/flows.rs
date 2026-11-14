@@ -414,9 +414,9 @@ fn a_write_is_synced_once_a_reader_holds_it_spec_sync_status_3() {
     assert_eq!(w.wait(0, Scope::Thing(t)), Waiting::Pending, "node 0's home carries it too, unconnected");
 }
 
-// spec/sync-status.md §2 (held elsewhere), spec/permissions.md §3 (drops once that commit is
-// held elsewhere): node 1 leaves a thing it writes (a self-removal); it keeps its secrets while
-// node 0 is out of reach and drops them once node 0 holds the removal.
+// spec/sync-status.md §2 (held elsewhere), spec/permissions.md §3 (Lost access): node 1 leaves a
+// thing it writes (a self-removal); it keeps its secrets while node 0 is out of reach (node 0's
+// record holds S: a peer away), through a restart, and drops them once node 0 holds the removal.
 #[test]
 fn a_self_removal_drops_its_secrets_once_held_elsewhere_spec_sync_status_2() {
     let (mut w, t, _) = granted_and_read(Role::Write);
@@ -425,11 +425,39 @@ fn a_self_removal_drops_its_secrets_once_held_elsewhere_spec_sync_status_2() {
     w.run();
     let c = w.write(1, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap().commits[0];
     w.run();
-    assert!(w.engine(1).waiting_held_elsewhere().unwrap().contains(&c), "only here");
+    assert!(w.engine(1).waiting_removals().unwrap().contains(&c), "only here");
     assert!(w.engine(1).epochs(&t).is_some_and(|x| x.read.holds_any()), "kept while it waits");
+    w.power_off(1);
+    w.power_on(1);
+    w.run();
+    assert!(w.engine(1).waiting_removals().unwrap().contains(&c), "a restart finds it waiting");
     w.heal();
     w.run();
-    assert!(w.engine(1).waiting_held_elsewhere().unwrap().is_empty(), "node 0 holds it");
+    assert!(w.engine(1).waiting_removals().unwrap().is_empty(), "node 0 holds it");
+    assert!(w.engine(1).epochs(&t).is_none_or(|e| e.read.held().next().is_none()), "dropped");
+}
+
+// spec/permissions.md §3 (Lost access): node 0 unsyncs a thing node 1 writes; node 1, sharing it
+// with nobody now, leaves it (a self-removal) and drops its secrets at once: nothing waits for a
+// peer that could never take the removal.
+#[test]
+fn a_self_removal_nobody_shares_drops_at_once_spec_perm_3() {
+    let (mut w, t, _) = granted_and_read(Role::Write);
+    let a1 = w.node(1).account.unwrap();
+    let s = w.engine(1).sync_ids(&t).unwrap()[0].id;
+    w.write(0, |e| {
+        let d = e.account().unwrap().unwrap().1;
+        let mut g = e.get_typed(&d, &ct::GROUP).unwrap().unwrap_or_default();
+        g.items.retain(|x| *x != t);
+        let mut m = Mutation::new();
+        m.set(d, &ct::GROUP, &g).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    assert!(w.store(0).synced(&s).is_none(), "node 0 stopped syncing it");
+    let c = w.write(1, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap().commits[0];
+    w.run();
+    assert!(!w.engine(1).waiting_removals().unwrap().contains(&c), "no peer shares it: done at once");
     assert!(w.engine(1).epochs(&t).is_none_or(|e| e.read.held().next().is_none()), "dropped");
 }
 

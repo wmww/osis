@@ -864,15 +864,16 @@ impl Engine {
         self.invitations_now()
     }
 
-    /// This node's self-removals waiting to be held elsewhere (spec/sync-status.md §2): the
-    /// secrets they gave up drop once each is.
-    pub fn waiting_held_elsewhere(&mut self) -> Result<Arc<BTreeSet<CommitId>>> {
-        Ok(self.waiting_held_elsewhere_now())
+    /// This node's self-removals sync waits on (spec/sync-status.md §2): the secrets they gave
+    /// up drop once sync is done with each.
+    pub fn waiting_removals(&mut self) -> Result<Arc<BTreeSet<CommitId>>> {
+        Ok(self.waiting_removals_now())
     }
 
-    /// Sync saw self-removal `c` held elsewhere (spec/sync-status.md §2).
-    pub fn held_elsewhere(&mut self, c: &CommitId) -> Result<()> {
-        self.held_elsewhere_now(c)
+    /// Sync is done waiting for self-removal `c`: held elsewhere, or no peer but this account's
+    /// own nodes shares a sync ID it goes under (spec/permissions.md §3 Lost access).
+    pub fn removal_done(&mut self, c: &CommitId) -> Result<()> {
+        self.removal_done_now(c)
     }
 
     /// The sync IDs some engine rule waits on a complete pass of, each with the moment the pass

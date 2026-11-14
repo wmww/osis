@@ -1785,9 +1785,9 @@ fn writer_leaves_spec_perm_3() {
     assert_eq!(aks_of(&lp, 1, &done.commits[0]), BTreeSet::from(["roles.0".to_string()]));
     assert!(lp.peers[1].engine.header(&done.commits[0]).unwrap().frontier.is_none());
     // the leaver drops what it lost once its removal is held elsewhere (sync's word)
-    assert!(lp.peers[1].engine.waiting_held_elsewhere().unwrap().contains(&done.commits[0]));
-    lp.peers[1].engine.held_elsewhere(&done.commits[0]).unwrap();
-    assert!(lp.peers[1].engine.waiting_held_elsewhere().unwrap().is_empty());
+    assert!(lp.peers[1].engine.waiting_removals().unwrap().contains(&done.commits[0]));
+    lp.peers[1].engine.removal_done(&done.commits[0]).unwrap();
+    assert!(lp.peers[1].engine.waiting_removals().unwrap().is_empty());
     assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.held().next().is_none()), "dropped on leaving");
     spread(&mut lp);
     let (rot, still) = lp.peers[0].engine.ensure_rotated(&d).unwrap();

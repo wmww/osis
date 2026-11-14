@@ -1,5 +1,5 @@
 //! What waits for sync's word (spec/sync-status.md §1-§3): self-removals whose lost secrets drop
-//! once the removal is held elsewhere (spec/permissions.md §3 Lost access), and complete passes:
+//! once sync is done waiting for the removal (spec/permissions.md §3 Lost access), and complete passes:
 //! the sync IDs some rule waits on a pass of (`passes_wanted`), and the last pass noted per sync
 //! ID, which the re-seal and history-add triggers and history completeness read.
 
@@ -12,7 +12,7 @@ use osis_store::Shred;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-/// `hw/` + commit ID: a self-removal waiting to be held elsewhere.
+/// `hw/` + commit ID: a self-removal sync waits on.
 pub(crate) const WAITING: &[u8] = b"hw/";
 /// `cp/` + sync ID: when the last complete pass of it noted began (engine ms, u64 BE).
 const PASSES: &[u8] = b"cp/";
@@ -35,8 +35,8 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Self-removal `c` waits to be held elsewhere before the secrets it gave up drop, in `c`'s own
-/// transaction.
+/// Self-removal `c` waits for sync (held elsewhere, or no peer to take it) before the secrets it
+/// gave up drop, in `c`'s own transaction.
 pub(crate) fn wait(tx: &mut Tx<'_>, c: CommitId) -> Result<()> {
     if tx.core.ix.held_wait.insert(c) {
         tx.txn.put_local(&[WAITING, &c.0].concat(), &[], Shred::No)?;
@@ -45,14 +45,15 @@ pub(crate) fn wait(tx: &mut Tx<'_>, c: CommitId) -> Result<()> {
 }
 
 impl Engine {
-    /// The self-removals waiting to be held elsewhere (spec/sync-status.md §2).
-    pub(crate) fn waiting_held_elsewhere_now(&self) -> Arc<BTreeSet<CommitId>> {
+    /// The self-removals sync waits on (spec/sync-status.md §2).
+    pub(crate) fn waiting_removals_now(&self) -> Arc<BTreeSet<CommitId>> {
         Arc::new(self.core.ix.held_wait.iter().copied().collect())
     }
 
-    /// Sync saw `c` held elsewhere: it waits no more and the secrets this node lost drop
-    /// (`drop_lost_secrets`, spec/permissions.md §3 Lost access).
-    pub(crate) fn held_elsewhere_now(&mut self, c: &CommitId) -> Result<()> {
+    /// Sync is done waiting for `c` (held elsewhere, or no peer shares where it goes): the
+    /// secrets this node lost drop once no removal waits (`drop_lost_secrets`, spec/permissions.md
+    /// §3 Lost access).
+    pub(crate) fn removal_done_now(&mut self, c: &CommitId) -> Result<()> {
         let c = *c;
         let was = self.run(|tx| {
             let was = tx.core.ix.held_wait.remove(&c);

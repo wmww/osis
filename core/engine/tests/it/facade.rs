@@ -298,20 +298,20 @@ fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: i64) -> osis_base::CommitI
     lp.peers[i].engine.commit(m).unwrap().unwrap()
 }
 
-// spec/permissions.md §3 (drops once that commit is held elsewhere: a self-remover keeps its
-// secrets until then), spec/sync-status.md §2.
+// spec/permissions.md §3 (Lost access: a self-remover keeps its secrets until sync is done with
+// the removal), spec/sync-status.md §2.
 #[test]
-fn a_self_removal_waits_to_be_held_elsewhere_spec_perm_3() {
+fn a_self_removal_waits_for_sync_spec_perm_3() {
     let (mut lp, t, pb, _, blob) = granted(Role::Write);
     lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
     spread(&mut lp);
     let done = lp.peers[1].engine.demote(&t, &Demotion { holder: pb, new: None, retain: None }).unwrap();
     let c = done.commits[0];
     let e = &mut lp.peers[1].engine;
-    assert!(e.waiting_held_elsewhere().unwrap().contains(&c));
+    assert!(e.waiting_removals().unwrap().contains(&c));
     assert!(e.epochs(&t).is_some_and(|x| x.read.holds_any()), "kept while it waits");
-    e.held_elsewhere(&c).unwrap();
-    assert!(e.waiting_held_elsewhere().unwrap().is_empty());
+    e.removal_done(&c).unwrap();
+    assert!(e.waiting_removals().unwrap().is_empty());
 }
 
 // spec/sync-judgement.md §1-§2: a commit's body under each read sync ID whose closure holds it,

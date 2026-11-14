@@ -52,6 +52,22 @@ fn a_record_resumes_its_shared_set_spec_sync_opens_3() {
     assert!(p.a.opens.agreed(p.ca) && p.b.opens.agreed(p.cb));
 }
 
+// spec/sync-set.md §3 (shares S: a source or a record it keeps holding S as a member),
+// spec/permissions.md §3 (Lost access: no peer but its account's nodes): S is shared while the
+// connection has it open and, once closed, while the kept record holds it; a peer whose proven
+// actors the caller skips (this account's own nodes, for a self-removal) shares nothing.
+#[test]
+fn shared_by_a_connection_or_a_kept_record_spec_sync_set_3() {
+    let mut p = readers();
+    let other = |t: &osis_base::Tid| *t == tid(2);
+    assert!(p.a.opens.shared(&p.a.store, &S, |_| false).unwrap(), "open on a connection");
+    assert!(!p.a.opens.shared(&p.a.store, &S, other).unwrap(), "only a skipped peer");
+    assert!(!p.a.opens.shared(&p.a.store, &sid(9), |_| false).unwrap(), "held by nobody");
+    p.close();
+    assert!(p.a.opens.shared(&p.a.store, &S, |_| false).unwrap(), "the peer away: its record holds S");
+    assert!(!p.a.opens.shared(&p.a.store, &S, other).unwrap(), "its record names a skipped actor");
+}
+
 fn sid(n: u8) -> SyncId {
     SyncId([n; 16])
 }

@@ -14,7 +14,10 @@
 //! - lacking counts per (S, source keeping S unread): the stamped entries here its stream did
 //!   not show (spec/sync-status.md §1: a source lacks only what it would pull);
 //! - per own commit under a read S: held elsewhere (§2), recorded on the entry durably
-//!   (`Store::set_elsewhere`) and told to the engine for a self-removal (`held_elsewhere`);
+//!   (`Store::set_elsewhere`);
+//! - per self-removal the engine waits on: done once, under each read S it has a body under, it
+//!   is held elsewhere or no peer but this account's own nodes shares S (spec/permissions.md §3
+//!   Lost access); with no such S, at once. Told to the engine (`removal_done`);
 //! - complete passes (§1) of each sync ID the engine wants one of, a fresh Pull at each source,
 //!   ended by every source caught up since and every recorded peer read at its next connection,
 //!   or `PASS_WAIT_MS`; each end told to the engine (`note_complete_pass`).
@@ -166,8 +169,11 @@ pub trait Ground: Net {
     /// Whether a source was recorded holding entry `b` of S, durably.
     fn elsewhere(&mut self, s: &SyncId, b: &BlobId) -> Result<bool>;
     fn set_elsewhere(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;
-    /// Tells the engine a self-removal is held elsewhere (it drops the secrets).
-    fn held_elsewhere(&mut self, c: &CommitId) -> Result<()>;
+    /// Some peer other than this account's own nodes shares S: a connection has it open or a kept
+    /// record holds it as a member (`Opens::shared`). Stamped.
+    fn shared(&mut self, s: &SyncId) -> Result<bool>;
+    /// Tells the engine sync is done waiting for a self-removal (it drops the secrets).
+    fn removal_done(&mut self, c: &CommitId) -> Result<()>;
     /// The sync IDs the engine wants a complete pass of, each with the moment the pass must begin
     /// at or after (spec/permissions.md §3 Complete pass: the newest role commit of one of S's
     /// actors from elsewhere it applied, a role found gone, a tied demotion's scope).
@@ -217,6 +223,8 @@ pub struct Work {
     pub commits: u64,
     /// Lacking counts taken again.
     pub lacking: u64,
+    /// Self-removals judged for done.
+    pub removals: u64,
 }
 
 #[derive(Clone)]
@@ -237,6 +245,8 @@ pub struct Status {
     held: StampedSet<CommitId>,
     removals_fx: Effects<(), Arc<BTreeSet<CommitId>>>,
     removals: StampedSet<CommitId>,
+    /// Per self-removal: sync is done waiting for it (held, or not shared, under each read S).
+    release_fx: Effects<CommitId, bool>,
     wanted_fx: Effects<(), Arc<BTreeMap<SyncId, WallMs>>>,
     passes: Stamped<SyncId, Pass>,
     pass_fx: Effects<SyncId, PassNow>,
@@ -265,6 +275,7 @@ impl Default for Status {
             held: StampedSet::default(),
             removals_fx: Effects::new("status: self-removals"),
             removals: StampedSet::default(),
+            release_fx: Effects::new("status: self-removal done"),
             wanted_fx: Effects::new("status: passes wanted"),
             passes: Stamped::default(),
             pass_fx: Effects::new("status: pass"),
@@ -405,8 +416,8 @@ impl Status {
         Ok(())
     }
 
-    /// Own commits under each read S, held elsewhere (§2); a self-removal held elsewhere is told
-    /// to the engine.
+    /// Own commits under each read S, held elsewhere (§2); a self-removal sync is done waiting
+    /// for is told to the engine.
     fn held_elsewhere(&mut self, g: &mut impl Ground) -> Result<bool> {
         let mut acted = false;
         self.removals_fx.want(());
@@ -416,10 +427,12 @@ impl Status {
             let gone: Vec<CommitId> = self.removals.iter().filter(|c| !now.contains(*c)).copied().collect();
             for c in gone {
                 self.removals.remove(&c);
+                self.release_fx.unwant(&c);
             }
             for c in now.iter() {
                 if !self.removals.contains(c) {
                     self.removals.insert(*c);
+                    self.release_fx.want(*c);
                 }
             }
         }
@@ -468,12 +481,19 @@ impl Status {
             let held = ids.is_some_and(|ids| !ids.is_empty() && ids.iter().all(|s| self.unheld.get(s).is_some_and(|u| !u.contains(&c))));
             if held && !self.held.contains(&c) {
                 self.held.insert(c);
-                if self.removals.contains(&c) {
-                    g.held_elsewhere(&c)?;
-                    acted = true;
-                }
             } else if !held && self.held.contains(&c) {
                 self.held.remove(&c);
+            }
+        }
+        // `by_commit` is no stamped read, but each change of it writes `unheld` of that sync ID,
+        // which the judgement reads (a sync ID added after a judgement can only keep it waiting)
+        for c in self.release_fx.due() {
+            self.work.removals += 1;
+            let (by_commit, unheld) = (&self.by_commit, &self.unheld);
+            let r = self.release_fx.try_settle(&c, || removal_done(g, &c, by_commit.get(&c).into_iter().flatten(), unheld));
+            if let Some((_, true)) = r? {
+                g.removal_done(&c)?;
+                acted = true;
             }
         }
         Ok(acted)
@@ -664,6 +684,20 @@ fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: impl Iterator
         }
     }
     Ok(Held::No)
+}
+
+/// Whether sync is done waiting for self-removal `c` (spec/permissions.md §3 Lost access): under
+/// each read S it has a body under (`ids`), held elsewhere or shared with no peer but this
+/// account's own nodes (which leave by the same commit, §2). With no such S, done at once: no
+/// peer could take it.
+fn removal_done<'a>(g: &mut impl Ground, c: &CommitId, ids: impl Iterator<Item = &'a SyncId>, unheld: &Stamped<SyncId, Arc<BTreeSet<CommitId>>>) -> Result<bool> {
+    for s in ids {
+        let held = unheld.get(s).is_some_and(|u| !u.contains(c));
+        if !held && g.shared(s)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// A pass of S as its sources stand: every source waited on caught up from a Pull sent since it
