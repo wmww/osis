@@ -75,7 +75,7 @@ impl Record {
                 stamp: get_opt(s, "record stamp")?.map(|s| get_bytes(s, "record stamp").map(Signature)).transpose()?,
             },
             (4, [l, b]) => Record::Delete { label: label(l)?, blob: blob(b)? },
-            (0..=5, _) => return Err(Error::Malformed("bundle record")),
+            (0..=4, _) => return Err(Error::Malformed("bundle record")),
             (k, _) => Record::Unknown(k),
         })
     }

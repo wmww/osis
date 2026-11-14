@@ -51,7 +51,7 @@ Not format constants (§11). Per-message caps: §11.2.
 | `MAX_SUBS` | 4096 live subscriptions per connection (§11.2) |
 | `MAX_CONNS_PER_CLIENT` | 8 authenticated sessions of one client actor (§11.2) |
 | `MAX_PROOFS` | 256 actor proofs in one Prove or Proved (§11.2) |
-| `MAX_RESUME_TAGS` | ⌊(`MAX_MESSAGE` − 64) / 33⌋ tags in one Resume (§11.2) |
+| `MAX_RESUME_TAGS` | ⌊(`MAX_MESSAGE` − 64) / 34⌋ tags in one Resume (§11.2; a tag's encoding is 34 bytes) |
 
 ### Node policy
 Not format constants. A value marked recommended is advice.

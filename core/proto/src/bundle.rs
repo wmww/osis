@@ -4,7 +4,8 @@
 
 use crate::Error;
 use crate::msg::Event;
-use osis_base::{BlobId, LabelId};
+use crate::SyncId;
+use osis_base::BlobId;
 use osis_label::Step;
 use osis_label::{BundleEvent, BundleReader, Importer};
 use std::collections::HashMap;
@@ -14,10 +15,10 @@ use std::io::Read;
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)] // one record at a time; boxing buys nothing
 pub enum Imported {
-    /// A label's registration path, from its genesis step.
-    Path { label: LabelId, steps: Vec<Step> },
-    /// One log event of a label.
-    Event { label: LabelId, event: Event },
+    /// A sync ID's registration path, from its genesis step.
+    Path { sync_id: SyncId, steps: Vec<Step> },
+    /// One log event of a sync ID.
+    Event { sync_id: SyncId, event: Event },
     /// A record the importer refused (bad path, stamp, entry before its blob).
     Refused(Error),
 }
@@ -47,13 +48,13 @@ impl<R: Read> BundleImport<R> {
             Ok(Some(ev)) => ev,
         };
         Ok(Some(match ev {
-            BundleEvent::Path { label, steps } => Some(Imported::Path { label, steps: steps.into_iter().map(|(s, _)| s).collect() }),
+            BundleEvent::Path { label, steps } => Some(Imported::Path { sync_id: label, steps: steps.into_iter().map(|(s, _)| s).collect() }),
             BundleEvent::Blob { id, blob } => {
                 self.blobs.insert(id, blob);
                 None
             }
-            BundleEvent::Add { label, blob, wrap, stamp } => Some(Imported::Event { label, event: Event::Added { blob_id: blob, blob: self.blobs.remove(&blob), wrap, stamp } }),
-            BundleEvent::Deleted { label, blob } => Some(Imported::Event { label, event: Event::Deleted(blob) }),
+            BundleEvent::Add { label, blob, wrap, stamp } => Some(Imported::Event { sync_id: label, event: Event::Added { blob_id: blob, blob: self.blobs.remove(&blob), wrap, stamp } }),
+            BundleEvent::Deleted { label, blob } => Some(Imported::Event { sync_id: label, event: Event::Deleted(blob) }),
         }))
     }
 }

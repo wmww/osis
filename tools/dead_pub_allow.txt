@@ -163,43 +163,35 @@ osis-label::verify_deposit  deferred: sync rebuild (issues/sync-rewrite.md Phase
 osis-label::wrap_order  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-perm::commits_walked  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-perm::entries_moved  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::BUDGET_FULL  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::CLOSED  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::ClockSamples  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::INITIAL_PINGS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
+osis-proto::DEPOSIT_BUDGET_FULL  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-proto::INVALID  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::IN_USE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::MAX_HELLO_BYTES  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::MAX_STEP_WIRE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
+osis-proto::MAX_BEHIND_STEPS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
+osis-proto::MAX_CONNS_PER_CLIENT  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
+osis-proto::MAX_HELLO_BODY  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-proto::MAX_SUBS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::NETWORK  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::NOT_UNDOABLE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::OFFSET_DIAGNOSTIC_MS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::OUTCOME_UNKNOWN  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::PERMISSION  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::PING_INTERVAL_MS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::Prover  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
+osis-proto::PASS_WAIT_MS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-proto::STORAGE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::STORAGE_CAP  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::TOMBSTONED  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::TYPE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::UNKNOWN_ACTOR  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::UNKNOWN_LABEL  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::UNKNOWN_THING  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::UNSYNCED  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::beacon_value  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::decode_gcs  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
+osis-proto::deposit_budget  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-proto::filter_width  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::for_node  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::is_reply_kind  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::is_request  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::negotiate  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::peek_head  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::pong  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::rotate_keeping_sync  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::set_max  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::stream_event_size  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::wants_answer  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
+osis-proto::stream_event_len  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-schema::HOST  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-schema::TID  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::RECORD_BUDGET  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync

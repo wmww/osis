@@ -1,21 +1,14 @@
-//! Hello and version negotiation (spec/wire.md §11.1), clock offset estimation (spec/sync-judgement.md §2).
+//! Hello and version negotiation (spec/wire.md §11.1), clock offset estimation (spec/sync-streams.md §1).
 
 use crate::Error;
 use crate::dec::{Fields, uint};
+use crate::limits::{MAX_HELLO_FRAME, MAX_HELLO_VERSIONS};
 use osis_base::{Limits, Value, cbor};
 
 /// The protocol version this build speaks (spec/wire.md §11; separate from the format version).
 pub const PROTOCOL_VERSION: u64 = 1;
-/// Versions a Hello may list.
-pub const MAX_HELLO_VERSIONS: usize = 16;
-/// Clock offsets beyond this are reported as a diagnostic (spec/sync-judgement.md §2: "a few seconds").
+/// Clock offsets beyond this are reported as a diagnostic (spec/sync-streams.md §1: "a few seconds").
 pub const OFFSET_DIAGNOSTIC_MS: u64 = 5_000;
-/// Pings a dialer sends when its connection starts (clock offset samples, spec/sync-judgement.md §2).
-pub const INITIAL_PINGS: usize = 3;
-/// Interval of a dialer's later pings: offset samples, and a request out so the stall clock finds
-/// a dead connection. Minor: 0 pings in a loop, infinity finds a dead idle connection only by
-/// the next request.
-pub const PING_INTERVAL_MS: u64 = 5 * 60 * 1000;
 /// Clock samples kept (`ClockSamples`).
 const MAX_SAMPLES: usize = 9;
 /// Pongs before a clock offset is reported (one outlier among three moves nothing).
@@ -48,7 +41,11 @@ impl Hello {
         cbor::encode(&self.to_value())
     }
 
+    /// Decodes a Hello frame's body: at most `MAX_HELLO_FRAME` bytes with its length.
     pub fn decode(body: &[u8]) -> Result<Hello, Error> {
+        if body.len() + 4 > MAX_HELLO_FRAME {
+            return Err(Error::Cap("hello"));
+        }
         let v = cbor::decode(body, &Limits { max_depth: 2, max_bytes: body.len() })?;
         let mut f = Fields::exact(v, 4, "hello")?;
         match f.next()? {
@@ -91,8 +88,9 @@ impl OffsetSample {
     }
 }
 
-/// Round trips longer than this give no offset sample: the error is up to half the round trip,
-/// and a reply held across a suspend would set the clock by the suspend's length.
+/// Round trips longer than this give no offset sample (spec/sync-streams.md §1: "a few seconds"):
+/// the error is up to half the round trip, and a reply held across a suspend would set the clock
+/// by the suspend's length.
 pub const MAX_SAMPLE_RTT_MS: u64 = 10_000;
 
 /// Clock offset (peer minus local, ms) from round-trip samples: the median of the per-sample
@@ -104,7 +102,7 @@ pub fn estimate_offset(samples: &[OffsetSample]) -> Option<i64> {
     offsets.get(offsets.len().checked_sub(1)? / 2).copied()
 }
 
-/// A connection's Ping round trips (spec/sync-judgement.md §2): the newest `MAX_SAMPLES`, and the offset
+/// A connection's Ping round trips (spec/sync-streams.md §1): the newest `MAX_SAMPLES`, and the offset
 /// once `MIN_PONGS` came back.
 #[derive(Clone, Debug, Default)]
 pub struct ClockSamples {
@@ -132,6 +130,18 @@ impl ClockSamples {
 mod tests {
     use super::*;
 
+    // spec/wire.md §11.1: a Hello frame is at most 256 bytes, its length included
+    #[test]
+    fn hello_frame_cap_spec_wire_11_1() {
+        let at = |n: usize| Value::List(vec![Value::Str("osis".into()), Value::List(vec![Value::uint(1)]), Value::uint(5), Value::Bytes(vec![0; n])]);
+        // a body of exactly 252 bytes: a valid layout but for its challenge length, refused as such
+        let body = cbor::encode(&at(252 - 11));
+        assert_eq!(body.len(), 252);
+        assert_eq!(Hello::decode(&body), Err(Error::Malformed("hello")));
+        let body = cbor::encode(&at(253 - 11));
+        assert_eq!(Hello::decode(&body), Err(Error::Cap("hello")));
+    }
+
     // spec/wire.md §11.1: Hello layout and the greatest common version
     #[test]
     fn hello_round_trip_and_negotiation() {
@@ -154,10 +164,11 @@ mod tests {
         assert!(bad(mk(vec![1, 1], 32)));
         assert!(bad(mk((1..=17).collect(), 32)));
         assert!(bad(mk(vec![1], 31)));
+        assert!(bad(mk(vec![1], 33)));
         assert!(bad(Value::List(vec![Value::Str("osiz".into()), Value::List(vec![Value::uint(1)]), Value::uint(5), Value::Bytes(vec![0; 32])])));
     }
 
-    // spec/sync-judgement.md §2: round-trip corrected, robust to an outlier
+    // spec/sync-streams.md §1: round-trip corrected, robust to an outlier
     #[test]
     fn offset_median() {
         let s = |sent, peer, received| OffsetSample { sent, peer, received };
@@ -168,7 +179,7 @@ mod tests {
         assert_eq!(estimate_offset(&[s(200, 5, 100)]), None);
     }
 
-    // spec/sync-judgement.md §2: a round trip over MAX_SAMPLE_RTT_MS (pings held across a suspend) is no
+    // spec/sync-streams.md §1: a round trip over MAX_SAMPLE_RTT_MS (pings held across a suspend) is no
     // sample: three of them set nothing, and beside short ones they move nothing
     #[test]
     fn offset_ignores_long_round_trips() {
@@ -181,7 +192,7 @@ mod tests {
         assert_eq!(estimate_offset(&mixed), Some(1000));
     }
 
-    // spec/sync-judgement.md §2: no offset before three Pongs, then the median of the samples kept
+    // spec/sync-streams.md §1: no offset before three Pongs, then the median of the samples kept
     #[test]
     fn offset_after_three_pongs() {
         let s = |sent, peer, received| OffsetSample { sent, peer, received };

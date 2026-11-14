@@ -18,8 +18,6 @@ pub enum Error {
     NoCommonVersion,
     /// A label object inside a message (step, claim set, entry box, proof, delete item, bundle).
     Label(osis_label::Error),
-    /// The oldest request in flight did not move for `STALL_TIMEOUT_MS`: the session closes.
-    Timeout,
 }
 
 osis_base::impl_error!(Error {
@@ -30,7 +28,6 @@ osis_base::impl_error!(Error {
     UnknownKind(k) => ("proto: unknown message kind {k}"),
     NoCommonVersion => ("proto: no common protocol version"),
     Label(e) => ("proto: {e}"),
-    Timeout => ("proto: requests stalled, connection closed"),
 });
 
 impl Classified for Error {

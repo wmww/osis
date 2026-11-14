@@ -1,57 +1,57 @@
-//! spec/wire.md §11.2, §13: message layouts, caps, rejections.
+//! spec/wire.md §11.1, §11.2, §13: message layouts, ids, caps, rejections.
 
 use super::*;
-use crate::examples::messages;
+use crate::examples::{messages, rejections};
 use proptest::prelude::*;
+use std::collections::BTreeSet;
 
-// spec/wire.md §11.2 (Resume): a tag past `MAX_RESUME_TAGS`, or of the wrong length, is refused
-#[test]
-fn resume_caps_spec_wire_11_2() {
-    let over = Message::Resume { id: 1, nonce: [1; 32], tags: vec![[2; 32]; crate::prove::MAX_RESUME_TAGS + 1] };
-    assert!(Message::decode(&over.encode()).is_err());
-    let short = Value::List(vec![Value::Int(34), Value::Int(1), Value::bytes(&[1; 32]), Value::List(vec![Value::bytes(&[2; 31])])]);
-    assert!(Message::decode(&osis_base::cbor::encode(&short)).is_err());
+/// Every kind version 1 names (spec/wire.md §11.2).
+const KINDS: [u64; 32] = [0, 1, 2, 3, 7, 11, 14, 19, 20, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46];
+/// Retired kinds (spec/wire.md §11.2): never decoded, never reused.
+const RETIRED: [u64; 15] = [4, 5, 6, 8, 9, 10, 12, 13, 15, 16, 17, 18, 21, 22, 23];
+
+fn enc(v: Value) -> Vec<u8> {
+    cbor::encode(&v)
 }
 
-// spec/wire.md §11.2: every kind `Message::kind` names has a decode arm, not only the examples
+fn rejected(v: Value) -> Rejected {
+    Msg::decode(&enc(v)).expect_err("decoded")
+}
+
+// spec/wire.md §11.2: one example of every kind decodes to itself and re-encodes to its bytes
 #[test]
-fn every_kind_is_in_the_decode_table() {
-    for kind in kinds() {
-        assert!(!unknown_at_every_arity(kind), "kind {kind} has no decode arm");
+fn every_kind_round_trips_spec_wire_11_2() {
+    let mut kinds = BTreeSet::new();
+    for (name, m) in messages() {
+        let body = m.encode();
+        assert_eq!(Msg::decode(&body).as_ref(), Ok(&m), "{name}");
+        assert_eq!(Msg::decode(&body).map(|m| m.encode()), Ok(body), "{name}");
+        kinds.insert(m.kind());
     }
+    assert_eq!(kinds, KINDS.into_iter().collect());
 }
 
-// spec/wire.md §11.2: a message of every kind takes exactly its layout's fields: one more or
-// one fewer is malformed; a kind with an id that is no request is a reply
+// spec/wire.md §11.2: every kind has a rejection of a canonical-form or layout rule, answered 2
+// when it is a request and dropped otherwise
+#[test]
+fn every_kind_has_a_canonical_rejection_spec_wire_11_2() {
+    let mut kinds = BTreeSet::new();
+    for (name, rule, body) in rejections() {
+        let r = Msg::decode(&body).expect_err(name);
+        assert_eq!(r.code(), Code::MALFORMED, "{name} ({rule}): {:?}", r.error);
+        assert_eq!(r.answered(), flow(r.kind).is_none_or(|f| f == Flow::Request), "{name}");
+        if let Some((kind, _)) = peek_head(&body) {
+            kinds.insert(kind);
+        }
+    }
+    assert_eq!(kinds, KINDS.into_iter().collect(), "a rejection per kind");
+}
+
+// spec/wire.md §1 (exact positions): a message of every kind takes exactly its layout's
+// fields: one more or one fewer is malformed
 #[test]
 fn exact_arity_spec_wire_11_2() {
-    use crate::api::{Outcome, Payload};
-    let max = crate::msg::SMALL_REPLY as u64;
-    let v = || Value::Int(5);
-    let mut ms: Vec<(String, Message)> = messages().into_iter().map(|(n, m)| (n.to_string(), m)).collect();
-    ms.extend(
-        [
-            Message::Auth { id: 1, secret: None, session: [1; 16] },
-            Message::Call { id: 1, max_reply: max, method: 2, args: vec![v()] },
-            Message::Reply { id: 1, outcome: Outcome::Ok { value: v() } },
-            Message::Sub { id: 1, max_reply: max, filter: v() },
-            Message::Unsub { id: 1, sub: 2 },
-            Message::Notify { sub: 2, payload: Payload::Delivery { value: v() } },
-            Message::Prove { id: 1, proofs: vec![] },
-            Message::Proved { id: 1, proofs: vec![] },
-            Message::Resume { id: 1, nonce: [1; 32], tags: vec![[2; 32]] },
-            Message::Resumed { id: 1, nonce: [1; 32], tag: Some([2; 32]) },
-        ]
-        .map(|m| (format!("kind {}", m.kind()), m)),
-    );
-    let mut covered: Vec<u64> = ms.iter().map(|(_, m)| m.kind()).collect();
-    covered.sort_unstable();
-    covered.dedup();
-    let mut all = kinds();
-    all.sort_unstable();
-    assert_eq!(covered, all);
-    for (name, m) in ms {
-        assert_eq!(Message::decode(&m.encode()).as_ref(), Ok(&m), "{name}");
+    for (name, m) in messages() {
         let Value::List(items) = m.to_value() else { unreachable!() };
         let mut more = items.clone();
         more.push(Value::Int(0));
@@ -60,196 +60,175 @@ fn exact_arity_spec_wire_11_2() {
         for v in [more, fewer] {
             assert_eq!(rejected(Value::List(v)).code(), Code::MALFORMED, "{name}");
         }
-        assert_eq!(is_reply_kind(m.kind()), !m.is_request() && m.id() != 0, "{name}");
     }
 }
 
-/// The kinds `Message::kind` names, parsed from its source.
-fn kinds() -> Vec<u64> {
-    let src = include_str!("../msg.rs");
-    let body = src.split("pub fn kind(&self)").nth(1).expect("fn kind").split("\n    }\n").next().unwrap();
-    let kinds: Vec<u64> = body.lines().filter_map(|l| l.trim().strip_suffix(',')?.rsplit("=> ").next()?.parse().ok()).collect();
-    assert!(kinds.len() > 30, "kinds parsed from Message::kind: {kinds:?}");
-    kinds
-}
-
-/// Whether `kind` decodes as an unknown kind with 0 to 6 fields after its head.
-fn unknown_at_every_arity(kind: u64) -> bool {
-    (2..=8).all(|n| {
-        let mut items = vec![Value::Int(kind as i64), Value::Int(1)];
-        items.resize(n, Value::Int(0));
-        matches!(decode_body(kind, 1, Value::List(items)), Err(Error::UnknownKind(_)))
-    })
-}
-
-/// Retired kinds (spec/wire.md §11.2): never decoded, never reused.
-const RETIRED: [u64; 15] = [4, 5, 6, 8, 9, 10, 12, 13, 15, 16, 17, 18, 21, 22, 23];
-
-// spec/wire.md §11.2: a retired kind number is no message: it decodes as an unknown kind (a
-// request of it is answered Error 11), is neither request nor reply, and names no kind again
+// spec/wire.md §11.1: an id is 0 in a push and nonzero in every request and reply, but an Error
+// answering a frame whose id cannot be read; spec/wire.md §11.2: the shared set's and the
+// stream's requests and answers have the top bit set, NoRecord exactly 2^31
 #[test]
-fn retired_kinds_are_unknown_spec_wire_11_2() {
-    let kinds = kinds();
-    for kind in RETIRED {
-        assert!(unknown_at_every_arity(kind), "kind {kind} decodes");
-        let r = rejected(Value::List(vec![Value::Int(kind as i64), Value::Int(7), Value::Int(0)]));
-        assert_eq!((r.id, r.code(), r.error), (7, Code::UNSUPPORTED, Error::UnknownKind(kind)), "kind {kind}");
-        assert!(!is_request_kind(kind) && !is_reply_kind(kind), "kind {kind}");
-        assert!(!kinds.contains(&kind), "kind {kind} reused");
-    }
-}
-
-fn enc(v: Value) -> Vec<u8> {
-    cbor::encode(&v)
-}
-
-fn rejected(v: Value) -> Rejected {
-    Message::decode(&enc(v)).expect_err("decoded")
-}
-
-fn with_list(m: Message, n: usize) -> Value {
-    // Replaces the first list field of `m`'s encoding by `n` copies of its first element.
-    let Value::List(mut items) = m.to_value() else { unreachable!() };
-    for it in items.iter_mut() {
-        if let Value::List(l) = it
-            && let Some(first) = l.first().cloned()
-        {
-            *l = vec![first; n];
-            break;
+fn ids_spec_wire_11_1() {
+    for (name, m) in messages() {
+        let (kind, id) = (m.kind(), m.id());
+        match flow(kind) {
+            Some(Flow::Push) => assert_eq!(id, 0, "{name}"),
+            Some(_) if kind == 0 => {}
+            Some(_) => assert_ne!(id, 0, "{name}"),
+            None => panic!("{name}"),
+        }
+        assert_eq!(top_bit_kind(kind), (36..=42).contains(&kind));
+        if top_bit_kind(kind) {
+            assert_ne!(id & crate::limits::TOP_BIT, 0, "{name}");
         }
     }
+    let r = rejected(Value::List(vec![Value::Int(2), Value::Int(0), Value::Int(1)]));
+    assert_eq!((r.error.clone(), r.answered()), (Error::Malformed("id"), true), "a request is answered");
+    let r = rejected(Value::List(vec![Value::Int(1), Value::Int(0)]));
+    assert_eq!((r.error.clone(), r.answered()), (Error::Malformed("id"), false), "a reply is dropped");
+    let r = rejected(Value::List(vec![Value::Int(2), Value::Int(1 << 32), Value::Int(0)]));
+    assert_eq!((r.id, r.code()), (0, Code::MALFORMED));
+    assert!(Msg::decode(&enc(Value::List(vec![Value::Int(0), Value::Int(0), Value::Int(2)]))).is_ok());
+}
+
+// spec/wire.md §11.2: a kind version 1 does not name, a retired one included, is unknown: a
+// request of it is answered Error 11 with its id
+#[test]
+fn unknown_and_retired_kinds_spec_wire_11_2() {
+    for kind in RETIRED.into_iter().chain([47, 99, 1 << 40]) {
+        for n in 2..=8 {
+            let mut items = vec![Value::uint(kind), Value::Int(7)];
+            items.resize(n, Value::Int(0));
+            let r = rejected(Value::List(items));
+            assert_eq!((r.id, r.code(), r.error.clone(), r.answered()), (7, Code::UNSUPPORTED, Error::UnknownKind(kind), true), "kind {kind}");
+        }
+        assert_eq!(flow(kind), None);
+        assert!(!KINDS.contains(&kind));
+    }
+}
+
+/// `m`'s encoding with the list at position `pos` (or at field `inner.1` of its item `inner.0`)
+/// holding `n` copies of its first element.
+fn grown(m: &Msg, pos: usize, inner: Option<(usize, usize)>, n: usize) -> Value {
+    let Value::List(mut items) = m.to_value() else { unreachable!() };
+    let mut l = &mut items[pos];
+    if let Some((at, i)) = inner {
+        let Value::List(outer) = l else { unreachable!() };
+        let Value::List(item) = &mut outer[at] else { unreachable!() };
+        l = &mut item[i];
+    }
+    let Value::List(l) = l else { unreachable!() };
+    let first = l[0].clone();
+    *l = vec![first; n];
     Value::List(items)
 }
 
-// spec/wire.md §11.2: the examples name every kind but the ones listed (the vectors generator
-// round-trips each example)
+// spec/wire.md §11.2 (Per-message caps, Offer, Lost, Digest, Prove, Resume): every list cap
+// takes its cap and refuses one more
 #[test]
-fn examples_name_every_kind() {
-    let ms = messages();
-    let mut kinds: Vec<u64> = ms.iter().map(|(_, m)| m.kind()).collect();
-    kinds.dedup();
-    // retired kinds name nothing; kinds 24-29 (client port): tests/it/port.rs; 30-31 reports;
-    // 32-35 elsewhere; 36-40 the shared set; 41-44 the stream; 45-46 the digest
-    assert_eq!(kinds, (0..=23).filter(|k| !RETIRED.contains(k)).chain(30..=31).chain(36..=46).collect::<Vec<_>>());
-}
-
-// spec/wire.md §11.2 Pull: a Stream with a cursor and no events (an ended member reaching its
-// `until`, asking a report) is a message
-#[test]
-fn a_stream_with_no_events_round_trips_spec_wire_11_2() {
-    let m = Message::Stream(Box::new(crate::msg::Stream { events: vec![], cursor: Some(vec![0x30; 72]), report: true, seq: 0 }));
-    assert_eq!(Message::decode(&m.encode()), Ok(m));
-}
-
-// spec/wire.md §11.2 Events: each event of a Stream with no cursor (Full, Refused) round-trips
-#[test]
-fn cursorless_events_round_trip_spec_wire_11_2() {
-    let l = LabelId([0x0a; 16]);
-    let events = vec![(l, Event::Full(true)), (l, Event::Refused(BlobId([0xb1; 32]), Code::NOT_HEAD)), (l, Event::Refused(BlobId([0xb2; 32]), Code::TOMBSTONED))];
-    let m = Message::Stream(Box::new(crate::msg::Stream { events, cursor: None, report: false, seq: 0 }));
-    assert_eq!(Message::decode(&m.encode()), Ok(m));
-}
-
-// spec/wire.md §11.2: per-message caps
-#[test]
-fn caps() {
+fn list_caps_spec_wire_11_2() {
+    use crate::limits::*;
     let ms: std::collections::BTreeMap<_, _> = messages().into_iter().collect();
-    let m = |n: &str| ms[n].clone();
-    for (name, cap) in [("delete", MAX_ITEMS), ("fetch", MAX_ITEMS), ("fetch reply", MAX_ITEMS)] {
-        assert!(Message::decode(&enc(with_list(m(name), cap))).is_ok(), "{name} at cap");
-        assert_eq!(rejected(with_list(m(name), cap + 1)).error, Error::Cap(match name {
-            "delete" => "delete items",
-            "fetch" => "fetch ids",
-            _ => "fetch items",
-        }), "{name}");
-    }
-    // Delete and Fetch need at least one item
-    for name in ["delete", "fetch"] {
-        assert!(Message::decode(&enc(with_list(m(name), 0))).is_err(), "{name} empty");
+    type Case<'a> = (&'a str, usize, Option<(usize, usize)>, usize);
+    let cases: [Case; 11] = [
+        ("delete", 3, None, MAX_DELETE_ITEMS),
+        ("status", 2, None, MAX_DELETE_ITEMS),
+        ("fetch", 4, None, MAX_FETCH_IDS),
+        ("fetch reply", 2, None, MAX_FETCH_IDS),
+        ("offer", 2, None, MAX_OFFER_ITEMS),
+        ("offer", 2, Some((2, 2)), MAX_ITEM_HITS),
+        ("lost", 2, None, MAX_OFFER_ITEMS),
+        ("shared", 2, None, MAX_OFFER_ITEMS),
+        ("members", 2, None, MAX_MEMBERS),
+        ("prove", 2, None, MAX_PROOFS),
+        ("resume", 3, None, MAX_RESUME_TAGS),
+    ];
+    for (name, pos, inner, cap) in cases {
+        let m = &ms[name];
+        let at = enc(grown(m, pos, inner, cap));
+        assert!(at.len() <= MAX_MESSAGE, "{name}: {} bytes at its cap", at.len());
+        assert!(Msg::decode(&at).is_ok(), "{name} at its cap");
+        // past the cap: refused as over it, or (Resume, whose cap fills a message) as too large
+        assert_eq!(rejected(grown(m, pos, inner, cap + 1)).code(), Code::MALFORMED, "{name} past its cap");
     }
 }
 
-// spec/wire.md §11.1: [kind, id, ...] with id < 2^32; unknown kind answered by 11; Stream carries id 0
+// spec/wire.md §11.2 (Offer: a Deposit item's blob at most `MAX_BLOB`; Pull: a cursor at most
+// 256 bytes); spec/wire.md §13 (blob `MAX_BLOB`)
 #[test]
-fn heads() {
-    let r = rejected(Value::List(vec![Value::Int(99), Value::Int(7)]));
-    assert_eq!((r.id, r.code()), (7, Code::UNSUPPORTED));
-    // kind 47 is unknown
-    assert_eq!(rejected(Value::List(vec![Value::Int(47), Value::Int(0)])).code(), Code::UNSUPPORTED);
-    assert_eq!(rejected(Value::List(vec![Value::Int(2), Value::Int(0), Value::Int(1)])).error, Error::Malformed("id 0"));
-    assert_eq!(rejected(Value::List(vec![Value::Int(1), Value::Int(0)])).error, Error::Malformed("id 0"));
-    assert!(Message::decode(&enc(Value::List(vec![Value::Int(0), Value::Int(0), Value::Int(2)]))).is_ok());
-    // non-canonical head, trailing bytes, indefinite length
-    assert!(Message::decode(&[0x82, 0x01, 0x18, 0x01]).is_err());
-    assert!(Message::decode(&[0x82, 0x01, 0x01, 0x00]).is_err());
-    assert!(Message::decode(&[0x9f, 0x01, 0x01, 0xff]).is_err());
-    let r = rejected(Value::List(vec![Value::Int(2), Value::Int(1 << 32), Value::Int(0)]));
-    assert_eq!((r.id, r.code()), (0, Code::MALFORMED));
-    let r = rejected(Value::List(vec![Value::Int(2), Value::Int(9), Value::Int(0), Value::Int(0)]));
-    assert_eq!((r.id, r.code()), (9, Code::MALFORMED));
-    assert!(Message::decode(&[0xff]).is_err());
-    let Value::List(mut push) = messages().into_iter().find(|(n, _)| *n == "stream").unwrap().1.to_value() else { unreachable!() };
-    push[1] = Value::Int(5);
-    assert!(Message::decode(&enc(Value::List(push))).is_err());
+fn byte_caps_spec_wire_13() {
+    let m = messages().into_iter().find(|(n, _)| *n == "offer with a deposit").unwrap().1;
+    let Msg::Offer { id, mut items } = m else { unreachable!() };
+    let OfferItem::Deposit(d) = &mut items[0] else { unreachable!() };
+    d.blob = vec![0; crate::limits::MAX_BLOB];
+    let at = Msg::Offer { id, items: items.clone() };
+    assert!(Msg::decode(&at.encode()).is_ok());
+    let OfferItem::Deposit(d) = &mut items[0] else { unreachable!() };
+    d.blob.push(0);
+    assert!(matches!(Msg::decode(&Msg::Offer { id, items }.encode()).unwrap_err().error, Error::Cap(_)));
+    assert!(Cursor::new(vec![0; 256]).is_ok());
+    assert_eq!(Cursor::new(vec![0; 257]), Err(Error::Cap("cursor")));
 }
 
-// spec/wire.md §11.2: wrap 57 bytes, sig 64, label 16; blob at most MAX_BLOB
-// spec/sync-ids.md §6 (deposit refusals): an oversized blob does not decode
+// spec/wire.md §11.2 (Pull): `stream_event_len` is the exact size of an event in a reply, so a
+// server pages by it
 #[test]
-fn field_sizes() {
-    let Value::List(offer) = messages().into_iter().find(|(n, _)| *n == "offer with a deposit").unwrap().1.to_value() else { unreachable!() };
-    // the deposit item: [2, label, blob, wrap, sig]
-    let with = |pos: usize, v: Value| {
-        let mut o = offer.clone();
-        let Value::List(items) = &mut o[2] else { unreachable!() };
-        let Value::List(d) = &mut items[0] else { unreachable!() };
-        d[pos] = v;
-        Value::List(o)
-    };
-    for (pos, len) in [(1, 15), (3, 48), (4, 63)] {
-        assert!(Message::decode(&enc(with(pos, Value::Bytes(vec![0; len])))).is_err(), "pos {pos}");
+fn stream_event_len_is_exact_spec_wire_11_2() {
+    for (name, m) in messages() {
+        let events = match m {
+            Msg::PullReply(r) => r.events,
+            Msg::Stream(s) => s.events,
+            _ => continue,
+        };
+        for (s, e) in events {
+            let v = Value::List(vec![Value::bytes(&s.0), event_value(&e)]);
+            assert_eq!(stream_event_len(&e), enc(v).len(), "{name}: {e:?}");
+        }
     }
-    assert_eq!(rejected(with(2, Value::Bytes(vec![0; MAX_BLOB + 1]))).error, Error::Cap("offer item"));
-    let st = |n: usize| Value::List(vec![Value::Int(7), Value::Int(1), Value::Bytes(vec![0; 16]), Value::Bytes(vec![0; n]), Value::opt(None)]);
-    assert_eq!(rejected(st(MAX_STEP_BYTES + 1)).error, Error::Cap("step"));
-    // a step must parse: 323 zero bytes do not
-    assert!(matches!(rejected(st(MAX_STEP_BYTES)).error, Error::Label(_)));
+    let big = Event::Refused(BlobId([1; 32]), Code(u64::MAX));
+    assert_eq!(stream_event_len(&big), enc(Value::List(vec![Value::bytes(&[0; 16]), event_value(&big)])).len());
+}
+
+// spec/wire.md §11.1: the kind and id of a frame still arriving
+#[test]
+fn peek_head_reads_a_partial_frame_spec_wire_11_1() {
+    for (name, m) in messages() {
+        let body = m.encode();
+        assert_eq!(peek_head(&body[..body.len().min(12)]), Some((m.kind(), m.id())), "{name}");
+    }
+    assert_eq!(peek_head(&[0x83, 0x02]), None);
 }
 
 proptest! {
-    // spec/wire.md §13: decoders never panic on arbitrary or mutated bytes
+    // spec/wire.md §13: decoders never panic on arbitrary or mutated bytes, and whatever decodes
+    // is canonical: it re-encodes to the bytes it came from
     #[test]
-    fn decode_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..200), which in 0usize..29, pos in any::<usize>(), byte in any::<u8>()) {
-        let _ = Message::decode(&bytes);
+    fn decode_never_panics_and_accepts_only_canonical_spec_wire_13(bytes in proptest::collection::vec(any::<u8>(), 0..200), which in any::<usize>(), pos in any::<usize>(), byte in any::<u8>()) {
+        if let Ok(m) = Msg::decode(&bytes) {
+            prop_assert_eq!(m.encode(), bytes);
+        }
         let ms = messages();
         let mut enc = ms[which % ms.len()].1.encode();
         let p = pos % enc.len();
         enc[p] = byte;
-        if let Ok(m) = Message::decode(&enc) {
-            // anything accepted re-encodes to the same canonical bytes
+        if let Ok(m) = Msg::decode(&enc) {
             prop_assert_eq!(m.encode(), enc);
         }
     }
 }
 
-// spec/wire.md §13 (message items), spec/requirements.md (peer input never causes unbounded
-// allocation): a frame of one-byte items is refused before its value tree is built, while the
-// densest message valid by §11.2 still decodes
+// spec/wire.md §13 (a message at most 2^20 CBOR data items): a frame of one-byte items is
+// refused before its value tree is built, while a frame densely full of valid events decodes
 #[test]
 fn item_cap_spec_wire_13() {
     let n = MAX_MESSAGE - 16;
     let mut body = vec![0x83, 0x0b, 0x01, 0x9a];
     body.extend_from_slice(&(n as u32).to_be_bytes());
     body.extend(std::iter::repeat_n(0u8, n));
-    let r = Message::decode(&body).expect_err("decoded");
-    assert_eq!(r.error, Error::Cap("message items"));
-    // Deleted events filling the frame (denser than any engine reply: those page by
-    // `stream_event_size`)
-    let deleted = (LabelId([0xdd; 16]), Event::Deleted(BlobId([0xee; 32])));
-    let each = enc(Value::List(vec![Value::bytes(&deleted.0.0), event_value(&deleted.1)])).len();
-    let k = (MAX_MESSAGE - 64) / each;
-    let m = Message::PullReply(Box::new(PullReply { id: 1, events: vec![deleted; k], cursor: Some(vec![1; 72]), whole: false, trimmed: false, more: true, report: false, joins: vec![] }));
+    assert_eq!(Msg::decode(&body).expect_err("decoded").error, Error::Cap("message items"));
+    let deleted = (SyncId([0xdd; 16]), Event::Deleted(BlobId([0xee; 32])));
+    let k = (MAX_MESSAGE - 300) / stream_event_len(&deleted.1);
+    let m = Msg::PullReply(Box::new(PullReply { id: crate::limits::TOP_BIT | 1, events: vec![deleted; k], cursor: Some(Cursor::new(vec![1; 72]).unwrap()), whole: false, trimmed: false, more: true, report: false, joins: vec![] }));
     let body = m.encode();
-    assert!(body.len() <= MAX_MESSAGE && body.len() + 100 > MAX_MESSAGE, "{}", body.len());
-    assert_eq!(Message::decode(&body), Ok(m));
+    assert!(body.len() <= MAX_MESSAGE && body.len() + 400 > MAX_MESSAGE, "{}", body.len());
+    assert_eq!(Msg::decode(&body), Ok(m));
 }

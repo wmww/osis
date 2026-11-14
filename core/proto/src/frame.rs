@@ -13,9 +13,8 @@ pub fn encode_frame(body: &[u8]) -> Vec<u8> {
     out
 }
 
-/// A Hello is at most about 200 bytes (spec/wire.md §11.1: 16 versions); a first frame above
-/// this is malformed.
-pub const MAX_HELLO_BYTES: usize = 256;
+/// The largest Hello body: the frame's `MAX_HELLO_FRAME` less its length (spec/wire.md §11.1).
+pub const MAX_HELLO_BODY: usize = crate::limits::MAX_HELLO_FRAME - 4;
 
 /// Incremental frame splitter. Holds at most one frame plus the last pushed chunk.
 #[derive(Clone)]
@@ -40,7 +39,7 @@ impl FrameDecoder {
     }
 
     /// Accepts frame bodies up to `max` (at most `MAX_MESSAGE`) from now on: a peer's first
-    /// frame is its Hello (`MAX_HELLO_BYTES`).
+    /// frame is its Hello (`MAX_HELLO_BODY`).
     pub fn set_max(&mut self, max: usize) {
         self.max = max.min(MAX_MESSAGE);
     }
@@ -67,7 +66,7 @@ impl FrameDecoder {
         let body = body.to_vec();
         self.start += 4 + len;
         // Once half is handed out, drop it and shrink: the capacity stays within about four
-        // times `pending`, which is what a host charges (a large frame followed by one byte
+        // times `pending`, what a connection is charged (a large frame followed by one byte
         // holds no frame-sized buffer). Each drop moves at most the bytes it frees: linear.
         if self.start >= self.buf.len() / 2 {
             self.buf.drain(..self.start);
@@ -114,18 +113,18 @@ mod tests {
     #[test]
     fn capped_first_frame() {
         let mut d = FrameDecoder::new();
-        d.set_max(MAX_HELLO_BYTES);
-        d.push(&((MAX_HELLO_BYTES + 1) as u32).to_be_bytes());
+        d.set_max(MAX_HELLO_BODY);
+        d.push(&((MAX_HELLO_BODY + 1) as u32).to_be_bytes());
         assert!(d.next_frame().is_err());
         let mut d = FrameDecoder::new();
-        d.set_max(MAX_HELLO_BYTES);
-        d.push(&encode_frame(&[0x80; MAX_HELLO_BYTES]));
-        assert_eq!(d.next_frame().map(|f| f.map(|b| b.len())), Ok(Some(MAX_HELLO_BYTES)));
+        d.set_max(MAX_HELLO_BODY);
+        d.push(&encode_frame(&[0x80; MAX_HELLO_BODY]));
+        assert_eq!(d.next_frame().map(|f| f.map(|b| b.len())), Ok(Some(MAX_HELLO_BODY)));
     }
 
     // spec/requirements.md (peer input never causes unbounded allocation): once a large frame is
     // handed out the decoder holds no frame-sized buffer, whether the input ended with it or with
-    // the start of a small next frame (a host charges only `pending` to the connection)
+    // the start of a small next frame (a connection is charged only `pending`)
     #[test]
     fn large_frame_buffer_released() {
         let big = encode_frame(&vec![0x40; 1 << 20]);

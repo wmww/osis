@@ -1,4 +1,4 @@
-//! Connection proofs (spec/sync-opens.md §2 connection proofs, spec/wire.md §11.2 Prove): each proof
+//! Connection proofs (spec/sync-opens.md §2, spec/wire.md §11.2 Prove): each proof
 //! shows the prover holds an actor's signing key on this connection. The signature covers the
 //! prover's role, the verifier's Hello challenge and the listener's static key (the one key both
 //! sides authenticated for the connection, whichever of them proves). Invariant: a proof made as
@@ -10,17 +10,6 @@ use crate::Error;
 use crate::dec::Fields;
 use osis_base::{CreationRecord, Tid, Value};
 use osis_crypto::{Domain, Signature, SigningSecret, VerifyingKey, proof_digest};
-
-/// Most proofs in one Prove or Proved; past it the message is refused whole. Resource bound: a
-/// stranger pays one signature per proof, so this bounds its verification cost per connection
-/// (about 12 ms at 46 us each). 0: no connection proves anything; infinity: a frame of proofs costs
-/// seconds of the event loop. A node holding more key actors proves its own key and the first of
-/// them by tid; the rest are not proved on that connection.
-pub const MAX_PROOFS: usize = 256;
-
-/// Most tags one Resume holds: as many as fit one message (spec/wire.md §11.2). Not picked: the
-/// message bound divided by a tag's encoding. A dialer holding more lists its most recent.
-pub const MAX_RESUME_TAGS: usize = (osis_base::format::MAX_MESSAGE - 64) / 33;
 
 /// A proof as the prover holds it, before the verifier's challenge is known.
 #[derive(Clone)]
@@ -130,8 +119,8 @@ mod tests {
     // spec/wire.md §11.2 Prove: `MAX_PROOFS` proofs fit a frame
     #[test]
     fn caps_fit_a_frame_spec_wire_11_2() {
-        let proofs = vec![prover(8).sign(false, &[1; 32], &[2; 32]); MAX_PROOFS];
-        assert!(crate::encode_frame(&crate::Message::Prove { id: 1, proofs }.encode()).len() <= osis_base::format::MAX_MESSAGE);
+        let proofs = vec![prover(8).sign(false, &[1; 32], &[2; 32]); crate::limits::MAX_PROOFS];
+        assert!(crate::encode_frame(&crate::Msg::Prove { id: 1, proofs }.encode()).len() <= osis_base::format::MAX_MESSAGE);
     }
 
     // spec/wire.md §11.2 Prove: encodes and decodes

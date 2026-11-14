@@ -3,9 +3,7 @@
 //! costs at most one comparison per value, each value at least `P + 1` bits: linear in the bytes.
 
 use crate::Error;
-
-/// Rice parameter and false-positive width (issues/sync-rewrite.md).
-pub const BEACON_P: u32 = 8;
+use crate::limits::BEACON_P;
 
 /// The width of a whole filter of `n` entries: `ceil(log2 n) + P` bits, `P` for an empty one.
 pub fn filter_width(n: usize) -> u8 {
@@ -97,44 +95,76 @@ pub fn pages(values: &[u64], f: u8, max_bytes: usize) -> Vec<Page> {
     }
 }
 
-/// Decodes the values of a page over `[lo, hi)`: ascending, each below `hi`. An error for bytes
-/// left over that are more than zero padding of one byte, or a value outside the range.
-pub fn decode_gcs(gcs: &[u8], lo: u64, hi: u64) -> Result<Vec<u64>, Error> {
-    let mut out = Vec::new();
-    let mut prev = lo;
-    let total = gcs.len() * 8;
-    let read = |i: usize| (gcs.get(i / 8).copied().unwrap_or(0) >> (7 - (i % 8))) & 1;
-    let mut pos = 0usize;
-    while total - pos > BEACON_P as usize {
+/// The values of a page over `[lo, hi)`, ascending, each below `hi`, read one at a time: a
+/// value past `hi`, a gap running off the end, or bytes left over that are more than fewer than
+/// 8 zero padding bits, is an error (and ends the iteration).
+struct Values<'a> {
+    gcs: &'a [u8],
+    pos: usize,
+    prev: u64,
+    hi: u64,
+    done: bool,
+}
+
+impl Values<'_> {
+    fn fail(&mut self, what: &'static str) -> Option<Result<u64, Error>> {
+        self.done = true;
+        Some(Err(Error::Malformed(what)))
+    }
+
+    fn bit(&self, i: usize) -> u8 {
+        (self.gcs.get(i / 8).copied().unwrap_or(0) >> (7 - (i % 8))) & 1
+    }
+}
+
+impl Iterator for Values<'_> {
+    type Item = Result<u64, Error>;
+    fn next(&mut self) -> Option<Result<u64, Error>> {
+        if self.done {
+            return None;
+        }
+        let total = self.gcs.len() * 8;
+        if total - self.pos <= BEACON_P as usize {
+            self.done = true;
+            let padded = total - self.pos < 8 && (self.pos..total).all(|p| self.bit(p) == 0);
+            return (!padded).then_some(Err(Error::Malformed("filter padding")));
+        }
         let mut q = 0u64;
-        while pos < total && read(pos) == 1 {
+        while self.pos < total && self.bit(self.pos) == 1 {
             q += 1;
-            pos += 1;
+            self.pos += 1;
         }
-        if pos >= total {
-            return Err(Error::Malformed("filter gap"));
+        if total - self.pos < 1 + BEACON_P as usize {
+            return self.fail("filter gap");
         }
-        pos += 1;
-        if total - pos < BEACON_P as usize {
-            return Err(Error::Malformed("filter gap"));
-        }
+        self.pos += 1;
         let mut r = 0u64;
         for _ in 0..BEACON_P {
-            r = (r << 1) | u64::from(read(pos));
-            pos += 1;
+            r = (r << 1) | u64::from(self.bit(self.pos));
+            self.pos += 1;
         }
-        let gap = q.checked_mul(1 << BEACON_P).and_then(|x| x.checked_add(r)).ok_or(Error::Malformed("filter gap"))?;
-        let v = prev.checked_add(gap).ok_or(Error::Malformed("filter gap"))?;
-        if v >= hi {
-            return Err(Error::Malformed("filter value outside its range"));
+        let Some(v) = q.checked_mul(1 << BEACON_P).and_then(|x| x.checked_add(r)).and_then(|gap| self.prev.checked_add(gap)) else { return self.fail("filter gap") };
+        if v >= self.hi {
+            return self.fail("filter value outside its range");
         }
-        out.push(v);
-        prev = v;
+        self.prev = v;
+        Some(Ok(v))
     }
-    if total - pos >= 8 || (pos..total).any(|p| read(p) == 1) {
-        return Err(Error::Malformed("filter padding"));
-    }
-    Ok(out)
+}
+
+fn values(gcs: &[u8], lo: u64, hi: u64) -> Values<'_> {
+    Values { gcs, pos: 0, prev: lo, hi, done: false }
+}
+
+/// Decodes the values of a page over `[lo, hi)` (spec/wire.md §11.2 Beacons).
+pub fn decode_gcs(gcs: &[u8], lo: u64, hi: u64) -> Result<Vec<u64>, Error> {
+    values(gcs, lo, hi).collect()
+}
+
+/// Checks a page as `decode_gcs` does and counts its values, allocating nothing: what a message
+/// decoder runs on a peer's page.
+pub fn count_gcs(gcs: &[u8], lo: u64, hi: u64) -> Result<u64, Error> {
+    values(gcs, lo, hi).try_fold(0u64, |n, v| v.map(|_| n + 1))
 }
 
 #[cfg(test)]
@@ -188,7 +218,19 @@ mod tests {
         assert_eq!(pages(&[], f, 16), vec![Page { lo: 0, hi: 1 << f, gcs: vec![], more: false }]);
     }
 
-    // issues/sync-rewrite.md: the width of a whole filter
+    // spec/wire.md §11.2 Beacons: a page's padding is fewer than 8 zero bits; the count agrees
+    #[test]
+    fn gcs_padding_and_count_spec_wire_11_2() {
+        let b = encode_gcs(&[1, 2, 3], 0);
+        assert_eq!(count_gcs(&b, 0, 500), Ok(3));
+        let mut one = b.clone();
+        *one.last_mut().unwrap() |= 1;
+        assert!(count_gcs(&one, 0, 500).is_err(), "a padding bit set");
+        assert!(count_gcs(&[0], 0, 500).is_err(), "8 bits of padding");
+        assert_eq!(count_gcs(&[], 0, 500), Ok(0));
+    }
+
+    // spec/wire.md §11.2 Beacons: the width of a whole filter
     #[test]
     fn filter_width_is_ceil_log2_plus_p() {
         assert_eq!(filter_width(0), BEACON_P as u8);

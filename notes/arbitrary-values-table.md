@@ -34,15 +34,14 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | `MAX_CHAIN_DEPTH` 64 | R | only key actors / unbounded chain walks; deeper is invalid everywhere alike |
 | `MAX_VALUE_DEPTH` 64, `MAX_OBJECT_DEPTH` 512, `MAX_AK_BYTES` 1024, `MAX_URL_BYTES` 256, `MAX_RUN` 2^12 (keeps a run, one page element, far below `MAX_PAGE_ITEMS`), `MAX_STEP_BYTES` 323 | R (decoder limits, refuse) | nothing decodes / stack and memory on hostile input |
 | `MAX_MESSAGE` 9 MiB, `REPLY_BUDGET`/`MAX_CLAIM_SET` = it − 64 KiB | R (headroom derived) | no messages / unbounded frame buffers |
-| `MAX_ITEMS` 1024 (osis-proto `msg`, items per message) | R | nothing per message / unbounded per-message work |
-| `MAX_HELLO_VERSIONS` 16, `MAX_HELLO_BYTES` 256 | R | no handshake / unbounded first frame |
+| osis-proto `limits` per-message caps: `MAX_DELETE_ITEMS`, `MAX_FETCH_IDS`, `MAX_OFFER_ITEMS` 1024, `MAX_ITEM_HITS` 256, `MAX_MEMBERS` 4096, `MAX_CURSOR_BYTES` 256, `MAX_RESUME_TAGS` ⌊(`MAX_MESSAGE` − 64) / 34⌋ (spec/wire.md §2, §11.2) | R (refused as malformed) | nothing per message / unbounded per-message work |
+| `MAX_HELLO_VERSIONS` 16, `MAX_HELLO_FRAME` 256 (length included) | R | no handshake / unbounded first frame |
 | `MAX_MESSAGE_ITEMS` 2^20 (osis-proto `msg`: CBOR items per message, counted before decoding) | R (densest engine reply about 760 000 items, densest §11.2-valid message about 1 021 000; a decoded item is 100-260 bytes, so at most about 270 MB per decode, one at a time in a hub) | no message decodes / about 2 GB of value tree per 9 MiB frame from any peer |
 
 ### Clock and window (`proto/hello.rs`, `proto/msg.rs`)
 | value | class | 0 / ∞ |
 |---|---|---|
-| `INITIAL_PINGS` 3, `MIN_PONGS` 3, `MAX_SAMPLES` 9 | M | no offset / slow start, memory |
-| `PING_INTERVAL_MS` 5 min | M (also keeps a request out, so the stall clock finds a dead idle dialed connection) | ping storm / offset never refreshed, a dead idle connection kept until the next request |
+| `MIN_PONGS` 3, `MAX_SAMPLES` 9 | M | no offset / slow start, memory |
 | `OFFSET_DIAGNOSTIC_MS` 5 s | M (diagnostic only) | always reported / never |
 | `MAX_SAMPLE_RTT_MS` 10 s | M (spec: ignore long round trips) | no samples / suspend-length errors |
 | `STALL_TIMEOUT_MS` 2 min | M (liveness: the oldest request in flight did not move, either side; half of it bounds how long a served request waits in the hub's queue for the output bound's room before the biggest holders are closed) | every connection with a request out closes, every stream body is asked of a second source at once / a peer answering nothing holds its fetches; a link moving under one `WRITE_CHUNK` per timeout counts as stalled |

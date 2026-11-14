@@ -4,13 +4,13 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use osis_proto::{FrameDecoder, Hello, Message};
+use osis_proto::{FrameDecoder, Hello, Msg};
 
 fn body(b: &[u8]) {
     if let Ok(h) = Hello::decode(b) {
         assert_eq!(h.encode(), b);
     }
-    if let Ok(m) = Message::decode(b) {
+    if let Ok(m) = Msg::decode(b) {
         assert_eq!(m.encode(), b);
     }
 }

@@ -1,15 +1,16 @@
-//! A fixed label (steps, claim set with an entry box, keys) from fixed seeds, and one message of
-//! every kind built on it (spec/wire.md §8, §11.2), shared by tests, conformance vectors and fuzz
-//! seeds. Fixed inputs only, so construction cannot fail on data.
+//! A fixed sync ID (steps, claim set with an entry box, keys) from fixed seeds, one message of
+//! every kind built on it and one rejection per kind (spec/wire.md §8, §11.2), shared by tests,
+//! conformance vectors and fuzz seeds. Fixed inputs only, so construction cannot fail on data.
 #![allow(clippy::expect_used)]
 
+use crate::api::{Outcome, Payload};
 use crate::msg::*;
-use osis_base::hash::hash;
-use osis_base::{BlobId, LabelId, WallMs};
+use crate::{ActorProof, Prover, SyncId};
+use osis_base::{BlobId, CreationRecord, Tid, Value, WallMs, cbor};
 use osis_crypto::{Epoch, KemSecret, LabelRole, SeededRng, Secret32, SigningSecret, X25519Secret, label_role_key};
-use osis_label::{Parent, Prefix, Reader, StepKeys, genesis_label, register, sign_deposit, sign_stamp};
+use osis_label::{Parent, Prefix, Reader, StepKeys, genesis_label, register, sign_stamp};
 
-/// The host's static key and Hello challenge the examples sign opens for.
+/// The listener's static key and the Hello challenge the examples sign opens and proofs for.
 pub const STATIC_KEY: [u8; 32] = [0x5e; 32];
 pub const CHALLENGE: [u8; 32] = [0x40; 32];
 
@@ -17,10 +18,10 @@ fn s32(b: u8) -> Secret32 {
     Secret32::from_bytes([b; 32])
 }
 
-/// One group's label: a genesis step and a child without rotation, each with a claim
+/// One group's sync ID: a genesis step and a child without rotation, each with a claim
 /// set listing one DH reader and one key actor (entry box sealed to a KEM key from `b+6`).
 pub struct Fixture {
-    pub label: LabelId,
+    pub sync_id: SyncId,
     pub genesis: Step,
     pub genesis_claims: ClaimSet,
     pub child: Step,
@@ -40,8 +41,8 @@ impl Fixture {
     /// sync secret `b+8`.
     pub fn new(b: u8) -> Fixture {
         let (read, write, admin, dseed, sync) = (s32(b), s32(b + 1), s32(b + 2), s32(b + 3), s32(b + 8));
-        let label = genesis_label(&admin);
-        let keys = StepKeys::derive(&sync, &write, &admin, &dseed, &label);
+        let sync_id = genesis_label(&admin);
+        let keys = StepKeys::derive(&sync, &write, &admin, &dseed, &sync_id);
         let delete = label_role_key(LabelRole::Delete, &admin);
         let reader = X25519Secret::from_secret(&s32(b + 4));
         let key_actor = SigningSecret::from_seed(&s32(b + 5));
@@ -54,7 +55,7 @@ impl Fixture {
         let (genesis, genesis_claims) = register(Parent::Genesis(&delete), keys, &readers, (&group, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed genesis");
         let (child, child_claims) = register(Parent::Child { step: &genesis, delete: &delete }, keys, &readers, (&group, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed child");
         Fixture {
-            label,
+            sync_id,
             genesis,
             genesis_claims,
             child,
@@ -62,7 +63,7 @@ impl Fixture {
             sync: label_role_key(LabelRole::Sync, &sync),
             write: label_role_key(LabelRole::Write, &write),
             delete,
-            deposit: osis_crypto::deposit_key(&dseed, &label),
+            deposit: osis_crypto::deposit_key(&dseed, &sync_id),
             reader,
             key_actor,
         }
@@ -81,7 +82,7 @@ impl Fixture {
     /// A stamped entry of `blob` under the head's write key (wrap: one byte repeated).
     pub fn entry(&self, blob: Vec<u8>) -> Stamped {
         let wrap = [blob.len() as u8; WRAP_LEN];
-        let stamp = sign_stamp(&self.write, &self.label, &osis_label::blob_id(&blob), &wrap, false);
+        let stamp = sign_stamp(&self.write, &self.sync_id, &osis_label::blob_id(&blob), &wrap, false);
         Stamped { blob, wrap, stamp }
     }
 }
@@ -94,191 +95,191 @@ pub struct Stamped {
     pub stamp: Signature,
 }
 
-/// One label's signing keys at one step.
-#[derive(Clone)]
-pub struct Keys {
-    pub sync: SigningSecret,
-    pub write: SigningSecret,
-    pub delete: SigningSecret,
-    pub deposit: SigningSecret,
+fn cursor(b: u8) -> Cursor {
+    Cursor::new(vec![b; 72]).expect("a short cursor")
 }
 
-/// A label that rotates (engine and host tests): its path, claim sets and keys; group secrets
-/// from a byte each, the admin secret from `admin`.
-pub struct Label {
-    pub id: LabelId,
-    pub keys: Vec<Keys>,
-    pub steps: Vec<Step>,
-    pub sets: Vec<ClaimSet>,
-    pub reader: X25519Secret,
-    /// The key actor every claim set lists by static entry.
-    pub key_actor: SigningSecret,
-    pub admin: u8,
-    /// Each step's sync secret byte.
-    syncs: Vec<u8>,
-}
-
-const DEPOSIT_SEED: u8 = 0x30;
-
-impl Label {
-    pub fn new(admin: u8) -> Label {
-        let id = genesis_label(&s32(admin));
-        let mut l = Label { id, keys: vec![], steps: vec![], sets: vec![], reader: X25519Secret::from_secret(&s32(0x31)), key_actor: SigningSecret::from_seed(&s32(0x32)), admin, syncs: vec![] };
-        l.step_with(1, 1, None);
-        l
-    }
-
-    /// A step with read secret `b`, write `b + 1`, sync `sync ^ 0x80`, the admin secret (a child
-    /// of the head signed by `parent`, else the genesis step).
-    fn step_with(&mut self, b: u8, sync: u8, parent: Option<SigningSecret>) -> (Step, ClaimSet) {
-        self.syncs.push(sync);
-        let (read, write, adm, sync) = (s32(b), s32(b + 1), s32(self.admin), s32(sync ^ 0x80));
-        let pk = StepKeys::derive(&sync, &write, &adm, &s32(DEPOSIT_SEED), &self.id);
-        let keys = Keys {
-            sync: label_role_key(LabelRole::Sync, &sync),
-            write: label_role_key(LabelRole::Write, &write),
-            delete: label_role_key(LabelRole::Delete, &adm),
-            deposit: osis_crypto::deposit_key(&s32(DEPOSIT_SEED), &self.id),
-        };
-        let kem = KemSecret::derive(&s32(0x33));
-        let readers = [Reader::Dh(self.reader.public()), Reader::Static { signing: self.key_actor.verifying_key(), kem: kem.public() }];
-        let mut rng = SeededRng::from_seed([b; 32]);
-        let group = osis_base::Tid::from_bytes([b; 15]);
-        let read_epoch = (&group, Epoch::derive(&group, osis_base::Role::Read, 1, &read).expect("small epoch"), &read);
-        let sync_epoch = (Epoch::derive(&group, osis_base::Role::Sync, 1, &sync).expect("small epoch"), &sync);
-        let (step, set) = match (&parent, self.steps.last()) {
-            (Some(d), Some(prev)) => register(Parent::Child { step: prev, delete: d }, pk, &readers, read_epoch, sync_epoch, &mut rng).expect("child step"),
-            _ => register(Parent::Genesis(&keys.delete), pk, &readers, read_epoch, sync_epoch, &mut rng).expect("genesis step"),
-        };
-        self.steps.push(step.clone());
-        self.sets.push(set.clone());
-        self.keys.push(keys);
-        (step, set)
-    }
-
-    /// A child step under new read and write secrets (`b`, `b + 1`).
-    pub fn rotate(&mut self, b: u8) -> (Step, ClaimSet) {
-        let parent = self.head_keys().delete.clone();
-        self.step_with(b, b, Some(parent))
-    }
-
-    /// A child step under new read and write secrets (`b`, `b + 1`) and the head's sync secret.
-    pub fn rotate_keeping_sync(&mut self, b: u8) -> (Step, ClaimSet) {
-        let parent = self.head_keys().delete.clone();
-        let sync = self.syncs.last().copied().unwrap_or(1);
-        self.step_with(b, sync, Some(parent))
-    }
-
-    pub fn head_keys(&self) -> &Keys {
-        self.keys.last().expect("a label has a step")
-    }
-
-    /// A stamped entry of `blob` under the head's write key.
-    pub fn entry(&self, blob: Vec<u8>) -> Stamped {
-        self.entry_by(blob, &self.head_keys().write.clone())
-    }
-
-    pub fn entry_by(&self, blob: Vec<u8>, write: &SigningSecret) -> Stamped {
-        let wrap: Wrap = [(blob.len() % 251) as u8; WRAP_LEN];
-        let stamp = sign_stamp(write, &self.id, &osis_label::blob_id(&blob), &wrap, false);
-        Stamped { blob, wrap, stamp }
-    }
-
-    /// A Deposit item of `blob` signed by `key`.
-    pub fn deposit(&self, blob: Vec<u8>, key: &SigningSecret) -> crate::msg::OfferItem {
-        let wrap: Wrap = [7; WRAP_LEN];
-        let sig = sign_deposit(key, &self.id, &osis_label::blob_id(&blob), &wrap, false);
-        crate::msg::OfferItem::Deposit { label: self.id, blob, wrap, sig }
-    }
-
-    /// A Register of step `i` with its claim set, as request `id`.
-    pub fn register(&self, id: crate::msg::Id, i: usize) -> crate::msg::Message {
-        crate::msg::Message::Register { id, label: self.id, step: self.steps.get(i).expect("step").clone(), claim_set: self.sets.get(i).cloned() }
-    }
-}
-
-/// A prefix salt from `n`.
-pub fn salt(n: u64) -> [u8; 16] {
-    hash(&n.to_be_bytes()).first_chunk::<16>().copied().unwrap_or_default()
-}
-
-/// A blob with a version 1 prefix (salt from `n`, expiry unless 0, commitments), then `size`
-/// body bytes.
-pub fn blob_sized(n: u64, expiry: u64, commitments: Vec<[u8; 33]>, size: usize) -> Vec<u8> {
-    let mut b = Prefix::new(salt(n), (expiry != 0).then_some(WallMs(expiry)), if commitments.is_empty() { vec![] } else { vec![commitments] }).expect("small prefix").to_bytes();
-    let h = hash(&n.to_le_bytes());
-    b.extend(h.iter().cycle().take(size));
-    b
-}
-
-pub fn blob_with(n: u64, expiry: u64, commitments: Vec<[u8; 33]>) -> Vec<u8> {
-    blob_sized(n, expiry, commitments, 20 + (n % 32) as usize)
-}
-
-pub fn blob(n: u64) -> Vec<u8> {
-    blob_with(n, 0, vec![])
-}
-
-pub fn bid(n: u64) -> BlobId {
-    osis_label::blob_id(&blob(n))
+/// A key actor's connection proof over the examples' challenge and static key.
+pub fn proof(b: u8) -> ActorProof {
+    let key = SigningSecret::from_seed(&s32(b));
+    let record = CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [b; 32], account: false };
+    Prover { key, record }.sign(false, &CHALLENGE, &STATIC_KEY)
 }
 
 /// `(name, message)` for every kind, in kind order, plus variants of the sum types.
-pub fn messages() -> Vec<(&'static str, Message)> {
+pub fn messages() -> Vec<(&'static str, Msg)> {
     let f = Fixture::new(0x10);
-    let l = f.label;
+    let l = f.sync_id;
+    let other = SyncId([0x0b; 16]);
     let id = |b: u8| BlobId([b; 32]);
+    let top = |n: u32| crate::limits::TOP_BIT | n;
     let entry = f.entry(Fixture::blob(1));
     let added = Event::Added { blob_id: osis_label::blob_id(&entry.blob), blob: Some(entry.blob.clone()), wrap: entry.wrap, stamp: Some(entry.stamp) };
-    let entry_box = f.genesis_claims.entry_box(&l, &f.key_actor.verifying_key()).cloned();
+    let entry_box = f.genesis_claims.entry_box(&l, &f.key_actor.verifying_key()).cloned().expect("the key actor is listed");
     let deposited = Fixture::blob(2);
     let dep_wrap = [0x78; WRAP_LEN];
     let dep_sig = osis_label::sign_deposit(&f.deposit, &l, &osis_label::blob_id(&deposited), &dep_wrap, false);
     let dk = osis_crypto::DeleteSecret::derive(&s32(0x7a));
+    let open = |k: &SigningSecret| osis_crypto::sign_open(k, false, &l, &CHALLENGE, &STATIC_KEY);
+    let gcs = crate::filter::encode_gcs(&[3, 200, 201, 511], 0);
     vec![
-        ("error", Message::Error { id: 1, code: Code::NOT_OPENED }),
-        ("ok", Message::Ok { id: 2 }),
-        ("ping", Message::Ping { id: 3, wall_ms: 1_700_000_000_000 }),
-        ("pong", Message::Pong { id: 3, wall_ms: 1_700_000_000_123 }),
-        ("register", Message::Register { id: 7, label: l, step: f.genesis.clone(), claim_set: Some(f.genesis_claims.clone()) }),
-        ("status", Message::Status { id: 10, codes: vec![Code::OK, Code::NOT_HEAD] }),
-        ("delete", Message::Delete { id: 14, label: l, items: vec![DeleteItem::sign(&f.delete, &l, id(0xd1)), DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[0x7d; 16], &[0x7e; 16], &l, id(0xd2)).expect("fixed delete")] }),
-        ("fetch", Message::Fetch { id: crate::msg::NODE_IDS | 19, label: l, max_reply: 32_768, ids: vec![id(0xb2), id(0xb5)] }),
-        (
-            "fetch reply",
-            Message::FetchReply { id: crate::msg::NODE_IDS | 19, items: vec![Fetched { blob_id: id(0xb2), entry: Some((Fixture::blob(3), [0x79; WRAP_LEN], None)) }, Fetched { blob_id: id(0xb5), entry: None }] },
-        ),
+        ("error", Msg::Error { id: 1, code: Code::NOT_OPEN }),
+        ("error answering an unreadable id", Msg::Error { id: 0, code: Code::MALFORMED }),
+        ("ok", Msg::Ok { id: 2 }),
+        ("ping", Msg::Ping { id: 3, wall_ms: 1_700_000_000_000 }),
+        ("pong", Msg::Pong { id: 3, wall_ms: 1_700_000_000_123 }),
+        ("register", Msg::Register { id: 7, sync_id: l, step: f.genesis.clone(), claim_set: Some(f.genesis_claims.clone()) }),
+        ("register a child without its claim set", Msg::Register { id: 8, sync_id: l, step: f.child.clone(), claim_set: None }),
+        ("status", Msg::Status { id: 14, codes: vec![Code::OK, Code::NOT_HEAD_KEY] }),
+        ("delete", Msg::Delete { id: 14, sync_id: l, items: vec![DeleteItem::sign(&f.delete, &l, id(0xd1)), DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[0x7d; 16], &[0x7e; 16], &l, id(0xd2)).expect("fixed delete")] }),
+        ("fetch", Msg::Fetch { id: top(19), sync_id: l, max_reply: 32_768, ids: vec![id(0xb2), id(0xb5)] }),
+        ("fetch reply", Msg::FetchReply { id: top(19), items: vec![Fetched { blob_id: id(0xb2), entry: Some((Fixture::blob(3), [0x79; WRAP_LEN], None)) }, Fetched { blob_id: id(0xb5), entry: None }] }),
+        ("auth of a main session", Msg::Auth { id: 24, secret: None, session_id: [0x24; 16] }),
+        ("auth of a client actor", Msg::Auth { id: 24, secret: Some(s32(0x25)), session_id: [0x24; 16] }),
+        ("call", Msg::Call { id: 25, max_reply: 16_384, method: 3, args: vec![Value::Tid(Tid::from_bytes([0x25; 15])), Value::Str("t:reg.0".into())] }),
+        ("reply", Msg::Reply { id: 25, outcome: Outcome::Ok { value: Value::uint(7) } }),
+        ("reply with an error", Msg::Reply { id: 25, outcome: Outcome::Err { code: crate::ApiCode::PERMISSION, detail: vec![Value::Tid(Tid::from_bytes([0x26; 15])), Value::uint(1)] } }),
+        ("sub", Msg::Sub { id: 27, max_reply: 65_536, filter: Value::List(vec![Value::uint(1)]) }),
+        ("unsub", Msg::Unsub { id: 28, sub_id: 27 }),
+        ("notify", Msg::Notify { sub_id: 27, payload: Payload::Delivery { value: Value::uint(9) } }),
+        ("notify lapsed", Msg::Notify { sub_id: 27, payload: Payload::Lapsed }),
+        ("notify too large", Msg::Notify { sub_id: 27, payload: Payload::TooLarge { source: Value::Str("t:reg.0".into()) } }),
         (
             "stranded",
-            Message::Stranded {
-                id: 35,
-                label: l,
-                holder: osis_base::Tid::from_bytes([0x0d; 15]),
-                keys: osis_label::HolderKeys { commits: vec![osis_base::Value::List(vec![osis_base::Value::List(vec![]), osis_base::Value::Int(1), osis_base::Value::List(vec![])])], records: vec![osis_base::CreationRecord::Thing { admin: osis_base::Tid::from_bytes([0x0e; 15]), nonce: [0x0f; 32], link: None }] },
+            Msg::Stranded {
+                id: 30,
+                sync_id: l,
+                holder: Tid::from_bytes([0x0d; 15]),
+                keys: osis_label::HolderKeys { commits: vec![Value::List(vec![Value::List(vec![]), Value::Int(1), Value::List(vec![])])], records: vec![CreationRecord::Thing { admin: Tid::from_bytes([0x0e; 15]), nonce: [0x0f; 32], link: None }] },
             },
         ),
-        ("suspect", Message::Suspect { id: 36, label: l, entries: vec![crate::msg::SuspectEntry { thing: osis_base::Tid::from_bytes([0x0c; 15]), ak: osis_base::Ak::new("t:reg.0").expect("an AK"), digest: [0x0d; 16] }] }),
-        ("beacons", Message::Beacons { id: 30, generation: 1, base: None, f: 9, lo: 0, hi: 512, gcs: vec![0, 1, 2], more: false }),
-        ("offer", Message::Offer { id: 31, items: vec![crate::msg::OfferItem::Hit([9; 32], None), crate::msg::OfferItem::Hit([10; 32], Some(osis_crypto::Signature([11; 64]))), crate::msg::OfferItem::ByRole(l, vec![[8; 32]])] }),
-        ("offer with a deposit", Message::Offer { id: 34, items: vec![crate::msg::OfferItem::Deposit { label: l, blob: deposited, wrap: dep_wrap, sig: dep_sig }] }),
-        ("offer static", Message::Offer { id: 36, items: vec![crate::msg::OfferItem::Static { hit: [12; 32], key: f.key_actor.verifying_key().to_bytes(), sig: osis_crypto::sign_open(&f.key_actor, false, &l, &CHALLENGE, &STATIC_KEY) }] }),
-        ("offer behind", Message::Offer { id: 35, items: vec![crate::msg::OfferItem::Behind { label: l, step: Some(f.genesis.id()), key: f.sync.verifying_key().to_bytes(), sig: osis_crypto::sign_open(&f.sync, false, &l, &CHALLENGE, &STATIC_KEY) }, crate::msg::OfferItem::Behind { label: l, step: None, key: f.sync.verifying_key().to_bytes(), sig: osis_crypto::sign_open(&f.sync, false, &l, &CHALLENGE, &STATIC_KEY) }] }),
-        ("lost", Message::Lost { id: 32, items: vec![(l, None)] }),
-        ("shared", Message::Shared { id: 31, codes: vec![(Code::OK, Some([7; 32]), None), (Code::NOT_ADMITTED, None, None)] }),
-        ("shared with an entry grant", Message::Shared { id: 32, codes: vec![(Code::OK, Some([7; 32]), Some(Box::new(crate::msg::Grant { entry_box: Some(entry_box.expect("the key actor is listed")), steps: vec![f.genesis.clone(), f.child.clone()] })))] }),
-        ("shared with a child step", Message::Shared { id: 35, codes: vec![(Code::OK, None, Some(Box::new(crate::msg::Grant { entry_box: None, steps: vec![f.child.clone()] })))] }),
-        ("no record", Message::NoRecord { id: 33 }),
+        ("suspect", Msg::Suspect { id: 31, sync_id: l, entries: vec![SuspectEntry { thing: Tid::from_bytes([0x0c; 15]), ak: osis_base::Ak::new("t:reg.0").expect("an AK"), digest: [0x0d; 16] }] }),
+        ("prove", Msg::Prove { id: 32, proofs: vec![proof(0x32), proof(0x33)] }),
+        ("proved", Msg::Proved { id: 32, proofs: vec![] }),
+        ("resume", Msg::Resume { id: 34, nonce: [0x34; 32], tags: vec![[0x35; 32], [0x36; 32]] }),
+        ("resumed", Msg::Resumed { id: 34, nonce: [0x37; 32], tag: Some([0x35; 32]) }),
+        ("beacons", Msg::Beacons { id: top(36), generation: 1, base: None, f: 9, lo: 0, hi: 512, gcs, more: false }),
+        ("beacons additions", Msg::Beacons { id: top(37), generation: 2, base: Some(1), f: 9, lo: 0, hi: 512, gcs: vec![], more: false }),
+        ("offer", Msg::Offer { id: top(37), items: vec![OfferItem::Hit { hit: [9; 32], sig: None }, OfferItem::Hit { hit: [10; 32], sig: Some(open(&f.sync)) }, OfferItem::ByRole { sync_id: l, hits: vec![[8; 32]] }] }),
+        ("offer with a deposit", Msg::Offer { id: top(38), items: vec![OfferItem::Deposit(DepositItem { sync_id: l, blob: deposited, wrap: dep_wrap, sig: dep_sig })] }),
+        ("offer static", Msg::Offer { id: top(39), items: vec![OfferItem::Static { hit: [12; 32], signing_pk: f.key_actor.verifying_key().to_bytes(), sig: open(&f.key_actor) }] }),
         (
-            "pull",
-            Message::Pull(Box::new(crate::msg::Pull { id: 34, cursor: Some(vec![0x2c; 72]), joins: vec![(l, None), (LabelId([0x0b; 16]), Some(vec![0x2d; 72]))], inline_limit: 0, max_reply: 65_536, follow: true, ephemeral: true })),
+            "offer behind",
+            Msg::Offer {
+                id: top(40),
+                items: vec![
+                    OfferItem::Behind(BehindItem { sync_id: l, step: Some(f.genesis.id()), key: f.sync.verifying_key().to_bytes(), sig: open(&f.sync) }),
+                    OfferItem::Behind(BehindItem { sync_id: l, step: None, key: f.sync.verifying_key().to_bytes(), sig: open(&f.sync) }),
+                ],
+            },
         ),
+        ("lost", Msg::Lost { id: top(38), items: vec![(l, None), (other, Some(cursor(0x38)))] }),
+        ("shared", Msg::Shared { id: top(37), items: vec![SharedItem { code: Code::OK, tag: Some([7; 32]), grant: None, sig: None }, SharedItem::code(Code::DECLINED)] }),
+        (
+            "shared with an entry grant",
+            Msg::Shared { id: top(39), items: vec![SharedItem { code: Code::OK, tag: Some([7; 32]), grant: Some(Grant { entry_box: Some(entry_box), steps: vec![f.genesis.clone(), f.child.clone()] }), sig: Some(open(&f.sync)) }] },
+        ),
+        ("shared with a child step", Msg::Shared { id: top(40), items: vec![SharedItem { code: Code::OK, tag: None, grant: Some(Grant { entry_box: None, steps: vec![f.child.clone()] }), sig: None }, SharedItem::code(Code::UNKNOWN_SYNC_ID)] }),
+        ("no record", Msg::NoRecord { id: crate::limits::NO_RECORD_ID }),
+        ("pull", Msg::Pull(Box::new(Pull { id: top(41), cursor: Some(cursor(0x2c)), joins: vec![(l, None), (other, Some(cursor(0x2d)))], inline_limit: 0, max_reply: 65_536, follow: true, ephemeral: true }))),
         (
             "pull reply",
-            Message::PullReply(Box::new(crate::msg::PullReply { id: 34, events: vec![(l, added.clone()), (l, Event::Deleted(id(0xb7)))], cursor: Some(vec![0x2e; 72]), whole: false, trimmed: false, more: true, report: false, joins: vec![(LabelId([0x0b; 16]), Some(vec![0x2f; 72]))] })),
+            Msg::PullReply(Box::new(PullReply { id: top(41), events: vec![(l, added.clone()), (l, Event::Deleted(id(0xb7))), (l, Event::Head(f.child.clone()))], cursor: Some(cursor(0x2e)), whole: false, trimmed: false, more: true, report: true, joins: vec![(other, Some(cursor(0x2f)))] })),
         ),
-        ("stream", Message::Stream(Box::new(crate::msg::Stream { events: vec![(l, added.clone())], cursor: Some(vec![0x30; 72]), report: true, seq: 0 }))),
-        ("applied", Message::Applied { cursor: vec![0x30; 72] }),
-        ("digest", Message::Digest { digest: [0x31; 32] }),
-        ("members", Message::Members { labels: vec![l, LabelId([0x0b; 16])], more: false }),
+        ("stream", Msg::Stream(Box::new(Stream { events: vec![(l, added.clone())], cursor: Some(cursor(0x30)), report: true, seq: 3 }))),
+        ("stream with no events", Msg::Stream(Box::new(Stream { events: vec![], cursor: Some(cursor(0x30)), report: true, seq: 0 }))),
+        ("stream with no cursor", Msg::Stream(Box::new(Stream { events: vec![(l, Event::Full(true)), (l, Event::Refused(id(0xb1), Code::NOT_HEAD_KEY)), (l, added)], cursor: None, report: false, seq: 0 }))),
+        ("applied", Msg::Applied { cursor: cursor(0x30) }),
+        ("digest", Msg::Digest { digest: [0x31; 32] }),
+        ("members", Msg::Members { sync_ids: vec![l, other], more: false }),
+    ]
+}
+
+/// The body of `m` with item `i` of its top array replaced by `v` (`None`: removed).
+fn with(m: &Msg, i: usize, v: Option<Value>) -> Vec<u8> {
+    let Value::List(mut items) = m.to_value() else { return vec![] };
+    match v {
+        Some(v) => {
+            if let Some(slot) = items.get_mut(i) {
+                *slot = v;
+            }
+        }
+        None => {
+            items.remove(i);
+        }
+    }
+    cbor::encode(&Value::List(items))
+}
+
+fn list(items: Vec<Value>) -> Value {
+    Value::List(items)
+}
+
+fn bytes(n: usize, b: u8) -> Value {
+    Value::Bytes(vec![b; n])
+}
+
+/// One rejected body per kind (and a few more): `(name, rule, body)`, `rule` naming the layout
+/// rule of spec/wire.md §11 it breaks: `cbor`, `id`, `count`, `size`, `range`, `order`,
+/// `shape`, `step`, `depth`.
+pub fn rejections() -> Vec<(&'static str, &'static str, Vec<u8>)> {
+    let ms: std::collections::BTreeMap<&str, Msg> = messages().into_iter().collect();
+    let m = |n: &str| ms.get(n).cloned().expect("an example");
+    let int = Value::uint;
+    let deep = (0..70).fold(Value::uint(0), |v, _| list(vec![v]));
+    let event_in = |name: &str, pos: usize, e: Value| {
+        let Value::List(mut items) = m(name).to_value() else { return vec![] };
+        if let Some(slot) = items.get_mut(pos) {
+            *slot = list(vec![list(vec![bytes(16, 0x0a), e])]);
+        }
+        cbor::encode(&list(items))
+    };
+    vec![
+        ("non-canonical id", "cbor", vec![0x82, 0x01, 0x18, 0x01]),
+        ("trailing byte", "cbor", vec![0x82, 0x01, 0x01, 0x00]),
+        ("indefinite array", "cbor", vec![0x9f, 0x01, 0x01, 0xff]),
+        ("id at 2^32", "id", cbor::encode(&list(vec![int(2), int(1 << 32), int(0)]))),
+        ("error with a field more", "shape", cbor::encode(&list(vec![int(0), int(1), int(8), int(0)]))),
+        ("ok with id 0", "id", with(&m("ok"), 1, Some(int(0)))),
+        ("ping with id 0", "id", with(&m("ping"), 1, Some(int(0)))),
+        ("pong without wall_ms", "shape", with(&m("pong"), 2, None)),
+        ("register with a sync ID of 15 bytes", "size", with(&m("register"), 2, Some(bytes(15, 1)))),
+        ("register with a step that does not parse", "step", with(&m("register"), 3, Some(bytes(300, 0)))),
+        ("status of no codes", "count", with(&m("status"), 2, Some(list(vec![])))),
+        ("delete of no items", "count", with(&m("delete"), 3, Some(list(vec![])))),
+        ("delete with levels descending", "order", with(&m("delete"), 3, Some(list(vec![list(vec![bytes(32, 1), list(vec![list(vec![int(2), bytes(64, 2)]), list(vec![int(1), bytes(64, 2)])]), bytes(64, 3)])])))),
+        ("fetch with max_reply below SMALL_REPLY", "range", with(&m("fetch"), 3, Some(int(16_383)))),
+        ("fetch reply with a stamp of 63 bytes", "size", with(&m("fetch reply"), 2, Some(list(vec![list(vec![bytes(32, 1), list(vec![list(vec![bytes(10, 0), bytes(57, 0), list(vec![bytes(63, 0)])])])])])))),
+        ("auth with a secret of 31 bytes", "size", with(&m("auth of a client actor"), 2, Some(list(vec![bytes(31, 1)])))),
+        ("call with a value 70 deep", "depth", with(&m("call"), 4, Some(list(vec![deep.clone()])))),
+        ("reply with an unknown outcome", "shape", with(&m("reply"), 2, Some(list(vec![int(2), int(0)])))),
+        ("sub with max_reply above REPLY_BUDGET", "range", with(&m("sub"), 2, Some(int(crate::limits::REPLY_BUDGET as u64 + 1)))),
+        ("unsub of subscription 0", "id", with(&m("unsub"), 2, Some(int(0)))),
+        ("notify with an id", "id", with(&m("notify"), 1, Some(int(27)))),
+        ("stranded with a holder as a tid value", "size", with(&m("stranded"), 3, Some(Value::Tid(Tid::from_bytes([0x0d; 15]))))),
+        ("suspect with a digest of 32 bytes", "size", with(&m("suspect"), 3, Some(list(vec![list(vec![bytes(15, 0x0c), Value::Str("t:reg.0".into()), bytes(32, 0)])])))),
+        ("prove with a key of 31 bytes", "size", with(&m("prove"), 2, Some(list(vec![list(vec![proof(1).record.to_value(), bytes(31, 0), bytes(64, 0)])])))),
+        ("proved as a push", "id", with(&m("proved"), 1, Some(int(0)))),
+        ("resume with a tag of 31 bytes", "size", with(&m("resume"), 3, Some(list(vec![bytes(31, 0)])))),
+        ("resumed with two tags", "shape", with(&m("resumed"), 3, Some(list(vec![bytes(32, 0), bytes(32, 0)])))),
+        ("beacons without the top bit", "id", with(&m("beacons"), 1, Some(int(36)))),
+        ("beacons of width 31", "range", with(&m("beacons"), 4, Some(int(31)))),
+        ("beacons with a value past hi", "range", with(&m("beacons"), 6, Some(int(300)))),
+        ("beacons with a zero byte of padding", "shape", with(&m("beacons additions"), 7, Some(bytes(1, 0)))),
+        ("offer of no items", "count", with(&m("offer"), 2, Some(list(vec![])))),
+        ("offer deposit with a wrap of 48 bytes", "size", with(&m("offer"), 2, Some(list(vec![list(vec![int(2), bytes(16, 1), bytes(1, 1), bytes(48, 0), bytes(64, 0)])])))),
+        ("offer of an unknown item", "shape", with(&m("offer"), 2, Some(list(vec![list(vec![int(5), bytes(32, 1)])])))),
+        ("lost with a cursor of 257 bytes", "size", with(&m("lost"), 2, Some(list(vec![list(vec![bytes(16, 1), list(vec![bytes(257, 0)])])])))),
+        ("shared refusal carrying a tag", "shape", with(&m("shared"), 2, Some(list(vec![list(vec![int(14), list(vec![bytes(32, 0)]), list(vec![]), list(vec![])])])))),
+        ("shared with a sig and no tag", "shape", with(&m("shared"), 2, Some(list(vec![list(vec![int(0), list(vec![]), list(vec![]), list(vec![bytes(64, 0)])])])))),
+        ("no record with another id", "id", with(&m("no record"), 1, Some(int(u64::from(crate::limits::TOP_BIT | 1))))),
+        ("pull with max_reply 0", "range", with(&m("pull"), 6, Some(int(0)))),
+        ("pull reply with a full event", "shape", event_in("pull reply", 2, list(vec![int(2), Value::Bool(true)]))),
+        ("stream with a cursor and a refused event", "shape", event_in("stream", 2, list(vec![int(4), bytes(32, 1), int(9)]))),
+        ("stream with no cursor and a seq", "shape", with(&m("stream with no cursor"), 5, Some(int(1)))),
+        ("stream refusing for room", "shape", event_in("stream with no cursor", 2, list(vec![int(4), bytes(32, 1), int(12)]))),
+        ("applied with a cursor of 257 bytes", "size", with(&m("applied"), 2, Some(bytes(257, 0)))),
+        ("digest of 31 bytes", "size", with(&m("digest"), 2, Some(bytes(31, 0)))),
+        ("members with a sync ID of 17 bytes", "size", with(&m("members"), 2, Some(list(vec![bytes(17, 0)])))),
     ]
 }

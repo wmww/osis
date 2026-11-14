@@ -24,10 +24,10 @@ fn import_replays_records() {
     let (b1, b2) = (Fixture::blob(1), Fixture::blob(2));
     let (id1, id2) = (osis_label::blob_id(&b1), osis_label::blob_id(&b2));
     let wrap = [9u8; osis_crypto::WRAP_LEN];
-    let stamp = sign_stamp(&f.write, &f.label, &id1, &wrap, false);
-    let forged = sign_stamp(&SigningSecret::from_seed(&Secret32::from_bytes([99; 32])), &f.label, &id2, &wrap, false);
+    let stamp = sign_stamp(&f.write, &f.sync_id, &id1, &wrap, false);
+    let forged = sign_stamp(&SigningSecret::from_seed(&Secret32::from_bytes([99; 32])), &f.sync_id, &id2, &wrap, false);
     let mut w = BundleWriter::new(Vec::new()).unwrap();
-    let l = f.label;
+    let l = f.sync_id;
     for r in [
         Record::Path { label: l, steps: vec![(f.genesis.clone(), Some(f.genesis_claims.clone())), (f.child.clone(), None)] },
         Record::Blob(b1.clone()),
@@ -42,9 +42,9 @@ fn import_replays_records() {
     let mut file = w.finish().unwrap();
     file.extend(encode_frame(&cbor::encode(&Value::List(vec![Value::Int(9), Value::Int(1)]))));
     let ev = import(&file);
-    assert!(matches!(&ev[0], Imported::Path { label, steps } if *label == l && *steps == vec![f.genesis.clone(), f.child.clone()]), "{ev:?}");
+    assert!(matches!(&ev[0], Imported::Path { sync_id, steps } if *sync_id == l && *steps == vec![f.genesis.clone(), f.child.clone()]), "{ev:?}");
     let event = |i: usize| match &ev[i] {
-        Imported::Event { label, event } if *label == l => event.clone(),
+        Imported::Event { sync_id, event } if *sync_id == l => event.clone(),
         e => panic!("{i}: {e:?}"),
     };
     assert_eq!(event(1), Event::Added { blob_id: id1, blob: Some(b1), wrap, stamp: Some(stamp) });
@@ -54,14 +54,24 @@ fn import_replays_records() {
     assert_eq!(ev.len(), 5);
 }
 
+// spec/wire.md §12: a record of a kind version 1 does not name (5 included) is skipped
+#[test]
+fn unknown_records_are_skipped_spec_wire_12() {
+    let mut file = BundleWriter::new(Vec::new()).unwrap().finish().unwrap();
+    for kind in [5, 9, 1000] {
+        file.extend(encode_frame(&cbor::encode(&Value::List(vec![Value::Int(kind), Value::Int(1)]))));
+    }
+    assert!(import(&file).is_empty());
+}
+
 // spec/wire.md §12: magic and format record; a path that does not extend the head is refused
 #[test]
 fn import_rejects() {
     assert!(BundleImport::new(&b"osisbndX"[..]).is_err());
     let f = Fixture::new(0x20);
     let mut w = BundleWriter::new(Vec::new()).unwrap();
-    w.record(&Record::Path { label: f.label, steps: vec![(f.genesis.clone(), None), (f.child.clone(), None)] }).unwrap();
-    w.record(&Record::Path { label: f.label, steps: vec![(f.genesis.clone(), None)] }).unwrap();
+    w.record(&Record::Path { label: f.sync_id, steps: vec![(f.genesis.clone(), None), (f.child.clone(), None)] }).unwrap();
+    w.record(&Record::Path { label: f.sync_id, steps: vec![(f.genesis.clone(), None)] }).unwrap();
     let ev = import(&w.finish().unwrap());
     assert!(matches!(&ev[..], [Imported::Path { .. }, Imported::Refused(_)]), "{ev:?}");
 }

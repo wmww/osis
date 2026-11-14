@@ -1,30 +1,31 @@
-//! Relay-only entries at a host or a co-reader peer serving a label (spec/sync-ids.md §6): admitted
-//! by prefix expiry and size, counted against a per-label rate, and pushed once per blob within
+//! Relay-only entries at a node keeping a sync ID unread (spec/sync-ids.md §6 Relay-only): admitted
+//! by prefix expiry and size, counted against a per-sync-ID rate, and pushed once per blob within
 //! its expiry window (a repeat is answered OK and pushed to nobody).
 
 use crate::msg::Code;
 use osis_base::format::{MAX_DRIFT_MS, MAX_RELAY_BLOB};
-use osis_base::{BlobId, LabelId};
+use crate::SyncId;
+use osis_base::BlobId;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// What becomes of a relay-only entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RelayVerdict {
-    /// New: push it to the label's subscribers.
+    /// New: push it to the sync ID's other holders.
     Push,
     /// Relayed already within its window: answered OK, pushed to nobody.
     Seen,
     Refused(Code),
 }
 
-/// Per-label relay rate (spec/sync-ids.md §6 rate limits). Resource bound: each relay is pushed to
-/// every subscriber of the label (0: no ephemeral signals; infinity: a writer or a replayer of stamped
+/// Per-sync-ID relay rate (spec/sync-ids.md §6 rate limits). Resource bound: each relay is pushed to
+/// every other holder of the sync ID (0: no ephemeral signals; infinity: a writer or a replayer of stamped
 /// blobs sends traffic at line rate times subscribers).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RelayLimits {
-    /// Relays per label and window.
+    /// Relays per sync ID and window.
     pub count: u32,
-    /// Relayed bytes per label and window.
+    /// Relayed bytes per sync ID and window.
     pub bytes: u64,
     pub window_ms: u64,
 }
@@ -35,21 +36,21 @@ impl Default for RelayLimits {
     }
 }
 
-/// Relayed (label, blob) pairs remembered until their prefix expiry, node-wide. Resource bound:
+/// Relayed (sync ID, blob) pairs remembered until their prefix expiry, node-wide. Resource bound:
 /// past it the earliest-expiring pair is forgotten, so a replay of that blob is pushed again
-/// (minor: counted against its label's rate, and receivers drop what they delivered); 0: every
+/// (minor: counted against its sync ID's rate, and receivers drop what they delivered); 0: every
 /// replay within the window is pushed; infinity: memory grows with every relay of the last two
 /// hours. Each pair costs about 200 bytes (a hash-set and a B-tree entry): 13 MiB at the bound.
 pub const MAX_RELAY_SEEN: usize = 1 << 16;
 
-/// The relay state of one host or co-reader peer (in memory; a restart forgets it).
+/// The relay state of one node (in memory; a restart forgets it).
 #[derive(Clone, Debug)]
 pub struct RelayGate {
     pub limits: RelayLimits,
-    seen: HashSet<(LabelId, BlobId)>,
-    by_expiry: BTreeSet<(u64, LabelId, BlobId)>,
+    seen: HashSet<(SyncId, BlobId)>,
+    by_expiry: BTreeSet<(u64, SyncId, BlobId)>,
     window: u64,
-    used: HashMap<LabelId, (u32, u64)>,
+    used: HashMap<SyncId, (u32, u64)>,
 }
 
 impl Default for RelayGate {
@@ -66,8 +67,8 @@ impl RelayGate {
     /// Admits a stamped relay-only blob of `size` bytes with prefix expiry `expiry` at wall
     /// `now` (spec/sync-ids.md §6): too large, without an expiry, expired or expiring more than
     /// `2 × MAX_DRIFT` ahead (a writer's `ts` at most `MAX_DRIFT` ahead, plus its window) is
-    /// refused; a repeat within its window is `Seen`; past the label's rate, code 4.
-    pub fn admit(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> RelayVerdict {
+    /// refused; a repeat within its window is `Seen`; past the sync ID's rate, code 4.
+    pub fn admit(&mut self, sync_id: &SyncId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> RelayVerdict {
         if size > MAX_RELAY_BLOB {
             return RelayVerdict::Refused(Code::TOO_LARGE);
         }
@@ -84,7 +85,7 @@ impl RelayGate {
             self.by_expiry.pop_first();
             self.seen.remove(&(first.1, first.2));
         }
-        if self.seen.contains(&(*label, *blob_id)) {
+        if self.seen.contains(&(*sync_id, *blob_id)) {
             return RelayVerdict::Seen;
         }
         let w = now / self.limits.window_ms.max(1);
@@ -92,14 +93,14 @@ impl RelayGate {
             self.window = w;
             self.used.clear();
         }
-        let used = self.used.entry(*label).or_insert((0, 0));
+        let used = self.used.entry(*sync_id).or_insert((0, 0));
         if used.0 >= self.limits.count || used.1.saturating_add(size as u64) > self.limits.bytes {
             return RelayVerdict::Refused(Code::RATE_LIMITED);
         }
         used.0 += 1;
         used.1 = used.1.saturating_add(size as u64);
-        self.seen.insert((*label, *blob_id));
-        self.by_expiry.insert((t, *label, *blob_id));
+        self.seen.insert((*sync_id, *blob_id));
+        self.by_expiry.insert((t, *sync_id, *blob_id));
         if self.seen.len() > MAX_RELAY_SEEN
             && let Some(first) = self.by_expiry.pop_first()
         {
@@ -127,12 +128,12 @@ mod tests {
         BlobId(b)
     }
 
-    // spec/sync-ids.md §6 (relay-only entries): a replay within the window is pushed once; expiry,
-    // size and rate bound what one replayer can make a host push
+    // spec/sync-ids.md §6 (relay-only): a replay within the window is pushed once; expiry,
+    // size and rate bound what one replayer can make a node push
     #[test]
-    fn replay_pushed_once_and_bounded_spec_sync_5() {
+    fn replay_pushed_once_and_bounded_spec_sync_ids_6() {
         let mut g = RelayGate::new(RelayLimits { count: 3, bytes: 1 << 20, window_ms: 60_000 });
-        let l = LabelId([1; 16]);
+        let l = SyncId([1; 16]);
         let t = Some(NOW + MAX_DRIFT_MS);
         assert_eq!(g.admit(&l, &id(0), 100, t, NOW), RelayVerdict::Push);
         for _ in 0..1000 {
@@ -144,8 +145,8 @@ mod tests {
         assert_eq!(g.admit(&l, &id(1), 100, Some(NOW + 2 * MAX_DRIFT_MS + 1), NOW), RelayVerdict::Refused(Code::REFUSED), "far future");
         assert_eq!(g.admit(&l, &id(1), 100, t, NOW), RelayVerdict::Push);
         assert_eq!(g.admit(&l, &id(2), 100, t, NOW), RelayVerdict::Push);
-        assert_eq!(g.admit(&l, &id(3), 100, t, NOW), RelayVerdict::Refused(Code::RATE_LIMITED), "the label's rate");
-        assert_eq!(g.admit(&LabelId([2; 16]), &id(3), 100, t, NOW), RelayVerdict::Push, "per label");
+        assert_eq!(g.admit(&l, &id(3), 100, t, NOW), RelayVerdict::Refused(Code::RATE_LIMITED), "the sync ID's rate");
+        assert_eq!(g.admit(&SyncId([2; 16]), &id(3), 100, t, NOW), RelayVerdict::Push, "per sync ID");
         assert_eq!(g.admit(&l, &id(3), 100, t, NOW + 60_000), RelayVerdict::Push, "next window");
         // past its expiry the pair is forgotten (and the blob refused as expired)
         assert_eq!(g.admit(&l, &id(0), 100, t, NOW + MAX_DRIFT_MS), RelayVerdict::Refused(Code::EXPIRED));
@@ -157,7 +158,7 @@ mod tests {
     #[test]
     fn remembered_pairs_bounded() {
         let mut g = RelayGate::new(RelayLimits { count: u32::MAX, bytes: u64::MAX, window_ms: 60_000 });
-        let l = LabelId([1; 16]);
+        let l = SyncId([1; 16]);
         for n in 0..(MAX_RELAY_SEEN as u32 + 10) {
             assert_eq!(g.admit(&l, &id(n), 10, Some(NOW + 1_000 + u64::from(n)), NOW), RelayVerdict::Push);
         }
