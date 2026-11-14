@@ -100,8 +100,8 @@ fn a_self_removal_shared_only_with_a_sibling_drops_at_once_spec_perm_3() {
     assert!(w.engine(1).epochs(&t).is_none_or(|e| e.read.held().next().is_none()), "dropped");
 }
 
-// spec/sync-inbox.md §2 (Taking: its sender is connected; a boxes payload, taken, gives the sync
-// secrets of its boxes with its sync IDs): the stranger redeemed account 1's contact card, so it
+// spec/sync-inbox.md §2 (Taking: its sender is connected, a taken boxes payload gives its sync IDs):
+// the stranger redeemed account 1's contact card, so it
 // holds read on the profile both siblings sync and is connected at each: a grant of sync to
 // account 1 is no invite request at either node, and node 2 takes it with its own synced group
 // not listing the thing. (An accept on one sibling taking at the other:
