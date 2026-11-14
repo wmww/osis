@@ -783,6 +783,9 @@ indexes! {
     pub falls: JMap<(Tid, Ak), u64>,
     /// Self-removals waiting to be held elsewhere (`sync::held`).
     pub held_wait: JSet<CommitId>,
+    /// Per sync ID, when the last complete pass sync noted of it began (`sync::held`): an event,
+    /// not derived from the commits held, so no rebuild compares it.
+    pub passes: JMap<SyncId, WallMs>,
     /// Inbox blobs held untaken (`sync::inbox`, spec/sync-inbox.md §2 invite requests).
     pub waiting_inbox: JMap<osis_base::BlobId, Arc<crate::sync::WaitingBlob>>,
     /// Per thing, the sync ID a taken inbox blob's payload named for it while no applied `sync.0`
@@ -1272,8 +1275,8 @@ pub struct Core {
     pub(crate) walks: crate::apply::reach::Walks,
     /// `Engine::owned_sync_ids` per thing (`memo`).
     pub(crate) sync_ids: memo::Memo<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
-    /// Complete passes sync noted, per actor: when the newest began (`sync::held`; memory only).
-    pub(crate) passes: BTreeMap<Tid, WallMs>,
+    /// `Engine::passes_wanted` (`memo`).
+    pub(crate) passes_wanted: memo::Memo<(), Arc<BTreeMap<SyncId, WallMs>>>,
     /// `Engine::published_under` for every actor (`memo`).
     pub(crate) published: memo::Memo<(), Published>,
     /// `Engine::held_links` (`memo`).
@@ -1410,7 +1413,7 @@ impl Core {
             memory_waits: self.memory_waits.clone(),
             walks: self.walks.clone(),
             sync_ids: self.sync_ids.clone(),
-            passes: self.passes.clone(),
+            passes_wanted: self.passes_wanted.clone(),
             published: self.published.clone(),
             links: self.links.clone(),
             sourced_elsewhere: self.sourced_elsewhere.clone(),
@@ -1867,7 +1870,7 @@ impl Core {
             inbox_actors: _,
             acting_of: _,
             sync_ids: _,
-            passes: _,
+            passes_wanted: _,
             links: _,
             held_writes: _,
             replaced_dates: _,
@@ -2157,7 +2160,7 @@ impl Core {
             memory_waits: BTreeSet::new(),
             walks: Default::default(),
             sync_ids: memo::Memo::new("sync IDs of"),
-            passes: BTreeMap::new(),
+            passes_wanted: memo::Memo::new("sync: passes wanted"),
             published: memo::Memo::new("published"),
             links: memo::Memo::new("held links"),
             sourced_elsewhere: BTreeSet::new(),

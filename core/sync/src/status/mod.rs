@@ -169,6 +169,9 @@ pub trait Ground: Net {
     /// at or after (spec/permissions.md §3 Complete pass: the newest role commit of one of S's
     /// actors from elsewhere it applied, a role found gone, a tied demotion's scope).
     fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, WallMs>>>;
+    /// The engine's clock (`Engine::pass_clock`): a pass's `began` and a want's moment are read on
+    /// the same clock.
+    fn pass_clock(&mut self) -> WallMs;
     /// A complete pass of S begun at `began` ended (the engine drops S from `passes_wanted` once
     /// `began` is at or past its moment).
     fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()>;
@@ -177,7 +180,11 @@ pub trait Ground: Net {
 /// A complete pass of S under way (§1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Pass {
+    /// When it began, on the node's clock (what streams' caught-up times are read on).
     began: WallMs,
+    /// When it began on the engine's clock (`Engine::pass_clock`): what the engine is told and
+    /// its wants are compared with.
+    noted: WallMs,
     /// The recorded peers not read since it began.
     waits: BTreeSet<RecordId>,
 }
@@ -489,7 +496,7 @@ impl Status {
         {
             for (s, since) in wanted.iter() {
                 match self.passes.get(s) {
-                    Some(p) if p.began >= *since => {}
+                    Some(p) if p.noted >= *since => {}
                     // a Pull sent before the moment ends no pass after it: one more once it ends
                     Some(_) => {
                         self.again.insert(*s);
@@ -513,14 +520,14 @@ impl Status {
             if now.done {
                 self.passes.remove(&s);
                 self.pass_fx.unwant(&s);
-                skip_unbuilt(g.note_complete_pass(&s, p.began).map(Some))?;
+                skip_unbuilt(g.note_complete_pass(&s, p.noted).map(Some))?;
                 acted = true;
                 if self.again.remove(&s) {
                     self.begin(g, s, pulls)?;
                 }
             } else if !now.read.is_empty() {
                 let waits = p.waits.difference(&now.read).copied().collect();
-                self.passes.insert(s, Pass { began: p.began, waits });
+                self.passes.insert(s, Pass { began: p.began, noted: p.noted, waits });
             }
         }
         Ok(acted)
@@ -528,10 +535,10 @@ impl Status {
 
     /// Begins a pass of S now: a fresh Pull at each source, the recorded peers to wait for.
     fn begin(&mut self, g: &mut impl Ground, s: SyncId, pulls: &mut Vec<ConnId>) -> Result<()> {
-        let began = g.now();
+        let (began, noted) = (g.now(), g.pass_clock());
         let waits = g.records_holding(&s)?;
         pulls.extend(self.sources.get(&s).into_iter().flat_map(|x| x.keys().copied()));
-        self.passes.insert(s, Pass { began, waits });
+        self.passes.insert(s, Pass { began, noted, waits });
         self.pass_fx.want(s);
         Ok(())
     }

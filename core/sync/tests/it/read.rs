@@ -71,7 +71,6 @@ fn uncovered() -> Facts {
         role: false,
         carriers: Vec::new(),
         later_unheld: Vec::new(),
-        neither: false,
         missing: false,
     }
 }
@@ -174,6 +173,14 @@ impl Ground for Fake {
     }
     fn dropped(&mut self, b: &BlobId) -> Result<bool> {
         Ok(self.dropped.contains_key(b))
+    }
+    // every entry of a commit carries its whole body here: none is a strict subset, any held
+    // one carries it (the engine's own judgement: core/engine/src/sync/tests_facts.rs)
+    fn strict_subset(&mut self, _s: &SyncId, _b: &BlobId, _held: &BTreeSet<BlobId>) -> Result<bool> {
+        Ok(false)
+    }
+    fn neither(&mut self, _s: &SyncId, _c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool> {
+        Ok(!there.is_empty())
     }
     fn own(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<Entry>> {
         Ok(self.own.get(&(*s, *c)).cloned().unwrap_or_default())

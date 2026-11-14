@@ -18,6 +18,8 @@ pub(crate) mod inbox;
 pub(crate) mod records;
 mod set;
 mod signing;
+#[cfg(test)]
+mod tests_facts;
 
 pub use inbox::WaitingBlob;
 pub use osis_label::DialHint;
@@ -122,7 +124,6 @@ pub struct BodyFacts {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MustNot {
     Purged,
-    StrictSubset,
     CardSuperseded,
     CardEnded,
 }
@@ -142,8 +143,6 @@ pub struct ReadFacts {
     /// Snapshots of its aspects stamped later than it that this node does not hold, each with
     /// whether it was judged invalid (spec/sync-judgement.md §2 established uncovered).
     pub later_unheld: Vec<(CommitId, bool)>,
-    /// spec/sync-judgement.md §3 Neither.
-    pub neither: bool,
     /// It counts as never received again (spec/sync-judgement.md §3 Dropped bodies).
     pub missing: bool,
 }
@@ -361,6 +360,19 @@ impl Engine {
     /// What `read` judges `c`'s body under `s` on beside `BodyFacts` (`ReadFacts`).
     pub fn read_facts(&mut self, s: &SyncId, c: &CommitId) -> Result<ReadFacts> {
         self.read_facts_now(s, c)
+    }
+
+    /// Whether held blob `b` is must-not-hold under `s` as a strict subset of another blob of its
+    /// commit among `held`, the blobs of it held under `s` (spec/sync-judgement.md §2).
+    pub fn strict_subset(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool> {
+        self.strict_subset_now(s, b, held)
+    }
+
+    /// Whether a delete that removed `c`'s body from `s` stands where `there` are the blobs of `c`
+    /// still held (spec/sync-judgement.md §3 Neither): the body is then neither logged nor relayed
+    /// there. False whatever `there` holds while the judgement is not established.
+    pub fn neither(&mut self, s: &SyncId, c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool> {
+        self.neither_now(s, c, there)
     }
 
     /// Falls of held parts on `c`'s aspects so far, summed over them (a body's stand mark).
@@ -772,14 +784,30 @@ impl Engine {
         self.held_elsewhere_now(c)
     }
 
-    /// A complete pass of `s` begun at `began` ended (spec/sync-status.md §1): the re-seal and
-    /// history-add trigger (`reseal_due`) of `s`'s thing's reader actor runs on it.
+    /// The sync IDs some engine rule waits on a complete pass of, each with the moment the pass
+    /// must begin at or after, on the engine's clock (`pass_clock`); a memo value, so status
+    /// follows it with `Effects` (spec/permissions.md §2-§3, spec/sync-status.md §3).
+    pub fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, WallMs>>> {
+        self.passes_wanted_now()
+    }
+
+    /// The engine's clock, the one a complete pass's `began` is read on: a pass begun at `began`
+    /// counts for a want at `since` only when `began >= since`.
+    pub fn pass_clock(&self) -> WallMs {
+        self.now()
+    }
+
+    /// A complete pass of `s` begun at `began` (`pass_clock`) ended (spec/sync-status.md §1):
+    /// kept durably, the last per sync ID; the re-seal and history-add trigger (`reseal_due`) and
+    /// history completeness read it.
     pub fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
-        if let Some(t) = self.sync_owner_of(s)? {
-            let actor = self.core.reader_of(&t);
-            self.note_complete_pass_now(&actor, began);
-        }
-        Ok(())
+        self.note_complete_pass_now(s, began)
+    }
+
+    /// History complete for `thing` (spec/sync-status.md §3): a complete pass of every sync ID
+    /// carrying it noted here.
+    pub fn history_complete(&mut self, thing: &Tid) -> Result<bool> {
+        self.history_complete_now(thing)
     }
 
     // Timers and config

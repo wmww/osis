@@ -59,7 +59,7 @@ fn note_section(tx: &mut Tx<'_>, c: &CommitId, t: &Tid, e: &Epoch) -> Result<()>
     Ok(())
 }
 
-fn note_blob(tx: &mut Tx<'_>, b: &BlobId, c: &CommitId, parts: &PartSet, copy: bool) -> Result<()> {
+pub(super) fn note_blob(tx: &mut Tx<'_>, b: &BlobId, c: &CommitId, parts: &PartSet, copy: bool) -> Result<()> {
     if tx.core.ix.blob_parts.contains_key(b) {
         return Ok(());
     }
@@ -157,29 +157,37 @@ impl Engine {
         let kept = b.parts.iter().any(|ai| keeps.get(*ai).is_some_and(|k| *k > now));
         let mut covered = Some(!b.parts.is_empty());
         for ai in &b.parts {
-            let Some(a) = h.aspects.get(*ai) else { continue };
             // a signal's delta is never joined: never established uncovered
-            if a.ak.signal() {
+            if h.aspects.get(*ai).is_none_or(|a| a.ak.signal()) {
                 continue;
             }
-            let snaps: Vec<CommitId> = self.core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).filter(|x| x != c).collect();
-            let mut this = Some(false);
-            for x in snaps {
-                match self.covered(&x, c, &a.tid, &a.ak)? {
-                    Some(true) => {
-                        this = Some(true);
-                        break;
-                    }
-                    None if self.header(&x).is_none_or(|sh| sh.ts > h.ts) => this = None,
-                    _ => {}
-                }
-            }
+            let this = self.part_covered(c, &h, *ai)?;
             covered = match (covered, this) {
                 (Some(x), Some(y)) => Some(x && y),
                 _ => None,
             };
         }
         Ok(BodyFacts { required: true, closure: !b.certificate, dropped, kept, covered, sole_certificate: false, lasting_header: b.header_only })
+    }
+
+    /// Whether held snapshots of its aspect cover delta `ai` of `c` (header `h`): `None` while one
+    /// stamped after it cannot be judged (spec/sync-judgement.md §2 established uncovered). A
+    /// signal's delta is never joined, so never covered.
+    pub(crate) fn part_covered(&mut self, c: &CommitId, h: &osis_commit::Header, ai: usize) -> Result<Option<bool>> {
+        let Some(a) = h.aspects.get(ai) else { return Ok(Some(false)) };
+        if a.ak.signal() {
+            return Ok(Some(false));
+        }
+        let snaps: Vec<CommitId> = self.core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).filter(|x| x != c).collect();
+        let mut this = Some(false);
+        for x in snaps {
+            match self.covered(&x, c, &a.tid, &a.ak)? {
+                Some(true) => return Ok(Some(true)),
+                None if self.header(&x).is_none_or(|sh| sh.ts > h.ts) => this = None,
+                _ => {}
+            }
+        }
+        Ok(this)
     }
 
     /// This node's commits (written here) with a body under `s` (spec/sync-status.md §2):

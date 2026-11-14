@@ -60,7 +60,6 @@ pub enum Why {
     Purged,
     Expired,
     OutsideRequired,
-    StrictSubset,
     CardSuperseded,
     CardEnded,
     /// A destroyed thing's sync ID being emptied (§5).

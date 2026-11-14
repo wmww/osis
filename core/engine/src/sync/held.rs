@@ -1,22 +1,37 @@
-//! What waits for sync's word (spec/sync-status.md §1-§2): self-removals whose lost secrets drop
-//! once the removal is held elsewhere (spec/permissions.md §3 Lost access), and the complete
-//! passes of an actor's sync ID that the re-seal and history-add triggers read
-//! (spec/permissions.md §3).
+//! What waits for sync's word (spec/sync-status.md §1-§3): self-removals whose lost secrets drop
+//! once the removal is held elsewhere (spec/permissions.md §3 Lost access), and complete passes:
+//! the sync IDs some rule waits on a pass of (`passes_wanted`), and the last pass noted per sync
+//! ID, which the re-seal and history-add triggers and history completeness read.
 
+use super::{Holding, ThingSync};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
-use osis_base::{CommitId, Tid, WallMs};
+use osis_base::{Ak, CommitId, Role, SyncId, Tid, WallMs};
+use std::collections::BTreeMap;
 use osis_store::Shred;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// `hw/` + commit ID: a self-removal waiting to be held elsewhere.
 pub(crate) const WAITING: &[u8] = b"hw/";
+/// `cp/` + sync ID: when the last complete pass of it noted began (engine ms, u64 BE).
+const PASSES: &[u8] = b"cp/";
 
-/// Loads the waiting self-removals (an open or reload).
+/// The role aspects whose commits from elsewhere a complete pass must follow.
+const ROLE_ASPECTS: [&str; 3] = ["roles.0", "secrets.0", "keys.0"];
+
+/// Loads the waiting self-removals and the complete passes noted (an open or reload).
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     let ids = tx.scan_keys(WAITING, "held elsewhere wait", CommitId)?;
     tx.core.ix.held_wait.extend(ids);
+    let bad = || Error::Corrupt("complete pass");
+    let mut rows = Vec::new();
+    tx.scan(PASSES, |k, v| {
+        let s = SyncId(k.get(..).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
+        rows.push((s, WallMs(u64::from_be_bytes(v.get(..).ok_or_else(bad)?.try_into().map_err(|_| bad())?))));
+        Ok(())
+    })?;
+    tx.core.ix.passes.extend(rows);
     Ok(())
 }
 
@@ -52,24 +67,124 @@ impl Engine {
         Ok(())
     }
 
-    /// Sync read every source of `actor`'s sync IDs to its end in a pass begun at `began`
-    /// (spec/sync-status.md §1). Kept in memory: a restart needs a new pass.
-    pub(crate) fn note_complete_pass_now(&mut self, actor: &Tid, began: WallMs) {
-        let e = self.core.passes.entry(*actor).or_insert(began);
-        *e = (*e).max(began);
+    /// A complete pass of `s` begun at `began` (engine ms) ended (spec/sync-status.md §1): kept
+    /// durably, the last one alone per sync ID.
+    pub(crate) fn note_complete_pass_now(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
+        if self.core.ix.passes.get(s).is_some_and(|b| *b >= began) {
+            return Ok(());
+        }
+        let s = *s;
+        self.run(|tx| {
+            tx.txn.put_local(&[PASSES, &s.0].concat(), &began.0.to_be_bytes(), Shred::No)?;
+            tx.core.ix.passes.insert(s, began);
+            Ok(())
+        })
     }
 
-    /// Whether a complete pass of `actor`'s sync IDs began after every role commit on it this node
-    /// received from elsewhere (spec/permissions.md §3: the re-seal trigger waits for one).
-    pub(crate) fn complete_pass(&self, actor: &Tid) -> bool {
-        let Some(began) = self.core.passes.get(actor).copied() else { return false };
-        let roles = ["roles.0", "secrets.0", "keys.0"].map(|a| osis_base::Ak::new(a).map_err(|_| Error::Misuse("ak")));
-        let latest = roles
-            .into_iter()
-            .flatten()
-            .flat_map(|ak| self.core.ix.by_aspect.get(&(*actor, ak)).into_iter().flatten().map(|(_, c)| *c).collect::<Vec<_>>())
-            .filter_map(|c| self.core.ix.commits.get(&c).filter(|m| m.origin == crate::events::Origin::Remote).map(|m| m.received))
-            .max();
-        latest.is_none_or(|t| t <= began)
+    /// The sync IDs some rule waits on a complete pass of, each with the moment (engine ms) the
+    /// pass must begin at or after; one whose last complete pass began at or after it is not
+    /// listed. A memo over the role commits held, the sync set, the ties and the passes noted:
+    /// derived again at an open, so a restart wants what it wanted.
+    /// - spec/permissions.md §3 Complete pass: the newest role commit of S's actor applied here
+    ///   from elsewhere;
+    /// - spec/permissions.md §2 Tied grants: every sync ID of a tie's demotion scope
+    ///   (`tied_wants`), from the last role commit of G or T applied from elsewhere;
+    /// - spec/sync-status.md §3 History complete: one pass of every sync ID read here.
+    pub(crate) fn passes_wanted_now(&mut self) -> Result<Arc<BTreeMap<SyncId, WallMs>>> {
+        osis_base::memo::Memo::get_in(self, |e| &e.core.passes_wanted, &(), |e| e.passes_wanted_fresh())
+    }
+
+    fn passes_wanted_fresh(&mut self) -> Result<Arc<BTreeMap<SyncId, WallMs>>> {
+        let mut out: BTreeMap<SyncId, WallMs> = BTreeMap::new();
+        let mut want = |s: SyncId, since: WallMs| {
+            let e = out.entry(s).or_insert(since);
+            *e = (*e).max(since);
+        };
+        let set = self.sync_set()?;
+        for (s, (t, holding)) in set.ids.iter() {
+            if *holding != Holding::Read {
+                continue;
+            }
+            want(*s, WallMs(0));
+            if let Some(at) = self.role_arrival(&self.core.reader_of(t)) {
+                want(*s, at);
+            }
+        }
+        for (since, ids) in self.tied_wants()? {
+            for s in ids {
+                want(s, since);
+            }
+        }
+        out.retain(|s, since| self.core.ix.passes.get(s).is_none_or(|b| b < since));
+        Ok(Arc::new(out))
+    }
+
+    /// When the newest role commit on `actor` (`roles.0`, `secrets.0`, `keys.0`) applied here
+    /// from elsewhere arrived, engine ms (spec/permissions.md §3: a Pull sent before it ends no
+    /// pass after it).
+    fn role_arrival(&self, actor: &Tid) -> Option<WallMs> {
+        let ix = &self.core.ix;
+        ROLE_ASPECTS
+            .iter()
+            .filter_map(|a| Ak::new(*a).ok())
+            .flat_map(|ak| ix.by_aspect.get(&(*actor, ak)).into_iter().flatten().map(|x| x.1).collect::<Vec<_>>())
+            .filter_map(|c| ix.commits.get(&c).filter(|m| m.origin == crate::events::Origin::Remote).map(|m| m.received))
+            .max()
+    }
+
+    /// spec/permissions.md §2 Tied grants: per tied grant (G, T) this node holds dead and would
+    /// remove as an explicit demotion (admin on T), the sync IDs whose bodies carry a thing of the
+    /// demotion's pre-sync scope, from the last role commit of G or T applied from elsewhere.
+    fn tied_wants(&mut self) -> Result<Vec<(WallMs, BTreeSet<SyncId>)>> {
+        let Some(me) = self.core.me() else { return Ok(Vec::new()) };
+        let mut out = Vec::new();
+        for (t, g) in self.tied_unplaced(&BTreeSet::new(), &BTreeSet::new(), true)? {
+            if self.core.timelines.get(&t).and_then(|tl| tl.role(&me, &t, osis_perm::At::KEYS)) != Some(Role::Admin) {
+                continue;
+            }
+            let since = self.role_arrival(&g).max(self.role_arrival(&t)).unwrap_or(WallMs(0));
+            out.push((since, self.demotion_scope_sync_ids(&t)?));
+        }
+        Ok(out)
+    }
+
+    /// The read sync IDs whose bodies carry a thing of a demotion's pre-sync scope on `t`
+    /// (spec/permissions.md §2, §5.3: the things the demoted authority gave write on, read as `t`
+    /// and the things it encloses; spec/sync-judgement.md §1: a thing travels under the sync IDs
+    /// of itself and of the groups enclosing it).
+    fn demotion_scope_sync_ids(&mut self, t: &Tid) -> Result<BTreeSet<SyncId>> {
+        let mut things: BTreeSet<Tid> = self.closure(t).iter().copied().collect();
+        things.insert(*t);
+        for x in things.clone() {
+            things.extend(self.enclosing(&x));
+        }
+        let mut out = BTreeSet::new();
+        for x in things {
+            if let ThingSync::Read(ids) = self.thing_sync_now(&x)? {
+                out.extend(ids);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether each sync ID of `actor` read here had a complete pass begun at or after the newest
+    /// role commit on it applied from elsewhere (spec/permissions.md §3 Complete pass: the re-seal
+    /// trigger waits for one). False for an actor with no sync ID read here.
+    pub(crate) fn complete_pass(&mut self, actor: &Tid) -> Result<bool> {
+        let ThingSync::Read(ids) = self.thing_sync_now(actor)? else { return Ok(false) };
+        let since = self.role_arrival(actor).unwrap_or(WallMs(0));
+        Ok(!ids.is_empty() && ids.iter().all(|s| self.core.ix.passes.get(s).is_some_and(|b| *b >= since)))
+    }
+
+    /// spec/sync-status.md §3 History complete for `thing`: a complete pass of every sync ID
+    /// carrying it (its own and its enclosing groups' read here) noted.
+    pub(crate) fn history_complete_now(&mut self, thing: &Tid) -> Result<bool> {
+        let mut ids = BTreeSet::new();
+        for x in std::iter::once(*thing).chain(self.enclosing(thing)) {
+            if let ThingSync::Read(v) = self.thing_sync_now(&x)? {
+                ids.extend(v);
+            }
+        }
+        Ok(!ids.is_empty() && ids.iter().all(|s| self.core.ix.passes.contains_key(s)))
     }
 }

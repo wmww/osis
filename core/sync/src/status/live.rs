@@ -1,8 +1,6 @@
 //! The product's ground: the engine's facade, the store, opens, streams, read and unread. Not
 //! built (each answers `NotBuilt`, so that part of status does nothing until it is): the store's
-//! own entries by commit (held elsewhere), the sync IDs the engine wants a complete pass of
-//! (`passes_wanted`, proposed facade call: the engine's rules waiting on a pass read the passes it
-//! is told of by `note_complete_pass`).
+//! own entries by commit (held elsewhere).
 
 use super::{Ground, Net};
 use crate::opens::Opens;
@@ -115,7 +113,10 @@ impl Ground for Live<'_, '_> {
         Ok(self.cx.engine.held_elsewhere(c)?)
     }
     fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, WallMs>>> {
-        Err(Error::NotBuilt("engine: passes_wanted (sync IDs wanting a complete pass)"))
+        Ok(self.cx.engine.passes_wanted()?)
+    }
+    fn pass_clock(&mut self) -> WallMs {
+        self.cx.engine.pass_clock()
     }
     fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
         Ok(self.cx.engine.note_complete_pass(s, began)?)

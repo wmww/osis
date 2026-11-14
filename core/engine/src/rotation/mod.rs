@@ -1045,12 +1045,17 @@ impl Engine {
         self.run(|tx| own_secrets_delivered(tx, t))
     }
 
-    /// `reseal_due` after a complete pass noted now (tests: the pass sync would note).
+    /// `reseal_due` after a complete pass of `actor`'s sync IDs noted now (tests: the pass sync
+    /// would note), run whether or not the actor has a sync ID read here.
     #[doc(hidden)]
     pub fn reseal_after_pass(&mut self, actor: &Tid) -> Result<Done> {
         let now = self.now();
-        self.note_complete_pass_now(actor, now);
-        self.reseal_due(actor)
+        if let crate::sync::ThingSync::Read(ids) = self.thing_sync(actor)? {
+            for s in ids {
+                self.note_complete_pass_now(&s, now)?;
+            }
+        }
+        self.reseal_run(actor)
     }
 
     /// Makes the rotations of `actor` nothing waits for (`pass_end_rotations`: withdraws), re-seals the
@@ -1059,9 +1064,14 @@ impl Engine {
     /// IDs began after every role commit on it received from elsewhere (`note_complete_pass`);
     /// nothing otherwise.
     pub fn reseal_due(&mut self, actor: &Tid) -> Result<Done> {
-        if !self.complete_pass(actor) {
+        if !self.complete_pass(actor)? {
             return Ok(Done::default());
         }
+        self.reseal_run(actor)
+    }
+
+    /// `reseal_due`'s work, its complete pass found.
+    fn reseal_run(&mut self, actor: &Tid) -> Result<Done> {
         let a = *actor;
         self.run(|tx| {
             let mut done = Done::default();

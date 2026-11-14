@@ -902,11 +902,12 @@ impl Clock {
         self.now
     }
 
-    /// The time, for a reader whose answer holds until `t` (`None`: at every later time).
+    /// The time, for a reader whose answer holds until `t` (`None`: at every later time). A `t`
+    /// already reached is no wake: the answer holds until the clock goes back.
     pub fn until(&self, t: Option<u64>) -> u64 {
         let k = t.unwrap_or(u64::MAX);
         self.stamps.read(&k);
-        if t.is_some() {
+        if t.is_some() && k > self.now {
             self.ahead.borrow_mut().insert(k);
         }
         self.now
@@ -1194,6 +1195,18 @@ mod tests {
             clock.set(t);
         }
         assert!(lock(&clock.stamps.0).keys.len() <= 1, "keys kept: {}", lock(&clock.stamps.0).keys.len());
+    }
+
+    // spec: none (internal). A horizon already reached is no wake: `next` names only one ahead,
+    // so a driver woken for it is never woken again at the same time.
+    #[test]
+    fn a_reached_horizon_is_no_wake() {
+        let mut clock = Clock::default();
+        clock.set(100);
+        assert!(clock.until(Some(100)) >= 100 && clock.until(Some(50)) >= 50);
+        assert_eq!(clock.next(), None);
+        clock.until(Some(150));
+        assert_eq!(clock.next(), Some(150));
     }
 
     // spec: none (internal). Debug builds compare a hit with a fresh run at the 1st, 4th, 16th,

@@ -76,11 +76,10 @@ impl Ground for Live<'_, '_> {
         let f = self.cx.engine.read_facts(s, c)?;
         let must_not = f.must_not.map(|m| match m {
             MustNot::Purged => Why::Purged,
-            MustNot::StrictSubset => Why::StrictSubset,
             MustNot::CardSuperseded => Why::CardSuperseded,
             MustNot::CardEnded => Why::CardEnded,
         });
-        Ok(Facts { body: f.body, must_not, own: f.own, role: f.role, carriers: f.carriers, later_unheld: f.later_unheld, neither: f.neither, missing: f.missing })
+        Ok(Facts { body: f.body, must_not, own: f.own, role: f.role, carriers: f.carriers, later_unheld: f.later_unheld, missing: f.missing })
     }
     fn fall_mark(&mut self, _s: &SyncId, c: &CommitId) -> Result<u64> {
         Ok(self.cx.engine.body_fall_mark(c)?)
@@ -141,6 +140,12 @@ impl Ground for Live<'_, '_> {
     }
     fn dropped(&mut self, b: &BlobId) -> Result<bool> {
         Ok(self.cx.engine.blob_dropped(b)?)
+    }
+    fn strict_subset(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool> {
+        Ok(self.cx.engine.strict_subset(s, b, held)?)
+    }
+    fn neither(&mut self, s: &SyncId, c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool> {
+        Ok(self.cx.engine.neither(s, c, there)?)
     }
     fn deletes_known(&mut self, s: &SyncId) -> Result<bool> {
         self.cx.store.deletes_known(s)

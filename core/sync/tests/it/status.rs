@@ -144,6 +144,9 @@ impl Ground for Fake {
     fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, WallMs>>> {
         Ok(self.wanted.get(&()).cloned().unwrap_or_default())
     }
+    fn pass_clock(&mut self) -> WallMs {
+        self.now()
+    }
     fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
         self.passes.push((*s, began));
         let mut w = self.wanted.get(&()).map(|x| (**x).clone()).unwrap_or_default();

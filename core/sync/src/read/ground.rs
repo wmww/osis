@@ -35,9 +35,6 @@ pub struct Facts {
     /// (forgotten, dropped), each with whether this node judged it invalid (spec/sync-judgement.md
     /// §2 established uncovered).
     pub later_unheld: Vec<(CommitId, bool)>,
-    /// §3 Neither: a delete that removed the body from S stands (each delta only a blob carries
-    /// is held by another blob of the commit, no purge request names one without dropping it).
-    pub neither: bool,
     /// The body counts as never received again (spec/sync-judgement.md §3 Dropped bodies).
     pub missing: bool,
 }
@@ -111,6 +108,13 @@ pub trait Ground {
     /// Held blob `b` holds a part this node dropped for good (purged, past its bounds, expired,
     /// destroyed): must-not-hold wherever it is logged (spec/sync-judgement.md §1).
     fn dropped(&mut self, b: &BlobId) -> Result<bool>;
+    /// Held blob `b` is a strict subset of another of `held`, the blobs of its commit held under S
+    /// (`Engine::strict_subset`, spec/sync-judgement.md §2): must-not-hold.
+    fn strict_subset(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool>;
+    /// `there`, the blobs of `c` held at a place, carry what only a blob carries of its body and
+    /// no purge request reopens it (`Engine::neither`, spec/sync-judgement.md §3 Neither): a delete
+    /// of it there stands, and nothing of it is relayed there.
+    fn neither(&mut self, s: &SyncId, c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool>;
 
     /// The sources of S on connections up now.
     fn sources(&mut self, s: &SyncId) -> Result<Arc<Vec<SrcView>>>;

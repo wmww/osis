@@ -159,7 +159,15 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
             stale.push(e.blob);
         }
     }
-    let live: Vec<BlobId> = own.iter().map(|e| e.blob).filter(|b| !stale.contains(b)).collect();
+    // a strict subset of another entry of it held here leaves too (§2); the larger one stays
+    let held: BTreeSet<BlobId> = own.iter().map(|e| e.blob).filter(|b| !stale.contains(b)).collect();
+    let mut subsets = Vec::new();
+    for b in &held {
+        if g.strict_subset(s, b, &held)? {
+            subsets.push(*b);
+        }
+    }
+    let live: Vec<BlobId> = held.iter().copied().filter(|b| !subsets.contains(b)).collect();
     let (f, verdict) = match bodies.get(s) {
         None if !g.closure_settled(s)? => (None, Verdict::Unjudged),
         None => (None, Verdict::MustNot(Why::OutsideRequired)),
@@ -187,7 +195,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         j.acts.extend(g.own_tombstones(s, c)?.into_iter().map(Act::Lift));
     }
     j.idle = bodies.get(s).is_none() && own.is_empty() && !g.present_anywhere(s, c)?;
-    j.acts.extend(stale.iter().map(|b| Act::DropOwn(*b)));
+    j.acts.extend(stale.iter().chain(&subsets).map(|b| Act::DropOwn(*b)));
     if verdict == Verdict::Unjudged {
         return Ok(j);
     }
@@ -199,8 +207,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     if matches!(verdict, Verdict::MustNot(_)) || dropped_here {
         j.acts.extend(live.iter().map(|b| Act::DropOwn(*b)));
     }
-    let neither = f.as_ref().is_some_and(|f| f.neither);
-    if verdict == Verdict::Must && live.is_empty() && !neither && g.pullable(s)? {
+    if verdict == Verdict::Must && live.is_empty() && g.pullable(s)? {
         j.acts.insert(Act::Log);
     }
     Ok(j)
@@ -234,8 +241,8 @@ pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId,
         true => Some(g.facts(s, c)?),
         false => None,
     };
-    if let Some(f) = &f {
-        at_source(g, mine, &mut t, &src, &seen, s, c, f, &verdict, head, creds, writer)?;
+    if f.is_some() {
+        at_source(g, mine, &mut t, &src, &seen, s, c, &verdict, head, creds, writer)?;
     }
     if keys.is_some_and(|k| k.delete.is_some()) && !seen.present.is_empty() {
         deletes(g, mine, &mut t, &src, &seen, s, c, f.as_ref(), &verdict, head, creds)?;
@@ -287,7 +294,14 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen
         seen.present.iter().copied().collect()
     } else {
         let copy = g.bodies(c)?.get(s).is_some_and(|m| m.copy);
-        duplicates(g, seen, copy)?
+        let mut out = duplicates(g, seen, copy)?;
+        // a strict subset of another entry of it there (§2), which carries it there
+        for b in &seen.present {
+            if !out.contains(b) && g.strict_subset(s, b, &seen.present)? {
+                out.push(*b);
+            }
+        }
+        out
     };
     if blobs.is_empty() || src.role_unheld || role_wait(g, mine, src, s, c, creds)? {
         return Ok(());
@@ -324,22 +338,24 @@ fn duplicates(g: &mut impl Ground, seen: &Seen, copy_body: bool) -> Result<Vec<B
 
 /// A must-hold body the source lacks (§3 Reader that is not a writer; §4 Logged again once).
 #[allow(clippy::too_many_arguments)]
-fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen: &Seen, s: &SyncId, c: &CommitId, f: &Facts, verdict: &Verdict, head: StepId, creds: &ReadCredentials, writer: bool) -> Result<()> {
-    if *verdict != Verdict::Must || !seen.present.is_empty() || f.neither {
+fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen: &Seen, s: &SyncId, c: &CommitId, verdict: &Verdict, head: StepId, creds: &ReadCredentials, writer: bool) -> Result<()> {
+    // what the source holds of it carries the body (§3 Neither): nothing to relay
+    if *verdict != Verdict::Must || (!seen.present.is_empty() && g.neither(s, c, &seen.present)?) {
         return Ok(());
     }
     let own = g.own(s, c)?;
-    if let Some(e) = own.iter().find(|e| !seen.deleted.contains(&e.blob)) {
+    if let Some(e) = own.iter().find(|e| !seen.deleted.contains(&e.blob) && !seen.present.contains(&e.blob)) {
         // a writer's own store is pulled; a non-writer gives it
         if !writer {
             t.acts.insert(Act::Deposit { at: src.at, conn: src.conn, blob: e.blob });
         }
         return Ok(());
     }
-    if own.is_empty() {
+    if !own.iter().any(|e| seen.deleted.contains(&e.blob)) {
         return Ok(());
     }
-    // every own entry of it was deleted there: logged again once per change of ground, but not a
+    // every own entry of it was deleted there or is there short of what only a blob carries:
+    // logged again once per change of ground, but not a
     // body expiring within MAX_DRIFT
     let expires = g.bodies(c)?.get(s).and_then(|m| m.expires);
     if expires.is_some_and(|e| mine.reached(e.0.saturating_sub(MAX_DRIFT_MS))) {

@@ -684,3 +684,177 @@ fn a_hint_is_no_recorded_sync_id_and_ends_with_its_blob_spec_sync_inbox_2() {
     lp.peers[1].tick().unwrap();
     assert!(!hinted(&mut lp), "the blob expired: no longer followed");
 }
+
+/// Peer `i`'s node writes its own `reach.0` a second later; the commit (a card commit, spec/
+/// permissions.md §4).
+fn reach(lp: &mut LocalPeer, i: usize, k: u8) -> osis_base::CommitId {
+    lp.advance(1000);
+    let n = lp.peers[i].engine.tid();
+    let mut m = Mutation::new();
+    m.set(n, &ct::REACH, &ct::Reach { dialable: [k; 32], items: Vec::new(), account: None }).unwrap();
+    lp.peers[i].engine.commit(m).unwrap().unwrap()
+}
+
+// spec/sync-judgement.md §2 must-not-hold (another node's card commit once a later valid card
+// commit of that node writing the same aspect is under the sync ID, an entry of it this node
+// opened). Hostile: a later card held as a commit with no entry of it opened here (a forged
+// supersession) supersedes nothing, and this node's own card never goes by this rule. The rule
+// firing: core/engine/src/sync/tests_facts.rs.
+#[test]
+fn a_card_known_only_as_a_commit_supersedes_nothing_spec_sync_judgement_2() {
+    let (mut lp, d) = crate::flows::account_two_nodes();
+    let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
+    let old = reach(&mut lp, 1, 1);
+    reach(&mut lp, 1, 2);
+    let (o1, _) = (reach(&mut lp, 0, 3), reach(&mut lp, 0, 4));
+    spread(&mut lp);
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.read_facts(&home, &old).unwrap().must_not, None, "a later card held but never opened here: kept");
+    assert_eq!(e.read_facts(&home, &o1).unwrap().must_not, None, "its own card: never by this rule");
+}
+
+// spec/sync-judgement.md §2 must-not-hold (another node's card commit, for `node.0` and `reach.0`,
+// once that node is a node of the account no more after an applied edge write on D ended its
+// grant). Hostile: a removed node paired again is a node again, its card kept; its `keys.0` card
+// never goes by this rule.
+#[test]
+fn a_card_goes_with_its_nodes_grant_spec_sync_judgement_2() {
+    let (mut lp, d) = crate::flows::account_two_nodes();
+    let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
+    let n1 = lp.peers[1].engine.tid();
+    let r = reach(&mut lp, 1, 1);
+    spread(&mut lp);
+    let keys = *lp.peers[0].engine.core.ix.by_aspect.get(&(n1, Ak::new("keys.0").unwrap())).unwrap().iter().next().unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.read_facts(&home, &r).unwrap().must_not, None, "a node of the account: kept");
+    e.demote(&d, &Demotion { holder: n1, new: None, retain: None }).unwrap();
+    assert_eq!(e.read_facts(&home, &r).unwrap().must_not, Some(osis_engine::sync::MustNot::CardEnded));
+    assert_eq!(e.read_facts(&home, &keys.1).unwrap().must_not, None, "its keys.0 card stays");
+    e.pair(&n1).unwrap();
+    assert_eq!(e.read_facts(&home, &r).unwrap().must_not, None, "paired again: kept");
+}
+
+/// Peer 1 takes a write grant on peer 0's thing `t` and syncs it (in its synced group).
+fn grantee() -> (LocalPeer, Tid) {
+    let (mut lp, t, _, _, blob) = granted(Role::Write);
+    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
+    spread(&mut lp);
+    let (_, d1) = lp.peers[1].engine.account().unwrap().unwrap();
+    add_item(&mut lp, 1, d1, t);
+    (lp, t)
+}
+
+// spec/permissions.md §3 Complete pass (a Pull sent before a role commit of the actor applied
+// ends no pass after it): the grant applied at peer 1 from elsewhere wants a pass of the thing's
+// sync ID from its arrival, on the engine's clock; a pass begun before it does not count, one
+// begun at it does, and the re-seal trigger waits for it.
+#[test]
+fn a_pass_begun_before_a_role_commit_does_not_count_spec_perm_3() {
+    let (mut lp, t) = grantee();
+    let e = &mut lp.peers[1].engine;
+    let s = e.home_sync_id(&t).unwrap().unwrap();
+    let since = *e.passes_wanted().unwrap().get(&s).expect("a pass of the thing's sync ID wanted");
+    assert!(since.0 > 0 && since <= e.pass_clock(), "from the grant's arrival, on the engine's clock");
+    e.note_complete_pass(&s, osis_base::WallMs(since.0 - 1)).unwrap();
+    assert_eq!(e.passes_wanted().unwrap().get(&s), Some(&since), "begun before it: still wanted");
+    assert!(e.reseal_due(&t).unwrap().commits.is_empty());
+    e.note_complete_pass(&s, since).unwrap();
+    assert!(!e.passes_wanted().unwrap().contains_key(&s));
+}
+
+// spec/permissions.md §3 Complete pass, spec/sync-status.md §1: the want is derived from the role
+// commits held and the passes noted, so a crash right after a role commit still wants the pass,
+// and a pass noted is kept across a restart.
+#[test]
+fn a_restart_still_wants_the_pass_spec_perm_3() {
+    let (mut lp, t) = grantee();
+    let s = lp.peers[1].engine.home_sync_id(&t).unwrap().unwrap();
+    let since = *lp.peers[1].engine.passes_wanted().unwrap().get(&s).unwrap();
+    lp.peers[1].restart(7).unwrap();
+    assert_eq!(lp.peers[1].engine.passes_wanted().unwrap().get(&s), Some(&since), "wanted after the crash");
+    lp.peers[1].engine.note_complete_pass(&s, since).unwrap();
+    lp.peers[1].restart(8).unwrap();
+    assert!(!lp.peers[1].engine.passes_wanted().unwrap().contains_key(&s), "the pass noted survives");
+}
+
+// spec/sync-status.md §3 History complete (a complete pass of every sync ID carrying the thing):
+// a fresh node wants one pass of its home, whenever begun; history is complete once it is noted.
+#[test]
+fn history_completes_with_a_pass_spec_sync_status_3() {
+    let (mut lp, _) = people(1);
+    let e = &mut lp.peers[0].engine;
+    let (_, d) = e.account().unwrap().unwrap();
+    let home = e.home_sync_id(&d).unwrap().unwrap();
+    assert_eq!(e.passes_wanted().unwrap().get(&home), Some(&osis_base::WallMs(0)), "one pass, whenever");
+    assert!(!e.history_complete(&d).unwrap());
+    let now = e.pass_clock();
+    e.note_complete_pass(&home, now).unwrap();
+    assert!(e.history_complete(&d).unwrap() && e.passes_wanted().unwrap().is_empty());
+}
+
+// spec/permissions.md §3 Complete pass: `passes_wanted` is a memo value over the engine's stamps,
+// so an `Effects` key over it is due when a role commit arrives from elsewhere, with no polling
+// and no hook, and its new value wants the pass from that arrival.
+#[test]
+fn passes_wanted_moves_with_a_role_commit_spec_perm_3() {
+    let (mut lp, t) = grantee();
+    let e = &mut lp.peers[1].engine;
+    let s = e.home_sync_id(&t).unwrap().unwrap();
+    let now = e.pass_clock();
+    for x in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
+        e.note_complete_pass(&x, now).unwrap();
+    }
+    let mut fx: osis_base::memo::Effects<(), std::sync::Arc<std::collections::BTreeMap<osis_base::SyncId, osis_base::WallMs>>> = osis_base::memo::Effects::new("test passes");
+    fx.want(());
+    let (_, first) = fx.settle(&(), || lp.peers[1].engine.passes_wanted().unwrap()).unwrap();
+    assert!(first.is_empty() && fx.due().is_empty(), "nothing wanted, nothing due");
+    lp.advance(1000);
+    let pb = lp.peers[1].engine.me();
+    lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
+    spread(&mut lp);
+    assert_eq!(fx.due(), vec![()], "the role commit's arrival moves the wants");
+    let (_, now) = fx.settle(&(), || lp.peers[1].engine.passes_wanted().unwrap()).unwrap();
+    assert!(now.get(&s).is_some_and(|x| x.0 > 0));
+}
+
+// spec/permissions.md §2 Tied grants (an explicit demotion of a tied grant held dead waits for a
+// complete pass of every sync ID whose bodies carry a thing of the demotion's pre-sync scope,
+// ended after the last role commit of G or T applied from elsewhere): a role commit on G from
+// another node wants a pass of T's sync ID, which no other rule wants once passed.
+#[test]
+fn a_dead_tie_wants_a_pass_of_its_scope_spec_perm_2() {
+    let (mut lp, ps) = people(3);
+    let g = thing_of(&mut lp, 0, ps[0]);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let (_, d) = lp.peers[0].engine.account().unwrap().unwrap();
+    for x in [g, t] {
+        lp.peers[0].engine.give_own_secrets(&x).unwrap();
+        add_item(&mut lp, 0, d, x);
+    }
+    add_item(&mut lp, 0, g, t);
+    let e = &mut lp.peers[0].engine;
+    let tie = e.placement(&t, &g, false).unwrap().unwrap();
+    e.grant(&t, &g, &ct::Edge { role: Role::Write, until: None, invite: None, tied: Some(osis_engine::flows::tied::tie_ct(tie)) }).unwrap();
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Remove(osis_base::Value::Tid(t)) }).unwrap();
+    e.commit(m).unwrap().unwrap();
+    assert!(e.tied_unplaced(&Default::default(), &Default::default(), true).unwrap().contains(&(t, g)), "the tie is dead");
+    let st = e.home_sync_id(&t).unwrap().unwrap();
+    let now = e.pass_clock();
+    for x in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
+        e.note_complete_pass(&x, now).unwrap();
+    }
+    assert!(e.passes_wanted().unwrap().is_empty());
+    let done = e.grant(&g, &ps[1], &edge_of(Role::Admin)).unwrap();
+    for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
+        if h == ps[1] {
+            lp.peers[1].engine.take_inbox_blob(&b, true).unwrap();
+        }
+    }
+    spread(&mut lp);
+    lp.advance(1000);
+    lp.peers[1].engine.grant(&g, &ps[2], &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    let w = lp.peers[0].engine.passes_wanted().unwrap();
+    assert!(w.get(&st).is_some_and(|x| x.0 > now.0), "T's sync ID, from the role commit on G: {w:?}");
+}

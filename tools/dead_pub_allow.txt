@@ -89,7 +89,6 @@ osis-engine::memory_charge  deferred: sync rebuild (issues/sync-rewrite.md Phase
 osis-engine::memory_pending  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::mintings_of  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::name_redeliver  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::named_by_a_fallen_purge  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::named_holders  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::named_permanent_count  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::next_lost_due  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -112,7 +111,6 @@ osis-engine::take_blind  deferred: sync rebuild (issues/sync-rewrite.md Phase 3)
 osis-engine::take_forged  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::take_signals  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::take_ts  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::tied_unplaced  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::tree_missing  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-keys::secret_count  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-label::in_memory  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -201,3 +199,5 @@ osis-engine::inbox_blob_without_chain  test hook: engine integration tests carry
 osis-engine::reseal_after_pass  test hook: engine integration tests carry deliveries and passes as sync would
 osis-keys::PermGraph  deferred: the reach of a lowering for role entries first (spec/sync-judgement.md §3), the read module's
 osis-sync::set_sync_set  test hook (tests/it: a store holding sync IDs without an engine)
+osis-engine::reseal_due  deferred: the re-seal trigger the driver runs at a complete pass's end (notes/sync-boundary.md); not wired yet
+osis-engine::history_complete  deferred: the osis API's history completeness (spec/sync-status.md §3); not wired yet
