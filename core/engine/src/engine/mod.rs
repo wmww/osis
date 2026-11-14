@@ -831,6 +831,9 @@ indexes! {
     /// Per actor, the place (`Core::place`) the newest role commit on it (`roles.0`, `secrets.0`,
     /// `keys.0`) applied from elsewhere arrived at (`sync::held`): an event, as `passes`.
     pub role_arrivals: JMap<Tid, u64>,
+    /// Per cause a rule waits a complete pass after (`sync::held::Cause`), the place (`Core::place`)
+    /// this node first judged it at (`sync::held`): an event, as `passes`.
+    pub cause_at: JMap<crate::sync::held::Cause, u64>,
     /// Per (actor, holder), a re-seal a stranded report asked for (`sync::stranded`, rows `rs/`):
     /// an event, so no rebuild compares it.
     pub reseal_asks: JMap<(Tid, Tid), crate::sync::stranded::Ask>,

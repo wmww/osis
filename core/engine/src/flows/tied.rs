@@ -155,19 +155,29 @@ impl Engine {
 
     /// The groups whose tied edge on `t` this node removes now (spec/permissions.md §2): the tie
     /// is held dead (`tie_dead`) and this node may remove it (`may_remove`), as a self-removal at
-    /// once, as an explicit demotion once the complete passes of the demotion's scope it waits are
-    /// noted (`passes_wanted` lists none). Reads `t`'s holders, their ties' placements and those
+    /// once, as an explicit demotion once the complete passes of the demotion's scope begun after
+    /// the place this call first judged it so at are noted (`passes_wanted` lists none; the place
+    /// kept while it stays so, `Engine::judge_ties`). Reads `t`'s holders, their ties' placements and those
     /// passes: sync's duty follows it per thing (`osis_sync::life`).
     pub fn untie_due(&mut self, t: &Tid) -> Result<BTreeSet<Tid>> {
         let pairs: BTreeSet<(Tid, Tid)> = self.core.ix.held.holders_of(t).map(|g| (*t, *g)).collect();
         let mut out = BTreeSet::new();
+        let mut explicit = BTreeSet::new();
         for (_, g) in self.ties_dead(pairs)? {
-            let due = match self.may_remove(t, &g)? {
-                Some(Untie::SelfRemoval) => true,
-                Some(Untie::Explicit) => self.tie_passes_done(t, &g)?,
-                None => false,
-            };
-            if due {
+            match self.may_remove(t, &g)? {
+                Some(Untie::SelfRemoval) => {
+                    out.insert(g);
+                }
+                Some(Untie::Explicit) => {
+                    explicit.insert(g);
+                }
+                None => {}
+            }
+        }
+        // each explicit one waits a pass begun after where it was first judged so
+        self.judge_ties(t, &explicit)?;
+        for g in explicit {
+            if self.tie_passes_done(t, &g)? {
                 out.insert(g);
             }
         }

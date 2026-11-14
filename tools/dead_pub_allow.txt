@@ -170,3 +170,4 @@ osis-sync::set_sync_set  test hook (tests/it: a store holding sync IDs without a
 osis-engine::history_complete  deferred: the osis API's history completeness (spec/sync-status.md §3); not wired yet
 osis-engine::loose_records  test hook (tests/it): counts loose records at n and 10n
 osis-engine::lost_wakes  test hook (tests/it order harness): a full scan of the pending commits finds no wake the index missed
+osis-engine::role_arrival_place  test hook (tests/it): role commits arrived after a pass began, in the pass-wait churn tests

@@ -1322,27 +1322,65 @@ fn a_removed_reader_drops_once_a_pass_after_the_removal_ends_spec_permissions_3(
     assert!(e.epochs(&t).is_none_or(|x| !x.read.holds_any()));
 }
 
-// spec/permissions.md §3 (When it learns it: after the newest role commit applied from elsewhere
-// on the actor or an actor a role on which gives one on it): a role commit on M, which holds read
-// on t, wants a pass of t's sync ID from its arrival, though nothing on t arrived.
+// spec/permissions.md §3 (When it learns it: a pass begun after it first judged the loss; a role
+// commit arriving later does not move that bar): peer 1, removed from t, judges the loss; a pass
+// begins; role commits on t arrive while it runs (peer 0 granting and removing another holder):
+// that pass ending lets it drop, so a role writer faster than a pass never holds the drop off.
 #[test]
-fn a_role_commit_on_a_holder_wants_a_pass_of_what_it_holds_spec_permissions_3() {
+fn role_commits_after_the_loss_do_not_hold_the_drop_off_spec_permissions_3() {
     let (mut lp, t) = grantee();
     let (pa, pb) = (lp.peers[0].engine.account().unwrap().unwrap().0, lp.peers[1].engine.account().unwrap().unwrap().0);
     let m = thing_of(&mut lp, 0, pa);
-    lp.peers[0].engine.grant(&t, &m, &edge_of(Role::Read)).unwrap();
+    let s = lp.peers[1].engine.home_sync_id(&t).unwrap().unwrap();
+    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: pb, new: None, retain: None }).unwrap();
     spread(&mut lp);
-    let e = &mut lp.peers[1].engine;
-    let sid = e.home_sync_id(&t).unwrap().unwrap();
-    let began = e.begin_pass();
-    for x in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
-        e.note_complete_pass(&x, began).unwrap();
+    assert!(lp.peers[1].engine.lost_due(&t).unwrap() && !lp.peers[1].engine.lost_passed(&t).unwrap(), "peer 1 judged the loss");
+    let began = lp.peers[1].engine.begin_pass();
+    for i in 0..3 {
+        lp.peers[0].engine.grant(&t, &m, &edge_of(Role::Read)).unwrap();
+        spread(&mut lp);
+        lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: m, new: None, retain: None }).unwrap();
+        spread(&mut lp);
+        assert!(lp.peers[1].engine.lost_due(&t).unwrap(), "still lost after churn {i}");
     }
-    assert!(!e.passes_wanted().unwrap().contains_key(&sid));
-    lp.peers[0].engine.grant(&m, &pb, &edge_of(Role::Read)).unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert!(e.role_arrival_place(&t).is_some_and(|x| x > began), "role commits on t arrived during the pass");
+    e.reload().unwrap();
+    e.note_complete_pass(&s, began).unwrap();
+    assert!(e.lost_passed(&t).unwrap(), "the pass begun after the loss was judged ends the wait");
+    assert!(e.drop_lost(&t).unwrap(), "dropped");
+}
+
+// spec/permissions.md §3 (When it learns it: a loss that ends and comes again is judged afresh):
+// peer 1, removed from t, judges the loss; a grant again ends it before any pass; a second
+// removal is judged anew, so a pass begun between the two judgements does not count for it.
+#[test]
+fn a_loss_that_comes_again_is_judged_afresh_spec_permissions_3() {
+    let (mut lp, t) = grantee();
+    let pb = lp.peers[1].engine.account().unwrap().unwrap().0;
+    let s = lp.peers[1].engine.home_sync_id(&t).unwrap().unwrap();
+    let remove = |lp: &mut LocalPeer| {
+        lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: pb, new: None, retain: None }).unwrap();
+        spread(lp);
+        assert!(lp.peers[1].engine.lost_due(&t).unwrap() && !lp.peers[1].engine.lost_passed(&t).unwrap(), "peer 1 judged the loss");
+    };
+    remove(&mut lp);
+    let done = lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Read)).unwrap();
+    for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
+        if h == pb {
+            lp.peers[1].engine.take_inbox_blob(&b, true).unwrap();
+        }
+    }
     spread(&mut lp);
-    let since = lp.peers[1].engine.passes_wanted().unwrap().get(&sid).copied();
-    assert!(since.is_some_and(|x| x > began), "t's sync ID wanted from the role commit on M: {since:?}");
+    assert!(!lp.peers[1].engine.lost_due(&t).unwrap(), "granted again: no loss");
+    let between = lp.peers[1].engine.begin_pass();
+    remove(&mut lp);
+    let e = &mut lp.peers[1].engine;
+    e.note_complete_pass(&s, between).unwrap();
+    assert!(!e.lost_passed(&t).unwrap(), "a pass begun before the second loss was judged counts for nothing");
+    let after = e.begin_pass();
+    e.note_complete_pass(&s, after).unwrap();
+    assert!(e.lost_passed(&t).unwrap());
 }
 
 // spec/permissions.md §3 (When it learns it: the removed node keeps the secrets through its pass,
@@ -1478,9 +1516,9 @@ fn passes_wanted_moves_with_a_role_commit_spec_perm_3() {
 
 // spec/permissions.md §2 Tied grants (an explicit demotion of a tied grant held dead waits for a
 // complete pass of every sync ID whose bodies carry a thing of the demotion's pre-sync scope,
-// ended after the last role commit of G or T applied from elsewhere): a role commit on G from
-// another node wants a pass of T's sync ID, which no other rule wants once passed; the removal is
-// due (`untie_due`) only while no pass is wanted.
+// begun after it first judged the tie dead): the removal waits a pass of T's sync ID begun after
+// the tie was judged dead (`untie_due`), and a role commit on G from another node arriving after
+// that pass began does not hold it off (a role writer faster than a pass never starves it).
 #[test]
 fn a_dead_tie_wants_a_pass_of_its_scope_spec_perm_2() {
     let (mut lp, ps) = people(3);
@@ -1500,13 +1538,12 @@ fn a_dead_tie_wants_a_pass_of_its_scope_spec_perm_2() {
     e.commit(m).unwrap().unwrap();
     assert!(e.tied_unplaced(&Default::default(), &Default::default(), true).unwrap().contains(&(t, g)), "the tie is dead");
     let st = e.home_sync_id(&t).unwrap().unwrap();
+    let before = e.begin_pass();
     assert!(e.untie_due(&t).unwrap().is_empty(), "the explicit removal waits its passes");
+    assert!(e.passes_wanted().unwrap().contains_key(&st), "a pass of T's sync ID wanted");
+    e.note_complete_pass(&st, before).unwrap();
+    assert!(e.untie_due(&t).unwrap().is_empty(), "a pass begun before the tie was judged dead counts for nothing");
     let now = e.begin_pass();
-    for x in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
-        e.note_complete_pass(&x, now).unwrap();
-    }
-    assert!(e.passes_wanted().unwrap().is_empty());
-    assert_eq!(e.untie_due(&t).unwrap(), [g].into(), "due once passed");
     let done = e.grant(&g, &ps[1], &edge_of(Role::Admin)).unwrap();
     for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
         if h == ps[1] {
@@ -1517,9 +1554,60 @@ fn a_dead_tie_wants_a_pass_of_its_scope_spec_perm_2() {
     lp.advance(1000);
     lp.peers[1].engine.grant(&g, &ps[2], &edge_of(Role::Read)).unwrap();
     spread(&mut lp);
-    let w = lp.peers[0].engine.passes_wanted().unwrap();
-    assert!(w.get(&st).is_some_and(|x| *x > now), "T's sync ID, from the role commit on G: {w:?}");
-    assert!(lp.peers[0].engine.untie_due(&t).unwrap().is_empty(), "waits the new pass");
+    let e = &mut lp.peers[0].engine;
+    assert!(e.role_arrival_place(&g).is_some_and(|x| x > now), "the role commit on G arrived after the pass began");
+    for x in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
+        e.note_complete_pass(&x, now).unwrap();
+    }
+    assert_eq!(e.untie_due(&t).unwrap(), [g].into(), "due once a pass after it ended, the role commit on G after it notwithstanding");
+}
+
+// spec/permissions.md §2 Tied grants (a tie it judges so no more is judged afresh): a dead tie's
+// explicit removal is made; T is placed in G again with a new tied grant, and that placement goes
+// too: the new tie waits a pass begun after it was judged dead, not after the first one was.
+#[test]
+fn a_tie_dead_again_is_judged_afresh_spec_perm_2() {
+    let (mut lp, ps) = people(1);
+    let g = thing_of(&mut lp, 0, ps[0]);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let (_, d) = lp.peers[0].engine.account().unwrap().unwrap();
+    for x in [g, t] {
+        lp.peers[0].engine.give_own_secrets(&x).unwrap();
+        add_item(&mut lp, 0, d, x);
+    }
+    let tie_and_unplace = |lp: &mut LocalPeer| {
+        add_item(lp, 0, g, t);
+        let e = &mut lp.peers[0].engine;
+        let tie = e.placement(&t, &g, false).unwrap().unwrap();
+        e.grant(&t, &g, &ct::Edge { role: Role::Write, until: None, invite: None, tied: Some(osis_engine::flows::tied::tie_ct(tie)), floor: None }).unwrap();
+        let mut m = Mutation::new();
+        m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Remove(osis_base::Value::Tid(t)) }).unwrap();
+        e.commit(m).unwrap().unwrap();
+        assert!(e.untie_due(&t).unwrap().is_empty(), "judged dead: waits its passes");
+    };
+    tie_and_unplace(&mut lp);
+    let e = &mut lp.peers[0].engine;
+    let st = e.home_sync_id(&t).unwrap().unwrap();
+    let first = e.begin_pass();
+    for x in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
+        e.note_complete_pass(&x, first).unwrap();
+    }
+    assert_eq!(e.untie_due(&t).unwrap(), [g].into());
+    e.untie(&t, &g).unwrap();
+    assert!(e.untie_due(&t).unwrap().is_empty(), "removed");
+    let between = e.begin_pass();
+    tie_and_unplace(&mut lp);
+    let e = &mut lp.peers[0].engine;
+    for x in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
+        e.note_complete_pass(&x, between).unwrap();
+    }
+    assert!(e.untie_due(&t).unwrap().is_empty(), "a pass begun before the new tie was judged dead counts for nothing");
+    assert!(e.passes_wanted().unwrap().contains_key(&st), "T's sync ID wanted again");
+    let now = e.begin_pass();
+    for x in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
+        e.note_complete_pass(&x, now).unwrap();
+    }
+    assert_eq!(e.untie_due(&t).unwrap(), [g].into());
 }
 
 // spec/permissions.md §2 Tied grants (an explicit demotion waits a complete pass of every sync ID
@@ -1550,6 +1638,7 @@ fn a_dead_tie_waits_no_pass_of_a_sync_id_not_read_here_spec_perm_2() {
     m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Remove(osis_base::Value::Tid(t)) }).unwrap();
     e.commit(m).unwrap().unwrap();
     assert_eq!(e.may_remove(&t, &g).unwrap(), Some(osis_engine::flows::Untie::Explicit));
+    assert!(e.untie_due(&t).unwrap().is_empty(), "judged dead: waits its passes");
     assert!(!e.passes_wanted().unwrap().contains_key(&sx), "no pass of E's sync ID is wanted");
     let now = e.begin_pass();
     for s in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {

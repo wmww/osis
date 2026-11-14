@@ -1056,6 +1056,11 @@ impl Engine {
         self.core.ix.held.holders_of(t).next().is_some()
     }
 
+    /// The pass place the newest role commit on `actor` applied from elsewhere arrived at.
+    pub fn role_arrival_place(&self, actor: &Tid) -> Option<u64> {
+        self.role_arrival(actor)
+    }
+
     /// The pass place now: a pass begun after this call begins above it.
     pub fn pass_place(&self) -> u64 {
         self.core.place

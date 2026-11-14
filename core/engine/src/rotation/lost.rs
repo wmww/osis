@@ -627,27 +627,25 @@ impl Engine {
         for x in reaching(&self.core, a) {
             self.core.time.until(next_until(&self.core, &x));
         }
-        if !self.core.ix.secrets.contains_key(a) {
-            return Ok(false);
-        }
         let a = *a;
-        self.read(|tx| due_now(tx, &a))
+        let due = self.core.ix.secrets.contains_key(&a) && self.read(|tx| due_now(tx, &a))?;
+        // a loss judged afresh once it ends: a later one waits its own pass (`lost_passed`)
+        if !due {
+            self.judge_cause(crate::sync::held::Cause::Lost(a), false)?;
+        }
+        Ok(due)
     }
 
     /// Whether a complete pass of each sync ID of `a` read here began after the loss
     /// (spec/permissions.md §3 Lost access: a node that loses read keeps syncing until it
-    /// completes a pass after the cause, then judges again): after the newest role commit applied
-    /// from elsewhere on an actor whose roles reach `a` (`lost_cause`). True with none read.
+    /// completes a pass after the cause, then judges again): after the place this node first
+    /// judged it lost at (`Cause::Lost`, noted here when sync's `Life` asks, `lost_due` holding;
+    /// forgotten by `lost_due` once it does not), so role commits arriving later never hold the
+    /// drop off. True with none read.
     pub fn lost_passed(&mut self, a: &Tid) -> Result<bool> {
+        let since = self.judge_cause(crate::sync::held::Cause::Lost(*a), true)?;
         let crate::sync::ThingSync::Read(ids) = self.thing_sync(a)? else { return Ok(true) };
-        let since = self.lost_cause(a);
         Ok(self.passed_after(ids.iter(), since))
-    }
-
-    /// The pass place of the newest role commit applied from elsewhere on an actor whose roles
-    /// reach `a` (`reaching`; 0 with none): a pass after it saw what followed any such loss.
-    pub(crate) fn lost_cause(&self, a: &Tid) -> u64 {
-        reaching(&self.core, a).iter().filter_map(|x| self.role_arrival(x)).max().unwrap_or(0)
     }
 
     /// Drops `a` if this node lost read access to it (`LostScope::Only`): sync's `Life` once
