@@ -320,6 +320,90 @@ fn replaced(mut b: Vec<u8>, f: &[u8], t: &[u8]) -> Vec<u8> {
     b
 }
 
+/// The commit id in a WRITE's `Opt(commit)` (a commit's stamp first, its id first).
+fn made_id(m: &Msg) -> [u8; 32] {
+    match outcome(m) {
+        Outcome::Ok { value: Value::List(c) } => match c.as_slice() {
+            [Value::List(c)] => match c.first() {
+                Some(Value::List(stamp)) => <[u8; 32]>::try_from(stamp[0].as_bytes().unwrap()).unwrap(),
+                o => panic!("{o:?}"),
+            },
+            o => panic!("{o:?}"),
+        },
+        o => panic!("{o:?}"),
+    }
+}
+
+/// The client's write of `t` (`x:v.0` = `n`) at `db` as `actor`, in a session of its own (id
+/// `n`): its commit id.
+fn client_write(db: &Osis, secret: &ClientSecret, actor: Tid, t: Tid, n: i64) -> [u8; 32] {
+    let r = osis::internals::port_answers(db, 9, false, vec![auth_as(Some(secret), 100 + n as u8), write_call(1, actor, t, n)]);
+    made_id(&r[1])
+}
+
+/// Every row and filter on `t` (commit `commit` for REVERT) in a client-actor session.
+fn every_row(secret: &ClientSecret, actor: Tid, t: Tid, session: u8, commit: [u8; 32]) -> Vec<Msg> {
+    let call = |method: u64, args: Vec<Value>| Msg::Call { id: 3, max_reply: 1 << 20, method, args };
+    let m = osis::internals::port_method::GET;
+    let (tv, ak) = (Value::Tid(t), Value::Str("x:v.0".into()));
+    let scopes = [Value::List(vec![Value::uint(0), tv.clone()]), Value::List(vec![Value::uint(1), Value::List(vec![Value::List(vec![tv.clone(), ak.clone()])])]), Value::List(vec![Value::uint(2), tv.clone()])];
+    let p = osis::internals::port_method::UNDO;
+    let undo = |nonce: u64, method: u64, s: &Value| Msg::Call { id: 3, max_reply: 1 << 20, method, args: vec![Value::uint(nonce), s.clone()] };
+    let at = |path: Vec<Value>| vec![tv.clone(), ak.clone(), Value::List(path)];
+    let index = Value::List(vec![Value::uint(3), Value::uint(0)]);
+    let revert = |nonce: u64| Msg::Call { id: 3, max_reply: 1 << 20, method: osis::internals::port_method::REVERT, args: vec![Value::uint(nonce), Value::Bytes(commit.to_vec())] };
+    vec![
+        auth_as(Some(secret), session),
+        call(osis::internals::port_method::WHOAMI, vec![]),
+        call(m, at(vec![])),
+        call(m, at(vec![index.clone()])),
+        call(m, vec![tv.clone(), Value::Str("created.0".into()), Value::List(vec![])]),
+        call(m, vec![tv.clone(), Value::Str("group.0".into()), Value::List(vec![])]),
+        call(osis::internals::port_method::ASPECTS, vec![tv.clone()]),
+        call(osis::internals::port_method::HAS_CONTENT, vec![tv.clone()]),
+        call(osis::internals::port_method::HOLDS, vec![tv.clone()]),
+        call(osis::internals::port_method::GROUPS_OF, vec![tv.clone()]),
+        call(osis::internals::port_method::GRANTS, vec![tv.clone()]),
+        call(osis::internals::port_method::ROLE_ON, vec![tv.clone()]),
+        call(osis::internals::port_method::HOLDERS, vec![tv.clone()]),
+        call(osis::internals::port_method::CREATED, vec![tv.clone()]),
+        call(osis::internals::port_method::CHANGED, vec![tv.clone()]),
+        call(osis::internals::port_method::STATUS, vec![]),
+        write_call(1, actor, t, 7),
+        write_call(2 | RESENT, actor, t, 7),
+        undo(3, p, &scopes[0]),
+        undo(4, osis::internals::port_method::REDO, &scopes[0]),
+        undo(5, p, &scopes[1]),
+        undo(6, p, &scopes[2]),
+        call(osis::internals::port_method::UNDO_TARGET, vec![scopes[0].clone()]),
+        call(osis::internals::port_method::UNDO_TARGET, vec![scopes[1].clone()]),
+        call(osis::internals::port_method::REDO_TARGET, vec![scopes[2].clone()]),
+        revert(7),
+        revert(7 | RESENT),
+        Msg::Sub { id: 4, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(0), tv.clone(), ak.clone(), Value::List(vec![])]) },
+        Msg::Sub { id: 5, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(0), tv.clone(), ak, Value::List(vec![index])]) },
+        Msg::Sub { id: 6, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(1), tv.clone()]) },
+        Msg::Sub { id: 7, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(2), tv]) },
+        Msg::Sub { id: 8, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(3)]) },
+    ]
+}
+
+/// Every row on `t` at `db` as the client reads byte for byte as on a never-known tid, its commit
+/// `made` as a never-known commit id; nothing of it writes.
+/// Connections and sessions `2n` and `2n + 1`.
+fn answers_as_never_known(db: &Osis, secret: &ClientSecret, actor: Tid, t: Tid, made: [u8; 32], n: u8) {
+    let never = Tid::from_bytes([9; 15]);
+    let before = db.at(t, v()).get().unwrap();
+    let (a, b) = (2 * n, 2 * n + 1);
+    let hidden = osis::internals::port_answers(db, a.into(), false, every_row(secret, actor, t, a, made));
+    let unknown = osis::internals::port_answers(db, b.into(), false, every_row(secret, actor, never, b, [7; 32]));
+    assert!(matches!(&hidden[0], Msg::Reply { .. }), "{hidden:?}");
+    for (h, u) in hidden.iter().zip(&unknown) {
+        assert_eq!(replaced(bytes_as(h, t, never), &made, &[7; 32]), u.encode(), "{h:?} / {u:?}");
+    }
+    assert_eq!(db.at(t, v()).get().unwrap(), before);
+}
+
 // spec/wire.md §11.2 (A client actor's rights): a thing the actor may not read answers every
 // method as a thing the node does not know: byte for byte the answers of every row, a write and
 // a subscription included, are a never-known thing's.
@@ -329,72 +413,70 @@ fn a_hidden_thing_answers_as_a_never_known_one_spec_wire_11() {
     shared_in_home(&w.a, w.t);
     // the client wrote it, with history kept, before its role went: its undo and its commit
     crate::common::keep_day(&w.a, w.t, &["x:v.0"]);
-    let r = osis::internals::port_answers(&w.a, 9, false, vec![auth_as(Some(&w.secret), 9), write_call(1, w.actor, w.t, 6)]);
-    // `Opt(commit)`, a commit's stamp first, its id first
-    let made = match outcome(&r[1]) {
-        Outcome::Ok { value: Value::List(c) } => match c.as_slice() {
-            [Value::List(c)] => match c.first() {
-                Some(Value::List(stamp)) => <[u8; 32]>::try_from(stamp[0].as_bytes().unwrap()).unwrap(),
-                o => panic!("{o:?}"),
-            },
-            o => panic!("{o:?}"),
-        },
-        o => panic!("{o:?}"),
-    };
+    let made = client_write(&w.a, &w.secret, w.actor, w.t, 6);
     w.a.set_role(w.t, w.actor, None, osis::SetRoleOpts::default()).unwrap();
-    let never = Tid::from_bytes([9; 15]);
-    let call = |method: u64, args: Vec<Value>| Msg::Call { id: 3, max_reply: 1 << 20, method, args };
-    let m = osis::internals::port_method::GET;
-    let rows = |t: Tid, session: u8, commit: [u8; 32]| {
-        let (tv, ak) = (Value::Tid(t), Value::Str("x:v.0".into()));
-        let scopes = [Value::List(vec![Value::uint(0), tv.clone()]), Value::List(vec![Value::uint(1), Value::List(vec![Value::List(vec![tv.clone(), ak.clone()])])]), Value::List(vec![Value::uint(2), tv.clone()])];
-        let p = osis::internals::port_method::UNDO;
-        let undo = |nonce: u64, method: u64, s: &Value| Msg::Call { id: 3, max_reply: 1 << 20, method, args: vec![Value::uint(nonce), s.clone()] };
-        let at = |path: Vec<Value>| vec![tv.clone(), ak.clone(), Value::List(path)];
-        let index = Value::List(vec![Value::uint(3), Value::uint(0)]);
-        vec![
-            auth_as(Some(&w.secret), session),
-            call(osis::internals::port_method::WHOAMI, vec![]),
-            call(m, at(vec![])),
-            call(m, at(vec![index.clone()])),
-            call(m, vec![tv.clone(), Value::Str("created.0".into()), Value::List(vec![])]),
-            call(m, vec![tv.clone(), Value::Str("group.0".into()), Value::List(vec![])]),
-            call(osis::internals::port_method::ASPECTS, vec![tv.clone()]),
-            call(osis::internals::port_method::HAS_CONTENT, vec![tv.clone()]),
-            call(osis::internals::port_method::HOLDS, vec![tv.clone()]),
-            call(osis::internals::port_method::GROUPS_OF, vec![tv.clone()]),
-            call(osis::internals::port_method::GRANTS, vec![tv.clone()]),
-            call(osis::internals::port_method::ROLE_ON, vec![tv.clone()]),
-            call(osis::internals::port_method::HOLDERS, vec![tv.clone()]),
-            call(osis::internals::port_method::CREATED, vec![tv.clone()]),
-            call(osis::internals::port_method::CHANGED, vec![tv.clone()]),
-            call(osis::internals::port_method::STATUS, vec![]),
-            write_call(1, w.actor, t, 7),
-            write_call(2 | RESENT, w.actor, t, 7),
-            undo(3, p, &scopes[0]),
-            undo(4, osis::internals::port_method::REDO, &scopes[0]),
-            undo(5, p, &scopes[1]),
-            undo(6, p, &scopes[2]),
-            call(osis::internals::port_method::UNDO_TARGET, vec![scopes[0].clone()]),
-            call(osis::internals::port_method::REDO_TARGET, vec![scopes[2].clone()]),
-            Msg::Call { id: 3, max_reply: 1 << 20, method: osis::internals::port_method::REVERT, args: vec![Value::uint(7), Value::Bytes(commit.to_vec())] },
-            Msg::Sub { id: 4, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(0), tv.clone(), ak.clone(), Value::List(vec![])]) },
-            Msg::Sub { id: 5, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(0), tv.clone(), ak, Value::List(vec![index])]) },
-            Msg::Sub { id: 6, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(1), tv.clone()]) },
-            Msg::Sub { id: 7, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(2), tv]) },
-            Msg::Sub { id: 8, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(3)]) },
-        ]
-    };
-    let hidden = osis::internals::port_answers(&w.a, 1, false, rows(w.t, 1, made));
-    let unknown = osis::internals::port_answers(&w.a, 2, false, rows(never, 2, [7; 32]));
-    assert!(matches!(&hidden[0], Msg::Reply { .. }), "{hidden:?}");
-    for (h, u) in hidden.iter().zip(&unknown) {
-        assert_eq!(replaced(bytes_as(h, w.t, never), &made, &[7; 32]), u.encode(), "{h:?} / {u:?}");
-    }
-    assert_eq!(w.a.at(w.t, v()).get().unwrap(), Some(Value::Int(6)));
+    answers_as_never_known(&w.a, &w.secret, w.actor, w.t, made, 1);
     // the node itself, whose `clients^.0` holds every client's secret hash, is such a thing
-    let node = osis::internals::port_answers(&w.a, 3, false, vec![auth_as(Some(&w.secret), 3), call(m, vec![Value::Tid(w.a.node()), Value::Str("clients^.0".into()), Value::List(vec![])])]);
-    assert_eq!(bytes_as(&node[1], w.a.node(), never), unknown[2].encode(), "{node:?}");
+    let never = Tid::from_bytes([9; 15]);
+    let get = |t: Tid| Msg::Call { id: 3, max_reply: 1 << 20, method: osis::internals::port_method::GET, args: vec![Value::Tid(t), Value::Str("clients^.0".into()), Value::List(vec![])] };
+    let node = osis::internals::port_answers(&w.a, 4, false, vec![auth_as(Some(&w.secret), 4), get(w.a.node())]);
+    let unknown = osis::internals::port_answers(&w.a, 5, false, vec![auth_as(Some(&w.secret), 5), get(never)]);
+    assert_eq!(bytes_as(&node[1], w.a.node(), never), unknown[1].encode(), "{node:?}");
+}
+
+// spec/wire.md §11.2 (A client actor's rights): a thing the actor may not read, listed in a group
+// it reads (so it knows the tid), still answers every row as a never-known thing: `groups_of`
+// does not name the group, the group's watch and grants do not let it through.
+#[test]
+fn a_hidden_item_of_a_readable_group_answers_as_never_known_spec_wire_11() {
+    let w = world(Some(Role::Write));
+    let mut x = w.a.write();
+    let g = x.create().unwrap();
+    x.group(g).add(osis::Member::Item(w.t)).unwrap();
+    x.commit().unwrap();
+    w.a.grant(g, w.actor, Role::Write, osis::GrantOpts::default()).unwrap();
+    crate::common::keep_day(&w.a, w.t, &["x:v.0"]);
+    let made = client_write(&w.a, &w.secret, w.actor, w.t, 6);
+    w.a.set_role(w.t, w.actor, None, osis::SetRoleOpts::default()).unwrap();
+    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
+    assert!(cl.aspects(g).unwrap().contains(&ak("group.0")), "it reads the group listing the thing");
+    assert_eq!(cl.groups_of(w.t).unwrap(), osis::GroupsOf::default());
+    answers_as_never_known(&w.a, &w.secret, w.actor, w.t, made, 1);
+}
+
+// notes/client-port.md §8 (Catching up), spec/wire.md §11.2 (A client actor's rights): at a node
+// reading a group at another node, a client of it gets every row of a thing in that group as of
+// a never-known thing, its undo and the revert of its own earlier commit included; so too while
+// the thing is split (also carried by a group that syncs here).
+#[test]
+fn a_thing_read_elsewhere_answers_a_client_as_never_known_notes_client_port() {
+    for split in [false, true] {
+        read_elsewhere_as_never_known(split);
+    }
+}
+
+fn read_elsewhere_as_never_known(split: bool) {
+    let w = world(Some(Role::Write));
+    let (b, _) = node(&w.net, 2, &w.c);
+    let mut x = b.write();
+    let (t, g) = (x.create().unwrap(), x.create().unwrap());
+    x.group(g).add(osis::Member::Item(t)).unwrap();
+    if split {
+        x.group(b.home()).add(osis::Member::Item(t)).unwrap();
+    }
+    x.at(t, v()).set(&Value::Int(3)).unwrap();
+    x.commit().unwrap();
+    let (actor, secret) = b.add_client(None).unwrap();
+    for x in [t, g] {
+        b.grant(x, actor, Role::Write, osis::GrantOpts::default()).unwrap();
+        crate::common::keep_day(&b, x, &["x:v.0"]);
+    }
+    let (made, made_g) = (client_write(&b, &secret, actor, t, 4), client_write(&b, &secret, actor, g, 5));
+    ready(b.connect_node(&login(&w))).unwrap();
+    ready(b.group_source(g, GroupSource::Node(w.addr.clone()))).unwrap();
+    answers_as_never_known(&b, &secret, actor, t, made, 1);
+    // the group itself, its undo by group scope included
+    answers_as_never_known(&b, &secret, actor, g, made_g, 2);
 }
 
 // spec/wire.md §11.2 (A client actor's rights): a watch on a thing the actor may not read hears
@@ -836,6 +918,29 @@ fn undo_through_a_thin_client_spec_wire_11() {
     let back = cl.revert(made.stamp.id).unwrap();
     assert_eq!(back.reverts, Some(made.stamp.id));
     assert_eq!(w.a.at(w.t, v()).get().unwrap(), Some(Value::Int(5)));
+}
+
+// spec/wire.md §11.2 (Write nonces): undo, redo and revert are write rows: a resend gets the
+// first outcome and runs nothing again (a second undo would undo the next commit back).
+#[test]
+fn undo_resends_run_once_spec_wire_11() {
+    let w = world(Some(Role::Write));
+    crate::common::keep_day(&w.a, w.t, &["x:v.0"]);
+    let scope = Value::List(vec![Value::uint(0), Value::Tid(w.t)]);
+    let row = |nonce: u64, method: u64, arg: Value| Msg::Call { id: 3, max_reply: 1 << 20, method, args: vec![Value::uint(nonce), arg] };
+    let (undo, redo, revert) = (osis::internals::port_method::UNDO, osis::internals::port_method::REDO, osis::internals::port_method::REVERT);
+    let r = osis::internals::port_answers(&w.a, 1, false, vec![auth_as(Some(&w.secret), 1), write_call(1, w.actor, w.t, 6), write_call(2, w.actor, w.t, 7)]);
+    let six = made_id(&r[1]);
+    let r = osis::internals::port_answers(&w.a, 1, false, vec![auth_as(Some(&w.secret), 1), row(3, undo, scope.clone()), row(3 | RESENT, undo, scope.clone())]);
+    assert!(matches!(outcome(&r[1]), Outcome::Ok { value: Value::List(c) } if c.len() == 1), "{r:?}");
+    assert_eq!(r[1], r[2], "the first outcome");
+    assert_eq!(w.a.at(w.t, v()).get().unwrap(), Some(Value::Int(6)), "undone once");
+    let r = osis::internals::port_answers(&w.a, 1, false, vec![auth_as(Some(&w.secret), 1), row(4, redo, scope.clone()), row(4 | RESENT, redo, scope)]);
+    assert_eq!(r[1], r[2]);
+    assert_eq!(w.a.at(w.t, v()).get().unwrap(), Some(Value::Int(7)), "redone once");
+    let r = osis::internals::port_answers(&w.a, 1, false, vec![auth_as(Some(&w.secret), 1), row(5, revert, Value::Bytes(six.to_vec())), row(5 | RESENT, revert, Value::Bytes(six.to_vec()))]);
+    assert!(matches!(outcome(&r[1]), Outcome::Ok { .. }), "{r:?}");
+    assert_eq!(r[1], r[2]);
 }
 
 /// Puts `t` in `a`'s home and grants it to another actor, so it has grants, a group and a sync

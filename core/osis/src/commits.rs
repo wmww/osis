@@ -501,14 +501,15 @@ impl Osis {
         let blocked = |reason| Error::NotUndoable { commit: target, reason };
         let (mat, actor) = (self.inner.limit, self.acting);
         let c = self.locked(|l| {
-            // what it touched at another node is that node's to revert
-            let touched: Vec<Tid> = l.engine().header(&target.0).map(|h| h.aspects.iter().map(|x| x.tid).collect()).unwrap_or_default();
-            if let Some(at) = touched.into_iter().find_map(|t| crate::sources::sourced_in(l, t)) {
-                return Err(Error::Unsupported(format!("revert of a commit on things read at {at}: not through a connection")));
-            }
             let e = l.engine();
             let c = target.0;
+            // a commit the actor reads none of is unknown, before anything else is said of it
             let h = e.header(&c).filter(|h| self.acting.is_none_or(|a| h.aspects.iter().any(|x| e.readable_by(&a, &x.tid)))).ok_or_else(|| Error::Invalid("unknown commit".into()))?;
+            // what it touched at another node is that node's to revert
+            if h.aspects.iter().any(|x| crate::sources::sourced_in(l, x.tid).is_some()) {
+                return Err(Error::Unsupported("revert of a commit on things read at another node: not through a connection".into()));
+            }
+            let e = l.engine();
             if h.kind != Kind::Content {
                 return Err(Error::Invalid("only changes and reverts are reverted".into()));
             }
@@ -627,17 +628,19 @@ impl crate::handle::ReadOnly {
         self.listing_here(a, q, usize::MAX)
     }
 
-    /// `target`'s commit at this engine.
     /// The node `scope`'s undo goes to, when not here: where all its things are (`Invalid` when
-    /// at two sources). A tracking handle's is `Unsupported`.
+    /// at two sources). A tracking handle's is `Unsupported`. A client of this node (acting) is
+    /// always answered here, before any source is looked at: it reads nothing this node reads at
+    /// another (`readable_by`), so what is sourced elsewhere is unknown to it, not refused.
     fn scope_at(&self, scope: &Scope) -> Result<Option<crate::share::Address>> {
+        if self.acting.is_some() {
+            return Ok(None);
+        }
         let things = Address::Writes(scope.clone()).things();
         match self.source_of_all(&things)? {
             crate::sources::Source::Local => Ok(None),
             crate::sources::Source::Node(_) if self.tracking.is_some() => Err(Error::Unsupported("a tracked undo target at another node".into())),
-            crate::sources::Source::Node(a) if self.acting.is_none() => Ok(Some(a)),
-            // a client of this node reads nothing it reads at another (`readable_by`)
-            crate::sources::Source::Node(_) => Ok(None),
+            crate::sources::Source::Node(a) => Ok(Some(a)),
         }
     }
 
