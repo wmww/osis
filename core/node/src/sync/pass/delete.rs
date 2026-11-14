@@ -718,34 +718,11 @@ impl SyncEngine {
         !is_role(a) && a.as_str() != "created.0" && !osis_schema::core_types::is_addenda(a.as_str()) && self.engine.role_on(t) >= Some(Role::Write)
     }
 
-    /// After purge requests applied (`Engine::take_purges`): on each named aspect this node
-    /// snapshots, unless it holds a snapshot of the aspect the purge left whole covering every
-    /// named body it had applied (held, or dropped as covered), it writes one from its whole state
-    /// (spec/commits.md §5 Purge). It carries the purged writes value-less, so a node that never
-    /// held them reads as this one once it holds it; duplicates from several writers are harmless
-    /// (spec/sync.md §7).
+    /// The engine's re-snapshots after purge requests applied (`Engine::purge_resnapshots`); a
+    /// refusal leaves the rest of the engine's changes to drain.
     pub(in crate::sync) fn purge_resnapshots(&mut self) -> Result<()> {
-        for ((t, a), held) in self.engine.take_purges() {
-            if !self.snapshots_on(&t, &a) {
-                continue;
-            }
-            // a snapshot the purge stripped goes at sources (`snapshot_first`): only a whole, valid
-            // one carries (and with no named body applied here, it alone decides)
-            let snaps: Vec<CommitId> = self.engine.core.ix.snapshots.get(&(t, a.clone())).into_iter().flatten().map(|x| x.1).filter(|s| self.engine.holds_valid_snapshot(s, &t, &a)).collect();
-            let mut covered = false;
-            'snaps: for s in &snaps {
-                for b in &held {
-                    if self.engine.covered(s, b, &t, &a)? != Some(true) {
-                        continue 'snaps;
-                    }
-                }
-                covered = true;
-                break;
-            }
-            // a refusal here leaves the rest of the engine's changes to drain
-            if !covered && let Err(e) = self.engine.snapshot(&t, &a) {
-                self.diag(format!("purge re-snapshot of {t} {a}: {e}"));
-            }
+        for (t, a, e) in self.engine.purge_resnapshots()? {
+            self.diag(format!("purge re-snapshot of {t} {a}: {e}"));
         }
         Ok(())
     }

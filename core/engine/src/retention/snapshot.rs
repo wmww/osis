@@ -689,6 +689,42 @@ fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: Fragment, ts: Ts, node:
 }
 
 impl Engine {
+    /// After purge requests applied (`Changed::purges`): on each named aspect this node compacts
+    /// (it may write there; not role-class, `created.0` or `addenda.0`), unless it holds a valid
+    /// snapshot the purge left whole covering every named body it had applied (held, or dropped
+    /// as covered), it writes one from its whole state (spec/commits.md §5 Purge). It carries the
+    /// purged writes value-less, so a node that never held them reads as this one once it holds
+    /// it; duplicates from several writers are harmless (spec/sync.md §7). Each aspect whose
+    /// snapshot was refused, with why.
+    pub fn purge_resnapshots(&mut self) -> Result<Vec<(Tid, Ak, Error)>> {
+        let purges = self.core.changed.as_mut().map(|c| std::mem::take(&mut c.purges)).unwrap_or_default();
+        let mut refused = Vec::new();
+        for ((t, a), held) in purges {
+            if is_role_class(a.as_str()) || a.as_str() == "created.0" || osis_schema::core_types::is_addenda(a.as_str()) || self.role_on(&t) < Some(osis_base::Role::Write) {
+                continue;
+            }
+            // a snapshot the purge stripped goes at sources (`snapshot_first`): only a whole, valid
+            // one carries (and with no named body applied here, it alone decides)
+            let snaps: Vec<CommitId> = self.core.ix.snapshots.get(&(t, a.clone())).into_iter().flatten().map(|x| x.1).filter(|s| self.holds_valid_snapshot(s, &t, &a)).collect();
+            let mut covered = false;
+            'snaps: for s in &snaps {
+                for b in &held {
+                    if self.covered(s, b, &t, &a)? != Some(true) {
+                        continue 'snaps;
+                    }
+                }
+                covered = true;
+                break;
+            }
+            if !covered && let Err(e) = self.snapshot(&t, &a) {
+                refused.push((t, a, e));
+            }
+        }
+        Ok(refused)
+    }
+}
+
+impl Engine {
     /// Writes a compaction snapshot of `(tid, ak)` from this node's whole state (spec/commits.md
     /// §2, spec/crdt.md §8): values of deltas with an expiry and of purged writes go
     /// value-less; frontiers from what this node applied (`frontiers_now`). On a `+` aspect a memory commit. `None`: no state to snapshot (a signal

@@ -730,6 +730,8 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     };
     for i in 0..3 {
         collect(&mut lp, i, &mut seen, &mut packs, &mut authors, &mut own);
+        // the purges each writer applies from here on (`Engine::purge_resnapshots`)
+        lp.peers[i].engine.take_changed();
     }
     let base = packs.len();
     let mut things = vec![g];
@@ -1340,6 +1342,13 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             } else {
                 *tally.refused.entry((kind, no.unwrap_or("no change".into()))).or_default() += 1;
             }
+        }
+        // every writer that applied a purge re-snapshots as node-sync does: a node that never
+        // held a purged write (one missing when purged counts as never received and is not
+        // fetched again) reads as its holders once it holds the snapshot (spec/commits.md §5 Purge)
+        for i in 0..3 {
+            lp.peers[i].engine.purge_resnapshots().unwrap();
+            collect(&mut lp, i, &mut seen, &mut packs, &mut authors, &mut own);
         }
     }
     tally.commits = (packs.len() - base) as u64;
@@ -3989,4 +3998,20 @@ fn record_after_a_waiting_commit_applied_fetches_its_thrown_out_part_spec_commit
     use Step::*;
     caught_up(&[NewTop { by: 0 }, Two { by: 0, a: 0, b: 1, v: 3 }], 1, 0, true);
     caught_up(&[NewTop { by: 0 }, TwoEdges { by: 0, a: 0, b: 1, holder: 1, role: Role::Write }], 1, 0, true);
+}
+
+
+// spec/commits.md §5 Purge, Never received: the keep-everything node judges 2's m8 invalid under
+// 0's backdated demotion of 2 and drops it; walking 2's side of the dispute (2 removed 0) turns it
+// valid and 2's purge of it standing at once, so it is missing when purged: never received, not
+// fetched again, and that node reads 1's m4 where a node that held m8 reads its leftover, until
+// it holds 2's re-snapshot (`Engine::purge_resnapshots`, which the history's writers make).
+#[test]
+fn purge_of_a_part_dropped_while_invalid_reads_alike_by_the_resnapshot_spec_commits_5() {
+    use Step::*;
+    let h = vec![Message { by: 1, t: 0, v: 4 }, Demote { by: 0, t: 0, holder: 2, at: 0, to_read: true }, RemoveFlow { by: 2, t: 0, holder: 0, lower: false }, Message { by: 2, t: 0, v: 8 }, PurgeNamed { by: 2, t: 0, of: 2, back: 0, v: 1 }];
+    let played = play(0, &h);
+    let whole: Vec<usize> = (0..played.packs.len()).collect();
+    order_checks(&played, &whole).unwrap();
+    order_checks(&played, &whole.iter().rev().copied().collect::<Vec<_>>()).unwrap();
 }
