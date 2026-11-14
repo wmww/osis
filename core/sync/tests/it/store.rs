@@ -1234,7 +1234,7 @@ fn only_a_writers_stamp_verifies_spec_sync_inbox_2() {
     let (b2, bytes2) = blob(101, Class::Durable, None, &[]);
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b2, false), bytes2).unwrap(), Code::OK);
     assert!(st.stamp_verifies(&s.id, &b2).unwrap());
-    let (g, c) = s.rotate(11);
+    let (g, c) = s.rotate(20);
     assert_eq!(st.take_register(&s.id, &g, Some(&c)).unwrap(), Code::OK);
     assert!(!st.stamp_verifies(&s.id, &b2).unwrap(), "under an earlier step's write key: no vouch");
 }

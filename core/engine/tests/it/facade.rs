@@ -2030,3 +2030,27 @@ fn a_secret_without_a_kept_sync_id_records_nothing_spec_sync_3() {
     let (_, d) = p1.account().unwrap().unwrap();
     assert!(p1.get_typed(&d, &ct::KEPT).unwrap().is_none_or(|k| !k.contains_key(&t)), "no record entry");
 }
+
+// spec/sync.md §3 (A kept sync ID: an accept keeps the sync IDs every held boxes payload offering
+// the thing names), spec/sync-hostile.md §2 (the user may accept a forger's offer: the thing is
+// then kept under that sync ID too, and the genuine one is kept as well): an accept made while a
+// forger's offer of another sync ID is held keeps both, so a forger arriving first displaces
+// nothing; the forger's secret, which no step of the genuine path bears, is never recorded.
+#[test]
+fn an_accept_with_a_forgers_offer_held_keeps_the_genuine_too_spec_sync_3() {
+    let (mut lp, t, b, _, blob) = granted(Role::Sync);
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let (real, _) = boxes_of(&mut lp, 1, &blob);
+    let forger = osis_base::SyncId([0x55; 16]);
+    let mut things = real.things.clone();
+    things[0].sync_id = Some(forger);
+    let forged = boxes_by_hand(&mut lp, 1, &osis_label::BoxesPayload::new(&b, things, None, None));
+    lp.peers[1].engine.take_inbox_blob(&forged, false).unwrap();
+    lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap();
+    accept(&mut lp, 1, t);
+    let e = &mut lp.peers[1].engine;
+    let r = e.sync_record(&t).unwrap().expect("kept");
+    let mut want = vec![s, forger];
+    want.sort();
+    assert_eq!(r.sync_ids, want, "both offers' sync IDs: the genuine one kept");
+}
