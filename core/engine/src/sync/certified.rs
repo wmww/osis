@@ -517,7 +517,7 @@ mod tests {
             e.commit(m).unwrap();
             things.push(t);
         }
-        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
+        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None, floor: None };
         // a link's K, written first by the sharer node and then by L (an author that is no node)
         let link: std::cell::RefCell<Option<osis_label::ShareLink>> = Default::default();
         let k = || link.borrow().as_ref().unwrap().k;
@@ -614,7 +614,7 @@ mod tests {
                 let t = things[next(things.len())];
                 let op = next(8);
                 let r = match op {
-                    0 => lp.peers[0].engine.grant(&t, &a1.account, &ct::Edge { role: roles[next(4)], until: None, invite: None, tied: None }).map(drop),
+                    0 => lp.peers[0].engine.grant(&t, &a1.account, &ct::Edge { role: roles[next(4)], until: None, invite: None, tied: None, floor: None }).map(drop),
                     1 => lp.peers[0].engine.demote(&t, &Demotion { holder: a1.account, new: None, retain: None }).map(drop),
                     2 => lp.peers[0].engine.give_own_secrets(&t).map(drop),
                     3 => {
