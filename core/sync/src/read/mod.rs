@@ -28,6 +28,7 @@
 pub mod ground;
 mod judge;
 mod live;
+mod pieces;
 mod views;
 
 pub use ground::{BlobInfo, Facts, Ground, PieceAt, RecordsMissing, Seen, SrcView};
@@ -88,6 +89,8 @@ pub struct Read {
     /// Per freed link (blob, thing), what it calls for under each S carrying its thing, and
     /// whether an entry of it is still known (spec/sync-compaction.md §1 Freed links).
     freed: Effects<(BlobId, Tid), judge::Freed>,
+    /// The pieces the must-hold bodies link, per (S, piece) (spec/sync-judgement.md §1).
+    pieces: pieces::Pieces,
     verdicts: Stamped<(SyncId, CommitId), Verdict>,
     /// Own role commits S must hold (§3 Role entries first).
     roles: Stamped<SyncId, BTreeSet<CommitId>>,
@@ -114,6 +117,7 @@ impl Default for Read {
             records: Effects::new("read: records"),
             steps: Effects::new("read: steps"),
             freed: Effects::new("read: freed"),
+            pieces: pieces::Pieces::default(),
             verdicts: Stamped::default(),
             roles: Stamped::default(),
             told: Stamped::default(),
@@ -273,23 +277,42 @@ impl Read {
                     self.judged.unwant(&k);
                     self.verdicts.remove(&k);
                 }
+                let links = |j: &Judged| (j.roots.to_vec(), j.repairs);
+                let (old, new) = (was.as_ref().map(links).unwrap_or_default(), links(&now));
+                self.pieces.body(&s, &c, (&old.0, old.1), (&new.0, new.1));
                 note(&mut judged, k, was, now);
+            }
+        }
+        // each piece the must-hold bodies link, to its fixpoint (a node judged held follows what
+        // lies below it)
+        loop {
+            let due = self.pieces.judged.due();
+            if due.is_empty() {
+                break;
+            }
+            for k in due {
+                let Some(p) = self.pieces.link_of(&k) else { continue };
+                let Some((_, now)) = self.pieces.judged.try_settle(&k, || judge::piece(g, &k.0, &p))? else { continue };
+                self.pieces.settled(&k, now);
             }
         }
         for ((s, c), (was, now)) in judged {
             acted = true;
             let before = was.map(|w| w.acts).unwrap_or_default();
-            // a body's pieces to repair go in one commit (spec/sync-ids.md §1 Repair)
-            let mut repair = BTreeSet::new();
             for a in now.acts.difference(&before).cloned().collect::<Vec<_>>() {
-                match a {
-                    Act::Repair(b) => drop(repair.insert(b)),
-                    a => self.act(g, &s, Some(&c), a)?,
-                }
+                self.act(g, &s, Some(&c), a)?;
             }
-            if !repair.is_empty() {
-                g.repair(&c, &repair)?;
-            }
+        }
+        // what the pieces newly call for; a lost one is repaired in the own bodies over it, each
+        // body's in one commit
+        let (acts, repairs) = self.pieces.acts();
+        for ((s, _), a) in acts {
+            acted = true;
+            self.act(g, &s, None, a)?;
+        }
+        for (c, b) in repairs {
+            acted = true;
+            g.repair(&c, &b)?;
         }
         // what each body calls for at each source keeping S unread: the rows a source's stream
         // wrote, and a source joining or moving (a non-writer there gives every must-hold body)
@@ -426,7 +449,7 @@ impl Read {
             (Act::Forget, _) => g.forget(s)?,
             (Act::LogPiece(b), _) => g.log_piece(s, &b)?,
             (Act::TakePiece(b), _) => g.take_piece(s, &b)?,
-            (Act::Repair(b), Some(c)) => g.repair(c, &[b].into())?,
+            (Act::Repair(_), _) => {}
             (Act::DropPiece(b), _) => g.drop_piece(s, &b)?,
             (Act::DeleteFreed { at, conn, head, blob, thing }, _) => {
                 let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) else { return Ok(()) };

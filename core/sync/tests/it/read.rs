@@ -14,7 +14,7 @@ use osis_engine::labeling::HeadKeys;
 use osis_engine::sync::{BodyFacts, BodyMeta, Destruction, ReadCredentials};
 use osis_label::{Class, Step, StepKeys};
 use osis_sync::read::{BlobInfo, Facts, Ground, PieceAt, Read, RecordsMissing, Seen, SrcView, Verdict, Why};
-use osis_engine::sync::Pieces;
+use osis_engine::sync::PieceLink;
 use osis_base::Tid;
 use osis_sync::store::{Source, Stand};
 use osis_sync::types::{ConnId, Entry};
@@ -150,8 +150,10 @@ struct Fake {
     record_logs: Vec<(SyncId, BTreeSet<osis_base::Tid>)>,
     records_forgotten: Vec<(SyncId, BlobId)>,
     k: Kstore,
-    /// Pieces per body, what the own store has of each, what each source shows of each.
-    pieces: Stamped<(SyncId, CommitId), Arc<Pieces>>,
+    /// Roots per body, what lies below each held piece, what the own store has of each, what
+    /// each source shows of each.
+    roots: Stamped<(SyncId, CommitId), Arc<Vec<PieceLink>>>,
+    below: Stamped<PieceLink, Arc<Vec<PieceLink>>>,
     piece_at: Stamped<(SyncId, BlobId), PieceAt>,
     piece_seen: Stamped<(Source, SyncId, BlobId), (bool, bool)>,
     /// Freed links in the set (and a feed of those added), the sync IDs carrying each thing.
@@ -161,14 +163,20 @@ struct Fake {
 }
 
 impl Ground for Fake {
-    fn pieces(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Pieces>> {
-        Ok(self.pieces.get(&(*s, *c)).cloned().unwrap_or_default())
+    fn piece_roots(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Vec<PieceLink>>> {
+        Ok(self.roots.get(&(*s, *c)).cloned().unwrap_or_default())
+    }
+    fn piece_below(&mut self, p: &PieceLink) -> Result<Option<Arc<Vec<PieceLink>>>> {
+        Ok(self.below.get(p).cloned())
     }
     fn piece(&mut self, s: &SyncId, b: &BlobId) -> Result<PieceAt> {
         Ok(self.piece_at.get(&(*s, *b)).copied().unwrap_or(PieceAt::Absent))
     }
-    fn piece_seen(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<(bool, bool)> {
-        Ok(self.piece_seen.get(&(*at, *s, *b)).copied().unwrap_or((false, false)))
+    fn piece_shown(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
+        Ok(self.piece_seen.get(&(*at, *s, *b)).is_some_and(|x| x.0))
+    }
+    fn piece_deleted(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
+        Ok(self.piece_seen.get(&(*at, *s, *b)).is_some_and(|x| x.1))
     }
     fn log_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         self.sent.push(Sent::LogPiece(*b));
@@ -1344,11 +1352,20 @@ fn bid(i: u8) -> BlobId {
     BlobId([i; 32])
 }
 
-/// A writer holding own body `cid(1)` under S with pieces `held` and `missing`.
+/// A piece link to blob `bid(i)` (a chunk when `leaf`).
+fn pl(i: u8, leaf: bool) -> PieceLink {
+    let link = osis_base::Link { hash: [i; 32], blob: bid(i), suite: 0, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE };
+    PieceLink::new(link, None, leaf)
+}
+
+/// A writer holding own body `cid(1)` under S linking chunks `held` (held here) and `missing`.
 fn with_pieces(held: &[u8], missing: &[u8]) -> W {
     let mut w = W::new();
-    let p = Pieces { held: held.iter().map(|i| bid(*i)).collect(), missing: missing.iter().map(|i| bid(*i)).collect() };
-    w.g.pieces.insert((S, cid(1)), Arc::new(p));
+    for i in held {
+        w.g.below.insert(pl(*i, true), Arc::default());
+    }
+    let roots = held.iter().chain(missing).map(|i| pl(*i, true)).collect();
+    w.g.roots.insert((S, cid(1)), Arc::new(roots));
     w.hold(cid(1), &[S], uncovered());
     w
 }
@@ -1364,8 +1381,13 @@ fn sent_of(w: &W, f: impl Fn(&Sent) -> bool) -> usize {
 fn pieces_of_a_must_hold_body_are_logged_once_spec_sync_judgement_1() {
     let mut w = W::new();
     w.g.piece_at.insert((S, bid(12)), PieceAt::Tombstoned);
-    w.g.pieces.insert((S, cid(1)), Arc::new(Pieces { held: [bid(10), bid(11), bid(12)].into(), missing: BTreeSet::new() }));
-    w.g.pieces.insert((S, cid(2)), Arc::new(Pieces { held: [bid(20)].into(), missing: BTreeSet::new() }));
+    // cid(1) links node 10 over chunks 11 and 12; cid(2) links chunk 20
+    w.g.below.insert(pl(10, false), Arc::new(vec![pl(11, true), pl(12, true)]));
+    for i in [11, 12, 20] {
+        w.g.below.insert(pl(i, true), Arc::default());
+    }
+    w.g.roots.insert((S, cid(1)), Arc::new(vec![pl(10, false)]));
+    w.g.roots.insert((S, cid(2)), Arc::new(vec![pl(20, true)]));
     w.hold(cid(1), &[S], uncovered());
     w.hold(cid(2), &[S], covered(cid(9)));
     w.exchange();
@@ -1381,7 +1403,7 @@ fn a_missing_piece_is_taken_or_fetched_spec_sync_judgement_1() {
     let mut w = W::new();
     w.g.piece_at.insert((S, bid(10)), PieceAt::Peer);
     w.g.piece_seen.insert((K, S, bid(11)), (true, false));
-    w.g.pieces.insert((S, cid(1)), Arc::new(Pieces { held: BTreeSet::new(), missing: [bid(10), bid(11), bid(12)].into() }));
+    w.g.roots.insert((S, cid(1)), Arc::new(vec![pl(10, true), pl(11, true), pl(12, true)]));
     w.hold(cid(1), &[S], uncovered());
     assert!(w.g.sent.contains(&Sent::TakePiece(bid(10))), "{:?}", w.g.sent);
     assert!(w.g.sent.contains(&Sent::Fetch(KC, bid(11))));
@@ -1433,6 +1455,101 @@ fn a_repair_commit_is_never_repaired_spec_sync_ids_1() {
     w.settle();
     w.exchange();
     assert_eq!(sent_of(&w, |m| matches!(m, Sent::Repair(..))), 0, "{:?}", w.g.sent);
+}
+
+/// A piece link to blob `i` (big-endian in its first bytes), a chunk when `leaf`.
+fn plw(i: u32, leaf: bool) -> PieceLink {
+    let mut b = [0u8; 32];
+    b[..4].copy_from_slice(&i.to_be_bytes());
+    b[4] = 0xee;
+    let link = osis_base::Link { hash: b, blob: BlobId(b), suite: 0, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE };
+    PieceLink::new(link, None, leaf)
+}
+
+/// Pieces judged when own body `cid(2)` links node 1001 over the `n` chunks of `cid(1)`'s node
+/// 1000 but one, and one new chunk: a small edit to a large value.
+fn pieces_judged_for_an_edit(n: u32) -> u64 {
+    let mut w = W::new();
+    let chunks: Vec<PieceLink> = (0..n).map(|i| plw(i, true)).collect();
+    for c in &chunks {
+        w.g.below.insert(*c, Arc::default());
+    }
+    w.g.below.insert(plw(1000, false), Arc::new(chunks.clone()));
+    w.g.roots.insert((S, cid(1)), Arc::new(vec![plw(1000, false)]));
+    w.hold(cid(1), &[S], uncovered());
+    w.exchange();
+    let mut edited = chunks[..chunks.len() - 1].to_vec();
+    edited.push(plw(999, true));
+    w.g.below.insert(plw(999, true), Arc::default());
+    w.g.below.insert(plw(1001, false), Arc::new(edited));
+    w.g.roots.insert((S, cid(2)), Arc::new(vec![plw(1001, false)]));
+    osis_base::costs::take();
+    w.hold(cid(2), &[S], uncovered());
+    w.exchange();
+    let taken = osis_base::costs::take();
+    taken.iter().filter(|(k, _, _)| *k == "read: piece judged").map(|(_, _, n)| n).sum()
+}
+
+// spec/sync.md §2 (work in proportion to change): a body sharing most of its tree with one
+// already followed judges only its new pieces: the same at n and 10n chunks.
+#[test]
+fn an_edit_judges_its_new_pieces_alone() {
+    let (a, b) = (pieces_judged_for_an_edit(10), pieces_judged_for_an_edit(100));
+    assert_eq!(a, b, "pieces judged per edit grow with the tree");
+    assert!(a <= 4, "the new node and the new chunk, each again once logged: {a}");
+}
+
+// spec/sync-judgement.md §1 (chunk and tree-node blobs): only a must-hold body's pieces go under
+// S: once it is no longer must-hold, a piece it alone linked is not fetched where a source
+// comes to show it.
+#[test]
+fn pieces_are_followed_only_while_a_must_hold_body_links_them_spec_sync_judgement_1() {
+    let mut w = with_pieces(&[], &[10]);
+    w.judge(S, cid(1), covered(cid(9)));
+    w.g.piece_seen.insert((K, S, bid(10)), (true, false));
+    w.settle();
+    assert_eq!(sent_of(&w, |m| matches!(m, Sent::Fetch(..))), 0, "{:?}", w.g.sent);
+}
+
+// spec/sync-judgement.md §1 (chunk and tree-node blobs): a held piece no must-hold body links
+// calls for nothing (its own entry gone, it is not logged); once a body links its node again,
+// it and what lies below the node act again, as they stand.
+#[test]
+fn a_piece_no_must_hold_body_links_acts_again_once_linked_spec_sync_judgement_1() {
+    let mut w = W::new();
+    w.g.below.insert(pl(30, false), Arc::new(vec![pl(31, true)]));
+    w.g.below.insert(pl(31, true), Arc::default());
+    w.g.roots.insert((S, cid(1)), Arc::new(vec![pl(30, false)]));
+    w.hold(cid(1), &[S], uncovered());
+    assert!(w.g.sent.contains(&Sent::LogPiece(bid(31))), "{:?}", w.g.sent);
+    w.judge(S, cid(1), covered(cid(9)));
+    w.g.sent.clear();
+    w.g.piece_at.insert((S, bid(31)), PieceAt::Absent);
+    w.settle();
+    assert_eq!(sent_of(&w, |m| matches!(m, Sent::LogPiece(_))), 0, "not linked: {:?}", w.g.sent);
+    w.g.roots.insert((S, cid(2)), Arc::new(vec![pl(30, false)]));
+    w.hold(cid(2), &[S], uncovered());
+    assert_eq!(w.g.sent.iter().filter(|m| **m == Sent::LogPiece(bid(31))).count(), 1, "{:?}", w.g.sent);
+}
+
+// spec/sync-ids.md §1 (Repair): a piece already lost when an own body comes to link it is
+// repaired in that body.
+#[test]
+fn a_lost_piece_an_own_body_comes_to_link_is_repaired_spec_sync_ids_1() {
+    let mut w = W::new();
+    w.g.below.insert(pl(10, true), Arc::default());
+    w.g.below.insert(pl(30, false), Arc::new(vec![pl(10, true)]));
+    w.g.roots.insert((S, cid(1)), Arc::new(vec![pl(10, true)]));
+    let mut f = uncovered();
+    f.own = false;
+    w.hold(cid(1), &[S], f);
+    w.g.heard.insert(S, true);
+    w.g.piece_seen.insert((K, S, bid(10)), (false, true));
+    w.settle();
+    assert_eq!(sent_of(&w, |m| matches!(m, Sent::Repair(..))), 0, "another's body is not repaired here");
+    w.g.roots.insert((S, cid(2)), Arc::new(vec![pl(30, false)]));
+    w.hold(cid(2), &[S], uncovered());
+    assert_eq!(w.g.sent.iter().filter(|m| **m == Sent::Repair(cid(2), bid(10))).count(), 1, "{:?}", w.g.sent);
 }
 
 // spec/sync-compaction.md §1 (Freed links): a freed link's own entry leaves, it is deleted at each

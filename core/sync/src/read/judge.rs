@@ -9,7 +9,7 @@ use crate::types::{ConnId, Result};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::memo::{Clock, Stamped};
 use osis_base::{BlobId, CommitId, SyncId, Tid};
-use osis_engine::sync::{BodyMeta, ReadCredentials};
+use osis_engine::sync::{BodyMeta, PieceLink, ReadCredentials};
 use osis_label::StepId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -57,12 +57,25 @@ pub(crate) struct Judged {
     pub acts: BTreeSet<Act>,
     /// Nothing of the body is under S here or at a source: no longer followed.
     pub idle: bool,
+    /// A must-hold body's links (`Engine::piece_roots`): where its pieces start.
+    pub roots: Arc<Vec<PieceLink>>,
+    /// An own body a repair did not write: its pieces are repaired (spec/sync-ids.md §1).
+    pub repairs: bool,
 }
 
 impl Default for Judged {
     fn default() -> Self {
-        Judged { verdict: Verdict::Unjudged, role: false, acts: BTreeSet::new(), idle: false }
+        Judged { verdict: Verdict::Unjudged, role: false, acts: BTreeSet::new(), idle: false, roots: Arc::default(), repairs: false }
     }
+}
+
+/// One piece at S, linked by a must-hold body here: what it calls for, and what lies one step
+/// below it (`Engine::piece_below`; nothing while it is missing).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PieceJudged {
+    pub held: bool,
+    pub acts: BTreeSet<Act>,
+    pub kids: Arc<Vec<PieceLink>>,
 }
 
 /// What one body at S calls for at one source.
@@ -238,56 +251,55 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         j.acts.insert(Act::Log);
     }
     if verdict == Verdict::Must {
-        pieces(g, &mut j, s, c, f.as_ref().is_some_and(|f| f.own && !f.repair))?;
+        j.roots = g.piece_roots(s, c)?;
+        j.repairs = f.as_ref().is_some_and(|f| f.own && !f.repair);
     }
     Ok(j)
 }
 
-/// The pieces of a must-hold body (§1: its linked blobs go under S beside it): a held one with no
-/// own entry is logged, a missing one is taken from a peer's entry here or fetched where a
-/// source shows it; and, for an own body a repair did not write (`repairs`), a held one some
-/// source shows deleted and none present is repaired (spec/sync-ids.md §1 Repair), judged once
-/// S's sources are heard out.
-fn pieces(g: &mut impl Ground, j: &mut Judged, s: &SyncId, c: &CommitId, repairs: bool) -> Result<()> {
-    let p = g.pieces(s, c)?;
-    if p.held.is_empty() && p.missing.is_empty() {
-        return Ok(());
-    }
-    let pullable = g.pullable(s)?;
-    for b in &p.held {
-        if g.piece(s, b)? != PieceAt::Own && g.piece(s, b)? != PieceAt::Tombstoned && pullable {
-            j.acts.insert(Act::LogPiece(*b));
+/// One piece of the must-hold bodies at S (§1: their linked blobs go under S beside them): a held
+/// one with no own entry is logged, a missing one is taken from a peer's entry here or fetched
+/// where a source shows it. A held one some source shows deleted and none present is lost
+/// (`Act::Repair`; spec/sync-ids.md §1 Repair), judged once S's sources are heard out; read
+/// repairs it in the own bodies linking it that a repair did not write.
+pub(crate) fn piece(g: &mut impl Ground, s: &SyncId, p: &PieceLink) -> Result<PieceJudged> {
+    osis_base::costs::count("read: piece judged", 1);
+    let b = p.blob();
+    let mut j = PieceJudged::default();
+    let Some(kids) = g.piece_below(p)? else {
+        if g.piece(s, &b)? == PieceAt::Peer {
+            j.acts.insert(Act::TakePiece(b));
+            return Ok(j);
         }
-    }
-    let sources = g.sources(s)?;
-    for b in &p.missing {
-        if g.piece(s, b)? == PieceAt::Peer {
-            j.acts.insert(Act::TakePiece(*b));
-            continue;
-        }
-        for src in sources.iter() {
-            if g.piece_seen(&src.at, s, b)?.0 {
-                j.acts.insert(Act::Fetch { at: src.at, conn: src.conn, blob: *b });
+        for src in g.sources(s)?.iter() {
+            if g.piece_shown(&src.at, s, &b)? {
+                j.acts.insert(Act::Fetch { at: src.at, conn: src.conn, blob: b });
             }
         }
+        return Ok(j);
+    };
+    j.held = true;
+    j.kids = kids;
+    if !matches!(g.piece(s, &b)?, PieceAt::Own | PieceAt::Tombstoned) && g.pullable(s)? {
+        j.acts.insert(Act::LogPiece(b));
     }
-    // repair: read only while a delete is known at a source of S and every source is heard out
-    // (every entry of S it can open applied)
-    if !repairs || !g.deletes_known(s)? || !g.heard_out(s)? {
-        return Ok(());
-    }
-    for b in &p.held {
-        let (mut deleted, mut present) = (false, false);
-        for src in sources.iter() {
-            let (p, d) = g.piece_seen(&src.at, s, b)?;
-            present |= p;
-            deleted |= d;
-        }
-        if deleted && !present {
-            j.acts.insert(Act::Repair(*b));
+    // lost: some source shows it deleted and none present, S's sources heard out (every entry of
+    // S each can open applied); deletes read only once no source shows it
+    let sources = g.sources(s)?;
+    for src in sources.iter() {
+        if g.piece_shown(&src.at, s, &b)? {
+            return Ok(j);
         }
     }
-    Ok(())
+    for src in sources.iter() {
+        if g.piece_deleted(&src.at, s, &b)? {
+            if g.heard_out(s)? {
+                j.acts.insert(Act::Repair(b));
+            }
+            break;
+        }
+    }
+    Ok(j)
 }
 
 /// A freed link's acts per sync ID, and whether an entry of it is still known here.
@@ -314,7 +326,7 @@ pub(crate) fn freed(g: &mut impl Ground, b: &BlobId, t: &Tid) -> Result<Freed> {
         }
         for src in g.sources(&s)?.iter() {
             // a reader judges its own entries: only a store's count
-            if !src.store || !g.piece_seen(&src.at, &s, b)?.0 {
+            if !src.store || !g.piece_shown(&src.at, &s, b)? {
                 continue;
             }
             known = true;

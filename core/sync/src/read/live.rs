@@ -5,7 +5,7 @@
 use super::Why;
 use super::ground::{BlobInfo, Facts, Ground, PieceAt, RecordsMissing, Seen, SrcView};
 use osis_engine::retention::freed::Freed;
-use osis_engine::sync::Pieces;
+use osis_engine::sync::PieceLink;
 use osis_label::StepId;
 use crate::opens::Opens;
 use crate::session::{Sessions, To};
@@ -326,9 +326,12 @@ impl Ground for Live<'_, '_> {
         self.cx.store.log(s, e, Some(bytes), None)?;
         Ok(())
     }
-    fn pieces(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Pieces>> {
+    fn piece_roots(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Vec<PieceLink>>> {
         let Some(parts) = self.cx.engine.sync_bodies(c)?.get(s).map(|m| m.parts.clone()) else { return Ok(Arc::default()) };
-        Ok(self.cx.engine.pieces(c, &parts)?)
+        Ok(Arc::new(self.cx.engine.piece_roots(c, &parts)?))
+    }
+    fn piece_below(&mut self, p: &PieceLink) -> Result<Option<Arc<Vec<PieceLink>>>> {
+        Ok(self.cx.engine.piece_below(p)?)
     }
     fn piece(&mut self, s: &SyncId, b: &BlobId) -> Result<PieceAt> {
         Ok(match self.cx.store.entry(s, b)? {
@@ -338,8 +341,11 @@ impl Ground for Live<'_, '_> {
             None => PieceAt::Absent,
         })
     }
-    fn piece_seen(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<(bool, bool)> {
-        Ok((self.streams.known().knows(*at, s, b), self.cx.store.seen_deleted(*at, s, b)?))
+    fn piece_shown(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
+        Ok(self.streams.known().knows(*at, s, b))
+    }
+    fn piece_deleted(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
+        self.cx.store.seen_deleted(*at, s, b)
     }
     fn log_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         if let Some(e) = self.cx.store.entry(s, b)? {

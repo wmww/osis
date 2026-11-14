@@ -8,7 +8,7 @@ use crate::store::{Source, Stand};
 use crate::types::{ConnId, Entry, Result};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::SigningSecret;
-use osis_engine::sync::{BodyFacts, BodyMeta, Destruction, PartSet, Pieces, ReadCredentials};
+use osis_engine::sync::{BodyFacts, BodyMeta, Destruction, PartSet, PieceLink, ReadCredentials};
 use osis_label::StepId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -180,21 +180,32 @@ pub trait Ground {
         let _ = (s, records);
         Ok(())
     }
-    /// The linked blobs of `c`'s body at S (`Engine::pieces`; spec/sync-judgement.md §1): held,
-    /// and missing as far as the held node and page blobs reach.
-    fn pieces(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Pieces>> {
+    /// The links of `c`'s body at S, where its pieces start (`Engine::piece_roots`;
+    /// spec/sync-judgement.md §1).
+    fn piece_roots(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Vec<PieceLink>>> {
         let _ = (s, c);
         Ok(Arc::default())
+    }
+    /// What lies one step below piece `p`: `None` while it is not held (`Engine::piece_below`).
+    fn piece_below(&mut self, p: &PieceLink) -> Result<Option<Arc<Vec<PieceLink>>>> {
+        let _ = p;
+        Ok(None)
     }
     /// What the own store has of piece `b` under S.
     fn piece(&mut self, s: &SyncId, b: &BlobId) -> Result<PieceAt> {
         let _ = (s, b);
         Ok(PieceAt::Absent)
     }
-    /// What the source's stream showed of piece `b` under S: (present, deleted).
-    fn piece_seen(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<(bool, bool)> {
+    /// The source's stream shows piece `b` under S present.
+    fn piece_shown(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
         let _ = (at, s, b);
-        Ok((false, false))
+        Ok(false)
+    }
+    /// The source's stream showed piece `b` under S deleted (a Deleted event, or a refusal as
+    /// tombstoned).
+    fn piece_deleted(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
+        let _ = (at, s, b);
+        Ok(false)
     }
     /// Logs held piece `b` under S in the own store (filler wrap; a peer's entry of it becomes
     /// own, off its peer budget).

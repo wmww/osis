@@ -133,3 +133,34 @@ fn a_reused_chunk_a_purger_deleted_is_repaired_spec_sync_ids_1() {
     let repairs = own.iter().filter(|c| w.engine(2).read_facts(&s, c).unwrap().repair).count();
     assert_eq!(repairs, 1, "one commit, marked a repair: what it wrote is never repaired");
 }
+
+/// Pieces judged (`read: piece judged`) and nodes decoded across the three nodes for a 4-byte edit
+/// to a value of `kib` KiB node 0 wrote, and the pieces of the edited value.
+fn edit_costs(kib: usize) -> (u64, u64, usize) {
+    let (mut w, t, _) = three(Gives::Reads);
+    let mut v = vec![0u8; kib << 10];
+    osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(5), &mut v);
+    write_big(&mut w, 0, t, v.clone());
+    w.run();
+    let n = v.len();
+    v[n - 4..].copy_from_slice(b"edit");
+    osis_base::costs::take();
+    write_big(&mut w, 0, t, v.clone());
+    w.run();
+    let taken = osis_base::costs::take();
+    let count = |name: &str| taken.iter().filter(|(k, _, _)| *k == name).map(|(_, _, n)| n).sum::<u64>();
+    assert_eq!(read_big(&mut w, 2, &t), Some(Value::Bytes(v)), "the edit read whole at node 2");
+    (count("read: piece judged"), count("pieces: nodes decoded"), live(&mut w, 0, &t).len())
+}
+
+// spec/sync.md §2 (work in proportion to change): a small edit to a large value judges and
+// decodes the pieces it wrote, not the value's tree: about the same at n and 10n pieces (an
+// absent store row a piece reads shares its stamp with a 64th of the others, so a removal
+// re-judges a few).
+#[test]
+fn a_small_edit_to_a_large_value_costs_its_new_pieces() {
+    let (small, large) = (edit_costs(256), edit_costs(2560));
+    assert!(large.2 >= 8 * small.2, "{small:?} {large:?}");
+    assert_eq!(small.1, large.1, "nodes decoded: {small:?} {large:?}");
+    assert!(large.0 < 2 * small.0, "pieces judged grow with the tree: {small:?} {large:?}");
+}
