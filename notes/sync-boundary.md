@@ -316,6 +316,16 @@ fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, stream
 ## Kept unread needs nothing of what S carries
 `unread` calls exactly `sync_records()` (its thing's sync IDs and sync secrets by epoch, from boxes sealed to its own key), `sync_set()` (whether its synced group's closure, walked only through groups the node reads, lists the thing: a fact of the node's own groups, not of S), `removal_notices()` (from the node's own inbox, which it reads) and `drop_sync_record`; with the store's path, head, entries and own deposits, that is every input spec/sync-judgement.md §6 names: keep, take, serve, stop, stranded. Its credentials (sync key and proof derived from the record's secret of the head's epoch, deposit key, the head's claim set) come from the record and the store. No call reads S's roster, chain, `keys.0` or commits; `open_entry` is never called for a kept-unread S (its entries do not open). Read and unread move by the one predicate in `sync_set`: a read secret held.
 
+## Reasons behind sync spec rules
+The spec states rules without reasons; these are the ones a fresh session might otherwise undo.
+- A node keeping S unread never drops its store on a head move alone (spec/sync-judgement.md §6 Stranded): a holder whose box is late would lose a copy that may be the only one.
+- A removal notice counts only at an epoch at or past every sync epoch held (§6 Stops): a re-grant boxes a newer epoch than the removal's rotation, so the old notice no longer applies.
+- An untold node deletes nothing under a destroyed thing's sync IDs (§5 Untold): deleting there would loop with a node that takes the thing back without the deleted bodies.
+- Promotion checks the author's write right at the writer (spec/sync-inbox.md §4): honest readers deposit others' content.
+- A reader refuses every Register (spec/sync-ids.md §6): its path comes from `sync.0` alone.
+- An accept is written under home alone (spec/sync-set.md §4) so no other holder learns which accounts sync the thing; it is a subgroup, never an item, since an item's subgroups are outside the closure.
+- A peer with no record has its unstamped charges per connection (spec/sync-ids.md §5 Peer budget): dropping and fetching again beats a row keyed by a node key.
+
 ## The osis API
 Checked against notes/api-design.md (one way, no leaks, names).
 - **Built on the new sync** (notes/api.md Sync configuration and status, notes/api-implementation.md): the handle holds the `Node`; `status`, `on_status_change`, `wait_synced`, `make_link` (every link names this node and its relays, spec/wire.md §10: `LinkOpts::direct` went), `redeem` and `import_contact` (both through `Node::redeem`), `contact_card`/`profile` (the profile made with the account), `invitations`/`accept_invite(thing, into)`, `export_bundle`/`import_bundle` (`Node::export_bundle`/`import_bundle`), `listen`, `listen_socket`, `rotate_peer_address`, `keep_alive`, `Config::dial` (`Osis::create`'s and `pair`'s peers), the client port's node side (`port`: Auth, session end, `GET`), `internals::ManualNet` (the API tests' fabric: one `Links` per node through `apply`, like the harness's).

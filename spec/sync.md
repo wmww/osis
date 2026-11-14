@@ -3,7 +3,7 @@
 
 ## 1. Words
 - **Sync ID** (S): the unit nodes sync, made by a thing with role secrets of its own (spec/sync-ids.md §2). Each such thing has exactly one, its **home sync ID**, for its life.
-- **Entry**: a blob held under S in a node's own store, with its wrap and its stamp or deposit flag (spec/sync-ids.md §5). A node **logs** an entry in its own store; an entry is **held at** a peer when that peer's stream showed it there (spec/sync-streams.md §4); a peer **pulls** what it lacks. Nothing is written into another node's store except a Deposit item it takes, a Register it takes and a Delete it takes (spec/sync-ids.md §6, spec/sync-inbox.md §3).
+- **Entry**: a blob held under S in a node's own store, with its wrap and its stamp or deposit flag (spec/sync-ids.md §5). A node **logs** an entry in its own store; an entry is **held at** a peer when that peer's stream showed it there (spec/sync-streams.md §4); a peer **pulls** what it lacks.
 - **Peer**: another node a node has a connection to. A **source** of S at a node: a peer with S open on a connection up now (spec/sync-opens.md §4). Connections, peers and sources are the only network roles; no node is of a kind.
 - **Synced group**: the group the account lists for a node in `synced^.0` (spec/sync-set.md §1); the node's **sync set** is the sync IDs it syncs (spec/sync-set.md §2).
 - **Read secret** of a thing: its read-role secret at some epoch (spec/crypto.md §4). **Sync secret**: its sync-role secret, held by every holder of sync or above (spec/permissions.md §1).
@@ -11,7 +11,7 @@
 
 ## 2. One kind of node
 - Every node runs the same protocol and the same rules. Whether a node reads data is a property of the pair (node, S), never of the node: per S a node either holds S **read**, holds it **kept unread**, or does not sync it (§3).
-- Every node holding S keeps one store of S's ciphertext (spec/sync-ids.md §5), serves it to every peer S is open with, and pulls S from every source (spec/sync-streams.md §4), whoever dialed. Nothing is uploaded: a peer's store changes only by its own judgement of what it pulled, and by the Deposit items, Registers and Deletes it verifies.
+- Every node holding S keeps one store of S's ciphertext (spec/sync-ids.md §5), serves it to every peer S is open with, and pulls S from every source (spec/sync-streams.md §4), whoever dialed. A peer's store changes only by its own judgement of what it pulled and by the Deposit items, Registers and Deletes it takes (spec/sync-ids.md §6, spec/sync-inbox.md §3); nothing else writes into another node's store.
 - What a node syncs is decided by its account alone (the synced group, spec/sync-set.md); which peer it syncs S with is decided by each side alone (the open rule, spec/sync-opens.md §4). No list of peers or of sync IDs to serve exists.
 - Every feature works with no server, relay or internet: on a LAN, on a mesh, through any willing node.
 - **Transport boundary**: sync sees only connections: an ordered, confidential byte stream with an authenticated static key per side, a route rank and a dial by key, and the dial candidates discovery finds (spec/sync-transport.md §1). Whether a peer is reached by QUIC, a relay, a LAN, Bluetooth or a mesh hop changes no rule above that boundary (a file carried by hand is a bundle, spec/sync-streams.md §6); a transport is added below it without touching sync.
@@ -20,8 +20,8 @@
 ## 3. Two holdings
 A node holds S of thing T, at each moment, by the secrets it holds of T:
 - **Read**: it holds a read secret of T. It judges every entry by the full rules (spec/sync-judgement.md §2-§5): what S must hold, may hold and must not hold, and acts on it.
-- **Kept unread**: it holds a sync secret of T and no read secret. It holds no engine state of what S carries: only a **sync record** per thing (T's tid, its sync IDs, and its sync secrets by epoch, each from a box sealed to its own account's key). It keeps ciphertext, relays it, verifies stamps, deposit signatures and delete signatures, and follows only its own grant and removal (spec/sync-judgement.md §6).
-- One predicate decides: read exactly while a read secret of T is held. A change of holding never empties the store: read to kept unread keeps every entry (the store moves under the caps, spec/sync-ids.md §5); kept unread to read opens what is there.
+- **Kept unread**: it holds a sync secret of T and no read secret. Of T it holds only a **sync record** (T's tid, its sync IDs, and its sync secrets by epoch, each from a box sealed to its own account's key): no roster, chain, `keys.0`, commit or other state of what S carries. It keeps ciphertext, relays it, verifies stamps, deposit signatures and delete signatures, and follows only its own grant and removal (spec/sync-judgement.md §6).
+- One predicate decides: read exactly while a read secret of T is held. A change of holding never empties the store (spec/sync-judgement.md §6 Read and unread move).
 
 ## 4. Areas
 Each area has one principle; every rule in its file follows from it, and a rule whose reason does not follow from its principle is a defect of the rule, not an exception to the principle.
