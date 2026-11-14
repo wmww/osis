@@ -45,9 +45,8 @@ fn unreference(w: &mut World, r: Tid) {
     });
 }
 
-// spec/commits.md §5 (Lifetimes: a node judges once, for each sync ID carrying X, a source of it
-// is connected and the node holds everything it holds there; while a peer sharing it is away it
-// releases nothing): X,
+// spec/commits.md §5 (Lifetimes: judged once a source of each sync ID is connected and read to its
+// end, nothing released under one while a peer sharing it is away): X,
 // under D's sync ID, is unreachable once R stops referencing it; cut off from its sibling node 1
 // keeps it, and releases it once D is heard out again, which node 2 then holds. Node 2 shows none
 // of its own new entries meanwhile (`Lie::Withhold`), so the release is node 1's judgment of the
