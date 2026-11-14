@@ -309,6 +309,33 @@ fn purge_on_replace_never_listed_ahead_of_the_clock_spec_commits_5() {
     assert!(!listed(&mut p, &v1, d), "never history");
 }
 
+// spec/commits.md §5 Keep bounds (a body leaves history no earlier than replaced): a part replaced ahead of a reader's clock is bounded by its
+// replacement until the clock reaches it; a value reading the bound is due again then, by time
+// alone.
+#[test]
+fn a_replacement_ahead_of_the_clock_bounds_until_reached_spec_commits_5() {
+    let (mut lp, d) = setup();
+    let base = base(&mut lp);
+    let k = set(&mut lp, 0, d, &setting(&[(A, keep(10 * HOUR))]));
+    let x = set(&mut lp, 0, d, &setting(&[(A, History::PurgeOnReplace)]));
+    let v1 = put(&mut lp, 1, d, "one");
+    let v2 = put(&mut lp, 1, d, "two");
+    let pks = [pack(&mut lp, 0, &k), pack(&mut lp, 0, &x), pack(&mut lp, 1, &v1), pack(&mut lp, 1, &v2)];
+    let at = WallMs(lp.peers[0].engine.now().0 - HOUR / 2);
+    let mut p = fresh(&base, &[&pks[0], &pks[1], &pks[2], &pks[3]], FRESH, at);
+    let r = p.engine.header(&v2).unwrap().ts.wall_ms().0;
+    let mut fx: osis_base::memo::Effects<(), Vec<u64>> = osis_base::memo::Effects::new("test keeps");
+    fx.want(());
+    let (_, first) = fx.settle(&(), || p.engine.part_keeps(&v1).unwrap()).unwrap();
+    assert_eq!(first, vec![r], "bounded by its replacement ahead of the clock");
+    p.clock.advance(HOUR);
+    let now = p.engine.now();
+    p.engine.set_now(now);
+    assert_eq!(fx.due(), vec![()], "the clock passing the replacement moves it");
+    let (_, after) = fx.settle(&(), || p.engine.part_keeps(&v1).unwrap()).unwrap();
+    assert!(after.iter().all(|b| *b < r), "{after:?}");
+}
+
 // spec/commits.md §5 Dated only where history is kept: each part of a body is dated by its own
 // writes and kept by its own aspect's setting alone. One commit writes the register (kept an
 // hour) and another aspect (no history). Replacing only the other aspect dates nothing: the kept
