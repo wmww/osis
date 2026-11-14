@@ -1054,8 +1054,8 @@ fn emptying_keeps_the_requests() {
     assert_eq!(w.at_k(S, cid(1)), 0);
 }
 
-// spec/sync-judgement.md §5 (Emptying: everything but the destroying requests is must-not-hold;
-// they leave at their expiry): told, an own entry of the request whose part on the destroyed
+// spec/sync-judgement.md §5 (Emptying): everything but the destroying requests is must-not-hold,
+// and they leave at their expiry: told, an own entry of the request whose part on the destroyed
 // thing is dropped here stays, and so does the request at K.
 #[test]
 fn emptying_keeps_a_request_whose_part_is_dropped_here_spec_sync_judgement_5() {

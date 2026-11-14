@@ -127,8 +127,8 @@ fn a_destroyed_things_sync_id_empties_but_its_request_past_its_window_spec_sync_
     assert!(w.engine(0).destruction(&t).unwrap().is_some_and(|d| d.requests == vec![q]), "the purge is a destroying request");
 }
 
-// spec/sync-judgement.md §5 (Emptying: the requests leave at their expiry; forgets the sync IDs
-// once its sources are heard out with nothing known there, only then the thing's secrets):
+// spec/sync-judgement.md §5 (Emptying): the requests leave at their expiry; it forgets the sync
+// IDs once its sources are heard out with nothing known there, only then the thing's secrets:
 // released, past the request's expiry S empties at every store and, past the deletes'
 // tombstones, node 0 forgets S and t's secrets.
 #[test]
