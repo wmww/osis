@@ -140,6 +140,8 @@ struct Record {
     /// Where each member that left rejoins: held by this side's stream (the connection ended), a
     /// Lost's cursor, or from the start (a digest difference, or this side closed it).
     stopped: BTreeMap<SyncId, Rejoin>,
+    /// Where this side's walk of each S stopped at the peer (`Opens::stops`; a kept record only).
+    walk: BTreeMap<SyncId, Stop>,
     acked_pos: u64,
     own: OwnFilter,
     peer: Option<PeerFilter>,
@@ -323,8 +325,15 @@ pub struct Opens {
     /// Stamped per S as a connection or record gains or loses it as a member, whole as records
     /// are evicted (`shared`: leave follows it).
     peers: osis_base::memo::Stamps,
+    /// Per S, the connections whose walk stopped there (spec/sync-ids.md §6 Stranded there), each
+    /// with the sync key of the step it stopped at (none: this node's recorded head). Goes with
+    /// the connection, S opening there, and S leaving the sync set (`walk_stop`: status follows it).
+    stops: osis_base::memo::Stamped<SyncId, BTreeMap<ConnId, Stop>>,
     work: Work,
 }
+
+/// Where a walk stopped at a source: the sync key of the step (none: the recorded head).
+pub type Stop = Option<[u8; 32]>;
 
 impl Default for Opens {
     fn default() -> Opens {
@@ -340,6 +349,7 @@ impl Default for Opens {
             fx: holds::Fx::default(),
             reports: osis_base::memo::Stamps::named("opens: reports"),
             peers: osis_base::memo::Stamps::named("opens: peers"),
+            stops: osis_base::memo::Stamped::default(),
             work: Work::default(),
         }
     }
@@ -555,6 +565,48 @@ impl Opens {
         Ok(false)
     }
 
+    /// Whether this node's walk of S stopped at some source (spec/sync-ids.md §6 Stranded there:
+    /// no credential of the newest step known there, or Behind refused it), and where: a stop
+    /// naming a step it reached before one naming none, the lowest connection first. Stamped
+    /// per S. O(connections stopped on S).
+    pub fn walk_stop(&self, s: &SyncId) -> Option<Stop> {
+        let at = self.stops.get(s)?;
+        at.values().find(|x| x.is_some()).or_else(|| at.values().next()).copied()
+    }
+
+    /// Sets (or with `None` clears) where the walk of S stopped on `conn`, kept in its record
+    /// (spec/sync-opens.md §3: the record keeps the source's step), so the record's next
+    /// connection (a restart's) starts stopped there until a test there says otherwise.
+    fn set_stop(&mut self, conn: ConnId, s: SyncId, stop: Option<Stop>) {
+        self.index_stop(conn, s, stop);
+        let Some(rid) = self.conns.get(&conn).and_then(|c| c.rec) else { return };
+        let Some(r) = self.records.get_mut(&rid).filter(|r| r.kept) else { return };
+        let was = match stop {
+            Some(x) => r.walk.insert(s, x),
+            None => r.walk.remove(&s),
+        };
+        if was != stop {
+            self.dirty(rid).walk.insert(s);
+        }
+    }
+
+    /// The stops `walk_stop` reads: S stopped on `conn` at `stop` (none: not stopped).
+    fn index_stop(&mut self, conn: ConnId, s: SyncId, stop: Option<Stop>) {
+        let mut at = self.stops.get(&s).cloned().unwrap_or_default();
+        let was = match stop {
+            Some(x) => at.insert(conn, x),
+            None => at.remove(&conn),
+        };
+        if was == stop {
+            return;
+        }
+        if at.is_empty() {
+            self.stops.remove(&s);
+        } else {
+            self.stops.insert(s, at);
+        }
+    }
+
     /// Member S's reported position on `conn` (spec/sync-opens.md §6 Lost): none for a sync ID
     /// that is no member there.
     pub fn reported_at(&self, conn: ConnId, s: &SyncId) -> Option<&(Position, Cursor)> {
@@ -635,7 +687,11 @@ impl Opens {
     /// A connection ended.
     pub fn closed(&mut self, conn: ConnId, moved: &mut Vec<Moved>) {
         self.release(conn, moved);
-        self.conns.remove(&conn);
+        if let Some(c) = self.conns.remove(&conn) {
+            for s in c.walks.keys() {
+                self.index_stop(conn, *s, None);
+            }
+        }
     }
 
     /// `conn` lets its record go: each member leaves it (the record keeps them); a record kept
@@ -644,6 +700,7 @@ impl Opens {
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let Some(rid) = c.rec.take() else { return };
         let Some(r) = self.records.get(&rid) else { return };
+        let walk: Vec<SyncId> = r.walk.keys().copied().collect();
         for (s, m) in &r.members {
             moved.push(Moved::Left(conn, *s, LeftAt { reported: c.reported.get(s).map(|(p, _)| *p), until: m.until }));
             if let Some(set) = self.holding.get_mut(s) {
@@ -654,6 +711,10 @@ impl Opens {
         // a kept one stays in memory until `flush` writes it (or another connection takes it)
         if !r.kept {
             self.records.remove(&rid);
+        }
+        // its walk stops stay in the record for the next connection taking it
+        for s in walk {
+            self.index_stop(conn, s, None);
         }
     }
 
@@ -774,13 +835,22 @@ impl Opens {
                     self.close_member(ctx, c, s, true, moved);
                 }
                 self.peers.wrote(&s, false);
+                for k in self.conns.values_mut() {
+                    k.walks.remove(&s);
+                }
+                if self.stops.contains_key(&s) {
+                    self.stops.remove(&s);
+                }
+                // the record rows of S go with S in the store
                 for r in self.records.values_mut() {
+                    r.walk.remove(&s);
                     r.members.remove(&s);
                     r.basis.remove(&s);
                     r.stopped.remove(&s);
                 }
                 for d in self.dirty.values_mut() {
                     d.members.remove(&s);
+                    d.walk.remove(&s);
                 }
                 let r = ctx.store.with_tx(|t| t.changed_forget(&s));
                 self.failed(r);
@@ -890,7 +960,7 @@ impl Opens {
         } else {
             random16(ctx.holds.rng())
         };
-        self.records.insert(id, Record { r, actors, kept, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None });
+        self.records.insert(id, Record { r, actors, kept, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), walk: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None });
         id
     }
 
@@ -948,8 +1018,14 @@ impl Opens {
             c.peer_digest = true;
         }
         let members: Vec<SyncId> = r.members.keys().copied().collect();
+        let walk: Vec<(SyncId, Stop)> = r.walk.iter().map(|(s, x)| (*s, *x)).collect();
         if core {
             self.dirty(id).core = true;
+        }
+        // where its walks stopped at this peer before (spec/sync-opens.md §3), until a test says
+        // otherwise
+        for (s, x) in walk {
+            self.index_stop(conn, s, Some(x));
         }
         for s in &members {
             self.holding.entry(*s).or_default().insert(conn);
@@ -1431,8 +1507,15 @@ impl Opens {
                 });
                 items.push(OfferItem::ByRole { sync_id: s, hits: hits.collect() });
                 sent.push(Sent::ByRole(s));
+                self.set_stop(conn, s, None);
             } else if !hit && adm.j == J::SyncHolder {
-                self.behind_item(ctx, conn, &s, &adm, &mut items, &mut sent);
+                let stop = self.walk_on(ctx, conn, &s, &adm, &mut items, &mut sent);
+                if stop.is_some() {
+                    osis_base::costs::count("opens: walk stopped", 1);
+                }
+                self.set_stop(conn, s, stop);
+            } else {
+                self.set_stop(conn, s, None);
             }
             if items.len() >= MAX_OFFER_ITEMS {
                 cut = true;
@@ -1455,24 +1538,45 @@ impl Opens {
         c.offer = Some(sent);
     }
 
+    /// The walk of S toward a peer J judges a sync holder, when no walk credential was shown
+    /// (spec/sync-ids.md §6 Walk): stopped there (spec/sync-ids.md §6 Stranded there) when it
+    /// holds no credential of the newest step known there or Behind refused that step; else a
+    /// Behind item (`behind_item`), and stopped when none is left to ask by. Where it stopped.
+    fn walk_on(&mut self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, adm: &Adm, items: &mut Vec<OfferItem>, sent: &mut Vec<Sent>) -> Option<Stop> {
+        let w = self.conns.get(&conn)?.walks.get(s);
+        let newest = w.and_then(|w| w.known.last()).cloned();
+        if let Some(n) = &newest {
+            let refused = w.is_some_and(|w| w.refused.contains(&Some(n.id())));
+            if refused || ctx.holds.step_creds(s, n).is_empty() {
+                return Some(Some(n.keys.sync.to_bytes()));
+            }
+        }
+        if self.behind_item(ctx, conn, s, adm, items, sent) {
+            // asked: the stop (if any) stands until the answer says otherwise
+            return self.stops.get(s).and_then(|at| at.get(&conn).copied());
+        }
+        Some(newest.map(|n| n.keys.sync.to_bytes()))
+    }
+
     /// A Behind item for S toward a peer J judges a sync holder, when no walk credential was
     /// shown (spec/sync-ids.md §6 Behind): by a credential of the newest known step it holds one
-    /// of, each step once per walk.
-    fn behind_item(&mut self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, adm: &Adm, items: &mut Vec<OfferItem>, sent: &mut Vec<Sent>) {
-        let Some(c) = self.conns.get_mut(&conn) else { return };
+    /// of, each step once per walk. Whether one was asked.
+    fn behind_item(&mut self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, adm: &Adm, items: &mut Vec<OfferItem>, sent: &mut Vec<Sent>) -> bool {
+        let Some(c) = self.conns.get_mut(&conn) else { return false };
         let w = c.walks.entry(*s).or_default();
         let known: Vec<Tested> = w.known.iter().rev().flat_map(|st| ctx.holds.step_creds(s, st)).map(|(t, _)| t).collect();
         let cand = known.iter().chain(adm.tests.iter()).find(|t| matches!(t, Tested::SyncKey { .. } | Tested::Claim { .. } | Tested::Static { .. }) && !w.refused.contains(&t.step()));
-        let Some(t) = cand else { return };
+        let Some(t) = cand else { return false };
         let (key, step) = match t {
             Tested::Claim { key, step, .. } => (key, Some(*step)),
             Tested::SyncKey { key, step } | Tested::Static { key, step } => (key, *step),
-            _ => return,
+            _ => return false,
         };
         w.asked = true;
         let bind = c.bind;
         items.push(OfferItem::Behind(osis_proto::BehindItem { sync_id: *s, step, key: key.verifying_key().to_bytes(), sig: bind.sign(key, s) }));
         sent.push(Sent::Behind(*s, step));
+        true
     }
 
     /// The peer's answers to this side's Offer (spec/sync-opens.md §5 Opening): the tester opens S
@@ -1483,7 +1587,6 @@ impl Opens {
         let Some(sent) = c.offer.take() else { return };
         let bind = c.bind;
         let mut accepted = BTreeSet::new();
-        let mut retest = false;
         for (i, x) in sent.into_iter().enumerate() {
             let a = items.get(i).cloned().unwrap_or(SharedItem::code(Code::DECLINED));
             match x {
@@ -1531,22 +1634,26 @@ impl Opens {
                     let Some(c) = self.conns.get_mut(&conn) else { continue };
                     let w = c.walks.entry(s).or_default();
                     w.asked = false;
-                    match (a.code, a.grant) {
+                    // the walk goes on (tested again) with each step it learns there, and after
+                    // each refusal on an earlier step; each step is refused once per walk, and
+                    // an answer naming only steps it knows changes nothing
+                    let retest = match (a.code, a.grant) {
                         (Code::OK, Some(g)) => {
-                            let known = ctx.holds.verify_steps(&s, named.as_ref(), &g.steps);
-                            if !known.is_empty() {
-                                w.known.extend(known);
-                                retest = true;
-                            }
+                            let mut known = ctx.holds.verify_steps(&s, &w.known, &g.steps);
+                            known.retain(|st| !w.known.iter().any(|k| k.id() == st.id()));
+                            let new = !known.is_empty();
+                            w.known.extend(known);
+                            new
                         }
                         // The source does not keep S: once it does, its filter shows its step's
                         // sync key (spec/sync-opens.md §4 Admissible) and a test opens it.
-                        (Code::UNKNOWN_SYNC_ID, _) => {}
+                        (Code::UNKNOWN_SYNC_ID, _) => false,
+                        // Refused for now: asked again after a back-off (not built: at this
+                        // node's next change of S), never counted as off the path.
+                        (Code::RATE_LIMITED, _) => false,
                         // Refused on a step: off the source's path; ask on an earlier one.
-                        _ => {
-                            w.refused.insert(named);
-                        }
-                    }
+                        _ => w.refused.insert(named),
+                    };
                     if retest {
                         self.remark(conn, &s);
                     }
@@ -1718,6 +1825,7 @@ impl Opens {
         self.holding.entry(s).or_default().insert(conn);
         self.peers.wrote(&s, true);
         moved.push(Moved::Joined(conn, s, rejoin));
+        self.set_stop(conn, s, None);
     }
 
     /// Re-judges member S of `conn` (spec/sync-opens.md §6): J reader or sync holder stays; an

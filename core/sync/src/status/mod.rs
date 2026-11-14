@@ -23,7 +23,8 @@
 //!   or `PASS_WAIT_MS`; each end told to the engine (`note_complete_pass`);
 //! - per read S, whether this node is stranded there (spec/permissions.md §4, `stranding`): the
 //!   engine's word (a current read epoch of S's thing known, none held) once S is heard out, the
-//!   reading of "after a complete pass there"; inbox sends the report.
+//!   reading of "after a complete pass there"; or, with no source, opens' walk stopped at a
+//!   source (`walk_stop`); inbox sends the report.
 //!
 //! Only `handle` makes outputs: reading status or a wait changes nothing.
 
@@ -194,6 +195,11 @@ pub trait Ground: Net {
     /// Whether this node holds no current read secret of read S's thing though one is known
     /// (`Engine::stranded`), with what its report names.
     fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<Stranding>>>;
+    /// Where this node's walk of S stopped at a source (`Opens::walk_stop`, stamped).
+    fn walk_stop(&self, s: &SyncId) -> Option<crate::opens::Stop>;
+    /// The report of this node stranded on read S, its walk stopped at `step`
+    /// (`Engine::stranding`).
+    fn walk_stranding(&mut self, s: &SyncId, step: crate::opens::Stop) -> Result<Option<Arc<Stranding>>>;
     /// The passes leaving sync IDs want, each after the pass place it left at (crate::leave).
     fn leave_passes(&mut self) -> Arc<BTreeMap<SyncId, u64>> {
         Arc::default()
@@ -431,12 +437,20 @@ impl Status {
 
     /// Per read S, whether this node is stranded there (spec/permissions.md §4): heard out (the
     /// reading of "after a complete pass there": every unrefusing source caught up) and the
-    /// engine holding no current read secret of S's thing though one is known. O(keys moved).
+    /// engine holding no current read secret of S's thing though one is known; or no source
+    /// has S open and its walk stopped at one (spec/sync-ids.md §6 Stranded there: every source
+    /// it reached refused every open it had to try). O(keys moved).
     fn judge_strandings(&mut self, g: &mut impl Ground) -> Result<()> {
         for s in self.stranding_fx.due() {
             let all = &self.sources;
             let r = self.stranding_fx.try_settle(&s, || {
                 let srcs = all.get(&s).map_or(&NO_SOURCES, |x| &**x);
+                if srcs.is_empty() {
+                    return match g.walk_stop(&s) {
+                        Some(step) => g.walk_stranding(&s, step),
+                        None => Ok(None),
+                    };
+                }
                 let heard = heard_out(srcs.iter().map(|(c, src)| (!g.full(src.at, &s) && !g.refusing(src.at, &s), g.caught_since(*c, &s).is_some())));
                 if heard { g.stranding(&s) } else { Ok(None) }
             })?;

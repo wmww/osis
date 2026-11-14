@@ -108,11 +108,13 @@ pub struct Table {
     pub gives_grant: bool,
     /// The sync IDs whose grant was taken (its secrets learned).
     pub taken: BTreeSet<SyncId>,
+    /// The recorded path per S: what a source's steps verify under.
+    pub recorded: BTreeMap<SyncId, Vec<osis_label::Step>>,
 }
 
 impl Table {
     pub fn new(seed: u64) -> Table {
-        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), j: BTreeMap::new(), covering: BTreeSet::new(), until: 100, grants: BTreeMap::new(), gives_grant: false, taken: BTreeSet::new() }
+        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), j: BTreeMap::new(), covering: BTreeSet::new(), until: 100, grants: BTreeMap::new(), gives_grant: false, taken: BTreeSet::new(), recorded: BTreeMap::new() }
     }
 
     /// S's credentials are now `c` (none: S left the sync set).
@@ -192,11 +194,19 @@ impl Holds for Table {
     fn deposit(&mut self, _src: osis_sync::store::Source, _item: &DepositItem) -> Code {
         Code::DECLINED
     }
-    fn verify_steps(&mut self, _s: &SyncId, _named: Option<&StepId>, _steps: &[osis_label::Step]) -> Vec<osis_label::Step> {
-        Vec::new()
+    fn verify_steps(&mut self, s: &SyncId, known: &[osis_label::Step], steps: &[osis_label::Step]) -> Vec<osis_label::Step> {
+        let recorded = self.recorded.get(s).cloned().unwrap_or_default();
+        let mut out = osis_sync::opens::holds::known_steps(s, recorded.iter().chain(known), steps);
+        out.retain(|st| !recorded.iter().any(|r| r.id() == st.id()));
+        out
     }
-    fn step_creds(&mut self, _s: &SyncId, _step: &osis_label::Step) -> Vec<(Tested, Option<Epoch>)> {
-        Vec::new()
+    fn step_creds(&mut self, s: &SyncId, step: &osis_label::Step) -> Vec<(Tested, Option<Epoch>)> {
+        let pk = step.keys.sync.to_bytes();
+        let held = self.creds.get(s).and_then(|c| c.tests.iter().find_map(|(t, e)| match t {
+            Tested::SyncKey { key, .. } if key.verifying_key().to_bytes() == pk => Some((key.clone(), *e)),
+            _ => None,
+        }));
+        held.map(|(key, e)| (Tested::SyncKey { step: Some(step.id()), key }, e)).into_iter().collect()
     }
 }
 

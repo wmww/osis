@@ -147,3 +147,50 @@ fn holder_keys_are_taken_only_where_a_reseal_may_follow_spec_permissions_4() {
     assert!(w.engine(2).header(&k).is_none(), "node 2 takes nothing");
     assert!(w.engine(0).current_keys(&t).contains(&k), "node 0 takes T's new keyset");
 }
+
+// spec/permissions.md §4 (stranded: every source refused every open it had to try, wherever its
+// walk stopped), spec/sync-ids.md §6 (Walk: Stranded there): node 1 reads G, node 2 keeps it
+// unread; cut off from node 0, node 1 reaches only node 2, whose head moves to the step of a
+// rotation of G's sync and read roles leaving node 1's account out. Its walk at node 2 stops
+// past its keys, so with no source it is stranded and deposits a notice under node 0's inbox;
+// once node 0 is reachable it is re-sealed and reads.
+#[test]
+fn a_reader_reaching_only_a_store_past_its_keys_reports_spec_permissions_4() {
+    let mut w = world(0, 3);
+    let (a0, a1, a2) = (w.node(0).account.unwrap(), w.node(1).account.unwrap(), w.node(2).account.unwrap());
+    let ak = Ak::new("u:v.0").unwrap();
+    let g = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a0);
+        e.commit(m).unwrap();
+        t
+    });
+    file(&mut w, 0, vec![g], Vec::new());
+    put(&mut w, 0, g, &ak, "before");
+    w.write(0, |e| e.grant(&g, &a1, &edge(Role::Read))).unwrap();
+    w.write(0, |e| e.grant(&g, &a2, &edge(Role::Sync))).unwrap();
+    w.run();
+    for i in [1, 2] {
+        file(&mut w, i, Vec::new(), vec![g]);
+    }
+    w.run();
+    let s = w.engine(0).sync_ids(&g).unwrap()[0].id;
+    assert_eq!(w.engine(1).get(&g, &ak).unwrap(), Some(Value::Str("before".into())), "node 1 reads G");
+    assert_eq!(w.engine(2).sync_holder(&s).unwrap(), Some((g, osis_engine::sync::Holding::Unread)), "node 2 keeps G unread");
+    let inbox = w.engine(1).inbox_of(&a0).unwrap();
+    let deposits = |w: &World| w.store(1).entries(&inbox).unwrap().into_iter().filter(|e| e.own && e.deposited).count();
+    let before = deposits(&w);
+    w.partition(0, 1);
+    w.run();
+    w.write(0, |e| e.rotate_leaving_out(&g, &[Role::Sync, Role::Read], &[a1])).unwrap();
+    put(&mut w, 0, g, &ak, "left out");
+    w.run();
+    let head = w.engine(0).sync_ids(&g).unwrap()[0].path.steps.last().map(|(st, _)| st.id());
+    assert_eq!(w.store(2).head(&s).unwrap().map(|h| h.id()), head, "node 2 at the rotation's step");
+    assert!(w.status(1)[&s].stranded, "node 1 is stranded on G");
+    assert_eq!(deposits(&w), before + 1, "one notice deposited under node 0's inbox");
+    w.heal();
+    w.run();
+    assert_eq!(w.engine(1).get(&g, &ak).unwrap(), Some(Value::Str("left out".into())), "node 1 reads G again");
+    assert!(!w.status(1)[&s].stranded, "stranded no more");
+}

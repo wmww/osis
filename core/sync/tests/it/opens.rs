@@ -1359,3 +1359,96 @@ fn a_reader_tests_each_held_sync_key_after_its_steps_spec_sync_ids_6() {
     let bare: Vec<_> = walk_tests(&rc, &Path::default(), &mut |_| None).into_iter().map(|(t, _)| t.step()).collect();
     assert_eq!(bare, vec![None, None]);
 }
+
+/// S's recorded genesis step (its sync key `st`'s) and a child step under it whose sync key the
+/// reader does not hold, signed by the genesis delete key (`bad`: signed by another key).
+fn path_past(st: &StepKeys, bad: bool) -> (osis_label::Step, osis_label::Step) {
+    use osis_crypto::{Domain, Secret32, Signature, SigningSecret};
+    let d0 = SigningSecret::from_seed(&Secret32::from_bytes([0xd0; 32]));
+    let keys = |sync: osis_crypto::VerifyingKey, d: &SigningSecret| osis_label::StepKeys { sync, write: d.verifying_key(), delete: d.verifying_key(), deposit: d.verifying_key() };
+    let g0 = osis_label::Step { label: S, prev: None, keys: keys(st.sync.verifying_key(), &d0), step_key: [1; 32], claims_hash: [0; 32], sig: Signature([0; 64]) };
+    let d1 = SigningSecret::from_seed(&Secret32::from_bytes([0xd1; 32]));
+    let mut g1 = osis_label::Step { label: S, prev: Some(g0.id()), keys: keys(StepKeys::new(1, 1).sync.verifying_key(), &d1), step_key: [2; 32], claims_hash: [0; 32], sig: Signature([0; 64]) };
+    g1.sig = if bad { &d1 } else { &d0 }.sign(Domain::SyncStep, &g1.digest());
+    (g0, g1)
+}
+
+/// A reader at recorded step `st` whose only peer, Adv, J judges a sync holder, its filter
+/// showing nothing of the reader's; Adv answers the reader's first Behind with `answer`.
+fn walk_answered(answer: osis_proto::SharedItem, bad: bool) -> (Side, Adv, osis_label::Step) {
+    let st = StepKeys::new(1, 0);
+    let (g0, g1) = path_past(&st, bad);
+    let mut r = Side::new(1);
+    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
+    r.table.recorded.insert(S, vec![g0]);
+    r.table.judge_as(S, tid(9), J::SyncHolder);
+    r.settle();
+    let (mut adv, _) = Adv::dials(&mut r, account(9), [2; 32]);
+    adv.filter(&mut r, &[[0xee; 32]], &S);
+    let sent = r.sent();
+    let Some(Msg::Offer { id, items }) = of_kind(&sent, 37).pop() else { panic!("an Offer") };
+    assert!(matches!(items.as_slice(), [OfferItem::Behind(b)] if b.sync_id == S), "nothing shown: Behind, {items:?}");
+    let answer = match answer.code {
+        Code::OK => osis_proto::SharedItem { grant: Some(osis_proto::Grant { entry_box: None, steps: vec![g1.clone()] }), ..answer },
+        _ => answer,
+    };
+    adv.send(&mut r, Msg::Shared { id, items: vec![answer] });
+    (r, adv, g1)
+}
+
+// spec/sync-ids.md §6 (Walk: Known steps, Stranded there), spec/permissions.md §4 (stranded): a
+// reader whose Behind is answered with a step verifying under its recorded head, whose
+// credential it does not hold, stops there naming that step's sync key; one refused on every
+// step it had to try stops at its recorded head; an answer that does not verify teaches no step
+// and stops nothing; a source not keeping S (13) stops nothing; the stop goes with the
+// connection.
+#[test]
+fn a_walk_stops_past_its_keys_or_refused_spec_sync_ids_6() {
+    let ok = osis_proto::SharedItem::code(Code::OK);
+    let (mut r, adv, g1) = walk_answered(ok.clone(), false);
+    assert_eq!(r.opens.walk_stop(&S), Some(Some(g1.keys.sync.to_bytes())), "stopped at the step it learned");
+    assert!(of_kind(&r.sent(), 37).is_empty(), "nothing more asked");
+    r.closed(adv.peer);
+    assert_eq!(r.opens.walk_stop(&S), None, "the stop goes with the connection");
+    let (mut r, ..) = walk_answered(osis_proto::SharedItem::code(Code::DECLINED), false);
+    assert_eq!(r.opens.walk_stop(&S), Some(None), "refused on its only step: stopped at its head");
+    assert!(of_kind(&r.sent(), 37).is_empty(), "each step asked once per walk");
+    let (r, ..) = walk_answered(ok, true);
+    assert_eq!(r.opens.walk_stop(&S), None, "a step that does not verify is not known");
+    let (r, ..) = walk_answered(osis_proto::SharedItem::code(Code::UNKNOWN_SYNC_ID), false);
+    assert_eq!(r.opens.walk_stop(&S), None, "13: the source does not keep S");
+}
+
+// spec/sync-ids.md §6 (Walk: Stranded there), spec/sync-opens.md §3 (record: it keeps the
+// source's step): where a walk stopped is kept in the peer's record, so after both sides restart
+// the record's next connection starts stopped there, testing nothing again; a test there that
+// opens S ends the stop.
+#[test]
+fn a_walk_stop_is_kept_in_the_record_across_a_restart_spec_sync_ids_6() {
+    let (st, head) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
+    let mut r = Side::new(1);
+    let mut k = Side::new(2);
+    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
+    r.table.judge_as(S, tid(2), J::SyncHolder);
+    k.table.set(S, Some(store(&head)));
+    r.settle();
+    k.settle();
+    let mut p = Pair::new(r, k, account(1), account(2));
+    p.run();
+    assert!(!p.a.open(p.ca, &S));
+    assert_eq!(p.a.opens.walk_stop(&S), Some(None), "refused (the store's Behind answers 14): stopped");
+    p.close();
+    assert_eq!(p.a.opens.walk_stop(&S), None);
+    p.a.restart();
+    p.b.restart();
+    p.log.clear();
+    p.connect(2, account(1), account(2));
+    p.run();
+    assert!(p.log.iter().any(|(_, m)| matches!(m, Msg::Resumed { tag: Some(_), .. })), "the record resumed");
+    assert_eq!(p.a.opens.walk_stop(&S), Some(None), "stopped there again");
+    assert!(!p.log.iter().any(|(_, m)| matches!(m, Msg::Offer { .. })), "nothing tested: {:?}", p.log);
+    p.a.table.set(S, Some(reader(&S, &read_secret(1, 0), &head, &[st], &[], &[])));
+    p.settle();
+    assert!(p.a.open(p.ca, &S), "granted the head's key: open");
+    assert_eq!(p.a.opens.walk_stop(&S), None, "open: no stop");
+}

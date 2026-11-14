@@ -13,7 +13,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 ## opens
 - Records' named actors (spec/sync-opens.md §3: a record is honoured only while a proven actor it names is known here now) are judged at a connection's proof alone; a live connection keeps its record when the actor stops being known.
 - Static entries claimed in the walk's tests (`Tested::Static` always has no step).
-- Stranded by the walk (spec/permissions.md §4, spec/sync-ids.md §6 Walk: no credential of the newest step known at a source, or Behind refused the newest step it gave): opens keeps no stop per (connection, S), so a reader whose sources all keep S unread past its keys reports nothing; only the heard-out reading is built (status's `strandings`: no current read secret held of a known current epoch). Needs a stamped "walk stopped at step k" per (connection, S) and status counting S stranded when no source has it open and one stopped.
+- A Behind answered 4 (refused for now, spec/sync-ids.md §6 Register: asked again after a back-off) is asked again only at this node's next change of S.
 
 ## store and streams
 - Fetching an unjudgeable body again (spec/commits.md §4 Unjudgeable, spec/sync-judgement.md §3 Dropped bodies): needs byte-less entries (a body counting missing is fetched again through `Streams::fetch_again`, notes/sync-read.md); until then an awaiting entry keeps its bytes (notes/sync-store.md).
@@ -37,6 +37,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - Suspect lists and their repair (spec/permissions.md §4 Suspect, spec/sync-compaction.md §1 Repair): issues/sync-suspect.md.
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.
 - A decline stamping in place.
+- Stranded reports at a restart (`stranded.rs`): status's strandings start empty, so the first settle drops every `I/x/` row and a node still stranded reports again once status judges it so (a duplicate Stranded message or notice per restart). Needs the rows kept until status judged S (heard out, or a walk stopped) and found it not stranded.
 - Opens' members are not stamped, so a source's step moving reaches Register only through its next join.
 - A deposit-only step (a refreshed seed, no newer role epoch) is issued without the waits spec/permissions.md §3 and spec/sync-ids.md §6 put on it (every entry it can open opened at the sources it reaches; no valid `keys.0` part of the actor missing; `flows::sync_ids::due_at`).
 
@@ -58,4 +59,4 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - osis-label's link carries a `hosts` list between K's sync ID and the peers that spec/wire.md §10 `Link` does not have.
 
 ## Own issues
-issues/sync-walk-reopen.md, issues/sync-link-first-contact.md, issues/sync-suspect.md, issues/group-source-hand-off.md, issues/sync-pending-leftovers.md, issues/holder-actor-sync-record.md, issues/sync-sibling-rotation-unopened.md.
+issues/sync-link-first-contact.md, issues/sync-suspect.md, issues/group-source-hand-off.md, issues/sync-pending-leftovers.md, issues/holder-actor-sync-record.md, issues/sync-sibling-rotation-unopened.md.

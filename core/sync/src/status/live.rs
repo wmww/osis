@@ -138,6 +138,12 @@ impl Ground for Live<'_, '_> {
     fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<osis_engine::sync::Stranding>>> {
         Ok(self.cx.engine.stranded(s)?.map(Arc::new))
     }
+    fn walk_stop(&self, s: &SyncId) -> Option<crate::opens::Stop> {
+        self.opens.walk_stop(s)
+    }
+    fn walk_stranding(&mut self, s: &SyncId, step: crate::opens::Stop) -> Result<Option<Arc<osis_engine::sync::Stranding>>> {
+        Ok(self.cx.engine.stranding(s, step)?.map(Arc::new))
+    }
     fn begin_pass(&mut self) -> u64 {
         self.cx.engine.begin_pass()
     }

@@ -61,11 +61,12 @@ pub(crate) mod tag {
     pub(crate) const STAND: u8 = b's';
     pub(crate) const SEEN: u8 = b'd';
     // opens: the record's own state (record-wide), the peer's filter by generation (record-wide),
-    // a member of the shared set, where a member that left rejoins
+    // a member of the shared set, where a member that left rejoins, where a walk stopped
     pub(crate) const OPENS: u8 = b'R';
     pub(crate) const FILTER: u8 = b'F';
     pub(crate) const MEMBER: u8 = b'M';
     pub(crate) const REJOIN: u8 = b'O';
+    pub(crate) const WALK: u8 = b'W';
     // streams: the stream's cursor (record-wide), a member at it, where a member not at it
     // joins from (joining, or stopped where it left: one row, so a member leaving one connection
     // and joining another from where it stood writes nothing); what the source showed: an entry

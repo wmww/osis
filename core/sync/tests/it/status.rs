@@ -77,6 +77,8 @@ struct Fake {
     stamped_reads: u64,
     /// The engine's `stranded` per read S.
     strandings: Stamped<SyncId, Arc<Stranding>>,
+    /// Opens' walk stops per S.
+    stops: Stamped<SyncId, osis_sync::opens::Stop>,
 }
 
 impl Net for Fake {
@@ -162,6 +164,12 @@ impl Ground for Fake {
     }
     fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<Stranding>>> {
         Ok(self.strandings.get(s).cloned())
+    }
+    fn walk_stop(&self, s: &SyncId) -> Option<osis_sync::opens::Stop> {
+        self.stops.get(s).copied()
+    }
+    fn walk_stranding(&mut self, _s: &SyncId, step: osis_sync::opens::Stop) -> Result<Option<Arc<Stranding>>> {
+        Ok(Some(Arc::new(Stranding { step: step.unwrap_or([7; 32]), ..(*stranding()).clone() })))
     }
     fn note_complete_pass(&mut self, s: &SyncId, began: u64) -> Result<()> {
         self.passes.push((*s, began));
@@ -702,4 +710,25 @@ fn a_read_sync_id_is_stranded_once_heard_out_spec_permissions_4() {
     t.g.strandings.remove(&S);
     t.settle();
     assert!(!t.st.of(&S, &t.g).unwrap().stranded && t.st.strandings().is_empty(), "a current secret held");
+}
+
+// spec/permissions.md §4 (stranded: every source refused every open it had to try, wherever its
+// walk stopped), spec/sync-ids.md §6 (Walk: Stranded there): a read S its walk stopped at a
+// source with no source open is stranded, naming the step it stopped at; a source opening S
+// (then judged by heard out) or the stop going ends it.
+#[test]
+fn a_walk_stopped_with_no_source_is_stranded_spec_sync_ids_6() {
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.g.stops.insert(S, Some([3; 32]));
+    t.settle();
+    assert!(t.st.of(&S, &t.g).unwrap().stranded, "stopped, no source");
+    assert_eq!(t.st.strandings().get(&S).map(|x| x.step), Some([3; 32]), "naming the step it stopped at");
+    t.join(S, A, reader(RA, 1));
+    assert!(t.st.strandings().is_empty(), "a source has S open: not heard out");
+    t.st.left(S, A, Default::default());
+    t.settle();
+    assert!(t.st.of(&S, &t.g).unwrap().stranded, "no source again");
+    t.g.stops.remove(&S);
+    t.settle();
+    assert!(!t.st.of(&S, &t.g).unwrap().stranded && t.st.strandings().is_empty(), "the stop gone");
 }

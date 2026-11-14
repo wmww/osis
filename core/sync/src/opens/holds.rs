@@ -118,10 +118,13 @@ pub trait Holds {
     /// Takes a Deposit item (spec/sync-inbox.md §3) a peer offered; `src` is where its peer
     /// budget charge lives (the peer's record, else the connection).
     fn deposit(&mut self, src: crate::store::Source, item: &DepositItem) -> Code;
-    /// Verifies steps a source gave (spec/sync-ids.md §6 Known steps): each under its parent,
-    /// the first under the named step (or from genesis). Those that verify.
-    fn verify_steps(&mut self, s: &SyncId, named: Option<&osis_label::StepId>, steps: &[Step]) -> Vec<Step>;
-    /// The walk credentials of a step a source gave (spec/sync-ids.md §6 Test).
+    /// Verifies steps a source gave (spec/sync-ids.md §6 Known steps): `known_steps` over this
+    /// node's recorded path and `known` (the steps the walk there knows). Those that verify and
+    /// are not recorded, in order.
+    fn verify_steps(&mut self, s: &SyncId, known: &[Step], steps: &[Step]) -> Vec<Step>;
+    /// The walk credentials of a step a source gave (spec/sync-ids.md §6 Test): its sync key when
+    /// a held sync secret derives it (a source's answer carries no claim set, so no claim or
+    /// static entry of such a step is known).
     fn step_creds(&mut self, s: &SyncId, step: &Step) -> Vec<(Tested, Option<Epoch>)>;
 }
 
@@ -362,11 +365,39 @@ impl Holds for NodeHolds<'_, '_> {
         self.cx.store.take_deposit(item, Some(src)).unwrap_or(Code::RATE_LIMITED)
     }
 
-    fn verify_steps(&mut self, _s: &SyncId, _named: Option<&osis_label::StepId>, _steps: &[Step]) -> Vec<Step> {
-        Vec::new()
+    fn verify_steps(&mut self, s: &SyncId, known: &[Step], steps: &[Step]) -> Vec<Step> {
+        let recorded: Vec<Step> = path_of(self.cx, s).map(|p| p.steps.iter().map(|(st, _)| st.clone()).collect()).unwrap_or_default();
+        let ids: std::collections::BTreeSet<StepId> = recorded.iter().map(Step::id).collect();
+        let mut out = known_steps(s, recorded.iter().chain(known), steps);
+        out.retain(|st| !ids.contains(&st.id()));
+        out
     }
 
-    fn step_creds(&mut self, _s: &SyncId, _step: &Step) -> Vec<(Tested, Option<Epoch>)> {
-        Vec::new()
+    fn step_creds(&mut self, s: &SyncId, step: &Step) -> Vec<(Tested, Option<Epoch>)> {
+        let Ok(Some(rc)) = self.cx.engine.read_credentials(s) else { return Vec::new() };
+        let pk = step.keys.sync.to_bytes();
+        let held = rc.keys.get(&step.id()).and_then(|k| k.sync.clone().map(|x| (x, k.epochs[0])));
+        let held = held.or_else(|| rc.sync_keys.iter().find(|(_, k)| k.verifying_key().to_bytes() == pk).map(|(e, k)| (k.clone(), Some(*e))));
+        held.filter(|(k, _)| k.verifying_key().to_bytes() == pk).map(|(key, e)| (Tested::SyncKey { step: Some(step.id()), key }, e)).into_iter().collect()
     }
+}
+
+/// The steps of `steps` that verify (spec/sync-ids.md §6 Known steps), in order up to the first
+/// that does not: each a step of S, a genesis step verified as one, else a child of the step
+/// before it in `steps` or, for the first, of the step of `parents` its `prev` names.
+pub fn known_steps<'a>(s: &SyncId, parents: impl Iterator<Item = &'a Step> + Clone, steps: &[Step]) -> Vec<Step> {
+    let mut out: Vec<Step> = Vec::new();
+    for st in steps {
+        let ok = st.label == *s
+            && match (out.last(), st.prev) {
+                (Some(p), _) => st.verify_child(p).is_ok(),
+                (None, None) => st.verify_genesis().is_ok(),
+                (None, Some(prev)) => parents.clone().find(|p| p.id() == prev).is_some_and(|p| st.verify_child(p).is_ok()),
+            };
+        if !ok {
+            break;
+        }
+        out.push(st.clone());
+    }
+    out
 }
