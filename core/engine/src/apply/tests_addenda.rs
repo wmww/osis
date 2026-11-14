@@ -708,3 +708,32 @@ fn an_addendum_at_its_authors_removals_ts_counts_when_vouched_for_spec_perm_5_2(
         }
     }
 }
+
+// spec/commits.md §5 (Covered: by a valid snapshot the node holds; Forgetting), spec/permissions.md
+// §5.2: a snapshot its writer made after a removal it had not received is invalid where the
+// removal is held, so it drops nothing there and nothing becomes forgettable; a remaining
+// writer's snapshot of the same state does drop the body.
+#[test]
+fn a_removed_writers_later_snapshot_drops_nothing_spec_commits_5() {
+    let (mut lp, t) = world(3, &[Role::Write, Role::Write]);
+    let e = write(&mut lp, 1, t, "x:e.0", 7);
+    lp.sync_all().unwrap();
+    write(&mut lp, 1, t, "x:e.0", 8);
+    remove(&mut lp, 0, t, 1);
+    lp.sync(0, 2).unwrap();
+    // peer 1, not holding its removal, compacts what it holds
+    let snap = lp.peers[1].engine.snapshot(&t, &ak("x:e.0")).unwrap().unwrap();
+    lp.advance(1000);
+    let pk = lp.peers[1].engine.package(&snap).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
+    assert!(lp.peers[2].engine.core.ix.commits.get(&snap).is_some_and(|m| m.aspect(&t, &ak("x:e.0")).is_some_and(|ai| !m.valid_at(ai))), "the snapshot is invalid at peer 2");
+    assert!(valid(&lp, 2, &e, t, "x:e.0"));
+    assert!(lp.peers[2].engine.covered_drops(&e).unwrap().is_empty(), "an invalid snapshot drops nothing");
+    assert!(!lp.peers[2].engine.forgettable(&e));
+    // control: peer 0's snapshot of the same state covers it
+    let ours = lp.peers[0].engine.snapshot(&t, &ak("x:e.0")).unwrap().unwrap();
+    lp.advance(1000);
+    let pk = lp.peers[0].engine.package(&ours).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
+    assert_eq!(lp.peers[2].engine.covered_drops(&e).unwrap(), vec![(t, ak("x:e.0"))]);
+}
