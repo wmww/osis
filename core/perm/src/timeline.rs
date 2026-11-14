@@ -239,7 +239,7 @@ impl EdgeEnd {
         if e.says_retain() {
             return EdgeEnd::Said(true);
         }
-        let key = e.until.and_then(|u| Ts::make(u, 0)).map(Point::expiry);
+        let key = e.until.and_then(|u| Ts::make(u, 0)).map(Point::start);
         match (key, at) {
             (Some(k), Some(a)) => EdgeEnd::Until(k.max(a)),
             (Some(k), None) => EdgeEnd::Until(k),

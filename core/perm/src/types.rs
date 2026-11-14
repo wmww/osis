@@ -16,9 +16,10 @@ pub struct Point {
 }
 
 impl Point {
-    /// The key of an expiry by `until` at its first `ts` (spec/permissions.md §3, Retain): the
-    /// zero tid and commit ID order it before every write at that `ts`.
-    pub fn expiry(ts: Ts) -> Point {
+    /// The start of `ts`: the zero tid and commit ID order it before every write at that `ts`.
+    /// An expiry by `until` takes effect there (spec/permissions.md §3, Retain), and layer 2
+    /// judges a commit there (§5.2, Position).
+    pub fn start(ts: Ts) -> Point {
         Point { ts, node: Tid::from_bytes([0; 15]), commit: CommitId([0; 32]) }
     }
 }

@@ -132,7 +132,7 @@ fn right_holds(core: &Core, p: &Header, pc: &CommitId, a: &Right) -> bool {
     // over what authority on the thing and the delta's actor comes from (`Held::upstream`), not
     // the node's whole role graph
     if a.ak.as_str() == osis_commit::retention::CREATED {
-        let later: BTreeSet<CommitId> = HeldSet::edge_commits(&core.ix.held, &a.tid).iter().filter(|c| c.point() > point).map(|c| c.id).collect();
+        let later: BTreeSet<CommitId> = HeldSet::edge_commits(&core.ix.held, &a.tid).iter().filter(|c| c.point().ts > p.ts).map(|c| c.id).collect();
         if !later.is_empty() {
             if !signers_could(core, p, a) {
                 return false;

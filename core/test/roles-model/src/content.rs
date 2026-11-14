@@ -40,13 +40,15 @@ pub struct World {
 }
 
 impl World {
-    /// X holds write on `thing` at `t`.
+    /// X holds write on `thing` just before every role event at `t` (§5.2, Position: one at the
+    /// same `ts` is concurrent, so after); an `until` passes at its time.
     fn authorized(&self, thing: usize, t: u32) -> bool {
         let mut on = false;
         for e in &self.timeline[thing] {
             match *e {
-                Ev::Grant(g) if g <= t => on = true,
-                Ev::Revoke { t: r, .. } | Ev::Until(r) if r <= t => on = false,
+                Ev::Grant(g) if g < t => on = true,
+                Ev::Revoke { t: r, .. } if r < t => on = false,
+                Ev::Until(r) if r <= t => on = false,
                 _ => {}
             }
         }
@@ -57,7 +59,8 @@ impl World {
         self.authorized(thing, u32::MAX)
     }
 
-    /// §5.2 on its own: valid if X held write at its ts and no explicit demotion followed;
+    /// §5.2 on its own: valid if X held write at its ts and no explicit demotion followed (one at
+    /// its ts follows it);
     /// else iff some explicit demotion's frontier covers it, whatever the order (a frontier is
     /// what its demoter had received); a re-grant (X holds write now) validates everything.
     pub fn own_valid(&self, c: usize, thing: usize) -> bool {
@@ -66,7 +69,7 @@ impl World {
             return true;
         }
         let revokes = || self.timeline[thing].iter().filter_map(|e| if let Ev::Revoke { t, revoker } = *e { Some((t, revoker)) } else { None });
-        if self.authorized(thing, cm.t) && !revokes().any(|(t, _)| t > cm.t) {
+        if self.authorized(thing, cm.t) && !revokes().any(|(t, _)| t >= cm.t) {
             return true;
         }
         revokes().any(|(t, revoker)| cm.recv[revoker] < t)
