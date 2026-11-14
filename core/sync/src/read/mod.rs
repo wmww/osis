@@ -389,6 +389,12 @@ impl Read {
         self.verdicts.get(&(*s, *c)).cloned()
     }
 
+    /// Tests: the pieces followed, acting or dormant (spec/sync-judgement.md §1).
+    #[doc(hidden)]
+    pub fn pieces_followed(&self) -> usize {
+        self.pieces.followed()
+    }
+
     /// When a judgement read up to a time (an expiry) moves next.
     pub fn next_wake(&self) -> Option<WallMs> {
         self.clock.next().map(WallMs)

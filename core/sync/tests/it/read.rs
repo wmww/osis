@@ -1552,6 +1552,44 @@ fn a_lost_piece_an_own_body_comes_to_link_is_repaired_spec_sync_ids_1() {
     assert_eq!(w.g.sent.iter().filter(|m| **m == Sent::Repair(cid(2), bid(10))).count(), 1, "{:?}", w.g.sent);
 }
 
+/// Pieces followed after `k` own bodies, each a node over 10 fresh chunks replacing the one
+/// before (judged covered); `release`: the engine releases a replaced body's pieces (no history).
+fn followed_after_replacements(k: u8, release: bool) -> usize {
+    let mut w = W::new();
+    let tree = |i: u8| (plw(10_000 + u32::from(i), false), (0..10).map(|j| plw(u32::from(i) * 100 + j, true)).collect::<Vec<_>>());
+    for i in 1..=k {
+        let (node, chunks) = tree(i);
+        for c in &chunks {
+            w.g.below.insert(*c, Arc::default());
+        }
+        w.g.below.insert(node, Arc::new(chunks));
+        w.g.roots.insert((S, cid(i)), Arc::new(vec![node]));
+        w.hold(cid(i), &[S], uncovered());
+        if i > 1 {
+            w.judge(S, cid(i - 1), covered(cid(i)));
+            if release {
+                let (node, chunks) = tree(i - 1);
+                for p in chunks.iter().chain([&node]) {
+                    w.g.below.remove(p);
+                }
+                w.settle();
+            }
+        }
+    }
+    w.read.pieces_followed()
+}
+
+// spec/sync-judgement.md §1 (chunk and tree-node blobs): bound of the pieces followed: a piece no
+// must-hold body links stays followed (dormant) only while it is held: a flood of large bodies
+// each replaced leaves the live tree's pieces followed, at k and 10k bodies; with the replaced
+// ones held (history), one per held piece.
+#[test]
+fn replaced_bodies_leave_no_pieces_followed_once_released_spec_sync_judgement_1() {
+    assert_eq!(followed_after_replacements(3, true), 11);
+    assert_eq!(followed_after_replacements(30, true), 11);
+    assert_eq!(followed_after_replacements(3, false), 33, "dormant while held");
+}
+
 // spec/sync-compaction.md §1 (Freed links): a freed link's own entry leaves, it is deleted at each
 // source keeping S unread that shows it (not at a reader source), and it leaves the set once no
 // entry of it is known here.

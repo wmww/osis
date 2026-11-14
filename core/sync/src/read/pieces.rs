@@ -86,6 +86,11 @@ impl Pieces {
         }
     }
 
+    /// How many pieces are followed, acting or dormant.
+    pub fn followed(&self) -> usize {
+        self.linked.len()
+    }
+
     /// The link followed piece `k` is walked by (`None`: not followed; a key dropped while due is
     /// not judged).
     pub fn link_of(&self, k: &Key) -> Option<PieceLink> {
