@@ -16,7 +16,9 @@
 //! own line stands (every rotation on it minted by a node, none by a node an earlier revocation
 //! removed, off that removal's rotation's line), and it follows every rotation whose line
 //! stands: two of its devices' rotations made at once both count, and a plain fork of a removed
-//! device never outweighs its removal. The nodes: those paired before the world, and every
+//! device never outweighs its removal. A line at odds with a taken revocation's (a rotation on
+//! one supersedes one on the other unnamed: a device that took the other revocation first
+//! disowns what it disregards) is that other side: never followed, its revocations not taken. The nodes: those paired before the world, and every
 //! holder of a grant by another node no removal hits (a removal hits its node's grants its
 //! frontier does not cover); a rotation counts as held only once its minter is known as a node.
 //! D's roster (whom an honest rotation boxes) is the nodes but the removed. Followed rotations
@@ -26,7 +28,7 @@
 //! has forked"). Nothing reads `ts`; checks read only what was placed before, so a later
 //! arrival never reopens a decision.
 //!
-//! Parties: account P with nodes A (honest, removes X at time 1), B (honest, may be offline
+//! Parties: account P with nodes A (honest, may rotate at time 0, removes X at time 1), B (honest, may be offline
 //! until it reconnects: unaware of the removal, it writes, rotates, boxes X), X (removed: from
 //! time 1 it forks from any epoch whose seed it holds, any number of times, may revoke A or B
 //! in its forks, may counter-merge, writes and lists its writes; it signs as itself or as Z, a
@@ -85,6 +87,9 @@ pub const NEVER: u32 = u32::MAX;
 /// included); 4 first-seen grants: a removed node's grant is hit only when held after its
 /// removal or signed beside it (notes/engine-validity-epochs.md, Sides: rejected).
 pub static CONTROL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// `forks-stubborn`: in some worlds B's user never switches (issues/account-side-stubborn-node.md:
+/// fails today).
+pub static STUBBORN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const NAMES: [&str; N] = ["A", "B", "X", "T", "R1", "R2", "Z"];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -127,6 +132,8 @@ pub struct World {
     pub switches: Vec<(usize, u32, u32)>,
     /// A's removal of X.
     pub removal: u32,
+    /// B's user never switches: a node of P that took X's side first stays there.
+    pub stubborn: bool,
 }
 
 impl World {
@@ -320,7 +327,7 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
             nodes.extend(more);
         }
     };
-    let node_rule = own && matches!(control, 0 | 3 | 4);
+    let node_rule = own && matches!(control, 0 | 3 | 4 | 5);
     if node_rule {
         // a node of P reads who made each rotation and whom it removes. The revocations it
         // takes are a consistent set, built in the order it came to hold them: one is taken
@@ -337,13 +344,22 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
                 nodes.contains(&m) && removals.iter().filter(|(y, ..)| *y == m).all(|(_, _, rr)| *q != *rr && j0.on(*q, *rr))
             })
         };
+        // q disowns p: supersedes it unnamed (neither the epoch it is signed at nor a fork it
+        // accepts): its minter disregarded p. An honest rotation disowns only what its minter
+        // disregards, and unlike rejecting this reads no other rotation held
+        let disowns = |q: u32, p: u32| -> bool {
+            let (at, names, sup, _) = w.rot(q).unwrap();
+            p != at && sup.contains(&p) && !(names.contains(&p) && j0.chain.contains(&p))
+        };
+        // a rotation on r's line disowns or is disowned by one on k's (control 5: never)
+        let at_odds = |r: u32, k: u32| control != 5 && j0.line(r).iter().any(|q| j0.line(k).iter().any(|p| disowns(*q, *p) || disowns(*p, *q)));
         let mut taken: Vec<u32> = Vec::new();
         let mut removals: Vec<(usize, u32, u32)> = Vec::new();
         for &r in &order {
             let Some((at, _, _, Some(y))) = w.rot(r) else { continue };
             let mine = [(y, at, r)];
             let with: Vec<(usize, u32, u32)> = removals.iter().chain(&mine).copied().collect();
-            if stands(r, &with) && taken.iter().all(|q| stands(*q, &mine)) {
+            if stands(r, &with) && taken.iter().all(|q| stands(*q, &mine) && !at_odds(r, *q)) {
                 taken.push(r);
                 removals.push((y, at, r));
                 j.removed.insert((y, at));
@@ -351,7 +367,10 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
         }
         let revocation = |q: &u32| matches!(w.rot(*q), Some((_, _, _, Some(_))));
         for &r in &order {
-            if stands(r, &removals) && j0.line(r).iter().filter(|q| revocation(q)).all(|q| taken.contains(q)) {
+            // a line at odds with a taken revocation's is a side taken otherwise (a device that
+            // took another revocation first supersedes what it disregards unnamed): it never
+            // counts beside it
+            if stands(r, &removals) && j0.line(r).iter().filter(|q| revocation(q)).all(|q| taken.contains(q)) && !taken.iter().any(|k| at_odds(r, *k)) {
                 followed.insert(r);
             } else {
                 j.disregarded.insert(r);
@@ -557,6 +576,7 @@ pub fn random_world(rng: &mut Rng) -> World {
     let mut w = World::default();
     let all = [true; N];
     let mut floor = [0u32; N];
+    w.stubborn = STUBBORN.load(std::sync::atomic::Ordering::Relaxed) && rng.below(3) == 0;
     // B offline until it reconnects
     let b_off = rng.below(3) > 0;
     if b_off {
@@ -573,6 +593,15 @@ pub fn random_world(rng: &mut Rng) -> World {
     // X pairs Z in plain sight, sometimes (the removal's frontier covers it if A holds it by then)
     if rng.below(5) == 0 {
         let id = w.add(Kind::Grant { to: Z }, X, 0, 0, [false; N]);
+        deliver(&mut w, &[id], rng, &floor);
+    }
+    // A rotates plainly before the removal, sometimes
+    if rng.below(3) == 0 {
+        let mut bx = all;
+        bx[R1] = false;
+        bx[R2] = false;
+        bx[Z] = false;
+        let id = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, A, 0, 0, bx);
         deliver(&mut w, &[id], rng, &floor);
     }
     // A writes, then removes X at 1
@@ -697,7 +726,7 @@ pub fn settle(w: &mut World, settle: u32) -> u32 {
         for n in [A, B, T] {
             t += 1;
             let j = judge(w, n, t);
-            if !j.counting.contains(&w.removal) {
+            if !j.counting.contains(&w.removal) && !(n == B && w.stubborn) {
                 w.switches.push((n, t, w.removal));
             }
             if n == T {
@@ -842,7 +871,14 @@ pub fn check(w0: &World, st: &mut Stats) {
         if let Some(h) = j.heads.iter().find(|h| **h != 0 && leaks(&w.item(**h).boxed)) {
             fail(format!("node {}: settled at head {h}, whose seed X holds", NAMES[v]), st);
         }
-        let honest: Vec<u32> = w.items.iter().filter(|i| i.author != X && matches!(i.kind, Kind::Content)).map(|i| i.id).collect();
+        // a node of P left on X's side (its user not switching) writes on that side
+        if v < OWN {
+            if let Some(c) = j.valid.iter().find(|c| w.hostile(**c)) {
+                fail(format!("node {}: settled counting X's write {c}", NAMES[v]), st);
+            }
+        }
+        let x_side = |n: usize| !judge(&w, n, end).counting.contains(&w.removal);
+        let honest: Vec<u32> = w.items.iter().filter(|i| i.author != X && !(i.author < OWN && x_side(i.author)) && matches!(i.kind, Kind::Content)).map(|i| i.id).collect();
         if let Some(c) = honest.iter().find(|c| !j.valid.contains(c)) {
             fail(format!("node {}: settled without honest write {c}", NAMES[v]), st);
         }
@@ -1181,6 +1217,46 @@ mod tests {
         for n in [A, B, T] {
             let j = judge(&w, n, 7);
             assert!(!j.roster.contains(&Z) && !j.counting.contains(&f), "{}: {j:?}", NAMES[n]);
+        }
+    }
+
+    // A rotates (r1), then removes X (r3); B rotated unaware at the first epoch (r10) and takes
+    // X's revocation of A (r6) first, so its next rotation (rb) supersedes A's line unnamed: a
+    // rejection. A and T disregard rb (a line at odds with the revocation they took); once B's
+    // user switches, B disregards rb too, so its merge names its own r10 only and rejects rb:
+    // R1, on A's line, follows the merge and counts B's write at rb by its listing
+    #[test]
+    fn a_device_that_switches_carries_no_rejection_of_its_new_side() {
+        let mut w = World::default();
+        let r1 = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, A, 0, 0, boxed_to(&[A, B, X, T]));
+        all_at(&mut w, &[r1], 0);
+        let r10 = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, B, 0, 1, boxed_to(&[A, B, X, T]));
+        all_at(&mut w, &[r10], 6);
+        let made = act(&mut w, A, 2, Some(X), false);
+        w.removal = made[0];
+        all_at(&mut w, &made, 3);
+        for id in &made {
+            to(&mut w, *id, B, 10);
+            to(&mut w, *id, X, NEVER);
+        }
+        let r6 = fork(&mut w, 0, 3, Some(A));
+        all_at(&mut w, &[r6], 4);
+        let b = act(&mut w, B, 5, None, true);
+        let rb = b[0];
+        assert!(matches!(&w.item(rb).kind, Kind::Rot { sup, .. } if sup.contains(&r1)), "B answers A's line");
+        all_at(&mut w, &b, 6);
+        let cb = b[1];
+        for n in [A, T] {
+            let j = judge(&w, n, 6);
+            assert!(j.counting.contains(&w.removal) && !j.counting.contains(&rb) && !j.valid.contains(&cb) && !j.cross, "{}: {j:?}", NAMES[n]);
+        }
+        w.switches.push((B, 11, w.removal));
+        let m = act(&mut w, B, 12, None, false);
+        assert!(matches!(&w.item(m[0]).kind, Kind::Rot { names, sup, .. } if !names.contains(&rb) && sup.contains(&rb)), "{:?}", w.item(m[0]));
+        all_at(&mut w, &m, 13);
+        for n in [A, B, T, R1] {
+            let j = judge(&w, n, 13);
+            assert!(j.counting.contains(&m[0]) && j.valid.contains(&cb) && j.heads.len() == 1, "{}: {j:?}", NAMES[n]);
         }
     }
 }

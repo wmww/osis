@@ -189,27 +189,48 @@ impl<E: Ord + Copy> Chain<E> {
     /// At a node of the account, which reads who minted each rotation and whom each removes:
     /// the revocations (rotations carrying a removal) it takes are a consistent set, built in
     /// order: one is taken when no revocation taken, nor itself, hits a rotation on its line,
-    /// nor it one on a taken one's line. It follows every rotation whose line none taken hits
-    /// and holds no revocation not taken. So its devices' rotations made at once all count, a
-    /// removed device's plain fork never outweighs the removal, and of two revocations hitting
-    /// each other the one held first holds. Then D's commits that do not count (`cut`).
+    /// nor it one on a taken one's line, nor is its line at odds with a taken one's (a rotation
+    /// on one supersedes one on the other unnamed: disowns it). It follows every rotation whose
+    /// line none taken hits, holds no revocation not taken, and is not at odds with a taken
+    /// revocation's line: a device that took another revocation first disowns the line it
+    /// disregards, so its later rotations are that side, never merged into this one. So its
+    /// devices' rotations made at once all count, a removed device's plain fork never outweighs
+    /// the removal, and of two revocations hitting each other the one held first holds. Then
+    /// D's commits that do not count (`cut`).
     fn follow_as_node<M: Ord + Copy>(&mut self, order: &[E], d: &Devices<E, M>) {
         // (node removed, rotation carrying the removal)
         let removals = |r: &E| -> BTreeSet<(M, E)> { d.removes.get(r).into_iter().flatten().map(|m| (*m, *r)).collect() };
+        // (q, p): q disowns p, superseding it unnamed (neither the epoch q is signed at nor a
+        // fork it accepts). An honest rotation disowns only what its minter disregards, so a
+        // device that took another revocation first disowns this side; unlike a rejection it
+        // reads no other rotation held, so a later arrival never lifts it
+        let mut disowns: Vec<(E, E)> = Vec::new();
+        for q in self.rots.values() {
+            let accepted = self.accepts(q);
+            disowns.extend(q.supersedes.iter().filter(|p| **p != q.at && !accepted.contains(p) && self.rots.contains_key(p)).map(|p| (q.id, *p)));
+        }
+        let empty = BTreeSet::new();
+        // a rotation on r's line disowns or is disowned by one of `kept`
+        let at_odds = |r: &E, kept: &BTreeSet<E>| -> bool {
+            let l = self.lines.get(r).unwrap_or(&empty);
+            disowns.iter().any(|(a, b)| l.contains(a) && kept.contains(b) || l.contains(b) && kept.contains(a))
+        };
         let mut taken: Vec<E> = Vec::new();
+        let mut taken_lines: BTreeSet<E> = BTreeSet::new();
         let mut removed: BTreeSet<(M, E)> = BTreeSet::new();
         for r in order.iter().filter(|r| d.removes.get(r).is_some_and(|x| !x.is_empty())) {
             let mine = removals(r);
             let with: BTreeSet<(M, E)> = removed.union(&mine).copied().collect();
             let nodes_mine = self.nodes(&mine, d);
-            if self.stands(*r, &with, d, &self.nodes(&with, d)) && taken.iter().all(|q| self.stands(*q, &mine, d, &nodes_mine)) {
+            if self.stands(*r, &with, d, &self.nodes(&with, d)) && taken.iter().all(|q| self.stands(*q, &mine, d, &nodes_mine)) && !at_odds(r, &taken_lines) {
                 taken.push(*r);
+                taken_lines.extend(self.lines.get(r).into_iter().flatten().copied());
                 removed = with;
             }
         }
         let nodes = self.nodes(&removed, d);
         for &r in order {
-            if self.stands(r, &removed, d, &nodes) && self.lines.get(&r).into_iter().flatten().filter(|q| d.removes.get(q).is_some_and(|x| !x.is_empty())).all(|q| taken.contains(q)) {
+            if self.stands(r, &removed, d, &nodes) && self.lines.get(&r).into_iter().flatten().filter(|q| d.removes.get(q).is_some_and(|x| !x.is_empty())).all(|q| taken.contains(q)) && !at_odds(&r, &taken_lines) {
                 self.counting.insert(r);
             } else {
                 self.disregarded.insert(r);

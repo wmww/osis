@@ -246,6 +246,24 @@ fn a_removed_nodes_grant_to_itself_is_no_readd() {
     assert!(c.counts(&1) && c.counts(&2) && !c.counts(&3) && c.cut(&101));
 }
 
+/// A rotates (1) and removes X (3, at 1); B rotated unaware (2) and took X's revocation of A (4)
+/// first, so its next rotation (5, at 2) supersedes A's 1 unnamed: it disowns the line A took.
+/// At A, holding 3 first, 5 is that side and never counts beside it (spec/permissions.md §5.4,
+/// Following, at a node of P); at B once its user chooses 3 the same holds, so B's merge names
+/// its 2 alone and carries no rejection of A's line to readers outside.
+#[test]
+fn a_rotation_disowning_a_taken_revocations_line_is_the_other_side() {
+    let rots = vec![rot(1, 0, &[0], &[]), rot(2, 0, &[0], &[]), rot(3, 1, &[1], &[]), rot(4, 0, &[0], &[]), rot(5, 2, &[2, 1], &[])];
+    let minted = [(1, 'A'), (2, 'B'), (3, 'A'), (4, 'X'), (5, 'B')];
+    let d = devices(&minted, &[(3, 'X'), (4, 'A')], &[]);
+    let a = Chain::new(0, rots.clone(), None, &rec(&[1, 3, 4, 2, 5]), Some(&d));
+    assert!(a.counts(&3) && a.counts(&2) && !a.counts(&4) && !a.counts(&5), "A: heads {:?}", a.heads());
+    let b = Chain::new(0, rots.clone(), None, &rec(&[1, 2, 4, 5, 3]), Some(&d));
+    assert!(b.counts(&4) && b.counts(&5) && !b.counts(&3), "B before its switch");
+    let b = Chain::new(0, rots, Some(3), &rec(&[1, 2, 4, 5, 3]), Some(&d));
+    assert!(b.counts(&3) && b.counts(&2) && !b.counts(&5) && b.heads() == &set(&[2, 3]), "B after: heads {:?}", b.heads());
+}
+
 /// `Chain` as node `v` of core/test/roles-model `forks` world `w` judges it at `now`, with the
 /// model's choice `chosen`: the held rotations, the receipt order of rotations and D grants
 /// (one tick's by ID), and at a node of P what D says (signers by inner signature, removals with
