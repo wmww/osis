@@ -10,46 +10,50 @@ false alarms beyond macros building names). tools/dead_pub_allow.txt lists the h
 purpose: `<crate>::<name>  <reason>`; a reason starting `deferred:` marks one left for a branch
 in that area. Every entry must still be a hit.
 Usage: python3 tools/dead_pub.py   (exit 1 on any unlisted hit or stale entry; policy.py runs it)"""
-import os, re, sys
+import functools, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from rustsrc import ROOT, members, mod_paths, rs_files, sanitize
+from rustsrc import ROOT, members, mod_paths, read, rs_files, sanitize
 
 ALLOW = os.path.join(ROOT, "tools/dead_pub_allow.txt")
 
 IDENT = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
-DEF = re.compile(r"\bpub\s+(?:const\s+|async\s+|unsafe\s+|extern\s+\"[^\"]*\"\s+)*(fn|const|static|struct|enum|type|trait|union)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)")
+# a `\b` before a literal is a lookbehind after it: sre scans fast for a pattern that starts with one
+DEF = re.compile(r"pub(?<!\wpub)\s+(?:const\s+|async\s+|unsafe\s+|extern\s+\"[^\"]*\"\s+)*(fn|const|static|struct|enum|type|trait|union)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)")
 TEST_CFG = re.compile(r"#\[cfg\((test|doctest|any\(test,\s*fuzzing\))\)\]")
 USE = re.compile(r"\b(?:pub(?:\([^)]*\))?\s+)?use\s+[^;]*;")
-IMPL = re.compile(r"\bimpl\b[^{;]*\{")
+IMPL = re.compile(r"impl(?<!\wimpl)\b[^{;]*\{")
+
+ATTR = re.compile(r"\s*#\[")
+BRACKET = re.compile(r"[\[\]]")
+BRACE = re.compile(r"[{}]")
+HEAD_END = re.compile(r"[;{]")
 
 def item_end(text, i):
     """End of the item starting at `i` (after its attributes): its `;` or its matching `}`."""
-    while True:
-        m = re.match(r"\s*#\[", text[i:])
-        if not m:
-            break
-        i, depth = i + m.end(), 1
-        while depth and i < len(text):
-            depth += {"[": 1, "]": -1}.get(text[i], 0)
-            i += 1
-    j = i
-    while j < len(text) and text[j] not in ";{":
-        j += 1
-    if j >= len(text) or text[j] == ";":
-        return i, j + 1
+    while (m := ATTR.match(text, i)):
+        i, depth = m.end(), 1
+        for b in BRACKET.finditer(text, i):
+            depth += 1 if b.group() == "[" else -1
+            if not depth:
+                i = b.end()
+                break
+        else:
+            i = len(text)
+    h = HEAD_END.search(text, i)
+    if not h or h.group() == ";":
+        return i, (h.end() if h else len(text) + 1)
     depth = 0
-    while j < len(text):
-        depth += {"{": 1, "}": -1}.get(text[j], 0)
-        j += 1
-        if depth == 0:
-            break
-    return i, j
+    for b in BRACE.finditer(text, h.start()):
+        depth += 1 if b.group() == "{" else -1
+        if not depth:
+            return i, b.end()
+    return i, len(text)
 
 class File:
     def __init__(self, path, crate, test):
         self.path, self.crate = path, crate
-        self.text = sanitize(open(path, errors="replace").read(), " ")
+        self.text = sanitize(read(path), " ")
         self.test_all = test
         self.test_spans, self.child_tests = [], []
         if not test:
@@ -59,14 +63,29 @@ class File:
                 mm = re.match(r"\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*;", self.text[start:end])
                 if mm:
                     self.child_tests += mod_paths(path, mm.group(1))
-        self.use_spans = [m.span() for m in USE.finditer(self.text)]
-        self.impl_spans = [m.span() for m in IMPL.finditer(self.text)]
+
+    @functools.cached_property
+    def use_spans(self):
+        return [m.span() for m in USE.finditer(self.text)]
+
+    @functools.cached_property
+    def impl_spans(self):
+        return [m.span() for m in IMPL.finditer(self.text)]
 
     def in_test(self, pos):
         return self.test_all or any(a <= pos < b for a, b in self.test_spans)
 
 def inside(spans, pos):
     return any(a <= pos < b for a, b in spans)
+
+def occurrences(text, n):
+    """Where identifier `n` stands in `text` as a whole word."""
+    i = text.find(n)
+    while i >= 0:
+        j = i + len(n)
+        if not (i and (text[i - 1].isalnum() or text[i - 1] == "_")) and not (j < len(text) and (text[j].isalnum() or text[j] == "_")):
+            yield i
+        i = text.find(n, i + 1)
 
 def scan():
     # core/test/fuzz is outside the workspace (cargo-fuzz), its targets still users
@@ -100,27 +119,23 @@ def hits():
         by_name.setdefault(n, []).append(crate)
     live = set()  # (crate, name) used live
     for f in files:
-        for m in IDENT.finditer(f.text):
-            n = m.group(0)
-            if n not in by_name:
-                continue
-            pos = m.start()
+        for n in set(IDENT.findall(f.text)) & by_name.keys():
             for crate in by_name[n]:
                 if (crate, n) in live:
-                    continue
-                kind, df, dpos = defs[(crate, n)]
-                if df is f and dpos == pos:
                     continue
                 if f.crate != crate:
                     live.add((crate, n))
                     continue
-                if f.in_test(pos):
-                    continue
-                if kind != "trait" and inside(f.use_spans, pos):
-                    continue
-                if kind in ("struct", "enum", "type", "union") and inside(f.impl_spans, pos):
-                    continue
-                live.add((crate, n))
+                kind, df, dpos = defs[(crate, n)]
+                for pos in occurrences(f.text, n):
+                    if (df is f and dpos == pos) or f.in_test(pos):
+                        continue
+                    if kind != "trait" and inside(f.use_spans, pos):
+                        continue
+                    if kind in ("struct", "enum", "type", "union") and inside(f.impl_spans, pos):
+                        continue
+                    live.add((crate, n))
+                    break
     out = []
     for (crate, n), (kind, f, pos) in sorted(defs.items()):
         if (crate, n) not in live:

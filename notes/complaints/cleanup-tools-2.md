@@ -1,0 +1,3 @@
+# cleanup-tools-2
+- tools/policy.py took 8.9 CPU-s per run (every commit and gate): per-line regex scans over 17 MB of sources, the same files read by several checks. Python's `re` scans fast only for a pattern that starts with a literal; a leading `\b` (or an alternation of `\b...` branches) makes it try every position, 10-50x slower. Write `X(?<!\wX)` or prefilter with the pattern minus its `\b`s (`has` in policy.py).
+- policy.py, dead_pub.py and doc_refs.py have no tests of their own; checking a rewrite meant a throwaway repo copy with planted violations, old vs new output compared.

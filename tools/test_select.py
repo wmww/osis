@@ -4,7 +4,7 @@ size, computed from what it touched. tools/gate.sh runs them in its one hold of 
 
   tools/test_select.py [--base REV | --all] [--offset N]          print the selection and its commands
   tools/test_select.py --paths PATH...                            select for these paths, not a diff
-  tools/test_select.py --emit [--base REV | --all] [--offset N]   for the gate: `build CMD` and `run LIMIT CMD` lines
+  tools/test_select.py --emit FILE ...                             also append the gate's `build CMD` and `run LIMIT CMD` lines to FILE
 
 The default base is the merge base with origin/main as last fetched, as in the gate (local main lags).
 
@@ -21,6 +21,9 @@ Offsets: one random value per run (--offset to repeat one) starts every harness 
 sim sweep, so a gate samples seeds no earlier gate ran.
 """
 import json, os, random, re, shlex, subprocess, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gate_paths
 
 SIZE_WORD = re.compile(r"_(large|plain|exhaustive)(_spec_\w*)?$")
 IGNORE = re.compile(r"^(?!\s*//).*#\[(ignore\b|cfg_attr\(.*\bignore\b)")
@@ -78,9 +81,7 @@ def metadata():
 def changed(base):
     if base is None:
         base = run("git", "merge-base", "HEAD", "refs/remotes/origin/main").strip()
-    diff = run("git", "diff", "--no-renames", "--name-only", "-z", base, "--")
-    new = run("git", "ls-files", "--others", "--exclude-standard", "-z")
-    return sorted({p for p in (diff + new).split("\0") if p})
+    return sorted(gate_paths.changed(base, None))
 
 
 def owner(path, dirs):
@@ -181,14 +182,16 @@ def envs(offset):
 
 def main():
     args = sys.argv[1:]
-    emit = "--emit" in args
     every = "--all" in args
-    base = offset = paths = None
+    base = offset = paths = emit = None
     i = 0
     while i < len(args):
         a = args[i]
-        if a in ("--emit", "--all"):
+        if a == "--all":
             i += 1
+        elif a == "--emit":
+            emit = args[i + 1]
+            i += 2
         elif a == "--base":
             base = args[i + 1]
             i += 2
@@ -224,11 +227,8 @@ def main():
         build.append(["cargo", "build", "--locked", "--bin", "sim-sweep"])
         cmds.append(("gate.sim", ["cargo", "run", "--locked", "--bin", "sim-sweep", "--", "--seeds", str(SIM_SEEDS), "--from", str(offset)]))
     if emit:
-        for b in build:
-            print("build " + shlex.join(b))
-        for n, c in cmds:
-            print(f"run {n} " + shlex.join(c))
-        return 0
+        with open(emit, "a") as f:
+            f.writelines([f"build {shlex.join(b)}\n" for b in build] + [f"run {n} {shlex.join(c)}\n" for n, c in cmds])
 
     print(f"paths: {'every crate (--all)' if every else len(paths)}")
     for p, why in sorted(nothing.items()):

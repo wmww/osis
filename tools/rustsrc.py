@@ -1,5 +1,5 @@
 """The workspace's crates and Rust sources, as tools/policy.py, dead_pub.py and loc.py read them."""
-import glob, os, re, tomllib
+import functools, glob, os, re, tomllib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -7,6 +7,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def toml(path):
     with open(path, "rb") as f:
         return tomllib.load(f)
+
+
+@functools.cache
+def read(path):
+    """`path`'s text, read once per run (the checks share it)."""
+    with open(path, errors="replace") as f:
+        return f.read()
 
 
 def members(extra=()):
@@ -98,7 +105,7 @@ def sanitize(src, fill="x"):
     quotes kept; newlines and offsets kept."""
 
     def blank(s, c=" "):
-        return "".join("\n" if ch == "\n" else c for ch in s)
+        return "\n".join(c * len(part) for part in s.split("\n"))
 
     out, last = [], 0
     for kind, s, e, a, b in lex(src):

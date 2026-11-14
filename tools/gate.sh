@@ -199,9 +199,7 @@ printf '%s\n' "build cargo test --locked --no-fail-fast --no-run" "run default-t
 offset=$(python3 -c 'import random; print(random.randrange(10**12))')
 if [ "$select" = all ]; then from=--all; else from="--base $base"; fi
 # shellcheck disable=SC2086
-step python3 tools/test_select.py $from --offset "$offset"
-# shellcheck disable=SC2086
-python3 tools/test_select.py --emit $from --offset "$offset" >> "$sel"
+step python3 tools/test_select.py $from --offset "$offset" --emit "$sel"
 # lints before tests: a lint failure found after minutes of tests wastes them;
 # core's, then the GUI's on the same artifacts (the core crates are linted already)
 limited gate.clippy cargo clippy --all-targets --locked -- -D warnings

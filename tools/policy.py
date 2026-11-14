@@ -11,11 +11,11 @@ and no code names a thing's destruction by the old word "ended" (`ended_names`),
 item is used only by its own crate's tests or not at all unless tools/dead_pub_allow.txt lists it (tools/dead_pub.py).
 Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
 libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
-import glob, os, re, sys
+import functools, glob, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dead_pub, doc_refs, gate_failures
-from rustsrc import ROOT, members as workspace_members, rs_files, toml as load
+from rustsrc import ROOT, members as workspace_members, read, rs_files, toml as load
 
 errs = []
 ws = load(os.path.join(ROOT, "Cargo.toml"))
@@ -28,18 +28,43 @@ def code(text):
     return re.sub(r"//[^\n]*", "", text)
 
 
-def walk(tops, exts):
-    """(path, path from the root) of each file under the `tops` dirs ending in one of `exts`, not
-    under target/ or vendored patches/."""
-    for top in tops:
-        for dirpath, dirs, files in os.walk(os.path.join(ROOT, top)):
-            dirs[:] = [d for d in dirs if d not in ("target", "patches")]
-            for f in files:
-                if f.endswith(exts):
-                    yield os.path.join(dirpath, f), os.path.relpath(os.path.join(dirpath, f), ROOT)
+@functools.cache
+def code_of(path):
+    """`path`'s text without its `//` comments, made once per run."""
+    return code(read(path))
+
+
+@functools.cache
+def _loose(pat):
+    return re.compile(pat.pattern.replace(r"\b", ""), pat.flags)
+
+
+def has(pat, text):
+    """Whether `pat` matches in `text`, fast: sre scans quickly only for a pattern that starts with a
+    literal, which a leading `\b` hides; the pattern without its `\b`s matches wherever it does."""
+    return bool(_loose(pat).search(text) and pat.search(text))
 
 
 CODE_TOPS = ("core", "cli", "libs", "app")
+
+
+@functools.cache
+def all_files():
+    """(path, path from the root) of every file under CODE_TOPS, schema/ and tools/, not under
+    target/ or vendored patches/: the one walk every check filters."""
+    out = []
+    for top in CODE_TOPS + ("schema", "tools"):
+        for dirpath, dirs, files in os.walk(os.path.join(ROOT, top)):
+            dirs[:] = sorted(d for d in dirs if d not in ("target", "patches"))
+            for f in sorted(files):
+                out.append((os.path.join(dirpath, f), os.path.relpath(os.path.join(dirpath, f), ROOT)))
+    return out
+
+
+def walk(tops, exts):
+    """The files of `all_files` under the `tops` dirs ending in one of `exts`."""
+    tops = tuple(t + "/" for t in tops)
+    return [(p, rel) for p, rel in all_files() if rel.startswith(tops) and rel.endswith(exts)]
 
 arch = open(os.path.join(ROOT, "notes/architecture.md")).read()
 allow = arch.split("## 5. Dependency allowlist", 1)[-1].split("\n## ", 1)[0]
@@ -62,17 +87,17 @@ def test_off_violations(m, rel, man):
     lib = man.get("lib", {})
     srcs = glob.glob(os.path.join(m, "src/**/*.rs"), recursive=True)
     lib_srcs = [s for s in srcs if "/src/bin/" not in s and not s.endswith("/src/main.rs")]
-    if lib.get("test") is False and any("#[cfg(test)]" in open(s).read() for s in lib_srcs):
+    if lib.get("test") is False and any("#[cfg(test)]" in read(s) for s in lib_srcs):
         yield f"{rel}: [lib] test = false but src/ has #[cfg(test)]"
     if lib.get("doctest") is False:
         for s in lib_srcs:
-            fences = [l for l in open(s) if re.match(r"^\s*//[/!]\s*```", l)]
+            fences = [l for l in read(s).split("\n") if "```" in l and re.match(r"^\s*//[/!]\s*```", l)]
             if any(DOCTEST.match(l) for l in fences[::2]):
                 yield f"{os.path.relpath(s, ROOT)}: doctest = false but it has a doctest"
     for b in man.get("bin", []):
         paths = [b["path"]] if "path" in b else [f"src/bin/{b['name']}.rs", "src/main.rs"]
         path = next((os.path.join(m, p) for p in paths if os.path.exists(os.path.join(m, p))), None)
-        if b.get("test") is False and path and "#[cfg(test)]" in open(path).read():
+        if b.get("test") is False and path and "#[cfg(test)]" in read(path):
             yield f"{rel}: bin {b['name']} has test = false but #[cfg(test)]"
 
 for m in members:
@@ -107,8 +132,8 @@ for m in members:
             external.setdefault(name, rel)
     for src in rs_files(m, members):
         srel = os.path.relpath(src, ROOT)
-        text = open(src).read()
-        lines = text.splitlines()
+        text = read(src)
+        lines = text.splitlines() if "unsafe" in text else []
         for i, line in enumerate(lines, 1):
             if UNSAFE.search(code(line)):
                 # app/android's one unsafe block, under its SAFETY comment
@@ -134,7 +159,8 @@ def env_vars():
     used = set()
     for path, _ in walk(CODE_TOPS + ("tools",), (".rs", ".sh", ".py", ".toml")):
         # a name ending in `_` is a prefix (a filter over the environment)
-        used |= {v for v in re.findall(r"\bOSIS_[A-Z0-9_]+", open(path, errors="replace").read()) if not v.endswith("_")}
+        # the `\b` as a lookbehind after the literal, for speed (`has`)
+        used |= {v for v in re.findall(r"OSIS_(?<!\wOSIS_)[A-Z0-9_]+", read(path)) if not v.endswith("_")}
     for v in sorted(v for v in used - known if v.startswith("OSIS_PROBE_")):
         yield f"{v} is a throwaway probe (notes/build.md): remove it before committing"
     for v in sorted(v for v in used - known if not v.startswith("OSIS_PROBE_")):
@@ -145,6 +171,8 @@ def env_vars():
 def paths_of(text, crate):
     """Every path named under `crate::` in `text` (comments dropped), `{a, b::{c}}` groups
     expanded; `*` for a glob; `<crate> as` aliases flagged as `as`."""
+    if crate not in text:
+        return []
     text = code(text)
     out = []
     if re.search(rf"\b{crate}\s+as\b", text):
@@ -201,7 +229,7 @@ def host_blind():
         if os.path.basename(src) == "tests.rs":
             continue
         rel = os.path.relpath(src, ROOT)
-        text = open(src).read()
+        text = read(src)
         if "OpenKey" in text:
             yield f"{rel}: names OpenKey"
         # osis-proto's client engine opens a label only with an
@@ -217,7 +245,7 @@ def host_blind():
                     yield f"{rel}: {crate}::{p} is not on the host's allowlist"
     for src in glob.glob(os.path.join(ROOT, "core/node/src/**/*.rs"), recursive=True):
         rel = os.path.relpath(src, ROOT)
-        for p in paths_of(open(src).read(), "osis_host"):
+        for p in paths_of(read(src), "osis_host"):
             if p in ("*", "as") or not allowed(p, NODE_HOST):
                 yield f"{rel}: osis_host::{p} is not the host's public surface"
 
@@ -238,15 +266,15 @@ def dispute_types():
     for path, rel in walk(CODE_TOPS, ".rs"):
         if rel.startswith(DISPUTE_DIRS) or rel.startswith("core/test/"):
             continue
-        text = open(path, errors="replace").read()
+        text = read(path)
         named = [p for p in paths_of(text, "osis_perm") if p.split("::")[-1] in DISPUTE_PATHS or p.startswith("trust::")]
         if named:
             yield f"{rel}: names osis_perm::{named[0]} (dispute types are private to osis-perm and the API layer)"
         # the public `osis` calls (`disputes`, `choose_side`) are for every app; the names
         # are checked inside core only
-        elif rel.startswith("core/") and DISPUTE_CALLS.search(code(text)):
+        elif rel.startswith("core/") and has(DISPUTE_CALLS, code_of(path)):
             yield f"{rel}: calls a dispute query of osis-perm (private to osis-perm and the API layer)"
-        elif rel.startswith("core/") and not rel.startswith(SIDES_HOOKS) and SIDES_NAMES.search(code(text)):
+        elif rel.startswith("core/") and not rel.startswith(SIDES_HOOKS) and has(SIDES_NAMES, code_of(path)):
             yield f"{rel}: names the trust store or its dispute event (engine sides.rs, its hooks and the API layer only)"
 
 # notes/testing.md (Conventions): agents run tests side by side, so none binds the real LAN port or
@@ -261,7 +289,7 @@ DEFAULT_CFG = re.compile(r"let mut (\w+)\s*=\s*(osis::)?Config::default\(\)")
 
 def real_lan_tests():
     for path, rel in walk(CODE_TOPS, ".rs"):
-        text = code(open(path, errors="replace").read())
+        text = code_of(path)
         if "/tests/" not in "/" + rel:
             if "#[cfg(test)]" not in text:
                 continue
@@ -272,7 +300,7 @@ def real_lan_tests():
         for m in DEFAULT_CFG.finditer(text):
             if re.search(rf"\b{m[1]}\.runtime\s*=\s*{NODE_RUNTIME}", text) and not re.search(rf"\b{m[1]}\.lan\s*=", text):
                 yield f"{rel}: a test node from a bare Config is on the real LAN: {m[0]} (use internals::Opening)"
-        for line in text.splitlines():
+        for line in text.splitlines() if "Lan::bind(" in text or rel.startswith("cli/tests/") else []:
             if LAN_BIND.search(line):
                 yield f"{rel}: Lan::bind in a test on a fixed port: {line.strip()[:80]} (use 0 or another socket's port)"
             if rel.startswith("cli/tests/") and CLI_RUN.search(line) and "--no-lan" not in line and "const OSIS" not in line:
@@ -284,18 +312,20 @@ PEER_TICK = re.compile(r"(?<!\bself)\.engine\.(tick|reexamine)\(")
 
 def peer_ticks():
     for path, rel in walk(("core",), ".rs"):
-        for n, line in enumerate(open(path, errors="replace"), 1):
-            if PEER_TICK.search(code(line)):
+        if ".engine." not in code_of(path):
+            continue
+        for n, line in enumerate(code_of(path).split("\n"), 1):
+            if PEER_TICK.search(line):
                 yield f"{rel}:{n}: engine.tick()/reexamine() on a peer skips its wake (use Peer::tick/reexamine)"
 
 # notes/test-harnesses.md (Copied worlds): a test copy is the same node twice (identity, session, rng
 # stream), so product code never makes one. Product sources name the copy hooks only in the
 # files that define them; tests, the test crates and the LocalPeer harness may use them freely.
 COPY_HOOKS = re.compile(r"\btest_copy\b|\btest_copy_boxed\b|\bcopying::|\btest_subscribe_with\b")
-COPY_DEFS = {"core/base/src/copying.rs", "core/base/src/lib.rs", "core/crypto/src/rng.rs", "core/store/src/memory.rs", "core/store/src/root.rs",
+COPY_DEFS = {"core/base/src/copying.rs", "core/crypto/src/rng.rs", "core/store/src/memory.rs", "core/store/src/root.rs",
              "core/store/src/backend.rs", "core/store/src/pager.rs", "core/store/src/store.rs", "core/engine/src/engine/testing.rs",
              "core/engine/src/engine/mod.rs", "core/base/src/memo/mod.rs", "core/base/src/memo/effects.rs", "core/engine/src/events/mod.rs",
-             "core/engine/src/local_peer.rs", "core/engine/src/tests_copy.rs", "core/node/src/sync/testing.rs", "core/host/src/store.rs", "core/host/src/hub.rs",
+             "core/engine/src/local_peer.rs", "core/node/src/sync/testing.rs", "core/host/src/store.rs", "core/host/src/hub.rs",
              "core/store/src/cipher.rs", "core/host/src/store/engine.rs",
              "core/osis/src/testing.rs"}
 
@@ -305,9 +335,10 @@ def product_lines(pat, skip):
     for m in members:
         for path in glob.glob(os.path.join(m, "src/**/*.rs"), recursive=True):
             rel = os.path.relpath(path, ROOT)
-            if not skip(rel) and not rel.startswith("core/test/"):
-                for n, line in enumerate(open(path, errors="replace"), 1):
-                    if pat.search(code(line)):
+            # `pat` matches within a line, so a file it misses has no line it matches
+            if not skip(rel) and not rel.startswith("core/test/") and pat.search(code_of(path)):
+                for n, line in enumerate(code_of(path).split("\n"), 1):
+                    if pat.search(line):
                         yield rel, n
 
 def test_copies():
@@ -325,23 +356,23 @@ def checked_bytes():
     for rel, n in product_lines(CHECKED, lambda rel: rel in CHECKED_DEFS or os.path.basename(rel).startswith("tests_")):
         yield f"{rel}:{n}: osis_crdt::Checked built outside the engine's apply::checked (notes/engine-paged.md, Checked once)"
     # within the engine's file, the one helper
-    n = sum(len(CHECKED.findall(code(l))) for l in open(os.path.join(ROOT, "core/engine/src/apply/mod.rs")))
+    n = len(CHECKED.findall(code_of(os.path.join(ROOT, "core/engine/src/apply/mod.rs"))))
     if n != 1:
         yield f"core/engine/src/apply/mod.rs: {n} Checked::verified uses, want 1 (apply::checked)"
 
 def known_failures():
     names, bad = gate_failures.known(ROOT)
     yield from bad
-    sim = open(os.path.join(ROOT, "core/test/sim/src/scenarios.rs")).read()
-    rs = None
+    sim = read(os.path.join(ROOT, "core/test/sim/src/scenarios.rs"))
+    fns = None
     for name in names:
         if name.startswith("sim-sweep:"):
             if f'"{name.split(":", 1)[1]}"' not in sim:
                 yield f"{gate_failures.KNOWN}: {name}: no such sim scenario"
             continue
-        if rs is None:
-            rs = "\n".join(open(f, errors="replace").read() for m in members for f in glob.glob(os.path.join(m, "**/*.rs"), recursive=True))
-        if not re.search(rf"\bfn {re.escape(name.split('::')[-1])}\b", rs):
+        if fns is None:  # `\bfn`, its `\b` after the literal for speed (`has`)
+            fns = {f for m in members for p in rs_files(m, members) for f in re.findall(r"fn(?<!\wfn) (\w+)", read(p))}
+        if name.split("::")[-1] not in fns:
             yield f"{gate_failures.KNOWN}: {name}: no such test"
 
 # issues/deprecated-terms.md (Tess): a thing is destroyed (released, purged or expired), never
@@ -356,11 +387,19 @@ ENDED_NAMES = re.compile(
     r"|\b(ended|ending) by (purge|release|expiry)\b|\bthe ending (travels|falls|fell|stands|keeps)\b|\bfn end\(&mut self, tid\b"
     r"|\bmod end\b|::end::|\bfn ended\(&self, \w+: &Tid\)|\bended\(&?(?!self\))[A-Za-z_][\w.]*(\(\))?\)")
 
+# Every match holds one of these: only lines holding one are searched (a whole-text search is slow).
+END_HINT = re.compile(r"end|End|END")
+
 def ended_names():
     for path, rel in walk(CODE_TOPS + ("schema", "tools"), (".rs", ".tla", ".cfg", ".osis", ".sh")):
-        for n, line in enumerate(open(path, errors="replace"), 1):
-            m = ENDED_NAMES.search(line)
+        text, last = read(path), -1
+        for h in END_HINT.finditer(text):
+            if h.start() <= last:
+                continue
+            a, last = text.rfind("\n", 0, h.start()) + 1, text.find("\n", h.start()) % (len(text) + 1)
+            m = ENDED_NAMES.search(text[a:last])
             if m:
+                n = text.count("\n", 0, a) + 1
                 yield f"{rel}:{n}: `{m.group(0)}`: a thing is destroyed, not ended (issues/deprecated-terms.md)"
 
 errs.extend(doc_refs.check())
