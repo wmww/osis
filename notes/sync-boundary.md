@@ -183,17 +183,24 @@ impl Unread {
 }
 ```
 The engine values are whole maps: each is read through one `Effects` key and diffed on change into per-key stamped maps, and one `Effects` key per S reads those and the store's path of S, so a head move, box or notice judges its own S only (counted at n and 10n); the diff costs the map's size per change of it, which per-key facade values (a `Feed`) would remove. Until the facade's `sync_set` is built, `settle` does nothing. `impl Sources for Streams` answers false until streams builds `known`, so until then a node keeping S unread with own entries never leaves an unlisted S; streams makes tests/it/unread.rs `leaves_once_own_entries_held_at_a_source` hold on a real source. The facade's `RemovalNotice::recipient` is the blob's AD recipient, never a payload value: the removal signature binds it, so a notice to another recipient re-sealed here verifies nowhere.
-**6. `streams`: streams and flow control** (spec/sync-streams.md §3-§6). State: per connection and member the cursor, joins, `seq`, owed bodies, fetches in flight, reports; `known` per source and S (durable in the record for a peer with one). Depends on session, store, opens (members), engine (`open_entry`, `wants`).
+**6. `streams`: streams and flow control** (spec/sync-streams.md §3-§6). Both sides serve (`serve.rs`: Pulls from the log filtered by the shared set now, pages by `max_reply`, joins in pages, ephemeral listings, pushes under `follow` with `seq`, Fetches, reported positions) and pull (`pull.rs`: one Pull out, received vs stored cursors, joins by generation, messages in hand applied in order once their bodies settle, gaps read again, bodies one source at a time in fill order, Full and Refused at a node keeping S unread). State: per connection serve and pull state; per source (`store::Source`: record, else connection) a `Place` (stored cursor, members at the stream, joins in pages, where members stopped); `Known` (stamped per (source, S, blob), per (S, blob) for `present`, per (source, S) for listing; heads, full, refusals per source). Not built: durability (in memory keyed by record, as opens' records), relay-only entries, the engine's `wants`, bundles, `Rank::Never` (the facade has no call for a keyset without history).
 ```rust
 impl Streams {
-    pub fn moved(&mut self, cx: &mut Cx, sessions: &mut Sessions, m: Moved);   // a join due, or a stream stopped where it stands
-    pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, conn: ConnId, m: Incoming);  // Pull, PullReply, Stream, Applied, Fetch
-    pub fn known(&self, conn: ConnId, s: &SyncId) -> &Known;   // what that source's stream showed
+    pub fn moved(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, m: Moved, reported: &mut Vec<Reported>);
+    pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, conn: ConnId, m: Incoming, reported: &mut Vec<Reported>);
+    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, reported: &mut Vec<Reported>) -> Result<bool>;
+    pub fn closed(&mut self, conn: ConnId);                     // the driver, before opens reports the members left
+    pub fn known(&self) -> &Known;                               // knows(src, s, b), present(s, b), list(src, s), head, full, refusal
+    pub fn knows(&self, src: Source, conn: Option<ConnId>, s: &SyncId, b: &BlobId) -> bool;   // durable by record, ephemeral by the connection
     pub fn caught_up(&self, conn: ConnId, s: &SyncId) -> bool;
-    pub fn import(&mut self, cx: &mut Cx, bundle: &mut dyn std::io::Read) -> Result<()>;  // a source with no cursor
-    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens) -> Result<bool>;
+    pub fn reported(&self, conn: ConnId, s: &SyncId) -> Option<Position>;
+    pub fn import(&mut self, cx: &mut Cx, bundle: &mut dyn std::io::Read) -> Result<()>;   // NotBuilt
 }
+impl unread::Sources for Streams   // present(s, b): some source's stream showed it
+pub enum Reported { Stream(ConnId, Position, Cursor), Member(ConnId, SyncId, Option<(Position, Cursor)>), Merged(ConnId, SyncId) }   // to opens
+pub enum Rejoin { Held, From(Option<Cursor>) }   // opens' word on a rejoin: a Lost's cursor, or none after a digest difference
 ```
+The core runs over `streams::Ctx { store, ground: &mut dyn Ground, wire: &mut dyn Wire, shared: &dyn Shared, now, reported }` (`Ground`: `open`, `rank` from the engine; `Wire`: Sessions; `Shared`: opens' `members`, `agreed`, `record`, `rejoin`), so tests run two sides over real stores with scripted opens and engine (core/sync/tests/it/streams.rs). Reported positions are compact so an Applied costs O(1), not O(members): opens keeps the stream's position and each joining member's own.
 **7. `inbox`: inbox, deposits, steps and Register** (spec/sync-inbox.md, spec/sync-ids.md §6 Steps and Register). Parts: `deliveries` (inbox blobs owed: logged stamped by a writer of the inbox, else deposited and offered; sealed again at the blob's expiry, a timer per delivery, or when the inbox moved; stopped once seen taken, by the engine's commit sign or an open of a named sync ID with the recipient proven), `offers` (Deposit items: one out per connection, refused for now backed off, one taken ends the others' back-off at that peer and S, 14 parked until the deposit key moves or the next filter), `held` (every entry through the store's entry feed: inbox blobs taken and stamped in place, deposits promoted, own deposits offered to store sources, clearing past `DEPOSITS_WAITING`), `register` (recorded steps after a store source's step, each once its stream showed the step's role commits), `serve` (Register, Delete, Stranded, Suspect), `links` (redeem kept durably until the join is held elsewhere). Durable: store rows `I/d/` (per delivery the blob sent and the open seen) and `I/r/` (links being redeemed, shredded). Seams: `inbox::Ground` (the engine calls it makes; `Eng` the product's) and `inbox::Net` (sessions, opens, streams; `Links` the product's), so tests/it/inbox.rs runs it on fakes over a real store.
 ```rust
 impl Inbox {

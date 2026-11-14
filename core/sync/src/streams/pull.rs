@@ -322,7 +322,7 @@ impl Streams {
                     }
                 }
                 // not shared there (SN_joinans): out of the stream, joined again later
-                Some(None) if !r.whole => {
+                Some(None) => {
                     if ours {
                         p.joins.remove(s);
                         if members.contains_key(s) {
@@ -687,7 +687,7 @@ impl Streams {
         if let Some(r) = &batch.reply {
             if r.whole {
                 // every member from the start: each at the stream now
-                for s in &members {
+                for s in members.iter().filter(|s| !matches!(r.joins.get(s), Some(None))) {
                     place.at_stream.insert(*s);
                     place.joining.remove(s);
                     place.stopped.remove(s);

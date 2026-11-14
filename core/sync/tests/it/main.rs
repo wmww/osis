@@ -8,4 +8,5 @@ mod read;
 mod unread;
 mod store;
 mod opens;
+mod streams;
 mod world;

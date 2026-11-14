@@ -211,9 +211,13 @@ impl Streams {
                 }
             }
         } else {
+            // joins ignored, but one of a member not shared here is still answered so
             let serve = self.serve.entry(conn).or_default();
             for (s, ..) in &p.joins {
                 serve.own.remove(s);
+                if !members.contains_key(s) {
+                    reply_joins.push((*s, None));
+                }
             }
         }
         self.ephemeral(ctx, conn, &mut page, &members)?;

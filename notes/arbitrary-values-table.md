@@ -129,6 +129,16 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | `ENTRY_OVERHEAD` 256 B, `TOMB_OVERHEAD` 128 B | M (caps approximate by this per row) | rows count nothing / nothing fits |
 | store `PAGE` 256 (rows a sweep or give-way pass handles per settle round) | P | no progress / one transaction holds the sweep |
 
+### Streams (`sync/src/streams/`)
+| value | class | 0 / ∞ |
+|---|---|---|
+| `INLINE_LIMIT` 16 KiB (bytes a requester lets a server inline while a member has one source) | P | every body a Fetch round trip / whole blobs inline, again from each source once a second joins |
+| `PENDING_CAP` 64 (messages in hand per connection awaiting bodies) | R (a push past it is dropped and read again) | every push read again / announcements held without bound |
+| `FETCHES_OUT` 2 (Fetches out per connection) | P | nothing fetched / the window alone bounds them |
+| streams `RESYNC_MS` 30 s (a refused Pull or join tried again) | M | a refusing peer loops at link speed / one refusal stops the stream for good |
+| `ASKED_MS` = `STALL_TIMEOUT_MS` (a blob asked at one source before another is asked too) | M (spec: the Stall rule's wait) | every source asked at once / one silent source holds the body |
+| serve `CHUNK` 256 (log events read at a time while paging), `OVERHEAD` 512 B, `JOIN_LEN` 300 B (reply bytes kept aside) | P / M (a reply ends a little short of `max_reply`) | no progress / one read holds the log |
+
 ### Engine, keys, perm, crdt, store, schema
 | value | class | 0 / ∞ |
 |---|---|---|
