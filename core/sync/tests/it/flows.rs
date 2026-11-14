@@ -628,3 +628,35 @@ fn own_secrets_keep_a_reader_of_the_first_admin_reading_spec_perm_3() {
     // the rotation's delivery to G's inbox, which node 0 reads, ends once logged: owed neither twice nor for good
     assert!(w.engine(0).deliveries().unwrap().is_empty(), "nothing owed: {:?}", w.engine(0).deliveries().unwrap());
 }
+
+// spec/sync-inbox.md §5 (Grant copy), §2 (Re-send): node 0 grants account 1 read on a thing;
+// node 1 takes it and logs a grant copy under its D's home; node 2, account 1's second node, is
+// away until the inbox blob expired and node 0 is gone: it learns the grant from the copy alone
+// and lists the invitation.
+#[test]
+fn an_accounts_node_away_past_inbox_lifetime_gets_the_grant_spec_sync_inbox_5() {
+    let mut w = contacts();
+    let n2 = w.pair(1);
+    w.run();
+    w.power_off(n2);
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let t = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a0);
+        m.set(t, &Ak::new("u:v.0").unwrap(), &Value::Str("x".into())).unwrap();
+        e.commit(m).unwrap();
+        t
+    });
+    file(&mut w, 0, vec![t], Vec::new());
+    w.write(0, |e| e.grant(&t, &a1, &edge(Role::Read))).unwrap();
+    w.run();
+    let invited = |w: &mut World, i: usize| w.engine(i).invitations().unwrap().iter().any(|x| x.thing == t && x.role == Role::Read);
+    assert!(invited(&mut w, 1), "node 1 took the grant");
+    w.power_off(0);
+    w.power_off(1);
+    w.advance(osis_base::format::INBOX_LIFETIME_MS + 3 * osis_base::format::MAX_DRIFT_MS);
+    w.power_on(1);
+    w.power_on(n2);
+    w.run();
+    assert!(invited(&mut w, n2), "node 2 lists the grant from node 1's copy");
+}

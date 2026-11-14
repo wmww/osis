@@ -517,6 +517,35 @@ impl World {
         i
     }
 
+    /// A new node paired as a second node of node `i`'s account, as the product's pairing does
+    /// (`Engine::pair`, `Engine::paired`): its card handed to node `i` and what node `i` sends
+    /// handed back, outside sync; then placed, listening and published as `add_node`'s.
+    pub fn pair(&mut self, i: usize) -> usize {
+        let (account, profile) = (self.node(i).account.expect("an account"), self.node(i).profile);
+        let n = self.add_bare_node();
+        let new = self.engine(n).tid();
+        let card: Vec<osis_engine::local_peer::Package> = { let e = self.engine(n); e.commit_ids().iter().filter_map(|c| e.package(c).ok().flatten()).collect() };
+        let sent = self.write(i, |e| {
+            for pk in &card {
+                e.ingest_with_lists(&pk.bytes, pk.blobs.clone(), None, &pk.lists).expect("the new node's card");
+            }
+            let (_, send) = e.pair(&new).expect("pair");
+            send.iter().filter_map(|c| e.package(c).ok().flatten()).collect::<Vec<_>>()
+        });
+        self.write(n, |e| {
+            for pk in &sent {
+                e.ingest_with_lists(&pk.bytes, pk.blobs.clone(), None, &pk.lists).expect("pairing's commits");
+            }
+            e.paired(&account).expect("paired");
+        });
+        if let Some(x) = self.nodes.get_mut(n) {
+            x.account = Some(account);
+            x.profile = profile;
+        }
+        self.publish(n);
+        n
+    }
+
     /// Node `i` publishes its address as it listens (`Engine::publish_reach`: its `reach.0` and
     /// its profile's dial list entry), as the product's `listen` does; then it is stepped.
     pub fn publish(&mut self, i: usize) {

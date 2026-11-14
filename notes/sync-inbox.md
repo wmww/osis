@@ -11,6 +11,8 @@ Spec: spec/sync-inbox.md, spec/sync-ids.md §6 Steps and Register, spec/wire.md 
 - `serve`: Register and Delete (taken by the store's rules), Stranded and Suspect (answered Ok).
 - `links`: first contact by link, redeemer's side (links.rs module doc): kept durably until the join is held at a source; meanwhile followed in the engine (`Engine::follow_link`: L held and K's sync ID in the sync set from the link text, only while K is unknown here or no other thing owns that sync ID, `labeling::actors::followable`); the join is written once `Engine::redeemable` (K listed alive on the target's roster, L on K's, and K's keyset held: K's sync ID brings L's grant before the keyset, which is wrapped under the epoch it supersedes and fetched last); forgotten once the join is held or the link ended (`Engine::link_ended`).
 
+Grant copies (spec/sync-inbox.md §5) are no part of this module: the engine lists them among the inbox's certificates (notes/sync-facade.md, Certificate bodies) and read logs them as any certificate.
+
 `dial_hints` (granting nodes of inbox blobs held, sharer nodes of links being redeemed) are the driver's dial candidates; `may_deposit(conn)` keeps a dialed connection open while a deposit to it may land.
 
 ## Taking inbox blobs

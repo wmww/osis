@@ -23,7 +23,7 @@
 ## 2. Required set and judgement
 S's **required set** is its closure blobs (§1) plus what is logged there beside them:
 - the certificate blobs of spec/permissions.md §4, judged by the deltas a blob holds, whatever else its commit writes, a list blob by its thing lists, a record blob by its records (never must-not-hold but under an emptied sync ID, below: no delete key covers it); a header-only copy of a minting its thing's witness supersedes, by spec/commits.md §5 (A thing's mintings travel with its record); a destroyed thing's certificates (its frozen edges and requests' parts outside the closure, header-only copies of its mintings and requests anywhere) by the sync ID's things needing it (spec/commits.md §5 Destruction);
-- the grantee's certificate copies and cross-published `sync.0` commits (§1; spec/sync-inbox.md §5);
+- under an actor's inbox, its grant copies (spec/sync-inbox.md §5); cross-published `sync.0` commits (§1);
 - unexpired inbox blobs.
 
 Per node, a body it holds is **must-hold**, **must-not-hold** or **may-hold** at a sync ID. A body meeting a must-not-hold condition is must-not-hold whatever else holds of it.
