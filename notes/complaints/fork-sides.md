@@ -7,3 +7,6 @@
 - Review: the outsider bug's engine half needed `tools/bin-at --patch` builds of main (4 min each); a review that checks "pre-existing on main" twice spends ~10 min building.
 - Review: `tools/heavy` waits silently behind other agents' locked runs; a 3000-world epochs probe sat queued while two other model runs held it.
 - Review: the gate's properties stage has no hung-test watch: a property made slow by a model change ran an hour until stopped by hand.
+- A mutation script that deletes a block (replacement "") cannot restore it (the reverse find of "" fails): the deleted check stayed out through two later mutation runs, which then passed for the wrong reason. Mutate by guarding (`false &&`), never by deleting.
+- A perm test binary copied by `ls -t target/debug/deps/it-*` can be another crate's `it`: check the test name ran.
+- `tools/heavy` queues behind other agents' runs silently; a 5-run model batch waited 15+ min before starting.
