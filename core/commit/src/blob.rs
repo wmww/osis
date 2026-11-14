@@ -197,7 +197,7 @@ fn decode_parts(pv: Item) -> Result<Vec<Part>, Error> {
     Ok(parts)
 }
 
-/// One section of a commit blob `[[ai*], [chain*], wrap, ciphertext]` (spec/wire.md §4): the
+/// One section of a commit blob `[[ai+], [chain*], wrap, ciphertext]` (spec/wire.md §4): the
 /// aspect indices of its parts (ascending, distinct, each with a part inside), the derivation chain
 /// of their thing up to the actor its read secret derives from (a reader derives the secret
 /// through it without the thing's record), the section key wrapped under that read secret,
