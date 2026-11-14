@@ -412,7 +412,7 @@ pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId,
         false => None,
     };
     if f.is_some() {
-        at_source(g, mine, &mut t, &src, &seen, s, c, &verdict, head, creds, writer)?;
+        at_source(g, mine, &mut t, &src, &seen, s, c, &verdict, head, creds, writer, f.as_ref().is_some_and(|f| f.role))?;
     }
     if keys.is_some_and(|k| k.delete.is_some()) && !seen.present.is_empty() {
         deletes(g, mine, &mut t, &src, &seen, s, c, f.as_ref(), &verdict, head, creds)?;
@@ -510,7 +510,7 @@ fn duplicates(g: &mut impl Ground, seen: &Seen, copy_body: bool) -> Result<Vec<B
 
 /// A must-hold body the source lacks (§3 Reader that is not a writer; §4 Logged again once).
 #[allow(clippy::too_many_arguments)]
-fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen: &Seen, s: &SyncId, c: &CommitId, verdict: &Verdict, head: StepId, creds: &ReadCredentials, writer: bool) -> Result<()> {
+fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen: &Seen, s: &SyncId, c: &CommitId, verdict: &Verdict, head: StepId, creds: &ReadCredentials, writer: bool, role: bool) -> Result<()> {
     // what the source holds of it carries the body (§3 Neither): nothing to relay
     if *verdict != Verdict::Must || (!seen.present.is_empty() && g.neither(s, c, &seen.present)?) {
         return Ok(());
@@ -520,8 +520,10 @@ fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, se
         // a writer's own store is pulled; a non-writer gives it, but not to a source on an
         // earlier step of the recorded path: the path is registered there first (spec/sync-ids.md
         // §6 Steps), and what this node holds stamped under a later step is taken as it is
-        // once the source stands there
-        let behind = creds.head.as_ref().is_some_and(|h| h.id() != head) && creds.keys.contains_key(&head);
+        // once the source stands there. A role commit goes there all the same: registering
+        // waits on the source holding the ones the step depends on, and a copy stamped under
+        // its head may be held nowhere
+        let behind = !role && creds.head.as_ref().is_some_and(|h| h.id() != head) && creds.keys.contains_key(&head);
         if !writer && !behind {
             t.acts.insert(Act::Deposit { at: src.at, conn: src.conn, blob: e.blob });
         }

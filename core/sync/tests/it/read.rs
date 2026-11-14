@@ -1181,6 +1181,23 @@ fn a_non_writer_deposits_nothing_at_a_source_behind_its_head_spec_sync_judgement
     assert!(w.g.sent.contains(&Sent::Deposit(KC, b)), "{:?}", w.g.sent);
 }
 
+// spec/sync-ids.md §6 (Steps: registering waits on the source holding the role commits the step
+// depends on; Taking a stamped entry: one under a superseded write key goes as a deposit): a
+// non-writer at step 1 gives K, standing at step 0, a role commit it holds unstamped, so the
+// registration it waits on can pass.
+#[test]
+fn a_non_writer_deposits_a_role_commit_at_a_source_behind_its_head_spec_sync_ids_6() {
+    let mut w = W::new();
+    w.pulls = false;
+    w.g.creds.insert(S, creds(1, false, false));
+    let mut f = uncovered();
+    f.role = true;
+    w.hold(cid(1), &[S], f);
+    w.settle();
+    let b = w.own_blobs(S, cid(1))[0];
+    assert!(w.g.sent.contains(&Sent::Deposit(KC, b)), "{:?}", w.g.sent);
+}
+
 // spec/sync-compaction.md §1 (duplicates): of two entries of one body at K the delete-key holder
 // deletes the higher blob ID.
 #[test]
