@@ -297,7 +297,8 @@ impl Engine {
     /// mintings; below read, nothing more (a sync holder learns none of them, spec/sync-ids.md
     /// §2). Nothing for a commit not applied here. One per (actor, thing), read from `t`'s edges
     /// alone (`Timelines::on`): a newer write replaces it, and the older copy leaves the required
-    /// set.
+    /// set. Nothing unless its author held write on `a` at its `ts` (`posts_to`): a reader's grant
+    /// to `a` reaches `a`'s holders by its inbox blob alone.
     pub fn grant_copy(&mut self, a: &Tid, t: &Tid) -> Certs {
         let mut out = Certs::default();
         // the newest applied edge write naming `a` on `t`, and whether `a` read `t` just before it
@@ -307,7 +308,7 @@ impl Engine {
         }) else {
             return out;
         };
-        if self.core.ix.pending.contains_key(&c) || !self.core.ix.commits.contains_key(&c) {
+        if self.core.ix.pending.contains_key(&c) || !self.core.ix.commits.contains_key(&c) || !self.posts_to(&c, a) {
             return out;
         }
         let on = BTreeSet::from([*t]);
@@ -345,6 +346,13 @@ impl Engine {
         }
         out.records.retain(|x| self.core.created(x).is_some());
         out
+    }
+
+    /// Whether commit `c` may post into actor `a`'s space (spec/requirements.md: posting into a
+    /// shared space needs write on its actor): its author held write on `a` at `c`'s `ts`, as this
+    /// node judges it, as promotion judges its author (spec/sync-inbox.md §4).
+    fn posts_to(&self, c: &CommitId, a: &Tid) -> bool {
+        self.header(c).is_some_and(|h| crate::engine::write::role_of(&self.core, &h.author, a, h.ts) >= Some(osis_base::Role::Write))
     }
 
     /// The author's chain an inbox blob of commit `c` carries for its `parts` (spec/wire.md §9

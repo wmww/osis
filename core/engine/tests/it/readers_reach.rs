@@ -67,12 +67,6 @@ fn a_readers_minted_key_actors_cards_are_not_kept_spec_sync_inbox_4() {
     }
 }
 
-/// Peer 1 makes a thing of its own and grants `g` read on it: the grant commit.
-fn share_with(lp: &mut LocalPeer, g: Tid, me: Tid) -> osis_base::CommitId {
-    let t = thing_of(lp, 1, me);
-    *lp.peers[1].engine.grant(&t, &g, &edge_of(Role::Read)).unwrap().commits.last().unwrap()
-}
-
 // spec/sync-inbox.md §4 (Promotion: only for parts whose author held write on S's actor at the
 // commit's `ts`): reader peer 1 of group g grants g read on things it makes. At writer peer 0,
 // holding the grants, none is promotable under g's sync ID: a reader's deposit of its own grant
@@ -80,29 +74,36 @@ fn share_with(lp: &mut LocalPeer, g: Tid, me: Tid) -> osis_base::CommitId {
 #[test]
 fn a_readers_grant_to_the_group_is_not_promoted_spec_sync_inbox_4() {
     let (mut lp, g, s, me) = member_of_a_group(Role::Read);
-    let grants: Vec<_> = (0..2).map(|_| share_with(&mut lp, g, me)).collect();
+    let grants: Vec<_> = (0..2).map(|_| share_with(&mut lp, 1, g, me)).collect();
     spread(&mut lp);
     for c in &grants {
         assert_eq!(lp.peers[0].engine.promotable(&s, c).unwrap(), Promote::Never);
     }
 }
 
-// spec/requirements.md (a reader's changes within a small budget), spec/sync-inbox.md §5 (Grant copy:
-// g's inbox holds, for each thing an edge write names g on, g's grant copy): reader peer 1
-// of group g mints `DEPOSITS_WAITING + 8` things and grants g read on each. What g's sync ID must
-// hold of those grants at writer peer 0 should stay within the deposit budget. Fails: each grant
-// is g's grant copy for its thing, in the sync ID's required set, so a writer logs it stamped
-// (issues/promotion-readers-grants-to-the-group.md).
+/// Peer `i` makes a thing of its own and grants `g` read on it: the grant commit.
+fn share_with(lp: &mut LocalPeer, i: usize, g: Tid, me: Tid) -> osis_base::CommitId {
+    let t = thing_of(lp, i, me);
+    *lp.peers[i].engine.grant(&t, &g, &edge_of(Role::Read)).unwrap().commits.last().unwrap()
+}
+
+// spec/sync-inbox.md §5 (Grant copy: only an edge write whose author held write on the actor at its
+// `ts`), spec/requirements.md (posting into a shared space needs write on its actor): reader peer
+// 1 of group g mints `DEPOSITS_WAITING + 8` things and grants g read on each; writer peer 0 shares
+// one of its own. At peer 0, none of the reader's grants is held under g's sync ID (a reader cannot
+// make g's writers keep what it mints), the writer's is.
 #[test]
-#[ignore = "issues/promotion-readers-grants-to-the-group.md"]
-fn a_readers_grants_to_the_group_stay_within_the_budget_spec_sync_inbox_5() {
+fn a_readers_grants_to_the_group_are_no_grant_copies_spec_sync_inbox_5() {
     let (mut lp, g, s, me) = member_of_a_group(Role::Read);
     let n = osis_base::format::DEPOSITS_WAITING + 8;
-    let grants: Vec<_> = (0..n).map(|_| share_with(&mut lp, g, me)).collect();
+    let grants: Vec<_> = (0..n).map(|_| share_with(&mut lp, 1, g, me)).collect();
+    let writer = lp.peers[0].engine.account().unwrap().unwrap().0;
+    let ours = share_with(&mut lp, 0, g, writer);
     spread(&mut lp);
     let e = &mut lp.peers[0].engine;
     let held = grants.iter().filter(|c| e.sync_bodies(c).unwrap().contains_key(&s)).count();
-    assert!(held <= osis_base::format::DEPOSITS_WAITING, "{held} of {n} grants held under g's sync ID");
+    assert_eq!(held, 0, "{held} of {n} reader grants held under g's sync ID");
+    assert!(e.sync_bodies(&ours).unwrap().contains_key(&s), "the writer's grant is g's grant copy");
 }
 
 // spec/crypto.md §3 (deposit seed: a fresh one in each rotation), §5 (who wraps under what: a
