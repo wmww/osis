@@ -63,7 +63,7 @@ pub struct Config {
     pub dial: Vec<Address>,
     /// Sync directly with other nodes that read the same data (default on): this node listens,
     /// tells them how to reach it and relays for them, and finds nodes on its local network (`lan`).
-    /// Turn it off to sync only with the peers it is given.
+    /// Turn it off to sync only with the nodes in `dial`.
     pub direct_sync: bool,
     /// Nodes that relay for this one, which it tells those nodes it can be reached through: each
     /// `peer://<ip>:<port>#<key>`, a node listening there with that key (any other form is
@@ -185,9 +185,6 @@ pub(crate) struct Inner {
     pub store_dir: Option<std::path::PathBuf>,
     /// Futures waiting on sync (`wait_synced`, `redeem`): polled again after each step.
     pub waiters: Mutex<Vec<std::task::Waker>>,
-    /// Client port requests taken from sync, served off the lock (`port::serve`).
-    pub port_in: Mutex<std::collections::VecDeque<osis_sync::PortEvent>>,
-    pub port_busy: std::sync::atomic::AtomicBool,
     /// User handles and whether the store closed (the last field: it drops after `eng`).
     pub life: LifeGuard,
 }
@@ -658,8 +655,6 @@ impl Osis {
             relays: cfg.relays.iter().filter_map(Address::relay_item).collect(),
             store_dir,
             waiters: Mutex::new(Vec::new()),
-            port_in: Mutex::new(Default::default()),
-            port_busy: Default::default(),
             life: LifeGuard(Arc::default()),
         });
         inner.dispatch.start(Arc::downgrade(&inner))?;
@@ -750,8 +745,7 @@ impl ReadOnly {
 
     /// Runs `f` under the node lock. A write in it steps sync (`Input::Wrote`); what sync steps
     /// give is carried out (`Net::carry`), the engine's events go to the dispatcher, and once
-    /// the lock is released the futures waiting on sync are polled again and the client port's
-    /// requests served.
+    /// the lock is released the futures waiting on sync are polled again.
     pub(crate) fn locked<R>(&self, f: impl FnOnce(&mut Locked) -> R) -> R {
         let mut g = lock(&self.inner.eng);
         let holder = &self.inner.dispatch.shared.holder;
@@ -762,8 +756,9 @@ impl ReadOnly {
             g.wake = None;
             g.handle(osis_sync::Input::Tick { now: at.max(self.inner.clock.now_wall_ms()) });
         }
-        expire_due(g.engine());
+        // an expiry's commit is a write sync hears of, as any other
         let before = g.engine().store_writes().committed;
+        expire_due(g.engine());
         let stepped = g.stepped;
         let r = f(&mut g);
         lifetimes(g.engine());
@@ -772,7 +767,6 @@ impl ReadOnly {
         }
         self.inner.net.carry(&mut g);
         let stepped = g.stepped;
-        let port = g.node.port();
         self.drain(&mut g);
         if stepped && self.inner.dispatch.status_listened() {
             g.seq += 1;
@@ -786,22 +780,23 @@ impl ReadOnly {
                 w.wake();
             }
         }
-        if !port.is_empty() {
-            lock(&self.inner.port_in).extend(port);
-        }
-        crate::port::serve(self);
         r
     }
 
-    /// One sync step on `input` from the node's links; `main`: a connection over the unix
-    /// transport coming up (a main session's, spec/sync-transport.md §6).
+    /// One sync step on `input` from the node's links (`main`: a connection over the unix
+    /// transport coming up, a main session's, spec/sync-transport.md §6), then the client
+    /// port's requests served in order, off the lock. Only the one loop feeding the node's
+    /// inputs calls it, so no API call ever runs a client's request, and requests are served one
+    /// at a time. A request from a step another call made waits for the next step here.
     pub(crate) fn step(&self, input: osis_sync::Input, main: bool) {
-        self.locked(|l| {
+        let port = self.locked(|l| {
             if let (true, osis_sync::Input::Up { conn, .. }) = (main, &input) {
                 l.port.main(*conn);
             }
-            l.handle(input)
-        })
+            l.handle(input);
+            l.node.port()
+        });
+        crate::port::serve(&self.inner, port);
     }
 
     /// Queues the engine's events for the dispatcher.

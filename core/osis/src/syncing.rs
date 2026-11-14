@@ -46,7 +46,7 @@ pub struct GroupSync {
 pub struct Status {
     /// Sync connections up now, whichever side dialed.
     pub connected: usize,
-    /// How each thing with a sync ID here stands (any thing is a group of itself).
+    /// How each thing with a sync ID here stands.
     pub groups: BTreeMap<Tid, GroupSync>,
 }
 
@@ -134,7 +134,7 @@ impl Osis {
     /// connected node with it open caught up both ways, none of them full or refusing it left
     /// waited for) and each commit of this node's on it held elsewhere, and in `All` and
     /// `Deliveries` every delivery taken. It never resolves while nobody is connected; with no
-    /// network (`Runtime::None`) it fails `Network`; `Unsynced` when it can never be done.
+    /// network (`Runtime::None`) it fails `Network`.
     pub async fn wait_synced(&self, scope: SyncScope) -> Result<()> {
         let s = match scope {
             SyncScope::All => osis_sync::types::Scope::All,
@@ -144,10 +144,9 @@ impl Osis {
         self.waiting(move |db| match db.locked(|l| l.node.wait(s)) {
             osis_sync::types::Waiting::Done => Some(Ok(())),
             osis_sync::types::Waiting::Pending => None,
-            osis_sync::types::Waiting::Never(_) => Some(Err(Error::Unsynced { groups: match scope {
-                SyncScope::Thing(t) => vec![t],
-                _ => Vec::new(),
-            } })),
+            // spec/sync-status.md §3 has no wait sure never to end: sync's `Never` here is a part
+            // of it not built yet, never an answer about the thing
+            osis_sync::types::Waiting::Never(_) => Some(Err(Error::NotBuilt)),
         })
         .await
     }

@@ -11,13 +11,11 @@
 
 use crate::error::{Error, Result};
 use crate::handle::ReadOnly;
-use crate::watch::lock;
 use osis_base::{Tid, Value};
 use osis_proto::api::{ApiCode, Outcome};
 use osis_proto::{Code, Msg};
 use osis_sync::{ConnId, PortEvent};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::Ordering;
 
 /// The method table (notes/client-port.md §2), as far as it is built.
 pub mod method {
@@ -54,30 +52,23 @@ impl Port {
     }
 }
 
-/// Serves the client port's requests taken from sync, in order, on one thread at a time (a
-/// call made while serving queues its own for this loop).
-pub(crate) fn serve(db: &ReadOnly) {
-    let inner = &db.inner;
-    loop {
-        if inner.port_busy.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        while let Some(ev) = lock(&inner.port_in).pop_front() {
-            match ev {
-                PortEvent::Closed(conn) => db.locked(|l| l.port.closed(conn)),
-                PortEvent::Request(conn, id, m) => {
-                    let answer = request(db, conn, *m);
-                    db.locked(|l| {
-                        let o = l.node.port_answer(conn, id, answer);
-                        l.out.extend(o);
-                    });
-                }
+/// Serves the client port's requests one step took from sync, in order (`ReadOnly::step`), as
+/// the node's main handle, whatever handle stepped.
+pub(crate) fn serve(inner: &std::sync::Arc<crate::handle::Inner>, events: Vec<PortEvent>) {
+    if events.is_empty() {
+        return;
+    }
+    let db = crate::Osis::internal(inner.clone());
+    for ev in events {
+        match ev {
+            PortEvent::Closed(conn) => db.locked(|l| l.port.closed(conn)),
+            PortEvent::Request(conn, id, m) => {
+                let answer = request(&db, conn, *m);
+                db.locked(|l| {
+                    let o = l.node.port_answer(conn, id, answer);
+                    l.out.extend(o);
+                });
             }
-        }
-        inner.port_busy.store(false, Ordering::Release);
-        // a request queued after the last pop and before the flag fell is served now
-        if lock(&inner.port_in).is_empty() {
-            return;
         }
     }
 }

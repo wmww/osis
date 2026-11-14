@@ -424,7 +424,7 @@ fn real_node(seed: u64, key: [u8; 32]) -> osis_sync::Node {
 /// Node A, configured with B's address, dials B over `ta`/`tb` (B listening at `url`) through
 /// `TransportLinks`: the dial comes up and B's session answers (Hello, proofs, opens).
 async fn dial_up<T: osis_transport::Transport>(ta: T, tb: T, url: &str) {
-    use osis_sync::driver::links::{TransportLinks, run};
+    use osis_sync::driver::links::TransportLinks;
     use osis_transport::StaticSecret;
     let clock: Arc<dyn osis_base::Clock> = Arc::new(osis_base::SystemClock);
     let (sa, sb) = (StaticSecret::from_bytes([0xa1; 32]), StaticSecret::from_bytes([0xb2; 32]));
@@ -436,8 +436,14 @@ async fn dial_up<T: osis_transport::Transport>(ta: T, tb: T, url: &str) {
     let mut cfg = a.config().clone();
     cfg.dial = vec![addr_b.clone()];
     a.set_config(cfg);
+    // B steps on its links as the osis handle's driver does (core/osis/src/net.rs `drive`)
     let served = tokio::spawn(async move {
-        run(&mut b, &mut lb, tokio::time::sleep(Duration::from_secs(10))).await;
+        osis_sync::apply(b.handle(osis_sync::Input::Wrote), &mut lb);
+        loop {
+            let input = lb.next().await;
+            let out = osis_transport::link::blocking(|| b.handle(input));
+            osis_sync::apply(out, &mut lb);
+        }
     });
     let first = a.handle(osis_sync::Input::Wrote);
     osis_sync::apply(first, &mut la);

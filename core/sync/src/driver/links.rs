@@ -1,11 +1,11 @@
 //! The product's `Links` over osis-transport (tokio): dials, listeners, discovery, each link's
 //! bytes and what the transport took of them, and the node's one wake, all turned into `Input`s
-//! (`TransportLinks::next`); `run` steps a node on them. Sync above this never learns how a peer
+//! (`TransportLinks::next`); the node's owner steps it on them (the osis handle's driver task). Sync above this never learns how a peer
 //! is reached: a connection is its key, its rank and its bytes.
 
 use crate::session::STALL_TIMEOUT_MS;
 use crate::types::{ConnId, Input, NodeKey};
-use crate::{Links, Node, apply};
+use crate::Links;
 use osis_base::{Clock, WallMs};
 use osis_label::Address;
 use osis_transport::link::{self, Link, LinkTx};
@@ -250,21 +250,5 @@ impl<T: Transport> Links for TransportLinks<T> {
 
     fn wake(&mut self, at: WallMs) {
         self.wake = Some(at);
-    }
-}
-
-/// Steps `node` on `links` until `stop` resolves: each input handled (blocking work off the
-/// runtime's threads, `link::blocking`), its outputs applied.
-pub async fn run<T: Transport>(node: &mut Node, links: &mut TransportLinks<T>, stop: impl std::future::Future<Output = ()>) {
-    tokio::pin!(stop);
-    let first = link::blocking(|| node.handle(Input::Wrote));
-    apply(first, links);
-    loop {
-        let input = tokio::select! {
-            i = links.next() => i,
-            () = &mut stop => return,
-        };
-        let out = link::blocking(|| node.handle(input));
-        apply(out, links);
     }
 }

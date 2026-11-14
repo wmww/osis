@@ -61,8 +61,6 @@ impl Osis {
             relays: i.relays.clone(),
             store_dir: None,
             waiters: Mutex::new(Vec::new()),
-            port_in: Mutex::new(Default::default()),
-            port_busy: Default::default(),
             life: LifeGuard(Arc::default()),
         });
         inner.dispatch.start(Arc::downgrade(&inner))?;

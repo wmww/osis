@@ -145,6 +145,8 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn pair_offer(&self) -> Result<PairOffer> {
         let (me, home, node) = (self.me(), self.home(), self.node());
+        // every node of the account learns the profile from the offer it paired by
+        let profile = self.profile()?;
         let now = self.inner.clock.now_wall_ms().0;
         let secret = self.locked(|x| {
             let mut s = [0u8; 32];
@@ -153,7 +155,7 @@ impl Osis {
             x.offers.push((s, now.saturating_add(OFFER_LIFETIME_MS)));
             s
         });
-        Ok(PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::Tid(me), Value::Tid(home), Value::Tid(node), Value::Bytes(secret.to_vec())]))))
+        Ok(PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::Tid(me), Value::Tid(home), Value::Tid(node), Value::Tid(profile), Value::Bytes(secret.to_vec())]))))
     }
 
     /// Accepts a new node's request to an offer of this node: makes it an admin of the
@@ -200,9 +202,10 @@ impl Osis {
     pub fn pair(store: Store, offer: &PairOffer, cfg: Config) -> Result<Joining> {
         cfg.check()?;
         let items = offer.parse()?;
-        let [_, Value::Tid(account), Value::Tid(home), Value::Tid(_), Value::Bytes(secret)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing offer".into())) };
+        let [_, Value::Tid(account), Value::Tid(home), Value::Tid(_), Value::Tid(profile), Value::Bytes(secret)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing offer".into())) };
         let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| Error::Invalid("malformed pairing offer".into()))?;
-        let Fresh { engine, clock, sync } = fresh_engine(&store, &cfg)?;
+        let Fresh { mut engine, clock, sync } = fresh_engine(&store, &cfg)?;
+        engine.set_app_record(crate::handle::PROFILE, profile.as_bytes())?;
         let db = Osis::start(engine, sync, clock, store, &cfg, *account, *home, 0)?;
         let node = db.node();
         let pks = db.engine(|e| -> Result<Vec<Package>> {

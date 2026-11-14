@@ -787,10 +787,10 @@ impl Osis {
 
     /// This account's profile thing, made with the account: the target of its contact card. The
     /// account writes its profile aspects on it (`name.0`, `contact:*`); everyone holding the
-    /// card reads them. `Invalid` on a node that does not know it (one paired before its
-    /// creation reached it).
+    /// card reads them. Every node of the account knows it (a new node from its pairing
+    /// offer), though a node paired a moment ago may not hold the thing yet.
     pub fn profile(&self) -> Result<Tid> {
-        let b = self.engine(|e| e.app_record(crate::handle::PROFILE))?.ok_or_else(|| Error::Invalid("this node does not know the account's profile".into()))?;
+        let b = self.engine(|e| e.app_record(crate::handle::PROFILE))?.ok_or_else(|| Error::Storage("no profile record".into()))?;
         Ok(Tid::from_bytes(b.as_slice().try_into().map_err(|_| Error::Storage("profile record".into()))?))
     }
 
