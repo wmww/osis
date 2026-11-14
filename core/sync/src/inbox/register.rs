@@ -18,7 +18,7 @@
 //! source, this module's own progress there).
 
 use super::offers::backoff_ms;
-use super::{Here, Net, settled};
+use super::{Here, Net};
 use crate::session::RequestId;
 use crate::types::{ConnId, Result, SourceClass};
 use osis_base::memo::{Effects, Stamped};
@@ -104,7 +104,7 @@ impl Register {
         }
         for k in self.plans.due() {
             let (engine, progress) = (&mut *h.engine, &self.progress);
-            let Some((_, plan)) = settled(&mut self.plans, &k, Plan::Nothing, || judge(engine, &*net, progress, &k))? else { continue };
+            let Some((_, plan)) = self.plans.try_settle(&k, || judge(engine, &*net, progress, &k))? else { continue };
             let Plan::Send(step, claims) = plan else { continue };
             let (conn, s) = k;
             let source = net.head(conn, &s);

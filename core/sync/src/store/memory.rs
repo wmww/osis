@@ -48,8 +48,9 @@ pub(crate) struct Memory {
     /// Those rows by when they were written: they end after `TOMBSTONE_LIFETIME` as a record's do.
     pub conn_aging: BTreeSet<(WallMs, ConnRow)>,
     pub stamps: Stamps,
-    /// Every entry added, or whose wrap, stamp or deposited flag changed, durable or in memory:
-    /// a `Feed<(SyncId, BlobId)>` over it is a reader's cursor of entries to judge (inbox).
+    /// Every entry added, removed, or whose wrap, stamp or deposited flag changed, durable or in
+    /// memory: a `Feed<(SyncId, BlobId)>` over it is a reader's cursor of entries to judge
+    /// (inbox, the store's parked entries).
     pub fed: Stamps,
     /// Every sync ID shredded (`Store::shred`): a `Feed<SyncId>` over it tells the modules that
     /// keep S in memory per record (opens, streams) to drop it.
@@ -179,6 +180,7 @@ impl Memory {
                 self.event(s, b, Some(now));
                 self.aging.insert((now, *s, *b));
             }
+            self.fed.wrote_added(&(*s, *b), true, true);
             if let Some(set) = self.by_blob.get_mut(b) {
                 set.remove(s);
                 if set.is_empty() {

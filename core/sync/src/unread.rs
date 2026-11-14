@@ -182,7 +182,7 @@ impl Unread {
         let mut acted = false;
         if !self.closure.due().is_empty() {
             let engine = &mut *cx.engine;
-            if let Some((_, now)) = settled(&mut self.closure, &(), Arc::default(), || Ok(engine.sync_things()?))? {
+            if let Some((_, now)) = self.closure.try_settle(&(), || engine.sync_things())? {
                 let gone: Vec<Tid> = self.things.iter().filter(|t| !now.contains(*t)).copied().collect();
                 for t in gone {
                     self.things.remove(&t);
@@ -198,7 +198,7 @@ impl Unread {
         }
         for t in self.thing.due() {
             let engine = &mut *cx.engine;
-            let Some((_, now)) = settled(&mut self.thing, &t, ThingSync::Plain, || Ok(engine.thing_sync(&t)?))? else { continue };
+            let Some((_, now)) = self.thing.try_settle(&t, || engine.thing_sync(&t))? else { continue };
             acted |= self.thing_moved(cx, &t, &now)?;
         }
         for s in self.judged.due() {
@@ -207,7 +207,7 @@ impl Unread {
                 continue;
             };
             let listed = &self.listed;
-            let Some((_, now)) = settled(&mut self.judged, &s, Verdict::Leave, || judge_s(cx, sources, listed, &s, &thing))? else { continue };
+            let Some((_, now)) = self.judged.try_settle(&s, || judge_s(cx, sources, listed, &s, &thing))? else { continue };
             acted = true;
             match now {
                 Verdict::Keep(k) => {
@@ -268,23 +268,6 @@ impl Unread {
     }
 }
 
-/// Runs `f` in an `Effects` settle and hands back its error, keeping the key due.
-fn settled<K: std::hash::Hash + Eq + Clone, V: Clone + PartialEq>(fx: &mut Effects<K, V>, k: &K, fallback: V, f: impl FnOnce() -> Result<V>) -> Result<Option<(Option<V>, V)>> {
-    let mut failed = None;
-    let moved = fx.settle(k, || {
-        f().unwrap_or_else(|e| {
-            failed = Some(e);
-            fallback
-        })
-    });
-    if let Some(e) = failed {
-        fx.unwant(k);
-        fx.want(k.clone());
-        return Err(e);
-    }
-    Ok(moved)
-}
-
 /// One S's judgement, reading its own keys only.
 fn judge_s(cx: &mut Cx, sources: &impl Sources, listed: &Stamped<SyncId, Tid>, s: &SyncId, thing: &Tid) -> Result<Verdict> {
     let record = cx.engine.sync_record(thing)?;
@@ -293,4 +276,3 @@ fn judge_s(cx: &mut Cx, sources: &impl Sources, listed: &Stamped<SyncId, Tid>, s
     let own_elsewhere = !listed && cx.store.entries(s)?.into_iter().filter(|e| e.own).all(|e| sources.present(s, &e.blob));
     Ok(judge(&Judged { listed, record: record.as_deref(), steps: path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default(), own_elsewhere }))
 }
-

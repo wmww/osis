@@ -215,6 +215,7 @@ pub(crate) fn remove(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
             t.remove_local(&rows::deposited_key(s, b), Shred::No)?;
         }
         t.remove_local(&rows::elsewhere_key(s, b), Shred::No)?;
+        env.mem.fed.wrote_added(&(*s, *b), true, true);
         charge(t, row, s, b, false)?;
         add_usage(t, env, s, |u| count(u, row, false))?;
         match how {

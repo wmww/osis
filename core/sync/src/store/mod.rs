@@ -478,8 +478,8 @@ impl Store {
         self.lock().read(|t, env| entries::bytes_len(t, env, b))
     }
 
-    /// A reader's cursor over the entries added from now on, or whose wrap, stamp or deposited
-    /// flag changed (`(S, blob)`, in order; one undone comes too and reads absent).
+    /// A reader's cursor over the entries added, removed (reading absent) or whose wrap, stamp
+    /// or deposited flag changed from now on (`(S, blob)`, in order).
     pub fn entry_feed(&self) -> osis_base::memo::Feed<(SyncId, BlobId)> {
         self.lock().mem.fed.feed()
     }

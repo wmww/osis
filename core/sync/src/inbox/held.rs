@@ -20,7 +20,7 @@
 //! again for S each time a deposit of S changed: O(S's deposits), which its deposit budget bounds.
 
 use super::offers::{Offers, Target};
-use super::{DialHint, Here, settled};
+use super::{DialHint, Here};
 use crate::store::Store;
 use crate::types::{Entry, Holding, Result};
 use osis_base::format::{DEPOSITS_WAITING, DEPOSITS_WAITING_BYTES, INBOX_LIFETIME_MS, MAX_DRIFT_MS};
@@ -94,7 +94,7 @@ impl Held {
         let mut acted = false;
         if !self.inbox_list.due().is_empty() {
             let engine = &mut *h.engine;
-            if let Some((_, now)) = settled(&mut self.inbox_list, &(), Arc::default(), || Ok(Arc::new(engine.inbox_actors().keys().copied().collect())))? {
+            if let Some((_, now)) = self.inbox_list.settle(&(), || Arc::new(engine.inbox_actors().keys().copied().collect())) {
                 let gone: Vec<SyncId> = self.inboxes.iter().filter(|s| !now.contains(*s)).copied().collect();
                 for s in gone {
                     self.inboxes.remove(&s);
@@ -120,7 +120,7 @@ impl Held {
             let now_ms = h.now;
             let moved = {
                 let (engine, store) = (&mut *h.engine, &*h.store);
-                settled(&mut self.judged, &k, Act::Gone, || judge(engine, store, inboxes, stamped, taken, now_ms, &k))?
+                self.judged.try_settle(&k, || judge(engine, store, inboxes, stamped, taken, now_ms, &k))?
             };
             let Some((was, now)) = moved else { continue };
             acted = true;

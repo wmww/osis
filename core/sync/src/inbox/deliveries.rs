@@ -14,7 +14,7 @@
 //! does not seal again. A row goes when its delivery ends or the engine owes it no more.
 
 use super::offers::{Offers, Target};
-use super::{Here, Net, own_entry, settled};
+use super::{Here, Net, own_entry};
 use crate::types::{ConnId, Credential, Result};
 use osis_base::format::INBOX_LIFETIME_MS;
 use osis_base::memo::{Effects, Feed, Stamped};
@@ -137,7 +137,7 @@ impl Deliveries {
         }
         for k in self.judged.due() {
             let (engine, seen) = (&mut *h.engine, &self.seen);
-            let Some((_, now)) = settled(&mut self.judged, &k, Want::Unreachable, || judge(engine, seen, &k))? else { continue };
+            let Some((_, now)) = self.judged.try_settle(&k, || judge(engine, seen, &k))? else { continue };
             acted = true;
             match now {
                 Want::Taken => {

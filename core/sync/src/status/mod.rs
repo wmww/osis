@@ -397,7 +397,7 @@ impl Status {
                 continue;
             };
             self.work.lacking += 1;
-            let Some((_, n)) = run(&mut self.lacking_fx, &k, || Ok(g.stamped(&s)?.iter().filter(|b| !g.knows(src.at, conn, &s, b)).count() as u64))? else { continue };
+            let Some((_, n)) = self.lacking_fx.try_settle(&k, || Ok::<_, crate::types::Error>(g.stamped(&s)?.iter().filter(|b| !g.knows(src.at, conn, &s, b)).count() as u64))? else { continue };
             self.lacking.insert(k, n);
         }
         Ok(())
@@ -423,7 +423,7 @@ impl Status {
         }
         let mut moved = BTreeSet::new();
         for s in self.own_fx.due() {
-            let Some((_, now)) = run(&mut self.own_fx, &s, || g.own_commits(&s))? else { continue };
+            let Some((_, now)) = self.own_fx.try_settle(&s, || g.own_commits(&s))? else { continue };
             let was: Vec<CommitId> = self.by_commit.iter().filter(|(c, ids)| ids.contains(&s) && !now.contains(*c)).map(|(c, _)| *c).collect();
             let mut unheld = self.unheld.get(&s).map(|x| (**x).clone()).unwrap_or_default();
             for c in was {
@@ -444,7 +444,7 @@ impl Status {
         for (s, c) in self.held_fx.due() {
             self.work.commits += 1;
             let (all, leaving, removals) = (&self.sources, &self.leaving, &self.removals);
-            let r = run(&mut self.held_fx, &(s, c), || {
+            let r = self.held_fx.try_settle(&(s, c), || {
                 let now = all.get(&s).map_or(&NO_SOURCES, |x| &**x);
                 let srcs = now.iter().map(|(k, v)| (*k, *v, None)).chain(leaving.get(&s).into_iter().flatten().map(|(k, (v, at))| (*k, *v, Some(*at))));
                 held_at(g, &s, &c, srcs, removals.contains(&c))
@@ -687,22 +687,5 @@ fn pass_now(g: &impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: &Pas
 }
 
 fn whole<T: Default + PartialEq>(fx: &mut Effects<(), Arc<T>>, f: impl FnOnce() -> Result<Arc<T>>) -> Result<Option<Arc<T>>> {
-    Ok(run(fx, &(), f)?.map(|(_, now)| now))
-}
-
-/// `Effects::settle` with a failing function: the key stays due, the error goes up.
-fn run<K: std::hash::Hash + Eq + Clone, V: Clone + PartialEq + Default>(fx: &mut Effects<K, V>, k: &K, f: impl FnOnce() -> Result<V>) -> Result<Option<(Option<V>, V)>> {
-    let mut failed = None;
-    let moved = fx.settle(k, || {
-        f().unwrap_or_else(|e| {
-            failed = Some(e);
-            V::default()
-        })
-    });
-    if let Some(e) = failed {
-        fx.unwant(k);
-        fx.want(k.clone());
-        return Err(e);
-    }
-    Ok(moved)
+    Ok(fx.try_settle(&(), f)?.map(|(_, now)| now))
 }

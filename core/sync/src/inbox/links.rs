@@ -14,7 +14,7 @@
 //!
 //! Finalize is the sharer's engine's, on a complete pass of K's sync ID (status tells it).
 
-use super::{DialHint, Here, settled};
+use super::{DialHint, Here};
 use crate::types::{Result, Waiting};
 use osis_base::memo::{Effects, Stamped};
 use osis_base::{CommitId, Tid};
@@ -129,7 +129,7 @@ impl Redemptions {
                 continue;
             };
             let engine = &mut *h.engine;
-            let Some((_, stage)) = settled(&mut self.ready, &k, Stage::Waiting, || link_stage(engine, &link))? else { continue };
+            let Some((_, stage)) = self.ready.try_settle(&k, || link_stage(engine, &link))? else { continue };
             if stage == Stage::Waiting {
                 continue;
             }
@@ -157,7 +157,7 @@ impl Redemptions {
                 continue;
             };
             let status = h.status;
-            let Some((_, true)) = settled(&mut self.held, &k, false, || Ok(status.is_some_and(|st| st.held(&c))))? else { continue };
+            let Some((_, true)) = self.held.settle(&k, || status.is_some_and(|st| st.held(&c))) else { continue };
             self.held.unwant(&k);
             self.forget(h, &k)?;
             acted = true;

@@ -8,6 +8,13 @@ The engine owns plaintext and every judgement of what a thing carries; sync owns
 
 One kind of node: whether a node reads data is a property of the pair (node, S). Per S a node holds it read (a read secret held: full judgement in `read`), kept unread (a sync secret only: `unread` judges signatures and its own grant), or not at all.
 
+## Arriving early: one parking place
+**Rule (Tess):** an item that arrives before what it needs parks under the one thing it awaits, and that thing arriving wakes only what is parked under it: nothing walks every waiting item, and no layer grows its own wait-and-retry. Two forms, one rule:
+- **Engine**: a pending commit parks in `Indexes::pend_on` under each `Wake` it awaits (a record, a commit, a time, blobs, a thing's lists, the role inputs); `reexamine` examines what the arrivals woke (notes/sync-facade.md Pending). Journaled with `pending`, so a rollback keeps them together.
+- **Sync**: what sync awaits is always a facade value, so a waiting item is an `Effects` key whose last value read it: the item is due exactly when what it awaits is written. A failed read is the same mechanism (`Effects::try_settle`: nothing recorded, the key stays due). Where many items await one value (a store entry that did not open, awaiting S's read secrets), the value is one key and the items are kept in a set under it (`store::Follow::parked`), examined only when the key moves: O(items parked), never O(S's entries).
+
+Waits on a peer (an offer refused for now, a refused Pull, a Behind) are back-offs and timers, not this rule: nothing local arrives to end them. A count test at n and 10n guards each keyed wait (flows.rs `a_read_secret_arriving_examines_only_what_did_not_open_spec_sync_2`).
+
 ## Crates
 - **osis-sync** (core/sync): the node's connections, its store per sync ID and the judgement over them, as one sans-IO step. Modules, one per area, each owning its state and changing no other's: `session`, `opens`, `store`, `read`, `unread`, `streams`, `inbox`, `status`, `driver`; `set` (the sync set followed per key, shared by store, opens and dials); `types` (every type two modules share; a type one module owns and others only read lives in that module). A part not built answers `Error::NotBuilt` or does nothing; no path a test reaches panics. The tokio transport glue is behind the default `driver` feature, the crate's one feature set.
 - **osis-engine**'s `sync` module (core/engine/src/sync): the facade.

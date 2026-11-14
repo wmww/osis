@@ -18,6 +18,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 ## store and streams
 - Fetching an unjudgeable body again (spec/commits.md §4 Unjudgeable, spec/sync-judgement.md §3 Dropped bodies): needs byte-less entries (a body counting missing is fetched again through `Streams::fetch_again`, notes/sync-read.md); until then an awaiting entry keeps its bytes (notes/sync-store.md).
 - Refused (spec/sync-streams.md §4): a refused entry is not offered again once the refusing node's head moved. The genesis Register goes out at a store source's open before anything of S is served there, so entries reach a head; a genesis refused for now (4, 12), or any later head move, leaves the entries refused meanwhile untaken there until a new stamp.
+- Fill order again (spec/sync-streams.md §4 Fill order, 4): a body queued as not opening keeps its last place when a read secret of S arrives; it should park under S's read secrets and be ranked again then, as the store's parked entries are (notes/sync.md Arriving early).
 - Relay-only entries; the engine's linked blobs (`Engine::wants`: pages and header lists before apply); bundle import (`Streams::import`); `Rank::Never` (a keyset without history: the facade has no call for it).
 
 ## read

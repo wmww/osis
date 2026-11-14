@@ -92,7 +92,8 @@ pub enum Opening {
 pub enum Rank {
     /// It opens, at this fetch order (order 0 first).
     Order(u64),
-    /// It does not open (yet): ranked again as secrets arrive.
+    /// It does not open (yet): kept, and opened by the store as a read secret of S arrives
+    /// (`store::Follow`, parked).
     Unopened,
     /// It can never open here (a keyset without history): not fetched.
     Never,

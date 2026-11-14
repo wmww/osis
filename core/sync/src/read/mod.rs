@@ -161,7 +161,7 @@ impl Read {
             self.bodies.want(c);
         }
         for c in self.bodies.due() {
-            let Some((_, now)) = run(&mut self.bodies, &c, || g.bodies(&c))? else { continue };
+            let Some((_, now)) = self.bodies.try_settle(&c, || g.bodies(&c))? else { continue };
             for s in now.keys() {
                 self.judged.want((*s, c));
                 self.dooms.want(*s);
@@ -173,7 +173,7 @@ impl Read {
         for s in self.dooms.due() {
             let told_before = self.told.contains_key(&s);
             let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock };
-            let Some((was, (doom, acts))) = run(&mut self.dooms, &s, || judge::doom(g, &mine, told_before, &s))? else { continue };
+            let Some((was, (doom, acts))) = self.dooms.try_settle(&s, || judge::doom(g, &mine, told_before, &s))? else { continue };
             let before = was.map(|(_, a)| a).unwrap_or_default();
             acted = true;
             match &doom {
@@ -198,7 +198,7 @@ impl Read {
                 continue;
             }
             // pullable read inside: a sync ID a reader cannot pull yet is due again once it can
-            let Some((_, now)) = run(&mut self.records, &s, || records_missing(g, &s).map(Arc::new))? else { continue };
+            let Some((_, now)) = self.records.try_settle(&s, || records_missing(g, &s).map(Arc::new))? else { continue };
             if !now.gone.is_empty() {
                 g.forget_record_blobs(&s, &now.gone)?;
                 acted = true;
@@ -218,7 +218,7 @@ impl Read {
             for k in due {
                 let (s, c) = k;
                 let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock };
-                let Some((was, now)) = run(&mut self.judged, &k, || judge::body(g, &mine, &s, &c))? else { continue };
+                let Some((was, now)) = self.judged.try_settle(&k, || judge::body(g, &mine, &s, &c))? else { continue };
                 if self.verdicts.get(&k) != Some(&now.verdict) {
                     self.verdicts.insert(k, now.verdict.clone());
                     // a non-writer gives a must-hold body to each store source lacking it
@@ -265,7 +265,7 @@ impl Read {
             for k in due {
                 let (s, c, at) = k;
                 let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock };
-                let Some((was, now)) = run(&mut self.toward, &k, || judge::toward(g, &mine, &s, &c, &at))? else { continue };
+                let Some((was, now)) = self.toward.try_settle(&k, || judge::toward(g, &mine, &s, &c, &at))? else { continue };
                 if now.idle {
                     self.toward.unwant(&k);
                 }
@@ -373,22 +373,6 @@ fn records_missing(g: &mut impl Ground, s: &SyncId) -> Result<RecordsMissing> {
         true => g.records_missing(s),
         false => Ok(RecordsMissing::default()),
     }
-}
-
-fn run<K: std::hash::Hash + Eq + Clone, V: Clone + PartialEq + Default>(fx: &mut Effects<K, V>, k: &K, f: impl FnOnce() -> Result<V>) -> Result<Option<(Option<V>, V)>> {
-    let mut failed = None;
-    let moved = fx.settle(k, || {
-        f().unwrap_or_else(|e| {
-            failed = Some(e);
-            V::default()
-        })
-    });
-    if let Some(e) = failed {
-        fx.unwant(k);
-        fx.want(k.clone());
-        return Err(e);
-    }
-    Ok(moved)
 }
 
 /// A part of the facade or of another module read needs is not built: read does nothing until

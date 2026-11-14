@@ -126,6 +126,30 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
     pub fn settle(&mut self, k: &K, f: impl FnOnce() -> V) -> Option<(Option<V>, V)> {
         let _s = crate::costs::span(self.name);
         let (now, frame) = recorded_frame(f);
+        self.record(k, now, frame)
+    }
+
+    /// `settle` with a function that may fail: on `Err` nothing is recorded and `k` stays due,
+    /// its value forgotten (the next settle reports it as new), so a failed read is tried again
+    /// at the next `due` with no retry kept by the caller.
+    pub fn try_settle<E>(&mut self, k: &K, f: impl FnOnce() -> Result<V, E>) -> Result<Option<(Option<V>, V)>, E> {
+        let _s = crate::costs::span(self.name);
+        let (out, frame) = recorded_frame(f);
+        match out {
+            Ok(now) => Ok(self.record(k, now, frame)),
+            Err(e) => {
+                if let Some(old) = self.followed.get_mut(k) {
+                    old.value = None;
+                    let deps = std::mem::take(&mut old.deps);
+                    self.unindex(k, &deps);
+                    self.pending.insert(k.clone());
+                }
+                Err(e)
+            }
+        }
+    }
+
+    fn record(&mut self, k: &K, now: V, frame: super::Frame) -> Option<(Option<V>, V)> {
         let Some(old) = self.followed.get_mut(k) else { return Some((None, now)) };
         let was = old.value.replace(now.clone());
         let old_deps = std::mem::replace(&mut old.deps, frame.deps.clone());
@@ -349,6 +373,22 @@ mod tests {
             v
         });
         assert_eq!(e.due(), [1], "written during its own settle");
+    }
+
+    // spec: none (internal). A settle that fails records nothing: the key stays due, its next
+    // settle reports it anew, and nothing it read before keeps it.
+    #[test]
+    fn a_failed_settle_stays_due() {
+        let mut m: Stamped<u8, u8> = Stamped::default();
+        let mut e: Effects<u8, u8> = Effects::new("test try");
+        e.want(1);
+        assert_eq!(e.try_settle(&1, || Ok::<_, ()>(m.get(&1).copied().unwrap_or(0))), Ok(Some((None, 0))));
+        m.insert(1, 2);
+        assert_eq!(e.due(), [1]);
+        assert_eq!(e.try_settle(&1, || m.get(&1).map_or(Err("failed"), |_| Err("failed"))), Err("failed"));
+        assert_eq!(e.due(), [1], "due again after a failure");
+        assert_eq!(e.try_settle(&1, || Ok::<_, ()>(m.get(&1).copied().unwrap_or(0))), Ok(Some((None, 2))), "reported anew");
+        assert_eq!(e.due(), Vec::<u8>::new());
     }
 
     // spec: none (internal). The log is kept from the oldest live mark: a reader that reads

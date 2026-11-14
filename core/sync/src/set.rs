@@ -46,19 +46,13 @@ impl SetFollow {
     pub fn settle(&mut self, engine: &mut Engine) -> Result<Vec<(SyncId, Option<Held>)>> {
         let mut touched = std::mem::take(&mut self.touched);
         if !self.closure.due().is_empty() {
-            let mut failed = None;
-            let moved = self.closure.settle(&(), || {
-                engine.sync_things().unwrap_or_else(|e| {
-                    failed = Some(e);
-                    Arc::default()
-                })
-            });
-            if let Some(e) = failed {
-                self.closure.unwant(&());
-                self.closure.want(());
-                self.touched = touched;
-                return Err(e.into());
-            }
+            let moved = match self.closure.try_settle(&(), || engine.sync_things()) {
+                Ok(m) => m,
+                Err(e) => {
+                    self.touched = touched;
+                    return Err(e.into());
+                }
+            };
             if let Some((_, now)) = moved {
                 let gone: Vec<Tid> = self.things.iter().filter(|t| !now.contains(*t)).copied().collect();
                 for t in gone {
@@ -74,19 +68,13 @@ impl SetFollow {
             }
         }
         for t in self.thing.due() {
-            let mut failed = None;
-            let moved = self.thing.settle(&t, || {
-                engine.thing_sync(&t).unwrap_or_else(|e| {
-                    failed = Some(e);
-                    ThingSync::Plain
-                })
-            });
-            if let Some(e) = failed {
-                self.thing.unwant(&t);
-                self.thing.want(t);
-                self.touched = touched;
-                return Err(e.into());
-            }
+            let moved = match self.thing.try_settle(&t, || engine.thing_sync(&t)) {
+                Ok(m) => m,
+                Err(e) => {
+                    self.touched = touched;
+                    return Err(e.into());
+                }
+            };
             let Some((_, now)) = moved else { continue };
             let ids = match now {
                 ThingSync::Read(ids) => ids.into_iter().map(|s| (s, Holding::Read)).collect(),

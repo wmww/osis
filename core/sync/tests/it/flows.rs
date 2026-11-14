@@ -228,6 +228,48 @@ fn a_reader_granted_again_through_a_failed_write_reads_spec_sync_streams_4() {
     crate::convergence::converge(468073306024, 3, &[New(0), Grant(0, 0, 2, Gives::Syncs), Write(0, 0), Disk(1, 20, Fail), Write(0, 0), Remove(0, 0, 2), Grant(0, 0, 1, Gives::Reads), Remove(0, 0, 1), Grant(0, 0, 1, Gives::Reads)], String::new());
 }
 
+// spec/sync.md §2 (Work in proportion to change), spec/sync-streams.md §4 (Fill order: what does
+// not open is held and opened as secrets arrive): an entry that did not open is parked under its
+// sync ID's read secrets, so a read secret arriving examines the parked entries alone, never the
+// entries that opened (counted at n and 10n writes); and the parked entry is examined then.
+#[test]
+fn a_read_secret_arriving_examines_only_what_did_not_open_spec_sync_2() {
+    let examined = |n: usize| {
+        let (mut w, t, _) = granted_and_read(Role::Read);
+        for i in 0..n {
+            w.write(0, |e| {
+                let mut m = Mutation::new();
+                m.set(t, &Ak::new(format!("u:w{i}.0")).unwrap(), &Value::Int(i as i64)).unwrap();
+                e.commit(m).unwrap();
+            });
+        }
+        w.run();
+        let s = w.engine(1).sync_ids(&t).unwrap()[0].id;
+        assert!(w.store(1).entries(&s).unwrap().len() >= n, "node 1 holds every write");
+        // a peer's entry no read secret held opens
+        let p = osis_label::Prefix::for_keys([7; 16], &[1; 16], None, &[]).unwrap();
+        let (_, bytes) = osis_label::frame(&p, &[7; 64], &mut osis_crypto::SeededRng::from_u64(7)).unwrap();
+        let b = osis_label::blob_id(&bytes);
+        let e = osis_sync::types::Entry { blob: b, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, deposited: true, own: false, role: false, class: osis_label::Class::Durable, expires: None };
+        let mut st = w.store(1).clone();
+        st.log(&s, e, Some(bytes), None).unwrap();
+        w.run();
+        let epoch = |w: &mut World| *w.engine(1).epochs(&t).unwrap().read.current().last().unwrap();
+        let before = epoch(&mut w);
+        let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+        osis_base::costs::take();
+        w.write(0, |e| e.rotate_boxing_only(&[t], &[Role::Read], &[a0, a1])).unwrap().expect("a rotation");
+        w.run();
+        let count = osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "store: parked examined").map(|(.., n)| n).sum::<u64>();
+        assert_ne!(epoch(&mut w), before, "node 1 took a new read secret");
+        assert!(w.store(1).entry(&s, &b).unwrap().is_some(), "kept, parked");
+        count
+    };
+    let (a, b) = (examined(4), examined(40));
+    assert_eq!(a, 1, "the parked entry alone is examined as the secret arrives");
+    assert_eq!(a, b, "entries examined: {a} after n writes, {b} after 10n");
+}
+
 // spec/commits.md §4 (Unjudgeable: fetched again when what it awaits arrives): a reader granted
 // after a writer's removal pulls that writer's last write before the grant that leads from the
 // writer to the thing; the engine keeps nothing of it, so sync keeps the entry and opens it

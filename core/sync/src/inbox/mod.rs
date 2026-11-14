@@ -242,20 +242,3 @@ impl Inbox {
 fn own_entry(blob: BlobId, wrap: Wrap, stamp: Option<osis_crypto::Signature>, expires: Option<WallMs>) -> Entry {
     Entry { blob, wrap, stamp, deposited: stamp.is_none(), own: true, role: false, class: osis_label::Class::Durable, expires }
 }
-
-/// Runs `f` in an `Effects` settle and hands back its error, keeping the key due.
-fn settled<K: std::hash::Hash + Eq + Clone, V: Clone + PartialEq>(fx: &mut osis_base::memo::Effects<K, V>, k: &K, fallback: V, f: impl FnOnce() -> Result<V>) -> Result<Option<(Option<V>, V)>> {
-    let mut failed = None;
-    let moved = fx.settle(k, || {
-        f().unwrap_or_else(|e| {
-            failed = Some(e);
-            fallback
-        })
-    });
-    if let Some(e) = failed {
-        fx.unwant(k);
-        fx.want(k.clone());
-        return Err(e);
-    }
-    Ok(moved)
-}

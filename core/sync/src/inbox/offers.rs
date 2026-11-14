@@ -21,7 +21,7 @@
 //! something ready, a back-off due or a refusal waiting for a filter, and reads each connection's
 //! filter count (O(connections)).
 
-use super::{Net, settled};
+use super::Net;
 use crate::store::Store;
 use crate::session::RequestId;
 use crate::types::{ConnId, Result, SourceClass};
@@ -175,7 +175,7 @@ impl Offers {
                 self.keys.unwant(&k);
                 continue;
             };
-            let Some((Some(_), _)) = settled(&mut self.keys, &k, None, || Ok(keys(&k.0, target.actor())?.map(|d| d.verifying_key())))? else { continue };
+            let Some((Some(_), _)) = self.keys.try_settle(&k, || Ok::<_, crate::types::Error>(keys(&k.0, target.actor())?.map(|d| d.verifying_key())))? else { continue };
             // the deposit key moved: signed again, it goes again wherever it was refused
             for (c, conn) in &mut self.conns {
                 if conn.parked.remove(&k).is_some() {
