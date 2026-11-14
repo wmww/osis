@@ -171,14 +171,6 @@ impl Engine {
         Arc::new(self.core.ix.sync_records.iter().map(|(t, r)| (*t, (**r).clone())).collect())
     }
 
-    /// Every removal notice held, unexpired, whole (a start's listing; `removal_notices_now` per S).
-    pub(crate) fn all_removal_notices_now(&self) -> Arc<Vec<RemovalNotice>> {
-        let now = self.core.time.get();
-        let all: Vec<&HeldNotice> = self.core.ix.removal_notices.values().flat_map(|m| m.values()).collect();
-        self.core.time.until(all.iter().map(|n| n.expires.0).filter(|e| *e > now).min());
-        Arc::new(all.into_iter().filter(|n| n.expires.0 > now).map(|n| n.notice.clone()).collect())
-    }
-
     /// The removal notices to this node for `s`, their blobs unexpired at the memo clock (valid
     /// until the earliest expiry). Reads only `s`'s key.
     pub(crate) fn removal_notices_now(&self, s: &SyncId) -> Arc<Vec<RemovalNotice>> {

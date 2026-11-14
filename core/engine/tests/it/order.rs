@@ -1693,7 +1693,7 @@ const FRESH: u64 = 0x5eed_f00d;
 fn withhold(mut played: Played, seed: u64, cfg: Cfg) -> Played {
     let Cfg { settled, away, every_seed, .. } = cfg;
     let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
-    if settled || !(every_seed || away || seed % 3 != 0) {
+    if settled || !(every_seed || away || !seed.is_multiple_of(3)) {
         return played;
     }
     let mut first = away;

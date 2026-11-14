@@ -168,7 +168,6 @@ fn a_removal_notice_reaches_a_sync_holder_spec_wire_9() {
     assert!(osis_label::verify_removal(&head.keys.delete, &n.sync_id, &Tid::from_bytes([1; 15]), &n.commit, n.epoch, &n.sig).is_err());
     assert!(osis_label::verify_removal(&head.keys.delete, &n.sync_id, &n.recipient, &n.commit, n.epoch + 1, &n.sig).is_err());
     assert!(osis_label::verify_removal(&head.keys.sync, &n.sync_id, &n.recipient, &n.commit, n.epoch, &n.sig).is_err());
-    assert_eq!(lp.peers[1].engine.all_removal_notices().unwrap().len(), 1);
 }
 
 // spec/sync-judgement.md §6 Stops ("a Register may move its head past the step the removal was

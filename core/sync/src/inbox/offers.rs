@@ -41,6 +41,9 @@ pub const BACKOFF_MAX_MS: u64 = 10 * 60 * 1000;
 
 type Key = (SyncId, BlobId);
 
+/// The deposit key S's offers are signed with, for a recipient's inbox from its deposit seed.
+pub type DepositKeys<'a> = dyn FnMut(&SyncId, Option<Tid>) -> Result<Option<SigningSecret>> + 'a;
+
 /// Who may take an offer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -165,7 +168,7 @@ impl Offers {
     /// Sends one Deposit item on each connection with one ready and none out.
     /// `keys` gives the deposit key S's offers are signed with (for a recipient's inbox, from its
     /// deposit seed): the engine's `signers` in a node.
-    pub fn settle(&mut self, now: WallMs, store: &Store, net: &mut impl Net, keys: &mut dyn FnMut(&SyncId, Option<Tid>) -> Result<Option<SigningSecret>>) -> Result<bool> {
+    pub fn settle(&mut self, now: WallMs, store: &Store, net: &mut impl Net, keys: &mut DepositKeys) -> Result<bool> {
         let mut acted = false;
         for k in self.keys.due() {
             let Some(target) = self.items.get(&k).copied() else {
@@ -339,7 +342,7 @@ fn may_take(net: &impl Net, conn: ConnId, actors: &[Tid], s: &SyncId, target: Ta
 
 /// The Deposit item of offer `k`, signed with the deposit key now; `None`: moot (its entry is
 /// no longer an own deposit, or no deposit key is held).
-fn item(store: &Store, keys: &mut dyn FnMut(&SyncId, Option<Tid>) -> Result<Option<SigningSecret>>, k: &Key, target: &Target) -> Result<Option<DepositItem>> {
+fn item(store: &Store, keys: &mut DepositKeys, k: &Key, target: &Target) -> Result<Option<DepositItem>> {
     let (s, b) = k;
     let Some(e) = store.entry(s, b)? else { return Ok(None) };
     if !e.deposited || !e.own {

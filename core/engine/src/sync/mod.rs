@@ -704,10 +704,6 @@ impl Engine {
         Ok(self.removal_notices_now(s))
     }
 
-    /// Every removal notice held, whole: a start's listing (then `removal_notices` per sync ID).
-    pub fn all_removal_notices(&mut self) -> Result<Arc<Vec<RemovalNotice>>> {
-        Ok(self.all_removal_notices_now())
-    }
 
     /// The invitations waiting for the user (spec/sync-set.md §4).
     pub fn invitations(&mut self) -> Result<Arc<Vec<Invitation>>> {
