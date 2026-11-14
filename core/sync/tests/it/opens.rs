@@ -642,6 +642,26 @@ fn a_listener_signs_its_answer_spec_sync_opens_5() {
     p.run();
     assert!(p.b.open(p.cb, &S), "the listener opened");
     assert!(p.a.open(p.ca, &S), "the dialer opened on the listener's signature");
+    assert!(p.a.table.taken.contains(&S), "the grant taken once its signature verified");
+}
+
+// spec/sync-opens.md §5 (Opening: for a static entry the tester takes the box's secrets, and
+// opens, only when `sig` verifies under the head's sync key): the grant's box and path name a
+// head sync key the replier's signature is not by; the tester takes nothing and opens nothing.
+#[test]
+fn a_static_grant_is_taken_only_once_its_signature_verifies_spec_sync_opens_5() {
+    let l = link_key(7);
+    let st = StepKeys::new(1, 0);
+    let mut x = Side::new(5);
+    x.table.set(S, Some(link_holder(&l)));
+    x.table.grants.insert(S, StepKeys::new(2, 0).pk());
+    let mut r = Side::new(4);
+    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[&l], &[])));
+    r.table.gives_grant = true;
+    let mut p = Pair::new(x, r, Proven::default(), Proven::default());
+    p.run();
+    assert!(p.a.table.taken.is_empty(), "no secret learned before the signature verifies");
+    assert!(!p.a.open(p.ca, &S), "the tester opened nothing");
 }
 
 // ---- work in proportion to change (notes/coordination.md, Check scaling) ----

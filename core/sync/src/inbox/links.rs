@@ -8,7 +8,9 @@
 //! unfollowed and L forgotten. So a redeem
 //! dropped or a restart before the join reached the sharer's node still completes
 //! (`redeem-dropped-before-delivery`). "Held at a source" is status's view (spec/sync-status.md
-//! §2).
+//! §2). A link that ends before the join (the held role history shows L's edge on K, or K's on the
+//! target, removed or past `until`) is forgotten the same way, and redeeming it again answers
+//! `Never`. Not built: the other end, every route refusing L's static entry.
 //!
 //! Finalize is the sharer's engine's, on a complete pass of K's sync ID (status tells it).
 
@@ -54,12 +56,23 @@ fn row_key(k: &Tid) -> Vec<u8> {
     [ROWS, k.as_bytes()].concat()
 }
 
+/// What a link not joined yet waits on.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Stage {
+    /// K's roster here does not list L yet.
+    Waiting,
+    /// K's roster lists L: the join can be written.
+    Ready,
+    /// The link has ended (`Engine::link_ended`): the redeemer stops.
+    Ended,
+}
+
 #[derive(Clone)]
 pub(super) struct Redemptions {
     pending: BTreeMap<Tid, Pending>,
     /// Stamped: the driver follows the dial hints as they move.
     hints: Stamped<Tid, Vec<DialHint>>,
-    ready: Effects<Tid, bool>,
+    ready: Effects<Tid, Stage>,
     held: Effects<Tid, bool>,
 }
 
@@ -98,6 +111,9 @@ impl Redemptions {
         if let Some(p) = self.pending.get(&link.k) {
             return Ok(if p.joined.is_some() { Waiting::Done } else { Waiting::Pending });
         }
+        if h.engine.link_ended(link) {
+            return Ok(Waiting::Never("the link has ended"));
+        }
         let p = Pending { link: link.clone(), joined: None };
         let row = p.encode()?;
         h.store.with_tx(|t| t.put_local(&row_key(&link.k), &row, Shred::Yes))?;
@@ -113,8 +129,16 @@ impl Redemptions {
                 continue;
             };
             let engine = &mut *h.engine;
-            let Some((_, true)) = settled(&mut self.ready, &k, false, || link_ready(engine, &link))? else { continue };
+            let Some((_, stage)) = settled(&mut self.ready, &k, Stage::Waiting, || link_stage(engine, &link))? else { continue };
+            if stage == Stage::Waiting {
+                continue;
+            }
             self.ready.unwant(&k);
+            if stage == Stage::Ended {
+                self.forget(h, &k)?;
+                acted = true;
+                continue;
+            }
             let me = h.engine.me();
             let Some(c) = h.engine.redeem(&link, &me, link.single_use)?.commits.first().copied() else { continue };
             let p = Pending { link, joined: Some(c) };
@@ -132,15 +156,21 @@ impl Redemptions {
             let status = h.status;
             let Some((_, true)) = settled(&mut self.held, &k, false, || Ok(status.is_some_and(|st| st.held(&c))))? else { continue };
             self.held.unwant(&k);
-            self.pending.remove(&k);
-            h.engine.unfollow_link(&k);
-            if self.hints.contains_key(&k) {
-                self.hints.remove(&k);
-            }
-            h.store.with_tx(|t| t.remove_local(&row_key(&k), Shred::Yes))?;
+            self.forget(h, &k)?;
             acted = true;
         }
         Ok(acted)
+    }
+
+    /// Stops redeeming link K: unfollowed, L and the kept link forgotten (spec/permissions.md §7).
+    fn forget(&mut self, h: &mut Here<'_>, k: &Tid) -> Result<()> {
+        self.pending.remove(k);
+        h.engine.unfollow_link(k);
+        if self.hints.contains_key(k) {
+            self.hints.remove(k);
+        }
+        h.store.with_tx(|t| t.remove_local(&row_key(k), Shred::Yes))?;
+        Ok(())
     }
 
     /// The sharer nodes of the links being redeemed (spec/wire.md §10: first-contact hints).
@@ -149,8 +179,11 @@ impl Redemptions {
     }
 }
 
-/// K's roster here lists L alive: the join can be written.
-fn link_ready(engine: &mut Engine, link: &ShareLink) -> Result<bool> {
+/// The link has ended, or K's roster here lists L: the join can be written.
+fn link_stage(engine: &mut Engine, link: &ShareLink) -> Result<Stage> {
+    if engine.link_ended(link) {
+        return Ok(Stage::Ended);
+    }
     let l = osis_engine::identity::key_actor_tid(&link.seed);
-    Ok(engine.roster(&link.k).contains_key(&l))
+    Ok(if engine.roster(&link.k).contains_key(&l) { Stage::Ready } else { Stage::Waiting })
 }

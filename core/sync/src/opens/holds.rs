@@ -102,9 +102,10 @@ pub trait Holds {
     /// The grant a static entry's answer carries (spec/sync-opens.md §5): the head's entry box
     /// for `entry` and the path to the head, when this node keeps them.
     fn grant(&mut self, s: &SyncId, entry: &[u8; 32]) -> Option<Grant>;
-    /// Takes a static entry's grant: the head's sync key when the path verifies from its genesis
-    /// step and the box's sync secret derives it (spec/sync-opens.md §5), the box's secrets taken.
-    fn take_grant(&mut self, s: &SyncId, entry: &[u8; 32], grant: &Grant) -> Option<[u8; 32]>;
+    /// Takes a static entry's grant (spec/sync-opens.md §5): when the path verifies from its
+    /// genesis step, the box's sync secret derives the head's sync key and `signed` (the answer's
+    /// `sig`) verifies under that key, the box's secrets are taken, and only then.
+    fn take_grant(&mut self, s: &SyncId, entry: &[u8; 32], grant: &Grant, signed: &dyn Fn(&[u8; 32]) -> bool) -> bool;
     /// Answers a Behind item whose open signature verified (spec/sync-ids.md §6 Behind).
     fn behind(&mut self, item: &BehindItem) -> SharedItem;
     /// Answers a Behind item whose signature did not verify: 13 for a sync ID not kept unread
@@ -289,14 +290,11 @@ impl Holds for NodeHolds<'_, '_> {
         Some(Grant { entry_box: Some(entry_box), steps: steps.into_iter().map(|(st, _)| st).collect() })
     }
 
-    fn take_grant(&mut self, s: &SyncId, entry: &[u8; 32], grant: &Grant) -> Option<[u8; 32]> {
-        osis_label::verify_path(s, &grant.steps).ok()?;
-        let head = grant.steps.last()?;
-        let (t, _) = self.cx.engine.sync_holding(s).ok()??;
-        let secrets = self.cx.engine.open_entry_box(s, &t, head, entry, grant.entry_box.as_ref()?).ok()??;
-        // the box's sync secret derives the head's sync key (spec/sync-opens.md §5)
-        let key = osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, &secrets.sync.1).verifying_key();
-        (key == head.keys.sync).then(|| key.to_bytes())
+    fn take_grant(&mut self, s: &SyncId, entry: &[u8; 32], grant: &Grant, signed: &dyn Fn(&[u8; 32]) -> bool) -> bool {
+        let Some(b) = grant.entry_box.as_ref() else { return false };
+        let Ok(Some(g)) = self.cx.engine.open_grant(s, entry, &grant.steps, b) else { return false };
+        // verify first, learn after (spec/sync-opens.md §5)
+        signed(&g.key) && self.cx.engine.learn_grant(&g).is_ok()
     }
 
     fn behind(&mut self, item: &BehindItem) -> SharedItem {

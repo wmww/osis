@@ -110,6 +110,16 @@ impl Engine {
         self.core.timelines.get(thing).is_some_and(|tl| tl.ended(thing, ts).contains_key(holder))
     }
 
+    /// Whether a link being redeemed has ended here (spec/permissions.md §7): the held role history
+    /// shows L's edge on K, or K's on the target the link names, removed or past `until`. Reads
+    /// the clock up to the next `until` or role commit of K's and the target's components, so an
+    /// `until` passing moves it.
+    pub fn link_ended(&mut self, link: &ShareLink) -> bool {
+        let l = crate::identity::key_actor_tid(&link.seed);
+        self.core.time.until(self.core.horizon([link.k, link.target].into_iter()));
+        self.edge_gone(&link.k, &l) || self.edge_gone(&link.target, &link.k)
+    }
+
     /// The links this account joined that have ended (spec/permissions.md §7, Joiner's leave),
     /// among those whose K or K's target is in `touched` (`None`: all): it holds K by a grant
     /// (the sharer holds it by K's record), and the held role history shows K's edge on the

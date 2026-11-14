@@ -238,6 +238,16 @@ pub struct EntryBoxSecrets {
     pub sync: (Epoch, Secret32),
 }
 
+/// A static entry's grant opened, not yet learned (`Engine::open_grant`).
+#[derive(Clone)]
+pub struct OpenedGrant {
+    /// S's thing.
+    pub thing: Tid,
+    /// The head's sync key the box's sync secret derives: the answer's `sig` verifies under it.
+    pub key: [u8; 32],
+    pub secrets: EntryBoxSecrets,
+}
+
 /// The keys this node signs entries of a sync ID with (spec/sync-inbox.md §2-§4).
 #[derive(Clone, Default)]
 pub struct Signers {
@@ -472,26 +482,45 @@ impl Engine {
         self.claim_key_now(s, step)
     }
 
-    /// Opens an entry box for a key actor this node acts for (a link).
-    /// Opens the entry box of `thing`'s sync ID `s` at `step` for static entry `entry` (spec/sync-
-    /// ids.md §3 Entry boxes), when it is a key actor this node holds (a link key): the secrets it
-    /// carries, each checked to name its epoch of `thing` and learned (`learn_secret`). `None`
-    /// when no held key actor has that entry or the box does not open.
-    pub fn open_entry_box(&mut self, s: &SyncId, thing: &Tid, step: &Step, entry: &[u8; 32], b: &osis_schema::core_types::SecretBox) -> Result<Option<EntryBoxSecrets>> {
-        let ids: Vec<Arc<crate::identity::Identity>> = self.core.key_actors.values().cloned().collect();
-        for id in ids {
-            if osis_crypto::static_entry(s, &id.keys().signing.verifying_key()) != *entry {
-                continue;
-            }
-            let Ok(item) = osis_label::open_entry_box(b, step, &id.keys().kem, thing) else { return Ok(None) };
-            self.learn_secret(thing, osis_base::Role::Read, item.epoch, item.secret.clone())?;
-            if let Some((e, x)) = &item.earlier {
-                self.learn_secret(thing, osis_base::Role::Read, *e, x.clone())?;
-            }
-            self.learn_secret(thing, osis_base::Role::Sync, item.sync.0, item.sync.1.clone())?;
-            return Ok(Some(EntryBoxSecrets { read: (item.epoch, item.secret), superseded: item.earlier, sync: item.sync }));
+    /// Opens a static entry's grant (spec/sync-opens.md §5): `steps` verify from S's genesis step
+    /// (`verify_path`: its delete key hashes to `s`) and pass through the newest step of S recorded
+    /// here; a key actor this node holds has static entry `entry` and opens the head's entry box
+    /// (spec/sync-ids.md §3 Entry boxes), each secret naming its epoch of S's thing; the box's sync
+    /// secret derives the head's sync key. Returns that key and the box, learning nothing: the
+    /// caller verifies the answer's signature under the key, then `learn_grant`. `None` when any
+    /// check fails or S is no sync ID this node reads.
+    pub fn open_grant(&mut self, s: &SyncId, entry: &[u8; 32], steps: &[Step], b: &osis_schema::core_types::SecretBox) -> Result<Option<OpenedGrant>> {
+        if osis_label::verify_path(s, steps).is_err() {
+            return Ok(None);
         }
-        Ok(None)
+        let Some(head) = steps.last() else { return Ok(None) };
+        let Some(c) = self.read_credentials(s)? else { return Ok(None) };
+        // a step older than the newest known here proves nothing (spec/sync-opens.md §4)
+        if let Some(known) = &c.head
+            && !steps.iter().any(|st| st.id() == known.id())
+        {
+            return Ok(None);
+        }
+        let Some((thing, _)) = self.sync_holding(s)? else { return Ok(None) };
+        let ids: Vec<Arc<crate::identity::Identity>> = self.core.key_actors.values().cloned().collect();
+        let Some(id) = ids.iter().find(|id| osis_crypto::static_entry(s, &id.keys().signing.verifying_key()) == *entry) else { return Ok(None) };
+        let Ok(item) = osis_label::open_entry_box(b, head, &id.keys().kem, &thing) else { return Ok(None) };
+        let key = osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, &item.sync.1).verifying_key().to_bytes();
+        if key != head.keys.sync.to_bytes() {
+            return Ok(None);
+        }
+        Ok(Some(OpenedGrant { thing, key, secrets: EntryBoxSecrets { read: (item.epoch, item.secret), superseded: item.earlier, sync: item.sync } }))
+    }
+
+    /// Learns an opened grant's secrets (`learn_secret`), once its answer's signature verified.
+    pub fn learn_grant(&mut self, g: &OpenedGrant) -> Result<()> {
+        let x = &g.secrets;
+        self.learn_secret(&g.thing, osis_base::Role::Read, x.read.0, x.read.1.clone())?;
+        if let Some((e, v)) = &x.superseded {
+            self.learn_secret(&g.thing, osis_base::Role::Read, *e, v.clone())?;
+        }
+        self.learn_secret(&g.thing, osis_base::Role::Sync, x.sync.0, x.sync.1.clone())?;
+        Ok(())
     }
 
     /// The sync records of things this node keeps unread (spec/sync-judgement.md §6): each

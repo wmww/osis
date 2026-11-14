@@ -215,8 +215,30 @@ impl Engine {
 }
 
 /// A link being redeemed (`Engine::follow_link`): K's sync ID from its link text, followed with no
-/// recorded path while no applied `sync.0` records it, as a hint is (spec/sync-set.md §2).
+/// recorded path while the link text is all this node has of it (spec/sync-set.md §2). The link
+/// text is untrusted: its K must be a link's K or unknown here (`followable`), and its sync ID no
+/// other thing's here (no applied `sync.0` records it, no sync record, destroyed thing, inbox hint
+/// or other followed link names it), else it is nobody's.
 fn followed(e: &Engine, k: &Tid) -> Option<OwnedSyncId> {
     let (s, _) = e.core.followed_links.get(k).copied()?;
-    (!crate::sync::inbox::recorded(e, &s)).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), hint: true })
+    let ix = &e.core.ix;
+    let elsewhere = crate::sync::inbox::recorded(e, &s)
+        || ix.record_ids.get(&s).is_some_and(|x| !x.is_empty())
+        || ix.destroyed_sync_ids.values().any(|v| v.iter().any(|o| o.id == s))
+        || ix.inbox_hints.iter().any(|(t, x)| t != k && x.0 == s)
+        || e.core.followed_links.iter().any(|(t, x)| t != k && x.0 == s);
+    (followable(e, k) && !elsewhere).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), hint: true })
+}
+
+/// Whether followed link `k` may be a link's K here: a thing this node holds only as a link's K
+/// (its creation record has the `link` field), or one it knows nothing of yet (no record, sync
+/// record or destruction). A link text naming any other thing as K changes nothing of it.
+pub(crate) fn followable(e: &Engine, k: &Tid) -> bool {
+    if !e.core.followed_links.contains_key(k) {
+        return false;
+    }
+    match e.core.created(k) {
+        Some(r) => r.link_target().is_some(),
+        None => !e.core.ix.sync_records.contains_key(k) && !e.core.ix.destroyed_sync_ids.contains_key(k),
+    }
 }

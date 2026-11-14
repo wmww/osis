@@ -100,11 +100,13 @@ pub struct Table {
     /// What `take_grant` gives: the head's sync key, per S.
     pub grants: BTreeMap<SyncId, [u8; 32]>,
     pub gives_grant: bool,
+    /// The sync IDs whose grant was taken (its secrets learned).
+    pub taken: BTreeSet<SyncId>,
 }
 
 impl Table {
     pub fn new(seed: u64) -> Table {
-        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), j: BTreeMap::new(), covering: BTreeSet::new(), known: BTreeSet::new(), until: 100, grants: BTreeMap::new(), gives_grant: false }
+        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), j: BTreeMap::new(), covering: BTreeSet::new(), known: BTreeSet::new(), until: 100, grants: BTreeMap::new(), gives_grant: false, taken: BTreeSet::new() }
     }
 
     /// S's credentials are now `c` (none: S left the sync set).
@@ -171,8 +173,12 @@ impl Holds for Table {
         let step = osis_label::Step { label: *s, prev: None, keys, step_key: [0; 32], claims_hash: [0; 32], sig: osis_crypto::Signature([0; 64]) };
         self.gives_grant.then(|| Grant { entry_box: None, steps: vec![step] })
     }
-    fn take_grant(&mut self, s: &SyncId, _entry: &[u8; 32], _grant: &Grant) -> Option<[u8; 32]> {
-        self.grants.get(s).copied()
+    fn take_grant(&mut self, s: &SyncId, _entry: &[u8; 32], _grant: &Grant, signed: &dyn Fn(&[u8; 32]) -> bool) -> bool {
+        let ok = self.grants.get(s).is_some_and(signed);
+        if ok {
+            self.taken.insert(*s);
+        }
+        ok
     }
     fn behind(&mut self, _item: &BehindItem) -> SharedItem {
         SharedItem::code(Code::DECLINED)

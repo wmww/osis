@@ -1547,7 +1547,7 @@ impl Opens {
     /// The tester's own proof of the replier (spec/sync-opens.md §5): J judges it a holder, or
     /// the answer proves it: a tag keyed by a secret is its own proof; for a sync key or claim, an
     /// open signature by the sync key of the step hit; for a static entry, the grant's head sync
-    /// key, the grant taken.
+    /// key, the grant taken once it verifies.
     fn replier_proved(&mut self, ctx: &mut Ctx, bind: &Bind, s: &SyncId, cred: &Tested, a: &SharedItem, j: J) -> bool {
         if matches!(j, J::Reader | J::SyncHolder) || cred.secret() {
             return true;
@@ -1557,12 +1557,11 @@ impl Opens {
             // The replier's step is the step hit: a step older than the one hit proves nothing.
             Tested::SyncKey { key, .. } => key.verifying_key().to_bytes(),
             Tested::Claim { sync, .. } => *sync,
+            // the grant's secrets are taken only once `sig` verifies under its head's sync key
             Tested::Static { key, .. } => {
                 let entry = osis_crypto::static_entry(s, &key.verifying_key());
-                match a.grant.as_ref().and_then(|g| ctx.holds.take_grant(s, &entry, g)) {
-                    Some(k) => k,
-                    None => return false,
-                }
+                let Some(g) = a.grant.as_ref() else { return false };
+                return ctx.holds.take_grant(s, &entry, g, &|k| bind.peer_signed(k, s, sig));
             }
             Tested::Read(..) | Tested::Proof(_) => return true,
         };

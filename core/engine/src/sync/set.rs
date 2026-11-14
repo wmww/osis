@@ -57,7 +57,7 @@ impl Engine {
         };
         let mut emptying: Vec<Tid> = self.core.ix.destroyed_sync_ids.keys().filter(|t| self.core.ix.destroyed_secrets.contains(t)).copied().collect();
         // links being redeemed (spec/sync-set.md §2)
-        emptying.extend(self.core.followed_links.keys().copied());
+        emptying.extend(self.core.followed_links.keys().filter(|k| crate::labeling::actors::followable(self, k)).copied());
         if emptying.iter().all(|t| closure.contains(t)) {
             return Ok(closure);
         }
@@ -81,8 +81,12 @@ impl Engine {
         {
             return Ok(ThingSync::Read(vec![home]));
         }
-        // a link being redeemed: its sync ID read while followed, whatever is held of K yet
-        if let Some((s, _)) = self.core.followed_links.get(t).copied() {
+        // a link being redeemed: its sync ID read while followed, whatever is held of K yet, while
+        // it is K's (`followable`; from the link text until K's own `sync.0` records it)
+        if let Some((s, _)) = self.core.followed_links.get(t).copied()
+            && crate::labeling::actors::followable(self, t)
+            && self.owned_sync_ids(t)?.iter().any(|o| o.id == s)
+        {
             return Ok(ThingSync::Read(vec![s]));
         }
         if let Some(r) = self.core.ix.sync_records.get(t).cloned() {
