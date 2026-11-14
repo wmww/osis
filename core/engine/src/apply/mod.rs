@@ -341,10 +341,11 @@ pub(crate) fn signature(core: &crate::engine::Core, id: &CommitId, sigs: &osis_c
 }
 
 /// `author`'s signing key at epoch `epoch` (`None` for a key actor other than an account) as held
-/// here: its creation record and, at a later epoch, the rotation minting it.
-pub(crate) fn held_key(core: &crate::engine::Core, author: &Tid, epoch: Option<CommitId>) -> Option<VerifyingKey> {
+/// here, an account's only while that epoch is open here (a head, spec/permissions.md §5.4): a
+/// closed epoch's key is held by whoever was removed from the account since.
+pub(crate) fn open_key(core: &crate::engine::Core, author: &Tid, epoch: Option<CommitId>) -> Option<VerifyingKey> {
     let Some(CreationRecord::KeyActor { public_key, account, .. }) = core.created(author) else { return None };
-    if *account != epoch.is_some() {
+    if *account != epoch.is_some() || epoch.is_some_and(|e| !core.account_view(author).is_some_and(|v| v.is_open(&e))) {
         return None;
     }
     epoch_key(core, author, epoch, public_key).ok().flatten()

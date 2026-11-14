@@ -223,15 +223,21 @@ fn kept() -> (LocalPeer, Vec<Tid>, Tid, osis_base::SyncId) {
 }
 
 // spec/sync.md §3 (A kept sync ID: added by an accept, the sync IDs every held boxes payload
-// offering the thing names), spec/sync-set.md §4 (accepting): once accepted, the offered sync ID
-// is kept, the thing is kept unread under it with the offer's secret held (not recorded), and it
-// is no invitation; the record lasts the offer's expiry and a restart.
+// offering the thing names), spec/sync-set.md §4 (Accepting), spec/sync-inbox.md §2 (Taking: a
+// boxes payload's dial hint dialed once its sync IDs are kept): once accepted, the offered sync
+// ID is kept, its dial hint given, the thing kept unread under it with the offer's secret held
+// (not recorded), and it is no invitation; the record lasts the offer's expiry and a restart.
 #[test]
 fn an_accept_keeps_the_offered_sync_id_spec_sync_3() {
     let (mut lp, t, _, _, blob) = granted(Role::Sync);
     let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
-    lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap();
+    // the sender's dial hint: dialed only once its sync ID is kept (spec/sync-inbox.md §2)
+    let (mut p, _) = boxes_of(&mut lp, 1, &blob);
+    p.dial = Some(osis_label::DialHint { dialable: [0x44; 32], urls: vec!["quic://granter".into()] });
+    let blob = boxes_by_hand(&mut lp, 1, &p);
+    assert!(lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap().unwrap().dial.is_none(), "not kept: no dial hint");
     accept(&mut lp, 1, t);
+    assert_eq!(lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap().unwrap().dial, p.dial, "kept: its dial hint");
     let e = &mut lp.peers[1].engine;
     let r = e.sync_record(&t).unwrap().expect("kept");
     assert_eq!(r.sync_ids, vec![s]);
@@ -337,13 +343,14 @@ fn a_rotation_needs_no_accept_spec_sync_3() {
 }
 
 // spec/sync-inbox.md §2 Taking (a grant's payload names its granting account only when its
-// signature verifies under a key of its author held here), spec/wire.md §9 (`GrantSig`: no
-// creation record or rotation carried): a grant by an account at a rotated epoch names nobody to a
-// node holding nothing of it, and its granter once that node holds the author's chain; a signature
-// by another key names nobody.
+// signature verifies under a key of its author held here, at an epoch open here), spec/wire.md §9
+// (`GrantSig`: no creation record or rotation carried): a grant by an account at a rotated epoch
+// names nobody to a node holding nothing of it, and its granter once that node holds the author's
+// chain; a signature by another key, or by the removed node's key at the closed first epoch,
+// names nobody.
 #[test]
 fn a_grant_names_its_granter_only_where_its_key_is_held_spec_sync_inbox_2() {
-    let (mut lp, a, b) = rotated_author();
+    let (mut lp, a, b, old) = rotated_author();
     let t = thing_of(&mut lp, 0, a);
     let done = lp.peers[0].engine.grant(&t, &b, &edge_of(Role::Sync)).unwrap();
     let blob = blob_to(&mut lp, &done, b);
@@ -360,12 +367,15 @@ fn a_grant_names_its_granter_only_where_its_key_is_held_spec_sync_inbox_2() {
     let ids = lp.peers[0].engine.commit_ids();
     crate::flows::send(&mut lp, 0, 2, &ids);
     assert_eq!(from(&mut lp, &resigned), None, "another key's signature");
+    let closed = boxes_by_hand(&mut lp, 2, &osis_label::BoxesPayload::new(&b, p.things.clone(), None, Some((a, Some(osis_commit::FIRST_EPOCH), &old))));
+    assert_eq!(from(&mut lp, &closed), None, "a removed node's key at the closed epoch");
     assert_eq!(from(&mut lp, &blob), Some(a), "the author's chain held: verified");
 }
 
-/// An account (peer 0) that rotated once (removing its second node, peer 1), and a stranger
-/// account (peer 2) holding nothing of it, whose own commits peer 0 holds.
-fn rotated_author() -> (LocalPeer, Tid, Tid) {
+/// An account (peer 0) that rotated once (removing its second node, peer 1, whose key of the
+/// first epoch is returned), and a stranger account (peer 2) holding nothing of it, whose own
+/// commits peer 0 holds.
+fn rotated_author() -> (LocalPeer, Tid, Tid, osis_crypto::SigningSecret) {
     let mut lp = crate::common::net_bare(3, 0);
     let (a, _) = lp.peers[0].engine.create_account().unwrap();
     let n = lp.peers[1].engine.tid();
@@ -374,12 +384,13 @@ fn rotated_author() -> (LocalPeer, Tid, Tid) {
     let (_, sent) = lp.peers[0].engine.pair(&n).unwrap();
     crate::flows::send(&mut lp, 0, 1, &sent);
     lp.peers[1].engine.paired(&a.account).unwrap();
+    let old = lp.peers[1].engine.provers(false).unwrap().into_iter().find(|(_, r)| r.tid() == a.account).expect("the account's key").0;
     let done = lp.peers[0].engine.demote(&a.devices, &Demotion { holder: n, new: None, retain: None }).unwrap();
     assert!(done.commits.iter().any(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.rotation.is_some())), "the account rotated");
     let (b, _) = lp.peers[2].engine.create_account().unwrap();
     let ids = lp.peers[2].engine.commit_ids();
     crate::flows::send(&mut lp, 2, 0, &ids);
-    (lp, a.account, b.account)
+    (lp, a.account, b.account, old)
 }
 
 // spec/sync-set.md §4 (invitations: a thing a held boxes payload offers under a sync ID not kept,
@@ -2005,4 +2016,17 @@ fn a_loose_record_awaited_after_another_arrives_is_learned_spec_commits_4() {
         lp.peers[0].engine.learn_records(vec![later.clone()]).unwrap();
         assert_eq!(lp.peers[0].engine.core.created(&loose.tid()), Some(&loose), "loose_author {loose_author}: awaited once {:?} arrived, now {:?}", later.tid(), lp.peers[0].engine.pending().into_iter().find(|(x, _)| *x == c));
     }
+}
+
+// spec/sync.md §3 (Sync record: a secret only beside a kept sync ID): a genuine sync secret
+// learned from an entry box of a thing this node does not read and keeps no sync ID of writes
+// nothing to the account's record.
+#[test]
+fn a_secret_without_a_kept_sync_id_records_nothing_spec_sync_3() {
+    let (mut lp, t, _, _, _) = granted(Role::Sync);
+    let (e, x) = lp.peers[0].engine.epochs(&t).unwrap().sync.held().map(|(e, x)| (e, x.clone())).next().expect("a sync secret");
+    let p1 = &mut lp.peers[1].engine;
+    assert!(!p1.learn_secret(&t, Role::Sync, e, x).unwrap());
+    let (_, d) = p1.account().unwrap().unwrap();
+    assert!(p1.get_typed(&d, &ct::KEPT).unwrap().is_none_or(|k| !k.contains_key(&t)), "no record entry");
 }

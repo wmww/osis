@@ -14,7 +14,7 @@ use osis_label::{ClaimSet, Class, Parent, Prefix, Step, StepId, StepKeys};
 use osis_proto::{Code, Msg, OfferItem, SharedItem};
 use osis_store::{MemoryBackend, MemoryRoot};
 use osis_sync::Result;
-use osis_sync::inbox::{Act, Facts, Net, Offers, Plan, Progress, Target, act_of, adds_delta, plan, to_clear};
+use osis_sync::inbox::{Act, Facts, Net, Offers, Plan, Progress, Target, act_of, adds_delta, goes_last, plan, to_clear};
 use osis_sync::opens::{Member, Moved};
 use osis_sync::session::RequestId;
 use osis_sync::store::Source;
@@ -398,6 +398,17 @@ fn clearing_keeps_at_most_deposits_waiting_spec_sync_inbox_4() {
     assert!(requests.iter().all(|e| !dropped.contains(&e.blob)), "invite requests last");
     assert!(dropped.contains(&others[0].blob) && dropped.contains(&others[1].blob), "no expiry first");
     assert!(dropped.contains(&others[2].blob) && dropped.contains(&others[3].blob), "then the earliest to expire");
+}
+
+// spec/sync-inbox.md §4 (clearing: opened invite requests and boxes payloads go last): an inbox
+// blob waiting for the user and a boxes payload held as an offer go last; a refused, applied or
+// unopened one does not.
+#[test]
+fn invite_requests_and_offers_go_last_spec_sync_inbox_4() {
+    use osis_engine::sync::Taken;
+    let inbox = |taken: Option<Taken>| Act::Inbox { stamped: false, taken, commit: None, dial: None, expires: None };
+    assert!(goes_last(&inbox(Some(Taken::Waiting))) && goes_last(&inbox(Some(Taken::Offered))));
+    assert!(![inbox(Some(Taken::Refused)), inbox(Some(Taken::Applied)), inbox(None), Act::Waiting { never: false }].iter().any(goes_last));
 }
 
 /// Steps of one sync ID: genesis and children, as an admin issues them.

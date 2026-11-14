@@ -271,7 +271,7 @@ impl Engine {
     /// path records its secrets.
     fn hold_offer(&mut self, blob: &BlobId, a: &Tid, expires: WallMs, p: BoxesPayload) -> Result<Option<InboxOpened>> {
         let boxed = self.boxes_payload_to(a, &p);
-        let from = p.grant.as_ref().filter(|g| crate::apply::held_key(&self.core, &g.author, g.epoch).is_some_and(|k| p.verifies(a, &k))).map(|g| g.author);
+        let from = p.grant.as_ref().filter(|g| crate::apply::open_key(&self.core, &g.author, g.epoch).is_some_and(|k| p.verifies(a, &k))).map(|g| g.author);
         let things: Vec<(Tid, Option<SyncId>)> = p.things.iter().map(|t| (t.tid, t.sync_id)).collect();
         self.offer_of(blob, expires, from, &boxed, &things, p.dial)
     }

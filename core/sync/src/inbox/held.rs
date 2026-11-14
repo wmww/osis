@@ -219,9 +219,7 @@ impl Held {
                 continue;
             }
             let Some(size) = h.store.blob_len(&e.blob)?.filter(|n| *n > 0) else { continue };
-            // an invite request (an opened inbox blob not taken; a refused one is none) or a boxes
-            // payload held as an offer: both go last
-            let request = matches!(act, Some(Act::Inbox { taken: Some(Taken::Waiting | Taken::Offered), .. })) && within_bound(e.expires, h.now);
+            let request = act.is_some_and(goes_last) && within_bound(e.expires, h.now);
             idle.push((e, size, request));
         }
         osis_base::costs::count("inbox: clearing read", idle.len() as u64);
@@ -263,6 +261,12 @@ pub fn to_clear(mut idle: Vec<(Entry, u64, bool)>, now: WallMs) -> Vec<BlobId> {
         bytes = bytes.saturating_sub(size);
     }
     out
+}
+
+/// Whether a deposit clearing counts goes last (spec/sync-inbox.md §4): an invite request (an
+/// opened inbox blob not taken; a refused one is none) or a boxes payload held as an offer.
+pub fn goes_last(act: &Act) -> bool {
+    matches!(act, Act::Inbox { taken: Some(Taken::Waiting | Taken::Offered), .. })
 }
 
 /// The prefix expiry is within `INBOX_LIFETIME + 2 × MAX_DRIFT` of `now` (spec/sync-inbox.md §2).

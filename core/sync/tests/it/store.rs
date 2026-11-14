@@ -1215,9 +1215,10 @@ fn a_stamp_vouches_only_under_the_head_spec_sync_ids_5() {
     }
 }
 
-// spec/sync-inbox.md §2 Taking (a stamp verifying under a write key of the inbox's path): an entry a peer brought with a stamp no write
-// key of S's path verifies is held unflagged and charged, yet its stamp vouches for nothing; a
-// writer's stamp, and one under an earlier step's write key, do.
+// spec/sync-inbox.md §2 Taking (its stamp verifies under the write key of the inbox's head): an
+// entry a peer brought with a stamp no write key of S's path verifies is held unflagged and
+// charged, yet its stamp vouches for nothing; a writer's stamp does, and once the head moves past
+// its write key no more (a removed node keeps the old key and could stamp with it).
 #[test]
 fn only_a_writers_stamp_verifies_spec_sync_inbox_2() {
     let dev = Dev::new();
@@ -1235,5 +1236,5 @@ fn only_a_writers_stamp_verifies_spec_sync_inbox_2() {
     assert!(st.stamp_verifies(&s.id, &b2).unwrap());
     let (g, c) = s.rotate(11);
     assert_eq!(st.take_register(&s.id, &g, Some(&c)).unwrap(), Code::OK);
-    assert!(st.stamp_verifies(&s.id, &b2).unwrap(), "under an earlier step's write key");
+    assert!(!st.stamp_verifies(&s.id, &b2).unwrap(), "under an earlier step's write key: no vouch");
 }

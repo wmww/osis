@@ -443,17 +443,14 @@ impl Store {
         g.read(|t, _| Ok(entries::get(t, s, b)?.map(|r| entries::to_entry(*b, &r))))
     }
 
-    /// Whether entry `b` of S carries a stamp that verifies under the write key of a step of S's
-    /// path held here, the head's first: a writer of S stamped it. A peer's stamp is kept
-    /// unverified (charged as unstamped), so its being there says nothing.
+    /// Whether entry `b` of S carries a stamp that verifies under the write key of S's head held
+    /// here: a current writer of S stamped it (spec/sync-inbox.md §2 Taking; an earlier step's
+    /// key is held by whoever was removed since). A peer's stamp is kept unverified (charged as
+    /// unstamped), so its being there says nothing.
     pub fn stamp_verifies(&self, s: &SyncId, b: &BlobId) -> Result<bool> {
         let Some(e) = self.entry(s, b)? else { return Ok(false) };
-        let Some(stamp) = e.stamp else { return Ok(false) };
         let mut g = self.lock();
-        g.read(|t, _| {
-            let ok = |k: &osis_crypto::VerifyingKey| osis_label::verify_stamp(k, s, b, &e.wrap, &stamp).is_ok();
-            Ok(path::head(t, s)?.is_some_and(|(_, h)| ok(&h.keys.write)) || path::earlier_write(t, s, ok)?)
-        })
+        g.read(|t, _| stamp_vouches(t, s, &e))
     }
 
     /// Every entry of S, durable then ephemeral (stamped reads: memo-safe). O(entries of S).
