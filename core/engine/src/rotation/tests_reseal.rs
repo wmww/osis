@@ -754,9 +754,9 @@ fn relink_without_the_removal_leaks_nothing_spec_crypto_5() {
     assert_ne!(read_v(&mut lp, M), Some(Value::Bytes(v)), "M reads R's edit through V's repair");
 }
 
-// spec/permissions.md §3 (Of a copy opened under a sync ID, a node takes no content part on a
-// thing under an actor with secrets of its own that the sync ID's group actor may not read now,
-// and keeps none of the copy's bytes): peer 0's X derives its secrets from Y, which group G reads
+// spec/permissions.md §3 (Lost access): of a copy opened under a sync ID, a node takes no content
+// part on a thing under an actor with secrets of its own that the sync ID's group actor may not
+// read now, and keeps none of the copy's bytes. Peer 0's X derives its secrets from Y, which group G reads
 // by role; X is filed in G, so G's sync ID carries X's write w as a copy. Once G is removed from
 // Y, peer 1 (a reader of G) opening that copy takes nothing of it
 #[test]
@@ -788,8 +788,8 @@ fn a_stale_copy_gives_no_content_spec_permissions_3() {
     assert!(!lp.peers[1].engine.holds_commit(&w), "nothing of w is held");
 }
 
-// spec/crypto.md §4 (Encrypting under: a node MUST NOT encrypt under an epoch blocked at it,
-// wrapping included; one that may not rotate waits for a rotation): admin A removes reader M; a
+// spec/crypto.md §4 (Encrypting under): a node MUST NOT encrypt under an epoch blocked at it,
+// wrapping included; one that may not rotate waits for a rotation. Admin A removes reader M; a
 // writer W holding the removal but not its rotation (the removal's `secrets.0` part) holds the read epoch M holds as its newest,
 // blocked: W wraps nothing of g under it, A's earlier write included, until the rotation arrives
 #[test]
