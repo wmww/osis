@@ -24,7 +24,10 @@ macro call's or macro_rules' brackets falls through (the macro may read it), as 
 that is not a workspace member or that reaches a proc macro outside DOCS_BLIND (a direct
 dependency's, or one a direct dependency depends on: clap's derive turns doc comments into help
 text); else its crate's doctests run, when it has a library. An added, deleted or untracked .rs
-file falls through.
+file falls through, as does one that is a symlink at either end (its blob is its target) and one
+whose name a one-line call reading a .rs file as text names (`include_str!("../msg.rs")`: a test
+parsing a source sees its comments). The diff is read with --text: a NUL byte makes git call a
+file binary and show no lines.
 """
 import bisect, json, os, re, shlex, subprocess, sys
 
@@ -36,6 +39,7 @@ GUI = ("libs/kit/", "app/")
 DOCS = re.compile(r"(spec|notes|issues)/.*\.md")
 UNIFY = re.compile(r"(.*/)?Cargo\.toml|Cargo\.lock|\.cargo/.*", re.S)
 READERS = r"(include(_str|_bytes)?!|read_to_string|fs::read|File::open|\.join)\(.*(spec|notes|issues)/"
+SOURCE_READERS = r'(include_str!|include_bytes!|read_to_string|fs::read|File::open)\(.*\.rs"'
 # proc macros known to ignore doc attributes; any other reachable one makes a doc comment code
 DOCS_BLIND = {"curve25519-dalek-derive", "jiff-static", "tokio-macros", "tracing-attributes", "zeroize_derive"}
 
@@ -80,7 +84,8 @@ def hunks(base, rev, paths):
     spec = ["--", *(":(literal)" + p for p in paths)]
     rng = [base, *([rev] if rev else [])]
     names = [p.decode("utf-8", "surrogateescape") for p in git("diff", "--no-renames", "--name-only", "-z", *rng, *spec).split(b"\0") if p]
-    patch = git("diff", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color", "-U0", *rng, *spec).decode("utf-8", "replace")
+    # --text: a file git takes for binary (a NUL byte) would show no hunk
+    patch = git("diff", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color", "--text", "-U0", *rng, *spec).decode("utf-8", "replace")
     sections = re.split(r"^diff --git ", patch, flags=re.M)[1:]
     if len(sections) != len(names):
         raise RuntimeError(f"git diff: {len(sections)} sections for {len(names)} paths")
@@ -93,6 +98,22 @@ def hunks(base, rev, paths):
             add += range(c, c + d)
         out[name] = (rem, add)
     return out
+
+
+def links(base, rev, paths):
+    """The `paths` that are not a regular file at base or at rev (a symlink's blob is its target)."""
+    if not paths:
+        return []
+    out = git("diff", "--no-renames", "--raw", "-z", base, *([rev] if rev else []), "--", *(":(literal)" + p for p in paths)).split(b"\0")
+    return sorted({out[k + 1].decode("utf-8", "surrogateescape") for k in range(0, len(out) - 1, 2)
+                   if any(m not in (b"100644", b"100755", b"000000") for m in out[k].lstrip(b":").split()[:2])})
+
+
+def sources_read(paths):
+    """`path: reader` for each of the .rs `paths` whose name a one-line call reading a .rs file as
+    text names (a test parsing a source sees its comments)."""
+    out = subprocess.run(["git", "grep", "-n", "-E", SOURCE_READERS, "--", "*.rs"], capture_output=True, text=True).stdout.splitlines()
+    return [f"{p}: read as text by {l}" for p in paths for l in out if re.search(r"\b" + re.escape(os.path.basename(p)) + '"', l)]
 
 
 def comment_lines(src):
@@ -148,6 +169,7 @@ def rs_verdict(base, rev, paths):
     old, new = blobs(base, paths), blobs(rev, paths)
     present = [p for p in paths if old[p] is not None and new[p] is not None]
     bad, docs = [f"{p}: added or deleted" for p in paths if p not in present], []
+    bad += [f"{p}: not a regular file" for p in links(base, rev, present)] + sources_read(present)
     for p, (rem, add) in hunks(base, rev, present).items():
         doc = False
         for side, nums in (("-", rem), ("+", add)):
