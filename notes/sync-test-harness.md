@@ -1,0 +1,88 @@
+# Sync test harness
+> Summary: Design of the one harness the sync rewrite's tests run on (issues/sync-rewrite.md Phase 4): measured costs of today's node sync tests, nodes stepped deterministically in one process behind the same link seam as QUIC, relay and LAN, shared fixtures copied per test, real crypto and store, four test layers with an instruction budget (the whole sync suite about 1,200 G instructions, about a minute on fastbox-0), and what of today's test code is reused or dropped.
+
+Principle: the marginal test is cheap. A test pays only for the changes it makes on a world someone already built; everything a test does runs the product's sync code byte for byte.
+
+## Measured (main 8ca628b44, fastbox-0)
+Instructions by `tools/icount` on the osis-node `it` binary, one test per process (`--exact --test-threads=1`), with a throwaway probe module of staged setups and per-call counters on osis-crypto's sign, verify, AEAD and KEM functions (patch and probe file kept outside the repo; not committed).
+
+Today's binary: 1,557 node sync tests, 3,489 G in one run (notes/testing.md, Default-test cost), median 0.98 G a test. Five modules (flows, sync_more, retention, deletion, inbox_life; 311 tests) in one process at 8 threads: 381 G, 1.23 G a test.
+
+Staged setup (each line is what that stage adds):
+| stage | instructions | crypto calls |
+|---|---|---|
+| process start | 2.4 M | |
+| today's `Host` (`add_host`), the node keeping data unread | 16 M | |
+| a node with its account | 56 M each | per 2 nodes + `Host`: 12 signs, 8 verifies, 199 AEAD seals, 16 KEM opens, 8 KEM seals, 13 KEM keygens |
+| a group with one other holder (pair, rotation, boxes) | 107 M | 15 signs, 20 verifies, 172 seals, 4 keygens |
+| run to quiet | 220 M (85 deliveries, 36 KB) | 27 signs, 110 verifies, 762 seals, 164 opens |
+| first item, synced | 73 M | |
+| each later write synced to one reader through the `Host` | 59 M (12 deliveries, 2 KB) | 4.9 signs, 13.6 verifies, 180 seals, 41 opens, 2.2 KEM opens |
+| 10 simulated idle minutes on the quiet world | 33 M (8 deliveries) | |
+| a reader restarting in place and resyncing | 71 M (29 deliveries) | |
+| a copy of the cached quiet world (`Net::cached`) | 7.5 M | |
+
+So a quiet world of two nodes, a `Host` and one group costs 455 M, about half a median test, and a copy of it 1.6% of that. Today 192 tests build with `Net::new()` and 358 use cached preludes.
+
+Per call (debug profile, crypto crates at opt-level 2): sign 0.29 M, verify 0.43 M, AEAD over 1 KiB 0.018 M, KEM seal 1.38 M, KEM open 1.13 M, KEM keygen 0.56 M. Crypto is about 24% of a synced write, 33% of settling, 35% of building nodes.
+
+Where the 311 tests' CPU goes (`tools/cpuprof`, inclusive, overlapping): ingest 23%, node-sync passes 18%, crypto 26% (ed25519 verify 8.2%, sign 0.9%, ChaCha 4.6%, x25519 2%, ML-KEM 1.7%, BLAKE3 1.9%), store layer 14% (the pager's commit 7%, `MemoryBackend` itself 0.9%), the debug `check_index` 10.7%, setup helpers (`create_account` 3.6%, `group_at` 5.5%, `pair` 4.3%), world copies 0.45%.
+
+What the numbers say:
+- Setup and settling, not the rule under test, are half of a typical test; copies are nearly free. Fixtures are the first lever.
+- A commit's signature is verified about five times per receiving node (13.6 verifies for two receivers). That is a product cost: the rebuilt sync verifies a signed object once per node (spec-level "verified" is a fact of the held record). Fixing it in the product helps every test and every user; faking crypto would hide it.
+- The store re-seals about 180 pages per synced write. Also a product cost, also not the harness's to hide.
+- The in-memory device is already cheap (0.9%); simulated time already has no sleeps, but tests advance it by hand 2,031 times (retry ticks "tens of seconds" later: a footgun in notes/test-harnesses.md).
+- Three harnesses apply a node's actions (node `Net`, sim `NetSim`, osis `World`), each with its own ordering bugs (hub messages after a call's other outputs). `Net` has 58 public fields, most of them scenario knobs (`tamper`, `hide_blobs`, `trickle`, `hold_blobs`, `deaf`, ...), and a separate `Host` type with about 200 `add_host` calls.
+
+## Architecture
+- **One world, one process, one thread per world.** `World` holds nodes, a link fabric, one manual clock (per-node skew) and a seeded rng. Seeds are 0 in rule tests (notes/testing.md, Conventions); random layers draw from the run's seed.
+- **One node type.** A world node is exactly what the product runs: engine, store, sync. No `Host` type, no test node. A node keeping S unread is an ordinary node granted sync on S through the ordinary grant flow. Reason: the seam the old design never settled was the special node.
+- **Hostile peers are scripted nodes.** A `Scripted` peer owns real keys from the fixture and speaks the wire through the real encoder; it does what its script says (lie in its own log, withhold entries, hold requests open, send malformed frames). It can sign only with its own keys. A lying honest node is an honest node whose outgoing frames pass through a script; no knob in the fabric changes content. Reason: hostile behaviour lives in a library of scripts, not in 40 harness fields.
+- **Every output is applied, in one place.** The sync crate's own `apply` (below) is the only code that carries a node's outputs out; the world calls it and nothing else. Tests act through world methods (write, grant, partition, crash, step, run); no test calls a node's `handle` and drops what it returns. An offline node's dials are answered `Down`.
+- **Time jumps to the next wake.** `run()` delivers until the queue is empty, then jumps the clock to the earliest `Wake` and goes on, until quiet (no queue, no wake before a horizon) or a step cap (the storm guard: panics naming what still flows). `advance(ms)` exists only for tests about time. Reason: no hand-tuned retry advances; idle costs nothing but its wakes.
+- **Scripts, seeds, shrinking from day one.** Every random layer generates a `Vec<Step>` (a `Debug` enum printed as Rust), and one `play(world, &[Step])` runs it. A failure prints the seed, the script as Rust and the replay call. `OSIS_SYNC_SHRINK=1` shrinks: drop chunks (halves down to single steps), then simplify each step (`Step::simpler`), to a fixpoint, replays silent. The shrunk script pasted into a test is the minimal reproducer (never a pinned seed).
+
+## The seam (transports)
+The rebuilt sync core is sans-IO: `Node::handle(Input) -> Outputs`.
+- Inputs: `Up { conn, peer_key, via }` (`via`: direct, relayed, LAN-found), `Bytes { conn, bytes }`, `Closed { conn }`, `Down { conn }`, `Tick { now }`, engine events.
+- Outputs: `Dial { conn, address }`, `Send { conn, bytes }`, `Close { conn }`, `Wake { at }`.
+- `trait Links { fn dial(&mut self, conn, &Address); fn send(&mut self, conn, &[u8]); fn close(&mut self, conn); fn wake(&mut self, at); }`, synchronous; results come back as Inputs. `sync::apply(outputs, &mut impl Links)` is the one place outputs are carried out, with its ordering rules.
+- Implementations: `TransportLinks<T: osis_transport::Transport>` (tokio; QUIC, P2P with relays, LAN, unix, and `InProcess` through `Multi`) for the product, and `FabricLinks` for the harness: a deterministic queue of real encoded frames between world nodes, routed by the reachability model (core/test/sim `reach.rs`: LAN segments, NATs, relays, partitions), so address choice (direct, relayed, LAN) runs as in the product. Sync never knows which it runs on.
+- Fabric faults, content-blind: drop, duplicate, delay (reorders across connections, never within one), cut (both ends told), partition and heal, a node's power loss.
+- Not exercised by the fabric: the async driver and the transports themselves. A few driver tests run `TransportLinks` over `osis_transport::InProcess` and `P2p<MemUdp>` (in process, deterministic, the real P2P and relay code); QUIC on localhost stays by hand.
+
+## Making the marginal test cheap
+| choice | saves | risk | guard |
+|---|---|---|---|
+| **Fixtures built once per process, copied per test** (`osis_base::copying::cached`): a catalog of small quiet worlds keyed by shape (accounts with one or two nodes, contacts exchanged, groups with each role, S kept unread at a node, an inbox), built lazily, each through the product's own flows | the 455 M class of setup per test; a copy is 1.5% of a build | every test sees the same IDs, keys and tie-breaks, so an order-dependent bug can hide | the differential builds fresh worlds per seed with drawn IDs; fixtures are built by the same flows tests use, never by planting rows; two live copies of one fixture in one test are refused (one node twice reuses nonces) |
+| **Real crypto everywhere** | nothing; about a quarter of a test | cost | after fixtures take keygens and boxes, and the product verifies once per node, crypto is roughly a tenth of a marginal test. Rejected: a cheap fake suite. A feature builds another copy of the tree (notes/build.md); a runtime suite switch is a product carve-out; and every hostile test is about signature, wrap and proof checks, so a fake that accepts too much hides exactly what they test |
+| **Real store over the in-memory device** with `osis_store::Faults` | device I/O is already 0.9% | none | store failures and crashes in place are injected through `Faults`, so the same stack is the one that fails |
+| **Clock jumps to the next wake** | idle time and retry waits | a test passes because time never moved | quiet is defined as "no wake before the horizon", and the differential's run ends past every timer the spec names |
+| **Many small tests on one fixture** | setup | tests coupled through a shared builder | a fixture's shape is in its key; changing a shape is changing its key |
+| **Table-driven rule families** (one plain `#[test]` fn per row calling a shared `case(...)`) | writing, not runtime | none | rows stay individual fns so `tools/spec_map.py` sees each name and citation |
+| **Debug checks stay on** (`check_rebuilt`, sampled `check_index`) | none (about 11%) | cost | they are the incremental-against-from-scratch oracle in every test; keep their sampling |
+
+## Layers and budget
+The whole sync suite (the sync crate's one `tests/it` binary) is about 1,200 G instructions: about 430 CPU-s, a minute of wall on fastbox-0 at the usual load. Today's node sync binary alone is 3,489 G.
+
+| layer | what | budget |
+|---|---|---|
+| spec rules | one `#[test]` per spec rule, on a fixture copy: a few writes, the observable checked. Named `<rule>_spec_<file>_<N>`, cited `// spec/sync.md §N (anchor): ...` (tools/spec_map.py); `--gaps` lists the rules with no test | 300 G; median under 0.15 G, cap 1 G a test |
+| differential | random histories (writes, grants, removals, partitions, restarts, losses, a node keeping S unread) on fresh worlds per seed; heal, run to quiet. Oracle, from the history only: every reader of S reads as a reference engine handed every commit written directly (sync's property is perfect delivery; the engine's own read rules are held-model's and the order harness's), and a fresh reader that syncs only through a node keeping S unread reads alike too. One function, size knob | 400 G at small size (about 100 histories of 40 steps); large in release checks |
+| simulations | named scenarios as scripts with fault schedules: lost and duplicated messages, a peer lying in its own log, full peers (caps), crashes and restarts in place, store failures; each bug-scenario of notes/sync-rewrite-inputs.md is one of these or a rule test. Checks at quiet: the differential's oracle plus the scenario's stated outcome | 350 G (about 8 scenarios x 8 seeds) |
+| scale | work counted at n and 10n (deliveries, bytes, store rows, verifies, engine transactions per change), from the fabric's and `costs`' counters; never time | 100 G |
+| driver | `TransportLinks` over `InProcess` and `P2p<MemUdp>` | 50 G |
+
+Enforcement:
+- Per test, deterministic: the world counts deliveries and node calls and panics past the layer's cap (a rule test 2,000 deliveries), so a test that storms or grows fails in the worker's own run, not in a profile weeks later.
+- Per layer and whole: a `sync-tests` row in notes/build.md Time limits (a share of `default-tests`), checked by the gate like every stage; `tools/icount` over the binary per module (`<layer>::`) is the comparable number, and a branch that raises it by more than 5% says why in its review. The test optimizer compares `tools/pertest.py` profiles.
+
+## Reuse and drop
+- Reuse: `osis_base::testenv` (`Seeds`, `run_seeds`, env vars, hung-seed detection), `osis_base::copying` (cached copies and `test_copy` hooks), ephemeral.rs's `Script` printing and `shrinking` (generalized into the harness, with chunked removal and step simplification added), order.rs's settled-tail rule for shrinking, sim `reach.rs`, `osis_store::Faults` and `MemoryBackend`, `osis_transport::InProcess`/`P2p<MemUdp>`, held-model, `tools/icount`, `cpuprof`, `pertest.py`.
+- Drop: node `it`'s `Net` with `Host`, `add_host` and every content knob (tamper, hide, trickle, hold, deaf, bare blobs, hand sessions); sim's `NetSim`, its scenarios and its own action carrier; the osis `World`'s separate sync driver (the osis API's tests drive the same fabric through the handle's manual runtime); pinned seed lists in default tests; hand `advance` loops for retries.
+
+## Open
+- The osis crate's API tests on the same `World`: the handle's manual runtime must plug into `Links`; the integration agent settles the shape.
+- Whether held-model joins the differential's oracle (an independent check of the reference engine) or stays the engine's: decide when Phase 1's retention rules are final.
+- The gate step that reads the sync binary's instruction count: needs a tools/gate.sh change, outside this note.
