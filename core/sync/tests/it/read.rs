@@ -706,6 +706,7 @@ fn covered_delete_waits_max_drift_spec_commits_5() {
     w.settle();
     assert!(w.own_blobs(S, cid(1)).is_empty(), "the own log waits for no drift");
     assert_eq!(w.deletes(), 0, "deleted at K before every node's clock agrees it left history");
+    assert_eq!(w.read.next_wake(), Some(WallMs(5_000)), "no wake at the wait's end");
     w.g.now = 5_000;
     w.settle();
     assert_eq!(w.deletes(), 1, "not deleted once the wait ended");

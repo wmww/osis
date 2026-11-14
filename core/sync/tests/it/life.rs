@@ -1,6 +1,7 @@
 //! Lifecycle duties the engine judges and sync drives (notes/sync-driver.md, Duties).
 
 use crate::harness::history::file;
+use crate::harness::lies::Lie;
 use crate::harness::{World, fixture_with, siblings};
 use osis_base::{Ak, Tid, Value};
 use osis_engine::Mutation;
@@ -47,7 +48,9 @@ fn unreference(w: &mut World, r: Tid) {
 // spec/commits.md §5 (Lifetimes: a node judges once, for each sync ID carrying X, a source of it
 // is connected and the node holds everything it holds there; offline it releases nothing): X,
 // under D's sync ID, is unreachable once R stops referencing it; cut off from its sibling node 1
-// keeps it, and releases it once D is heard out again, which node 2 then holds.
+// keeps it, and releases it once D is heard out again, which node 2 then holds. Node 2 shows none
+// of its own new entries meanwhile (`Lie::Withhold`), so the release is node 1's judgment of the
+// thing it held, not node 2's of the write reaching it.
 #[test]
 fn an_unreachable_thing_is_released_once_heard_out_spec_commits_5() {
     let (mut w, r, x) = retained();
@@ -56,6 +59,7 @@ fn an_unreachable_thing_is_released_once_heard_out_spec_commits_5() {
     unreference(&mut w, r);
     w.flush();
     assert_eq!(w.engine(1).get(&x, &v()).unwrap(), Some(Value::Str("x".into())), "released offline");
+    w.lie(2, Some(Lie::Withhold));
     w.heal();
     w.run();
     assert_eq!(w.engine(1).get(&x, &v()).unwrap(), None, "not released once heard out");
