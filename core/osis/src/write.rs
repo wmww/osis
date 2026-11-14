@@ -10,14 +10,13 @@
 use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::share::Member;
-use crate::sources::Source;
 use crate::keys::DynamicAspectKey;
 use crate::read::{Reader, ak_of};
 use osis_base::{Ak, CreationRecord, Role, Tid, Value, Time};
 use osis_commit::PurgeItem;
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use crate::commit_id::CommitId;
-use osis_node::Mutation;
+use osis_engine::Mutation;
 use osis_schema::{AspectKey, SignalKey, ValueKey};
 use osis_schema::core_types::{GROUP, RELEASED, RETAINERS, is_role_class};
 use osis_schema::{RawKey, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
@@ -80,18 +79,6 @@ enum WriteOp {
     /// Adds `by` to `thing`'s retainers; `by`'s aspect `key` must reference `thing` after the
     /// commit.
     Retain { by: Tid, key: u32, thing: Tid },
-}
-
-impl WriteOp {
-    /// The things it writes; none for a create (it goes where its write goes).
-    fn tids(&self) -> Vec<Tid> {
-        match self {
-            WriteOp::Create(_) => Vec::new(),
-            WriteOp::Retain { by, thing, .. } => vec![*by, *thing],
-            WriteOp::Delete(t) | WriteOp::PurgeThing(t) | WriteOp::Release(t) | WriteOp::Group { g: t, .. } => vec![*t],
-            WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => vec![*tid],
-        }
-    }
 }
 
 /// Writes that become one commit (two: below), all or nothing. Reads meanwhile do not see them. What cannot share
@@ -207,9 +194,9 @@ impl<'d> Write<'d> {
         self
     }
 
-    /// `t`, failing `UnknownThing` when it is not held; a node it goes to checks at replay.
+    /// `t`, failing `UnknownThing` when it is not held.
     fn known(&self, t: Tid) -> Result<Tid> {
-        if self.created.contains(&t) || !self.db.is_local(t) || self.db.holds(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
+        if self.created.contains(&t) || self.db.holds(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
     }
 
     /// The index of `key` (AK `ak`) in the key table: one entry, and one copy of its schema,
@@ -324,16 +311,6 @@ impl<'d> Write<'d> {
         AspectWrite { w: self, tid, key, ix }
     }
 
-    /// The things that decide the write's source: those it names but does not create; creates
-    /// only: their first admins.
-    fn deciders(&self) -> Vec<Tid> {
-        let named: Vec<Tid> = self.ops.iter().flat_map(WriteOp::tids).filter(|t| !self.created.contains(t)).collect();
-        if !named.is_empty() {
-            return named;
-        }
-        self.ops.iter().filter_map(|o| if let WriteOp::Create(CreationRecord::Thing { admin, .. }) = o { Some(*admin) } else { None }).filter(|t| !self.created.contains(t)).collect()
-    }
-
     /// Writes every op as one commit (two for what `Write` names); `None` when it writes none (nothing
     /// changes, or only a `delete`'s ephemeral values here). Fails before anything applies
     /// with `Permission`, `UnknownThing`, or `Invalid` (also when the ops cannot share a commit:
@@ -343,24 +320,14 @@ impl<'d> Write<'d> {
         if let Some(e) = self.refused {
             return Err(e);
         }
-        let deciders = self.deciders();
-        if let Source::Node(r) = self.db.source_write_all(&deciders)? {
-            let db = self.db;
-            if self.alive.is_some() {
-                return Err(Error::Unsupported("text sessions through another node".into()));
-            }
-            return db.node_write(&r, self.wire(&r)?);
-        }
         let db = self.db;
-        db.after_source();
         let limit = db.inner.limit;
         let expires = self.expires.map(|e| expiry_at(db, e)).transpose()?;
         let (r, removed) = db.locked(|l| {
             // the source invariant's second half: under the lock this commit takes, every thing it
             // writes is still this engine's. A write decided Local before a move fails here, never
             // lands in a group that no longer syncs (crate::sources)
-            db.guard_local(l, &deciders)?;
-            let e = l.engine();
+            let e = &mut l.engine;
             if let Some(t) = self.alive
                 && !crate::read::knows_in(e, t)?
             {
@@ -387,39 +354,6 @@ impl<'d> Write<'d> {
         })?;
         db.untie_now(&removed);
         Ok(r)
-    }
-
-    /// The write in its wire form (notes/client-port.md §2): `[actor, [ak*], [op*], expires?]`.
-    fn wire(&self, there: &crate::port::client::Connection) -> Result<Vec<Value>> {
-        use crate::port::codec::{op_v, u, v};
-        if self.ops.len() > crate::port::MAX_WRITE_OPS {
-            return Err(Error::Invalid(format!("a write to another node holds at most {} ops", crate::port::MAX_WRITE_OPS)));
-        }
-        let t = Value::Tid;
-        let ops = self
-            .ops
-            .iter()
-            .map(|o| {
-                Ok(Value::List(match o {
-                    WriteOp::Create(rec) => vec![u(0), rec.to_value()],
-                    WriteOp::Group { g, member, items, add } => vec![u(2), t(*g), t(*member), Value::Bool(*items), Value::Bool(*add)],
-                    WriteOp::Path { tid, key, op } => vec![u(3), t(*tid), u(u64::from(*key)), op_v(op)?],
-                    WriteOp::Retention { tid, key, r } => vec![u(5), t(*tid), u(u64::from(*key)), v(r)],
-                    WriteOp::Purge { tid, key } => vec![u(6), t(*tid), u(u64::from(*key))],
-                    WriteOp::Delete(x) => vec![u(7), t(*x)],
-                    WriteOp::PurgeThing(x) => vec![u(11), t(*x)],
-                    WriteOp::Release(x) => vec![u(12), t(*x)],
-                    WriteOp::Retain { by, key, thing } => vec![u(13), t(*by), u(u64::from(*key)), t(*thing)],
-                    WriteOp::PurgeCommit { tid, key, commit } => vec![u(8), t(*tid), u(u64::from(*key)), Value::bytes(&commit.0)],
-                    WriteOp::PurgeAuthor { tid, key, actor } => vec![u(9), t(*tid), u(u64::from(*key)), t(*actor)],
-                    WriteOp::Fire { tid, key, v, replaces } => vec![u(10), t(*tid), u(u64::from(*key)), v.clone(), crate::port::codec::v(replaces)],
-                }))
-            })
-            .collect::<Result<Vec<Value>>>()?;
-        // not named by `act_as`: whoever this process is at that node
-        let actor = if self.actor == self.db.me() { there.acts_as().unwrap_or(self.actor) } else { self.actor };
-        let expires = self.expires.map(|e| expiry_at(self.db, e)).transpose()?;
-        Ok(vec![t(actor), Value::List(self.keys.iter().map(|k| v(&k.ak)).collect()), Value::List(ops), v(&expires)])
     }
 
     /// The engine mutation of the recorded ops, against the state `r` holds (`delete`).
@@ -563,102 +497,6 @@ impl<'d> Write<'d> {
     }
 }
 
-impl Osis {
-    /// Commits a write received in wire form (`Write::wire`) as this node's own: tids resolved
-    /// and checked as the recorder checks them locally, keys typed by this node's schemas.
-    pub(crate) fn replay(&self, args: Vec<Value>) -> Result<Option<Commit>> {
-        use crate::port::codec::{Args, bad, of, op};
-        let mut a = Args::of(args);
-        let actor = a.tid()?;
-        if self.acting.is_some_and(|x| x != actor) {
-            return Err(Error::Invalid("a client writes only as its own actor".into()));
-        }
-        let keys: Vec<DynamicAspectKey> = a.get::<Vec<osis_base::Ak>>()?.iter().map(|ak| self.aspect_key(ak.as_str())).collect::<Result<_>>()?;
-        if let Some(why) = keys.iter().find_map(|k| not_writable(k.ak.as_str())) {
-            return Err(Error::Invalid(why));
-        }
-        let raw = a.list()?;
-        let expires = a.get::<Option<Time>>()?.map(Expiry::At);
-        a.end()?;
-        if raw.len() > crate::port::MAX_WRITE_OPS {
-            return Err(bad("write (too many ops)"));
-        }
-        let mut w = self.write();
-        w.act_as(actor);
-        w.expires = expires;
-        w.keys = keys;
-        let nkeys = w.keys.len();
-        let key = |k: u64| u32::try_from(k).ok().filter(|k| (*k as usize) < nkeys).ok_or_else(|| bad("key index"));
-        for o in raw {
-            let mut o = Args::new(o)?;
-            let op = match o.uint()? {
-                0 => {
-                    let rec = CreationRecord::from_value(&o.next()?).ok_or_else(|| bad("creation record"))?;
-                    if !matches!(rec, CreationRecord::Thing { .. }) {
-                        return Err(bad("creation record"));
-                    }
-                    w.created.push(rec.tid());
-                    WriteOp::Create(rec)
-                }
-                2 => WriteOp::Group { g: w.known(o.tid()?)?, member: o.tid()?, items: o.bool()?, add: o.bool()? },
-                3 => {
-                    let (tid, k, p) = (o.tid()?, key(o.uint()?)?, op(o.next()?)?);
-                    // a link is the node's: this one would name a blob of something it may not
-                    // read, or none at all, for every reader of the aspect
-                    if self.acting.is_some() && op_links(&p) {
-                        return Err(Error::Invalid("a client writes values, not links".into()));
-                    }
-                    WriteOp::Path { tid, key: k, op: p }
-                }
-                5 => WriteOp::Retention { tid: o.tid()?, key: key(o.uint()?)?, r: of(o.next()?)? },
-                6 => WriteOp::Purge { tid: o.tid()?, key: key(o.uint()?)? },
-                7 => WriteOp::Delete(w.known(o.tid()?)?),
-                11 => WriteOp::PurgeThing(w.known(o.tid()?)?),
-                12 => WriteOp::Release(w.known(o.tid()?)?),
-                13 => WriteOp::Retain { by: o.tid()?, key: key(o.uint()?)?, thing: o.tid()? },
-                8 => WriteOp::PurgeCommit { tid: o.tid()?, key: key(o.uint()?)?, commit: crate::port::codec::of(o.next()?)? },
-                9 => WriteOp::PurgeAuthor { tid: o.tid()?, key: key(o.uint()?)?, actor: o.tid()? },
-                10 => {
-                    let (tid, k, v) = (o.tid()?, key(o.uint()?)?, o.next()?);
-                    let replaces = o.get()?;
-                    if self.acting.is_some() && op_links(&PathOp { path: Vec::new(), op: Op::Set(v.clone()) }) {
-                        return Err(Error::Invalid("a client writes values, not links".into()));
-                    }
-                    WriteOp::Fire { tid, key: k, v, replaces }
-                }
-                _ => return Err(bad("op kind")),
-            };
-            o.end()?;
-            w.ops.push(op);
-        }
-        for t in w.ops.iter().flat_map(WriteOp::tids).collect::<Vec<_>>() {
-            w.known(t)?;
-        }
-        w.commit()
-    }
-}
-
-/// Whether `p` holds a link, in its path or its values.
-fn op_links(p: &PathOp) -> bool {
-    fn link(v: &Value) -> bool {
-        match v {
-            Value::Link(_) => true,
-            Value::List(l) => l.iter().any(link),
-            Value::Set(s) => s.iter().any(link),
-            Value::Map(m) => m.iter().any(|(k, x)| link(k) || link(x)),
-            Value::Enum(_, Some(x)) => link(x),
-            _ => false,
-        }
-    }
-    p.path.iter().any(|s| matches!(s, PathSeg::Key(k) if link(k)))
-        || match &p.op {
-            Op::Set(v) | Op::Replace(v) | Op::Put(v) | Op::Add(v) | Op::Remove(v) | Op::Inc(v) => link(v),
-            Op::Insert { items, .. } | Op::InsertAfter { items, .. } => items.iter().any(link),
-            Op::Edit { base, new } => link(base) || link(new),
-            Op::RemoveAspect | Op::Delete { .. } | Op::DeleteDots { .. } | Op::Move { .. } | Op::Paste { .. } => false,
-        }
-}
-
 /// A write's engine mutation and the memberships its commit acts on.
 struct Built {
     m: Mutation,
@@ -685,7 +523,7 @@ impl Built {
 
 /// Reports added things that no synced group holds (spec/requirements.md, Offline
 /// and network).
-fn not_synced(e: &mut osis_node::Engine, added: &[(Tid, Tid)], sharing: bool) {
+fn not_synced(e: &mut osis_engine::Engine, added: &[(Tid, Tid)], sharing: bool) {
     if added.is_empty() {
         return;
     }
@@ -696,9 +534,9 @@ fn not_synced(e: &mut osis_node::Engine, added: &[(Tid, Tid)], sharing: bool) {
             if sharing {
                 continue;
             }
-            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t, *g], commit: None, peer: None, detail: "in a group whose holders may not read it: it does not reach them (add_with_grant)".into() });
+            e.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::NotSynced, tids: vec![*t, *g], commit: None, peer: None, detail: "in a group whose holders may not read it: it does not reach them (add_with_grant)".into() });
         } else if !e.carried(t) {
-            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "only in groups no synced group holds: it stays on this node".into() });
+            e.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "only in groups no synced group holds: it stays on this node".into() });
         }
     }
 }

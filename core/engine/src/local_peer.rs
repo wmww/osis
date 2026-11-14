@@ -68,8 +68,7 @@ pub struct Peer {
     pub discarded: Vec<Discarded>,
     /// How many packages the engine threw out so far.
     pub discards: u64,
-    /// How many carriers of a commit named for redelivery were ingested again (node-sync's
-    /// `SyncEngine::redelivered`).
+    /// How many carriers of a commit named for redelivery were ingested again.
     pub redelivered: u64,
 }
 

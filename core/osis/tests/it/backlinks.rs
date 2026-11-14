@@ -4,8 +4,8 @@
 
 use crate::common::*;
 use osis::internals::Internals as _;
-use osis::internals::node::costs;
-use osis::{Backlink, BacklinkPage, BacklinkQuery, DynamicAspectKey, MemStore, Osis, Role, SetRoleOpts, Tid, Value, p};
+use osis::internals::costs;
+use osis::{Backlink, BacklinkPage, BacklinkQuery, DynamicAspectKey, MemStore, Osis, Role, Tid, Value, p};
 use std::sync::{Arc, Mutex};
 
 fn key(k: &str) -> DynamicAspectKey {
@@ -224,37 +224,3 @@ fn live_through_add_remove_expiry_purge() {
     assert_eq!(heard.take(&db), vec![vec![]], "purged");
 }
 
-// notes/api.md Backlinks: a reference whose write turns invalid (its writer removed with a
-// frontier that omits it) leaves the page, and the listener hears it.
-#[test]
-fn a_validity_flip_is_heard() {
-    let (mut w, alice, mut others, ids) = crate::common::people(1);
-    let (bob, b) = (others.remove(0), ids[0]);
-    let g = alice
-        .commit_with(|x| {
-            let g = x.create()?;
-            x.group(alice.home()).add(osis::Member::Item(g))?;
-            Ok(g)
-        })
-        .unwrap();
-    alice.sync(g, &[]).unwrap();
-    alice.grant(g, b, Role::Write, Default::default()).unwrap();
-    w.run();
-    for r in bob.invite_requests().unwrap_or_default() {
-        let _ = bob.accept_invite(r);
-    }
-    w.run();
-    w.set_online(&bob, false);
-    w.advance(1000);
-    alice.set_role(g, b, None, SetRoleOpts { retain_copy: Some(true) }).unwrap();
-    w.run();
-    let target = alice.home();
-    let heard = Heard::on(&bob, target, &BacklinkQuery::default());
-    bob.commit_with(|x| x.at(g, key("t:a.0")).set(&Value::Tid(target))).unwrap();
-    assert!(heard.take(&bob).last().is_some_and(|p| p.contains(&bl(g, "t:a.0"))), "valid where written");
-    w.set_online(&bob, true);
-    w.advance(60_000);
-    w.run();
-    assert!(!all(&bob, target).contains(&bl(g, "t:a.0")), "invalid once the removal arrives");
-    assert!(heard.take(&bob).last().is_some_and(|p| !p.contains(&bl(g, "t:a.0"))), "heard");
-}

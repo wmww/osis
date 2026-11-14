@@ -516,11 +516,6 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
         crate::retention::destroy::record_back(tx, &t)?;
     }
     crate::retention::lifetimes::queue_with_listers(tx, &t)?;
-    // the reader actor of the thing's deltas is known now
-    let touching: Vec<CommitId> = tx.core.aspects_of(&t).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
-    for c in touching {
-        tx.core.mark_changed(c);
-    }
     Ok(true)
 }
 
@@ -592,7 +587,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
     let hold = (0..h.aspects.len()).map(|ai| if missing.contains(&ai) { Hold::Missing(Missing::Plain) } else { Hold::Body { whole: false } }).collect();
     let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), hold };
-    crate::retention::fetch_fallen(tx, &h, &id, &missing)?;
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
     // held now: what it names is judged (`lists::put_names`)
@@ -632,8 +626,8 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         // an own edge with an `until` (a self-demotion): judged when it passes
         crate::rotation::arm_untils(tx, rosters.iter().copied())?;
     }
-    // a memory commit is ephemeral state to watchers; node-sync carries its bodies as any
-    // commit's (`mark_changed`)
+    // a memory commit is ephemeral state to watchers; sync carries its bodies as any
+    // commit's
     crate::retention::compact::Trigger::applied(tx, &id, &h, blob)?;
     if h.ephemeral.is_some() {
         tx.core.events.queue(Event::Ephemeral { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
@@ -787,9 +781,6 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     }
     tx.core.events.queue(Event::Joined { id: *id, origin: meta.origin, author: h.author, actor: h.actor, ts: h.ts, received: meta.received });
     let changed = j.changed;
-    for (t, a) in &changed {
-        tx.core.mark_aspect_changed(t, a);
-    }
     if !changed.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::LateDelta, changed: changed.into_iter().collect() });
     }
@@ -1170,7 +1161,6 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     // a signal has no state: a validity change or a drop only changes which bodies count
     // (spec/commits.md §5 Signals)
     if ak.signal() {
-        tx.core.mark_aspect_changed(tid, ak);
         return Ok(());
     }
     tx.core.rebuilds += 1;
@@ -1199,7 +1189,6 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         observe_state(tx, tid, ak)?;
     }
     crate::retention::mark_bounded(tx, tid, ak);
-    tx.core.mark_aspect_changed(tid, ak);
     Ok(())
 }
 
@@ -1213,7 +1202,6 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 /// copy elsewhere would keep showing, so that expiry rebuilds instead.
 pub(crate) fn strip_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment, own: &[Owned]) -> Result<()> {
     if ak.signal() {
-        tx.core.mark_aspect_changed(tid, ak);
         return Ok(());
     }
     let k = (*tid, ak.clone());
@@ -1248,7 +1236,6 @@ pub(crate) fn strip_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment, ow
     if ak.as_str() == "group.0" {
         observe_state(tx, tid, ak)?;
     }
-    tx.core.mark_aspect_changed(tid, ak);
     Ok(())
 }
 

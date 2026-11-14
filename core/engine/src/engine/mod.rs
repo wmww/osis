@@ -58,7 +58,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Config {
-        Config { software: format!("osis-node {}", env!("CARGO_PKG_VERSION")), store: StoreConfig::default() }
+        Config { software: format!("osis-engine {}", env!("CARGO_PKG_VERSION")), store: StoreConfig::default() }
     }
 }
 
@@ -1302,9 +1302,9 @@ pub struct Core {
     /// The commits on durable signal aspects `edits::settle` refolds besides those the journal
     /// names: a keep bound passed with no meta changing (`edits::time_passed`).
     pub refold: BTreeSet<(Tid, Ak, CommitId)>,
-    /// What changed since node-sync last took it (`Engine::take_changed`; `None`: no
-    /// node-sync, nothing kept). A mark from an aborted transaction stays: one extra judgment.
-    pub changed: Option<Changed>,
+    /// What brings back what the node could not judge, since a test peer last took it
+    /// (`Engine::take_wakes`; `None`: nothing kept).
+    pub wakes: Option<Wakes>,
     /// Owed re-snapshots to try at the next `Engine::purge_resnapshots`
     /// (`Indexes::resnapshots_owed`): newly owed, every one at open, and those on a thing that
     /// may be written on now (`replace::wake_covers`).
@@ -1335,8 +1335,6 @@ pub struct Core {
     /// Bumped whenever a transaction changes the indexes or a state, rolls back, or the caches
     /// reload (it never goes back): caches derived from them (the sync engine's) compare it.
     pub generation: u64,
-    /// Bumped by every `role_changed` (roster or read secrets): the node's `changed_at` pass.
-    pub role_generation: u64,
     /// `generation` for memory transactions (`Tx::set_memory`): what they change is in memory
     /// only, so durable-derived caches (node-sync's) keep theirs.
     pub memory_generation: u64,
@@ -1350,10 +1348,8 @@ pub struct Core {
     pub memory_waits: BTreeSet<CommitId>,
     /// Walks of what waiting commits link, kept for node-sync (`Engine::blob_wants`).
     pub(crate) walks: crate::apply::reach::Walks,
-    /// Labels this node made, not yet seen by node-sync (`take_made_labels`).
-    pub made_labels: Vec<osis_base::LabelId>,
     /// Debug builds: the cache hits compared with a fresh read at this point of the store
-    /// (`Engine::recheck`).
+    /// (`Tx::recheck`).
     #[cfg(debug_assertions)]
     pub(crate) rechecked: ((u64, u64, u64), BTreeSet<String>),
     /// `Engine::labels_of` per group (`memo`).
@@ -1481,7 +1477,7 @@ impl Core {
             destroyed_secrets_due: self.destroyed_secrets_due.clone(),
             cut_subs: self.cut_subs.clone(),
             refold: self.refold.clone(),
-            changed: self.changed.clone(),
+            wakes: self.wakes.clone(),
             resnapshots_due: self.resnapshots_due.clone(),
             missed: self.missed.clone(),
             bodies: self.bodies.clone(),
@@ -1491,13 +1487,11 @@ impl Core {
             rebuilds: self.rebuilds.clone(),
             decoded: self.decoded.clone(),
             generation: self.generation.clone(),
-            role_generation: self.role_generation.clone(),
             memory_generation: self.memory_generation.clone(),
             memory_tx: self.memory_tx.clone(),
             memory_room: self.memory_room,
             memory_waits: self.memory_waits.clone(),
             walks: self.walks.clone(),
-            made_labels: self.made_labels.clone(),
             #[cfg(debug_assertions)]
             rechecked: self.rechecked.clone(),
             #[cfg(debug_assertions)]
@@ -1528,24 +1522,6 @@ pub trait SyncRecords: Sync {
     fn forget(&self, tx: &mut Tx<'_>, labels: &BTreeSet<osis_base::LabelId>, things: &BTreeSet<Tid>, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>, extra: BTreeSet<osis_base::BlobId>) -> Result<BTreeSet<osis_base::BlobId>>;
 }
 
-/// What node-sync judges again (`Core::changed`).
-#[derive(Clone, Debug, Default)]
-pub struct Changed {
-    /// Commits whose record, parts, validity, bodies, replacement or timers changed.
-    pub commits: BTreeSet<CommitId>,
-    /// Aspects whose state changed other than by a valid write's join (a validity flip, an
-    /// un-merge, expiry, purge, a late delta): what waits on the state is judged again.
-    pub aspects: BTreeSet<(Tid, Ak)>,
-    /// Commits with a part missing again (a cover that no longer carries it, `retention::uncover`;
-    /// a purge's fall, `purge::rejudge_purges`; valid again, `retention::valid_again`): node-sync
-    /// fetches its entries again.
-    pub undropped: BTreeSet<CommitId>,
-    /// (holder, target) edges whose current value changed (`osis_perm::Changed::edges`).
-    pub edges: BTreeSet<(Tid, Tid)>,
-    /// What node-sync fetches again (`waits::wake`).
-    pub wakes: Wakes,
-}
-
 /// What brings back what the node could not judge (notes/expiry-creation-design.md §3).
 #[derive(Clone, Debug, Default)]
 pub struct Wakes {
@@ -1559,18 +1535,6 @@ pub struct Wakes {
     pub woken: BTreeSet<CommitId>,
     /// Every awaiting entry is fetched again (a key actor taken up: boxes may open to it).
     pub reopen_awaits: bool,
-}
-
-impl Wakes {
-    fn take(&mut self) -> Wakes {
-        std::mem::take(self)
-    }
-}
-
-impl Changed {
-    pub fn is_empty(&self) -> bool {
-        self.commits.is_empty() && self.aspects.is_empty() && self.undropped.is_empty() && self.edges.is_empty()
-    }
 }
 
 /// (actor, role, epoch) -> the commit that introduced it: (ts, commit ID).
@@ -1640,9 +1604,6 @@ impl Core {
             }
         }
         self.stale_under.extend(under);
-        if let Some(s) = &mut self.changed {
-            s.edges.extend(c.edges);
-        }
     }
 
     /// The commits of `index` (by (thing, author)) on `under` by `authors`: O(the things and their
@@ -1709,11 +1670,6 @@ impl Core {
             }
         }
         out
-    }
-
-    /// Moves `role_generation`: called wherever rosters, `secrets.0` or held epochs change.
-    pub fn role_changed(&mut self) {
-        self.role_generation += 1;
     }
 
     /// Whether `t` exists here: its record is held and it has not been destroyed. What may read a thing
@@ -1797,39 +1753,11 @@ impl Core {
                 crate::sides::after_update(self);
             }
         }
-        self.role_changed();
     }
 
     /// Whether some validity waits for `rejudge_all`.
     pub fn stale(&self) -> bool {
         self.stale_all || !self.stale_things.is_empty() || !self.stale_commits.is_empty() || !self.stale_authors.is_empty() || !self.ix.epochs_due.is_empty()
-    }
-
-    /// A write changes a state of aspect `ak`: a role-class one moves what `role_changed` keys.
-    fn state_changed(&mut self, ak: &Ak) {
-        if osis_schema::core_types::is_role_class(ak.as_str()) {
-            self.role_changed();
-        }
-    }
-
-    /// Marks commit `c` changed for node-sync (`changed`): its labels' passes judge it again
-    /// (a memory commit's too: its bodies travel the same path, spec/sync-compaction.md §2).
-    pub fn mark_changed(&mut self, c: CommitId) {
-        if let Some(s) = &mut self.changed {
-            s.commits.insert(c);
-        }
-    }
-
-    /// Marks the state of `(tid, ak)` changed for node-sync (`changed`): the commits whose
-    /// parts changed are marked on their own. Not in a memory transaction (a durable one
-    /// touching a memory aspect marks it: one extra judgment).
-    pub fn mark_aspect_changed(&mut self, tid: &Tid, ak: &Ak) {
-        if self.memory_tx {
-            return;
-        }
-        if let Some(s) = &mut self.changed {
-            s.aspects.insert((*tid, ak.clone()));
-        }
     }
 
     /// Notes that the running transaction writes the state of `k` (evicted on rollback).
@@ -1941,7 +1869,6 @@ impl Core {
             } else {
                 self.generation += 1;
             }
-            self.role_changed();
             for k in self.written.split_off(m.written) {
                 self.states.remove(&k);
                 self.pages.remove(&k);
@@ -1997,7 +1924,6 @@ impl Core {
             stale_all: _,
             batched: _,
             memory_tx: _,
-            made_labels: _,
             dirty: _,
             // taken by node-sync, kept: a flip rolled back only reports once more (one more
             // placement again, one more relist)
@@ -2050,7 +1976,6 @@ impl Core {
             generation: _,
             // the store's count, read by `changed_since`
             store_rows: _,
-            role_generation: _,
             memory_generation: _,
             // work lists and hints a superset of which is harmless (the consumer re-checks each
             // entry against the restored state), and what a step only moves forward
@@ -2068,7 +1993,7 @@ impl Core {
             destroyed_due: _,
             destroyed_kept: _,
             lifetimes_rights: _,
-            changed: _,
+            wakes: _,
             resnapshots_due: _,
             redeliver: _,
             pended: _,
@@ -2307,7 +2232,7 @@ impl Core {
             destroyed_secrets_due: BTreeSet::new(),
             cut_subs: BTreeSet::new(),
             refold: BTreeSet::new(),
-            changed: None,
+            wakes: None,
             resnapshots_due: BTreeSet::new(),
             sync_records: None,
             missed: BTreeSet::new(),
@@ -2318,13 +2243,11 @@ impl Core {
             rebuilds: 0,
             decoded: Default::default(),
             generation: 0,
-            role_generation: 0,
             memory_generation: 0,
             memory_tx: false,
             memory_room: None,
             memory_waits: BTreeSet::new(),
             walks: Default::default(),
-            made_labels: Vec::new(),
             #[cfg(debug_assertions)]
             rechecked: Default::default(),
             #[cfg(debug_assertions)]
@@ -2339,7 +2262,7 @@ impl Core {
         self.hlc.wall()
     }
 
-    /// `Engine::recheck` at point `at`. Never inside a memo's comparison (`memo::comparing`): it
+    /// `Tx::recheck` at point `at`. Never inside a memo's comparison (`memo::comparing`): it
     /// checks the memo, and the hits of the caches it reads are checked where they are read
     /// outside one.
     #[cfg(debug_assertions)]
@@ -2617,7 +2540,7 @@ pub struct Tx<'a> {
 
 impl Tx<'_> {
     /// Makes this a memory transaction: every new row in the store's memory overlay, the
-    /// change counter `memory_generation`, nothing marked for node-sync (`Core::changed`).
+    /// change counter `memory_generation`.
     pub fn set_memory(&mut self) {
         self.txn.set_memory(true);
         self.core.memory_tx = true;
@@ -2893,7 +2816,6 @@ impl Tx<'_> {
             }
             pages::Reset::Paged { skeleton, unit, changes } => {
                 let _s = osis_base::costs::span("reset: by pages");
-                self.core.state_changed(ak);
                 let mut u = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
                 u.state = unit;
                 self.txn.put_aspect(tid, ak, &u, Shred::No)?;
@@ -2964,7 +2886,6 @@ impl Tx<'_> {
     /// `set_state` for a join, whose caller keeps the reference index (`refs::Delta::reach`).
     fn write_state(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, shred: Shred) -> Result<()> {
         self.core.touch();
-        self.core.state_changed(ak);
         self.core.wrote((*tid, ak.clone()));
         let mut unit = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
         let (bytes, idx) = pages::write_full(&mut self.txn, tid, ak, f.as_ref(), pages::is_paged(&unit.state), &self.core.key_salt)?;
@@ -3001,7 +2922,6 @@ impl Tx<'_> {
     /// else is written whole (the pages not loaded joined in first). The caller has noted the
     /// state as written (`Core::written`).
     pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touch: &pages::Touch, shred: Shred) -> Result<()> {
-        self.core.state_changed(ak);
         let k = (*tid, ak.clone());
         if let (Some(st), Some(idx), Some(touch)) = (&f, self.core.pages.get_mut(&k), touch)
             && let Some(unit_state) = pages::write_touched(&mut self.txn, idx, tid, ak, st, touch, shred)?
@@ -3031,7 +2951,6 @@ impl Tx<'_> {
     /// they keep; then its blob), and for a role commit its `node/edges` row (`edges`: what the caller already
     /// read of `blob` with `edge_parts_of`, else decoded here).
     pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
-        self.core.mark_changed(*id);
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
         if meta.header.kind.is_role() {
@@ -3264,17 +3183,6 @@ impl Engine {
         (self.store.changes(), self.core.generation, self.core.memory_generation, self.core.now().0)
     }
 
-    /// Debug builds: whether a cache hit of `what` is worth comparing with a fresh read: one
-    /// comparison per state of the store and indexes checks all that can be checked (repeats held
-    /// a quarter of the CPU of `osis`'s tests, notes/testing.md, Default-test cost). The clock is not part of it (a
-    /// running one moves at nearly every hit): a cache whose answer moves with time names that
-    /// time in `what`.
-    #[cfg(debug_assertions)]
-    pub fn recheck(&mut self, what: String) -> bool {
-        let at = (self.store.changes(), self.core.generation, self.core.memory_generation);
-        self.core.recheck_at(at, what)
-    }
-
     /// A new node over an empty backend: fresh identity, its node thing with `created.0`,
     /// `node.0` and `keys.0` (spec/permissions.md §4 node card).
     pub fn create(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, blobs: Arc<dyn osis_store::Ciphertext>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Engine> {
@@ -3480,16 +3388,11 @@ impl Engine {
         self.core.sync_records = Some(r);
     }
 
-    /// What changed since the last call (`Core::changed`), keeping it from now on.
-    pub fn take_changed(&mut self) -> Changed {
-        self.core.changed.replace(Changed::default()).unwrap_or_default()
-    }
-
-    /// Only the wakes of `Changed`, the rest kept for `take_changed` (a test standing in for
-    /// node-sync's fetches).
+    /// What brings back what the node could not judge since the last call, keeping it from now
+    /// on (a test peer's fetches again).
     #[doc(hidden)]
     pub fn take_wakes(&mut self) -> Wakes {
-        self.core.changed.get_or_insert_with(Changed::default).wakes.take()
+        self.core.wakes.replace(Wakes::default()).unwrap_or_default()
     }
 
     /// What `f` returns, run as a read: in a store transaction dropped after, and whatever `f`
@@ -3732,7 +3635,7 @@ impl Engine {
         fresh.redeliver = std::mem::take(&mut self.core.redeliver);
         fresh.pended = std::mem::take(&mut self.core.pended);
         fresh.waits = std::mem::take(&mut self.core.waits);
-        fresh.changed = self.core.changed.take();
+        fresh.wakes = self.core.wakes.take();
         self.core = fresh;
         let r = {
             let txn = self.store.transaction(&mut self.store_rng)?;

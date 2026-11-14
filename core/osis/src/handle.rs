@@ -1,21 +1,17 @@
-//! The handle (notes/api.md Handle and lifecycle): `Osis` over one node's sync engine (which owns
-//! the engine) behind one lock; every call drains the engine's events into the dispatcher queue
-//! before the lock is released, so the queue is in commit order, and lets the sync engine look
-//! at what changed. Network actions leave through `Net` under the same lock, so they keep their
-//! order.
+//! The handle (notes/api.md Handle and lifecycle): `Osis` over one node's engine behind one lock;
+//! every call drains the engine's events into the dispatcher queue before the lock is released,
+//! so the queue is in commit order.
 
 use crate::error::{Error, Result};
-use crate::net::{Net, Runtime, Waiter};
-use crate::share::{Address, Status};
+use crate::net::Runtime;
+use crate::share::Address;
 use crate::watch::{Dispatch, Dispatcher, Msg, lock};
 use osis_base::{Clock, SystemClock, Tid};
 use osis_crypto::{OsRng, SeededRng};
-use osis_node::sync::{Action, Event as SyncEvent, SyncConfig, SyncEngine};
-use osis_node::{Engine, Event};
+use osis_engine::{Engine, Event};
 use osis_schema::Schema;
 use osis_schema::core_types as ct;
 use osis_store::{MemoryBackend, MemoryRoot};
-use std::collections::BTreeMap;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -30,11 +26,11 @@ const DEFAULT_IDLE_COMMIT: Duration = Duration::from_secs(2);
 pub struct MemStore {
     pub(crate) backend: MemoryBackend,
     pub(crate) root: MemoryRoot,
-    /// The node's one store beside the engine (the hub's), its own key root beside it.
-    pub(crate) host: MemoryBackend,
+    /// The engine's ciphertext store (`osis_store::BlobArea`), its own key root beside it.
+    pub(crate) blobs: MemoryBackend,
+    pub(crate) blobs_root: MemoryRoot,
     /// Opens under a test seed, this store's and its backups' (`open_salt`).
     pub(crate) opens: Arc<std::sync::atomic::AtomicU64>,
-    pub(crate) host_root: MemoryRoot,
 }
 
 impl MemStore {
@@ -62,7 +58,7 @@ pub struct Config {
     pub runtime: Runtime,
     /// Sync directly with other nodes that read the same data (default on): this node listens,
     /// tells them how to reach it and relays for them, and finds nodes on its local network (`lan`).
-    /// Turn it off to sync only with saved peers.
+    /// Turn it off to sync only with the peers it is given.
     pub direct_sync: bool,
     /// Nodes that relay for this one, which it tells those nodes it can be reached through: each
     /// `peer://<ip>:<port>#<key>`, a node listening there with that key (any other form is
@@ -122,50 +118,14 @@ impl Default for AppConfig {
     }
 }
 
-/// The sync engine with its event channel, the dispatcher sequence number and the handle's
+/// The engine with its event channel, the dispatcher sequence number and the handle's
 /// bookkeeping, all under one lock.
 pub(crate) struct Locked {
-    pub sync: SyncEngine,
+    pub engine: Engine,
     pub events: Receiver<Event>,
     pub seq: u64,
-    pub waiters: Vec<Waiter>,
-    pub status: Status,
     /// Pairing offers not yet used: secret, expiry (wall ms).
     pub offers: Vec<([u8; 32], u64)>,
-    /// This process's connections to other nodes, in the order they connected.
-    pub connections: Vec<Arc<crate::port::client::Connection>>,
-    /// Groups this node reads and writes at another node: its address, persisted as the `sources`
-    /// record. See `crate::sources`.
-    pub group_sources: BTreeMap<Tid, Address>,
-    /// The connections, the group sources or what a connection last said of sync changed: status
-    /// watches hear the status again, to merge it anew (`Osis::on_status_change`).
-    pub remerge: bool,
-}
-
-impl Locked {
-    pub fn engine(&mut self) -> &mut Engine {
-        self.sync.engine_mut()
-    }
-}
-
-impl Inner {
-    /// Hands the sync engine's actions on, in order: network actions to the driver, client-port
-    /// ones to the port (run after the lock is released).
-    pub(crate) fn apply(&self, acts: Vec<Action>) {
-        if acts.iter().any(crate::port::serve::is_port) {
-            let (port, net): (Vec<Action>, Vec<Action>) = acts.into_iter().partition(crate::port::serve::is_port);
-            self.port.queue(port);
-            self.net.apply(net);
-        } else {
-            self.net.apply(acts);
-        }
-    }
-}
-
-/// A process with no store of its own: where its process-wide calls go, and who it is there.
-pub(crate) struct ClientOf {
-    pub primary: Arc<crate::port::client::Connection>,
-    pub who: crate::port::client::Who,
 }
 
 pub(crate) struct Inner {
@@ -178,31 +138,33 @@ pub(crate) struct Inner {
     pub idle_commit: Duration,
     /// `Knobs::text_save`.
     pub text_save: Option<Arc<dyn Fn() + Send + Sync>>,
-    /// A test's in-process endpoints in place of QUIC, for this handle's every dial.
-    pub transport: Option<osis_transport::InProcess>,
-    /// The store's directory: what names its client socket (`Osis::listen_socket`).
-    pub store_dir: Option<std::path::PathBuf>,
-    /// Whether this node can dial another by its key alone (`Config::direct_sync`).
-    pub dials_peers: bool,
-    /// How long a connection's attempt, or a write across a drop, lasts (`CONNECTION_WAIT`).
-    pub connection_wait: Duration,
     pub clock: Arc<dyn Clock>,
     pub schemas: Mutex<Vec<Arc<Schema>>>,
     /// Serializes undo and redo: candidate selection and commit.
     pub undo: Mutex<()>,
-    pub net: Net,
-    /// The client port this node serves: requests its connections make.
-    pub port: crate::port::serve::Port,
-    /// A process with no store of its own (`Osis::connect`): the scratch node stands in.
-    pub client: std::sync::OnceLock<ClientOf>,
-    /// Any connection or group source exists: only then is a source looked up (no cost on a local path).
-    pub has_sources: std::sync::atomic::AtomicBool,
+    /// A runtime is configured (`Config::runtime`): timers run (`Inner::after`).
+    pub timers: bool,
     /// User handles and whether the store closed (the last field: it drops after `eng`).
     pub life: LifeGuard,
 }
 
+impl Inner {
+    /// Runs `f` once `d` has passed, on a thread of its own; `false` with no runtime configured
+    /// (`Runtime::None`: nothing runs in the background).
+    pub(crate) fn after(&self, d: Duration, f: Box<dyn FnOnce() + Send>) -> bool {
+        self.timers
+            && std::thread::Builder::new()
+                .name("osis-timer".into())
+                .spawn(move || {
+                    std::thread::sleep(d);
+                    f()
+                })
+                .is_ok()
+    }
+}
+
 /// What `close` waits on: the count of user handles (clones, `WeakOsis::upgrade`, streams,
-/// text sessions; not the dispatcher's, the driver's or timers' short-lived ones) and whether
+/// text sessions; not the dispatcher's or timers' short-lived ones) and whether
 /// `Inner` is gone.
 #[derive(Default)]
 pub(crate) struct Life {
@@ -217,10 +179,6 @@ impl Life {
         g.0 = g.0.saturating_add_signed(d);
         self.cv.notify_all();
         g.0
-    }
-
-    pub(crate) fn users_now(&self) -> usize {
-        lock(&self.m).0
     }
 }
 
@@ -428,8 +386,8 @@ impl Clone for ReadOnly {
 
 impl Drop for ReadOnly {
     fn drop(&mut self) {
-        if self.user && self.inner.life.0.users(-1) == 0 {
-            self.inner.port.closing();
+        if self.user {
+            self.inner.life.0.users(-1);
         }
     }
 }
@@ -469,13 +427,11 @@ impl std::fmt::Debug for Inner {
     }
 }
 
-pub(crate) const SAVED_PEERS: &str = "saved_peers";
-
-/// A store's backend and key root: the engine's (`<store>/db.redb`, `<store>/root`), or with `hub`
-/// the node's one store beside it (what it serves, notes/serving.md: `host.redb`, `host.root`).
-fn parts(store: &Store, hub: bool) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>)> {
+/// A store's backend and key root: the engine's (`<store>/db.redb`, `<store>/root`), or with
+/// `blobs` its ciphertext store's (`blobs.redb`, `blobs.root`).
+fn parts(store: &Store, blobs: bool) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>)> {
     match store {
-        Store::Memory(m) if hub => Ok((Box::new(m.host.clone()), Box::new(m.host_root.clone()))),
+        Store::Memory(m) if blobs => Ok((Box::new(m.blobs.clone()), Box::new(m.blobs_root.clone()))),
         Store::Memory(m) => Ok((Box::new(m.backend.clone()), Box::new(m.root.clone()))),
         Store::Dir(p) => {
             let mut d = std::fs::DirBuilder::new();
@@ -484,7 +440,7 @@ fn parts(store: &Store, hub: bool) -> Result<(Box<dyn osis_store::Backend>, Box<
             std::os::unix::fs::DirBuilderExt::mode(&mut d, 0o700);
             let bad = |e: &dyn std::fmt::Display| Error::Storage(format!("{}: {e}", p.display()));
             d.create(p).map_err(|e| bad(&e))?;
-            let (db, root) = if hub { ("host.redb", "host.root") } else { ("db.redb", "root") };
+            let (db, root) = if blobs { ("blobs.redb", "blobs.root") } else { ("db.redb", "root") };
             let b = osis_store::RedbBackend::open(&p.join(db)).map_err(|e| match e {
                 osis_store::BackendError::InUse => Error::InUse,
                 e => bad(&e),
@@ -520,112 +476,77 @@ fn open_salt(store: &Store, cfg: &Config) -> Result<u64> {
     Ok(n.wrapping_add(1).wrapping_mul(0x9e37_79b9_7f4a_7c15))
 }
 
-/// The engine's ciphertext store (`Engine::open`) over the hub's store (`parts`).
-fn hub_store(store: &Store, clock: &Arc<dyn Clock>) -> Result<Arc<dyn osis_store::Ciphertext>> {
+/// The engine's ciphertext store (`Engine::open`).
+fn blob_store(store: &Store) -> Result<Arc<dyn osis_store::Ciphertext>> {
     let (b, r) = parts(store, true)?;
-    Ok(osis_node::sync::hub_store_on(b, r, clock.clone(), Box::new(osis_crypto::OsRng))?)
+    Ok(osis_store::BlobArea::open(b, r, Box::new(OsRng)).map_err(osis_engine::Error::from)?)
 }
 
 fn clock(cfg: &Config) -> Arc<dyn Clock> {
     cfg.app.internals.clock.clone().unwrap_or_else(|| Arc::new(SystemClock))
 }
 
-fn engine_cfg() -> osis_node::Config {
-    osis_node::Config { software: format!("osis {}", env!("CARGO_PKG_VERSION")), ..Default::default() }
+fn engine_cfg() -> osis_engine::Config {
+    osis_engine::Config { software: format!("osis {}", env!("CARGO_PKG_VERSION")), ..Default::default() }
 }
 
-/// The saved peers as one local record (text lines).
-pub(crate) fn save_peers(e: &mut Engine, s: &[Address]) -> Result<()> {
-    let text: Vec<String> = s.iter().map(|a| a.to_string()).collect();
-    e.set_app_record(SAVED_PEERS, text.join("\n").as_bytes())?;
-    Ok(())
-}
-
-fn load_peers(e: &mut Engine) -> Result<Option<Vec<Address>>> {
-    let Some(b) = e.app_record(SAVED_PEERS)? else { return Ok(None) };
-    let s = String::from_utf8(b).map_err(|_| Error::Storage("saved peers record".into()))?;
-    Ok(Some(s.lines().filter(|l| !l.is_empty()).map(|l| l.parse()).collect::<Result<_>>()?))
-}
-
-/// A sync engine over an engine, from the first commit on (it sees every event).
+/// A new store's engine, from the first commit on (it sees every event).
 pub(crate) struct Fresh {
-    pub sync: SyncEngine,
+    pub engine: Engine,
     pub clock: Arc<dyn Clock>,
 }
 
-fn sync_over(engine: Engine, cfg: &Config, hosts: &[Address]) -> Result<SyncEngine> {
-    let d = SyncConfig::default();
-    let fill_batch = cfg.app.internals.fill_batch.unwrap_or(d.fill_batch);
-    let scfg = SyncConfig { hosts: hosts.iter().map(|s| s.0.clone()).collect(), peers: cfg.direct_sync, fill_batch, ..d };
-    Ok(SyncEngine::new(engine, rng(cfg, 7), scfg)?)
-}
-
-/// A new store's sync engine (its hosts set later by `set_hosts` where they change).
-pub(crate) fn fresh_engine(store: &Store, cfg: &Config, hosts: &[Address]) -> Result<Fresh> {
+/// A new store's engine.
+pub(crate) fn fresh_engine(store: &Store, cfg: &Config) -> Result<Fresh> {
     let (b, r) = parts(store, false)?;
     let clock = clock(cfg);
-    let engine = Engine::create(b, r, hub_store(store, &clock)?, engine_cfg(), clock.clone(), rng(cfg, 0))?;
-    Ok(Fresh { sync: sync_over(engine, cfg, hosts)?, clock })
+    let engine = Engine::create(b, r, blob_store(store)?, engine_cfg(), clock.clone(), rng(cfg, 0))?;
+    Ok(Fresh { engine, clock })
 }
 
 impl Osis {
     /// Creates a node and a new account with this node its admin. The account is also its home group,
-    /// synced with `peers`. Peers need `Config::runtime` (`Invalid`).
+    /// synced with `peers` (`NotBuilt` with any). Peers need `Config::runtime` (`Invalid`).
     pub fn create(store: Store, peers: &[Address], cfg: Config) -> Result<Osis> {
         cfg.check(peers)?;
-        let Fresh { mut sync, clock } = fresh_engine(&store, &cfg, peers)?;
-        let engine = sync.engine_mut();
-        let addrs: Vec<osis_label::Address> = peers.iter().map(|s| s.0.clone()).collect();
-        let (a, done) = engine.create_account(&addrs)?;
-        let mut m = osis_node::Mutation::new();
+        if !peers.is_empty() {
+            return Err(Error::NotBuilt);
+        }
+        let Fresh { mut engine, clock } = fresh_engine(&store, &cfg)?;
+        let (a, _) = engine.create_account(&[])?;
+        let mut m = osis_engine::Mutation::new();
         m.set(a.devices, &ct::GROUP, &ct::Group::default())?;
         engine.commit(m)?;
-        save_peers(engine, peers)?;
-        let db = Osis::start(sync, clock, store, &cfg, a.account, a.devices)?;
-        db.carry(done)?;
-        Ok(db)
+        Osis::start(engine, clock, store, &cfg, a.account, a.devices)
     }
 
-    /// Opens an existing store. Its peers are those saved in it (`add_peer`, `remove_peer`).
+    /// Opens an existing store.
     pub fn open(store: Store, cfg: Config) -> Result<Osis> {
         cfg.check(&[])?;
         let (b, r) = parts(&store, false)?;
         let clock = clock(&cfg);
-        let mut e = Engine::open(b, r, hub_store(&store, &clock)?, engine_cfg(), clock.clone(), rng(&cfg, open_salt(&store, &cfg)?))?;
+        let mut e = Engine::open(b, r, blob_store(&store)?, engine_cfg(), clock.clone(), rng(&cfg, open_salt(&store, &cfg)?))?;
         let (me, home) = e.account()?.ok_or_else(|| Error::Storage("no account record".into()))?;
-        let peers = load_peers(&mut e)?.unwrap_or_default();
-        let sync = sync_over(e, &cfg, &peers)?;
-        Osis::start(sync, clock, store, &cfg, me, home)
+        Osis::start(e, clock, store, &cfg, me, home)
     }
 
-    pub(crate) fn start(mut sync: SyncEngine, clock: Arc<dyn Clock>, store: Store, cfg: &Config, me: Tid, home: Tid) -> Result<Osis> {
+    pub(crate) fn start(mut engine: Engine, clock: Arc<dyn Clock>, store: Store, cfg: &Config, me: Tid, home: Tid) -> Result<Osis> {
         // store files open to group or others: tightened where possible (best effort), else
         // reported
         if let Store::Dir(p) = &store {
-            for f in [p.clone(), p.join("db.redb"), p.join("root"), p.join("host.redb"), p.join("host.root")] {
+            for f in [p.clone(), p.join("db.redb"), p.join("root"), p.join("blobs.redb"), p.join("blobs.root")] {
                 if let Some(why) = osis_store::restrict_to_owner(&f) {
-                    sync.engine_mut().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: why });
+                    engine.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: why });
                 }
             }
         }
-        let node = sync.engine().tid();
-        let events = sync.engine_mut().subscribe();
+        let node = engine.tid();
+        let events = engine.subscribe();
         let dispatch = Dispatch::new(&cfg.app.dispatch);
-        let (net, ctl) = Net::new(&cfg.runtime)?;
-        let group_sources = crate::sources::load_sources(sync.engine_mut())?;
-        sync.engine_mut().core.sourced_elsewhere = group_sources.keys().copied().collect();
-        let has_sources = !group_sources.is_empty();
-        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), connections: Vec::new(), group_sources, remerge: false };
-        let port = crate::port::serve::Port::new();
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, home, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, text_save: cfg.app.internals.text_save.clone(), transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.direct_sync, connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), has_sources: has_sources.into(), life: LifeGuard(Arc::default()) });
+        let locked = Locked { engine, events, seq: 0, offers: Vec::new() };
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, home, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, text_save: cfg.app.internals.text_save.clone(), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), timers: !matches!(cfg.runtime, Runtime::None), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
-        if let Some(ctl) = ctl {
-            inner.net.spawn_driver(ctl, cfg, clock.clone(), WeakOsis(Arc::downgrade(&inner)))?;
-        }
         let db = Osis::user(inner);
-        if let Runtime::Manual(m) = &cfg.runtime {
-            m.register(db.downgrade());
-        }
         db.locked(|_| ());
         Ok(db)
     }
@@ -643,8 +564,7 @@ impl Osis {
     /// is that actor, a read shows what it may read and nothing else (what it may not reads as a
     /// thing this node does not know), a write or revert needs its rights, not this node's. Calls
     /// on the tid-addressed read and write paths only: the sharing, sync and process-wide calls do
-    /// not honour it yet (issues/grant-rename-multi-actor.md), so it stays inside the crate, used
-    /// by the port worker's client rows (`port::method::for_client`).
+    /// not honour it yet (issues/grant-rename-multi-actor.md), so it stays inside the crate.
     pub(crate) fn act_as(&self, actor: Tid) -> Osis {
         Osis(ReadOnly { inner: self.inner.clone(), user: false, acting: Some(actor), tracking: None })
     }
@@ -657,13 +577,8 @@ impl Osis {
 
     /// Closes this handle. With no other handle left (clones, upgraded `WeakOsis`, value streams,
     /// text sessions, a `Joining`), returns once the node is closed (every commit is already
-    /// durable), so the store can be opened again at once; a callback or sync engine call still
-    /// running ends first, and so does background sync, serving for others included: with `Runtime::Own` its runtime is
-    /// shut down (about 10 s at worst; a task still running then may keep the store of what it serves
-    /// a little longer), with `Runtime::Tokio` on a
-    /// multi-thread runtime its task ends (so the app may shut that runtime down); on a
-    /// current-thread runtime `close` does not wait for sync, which ends once the app drives that
-    /// runtime again. While other handles keep it open, this one is closed and it returns
+    /// durable), so the store can be opened again at once; a callback still running ends first.
+    /// While other handles keep it open, this one is closed and it returns
     /// `Close::StillOpen` at once. From a callback (the dispatcher, which holds the node while it
     /// runs) it fails `Invalid` at once: drop the handle instead. Never call it while holding
     /// something a running callback may wait for (a lock, a channel it awaits): close waits for
@@ -673,18 +588,12 @@ impl Osis {
             return Err(Error::Invalid("close() from a callback would wait on itself; drop the handle".into()));
         }
         let life = self.inner.life.0.clone();
-        let ended = self.inner.net.ended();
         drop(self);
         // what still holds it besides user handles (a callback, an engine call, a timer) ends
         // (in place on a multi-thread runtime: the holder may need that worker's tasks)
         let (users, closed) = crate::net::blocking(|| *life.cv.wait_while(lock(&life.m), |(users, closed)| *users == 0 && !*closed).unwrap_or_else(|e| e.into_inner()));
         if !closed {
             return Ok(Close::StillOpen { handles: users });
-        }
-        if let Some(e) = ended {
-            // the driver, and the host with it, is gone: the host store is free and the app may
-            // shut its runtime down
-            crate::net::wait_ended(&e);
         }
         Ok(Close::Closed)
     }
@@ -699,128 +608,74 @@ impl ReadOnly {
 
     /// This node's own identity, an actor apart from its account (a thin client: its node's).
     pub fn node(&self) -> Tid {
-        self.inner.client.get().map_or(self.inner.node, |t| t.who.node)
+        self.inner.node
     }
 
     /// The account this node belongs to (a thin client: the actor its node acts as for it): the
     /// author of its writes and the holder of its roles.
     pub fn me(&self) -> Tid {
-        self.acting.unwrap_or_else(|| self.inner.client.get().map_or(self.inner.me, |t| t.who.me))
+        self.acting.unwrap_or(self.inner.me)
     }
 
     /// The group private to this account: what is in it reaches every node of the account and
     /// nobody else. On a client with its own actor it is that actor.
     pub fn home(&self) -> Tid {
-        self.acting.unwrap_or_else(|| self.inner.client.get().map_or(self.inner.home, |t| t.who.home))
+        self.acting.unwrap_or(self.inner.home)
     }
 
     /// Runs `f` on the engine under the node lock, then queues its events for the
     /// dispatcher (`internals::Internals::engine` outside the crate).
     pub(crate) fn engine<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> R {
-        self.locked(|l| f(l.engine()))
-    }
-
-    /// Runs `f` on the sync engine as the network driver does: its actions go out, and the
-    /// events it caused were already seen by the sync engine.
-    pub(crate) fn handled(&self, f: impl FnOnce(&mut Locked) -> Vec<Action>) {
-        self.locked_in(true, |l| {
-            let acts = f(l);
-            self.inner.apply(acts);
-        })
+        self.locked(|l| f(&mut l.engine))
     }
 
     pub(crate) fn locked<R>(&self, f: impl FnOnce(&mut Locked) -> R) -> R {
-        self.locked_in(false, f)
-    }
-
-    fn locked_in<R>(&self, handled: bool, f: impl FnOnce(&mut Locked) -> R) -> R {
         let mut g = lock(&self.inner.eng);
         let holder = &self.inner.dispatch.shared.holder;
         *lock(holder) = Some(std::thread::current().id());
-        // nothing past its expiry is seen, however late the driver's Tick
-        g.sync.expire_due();
+        expire_due(&mut g.engine);
         let r = f(&mut g);
-        self.after(&mut g, handled);
+        lifetimes(&mut g.engine);
+        self.drain(&mut g);
         *lock(holder) = None;
         drop(g);
         self.inner.dispatch.wake();
-        self.inner.port.kick(&self.inner);
         r
     }
 
-    /// Queues events for the dispatcher; `true` when there were any events other than
-    /// ephemeral ones (local ephemeral writes reach the sync engine only when they wait to be
-    /// sent, `after`).
-    fn drain(&self, l: &mut Locked) -> bool {
-        let mut any = false;
+    /// Queues the engine's events for the dispatcher.
+    fn drain(&self, l: &mut Locked) {
         while let Ok(e) = l.events.try_recv() {
-            any |= !matches!(e, Event::Ephemeral { .. });
             l.seq += 1;
             self.inner.dispatch.send(l.seq, Msg::Event(e));
         }
-        any
     }
+}
 
-    /// After every call under the lock: events to the dispatcher; local changes shown to the
-    /// sync engine; then status, link upkeep and waiters.
-    fn after(&self, l: &mut Locked, handled: bool) {
-        // ephemeral writes on things in a labeled closure go out as ephemeral commits
-        let any = self.drain(l) || l.sync.engine().has_memory_changes();
-        if std::mem::take(&mut l.remerge) {
-            l.seq += 1;
-            self.inner.dispatch.send(l.seq, Msg::Status(l.status.clone()));
+/// Runs the engine's due expiry timers (spec/commits.md §6), so nothing past its expiry is seen. A
+/// failure is a diagnostic; the timers stay due.
+fn expire_due(e: &mut Engine) {
+    if e.timers_due()
+        && let Err(x) = e.tick()
+    {
+        e.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: format!("expiry timers: {x}") });
+    }
+}
+
+/// Judges thing lifetimes when work is queued (notes/lifetimes.md, The release): a thing is
+/// judged once every group holding it is heard out; with no sync, a group with a sync ID never
+/// is, so nothing under one is released. A failure is a diagnostic; the work stays queued.
+fn lifetimes(e: &mut Engine) {
+    let r = e.lifetimes_due().and_then(|(due, _)| {
+        if !due {
+            return Ok(());
         }
-        if any && !handled {
-            let acts = l.sync.handle(SyncEvent::Local);
-            self.inner.apply(acts);
-            self.drain(l);
-        }
-        if !(any || handled) {
-            // nothing changed: a waiter whose future was dropped still goes
-            if !l.waiters.is_empty() {
-                let Locked { waiters, sync, status, .. } = l;
-                waiters.retain_mut(|w| !w.poll(sync, status));
-            }
-            return;
-        }
-        let status = crate::share::status_of(&mut l.sync);
-        if status != l.status {
-            for (g, s) in &status.groups {
-                if s.state == crate::share::SyncState::Stranded && l.status.groups.get(g).is_none_or(|o| o.state != s.state) {
-                    l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Stranded, tids: vec![*g], commit: None, peer: None, detail: "stranded: waiting for a re-seal".into() });
-                }
-            }
-            l.status = status.clone();
-            l.seq += 1;
-            self.inner.dispatch.send(l.seq, Msg::Status(status));
-        }
-        self.drain(l);
-        let Locked { waiters, sync, status, .. } = l;
-        waiters.retain_mut(|w| !w.poll(sync, status));
+        let synced: std::collections::BTreeSet<Tid> = e.labeled_groups().into_iter().collect();
+        e.judge_lifetimes(&|g| !synced.contains(g), false).map(drop)
+    });
+    if let Err(x) = r {
+        e.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: format!("lifetimes: {x}") });
     }
-
-    /// Runs `f` under the lock and hands the actions it returns to the network, in order.
-    pub(crate) fn act(&self, f: impl FnOnce(&mut Locked) -> Vec<Action>) {
-        self.locked(|l| {
-            let acts = f(l);
-            self.inner.apply(acts);
-        })
-    }
-
-    /// `act` for a fallible `f`.
-    pub(crate) fn try_act(&self, f: impl FnOnce(&mut Locked) -> Result<Vec<Action>>) -> Result<()> {
-        self.locked(|l| {
-            let acts = f(l)?;
-            self.inner.apply(acts);
-            Ok(())
-        })
-    }
-
-    /// Carries out a flow's result (deliveries) under the lock.
-    pub(crate) fn carry(&self, done: osis_node::flows::Done) -> Result<()> {
-        self.try_act(|l| Ok(l.sync.carry_out(done)?))
-    }
-
 }
 
 impl Osis {
@@ -830,11 +685,6 @@ impl Osis {
     /// how the app pumps (after its wake callback). Returns at once inside a callback.
     // Never inside an `Internals::engine` closure: a callback may need the lock it holds (deadlock).
     pub fn settle(&self) {
-        // connected nodes' deliveries so far reach the queue first (not from a callback: the reply
-        // would wait for this very dispatcher)
-        if self.has_sources() && self.may_wait() {
-            self.node_settle();
-        }
         self.inner.dispatch.settle(Arc::downgrade(&self.inner));
     }
 
@@ -848,8 +698,6 @@ impl Osis {
         if s.declares_core() {
             return Err(Error::Invalid("an app schema declares no core AK".into()));
         }
-        // the nodes need it for structural diffs and undo write-back
-        self.mirror_schema(name, source)?;
         let s = Arc::new(s);
         self.engine(|e| e.register_schema(s.clone()))?;
         let mut v = lock(&self.inner.schemas);

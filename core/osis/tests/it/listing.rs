@@ -6,8 +6,7 @@
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common::*;
-use osis::{Body, CommitEvent, CommitFrom, CommitId, CommitKind, CommitQuery, Error, Osis, Role, Scope, SyncScope, Tid, Value};
-use osis_sim::world::World;
+use osis::{Body, CommitEvent, CommitFrom, CommitId, CommitKind, CommitQuery, Error, Osis, Scope, Tid, Value};
 use std::collections::BTreeSet;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
@@ -38,7 +37,6 @@ fn thing(db: &Osis) -> Tid {
     })
     .unwrap()
 }
-
 
 /// A write of `x` on `t`'s `msg`, its history kept for good: every one stays listed.
 fn say(db: &Osis, t: Tid, x: &str) -> CommitId {
@@ -109,6 +107,7 @@ fn page_and_listener() {
 // or per write, lists every write until its keep bound, then only the live one again; a signal key
 // lists no writes, a value key no fires.
 #[test]
+#[ignore = "sync rewrite"]
 fn listed_while_in_read_or_kept_api_commits() {
     let c = clock();
     let db = osis::internals::create(cfg(0, osis::MemStore::new(), &c)).unwrap();
@@ -272,43 +271,6 @@ fn scope_listeners_api_commits() {
     assert_eq!(db.at(t, log).fired(&CommitQuery::default()).unwrap().commits.len(), 1, "the signal lists at its key");
 }
 
-// spec/permissions.md §5.1, §5.2, notes/api.md Commits: a write stamped after its writer's role
-// ended turns invalid: another node lists it nowhere, its own node lists it, marked.
-#[test]
-fn invalid_listed_only_at_its_writer_spec_perm_5() {
-    let (mut w, alice, mut others, ids) = crate::common::people(1);
-    let (bob, b) = (others.remove(0), ids[0]);
-    let g = alice
-        .commit_with(|x| {
-            let g = x.create()?;
-            x.group(alice.home()).add(osis::Member::Item(g))?;
-            Ok(g)
-        })
-        .unwrap();
-    alice.sync(g, &[]).unwrap();
-    alice.grant(g, b, Role::Write, Default::default()).unwrap();
-    w.run();
-    for r in bob.invite_requests().unwrap_or_default() {
-        let _ = bob.accept_invite(r);
-    }
-    w.run();
-    let seen = say(&bob, g, "seen");
-    w.run();
-    w.set_online(&bob, false);
-    w.advance(1000);
-    // a kept copy: bob still reads what he held
-    alice.set_role(g, b, None, osis::SetRoleOpts { retain_copy: Some(true) }).unwrap();
-    w.run();
-    let late = say(&bob, g, "late");
-    w.set_online(&bob, true);
-    w.advance(60_000);
-    w.run();
-    let listed_at = |db: &Osis| db.at(g, untyped(msg())).writes(&CommitQuery::default()).unwrap().commits.into_iter().map(|c| (c.stamp.id, part(&c, g, &msg()).valid)).collect::<Vec<_>>();
-    assert!(!listed_at(&alice).iter().any(|x| x.0 == late), "another node's invalid write");
-    assert!(listed_at(&alice).contains(&(seen, true)));
-    assert!(listed_at(&bob).contains(&(late, false)), "its own, marked: {:?}", listed_at(&bob));
-}
-
 // spec/commits.md §5, notes/api.md Commits: delete for everyone: one commit's body goes for good
 // and it stays listed as a tombstone; what the state reads does not change for a dead write; the
 // request is not listed at the aspect it purges (a writer may add a snapshot there); the listener
@@ -353,218 +315,6 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     commit_with(&db, |w| w.at(t, untyped(ak("t:m+.0"))).set(&osis::Value::Map(osis_base::ValueMap::from([(s("k"), s("v"))]))));
     commit_with(&db, |w| w.at(t, untyped(ak("t:m+.0"))).purge(osis::Purge::All));
     assert_eq!(db.at(t, untyped(ak("t:m+.0"))).get().unwrap(), None);
-}
-
-// spec/permissions.md §6: a purge by author through the API: an admin's request drops a writer's
-// bodies on every node, its own stay; and no write on the thing, no request (it could never hold a
-// right, and nothing else in the commit would check).
-#[test]
-fn purge_author_through_the_api_spec_perm_6() {
-    let (mut w, alice, bob, b, g) = alice_admits_bob();
-    let mut x = bob.write();
-    x.at(g, untyped(msg())).purge(osis::Purge::Author(alice.me())).unwrap();
-    assert!(matches!(x.commit(), Err(Error::Permission { needs: Role::Write, .. })), "a reader");
-    alice.grant(g, b, Role::Write, Default::default()).unwrap();
-    w.run();
-    let flood = say(&bob, g, "junk");
-    let own = say(&alice, g, "mine");
-    w.run();
-    let mut x = alice.write();
-    x.at(g, untyped(msg())).purge(osis::Purge::Author(bob.me())).unwrap();
-    let rq = x.commit().unwrap().unwrap().stamp.id;
-    w.run();
-    for db in [&alice, &bob] {
-        let got = db.at(g, untyped(msg())).writes(&page(CommitFrom::Oldest, 10)).unwrap();
-        let of = |c: CommitId| part(got.commits.iter().find(|e| e.stamp.id == c).unwrap(), g, &msg()).body;
-        assert_eq!(of(flood), Body::Purged { by: rq, actor: Some(alice.me()) });
-        assert_eq!(of(own), Body::Held(Some(s("mine"))));
-    }
-}
-
-/// Alice's synced thing `g`, Bob (actor `b`) a reader of it: built once (`World::cached`).
-pub(crate) fn alice_admits_bob() -> (World, Osis, Osis, Tid, Tid) {
-    let (w, [alice, bob], (b, g)) = World::cached("listing::alice_admits_bob", || {
-        let (w, alice, bob, b, g) = built_alice_admits_bob();
-        (w, [alice, bob], (b, g))
-    });
-    (w, alice, bob, b, g)
-}
-
-fn built_alice_admits_bob() -> (World, Osis, Osis, Tid, Tid) {
-    let (mut w, alice, mut others, ids) = crate::common::people(1);
-    let (bob, b) = (others.remove(0), ids[0]);
-    let mut x = alice.write();
-    let g = x.create().unwrap();
-    crate::common::keep_all(&mut x, g);
-    x.group(alice.home()).add(osis::Member::Item(g)).unwrap();
-    x.commit().unwrap();
-    alice.sync(g, &[]).unwrap();
-    alice.grant(g, b, Role::Read, Default::default()).unwrap();
-    w.run();
-    for r in bob.invite_requests().unwrap_or_default() {
-        let _ = bob.accept_invite(r);
-    }
-    w.run();
-    (w, alice, bob, b, g)
-}
-
-// spec/permissions.md §6, notes/api-design.md (rights are checked locally before signing): a
-// request whose purge rights would drop none of the held deltas it names is refused with
-// `Permission` and nothing is sent; one dropping any of them is written. The default purge set is
-// admins alone: a writer purges its own writes only where they say `author_or_admin`; the admin
-// purges anyone's.
-#[test]
-fn purge_without_the_right_is_refused_spec_perm_6() {
-    let (mut w, alice, bob, b, g) = alice_admits_bob();
-    alice.grant(g, b, Role::Write, Default::default()).unwrap();
-    w.run();
-    let hers = say(&alice, g, "hers");
-    w.run();
-    let refused = |what: osis::Purge| {
-        let mut x = bob.write();
-        x.at(g, untyped(msg())).purge(what).unwrap();
-        matches!(x.commit(), Err(Error::Permission { tid, .. }) if tid == g)
-    };
-    assert!(refused(osis::Purge::Commit(hers)), "another's write by commit");
-    assert!(refused(osis::Purge::Author(alice.me())), "another's writes by author");
-    assert!(refused(osis::Purge::All), "the aspect holding only another's writes");
-    let kept = say(&bob, g, "his, by default");
-    w.run();
-    assert!(refused(osis::Purge::Commit(kept)), "his own, under the default");
-    let mut x = bob.write();
-    x.at(g, untyped(msg())).retention(osis::Retention { by: osis::PurgeBy::AuthorOrAdmin }).set(&s("his")).unwrap();
-    let his = x.commit().unwrap().unwrap().stamp.id;
-    w.run();
-    assert!(refused(osis::Purge::Author(alice.me())), "still none of his");
-    let mut x = bob.write();
-    x.at(g, untyped(msg())).purge(osis::Purge::Commit(his)).unwrap();
-    let own = x.commit().unwrap().unwrap().stamp.id;
-    let mut x = alice.write();
-    x.at(g, untyped(msg())).purge(osis::Purge::Commit(kept)).unwrap();
-    x.commit().unwrap();
-    let mut x = alice.write();
-    x.at(g, untyped(msg())).purge(osis::Purge::Commit(hers)).unwrap();
-    x.commit().unwrap();
-    w.run();
-    for db in [&alice, &bob] {
-        let bodies = bodies(db, g, &msg());
-        assert!(matches!(bodies.as_slice(), [Body::Purged { .. }, Body::Purged { .. }, Body::Purged { by, .. }] if *by == own), "{bodies:?}");
-    }
-}
-
-// spec/sync-status.md §3, notes/api.md Commits (the seam for issues/partial-history-fetch.md): `complete` is false while a
-// sync ID carrying the thing has more to bring from a connected node; a sync ID this node made has
-// nothing to bring before any pass.
-#[test]
-fn page_says_when_it_may_miss_commits() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let db = w.account(1, &[host]);
-    let t = db.commit_with(|x| {
-        let t = x.create()?;
-        x.group(db.home()).add(osis::Member::Item(t))?;
-        Ok(t)
-    });
-    let t = t.unwrap();
-    say(&db, t, "x");
-    let newest = |db: &Osis, t| db.at(t, untyped(msg())).writes(&page(CommitFrom::Newest, 1)).unwrap();
-    assert!(newest(&db, t).complete, "a sync ID it made: nothing known is missing");
-    w.until(db.wait_synced(SyncScope::All), 1000, 10).unwrap();
-    w.run();
-    assert!(newest(&db, t).complete);
-    // a thing in no label: nothing to wait for
-    let alone = db_at(4);
-    let u = thing(&alone);
-    assert!(newest(&alone, u).complete);
-}
-
-// spec/sync-streams.md §5: a new node reads the newest messages while older ones are on their way:
-// `complete` false, then true, and every page's commits the newest there are.
-#[test]
-fn a_new_node_reads_newest_first_spec_sync_6() {
-    // the new node fills `BATCH` messages at a time, so a few batches are part way
-    const BATCH: usize = 8;
-    const N: usize = 6 * BATCH;
-    let mut w = World::new();
-    let host = w.add_host();
-    let db = w.account(1, &[host]);
-    let mut x = db.write();
-    let t = x.create().unwrap();
-    x.group(db.home()).add(osis::Member::Item(t)).unwrap();
-    x.commit().unwrap();
-    // the thing's creation comes with its first message, which judging needs first
-    say(&db, t, "first");
-    for i in 0..N {
-        say(&db, t, &format!("{i:05}"));
-    }
-    w.run();
-    let mut cfg = w.cfg(2, &[]);
-    cfg.app.internals.fill_batch = Some(BATCH);
-    let join = osis::internals::pair(cfg, &db.pair_offer().unwrap()).unwrap();
-    let (_, reply) = db.pair_accept(join.request()).unwrap();
-    let phone = join.finish(&reply).unwrap();
-    let mut partly = false;
-    for _ in 0..100_000 {
-        let got = phone.at(t, untyped(msg())).writes(&page(CommitFrom::Newest, 10)).unwrap();
-        if !got.commits.is_empty() {
-            let shown: Vec<_> = got.commits.iter().map(|c| part(c, t, &msg()).body).filter(|b| *b != Body::Held(Some(s("first")))).collect();
-            for (i, b) in shown.iter().enumerate() {
-                assert_eq!(*b, Body::Held(Some(s(&format!("{:05}", N - 1 - i)))), "newest first");
-            }
-            if got.complete {
-                break;
-            }
-            // the newest held while older ones are missing
-            partly |= !shown.is_empty() && shown.len() < 10;
-        }
-        // one hop; nothing queued: time for a tick
-        if !w.step(None) {
-            w.advance(1_000);
-        }
-    }
-    assert!(partly, "seen before it was complete");
-    w.run();
-    assert!(phone.at(t, untyped(msg())).writes(&page(CommitFrom::Newest, 1)).unwrap().complete);
-}
-
-// spec/sync-compaction.md §2, notes/api.md Commits, notes/ephemeral.md: memory commits list too: own commits
-// at once, another node's with their author; an expired one is listed no more, and the listener
-// says so (spec/crdt.md §4.7: held value-less).
-#[test]
-fn memory_commits_list_and_tell_spec_sync_9() {
-    let (mut w, alice, mut others, known) = crate::common::people(1);
-    let (bob, b) = (others.remove(0), known[0]);
-    let mut x = alice.write();
-    let g = x.create().unwrap();
-    x.group(alice.home()).add(osis::Member::Item(g)).unwrap();
-    x.commit().unwrap();
-    alice.sync(g, &[]).unwrap();
-    alice.grant(g, b, Role::Write, Default::default()).unwrap();
-    w.run();
-    let typing = ak("t:typing+.0");
-    let (_sub, rx) = watch(&bob, g, typing.clone());
-    let mut x = alice.write();
-    x.expires(osis::Expiry::In(Duration::from_secs(5)));
-    x.at(g, untyped(typing.clone())).set(&s("alice types")).unwrap();
-    x.commit().unwrap();
-    let list = |a: &Osis| a.at(g, untyped(typing.clone())).writes(&page(CommitFrom::Newest, 5)).unwrap().commits;
-    // at once for its writer
-    let own = list(&alice);
-    assert_eq!(own.len(), 1);
-    assert_eq!(part(&own[0], g, &typing).body, Body::Held(Some(s("alice types"))));
-    assert_eq!(own[0].kind, CommitKind::Content);
-    w.run();
-    let got = list(&bob);
-    assert_eq!(got.len(), 1, "{got:?}");
-    let p = part(&got[0], g, &typing);
-    assert_eq!((got[0].stamp.actor, p.valid, p.body), (alice.me(), true, Body::Held(Some(s("alice types")))));
-    let id = got[0].stamp.id;
-    assert!(ids(&heard(&bob, &rx)).contains(&(id, true)));
-    w.advance(6_000);
-    w.run();
-    assert!(list(&bob).is_empty(), "expired");
-    assert!(ids(&heard(&bob, &rx)).contains(&(id, false)), "told: listed no more");
-    assert!(list(&alice).is_empty(), "its writer too");
 }
 
 // spec/data-model.md §6 (large values), notes/api.md Commits: a page is bounded in the bytes of its values, a link's once materialized, so

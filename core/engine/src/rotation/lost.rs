@@ -175,37 +175,36 @@ pub(crate) fn readable(core: &Core, a: &Tid) -> bool {
     holds_at(core, a, Role::Read)
 }
 
-/// Whether the node's roles on `a` now give it role `r`'s secrets there (spec/permissions.md §3:
-/// a node holds no secret of an actor it cannot read): every role's, reading `a`; sync's alone,
-/// holding sync (it reads nothing of `a`, and still holds and serves its sync IDs); none else.
-fn may_hold(core: &Core, a: &Tid, r: Role) -> bool {
-    readable(core, a) || (r == Role::Sync && holds_at(core, a, Role::Sync))
+/// Whether the node's roles on `a` now give it secrets there (spec/permissions.md §3: a node
+/// holds no secret of an actor it cannot read): every role's, reading `a`; none else.
+fn may_hold(core: &Core, a: &Tid) -> bool {
+    readable(core, a)
 }
 
-/// Whether a box may give this node role `r`'s secrets of `a` (spec/permissions.md §3: a node holds
+/// Whether a box may give this node secrets of `a` (spec/permissions.md §3: a node holds
 /// no secret of an actor it cannot read): its roles give them (`may_hold`), or an unfinalized link
 /// race keeps what reaches `a` (`contested`, as `judge` keeps it). Every applied box is opened by
 /// this rule (`Core::ingest_view`), so no box gives back what the trigger dropped.
-pub(crate) fn may_take(core: &Core, a: &Tid, r: Role) -> bool {
-    may_hold(core, a, r) || {
+pub(crate) fn may_take(core: &Core, a: &Tid) -> bool {
+    may_hold(core, a) || {
         let chain = core.record_chain(a).filter_map(|s| s.thing());
         let holders = core.edge_holders(a).into_iter().map(|(m, _)| m).filter(|m| core.role_now(m, a).is_some());
         chain.chain(holders).any(|k| contested(core, &k))
     }
 }
 
-/// Whether an entry box may give this node role `r`'s secrets of `a` (spec/sync-ids.md §3): as a box
+/// Whether an entry box may give this node secrets of `a` (spec/sync-ids.md §3): as a box
 /// may (`may_take`), or while nothing held says the node lost `a`: no ended edge on it of the node,
 /// a held key actor or an actor it reads (a link's redeemer opens the label before it holds the
 /// grant to its key; the trigger judges `a` once role commits on it apply).
-pub(crate) fn may_learn(core: &Core, a: &Tid, r: Role) -> bool {
-    may_take(core, a, r) || core.timelines.get(a).is_none_or(|tl| !tl.ended(a, now_ts(core)).keys().any(|h| ours(core, h)))
+pub(crate) fn may_learn(core: &Core, a: &Tid) -> bool {
+    may_take(core, a) || core.timelines.get(a).is_none_or(|tl| !tl.ended(a, now_ts(core)).keys().any(|h| ours(core, h)))
 }
 
 /// Whether the node holds secrets of `a` its roles there no longer give (`may_hold`, lost access).
 fn over_held(core: &Core, a: &Tid) -> bool {
     let Some(e) = core.ix.secrets.get(a) else { return false };
-    ROLES.iter().any(|r| e.role(*r).holds_any() && !may_hold(core, a, *r))
+    ROLES.iter().any(|r| e.role(*r).holds_any()) && !may_hold(core, a)
 }
 
 /// Whether all that ended the node's (or a held key actor's) role on `a` is an `until` passing:
@@ -485,19 +484,8 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
     let lost: Vec<Tid> = lost.into_iter().chain(gone).collect();
     let held: BTreeMap<Tid, u64> = lost.iter().filter_map(|a| Some((*a, tx.core.ix.secrets.get(a)?.read.held().map(|(e, _)| e.n()).max()?))).collect();
     for a in &lost {
-        // a holder of sync alone keeps the sync secret and drops the rest
-        let sync = holds_at(tx.core, a, Role::Sync).then(|| tx.core.ix.secrets.get(a).map(|e| e.sync.clone())).flatten();
-        match sync {
-            Some(sync) => {
-                tx.core.ix.secrets.insert(*a, ActorEpochs { sync, ..ActorEpochs::default() });
-                crate::flows::save_epochs(tx, a)?;
-            }
-            None => {
-                tx.core.ix.secrets.remove(a);
-                tx.core.role_changed();
-                tx.txn.remove_local(&[b"k/".as_slice(), a.as_bytes()].concat(), osis_store::Shred::Yes)?;
-            }
-        }
+        tx.core.ix.secrets.remove(a);
+        tx.txn.remove_local(&[b"k/".as_slice(), a.as_bytes()].concat(), osis_store::Shred::Yes)?;
         let now = tx.now();
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::Removed, tids: vec![*a], commit: None, peer: None, detail: if kept.contains_key(a) { "lost read access: secrets dropped, a read-only copy kept" } else { "lost read access: secrets and what only they read dropped" }.into() }, now);
     }

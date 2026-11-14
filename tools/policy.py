@@ -2,8 +2,8 @@
 """Policy checks (notes/gate.md, Policy checks): unsafe forbidden everywhere in the workspace,
 workspace lints on, every external dependency has its line in notes/architecture.md §5, and no
 target marked `test = false` / `doctest = false` has unit tests / doctests that would silently not run,
-and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name, and
-osis-host cannot reach decryption (`host_blind`), and no test can bind the real LAN port or
+and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name, and no
+test can bind the real LAN port or
 announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`), and only the engine's `apply::checked`
 vouches for checked delta bytes (`checked_bytes`), and every tools/known_failures.txt line names
 an existing issue file, an existing test or sim scenario and a valid pattern (`known_failures`),
@@ -180,52 +180,11 @@ def paths_of(text, crate):
         expand(text, m.end(), [])
     return out
 
-HOST_DEPS = {"osis-base", "osis-crypto", "osis-label", "osis-proto", "osis-store", "osis-transport"}
-HOST_CRYPTO = {"VerifyingKey", "Signature", "WRAP_LEN", "OsRng", "RngCore", "CryptoRngCore", "NodeRng"}
-HOST_LABEL = {"blob_id", "Prefix", "prefix_bytes", "verify_stamp", "step::parse_entry_box", "step::entry_box_bytes", "Address", "address_to_text", "address_from_text", "ClaimSet", "Step", "StepId"}
-HOST_PROTO_DENY = {"examples"}
-NODE_HOST = {"Hub", "HubOutput", "ConnId", "Up", "Binding", "Down", "Remote", "HostStore", "HostConfig", "HostPolicy", "Admission", "LabelCaps", "MemEvent", "Room"}
-
-def allowed(path, allow):
-    return any(path == a or path.startswith(a + "::") for a in allow)
-
-def host_blind():
-    """The host cannot touch decryption (notes/serving.md, Decisions): osis-host depends only on the
-    crates hosting needs and names only allowlisted osis-crypto and osis-label items (fails
-    closed: a new decrypting call fails here); osis-node names only the host's public surface."""
-    man = load(os.path.join(ROOT, "core/host/Cargo.toml"))
-    for key, extra in (("dependencies", set()), ("dev-dependencies", {"proptest"})):
-        for d in sorted(set(man.get(key, {})) - HOST_DEPS - extra):
-            yield f"core/host/Cargo.toml: {key} {d} is not one hosting may use"
-    for src in glob.glob(os.path.join(ROOT, "core/host/src/**/*.rs"), recursive=True):
-        if os.path.basename(src) == "tests.rs":
-            continue
-        rel = os.path.relpath(src, ROOT)
-        text = open(src).read()
-        if "OpenKey" in text:
-            yield f"{rel}: names OpenKey"
-        # osis-proto's client engine opens a label only with an
-        # `OpenKey` (refused above); its examples hold secrets; a glob would hide both
-        for p in paths_of(text, "osis_proto"):
-            if p in ("*", "as") or p.endswith("::*") or p.split("::")[0] in HOST_PROTO_DENY:
-                yield f"{rel}: osis_proto::{p} is not for the host (glob, alias or examples)"
-        for crate, allow in (("osis_crypto", HOST_CRYPTO), ("osis_label", HOST_LABEL)):
-            for p in paths_of(text, crate):
-                if p in ("*", "as") or p.endswith("::*"):
-                    yield f"{rel}: {crate} glob or alias"
-                elif not allowed(p, allow):
-                    yield f"{rel}: {crate}::{p} is not on the host's allowlist"
-    for src in glob.glob(os.path.join(ROOT, "core/node/src/**/*.rs"), recursive=True):
-        rel = os.path.relpath(src, ROOT)
-        for p in paths_of(open(src).read(), "osis_host"):
-            if p in ("*", "as") or not allowed(p, NODE_HOST):
-                yield f"{rel}: osis_host::{p} is not the host's public surface"
-
 # notes/disputes-plan.md, the coherence rule: the dispute types are private to osis-perm and
 # the API layer; nothing else names a side or asks whether a dispute is open.
 # The trust store (core/engine/src/sides.rs) is the rule's second exception: durable sides, fed
-# to the walk; its end-to-end tests are core/node/tests/it/disputes.rs.
-DISPUTE_DIRS = ("core/perm/", "core/osis/", "core/engine/src/sides.rs", "core/node/tests/it/disputes.rs")
+# to the walk; its end-to-end tests are core/engine/tests/it/disputes.rs.
+DISPUTE_DIRS = ("core/perm/", "core/osis/", "core/engine/src/sides.rs", "core/engine/tests/it/disputes.rs")
 DISPUTE_PATHS = {"Trust", "Dispute", "Detected", "trust", "DETECT_MAX"}
 DISPUTE_CALLS = re.compile(r"\.(set_trust|disputes|disputes_up_to|evaluate_with|trusted_active|take_detected)\s*\(|\bTrust\s*\{|\bDispute\s*\{")
 # The engine's own dispute names (the store, its event and diagnostic) outside the store itself:
@@ -295,8 +254,8 @@ COPY_HOOKS = re.compile(r"\btest_copy\b|\btest_copy_boxed\b|\bcopying::|\btest_s
 COPY_DEFS = {"core/base/src/copying.rs", "core/base/src/lib.rs", "core/crypto/src/rng.rs", "core/store/src/memory.rs", "core/store/src/root.rs",
              "core/store/src/backend.rs", "core/store/src/pager.rs", "core/store/src/store.rs", "core/engine/src/engine/testing.rs",
              "core/engine/src/engine/mod.rs", "core/base/src/memo/mod.rs", "core/base/src/memo/effects.rs", "core/engine/src/events/mod.rs",
-             "core/engine/src/local_peer.rs", "core/engine/src/tests_copy.rs", "core/node/src/sync/testing.rs", "core/host/src/store.rs", "core/host/src/hub.rs",
-             "core/store/src/cipher.rs", "core/host/src/store/engine.rs",
+             "core/engine/src/local_peer.rs", "core/engine/src/tests_copy.rs",
+             "core/store/src/cipher.rs",
              "core/osis/src/testing.rs"}
 
 def product_lines(pat, skip):
@@ -372,7 +331,6 @@ errs.extend(checked_bytes())
 errs.extend(real_lan_tests())
 errs.extend(peer_ticks())
 errs.extend(env_vars())
-errs.extend(host_blind())
 errs.extend(dispute_types())
 
 for e in errs:

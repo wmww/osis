@@ -811,7 +811,6 @@ impl Engine {
         let d = d_record.tid();
         self.core.account.set(Some(p));
         self.core.accounts.insert(p, Arc::new(HeldAccount { devices: d, first: signing, keys: [(signing, keys.clone())].into() }));
-        self.core.role_changed();
         let res = self.run(|tx| create_account_in(tx, record, d_record, &keys, hosts));
         if res.is_err() {
             self.core.account.set(None);
@@ -835,7 +834,6 @@ impl Engine {
             return Err(Error::Misuse("no seed of the account readable here"));
         }
         self.core.accounts.insert(*p, Arc::new(HeldAccount { devices: *d, first, keys }));
-        self.core.role_changed();
         self.run(super::reopen_all)
     }
 
@@ -956,7 +954,6 @@ impl Engine {
         self.hold_account(p, &d)?;
         self.core.account.set(Some(*p));
         self.save_account(p, &d)?;
-        self.core.role_changed();
         let g = *grant;
         let x = self.run(|tx| super::owe(tx, Delivery::Certificate { commits: vec![g], under: d }))?;
         Ok(Done { deliveries: vec![x], ..Done::default() })

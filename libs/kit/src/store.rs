@@ -23,19 +23,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Opens the store in `dir`, creating it (with its home group syncing with `peers`) when `dir` holds
-/// none; an existing store adds the `peers` it lacks. Sync runs on osis's own runtime over QUIC
-/// while the app runs. Watch callbacks run on the UI thread, in `db.settle()`: `wake` arranges for
+/// none; an existing store syncs with `peers` too (`NotBuilt` with any). Sync runs on osis's own
+/// runtime over QUIC while the app runs. Watch callbacks run on the UI thread, in `db.settle()`: `wake` arranges for
 /// one (`window::Waker`).
 pub fn open(dir: &Path, peers: Vec<Address>, wake: Arc<dyn Fn() + Send + Sync>) -> Result<Osis> {
     let mut cfg = Config { runtime: Runtime::Own, ..Config::default() };
     cfg.app.dispatch = osis::Dispatcher::Pump(wake);
     let store = Store::Dir(dir.to_path_buf());
     if dir.join("db.redb").exists() {
-        let db = Osis::open(store, cfg)?;
-        for p in &peers {
-            db.add_peer(p)?;
+        if !peers.is_empty() {
+            return Err(osis::Error::NotBuilt);
         }
-        Ok(db)
+        Osis::open(store, cfg)
     } else {
         Osis::create(store, &peers, cfg)
     }
@@ -91,12 +90,7 @@ impl Data {
         if let Err(e) = db.register_schema(crate::schema::SCHEMA.file(), crate::schema::SCHEMA.source()) {
             eprintln!("osis-kit: schema: {e}");
         }
-        let data = Data::from_parts((db, account, Arc::new(registry)));
-        // made at open, never by a read; a store error here shows again at the first write
-        if let Err(e) = data.ensure_profile() {
-            eprintln!("osis-kit: profile: {e}");
-        }
-        data
+        Data::from_parts((db, account, Arc::new(registry)))
     }
 
     /// What another thread may hold (`Data` carries the UI thread's graph handles).
@@ -107,14 +101,6 @@ impl Data {
     /// `Data` again, on another thread.
     pub fn from_parts((db, account, registry): (Osis, Arc<dyn Account>, Arc<Registry>)) -> Data {
         Data { reader: Reader { db: ReadOnly::clone(&db), scope: None, clock: db.clone(), account, registry }, db }
-    }
-
-    /// Makes this account's profile, if it can have one yet (a peer saved).
-    pub fn ensure_profile(&self) -> Result<()> {
-        if !self.db.saved_peers()?.is_empty() {
-            self.db.profile()?;
-        }
-        Ok(())
     }
 
     /// The group writes go to, made on first use.
@@ -239,7 +225,7 @@ impl Reader {
         Ok(self.groups()?.contains(&t))
     }
 
-    /// The account's profile thing, once it is made (`Data::ensure_profile`).
+    /// The account's profile thing, once it is made (`Osis::profile`).
     pub fn you(&self) -> Result<Option<Tid>> {
         self.db.profile_of(self.db.me())
     }
@@ -261,7 +247,12 @@ impl Reader {
         for g in &groups {
             todo.extend(self.members(*g)?.iter().copied().map(Member::tid).filter(|t| !skip(t)));
         }
-        todo.extend(self.db.status()?.groups.into_iter().filter(|(t, g)| !g.leaving && !skip(t)).map(|(t, _)| t));
+        // the groups this store syncs: none while sync is not built
+        match self.db.status() {
+            Ok(s) => todo.extend(s.groups.into_iter().filter(|(t, g)| !g.leaving && !skip(t)).map(|(t, _)| t)),
+            Err(osis::Error::NotBuilt) => {}
+            Err(e) => return Err(e),
+        }
         todo.extend(self.db.profile_of(home)?);
         while let Some(t) = todo.pop() {
             if !seen.insert(t) {

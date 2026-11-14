@@ -1,8 +1,7 @@
 //! Tied grants (spec/permissions.md §2): an edge whose holder is a group G, tied to G's placement
 //! of the target T, named by the `group.0` element's creation stamp. Written after the placement
 //! (`Osis::share_into`); once a node's state of G's `group.0` holds that element dead, the tied
-//! edge is to be removed by a node that may (the obligation node-sync runs,
-//! `SyncEngine::untie_unplaced`): explicitly by an admin of T, else as a self-removal by an admin
+//! edge is to be removed by a node that may (an obligation sync runs): explicitly by an admin of T, else as a self-removal by an admin
 //! of G. An element not held yet is on its way: nothing. One way only: a stale placement never
 //! re-grants.
 

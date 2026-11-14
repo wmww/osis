@@ -274,24 +274,13 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
-//! # Sync and peers
-//! Everything works with nobody online; sync catches up whenever two nodes meet. Two kinds of node
-//! carry a group, for now:
-//! - Other nodes that read it find each other and sync directly (`Config::direct_sync`), also by
-//!   finding each other on a local network (`Config::lan`).
-//! - **Saved peers**, named by address: nodes that serve data for others at a fixed address
-//!   (`set_serving`, `listen`), whether or not they can read it: another of your machines,
-//!   a friend's, a rented box. What a peer cannot read reaches it encrypted.
-//!
-//! `status` says how far each group got with the nodes connected now, and `wait_synced` waits until
-//! they are caught up: with nobody connected it waits.
-//!
-//! Sync runs on a runtime (`Runtime::Own`, or your tokio handle); without one everything local still
-//! works, and a call that waits for another node fails `Network`.
+//! # Sync
+//! Everything works with nobody online; sync catches up whenever two nodes meet. Sync is not built
+//! yet: every call that needs another node, or a connection to one, fails `Error::NotBuilt`.
 //! ```
-//! # use osis::{Config, MemStore, Osis, Store, SyncState};
+//! # use osis::{Config, Error, MemStore, Osis, Store};
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
-//! assert_eq!(db.status()?.groups[&db.home()].state, SyncState::NotConnected);
+//! assert_eq!(db.status(), Err(Error::NotBuilt));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -313,28 +302,21 @@
 //! # Sharing
 //! A role says who may; sync says where the data goes. `grant` gives an actor a role on a thing and
 //! needs the actor's keys (a contact card, a shared group). The holder reads once a synced group it
-//! reads holds the thing, or the thing's own `sync` carries it. `set_role` changes or removes a role.
-//! A link needs no keys and syncs its thing. Being in a group grants nothing: `add_with_grant` adds a
+//! reads holds the thing, or the grant gives the thing a sync ID of its own. `set_role` changes or
+//! removes a role. A link needs no keys and syncs its thing. Being in a group grants nothing: `add_with_grant` adds a
 //! member and lets the group's holders read it.
 //! ```
-//! # use osis::{Address, Config, GrantOpts, MemStore, Osis, Role, LinkOpts, Store, Value};
-//! // a link names peers (or is direct, `LinkOpts::direct`)
+//! # use osis::{Config, GrantOpts, MemStore, Osis, Role, Store};
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
-//! db.add_peer(&Address::new(&"quic://example.org:4433".parse()?, [7; 32]))?;
 //! let mut w = db.write();
 //! let g = w.create()?;
 //! w.at(g, osis::core::NAME).set(&"Trip".to_string())?;
 //! w.commit()?;
-//! db.sync(g, &[])?;
-//! let link = db.make_link(g, Role::Write, LinkOpts { single_use: true, ..Default::default() })?;
-//! assert!(link.to_string().starts_with("osis://link/"));
-//! let links = db.links()?;
-//! assert_eq!(links.iter().filter(|l| l.target == g).count(), 1);
-//! // who holds `g`, and who holds it through what
-//! assert!(db.holders(g)?.iter().any(|h| h.actor == links[0].id.actor() && h.through.is_empty()));
 //! // grant, and later change or remove with `set_role`
 //! db.grant(g, db.node(), Role::Read, GrantOpts::default())?;
 //! assert_eq!(db.grants(g)?[&db.node()].role, Role::Read);
+//! // who holds `g`, and who holds it through what
+//! assert!(db.holders(g)?.iter().any(|h| h.actor == db.node() && h.through.is_empty()));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -491,7 +473,6 @@ mod clients;
 mod diagnostic;
 mod error;
 mod handle;
-mod serving;
 #[doc(hidden)]
 pub mod internals;
 mod keep;
@@ -512,14 +493,12 @@ mod track;
 mod watch;
 mod write;
 
-mod port;
 pub use backlinks::{Backlink, BacklinkPage, BacklinkQuery};
 pub use commit_id::{CommitFrom, CommitId, CommitPos};
 pub use clients::{Client, ClientSecret};
 pub use error::{Error, Result};
 pub use diagnostic::Diagnostic;
 pub use disputes::{Dispute, DisputeId, Side};
-pub use serving::{Admit, ServingCaps, Serving, ServingPolicy, SyncId};
 pub use handle::{Close, Config, AppConfig, MemStore, Osis, ReadOnly, Store, WeakOsis};
 pub use net::{Lan, Runtime};
 pub use account::{Joining, PairOffer, PairReply, PairRequest};

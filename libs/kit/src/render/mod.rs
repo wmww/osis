@@ -724,18 +724,7 @@ impl Ui {
         let q = self.state.graph.peek(QUERY).trim().to_string();
         match classify(&q) {
             Paste::Link => self.start_redeem(rr, q),
-            Paste::Peer => {
-                let r = q.parse::<osis::Address>().map_err(|e| e.to_string()).and_then(|a| self.data.db.add_peer(&a).map_err(|e| e.to_string()));
-                match r {
-                    Ok(()) => {
-                        let _ = self.data.ensure_profile();
-                        self.state.set_local(QUERY, String::new());
-                        self.status(rr, format!("peer {q} added"));
-                        self.update(rr, true);
-                    }
-                    Err(e) => self.status(rr, format!("not added: {e}")),
-                }
-            }
+            Paste::Peer => self.status(rr, format!("peer {q}: {}", osis::Error::NotBuilt)),
             Paste::Query => {
                 let dark = self.look.dark;
                 let cx = Cx::new(&self.data, &self.state, dark);
@@ -767,7 +756,6 @@ impl Ui {
         self.redeeming = false;
         match r {
             Ok(t) => {
-                let _ = self.data.ensure_profile();
                 self.state.set_local(QUERY, String::new());
                 self.diag = None;
                 if let Err(e) = self.data.set_open(Some(t)) {

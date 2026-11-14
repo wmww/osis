@@ -1,12 +1,12 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Tracked reads and indexed dispatch (notes/api.md Watching, notes/fast-design.md): cost counted,
 //! never timed, on a `Dispatcher::Pump` node so what a commit dispatches runs on this thread.
 //! spec: none (API surface, notes/api.md).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common::TestWrites as _;
 use crate::common::*;
 use osis::internals::Internals as _;
-use osis::internals::node::costs;
+use osis::internals::costs;
 use osis::{CommitFrom, Dispatcher, Member, MemStore, Osis, ReadSet, Scope, Tid, Value, p};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

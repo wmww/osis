@@ -456,7 +456,7 @@ impl Engine {
     }
 
     /// Fetch commit `c` again once this node holds secrets of the secret actor of any of its
-    /// parts `ais` (`copy_stale`): `Changed::wakes` names it then.
+    /// parts `ais` (`copy_stale`): `Wakes` names it then.
     pub fn await_reading(&mut self, c: &CommitId, h: &osis_commit::Header, ais: &BTreeSet<usize>) {
         let actors: BTreeSet<Tid> = ais.iter().filter_map(|ai| h.aspects.get(*ai)).filter_map(|a| self.core.secret_actor(&a.tid)).collect();
         for a in actors {

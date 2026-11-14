@@ -4,7 +4,7 @@
 //! sides authenticated for the connection, whichever of them proves). Invariant: a proof made as
 //! one role cannot be accepted in the other, and is bound to one challenge and one listener.
 //! An account signs with one of its epochs' keys; whether that epoch is open is the node's to
-//! judge (`osis_node`).
+//! judge.
 
 use crate::Error;
 use crate::dec::Fields;
@@ -15,7 +15,7 @@ use osis_crypto::{Domain, Signature, SigningSecret, VerifyingKey, proof_digest};
 /// stranger pays one signature per proof, so this bounds its verification cost per connection
 /// (about 12 ms at 46 us each). 0: no connection proves anything; infinity: a frame of proofs costs
 /// seconds of the event loop. A node holding more key actors proves its own key and the first of
-/// them by tid (`osis_node`'s `provers`); the rest are not proved on that connection.
+/// them by tid; the rest are not proved on that connection.
 pub const MAX_PROOFS: usize = 256;
 
 /// Most tags one Resume holds: as many as fit one message (spec/wire.md §11.2). Not picked: the

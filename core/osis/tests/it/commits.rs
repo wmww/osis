@@ -1,6 +1,6 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Commit listings' relations and filters, undo, redo, revert (notes/api.md Commits; spec/commits.md
 //! §7, spec/crdt.md §4.6).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis::internals::Exact as _;
 use osis::internals::CommitRaw as _;
@@ -10,7 +10,6 @@ use crate::common;
 use common::*;
 use crate::common::CreateIn;
 use osis::{CommitId, CommitKind, CommitQuery, NotUndoableReason, Error, MemStore, Osis, Scope, Value};
-use osis_sim::world::World;
 
 // spec/commits.md §7, notes/api.md Commits: undo and redo walk this actor's own commits in
 // scope; redo is an undo of the undo; a new undo after a redo undoes the redone change. A
@@ -114,9 +113,9 @@ fn undo_mutation_alone_spec_commits_7() {
     let mut w = db.write();
     let t = w.create_with_content(db.home()).unwrap();
     let c = w.commit().unwrap().unwrap().stamp.id.raw();
-    let mut m = osis::internals::node::Mutation::new();
+    let mut m = osis::internals::engine::Mutation::new();
     m.undo(c).set(t, &ak("t:x.0"), &Value::Int(1)).unwrap();
-    assert!(matches!(db.engine(|e| e.commit(m)), Err(osis::internals::node::Error::Misuse(_))));
+    assert!(matches!(db.engine(|e| e.commit(m)), Err(osis::internals::engine::Error::Misuse(_))));
 }
 
 // notes/api.md Commits: a listing shows everyone's commits in scope with their relations; a
@@ -253,46 +252,6 @@ fn undo_redo_across_nodes_spec_commits_7() {
     assert_eq!(get(&db), None);
 }
 
-// notes/api.md Commits: another actor's revert of my change is found with the same query; my
-// undo skips the commit it reverted; for its author the revert is an undo: redo reverts it.
-#[test]
-fn find_another_actors_revert_api_commits() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = crate::scenario::account(&mut w, 1, host);
-    let bob = crate::scenario::account(&mut w, 2, host);
-    let b = crate::scenario::introduce(&mut w, &alice, &bob);
-    typed_any(&alice, &["t:x.0"]);
-    typed_any(&bob, &["t:x.0"]);
-    let k = ak("t:x.0");
-    let t = alice
-        .commit_with(|wr| {
-            let t = wr.create()?;
-            keep_all(wr, t);
-            Ok(t)
-        })
-        .unwrap();
-    alice.sync(t, &[]).unwrap();
-    alice.grant(t, b, osis::Role::Write, osis::GrantOpts::default()).unwrap();
-    w.run();
-    let c = commit_with(&alice, |wr| wr.at(t, kept(&alice, &k.clone())).set(&Value::Int(1)));
-    w.run();
-    assert_eq!(bob.at(t, kept(&alice, &k.clone())).get().unwrap(), Some(Value::Int(1)));
-    let r = bob.revert(c.stamp.id).unwrap();
-    w.run();
-    assert_eq!(alice.at(t, kept(&alice, &k.clone())).get().unwrap(), None);
-    let found = alice.writes(&Scope::Thing(t), &CommitQuery { reverts: Some(c.stamp.id), ..Default::default() }).unwrap().commits;
-    assert_eq!(found.iter().map(|e| (e.stamp.id, e.stamp.actor)).collect::<Vec<_>>(), vec![(r.stamp.id, bob.me())]);
-    let mine = alice.writes(&Scope::Thing(t), &CommitQuery { actors: vec![alice.me()], kinds: vec![CommitKind::Content], ..Default::default() }).unwrap().commits;
-    assert!(mine.iter().any(|e| e.stamp.id == c.stamp.id && !e.in_effect && e.reverted_by == vec![r.stamp.id]));
-    assert_eq!(alice.undo(&Scope::Aspects(vec![(t, k.clone())])).unwrap(), None, "alice's change is out of effect");
-    // bob's revert is a revert: his undo skips it, his redo reverts it
-    assert_eq!(bob.undo(&Scope::Thing(t)).unwrap(), None, "bob made no change");
-    bob.redo(&Scope::Thing(t)).unwrap().unwrap();
-    w.run();
-    assert_eq!(alice.at(t, kept(&alice, &k)).get().unwrap(), Some(Value::Int(1)));
-}
-
 // notes/api.md Attribution, spec/permissions.md §5.2: the API reports only verifiable authorship.
 // B holds A's signed change: history lists it with A's node and `ts`. C holds only A's snapshot
 // of the aspect: the value reads the same, its watch reports the commit as the snapshot's (its
@@ -392,7 +351,6 @@ fn exact_undo_spec_crdt_4_6() {
         assert_eq!(a.at(t, osis::DynamicAspectKey::untyped(doc.clone())).get().unwrap(), before, "{name}");
     }
 }
-
 
 /// What `next` picks in `scope`.
 fn next(db: &Osis, scope: &Scope, redo: bool) -> Option<CommitId> {
@@ -546,48 +504,6 @@ fn next_reports_what_undo_and_redo_revert_api_commits() {
     assert_eq!(db.at(a, kept(&db, &k)).get().unwrap(), Some(Value::Int(1)));
 }
 
-// spec/crdt.md §4.6, undoing a creation, shared: the undo of a creation reaches the other
-// holder (deleted there), redo restores it there; a writer (not admin) may revert another's
-// creation of a thing it may write; reverting the creation of a thing it may not write is
-// `Permission` and changes nothing (never a partial revert: removed but not deleted).
-#[test]
-fn undo_of_creation_shared_spec_crdt_4_6() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = crate::scenario::account(&mut w, 1, host);
-    let bob = crate::scenario::account(&mut w, 2, host);
-    let b = crate::scenario::introduce(&mut w, &alice, &bob);
-    typed_any(&alice, &["t:x.0"]);
-    typed_any(&bob, &["t:x.0"]);
-    let x = ak("t:x.0");
-    let g = alice.commit_with(|wr| { let g = wr.create()?; keep_all(wr, g); Ok(g) }).unwrap();
-    alice.sync(g, &[]).unwrap();
-    alice.grant(g, b, osis::Role::Write, osis::GrantOpts::default()).unwrap();
-    w.run();
-    let mk = |admin: osis::Tid| alice.commit_with(|wr| { let t = wr.create_in(admin, &[g])?; keep_all(wr, t); wr.at(t, kept(&alice, &x.clone())).set(&Value::Int(1))?; Ok(t) }).unwrap();
-    let t = mk(g);
-    w.run();
-    assert_eq!(bob.at(t, kept(&alice, &x.clone())).get().unwrap(), Some(Value::Int(1)));
-    let s = Scope::Thing(t);
-    alice.undo(&s).unwrap().unwrap();
-    w.run();
-    assert!(!bob.has_content(t).unwrap() && bob.groups_of(t).unwrap().within.is_empty());
-    alice.redo(&s).unwrap().unwrap();
-    w.run();
-    assert!(bob.has_content(t).unwrap() && bob.at(t, kept(&alice, &x.clone())).get().unwrap() == Some(Value::Int(1)) && bob.groups_of(t).unwrap().item_of == vec![g]);
-    let c = alice.created(t).unwrap().unwrap().id;
-    bob.revert(c).unwrap();
-    w.run();
-    assert!(!alice.has_content(t).unwrap() && alice.groups_of(t).unwrap().within.is_empty());
-    let t3 = mk(alice.me());
-    w.run();
-    assert_eq!(bob.role_on(t3).unwrap(), None);
-    let c3 = alice.created(t3).unwrap().unwrap().id;
-    assert!(matches!(bob.revert(c3), Err(Error::Permission { .. })));
-    w.run();
-    assert!(alice.has_content(t3).unwrap() && alice.groups_of(t3).unwrap().item_of == vec![g]);
-}
-
 // notes/api.md Commits: a revert of a creation is related to it in a scope naming only
 // `created.0`, though it writes none of the aspects the creation wrote (removed meanwhile; seen
 // on the other node, which has no log entry of it).
@@ -733,7 +649,7 @@ fn commit_work_linear_in_things_spec_requirements_decentralization() {
 /// Per kind, the work of creating `n` things in one commit and delivering it, then of writing
 /// one commit with a change on each of them and of applying it on another node.
 fn commit_work(n: usize) -> std::collections::BTreeMap<String, u64> {
-    use osis::internals::node::costs;
+    use osis::internals::costs;
     let (a, b, _c) = paired();
     let mut work = std::collections::BTreeMap::new();
     let mut add = |side: &str, cs: Vec<(&'static str, std::time::Duration, u64)>, reached: u64| {

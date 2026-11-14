@@ -3,9 +3,11 @@
 # fails on main (a sim's SETUP/SEED); ISSUE: its issues/ file; PATTERN: a regex every failing
 # unit of NAME (each seed line of its panic, or its whole panic) must match
 # (tools/gate_failures.py).
-runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issues/paired-peer-runtime-flake.md Unsynced \{ groups
 props::settled_histories_keep_their_laws_large_spec_commits_5 OSIS_HELD_START=387315248891 issues/held-model-until-no-deadline.md seed \d+: output changed before its first deadline
 runtime::redeem_in_process_spec_permissions_7 - issues/paired-peer-runtime-flake.md Unsynced
+order::held_set_decides_plain OSIS_ORDER_SEED=197373046315 issues/order-held-model-role-applies.md held-model differs: role commit .* applies: model true, node false
+order::held_set_decides_plain OSIS_ORDER_START=1117 issues/held-model-undo-covered-drop-live.md held-model differs: commit .*: dropped as covered at \d+, live, the settings held keep it
+order::held_set_decides_plain OSIS_ORDER_START=5019 issues/held-model-forged-two-edges-applied.md held-model differs: commit .* applied: model false, node true; parts \[.*roles\.0
 disputes::disputes_listed_told_and_chosen_spec_permissions_5_1 - issues/osis-tests-depend-on-store-rng.md Author, false\)\s+right: \(Tid\(\S+\), Tid\(\S+\), Holder
 sharing::redeem_after_a_joiner_left_spec_permissions_7 - issues/osis-tests-depend-on-store-rng.md Unsynced \{ groups
 awaits::a_part_missing_again_is_fetched_under_every_label_spec_sync_6 - issues/osis-tests-depend-on-store-rng.md fresh blobs per label\s+left: \[1, 1\]

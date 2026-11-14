@@ -2673,13 +2673,11 @@ dependencies = [
  "osis-commit",
  "osis-crdt",
  "osis-crypto",
- "osis-host",
+ "osis-engine",
  "osis-label",
- "osis-node",
  "osis-perm",
  "osis-proto",
  "osis-schema",
- "osis-sim",
  "osis-store",
  "osis-transport",
  "tokio",
@@ -2743,10 +2741,7 @@ name = "osis-chat"
 version = "0.1.0"
 dependencies = [
  "osis",
- "osis-label",
  "osis-schema",
- "osis-sim",
- "osis-transport",
 ]
 
 [[package]]
@@ -2803,6 +2798,8 @@ dependencies = [
 name = "osis-engine"
 version = "0.1.0"
 dependencies = [
+ "crdt-model",
+ "held-model",
  "osis-base",
  "osis-commit",
  "osis-crdt",
@@ -2812,19 +2809,7 @@ dependencies = [
  "osis-perm",
  "osis-schema",
  "osis-store",
-]
-
-[[package]]
-name = "osis-host"
-version = "0.1.0"
-dependencies = [
- "osis-base",
- "osis-crypto",
- "osis-label",
- "osis-proto",
- "osis-store",
- "osis-transport",
- "proptest",
+ "osis-vectors",
 ]
 
 [[package]]
@@ -2865,29 +2850,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "osis-node"
-version = "0.1.0"
-dependencies = [
- "crdt-model",
- "held-model",
- "osis-base",
- "osis-commit",
- "osis-crdt",
- "osis-crypto",
- "osis-engine",
- "osis-host",
- "osis-keys",
- "osis-label",
- "osis-perm",
- "osis-proto",
- "osis-schema",
- "osis-store",
- "osis-transport",
- "osis-vectors",
- "tokio",
-]
-
-[[package]]
 name = "osis-perm"
 version = "0.1.0"
 dependencies = [
@@ -2919,15 +2881,11 @@ dependencies = [
 name = "osis-sim"
 version = "0.1.0"
 dependencies = [
- "osis",
  "osis-base",
  "osis-commit",
  "osis-crdt",
  "osis-crypto",
- "osis-host",
- "osis-label",
- "osis-node",
- "osis-proto",
+ "osis-engine",
  "osis-schema",
  "osis-store",
  "osis-transport",

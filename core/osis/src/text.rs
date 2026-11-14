@@ -161,7 +161,7 @@ struct Session {
 
 /// Reports edits a session could not commit.
 fn uncommitted(db: &Osis, tid: Tid, e: &Error) {
-    let d = osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Uncommitted, tids: vec![tid], commit: None, peer: None, detail: format!("text session edits not committed: {e}") };
+    let d = osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::Uncommitted, tids: vec![tid], commit: None, peer: None, detail: format!("text session edits not committed: {e}") };
     db.engine(|en| en.report(d));
 }
 
@@ -169,7 +169,7 @@ fn uncommitted(db: &Osis, tid: Tid, e: &Error) {
 /// idle for `idle_commit`, else it re-arms for the rest.
 fn arm(db: &Osis, s: Weak<Session>, d: std::time::Duration) -> bool {
     let w = db.downgrade();
-    db.inner.net.after(
+    db.inner.after(
         d,
         Box::new(move || {
             let (Some(db), Some(s)) = (w.hold(), s.upgrade()) else { return };
@@ -302,9 +302,6 @@ impl<K: ValueKey> PathRef<'_, '_, K> {
     /// through a connected node.
     pub fn edit_text(&self) -> Result<TextSession> {
         let (db, tid, key, path) = self.parts();
-        if let crate::sources::Source::Node(_) = db.source(tid) {
-            return Err(Error::Unsupported("edit_text through a connected node".into()));
-        }
         let seq = matches!(crate::large::type_of(key, path)?, Some(Type::Text));
         let key = crate::DynamicAspectKey { ak: ak_of(key)?, schema: key.schema().map(|s| Arc::new(s.clone())) };
         let now = match db.read_local(|r| r.get_path(tid, &key, path))? {

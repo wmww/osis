@@ -2,19 +2,16 @@
 //! seeded scheduler (`harness`), per-node virtual clocks with skew and drift, message faults
 //! (drop, duplicate, delay, reorder), crash and restart over the same `MemoryBackend`; the
 //! invariant library (`check`); named scenarios with seed replay (`scenarios`). No tokio, no
-//! threads, no I/O (notes/architecture.md §2, node sync layer is sans-I/O).
-//! Layer 9 (notes/architecture.md). Notes: notes/test-sim.md. Phase A: commits only (no labels,
-//! hosts or sync engine yet).
+//! threads, no I/O. `reach`: the reachability model (LAN segments, NATs, relays, partitions) a
+//! sync harness routes by. Layer 9 (notes/architecture.md). Notes: notes/test-sim.md.
 #![forbid(unsafe_code)]
 
 pub mod check;
 pub mod dice;
 pub mod harness;
-pub mod net;
 pub mod reach;
 pub mod scenarios;
 pub mod workload;
-pub mod world;
 
 pub use harness::{ClockSpec, Config, Failure, NetFaults, Node, Report, Res, Seeds, Sim, Weights};
 pub use scenarios::{BLOCKED, SCENARIOS, blocked, replay, run, setup_seed};

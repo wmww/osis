@@ -14,17 +14,13 @@ doctest = false
 workspace = true
 
 [dependencies]
-osis.workspace = true
-osis-node.workspace = true
-osis-host.workspace = true
+osis-engine.workspace = true
 osis-store.workspace = true
 osis-base.workspace = true
 osis-crypto.workspace = true
 osis-crdt.workspace = true
 osis-schema.workspace = true
 osis-commit.workspace = true
-osis-label.workspace = true
-osis-proto.workspace = true
 osis-transport.workspace = true
 
 [[bin]]

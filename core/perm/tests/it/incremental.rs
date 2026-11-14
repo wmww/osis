@@ -2087,7 +2087,7 @@ fn applied(inc: &Timelines, things: &BTreeSet<Tid>) -> BTreeMap<WriteId, (Tid, T
 }
 
 /// `update_touched`, with `MOVES` checking the rule the engine's and sync's narrow paths rest on
-/// (`Core::timelines_changed`, `SyncEngine::note_role_moves`): an answer about (node, thing)
+/// (`Core::timelines_changed`): an answer about (node, thing)
 /// differs only where the thing's component was evaluated, it is below a new record, or the node
 /// is upstream of a reported edge's holder or new record and the thing reachable from its target or
 /// that record; in the walk's past too, and however the node stands now.

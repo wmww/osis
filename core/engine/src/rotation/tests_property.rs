@@ -707,7 +707,9 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
             // every holder at r agrees on the current epochs, each established by the first admin;
             // a node holding none of r's secrets reads supersession from keysets alone, without
             // the history boxes (spec/crypto.md §4, Supersedes), so may count more
-            for &(p, _) in direct.iter().filter(|x| x.1 >= r) {
+            // a holder of sync alone reads nothing, so holds no secret (spec/permissions.md §3)
+            let holds = r.max(Role::Read);
+            for &(p, _) in direct.iter().filter(|x| x.1 >= holds) {
                 assert!(at_o.iter().all(|x| ep(o).is_established(x)), "seed {seed}: {t:?} {r:?}: the first admin counts current {at_o:?}, not all established there");
                 assert_eq!(ep(p).current(), at_o, "seed {seed}: {t:?} {r:?}: peers {o} and {p} count different current epochs (rotated: {rotated})");
             }
@@ -715,9 +717,9 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
             // may rotate holds, and every earlier superseded secret a holder of it holds
             for e in &at_o {
                 let any = direct.iter().any(|&(p, pr)| pr >= r.max(Role::Write) && ep(p).secret(e).is_some());
-                let lacking: Vec<usize> = direct.iter().filter(|&&(p, pr)| pr >= r && ep(p).secret(e).is_none()).map(|x| x.0).collect();
+                let lacking: Vec<usize> = direct.iter().filter(|&&(p, pr)| pr >= holds && ep(p).secret(e).is_none()).map(|x| x.0).collect();
                 assert!(!any || lacking.is_empty(), "seed {seed}: {t:?} {r:?} holders {lacking:?} lack current epoch {e:?} another holds (rotated: {rotated})");
-                let at_e: Vec<usize> = direct.iter().filter(|&&(p, pr)| pr >= r && ep(p).secret(e).is_some()).map(|x| x.0).collect();
+                let at_e: Vec<usize> = direct.iter().filter(|&&(p, pr)| pr >= holds && ep(p).secret(e).is_some()).map(|x| x.0).collect();
                 for &p in &at_e {
                     let ex = ep(p);
                     for (x, _) in ex.held_established().filter(|(x, _)| x.n() < e.n() && !ex.is_current(x)) {

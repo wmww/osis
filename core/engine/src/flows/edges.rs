@@ -121,7 +121,7 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
     let blob = seal_inbox_blob(&to, &kem, &payload, now, &mut *tx.rng)?;
     let resend = super::Resend { holder, commit: c, things: things.to_vec(), edge_only: parts == Parts::Edge };
     // its record in the commit's own transaction: node-sync sends it from there, also after a
-    // crash before `carry_out` (spec/sync-judgement.md §1, spec/sync-ids.md §6)
+    // crash before it is sent (spec/sync-judgement.md §1, spec/sync-ids.md §6)
     if let Some(r) = tx.core.sync_records {
         r.note_unsent(tx, holder, c, things.to_vec(), parts == Parts::Edge)?;
     }

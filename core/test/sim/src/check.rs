@@ -10,7 +10,7 @@ use osis_commit::Header;
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, CommitId, Tid, Ts, Value};
 use osis_crdt::Source;
-use osis_node::{Engine, Event, Origin, Result};
+use osis_engine::{Engine, Event, Origin, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Every stored aspect and its read.
@@ -110,7 +110,7 @@ pub fn held(e: &Engine) -> Held {
 /// A node's held set and reads, at the engine (its restart count) and read point
 /// (`Engine::point`: a read repeats while it stands) they were taken at.
 pub struct View {
-    at: (u64, osis_node::engine::ReadPoint),
+    at: (u64, osis_engine::engine::ReadPoint),
     held: Held,
     reads: Reads,
 }

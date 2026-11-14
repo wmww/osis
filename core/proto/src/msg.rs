@@ -13,6 +13,10 @@ use osis_schema::Codec;
 pub use osis_schema::core_types::SecretBox;
 
 pub const WRAP_LEN: usize = osis_crypto::WRAP_LEN;
+/// The greatest `max_reply` (spec/wire.md §2, Protocol version 1 limits).
+pub const REPLY_BUDGET: usize = MAX_MESSAGE - 64 * 1024;
+/// The smallest `max_reply` (spec/wire.md §2, Protocol version 1 limits).
+pub const SMALL_REPLY: usize = 16 << 10;
 pub type Wrap = [u8; WRAP_LEN];
 
 /// Per-message caps (spec/wire.md §11.2).
@@ -624,7 +628,7 @@ fn suspect_entry(v: Value) -> Result<SuspectEntry, Error> {
 /// A reply allowance: `SMALL_REPLY..=REPLY_BUDGET` (spec/wire.md §11.2).
 fn max_reply(f: &mut Fields) -> Result<u64, Error> {
     let m = f.uint()?;
-    if m < crate::window::SMALL_REPLY as u64 || m > crate::session::REPLY_BUDGET as u64 {
+    if m < SMALL_REPLY as u64 || m > REPLY_BUDGET as u64 {
         return Err(Error::Malformed("max_reply"));
     }
     Ok(m)

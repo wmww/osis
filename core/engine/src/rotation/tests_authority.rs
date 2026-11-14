@@ -277,8 +277,7 @@ fn route_removal_proved_leaks_nothing_spec_crypto_4() {
     assert!(!openable(&mut lp, M1, &[m], f, known).contains(&(m, Role::Read, em)), "f opens m1's newest epoch of M");
 }
 
-/// Node-sync's covered drop (`CoverPass`, as `SyncEngine::compact_now` runs it, role snapshots
-/// included) over `t`'s `keys.0` and `secrets.0` at peer `i`: each held body (not a snapshot) that
+/// Covered drops (role snapshots included) over `t`'s `keys.0` and `secrets.0` at peer `i`: each held body (not a snapshot) that
 /// a held valid snapshot covers drops once past its keep bound (`Engine::drop_from`); one kept for
 /// good leaves the cover candidates (`Engine::settle_kept`). Returns how many dropped.
 fn drop_covered(lp: &mut LocalPeer, i: usize, t: Tid) -> usize {

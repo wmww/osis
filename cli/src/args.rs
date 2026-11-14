@@ -159,7 +159,7 @@ pub enum Cmd {
         #[arg(long, value_name = "ADDR")]
         peer: Vec<String>,
     },
-    /// This store's account (also its home group), node and saved peers
+    /// This store's account (also its home group) and node
     Whoami,
     /// Add a node to this account
     #[command(subcommand)]
@@ -167,23 +167,13 @@ pub enum Cmd {
     /// This account's nodes
     #[command(subcommand)]
     Node(NodeCmd),
-    /// Nodes this store syncs with
-    #[command(subcommand)]
-    Peers(PeersCmd),
-    /// Whether this node stores and serves data for others, and on what terms: show, set or stop it
-    #[command(subcommand)]
-    Serving(ServingCmd),
     /// Thin clients of this node, each with an actor of its own
     #[command(subcommand)]
     Clients(ClientsCmd),
-    /// Keep the store open: sync, serve data for others if set to (the flags set it, as `serving set`),
-    /// print diagnostics
+    /// Keep the store open: sync, print diagnostics
     Serve {
-        #[command(flatten)]
-        serving: ServingFlags,
-        /// Listen at this transport URL under the node's key (repeatable; serving with none: the
-        /// default port): other nodes sync, and clients connect, there. A line `URL#KEY` per
-        /// address prints first
+        /// Listen at this transport URL under the node's key (repeatable): other nodes sync, and
+        /// clients connect, there. A line `URL#KEY` per address prints first
         #[arg(long, value_name = "URL")]
         listen: Vec<String>,
     },
@@ -511,19 +501,6 @@ pub enum NodeCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum PeersCmd {
-    /// The saved peers; with --group, whom G syncs with: its saved peers and readers' published addresses
-    Ls {
-        #[arg(long, value_name = "G")]
-        group: Option<String>,
-    },
-    /// Save a peer, a node serving at ADDR (its `serving show`): what syncs from now on syncs with it
-    Add { addr: String },
-    /// Remove a saved peer
-    Rm { addr: String },
-}
-
-#[derive(Subcommand, Debug)]
 pub enum ClientsCmd {
     /// Registers a client: prints `ACTOR SECRET`, the secret (64 hex digits) only here. Grant
     /// the actor what it may reach
@@ -539,42 +516,6 @@ pub enum ClientsCmd {
     Rm { actor: String },
     /// A new secret for one (printed only here); the old one and its connections end
     Rotate { actor: String },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum ServingCmd {
-    /// Print the terms (not serving: exit 3)
-    Show,
-    /// Start or change serving: each flag given replaces its field, the rest kept
-    Set(ServingFlags),
-    /// The sync IDs of a synced group, for the `--admitted` and `--cap` of a node that cannot read it, one per line
-    Ids { g: String },
-    /// Stop serving (what was stored is dropped; a later start begins empty)
-    Off,
-}
-
-/// The terms of serving (`serving set`, `serve`): each flag given replaces its field; a flag given
-/// once as `''` clears it.
-#[derive(clap::Args, Debug, Default)]
-pub struct ServingFlags {
-    /// Which groups this node stores for others: those --admitted names, or any (it serves the groups it reads either way)
-    #[arg(long, value_enum)]
-    pub admit: Option<AdmitArg>,
-    /// Also admit a group (one synced here) or a sync ID, 32 hex digits (repeatable)
-    #[arg(long, value_name = "GROUP|ID")]
-    pub admitted: Vec<String>,
-    /// A limit: group_entries, group_bytes, groups, entries, bytes (repeatable)
-    #[arg(long, value_name = "NAME=N")]
-    pub policy: Vec<String>,
-    /// Caps for a group or a sync ID, in place of the policy's (repeatable)
-    #[arg(long, value_name = "GROUP|ID=ENTRIES,BYTES")]
-    pub cap: Vec<String>,
-}
-
-impl ServingFlags {
-    pub fn any(&self) -> bool {
-        self.admit.is_some() || !self.admitted.is_empty() || !self.policy.is_empty() || !self.cap.is_empty()
-    }
 }
 
 /// A group's members (`group add`, `group rm`).
@@ -636,9 +577,6 @@ pub enum ChatCmd {
         /// A kicked participant erases what it holds, unless the kick says otherwise
         #[arg(long)]
         no_retain_copy: bool,
-        /// Who it syncs with (default: the store's saved peers); a peer that does not read the group must admit it
-        #[arg(long, value_name = "ADDR")]
-        peer: Vec<String>,
     },
     /// Adds an account (a tid from `card import`)
     Add {
@@ -731,13 +669,6 @@ pub enum CardCmd {
 pub enum GroupCmd {
     #[command(flatten)]
     Member(MemberCmd),
-    /// Make G synced (default: the store's saved peers)
-    Sync {
-        g: String,
-        /// A peer to sync with (repeatable)
-        #[arg(long, value_name = "ADDR")]
-        peer: Vec<String>,
-    },
     /// Where G's calls go: shows it, or moves it to TO: `local`, or ADDR (URL#KEY) of the node
     /// connected by --connect; held in the store. Local: this store syncs it, and it is caught up
     /// before calls come home
@@ -795,11 +726,4 @@ pub enum ScriptCmd {
     #[command(subcommand)]
     Group(MemberCmd),
     Delete { t: String },
-}
-
-/// `--admit`.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AdmitArg {
-    Listed,
-    Open,
 }

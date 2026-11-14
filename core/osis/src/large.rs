@@ -32,8 +32,6 @@ enum Src {
     /// `buf[at..]`: the unread rest of the current chunk, `buf` starting at canonical byte
     /// `start`; `head`: bytes of the string head.
     Tree { reader: Box<osis_label::TreeReader>, buf: Vec<u8>, start: u64, at: usize, head: u64 },
-    /// At the connected node: read in `stream_read` pages; `buf` is the page from `start`.
-    Node { r: std::sync::Arc<crate::port::client::Connection>, ak: osis_base::Ak, path: Path, buf: Vec<u8>, start: u64 },
 }
 
 impl std::fmt::Debug for ValueStream {
@@ -104,21 +102,6 @@ impl ValueStream {
                 let piece = b.get(start..start.saturating_add(want)).unwrap_or_default();
                 out.get_mut(..piece.len()).unwrap_or_default().copy_from_slice(piece);
                 piece.len()
-            }
-            Src::Node { r, ak, path, buf, start } => {
-                let pos = self.pos;
-                if pos < *start || pos >= *start + buf.len() as u64 {
-                    *buf = self.db.node_read(r, tid, ak, path, pos, crate::port::STREAM_CHUNK)?;
-                    *start = pos;
-                    if buf.is_empty() {
-                        return Err(Error::Storage("value read at the node shorter than its length".into()));
-                    }
-                }
-                let at = usize::try_from(pos - *start).unwrap_or(usize::MAX);
-                let piece = buf.get(at..).unwrap_or_default();
-                let n = piece.len().min(want);
-                out.get_mut(..n).unwrap_or_default().copy_from_slice(piece.get(..n).unwrap_or_default());
-                n
             }
             Src::Tree { reader, buf, start, at, .. } => {
                 while *at >= buf.len() {
@@ -196,12 +179,6 @@ impl<K: ValueKey, H: std::borrow::Borrow<ReadOnly>> PathRef<'_, '_, K, H> {
     /// The string or blob here as a stream (`Read + Seek`), of any size. `None` when absent.
     pub fn stream(&self) -> Result<Option<ValueStream>> {
         let (db, tid, key, path) = self.read_parts();
-        if let crate::sources::Source::Node(r) = db.source(tid) {
-            db.untrackable("stream at a connected node")?;
-            let ak = ak_of(key)?;
-            let Some(len) = db.node_len(&r, tid, &ak, path)? else { return Ok(None) };
-            return Ok(Some(ValueStream { db: db.clone(), tid, len, pos: 0, chunks: 0, held: 0, src: Src::Node { r, ak, path: path.clone(), buf: Vec::new(), start: 0 } }));
-        }
         if db.tracking.is_some() {
             // the link, not the bytes: a change of the value is a new link
             let (ak, at) = (ak_of(key)?, path.clone());

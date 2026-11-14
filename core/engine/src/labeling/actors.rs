@@ -7,7 +7,7 @@ use crate::error::Result;
 use osis_base::{ChainStep, LabelId, Role, Tid};
 use osis_crypto::{LabelRole, label_role_key};
 use osis_keys::ActorEpochs;
-use osis_label::{Address, ClaimSet, Step, StepId};
+use osis_label::{ClaimSet, Step, StepId};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -19,7 +19,6 @@ pub struct GroupLabel {
     pub id: LabelId,
     /// Steps by ID with their claim sets when recorded.
     pub steps: BTreeMap<StepId, (Step, Option<ClaimSet>)>,
-    pub hosts: Vec<Address>,
 }
 
 /// Whether label `id`, its steps as `steps` records them, belongs to the group whose epochs held
@@ -52,7 +51,7 @@ pub(crate) fn owns(epochs: Option<&ActorEpochs>, id: &LabelId, steps: &BTreeMap<
 
 fn group_label(g: &Tid, id: &LabelId, l: &ct::Label) -> Option<Arc<GroupLabel>> {
     let steps = osis_label::label_steps(l).ok()?;
-    Some(Arc::new(GroupLabel { group: *g, id: *id, steps, hosts: l.hosts.clone() }))
+    Some(Arc::new(GroupLabel { group: *g, id: *id, steps }))
 }
 
 /// The labels of `g` a `label.0` value `v` records, owned or not (`owns`); records that do not

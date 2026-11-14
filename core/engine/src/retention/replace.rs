@@ -186,7 +186,6 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
             })?;
             // node-sync judges its delete at hosts (a snapshot's arrival judges only the
             // aspect's cover candidates, `Core::cover_judged_on`)
-            tx.core.mark_changed(c);
         }
     }
     Ok(())

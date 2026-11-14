@@ -2,7 +2,7 @@
 //! held purge request they are held value-less, what was stripped of them kept as the part's
 //! leftover (`leftover`) until it joins.
 
-use super::{T_EXPIRY, counts_as_purged, known_purged, leftover, make_leftover, suspect, writes_of};
+use super::{T_EXPIRY, known_purged, leftover, make_leftover, suspect, writes_of};
 use crate::engine::Tx;
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid};
@@ -76,7 +76,6 @@ fn strip_carried_waiting(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit:
     leftover::put(tx, &a.tid, &a.ak, id, ai, &l)?;
     tx.core.touch();
     // node-sync forgets the blobs holding it (`Engine::spent_copy`)
-    tx.core.mark_changed(*id);
     rewrite_stored(tx, id, |b| empty_slot(b, ai))?;
     Ok(())
 }
@@ -183,23 +182,7 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
     }
     tx.core.touch();
     // node-sync forgets the blobs holding it (`Engine::spent_copy`)
-    tx.core.mark_changed(*id);
     rewrite_stored(tx, id, |b| if done { empty_slot(b, ai) } else { take_slot(b, ai) })?;
-    Ok(())
-}
-
-/// Commit `id` (header `h`) applies without parts `missing`. One a request names (`counts_as_purged`)
-/// but does not drop may have gone with a page away, its request falling while the commit waited
-/// (`strip_purged`): a live part, so node-sync fetches it (`Changed::undropped`).
-pub(crate) fn fetch_fallen(tx: &mut Tx<'_>, h: &Header, id: &CommitId, missing: &BTreeSet<usize>) -> Result<()> {
-    for ai in missing {
-        if !known_purged(tx, h, id, *ai)? && counts_as_purged(tx, h, id, *ai)? {
-            if let Some(ch) = &mut tx.core.changed {
-                ch.undropped.insert(*id);
-            }
-            break;
-        }
-    }
     Ok(())
 }
 
@@ -303,8 +286,7 @@ pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, 
 }
 
 /// Part `ai` of the stored pending copy of `c` (waiting or parked), if any, goes (`pending_drops`,
-/// `hold_valueless`), flagged suspect; node-sync then forgets the blobs holding it
-/// (`mark_changed`).
+/// `hold_valueless`), flagged suspect; sync then forgets the blobs holding it.
 pub(super) fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some((h, taken)) = rewrite_stored(tx, c, |b| take_slot(b, ai))? else { return Ok(()) };
     forget_waiting_leftover(tx, &h, c, ai)?;
@@ -312,7 +294,6 @@ pub(super) fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
         return Ok(());
     }
     tx.core.touch();
-    tx.core.mark_changed(*c);
     if let Some(a) = h.aspects.get(ai) {
         suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry, &[(*c, ai)])?;
     }

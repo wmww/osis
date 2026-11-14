@@ -213,7 +213,6 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
             }
         }
     }
-    tx.core.role_changed();
     Ok(())
 }
 
@@ -281,7 +280,6 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
         } else {
             tx.core.ix.own_keys.remove(t);
         }
-        tx.core.role_changed();
     }
     Ok(())
 }
@@ -679,7 +677,7 @@ impl crate::engine::Engine {
     /// it establishes nothing). False when it is not, or when the node lost `g` (`rotation::may_learn`,
     /// spec/permissions.md §3).
     pub fn learn_secret(&mut self, g: &Tid, r: Role, e: osis_crypto::Epoch, secret: osis_crypto::Secret32) -> Result<bool> {
-        if !e.names(g, r, &secret) || !crate::rotation::may_learn(&self.core, g, r) {
+        if !e.names(g, r, &secret) || !crate::rotation::may_learn(&self.core, g) {
             return Ok(false);
         }
         let g = *g;

@@ -18,7 +18,7 @@
 //! late, never before the body leaves.
 //!
 //! What leaving does: a value part is told to commit listeners (`listing`) and marked for
-//! node-sync (`Core::mark_changed`: its keep bound passed); a fire's body drops. A purge
+//! sync (its keep bound passed); a fire's body drops. A purge
 //! request's header keeps its commit's parts to its purge floor (spec/commits.md §5 Purge), a time
 //! no setting moves, as an expiry: a per-part `T_KEPT` timer, armed at the floor when a value part
 //! arrives (`on_parts`), and for a fire the walk reaches before it (as a purged fire's tombstone,
@@ -144,7 +144,6 @@ fn rearm(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, k: &history::Kept) -> Result<()> {
 /// Tells that part `(tid, ak)` of `c` left or came back into history: listeners, and node-sync
 /// (its keep bound moved past the clock).
 fn moved(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId) {
-    tx.core.mark_changed(*c);
     if crate::engine::listing::listened(tx.core, tid, ak) {
         tx.core.commits_named(*tid, ak.clone(), *c);
     }
@@ -397,7 +396,6 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
             let out = if leaves(&k, t) > now { before(tx.core, &tid, &ak, f.1, (t, c)) } else { f.1 };
             set_from(tx, &tid, &ak, Some((f.0, out)))?;
         }
-        tx.core.mark_changed(c);
         if crossed && crate::engine::listing::listened(tx.core, &tid, &ak) {
             tx.core.commits_named(tid, ak.clone(), c);
         }

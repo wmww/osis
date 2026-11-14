@@ -4,7 +4,7 @@
 //! `rejudge_purges`), and `signers_could`, by roles of any validity at any time, for what must not
 //! turn on arrival (`could_stand`). A header never names role-class deltas (`Header::validate`).
 
-use super::{gone_of, hold_valueless, list_valueless, off_valueless, purged_changed, refetch, reopen_to_fetch, suspect, unstrip, writes_of};
+use super::{gone_of, hold_valueless, list_valueless, off_valueless, purged_changed, reopen_to_fetch, suspect, unstrip, writes_of};
 use crate::engine::Owned;
 use crate::engine::records::{self, Rd};
 use crate::engine::{Core, Engine, LazyHeader, Tx};
@@ -361,14 +361,6 @@ pub(crate) fn known_purged(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize
     Ok(purged_by(tx, ch, c, ai)?.is_some())
 }
 
-/// Whether a held purge request names delta `ai` of `c`, signed by one that could ever hold the
-/// right (`Held::ever_admins`, `ever_writers`). Unlike `known_purged` it reads no validity, so a demotion
-/// arriving later changes nothing here.
-pub(crate) fn counts_as_purged(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize) -> Result<bool> {
-    let Some(a) = ch.aspects.get(ai) else { return Ok(false) };
-    Ok(requests_on(tx, a, ch, c)?.iter().any(|(_, p)| could_stand(tx.core, p, a, ch, c)))
-}
-
 /// The aspects a timeline change on `things` or a change to commits `whole` may change purges of:
 /// those with a held request (`aspect_requests`), each once.
 pub(crate) fn purged_aspects(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, whole: &BTreeSet<CommitId>) -> Result<BTreeSet<(Tid, Ak)>> {
@@ -457,8 +449,8 @@ impl AspectRequests {
 /// Judges the held purge requests on `(tid, ak)` again (spec/permissions.md §6): a part one now
 /// drops is purged as on arrival; one held value-less for a purge that none drops any more
 /// counts as never received from here on: off the value-less list, its leftover set aside
-/// (`unstrip`) and its writes gone from the state until a copy comes (node-sync fetches it,
-/// `Changed::undropped`; a holder uploads it). A body stripped for carrying others' values stays held
+/// (`unstrip`) and its writes gone from the state until a copy comes (sync fetches it; a holder
+/// uploads it). A body stripped for carrying others' values stays held
 /// as its leftover (spec/permissions.md §6); no request names a snapshot (`names`). Cost: the aspect's requests
 /// and what they name, its snapshots' views, and with an aspect-wide request a walk of its parts, as
 /// `validity::rejudge_once` walks them (`scale::purge_rejudge_is_linear_in_requests_spec_permissions_6`).
@@ -528,13 +520,9 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
         if m.stripped(ai) {
             // never received until a copy comes; its leftover set aside for a rise before one
             unstrip(tx, &c, ai, true)?;
-            refetch(tx, &c);
-        } else if m.missing(ai) {
-            refetch(tx, &c);
-        } else {
+        } else if !m.missing(ai) {
             reopen_to_fetch(tx, &c, ai)?;
         }
-        tx.core.mark_changed(c);
     }
     if leaving.is_empty() {
         return Ok(());
@@ -649,7 +637,6 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
     // release's (spec/commits.md §5)
     if !release && super::history::permanent(tx.core, &m.header, &a, tx.now().0) {
         tx.txn.put_local(&records::named_permanent_key(pc, &a.tid), &[], Shred::No)?;
-        tx.core.mark_changed(*pc);
     }
     // every held body carrying the purged values, snapshots included, is stripped of them by the
     // rebuild this runs (`apply::rebuild`, spec/commits.md §5)

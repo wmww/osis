@@ -410,8 +410,8 @@ fn still_waits(tx: &mut Tx<'_>, b: &CommitBlob) -> Result<bool> {
 /// - it does not hash to its header entry: not that part (junk from anyone). Dropped, nothing kept
 ///   of it: a true copy is still taken. While its header lists are not resolved the hash cannot be
 ///   read and the pending blob keeps the first copy of each slot, junk or not, and an unverified
-///   signature likewise; the commit is named when one proves junk (`Core::redeliver`), and node-sync ingests the commit's other
-///   entries again (`SyncEngine::redeliver`). So this holds at the node, not at one `Engine::ingest`.
+///   signature likewise; the commit is named when one proves junk (`Core::redeliver`), and sync ingests the commit's other
+///   entries again. So this holds at the node, not at one `Engine::ingest`.
 /// - it hashes but is bad by itself (`judge_part`): the author signed garbage, and those bytes are
 ///   the only ones that can ever hash there, so no later copy can differ and no mark is needed. It
 ///   never applies and is dropped alone.
@@ -421,7 +421,7 @@ fn still_waits(tx: &mut Tx<'_>, b: &CommitBlob) -> Result<bool> {
 ///   boxes read, fetched again when what it awaits arrives; the other parts apply.
 ///
 /// Every wait only ends as the held set grows, so the applied parts are the least fixpoint of a
-/// monotone rule, one result for every order (osis-node `order::held_set_decides` plays them).
+/// monotone rule, one result for every order (`tests/it` `order::held_set_decides` plays them).
 pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, skip: &BTreeSet<usize>, origin: Origin) -> Result<Exam> {
     if !blob.header.is_resolved() {
         // a held author's signature first: a false one costs no list. An author's record carried
@@ -1217,7 +1217,7 @@ impl Engine {
 
     /// The slots of commit `id` no copy need bring here: those held, applied or pending, and those
     /// counting as never received (spec/commits.md §5), its body dropped or past its expiry, which
-    /// only a new copy brings back (`SyncEngine::redeliver`).
+    /// only a new copy brings back.
     pub fn settled_slots(&mut self, id: &CommitId) -> Result<BTreeSet<usize>> {
         let id = *id;
         self.read(|tx| {
@@ -1241,7 +1241,7 @@ impl Engine {
     /// Whether copy `copy` of commit `id` holds a part that went from the node (spec/commits.md §5:
     /// dropped from the applied commit or held as its leftover while value-less, held pending past
     /// its expiry, or held pending value-less or gone for a request, `retention::strip_purged`)
-    /// and nothing a copy may still be needed for (`SyncEngine::redeliver`):
+    /// and nothing a copy may still be needed for:
     /// its every other part went too, is applied, or, where parts of it wait, is in the pending copy
     /// alike, provably does not hash to its header entry, or cannot be judged (thrown out,
     /// `copy_awaits`). Node-sync then forgets the copy's blob and key; one holding a true copy the

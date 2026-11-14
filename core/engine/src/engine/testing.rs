@@ -1,4 +1,4 @@
-//! Test hooks: `#[doc(hidden)] pub` because osis-node's `tests/it` calls them.
+//! Test hooks: `#[doc(hidden)] pub` because the crate's `tests/it` calls them.
 
 use super::index::*;
 use super::Engine;

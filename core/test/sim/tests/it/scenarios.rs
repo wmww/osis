@@ -4,7 +4,7 @@
 //! A failure prints its seeds and the `osis_sim::replay` call that reproduces it. Runs use setup 0.
 
 use osis_base::{CommitId, Role, Value};
-use osis_node::Mutation;
+use osis_engine::Mutation;
 use osis_sim::{Config, Report, SCENARIOS, Sim, replay, workload};
 
 fn ok(name: &str, seed: u64) -> Report {

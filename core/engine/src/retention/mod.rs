@@ -51,9 +51,9 @@ pub(crate) use snapshot::write_snapshot;
 pub mod suspect;
 
 pub(crate) use replace::settle_none;
-pub(crate) use pending::{emptied, fetch_fallen, forget_joined_leftovers, forget_waiting_leftovers, pending_drops, pending_expired, stripped_joined, waiting_stripped};
+pub(crate) use pending::{emptied, forget_joined_leftovers, forget_waiting_leftovers, pending_drops, pending_expired, stripped_joined, waiting_stripped};
 use pending::{purge_pending, strip_pending};
-pub(crate) use purge::{check_request, counts_as_purged, known_purged, lasting, load_owed, note_requests, purged_aspects, purged_by, rejudge_purges, requests_resting_on};
+pub(crate) use purge::{check_request, known_purged, lasting, load_owed, note_requests, purged_aspects, purged_by, rejudge_purges, requests_resting_on};
 pub(crate) use snapshot::covered;
 pub(crate) use bounds::{Killed, mark_killed, mark_bounded};
 
@@ -337,8 +337,7 @@ pub(crate) fn coverers(core: &Core, c: &CommitId, ai: usize) -> Vec<CommitId> {
 /// one covering a coverer and so on, is held and valid: each turned invalid, went missing or was
 /// dropped other than as covered, by a purge) are missing again (spec/permissions.md §5.2): they
 /// give nothing, as at a node that never held them, until the body arrives again (a node still
-/// holding it finds it uncovered and re-uploads it, spec/sync-judgement.md §2; node-sync fetches it again,
-/// `Changed::undropped`). The caller rebuilds the aspect. Whether any part went missing.
+/// holding it finds it uncovered and re-uploads it, spec/sync-judgement.md §2; sync fetches it again). The caller rebuilds the aspect. Whether any part went missing.
 pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
     let core = &*tx.core;
     let carries = |s: &CommitId| {
@@ -484,7 +483,7 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>) -> Result<()> {
 
 /// The parts `parts` dropped while invalid that are valid now are missing again (spec/permissions.md
 /// §6): they give nothing until the body arrives again, as at a node that never received it
-/// (node-sync fetches it, `Changed::undropped`, from any holder; with none it stays gone at every
+/// (sync fetches it from any holder; with none it stays gone at every
 /// node alike). Until then this node may read less than one that kept it (its author). A signal's
 /// past its keep bound stays dropped (`past_signal_bound`).
 pub(crate) fn valid_again(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Result<()> {
@@ -535,15 +534,7 @@ pub(super) fn reopen_in(tx: &mut Tx<'_>, c: &CommitId, m: &mut crate::engine::Me
     tx.core.stale_commits.insert(*c);
 }
 
-/// node-sync fetches commit `c` again (`Changed::undropped`): a part held as its leftover or
-/// missing whose purge fell.
-fn refetch(tx: &mut Tx<'_>, c: &CommitId) {
-    if let Some(ch) = &mut tx.core.changed {
-        ch.undropped.insert(*c);
-    }
-}
-
-/// `reopen`, and node-sync fetches it again (`Changed::undropped`). A memory commit stays known
+/// `reopen`, and sync fetches it again. A memory commit stays known
 /// while the part is to come (`Missing::ToFetch`).
 fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engine::Meta>> {
     let mut m = reopen(tx, c, ai)?;
@@ -551,7 +542,6 @@ fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<cr
         m.set_hold(ai, Hold::Missing(Missing::ToFetch));
         tx.core.put_meta(*c, m.clone());
     }
-    refetch(tx, c);
     Ok(m)
 }
 
@@ -745,10 +735,6 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
                 tx.put_commit(c, &blob, &m, Shred::No, None)?;
             }
             tx.core.put_meta(*c, m);
-            tx.core.mark_changed(*c);
-            if let Some(ch) = &mut tx.core.changed {
-                ch.undropped.remove(c);
-            }
             crate::apply::rebuild(tx, &a.tid, &a.ak)?;
         } else if m.missing(ai) {
             drop_part_for(tx, c, ai, DropFor::Other)?;
@@ -847,12 +833,6 @@ fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::
         tx.put_commit(c, &rest, &m, shred, None)?;
     }
     tx.core.put_meta(*c, m);
-    if fresh {
-        tx.core.mark_changed(*c);
-        if let Some(ch) = &mut tx.core.changed {
-            ch.undropped.remove(c);
-        }
-    }
     Ok(())
 }
 
@@ -1045,9 +1025,6 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: BTreeSet<usize>, pu
 }
 
 fn purged_changed(tx: &mut Tx<'_>, purged: BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>) {
-    for (t, a) in &purged {
-        tx.core.mark_aspect_changed(t, a);
-    }
     if !purged.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::Purge, changed: purged.iter().cloned().collect() });
         changed.extend(purged);
@@ -1097,7 +1074,6 @@ fn run_timer(tx: &mut Tx<'_>, key: &[u8], c: &CommitId, ai: usize, kind: u8, cha
         return crate::engine::listing::kept_passed(tx, c, ai);
     }
     // judged again by node-sync whatever the timer did
-    tx.core.mark_changed(*c);
     let mut ch = BTreeSet::new();
     if kind == T_FLOOR {
         replace::floor_passed(tx, c, ai);
@@ -1127,9 +1103,6 @@ fn run_timer(tx: &mut Tx<'_>, key: &[u8], c: &CommitId, ai: usize, kind: u8, cha
         crate::engine::edits::time_passed(tx, c, ai);
     }
     memory::forget_if_spent(tx, c)?;
-    for (t, a) in &ch {
-        tx.core.mark_aspect_changed(t, a);
-    }
     changed.extend(ch);
     Ok(())
 }
@@ -1164,8 +1137,7 @@ impl Engine {
 
     /// Runs what is due by the wall clock: expiries, purge floors (`T_FLOOR`, `T_KEPT`), bodies
     /// leaving history (`leaving`), live bounds and quiet times the compaction trigger waits for
-    /// (`compact::Trigger::passed`, `quiet_passed`) and commits parked for drift. The commits whose timers fired
-    /// are marked changed (`Core::changed`).
+    /// (`compact::Trigger::passed`, `quiet_passed`) and commits parked for drift.
     pub fn tick(&mut self) -> Result<()> {
         let r = self.run(|tx| {
             let mut changed = BTreeSet::new();
@@ -1852,46 +1824,6 @@ mod tests {
         assert!(e.core.ix.commits.get(&c).unwrap().stripped(0), "the purged part is held as its leftover");
     }
 
-    // spec/sync-judgement.md §3 (work sets): node-sync's change hook marks a commit whose validity flipped
-    // (its author's removal by an admin that had not received it), and one whose body was
-    // dropped; nothing is kept until node-sync asks.
-    #[test]
-    fn changed_marks_flips_and_drops_spec_sync_6() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
-        lp.sync_all().unwrap();
-        let (a, w, x) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
-        let ak = Ak::new("x:a.0").unwrap();
-        let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, a);
-        m.set(t, &ak, &Value::Int(0)).unwrap();
-        let first = lp.peers[0].commit(m).unwrap().unwrap();
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
-        let admin = ct::Edge { role: Role::Admin, ..write.clone() };
-        lp.peers[0].engine.grant(&t, &w, &write).unwrap();
-        lp.peers[0].engine.grant(&t, &x, &admin).unwrap();
-        lp.sync_all().unwrap();
-        lp.advance(60_000);
-        let mut m = Mutation::new();
-        m.set(t, &ak, &Value::Int(1)).unwrap();
-        let c = lp.peers[1].commit(m).unwrap().unwrap();
-        let e = &mut lp.peers[0].engine;
-        e.take_changed();
-        lp.sync(1, 0).unwrap();
-        let e = &mut lp.peers[0].engine;
-        assert!(e.take_changed().commits.contains(&c), "applied");
-        lp.peers[2].engine.demote(&t, &Demotion { holder: w, new: None, retain: None }).unwrap();
-        lp.sync(2, 0).unwrap();
-        let e = &mut lp.peers[0].engine;
-        let got = e.take_changed();
-        assert!(got.commits.contains(&c), "the flipped commit");
-        assert!(!got.commits.contains(&first), "not every commit on the flipped aspect");
-        assert!(got.aspects.contains(&(t, ak.clone())), "the flipped aspect's state");
-        e.snapshot(&t, &ak).unwrap().unwrap();
-        e.take_changed();
-        e.drop_body(&first, &t, &ak).unwrap();
-        assert!(e.take_changed().commits.contains(&first), "dropped");
-    }
-
     // spec/commits.md §5 (Own replaces, Purge): a whole replace held as its leftover stays one
     // through a fall and a rise of its purge. The fall makes the part missing (its leftover set
     // aside), and a missing part says nothing of `whole` (`Hold::Missing`); the rise adopts the
@@ -1993,13 +1925,11 @@ mod tests {
         let ds: Vec<_> = d.commits.iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap()).collect();
         lp.deliver(2, &p).unwrap();
         assert!(matches!(hold(&lp, &c0), Hold::Dropped(_)), "C2 purged is still an own replace");
-        lp.peers[2].engine.take_changed();
         for d in &ds {
             lp.deliver(2, d).unwrap();
         }
         assert_eq!(hold(&lp, &c2), Hold::Missing(Missing::Plain), "fallen: never received");
         assert_eq!(hold(&lp, &c0), Hold::Missing(Missing::Plain), "C0 is missing again: one own replace covers nothing");
-        assert!(lp.peers[2].engine.take_changed().undropped.contains(&c0), "and fetched");
         assert_eq!(lp.peers[2].engine.get(&t, &reg).unwrap(), Some(Value::Int(2)));
         lp.peers[2].engine.check_index();
         // the cycle ends: C2 and C0 fetched back, C0 drops again under C2, C3 and stays dropped
@@ -2007,10 +1937,8 @@ mod tests {
         assert!(matches!(hold(&lp, &c2), Hold::Body { whole: true }), "C2 back whole");
         lp.peers[2].engine.drop_body(&c0, &t, &reg).unwrap();
         assert!(matches!(hold(&lp, &c0), Hold::Dropped(_)), "covered by C2, C3 again");
-        lp.peers[2].engine.take_changed();
         lp.sync_all().unwrap();
         assert!(matches!(hold(&lp, &c0), Hold::Dropped(_)), "nothing fetches it back");
-        assert!(!lp.peers[2].engine.take_changed().undropped.contains(&c0));
         assert_eq!(lp.peers[2].engine.get(&t, &reg).unwrap(), Some(Value::Int(2)));
         lp.peers[2].engine.check_index();
     }
@@ -2064,13 +1992,11 @@ mod tests {
         let d = lp.peers[0].engine.demote(&t, &Demotion { holder: w, new: None, retain: None }).unwrap();
         let ds: Vec<_> = d.commits.iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap()).collect();
         lp.deliver(2, &sw).unwrap();
-        lp.peers[2].engine.take_changed();
         for d in &ds {
             lp.deliver(2, d).unwrap();
         }
         let e = &mut lp.peers[2].engine;
         assert!(!e.core.ix.commits[&sw.id].valid_at(0), "W's snapshot fell");
-        assert_eq!(e.take_changed().undropped.len(), 0, "nothing fetched again: {}", e.aspect_dump(&t, &reg));
         assert!(matches!(e.core.ix.commits[&c].hold[0], Hold::Dropped(_)), "S2 carries C");
         assert!(e.suspects().unwrap().is_empty(), "no flag");
         assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Int(2)));

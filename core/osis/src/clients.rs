@@ -1,16 +1,15 @@
 //! Clients of this node by a secret (notes/client-port.md §3): `clients^.0` on the node thing
 //! (spec/data-model.md §9) lists a client actor per client with the hash of its bearer secret
 //! and its end. The node mints the actor (an actor whose first admin is the account, like a link's K) and
-//! acts as it for the client's session (`port::serve`); what the client may read and write is
+//! acts as it for the client's session (the client port, spec/wire.md §11.2); what the client may read and write is
 //! that actor's grants, nothing else. Any admin of the node thing may edit the registry.
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
-use crate::port::method;
 use osis_base::{Tid, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
-use osis_node::flows::Demotion;
+use osis_engine::flows::Demotion;
 use osis_schema::core_types as ct;
 use osis_schema::{Codec, p};
 
@@ -54,9 +53,6 @@ impl Osis {
     /// client reaches (it starts with none).
     /// `Unsupported` on a client with its own actor.
     pub fn add_client(&self, until: Option<Time>) -> Result<(Tid, ClientSecret)> {
-        if !self.has_store() {
-            return crate::port::codec::of(self.rcall(method::ADD_CLIENT, vec![crate::port::codec::v(&until)])?);
-        }
         let now = self.now()?;
         if until.is_some_and(|u| u <= now) {
             return Err(Error::Invalid("a client's until must be in the future".into()));
@@ -65,18 +61,17 @@ impl Osis {
         let entry = secret.entry(until);
         let (me, node) = (self.me(), self.node());
         let home = self.home();
-        let (actor, done) = self.engine(|e| {
+        let (actor, _) = self.engine(|e| {
             e.mint_actor(&me, |a| {
-                let mut m = osis_node::Mutation::new();
+                let mut m = osis_engine::Mutation::new();
                 m.op(home, &ct::GROUP, crate::write::group_op(true, a, true))?;
                 Ok(m)
             })
         })?;
-        self.carry(done)?;
         // a commit of the node's own: only it writes its thing (a crash before it leaves an
         // actor no client can reach, holding nothing)
         self.engine(|e| {
-            let mut m = osis_node::Mutation::new();
+            let mut m = osis_engine::Mutation::new();
             m.op(node, &ct::CLIENTS, PathOp { path: vec![PathSeg::Key(Value::Tid(actor))], op: Op::Set(entry.to_value()) })?;
             e.commit(m)
         })?;
@@ -86,9 +81,6 @@ impl Osis {
     /// The clients registered with `add_client`.
     /// `Unsupported` on a client with its own actor.
     pub fn clients(&self) -> Result<Vec<Client>> {
-        if !self.has_store() {
-            return crate::port::codec::of(self.rcall(method::CLIENTS, vec![])?);
-        }
         Ok(self.at(self.node(), ct::CLIENTS).get()?.unwrap_or_default().into_iter().map(|(actor, c)| Client { actor, until: c.until }).collect())
     }
 
@@ -103,9 +95,6 @@ impl Osis {
     /// staying: move its group home and call this again).
     /// `Unsupported` on a client with its own actor.
     pub fn remove_client(&self, actor: Tid) -> Result<bool> {
-        if !self.has_store() {
-            return crate::port::codec::of(self.rcall(method::REMOVE_CLIENT, vec![Value::Tid(actor)])?);
-        }
         let node = self.node();
         let Some(e) = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&actor) else { return Ok(false) };
         // ended under any clock: one moved back revives no half-removed client
@@ -116,9 +105,7 @@ impl Osis {
             w.commit()?;
         }
         for t in self.engine(|x| x.grants_of(&actor)) {
-            self.require_local("remove_client", t)?;
-            let done = self.guarded(&[t], |x| Ok(x.demote(&t, &Demotion { holder: actor, new: None, retain: None })?))?;
-            self.carry(done)?;
+            self.engine(|x| x.demote(&t, &Demotion { holder: actor, new: None, retain: None }))?;
         }
         let mut w = self.write();
         w.at(node, ct::CLIENTS).path(p![actor]).remove()?;
@@ -130,9 +117,6 @@ impl Osis {
     /// actor and its grants stay. `Invalid` when there is no entry.
     /// `Unsupported` on a client with its own actor.
     pub fn rotate_client_secret(&self, actor: Tid) -> Result<ClientSecret> {
-        if !self.has_store() {
-            return crate::port::codec::of(self.rcall(method::ROTATE_CLIENT_SECRET, vec![Value::Tid(actor)])?);
-        }
         let node = self.node();
         let e = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&actor).ok_or_else(|| Error::Invalid(format!("no client {actor}")))?;
         let secret = ClientSecret::generate();

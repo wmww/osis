@@ -3,7 +3,7 @@
 
 use crate::args::ChatCmd;
 use crate::Ctx;
-use crate::cmd::{deliver, parse_id, parse_role};
+use crate::cmd::{parse_id, parse_role};
 use crate::json::J;
 use crate::{exit, parse_dur, usage};
 use osis::core::RETENTION;
@@ -127,7 +127,7 @@ fn print_since(ctx: &mut Ctx<'_>, t: Tid, s: &osis_chat::Since, from: Option<&Cu
 pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     match c {
-        ChatCmd::Create { name, purge, edit, disappear, no_retain_copy, peer } => {
+        ChatCmd::Create { name, purge, edit, disappear, no_retain_copy } => {
             let purge = match purge.as_str() {
                 "author-or-admin" => PurgeBy::AuthorOrAdmin,
                 "admin" => PurgeBy::Admin,
@@ -140,31 +140,23 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
                 "off" => None,
                 x => return Err(usage(format!("--edit: purge, keep or off, not {x:?}"))),
             };
-            let peers = peer.iter().map(|h| h.parse()).collect::<Result<Vec<osis::Address>, _>>()?;
-            let o = Options { name, purge, edit, disappear: disappear.as_deref().map(parse_dur).transpose()?, retain_copies: !no_retain_copy, peers };
+            let o = Options { name, purge, edit, disappear: disappear.as_deref().map(parse_dur).transpose()?, retain_copies: !no_retain_copy };
             let t = osis_chat::create(&db, &o)?;
-            send_out(ctx, Some(t))?;
             ctx.one("tid", t.to_uri())
         }
         ChatCmd::Add { chat, account, role } => {
             let t = ctx.tid(&chat)?;
             db.grant(t, ctx.tid(&account)?, parse_role(&role)?, GrantOpts::default())?;
-            send_out(ctx, Some(t))
+            Ok(())
         }
         ChatCmd::Link { chat, role, single_use } => {
             let t = ctx.tid(&chat)?;
             let l = db.make_link(t, parse_role(&role)?, LinkOpts { until: None, single_use, direct: false })?;
-            send_out(ctx, Some(t))?;
             ctx.one("link", l)
         }
         ChatCmd::Join { link } => {
             let l: osis::ShareLink = ctx.arg_text(&link)?.parse()?;
             let t = crate::cmd::confirm(ctx, db.redeem(&l))?;
-            send_out(ctx, None)?;
-            // a `read` through the daemon does not pull: the first messages are here when this ends
-            if !db.has_store() {
-                catch_up(ctx, t);
-            }
             ctx.one("tid", t.to_uri())
         }
         ChatCmd::Kick { chat, account, erase, retain_copy, purge } => {
@@ -177,7 +169,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
                 w.at(t, MSG).purge(osis::Purge::Author(p))?;
                 w.commit()?;
             }
-            send_out(ctx, None)
+            Ok(())
         }
         ChatCmd::Post { chat, text, subject, from, reply_to } => {
             let t = ctx.tid(&chat)?;
@@ -185,12 +177,10 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let text = subject.map_or_else(|| body.clone(), |s| format!("{s}\n\n{body}"));
             let reply_to = reply_to.as_deref().map(parse_id).transpose()?.map(|r| r.to_string());
             let m = osis_chat::send(&db, t, &schema::Message { text, name: from, reply_to })?;
-            send_out(ctx, None)?;
             ctx.one("id", m)
         }
         ChatCmd::Read { chat, max, before, after } => {
             let t = ctx.tid(&chat)?;
-            pull(ctx, t);
             if let Some(a) = after {
                 let a: Cursor = a.parse()?;
                 let s = osis_chat::since(&db, t, Some(&a), max)?;
@@ -269,7 +259,6 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let t = ctx.tid(&chat)?;
             let m = parse_id(&i)?;
             osis_chat::edit(&db, t, m, &text)?;
-            send_out(ctx, None)?;
             ctx.one("id", m)
         }
         ChatCmd::Resend { chat, id: i } => {
@@ -283,7 +272,6 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
                 return Err(exit(1, "only one's own undelivered message is sent again"));
             }
             let new = osis_chat::send(&db, t, &body)?;
-            send_out(ctx, None)?;
             ctx.one("id", new)
         }
         ChatCmd::Delete { chat, id: i } => {
@@ -293,15 +281,14 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let mut w = db.write();
             w.at(t, MSG).purge(osis::Purge::Commit(k.stamp.id))?;
             w.commit()?;
-            send_out(ctx, None)
+            Ok(())
         }
         ChatCmd::Leave { chat } => {
             db.leave(db.me(), ctx.tid(&chat)?)?;
-            send_out(ctx, None)
+            Ok(())
         }
         ChatCmd::Participants { chat } => {
             let t = ctx.tid(&chat)?;
-            pull(ctx, t);
             let ways = db.holders(t)?;
             let (m, links) = people_and_links(&ways);
             let name = db.at(t, SETTINGS).get()?.map(|s| s.name).unwrap_or_default();
@@ -328,33 +315,9 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let mut w = db.write();
             w.at(t, RETENTION).set(&rules)?;
             w.commit()?;
-            send_out(ctx, None)
+            Ok(())
         }
     }
-}
-
-/// A store this command just opened brings what its peers have (best effort: reading works offline).
-fn pull(ctx: &mut Ctx<'_>, t: Tid) {
-    if ctx.db.has_store() {
-        catch_up(ctx, t);
-    }
-}
-
-/// Waits a moment for what its peers have of `t` (best effort).
-fn catch_up(ctx: &mut Ctx<'_>, t: Tid) {
-    let db = ctx.db.clone();
-    if db.saved_peers().is_ok_and(|h| !h.is_empty()) {
-        let _ = db.nudge_sync();
-        let _ = crate::cmd::within(Some(crate::DEFAULT_WAIT.min(std::time::Duration::from_secs(10))), db.wait_synced(osis::SyncScope::Thing(t)));
-    }
-}
-
-/// What this command wrote reaches its peers before the process exits; a daemon sees to it itself.
-fn send_out(ctx: &mut Ctx<'_>, shared: Option<Tid>) -> anyhow::Result<()> {
-    if !ctx.db.has_store() || ctx.db.saved_peers()?.is_empty() {
-        return Ok(());
-    }
-    deliver(ctx, shared.map_or(crate::cmd::Delivers::All, |t| crate::cmd::Delivers::Thing(t.to_uri())))
 }
 
 /// A chat's share view from its holders: the actors holding it directly and those who joined by a

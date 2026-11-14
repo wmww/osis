@@ -2,7 +2,3 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod bundle;
-mod hostile_peer;
-mod loopback;
-mod port;
-mod slow_link;

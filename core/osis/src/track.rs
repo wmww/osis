@@ -7,10 +7,9 @@
 
 use crate::commits::Address;
 use crate::CommitId;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::handle::{Locked, Osis, ReadOnly};
 use crate::read::Reader;
-use crate::sources::Source;
 use crate::watch::{Callback, Delivery, DerivedFrom, Digest, Filter, Origin, ReadAt, Subscription, Watch, digest, lock};
 use osis_base::{Ak, Tid, Value};
 use std::collections::HashMap;
@@ -48,16 +47,11 @@ impl Listener {
 struct Gate {
     last: Mutex<Option<Digest>>,
     armed: AtomicBool,
-    /// Its subscription ended or errored (the source moved, a connection lost): told once, and
-    /// replaced at the next read.
-    gone: AtomicBool,
-    /// A connected node's subscription has called once (a call with no origin to say it is initial).
-    called: AtomicBool,
 }
 
 impl Gate {
     fn new(last: Option<Digest>) -> Arc<Gate> {
-        Arc::new(Gate { last: Mutex::new(last), armed: AtomicBool::new(true), gone: AtomicBool::new(false), called: AtomicBool::new(false) })
+        Arc::new(Gate { last: Mutex::new(last), armed: AtomicBool::new(true) })
     }
 
     fn fire(&self, set: &Weak<SetInner>, db: &Osis) {
@@ -65,21 +59,6 @@ impl Gate {
             && let Some(s) = set.upgrade()
         {
             (s.on_change)(db);
-        }
-    }
-
-    /// The subscription ended (`Delivery::Moved`, a connected node's error): nothing more comes.
-    fn ended(&self, set: &Weak<SetInner>, db: &Osis) {
-        self.gone.store(true, Ordering::Release);
-        self.fire(set, db);
-    }
-
-    fn change(&self, set: &Weak<SetInner>, db: &Osis, value_err: bool, initial: bool) {
-        if value_err {
-            return self.ended(set, db);
-        }
-        if !initial || self.gone.load(Ordering::Acquire) {
-            self.fire(set, db);
         }
     }
 }
@@ -128,21 +107,13 @@ impl Osis {
 }
 
 impl ReadOnly {
-    /// `Unsupported` on a tracking handle: this read has no listener.
-    pub(crate) fn untrackable(&self, what: &str) -> Result<()> {
-        if self.tracking.is_some() {
-            return Err(Error::Unsupported(format!("{what} cannot be tracked")));
-        }
-        Ok(())
-    }
-
     /// Registers (or re-arms) the set's listener for `key` under the node lock `l` taken by the
     /// read. `make` gives its filter and callback, once.
     fn track_in(&self, l: &mut Locked, set: &Arc<SetInner>, key: String, last: Option<Digest>, make: impl FnOnce(Arc<Gate>) -> (Filter, Callback)) {
         let pass = set.pass.load(Ordering::Acquire);
         let since = l.seq + 1;
         let mut g = lock(&set.listeners);
-        if let Some(li) = g.get_mut(&key).filter(|li| !li.gate.gone.load(Ordering::Acquire)) {
+        if let Some(li) = g.get_mut(&key) {
             *lock(&li.gate.last) = last;
             li.gate.armed.store(true, Ordering::Release);
             if let Some(id) = li.sub.id() {
@@ -164,19 +135,12 @@ impl ReadOnly {
     fn track_due(&self, l: &mut Locked, set: &Arc<SetInner>, key: String, w: Watch) {
         let weak = Arc::downgrade(set);
         self.track_in(l, set, key, None, |gate| {
-            (Filter::Due(w), Box::new(move |db, d| match d {
-                Delivery::Due => gate.fire(&weak, db),
-                Delivery::Moved => gate.ended(&weak, db),
-                _ => {}
+            (Filter::Due(w), Box::new(move |db, d| {
+                if let Delivery::Due = d {
+                    gate.fire(&weak, db);
+                }
             }))
         });
-    }
-
-    /// On a tracking handle: listens for a change of this node's saved peers (`Watch::Local`).
-    pub(crate) fn track_saved_peers(&self) -> Result<()> {
-        let Some(set) = self.tracking.clone() else { return Ok(()) };
-        self.locked(|l| self.track_due(l, &set, "saved_peers".into(), Watch::Local));
-        Ok(())
     }
 
     /// The value `read` reads at `(tid, ak)`, listened to at that address on a tracking handle.
@@ -184,8 +148,8 @@ impl ReadOnly {
         let Some(set) = self.tracking.clone() else { return self.read_local(|r| read.0(r)) };
         let (ak, limit, actor) = (ak.clone(), self.inner.limit, self.acting);
         self.locked(|l| {
-            drop(osis_node::costs::span("read: engine"));
-            let v = read.0(&mut Reader { e: l.engine(), limit, actor });
+            drop(osis_base::costs::span("read: engine"));
+            let v = read.0(&mut Reader { e: &mut l.engine, limit, actor });
             self.track_in(l, &set, key, digest(&v), |gate| {
                 let w = Arc::downgrade(&set);
                 (Filter::Aspect(tid, ak, read), value_callback(gate, w))
@@ -200,8 +164,8 @@ impl ReadOnly {
         let Some(set) = self.tracking.clone() else { return self.read_local(|r| read(r)) };
         let (limit, actor) = (self.inner.limit, self.acting);
         self.locked(|l| {
-            drop(osis_node::costs::span("read: engine"));
-            let a = read(&mut Reader { e: l.engine(), limit, actor });
+            drop(osis_base::costs::span("read: engine"));
+            let a = read(&mut Reader { e: &mut l.engine, limit, actor });
             let last = Some(answer_digest(&a));
             let w = Arc::downgrade(&set);
             self.track_in(l, &set, key(), last, move |gate| {
@@ -220,15 +184,6 @@ impl ReadOnly {
             None => format!("{a:?}"),
         };
         let mine = move |id: CommitId| only.is_none_or(|c| c == id);
-        if let Source::Node(r) = self.source_address(a)? {
-            return self.track_remote(key, |gate, w| {
-                self.node_on_commits(&r, a.clone(), Box::new(move |db, e| match e {
-                    crate::CommitEvent::Ended(_) => gate.ended(&w, db),
-                    crate::CommitEvent::Commit { id, .. } if !mine(id) => {}
-                    _ => gate.fire(&w, db),
-                }))
-            });
-        }
         let a = a.clone();
         self.locked(|l| {
             // the group's own writes say nothing of a member joining: what it holds is its answer too
@@ -241,7 +196,6 @@ impl ReadOnly {
                     match d {
                         Delivery::Commit { id, .. } if mine(id) => gate.fire(&w, db),
                         Delivery::Reread => gate.fire(&w, db),
-                        Delivery::Moved => gate.ended(&w, db),
                         _ => {}
                     }
                 }))
@@ -249,79 +203,18 @@ impl ReadOnly {
         });
         Ok(())
     }
-
-    /// On a tracking handle: the status read next is listened to, as `on_status_change` follows it.
-    pub(crate) fn track_status(&self) -> Result<()> {
-        self.track_remote("status".into(), |gate, w| {
-            Ok(self.status_feed(Box::new(move |db, _| gate.called_fire(&w, db, false))))
-        })
-    }
-
-    /// A read heard through a whole subscription (at a connected node, or the status feed):
-    /// subscribes first (its listener, once), then the caller reads; a write in between fires one
-    /// extra time. The subscription compares values.
-    fn track_remote(&self, key: String, sub: impl FnOnce(Arc<Gate>, Weak<SetInner>) -> Result<Subscription>) -> Result<()> {
-        let Some(set) = self.tracking.clone() else { return Ok(()) };
-        let pass = set.pass.load(Ordering::Acquire);
-        let mut g = lock(&set.listeners);
-        if let Some(li) = g.get_mut(&key).filter(|li| !li.gate.gone.load(Ordering::Acquire)) {
-            li.gate.armed.store(true, Ordering::Release);
-            li.read(pass);
-            return Ok(());
-        }
-        drop(g);
-        let gate = Gate::new(None);
-        let s = sub(gate.clone(), Arc::downgrade(&set))?;
-        let old = lock(&set.listeners).insert(key, Listener { sub: s, gate, pass, reads: 1 });
-        drop(old);
-        Ok(())
-    }
-
-    /// A value read at a connected node: listened to through the node's aspect subscription.
-    pub(crate) fn track_remote_value(&self, r: &Arc<crate::port::client::Connection>, tid: Tid, ak: &Ak, path: &osis_schema::Path, key: String) -> Result<()> {
-        self.track_remote(key, |gate, w| {
-            self.node_on_change(r, tid, ak.clone(), path.clone(), Box::new(move |db, c| gate.change(&w, db, c.value.is_err(), c.origin == Origin::Initial)))
-        })
-    }
-
-    /// A read of a thing's aspects at a connected node: heard through its thing subscription.
-    pub(crate) fn track_remote_thing(&self, r: &Arc<crate::port::client::Connection>, tid: Tid, key: String) -> Result<()> {
-        self.track_remote(key, |gate, w| {
-            self.node_on_thing_change(r, tid, Box::new(move |db, c| gate.change(&w, db, c.value.is_err(), c.origin == Origin::Initial)))
-        })
-    }
-
-    /// Grants read at a connected node: heard through its grants subscription.
-    pub(crate) fn track_remote_grants(&self, r: &Arc<crate::port::client::Connection>, tid: Tid, key: String) -> Result<()> {
-        self.track_remote(key, |gate, w| {
-            self.node_on_answer(r, tid, crate::port::client::grants_filter(tid), Box::new(move |db, g: Result<crate::read::Grants>| gate.called_fire(&w, db, g.is_err())))
-        })
-    }
-}
-
-impl Gate {
-    /// A remote callback with no origin: its first call is the initial one; an error ends it.
-    fn called_fire(&self, set: &Weak<SetInner>, db: &Osis, err: bool) {
-        if err {
-            self.ended(set, db);
-        } else if self.called.swap(true, Ordering::AcqRel) {
-            self.fire(set, db);
-        }
-    }
 }
 
 /// A listener on a value: told when the value read differs from the last read.
 fn value_callback(gate: Arc<Gate>, set: Weak<SetInner>) -> Callback {
-    Box::new(move |db, d| match d {
-        Delivery::Aspect { value, origin, .. } => {
+    Box::new(move |db, d| {
+        if let Delivery::Aspect { value, origin, .. } = d {
             // a large value's blob arrived: a read of its link stays equal, what it reads does not
             let arrived = origin == Origin::Derived(DerivedFrom::Arrived);
             if arrived || value.is_err() || *lock(&gate.last) != digest(&value) {
                 gate.fire(&set, db);
             }
         }
-        Delivery::Moved => gate.ended(&set, db),
-        _ => {}
     })
 }
 
@@ -330,12 +223,11 @@ fn value_callback(gate: Arc<Gate>, set: Weak<SetInner>) -> Callback {
 fn answer_callback(gate: Arc<Gate>, set: Weak<SetInner>, read: impl Fn(&mut Reader<'_>) -> Digest + Send + Sync + 'static, limit: usize, actor: Option<Tid>) -> Callback {
     Box::new(move |db, d| match d {
         Delivery::Due | Delivery::Grants => {
-            let now = db.locked(|l| read(&mut Reader { e: l.engine(), limit, actor }));
+            let now = db.locked(|l| read(&mut Reader { e: &mut l.engine, limit, actor }));
             if *lock(&gate.last) != Some(now) {
                 gate.fire(&set, db);
             }
         }
-        Delivery::Moved => gate.ended(&set, db),
         _ => {}
     })
 }

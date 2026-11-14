@@ -18,8 +18,3 @@ osis.workspace = true
 
 [build-dependencies]
 osis-schema.workspace = true
-
-[dev-dependencies]
-osis-label.workspace = true
-osis-sim.workspace = true
-osis-transport.workspace = true

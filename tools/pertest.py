@@ -8,7 +8,7 @@
       process (`--exact NAME --test-threads=1`, from its package dir) under tools/icount, N at a
       time (default: half the hardware threads); write OUT as tab-separated lines: binary, test,
       instructions, CPU-s, exit code. MATCH keeps the tests whose "binary test" contains one of
-      them (binary is `<package> <target>`, e.g. `osis-node it`). --jobs 1 takes no lock.
+      them (binary is `<package> <target>`, e.g. `osis-engine it`). --jobs 1 takes no lock.
   tools/pertest.py top OUT [N]          per-binary totals, then the N costliest tests (default 30)
   tools/pertest.py compare OLD NEW [N]  per-binary totals of both, then the N largest moves by
                                         test (default 30); tests in one file only are listed apart

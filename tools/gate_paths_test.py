@@ -73,7 +73,7 @@ check("d8b89848d", g.classify("d8b89848d^", "d8b89848d")["core"], "1")
 check("6050ae05f", g.classify("6050ae05f^", "6050ae05f"), dict(core="comments", gui="", unify="", doc=""))
 
 # doc comments: a crate's doctests, unless a proc macro may read them or no crate owns the file
-check("doc crates", g.doc_crates(["core/base/src/ids.rs", "core/node/tests/it/judgment.rs"]), (["osis-base", "osis-node"], []))
+check("doc crates", g.doc_crates(["core/base/src/ids.rs", "core/engine/tests/it/judgment.rs"]), (["osis-base", "osis-engine"], []))
 crates, why = g.doc_crates(["cli/src/args.rs", "core/test/fuzz/x.rs"])
 check("doc in a clap crate, doc outside the workspace", (crates, [w.split(":")[0] for w in why]), ([], ["cli/src/args.rs", "core/test/fuzz/x.rs"]))
 

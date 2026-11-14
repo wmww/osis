@@ -559,3 +559,99 @@ mod tests {
         assert!(run_on(None, Instant::now()).judge(Instant::now(), Duration::from_secs(1)).is_ok());
     }
 }
+
+thread_local! {
+    /// A shrink's replays print nothing (`shrinking`).
+    static QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The steps of the last run that panicked on this thread (`Script`).
+    static FAILED: std::cell::RefCell<Option<Box<dyn std::any::Any>>> = std::cell::RefCell::new(None);
+}
+
+/// A random run's steps as a script, each with what it did: printed as Rust, with the call that
+/// replays it, when the run panics (notes/test-harnesses.md, Env vars and seeds). `kind` is the
+/// step type's path (`use {kind}::*` makes the printed steps compile); `shrink_var` the variable
+/// `shrinking` reads.
+pub struct Script<A: std::fmt::Debug + Clone + 'static> {
+    kind: &'static str,
+    shrink_var: &'static str,
+    replay: String,
+    steps: Vec<(A, String)>,
+}
+
+impl<A: std::fmt::Debug + Clone + 'static> Script<A> {
+    pub fn new(kind: &'static str, shrink_var: &'static str, replay: String) -> Self {
+        Script { kind, shrink_var, replay, steps: Vec::new() }
+    }
+
+    /// Records step `a`, with a note of what it did (empty: none).
+    pub fn push(&mut self, a: A, note: String) {
+        self.steps.push((a, note));
+    }
+}
+
+impl<A: std::fmt::Debug + Clone + 'static> Drop for Script<A> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        if !QUIET.get() {
+            let mut out = format!("the run as a script ({}; {}=1 shrinks it):\nlet script = {{\n    use {}::*;\n    vec![\n", self.replay, self.shrink_var, self.kind);
+            for (a, note) in &self.steps {
+                out.push_str(&format!("        {a:?},{}\n", if note.is_empty() { String::new() } else { format!(" // {note}") }));
+            }
+            out.push_str("    ]\n};");
+            eprintln!("{out}");
+        }
+        let steps: Vec<A> = self.steps.iter().map(|x| x.0.clone()).collect();
+        FAILED.set(Some(Box::new(steps)));
+    }
+}
+
+/// Runs `run`, which records its steps in a `Script<A>`; with `shrink_var` set nonzero, a failing
+/// run's script is shrunk by dropping steps while `replay` still fails, pass after pass until none
+/// drops, and the shrunk run fails as the original failure, printing its script.
+pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: impl FnOnce(), replay: impl Fn(&[A])) {
+    use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+    if !u64_var(shrink_var).is_some_and(|n| n != 0) {
+        return run();
+    }
+    let Err(first) = catch_unwind(AssertUnwindSafe(run)) else { return };
+    let Some(mut steps) = FAILED.take().and_then(|b| b.downcast::<Vec<A>>().ok()).map(|b| *b) else { resume_unwind(first) };
+    // a hook that stays silent for a shrink's replays, installed once for the process
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !QUIET.get() {
+                prev(info)
+            }
+        }));
+    });
+    let fails = |h: &[A]| {
+        QUIET.set(true);
+        let failed = catch_unwind(AssertUnwindSafe(|| replay(h))).is_err();
+        QUIET.set(false);
+        FAILED.take();
+        failed
+    };
+    let n = steps.len();
+    loop {
+        let before = steps.len();
+        let mut i = 0;
+        while i < steps.len() {
+            let mut fewer = steps.clone();
+            fewer.remove(i);
+            if fails(&fewer) {
+                steps = fewer;
+            } else {
+                i += 1;
+            }
+        }
+        if steps.len() == before {
+            break;
+        }
+    }
+    eprintln!("shrunk from {n} to {} steps; the shrunk run:", steps.len());
+    replay(&steps);
+    resume_unwind(first)
+}

@@ -4,12 +4,11 @@
 use crate::error::{Error, Result};
 use crate::handle::{Osis, ReadOnly};
 use std::borrow::Borrow;
-use crate::port::method as m;
 use crate::share::Member;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Origin, ReadAt, Subscription, Watch, digest};
 use crate::commit_id::{CommitId, CommitPos};
 use osis_base::{Ak, Role, Tid, Ts, Value, Time};
-use osis_node::{Diagnostic, Engine};
+use osis_engine::{Diagnostic, Engine};
 use osis_schema::{AspectKey, ValueKey};
 use osis_schema::core_types::GROUP;
 use crate::track::{thing, thing_key};
@@ -84,7 +83,7 @@ impl ThingStamp {
     }
 }
 
-fn stamp(c: osis_node::Creation) -> ThingStamp {
+fn stamp(c: osis_engine::Creation) -> ThingStamp {
     ThingStamp { id: CommitId(c.commit), written: c.ts.wall_ms(), ts: c.ts, actor: c.actor, received: c.received }
 }
 
@@ -116,8 +115,8 @@ fn read_link(e: &mut Engine, tid: &Tid, l: &osis_base::Link, limit: usize, budge
     let too_large = Error::TooLarge { limit };
     let x = match e.read_large_max(tid, l, *budget) {
         Ok(x) => x,
-        Err(osis_node::Error::Data(osis_label::Error::TooLarge(_))) => return Err(too_large),
-        Err(osis_node::Error::Data(err)) if err == osis_label::Error::Missing || err.class() != ErrorClass::Local => {
+        Err(osis_engine::Error::Data(osis_label::Error::TooLarge(_))) => return Err(too_large),
+        Err(osis_engine::Error::Data(err)) if err == osis_label::Error::Missing || err.class() != ErrorClass::Local => {
             bad.push(err);
             return Ok(None);
         }
@@ -170,7 +169,7 @@ fn materialize(e: &mut Engine, tid: &Tid, v: Value, limit: usize, bad: &mut Vec<
 
 /// The diagnostic for a stored value of `tid`'s `ak` that a typed read could not decode.
 pub(crate) fn mismatch(tid: Tid, ak: &Ak, e: &PathError) -> Diagnostic {
-    Diagnostic { kind: osis_node::DiagnosticKind::Mismatch, tids: vec![tid], commit: None, peer: None, detail: format!("{ak}: type error at {}: {}", e.path, e.kind) }
+    Diagnostic { kind: osis_engine::DiagnosticKind::Mismatch, tids: vec![tid], commit: None, peer: None, detail: format!("{ak}: type error at {}: {}", e.path, e.kind) }
 }
 
 /// A typed decode of stored data (notes/api.md Typed reads): a value that does not match the
@@ -226,7 +225,7 @@ impl Reader<'_> {
         if !bad.is_empty() {
             // each kind of failure once: the detail stays small however many links fail
             let why = bad.iter().map(|e| e.to_string()).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>().join("; ");
-            self.e.report(Diagnostic { kind: osis_node::DiagnosticKind::Unreadable, tids: vec![*tid], commit: None, peer: None, detail: format!("{ak}: {} link(s) read as absent: {why}", bad.len()) });
+            self.e.report(Diagnostic { kind: osis_engine::DiagnosticKind::Unreadable, tids: vec![*tid], commit: None, peer: None, detail: format!("{ak}: {} link(s) read as absent: {why}", bad.len()) });
         }
         Ok(v)
     }
@@ -417,7 +416,7 @@ impl ReadOnly {
     /// Runs `f` on this process's engine (callers pick the source first).
     pub(crate) fn read_local<R>(&self, f: impl FnOnce(&mut Reader<'_>) -> R) -> R {
         let (limit, actor) = (self.inner.limit, self.acting);
-        drop(osis_node::costs::span("read: engine"));
+        drop(osis_base::costs::span("read: engine"));
         self.engine(|e| f(&mut Reader { e, limit, actor }))
     }
 
@@ -429,20 +428,12 @@ impl ReadOnly {
     /// The aspects that read as present on the thing, core ones included (`created.0`). A register
     /// whose live write was purged reads absent, and is not listed.
     pub fn aspects(&self, tid: Tid) -> Result<Vec<Ak>> {
-        if let crate::sources::Source::Node(r) = self.source(tid) {
-            self.track_remote_thing(&r, tid, thing_key("aspects", tid))?;
-            return crate::port::codec::of(r.call(m::ASPECTS, vec![Value::Tid(tid)])?);
-        }
         self.read_answer(|| thing_key("aspects", tid), thing(tid), move |r| r.aspects(tid))
     }
 
     /// The groups the thing is in: those listing it as an item or as a subgroup, and every group
     /// holding it transitively.
     pub fn groups_of(&self, tid: Tid) -> Result<GroupsOf> {
-        if let crate::sources::Source::Node(r) = self.source(tid) {
-            self.untrackable("groups_of at a connected node")?;
-            return crate::port::codec::of(r.call(m::GROUPS_OF, vec![Value::Tid(tid)])?);
-        }
         Ok(self.read_answer(|| thing_key("groups_of", tid), Filter::Due(Watch::Groups(tid)), move |r| r.groups_of(tid)))
     }
 
@@ -456,10 +447,6 @@ impl ReadOnly {
 
     /// The roles granted on `thing`, by holder. Whoever holds through those: `holders`.
     pub fn grants(&self, thing: Tid) -> Result<Grants> {
-        if let crate::sources::Source::Node(r) = self.source(thing) {
-            self.track_remote_grants(&r, thing, thing_key("grants", thing))?;
-            return crate::port::codec::of(r.call(m::GRANTS, vec![Value::Tid(thing)])?);
-        }
         Ok(self.read_answer(|| thing_key("grants", thing), Filter::Grants(thing), move |r| r.grants(thing)))
     }
 
@@ -467,10 +454,6 @@ impl ReadOnly {
     /// read until this node can write the thing: the keys a write needs can arrive after the role
     /// (on another node of the account, say), and a write before then fails `Permission`.
     pub fn role_on(&self, tid: Tid) -> Result<Option<Role>> {
-        if let crate::sources::Source::Node(r) = self.source(tid) {
-            self.untrackable("role_on at a connected node")?;
-            return crate::port::codec::of(r.call(m::ROLE_ON, vec![Value::Tid(tid)])?);
-        }
         self.read_answer(|| thing_key("role_on", tid), Filter::Due(Watch::Roles), move |r| r.role_on(tid))
     }
 
@@ -478,10 +461,6 @@ impl ReadOnly {
     /// content, which is a deleted one and equally one never written: a thing just created, or
     /// only added to a group or granted. Its creation being here needs no content, and is all a write needs.
     pub fn has_content(&self, tid: Tid) -> Result<bool> {
-        if let crate::sources::Source::Node(r) = self.source(tid) {
-            self.track_remote_thing(&r, tid, thing_key("has_content", tid))?;
-            return crate::port::codec::of(r.call(m::HAS_CONTENT, vec![Value::Tid(tid)])?);
-        }
         self.read_answer(|| thing_key("has_content", tid), thing(tid), move |r| r.knows(tid))
     }
 
@@ -492,10 +471,6 @@ impl ReadOnly {
     /// When the thing was created: the oldest valid commit carrying its creation; `None` while it
     /// is unknown here, or once it was destroyed (`Write::purge`, `Write::release`, an expiry).
     pub fn created(&self, tid: Tid) -> Result<Option<ThingStamp>> {
-        if let crate::sources::Source::Node(r) = self.source(tid) {
-            self.track_remote_thing(&r, tid, thing_key("created", tid))?;
-            return crate::port::codec::of(r.call(m::CREATED, vec![Value::Tid(tid)])?);
-        }
         Ok(self.read_answer(|| thing_key("created", tid), Filter::Due(Watch::CommitsOf(tid)), move |r| r.created(tid)))
     }
 
@@ -503,10 +478,6 @@ impl ReadOnly {
     /// is); its creation if never since. A commit known here only from a `CommitKind::Snapshot` is
     /// not seen.
     pub fn changed(&self, tid: Tid) -> Result<Option<ThingStamp>> {
-        if let crate::sources::Source::Node(r) = self.source(tid) {
-            self.track_remote_thing(&r, tid, thing_key("changed", tid))?;
-            return crate::port::codec::of(r.call(m::CHANGED, vec![Value::Tid(tid)])?);
-        }
         Ok(self.read_answer(|| thing_key("changed", tid), Filter::Due(Watch::CommitsOf(tid)), move |r| r.changed(tid)))
     }
 
@@ -515,7 +486,7 @@ impl ReadOnly {
     pub(crate) fn read_with<R>(&self, read: impl FnOnce(&mut Reader<'_>) -> R, also: impl FnOnce()) -> R {
         let (limit, actor) = (self.inner.limit, self.acting);
         self.locked(|l| {
-            let v = read(&mut Reader { e: l.engine(), limit, actor });
+            let v = read(&mut Reader { e: &mut l.engine, limit, actor });
             also();
             v
         })
@@ -532,9 +503,6 @@ impl Osis {
     /// for app timestamps. On a thin client, its node's: `Network` when it cannot be
     /// reached.
     pub fn now(&self) -> Result<Time> {
-        if !self.has_store() {
-            return crate::port::codec::of(self.rcall(m::NOW, vec![])?);
-        }
         Ok(self.engine(|e| e.now()))
     }
 
@@ -544,7 +512,7 @@ impl Osis {
     pub(crate) fn subscribe(&self, filter: Filter, initial: bool, make: impl FnOnce(&mut Reader<'_>) -> Callback) -> Subscription {
         let (limit, actor) = (self.inner.limit, self.acting);
         self.locked(|l| {
-            let cb = make(&mut Reader { e: l.engine(), limit, actor });
+            let cb = make(&mut Reader { e: &mut l.engine, limit, actor });
             self.subscribe_in(l, filter, initial, cb)
         })
     }
@@ -556,9 +524,6 @@ impl Osis {
     /// Fails `Network` when `tid` is at a node that cannot be reached now. A live watch hears a
     /// lost connection as an `Err` value, and the aspects again once it is back.
     pub fn on_thing_change(&self, tid: Tid, mut f: impl FnMut(&Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
-        if let crate::sources::Source::Node(r) = self.source(tid) {
-            return self.node_on_thing_change(&r, tid, Box::new(f));
-        }
         let mut failed = None;
         let sub = self.subscribe(Filter::Thing(tid), true, |r| {
             let mut first: BTreeMap<Ak, Result<Option<Value>>> = BTreeMap::new();
@@ -591,7 +556,6 @@ impl Osis {
                         tell_changed(&mut last, db, Change { tid, ak, value, origin: Origin::Derived(crate::DerivedFrom::Recovered) }, &mut f);
                     }
                 }
-                Delivery::Moved => f(db, Change { tid, ak: osis_schema::core_types::TID.name(), value: Err(crate::sources::moved()), origin: Origin::Initial }),
                 _ => {}
             })
         });
@@ -605,9 +569,6 @@ impl Osis {
     /// `Network` when `thing` is at a node that cannot be reached now; a live watch hears a lost
     /// connection as an `Err`, and the grants again once it is back.
     pub fn on_grants_change(&self, thing: Tid, mut f: impl FnMut(&Osis, Result<Grants>) + Send + 'static) -> Result<Subscription> {
-        if let crate::sources::Source::Node(r) = self.source(thing) {
-            return self.node_on_answer(&r, thing, crate::port::client::grants_filter(thing), Box::new(f));
-        }
         Ok(self.subscribe(Filter::Grants(thing), true, move |r| {
             let mut last = r.grants(thing);
             Box::new(move |db, d| match d {
@@ -620,7 +581,6 @@ impl Osis {
                     }
                     Err(e) => f(db, Err(e)),
                 },
-                Delivery::Moved => f(db, Err(crate::sources::moved())),
                 _ => {}
             })
         }))
@@ -630,9 +590,6 @@ impl Osis {
     /// of its node: while it cannot be reached none come, and
     /// `status` says so; a session the node has ended fails as its calls do.
     pub fn on_diagnostic(&self, mut f: impl FnMut(&Osis, crate::Diagnostic) + Send + 'static) -> Result<Subscription> {
-        if !self.has_store() {
-            return self.node_on_diagnostic(Box::new(f));
-        }
         Ok(self.subscribe(Filter::Diagnostics, false, |_| {
             Box::new(move |db, d| {
                 if let Delivery::Diagnostic(x) = d {
@@ -666,13 +623,6 @@ impl<'d, K, H: Borrow<ReadOnly>> AspectRef<'d, K, H> {
 impl<'d, K: ValueKey, H: Borrow<ReadOnly>> AspectRef<'d, K, H> {
     /// The value now; `None` when it is absent or does not read as the key's type.
     pub fn get(&self) -> Result<Option<K::T>> {
-        if let crate::sources::Source::Node(r) = self.ro().source(self.tid) {
-            let ak = ak_of(&self.key)?;
-            self.ro().track_remote_value(&r, self.tid, &ak, &Path::root(), value_key(self.tid, &ak, &Path::root()))?;
-            let Some(v) = self.ro().node_get(&r, self.tid, &ak, &Path::root())? else { return Ok(None) };
-            let db = self.ro();
-            return Ok(lenient(self.tid, &ak, self.key.decode(&v), |d| db.engine(|e| e.report(d))));
-        }
         if self.ro().tracking.is_none() {
             return self.ro().read_local(|r| r.get(self.tid, &self.key));
         }
@@ -703,7 +653,7 @@ impl<K: ValueKey + Clone + Send + 'static> AspectRef<'_, K> {
         let (tid, ak, key) = (self.tid, ak_of(&self.key)?, self.key.clone());
         let ak2 = ak.clone();
         let read = ReadAt::new(move |r| r.value(tid, &ak2));
-        self.db.watch_value(tid, ak, Path::root(), read, move |db, ch| {
+        self.db.watch_value(tid, ak, read, move |db, ch| {
             let value = ch.value.map(|v| v.and_then(|x| lenient(ch.tid, &ch.ak, key.decode(&x), |d| db.report(d))));
             f(db, Change { tid: ch.tid, ak: ch.ak, value, origin: ch.origin })
         })
@@ -713,10 +663,7 @@ impl<K: ValueKey + Clone + Send + 'static> AspectRef<'_, K> {
 impl Osis {
     /// A value watch at `path` of `tid`'s `ak`: `read` here, the node's path read at a
     /// connected node. `f` hears the value once, then each time it reads otherwise.
-    fn watch_value(&self, tid: Tid, ak: Ak, path: Path, read: ReadAt, mut f: impl FnMut(&Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
-        if let crate::sources::Source::Node(r) = self.source(tid) {
-            return self.node_on_change(&r, tid, ak, path, Box::new(f));
-        }
+    fn watch_value(&self, tid: Tid, ak: Ak, read: ReadAt, mut f: impl FnMut(&Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
         Ok(self.subscribe(Filter::Aspect(tid, ak.clone(), read.clone()), true, move |r| {
             let first = read.0(r);
             let mut last = digest(&first);
@@ -727,7 +674,6 @@ impl Osis {
                     last = digest(&value);
                     f(db, Change { tid, ak: ak.clone(), value, origin });
                 }
-                Delivery::Moved => f(db, Change { tid, ak: ak.clone(), value: Err(crate::sources::moved()), origin: Origin::Initial }),
                 _ => {}
             })
         }))
@@ -762,10 +708,6 @@ impl<'d, K: ValueKey + Clone + Send + 'static, H: Borrow<ReadOnly>> PathRef<'_, 
     /// The untyped value at the path (typed projection when the key has a schema).
     fn value(&self) -> Result<Option<Value>> {
         let (db, tid, ak) = (self.a.ro(), self.a.tid, ak_of(&self.a.key)?);
-        if let crate::sources::Source::Node(r) = db.source(tid) {
-            db.track_remote_value(&r, tid, &ak, &self.path, value_key(tid, &ak, &self.path))?;
-            return db.node_get(&r, tid, &ak, &self.path);
-        }
         if db.tracking.is_none() {
             return db.read_local(|r| r.get_path(tid, &self.a.key, &self.path));
         }
@@ -795,7 +737,7 @@ impl<K: ValueKey + Clone + Send + 'static> PathRef<'_, '_, K> {
         }
         let (path, k) = (self.path.clone(), std::sync::Mutex::new(key));
         let read = ReadAt::new(move |r| r.get_path(tid, &*crate::watch::lock(&k), &path));
-        db.watch_value(tid, ak, self.path.clone(), read, move |db, ch| {
+        db.watch_value(tid, ak, read, move |db, ch| {
             let value = ch.value.map(|v| v.and_then(|x| lenient(ch.tid, &ch.ak, U::from_value(&x), |d| db.report(d))));
             f(db, Change { tid: ch.tid, ak: ch.ak, value, origin: ch.origin })
         })
@@ -805,33 +747,20 @@ impl<K: ValueKey + Clone + Send + 'static> PathRef<'_, '_, K> {
 impl crate::handle::ReadOnly {
     /// `subscribe` under the lock a caller holds (with what it read for it).
     pub(crate) fn subscribe_in(&self, l: &mut crate::handle::Locked, filter: Filter, initial: bool, cb: Callback) -> Subscription {
-        let actor = self.acting;
         let d = &self.inner.dispatch;
-        // the source was decided before this lock: a move since ends it at once
-        let on = match &filter {
-            Filter::Aspect(t, ..) | Filter::Thing(t) | Filter::Grants(t) => Some(*t),
+        match &filter {
             Filter::Commits(a) => {
                 // a store failure here only loses telling a keep bound passing: the
                 // subscription stands
-                let _ = l.engine().listen_commits(d.commit_listened(), &a.things());
-                a.things().first().copied()
+                let _ = l.engine.listen_commits(d.commit_listened(), &a.things());
             }
-            Filter::Due(Watch::CommitsOf(t)) => {
-                l.engine().watch_commits();
-                Some(*t)
-            }
-            Filter::Due(Watch::Thing(t) | Watch::Groups(t)) => Some(*t),
-            _ => None,
-        };
-        let gone = on.is_some_and(|t| actor.is_none() && !self.local_in(l, t));
+            Filter::Due(Watch::CommitsOf(_)) => l.engine.watch_commits(),
+            _ => {}
+        }
         let sub = d.register(l.seq + 1, filter, cb);
         if initial && let Some(id) = sub.id() {
             l.seq += 1;
             d.send(l.seq, Msg::Initial(id));
-        }
-        if gone && let Some(id) = sub.id() {
-            l.seq += 1;
-            d.send(l.seq, Msg::Moved(id));
         }
         sub
     }

@@ -82,10 +82,6 @@ impl ReadOnly {
     /// aspect, a page at a time. Only what this node holds and the handle may read counts, never
     /// history; a group listing `tid` is one (on `group.0`). `tid` itself need not be known here.
     pub fn backlinks(&self, tid: Tid, q: &BacklinkQuery) -> Result<BacklinkPage> {
-        if let crate::sources::Source::Node(r) = self.source(tid) {
-            self.untrackable("backlinks at a connected node")?;
-            return self.node_backlinks(&r, tid, q);
-        }
         if self.tracking.is_some() {
             self.engine(|e| e.watch_references());
         }
@@ -100,9 +96,6 @@ impl Osis {
     /// is at a node that cannot be reached now; a live watch hears a lost connection as an `Err`,
     /// and the page again once it is back.
     pub fn on_backlinks_change(&self, tid: Tid, q: &BacklinkQuery, mut f: impl FnMut(&Osis, Result<BacklinkPage>) + Send + 'static) -> Result<Subscription> {
-        if let crate::sources::Source::Node(r) = self.source(tid) {
-            return self.node_on_answer(&r, tid, osis_base::Value::List(vec![osis_base::Value::uint(crate::port::filter::BACKLINKS), osis_base::Value::Tid(tid), crate::port::codec::v(q)]), Box::new(f));
-        }
         let (q, limit, actor) = (q.clone(), self.inner.limit, self.acting);
         let mut failed = None;
         let sub = self.subscribe(watch(self, tid), true, |r| {
@@ -121,7 +114,7 @@ impl Osis {
                         f(db, Ok(p));
                     }
                 }
-                Delivery::Due => match db.locked(|l| Reader { e: l.engine(), limit, actor }.backlinks(tid, &q)) {
+                Delivery::Due => match db.locked(|l| Reader { e: &mut l.engine, limit, actor }.backlinks(tid, &q)) {
                     Ok(p) if last.as_ref() == Some(&p) => {}
                     Ok(p) => {
                         last = Some(p.clone());
@@ -132,7 +125,6 @@ impl Osis {
                         f(db, Err(e));
                     }
                 },
-                Delivery::Moved => f(db, Err(crate::sources::moved())),
                 _ => {}
             })
         });

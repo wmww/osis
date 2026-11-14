@@ -11,7 +11,6 @@ use osis::internals::Internals as _;
 use osis::{
     Change, Store, CommitId, CommitKind, CommitQuery, DynamicAspectKey, Error, GrantOpts, LinkOpts, Member, Origin, Osis, Role, SetRoleOpts, SyncScope, SyncState, Tid, Value,
 };
-use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::io::BufRead;
 use std::sync::mpsc;
@@ -151,10 +150,6 @@ fn opt_scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<Option<osis::Scope>> {
     }
 }
 
-fn peers(ctx: &mut Ctx<'_>, list: &[String]) -> anyhow::Result<Vec<osis::Address>> {
-    list.iter().map(|s| Ok(ctx.arg_text(s)?.parse::<osis::Address>()?)).collect()
-}
-
 /// A value as text or JSON at a key's type (`--raw`: numbered).
 fn show_value(ctx: &Ctx<'_>, v: &Value, ty: Ty<'_>) -> (String, J) {
     let ty = if ctx.g.raw { None } else { ty };
@@ -192,7 +187,6 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::Sync { .. }
             | Cmd::Group(GroupCmd::Source { to: Some(_), .. })
     ) || stays_up(c)
-        || delivers(c)
 }
 
 /// Commands that stay up until stopped, so they are on the local network (unless `--no-lan`).
@@ -219,59 +213,6 @@ fn network(c: &Cmd) -> crate::Network {
         c if needs_net(c) => crate::Network::Sync,
         _ => crate::Network::None,
     }
-}
-
-/// Commands whose API call hands other nodes something the engine keeps only in memory until
-/// sent (inbox grants, the first commits under a new sync ID):
-/// they run with sync on and wait until it reached a peer before the process exits.
-fn delivers(c: &Cmd) -> bool {
-    // a role that stays may have been granted or raised, which goes to the holder's inbox
-    matches!(c, Cmd::SetRole { role, .. } if role != "none") || matches!(c, Cmd::Grant { .. } | Cmd::Leave { .. } | Cmd::AddWithGrant { .. } | Cmd::Link(LinkCmd::Make { .. }) | Cmd::Card(CardCmd::Show) | Cmd::Group(GroupCmd::Sync { .. }))
-}
-
-/// What a delivering command waits on before exit.
-pub(crate) enum Delivers {
-    /// The thing its holders fetch, or the one a removal is about.
-    Thing(String),
-    /// This account's profile: a contact card is a read link to it.
-    Profile,
-    /// Only the inbox items it queued: the role is recorded, and `status` shows how its sync stands.
-    Deliveries,
-    All,
-}
-
-fn delivery_of(c: &Cmd) -> Delivers {
-    match c {
-        Cmd::AddWithGrant { t, .. } | Cmd::Link(LinkCmd::Make { t, .. }) | Cmd::Leave { t, .. } => Delivers::Thing(t.clone()),
-        Cmd::Card(CardCmd::Show) => Delivers::Profile,
-        Cmd::Group(GroupCmd::Sync { g, .. }) => Delivers::Thing(g.clone()),
-        Cmd::Grant { .. } | Cmd::SetRole { .. } => Delivers::Deliveries,
-        _ => Delivers::All,
-    }
-}
-
-/// The peers this process delivers to: a thin client has none, its node delivers.
-fn own_peers(db: &Osis) -> osis::Result<Vec<osis::Address>> {
-    match db.saved_peers() {
-        Err(Error::Unsupported(_)) => Ok(Vec::new()),
-        h => h,
-    }
-}
-
-/// Sends what a `delivers` command queued (within `--timeout`): `wait_synced` on what it delivers.
-pub(crate) fn deliver(ctx: &mut Ctx<'_>, what: Delivers) -> anyhow::Result<()> {
-    let db = ctx.db.clone();
-    db.nudge_sync()?;
-    let end = deadline(ctx.timeout()?);
-    let s = match what {
-        Delivers::Thing(x) => SyncScope::Thing(ctx.tid(&x)?),
-        Delivers::Profile => SyncScope::Thing(db.profile()?),
-        Delivers::Deliveries => SyncScope::Deliveries,
-        Delivers::All => SyncScope::All,
-    };
-    let left = end.map(|e| e.saturating_duration_since(Instant::now()));
-    wait_sync(ctx, s, left).map_err(|e| exit(6, format!("done locally, not yet at its peers: {e:#}")))?;
-    Ok(())
 }
 
 /// Runs one parsed command.
@@ -323,15 +264,7 @@ pub fn dispatch(cli: Cli, store: Option<Store>, stdin: &mut dyn BufRead, out: &m
             v
         });
         let mut ctx = Ctx::new(g, db, sel, out, stdin, tty)?;
-        let (flush, what) = (delivers(&cli.cmd), delivery_of(&cli.cmd));
-        let mut r = run(&mut ctx, cli.cmd);
-        if r.is_ok() && flush {
-            r = match own_peers(&ctx.db) {
-                Ok(h) if h.is_empty() => Ok(()),
-                Ok(_) => deliver(&mut ctx, what),
-                Err(e) => Err(e.into()),
-            };
-        }
+        let r = run(&mut ctx, cli.cmd);
         ctx.db.settle();
         drop(verbose);
         let db = ctx.db.clone();
@@ -367,12 +300,7 @@ fn one_write(ctx: &mut Ctx<'_>, c: ScriptCmd) -> anyhow::Result<()> {
 fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     match cmd {
-        Cmd::Init { peer } | Cmd::Pair(PairCmd::Join { peer, .. }) => {
-            for s in peers(ctx, &peer)? {
-                db.add_peer(&s)?;
-            }
-            whoami(ctx)
-        }
+        Cmd::Init { .. } | Cmd::Pair(PairCmd::Join { .. }) => whoami(ctx),
         Cmd::Whoami => whoami(ctx),
         Cmd::Pair(PairCmd::Offer) => {
             // print the offer, read the new node's request, print the reply and its node
@@ -405,25 +333,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             };
             ctx.emit(&open.iter().map(say).collect::<Vec<_>>(), J::obj([("links", links_j(&open)), ("ended", J::Bool(end_links))]))
         }
-        Cmd::Peers(PeersCmd::Ls { group }) => {
-            let s = match group {
-                Some(g) => db.peers(ctx.tid(&g)?)?,
-                None => db.saved_peers()?,
-            };
-            ctx.list(&s.iter().map(ToString::to_string).collect::<Vec<_>>())
-        }
-        Cmd::Peers(PeersCmd::Add { addr }) => Ok(db.add_peer(&ctx.arg_text(&addr)?.parse()?)?),
-        Cmd::Peers(PeersCmd::Rm { addr }) => Ok(db.remove_peer(&ctx.arg_text(&addr)?.parse()?)?),
-        Cmd::Serving(ServingCmd::Show) => serving_show(ctx),
-        Cmd::Serving(ServingCmd::Set(f)) => set_serving(ctx, f),
-        Cmd::Serving(ServingCmd::Off) => Ok(db.set_serving(None)?),
-        Cmd::Serving(ServingCmd::Ids { g }) => {
-            let t = ctx.tid(&g)?;
-            let t = if t == db.me() { db.home() } else { t };
-            ctx.list(&db.sync_ids(t)?.iter().map(ToString::to_string).collect::<Vec<_>>())
-        }
         Cmd::Clients(c) => clients(ctx, &c),
-        Cmd::Serve { serving, listen, .. } => serve(ctx, serving, &listen),
+        Cmd::Serve { listen } => serve(ctx, &listen),
         Cmd::Schema(_) => unreachable!("handled before opening"),
         Cmd::Create(a) => one_write(ctx, ScriptCmd::Create(a)),
         Cmd::Set(a) => one_write(ctx, ScriptCmd::Set(a)),
@@ -663,11 +574,6 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let t = ctx.timeout()?;
             wait_sync(ctx, s, t)
         }
-        Cmd::Group(GroupCmd::Sync { g, peer }) => {
-            let g = ctx.tid(&g)?;
-            let s = peers(ctx, &peer)?;
-            Ok(db.sync(g, &s)?)
-        }
         Cmd::Group(GroupCmd::Source { g, to }) => {
             // the source's connection and its secret are in the process that holds the store
             if !db.has_store() {
@@ -697,17 +603,14 @@ fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         Store::Dir(d) => d.display().to_string(),
         Store::Memory(_) => "(memory)".into(),
     };
-    let peers = own_peers(&db)?;
     let sw = format!("osis {}", env!("CARGO_PKG_VERSION"));
     let mut lines = vec![format!("me\t{}", db.me().to_uri()), format!("home\t{}", db.home().to_uri()), format!("node\t{}", db.node().to_uri())];
-    lines.extend(peers.iter().map(|s| format!("peer\t{s}")));
     lines.push(format!("store\t{store}"));
     lines.push(format!("software\t{sw}"));
     let j = J::obj([
         ("me", J::tid(db.me())),
         ("home", J::tid(db.home())),
         ("node", J::tid(db.node())),
-        ("peers", J::strs(&peers)),
         ("store", J::str(store)),
         ("software", J::str(sw)),
     ]);
@@ -1358,20 +1261,11 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
     ctx.list(&lines)
 }
 
-/// What `serve` listens on when serving with no listen URL (osis's default port, spec/sync-transport.md §2).
-const DEFAULT_LISTEN: &str = "quic://0.0.0.0:4040";
-
-fn serve(ctx: &mut Ctx<'_>, serving: ServingFlags, listen: &[String]) -> anyhow::Result<()> {
-    let mut urls = listen.iter().map(|u| u.parse()).collect::<osis::Result<Vec<osis::Url>>>()?;
+fn serve(ctx: &mut Ctx<'_>, listen: &[String]) -> anyhow::Result<()> {
+    let urls = listen.iter().map(|u| u.parse()).collect::<osis::Result<Vec<osis::Url>>>()?;
     let db = ctx.db.clone();
     // other invocations on this store become its clients (notes/cli.md Design)
     crate::listen(&ctx.sel, &db)?;
-    if serving.any() {
-        set_serving(ctx, serving)?;
-    }
-    if urls.is_empty() && db.serving()?.is_some() {
-        urls = vec![DEFAULT_LISTEN.parse()?];
-    }
     if !urls.is_empty() {
         for a in db.listen(&urls).map_err(|e| exit(6, format!("listen: {e}")))? {
             ctx.one("address", a)?;
@@ -1381,47 +1275,6 @@ fn serve(ctx: &mut Ctx<'_>, serving: ServingFlags, listen: &[String]) -> anyhow:
     // the address lines above are a hard failure; the diagnostics after them are best effort (a
     // caller that read only the addresses and closed the pipe does not end it)
     diag(ctx, true, true)
-}
-
-/// Sets the terms of serving: each flag given replaces its field (one `''` clears it), the rest kept;
-/// starts serving (`listed`) when it was off.
-fn set_serving(ctx: &mut Ctx<'_>, f: ServingFlags) -> anyhow::Result<()> {
-    let db = ctx.db.clone();
-    let mut h = db.serving()?.unwrap_or_default();
-    // a flag given once as '' clears its field; otherwise its values replace it
-    let given = |v: &[String]| (!v.is_empty()).then(|| v.iter().filter(|x| !(v.len() == 1 && x.is_empty())).cloned().collect::<Vec<_>>());
-    if let Some(a) = f.admit {
-        h.admit = match a {
-            AdmitArg::Listed => osis::Admit::Listed,
-            AdmitArg::Open => osis::Admit::Open,
-        };
-    }
-    if let Some(v) = given(&f.admitted) {
-        h.admitted = BTreeSet::new();
-        for l in v {
-            h.admitted.extend(sync_ids(ctx, &l)?);
-        }
-    }
-    if let Some(v) = given(&f.policy) {
-        h.policy = osis::ServingPolicy::default();
-        for p in v {
-            let (k, n) = p.split_once('=').ok_or_else(|| usage(format!("not NAME=N: {p}")))?;
-            osis::internals::host_limit(&mut h.policy, k, n.parse().map_err(|_| usage(format!("not NAME=N: {p}")))?).map_err(Error::Invalid)?;
-        }
-    }
-    if let Some(v) = given(&f.cap) {
-        h.caps = BTreeMap::new();
-        for c in v {
-            let bad = || usage(format!("not GROUP|ID=ENTRIES,BYTES: {c}"));
-            let (l, n) = c.rsplit_once('=').ok_or_else(bad)?;
-            let (e, b) = n.split_once(',').ok_or_else(bad)?;
-            let caps = osis::ServingCaps { entries: e.parse().map_err(|_| bad())?, bytes: b.parse().map_err(|_| bad())? };
-            for id in sync_ids(ctx, l)? {
-                h.caps.insert(id, caps);
-            }
-        }
-    }
-    Ok(db.set_serving(Some(h))?)
 }
 
 /// `clients add|ls|rm|rotate` (notes/cli.md): `clients^.0` of this node.
@@ -1449,50 +1302,6 @@ fn clients(ctx: &mut Ctx<'_>, c: &ClientsCmd) -> anyhow::Result<()> {
             ctx.emit(std::slice::from_ref(&s), J::str(s.clone()))
         }
     }
-}
-
-/// The terms of serving as lines (`admit listed|open`, `admitted ID`, `policy NAME N`,
-/// `cap ID ENTRIES BYTES`) or one JSON object; exit 3 when not serving.
-fn serving_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
-    let h = ctx.db.serving()?.ok_or_else(|| exit(3, "not serving"))?;
-    let admit = match h.admit {
-        osis::Admit::Listed => "listed",
-        osis::Admit::Open => "open",
-    };
-    let mut lines = vec![format!("admit {admit}")];
-    lines.extend(h.admitted.iter().map(|l| format!("admitted {l}")));
-    let knobs = policy_lines(&h.policy);
-    lines.extend(knobs.iter().map(|(k, n)| format!("policy {k} {n}")));
-    lines.extend(h.caps.iter().map(|(l, c)| format!("cap {l} {} {}", c.entries, c.bytes)));
-    let j = J::obj([
-        ("admit", J::str(admit)),
-        ("admitted", J::strs(&h.admitted)),
-        ("policy", J::Obj(knobs.iter().map(|(k, n)| (k.clone(), J::int(*n))).collect())),
-        ("caps", J::Obj(h.caps.iter().map(|(l, c)| (l.to_string(), J::obj([("entries", J::int(c.entries)), ("bytes", J::int(c.bytes))]))).collect())),
-    ]);
-    ctx.emit(&lines, j)
-}
-
-/// The limits set apart from the defaults, by name.
-fn policy_lines(p: &osis::ServingPolicy) -> BTreeMap<String, u64> {
-    let d = osis::ServingPolicy::default();
-    let plain = [("group_entries", p.group_entries, d.group_entries), ("group_bytes", p.group_bytes, d.group_bytes), ("groups", p.groups, d.groups), ("entries", p.entries, d.entries), ("bytes", p.bytes, d.bytes)];
-    plain.into_iter().filter(|(_, v, def)| v != def).map(|(k, v, _)| (k.to_string(), v)).chain(osis::internals::host_limits_unshown(p)).collect()
-}
-
-/// A sync ID, or a group synced here: its IDs.
-fn sync_ids(ctx: &mut Ctx<'_>, s: &str) -> anyhow::Result<Vec<osis::SyncId>> {
-    if let Ok(id) = s.parse() {
-        return Ok(vec![id]);
-    }
-    let g = ctx.tid(s).map_err(|_| usage(format!("not a group or a sync ID (32 hex digits): {s}")))?;
-    // an account syncs under its home group
-    let g = if g == ctx.db.me() { ctx.db.home() } else { g };
-    let ls = ctx.db.sync_ids(g)?;
-    if ls.is_empty() {
-        return Err(exit(3, format!("{s} is not synced here: give its sync ID (`osis serving ids` on a node that reads it)")));
-    }
-    Ok(ls)
 }
 
 /// Reads and parses a schema file (exit 7 when it does not parse); returns its file name too.
@@ -1550,15 +1359,6 @@ fn schema_reg(sel: &Store, file: &std::path::Path, add: bool) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
-    // notes/api.md Sync configuration and status: `leave` and `card show` wait on the thing they touch, so an unrelated
-    // group with nobody connected does not end them in exit 6.
-    #[test]
-    fn leave_and_card_show_wait_on_what_they_touch() {
-        use super::{CardCmd, Cmd, Delivers, delivery_of};
-        assert!(matches!(delivery_of(&Cmd::Leave { t: "x".into(), holder: None }), Delivers::Thing(t) if t == "x"));
-        assert!(matches!(delivery_of(&Cmd::Card(CardCmd::Show)), Delivers::Profile));
-    }
-
     // notes/cli.md Network: only a command that stays up is on the LAN; a short one never announces.
     #[test]
     fn only_commands_that_stay_up_announce_notes_cli() {
@@ -1571,7 +1371,7 @@ mod tests {
             (&["osis", "status", "--watch"], Node),
             (&["osis", "status"], Sync),
             (&["osis", "diag"], None),
-            (&["osis", "link", "make", "t", "read"], Sync),
+            (&["osis", "link", "make", "t", "read"], None),
             (&["osis", "sync"], Sync),
             (&["osis", "get", "t", "a:b.0"], None),
         ] {

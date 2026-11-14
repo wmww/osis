@@ -3,7 +3,7 @@
 
 use osis_base::Tid;
 use crate::commit_id::CommitId;
-use osis_node::DiagnosticKind as K;
+use osis_engine::DiagnosticKind as K;
 
 /// Something an app may want to log, or tell its user. All but `Handled` name what an app could do
 /// something about; more kinds may come.
@@ -53,9 +53,9 @@ pub enum Diagnostic {
 }
 
 #[doc(hidden)]
-impl From<osis_node::Diagnostic> for Diagnostic {
-    fn from(d: osis_node::Diagnostic) -> Diagnostic {
-        let osis_node::Diagnostic { kind, tids, commit, peer, detail } = d;
+impl From<osis_engine::Diagnostic> for Diagnostic {
+    fn from(d: osis_engine::Diagnostic) -> Diagnostic {
+        let osis_engine::Diagnostic { kind, tids, commit, peer, detail } = d;
         let first = tids.first().copied();
         match (kind, first, tids.get(1).copied(), commit) {
             (K::NotSynced, Some(thing), group, _) => Diagnostic::NotSynced { thing, group, detail },

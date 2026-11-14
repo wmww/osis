@@ -1,6 +1,6 @@
 //! The node's one store of ciphertext (issues/sync-rewrite.md step 4): the blob ciphertexts the
-//! engine writes and reads live in a store beside the engine's (the hub's, `osis_host`'s
-//! `HostStore`), shared with what that store keeps for others, so a blob is held once. An engine
+//! engine writes and reads live in a store beside the engine's, shared with what that store keeps
+//! for others, so a blob is held once. An engine
 //! transaction touching blobs locks it (`Ciphertext::begin`) and commits it first: ciphertext is
 //! the truth, engine state a cache of it.
 //!
@@ -70,7 +70,7 @@ pub trait CipherTx {
     /// Tests only: every key the store's tree yields (`Store::forensic_keys`).
     #[doc(hidden)]
     fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>, Error>;
-    /// The store itself, for a holder that knows its type (node sync and the hub's store).
+    /// The store itself, for a holder that knows its type.
     fn any(&mut self) -> &mut dyn Any;
 }
 
@@ -136,7 +136,7 @@ fn decode_note(k: &[u8], v: &[u8]) -> Result<Note, Error> {
 }
 
 /// Tests only: `store`'s copy inside a world copy (`osis_base::copying::remap`), so every holder
-/// of one store (a node's engine, sync engine and hub) shares one copy.
+/// of one store (a node's engine and its sync) shares one copy.
 #[doc(hidden)]
 pub fn test_copy_shared<T: CipherHost>(store: &Arc<Mutex<T>>, clock: Arc<dyn osis_base::Clock>) -> Result<Arc<Mutex<T>>, Error> {
     if let Some(c) = osis_base::copying::found(store) {

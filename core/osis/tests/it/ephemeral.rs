@@ -7,7 +7,6 @@ use crate::common::watched;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common::*;
-use osis_sim::world::World;
 use osis::{Error, MemStore, Osis, Role, Origin, Store, Value};
 use std::sync::mpsc::channel;
 use std::time::Duration;
@@ -495,60 +494,6 @@ fn delete_of_ephemeral_only_thing_drops_its_values_spec_data_model_1() {
     assert!(rx.try_recv().is_err() && brx.try_recv().is_err(), "told once");
     assert!(!db.has_content(x).unwrap());
     assert_eq!(db.at(x, key("retainers^.0")).get().unwrap(), Some(Value::Set([Value::Tid(keep)].into_iter().collect())), "the list stays");
-}
-
-/// Alice's synced group `g` with Bob granted `role` on it, through one host.
-fn shared(role: Role) -> (World, Osis, Osis, osis::Tid) {
-    let (mut w, alice, mut others, ids) = crate::common::people(1);
-    let (bob, b) = (others.remove(0), ids[0]);
-    let mut wr = alice.write();
-    let g = wr.create().unwrap();
-    wr.group(alice.home()).add(osis::Member::Item(g)).unwrap();
-    wr.commit().unwrap();
-    alice.sync(g, &[]).unwrap();
-    alice.grant(g, b, role, Default::default()).unwrap();
-    w.run();
-    (w, alice, bob, g)
-}
-
-// notes/ephemeral.md Rights: readers cannot write ephemeral data (spec/requirements.md: readers
-// only read): a reader of a thing can neither create a thing under it, write an ephemeral aspect
-// on it nor fire a signal there; a writer can.
-// spec/permissions.md §1
-#[test]
-fn reader_cannot_write_ephemeral_spec_permissions_1() {
-    let (_w, _alice, bob, g) = shared(Role::Read);
-    assert_eq!(bob.role_on(g).unwrap(), Some(Role::Read));
-    let before = durable_marks(&bob);
-    let mut w = bob.write();
-    w.create_with_admin(g).unwrap();
-    assert!(matches!(w.commit(), Err(Error::Permission { .. })), "a reader creates under g");
-    let mut w = bob.write();
-    w.at(g, osis::DynamicAspectKey::untyped(ak("app:cursor+.0"))).set(&Value::Int(1)).unwrap();
-    assert_eq!(w.commit(), Err(Error::Permission { tid: g, needs: Role::Write }));
-    let mut w = bob.write();
-    w.at(g, osis::DynamicAspectKey::untyped(ak("app:sig+~0"))).fire(&Value::Int(1)).unwrap();
-    assert_eq!(w.commit(), Err(Error::Permission { tid: g, needs: Role::Write }));
-    assert_eq!(durable_marks(&bob), before);
-    // nor delete a thing whose only content is ephemeral (no commit to refuse: notes/ephemeral.md
-    // Deletion): its values stay
-    let (mut world, alice, bob, g) = shared(Role::Read);
-    let cursor = osis::DynamicAspectKey::untyped(ak("app:cursor+.0"));
-    let x = alice.commit_with(|w| { let x = w.create_with_admin(g)?; w.group(g).add(osis::Member::Item(x))?; Ok(x) }).unwrap();
-    alice.commit_set(x, cursor.clone(), &Value::Int(1)).unwrap();
-    world.run();
-    assert_eq!(bob.at(x, cursor.clone()).get().unwrap(), Some(Value::Int(1)));
-    let mut w = bob.write();
-    w.delete(x).unwrap();
-    assert_eq!(w.commit(), Err(Error::Permission { tid: x, needs: Role::Write }));
-    assert_eq!(bob.at(x, cursor).get().unwrap(), Some(Value::Int(1)));
-    let (_w, _alice, bob, g) = shared(Role::Write);
-    let e = bob.commit_with(|w| w.create_with_admin(g)).unwrap();
-    let mut w = bob.write();
-    w.at(e, osis::DynamicAspectKey::untyped(ak("app:d+.0"))).set(&Value::Int(1)).unwrap();
-    w.at(g, osis::DynamicAspectKey::untyped(ak("app:cursor+.0"))).set(&Value::Int(1)).unwrap();
-    w.commit().unwrap();
-    assert_eq!(bob.role_on(e).unwrap(), Some(Role::Write));
 }
 
 // notes/ephemeral.md API (Writes): an ephemeral op that fails when it resolves (a list index

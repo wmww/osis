@@ -1,0 +1,218 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+//! Established epochs at the engine level (spec/crypto.md §4).
+
+use crate::common;
+use common::*;
+use osis_base::{Role, Tid, Value};
+use osis_crdt::{Op, PathOp, PathSeg};
+use osis_crypto::SeededRng;
+use osis_keys::{Names, Provenance, Recipient, Rotation, rotate};
+use osis_engine::Mutation;
+use osis_engine::local_peer::LocalPeer;
+use osis_schema::RawKey;
+use osis_schema::Codec;
+use osis_schema::core_types as ct;
+use std::collections::BTreeSet;
+
+fn rcpt(lp: &mut LocalPeer, i: usize, role: Role) -> Recipient {
+    let e = &mut lp.peers[i].engine;
+    let holder = e.me();
+    let keys = e.account_holder_keys(&holder).unwrap();
+    Recipient { holder, role, keys }
+}
+
+/// Node 0 grants node 1 read on `a`: its boxes then give node 1 `a`'s secrets
+/// (spec/permissions.md §3: a node holds no secret of an actor it cannot read).
+fn read_by_1(lp: &mut LocalPeer, a: Tid) {
+    let b = lp.peers[1].engine.me();
+    lp.peers[0].engine.grant(&a, &b, &edge(Role::Read)).unwrap();
+}
+
+/// A read rotation of `a` from node 0's view, written as one role commit naming `names`.
+fn rotation_commit(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>, names: &Names) -> (osis_base::CommitId, Rotation) {
+    let holders = [rcpt(lp, 0, Role::Admin), rcpt(lp, 1, Role::Read)];
+    rotation_commit_to(lp, a, seed, roles, &holders, names)
+}
+
+/// A rotation of `a` from node 0's view boxing `holders`.
+fn rotation_commit_to(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>, holders: &[Recipient], names: &Names) -> (osis_base::CommitId, Rotation) {
+    let e = &mut lp.peers[0].engine;
+    let view = e.epochs(&a).unwrap();
+    let state = e.get(&a, &ak("secrets.0")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap_or_default();
+    let r = rotate(&a, &roles, &view, &state, holders, names, &mut SeededRng::from_u64(seed)).unwrap();
+    let mut m = Mutation::new();
+    for (k, b) in &r.secrets.boxes {
+        m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
+    }
+    for k in &r.secrets.removed {
+        m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(k.to_value()) }).unwrap();
+    }
+    for (k, h) in &r.secrets.history {
+        m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Set(Value::Bytes(h.clone())) }).unwrap();
+    }
+    for (role, ks) in &r.keys.keysets {
+        let f = osis_keys::aspects::keyset_field(*role);
+        m.op(a, &ct::KEYS, PathOp { path: vec![PathSeg::Field(f)], op: Op::Replace(Some(ks.clone()).to_value()) }).unwrap();
+    }
+    (e.commit(m).unwrap().unwrap(), r)
+}
+
+// spec/crypto.md §4 (names): a rotation commit naming a commit the node does not hold yet (here
+// the rotation before it) is not current (nor established) at a node holding its secret until
+// that commit is applied; establishment is recomputed after a restart.
+#[test]
+fn rotation_out_of_order_spec_crypto_4() {
+    let mut lp = net(2, 0);
+    lp.sync_all().unwrap();
+    let a = new_thing(&mut lp, 0);
+    read_by_1(&mut lp, a);
+    let (c1, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from(Role::ALL), &Names::default());
+    let e1 = r1.rotated.iter().find(|x| x.role == Role::Read).unwrap().epoch;
+    let v0 = lp.peers[0].engine.epochs(&a).unwrap();
+    assert!(v0.read.is_established(&e1), "{:?}", v0.read);
+    let h1 = lp.peers[0].engine.header(&c1).unwrap();
+    let key = osis_keys::Key { ts: h1.ts.to_u64(), node: h1.author, commit: c1 };
+    // a void name: met once its commit is applied (it writes no edge, so nothing applies)
+    let names = Names { list: [osis_keys::Name::void(key, a)].into(), ..Names::default() };
+    let (c2, r2) = rotation_commit(&mut lp, a, 2, BTreeSet::from([Role::Read]), &names);
+    let e2 = r2.rotated[0].epoch;
+    assert_eq!(lp.peers[0].engine.epochs(&a).unwrap().read.current(), vec![e2]);
+    // node 1: the thing, then e2's commit before e1's
+    let pks = lp.packages(0).unwrap();
+    for p in pks.iter().filter(|p| p.id != c1 && p.id != c2) {
+        let _ = lp.deliver(1, p);
+    }
+    let p2 = pks.iter().find(|p| p.id == c2).unwrap().clone();
+    let p1 = pks.iter().find(|p| p.id == c1).unwrap().clone();
+    lp.deliver(1, &p2).unwrap();
+    let v = lp.peers[1].engine.epochs(&a).unwrap();
+    assert!(v.read.secret(&e2).is_some());
+    assert!(!v.read.is_established(&e2));
+    assert!(!v.read.current().contains(&e2));
+    lp.deliver(1, &p1).unwrap();
+    let v = lp.peers[1].engine.epochs(&a).unwrap();
+    assert_eq!(v.read.provenance(&e1), Some(Provenance::Rotated));
+    assert_eq!(v.read.provenance(&e2), Some(Provenance::Rotated));
+    assert_eq!(v.read.current(), vec![e2]);
+    lp.peers[1].restart(810).unwrap();
+    assert_eq!(lp.peers[1].engine.epochs(&a).unwrap().read.current(), vec![e2]);
+}
+
+// spec/crypto.md §4: a node boxed at the newest epoch only opens the earlier ones through the
+// history boxes the actor's `secrets.0` already holds (written by rotations that did not box it):
+// the delta's box, then the chain of held history entries, without reading every box.
+#[test]
+fn history_chain_from_state_spec_crypto_4() {
+    let mut lp = net(2, 0);
+    lp.sync_all().unwrap();
+    let a = new_thing(&mut lp, 0);
+    read_by_1(&mut lp, a);
+    let roles = BTreeSet::from([Role::Read]);
+    let only0 = [rcpt(&mut lp, 0, Role::Admin)];
+    // secrets of its own are all three roles' (spec/crypto.md §3); then two read rotations
+    rotation_commit_to(&mut lp, a, 9, BTreeSet::from(Role::ALL), &only0, &Names::default());
+    let (_, r1) = rotation_commit_to(&mut lp, a, 1, roles.clone(), &only0, &Names::default());
+    let (_, r2) = rotation_commit_to(&mut lp, a, 2, roles.clone(), &only0, &Names::default());
+    sync(&mut lp, 0, 1);
+    let (e1, e2) = (r1.rotated[0].epoch, r2.rotated[0].epoch);
+    assert!(lp.peers[1].engine.epochs(&a).is_none_or(|v| v.read.secret(&e2).is_none()), "not boxed yet");
+    // node 1's box at e2 alone: no history entry in the delta
+    let e = &mut lp.peers[0].engine;
+    let view = e.epochs(&a).unwrap();
+    let state = e.get(&a, &ak("secrets.0")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap();
+    let hist = osis_keys::history_boxes(&a, &view, &state, &osis_keys::HistoryAlts::new(), &osis_keys::AllHeld);
+    let w = osis_keys::box_holder(&a, &view, &hist, &rcpt(&mut lp, 1, Role::Read), &roles, &mut SeededRng::from_u64(0)).unwrap().unwrap();
+    let mut m = Mutation::new();
+    for (k, b) in &w.boxes {
+        m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
+    }
+    lp.peers[0].engine.commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    let v1 = lp.peers[1].engine.epochs(&a).unwrap();
+    assert!(v1.read.secret(&e2).is_some(), "the box");
+    assert!(v1.read.secret(&e1).is_some(), "e2's history box, held in state");
+    assert_eq!(v1.read.secret(&e1), lp.peers[0].engine.epochs(&a).unwrap().read.secret(&e1));
+}
+
+// spec/crypto.md §3, §4: a key actor taken up (a link's L) opens every box reachable from it,
+// however deep the chain of holder actors (each box opens with the secrets of the holder below
+// it). Tids descend along the chain, so a bare sweep over actors in tid order opens one level per sweep.
+#[test]
+fn key_actor_opens_deep_holder_chain_spec_crypto_4() {
+    let mut lp = net(2, 0);
+    lp.sync_all().unwrap();
+    let mut chain: Vec<Tid> = (0..12).map(|_| new_thing(&mut lp, 0)).collect();
+    chain.sort_by(|a, b| b.cmp(a));
+    let read = edge(Role::Read);
+    for w in chain.windows(2) {
+        lp.peers[0].engine.grant(&w[1], &w[0], &read).unwrap();
+    }
+    let sharer = new_thing(&mut lp, 0);
+    let spec = osis_engine::flows::LinkSpec { target: chain[0], role: Role::Read, until: None, hosts: Vec::new(), peers: Vec::new(), single_use: false };
+    let (link, _, _) = lp.peers[0].engine.create_link(&sharer, &spec).unwrap();
+    sync(&mut lp, 0, 1);
+    let held = |lp: &LocalPeer, t: &Tid| lp.peers[1].engine.epochs(t).is_some_and(|e| e.read.holds_any());
+    assert!(chain.iter().all(|t| !held(&lp, t)), "nothing opens before the key");
+    lp.peers[1].engine.hold_key_actor(link.seed.clone()).unwrap();
+    assert!(held(&lp, &link.k), "K, boxed to L");
+    let missing: Vec<usize> = (0..chain.len()).filter(|i| !held(&lp, &chain[*i])).collect();
+    assert!(missing.is_empty(), "levels left unopened: {missing:?}");
+}
+
+// spec/commits.md §4, spec/crypto.md §4: a syncer holding only a rotation's `secrets.0` part
+// applies the role commit; the `keys.0` part joining later establishes the epoch as a
+// whole arrival does (a certificate copy of some parts may come first).
+#[test]
+fn late_keys_part_establishes_rotation_spec_crypto_4() {
+    let mut lp = net(2, 0);
+    lp.sync_all().unwrap();
+    let a = new_thing(&mut lp, 0);
+    let (_, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from(Role::ALL), &Names::default());
+    let e1 = r1.rotated.iter().find(|x| x.role == Role::Read).unwrap().epoch;
+    let (c2, r2) = rotation_commit(&mut lp, a, 2, BTreeSet::from([Role::Read]), &Names::default());
+    let e2 = r2.rotated[0].epoch;
+    let pks = lp.packages(0).unwrap();
+    for p in pks.iter().filter(|p| p.id != c2) {
+        let _ = lp.deliver(1, p);
+    }
+    assert!(lp.peers[1].engine.epochs(&a).unwrap().read.is_established(&e1));
+    lp.peers[1].engine.set_syncing(a, true).unwrap();
+    let p2 = pks.iter().find(|p| p.id == c2).unwrap().clone();
+    let h = lp.peers[0].engine.header(&c2).unwrap();
+    let mut only = osis_commit::CommitBlob::decode(&p2.bytes).unwrap();
+    only.parts.retain(|p| h.aspects[p.ai].ak.as_str() == "secrets.0");
+    assert!(!only.parts.is_empty());
+    let mut first = p2.clone();
+    first.bytes = only.encode();
+    assert!(matches!(lp.deliver(1, &first).unwrap(), osis_engine::Ingested::Applied(_)), "a held part of a role commit applies");
+    lp.deliver(1, &p2).unwrap();
+    let v = lp.peers[1].engine.epochs(&a).unwrap();
+    assert!(v.read.is_established(&e2), "{:?}", v.read);
+    assert_eq!(v.read.current(), vec![e2]);
+}
+
+// spec/crypto.md §4 (History box): a thing under another thing gets secrets of its own; its node
+// reads the history box of the new epochs with their secrets, and so holds the derived epoch 0
+// established, as a rebuild from the commit records does
+#[test]
+fn own_secrets_keep_derived_epochs_spec_crypto_4() {
+    let mut lp = net(1, 0);
+    let e = &mut lp.peers[0].engine;
+    let me = e.me();
+    let mut m = Mutation::new();
+    let p = e.new_thing(&mut m, me);
+    e.commit(m).unwrap();
+    let mut m = Mutation::new();
+    let h = e.new_thing(&mut m, p);
+    m.set(h, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    let derived = e.epochs(&h).unwrap();
+    e.give_own_secrets(&h).unwrap();
+    let own = e.epochs(&h).unwrap();
+    for r in Role::ALL {
+        let (ep, _) = derived.role(r).epochs().next().unwrap();
+        let info = own.role(r).get(ep).unwrap_or_else(|| panic!("{r:?}: the derived epoch let go"));
+        assert!(info.secret.is_some() && info.established == Some(Provenance::Derived), "{r:?}: {info:?}");
+    }
+    e.check_index();
+}

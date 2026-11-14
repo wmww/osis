@@ -1,6 +1,6 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Handle, keys, reads, the `Write` commit, rights, errors (notes/api.md Handle, Keys, Reads,
 //! Writes, Errors, Footguns closed).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis::internals::Exact as _;
 use osis::internals::CommitRaw as _;
@@ -615,31 +615,6 @@ fn act_as_spec_commits_1() {
     assert_eq!(db.write().commit().unwrap(), None);
 }
 
-// notes/api.md Sync configuration and status: without a runtime the surface works locally,
-// the stored peer list survives a reopen, and waiting for another node fails `Network`.
-// spec: none (API surface, notes/api.md)
-#[test]
-fn local_sync_surface_spec_api_sync() {
-    let c = clock();
-    let store = MemStore::new();
-    let db = osis::internals::create(cfg(0, store.clone(), &c)).unwrap();
-    assert!(db.saved_peers().unwrap().is_empty());
-    let st = db.status().unwrap();
-    assert_eq!(st.groups.get(&db.home()).map(|g| g.state), Some(osis::SyncState::NotConnected));
-    assert!("".parse::<osis::Address>().is_err());
-    let a = osis::Address::new(&"quic://h:1".parse().unwrap(), [7; 32]);
-    assert_eq!(a.to_string().parse::<osis::Address>().unwrap(), a);
-    // a `quic://` URL without a port is :4040 (spec/sync-transport.md §2), kept spelled out
-    let d = osis::Address::new(&"quic://h:4040".parse().unwrap(), [7; 32]);
-    assert_eq!(d.to_string().replace(":4040", "").parse::<osis::Address>().unwrap(), d);
-    assert_eq!(osis::Address::new(&"quic://h".parse().unwrap(), [7; 32]), d);
-    db.add_peer(&a).unwrap();
-    assert!(matches!(common::block_on(db.wait_synced(osis::SyncScope::All)), Err(Error::Network(_))));
-    drop(db);
-    let db = osis::internals::open(cfg(0, store, &c)).unwrap();
-    assert_eq!(db.saved_peers().unwrap(), vec![a]);
-}
-
 // spec/data-model.md §9: `created.0` is typed by its exclusivity rule (admin or key), not the
 // missing-field rule, so a run-time core key (`Osis::key`, the CLI's) reads it.
 #[test]
@@ -1136,21 +1111,6 @@ fn created_not_a_snapshot_spec_commits_2() {
     assert_eq!(b.created(t).unwrap(), None);
 }
 
-// notes/api.md Handle: peers with no runtime would never sync and nothing would say so: refused
-// before anything is written. No peers stays local, and a runtime takes them.
-// spec: none (API surface, notes/api.md)
-#[test]
-fn peers_without_a_runtime_are_refused() {
-    let host = osis::Address::new(&"mem://nobody".parse().unwrap(), [7; 32]);
-    let mut c = osis::internals::Opening::memory();
-    c.hosts = vec![host.clone()];
-    let r = osis::internals::create(c.clone());
-    assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("runtime")), "{:?}", r.map(|_| ()));
-    assert!(osis::internals::create(osis::internals::Opening::memory()).is_ok());
-    c.runtime = osis::Runtime::Manual(osis::internals::ManualNet::new());
-    assert!(osis::internals::create(c).is_ok());
-}
-
 // notes/api.md Handle: a relay is a node at one socket address; any other form is refused.
 // spec: none (API surface, notes/api.md)
 #[test]
@@ -1161,46 +1121,6 @@ fn relays_need_a_socket_address() {
         c.relays = vec![osis::Address::new(&url.parse().unwrap(), key)];
         assert_eq!(osis::internals::create(c).is_ok(), ok, "{url}");
     }
-}
-
-// notes/api.md Sync configuration: `sync` of a group that has a label never moves it silently: its
-// peers again, or none named, do nothing; other peers are refused.
-// spec: none (API surface, notes/api.md)
-#[test]
-fn sync_refuses_other_peers() {
-    let db = db(0);
-    let (a, b) = (osis::Address::new(&"mem://a".parse().unwrap(), [1; 32]), osis::Address::new(&"mem://b".parse().unwrap(), [2; 32]));
-    let mut w = db.write();
-    let g = w.create().unwrap();
-    w.commit().unwrap();
-    db.sync(g, std::slice::from_ref(&a)).unwrap();
-    db.sync(g, std::slice::from_ref(&a)).unwrap();
-    db.sync(g, &[]).unwrap();
-    assert!(matches!(db.sync(g, std::slice::from_ref(&b)), Err(Error::Invalid(_))));
-    assert!(matches!(db.sync(g, &[a, b]), Err(Error::Invalid(_))));
-}
-
-// notes/api.md Reads: `has_content` is about content: a thing created and made durable with none reads
-// `false`, like a deleted one, and still takes writes.
-// spec: none (API surface, notes/api.md)
-#[test]
-fn knows_is_about_content() {
-    let db = db(0);
-    let k = ak("t:x.0");
-    let mut w = db.write();
-    let t = w.create().unwrap();
-    w.commit().unwrap();
-    db.sync(t, &[]).unwrap();
-    assert!(db.created(t).unwrap().is_some(), "durable");
-    assert!(!db.has_content(t).unwrap(), "no content yet");
-    db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
-    assert!(db.has_content(t).unwrap());
-    let mut w = db.write();
-    w.delete(t).unwrap();
-    w.commit().unwrap();
-    assert!(!db.has_content(t).unwrap());
-    db.commit_set(t, osis::DynamicAspectKey::untyped(k), &Value::Int(2)).unwrap();
-    assert!(db.has_content(t).unwrap());
 }
 
 // notes/api.md Reads: `aspects` lists what reads as present: a register whose live write was
@@ -1222,158 +1142,6 @@ fn aspects_agrees_with_reads_after_a_purge() {
     w.commit().unwrap();
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k.clone())).get().unwrap(), None);
     assert!(!db.aspects(t).unwrap().contains(&k));
-}
-
-// notes/api.md Diagnostics: the check is of what the cut took away, the cut subgroup's closure (itself
-// included, spec/sync-set.md §2). A cut below a subgroup of the synced group strands the same; a cut under
-// a group that never synced strands nothing; deleting a tag tells of its items that went with it,
-// never of the deleted tag, which holds nothing.
-// spec: none (API surface, notes/api.md)
-#[test]
-fn a_cut_tells_exactly_what_it_took_out_of_sync() {
-    let db = db(0);
-    let k = ak("t:x.0");
-    let (tx, rx) = std::sync::mpsc::channel();
-    db.on_diagnostic(move |_, d| {
-        if let osis::Diagnostic::NotSynced { thing, group, .. } = d {
-            let _ = tx.send(std::iter::once(thing).chain(group).collect::<Vec<_>>());
-        }
-    }).unwrap().detach();
-    let group = |w: &mut osis::Write<'_>| {
-        w.create().unwrap()
-    };
-    let synced = db.commit_with(|w| Ok(group(w))).unwrap();
-    db.sync(synced, &[osis::Address::new(&"mem://a".parse().unwrap(), [1; 32])]).unwrap();
-    let mut w = db.write();
-    let (mid, low, plain, tag, far, dual) = (group(&mut w), group(&mut w), group(&mut w), group(&mut w), group(&mut w), group(&mut w));
-    w.group(synced).add(osis::Member::Subgroup(mid)).unwrap();
-    w.group(mid).add(osis::Member::Subgroup(low)).unwrap();
-    w.group(plain).add(osis::Member::Subgroup(far)).unwrap();
-    w.group(synced).add(osis::Member::Subgroup(tag)).unwrap();
-    // `dual` is an item too: it keeps syncing, its items do not
-    w.group(synced).add(osis::Member::Subgroup(dual)).unwrap();
-    w.group(synced).add(osis::Member::Item(dual)).unwrap();
-    let (below, never, in_tag, also_synced, in_dual) = (w.create().unwrap(), w.create().unwrap(), w.create().unwrap(), w.create_with_admin(synced).unwrap(), w.create().unwrap());
-    for t in [below, never, in_tag, also_synced, in_dual] {
-        w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)).unwrap();
-    }
-    w.group(low).add(osis::Member::Item(below)).unwrap();
-    w.group(far).add(osis::Member::Item(never)).unwrap();
-    w.group(tag).add(osis::Member::Item(in_tag)).unwrap();
-    w.group(tag).add(osis::Member::Item(also_synced)).unwrap();
-    w.group(synced).add(osis::Member::Item(also_synced)).unwrap();
-    w.group(dual).add(osis::Member::Item(in_dual)).unwrap();
-    w.commit().unwrap();
-    db.settle();
-    let _ = rx.try_iter().count();
-    let told = |rx: &std::sync::mpsc::Receiver<Vec<osis::Tid>>| {
-        db.settle();
-        rx.try_iter().flatten().collect::<BTreeSet<osis::Tid>>()
-    };
-    let mut w = db.write();
-    w.group(mid).remove(osis::Member::Subgroup(low)).unwrap();
-    w.commit().unwrap();
-    assert_eq!(told(&rx), BTreeSet::from([low, below]), "a level down");
-    let mut w = db.write();
-    w.group(plain).remove(osis::Member::Subgroup(far)).unwrap();
-    w.commit().unwrap();
-    assert_eq!(told(&rx), BTreeSet::new(), "it never synced");
-    let mut w = db.write();
-    w.delete(tag).unwrap();
-    w.commit().unwrap();
-    assert_eq!(told(&rx), BTreeSet::from([in_tag]), "its items, not the tag");
-    let mut w = db.write();
-    w.group(synced).remove(osis::Member::Subgroup(dual)).unwrap();
-    w.commit().unwrap();
-    assert_eq!(told(&rx), BTreeSet::from([in_dual]), "its items, not itself");
-}
-
-// notes/api.md Diagnostics: cutting a subgroup out of the synced group that was its only way there
-// tells of it and the items it strands; an item still carried otherwise is not told of.
-// spec: none (API surface, notes/api.md)
-#[test]
-fn cutting_a_subgroup_reports_what_it_strands() {
-    let db = db(0);
-    let k = ak("t:x.0");
-    let (tx, rx) = std::sync::mpsc::channel();
-    db.on_diagnostic(move |_, d| {
-        if let osis::Diagnostic::NotSynced { thing, group, .. } = d {
-            let _ = tx.send(std::iter::once(thing).chain(group).collect::<Vec<_>>());
-        }
-    }).unwrap().detach();
-    let mut w = db.write();
-    let g = w.create().unwrap();
-    let synced = g;
-    w.commit().unwrap();
-    db.sync(synced, &[osis::Address::new(&"mem://a".parse().unwrap(), [1; 32])]).unwrap();
-    let mut w = db.write();
-    let sub = w.create().unwrap();
-    w.group(synced).add(osis::Member::Subgroup(sub)).unwrap();
-    let (stranded, kept) = (w.create().unwrap(), w.create_with_admin(synced).unwrap());
-    for t in [stranded, kept] {
-        w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)).unwrap();
-        w.group(sub).add(osis::Member::Item(t)).unwrap();
-    }
-    w.group(synced).add(osis::Member::Item(kept)).unwrap();
-    w.commit().unwrap();
-    db.settle();
-    assert_eq!(rx.try_iter().collect::<Vec<_>>(), Vec::<Vec<osis::Tid>>::new());
-    let mut w = db.write();
-    w.group(synced).remove(osis::Member::Subgroup(sub)).unwrap();
-    w.commit().unwrap();
-    db.settle();
-    let told: BTreeSet<osis::Tid> = rx.try_iter().flatten().collect();
-    assert_eq!(told, BTreeSet::from([sub, stranded]), "the subgroup went through this group too");
-}
-
-// notes/api.md Diagnostics: a subgroup whose membership expires strands what it held as a write
-// cutting it does, told by the same diagnostic.
-// spec: none (API surface, notes/api.md)
-#[test]
-fn an_expiring_subgroup_reports_what_it_strands() {
-    let c = clock();
-    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
-    let k = ak("t:x.0");
-    let (tx, rx) = std::sync::mpsc::channel();
-    db.on_diagnostic(move |_, d| {
-        if let osis::Diagnostic::NotSynced { thing, group: None, detail } = d {
-            let _ = tx.send((thing, detail));
-        }
-    }).unwrap().detach();
-    let synced = db.commit_with(|w| w.create()).unwrap();
-    db.sync(synced, &[osis::Address::new(&"mem://a".parse().unwrap(), [1; 32])]).unwrap();
-    let mut w = db.write();
-    let (cut, kept) = (w.create().unwrap(), w.create_with_admin(synced).unwrap());
-    let (in_cut, in_expiring) = (w.create().unwrap(), w.create().unwrap());
-    for t in [in_cut, in_expiring, kept] {
-        w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)).unwrap();
-    }
-    w.group(synced).add(osis::Member::Subgroup(cut)).unwrap();
-    w.group(synced).add(osis::Member::Item(kept)).unwrap();
-    w.group(cut).add(osis::Member::Item(in_cut)).unwrap();
-    w.commit().unwrap();
-    let expiring = db.commit_with(|w| w.create()).unwrap();
-    let mut w = db.write();
-    w.expires(osis::Expiry::In(std::time::Duration::from_secs(60)));
-    w.group(synced).add(osis::Member::Subgroup(expiring)).unwrap();
-    w.commit().unwrap();
-    commit_with(&db, |w| {
-        w.group(expiring).add(osis::Member::Item(in_expiring))?;
-        w.group(expiring).add(osis::Member::Item(kept))
-    });
-    db.settle();
-    assert_eq!(rx.try_iter().count(), 0);
-    commit_with(&db, |w| w.group(synced).remove(osis::Member::Subgroup(cut)));
-    db.settle();
-    let by_write: Vec<_> = rx.try_iter().collect();
-    assert_eq!(by_write.iter().map(|d| d.0).collect::<BTreeSet<_>>(), BTreeSet::from([cut, in_cut]));
-    c.advance(61_000);
-    db.engine(|e| e.tick()).unwrap();
-    db.settle();
-    assert!(db.members(synced).unwrap().iter().all(|m| *m != osis::Member::Subgroup(expiring)), "it left by itself");
-    let by_expiry: Vec<_> = rx.try_iter().collect();
-    let detail = by_write[0].1.clone();
-    assert_eq!(by_expiry.into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([(expiring, detail.clone()), (in_expiring, detail)]), "the stranded subgroup and item, as a write cutting it tells; not what another way still carries");
 }
 
 // spec: none (client surface: notes/api.md Writes). The empty path is the whole value: each whole-value op there reads as the aspect's
@@ -1684,26 +1452,6 @@ fn edit_text_by_position() {
     assert!(matches!(db.at(t, osis::DynamicAspectKey::untyped(k)).path(osis::p![]).edit_text(), Err(Error::Invalid(_))), "the whole aspect is no string");
 }
 
-// spec/wire.md §10 (`MAX_URL_BYTES`), notes/api.md Sync configuration: a URL is checked when parsed and one peer has one address; a peer policy is typed and what the peer cannot run by is refused
-#[test]
-fn urls_and_serving_policy_are_typed() {
-    let u: osis::Url = "quic://h".parse().unwrap();
-    assert_eq!(u.as_str(), "quic://h:4040");
-    assert_eq!(osis::Address::new(&u, [1; 32]).url(), u);
-    for bad in ["", "no-scheme", "quic://", "://x", "quic://h#key", "quic://a b"] {
-        assert!(matches!(bad.parse::<osis::Url>(), Err(Error::Invalid(_))), "{bad}");
-    }
-    let long = format!("quic://{}", "h".repeat(osis::internals::schema::osis_base::format::MAX_URL_BYTES));
-    assert!(matches!(long.parse::<osis::Url>(), Err(Error::Invalid(_))));
-    let db = db(0);
-    let mut policy = osis::ServingPolicy { group_bytes: 77, ..Default::default() };
-    osis::internals::host_limit(&mut policy, "deletes", 9).unwrap();
-    db.set_serving(Some(osis::Serving { policy: policy.clone(), ..Default::default() })).unwrap();
-    assert_eq!(db.serving().unwrap().unwrap().policy, policy);
-    let mut bad = osis::ServingPolicy::default();
-    assert!(osis::internals::host_limit(&mut bad, "max_queued_bytes", 1).is_err(), "a limit the host cannot run by");
-}
-
 // spec: none (API surface); notes/api.md Rules: what waits can go on any runtime's spawn
 #[test]
 fn waiting_calls_are_send() {
@@ -1809,35 +1557,6 @@ fn w_ephemeral(db: &Osis, t: osis::Tid) -> osis::CommitId {
     let mut w = db.write();
     w.at(t, db.aspect_key("t:cursor+.0").unwrap()).set(&Value::Int(1)).unwrap();
     w.commit().unwrap().unwrap().stamp.id
-}
-
-// spec: none (API surface); notes/api.md Serving: an admission id is opaque text, asked of a group; a group that does not sync has none; a peer policy says what it takes on in plain limits, and the rest stays by name
-#[test]
-fn sync_ids_and_serving_policy_api_design() {
-    let db = db(0);
-    let mut w = db.write();
-    let g = w.create().unwrap();
-    w.at(g, osis::core::NAME).set(&"g".to_string()).unwrap();
-    w.commit().unwrap();
-    assert!(db.sync_ids(g).unwrap().is_empty(), "not synced");
-    for bad in ["", "abc", "zz"] {
-        assert!(matches!(bad.parse::<osis::SyncId>(), Err(Error::Invalid(_))), "{bad}");
-    }
-    let id: osis::SyncId = "00112233445566778899aabbccddeeff".parse().unwrap();
-    assert_eq!(id.to_string(), "00112233445566778899aabbccddeeff");
-    let mut p = osis::ServingPolicy { groups: 7, ..Default::default() };
-    osis::internals::host_limit(&mut p, "deletes", 9).unwrap();
-    assert!(osis::internals::host_limit(&mut p, "no_such_limit", 1).is_err());
-    // one limit, one place, by either name
-    osis::internals::host_limit(&mut p, "cap_bytes", 55).unwrap();
-    assert_eq!(p.group_bytes, 55);
-    assert!(!osis::internals::host_limits_unshown(&p).contains_key("cap_bytes"));
-    p.group_bytes = osis::ServingPolicy::default().group_bytes;
-    db.set_serving(Some(osis::Serving { admitted: [id].into(), caps: [(id, osis::ServingCaps { entries: 1, bytes: 2 })].into(), policy: p.clone(), ..Default::default() })).unwrap();
-    let h = db.serving().unwrap().unwrap();
-    assert_eq!((h.policy.groups, osis::internals::host_limits_unshown(&h.policy).get("deletes").copied()), (7, Some(9)));
-    assert_eq!(h.policy, p);
-    assert!(h.admitted.contains(&id) && h.caps.contains_key(&id));
 }
 
 // spec/data-model.md §5 (standard types); notes/api.md Keys: a description sees through aliases and generics to what a type is, `timestamp`, `date` and the like by their own words; what a schema cannot declare never reaches it

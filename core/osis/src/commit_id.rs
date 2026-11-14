@@ -4,7 +4,7 @@
 use crate::error::{Error, Result};
 use osis_base::hex;
 use osis_base::{CommitId as RawCommitId, Ts, Time};
-use osis_node::engine::listing as engine;
+use osis_engine::engine::listing as engine;
 
 /// Names one commit: a `Commit`'s, what a commit listener names, and what `revert` or
 /// `Purge::Commit` takes. Its text form (`Display`, `FromStr`) keeps it anywhere.

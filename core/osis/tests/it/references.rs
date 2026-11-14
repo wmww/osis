@@ -4,8 +4,8 @@
 
 use crate::common::*;
 use osis::internals::Internals as _;
-use osis::internals::node::costs;
-use osis::{DynamicAspectKey, MemStore, Osis, Role, SetRoleOpts, Tid, Value, p};
+use osis::internals::costs;
+use osis::{DynamicAspectKey, MemStore, Osis, Tid, Value, p};
 use std::collections::BTreeSet;
 
 fn key(k: &str) -> DynamicAspectKey {
@@ -118,63 +118,6 @@ fn an_expiry_and_a_purge_remove_rows() {
     assert_eq!(rows(&db, r), [row(y, "t:b.0", 1)].into(), "expired");
     db.commit_with(|w| w.at(r, key("t:b.0")).purge(osis::Purge::All)).unwrap();
     assert_eq!(rows(&db, r), BTreeSet::new(), "purged");
-}
-
-// notes/lifetimes.md (Disputes, validity): a reference whose write turns invalid (its
-// writer removed with a frontier that omits it) leaves the index.
-#[test]
-fn a_validity_flip_removes_rows() {
-    let (mut w, alice, mut others, ids) = crate::common::people(1);
-    let (bob, b) = (others.remove(0), ids[0]);
-    let g = alice
-        .commit_with(|x| {
-            let g = x.create()?;
-            x.group(alice.home()).add(osis::Member::Item(g))?;
-            Ok(g)
-        })
-        .unwrap();
-    alice.sync(g, &[]).unwrap();
-    alice.grant(g, b, Role::Write, Default::default()).unwrap();
-    w.run();
-    for r in bob.invite_requests().unwrap_or_default() {
-        let _ = bob.accept_invite(r);
-    }
-    w.run();
-    w.set_online(&bob, false);
-    w.advance(1000);
-    alice.set_role(g, b, None, SetRoleOpts { retain_copy: Some(true) }).unwrap();
-    w.run();
-    bob.commit_with(|x| x.at(g, key("t:a.0")).set(&Value::Tid(alice.home()))).unwrap();
-    assert_eq!(rows(&bob, g), [row(alice.home(), "t:a.0", 1)].into(), "valid where written");
-    w.set_online(&bob, true);
-    w.advance(60_000);
-    w.run();
-    assert_eq!(rows(&bob, g), BTreeSet::new(), "invalid once the removal arrives");
-    assert_eq!(rows(&alice, g), BTreeSet::new());
-}
-
-// notes/lifetimes.md (The judgment: an unknown retainer keeps): a node that loses access to
-// a thing keeps no row of it.
-#[test]
-fn lost_access_leaves_no_rows() {
-    let (mut w, alice, mut others, ids) = crate::common::people(1);
-    let (bob, b) = (others.remove(0), ids[0]);
-    let mut wr = alice.write();
-    let g = wr.create_in(alice.me(), &[alice.home()]).unwrap();
-    wr.commit().unwrap();
-    alice.sync(g, &[]).unwrap();
-    let mut wr = alice.write();
-    let t = wr.create_in(g, &[g]).unwrap();
-    wr.at(t, key("t:a.0")).set(&Value::Tid(g)).unwrap();
-    wr.commit().unwrap();
-    alice.grant(g, b, Role::Read, Default::default()).unwrap();
-    w.run();
-    assert_eq!(rows(&bob, t), [row(g, "t:a.0", 1)].into(), "held");
-    alice.set_role(g, b, None, SetRoleOpts { retain_copy: Some(false) }).unwrap();
-    w.run();
-    assert_eq!(bob.at(t, key("t:a.0")).get().unwrap(), None, "forgotten");
-    assert_eq!(rows(&bob, t), BTreeSet::new());
-    assert!(bob.engine(|e| e.references_to(&g).unwrap()).is_empty());
 }
 
 // notes/lifetimes.md (Cost): a path write into a map of n and 10n entries reads the values

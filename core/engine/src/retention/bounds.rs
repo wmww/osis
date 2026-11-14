@@ -382,7 +382,7 @@ impl Killed {
 
 /// A join on `(tid, ak)` superseded `dead`: the held bodies with a relative bound it may have
 /// replaced (the dying writes' own commits, and the aspect's snapshots, which may carry them) are
-/// judged again by node-sync (`Core::changed`), and the history row of each is set no earlier
+/// judged again by sync, and the history row of each is set no earlier
 /// than `Killed::at` (`Core::to_date`, `Dating::Killed`: no body read; a snapshot whether or not it
 /// carries a dying write, as telling which would read it); with `Killed::all`, every one dated
 /// whole (`mark_bounded`).
@@ -401,20 +401,16 @@ pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
     let mut on = owners.clone();
     on.extend(core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1));
     crate::engine::listing::note_killed(tx, tid, ak, &on);
-    for c in &owners {
-        tx.core.mark_changed(*c);
-    }
     let held: Vec<CommitId> = owners.iter().copied().filter(|c| super::held_part(tx.core, c, tid, ak).is_some()).collect();
     tx.core.cover_candidates.entry((*tid, ak.clone())).or_default().extend(held);
     if !bounded(tx.core, tid, ak) {
         return;
     }
     for c in on {
-        if bounded_part(tx.core, &c, tid, ak).is_some() {
-            tx.core.mark_changed(c);
-            if let Some(t) = dead.at {
-                tx.core.to_date.push((*tid, ak.clone(), c, super::leaving::Dating::Killed(t)));
-            }
+        if bounded_part(tx.core, &c, tid, ak).is_some()
+            && let Some(t) = dead.at
+        {
+            tx.core.to_date.push((*tid, ak.clone(), c, super::leaving::Dating::Killed(t)));
         }
     }
 }
@@ -437,7 +433,6 @@ pub(crate) fn mark_bounded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) {
     }
     for c in on {
         if bounded_part(tx.core, &c, tid, ak).is_some() {
-            tx.core.mark_changed(c);
             tx.core.to_date.push((*tid, ak.clone(), c, super::leaving::Dating::Full(false)));
         }
     }

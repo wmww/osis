@@ -225,7 +225,6 @@ pub(crate) fn take_seeds(tx: &mut Tx<'_>, d: &Tid) -> Result<()> {
         let mut n = (*a).clone();
         n.keys = keys;
         tx.core.accounts.insert(p, Arc::new(n));
-        tx.core.role_changed();
         // the epoch it can sign at may move
         tx.core.ix.epochs_due.insert(p);
         crate::apply::keyset_changed(tx.core, &p);
@@ -395,7 +394,6 @@ pub(crate) fn leave_if_removed(tx: &mut Tx<'_>) -> Result<()> {
 pub(crate) fn leave(tx: &mut Tx<'_>, p: Tid, d: Tid) -> Result<()> {
     tx.core.accounts.remove(&p);
     tx.core.left.insert(p);
-    tx.core.role_changed();
     let held: Vec<Tid> = tx.core.ix.secrets.keys().copied().chain([d]).collect();
     crate::rotation::mark_lost_due(tx, held)
 }

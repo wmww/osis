@@ -1,0 +1,792 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+//! Writing path end to end: identity, creation, ops to commits, local apply, events, restart.
+
+use crate::common;
+use osis_base::{Ak, Value, WallMs};
+use osis_crdt::{Op, PathOp, PathSeg};
+use osis_engine::local_peer::Peer;
+use osis_engine::{Event, Mutation, Origin};
+use osis_schema::core_types as ct;
+use std::collections::BTreeMap;
+
+fn ak(s: &str) -> Ak {
+    Ak::new(s).unwrap()
+}
+
+/// A node; `seed`s that differ make different nodes.
+fn peer(seed: u64) -> Peer {
+    Peer::new(seed, WallMs(1_700_000_000_000)).unwrap()
+}
+
+// spec/data-model.md §1, §9; spec/permissions.md §4: a new node holds its own thing with
+// `created.0`, `node.0` and `keys.0`.
+#[test]
+fn node_identity_spec_dm_1() {
+    let mut p = peer(0);
+    let me = p.engine.tid();
+    let rec = p.engine.get_typed(&me, &ct::CREATED).unwrap().unwrap();
+    assert_eq!(rec.tid(), me);
+    assert!(p.engine.get_typed(&me, &ct::NODE).unwrap().is_some());
+    let keys = p.engine.get_typed(&me, &ct::KEYS).unwrap().unwrap();
+    assert!(keys.key.is_some());
+    assert_eq!(p.engine.get(&me, &ak("tid.0")).unwrap(), Some(Value::Tid(me)));
+    let aspects = p.engine.aspects(&me).unwrap();
+    assert!(aspects.contains(&ak("created.0")) && aspects.contains(&ak("node.0")) && aspects.contains(&ak("keys.0")));
+    assert_eq!(p.engine.core.role_now(&me, &me), Some(osis_base::Role::Admin));
+}
+
+// spec/crdt.md §4.5, §9; spec/commits.md §1: ops become one commit, applied locally, with an
+// event naming the changed aspects (notes/api.md: listeners fire for local writes too).
+#[test]
+fn write_and_read_spec_crdt_4_5() {
+    let mut p = peer(0);
+    let me = p.engine.me();
+    p.drain_events();
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    let a = ak("app:title.0");
+    m.set(t, &a, &Value::Str("hello".into())).unwrap();
+    let mut map = BTreeMap::new();
+    map.insert(Value::Str("x".into()), Value::Int(1));
+    m.set(t, &ak("app:map.0"), &Value::Map(map.into_iter().collect())).unwrap();
+    let id = p.commit(m).unwrap().unwrap();
+    assert_eq!(p.engine.get(&t, &a).unwrap(), Some(Value::Str("hello".into())));
+    let ev = p.drain_events();
+    let Some(Event::Applied { id: eid, origin, changed, .. }) = ev.iter().find(|e| matches!(e, Event::Applied { .. })) else { panic!("{ev:?}") };
+    assert_eq!((*eid, *origin), (id, Origin::Local));
+    assert!(changed.contains(&(t, a.clone())) && changed.contains(&(t, ak("created.0"))));
+    // path op into the map, then a no-op set writes nothing
+    let mut m = Mutation::new();
+    m.op(t, &ak("app:map.0"), PathOp { path: vec![PathSeg::Key(Value::Str("y".into()))], op: Op::Set(Value::Int(2)) }).unwrap();
+    p.commit(m).unwrap().unwrap();
+    let v = p.engine.get(&t, &ak("app:map.0")).unwrap().unwrap();
+    let Value::Map(v) = v else { panic!() };
+    assert_eq!(v.len(), 2);
+    let mut m = Mutation::new();
+    m.set(t, &a, &Value::Str("hello".into())).unwrap();
+    assert_eq!(p.commit(m).unwrap(), None);
+    // remove
+    let mut m = Mutation::new();
+    m.remove_aspect(t, &a).unwrap();
+    p.commit(m).unwrap().unwrap();
+    assert_eq!(p.engine.get(&t, &a).unwrap(), None);
+}
+
+// spec/crdt.md §2.1, §2.3: session-form counters per (aspect, session) are contiguous from 1.
+#[test]
+fn counters_contiguous_spec_crdt_2_3() {
+    let mut p = peer(0);
+    let me = p.engine.me();
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    m.set(t, &ak("app:n.0"), &Value::Int(0)).unwrap();
+    p.commit(m).unwrap();
+    let mut ranges = Vec::new();
+    for i in 1..5 {
+        let mut m = Mutation::new();
+        m.set(t, &ak("app:n.0"), &Value::Int(i)).unwrap();
+        let id = p.commit(m).unwrap().unwrap();
+        let h = p.engine.header(&id).unwrap();
+        let a = h.aspects.iter().find(|a| a.ak.as_str() == "app:n.0").unwrap();
+        ranges.push((a.lo, a.hi));
+    }
+    assert_eq!(ranges, vec![(2, 3), (3, 4), (4, 5), (5, 6)]);
+}
+
+// spec/commits.md §3: commit-form dots carry the commit ID as their source.
+#[test]
+fn commit_form_spec_commits_3() {
+    let mut p = peer(0);
+    let me = p.engine.me();
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    m.commit_form();
+    m.set(t, &ak("app:x.0"), &Value::Int(7)).unwrap();
+    let id = p.commit(m).unwrap().unwrap();
+    assert_eq!(p.engine.header(&id).unwrap().form, osis_commit::Form::Commit);
+    assert_eq!(p.engine.get(&t, &ak("app:x.0")).unwrap(), Some(Value::Int(7)));
+}
+
+// spec/permissions.md §1: writing a thing needs write on it; an unknown thing is refused.
+#[test]
+fn authority_checked_before_signing_spec_perm_1() {
+    let mut a = peer(0);
+    let mut b = peer(1);
+    let ta = {
+        let me = a.engine.me();
+        let mut m = Mutation::new();
+        let t = a.engine.new_thing(&mut m, me);
+        m.set(t, &ak("app:x.0"), &Value::Int(1)).unwrap();
+        a.commit(m).unwrap();
+        t
+    };
+    let mut m = Mutation::new();
+    m.set(ta, &ak("app:x.0"), &Value::Int(2)).unwrap();
+    assert!(matches!(b.commit(m), Err(osis_engine::Error::UnknownThing(_))));
+    // after receiving the thing, b still holds no role on it
+    for id in a.engine.commit_ids() {
+        let pk = a.engine.package(&id).unwrap().unwrap();
+        b.engine.ingest(&pk.bytes, pk.blobs).unwrap();
+    }
+    assert_eq!(b.engine.get(&ta, &ak("app:x.0")).unwrap(), Some(Value::Int(1)));
+    let mut m = Mutation::new();
+    m.set(ta, &ak("app:x.0"), &Value::Int(2)).unwrap();
+    assert!(matches!(b.commit(m), Err(osis_engine::Error::Permission { .. })));
+}
+
+// notes/local-store.md: everything survives a restart (reload from the store).
+// spec/commits.md §4 (one storage transaction per apply: state survives a reopen)
+#[test]
+fn restart_keeps_state() {
+    let mut p = peer(0);
+    let me = p.engine.me();
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    m.set(t, &ak("app:x.0"), &Value::Str("kept".into())).unwrap();
+    p.commit(m).unwrap();
+    let n = p.engine.commit_ids().len();
+    p.restart(70).unwrap();
+    assert_eq!(p.engine.me(), me);
+    assert_eq!(p.engine.commit_ids().len(), n);
+    assert_eq!(p.engine.get(&t, &ak("app:x.0")).unwrap(), Some(Value::Str("kept".into())));
+    let mut m = Mutation::new();
+    m.set(t, &ak("app:x.0"), &Value::Str("again".into())).unwrap();
+    let id = p.commit(m).unwrap().unwrap();
+    let h = p.engine.header(&id).unwrap();
+    // a new open is a new session: its counters start from 1 (spec/crdt.md §2.1)
+    assert_eq!(h.aspects[0].lo, 1);
+    let first = p.engine.commit_ids().into_iter().filter(|c| *c != id).map(|c| p.engine.header(&c).unwrap()).find(|h| h.aspects.iter().any(|a| a.ak == ak("app:x.0"))).unwrap();
+    assert!(matches!(h.form, osis_commit::Form::Session(_)) && h.form != first.form, "another session");
+}
+
+// spec/crdt.md §4.1, §8 (a large state pages; the join of its pages is the state); notes/local-store.md,
+// Units: a large state is kept as pages and an edit rewrites only the pages
+// it touched; spec/requirements.md, Scale (a change inside a huge value costs O(change)). Seeded
+// random puts, removals and bulk inserts (page splits) into a paged map and a paged set, checked
+// against a model across restarts, plus an undo of an edit inside the paged map.
+#[test]
+fn paged_state_edits_and_restart() {
+    let mut p = peer(0);
+    let me = p.engine.me();
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    let (am, aset) = (ak("app:big.0"), ak("app:bigset.0"));
+    // a few hundred entries of a few hundred bytes page as thousands of small ones would
+    let mut model: osis_base::ValueMap = (0..300i64).map(|i| (Value::Int(i), hexed(i as u64, 214))).collect();
+    let mut smodel: osis_base::ValueSet = (0..300i64).map(|i| hexed(i as u64, 214)).collect();
+    m.set(t, &am, &Value::Map(model.clone())).unwrap();
+    m.set(t, &aset, &Value::Set(smodel.clone())).unwrap();
+    // kept: the undo below writes back an entry's value (spec/crdt.md §4.6)
+    common::keep_in(&mut m, t, &common::setting(&[("app:big.0", common::DAY)]));
+    p.commit(m).unwrap().unwrap();
+    let mut r = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = || {
+        r ^= r << 13;
+        r ^= r >> 7;
+        r ^= r << 17;
+        r
+    };
+    let mut last_edit = None;
+    for round in 0..40 {
+        let mut m = Mutation::new();
+        let k = Value::Int((next() % 400) as i64);
+        match next() % 4 {
+            0 if model.contains_key(&k) => {
+                m.op(t, &am, PathOp { path: vec![], op: Op::Remove(k.clone()) }).unwrap();
+                model.remove(&k);
+            }
+            1 => {
+                // a bulk insert lands in the last page and splits it
+                for j in 0..30 {
+                    let k = Value::Int(10_000 + round * 30 + j);
+                    let v = hexed(1_000_000 + round as u64, 214);
+                    m.op(t, &am, PathOp { path: vec![PathSeg::Key(k.clone())], op: Op::Set(v.clone()) }).unwrap();
+                    model.insert(k, v);
+                }
+            }
+            _ => {
+                let v = Value::Int(round);
+                m.op(t, &am, PathOp { path: vec![PathSeg::Key(k.clone())], op: Op::Set(v.clone()) }).unwrap();
+                model.insert(k, v);
+            }
+        }
+        let s = hexed(next() % 400, 214);
+        if smodel.contains(&s) {
+            m.op(t, &aset, PathOp { path: vec![], op: Op::Remove(s.clone()) }).unwrap();
+            smodel.remove(&s);
+        } else {
+            m.op(t, &aset, PathOp { path: vec![], op: Op::Add(s.clone()) }).unwrap();
+            smodel.insert(s);
+        }
+        last_edit = p.commit(m).unwrap();
+        if round % 10 == 9 {
+            p.restart(100 + round as u64).unwrap();
+        }
+        assert_eq!(p.engine.get(&t, &am).unwrap(), Some(Value::Map(model.clone())), "round {round}");
+        assert_eq!(p.engine.get(&t, &aset).unwrap(), Some(Value::Set(smodel.clone())), "round {round}");
+        let k = Value::Int((next() % 400) as i64);
+        assert_eq!(p.engine.get_at(&t, &am, &[PathSeg::Key(k.clone())]).unwrap(), model.get(&k).cloned());
+    }
+    // a path edit, then its undo
+    let before = p.engine.get(&t, &am).unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &am, PathOp { path: vec![PathSeg::Key(Value::Int(5))], op: Op::Set(Value::Int(-5)) }).unwrap();
+    let id = p.commit(m).unwrap().unwrap();
+    assert_ne!(p.engine.get(&t, &am).unwrap(), before);
+    p.engine.revert(&id).unwrap();
+    assert_eq!(p.engine.get(&t, &am).unwrap(), before);
+    assert!(last_edit.is_some());
+}
+
+/// About `2 * n` bytes of hex drawn from `i` (not periodic, so content-defined cuts fall as in
+/// any other bytes), led by `i`.
+fn hexed(i: u64, n: usize) -> Value {
+    let pad: String = noise(n, i).iter().map(|b| format!("{b:02x}")).collect();
+    Value::Str(format!("{i}-{pad}"))
+}
+
+/// Seeded pseudo-random bytes.
+fn noise(n: usize, seed: u64) -> Vec<u8> {
+    let mut v = vec![0u8; n];
+    osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(seed), &mut v);
+    v
+}
+
+/// Bytes of the chunks of `new`'s canonical encoding whose content `old`'s lacks: what any
+/// content-defined writer must write for the edit.
+fn new_chunk_bytes(old: &[u8], new: &[u8]) -> usize {
+    let cuts = |d: &[u8]| -> Vec<Vec<u8>> {
+        let e = osis_base::encode(&Value::Bytes(d.to_vec()));
+        let mut out = Vec::new();
+        let mut at = 0;
+        for n in osis_base::chunker::chunk_lengths(&e, osis_base::ChunkParams::FORMAT) {
+            out.push(e[at..at + n].to_vec());
+            at += n;
+        }
+        out
+    };
+    let have: std::collections::BTreeSet<Vec<u8>> = cuts(old).into_iter().collect();
+    cuts(new).into_iter().filter(|c| !have.contains(c)).map(|c| c.len()).sum()
+}
+
+// spec/requirements.md (Scale: a change inside a huge value costs O(change)); spec/sync-ids.md §1
+// (a chunk reused by a later delta keeps its blob and prefix): editing a value of many chunks
+// writes, and logs, only the chunks the edit changed plus the tree's root node.
+#[test]
+fn large_edit_reuses_chunks_spec_sync_1() {
+    let mut p = peer(0);
+    let me = p.engine.me();
+    let a = ak("app:file.0");
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    let mut cur = noise(4 << 20, 1);
+    m.set(t, &a, &Value::Bytes(cur.clone())).unwrap();
+    let first = p.commit(m).unwrap().unwrap();
+    // the bytes of the blobs commit `c` links that no earlier one did (`seen`)
+    let mut seen = std::collections::BTreeSet::new();
+    let mut blobs = |p: &mut Peer, c| p.engine.package(&c).unwrap().unwrap().blobs.iter().filter(|(id, _)| seen.insert(*id)).map(|(_, b)| b.len()).sum::<usize>();
+    let whole = blobs(&mut p, first);
+    let chunks = osis_base::chunker::chunk_lengths(&osis_base::encode(&Value::Bytes(cur.clone())), osis_base::ChunkParams::FORMAT).len();
+    assert!(chunks > 30, "{chunks} chunks");
+    for name in ["insert 100 B", "overwrite 256 KiB", "append 10 KB", "delete 50 KB"] {
+        let old = cur.clone();
+        match name {
+            "insert 100 B" => drop(cur.splice(2 << 20..2 << 20, noise(100, 2))),
+            "overwrite 256 KiB" => cur[1 << 20..(1 << 20) + (256 << 10)].copy_from_slice(&noise(256 << 10, 3)),
+            "append 10 KB" => cur.extend(noise(10_000, 4)),
+            _ => drop(cur.drain(3 << 20..(3 << 20) + 50_000)),
+        }
+        let mut m = Mutation::new();
+        m.set(t, &a, &Value::Bytes(cur.clone())).unwrap();
+        let c = p.commit(m).unwrap().unwrap();
+        let wrote = blobs(&mut p, c);
+        let need = new_chunk_bytes(&old, &cur);
+        // the root node: one link (about 100 B) per chunk
+        let node = chunks * 120 + 4096;
+        eprintln!("{name}: {wrote} B of blobs ({need} B of new chunks, whole value {whole} B)");
+        assert!(wrote * 10 <= need * 12 + node * 10, "{name}: wrote {wrote}, new chunks {need}");
+        assert_eq!(p.engine.get_full(&t, &a).unwrap(), Some(Value::Bytes(cur.clone())), "{name}");
+    }
+    // the same value again changes nothing
+    let mut m = Mutation::new();
+    m.set(t, &a, &Value::Bytes(cur.clone())).unwrap();
+    assert_eq!(p.commit(m).unwrap(), None);
+}
+
+// spec/data-model.md §6: a list item above CHUNK_THRESHOLD is chunked when inserted, as when set.
+#[test]
+fn large_list_insert_chunked_spec_dm_6() {
+    let mut p = peer(0);
+    let me = p.engine.me();
+    let (key, a) = (&common::LIST, ak("t:list.0"));
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    m.set(t, key, &Value::List(vec![common::s("a")])).unwrap();
+    p.commit(m).unwrap().unwrap();
+    let big = Value::Str("large ".repeat(50_000));
+    let mut m = Mutation::new();
+    m.op(t, key, PathOp { path: vec![], op: Op::Insert { at: 1, items: vec![big.clone(), common::s("b")] } }).unwrap();
+    p.commit(m).unwrap().unwrap();
+    let Some(Value::List(l)) = p.engine.get(&t, &a).unwrap() else { panic!() };
+    assert!(matches!(l.as_slice(), [Value::Str(_), Value::Link(_), Value::Str(_)]), "{l:?}");
+    assert_eq!(p.engine.get_full(&t, &a).unwrap(), Some(Value::List(vec![common::s("a"), big, common::s("b")])));
+}
+
+/// A struct of 65 string registers: each field just under `CHUNK_THRESHOLD` stays inline, and
+/// together they exceed `MAX_BLOB`.
+static WIDE: osis_schema::StaticSchema = osis_schema::StaticSchema::new("wide.osis", WIDE_SRC);
+const WIDE_SRC: &str = concat!(
+    "revision 1;\ntype wide = struct { ",
+    "f0 0: string, f1 1: string, f2 2: string, f3 3: string, f4 4: string, f5 5: string, f6 6: string, f7 7: string, f8 8: string, f9 9: string, ",
+    "f10 10: string, f11 11: string, f12 12: string, f13 13: string, f14 14: string, f15 15: string, f16 16: string, f17 17: string, f18 18: string, f19 19: string, ",
+    "f20 20: string, f21 21: string, f22 22: string, f23 23: string, f24 24: string, f25 25: string, f26 26: string, f27 27: string, f28 28: string, f29 29: string, ",
+    "f30 30: string, f31 31: string, f32 32: string, f33 33: string, f34 34: string, f35 35: string, f36 36: string, f37 37: string, f38 38: string, f39 39: string, ",
+    "f40 40: string, f41 41: string, f42 42: string, f43 43: string, f44 44: string, f45 45: string, f46 46: string, f47 47: string, f48 48: string, f49 49: string, ",
+    "f50 50: string, f51 51: string, f52 52: string, f53 53: string, f54 54: string, f55 55: string, f56 56: string, f57 57: string, f58 58: string, f59 59: string, ",
+    "f60 60: string, f61 61: string, f62 62: string, f63 63: string, f64 64: string };\naspect w:wide.0: wide;\n"
+);
+const WIDE_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("w:wide.0", &WIDE);
+
+// spec/commits.md §1 (delta fits a blob), spec/crdt.md §8: a struct of many near-`CHUNK_THRESHOLD`
+// registers (no field chunked) outgrows one blob, so its field map is paged: the write commits,
+// syncs as pages and reads back whole.
+#[test]
+fn wide_struct_paged_fits_spec_commits_1() {
+    use osis_base::format::{CHUNK_THRESHOLD, MAX_BLOB};
+    let mut p = peer(0);
+    let me = p.engine.me();
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    m.set(t, &ak("app:x.0"), &Value::Int(1)).unwrap();
+    p.commit(m).unwrap().unwrap();
+    let field = "w".repeat(CHUNK_THRESHOLD - 16);
+    let wide = |n: i64| Value::Map((0..65).map(|i| (Value::Int(i), Value::Str(if i < n { field.clone() } else { String::new() }))).collect());
+    assert!(65 * field.len() > MAX_BLOB && 63 * field.len() < MAX_BLOB);
+    let mut m = Mutation::new();
+    m.set(t, &WIDE_AK, &wide(65)).unwrap();
+    let id = p.commit(m).unwrap().unwrap();
+    assert!(!p.engine.package(&id).unwrap().unwrap().blobs.is_empty(), "the field map pages");
+    let Some(Value::Map(got)) = p.engine.get(&t, &ak("w:wide.0")).unwrap() else { panic!() };
+    assert_eq!(got.values().filter(|v| **v == Value::Str(field.clone())).count(), 65);
+}
+
+// spec/data-model.md §6: a list `edit` chunks the items it inserts as an insert does; base items
+// match the list's links by content hash (so the edit lands in place), and an item the list
+// holds already keeps its tree (nothing of it is written again).
+#[test]
+fn large_list_edit_chunked_spec_dm_6() {
+    let mut p = peer(0);
+    let me = p.engine.me();
+    let (key, a) = (&common::LIST, ak("t:list.0"));
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    let big1 = Value::Str("first ".repeat(50_000));
+    m.set(t, key, &Value::List(vec![common::s("a"), big1.clone()])).unwrap();
+    let first = p.commit(m).unwrap().unwrap();
+    let blobs = |p: &mut Peer, c| p.engine.package(&c).unwrap().unwrap().blobs.iter().map(|(_, b)| b.len()).sum::<usize>();
+    assert!(blobs(&mut p, first) > 300_000);
+    let big2 = Value::Str("second ".repeat(50_000));
+    let base = Value::List(vec![common::s("a"), big1.clone()]);
+    let new = Value::List(vec![common::s("a"), big1.clone(), big2.clone(), common::s("b")]);
+    let mut m = Mutation::new();
+    m.op(t, key, PathOp { path: vec![], op: Op::Edit { base, new: new.clone() } }).unwrap();
+    let c = p.commit(m).unwrap().unwrap();
+    let Some(Value::List(l)) = p.engine.get(&t, &a).unwrap() else { panic!() };
+    assert!(matches!(l.as_slice(), [Value::Str(_), Value::Link(_), Value::Link(_), Value::Str(_)]), "{l:?}");
+    assert_eq!(p.engine.get_full(&t, &a).unwrap(), Some(new.clone()));
+    // only big2's tree is new (350 000 bytes; with big1's it would be 650 000)
+    let wrote = blobs(&mut p, c);
+    assert!((350_000..430_000).contains(&wrote), "edit wrote {wrote} B");
+    // a new item twice: one tree
+    let big3 = Value::Str("third ".repeat(50_000));
+    let base = new.clone();
+    let Value::List(mut items) = new else { panic!() };
+    items.extend([big3.clone(), common::s("c"), big3]);
+    let new = Value::List(items);
+    let mut m = Mutation::new();
+    m.op(t, key, PathOp { path: vec![], op: Op::Edit { base, new: new.clone() } }).unwrap();
+    let c = p.commit(m).unwrap().unwrap();
+    assert_eq!(p.engine.get_full(&t, &a).unwrap(), Some(new));
+    let wrote = blobs(&mut p, c);
+    assert!((300_000..380_000).contains(&wrote), "duplicate items wrote {wrote} B");
+}
+
+// spec/crdt.md §5.7 (`edit` resolved at base's indices around its change), §8; spec/data-model.md
+// §6 (large items as links): list edits of a paged list with large items (above
+// CHUNK_THRESHOLD), each in a new session, write on the pages loaded what they write with the
+// list loaded whole: two peers from one seed, one cold and one reading the list whole before
+// each edit, make the same commits. Edits against the current read load a few pages and never
+// load whole; against a stale read they load whole and still agree.
+#[test]
+fn paged_list_edits_match_whole_spec_crdt_5_7() {
+    for with_large in [true, false] {
+        list_edits_match_whole(with_large);
+    }
+}
+
+fn list_edits_match_whole(with_large: bool) {
+    let small = |id: usize| Value::Str(format!("item {id} of the list"));
+    let big = |id: usize| if with_large { Value::Str(format!("L{id}:{}", "x".repeat(osis_base::format::CHUNK_THRESHOLD + 10))) } else { Value::Str(format!("item {id} (not large)")) };
+    let (key, a) = (&common::LIST, ak("t:list.0"));
+    let (mut cold, mut whole) = (peer(0), peer(0));
+    let me = cold.engine.me();
+    let mut model: Vec<Value> = (0..3000).map(small).collect();
+    for (k, i) in [40, 700, 1500, 2100, 2990].into_iter().enumerate() {
+        model[i] = big(k);
+    }
+    let mut t = None;
+    for p in [&mut cold, &mut whole] {
+        let mut m = Mutation::new();
+        t = Some(p.engine.new_thing(&mut m, me));
+        m.set(t.unwrap(), key, &Value::List(model.clone())).unwrap();
+        p.commit(m).unwrap().unwrap();
+    }
+    let t = t.unwrap();
+    let mut x = 0x5851_f42d_4c95_7f2du64;
+    let mut r = |n: usize| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        (x % n.max(1) as u64) as usize
+    };
+    let (mut fresh_id, mut stale) = (10_000, model.clone());
+    let (mut at_window, mut stale_edits) = (0, 0);
+    for step in 0..24u64 {
+        let old = step % 6 == 5;
+        let base = if old { stale.clone() } else { model.clone() };
+        let mut new = base.clone();
+        let at = r(new.len());
+        fresh_id += 1;
+        let kind = r(6);
+        match kind {
+            0 => new.insert(at, small(fresh_id)),
+            1 => new.insert(at, big(fresh_id)),
+            2 => {
+                new.remove(at);
+            }
+            3 => new[at] = if r(2) == 0 { big(fresh_id) } else { small(fresh_id) },
+            // a copy of a large item held elsewhere in the list
+            4 => new.insert(at, big(r(5))),
+            _ => new.truncate(at.max(2900)),
+        }
+        let mut ids = Vec::new();
+        for (i, p) in [&mut cold, &mut whole].into_iter().enumerate() {
+            p.restart(1000 + step).unwrap();
+            if i == 1 {
+                assert!(p.engine.get(&t, &a).unwrap().is_some());
+            }
+            osis_base::costs::take();
+            let mut m = Mutation::new();
+            m.op(t, key, PathOp { path: vec![], op: Op::Edit { base: Value::List(base.clone()), new: Value::List(new.clone()) } }).unwrap();
+            ids.push(p.commit(m).unwrap());
+            let c = osis_base::costs::take();
+            let count = |k: &str| c.iter().filter(|x| x.0.starts_with(k)).map(|x| x.2).sum::<u64>();
+            if i == 0 && !old {
+                let pages = count("state page load");
+                assert!(pages <= 6 && count("paged op whole") == 0, "step {step} (kind {kind}): {pages} pages loaded, {c:?}");
+                at_window += 1;
+            }
+            stale_edits += usize::from(i == 0 && old);
+        }
+        assert_eq!(ids[0], ids[1], "step {step} (kind {kind}, stale {old}): cold and whole commits differ");
+        let got = cold.engine.get_full(&t, &a).unwrap();
+        assert_eq!(got, whole.engine.get_full(&t, &a).unwrap(), "step {step}");
+        let Some(Value::List(got)) = got else { panic!() };
+        if !old {
+            assert!(got == new, "step {step} (kind {kind}): the edit as written");
+        }
+        model = got;
+        if step % 6 == 2 {
+            stale = model.clone();
+        }
+    }
+    assert!(at_window >= 20 && stale_edits >= 4, "{at_window} at their window, {stale_edits} stale");
+}
+
+// spec/data-model.md §6: an edit replacing a large item the list no longer holds (deleted
+// concurrently) changes nothing there; the commit links no tree written for the replacement.
+#[test]
+fn edit_of_gone_item_links_nothing_spec_dm_6() {
+    let mut p = peer(0);
+    let me = p.engine.me();
+    let (key, a) = (&common::LIST, ak("t:list.0"));
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    m.set(t, key, &Value::List(vec![common::s("a"), common::s("x"), common::s("b")])).unwrap();
+    p.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.op(t, key, PathOp { path: vec![], op: Op::Delete { at: 1, len: 1 } }).unwrap();
+    p.commit(m).unwrap().unwrap();
+    // an editor that still sees "x" replaces it by a large item, and edits "b"
+    let base = Value::List(vec![common::s("a"), common::s("x"), common::s("b")]);
+    let new = Value::List(vec![common::s("a"), Value::Str("large ".repeat(50_000)), common::s("c")]);
+    let mut m = Mutation::new();
+    m.op(t, key, PathOp { path: vec![], op: Op::Edit { base, new } }).unwrap();
+    let c = p.commit(m).unwrap();
+    let linked = c.map_or(0, |c| p.engine.package(&c).unwrap().unwrap().blobs.len());
+    let got = p.engine.get_full(&t, &a).unwrap();
+    let large = matches!(&got, Some(Value::List(l)) if l.iter().any(|v| matches!(v, Value::Str(s) if s.len() > 1000)));
+    assert!(large || linked == 0, "{linked} blobs linked for a value the list does not hold: {got:?}");
+}
+
+fn op_at(p: &mut Peer, t: osis_base::Tid, a: &Ak, path: Vec<PathSeg>, op: Op) -> bool {
+    let mut m = Mutation::new();
+    m.op(t, a, PathOp { path, op }).unwrap();
+    p.commit(m).unwrap().is_some()
+}
+
+// spec/crdt.md §5.5 (add of a live value writes nothing; remove resets its elements), §5.6
+// (remove and put by key), spec/data-model.md §6 (a set element or map key above
+// CHUNK_THRESHOLD is held as a link, equal by content hash): by value over 128 KiB, in small
+// and paged states, in the session that wrote it and in new ones.
+#[test]
+fn large_values_by_value_spec_crdt_5_5() {
+    let large = |c: &str| Value::Str(c.repeat(osis_base::format::CHUNK_THRESHOLD + 10));
+    let links = |v: &Value| match v {
+        Value::Set(s) => s.iter().filter(|x| matches!(x, Value::Link(_))).count(),
+        Value::Map(m) => m.keys().filter(|x| matches!(x, Value::Link(_))).count(),
+        _ => panic!("{v:?}"),
+    };
+    for n in [10i64, 2000] {
+        let mut p = peer(0);
+        let me = p.engine.me();
+        let a = ak("app:set.0");
+        let mut m = Mutation::new();
+        let t = p.engine.new_thing(&mut m, me);
+        let mut v: osis_base::ValueSet = (0..n).map(|i| Value::Str(format!("e{i}"))).collect();
+        v.insert(large("L"));
+        m.set(t, &a, &Value::Set(v)).unwrap();
+        p.commit(m).unwrap().unwrap();
+        assert!(!op_at(&mut p, t, &a, vec![], Op::Add(large("L"))), "n {n}: present, same session");
+        p.restart(0).unwrap();
+        assert!(!op_at(&mut p, t, &a, vec![], Op::Add(large("L"))), "n {n}: present, new session");
+        p.restart(0).unwrap();
+        assert!(op_at(&mut p, t, &a, vec![], Op::Remove(large("L"))), "n {n}: removed");
+        assert_eq!(links(&p.engine.get(&t, &a).unwrap().unwrap()), 0, "n {n}");
+        assert!(op_at(&mut p, t, &a, vec![], Op::Add(large("L"))), "n {n}: added again");
+        p.restart(0).unwrap();
+        assert!(op_at(&mut p, t, &a, vec![], Op::Remove(large("L"))), "n {n}: removed again");
+        assert_eq!(links(&p.engine.get(&t, &a).unwrap().unwrap()), 0);
+        // a map with a large key
+        let a = ak("app:map.0");
+        let mut m = Mutation::new();
+        let mut kv: osis_base::ValueMap = (0..n).map(|i| (Value::Int(i), Value::Int(i))).collect();
+        kv.insert(large("K"), Value::Int(-1));
+        m.set(t, &a, &Value::Map(kv)).unwrap();
+        p.commit(m).unwrap().unwrap();
+        p.restart(0).unwrap();
+        assert!(op_at(&mut p, t, &a, vec![PathSeg::Key(large("K"))], Op::Set(Value::Int(5))), "n {n}: put");
+        p.restart(0).unwrap();
+        assert_eq!(p.engine.get_at(&t, &a, &[PathSeg::Key(large("K"))]).unwrap(), Some(Value::Int(5)), "n {n}");
+        let got = p.engine.get(&t, &a).unwrap().unwrap();
+        assert_eq!((links(&got), matches!(&got, Value::Map(m) if m.len() == n as usize + 1)), (1, true), "n {n}: one entry");
+        assert!(op_at(&mut p, t, &a, vec![], Op::Remove(large("K"))), "n {n}: key removed");
+        assert_eq!(links(&p.engine.get(&t, &a).unwrap().unwrap()), 0, "n {n}");
+    }
+}
+
+static TEXTS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("write-text.osis", "revision 1; aspect w:text.0: text;\n");
+const TEXT_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("w:text.0", &TEXTS);
+
+// spec/crdt.md §5.7 (ops by index), §6.1 (a new insert lands right after its anchor), §4.6
+// (undo), §8: local inserts and deletes by index into a paged text, each in a new session, load a
+// few pages (resolved through the stored placement; an insert only its record's); undos of them, also in new sessions,
+// restore the text; reads by index and whole reads agree with a plain-string model throughout,
+// and edits by index go on after the undos.
+#[test]
+fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
+    let mut p = peer(0);
+    let me = p.engine.me();
+    let a = ak("w:text.0");
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    // history kept: only kept writes are undone (spec/commits.md §7)
+    crate::common::keep_in(&mut m, t, &crate::common::day_setting());
+    // 4-byte chars: the state is above PAGE_TARGET, so the text is paged
+    let mut model: Vec<char> = (0..20_000u32).map(|i| char::from_u32(0x1F600 + i % 64).unwrap()).collect();
+    m.set(t, &TEXT_AK, &Value::Str(model.iter().collect())).unwrap();
+    p.engine.commit(m).unwrap().unwrap();
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let mut r = |n: usize| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        (x % n.max(1) as u64) as usize
+    };
+    let mut done = Vec::new();
+    let mut session = 100;
+    let mut restart = |p: &mut Peer| {
+        session += 1;
+        p.restart(session).unwrap();
+        osis_base::costs::take();
+    };
+    for step in 0..12 {
+        restart(&mut p);
+        let before = model.clone();
+        let insert = step % 3 != 2;
+        let op = if !insert {
+            let at = r(model.len() - 10);
+            let len = 1 + r(8);
+            model.drain(at..at + len);
+            Op::Delete { at, len }
+        } else {
+            let at = r(model.len() + 1);
+            model.splice(at..at, "ab".chars());
+            Op::Insert { at, items: vec![Value::Str("ab".into())] }
+        };
+        let mut m = Mutation::new();
+        m.op(t, &TEXT_AK, PathOp { path: vec![], op }).unwrap();
+        done.push((p.engine.commit(m).unwrap().unwrap(), before));
+        let c = osis_base::costs::take();
+        let pages = c.iter().find(|c| c.0 == "state page load").map_or(0, |c| c.2);
+        // an insert: only the page its record goes to (its anchor from the placement, placed first
+        // among the anchor's children by the newest stamp)
+        assert!(pages <= if insert { 1 } else { 4 } && !c.iter().any(|c| c.0.starts_with("paged op whole")), "step {step}: {pages} pages loaded, {c:?}");
+        restart(&mut p);
+        let lo = r(model.len() - 50);
+        assert_eq!(p.engine.get_range(&t, &a, &[], lo..lo + 50).unwrap(), Some(Value::Str(model[lo..lo + 50].iter().collect())), "step {step}");
+    }
+    // undo the last edits (a delete, two inserts), newest first, each in a new session
+    for (id, before) in done.into_iter().rev().take(3) {
+        restart(&mut p);
+        p.engine.revert(&id).unwrap().unwrap();
+        model = before;
+    }
+    restart(&mut p);
+    assert_eq!(p.engine.get(&t, &a).unwrap(), Some(Value::Str(model.iter().collect())));
+    // edits by index go on: a read by index lays the placement out again, then through it
+    for step in 0..3 {
+        restart(&mut p);
+        assert_eq!(p.engine.get_range(&t, &a, &[], 0..10).unwrap(), Some(Value::Str(model[..10].iter().collect())));
+        restart(&mut p);
+        let at = r(model.len());
+        model.splice(at..at, "c".chars());
+        let mut m = Mutation::new();
+        m.op(t, &TEXT_AK, PathOp { path: vec![], op: Op::Insert { at, items: vec![Value::Str("c".into())] } }).unwrap();
+        p.engine.commit(m).unwrap().unwrap();
+        let c = osis_base::costs::take();
+        let pages = c.iter().find(|c| c.0 == "state page load").map_or(0, |c| c.2);
+        assert!(pages <= 4 && !c.iter().any(|c| c.0.starts_with("paged op whole")), "after undo, step {step}: {pages} pages loaded, {c:?}");
+    }
+    restart(&mut p);
+    assert_eq!(p.engine.get(&t, &a).unwrap(), Some(Value::Str(model.iter().collect())));
+}
+
+// spec/crdt.md §4.2 and §5.7 (`replace` and `remove_aspect` leave the old elements as bare
+// anchors), §6, §8: a paged text (80 KB, some 30 pages) replaced by another (its old records left bare, merged
+// into range records), then edited by index and read by range, each in a new session, agrees
+// with a plain-string model and with a whole read; after `remove_aspect` it reads absent, and a
+// new text over the twice-reset anchors edits and reads alike.
+#[test]
+fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
+    let mut p = peer(0);
+    let me = p.engine.me();
+    let a = ak("w:text.0");
+    let text = |n: u32, off: u32| -> Vec<char> { (0..n).map(|i| char::from_u32(0x1F600 + (i + off) % 64).unwrap()).collect() };
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    m.set(t, &TEXT_AK, &Value::Str(text(20_000, 0).into_iter().collect())).unwrap();
+    p.engine.commit(m).unwrap().unwrap();
+    let mut x = 0x2545_f491_4f6c_dd1du64;
+    let mut r = |n: usize| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        (x % n.max(1) as u64) as usize
+    };
+    let session = std::cell::Cell::new(200);
+    let restart = |p: &mut Peer| {
+        session.set(session.get() + 1);
+        p.restart(session.get()).unwrap();
+        osis_base::costs::take();
+    };
+    // pages loaded, and whether an op on the pages loaded gave up and loaded whole
+    let pages = || {
+        let c = osis_base::costs::take();
+        (c.iter().find(|c| c.0 == "state page load").map_or(0, |c| c.2), c.iter().any(|c| c.0.starts_with("paged op whole")))
+    };
+    let mut edits = |p: &mut Peer, model: &mut Vec<char>, what: &str| {
+        let mut loaded = 0;
+        for step in 0..8 {
+            restart(p);
+            let op = if step % 3 == 2 {
+                let at = r(model.len() - 10);
+                let len = 1 + r(8);
+                model.drain(at..at + len);
+                Op::Delete { at, len }
+            } else {
+                let at = r(model.len() + 1);
+                model.splice(at..at, "ab".chars());
+                Op::Insert { at, items: vec![Value::Str("ab".into())] }
+            };
+            let mut m = Mutation::new();
+            m.op(t, &TEXT_AK, PathOp { path: vec![], op }).unwrap();
+            p.engine.commit(m).unwrap().unwrap();
+            // the first edit after the reset finds no placement (laid out by the read after it)
+            let (n, gave_up) = pages();
+            assert!(step == 0 || n <= 4 && !gave_up, "{what} step {step}: {n} pages loaded");
+            loaded += n;
+            restart(p);
+            let lo = r(model.len() - 50);
+            assert_eq!(p.engine.get_range(&t, &a, &[], lo..lo + 50).unwrap(), Some(Value::Str(model[lo..lo + 50].iter().collect())), "{what} step {step}");
+        }
+        assert!(loaded > 0, "{what}: paged");
+        restart(p);
+        assert_eq!(p.engine.get(&t, &a).unwrap(), Some(Value::Str(model.iter().collect())), "{what}");
+    };
+    // a replace: the old elements bare under the new ones
+    restart(&mut p);
+    let mut model = text(20_000, 7);
+    let mut m = Mutation::new();
+    m.set(t, &TEXT_AK, &Value::Str(model.iter().collect())).unwrap();
+    p.engine.commit(m).unwrap().unwrap();
+    edits(&mut p, &mut model, "replace");
+    // remove_aspect: absent, then a new text over the twice-reset anchors
+    restart(&mut p);
+    let mut m = Mutation::new();
+    m.remove_aspect(t, &TEXT_AK).unwrap();
+    p.engine.commit(m).unwrap().unwrap();
+    restart(&mut p);
+    assert_eq!(p.engine.get(&t, &a).unwrap(), None);
+    assert_eq!(p.engine.get_range(&t, &a, &[], 0..10).unwrap(), None);
+    restart(&mut p);
+    let mut model = text(17_000, 3);
+    let mut m = Mutation::new();
+    m.set(t, &TEXT_AK, &Value::Str(model.iter().collect())).unwrap();
+    p.engine.commit(m).unwrap().unwrap();
+    edits(&mut p, &mut model, "after remove_aspect");
+}
+
+// spec/crdt.md §4.6 (restores the prior read; never wipes others' writes it has seen): a struct
+// aspect is present; one commit creates its map field (absent before) with entries sorting first;
+// many more entries follow, so the field is paged. In a new session the undo of the first commit
+// removes its entries only: the field reads the others, though the delta touches only its pages.
+#[test]
+fn undo_into_paged_field_keeps_later_entries_spec_crdt_4_6() {
+    let mut p = peer(0);
+    let me = p.engine.me();
+    let (key, a) = (&common::BOOK, ak("t:book.0"));
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    crate::common::keep_in(&mut m, t, &crate::common::day_setting());
+    m.op(t, key, PathOp { path: vec![PathSeg::Field(1)], op: Op::Set(Value::Str("n".into())) }).unwrap();
+    p.commit(m).unwrap().unwrap();
+    let put = |m: &mut Mutation, k: String, v: String| m.op(t, key, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(Value::Str(k))], op: Op::Set(Value::Str(v)) }).map(|_| ()).unwrap();
+    let mut m = Mutation::new();
+    for i in 0..100 {
+        put(&mut m, format!("a{i:04}"), "A".repeat(300));
+    }
+    let first = p.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    let mut later = osis_base::ValueMap::new();
+    for i in 0..400 {
+        let (k, v) = (format!("k{i:04}"), format!("{i}-{}", "v".repeat(300)));
+        put(&mut m, k.clone(), v.clone());
+        later.insert(Value::Str(k), Value::Str(v));
+    }
+    p.commit(m).unwrap().unwrap();
+    p.restart(150).unwrap();
+    p.engine.revert(&first).unwrap().unwrap();
+    p.restart(151).unwrap();
+    assert_eq!(p.engine.get_at(&t, &a, &[PathSeg::Field(0)]).unwrap(), Some(Value::Map(later)));
+}

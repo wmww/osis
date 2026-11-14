@@ -243,12 +243,11 @@ impl Core {
     /// `alts`: the live entries of history keys holding several (each tried).
     pub(crate) fn ingest_secrets(&mut self, actor: &Tid, secrets: &Secrets, read: SecretsRead<'_>, alts: &HistoryAlts) -> bool {
         let (epochs, untaken) = self.ingest_view(actor, secrets, read, alts);
-        for r in untaken {
-            self.waits.untaken(*actor, r);
+        if untaken {
+            self.waits.untaken(*actor);
         }
         let Some(epochs) = epochs else { return false };
         self.ix.secrets.insert(*actor, epochs);
-        self.role_changed();
         self.read_again(actor);
         true
     }
@@ -257,8 +256,8 @@ impl Core {
     /// read what is under it are fetched again (`Waits::awaits_reading`).
     pub(crate) fn read_again(&mut self, actor: &Tid) {
         let again = self.waits.read_again(actor);
-        if let Some(ch) = &mut self.changed {
-            ch.wakes.woken.extend(again);
+        if let Some(ch) = &mut self.wakes {
+            ch.woken.extend(again);
         }
     }
 
@@ -276,9 +275,9 @@ impl Core {
         ROLES.iter().all(|r| e.role(*r).held().next().is_none()) && e.holds_any()
     }
 
-    /// What `ingest_secrets` would make of `actor`'s epochs, when it changes them, and the roles
-    /// whose secrets an applied box gave but `rotation::may_take` kept out.
-    pub(crate) fn ingest_view(&self, actor: &Tid, secrets: &Secrets, read: SecretsRead<'_>, alts: &HistoryAlts) -> (Option<ActorEpochs>, Vec<Role>) {
+    /// What `ingest_secrets` would make of `actor`'s epochs, when it changes them, and whether an
+    /// applied box gave secrets `rotation::may_take` kept out.
+    pub(crate) fn ingest_view(&self, actor: &Tid, secrets: &Secrets, read: SecretsRead<'_>, alts: &HistoryAlts) -> (Option<ActorEpochs>, bool) {
         let before = self.ix.secrets.get(actor).cloned();
         let unchecked = match read {
             SecretsRead::Pending(u) => Some(u),
@@ -286,7 +285,7 @@ impl Core {
         };
         // a bounded number of actors held through reading-only secrets alone
         if unchecked.is_some() && self.reading_full(actor) {
-            return (None, Vec::new());
+            return (None, false);
         }
         let mut epochs = before.clone().unwrap_or_default();
         // an epoch whose history key the read stands for names and lists only what its live
@@ -327,19 +326,15 @@ impl Core {
         // a pending one's are a grant's still to be judged, read until it is
         // (`keys::forget_unchecked`). What it keeps out is opened again once the node's roles
         // give it (`flows::retake`): a box may apply before the grant that makes it ours.
-        let mut untaken = Vec::new();
-        if unchecked.is_none() {
+        let mut untaken = false;
+        if unchecked.is_none() && !crate::rotation::may_take(self, actor) {
             for r in ROLES {
-                if !crate::rotation::may_take(self, actor, r) {
-                    let was = before.as_ref().map(|b| b.role(r).clone()).unwrap_or_default();
-                    // listed only for a secret kept out (epochs observed without one are
-                    // no access, and listing them would list every actor the node cannot read)
-                    let new = epochs.role(r);
-                    if new.epochs().any(|(e, _)| new.reading_secret(e).is_some() && was.reading_secret(e).is_none()) {
-                        untaken.push(r);
-                    }
-                    *epochs.role_mut(r) = was;
-                }
+                let was = before.as_ref().map(|b| b.role(r).clone()).unwrap_or_default();
+                // listed only for a secret kept out (epochs observed without one are no access,
+                // and listing them would list every actor the node cannot read)
+                let new = epochs.role(r);
+                untaken |= new.epochs().any(|(e, _)| new.reading_secret(e).is_some() && was.reading_secret(e).is_none());
+                *epochs.role_mut(r) = was;
             }
         }
         let held_any = epochs.holds_any();
@@ -446,7 +441,6 @@ impl Core {
     pub(crate) fn observe_keys(&mut self, actor: &Tid, keys: &Keys) {
         if keys.sync.is_some() || keys.read.is_some() || keys.write.is_some() || keys.admin.is_some() {
             self.ix.delete_hints.remove(actor);
-            self.role_changed();
         }
     }
 }

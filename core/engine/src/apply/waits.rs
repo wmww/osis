@@ -1,7 +1,7 @@
 //! What brings back what the node could not judge (notes/expiry-creation-design.md §3). Nothing
-//! is kept of an unjudgeable part or commit but the reading-only secrets its boxes open; node-sync
+//! is kept of an unjudgeable part or commit but the reading-only secrets its boxes open; sync
 //! fetches it again when what it awaits arrives. This module holds what names those fetches:
-//! `Changed::wakes` and the applied commits with a slot
+//! `Wakes` and the applied commits with a slot
 //! waiting (`Awaiting`, derived from held headers).
 
 use super::Reason;
@@ -45,13 +45,13 @@ pub(crate) struct Waits {
     /// (`Engine::copy_stale`), by those things' secret actor: fetched again once the node holds
     /// secrets of it (`read_again`). In memory: a restart fetches every missing part again.
     unread: BTreeMap<Tid, BTreeSet<CommitId>>,
-    /// Roles of actors whose applied boxes gave secrets the node's roles did not give then
+    /// Actors whose applied boxes gave secrets the node's roles did not give then
     /// (`rotation::may_take`): taken again once they do (`flows::retake`). In memory: the open's
     /// `reopen_all` (`take_account`) refuses and lists them again.
-    untaken: BTreeMap<Tid, BTreeSet<osis_base::Role>>,
+    untaken: BTreeSet<Tid>,
     /// Entries `retaken` took off `untaken` in the transaction running: a rollback lists them
     /// again (`Core::rollback_to`; the secrets they gave are rolled back), a commit forgets them.
-    retaking: Vec<(Tid, BTreeSet<osis_base::Role>)>,
+    retaking: Vec<Tid>,
 }
 
 impl Waits {
@@ -144,20 +144,20 @@ impl Waits {
         self.unread.entry(actor).or_default().insert(id);
     }
 
-    /// An applied box of `actor` gave role `r`'s secrets the node's roles did not give.
-    pub fn untaken(&mut self, actor: Tid, r: osis_base::Role) {
-        self.untaken.entry(actor).or_default().insert(r);
+    /// An applied box of `actor` gave secrets the node's roles did not give.
+    pub fn untaken(&mut self, actor: Tid) {
+        self.untaken.insert(actor);
     }
 
-    /// The actors with an untaken role `may` allows.
-    pub fn untaken_due(&self, may: impl Fn(&Tid, osis_base::Role) -> bool) -> Vec<Tid> {
-        self.untaken.iter().filter(|(a, rs)| rs.iter().any(|r| may(a, *r))).map(|(a, _)| *a).collect()
+    /// The untaken actors `may` allows.
+    pub fn untaken_due(&self, may: impl Fn(&Tid) -> bool) -> Vec<Tid> {
+        self.untaken.iter().filter(|a| may(a)).copied().collect()
     }
 
-    /// `actor`'s untaken roles, taken off the list (opened again).
+    /// `actor`, taken off the untaken list (opened again).
     pub fn retaken(&mut self, actor: &Tid) {
-        if let Some(rs) = self.untaken.remove(actor) {
-            self.retaking.push((*actor, rs));
+        if self.untaken.remove(actor) {
+            self.retaking.push(*actor);
         }
     }
 
@@ -169,9 +169,7 @@ impl Waits {
     /// The transaction (or a step of it) rolled back: what `retaken` took is listed again (a
     /// superset is harmless: `flows::retake` judges each entry again).
     pub fn retake_rolled_back(&mut self) {
-        for (a, rs) in self.retaking.drain(..) {
-            self.untaken.entry(a).or_default().extend(rs);
-        }
+        self.untaken.extend(self.retaking.drain(..));
     }
 
     /// The commits waiting for the node to read `actor` (`awaits_reading`), taken.
@@ -199,7 +197,7 @@ impl Waits {
     }
 }
 
-/// Names what the budget and new records free: `Changed::wakes`. The start of
+/// Names what the budget and new records free: `Wakes`. The start of
 /// `Engine::reexamine`.
 pub(crate) fn wake(core: &mut Core) {
     let records = core.ix.held.take_records();
@@ -244,11 +242,11 @@ pub(crate) fn wake(core: &mut Core) {
         }
     }
     core.redeliver.extend(again);
-    if let Some(ch) = &mut core.changed {
-        ch.wakes.woken.extend(undropped);
-        ch.wakes.records.extend(records);
-        ch.wakes.moved |= !moved.is_empty();
-        ch.wakes.reread.extend(reread);
+    if let Some(ch) = &mut core.wakes {
+        ch.woken.extend(undropped);
+        ch.records.extend(records);
+        ch.moved |= !moved.is_empty();
+        ch.reread.extend(reread);
     }
 }
 

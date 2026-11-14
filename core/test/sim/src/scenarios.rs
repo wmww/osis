@@ -4,71 +4,22 @@
 
 use crate::dice::Dice;
 use crate::harness::{ClockSpec, Config, Failure, NetFaults, Report, Res, Seeds, Sim, Weights};
-use crate::net::scenarios as net;
-use crate::net::ephemeral as net_ephemeral;
-use crate::net::{adversary, library, skew};
 use crate::workload;
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Role, Value};
-use osis_node::{Ingested, Mutation, Reason};
+use osis_engine::{Ingested, Mutation, Reason};
 use osis_schema::RawKey;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 pub type Scenario = fn(Seeds) -> Res<Report>;
 
-/// Every scenario by name: phase A (commits engine to engine), then phase B (sync engines and
-/// hosts, `crate::net`).
+/// Every scenario by name: commits carried engine to engine.
 pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("two_nodes", two_nodes),
     ("three_random", three_random),
     ("crash_restart", crash_restart),
     ("drift_parks", drift_parks),
     ("revoke_while_writing", revoke_while_writing),
-    ("two_nodes_host", net::two_nodes_host),
-    ("three_accounts_two_hosts", net::three_accounts_two_hosts),
-    ("removed_writer", net::removed_writer),
-    ("compaction", net::compaction),
-    ("reader_relays", net::reader_relays),
-    ("grant_to_group", net::grant_to_group),
-    ("stranded_reseal", net::stranded_reseal),
-    ("host_loses_data", net::host_loses_data),
-    ("offline_rotation", net::offline_rotation),
-    ("restore_backup", net::restore_backup),
-    ("grant_lost_on_crash", net::grant_lost_on_crash),
-    ("large_edits", net::large_edits),
-    ("work_sets", net::work_sets),
-    ("member_churn", net::member_churn),
-    ("coverer_revoked", net::coverer_revoked),
-    ("snapshot_rights", net::snapshot_rights),
-    ("no_host", net::no_host),
-    ("no_host_chain", net::no_host_chain),
-    ("revocation_bob", library::revocation_bob),
-    ("revocation_carol", library::revocation_carol),
-    ("demotion_synced", library::demotion_synced),
-    ("demotion_unsynced", library::demotion_unsynced),
-    ("link_redeem", library::link_redeem),
-    ("link_race", library::link_race),
-    ("chat_join_leave", library::chat_join_leave),
-    ("team_reads_member_thing", library::team_reads_member_thing),
-    ("folders", library::folders),
-    ("bundles", library::bundles),
-    ("disappearing", library::disappearing),
-    ("purge_on_replace", library::purge_on_replace),
-    ("purge_tombstones", library::purge_tombstones),
-    ("purge_falls", library::purge_falls),
-    ("purge_falls_churn", library::purge_falls_churn),
-    ("concurrent_writers", library::concurrent_writers),
-    ("evil_host", adversary::evil_host),
-    ("evil_host_drops", adversary::evil_host_drops),
-    ("removed_replayer", adversary::removed_replayer),
-    ("malformed_blobs", adversary::malformed_blobs),
-    ("deposit_flood", adversary::deposit_flood),
-    ("equivocating_writer", adversary::equivocating_writer),
-    ("tombstone_liar", adversary::tombstone_liar),
-    ("future_format", skew::future_format),
-    ("newer_schema", skew::newer_schema),
-    ("ephemeral", net_ephemeral::ephemeral),
-    ("ephemeral_capped", net_ephemeral::ephemeral_capped),
 ];
 
 /// Scenarios a known engine bug breaks, with the issue: the sweep skips them unless asked;

@@ -314,7 +314,6 @@ fn reopen_fallen(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     // its `label.0` parts come back with the rest
     unkeep_labels(tx, t)?;
     // reads of the thing and its roles move, and whatever waited on the thing is judged again
-    tx.core.role_changed();
     tx.core.ix.held.record_back(*t);
     Ok(())
 }
@@ -469,7 +468,6 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
         // the destroyed actors on its authority paths, kept for it alone, go in
         // `apply_destructions`'s loop: its record and edges going unname them (`Held::take_unnamed`)
     }
-    tx.core.role_changed();
     Ok(held_changed || !keep)
 }
 
@@ -532,7 +530,6 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
             tx.put_commit(&c, &blob, &m, Shred::No, None)?;
         }
         tx.core.put_meta(c, m);
-        tx.core.mark_changed(c);
     }
     // as a node that never held it: no per-aspect row of it stays
     for ak in &aks {
@@ -566,7 +563,7 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 /// and 3; acting for it: level 2, the author chain, spec/crypto.md §7): a freed link of its thing
 /// or author (judged here), or, under a label node-sync syncs, an entry of such a commit whose
 /// sections list a part on it (any, of one acting for it) or a delete of one within its tombstone
-/// (judged by node-sync, `SyncEngine::drop_destroyed_secrets`, when the thing is noted here, after
+/// (judged by sync, `Engine::drop_destroyed_secrets`, when the thing is noted here, after
 /// each start, and when such an entry, delete or freed link goes). Nothing else needs them: the
 /// thing reads as absent, nothing is written on it or for it (a valid write acting for it is on a
 /// thing that needs it), and a dependent reaching this node later brings what reads its parts
@@ -699,7 +696,6 @@ impl crate::engine::Engine {
                 }
                 if tx.core.ix.secrets.remove(&t).is_some() {
                     tx.core.touch();
-                    tx.core.role_changed();
                 }
                 tx.txn.remove_local(&[b"k/".as_slice(), t.as_bytes()].concat(), Shred::Yes)?;
             }

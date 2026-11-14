@@ -1,4 +1,4 @@
-//! The sims' one reachability model (`World`, `NetSim`): who can reach whom through a `peer://`
+//! The sims' one reachability model: who can reach whom through a `peer://`
 //! address. Not a packet machine (that is osis-transport's `nat`, whose `punch_opens` rule this
 //! applies): each node sits on LAN segments and has a public address, a NAT, or no uplink, and
 //! `route` answers from that alone, with the caller's partitions, whether some item of a dialed

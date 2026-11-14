@@ -43,22 +43,18 @@ pub struct Options {
     pub disappear: Option<Duration>,
     /// A kicked participant retains a read-only copy, unless the kick says otherwise.
     pub retain_copies: bool,
-    /// Whom the chat syncs with; empty: this node's saved peers. A peer that reads it syncs
-    /// it; another must admit it by its sync ID or admit anyone.
-    pub peers: Vec<osis::Address>,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { name: String::new(), purge: PurgeBy::AuthorOrAdmin, edit: Some(EditMode::Purge), disappear: None, retain_copies: true, peers: Vec::new() }
+        Options { name: String::new(), purge: PurgeBy::AuthorOrAdmin, edit: Some(EditMode::Purge), disappear: None, retain_copies: true }
     }
 }
 
 /// A new chat, this account its first admin, its settings written before anyone is granted:
 /// every message kept for good (expiry ends a disappearing one), replacements refused when
 /// editing is off, who may delete a message. One commit makes it whole (record, `retention^.0`,
-/// settings), then `sync`: a failure there leaves a whole chat on this node alone, granted to
-/// nobody; make another. Changing a setting later writes `retention^.0` whole; a participant who
+/// settings). Changing a setting later writes `retention^.0` whole; a participant who
 /// has not seen it writes as before (its messages keep the expiry they were written with).
 pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     let purge = match o.purge {
@@ -74,7 +70,6 @@ pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     w.at(c, RETENTION).set(&setting)?;
     w.at(c, SETTINGS).set(&schema::Settings { name: o.name.clone(), edit: o.edit.clone().unwrap_or(EditMode::Purge), purge })?;
     w.commit()?;
-    db.sync(c, &o.peers)?;
     Ok(c)
 }
 

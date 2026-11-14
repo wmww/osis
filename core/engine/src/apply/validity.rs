@@ -1145,7 +1145,6 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         }
         m.valid = now;
         tx.core.index_validity(&id);
-        tx.core.mark_changed(id);
     }
     drop(judge);
     // an own write of the current sessions fell: later writes go under fresh ones, past the hole
@@ -1166,7 +1165,6 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     // what its body judged goes with it (`reopen`): judged again by the next pass
     crate::retention::valid_again(tx, &back)?;
     for k in &flipped {
-        tx.core.mark_aspect_changed(&k.0, &k.1);
         // a flip may uncover a leftover: covered once the aspect is quiet (spec/sync-compaction.md §1)
         crate::retention::compact::Trigger::stirred(tx, k);
     }

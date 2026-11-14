@@ -12,12 +12,11 @@ use crate::error::{Error, Result};
 use crate::handle::{Inner, Osis, ReadOnly};
 use std::borrow::Borrow;
 use crate::read::{AspectRef, Reader, Stamp, ak_of, lenient};
-use crate::sources::Source;
 use crate::watch::{Delivery, Filter, Subscription, lock};
 use osis_base::{Ak, Tid, Ts, Value};
 use osis_commit::Kind;
-use osis_node::engine::listing::{CommitRow, PartBody};
-use osis_node::undo::Reverted;
+use osis_engine::engine::listing::{CommitRow, PartBody};
+use osis_engine::undo::Reverted;
 use osis_schema::{AspectKey, SignalKey, ValueKey};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Weak;
@@ -83,9 +82,9 @@ pub struct CommitPage {
     /// More commits may lie that way: past `limit`, a page's cap or the read limit.
     pub more: bool,
     /// Past the last commit there is nothing this node knows of. `false`: a sync carrying the
-    /// address is mid-pass with a connected node or this node never finished one there, so commits
-    /// may yet arrive anywhere, older ones too: not fetched, not absent. `true` says nothing of
-    /// nodes not connected, and stays true offline.
+    /// address has not caught up, so commits may yet arrive anywhere, older ones too: not fetched,
+    /// not absent. `true` says nothing of nodes not connected, and stays true offline (always, until
+    /// sync is built).
     pub complete: bool,
 }
 
@@ -222,16 +221,6 @@ impl Commit {
         })
     }
 
-    /// A commit read from another node (`port::codec`), parts and all.
-    pub(crate) fn of_parts(stamp: Stamp, kind: CommitKind, reverts: Option<CommitId>, reverted_by: Vec<CommitId>, in_effect: bool, parts: Vec<(Tid, Ak, Part<Value>)>) -> Commit {
-        Commit { stamp, kind, reverts, reverted_by, in_effect, parts, report: Reporter::default() }
-    }
-
-    /// `of_parts`' arguments back (`port::codec`).
-    pub(crate) fn raw_parts(&self) -> &[(Tid, Ak, Part<Value>)] {
-        &self.parts
-    }
-
     /// Reports mismatches at `db`'s node (a commit read through another node).
     pub(crate) fn reporting(mut self, db: &ReadOnly) -> Commit {
         self.report = Reporter(Some(std::sync::Arc::downgrade(&db.inner)));
@@ -290,12 +279,12 @@ struct Relations {
 }
 
 impl Relations {
-    fn reverters(&mut self, e: &osis_node::Engine, c: CommitId) -> Vec<CommitId> {
+    fn reverters(&mut self, e: &osis_engine::Engine, c: CommitId) -> Vec<CommitId> {
         self.reverters.entry(c).or_insert_with(|| e.reverters(&c.0).into_iter().map(CommitId).collect()).clone()
     }
 
     /// No revert in effect reverts it (reverts are newer than what they revert, so this ends).
-    fn in_effect(&mut self, e: &osis_node::Engine, c: CommitId) -> bool {
+    fn in_effect(&mut self, e: &osis_engine::Engine, c: CommitId) -> bool {
         if let Some(b) = self.in_effect.get(&c) {
             return *b;
         }
@@ -380,10 +369,6 @@ impl ReadOnly {
 
     fn target(&self, scope: &Scope, redo: bool) -> Result<Option<Commit>> {
         self.track_commits(&Address::Writes(scope.clone()), None)?;
-        if let Source::Node(r) = self.source_scope(Some(scope))? {
-            let m = if redo { crate::port::method::REDO_TARGET } else { crate::port::method::UNDO_TARGET };
-            return Ok(crate::port::codec::of::<Option<Commit>>(r.call(m, vec![crate::port::codec::v(scope)])?)?.map(|c| c.reporting(self)));
-        }
         let Some(c) = self.target_id(scope, redo)? else { return Ok(None) };
         self.commit_here(c)
     }
@@ -394,7 +379,7 @@ impl ReadOnly {
     pub(crate) fn commit_told_here(&self, a: &Address, id: CommitId, fired: Option<CommitRow>) -> Result<Option<Commit>> {
         let (mat, actor) = (self.inner.limit, self.acting);
         let c = self.locked(|l| {
-            let mut r = Reader { e: l.engine(), limit: mat, actor };
+            let mut r = Reader { e: &mut l.engine, limit: mat, actor };
             // a group the caller may not read names nothing (`scope_aspects`)
             if let Address::Writes(Scope::Group(g)) = a
                 && r.hidden(*g)
@@ -428,19 +413,13 @@ impl ReadOnly {
     /// Commit `id` as listed at `a` now, wherever it is read; `None` when it is not listed there.
     fn listed_commit(&self, a: &Address, id: CommitId) -> Result<Option<Commit>> {
         self.track_commits(a, Some(id))?;
-        match self.source_address(a)? {
-            Source::Node(r) => self.node_listed_commit(&r, a, id),
-            Source::Local => self.commit_told_here(a, id, None),
-        }
+        self.commit_told_here(a, id, None)
     }
 }
 
 impl Osis {
     /// Calls `f` for each commit that reads otherwise at `a`, wherever it is read.
-    fn on_commits(&self, a: Address, mut f: crate::port::client::CallbackOf<CommitEvent>) -> Result<Subscription> {
-        if let Source::Node(r) = self.source_address(&a)? {
-            return self.node_on_commits(&r, a, f);
-        }
+    fn on_commits(&self, a: Address, mut f: crate::watch::CallbackOf<CommitEvent>) -> Result<Subscription> {
         // the dispatcher's handle acts for no one: read as this one does
         let acting = self.acting;
         Ok(self.subscribe(Filter::Commits(a.clone()), false, move |_| {
@@ -458,7 +437,6 @@ impl Osis {
                     }
                 }
                 Delivery::Reread => f(db, CommitEvent::Reread),
-                Delivery::Moved => f(db, CommitEvent::Ended(crate::sources::moved())),
                 _ => {}
             })
         }))
@@ -475,27 +453,18 @@ impl Osis {
     /// it. `None` when there is none, `NotUndoable` when it cannot be reverted (nothing older is
     /// undone instead).
     pub fn undo(&self, scope: &Scope) -> Result<Option<Commit>> {
-        if let Source::Node(r) = self.source_write_scope(scope)? {
-            return Ok(crate::port::codec::of::<Option<Commit>>(r.call_once(crate::port::method::UNDO, vec![crate::port::codec::v(scope)])?)?.map(|c| c.reporting(self)));
-        }
         self.step(scope, false)
     }
 
     /// Redoes this actor's newest undo in effect in `scope`, unless a new commit of this actor
     /// came after it there: reverts the undo. `None` when there is none.
     pub fn redo(&self, scope: &Scope) -> Result<Option<Commit>> {
-        if let Source::Node(r) = self.source_write_scope(scope)? {
-            return Ok(crate::port::codec::of::<Option<Commit>>(r.call_once(crate::port::method::REDO, vec![crate::port::codec::v(scope)])?)?.map(|c| c.reporting(self)));
-        }
         self.step(scope, true)
     }
 
     /// Reverts any held commit or revert, durable or ephemeral, this node may write (an admin
     /// reverting someone else's).
     pub fn revert(&self, id: CommitId) -> Result<Commit> {
-        if let Source::Node(r) = self.source_write_commit(id.0)? {
-            return crate::port::codec::of::<Commit>(r.call_once(crate::port::method::REVERT, vec![crate::port::codec::v(&id)])?).map(|c| c.reporting(self));
-        }
         let _g = lock(&self.inner.undo);
         self.revert_one(id)
     }
@@ -512,9 +481,7 @@ impl Osis {
         let blocked = |reason| Error::NotUndoable { commit: target, reason };
         let (mat, actor) = (self.inner.limit, self.acting);
         let c = self.locked(|l| {
-            // what the revert writes is still this engine's (a move since the source was decided)
-            self.guard_commit(l, target.0)?;
-            let e = l.engine();
+            let e = &mut l.engine;
             let c = target.0;
             let h = e.header(&c).filter(|h| self.acting.is_none_or(|a| h.aspects.iter().any(|x| e.readable_by(&a, &x.tid)))).ok_or_else(|| Error::Invalid("unknown commit".into()))?;
             if h.kind != Kind::Content {
@@ -525,7 +492,7 @@ impl Osis {
                 None => e.revert_commit(c, me)?,
             };
             match r {
-                Reverted::Written(w) => written_in(&mut Reader { e: l.engine(), limit: mat, actor }, w, me),
+                Reverted::Written(w) => written_in(&mut Reader { e: &mut l.engine, limit: mat, actor }, w, me),
                 Reverted::Superseded => Err(blocked(NotUndoableReason::Superseded)),
                 Reverted::NotKept => Err(blocked(NotUndoableReason::NotKept)),
             }
@@ -537,7 +504,7 @@ impl Osis {
 /// Commit `id` read in `r`, every listed part the reader may read; `None` when not held.
 fn commit_in(r: &mut Reader<'_>, id: CommitId) -> Result<Option<Commit>> {
     let actor = r.actor;
-    let shown = move |e: &mut osis_node::Engine, t: &Tid| actor.is_none_or(|a| e.readable_by(&a, t));
+    let shown = move |e: &mut osis_engine::Engine, t: &Tid| actor.is_none_or(|a| e.readable_by(&a, t));
     let limit = r.limit;
     match r.e.commit_row(&id.0, &shown, limit)? {
         Some(row) => commit_of(r, &mut Relations::default(), row, limit).map(Some),
@@ -547,7 +514,7 @@ fn commit_in(r: &mut Reader<'_>, id: CommitId) -> Result<Option<Commit>> {
 
 /// The commit a write just made, as a listing then shows it; one nobody holds (an ephemeral
 /// signal's) with no parts: no listing shows it.
-pub(crate) fn written_in(r: &mut Reader<'_>, w: osis_node::Written, actor: Tid) -> Result<Commit> {
+pub(crate) fn written_in(r: &mut Reader<'_>, w: osis_engine::Written, actor: Tid) -> Result<Commit> {
     let id = CommitId(w.id);
     if let Some(c) = commit_in(r, id)? {
         return Ok(c);
@@ -631,10 +598,7 @@ impl crate::handle::ReadOnly {
             _ => None,
         };
         self.track_commits(a, only)?;
-        match self.source_address(a)? {
-            Source::Node(r) => self.node_listing(&r, a, q),
-            Source::Local => self.listing_here(a, q, usize::MAX),
-        }
+        self.listing_here(a, q, usize::MAX)
     }
 
     /// `target`'s commit at this engine.
@@ -643,7 +607,7 @@ impl crate::handle::ReadOnly {
         let Some(f) = self.pick(found, redo) else { return Ok(None) };
         let c = f.id;
         self.locked(|l| {
-            let e = l.engine();
+            let e = &mut l.engine;
             let blocked = |reason| Error::NotUndoable { commit: c, reason };
             let r = match self.acting {
                 Some(a) => e.check_revertible_as(c.0, a),
@@ -652,7 +616,7 @@ impl crate::handle::ReadOnly {
             match r {
                 Ok(true) => Ok(Some(c)),
                 Ok(false) => Err(blocked(NotUndoableReason::Superseded)),
-                Err(osis_node::Error::NotKept(_)) => Err(blocked(NotUndoableReason::NotKept)),
+                Err(osis_engine::Error::NotKept(_)) => Err(blocked(NotUndoableReason::NotKept)),
                 Err(x) => Err(x.into()),
             }
         })
@@ -664,14 +628,6 @@ impl crate::handle::ReadOnly {
         Ok(self.read_local(|r| commit_in(r, id))?.map(|c| c.reporting(self)))
     }
 
-    /// Where calls at `a` go.
-    pub(crate) fn source_address(&self, a: &Address) -> Result<Source> {
-        match a {
-            Address::Writes(s) => self.source_scope(Some(s)),
-            Address::Fired(t, _) | Address::Versions(t, _, _) => Ok(self.source(*t)),
-        }
-    }
-
     /// A page of the commits listed at `a` at this engine, at most `budget` bytes of bodies.
     pub(crate) fn listing_here(&self, a: &Address, q: &CommitQuery, budget: usize) -> Result<CommitPage> {
         let aks = self.address_aspects(a)?;
@@ -680,9 +636,9 @@ impl crate::handle::ReadOnly {
         let limit = q.limit.unwrap_or(COMMIT_PAGE);
         let (cut, limit) = (limit > COMMIT_PAGE, limit.min(COMMIT_PAGE));
         self.locked(|l| {
-            let complete = a.things().into_iter().all(|t| crate::share::fetched(l, t));
-            let mut r = Reader { e: l.engine(), limit: mat, actor };
-            let shown = move |e: &mut osis_node::Engine, t: &Tid| actor.is_none_or(|a| e.readable_by(&a, t));
+            let complete = true;
+            let mut r = Reader { e: &mut l.engine, limit: mat, actor };
+            let shown = move |e: &mut osis_engine::Engine, t: &Tid| actor.is_none_or(|a| e.readable_by(&a, t));
             let (mut commits, mut more, mut used, mut from) = (Vec::new(), false, 0usize, q.from.into());
             let mut rel = Relations::default();
             // a fire's versions: each read as written, on the one aspect `aks` holds (none when the
@@ -697,12 +653,12 @@ impl crate::handle::ReadOnly {
                     None => r.e.places(&aks, from, 64),
                 };
                 let Some(last) = places.last() else { break };
-                from = if q.from.newer() { osis_node::engine::listing::CommitFrom::After(*last) } else { osis_node::engine::listing::CommitFrom::Before(*last) };
+                from = if q.from.newer() { osis_engine::engine::listing::CommitFrom::After(*last) } else { osis_engine::engine::listing::CommitFrom::Before(*last) };
                 for p in places {
-                    drop(osis_node::costs::span("listing: place walked"));
+                    drop(osis_base::costs::span("listing: place walked"));
                     let row = match &versions {
                         Some((t, k, _)) => {
-                            drop(osis_node::costs::span("listing: commit read"));
+                            drop(osis_base::costs::span("listing: commit read"));
                             match r.e.version_row(&p.id, t, k, &shown, budget)? {
                                 Some(row) if row.parts.iter().any(|x| x.tid == *t && x.ak == *k) => row,
                                 _ => continue,
@@ -710,7 +666,7 @@ impl crate::handle::ReadOnly {
                         }
                         None if !r.e.listed_at(&p.id, &aks)? => continue,
                         None => {
-                            drop(osis_node::costs::span("listing: commit read"));
+                            drop(osis_base::costs::span("listing: commit read"));
                             match r.e.commit_row(&p.id, &shown, budget)? {
                                 Some(row) => row,
                                 None => continue,
@@ -818,8 +774,8 @@ impl crate::handle::ReadOnly {
     fn scope_aspects(&self, s: &Scope) -> Result<Vec<(Tid, Ak)>> {
         // acting as an actor: of what it may read only
         let acting = self.acting;
-        let shown = |e: &osis_node::Engine, t: &Tid| acting.is_none_or(|a| e.readable_by(&a, t));
-        let things = |keep: &dyn Fn(&osis_node::Engine, &Tid) -> bool| -> Result<Vec<(Tid, Ak)>> {
+        let shown = |e: &osis_engine::Engine, t: &Tid| acting.is_none_or(|a| e.readable_by(&a, t));
+        let things = |keep: &dyn Fn(&osis_engine::Engine, &Tid) -> bool| -> Result<Vec<(Tid, Ak)>> {
             self.engine(|e| {
                 // an ephemeral aspect of a durable thing (a cursor) is in scope only when named
                 e.all_aspects().map(|v| v.into_iter().filter(|(t, a)| !a.ephemeral() && !a.signal() && keep(e, t) && shown(e, t)).collect::<Vec<(Tid, Ak)>>())

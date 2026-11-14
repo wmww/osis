@@ -60,7 +60,12 @@ pub fn name(db: &osis::ReadOnly, c: Tid) -> Result<String> {
 
 /// The name messages go out under: the profile's `name.0`, else `OSIS_CHAT_NAME`.
 pub fn my_name(db: &Osis) -> Result<Option<String>> {
-    let own = if db.saved_peers()?.is_empty() { None } else { db.at(db.profile()?, NAME).get()?.filter(|n| !n.trim().is_empty()) };
+    // the profile comes with the contact card, which needs sync
+    let own = match db.profile() {
+        Ok(p) => db.at(p, NAME).get()?.filter(|n| !n.trim().is_empty()),
+        Err(osis::Error::NotBuilt) => None,
+        Err(e) => return Err(e),
+    };
     Ok(own.or_else(|| std::env::var("OSIS_CHAT_NAME").ok().filter(|n| !n.trim().is_empty())))
 }
 

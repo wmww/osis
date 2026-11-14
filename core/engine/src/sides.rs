@@ -194,7 +194,6 @@ fn feed(core: &mut Core) {
     let trust = core.sides.trust();
     let changed = core.timelines.change().set_trust(&core.ix.held, trust);
     core.timelines_changed(changed);
-    core.role_changed();
 }
 
 /// Writes the record when the running transaction changed the sides.

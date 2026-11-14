@@ -661,7 +661,7 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
 
     /// `get_in` whose debug comparison runs `fresh`, which gives what `f` gives and changes
     /// nothing: for an `f` with effects where its answer is not kept (one that writes when
-    /// something is due and fails so, `SyncEngine::rotations`).
+    /// something is due and fails so).
     pub fn get_checked_in<C, E>(ctx: &mut C, memo: impl Fn(&C) -> &Self, k: &K, f: impl Fn(&mut C) -> Result<V, E>, fresh: impl Fn(&mut C) -> Result<V, E>) -> Result<V, E> {
         if let Some((value, deps, check)) = memo(ctx).kept(k) {
             Self::compare(ctx, &memo, check, &value, &fresh, "a read no stamp covers");

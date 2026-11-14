@@ -5,8 +5,8 @@
 
 use crate::common::TestWrites as _;
 use crate::common::*;
-use osis::internals::node::costs;
-use osis::{Body, CommitEvent, CommitFrom, CommitId, Error, Osis, Tid, Value};
+use osis::internals::costs;
+use osis::{Body, CommitEvent, CommitFrom, CommitId, Osis, Tid, Value};
 use std::sync::mpsc::{Receiver, channel};
 
 fn log() -> osis::Ak {
@@ -20,7 +20,6 @@ fn key() -> osis::DynamicAspectKey {
 fn s(x: &str) -> Value {
     Value::Str(x.into())
 }
-
 
 /// A thing keeping its signal's fires for good.
 fn thing(db: &Osis) -> Tid {
@@ -146,32 +145,6 @@ fn a_purge_of_a_fire_takes_its_versions_spec_commits_5() {
     assert!(versions(&db, t, o).iter().all(|(_, b)| matches!(b, Body::Purged { .. })));
 }
 
-// spec/commits.md §5 Signals, notes/api-design.md (rights are checked locally before signing): a
-// writer replaces only its own listed, valid fire that replaces none itself, of a durable signal,
-// and none under a rule refusing replacements; anything else is `Invalid` and writes nothing
-#[test]
-fn a_replacement_nobody_would_honor_is_refused_spec_commits_5() {
-    let (mut w, alice, bob, b, g) = crate::listing::alice_admits_bob();
-    alice.grant(g, b, osis::Role::Write, Default::default()).unwrap();
-    w.run();
-    let hers = fire(&alice, g, "hers");
-    w.run();
-    let refused = |db: &Osis, o: CommitId| matches!(replace(db, g, o, "x"), Err(Error::Invalid(_)));
-    assert!(refused(&bob, hers), "another actor's fire");
-    let v = replace(&alice, g, hers, "edited").unwrap();
-    assert!(refused(&alice, v), "a replacement: replace the fire");
-    assert!(refused(&alice, "07".repeat(32).parse::<CommitId>().unwrap()), "not held");
-    let mut x = alice.write();
-    assert!(matches!(x.at(g, osis::DynamicAspectKey::untyped(ak("t:ping+~0"))).replace(hers, &s("x")).and_then(|_| x.commit().map(|_| ())), Err(Error::Invalid(_))), "an ephemeral signal");
-    let rules = osis::core::RetentionSetting { rules: [(log(), osis::core::RetentionEntry { history: Some(osis::History::FOREVER), expires: None, refuse_replace: true })].into(), ..Default::default() };
-    alice.commit_with(|x| x.at(g, osis::core::RETENTION).set(&rules)).unwrap();
-    assert!(refused(&alice, hers), "the thing refuses replacements");
-    w.run();
-    for db in [&alice, &bob] {
-        assert_eq!(listed(db, g), vec![(hers, held("edited"), Some(v))]);
-    }
-}
-
 // spec/commits.md §5 Signals, notes/api-design.md (fast by construction): a page and a quote cost
 // the same however many messages and edits there are: bodies read and versions judged are flat
 // in n and in the edits of each message
@@ -207,25 +180,3 @@ fn a_page_and_a_quote_are_flat_in_edits_spec_commits_5() {
     assert_eq!(small, count(30, 30));
 }
 
-// notes/client-port.md (Commits), spec/commits.md §5 Signals: through a handle connected to the
-// node, a replacement, `commit`, `versions`, the edited place and a purge's versions read as at
-// the node
-#[test]
-fn a_connected_handle_replaces_and_reads_as_the_node_spec_commits_5() {
-    let d = crate::port::Dir::new();
-    let sock = d.0.join("n.sock");
-    let net = osis_transport::Net::new(0);
-    let n = crate::port::node(&osis::MemStore::new(), &net, &sock, true);
-    let c = crate::port::connect(&sock);
-    let t = thing(&c);
-    let o = fire(&c, t, "one");
-    let v = replace(&c, t, o, "two").unwrap();
-    for db in [&n, &c] {
-        assert_eq!(listed(db, t), vec![(o, held("two"), Some(v))]);
-        assert_eq!(db.at(t, key()).commit(o).unwrap().map(|x| part(&x, t, &log()).body), Some(held("two")));
-        assert_eq!(db.at(t, key()).commit(v).unwrap(), None);
-        assert_eq!(versions(db, t, o), vec![(o, held("one")), (v, held("two"))]);
-    }
-    commit_with(&c, |w| w.at(t, key()).purge(osis::Purge::Commit(o)));
-    assert!(versions(&n, t, o).iter().all(|(_, b)| matches!(b, Body::Purged { .. })));
-}

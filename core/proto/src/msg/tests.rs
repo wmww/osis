@@ -26,7 +26,7 @@ fn every_kind_is_in_the_decode_table() {
 #[test]
 fn exact_arity_spec_wire_11_2() {
     use crate::api::{Outcome, Payload};
-    let max = crate::window::SMALL_REPLY as u64;
+    let max = crate::msg::SMALL_REPLY as u64;
     let v = || Value::Int(5);
     let mut ms: Vec<(String, Message)> = messages().into_iter().map(|(n, m)| (n.to_string(), m)).collect();
     ms.extend(

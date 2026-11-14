@@ -8,8 +8,8 @@ use crate::workload;
 use osis_base::{Classified, Clock, CommitId, ErrorClass, ManualClock, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::SeededRng;
-use osis_node::local_peer::{Package, Peer};
-use osis_node::{Engine, Ingested, Mutation};
+use osis_engine::local_peer::{Package, Peer};
+use osis_engine::{Engine, Ingested, Mutation};
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot};
@@ -21,8 +21,7 @@ use std::sync::Arc;
 pub const T0: u64 = 1_700_000_000_000;
 const TRACE: usize = 40;
 
-/// What a scenario run is a function of: the seed of its calm setup (a sweep's seeds share one,
-/// `NetSim::setup`) and its own seed, which drives everything after the setup.
+/// What a scenario run is a function of: the seed of its calm setup (a sweep's seeds share one) and its own seed, which drives everything after the setup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Seeds {
     pub setup: u64,
@@ -156,7 +155,7 @@ pub struct Report {
     /// BLAKE3 of every node's final held commits and reads and, on a net sim, the hosts' logs
     /// and `parts`: replays alike to the bit.
     pub digest: [u8; 32],
-    /// What ended where, each named and free of blob IDs (`NetSim::finish`): what two runs must
+    /// What ended where, each named and free of blob IDs : what two runs must
     /// share even if a node's random stream served its seals in another order.
     pub parts: std::collections::BTreeMap<String, [u8; 32]>,
 }
@@ -181,14 +180,14 @@ pub struct Sim {
     views: BTreeMap<usize, check::View>,
 }
 
-fn boot(seed: u64, t: WallMs) -> osis_node::Result<(Peer, Faults)> {
+fn boot(seed: u64, t: WallMs) -> osis_engine::Result<(Peer, Faults)> {
     let faults = Faults::new();
     let clock = Arc::new(ManualClock::new(t));
     let backend = MemoryBackend::with_faults(faults.clone());
     let root = MemoryRoot::with_faults(faults.clone());
     let c: Arc<dyn Clock> = clock.clone();
     let blob_disk = (MemoryBackend::with_faults(faults.clone()), MemoryRoot::with_faults(faults.clone()));
-    let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_node::local_peer::blob_area(&blob_disk, seed)?, osis_node::Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
+    let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_engine::local_peer::blob_area(&blob_disk, seed)?, osis_engine::Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
     engine.create_account(&[])?;
     engine.take_wakes();
     let events = engine.subscribe();
@@ -253,7 +252,7 @@ impl Sim {
 
     /// An engine error on node `i`: a crash takes it down; a planned failed write this step
     /// failed the call, the node stays up; anything else fails the run.
-    fn engine_err(&mut self, i: usize, what: &str, e: osis_node::Error) -> Res<()> {
+    fn engine_err(&mut self, i: usize, what: &str, e: osis_engine::Error) -> Res<()> {
         let n = self.node(i)?;
         if n.faults.crashed() {
             n.up = false;

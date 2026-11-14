@@ -47,12 +47,6 @@ impl Engine {
         osis_commit::Form::Session(self.core.nonce_as(&self.me(), self.core.session.nonce))
     }
 
-    /// Whether changes wait for node-sync: commits marked changed (memory commits applied,
-    /// `Core::changed`) or ephemeral signal writes not sent (`take_signals`).
-    pub fn has_memory_changes(&self) -> bool {
-        self.core.changed.as_ref().is_some_and(|c| !c.is_empty()) || !self.eph.signals.is_empty()
-    }
-
     /// Writes `m` as one commit, durable or memory. `Clash` when the ops ask for both (a new
     /// thing's record is durable, so a `+` write on a thing created in the same batch is one), or
     /// signals beside either. A delete (`Mutation::deleting`) purges its things' ephemeral state

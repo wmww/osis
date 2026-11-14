@@ -92,8 +92,7 @@ pub trait SyncState {
 pub struct Done {
     pub commits: Vec<CommitId>,
     pub deliveries: Vec<Delivery>,
-    /// A self-removal: drop the secrets this node lost once the commit is placed (node-sync's
-    /// `carry_out` arms that; the lost-access trigger leaves such losses, an app driving the
+    /// A self-removal: drop the secrets this node lost once the commit is placed (sync arms that; the lost-access trigger leaves such losses, an app driving the
     /// engine alone calls `Engine::drop_lost_secrets`).
     pub drop_lost: bool,
 }
@@ -341,7 +340,6 @@ pub(crate) fn secrets_alts(tx: &mut Tx<'_>, actor: &Tid) -> Result<osis_keys::Hi
 
 /// Persists the epochs held for `actor` (the `k/` record node-core loads).
 pub(crate) fn save_epochs(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
-    tx.core.role_changed();
     if let Some(e) = tx.core.ix.secrets.get(actor) {
         let b = crate::engine::secrets::encode_epochs(e);
         tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
@@ -384,9 +382,9 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
 pub(crate) fn retake(tx: &mut Tx<'_>) -> Result<()> {
     let core = &*tx.core;
     osis_base::costs::count("retake: calls", 1);
-    let due = core.waits.untaken_due(|a, r| {
+    let due = core.waits.untaken_due(|a| {
         osis_base::costs::count("retake: judged", 1);
-        crate::rotation::may_take(core, a, r)
+        crate::rotation::may_take(core, a)
     });
     for a in due {
         tx.core.waits.retaken(&a);
@@ -446,9 +444,8 @@ impl Engine {
         let id = Identity::from_seed(seed);
         let t = id.tid();
         self.core.key_actors.insert(t, Arc::new(id));
-        self.core.role_changed();
-        if let Some(ch) = &mut self.core.changed {
-            ch.wakes.reopen_awaits = true;
+        if let Some(ch) = &mut self.core.wakes {
+            ch.reopen_awaits = true;
         }
         self.run(reopen_all)?;
         Ok(t)
@@ -468,7 +465,6 @@ impl Engine {
     /// Forgets a held key actor (a redeemer discards the seed, spec/permissions.md §7).
     pub fn drop_key_actor(&mut self, tid: &Tid) {
         self.core.key_actors.remove(tid);
-        self.core.role_changed();
     }
 
     /// Commits `m` in a running transaction.

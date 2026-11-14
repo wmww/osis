@@ -27,8 +27,7 @@ pub enum Error {
     /// The newest commit in an undo or redo scope cannot be undone (its body was dropped, or a
     /// register it wrote is no longer its winner). Nothing older is undone instead.
     NotUndoable { commit: CommitId, reason: NotUndoableReason },
-    /// These groups cannot catch up, and waiting would not help: stranded, or, for a wait that needs
-    /// a saved peer to confirm anything, with none (`wait_synced`, `set_role`, `group_source`).
+    /// These groups cannot catch up, and waiting would not help (`wait_synced`, `group_source`).
     Unsynced { groups: Vec<Tid> },
     /// What was asked cannot be done as asked: a malformed argument (value, link, card, path, op,
     /// retention), or writes that cannot share a commit. The text says which.
@@ -52,6 +51,9 @@ pub enum Error {
     Refused(String),
     /// The node is closed.
     Closed,
+    /// Sync is not built yet: every call that needs another node, or a connection to one, fails
+    /// this way.
+    NotBuilt,
 }
 
 osis_base::impl_error!(Error {
@@ -70,6 +72,7 @@ osis_base::impl_error!(Error {
     Unsupported(m) => ("not available on this handle: {m}"),
     Refused(m) => ("refused by the node: {m}"),
     Closed => ("node closed"),
+    NotBuilt => ("sync is not built yet"),
 });
 
 /// A result whose failure is an `Error`.
@@ -82,9 +85,9 @@ impl From<PathError> for Error {
 }
 
 #[doc(hidden)]
-impl From<osis_node::Error> for Error {
-    fn from(e: osis_node::Error) -> Error {
-        use osis_node::Error as N;
+impl From<osis_engine::Error> for Error {
+    fn from(e: osis_engine::Error) -> Error {
+        use osis_engine::Error as N;
         match e {
             N::Permission { tid } => Error::Permission { tid, needs: Role::Write },
             N::UnknownThing(tid) => Error::UnknownThing { tid },

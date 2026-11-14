@@ -1,7 +1,7 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Watches, subscriptions, the dispatcher, diagnostics, two nodes (notes/api.md Watching,
 //! Diagnostics, Footguns closed).
 //! spec: none (API surface, notes/api.md).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common::watched;
 use crate::common::TestWrites as _;
@@ -469,7 +469,7 @@ fn a_parked_commit_is_told_once_spec_versioning_2() {
         }
     }).unwrap();
     let r = b.engine(|e| e.ingest(&bytes, pk.blobs.clone()).unwrap());
-    let osis::internals::node::Ingested::Parked(id) = r else { panic!("{r:?}") };
+    let osis::internals::engine::Ingested::Parked(id) = r else { panic!("{r:?}") };
     assert!(matches!(recv(&diags), osis::Diagnostic::Parked { commit: Some(c), .. } if c == osis::CommitId::from(id)));
     b.engine(|e| e.ingest(&bytes, pk.blobs.clone()).unwrap());
     b.engine(|e| e.reexamine().unwrap());
@@ -563,7 +563,7 @@ fn path_listener_mismatch_reads_none() {
 // read loads stay flat as the map grows tenfold, where a whole-aspect watch's grow with it.
 #[test]
 fn path_listeners_one_write_one_call_n_reads() {
-    use osis::internals::node::costs;
+    use osis::internals::costs;
     let mut c = cfg(0, MemStore::new(), &clock());
     c.app.dispatch = osis::Dispatcher::Pump(Arc::new(|| {}));
     let db = osis::internals::create(c).unwrap();
@@ -618,46 +618,6 @@ fn path_listeners_one_write_one_call_n_reads() {
     // 500 entries fit unpaged; 5000 take about 76 pages
     assert!(whole_large > 10 * whole_small.max(1), "the counter sees a whole read: {whole_small} -> {whole_large}");
     assert!(large <= small + 1, "a path read loads its pages only: {small} -> {large}");
-}
-
-// notes/listener-design.md (step 5), spec/permissions.md §5.1: a write turning invalid with no new
-// commit calls the listener at its path, `Derived(ValidityChanged)`, and not the one beside it.
-#[test]
-fn path_listener_hears_a_validity_flip() {
-    let (mut w, alice, mut others, ids) = crate::common::people(1);
-    let (bob, b) = (others.remove(0), ids[0]);
-    let g = alice
-        .commit_with(|x| {
-            let g = x.create()?;
-            x.group(alice.home()).add(osis::Member::Item(g))?;
-            Ok(g)
-        })
-        .unwrap();
-    alice.sync(g, &[]).unwrap();
-    alice.grant(g, b, osis::Role::Write, Default::default()).unwrap();
-    w.run();
-    for r in bob.invite_requests().unwrap_or_default() {
-        let _ = bob.accept_invite(r);
-    }
-    w.run();
-    bob.commit_with(|x| x.at(g, untyped("t:m.0")).path(osis::p!["seen"]).set(&Value::Int(1))).unwrap();
-    w.run();
-    w.set_online(&bob, false);
-    w.advance(1000);
-    alice.set_role(g, b, None, osis::SetRoleOpts { retain_copy: Some(true) }).unwrap();
-    w.run();
-    bob.commit_with(|x| x.at(g, untyped("t:m.0")).path(osis::p!["late"]).set(&Value::Int(2))).unwrap();
-    let (_l, late) = at_path(&bob, g, "t:m.0", osis::p!["late"]);
-    let (_s, seen) = at_path(&bob, g, "t:m.0", osis::p!["seen"]);
-    bob.settle();
-    assert_eq!(late.try_iter().map(|x| x.0).collect::<Vec<_>>(), vec![Ok(Some(Value::Int(2)))]);
-    assert_eq!(seen.try_iter().map(|x| x.0).collect::<Vec<_>>(), vec![Ok(Some(Value::Int(1)))]);
-    w.set_online(&bob, true);
-    w.advance(60_000);
-    w.run();
-    bob.settle();
-    assert_eq!(late.try_iter().collect::<Vec<_>>(), vec![(Ok(None), Origin::Derived(DerivedFrom::ValidityChanged))]);
-    assert!(seen.try_iter().next().is_none(), "the entry beside it");
 }
 
 // notes/listener-design.md (step 5), spec/commits.md §5, §6: an expiry and a purge change a value
