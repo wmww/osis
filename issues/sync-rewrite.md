@@ -20,6 +20,12 @@ Tess's direction, which governs every choice below:
 - No **saved peer**, **label hosts**, **admission**, **keep list**; no **person** for the account actor; no **device** for a node.
 - Not "two kinds of node". The design has one kind of node and, per sync ID, two ways a node holds it: **read** (it holds the read secret: full engine judgement) and **kept unread** (it holds only the sync secret: it keeps ciphertext, relays it, verifies signatures and its own grant and removal, and judges nothing else).
 
+## Building it (Tess)
+- Build in the right abstractions, e.g. for different network transports or ways of using them: sync never cares how a peer is reached.
+- Efficiency is structural, designed in from the start, never profiling and shortcutting hot paths. Agents told to optimize used to add makeshift caches here and there; the real fix was a larger memoization system used everywhere. Each change does work in proportion to what changed.
+- Tests: the trade-off is coverage against runtime, not against writing time (agents write tests cheaply; tests run on every change). Build the harness so the marginal test is cheap, which buys more coverage.
+- Watch for architectural problems and antipatterns; fix them or record them for study. Nothing is right because it exists; a rule that stays has its reason documented.
+
 ## Scope
 **Deleted (Phase 3):** `core/node/src/sync/` (about 30 files) and everything in `core/node` that only serves it; the stores and hub in `core/host` (rebuilt as the node's store per sync ID); the session and message layers of `core/proto` that the new design does not keep; the node test net (`core/node/tests/it/net`, its `Host` type and `add_host`), the node sync tests (about 85 files, 1,500 tests), the sync-shaped osis tests, and the sim's network model and scenarios (`core/test/sim/src/net`, `scenarios.rs`, `world.rs` keeper copies). Old sync TLA models stay only if Phase 1 reuses them.
 
