@@ -7,3 +7,4 @@ order::held_set_decides_plain OSIS_ORDER_START=539131766525 issues/order-require
 order::held_set_decides_plain OSIS_ORDER_START=632680797673 issues/order-required-floor-plain.md held_set_decides: none of \d+ Undo steps made a commit
 runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issues/paired-peer-runtime-flake.md Unsynced \{ groups
 props::settled_histories_keep_their_laws_large_spec_commits_5 OSIS_HELD_START=387315248891 issues/held-model-until-no-deadline.md seed \d+: output changed before its first deadline
+runtime::redeem_in_process_spec_permissions_7 - issues/paired-peer-runtime-flake.md Unsynced
