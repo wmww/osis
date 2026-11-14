@@ -984,3 +984,29 @@ fn a_rotation_waiting_for_a_head_names_nothing_until_held_spec_permissions_5_5()
     lp.peers[3].engine.rebuild_index().unwrap();
     assert_eq!(d0.first_diff(&lp.peers[3].engine.index_digest()), None, "rebuilt");
 }
+
+// spec/permissions.md §5.5 (Nothing waits for a thing list), spec/requirements.md (outsiders
+// never learn the account's devices): an outsider that holds the account's rotation before its
+// thing list reads the account's earlier grant and write as unlisted; once the list arrives, without
+// the removal, the grant counts again and the write's body,
+// dropped while it did not count, is asked for again (`Changed::undropped`) and reads once offered
+#[test]
+fn a_rotations_late_list_restores_the_accounts_earlier_word_at_an_outsider_spec_permissions_5_5() {
+    let (mut lp, a, t) = world(3, 2);
+    let sib = write(&mut lp, 1, t, "sibling");
+    lp.sync_all().unwrap();
+    let o = lp.peers[2].engine.me();
+    let done = remove(&mut lp, 0, a.devices, 1);
+    let pk = lp.peers[0].engine.package(&done.commits[1]).unwrap().unwrap();
+    lp.advance(1);
+    lp.peers[2].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    assert_eq!(lp.peers[2].engine.core.role_now(&o, &t), None, "the grant at the closed epoch is unlisted");
+    let _ = lp.peers[2].engine.take_changed();
+    assert_eq!(lp.peers[2].engine.hold_lists(&pk.lists[0]).unwrap(), crate::flows::ListsHeld::Held);
+    assert!(lp.peers[2].engine.take_changed().undropped.contains(&sib), "the write is asked for again");
+    lp.peers[2].reexamine().unwrap();
+    assert_eq!(lp.peers[2].engine.core.role_now(&o, &t), Some(Role::Write), "the grant counts by the list");
+    send(&mut lp, 1, 2, &[sib]);
+    assert_eq!(read(&mut lp, 2, t), Some(Value::Str("sibling".into())));
+    assert!(lp.peers[2].engine.header(&done.commits[0]).is_none(), "the outsider never holds the removal");
+}
