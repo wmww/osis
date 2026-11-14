@@ -556,7 +556,8 @@ fn role_commit_of_junk_holds_nothing_spec_commits_4() {
     assert!(p.engine.commit_ids().contains(&id));
 }
 
-// spec/commits.md §2, §4: a delta on an aspect of the wrong storage class is never applied, by anyone:
+// spec/commits.md §2 (class from the key), §4: a writer writes none, a receiver drops it alone: a
+// delta on an aspect of the wrong storage class is never applied, by anyone:
 // the rest applies whether the part came or not.
 #[test]
 fn wrong_class_delta_is_not_waited_for_spec_commits_4() {

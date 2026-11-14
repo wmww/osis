@@ -563,8 +563,8 @@ fn an_unsynced_write_goes_out_before_the_copy_goes_spec_sync_set_3() {
     assert!(!a.status().unwrap().groups.contains_key(&t), "synced no more");
 }
 
-// spec/permissions.md §3 (removing a node: a departure rotates its account's roles), spec/sync-inbox.md
-// §2: an outside reader of a group the account writes reads the account's writes from before and
+// spec/permissions.md §3, spec/sync-inbox.md §2: removing a node is a departure rotating its
+// account's roles; an outside reader of a group the account writes reads the account's writes from before and
 // after one of the account's nodes is removed (Fathom's report on main: it read none of them).
 #[test]
 #[ignore = "issues/outsider-reads-nothing-after-node-removal.md"]

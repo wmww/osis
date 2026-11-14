@@ -157,8 +157,8 @@ fn a_node_keeping_s_unread_yields_nothing_forbidden_to_its_devices_attacker_spec
     }
 }
 
-// spec/wire.md §5 (padding: Padmé), spec/sync-ids.md §5 (what a node keeping S unread may learn:
-// padded sizes): every blob node 1 holds under S has a Padmé length of padded plaintext.
+// spec/wire.md §5 (padding: Padmé), spec/requirements.md Data a node cannot read (it may
+// learn padded sizes): every blob node 1 holds under S has a Padmé length of padded plaintext.
 #[test]
 fn blobs_kept_unread_have_padme_lengths_spec_wire_5() {
     let (w, _, s) = scenario();

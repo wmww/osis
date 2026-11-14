@@ -2102,3 +2102,24 @@ fn an_accepted_forgers_dial_hint_hides_no_granter_spec_sync_inbox_2() {
     assert_eq!(r.sync_ids.len(), 2, "the user accepted the forger's sync ID too");
     assert!(r.dials.contains(&granter) && r.dials.contains(&forger), "{:?}", r.dials);
 }
+
+// spec/sync-ids.md §2 (home sync id): a commit that gives a thing role secrets of its own also
+// creates its sync ID and records it in `sync.0`, in that one commit. A thing given secrets of its
+// own, by `give_own_secrets` or by its first grant, has its home sync ID, and the first commit
+// with a `secrets.0` part on it carries a `sync.0` write too.
+#[test]
+fn own_secrets_and_the_home_sync_id_come_in_one_commit_spec_sync_ids_2() {
+    for by_grant in [false, true] {
+        let (mut lp, ps) = people(2);
+        let t = thing_of(&mut lp, 0, ps[0]);
+        let e = &mut lp.peers[0].engine;
+        assert_eq!(e.home_sync_id(&t).unwrap(), None, "a plain thing has none");
+        let done = if by_grant { e.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap() } else { e.give_own_secrets(&t).unwrap() };
+        assert!(e.home_sync_id(&t).unwrap().is_some(), "a home sync ID (by grant: {by_grant})");
+        let secrets = Ak::new("secrets.0").unwrap();
+        let sync = ct::SYNC.name();
+        // the first commit with a secrets.0 part on t gives them (later ones box holders)
+        let first = done.commits.iter().map(|c| e.header(c).unwrap()).find(|h| h.aspects.iter().any(|a| a.tid == t && a.ak == secrets)).expect("a commit gives t its secrets");
+        assert!(first.aspects.iter().any(|a| a.ak == sync), "the commit giving t secrets writes sync.0 (by grant: {by_grant})");
+    }
+}

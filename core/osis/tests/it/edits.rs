@@ -180,3 +180,19 @@ fn a_page_and_a_quote_are_flat_in_edits_spec_commits_5() {
     assert_eq!(small, count(30, 30));
 }
 
+
+// spec/commits.md §5 (fire kept): a writer writes no fire the setting it holds would not keep.
+// On a thing with no setting for the signal a fire is refused and nothing is written; on one
+// keeping it, the same fire is listed.
+#[test]
+fn a_fire_no_setting_keeps_is_refused_spec_commits_5() {
+    let db = db(0);
+    let bare = db.commit_with(|w| w.create()).unwrap();
+    let mut w = db.write();
+    let r = w.at(bare, key()).fire(&s("unkept")).and_then(|_| w.commit());
+    assert!(r.is_err(), "a fire nothing keeps: {r:?}");
+    assert!(listed(&db, bare).is_empty(), "nothing written");
+    let kept = thing(&db);
+    fire(&db, kept, "kept");
+    assert_eq!(listed(&db, kept).len(), 1);
+}

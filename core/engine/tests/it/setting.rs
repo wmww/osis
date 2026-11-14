@@ -256,8 +256,9 @@ fn dropped_before_a_late_extension_is_not_fetched_spec_commits_5() {
     assert!(!listed(&mut lp.peers[0], &v1, d));
 }
 
-// spec/commits.md §5 Purge on replace: a setting arriving late at a writer holding a body it
-// puts under purge on replace makes the writer cover it (one snapshot), and the body goes
+// spec/commits.md §5 (purge on replace cover; purge on replace drop): a setting arriving late at a
+// writer holding a body it puts under purge on replace makes the writer cover it (one snapshot),
+// and the body goes
 #[test]
 fn late_purge_on_replace_setting_makes_holders_cover_spec_commits_5() {
     let (mut lp, d) = setup();
@@ -349,7 +350,8 @@ fn a_part_keeps_by_its_own_aspect_spec_commits_5() {
     }
 }
 
-// spec/requirements.md Purge on replace, spec/commits.md §5 Keep bounds (each delta kept by its
+// spec/requirements.md Purge on replace, spec/commits.md §5 (purge on replace drop): every node
+// holding it drops the body once it holds the cover; §5 Keep bounds (each delta kept by its
 // own aspect's setting alone): one commit writes a kept aspect and a purge-on-replace one in one
 // body; replacing both, the writer covers the purge-on-replace part and it goes at once at every
 // node holding it, while the kept part stays an hour from its own replacement.
