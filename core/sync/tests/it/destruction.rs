@@ -92,19 +92,6 @@ fn a_write_after_the_destruction_counts_nowhere_spec_commits_5() {
     assert!(!w.engine(0).commit_ids().contains(&late), "node 0 applied a write after the destruction");
 }
 
-// spec/commits.md §5 (Destruction: a release request destroys things as storage reclaim; a
-// destroyed thing reads as absent to every read and write), spec/permissions.md §6: node 0's
-// release of t reaches node 2, which reads it absent.
-#[test]
-fn a_released_thing_reads_absent_at_every_node_spec_commits_5() {
-    let (mut w, t, _) = three();
-    w.write(0, |e| e.release(&[t])).unwrap().expect("a release request");
-    w.run();
-    for i in [0, 2] {
-        gone(&mut w, i, t);
-    }
-}
-
 // spec/commits.md §5 (Destruction: once no request is in force and nothing needs it, it keeps
 // nothing, and every entry under its own sync IDs is must-not-hold), spec/sync-judgement.md §5
 // (Emptying: but the destroying requests, which leave at their expiry): past a purge's window
@@ -127,16 +114,22 @@ fn a_destroyed_things_sync_id_empties_but_its_request_past_its_window_spec_sync_
     assert!(w.engine(0).destruction(&t).unwrap().is_some_and(|d| d.requests == vec![q]), "the purge is a destroying request");
 }
 
-// spec/sync-judgement.md §5 (Emptying): the requests leave at their expiry; it forgets the sync
-// IDs once its sources are heard out with nothing known there and none keeps S unread (it
-// registers the closing step there, §6 Closes), only then the thing's secrets: released, past
-// the request's expiry S empties at every store and, past the deletes' tombstones, node 0
-// forgets S and t's secrets, and node 1 (kept unread) forgets S and its account's record of it.
+// spec/commits.md §5 (Destruction: a release request destroys things as storage reclaim; a
+// destroyed thing reads as absent to every read and write), spec/permissions.md §6: node 0's
+// release of t reaches node 2, which reads it absent. spec/sync-judgement.md §5 (Emptying): the
+// requests leave at their expiry; it forgets the sync IDs once its sources are heard out with
+// nothing known there and none keeps S unread (it registers the closing step there, §6 Closes),
+// only then the thing's secrets: past the request's expiry S empties at every store and, past
+// the deletes' tombstones, node 0 forgets S and t's secrets, and node 1 (kept unread) forgets S
+// and its account's record of it.
 #[test]
-fn a_released_things_sync_id_empties_and_is_forgotten_spec_sync_judgement_5() {
+fn a_released_thing_reads_absent_and_its_sync_id_is_forgotten_spec_sync_judgement_5() {
     let (mut w, t, s) = three();
     w.write(0, |e| e.release(&[t])).unwrap().expect("a release request");
     w.run();
+    for i in [0, 2] {
+        gone(&mut w, i, t);
+    }
     w.advance(ROLE_KEEP_MS + 60_000);
     w.run();
     for i in 0..3 {

@@ -199,7 +199,7 @@ ClaimSet := [[claim+], {entry: box}]
 - `claims_hash` = BLAKE3(canonical bytes of the step's `ClaimSet`). `claim`: 32 bytes, a claim public key or static entry (spec/sync-ids.md §2), the count a power of two from 1 to `MAX_CLAIMS`, order as the registrar wrote it. The map holds an entry box (§7) per static entry listed, keyed by the 32-byte entry; every key appears in the claims.
 - **Claim key pair**: the Ed25519 key pair with seed `kdf("sync claim", DH(step private key, M's X25519 key), sync_id || step_key)`.
 - **Static entry**: `BLAKE3("osis v1 static claim" || sync_id || pk)` with `pk` the key actor's raw Ed25519 signing key.
-- **Closing step** (spec/sync-judgement.md §6 Closes): a child step whose `step_key` and `claims_hash` are 32 zero bytes each and whose four public keys are its parent's, signed as any child step (no genuine step has that `step_key`: a fresh X25519 key is never zero); it is carried with no claim set, and nothing is registered after it.
+- **Closing step** (spec/sync-judgement.md §6 Closes): a child step whose `step_key` is 32 zero bytes (no genuine step has it: a fresh X25519 key is never zero). Its `claims_hash` is 32 zero bytes and its four public keys are its parent's (Register refuses one that is not, code 2); it is signed as any child step, carried with no claim set; nothing is registered after it.
 - `sync.0` stores a step as the canonical bytes of `Step` and its claim set as those of `ClaimSet` (`step_record`, spec/data-model.md §9).
 
 ## 9. Inbox blobs
@@ -304,10 +304,10 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Digest** (spec/sync-opens.md §3): `digest` 32 bytes. **Members**: at most 4096 sync IDs, `more` true on every page but the last; sent only after a Digest that differs. Neither is answered.
 - **Resume** (spec/sync-opens.md §3): dialer to listener, after the dialer's `Proved`, at most one per connection (a second, or one before a Prove, is answered Error 2; a listener the dialer proved no actor to, keeping no record for this connection, answers Error 1, and the dialer sends NoRecord). `nonce` 32 random bytes; each `tag` 32 bytes, at most `MAX_RESUME_TAGS` of them, as many as fit one message. **Resumed**: the listener's own `nonce`, and `tag` when it holds a listed record.
 - **Register**: replies Ok (also when the step already is the head), or an Error without the head (spec/sync-ids.md §6):
-  - 2 when the step's sync ID is not the message's or the claim set does not hash to `claims_hash`;
+  - 2 when the step's sync ID is not the message's, the claim set does not hash to `claims_hash`, or a closing step under the head is malformed (§8);
   - 1 for a genesis step that does not verify;
   - 13 for a child step of an unknown sync ID;
-  - 9 for a step that is not a valid child of the head, a genesis step included while the node holds a step of the sync ID;
+  - 9 for a step that is not a valid child of the head, a genesis step included while the node holds a step of the sync ID, and any step while the head is a closing step;
   - 12 when that genesis step does not fit a storage cap (a child step that does not fit: spec/sync-ids.md §6);
   - 4 when registrations are rate-limited;
   - 14 when the node reads the sync ID or does not sync it.

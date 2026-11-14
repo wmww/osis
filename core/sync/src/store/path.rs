@@ -157,9 +157,9 @@ pub(crate) fn drop_claims(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId
 /// Register (spec/sync-ids.md §6, spec/wire.md §11.2 Register): 2 a step of another sync ID or a
 /// claim set of another hash; 14 a sync ID not kept unread in the sync set; into an empty path a
 /// genesis step that verifies (else 1; a child step 13); else the head again (0, nothing changes)
-/// or a child of the head that is no closing step (else 9; a closing step not bearing its
-/// parent's keys 2); within the caps, a child past them without its claim set,
-/// and past them even so at most once per `register_every_ms`.
+/// or a child of the head that is no closing step (else 9; a malformed closing step 2); within
+/// the caps, a child past them without its claim set, and past them even so at most once per
+/// `register_every_ms`.
 pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, policy: &Policy, s: &SyncId, step: &Step, claims: Option<&ClaimSet>, last_past_cap: Option<WallMs>) -> Result<(Code, bool)> {
     if step.label != *s || claims.is_some_and(|c| c.hash() != step.claims_hash) {
         return Ok((Code::MALFORMED, false));
@@ -173,9 +173,9 @@ pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, policy: &Poli
         None if step.verify_genesis().is_err() => return Ok((Code::REFUSED, false)),
         None => {}
         Some((_, h)) if h.id() == step.id() => return Ok((Code::OK, false)),
-        // nothing is registered after a closing step, and one bears its parent's keys (spec/wire.md §8)
+        // nothing is registered after a closing step, and one is as `Step::closing` makes it (spec/wire.md §8)
         Some((_, h)) if h.is_closing() || step.verify_child(&h).is_err() => return Ok((Code::NOT_HEAD_KEY, false)),
-        Some((_, h)) if step.is_closing() && step.keys != h.keys => return Ok((Code::MALFORMED, false)),
+        Some((_, h)) if step.is_closing() && !step.closes(&h) => return Ok((Code::MALFORMED, false)),
         Some(_) => {}
     }
     let fits = |t: &mut Transaction<'_>, env: &mut Env<'_>, add: u64| -> Result<bool> { env.room(t, s, 0, add) };

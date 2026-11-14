@@ -66,14 +66,17 @@ impl Sid {
     }
     /// The next step (a child of the last), listing `readers`.
     fn issue(&self, readers: &[Reader]) -> (Step, ClaimSet) {
+        self.issue_by(readers, &self.delete())
+    }
+    /// The next step, signed by `d` (the parent's delete key).
+    fn issue_by(&self, readers: &[Reader], d: &SigningSecret) -> (Step, ClaimSet) {
         let mut rng = SeededRng::from_u64(self.steps.len() as u64 + 99);
         let n = self.steps.len() as u64;
         let read = Epoch::derive(&THING, osis_base::Role::Read, n, &self.write).unwrap();
         let sync = Epoch::derive(&THING, osis_base::Role::Sync, n, &self.sync).unwrap();
-        let d = self.delete();
         let parent = match self.steps.last() {
-            None => Parent::Genesis(&d),
-            Some((p, _)) => Parent::Child { step: p, delete: &d },
+            None => Parent::Genesis(d),
+            Some((p, _)) => Parent::Child { step: p, delete: d },
         };
         osis_label::register(parent, self.keys(), readers, (&THING, read, &self.write), (sync, &self.sync), &mut rng).unwrap()
     }
@@ -84,6 +87,17 @@ impl Sid {
         let st = self.issue(&[]);
         self.steps.push(st.clone());
         st
+    }
+    /// An admin's removal: every role secret rotates (the admin's too) and the next step issues,
+    /// signed by the old delete key, which is returned.
+    fn remove_admin(&mut self, b: u8) -> SigningSecret {
+        let old = self.delete();
+        self.write = Secret32::from_bytes([b; 32]);
+        self.sync = Secret32::from_bytes([b + 1; 32]);
+        self.admin = Secret32::from_bytes([b + 2; 32]);
+        let st = self.issue_by(&[], &old);
+        self.steps.push(st);
+        old
     }
     fn head(&self) -> &Step {
         &self.steps.last().unwrap().0
@@ -190,6 +204,30 @@ fn register_takes_a_closing_step_and_nothing_after_it_spec_wire_8() {
     after.prev = Some(closing.id());
     after.sig = s.delete().sign(osis_crypto::Domain::SyncStep, &after.digest());
     assert_eq!(st.take_register(&s.id, &after, None).unwrap(), Code::NOT_HEAD_KEY, "a step after a closing step");
+}
+
+// spec/wire.md §8 (closing step: a zero step key, a zero claims hash), spec/sync-ids.md §6
+// (Register: a child of the head only), spec/sync-hostile.md §2 (Register refuses both: a removed
+// admin closes S only at a node still at a head whose delete key it holds): a closing step with a claims hash is refused
+// (2); once the head moved past the removal, the removed admin's closing step of its old head is
+// no child of the head, and one under the new head fails its signature: both refused (9).
+#[test]
+fn register_refuses_a_removed_admins_closing_step_past_its_head_spec_sync_hostile_2() {
+    let dev = Dev::new();
+    let mut s = Sid::new(10);
+    let mut st = unread(&dev, &s);
+    let g = s.steps[0].0.clone();
+    let mut hashed = g.closing(&s.delete());
+    hashed.claims_hash = [1; 32];
+    hashed.sig = s.delete().sign(osis_crypto::Domain::SyncStep, &hashed.digest());
+    assert_eq!(st.take_register(&s.id, &hashed, None).unwrap(), Code::MALFORMED, "a closing step with a claims hash");
+    let old = s.remove_admin(70);
+    let (next, cs) = s.steps[1].clone();
+    assert_eq!(st.take_register(&s.id, &next, Some(&cs)).unwrap(), Code::OK);
+    assert_eq!(st.take_register(&s.id, &g.closing(&old), None).unwrap(), Code::NOT_HEAD_KEY, "closed under an old head");
+    assert_eq!(st.take_register(&s.id, &next.closing(&old), None).unwrap(), Code::NOT_HEAD_KEY, "closed by an old delete key");
+    assert_eq!(st.head(&s.id).unwrap().as_ref(), Some(&next));
+    assert_eq!(st.take_register(&s.id, &next.closing(&s.delete()), None).unwrap(), Code::OK, "the current admin closes");
 }
 
 // spec/sync-ids.md §6 (claim set hash): a claim set registered with a step must hash to the

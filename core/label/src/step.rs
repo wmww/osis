@@ -179,9 +179,16 @@ impl Step {
         step
     }
 
-    /// A closing step (spec/wire.md §8): no genuine step has a zero step key.
+    /// A closing step (spec/wire.md §8): a child step with a zero step key (no genuine step has
+    /// one). Well formed only as `closing` makes it: see `closes`.
     pub fn is_closing(&self) -> bool {
-        self.prev.is_some() && self.step_key == [0; 32] && self.claims_hash == [0; 32]
+        self.prev.is_some() && self.step_key == [0; 32]
+    }
+
+    /// `self` is the well-formed closing step under `parent` (spec/wire.md §8): a closing step
+    /// with a zero claims hash bearing `parent`'s keys. Its signature is `verify_child`'s.
+    pub fn closes(&self, parent: &Step) -> bool {
+        self.is_closing() && self.claims_hash == [0; 32] && self.keys == parent.keys
     }
 
     /// The claim key a reader derives from its X25519 private key (spec/sync-ids.md §3); try each

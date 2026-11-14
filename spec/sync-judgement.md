@@ -78,7 +78,7 @@ A destroyed thing (spec/commits.md §5 Destruction) with secrets of its own may 
 - **Untold** (away for the whole window, or learned it past it): once each destroying request it holds is past its expiry, the node forgets the sync IDs and the thing's secrets, deleting nothing there.
 - A released thing may come back from a holder that missed the request; a node that forgot it takes it back as never received; a record arriving after the forget is not judged destroyed again.
 - Limit: a late write reaching a peer before its writer hears of the destruction may be dropped as the only copy (spec/commits.md §5 Destruction).
-- Limit: a reader away for the whole window that holds no destroying request is never told (no source keeps S for it once closed) and keeps the thing, as at a node that never held the destruction (spec/commits.md §5 Destruction).
+- Limit: a reader away for the whole window that never holds a destroying request (they have left every source) is neither told nor untold and keeps the thing, as a node that never held the destruction (spec/commits.md §5 Destruction).
 
 ## 6. Kept unread
 A node keeping S unread holds, per thing, only its account's sync record and the sync secrets it holds (spec/sync.md §3 Sync record), and runs no judgement of what S carries.
