@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: performance, node, store, crdt
 
-Counted: osis-node `scale::text_edits_are_flat` (by hand) and `scale::map_edit_is_flat`, `set_by_value_is_flat`: pages loaded and written and store bytes at n and 10n; a move: issues/text-move-loads-placement.md.
+Counted: osis-engine `scale::text_edits_are_flat` (by hand) and `scale::map_edit_is_flat`, `set_by_value_is_flat`: pages loaded and written and store bytes at n and 10n; a move: issues/text-move-loads-placement.md.
 
 Paged reads and writes: notes/engine-paged.md, Paged state; whole fallbacks of ops are counted (`paged op whole:` cost spans).
 

@@ -1,7 +1,7 @@
 #!/bin/sh
-# tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME | --lib CRATE] [--patch FILE]... [--take PATH]...:
-# REV's test binary (default osis-node's `it`, dev profile; `--lib CRATE`: that crate's lib unit
-# tests, e.g. osis-engine's `rotation::tests`), built in this worktree and copied to
+# tools/bin-at REV OUT (-p CRATE [--test NAME] | --lib CRATE) [--release] [--patch FILE]... [--take PATH]...:
+# REV's test binary (CRATE's `it`, or `--test NAME`, dev profile; `--lib CRATE`: that crate's lib
+# unit tests, e.g. osis-engine's `rotation::tests`), built in this worktree and copied to
 # OUT, for old-vs-new runs and `tools/icount` comparisons (notes/build.md). To build a new test
 # against an old REV: `--patch FILE` applies a diff (`git apply --index`) on top of REV, `--take
 # PATH` (a file or directory) copies PATH as the starting commit holds it (`git checkout <start>
@@ -14,11 +14,11 @@
 # fail to link with undefined symbols: `cargo clean -p <crate>` for the crate the error names
 # (notes/build.md, Footguns; deleting incremental dirs leaves a fresh-looking rlib unrebuilt).
 set -eu
-usage="usage: tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME | --lib CRATE] [--patch FILE]... [--take PATH]..."
+usage="usage: tools/bin-at REV OUT (-p CRATE [--test NAME] | --lib CRATE) [--release] [--patch FILE]... [--take PATH]..."
 [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
 rev=$1 out=$2
 shift 2
-profile="" crate=osis-node test=it lib="" patches="" takes=""
+profile="" crate="" test=it lib="" patches="" takes=""
 nl='
 '
 while [ $# -gt 0 ]; do
@@ -34,6 +34,8 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+# no default crate: the binary wanted is the one whose test is compared
+[ -n "$crate" ] || { echo "bin-at: name the crate (-p CRATE or --lib CRATE)" >&2; echo "$usage" >&2; exit 2; }
 root=$(git rev-parse --show-toplevel)
 cd "$root"
 [ "$(git rev-parse --git-dir)" != "$(git rev-parse --git-common-dir)" ] || { echo "bin-at: main checkout; run it in a task worktree (wt claim)" >&2; exit 1; }

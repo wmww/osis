@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: node, permissions, performance
 
-Counted in the default tests: osis-node `scale::long_aspect_writes_are_flat` (a write and its arrival flat, a writer's removal linear), `scale::purge_rejudge_is_linear_in_requests_spec_permissions_6` (a requester's flip rebuilds the aspect once). The numbers below are release measurements at 10^4..10^6 messages.
+Counted in the default tests: osis-engine `scale::long_aspect_writes_are_flat` (a write and its arrival flat, a writer's removal linear), `scale::purge_rejudge_is_linear_in_requests_spec_permissions_6` (a requester's flip rebuilds the aspect once). The numbers below are release measurements at 10^4..10^6 messages.
 
 In order of damage:
 

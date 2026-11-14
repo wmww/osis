@@ -115,7 +115,7 @@ One agent writes a note `sync-boundary` in notes/: the interface between the eng
 - **One fast test per spec rule**, named and cited per tools/spec_map.py conventions, default suite. Target: the whole sync suite runs in about a minute.
 - **A reference-model differential** for convergence: random histories, every node reads alike at quiet and matches a simple model. It replaces the many seed-specific tests.
 - **A small simulation set**: lost and duplicated messages, a peer lying in its own log, full peers, crashes and restarts in place, store failures. Each bug-scenario from the inputs note is one of these or a spec-rule test.
-- **Scale by counting work** at n and 10n (messages, rows, bytes per change), never wall time.
+- **Scale by counting work** at n and 10n (messages, rows, bytes per change), never wall time: the sync-shaped checks the deletion removed are the rows of notes/test-scale.md, Checks to restore (drop a row when its test lands).
 - Long runs (large seed counts) belong to release checks, not the gate.
 
 ## Phase 5: switch over (an hour or two)

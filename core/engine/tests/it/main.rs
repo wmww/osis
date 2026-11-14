@@ -28,3 +28,5 @@ mod validity;
 mod waits;
 mod expiry_model;
 mod write;
+mod scale;
+mod memory;

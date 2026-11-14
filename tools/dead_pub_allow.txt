@@ -154,8 +154,6 @@ osis-label::prefix_bytes  deferred: sync rebuild (issues/sync-rewrite.md Phase 3
 osis-label::seal_stranded_notice  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-label::verify_deposit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-label::wrap_order  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-perm::commits_walked  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-perm::entries_moved  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::CLOSED  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::ClockSamples  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::DEPOSIT_BUDGET_FULL  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
