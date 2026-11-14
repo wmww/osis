@@ -10,7 +10,7 @@ CONSTANTS
     MaxEnc,         \* highest encryption number of e (NoCap checks it is not reached)
     Away,           \* b is away for the whole window
     ToldGate,       \* §5 Emptying: a node deletes only once told (q held at a source, K)
-    KeepReq,        \* proposed: emptying deletes no destroying request (it leaves at its expiry)
+    KeepReq,        \* §5 Emptying: emptying deletes no destroying request (it leaves at its expiry)
     Stand,          \* §4: logged again once; a delete of that encryption stands
     ForgetGate      \* §5: forget S only once no entry and no tombstone of it is known
 

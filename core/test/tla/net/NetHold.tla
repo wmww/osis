@@ -4,7 +4,8 @@
    S), a node K keeping S unread, optionally a hostile writer H deleting anything at K.
    Bodies: b, a write on aspect A authored by r2; c, r1's snapshot of A covering b; x, a role
    commit by r2 under which c is invalid. A blob ID is <<body, n>>: n > 0 is a fresh encryption
-   logged again. K takes what it pulls from a reader's store unless tombstoned (code 6) and Deletes;
+   logged again. r2, b's author, keeps b as local data under r1's cover (spec/sync-compaction.md
+   §1 Own bodies), but b's entries leave its log (§3 Own store): no stream from r2 lists them. K takes what it pulls from a reader's store unless tombstoned (code 6) and Deletes;
    it judges nothing. A reader learns K's store only from K's stream (Sync: the stream read to
    its end). Each rule is a flag; a rule removed must fail for its stated reason (cfg comments). *)
 EXTENDS Naturals, FiniteSets, TLC
@@ -24,13 +25,13 @@ CONSTANTS
     ReadersOnly,    \* §3 Between readers: no Delete between readers
     RoleFirst,      \* §3 Role entries first: deletes and logging again wait for K to take this node's role commits
     SnapClause,     \* §2 established uncovered: a snapshot under S this node does not hold blocks it
-    InvalidBlocks,  \* ... counting one this node dropped as invalid (the spec text: TRUE)
-    FallAny,        \* proposed: c judged invalid here counts as a fall whether held valid before or arriving invalid
-    DelRoleView,    \* proposed: a delete waits while K's stream shows a role commit this node lacks
+    InvalidBlocks,  \* control: ... counting one this node dropped as invalid (§2: it does not count)
+    FallAny,        \* §4: c judged invalid here counts as a fall whether held valid before or arriving invalid
+    DelRoleView,    \* §3 Role entries first: a delete waits while K's stream shows a role commit this node lacks
     Dups,           \* compaction §1 Duplicates: of two entries of one body at K, a delete-key holder deletes the higher
     Cap,            \* K's cap on entries of b and c (x, a role entry, counts toward none); 9: none
     FullCarrier,    \* §3 Deletes: at a source full for S, a carrier it lacks counts as held
-    OfferGate       \* proposed: a reader does not let K pull back an entry whose delete there it knows
+    OwnLog          \* §3 Own store: an entry covered and dropped leaves the log even where its body stays local
 
 Readers == {"r1", "r2"}
 Bodies == {"b", "c", "x"}
@@ -39,7 +40,8 @@ B(e) == e[1]
 NoGround == <<99, 99>>
 
 VARIABLES
-    store,      \* store[r]: blob IDs in reader r's own store (it holds a body iff it holds an entry of it)
+    store,      \* store[r]: blob IDs in reader r's log of S (what its stream lists)
+    unlog,      \* unlog[r]: r's entries out of its log whose body it keeps as local data (Own bodies)
     dropT,      \* dropT[r]: bodies r dropped (its own tombstones: it knows their entries, holds no bytes)
     falls,      \* falls[r]: times c fell at r (held valid, then invalid)
     known,      \* known[r]: K's store as r last read K's stream
@@ -56,16 +58,17 @@ VARIABLES
     refused,    \* entries K refused for room while full (not fetched again while full)
     kFull,      \* kFull[r]: K's full flag as r last read it (event 2 in K's stream)
     badDel      \* an honest delete took b at K while K held no entry of c
-vars == <<store, dropT, falls, known, kHead, delK, againG, againN, enc, storeK, tombK, headK, written, hN, dlog, full, refused, kFull, badDel>>
+vars == <<store, unlog, dropT, falls, known, kHead, delK, againG, againN, enc, storeK, tombK, headK, written, hN, dlog, full, refused, kFull, badDel>>
 
 Hostile == MaxH > 0
-Held(r) == {B(e) : e \in store[r]}
+Held(r) == {B(e) : e \in store[r] \cup unlog[r]}
 KB == {B(e) : e \in storeK}
 KnownB(r) == {B(e) : e \in known[r]}
 Other(r) == IF r = "r1" THEN "r2" ELSE "r1"
 
 Init ==
     /\ store = [r \in Readers |-> IF r = "r2" THEN {<<"b", 0>>} ELSE {}]
+    /\ unlog = [r \in Readers |-> {}]
     /\ dropT = [r \in Readers |-> {}]
     /\ falls = [r \in Readers |-> 0]
     /\ known = [r \in Readers |-> {}]
@@ -91,17 +94,20 @@ Read(r) == IF "b" \in Held(r) \/ Covered(r) THEN "w" ELSE "none"
 
 (* r's store becomes s: c held beside x is invalid and dropped at once (spec/permissions.md §6);
    c held valid before fell: r forgets its own tombstone of b (spec/sync-compaction.md §1, A
-   snapshot turning invalid) and fetches it where present. *)
+   snapshot turning invalid) and fetches it where present; b kept local is must-hold again and
+   its entries return to r's log. *)
 Settle(r, s) ==
-    LET h == {B(e) : e \in s}
+    LET h == {B(e) : e \in s \cup unlog[r]}
         wasValid == Covered(r)
     IN IF "c" \in h /\ "x" \in h
-       THEN [st |-> {e \in s : B(e) # "c"},
+       THEN [st |-> {e \in s : B(e) # "c"} \cup (IF wasValid THEN unlog[r] ELSE {}),
+             ul |-> IF wasValid THEN {} ELSE unlog[r],
              dt |-> (dropT[r] \cup {"c"}) \ (IF wasValid THEN {"b"} ELSE {}),
              fl |-> falls[r] + (IF wasValid \/ (FallAny /\ "c" \notin dropT[r]) THEN 1 ELSE 0)]
-       ELSE [st |-> s, dt |-> dropT[r], fl |-> falls[r]]
+       ELSE [st |-> s, ul |-> unlog[r], dt |-> dropT[r], fl |-> falls[r]]
 SetR(r, n) ==
     /\ store' = [store EXCEPT ![r] = n.st]
+    /\ unlog' = [unlog EXCEPT ![r] = n.ul]
     /\ dropT' = [dropT EXCEPT ![r] = n.dt]
     /\ falls' = [falls EXCEPT ![r] = n.fl]
 
@@ -116,13 +122,13 @@ Ground(r) == <<IF StandHead THEN kHead[r] ELSE 0, IF StandFall THEN falls[r] ELS
 
 (* ---- honest steps ---- *)
 Sync(r) ==
-    LET d == (delK[r] \cup ((known[r] \cup store[r]) \cap dlog)) \ storeK IN
+    LET d == (delK[r] \cup ((known[r] \cup store[r] \cup unlog[r]) \cap dlog)) \ storeK IN
     /\ known[r] # storeK \/ kHead[r] # headK \/ d # delK[r] \/ kFull[r] # full
     /\ known' = [known EXCEPT ![r] = storeK]
     /\ kFull' = [kFull EXCEPT ![r] = full]
     /\ kHead' = [kHead EXCEPT ![r] = headK]
     /\ delK' = [delK EXCEPT ![r] = d]
-    /\ UNCHANGED <<store, dropT, falls, againG, againN, enc, storeK, tombK, headK, written, badDel, hN, full, refused, dlog>>
+    /\ UNCHANGED <<store, unlog, dropT, falls, againG, againN, enc, storeK, tombK, headK, written, badDel, hN, full, refused, dlog>>
 
 \* r fetches an entry K's stream showed, or (ReadersMeet) one another reader holds; not one it dropped.
 Take(r, e) ==
@@ -132,17 +138,23 @@ Take(r, e) ==
 Fetch(r, e) == e \in known[r] \cap storeK /\ Take(r, e)
 PullR(r, e) == ReadersMeet /\ e \in store[Other(r)] /\ Take(r, e)
 
-\* Own store: r drops b under a held valid cover; the author only under its own (it wrote none).
+(* §3 Own store: b covered and dropped under a held valid c leaves r's log. r1 drops it (its own
+   tombstone); r2, its author, keeps the body as local data only (spec/sync-compaction.md §1 Own
+   bodies: it wrote no cover), so no stream from r2 lists it. *)
 DropB(r) ==
-    /\ r # "r2" /\ "b" \in Held(r) /\ Covered(r)
+    /\ Covered(r) /\ \E e \in store[r] : B(e) = "b"
     /\ store' = [store EXCEPT ![r] = {e \in @ : B(e) # "b"}]
-    /\ dropT' = [dropT EXCEPT ![r] = @ \cup {"b"}]
+    /\ IF r = "r2"
+       THEN /\ OwnLog
+            /\ unlog' = [unlog EXCEPT ![r] = @ \cup {e \in store[r] : B(e) = "b"}]
+            /\ UNCHANGED dropT
+       ELSE /\ dropT' = [dropT EXCEPT ![r] = @ \cup {"b"}]
+            /\ UNCHANGED unlog
     /\ UNCHANGED <<falls, known, kHead, delK, againG, againN, enc, storeK, tombK, headK, written, badDel, hN, full, refused, kFull, dlog>>
 
 \* K pulls what it lacks of r's store; a tombstoned blob ID is refused, code 6 (deleted there).
 PullK(r, e) ==
     /\ e \in store[r] \ storeK
-    /\ OfferGate => e \notin delK[r]
     /\ IF e \in tombK
        THEN /\ e \notin delK[r]
             /\ delK' = [delK EXCEPT ![r] = @ \cup {e}]
@@ -153,7 +165,7 @@ PullK(r, e) ==
             /\ UNCHANGED <<storeK, delK>>
        ELSE /\ storeK' = storeK \cup {e}
             /\ UNCHANGED <<delK, full, refused>>
-    /\ UNCHANGED <<store, dropT, falls, known, kHead, againG, againN, enc, tombK, headK, written, badDel, hN, kFull, dlog>>
+    /\ UNCHANGED <<store, unlog, dropT, falls, known, kHead, againG, againN, enc, tombK, headK, written, badDel, hN, kFull, dlog>>
 
 \* §3 Deletes, spec/sync-compaction.md §1 Carriers and Duplicates: r deletes at K an entry K's
 \* stream showed, covered by its held valid c once K's stream shows c (the carrier), or the higher
@@ -169,6 +181,7 @@ Delete(r, e) ==
     /\ Leave(e)
     /\ badDel' = (badDel \/ (B(e) = "b" /\ "c" \notin KB /\ ~full /\ ~(FullCarrier /\ kFull[r])))
     /\ store' = IF ReadersOnly THEN store ELSE [store EXCEPT ![Other(r)] = @ \ {e}]
+    /\ unlog' = IF ReadersOnly THEN unlog ELSE [unlog EXCEPT ![Other(r)] = @ \ {e}]
     /\ delK' = [delK EXCEPT ![r] = @ \cup {e}]     \* a deleter knows its own delete
     /\ UNCHANGED <<dropT, falls, known, kHead, againG, againN, enc, headK, written, hN, kFull>>
 
@@ -185,7 +198,7 @@ LogAgain(r, d) ==
        /\ enc' = IF FreshEnc THEN [enc EXCEPT ![d] = @ + 1] ELSE enc
     /\ againG' = [againG EXCEPT ![r][d] = Ground(r)]
     /\ againN' = [againN EXCEPT ![r][d] = @ + 1]
-    /\ UNCHANGED <<dropT, falls, known, kHead, delK, storeK, tombK, headK, written, badDel, hN, full, refused, kFull, dlog>>
+    /\ UNCHANGED <<unlog, dropT, falls, known, kHead, delK, storeK, tombK, headK, written, badDel, hN, full, refused, kFull, dlog>>
 
 Honest ==
     \E r \in Readers :
@@ -206,16 +219,16 @@ WriteX ==
     /\ UNCHANGED <<known, kHead, delK, againG, againN, enc, storeK, tombK, headK, badDel, hN, full, refused, kFull, dlog>>
 MoveHead ==
     /\ headK < MaxHead /\ headK' = headK + 1
-    /\ UNCHANGED <<store, dropT, falls, known, kHead, delK, againG, againN, enc, storeK, tombK, written, badDel, hN, full, refused, kFull, dlog>>
+    /\ UNCHANGED <<store, unlog, dropT, falls, known, kHead, delK, againG, againN, enc, storeK, tombK, written, badDel, hN, full, refused, kFull, dlog>>
 HDelete(e) ==
     /\ hN < MaxH /\ e \in storeK
     /\ Leave(e) /\ hN' = hN + 1
-    /\ UNCHANGED <<store, dropT, falls, known, kHead, delK, againG, againN, enc, headK, written, badDel, kFull>>
+    /\ UNCHANGED <<store, unlog, dropT, falls, known, kHead, delK, againG, againN, enc, headK, written, badDel, kFull>>
 Expire(e) ==
     /\ TombExpire /\ e \in tombK
     /\ \A r \in Readers : e \notin known[r]     \* every reader read K's stream past the delete within TOMBSTONE_LIFETIME
     /\ tombK' = tombK \ {e}
-    /\ UNCHANGED <<store, dropT, falls, known, kHead, delK, againG, againN, enc, storeK, headK, written, badDel, hN, full, refused, kFull, dlog>>
+    /\ UNCHANGED <<store, unlog, dropT, falls, known, kHead, delK, againG, againN, enc, storeK, headK, written, badDel, hN, full, refused, kFull, dlog>>
 
 Next == Honest \/ WriteC \/ WriteX \/ MoveHead \/ \E e \in Blobs : HDelete(e) \/ Expire(e)
 Fair == \A r \in Readers :

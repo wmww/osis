@@ -9,8 +9,8 @@
    that closes the other side too.
    Honest nodes: readers (hold the roster, every seed of a step they held, show the proof of their
    newest step and the static entries the roster lists; Hit a store's sync key, older steps too
-   by their walk), stores (hold S unread: the head's seed only, show its sync key and the listed
-   static entries; Hit a reader's proof and a store's sync key at their head), link holders (hold
+   by their walk), stores (hold S unread: the head's seed only, show its sync key, its proof and
+   the listed static entries; Hit a sync key or proof at their head), link holders (hold
    a link key whose static entry S lists, no seed; Hit their own static entry). Events (a fixed
    order, each at any time; each honest node learns them in order at its own pace): a grant, a
    removal (roster and static entries) and a rotation (a new step and seed, given to every member
@@ -21,6 +21,8 @@
    entries), answers any Hit with any token it holds or makes, and replays any token it was sent.
    A token (a signature, or a Hit or tag keyed by a secret match value, always bound to its
    sender's side) is modelled by its key, side, the verifier's challenge and the listener's key.
+   An answer to a Hit on a sync key or static entry is signed by the sync key of the replier's
+   step (a store's head, a reader's newest known step), made only while it holds that seed.
    A rule of the design is a flag. *)
 EXTENDS Naturals, FiniteSets, Sequences, TLC
 
@@ -93,7 +95,7 @@ Syncs(n) == n \in Mem[know[n]]
 \* What honest n's filter shows when it knows k events; what a stored copy of it holds (nothing
 \* is removed from a stored filter); what Adv shows.
 ShowsAt(n, k) ==
-    (IF Role[n] = "store" THEN {SyncK(St[k])} ELSE IF Role[n] = "reader" THEN {ProofK(St[k])} ELSE {})
+    (IF Role[n] = "store" THEN {SyncK(St[k]), ProofK(St[k])} ELSE IF Role[n] = "reader" THEN {ProofK(St[k])} ELSE {})
     \cup (IF Role[n] = "link" THEN {} ELSE {LinkK(a) : a \in Listed(k)})
 ShowsEver(n) == UNION {ShowsAt(n, j) : j \in 0..know[n]}
 AdvShows == {SyncK(s) : s \in 0..St[happened]} \cup {LinkK(a) : a \in LinkNodes}
