@@ -50,6 +50,7 @@ pub(crate) fn spread_sealed(lp: &mut LocalPeer) {
     let n = lp.peers.len();
     for _ in 0..2 {
         for a in 0..n {
+            lp.role_duties(a).unwrap();
             let ids = lp.peers[a].engine.commit_ids();
             let pks = lp.sealed(a, &ids).unwrap();
             for b in (0..n).filter(|b| *b != a) {
@@ -63,16 +64,19 @@ pub(crate) fn spread_sealed(lp: &mut LocalPeer) {
 /// peers that read it then. One that does not read it opened none of its bodies (it lacks the key,
 /// not the delivery).
 pub(crate) fn sealed_write(lp: &mut LocalPeer, from: usize, t: Tid, v: &str) -> BTreeSet<usize> {
+    // the writer's step runs its role duty before it writes (sync's `Life`), its rotations sent first
+    let mut ids = lp.role_duties(from).unwrap();
     let mut m = Mutation::new();
     m.set(t, &REG, &s(v)).unwrap();
     let c = lp.peers[from].commit(m).unwrap().unwrap();
-    let pks = lp.sealed(from, &[c]).unwrap();
-    assert!(!pks.is_empty() && !pks[0].entries.is_empty(), "the writer seals its write");
+    ids.push(c);
+    let pks = lp.sealed(from, &ids).unwrap();
+    assert!(pks.last().is_some_and(|p| p.id == c && !p.entries.is_empty()), "the writer seals its write");
     let mut out = BTreeSet::new();
     for i in (0..lp.peers.len()).filter(|i| *i != from) {
         let left = lp.deliver_sealed(i, &pks).unwrap();
         let reads = lp.peers[i].engine.get(&t, &ak("t:reg.0")).unwrap() == Some(s(v));
-        assert_eq!(left.is_empty(), reads, "peer {i}: opened iff it reads");
+        assert_eq!(!left.contains(&c), reads, "peer {i}: opened the write iff it reads");
         if reads {
             out.insert(i);
         }

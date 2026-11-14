@@ -518,27 +518,26 @@ impl LocalPeer {
         Ok(n)
     }
 
-    /// Commits `from` holds, sealed (`Engine::seal_package`), after the rotations due before it
-    /// encrypts under their reader actors (node-sync's `uncovered`), which go first.
+    /// Peer `i`'s role duty as sync's `Life` runs it: for each held actor whose
+    /// `Engine::role_duty_due` is true, `Engine::ensure_rotated`. The rotations it wrote.
+    pub fn role_duties(&mut self, i: usize) -> Result<Vec<CommitId>> {
+        let Some(p) = self.peers.get_mut(i) else { return Ok(Vec::new()) };
+        let mut out = Vec::new();
+        for a in p.engine.held_actors() {
+            if p.engine.role_duty_due(&a)? {
+                out.extend(p.engine.ensure_rotated(&a)?.0.commits);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Commits `from` holds, sealed (`Engine::seal_package`) as they stand: the harness makes no
+    /// rotation (sync's role duty does: `role_duties`, which a test calls where a node's step
+    /// would run it).
     pub fn sealed(&mut self, from: usize, ids: &[CommitId]) -> Result<Vec<SealedPackage>> {
         let Some(p) = self.peers.get_mut(from) else { return Ok(Vec::new()) };
-        let mut readers = BTreeSet::new();
-        for id in ids {
-            readers.extend(p.engine.reader_actors(id));
-        }
-        let mut all = Vec::new();
-        for a in readers {
-            if !p.engine.core.is_key_actor(&a) {
-                all.extend(p.engine.ensure_rotated(&a)?.0.commits);
-            }
-        }
-        for id in ids {
-            if !all.contains(id) {
-                all.push(*id);
-            }
-        }
         let mut out = Vec::new();
-        for id in &all {
+        for id in ids {
             if let Some(pk) = p.engine.seal_package(id, &mut self.rng)? {
                 out.push(pk);
             }
