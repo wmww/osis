@@ -321,7 +321,8 @@ fn a_box_after_a_new_step_extends_the_record_spec_sync_judgement_6() {
 // recorded head registers, a child of that head, after logging the rotation commits it registers):
 // nothing is due until a removal rotates; then the step is due, naming the removal's rotation
 // among what it registers, and its issue records a child of the recorded head at the new sync
-// epoch, after which nothing is due; a fresh step is a further child.
+// epoch, after which nothing is due; a fresh step is a further child. A refreshed deposit seed
+// makes a step due, and `issue_due_step` issues it (both read the head and seed one way).
 #[test]
 fn a_step_is_due_after_a_rotation_spec_sync_ids_6() {
     let (mut lp, ps) = people(3);
@@ -341,6 +342,12 @@ fn a_step_is_due_after_a_rotation_spec_sync_ids_6() {
     assert!(lp.peers[0].engine.due_step(&s).unwrap().is_none(), "nothing due after it");
     let (fresh, _) = lp.peers[0].engine.issue_step(&t, &s, true).unwrap().expect("a fresh step");
     assert_eq!((fresh.prev, head(&mut lp).id()), (Some(step.id()), fresh.id()));
+    // a refreshed deposit seed: due by the seed `issue_due_step` reads, and issued from it
+    lp.peers[0].engine.refresh_deposit_seed(&t).unwrap();
+    assert!(lp.peers[0].engine.due_step(&s).unwrap().is_some(), "a new deposit key is due");
+    let seeded = lp.peers[0].engine.issue_due_step(&s).unwrap().expect("issued by the same reading");
+    assert_eq!(seeded.prev, Some(fresh.id()));
+    assert!(lp.peers[0].engine.due_step(&s).unwrap().is_none(), "nothing due after it");
 }
 
 // spec/sync-inbox.md §2 (Re-send: until the sender has seen the recipient take it, a commit by

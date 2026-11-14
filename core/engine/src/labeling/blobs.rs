@@ -9,7 +9,6 @@ use osis_base::{BlobId, CommitId, SyncId, Role, Tid, WallMs};
 use osis_crypto::{CryptoRngCore, DeleteSecret, Epoch, LabelRole, Secret32, SigningSecret, deposit_key};
 use osis_keys::ActorEpochs;
 use osis_label::Step;
-use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -674,11 +673,9 @@ impl Engine {
         Ok(epochs.read.wrapped_under(&e).map(|(s, _)| s))
     }
 
-    /// The deposit seed of `g`'s actor (its `keys.0`).
+    /// The deposit seed of `g`'s actor (its `keys.0`; `flows::sync_ids::deposit_seed_of`).
     pub fn deposit_seed(&mut self, g: &Tid) -> Result<Option<Secret32>> {
-        // a devices actor's labels derive from its account's seed
-        let x = self.core.home_owner(&self.group_actor(g));
-        Ok(self.get_typed(&x, &ct::KEYS)?.and_then(|k| k.deposit_seed).map(Secret32::from_bytes))
+        self.read(|tx| crate::flows::sync_ids::deposit_seed_of(tx, g))
     }
 
     /// The keys this node holds for `head` of a label of `g` (spec/sync-ids.md §2, spec/sync-ids.md §6): any

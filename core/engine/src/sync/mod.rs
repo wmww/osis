@@ -823,16 +823,9 @@ impl Engine {
     /// under the head a store keeping S unread holds.
     pub fn due_step(&mut self, s: &SyncId) -> Result<Option<Arc<Vec<CommitId>>>> {
         let Some(t) = self.sync_owner_of(s)? else { return Ok(None) };
-        let Ok(me) = self.core.writer() else { return Ok(None) };
-        if self.core.role_now(&me, &t) != Some(Role::Admin) {
-            return Ok(None);
-        }
-        let Some(o) = self.owned_sync_ids(&t)?.iter().find(|o| o.id == *s && !o.hint).cloned() else { return Ok(None) };
-        let Some((head, _)) = o.path.steps.last() else { return Ok(None) };
-        let (Some(epochs), Some(seed)) = (self.core.epochs(&t), self.deposit_seed(&t)?) else { return Ok(None) };
-        if crate::flows::sync_ids::due_at(&epochs, head, &seed, false).is_none() {
-            return Ok(None);
-        }
+        // the head and deposit seed as `issue_due_step` reads them (one derivation, `step_due`)
+        let Some(due) = self.read(|tx| crate::flows::sync_ids::step_due(tx, &t, s, false))? else { return Ok(None) };
+        let epochs = due.epochs;
         let mut out = std::collections::BTreeSet::new();
         for r in [Role::Sync, Role::Write, Role::Admin] {
             let re = epochs.role(r);

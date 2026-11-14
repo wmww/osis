@@ -78,14 +78,14 @@ pub(crate) fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> 
     })
 }
 
-/// The deposit seed of the actor `group`'s sync IDs derive from (spec/sync-ids.md §2).
-fn deposit_seed(tx: &mut Tx<'_>, group: &Tid) -> Result<Secret32> {
-    let actor = if tx.core.has_own_secrets(group) { *group } else { tx.core.first_admin(group).ok_or(Error::UnknownThing(*group))? };
-    // a devices actor's labels derive from its account's seed
-    let actor = tx.core.home_owner(&actor);
-    let k = Core::keys_in(tx, &actor)?.and_then(|k| k.deposit_seed).ok_or(Error::Misuse("no deposit seed in keys.0"))?;
-    Ok(Secret32::from_bytes(k))
+/// The deposit seed `group`'s sync IDs derive from (spec/sync-ids.md §2): its secret actor's
+/// `keys.0`, a devices actor's being its account's. The one derivation (`Engine::deposit_seed`,
+/// `step_due`).
+pub(crate) fn deposit_seed_of(tx: &mut Tx<'_>, group: &Tid) -> Result<Option<Secret32>> {
+    let actor = tx.core.home_owner(&tx.core.reader_of(group));
+    Ok(Core::keys_in(tx, &actor)?.and_then(|k| k.deposit_seed).map(Secret32::from_bytes))
 }
+
 
 /// Issues a step of `group` at the newest established epochs: a genesis step of a new sync ID
 /// when `parent` is none, else a child of the parent step (signed by the parent's delete key,
@@ -199,7 +199,7 @@ pub(crate) struct Due {
     head: Step,
     admin: Secret32,
     deposit: Secret32,
-    epochs: std::sync::Arc<ActorEpochs>,
+    pub(crate) epochs: std::sync::Arc<ActorEpochs>,
 }
 
 /// Whether this node issues a step of `g`'s sync ID `l` now (spec/sync-ids.md §6 Steps,
@@ -218,7 +218,7 @@ pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId, fresh: bool) -> Res
     let steps = sync_steps(rec)?;
     let Some((head, _)) = crate::labeling::actors::head_of(&steps).and_then(|h| steps.get(&h).cloned()) else { return Ok(None) };
     let Some(epochs) = tx.core.epochs(g) else { return Ok(None) };
-    let deposit = deposit_seed(tx, g)?;
+    let Some(deposit) = deposit_seed_of(tx, g)? else { return Ok(None) };
     let Some(head_admin) = due_at(&epochs, &head, &deposit, fresh) else { return Ok(None) };
     let admin = epochs.role(Role::Admin).secret(&head_admin).cloned().ok_or(Error::Misuse("head admin secret"))?;
     Ok(Some(Due { head, admin, deposit, epochs }))
