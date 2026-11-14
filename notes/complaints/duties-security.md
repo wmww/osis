@@ -1,5 +1,0 @@
-# duties-security
-- A test of an account fork through sync ran into a separate bug first (a sibling's concurrent rotation never opens: issues/sync-sibling-rotation-unopened.md); an hour of tracing before the duty itself could be tested. `OSIS_SYNC_TRACE` shows `+entry` without `+commit` for an entry that stays NotOpen, but nothing says why; a trace line for NotOpen would have saved most of it.
-- `passes_wanted` counts a pass begun at the same engine ms as a role commit's arrival as after it: issues/pass-same-ms-arrival.md.
-- (review) Restarting the modules on every engine reload first broke unsyncing: Leave's start sweep skipped a sync ID whose entry was still synced, so a restart lost a waiting S for good (the same bug a store-failure restart would hit). An hour to find; a restart test per module with state in flight would catch this class.
-- (review) The harness's `run` moves the clock to every wake inside its horizon, so a test of an `until` must put it beyond `horizon_ms` or the duty fires before the test looks.

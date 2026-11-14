@@ -73,7 +73,7 @@ osis-engine (`core/engine/src`; each file's doc comment says more):
 ## Public surface (engine)
 A map by area; rustdoc has the full list.
 - Lifecycle: `Engine::create` (fresh identity: the node thing's `created.0` with `node.0`, then `keys.0`), `open` (load, re-examine pending), `reload`, `subscribe`/`subscribe_durable`, `app_record`/`set_app_record` (the `u/` records), `report(diagnostic)` (deduped like the engine's own).
-- Writing: `Mutation` built up and passed to `Engine::commit(m) -> Option<CommitId>` (notes/engine-apply.md, Writer side).
+- Writing: `Mutation` built up and passed to `Engine::commit(m) -> Option<CommitId>` (notes/engine-apply.md, Writer side). `Engine::commit` is the raw commit: the app's path is `Engine::write`, which also marks an accepted invitation acted on (`mark_acted`); a test standing in for a user's write or accept uses `write` (or `accept_invite` for a thing listed already), else it accepts nothing and passes for the wrong reason.
 - Receiving: `ingest`/`ingest_with_lists`/`ingest_memory` -> `Ingested::{Applied, Duplicate, Pending, Awaits, Parked, TooLarge}` (sync ingests through `open_entry`); `reexamine`, `tick` (expiry, purge floors, drift).
 - Reads: `get`, `get_at` (a paged state loads the path's pages only), `get_range`, `read_large`/`read_large_max`, `next_chunk` (the API's `stream`), commit listings (`engine::listing`), `held_parts`.
 - Retention: sync judges deletions and re-snapshots from the commit index, no queue (`snapshot`, `covered`, `drop_body`, `part_keeps` per commit by aspect index, `delta_live`, `replaced_at`, `body_not_dropped`: true for a missing part too).
