@@ -19,18 +19,17 @@
 - Signed input is `domain || digest`: an ASCII domain string, then the 32-byte BLAKE3 digest of the signed canonical bytes. Digests per object: spec/wire.md.
 - Domains, one per signed object:
   - `"osis v1 commit"` (input digest: the commit ID; for an account's commit, BLAKE3 of the commit ID, the inner signature and the merge signatures in order, spec/wire.md §4, so neither can be swapped)
-  - `"osis v1 label register"`
-  - `"osis v1 label open"`
-  - `"osis v1 upload"` (stamps, spec/sync.md §5)
-  - `"osis v1 deposit"`
-  - `"osis v1 role entry"` (a stamp or deposit signature of a role entry, in place of the two above, spec/sync.md §5)
+  - `"osis v1 sync step"` (a step, spec/wire.md §8)
+  - `"osis v1 sync open"` (an open signature, spec/sync-opens.md §5)
+  - `"osis v1 stamp"` (stamps, spec/sync-ids.md §6)
+  - `"osis v1 deposit"` (spec/sync-inbox.md §3)
+  - `"osis v1 role entry"` (a stamp or deposit signature of a role entry, in place of the two above, spec/sync-ids.md §6)
   - `"osis v1 delete"`
-  - `"osis v1 lan announce"` (by a dialable key, spec/sync.md §10)
   - `"osis v1 connection proof"` (a connection proof, spec/wire.md §11.2: over the prover's role, the verifier's challenge and the listener's key)
   - `"osis v1 possession"` (a box's possession signature and a keyset's possession proof, spec/wire.md §7)
   - `"osis v1 inner"` (a node's inner signature, input digest: the commit ID; spec/permissions.md §5.5)
   - `"osis v1 merge"` (a merge's signature at a fork's epoch, input digest: the merge's commit ID; §9)
-- Signers: account epoch keys (commits by the account, §3), node keys (inner signatures, the node thing's own aspects, connection proofs, spec/sync.md §10), link keys (commits signed as that key actor), label role keys (spec/sync.md §5), blinded delete keys (§7), possession keys (§4, Holder actors).
+- Signers: account epoch keys (commits by the account, §3), node keys (inner signatures, the node thing's own aspects, connection proofs, spec/sync-opens.md §2), link keys (commits signed as that key actor), sync ID role keys (spec/sync-ids.md §2), blinded delete keys (§7), possession keys (§4, Holder actors).
 
 ## 3. Keys per actor kind
 - **Notation**: a `kdf` written with two arguments has empty input; a tid as input is its 15 bytes; an Ed25519 key "from" a kdf output is the key with that 32-byte seed (RFC 8032).
@@ -44,7 +43,7 @@
 - A node counts a thing as having **secrets of its own** iff it holds a role commit whose `keys.0` part is valid (spec/permissions.md §5.2) and wrote a keyset in the body the node held (its body since dropped or missing counts). A thing whose only such part turns invalid is plain again (derived secrets), the secrets it learned from that commit kept for reading only (§4).
 - **Key actor** other than an account (node, link key): one 32-byte seed.
   - Signing key from `kdf("sign", seed)`.
-  - KEM key pair from `kdf("kem", seed)` read as 96 XOF bytes: the first 64 the ML-KEM-768 keygen seed `d || z` (FIPS 203), the last 32 the X25519 private key. Its X25519 half is also its claim key (spec/sync.md §2).
+  - KEM key pair from `kdf("kem", seed)` read as 96 XOF bytes: the first 64 the ML-KEM-768 keygen seed `d || z` (FIPS 203), the last 32 the X25519 private key. Its X25519 half is also its claim key (spec/sync-ids.md §3).
   - Role secrets `kdf("role <role>", seed)`, all at the fixed epoch (0, 32 zero bytes), the one exception to the nonce rule (§4), never rotated.
   - The creation record commits to the signing public key only.
   - A link key's seed is in the link. Its creation nonce is `kdf("creation nonce", seed, "")` (spec/wire.md §3).
@@ -54,12 +53,12 @@
   - **Epoch name**: `[height, signing public key]`, an epoch `[n, nonce]` in shape. Every box to the account, sealed or symmetric, possession proof and anchor names the account's epoch by it. The role epochs under the nonce rule stay internal to the account's nodes.
   - Every rule needing a public per-epoch key of an account uses the epoch's signing key, under that rule's own domain.
   - The creation record commits to the first epoch's signing key, and the first epoch's KEM key is the `key` of a `keys.0` whose `signing` is that signing key. A rotation's header carries the new epoch's signing and KEM public keys (spec/wire.md §4).
-  - `keys.0` of an account holds the current epoch's public keys (`signing`, its signing key; `key`, its KEM key), its inbox (its D's home label) and D's deposit seed, written by the account in its creation and its rotations (spec/permissions.md §3), never in a later commit carrying D's role writes (it is a certificate under every label the account acts in, spec/permissions.md §4); D's deposit seed changes only in a commit a rotation of the account follows. Its keysets are its epochs (§4, Holder actors).
+  - `keys.0` of an account holds the current epoch's public keys (`signing`, its signing key; `key`, its KEM key), its inbox (its D's home sync ID) and D's deposit seed, written by the account in its creation and its rotations (spec/permissions.md §3), never in a later commit carrying D's role writes (it is a certificate under every sync ID the account acts in, spec/permissions.md §4); D's deposit seed changes only in a commit a rotation of the account follows. Its keysets are its epochs (§4, Holder actors).
   - **Inner signature**: every commit an account authors carries one: the node's tid and its Ed25519 signature under `"osis v1 inner"` over the commit ID, sealed under `kdf("inner key", inner secret, commit ID)` of the epoch the commit is signed at, nonce 24 zero bytes (one plaintext per key) (spec/wire.md §4). Only the account's nodes open it.
-- **Other actors**: one KEM key pair per role per epoch, `kdf("kem", role secret)`. The read-role pair's X25519 half is the actor's claim key (spec/sync.md §2).
+- **Other actors**: one KEM key pair per role per epoch, `kdf("kem", role secret)`. The read-role pair's X25519 half is the actor's claim key (spec/sync-ids.md §3).
 - **`keys.0`**: a struct holding the current keyset only.
   - Per role a `keyset` (spec/data-model.md §9; `delete_key`: §7; `possession_key`: §4, Holder actors; a key actor: one KEM key, no epoch).
-  - For an actor other than a key actor, also its **inbox** (its home label's ID and hosts; spec/sync.md §2) and **deposit seed** (32 random bytes, spec/sync.md §2).
+  - For an actor other than a key actor, also its **inbox** (its home sync ID; spec/sync-inbox.md §1) and **deposit seed** (32 random bytes, spec/sync-inbox.md §1).
   - A role's entry is written by the node that rotates that role (spec/permissions.md §3).
   - An admin writes the inbox and deposit seed; it MAY refresh the deposit seed at any time and MUST write a fresh one in each rotation of the sync role it makes.
   - A key actor's `keys.0` is written by its own key. A key actor's keyset other than an account's is fixed by its seed and never rotates: a key actor changes keys only by being replaced (a new key actor added, the old one removed).
@@ -112,7 +111,7 @@ Terms in this section depend on each other; each is defined once, under its bold
 - A name is the write's commit key (spec/permissions.md §5.1), its holder, and whether it is void.
 - **Departs mark**: when the rotation commit itself lowers a holder of A it cannot name itself. The names then carry its departs mark: its `ts`, author and header `blind` (spec/wire.md §4).
 - Every history box of one rotation carries the same names, and the rotated roles' keysets carry their digest (spec/wire.md §7): an entry is **bound** to each held valid rotation commit of its epoch whose keyset carries the digest of its names; a held valid `keys.0` compaction snapshot carrying the keyset beside a `secrets.0` snapshot carrying the entry counts as one, by its author.
-- The rotator places every named commit under each label it places the rotation commit under (spec/sync.md §5).
+- The rotator logs every named commit under each sync ID it logs the rotation commit under (spec/sync-judgement.md §3).
 - **Met**: the names of a history box entry are met at a node when both hold:
   - each name's commit is applied at the node with its `roles.0` delta on A, if it has one, held (a copy of the commit lacking it does not count) and resolved (spec/permissions.md §2: every entry its removals reset known, so its edge writes take part in the walk; a finalize held without the write it ends removes nobody); an applied name's write only while it stands there (Edge writes), a void name's write only while it applies nothing there.
   - its departs mark, if any, is met: the node holds a role commit of that `ts`, author and `blind` with its `roles.0` delta on A, resolved (as above), each of its edge writes on A standing there.
@@ -146,10 +145,10 @@ Terms in this section depend on each other; each is defined once, under its bold
 
 ### Encrypting under
 - **Encrypting under** an epoch means:
-  - wrapping under a label read key derived from its secret (§5);
+  - wrapping under a wrap key derived from its secret (§5);
   - sealing or wrapping a box under its secret or a KEM key derived from it. A box carrying a secret is encrypted under its recipient's key (a holder actor's keyset, Holder actors), not under the epoch it carries;
-  - signing a stamp, step or delete under a label key derived from it.
-  - Signing with a delete key (§7), opening a label and reading are not encrypting under.
+  - signing a stamp, step or delete under a sync ID role key derived from it.
+  - Signing with a delete key (§7), opening a sync ID and reading are not encrypting under.
 - A node MUST NOT **encrypt under** an epoch e of role r of actor A that is **blocked** at it; one that may rotate r (spec/permissions.md §3) rotates first, another waits for a rotation. e is blocked at a node holding its secret when:
   - e does not cover a departure from A the node knows of, other than the node's own (its account's or its own node's);
   - e has a box to a holder actor M naming an epoch of M blocked at the node (the box's sealing was encrypting under it), whatever the node's role on A or M; a joint box only when every epoch it names is, or one is by a box (below);
@@ -158,14 +157,14 @@ Terms in this section depend on each other; each is defined once, under its bold
   - An account's epoch e is blocked at a node of the account (it holds the account's devices actor D) when a departure from D the node knows of, other than its own, has a write an epoch covering it must name (Covers) that no rotation on e's line (§9) names in its thing list for D (spec/permissions.md §5.5) among the rotations D's roster authorizes (spec/permissions.md §5.4, Nodes of P). The first epoch covers none, nor does an epoch the node holds no counting rotation of.
   - An epoch e of a holder actor (Holder actors) whose secret the node lacks is blocked at it when the earliest held valid `keys.0` body writing e as a keyset (Held keyset) is ordered (spec/permissions.md §5.1) before the newest edge write an epoch covering a departure from that actor the node knows of, other than its own, must name (the earliest tail write giving its holder less than the role, when one is needed, and every tail write giving the role or more that counts; Covers): e's rotator held nothing ordered after it, so e cannot cover it.
   - e is blocked **by a box** where it is blocked by the clause on stale and past-key-access boxes, or by the box clause through a box to M (the stale-box rule of Seal included) at an epoch of M so blocked; **by a departure** otherwise.
-  - Placing a commit as a certificate, or the node's own role commit, under A's labels (spec/sync.md §5) is held back by the box clause only through actors whose r the node may rotate: a node that may not still places the keysets and revokes that tell their rotators.
+  - Logging a commit as a certificate, or the node's own role commit, under A's sync IDs (spec/sync-judgement.md §3) is held back by the box clause only through actors whose r the node may rotate: a node that may not still logs the keysets and revokes that tell their rotators.
   - Limit: an epoch whose secret the node lacks is judged by order alone: a keyset of holder actor M ordered after a departure from M but made without knowing it (concurrent with it), or whose earliest body the node holds is a later re-write of it so ordered (a compaction snapshot), is sealed to, and the party removed from M opens what the node so seals until M's knowing keyset reaches it (Holder actors).
   - Exception: the wrap of a rotation commit itself (§5).
-  - Exception: a departure whose newest edge write is the node's own self-removal (spec/permissions.md §2; one it made, or one by it, its account or a key actor it holds, whichever node of the account made it) of a holder other than its account or node (a link key it holds, an actor it administers) holds back none of the node's encrypting, here or under spec/permissions.md §4, until that commit is placed (spec/sync.md §5, Placed). Both are judged from what the node stores.
+  - Exception: a departure whose newest edge write is the node's own self-removal (spec/permissions.md §2; one it made, or one by it, its account or a key actor it holds, whichever node of the account made it) of a holder other than its account or node (a link key it holds, an actor it administers) holds back none of the node's encrypting, here or under spec/permissions.md §4, until that commit is held elsewhere (spec/sync-status.md §2). Both are judged from what the node stores.
 - A node that may rotate r also rotates r before it next encrypts under A while any current epoch of r, not only the newest, does not cover a departure it knows of (one whose secret it lacks covers nothing; a fork made without knowing a departure stays current otherwise, and may be the newest), or has a stale box (Holder actors) or a box to a holder past its key access to A (the **knowing re-key**), or is **orphaned** (the node lacks its secret and no box of it the node holds is to a holder that may rotate r: no re-sealer holds it; its holders add it to the next epoch's history), or is a derived epoch the node wrote under (Established and current).
   - A rotation due only for current epochs whose secret the node lacks (covering nothing, or orphaned) is made only when it boxes, at r, a holder that may rotate r: else its epoch is one every other rotator lacks alike, and each would rotate again.
 - **Forks** stand: no rule rotates r for having more than one current epoch. Holders are re-sealed at every current epoch, and the next rotation of r lists every current epoch, superseding them all; a holder actor anchored at forks of its keysets is sealed jointly (Holder actors, Seal).
-- At the end of a complete pass of A's labels (spec/permissions.md §3, as re-seals are), and for the holder actors below A with it, a node that may rotate r also rotates r while an unsuperseded epoch of r is not current at it and the node **withdraws** it: it made the epoch, or the epoch's maker is unknown or may not rotate r. This waits for the pass's end alone: no epoch it supersedes holds back the node's encrypting.
+- At the end of a complete pass of A's sync IDs (spec/permissions.md §3, as re-seals are), and for the holder actors below A with it, a node that may rotate r also rotates r while an unsuperseded epoch of r is not current at it and the node **withdraws** it: it made the epoch, or the epoch's maker is unknown or may not rotate r. This waits for the pass's end alone: no epoch it supersedes holds back the node's encrypting.
   - A node making a rotation of a holder actor M that this section requires makes, in the same step, the rotations then due at it on each actor M holds a role on that it may rotate, and upward from those it rotates: M's rotation makes boxes to M stale, and answered by M's rotator at once, no other rotator of those actors meets them and makes a fork of its own. A removal's or finalize's own rotation (spec/permissions.md §3) is not followed so; its author answers above when it next rotates what is due.
 - **Established only**: a node encrypts under established epochs only, except under the epochs a rotation commit makes in that commit itself. The secret of any other epoch (one whose rotation commit it has not applied, or is pending, unjudgeable or invalid, spec/commits.md §4) is kept for reading.
 - **Reading-only secrets**: a box opens with the node's own key and needs no record: it proves itself by what it opens. A secret learned only from a pending, unjudgeable (spec/commits.md §4) or invalid commit (from its boxes, or from history boxes opened with such a secret) is kept for reading and never encrypted under until an applied valid box or a history box opened with a secret not so learned carries it. Such a commit's epochs count for nothing else: a box it holds that the node cannot open records nothing; what its history boxes list supersedes nothing. Sourced from a commit not applied in full, it goes when that commit's last part applies, it is judged bad, or its last entry leaves.
@@ -191,9 +190,9 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
   - With none (the anchors fork), **jointly**: per anchor no other anchor descends from, the newest candidate that is or descends from it, less each another of them descends from; one joint box (spec/wire.md §7) opens only for a holder of every keyset it names. So no rotation, grant or re-seal of A waits for a rotation of M.
   - With no candidate for some anchor (none at all, without anchors), M is left out of r and the roles above, and re-sealed (spec/permissions.md §3) once one exists.
   - When every keyset Seal gives is blocked at the node (§4 Encrypting under), or one is blocked by a box, or one or an epoch the box clause follows from it has a stale box (whatever the node's role on M, whether or not it holds that epoch's secret), M is left out of r and the roles above, and re-sealed once it is not. A joint box opens only for a holder of every keyset it names, so a keyset not blocked keeps out of it every departed party, alone or pooling secrets with others.
-- **Reported**: a node that left M out learns M's next keyset as M's readers place it under A's labels, or, where they cannot (left out, they hold no current epoch of A to wrap it under), from their stranded reports (spec/permissions.md §4), which carry M's current `keys.0` commits; so a node that no longer follows M (gone from it, or never in it) still re-seals M.
+- **Reported**: a node that left M out learns M's next keyset as M's readers log it under A's sync IDs, or, where they cannot (left out, they hold no current epoch of A to wrap it under), from their stranded reports (spec/permissions.md §4), which carry M's current `keys.0` commits; so a node that no longer follows M (gone from it, or never in it) still re-seals M.
 - **Stale**: a box of A to holder actor M naming epoch k of M (a joint box: any keyset it names) is stale at a node when k is held invalid, tainted, or named by the supersedes list of a held valid keyset of M. A keyset the node holds no body of and finds in no such list is not stale. A proof for M (Possession) that the keyset of an epoch e of A carries, naming such a keyset, is a stale box of e as well, whether or not e boxes M.
-- **Carried**: a rotation, grant or re-seal of A places with its commit, under A's labels, the held rotation commits of the keysets its boxes to holder actors name, and of those its keysets record holder actors left out at, as certificates (spec/permissions.md §4), so that A's writers can judge those keysets. A certificate of a rotation (its `keys.0` delta) carries its proofs, so a node holding it alone judges its Authority as a node holding the whole commit does.
+- **Carried**: a rotation, grant or re-seal of A logs with its commit, under A's sync IDs, the held rotation commits of the keysets its boxes to holder actors name, and of those its keysets record holder actors left out at, as certificates (spec/permissions.md §4), so that A's writers can judge those keysets. A certificate of a rotation (its `keys.0` delta) carries its proofs, so a node holding it alone judges its Authority as a node holding the whole commit does.
   - Limit: a node may hold A's box naming M's keyset k, or A's keyset recording M left out at k, without k's body (the box's commit arrived, the carried one not yet). k is then no anchor and M is not left out at it, and its next rotation, grant or re-seal of A seals M at the older keyset it holds, which a party removed from M may open; a node holding k finds that box stale and rotates (within the stated limit: that node held no knowing keyset of M).
 - Limit: a keyset of M written without knowledge of a removal from M (a concurrent rotation of M, or one the removed party forged, where the removal or the forgery has not arrived) is sealed to as any other: the removed party opens A's epochs so sealed, written since the removal, until A is sealed at a keyset of M descending from a rotation of M that knows.
 - Limit: a departure from a holder actor M' of M reaches the node's sealing of M only by stale boxes (Seal): until a keyset of M' superseding the one M's box names reaches the node, M is sealed at that keyset as any other, and the party removed from M' opens A's epochs so sealed.
@@ -212,17 +211,17 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
   - **Writers**: a node makes a rotation only where Authority holds; otherwise it waits (encrypting under A as §4 allows, so not under an epoch with a stale box) until it holds the secret of the keyset Seal gives at the role needed or no longer holds the role through M; a removal or finalize needing that rotation goes alone (spec/permissions.md §3). A rotation needing write (the right to rotate, spec/permissions.md §3) shows M at write only by its keyset of write, so a node holding write on A through M that rotates read rotates write with it. A box that cannot show M is sealed to k's KEM key as Seal says.
 
 ## 5. Blobs, wraps, inbox blobs
-- **Blob encryption**: a fresh random 32-byte key per encryption; nothing encrypts a blob under a caller-chosen key (a copy's section is sealed under the fresh key before the blob is). Framing, padding, AD and blob ID: spec/wire.md §5; spec/sync.md §1.
-- **Wrap** (per label, per blob): carries the blob's suite byte, blob key and order under the label read key `kdf("wrap", label read secret)`. Deterministic. Bytes: spec/wire.md §5.
-- **Section** (per thing, inside a commit blob): its parts under a fresh random section key used once; the key under `kdf("section", read secret of the thing)` (own or derived, §3; the record chain it derives through is in the clear beside it) with a fresh random nonce, AD = the commit ID. Bytes: spec/wire.md §4. The epoch is chosen as for a wrap (below, the rotation exception included); a copy's one section (spec/sync.md §3) goes under `kdf("section", blob key)`, so the blob's wraps gate it.
-- **Order**: 0 for a commit with a purge request or a part on a role-class aspect, `created.0`, `retention^.0` or `group.0`, else the commit's `ts` (a header-only blob too). It is read only to order a node's first sync (spec/sync.md §6), and a wrong one changes nothing else.
+- **Blob encryption**: a fresh random 32-byte key per encryption; nothing encrypts a blob under a caller-chosen key (a copy's section is sealed under the fresh key before the blob is). Framing, padding, AD and blob ID: spec/wire.md §5; spec/sync-ids.md §1.
+- **Wrap** (per sync ID, per blob): carries the blob's suite byte, blob key and order under the wrap key `kdf("wrap", read secret)` of the sync ID's thing. Deterministic. Bytes: spec/wire.md §5.
+- **Section** (per thing, inside a commit blob): its parts under a fresh random section key used once; the key under `kdf("section", read secret of the thing)` (own or derived, §3; the record chain it derives through is in the clear beside it) with a fresh random nonce, AD = the commit ID. Bytes: spec/wire.md §4. The epoch is chosen as for a wrap (below, the rotation exception included); a copy's one section (spec/sync-judgement.md §1) goes under `kdf("section", blob key)`, so the blob's wraps gate it.
+- **Order**: 0 for a commit with a purge request or a part on a role-class aspect, `created.0`, `retention^.0` or `group.0`, else the commit's `ts` (a header-only blob too). It is read only to order a node's first sync (spec/sync-streams.md §5), and a wrong one changes nothing else.
 - A wrap names no epoch: a reader tries the read secrets it holds, newest first.
 - **Who wraps under what**:
   - A node logging an entry wraps under the newest current read epoch whose secret it holds (§4).
-  - A node holding no current secret places nothing: it is stranded (spec/permissions.md §4).
-  - Exception: a commit carrying boxes of a read epoch e (a rotation) is wrapped, under every label whose read secret derives from that actor's, under the read epoch e supersedes whose secret the rotator holds with the greatest n, ties by lowest nonce (n, not order n, §4).
-- Label role keys for a host are those of the epochs its current step registers (spec/sync.md §5).
-- **Inbox blob** (spec/sync.md §3): a role commit (header and deltas) about the recipient, plus the label IDs and host addresses of the things it names, sealed to the recipient actor's read-role KEM key. Bytes: spec/wire.md §9.
+  - A node holding no current secret logs nothing: it is stranded (spec/permissions.md §4).
+  - Exception: a commit carrying boxes of a read epoch e (a rotation) is wrapped, under every sync ID whose read secret derives from that actor's, under the read epoch e supersedes whose secret the rotator holds with the greatest n, ties by lowest nonce (n, not order n, §4).
+- A sync ID's role keys at a peer are those of the epochs the peer's head registers (spec/sync-ids.md §3).
+- **Inbox blob** (spec/sync-inbox.md §2): a role commit (header and deltas) about the recipient, plus the sync IDs of the things it names, sealed to the recipient actor's read-role KEM key. Bytes: spec/wire.md §9.
   - Its prefix expiry is a delivery lifetime (`INBOX_LIFETIME`), not a commit expiry.
   - It has no blob key and its entry's wrap is filler.
 
@@ -231,7 +230,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
   - delta hash `kdf("delta", dedup secret, delta bytes)`;
   - link content hash of a chunk, page or tree node: spec/wire.md §6;
   - a suspect entry's state digest `kdf("state", dedup secret, ak || 0x00 || state bytes)` cut to 16 bytes (spec/permissions.md §4).
-- **Link**: (link content hash 32, blob ID 32, suite byte || blob key 33, prefix salt 16, delete keys): the delete keys are those of the blob's one commitment group (§7), by level ascending (none for a `nobody` delta's blob), as its writer claims them: a holder of the blob checks them against its prefix before using them (spec/sync.md §1).
+- **Link**: (link content hash 32, blob ID 32, suite byte || blob key 33, prefix salt 16, delete keys): the delete keys are those of the blob's one commitment group (§7), by level ascending (none for a `nobody` delta's blob), as its writer claims them: a holder of the blob checks them against its prefix before using them (spec/sync-ids.md §1).
 
 ## 7. Delete keys
 - **Levels** of a delta, by its retention (spec/commits.md §5), one per member of its set:
@@ -258,8 +257,8 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
   - A blob commits to the delete keys of the deltas it serves, in groups, one per distinct delete-key set (spec/wire.md §5).
 - **Delete signature** for a blob: Ed25519 (RFC 8032 signing) over `"osis v1 delete" || digest` (§2, spec/wire.md §11.2) with secret scalar h·a mod ℓ, nonce prefix `kdf("delete nonce", seed, prefix salt || blind)` (seed: the delete key's RFC 8032 seed), and public key A'.
   - It verifies strictly under A' (§1).
-  - A host checks it against the blob prefix's commitment at its level in a group, one per group for a Delete, and requires the label signature the levels call for (spec/sync.md §5).
-- A holder tries every epoch it holds of the level's secret up the thing's record chain (a thing that got secrets of its own keeps its earlier content under its former base's keys) and signs with the one whose key the header lists, or, for a linked blob, the link names (spec/sync.md §7 Freed links; level 2 along the chain of the dropped body's author).
+  - A node keeping the sync ID unread checks it against the blob prefix's commitment at its level in a group, one per group for a Delete, and requires the sync ID signature the levels call for (spec/sync-ids.md §6).
+- A holder tries every epoch it holds of the level's secret up the thing's record chain (a thing that got secrets of its own keeps its earlier content under its former base's keys) and signs with the one whose key the header lists, or, for a linked blob, the link names (spec/sync-compaction.md §1; level 2 along the chain of the dropped body's author).
 
 ## 8. Agility
 - Keys, signatures, KEM public keys and sealed boxes are enums (`signing_key`, `signature`, `kem_key`, `sealed`) with one case today. Cases are never removed; a new primitive is a new case.

@@ -70,6 +70,4 @@ LAN discovery announces nothing stable across networks or meaningful to stranger
   - The node acts as its client actor: it signs the session's commits as its account, with that actor in the header's actor field, and holds them to that actor's rights itself, since receivers judge only the author account's (spec/permissions.md §5).
   - A client's secret is never sent on another transport.
   - A client whose connection ended dials again with its session id unchanged, sends Auth, and resends each write that had no answer, marking it (spec/wire.md §11.2). A node that no longer remembers it answers that its outcome is unknown.
-- **Group source**: a node MAY read and write a group through another node it is a client of (the group's source).
-  - A thing in a group sourced at another node goes there, whatever else holds it; the copy this node holds never answers.
-  - A write on it is refused while a group carrying it (spec/sync-judgement.md §1) syncs here or is sourced at another node.
+- **Group source**: a group read and written through a node one is a client of: spec/sync-set.md §5.

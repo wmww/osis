@@ -3,7 +3,7 @@
 
 ## 1. Conventions
 - Every structure below is canonical CBOR in the profile of spec/data-model.md §5 unless it is given as a fixed byte layout. `[a, b]` is an array with exactly those positions; `Opt(X) := [] | [X]`; `X*` repeats X zero or more times, `X+` one or more. A decoder rejects any other length, a wrong major type, or an item outside its stated size.
-- Inside structures (not values): a tid is a 15-byte byte string, a commit ID, blob ID, step ID or hash a 32-byte byte string, a label ID a 16-byte byte string, a time (wall ms) or `ts` an unsigned integer. A **value** (spec/data-model.md §4) embedded in a structure keeps its value encoding (tags included).
+- Inside structures (not values): a tid is a 15-byte byte string, a commit ID, blob ID, step ID or hash a 32-byte byte string, a sync ID a 16-byte byte string, a time (wall ms) or `ts` an unsigned integer. A **value** (spec/data-model.md §4) embedded in a structure keeps its value encoding (tags included).
 - A role in a structure is a uint: 0 read, 1 write, 2 admin, 3 sync (ordered sync < read < write < admin). A purgeable-by class: 0 `nobody`, 1 `admin`, 2 `author_or_admin`, 3 `writer`. A delete level: 1, 2, 3 (spec/crypto.md §7).
 - An epoch in a structure is `[n, nonce]` (uint, 32-byte byte string; spec/crypto.md §4).
 - **AD tuples**: an AEAD associated-data tuple `(a, b, ...)` written in spec/crypto.md is the canonical CBOR array of its items in the encodings of this section; layouts below give each one.
@@ -30,10 +30,10 @@ Format version 1, spec/versioning.md §1:
 | `MAX_AK_BYTES` | 1024 bytes, one AK (§4, §13) |
 | `MAX_VALUE_DEPTH` | 64 levels of nesting in a value (§13, spec/data-model.md §5) |
 | `MAX_DRIFT` | 1 hour |
-| `MAX_RELAY_BLOB` | 64 KiB (65 536 bytes), whole relay-only blob (spec/sync.md §5, §9) |
+| `MAX_RELAY_BLOB` | 64 KiB (65 536 bytes), whole relay-only blob (spec/sync-ids.md §6; spec/sync-compaction.md §2) |
 | `ROLE_KEEP` | 90 days |
 | `INBOX_LIFETIME` | 90 days |
-| `DEPOSITS_WAITING`, `DEPOSITS_WAITING_BYTES` | 32 entries, 1 MiB (1 048 576 bytes): deposits a node leaves waiting under a label it clears (spec/sync.md §5) |
+| `DEPOSITS_WAITING`, `DEPOSITS_WAITING_BYTES` | 32 entries, 1 MiB (1 048 576 bytes): deposits a node leaves waiting under a sync ID it clears (spec/sync-inbox.md §4) |
 | `LIST_TREE_DEPTH` | 32: levels of a rotation's list tree, at most 2^32 thing lists per rotation (§4, List tree; spec/permissions.md §5.5) |
 | `MAX_CHAIN_DEPTH` | 64 links from a thing up its record chain to its key actor (spec/permissions.md §1) |
 | `MAX_RETENTION_ENTRIES` | 64 entries in the `rules` of one `retention^.0` delta (spec/commits.md §5) |
@@ -45,20 +45,20 @@ Not format constants (§11). Per-message caps: §11.2.
 | constant | value |
 |---|---|
 | `MAX_MESSAGE` | 9 MiB (9 437 184 bytes), one frame's `len` (§11.1) |
-| `REPLY_BUDGET` | `MAX_MESSAGE` − 64 KiB: the greatest `max_reply` (§11.2) and the bound on a peer's untaken bytes for a push (spec/sync.md §8) |
-| `SMALL_REPLY` | 16 KiB (16 384 bytes): the smallest `max_reply` (§11.2) and the reply allowance of every kind without its own (spec/sync.md §6) |
-| `WINDOW` | 16 MiB (16 777 216 bytes) a requester keeps in flight per connection (spec/sync.md §6) |
+| `REPLY_BUDGET` | `MAX_MESSAGE` − 64 KiB: the greatest `max_reply` (§11.2) and the bound on a peer's untaken bytes for a push (spec/sync-streams.md §2) |
+| `SMALL_REPLY` | 16 KiB (16 384 bytes): the smallest `max_reply` (§11.2) and the reply allowance of every kind without its own (spec/sync-streams.md §1) |
+| `WINDOW` | 16 MiB (16 777 216 bytes) a requester keeps in flight per connection (spec/sync-streams.md §1) |
 | `MAX_SUBS` | 4096 live subscriptions per connection (§11.2) |
 | `MAX_CONNS_PER_CLIENT` | 8 authenticated sessions of one client actor (§11.2) |
 
-### Host and node policy
+### Node policy
 Not format constants. A value marked recommended is advice.
 
 | name | value |
 |---|---|
-| `TOMBSTONE_LIFETIME` | recommended 30 days (spec/sync.md §4, §5) |
-| deposit budget | recommended minimum `64 + 4 ×` (size of the current step's claim set) entries and that many × 32 KiB bytes (spec/sync.md §5) |
-| `MAX_DELIVERED` | 2^16 delivered relay-only commit IDs remembered (spec/sync.md §9) |
+| `TOMBSTONE_LIFETIME` | recommended 30 days (spec/sync-ids.md §5, §6) |
+| deposit budget | recommended minimum `64 + 4 ×` (size of the current step's claim set) entries and that many × 32 KiB bytes (spec/sync-inbox.md §3) |
+| `MAX_DELIVERED` | 2^16 delivered relay-only commit IDs remembered (spec/sync-compaction.md §2) |
 | `LOST_HEARD_WAIT_MS` | `ROLE_KEEP`: how long after a node first found a role gone by an `until` alone it drops anyway (spec/permissions.md §2) |
 | `SETTLE_MS` | local policy, 30 s: how long a node leaves another node's fresh demotion or `keys.0` to its author before copying it, and a plain thing with a holder to the author of its newest edge write before giving it secrets of its own (spec/permissions.md §2, §3, §4) |
 
@@ -103,7 +103,7 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`
 - **Commit ID** = BLAKE3(canonical bytes of `Header`). The signature is the `signature` value of the author's key (an account's: the signing key of the epoch the header names) under `"osis v1 commit"` over the digest below.
 - The commit signature of an account's commit signs BLAKE3(commit ID ‖ `inner` ‖ each merge signature) (spec/crypto.md §2); every other commit's signs the commit ID.
 - **Inner signature** (spec/crypto.md §3): `inner` is present iff the author is an account (else bad input): 95 bytes, XChaCha20-Poly1305 under `kdf("inner key", inner secret, commit ID)`, nonce 24 zero bytes, no AD, of the node's tid (15) then its raw Ed25519 signature under `"osis v1 inner"` over the commit ID (64).
-- **Merge signatures**: one `signature` per fork rotation the header's `rotation` names, in that order, each under `"osis v1 merge"` over the commit ID by the signing key that fork mints (spec/crypto.md §9); empty without a rotation; another count is bad input. A header-only copy of a rotation (spec/sync.md §3) carries them.
+- **Merge signatures**: one `signature` per fork rotation the header's `rotation` names, in that order, each under `"osis v1 merge"` over the commit ID by the signing key that fork mints (spec/crypto.md §9); empty without a rotation; another count is bad input. A header-only copy of a rotation (spec/sync-judgement.md §1) carries them.
 - **List tree** (spec/permissions.md §5.5): a binary Merkle tree of depth `LIST_TREE_DEPTH` whose leaves are a rotation's thing lists, each at a random distinct index below 2^`LIST_TREE_DEPTH`.
   ```
   ThingList := [tid, [commit_id*] | LINK, salt]
@@ -113,9 +113,9 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`
   - `ThingList`: the thing, the commit IDs ascending and distinct (inline iff its canonical encoding is at most `CHUNK_THRESHOLD`, else a LINK to a chunk tree of it as for a linked frontier, keyed by the thing's dedup secret), a fresh random 16-byte `salt`.
   - Leaf = BLAKE3(`"osis v1 list leaf"` || canonical bytes of the `ThingList`); an interior node = BLAKE3(`"osis v1 list node"` || left || right). Every subtree holding no leaf hashes to a fresh random 32-byte value. `list_root` is the root.
   - `ThingCert`: the rotation's commit ID, the leaf's index (uint), the `LIST_TREE_DEPTH` sibling hashes from the leaf up; it verifies when folding the leaf with them by the index's bits (bit k set: the sibling is on the left at height k) gives the rotation's `list_root`. A cert that does not verify is bad input.
-  - A list blob (spec/sync.md §3) is a blob whose plaintext, in place of a `CommitBlobPlaintext`, is `ListBlobPlaintext`, with no commitments and no expiry.
-- **Commit blob** plaintext: `CommitBlobPlaintext`: one blob carries the whole commit, every part sealed to its thing's readers (spec/sync.md §3).
-  - A `Section` holds the parts of one thing: `[ai*]` the aspect indices of its parts, ascending, distinct, each with a part inside; `[chain*]` the thing's derivation chain (spec/crypto.md §3) as the writer knows it, nearest first (empty for an actor with secrets of its own or a key actor; at most `MAX_CHAIN_DEPTH`, no tid twice: else bad input); `ciphertext` = XChaCha20-Poly1305 of the canonical `[Part*]` list under a fresh random 32-byte section key, nonce 24 zero bytes (the key encrypts this one plaintext and nothing else), AD = the commit ID; `wrap` = a random 24-byte nonce `||` XChaCha20-Poly1305 of the section key under `kdf("section", read secret of the thing)` (its own, or derived from its base actor's by tid, spec/crypto.md §3) at the newest epoch the writer holds (a rotation's section under the epoch it supersedes, spec/crypto.md §5), that nonce, AD = the commit ID: 72 bytes. Sections sorted by their first `ai`; an aspect in two sections is bad input; zero sections is allowed (every delta purged). A copy (per-label or certificate, spec/sync.md §3) is one section of its parts, with an empty chain, its `wrap` under `kdf("section", blob key)` in place of a read secret: whoever opens a wrap of the blob reads it.
+  - A list blob (spec/sync-judgement.md §1) is a blob whose plaintext, in place of a `CommitBlobPlaintext`, is `ListBlobPlaintext`, with no commitments and no expiry.
+- **Commit blob** plaintext: `CommitBlobPlaintext`: one blob carries the whole commit, every part sealed to its thing's readers (spec/sync-judgement.md §1).
+  - A `Section` holds the parts of one thing: `[ai*]` the aspect indices of its parts, ascending, distinct, each with a part inside; `[chain*]` the thing's derivation chain (spec/crypto.md §3) as the writer knows it, nearest first (empty for an actor with secrets of its own or a key actor; at most `MAX_CHAIN_DEPTH`, no tid twice: else bad input); `ciphertext` = XChaCha20-Poly1305 of the canonical `[Part*]` list under a fresh random 32-byte section key, nonce 24 zero bytes (the key encrypts this one plaintext and nothing else), AD = the commit ID; `wrap` = a random 24-byte nonce `||` XChaCha20-Poly1305 of the section key under `kdf("section", read secret of the thing)` (its own, or derived from its base actor's by tid, spec/crypto.md §3) at the newest epoch the writer holds (a rotation's section under the epoch it supersedes, spec/crypto.md §5), that nonce, AD = the commit ID: 72 bytes. Sections sorted by their first `ai`; an aspect in two sections is bad input; zero sections is allowed (every delta purged). A copy (per-sync-ID or certificate, spec/sync-judgement.md §1) is one section of its parts, with an empty chain, its `wrap` under `kdf("section", blob key)` in place of a read secret: whoever opens a wrap of the blob reads it.
   - A reader tries, per section, the read secrets it holds of the section's thing, those derived by tid through the listed chain from the epochs it holds of any member of it (the thing's record may be inside the section; a member given secrets of its own since holds the derived epoch in its history), newest first, and the blob key. Parts that open on an aspect the section does not list, or a listed aspect with no part, are bad input. A section no held secret opens is kept as it is: a non-reader learns nothing of it beyond its size, `ai` list and chain, and copies it verbatim into a fresh encryption of the commit.
   - A `Part` holds one delta: `ai` indexes `aspects`, `delta` is the embedded `Delta` or `Snapshot` array (spec/crdt.md §3.2, §8) whose canonical bytes hash to that aspect's `hash`. Within a section parts sorted by `ai`, distinct.
   - The blob's prefix commitment groups are those of the delete keys its sections' aspects list (§5); its expiry is the header's `expires`. The whole commit stays within `MAX_BLOB` (a writer pages its deltas, spec/crdt.md §8, and refuses a commit that still does not fit): about 150 000 small changes on one thing, or about 6 500 things.
@@ -141,7 +141,7 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
 | 0 | 1 | framing version: 1 |
 | 1 | 16 | salt, random per encryption |
 | 17 | 8 | expiry `T`: le64 wall ms; 0 means none |
-| 25 | 1 | class: 0 durable, 1 ephemeral, 2 relay-only (spec/sync.md §1); any other value is bad input |
+| 25 | 1 | class: 0 durable, 1 ephemeral, 2 relay-only (spec/sync-ids.md §1); any other value is bad input |
 | 26 | 2 | n: number of commitment groups, le16 |
 | 28 | … | n groups, each: a count byte m (0..3) then 33·m commitments: level byte (1..3) `||` 32-byte blinded delete key (spec/crypto.md §7), levels strictly ascending within a group |
 
@@ -150,10 +150,10 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
 - Plaintext per blob kind: commit blob `CommitBlobPlaintext` (§4); chunk: the raw chunk bytes; tree node and link page: §6; page: §6; inbox blob: §9 (its ciphertext is a sealed box, not the AEAD above).
 - Class: a commit blob's class is that of its header's ephemeral marker (none: durable, 0: ephemeral, 1: relay-only); a mismatch is bad input. Inbox blobs are durable; a chunk, tree node, page or link page has the class of the commit whose delta introduced it. A relay-only commit blob's expiry `T` is its header's `ts` (wall ms) plus `MAX_DRIFT` (its header carries no `expires`); any other is bad input.
 - Commitments, blinded by the blob's own salt and its blind (a commit blob: its header's; a chunk, tree node, page or link page: its thing blind), one per level within a group (spec/crypto.md §7):
-  - a commit blob carries one group per distinct delete-key set among the aspects its sections list (opened or not), each group the keys of that set in header key order, groups in order of their first aspect; a `nobody` aspect's set is empty, so its group is (a Delete by level then never verifies, spec/sync.md §5); a header-only blob carries no group;
+  - a commit blob carries one group per distinct delete-key set among the aspects its sections list (opened or not), each group the keys of that set in header key order, groups in order of their first aspect; a `nobody` aspect's set is empty, so its group is (a Delete by level then never verifies, spec/sync-ids.md §6); a header-only blob carries no group;
   - a chunk, tree node or page carries one group: the delete keys of the delta that created it;
   - a chunk or tree node of a linked header list (§4) carries one group holding the commitment of the commit's level-2 key only (empty when the header lists none); its expiry is the commit's `expires`.
-- **Wrap**: XChaCha20-Poly1305 under `kdf("wrap", label read secret)`, nonce = first 24 bytes of the blob ID, empty AD, plaintext `suite (1) || blob key (32) || order (8, little-endian)`: 57 bytes. A filler is 57 random bytes.
+- **Wrap**: XChaCha20-Poly1305 under `kdf("wrap", read secret)` (the read secret of the sync ID's thing), nonce = first 24 bytes of the blob ID, empty AD, plaintext `suite (1) || blob key (32) || order (8, little-endian)`: 57 bytes. A filler is 57 random bytes.
 - A node that does not know a blob's framing version stores and relays it as a durable blob with no expiry and no commitments.
 
 ## 6. Chunker, chunk trees, pages
@@ -174,7 +174,7 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
   - Symmetric `wrap`: XChaCha20-Poly1305 under `kdf("box", s)`, nonce = first 24 bytes of BLAKE3(AD), plaintext `suite (1) || secret (32)`: 49 bytes.
   - For an account holder, `[sn, snonce]` of the symmetric form is its epoch name (spec/crypto.md §3), `s` its role secret at that epoch.
   - Symmetric `possession`: present iff the holder is not a key actor other than an account: a `signature` by the possession key of s (spec/crypto.md §4, Holder actors) under `"osis v1 possession"`, digest BLAKE3(canonical `[actor, holder, role, n, nonce, form, wrap]`), the AD's items then the wrap.
-- **Entry box** (spec/sync.md §2): a `box` value in the sealed form with no keyset epoch, AD = `[label_id, step_key, form]`, payload `[role, n, secret, earlier, sync]` with the read role, `earlier` `[n, secret]` of the earlier read epoch (spec/sync.md §2) or `[]`, `sync` `[n, secret]` of the sync epoch whose key the step registers; its epochs are the label's group thing's. A claim set holding a box of another form is malformed.
+- **Entry box** (spec/sync-ids.md §2): a `box` value in the sealed form with no keyset epoch, AD = `[sync_id, step_key, form]`, payload `[role, n, secret, earlier, sync]` with the read role, `earlier` `[n, secret]` of the earlier read epoch (spec/sync-ids.md §2) or `[]`, `sync` `[n, secret]` of the sync epoch whose key the step registers; its epochs are the sync ID's thing's. A claim set holding a box of another form is malformed.
 - **Superseded list** (spec/crypto.md §4): a keyset's field 4 `supersedes` (spec/data-model.md §9), `set<epoch>`: each epoch `[n, nonce]` the rotation lists. A rotation commit writes the whole keyset (a replace), so the list is read from its `keys.0` delta.
 - **Possession proof** (spec/crypto.md §4, Possession): a keyset's field 7 `proofs`, `map<tid, possession_proof>`: per holder actor M of the rotated actor, `{ keyset: epoch of M's keyset k of the keyset's role, signature }`, the signature by the possession key of k's secret under `"osis v1 possession"`, digest BLAKE3(canonical `[actor, M, role, keyset]`), the keyset value with an empty `proofs`.
 - **Left out** (spec/crypto.md §4, Holder actors): a keyset's field 8 `left_out`, `map<tid, set<epoch>>`: per holder actor M the rotation left out of the keyset's role, the epochs `[n, nonce]` of M's keysets of that role it records M left out at; empty for every other rotation. A proof's digest covers it.
@@ -182,89 +182,89 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
 - **History box** (role r, epoch e): XChaCha20-Poly1305 under `kdf("history", secret_r[e])`, nonce 24 zero bytes, AD = `[actor, role, n, nonce]`, plaintext `[[[n, secret]*], [[name*], Opt([ts, author, blind])]]`: the earlier secrets strictly ascending by the epochs they name (by `n`, then `nonce` bytewise), each `n` below e's (a box breaking this opens to nothing), then the names (spec/crypto.md §4), each `[ts, author, commit, holder, void]` (the edge write's commit key, the holder whose edge it writes, and whether it is void, a bool), ascending by those fields, then the departs mark (the rotation commit's `ts`, author and header `blind`); the `secrets.0` history map holds the ciphertext.
 - Suite 1 is the only suite: `suite` fields and suite bytes are 1.
 
-## 8. Labels: steps and claim sets
+## 8. Sync IDs: steps and claim sets
 ```
-Step     := [label_id, prev, sync_pk, write_pk, delete_pk, deposit_pk, step_key, claims_hash, sig]
+Step     := [sync_id, prev, sync_pk, write_pk, delete_pk, deposit_pk, step_key, claims_hash, sig]
 ClaimSet := [[claim+], {entry: box}]
 ```
-- Role keys (spec/sync.md §2) are Ed25519 key pairs whose 32-byte seed is the `kdf` output; `*_pk` are their raw public keys. `step_key`: the step's raw X25519 public key. `prev`: `Opt(step ID)`, `[]` in the genesis step.
-- `sig`: raw Ed25519 signature by the parent's delete key (the genesis step: by its own `delete_pk`) under `"osis v1 label register"`, digest BLAKE3(canonical bytes of the array of the first eight items). **Step ID** = BLAKE3(canonical bytes of `Step`).
-- **Label ID** = first 16 bytes of BLAKE3(`"osis v1 label id"` || genesis `delete_pk`).
-- `claims_hash` = BLAKE3(canonical bytes of the step's `ClaimSet`). `claim`: 32 bytes, a claim public key or static entry (spec/sync.md §2), the count a power of two from 1 to `MAX_CLAIMS`, order as the registrar wrote it. The map holds an entry box (§7) per static entry listed, keyed by the 32-byte entry; every key appears in the claims.
-- **Claim key pair**: the Ed25519 key pair with seed `kdf("label claim", DH(step private key, M's X25519 key), label_id || step_key)`.
-- **Static entry**: `BLAKE3("osis v1 static claim" || label_id || pk)` with `pk` the key actor's raw Ed25519 signing key.
-- `label.0` stores a step as the canonical bytes of `Step` and its claim set as those of `ClaimSet` (`step_record`, spec/data-model.md §9).
+- Role keys (spec/sync-ids.md §2) are Ed25519 key pairs whose 32-byte seed is the `kdf` output; `*_pk` are their raw public keys. `step_key`: the step's raw X25519 public key. `prev`: `Opt(step ID)`, `[]` in the genesis step.
+- `sig`: raw Ed25519 signature by the parent's delete key (the genesis step: by its own `delete_pk`) under `"osis v1 sync step"`, digest BLAKE3(canonical bytes of the array of the first eight items). **Step ID** = BLAKE3(canonical bytes of `Step`).
+- **Sync ID** = first 16 bytes of BLAKE3(`"osis v1 sync id"` || genesis `delete_pk`).
+- `claims_hash` = BLAKE3(canonical bytes of the step's `ClaimSet`). `claim`: 32 bytes, a claim public key or static entry (spec/sync-ids.md §2), the count a power of two from 1 to `MAX_CLAIMS`, order as the registrar wrote it. The map holds an entry box (§7) per static entry listed, keyed by the 32-byte entry; every key appears in the claims.
+- **Claim key pair**: the Ed25519 key pair with seed `kdf("sync claim", DH(step private key, M's X25519 key), sync_id || step_key)`.
+- **Static entry**: `BLAKE3("osis v1 static claim" || sync_id || pk)` with `pk` the key actor's raw Ed25519 signing key.
+- `sync.0` stores a step as the canonical bytes of `Step` and its claim set as those of `ClaimSet` (`step_record`, spec/data-model.md §9).
 
 ## 9. Inbox blobs
 - **Inbox blob** (spec/crypto.md §5): prefix with expiry = the sender's wall ms + `INBOX_LIFETIME` and no commitments, then the raw bytes of a sealed box (§7, not a `sealed` value) to the recipient's newest read keyset KEM key.
 - AD = `[recipient, "inbox", prefix bytes]` (`"inbox"` a text string).
 - Payload: the padded (§5) canonical bytes of `InboxPayload`:
   ```
-  InboxPayload := [CommitBlobPlaintext, [[tid, Opt([label_id, [address*]]), Opt([admin_pk, write_pk])]*], [CommitBlobPlaintext*], [creation*]]
+  InboxPayload := [CommitBlobPlaintext, [[tid, Opt(sync_id), Opt([admin_pk, write_pk])]*], [CommitBlobPlaintext*], [creation*]]
   ```
   - **Position 0**: the role commit with the parts about the recipient (§4).
-  - **Position 1**: for each thing it names, sorted by tid: if the thing has a label of its own (its `label.0`, never a group's holding it), that label's ID and host addresses (`address` values, spec/data-model.md §9) and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7).
-  - **Positions 2 and 3**: empty unless a thing the commit touches has no label of its own or the recipient holds less than read on it now, as the sender judges it (sync alone, or removed: it reads no label of it). Then they hold, a chain that would not fit the blob left out:
+  - **Position 1**: for each thing it names, sorted by tid: if the thing has a sync ID of its own (its `sync.0`, never a group's holding it), that sync ID and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7).
+  - **Positions 2 and 3**: empty unless a thing the commit touches has no sync ID of its own and the recipient reads it now, as the sender judges it. A recipient holding less than read on every thing the commit touches (sync alone, or removed) gets them empty: the box and the sync IDs are all it takes (spec/sync-inbox.md §2). Otherwise they hold, a chain that would not fit the blob left out:
     - the author's chain certificates for the carried parts (spec/permissions.md §4): its commits, each projected to its chain deltas and without any `keys.0` but the author's own, in position 2, and its creation records, ascending by tid and distinct, in position 3;
     - when the commit boxes the recipient (a grant, a re-seal), the current `keys.0` commit of each thing it boxes it on, projected to that delta, in position 2.
-- A recipient ingests the chain before the commit, only once the blob is admitted (spec/sync.md §3), and only its records, `roles.0` and `keys.0` deltas and accounts' rotations.
-- **Stranded notice** (spec/permissions.md §4): an inbox blob whose payload is `StrandedNotice := ["stranded", label_id, holder, HolderKeys]` (flattened: `HolderKeys` is two positions) in place of an `InboxPayload`: the label the holder (an actor tid) is stranded on, and its holder keys. It carries no role commit and asks only for a re-seal the recipient judges itself.
+- A recipient ingests the chain before the commit, only once the blob is taken (spec/sync-inbox.md §2), and only its records, `roles.0` and `keys.0` deltas and accounts' rotations.
+- **Stranded notice** (spec/permissions.md §4): an inbox blob whose payload is `StrandedNotice := ["stranded", sync_id, holder, HolderKeys]` (flattened: `HolderKeys` is two positions) in place of an `InboxPayload`: the sync ID the holder (an actor tid) is stranded on, and its holder keys. It carries no role commit and asks only for a re-seal the recipient judges itself.
 - **Holder keys**: `HolderKeys := [CommitBlobPlaintext*], [creation*]`: the holder's current `keys.0` commits (its newest `keys.0` write and the rotation commits of its newest keyset per role), each projected to its `keys.0` delta on the holder, with their authors' chain certificates for those deltas, each projected to its chain deltas (as position 2 of `InboxPayload`); then that chain's creation records, ascending by tid, distinct. A receiver ingests only what is on things in the holder's authority chain as it judges it while taking them (spec/permissions.md §4): `keys.0` deltas on the named holder and on the authors of the holder's `keys.0` commits carried (their cards), records, and `roles.0` deltas, each kept only if judged valid; it ignores the rest.
 
 ## 10. Links
 ```
-Link := [1, seed, target, k, k_label, [address*], [peer*], ? flags]
+Link := [1, seed, target, k, k_sync_id, [peer*], ? flags]
 peer := [dialable, [relay*]]
 ```
-- `Link` (spec/permissions.md §7): format 1, L's 32-byte seed, the target tid, K's tid, K's label ID, host addresses of K's label, and the sharer node's P2P reach for first contact: `dialable` its 32-byte dialable key, `relay` its relays as `peer://` relay items (the relay items of `reach.0`, spec/data-model.md §9, spec/sync.md §10). A redeemer with no common host dials a peer, which serves K's label as a co-reader peer (spec/sync.md §5). `flags` (uint): bit 0 single use (the redemption removes L's own grant, spec/permissions.md §7); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
-- The label a link names is K's label (spec/sync.md §2): K is created with it.
-- Caps: at most 8 addresses, 4 peers, 4 relays per peer; URLs at most 256 bytes (§13).
+- `Link` (spec/permissions.md §7): format 1, L's 32-byte seed, the target tid, K's tid, K's sync ID, and the sharer node's P2P reach for first contact: `dialable` its 32-byte dialable key, `relay` its relays as `peer://` relay items (the relay items of `reach.0`, spec/data-model.md §9, spec/sync-transport.md §3). The redeemer dials a peer, which serves K's sync ID as a peer that reads it (spec/permissions.md §7). `flags` (uint): bit 0 single use (the redemption removes L's own grant, spec/permissions.md §7); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
+- The sync ID a link names is K's home sync ID (spec/sync-ids.md §2): K is created with it.
+- Caps: at most 4 peers, 4 relays per peer; URLs at most 256 bytes (§13).
 - Text form: `osis://link/` followed by the unpadded base64url of the canonical bytes.
 
 ## 11. Node-to-node protocol (version 1)
 ### 11.1 Framing and handshake
-- Each direction of the stream (spec/sync.md §10) is a sequence of frames: a 4-byte big-endian length `len`, `1 <= len <= MAX_MESSAGE`, then one canonical CBOR item of `len` bytes. A frame breaking a rule of this section is answered by Error 2 and may end the connection.
+- Each direction of the stream (spec/sync-transport.md §1) is a sequence of frames: a 4-byte big-endian length `len`, `1 <= len <= MAX_MESSAGE`, then one canonical CBOR item of `len` bytes. A frame breaking a rule of this section is answered by Error 2 and may end the connection.
 - Each side sends `Hello := ["osis", [version+], wall_ms, challenge]` as its first frame, without waiting for the other's: supported protocol versions strictly ascending (at most 16; the Hello frame at most 256 bytes), its wall clock, 32 random bytes. The session uses the greatest version both list; with none in common, both close. This section defines version 1.
 - Every later frame is a message `[kind, id, ...]`. `id < 2^32` is chosen by the requesting side and not reused while its request is outstanding; replies carry it, and a reply naming no request of the receiver's outstanding is dropped, never answered, as is a malformed reply or push; a malformed request is answered Error 2. `id` is 0 in a push (Notify, Stream, Applied, Digest, Members) and nonzero in every request and reply, except an Error answering a frame whose id cannot be read, which carries 0; any other id 0 (or a push with another id) is malformed. A Sub's id names its subscription and is not reused (by any request) until its Unsub is answered, a Notify `[1]` for it arrived, or its Sub was answered otherwise than by Reply `[0, ..]`; a Sub reusing a live subscription's id is answered Error 2. Either side may send requests. A request of unknown kind gets Error 11. Replies may arrive in any order, except a stream's (§11.2, Pull).
-- **Static key** of a side: the 32-byte key the transport authenticated for it (the key of the address dialed or listened on: a host's address key; a peer's dialable key, or the LAN transport key it announced). An open signature binds its signer's side, the other side's Hello challenge and the listener's static key.
+- **Static key** of a side: the 32-byte key the transport authenticated for it (the key of the address dialed or listened on: a peer's dialable key, or the LAN transport key it announced). An open signature binds its signer's side, the other side's Hello challenge and the listener's static key.
 
 ### 11.2 Messages
 ```
 Error     [0, id, code]
 Ok        [1, id]
 Ping      [2, id, wall_ms]                     -> Pong [3, id, wall_ms]
-Register  [7, id, label_id, step, Opt(claim_set)]   -> Ok | Error
+Register  [7, id, sync_id, step, Opt(claim_set)]   -> Ok | Error
 Status    [11, id, [code+]]
-Delete    [14, id, label_id, [item+]]          -> Status
-Fetch     [19, id, label_id, max_reply, [blob_id+]]     -> FetchReply [20, id, [[blob_id, Opt([blob, wrap, Opt(stamp)])]*]]
+Delete    [14, id, sync_id, [item+]]          -> Status
+Fetch     [19, id, sync_id, max_reply, [blob_id+]]     -> FetchReply [20, id, [[blob_id, Opt([blob, wrap, Opt(stamp)])]*]]
 Auth      [24, id, Opt(secret), session_id]      -> Reply [0, []] | Error
 Call      [25, id, max_reply, method, [arg*]]  -> Reply | Error
 Reply     [26, id, outcome]
 Sub       [27, id, max_reply, filter]          -> Reply | Error
 Unsub     [28, id, sub_id]                     -> Ok
 Notify    [29, 0, sub_id, payload]
-Stranded  [30, id, label_id, holder, HolderKeys] -> Ok
-Suspect   [31, id, label_id, [suspect+]]       -> Ok
+Stranded  [30, id, sync_id, holder, HolderKeys] -> Ok
+Suspect   [31, id, sync_id, [suspect+]]       -> Ok
 Prove     [32, id, [actor_proof*]]             -> Proved | Error
 Proved    [33, id, [actor_proof*]]
 Resume    [34, id, nonce, [tag*]]             -> Resumed | Error
 Resumed   [35, id, nonce, Opt(tag)]
 Beacons   [36, id, generation, Opt(base), f, lo, hi, gcs, more]  -> Shared
 Offer     [37, id, [item+]]                    -> Shared
-Lost      [38, id, [[label_id, Opt(cursor)]+]]  -> Shared
+Lost      [38, id, [[sync_id, Opt(cursor)]+]]  -> Shared
 Shared    [39, id, [[code, Opt(tag), Opt(grant)]+]]
 NoRecord  [40, id]                             -> Shared
 Pull      [41, id, Opt(cursor), [join*], inline_limit, max_reply, follow, ephemeral]
-                                               -> PullReply [42, id, [[label_id, event]*], Opt(cursor), whole, trimmed, more, report, [join*]]
-Stream    [43, 0, [[label_id, event]*], Opt(cursor), report, seq]
+                                               -> PullReply [42, id, [[sync_id, event]*], Opt(cursor), whole, trimmed, more, report, [join*]]
+Stream    [43, 0, [[sync_id, event]*], Opt(cursor), report, seq]
 Applied   [44, 0, cursor]
 Digest    [45, 0, digest]
-Members   [46, 0, [label_id*], more]
+Members   [46, 0, [sync_id*], more]
 
 actor_proof := [creation, key, sig]
-item   := [0, hit, Opt(sig)] | [1, label_id, [hit+]] | [2, label_id, blob, wrap, sig] | [3, label_id, Opt(step_id), key, sig] | [4, hit, signing_pk, sig]
+item   := [0, hit, Opt(sig)] | [1, sync_id, [hit+]] | [2, sync_id, blob, wrap, sig] | [3, sync_id, Opt(step_id), key, sig] | [4, hit, signing_pk, sig]
 grant  := [Opt(entry_box), [step+]]
-join   := [label_id, Opt(cursor)]
+join   := [sync_id, Opt(cursor)]
 item   := [blob_id, [[level, dsig]*], sig]
 outcome := [0, value] | [1, code, detail*]
 payload := [0, value] | [1] | [2, value]
@@ -274,45 +274,44 @@ event  := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [2, full] |
 Kinds 4-6, 8-10, 12, 13, 15-18 and 21-23 and status codes 10 and 15 are retired: never sent, never reused; a retired kind is unknown (answered Error 11).
 Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canonical bytes as byte strings; blobs are byte strings; `wrap` 57 bytes; `sig`, `dsig`, `stamp` raw 64-byte Ed25519 signatures; `*_pk` raw 32-byte keys.
 
-- **Prove** (spec/sync.md §10, Connection proofs): dialer to listener, at most one per connection (a second is answered Error 2). `creation` is the proving key actor's creation record (§3): the actor is its tid. `key` the signing key that made `sig`: the record's own, or for an account its signing key at an epoch (open at the verifier, spec/sync.md §10). `sig` by `key` under `"osis v1 connection proof"`, digest BLAKE3(canonical `[by_listener, challenge, listener_key]`): `by_listener` 0 for a dialer's proof and 1 for a listener's, `challenge` the verifier's Hello challenge, `listener_key` the listener's static key. A verifier checks proofs in order and stops at the first that does not verify: it and those after it prove nothing, those before it stand. A message carries at most `MAX_PROOFS` (256) proofs; past it it is refused whole. A node sends its own proof first (only to a node of its own account, spec/sync.md §10), then its account's, then its key actors by ascending tid, as many as fit. **Proved** carries the listener's proofs, possibly none, under the same rules. A node serving no identity answers none.
-- **Beacons** (spec/sync.md §10, Shared set): one page of generation `generation` of a side's filter: a Golomb-Rice coded multiset of `f`-bit values over `[lo, hi)`, Rice parameter 8, each value's gap from the last (from `lo` first) as a unary quotient of 1-bits, a 0-bit and 8 remainder bits, most significant first, the last byte padded with fewer than 8 zero bits. `more` is true on every page but the last; pages are consecutive from `lo` 0 to `hi` `2^f`. `base` absent: a whole filter, `f` is `ceil(log2(n)) + 8` of its n entries (n = 0: 8); present: additions to generation `base`, at the same `f`, at most the whole filter's n entries in all. A filter past 2^22 entries, a page out of order, a gap past `hi`, or a width or additions count breaking this is answered Error 2 and closes the connection. Shared answers each page, its code 0, or 13 for a `base` not held.
-- **Offer**: `hit` 32 bytes, at most 1024 items and 256 hits in an item. A Hit's `sig` is the proof of a sync key's or a claim's credential (spec/sync.md §10): an **open signature** under `"osis v1 label open"`, digest BLAKE3(canonical `[side, label_id, challenge, static_key]`) with `side` its signer's (0 the dialer, 1 the listener), the other side's Hello challenge and the listener's static key; absent for other credentials (a read secret's or a sync-key proof's Hit proves its secret itself). A Static item (`[4, ...]`) is a Hit on a key actor's static entry carrying the key actor's signing key and an open signature by it, digest as for a Hit's; it opens only where that key's static entry is the credential hit. A Behind item (`[3, ...]`, spec/sync.md §5 Behind) carries a credential key `key` of the step it names (a sync key, a claim, or a key actor's signing key; naming none, a sync key or a key actor's signing key) and an open signature by it, digest as for a Hit's. A Deposit item (`[2, ...]`, spec/sync.md §10) carries an inbox blob (`blob`, `wrap`, `sig` by the deposit key, below: Deposit item), at most `MAX_BLOB`; the Offer as a whole fits `MAX_MESSAGE`. Shared gives one code per item in order, a 32-byte tag for a Hit accepted, none for a ByRole or Deposit; code 14 refuses one, for no stated reason; a Deposit item is answered 0 (taken), 14, or 4, 5 or 12 (refused for now). A Hit accepted on a static entry also carries `grant` when the answering side holds the head's claim set: the head's `entry_box` for that entry and the label's path from its genesis step to that head (without claim sets). A Behind item is answered 0 with `grant` carrying no `entry_box` and the steps after the named one through the first under another sync key (without claim sets), or, by a key actor's signing key naming no step, 0 with `grant` as a Static item's accepted Hit carries; 13 for a label not kept there; 4 past the Offer's step bound (spec/sync.md §5 Behind: ⌊`REPLY_BUDGET` / 326⌋ steps, 326 bytes a step's greatest encoding as a byte string); else 14, with nothing; no other answer carries one.
-- **Lost**: at most 1024 items, `cursor` at most 256 bytes: where the member stopped for the receiver (spec/sync.md §10, Shared set). Shared answers 0 per item.
-- **NoRecord** (spec/sync.md §10, Shared set): from a dialer that keeps no record for this listener; id `2^31`.
+- **Prove** (spec/sync-opens.md §2, Connection proofs): dialer to listener, at most one per connection (a second is answered Error 2). `creation` is the proving key actor's creation record (§3): the actor is its tid. `key` the signing key that made `sig`: the record's own, or for an account its signing key at an epoch (open at the verifier, spec/sync-opens.md §4). `sig` by `key` under `"osis v1 connection proof"`, digest BLAKE3(canonical `[by_listener, challenge, listener_key]`): `by_listener` 0 for a dialer's proof and 1 for a listener's, `challenge` the verifier's Hello challenge, `listener_key` the listener's static key. A verifier checks proofs in order and stops at the first that does not verify: it and those after it prove nothing, those before it stand. A message carries at most `MAX_PROOFS` (256) proofs; past it it is refused whole. A node sends its own proof first (only to a node of its own account, spec/sync-opens.md §4), then its account's, then its key actors by ascending tid, as many as fit. **Proved** carries the listener's proofs, possibly none, under the same rules. A node serving no identity answers none.
+- **Beacons** (spec/sync-opens.md §4, Shared set): one page of generation `generation` of a side's filter: a Golomb-Rice coded multiset of `f`-bit values over `[lo, hi)`, Rice parameter 8, each value's gap from the last (from `lo` first) as a unary quotient of 1-bits, a 0-bit and 8 remainder bits, most significant first, the last byte padded with fewer than 8 zero bits. `more` is true on every page but the last; pages are consecutive from `lo` 0 to `hi` `2^f`. `base` absent: a whole filter, `f` is `ceil(log2(n)) + 8` of its n entries (n = 0: 8); present: additions to generation `base`, at the same `f`, at most the whole filter's n entries in all. A filter past 2^22 entries, a page out of order, a gap past `hi`, or a width or additions count breaking this is answered Error 2 and closes the connection. Shared answers each page, its code 0, or 13 for a `base` not held.
+- **Offer**: `hit` 32 bytes, at most 1024 items and 256 hits in an item. A Hit's `sig` is the proof of a sync key's or a claim's credential (spec/sync-opens.md §4): an **open signature** under `"osis v1 sync open"`, digest BLAKE3(canonical `[side, sync_id, challenge, static_key]`) with `side` its signer's (0 the dialer, 1 the listener), the other side's Hello challenge and the listener's static key; absent for other credentials (a read secret's or a sync-key proof's Hit proves its secret itself). A Static item (`[4, ...]`) is a Hit on a key actor's static entry carrying the key actor's signing key and an open signature by it, digest as for a Hit's; it opens only where that key's static entry is the credential hit. A Behind item (`[3, ...]`, spec/sync-ids.md §6) carries a credential key `key` of the step it names (a sync key, a claim, or a key actor's signing key; naming none, a sync key or a key actor's signing key) and an open signature by it, digest as for a Hit's. A Deposit item (`[2, ...]`, spec/sync-inbox.md §3) carries an inbox blob (`blob`, `wrap`, `sig` by the deposit key, below: Deposit item), at most `MAX_BLOB`; the Offer as a whole fits `MAX_MESSAGE`. Shared gives one code per item in order, a 32-byte tag for a Hit accepted, none for a ByRole or Deposit; code 14 refuses one, for no stated reason; a Deposit item is answered 0 (taken), 14, or 4, 5 or 12 (refused for now). A Hit accepted on a static entry also carries `grant` when the answering side holds the head's claim set: the head's `entry_box` for that entry and the sync ID's path from its genesis step to that head (without claim sets). A Behind item is answered 0 with `grant` carrying no `entry_box` and the steps after the named one through the first under another sync key (without claim sets), or, by a key actor's signing key naming no step, 0 with `grant` as a Static item's accepted Hit carries; 13 for a sync ID not kept there; 4 past the Offer's step bound (spec/sync-ids.md §6: ⌊`REPLY_BUDGET` / 326⌋ steps, 326 bytes a step's greatest encoding as a byte string); else 14, with nothing; no other answer carries one.
+- **Lost**: at most 1024 items, `cursor` at most 256 bytes: where the member stopped for the receiver (spec/sync-opens.md §4, Shared set). Shared answers 0 per item.
+- **NoRecord** (spec/sync-opens.md §4, Shared set): from a dialer that keeps no record for this listener; id `2^31`.
 - **Shared-set request ids**: `id`s of Beacons, Offer, Lost, NoRecord, Pull and a Fetch of stream bodies are chosen by each side with its top bit set, so they cannot equal an id of that side's other requests. An Error or FetchReply with such an id answers that request. A side keeping no shared set on the connection (a listener before the dialer's NoRecord or a record) answers each of them Error 14.
-- **Pull** (spec/sync.md §10, Stream), between two nodes that read the sync IDs they share, and from a reader to a peer that cannot read them: a `cursor` (here and in `join`, PullReply, Stream and Applied) is at most 256 opaque bytes the answering node sealed; `max_reply`, in `SMALL_REPLY..=REPLY_BUDGET`, bounds the reply's frame body: a server ends the page before an event that would pass it, so a reply asked below `REPLY_BUDGET` may hold no event, and one asked at `REPLY_BUDGET` holds at least one. PullReply carries, in log order, the events after `cursor` of each member of the connection's shared set, and of each `join`'s member after the join's cursor (from the start of the log when it has none); with no `cursor`, or any cursor of the Pull (its own or a join's) that names no position of the server's log, every member from the start, `whole` true, joins ignored; also so when any cursor of the Pull names a position below the server's deletion horizon (spec/sync.md §10), with `trimmed` true. Its `cursor` is the position the reply covers for the stream; its `join` list names each join not at that position: one still in pages, with its own cursor, to name again in the next Pull, or one the server does not share, with none. `more` true: pull again from the returned cursors. `ephemeral` true: the reply also lists the live entries of the ephemeral class of every member; every join lists its member's. Ephemeral entries count against `max_reply` with the rest; what does not fit follows in later replies or Streams. `follow` true: once a reply has `more` false, the server pushes each later run of events as a Stream from the reply's cursor, under the push rule of spec/sync.md §8, until the next Pull. A Stream with a cursor carries `seq`, the number of Streams with a cursor the server sent on the connection since its last PullReply (0 in one without a cursor); a requester applies it only in that order (spec/sync.md §10 Flow control). `report` asks for Applied once the requester applied and stored the message's cursor. Events (below) carry an add only for an entry whose bytes the server holds, its bytes inline only if its size is at most `inline_limit` and not for a blob that crossed this connection; a requester fetches any added blob whose bytes it lacks. A Stream with no `cursor` carries a relay-only entry (spec/sync.md §9), which no position names. A Stream with a `cursor` and no events moves the stream there and asks `report` (an ended member reaching its `until`, spec/sync.md §10 Reports). A side answers a connection's Pulls and top-bit Fetches in the order they arrive (PullReply, FetchReply or Error); a requester counts one of them still unanswered when a later one's answer arrives as skipped: a skipped Pull as refused, a skipped Fetch as answered with none of its IDs.
-- **Fetch** between such nodes (spec/sync.md §10, Stream), with a top-bit id: `label_id` a member of the connection's shared set; an ID it does not hold, or of a sync ID it does not share there, is answered with none; `max_reply` and a prefix as below (Fetch).
+- **Pull** (spec/sync-streams.md §4, Stream), between two nodes that read the sync IDs they share, and from a reader to a peer that cannot read them: a `cursor` (here and in `join`, PullReply, Stream and Applied) is at most 256 opaque bytes the answering node sealed; `max_reply`, in `SMALL_REPLY..=REPLY_BUDGET`, bounds the reply's frame body: a server ends the page before an event that would pass it, so a reply asked below `REPLY_BUDGET` may hold no event, and one asked at `REPLY_BUDGET` holds at least one. PullReply carries, in log order, the events after `cursor` of each member of the connection's shared set, and of each `join`'s member after the join's cursor (from the start of the log when it has none); with no `cursor`, or any cursor of the Pull (its own or a join's) that names no position of the server's log, every member from the start, `whole` true, joins ignored; also so when any cursor of the Pull names a position below the server's deletion horizon (spec/sync-opens.md §4), with `trimmed` true. Its `cursor` is the position the reply covers for the stream; its `join` list names each join not at that position: one still in pages, with its own cursor, to name again in the next Pull, or one the server does not share, with none. `more` true: pull again from the returned cursors. `ephemeral` true: the reply also lists the live entries of the ephemeral class of every member; every join lists its member's. Ephemeral entries count against `max_reply` with the rest; what does not fit follows in later replies or Streams. `follow` true: once a reply has `more` false, the server pushes each later run of events as a Stream from the reply's cursor, under the push rule of spec/sync-streams.md §2, until the next Pull. A Stream with a cursor carries `seq`, the number of Streams with a cursor the server sent on the connection since its last PullReply (0 in one without a cursor); a requester applies it only in that order (spec/sync-streams.md §4). `report` asks for Applied once the requester applied and stored the message's cursor. Events (below) carry an add only for an entry whose bytes the server holds, its bytes inline only if its size is at most `inline_limit` and not for a blob that crossed this connection; a requester fetches any added blob whose bytes it lacks. A Stream with no `cursor` carries a relay-only entry (spec/sync-compaction.md §2), which no position names. A Stream with a `cursor` and no events moves the stream there and asks `report` (an ended member reaching its `until`, spec/sync-streams.md §4). A side answers a connection's Pulls and top-bit Fetches in the order they arrive (PullReply, FetchReply or Error); a requester counts one of them still unanswered when a later one's answer arrives as skipped: a skipped Pull as refused, a skipped Fetch as answered with none of its IDs.
+- **Fetch** between such nodes (spec/sync-streams.md §4, Stream), with a top-bit id: `sync_id` a member of the connection's shared set; an ID it does not hold, or of a sync ID it does not share there, is answered with none; `max_reply` and a prefix as below (Fetch).
 - Between such nodes nothing else syncs: no Delete is sent.
-- **Digest** (spec/sync.md §10, Agreement): `digest` 32 bytes. **Members**: at most 4096 sync IDs, `more` true on every page but the last; sent only after a Digest that differs. Neither is answered.
-- **Resume** (spec/sync.md §10, Pair key): dialer to listener, after the dialer's `Proved`, at most one per connection (a second, or one before a Prove, is answered Error 2; a listener keeping no record for this connection answers Error 1). `nonce` 32 random bytes; each `tag` 32 bytes, at most `MAX_RESUME_TAGS` of them, as many as fit one message. **Resumed**: the listener's own `nonce`, and `tag` when it holds a listed record.
-- **Register**: replies Ok (also when the step already is the head), or an Error without the head (spec/sync.md §5):
-  - 2 when the step's label is not the message's or the claim set does not hash to `claims_hash`;
+- **Digest** (spec/sync-opens.md §3): `digest` 32 bytes. **Members**: at most 4096 sync IDs, `more` true on every page but the last; sent only after a Digest that differs. Neither is answered.
+- **Resume** (spec/sync-opens.md §3): dialer to listener, after the dialer's `Proved`, at most one per connection (a second, or one before a Prove, is answered Error 2; a listener keeping no record for this connection answers Error 1). `nonce` 32 random bytes; each `tag` 32 bytes, at most `MAX_RESUME_TAGS` of them, as many as fit one message. **Resumed**: the listener's own `nonce`, and `tag` when it holds a listed record.
+- **Register**: replies Ok (also when the step already is the head), or an Error without the head (spec/sync-ids.md §6):
+  - 2 when the step's sync ID is not the message's or the claim set does not hash to `claims_hash`;
   - 1 for a genesis step that does not verify;
-  - 13 for a child step of an unknown label;
+  - 13 for a child step of an unknown sync ID;
   - 9 for a step that is not a valid child of the head;
-  - 14 when a genesis step's new label is outside the host's admission (spec/data-model.md §9);
-  - 12 when that genesis step does not fit a storage cap (a child step that does not fit: spec/sync.md §5);
+  - 12 when that genesis step does not fit a storage cap (a child step that does not fit: spec/sync-ids.md §6);
   - 4 when registrations are rate-limited.
-- **Stamp**: `stamp` under `"osis v1 upload"` (`"osis v1 role entry"` for a role entry, spec/sync.md §5), digest BLAKE3(canonical `[label_id, blob_id, wrap]`).
+- **Stamp**: `stamp` under `"osis v1 stamp"` (`"osis v1 role entry"` for a role entry, spec/sync-ids.md §6), digest BLAKE3(canonical `[sync_id, blob_id, wrap]`).
 - **Deposit item**: `sig` by the deposit key under `"osis v1 deposit"` (`"osis v1 role entry"` for a role entry), digest as for a stamp.
-- **Delete**: answered Error 8 whole where the label is not open on the connection (spec/sync.md §5 Delete); per item, signatures under `"osis v1 delete"` over digest BLAKE3(canonical `[label_id, blob_id, [level*]]`), the levels those of its `[level, dsig]` pairs, ascending, distinct, within 1..3:
+- **Delete**: answered Error 8 whole where the sync ID is not open on the connection (spec/sync-ids.md §6); per item, signatures under `"osis v1 delete"` over digest BLAKE3(canonical `[sync_id, blob_id, [level*]]`), the levels those of its `[level, dsig]` pairs, ascending, distinct, within 1..3:
   - with no pair, `sig` by the head's delete key;
-  - else each `dsig` by that level's delete key, verifying under the commitment at that level of at least one of the blob prefix's groups (spec/crypto.md §7), every group covered by at least one pair, and `sig` by the head's write key when any level is 3, else its sync key (spec/sync.md §5). A pair verifying under no group refuses the item.
+  - else each `dsig` by that level's delete key, verifying under the commitment at that level of at least one of the blob prefix's groups (spec/crypto.md §7), every group covered by at least one pair, and `sig` by the head's write key when any level is 3, else its sync key (spec/sync-ids.md §6). A pair verifying under no group refuses the item.
   - An item whose entry is not held: by the delete key, 0 when a tombstone of the blob exists (a repeated delete is idempotent), else 1; with levels, 1 (the prefix to check them against is gone).
   - Status gives one code per item in order.
-- **Events**: 0 an entry added or a deposited one stamped, its wrap and stamp replaced (no stamp: deposited), 1 deleted, 2 the sender is full for the label (`full` a bool: true full, false room again; only in a Stream with no cursor, spec/sync.md §10 Full), 3 a new head (without claim set), 4 the sender refused a pulled entry for anything but room, with the refusal's code (only in a Stream with no cursor, spec/sync.md §10 Refused). Expiry produces no event.
-- **Fetch** (spec/sync.md §10): items in request order, possibly a prefix of the request when the reply would exceed `max_reply` (in `SMALL_REPLY..=REPLY_BUDGET`), possibly none below `REPLY_BUDGET`; the requester asks the rest again under `REPLY_BUDGET`.
-- **Stranded** and **Suspect** (spec/permissions.md §4): node to node only, answered Ok whatever the receiver does with them. Stranded names a label the sender is stranded on and the holder (a tid) it reads the label's actor through, with that holder's holder keys (§9); Suspect carries suspect entries of things in the label's closure, `thing` a tid, `ak` an AK, `digest` 16 bytes, as many as fit `MAX_MESSAGE` per message.
-- **Client port** (kinds 24-29): served on every connection of a node, at every listener and on those it dialed (spec/sync.md §10, One key). `session_id` is 16 bytes; `secret` is exactly 32 bytes.
+- **Events**: 0 an entry added or a deposited one stamped, its wrap and stamp replaced (no stamp: deposited), 1 deleted, 2 the sender is full for the sync ID (`full` a bool: true full, false room again; only in a Stream with no cursor, spec/sync-streams.md §4), 3 a new head (without claim set), 4 the sender refused a pulled entry for anything but room, with the refusal's code (only in a Stream with no cursor, spec/sync-streams.md §4). Expiry produces no event.
+- **Fetch** (spec/sync-streams.md §4): items in request order, possibly a prefix of the request when the reply would exceed `max_reply` (in `SMALL_REPLY..=REPLY_BUDGET`), possibly none below `REPLY_BUDGET`; the requester asks the rest again under `REPLY_BUDGET`.
+- **Stranded** and **Suspect** (spec/permissions.md §4): node to node only, answered Ok whatever the receiver does with them. Stranded names a sync ID the sender is stranded on and the holder (a tid) it reads the sync ID's actor through, with that holder's holder keys (§9); Suspect carries suspect entries of things in the sync ID's closure, `thing` a tid, `ak` an AK, `digest` 16 bytes, as many as fit `MAX_MESSAGE` per message.
+- **Client port** (kinds 24-29): served on every connection of a node, at every listener and on those it dialed (spec/sync-transport.md §5, One key). `session_id` is 16 bytes; `secret` is exactly 32 bytes.
   - **Auth**: answered Reply `[0, []]`.
-    - A main session (the unix transport, spec/sync.md §10) sends Auth without `secret`.
+    - A main session (the unix transport, spec/sync-transport.md §6) sends Auth without `secret`.
     - A client-actor session, on a keyed transport, sends it with its bearer secret (spec/data-model.md §9), which binds the session to the client actor of the `clients^.0` entry whose `secret_hash` is its BLAKE3, compared in constant time, `until` not passed.
     - Any other Auth is answered Error 1: no matching entry, no secret on a keyed transport, a secret on the unix transport, a second Auth of a client-actor session.
     - Past `MAX_CONNS_PER_CLIENT` authenticated sessions of one client or `max_clients` of all clients: Error 4.
     - A Call or Sub before an Auth answered by Reply is answered Error 1.
   - **End of a client-actor session**: it ends when its entry goes, its `secret_hash` changes or its `until` passes. Each request is checked at the time it runs and does not run if any of those holds.
   - **A client actor's rights**: every method of a client-actor session runs as its client actor, by that actor's rights at that time.
-    - A thing the actor may not read (spec/sync.md §3, and not a kept copy it reads, spec/permissions.md §3) answers every method as a thing the node does not know.
+    - A thing the actor may not read (spec/sync-judgement.md §1, and not a kept copy it reads, spec/permissions.md §3) answers every method as a thing the node does not know.
     - A write the actor may not make is code 3, adding a thing it may not read to a group code 1, a `link` value anywhere in its write code 8.
     - A revert needs the actor's rights on every write it makes (of a thing it deletes: every aspect, and its memberships in every group both the node and the actor may write; a membership in any other group stays, as for a delete) and on everything the reverted commit touched, and lists nothing the actor may not read (code 3).
     - Methods carrying state beyond a thing the actor may read are for main sessions only, code 11 otherwise.
@@ -347,10 +346,10 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | 15 | in use: the node's store is open elsewhere | `[]` |
 
   - **Payload**: `[0, ..]` is a delivery, `[1]` the subscription lapsed (its id is free), `[2, source]` a delivery above `max_reply`.
-  - **Flow control**: spec/sync.md §6; Notifies follow the push rule (spec/sync.md §8).
+  - **Flow control**: spec/sync-streams.md §1; Notifies follow the push rule (spec/sync-streams.md §2).
   - **Subscriptions**: at most `MAX_SUBS` live subscriptions per connection (Error 4 past it).
-- Once one signature of a message verifies under no key the host tries (code 1), it MAY check the message's later signatures against the head's keys only (code 1 where 9 would be due).
-- Code 9 refuses a signature under an earlier key of the label's role (a host answers it for some recent earlier keys, 1 past them) and carries nothing more, never the head: the signer learns the head where it opened the label (a stream's head event, spec/sync.md §10) and signs again once it holds a newer key.
+- Once one signature of a message verifies under no key the receiver tries (code 1), it MAY check the message's later signatures against the head's keys only (code 1 where 9 would be due).
+- Code 9 refuses a signature under an earlier key of the sync ID's role (a node answers it for some recent earlier keys, 1 past them) and carries nothing more, never the head: the signer learns the head where it opened the sync ID (a stream's head event, spec/sync-streams.md §4) and signs again once it holds a newer key.
 - **Status codes**:
 
   | code | meaning |
@@ -358,29 +357,29 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   | 0 | ok |
   | 1 | refused |
   | 2 | malformed |
-  | 3 | too large (a relay-only blob above `MAX_RELAY_BLOB`; a host answers an oversized message as malformed, 2) |
+  | 3 | too large (a relay-only blob above `MAX_RELAY_BLOB`; an oversized message is answered as malformed, 2) |
   | 4 | rate limited |
   | 5 | deposit budget full |
   | 6 | tombstoned |
   | 7 | expired |
-  | 8 | label not opened |
+  | 8 | not open |
   | 9 | key not of the head |
   | 11 | unsupported |
   | 12 | storage cap reached |
-  | 13 | unknown label |
-  | 14 | not admitted |
+  | 13 | unknown sync ID |
+  | 14 | refused |
 
 - **Per-message caps**:
   - Delete: 1024 items.
   - Fetch: 1024 IDs.
 
 ## 12. Bundles
-- A bundle file (spec/sync.md §11) is the 8 ASCII bytes `osisbndl` followed by frames as in §11.1, each one record. The first record is `[0, 1]` (bundle format 1). Records:
-  - `[1, label_id, [[step, Opt(claim_set)]+]]`: the registration path from the genesis step to the head;
+- A bundle file (spec/sync-streams.md §6) is the 8 ASCII bytes `osisbndl` followed by frames as in §11.1, each one record. The first record is `[0, 1]` (bundle format 1). Records:
+  - `[1, sync_id, [[step, Opt(claim_set)]+]]`: the registration path from the genesis step to the head;
   - `[2, blob]`: blob bytes, before the first entry naming them, once per bundle;
-  - `[3, label_id, blob_id, wrap, Opt(stamp)]`: an entry (no stamp: deposited);
-  - `[4, label_id, blob_id]`: a deletion.
-- Steps and claim sets are their canonical bytes as byte strings (as in §11.2). An importer verifies paths and stamps as a host does and applies the records as a peer's log events received without a cursor: a path record after the first for its label must pass through the current head; an entry before its blob's record, or stamped before a path record of its label (its stamp checked against that path's head), is malformed; a second format record is malformed, another bundle format parks the file; records of unknown kind are skipped.
+  - `[3, sync_id, blob_id, wrap, Opt(stamp)]`: an entry (no stamp: deposited);
+  - `[4, sync_id, blob_id]`: a deletion.
+- Steps and claim sets are their canonical bytes as byte strings (as in §11.2). An importer verifies paths and stamps as a node keeping the sync ID unread does (spec/sync-ids.md §6) and applies the records as a peer's log events received without a cursor: a path record after the first for its sync ID must pass through the current head; an entry before its blob's record, or stamped before a path record of its sync ID (its stamp checked against that path's head), is malformed; a second format record is malformed, another bundle format parks the file; records of unknown kind are skipped.
 
 ## 13. Decoder limits
 - Any object: CBOR nesting at most 512 deep, values inside it at most `MAX_VALUE_DEPTH` (spec/data-model.md §5); no array or map longer than the bytes that remain.

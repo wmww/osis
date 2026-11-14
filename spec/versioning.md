@@ -7,12 +7,12 @@ Four independent extension points, each parked separately so a node with one unk
 - **Merge encodings**: IDs named per fragment inside a delta (spec/crdt.md §3.1). A change to an encoding's grammar is a new encoding ID with an embedding from the old one (spec/crdt.md §7), never an in-place change.
 - **Value types**: new CBOR tags (spec/data-model.md §5).
 - **Algorithms**: enum cases on keys, signatures and sealed boxes; suite bytes and suite IDs (spec/crypto.md §8).
-Local storage, indexes, the node-to-node protocol (spec/sync.md §6, which negotiates its own version) and the API are not part of the format and change freely.
+Local storage, indexes, the node-to-node protocol (spec/sync-streams.md §1, which negotiates its own version) and the API are not part of the format and change freely.
 
 ## 2. Parking rule
 - A node MUST NOT discard, reject or crash on data it cannot interpret: an unknown format version, encoding ID, tag, field ID, enum case, AK, algorithm case or suite. It stores and relays the data, joins what it can, treats the rest as not yet received, and re-examines it after an upgrade. A parked delta waits as spec/commits.md §4 says.
 - A parked delta is kept as bytes with its header entry. A parked commit is pending (spec/commits.md §4).
-- A body a node could not join is never covered for it (spec/commits.md §5), so it never compacts one. As a waiting part it keeps its body until it applies, whatever its keep bounds: before that only a purge request or its expiry acts on it, so one never interpreted is kept until one does, or for good (spec/commits.md §5). It relays other nodes' snapshots and deletions of such blobs like a host does.
+- A body a node could not join is never covered for it (spec/commits.md §5), so it never compacts one. As a waiting part it keeps its body until it applies, whatever its keep bounds: before that only a purge request or its expiry acts on it, so one never interpreted is kept until one does, or for good (spec/commits.md §5). It relays other nodes' snapshots and deletions of such blobs like a node keeping them unread does.
 - A role-class value the node cannot type (an unknown role case, say) counts as not received; what depends on it stays pending.
 - Malformed data (non-canonical bytes, out-of-range indices, a violated grammar rule) is bad input and MUST be rejected, never parked.
 

@@ -14,10 +14,10 @@
 - An aspect is identified by (tid, AK). An **AK** is a string (text on the wire) of the grammar `ak = [":" tid ":"] name *(":" name) ["+"] ["^"] ("." / "~") version`, `name = [a-z_][a-z0-9_]*`, `tid` its 20-character text form (§1), `version` a decimal u64 without leading zeros: `name.0`, `contact:names.0`, `:<tid>:foo+^.1`, `call:ring+~0`. Anything else, or longer than the AK limit (spec/wire.md §4), is not an AK.
 - The tid and name segments name the aspect; the **version** is its major version. A key with the same tid and name segments and a higher version is a **successor** of the lower: the form a breaking change takes (spec/versioning.md §4). A node may use the relation without any schema; it implies no conversion.
 - **Markers**, independent of each other and alike for every AK, declared by a schema or not:
-  - `+` **ephemeral**: writes of the aspect are held in memory by the nodes holding the thing, never in a durable commit (they sync as ephemeral commits, spec/commits.md §2, spec/sync.md §9). Without it, writes go in durable commits.
+  - `+` **ephemeral**: writes of the aspect are held in memory by the nodes holding the thing, never in a durable commit (they sync as ephemeral commits, spec/commits.md §2, spec/sync-compaction.md §2). Without it, writes go in durable commits.
   - `^` **admin-only**: a write of the aspect needs admin on the thing (spec/permissions.md §5.2).
   - `~` in place of the `.` **signal**: the aspect has no current value. A write of it, a **fire**, is one whole-value set, never joined into state; the aspect always reads absent. An API keeps the two kinds apart: a signal is only fired and a value aspect only written; where a key's kind is not known until run time, a write of the other kind is refused before anything applies, and a read of the other kind finds nothing.
-  - An ephemeral signal (`+` and `~`) is delivered here and on the nodes connected now, and held by none (relay-only commits, spec/sync.md §9). Listeners hear each fire once where it is fired and once where it is delivered, as its commit as written; no listing shows it.
+  - An ephemeral signal (`+` and `~`) is delivered here and on the nodes connected now, and held by none (relay-only commits, spec/sync-compaction.md §2). Listeners hear each fire once where it is fired and once where it is delivered, as its commit as written; no listing shows it.
   - A signal without `+` is written in durable commits: each write is history from the moment it is written, kept at least as long as its thing's setting keeps it (spec/commits.md §5 The setting), never joined, and heard by listeners as a listed commit. An author may replace its fire with a later whole value (spec/commits.md §5 Signals).
   - A node decides an aspect's storage class from its AK alone (spec/commits.md §2).
   - Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory).
@@ -77,10 +77,10 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 
 ## 6. Large atomic values
 - A blob, a string in register encoding, or a set element or map key whose canonical encoding exceeds `CHUNK_THRESHOLD` (format constant, spec/wire.md §2) MUST be chunked; one at or below it MUST NOT be. Durable and ephemeral content alike (an ephemeral commit's chunks are ephemeral blobs, spec/wire.md §5):
-  - A role-class aspect's values (§9) stay inline, whatever their size (a `label.0` claim set, a `secrets.0` history box).
+  - A role-class aspect's values (§9) stay inline, whatever their size (a `sync.0` claim set, a `secrets.0` history box).
   - A delta on any other aspect holding such a value unchunked is bad by itself (spec/commits.md §4), judged without its type: a `Str` or `Bytes` in a register value, a set or bag element's whole value, a map key.
 - Chunking: content-defined boundaries over the canonical bytes, chunker of spec/wire.md §6, giving a tree: leaves are chunks, interior nodes hold links with the plaintext length under each; the value's place in the enclosing CBOR holds the root link. Chunker, tree shape and node layout: spec/wire.md §6.
-- Every chunk and interior node is a separate blob encrypted under a fresh random key (spec/sync.md §1). A **link** = (keyed content hash of the subtree, blob ID, suite byte || 32-byte blob key, the blob's 16-byte prefix salt, its delete keys: `[level, pk]` pairs, levels 1 to 3 strictly ascending, `pk` 32 bytes) (spec/crypto.md §6, §7): what reads the blob and what deletes it. A decoder rejects any other shape (as tag content); a link's salt and delete keys are its writer's claim, never checked when reading; the root's content hash is a function of the value's canonical bytes alone (spec/wire.md §6).
+- Every chunk and interior node is a separate blob encrypted under a fresh random key (spec/sync-ids.md §1). A **link** = (keyed content hash of the subtree, blob ID, suite byte || 32-byte blob key, the blob's 16-byte prefix salt, its delete keys: `[level, pk]` pairs, levels 1 to 3 strictly ascending, `pk` 32 bytes) (spec/crypto.md §6, §7): what reads the blob and what deletes it. A decoder rejects any other shape (as tag content); a link's salt and delete keys are its writer's claim, never checked when reading; the root's content hash is a function of the value's canonical bytes alone (spec/wire.md §6).
 - Equality of a large value is equality of its keyed content hash, never of its link bytes.
 - A link stands only where the type takes one: a blob, string or `any` position, or a set element or map key (or a position inside one) whose type is not **small**.
   - Small types can never exceed `CHUNK_THRESHOLD`: `bool`, `int`, `float`, `tid`, counter, max, min, and an enum whose cases carry no payload.
@@ -99,7 +99,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 
 ## 8. Groups
 - A **group** is a thing with a `group.0` aspect: `items: set<tid>`, `subgroups: set<tid>`. Its members are the items of its `group.0` plus, transitively, the members of their subgroups. Groups may overlap, nest and be cyclic; membership changes over time.
-- Member, membership and member of a group mean only this listing, which grants no rights (spec/permissions.md §1). A subgroup is no member. Groups are the sync unit: a group's closure is its members, itself and its subgroups (spec/sync.md §3).
+- Member, membership and member of a group mean only this listing, which grants no rights (spec/permissions.md §1). A subgroup is no member. Groups are the sync unit: a group's closure is its members, itself and its subgroups (spec/sync-set.md §2).
 - `groups.0` (synthetic) on a thing: the locally known groups containing it, directly or transitively.
 
 ## 9. Core schema
@@ -107,8 +107,8 @@ The core aspects form the core schema, evolving under spec/versioning.md. `schem
 
 - `roles.0` reads as the role timeline's roster (spec/permissions.md §5). `tied`: spec/permissions.md §2. `until` 0: a removal saying retain (spec/permissions.md §2).
 - `addenda.0` is read per delta, never as state.
-- `keys.0`: spec/crypto.md §3, spec/sync.md §2; `signing` is set only on an account's (the current epoch's signing key; `key` beside it is that epoch's KEM key). `secrets.0`: spec/crypto.md §4. `label.0`: spec/sync.md §2. `reach.0`: spec/sync.md §10. Box payloads, history box layout and AD tuples: spec/wire.md §7.
-- `node.0`, `reach.0`, `host^.0`, `clients^.0` are written on node things. `node.0` and `reach.0` go under the node's account's D's home label only (spec/permissions.md §4; target, issues/account-signing.md steps 7, 8). A node's last sync is its own record; stranded reports and suspect lists go over connections and inboxes (spec/permissions.md §4).
+- `keys.0`: spec/crypto.md §3, spec/sync-ids.md §2; `signing` is set only on an account's (the current epoch's signing key; `key` beside it is that epoch's KEM key). `secrets.0`: spec/crypto.md §4. `sync.0`: spec/sync-ids.md §4. `reach.0`: spec/sync-transport.md §3 (a node's dialable key, its global addresses and relays; no LAN secret). Box payloads, history box layout and AD tuples: spec/wire.md §7.
+- `node.0`, `reach.0`, `caps^.0`, `clients^.0` are written on node things; `synced^.0` on D; `dial.0` on an account's profile. `node.0` and `reach.0` go under the node's account's D's home sync ID only (spec/permissions.md §4; target, issues/account-signing.md steps 7, 8). A node's last sync is its own record; stranded reports and suspect lists go over connections and inboxes (spec/permissions.md §4).
 - **`account.0`** on an account's D: `struct { seeds 0: map<blob, struct { seed 0: blob, under 1: epoch }> }`, per epoch of the account's signing chain its 32-byte signing public key (spec/crypto.md §3; not the epoch ID, which is the minting commit's own ID) to its 32-byte seed and the read epoch of D its writer encrypts the commit under (spec/crypto.md §9: a node takes the seed up only once that epoch is established there). Written by the account in the rotation that mints the epoch, as one entry put and nothing else on D (the first in the commit creating the account and D).
 - **`listing.0`**: `map<blob, set<blob>>`, a rotation's 32-byte commit ID to the 32-byte commit IDs a listing names (spec/permissions.md §5.5); entries only put, never reset. Read per delta, never as state.
 - `retention^.0`: what the thing keeps of replaced content per AK, the expiry a writer gives its writes there, `final` (a writer replaces no fire there) (spec/commits.md §5 The setting), and its removal default (`retain`, spec/permissions.md §2, §3); admin-only, fixed retention.
@@ -116,14 +116,13 @@ The core aspects form the core schema, evolving under spec/versioning.md. `schem
 - `released.0` (`timestamp`): a release request's delta on each thing it releases (spec/commits.md §5 Destruction).
 - `retainers^.0` (`set<tid>`): the thing's retainer set (spec/requirements.md Data model); absent, the thing is a garbage-collection root. Admin-only, ordinary retention. What keeps a thing and when a node releases it: spec/commits.md §5 Lifetimes.
 - `group.0`, `groups.0`: §8. `tag.0` marks a group as a user-facing tag (§8).
-- **`host^.0`** present: the node hosts (spec/sync.md §4). Absent: it does not, and keeps nothing for others (stopping drops what it kept, at the latest when the node next runs sync; a later start begins empty). Never placed under a label.
-  - `admit` `listed`: it takes registrations of the labels in `labels`. `admit` `open`: of any label.
-  - A label the node syncs (it reads the group, spec/sync.md §2) it stores and serves whatever `admit` says, `host^.0` present or not, and keeps when hosting stops (spec/sync.md §4).
-  - `policy`, `caps`: local policy.
-- **`clients^.0`**: clients with an actor of their own, by client actor (spec/sync.md §10). Never placed under a label.
+- **`caps^.0`**: the limits (`policy`, per-sync-ID `caps`) on what peers may make the node store of the sync IDs it keeps unread (spec/sync-ids.md §5); local policy, absent: the defaults. Never logged under a sync ID.
+- **`synced^.0`** on an account's devices actor D: each node of the account to its synced group (spec/sync-set.md §1). Admin-only; it travels under home.
+- **`dial.0`** on an account's profile: `map<blob, list<text>>`, a node's dialable key to its URLs (spec/sync-set.md §1; spec/sync-opens.md §1); written by the account, each node keeping its own entry; read by contacts.
+- **`clients^.0`**: clients with an actor of their own, by client actor (spec/sync-transport.md §6). Never logged under a sync ID.
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.
   - The client actor is a thing whose first admin is the node's account, with secrets of its own, and what the client may do is that actor's roles.
-- **Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`, `account.0`, `listing.0`. Their rules: spec/commits.md §2, spec/permissions.md. `addenda.0` is content with the retention of a role-class aspect (spec/commits.md §5), never compacted. Role-class aspects, `addenda.0`, `retention^.0`, `purge.0` and `released.0` have the fixed retention of spec/commits.md §5.
+- **Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `sync.0`, `account.0`, `listing.0`. Their rules: spec/commits.md §2, spec/permissions.md. `addenda.0` is content with the retention of a role-class aspect (spec/commits.md §5), never compacted. Role-class aspects, `addenda.0`, `retention^.0`, `purge.0` and `released.0` have the fixed retention of spec/commits.md §5.
 - `creation` holds exactly one of fields 0 and 1 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
 
 ## 10. Schemas
