@@ -140,8 +140,8 @@ pub trait Ground {
     /// Logs `c`'s body under S in the own store; its blob, or `None` when it cannot be logged here.
     /// Not `fresh`: a held blob of it not tombstoned under S, verbatim under a wrap for S, else a
     /// fresh encryption. `fresh` (logged again once, §4): always a fresh encryption. A fresh
-    /// encryption is `Engine::seal_body`'s alone (each section under the epoch it was written
-    /// under, never this node's newest; refused when that epoch is not established here).
+    /// encryption is `Engine::seal_body`'s alone, given every held blob of the commit
+    /// (spec/crypto.md §5 Passing on: refused while it may not be made).
     fn log_own(&mut self, s: &SyncId, c: &CommitId, fresh: bool) -> Result<Option<BlobId>>;
     /// The entry leaves the own log, its tombstone noting `c`.
     fn drop_own(&mut self, s: &SyncId, b: &BlobId, c: &CommitId) -> Result<()>;

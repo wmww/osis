@@ -14,7 +14,7 @@ use crate::types::{ConnId, Cx, Entry, Result};
 use osis_base::memo::Feed;
 use osis_base::{BlobId, CommitId, SyncId, WallMs};
 use osis_crypto::SigningSecret;
-use osis_engine::sync::{BodyMeta, Destruction, MustNot, ReadCredentials};
+use osis_engine::sync::{BodyMeta, Destruction, HeldBlob, MustNot, ReadCredentials};
 use osis_label::{Class, DeleteItem};
 use osis_proto::Msg;
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,6 +53,21 @@ fn own_entry(cx: &mut Cx, s: &SyncId, blob: BlobId, wrap: crate::types::Wrap, cl
 impl Live<'_, '_> {
     fn thing(&mut self, s: &SyncId) -> Result<Option<osis_base::Tid>> {
         Ok(self.cx.store.synced(s).map(|(t, _)| t))
+    }
+
+    /// `c`'s body under `s` as a fresh encryption (logging again, a deposit, a body with no held
+    /// encryption): `Engine::seal_body` given every blob of `c` the store holds bytes of, each
+    /// with an entry's wrap, tombstoned under `s` or not (spec/crypto.md §5 Passing on: what
+    /// this node may not encrypt under an epoch of its choosing goes as the section it came in).
+    /// The only place read makes a fresh encryption of a body.
+    fn fresh(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<(osis_engine::labeling::Sealed, crate::types::Wrap)>> {
+        let mut held = Vec::new();
+        for b in self.cx.engine.commit_blobs(c)?.iter() {
+            let Some(bytes) = self.cx.store.bytes(b)? else { continue };
+            let Some(e) = self.cx.store.naming(b)?.into_iter().find_map(|x| self.cx.store.entry(&x, b).ok().flatten().map(|e| (x, e))) else { continue };
+            held.push(HeldBlob { sync_id: e.0, wrap: e.1.wrap, bytes });
+        }
+        Ok(self.cx.engine.seal_body(s, c, &held, self.cx.rng)?)
     }
 }
 
@@ -222,7 +237,7 @@ impl Ground for Live<'_, '_> {
                 }
             }
         }
-        let Some((sealed, wrap)) = self.cx.engine.seal_body(s, c, self.cx.rng)? else { return Ok(None) };
+        let Some((sealed, wrap)) = self.fresh(s, c)? else { return Ok(None) };
         let e = own_entry(self.cx, s, sealed.id, wrap, class)?;
         let code = self.cx.store.log(s, e, Some(sealed.blob), None)?;
         Ok((code == osis_proto::Code::OK).then_some(sealed.id))
@@ -259,7 +274,7 @@ impl Ground for Live<'_, '_> {
             return Ok(());
         }
         // else a fresh encryption, deposited: offered as it is logged
-        let Some((sealed, wrap)) = self.cx.engine.seal_body(s, c, self.cx.rng)? else { return Ok(()) };
+        let Some((sealed, wrap)) = self.fresh(s, c)? else { return Ok(()) };
         let entry = Entry { blob: sealed.id, wrap, stamp: None, deposited: true, own: true, role: false, class: e.class, expires: None };
         self.cx.store.log(s, entry, Some(sealed.blob), None)?;
         Ok(())
