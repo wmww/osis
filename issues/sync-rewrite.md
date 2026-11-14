@@ -106,5 +106,8 @@ The app, CLI and chat go through the osis API, which now runs the new sync; chec
 - When a phase finishes, update this issue's phase status here, not in a new file.
 
 ## Status
-- Phase 0: done (inputs in notes/sync-rewrite-inputs.md; old net issues deleted; freeze posted; old branches deleted).
-- Phases 1-5: not started.
+- Phase 0: done.
+- Phase 1: done. Spec: spec/sync.md (overview) and spec/sync-*.md, spec/sync-transport.md; models in core/test/tla/net (NetOpen, NetHold, NetDestroy, NetKeep) pass with every control failing for its reason.
+- Phase 2: done: notes/sync-boundary.md (inventory and interface).
+- Phase 3: deletion done on local integration branch `sync-rebuild` (never pushed). Building: crate foundation and harness (`sync-foundation`), wire messages (`sync-wire`). Waits on osis_base::memo::Effects from Fathom's memo worker.
+- Phases 4-5: Phase 4 tests are written with each module; Phase 5's notes sweep is running on `sync-notes`.
