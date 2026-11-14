@@ -64,23 +64,6 @@ pub(crate) struct ToIngest {
 
 const MAX_ROUNDS: usize = 16;
 
-/// The chain commits an inbox payload carries (spec/wire.md §9) that decode as commit blobs, each
-/// cut to its chain deltas. Admission judges the blob's commit, which anyone can name: a box or a
-/// `label.0` here would be an invite nobody was asked about; a bare edge is the limit (a status
-/// row at worst).
-fn chain_commits(chain: Vec<osis_base::Value>) -> Vec<(Vec<u8>, osis_commit::CommitBlob)> {
-    // each value freed before its plaintext decodes: never two decoded copies of a stranger's blob
-    chain.into_iter().filter_map(|v| {
-        let plain = osis_base::encode(&v);
-        drop(v);
-        let mut c = osis_commit::CommitBlob::decode(&plain).ok()?;
-        let aspects = &c.header.aspects;
-        let parts = c.parts.iter().filter(|x| aspects.get(x.ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "keys.0"))).cloned().collect();
-        c.parts = parts;
-        (!c.parts.is_empty()).then(|| (c.encode(), c))
-    }).collect()
-}
-
 /// Where log events come from (`log_events_from`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Src {
@@ -1039,7 +1022,7 @@ impl SyncEngine {
             };
             self.inbox_plain.insert((l, b), (pt.clone(), chain.clone(), records.clone()));
             self.engine.learn_records(records)?;
-            let chain = chain_commits(chain);
+            let chain = osis_engine::inbox_chain(chain);
             self.state.note_chain(l, b, chain.iter().map(|(_, c)| c.id()).collect());
             // the author's chain first; what still cannot be judged is looked at again later
             for plain in chain.into_iter().map(|(plain, _)| plain).chain([pt]) {
@@ -1465,7 +1448,7 @@ impl SyncEngine {
             // the author's chain first (spec/wire.md §9): the commit applies with no label of the
             // thing read
             self.engine.learn_records(records)?;
-            let chain = chain_commits(chain);
+            let chain = osis_engine::inbox_chain(chain);
             carried = chain.iter().map(|(_, c)| c.id()).collect();
             commits.extend(chain.into_iter().map(|(plaintext, commit)| ToIngest { label: l, blob: b, size: 0, plaintext, commit }));
             commits.push(ToIngest { label: l, blob: b, size: 0, plaintext: pt, commit: c });
@@ -1492,7 +1475,7 @@ impl SyncEngine {
     /// (`State::reported`). No other actor's keyset is taken from a report.
     pub(super) fn take_holder_keys(&mut self, l: LabelId, holder: &Tid, keys: osis_label::HolderKeys) -> Result<()> {
         let on = |c: &osis_commit::CommitBlob, t: &dyn Fn(&Tid) -> bool| c.parts.iter().any(|p| c.header.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == "keys.0" && t(&a.tid)));
-        let mut rest = chain_commits(keys.commits);
+        let mut rest = osis_engine::inbox_chain(keys.commits);
         let authors: BTreeSet<Tid> = rest.iter().filter(|(_, c)| on(c, &|t| t == holder)).map(|(_, c)| c.header.author).collect();
         // what a part may be: `keys.0` on the holder or an author, `roles.0` on the chain
         for (_, c) in &mut rest {
@@ -1656,7 +1639,7 @@ impl SyncEngine {
                 self.state.set_entry(l, b, e);
             }
             self.engine.note_delete_hints(x, &things)?;
-            let chain = chain_commits(chain);
+            let chain = osis_engine::inbox_chain(chain);
             self.state.note_chain(l, b, chain.iter().map(|(_, c)| c.id()).collect());
             // the author's chain first; what cannot be judged yet is looked at again on a wake
             for (plain, cb) in chain.into_iter().chain([(pt, blob)]) {

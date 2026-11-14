@@ -21,7 +21,7 @@ pub(crate) mod signing;
 pub mod tied;
 
 
-pub use edges::Demotion;
+pub use edges::{Demotion, inbox_chain};
 pub use links::{HeldLink, LINK_SEED, LinkSpec};
 pub use account::CreatedAccount;
 pub use lists::ListsHeld;

@@ -24,6 +24,7 @@ mod tests_copy;
 pub use apply::{Creation, Ingested, Reason};
 pub use apply::reach::Wants;
 pub use engine::{Config, Engine, Mutation};
+pub use flows::inbox_chain;
 pub use error::{Error, Result};
 pub use ephemeral::Written;
 pub use events::{Cause, Diagnostic, DiagnosticKind, Event, CommitChange, Origin};

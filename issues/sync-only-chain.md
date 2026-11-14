@@ -1,0 +1,13 @@
+# A keeper's view of a thing's keys after its grant's chain
+> Summary: On net-6b, with `Engine::accept_inbox` taking the inbox chain as node sync does, 5 osis sharing tests fail: a keeper (sync-only holder) holding a thing's `keys.0` from a grant's chain changes what other accounts get through it. The engine joins projections correctly and the wrong read hint is fixed; this is what is left.
+> Priority: normal
+> Tags: sync, node, tests, net-rework
+
+## What is known
+- A projection of a commit in an inbox chain is held as that commit with the other parts absent; the full commit joins it in either order (`flows::a_chain_projection_and_its_commit_join_in_either_order_spec_commits_4`). Nothing in the engine blocks or misreads the full commit.
+- Of the 18 osis failures net-6b had with the chain taken, 13 came from `Engine::boxed_by` counting a sync box as a read secret: the keeper followed the grant's label as a reader (a hint), and its filter then showed the hint path's empty read credentials in place of the head's, so readers opening that label at the keeper were declined (`a_sync_grant_gives_no_read_secret_to_follow_spec_wire_9`).
+- Left on net-6b (rebased on this fix, `accept_inbox` taking the chain): `sharing::removed_node_revokes_no_link_spec_permissions_7`, `removing_a_node_lists_its_links_spec_permissions_7`, `team_left_out_reads_again_by_its_stranded_report_spec_crypto_4`, `team_left_out_by_a_sealer_reading_none_of_it_reads_again_spec_crypto_4`, `retry_after_a_stalled_pull_spec_permissions_7`. All pass when the keeper skips the chain's `keys.0` projections of a thing's first keys commit (header `keys.0`, `label.0`, `secrets.0`); skipping `roles.0` or account projections changes nothing.
+- In `team_left_out_by_a_sealer...`, Alice's re-seal of A on G fails ("no keyset this node may seal it to"): the stranded reports reaching her carry A's older keys (Bob's first keys commit), never Bob's rotation of A, which in the passing run reaches Carol's nodes as a copy under G's label.
+
+## Next step
+The keeper's `keys.0` of a thing is a snapshot from the grant's chain: it reads no label of the thing, so only a re-seal's chain moves it, and net-6b's hand delivery hands keepers no re-seal. Find which node-sync path reads the keeper's keysets of a thing it keeps unread (the shared filter, stranded reports, `reseal_due`), and decide whether a sync-only holder should judge anything by them; check whether the failures are only the missing re-seal hand-over in the test nets.

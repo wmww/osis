@@ -39,6 +39,25 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
     Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, tied: None }))
 }
 
+/// The chain commits an inbox payload carries (spec/wire.md §9) that decode as commit blobs, each
+/// cut to its chain deltas. Admission judges the blob's commit, which anyone can name: a box or a
+/// `label.0` here would be an invite nobody was asked about; a bare edge is the limit (a status
+/// row at worst).
+pub fn inbox_chain(chain: Vec<osis_base::Value>) -> Vec<(Vec<u8>, CommitBlob)> {
+    // each value freed before its plaintext decodes: never two decoded copies of a stranger's blob
+    chain
+        .into_iter()
+        .filter_map(|v| {
+            let plain = osis_base::encode(&v);
+            drop(v);
+            let mut c = CommitBlob::decode(&plain).ok()?;
+            let aspects = &c.header.aspects;
+            c.parts.retain(|x| aspects.get(x.ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "keys.0")));
+            (!c.parts.is_empty()).then(|| (c.encode(), c))
+        })
+        .collect()
+}
+
 fn perm_edge(e: &Edge) -> PermEdge {
     PermEdge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.map(super::tied::tie_perm) }
 }
@@ -616,7 +635,8 @@ impl Engine {
     }
 
     /// Opens an inbox blob addressed to an actor or account this node holds the keys of
-    /// (spec/sync.md §3), applies the role commit it carries and returns the things it
+    /// (spec/sync.md §3), takes the author's chain it carries as node sync does (`inbox_chain`),
+    /// applies the role commit it carries and returns the things it
     /// names with their labels, plus the certificate copy to place under that actor's home
     /// label (a grant this node accepts).
     pub fn accept_inbox(&mut self, blob: &[u8]) -> Result<(Vec<InboxThing>, Done)> {
@@ -637,9 +657,16 @@ impl Engine {
             }
         }
         let (a, p) = opened.ok_or(Error::Misuse("no held read secret opens this inbox blob"))?;
-        let (bytes, things, _, records) = p.split();
+        let (bytes, things, chain, records) = p.split();
         let id = CommitBlob::decode(&bytes)?.id();
         self.learn_records(records)?;
+        // the author's chain first, as node-sync takes it (spec/wire.md §9): a chain commit is
+        // judged alone, its refusal refuses nothing else
+        for (plain, _) in inbox_chain(chain) {
+            if let Err(e) = self.ingest(&plain, Vec::new()) && osis_base::Classified::class(&e) == osis_base::ErrorClass::Local {
+                return Err(e);
+            }
+        }
         self.ingest(&bytes, Vec::new())?;
         self.note_delete_hints(id, &things)?;
         let mut done = Done::default();

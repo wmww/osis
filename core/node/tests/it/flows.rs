@@ -215,6 +215,97 @@ fn grant_by_inbox_spec_perm_2() {
     assert!(tags(&mut lp, 0, d).contains("bob"));
 }
 
+/// Peer 0's grant to `pb` on its new thing `d`, as an inbox blob carrying the chain a recipient
+/// below read gets (spec/wire.md §9, positions 2-3): `d`'s current `keys.0` commits projected to
+/// their `keys.0` delta on `d`, and `d`'s record. (d, the commit giving `d` its keys, the grant,
+/// the blob, the same blob with no chain.)
+fn grant_with_chain(lp: &mut LocalPeer, pa: Tid, pb: Tid, role: Role) -> (Tid, CommitId, CommitId, Vec<u8>, Vec<u8>) {
+    let d = thing_of(lp, 0, pa);
+    let done = lp.peers[0].engine.grant(&d, &pb, &edge_of(role)).unwrap();
+    let g = *done.commits.last().unwrap();
+    let e = &mut lp.peers[0].engine;
+    let mut keys = None;
+    let mut chain = Vec::new();
+    for x in e.current_keys(&d) {
+        let mut c = osis_commit::CommitBlob::decode(&e.package(&x).unwrap().unwrap().bytes).unwrap();
+        let aspects = c.header.aspects.clone();
+        if aspects.iter().any(|a| a.tid == d && a.ak.as_str() == "label.0") {
+            keys = Some(x);
+        }
+        c.parts.retain(|p| aspects.get(p.ai).is_some_and(|a| a.tid == d && a.ak.as_str() == "keys.0"));
+        chain.push(osis_base::decode(&c.encode(), &osis_base::Limits { max_depth: 64, max_bytes: 1 << 22 }).unwrap());
+    }
+    let records = vec![e.core.created(&d).cloned().unwrap()];
+    let blob = |e: &mut osis_node::Engine, chain, records| {
+        let ds = e.run(|tx| osis_node::flows::edges::deliver_parts(tx, pb, g, &[d], osis_node::flows::edges::Parts::All, chain, records)).unwrap();
+        let Some(Delivery::Inbox { blob, .. }) = ds.into_iter().next() else { panic!("no inbox blob") };
+        blob
+    };
+    let with = blob(e, chain, records);
+    let without = blob(e, Vec::new(), Vec::new());
+    (d, keys.expect("d's first keys commit is current"), g, with, without)
+}
+
+/// What peer `i` holds of thing `d` and commit `k`: role, read epochs, `keys.0`, `label.0` and
+/// the register, what pends, and per part of `k` its verdict and whether it is held.
+type Held = (Option<Role>, BTreeSet<osis_crypto::Epoch>, [Option<Value>; 3], usize, Option<Vec<(bool, bool)>>);
+
+fn held_of(lp: &mut LocalPeer, i: usize, d: Tid, k: CommitId) -> Held {
+    let e = &mut lp.peers[i].engine;
+    let ak = |x: &str| osis_base::Ak::new(x).unwrap();
+    let vals = [e.get(&d, &ak("keys.0")).unwrap(), e.get(&d, &ak("label.0")).unwrap(), e.get(&d, &ak("t:reg.0")).unwrap()];
+    let epochs = e.epochs(&d).map(|x| x.read.held().map(|y| y.0).collect()).unwrap_or_default();
+    let valid = e.valid_parts(&k).unwrap_or_default();
+    let parts = e.core.ix.commits.get(&k).map(|m| (0..m.header.aspects.len()).map(|ai| (valid.contains(&ai), !m.missing(ai))).collect());
+    (e.role_on(&d), epochs, vals, e.pending().len(), parts)
+}
+
+// spec/commits.md §4 (a delta arriving later joins its applied commit), spec/wire.md §9: an
+// inbox chain's `keys.0` projection of a commit is that commit with its other parts absent: the
+// full commit arriving after it, or before it, ends as if the projection never came.
+#[test]
+fn a_chain_projection_and_its_commit_join_in_either_order_spec_commits_4() {
+    let (lp0, ps) = people(2);
+    let (pa, pb) = (ps[0], ps[1]);
+    let mut lp = lp0;
+    let (d, k, _, with, without) = grant_with_chain(&mut lp, pa, pb, Role::Read);
+    let mut never = lp.copy().unwrap();
+    sync(&mut never, 0, 1);
+    never.peers[1].engine.accept_inbox(&without).unwrap();
+    let want = held_of(&mut never, 1, d, k);
+    assert_eq!(want.0, Some(Role::Read));
+    assert!(want.4.as_ref().is_some_and(|p| p.iter().all(|x| *x == (true, true))), "every part held and valid: {want:?}");
+    // the projection first: its commit applies with the `keys.0` part alone
+    let mut first = lp.copy().unwrap();
+    first.peers[1].engine.accept_inbox(&with).unwrap();
+    let projected = held_of(&mut first, 1, d, k).4.expect("the projection applied under its commit's ID");
+    assert_eq!(projected.iter().filter(|x| x.1).count(), 1, "the `keys.0` part alone: {projected:?}");
+    sync(&mut first, 0, 1);
+    assert_eq!(held_of(&mut first, 1, d, k), want, "the full commit joined the projection");
+    // the full commit first: the projection brings nothing
+    let mut last = lp.copy().unwrap();
+    sync(&mut last, 0, 1);
+    last.peers[1].engine.accept_inbox(&with).unwrap();
+    assert_eq!(held_of(&mut last, 1, d, k), want, "the projection after the commit");
+}
+
+// spec/wire.md §9, spec/sync.md §3: an inbox payload's label is followed only for a thing the
+// commit gave this node a read secret of. A sync grant's box gives the sync secret alone: with
+// the chain taken (the thing's `keys.0`, so the grant applies valid), it names no such thing.
+#[test]
+fn a_sync_grant_gives_no_read_secret_to_follow_spec_wire_9() {
+    let (mut lp, ps) = people(2);
+    let (pa, pb) = (ps[0], ps[1]);
+    for (role, reads) in [(Role::Sync, false), (Role::Read, true)] {
+        let (d, _, g, with, _) = grant_with_chain(&mut lp, pa, pb, role);
+        lp.peers[1].engine.accept_inbox(&with).unwrap();
+        sync(&mut lp, 0, 1);
+        assert_eq!(lp.peers[1].engine.role_on(&d), Some(role));
+        assert!(lp.peers[1].engine.core.ix.commits.get(&g).is_some(), "the {role:?} grant applied");
+        assert_eq!(lp.peers[1].engine.boxed_by(&g, &d), reads, "{role:?}");
+    }
+}
+
 // spec/crypto.md §4, spec/permissions.md §3: a grant carries the history boxes of the epochs it
 // boxes, so the grantee holds the doc's epochs from before its own secrets (what its earlier
 // content is under) already from the grant not yet judged, and after applying it.
