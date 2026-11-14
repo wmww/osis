@@ -1916,7 +1916,7 @@ pub(super) fn drop_covered(lp: &mut LocalPeer, i: usize, t: Tid) -> usize {
     for ak in ["keys.0", "secrets.0"].map(|k| osis_base::Ak::new(k).unwrap()) {
         let k = (t, ak.clone());
         let snaps: Vec<osis_base::CommitId> = e.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| crate::retention::bounds::valid_snapshot_held(&e.core, s, &t, &ak)).collect();
-        let bodies: Vec<CommitId> = e.core.durable_on(&k).filter(|c| e.header(c).is_some_and(|h| !h.kind.is_compaction())).collect();
+        let bodies: Vec<osis_base::CommitId> = e.core.durable_on(&k).filter(|c| e.header(c).is_some_and(|h| !h.kind.is_compaction())).collect();
         for c in bodies {
             for s in &snaps {
                 if !e.droppable_if_covered(&c, &t, &ak) || e.covered(s, &c, &t, &ak).unwrap() != Some(true) {
