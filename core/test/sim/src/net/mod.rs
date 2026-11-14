@@ -1662,7 +1662,9 @@ impl NetSim {
                 Payload::Up { .. } => "Up".to_string(),
                 Payload::Down => "Down".to_string(),
             };
-            self.note(format!("link {} delivers to {:?}: {what}{}", m.link, m.to, if alive { "" } else { " (link gone: lost)" }));
+            // a `Down` goes through on a gone link: it is how the end learns
+            let lost = !alive && !matches!(m.what, Payload::Down);
+            self.note(format!("link {} delivers to {:?}: {what}{}", m.link, m.to, if lost { " (link gone: lost)" } else { "" }));
         }
         let now = self.now();
         match (m.to, m.what) {
