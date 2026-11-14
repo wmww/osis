@@ -120,7 +120,7 @@ impl Engine {
             return Ok(false);
         }
         // its author's record must be held here (a relay never waits)
-        match crate::apply::signed_by_author(&self.core, &blob, &id, self.core.created(&h.author)) {
+        match crate::apply::signed_by_author(&self.core, &blob, &id, self.core.created(&h.author), None) {
             Some(true) => {}
             Some(false) => return Err(crate::Error::BadInput("signature")),
             None => return Ok(false),

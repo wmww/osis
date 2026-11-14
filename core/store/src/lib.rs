@@ -29,4 +29,4 @@ pub use forensic::{Ciphers, Evidence, Recovered, Section, Source, attack};
 pub use pager::StoreConfig;
 pub use record::{At, Filter, Member, RECORD_BUDGET, Record, RecordId};
 pub use root::{FileRoot, MemoryRoot, RootRecord, RootStorage};
-pub use store::{AspectUnit, PendingKind, Shred, Store, Suspended, Table, Transaction, Writes};
+pub use store::{AspectUnit, Pending, PendingKind, Shred, Store, Suspended, Table, Transaction, Writes};

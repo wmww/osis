@@ -49,6 +49,15 @@ pub enum PendingKind {
     Parked,
 }
 
+/// A stored pending or parked commit: its bytes (header and blob) and the kept verdict on their
+/// signature, if one was reached (the engine's `osis_commit::Signed`): this node's own, never a peer's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pending {
+    pub kind: PendingKind,
+    pub verdict: Option<[u8; 32]>,
+    pub bytes: Vec<u8>,
+}
+
 /// Catalog rows a paged scan reads at a time.
 pub(crate) const PAGE: usize = 256;
 
@@ -809,27 +818,25 @@ impl Transaction<'_> {
 
     // Pending and parked commits.
 
-    /// Stores a commit not yet applied, as bytes (header and blob).
-    pub fn put_pending(&mut self, id: &CommitId, k: PendingKind, bytes: &[u8]) -> Result<(), Error> {
+    /// Stores a commit not yet applied, as bytes (header and blob), with its signature's
+    /// verdict if one was reached (`Pending`).
+    pub fn put_pending(&mut self, id: &CommitId, k: PendingKind, verdict: Option<[u8; 32]>, bytes: &[u8]) -> Result<(), Error> {
         let tag = match k {
             PendingKind::Pending => 0,
             PendingKind::Parked => 1,
-        };
-        let v = W::new().u8(tag).raw(bytes).take();
+        } | u8::from(verdict.is_some()) << 1;
+        let v = W::new().u8(tag).raw(verdict.as_ref().map_or(&[][..], |v| &v[..])).raw(bytes).take();
         self.cat_put(&W::new().u8(kind::PENDING).raw(&id.0).take(), v, Shred::No)
     }
-    pub fn get_pending(&mut self, id: &CommitId) -> Result<Option<(PendingKind, Vec<u8>)>, Error> {
+    pub fn get_pending(&mut self, id: &CommitId) -> Result<Option<Pending>, Error> {
         self.cat_get(&W::new().u8(kind::PENDING).raw(&id.0).take())?.map(|v| decode_pending(&v)).transpose()
     }
     /// Pending and parked commits by ID, after `after` (exclusive).
-    pub fn pending(&mut self, after: Option<&CommitId>, limit: usize) -> Result<Vec<(CommitId, PendingKind, Vec<u8>)>, Error> {
+    pub fn pending(&mut self, after: Option<&CommitId>, limit: usize) -> Result<Vec<(CommitId, Pending)>, Error> {
         let from = after.map(|c| [&c.0[..], &[0]].concat()).unwrap_or_default();
         self.cat_scan(&[kind::PENDING], &from, limit)?
             .into_iter()
-            .map(|(k, v)| {
-                let (pk, b) = decode_pending(&v)?;
-                Ok((CommitId(tail(&k)?), pk, b))
-            })
+            .map(|(k, v)| Ok((CommitId(tail(&k)?), decode_pending(&v)?)))
             .collect()
     }
     /// Removes a pending commit; `Shred::Yes` when its content is being purged rather than applied.
@@ -902,12 +909,19 @@ impl Transaction<'_> {
     }
 }
 
-fn decode_pending(v: &[u8]) -> Result<(PendingKind, Vec<u8>), Error> {
+fn decode_pending(v: &[u8]) -> Result<Pending, Error> {
     let (tag, b) = v.split_first().ok_or(Error::Corrupt("pending"))?;
-    let k = match tag {
+    let kind = match tag & 1 {
         0 => PendingKind::Pending,
-        1 => PendingKind::Parked,
+        _ => PendingKind::Parked,
+    };
+    let (verdict, bytes) = match tag >> 1 {
+        0 => (None, b),
+        1 => {
+            let (v, rest) = b.split_first_chunk::<32>().ok_or(Error::Corrupt("pending"))?;
+            (Some(*v), rest)
+        }
         _ => return Err(Error::Corrupt("pending")),
     };
-    Ok((k, b.to_vec()))
+    Ok(Pending { kind, verdict, bytes: bytes.to_vec() })
 }

@@ -208,7 +208,10 @@ impl CommitBuilder {
         if blob_bound(&commit) > self.max_blob {
             return Err(Error::Build(COMMIT_PAST_BLOB));
         }
+        // the signer's verdict stands for a check nobody makes here; debug builds make it (outside
+        // the counted costs), so a signing bug fails at its writer, not at every receiver
         let signed = crate::Signed::of(&id, &commit.sigs, &key.verifying_key());
+        debug_assert_eq!(osis_base::costs::paused(|| crate::verify_signature(&id, &commit.sigs, &key.verifying_key()).ok()), Some(signed), "a commit signature that does not verify");
         Ok(Built { commit, list_blobs, signed })
     }
 }

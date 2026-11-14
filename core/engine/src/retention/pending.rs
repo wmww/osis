@@ -104,13 +104,14 @@ fn rewrite_stored(tx: &mut Tx<'_>, id: &CommitId, edit: impl FnOnce(&mut osis_co
     if !tx.core.ix.pending.contains_key(id) {
         return Ok(None);
     }
-    let Some((kind, bytes)) = tx.txn.get_pending(id)? else { return Ok(None) };
+    let Some(osis_store::Pending { kind, verdict, bytes }) = tx.txn.get_pending(id)? else { return Ok(None) };
     let Ok(mut b) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(None) };
     let changed = edit(&mut b);
     if changed {
         tx.in_class(b.header.ephemeral.is_some(), |tx| {
             tx.txn.remove_pending(id, Shred::Yes)?;
-            Ok(tx.txn.put_pending(id, kind, &b.encode())?)
+            // its signatures unchanged: their verdict stays
+            Ok(tx.txn.put_pending(id, kind, verdict, &b.encode())?)
         })?;
     }
     Ok(Some((b.header, changed)))
@@ -207,7 +208,7 @@ pub(crate) fn fetch_fallen(tx: &mut Tx<'_>, h: &Header, id: &CommitId, missing: 
 /// purge request naming them just applied (`purge_one`): held as `pending_drops` holds them.
 pub(super) fn purge_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(h) = tx.core.ix.commits.get(c).map(|m| (*m.header).clone()).filter(|_| tx.core.ix.pending.contains_key(c)) else { return Ok(()) };
-    let Some((_, bytes)) = tx.txn.get_pending(c)? else { return Ok(()) };
+    let Some(osis_store::Pending { bytes, .. }) = tx.txn.get_pending(c)? else { return Ok(()) };
     let Ok(mut blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(()) };
     strip_purged(tx, c, &mut blob, &h, ai)
 }
@@ -261,7 +262,7 @@ pub(crate) fn forget_joined_leftovers(tx: &mut Tx<'_>, h: &Header, id: &CommitId
 pub(crate) fn forget_waiting_leftovers(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     let h = match tx.core.ix.commits.get(id) {
         Some(m) => (*m.header).clone(),
-        None => match tx.txn.get_pending(id)?.and_then(|(_, b)| osis_commit::CommitBlob::decode_stored(&b).ok()) {
+        None => match tx.txn.get_pending(id)?.and_then(|p| osis_commit::CommitBlob::decode_stored(&p.bytes).ok()) {
             Some(b) => b.header,
             None => return Ok(()),
         },

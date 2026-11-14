@@ -246,13 +246,13 @@ fn reaches(core: &Core, x: &Tid, a: &Tid) -> bool {
 /// commit's age (spec/permissions.md §3), so a re-grant applied after the loss brings its boxes.
 /// A box only at an epoch the node held (a grant from before the removal, which applied gives no
 /// role) goes: kept, it would hold the lost secrets for good. Cost: such a re-grant that never
-/// applies keeps its sealed box.
-pub(crate) fn boxes_kept(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_base::CommitId, held: &BTreeMap<Tid, u64>) -> BTreeSet<Tid> {
+/// applies keeps its sealed box. `known`: the verdict its stored copy keeps (`apply::kept_verdict`).
+pub(crate) fn boxes_kept(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_base::CommitId, held: &BTreeMap<Tid, u64>, known: Option<osis_commit::Signed>) -> BTreeSet<Tid> {
     if core.ix.commits.contains_key(id) {
         return BTreeSet::new();
     }
     let newer = |x: &Tid, k: &BoxKey| ours(core, &k.holder) && k.role == Role::Read && held.get(x).is_none_or(|n| k.epoch.n > *n);
-    crate::apply::keys::pending_secrets_writes(blob, id).into_iter().filter(|(x, w)| w.boxes.keys().any(|k| newer(x, k)) && may_grant(core, &blob.header.author, x) && authentic(core, blob, id, x)).map(|(x, _)| x).collect()
+    crate::apply::keys::pending_secrets_writes(blob, id).into_iter().filter(|(x, w)| w.boxes.keys().any(|k| newer(x, k)) && may_grant(core, &blob.header.author, x) && authentic(core, blob, id, x, known)).map(|(x, _)| x).collect()
 }
 
 impl Engine {
@@ -278,10 +278,10 @@ impl Engine {
         let ids: Vec<osis_base::CommitId> = self.core.ix.pending.iter().filter(|(_, r)| **r != crate::Reason::Parked).map(|(c, _)| *c).collect();
         self.read(|tx| {
             for id in ids {
-                let Some((_, bytes)) = tx.txn.get_pending(&id)? else { continue };
-                let Ok(blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { continue };
+                let Some(p) = tx.txn.get_pending(&id)? else { continue };
+                let Ok(blob) = osis_commit::CommitBlob::decode_stored(&p.bytes) else { continue };
                 let h = &blob.header;
-                if h.aspect_index(&a, "keys.0").is_some() && tx.core.role_now(&h.author, &a) == Some(Role::Admin) && authentic(tx.core, &blob, &id, &a) {
+                if h.aspect_index(&a, "keys.0").is_some() && tx.core.role_now(&h.author, &a) == Some(Role::Admin) && authentic(tx.core, &blob, &id, &a, crate::apply::kept_verdict(&p)) {
                     return Ok(true);
                 }
             }
@@ -292,11 +292,11 @@ impl Engine {
 
 /// Whether pending `blob` is signed by its author and its `secrets.0` parts on `x` are the ones its
 /// header lists: a commit waiting on its author's chain or a creation record is stored unchecked, so its
-/// `author` and `ts` could be anyone's.
-pub(crate) fn authentic(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_base::CommitId, x: &Tid) -> bool {
+/// `author` and `ts` could be anyone's. `known`: the verdict its stored copy keeps, if any.
+pub(crate) fn authentic(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_base::CommitId, x: &Tid, known: Option<osis_commit::Signed>) -> bool {
     let h = &blob.header;
     let mut interner = osis_crdt::Interner::new();
-    crate::apply::signed_by_author(core, blob, id, core.created(&h.author)) == Some(true)
+    crate::apply::signed_by_author(core, blob, id, core.created(&h.author), known) == Some(true)
         && blob.parts.iter().all(|p| match h.aspects.get(p.ai) {
             Some(a) if a.tid == *x && a.ak.as_str() == "secrets.0" => core.dedup(x).is_some_and(|d| osis_commit::verify_part(h, id, p, &d, &mut interner, None).is_ok()),
             _ => true,

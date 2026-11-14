@@ -3043,15 +3043,15 @@ impl Tx<'_> {
         self.txn.local_stamp(&records::commit_key(id))
     }
 
-    /// Every stored pending or parked copy, a page at a time: commit, kind, bytes.
-    pub(crate) fn each_pending(&mut self, mut f: impl FnMut(CommitId, osis_store::PendingKind, Vec<u8>)) -> Result<()> {
+    /// Every stored pending or parked copy, a page at a time.
+    pub(crate) fn each_pending(&mut self, mut f: impl FnMut(CommitId, osis_store::Pending)) -> Result<()> {
         let mut after: Option<CommitId> = None;
         loop {
             let page = self.txn.pending(after.as_ref(), SCAN_PAGE)?;
             let n = page.len();
-            for (id, k, bytes) in page {
+            for (id, p) in page {
                 after = Some(id);
-                f(id, k, bytes);
+                f(id, p);
             }
             if n < SCAN_PAGE {
                 return Ok(());

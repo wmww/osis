@@ -47,7 +47,7 @@ fn plant(s: &mut Store, rng: &mut SeededRng, marker: &[u8]) {
         t.table_put(big, &i.to_be_bytes(), format!("element {i}").into_bytes(), Shred::No).unwrap();
     }
     t.table_put(big, &150u32.to_be_bytes(), [b"elem:", marker].concat(), Shred::No).unwrap();
-    t.put_pending(&CommitId([3; 32]), PendingKind::Parked, &[b"commit:", marker, &[0; 400]].concat()).unwrap();
+    t.put_pending(&CommitId([3; 32]), PendingKind::Parked, None, &[b"commit:", marker, &[0; 400]].concat()).unwrap();
     t.commit().unwrap();
     // Unrelated edits: same unit keys, new versions.
     for round in 0..3u8 {

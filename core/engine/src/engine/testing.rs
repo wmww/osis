@@ -192,7 +192,7 @@ impl Engine {
     pub fn stripped_count(&mut self, id: &osis_base::CommitId) -> Result<usize> {
         let id = *id;
         self.read(|tx| {
-            let Some(b) = tx.txn.get_pending(&id)?.and_then(|(_, b)| osis_commit::CommitBlob::decode_stored(&b).ok()) else { return Ok(0) };
+            let Some(b) = tx.txn.get_pending(&id)?.and_then(|p| osis_commit::CommitBlob::decode_stored(&p.bytes).ok()) else { return Ok(0) };
             let mut n = 0;
             for ai in 0..b.header.aspects.len() {
                 if crate::retention::waiting_stripped(tx, &b, &id, ai)? {
@@ -364,7 +364,7 @@ impl Engine {
     pub fn pending_parts(&mut self, c: &CommitId) -> Result<Option<std::collections::BTreeSet<usize>>> {
         let c = *c;
         self.read(|tx| {
-            let Some((_, bytes)) = tx.txn.get_pending(&c)? else { return Ok(None) };
+            let Some(osis_store::Pending { bytes, .. }) = tx.txn.get_pending(&c)? else { return Ok(None) };
             let Ok(blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(None) };
             Ok(Some(blob.parts.iter().map(|p| p.ai).collect()))
         })
@@ -377,7 +377,7 @@ impl Engine {
     pub fn pending_value_past_end(&mut self, c: &CommitId, now: osis_base::WallMs) -> Result<Option<String>> {
         let c = *c;
         self.read(|tx| {
-            let Some((_, bytes)) = tx.txn.get_pending(&c)? else { return Ok(None) };
+            let Some(osis_store::Pending { bytes, .. }) = tx.txn.get_pending(&c)? else { return Ok(None) };
             let Ok(blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(None) };
             let emptied = crate::retention::emptied();
             for p in blob.parts.iter().filter(|p| p.delta != emptied) {
