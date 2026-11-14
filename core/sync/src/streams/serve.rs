@@ -383,11 +383,11 @@ impl Streams {
     pub(super) fn on_applied(&mut self, ctx: &mut Ctx, conn: ConnId, cursor: Cursor) {
         let Ok(Some(pos)) = ctx.store.position(&cursor) else { return };
         let serve = self.serve.entry(conn).or_default();
-        if serve.applied.is_some_and(|p| p >= pos) {
-            return;
+        // a join merging at a position the stream stood at already is covered by an Applied of it
+        if serve.applied.is_none_or(|p| p < pos) {
+            serve.applied = Some(pos);
+            ctx.reported.push(Reported::Stream(conn, pos, cursor));
         }
-        serve.applied = Some(pos);
-        ctx.reported.push(Reported::Stream(conn, pos, cursor));
         let merged: Vec<SyncId> = serve.merging.iter().filter(|(_, p)| **p <= pos).map(|(s, _)| *s).collect();
         for s in merged {
             serve.merging.remove(&s);

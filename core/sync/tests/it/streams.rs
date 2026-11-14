@@ -605,6 +605,8 @@ fn a_join_in_pages_keeps_its_position_spec_sync_streams_4() {
     a.log(s, 100);
     a.open.members.entry(C).or_default().insert(s, member());
     let c = pull_at(&mut a, 1, plain_pull(None, vec![], REPLY_BUDGET)).cursor.unwrap().into_bytes();
+    a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(c.clone()).unwrap() })));
+    assert!(a.reported_at(s).is_some(), "the stream's position");
     a.open.members.get_mut(&C).unwrap().insert(t, member());
     let r = pull_at(&mut a, 1, plain_pull(Some(c.clone()), vec![(t, None)], SMALL_REPLY));
     let [(jt, Some(jc))] = r.joins.as_slice() else { panic!("the join is in pages: {:?}", r.joins) };

@@ -226,7 +226,6 @@ impl Streams {
         }
         self.drain(ctx, conn);
         self.fetch(ctx, conn);
-        self.send_pull(ctx, conn);
         let Some(p) = self.pull.get_mut(&conn) else { return };
         if !p.tell.is_empty() {
             let st = Stream { events: p.tell.clone(), cursor: None, report: false, seq: 0 };
@@ -240,6 +239,7 @@ impl Streams {
         {
             p.applied_owed = None;
         }
+        self.send_pull(ctx, conn);
     }
 
     /// Sends the next Pull when one is due: the first, a page on, a join, a gap or a dropped
@@ -253,7 +253,9 @@ impl Streams {
         let Some(p) = self.pull.get_mut(&conn) else { return };
         // refusals not told yet hold the stream like messages in hand: what a peer makes this side
         // owe it stays bounded
-        if p.out.is_some() || p.pending.len() >= PENDING_CAP || !p.tell.is_empty() || members.is_empty() || p.retry_at.is_some_and(|t| t > ctx.now) {
+        // an Applied goes before the next Pull: the server reads a reported position as covering
+        // only what came before the Pull (a join merging there is not yet stored)
+        if p.out.is_some() || p.pending.len() >= PENDING_CAP || !p.tell.is_empty() || p.applied_owed.is_some() || members.is_empty() || p.retry_at.is_some_and(|t| t > ctx.now) {
             return;
         }
         p.retry_at = None;
