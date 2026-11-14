@@ -54,15 +54,10 @@ fn kept_then_removed() -> (World, Tid, SyncId) {
     add_to_d(&mut w, 1, t);
     w.run();
     assert_eq!(w.engine(1).sync_holding(&s).unwrap(), Some((t, Holding::Unread)), "kept unread");
-    // NOT BUILT: no reader registers S's path at a node keeping S unread that holds none of it
-    // (spec/sync-ids.md §6 Register; issues/sync-register-first-path.md), so it is registered by hand
+    // node 0 walks S at node 1 again at node 1's filter, which shows the accept: Behind answered
+    // 13, the genesis registered, then the rest of the recorded path (spec/sync-ids.md §6 Walk)
     let path = w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.clone();
-    let mut st1 = w.store(1).clone();
-    for (step, claims) in &path.steps {
-        assert_eq!(st1.take_register(&s, step, claims.as_ref()).unwrap(), osis_proto::Code::OK);
-    }
-    w.write(1, |_| ());
-    w.run();
+    assert_eq!(w.store(1).head(&s).unwrap().map(|h| h.id()), path.steps.last().map(|(st, _)| st.id()), "S's path registered at node 1");
     let c = w.write(0, |e| {
         let mut m = Mutation::new();
         m.set(t, &Ak::new("t:reg.0").unwrap(), &Value::Int(2)).unwrap();
@@ -78,7 +73,8 @@ fn kept_then_removed() -> (World, Tid, SyncId) {
 }
 
 // spec/sync-judgement.md §6 (Keeps; Stops), spec/sync-inbox.md §2 (Logging), spec/sync-ids.md
-// §6 (Taking a stamped entry), spec/sync-opens.md §1 (whom to dial):
+// §6 (Taking a stamped entry; Walk: a Behind answered 13 registers the path from genesis, tested
+// again at each filter of the source), spec/sync-opens.md §1 (whom to dial):
 // `kept_then_removed`: the removal's notice reaches node 1 as the grant did and stops it: S
 // shredded with its path.
 #[test]
