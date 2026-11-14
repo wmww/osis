@@ -12,7 +12,7 @@ Independent of any osis crate: an oracle, never patched to match the implementat
 | `addenda` | 1,000,000 (4 min) | notes/permissions.md, Addenda model |
 | `addenda-exh` | 0 (the cover family, then 2.83M worlds, 11 min) | as above |
 | `addenda-covers` | 0 (the cover family alone, 38,656 worlds, 8 s) | as above, Cover rules |
-| `epochs` | 800,000 (about 4,200 CPU-s) | below |
+| `epochs` | 600,000 (about 4,000 CPU-s) | below |
 | `epochs-exh` | 0 (families A and B; 2.41M worlds, about 2,200 CPU-s) | below |
 | `epochs-exh-c` | 0 (family C; 1.44M worlds, about 5,300 CPU-s) | below |
 | `digest` | 1,000,000 | notes/test-properties.md, Models |
@@ -30,11 +30,13 @@ One account P (node 0 the remover, X = 1, Y = 2, maybe a sibling), witness write
 Hand tests (`cargo test -p roles-model --lib epochs`) state the properties of the build plan's steps 4 and 5 on small worlds; `removed_node_holding_a_sibling_epoch` is the minimal sibling-epoch world; `any_node_supersedes_a_sibling_epoch_with_the_remover_gone` and `a_standing_fork_loses_no_write_when_its_writer_goes` the minimal worlds for no designated rotator and for `World::ends`.
 
 ### Results
-Recorded before the first-seen sides (`forks`); after them a 592-world run (`-- 600 epochs`, 22 s) passes every hard check (merges owed for honest forks asked in the settle only), and larger runs do not end within the heavy limit: a few worlds grow to 100-135 items and 30+ rotations (X re-forking after every rotation of P's, each answered), and both generating one (up to 170 s; `Builder::due`/`forked` judge the chain at every tick) and checking it (every observer and prefix) take minutes, as `World::follow` is about quartic in items (`minted` scans every item inside the per-line, per-removal loops). No merge race: the settle's rounds are capped. Index `minted` and the line sets once per judgment before re-running the table. Re-run the table's rows before relying on them.
+Judgment indexes each held set once (`Lines`: lines as membership rows, signed-at epochs, the minting rotation per epoch; `Roots`: `verified` memoized, as walking every merge's named forks again per call is exponential in merges), so a world costs polynomially in its items: the slowest of 20,000 random worlds (140 items) takes 0.6 s.
+
+Oracle readings the first-seen sides need (each a stated limit, spec/permissions.md §5.5): an observer whose heads all lie beside a removal it holds followed a line it held first (an unaware sibling's rotation, or the removed node's own from before the removal), so a removed node's write counting there is the window until a merge of P joins them (counted with the beside-head window), not a safety failure; for "removal stands", a merge takes a rival in only if held before every rotation of the removed node's beside the removal, its own from before the removal included. Honest policy: a lister leaving out covered commits leaves out none a snapshot of P's covers (`covered_at`; hand test `a_cover_by_ps_own_snapshot_excuses_no_listing`), as P's snapshot counts by the lister's side of P's chain. A re-add comes first in its tick (`World::grant_of`; hand test `a_rotation_right_after_a_readd_stands_beside_the_removers`).
 
 | Run | Worlds | Hard failures |
 |---|---|---|
-| `-- 200000 epochs` | 200,000 (104,314 with a sibling's or X's own rotation, 50,910 re-forking after every rotation, 44,300 with the remover gone for good; honest content visible at a void epoch 1,510) | 0 |
+| `-- 200000 epochs` (1,350 CPU-s) | 200,000 (103,954 with a sibling's or X's own rotation, 50,583 re-forking after every rotation, 43,925 with the remover gone for good; honest content visible at a void epoch 959) | 0 |
 | `-- 0 epochs-exh` A (one label) | 1,127,364 | 0 |
 | `-- 0 epochs-exh` B (labels, successive removals, re-add, bound) | 1,283,040 | 0 |
 | `-- 0 epochs-exh-c` C (a sibling rotating after a removal it has not received; X rotating before it; the remover gone) | 1,443,420 | 0 |

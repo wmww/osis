@@ -10,3 +10,6 @@
 - A mutation script that deletes a block (replacement "") cannot restore it (the reverse find of "" fails): the deleted check stayed out through two later mutation runs, which then passed for the wrong reason. Mutate by guarding (`false &&`), never by deleting.
 - A perm test binary copied by `ls -t target/debug/deps/it-*` can be another crate's `it`: check the test name ran.
 - `tools/heavy` queues behind other agents' runs silently; a 5-run model batch waited 15+ min before starting.
+- fork-sides-epochs: the slow `epochs` worlds were not quartic `follow` (judgment was 0.2 s of a 13 s world): an unmemoized `verified` re-walked every merge's named forks per call, exponential in merges. A single-world timer split by function found it in minutes; guessing from the code would have optimized the wrong loop.
+- fork-sides-epochs: with the model too slow for runs past 600 worlds, the branch's new hard failures at 200,000 worlds (oracle readings of the first-seen sides, a model re-add tick bug) stayed hidden until the model was fast.
+- fork-sides-epochs: `tools/heavy` queued 15-30 min at a time behind gates and other models; most of this task's wall time was lock waits.
