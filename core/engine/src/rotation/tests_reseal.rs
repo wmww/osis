@@ -507,7 +507,7 @@ fn facade_copy_read_content_withheld_without_the_removal_spec_crypto_5() {
 
 // spec/crypto.md §5 (Passing on: a copy's content came under its wrap's epoch alone): R's write
 // w reaches V first as a per-sync-ID copy under h's sync ID (another thing R and V read, M does
-// not), so V reads it in no section of g. That opening counts for no epoch of g: V neither seals
+// not, whose actor reads g), so V reads it in no section of g. That opening counts for no epoch of g: V neither seals
 // w for g's sync ID nor snapshots it under its own epoch of g, which M holds; not even once W
 // arrives. Once V opens R's entry of w under e_R, established, it does, and M reads nothing.
 #[test]
@@ -516,6 +516,9 @@ fn cross_thing_copy_content_never_resealed_spec_crypto_5() {
     let h = super::tests::group(&mut lp, R);
     let v_tid = lp.peers[V].engine.me();
     lp.peers[R].engine.grant(&h, &v_tid, &edge(Role::Admin)).unwrap();
+    // h's actor reads g, so h's sync ID may carry w as a copy (spec/permissions.md §3: a copy of
+    // content its group actor may not read is not taken)
+    lp.peers[R].engine.grant(&g, &h, &edge(Role::Read)).unwrap();
     send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
     let sh = lp.peers[V].engine.home_sync_id(&h).unwrap().expect("V syncs h");
     let r = &mut lp.peers[R].engine;
@@ -749,4 +752,57 @@ fn relink_without_the_removal_leaks_nothing_spec_crypto_5() {
     let pks = lp.sealed(V, &[c]).unwrap();
     lp.deliver_sealed(M, &pks).unwrap();
     assert_ne!(read_v(&mut lp, M), Some(Value::Bytes(v)), "M reads R's edit through V's repair");
+}
+
+// spec/permissions.md §3 (Of a copy opened under a sync ID, a node takes no content part on a
+// thing under an actor with secrets of its own that the sync ID's group actor may not read now,
+// and keeps none of the copy's bytes): peer 0's X derives its secrets from Y, which group G reads
+// by role; X is filed in G, so G's sync ID carries X's write w as a copy. Once G is removed from
+// Y, peer 1 (a reader of G) opening that copy takes nothing of it
+#[test]
+fn a_stale_copy_gives_no_content_spec_permissions_3() {
+    let (mut lp, _, tids) = granted(2, &[]);
+    let g = super::tests::group(&mut lp, 0);
+    let y = super::tests::group(&mut lp, 0);
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, y);
+    let mut items = osis_schema::core_types::Group::default();
+    items.items.insert(t);
+    m.set(g, &osis_schema::core_types::GROUP, &items).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    lp.peers[0].engine.grant(&y, &g, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let w = put(&mut lp, 0, t, "w");
+    let p0 = &mut lp.peers[0].engine;
+    let body = p0.body(&w).unwrap().unwrap();
+    let copy = p0.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(40)).unwrap().unwrap();
+    let k = p0.wrap_secret(&g, Some((&w, &body.parts))).unwrap().expect("peer 0 wraps its own");
+    let s = p0.home_sync_id(&g).unwrap().unwrap();
+    lp.peers[0].engine.demote(&y, &Demotion { holder: g, new: None, retain: None }).unwrap();
+    send_skipping(&mut lp, 0, 1, &BTreeSet::from([w]));
+    assert!(!lp.peers[1].engine.reads_in(&g, &t), "G reads X no more");
+    let wrap = osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap();
+    let o = lp.peers[1].engine.open_entry(&s, &copy.id, &wrap, &copy.blob).unwrap();
+    assert!(matches!(o, crate::sync::Opened::NotOpen), "the stale copy is not taken: {o:?}");
+    assert!(!lp.peers[1].engine.holds_commit(&w), "nothing of w is held");
+}
+
+// spec/crypto.md §4 (Encrypting under: a node MUST NOT encrypt under an epoch blocked at it,
+// wrapping included; one that may not rotate waits for a rotation): admin A removes reader M; a
+// writer W holding the removal but not its rotation (the removal's `secrets.0` part) holds the read epoch M holds as its newest,
+// blocked: W wraps nothing of g under it, A's earlier write included, until the rotation arrives
+#[test]
+fn a_wrap_waits_for_a_rotation_covering_a_known_removal_spec_crypto_4() {
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Read)]);
+    let c0 = put(&mut lp, 0, g, "before");
+    lp.sync(0, 1).unwrap();
+    let removal = lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap().commits[0];
+    super::tests::deliver_without_secrets(&mut lp, 0, 1, g);
+    assert!(lp.peers[1].engine.holds_commit(&removal));
+    let parts: Vec<usize> = lp.peers[1].engine.body(&c0).unwrap().unwrap().parts;
+    assert!(lp.peers[1].engine.wrap_secret(&g, Some((&c0, &parts))).unwrap().is_none(), "W wraps under no epoch the removed reader holds");
+    lp.peers[1].engine.forget_awaiting(&removal).unwrap();
+    send_skipping(&mut lp, 0, 1, &BTreeSet::new());
+    assert!(lp.peers[1].engine.wrap_secret(&g, Some((&c0, &parts))).unwrap().is_some(), "the rotation held, W wraps");
 }

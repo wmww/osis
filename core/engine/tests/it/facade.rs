@@ -1268,7 +1268,7 @@ fn a_pass_begun_before_a_role_commit_does_not_count_spec_perm_3() {
     assert!(since.0 > 0 && since <= e.pass_clock(), "from the grant's arrival, on the engine's clock");
     e.note_complete_pass(&s, osis_base::WallMs(since.0 - 1)).unwrap();
     assert_eq!(e.passes_wanted().unwrap().get(&s), Some(&since), "begun before it: still wanted");
-    assert!(e.reseal_due(&t).unwrap().commits.is_empty());
+    assert!(e.pass_end(&t).unwrap().commits.is_empty());
     e.note_complete_pass(&s, since).unwrap();
     assert!(!e.passes_wanted().unwrap().contains_key(&s));
 }

@@ -485,14 +485,13 @@ impl Engine {
         parts.iter().filter(|ai| h.aspects.get(**ai).is_some_and(|a| self.reads(ctx, &a.tid))).copied().collect()
     }
 
-    /// The parts of copy `c`, opened under a label of `g`, that the label carries no more
-    /// (spec/sync-judgement.md §1: a label carries the parts its group's actor may read, and certificate
-    /// copies of role-class parts on any thing): content (`is_content`) on a
-    /// thing under an actor with secrets of its own that the group's actor may not read now, left
-    /// by a revocation since the per-label copy was placed
-    /// (spec/permissions.md §3). Node-sync takes none of them and keeps no byte of the copy;
-    /// each is fetched again once this node holds secrets of its thing's secret actor
-    /// (`Engine::await_reading`).
+    /// The parts of copy `c`, opened under a sync ID of `g`, that the sync ID carries no more
+    /// (spec/sync-judgement.md §1: a sync ID carries the parts its group's actor may read, and
+    /// certificate copies of role-class parts on any thing): content (`is_content`) on a thing
+    /// under an actor with secrets of its own that the group's actor may not read now, left by a
+    /// revocation since the per-sync-ID copy was placed (spec/permissions.md §3). With any,
+    /// `open_entry` takes none of the copy (`Opened::NotOpen`), to be opened again once this node
+    /// holds secrets of its thing's secret actor (`Engine::await_reading`).
     /// Invariant: no part taken from a copy gives a node anything of an actor it cannot read now.
     /// Content is left out here; a role-class part is taken because each is judged as it is used:
     /// `secrets.0` boxes by `rotation::may_take` as they open, `label.0` entry boxes by
@@ -635,7 +634,13 @@ impl Engine {
             Some((c, parts)) if self.carries_secrets(g, c, parts) => self.rotation_wrap_epoch(g, c)?.and_then(|ep| e.read.secret(&ep).map(|s| (ep, s.clone()))),
             _ => None,
         };
+        let own_wrap = rotation.is_some();
         let Some((ep, s)) = rotation.or_else(|| osis_keys::wrap_epoch(&e.read).and_then(|ep| e.read.secret(&ep).map(|s| (ep, s.clone())))) else { return Ok(None) };
+        // spec/crypto.md §4 Encrypting under: wrapping is encrypting under the epoch, so none
+        // under one blocked here (a rotation's own wrap excepted)
+        if !own_wrap && self.wrap_blocked(&self.core.reader_of(g), c.map(|x| x.0))? {
+            return Ok(None);
+        }
         // the wrap gates the header, and a copy's whole content: under this node's epoch only
         // where every part it carries may go so and the commit's header may, at that epoch's
         // floor (`Engine::passes_on_parts`, spec/crypto.md §5 Passing on)
@@ -645,6 +650,27 @@ impl Engine {
             return Ok(None);
         }
         Ok(Some((ep, s)))
+    }
+
+    /// Whether read of `a` is blocked here for a wrap of commit `c` (spec/crypto.md §4 Encrypting
+    /// under): a role commit, which goes as a certificate or as this node's own, by the placing
+    /// walk (`Walk::Place`: through holder actors this node may rotate only, so a node that may
+    /// not still logs what tells their rotators); anything else by the encrypting walk. A key
+    /// actor's epochs are its seed's: never blocked.
+    fn wrap_blocked(&mut self, a: &Tid, c: Option<&CommitId>) -> Result<bool> {
+        if self.core.is_key_actor(a) {
+            return Ok(false);
+        }
+        let walk = match c.and_then(|c| self.header(c)) {
+            Some(h) if !h.kind.is_role() => crate::rotation::Walk::Encrypt,
+            _ => crate::rotation::Walk::Place,
+        };
+        let a = *a;
+        self.read(|tx| {
+            let who = tx.core.writer()?;
+            let deps = crate::rotation::departures(tx, &a)?;
+            Ok(crate::rotation::blocked_roles_of(tx, &who, &a, &deps, walk)?.contains(&Role::Read))
+        })
     }
 
     /// Held read secrets of a group, newest first; then those derived from its first admin's (a

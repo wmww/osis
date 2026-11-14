@@ -680,7 +680,7 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, mode:
 
 /// The rotations nothing waits for, on `a` and the holder actors below it (`rotate_below`) by
 /// `who`, with the other rotations due there: withdraws of unsuperseded epochs not current here.
-/// Decided at the end of a complete pass of `a`'s labels (`Engine::reseal_due`), as re-seals and
+/// Decided at the end of a complete pass of `a`'s labels (`Engine::pass_end`), as re-seals and
 /// history adds are, never by `ensure_rotated`: no epoch they supersede is one this node would
 /// encrypt under while it misses a departure.
 fn pass_end_rotations(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done) -> Result<()> {
@@ -876,7 +876,7 @@ fn ended_holders(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Tid> {
 /// Which boxes a re-seal writes (`reseal_one`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Reseal {
-    /// The trigger's (`reseal_due`): at the current epochs the holder has no box at, whose
+    /// The trigger's (`pass_end`): at the current epochs the holder has no box at, whose
     /// secret this node holds; it replaces no box (`osis_keys::reseal_holder`).
     Missing,
     /// A re-share (`Engine::reshare`): at every current epoch held, replacing the holder's boxes
@@ -1119,7 +1119,7 @@ impl Engine {
         self.run(|tx| own_secrets_delivered(tx, t))
     }
 
-    /// `reseal_due` after a complete pass of `actor`'s sync IDs noted now (tests: the pass sync
+    /// `pass_end` after a complete pass of `actor`'s sync IDs noted now (tests: the pass sync
     /// would note), run whether or not the actor has a sync ID read here.
     #[doc(hidden)]
     pub fn reseal_after_pass(&mut self, actor: &Tid) -> Result<Done> {
@@ -1132,19 +1132,26 @@ impl Engine {
         self.reseal_run(actor)
     }
 
-    /// Makes the rotations of `actor` nothing waits for (`pass_end_rotations`: withdraws), re-seals the
-    /// holders of `actor` the trigger names, adds the history its current epochs lack
-    /// (spec/permissions.md §3, spec/crypto.md §4 History box) and writes the snapshots a cut owes
-    /// (spec/crypto.md §4, State at a cut), once a complete pass of its sync IDs began after every
-    /// role commit on it received from elsewhere (`note_complete_pass`); nothing otherwise.
-    pub fn reseal_due(&mut self, actor: &Tid) -> Result<Done> {
+    /// What a complete pass of `actor`'s sync IDs makes due, once one began after every role
+    /// commit on it received from elsewhere (`note_complete_pass`); nothing otherwise: the
+    /// rotations of `actor` nothing waits for (`pass_end_rotations`: withdraws), the re-seals of
+    /// the holders the trigger names, the history its current epochs lack (spec/permissions.md §3,
+    /// spec/crypto.md §4 History box), the snapshots a cut owes (spec/crypto.md §4, State at a
+    /// cut) and, for this node's devices actor D, what the account owes its signing chain
+    /// (`signing_due`, spec/permissions.md §3, §5.5: decided at the end of a complete pass of D's
+    /// sync IDs).
+    pub fn pass_end(&mut self, actor: &Tid) -> Result<Done> {
         if !self.complete_pass(actor)? {
             return Ok(Done::default());
         }
-        self.reseal_run(actor)
+        let mut done = self.reseal_run(actor)?;
+        if self.core.account_devices().is_some_and(|(_, d)| d == *actor) {
+            done.extend(self.signing_due()?);
+        }
+        Ok(done)
     }
 
-    /// `reseal_due`'s work, its complete pass found.
+    /// `pass_end`'s re-seal work, its complete pass found.
     fn reseal_run(&mut self, actor: &Tid) -> Result<Done> {
         let a = *actor;
         self.run(|tx| {
@@ -1177,7 +1184,7 @@ impl Engine {
     }
 
     /// `pass_end_rotations` alone, as a complete pass's end runs it (tests: the withdraws without the
-    /// re-seals and history adds of `reseal_due`).
+    /// re-seals and history adds of `pass_end`).
     #[cfg(test)]
     pub(crate) fn pass_end_rotations(&mut self, actor: &Tid) -> Result<Done> {
         let a = *actor;

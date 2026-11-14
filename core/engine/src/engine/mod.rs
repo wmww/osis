@@ -1194,9 +1194,9 @@ pub struct Core {
     /// The account this node was removed from and has not dropped what it read as it yet
     /// (`flows::signing::leave_if_removed`; the lost-access drop takes it).
     pub left: BTreeSet<Tid>,
-    /// A commit of this node's account applied: what it owes its signing chain is looked at
-    /// at the end of the next complete pass of its devices actor's labels
-    /// (`Engine::signing_due`).
+    /// A commit of this node's account applied from elsewhere, or the engine opened (not
+    /// durable): what it owes its signing chain is looked at at the end of the next complete
+    /// pass of its devices actor's sync IDs (`Engine::pass_end`, `Engine::signing_due`).
     pub signing_due: bool,
     /// No purge-on-replace cover or drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
@@ -2192,7 +2192,8 @@ impl Core {
             account: Default::default(),
             time: Default::default(),
             left: BTreeSet::new(),
-            signing_due: false,
+            // judged once after an open: a commit applied before a restart left it owed
+            signing_due: true,
             accounts: Default::default(),
             keep_bodies: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
@@ -3115,6 +3116,9 @@ pub struct Engine {
     blobs_unsettled: bool,
     /// The store's `Writes::unknown` when this engine last read it whole (`load`).
     unknown_seen: u64,
+    /// How many times the in-memory indexes were read from the store again (`load_fresh`): each
+    /// replaces every memo stamp and feed a follower read (`Engine::loads`).
+    loads: u64,
     pub(crate) rng: Box<dyn osis_crypto::NodeRng>,
     #[doc(hidden)]
     pub core: Core,
@@ -3167,6 +3171,13 @@ fn nonce_count(n: &Nonce) -> u64 {
 
 impl Engine {
     /// `Store::writes` of the engine's store.
+    /// How many times the engine read its indexes from the store again (an open, a reload after
+    /// a write of unknown outcome, a lost-access forget): a follower of its memos (sync's modules)
+    /// follows them afresh when it moves, as the old stamps and feeds see no further write.
+    pub fn loads(&self) -> u64 {
+        self.loads
+    }
+
     pub fn store_writes(&self) -> osis_store::Writes {
         self.store.writes()
     }
@@ -3187,7 +3198,7 @@ impl Engine {
         let id = Identity::generate(&mut *rng);
         let (session, expiring) = sessions(id.tid(), &mut *rng);
         let rows = store.row_changes();
-        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -3213,7 +3224,7 @@ impl Engine {
         let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
         let (session, expiring) = sessions(id.tid(), &mut *rng);
         let rows = store.row_changes();
-        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         e.load()?;
         Ok(e)
     }
@@ -3617,6 +3628,7 @@ impl Engine {
     /// A fresh `Core` loaded from the store (`rebuild`: ignoring the persisted index); whether
     /// it was rebuilt from the commit records.
     fn load_fresh(&mut self, rebuild: bool) -> Result<Option<Vec<(Tid, Ak)>>> {
+        self.loads = self.loads.wrapping_add(1);
         let mut fresh = self.blank_core();
         fresh.events = std::mem::take(&mut self.core.events);
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);

@@ -1399,7 +1399,7 @@ fn reseal_raced_grant_spec_perm_3() {
     assert_eq!(newest_read(&lp, 0, t), Some(e1));
     assert!(lp.peers[2].engine.epochs(&t).is_none_or(|e| e.read.secret(&e1).is_none()), "carol stranded");
     // no pass, no decision
-    assert!(lp.peers[0].engine.reseal_due(&t).unwrap().commits.is_empty());
+    assert!(lp.peers[0].engine.pass_end(&t).unwrap().commits.is_empty());
     let done = lp.peers[0].engine.reseal_after_pass(&t).unwrap();
     assert_eq!(done.commits.len(), 1, "carol only");
     let inbox = blobs_to(&mut lp, 0, &done, pc);

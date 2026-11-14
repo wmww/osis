@@ -962,7 +962,7 @@ impl Engine {
     }
 
     /// A complete pass of `s` begun at `began` (`pass_clock`) ended (spec/sync-status.md §1):
-    /// kept durably, the last per sync ID; the re-seal and history-add trigger (`reseal_due`) and
+    /// kept durably, the last per sync ID; the re-seal and history-add trigger (`pass_end`) and
     /// history completeness read it.
     pub fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
         self.note_complete_pass_now(s, began)
