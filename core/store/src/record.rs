@@ -1,5 +1,5 @@
 //! Durable per-peer records (spec/sync-opens.md §3): one per peer node a node has shared
-//! something with or whose known actor it has met, found by what the peer proves and the pair key
+//! something with or that proved an actor to it, found by what the peer proves and the pair key
 //! both hold, never by a node key.
 //!
 //! The rule: a record says only what need not be sent again, so losing one is a first contact.

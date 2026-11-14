@@ -945,7 +945,7 @@ fn reconnect_with(n: u8) -> osis_sync::opens::Work {
     osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
 }
 
-// spec/sync-opens.md §3 (records): a known peer reconnecting with nothing changed costs the same
+// spec/sync-opens.md §3 (records): a peer with a record reconnecting with nothing changed costs the same
 // whatever else this node syncs: no beacon of what the two do not share.
 #[test]
 fn a_reconnect_costs_the_same_at_n_and_10n_spec_sync_opens_3() {
