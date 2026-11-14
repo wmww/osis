@@ -18,8 +18,8 @@ fn two_nodes_run_to_quiet() {
 }
 
 // spec: none (test harness): each kind of output is carried out: a dial comes up at both ends (or
-// down at the dialer for a key nobody listens with), bytes reach the peer, a close reaches the
-// peer, a wake ticks the node at its time.
+// down at the dialer for a key nobody listens with), bytes reach the peer and the sender learns the
+// transport took them, a close reaches the peer, a wake ticks the node at its time.
 #[test]
 fn every_output_reaches_the_network() {
     let mut w = World::new(0);
@@ -28,21 +28,26 @@ fn every_output_reaches_the_network() {
     w.trace = true;
     let to = w.address(1);
     let nobody = Address { url: to.url.clone(), key: [9; 32] };
-    let at = WallMs(w.now().0 + 5_000);
     let c = ConnId(1);
-    w.apply_as(0, vec![Out::Dial(c, to), Out::Send(c, vec![1, 2, 3]), Out::Close(c), Out::Dial(ConnId(2), nobody), Out::Wake(at)]);
-    w.run();
+    w.apply_as(0, vec![Out::Dial(c, to), Out::Send(c, vec![1, 2, 3]), Out::Close(c), Out::Dial(ConnId(2), nobody)]);
+    w.flush();
     // rank 1: node 1's address lists its public address, a direct route
     let acc = ConnId(ConnId::ACCEPTED | 1);
     let want = [
         Seen::Up { node: 0, conn: c, dialed: true, rank: 1 },
         Seen::Up { node: 1, conn: acc, dialed: false, rank: 1 },
         Seen::Bytes { node: 1, conn: acc, len: 3 },
+        Seen::Taken { node: 0, conn: c, bytes: 3 },
         Seen::Down { node: 0, conn: ConnId(2) },
         Seen::Closed { node: 1, conn: acc },
-        Seen::Tick { node: 0, at },
     ];
     assert_eq!(w.seen, want);
+    w.run();
+    w.seen.clear();
+    let at = WallMs(w.now().0 + 5_000);
+    w.apply_as(0, vec![Out::Wake(at)]);
+    w.run();
+    assert_eq!(w.seen, [Seen::Tick { node: 0, at }]);
 }
 
 #[derive(Default)]

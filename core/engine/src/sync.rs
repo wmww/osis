@@ -6,7 +6,7 @@
 //!
 //! Not built (each returns `Error::NotBuilt` naming itself): every call marked replace or new in
 //! the boundary note's table, until the engine is reshaped for it. Built: `ingest_relay`,
-//! `wants`, `freed`, `next_timer`, `tick`, `set_now`, `known_actor`, `provers`, `key_open`.
+//! `wants`, `freed`, `next_timer`, `tick`, `set_now`, `known_actor`, `provers`, `own_node`, `own_node_key`, `key_open`.
 
 use crate::apply::reach::Wants;
 use crate::engine::DropFor;
@@ -349,11 +349,51 @@ impl Engine {
         self.core.judge([*a]).known()
     }
 
-    /// The account key this node proves with on a connection (spec/sync-opens.md §2): its signing
-    /// key at its newest epoch, with the account's record. Connection proofs themselves are
+    /// The keys this node proves with on a connection, in proof order (spec/wire.md §11.2 Prove):
+    /// its own node key first when `own_node` (the peer is a node of its account), then its
+    /// account at its open epoch while it holds that epoch's seed, then the key actors it acts for
+    /// (link keys) by ascending tid. Each with its creation record; signing and checking proofs is
     /// osis-proto's (`Prover`).
-    pub fn provers(&mut self) -> Result<Option<(SigningSecret, CreationRecord)>> {
-        self.account_prover()
+    pub fn provers(&mut self, own_node: bool) -> Result<Vec<(SigningSecret, CreationRecord)>> {
+        let mut out = Vec::new();
+        if own_node {
+            out.push((self.core.id.keys().signing.clone(), self.core.id.record().clone()));
+        }
+        out.extend(self.account_prover()?);
+        out.extend(self.core.key_actors.values().map(|k| (k.keys().signing.clone(), k.record().clone())));
+        Ok(out)
+    }
+
+    /// Whether `t` is another node of this node's account (spec/sync-opens.md §2: a node proof
+    /// counts as the peer's node only then).
+    pub fn own_node(&mut self, t: &Tid) -> bool {
+        self.core.own_node(t)
+    }
+
+    /// Whether dialable key `key` is, by the `reach.0` held here, another node of this node's
+    /// account (spec/sync-opens.md §2: a dialer proves its node key only to such a key). O(the
+    /// account's nodes): asked once per connection dialed.
+    pub fn own_node_key(&mut self, key: &[u8; 32]) -> Result<bool> {
+        let Some((_, d)) = self.core.account_devices() else { return Ok(false) };
+        for (n, _) in self.core.key_holders(&d) {
+            if self.core.own_node(&n) && self.get_typed(&n, &osis_schema::core_types::REACH)?.is_some_and(|r| r.dialable == *key) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The signed rotations of this node's account a verifier may lack, each a header-only copy
+    /// (a `CommitBlobPlaintext` value with no sections), for a Prove (spec/sync-opens.md §2).
+    pub fn prove_rotations(&mut self) -> Result<Vec<osis_base::Value>> {
+        not_built("prove_rotations")
+    }
+
+    /// Takes the rotations a peer's Prove carried (header-only copies of its account's rotation
+    /// commits), judged by spec/permissions.md §5.4, before its proofs are judged.
+    pub fn take_rotations(&mut self, rotations: Vec<osis_base::Value>) -> Result<()> {
+        let _ = rotations;
+        not_built("take_rotations")
     }
 
     /// Whether `key` is `record`'s actor's key at an epoch open here (a connection proof's key).

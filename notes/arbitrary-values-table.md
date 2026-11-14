@@ -10,7 +10,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | `reopen_all` sweeps, `reopen_dependents` steps | `engine/flows/mod.rs` | taking up a key actor reopens to a fixpoint, each learner's dependents at once; terminates because an actor is pushed only when its held epochs grew (epochs and secrets are only added), bounded by the secrets the held `secrets.0` states carry | `keys::key_actor_opens_deep_holder_chain_spec_crypto_4` |
 | rotation `MAX_DEPTH` | `engine/rotation/mod.rs` | departures one per covers class, a polynomial fixpoint over the holder graph, cascade iterative, each actor once: any depth rotates | `rotation::tests::removal_twelve_deep_rotates_every_level_spec_crypto_4` |
 | `MAX_INBOX_TRIES` | old sync's deposits | a refused deposit is retried at the capped back-off until taken or moot (delivery forgotten or re-sealed, label replaced) | `inbox_retry::inbox_deposit_retried_for_hours_spec_sync_5` |
-| queue caps and a request timeout as flow control | old sync's sessions | the request window `WINDOW` (spec/sync-streams.md §1 flow control) keeps both queues under `WINDOW_QUEUE`; `STALL_TIMEOUT_MS` counts from the oldest request's last move; pushes wait while the connection's unwritten bytes leave no room for one (`SessionInput::Taken`), so a subscriber's queue stays under `SEND_QUEUE` | `slow_link::*` |
+| queue caps and a request timeout as flow control | old sync's sessions | the request window `WINDOW` (spec/sync-streams.md §1 flow control); `STALL_TIMEOUT_MS` counts from the oldest request's last move; pushes wait while the connection's untaken bytes leave no room for one (`Input::Taken`) | `session::window_spec_sync_streams_1`, `session::pushes_wait_for_room_spec_sync_streams_2` |
 | `HANDSHAKE_TIMEOUT` | `transport/quic.rs`, `p2p.rs` | no deadline; QUIC's idle timeout ends a silent handshake, a listener drops its oldest handshake past `MAX_INCOMING` | `quic::tests::handshakes_evict_oldest` |
 | `CLOSE_WAIT` | `osis/handle.rs` | user handles counted: `close` fails `StillOpen` while others exist, else waits for the callback, engine call or timer to end (and the driver task on the app's multi-thread runtime) | `api::close_waits_or_names_holders_spec_api_handle` |
 
@@ -41,10 +41,10 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 ### Clock and window (`proto/hello.rs`, `proto/msg.rs`)
 | value | class | 0 / ∞ |
 |---|---|---|
-| `MIN_PONGS` 3, `MAX_SAMPLES` 9 | M | no offset / slow start, memory |
+| `MIN_PONGS` 3, `MAX_SAMPLES` 9; sync `PINGS` 3 per dialed connection | M | no offset / slow start, memory; `PINGS` ∞: a connection never idle |
 | `OFFSET_DIAGNOSTIC_MS` 5 s | M (diagnostic only) | always reported / never |
 | `MAX_SAMPLE_RTT_MS` 10 s | M (spec: ignore long round trips) | no samples / suspend-length errors |
-| `STALL_TIMEOUT_MS` 2 min | M (liveness: the oldest request in flight did not move, either side; half of it bounds how long a served request waits in the hub's queue for the output bound's room before the biggest holders are closed) | every connection with a request out closes, every stream body is asked of a second source at once / a peer answering nothing holds its fetches; a link moving under one `WRITE_CHUNK` per timeout counts as stalled |
+| `STALL_TIMEOUT_MS` 2 min (sync `session`; also the wait for a peer's Hello, and `DIAL_TIMEOUT_MS`) | M (liveness: the oldest request in flight did not move, either side) | every connection with a request out closes, every stream body is asked of a second source at once / a peer answering nothing holds its fetches; a link moving under one `WRITE_CHUNK` per timeout counts as stalled |
 | `WINDOW` 16 MiB (spec) | R/P (per-peer buffer vs throughput, `WINDOW` per round trip; one request always goes) | one request at a time / queues overflow the caps |
 | `SMALL_REPLY` 16 KiB (holds a Status of 1024 codes; the smallest `max_reply`, the allowance of every request whose reply is bounded small) | P (requests per round trip are `WINDOW` over it; a larger reply is `TooLarge` or pages under `REPLY_BUDGET`) | every reply `TooLarge` / two requests per round trip |
 

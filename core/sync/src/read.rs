@@ -9,9 +9,9 @@
 //! Not built: every call below.
 
 use crate::opens::Opens;
-use crate::session::Sessions;
+use crate::session::{Incoming, Sessions};
 use crate::streams::Streams;
-use crate::types::{Cx, Result};
+use crate::types::{ConnId, Cx, Result};
 use osis_base::{CommitId, SyncId, WallMs};
 
 /// A body's verdict at S (spec/sync-judgement.md §2).
@@ -43,6 +43,11 @@ impl Read {
     pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams) -> Result<bool> {
         let _ = (cx, sessions, opens, streams);
         Ok(false)
+    }
+
+    /// Answers to its own requests (Delete, deposits, stamps).
+    pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, conn: ConnId, m: Incoming) {
+        let _ = (cx, sessions, conn, m);
     }
 
     /// For status and inbox.

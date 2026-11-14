@@ -92,6 +92,10 @@ pub enum Input {
     Up { conn: ConnId, peer: NodeKey, rank: u8, dialed: bool },
     /// Bytes arrived on a connection.
     Bytes { conn: ConnId, bytes: Vec<u8> },
+    /// The transport took `bytes` of what this node sent on `conn`, in all so far (written out,
+    /// no longer queued at this end): pushes wait on it, and it moves the stall clock
+    /// (spec/sync-streams.md §1-§2).
+    Taken { conn: ConnId, bytes: u64 },
     /// An up connection ended.
     Closed { conn: ConnId },
     /// A dial failed: the connection never came up.

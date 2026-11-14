@@ -17,7 +17,7 @@ pub fn encode_frame(body: &[u8]) -> Vec<u8> {
 pub const MAX_HELLO_BODY: usize = crate::limits::MAX_HELLO_FRAME - 4;
 
 /// Incremental frame splitter. Holds at most one frame plus the last pushed chunk.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FrameDecoder {
     buf: Vec<u8>,
     /// Bytes of `buf` already handed out.

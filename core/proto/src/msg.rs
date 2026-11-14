@@ -280,6 +280,24 @@ pub fn flow(kind: u64) -> Option<Flow> {
     })
 }
 
+/// Whether a message of kind `reply` answers a request of kind `request` (spec/wire.md §11.2):
+/// an Error answers any request; any other reply kind only its own requests.
+pub fn answers(request: u64, reply: u64) -> bool {
+    reply == 0
+        || match request {
+            2 => reply == 3,
+            7 | 28 | 30 | 31 => reply == 1,
+            14 => reply == 11,
+            19 => reply == 20,
+            24 | 25 | 27 => reply == 26,
+            32 => reply == 33,
+            34 => reply == 35,
+            36 | 37 | 38 | 40 => reply == 39,
+            41 => reply == 42,
+            _ => false,
+        }
+}
+
 /// Kinds whose id has its top bit set: the shared set's and the stream's requests and their
 /// answers (spec/wire.md §11.2 Shared-set request ids). A Fetch of stream bodies has one too,
 /// but a Fetch may also have another id.
@@ -287,11 +305,15 @@ fn top_bit_kind(kind: u64) -> bool {
     matches!(kind, 36..=42)
 }
 
-/// A frame body that is not a valid message: its kind and request id when readable (else 0).
+/// A frame body that is not a valid message: its kind and request id when readable (`read`;
+/// else 0).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rejected {
     pub kind: u64,
     pub id: Id,
+    /// Whether `kind` and `id` were read: a frame whose id cannot be read is answered by an
+    /// Error with id 0, whatever it was meant to be (spec/wire.md §11.1).
+    pub read: bool,
     pub error: Error,
 }
 
@@ -304,10 +326,11 @@ impl Rejected {
         }
     }
 
-    /// Whether it is answered: a malformed request or a frame of unknown kind is answered by
-    /// Error; a malformed reply or push is dropped (spec/wire.md §11.1).
+    /// Whether it is answered: a malformed request, a frame of unknown kind or one whose id
+    /// cannot be read is answered by Error (with its id, or 0); a malformed reply or push is
+    /// dropped (spec/wire.md §11.1).
     pub fn answered(&self) -> bool {
-        matches!(self.error, Error::UnknownKind(_)) || flow(self.kind).is_none_or(|f| f == Flow::Request)
+        !self.read || matches!(self.error, Error::UnknownKind(_)) || flow(self.kind).is_none_or(|f| f == Flow::Request)
     }
 }
 
@@ -391,6 +414,17 @@ impl Msg {
         flow(self.kind()).unwrap_or(Flow::Push)
     }
 
+    /// Sets the request id (a request's, or the one a reply answers); a push keeps id 0.
+    pub fn set_id(&mut self, new: Id) {
+        use Msg::*;
+        match self {
+            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Suspect { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id = new,
+            Pull(p) => p.id = new,
+            PullReply(r) => r.id = new,
+            Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } => {}
+        }
+    }
+
     pub fn to_value(&self) -> Value {
         use Msg as M;
         let k = Value::uint(self.kind());
@@ -444,7 +478,11 @@ impl Msg {
     /// bytes a byte string carries (steps, claim sets, entry boxes) included, so a message builds
     /// at most `MAX_MESSAGE_ITEMS` values in all beside its bytes.
     pub fn decode(body: &[u8]) -> Result<Msg, Rejected> {
-        let bad = |error: Error| Rejected { kind: 0, id: 0, error };
+        // a body that is not canonical CBOR may still show its kind and id
+        let bad = |error: Error| match peek_head(body) {
+            Some((kind, id)) => Rejected { kind, id, read: true, error },
+            None => Rejected { kind: 0, id: 0, read: false, error },
+        };
         let limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_MESSAGE };
         let mut items = 0usize;
         cbor::visit_items(body, &limits, &mut |_, _, _| items += 1).map_err(|e| bad(e.into()))?;
@@ -455,11 +493,11 @@ impl Msg {
         let (kind, id) = match &v {
             Value::List(items) => match (items.first().and_then(Value::as_uint), items.get(1).and_then(Value::as_uint)) {
                 (Some(k), Some(i)) if i <= MAX_ID => (k, i as Id),
-                _ => return Err(bad(Error::Malformed("message head"))),
+                _ => return Err(Rejected { kind: 0, id: 0, read: false, error: Error::Malformed("message head") }),
             },
-            _ => return Err(bad(Error::Malformed("message head"))),
+            _ => return Err(Rejected { kind: 0, id: 0, read: false, error: Error::Malformed("message head") }),
         };
-        decode_body(kind, id, v, &Items(Cell::new(MAX_MESSAGE_ITEMS - items))).map_err(|error| Rejected { kind, id, error })
+        decode_body(kind, id, v, &Items(Cell::new(MAX_MESSAGE_ITEMS - items))).map_err(|error| Rejected { kind, id, read: true, error })
     }
 }
 

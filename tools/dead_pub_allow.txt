@@ -153,13 +153,11 @@ osis-label::seal_stranded_notice  deferred: sync rebuild (issues/sync-rewrite.md
 osis-label::verify_deposit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-label::wrap_order  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::CLOSED  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::ClockSamples  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::DEPOSIT_BUDGET_FULL  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-proto::INVALID  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::IN_USE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::MAX_BEHIND_STEPS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-proto::MAX_CONNS_PER_CLIENT  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
-osis-proto::MAX_HELLO_BODY  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-proto::MAX_SUBS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::NETWORK  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::NOT_UNDOABLE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -176,10 +174,6 @@ osis-proto::beacon_value  deferred: sync rebuild (issues/sync-rewrite.md Phase 3
 osis-proto::decode_gcs  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::deposit_budget  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-proto::filter_width  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::negotiate  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::peek_head  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::pong  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::set_max  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::stream_event_len  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-schema::HOST  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-schema::TID  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -303,11 +297,9 @@ osis-engine::held_elsewhere  deferred: sync rebuild skeleton (issues/sync-rewrit
 osis-engine::inbox_blob  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::invitations  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::judge_peer  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::key_open  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::note_complete_pass  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::own_commits  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::promotable  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::provers  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::read_credentials  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::removal_notices  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::seal_body  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
@@ -325,3 +317,5 @@ osis-sync::take_deposit  deferred: sync rebuild skeleton (issues/sync-rewrite.md
 osis-sync::take_register  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::take_stamped  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::verdict  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
+osis-sync::proofs_done  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); opens refuses a Resume before the proofs with it
+osis-sync::clock_offset  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); status reports a large offset as a diagnostic (spec/sync-streams.md §1)

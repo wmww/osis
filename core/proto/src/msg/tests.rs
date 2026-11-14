@@ -39,7 +39,7 @@ fn every_kind_has_a_canonical_rejection_spec_wire_11_2() {
     for (name, rule, body) in rejections() {
         let r = Msg::decode(&body).expect_err(name);
         assert_eq!(r.code(), Code::MALFORMED, "{name} ({rule}): {:?}", r.error);
-        assert_eq!(r.answered(), flow(r.kind).is_none_or(|f| f == Flow::Request), "{name}");
+        assert_eq!(r.answered(), !r.read || flow(r.kind).is_none_or(|f| f == Flow::Request), "{name}");
         if let Some((kind, _)) = peek_head(&body) {
             kinds.insert(kind);
         }
@@ -86,7 +86,13 @@ fn ids_spec_wire_11_1() {
     let r = rejected(Value::List(vec![Value::Int(1), Value::Int(0)]));
     assert_eq!((r.error.clone(), r.answered()), (Error::Malformed("id"), false), "a reply is dropped");
     let r = rejected(Value::List(vec![Value::Int(2), Value::Int(1 << 32), Value::Int(0)]));
-    assert_eq!((r.id, r.code()), (0, Code::MALFORMED));
+    assert_eq!((r.id, r.code(), r.answered()), (0, Code::MALFORMED, true), "an id that cannot be read: answered with 0");
+    let r = Msg::decode(&[0x9f, 0x02, 0x01, 0x00, 0xff]).expect_err("indefinite");
+    assert_eq!((r.id, r.answered()), (0, true), "nor can one in a body that is not canonical CBOR");
+    let r = Msg::decode(&[0x83, 0x02, 0x18, 0x05, 0x00]).expect_err("non-canonical");
+    assert_eq!((r.kind, r.id, r.answered()), (2, 5, true), "a request whose head reads is answered with its id");
+    let r = Msg::decode(&[0x82, 0x01, 0x18, 0x05]).expect_err("non-canonical");
+    assert_eq!((r.kind, r.id, r.answered()), (1, 5, false), "a reply whose head reads is dropped");
     assert!(Msg::decode(&enc(Value::List(vec![Value::Int(0), Value::Int(0), Value::Int(2)]))).is_ok());
 }
 
@@ -240,4 +246,25 @@ fn item_cap_spec_wire_13() {
     let body = m.encode();
     assert!(body.len() <= MAX_MESSAGE && body.len() + 400 > MAX_MESSAGE, "{}", body.len());
     assert_eq!(Msg::decode(&body), Ok(m));
+}
+
+// spec/wire.md §11.1 (ids): a request's or reply's id can be set; a push keeps 0
+#[test]
+fn set_id_spec_wire_11_1() {
+    for (name, mut m) in messages() {
+        m.set_id(9);
+        assert_eq!(m.id(), if m.flow() == Flow::Push { 0 } else { 9 }, "{name}");
+    }
+}
+
+// spec/wire.md §11.2: each request kind's answer kinds, an Error answering any
+#[test]
+fn answers_spec_wire_11_2() {
+    let pairs = [(2, 3), (7, 1), (14, 11), (19, 20), (24, 26), (25, 26), (27, 26), (28, 1), (30, 1), (31, 1), (32, 33), (34, 35), (36, 39), (37, 39), (38, 39), (40, 39), (41, 42)];
+    for req in KINDS.into_iter().filter(|k| flow(*k) == Some(Flow::Request)) {
+        assert!(answers(req, 0), "{req}");
+        for rep in KINDS.into_iter().filter(|k| *k != 0 && flow(*k) == Some(Flow::Reply)) {
+            assert_eq!(answers(req, rep), pairs.contains(&(req, rep)), "{req} {rep}");
+        }
+    }
 }

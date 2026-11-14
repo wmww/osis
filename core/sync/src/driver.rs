@@ -106,6 +106,7 @@ impl Node {
     pub fn handle(&mut self, input: Input) -> Vec<Out> {
         let mut out = Vec::new();
         self.now = self.now.max(self.engine.now());
+        self.driver.sessions.set_now(self.now);
         self.rounds = 0;
         if let Err(e) = self.step(input, &mut out).and_then(|()| self.settle(&mut out)) {
             self.failed(e, &mut out);
@@ -145,15 +146,25 @@ impl Node {
     fn step(&mut self, input: Input, out: &mut Vec<Out>) -> Result<()> {
         match input {
             Input::Up { conn, peer, rank, dialed } => {
-                let s = Session::new(conn, peer, dialed, rank, &mut cx!(self, out));
+                // the listener's static key: the key dialed, or the one this node listens with
+                let Some(listener) = (if dialed { Some(peer) } else { self.cfg.key }) else {
+                    out.push(Out::Close(conn));
+                    return Ok(());
+                };
+                let s = Session::new(conn, peer, dialed, rank, listener, &mut cx!(self, out));
                 self.driver.sessions.insert(s);
             }
+            Input::Taken { conn, bytes } => self.driver.sessions.taken(conn, bytes),
             Input::Bytes { conn, bytes } => self.bytes(conn, &bytes, out),
             Input::Closed { conn } | Input::Down { conn } => self.closed(conn, out),
             Input::Tick { now } => {
                 self.now = self.now.max(now);
                 self.engine.set_now(self.now);
                 self.engine.tick()?;
+                for (conn, _) in self.driver.sessions.tick(self.now) {
+                    out.push(Out::Close(conn));
+                    self.closed(conn, out);
+                }
             }
             Input::Wrote => {}
         }
@@ -172,6 +183,7 @@ impl Node {
                     match m.to() {
                         Some(To::Opens) => self.opens.on_message(&mut cx, sessions, conn, m, &mut moved),
                         Some(To::Streams) => self.streams.on_message(&mut cx, sessions, &self.opens, conn, m),
+                        Some(To::Read) => self.read.on_message(&mut cx, sessions, conn, m),
                         Some(To::Inbox) => self.inbox.on_message(&mut cx, sessions, conn, m),
                         None => {
                             close = true;
@@ -247,7 +259,7 @@ impl Node {
     /// The earliest wake any module, the store or the engine needs.
     fn next_wake(&mut self) -> Option<WallMs> {
         let engine = self.engine.next_timer().ok().flatten().map(WallMs);
-        [self.store.next_wake(), self.opens.next_wake(), self.read.next_wake(), self.unread.next_wake(), self.streams.next_wake(), self.inbox.next_wake(), self.status.next_wake(), engine].into_iter().flatten().min()
+        [self.driver.sessions.next_wake(), self.store.next_wake(), self.opens.next_wake(), self.read.next_wake(), self.unread.next_wake(), self.streams.next_wake(), self.inbox.next_wake(), self.status.next_wake(), engine].into_iter().flatten().min()
     }
 
     /// Tests only: a copy of this node inside a world copy (`osis_base::copying`), its clock

@@ -32,7 +32,7 @@ pub struct SyncConfig { pub key: Option<NodeKey>, pub dial: Vec<Address> }   // 
 
 ## The step
 ```rust
-pub enum Input { Up { conn: ConnId, peer: NodeKey, rank: u8, dialed: bool }, Bytes { conn: ConnId, bytes: Vec<u8> }, Closed { conn: ConnId }, Down { conn: ConnId }, Tick { now: WallMs }, Wrote }
+pub enum Input { Up { conn: ConnId, peer: NodeKey, rank: u8, dialed: bool }, Bytes { conn: ConnId, bytes: Vec<u8> }, Taken { conn: ConnId, bytes: u64 }, Closed { conn: ConnId }, Down { conn: ConnId }, Tick { now: WallMs }, Wrote }
 impl Node {
     pub fn open(engine: Engine, store: Store, cfg: SyncConfig, rng: Box<dyn NodeRng>) -> Result<Node>;
     #[must_use] pub fn handle(&mut self, input: Input) -> Vec<Out>;
@@ -55,23 +55,31 @@ pub fn apply(out: Vec<Out>, links: &mut impl Links);   // the one place outputs 
 ## Modules
 Each module is a `Clone` struct (world copies: `Node::test_copy`) owning its state, with `fn settle(..) -> Result<bool>`, `fn next_wake(&self) -> Option<WallMs>`, and the entry points below. A module calls another only through the read accessors listed; it changes another's state never (one owner per row). Dependencies are acyclic in this order.
 
-**1. `session`: wire and session** (spec/wire.md §11, spec/sync-streams.md §1-§2). State: per connection, in memory: Hello, proofs shown, request ids, `WINDOW` accounting, the stall clock, unanswered-in bytes, push budget. Depends on osis-proto and the engine's proof calls.
+**1. `session`: wire and session** (spec/wire.md §11.1-§11.2, spec/sync-streams.md §1-§2, spec/sync-opens.md §1 Dial timeout and §2, spec/sync-transport.md §1). Pure: messages in, frames out; time comes in inputs. State: per connection, in memory: Hello and the challenges, proofs shown and proven, request ids and their send order, the window, the stall clock, unanswered-in bytes, bytes written and taken, clock samples; per dial not up, its deadline. Depends on osis-proto and the engine's proof calls (`provers`, `own_node_key`, `own_node`, `key_open`, `known_actor`, `account_tid`, `prove_rotations`, `take_rotations`).
 ```rust
 impl Session {
-    pub fn new(conn: ConnId, peer: NodeKey, dialer: bool, rank: u8, cx: &mut Cx) -> Session;  // queues Hello
-    pub fn receive(&mut self, bytes: &[u8], cx: &mut Cx) -> Result<Vec<Incoming>, Close>;      // proofs run here
-    pub fn request(&mut self, m: Message) -> RequestId;   // osis_proto::Message; sent in order while under WINDOW
-    pub fn answer(&mut self, to: RequestId, m: Message);
-    pub fn push(&mut self, m: Message) -> bool;           // false: past REPLY_BUDGET, the pusher waits
-    pub fn proven(&self) -> &Proven;                  // account at epoch, key actors, own node
-    pub fn take_bytes(&mut self) -> Vec<u8>;
+    pub fn new(conn: ConnId, peer: NodeKey, dialer: bool, rank: u8, listener_key: NodeKey, cx: &mut Cx) -> Session;  // queues Hello; listener_key: the key dialed, or the node's own
+    pub fn receive(&mut self, bytes: &[u8], cx: &mut Cx) -> Result<Vec<Incoming>, Close>;   // Hello, Prove/Proved, Ping/Pong run here
+    pub fn request(&mut self, by: To, m: Msg) -> RequestId;   // id chosen here (top bit for kinds 19, 36-41; NoRecord 2^31); sent in order while under WINDOW; the answer goes to `by`
+    pub fn answer(&mut self, to: RequestId, m: Msg);
+    pub fn push(&mut self, m: Msg) -> bool;           // false: untaken bytes past REPLY_BUDGET, the pusher waits (retries at a later settle: `Input::Taken` steps the node)
+    pub fn proven(&self) -> &Proven; pub fn proofs_done(&self) -> bool; pub fn proved(&self) -> &[Tid];
+    pub fn binding(&self) -> Option<&Binding>;        // both Hello challenges and the listener's static key: Resume tags, Hits, open signatures, pair keys
+    pub fn clock_offset(&self) -> Option<i64>;        // diagnostic (status)
+    pub fn taken(&mut self, total: u64, now: WallMs); pub fn deadline(&self) -> Option<WallMs>; pub fn take_bytes(&mut self) -> Vec<u8>;
 }
-pub enum Incoming { Proved, Request(RequestId, Message), Reply(RequestId, Message), Push(Message) }   // Proved: the peer's proofs are done
-impl Incoming { pub fn to(&self) -> Option<To> }   // To { Opens, Streams, Inbox }: the module that takes it
-impl Sessions { pub fn get(&self, c: ConnId) -> Option<&Session>; pub fn get_mut(&mut self, c: ConnId) -> Option<&mut Session>; pub fn conns(&self) -> impl Iterator<Item = ConnId>; }  // the driver's; insert, remove, bytes taken by it
-pub struct Proven { pub account: Option<(Tid, Epoch)>, pub actors: Vec<Tid>, pub own_node: bool }
+pub enum Incoming { Proved, Request(RequestId, Msg), Reply(To, RequestId, Msg), Push(Msg) }
+impl Incoming { pub fn to(&self) -> Option<To> }   // To { Opens, Streams, Read, Inbox }: requests and pushes by kind, replies to the module that asked; the client port's to none
+impl Sessions { get, get_mut (marks the session touched), conns, set_now, dialing, tick(now) -> Vec<(ConnId, Close)>, next_wake }   // the driver's: insert, remove, taken, take_sends
+pub struct Proven { pub account: Option<(CreationRecord, [u8; 32])>, pub key_actors: BTreeMap<Tid, [u8; 32]>, pub node: Option<Tid> }   // account()/actors(); the key: `key_open` judges it again, a static entry is checked against a key actor's
+pub struct Binding { pub dialer_challenge: [u8; 32], pub listener_challenge: [u8; 32], pub listener_key: [u8; 32] }
 pub struct Close(pub &'static str);
 ```
+- **Replies by asker, requests by kind.** A Shared may answer opens' Hits or inbox's Deposit items, a Status read's Delete: only the asker knows. Requests: Resume, Beacons, Offer, Lost, NoRecord, Digest, Members to opens; Pull, Fetch, Stream, Applied to streams; Register, Delete, Stranded, Suspect to inbox. A reply of a kind that does not answer its request (`osis_proto::msg::answers`) is dropped.
+- **Skipped**: Pulls and Fetches are answered in order; one still out when a later one's answer arrives reaches its module as `Reply(.., Error 14)` (a Pull) or an empty `FetchReply`, so streams has one path for refusals. Every Fetch takes a top-bit id.
+- **Deadlines**: `STALL_TIMEOUT_MS` (2 min) from the oldest request's last move, or from Up while the peer's Hello has not come; `DIAL_TIMEOUT_MS` (the same) from `Sessions::dialing`. Kept in one ordered set, refreshed only for sessions a step touched (`take_sends`), so a step's work is in proportion to the connections it reached. A world with no request out has no wake: `PINGS` (3) Pings by the dialer only, one at a time, then none.
+- **`Input::Taken { conn, bytes }`**: the transport took that many bytes of the connection in all (`osis_transport` link's `taken`); the push rule and the stall clock need it. The harness answers each send with it at once.
+- Not built: closing a connection where the node came to act for an actor it did not prove there (spec/sync-opens.md §1); the account's rotations in a Prove (`Engine::prove_rotations` and `take_rotations` return NotBuilt: none sent, those received not taken); the closing rule is checked only when bytes arrive.
 **2. `opens`: records, agreement, the shared set** (spec/sync-opens.md §2-§6, spec/sync-ids.md §6 Walk). State: records (durable, in the store's record rows, `RECORD_BUDGET` LRU), per connection the members, filter generations sent and received, Offer in flight, walk state; `changed_at` per S (durable). Depends on session, store, unread (its credentials), engine (J, credentials, known actors).
 ```rust
 impl Opens {
@@ -183,7 +191,7 @@ One facade, `osis_engine::sync` (methods on `Engine`; its types are there too); 
 | `fn sync_records(&mut self) -> Arc<BTreeMap<Tid, SyncRecord>>`; `SyncRecord { sync_ids: Vec<SyncId>, secrets: BTreeMap<Epoch, Secret32> }` and `fn drop_sync_record(&mut self, thing: &Tid) -> Result<()>` | new | `learn_secret`'s sync side: the engine writes a record where a box sealed to its own key opens (taking an inbox blob, an entry box, a lowering from read keeps the sync secrets it held), in that transaction |
 | **Grants, removals, peers** | | |
 | `fn judge_peer(&mut self, s: &SyncId, proven: &[Tid]) -> J` (`Reader`, `SyncHolder`, `Departed`, `Unknown`) and `fn covers_departures(&mut self, s: &SyncId, epoch: Epoch) -> bool` | keep | `labeling::judge::{judge, own_node}`, `Judge::of`, departures |
-| `fn known_actor(&mut self, a: &Tid) -> bool`; `fn provers(&mut self) -> Option<(SigningSecret, CreationRecord)>` (the account key this node proves with); `fn key_open(&mut self, record: &CreationRecord, key: &[u8; 32]) -> bool` (a proof's key is its actor's at an epoch open here). Proof signing and checking are osis-proto's `Prover` and `verified` (the engine does not depend on osis-proto) (all built) | keep | `Judge::known`, `labeling::proofs::{account_key_open, account_prover}` |
+| `fn known_actor(&mut self, a: &Tid) -> bool`; `fn provers(&mut self, own_node: bool) -> Result<Vec<(SigningSecret, CreationRecord)>>` (in proof order: the node key when `own_node`, the account at its open epoch, key actors by tid); `fn own_node(&mut self, t: &Tid) -> bool`; `fn own_node_key(&mut self, dialable: &[u8; 32]) -> Result<bool>` (by `reach.0`); `fn key_open(&mut self, record: &CreationRecord, key: &[u8; 32]) -> bool` (a proof's key is its actor's at an epoch open here); all built. `fn prove_rotations(&mut self) -> Result<Vec<Value>>`, `fn take_rotations(&mut self, Vec<Value>) -> Result<()>` (header-only copies of the account's rotations, spec/sync-opens.md §2): not built. Proof signing and checking are osis-proto's `Prover` and `verified` (the engine does not depend on osis-proto) | keep | `Judge::known`, `labeling::proofs::{account_key_open, account_prover}` |
 | `fn deliveries(&mut self) -> Arc<BTreeSet<(CommitId, Tid)>>`, `fn delivery_taken(&mut self, c: &CommitId, holder: &Tid) -> bool`, `fn inbox_blob(&mut self, c: &CommitId, holder: &Tid, rng: &mut dyn NodeRng) -> Result<Option<Sealed>>` | replace | `SyncRecords::note_unsent`, `flows::Resend`, `Done::deliveries`: what a flow owes is derived from the role commit it wrote; `flows::{inbox_of_actor, inbox_kem}` kept |
 | `fn take_inbox(&mut self, s: &SyncId, blob: &BlobId, accepted: bool) -> Result<InboxOpened>`; `InboxOpened { commit, taken: Taken, hints: Vec<(Tid, SyncId)>, dial: Option<Address> }` | replace | `accept_inbox`, `hint_actors`, `inbox_named`, `learn_secret`, `flows::edges::inbox_chain` (chain only to readers) |
 | `fn removal_notices(&mut self) -> Arc<Vec<RemovalNotice>>` (`sync_id`, `sig`, `recipient`, `commit`) from inbox blobs held to this node's account | new | spec/wire.md §9 position 5, for `unread` to verify under its head's delete key |

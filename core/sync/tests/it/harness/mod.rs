@@ -81,6 +81,7 @@ pub struct WNode {
 pub enum Seen {
     Up { node: usize, conn: ConnId, dialed: bool, rank: u8 },
     Bytes { node: usize, conn: ConnId, len: usize },
+    Taken { node: usize, conn: ConnId, bytes: u64 },
     Closed { node: usize, conn: ConnId },
     Down { node: usize, conn: ConnId },
     Tick { node: usize, at: WallMs },
@@ -92,6 +93,7 @@ impl Seen {
         match input {
             Input::Up { conn, rank, dialed, .. } => Seen::Up { node, conn: *conn, dialed: *dialed, rank: *rank },
             Input::Bytes { conn, bytes } => Seen::Bytes { node, conn: *conn, len: bytes.len() },
+            Input::Taken { conn, bytes } => Seen::Taken { node, conn: *conn, bytes: *bytes },
             Input::Closed { conn } => Seen::Closed { node, conn: *conn },
             Input::Down { conn } => Seen::Down { node, conn: *conn },
             Input::Tick { now } => Seen::Tick { node, at: *now },
@@ -115,6 +117,9 @@ pub struct Net {
     accepted: Vec<u64>,
     /// Bytes carried so far.
     pub bytes: u64,
+    /// Bytes each end sent on each connection: the transport takes them at once (no buffer), so
+    /// each send is answered `Taken` with the total.
+    written: BTreeMap<(usize, ConnId), u64>,
     rng_seed: u64,
     dials: u64,
 }
@@ -162,7 +167,11 @@ impl Net {
         // bytes on a connection the peer already closed are lost, as on a transport
         if let Some((to, tc)) = self.links.get(&(from, conn)).copied() {
             self.bytes += bytes.len() as u64;
+            let w = self.written.entry((from, conn)).or_default();
+            *w += bytes.len() as u64;
+            let total = *w;
             self.queue.push_back((to, Input::Bytes { conn: tc, bytes: bytes.to_vec() }));
+            self.queue.push_back((from, Input::Taken { conn, bytes: total }));
         }
     }
 
