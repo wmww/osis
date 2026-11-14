@@ -1213,10 +1213,10 @@ fn marked_by_a_pass_passes_in_the_same_step_spec_sync_6() {
     // bare: the pass's re-seal of `other` is the write that marks the second pass
     set_edge(net.engine(a), g, other, Role::Read);
     let before = net.sync(a).pass_stats().passes;
-    let _ = net.sync(a).handle(osis_node::sync::Event::Local);
+    net.feed(a, osis_node::sync::Event::Local);
     let first = net.sync(a).pass_stats().passes;
     assert!(first > before + 1, "a pass and the one its writes mark: {} passes", first - before);
-    let _ = net.sync(a).handle(osis_node::sync::Event::Local);
+    net.feed(a, osis_node::sync::Event::Local);
     assert_eq!(net.sync(a).pass_stats().passes, first, "nothing left for the next step");
 }
 

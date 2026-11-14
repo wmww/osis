@@ -77,7 +77,7 @@ fn settle_offline(net: &mut Net, b: usize, f: &Faults) {
             if f.crashed() {
                 return;
             }
-            net.sync(b).handle(ev);
+            net.offline_handle(b, ev);
         }
     }
 }

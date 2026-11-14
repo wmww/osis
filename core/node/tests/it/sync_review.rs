@@ -417,8 +417,8 @@ fn purge_crash_before_sync_forget_leaves_no_copy_spec_commits_5() {
             net.restart(b, 77);
         }
         for _ in 0..3 {
-            net.sync(b).handle(Event::Local);
-            net.sync(b).handle(Event::Tick);
+            net.offline_handle(b, Event::Local);
+            net.offline_handle(b, Event::Tick);
         }
         for id in &ids {
             assert!(!net.sync(b).holds_blob(id), "crash {crash}: the purger keeps the purged body's key or ciphertext");
