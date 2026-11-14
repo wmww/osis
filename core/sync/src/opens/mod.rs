@@ -12,11 +12,10 @@
 //! advanced for. Work follows change: a sync ID whose credentials moved advances `changed_at`,
 //! re-judges its members on the connections holding it (`holding`), and makes a filter addition
 //! and a test due on each connection; nothing walks every sync ID per connection but a whole
-//! filter (first contact) and the Hits index a connection starts with.
+//! filter (first contact) and the Hits index, built at the connection's first Hit.
 //!
-//! Not built: records and `changed_at` live in memory (the store's record and `changed` rows wait
-//! for the store's transaction handle), so a restart is a first contact; `RECORD_BUDGET`
-//! eviction.
+//! Not built (notes/sync-boundary.md, opens: what the integration wires): records and
+//! `changed_at` live in memory, so a restart is a first contact; `RECORD_BUDGET` eviction.
 
 pub mod cred;
 pub mod holds;
@@ -32,7 +31,7 @@ use osis_crypto::kdf::{members_digest, pair_key, resume_tag, resumed_tag};
 use osis_engine::sync::J;
 use osis_label::StepId;
 use osis_proto::filter::{beacon_value, decode_gcs, filter_width, pages};
-use osis_proto::limits::{MAX_FILTER_WIDTH, MAX_MEMBERS, MAX_OFFER_ITEMS, MAX_RESUME_TAGS, MIN_FILTER_WIDTH, NO_RECORD_ID, REPLY_BUDGET};
+use osis_proto::limits::{MAX_FILTER_ENTRIES, MAX_FILTER_WIDTH, MAX_MEMBERS, MAX_OFFER_ITEMS, MAX_RESUME_TAGS, MIN_FILTER_WIDTH, NO_RECORD_ID, REPLY_BUDGET};
 use osis_proto::{Code, Id, Msg, OfferItem, SharedItem};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -134,6 +133,9 @@ struct PeerFilter {
     generation: u64,
     f: u8,
     values: BTreeSet<u64>,
+    /// Entries of its whole generation, and of the additions since (at most `whole` in all).
+    whole: u64,
+    added: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -206,8 +208,11 @@ struct WalkState {
 struct Conn {
     bind: Bind,
     proven: Proven,
-    /// The peer proved a known actor (its read secrets' beacons may go to it).
+    /// The peer proved a known actor (its read secrets' beacons may go to it), as of the last
+    /// generation sent.
     known: bool,
+    /// The proven actors known here: what a record of this connection names (none: no record).
+    named: Vec<Tid>,
     phase: Phase,
     rec: Option<RecordId>,
     agree: Agree,
@@ -219,7 +224,9 @@ struct Conn {
     /// The first generation of this connection is not sent yet.
     first: bool,
     /// The Hits this side's filter makes possible: expected peer Hit -> (S, credential, beacon).
+    /// Built at the connection's first Hit (`indexed`), then kept by each change of S.
     shown: HashMap<[u8; 32], (SyncId, Shown, [u8; 32])>,
+    indexed: bool,
     /// Sync IDs whose shown credentials go in the next generation's additions.
     adds: BTreeSet<SyncId>,
     peer_gen: Option<PeerGen>,
@@ -442,7 +449,7 @@ impl Opens {
             k.adds.insert(s);
             k.test_due = true;
         }
-        let conns: Vec<ConnId> = self.conns.keys().copied().collect();
+        let conns: Vec<ConnId> = self.conns.iter().filter(|(_, k)| k.indexed).map(|(c, _)| *c).collect();
         for c in conns {
             self.index_shown(ctx, c, &s);
         }
@@ -453,10 +460,12 @@ impl Opens {
     fn proved(&mut self, ctx: &mut Ctx, conn: ConnId, moved: &mut Vec<Moved>) {
         let Some((bind, proven)) = ctx.wire.bind(conn) else { return };
         let known = ctx.holds.known(&proven);
+        let named = named_known(ctx.holds, &proven);
         let mut c = Conn {
             bind,
             proven,
             known,
+            named,
             phase: Phase::Waiting,
             rec: None,
             agree: Agree::Done,
@@ -467,6 +476,7 @@ impl Opens {
             whole_next: false,
             first: true,
             shown: HashMap::new(),
+            indexed: false,
             adds: BTreeSet::new(),
             peer_gen: None,
             tested_pos: 0,
@@ -476,10 +486,10 @@ impl Opens {
             walks: BTreeMap::new(),
         };
         if bind.dialer {
-            if known {
-                // spec/sync-opens.md §3: Resume lists each record naming a proven actor, most
-                // recent first.
-                let actors = actor_set(&c.proven);
+            if !c.named.is_empty() {
+                // spec/sync-opens.md §3: Resume lists each record naming a proven actor known here
+                // now, most recent first.
+                let actors = c.named.clone();
                 let mut listed: Vec<(u64, RecordId)> = self.records.iter().filter(|(_, r)| r.kept && r.actors.iter().any(|a| actors.contains(a))).map(|(id, r)| (r.used, *id)).collect();
                 listed.sort_by(|a, b| b.cmp(a));
                 listed.truncate(MAX_RESUME_TAGS);
@@ -532,11 +542,10 @@ impl Opens {
         let seq = self.seq;
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let Some(r) = self.records.get_mut(&id) else { return };
-        let actors = actor_set(&c.proven);
-        if r.kept && r.actors.iter().collect::<BTreeSet<_>>() != actors.iter().collect::<BTreeSet<_>>() {
+        if r.kept && r.actors != c.named {
             // spec/sync-opens.md §3: a session proving other actors than the record names starts
             // with every credential pending and a whole filter.
-            r.actors = actors.into_iter().collect();
+            r.actors = c.named.clone();
             r.acked_pos = 0;
             r.own.acked = 0;
             c.whole_next = true;
@@ -564,7 +573,6 @@ impl Opens {
         for s in members {
             self.rejudge(ctx, conn, s, moved);
         }
-        self.index_all(ctx, conn);
     }
 
     fn request(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, m: Msg, moved: &mut Vec<Moved>) {
@@ -598,13 +606,14 @@ impl Opens {
             ctx.wire.send(conn, Msg::Error { id, code: Code::MALFORMED });
             return;
         }
-        if !c.known {
-            // A connection that proved no known actor keeps no record: the dialer sends NoRecord.
+        if c.named.is_empty() {
+            // A connection whose dialer proved no known actor keeps no record: Error 1, and the
+            // dialer sends NoRecord (spec/sync-opens.md §3).
             ctx.wire.send(conn, Msg::Error { id, code: Code::REFUSED });
             return;
         }
         let bind = c.bind;
-        let actors = actor_set(&c.proven);
+        let actors = c.named.clone();
         let (d, l) = (bind.peer_challenge, bind.own_challenge);
         // A record is honoured only while a proven actor of this session is named by it.
         let mine: HashMap<[u8; 32], RecordId> = self.records.iter().filter(|(_, r)| r.kept && r.actors.iter().any(|a| actors.contains(a))).map(|(id, r)| (resume_tag(&r.r, &bind.listener_key, &d, &l), *id)).collect();
@@ -616,7 +625,7 @@ impl Opens {
                 (rid, Some(resumed_tag(&r, &bind.listener_key, &d, &l)))
             }
             // On no match a new record, written before the answer goes.
-            None => (self.new_record(ctx, *pair_key(&dnonce, &lnonce).expose(), actors.into_iter().collect(), true), None),
+            None => (self.new_record(ctx, *pair_key(&dnonce, &lnonce).expose(), actors, true), None),
         };
         ctx.wire.send(conn, Msg::Resumed { id, nonce: lnonce, tag });
         self.take(ctx, conn, rid, true, moved);
@@ -645,7 +654,7 @@ impl Opens {
         let rid = match found {
             Some(rid) => rid,
             None => {
-                let actors = actor_set(&c.proven).into_iter().collect();
+                let actors = c.named.clone();
                 self.new_record(ctx, *pair_key(&nonce, &lnonce).expose(), actors, true)
             }
         };
@@ -694,7 +703,8 @@ impl Opens {
             ctx.wire.close(conn, "Members out of order");
             return;
         };
-        list.extend(ids);
+        // Only sync IDs held here can be closed or re-marked: the rest is not kept.
+        list.extend(ids.into_iter().filter(|s| self.changed.at.contains_key(s)));
         if more {
             return;
         }
@@ -718,10 +728,13 @@ impl Opens {
         self.test(ctx, conn, moved);
     }
 
-    /// Indexes the Hits every credential this side shows on `conn` makes possible.
+    /// Indexes the Hits every credential this side shows on `conn` makes possible, at the
+    /// connection's first Hit: a connection the peer Hits nothing on (a reconnect with nothing
+    /// changed) computes no beacon of what it does not share.
     fn index_all(&mut self, ctx: &mut Ctx, conn: ConnId) {
-        if let Some(c) = self.conns.get_mut(&conn) {
-            c.shown.clear();
+        match self.conns.get_mut(&conn) {
+            Some(c) if !c.indexed => c.indexed = true,
+            _ => return,
         }
         let all: Vec<SyncId> = self.changed.at.keys().copied().collect();
         for s in all {
@@ -755,9 +768,11 @@ impl Opens {
         let Some(rid) = c.rec else { return };
         let Some(r) = self.records.get(&rid) else { return };
         let first = c.first;
-        let whole = c.whole_next || r.own.generation == 0 || (first && r.own.acked != r.own.generation) || r.own.added > r.own.whole;
+        // spec/sync-opens.md §4 Audiences, judged now: a change of audience makes the generation whole.
+        let known = ctx.holds.known(&c.proven);
+        let whole = c.whole_next || known != c.known || r.own.generation == 0 || (first && r.own.acked != r.own.generation);
         let ids: Vec<SyncId> = if whole {
-            self.changed.at.keys().copied().collect()
+            Vec::new()
         } else if first {
             self.changed.after(r.acked_pos)
         } else {
@@ -766,19 +781,22 @@ impl Opens {
         if !whole && !first && ids.is_empty() {
             return;
         }
-        let (rr, known) = (r.r, c.known);
-        let mut beacons = Vec::new();
-        for s in &ids {
-            if let Some(adm) = self.admissible(ctx, conn, s) {
-                for sh in adm.shows {
-                    // spec/sync-opens.md §4 Audiences: a read secret's beacon only to a known actor.
-                    if sh.secret_audience() && !known {
-                        continue;
-                    }
-                    self.work.beacons += 1;
-                    beacons.push(beacon_of(sh.matched(), s, &rr));
-                }
+        let (rr, room) = (r.r, r.own.whole.saturating_sub(r.own.added));
+        let mut beacons = if whole { None } else { Some(self.shown_beacons(ctx, conn, &ids, known, &rr)) };
+        // Additions bring at most the whole one's n entries in all (spec/wire.md §11.2): past it, whole.
+        if beacons.as_ref().is_some_and(|b| b.len() as u64 > room) {
+            beacons = None;
+        }
+        let whole = beacons.is_none();
+        let beacons = match beacons {
+            Some(b) => b,
+            None => {
+                let all: Vec<SyncId> = self.changed.at.keys().copied().collect();
+                self.shown_beacons(ctx, conn, &all, known, &rr)
             }
+        };
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.known = known;
         }
         let Some(r) = self.records.get_mut(&rid) else { return };
         let f = if whole { filter_width(beacons.len()).clamp(MIN_FILTER_WIDTH, MAX_FILTER_WIDTH) } else { r.own.f };
@@ -808,6 +826,21 @@ impl Opens {
             ctx.wire.send(conn, Msg::Beacons { id, generation, base, f, lo: p.lo, hi: p.hi, gcs: p.gcs, more: p.more });
         }
         c.gen_out = Some(GenOut { generation, pages: ids, refused: false, base_missing: false });
+    }
+
+    /// The beacons of the credentials `ids` show to this peer (spec/sync-opens.md §4 Audiences: a
+    /// read secret's only to a known actor).
+    fn shown_beacons(&mut self, ctx: &mut Ctx, conn: ConnId, ids: &[SyncId], known: bool, r: &[u8; 32]) -> Vec<[u8; 32]> {
+        let mut beacons = Vec::new();
+        for s in ids {
+            if let Some(adm) = self.admissible(ctx, conn, s) {
+                for sh in adm.shows.iter().filter(|sh| known || !sh.secret_audience()) {
+                    self.work.beacons += 1;
+                    beacons.push(beacon_of(sh.matched(), s, r));
+                }
+            }
+        }
+        beacons
     }
 
     /// The peer answered a page of this side's generation `generation`.
@@ -852,12 +885,35 @@ impl Opens {
             return;
         }
         if fresh {
-            let held_base = base.is_none_or(|b| r.peer.as_ref().is_some_and(|p| p.generation == b && p.f == f));
+            let held = base.and_then(|b| r.peer.as_ref().filter(|p| p.generation == b));
+            // Additions at another width than their base's break the format.
+            if held.is_some_and(|p| p.f != f) {
+                ctx.wire.send(conn, Msg::Error { id, code: Code::MALFORMED });
+                ctx.wire.close(conn, "filter additions at another width");
+                return;
+            }
+            let held_base = base.is_none() || held.is_some();
             c.peer_gen = Some(PeerGen { generation, base, f, next_lo: lo, held_base, values: Vec::new() });
         }
         let Some(p) = c.peer_gen.as_mut() else { return };
         p.next_lo = hi;
-        p.values.extend(values.unwrap_or_default());
+        if p.held_base {
+            p.values.extend(values.unwrap_or_default());
+        }
+        // spec/wire.md §11.2 Beacons: a whole filter of n entries is `filter_width(n)` wide (so
+        // at most 2^(f-8) entries); additions bring at most the whole one's n in all.
+        let n = p.values.len() as u64;
+        let cap = match (p.base, &r.peer) {
+            (None, _) => MAX_FILTER_ENTRIES.min(1 << (f - MIN_FILTER_WIDTH)),
+            (Some(_), Some(old)) => old.whole.saturating_sub(old.added),
+            (Some(_), None) => 0,
+        };
+        let narrow = !more && p.base.is_none() && filter_width(p.values.len()).max(MIN_FILTER_WIDTH) != f;
+        if p.held_base && (n > cap || narrow) {
+            ctx.wire.send(conn, Msg::Error { id, code: Code::MALFORMED });
+            ctx.wire.close(conn, "a filter breaking its width or entry count");
+            return;
+        }
         let code = if p.held_base { Code::OK } else { Code::UNKNOWN_SYNC_ID };
         ctx.wire.send(conn, Msg::Shared { id, items: vec![SharedItem::code(code)] });
         if more {
@@ -870,11 +926,16 @@ impl Opens {
         match (&mut r.peer, p.base) {
             (Some(old), Some(_)) => {
                 old.generation = p.generation;
+                old.added += p.values.len() as u64;
                 old.values.extend(p.values);
             }
-            _ => r.peer = Some(PeerFilter { generation: p.generation, f: p.f, values: p.values.into_iter().collect() }),
+            _ => r.peer = Some(PeerFilter { generation: p.generation, f: p.f, whole: p.values.len() as u64, added: 0, values: p.values.into_iter().collect() }),
         }
-        // Testing at each filter arrival.
+        // Testing at each filter arrival: from `acked_pos` (spec/sync-opens.md §5 Testing). Other
+        // tests (an answer read, a change) go on from the position tested on this connection, so a
+        // refused Hit is not sent again at each answer while the peer has not acknowledged a
+        // generation.
+        c.tested_pos = c.tested_pos.min(r.acked_pos);
         c.test_due = true;
     }
 
@@ -906,7 +967,7 @@ impl Opens {
         let Some(rid) = c.rec else { return };
         let Some(r) = self.records.get(&rid) else { return };
         let Some(pf) = r.peer.clone() else { return };
-        let (rr, bind, from) = (r.r, c.bind, r.acked_pos.min(c.tested_pos).min(r.acked_pos));
+        let (rr, bind, from) = (r.r, c.bind, c.tested_pos);
         let pending = self.changed.after(from);
         let end = self.changed.end;
         let mut sent = Vec::new();
@@ -1007,13 +1068,15 @@ impl Opens {
             let a = items.get(i).cloned().unwrap_or(SharedItem::code(Code::DECLINED));
             match x {
                 Sent::Hit { s, cred, beacon } if a.code == Code::OK => {
-                    accepted.insert(s);
-                    if self.member(conn, &s).is_some() {
+                    let m = cred.matched(&s);
+                    // The tag: computable only with the credential and S, by the replier's side.
+                    // Without it the peer showed no knowledge of S: no Lost names S to it (a
+                    // false positive of the filter answered OK would learn S).
+                    if a.tag != Some(bind.peer_tag(&m, &s, &beacon)) {
                         continue;
                     }
-                    let m = cred.matched(&s);
-                    // The tag: computable only with the credential, by the replier's side.
-                    if a.tag != Some(bind.peer_tag(&m, &s, &beacon)) {
+                    accepted.insert(s);
+                    if self.member(conn, &s).is_some() {
                         continue;
                     }
                     let Some(adm) = self.admissible(ctx, conn, &s) else { continue };
@@ -1099,6 +1162,9 @@ impl Opens {
     /// of its shown credentials its filter to this peer shows, carrying its proof; the session
     /// learns of the open before the answer goes.
     fn offered(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, items: Vec<OfferItem>, moved: &mut Vec<Moved>) {
+        if items.iter().any(|i| matches!(i, OfferItem::Hit { .. } | OfferItem::Static { .. } | OfferItem::ByRole { .. })) {
+            self.index_all(ctx, conn);
+        }
         let mut answers = Vec::with_capacity(items.len());
         for item in items {
             let a = match item {
@@ -1118,6 +1184,10 @@ impl Opens {
         let Some(c) = self.conns.get(&conn) else { return refuse };
         let Some((s, shown, beacon)) = c.shown.get(hit).cloned() else { return refuse };
         let (bind, proven) = (c.bind, c.proven.clone());
+        // Only what this side's filter to this peer shows: a read secret only to a known actor.
+        if shown.secret_audience() && !ctx.holds.known(&proven) {
+            return refuse;
+        }
         // Judged on what this side holds now: a credential no longer shown proves nothing.
         let Some(adm) = self.admissible(ctx, conn, &s) else { return refuse };
         if !adm.shows.contains(&shown) {
@@ -1166,11 +1236,12 @@ impl Opens {
         let Some(c) = self.conns.get(&conn) else { return SharedItem::code(Code::DECLINED) };
         let proven = c.proven.clone();
         let statics = ctx.holds.proven_statics(&s, &proven);
+        let known = ctx.holds.known(&proven);
         let found = hits.iter().filter_map(|h| c.shown.get(h).cloned()).find(|(hs, sh, _)| {
             *hs == s
                 && adm.shows.contains(sh)
                 && match sh {
-                    Shown::Read(..) => true,
+                    Shown::Read(..) => known,
                     Shown::Static(e) => statics.contains(e),
                     _ => false,
                 }
@@ -1310,8 +1381,12 @@ impl Opens {
                 self.drop_member(conn, s, true, moved);
             }
             self.remark(conn, &s);
-            if let Some(r) = self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get_mut(&r)) {
-                r.stopped.insert(s, cursor);
+            // Kept for a member that left (also one this side closed first: the two crossed);
+            // a Lost naming anything else keeps nothing.
+            if let Some(r) = self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get_mut(&r))
+                && let Some(at) = r.stopped.get_mut(&s)
+            {
+                *at = cursor;
             }
             if let Some(u) = ending {
                 let mut c = self.reported_cursor(conn, &s);
@@ -1329,7 +1404,11 @@ impl Opens {
 
     /// Re-marks S for `conn`'s record (spec/sync-opens.md §5 Testing): its `acked_pos` and the
     /// tested position drop below `changed_at(S)`, and a test is due.
+    /// A sync ID not in this node's sync set has no `changed_at`: re-marking it changes nothing.
     fn remark(&mut self, conn: ConnId, s: &SyncId) {
+        if !self.changed.at.contains_key(s) {
+            return;
+        }
         let below = self.changed.pos(s).saturating_sub(1);
         let Some(c) = self.conns.get_mut(&conn) else { return };
         c.tested_pos = c.tested_pos.min(below);
@@ -1353,8 +1432,20 @@ impl Opens {
     }
 }
 
-fn actor_set(p: &Proven) -> Vec<Tid> {
-    let mut v: Vec<Tid> = p.account.iter().map(|(a, _)| *a).chain(p.actors.iter().copied()).collect();
+/// The actors `p` proved that are known here now, sorted (spec/sync-opens.md §3: a record is
+/// honoured only while a proven actor of the session is named by it and known here now).
+fn named_known(holds: &mut dyn Holds, p: &Proven) -> Vec<Tid> {
+    let mut v: Vec<Tid> = Vec::new();
+    if let Some(a) = p.account
+        && holds.known(&Proven { account: Some(a), actors: Vec::new(), own_node: false })
+    {
+        v.push(a.0);
+    }
+    for a in &p.actors {
+        if holds.known(&Proven { account: None, actors: vec![*a], own_node: false }) {
+            v.push(*a);
+        }
+    }
     v.sort();
     v.dedup();
     v

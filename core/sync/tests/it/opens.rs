@@ -245,8 +245,15 @@ fn store_dialed_by_adv(head: &StepKeys, ch_adv: [u8; 32]) -> (Side, Adv) {
     let mut k = Side::new(3);
     k.table.set(S, Some(store(&S, head, &[])));
     k.settle();
-    let (adv, _) = Adv::dials(&mut k, Proven::default(), ch_adv);
+    let (mut adv, _) = Adv::dials(&mut k, Proven::default(), ch_adv);
+    hit_once(&mut k, &mut adv);
     (k, adv)
+}
+
+/// Adv Hits nothing K shows, so K indexes the Hits its filter makes possible now: what it shows
+/// later must not take an entry of that index for proof.
+fn hit_once(h: &mut Side, adv: &mut Adv) {
+    assert_eq!(adv.offer(h, vec![OfferItem::Hit { hit: [0; 32], sig: None }])[0].code, Code::DECLINED);
 }
 
 /// Adv's Hit on a sync key it holds the secret of, with its open signature.
@@ -290,7 +297,8 @@ fn an_older_steps_proof_proves_nothing_spec_sync_opens_4() {
 fn a_proof_from_the_public_key_proves_nothing_spec_sync_opens_4() {
     let s0 = StepKeys::new(1, 0);
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-    let fake = osis_crypto::kdf::sync_proof(&osis_crypto::Secret32::from_bytes(s0.pk()));
+    // The proof's derivation applied to the public key in place of the seed.
+    let fake = *osis_crypto::kdf::kdf(osis_crypto::kdf::SYNC_PROOF, &s0.pk(), b"").expose();
     let a = adv.offer(&mut k, vec![OfferItem::Hit { hit: adv.hit_on(&fake, &S), sig: None }]);
     assert_eq!(a[0].code, Code::DECLINED);
     assert!(!k.open(adv.peer, &S));
@@ -368,7 +376,8 @@ fn reader_with_link(l: &osis_crypto::SigningSecret) -> (Side, Adv) {
     let mut r = Side::new(4);
     r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[l], &[])));
     r.settle();
-    let (adv, _) = Adv::dials(&mut r, Proven::default(), [2; 32]);
+    let (mut adv, _) = Adv::dials(&mut r, Proven::default(), [2; 32]);
+    hit_once(&mut r, &mut adv);
     (r, adv)
 }
 
@@ -412,8 +421,9 @@ fn reader_judging(j: J) -> (Side, Adv) {
     (r, adv)
 }
 
-// ON_jnow (spec/sync-opens.md §4 J): J reads the roster held now: Adv's ByRole after its
-// removal opens nothing.
+// ON_jnow (spec/sync-opens.md §4 J): J reads the roster held now, not the one the connection
+// started with: Adv's ByRole after its removal opens nothing, and a grant made while connected
+// opens by J (R itself offers ByRole).
 #[test]
 fn j_is_judged_on_the_roster_held_now_spec_sync_opens_4() {
     let (mut r, mut adv) = reader_judging(J::Reader);
@@ -421,6 +431,15 @@ fn j_is_judged_on_the_roster_held_now_spec_sync_opens_4() {
     r.settle();
     assert_eq!(adv.offer(&mut r, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new() }])[0].code, Code::DECLINED);
     assert!(!r.open(adv.peer, &S));
+    let (mut r, mut adv) = reader_judging(J::Unknown);
+    adv.filter(&mut r, &[], &S);
+    r.sent();
+    r.table.judge_as(S, tid(9), J::Reader);
+    r.settle();
+    let byrole = of_kind(&r.sent(), 37).iter().any(|m| matches!(m, Msg::Offer { items, .. } if items.iter().any(|i| matches!(i, OfferItem::ByRole { sync_id, .. } if *sync_id == S))));
+    assert!(byrole, "ByRole once J judges Adv a reader");
+    assert_eq!(adv.offer(&mut r, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new() }])[0].code, Code::OK);
+    assert!(r.open(adv.peer, &S));
 }
 
 // ON_endj (spec/sync-opens.md §6): an open by J closes at once with a Lost when J judges the peer
@@ -458,18 +477,34 @@ fn nothing_opens_toward_a_departed_peer_spec_sync_opens_4() {
     assert_eq!(adv.offer(&mut r, vec![OfferItem::Hit { hit: adv.hit_on(rs1.1.expose(), &S), sig: None }])[0].code, Code::OK);
 }
 
-// ON_dialer (spec/sync-opens.md §4): which side dialed proves nothing: K dials Adv, which proves
-// nothing; Adv claiming K reads S (ByRole) opens nothing.
+// ON_dialer (spec/sync-opens.md §4): which side dialed proves nothing. K dials Adv, which holds
+// only S's public values and proves nothing: Adv claiming K reads S (ByRole) opens nothing, and
+// K's Hit on the sync key Adv shows, answered with the tag anyone holding the key computes and no
+// signature, opens nothing either; K sends Adv the same as when Adv dials it.
 #[test]
 fn dialing_proves_nothing_spec_sync_opens_4() {
     let s0 = StepKeys::new(1, 0);
-    let mut k = Side::new(3);
-    k.table.set(S, Some(store(&S, &s0, &[])));
-    k.settle();
-    let mut adv = Adv::connect(&mut k, true, [1; 32], [2; 32], Proven::default());
-    k.sent();
-    assert_eq!(adv.offer(&mut k, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new() }])[0].code, Code::DECLINED);
-    assert!(!k.open(adv.peer, &S));
+    let mut outcome = Vec::new();
+    for k_dials in [true, false] {
+        let mut k = Side::new(3);
+        k.table.set(S, Some(store(&S, &s0, &[])));
+        k.settle();
+        let mut adv = Adv::connect(&mut k, k_dials, [1; 32], [2; 32], Proven::default());
+        if !k_dials {
+            let id = osis_proto::limits::NO_RECORD_ID;
+            adv.send(&mut k, Msg::NoRecord { id });
+        }
+        k.sent();
+        assert_eq!(adv.offer(&mut k, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new() }])[0].code, Code::DECLINED);
+        adv.filter(&mut k, &[s0.pk()], &S);
+        let sent = k.sent();
+        let Some(Msg::Offer { id, .. }) = of_kind(&sent, 37).pop() else { panic!("K Hits the sync key Adv shows") };
+        let tag = adv.tag_on(&s0.pk(), &S);
+        adv.send(&mut k, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some(tag), grant: None, sig: None }] });
+        assert!(!k.open(adv.peer, &S), "k dials: {k_dials}");
+        outcome.push((k.opens.record(adv.peer).is_some(), of_kind(&k.sent(), 38).len()));
+    }
+    assert_eq!(outcome[0], outcome[1], "the dialer and the dialed act alike");
 }
 
 // ON_nolisten (spec/sync-opens.md §5): a listener signs its answer: a link holder X dials reader
@@ -587,4 +622,133 @@ fn an_ended_member_admissible_again_is_not_ended_spec_sync_opens_6() {
     k.table.set(S, Some(store(&S, &s0, &[])));
     k.settle();
     assert_eq!(k.opens.members(adv.peer)[&S].until, None);
+}
+
+// spec/sync-opens.md §4 (audiences): a read secret's Hit from a peer that proved no known actor
+// opens nothing: R's filter to it does not show the secret, so R accepts no Hit on it (whoever
+// holds the secret), and so tells that peer nothing of S.
+#[test]
+fn a_read_secret_hit_from_an_unknown_peer_opens_nothing_spec_sync_opens_4() {
+    let rs = read_secret(1, 0);
+    let mut r = Side::new(4);
+    r.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 0), &[], &[], &[])));
+    r.settle();
+    let (mut adv, _) = Adv::dials(&mut r, Proven::default(), [2; 32]);
+    let hit = OfferItem::Hit { hit: adv.hit_on(rs.1.expose(), &S), sig: None };
+    assert_eq!(adv.offer(&mut r, vec![hit.clone()])[0].code, Code::DECLINED);
+    let byrole = OfferItem::ByRole { sync_id: S, hits: vec![adv.hit_on(rs.1.expose(), &S)] };
+    assert_eq!(adv.offer(&mut r, vec![byrole])[0].code, Code::DECLINED);
+    assert!(!r.open(adv.peer, &S));
+}
+
+// spec/sync-opens.md §5 (opening): a Lost after an Offer names only a sync ID whose Hit the peer
+// answered with a valid tag: an OK with no valid tag (a hostile answer to a filter's false
+// positive) learns no sync ID.
+#[test]
+fn no_lost_names_s_without_a_valid_tag_spec_sync_opens_5() {
+    let rs = read_secret(1, 0);
+    let mut r = knowing(1, 9);
+    r.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 0), &[], &[], &[])));
+    r.settle();
+    let (mut adv, _) = Adv::dials(&mut r, account(9), [2; 32]);
+    adv.filter(&mut r, &[*rs.1.expose()], &S);
+    let sent = r.sent();
+    let Some(Msg::Offer { id, .. }) = of_kind(&sent, 37).pop() else { panic!("an Offer") };
+    adv.send(&mut r, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some([0; 32]), grant: None, sig: None }] });
+    assert!(!r.open(adv.peer, &S));
+    assert!(of_kind(&r.sent(), 38).is_empty(), "no Lost");
+}
+
+// spec/wire.md §11.2 (Beacons): a whole filter narrower than its entry count needs (one that
+// would make every beacon a Hit), or additions past the whole one's entries, is answered 2 and
+// closes the connection.
+#[test]
+fn a_filter_too_dense_closes_the_connection_spec_wire_11_2() {
+    let all: Vec<u64> = (0..256).collect();
+    let mut r = Side::new(1);
+    let (mut adv, _) = Adv::dials(&mut r, Proven::default(), [2; 32]);
+    let id = adv.id();
+    adv.send(&mut r, Msg::Beacons { id, generation: 1, base: None, f: 8, lo: 0, hi: 256, gcs: osis_proto::filter::encode_gcs(&all, 0), more: false });
+    assert!(r.sent().iter().any(|(_, m)| *m == Msg::Error { id, code: Code::MALFORMED }));
+    assert!(!r.pipe.closed.is_empty());
+    let mut r = Side::new(1);
+    let (mut adv, _) = Adv::dials(&mut r, Proven::default(), [2; 32]);
+    let id = adv.id();
+    adv.send(&mut r, Msg::Beacons { id, generation: 1, base: None, f: 8, lo: 0, hi: 256, gcs: osis_proto::filter::encode_gcs(&[5], 0), more: false });
+    let id = adv.id();
+    adv.send(&mut r, Msg::Beacons { id, generation: 2, base: Some(1), f: 8, lo: 0, hi: 256, gcs: osis_proto::filter::encode_gcs(&[6, 7], 0), more: false });
+    assert!(r.sent().iter().any(|(_, m)| *m == Msg::Error { id, code: Code::MALFORMED }));
+    assert!(!r.pipe.closed.is_empty());
+}
+
+// spec/sync-opens.md §5 (testing): a refused Hit is not sent again at its answer (here the peer
+// acknowledged no generation of the tester's filter), and a Lost naming a sync ID this node does
+// not sync re-marks nothing; a Lost naming S re-marks S.
+#[test]
+fn a_lost_for_an_unheld_sync_id_remarks_nothing_spec_sync_opens_5() {
+    let rs = read_secret(1, 0);
+    let mut r = knowing(1, 9);
+    r.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 0), &[], &[], &[])));
+    r.settle();
+    let (mut adv, _) = Adv::dials(&mut r, account(9), [2; 32]);
+    adv.filter(&mut r, &[*rs.1.expose()], &S);
+    let oid = of_kind(&r.sent(), 37)[0].id();
+    adv.send(&mut r, Msg::Shared { id: oid, items: vec![osis_proto::SharedItem::code(Code::DECLINED)] });
+    // Adv acknowledged no generation of r's filter: still no Hit again at the answer.
+    assert_eq!(offered_hits(&r.sent()), 0, "a refused Hit is not sent again at its answer");
+    let id = adv.id();
+    adv.send(&mut r, Msg::Lost { id, items: vec![(sid(77), None)] });
+    assert_eq!(offered_hits(&r.sent()), 0, "not re-marked");
+    let id = adv.id();
+    adv.send(&mut r, Msg::Lost { id, items: vec![(S, None)] });
+    assert_eq!(offered_hits(&r.sent()), 1, "a Lost for S re-marks it");
+}
+
+// spec/sync-opens.md §3 (pair key): a dialer that knows the listener sends Resume; a listener that
+// knows no actor the dialer proved answers Error 1, the dialer sends NoRecord, and the shared set
+// runs keeping no record at either side.
+#[test]
+fn a_resume_to_a_listener_not_knowing_the_dialer_runs_unkept_spec_sync_opens_3() {
+    let st = StepKeys::new(1, 0);
+    let rs = read_secret(1, 0);
+    let mut a = knowing(1, 2);
+    let mut b = Side::new(2);
+    a.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
+    b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
+    let mut p = Pair::new(a, b, account(1), account(2));
+    p.run();
+    let from_b: Vec<&Msg> = p.log.iter().filter(|(a, _)| !a).map(|(_, m)| m).collect();
+    assert!(from_b.iter().any(|m| matches!(m, Msg::Error { code: Code::REFUSED, .. })), "Error 1");
+    assert!(p.log.iter().any(|(a, m)| *a && matches!(m, Msg::NoRecord { .. })), "then NoRecord");
+    assert!(p.a.opens.record(p.ca).is_none() && p.b.opens.record(p.cb).is_none());
+    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
+}
+
+/// `a` holds `n` sync IDs, `b` one of them; they share it, close and connect again with nothing
+/// changed. The work of the reconnect at `a`.
+fn reconnect_with(n: u8) -> osis_sync::opens::Work {
+    let st = StepKeys::new(1, 0);
+    let mut a = knowing(1, 2);
+    let mut b = knowing(2, 1);
+    for i in 0..n {
+        a.table.set(sid(i), Some(reader(&sid(i), &read_secret(i, 0), &st, &[], &[], &[])));
+    }
+    b.table.set(sid(0), Some(reader(&sid(0), &read_secret(0, 0), &st, &[], &[], &[])));
+    let mut p = Pair::new(a, b, account(1), account(2));
+    p.run();
+    assert!(p.a.open(p.ca, &sid(0)));
+    p.close();
+    let before = p.a.opens.work();
+    p.connect(2, account(1), account(2));
+    p.run();
+    assert!(p.a.open(p.ca, &sid(0)));
+    let w = p.a.opens.work();
+    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
+}
+
+// spec/sync-opens.md §3 (records): a known peer reconnecting with nothing changed costs the same
+// whatever else this node syncs: no beacon of what the two do not share.
+#[test]
+fn a_reconnect_costs_the_same_at_n_and_10n_spec_sync_opens_3() {
+    assert_eq!(reconnect_with(10), reconnect_with(100));
 }
