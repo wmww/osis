@@ -255,7 +255,6 @@ fn applies_what_is_held_and_late_delta_spec_commits_4() {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
     let mut m = Mutation::new();
     m.set(t, &REG, &s("r")).unwrap();
     m.set(t, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
@@ -272,7 +271,6 @@ fn applies_what_is_held_and_late_delta_spec_commits_4() {
     let mut lp = net(2, 0);
     let (t, u) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     sync(&mut lp, 0, 1);
-    lp.peers[1].engine.set_syncing(u, true).unwrap();
     let mut m = Mutation::new();
     m.set(t, &REG, &s("r")).unwrap();
     m.set(u, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();

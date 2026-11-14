@@ -756,7 +756,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
         let own = !hist.headers.contains_key(&id);
         if touches && !own && o.applied.contains(&c.id) != applied {
             let h = &hist.headers[&id];
-            let parts: Vec<String> = h.aspects.iter().map(|a| format!("{:?} {} syncs {} first admin {:?}", a.tid, a.ak.as_str(), e.core.syncs(&a.tid), e.first_admin(&a.tid))).collect();
+            let parts: Vec<String> = h.aspects.iter().map(|a| format!("{:?} {} first admin {:?}", a.tid, a.ak.as_str(), e.first_admin(&a.tid))).collect();
             let missing = e.core.ix.commits.get(&id).map(|m| m.missing_parts().collect::<Vec<_>>());
             diffs.push(("applied differs".into(), differ(format!("commit {id:?} (#{}) applied: model {}, node {applied}; parts {parts:?}, node misses {missing:?}", c.id, o.applied.contains(&c.id)), &c.parts.iter().map(|p| p.thing).collect::<Vec<_>>())));
             continue;

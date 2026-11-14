@@ -417,7 +417,13 @@ impl Engine {
     /// The node's sync set (spec/sync-set.md §2), whole: `sync_things` and `thing_sync` of each.
     /// For listing; a module follows `sync_things` and `thing_sync` per thing.
     pub fn sync_set(&mut self) -> Result<Arc<SyncSet>> {
-        self.sync_set_now()
+        osis_base::memo::Memo::get_in(self, |e| &e.core.sync_set, &(), |e| e.sync_set_now())
+    }
+
+    /// How this node holds sync ID `s`, and its thing (`sync_set`'s entry for `s`): reads only
+    /// `s`'s owner's keys and whether the synced group's closure holds it.
+    pub fn sync_holding(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
+        self.sync_holding_now(s)
     }
 
     /// The things the sync set is judged over: the synced group's closure (the same `Arc` while
@@ -428,7 +434,7 @@ impl Engine {
 
     /// How this node syncs thing `t` (read, kept unread, unsyncable, plain); reads only `t`'s keys.
     pub fn thing_sync(&mut self, t: &Tid) -> Result<ThingSync> {
-        self.thing_sync_now(t)
+        osis_base::memo::Memo::get_in(self, |e| &e.core.thing_sync, t, |e| e.thing_sync_now(t))
     }
 
     /// The thing owning sync ID `s` here by its `sync.0`.

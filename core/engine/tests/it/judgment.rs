@@ -28,13 +28,12 @@ fn s32(b: u8) -> Secret32 {
 
 /// One arrival step: receive bundle entry i (a body it opens, else a referenced blob), advance
 /// the clock by ms and run timers, drop every aspect of entry i's body as covered (node-sync's
-/// compaction drop), or start syncing a thing.
+/// compaction drop).
 #[derive(Clone, Copy, Debug)]
 enum Tok {
     In(usize),
     Wait(u64),
     Drop(usize),
-    Sync(Tid),
 }
 
 fn render_order(o: &[Tok]) -> String {
@@ -42,15 +41,13 @@ fn render_order(o: &[Tok]) -> String {
         Tok::In(i) => i.to_string(),
         Tok::Wait(ms) => format!("+{ms}"),
         Tok::Drop(i) => format!("d{i}"),
-        Tok::Sync(t) => format!("s{t}"),
     }).collect::<Vec<_>>().join(",")
 }
 
 fn parse_order(s: &str) -> Vec<Tok> {
-    s.split(',').map(|t| match (t.strip_prefix('+'), t.strip_prefix('d'), t.strip_prefix('s')) {
-        (Some(ms), ..) => Tok::Wait(ms.parse().unwrap()),
-        (_, Some(i), _) => Tok::Drop(i.parse().unwrap()),
-        (_, _, Some(x)) => Tok::Sync(x.parse().unwrap()),
+    s.split(',').map(|t| match (t.strip_prefix('+'), t.strip_prefix('d')) {
+        (Some(ms), _) => Tok::Wait(ms.parse().unwrap()),
+        (_, Some(i)) => Tok::Drop(i.parse().unwrap()),
         _ => Tok::In(t.parse().unwrap()),
     }).collect()
 }
@@ -233,7 +230,6 @@ fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(
                     p.reexamine().unwrap();
                 }
             },
-            Tok::Sync(t) => p.engine.set_syncing(t, true).unwrap(),
             Tok::Wait(ms) => {
                 p.clock.advance(ms);
                 p.tick().unwrap();
@@ -658,30 +654,28 @@ fn labels() -> Vec<Scenario> {
     }
     fn orders(played: &Played, of: &[usize], _: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
         let (c, setup, two) = entries(played, of);
-        let h = Tok::Sync(played.things[1]);
-        let list = |pre: &[Tok], post: &[usize]| setup.iter().copied().chain(pre.iter().copied()).chain(c.iter().chain(post).map(|e| Tok::In(*e))).collect();
-        vec![("both labels", list(&[], &two)), ("one label, the other's thing not synced", list(&[], &two[..1])), ("one label, the other's thing synced", list(&[h], &two[..1])), ("both labels, synced", list(&[h], &two))]
+        let list = |post: &[usize]| setup.iter().copied().chain(c.iter().chain(post).map(|e| Tok::In(*e))).collect();
+        vec![("both labels", list(&two)), ("one label", list(&two[..1]))]
     }
-    /// The two parts in both orders, H synced or not, and the withheld edge last.
+    /// The two parts in both orders, before or after the rest, and the withheld edge last.
     fn chainless(played: &Played, of: &[usize], _: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
         let (edge, last) = (played.base + 1, played.packs.len() - 1);
         let rest: Vec<usize> = (0..of.len()).filter(|e| of[*e] != edge && of[*e] != last).collect();
         let two: Vec<usize> = (0..of.len()).filter(|e| of[*e] == last).collect();
         assert_eq!(two.len(), 2, "a part under each label");
         let edges: Vec<usize> = (0..of.len()).filter(|e| of[*e] == edge).collect();
-        let h = Tok::Sync(played.things[1]);
-        let list = |pre: &[Tok], post: &[usize]| pre.iter().copied().chain(rest.iter().chain(post).map(|e| Tok::In(*e))).collect::<Vec<Tok>>();
+        let list = |post: &[usize]| rest.iter().chain(post).map(|e| Tok::In(*e)).collect::<Vec<Tok>>();
         let (gh, hg) = ([two[0], two[1]], [two[1], two[0]]);
-        let early = |parts: &[usize]| std::iter::once(h).chain(parts.iter().chain(&rest).map(|e| Tok::In(*e))).collect::<Vec<Tok>>();
+        let early = |parts: &[usize]| parts.iter().chain(&rest).map(|e| Tok::In(*e)).collect::<Vec<Tok>>();
         let (gh_e, hg_e): (Vec<usize>, Vec<usize>) = (gh.iter().chain(&edges).copied().collect(), hg.iter().chain(&edges).copied().collect());
         vec![
-            ("G first", list(&[], &gh)),
-            ("H first", list(&[], &hg)),
-            // the parts before the rest: with H synced the commit waits whatever part is here
-            ("H synced, G first", early(&gh)),
-            ("H synced, H first", early(&hg)),
-            ("G first, the edge last", list(&[], &gh_e)),
-            ("H first, the edge last", list(&[], &hg_e)),
+            ("G first", list(&gh)),
+            ("H first", list(&hg)),
+            // the parts before the rest
+            ("parts first, G first", early(&gh)),
+            ("parts first, H first", early(&hg)),
+            ("G first, the edge last", list(&gh_e)),
+            ("H first, the edge last", list(&hg_e)),
         ]
     }
     vec![
@@ -702,14 +696,14 @@ fn labels() -> Vec<Scenario> {
         Scenario {
             name: "content commit, its author's chain to H away",
             spec: "spec/commits.md §4, spec/requirements.md Decentralization",
-            source: "hand-built: 1 writes both G and H, the edge giving it a path to H withheld: H's part waits alone in either order, H synced or not; the edge arriving ends as in order",
+            source: "hand-built: 1 writes both G and H, the edge giving it a path to H withheld: H's part waits alone in either order; the edge arriving ends as in order",
             steps: vec![NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Two { by: 1, a: 0, b: 1, v: 1 }],
             orders: Some(chainless),
         },
         Scenario {
             name: "role commit, its author's chain to H away",
             spec: "spec/commits.md §4, spec/requirements.md Decentralization",
-            source: "hand-built: 2 (admin on G) sets 1's edge on G and H, the edge giving it a path to H withheld: G's roster changes in either order, H synced or not",
+            source: "hand-built: 2 (admin on G) sets 1's edge on G and H, the edge giving it a path to H withheld: G's roster changes in either order",
             steps: vec![NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick.clone(), TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }],
             orders: Some(chainless),
         },

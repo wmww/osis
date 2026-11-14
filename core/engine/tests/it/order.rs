@@ -10,7 +10,7 @@
 //! from its own stream; the seed picks an emphasis (`Emphasis`). Each held set goes to fresh
 //! nodes in the orders of one config (`ORDERS`: as made, reversed, as fetched, shuffles, late
 //! parts, part at an earlier clock; `Size` scales the counts, the exhaustive size tries every
-//! order of short histories), syncing things by seed (`with_syncs`). Each node is judged by
+//! order of short histories), some multi-part commits given in part for good by seed (`withhold`). Each node is judged by
 //! `node_checks` against the node holding the same commits and keeping every body, and against
 //! held-model (`held.rs`), the engine-independent reference; also reopened after every ingest
 //! (`reopens_alike`) and, for parts away, given only what its snapshots leave uncovered
@@ -560,8 +560,6 @@ pub(crate) struct Played {
     pub(crate) now: WallMs,
     /// What each step made.
     tally: Tally,
-    /// What the fresh nodes sync (`Syncs`).
-    sync: Syncs,
     /// Keys a node showed differently after its sync exchange than before (`Seen::restored`).
     restored: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// What the per-node checks judged (`Seen::judged`).
@@ -582,7 +580,7 @@ pub(crate) struct Played {
     /// of another step, keyed as `shown` keys them: in a `settled` history, those settled. An
     /// aspect no writer is left to compact, or the tail does not compact, is not.
     settled_last: BTreeSet<(String, String)>,
-    /// Commits `with_syncs` holds in part for good.
+    /// Commits `withhold` gives in part for good.
     withheld: u64,
     /// `Cfg::model`: the history for the held-model adapter, and what it compared.
     model: Option<std::sync::Arc<(crate::held::History, std::sync::Mutex<crate::held::Coverage>)>>,
@@ -1249,7 +1247,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 Some(other)
             }
             Step::Removals { by, other, v } => {
-                // one aspect per commit: no part of them is held away for good (`with_syncs`)
+                // one aspect per commit: no part of them is held away for good (`withhold`)
                 let po = |path: Vec<PathSeg>, op: Op| PathOp { path, op };
                 let tag = s(&format!("t{}", v % 4));
                 let mut m = Mutation::new();
@@ -1376,7 +1374,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             pk.bytes = b.clone();
         }
     }
-    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, held_here, settle_from: None, settled_last, withheld: 0, model: None, setups: Setups::default() }
+    Played { packs, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, held_here, settle_from: None, settled_last, withheld: 0, model: None, setups: Setups::default() }
 }
 
 /// Per body (commit, thing, aspect): when it was replaced, for keep-for-D (spec/commits.md §5).
@@ -1465,9 +1463,6 @@ struct Oracle {
 fn oracle(played: &Played, held: &[usize]) -> Oracle {
     let mut p = made(played.now);
     p.engine.keep_bodies(true);
-    for t in played.sync.things() {
-        p.engine.set_syncing(*t, true).unwrap();
-    }
     // a forged package may be refused, never fail the node
     for &i in held {
         let pk = &played.packs[i];
@@ -1655,9 +1650,6 @@ fn reopens_alike(played: &Played, order: &[usize]) -> Result<(), String> {
 fn covered_away(played: &Played, o: &Oracle) -> Result<usize, String> {
     let mut full = fresh(played.now);
     full.engine.keep_bodies(true);
-    for t in played.sync.things() {
-        full.engine.set_syncing(*t, true).unwrap();
-    }
     for pk in &played.packs {
         let _ = full.receive(&pk.bytes, pk.blobs.clone());
     }
@@ -1692,118 +1684,27 @@ fn covered_away(played: &Played, o: &Oracle) -> Result<usize, String> {
 
 const FRESH: u64 = 0x5eed_f00d;
 
-/// What the fresh nodes sync, and when they learn it: apply reads nothing of it (spec/commits.md
-/// §4), so every order must judge alike.
-#[derive(Clone, Debug)]
-enum Syncs {
-    None,
-    /// `on` from before the first commit, some commits' other parts never held (`withhold`);
-    /// `prefix` synced only for a stretch of each delivery.
-    Early { on: Vec<Tid>, prefix: Vec<Tid> },
-    /// Nothing at first, `on` from a point of each delivery, some stopping and starting again;
-    /// some commits' other parts never held.
-    Late { on: Vec<Tid> },
-}
-
-/// Toggles in delivery order: before the `.0`th ingest, thing `.1` on or off.
-struct SyncPlan(Vec<(usize, Tid, bool)>);
-
-impl Syncs {
-    fn things(&self) -> &[Tid] {
-        match self {
-            Syncs::None => &[],
-            Syncs::Early { on, .. } | Syncs::Late { on } => on,
-        }
-    }
-
-    /// The toggles of a delivery of `order`: their points depend on its length and the order
-    /// before them alone, so deliveries sharing a prefix share the toggles in it (`deliver`).
-    /// Draw `j` of thing `t` is a point uniform in `0..=len`: at each point `i` it stops with
-    /// probability `1 / (len + 1 - i)`, decided by a hash of `order[..i]`, `t` and `j`.
-    fn plan(&self, order: &[usize]) -> SyncPlan {
-        let fnv = |h: u64, x: u64| (h ^ x).wrapping_mul(0x0100_0000_01b3);
-        let len = order.len();
-        let before: Vec<u64> = std::iter::once(0xcbf2_9ce4_8422_2325u64).chain(order.iter().scan(0xcbf2_9ce4_8422_2325u64, |h, x| {
-            *h = fnv(*h, *x as u64);
-            Some(*h)
-        })).collect();
-        let at = |t: &Tid, j: u64| {
-            (0..len)
-                .find(|&i| {
-                    let h = t.as_bytes().iter().fold(fnv(before[i], j), |h, x| fnv(h, *x as u64));
-                    Rng(h | 1).below((len + 1 - i) as u64) == 0
-                })
-                .unwrap_or(len)
-        };
-        let mut out = Vec::new();
-        match self {
-            Syncs::None => {}
-            Syncs::Early { on, prefix } => {
-                out.extend(on.iter().chain(prefix).map(|t| (0, *t, true)));
-                out.extend(prefix.iter().map(|t| (at(t, 0), *t, false)));
-            }
-            Syncs::Late { on } => {
-                for (i, t) in on.iter().enumerate() {
-                    let a = at(t, 0);
-                    out.push((a, *t, true));
-                    if i % 3 == 0 {
-                        let (b, c) = (a.max(at(t, 1)), at(t, 2));
-                        out.push((b, *t, false));
-                        out.push((b.max(c), *t, true));
-                    }
-                }
-            }
-        }
-        // stable: a thing's own toggles stay in order
-        out.sort_by_key(|x| x.0);
-        SyncPlan(out)
-    }
-}
-
-impl SyncPlan {
-    /// Applies the toggles due before ingest number `done` (`usize::MAX`: all that are left).
-    fn upto(&mut self, p: &mut Peer, done: usize) {
-        while let Some(&(at, t, on)) = self.0.first()
-            && at <= done
-        {
-            p.engine.set_syncing(t, on).unwrap();
-            self.0.remove(0);
-        }
-    }
-}
-
-/// The history as the seed's fresh nodes get it, by `seed % 3` (`away`: one of the last two;
-/// `late`: the last):
-/// as made; each thing synced from the start with probability one half and half of the commits
-/// with parts on several aspects held in part for good (`Syncs::Early`); or things synced at
-/// varying points, with such parts withheld too (`Syncs::Late`). As made when `settled`: a part
-/// a node did not sync or never got is not held before the sync exchange, so no compaction
-/// settles it there (a `required^.0` body, never snapshotted, changes validity on its own),
-/// spec/requirements.md Deterministic: the node reads as if it never had it until it arrives.
-fn with_syncs(mut played: Played, seed: u64, cfg: Cfg) -> Played {
-    let Cfg { settled, away, late, .. } = cfg;
+/// The history as the seed's fresh nodes get it: as made, or (`!settled`, by `seed % 3` unless
+/// `away` or `every_seed`) half of the commits with parts on several aspects held in part for good
+/// (the first such commit always when `away`). As made when `settled`: a part a node never got is
+/// not held before the sync exchange, so no compaction settles it there (a `required^.0` body,
+/// never snapshotted, changes validity on its own), spec/requirements.md Deterministic: the node
+/// reads as if it never had it until it arrives.
+fn withhold(mut played: Played, seed: u64, cfg: Cfg) -> Played {
+    let Cfg { settled, away, every_seed, .. } = cfg;
     let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
-    let mut half = |ts: &[Tid]| ts.iter().copied().filter(|_| rng.below(2) == 0).collect::<Vec<_>>();
-    let things = played.things.clone();
-    let (on, other) = (half(&things), half(&things));
-    let prefix: Vec<Tid> = other.into_iter().filter(|t| !on.contains(t)).collect();
-    // parts away: always some synced and some parts withheld (the first multi-part commit and
-    // half the rest; a parts-away history starts with some)
-    match if settled { 0 } else if late { 2 } else if away { 1 + seed % 2 } else { seed % 3 } {
-        0 => {}
-        mode => {
-            let mut first = away;
-            for i in played.base..played.packs.len() {
-                let mut b = osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap();
-                let ais: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
-                if ais.len() > 1 && (std::mem::take(&mut first) || rng.below(2) == 0) {
-                    let keep = ais.iter().copied().nth(rng.below(ais.len() as u64) as usize).unwrap();
-                    b.parts.retain(|x| x.ai == keep);
-                    played.packs[i].bytes = b.encode();
-                    played.withheld += 1;
-                }
-            }
-            played.sync = if mode == 1 { Syncs::Early { on, prefix } } else { Syncs::Late { on } };
+    if settled || !(every_seed || away || seed % 3 != 0) {
+        return played;
+    }
+    let mut first = away;
+    for i in played.base..played.packs.len() {
+        let mut b = osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap();
+        let ais: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
+        if ais.len() > 1 && (std::mem::take(&mut first) || rng.below(2) == 0) {
+            let keep = ais.iter().copied().nth(rng.below(ais.len() as u64) as usize).unwrap();
+            b.parts.retain(|x| x.ai == keep);
+            played.packs[i].bytes = b.encode();
+            played.withheld += 1;
         }
     }
     played
@@ -1811,7 +1712,7 @@ fn with_syncs(mut played: Played, seed: u64, cfg: Cfg) -> Played {
 
 /// A fresh node given `packs` in `order`. An order starting with the setup as made starts from
 /// a copy of a node given it once (`Played::setups`): the same node, as `Peer::copy` goes on as
-/// the original would and the sync toggles in a prefix depend on the prefix alone (`Syncs::plan`).
+/// the original would.
 fn deliver(played: &Played, order: &[usize]) -> Peer {
     let n = played.base;
     let start = if order.len() > n && order[..n].iter().copied().eq(0..n) {
@@ -1825,14 +1726,12 @@ fn deliver(played: &Played, order: &[usize]) -> Peer {
 }
 
 /// A fresh node given the first `n` of `order` as `deliver_with` gives them with no late parts
-/// or clock (the sync toggles due before each, its sides walked after each).
+/// or clock (its sides walked after each).
 fn first_of(played: &Played, order: &[usize], n: usize) -> Peer {
     let mut p = fresh(played.now);
     // every component's walk saved, so reopens restore them
     p.engine.set_walk_cache_min(1);
-    let mut plan = played.sync.plan(order);
-    for (done, &i) in order[..n].iter().enumerate() {
-        plan.upto(&mut p, done);
+    for &i in &order[..n] {
         let pk = &played.packs[i];
         let _ = p.receive(&pk.bytes, pk.blobs.clone());
         crate::disputes::walk_sides(&mut p);
@@ -1923,14 +1822,11 @@ fn deliver_from(played: &Played, order: &[usize], (mut p, start): (Peer, usize),
         p.clock.set(c.early);
     }
     let mut late = Vec::new();
-    let mut plan = played.sync.plan(order);
-    plan.0.retain(|x| x.0 >= start);
     let mut done = start;
     // a settled history's late parts come before its settling tail: one after it is a write
     // after the writers' last compactions, which then settle nothing
-    let deliver_late = |p: &mut Peer, late: &mut Vec<usize>, plan: &mut SyncPlan, done: &mut usize, each: &mut dyn FnMut(&mut Peer)| {
+    let deliver_late = |p: &mut Peer, late: &mut Vec<usize>, done: &mut usize, each: &mut dyn FnMut(&mut Peer)| {
         for &i in std::mem::take(late).iter().rev() {
-            plan.upto(p, *done);
             *done += 1;
             let pk = &played.packs[i];
             let _ = p.receive(&pk.bytes, pk.blobs.clone());
@@ -1939,12 +1835,11 @@ fn deliver_from(played: &Played, order: &[usize], (mut p, start): (Peer, usize),
     };
     for &i in &order[start..] {
         if played.settle_from.is_some_and(|f| i >= f) && !late.is_empty() {
-            deliver_late(&mut p, &mut late, &mut plan, &mut done, &mut each);
+            deliver_late(&mut p, &mut late, &mut done, &mut each);
         }
         if clock.is_some_and(|c| c.at == done) {
             move_clock(played, &mut p);
         }
-        plan.upto(&mut p, done);
         done += 1;
         let pk = &played.packs[i];
         let bytes = match rng.as_deref_mut() {
@@ -1967,8 +1862,7 @@ fn deliver_from(played: &Played, order: &[usize], (mut p, start): (Peer, usize),
         move_clock(played, &mut p);
         each(&mut p);
     }
-    deliver_late(&mut p, &mut late, &mut plan, &mut done, &mut each);
-    plan.upto(&mut p, usize::MAX);
+    deliver_late(&mut p, &mut late, &mut done, &mut each);
     each(&mut p);
     if rng.is_some() {
         let _ = p.reexamine();
@@ -1992,9 +1886,6 @@ fn explain(played: &Played, held: &[usize], p: &mut Peer, what: &str) {
     }
     let mut o = fresh(played.now);
     o.engine.keep_bodies(true);
-    for t in played.sync.things() {
-        o.engine.set_syncing(*t, true).unwrap();
-    }
     for &i in held {
         let pk = &played.packs[i];
         let _ = o.receive(&pk.bytes, pk.blobs.clone());
@@ -2132,11 +2023,10 @@ struct Cfg {
     /// How many of each held set's orders are tried again at an earlier clock (`Clock`): as made
     /// and reversed, then a sample spread evenly over the rest.
     clock: usize,
-    /// Fresh nodes sync things, by seed (`with_syncs`).
-    sync: bool,
-    /// With `sync`: fresh nodes learn what they sync at varying points (`Syncs::Late`), whatever
-    /// the seed.
-    late: bool,
+    /// Fresh nodes are given some multi-part commits in part for good, by seed (`withhold`).
+    withhold: bool,
+    /// With `withhold`: whatever the seed.
+    every_seed: bool,
     /// `settled` histories: the whole held set only, equal before the sync exchange too.
     settled: bool,
     /// Every node judged is also compared with held-model (`held::compare`).
@@ -2193,11 +2083,11 @@ fn twins(split: Twins, n: usize, rng: &mut Rng) -> Vec<usize> {
 /// whole set of at most 4 commits after the setup, shuffles, two partial held sets, two orders
 /// each with late parts and at an earlier clock; every node judged by held-model too. Sizes
 /// change the counts (`Size`), never the kinds.
-const ORDERS: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 2, split: Twins::First(2), clock: 2, sync: true, late: false, settled: false, model: true, addenda: false, away: false };
+const ORDERS: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 2, split: Twins::First(2), clock: 2, withhold: true, every_seed: false, settled: false, model: true, addenda: false, away: false };
 
 /// A hand-written history's orders, none shuffled or drawn: as made, reversed and as a first
 /// sync fetches it, of the whole set and two first-sync prefixes.
-const NAMED: Cfg = Cfg { all_up_to: 0, random: 0, subsets: 0, split: Twins::First(0), clock: 0, sync: false, model: false, ..ORDERS };
+const NAMED: Cfg = Cfg { all_up_to: 0, random: 0, subsets: 0, split: Twins::First(0), clock: 0, withhold: false, model: false, ..ORDERS };
 
 /// The arrival orders of `held` tried: as made (the reference), reversed, every order of the
 /// held commits after the setup when there are at most `all_up_to` (and the whole set is held,
@@ -2321,7 +2211,7 @@ struct Seen {
     /// Held sets with a multi-part commit, those of them given late-parts orders, and those
     /// orders (`Cfg::split`).
     twins: (u64, u64, u64),
-    /// Parts left out as covered (`covered_away`), commits held in part for good (`with_syncs`).
+    /// Parts left out as covered (`covered_away`), commits held in part for good (`withhold`).
     covered_away: u64,
     withheld: u64,
     /// Settled histories checked.
@@ -2454,7 +2344,7 @@ fn check_on(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen,
 fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     let played = play_with(seed, steps, cfg.addenda);
     let played = if cfg.settled { settling(played, steps) } else { played };
-    let played = if cfg.sync { with_syncs(played, seed, cfg) } else { played };
+    let played = if cfg.withhold { withhold(played, seed, cfg) } else { played };
     let model = cfg.model.then(|| std::sync::Arc::new((crate::held::History::new(&played.packs), std::sync::Mutex::new(crate::held::Coverage::default()))));
     let played = Played { model, ..played };
     let played = &played;
@@ -3130,36 +3020,6 @@ fn chainless_part_creation_missing_spec_commits_4() {
     assert_eq!(read(g, t), read(t, g));
 }
 
-// spec/commits.md §4: one commit on two aspects of G, one part held. A node syncing G first and one
-// syncing G after the part came read alike: the part waits for its thing's other part in both.
-#[test]
-fn sync_learned_after_part_reads_alike_spec_commits_4() {
-    use Step::*;
-    let h = vec![Nested { by: 0, other: 1, t: 0, k: 0, text: false, compact: false, also: true }];
-    let played = play(0, &h);
-    let pk = &played.packs[played.base];
-    let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-    assert!(b.parts.iter().any(|x| x.ai != b.parts[0].ai), "two aspects");
-    let keep = b.parts[0].ai;
-    b.parts.retain(|x| x.ai == keep);
-    let part = b.encode();
-    let g = played.things[0];
-    let node = |sync_first: bool| {
-        let mut p = fresh(played.now);
-        for pk in &played.packs[..played.base] {
-            p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
-        }
-        if sync_first {
-            p.engine.set_syncing(g, true).unwrap();
-        }
-        let _ = p.receive(&part, pk.blobs.clone());
-        p.engine.set_syncing(g, true).unwrap();
-        shown(&mut p, &played.things)
-    };
-    assert_eq!(node(true), node(false));
-}
-
-
 /// `h`, then every peer holds what the others do, takes the walk's side in each dispute (as the
 /// judged nodes do), fetches again what it dropped while invalid on its first side (a snapshot
 /// written without it would not carry it) and compacts every aspect of every thing it may write: spec/commits.md §5's waiting part past its expiry and spec/requirements.md
@@ -3802,7 +3662,7 @@ fn possession_judged_alike_after_reopen_spec_crypto_4() {
     use Step::*;
     let a = |x: Step| Aim(Box::new(x));
     let h = vec![RecordOnly { by: 0, under: None }, a(RecordOnly { by: 0, under: Some(0) }), a(Nested { by: 0, other: 1, t: 6, k: 1, text: false, compact: true, also: true }), a(GrantFlow { by: 0, t: 2, holder: 0, role: Role::Admin }), a(GrantFlow { by: 0, t: 4, holder: 2, role: Role::Read }), a(GrantFlow { by: 0, t: 6, holder: 3, role: Role::Admin }), a(RemoveFlow { by: 1, t: 4, holder: 3, lower: false })];
-    check(0, &h, Cfg { sync: true, late: true, ..NAMED }).unwrap();
+    check(0, &h, Cfg { withhold: true, every_seed: true, ..NAMED }).unwrap();
 }
 
 // spec/permissions.md §5.1 (Trust set): 2 removes 0's record edge on G while 0, not having seen

@@ -16,6 +16,7 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     // what sync's facade kept of it: section epochs, blob parts, deliveries owed
     crate::sync::bodies::forget(tx, id)?;
     crate::sync::deliveries::forget(tx, id)?;
+    tx.core.redeliver.remove(id);
     // a memory commit's held parts go with it: what they link joins the freed sets
     // (`retention::freed`), memory rows; node-sync deletes the pieces as durable ones
     let held: Vec<usize> = tx.core.ix.commits.get(id).filter(|m| m.view.memory).map(|m| (0..m.header.aspects.len()).filter(|ai| m.holds(*ai)).collect()).unwrap_or_default();

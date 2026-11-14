@@ -50,8 +50,6 @@ pub const LEAVING: &[u8] = b"hr/";
 /// History cursors (`Indexes::leave_from`): `hf/` + aspect key, the due wall ms (8 bytes), then
 /// 0, or 1 + the last place out (`Ts`, commit ID).
 pub const LEAVE_FROM: &[u8] = b"hf/";
-/// Things this node syncs: `s/` + tid.
-pub const SYNCING: &[u8] = b"s/";
 /// Things destroyed for good here: a purge request destroying them is past its window
 /// (`retention::destroy::keeps`), so no minting of them is taken again: `td/` + tid. Kept for good.
 pub const DESTROYED: &[u8] = b"td/";

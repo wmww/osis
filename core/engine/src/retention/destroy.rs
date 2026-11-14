@@ -454,11 +454,6 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
     } else {
         hold_secrets(tx, t)?;
         tx.txn.remove_local(&[records::CREATED, t.as_bytes()].concat(), Shred::Yes)?;
-        // no closure of it is synced here any more (`Engine::set_syncing`)
-        if tx.core.ix.syncing.remove(t) {
-            tx.core.touch();
-            tx.txn.remove_local(&[records::SYNCING, t.as_bytes()].concat(), Shred::No)?;
-        }
         tx.core.ix.held.forget_record(t);
         tx.core.tree_reach.remove(t);
         crate::rotation::merge::forget(tx, t)?;

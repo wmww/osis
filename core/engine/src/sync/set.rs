@@ -97,7 +97,7 @@ impl Engine {
     pub(crate) fn sync_set_now(&mut self) -> Result<Arc<SyncSet>> {
         let mut set = SyncSet::default();
         for t in self.sync_things_now()?.iter() {
-            match self.thing_sync_now(t)? {
+            match self.thing_sync(t)? {
                 ThingSync::Read(ids) => set.ids.extend(ids.into_iter().map(|s| (s, (*t, Holding::Read)))),
                 // two records naming one sync ID (both owners unknown here): the first keeps it
                 ThingSync::Unread(ids) => {
@@ -186,6 +186,26 @@ impl Engine {
     }
 
     /// The thing that owns sync ID `s` here by its `sync.0` (`sync_ids`); `None` when none does.
+    /// `sync_set`'s entry for `s`: its owner (by `sync.0`, a destroyed thing's kept sync IDs, or
+    /// a sync record naming it), held when the closure holds it and `thing_sync` lists `s`.
+    pub(crate) fn sync_holding_now(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
+        let mut owners: Vec<Tid> = self.sync_owner_of(s)?.into_iter().collect();
+        owners.extend(self.core.ix.destroyed_sync_ids.iter().filter(|(_, v)| v.iter().any(|o| o.id == *s)).map(|(t, _)| *t));
+        owners.extend(self.core.ix.sync_records.iter().filter(|(_, r)| r.sync_ids.contains(s)).map(|(t, _)| *t));
+        let things = self.sync_things_now()?;
+        for t in owners {
+            if !things.contains(&t) {
+                continue;
+            }
+            match self.thing_sync(&t)? {
+                ThingSync::Read(ids) if ids.contains(s) => return Ok(Some((t, Holding::Read))),
+                ThingSync::Unread(ids) if ids.contains(s) => return Ok(Some((t, Holding::Unread))),
+                _ => {}
+            }
+        }
+        Ok(None)
+    }
+
     pub(crate) fn sync_owner_of(&mut self, s: &SyncId) -> Result<Option<Tid>> {
         let things: Vec<Tid> = self.core.ix.sync_recorders.get(s).into_iter().flatten().copied().collect();
         for t in things {

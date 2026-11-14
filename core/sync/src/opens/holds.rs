@@ -130,9 +130,8 @@ pub struct NodeHolds<'a, 'c> {
 /// S's credentials as the engine (read) or `unread` (kept unread) gives them.
 fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
     {
-        let set = cx.engine.sync_set().ok()?;
-        let (_, holding) = set.ids.get(s)?;
-        let mut c = Creds { holding: Some(*holding), ..Creds::default() };
+        let (_, holding) = cx.engine.sync_holding(s).ok()??;
+        let mut c = Creds { holding: Some(holding), ..Creds::default() };
         match holding {
             Holding::Read => {
                 let rc = cx.engine.read_credentials(s).ok()??;

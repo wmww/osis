@@ -572,3 +572,28 @@ fn read_facts_of_own_and_role_commits_spec_sync_judgement_3() {
     let key = |w: &[u8]| osis_label::unwrap_any(rc.read_secrets.iter().map(|x| &x.1), &sealed.id, w).map(|x| *x.1.expose());
     assert_eq!(key(&again), key(&wrap));
 }
+
+// spec/sync-judgement.md §6 (Read and unread move: a node lowered to sync keeps the sync secrets
+// it held as its sync record and drops its engine state of S, which becomes kept unread).
+#[test]
+fn a_lowering_to_sync_writes_a_sync_record_spec_sync_judgement_6() {
+    let (mut lp, t, pb, _, blob) = granted(Role::Read);
+    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
+    spread(&mut lp);
+    assert!(lp.peers[1].engine.sync_record(&t).unwrap().is_none(), "a reader keeps no record");
+    let held: Vec<_> = lp.peers[1].engine.epochs(&t).unwrap().sync.held().map(|(e, _)| e).collect();
+    assert!(!held.is_empty());
+    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: pb, new: Some(edge_of(Role::Sync)), retain: None }).unwrap();
+    for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
+        if h == pb {
+            lp.peers[1].engine.take_inbox_blob(&b, true).unwrap();
+        }
+    }
+    spread(&mut lp);
+    let e = &mut lp.peers[1].engine;
+    e.forget_lost(osis_engine::rotation::LostScope::All).unwrap();
+    assert!(e.epochs(&t).is_none_or(|x| !x.read.holds_any()), "read secrets gone");
+    let r = e.sync_record(&t).unwrap().expect("lowered: a sync record");
+    assert!(held.iter().all(|x| r.secrets.contains_key(x)), "the sync secrets it held");
+    assert_eq!(r.sync_ids, vec![lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap()]);
+}

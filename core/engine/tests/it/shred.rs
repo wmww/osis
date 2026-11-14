@@ -362,26 +362,23 @@ fn expired_late_part_unrecoverable_spec_crdt_4_7() {
 
 // spec/commits.md §4 (a commit with no part held, or whose every held part waits, applies as its header alone): peer 1 gets peer 0's
 // expiring write on a thing whose creation record it lacks, past T: nothing of it is kept (spec/commits.md
-// §4 Unjudgeable), whether peer 1 syncs the thing or not; fetched again with its record, the part
+// §4 Unjudgeable); fetched again with its record, the part
 // past T counts as never received and the commit applies as its header.
 #[test]
 fn partless_commit_applies_as_its_header_spec_commits_4() {
-    for syncing in [false, true] {
-        let mut lp = net2();
-        lp.sync_all().unwrap();
-        let t = new_thing(&mut lp, 0);
-        let mut m = Mutation::new();
-        m.set(t, &BRIEF, &s("brief")).unwrap();
-        m.expires(t, &BRIEF, osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
-        let c = lp.peers[0].commit(m).unwrap().unwrap();
-        let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == c).unwrap();
-        lp.peers[1].engine.set_syncing(t, syncing).unwrap();
-        lp.advance(120_000);
-        assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_engine::Ingested::Awaits(_, _)), "syncing {syncing}: cannot be judged");
-        lp.sync(0, 1).unwrap();
-        assert!(lp.peers[1].engine.commit_ids().contains(&c) && lp.peers[1].engine.pending().iter().all(|x| x.0 != c), "syncing {syncing}");
-        assert_eq!(lp.peers[1].engine.get_typed(&t, &BRIEF).unwrap(), None, "syncing {syncing}");
-    }
+    let mut lp = net2();
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let mut m = Mutation::new();
+    m.set(t, &BRIEF, &s("brief")).unwrap();
+    m.expires(t, &BRIEF, osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == c).unwrap();
+    lp.advance(120_000);
+    assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_engine::Ingested::Awaits(_, _)), "cannot be judged");
+    lp.sync(0, 1).unwrap();
+    assert!(lp.peers[1].engine.commit_ids().contains(&c) && lp.peers[1].engine.pending().iter().all(|x| x.0 != c));
+    assert_eq!(lp.peers[1].engine.get_typed(&t, &BRIEF).unwrap(), None);
 }
 
 // spec/commits.md §5, spec/requirements.md (Deterministic): a commit, its thing's record and a purge
@@ -403,11 +400,8 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
         lp.peers[0].commit(m).unwrap().unwrap();
         let t3 = new_thing(&mut lp, 0);
         lp.sync(0, 1).unwrap();
-        lp.peers[1].engine.set_syncing(t3, true).unwrap();
-        lp.peers[1].engine.set_syncing(t, true).unwrap();
         let had: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
         let t2 = new_thing(&mut lp, 0);
-        lp.peers[1].engine.set_syncing(t2, true).unwrap();
         let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !had.contains(&p.id)).collect();
         lp.advance(5);
         let mut m = Mutation::new();
@@ -473,8 +467,6 @@ fn purge_of_a_part_waiting_aside_reads_alike_spec_commits_5() {
         let t2 = new_thing(&mut lp, 0);
         let t3 = new_thing(&mut lp, 0);
         lp.sync(0, 1).unwrap();
-        lp.peers[1].engine.set_syncing(t2, true).unwrap();
-        lp.peers[1].engine.set_syncing(t3, true).unwrap();
         lp.advance(5);
         let mut m = Mutation::new();
         m.set(t, &REG, &s("SECRET-R4e1")).unwrap();
@@ -611,7 +603,7 @@ fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
 // spec/commits.md §4, §5: a purged part, a part past its expiry, an unchecked first copy of a slot and
 // a relay's empty slots (the bytes of a stripped one, no record behind them or one), in any order, T
 // passing and a restart anywhere among them: each true copy delivered again at the end, the node reads
-// alike whatever it syncs, its commit applied, no flag left, nothing of either value recoverable.
+// alike, its commit applied, no flag left, nothing of either value recoverable.
 // The default test runs the 7 rotations of the items' order in every shape: each item first and
 // last, each pair both ways round.
 #[test]
@@ -687,11 +679,7 @@ fn past_expiry_and_purge_alike(every: bool) {
                 let Some(&(n, o)) = cases.get(at) else { return };
                 let ((sync, k, tick), order) = (shapes[n], &orders[o]);
                 let mut p = base.lock().unwrap().copy().unwrap();
-                match sync {
-                    1 => p.engine.set_syncing(t, true).unwrap(),
-                    2 => p.engine.set_syncing(t2, true).unwrap(),
-                    _ => {}
-                }
+                let _ = (sync, t2);
                 let late = exp.0 + 5_000;
                 let to = |p: &mut Peer, when: u64| {
                     let now = p.engine.now().0;
@@ -801,13 +789,11 @@ fn tombstone_alike(stride: u64) {
         for i in 0..items.len() {
             orders = orders.iter().flat_map(|q| (0..=q.len()).map(move |at| { let mut x = q.clone(); x.insert(at, i); x })).collect();
         }
-        for syncing in [true, false] {
-            for order in &orders {
-                for restart in 0..=order.len() {
-                    cases += 1;
-                    if cases % stride == 0 {
-                        jobs.push((k, syncing, order.clone(), restart));
-                    }
+        for order in &orders {
+            for restart in 0..=order.len() {
+                cases += 1;
+                if cases % stride == 0 {
+                    jobs.push((k, order.clone(), restart));
                 }
             }
         }
@@ -815,12 +801,9 @@ fn tombstone_alike(stride: u64) {
     let base = std::sync::Mutex::new(holding(&setup));
     let one = |j: u64| {
         osis_base::testenv::caught(|| {
-            let (k, syncing, order, restart) = &jobs[j as usize];
+            let (k, order, restart) = &jobs[j as usize];
             let (what, items) = &sets[*k];
             let mut p = base.lock().unwrap().copy().unwrap();
-            if *syncing {
-                p.engine.set_syncing(t, true).unwrap();
-            }
             for (at, i) in order.iter().enumerate() {
                 if at == *restart {
                     p = reopened(p, FRESH + 1);
@@ -828,7 +811,7 @@ fn tombstone_alike(stride: u64) {
                 p.receive(&items[*i].0, items[*i].1.clone()).unwrap();
             }
             let e = &mut p.engine;
-            let at = format!("{what}, syncing {syncing}, order {order:?}, restart {restart}");
+            let at = format!("{what}, order {order:?}, restart {restart}");
             assert!(e.commit_ids().contains(&c), "{at}: not applied");
             assert!(!e.body_not_dropped(&c, &t, &ak("t:reg.0")), "{at}: its body is held");
             assert_eq!(e.purged_on(&t, &ak("t:reg.0")).unwrap().get(&c), Some(&pc), "{at}");
@@ -845,8 +828,8 @@ fn tombstone_alike(stride: u64) {
     let idx: Vec<u64> = (0..jobs.len() as u64).collect();
     let fails: Vec<String> = osis_base::testenv::par_map(&idx, osis_base::testenv::threads("OSIS_SEED_THREADS"), one).into_iter().filter_map(Result::err).collect();
     assert!(fails.is_empty(), "{} of {} cases failed, the first: {}", fails.len(), jobs.len(), fails[0]);
-    // every case counted: both sync modes, each order, each restart point
-    assert_eq!(cases, 2 * (24 * 5 + 6 * 4 + 24 * 5));
+    // every case counted: each order, each restart point
+    assert_eq!(cases, 24 * 5 + 6 * 4 + 24 * 5);
 }
 
 /// Node 0's paged map on `t` over an older value node 1 holds, by commit `c` (`whole`: its package), and a
@@ -858,7 +841,6 @@ fn purged_page_away(lp: &mut LocalPeer, marker: &str) -> (Tid, osis_base::Commit
     m.set(t, &BIG, &Value::Map(osis_base::ValueMap::from([(s("older"), s("kept"))]))).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync(0, 1).unwrap();
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
     lp.advance(5);
     // the marker in every entry, so whichever page stays away the held ones carry it
     let fill: osis_base::ValueMap = (0..400).map(|i| (s(&format!("k{i:03}")), s(&format!("{marker}{}", "f".repeat(1100))))).collect();

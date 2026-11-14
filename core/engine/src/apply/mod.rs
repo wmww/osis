@@ -931,6 +931,10 @@ fn unpend(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
 /// (read from it: first). Whether it was pending.
 fn drop_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
     crate::retention::forget_waiting_leftovers(tx, id)?;
+    // nothing of it held: no copy of it is needed again
+    if !tx.core.ix.commits.contains_key(id) {
+        tx.core.redeliver.remove(id);
+    }
     unpend(tx, id)
 }
 
@@ -1589,22 +1593,6 @@ impl Engine {
         r
     }
 
-    /// Starts or stops syncing `tid` and what its `group.0` holds, now and as it changes.
-    pub fn set_syncing(&mut self, tid: Tid, on: bool) -> Result<()> {
-        self.run(|tx| {
-            tx.core.touch();
-            let k = [records::SYNCING, tid.as_bytes()].concat();
-            if on {
-                tx.txn.put_local(&k, &[], Shred::No)?;
-                tx.core.ix.syncing.insert(tid);
-            } else {
-                tx.txn.remove_local(&k, Shred::No)?;
-                tx.core.ix.syncing.remove(&tid);
-            }
-            Ok(())
-        })
-    }
-
     /// Pending and parked commits with their reasons (`Unexamined` from a load until examined).
     pub fn pending(&self) -> Vec<(CommitId, Reason)> {
         self.core.ix.pending.iter().map(|(k, v)| (*k, v.clone())).collect()
@@ -1716,8 +1704,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     for r in created {
         tx.core.ix.held.create(r);
     }
-    let syncing = tx.scan_keys(records::SYNCING, "syncing", Tid::from_bytes)?;
-    tx.core.ix.syncing.extend(syncing);
     let void = tx.scan_keys(records::VOID, "void", CommitId)?;
     tx.core.ix.void.extend(void);
     let destroyed_for_good = tx.scan_keys(records::DESTROYED, "destroyed", Tid::from_bytes)?;

@@ -176,7 +176,6 @@ fn late_keys_part_establishes_rotation_spec_crypto_4() {
         let _ = lp.deliver(1, p);
     }
     assert!(lp.peers[1].engine.epochs(&a).unwrap().read.is_established(&e1));
-    lp.peers[1].engine.set_syncing(a, true).unwrap();
     let p2 = pks.iter().find(|p| p.id == c2).unwrap().clone();
     let h = lp.peers[0].engine.header(&c2).unwrap();
     let mut only = osis_commit::CommitBlob::decode(&p2.bytes).unwrap();

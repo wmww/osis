@@ -69,7 +69,6 @@ fn expiring_commit_applies_without_missing_delta_spec_commits_4() {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
     let at = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
     let mut m = Mutation::new();
     m.set(t, &BRIEF, &s("gone soon")).unwrap();
@@ -106,7 +105,6 @@ fn bad_part_dropped_alone_spec_commits_4() {
     let last = b.parts.len() - 1;
     let n = b.parts[last].delta.len();
     b.parts[last].delta[n - 1] ^= 1;
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
     let r = lp.peers[1].receive(&b.encode(), Vec::new()).unwrap();
     assert_eq!(r, Ingested::Applied(id));
     assert_eq!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(id));
@@ -162,7 +160,6 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     for p in rest.iter().chain([&secret_pk]) {
         lp.deliver(1, p).unwrap();
     }
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
     lp.peers[1].reexamine().unwrap();
     assert!(!lp.peers[1].engine.body_not_dropped(&secret, &t, &reg));
     lp.deliver(1, &spk).unwrap();
@@ -175,7 +172,6 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     for p in rest.iter().chain([&spk, &secret_pk]) {
         lp.deliver(i, p).unwrap();
     }
-    lp.peers[i].engine.set_syncing(t, true).unwrap();
     lp.peers[i].reexamine().unwrap();
     check(&mut lp.peers[i].engine, "named delta last");
     // the snapshot's header (applied alone, spec/commits.md §4), then its part
@@ -187,7 +183,6 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     let sh = lp.peers[0].engine.header(&snap).unwrap();
     let r = lp.peers[j].receive(&strip_parts(&spk, |_| false, &sh), Vec::new()).unwrap();
     assert_eq!(r, Ingested::Applied(snap));
-    lp.peers[j].engine.set_syncing(t, true).unwrap();
     assert!(!lp.peers[j].engine.body_not_dropped(&secret, &t, &reg));
     lp.deliver(j, &spk).unwrap();
     check(&mut lp.peers[j].engine, "snapshot part last");
@@ -215,7 +210,6 @@ fn late_snapshot_of_purged_value_reads_nothing_spec_crdt_4_7() {
     for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != snap) {
         lp.deliver(1, &p).unwrap();
     }
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
     lp.peers[1].reexamine().unwrap();
     assert!(!lp.peers[1].engine.body_not_dropped(&secret, &t, &reg));
     assert_ne!(lp.peers[1].engine.get(&t, &reg).unwrap(), Some(s("secret")), "purged");

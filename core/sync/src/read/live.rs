@@ -44,7 +44,7 @@ fn own_entry(cx: &mut Cx, s: &SyncId, blob: BlobId, wrap: crate::types::Wrap, cl
 
 impl Live<'_, '_> {
     fn thing(&mut self, s: &SyncId) -> Result<Option<osis_base::Tid>> {
-        Ok(self.cx.engine.sync_set()?.ids.get(s).map(|(t, _)| *t))
+        Ok(self.cx.engine.sync_holding(s)?.map(|(t, _)| t))
     }
 }
 
@@ -87,7 +87,7 @@ impl Ground for Live<'_, '_> {
         }
     }
     fn reads(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(self.cx.engine.sync_set()?.ids.get(s).is_some_and(|(_, h)| *h == osis_engine::sync::Holding::Read))
+        Ok(self.cx.engine.sync_holding(s)?.is_some_and(|(_, h)| h == osis_engine::sync::Holding::Read))
     }
     fn closure_settled(&mut self, s: &SyncId) -> Result<bool> {
         let _ = s;

@@ -1,6 +1,6 @@
 //! Which parts of a commit apply and which wait (spec/commits.md §4). Invariant under test: what a
 //! node applies is a function of the parts it holds and what else it holds, never of which part
-//! came first or what it syncs, however the commit's parts are split over deliveries.
+//! came first, however the commit's parts are split over deliveries.
 
 use crate::judgment::observe;
 use crate::order::{Played, Step, play};
@@ -39,11 +39,8 @@ fn part(played: &Played, i: usize, t: Option<Tid>) -> Vec<u8> {
     b.encode()
 }
 
-fn deliver(played: &Played, syncs: &[Tid], order: &[Tok]) -> Peer {
+fn deliver(played: &Played, order: &[Tok]) -> Peer {
     let mut p = Peer::new(FRESH, played.now).unwrap();
-    for t in syncs {
-        p.engine.set_syncing(*t, true).unwrap();
-    }
     for (i, t) in order {
         let _ = p.engine.ingest(&part(played, *i, *t), played.packs[*i].blobs.clone());
     }
@@ -62,8 +59,8 @@ fn in_order(played: &Played, hidden: &[usize]) -> Vec<Tok> {
 }
 
 /// `played`'s last commit's value on a thing, delivered with the packs `hidden` held back.
-fn reads(played: &Played, syncs: &[Tid], hidden: &[usize]) -> (Vec<Option<Value>>, usize) {
-    let mut p = deliver(played, syncs, &in_order(played, hidden));
+fn reads(played: &Played, hidden: &[usize]) -> (Vec<Option<Value>>, usize) {
+    let mut p = deliver(played, &in_order(played, hidden));
     let r = played.things.iter().map(|t| p.engine.get(t, &reg()).unwrap()).collect();
     (r, p.engine.pending().len())
 }
@@ -72,51 +69,38 @@ fn v(x: &str) -> Option<Value> {
     Some(Value::Str(x.into()))
 }
 
-// spec/commits.md §4: a part whose chain is away waits alone and the rest applies, whatever the node
-// syncs; a chain arriving later ends in-order's state (`split_delivery_*` compares every order to it).
+// spec/commits.md §4: a part whose chain is away waits alone and the rest applies; a chain arriving later ends in-order's state (`split_delivery_*` compares every order to it).
 // Three things: only the chainless part waits.
 #[test]
-fn chainless_part_waits_alone_whatever_is_synced_spec_commits_4() {
+fn chainless_part_waits_alone_spec_commits_4() {
     let hs = histories();
     let (content, three) = (&hs[0], &hs[2]);
-    let (g, h) = (content.things[0], content.things[1]);
     let edge = content.base + 1;
-    let (got, pending) = reads(content, &[], &[edge]);
-    assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 0), "unsynced: G applied, H awaits");
-    let (got, pending) = reads(content, &[h], &[edge]);
-    assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 0), "H synced: G applied, H awaits");
-    let (got, pending) = reads(content, &[g, h], &[]);
+    let (got, pending) = reads(content, &[edge]);
+    assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 0), "G applied, H awaits");
+    let (got, pending) = reads(content, &[]);
     assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 0), "the chain held: 1 only reads H, its write there judged invalid");
-    let (g3, h3, c3) = (three.things[0], three.things[1], three.things[2]);
-    let (got, pending) = reads(three, &[], &[three.base + 2]);
-    assert_eq!(got, vec![v("v1"), v("top"), v("v1")], "{g3} {h3} {c3}: only H's part waits");
+    let (got, pending) = reads(three, &[three.base + 2]);
+    assert_eq!(got, vec![v("v1"), v("top"), v("v1")], "only H's part waits");
     assert_eq!(pending, 0, "nothing kept");
-    let (got, _) = reads(three, &[h3], &[three.base + 2]);
-    assert_eq!(got, vec![v("v1"), v("top"), v("v1")], "H synced: only H's part waits");
-    let (got, _) = reads(three, &[c3], &[three.base + 2]);
-    assert_eq!(got, vec![v("v1"), v("top"), v("v1")], "C synced, its chain held: only H's part waits");
 }
 
 // spec/commits.md §4: a commit's parts wait alone, so what a role commit does to one thing's
-// roster reads alike however the other part came and whichever things are synced: authority does
-// not depend on the sync set.
+// roster reads alike however the other part came.
 #[test]
-fn role_part_applies_whatever_is_synced_spec_commits_4() {
+fn role_part_applies_spec_commits_4() {
     let hs = histories();
     let role = &hs[1];
-    let (g, h) = (role.things[0], role.things[1]);
+    let g = role.things[0];
     let roster = |p: &mut Peer| seen(role, p).into_iter().find(|(k, _)| *k == format!("thing {g}")).unwrap().1;
     let edge = role.base + 1;
     let before: Vec<usize> = (0..role.packs.len() - 1).collect();
-    let mut was = deliver(role, &[], &before.iter().filter(|i| **i != edge).map(|i| (*i, None)).collect::<Vec<_>>());
+    let mut was = deliver(role, &before.iter().filter(|i| **i != edge).map(|i| (*i, None)).collect::<Vec<_>>());
     let was = roster(&mut was);
     let order = in_order(role, &[edge]);
-    let mut applied = deliver(role, &[], &order);
+    let mut applied = deliver(role, &order);
     let applied = roster(&mut applied);
     assert_ne!(applied, was, "the G part applies");
-    for sy in [vec![h], vec![g], vec![g, h]] {
-        assert_eq!(roster(&mut deliver(role, &sy, &order)), applied, "{sy:?}");
-    }
 }
 
 /// Peer 0's commit `write` makes on two of its things peer 1 knows, split per thing.
@@ -141,14 +125,14 @@ fn on(pk: &osis_engine::local_peer::Package, t: Tid) -> Vec<u8> {
     b.encode()
 }
 
-// spec/commits.md §4, spec/crdt.md §8: a paged part whose pages are away waits alone, synced or not, in either
+// spec/commits.md §4, spec/crdt.md §8: a paged part whose pages are away waits alone, in either
 // order, and it joins when they come.
 #[test]
 fn part_missing_pages_waits_alone_spec_commits_4() {
     use crate::common::*;
     let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
     let big = Value::Map(map);
-    for (first_g, synced) in [(true, false), (false, false), (true, true), (false, true)] {
+    for first_g in [true, false] {
         let want = big.clone();
         let (mut lp, g, h, pk) = two_things(|m, g, h| {
             m.set(g, &REG, &s("small")).unwrap();
@@ -156,14 +140,11 @@ fn part_missing_pages_waits_alone_spec_commits_4() {
         });
         assert!(!pk.blobs.is_empty(), "paged");
         let e = &mut lp.peers[1].engine;
-        if synced {
-            e.set_syncing(h, true).unwrap();
-        }
         for t in if first_g { [g, h] } else { [h, g] } {
             let _ = e.ingest(&on(&pk, t), Vec::new());
         }
         e.reexamine().unwrap();
-        assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("small")), "first_g {first_g} synced {synced}");
+        assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("small")), "first_g {first_g}");
         assert_eq!(e.pending(), vec![(pk.id, Reason::WaitBlobs)]);
         assert_eq!(e.get(&h, &ak("t:big.0")).unwrap(), None);
         e.put_blobs(pk.blobs.clone()).unwrap();
@@ -174,7 +155,7 @@ fn part_missing_pages_waits_alone_spec_commits_4() {
     }
 }
 
-// spec/versioning.md §2, spec/commits.md §4: a parked part waits alone, synced or not, together or
+// spec/versioning.md §2, spec/commits.md §4: a parked part waits alone, together or
 // split, either order, and is kept to relay.
 #[test]
 fn parked_part_waits_alone_spec_versioning_2() {
@@ -213,10 +194,9 @@ fn parked_part_waits_alone_spec_versioning_2() {
     let e = &mut lp.peers[1].engine;
     let r = e.ingest(&part(h), Vec::new()).unwrap();
     assert!(matches!(r, Ingested::Applied(_)), "the header waits for no part: {r:?}");
-    e.set_syncing(h, true).unwrap();
     let _ = e.ingest(&part(g), Vec::new());
     e.reexamine().unwrap();
-    assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("ok")), "synced: the rest applies");
+    assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("ok")), "the rest applies");
     assert_eq!(e.pending(), vec![(id, Reason::Parked)], "the parked part stays");
     // the same from the other order, and together
     let (mut other, mut together) = (net(2, 0), net(2, 0));
@@ -323,22 +303,19 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     }
 }
 
-// spec/commits.md §4: an applied commit holds nothing back: a late part joins whether or not a
-// thing synced since has a wait or another part is missing.
+// spec/commits.md §4: an applied commit holds nothing back: a late part joins whether or not
+// another part has a wait or is missing.
 #[test]
 fn late_part_of_applied_commit_joins_alone_spec_commits_4() {
     let hs = histories();
     let three = &hs[2];
-    let (g, h, c) = (three.things[0], three.things[1], three.things[2]);
+    let (g, c) = (three.things[0], three.things[2]);
     let last = three.packs.len() - 1;
     let setup: Vec<Tok> = in_order(three, &[last]);
-    for (hidden, syncs) in [(vec![three.base + 2], vec![h]), (vec![], vec![h, c])] {
+    for hidden in [vec![three.base + 2], vec![]] {
         let mut order: Vec<Tok> = setup.iter().filter(|x| !hidden.contains(&x.0)).copied().collect();
         order.push((last, Some(g)));
-        let mut p = deliver(three, &[], &order);
-        for t in &syncs {
-            p.engine.set_syncing(*t, true).unwrap();
-        }
+        let mut p = deliver(three, &order);
         let _ = p.engine.ingest(&part(three, last, Some(c)), Vec::new());
         p.reexamine().unwrap();
         assert_eq!(p.engine.get(&c, &reg()).unwrap(), v("v1"), "hidden {hidden:?}");
@@ -346,7 +323,7 @@ fn late_part_of_applied_commit_joins_alone_spec_commits_4() {
 }
 
 // spec/commits.md §4: a part bad by itself beside its thing's other parts. Each good part shows as it
-// comes, in every order, synced or not, ending as from the whole blob; the bad part alone, or a junk
+// comes, in every order, ending as from the whole blob; the bad part alone, or a junk
 // copy of its slot, is refused and keeps nothing.
 #[test]
 fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
@@ -391,42 +368,36 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
         b.encode()
     };
     let (p_one, p_two, p_bad) = (on("t:one.0"), on("t:two.0"), on("t:bad.0"));
-    let read = |synced: bool, deliveries: &[&[u8]]| {
+    let read = |deliveries: &[&[u8]]| {
         let mut lp2 = net(2, 0);
         for pk in &setup {
             lp2.deliver(1, pk).unwrap();
         }
         let e = &mut lp2.peers[1].engine;
-        if synced {
-            e.set_syncing(g, true).unwrap();
-        }
         for b in deliveries {
             let _ = e.ingest(b, Vec::new());
         }
         e.reexamine().unwrap();
         (e.get(&g, &ak("t:one.0")).unwrap(), e.get(&g, &ak("t:two.0")).unwrap(), e.commit_ids().contains(&id), e.pending())
     };
-    for synced in [false, true] {
-        let got = read(synced, &[&blob.encode()]);
-        assert_eq!((&got.0, &got.1, got.2), (&Some(s("one")), &Some(s("two")), true), "synced {synced}");
+    {
+        let got = read(&[&blob.encode()]);
+        assert_eq!((&got.0, &got.1, got.2), (&Some(s("one")), &Some(s("two")), true));
         assert!(got.3.is_empty());
         let parts = [&p_one[..], &p_two[..], &p_bad[..]];
         for order in permutations(3) {
             let seq: Vec<&[u8]> = order.iter().map(|i| parts[*i]).collect();
-            assert_eq!(read(synced, &seq), got, "synced {synced}, order {order:?}");
+            assert_eq!(read(&seq), got, "order {order:?}");
             // the first two alone: what is good of them shows
-            let held = read(synced, &seq[..2]);
+            let held = read(&seq[..2]);
             let has = |i: usize| order[..2].contains(&i);
-            assert_eq!((&held.0, &held.1, held.2), (&has(0).then(|| s("one")), &has(1).then(|| s("two")), true), "synced {synced}, held {:?}", &order[..2]);
-            assert!(held.3.is_empty(), "synced {synced}, held {:?}", &order[..2]);
+            assert_eq!((&held.0, &held.1, held.2), (&has(0).then(|| s("one")), &has(1).then(|| s("two")), true), "held {:?}", &order[..2]);
+            assert!(held.3.is_empty(), "held {:?}", &order[..2]);
         }
         // the bad part alone, and a junk copy of its slot: refused, nothing kept
         let mut lp2 = net(2, 0);
         for pk in &setup {
             lp2.deliver(1, pk).unwrap();
-        }
-        if synced {
-            lp2.peers[1].engine.set_syncing(g, true).unwrap();
         }
         let e = &mut lp2.peers[1].engine;
         assert!(e.ingest(&p_bad, Vec::new()).is_err());
@@ -493,8 +464,6 @@ fn expired_part_with_pages_away_order_spec_commits_4() {
         assert!(!pk.blobs.is_empty(), "paged");
         lp.peers[1].clock.advance(10_000_000);
         let e = &mut lp.peers[1].engine;
-        e.set_syncing(g, true).unwrap();
-        e.set_syncing(h, true).unwrap();
         for t in if first_g { [g, h] } else { [h, g] } {
             let _ = e.ingest(&on(&pk, t), Vec::new());
         }
@@ -521,7 +490,7 @@ fn shapes(played: &Played, i: usize) -> Vec<Vec<Vec<u8>>> {
 }
 
 // spec/commits.md §4: a part that hashes right and is bad by itself, beside good ones, on content and
-// a role commit, synced or not: in every shape of delivery the node reads alike, the good parts stand
+// a role commit: in every shape of delivery the node reads alike, the good parts stand
 // and nothing waits for the bad one.
 #[test]
 fn bad_part_every_shape_reads_alike_spec_commits_4() {
@@ -534,13 +503,10 @@ fn bad_part_every_shape_reads_alike_spec_commits_4() {
         let parts = CommitBlob::decode(&played.packs[last].bytes).unwrap().parts.len();
         assert!(parts >= 2, "how {how}: a bad part beside a good one");
         let ids: std::collections::BTreeSet<_> = played.packs.iter().map(|x| x.id).collect();
-        for syncs in [vec![], vec![a], vec![b], vec![a, b]] {
+        {
             let mut want = None;
             for shape in shapes(&played, last) {
                 let mut p = Peer::new(FRESH, played.now).unwrap();
-                for t in &syncs {
-                    p.engine.set_syncing(*t, true).unwrap();
-                }
                 for pk in &played.packs[..last] {
                     p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
                 }
@@ -552,11 +518,11 @@ fn bad_part_every_shape_reads_alike_spec_commits_4() {
                 let got = (observe(&mut p.engine, &ids), roster, p.engine.pending());
                 assert!(got.2.is_empty(), "how {how}: nothing waits for a part held bad: {:?}", got.2);
                 if how == 0 {
-                    assert_eq!(p.engine.get(&a, &reg()).unwrap(), v("beside bad"), "how {how}, syncs {}", syncs.len());
+                    assert_eq!(p.engine.get(&a, &reg()).unwrap(), v("beside bad"), "how {how}");
                     assert_eq!(p.engine.get(&b, &reg()).unwrap(), v("top"), "the bad part never applies");
                 }
                 let w = want.get_or_insert_with(|| got.clone());
-                assert!(got == *w, "how {how}, syncs {}: {:?}", syncs.len(), got.0.iter().zip(w.0.iter()).find(|(a, b)| a != b));
+                assert!(got == *w, "how {how}: {:?}", got.0.iter().zip(w.0.iter()).find(|(a, b)| a != b));
             }
         }
     }
@@ -578,10 +544,8 @@ fn role_commit_of_junk_holds_nothing_spec_commits_4() {
     let role = &hs[1];
     let last = role.packs.len() - 1;
     let id = role.packs[last].id;
-    let g = role.things[0];
     let junk = with_delta(&role.packs[last].bytes, 9, 40);
     let mut p = Peer::new(FRESH, role.now).unwrap();
-    p.engine.set_syncing(g, true).unwrap();
     for pk in &role.packs[..last] {
         p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
     }
@@ -606,7 +570,6 @@ fn wrong_class_delta_is_not_waited_for_spec_commits_4() {
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
     assert_eq!(CommitBlob::decode(&pk.bytes).unwrap().parts.len(), 1, "its author's copy holds no such part");
     let e = &mut lp.peers[1].engine;
-    e.set_syncing(g, true).unwrap();
     assert!(matches!(e.ingest(&pk.bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
     assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("kept")));
     // a copy holding one, while the commit waits, names nothing: such a part has no true copy to look for
@@ -721,7 +684,6 @@ fn bad_part_beside_a_waiting_part_alike_spec_commits_4() {
     let ids: std::collections::BTreeSet<_> = played.packs.iter().map(|x| x.id).collect();
     let read = |order: &[Vec<u8>]| {
         let mut p = Peer::new(FRESH, played.now).unwrap();
-        p.engine.set_syncing(b, true).unwrap();
         for (_, pk) in played.packs.iter().enumerate().filter(|(i, _)| *i != hidden && *i != last) {
             let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
         }
@@ -962,7 +924,7 @@ fn parked_part_goes_at_its_purge_spec_commits_5() {
 
 // spec/commits.md §4, §5: beside a part past its expiry, a part bad by itself or parked and a true one,
 // with a relay's junk on two of the slots: in any order, each true copy delivered again at the end, the
-// node reads alike, whatever it syncs. The default test takes every seventh of the 120 orders; the property all.
+// node reads alike. The default test takes every seventh of the 120 orders; the property all.
 #[test]
 fn forged_parts_beside_a_part_past_expiry_alike_spec_commits_4() {
     forged_parts_beside_a_part_past_expiry(7);
@@ -997,16 +959,13 @@ fn forged_parts_beside_a_part_past_expiry(stride: usize) {
         for i in 0..items.len() {
             orders = orders.iter().flat_map(|q| (0..=q.len()).map(move |at| { let mut o = q.clone(); o.insert(at, i); o })).collect();
         }
-        for sync in [None, Some(x), Some(y), Some(z)] {
+        {
             // the orders on a thread per core, each on its own node
             let picked: Vec<&Vec<usize>> = orders.iter().step_by(stride).collect();
             let idx: Vec<u64> = (0..picked.len() as u64).collect();
             let one = |j: u64| {
                 let order = picked[j as usize];
                 let mut p = Peer::new(FRESH, now).unwrap();
-                if let Some(t) = sync {
-                    p.engine.set_syncing(t, true).unwrap();
-                }
                 for pk in &f.setup {
                     let _ = p.engine.ingest(&pk.bytes, Vec::new());
                 }
@@ -1024,7 +983,7 @@ fn forged_parts_beside_a_part_past_expiry(stride: usize) {
             for (order, got) in picked.iter().zip(osis_base::testenv::par_map(&idx, osis_base::testenv::threads("OSIS_SEED_THREADS"), one)) {
                 seen.entry(got).or_insert_with(|| (*order).clone());
             }
-            assert_eq!(seen.len(), 1, "bad {}, sync {:?}: {seen:#?}", how == Made::Bad, sync.map(|t| t == x));
+            assert_eq!(seen.len(), 1, "bad {}: {seen:#?}", how == Made::Bad);
         }
     }
 }

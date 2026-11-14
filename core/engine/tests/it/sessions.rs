@@ -181,7 +181,6 @@ fn untraced_session_part_joins_late_spec_commits_4() {
     let w = lp.peers[2].engine.me();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
     let mut m = Mutation::new();
     m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("w")) }).unwrap();
     lp.peers[2].commit(m).unwrap().unwrap();
@@ -333,8 +332,6 @@ fn snapshot_not_covered_by_an_earlier_equal_spec_commits_4() {
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     }
     lp.sync_all().unwrap();
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
-    lp.peers[4].engine.set_syncing(t, true).unwrap();
     let tags = ak("t:tags.0");
     let mut m = Mutation::new();
     m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("w")) }).unwrap();
@@ -387,7 +384,6 @@ fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, t, y, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
     let asp = ak("t:gone.0");
     // a snapshot stamped before the body settles nothing
     set(&mut lp, 3, t, &GONE, "v0");
@@ -446,8 +442,6 @@ fn equal_stamped_snapshots_cover_each_other_spec_sync_7() {
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     }
     lp.sync_all().unwrap();
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
-    lp.peers[4].engine.set_syncing(t, true).unwrap();
     let tags = ak("t:tags.0");
     let mut m = Mutation::new();
     m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("w")) }).unwrap();
@@ -498,7 +492,6 @@ fn invalid_or_lagging_later_snapshot_stays_and_stands_in_spec_commits_5() {
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, t, y, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
     let tags = ak("t:tags.0");
     let add = |lp: &mut LocalPeer, i: usize, v: &str| {
         let mut m = Mutation::new();
@@ -586,7 +579,6 @@ fn flip_flag_on_a_snapshot_body_settles_spec_permissions_4() {
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     }
     lp.sync_all().unwrap();
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
     let asp = ak("t:gone.0");
     set(&mut lp, 0, t, &GONE, "v1");
     lp.advance(1_000);

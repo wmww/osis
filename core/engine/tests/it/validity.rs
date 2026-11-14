@@ -2768,11 +2768,9 @@ fn latest_of(lp: &mut LocalPeer, i: usize) -> osis_base::CommitId {
     *lp.peers[i].engine.commit_ids().iter().max_by_key(|x| lp.peers[i].engine.header(x).unwrap().ts).unwrap()
 }
 
-/// Delivers commits `ids` held by peer `from` to peer `i`, syncing `t`, without their parts on
-/// `(t, a)`: `i` holds their headers, their writes there only through snapshots (spec/crdt.md §8:
+/// Delivers commits `ids` held by peer `from` to peer `i` without their parts on aspect `a`: `i` holds their headers, their writes there only through snapshots (spec/crdt.md §8:
 /// a snapshot's frontier counts only on held headers).
-fn deliver_stripped(lp: &mut LocalPeer, from: usize, i: usize, ids: &BTreeSet<osis_base::CommitId>, t: Tid, a: &osis_base::Ak) -> Vec<Ingested> {
-    lp.peers[i].engine.set_syncing(t, true).unwrap();
+fn deliver_stripped(lp: &mut LocalPeer, from: usize, i: usize, ids: &BTreeSet<osis_base::CommitId>, a: &osis_base::Ak) -> Vec<Ingested> {
     let pks: Vec<_> = packages(lp, from).into_iter().filter(|p| ids.contains(&p.id)).collect();
     pks.iter()
         .map(|p| {
@@ -2950,7 +2948,7 @@ fn flipped_snapshot_leaves_frontier_alike_spec_perm_5_2() {
             lp.deliver(i, &pk(id)).unwrap();
             if id == snap {
                 // Bob's headers: S's frontier counts on them while S is valid
-                deliver_stripped(&mut lp, 1, i, &bob, d, &ak("t:tags.0"));
+                deliver_stripped(&mut lp, 1, i, &bob, &ak("t:tags.0"));
             }
         }
         lp.peers[i].reexamine().unwrap();
@@ -2995,14 +2993,13 @@ fn listed_part_setup(commit_form: bool) -> (LocalPeer, Tid, Vec<osis_engine::loc
 }
 
 /// A fresh peer given Alice's packages, with S, R and X (without its tags part) in `order`.
-fn listed_part_peer(lp: &mut LocalPeer, d: Tid, pks: &[osis_engine::local_peer::Package], ids: [osis_base::CommitId; 3], order: &[osis_base::CommitId], seed: u64) -> usize {
+fn listed_part_peer(lp: &mut LocalPeer, pks: &[osis_engine::local_peer::Package], ids: [osis_base::CommitId; 3], order: &[osis_base::CommitId], seed: u64) -> usize {
     let [x, ..] = ids;
     let i = lp.peers.len();
     lp.peers.push(osis_engine::local_peer::Peer::new(seed, lp.peers[0].engine.now()).unwrap());
     for p in pks.iter().filter(|p| !ids.contains(&p.id)) {
         lp.deliver(i, p).unwrap();
     }
-    lp.peers[i].engine.set_syncing(d, true).unwrap();
     for id in order {
         let p = pks.iter().find(|p| p.id == *id).unwrap();
         if *id == x {
@@ -3026,7 +3023,7 @@ fn part_listed_by_invalid_snapshot_applies_spec_commits_4() {
     for commit_form in [false, true] {
         let (mut lp, d, pks, ids) = listed_part_setup(commit_form);
         let [x, snap, rv] = ids;
-        let i = listed_part_peer(&mut lp, d, &pks, ids, &[rv, snap, x], 0x5fd9);
+        let i = listed_part_peer(&mut lp, &pks, ids, &[rv, snap, x], 0x5fd9);
         assert!(lp.peers[i].engine.pending().is_empty(), "commit form {commit_form}: {:?}", lp.peers[i].engine.pending());
         assert_eq!(lp.peers[i].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("bob")), "commit form {commit_form}");
         assert!(!tags(&mut lp, i, d).contains("bob"), "commit form {commit_form}");
@@ -3044,7 +3041,7 @@ fn listed_part_alike_in_any_order_spec_commits_4() {
     let [x, snap, rv] = ids;
     let orders = [[snap, x, rv], [x, snap, rv], [snap, rv, x], [rv, snap, x], [x, rv, snap], [rv, x, snap]];
     for (n, order) in orders.iter().enumerate() {
-        let i = listed_part_peer(&mut lp, d, &pks, ids, order, 0x5fdb + n as u64);
+        let i = listed_part_peer(&mut lp, &pks, ids, order, 0x5fdb + n as u64);
         for restarted in [false, true] {
             if restarted {
                 lp.peers[i].restart(0x5fe9 + n as u64).unwrap();
@@ -3090,7 +3087,7 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
     lp.deliver(i, pk).unwrap();
     assert!(tags(&mut lp, i, d).contains("bob"));
     // Bob's headers (not his parts): S's frontier counts on them
-    let got = deliver_stripped(&mut lp, 1, i, &bob, d, &ak("t:tags.0"));
+    let got = deliver_stripped(&mut lp, 1, i, &bob, &ak("t:tags.0"));
     assert!(got.iter().all(|g| matches!(g, Ingested::Applied(_))), "{got:?}");
     let of_bob = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
     assert_eq!(lp.peers[i].engine.frontier(&of_bob, before).unwrap(), osis_schema::core_types::Frontier::default(), "backdated before the part");
@@ -3143,7 +3140,7 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != rv) {
             lp.deliver(i, &p).unwrap();
         }
-        let got = deliver_stripped(&mut lp, 1, i, &late, d, &tags_ak);
+        let got = deliver_stripped(&mut lp, 1, i, &late, &tags_ak);
         assert!(got.iter().all(|g| matches!(g, Ingested::Applied(..))), "snap first {snap_first}: {got:?}");
         assert!(!tags(&mut lp, i, d).contains("late"), "snap first {snap_first}");
         sync(&mut lp, 1, 0);

@@ -815,8 +815,6 @@ indexes! {
     /// commit too: equivocating commits of one range are all held (spec/commits.md §4).
     pub ranges: JNested<(Tid, Ak, osis_crdt::Source), (u64, CommitId), u64>,
     pub pending: JMap<CommitId, Reason>,
-    /// What the node was asked to sync (`Core::syncs` adds what these groups hold).
-    pub syncing: JSet<Tid>,
     /// Link keys this node keeps reading as, their seed forgotten (`Engine::keep_bearer`,
     /// spec/permissions.md §7, Bearer use).
     pub bearers: JSet<Tid>,
@@ -1035,6 +1033,9 @@ pub struct Core {
     pub(crate) secrets_read: memo::Memo<Tid, Arc<osis_schema::core_types::Secrets>>,
     /// `Engine::head_keys` per (group, step) (`memo`): deriving them is some curve work.
     pub(crate) head_keys: memo::Memo<(Tid, osis_label::StepId), crate::labeling::HeadKeys>,
+    /// `Engine::thing_sync` per thing and `Engine::sync_set` (`memo`): sync reads them every step.
+    pub(crate) thing_sync: memo::Memo<Tid, crate::sync::ThingSync>,
+    pub(crate) sync_set: memo::Memo<(), Arc<crate::sync::SyncSet>>,
     /// `Engine::holders_named` per commit (`memo`): an admin's pass reads it for every inbox
     /// copy, and it decodes role parts.
     pub(crate) holders_named: memo::Memo<CommitId, Arc<BTreeMap<usize, BTreeSet<Tid>>>>,
@@ -1131,7 +1132,9 @@ pub struct Core {
     /// (`retention::leaving::date_due`).
     pub(crate) to_date: Vec<(Tid, Ak, CommitId, crate::retention::leaving::Dating)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
-    /// costs a look.
+    /// costs a look. A name goes with its commit (forgotten, or dropped from pending while not
+    /// applied), so it holds at most one per commit held. Sync reads none of it yet
+    /// (notes/sync-boundary.md, Left for the integration).
     pub(crate) redeliver: BTreeSet<CommitId>,
     /// Aspects whose deltas `Engine::commit_forged` replaces by bytes that do not decode.
     pub(crate) forge_bad: BTreeSet<(Tid, Ak)>,
@@ -1345,6 +1348,8 @@ impl Core {
             states: self.states.clone(),
             secrets_read: self.secrets_read.clone(),
             head_keys: self.head_keys.clone(),
+            thing_sync: self.thing_sync.clone(),
+            sync_set: self.sync_set.clone(),
             holders_named: self.holders_named.clone(),
             departures: self.departures.clone(),
             reseal_scans: self.reseal_scans.clone(),
@@ -1483,12 +1488,6 @@ pub struct Wakes {
 pub(crate) type EpochIntro = JMap<(Tid, osis_base::Role, osis_crypto::Epoch), (Ts, CommitId)>;
 
 impl Core {
-    /// Whether the node syncs `t`: it was asked to, or a `group.0` it holds puts `t` in the
-    /// closure of a group it was asked to (a function of held data, whenever it was learned; spec/sync-set.md §2).
-    pub fn syncs(&self, t: &Tid) -> bool {
-        self.ix.groups.enclosing(t).iter().any(|g| self.ix.syncing.contains(g))
-    }
-
     /// The held durable commits with a delta on `k` (`by_aspect` without memory commits).
     pub fn durable_on<'a>(&'a self, k: &(Tid, Ak)) -> impl Iterator<Item = CommitId> + 'a {
         self.ix.by_aspect.get(k).into_iter().flatten().map(|x| x.1).filter(|c| !self.ix.commits.get(c).is_some_and(|m| m.view.memory))
@@ -1886,6 +1885,8 @@ impl Core {
             secrets_read: _,
             published: _,
             head_keys: _,
+            thing_sync: _,
+            sync_set: _,
             holders_named: _,
             key_access: _,
             key_roles: _,
@@ -2066,6 +2067,8 @@ impl Core {
             states: HashMap::new(),
             secrets_read: memo::Memo::new("secrets: decode"),
             head_keys: memo::Memo::new("head keys: derive"),
+            thing_sync: memo::Memo::new("sync: thing sync"),
+            sync_set: memo::Memo::new("sync: sync set"),
             holders_named: memo::Memo::new("holders named: read"),
             departures: memo::Memo::new("departures"),
             reseal_scans: memo::Memo::new("reseal: scan"),
