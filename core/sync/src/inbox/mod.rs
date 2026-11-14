@@ -372,6 +372,11 @@ impl Inbox {
         self.held.hints().chain(self.links.hints()).cloned().collect()
     }
 
+    /// Whether a deposit to `conn` may land (spec/sync-opens.md §1 Keep or close).
+    pub fn may_deposit(&self, conn: ConnId) -> bool {
+        self.offers.may_land(conn)
+    }
+
     pub fn next_wake(&self) -> Option<WallMs> {
         [self.deliveries.next_wake(), self.offers.next_wake(), self.register.next_wake(), self.held.next_wake()].into_iter().flatten().min()
     }

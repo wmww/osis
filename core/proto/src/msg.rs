@@ -165,7 +165,7 @@ pub struct BehindItem {
     pub sig: Signature,
 }
 
-/// `item := [0, hit, Opt(sig)] | [1, sync_id, [hit+]] | [2, ...] | [3, ...] | [4, hit, signing_pk, sig]`.
+/// `item := [0, hit, Opt(sig)] | [1, sync_id, [hit*]] | [2, ...] | [3, ...] | [4, hit, signing_pk, sig]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OfferItem {
     /// A Hit with the open signature proving its credential, where it needs one.
@@ -697,7 +697,7 @@ fn offer_item(v: Value) -> Result<OfferItem, Error> {
     let mut f = Fields::range(v, 2, 5, "offer item")?;
     let item = match (f.uint()?, f.remaining()) {
         (0, 2) => OfferItem::Hit { hit: f.fixed()?, sig: f.opt()?.map(|v| dec::fixed(v, "open signature").map(Signature)).transpose()? },
-        (1, 2) => OfferItem::ByRole { sync_id: sync_id(&mut f)?, hits: f.list(1, MAX_ITEM_HITS, "hits")?.into_iter().map(|v| dec::fixed(v, "hit")).collect::<Result<_, _>>()? },
+        (1, 2) => OfferItem::ByRole { sync_id: sync_id(&mut f)?, hits: f.list(0, MAX_ITEM_HITS, "hits")?.into_iter().map(|v| dec::fixed(v, "hit")).collect::<Result<_, _>>()? },
         (2, 4) => OfferItem::Deposit(DepositItem { sync_id: sync_id(&mut f)?, blob: f.bytes(MAX_BLOB)?, wrap: f.fixed()?, sig: Signature(f.fixed()?) }),
         (3, 4) => OfferItem::Behind(BehindItem { sync_id: sync_id(&mut f)?, step: f.opt()?.map(|v| dec::fixed(v, "behind step").map(StepId)).transpose()?, key: f.fixed()?, sig: Signature(f.fixed()?) }),
         (4, 3) => OfferItem::Static { hit: f.fixed()?, signing_pk: f.fixed()?, sig: Signature(f.fixed()?) },

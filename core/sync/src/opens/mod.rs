@@ -495,13 +495,19 @@ impl Opens {
     }
 
     /// spec/sync-opens.md §1 (one connection per pair): `conn` comes to take record `id` while
-    /// another connection holds it: the one of better route rank stays, then the smaller order
-    /// hash (`Bind::pair_order`, the same at both ends whatever order the two arrived in); the
-    /// other lets the record go and closes. Whether `conn` stays.
+    /// another connection is of the same pair: it holds that record, or on both the peer proved
+    /// the same node (another node of this account). The one of better route rank stays, then the
+    /// smaller order hash (`Bind::pair_order`, each under its own record's pair key: the same at
+    /// both ends whatever order the two arrived in); the other lets its record go and closes.
+    /// Whether `conn` stays.
     fn one_per_pair(&mut self, ctx: &mut Ctx, conn: ConnId, id: RecordId, moved: &mut Vec<Moved>) -> bool {
-        let Some(r) = self.records.get(&id).filter(|r| r.kept).map(|r| r.r) else { return true };
-        let Some((other, theirs)) = self.conns.iter().find(|(c, k)| **c != conn && k.rec == Some(id)).map(|(c, k)| (*c, k.bind.pair_order(&r))) else { return true };
-        let Some(ours) = self.conns.get(&conn).map(|k| k.bind.pair_order(&r)) else { return false };
+        let Some(r) = self.records.get(&id).map(|r| r.r) else { return true };
+        let Some(c) = self.conns.get(&conn) else { return false };
+        let node = c.proven.node;
+        let kept = self.records.get(&id).is_some_and(|r| r.kept);
+        let same = |k: &Conn| k.rec.is_some_and(|o| (o == id && kept) || (node.is_some() && k.proven.node == node));
+        let Some((other, theirs)) = self.conns.iter().filter(|(o, k)| **o != conn && k.lost_to.is_none() && same(k)).find_map(|(o, k)| Some((*o, k.bind.pair_order(&self.records.get(&k.rec?)?.r)))) else { return true };
+        let ours = c.bind.pair_order(&r);
         let (loser, winner) = if ours < theirs { (other, conn) } else { (conn, other) };
         self.release(loser, moved);
         if let Some(k) = self.conns.get_mut(&loser) {
@@ -509,6 +515,15 @@ impl Opens {
         }
         ctx.wire.close(loser, "one connection per pair");
         loser != conn
+    }
+
+    /// Keep or close (spec/sync-opens.md §1), opens' part: the connection runs its shared set,
+    /// which has no member, and nothing of opens is under way on it (no request of its own out,
+    /// agreement done, no filter generation out or arriving, no test due, no Offer unanswered,
+    /// no member ending). What may still come from the peer is the caller's to rule out.
+    pub fn idle(&self, conn: ConnId) -> bool {
+        let Some(c) = self.conns.get(&conn) else { return false };
+        c.phase == Phase::Running && c.lost_to.is_none() && self.members(conn).is_empty() && c.reqs.is_empty() && c.agree == Agree::Done && c.peer_digest && c.gen_out.is_none() && c.peer_gen.is_none() && !c.test_due && c.offer.is_none() && c.ending.is_empty() && !c.first
     }
 
     /// Settles: each sync ID whose credentials moved advances `changed_at`, re-judges its

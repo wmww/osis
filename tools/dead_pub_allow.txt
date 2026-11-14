@@ -122,7 +122,6 @@ osis-engine::set_sync_records  deferred: sync rebuild (issues/sync-rewrite.md Ph
 osis-engine::settled_slots  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::static_listed  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::store_dump  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::store_writes  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::take_blind  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::take_destroyed_secrets_due  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::take_fallen  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync

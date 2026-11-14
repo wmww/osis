@@ -6,15 +6,19 @@
 //! above, granters, its own nodes holding S), configured addresses, discovered nodes. Reasons
 //! are priorities, never a filter on what opens: they order the dials, nothing else.
 //!
-//! One retry rule: a candidate not connected is due again `REDIAL_MS` after its last dial, or at
-//! once after a change this node knows of that could make a peer share something (opens'
-//! `changed_at` moved, or the candidate's address). Dials go out while fewer than `max_peers`
-//! connections share something or are being dialed. A dialer whose connection lost the pair rule
-//! to another connection (`Opens::lost_to`) does not dial that peer while the winner lasts.
+//! One retry rule: a candidate not connected is due again `REDIAL_MS` after its last dial; one
+//! whose connection closed sharing nothing (keep or close) is **quiet**: due only after a change
+//! this node knows of that could make a peer share something (opens' `changed_at` moved), and
+//! still no sooner than `REDIAL_MS` after its last dial, so a stream of changes dials each peer at
+//! most once per `REDIAL_MS`. A new address, or acting for an actor a connection did not prove,
+//! dials at once. Dials go out while fewer than `max_peers` connections share something or are
+//! being dialed, by priority, then the longest undialed first (no candidate starves the others of
+//! slots). A dialer whose connection lost the pair rule to another connection (`Opens::lost_to`)
+//! does not dial that peer while the winner lasts.
 //!
-//! Work follows change: the due candidates wait in priority order, the waiting ones by time; a
-//! step with nothing due touches no candidate. A change of what the node shares moves every
-//! waiting candidate to due once (the spec's "any change" redials every peer not connected).
+//! Work follows change: the due candidates wait in priority order, the waiting ones by time, the
+//! quiet ones apart; a step with nothing due touches no candidate. A change moves the quiet
+//! candidates only.
 
 use crate::types::ConnId;
 use osis_base::memo::Effects;
@@ -30,9 +34,9 @@ use std::sync::Arc;
 pub const MAX_PEERS: usize = 32;
 
 /// `REDIAL_MS` (spec/sync-opens.md §1, local policy): a candidate not connected is dialed again
-/// this long after its last dial, unless a change makes it due sooner. Minor consequence: at 0 a
-/// failing peer is dialed at every event (a dial per failure, at the transport's pace); at
-/// infinity a peer is dialed again only on a change.
+/// this long after its last dial (a quiet one only after a change, and no sooner). Minor
+/// consequence: at 0 a failing peer is dialed at every event and a quiet one at every change; at
+/// infinity a peer is dialed again only at a new address.
 pub const REDIAL_MS: u64 = 30_000;
 
 /// Discovered candidates remembered (spec/sync-transport.md §4: what a node remembers of its
@@ -79,21 +83,28 @@ struct Cand {
     state: State,
     /// Its last dial.
     last: Option<WallMs>,
-    /// The change epoch at its last dial: a later change makes it due at once.
-    epoch: u64,
-    /// Where it waits while idle: due now (its priority), or at a time.
+    /// Its connection closed sharing nothing: due only after a change.
+    quiet: bool,
+    /// Where it waits while idle: due now (its place), or at a time.
     wait: Option<Wait>,
 }
 
+/// A due candidate's place: priority, then the longest undialed (never dialed first).
+type Place = (u8, u64);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Wait {
-    Due(u8),
+    Due(Place),
     At(WallMs),
 }
 
 impl Cand {
     fn rank(&self) -> u8 {
         self.why.keys().next().map_or(u8::MAX, Why::rank)
+    }
+
+    fn place(&self) -> Place {
+        (self.rank(), self.last.map_or(0, |t| t.0.saturating_add(1)))
     }
 
     fn address(&self) -> Option<&Address> {
@@ -188,7 +199,7 @@ pub struct Work {
 #[derive(Clone, Debug, Default)]
 pub struct Dials {
     cands: BTreeMap<[u8; 32], Cand>,
-    due: BTreeSet<(u8, [u8; 32])>,
+    due: BTreeSet<(Place, [u8; 32])>,
     timer: BTreeSet<(WallMs, [u8; 32])>,
     /// Connections this node dialed, to their candidate.
     conns: BTreeMap<ConnId, [u8; 32]>,
@@ -197,9 +208,8 @@ pub struct Dials {
     held: BTreeMap<ConnId, BTreeSet<[u8; 32]>>,
     /// Connections whose shared set has a member.
     sharing: BTreeSet<ConnId>,
-    /// The change epoch: each change this node knows of that could make a peer share
-    /// something.
-    epoch: u64,
+    /// Quiet candidates: due after the next change.
+    quiet: BTreeSet<[u8; 32]>,
     /// Each sync ID's dial peers as last applied.
     by_sync: BTreeMap<SyncId, Arc<Vec<Address>>>,
     configured: Vec<Address>,
@@ -227,7 +237,7 @@ impl Dials {
             return;
         }
         let key = to.key;
-        let c = self.cands.entry(key).or_insert_with(|| Cand { why: BTreeMap::new(), state: State::Idle, last: None, epoch: 0, wait: None });
+        let c = self.cands.entry(key).or_insert_with(|| Cand { why: BTreeMap::new(), state: State::Idle, last: None, quiet: false, wait: None });
         let before = c.address().cloned();
         if c.why.insert(why, to).is_some() && c.address().cloned() == before {
             return;
@@ -244,6 +254,8 @@ impl Dials {
         if changed && let Some(c) = self.cands.get_mut(&key) {
             // an address it was not dialed at: due at once
             c.last = None;
+            c.quiet = false;
+            self.quiet.remove(&key);
         }
         self.schedule(key, now);
     }
@@ -262,6 +274,7 @@ impl Dials {
         self.work.touched += 1;
         if c.why.is_empty() && c.state == State::Idle {
             self.unwait(key);
+            self.quiet.remove(key);
             self.cands.remove(key);
         } else if c.state == State::Idle {
             // its priority may have moved
@@ -298,17 +311,14 @@ impl Dials {
         }
     }
 
-    /// A change this node knows of that could make a peer share something: every candidate not
-    /// connected is due at once.
-    pub fn changed(&mut self) {
-        self.epoch += 1;
-        for (_, key) in std::mem::take(&mut self.timer) {
-            self.work.touched += 1;
+    /// A change this node knows of that could make a peer share something: every quiet
+    /// candidate is due again, `REDIAL_MS` after its last dial at the soonest.
+    pub fn changed(&mut self, now: WallMs) {
+        for key in std::mem::take(&mut self.quiet) {
             if let Some(c) = self.cands.get_mut(&key) {
-                let r = c.rank();
-                c.wait = Some(Wait::Due(r));
-                self.due.insert((r, key));
+                c.quiet = false;
             }
+            self.schedule(key, now);
         }
     }
 
@@ -318,9 +328,9 @@ impl Dials {
             self.timer.remove(&(at, key));
             self.work.touched += 1;
             if let Some(c) = self.cands.get_mut(&key) {
-                let r = c.rank();
-                c.wait = Some(Wait::Due(r));
-                self.due.insert((r, key));
+                let p = c.place();
+                c.wait = Some(Wait::Due(p));
+                self.due.insert((p, key));
             }
         }
     }
@@ -339,7 +349,6 @@ impl Dials {
             c.wait = None;
             c.state = State::Dialing(conn);
             c.last = Some(now);
-            c.epoch = self.epoch;
             self.conns.insert(conn, key);
             self.in_flight.insert(conn);
             self.work.touched += 1;
@@ -367,6 +376,16 @@ impl Dials {
     /// rule; one whose dial lost its pair to the live connection `lost_to` is held by it. The
     /// candidates it held are idle again.
     pub fn ended(&mut self, conn: ConnId, lost_to: Option<ConnId>, now: WallMs) {
+        self.end(conn, lost_to, false, now);
+    }
+
+    /// A connection this node dialed closed sharing nothing (keep or close, spec/sync-opens.md
+    /// §1): its candidate is quiet, dialed again after a change.
+    pub fn closed_quiet(&mut self, conn: ConnId, now: WallMs) {
+        self.end(conn, None, true, now);
+    }
+
+    fn end(&mut self, conn: ConnId, lost_to: Option<ConnId>, quiet: bool, now: WallMs) {
         self.in_flight.remove(&conn);
         self.sharing.remove(&conn);
         for key in self.held.remove(&conn).unwrap_or_default() {
@@ -378,7 +397,10 @@ impl Dials {
                 c.state = State::Held(w);
                 self.held.entry(w).or_default().insert(key);
             }
-            (None, Some(_)) => self.idle(key, now),
+            (None, Some(c)) => {
+                c.quiet = quiet;
+                self.idle(key, now);
+            }
             _ => {}
         }
     }
@@ -388,6 +410,7 @@ impl Dials {
     pub fn redial_now(&mut self, conn: ConnId) {
         if let Some(c) = self.conns.get(&conn).and_then(|k| self.cands.get_mut(k)) {
             c.last = None;
+            c.quiet = false;
         }
     }
 
@@ -396,24 +419,27 @@ impl Dials {
         c.state = State::Idle;
         if c.why.is_empty() {
             self.cands.remove(&key);
+            self.quiet.remove(&key);
             return;
         }
         self.schedule(key, now);
     }
 
-    /// An idle candidate waits for its next dial: at once if never dialed or a change came since
-    /// its last dial, else `REDIAL_MS` after it.
+    /// An idle candidate waits for its next dial: a quiet one for a change; else at once if never
+    /// dialed, else `REDIAL_MS` after its last dial.
     fn schedule(&mut self, key: [u8; 32], now: WallMs) {
-        let epoch = self.epoch;
         let Some(c) = self.cands.get_mut(&key) else { return };
         if c.state != State::Idle {
             return;
         }
-        let at = match c.last {
-            Some(t) if c.epoch >= epoch => WallMs(t.0.saturating_add(REDIAL_MS)),
-            _ => WallMs(0),
-        };
-        let wait = if at <= now { Wait::Due(c.rank()) } else { Wait::At(at) };
+        if c.quiet {
+            if self.quiet.insert(key) {
+                self.work.touched += 1;
+            }
+            return self.unwait(&key);
+        }
+        let at = c.last.map_or(WallMs(0), |t| WallMs(t.0.saturating_add(REDIAL_MS)));
+        let wait = if at <= now { Wait::Due(c.place()) } else { Wait::At(at) };
         if c.wait == Some(wait) {
             return;
         }
@@ -464,6 +490,11 @@ impl Dials {
     /// Where candidate `key` stands (`None`: not a candidate).
     pub fn state(&self, key: &[u8; 32]) -> Option<State> {
         self.cands.get(key).map(|c| c.state)
+    }
+
+    /// The connections this node dialed, up or in flight.
+    pub fn dialed_conns(&self) -> Vec<ConnId> {
+        self.conns.keys().copied().collect()
     }
 
     /// The candidate a dialed connection is to.

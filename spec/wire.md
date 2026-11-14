@@ -271,7 +271,7 @@ Members   [46, 0, [sync_id*], more]
 
 actor_proof := [creation, key, sig]
 rotation := CommitBlobPlaintext
-item   := [0, hit, Opt(sig)] | [1, sync_id, [hit+]] | [2, sync_id, blob, wrap, sig] | [3, sync_id, Opt(step_id), key, sig] | [4, hit, signing_pk, sig]
+item   := [0, hit, Opt(sig)] | [1, sync_id, [hit*]] | [2, sync_id, blob, wrap, sig] | [3, sync_id, Opt(step_id), key, sig] | [4, hit, signing_pk, sig]
 grant  := [Opt(entry_box), [step+]]
 join   := [sync_id, Opt(cursor)]
 ditem  := [blob_id, [[level, dsig]*], sig]

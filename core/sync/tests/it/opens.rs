@@ -868,3 +868,36 @@ fn the_order_hash_breaks_a_tie_alike_at_both_ends_spec_sync_opens_1() {
     let lost = pairs.iter().find(|(a, _)| a_lost.contains(a)).unwrap();
     assert_eq!(b_lost, [lost.1], "the same connection at both ends");
 }
+
+// spec/sync-opens.md §1 (one connection per pair): two connections on which the peer proved the
+// same node of this account are of one pair though each made a record of its own (crossed first
+// dials): one closes, the same one at both ends, and the shared set runs on the other.
+#[test]
+fn crossed_first_dials_between_own_nodes_keep_one_spec_sync_opens_1() {
+    use osis_sync::types::ConnId;
+    let node = |n: u8, node: u8| Proven { node: Some(tid(node)), ..account(n) };
+    let st = StepKeys::new(1, 0);
+    let rs = read_secret(1, 0);
+    let mut a = knowing(1, 2);
+    let mut b = knowing(2, 1);
+    a.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
+    b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
+    a.settle();
+    b.settle();
+    // a dials b (connection 1) and b dials a (connection 2) before either answers
+    let mut p = Pair::new(a, b, node(1, 11), node(2, 12));
+    let (cb2, ca2) = (ConnId(2), ConnId(ConnId::ACCEPTED | 2));
+    let (bb, ba) = binds([0x5c; 32], [0x6d; 32], [0x4a; 32]);
+    p.b.pipe.binds.insert(cb2, (bb, node(1, 11)));
+    p.a.pipe.binds.insert(ca2, (ba, node(2, 12)));
+    p.a.take(ca2, osis_sync::session::Incoming::Proved);
+    p.b.take(cb2, osis_sync::session::Incoming::Proved);
+    route_all(&mut p);
+    let a_lost: Vec<_> = p.a.pipe.closed.iter().map(|(c, _)| *c).collect();
+    let b_lost: Vec<_> = p.b.pipe.closed.iter().map(|(c, _)| *c).collect();
+    let pairs = [(p.ca, p.cb), (ca2, cb2)];
+    assert_eq!(a_lost.len(), 1, "one closed: {a_lost:?}");
+    let (lost, kept) = if a_lost[0] == pairs[0].0 { (pairs[0], pairs[1]) } else { (pairs[1], pairs[0]) };
+    assert_eq!(b_lost, [lost.1], "the same connection at both ends");
+    assert!(p.a.open(kept.0, &S) && p.b.open(kept.1, &S));
+}

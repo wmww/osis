@@ -164,8 +164,12 @@ impl Holds for Table {
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor> {
         Some(pos.to_be_bytes().to_vec())
     }
-    fn grant(&mut self, _s: &SyncId, _entry: &[u8; 32]) -> Option<Grant> {
-        self.gives_grant.then(|| Grant { entry_box: None, steps: Vec::new() })
+    fn grant(&mut self, s: &SyncId, _entry: &[u8; 32]) -> Option<Grant> {
+        // a path of one step (its bytes are never verified here: `take_grant` is the table's)
+        let k = link_key(1).verifying_key();
+        let keys = osis_label::StepKeys { sync: k, write: k, delete: k, deposit: k };
+        let step = osis_label::Step { label: *s, prev: None, keys, step_key: [0; 32], claims_hash: [0; 32], sig: osis_crypto::Signature([0; 64]) };
+        self.gives_grant.then(|| Grant { entry_box: None, steps: vec![step] })
     }
     fn take_grant(&mut self, s: &SyncId, _entry: &[u8; 32], _grant: &Grant) -> Option<[u8; 32]> {
         self.grants.get(s).copied()
@@ -275,8 +279,10 @@ impl Side {
     }
 }
 
-/// How a received message reaches opens, by its flow (spec/wire.md §11.1).
+/// How a received message reaches opens, by its flow (spec/wire.md §11.1), through its wire
+/// bytes: one the wire refuses (a shape the spec forbids) fails the test.
 pub fn incoming(m: Msg) -> Incoming {
+    let m = Msg::decode(&m.encode()).unwrap_or_else(|e| panic!("{m:?} does not decode: {e:?}"));
     match m.flow() {
         Flow::Request => Incoming::Request(m.id(), m),
         Flow::Reply => Incoming::Reply(osis_sync::session::To::Opens, m.id(), m),

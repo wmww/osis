@@ -9,11 +9,12 @@
 //!
 //! State: connections and their sessions; dial candidates, redial times and the pair rule's held
 //! dials (`dials`); whether a store failure's stretch is under way. A step that fails closes
-//! every connection and restarts the modules from the store (once per stretch, until a commit of
-//! the store lands): what they keep in memory goes, the store's memory part stays.
+//! every connection and restarts the modules from the store (once per stretch, until a durable
+//! commit of either store lands): what they keep in memory goes, the store's memory part stays.
+//! A connection this node dialed closes once it shares nothing and nothing is under way on it
+//! (`keep_or_close`).
 //!
-//! Not built: the link sharer as a candidate (inbox's redeem), keep-or-close (a connection with
-//! nothing shared, pending or depositable stays up).
+//! Not built: grant hints and link sharers as candidates (`Inbox::dial_hints`, not read yet).
 
 pub mod dials;
 #[cfg(feature = "driver")]
@@ -103,7 +104,8 @@ pub const RETRY_MAX_MS: u64 = 60_000;
 /// A store failure's stretch.
 #[derive(Clone, Copy, Debug)]
 struct Stretch {
-    /// The store's commits when the modules restarted: a commit since ends the stretch.
+    /// The durable commits (`Node::committed`) when the modules restarted: one since ends the
+    /// stretch.
     committed: u64,
     /// No wake before this; and the wait after the next failure.
     retry_at: WallMs,
@@ -152,12 +154,16 @@ impl Node {
         self.now = self.now.max(self.engine.now());
         self.driver.sessions.set_now(self.now);
         self.rounds = 0;
-        if let Err(e) = self.step(input, &mut out).and_then(|()| self.settle(&mut out)) {
-            self.failed(e, &mut out);
-        } else if self.driver.failing.is_some_and(|f| self.store.committed() > f.committed) {
+        let r = self.step(input, &mut out).and_then(|()| self.settle(&mut out));
+        // a durable commit since the restart ends the stretch, whatever this step did
+        if self.driver.failing.is_some_and(|f| self.committed() > f.committed) {
             self.driver.failing = None;
         }
+        if let Err(e) = r {
+            self.failed(e, &mut out);
+        }
         self.dial(&mut out);
+        self.keep_or_close(&mut out);
         for c in self.driver.sessions.closing() {
             out.push(Out::Close(c));
             self.closed(c, &mut out);
@@ -195,6 +201,12 @@ impl Node {
     #[doc(hidden)]
     pub fn restarts(&self) -> u64 {
         self.driver.restarts
+    }
+
+    /// Tests only: connection `c`'s session.
+    #[doc(hidden)]
+    pub fn session(&self, c: ConnId) -> Option<&Session> {
+        self.driver.sessions.get(c)
     }
 
     /// Status as of the last step.
@@ -272,12 +284,41 @@ impl Node {
         let changed = self.opens.changed_end();
         if changed != d.changed {
             d.changed = changed;
-            d.dials.changed();
+            d.dials.changed(now);
         }
         d.dials.tick(now);
         for (conn, to) in d.dials.dial(now, self.cfg.max_peers) {
             d.sessions.dialing(conn);
             out.push(Out::Dial(conn, to));
+        }
+    }
+
+    /// Durable commits of the node's two stores (the sync store and the engine's) since they
+    /// opened: any one landing ends a store failure's stretch.
+    fn committed(&self) -> u64 {
+        self.store.committed().saturating_add(self.engine.store_writes().committed)
+    }
+
+    /// Keep or close (spec/sync-opens.md §1), for the connections this node dialed (it never
+    /// closes one it serves for sharing nothing, spec/sync-transport.md §5; those it dialed are
+    /// at most `max_peers` sharing ones plus those about to close, so each step reads them all):
+    /// one whose shared set has no member, with nothing of opens under way, no deposit to it that
+    /// may land, and a quiet peer (`Session::quiet`: whatever the peer sent in answer to this
+    /// side has arrived) closes; its candidate is dialed again after a change.
+    fn keep_or_close(&mut self, out: &mut Vec<Out>) {
+        let mut close = Vec::new();
+        for c in self.driver.dials.dialed_conns() {
+            if !self.driver.sessions.get(c).is_some_and(|s| s.dialer && s.closing().is_none()) || !self.opens.idle(c) || self.inbox.may_deposit(c) {
+                continue;
+            }
+            if self.driver.sessions.get_mut(c).is_some_and(Session::quiet) {
+                close.push(c);
+            }
+        }
+        for c in close {
+            self.driver.dials.closed_quiet(c, self.now);
+            out.push(Out::Close(c));
+            self.closed(c, out);
         }
     }
 
@@ -405,7 +446,7 @@ impl Node {
             f.retry_at = WallMs(self.now.0.saturating_add(f.wait));
             return;
         }
-        self.driver.failing = Some(Stretch { committed: self.store.committed(), retry_at: WallMs(self.now.0.saturating_add(RETRY_FIRST_MS)), wait: RETRY_FIRST_MS });
+        self.driver.failing = Some(Stretch { committed: self.committed(), retry_at: WallMs(self.now.0.saturating_add(RETRY_FIRST_MS)), wait: RETRY_FIRST_MS });
         self.driver.restarts += 1;
         self.opens = Opens::default();
         self.read = Read::default();

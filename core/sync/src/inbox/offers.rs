@@ -90,6 +90,13 @@ impl std::fmt::Debug for Offers {
 }
 
 impl Offers {
+    /// Whether a deposit to `conn` may land (spec/sync-opens.md §1 Keep or close): one is out,
+    /// ready, or refused for now and backed off. One refused (14) waits for the peer's next filter,
+    /// which a later connection sends.
+    pub(super) fn may_land(&self, conn: ConnId) -> bool {
+        self.conns.get(&conn).is_some_and(|c| c.out.is_some() || !c.ready.is_empty() || !c.backoff.is_empty())
+    }
+
     pub(super) fn add(&mut self, s: SyncId, b: BlobId, target: Target) {
         let k = (s, b);
         match self.items.get(&k) {

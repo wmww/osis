@@ -70,7 +70,7 @@ impl Disks {
 
 /// One world node.
 pub struct WNode {
-    node: Node,
+    pub node: Node,
     disks: Disks,
     /// The node's store, the handle its node holds (tests reach its rows directly).
     pub store: Store,
@@ -134,6 +134,8 @@ pub struct Net {
     pub hang: BTreeSet<usize>,
     /// Every dial made: (dialer, its conn, target key).
     pub dials: Vec<(usize, ConnId, [u8; 32])>,
+    /// Every dial that came up: (dialer, target node).
+    pub ups: Vec<(usize, usize)>,
     rng_seed: u64,
     ephemerals: u64,
 }
@@ -175,6 +177,7 @@ impl Net {
         });
         let accepted = ConnId(ConnId::ACCEPTED | n.unwrap_or(0));
         let eph = self.ephemeral();
+        self.ups.push((from, target));
         self.links.insert((from, conn), (target, accepted));
         self.links.insert((target, accepted), (from, conn));
         self.queue.push_back((from, Input::Up { conn, peer: NodeKey(to.key), rank, dialed: true, listener: NodeKey(to.key) }));
@@ -413,6 +416,15 @@ impl World {
     /// Tests of the harness only: carries out `out` as node `i`'s outputs.
     pub fn apply_as(&mut self, i: usize, out: Vec<Out>) {
         apply(out, &mut NodeLinks { net: &mut self.net, node: i });
+    }
+
+    /// Delivers the next input in flight; whether there was one.
+    pub fn step(&mut self) -> bool {
+        let Some((i, input)) = self.net.queue.pop_front() else { return false };
+        if self.net.online.get(i) == Some(&true) {
+            self.deliver(i, input);
+        }
+        true
     }
 
     /// Delivers what is in flight, in order.

@@ -219,6 +219,12 @@ pub struct Session {
     ping: Option<(RequestId, WallMs)>,
     pings: u32,
     offset: Option<i64>,
+    /// Frames received after Hello.
+    frames_in: u64,
+    /// Keep or close: the quiet probe out (its Ping, and `frames_in` when it went), and whether
+    /// the last one came back with nothing before it.
+    probe: Option<(RequestId, u64)>,
+    quiet: Option<u64>,
 }
 
 impl Session {
@@ -263,6 +269,9 @@ impl Session {
             ping: None,
             pings: 0,
             offset: None,
+            frames_in: 0,
+            probe: None,
+            quiet: None,
         };
         s.write(Hello::new(cx.now.0, challenge).encode());
         s
@@ -287,6 +296,7 @@ impl Session {
             if self.binding.is_none() {
                 self.hello(&body, cx)?;
             } else {
+                self.frames_in += 1;
                 match self.frame(body, cx, &mut ins)? {
                     Moves::Own => own = true,
                     Moves::Nothing => {}
@@ -677,6 +687,12 @@ impl Session {
                 ins.push(Incoming::Proved);
             }
             (32, _) => return Err(Close("proofs refused")),
+            (2, Msg::Pong { id, .. }) if self.probe.is_some_and(|(p, _)| p == id) => {
+                // the peer answered the probe after everything it sent before it: quiet when
+                // nothing else came between
+                let at = self.probe.take().map_or(0, |(_, n)| n);
+                self.quiet = (self.frames_in == at + 1).then_some(self.frames_in);
+            }
             (2, Msg::Pong { wall_ms, .. }) => {
                 if let Some((_, sent)) = self.ping.take() {
                     self.pings += 1;
@@ -687,6 +703,27 @@ impl Session {
             _ => self.ping = None,
         }
         Ok(())
+    }
+
+    /// Keep or close (spec/sync-opens.md §1): this side has nothing under way on the connection.
+    /// Whether the peer is quiet too: a Ping sent while this side had nothing under way came back
+    /// with no other frame before it, so whatever the peer sent in answer to what this side sent
+    /// (a test's Offer after a filter, a Lost) has arrived and nothing came since. Else a probe
+    /// goes (one at a time) and this is asked again when its Pong comes.
+    pub fn quiet(&mut self) -> bool {
+        let pings = [self.probe.map(|(p, _)| p), self.ping.map(|(p, _)| p)];
+        if !self.unanswered.is_empty() || !self.waiting.is_empty() || self.reqs.keys().any(|id| !pings.contains(&Some(*id))) {
+            self.quiet = None;
+            return false;
+        }
+        if self.quiet == Some(self.frames_in) {
+            return true;
+        }
+        if self.probe.is_none() {
+            let id = self.send_request(None, Msg::Ping { id: 0, wall_ms: self.now.0 });
+            self.probe = Some((id, self.frames_in));
+        }
+        false
     }
 
     /// The dialer's next Ping, one at a time, `PINGS` in all.

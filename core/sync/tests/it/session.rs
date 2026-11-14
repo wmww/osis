@@ -648,3 +648,23 @@ fn silent_peers_close_at_the_tick_spec_sync_streams_1() {
         assert!(closed(&w), "deaf {deaf}: closed at the bound");
     }
 }
+
+// spec/sync-opens.md §1 (keep or close): the dialer's peer is quiet once a Ping sent while the
+// dialer had nothing under way comes back with no other frame before it: whatever the peer sent
+// before reading it (a test's Offer after a filter) has arrived. A frame between makes it ask again.
+#[test]
+fn a_quiet_peer_answers_the_probe_first_spec_sync_opens_1() {
+    let mut p = quiet_pair();
+    assert!(!p.ds.quiet(), "not known yet: a probe goes");
+    assert!(!p.ds.quiet(), "one probe at a time");
+    let probes = frames_after_hello(&p.ds.take_bytes());
+    assert!(matches!(probes.as_slice(), [Msg::Ping { .. }]), "{probes:?}");
+    // the peer pushed something before it read the probe
+    p.ls.push_now(Msg::Digest { digest: [1; 32] });
+    let pong = p.ls.receive(&frame(&probes[0]), &mut p.l.cx()).expect("kept");
+    assert!(pong.is_empty());
+    p.flow();
+    assert!(!p.ds.quiet(), "a frame came before the Pong: asked again");
+    p.flow();
+    assert!(p.ds.quiet(), "nothing before the Pong");
+}

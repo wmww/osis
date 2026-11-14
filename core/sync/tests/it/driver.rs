@@ -4,7 +4,7 @@
 //! of notes/sync-rewrite-inputs.md). World tests run the product's node; the dial rules alone
 //! run on `Dials` with a table of dial peers.
 
-use crate::harness::{World, two_nodes};
+use crate::harness::{Seen, World, two_nodes};
 use osis_base::{BlobId, SyncId, WallMs};
 use osis_label::{Address, Class, Prefix};
 use osis_store::Fault;
@@ -26,6 +26,11 @@ fn connected(w: &World, i: usize, j: usize) -> bool {
     w.links_of(i).iter().any(|(_, t)| *t == j)
 }
 
+/// Dials node `i` made to node `j` that came up.
+fn ups_to(w: &World, i: usize, j: usize) -> usize {
+    w.net.ups.iter().filter(|u| **u == (i, j)).count()
+}
+
 /// `w` with node 0 configured to dial node 1.
 fn configured(mut w: World) -> World {
     let a = w.address(1);
@@ -33,15 +38,21 @@ fn configured(mut w: World) -> World {
     w
 }
 
-// spec/sync-opens.md §1 (where to dial): a configured address is dialed, and the connection comes
-// up at both ends.
+// spec/sync-opens.md §1 (where to dial; keep or close): a configured address is dialed and comes
+// up; the connection, sharing nothing, with nothing under way and its peer quiet, closes, by its
+// dialer (spec/sync-transport.md §5: the listener closes none for sharing nothing); the peer is
+// not dialed again by time alone.
 #[test]
-fn a_configured_address_is_dialed_spec_sync_opens_1() {
+fn a_configured_address_is_dialed_and_closes_sharing_nothing_spec_sync_opens_1() {
     let mut w = configured(two_nodes());
+    w.trace = true;
     w.run();
-    assert_eq!(dials_to(&w, 0, 1), 1);
-    assert!(connected(&w, 0, 1) && connected(&w, 1, 0));
-    assert!(matches!(w.dials(0).state(&w.node(1).key.0), Some(State::Up(_))));
+    assert_eq!((dials_to(&w, 0, 1), ups_to(&w, 0, 1)), (1, 1));
+    assert!(!connected(&w, 0, 1) && !connected(&w, 1, 0), "closed sharing nothing");
+    assert!(w.seen.iter().any(|s| matches!(s, Seen::Closed { node: 1, .. })) && !w.seen.iter().any(|s| matches!(s, Seen::Closed { node: 0, .. })), "the dialer closed it");
+    assert_eq!(w.dials(0).state(&w.node(1).key.0), Some(State::Idle));
+    w.advance(10 * REDIAL_MS);
+    assert_eq!(dials_to(&w, 0, 1), 1, "quiet: dialed again only after a change");
 }
 
 // spec/sync-opens.md §1 (own key): a node never dials its own key, whatever lists it.
@@ -62,7 +73,7 @@ fn a_discovered_node_is_dialed_spec_sync_opens_1() {
     let mut w = two_nodes();
     w.discover(0, 1);
     w.run();
-    assert!(connected(&w, 0, 1));
+    assert_eq!(ups_to(&w, 0, 1), 1);
 }
 
 // spec/sync-opens.md §1 (dial timeout), scenario dial-bound: a dial not up `DIAL_TIMEOUT_MS`
@@ -83,7 +94,7 @@ fn a_silent_dial_times_out_and_redials_spec_sync_opens_1() {
     w.advance(DIAL_TIMEOUT_MS);
     assert_eq!(dials_to(&w, 0, 1), 3);
     w.run();
-    assert!(connected(&w, 0, 1));
+    assert_eq!(ups_to(&w, 0, 1), 1);
 }
 
 // spec/sync-opens.md §1 (redial): a failed dial is dialed again `REDIAL_MS` after it, not sooner
@@ -107,7 +118,7 @@ fn a_failed_dial_waits_one_pause_spec_sync_opens_1() {
     w.power_on(1);
     w.advance(REDIAL_MS);
     w.run();
-    assert!(connected(&w, 0, 1));
+    assert_eq!(ups_to(&w, 0, 1), 1);
 }
 
 // spec/sync-opens.md §1 (whom to dial): within `max_peers`, which counts connections sharing
@@ -134,12 +145,15 @@ fn max_peers_bounds_dials_in_flight_spec_sync_opens_1() {
 #[test]
 fn acting_for_a_new_actor_redials_spec_sync_opens_1() {
     let mut w = configured(two_nodes());
-    w.run();
-    let before = dials_to(&w, 0, 1);
+    // the dial up to node 0's proofs done, the connection live
+    let proved = |w: &World| w.links_of(0).iter().any(|(c, _)| w.node(0).node.session(*c).is_some_and(|s| !s.proved().is_empty()));
+    while !proved(&w) {
+        assert!(w.step(), "the dial came up and proved");
+    }
     w.write(0, |e| e.hold_key_actor(osis_crypto::Secret32::from_bytes([0x33; 32])).unwrap());
+    assert_eq!(dials_to(&w, 0, 1), 2, "closed and dialed again at once");
     w.run();
-    assert_eq!(dials_to(&w, 0, 1), before + 1, "closed and dialed again at once");
-    assert!(connected(&w, 0, 1));
+    assert_eq!(ups_to(&w, 0, 1), 2);
 }
 
 /// A blob of `class` expiring at `expiry`.
@@ -183,7 +197,6 @@ fn a_store_failure_restarts_in_place_once_per_stretch() {
     assert!(st.entry(&SID, &e).unwrap().is_some(), "the memory class stays");
     assert!(st.entry(&SID, &d).unwrap().is_none(), "the retried write landed");
     w.run();
-    assert!(connected(&w, 0, 1), "dialed again");
     // a stretch: every write fails until writes work again; one restart
     faults.forbid_writes(true);
     w.advance(late - w.now().0);
@@ -194,7 +207,6 @@ fn a_store_failure_restarts_in_place_once_per_stretch() {
     w.advance(REDIAL_MS);
     w.run();
     assert!(st.entry(&SID, &d2).unwrap().is_none() && st.entry(&SID, &e).unwrap().is_some());
-    assert!(connected(&w, 0, 1));
     let _ = &mut st;
 }
 
@@ -268,19 +280,57 @@ fn max_peers_counts_sharing_connections_spec_sync_opens_1() {
     assert_eq!(d.dial(T0, 1).len(), 1, "sharing nothing: the slot is free");
 }
 
-// spec/sync-opens.md §1 (redial): a candidate not connected is due `REDIAL_MS` after its last
-// dial, or at once after a change that could make a peer share something.
+// spec/sync-opens.md §1 (redial; keep or close): a candidate not connected is due `REDIAL_MS`
+// after its last dial; one whose connection closed sharing nothing only after a change, and
+// still no sooner than `REDIAL_MS` after its last dial, so changes on every step dial it at most
+// once per `REDIAL_MS`.
 #[test]
-fn a_change_makes_every_waiting_candidate_due_spec_sync_opens_1() {
+fn a_quiet_candidate_waits_for_a_change_spec_sync_opens_1() {
+    let at = |ms: u64| WallMs(T0.0 + ms);
     let mut d = Dials::default();
-    d.configure(&[addr(1)], T0);
-    let (c, _) = d.dial(T0, MAX_PEERS)[0].clone();
-    d.ended(c, None, WallMs(T0.0 + 10));
-    d.tick(WallMs(T0.0 + 10));
-    assert!(d.dial(WallMs(T0.0 + 10), MAX_PEERS).is_empty());
-    assert_eq!(d.next_wake(), Some(WallMs(T0.0 + REDIAL_MS)));
-    d.changed();
-    assert_eq!(d.dial(WallMs(T0.0 + 20), MAX_PEERS).len(), 1, "a change: at once");
+    d.configure(&[addr(1), addr(2)], T0);
+    let cs: Vec<ConnId> = d.dial(T0, MAX_PEERS).into_iter().map(|(c, _)| c).collect();
+    d.ended(cs[0], None, at(10));
+    d.up(cs[1]);
+    d.closed_quiet(cs[1], at(10));
+    d.tick(at(REDIAL_MS));
+    let due: Vec<[u8; 32]> = d.dial(at(REDIAL_MS), MAX_PEERS).into_iter().map(|(_, a)| a.key).collect();
+    assert_eq!(due, [addr(1).key], "the failed one by time; the quiet one waits");
+    d.tick(at(10 * REDIAL_MS));
+    assert!(d.dial(at(10 * REDIAL_MS), MAX_PEERS).is_empty() && d.next_wake().is_none());
+    // a change: dialed at once (its last dial is long past)
+    d.changed(at(10 * REDIAL_MS));
+    let (c, a) = d.dial(at(10 * REDIAL_MS), MAX_PEERS).remove(0);
+    assert_eq!(a.key, addr(2).key);
+    d.up(c);
+    d.closed_quiet(c, at(10 * REDIAL_MS + 5));
+    // a change on every step: no sooner than `REDIAL_MS` after the last dial
+    for ms in (10 * REDIAL_MS + 6..11 * REDIAL_MS).step_by(1000) {
+        d.changed(at(ms));
+        d.tick(at(ms));
+        assert!(d.dial(at(ms), MAX_PEERS).is_empty(), "at {ms}");
+    }
+    d.tick(at(11 * REDIAL_MS));
+    assert_eq!(d.dial(at(11 * REDIAL_MS), MAX_PEERS).len(), 1);
+}
+
+// spec/sync-opens.md §1 (whom to dial, redial): due dials go by priority, then the longest
+// undialed first: silent candidates that time out together never keep the others from a slot.
+#[test]
+fn due_dials_take_turns_spec_sync_opens_1() {
+    let mut d = Dials::default();
+    d.configure(&[addr(1), addr(2), addr(3)], T0);
+    let mut seen = Vec::new();
+    let mut now = T0;
+    for _ in 0..3 {
+        let (c, a) = d.dial(now, 1).remove(0);
+        seen.push(a.key);
+        now = WallMs(now.0 + DIAL_TIMEOUT_MS);
+        d.ended(c, None, now);
+        d.tick(now);
+    }
+    seen.sort();
+    assert_eq!(seen, [addr(1).key, addr(2).key, addr(3).key], "each in turn");
 }
 
 // spec/sync-opens.md §1 (one connection per pair): a dialer whose connection closed losing its
@@ -294,7 +344,7 @@ fn a_lost_dial_waits_for_the_winner_spec_sync_opens_1() {
     let winner = ConnId(ConnId::ACCEPTED | 5);
     d.ended(c, Some(winner), T0);
     assert_eq!(d.state(&addr(1).key), Some(State::Held(winner)));
-    d.changed();
+    d.changed(WallMs(T0.0 + 20));
     d.tick(WallMs(T0.0 + 10 * REDIAL_MS));
     assert!(d.dial(WallMs(T0.0 + 10 * REDIAL_MS), MAX_PEERS).is_empty());
     d.ended(winner, None, WallMs(T0.0 + 10 * REDIAL_MS));
