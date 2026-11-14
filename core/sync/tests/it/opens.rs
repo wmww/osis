@@ -1191,3 +1191,53 @@ fn a_crash_before_a_step_writes_its_records_spec_sync_opens_3() {
         assert!(k > 1, "steps crashed: {k}");
     }
 }
+
+/// Behind items a reader sends per arrival of an unchanged filter from Adv, an account J judges a
+/// sync holder of `n` sync IDs it does not keep (each Behind answered 13).
+fn behinds_per_arrival(n: u8) -> usize {
+    let mut r = knowing(1, 9);
+    for i in 0..n {
+        let s = SyncId([i; 16]);
+        r.table.set(s, Some(reader(&s, &read_secret(i, 0), &StepKeys::new(i, 0), &[], &[], &[])));
+        r.table.judge_as(s, tid(9), J::SyncHolder);
+    }
+    r.settle();
+    let (mut adv, sent) = Adv::dials(&mut r, account(9), [2; 32]);
+    for m in of_kind(&sent, 36) {
+        let id = m.id();
+        adv.send(&mut r, Msg::Shared { id, items: vec![osis_proto::SharedItem::code(Code::OK)] });
+    }
+    let behinds = |sent: &[(osis_sync::types::ConnId, Msg)]| -> Vec<(osis_proto::Id, usize)> {
+        of_kind(sent, 37).iter().map(|m| match m {
+            Msg::Offer { id, items } => (*id, items.iter().filter(|i| matches!(i, OfferItem::Behind(_))).count()),
+            _ => unreachable!(),
+        }).collect()
+    };
+    // Adv's filter arrives (generation 1 whole, then empty additions); r's Offers are each
+    // answered 13 (Adv keeps none of them).
+    let mut per = Vec::new();
+    for g in 1..=3u64 {
+        let id = adv.id();
+        let base = (g > 1).then_some(g - 1);
+        adv.send(&mut r, Msg::Beacons { id, generation: g, base, f: 8, lo: 0, hi: 256, gcs: Vec::new(), more: false });
+        let mut count = 0;
+        let mut offers = behinds(&r.sent());
+        while let Some((oid, k)) = offers.pop() {
+            count += k;
+            let items = vec![osis_proto::SharedItem::code(Code::UNKNOWN_SYNC_ID); osis_proto::limits::MAX_OFFER_ITEMS];
+            adv.send(&mut r, Msg::Shared { id: oid, items });
+            offers.extend(behinds(&r.sent()));
+        }
+        per.push(count);
+    }
+    per[2]
+}
+
+// spec/sync-ids.md §6 (walk: tested again at each arrival of the source's filter): an arrival of
+// a filter that changed nothing costs the same at n and 10n walks. Fails: each arrival asks Behind
+// again on every walk (issues/sync-walk-cost.md).
+#[test]
+#[ignore = "fails: issues/sync-walk-cost.md"]
+fn an_unchanged_filter_asks_behind_on_nothing_spec_sync_ids_6() {
+    assert_eq!(behinds_per_arrival(2), behinds_per_arrival(20));
+}

@@ -27,6 +27,12 @@
    matching anything an honest tester tests (a false positive), which the tester Hits. A tester
    ends with Lost only an acceptance that carries a valid tag (LostTag): one keyed by the Hit's
    match, which Adv can make only for a value it holds.
+   A store granted later keeps S with no step until a reader registers its genesis there (a
+   Behind answered 13, then Register): with no head it shows and tests nothing. A reader tests
+   when due: at a connection, at each event it learns, and (Walked) at each change of the
+   filter of a peer it walks: a test that finds the peer a store J judges a holder and nothing
+   of it shown marks S walked there; it registers when the store syncs S. The walk is kept per
+   connection here (the product keeps it in the peer's record).
    A rule of the design is a flag. *)
 EXTENDS Naturals, FiniteSets, Sequences, TLC
 
@@ -50,7 +56,8 @@ CONSTANTS
     DialProves,     \* TRUE: the dialer opens toward the key it dialed (who dialed proves nothing)
     AdvPublic,      \* Adv holds S's public values (each step's sync key, every static entry)
     AdvJunk,        \* Adv's filter may show junk matching any value a tester tests
-    LostTag         \* a Lost answers only an acceptance with a valid tag (FALSE: any acceptance)
+    LostTag,        \* a Lost answers only an acceptance with a valid tag (FALSE: any acceptance)
+    Walked          \* a reader tests a walk again at each change of the store's filter
 
 Honest == Nodes \ {Adv}
 NE == Len(Events)
@@ -85,15 +92,18 @@ Tok(key, sd, ch, lk) == [k |-> key, sd |-> sd, ch |-> ch, lk |-> lk]
 NoTok == Tok(Key("none", 0, "-"), 0, 0, "-")
 
 VARIABLES conns, opens, known, seen, next, happened, know,
-    leak        \* a Lost named S to Adv while Adv held no value of S
-vars == <<conns, opens, known, seen, next, happened, know, leak>>
+    leak,       \* a Lost named S to Adv while Adv held no value of S
+    head,       \* head[n]: a store holds a step of S (its genesis registered there)
+    due,        \* <<i, r>>: reader r's test on connection i is due
+    walked      \* <<i, r>>: reader r walks S at its peer on connection i
+vars == <<conns, opens, known, seen, next, happened, know, leak, head, due, walked>>
 
 KnowOf(n) == IF n = Adv THEN happened ELSE know[n]
 \* The steps whose seed n holds (and so their sync key and proof).
 Seeds(n) ==
     IF n = Adv THEN {St[j] : j \in {j \in 0..happened : Adv \in Account(j)}}
     ELSE IF Role[n] = "reader" THEN {St[j] : j \in {j \in 0..know[n] : n \in Mem[j]}}
-    ELSE IF Role[n] = "store" /\ n \in Mem[know[n]] THEN {St[know[n]]}
+    ELSE IF Role[n] = "store" /\ n \in Mem[know[n]] /\ head[n] THEN {St[know[n]]}
     ELSE {}
 HoldsKeys(n) ==
     {SyncK(s) : s \in Seeds(n)} \cup {ProofK(s) : s \in Seeds(n)}
@@ -103,6 +113,7 @@ Syncs(n) == n \in Mem[know[n]]
 \* What honest n's filter shows when it knows k events; what a stored copy of it holds (nothing
 \* is removed from a stored filter); what Adv shows.
 ShowsAt(n, k) ==
+    IF Role[n] = "store" /\ ~head[n] THEN {} ELSE
     (IF Role[n] = "store" THEN {SyncK(St[k]), ProofK(St[k])} ELSE IF Role[n] = "reader" THEN {ProofK(St[k])} ELSE {})
     \cup (IF Role[n] = "link" THEN {} ELSE {LinkK(a) : a \in Listed(k)})
 ShowsEver(n) == UNION {ShowsAt(n, j) : j \in 0..know[n]}
@@ -177,6 +188,9 @@ Init ==
     /\ happened = 0
     /\ know = [n \in Honest |-> 0]
     /\ leak = FALSE
+    /\ head = [n \in Honest |-> Role[n] # "store" \/ n \in InitMembers]
+    /\ due = {}
+    /\ walked = {}
 
 \* A connection: honest sides draw a fresh challenge; Adv any it has seen, the other side's of
 \* this connection, or a fresh one.
@@ -188,12 +202,16 @@ Connect(d, l) ==
         /\ conns' = Append(conns, [d |-> d, l |-> l, cd |-> cd, cl |-> cl])
         /\ seen' = IF Adv \in {d, l} THEN seen \cup {cd, cl} ELSE seen
     /\ next' = next + 2
-    /\ UNCHANGED <<opens, known, happened, know, leak>>
+    /\ due' = due \cup {<<Len(conns) + 1, n>> : n \in {d, l} \cap Honest}
+    /\ UNCHANGED <<opens, known, happened, know, leak, head, walked>>
 
 Happen ==
     /\ happened < NE
     /\ happened' = happened + 1
-    /\ UNCHANGED <<conns, opens, known, seen, next, know, leak>>
+    /\ UNCHANGED <<conns, opens, known, seen, next, know, leak, head, due, walked>>
+
+\* n's filter changed (an event learned, a step registered): every walk at n is tested again.
+Arrive(n, w) == {x \in w : Peer(conns[x[1]], x[2]) = n}
 
 \* Honest n learns the next event and re-judges every open it holds on what it holds now; an open
 \* whose basis it no longer accepts ends (with its Lost, both sides). A node that stops syncing S
@@ -210,7 +228,8 @@ Learn(n) ==
     /\ know[n] < happened
     /\ know' = [know EXCEPT ![n] = k]
     /\ opens' = {o \in opens : o[1] \notin Drop}
-    /\ UNCHANGED <<conns, known, seen, next, happened, leak>>
+    /\ due' = due \cup {<<i, n>> : i \in {i \in 1..Len(conns) : n \in {conns[i].d, conns[i].l}}} \cup Arrive(n, walked)
+    /\ UNCHANGED <<conns, known, seen, next, happened, leak, head, walked>>
 
 \* Honest t Hits v in its peer's filter with a token made over its own side, the peer's challenge
 \* and the listener's key. An honest peer opens if it accepts v and answers with its proof: the tag
@@ -236,7 +255,7 @@ HonestHit(i, t, v) ==
                /\ Syncs(p) /\ Accept(p, know[p], v, t)
                /\ Finish(i, t, p, v, a, IF IsOpen(i, p) THEN opens ELSE opens \cup {<<i, p, v>>})
                /\ UNCHANGED known
-    /\ UNCHANGED <<conns, seen, next, happened, know>>
+    /\ UNCHANGED <<conns, seen, next, happened, know, head, due, walked>>
 
 \* Adv Hits v, anything h ever showed it, with any token it holds or makes; h opens toward Adv when
 \* it accepts, and answers with its proof, which Adv keeps.
@@ -253,7 +272,7 @@ AdvHit(i, v) ==
     /\ opens' = opens \cup {<<i, h, v>>}
     /\ known' = IF ak \in HoldsKeys(h) /\ CanSign(h, c, ak) /\ ak \notin HoldsKeys(Adv)
                 THEN known \cup {Tok(ak, Side(c, h), Ch(c, Adv), c.l)} ELSE known
-    /\ UNCHANGED <<conns, seen, next, happened, know, leak>>
+    /\ UNCHANGED <<conns, seen, next, happened, know, leak, head, due, walked>>
 
 \* A reader opens toward a peer J judges a holder (ByRole); Adv proves its account to anyone.
 JOpen(i, v) ==
@@ -261,14 +280,31 @@ JOpen(i, v) ==
     /\ v \in {c.d, c.l} /\ ~IsOpen(i, v)
     /\ Syncs(v) /\ J(v, Peer(c, v), know[v])
     /\ opens' = opens \cup {<<i, v, JB>>}
-    /\ UNCHANGED <<conns, known, seen, next, happened, know, leak>>
+    /\ UNCHANGED <<conns, known, seen, next, happened, know, leak, head, due, walked>>
 
 \* The rejected rule: a dialer opens toward the key it dialed.
 DialOpen(i) ==
     LET c == conns[i] IN
     /\ DialProves /\ c.d \in Honest /\ ~IsOpen(i, c.d) /\ Syncs(c.d)
     /\ opens' = opens \cup {<<i, c.d, DialB>>}
-    /\ UNCHANGED <<conns, known, seen, next, happened, know, leak>>
+    /\ UNCHANGED <<conns, known, seen, next, happened, know, leak, head, due, walked>>
+
+\* Reader r's due test on connection i toward a store p (spec/sync-ids.md §6 Walk): J judges p a
+\* holder and p shows nothing r tests: S is walked there (Walked), and r asks Behind; a store
+\* that syncs S with no step answers 13 and r registers genesis there, which changes p's filter.
+WalkTest(i, r) ==
+    LET c == conns[i]
+        p == Peer(c, r)
+        walk == J(r, p, know[r]) /\ ~\E v \in ShowsAt(p, know[p]) : Tests(r, v)
+        reg == walk /\ Syncs(p) /\ ~head[p]
+        w2 == IF walk /\ Walked THEN walked \cup {<<i, r>>} ELSE walked \ {<<i, r>>}
+    IN
+    /\ <<i, r>> \in due
+    /\ IsReader(r) /\ IsStore(p) /\ Syncs(r)
+    /\ head' = IF reg THEN [head EXCEPT ![p] = TRUE] ELSE head
+    /\ walked' = w2
+    /\ due' = (due \ {<<i, r>>}) \cup (IF reg THEN Arrive(p, w2) ELSE {})
+    /\ UNCHANGED <<conns, opens, known, seen, next, happened, know, leak>>
 
 Values == {SyncK(s) : s \in 0..St[NE]} \cup {ProofK(s) : s \in 0..St[NE]} \cup {LinkK(a) : a \in LinkNodes}
 
@@ -277,6 +313,7 @@ HonestNext ==
     \/ \E i \in 1..Len(conns), t \in Honest, v \in Values : HonestHit(i, t, v)
     \/ \E i \in 1..Len(conns), v \in Honest : JOpen(i, v)
     \/ \E i \in 1..Len(conns) : DialOpen(i)
+    \/ \E i \in 1..Len(conns), r \in Honest : WalkTest(i, r)
 
 Next ==
     \/ HonestNext
