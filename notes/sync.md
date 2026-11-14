@@ -16,7 +16,7 @@ One kind of node: whether a node reads data is a property of the pair (node, S).
 A failed read is no wait: `Effects::try_settle` records nothing and leaves the key due, and the error fails the step. Waits on a peer (an offer refused for now, a refused Pull, a Behind) are back-offs and timers, not this rule: nothing local arrives to end them.
 
 ## Crates
-- **osis-sync** (core/sync): the node's connections, its store per sync ID and the judgement over them, as one sans-IO step. Modules, one per area, each owning its state and changing no other's: `session`, `opens`, `store`, `read`, `unread`, `streams`, `inbox`, `status`, `driver`; `set` (the sync set followed per key, shared by store, opens and dials); `types` (every type two modules share; a type one module owns and others only read lives in that module). A part not built answers `Error::NotBuilt` or does nothing; no path a test reaches panics. The tokio transport glue is behind the default `driver` feature, the crate's one feature set.
+- **osis-sync** (core/sync): the node's connections, its store per sync ID and the judgement over them, as one sans-IO step. Modules, one per area, each owning its state and changing no other's: `session`, `opens`, `store`, `read`, `unread`, `leave`, `streams`, `inbox`, `status`, `driver`; `set` (the sync set followed per key, shared by store, opens and dials); `types` (every type two modules share; a type one module owns and others only read lives in that module). A part not built answers `Error::NotBuilt` or does nothing; no path a test reaches panics. The tokio transport glue is behind the default `driver` feature, the crate's one feature set.
 - **osis-engine**'s `sync` module (core/engine/src/sync): the facade.
 - **osis-proto** (core/proto): codecs below sync (frames, Hello, proofs, messages and their limits, filters, relay gate, the client port's messages); no session or store (notes/sync-protocol.md).
 - **osis-label** (core/label): blob prefix and wraps, steps, claim sets, stamps and deposit signatures, inbox blobs, links, bundles.
@@ -25,7 +25,7 @@ A failed read is no wait: `Effects::try_settle` records nothing and leaves the k
 - **osis** holds a `Node` per handle and steps it from its driver task (notes/api-implementation.md).
 
 ## The one step
-`Node::handle(input) -> Vec<Out>` is all of sync: route the input to its module, run the compaction trigger, settle every module (store, unread, opens, read, inbox, streams, status) until none acted, flush opens' records, decide dials and keep-or-close, then emit sends, dials, closes and one wake. `apply(out, links)` alone carries outputs out. Inputs: a connection up or down, bytes, bytes the transport took, a wake, a discovery, and `Wrote` after the osis handle writes. Details and failure handling: notes/sync-driver.md.
+`Node::handle(input) -> Vec<Out>` is all of sync: route the input to its module, run the compaction trigger, settle every module (store, unread, opens, read, inbox, streams, status, leave) until none acted, flush opens' records, decide dials and keep-or-close, then emit sends, dials, closes and one wake. `apply(out, links)` alone carries outputs out. Inputs: a connection up or down, bytes, bytes the transport took, a wake, a discovery, and `Wrote` after the osis handle writes. Details and failure handling: notes/sync-driver.md.
 
 ## How a write reaches a peer
 1. The app writes through the osis handle; the engine commits it and calls nothing; the handle calls `handle(Wrote)`.
@@ -37,7 +37,7 @@ A failed read is no wait: `Effects::try_settle` records nothing and leaves the k
 ## Spec areas in code
 | spec | code |
 |---|---|
-| spec/sync-set.md (what a node syncs) | engine `sync/set.rs` (`sync_things`, `thing_sync`, `sync_set`), osis-sync `set.rs`; `unread` for leaving |
+| spec/sync-set.md (what a node syncs) | engine `sync/set.rs` (`sync_things`, `thing_sync`, `sync_set`), `forget_local`; osis-sync `set.rs`; `leave` (read) and `unread` for leaving |
 | spec/sync-ids.md (sync IDs, steps, the store, Register, Behind, Walk) | engine `labeling` and `sync/records.rs`; `store` (entries, paths, caps, Register, Delete, Behind); `opens` (Walk); `inbox/register.rs` |
 | spec/sync-opens.md (dials, proofs, records, the shared set) | `driver/dials.rs`, `session` (proofs), `opens` |
 | spec/sync-judgement.md, spec/sync-compaction.md | `read` (reader), `unread` (kept unread); engine `sync/facts.rs`, `bodies.rs`, retention |
@@ -49,7 +49,7 @@ A failed read is no wait: `Effects::try_settle` records nothing and leaves the k
 | spec/wire.md §11 | osis-proto `msg`, `session` |
 
 ## The sync notes
-- notes/sync-session.md, sync-opens.md, sync-store.md, sync-read.md, sync-unread.md, sync-streams.md, sync-inbox.md, sync-status.md, sync-driver.md: one per module (what it owns, its implementation choices, bounds, reasons, what is not built).
+- notes/sync-session.md, sync-opens.md, sync-store.md, sync-read.md, sync-unread.md, sync-leave.md, sync-streams.md, sync-inbox.md, sync-status.md, sync-driver.md: one per module (what it owns, its implementation choices, bounds, reasons, what is not built).
 - notes/sync-facade.md: the engine's facade, the memo and `Effects` mechanism, the engine tables kept for sync.
 - notes/sync-test-harness.md: the one harness (worlds of `Node`s, scripted peers, histories, faults).
 - Design reasons: notes/sync-reasons.md (core: blobs, sync IDs, stamps, delete keys, nodes), notes/sync-access.md (steps, claims, re-seal, static entries), notes/sync-convergence.md (judgement and deletion), notes/inbox.md (deposits, inbox), notes/unreadable-data.md (what a node keeping S unread learns), notes/sync-protocol.md (wire, osis-proto, osis-label), notes/networking.md (transports, reachability, first contact), notes/growth.md (permanent growth).

@@ -422,3 +422,91 @@ fn a_bundle_carries_a_group_by_hand_spec_sync_streams_6() {
     b.import_bundle(bytes.as_slice()).unwrap();
     assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("by hand"));
 }
+
+// ---- leaving (spec/sync-set.md §3) ----
+
+/// A thing with a sync ID of its own (its first link), named `name`, an item of `g`.
+fn shared_in(db: &Osis, g: osis::Tid, name: &str) -> osis::Tid {
+    let mut w = db.write();
+    let t = w.create().unwrap();
+    w.group(g).add(osis::Member::Item(t)).unwrap();
+    w.at(t, osis::core::NAME).set(&name.to_string()).unwrap();
+    w.commit().unwrap();
+    db.make_link(t, Role::Read, LinkOpts::default()).unwrap();
+    t
+}
+
+fn name(db: &Osis, t: osis::Tid) -> Option<String> {
+    db.at(t, osis::core::NAME).get().unwrap()
+}
+
+// spec/sync-set.md §3 (Unsyncing): a thing leaving this node's synced group, its own entries held
+// at the account's other node, is forgotten here; the other node, whose own synced group lists
+// it, keeps it.
+#[test]
+fn an_unsynced_thing_is_forgotten_here_spec_sync_set_3() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (a, b) = paired(&net, &c);
+    let t = shared_in(&a, a.home(), "moved");
+    drive(&net, a.wait_synced(SyncScope::Thing(t))).unwrap();
+    net.run();
+    // b's own synced group (under home as every synced group) lists it too
+    let synced = b.aspect_key("synced^.0").unwrap();
+    let Some(Value::Map(mut m)) = b.at(b.home(), synced.clone()).get().unwrap() else { panic!("synced^.0") };
+    let mut w = b.write();
+    let gb = w.create().unwrap();
+    w.group(gb).add(osis::Member::Subgroup(b.home())).unwrap();
+    w.group(gb).add(osis::Member::Item(t)).unwrap();
+    w.group(b.home()).add(osis::Member::Item(gb)).unwrap();
+    m.insert(Value::Tid(b.node()), Value::Tid(gb));
+    w.at(b.home(), synced).set(&Value::Map(m)).unwrap();
+    w.commit().unwrap();
+    net.run();
+    let mut w = a.write();
+    w.group(a.home()).remove(osis::Member::Item(t)).unwrap();
+    w.commit().unwrap();
+    for _ in 0..5 {
+        net.run();
+    }
+    assert_eq!(name(&a, t), None, "forgotten here");
+    assert_eq!(name(&b, t).as_deref(), Some("moved"));
+}
+
+// spec/sync-set.md §3 (one rule ends syncing it; synced again before then): a
+// write made while the other node was away, its thing then taken out of every synced group,
+// stays here while no source holds it (the other node, holding nothing of its own there, forgets
+// its copy), and reaches the other node once the thing is synced again.
+#[test]
+fn an_unsent_write_goes_out_when_synced_again_spec_sync_set_3() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (a, b) = paired(&net, &c);
+    let t = shared_in(&a, a.home(), "first");
+    drive(&net, a.wait_synced(SyncScope::Thing(t))).unwrap();
+    net.run();
+    assert_eq!(name(&b, t).as_deref(), Some("first"));
+    net.set_online(1, false);
+    net.run();
+    let mut w = a.write();
+    w.at(t, osis::core::NAME).set(&"away".to_string()).unwrap();
+    w.commit().unwrap();
+    net.run();
+    let mut w = a.write();
+    w.group(a.home()).remove(osis::Member::Item(t)).unwrap();
+    w.commit().unwrap();
+    net.run();
+    net.set_online(1, true);
+    for _ in 0..5 {
+        net.advance(60_000);
+    }
+    assert_eq!(name(&a, t).as_deref(), Some("away"), "its own write held nowhere else: kept");
+    assert_eq!(name(&b, t), None, "b logged nothing there: forgotten");
+    let mut w = a.write();
+    w.group(a.home()).add(osis::Member::Item(t)).unwrap();
+    w.commit().unwrap();
+    for _ in 0..5 {
+        net.advance(60_000);
+    }
+    assert_eq!(name(&b, t).as_deref(), Some("away"));
+}

@@ -1,11 +1,11 @@
 //! The node, dials, timers and outputs (spec/sync-opens.md §1, spec/sync-transport.md).
 //!
 //! `Node::handle` is the whole of sync as a sans-IO step: it routes an input to its module (and
-//! each member opens reports moved to streams), then settles every module (store, unread, opens,
-//! read, inbox, streams, status, again while one acted), then decides its dials (`dials`), closes
-//! what a module closed, and collects sessions' bytes and the earliest wake. `apply` is the one
-//! place outputs are carried out, through a `Links`: the product's transports (`links`) or a
-//! test's network. Sync never knows how a peer is reached.
+//! each member opens reports moved to streams), then settles every module (store, unread,
+//! opens, read, inbox, streams, status, leave, again while one acted),
+//! then decides its dials (`dials`), closes what a module closed, and collects sessions' bytes
+//! and the earliest wake. `apply` is the one place outputs are carried out, through a `Links`:
+//! the product's transports (`links`) or a test's network. Sync never knows how a peer is reached.
 //!
 //! State: connections and their sessions; dial candidates, redial times and the pair rule's held
 //! dials (`dials`); whether a store failure's stretch is under way. A step that fails closes
@@ -31,6 +31,7 @@ use crate::types::{ConnId, Cx, Error, Input, Out, Result, Scope, SyncConfig, Wai
 use dials::{Dials, NodePeers, Why};
 use osis_base::Tid;
 use crate::unread::Unread;
+use crate::leave::Leave;
 use osis_base::{SyncId, WallMs};
 use osis_crypto::NodeRng;
 use osis_engine::Engine;
@@ -158,6 +159,7 @@ pub struct Node {
     streams: Streams,
     inbox: Inbox,
     status: Status,
+    leave: Leave,
 }
 
 /// The `Cx` over a node's fields, borrowed apart from its modules.
@@ -175,7 +177,7 @@ impl Node {
         let store_handle = store.clone();
         let mut driver = Driver::default();
         driver.dials.set_node(cfg.key.map(|k| k.0), &cfg.policy);
-        Ok(Node { engine, store, rng, cfg, now, rounds: 0, driver, opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::new(store_handle), inbox: Inbox::default(), status: Status::default() })
+        Ok(Node { engine, store, rng, cfg, now, rounds: 0, driver, opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::new(store_handle), inbox: Inbox::default(), status: Status::default(), leave: Leave::default() })
     }
 
     /// One step: `input` taken, every module settled. The outputs must all reach `apply`.
@@ -674,6 +676,8 @@ impl Node {
                 self.streams.pull_again(&mut cx, &mut self.driver.sessions, &self.opens, conn, &mut self.driver.reported);
                 acted = true;
             }
+            let mut cx = cx!(self, out);
+            acted |= self.leave.settle(&mut crate::leave::Live { cx: &mut cx, unread: &self.unread })?;
             self.reports(out);
             if !acted {
                 return Ok(());
@@ -722,6 +726,7 @@ impl Node {
         self.streams = Streams::new(self.store.clone());
         self.inbox = Inbox::default();
         self.status = Status::default();
+        self.leave = Leave::default();
         self.driver.changed = 0;
         self.driver.store = crate::store::Follow::default();
         // the dial peers and hints follow the modules' and the engine's stamps afresh
@@ -789,6 +794,7 @@ impl Node {
                 streams,
                 inbox: self.inbox.clone(),
                 status: self.status.clone(),
+                leave: self.leave.clone(),
             })
         })
     }

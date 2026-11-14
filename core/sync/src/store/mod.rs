@@ -1073,6 +1073,22 @@ impl Store {
 
     // Leaving and closing
 
+    /// The sync IDs with a usage or a path here (`U/`, `H/`): every one whose store holds
+    /// something. O(those); read at a start (spec/sync-set.md §3: what left while the node was
+    /// down still holds its rows).
+    pub fn held_ids(&self) -> Result<BTreeSet<SyncId>> {
+        self.lock().read(|t, _| {
+            let mut out = BTreeSet::new();
+            for p in [rows::USAGE, rows::HEAD] {
+                for (k, _) in t.scan_local(p, b"", usize::MAX)? {
+                    let id: [u8; 16] = k.get(p.len()..p.len() + 16).and_then(|x| x.try_into().ok()).ok_or(crate::types::Error::Store(osis_store::Error::Corrupt("sync store held ids")))?;
+                    out.insert(SyncId(id));
+                }
+            }
+            Ok(out)
+        })
+    }
+
     /// Leaving S (spec/sync-set.md §3): every row of S goes, wraps and keys shredded, with S's
     /// log events, its usage, and S in every peer record (the one transaction that stops it).
     pub fn shred(&mut self, s: &SyncId) -> Result<()> {

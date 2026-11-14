@@ -6,7 +6,6 @@
 Each is built or specified the reversible way; one decision each.
 
 ## Behaviour
-- **Last copy on leaving** (spec/sync-set.md §3): removing a thing from every node's synced group drops it from every node of the account once their own commits are held elsewhere, even when no other account holds it, so it can lose the last copy. Option: keep it until another holder's stream showed it whole.
 - **Sync-only holders keep no subgroups** (spec/sync-set.md §4): a grant is per sync ID, so a new subgroup is kept only once granted too; an app policy may grant new subgroups.
 - **Dial hints** (spec/sync-inbox.md §2, spec/wire.md §10): every node publishes `reach.0` and lists itself in its account profile's `dial^.0` (`osis_engine` `dial::lists_on_profile`); a grant shows the grantee the granting node's dial hint; links and contact cards carry the sharer node's dial hint by default. Options: which nodes a profile lists; hints off by default (issues/privacy.md).
 - **A node keeping S unread shows its filter to every connection** (spec/sync-opens.md §5 Filter; stated limit spec/sync-hostile.md §2): anyone holding S's public values learns it keeps S. A policy limiting whom it syncs with (spec/sync-opens.md §1 Policy) hides it from the rest.
