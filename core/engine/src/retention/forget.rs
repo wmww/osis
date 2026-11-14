@@ -15,6 +15,10 @@
 //! labels of forgotten groups and of the commit blobs holding forgotten parts, and their blob
 //! ciphertexts.
 //!
+//! Forgetting a local copy (spec/sync-set.md §3 Unsyncing, `Engine::forget_local`) goes the same
+//! way for the things named, whose secrets stay: `secrets.0` stays with the role-class aspects,
+//! so the thing reads again once synced, and what arrives again counts as never received.
+//!
 //! A kept copy (spec/permissions.md §3, Retain) goes the same way but for its content, which stays
 //! whole, state and bodies and timers: only `secrets.0`, the labels' sync records and the blob
 //! ciphertexts nothing still lists go.
@@ -32,6 +36,15 @@ use std::collections::{BTreeMap, BTreeSet};
 /// no secret.
 const KEPT: [&str; 5] = ["created.0", "retention^.0", "roles.0", "keys.0", "sync.0"];
 
+/// What `forget` forgets.
+#[derive(Clone, Copy)]
+pub(crate) enum Scope<'a> {
+    /// The things whose reading went with the secrets of these actors, just lost.
+    Lost(&'a BTreeSet<Tid>),
+    /// These things' local copies, their secrets kept.
+    Local(&'a BTreeSet<Tid>),
+}
+
 /// What goes of a thing `forget` reaches.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fate {
@@ -40,6 +53,8 @@ enum Fate {
     /// A kept copy (`Core::ix.kept`).
     Kept,
     Erased,
+    /// Its local copy goes (`Scope::Local`): everything an erased thing loses but `secrets.0`.
+    Local,
 }
 
 /// What one forgetting removed.
@@ -62,7 +77,11 @@ pub(crate) fn read_path(core: &Core, t: &Tid) -> bool {
 
 /// `t` when the secrets of `lost` are dropped: forgotten when its secrets derive from a lost
 /// actor's and no held path reads it.
-fn fate(core: &Core, lost: &BTreeSet<Tid>, t: &Tid) -> Fate {
+fn fate(core: &Core, scope: Scope<'_>, t: &Tid) -> Fate {
+    let lost = match scope {
+        Scope::Lost(l) => l,
+        Scope::Local(ts) => return if ts.contains(t) { Fate::Local } else { Fate::Stays },
+    };
     let Some(a) = core.secret_actor(t) else { return Fate::Stays };
     if !lost.contains(&a) || read_path(core, t) {
         return Fate::Stays;
@@ -75,6 +94,7 @@ fn forgotten_ak(fate: Fate, ak: &Ak) -> bool {
         Fate::Stays => false,
         Fate::Kept => ak.as_str() == "secrets.0",
         Fate::Erased => !KEPT.contains(&ak.as_str()),
+        Fate::Local => !KEPT.contains(&ak.as_str()) && ak.as_str() != "secrets.0",
     }
 }
 
@@ -82,7 +102,7 @@ fn forgotten_ak(fate: Fate, ak: &Ak) -> bool {
 /// derive from a lost actor's and no held path reads it (node-sync: where this node's writes on
 /// what an `until` ended would go).
 pub(crate) fn would_forget(core: &Core, lost: &BTreeSet<Tid>, t: &Tid) -> bool {
-    fate(core, lost, t) != Fate::Stays
+    fate(core, Scope::Lost(lost), t) != Fate::Stays
 }
 
 /// Whether a part on `(t, ak)` is content of a kept copy, which takes none: everything an erased
@@ -97,23 +117,24 @@ pub(crate) fn copy_of(core: &Core, t: &Tid) -> Option<Tid> {
 }
 
 /// Aspect indices of `h` forgotten.
-fn lost_aspects(core: &Core, lost: &BTreeSet<Tid>, h: &Header, memo: &mut BTreeMap<Tid, Fate>) -> BTreeSet<usize> {
+fn lost_aspects(core: &Core, scope: Scope<'_>, h: &Header, memo: &mut BTreeMap<Tid, Fate>) -> BTreeSet<usize> {
     let mut out = BTreeSet::new();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if forgotten_ak(*memo.entry(a.tid).or_insert_with(|| fate(core, lost, &a.tid)), &a.ak) {
+        if forgotten_ak(*memo.entry(a.tid).or_insert_with(|| fate(core, scope, &a.tid)), &a.ak) {
             out.insert(ai);
         }
     }
     out
 }
 
-/// Forgets every thing whose reading went with the secrets of `lost` (called after they are
-/// dropped from the store, before the engine reloads its indexes; `held`: the newest read epoch
-/// number they held, `rotation::boxes_kept`).
-pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -> Result<Forgotten> {
-    let lost: BTreeSet<Tid> = lost.iter().copied().collect();
+/// Forgets what `scope` names (lost: called after the lost secrets are dropped from the store;
+/// either way before the engine reloads its indexes; `held`: the newest read epoch number the
+/// lost actors held, `rotation::boxes_kept`).
+pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64>) -> Result<Forgotten> {
     let mut out = Forgotten::default();
-    if lost.is_empty() {
+    if match scope {
+        Scope::Lost(x) | Scope::Local(x) => x.is_empty(),
+    } {
         return Ok(out);
     }
     // commit records change below the indexes: the reload rebuilds the persisted index
@@ -129,7 +150,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     })?;
     let known: Vec<(Tid, Ak)> = tx.core.ix.by_aspect.keys().cloned().chain(indexed).collect();
     for (t, ak) in known {
-        let f = *memo.entry(t).or_insert_with(|| fate(tx.core, &lost, &t));
+        let f = *memo.entry(t).or_insert_with(|| fate(tx.core, scope, &t));
         if f != Fate::Stays {
             out.things.insert(t);
             if forgotten_ak(f, &ak) {
@@ -141,11 +162,11 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     let mut parts: BTreeMap<CommitId, BTreeSet<usize>> = BTreeMap::new();
     // the links of the parts forgotten, by thing: the pieces they reach may go (`freed::lost`)
     let mut links: BTreeMap<Tid, Vec<osis_base::Link>> = BTreeMap::new();
-    // rare (lost access): decodes every header
+    // rare (lost access, unsyncing): decodes every header
     let ids: Vec<CommitId> = tx.core.ix.commits.keys().copied().collect();
     for id in ids {
         let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
-        let ais = lost_aspects(tx.core, &lost, &m.header, &mut memo);
+        let ais = lost_aspects(tx.core, scope, &m.header, &mut memo);
         if ais.is_empty() {
             continue;
         }
@@ -178,7 +199,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
         let Ok(blob) = CommitBlob::decode_stored(&p.bytes) else { continue };
         // a kept copy's content takes nothing new: what waits goes too
         let mut ais: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, a)| frozen(tx.core, &a.tid, &a.ak)).map(|(ai, _)| ai).collect();
-        ais.extend(lost_aspects(tx.core, &lost, &blob.header, &mut memo));
+        ais.extend(lost_aspects(tx.core, scope, &blob.header, &mut memo));
         if ais.is_empty() {
             continue;
         }
@@ -266,7 +287,8 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     }
     // the API's watches see the loss
     if !aspects.is_empty() {
-        tx.core.events.queue(Event::Changed { cause: Cause::LostAccess, changed: aspects.into_iter().collect() });
+        let cause = if matches!(scope, Scope::Local(_)) { Cause::Unsynced } else { Cause::LostAccess };
+        tx.core.events.queue(Event::Changed { cause, changed: aspects.into_iter().collect() });
     }
     out.parts = parts;
     Ok(out)

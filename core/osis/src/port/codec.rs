@@ -309,7 +309,7 @@ fn stamp_from(v: Value) -> Result<Stamp> {
     Ok(Stamp::new(CommitId(commit_id_from(&id)?), tid(&actor)?, ts, Time(uint(&received, "stamp")?)))
 }
 
-const DERIVED: [DerivedFrom; 6] = [DerivedFrom::ValidityChanged, DerivedFrom::Expired, DerivedFrom::Purged, DerivedFrom::Arrived, DerivedFrom::LostAccess, DerivedFrom::Recovered];
+const DERIVED: [DerivedFrom; 7] = [DerivedFrom::ValidityChanged, DerivedFrom::Expired, DerivedFrom::Purged, DerivedFrom::Arrived, DerivedFrom::LostAccess, DerivedFrom::Recovered, DerivedFrom::Unsynced];
 
 /// An origin: `[0] | [1, stamp] | [2, stamp] | [3, derived]`.
 pub(crate) fn origin_to(o: &Origin) -> Value {

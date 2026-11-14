@@ -51,6 +51,8 @@ pub enum DerivedFrom {
     Arrived,
     /// This node lost read access.
     LostAccess,
+    /// This node stopped syncing the thing and forgot its copy (it left every synced group).
+    Unsynced,
     /// After a failed write the store was read again and a commit reported failed had landed
     /// after all.
     Recovered,
@@ -65,6 +67,7 @@ impl From<Cause> for DerivedFrom {
             Cause::Purge => DerivedFrom::Purged,
             Cause::LateDelta | Cause::Fetched => DerivedFrom::Arrived,
             Cause::LostAccess => DerivedFrom::LostAccess,
+            Cause::Unsynced => DerivedFrom::Unsynced,
         }
     }
 }

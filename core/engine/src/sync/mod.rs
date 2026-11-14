@@ -452,6 +452,30 @@ impl Engine {
         self.forget_destroyed_now(thing)
     }
 
+    /// Forgets this node's local copy of `t`, unsynced (spec/sync-set.md §3 Unsyncing): the
+    /// content of `t` and of each thing whose secrets are `t`'s, but those this node's synced
+    /// group's closure holds; their role-class aspects (`secrets.0` included) and secrets stay,
+    /// and what arrives again counts as never received. Decodes every commit header (rare).
+    pub fn forget_local(&mut self, t: &Tid) -> Result<()> {
+        let closure = match self.sync_root()? {
+            Some(root) => self.closure(&root),
+            None => Arc::default(),
+        };
+        let core = &self.core;
+        let mut things: BTreeSet<Tid> = core.ix.by_aspect.keys().map(|(x, _)| *x).filter(|x| core.secret_actor(x) == Some(*t)).collect();
+        things.insert(*t);
+        things.retain(|x| !closure.contains(x));
+        if things.is_empty() {
+            return Ok(());
+        }
+        let f = self.run(|tx| crate::retention::forget::forget(tx, crate::retention::forget::Scope::Local(&things), &BTreeMap::new()))?;
+        if !f.things.is_empty() {
+            self.reload()?;
+            self.reexamine()?;
+        }
+        Ok(())
+    }
+
     pub fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote> {
         self.promotable_now(s, c)
     }

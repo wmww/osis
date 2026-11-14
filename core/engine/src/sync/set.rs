@@ -24,7 +24,7 @@ impl Engine {
 
     /// The group whose closure this node syncs: its synced group, or before it has read one, its
     /// account's D (home's closure, spec/sync-set.md §1). `None` for a node of no account.
-    fn sync_root(&mut self) -> Result<Option<Tid>> {
+    pub(super) fn sync_root(&mut self) -> Result<Option<Tid>> {
         let home = self.core.account_devices().map(|(_, d)| d);
         Ok(self.synced_group()?.or(home))
     }

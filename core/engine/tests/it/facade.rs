@@ -1180,3 +1180,35 @@ fn a_loose_author_record_is_learned_when_its_commit_comes_spec_commits_4() {
     lp.peers[0].engine.ingest(&cb, Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.core.created(&b), Some(&rec), "the author's record, awaited");
 }
+
+// spec/sync-set.md §3 (Unsyncing): forgetting an unsynced thing's local copy drops its content
+// and that of the things under its secrets but those the synced group's closure holds; its
+// role-class aspects and secrets stay (still read here), and its commits arriving again count as
+// never received.
+#[test]
+fn forget_local_drops_content_keeps_secrets_spec_sync_set_3() {
+    let (mut lp, ps) = people(1);
+    let (_, d) = lp.peers[0].engine.account().unwrap().unwrap();
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let under = e.new_thing(&mut m, t);
+    let listed = e.new_thing(&mut m, t);
+    m.set(t, &ct::NAME, &"own".to_string()).unwrap();
+    m.set(under, &ct::NAME, &"under".to_string()).unwrap();
+    m.set(listed, &ct::NAME, &"listed".to_string()).unwrap();
+    let c = e.commit(m).unwrap().unwrap();
+    let bytes = e.commit_bytes(&c).unwrap().unwrap();
+    add_item(&mut lp, 0, d, listed);
+    let e = &mut lp.peers[0].engine;
+    let s0 = e.home_sync_id(&t).unwrap().unwrap();
+    e.forget_local(&t).unwrap();
+    assert_eq!(e.get_typed(&t, &ct::NAME).unwrap(), None);
+    assert_eq!(e.get_typed(&under, &ct::NAME).unwrap(), None, "under its secrets");
+    assert_eq!(e.get_typed(&listed, &ct::NAME).unwrap().as_deref(), Some("listed"), "in the synced group's closure");
+    assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Read(vec![s0]), "secrets kept: still read");
+    e.ingest(&bytes, Vec::new()).unwrap();
+    assert_eq!(e.get_typed(&t, &ct::NAME).unwrap().as_deref(), Some("own"), "arrived again");
+    assert_eq!(e.get_typed(&under, &ct::NAME).unwrap().as_deref(), Some("under"));
+}

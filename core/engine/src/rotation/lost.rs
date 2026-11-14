@@ -499,7 +499,8 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
         let now = tx.now();
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::Removed, tids: vec![*a], commit: None, peer: None, detail: if kept.contains_key(a) { "lost read access: secrets dropped, a read-only copy kept" } else { "lost read access: secrets and what only they read dropped" }.into() }, now);
     }
-    let f = crate::retention::forget::forget(tx, &lost, &held)?;
+    let set: BTreeSet<Tid> = lost.iter().copied().collect();
+    let f = crate::retention::forget::forget(tx, crate::retention::forget::Scope::Lost(&set), &held)?;
     Ok((lost, f))
 }
 
