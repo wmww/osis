@@ -592,11 +592,13 @@ impl crate::Osis {
     }
 
     /// Gives this node a new key, so a new address other nodes dial it directly at
-    /// (`Config::direct_sync`) and new `listen` addresses: it returns once it listens under it (the
-    /// old key's listeners closed, their ports taken over), and tells the groups it syncs. A node removed from those since can no longer
-    /// dial it or recognise it on a LAN, nor can a holder of a direct link. Direct links still open
-    /// no longer reach this node directly (they still work through saved peers). Never done by
-    /// itself: the address stays put until this is called.
+    /// (`Config::direct_sync`) and new `listen` addresses, and tells the groups it syncs. It returns
+    /// once the node listens under the new key, the old key's listeners closed and their ports
+    /// taken over (a failed listen is logged: the direct-sync one is tried again, `listen`'s URLs
+    /// are not). A node removed from those groups since can no longer dial it or recognise it on a
+    /// LAN, nor can a holder of a direct link.
+    /// Direct links still open no longer reach this node directly (they still work through saved
+    /// peers). Never done by itself: the address stays put until this is called.
     /// `Unsupported` on a client with its own actor.
     pub fn rotate_peer_address(&self) -> crate::Result<()> {
         if !self.has_store() {

@@ -90,6 +90,7 @@ Words in this note follow issues/sync-rewrite.md Words: S below is a sync ID whe
 - Nodes that never met on different networks: no relay or default meeting point (decided); later job: a lookup by account at meeting points, one record per node; per-sync-ID announcement dropped (Tess). [CN]
 - One listening key per node (the dialable key) for sync, kept-unread data and the client port; LAN listeners take a fresh key per network join; no automatic rotation, `rotate_peer_address` by hand only. [P step 2; CN]
 - OPEN: a key rotation writes `reach.0` and the `dial.0` entry with no `Moved` and no old listener kept [P Finding peers], vs keep the old listener until the new key reached own nodes and connected peers, or a bound passes [CN The listening key].
+- `rotate_peer_address` returns once the node listens under the new key (a dial right after reaches it); a relisten that fails must not leave listeners down behind an `Ok` (today the driver's `after_rotation` only logs a failed `Osis::listen` URL). [c776d1ed1]
 - IP consent: any positive action is consent; relaying for co-readers by default, for strangers only when turned on; no default relay in builds. [R Decided]
 - One connection, one session, one store answering it; every secret above the store layer. [P step 3]
 - One connection per pair: direct before relayed, then the order hash; a dialer that lost to its peer's dial does not redial while that session lasts. [RC Built]
