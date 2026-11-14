@@ -863,6 +863,33 @@ impl Store {
         self.lock().mem.events(s, after, max)
     }
 
+    /// The memory part's counter: it moves at each ephemeral event of any sync ID.
+    pub fn memory_mark(&self) -> u64 {
+        self.lock().mem.next
+    }
+
+    /// The position cursor `c` names on this store's history (spec/sync-streams.md §3): none for
+    /// one that does not open, is past the log's end or names an incarnation not held there.
+    pub fn position(&self, c: &[u8]) -> Result<Option<Position>> {
+        self.lock().read(|t, _| Ok(t.log_position(c)?))
+    }
+
+    /// A cursor at position `pos` of this store's log (none past its end).
+    pub fn cursor_at(&self, pos: Position) -> Result<Option<Cursor>> {
+        self.lock().read(|t, _| Ok(t.log_cursor(pos)?))
+    }
+
+    /// The position entry `b` of S was first logged at, while the log holds it: what a member
+    /// ended at `until` may still fetch (spec/sync-streams.md §4).
+    pub fn first_logged(&self, s: &SyncId, b: &BlobId) -> Result<Option<Position>> {
+        self.lock().read(|t, _| Ok(t.log_entry_first(s, b)?))
+    }
+
+    /// The log's last position and its deletion horizon (spec/sync-streams.md §3).
+    pub fn log_bounds(&self) -> Result<(Position, Position)> {
+        self.lock().read(|t, _| Ok((t.log_end()?, t.log_horizon()?)))
+    }
+
     // Leaving and closing
 
     /// Leaving S (spec/sync-set.md §3): every row of S goes, wraps and keys shredded, with S's

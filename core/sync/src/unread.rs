@@ -22,7 +22,6 @@
 //! read stamped. Nothing durable of its own: a start settles every key once.
 
 use crate::store::Store;
-use crate::streams::Streams;
 use crate::types::{Cx, Error, Result};
 use osis_base::memo::{Effects, Stamped};
 use osis_base::{BlobId, SyncId, Tid, WallMs};
@@ -379,12 +378,3 @@ fn removal_verifies(n: &RemovalNotice, steps: &[(osis_label::Step, Option<ClaimS
     })
 }
 
-/// Not built: a source's `known` (streams). Until it is, no own entry counts as present, so a
-/// node keeping S unread that logged entries there never leaves; streams makes
-/// tests/it/unread.rs `leaves_once_own_entries_held_at_a_source` hold on a real source.
-impl Sources for Streams {
-    fn present(&self, s: &SyncId, b: &BlobId) -> bool {
-        let _ = (s, b);
-        false
-    }
-}

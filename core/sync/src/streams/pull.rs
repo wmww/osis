@@ -1,0 +1,735 @@
+//! The pulling side of a stream (spec/sync-streams.md §4 Joining, Pushes, Flow control, Applying,
+//! Bodies, Fill order, Full, Refused, Reports; §5 First sync): Pulls with the stream's cursor and
+//! its joins, messages applied in order once their bodies are held, the cursor stored only then,
+//! `seq` checked and a gap read again, bodies fetched one source at a time in the fill order.
+
+use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, PENDING_CAP, RESYNC_MS, Rank, Rejoin, Refusal, Streams};
+use crate::store::Source;
+use crate::types::{ConnId, Cursor, Entry, Result};
+use osis_base::{BlobId, SyncId, WallMs};
+use osis_engine::sync::Holding;
+use osis_label::{Class, Prefix};
+use osis_proto::limits::{MAX_FETCH_IDS, REPLY_BUDGET};
+use osis_proto::{Code, Event, Fetched, Id, Msg, Pull, PullReply, Stamp, Stream, Wrap};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+
+/// Where this node stands in one source's log: what it stored (spec/sync-opens.md §3: the
+/// stream's cursor, each member at it or joining from its own position, where members that left
+/// stopped).
+#[derive(Clone, Debug, Default)]
+pub(super) struct Place {
+    pub cursor: Option<Cursor>,
+    pub at_stream: BTreeSet<SyncId>,
+    pub joining: BTreeMap<SyncId, Option<Cursor>>,
+    pub stopped: BTreeMap<SyncId, Option<Cursor>>,
+}
+
+/// A join on this connection: its generation (a join after a member left and opened again is
+/// another), and the cursor to name next.
+#[derive(Clone, Debug)]
+struct Join {
+    generation: u64,
+    cursor: Option<Cursor>,
+}
+
+/// A message in hand: applied once every body it owes is settled.
+#[derive(Clone, Debug)]
+struct Batch {
+    events: Vec<(SyncId, Event)>,
+    cursor: Option<Cursor>,
+    report: bool,
+    reply: Option<ReplyInfo>,
+    owed: Vec<(SyncId, BlobId)>,
+}
+
+#[derive(Clone, Debug)]
+struct ReplyInfo {
+    whole: bool,
+    trimmed: bool,
+    more: bool,
+    joins: BTreeMap<SyncId, Option<Cursor>>,
+    asked: Vec<(SyncId, u64)>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct Pulling {
+    pub src: Source,
+    /// The Pull out, with the joins it named.
+    out: Option<(Id, Vec<(SyncId, u64)>)>,
+    first_sent: bool,
+    eph_next: bool,
+    /// The latest cursor received (applied or in hand): what the next Pull names.
+    recv: Option<Cursor>,
+    joins: BTreeMap<SyncId, Join>,
+    generation: u64,
+    /// Streams with a cursor taken since the last PullReply.
+    seq: u64,
+    gap: bool,
+    more: bool,
+    quiet: bool,
+    pending: VecDeque<Batch>,
+    fetches: BTreeMap<Id, (SyncId, Vec<BlobId>, u8)>,
+    queue: BTreeMap<(u8, u64, u64), (SyncId, BlobId)>,
+    arrivals: u64,
+    /// What this source answered without, until it announces it again.
+    failed: HashSet<BlobId>,
+    /// Bodies settled (taken, opened, refused) while messages are in hand.
+    pub(super) settled: HashSet<(SyncId, BlobId)>,
+    retry_at: Option<WallMs>,
+    rejoin_at: BTreeMap<SyncId, WallMs>,
+    inline: u64,
+    pub(super) inline_check: bool,
+    /// A listing from the start marked trimmed: what it listed so far.
+    listing: Option<BTreeMap<SyncId, BTreeSet<BlobId>>>,
+    /// Full and Refused events to tell the source.
+    tell: Vec<(SyncId, Event)>,
+    told_full: BTreeSet<SyncId>,
+    applied_owed: Option<Cursor>,
+}
+
+impl Pulling {
+    fn new(src: Source, cursor: Option<Cursor>) -> Pulling {
+        Pulling {
+            src,
+            out: None,
+            first_sent: false,
+            eph_next: false,
+            recv: cursor,
+            joins: BTreeMap::new(),
+            generation: 0,
+            seq: 0,
+            gap: false,
+            more: false,
+            quiet: false,
+            pending: VecDeque::new(),
+            fetches: BTreeMap::new(),
+            queue: BTreeMap::new(),
+            arrivals: 0,
+            failed: HashSet::new(),
+            settled: HashSet::new(),
+            retry_at: None,
+            rejoin_at: BTreeMap::new(),
+            inline: INLINE_LIMIT,
+            inline_check: false,
+            listing: None,
+            tell: Vec::new(),
+            told_full: BTreeSet::new(),
+            applied_owed: None,
+        }
+    }
+
+    /// SN_rearm: caught up only with the last reply at the end, no Pull out (a change announced
+    /// during one denies it), no gap and nothing in hand.
+    pub(super) fn caught_up(&self) -> bool {
+        self.quiet && self.out.is_none() && !self.gap && self.pending.is_empty()
+    }
+
+    pub(super) fn wake(&self) -> Option<WallMs> {
+        self.retry_at.into_iter().chain(self.rejoin_at.values().copied()).min()
+    }
+
+    fn join(&mut self, s: SyncId, cursor: Option<Cursor>) {
+        self.generation += 1;
+        self.joins.insert(s, Join { generation: self.generation, cursor });
+        self.rejoin_at.remove(&s);
+    }
+}
+
+/// A body's fill-order class (spec/sync-streams.md §4 Fill order, §5): order 0, deposited
+/// entries that do not open, the highest order, the rest; and the key within it.
+fn class(rank: Rank, deposited: bool) -> Option<(u8, u64)> {
+    match rank {
+        Rank::Order(0) => Some((0, 0)),
+        Rank::Unopened if deposited => Some((1, 0)),
+        Rank::Order(n) => Some((2, u64::MAX - n)),
+        Rank::Unopened => Some((3, 0)),
+        Rank::Never => None,
+    }
+}
+
+fn entry_of(b: BlobId, wrap: Wrap, stamp: Option<Stamp>, bytes: &[u8]) -> Entry {
+    let (class, expires) = Prefix::parse(bytes).map_or((Class::Durable, None), |p| (p.class(), p.expiry()));
+    Entry { blob: b, wrap, stamp, deposited: stamp.is_none(), own: false, class, expires }
+}
+
+impl Streams {
+    fn place(&mut self, src: Source) -> &mut Place {
+        self.places.entry(src).or_default()
+    }
+
+    /// A member joined: from where opens says, else where this side's record holds it, else from
+    /// the start; none for a member at the stream's cursor (spec/sync-streams.md §4 Joining).
+    pub(super) fn joined(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
+        let src = self.source(ctx.shared, conn);
+        let cursor = self.places.get(&src).and_then(|p| p.cursor.clone());
+        self.pull.entry(conn).or_insert_with(|| Pulling::new(src, cursor));
+        let place = self.place(src);
+        let from = match ctx.shared.rejoin(conn, &s) {
+            Rejoin::From(c) => {
+                place.stopped.remove(&s);
+                place.at_stream.remove(&s);
+                place.joining.remove(&s);
+                Some(c)
+            }
+            Rejoin::Held => {
+                if let Some(c) = place.stopped.remove(&s) {
+                    Some(c)
+                } else if let Some(c) = place.joining.get(&s) {
+                    Some(c.clone())
+                } else if place.at_stream.contains(&s) {
+                    None
+                } else {
+                    Some(None)
+                }
+            }
+        };
+        if let (Some(c), Some(p)) = (from, self.pull.get_mut(&conn)) {
+            p.join(s, c);
+            p.quiet = false;
+        }
+    }
+
+    /// A member left: its stream stops where it stands (its stored position kept for its rejoin);
+    /// a sync ID the node no longer holds leaves no position and no `known`.
+    pub(super) fn left(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
+        let Some(p) = self.pull.get_mut(&conn) else { return };
+        p.joins.remove(&s);
+        p.rejoin_at.remove(&s);
+        let src = p.src;
+        let held = ctx.store.holding(&s).is_some();
+        let place = self.place(src);
+        let at = if let Some(c) = place.joining.remove(&s) {
+            Some(c)
+        } else if place.at_stream.remove(&s) {
+            Some(place.cursor.clone())
+        } else {
+            None
+        };
+        if !held {
+            place.stopped.remove(&s);
+            self.known.forget(src, s);
+            self.known.forget(Source::Conn(conn), s);
+        } else if let Some(c) = at {
+            place.stopped.insert(s, c);
+        }
+    }
+
+    /// Whatever is due on a connection: messages applied, fetches and a Pull sent, refusals told.
+    pub(super) fn run(&mut self, ctx: &mut Ctx, conn: ConnId) {
+        if !self.pull.contains_key(&conn) {
+            return;
+        }
+        self.drain(ctx, conn);
+        self.fetch(ctx, conn);
+        self.send_pull(ctx, conn);
+        let Some(p) = self.pull.get_mut(&conn) else { return };
+        if !p.tell.is_empty() {
+            let st = Stream { events: p.tell.clone(), cursor: None, report: false, seq: 0 };
+            if ctx.wire.push(conn, Msg::Stream(Box::new(st))) {
+                p.tell.clear();
+            }
+        }
+        if let Some(c) = p.applied_owed.clone()
+            && let Ok(cursor) = osis_proto::Cursor::new(c)
+            && ctx.wire.push(conn, Msg::Applied { cursor })
+        {
+            p.applied_owed = None;
+        }
+    }
+
+    /// Sends the next Pull when one is due: the first, a page on, a join, a gap or a dropped
+    /// push to read again, a change of `inline_limit` (spec/sync-streams.md §4). None before
+    /// agreement, while one is out, or while the messages in hand reach the local bound.
+    fn send_pull(&mut self, ctx: &mut Ctx, conn: ConnId) {
+        if !ctx.shared.agreed(conn) {
+            return;
+        }
+        let members = ctx.shared.members(conn);
+        let Some(p) = self.pull.get_mut(&conn) else { return };
+        if p.out.is_some() || p.pending.len() >= PENDING_CAP || members.is_empty() || p.retry_at.is_some_and(|t| t > ctx.now) {
+            return;
+        }
+        p.retry_at = None;
+        // a join refused while S stays a member is joined again `resync_ms` later
+        let due: Vec<SyncId> = p.rejoin_at.iter().filter(|(s, t)| **t <= ctx.now && members.contains_key(*s)).map(|(s, _)| *s).collect();
+        p.rejoin_at.retain(|s, t| *t > ctx.now && members.contains_key(s));
+        for s in due {
+            let c = self.places.get(&p.src).and_then(|pl| pl.joining.get(&s).cloned()).flatten();
+            p.join(s, c);
+        }
+        let mut inline_moved = false;
+        if p.inline_check {
+            p.inline_check = false;
+            self.work.members += members.len() as u64;
+            let many = members.keys().any(|s| self.holders.get(s).is_some_and(|h| h.len() > 1));
+            let want = if many { 0 } else { INLINE_LIMIT };
+            inline_moved = want != p.inline && p.first_sent;
+            p.inline = want;
+        }
+        if p.first_sent && !p.more && !p.gap && !p.eph_next && p.joins.is_empty() && !inline_moved {
+            return;
+        }
+        let joins: Vec<(SyncId, Option<osis_proto::Cursor>)> = p.joins.iter().map(|(s, j)| (*s, j.cursor.clone().and_then(|c| osis_proto::Cursor::new(c).ok()))).collect();
+        let asked = p.joins.iter().map(|(s, j)| (*s, j.generation)).collect();
+        let pull = Pull { id: 0, cursor: p.recv.clone().and_then(|c| osis_proto::Cursor::new(c).ok()), joins, inline_limit: p.inline, max_reply: REPLY_BUDGET as u64, follow: true, ephemeral: !p.first_sent || p.eph_next };
+        let Some(id) = ctx.wire.request(conn, Msg::Pull(Box::new(pull))) else { return };
+        p.first_sent = true;
+        p.eph_next = false;
+        p.quiet = false;
+        p.out = Some((id, asked));
+    }
+
+    /// A reply to a request of this side's: a PullReply (or a Pull refused or skipped), a
+    /// FetchReply.
+    pub(super) fn on_reply(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, m: Msg) {
+        let Some(p) = self.pull.get_mut(&conn) else { return };
+        if p.fetches.contains_key(&id) {
+            let items = match m {
+                Msg::FetchReply { items, .. } => items,
+                _ => Vec::new(),
+            };
+            self.fetched(ctx, conn, id, items);
+            return;
+        }
+        if p.out.as_ref().is_none_or(|(x, _)| *x != id) {
+            return;
+        }
+        let (_, asked) = p.out.take().unwrap_or_default();
+        match m {
+            Msg::PullReply(r) => self.on_pull_reply(ctx, conn, *r, asked),
+            _ => p.retry_at = Some(WallMs(ctx.now.0.saturating_add(RESYNC_MS))),
+        }
+    }
+
+    fn on_pull_reply(&mut self, ctx: &mut Ctx, conn: ConnId, r: PullReply, asked: Vec<(SyncId, u64)>) {
+        let members = ctx.shared.members(conn);
+        let Some(p) = self.pull.get_mut(&conn) else { return };
+        p.seq = 0;
+        p.gap = false;
+        p.more = r.more;
+        p.quiet = !r.more;
+        if r.cursor.is_some() || r.whole {
+            p.recv = r.cursor.clone().map(osis_proto::Cursor::into_bytes);
+        }
+        let joins: BTreeMap<SyncId, Option<Cursor>> = r.joins.iter().map(|(s, c)| (*s, c.clone().map(osis_proto::Cursor::into_bytes))).collect();
+        for (s, generation) in &asked {
+            let ours = p.joins.get(s).is_some_and(|j| j.generation == *generation);
+            match joins.get(s) {
+                // still in pages: name it again from its own cursor (SN_joindur)
+                Some(Some(c)) if !r.whole => {
+                    if let Some(j) = p.joins.get_mut(s).filter(|_| ours) {
+                        j.cursor = Some(c.clone());
+                    }
+                }
+                // not shared there (SN_joinans): out of the stream, joined again later
+                Some(None) if !r.whole => {
+                    if ours {
+                        p.joins.remove(s);
+                        if members.contains_key(s) {
+                            p.rejoin_at.insert(*s, WallMs(ctx.now.0.saturating_add(RESYNC_MS)));
+                        }
+                    }
+                }
+                _ => {
+                    if ours {
+                        p.joins.remove(s);
+                    }
+                }
+            }
+        }
+        let info = ReplyInfo { whole: r.whole, trimmed: r.trimmed, more: r.more, joins, asked };
+        let batch = Batch { events: r.events, cursor: r.cursor.map(osis_proto::Cursor::into_bytes), report: r.report, reply: Some(info), owed: Vec::new() };
+        self.stage(ctx, conn, batch);
+    }
+
+    /// A Stream: with no cursor, Full and Refused events (and relay-only entries, not built);
+    /// with one, applied only in `seq` order since the last PullReply, else a gap read again at
+    /// the next PullReply (spec/sync-streams.md §4 Pushes).
+    pub(super) fn on_stream(&mut self, ctx: &mut Ctx, conn: ConnId, st: Stream) {
+        let Some(p) = self.pull.get_mut(&conn) else { return };
+        let src = p.src;
+        let Some(cursor) = st.cursor else {
+            for (s, e) in st.events {
+                match e {
+                    Event::Full(f) => self.known.set_full(src, s, f),
+                    // code 6 counts as the entry deleted there
+                    Event::Refused(b, Code::TOMBSTONED) => {
+                        self.known.remove(src, s, &b);
+                    }
+                    Event::Refused(b, code) => {
+                        let stamp = ctx.store.entry(&s, &b).ok().flatten().and_then(|e| e.stamp);
+                        let head = self.known.head(src, &s);
+                        self.known.set_refused(src, s, b, Refusal { code, stamp, head });
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        };
+        if p.gap || st.seq != p.seq || p.pending.len() >= PENDING_CAP {
+            p.gap = true;
+            p.eph_next = true;
+            return;
+        }
+        p.seq += 1;
+        p.recv = Some(cursor.as_bytes().to_vec());
+        let batch = Batch { events: st.events, cursor: Some(cursor.into_bytes()), report: st.report, reply: None, owed: Vec::new() };
+        self.stage(ctx, conn, batch);
+    }
+
+    /// Takes a message in hand: bodies that came inline are taken now, those announced without
+    /// bytes that this node lacks and wants are owed and queued for fetching.
+    fn stage(&mut self, ctx: &mut Ctx, conn: ConnId, mut batch: Batch) {
+        let members: BTreeSet<SyncId> = batch.events.iter().map(|(s, _)| *s).filter(|s| ctx.shared.members(conn).contains_key(s)).collect();
+        for (s, e) in &batch.events {
+            let Event::Added { blob_id: b, blob, wrap, stamp } = e else { continue };
+            if !members.contains(s) {
+                continue;
+            }
+            if let Some(p) = self.pull.get_mut(&conn) {
+                p.failed.remove(b);
+            }
+            if let Some(bytes) = blob {
+                self.serve.entry(conn).or_default().crossed.insert(*b);
+                self.take_body(ctx, conn, *s, *b, *wrap, *stamp, bytes);
+            } else if let Some(c) = self.wanted(ctx, conn, s, b, wrap, *stamp) {
+                batch.owed.push((*s, *b));
+                if let Some(p) = self.pull.get_mut(&conn)
+                    && !p.queue.values().any(|x| *x == (*s, *b))
+                {
+                    p.arrivals += 1;
+                    let key = (c.0, c.1, u64::MAX - p.arrivals);
+                    p.queue.insert(key, (*s, *b));
+                }
+            }
+        }
+        if let Some(p) = self.pull.get_mut(&conn) {
+            p.pending.push_back(batch);
+        }
+        self.drain(ctx, conn);
+    }
+
+    /// Whether a body announced without bytes is to be fetched, and its fill-order class: only
+    /// what this node lacks and may take (spec/sync-streams.md §4 Bodies); one held is taken now.
+    fn wanted(&mut self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, b: &BlobId, wrap: &Wrap, stamp: Option<Stamp>) -> Option<(u8, u64)> {
+        let holding = ctx.store.holding(s)?;
+        let held = ctx.store.bytes(b).ok().flatten();
+        let tomb = ctx.store.tombstone(s, b).ok().flatten().is_some();
+        match holding {
+            Holding::Unread => {
+                // a node keeping S unread takes stamped entries only, never one refused while full
+                let stamp = stamp?;
+                if self.room.get(s).is_some_and(|(_, r)| r.contains(b)) {
+                    return None;
+                }
+                if tomb {
+                    self.tell(conn, *s, Event::Refused(*b, Code::TOMBSTONED));
+                    return None;
+                }
+                if let Some(bytes) = held {
+                    self.take_body(ctx, conn, *s, *b, *wrap, Some(stamp), &bytes);
+                    return None;
+                }
+                class(Rank::Unopened, false)
+            }
+            Holding::Read => {
+                if tomb || held.is_some() {
+                    return None;
+                }
+                class(ctx.ground.rank(s, b, wrap), stamp.is_none())
+            }
+        }
+    }
+
+    fn tell(&mut self, conn: ConnId, s: SyncId, e: Event) {
+        if let Some(p) = self.pull.get_mut(&conn) {
+            p.tell.push((s, e));
+        }
+    }
+
+    /// A body's bytes arrived (inline or fetched): taken into the store (kept unread) or opened
+    /// (read); settled for every stream owing it. Wrong bytes count as this source lacking it.
+    #[allow(clippy::too_many_arguments)]
+    fn take_body(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, b: BlobId, wrap: Wrap, stamp: Option<Stamp>, bytes: &[u8]) {
+        if osis_label::blob_id(bytes) != b {
+            if let Some(p) = self.pull.get_mut(&conn) {
+                p.failed.insert(b);
+            }
+            return;
+        }
+        let e = entry_of(b, wrap, stamp, bytes);
+        match ctx.store.holding(&s) {
+            Some(Holding::Unread) if stamp.is_some() => {
+                let code = ctx.store.take_stamped(&s, &e, bytes.to_vec()).unwrap_or(Code::DECLINED);
+                self.refused(ctx, conn, s, b, code);
+            }
+            Some(Holding::Read) => {
+                if let Ok(Opening::Bad) = ctx.ground.open(&s, &e, bytes) {
+                    if let Some(p) = self.pull.get_mut(&conn) {
+                        p.failed.insert(b);
+                    }
+                    return;
+                }
+            }
+            _ => {}
+        }
+        for c in self.holders.get(&s).into_iter().flatten().chain(std::iter::once(&conn)) {
+            if let Some(p) = self.pull.get_mut(c) {
+                p.settled.insert((s, b));
+                p.queue.retain(|_, x| *x != (s, b));
+            }
+        }
+        if self.asked.get(&b).is_some_and(|(c, _)| *c == conn) {
+            self.asked.remove(&b);
+        }
+    }
+
+    /// What a node keeping S unread does with a pulled entry it did not take
+    /// (spec/sync-streams.md §4 Full, Refused): for room it is full for S there, else it tells the
+    /// refusal's code.
+    fn refused(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, b: BlobId, code: Code) {
+        match code {
+            Code::OK | Code::DECLINED => {}
+            Code::STORAGE_CAP => {
+                let bytes = ctx.store.usage(&s).map_or(0, |(d, m)| d.bytes + m.bytes);
+                let r = self.room.entry(s).or_default();
+                r.0 = bytes;
+                r.1.insert(b);
+                if let Some(p) = self.pull.get_mut(&conn)
+                    && p.told_full.insert(s)
+                {
+                    p.tell.push((s, Event::Full(true)));
+                }
+            }
+            c => self.tell(conn, s, Event::Refused(b, c)),
+        }
+    }
+
+    /// Room grew under a sync ID this node is full for (an entry left): `full` false where it
+    /// told, and S pulled again from the start from each source.
+    pub(super) fn room_grew(&mut self, ctx: &mut Ctx) -> Result<bool> {
+        let mut grew = Vec::new();
+        for (s, (at, _)) in &self.room {
+            let (d, m) = ctx.store.usage(s)?;
+            if d.bytes + m.bytes < *at {
+                grew.push(*s);
+            }
+        }
+        for s in &grew {
+            self.room.remove(s);
+            for c in self.holders.get(s).cloned().unwrap_or_default() {
+                let Some(p) = self.pull.get_mut(&c) else { continue };
+                if p.told_full.remove(s) {
+                    p.tell.push((*s, Event::Full(false)));
+                }
+                p.join(*s, None);
+                let src = p.src;
+                let place = self.place(src);
+                place.at_stream.remove(s);
+                place.joining.remove(s);
+            }
+        }
+        Ok(!grew.is_empty())
+    }
+
+    /// Sends Fetches while fewer than `FETCHES_OUT` are out: one sync ID's bodies of one fill
+    /// class at a time, the best first, order 0 before anything else; a blob asked at another
+    /// source stays queued here until that ask is past `ASKED_MS` (spec/sync-streams.md §4 Bodies).
+    fn fetch(&mut self, ctx: &mut Ctx, conn: ConnId) {
+        loop {
+            let Some(p) = self.pull.get(&conn) else { return };
+            if p.fetches.len() >= FETCHES_OUT {
+                return;
+            }
+            let order0_out = p.fetches.values().any(|(_, _, c)| *c == 0);
+            let mut pick: Option<(SyncId, u8)> = None;
+            let mut ids = Vec::new();
+            let mut drop = Vec::new();
+            for (k, (s, b)) in &p.queue {
+                if p.settled.contains(&(*s, *b)) || p.failed.contains(b) || !ctx.shared.members(conn).contains_key(s) {
+                    drop.push(*k);
+                    continue;
+                }
+                if self.asked.get(b).is_some_and(|(c, at)| *c != conn && at.0.saturating_add(ASKED_MS) > ctx.now.0) {
+                    continue;
+                }
+                match pick {
+                    None => {
+                        if order0_out && k.0 != 0 {
+                            break;
+                        }
+                        pick = Some((*s, k.0));
+                    }
+                    Some((ps, pc)) if ps != *s || pc != k.0 => continue,
+                    _ => {}
+                }
+                ids.push((*k, *b));
+                if ids.len() >= MAX_FETCH_IDS {
+                    break;
+                }
+            }
+            let Some(p) = self.pull.get_mut(&conn) else { return };
+            for k in drop {
+                p.queue.remove(&k);
+            }
+            let Some((s, c)) = pick else { return };
+            let blobs: Vec<BlobId> = ids.iter().map(|(_, b)| *b).collect();
+            let Some(id) = ctx.wire.request(conn, Msg::Fetch { id: 0, sync_id: s, max_reply: REPLY_BUDGET as u64, ids: blobs.clone() }) else { return };
+            for (k, b) in &ids {
+                p.queue.remove(k);
+                self.asked.insert(*b, (conn, ctx.now));
+            }
+            p.fetches.insert(id, (s, blobs, c));
+        }
+    }
+
+    /// A FetchReply (or a Fetch skipped or refused: none of its IDs): what came is taken, what
+    /// came as none fails at this source, the rest of a prefix is asked again.
+    fn fetched(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, items: Vec<Fetched>) {
+        let Some(p) = self.pull.get_mut(&conn) else { return };
+        let Some((s, ids, c)) = p.fetches.remove(&id) else { return };
+        let answered: BTreeSet<BlobId> = items.iter().map(|f| f.blob_id).collect();
+        for b in &ids {
+            if self.asked.get(b).is_some_and(|(x, _)| *x == conn) {
+                self.asked.remove(b);
+            }
+        }
+        if items.is_empty() {
+            if let Some(p) = self.pull.get_mut(&conn) {
+                p.failed.extend(ids.iter().copied());
+            }
+        } else if let Some(p) = self.pull.get_mut(&conn) {
+            for b in ids.iter().filter(|b| !answered.contains(b)) {
+                p.arrivals += 1;
+                let key = (c, 0, u64::MAX - p.arrivals);
+                p.queue.insert(key, (s, *b));
+            }
+        }
+        for f in items {
+            match f.entry {
+                Some((bytes, wrap, stamp)) => {
+                    self.serve.entry(conn).or_default().crossed.insert(f.blob_id);
+                    self.take_body(ctx, conn, s, f.blob_id, wrap, stamp, &bytes);
+                }
+                None => {
+                    if let Some(p) = self.pull.get_mut(&conn) {
+                        p.failed.insert(f.blob_id);
+                    }
+                }
+            }
+        }
+        self.drain(ctx, conn);
+    }
+
+    /// Applies the messages in hand, in order, while the first owes nothing: an owed body is
+    /// settled once held, no longer wanted (not a member here), or this source lacks it.
+    fn drain(&mut self, ctx: &mut Ctx, conn: ConnId) {
+        loop {
+            let Some(p) = self.pull.get(&conn) else { return };
+            let Some(front) = p.pending.front() else { break };
+            let members = ctx.shared.members(conn);
+            let ready = front.owed.iter().all(|(s, b)| p.settled.contains(&(*s, *b)) || p.failed.contains(b) || !members.contains_key(s) || ctx.store.bytes(b).ok().flatten().is_some());
+            if !ready {
+                return;
+            }
+            let Some(batch) = self.pull.get_mut(&conn).and_then(|p| p.pending.pop_front()) else { return };
+            self.apply(ctx, conn, batch);
+        }
+        if let Some(p) = self.pull.get_mut(&conn) {
+            p.settled.clear();
+        }
+    }
+
+    /// Applies one message: what each source holds (`known`; a deletion only says the source no
+    /// longer holds it, a head names its step), then the cursor stored (SN_cursor: only now),
+    /// joins moved, and an Applied when asked (spec/sync-streams.md §4 Applying, Reports).
+    fn apply(&mut self, ctx: &mut Ctx, conn: ConnId, batch: Batch) {
+        let members: BTreeSet<SyncId> = ctx.shared.members(conn).keys().copied().collect();
+        let Some(p) = self.pull.get_mut(&conn) else { return };
+        let src = p.src;
+        if let Some(r) = &batch.reply
+            && r.whole
+            && r.trimmed
+            && p.listing.is_none()
+        {
+            p.listing = Some(BTreeMap::new());
+        }
+        let mut listing = p.listing.take();
+        for (s, e) in &batch.events {
+            if !members.contains(s) {
+                continue;
+            }
+            self.work.applied += 1;
+            match e {
+                Event::Added { blob_id: b, blob, .. } => {
+                    let class = match blob {
+                        Some(v) => Prefix::parse(v).map_or(Class::Durable, |p| p.class()),
+                        None => ctx.store.entry(s, b).ok().flatten().map_or(Class::Durable, |e| e.class),
+                    };
+                    let at = if class == Class::Ephemeral { Source::Conn(conn) } else { src };
+                    self.known.add(at, *s, *b);
+                    if let Some(l) = listing.as_mut() {
+                        l.entry(*s).or_default().insert(*b);
+                    }
+                }
+                Event::Deleted(b) => {
+                    self.known.remove(src, *s, b);
+                    self.known.remove(Source::Conn(conn), *s, b);
+                }
+                Event::Head(step) => self.known.set_head(src, *s, step.id()),
+                _ => {}
+            }
+        }
+        let place = self.places.entry(src).or_default();
+        if batch.cursor.is_some() || batch.reply.as_ref().is_some_and(|r| r.whole) {
+            place.cursor = batch.cursor.clone();
+        }
+        if let Some(r) = &batch.reply {
+            if r.whole {
+                // every member from the start: each at the stream now
+                for s in &members {
+                    place.at_stream.insert(*s);
+                    place.joining.remove(s);
+                    place.stopped.remove(s);
+                }
+            } else {
+                for (s, _) in &r.asked {
+                    match r.joins.get(s) {
+                        Some(Some(c)) => {
+                            place.joining.insert(*s, Some(c.clone()));
+                        }
+                        Some(None) => {
+                            place.joining.remove(s);
+                        }
+                        None => {
+                            place.joining.remove(s);
+                            if members.contains(s) {
+                                place.at_stream.insert(*s);
+                            }
+                        }
+                    }
+                }
+            }
+            // SN_infer: a listing from the start replaces what this source holds only when trimmed
+            if !r.more
+                && let Some(seen) = listing.take()
+            {
+                for s in &members {
+                    let listed = seen.get(s);
+                    for b in self.known.list(src, s) {
+                        if listed.is_none_or(|l| !l.contains(&b)) {
+                            self.known.remove(src, *s, &b);
+                        }
+                    }
+                }
+            }
+        }
+        let Some(p) = self.pull.get_mut(&conn) else { return };
+        p.listing = listing;
+        if batch.report
+            && let Some(c) = batch.cursor
+        {
+            p.applied_owed = Some(c);
+        }
+    }
+}

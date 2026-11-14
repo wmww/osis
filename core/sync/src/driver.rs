@@ -19,7 +19,7 @@ use crate::read::Read;
 use crate::session::{Incoming, Session, Sessions, To};
 use crate::status::{Status, StatusView};
 use crate::store::Store;
-use crate::streams::Streams;
+use crate::streams::{Reported, Streams};
 use crate::types::{ConnId, Cx, Error, Input, Out, Result, Scope, SyncConfig, Waiting};
 use crate::unread::Unread;
 use osis_base::WallMs;
@@ -66,6 +66,8 @@ pub fn apply(out: Vec<Out>, links: &mut impl Links) {
 #[derive(Clone, Debug, Default)]
 struct Driver {
     sessions: Sessions,
+    /// Reported positions streams gave this step, for opens.
+    reported: Vec<Reported>,
 }
 
 /// One node's sync: its engine, its store and every module.
@@ -178,7 +180,7 @@ impl Node {
                     let proved = matches!(m, Incoming::Proved);
                     match m.to() {
                         Some(To::Opens) => self.opens.on_message(&mut cx, sessions, &self.unread, conn, m, &mut moved),
-                        Some(To::Streams) => self.streams.on_message(&mut cx, sessions, &self.opens, conn, m),
+                        Some(To::Streams) => self.streams.on_message(&mut cx, sessions, &self.opens, conn, m, &mut self.driver.reported),
                         Some(To::Read) => self.read.on_message(&mut cx, sessions, conn, m),
                         Some(To::Inbox) => self.inbox.on_message(&mut cx, sessions, &self.opens, &self.streams, conn, m),
                         None => {
@@ -210,7 +212,7 @@ impl Node {
         let mut cx = cx!(self, out);
         for m in moved.drain(..) {
             self.inbox.moved(&m, &crate::inbox::Links { sessions: &mut self.driver.sessions, opens: &self.opens, streams: &self.streams });
-            self.streams.moved(&mut cx, &mut self.driver.sessions, m);
+            self.streams.moved(&mut cx, &mut self.driver.sessions, &self.opens, m, &mut self.driver.reported);
         }
     }
 
@@ -221,6 +223,7 @@ impl Node {
         if !bytes.is_empty() {
             out.push(Out::Send(conn, bytes));
         }
+        self.streams.closed(conn);
         let mut moved = Vec::new();
         self.opens.on_closed(&mut cx!(self, out), conn, &mut moved);
         self.moved(&mut moved, out);
@@ -245,7 +248,9 @@ impl Node {
             let sessions = &mut self.driver.sessions;
             acted |= self.read.settle(&mut cx, sessions, &self.opens, &self.streams)?;
             acted |= self.inbox.settle(&mut cx, sessions, &self.opens, &self.streams)?;
-            acted |= self.streams.settle(&mut cx, sessions, &self.opens)?;
+            acted |= self.streams.settle(&mut cx, sessions, &self.opens, &mut self.driver.reported)?;
+            // reported positions go to opens (`Opens::reported`) with its module
+            self.driver.reported.clear();
             acted |= self.status.settle(&mut cx, &self.opens, &self.streams, &self.read)?;
             if !acted {
                 return Ok(());
