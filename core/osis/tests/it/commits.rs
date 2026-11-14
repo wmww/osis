@@ -401,15 +401,10 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     let db = db(0);
     typed_any(&db, &["t:x.0", "t:y.0"]);
     let (x, y) = (ak("t:x.0"), ak("t:y.0"));
-    // node-local groups: unfiled from home (spec/sync-set.md §1 Filing)
-    let mk = |db: &Osis| {
-        let g = db.commit_with(|w| { let g = w.create_with_content(db.me())?; keep_all(w, g); Ok(g) }).unwrap();
-        db.commit_with(|w| w.group(db.home()).remove(osis::Member::Subgroup(g))).unwrap();
-        g
-    };
+    // groups made under the account (filed under home, spec/sync-set.md §1 Filing): t, listed
+    // in f, is not filed itself
+    let mk = |db: &Osis| db.commit_with(|w| { let g = w.create_with_content(db.me())?; keep_all(w, g); Ok(g) }).unwrap();
     let (f, f2, f3) = (mk(&db), mk(&db), mk(&db));
-    // t, listed only in f, is filed under home too: home keeps the listing's history for the redo
-    db.commit_with(|w| { keep_all(w, db.home()); Ok(()) }).unwrap();
     let t = db.commit_with(|w| { let t = w.create_in(db.me(), &[f])?; keep_all(w, t); w.at(t, kept(&db, &x.clone())).set(&Value::Int(1))?; Ok(t) }).unwrap();
     let created = db.created(t).unwrap().unwrap().id;
     db.commit_with(|w| { w.group(f2).add(osis::Member::Item(t))?; w.group(f3).add(osis::Member::Subgroup(t)) }).unwrap();
@@ -431,9 +426,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     items.sort();
     let mut want = vec![f, f2];
     want.sort();
-    let mut subs = vec![f3, db.home()];
-    subs.sort();
-    assert_eq!((items, gs.subgroup_of), (want, subs));
+    assert_eq!((items, gs.subgroup_of), (want, vec![f3]));
     step(&db, &s, true).unwrap();
     assert_eq!(db.at(t, kept(&db, &y.clone())).get().unwrap(), Some(Value::Int(2)));
     assert_eq!(next(&db, &s, true), None);
@@ -442,7 +435,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     let r = db.revert(created).unwrap();
     assert!(!db.has_content(t).unwrap() && db.at(t, kept(&db, &y.clone())).get().unwrap().is_none() && db.groups_of(t).unwrap().within.is_empty());
     db.revert(r.stamp.id).unwrap();
-    assert!(db.at(t, kept(&db, &x)).get().unwrap() == Some(Value::Int(1)) && db.at(t, kept(&db, &y)).get().unwrap() == Some(Value::Int(2)) && db.groups_of(t).unwrap().within.len() == 2);
+    assert!(db.at(t, kept(&db, &x)).get().unwrap() == Some(Value::Int(1)) && db.at(t, kept(&db, &y)).get().unwrap() == Some(Value::Int(2)) && [f, f2].iter().all(|g| db.groups_of(t).unwrap().within.contains(g)));
 }
 
 // notes/ephemeral.md API (Undo), spec/crdt.md §4.6: undoing the commit that created a thing
