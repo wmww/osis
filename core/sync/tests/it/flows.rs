@@ -729,3 +729,38 @@ fn a_sync_grant_accepted_on_one_node_is_taken_at_its_sibling_spec_sync_inbox_2()
         assert_eq!(w.engine(i).thing_sync(&t).unwrap(), osis_engine::sync::ThingSync::Unread(vec![s]), "node {i}");
     }
 }
+
+// spec/crypto.md §4 (encrypt under covering epoch), spec/permissions.md §3 (required rotation):
+// a reader's `until` passes; before node 0 next encrypts under t's read epoch it rotates, so the
+// departed reader reads nothing written after.
+#[test]
+#[ignore = "issues/no-rotation-before-encrypting.md"]
+fn repro_a_passed_until_rotates_before_the_next_encryption_spec_crypto_4() {
+    let mut w = contacts();
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let ak = Ak::new("u:v.0").unwrap();
+    let set = |w: &mut World, t: Option<osis_base::Tid>, v: &str| {
+        w.write(0, |e| {
+            let mut m = Mutation::new();
+            let t = t.unwrap_or_else(|| e.new_thing(&mut m, a0));
+            m.set(t, &ak, &Value::Str(v.into())).unwrap();
+            e.commit(m).unwrap();
+            t
+        })
+    };
+    let t = set(&mut w, None, "before");
+    file(&mut w, 0, vec![t], Vec::new());
+    let until = osis_base::WallMs(w.now().0 + 60_000);
+    w.write(0, |e| e.grant(&t, &a1, &ct::Edge { until: Some(until), ..edge(Role::Read) })).unwrap();
+    w.run();
+    file(&mut w, 1, Vec::new(), vec![t]);
+    w.run();
+    assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("before".into())));
+    let read = |w: &mut World| w.engine(0).epochs(&t).unwrap().role(Role::Read).newest_secret().unwrap().0;
+    let e0 = read(&mut w);
+    w.advance(120_000);
+    set(&mut w, Some(t), "after");
+    w.run();
+    assert_ne!(read(&mut w), e0, "rotated before encrypting");
+    assert_ne!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("after".into())), "the departed reader reads nothing new");
+}
