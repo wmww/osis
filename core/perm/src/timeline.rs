@@ -957,7 +957,7 @@ impl Timeline {
 
     /// Effective roles of `node` at `at` on every thing it reaches (`roles_of`), walked once
     /// per node while the answer holds for the current edges (`roles_now`) and at the end.
-    pub fn roles_at(&self, node: &Tid, at: At) -> Arc<BTreeMap<Tid, Role>> {
+    fn roles_at(&self, node: &Tid, at: At) -> Arc<BTreeMap<Tid, Role>> {
         if at.point.is_none()
             && let Some(ts) = at.ts
         {
