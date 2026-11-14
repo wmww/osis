@@ -223,3 +223,15 @@ fn a_reader_granted_again_through_a_failed_write_reads_spec_sync_streams_4() {
     use crate::harness::history::Gives;
     crate::convergence::converge(468073306024, 3, &[New(0), Grant(0, 0, 2, Gives::Syncs), Write(0, 0), Disk(1, 20, Fail), Write(0, 0), Remove(0, 0, 2), Grant(0, 0, 1, Gives::Reads), Remove(0, 0, 1), Grant(0, 0, 1, Gives::Reads)], String::new());
 }
+
+// spec/requirements.md Convergence: a writer removed after a write that reached its granter, and
+// a reader granted then, read alike: the new reader reads the removed writer's last write.
+// Found by the full-size differential (clean seed 188669321708, shrunk); fails:
+// issues/sync-removed-writers-write.md.
+#[test]
+#[ignore = "fails: issues/sync-removed-writers-write.md"]
+fn a_reader_granted_after_a_writers_removal_reads_its_last_write() {
+    use crate::harness::Step::*;
+    use crate::harness::history::Gives;
+    crate::convergence::converge(188669321708, 3, &[New(0), New(0), New(0), Grant(0, 2, 1, Gives::Writes), Run, Write(1, 2), Run, Remove(0, 2, 1), Grant(0, 2, 2, Gives::Reads)], String::new());
+}
