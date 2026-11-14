@@ -793,7 +793,7 @@ indexes! {
     /// Destroyed things keeping nothing whose own secrets are held for node-sync's deletes alone
     /// (`records::DESTROYED_SECRETS`, `retention::destroy::hold_secrets`).
     pub destroyed_secrets: JSet<Tid>,
-    /// Destroyed things' own sync IDs kept for emptying once they keep nothing
+    /// Destroyed things' own sync IDs, read from the destruction until emptied
     /// (`records::DESTROYED_SYNC_IDS`, `retention::destroy::keep_sync_ids`).
     pub destroyed_sync_ids: JMap<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
     /// The account's sync records (`kept^.0` on D, by thing; `sync::records::observe`).

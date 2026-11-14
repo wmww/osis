@@ -558,14 +558,16 @@ fn hold_secrets(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 }
 
 /// Destroyed `t`'s `sync.0` goes with its destruction: with secrets of its own held, its own
-/// sync IDs are kept (`records::DESTROYED_SYNC_IDS`) for sync to empty once it keeps nothing.
+/// sync IDs are kept (`records::DESTROYED_SYNC_IDS`) and stay read (`Engine::thing_sync`) from
+/// its destruction, keeping or not, carrying the requests destroying it (spec/sync-judgement.md
+/// §5 Telling), until sync empties them once it keeps nothing.
 ///
 /// Invariant: once a destroyed thing keeps nothing here, everything under its own labels is
 /// must-not-hold for every holder: nothing it keeps lives there (what its dependents need of it
 /// travels under their labels, spec/commits.md §5 Destruction), and its closure, its required set
 /// there, is empty. So while it keeps nothing and this node holds its secrets
-/// (`Engine::destruction`), sync syncs those sync IDs for that alone (spec/sync-judgement.md §5),
-/// and once they are emptied the row goes, and only then its secrets, which derive those keys
+/// (`Engine::destruction`), sync empties those sync IDs (spec/sync-judgement.md §5), and once
+/// they are emptied the row goes, and only then its secrets, which derive those keys
 /// (`Engine::forget_destroyed`). Not while it keeps: its destruction may still fall (a request in
 /// force), and what it dropped is fetched again.
 fn keep_sync_ids(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {

@@ -168,11 +168,7 @@ impl Engine {
 
     /// The thing whose read sync ID `s` is here (`ThingSync::Read`).
     pub(crate) fn read_thing(&mut self, s: &SyncId) -> Result<Option<Tid>> {
-        let owner = match self.sync_owner_of(s)? {
-            Some(t) => Some(t),
-            None => self.core.ix.destroyed_sync_ids.iter().find(|(_, v)| v.iter().any(|o| o.id == *s)).map(|(t, _)| *t),
-        };
-        let Some(t) = owner else { return Ok(None) };
+        let Some(t) = self.sync_owner_of(s)? else { return Ok(None) };
         Ok(matches!(self.thing_sync_now(&t)?, ThingSync::Read(ids) if ids.contains(s)).then_some(t))
     }
 

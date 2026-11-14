@@ -46,16 +46,23 @@ impl Engine {
         self.core.epochs(t).is_some_and(|e| e.role(Role::Read).holds_any())
     }
 
+    /// Whether this node holds a read secret of `t`'s own (`Indexes::secrets`): a destroyed
+    /// thing's, held while its record is or not (`retention::destroy::hold_secrets`).
+    fn holds_own_read(&self, t: &Tid) -> bool {
+        self.core.ix.secrets.get(t).is_some_and(|e| e.role(Role::Read).holds_any())
+    }
+
     /// The things the sync set is judged over (spec/sync-set.md §2): the synced group's closure
     /// (the engine's closure `Arc`, the same while it does not change), with each destroyed thing
-    /// whose own sync IDs are being emptied (spec/sync-judgement.md §5). Walked through groups this
-    /// node reads only: a thing kept unread lists nothing here.
+    /// whose own sync IDs are kept (`Indexes::destroyed_sync_ids`: from its destruction until they
+    /// are emptied, spec/sync-judgement.md §5). Walked through groups this node reads only: a
+    /// thing kept unread lists nothing here.
     pub(crate) fn sync_things_now(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         let closure = match self.sync_root()? {
             Some(root) => self.closure(&root),
             None => Arc::new(BTreeSet::new()),
         };
-        let mut emptying: Vec<Tid> = self.core.ix.destroyed_sync_ids.keys().filter(|t| self.core.ix.destroyed_secrets.contains(t)).copied().collect();
+        let mut emptying: Vec<Tid> = self.core.ix.destroyed_sync_ids.keys().copied().collect();
         // links being redeemed (spec/sync-set.md §2)
         emptying.extend(self.core.followed_links.keys().filter(|k| crate::labeling::actors::followable(self, k)).copied());
         if emptying.iter().all(|t| closure.contains(t)) {
@@ -65,15 +72,15 @@ impl Engine {
     }
 
     /// How this node syncs thing `t` of `sync_things` (spec/sync-set.md §2): its home sync ID read
-    /// while a read secret of it is held (a destroyed thing being emptied: its own sync IDs), kept
-    /// unread while only its sync record is; a thing with secrets of its own and neither is
-    /// unsyncable; a plain thing has none of its own. Reads only `t`'s keys.
+    /// while a read secret of it is held (a destroyed thing: every own sync ID its destruction
+    /// kept, from its destruction until they are emptied, spec/sync-judgement.md §5), kept unread
+    /// while only its sync record is; a thing with secrets of its own and neither is unsyncable; a
+    /// plain thing has none of its own. Reads only `t`'s keys.
     pub(crate) fn thing_sync_now(&mut self, t: &Tid) -> Result<ThingSync> {
-        if self.core.created(t).is_none() && self.core.ix.destroyed_secrets.contains(t) {
-            let ids: Vec<SyncId> = self.owned_sync_ids(t)?.iter().map(|o| o.id).collect();
-            if !ids.is_empty() {
-                return Ok(ThingSync::Read(ids));
-            }
+        if let Some(kept) = self.core.ix.destroyed_sync_ids.get(t).cloned()
+            && self.holds_own_read(t)
+        {
+            return Ok(ThingSync::Read(kept.iter().map(|o| o.id).collect()));
         }
         if self.core.has_own_secrets(t)
             && self.holds_read(t)
@@ -224,7 +231,6 @@ impl Engine {
     /// `thing_sync` lists `s`. The sync set's entry for `s` when the closure holds that thing.
     pub(crate) fn sync_holder_now(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
         let mut owners: Vec<Tid> = self.sync_owner_of(s)?.into_iter().collect();
-        owners.extend(self.core.ix.destroyed_sync_ids.iter().filter(|(_, v)| v.iter().any(|o| o.id == *s)).map(|(t, _)| *t));
         owners.extend(self.core.ix.record_ids.get(s).into_iter().flatten().copied());
         for t in owners {
             match self.thing_sync(&t)? {
@@ -238,6 +244,8 @@ impl Engine {
 
     pub(crate) fn sync_owner_of(&mut self, s: &SyncId) -> Result<Option<Tid>> {
         let mut things: Vec<Tid> = self.core.ix.sync_recorders.get(s).into_iter().flatten().copied().collect();
+        // a destroyed thing's kept own sync IDs (`owned_sync_ids`)
+        things.extend(self.core.ix.destroyed_sync_ids.iter().filter(|(_, v)| v.iter().any(|o| o.id == *s)).map(|(t, _)| *t));
         // a thing a taken inbox blob named it for (O(hints held))
         things.extend(self.core.ix.inbox_hints.iter().filter(|(_, x)| x.0 == *s).map(|(t, _)| *t));
         things.extend(self.core.followed_links.iter().filter(|(_, x)| x.0 == *s).map(|(t, _)| *t));

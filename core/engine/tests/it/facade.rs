@@ -2122,4 +2122,38 @@ fn own_secrets_and_the_home_sync_id_come_in_one_commit_spec_sync_ids_2() {
         let first = done.commits.iter().map(|c| e.header(c).unwrap()).find(|h| h.aspects.iter().any(|a| a.tid == t && a.ak == secrets)).expect("a commit gives t its secrets");
         assert!(first.aspects.iter().any(|a| a.ak == sync), "the commit giving t secrets writes sync.0 (by grant: {by_grant})");
     }
+
+// spec/sync-judgement.md §5 (Telling: from its destruction a node holding a destroyed thing's
+// secrets keeps syncing its own sync IDs, logging the destroying requests there; Emptying: a
+// holder of the newest step's delete key deletes there; forgotten, they leave the sync set),
+// spec/sync-set.md §2: purged, t keeps (its request in force) and S stays read, carrying the
+// request; keeping nothing, S stays read with the head's delete key; forgotten, S goes.
+#[test]
+fn a_destroyed_things_sync_id_stays_read_until_forgotten_spec_sync_judgement_5() {
+    let (mut lp, t, _, _, _) = granted(Role::Write);
+    let e = &mut lp.peers[0].engine;
+    let s = e.home_sync_id(&t).unwrap().unwrap();
+    let mut m = Mutation::new();
+    let now = e.now();
+    m.set(t, &ct::PURGE, &now).unwrap();
+    m.purge(osis_commit::PurgeItem::Aspect { tid: t, ak: ct::CREATED.name() });
+    let q = e.commit(m).unwrap().unwrap();
+    assert!(!e.knows(&t), "t destroyed");
+    assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Read(vec![s]), "kept: S read");
+    assert_eq!(e.sync_holder(&s).unwrap(), Some((t, Holding::Read)));
+    assert_eq!(e.sync_set().unwrap().ids.get(&s), Some(&(t, Holding::Read)));
+    assert!(e.sync_bodies(&q).unwrap().contains_key(&s), "the request goes under S");
+    assert!(e.destruction(&t).unwrap().is_none(), "not emptied while it keeps");
+    lp.advance(osis_base::format::ROLE_KEEP_MS + 1_000);
+    lp.peers[0].tick().unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(e.destruction(&t).unwrap().is_some(), "keeps nothing: emptied");
+    assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Read(vec![s]), "keeping nothing: S read");
+    let c = e.read_credentials(&s).unwrap().expect("credentials of S");
+    let head = c.head.as_ref().unwrap().id();
+    assert!(c.keys.get(&head).is_some_and(|k| k.delete.is_some()), "the head's delete key");
+    e.forget_destroyed(&t).unwrap();
+    assert_ne!(e.thing_sync(&t).unwrap(), ThingSync::Read(vec![s]), "forgotten: S not read");
+    assert_eq!(e.sync_holder(&s).unwrap(), None);
+    assert!(!e.sync_set().unwrap().ids.contains_key(&s));
 }

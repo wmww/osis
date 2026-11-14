@@ -725,7 +725,10 @@ impl Engine {
     }
 
     /// The keys this node holds for `head` of a label of `g` (spec/sync-ids.md §2, spec/sync-ids.md §6): any
-    /// held secret opens; stamps and deletes need an established epoch (spec/crypto.md §4).
+    /// held secret opens; stamps and deletes need an established epoch (spec/crypto.md §4), but for
+    /// the delete key of a destroyed thing whose secrets are held for deletes alone
+    /// (`retention::destroy::hold_secrets`): what established them went with it, and the step
+    /// bearing the key vouches for the secret (spec/sync-judgement.md §5 Emptying).
     pub fn head_keys(&mut self, g: &Tid, head: &Step) -> Result<HeadKeys> {
         Memo::get_in(self, |e| &e.core.head_keys, &(*g, head.id()), |e| e.head_keys_derived(g, head))
     }
@@ -746,7 +749,7 @@ impl Engine {
                 k.epochs[1] = Some(ep);
             }
             if let Some((ep, s, checked)) = matching(&e, LabelRole::Delete, &head.keys.delete) {
-                if checked && self.established(g, &e, Role::Admin, &ep) {
+                if checked && (self.established(g, &e, Role::Admin, &ep) || self.core.ix.destroyed_secrets.contains(g)) {
                     k.delete = Some(s);
                 }
                 k.epochs[2] = Some(ep);

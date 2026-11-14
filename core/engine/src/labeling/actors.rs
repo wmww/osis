@@ -193,15 +193,15 @@ impl Engine {
 
     /// The sync IDs `g` owns as its `sync.0` records them (`owns`), each with its recorded path;
     /// hints while this node holds no sync secret of `g`'s own. Decoded once per write of the
-    /// `sync.0` (`Core::sync_ids`). A destroyed thing keeping nothing has the ones its destruction
-    /// kept (`Indexes::destroyed_sync_ids`). A `sync.0` the store refuses to read is the error, read
-    /// again at the next ask.
+    /// `sync.0` (`Core::sync_ids`). A destroyed thing has the ones its destruction kept
+    /// (`Indexes::destroyed_sync_ids`), its record held or not. A `sync.0` the store refuses to
+    /// read is the error, read again at the next ask.
     pub(crate) fn owned_sync_ids(&mut self, g: &Tid) -> Result<Arc<Vec<OwnedSyncId>>> {
+        if let Some(kept) = self.core.ix.destroyed_sync_ids.get(g) {
+            return Ok(kept.clone());
+        }
         if self.core.created(g).is_none() {
-            if let Some(h) = followed(self, g) {
-                return Ok(Arc::new(vec![h]));
-            }
-            return Ok(self.core.ix.destroyed_sync_ids.get(g).cloned().unwrap_or_default());
+            return Ok(followed(self, g).map(|h| Arc::new(vec![h])).unwrap_or_default());
         }
         Memo::get_in(self, |e| &e.core.sync_ids, g, |e| {
             let m = e.get_typed(g, &ct::SYNC)?.unwrap_or_default();
