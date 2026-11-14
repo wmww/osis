@@ -267,14 +267,17 @@ fn outsider_across_a_node_removal(mut w: World) {
     assert!(lost.is_empty(), "node 0 dropped {} commits it held", lost.len());
     assert!(w.engine(0).roster(&t).contains_key(&a0), "node 0's account keeps its read edge");
     assert_eq!(w.engine(0).get(&t, &ak).unwrap(), Some(Value::Str("before".into())), "the write before the removal");
-    // what an outsider learns of the account's lists: only lists of t and of the account (whose
-    // rotations are its certificates), naming only commits it holds: nothing of D or its nodes
+    // what an outsider learns of the account's lists: only lists of what it reads (t; the
+    // account's profile and what the two share where they are contacts) and of the account
+    // (whose rotations are its certificates), naming only commits it holds: nothing of D or its
+    // nodes
     let mine = w.engine(0).commit_ids();
     let rots = w.engine(1).account_rotations(&a1);
     assert!(rots.iter().any(|r| w.engine(1).rotation_lists(r).unwrap().iter().any(|(x, _)| *x == d)), "node 1 holds D's list");
     for r in rots {
         for (x, ids) in w.engine(0).rotation_lists(&r).unwrap() {
-            assert!(x == t || x == a1, "node 0 holds a thing list of {x:?} (d {d:?})");
+            let reads = matches!(w.engine(0).thing_sync(&x).unwrap(), osis_engine::sync::ThingSync::Read(_));
+            assert!(x == t || x == a1 || reads, "node 0 holds a thing list of {x:?} (d {d:?})");
             assert!(ids.iter().all(|c| mine.contains(c)), "a list of {x:?} names a commit node 0 does not hold");
         }
     }
@@ -307,13 +310,66 @@ fn an_outsider_reads_the_accounts_writes_across_a_node_removal_spec_permissions_
     outsider_across_a_node_removal(w);
 }
 
-// spec/permissions.md §5.5 (Honest nodes of P: removing a node X from D), the same where node 0
-// holds node 1's contact card: A's rotation reaches it first under the card's sync ID, before t's
-// thing list, so t's grant reads unlisted, node 0 stops syncing t and never fetches the list
-// (issues/outsider-reads-nothing-after-node-removal.md). The API flow is osis
-// `sync::repro_an_outsider_reads_the_accounts_writes_across_a_node_removal_*`.
+// spec/sync-set.md §3 (One rule ends syncing it: N keeps syncing S until a complete pass of S begun
+// after S left ends, and what that pass brings may give S back), spec/permissions.md §5.5: the same where node 0 holds node 1's
+// contact card. A's rotation reaches it first under the card's sync ID, before t's thing list, so
+// t reads plain for now and S_t leaves; node 0 keeps syncing S_t (opening and proving by t's read
+// secrets) through a pass, which brings the list, and S_t comes back. The API flow is osis
+// `sync::an_outsider_reads_the_accounts_writes_across_a_node_removal_*`.
 #[test]
-#[ignore = "issues/outsider-reads-nothing-after-node-removal.md"]
-fn repro_an_outsider_reads_the_accounts_writes_across_a_node_removal() {
+fn an_outsider_with_the_card_reads_the_accounts_writes_across_a_node_removal_spec_sync_set_3() {
     outsider_across_a_node_removal(siblings());
+}
+
+// spec/crypto.md §4 (Roles secrets: a history-less holder holds every earlier epoch's roles
+// secret), spec/crypto.md §5 (A rotation's thing lists: they wrap as it does, under the roles
+// secret), spec/permissions.md
+// §5.5: after account A removes node 2 (rotation r), node 1 grants t from now to a new account's
+// node 3. Node 3 opens t's thing list of r under the closed epoch's roles secret, so it judges A's
+// grant to node 0's account as node 0 does: both hold the same roster of t.
+#[test]
+fn a_from_now_grantee_after_a_removal_holds_the_old_readers_roster_spec_crypto_5() {
+    use osis_engine::flows::edges::History;
+    let mut w = fixture("one-way contact siblings", || {
+        let mut w = two_nodes();
+        let card = w.make_link(0, w.node(0).profile.expect("a profile"), Role::Read);
+        w.redeem(1, &card);
+        w.run();
+        assert_eq!(w.redeem(1, &card), osis_sync::types::Waiting::Done, "node 1 redeems node 0's card");
+        file(&mut w, 1, Vec::new(), vec![card.target]);
+        w.pair(1);
+        w.run();
+        w
+    });
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let ak = Ak::new("u:v.0").unwrap();
+    let t = w.write(1, |e| {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a1);
+        m.set(t, &ak, &Value::Str("before".into())).unwrap();
+        e.commit(m).unwrap();
+        t
+    });
+    file(&mut w, 1, vec![t], Vec::new());
+    w.write(1, |e| e.grant(&t, &a0, &edge(Role::Read))).unwrap();
+    w.run();
+    file(&mut w, 0, Vec::new(), vec![t]);
+    w.run();
+    let (n2, d) = (w.engine(2).tid(), w.engine(1).account().unwrap().unwrap().1);
+    w.write(1, |e| e.demote(&d, &Demotion { holder: n2, new: None, retain: None })).unwrap();
+    w.run();
+    let n3 = w.add_node();
+    let a3 = w.node(n3).account.unwrap();
+    let card = w.make_link(n3, w.node(n3).profile.expect("a profile"), Role::Read);
+    w.redeem(1, &card);
+    w.run();
+    w.write(1, |e| e.grant_with(&t, &a3, &edge(Role::Read), History::None)).unwrap();
+    w.run();
+    file(&mut w, n3, Vec::new(), vec![t]);
+    w.run();
+    let old = w.engine(0).roster(&t);
+    assert!(old.contains_key(&a0), "node 0 keeps its read edge");
+    assert!(w.engine(n3).roster(&t).contains_key(&a3), "node 3 holds its grant");
+    assert_eq!(w.engine(n3).roster(&t), w.engine(1).roster(&t), "node 3 holds the writer's roster of t");
+    assert_eq!(w.engine(0).roster(&t), w.engine(1).roster(&t), "so does node 0");
 }

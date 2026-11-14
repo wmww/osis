@@ -842,3 +842,36 @@ fn repro_a_removal_is_logged_before_what_was_written_before_it_spec_permissions_
     let (pc, pr) = (at(&mut w, c), at(&mut w, r));
     assert!(pr < pc, "the removal ({pr:?}) logged before the write ({pc:?})");
 }
+
+// spec/sync-set.md §3 (One rule ends syncing it: a complete pass after it left first, then the rules apply): node 0 removes
+// node 1's account from a thing node 1 reads, then writes; node 1 syncs S one more pass after the
+// removal reaches it, opens nothing written after, and then stops syncing S.
+#[test]
+fn a_removed_reader_opens_nothing_after_and_stops_spec_sync_set_3() {
+    let mut w = contacts();
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let ak = Ak::new("u:v.0").unwrap();
+    let set = |w: &mut World, t: Option<osis_base::Tid>, v: &str| {
+        w.write(0, |e| {
+            let mut m = Mutation::new();
+            let t = t.unwrap_or_else(|| e.new_thing(&mut m, a0));
+            m.set(t, &ak, &Value::Str(v.into())).unwrap();
+            e.commit(m).unwrap();
+            t
+        })
+    };
+    let t = set(&mut w, None, "before");
+    file(&mut w, 0, vec![t], Vec::new());
+    w.write(0, |e| e.grant(&t, &a1, &edge(Role::Read))).unwrap();
+    w.run();
+    file(&mut w, 1, Vec::new(), vec![t]);
+    w.run();
+    assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("before".into())));
+    let s = w.engine(1).sync_ids(&t).unwrap()[0].id;
+    assert!(w.store(1).synced(&s).is_some());
+    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap();
+    set(&mut w, Some(t), "after");
+    w.run();
+    assert_ne!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("after".into())), "nothing written after the removal");
+    assert!(w.store(1).synced(&s).is_none(), "S synced no more once its pass ended");
+}

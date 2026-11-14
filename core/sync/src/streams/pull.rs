@@ -157,10 +157,11 @@ pub(super) struct Pulling {
     tell: Vec<(SyncId, Event)>,
     told_full: BTreeSet<SyncId>,
     applied_owed: Option<Cursor>,
-    /// When the Pull out was sent, and when the one the last reply answered was: a stream caught
-    /// up since a moment read its end from a Pull sent after it (spec/sync-status.md §1).
-    out_at: WallMs,
-    pub(super) answered_at: WallMs,
+    /// The places (`Streams::pull_seq`) of the Pull out and of the one the last reply answered:
+    /// a stream caught up since a pass began read its end from a Pull sent after it
+    /// (spec/sync-status.md §1).
+    out_at: u64,
+    pub(super) answered_at: u64,
     /// A Pull is wanted though nothing else is due (a complete pass, `Streams::pull_again`).
     pub(super) again: bool,
 }
@@ -194,8 +195,8 @@ impl Pulling {
             tell: Vec::new(),
             told_full: BTreeSet::new(),
             applied_owed: None,
-            out_at: WallMs(0),
-            answered_at: WallMs(0),
+            out_at: 0,
+            answered_at: 0,
             again: false,
         }
     }
@@ -435,7 +436,8 @@ impl Streams {
         p.again = false;
         p.quiet = false;
         p.out = Some((id, asked));
-        p.out_at = ctx.now;
+        self.pulls_sent += 1;
+        p.out_at = self.pulls_sent;
     }
 
     /// A reply to a request of this side's: a PullReply (or a Pull refused or skipped), a

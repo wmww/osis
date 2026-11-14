@@ -45,7 +45,7 @@ fn a_rotation_owed_by_the_account_is_made_at_a_pass_end_spec_permissions_3() {
     w.run();
     remove_node(&mut w, 0, 2);
     let d1 = remove_node(&mut w, 1, 3);
-    // a pass begun at the same ms as the commits' arrival ends no pass after it
+    // node 1's removal arrives in a later ms than node 0's own (issues/same-ms-merge-rotation.md)
     w.advance(1);
     let pks: Vec<_> = d1.iter().map(|c| w.engine(1).package(c).unwrap().unwrap()).collect();
     w.write(0, |e| {

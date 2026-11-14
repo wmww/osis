@@ -20,8 +20,11 @@ pub struct NetView<'a> {
 }
 
 impl Net for NetView<'_> {
-    fn caught_since(&self, conn: ConnId, s: &SyncId) -> Option<WallMs> {
+    fn caught_since(&self, conn: ConnId, s: &SyncId) -> Option<u64> {
         self.streams.caught_since(conn, s)
+    }
+    fn pull_seq(&self) -> u64 {
+        self.streams.pull_seq()
     }
     fn full(&self, at: Source, s: &SyncId) -> bool {
         self.streams.known().full(at, s)
@@ -40,6 +43,7 @@ pub struct Live<'a, 'b> {
     pub streams: &'a Streams,
     pub read: &'a Read,
     pub unread: &'a Unread,
+    pub leave: &'a crate::leave::Leave,
 }
 
 impl Live<'_, '_> {
@@ -49,8 +53,11 @@ impl Live<'_, '_> {
 }
 
 impl Net for Live<'_, '_> {
-    fn caught_since(&self, conn: ConnId, s: &SyncId) -> Option<WallMs> {
+    fn caught_since(&self, conn: ConnId, s: &SyncId) -> Option<u64> {
         self.net().caught_since(conn, s)
+    }
+    fn pull_seq(&self) -> u64 {
+        self.net().pull_seq()
     }
     fn full(&self, at: Source, s: &SyncId) -> bool {
         self.net().full(at, s)
@@ -122,16 +129,19 @@ impl Ground for Live<'_, '_> {
     fn removal_done(&mut self, c: &CommitId) -> Result<()> {
         Ok(self.cx.engine.removal_done(c)?)
     }
-    fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, WallMs>>> {
+    fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
         Ok(self.cx.engine.passes_wanted()?)
     }
-    fn pass_clock(&mut self) -> WallMs {
-        self.cx.engine.pass_clock()
+    fn leave_passes(&mut self) -> Arc<BTreeMap<SyncId, u64>> {
+        Arc::new(self.leave.passes_wanted())
     }
     fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<osis_engine::sync::Stranding>>> {
         Ok(self.cx.engine.stranded(s)?.map(Arc::new))
     }
-    fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
+    fn begin_pass(&mut self) -> u64 {
+        self.cx.engine.begin_pass()
+    }
+    fn note_complete_pass(&mut self, s: &SyncId, began: u64) -> Result<()> {
         self.cx.engine.note_complete_pass(s, began)?;
         // what a complete pass's end decides (spec/permissions.md §3 Complete pass, §5.5): the
         // engine re-seals, adds history and, for its devices actor, makes the account's owed

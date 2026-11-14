@@ -134,9 +134,12 @@ fn heard_out(sources: impl Iterator<Item = (bool, bool)>) -> bool {
 
 /// What status reads of streams and unread when asked (all stamped reads, memo-safe).
 pub trait Net {
-    /// When the Pull was sent whose answer S's stream on `conn` is caught up by (none: not caught
-    /// up, both ways: spec/sync-status.md §1).
-    fn caught_since(&self, conn: ConnId, s: &SyncId) -> Option<WallMs>;
+    /// The place of the Pull whose answer S's stream on `conn` is caught up by (none: not caught
+    /// up, both ways: spec/sync-status.md §1), among `pull_seq`'s.
+    fn caught_since(&self, conn: ConnId, s: &SyncId) -> Option<u64>;
+    /// The Pulls sent so far (`Streams::pull_seq`): a pass begun now counts only a Pull sent
+    /// after it, whatever the clock reads.
+    fn pull_seq(&self) -> u64;
     fn full(&self, at: Source, s: &SyncId) -> bool;
     fn refusing(&self, at: Source, s: &SyncId) -> bool;
     fn stranded(&self, s: &SyncId) -> bool;
@@ -178,31 +181,37 @@ pub trait Ground: Net {
     fn shared(&mut self, s: &SyncId) -> Result<bool>;
     /// Tells the engine sync is done waiting for a self-removal (it drops the secrets).
     fn removal_done(&mut self, c: &CommitId) -> Result<()>;
-    /// The sync IDs the engine wants a complete pass of, each with the moment the pass must begin
-    /// at or after (spec/permissions.md §3 Complete pass: the newest role commit of one of S's
-    /// actors from elsewhere it applied, a role found gone, a tied demotion's scope).
-    fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, WallMs>>>;
-    /// The engine's clock (`Engine::pass_clock`): a pass's `began` and a want's moment are read on
-    /// the same clock.
-    fn pass_clock(&mut self) -> WallMs;
-    /// A complete pass of S begun at `began` ended (the engine drops S from `passes_wanted` once
-    /// `began` is at or past its moment).
-    fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()>;
+    /// The sync IDs the engine wants a complete pass of, each with the pass place the pass must
+    /// begin after (spec/permissions.md §3 Complete pass: the newest role commit of one of S's
+    /// actors from elsewhere it applied, a tied demotion's scope; spec/sync-status.md §3).
+    fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>>;
+    /// Begins a pass: the next pass place (`Engine::begin_pass`), one count with role arrivals and
+    /// leaves, so a pass counts for a want only when begun above its place.
+    fn begin_pass(&mut self) -> u64;
+    /// A complete pass of S begun at place `began` ended (the engine drops S from
+    /// `passes_wanted` once `began` is above its place).
+    fn note_complete_pass(&mut self, s: &SyncId, began: u64) -> Result<()>;
     /// Whether this node holds no current read secret of read S's thing though one is known
     /// (`Engine::stranded`), with what its report names.
     fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<Stranding>>>;
+    /// The passes leaving sync IDs want, each after the pass place it left at (crate::leave).
+    fn leave_passes(&mut self) -> Arc<BTreeMap<SyncId, u64>> {
+        Arc::default()
+    }
 }
 
 /// A complete pass of S under way (§1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Pass {
-    /// When it began, on the node's clock (what streams' caught-up times are read on).
+    /// When it began, on the node's clock: its `PASS_WAIT_MS` deadline runs from it.
     began: WallMs,
-    /// When it began on the engine's clock (`Engine::pass_clock`): what the engine is told and
-    /// its wants are compared with.
-    noted: WallMs,
+    /// Its pass place (`Ground::begin_pass`): what the engine is told, and what the engine's
+    /// and leave's wants are compared with.
+    noted: u64,
     /// The recorded peers not read since it began.
     waits: BTreeSet<RecordId>,
+    /// The Pulls sent before it began (`Ground::pull_seq`): a source is fresh by a later one.
+    pulled: u64,
 }
 
 /// One own commit under S: held elsewhere, and by which entry (to record it).
@@ -254,12 +263,17 @@ pub struct Status {
     removals: StampedSet<CommitId>,
     /// Per self-removal: sync is done waiting for it (held, or not shared, under each read S).
     release_fx: Effects<CommitId, bool>,
-    wanted_fx: Effects<(), Arc<BTreeMap<SyncId, WallMs>>>,
+    wanted_fx: Effects<(), Arc<BTreeMap<SyncId, u64>>>,
     passes: Stamped<SyncId, Pass>,
     pass_fx: Effects<SyncId, PassNow>,
     /// Per read S: stranded there (heard out, and the engine's `stranded`).
     stranding_fx: Effects<SyncId, Option<Arc<Stranding>>>,
     strandings: Stamped<SyncId, Arc<Stranding>>,
+    /// Per S held, the place (`Pass::seq`) of its last complete pass here: what a leaving S
+    /// waits on (crate::leave). Goes with S.
+    done: Stamped<SyncId, u64>,
+    /// The passes leave wants (`Ground::leave_passes`), whole.
+    left_fx: Effects<(), Arc<BTreeMap<SyncId, u64>>>,
     /// S owes another pass once the one under way ends.
     again: BTreeSet<SyncId>,
     /// Sources that left since the last settle: what their streams showed still counts for held
@@ -291,6 +305,8 @@ impl Default for Status {
             pass_fx: Effects::new("status: pass"),
             stranding_fx: Effects::new("status: stranded"),
             strandings: Stamped::default(),
+            done: Stamped::default(),
+            left_fx: Effects::new("status: passes leaving wants"),
             again: BTreeSet::new(),
             leaving: BTreeMap::new(),
             work: Work::default(),
@@ -326,8 +342,8 @@ impl Status {
     /// The product's settle: over the engine, the store, opens, streams, read and unread.
     /// `pulls`: the connections streams is to Pull again on for a pass (`Streams::pull_again`).
     #[allow(clippy::too_many_arguments)]
-    pub fn settle(&mut self, cx: &mut Cx, opens: &Opens, streams: &Streams, read: &Read, unread: &Unread, pulls: &mut Vec<ConnId>) -> Result<bool> {
-        self.settle_on(&mut Live { cx, opens, streams, read, unread }, pulls)
+    pub fn settle(&mut self, cx: &mut Cx, opens: &Opens, streams: &Streams, read: &Read, unread: &Unread, leave: &crate::leave::Leave, pulls: &mut Vec<ConnId>) -> Result<bool> {
+        self.settle_on(&mut Live { cx, opens, streams, read, unread, leave }, pulls)
     }
 
     // ---- the core ----
@@ -385,6 +401,7 @@ impl Status {
         let gone: Vec<SyncId> = self.holding.keys().filter(|s| !set.ids.contains_key(*s)).copied().collect();
         for s in gone {
             self.holding.remove(&s);
+            self.done.remove(&s);
             self.own_fx.unwant(&s);
             self.forget_own(&s);
             self.unstrand(&s);
@@ -573,8 +590,26 @@ impl Status {
         {
             for (s, since) in wanted.iter() {
                 match self.passes.get(s) {
-                    Some(p) if p.noted >= *since => {}
+                    Some(p) if p.noted > *since => {}
                     // a Pull sent before the moment ends no pass after it: one more once it ends
+                    Some(_) => {
+                        self.again.insert(*s);
+                    }
+                    None => self.begin(g, *s, pulls)?,
+                }
+            }
+        }
+        // a pass of each leaving S begun after it left (crate::leave)
+        self.left_fx.want(());
+        if !self.left_fx.due().is_empty()
+            && let Some(wanted) = whole(&mut self.left_fx, || Ok(g.leave_passes()))?
+        {
+            for (s, since) in wanted.iter() {
+                if self.done.get(s).is_some_and(|d| d > since) {
+                    continue;
+                }
+                match self.passes.get(s) {
+                    Some(p) if p.noted > *since => {}
                     Some(_) => {
                         self.again.insert(*s);
                     }
@@ -597,6 +632,7 @@ impl Status {
             if now.done {
                 self.passes.remove(&s);
                 self.pass_fx.unwant(&s);
+                self.done.insert(s, p.noted);
                 g.note_complete_pass(&s, p.noted)?;
                 acted = true;
                 if self.again.remove(&s) {
@@ -604,7 +640,7 @@ impl Status {
                 }
             } else if !now.read.is_empty() {
                 let waits = p.waits.difference(&now.read).copied().collect();
-                self.passes.insert(s, Pass { began: p.began, noted: p.noted, waits });
+                self.passes.insert(s, Pass { waits, ..p });
             }
         }
         Ok(acted)
@@ -612,15 +648,21 @@ impl Status {
 
     /// Begins a pass of S now: a fresh Pull at each source, the recorded peers to wait for.
     fn begin(&mut self, g: &mut impl Ground, s: SyncId, pulls: &mut Vec<ConnId>) -> Result<()> {
-        let (began, noted) = (g.now(), g.pass_clock());
+        let (began, noted) = (g.now(), g.begin_pass());
         let waits = g.records_holding(&s)?;
         pulls.extend(self.sources.get(&s).into_iter().flat_map(|x| x.keys().copied()));
-        self.passes.insert(s, Pass { began, noted, waits });
+        self.passes.insert(s, Pass { began, noted, waits, pulled: g.pull_seq() });
         self.pass_fx.want(s);
         Ok(())
     }
 
     // ---- reads (stamped: memo-safe; none makes an output) ----
+
+    /// Whether a complete pass of S begun after pass place `seq` (`Engine::pass_place`) ended,
+    /// while S is held.
+    pub fn passed_since(&self, s: &SyncId, seq: u64) -> bool {
+        self.done.get(s).is_some_and(|d| *d > seq)
+    }
 
     /// How S stands now: O(sources of S). None for a sync ID neither held nor shared.
     pub fn of(&self, s: &SyncId, net: &impl Net) -> Option<SyncStatus> {
@@ -766,7 +808,7 @@ fn pass_now(g: &impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: &Pas
     let mut read = BTreeSet::new();
     for (conn, src) in sources {
         work.sources += 1;
-        let fresh = g.caught_since(*conn, s).is_some_and(|t| t >= p.began);
+        let fresh = g.caught_since(*conn, s).is_some_and(|t| t > p.pulled);
         if fresh {
             if let Some(r) = src.record().filter(|r| p.waits.contains(r)) {
                 read.insert(r);
@@ -777,7 +819,10 @@ fn pass_now(g: &impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: &Pas
     }
     let deadline = p.began.0.saturating_add(PASS_WAIT_MS);
     let timed_out = clock.until(Some(deadline)) >= deadline;
-    let records = p.waits.iter().all(|r| read.contains(r));
+    // a record that no longer holds S has nothing of S left to read (closed: a Lost, or
+    // its peer judged this node departed)
+    let holding = g.records_holding(s).unwrap_or_default();
+    let records = p.waits.iter().all(|r| read.contains(r) || !holding.contains(r));
     PassNow { read, done: timed_out || (fresh_all && records) }
 }
 

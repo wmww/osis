@@ -46,7 +46,7 @@ use crate::session::{Incoming, Sessions, To};
 use crate::store::{Source, Store};
 use crate::types::{ConnId, Cx, Entry, Error, Position, RecordId, Result};
 use crate::leave::Sources;
-use osis_base::memo::Stamped;
+use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, SyncId, WallMs};
 use osis_engine::Engine;
 use osis_engine::sync::Opened;
@@ -203,9 +203,15 @@ pub struct Streams {
     /// Kept unread: entries refused for room per S, with S's bytes when the last was refused.
     room: BTreeMap<SyncId, (u64, BTreeSet<BlobId>)>,
     /// The connections whose stream is caught up both ways (this side applied the peer's to its
-    /// end, the peer applied every message served to it), with when the Pull the last reply
-    /// answered was sent: status follows it per connection (`caught_up`).
-    caught: Stamped<ConnId, WallMs>,
+    /// end, the peer applied every message served to it): what read and status follow per
+    /// connection (`caught_up`).
+    caught: StampedSet<ConnId>,
+    /// Per caught-up connection, the place (`pulls_sent`) of the Pull the last reply answered:
+    /// status's passes alone read it (`caught_since`), so a Pull answered moves no one else.
+    caught_at: Stamped<ConnId, u64>,
+    /// Pulls sent so far, on every connection: each Pull's place, strictly increasing, so a pass
+    /// tells a Pull sent after it began from one before in the same millisecond.
+    pulls_sent: u64,
     /// Relay-only blobs taken, per sync ID until their expiry, and each S's relay rate.
     relays: osis_proto::RelayGate,
     /// A store failure this step met: `settle` fails the step with it.
@@ -216,7 +222,7 @@ pub struct Streams {
 impl Streams {
     /// Streams over the node's store: where a record source's place and word live.
     pub fn new(store: Store) -> Streams {
-        Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew: store.anew_feed(), known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), room: BTreeMap::new(), caught: Stamped::default(), relays: osis_proto::RelayGate::default(), fault: None, work: Work::default() }
+        Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew: store.anew_feed(), known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), room: BTreeMap::new(), caught: StampedSet::default(), caught_at: Stamped::default(), pulls_sent: 0, relays: osis_proto::RelayGate::default(), fault: None, work: Work::default() }
     }
 
     /// Tests only (world copies): reads the copy's store.
@@ -292,15 +298,19 @@ impl Streams {
     /// Pull out (spec/sync-streams.md §4; `SN_rearm`), and the peer reported every message
     /// served to it applied.
     pub fn caught_up(&self, conn: ConnId, s: &SyncId) -> bool {
-        self.caught_since(conn, s).is_some()
+        self.caught.contains(&conn) && self.pull.get(&conn).is_some_and(|p| self.places.get(&p.src).is_some_and(|pl| pl.at_stream.contains(s) && !pl.joining.contains_key(s)))
     }
 
-    /// When the Pull was sent whose reply S's caught up on `conn` rests on: none while not caught
-    /// up. Stamped per connection and per (source, S).
-    pub fn caught_since(&self, conn: ConnId, s: &SyncId) -> Option<WallMs> {
-        let t = *self.caught.get(&conn)?;
-        let p = self.pull.get(&conn)?;
-        self.places.get(&p.src).is_some_and(|pl| pl.at_stream.contains(s) && !pl.joining.contains_key(s)).then_some(t)
+    /// The place (`pull_seq`) of the Pull whose reply S's caught up on `conn` rests on: none
+    /// while not caught up. Stamped per connection and per (source, S).
+    pub fn caught_since(&self, conn: ConnId, s: &SyncId) -> Option<u64> {
+        let t = *self.caught_at.get(&conn)?;
+        self.caught_up(conn, s).then_some(t)
+    }
+
+    /// The Pulls sent so far: a Pull sent after this reads a greater place (`caught_since`).
+    pub fn pull_seq(&self) -> u64 {
+        self.pulls_sent
     }
 
     /// Tests only: what a connection's pulling holds for its peer (messages in hand, queued and
@@ -378,10 +388,16 @@ impl Streams {
         let end = ctx.store.log_bounds().map(|(e, _)| e);
         let mark = ctx.store.memory_mark();
         let now = self.pull.get(&conn).filter(|p| p.caught_up() && end.as_ref().is_ok_and(|e| self.served_applied(conn, *e, mark))).map(|p| p.answered_at);
-        if self.caught.get(&conn).copied() != now {
+        if self.caught.contains(&conn) != now.is_some() {
             match now {
-                Some(t) => self.caught.insert(conn, t),
+                Some(_) => self.caught.insert(conn),
                 None => self.caught.remove(&conn),
+            };
+        }
+        if self.caught_at.get(&conn).copied() != now {
+            match now {
+                Some(t) => self.caught_at.insert(conn, t),
+                None => self.caught_at.remove(&conn),
             };
         }
     }
@@ -403,6 +419,7 @@ impl Streams {
         }
         self.holders.retain(|_, v| !v.is_empty());
         self.caught.remove(&conn);
+        self.caught_at.remove(&conn);
     }
 
     /// Settles every connection: pushes under `follow`, Pulls and Fetches due, room regained.

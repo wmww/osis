@@ -70,8 +70,9 @@ struct Fake {
     /// Sync IDs some peer other than this account's own nodes shares (opens' `shared`).
     shared: StampedSet<SyncId>,
     told_held: Vec<CommitId>,
-    wanted: Stamped<(), Arc<BTreeMap<SyncId, WallMs>>>,
-    passes: Vec<(SyncId, WallMs)>,
+    /// The engine's wants, by pass place; the fake's places are its ms (`begin_pass`).
+    wanted: Stamped<(), Arc<BTreeMap<SyncId, u64>>>,
+    passes: Vec<(SyncId, u64)>,
     /// Calls to `stamped` (lacking counts taken).
     stamped_reads: u64,
     /// The engine's `stranded` per read S.
@@ -79,8 +80,13 @@ struct Fake {
 }
 
 impl Net for Fake {
-    fn caught_since(&self, conn: ConnId, s: &SyncId) -> Option<WallMs> {
-        self.caught.get(&(conn, *s)).copied()
+    fn caught_since(&self, conn: ConnId, s: &SyncId) -> Option<u64> {
+        self.caught.get(&(conn, *s)).map(|t| t.0)
+    }
+    /// The fake places a Pull by when it was sent, one per millisecond at most: one sent in the
+    /// millisecond a pass begins counts as after it.
+    fn pull_seq(&self) -> u64 {
+        self.now.saturating_sub(1)
     }
     fn full(&self, at: Source, s: &SyncId) -> bool {
         self.full.contains(&(at, *s))
@@ -148,19 +154,19 @@ impl Ground for Fake {
         self.removals.insert((), Arc::new(r));
         Ok(())
     }
-    fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, WallMs>>> {
+    fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
         Ok(self.wanted.get(&()).cloned().unwrap_or_default())
     }
-    fn pass_clock(&mut self) -> WallMs {
-        self.now()
+    fn begin_pass(&mut self) -> u64 {
+        self.now
     }
     fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<Stranding>>> {
         Ok(self.strandings.get(s).cloned())
     }
-    fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
+    fn note_complete_pass(&mut self, s: &SyncId, began: u64) -> Result<()> {
         self.passes.push((*s, began));
         let mut w = self.wanted.get(&()).map(|x| (**x).clone()).unwrap_or_default();
-        if w.get(s).is_some_and(|t| *t <= began) {
+        if w.get(s).is_some_and(|t| *t < began) {
             w.remove(s);
             self.wanted.insert((), Arc::new(w));
         }
@@ -430,10 +436,11 @@ fn nothing_to_hold_is_held() {
     assert!(t.st.held(&cid(1)));
 }
 
-/// The engine wants a pass of S begun at or after `since`.
+/// The engine wants a pass of S begun at or after ms `since` (after place `since - 1`: what it
+/// waits on arrived before a pass begun in that ms).
 fn want(t: &mut T, s: SyncId, since: u64) {
     let mut w = t.g.wanted.get(&()).map(|x| (**x).clone()).unwrap_or_default();
-    w.insert(s, WallMs(since));
+    w.insert(s, since.saturating_sub(1));
     t.g.wanted.insert((), Arc::new(w));
     t.settle();
 }
@@ -457,7 +464,7 @@ fn complete_pass_needs_fresh_pulls_and_recorded_peers() {
     assert!(t.g.passes.is_empty(), "RB not read since");
     t.join(S, B, reader(RB, 2));
     t.caught(B, S, 120);
-    assert_eq!(t.g.passes, vec![(S, WallMs(100))]);
+    assert_eq!(t.g.passes, vec![(S, 100)]);
     assert_eq!(t.st.of(&S, &t.g).unwrap().pass_waits, None);
 }
 
@@ -467,7 +474,7 @@ fn complete_pass_with_nobody_ends_at_once() {
     let mut t = T::new(&[(S, Holding::Read)]);
     t.at(7);
     want(&mut t, S, 7);
-    assert_eq!(t.g.passes, vec![(S, WallMs(7))]);
+    assert_eq!(t.g.passes, vec![(S, 7)]);
 }
 
 // spec/sync-status.md §1 (PASS_WAIT_MS): a recorded peer away holds a pass no longer than
@@ -483,7 +490,7 @@ fn complete_pass_gives_up_on_away_peer() {
     t.at(10 + PASS_WAIT_MS - 1);
     assert!(t.g.passes.is_empty());
     t.at(10 + PASS_WAIT_MS);
-    assert_eq!(t.g.passes, vec![(S, WallMs(10))]);
+    assert_eq!(t.g.passes, vec![(S, 10)]);
 }
 
 // spec/sync-status.md §1 (complete pass, spec/permissions.md §3 Complete pass): a pass under way
@@ -499,7 +506,7 @@ fn pass_begun_before_the_moment_counts_for_nothing() {
     want(&mut t, S, 20);
     t.pulls.clear();
     t.caught(A, S, 10);
-    assert_eq!(t.g.passes, vec![(S, WallMs(10))]);
+    assert_eq!(t.g.passes, vec![(S, 10)]);
     assert_eq!(t.pulls, vec![A], "the next pass asks again");
     // a third moment while the second pass is under way queues one pass, not one per moment
     t.at(30);
@@ -507,9 +514,9 @@ fn pass_begun_before_the_moment_counts_for_nothing() {
     t.at(40);
     want(&mut t, S, 40);
     t.caught(A, S, 20);
-    assert_eq!(t.g.passes, vec![(S, WallMs(10)), (S, WallMs(20))]);
+    assert_eq!(t.g.passes, vec![(S, 10), (S, 20)]);
     t.caught(A, S, 40);
-    assert_eq!(t.g.passes, vec![(S, WallMs(10)), (S, WallMs(20)), (S, WallMs(40))], "one pass for both");
+    assert_eq!(t.g.passes, vec![(S, 10), (S, 20), (S, 40)], "one pass for both");
     assert!(t.g.wanted.get(&()).unwrap().is_empty());
 }
 

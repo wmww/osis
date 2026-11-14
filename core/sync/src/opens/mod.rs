@@ -523,9 +523,10 @@ impl Opens {
     }
 
     /// The kept records holding S as a member (spec/sync-status.md §1: a complete pass waits for
-    /// each): as connections hold them, else as written. O(records holding S): read only as a
-    /// pass begins.
+    /// each while it does): as connections hold them, else as written. Stamped per S (`peers`).
+    /// O(records holding S): read as a pass begins and as it is judged.
     pub fn records_holding(&self, store: &Store, s: &SyncId) -> Result<BTreeSet<RecordId>> {
+        self.peers.read(s);
         let stored = store.with_read(|t| t.records_with_row(s, crate::store::rows::tag::MEMBER, b"", usize::MAX))?;
         let held = |id: &RecordId| self.records.get(id).filter(|r| r.kept).map(|r| r.members.contains_key(s));
         Ok(stored.into_iter().filter(|id| held(id) != Some(false)).chain(self.records.iter().filter(|(_, r)| r.kept && r.members.contains_key(s)).map(|(id, _)| *id)).collect())

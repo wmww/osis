@@ -664,7 +664,7 @@ impl Node {
             let sessions = &mut self.driver.sessions;
             let mut acted = cx.engine.follow()?;
             // leave first: what this node syncs, which every other module follows
-            acted |= self.leave.settle(&mut crate::leave::Live { cx: &mut cx, sources: &self.streams, opens: &self.opens })?;
+            acted |= self.leave.settle(&mut crate::leave::Live { cx: &mut cx, sources: &self.streams, opens: &self.opens, status: &self.status })?;
             acted |= self.driver.store.settle(cx.engine, cx.store, cx.now)?;
             acted |= self.unread.settle(&mut cx)?;
             acted |= self.opens.settle(&mut cx, sessions, &self.unread, &mut moved)?;
@@ -686,7 +686,7 @@ impl Node {
             self.reports(out);
             let mut cx = cx!(self, out);
             let mut pulls = Vec::new();
-            acted |= self.status.settle(&mut cx, &self.opens, &self.streams, &self.read, &self.unread, &mut pulls)?;
+            acted |= self.status.settle(&mut cx, &self.opens, &self.streams, &self.read, &self.unread, &self.leave, &mut pulls)?;
             for conn in pulls {
                 let mut cx = cx!(self, out);
                 self.streams.pull_again(&mut cx, &mut self.driver.sessions, &self.opens, conn, &mut self.driver.reported);

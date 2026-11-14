@@ -1145,7 +1145,8 @@ fn caught_up_needs_the_peers_applied_spec_sync_status_1() {
 }
 
 // spec/sync-status.md §1 (complete pass): a pass asks a fresh Pull (`pull_again`), and caught up
-// says when the Pull it rests on was sent: one from before the pass counts for nothing.
+// says which Pull it rests on (its place, `pull_seq`): one from before the pass counts for
+// nothing, whatever the clock reads.
 #[test]
 fn caught_since_moves_with_a_fresh_pull_spec_sync_status_1() {
     let mut p = Pair::new();
@@ -1153,14 +1154,14 @@ fn caught_since_moves_with_a_fresh_pull_spec_sync_status_1() {
     p.shared_read(s);
     p.run();
     let t0 = p.b.streams.caught_since(C, &s).unwrap();
-    p.now += 5_000;
     let pulls = p.sent_by_b(41).len();
+    let before = p.b.streams.pull_seq();
     let now = p.now;
     p.b.with(now, |st, cx| st.again(cx, C));
     p.run();
     assert_eq!(p.sent_by_b(41).len(), pulls + 1, "one fresh Pull");
     let t1 = p.b.streams.caught_since(C, &s).unwrap();
-    assert!(t1 > t0 && t1 == WallMs(p.now));
+    assert!(t1 > t0 && t1 > before, "the fresh Pull's place, in the same millisecond");
 }
 
 /// The durable entries of S a side holds (the ground truth caught up speaks of): its own logged,

@@ -15,10 +15,14 @@
 //!   per actor this node holds secrets of, one `Effects` key over `Engine::role_duty_due` (a
 //!   value derived from the state: the finalize or rotation this node owes before it next
 //!   encrypts there, whatever made it due, own commits included, and the memo clock up to the
-//!   next `until`): `Engine::ensure_rotated` writes it when it settles true. Then the lost-access
-//!   drop (`Engine::role_duties`) runs when `Engine::role_duties_due` (its work list and the
-//!   memo clock up to its first entry, stamped) settles true: a role commit applied from
-//!   elsewhere, or an `until` passing with nothing written (the clock's wake).
+//!   next `until`): `Engine::ensure_rotated` writes it when it settles true. Then, on a second
+//!   key per held actor, the lost-access drop (spec/permissions.md §3 Lost access): once
+//!   `Engine::lost_due` (lost by every path, no own self-removal waiting, not by an `until`
+//!   alone; the clock read to the next `until`) and `Engine::lost_passed` (a complete pass of its
+//!   sync IDs begun after the newest role commit that could have caused it: it keeps syncing until
+//!   then, and what that pass brings may give it back) both hold, `Engine::drop_lost` judges
+//!   and drops it. One key over `Engine::copies_due` judges the kept copies again
+//!   (`Engine::rejudge_copies`) where a role commit moved what one hangs on.
 //! - **Joiner's leave** (spec/permissions.md §7): per thing named a holder, whether it is a link
 //!   this account joined whose K's edge on its target ended (`Engine::joined_link_ended`); one
 //!   that became so is left (`Engine::leave_link`).
@@ -63,8 +67,10 @@ pub struct Life {
     last: (bool, bool),
     /// A sync ID became heard out since the last judgment: the held things are judged again.
     newly: bool,
-    /// `Engine::role_duties_due`, as last settled.
-    roles: Effects<(), bool>,
+    /// `Engine::copies_due`, as last settled.
+    copies: Effects<(), bool>,
+    /// Per actor held, whether its drop is due and its pass done (`lost_due`, `lost_passed`).
+    lost: Effects<Tid, bool>,
     /// The actors whose secrets the engine comes to hold (`None` before the first settle: every
     /// one held then is wanted).
     actors: Option<Feed<Tid>>,
@@ -84,9 +90,9 @@ impl Default for Life {
     fn default() -> Life {
         let mut due = Effects::new("life: lifetimes due");
         due.want(());
-        let mut roles = Effects::new("life: role duties due");
-        roles.want(());
-        Life { syncs: SyncsFollow::default(), ids: BTreeMap::new(), heard: Effects::new("life: heard out"), heard_now: BTreeMap::new(), due, last: (false, false), newly: false, roles, actors: None, owed: Effects::new("life: role duty owed"), pairs: None, leaves: Effects::new("life: joiner's leave"), unties: Effects::new("life: tied grants") }
+        let mut copies = Effects::new("life: kept copies");
+        copies.want(());
+        Life { syncs: SyncsFollow::default(), ids: BTreeMap::new(), heard: Effects::new("life: heard out"), heard_now: BTreeMap::new(), due, last: (false, false), newly: false, copies, lost: Effects::new("life: lost access"), actors: None, owed: Effects::new("life: role duty owed"), pairs: None, leaves: Effects::new("life: joiner's leave"), unties: Effects::new("life: tied grants") }
     }
 }
 
@@ -106,18 +112,21 @@ impl Life {
         if self.owe(engine)? {
             return Ok(true);
         }
-        if !self.roles.due().is_empty()
-            && let Some((_, true)) = self.roles.settle(&(), || engine.role_duties_due())
+        if self.drop_lost(engine)? {
+            return Ok(true);
+        }
+        if !self.copies.due().is_empty()
+            && let Some((_, true)) = self.copies.settle(&(), || engine.copies_due())
         {
             // a store failure fails the step (due again after its restart); any other error is
             // this duty's alone: parked until what its value read moves (`isolate`)
-            match isolate(engine.role_duties()) {
+            match isolate(engine.rejudge_copies()) {
                 Ok(Some(_)) => return Ok(true),
                 Ok(None) => {}
                 Err(e) => {
                     // due again at the next settle (the failing step restarts anyway)
-                    self.roles.unwant(&());
-                    self.roles.want(());
+                    self.copies.unwant(&());
+                    self.copies.want(());
                     return Err(e);
                 }
             }
@@ -138,6 +147,7 @@ impl Life {
         };
         for a in added {
             self.owed.want(a);
+            self.lost.want(a);
         }
         let mut ran = false;
         // one actor's error is its own: a store failure fails the step, any other parks that
@@ -159,6 +169,28 @@ impl Life {
             }
         }
         Ok(ran)
+    }
+
+    /// Drops each held actor whose `lost_due` and `lost_passed` settle true (`Engine::drop_lost`);
+    /// whether one dropped (the engine read its store again: the step restarts the modules).
+    /// O(actors added and keys moved).
+    fn drop_lost(&mut self, engine: &mut Engine) -> Result<bool> {
+        for a in self.lost.due() {
+            match self.lost.try_settle(&a, || isolate(lost_now(engine, &a)).map(|v| v.unwrap_or(false)))? {
+                Some((_, true)) => match isolate(engine.drop_lost(&a)) {
+                    Ok(Some(true)) => return Ok(true),
+                    Ok(_) => {}
+                    Err(e) => {
+                        self.lost.unwant(&a);
+                        self.lost.want(a);
+                        return Err(e);
+                    }
+                },
+                Some((_, false)) if !engine.held_actors_has(&a) => self.lost.unwant(&a),
+                _ => {}
+            }
+        }
+        Ok(false)
     }
 
     fn lifetimes(&mut self, engine: &mut Engine, store: &Store, mut heard_out: impl FnMut(&SyncId) -> Result<bool>) -> Result<bool> {
@@ -261,6 +293,11 @@ impl Life {
 /// is judged again when what it read moves). Whether it wrote.
 /// One duty's engine result, isolated: a store failure goes up (the step fails and restarts);
 /// any other error is that duty's alone, `None` (its key parked until what it read moves).
+/// Held actor `a`'s drop is due and its complete pass done (`Life::drop_lost`).
+fn lost_now(engine: &mut Engine, a: &Tid) -> std::result::Result<bool, osis_engine::Error> {
+    Ok(engine.lost_due(a)? && engine.lost_passed(a)?)
+}
+
 fn isolate<T>(r: std::result::Result<T, osis_engine::Error>) -> Result<Option<T>> {
     match r {
         Ok(v) => Ok(Some(v)),
