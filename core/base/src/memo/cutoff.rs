@@ -158,3 +158,48 @@ impl<K: Hash + Eq + Ord + Clone, V: Clone> Clone for Spread<K, V> {
         Spread { fx: RefCell::new(self.fx.borrow().clone()), values: RefCell::new(Stamped::clone(&self.values.borrow())) }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::Stamped;
+    use super::*;
+
+    // spec: none (internal: notes/engine.md, Derived values). A reader of a cutoff's value moves
+    // only when the value does, not when what it read moved to the same value; one of a spread's
+    // entries only when that entry does.
+    #[test]
+    fn readers_move_only_with_the_value() {
+        let mut m: Stamped<u8, u8> = Stamped::default();
+        m.insert(1, 10);
+        let c: Cutoff<u8, bool> = Cutoff::new("test cutoff");
+        let s: Spread<u8, u8> = Spread::new("test spread");
+        let big = |m: &Stamped<u8, u8>, k: &u8| m.get(k).copied().unwrap_or(0) > 5;
+        let all = |m: &Stamped<u8, u8>| (0..3u8).map(|k| (k, u8::from(big(m, &k)) + m.get(&1).map_or(0, |_| 1))).collect();
+        let mut e: Effects<u8, (bool, Option<u8>)> = Effects::new("test reader");
+        e.want(1);
+        e.want(2);
+        for k in e.due() {
+            e.settle(&k, || (c.get(&k, |k| big(&m, k)), s.get(&k, || all(&m))));
+        }
+        m.insert(1, 20);
+        c.refresh(|k| big(&m, k));
+        s.refresh(|| all(&m));
+        assert!(e.due().is_empty(), "the values stayed");
+        m.insert(1, 2);
+        c.refresh(|k| big(&m, k));
+        s.refresh(|| all(&m));
+        assert_eq!(e.due(), [1], "key 1's value moved, key 2's did not");
+    }
+
+    // spec: none (internal). A key not asked for goes at a sweep (`SWEEP`, as a memo's): what
+    // is kept is a few times what was asked lately, never every key ever asked.
+    #[test]
+    fn keys_not_asked_are_swept() {
+        let c: Cutoff<u32, u32> = Cutoff::new("test sweep");
+        for k in (0..1000).chain(5000..9000) {
+            c.get(&k, |k| *k);
+        }
+        let values = c.values.borrow();
+        assert!(values.len() < 5000 && !values.keys().any(|k| *k < 1000), "{}", values.len());
+    }
+}

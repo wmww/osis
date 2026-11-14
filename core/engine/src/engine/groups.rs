@@ -820,7 +820,36 @@ mod tests {
         let n = |rng: &mut SeededRng| (rng.next_u32() % 12) as u8;
         // an item: a plain thing, or a quarter of the time a group (its contents stay out)
         let item = |rng: &mut SeededRng| t(n(rng) + if rng.next_u32().is_multiple_of(4) { 0 } else { 20 });
+        // every answer read through the stamps, followed: one that changed is due (`stamped`), so a
+        // reader of one row moves when it does
+        let read = |g: &Groups, (kind, a, x): &(u8, Tid, Tid)| -> BTreeSet<Tid> {
+            match kind {
+                0 => g.closure_of(a).contains(x).then_some(*x).into_iter().collect(),
+                1 => g.groups_of(a),
+                2 => g.enclosing(a),
+                3 => (*g.closure(a)).clone(),
+                4 => g.is_defined(a).then_some(*a).into_iter().collect(),
+                _ => g.listed_in(a).0.union(&g.listed_in(a).1).copied().collect(),
+            }
+        };
+        // membership asked of the groups (`t(0..12)`) alone: a plain thing's closure is itself
+        let keys: Vec<(u8, Tid, Tid)> = all.iter().flat_map(|a| all.iter().filter(|_| *a < t(12)).map(|x| (0, *a, *x)).chain((1..6).map(|k| (k, *a, *a)))).collect();
+        let mut fx: osis_base::memo::Effects<(u8, Tid, Tid), BTreeSet<Tid>> = osis_base::memo::Effects::new("test groups");
+        let mut stamped = |g: &Groups| {
+            for k in &keys {
+                fx.want(*k);
+            }
+            let due: BTreeSet<(u8, Tid, Tid)> = fx.due().into_iter().collect();
+            for k in &keys {
+                let moved = fx.settle(k, || read(g, k)).is_some_and(|(was, _)| was.is_some());
+                assert!(!moved || due.contains(k), "{k:?} changed with no stamp of what it read moving");
+            }
+        };
         for step in 0..600 {
+            // every few steps: a move missed in between is still found
+            if step % 6 == 0 {
+                stamped(&g);
+            }
             let (was, listed) = (naive(&defs, &all), listings(&defs, &all));
             // closures asked for before (kept), some still held
             let held: Vec<(Tid, Arc<BTreeSet<Tid>>)> = (0..3).map(|_| t(n(&mut rng))).map(|a| (a, g.closure(&a))).collect();
