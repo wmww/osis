@@ -178,21 +178,29 @@ pub trait Ground {
     fn forget(&mut self, s: &SyncId) -> Result<()>;
 
     /// The records S carries as certificates that no record blob in the own store of S carries
-    /// (spec/permissions.md §4 Logging certificates: the records missing), and the record blobs
-    /// sealed here under S that the own store holds no more, and those it holds.
-    fn records_missing(&mut self, s: &SyncId) -> Result<RecordsMissing> {
+    /// (spec/permissions.md §4 Logging certificates: the records missing), the thing lists S
+    /// carries that no list blob of their rotation there carries (spec/sync-judgement.md §1 List
+    /// blobs), and the certificate blobs sealed here under S that the own store holds no more, and
+    /// those it holds.
+    fn cert_blobs_missing(&mut self, s: &SyncId) -> Result<CertBlobsMissing> {
         let _ = s;
-        Ok(RecordsMissing::default())
+        Ok(CertBlobsMissing::default())
     }
-    /// Record blobs sealed here under S that the own store holds no more: what the engine keeps
-    /// of them goes.
-    fn forget_record_blobs(&mut self, s: &SyncId, gone: &BTreeSet<osis_base::BlobId>) -> Result<()> {
+    /// Certificate blobs sealed here under S that the own store holds no more: what the engine
+    /// keeps of them goes.
+    fn forget_cert_blobs(&mut self, s: &SyncId, gone: &BTreeSet<osis_base::BlobId>) -> Result<()> {
         let _ = (s, gone);
         Ok(())
     }
     /// Logs one record blob of `records` under S in the own store (a fresh encryption).
     fn log_records(&mut self, s: &SyncId, records: &BTreeSet<osis_base::Tid>) -> Result<()> {
         let _ = (s, records);
+        Ok(())
+    }
+    /// Logs one list blob of rotation `r`'s thing lists for `things` under S in the own store (a
+    /// fresh encryption).
+    fn log_lists(&mut self, s: &SyncId, r: &CommitId, things: &BTreeSet<osis_base::Tid>) -> Result<()> {
+        let _ = (s, r, things);
         Ok(())
     }
     /// The links of `c`'s body at S, where its pieces start (`Engine::piece_roots`;
@@ -301,13 +309,16 @@ pub enum PieceAt {
     Tombstoned,
 }
 
-/// `Ground::records_missing`.
+/// `Ground::cert_blobs_missing`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RecordsMissing {
+pub struct CertBlobsMissing {
     /// Records S carries that no own record blob of S carries: one record blob of them is logged.
     pub records: BTreeSet<osis_base::Tid>,
-    /// Record blobs sealed here under S that the own store holds no more.
+    /// Per rotation, the things whose thing lists S carries that no own list blob of that
+    /// rotation carries: one list blob of them is logged per rotation.
+    pub lists: BTreeMap<CommitId, BTreeSet<osis_base::Tid>>,
+    /// Certificate blobs sealed here under S that the own store holds no more.
     pub gone: BTreeSet<osis_base::BlobId>,
-    /// Record blobs sealed here under S that the own store holds.
+    /// Certificate blobs sealed here under S that the own store holds.
     pub held: BTreeSet<osis_base::BlobId>,
 }

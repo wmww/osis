@@ -3,7 +3,7 @@
 //! failing in the middle of a settle fails the node's step, closing every connection.
 
 use super::Why;
-use super::ground::{BlobInfo, Facts, Ground, PieceAt, RecordsMissing, Seen, SrcView};
+use super::ground::{BlobInfo, CertBlobsMissing, Facts, Ground, PieceAt, Seen, SrcView};
 use osis_engine::retention::freed::Freed;
 use osis_engine::sync::PieceLink;
 use osis_label::StepId;
@@ -17,7 +17,7 @@ use crate::types::{ConnId, Cx, Entry, Result};
 use osis_base::memo::Feed;
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::SigningSecret;
-use osis_engine::sync::{BodyMeta, Destruction, HeldBlob, MustNot, ReadCredentials};
+use osis_engine::sync::{BodyMeta, Carried, Destruction, HeldBlob, MustNot, ReadCredentials};
 use osis_label::{Class, DeleteItem};
 use osis_proto::Msg;
 use std::collections::{BTreeMap, BTreeSet};
@@ -295,24 +295,41 @@ impl Ground for Live<'_, '_> {
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &CommitId, stand: &Stand) -> Result<()> {
         self.cx.store.set_stand(*at, s, &c.0, Some(stand))
     }
-    fn records_missing(&mut self, s: &SyncId) -> Result<RecordsMissing> {
-        let mut out = RecordsMissing { records: (*self.cx.engine.certificate_records(s)?).clone(), ..RecordsMissing::default() };
-        for (b, tids) in self.cx.engine.record_blobs(s)?.iter() {
-            match self.cx.store.entry(s, b)?.is_some_and(|e| e.own) {
-                true => {
-                    out.records.retain(|t| !tids.contains(t));
-                    out.held.insert(*b);
-                }
-                false => {
-                    out.gone.insert(*b);
+    fn cert_blobs_missing(&mut self, s: &SyncId) -> Result<CertBlobsMissing> {
+        // nothing can be sealed under S yet (a rotation owed before encrypting): what is missing
+        // is told once it can, so the effect acts then
+        let records = match self.cx.engine.cert_wrap(s, None)? {
+            true => (*self.cx.engine.certificate_records(s)?).clone(),
+            false => BTreeSet::new(),
+        };
+        let mut lists = (*self.cx.engine.certificate_lists(s)?).clone();
+        let mut sealable = BTreeMap::new();
+        for r in lists.keys() {
+            sealable.insert(*r, self.cx.engine.cert_wrap(s, Some(r))?);
+        }
+        lists.retain(|r, _| sealable.get(r) == Some(&true));
+        let mut out = CertBlobsMissing { records, lists, ..CertBlobsMissing::default() };
+        for (b, carried) in self.cx.engine.cert_blobs(s)?.iter() {
+            if !self.cx.store.entry(s, b)?.is_some_and(|e| e.own) {
+                out.gone.insert(*b);
+                continue;
+            }
+            out.held.insert(*b);
+            match carried {
+                Carried::Records(tids) => out.records.retain(|t| !tids.contains(t)),
+                Carried::Lists(r, tids) => {
+                    if let Some(x) = out.lists.get_mut(r) {
+                        x.retain(|t| !tids.contains(t));
+                    }
                 }
             }
         }
+        out.lists.retain(|_, x| !x.is_empty());
         Ok(out)
     }
-    fn forget_record_blobs(&mut self, s: &SyncId, gone: &BTreeSet<osis_base::BlobId>) -> Result<()> {
+    fn forget_cert_blobs(&mut self, s: &SyncId, gone: &BTreeSet<osis_base::BlobId>) -> Result<()> {
         for b in gone {
-            self.cx.engine.forget_record_blob(s, b)?;
+            self.cx.engine.forget_cert_blob(s, b)?;
         }
         Ok(())
     }
@@ -334,6 +351,12 @@ impl Ground for Live<'_, '_> {
     }
     fn log_records(&mut self, s: &SyncId, records: &BTreeSet<osis_base::Tid>) -> Result<()> {
         let Some((blob, bytes, wrap)) = self.cx.engine.seal_records(s, records, self.cx.rng)? else { return Ok(()) };
+        let e = own_entry(self.cx, s, blob, wrap, Class::Durable)?;
+        self.cx.store.log(s, e, Some(bytes), None)?;
+        Ok(())
+    }
+    fn log_lists(&mut self, s: &SyncId, r: &CommitId, things: &BTreeSet<osis_base::Tid>) -> Result<()> {
+        let Some((blob, bytes, wrap)) = self.cx.engine.seal_lists(s, r, things, self.cx.rng)? else { return Ok(()) };
         let e = own_entry(self.cx, s, blob, wrap, Class::Durable)?;
         self.cx.store.log(s, e, Some(bytes), None)?;
         Ok(())

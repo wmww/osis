@@ -19,8 +19,9 @@ pub(crate) mod held;
 pub(crate) mod inbox;
 pub(crate) mod pieces;
 pub use pieces::PieceLink;
-pub(crate) mod recblobs;
-pub(crate) use recblobs::with_chains;
+pub(crate) mod certblobs;
+pub use certblobs::Carried;
+pub(crate) use certblobs::with_chains;
 pub(crate) mod records;
 mod relay;
 pub use relay::{Relay, RelayOpened};
@@ -76,6 +77,9 @@ pub enum Opened {
     Inbox(InboxOpened),
     /// A record blob (spec/wire.md §3): its records learned.
     Records(BTreeSet<Tid>),
+    /// A list blob (spec/wire.md §4, List tree): the thing lists of this rotation held, or kept
+    /// loose until it is.
+    Lists(CommitId),
     /// No held secret opens it (or nothing held links it).
     NotOpen,
     /// It opened and is bad (its sender is to blame).
@@ -429,20 +433,40 @@ impl Engine {
         self.certificate_records_now(s)
     }
 
-    /// Record blob `b` sealed here under `s` is in the own store no more: its row goes.
-    pub fn forget_record_blob(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
-        let (s, b) = (*s, *b);
-        self.run(|tx| recblobs::forget_blob(tx, &s, &b))
+    /// The thing lists `s` carries (spec/sync-judgement.md §1 List blobs), per rotation the
+    /// things whose lists go: a list blob of those no list blob of that rotation in the own store
+    /// carries is logged there.
+    pub fn certificate_lists(&mut self, s: &SyncId) -> Result<Arc<BTreeMap<CommitId, BTreeSet<Tid>>>> {
+        self.certificate_lists_now(s)
     }
 
-    /// The record blobs sealed here under `s`, each with its records.
-    pub fn record_blobs(&mut self, s: &SyncId) -> Result<Arc<BTreeMap<BlobId, BTreeSet<Tid>>>> {
-        Ok(self.record_blobs_now(s))
+    /// Whether a record blob (`r` none) or a list blob of rotation `r` can be sealed under `s`
+    /// now: what is missing there waits for it.
+    pub fn cert_wrap(&mut self, s: &SyncId, r: Option<&CommitId>) -> Result<bool> {
+        self.cert_wrap_now(s, r)
+    }
+
+    /// Certificate blob `b` sealed here under `s` is in the own store no more: its row goes.
+    pub fn forget_cert_blob(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        let (s, b) = (*s, *b);
+        self.run(|tx| certblobs::forget_blob(tx, &s, &b))
+    }
+
+    /// The certificate blobs (record and list blobs) sealed here under `s`, each with what it
+    /// carries.
+    pub fn cert_blobs(&mut self, s: &SyncId) -> Result<Arc<BTreeMap<BlobId, Carried>>> {
+        Ok(self.cert_blobs_now(s))
     }
 
     /// A record blob of `records` under `s` (spec/wire.md §3), its bytes and wrap.
     pub fn seal_records(&mut self, s: &SyncId, records: &BTreeSet<Tid>, rng: &mut dyn NodeRng) -> Result<Option<(BlobId, Vec<u8>, Wrap)>> {
         self.seal_records_now(s, records, rng)
+    }
+
+    /// A list blob of rotation `r`'s thing lists for `things` under `s` (spec/wire.md §4, List
+    /// tree), its bytes and wrap.
+    pub fn seal_lists(&mut self, s: &SyncId, r: &CommitId, things: &BTreeSet<Tid>, rng: &mut dyn NodeRng) -> Result<Option<(BlobId, Vec<u8>, Wrap)>> {
+        self.seal_lists_now(s, r, things, rng)
     }
 
     /// This node's own certificates under `s` (spec/permissions.md §4), to log there.

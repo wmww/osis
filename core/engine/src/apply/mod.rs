@@ -1458,6 +1458,7 @@ impl Engine {
         let _s = osis_base::costs::span("ingest");
         let mut fresh = false;
         let mut seen = None;
+        let mut rotation = None;
         self.core.memory_room = room;
         let r = self.run(|tx| {
             let decoded = CommitBlob::decode(bytes);
@@ -1477,8 +1478,11 @@ impl Engine {
                 && !tx.core.ix.commits.contains_key(&b.id())
             {
                 let id = b.id();
-                let certs: Vec<osis_commit::thing_list::ThingCert> = lists.iter().filter_map(|l| osis_commit::thing_list::decode_list_blob(l).ok()).flatten().filter(|c| c.rotation == id && crate::flows::lists::verifies(c, &root)).collect();
+                // with those that came beside it, the lists kept loose until it came
+                let loose = tx.core.waits.loose.lists_for(&id);
+                let certs: Vec<osis_commit::thing_list::ThingCert> = lists.iter().filter_map(|l| osis_commit::thing_list::decode_list_blob(l).ok()).flatten().chain(loose).filter(|c| c.rotation == id && crate::flows::lists::verifies(c, &root)).collect();
                 crate::flows::lists::keep_certs(tx, &certs)?;
+                rotation = Some(id);
             }
             match decoded {
                 Ok(blob) => {
@@ -1498,6 +1502,12 @@ impl Engine {
         self.core.memory_room = None;
         if fresh && r.is_ok() {
             self.blobs_stored();
+        }
+        // its loose lists are held: their carriers give something held now
+        if let Some(id) = rotation.filter(|_| r.is_ok()) {
+            for b in self.core.waits.loose.lists_held(&id) {
+                self.core.waits.carried.wrote_added(&b, true, true);
+            }
         }
         // written where kept, or nothing of it is kept (`labeling::opened`)
         if let Some(id) = seen {
@@ -1805,7 +1815,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::sync::held::load(tx)?;
     crate::sync::falls::load(tx)?;
     crate::sync::bodies::load(tx)?;
-    crate::sync::recblobs::load(tx)?;
+    crate::sync::certblobs::load(tx)?;
+    crate::flows::lists::load(tx)?;
     let addenda_due = tx.scan_keys(records::ADDENDA_DUE, "addenda due", CommitId)?;
     tx.core.ix.addenda_due.extend(addenda_due);
     let rotations_due = tx.scan_keys(records::ROTATIONS_DUE, "listings due", CommitId)?;

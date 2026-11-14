@@ -706,6 +706,20 @@ impl Engine {
         parts.iter().filter_map(|ai| h.aspects.get(*ai)).any(|x| x.tid == a && matches!(x.ak.as_str(), "secrets.0" | "keys.0"))
     }
 
+    /// The read secret a list blob of rotation `r` is wrapped under at `g` (spec/crypto.md §5 Who
+    /// wraps under what: a rotation's thing lists are parts of it and wrap as it does): the
+    /// newest established read epoch of `g`'s secret actor whose secret is held and that no
+    /// rotation made after `r` minted (by order key, `ts`), so a rotation of `g` that `r` caused
+    /// takes nothing from whoever read `g` before it. Like a rotation's own wrap, it is not
+    /// subject to `wrap_blocked`. `None`: `r` or no such epoch is held.
+    pub(crate) fn list_wrap_secret(&mut self, g: &Tid, r: &CommitId) -> Option<Secret32> {
+        let a = self.core.secret_actor(g)?;
+        let at = self.header(r)?.ts;
+        let e = self.epochs(&a)?;
+        let intro = &self.core.ix.epoch_intro;
+        e.read.newest_held_where(|x| intro.get(&(a, Role::Read, *x)).is_none_or(|(ts, _)| *ts <= at)).map(|(_, s)| s.clone())
+    }
+
     /// For a rotation commit of the read role of `g`'s secret actor (its `keys.0` delta writes a
     /// read keyset): the newest held epoch the new read epoch supersedes.
     fn rotation_wrap_epoch(&mut self, g: &Tid, c: &CommitId) -> Result<Option<Epoch>> {

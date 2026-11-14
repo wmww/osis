@@ -127,6 +127,11 @@ pub(crate) struct Loose {
     by_blob: BTreeMap<BlobId, BTreeSet<Tid>>,
     /// Records an awaiting commit or slot named while loose: learned at the next `reexamine`.
     due: BTreeSet<Tid>,
+    /// List blobs whose rotation is not held here (spec/sync-judgement.md §1 List blobs): each
+    /// one's thing lists, unverified, held as the rotation arrives (`lists_for`, verified then
+    /// against its list root), by carrier.
+    lists: BTreeMap<BlobId, (CommitId, Vec<osis_commit::thing_list::ThingCert>)>,
+    lists_by_rotation: BTreeMap<CommitId, BTreeSet<BlobId>>,
 }
 
 impl Loose {
@@ -173,13 +178,41 @@ impl Loose {
         out
     }
 
-    /// Whether `b` carries a loose record.
-    pub fn carries(&self, b: &BlobId) -> bool {
-        self.by_blob.contains_key(b)
+    /// Thing lists of rotation `r`, not held here, carried by `b`.
+    pub fn keep_lists(&mut self, b: BlobId, r: CommitId, certs: Vec<osis_commit::thing_list::ThingCert>) {
+        self.lists.insert(b, (r, certs));
+        self.lists_by_rotation.entry(r).or_default().insert(b);
     }
 
-    /// No entry carries `b` any more: the records only it carried go.
+    /// The loose thing lists of rotation `r` (as its commit arrives).
+    pub fn lists_for(&self, r: &CommitId) -> Vec<osis_commit::thing_list::ThingCert> {
+        self.lists_by_rotation.get(r).into_iter().flatten().filter_map(|b| self.lists.get(b)).flat_map(|x| x.1.iter().cloned()).collect()
+    }
+
+    /// Rotation `r` arrived and its loose lists were held: loose no more. Their carriers.
+    pub fn lists_held(&mut self, r: &CommitId) -> Vec<BlobId> {
+        let out: Vec<BlobId> = self.lists_by_rotation.remove(r).into_iter().flatten().collect();
+        for b in &out {
+            self.lists.remove(b);
+        }
+        out
+    }
+
+    /// Whether `b` carries a loose record or loose thing lists.
+    pub fn carries(&self, b: &BlobId) -> bool {
+        self.by_blob.contains_key(b) || self.lists.contains_key(b)
+    }
+
+    /// No entry carries `b` any more: the records and lists only it carried go.
     pub fn forget(&mut self, b: &BlobId) {
+        if let Some((r, _)) = self.lists.remove(b)
+            && let Some(x) = self.lists_by_rotation.get_mut(&r)
+        {
+            x.remove(b);
+            if x.is_empty() {
+                self.lists_by_rotation.remove(&r);
+            }
+        }
         for t in self.by_blob.remove(b).unwrap_or_default() {
             if let Some(x) = self.recs.get_mut(&t) {
                 x.1.remove(b);
@@ -191,9 +224,9 @@ impl Loose {
         }
     }
 
-    /// Loose records held (scale checks).
+    /// Loose records and list blobs held (scale checks).
     pub fn len(&self) -> usize {
-        self.recs.len()
+        self.recs.len() + self.lists.len()
     }
 }
 

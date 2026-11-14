@@ -98,11 +98,28 @@ pub(crate) fn keep_certs(tx: &mut Tx<'_>, certs: &[ThingCert]) -> Result<bool> {
         }
         new = true;
         tx.txn.put_local(&key, &encode_list_blob(std::slice::from_ref(c)), Shred::No)?;
+        tx.core.ix.lists_on.insert(c.list.thing, c.rotation);
         if let ListIds::Inline(ids) = &c.list.ids {
             put_names(tx, &c.rotation, &c.list.thing, ids.iter().copied())?;
         }
     }
     Ok(new)
+}
+
+/// Loads `Indexes::lists_on` from the thing lists held (an open or reload).
+pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
+    let bad = || Error::Corrupt("list row");
+    let mut rows: Vec<(Tid, CommitId)> = Vec::new();
+    tx.scan(records::LISTS, |k, _| {
+        let r = CommitId(k.get(..32).and_then(|x| x.try_into().ok()).ok_or_else(bad)?);
+        let t = Tid::from_bytes(k.get(32..47).and_then(|x| x.try_into().ok()).ok_or_else(bad)?);
+        rows.push((t, r));
+        Ok(())
+    })?;
+    for (t, r) in rows {
+        tx.core.ix.lists_on.insert(t, r);
+    }
+    Ok(())
 }
 
 /// The thing certs held of `rotation` whose thing is in `things` (all: `None`).
@@ -150,9 +167,16 @@ impl Engine {
         if certs.iter().any(|c| c.rotation != r) {
             return Ok(ListsHeld::Bad);
         }
-        let Some(root) = self.header(&r).and_then(|h| h.rotation.as_ref().map(|x| x.list_root)) else {
-            return Ok(if self.core.ix.commits.contains_key(&r) { ListsHeld::Bad } else { ListsHeld::Awaits(r) });
+        // the rotation's header: applied, or pending here
+        let root = match self.header(&r) {
+            Some(h) => h.rotation.as_ref().map(|x| x.list_root),
+            None if self.core.ix.commits.contains_key(&r) => None,
+            None => match self.read(|tx| Ok(tx.txn.get_pending(&r)?.and_then(|p| osis_commit::CommitBlob::decode_stored(&p.bytes).ok())))? {
+                Some(b) => b.header.rotation.as_ref().map(|x| x.list_root),
+                None => return Ok(ListsHeld::Awaits(r)),
+            },
         };
+        let Some(root) = root else { return Ok(ListsHeld::Bad) };
         if !certs.iter().all(|c| verifies(c, &root)) {
             return Ok(ListsHeld::Bad);
         }

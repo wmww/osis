@@ -100,24 +100,24 @@ impl Engine {
     }
 
     /// `s` is read here no more: its passes go with it, so a sync ID read again wants a pass of
-    /// its own (history read since it left is not here), and so do the record blobs sealed under
-    /// it (`recblobs`: read logs them again if it reads `s` again).
+    /// its own (history read since it left is not here), and so do the certificate blobs sealed
+    /// under it (`certblobs`: read logs them again if it reads `s` again).
     pub(crate) fn forget_read_now(&mut self, s: &SyncId) -> Result<()> {
-        if !self.core.ix.passes.contains_key(s) && !self.core.ix.record_blobs.contains_key(s) {
+        if !self.core.ix.passes.contains_key(s) && !self.core.ix.cert_blobs.contains_key(s) {
             return Ok(());
         }
         let s = *s;
         self.run(|tx| {
             tx.txn.remove_local(&[PASSES, &s.0].concat(), Shred::No)?;
             tx.core.ix.passes.remove(&s);
-            super::recblobs::forget(tx, &s)
+            super::certblobs::forget(tx, &s)
         })
     }
 
     /// At an open: what `forget_read_now` drops, of each sync ID not read here (one left while
     /// the node was down).
     pub(crate) fn forget_unread(&mut self) -> Result<()> {
-        let gone: BTreeSet<SyncId> = self.core.ix.passes.keys().chain(self.core.ix.record_blobs.keys()).copied().collect();
+        let gone: BTreeSet<SyncId> = self.core.ix.passes.keys().chain(self.core.ix.cert_blobs.keys()).copied().collect();
         for s in gone {
             if !self.reads_now(&s)? {
                 self.forget_read_now(&s)?;

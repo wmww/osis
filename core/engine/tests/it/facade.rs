@@ -1602,20 +1602,20 @@ fn record_blob_rows_go_with_their_sync_id_spec_perm_4() {
     let (b, _, _) = lp.peers[0].engine.seal_records(&s, &[ps[0]].into(), &mut rng).unwrap().expect("sealed");
     let (b2, _, _) = lp.peers[0].engine.seal_records(&s, &[ps[0]].into(), &mut rng).unwrap().expect("sealed");
     lp.peers[0].restart(8).unwrap();
-    assert_eq!(lp.peers[0].engine.record_blobs(&s).unwrap().keys().copied().collect::<Vec<_>>().len(), 2, "durable");
-    lp.peers[0].engine.forget_record_blob(&s, &b2).unwrap();
-    assert_eq!(lp.peers[0].engine.record_blobs(&s).unwrap().keys().copied().collect::<Vec<_>>(), vec![b]);
+    assert_eq!(lp.peers[0].engine.cert_blobs(&s).unwrap().keys().copied().collect::<Vec<_>>().len(), 2, "durable");
+    lp.peers[0].engine.forget_cert_blob(&s, &b2).unwrap();
+    assert_eq!(lp.peers[0].engine.cert_blobs(&s).unwrap().keys().copied().collect::<Vec<_>>(), vec![b]);
     lp.peers[0].engine.forget_read(&s).unwrap();
-    assert!(lp.peers[0].engine.record_blobs(&s).unwrap().is_empty());
+    assert!(lp.peers[0].engine.cert_blobs(&s).unwrap().is_empty());
     lp.peers[0].restart(9).unwrap();
-    assert!(lp.peers[0].engine.record_blobs(&s).unwrap().is_empty(), "its rows gone too");
+    assert!(lp.peers[0].engine.cert_blobs(&s).unwrap().is_empty(), "its rows gone too");
     // left while down: an open drops them
     lp.peers[0].engine.seal_records(&s, &[ps[0]].into(), &mut rng).unwrap().expect("sealed");
     let mut m = Mutation::new();
     m.op(d, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Remove(osis_base::Value::Tid(t)) }).unwrap();
     lp.peers[0].engine.commit(m).unwrap().unwrap();
     lp.peers[0].restart(10).unwrap();
-    assert!(lp.peers[0].engine.record_blobs(&s).unwrap().is_empty(), "S not read at the open");
+    assert!(lp.peers[0].engine.cert_blobs(&s).unwrap().is_empty(), "S not read at the open");
 }
 
 // spec/permissions.md §4 (Logging certificates: each node logs its account's chain certificates

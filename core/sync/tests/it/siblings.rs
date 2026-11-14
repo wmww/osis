@@ -2,7 +2,7 @@
 //! node of another: what a sibling changes and what it does not.
 
 use crate::harness::history::file;
-use crate::harness::{World, fixture_with, siblings, stranger_siblings};
+use crate::harness::{World, fixture, fixture_with, siblings, stranger_siblings, two_nodes};
 use osis_base::{Ak, Role, Tid, Value};
 use osis_engine::Mutation;
 use osis_engine::flows::Demotion;
@@ -236,14 +236,11 @@ fn a_siblings_self_removal_waits_and_drops_at_both_siblings_spec_perm_3() {
     assert_ne!(w.engine(2).get(&t, &ak).unwrap(), Some(Value::Str("after".into())), "node 2 reads nothing after");
 }
 
-// spec/permissions.md §3, spec/sync-inbox.md §2: removing a node of an account is a departure,
-// rotating the account's roles; node 1 writes a thing node 0's account reads; node 1 removes its
-// sibling node 2 from the account; node 0 still reads the write from before and reads one after.
-// The API flow is osis `sync::repro_an_outsider_reads_the_accounts_writes_across_a_node_removal_*`.
-#[test]
-#[ignore = "issues/outsider-reads-nothing-after-node-removal.md"]
-fn repro_an_outsider_reads_the_accounts_writes_across_a_node_removal() {
-    let mut w = siblings();
+/// Node 1 writes t, grants node 0's account read, node 0 reads it; node 1 removes its sibling
+/// node 2 from its account's D; node 0 keeps every commit it held, reads the write from before
+/// and one after, and holds no thing list of D (spec/permissions.md §5.5: outsiders get the
+/// rotation alone); node 2 reads nothing written after.
+fn outsider_across_a_node_removal(mut w: World) {
     let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
     let ak = Ak::new("u:v.0").unwrap();
     let set = |w: &mut World, t: Option<Tid>, v: &str| {
@@ -268,8 +265,44 @@ fn repro_an_outsider_reads_the_accounts_writes_across_a_node_removal() {
     w.run();
     let lost: Vec<_> = held.iter().filter(|c| !w.engine(0).commit_ids().contains(c)).collect();
     assert!(lost.is_empty(), "node 0 dropped {} commits it held", lost.len());
+    assert!(w.engine(0).roster(&t).contains_key(&a0), "node 0's account keeps its read edge");
     assert_eq!(w.engine(0).get(&t, &ak).unwrap(), Some(Value::Str("before".into())), "the write before the removal");
+    for r in w.engine(1).account_rotations(&a1) {
+        assert!(w.engine(0).rotation_lists(&r).unwrap().iter().all(|(x, _)| *x != d), "node 0 holds no thing list of D");
+    }
     set(&mut w, Some(t), "after");
     w.run();
     assert_eq!(w.engine(0).get(&t, &ak).unwrap(), Some(Value::Str("after".into())), "the write after the removal");
+    assert_ne!(w.engine(2).get(&t, &ak).unwrap(), Some(Value::Str("after".into())), "node 2 reads nothing after its removal");
+}
+
+// spec/permissions.md §5.5 (Honest nodes of P: removing a node X from D; Rotation's list: a thing
+// list is a chain certificate of T), spec/sync-judgement.md §1 (List blobs): node 0's account
+// holds nothing of node 1's account but t, so the rotation reaches it under t's sync ID alone,
+// with t's thing list, and t's commits at the closed epoch count there.
+#[test]
+fn an_outsider_reads_the_accounts_writes_across_a_node_removal_spec_permissions_5_5() {
+    let w = fixture("one-way contact siblings", || {
+        let mut w = two_nodes();
+        let card = w.make_link(0, w.node(0).profile.expect("a profile"), Role::Read);
+        w.redeem(1, &card);
+        w.run();
+        assert_eq!(w.redeem(1, &card), osis_sync::types::Waiting::Done, "node 1 redeems node 0's card");
+        file(&mut w, 1, Vec::new(), vec![card.target]);
+        w.pair(1);
+        w.run();
+        w
+    });
+    outsider_across_a_node_removal(w);
+}
+
+// spec/permissions.md §5.5 (Honest nodes of P: removing a node X from D), the same where node 0
+// holds node 1's contact card: A's rotation reaches it first under the card's sync ID, before t's
+// thing list, so t's grant reads unlisted, node 0 stops syncing t and never fetches the list
+// (issues/outsider-reads-nothing-after-node-removal.md). The API flow is osis
+// `sync::repro_an_outsider_reads_the_accounts_writes_across_a_node_removal_*`.
+#[test]
+#[ignore = "issues/outsider-reads-nothing-after-node-removal.md"]
+fn repro_an_outsider_reads_the_accounts_writes_across_a_node_removal() {
+    outsider_across_a_node_removal(siblings());
 }

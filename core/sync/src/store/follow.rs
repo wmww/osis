@@ -92,7 +92,7 @@ fn apply_waiting(engine: &mut Engine, store: &Store, c: &CommitId) -> Result<boo
 pub(crate) fn pends(engine: &mut Engine, b: &BlobId, o: &Opened) -> bool {
     match o {
         Opened::Commit(c, _) => engine.pends(c),
-        Opened::Records(_) => engine.carries_loose(b),
+        Opened::Records(_) | Opened::Lists(_) => engine.carries_loose(b),
         _ => false,
     }
 }
@@ -391,7 +391,7 @@ fn open_parked(engine: &mut Engine, store: &mut Store, parked: &mut BTreeSet<Blo
         if pends(engine, &b, &o) {
             continue;
         }
-        if matches!(o, Opened::Commit(..) | Opened::Linked | Opened::Records(_)) {
+        if matches!(o, Opened::Commit(..) | Opened::Linked | Opened::Records(_) | Opened::Lists(_)) {
             store.uncharge(s, &b)?;
             opened = true;
         }

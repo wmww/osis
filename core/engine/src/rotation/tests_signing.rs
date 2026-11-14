@@ -111,6 +111,34 @@ fn removal_rotates_the_account_and_its_lists_keep_its_writes_spec_permissions_5_
     assert_eq!(read(&mut lp, 2, t), Some(Value::Str("sibling".into())));
 }
 
+// spec/sync-judgement.md §1 (List blobs: a node holds a list blob's thing lists once it holds
+// its rotation), spec/commits.md §4 (Pending storage): a list blob opened before its rotation is
+// kept loose, carried by its blob, and held as the rotation arrives without it, so the sibling's
+// write the list names counts; the carrier then carries nothing loose, and a reopen and a
+// rebuild read the lists alike
+#[test]
+fn a_list_blob_before_its_rotation_is_held_as_it_arrives_spec_sync_judgement_1() {
+    let (mut lp, a, t) = world(3, 2);
+    write(&mut lp, 1, t, "sibling");
+    lp.sync_all().unwrap();
+    let done = remove(&mut lp, 0, a.devices, 1);
+    let pk = lp.peers[0].engine.package(&done.commits[1]).unwrap().unwrap();
+    assert!(!pk.lists.is_empty());
+    let carrier = osis_base::BlobId([7; 32]);
+    for l in &pk.lists {
+        assert_eq!(lp.peers[2].engine.take_list_blob(&carrier, l).unwrap(), Some(done.commits[1]));
+    }
+    assert!(lp.peers[2].engine.carries_loose(&carrier), "kept loose until its rotation");
+    lp.peers[2].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    assert!(!lp.peers[2].engine.carries_loose(&carrier), "held with its rotation");
+    assert_eq!(read(&mut lp, 2, t), Some(Value::Str("sibling".into())), "the sibling's write was listed");
+    let d0 = lp.peers[2].engine.index_digest();
+    lp.peers[2].engine.reload().unwrap();
+    assert_eq!(d0.first_diff(&lp.peers[2].engine.index_digest()), None, "reopened");
+    lp.peers[2].engine.rebuild_index().unwrap();
+    assert_eq!(d0.first_diff(&lp.peers[2].engine.index_digest()), None, "rebuilt");
+}
+
 // spec/permissions.md §5.5: a rotation's list names ephemeral commits as durable ones: a
 // sibling's ephemeral write the rotator held still counts at an outsider once the rotation
 // closes its epoch; one the removed node writes after it does not

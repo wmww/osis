@@ -13,7 +13,7 @@ use osis_crypto::{LabelRole, Secret32, Signature, SigningSecret, label_role_key}
 use osis_engine::labeling::HeadKeys;
 use osis_engine::sync::{BodyFacts, BodyMeta, Destruction, ReadCredentials};
 use osis_label::{Class, Step, StepKeys};
-use osis_sync::read::{BlobInfo, Facts, Ground, PieceAt, Read, RecordsMissing, Seen, SrcView, Verdict, Why};
+use osis_sync::read::{BlobInfo, Facts, Ground, PieceAt, Read, CertBlobsMissing, Seen, SrcView, Verdict, Why};
 use osis_engine::sync::PieceLink;
 use osis_base::Tid;
 use osis_sync::store::{Source, Stand};
@@ -145,8 +145,9 @@ struct Fake {
     next: u32,
     sent: Vec<Sent>,
     logged: Vec<(SyncId, CommitId, BlobId)>,
-    /// Per S, the records it carries that no own record blob does, and own record blobs gone.
-    records: Stamped<SyncId, RecordsMissing>,
+    /// Per S, the records and lists it carries that no own certificate blob does, and own
+    /// certificate blobs gone.
+    records: Stamped<SyncId, CertBlobsMissing>,
     /// Record blobs logged, and rows of gone ones forgotten.
     record_logs: Vec<(SyncId, BTreeSet<osis_base::Tid>)>,
     records_forgotten: Vec<(SyncId, BlobId)>,
@@ -251,10 +252,10 @@ impl Ground for Fake {
     fn pullable(&mut self, s: &SyncId) -> Result<bool> {
         Ok(!self.unpullable.contains_key(s))
     }
-    fn records_missing(&mut self, s: &SyncId) -> Result<RecordsMissing> {
+    fn cert_blobs_missing(&mut self, s: &SyncId) -> Result<CertBlobsMissing> {
         Ok(self.records.get(s).cloned().unwrap_or_default())
     }
-    fn forget_record_blobs(&mut self, s: &SyncId, gone: &BTreeSet<BlobId>) -> Result<()> {
+    fn forget_cert_blobs(&mut self, s: &SyncId, gone: &BTreeSet<BlobId>) -> Result<()> {
         self.records_forgotten.extend(gone.iter().map(|b| (*s, *b)));
         let mut r = self.records.get(s).cloned().unwrap_or_default();
         r.gone.clear();
@@ -1151,7 +1152,7 @@ fn an_emptied_sync_id_drops_its_record_blobs_and_logs_none() {
     let rb = BlobId([8; 32]);
     let r1 = osis_base::Tid::from_bytes([1; 15]);
     let mut w = released(false);
-    w.g.records.insert(S, RecordsMissing { records: [r1].into(), held: [rb].into(), ..RecordsMissing::default() });
+    w.g.records.insert(S, CertBlobsMissing { records: [r1].into(), held: [rb].into(), ..Default::default() });
     w.settle();
     assert!(!w.g.sent.contains(&Sent::DropBlob(rb)), "dropped before told");
     assert_eq!(w.g.record_logs, vec![(S, [r1].into())]);
@@ -1282,7 +1283,7 @@ fn missing_records_are_logged_once_a_reader_can_pull() {
     let mut w = W::new();
     let (r1, r2) = (osis_base::Tid::from_bytes([1; 15]), osis_base::Tid::from_bytes([2; 15]));
     w.g.unpullable.insert(S, ());
-    w.g.records.insert(S, RecordsMissing { records: [r1].into(), ..RecordsMissing::default() });
+    w.g.records.insert(S, CertBlobsMissing { records: [r1].into(), ..Default::default() });
     w.hold(cid(1), &[S], uncovered());
     assert!(w.g.record_logs.is_empty(), "no reader can pull S yet");
     w.g.unpullable.remove(&S);
@@ -1290,7 +1291,7 @@ fn missing_records_are_logged_once_a_reader_can_pull() {
     assert_eq!(w.g.record_logs, vec![(S, [r1].into())]);
     w.settle();
     assert_eq!(w.g.record_logs.len(), 1, "once");
-    w.g.records.insert(S, RecordsMissing { records: [r2].into(), gone: [BlobId([9; 32])].into(), ..RecordsMissing::default() });
+    w.g.records.insert(S, CertBlobsMissing { records: [r2].into(), gone: [BlobId([9; 32])].into(), ..Default::default() });
     w.settle();
     assert_eq!(w.g.record_logs, vec![(S, [r1].into()), (S, [r2].into())]);
     assert_eq!(w.g.records_forgotten, vec![(S, BlobId([9; 32]))]);

@@ -471,7 +471,7 @@ impl Ground for EngineGround<'_> {
             Ok(o) if crate::store::pends(self.engine, &e.blob, &o) => Ok(Opening::Pends),
             Ok(Opened::Commit(c, _)) if self.engine.holds_memory(&c) => Ok(Opening::Memory(self.engine.memory_charge(&c)?)),
             Ok(Opened::Commit(_, i)) => Ok(Opening::Held { gave: !matches!(i, osis_engine::Ingested::Duplicate(_)) }),
-            Ok(Opened::Linked | Opened::Inbox(_) | Opened::Records(_)) => Ok(Opening::Taken),
+            Ok(Opened::Linked | Opened::Inbox(_) | Opened::Records(_) | Opened::Lists(_)) => Ok(Opening::Taken),
             Ok(Opened::NotOpen) | Err(crate::types::Error::Engine(osis_engine::Error::NotBuilt(_))) => Ok(Opening::NotOpen),
             Ok(Opened::Bad) => Ok(Opening::Bad),
             Err(e) => Err(e),

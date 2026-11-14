@@ -419,10 +419,14 @@ impl Engine {
             Ok(o) => o,
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
             Err(_) => {
-                // a record blob (spec/wire.md §3): its records taken
+                // a record blob (spec/wire.md §3): its records taken; a list blob (§4): its
+                // thing lists
                 let Ok((_, pt)) = osis_label::open(bytes, &key) else { return Ok(Opened::Bad) };
-                return Ok(match self.take_record_blob(blob, &pt)? {
-                    Some(tids) => Opened::Records(tids),
+                if let Some(tids) = self.take_record_blob(blob, &pt)? {
+                    return Ok(Opened::Records(tids));
+                }
+                return Ok(match self.take_list_blob(blob, &pt)? {
+                    Some(r) => Opened::Lists(r),
                     None => Opened::Bad,
                 });
             }
