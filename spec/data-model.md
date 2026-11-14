@@ -101,6 +101,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - A **group** is a thing with a `group.0` aspect: `items: set<tid>`, `subgroups: set<tid>`. Its members are the items of its `group.0` plus, transitively, the members of their subgroups. Groups may overlap, nest and be cyclic; membership changes over time.
 - Member, membership and member of a group mean only this listing, which grants no rights (spec/permissions.md §1). A subgroup is no member. Groups are the sync unit: a group's closure is its members, itself and its subgroups (spec/sync-set.md §2).
 - `groups.0` (synthetic) on a thing: the locally known groups containing it, directly or transitively.
+- A thing the account creates is listed somewhere synced from its creating commit: the creator lists it, or the commit files it under home (spec/sync-set.md §1 Filing).
 
 ## 9. Core schema
 The core aspects form the core schema, evolving under spec/versioning.md. `schema/core.osis` (normative, in the DSL of notes/data-model.md) gives their exact types, flags and default retentions; `creation`, `signing_key`, `signature`, `kem_key`, `sealed` are spec/wire.md §3. Rules beyond the types:

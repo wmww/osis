@@ -11,7 +11,8 @@
 //!
 //! # A first write
 //! You are the first admin of a thing you create. `me()` is your account; `home()` is a private group synced to
-//! all your nodes.
+//! all your nodes. A thing you create reaches your other nodes: unless the same write lists it in
+//! a group that syncs, the write also lists it in `home()`, as a subgroup.
 //! ```
 //! use osis::{Config, Member, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
@@ -205,7 +206,8 @@
 //!
 //! # Backlinks
 //! `backlinks(t, query)` pages through the things whose current values hold `t`'s tid, with the
-//! aspect; a group listing `t` is one. `on_backlinks_change` hears a page now and on each change.
+//! aspect; a group listing `t` is one (here `home()`, where the write filed `b`).
+//! `on_backlinks_change` hears a page now and on each change.
 //! ```
 //! # use osis::{BacklinkQuery, Config, MemStore, Osis, Store, Value};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
@@ -216,7 +218,9 @@
 //! w.commit()?;
 //! let page = db.backlinks(b, &BacklinkQuery::default())?;
 //! let found: Vec<_> = page.backlinks.iter().map(|l| (l.tid, l.ak.as_str())).collect();
-//! assert_eq!(found, vec![(a, "note:link.0")]);
+//! let mut want = vec![(a, "note:link.0"), (db.home(), "group.0")];
+//! want.sort();
+//! assert_eq!(found, want);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!

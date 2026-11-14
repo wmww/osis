@@ -616,7 +616,7 @@ fn a_socket_client_is_the_main_actor_spec_sync_transport_6() {
         let t = x.create()?;
         x.at(t, v()).set(&Value::Int(5))
     });
-    let t = t.parts().next().unwrap().0;
+    let t = t.parts().map(|p| p.0).find(|t| *t != a.home()).unwrap();
     let cl = ready(Osis::connect_socket(&dir.0, app(&net, &c))).unwrap();
     assert_eq!((cl.me(), cl.home(), cl.node()), (a.me(), a.home(), a.node()));
     assert_eq!(cl.at(t, v()).get().unwrap(), Some(Value::Int(5)));

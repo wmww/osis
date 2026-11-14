@@ -266,7 +266,9 @@ fn members_is_heard() {
 #[test]
 fn tracked_backlinks_hear_their_thing() {
     let db = pumped(14);
-    let (a, x, y) = (thing(&db), thing(&db), thing(&db));
+    // listed nowhere: no home filing among the backlinks (spec/sync-set.md §1 Filing)
+    let [a, x, y] = unfiled(&db, 3)[..] else { panic!() };
+    db.settle();
     let (_set, n, h) = tracked(&db);
     assert!(h.backlinks(x, &Default::default()).unwrap().backlinks.is_empty());
     db.commit_with(|w| w.at(a, untyped("t:a.0")).set(&Value::Tid(y))).unwrap();

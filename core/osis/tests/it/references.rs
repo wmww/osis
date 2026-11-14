@@ -19,8 +19,9 @@ fn rows(db: &Osis, source: Tid) -> BTreeSet<Row> {
     db.engine(|e| e.references_from(&source).unwrap()).into_iter().map(|r| (r.target, r.ak.as_str().to_string(), r.count)).collect()
 }
 
+/// Listed nowhere: no home filing among the references (spec/sync-set.md §1 Filing).
 fn things(db: &Osis, n: usize) -> Vec<Tid> {
-    db.commit_with(|w| (0..n).map(|_| w.create()).collect()).unwrap()
+    unfiled(db, n)
 }
 
 fn row(t: Tid, k: &str, n: u64) -> (Tid, String, u64) {

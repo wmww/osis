@@ -12,8 +12,9 @@ fn key(k: &str) -> DynamicAspectKey {
     DynamicAspectKey::untyped(ak(k))
 }
 
+/// Listed nowhere: no home listing among the backlinks.
 fn things(db: &Osis, n: usize) -> Vec<Tid> {
-    db.commit_with(|w| (0..n).map(|_| w.create()).collect()).unwrap()
+    unfiled(db, n)
 }
 
 fn bl(t: Tid, k: &str) -> Backlink {
@@ -123,9 +124,8 @@ fn backlinks_follow_writes_in_any_arrival_order() {
 fn only_what_the_actor_may_read() {
     let db = db(1);
     let (actor, _) = db.add_client(None).unwrap();
-    let [g, h] = things(&db, 2)[..] else { panic!() };
+    let [g, h, x] = things(&db, 3)[..] else { panic!() };
     let mut w = db.write();
-    let x = w.create().unwrap();
     // three readable, three not
     let srcs: Vec<(Tid, bool)> = (0..6).map(|i| (w.create_in([g, h][i % 2], &[[g, h][i % 2]]).unwrap(), i % 2 == 0)).collect();
     for (s, _) in &srcs {

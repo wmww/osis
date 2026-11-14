@@ -692,14 +692,13 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
             let _ = tx.send(std::iter::once(thing).chain(group).collect::<Vec<_>>());
         }
     }).unwrap();
+    // listed nowhere (unfiled from home, spec/sync-set.md §1 Filing)
+    let [g, lost] = unfiled(&db, 2)[..] else { panic!() };
     let mut w = db.write();
-    let g = w.create().unwrap();
     // durable things: an ephemeral membership is no `NotSynced` matter (nothing leaves the
     // node anyway); placing a durable thing persists the group
     let home_item = w.create_with_content(db.home()).unwrap();
     w.group(db.home()).add(osis::Member::Item(home_item)).unwrap();
-    // made under the account: no key home carries it (spec/sync-set.md §2)
-    let lost = w.create_with_content(db.me()).unwrap();
     w.group(g).add(osis::Member::Item(lost)).unwrap();
     w.commit().unwrap();
     db.settle();
@@ -797,23 +796,19 @@ fn membership_reaching_no_synced_group_fails_spec_api_writes() {
     let mut w = db.write();
     let g = w.create_in(db.me(), &[home]).unwrap();
     w.commit().unwrap();
+    // things listed nowhere (unfiled from home): a new one would be filed (spec/sync-set.md §1 Filing)
+    let [x, l, y] = unfiled(&db, 3)[..] else { panic!() };
     let mut w = db.write();
-    // made under the account: no key home carries it (spec/sync-set.md §2)
-    let x = w.create_with_content(db.me()).unwrap();
     w.group(g).add(osis::Member::Item(x)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("as a subgroup")));
-    assert!(!db.has_content(x).unwrap() && db.created(x).unwrap().is_none(), "nothing applied");
+    assert!(db.members(g).unwrap().is_empty(), "nothing applied");
     // a group with no synced group at all: node-local, allowed (a `NotSynced` diagnostic)
     let mut w = db.write();
-    let l = w.create_with_content(db.home()).unwrap();
-    let y = w.create_with_content(db.home()).unwrap();
     w.group(l).add(osis::Member::Item(y)).unwrap();
-    let local = l;
     w.commit().unwrap();
-    assert!(db.has_content(local).unwrap());
+    assert_eq!(db.members(l).unwrap(), vec![osis::Member::Item(y)]);
     // the fix: the group as a subgroup too, in the same commit
     let mut w = db.write();
-    let x = w.create_with_content(db.home()).unwrap();
     w.group(g).add(osis::Member::Item(x)).unwrap();
     w.group(home).add(osis::Member::Subgroup(g)).unwrap();
     w.commit().unwrap();
@@ -1213,12 +1208,8 @@ fn members_list_a_groups_members() {
 #[test]
 fn a_first_member_makes_a_group() {
     let db = db(0);
-    let (plain, other, a, b) = db
-        .commit_with(|w| {
-            let v = [w.create_with_content(db.home())?, w.create_with_content(db.home())?, w.create_with_content(db.home())?, w.create_with_content(db.home())?];
-            Ok((v[0], v[1], v[2], v[3]))
-        })
-        .unwrap();
+    // listed nowhere: no home filing among the memberships (spec/sync-set.md §1 Filing)
+    let [plain, other, a, b] = unfiled(&db, 4)[..] else { panic!() };
     assert_eq!(db.members(plain).unwrap(), vec![]);
     assert_eq!(db.at(plain, osis::internals::core_types::GROUP).get().unwrap(), None, "no group yet");
     let mut w = db.write();
@@ -1252,13 +1243,12 @@ fn a_first_member_makes_a_group() {
     w.commit().unwrap();
     assert_eq!(db.grants(t).unwrap().get(&group_actor).map(|e| e.role), Some(Role::Admin), "its first admin");
     // a new thing in the commit, its member new too: one commit
-    let before = db.engine(|e| e.commit_ids().len());
     let (g, e) = db.commit_with(|w| {
         let (g, e) = (w.create()?, w.create()?);
         w.group(g).add(osis::Member::Item(e))?;
         Ok((g, e))
     }).unwrap();
-    assert_eq!(db.engine(|e| e.commit_ids().len()), before + 1);
+    assert_eq!(db.created(g).unwrap().unwrap().id, db.created(e).unwrap().unwrap().id);
     assert_eq!(db.members(g).unwrap(), vec![osis::Member::Item(e)]);
 }
 
@@ -1376,9 +1366,8 @@ fn membership_expires_item_or_subgroup_spec_commits_6() {
     let c = clock();
     let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     let minute = osis::Expiry::In(std::time::Duration::from_secs(60));
-    let mut w = db.write();
-    let (g, t, s, kept) = (w.create_with_content(db.home()).unwrap(), w.create_with_content(db.home()).unwrap(), w.create_with_content(db.home()).unwrap(), w.create_with_content(db.home()).unwrap());
-    w.commit().unwrap();
+    // listed nowhere: no home filing among the memberships (spec/sync-set.md §1 Filing)
+    let [g, t, s, kept] = unfiled(&db, 4)[..] else { panic!() };
     let mut w = db.write();
     w.expires(minute);
     w.group(g).add(osis::Member::Item(t)).unwrap();
@@ -1721,9 +1710,11 @@ fn a_cut_or_expiring_subgroup_tells_what_it_strands() {
             let _ = tx.send((thing, detail));
         }
     }).unwrap();
+    // listed nowhere but where the test lists them (no home filing, spec/sync-set.md §1 Filing)
+    let [expiring, in_expiring] = unfiled(&db, 2)[..] else { panic!() };
     let mut w = db.write();
-    let (cut, expiring) = (w.create().unwrap(), w.create().unwrap());
-    let (kept, in_cut, in_expiring) = (w.create_with_admin(synced).unwrap(), w.create().unwrap(), w.create().unwrap());
+    let cut = w.create().unwrap();
+    let (kept, in_cut) = (w.create_with_admin(synced).unwrap(), w.create().unwrap());
     for t in [kept, in_cut, in_expiring] {
         w.at(t, k.clone()).set(&Value::Int(1)).unwrap();
     }
@@ -1777,3 +1768,59 @@ fn from_now_grant_is_kept_until_a_grant_shows_everything() {
     assert!(!db.grants(g).unwrap()[&n].from_now, "kept: everything");
     assert!(matches!(db.grant(g, n, Role::Admin, opts(osis::Reads::FromNow)), Err(Error::Invalid(_))), "a holder reading what came before");
 }
+
+// spec/sync-set.md §1 (Filing): a write as the account lists what it creates under home, as a
+// subgroup, unless the same write lists it in a group a synced group's closure walks: one listed
+// there is not filed; one made under home is filed (so its items sync); one listed only in a
+// group no synced group holds, or as an item of a group whose items do not sync, is filed too;
+// what the write lists in a group it creates and files rides with that group.
+#[test]
+fn create_files_what_nothing_synced_holds_spec_sync_set_1() {
+    let db = db(0);
+    let home = db.home();
+    let in_home = |t| db.members(home).unwrap().into_iter().filter(|m| matches!(m, osis::Member::Item(x) | osis::Member::Subgroup(x) if *x == t)).collect::<Vec<_>>();
+    let [local] = unfiled(&db, 1)[..] else { panic!() };
+    let mut w = db.write();
+    let main = w.create().unwrap();
+    w.group(home).add(osis::Member::Subgroup(main)).unwrap();
+    let listed = w.create().unwrap();
+    w.group(main).add(osis::Member::Item(listed)).unwrap();
+    let item = w.create().unwrap();
+    w.group(home).add(osis::Member::Item(item)).unwrap();
+    let under_home = w.create_with_admin(home).unwrap();
+    let only_local = w.create().unwrap();
+    w.group(local).add(osis::Member::Item(only_local)).unwrap();
+    let in_item = w.create().unwrap();
+    w.group(item).add(osis::Member::Item(in_item)).unwrap();
+    let bare = w.create().unwrap();
+    let rides = w.create().unwrap();
+    w.group(bare).add(osis::Member::Item(rides)).unwrap();
+    w.commit().unwrap();
+    assert_eq!(in_home(main), vec![osis::Member::Subgroup(main)], "listed by the write: no second listing");
+    assert_eq!(in_home(listed), vec![], "in a synced closure's walked group");
+    assert_eq!(in_home(item), vec![osis::Member::Item(item)], "an item of home is listed");
+    for t in [under_home, only_local, in_item, bare] {
+        assert_eq!(in_home(t), vec![osis::Member::Subgroup(t)], "filed");
+    }
+    assert_eq!(in_home(rides), vec![], "carried by the group it is listed in");
+    assert!(db.engine(|e| e.closure(&home).contains(&rides)), "which syncs its items");
+}
+
+// spec/sync-set.md §1 (Filing): the filing listing is part of the creating commit, with its
+// expiry: a disappearing thing leaves home with it.
+#[test]
+fn a_filed_thing_leaves_home_with_its_commit_spec_sync_set_1() {
+    let c = clock();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
+    let mut w = db.write();
+    w.expires(osis::Expiry::In(std::time::Duration::from_secs(60)));
+    let t = w.create().unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
+    let made = w.commit().unwrap().unwrap();
+    assert_eq!(made.parts().filter(|p| p.0 == db.home()).count(), 1, "one commit");
+    assert!(db.members(db.home()).unwrap().contains(&osis::Member::Subgroup(t)));
+    c.advance(61_000);
+    db.engine(|e| e.tick()).unwrap();
+    assert!(!db.members(db.home()).unwrap().contains(&osis::Member::Subgroup(t)), "gone with it");
+}
+

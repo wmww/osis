@@ -365,6 +365,29 @@ fn a_write_reaches_the_accounts_other_node_spec_sync_set_1() {
     assert_eq!(a.status().unwrap().groups.get(&a.home()).map(|g| g.state), Some(osis::SyncState::Synced));
 }
 
+// spec/sync-set.md §1 (Filing): a thing created and listed nowhere is filed under home, so it
+// reaches the account's other node; a group so made syncs its items there too.
+#[test]
+fn a_thing_listed_nowhere_reaches_the_accounts_other_node_spec_sync_set_1() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (a, b) = paired(&net, &c);
+    let mut w = a.write();
+    let g = w.create().unwrap();
+    w.at(g, osis::core::NAME).set(&"g".to_string()).unwrap();
+    w.commit().unwrap();
+    let mut w = a.write();
+    let t = w.create().unwrap();
+    w.group(g).add(osis::Member::Item(t)).unwrap();
+    w.at(t, osis::core::NAME).set(&"t".to_string()).unwrap();
+    w.commit().unwrap();
+    assert!(!a.members(a.home()).unwrap().contains(&osis::Member::Subgroup(t)), "listed in g, which syncs: not filed");
+    drive(&net, a.wait_synced(SyncScope::Thing(t))).unwrap();
+    net.run();
+    assert_eq!(b.at(g, osis::core::NAME).get().unwrap().as_deref(), Some("g"));
+    assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("t"));
+}
+
 // spec/sync-inbox.md §6 (first contact): a redeemer reaches the sharer node by the link and
 // joins; the thing is read there.
 #[test]

@@ -297,6 +297,12 @@ impl<'d> Write<'d> {
     /// A new thing, the acting actor its first admin, stored with this commit. `Invalid` at
     /// commit on a thin client's handle: its actor goes with the client, so what it makes
     /// names who stays (`create_with_admin`).
+    ///
+    /// A write acting as the account lists each thing it creates that, after it, no synced group
+    /// holds in `home()` as a subgroup, in the same commit, so it reaches the account's other
+    /// nodes (and, should it become a group, so do its items). A thing the write lists in a
+    /// group that syncs, or makes under a thing that syncs other than `home()`, is not listed
+    /// there.
     pub fn create(&mut self) -> Result<Tid> {
         self.create_with_admin(self.actor)
     }
@@ -584,6 +590,9 @@ impl<'d> Write<'d> {
             }
         }
         b.m.act_as(actor);
+        // what it creates reaches the account's other nodes unless the write lists it somewhere
+        // synced itself (crate docs, Writes)
+        b.m.file_created();
         if let Some(at) = expires {
             b.m.expires_all(at);
         }
