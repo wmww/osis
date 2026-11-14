@@ -2,12 +2,15 @@
 //! plaintext and judgement, per sync ID, and the few commands it gives. Sync reaches the engine
 //! only through these methods (and the opening, writing and clock calls any node makes); the
 //! engine calls nothing of sync's. Every value call is a memo or reads stamped rows, so a sync
-//! effect that reads one depends on exactly what the engine read.
+//! effect that reads one depends on exactly what the engine read; a value derived from one
+//! whose reads move far more often than it does is kept per key instead, brought up to date by
+//! `follow`.
 //!
 //! Not built (each returns `Error::NotBuilt` naming itself): `prove_rotations`,
 //! `take_rotations`.
 
 pub(crate) mod bodies;
+pub(crate) mod certified;
 pub(crate) mod deliveries;
 pub(crate) mod dial;
 pub(crate) mod facts;
@@ -339,6 +342,16 @@ impl Engine {
 
     // Held parts and bodies
 
+    /// Brings the per-commit rows `sync_bodies` reads of engine-wide derivations (each read
+    /// thing's certificates, `certified`; `Core::published`, `Core::sync_holding`) up to date with what moved since the last call: a
+    /// module calls it before its `due()`, so a key that read a row is due once the row moves.
+    pub fn follow(&mut self) -> Result<()> {
+        let core = &self.core;
+        core.published.refresh(|| crate::labeling::published_all(core));
+        osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.sync_holding, |e, s| e.sync_holding_now(s))?;
+        self.follow_certificates()
+    }
+
     /// Per sync ID of the sync set whose required set holds a body of `c`: that body.
     pub fn sync_bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
         self.sync_bodies_now(c)
@@ -493,10 +506,10 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.sync_set, &(), |e| e.sync_set_now())
     }
 
-    /// How this node holds sync ID `s`, and its thing (`sync_set`'s entry for `s`): reads only
-    /// `s`'s owner's keys and whether the synced group's closure holds it.
+    /// How this node holds sync ID `s`, and its thing (`sync_set`'s entry for `s`): a reader moves
+    /// only when the answer does (`Core::sync_holding`).
     pub fn sync_holding(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
-        self.sync_holding_now(s)
+        osis_base::memo::Cutoff::get_in(self, |e| &e.core.sync_holding, s, |e, s| e.sync_holding_now(s))
     }
 
     /// The things the sync set is judged over: the synced group's closure (the same `Arc` while

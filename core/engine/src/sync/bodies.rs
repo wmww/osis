@@ -146,24 +146,21 @@ impl Engine {
         let id = *c;
         let held: PartSet = osis_base::memo::Memo::get_in(self, |e| &e.core.bodies, &id, |e| e.body_with(&id, false))?.map(|b| b.parts.into_iter().collect()).unwrap_or_default();
         let (expires, order) = (osis_commit::blob_expiry(&h).map(WallMs), crate::labeling::fetch_order(&h));
-        let set = self.sync_set()?;
-        let mut by_thing: BTreeMap<Tid, Vec<SyncId>> = BTreeMap::new();
-        for (s, (t, how)) in set.ids.iter() {
-            if *how == super::Holding::Read && !out.contains_key(s) {
-                by_thing.entry(*t).or_default().push(*s);
+        let closure: BTreeSet<SyncId> = out.keys().copied().collect();
+        for (t, named, ids) in self.certified(c)? {
+            let ids: Vec<SyncId> = ids.into_iter().filter(|s| !closure.contains(s)).collect();
+            if ids.is_empty() {
+                continue;
             }
-        }
-        for (t, ids) in by_thing {
-            let certs = self.sync_certificates(&t);
-            let parts: PartSet = match certs.commits.get(c) {
-                Some(p) => {
+            let parts: PartSet = match named.parts.is_empty() {
+                false => {
                     let ctx = self.body_ctx(&t);
                     let carried = self.body_carried(&ctx, &h);
-                    p.iter().copied().filter(|ai| held.contains(ai) && !carried.contains(ai)).collect()
+                    named.parts.iter().copied().filter(|ai| held.contains(ai) && !carried.contains(ai)).collect()
                 }
-                None => PartSet::new(),
+                true => PartSet::new(),
             };
-            if parts.is_empty() && !certs.headers.contains(c) {
+            if parts.is_empty() && !named.header {
                 continue;
             }
             let header_only = parts.is_empty();

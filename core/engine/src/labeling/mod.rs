@@ -12,5 +12,6 @@ mod proofs;
 
 pub use blobs::{Body, HeadKeys, OpenedBlob, Sealed, delete_item, delete_item_by_level, delete_key, fetch_order, frame_envelope, seal_plain};
 pub use blobs::BodyCtx;
+pub(crate) use blobs::published_all;
 pub use certs::{Certs, Parts};
 pub use judge::{Judge, Judgment};

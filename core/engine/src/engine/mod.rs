@@ -1019,6 +1019,12 @@ pub struct Core {
     pub(crate) holders_named: memo::Memo<CommitId, Arc<BTreeMap<usize, BTreeSet<Tid>>>>,
     /// `Engine::sync_certificates` per thing (`memo`): every commit's bodies read it.
     pub(crate) sync_certs: memo::Memo<Tid, Arc<crate::labeling::Certs>>,
+    /// What each read thing's certificates name, per commit (`sync::certified`): `sync_bodies`
+    /// reads one commit's row.
+    pub(crate) certified: crate::sync::certified::Certified,
+    /// `Engine::sync_holding` per sync ID (`memo::Cutoff`): it reads the synced group's whole
+    /// closure and the owner hints, which move at every thing made, while the answer rarely does.
+    pub(crate) sync_holding: memo::Cutoff<SyncId, Option<(Tid, crate::sync::Holding)>>,
     /// `rotation::departures` per actor (`memo`).
     pub(crate) departures: memo::Memo<Tid, Vec<osis_keys::Departure>>,
     /// The holders lacking a box of each actor (`rotation::reseal_candidates`, `memo`): O(roster)
@@ -1310,8 +1316,9 @@ pub struct Core {
     pub(crate) sync_ids: memo::Memo<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
     /// `Engine::passes_wanted` (`memo`).
     pub(crate) passes_wanted: memo::Memo<(), Arc<BTreeMap<SyncId, WallMs>>>,
-    /// `Engine::published_under` for every actor (`memo`).
-    pub(crate) published: memo::Memo<(), Published>,
+    /// `Engine::published_under` for every actor (`memo::Spread`): it walks every labeled thing's
+    /// record chain, which moves at most role events, while an actor's entry rarely does.
+    pub(crate) published: memo::Spread<Tid, Arc<BTreeSet<Tid>>>,
     /// `Engine::held_links` (`memo`).
     pub(crate) links: memo::Memo<(), std::sync::Arc<Vec<crate::flows::HeldLink>>>,
     /// Groups the handle reads and writes at another node (`osis` sources): what is here of them
@@ -1338,6 +1345,8 @@ impl Core {
             dial_peers: self.dial_peers.clone(),
             holders_named: self.holders_named.clone(),
             sync_certs: self.sync_certs.clone(),
+            certified: self.certified.clone(),
+            sync_holding: self.sync_holding.clone(),
             departures: self.departures.clone(),
             reseal_scans: self.reseal_scans.clone(),
             store_rows: self.store_rows.clone(),
@@ -1454,8 +1463,6 @@ impl Core {
     }
 }
 
-/// `Core::published`: the published things per actor.
-pub(crate) type Published = std::sync::Arc<BTreeMap<Tid, std::sync::Arc<BTreeSet<Tid>>>>;
 
 /// What brings back what the node could not judge (notes/expiry-creation-design.md §3).
 #[derive(Clone, Debug, Default)]
@@ -1904,6 +1911,10 @@ impl Core {
             dial_peers: _,
             holders_named: _,
             sync_certs: _,
+            // followed (`Effects`): what a rollback restores moves its reads, so the next follow
+            // indexes again
+            certified: _,
+            sync_holding: _,
             key_roles: _,
             inbox_actors: _,
             acting_of: _,
@@ -2089,6 +2100,8 @@ impl Core {
             dial_peers: memo::Memo::new("sync: dial peers"),
             holders_named: memo::Memo::new("holders named: read"),
             sync_certs: memo::Memo::new("sync: certificates"),
+            certified: Default::default(),
+            sync_holding: memo::Cutoff::new("sync: holding"),
             departures: memo::Memo::new("departures"),
             reseal_scans: memo::Memo::new("reseal: scan"),
             rotation_seq: 0,
@@ -2199,7 +2212,7 @@ impl Core {
             walks: Default::default(),
             sync_ids: memo::Memo::new("sync IDs of"),
             passes_wanted: memo::Memo::new("sync: passes wanted"),
-            published: memo::Memo::new("published"),
+            published: memo::Spread::new("published"),
             links: memo::Memo::new("held links"),
             sourced_elsewhere: BTreeSet::new(),
         }

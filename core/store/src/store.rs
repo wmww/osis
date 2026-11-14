@@ -136,7 +136,7 @@ const KINDS: usize = 16;
 
 impl Default for Stamping {
     fn default() -> Stamping {
-        Stamping { families: (0..KINDS + 256).map(|_| Stamps::default()).collect(), all: Stamps::default(), log: Vec::new() }
+        Stamping { families: (0..KINDS + 256).map(|_| Stamps::named("store: catalog family")).collect(), all: Stamps::named("store: catalog"), log: Vec::new() }
     }
 }
 

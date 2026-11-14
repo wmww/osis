@@ -42,7 +42,7 @@ pub struct JMap<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> {
 
 impl<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> Default for JMap<K, V> {
     fn default() -> Self {
-        JMap { map: BTreeMap::new(), stamps: Stamps::default(), log: Vec::new(), seen: BTreeSet::new() }
+        JMap { map: BTreeMap::new(), stamps: Stamps::of::<Self>(), log: Vec::new(), seen: BTreeSet::new() }
     }
 }
 
@@ -201,7 +201,7 @@ pub struct JSet<T: Ord + Clone + Hash> {
 
 impl<T: Ord + Clone + Hash> Default for JSet<T> {
     fn default() -> Self {
-        JSet { set: BTreeSet::new(), stamps: Stamps::default(), log: Vec::new() }
+        JSet { set: BTreeSet::new(), stamps: Stamps::of::<Self>(), log: Vec::new() }
     }
 }
 
@@ -284,7 +284,7 @@ pub struct JSetMap<K: Ord + Clone + Hash, T: Ord + Clone> {
 
 impl<K: Ord + Clone + Hash, T: Ord + Clone> Default for JSetMap<K, T> {
     fn default() -> Self {
-        JSetMap { map: BTreeMap::new(), stamps: Stamps::default(), log: Vec::new() }
+        JSetMap { map: BTreeMap::new(), stamps: Stamps::of::<Self>(), log: Vec::new() }
     }
 }
 
@@ -393,7 +393,7 @@ pub struct JNested<K: Ord + Clone + Hash, K2: Ord + Clone, V: Clone> {
 
 impl<K: Ord + Clone + Hash, K2: Ord + Clone, V: Clone> Default for JNested<K, K2, V> {
     fn default() -> Self {
-        JNested { map: BTreeMap::new(), stamps: Stamps::default(), log: Vec::new() }
+        JNested { map: BTreeMap::new(), stamps: Stamps::of::<Self>(), log: Vec::new() }
     }
 }
 

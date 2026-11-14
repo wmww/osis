@@ -114,6 +114,9 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
         // a logged write of a key read, before the read or by a key sharing its hash, moved
         // nothing: the stamps say which did
         let mut due: Vec<(u64, K)> = maybe.into_iter().filter_map(|k| self.followed.get(&k).filter(|f| f.value.is_none() || !f.deps.iter().all(Dep::holds)).map(|f| (f.seq, k))).collect();
+        if crate::costs::on() {
+            self.count_causes(&due);
+        }
         due.sort_by_key(|(s, _)| *s);
         self.pending.extend(due.iter().map(|(_, k)| k.clone()));
         due.into_iter().map(|(_, k)| k).collect()
@@ -135,6 +138,12 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
     pub fn try_settle<E>(&mut self, k: &K, f: impl FnOnce() -> Result<V, E>) -> Result<Option<(Option<V>, V)>, E> {
         let _s = crate::costs::span(self.name);
         let (out, frame) = recorded_frame(f);
+        self.settled(k, out, frame)
+    }
+
+    /// `try_settle` of a value computed (with what it read, `frame`) while this was not borrowed:
+    /// for an owner inside what the function reads (`Cutoff::get_in`).
+    pub(super) fn settled<E>(&mut self, k: &K, out: Result<V, E>, frame: super::Frame) -> Result<Option<(Option<V>, V)>, E> {
         match out {
             Ok(now) => Ok(self.record(k, now, frame)),
             Err(e) => {
@@ -147,6 +156,11 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
                 Err(e)
             }
         }
+    }
+
+    /// This effects' name (`costs`).
+    pub(super) fn name(&self) -> &'static str {
+        self.name
     }
 
     fn record(&mut self, k: &K, now: V, frame: super::Frame) -> Option<(Option<V>, V)> {
@@ -215,6 +229,28 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
             ix.reads = ix.reads.saturating_sub(1);
             if ix.reads == 0 {
                 self.tables.remove(&p);
+            }
+        }
+    }
+
+    /// Counts, per due key, what made it due (`costs::count_by`, under this effects' name): never
+    /// settled, or each container whose stamp a read of its last value saw moved.
+    fn count_causes(&self, due: &[(u64, K)]) {
+        for (_, k) in due {
+            let Some(f) = self.followed.get(k) else { continue };
+            if f.value.is_none() {
+                crate::costs::count_by(self.name, "unsettled", 1);
+                continue;
+            }
+            let mut moved = false;
+            for d in f.deps.iter().filter(|d| !d.holds()) {
+                let t = lock(&d.table);
+                crate::costs::count_by(self.name, t.cause(d.key.is_none()), 1);
+                moved = true;
+            }
+            if !moved {
+                // given by an earlier `due` and not settled since
+                crate::costs::count_by(self.name, "given before", 1);
             }
         }
     }

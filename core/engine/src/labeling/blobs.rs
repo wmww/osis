@@ -108,7 +108,7 @@ fn framed(key: osis_crypto::BlobKey, env: &Envelope, resolved: &osis_commit::Hea
 
 /// A group as `Engine::commit_bodies_under` sees it.
 pub struct BodyCtx {
-    pub closure: std::sync::Arc<std::collections::BTreeSet<Tid>>,
+    pub closure: crate::engine::groups::Closure,
     pub actor: Tid,
     pub published: std::sync::Arc<std::collections::BTreeSet<Tid>>,
 }
@@ -459,7 +459,7 @@ impl Engine {
     /// What `commit_bodies_under` needs of a group: its closure, actor and the things its home
     /// label publishes.
     pub fn body_ctx(&mut self, g: &Tid) -> BodyCtx {
-        BodyCtx { closure: self.closure(g), actor: self.group_actor(g), published: self.published_under(g) }
+        BodyCtx { closure: self.core.ix.groups.closure_of(g), actor: self.group_actor(g), published: self.published_under(g) }
     }
 
     /// The parts of commit `id` (its held parts, or `parts`) the actor of `ctx` may read
@@ -596,11 +596,10 @@ impl Engine {
     /// Labeled groups whose nearest labeled record-chain actor is `g` (its home label publishes
     /// their `label.0`, spec/sync-ids.md §4). Empty unless `g` is an actor with secrets of its own.
     /// Taken for every actor at once (`Core::published`): O(labeled things) per change of what
-    /// it reads, not per pass.
+    /// it reads, not per pass; a reader moves only when the answer does.
     pub fn published_under(&mut self, g: &Tid) -> std::sync::Arc<std::collections::BTreeSet<Tid>> {
         let core = &self.core;
-        let all = core.published.get(&(), || std::sync::Arc::new(published_by_actor(core, &core.ix.sync_recorded).into_iter().map(|(k, v)| (k, std::sync::Arc::new(v))).collect()));
-        all.get(g).cloned().unwrap_or_default()
+        core.published.get(g, || published_all(core)).unwrap_or_default()
     }
 
     /// The read secret a commit is wrapped under at a label of `g` (spec/crypto.md §5): the
@@ -839,6 +838,11 @@ pub fn delete_key<'a>(keys: &'a HeadKeys, item: &osis_label::DeleteItem) -> Opti
 
 /// Labeled things by the nearest labeled actor with secrets of its own up their record chain
 /// whose record edges up to it stand here (`Core::standing_chain`; spec/sync-ids.md §2; `Engine::published_under`).
+/// `Core::published`'s map: the published things per actor.
+pub(crate) fn published_all(core: &crate::engine::Core) -> std::collections::BTreeMap<Tid, std::sync::Arc<std::collections::BTreeSet<Tid>>> {
+    published_by_actor(core, &core.ix.sync_recorded).into_iter().map(|(k, v)| (k, std::sync::Arc::new(v))).collect()
+}
+
 fn published_by_actor(core: &crate::engine::Core, labeled: &std::collections::BTreeSet<Tid>) -> std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> {
     let mut map: std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> = std::collections::BTreeMap::new();
     for h in labeled {

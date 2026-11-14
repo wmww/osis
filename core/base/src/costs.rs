@@ -39,6 +39,23 @@ pub fn count(name: &'static str, n: u64) {
     }
 }
 
+/// Whether this thread records (tests that `take`): a diagnostic costing more than a count runs
+/// only then.
+pub fn on() -> bool {
+    ON.with(Cell::get)
+}
+
+/// `count` under `"{name} <- {by}"`: what moved a phase, per cause (each label made once).
+pub fn count_by(name: &'static str, by: &'static str, n: u64) {
+    thread_local! {
+        static LABELS: RefCell<std::collections::HashMap<(&'static str, &'static str), &'static str>> = RefCell::default();
+    }
+    if on() {
+        let label = LABELS.with(|l| *l.borrow_mut().entry((name, by)).or_insert_with(|| Box::leak(format!("{name} <- {by}").into_boxed_str())));
+        count(label, n);
+    }
+}
+
 /// `count` of `n()`, computed only while this thread records.
 pub fn count_with(name: &'static str, n: impl FnOnce() -> u64) {
     if ON.with(Cell::get) {

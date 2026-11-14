@@ -357,9 +357,42 @@ pub struct Groups {
     /// Things whose `groups_of` answer the running transaction changed, and groups whose
     /// closure it changed (`Event::Groups`).
     pub(crate) moved: BTreeSet<Tid>,
-    /// Stamps the index as one (`osis_base::memo`): every read reads it whole, every change of
-    /// a listing or a definition moves it.
+    /// Stamps the index per row read (`Row`): a change moves what read the rows it changed.
     stamps: osis_base::memo::Stamps,
+}
+
+/// A row of `Groups` as its stamps name it: a reader of one moves only with it.
+#[derive(Hash)]
+enum Row {
+    /// Whether a group is defined.
+    Defined(Tid),
+    /// A group's listing of a field.
+    Listing(Tid, u64),
+    /// The groups listing a tid in a field.
+    ListedIn(Tid, u64),
+    /// A group's closure, read whole.
+    Closure(Tid),
+    /// Whether a group's closure holds a tid.
+    Member(Tid, Tid),
+}
+
+/// A group's closure as handed out (`Groups::closure_of`): read tid by tid as it is used, so
+/// what asks whether it holds a tid moves only when that answer does; walked, it is read whole.
+pub struct Closure {
+    group: Tid,
+    set: Arc<BTreeSet<Tid>>,
+    reads: osis_base::memo::Reader,
+}
+
+impl Closure {
+    pub fn contains(&self, t: &Tid) -> bool {
+        self.reads.read(&Row::Member(self.group, *t));
+        self.set.contains(t)
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &Tid> {
+        self.reads.read(&Row::Closure(self.group));
+        self.set.iter()
+    }
 }
 
 impl Clone for Groups {
@@ -412,7 +445,7 @@ impl Groups {
 
     /// Whether `g` has a `group.0` state.
     pub(crate) fn is_defined(&self, g: &Tid) -> bool {
-        self.stamps.read_all();
+        self.stamps.read(&Row::Defined(*g));
         self.defined.contains(g)
     }
 
@@ -424,24 +457,25 @@ impl Groups {
 
     /// Whether `g`'s field `f` lists `t`.
     pub(crate) fn listed(&self, g: &Tid, f: u64, t: &Tid) -> bool {
-        self.stamps.read_all();
+        self.stamps.read(&Row::Listing(*g, f));
         self.maps(f).0.get(g).is_some_and(|s| s.contains(t))
     }
 
     /// What `g`'s field `f` lists.
     pub(crate) fn listing(&self, g: &Tid, f: u64) -> impl Iterator<Item = &Tid> {
-        self.stamps.read_all();
+        self.stamps.read(&Row::Listing(*g, f));
         self.maps(f).0.get(g).into_iter().flatten()
     }
 
     /// `g`'s whole definition: O(the group), for checks.
     pub(crate) fn def(&self, g: &Tid) -> Option<Def> {
-        self.defined.contains(g).then(|| (self.listing(g, ITEMS).copied().collect(), self.listing(g, SUBGROUPS).copied().collect()))
+        self.is_defined(g).then(|| (self.listing(g, ITEMS).copied().collect(), self.listing(g, SUBGROUPS).copied().collect()))
     }
 
     /// The groups listing `t` directly: (as an item, as a subgroup).
     pub(crate) fn listed_in(&self, t: &Tid) -> (BTreeSet<Tid>, BTreeSet<Tid>) {
-        self.stamps.read_all();
+        self.stamps.read(&Row::ListedIn(*t, ITEMS));
+        self.stamps.read(&Row::ListedIn(*t, SUBGROUPS));
         let of = |m: &Edges| m.get(t).cloned().unwrap_or_default();
         (of(&self.item_of), of(&self.parents))
     }
@@ -455,14 +489,16 @@ impl Groups {
                 return false;
             }
             rev.entry(t).or_default().insert(g);
-            stamps.moved();
+            stamps.wrote(&Row::Listing(g, f), true);
+            stamps.wrote(&Row::ListedIn(t, f), true);
             return true;
         }
         let Some(s) = fwd.get_mut(&g) else { return false };
         if !s.remove(&t) {
             return false;
         }
-        stamps.moved();
+        stamps.wrote(&Row::Listing(g, f), true);
+        stamps.wrote(&Row::ListedIn(t, f), true);
         if s.is_empty() {
             fwd.remove(&g);
         }
@@ -477,11 +513,11 @@ impl Groups {
 
     /// `g` and every group above it through subgroup lists.
     pub(crate) fn above(&self, g: &Tid) -> BTreeSet<Tid> {
-        self.stamps.read_all();
         let mut seen = BTreeSet::new();
         let mut stack = vec![*g];
         while let Some(x) = stack.pop() {
             if seen.insert(x) {
+                self.stamps.read(&Row::ListedIn(x, SUBGROUPS));
                 stack.extend(self.parents.get(&x).into_iter().flatten().copied());
             }
         }
@@ -491,7 +527,7 @@ impl Groups {
 
     /// The groups containing `t` (`groups.0`): above each group listing it as an item.
     pub(crate) fn groups_of(&self, t: &Tid) -> BTreeSet<Tid> {
-        self.stamps.read_all();
+        self.stamps.read(&Row::ListedIn(*t, ITEMS));
         self.item_of.get(t).into_iter().flatten().flat_map(|g| self.above(g)).collect()
     }
 
@@ -526,7 +562,16 @@ impl Groups {
     /// The closure of `g`: itself, its subgroups and every thing it contains, transitively.
     /// Derived the first time it is asked for (O(the closure)), then kept.
     pub fn closure(&self, g: &Tid) -> Arc<BTreeSet<Tid>> {
-        self.stamps.read_all();
+        self.stamps.read(&Row::Closure(*g));
+        self.kept_closure(g)
+    }
+
+    /// The closure of `g` read as it is used (`Closure`).
+    pub fn closure_of(&self, g: &Tid) -> Closure {
+        Closure { group: *g, set: self.kept_closure(g), reads: self.stamps.reader() }
+    }
+
+    fn kept_closure(&self, g: &Tid) -> Arc<BTreeSet<Tid>> {
         if let Some(c) = self.kept().get(g) {
             return c.clone();
         }
@@ -582,6 +627,8 @@ impl Groups {
             for a in was.symmetric_difference(now) {
                 // `x` entered or left `a`'s closure; what `a` holds is an answer too
                 moved.extend([*x, *a]);
+                self.stamps.wrote(&Row::Closure(*a), true);
+                self.stamps.wrote(&Row::Member(*a, *x), true);
                 if let Some(c) = kept.get_mut(a) {
                     let c = Arc::make_mut(c);
                     if now.contains(a) {
@@ -610,7 +657,7 @@ impl Groups {
     fn define(&mut self, g: Tid, on: bool) {
         let was = self.defined.contains(&g);
         if was != on {
-            self.stamps.moved();
+            self.stamps.wrote(&Row::Defined(g), true);
             self.log.push(Logged::Defined(g, was));
             if on {
                 self.defined.insert(g);
@@ -637,7 +684,7 @@ impl Groups {
     /// `defined` defined; not logged, nothing told.
     pub(crate) fn load<'a>(&mut self, g: Tid, defined: bool, items: impl Iterator<Item = &'a Tid>, subs: impl Iterator<Item = &'a Tid>) {
         if defined && self.defined.insert(g) {
-            self.stamps.moved();
+            self.stamps.wrote(&Row::Defined(g), true);
         }
         let mut n = 0;
         for (f, t) in items.map(|t| (ITEMS, t)).chain(subs.map(|t| (SUBGROUPS, t))) {
@@ -679,7 +726,7 @@ impl super::journal::Journaled for Groups {
         while self.log.len() > m {
             match self.log.pop() {
                 Some(Logged::Defined(g, was)) => {
-                    self.stamps.moved();
+                    self.stamps.wrote(&Row::Defined(g), true);
                     if was {
                         self.defined.insert(g);
                     } else {

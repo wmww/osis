@@ -24,7 +24,9 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+mod cutoff;
 mod effects;
+pub use cutoff::{Cutoff, Spread};
 pub use effects::{Effects, Feed};
 
 /// Absent keys share a stamp per bucket of their hash (`Table::absent`). Performance switch: at 1
@@ -55,6 +57,10 @@ struct Table {
     log: std::collections::VecDeque<(u64, Logged)>,
     /// The readers' marks (`ver` up to which each read the log), counted.
     marks: BTreeMap<u64, usize>,
+    /// What the container is, for diagnostics (`Effects` counts what made a key due by it):
+    /// its name, else where its stamps were made.
+    name: Option<&'static str>,
+    born: &'static std::panic::Location<'static>,
 }
 
 /// One change in a `Table`'s log.
@@ -80,8 +86,9 @@ impl std::fmt::Debug for Logged {
 }
 
 impl Default for Table {
+    #[track_caller]
     fn default() -> Table {
-        Table { ver: 0, absent: [0; ABSENT_BUCKETS], keys: HashMap::new(), prefixes: BTreeMap::new(), log: Default::default(), marks: BTreeMap::new() }
+        Table { ver: 0, absent: [0; ABSENT_BUCKETS], keys: HashMap::new(), prefixes: BTreeMap::new(), log: Default::default(), marks: BTreeMap::new(), name: None, born: std::panic::Location::caller() }
     }
 }
 
@@ -136,6 +143,22 @@ impl Table {
         }
     }
 
+    /// The name a read of the container is counted under (`Effects` causes): its name, else where
+    /// its stamps were made; `(whole)` for a read of all of it. Each label is made once.
+    fn cause(&self, whole: bool) -> &'static str {
+        type Labels = HashMap<(Option<&'static str>, usize, bool), &'static str>;
+        thread_local! {
+            static LABELS: RefCell<Labels> = RefCell::default();
+        }
+        let id = (self.name, self.born as *const _ as usize, whole);
+        LABELS.with(|l| {
+            *l.borrow_mut().entry(id).or_insert_with(|| {
+                let name = self.name.map(str::to_string).unwrap_or_else(|| format!("{}:{}", self.born.file(), self.born.line()));
+                Box::leak(if whole { format!("{name} (whole)") } else { name }.into_boxed_str())
+            })
+        })
+    }
+
     /// The changes after `at`, and the mark moved from `at` to now.
     fn read_log(&mut self, at: &mut u64) -> Vec<Logged> {
         let start = self.log.partition_point(|(v, _)| *v <= *at);
@@ -174,10 +197,28 @@ pub struct StampKey(u64);
 
 /// A container's change stamps, owned by the container: its writes call `wrote`, its reads
 /// `read`. Dropped with the container, after which nothing that read it holds.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Stamps(Arc<Mutex<Table>>);
 
+/// Stamps named by where they were made (`Effects`' causes), through a derived `Default` too.
+impl Default for Stamps {
+    #[track_caller]
+    fn default() -> Stamps {
+        Stamps(Arc::new(Mutex::new(Table::default())))
+    }
+}
+
 impl Stamps {
+    /// The stamps of a container named `name` (what `Effects` reports a key due by).
+    pub fn named(name: &'static str) -> Stamps {
+        Stamps(Arc::new(Mutex::new(Table { name: Some(name), ..Table::default() })))
+    }
+
+    /// The stamps of a container of type `C`, named by it.
+    pub fn of<C: ?Sized>() -> Stamps {
+        Stamps::named(std::any::type_name::<C>())
+    }
+
     /// Key `k` was written (`present`) or removed.
     pub fn wrote<Q: Hash + ?Sized>(&self, k: &Q, present: bool) {
         lock(&self.0).wrote(hash(k), present, None);
@@ -279,11 +320,15 @@ impl Stamps {
     }
 
     fn record(&self, key: Option<u64>) {
+        Stamps::record_on(&self.0, key);
+    }
+
+    fn record_on(t: &Arc<Mutex<Table>>, key: Option<u64>) {
         FRAMES.with(|f| {
             let mut f = f.borrow_mut();
             let accounted = accounting(&f);
             let Some(top) = f.last_mut() else { return };
-            top.note((Arc::as_ptr(&self.0) as usize, key), accounted, || Dep { table: self.0.clone(), key, seen: lock(&self.0).stamp(key), accounted });
+            top.note((Arc::as_ptr(t) as usize, key), accounted, || Dep { table: t.clone(), key, seen: lock(t).stamp(key), accounted });
         });
     }
 }
@@ -311,7 +356,30 @@ impl Clone for Changes {
     }
 }
 
+/// A container's key reads (`Stamps::read`), made away from the container (`Stamps::reader`): for
+/// a view of it handed out, read key by key as it is used.
+#[derive(Debug)]
+pub struct Reader(Arc<Mutex<Table>>);
+
+impl Reader {
+    pub fn read<Q: Hash + ?Sized>(&self, k: &Q) {
+        if RECORDING.load(Ordering::Relaxed) != 0 {
+            Stamps::record_on(&self.0, Some(hash(k)));
+        }
+    }
+    pub fn read_all(&self) {
+        if RECORDING.load(Ordering::Relaxed) != 0 {
+            Stamps::record_on(&self.0, None);
+        }
+    }
+}
+
 impl Stamps {
+    /// A handle reading this container's keys (`Reader`).
+    pub fn reader(&self) -> Reader {
+        Reader(self.0.clone())
+    }
+
     /// The container's change count, readable where the container is not.
     pub fn counter(&self) -> Changes {
         Changes(self.0.clone())
@@ -370,7 +438,7 @@ impl Dep {
 
 /// What the memo computing on this thread has read so far.
 #[derive(Default)]
-struct Frame {
+pub(crate) struct Frame {
     deps: Vec<Dep>,
     /// Each dep's place in `deps`, by `Dep::id`.
     seen: HashMap<(usize, Option<u64>), usize>,
@@ -457,7 +525,7 @@ fn recorded<T>(f: impl FnOnce() -> T) -> (T, Arc<[Dep]>) {
 }
 
 /// Runs `f` and returns its frame.
-fn recorded_frame<T>(f: impl FnOnce() -> T) -> (T, Frame) {
+pub(crate) fn recorded_frame<T>(f: impl FnOnce() -> T) -> (T, Frame) {
     let _open = Open::start();
     let out = f();
     let frame = FRAMES.with(|fr| fr.borrow_mut().pop()).unwrap_or_default();
@@ -832,7 +900,7 @@ pub struct Stamped<K, V> {
 
 impl<K, V> Default for Stamped<K, V> {
     fn default() -> Self {
-        Stamped { map: BTreeMap::new(), stamps: Stamps::default() }
+        Stamped { map: BTreeMap::new(), stamps: Stamps::of::<Self>() }
     }
 }
 
@@ -888,12 +956,18 @@ impl<K: Ord + Hash, V> Stamped<K, V> {
 /// holds: `get` is a read of the time itself (any move of it moves the reader), `until(t)` of
 /// the time only as far as `t` (the reader's answer holds while the clock is before `t`). A move
 /// back moves every reader: an answer judged later need not hold earlier.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Clock {
     now: u64,
     stamps: Stamps,
     /// The `until` times read and not passed yet.
     ahead: RefCell<std::collections::BTreeSet<u64>>,
+}
+
+impl Default for Clock {
+    fn default() -> Clock {
+        Clock { now: 0, stamps: Stamps::of::<Clock>(), ahead: RefCell::default() }
+    }
 }
 
 impl Clock {
@@ -940,10 +1014,16 @@ impl Clock {
 
 /// A value outside the journal whose reads (`get`) and changes (`set`) are stamped
 /// (`Core::account`).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Tracked<T> {
     value: T,
     stamps: Stamps,
+}
+
+impl<T: Default> Default for Tracked<T> {
+    fn default() -> Self {
+        Tracked { value: T::default(), stamps: Stamps::of::<Self>() }
+    }
 }
 
 impl<T: Copy + PartialEq> Tracked<T> {
@@ -969,7 +1049,7 @@ pub struct StampedSet<T> {
 
 impl<T> Default for StampedSet<T> {
     fn default() -> Self {
-        StampedSet { set: Default::default(), stamps: Stamps::default() }
+        StampedSet { set: Default::default(), stamps: Stamps::of::<Self>() }
     }
 }
 
