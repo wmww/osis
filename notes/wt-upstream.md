@@ -1,0 +1,10 @@
+# Reports for the wt plugin's author
+> Summary: Behaviours of `wt` (reasonable-rust-builds 0.6.0, wmww/agent-skills) worth changing upstream, each with what we saw; our own usage rules are in notes/coordination.md (Briefs). We don't edit the plugin.
+
+**1. `claim` checks a branch out over a free tree that has a branch checked out.** `release` always detaches HEAD, so a free tree on a branch means someone is working there without a claim. `claim` only checks `git status --porcelain` is clean, then `git checkout`s its branch over the other agent's (a clean tree between commits passes). Seen twice in one session: an agent working unclaimed in wt11 (branch sync-read) and one in wt5 (branch sync-convergence) had their HEAD switched by the next `wt claim` 17 s and 14 s after they started. Suggest: in `claim`'s loop, a tree whose `git branch --show-current` is non-empty is busy (skip it, as for an existing marker, with a warning naming the branch). The cause here was ours (agents trusted a harness-given cwd instead of claiming), but the tool could have refused.
+
+**2. Markers without a worktree are invisible and permanent.** `.git/wt-claims/wt1..wt4, wt6..wt8` (claims from earlier sessions) name trees that no longer exist; `list` iterates `.worktrees/` so never shows them, `trim` never clears them, and `claim` skips those numbers forever. Suggest: `list` prints markers with no tree, and `claim` drops a marker whose tree is gone (or `trim` does).
+
+**3. `claim <branch> <base>` reuses an existing branch silently.** A stale local branch of the same name, 309 commits behind `origin/main`, was checked out as is; the base argument is ignored when the branch exists. Suggest: warn when an existing branch is not a descendant of `<base>`.
+
+**Not a wt bug**, recorded so nobody chases it: "the claim marker vanished while an agent worked" was the agent never claiming. A spawned agent's environment names the parent's shell cwd as its working directory ("a git worktree, run all commands from this directory"); when the coordinator's last command `cd`'d into a tree it had just released, the next agent built there unclaimed.

@@ -62,4 +62,6 @@ Compare old and new code by instruction counts, never wall time on a loaded box;
 - A new node test that loops shows nothing through `| tail` until it exits (`Net::settle`'s round guard misses loops inside one step): run it first with `--nocapture` to a log.
 - Sim trace: `link N -> Hub(..): Stream` names the receiving end (hosts pull nodes' logs, so it reads like a host push); a send's line is followed later by its `delivers` line (by message kind; `sent twice` marks a `dup_pct` copy, `link gone: lost` a delivery onto a cut link); a node sync restart in place after an injected store fault shows only as a diagnostic.
 - osis-host tests' `World::connect` keys overflow past 31 clients (`0xe0 + c as u8`).
+- A proptest failure reproduces across runs only under `PROPTEST_RNG_SEED=N`; without it each run draws new cases.
+- A count taken inside a `measured` closure (`osis_base::costs::take`) zeroes what the closure is measured by: every n/10n check then passes at 0. Probe outside the measured region.
 - A loop over consecutive seeds with `rng(seed | 1)` makes seeds 2k and 2k+1 the same history: use odd seeds via `step_by(2)`.
