@@ -17,7 +17,7 @@ pub type Row = (&'static str, SyncId, Source);
 #[derive(Clone, Debug, Default)]
 pub struct Views {
     /// Per (S, source), each connection it is open on and whether it is a store source there.
-    open: BTreeMap<(SyncId, Source), BTreeMap<ConnId, bool>>,
+    open: BTreeMap<SyncId, BTreeMap<Source, BTreeMap<ConnId, bool>>>,
     /// Where each (connection, S) member's rows live, as it joined.
     by_conn: BTreeMap<(ConnId, SyncId), Source>,
     stamps: Stamps,
@@ -33,7 +33,7 @@ impl Views {
                 if let Some(old) = self.by_conn.insert((*conn, *s), at) {
                     self.drop_conn(*s, old, *conn);
                 }
-                self.open.entry((*s, at)).or_default().insert(*conn, store);
+                self.open.entry(*s).or_default().entry(at).or_default().insert(*conn, store);
                 self.wrote(*s, at);
             }
             Moved::Left(conn, s) => {
@@ -46,10 +46,15 @@ impl Views {
     }
 
     fn drop_conn(&mut self, s: SyncId, at: Source, conn: ConnId) {
-        if let Some(m) = self.open.get_mut(&(s, at)) {
-            m.remove(&conn);
-            if m.is_empty() {
-                self.open.remove(&(s, at));
+        if let Some(by) = self.open.get_mut(&s) {
+            if let Some(m) = by.get_mut(&at) {
+                m.remove(&conn);
+                if m.is_empty() {
+                    by.remove(&at);
+                }
+            }
+            if by.is_empty() {
+                self.open.remove(&s);
             }
         }
         self.wrote(s, at);
@@ -64,14 +69,14 @@ impl Views {
     /// caller's to fill.
     pub fn get(&self, s: &SyncId, at: &Source) -> Option<SrcView> {
         self.stamps.read(&("v", *s, *at));
-        let (conn, store) = self.open.get(&(*s, *at))?.iter().next().map(|(c, x)| (*c, *x))?;
+        let (conn, store) = self.open.get(s)?.get(at)?.iter().next().map(|(c, x)| (*c, *x))?;
         Some(SrcView { at: *at, conn, store, head: None, full: false, role_unheld: false })
     }
 
     /// Every source of S up now.
     pub fn of(&self, s: &SyncId) -> Vec<Source> {
         self.stamps.read(&("s", *s));
-        self.open.range((*s, Source::Conn(ConnId(0)))..).take_while(|((x, _), _)| x == s).map(|((_, at), _)| *at).collect()
+        self.open.get(s).map(|by| by.keys().copied().collect()).unwrap_or_default()
     }
 
     /// A cursor over the views written from now on.

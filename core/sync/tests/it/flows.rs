@@ -68,5 +68,11 @@ fn probe_two_accounts_share() {
     w.run();
     eprintln!("set 1: {:?}", w.engine(1).sync_set().unwrap().ids);
     eprintln!("status 1: {:?}", w.status(1));
+    let st = w.engine(0).sync_ids(&t).unwrap()[0].id;
+    eprintln!("dbg 0 entries S: {:?}", w.store(0).entries(&st).unwrap().len());
+    eprintln!("dbg 1 entries S: {:?}", w.store(1).entries(&st).unwrap().len());
+    for c in w.engine(0).commit_ids() { let b = w.engine(0).sync_bodies(&c).unwrap(); if b.contains_key(&st) { eprintln!("dbg body {c:?} {:?}", b.get(&st)); } }
+    eprintln!("dbg 0 path: {:?}", w.store(0).path(&st).unwrap().map(|p| p.steps.len()));
+    eprintln!("dbg 1 commits of t: {:?}", w.engine(1).role_on(&t));
     assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("x".into())));
 }

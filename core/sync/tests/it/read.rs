@@ -125,6 +125,8 @@ struct Fake {
     unpullable: Stamped<SyncId, ()>,
     /// Blobs held with other parts than `{0}`, as a copy, or without bytes (`None`).
     blobs: Stamped<BlobId, Option<BlobInfo>>,
+    /// Blobs holding a part dropped here for good (a purge).
+    dropped: Stamped<BlobId, ()>,
     /// Whether each logging was a fresh encryption.
     fresh: Vec<bool>,
     all: Stamped<(Source, SyncId), BTreeSet<BlobId>>,
@@ -169,6 +171,9 @@ impl Ground for Fake {
     }
     fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>> {
         Ok(self.blobs.get(b).cloned().unwrap_or(Some(BlobInfo { parts: [0].into(), copy: false })))
+    }
+    fn dropped(&mut self, b: &BlobId) -> Result<bool> {
+        Ok(self.dropped.contains_key(b))
     }
     fn own(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<Entry>> {
         Ok(self.own.get(&(*s, *c)).cloned().unwrap_or_default())
@@ -515,6 +520,24 @@ fn verdicts_follow_the_facts() {
     f.body.required = false;
     w.judge(S, cid(1), f);
     assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::MustNot(Why::OutsideRequired)));
+}
+
+// spec/sync-judgement.md §1 (a delta the node dropped makes the blob must-not-hold): an own entry
+// whose blob holds a part purged here leaves the own store while the body stays must-hold, and
+// the rest of the body is logged again as a fresh encryption without it.
+#[test]
+fn entry_holding_a_purged_part_leaves_spec_sync_judgement_1() {
+    let mut w = W::new();
+    w.hold(cid(1), &[S], uncovered());
+    w.exchange();
+    let old = w.own_blobs(S, cid(1));
+    assert_eq!(old.len(), 1);
+    w.g.dropped.insert(old[0], ());
+    w.settle();
+    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Must), "the body S needs now stays must-hold");
+    let now = w.own_blobs(S, cid(1));
+    assert!(!now.contains(&old[0]), "the entry holding the purged part left");
+    assert_eq!(now.len(), 1, "the rest of the body logged again");
 }
 
 // spec/sync-judgement.md §3 (own store) (aged-covers): an entry covered and dropped leaves the own

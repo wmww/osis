@@ -151,6 +151,15 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     }
     let bodies = g.bodies(c)?;
     let own = g.own(s, c)?;
+    // an entry whose blob holds a part dropped here for good is must-not-hold itself, whatever
+    // the body's verdict (spec/sync-judgement.md §1): it leaves, and the body counts as unlogged
+    let mut stale = Vec::new();
+    for e in &own {
+        if g.dropped(&e.blob)? {
+            stale.push(e.blob);
+        }
+    }
+    let live: Vec<BlobId> = own.iter().map(|e| e.blob).filter(|b| !stale.contains(b)).collect();
     let (f, verdict) = match bodies.get(s) {
         None if !g.closure_settled(s)? => (None, Verdict::Unjudged),
         None => (None, Verdict::MustNot(Why::OutsideRequired)),
@@ -178,6 +187,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         j.acts.extend(g.own_tombstones(s, c)?.into_iter().map(Act::Lift));
     }
     j.idle = bodies.get(s).is_none() && own.is_empty() && !g.present_anywhere(s, c)?;
+    j.acts.extend(stale.iter().map(|b| Act::DropOwn(*b)));
     if verdict == Verdict::Unjudged {
         return Ok(j);
     }
@@ -187,10 +197,10 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         None => false,
     };
     if matches!(verdict, Verdict::MustNot(_)) || dropped_here {
-        j.acts.extend(own.iter().map(|e| Act::DropOwn(e.blob)));
+        j.acts.extend(live.iter().map(|b| Act::DropOwn(*b)));
     }
     let neither = f.as_ref().is_some_and(|f| f.neither);
-    if verdict == Verdict::Must && own.is_empty() && !neither && g.pullable(s)? {
+    if verdict == Verdict::Must && live.is_empty() && !neither && g.pullable(s)? {
         j.acts.insert(Act::Log);
     }
     Ok(j)

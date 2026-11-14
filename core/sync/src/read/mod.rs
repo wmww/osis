@@ -28,6 +28,7 @@
 pub mod ground;
 mod judge;
 mod live;
+mod views;
 
 pub use ground::{BlobInfo, Facts, Ground, Seen, SrcView};
 pub use live::Live;
@@ -81,6 +82,10 @@ pub struct Read {
     told: Stamped<SyncId, Arc<BTreeSet<CommitId>>>,
     /// The engine's commits held, followed from the first settle (`Live`).
     commits: Option<osis_base::memo::Feed<CommitId>>,
+    /// The sources of each S, as opens moved them.
+    views: views::Views,
+    /// Cursors over streams' `known` rows and the views, from the first settle (`Live`).
+    feeds: live::Feeds,
 }
 
 impl Default for Read {
@@ -95,6 +100,8 @@ impl Default for Read {
             roles: Stamped::default(),
             told: Stamped::default(),
             commits: None,
+            views: views::Views::default(),
+            feeds: live::Feeds::default(),
         }
     }
 }
@@ -122,9 +129,18 @@ impl Read {
     /// The product's step: over the engine, store, opens' members and streams' `known`.
     pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, status: &crate::status::Status, unread: &crate::unread::Unread) -> Result<bool> {
         let mut commits = self.commits.take();
-        let r = self.settle_on(&mut Live { cx, sessions, opens, streams, status, unread, commits: &mut commits });
+        let mut feeds = std::mem::take(&mut self.feeds);
+        let views = std::mem::take(&mut self.views);
+        let r = self.settle_on(&mut Live { cx, sessions, opens, streams, status, unread, commits: &mut commits, views: &views, feeds: &mut feeds });
         self.commits = commits;
+        self.feeds = feeds;
+        self.views = views;
         r
+    }
+
+    /// A member joined or left a connection's shared set (opens' word, through the driver).
+    pub fn moved(&mut self, m: &crate::opens::Moved, opens: &Opens) {
+        self.views.moved(m, opens);
     }
 
     /// One settle over `g`: whether anything acted. Judging runs to a fixpoint (a verdict moving

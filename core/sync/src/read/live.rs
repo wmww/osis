@@ -11,7 +11,7 @@ use crate::store::{Source, Stand};
 use crate::status::{NetView, Status};
 use crate::streams::Streams;
 use crate::unread::Unread;
-use crate::types::{Cx, Entry, Error, Result, SourceClass};
+use crate::types::{Cx, Entry, Result};
 use osis_base::memo::Feed;
 use osis_base::{BlobId, CommitId, SyncId, WallMs};
 use osis_crypto::SigningSecret;
@@ -20,6 +20,13 @@ use osis_label::{Class, DeleteItem};
 use osis_proto::Msg;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+
+/// Read's cursors over the rows other modules write: streams' `known` and the source views.
+#[derive(Clone, Default)]
+pub struct Feeds {
+    known: Option<Feed<crate::streams::KnownRow>>,
+    views: Option<Feed<super::views::Row>>,
+}
 
 pub struct Live<'a, 'b> {
     pub cx: &'a mut Cx<'b>,
@@ -30,10 +37,10 @@ pub struct Live<'a, 'b> {
     pub unread: &'a Unread,
     /// The engine's commits held, followed from read's first settle.
     pub commits: &'a mut Option<Feed<CommitId>>,
+    pub views: &'a super::views::Views,
+    pub feeds: &'a mut Feeds,
 }
 
-/// Every ground call is built: read runs (`commits_added` gates it).
-const READY: bool = false;
 
 /// The entry this node logs of its own under `s`: stamped where it writes S's head, else
 /// deposited.
@@ -50,8 +57,10 @@ impl Live<'_, '_> {
 
 impl Ground for Live<'_, '_> {
     fn commits_added(&mut self) -> Result<Vec<CommitId>> {
-        if !READY {
-            return Err(Error::NotBuilt("read: streams' known and seen, opens' source views, inbox deposits, closure settled, deletes known"));
+        // the feeds start with the first settle: what each covers before is judged then
+        if self.feeds.known.is_none() {
+            self.feeds.known = Some(self.streams.known().feed());
+            self.feeds.views = Some(self.views.feed());
         }
         match self.commits.as_mut() {
             Some(f) => Ok(f.added()),
@@ -90,11 +99,14 @@ impl Ground for Live<'_, '_> {
         Ok(self.cx.engine.sync_holding(s)?.is_some_and(|(_, h)| h == osis_engine::sync::Holding::Read))
     }
     fn closure_settled(&mut self, s: &SyncId) -> Result<bool> {
-        let _ = s;
-        Err(Error::NotBuilt("engine: a closure's group.0 held as a header only"))
+        match self.thing(s)? {
+            Some(t) => Ok(self.cx.engine.closure_whole(&t)?),
+            None => Ok(false),
+        }
     }
     fn pullable(&mut self, s: &SyncId) -> Result<bool> {
-        if self.sessions.conns().into_iter().any(|c| self.opens.members(c).contains_key(s)) {
+        // a source of S up now (stamped: a source joining judges again)
+        if !self.views.of(s).is_empty() {
             return Ok(true);
         }
         Ok(self.cx.engine.publishes_reach()?)
@@ -128,40 +140,57 @@ impl Ground for Live<'_, '_> {
         let (Some(parts), Some(copy)) = (self.cx.engine.blob_parts(b)?, self.cx.engine.blob_copy(b)?) else { return Ok(None) };
         Ok(Some(BlobInfo { parts, copy }))
     }
-    fn deletes_known(&mut self, _s: &SyncId) -> Result<bool> {
-        Err(Error::NotBuilt("store: deletes seen per sync ID"))
+    fn dropped(&mut self, b: &BlobId) -> Result<bool> {
+        Ok(self.cx.engine.blob_dropped(b)?)
+    }
+    fn deletes_known(&mut self, s: &SyncId) -> Result<bool> {
+        self.cx.store.deletes_known(s)
     }
     fn sources(&mut self, s: &SyncId) -> Result<Arc<Vec<SrcView>>> {
         let mut out = Vec::new();
-        for conn in self.sessions.conns() {
-            if let Some(m) = self.opens.members(conn).get(s) {
-                let at = self.opens.record(conn).map_or(Source::Conn(conn), Source::Record);
-                out.push(SrcView { at, conn, store: m.class == SourceClass::Store, head: m.step, full: false, role_unheld: false });
-            }
+        for at in self.views.of(s) {
+            out.extend(self.source(s, &at)?);
         }
         Ok(Arc::new(out))
     }
     fn source(&mut self, s: &SyncId, at: &Source) -> Result<Option<SrcView>> {
-        let _ = (s, at);
-        Err(Error::NotBuilt("opens: one source's view per sync ID, stamped"))
+        let Some(mut v) = self.views.get(s, at) else { return Ok(None) };
+        let known = self.streams.known();
+        v.head = known.head(*at, s);
+        v.full = known.full(*at, s);
+        Ok(Some(v))
     }
     fn sources_added(&mut self) -> Result<Vec<(SyncId, Source)>> {
-        Err(Error::NotBuilt("opens: a feed of source views written"))
+        Ok(self.feeds.views.as_mut().map(|f| f.added()).unwrap_or_default().into_iter().map(|(_, s, at)| (s, at)).collect())
     }
     fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, CommitId)>> {
-        Err(Error::NotBuilt("streams: a feed of known rows written"))
+        let mut out = Vec::new();
+        // a blob this node never opened or sealed names no commit here: it is pulled, and its
+        // commit known, once opened
+        for (_, at, s, b) in self.feeds.known.as_mut().map(|f| f.added()).unwrap_or_default() {
+            if let Some(c) = self.cx.engine.blob_commit(&b)? {
+                out.push((at, s, c));
+            }
+        }
+        Ok(out)
     }
     fn present_anywhere(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
-        let _ = (s, c);
-        Err(Error::NotBuilt("streams: an entry of a commit present at some source"))
+        let known = self.streams.known();
+        Ok(self.cx.engine.commit_blobs(c)?.iter().any(|b| known.present(s, b)))
     }
     fn seen(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Seen> {
-        let _ = (at, s, c, self.streams);
-        Err(Error::NotBuilt("streams: known by commit"))
+        let mut seen = Seen::default();
+        for b in self.cx.engine.commit_blobs(c)?.iter() {
+            if self.streams.known().knows(*at, s, b) {
+                seen.present.insert(*b);
+            } else if self.cx.store.seen_deleted(*at, s, b)? {
+                seen.deleted.insert(*b);
+            }
+        }
+        Ok(seen)
     }
     fn seen_all(&mut self, at: &Source, s: &SyncId) -> Result<BTreeSet<BlobId>> {
-        let _ = (at, s);
-        Err(Error::NotBuilt("streams: known by source"))
+        Ok(self.streams.known().list(*at, s).into_iter().collect())
     }
     fn heard_out(&mut self, s: &SyncId) -> Result<bool> {
         Ok(self.status.heard_out(s, &NetView { streams: self.streams, unread: self.unread }))
@@ -175,7 +204,7 @@ impl Ground for Live<'_, '_> {
             // a held blob of the commit not tombstoned under S, verbatim under a wrap for S
             let homes: Vec<SyncId> = self.cx.engine.sync_bodies(c)?.keys().copied().collect();
             for b in self.cx.engine.commit_blobs(c)?.iter() {
-                if self.cx.store.tombstone(s, b)?.is_some() || self.cx.store.blob_len(b)?.is_none() {
+                if self.cx.store.tombstone(s, b)?.is_some() || self.cx.store.blob_len(b)?.is_none() || self.cx.engine.blob_dropped(b)? {
                     continue;
                 }
                 for from in &homes {
@@ -207,8 +236,23 @@ impl Ground for Live<'_, '_> {
         Ok(())
     }
     fn deposit(&mut self, at: &SrcView, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<()> {
-        let _ = (at, s, c, b);
-        Err(Error::NotBuilt("inbox: Deposit items (relay, or a fresh encryption by seal_body)"))
+        let Some(e) = self.cx.store.entry(s, b)? else { return Ok(()) };
+        // a deposited own entry is offered to every store source of S (inbox's offers)
+        if e.deposited {
+            return Ok(());
+        }
+        // stamped under the source's head write key: it pulls it as it is
+        let write = at.head.and_then(|h| self.cx.store.path(s).ok().flatten().and_then(|p| p.steps.iter().find(|(st, _)| st.id() == h).map(|(st, _)| st.keys.write)));
+        if let (Some(w), Some(stamp)) = (write, e.stamp)
+            && osis_label::verify_stamp(&w, s, b, &e.wrap, &stamp).unwrap_or(false)
+        {
+            return Ok(());
+        }
+        // else a fresh encryption, deposited: offered as it is logged
+        let Some((sealed, wrap)) = self.cx.engine.seal_body(s, c, self.cx.rng)? else { return Ok(()) };
+        let entry = Entry { blob: sealed.id, wrap, stamp: None, deposited: true, own: true, role: false, class: e.class, expires: None };
+        self.cx.store.log(s, entry, Some(sealed.blob), None)?;
+        Ok(())
     }
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &CommitId, stand: &Stand) -> Result<()> {
         self.cx.store.set_stand(*at, s, &c.0, Some(stand))

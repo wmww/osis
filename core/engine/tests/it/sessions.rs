@@ -547,10 +547,8 @@ fn flip_flag_on(lp: &mut LocalPeer, t: Tid, asp: &Ak, body: &CommitId) {
             let h = e.header(&id).unwrap();
             if h.aspects.iter().any(|x| x.ak == *asp) {
                 let m = e.core.ix.commits.get(&id).unwrap();
-                eprintln!("DBG {id:?} body {} author {:?} kind {:?} dropped {:?} missing {:?}", id == *body, h.author, h.kind, m.dropped_parts().map(|x| x.1).map(|d| (d.why, d.covered_by.clone())).collect::<Vec<_>>(), m.missing_parts().collect::<Vec<_>>());
             }
         }
-        eprintln!("DBG suspects {:?}", e.suspects().unwrap());
     }
     assert!(lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == *asp), "flagged");
 }

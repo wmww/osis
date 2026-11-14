@@ -217,6 +217,17 @@ impl Engine {
         self.core.ix.blob_parts.get(b).map(|x| x.1.clone())
     }
 
+    /// Whether held blob `b` holds a part of its commit this node dropped for good (spec/sync-
+    /// judgement.md §1: a delta it holds that the node dropped makes the blob must-not-hold,
+    /// whatever sync ID it is under): purged, past its bounds, expired, destroyed. A part dropped
+    /// as covered (it leaves by the carriers rule, spec/sync-compaction.md §1) or while invalid
+    /// (no right deletes it) does not count. `false` for a blob not opened or sealed here.
+    pub(crate) fn blob_dropped_now(&self, b: &BlobId) -> bool {
+        let Some(x) = self.core.ix.blob_parts.get(b) else { return false };
+        let Some(m) = self.core.ix.commits.get(&x.0) else { return false };
+        x.1.iter().any(|ai| m.dropped(*ai).is_some_and(|d| matches!(d.why, crate::engine::DropFor::Other | crate::engine::DropFor::Destroyed)))
+    }
+
     /// Whether blob `b`, as opened or sealed here, is a per-sync-ID copy.
     pub(crate) fn blob_copy_now(&self, b: &BlobId) -> Option<bool> {
         self.core.ix.blob_parts.get(b).map(|x| x.2)

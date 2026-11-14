@@ -477,6 +477,7 @@ impl Node {
         let mut cx = cx!(self, out);
         for m in moved.drain(..) {
             self.status.moved(&self.driver.sessions, &self.opens, &m);
+            self.read.moved(&m, &self.opens);
             self.inbox.moved(&m, &crate::inbox::Links { sessions: &mut self.driver.sessions, opens: &self.opens, streams: &self.streams });
             let c = m.conn();
             self.driver.dials.sharing(c, !self.opens.members(c).is_empty());
@@ -494,6 +495,7 @@ impl Node {
             self.opens.on_reported(&mut cx, &mut self.driver.sessions, &self.unread, &mut self.driver.reported, &mut moved);
             for m in moved.drain(..) {
                 let c = m.conn();
+                self.read.moved(&m, &self.opens);
                 self.driver.dials.sharing(c, !self.opens.members(c).is_empty());
                 self.streams.moved(&mut cx, &mut self.driver.sessions, &self.opens, m, &mut self.driver.reported);
             }

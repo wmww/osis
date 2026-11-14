@@ -108,6 +108,9 @@ pub trait Ground {
     /// No entry of S in the own store.
     fn own_empty(&mut self, s: &SyncId) -> Result<bool>;
     fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>>;
+    /// Held blob `b` holds a part this node dropped for good (purged, past its bounds, expired,
+    /// destroyed): must-not-hold wherever it is logged (spec/sync-judgement.md §1).
+    fn dropped(&mut self, b: &BlobId) -> Result<bool>;
 
     /// The sources of S on connections up now.
     fn sources(&mut self, s: &SyncId) -> Result<Arc<Vec<SrcView>>>;

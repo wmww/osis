@@ -366,6 +366,12 @@ impl Engine {
         Ok(self.blob_parts_now(b))
     }
 
+    /// Whether held blob `b` holds a part of its commit dropped here (spec/sync-judgement.md §1:
+    /// the blob is must-not-hold wherever it is logged).
+    pub fn blob_dropped(&mut self, b: &BlobId) -> Result<bool> {
+        Ok(self.blob_dropped_now(b))
+    }
+
     /// `c`'s body under `s` sealed, with its wrap for `s`.
     pub fn seal_body(&mut self, s: &SyncId, c: &CommitId, rng: &mut dyn NodeRng) -> Result<Option<(Sealed, Wrap)>> {
         self.seal_body_now(s, c, rng)
