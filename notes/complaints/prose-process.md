@@ -1,3 +1,0 @@
-- `cat notes/coordination.md` overflowed the Bash tool's output limit (38 KB) and was saved to a file instead; the Read tool was needed.
-- The unread-retainer review gate (03:50-03:54 UTC and a 04:07 run) left its time-limit hits unlogged in notes/time-limits.md: `tools/limits.py summary` still lists them.
-- CLAUDE.md's default-test and gate costs (6.5-9 min, 4700-5300 CPU-s; 30 min gate) and notes/testing.md, Default-test cost (4700 CPU-s) disagree with the gate's measured default tests (about 1200-1300 CPU-s, 2-4 min on fastbox-0).
