@@ -825,9 +825,12 @@ indexes! {
     pub falls: JMap<(Tid, Ak), u64>,
     /// Self-removals waiting to be held elsewhere (`sync::held`).
     pub held_wait: JSet<CommitId>,
-    /// Per sync ID, when the last complete pass sync noted of it began (`sync::held`): an event,
-    /// not derived from the commits held, so no rebuild compares it.
-    pub passes: JMap<SyncId, WallMs>,
+    /// Per sync ID, the place (`Core::place`) the last complete pass sync noted of it began at
+    /// (`sync::held`): an event, not derived from the commits held, so no rebuild compares it.
+    pub passes: JMap<SyncId, u64>,
+    /// Per actor, the place (`Core::place`) the newest role commit on it (`roles.0`, `secrets.0`,
+    /// `keys.0`) applied from elsewhere arrived at (`sync::held`): an event, as `passes`.
+    pub role_arrivals: JMap<Tid, u64>,
     /// Per (actor, holder), a re-seal a stranded report asked for (`sync::stranded`, rows `rs/`):
     /// an event, so no rebuild compares it.
     pub reseal_asks: JMap<(Tid, Tid), crate::sync::stranded::Ask>,
@@ -912,11 +915,6 @@ indexes! {
     /// epoch a held valid `keys.0` body (a role commit's delta or a compaction snapshot) records
     /// a box at.
     pub sealed: JMap<(Tid, osis_base::Role, osis_crypto::Epoch), SealedAt>,
-    /// The lost-access trigger's work list (`rotation::lost::LOST_DUE`): tid -> when due
-    /// (engine ms; 0: now).
-    pub lost_due: JMap<Tid, u64>,
-    /// The same, by time (a step asks for what is due without a scan).
-    pub lost_due_at: JSet<(u64, Tid)>,
     /// Actors lost by an `until` passing alone, waiting for node-sync to hear their labels out
     /// (`rotation::lost::TIMED_LOST`): actor -> when first judged (engine ms).
     pub timed_lost: JMap<Tid, u64>,
@@ -1046,6 +1044,10 @@ pub struct Core {
     pub(crate) epochs_of: memo::Memo<Tid, Option<Arc<osis_keys::ActorEpochs>>>,
     /// Numbers `Indexes::rotations`; never rolled back.
     pub rotation_seq: u64,
+    /// The pass place (`sync::held`): one strictly increasing count that both stamps a role
+    /// commit's arrival from elsewhere and begins a complete pass, so the two never tie. Never
+    /// rolled back; an open takes the highest place stored.
+    pub place: u64,
     /// `Core::account_view` per account (`memo`).
     pub(crate) account_views: memo::Memo<Tid, Option<Arc<crate::flows::account::AccountView>>>,
     /// `Core::account_epochs` per account (`memo`).
@@ -1329,7 +1331,7 @@ pub struct Core {
     /// `Engine::owned_sync_ids` per thing (`memo`).
     pub(crate) sync_ids: memo::Memo<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
     /// `Engine::passes_wanted` (`memo`).
-    pub(crate) passes_wanted: memo::Memo<(), Arc<BTreeMap<SyncId, WallMs>>>,
+    pub(crate) passes_wanted: memo::Memo<(), Arc<BTreeMap<SyncId, u64>>>,
     /// `Engine::published_under` for every actor, followed per labeled thing
     /// (`labeling::published`).
     pub(crate) published: crate::labeling::published::Published,
@@ -1364,6 +1366,7 @@ impl Core {
             store_rows: self.store_rows.clone(),
             epochs_of: self.epochs_of.clone(),
             rotation_seq: self.rotation_seq.clone(),
+            place: self.place,
             account_views: self.account_views.clone(),
             account_epochs_of: self.account_epochs_of.clone(),
             epochs_judged_from: self.epochs_judged_from.clone(),
@@ -1950,6 +1953,7 @@ impl Core {
             states: _,
             pages: _,
             rotation_seq: _,
+            place: _,
             epochs_judged_from: _,
             waits: _,
             touches: _,
@@ -2118,6 +2122,7 @@ impl Core {
             departures: memo::Memo::new("departures"),
             reseal_scans: memo::Memo::new("reseal: scan"),
             rotation_seq: 0,
+            place: 0,
             account_views: memo::Memo::new("account view"),
             account_epochs_of: memo::Memo::new("account epochs"),
             epochs_judged_from: None,
@@ -3633,6 +3638,10 @@ impl Engine {
         let mut fresh = self.blank_core();
         fresh.events = std::mem::take(&mut self.core.events);
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
+        // links followed are this session's, as the key actors they hold
+        fresh.followed_links = std::mem::take(&mut self.core.followed_links);
+        // the pass place never goes back: passes under way began at places below it
+        fresh.place = self.core.place;
         fresh.accounts = std::mem::take(&mut self.core.accounts);
         fresh.redeliver = std::mem::take(&mut self.core.redeliver);
         fresh.waits = std::mem::take(&mut self.core.waits);

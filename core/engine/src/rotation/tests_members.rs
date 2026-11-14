@@ -2136,12 +2136,12 @@ fn driver_duties(lp: &mut LocalPeer, i: usize) {
             e.ensure_rotated(&a).unwrap();
         }
     }
-    if e.role_duties_due() {
+    if e.role_duties_due().unwrap() {
         e.role_duties().unwrap();
     }
     let wanted: Vec<_> = e.passes_wanted().unwrap().keys().copied().collect();
     for s in wanted {
-        let now = e.pass_clock();
+        let now = e.begin_pass();
         e.note_complete_pass(&s, now).unwrap();
         if let Some(o) = e.sync_owner(&s).unwrap() {
             e.pass_end(&o).unwrap();

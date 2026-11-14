@@ -298,7 +298,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
         e.reexamine().unwrap();
         assert_eq!(e.pending().iter().map(|x| x.0).collect::<Vec<_>>(), vec![id], "{name}: H's part cannot be judged: it waits in the applied commit's pending copy");
         assert!(e.commit_ids().contains(&id), "{name}: G's part applied");
-        assert!(!e.core.ix.lost_due.contains_key(&h), "{name}: nothing forgotten for it");
+        assert!(!e.lost_due(&h).unwrap(), "{name}: nothing forgotten for it");
         assert!(e.epochs(&h).is_some_and(|x| x.read.holds_any()), "{name}: the waiting part's box read");
     }
 }

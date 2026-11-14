@@ -33,7 +33,12 @@ fn lists_on_profile() -> bool {
 impl Engine {
     /// See `Engine::dial_peers`.
     pub(crate) fn dial_peers_now(&mut self, s: &SyncId) -> Result<Arc<Vec<Address>>> {
-        let Some((t, holding)) = self.sync_holder(s)? else { return Ok(Arc::default()) };
+        // a sync ID left that sync still syncs: as read while its read secrets are held
+        let held = match self.sync_holder(s)? {
+            Some(x) => Some(x),
+            None => self.opening_thing(s)?.map(|t| (t, Holding::Read)),
+        };
+        let Some((t, holding)) = held else { return Ok(Arc::default()) };
         let mut out: BTreeMap<[u8; 32], Address> = BTreeMap::new();
         let own = self.core.account_devices();
         // own nodes whose sync sets hold S's thing, by their `reach.0`

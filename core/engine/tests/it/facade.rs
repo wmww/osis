@@ -1259,20 +1259,63 @@ fn grantee() -> (LocalPeer, Tid) {
 
 // spec/permissions.md §3 Complete pass (a Pull sent before a role commit of the actor applied
 // ends no pass after it): the grant applied at peer 1 from elsewhere wants a pass of the thing's
-// sync ID from its arrival, on the engine's clock; a pass begun before it does not count, one
-// begun at it does, and the re-seal trigger waits for it.
+// sync ID from its arrival's pass place; a pass begun at or before it does not count, one begun
+// after it does (whatever the clock reads), and the re-seal trigger waits for it.
 #[test]
 fn a_pass_begun_before_a_role_commit_does_not_count_spec_perm_3() {
     let (mut lp, t) = grantee();
     let e = &mut lp.peers[1].engine;
     let s = e.home_sync_id(&t).unwrap().unwrap();
     let since = *e.passes_wanted().unwrap().get(&s).expect("a pass of the thing's sync ID wanted");
-    assert!(since.0 > 0 && since <= e.pass_clock(), "from the grant's arrival, on the engine's clock");
-    e.note_complete_pass(&s, osis_base::WallMs(since.0 - 1)).unwrap();
-    assert_eq!(e.passes_wanted().unwrap().get(&s), Some(&since), "begun before it: still wanted");
-    assert!(e.pass_end(&t).unwrap().commits.is_empty());
+    assert!(since > 0 && since <= e.pass_place(), "from the grant's arrival, by pass place");
     e.note_complete_pass(&s, since).unwrap();
+    assert_eq!(e.passes_wanted().unwrap().get(&s), Some(&since), "begun at its place (before it): still wanted");
+    assert!(e.pass_end(&t).unwrap().commits.is_empty());
+    let began = e.begin_pass();
+    e.note_complete_pass(&s, began).unwrap();
     assert!(!e.passes_wanted().unwrap().contains_key(&s));
+}
+
+// spec/sync-set.md §2 (links being redeemed): a link followed is this session's, as the key it
+// holds; the engine reading its store again (`reload`, after a forgetting drop) keeps it, so K's
+// sync ID stays in the sync set and nothing it syncs leaves for a round.
+#[test]
+fn a_followed_link_stays_across_a_reload_spec_sync_set_2() {
+    let (mut lp, ps) = people(2);
+    let target = thing_of(&mut lp, 0, ps[0]);
+    let spec = osis_engine::flows::LinkSpec { target, role: Role::Read, until: None, hosts: Vec::new(), peers: Vec::new(), single_use: false };
+    let link = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
+    let e = &mut lp.peers[1].engine;
+    e.follow_link(&link).unwrap();
+    assert!(e.sync_set().unwrap().ids.contains_key(&link.k_label), "K's sync ID followed");
+    e.reload().unwrap();
+    assert!(e.sync_set().unwrap().ids.contains_key(&link.k_label), "still followed after a reload");
+}
+
+// spec/permissions.md §3 (When it learns it: a node syncing a sync ID of the actor keeps syncing it,
+// and keeps the secrets, until a complete pass of it begun after the role commit ends; then it
+// judges again): peer 1, removed from t, owes the drop (`lost_due`) but keeps t's
+// secrets and acts as a reader of t's sync ID while the only pass noted began before the removal
+// arrived; one begun after lets it drop.
+#[test]
+fn a_removed_reader_drops_once_a_pass_after_the_removal_ends_spec_permissions_3() {
+    let (mut lp, t) = grantee();
+    let pb = lp.peers[1].engine.account().unwrap().unwrap().0;
+    let s = lp.peers[1].engine.home_sync_id(&t).unwrap().unwrap();
+    let before = lp.peers[1].engine.begin_pass();
+    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: pb, new: None, retain: None }).unwrap();
+    spread(&mut lp);
+    let e = &mut lp.peers[1].engine;
+    assert!(e.lost_due(&t).unwrap(), "peer 1 lost t");
+    e.note_complete_pass(&s, before).unwrap();
+    assert!(!e.lost_passed(&t).unwrap(), "a pass begun before the removal arrived counts for nothing");
+    assert!(e.epochs(&t).is_some_and(|x| x.read.holds_any()), "the secrets stay meanwhile");
+    assert!(e.read_credentials(&s).unwrap().is_some(), "and it acts as a reader of t's sync ID");
+    let after = e.begin_pass();
+    e.note_complete_pass(&s, after).unwrap();
+    assert!(e.lost_passed(&t).unwrap(), "a pass begun after it ended");
+    assert!(e.drop_lost(&t).unwrap(), "dropped");
+    assert!(e.epochs(&t).is_none_or(|x| !x.read.holds_any()));
 }
 
 // spec/permissions.md §3 Complete pass, spec/sync-status.md §1: the want is derived from the role
@@ -1285,7 +1328,9 @@ fn a_restart_still_wants_the_pass_spec_perm_3() {
     let since = *lp.peers[1].engine.passes_wanted().unwrap().get(&s).unwrap();
     lp.peers[1].restart(7).unwrap();
     assert_eq!(lp.peers[1].engine.passes_wanted().unwrap().get(&s), Some(&since), "wanted after the crash");
-    lp.peers[1].engine.note_complete_pass(&s, since).unwrap();
+    assert!(lp.peers[1].engine.pass_place() >= since, "the pass place goes on after a restart");
+    let began = lp.peers[1].engine.begin_pass();
+    lp.peers[1].engine.note_complete_pass(&s, began).unwrap();
     lp.peers[1].restart(8).unwrap();
     assert!(!lp.peers[1].engine.passes_wanted().unwrap().contains_key(&s), "the pass noted survives");
 }
@@ -1298,9 +1343,9 @@ fn history_completes_with_a_pass_spec_sync_status_3() {
     let e = &mut lp.peers[0].engine;
     let (_, d) = e.account().unwrap().unwrap();
     let home = e.home_sync_id(&d).unwrap().unwrap();
-    assert_eq!(e.passes_wanted().unwrap().get(&home), Some(&osis_base::WallMs(0)), "one pass, whenever");
+    assert_eq!(e.passes_wanted().unwrap().get(&home), Some(&0), "one pass, whenever");
     assert!(!e.history_complete(&d).unwrap());
-    let now = e.pass_clock();
+    let now = e.begin_pass();
     e.note_complete_pass(&home, now).unwrap();
     assert!(e.history_complete(&d).unwrap() && e.passes_wanted().unwrap().is_empty());
 }
@@ -1317,7 +1362,7 @@ fn a_pass_goes_with_its_sync_id_spec_sync_status_3() {
     let (_, d) = lp.peers[0].engine.account().unwrap().unwrap();
     let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
     let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
-    let now = lp.peers[0].engine.pass_clock();
+    let now = lp.peers[0].engine.begin_pass();
     lp.peers[0].engine.note_complete_pass(&home, now).unwrap();
     lp.peers[0].engine.note_complete_pass(&s, now).unwrap();
     add_item(&mut lp, 0, d, t);
@@ -1330,8 +1375,8 @@ fn a_pass_goes_with_its_sync_id_spec_sync_status_3() {
     lp.peers[0].restart(9).unwrap();
     add_item(&mut lp, 0, d, t);
     assert!(!lp.peers[0].engine.history_complete(&t).unwrap(), "left while down: read again, history not complete");
-    assert_eq!(lp.peers[0].engine.passes_wanted().unwrap().get(&s), Some(&osis_base::WallMs(0)));
-    let now = lp.peers[0].engine.pass_clock();
+    assert_eq!(lp.peers[0].engine.passes_wanted().unwrap().get(&s), Some(&0));
+    let now = lp.peers[0].engine.begin_pass();
     lp.peers[0].engine.note_complete_pass(&s, now).unwrap();
     lp.peers[0].engine.forget_read(&s).unwrap();
     assert!(!lp.peers[0].engine.history_complete(&t).unwrap(), "forgotten: wanted again");
@@ -1345,11 +1390,11 @@ fn passes_wanted_moves_with_a_role_commit_spec_perm_3() {
     let (mut lp, t) = grantee();
     let e = &mut lp.peers[1].engine;
     let s = e.home_sync_id(&t).unwrap().unwrap();
-    let now = e.pass_clock();
+    let now = e.begin_pass();
     for x in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
         e.note_complete_pass(&x, now).unwrap();
     }
-    let mut fx: osis_base::memo::Effects<(), std::sync::Arc<std::collections::BTreeMap<osis_base::SyncId, osis_base::WallMs>>> = osis_base::memo::Effects::new("test passes");
+    let mut fx: osis_base::memo::Effects<(), std::sync::Arc<std::collections::BTreeMap<osis_base::SyncId, u64>>> = osis_base::memo::Effects::new("test passes");
     fx.want(());
     let (_, first) = fx.settle(&(), || lp.peers[1].engine.passes_wanted().unwrap()).unwrap();
     assert!(first.is_empty() && fx.due().is_empty(), "nothing wanted, nothing due");
@@ -1359,7 +1404,7 @@ fn passes_wanted_moves_with_a_role_commit_spec_perm_3() {
     spread(&mut lp);
     assert_eq!(fx.due(), vec![()], "the role commit's arrival moves the wants");
     let (_, now) = fx.settle(&(), || lp.peers[1].engine.passes_wanted().unwrap()).unwrap();
-    assert!(now.get(&s).is_some_and(|x| x.0 > 0));
+    assert!(now.get(&s).is_some_and(|x| *x > 0));
 }
 
 // spec/permissions.md §2 Tied grants (an explicit demotion of a tied grant held dead waits for a
@@ -1387,7 +1432,7 @@ fn a_dead_tie_wants_a_pass_of_its_scope_spec_perm_2() {
     assert!(e.tied_unplaced(&Default::default(), &Default::default(), true).unwrap().contains(&(t, g)), "the tie is dead");
     let st = e.home_sync_id(&t).unwrap().unwrap();
     assert!(e.untie_due(&t).unwrap().is_empty(), "the explicit removal waits its passes");
-    let now = e.pass_clock();
+    let now = e.begin_pass();
     for x in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
         e.note_complete_pass(&x, now).unwrap();
     }
@@ -1404,7 +1449,7 @@ fn a_dead_tie_wants_a_pass_of_its_scope_spec_perm_2() {
     lp.peers[1].engine.grant(&g, &ps[2], &edge_of(Role::Read)).unwrap();
     spread(&mut lp);
     let w = lp.peers[0].engine.passes_wanted().unwrap();
-    assert!(w.get(&st).is_some_and(|x| x.0 > now.0), "T's sync ID, from the role commit on G: {w:?}");
+    assert!(w.get(&st).is_some_and(|x| *x > now), "T's sync ID, from the role commit on G: {w:?}");
     assert!(lp.peers[0].engine.untie_due(&t).unwrap().is_empty(), "waits the new pass");
 }
 
@@ -1437,7 +1482,7 @@ fn a_dead_tie_waits_no_pass_of_a_sync_id_not_read_here_spec_perm_2() {
     e.commit(m).unwrap().unwrap();
     assert_eq!(e.may_remove(&t, &g).unwrap(), Some(osis_engine::flows::Untie::Explicit));
     assert!(!e.passes_wanted().unwrap().contains_key(&sx), "no pass of E's sync ID is wanted");
-    let now = e.pass_clock();
+    let now = e.begin_pass();
     for s in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
         e.note_complete_pass(&s, now).unwrap();
     }

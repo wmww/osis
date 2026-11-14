@@ -420,7 +420,7 @@ fn retry_pending(tx: &mut Tx<'_>, id: CommitId, b: CommitBlob) -> Result<Option<
             }
             keys::forget_unchecked(tx, &id)?;
             // secrets read from its boxes go unless something else reads them
-            crate::rotation::mark_lost_due(tx, things)?;
+            crate::rotation::touch_held(tx, things);
             let now = tx.now();
             tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(id), peer: None, detail: e.to_string() }, now);
             Ok(None)
@@ -1581,7 +1581,7 @@ impl Engine {
             tx.core.waits.unawaits(&id);
             keys::forget_unchecked(tx, &id)?;
             // secrets read from its boxes go unless something else reads them
-            crate::rotation::mark_lost_due(tx, things)?;
+            crate::rotation::touch_held(tx, things);
             Ok(true)
         })
     }
@@ -2028,7 +2028,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     } else {
         tx.core.update_timelines();
     }
-    crate::rotation::load_lost_due(tx)?;
+    crate::rotation::load_lost(tx)?;
     crate::rotation::load_kept(tx)?;
     crate::retention::leaving::load(tx)?;
     let mut pend = Vec::new();

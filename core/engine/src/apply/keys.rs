@@ -649,7 +649,8 @@ pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         crate::flows::save_epochs(tx, &a)?;
     }
     tx.core.waits.forgot(id);
-    crate::rotation::mark_lost_due(tx, lost)
+    crate::rotation::touch_held(tx, lost);
+    Ok(())
 }
 
 /// The `secrets.0` writes of a held, not applied role commit, per actor, decoded
@@ -1250,7 +1251,7 @@ mod tests {
         lp.peers[0].engine.index_poked = true;
         lp.peers[0].engine.core.ix.secrets.insert(x, reading_only(9, c));
         lp.peers[0].engine.run(|tx| super::forget_unchecked(tx, &c)).unwrap();
-        assert!(lp.peers[0].engine.core.ix.lost_due.contains_key(&x));
+        assert!(lp.peers[0].engine.lost_due(&x).unwrap());
         lp.peers[0].engine.role_duties().unwrap();
         assert!(lp.peers[0].engine.core.ix.secrets.get(&x).is_none_or(|e| !e.read.holds_any()));
     }

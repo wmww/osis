@@ -184,12 +184,11 @@ impl Engine {
         Ok(read.epochs().filter(|(_, i)| i.established.is_some() && i.superseded_epochs().contains(e)).flat_map(|(_, i)| i.rotations.keys().copied()).collect())
     }
 
-    /// The thing whose sync ID `s` is, read here, with its record (`sync_ids`).
+    /// The thing whose sync ID `s` is, read here or by the read secrets of it still held
+    /// (`opening_thing`: a sync ID sync still syncs after it left the sync set), with its record
+    /// (`sync_ids`).
     pub(crate) fn read_sync_id(&mut self, s: &SyncId) -> Result<Option<(Tid, OwnedSyncId)>> {
-        let Some(t) = self.sync_owner_of(s)? else { return Ok(None) };
-        if !matches!(self.thing_sync_now(&t)?, ThingSync::Read(ids) if ids.contains(s)) {
-            return Ok(None);
-        }
+        let Some(t) = self.opening_thing(s)? else { return Ok(None) };
         Ok(self.owned_sync_ids(&t)?.iter().find(|o| o.id == *s).map(|o| (t, o.clone())))
     }
 

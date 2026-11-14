@@ -33,7 +33,7 @@ pub use lost::{Dropped, Leaving, LostScope, LOST_HEARD_WAIT_MS};
 pub(crate) use lost::{load_kept, without_frozen};
 pub(crate) use departures::{departures, key_role, own_self_removal};
 pub(crate) use members::{Boxing, Sealed, grant_keyless, sealed};
-pub(crate) use lost::{arm_untils, boxes_kept, load_lost_due, mark_lost_due, may_learn, may_take};
+pub(crate) use lost::{boxes_kept, load_lost, may_learn, may_take, touch_held};
 
 /// How far `blocked_epoch` follows boxes to holder actors (spec/crypto.md §4, Encrypting under).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1208,7 +1208,7 @@ impl Engine {
     /// would note), run whether or not the actor has a sync ID read here.
     #[doc(hidden)]
     pub fn reseal_after_pass(&mut self, actor: &Tid) -> Result<Done> {
-        let now = self.now();
+        let now = self.begin_pass_now();
         if let crate::sync::ThingSync::Read(ids) = self.thing_sync(actor)? {
             for s in ids {
                 self.note_complete_pass_now(&s, now)?;

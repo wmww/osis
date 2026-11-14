@@ -197,6 +197,19 @@ impl Engine {
         Ok(matches!(self.thing_sync_now(&t)?, ThingSync::Read(ids) if ids.contains(s)).then_some(t))
     }
 
+    /// The thing whose read secrets open and act for `s` here: the one reading it, else its owner
+    /// while a read secret of it is held. Sync keeps syncing a sync ID that left its sync set
+    /// until a complete pass after it left (spec/sync-set.md §3: opening what arrives by the read
+    /// secrets of S's thing it still holds), so what a reader of `s` acts with stands as long
+    /// as those secrets do; a lost reader's go with its drop, which waits for that pass.
+    pub(crate) fn opening_thing(&mut self, s: &SyncId) -> Result<Option<Tid>> {
+        if let Some(t) = self.read_thing(s)? {
+            return Ok(Some(t));
+        }
+        let Some(t) = self.sync_owner_of(s)? else { return Ok(None) };
+        Ok(self.core.epochs(&t).is_some_and(|e| e.role(osis_base::Role::Read).holds_any()).then_some(t))
+    }
+
     /// The facts the judgement of `c`'s body under `s` reads (spec/sync-judgement.md §2): whether
     /// it is in the required set and a closure body; a part of it dropped here and why; a delta
     /// before its keep-at-least bound; covered by held valid snapshots of its aspects under `s`
@@ -471,7 +484,7 @@ impl Engine {
             self.put_blobs(vec![(*blob, bytes.to_vec())])?;
             return Ok(Opened::Linked);
         }
-        let Some(t) = self.read_thing(s)? else { return Ok(Opened::NotOpen) };
+        let Some(t) = self.opening_thing(s)? else { return Ok(Opened::NotOpen) };
         let Some((_, key)) = osis_label::unwrap_any(self.read_secrets(&t).iter(), blob, wrap) else { return Ok(Opened::NotOpen) };
         let opened = match self.open_commit(bytes, &key) {
             Ok(o) => o,

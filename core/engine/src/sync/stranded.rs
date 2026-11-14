@@ -30,7 +30,7 @@
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use crate::labeling::Certs;
-use osis_base::{CommitId, CreationRecord, Role, SyncId, Tid, Value, WallMs};
+use osis_base::{CommitId, CreationRecord, Role, SyncId, Tid, Value};
 use osis_commit::CommitBlob;
 use osis_crypto::NodeRng;
 use osis_label::{HolderKeys, StrandedNotice};
@@ -44,8 +44,8 @@ const ASKS: &[u8] = b"rs/";
 /// A re-seal asked for by a stranded report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ask {
-    /// When it was taken (engine ms): a complete pass begun at or after it meets it.
-    pub at: WallMs,
+    /// The pass place it was taken at (`Core::place`): a complete pass begun after it meets it.
+    pub at: u64,
     /// A digest of the holder's current `keys.0` commits held when it was taken.
     pub keys: [u8; 32],
     /// Met at a pass's end: kept so the same report asks nothing more.
@@ -54,10 +54,10 @@ pub struct Ask {
 
 impl Ask {
     fn encode(&self) -> Vec<u8> {
-        [&self.at.0.to_be_bytes()[..], &self.keys, &[u8::from(self.met)]].concat()
+        [&self.at.to_be_bytes()[..], &self.keys, &[u8::from(self.met)]].concat()
     }
     fn decode(v: &[u8]) -> Option<Ask> {
-        Some(Ask { at: WallMs(u64::from_be_bytes(v.get(..8)?.try_into().ok()?)), keys: v.get(8..40)?.try_into().ok()?, met: *v.get(40)? == 1 })
+        Some(Ask { at: u64::from_be_bytes(v.get(..8)?.try_into().ok()?), keys: v.get(8..40)?.try_into().ok()?, met: *v.get(40)? == 1 })
     }
 }
 
@@ -91,6 +91,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         rows.push(((a, m), Ask::decode(&v).ok_or_else(bad)?));
         Ok(())
     })?;
+    // the pass place goes on from the highest stored (`sync::held::load`)
+    let top = rows.iter().map(|(_, k)| k.at).max().unwrap_or(0);
+    tx.core.place = tx.core.place.max(top);
     tx.core.ix.reseal_asks.extend(rows);
     Ok(())
 }
@@ -233,7 +236,9 @@ impl Engine {
         if self.core.ix.reseal_asks.get(&(a, m)).is_some_and(|k| k.keys == digest) {
             return Ok(false);
         }
-        let k = Ask { at: self.pass_clock(), keys: digest, met: false };
+        // the next pass place, as a role commit's arrival takes (`sync::held`)
+        self.core.place += 1;
+        let k = Ask { at: self.core.place, keys: digest, met: false };
         self.run(|tx| {
             tx.txn.put_local(&ask_key(&a, &m), &k.encode(), Shred::No)?;
             tx.core.ix.reseal_asks.insert((a, m), k);

@@ -394,7 +394,8 @@ pub(crate) fn leave(tx: &mut Tx<'_>, p: Tid, d: Tid) -> Result<()> {
     tx.core.accounts.remove(&p);
     tx.core.left.insert(p);
     let held: Vec<Tid> = tx.core.ix.secrets.keys().copied().chain([d]).collect();
-    crate::rotation::mark_lost_due(tx, held)
+    crate::rotation::touch_held(tx, held);
+    Ok(())
 }
 
 /// The counting removals from account `p`'s devices actor D of a node of D, with that node.

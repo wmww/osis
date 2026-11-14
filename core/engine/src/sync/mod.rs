@@ -675,6 +675,13 @@ impl Engine {
         Ok(self.carrying_now(t, false)?.into_iter().collect())
     }
 
+    /// Whether this node knows the group whose closure it syncs (its synced group, or its
+    /// account's D before it has read one): before (a node pairing), its sync set is empty for want
+    /// of the group, not because anything left it, so nothing it holds counts as left.
+    pub fn sync_rooted(&mut self) -> Result<bool> {
+        Ok(self.sync_root()?.is_some())
+    }
+
     /// The thing owning sync ID `s` here by its `sync.0`.
     pub fn sync_owner(&mut self, s: &SyncId) -> Result<Option<Tid>> {
         self.sync_owner_of(s)
@@ -686,7 +693,9 @@ impl Engine {
         self.owned_sync_ids(thing)
     }
 
-    /// What this node opens and acts with as a reader of `s` (`None`: it does not read `s`).
+    /// What this node opens and acts with as a reader of `s` (`None`: it does not read `s`): also
+    /// for a sync ID it left while a read secret of its thing is held, which sync keeps syncing
+    /// until a complete pass after it left (spec/sync-set.md §3).
     pub fn read_credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {
         self.read_credentials_now(s)
     }
@@ -1018,17 +1027,18 @@ impl Engine {
         self.removal_done_now(c)
     }
 
-    /// The sync IDs some engine rule waits on a complete pass of, each with the moment the pass
-    /// must begin at or after, on the engine's clock (`pass_clock`); a memo value, so status
-    /// follows it with `Effects` (spec/permissions.md §2-§3, spec/sync-status.md §3).
-    pub fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, WallMs>>> {
+    /// The sync IDs some engine rule waits on a complete pass of, each with the pass place the
+    /// pass must begin after (`begin_pass`); a memo value, so status follows it with `Effects`
+    /// (spec/permissions.md §2-§3, spec/sync-status.md §3).
+    pub fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
         self.passes_wanted_now()
     }
 
-    /// The engine's clock, the one a complete pass's `began` is read on: a pass begun at `began`
-    /// counts for a want at `since` only when `began >= since`.
-    pub fn pass_clock(&self) -> WallMs {
-        self.now()
+    /// Begins a complete pass: the next pass place, one count with the role commits' arrivals
+    /// from elsewhere, so a pass begun at place `p` counts for a want at `since` only when
+    /// `p > since`.
+    pub fn begin_pass(&mut self) -> u64 {
+        self.begin_pass_now()
     }
 
     /// What sync's role duties follow per thing (`osis_sync::life`: `joined_link_ended`,
@@ -1045,10 +1055,15 @@ impl Engine {
         self.core.ix.held.holders_of(t).next().is_some()
     }
 
-    /// A complete pass of `s` begun at `began` (`pass_clock`) ended (spec/sync-status.md §1):
-    /// kept durably, the last per sync ID; the re-seal and history-add trigger (`pass_end`) and
-    /// history completeness read it.
-    pub fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
+    /// The pass place now: a pass begun after this call begins above it.
+    pub fn pass_place(&self) -> u64 {
+        self.core.place
+    }
+
+    /// A complete pass of `s` begun at place `began` (`begin_pass`) ended (spec/sync-status.md
+    /// §1): kept durably, the last per sync ID; the re-seal and history-add trigger (`pass_end`)
+    /// and history completeness read it.
+    pub fn note_complete_pass(&mut self, s: &SyncId, began: u64) -> Result<()> {
         self.note_complete_pass_now(s, began)
     }
 
