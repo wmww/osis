@@ -4,3 +4,5 @@
 - The engine signing tests ran with a frozen clock, so every receipt shared one millisecond and receipt order fell back to commit ID; `send` now advances 1 ms.
 - The osis-level removal scenario reads nothing at an outsider on main too (issues/outsider-reads-nothing-after-node-removal.md); found only by building main's test binary with `tools/bin-at --take`.
 - `roles-model -- 20000 epochs` under `tools/heavy` ran past the heavy wall limit (33 min, stopped) where 600 worlds took 22 s: some worlds are far slower after the first-seen change (not chased; README there says so).
+- Review: the outsider bug's engine half needed `tools/bin-at --patch` builds of main (4 min each); a review that checks "pre-existing on main" twice spends ~10 min building.
+- Review: `tools/heavy` waits silently behind other agents' locked runs; a 3000-world epochs probe sat queued while two other model runs held it.

@@ -1047,3 +1047,154 @@ fn a_rotations_late_list_restores_the_accounts_earlier_word_at_an_outsider_spec_
     assert_eq!(read(&mut lp, 2, t), Some(Value::Str("sibling".into())));
     assert!(lp.peers[2].engine.header(&done.commits[0]).is_none(), "the outsider never holds the removal");
 }
+
+/// Commit `id` of peer `from` as a holder of its epoch's keys `k` re-signs it: its inner signature
+/// sealed as key actor `z` (whose identity `zid` signs), the account's signature over it again.
+fn inner_as(lp: &mut LocalPeer, from: usize, id: &CommitId, k: &osis_crypto::AccountEpochKeys, zid: &crate::identity::Identity) -> crate::local_peer::Package {
+    let mut pk = lp.peers[from].engine.package(id).unwrap().unwrap();
+    let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let inner = osis_crypto::seal_inner(&k.inner, &id.0, &zid.tid(), &zid.keys().signing);
+    b.sigs = osis_commit::Sigs::signed(id, &k.signing, Some(inner), b.sigs.merge.clone());
+    pk.bytes = b.encode();
+    pk
+}
+
+// spec/permissions.md §5.4 (Following, at a node of P): a removed node holds its old epochs'
+// inner key, so it can seal a rotation's inner signature as any key actor it makes (here an
+// outsider's node, standing in for a fresh one). A plain fork it so signs after its removal is
+// no head at a node of the account holding the removal, and its write at the fork counts at none
+// of them nor at an outsider holding the removal's rotation
+#[test]
+#[ignore = "a removed node's fork signed as a key actor it made counts at the account's nodes: issues/forged-minter.md"]
+fn a_removed_nodes_fork_signed_as_another_key_actor_counts_nowhere_spec_permissions_5_4() {
+    let (mut lp, a, t) = world(4, 3);
+    let done = remove(&mut lp, 0, a.devices, 2);
+    send(&mut lp, 0, 1, &done.commits);
+    send(&mut lp, 0, 3, &done.commits[1..]);
+    let z = lp.peers[3].engine.core.id.clone();
+    let (_, k0) = lp.peers[2].engine.core.account_signing(&a.account).unwrap().unwrap();
+    let fork = lp.peers[2].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
+    let (_, k1) = lp.peers[2].engine.core.account_signing(&a.account).unwrap().unwrap();
+    let late = write(&mut lp, 2, t, "removed at its fork");
+    let forged = [inner_as(&mut lp, 2, &fork, &k0, &z), inner_as(&mut lp, 2, &late, &k1, &z)];
+    for to in [0, 1, 3] {
+        lp.advance(1);
+        for pk in &forged {
+            lp.deliver(to, pk).unwrap();
+        }
+    }
+    for k in [0, 1] {
+        let v = lp.peers[k].engine.core.account_view(&a.account).unwrap();
+        assert!(!v.heads().contains(&fork), "peer {k}: the forged fork is a head");
+    }
+    for k in [0, 1, 3] {
+        let _ = lp.peers[k].engine.signing_due();
+        assert_ne!(read(&mut lp, k, t), Some(Value::Str("removed at its fork".into())), "peer {k}: the removed node's write counts");
+    }
+}
+
+/// Merge rounds after `nodes` of the account rotate at once (spec/permissions.md §5.5, Limit:
+/// merges made at once fork again). `lockstep`: every node runs its signing pass before any
+/// rotation travels, `rounds` times. Else a random interleaving (seed `seed`) of single
+/// deliveries and single nodes' signing passes, until nothing is owed. Returns the merges made
+/// and whether the account's nodes end on one head.
+fn merge_rounds(nodes: usize, seed: u64, lockstep: Option<usize>) -> (usize, bool) {
+    let (mut lp, a, _) = world(nodes + 1, nodes);
+    let mut q: Vec<(usize, usize, CommitId)> = Vec::new();
+    for k in 0..nodes {
+        let r = lp.peers[k].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
+        q.extend((0..=nodes).filter(|to| *to != k).map(|to| (k, to, r)));
+    }
+    let mut made = 0;
+    let mut s = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut next = |n: usize| {
+        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((s >> 33) as usize) % n
+    };
+    if let Some(rounds) = lockstep {
+        for _ in 0..rounds {
+            for (from, to, r) in std::mem::take(&mut q) {
+                send(&mut lp, from, to, &[r]);
+            }
+            for k in 0..nodes {
+                let c = lp.peers[k].engine.signing_due().unwrap().commits;
+                made += c.len();
+                q.extend(c.iter().flat_map(|r| (0..=nodes).filter(|to| *to != k).map(move |to| (k, to, *r))));
+            }
+        }
+    } else {
+        let mut quiet = 0;
+        while quiet < 4 * nodes {
+            if !q.is_empty() && next(2) == 0 {
+                let (from, to, r) = q.swap_remove(next(q.len()));
+                send(&mut lp, from, to, &[r]);
+                quiet = 0;
+                continue;
+            }
+            let k = next(nodes);
+            let c = lp.peers[k].engine.signing_due().unwrap().commits;
+            made += c.len();
+            if c.is_empty() && q.is_empty() {
+                quiet += 1;
+            }
+            q.extend(c.iter().flat_map(|r| (0..=nodes).filter(|to| *to != k).map(move |to| (k, to, *r))));
+        }
+    }
+    let heads: std::collections::BTreeSet<Vec<CommitId>> = (0..nodes).map(|k| lp.peers[k].engine.core.account_view(&a.account).unwrap().heads()).collect();
+    (made, heads.len() == 1 && heads.iter().all(|h| h.len() == 1))
+}
+
+// By hand (a measurement, not a property): merge rounds after two or three of the account's
+// nodes rotate at once
+#[test]
+#[ignore = "by hand: prints merge counts"]
+fn merge_rounds_after_concurrent_rotations() {
+    for nodes in [2, 3] {
+        let (made, one) = merge_rounds(nodes, 0, Some(5));
+        eprintln!("{nodes} nodes, lockstep 5 rounds: {made} merges, one head: {one}");
+        let mut counts = Vec::new();
+        for seed in 0..40 {
+            let (made, one) = merge_rounds(nodes, seed, None);
+            assert!(one, "{nodes} nodes seed {seed}: not one head");
+            counts.push(made);
+        }
+        counts.sort();
+        eprintln!("{nodes} nodes, random: merges {counts:?}");
+    }
+}
+
+// spec/permissions.md §5.4 (Following, at a node of P: a re-add is a grant by a node other than
+// the one removed): a removed node granting itself D again is not put back. Here at the epoch of
+// a sibling's rotation made unaware of the removal and boxed to it, which descends from the
+// removal's epoch, as a re-add's must: the removed node's fork from there is no head at the
+// account's nodes, and its write there counts nowhere the removal is held
+#[test]
+#[ignore = "a removed node's grant to itself at an unaware sibling's epoch puts it back on D: issues/self-readd-at-sibling-epoch.md"]
+fn a_removed_node_readding_itself_is_not_put_back_spec_permissions_5_4() {
+    let (mut lp, a, t) = world(4, 3);
+    let done = remove(&mut lp, 0, a.devices, 2);
+    send(&mut lp, 0, 3, &done.commits[1..]);
+    // the sibling, unaware, rotates; its epoch's seed is boxed to the removed node
+    let rb = lp.peers[1].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
+    send(&mut lp, 1, 2, &[rb]);
+    let xn = lp.peers[2].engine.tid();
+    let mut sent = vec![rb];
+    sent.extend(lp.peers[2].engine.grant(&a.devices, &xn, &edge(Role::Admin)).unwrap().commits);
+    let fork = lp.peers[2].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
+    assert_eq!(lp.peers[2].engine.header(&fork).unwrap().epoch, Some(rb), "the removed node forks from the sibling's epoch");
+    sent.push(fork);
+    sent.push(write(&mut lp, 2, t, "removed"));
+    send(&mut lp, 0, 1, &done.commits);
+    for to in [0, 1, 3] {
+        send(&mut lp, 2, to, &sent);
+    }
+    for k in [0, 1] {
+        let _ = lp.peers[k].engine.signing_due();
+        let v = lp.peers[k].engine.core.account_view(&a.account).unwrap();
+        assert!(!lp.peers[k].engine.roster(&a.devices).contains_key(&xn), "peer {k}: the removed node is back on D");
+        assert!(!v.heads().contains(&fork), "peer {k}: the removed node's fork is a head");
+    }
+    for k in [0, 1, 3] {
+        assert_ne!(read(&mut lp, k, t), Some(Value::Str("removed".into())), "peer {k}: the removed node's write counts");
+    }
+}

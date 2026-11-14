@@ -320,7 +320,7 @@ A commit of account P names the epoch it is signed at (spec/wire.md §4); §5.4 
 
   No node is designated. The rotation is signed at the preferred head, supersedes it and every such disregarded rotation, and names the other heads D's roster authorizes whose seeds it holds, signed at each one's epoch (spec/crypto.md §9); a head it cannot sign at is left to a node that can. A rotation superseded unnamed is rejected; what P's honest nodes signed at its epochs counts by their own listings (Listings: those epochs are closed by it).
   - Limit: rotations two nodes of P make at once (merges among them) fork again and are owed another merge; nothing bounds the rounds while nodes merge within one sync of each other.
-  - Limit: a reader outside P that came to hold a removed node's fork, or a rotation of an unaware sibling boxed to it, before the removal follows that line: the removed node's commits signed on it count there until the reader's user chooses otherwise (for a sibling's rotation: until a merge of P joins the removal to it).
+  - Limit: a reader outside P that came to hold a removed node's fork, or a rotation of an unaware sibling boxed to it, before the removal follows that line: the removed node's commits signed on it count there, and the reader seals to P at that line's epochs (spec/crypto.md §4, Account keysets), which the removed node opens and P's other nodes do not, until the reader's user chooses otherwise (for a sibling's rotation: until a merge of P joins the removal to it).
 
 ## 6. Purge rights
 - **The right**: a delta's retention names who may purge it (spec/commits.md §5), judged at the request's time. Each member of the named set holds the right on its own:

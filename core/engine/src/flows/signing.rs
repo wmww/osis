@@ -507,11 +507,8 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Option<C
     let Some(p) = tx.core.member() else { return Ok(None) };
     let Some(d) = tx.core.accounts.get(&p).map(|a| a.devices) else { return Ok(None) };
     take_seeds(tx, &d)?;
-    // a seed taken up moves what the account's epochs judge, which may let D's `account.0`
-    // give up more seeds (each pass takes some up, or ends)
-    while tx.core.stale() {
-        crate::apply::rejudged(tx, false)?;
-    }
+    // a seed taken up moves what the account's epochs judge
+    crate::apply::rejudged(tx, false)?;
     let Some(v) = tx.core.account_view(&p) else { return Ok(None) };
     let dep = departures(tx, &p, &v)?;
     let named = dep.all();

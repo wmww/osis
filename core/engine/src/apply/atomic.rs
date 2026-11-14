@@ -706,18 +706,23 @@ fn observe_all(tx: &mut Tx<'_>, j: &Joins) -> Result<()> {
 }
 
 /// Re-judges held deltas when the held set changed or something is stale
-/// (`validity::rejudge_all`), and observes the aspects that flipped; returns them.
+/// (`validity::rejudge_all`), and observes the aspects that flipped; returns them. Until nothing
+/// is stale: observing may make more so (a devices actor's `account.0` that counts again gives
+/// its nodes seeds, which move the account's epochs; each pass takes some up, or ends).
 pub(crate) fn rejudged(tx: &mut Tx<'_>, held_changed: bool) -> Result<Vec<(Tid, Ak)>> {
-    if !held_changed && !tx.core.stale() {
-        return Ok(Vec::new());
+    let mut all = Vec::new();
+    let mut first = held_changed;
+    while first || tx.core.stale() {
+        first = false;
+        let flipped = validity::rejudge_all(tx, true)?;
+        for (tid, ak) in &flipped {
+            observe_state(tx, tid, ak)?;
+        }
+        // roles may have grown: boxes kept out for want of them open now
+        crate::flows::retake(tx)?;
+        all.extend(flipped);
     }
-    let flipped = validity::rejudge_all(tx, true)?;
-    for (tid, ak) in &flipped {
-        observe_state(tx, tid, ak)?;
-    }
-    // roles may have grown: boxes kept out for want of them open now
-    crate::flows::retake(tx)?;
-    Ok(flipped)
+    Ok(all)
 }
 
 /// Joins deltas of an applied commit that arrived later (spec/commits.md §4). Late creation
