@@ -122,7 +122,7 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
     let u = lp.peers[1].engine.new_thing(&mut m, t);
     m.set(u, &REG, &s("u")).unwrap();
     lp.peers[1].commit(m).unwrap();
-    lp.peers[1].engine.demote(&t, &osis_node::flows::Demotion { holder: a, new: None, retain: None }).unwrap();
+    lp.peers[1].engine.demote(&t, &osis_engine::flows::Demotion { holder: a, new: None, retain: None }).unwrap();
     // the grant that makes 0 able to sign, held back from 2 till the end
     lp.peers[1].engine.grant(&t, &a, &Edge { role: Role::Read, until: None, invite: None, tied: None }).unwrap();
     let grant = packages(&mut lp, 1).pop().unwrap();
@@ -136,7 +136,7 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
     }
     let forged = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
     let forged = packages(&mut lp, 0).into_iter().find(|p| p.id == forged).unwrap();
-    let rosters = |lp: &mut osis_node::local_peer::LocalPeer| [t, u].map(|x| lp.peers[2].engine.roster(&x));
+    let rosters = |lp: &mut osis_engine::local_peer::LocalPeer| [t, u].map(|x| lp.peers[2].engine.roster(&x));
     for p in packages(&mut lp, 1).iter().chain(&packages(&mut lp, 0)).filter(|p| p.id != forged.id && p.id != grant.id) {
         lp.deliver(2, p).unwrap();
     }

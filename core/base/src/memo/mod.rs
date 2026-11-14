@@ -410,8 +410,7 @@ thread_local! {
 }
 
 /// Whether a memo's debug comparison is running on this thread: what it reads is the
-/// comparison's, so a memo hit inside it counts toward no comparison of its own (`Checks`), and
-/// `Core::recheck_at` rechecks no cache there.
+/// comparison's, so a memo hit inside it counts toward no comparison of its own (`Checks`).
 pub fn comparing() -> bool {
     COMPARING.get() > 0
 }

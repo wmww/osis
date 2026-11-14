@@ -1348,10 +1348,6 @@ pub struct Core {
     pub memory_waits: BTreeSet<CommitId>,
     /// Walks of what waiting commits link, kept for node-sync (`Engine::blob_wants`).
     pub(crate) walks: crate::apply::reach::Walks,
-    /// Debug builds: the cache hits compared with a fresh read at this point of the store
-    /// (`Tx::recheck`).
-    #[cfg(debug_assertions)]
-    pub(crate) rechecked: ((u64, u64, u64), BTreeSet<String>),
     /// `Engine::labels_of` per group (`memo`).
     pub(crate) labels: memo::Memo<Tid, Vec<std::sync::Arc<crate::labeling::GroupLabel>>>,
     /// `Engine::published_under` for every actor (`memo`).
@@ -1492,8 +1488,6 @@ impl Core {
             memory_room: self.memory_room,
             memory_waits: self.memory_waits.clone(),
             walks: self.walks.clone(),
-            #[cfg(debug_assertions)]
-            rechecked: self.rechecked.clone(),
             #[cfg(debug_assertions)]
             labels: self.labels.clone(),
             published: self.published.clone(),
@@ -2036,8 +2030,6 @@ impl Core {
             #[cfg(debug_assertions)]
             rebuilt_edges: _,
             #[cfg(debug_assertions)]
-            rechecked: _,
-            #[cfg(debug_assertions)]
             #[cfg(test)]
             check_ingest: _,
             #[cfg(test)]
@@ -2249,8 +2241,6 @@ impl Core {
             memory_waits: BTreeSet::new(),
             walks: Default::default(),
             #[cfg(debug_assertions)]
-            rechecked: Default::default(),
-            #[cfg(debug_assertions)]
             labels: memo::Memo::new("labels of"),
             published: memo::Memo::new("published"),
             links: memo::Memo::new("held links"),
@@ -2262,19 +2252,6 @@ impl Core {
         self.hlc.wall()
     }
 
-    /// `Tx::recheck` at point `at`. Never inside a memo's comparison (`memo::comparing`): it
-    /// checks the memo, and the hits of the caches it reads are checked where they are read
-    /// outside one.
-    #[cfg(debug_assertions)]
-    pub(crate) fn recheck_at(&mut self, at: (u64, u64, u64), what: String) -> bool {
-        if memo::comparing() {
-            return false;
-        }
-        if self.rechecked.0 != at {
-            self.rechecked = (at, BTreeSet::new());
-        }
-        self.rechecked.1.insert(what)
-    }
 
     /// Queues `changes` as a commit event, if anyone may listen.
     pub(crate) fn commits_touched(&mut self, changes: Vec<(Tid, Ak, CommitId)>) {
