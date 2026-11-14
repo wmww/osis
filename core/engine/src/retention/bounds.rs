@@ -550,10 +550,11 @@ impl Engine {
         })
     }
 
-    /// Body `(tid, ak)` of `c` is kept for good while live (its `drop_from` is past `FOREVER`,
-    /// spec/commits.md §5 Kept while live): it leaves the aspect's cover candidates
-    /// (`Core::cover_judged_on`) until a write of it dies, its aspect is rebuilt or its thing's
-    /// setting changes.
+    /// Body `(tid, ak)` of `c` is kept for good (its `drop_from` is past `FOREVER`: while live,
+    /// spec/commits.md §5 Kept while live, or a keyset while its boxes are held,
+    /// `judged_by_held`): it leaves the aspect's cover candidates (`Core::cover_judged_on`) until
+    /// a write of it dies, its aspect is rebuilt, its thing's setting changes or its commit's
+    /// `secrets.0` part on the thing drops.
     pub fn settle_kept(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) {
         if let Some(s) = self.core.cover_candidates.get_mut(&(*tid, ak.clone())) {
             s.remove(c);

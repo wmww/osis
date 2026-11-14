@@ -1727,7 +1727,7 @@ fn text_delete_replaces_at_earliest_delete_held_spec_commits_5() {
 
 // spec/permissions.md §5.2 (a part dropped as covered whose coverer turns invalid is missing
 // again, judged as at a node that never held it): B removes admin D, rotating the admin keyset;
-// C compacts `keys.0` and drops the rotation's part; A demotes B to write (the rotation's `keys.0`
+// C compacts `secrets.0` and `keys.0` and drops the rotation's parts; A demotes B to write (the rotation's `keys.0`
 // part turns invalid: it needs admin) and removes C (the snapshot turns invalid): the part,
 // missing again, needs only write and turns valid, as a rebuild judges it (`Engine::check_index`).
 #[test]
@@ -1753,16 +1753,19 @@ fn uncovered_part_judged_anew() {
     let rm = osis_node::flows::Demotion { holder: d, new: None, retain: None };
     let g = lp.peers[1].engine.demote(&t, &rm).unwrap().commits;
     deliver(&mut lp, 1, 2, &g);
-    // C compacts `keys.0`, dropping the rotation's part
+    // C compacts `secrets.0` and `keys.0`, dropping the rotation's parts (its keyset once its
+    // boxes are gone: it is kept while they are held)
     tick(&mut lp);
     let keys = ak("keys.0");
     let e = &mut lp.peers[2].engine;
-    let snap = e.snapshot(&t, &keys).unwrap().unwrap();
     let on: Vec<_> = g.iter().filter(|x| e.header(x).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t && a.ak == keys))).copied().collect();
     assert!(!on.is_empty(), "the removal writes `keys.0`");
-    for x in &on {
-        assert_eq!(e.covered(&snap, x, &t, &keys).unwrap(), Some(true));
-        e.drop_body(x, &t, &keys).unwrap();
+    for k in [ak("secrets.0"), keys.clone()] {
+        let snap = e.snapshot(&t, &k).unwrap().unwrap();
+        for x in &on {
+            assert_eq!(e.covered(&snap, x, &t, &k).unwrap(), Some(true));
+            e.drop_body(x, &t, &k).unwrap();
+        }
     }
     // A, having seen neither, demotes B to write and removes C
     tick(&mut lp);

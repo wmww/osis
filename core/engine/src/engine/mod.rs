@@ -1274,8 +1274,9 @@ pub struct Core {
     /// those found kept for good while live (`Engine::settle_kept`, spec/commits.md §5 Kept
     /// while live). node-sync judges these, not every held body, when a snapshot arrives: a
     /// snapshot changes nothing for such a body, which comes back only when one of its writes
-    /// dies (`mark_killed`), its aspect is rebuilt (`mark_bounded`) or its thing's setting
-    /// changes (`retention::settings_changed`).
+    /// dies (`mark_killed`), its aspect is rebuilt (`mark_bounded`), its thing's setting
+    /// changes (`retention::settings_changed`) or, a role commit's keyset, the commit's
+    /// `secrets.0` part drops (`retention::drop_part_for`).
     pub cover_candidates: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
     /// Things whose `retention^.0` deltas arrived, flipped or dropped this transaction: what their
     /// timeline judges is judged again at its end (`retention::settings_changed`).

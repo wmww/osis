@@ -81,8 +81,10 @@ pub(super) fn all_boxed(lp: &mut LocalPeer, i: usize, actors: &[Tid]) -> bool {
     })
 }
 
-fn keys_secrets() -> [osis_base::Ak; 2] {
-    ["keys.0", "secrets.0"].map(|k| osis_base::Ak::new(k).unwrap())
+/// The role-class aspects a rotation writes, in the order covers drop them: its boxes first, as
+/// its keyset is kept while they are held (spec/commits.md §5 Keep bounds).
+fn secrets_keys() -> [osis_base::Ak; 2] {
+    ["secrets.0", "keys.0"].map(|k| osis_base::Ak::new(k).unwrap())
 }
 
 // spec/crypto.md §4 (covers by names, carried in the history box): N, granted admin after the
@@ -94,7 +96,7 @@ fn compacted_rotation_covers_its_names_spec_crypto_4() {
     for compact in [true, false] {
         let (mut lp, t, r1) = removed_writer(false);
         if compact {
-            for k in keys_secrets() {
+            for k in secrets_keys() {
                 lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
                 for c in &r1 {
                     if lp.peers[0].engine.body_not_dropped(c, &t, &k) {
@@ -116,25 +118,31 @@ fn compacted_rotation_covers_its_names_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (names: an entry is bound to a held valid keyset body), spec/permissions.md
-// §5.2: N drops R1's `keys.0` body under admin P's compaction snapshot S; the first admin then demotes
-// P with a frontier not listing S, so S turns invalid and that body is missing again at N (R1's
-// `secrets.0` still held). No held valid keyset binds the read epoch's entry any more, so it
-// covers nothing: N rotates read once (an extra rotation, no lockout) and is covered by its own.
+// §5.2: N drops R1's `secrets.0` body under the first admin's compaction snapshot (which carries
+// the read epoch's entry), then R1's `keys.0` body under admin P's snapshot S; the first admin
+// then demotes P with a frontier not listing S, so S turns invalid and that body is missing again
+// at N. No held valid keyset binds the read epoch's entry any more, so it covers nothing: N
+// rotates read once (an extra rotation, no lockout) and is covered by its own.
 #[test]
 fn rotation_missing_again_binds_nothing_spec_crypto_4() {
     let (mut lp, t, r1) = removed_writer(true);
     lp.sync_all().unwrap();
     let p = lp.peers[2].engine.me();
-    let k = osis_base::Ak::new("keys.0").unwrap();
-    let s = lp.peers[2].engine.snapshot(&t, &k).unwrap().unwrap();
-    let pk = lp.peers[2].engine.package(&s).unwrap().unwrap();
-    lp.deliver(3, &pk).unwrap();
-    for c in &r1 {
-        let e = &mut lp.peers[3].engine;
-        if e.body_not_dropped(c, &t, &k) && e.covered(&s, c, &t, &k).unwrap() == Some(true) {
-            e.drop_body(c, &t, &k).unwrap();
+    let [secrets, k] = secrets_keys();
+    let mut s = None;
+    for (i, ak) in [(0, &secrets), (2, &k)] {
+        let snap = lp.peers[i].engine.snapshot(&t, ak).unwrap().unwrap();
+        let pk = lp.peers[i].engine.package(&snap).unwrap().unwrap();
+        lp.deliver(3, &pk).unwrap();
+        for c in &r1 {
+            let e = &mut lp.peers[3].engine;
+            if e.body_not_dropped(c, &t, ak) && e.covered(&snap, c, &t, ak).unwrap() == Some(true) {
+                e.drop_body(c, &t, ak).unwrap();
+            }
         }
+        s = Some(snap);
     }
+    let s = s.unwrap();
     assert!(r1.iter().any(|c| !lp.peers[3].engine.body_not_dropped(c, &t, &k)), "R1's keys.0 dropped at N");
     assert!(blocked_at(&mut lp, 3, t).is_empty(), "the dropped rotation stays known");
     lp.peers[0].engine.demote(&t, &Demotion { holder: p, new: Some(edge(Role::Read)), retain: None }).unwrap();

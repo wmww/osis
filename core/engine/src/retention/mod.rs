@@ -286,6 +286,14 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     if let Some(s) = tx.core.cover_candidates.get_mut(&k) {
         s.remove(c);
     }
+    // a role commit's `keys.0` part on the thing, kept for good while this part was held
+    // (`bounds::judged_by_held`), has its own bound again: a cover candidate again
+    if header.kind == osis_commit::Kind::Role && a.ak.as_str() == "secrets.0" {
+        let keys = osis_schema::core_types::KEYS.name();
+        if held_part(tx.core, c, &a.tid, &keys).is_some() {
+            tx.core.cover_candidates.entry((a.tid, keys)).or_default().insert(*c);
+        }
+    }
     crate::apply::note_stands_in(tx.core, c);
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     crate::apply::keys::forget_dropped(tx, &header, ai, &role_bodies)?;

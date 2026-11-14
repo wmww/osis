@@ -279,23 +279,31 @@ fn route_removal_proved_leaks_nothing_spec_crypto_4() {
 
 /// Node-sync's covered drop (`CoverPass`, as `SyncEngine::compact_now` runs it, role snapshots
 /// included) over `t`'s `keys.0` and `secrets.0` at peer `i`: each held body (not a snapshot) that
-/// a held valid snapshot covers drops once past its keep bound (`Engine::drop_from`). Returns how
-/// many dropped.
+/// a held valid snapshot covers drops once past its keep bound (`Engine::drop_from`); one kept for
+/// good leaves the cover candidates (`Engine::settle_kept`). Returns how many dropped.
 fn drop_covered(lp: &mut LocalPeer, i: usize, t: Tid) -> usize {
     let e = &mut lp.peers[i].engine;
     let now = e.now().0;
     let mut n = 0;
     for ak in ["keys.0", "secrets.0"].map(|k| osis_base::Ak::new(k).unwrap()) {
         let k = (t, ak.clone());
-        let snaps: Vec<CommitId> = e.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| e.holds_valid_snapshot(s, &t, &ak)).collect();
+        let snaps: Vec<CommitId> = e.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| crate::retention::bounds::valid_snapshot_held(&e.core, s, &t, &ak)).collect();
         let bodies: Vec<CommitId> = e.core.durable_on(&k).filter(|c| e.header(c).is_some_and(|h| !h.kind.is_compaction())).collect();
         for c in bodies {
             for s in &snaps {
-                if e.droppable_if_covered(&c, &t, &ak) && e.covered(s, &c, &t, &ak).unwrap() == Some(true) && e.drop_from(&c, &t, &ak).unwrap() <= now {
+                if !e.droppable_if_covered(&c, &t, &ak) || e.covered(s, &c, &t, &ak).unwrap() != Some(true) {
+                    continue;
+                }
+                let due = e.drop_from(&c, &t, &ak).unwrap();
+                // kept for good: out of the aspect's cover candidates until its bound may move
+                if due >= osis_commit::FOREVER {
+                    e.settle_kept(&c, &t, &ak);
+                }
+                if due <= now {
                     e.drop_body(&c, &t, &ak).unwrap();
                     n += 1;
-                    break;
                 }
+                break;
             }
         }
     }
@@ -321,10 +329,10 @@ fn secrets_verdicts(lp: &LocalPeer, i: usize, j: usize, t: Tid) -> Vec<(CommitId
 // around it). A node granted M afterwards gets what m1 holds: had m1 dropped the rotation's
 // `keys.0` part while holding its `secrets.0` part, the newcomer would read no proof and judge
 // that part invalid where m1 judges it valid, for good. Randomized over the rotations, which
-// aspects are compacted, the clock, restarts and arrival order.
+// aspects are compacted, the clock, restarts and arrival order. Where m1 dropped f's `secrets.0`
+// part too, the keyset judges nothing held: a cover candidate again, it drops in turn.
 #[test]
 fn rotation_judged_alike_by_a_node_joining_after_compaction_spec_crypto_4() {
-    let mut reached = 0;
     for seed in 0..6u64 {
         let mut r = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x2545_f491_4f6c_dd1d;
         let mut next = |n: u64| {
@@ -357,6 +365,16 @@ fn rotation_judged_alike_by_a_node_joining_after_compaction_spec_crypto_4() {
         if next(2) == 0 {
             lp.peers[M1].restart(seed + 100).unwrap();
         }
+        // m1 may have dropped f's `secrets.0` part too (its boxes and history entries replaced,
+        // covered): then the keyset judges nothing held and goes under its cover in turn
+        let held = |lp: &LocalPeer, ak: &osis_base::Ak| lp.peers[M1].engine.body_not_dropped(&c, &m, ak);
+        if !held(&lp, &secrets) {
+            assert!(lp.peers[M1].engine.core.cover_judged_on(&(m, keys.clone())).contains(&c), "seed {seed}: f's keyset a cover candidate again");
+            drop_covered(&mut lp, M1, m);
+            assert!(!held(&lp, &keys), "seed {seed}: f's keyset kept with nothing it judges held");
+            continue;
+        }
+        assert!(held(&lp, &keys), "seed {seed}: f's keyset dropped while its boxes are held");
         // a node granted M now gets what m1 holds, in some order
         let x = lp.peers.len();
         let now = lp.peers[M1].engine.now();
@@ -374,13 +392,10 @@ fn rotation_judged_alike_by_a_node_joining_after_compaction_spec_crypto_4() {
             }
         }
         let got = secrets_verdicts(&lp, M1, x, m);
-        // m1 may have dropped f's `secrets.0` part too (its boxes and history entries replaced,
-        // covered): then nobody judges it
-        reached += usize::from(got.iter().any(|(id, ..)| *id == c));
+        assert!(got.iter().any(|(id, ..)| *id == c), "seed {seed}: the newcomer holds f's boxes");
         let differ: Vec<_> = got.iter().filter(|(_, a, b)| a != b).collect();
         assert!(differ.is_empty(), "seed {seed}: m1 and the newcomer judge differently: {differ:?} (f's rotation {c:?})");
     }
-    assert!(reached > 0, "no run left f's boxes to judge");
 }
 
 // spec/commits.md §5 Keep bounds, spec/crypto.md §4 Held keyset: a1 holds f's rotation of M as a
