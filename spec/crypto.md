@@ -249,6 +249,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
   - A node logging an entry of its own commit wraps under the newest current read epoch whose secret it holds (§4); Passing on (above) otherwise.
   - A node holding no current secret logs nothing: it is stranded (spec/permissions.md §4).
   - Exception: a commit carrying boxes of a read epoch e (a rotation) is wrapped, under every sync ID whose read secret derives from that actor's, under the read epoch e supersedes whose secret the rotator holds with the greatest n, ties by lowest nonce (n, not order n, §4).
+  - A rotation's thing lists (spec/permissions.md §5.5) are parts of it and wrap as it does: a list blob of rotation r under S goes under the newest read epoch of S's thing whose secret the node holds that was current when r was made (minted by no rotation ordered after r, spec/permissions.md §5.1), never one a later rotation of that thing created.
 - A sync ID's role keys at a peer are those of the epochs the peer's head registers (spec/sync-ids.md §3).
 - **Inbox blob** (spec/sync-inbox.md §2): a role commit (header and deltas) about the recipient, plus the sync IDs of the things it names, sealed to the recipient actor's read-role KEM key; to a recipient below read, its boxes of the commit alone, signed by the author. Bytes: spec/wire.md §9.
   - Its prefix expiry is a delivery lifetime (`INBOX_LIFETIME`), not a commit expiry.
