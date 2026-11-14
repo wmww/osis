@@ -8,7 +8,7 @@ announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`t
 vouches for checked delta bytes (`checked_bytes`), and signature verdicts are read back only where kept (`kept_verdicts`), and every tools/known_failures.txt line names
 an existing issue file, an existing test or sim scenario and a valid pattern (`known_failures`),
 and every list under git's union merge has no duplicate line and a stale-line check (`union_lists`),
-and no code names a thing's destruction by the old word "ended" (`ended_names`), and every pointer into notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and no core `pub`
+and no code names a thing's destruction by the old word "ended" (`ended_names`), and each store's local-row key constants are prefix-free and never written as literals (`row_prefixes`), and every pointer into notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and no core `pub`
 item is used only by its own crate's tests or not at all unless tools/dead_pub_allow.txt lists it (tools/dead_pub.py).
 Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
 libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
