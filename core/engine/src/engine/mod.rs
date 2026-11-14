@@ -828,6 +828,9 @@ indexes! {
     /// Per sync ID, when the last complete pass sync noted of it began (`sync::held`): an event,
     /// not derived from the commits held, so no rebuild compares it.
     pub passes: JMap<SyncId, WallMs>,
+    /// Per (actor, holder), a re-seal a stranded report asked for (`sync::stranded`, rows `ra/`):
+    /// an event, so no rebuild compares it.
+    pub reseal_asks: JMap<(Tid, Tid), crate::sync::stranded::Ask>,
     /// Inbox blobs held untaken (`sync::inbox`, spec/sync-inbox.md §2 invite requests).
     pub waiting_inbox: JMap<osis_base::BlobId, Arc<crate::sync::WaitingBlob>>,
     /// Per thing, the sync ID a taken inbox blob's payload named for it while no applied `sync.0`

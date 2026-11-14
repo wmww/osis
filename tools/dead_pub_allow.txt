@@ -52,7 +52,6 @@ osis-engine::freed_wants  deferred: sync rebuild (issues/sync-rewrite.md Phase 3
 osis-engine::header_body  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::held_key_actors  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::inbox_of_actor  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::ingest_valid  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::invalid_writes  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::is_writer  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::judge_freed  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -94,7 +93,6 @@ osis-keys::secret_count  deferred: sync rebuild (issues/sync-rewrite.md Phase 3)
 osis-label::in_memory  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-label::match_secret  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-label::prefix_bytes  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-label::seal_stranded_notice  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::MAX_BEHIND_STEPS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-proto::OFFSET_DIAGNOSTIC_MS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-schema::TID  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync

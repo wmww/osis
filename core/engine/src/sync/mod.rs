@@ -27,6 +27,8 @@ mod relay;
 pub use relay::{Relay, RelayOpened};
 mod set;
 mod signing;
+pub(crate) mod stranded;
+pub use stranded::Stranding;
 #[cfg(test)]
 mod tests_facts;
 

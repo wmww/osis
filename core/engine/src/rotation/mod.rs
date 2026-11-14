@@ -900,8 +900,12 @@ pub(crate) enum Reseal {
     /// secret this node holds; it replaces no box (`osis_keys::reseal_holder`).
     Missing,
     /// A re-share (`Engine::reshare`): at every current epoch held, replacing the holder's boxes
-    /// there (a re-paired node's, a stranded holder's).
+    /// there (a re-paired node's).
     All,
+    /// A stranded report's ask (spec/permissions.md §3, §4): as `All` at every current epoch held,
+    /// written only when a box differs from the one Seal gives now or is missing, so asking
+    /// again changes nothing once met.
+    Asked,
 }
 
 /// A re-seal of `holder` for `roles` of `a` (spec/permissions.md §3): its boxes at the current
@@ -929,15 +933,32 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
         Sealed::Out => return Err(Error::Misuse("the holder has no key access or no keyset this node may seal it to")),
     };
     let missing = |r: Role| osis_keys::reseal_missing(&secrets, &epochs, &holder, r).iter().any(|e| epochs.role(r).secret(e).is_some());
-    let roles: BTreeSet<Role> = roles.iter().copied().filter(|r| *r <= rcpt.role && (which == Reseal::All && !rotated || missing(*r))).collect();
+    let held = |r: Role| epochs.role(r).current().iter().any(|e| epochs.role(r).secret(e).is_some());
+    let roles: BTreeSet<Role> = roles
+        .iter()
+        .copied()
+        .filter(|r| *r <= rcpt.role)
+        .filter(|r| match which {
+            Reseal::Missing => missing(*r),
+            Reseal::All => !rotated || missing(*r),
+            Reseal::Asked => held(*r) && (!rotated || missing(*r)),
+        })
+        .collect();
     if roles.is_empty() {
         return Ok(done);
     }
     let hist = history_boxes(tx, &me, &a)?;
     let w = match which {
         Reseal::Missing => osis_keys::reseal_holder(&a, &epochs, &secrets, &hist, &rcpt, &roles, &mut *tx.rng)?,
-        Reseal::All => osis_keys::box_holder(&a, &epochs, &hist, &rcpt, &roles, &mut *tx.rng)?,
+        Reseal::All | Reseal::Asked => osis_keys::box_holder(&a, &epochs, &hist, &rcpt, &roles, &mut *tx.rng)?,
     };
+    // asked: nothing to write when every box is there at the keysets Seal gives now
+    if which == Reseal::Asked
+        && let Some(w) = &w
+        && w.boxes.iter().all(|(k, b)| secrets.boxes.get(k).is_some_and(|x| osis_keys::box_keysets(x) == osis_keys::box_keysets(b)))
+    {
+        return Ok(done);
+    }
     let Some(w) = w else {
         return Err(Error::Misuse("the holder's keyset is unknown"));
     };
@@ -1235,6 +1256,23 @@ impl Engine {
             for (m, roles) in due {
                 done.extend(reseal_one(tx, a, m, &roles, Reseal::Missing)?);
             }
+            // the re-seals stranded reports asked for (spec/permissions.md §4), each judged now:
+            // a holder no longer current, or one this node may no longer seal to, asks nothing
+            for m in crate::sync::stranded::asked(tx, &a) {
+                let role = tx.core.key_holders(&a).into_iter().find(|x| x.0 == m).map(|x| x.1);
+                crate::sync::stranded::meet(tx, &a, &m, role.is_some())?;
+                let Some(role) = role else { continue };
+                let me = tx.core.writer()?;
+                let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= role && may_rotate(tx.core, &me, &a).contains(r)).collect();
+                // refused (nothing to seal to, the grant ended, a rewrite Authority refuses:
+                // issues/reshare-rewrite-refused.md): the ask is met all the same, the rest of the
+                // pass's end stands
+                match reseal_one(tx, a, m, &roles, Reseal::Asked) {
+                    Ok(d) => done.extend(d),
+                    Err(Error::Misuse(_) | Error::Permission { .. }) => {}
+                    Err(e) => return Err(e),
+                }
+            }
             done.extend(add_history(tx, a)?);
             done.extend(tip_add(tx, a)?);
             floors::owe_state(tx, &a)?;
@@ -1297,3 +1335,5 @@ mod tests_property;
 mod tests_reseal;
 #[cfg(test)]
 mod tests_planted;
+#[cfg(test)]
+mod tests_stranded;

@@ -185,7 +185,7 @@ impl Engine {
     }
 
     /// The thing whose sync ID `s` is, read here, with its record (`sync_ids`).
-    fn read_sync_id(&mut self, s: &SyncId) -> Result<Option<(Tid, OwnedSyncId)>> {
+    pub(crate) fn read_sync_id(&mut self, s: &SyncId) -> Result<Option<(Tid, OwnedSyncId)>> {
         let Some(t) = self.sync_owner_of(s)? else { return Ok(None) };
         if !matches!(self.thing_sync_now(&t)?, ThingSync::Read(ids) if ids.contains(s)) {
             return Ok(None);

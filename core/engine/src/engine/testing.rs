@@ -18,6 +18,25 @@ pub struct HeldBody {
 }
 
 impl Engine {
+    /// Tests only: rotates `roles` of `a` boxing every holder this node would but `skip`, as a
+    /// rotation that left them out (a holder left out of a rotation, spec/permissions.md §4
+    /// Stranded). The commit made.
+    #[doc(hidden)]
+    pub fn rotate_leaving_out(&mut self, a: &Tid, roles: &[osis_base::Role], skip: &[Tid]) -> Result<Option<CommitId>> {
+        let (a, roles): (Tid, BTreeSet<osis_base::Role>) = (*a, roles.iter().copied().collect());
+        let skip: Vec<(Tid, Option<osis_base::Role>)> = skip.iter().map(|t| (*t, None)).collect();
+        self.run(|tx| {
+            let held = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
+            let me = tx.core.writer()?;
+            let holders = crate::rotation::recipients(tx, &me, &a, &skip)?;
+            let mut m = crate::Mutation::new();
+            let r = crate::rotation::rotation_into(tx, &mut m, a, &roles, &held, &holders, crate::rotation::Departs::No)?;
+            let c = Engine::commit_tx(tx, m)?;
+            crate::rotation::record(tx, a, &r)?;
+            Ok(c)
+        })
+    }
+
     /// Tests only: an exact copy of this engine as it stands, on `clock`, sharing no mutable
     /// state with it (notes/test-harnesses.md, Copied worlds): its store over test copies of the backend
     /// and root (`osis_store::Store::test_copy`), its indexes, caches and memos, its rngs

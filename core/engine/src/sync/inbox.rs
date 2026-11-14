@@ -308,7 +308,12 @@ impl Engine {
         let p = match inbox {
             Inbox::Payload(p) => p,
             Inbox::Boxes(p) => return self.hold_offer(blob, &a, expires, p),
-            Inbox::Stranded(_) => return Ok(Some(InboxOpened { commit: None, taken: Taken::Refused, hints: Vec::new(), dial: None })),
+            Inbox::Stranded(n) => {
+                // judged from what this node holds alone (`take_stranded`): taking it again
+                // asks nothing more
+                self.take_stranded(&n.label, &n.holder, &n.keys)?;
+                return Ok(Some(InboxOpened { commit: None, taken: Taken::Refused, hints: Vec::new(), dial: None }));
+            }
         };
         let (plain, rest) = InboxPayload::split(p);
         let InboxRest { things, chain, records, dial } = rest;

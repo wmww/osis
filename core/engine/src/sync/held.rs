@@ -151,7 +151,12 @@ impl Engine {
                 continue;
             }
             want(*s, WallMs(0));
-            if let Some(at) = self.role_arrival(&self.core.reader_of(t)) {
+            let a = self.core.reader_of(t);
+            if let Some(at) = self.role_arrival(&a) {
+                want(*s, at);
+            }
+            // a stranded report's re-seal ask (spec/permissions.md §3, §4): met at a pass's end
+            if let Some(at) = self.asked_at(&a) {
                 want(*s, at);
             }
         }
@@ -175,6 +180,11 @@ impl Engine {
             .flat_map(|ak| ix.by_aspect.get(&(*actor, ak)).into_iter().flatten().map(|x| x.1).collect::<Vec<_>>())
             .filter_map(|c| ix.commits.get(&c).filter(|m| m.origin == crate::events::Origin::Remote).map(|m| m.received))
             .max()
+    }
+
+    /// When the newest re-seal ask on `actor` from a stranded report was taken (`sync::stranded`).
+    fn asked_at(&self, actor: &Tid) -> Option<WallMs> {
+        self.core.ix.reseal_asks.iter().filter(|((a, _), k)| a == actor && !k.met).map(|(_, k)| k.at).max()
     }
 
     /// spec/permissions.md §2 Tied grants: per tied grant (G, T) this node holds dead and would
@@ -233,7 +243,7 @@ impl Engine {
     /// trigger waits for one). False for an actor with no sync ID read here.
     pub(crate) fn complete_pass(&mut self, actor: &Tid) -> Result<bool> {
         let ThingSync::Read(ids) = self.thing_sync_now(actor)? else { return Ok(false) };
-        let since = self.role_arrival(actor).unwrap_or(WallMs(0));
+        let since = self.role_arrival(actor).max(self.asked_at(actor)).unwrap_or(WallMs(0));
         Ok(!ids.is_empty() && ids.iter().all(|s| self.core.ix.passes.get(s).is_some_and(|b| *b >= since)))
     }
 
