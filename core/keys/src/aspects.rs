@@ -162,9 +162,18 @@ pub fn snapshot_keyed(s: &Secrets, commit: CommitId, epochs: &mut ActorEpochs) -
 }
 
 /// The `secrets.0` compaction gate (spec/crypto.md §4): every epoch the state `s` keys is
-/// established, so the snapshot vouches for nothing this node did not verify.
+/// established, its names condition aside, so the snapshot vouches for no epoch whose rotation
+/// this node did not verify. Names are each holder's own judgement (a receiver holding the secret
+/// judges them itself), and an epoch whose names its holders find unmet (withdrawn) keeps its
+/// boxes for good: gating on them would stop compaction at its holders for good.
 pub fn may_compact_secrets(s: &Secrets, epochs: &ActorEpochs) -> Result<bool, Error> {
-    Ok(keyed(s)?.iter().all(|(r, e)| epochs.role(*r).is_established(e)))
+    let mut based: BTreeMap<Role, BTreeMap<Epoch, crate::Provenance>> = BTreeMap::new();
+    for (r, e) in keyed(s)? {
+        if !based.entry(r).or_insert_with(|| epochs.role(r).established_names_aside()).contains_key(&e) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// A write to `keys.0` by a rotation: the rotated roles' keysets (spec/crypto.md §3).

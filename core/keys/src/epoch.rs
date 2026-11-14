@@ -350,9 +350,16 @@ impl RoleEpochs {
     /// has names this node does not meet, yet is current wherever its secret is not held: a
     /// rotation lists it, and its maker withdraws it.
     pub fn unsuperseded(&self) -> Vec<Epoch> {
-        let est = self.established_by(|_| true);
+        let est = self.established_names_aside();
         let superseded: BTreeSet<&Epoch> = est.keys().filter_map(|e| self.map.get(e)).flat_map(EpochInfo::superseded_iter).collect();
         est.into_keys().filter(|e| !superseded.contains(e)).collect()
+    }
+
+    /// The epochs established with the names condition dropped (spec/crypto.md §4): what a node
+    /// holding none of the role's secrets counts established, and what a `secrets.0` compaction
+    /// snapshot may key (`may_compact_secrets`).
+    pub fn established_names_aside(&self) -> BTreeMap<Epoch, Provenance> {
+        self.established_by(|_| true)
     }
 
     pub fn is_established(&self, e: &Epoch) -> bool {
