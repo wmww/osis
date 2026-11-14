@@ -297,6 +297,8 @@ impl Changed {
 pub struct Opens {
     /// The records connections hold (and those released this step, until `flush`).
     records: BTreeMap<RecordId, Record>,
+    /// Sync IDs the store shredded, from the first settle.
+    shreds: Option<osis_base::memo::Feed<SyncId>>,
     /// What changed of each kept record since `flush`.
     dirty: BTreeMap<RecordId, records::Dirty>,
     /// A store failure this step met: `settle` and `flush` fail the step with it.
@@ -318,6 +320,7 @@ impl Default for Opens {
     fn default() -> Opens {
         Opens {
             records: BTreeMap::new(),
+            shreds: None,
             dirty: BTreeMap::new(),
             fault: None,
             budget: osis_store::RECORD_BUDGET,
@@ -460,6 +463,15 @@ impl Opens {
         let mut holds = NodeHolds { cx, unread, fx: &mut fx };
         let mut ctx = Ctx { holds: &mut holds, wire: sessions, store: &mut store, now };
         let acted = self.tick(&mut ctx, moved);
+        // S left this node (spec/sync-set.md §3): its record rows went with the shred; where a
+        // member stopped goes from memory too, so a later join is from the start
+        let shreds = self.shreds.get_or_insert_with(|| store.shred_feed()).added();
+        for s in shreds {
+            for r in self.records.values_mut() {
+                r.stopped.remove(&s);
+                r.basis.remove(&s);
+            }
+        }
         self.fx = fx;
         if let Some(e) = self.fault.take() {
             return Err(e.into());

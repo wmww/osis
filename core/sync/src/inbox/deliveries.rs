@@ -267,7 +267,7 @@ impl Deliveries {
 
 fn judge(engine: &mut Engine, seen: &Stamped<Key, BTreeSet<(SyncId, Option<osis_crypto::Epoch>)>>, k: &Key) -> Result<Want> {
     osis_base::costs::count("inbox: delivery judged", 1);
-    if engine.delivery_taken(&k.0, &k.1)? || opened_taken(engine, seen.get(k))? {
+    if engine.delivery_taken(&k.0, &k.1)? || opened_taken(engine, &k.1, seen.get(k))? {
         return Ok(Want::Taken);
     }
     Ok(match engine.inbox_of(&k.1) {
@@ -277,14 +277,23 @@ fn judge(engine: &mut Engine, seen: &Stamped<Key, BTreeSet<(SyncId, Option<osis_
 }
 
 /// spec/sync-inbox.md §2 Re-send: an open of a sync ID the blob names, the recipient proven,
-/// shows the delivery taken only by a credential the delivery's secrets give: a read secret at
-/// a current epoch of S's thing here (an older one opened before the grant was taken: a grant
-/// again after a removal), or a store credential (a holder of sync alone shows its head's).
-fn opened_taken(engine: &mut Engine, seen: Option<&BTreeSet<(SyncId, Option<osis_crypto::Epoch>)>>) -> Result<bool> {
+/// shows the delivery taken only by a credential the delivery's secrets give: to a recipient
+/// reading S's thing here, a read secret at a current epoch of it (an older one opened before the
+/// grant was taken: a grant again after a removal, or a sync holder raised to read); to a holder
+/// of sync alone, a store credential (its head's).
+fn opened_taken(engine: &mut Engine, holder: &osis_base::Tid, seen: Option<&BTreeSet<(SyncId, Option<osis_crypto::Epoch>)>>) -> Result<bool> {
     for (s, by) in seen.into_iter().flatten() {
-        let Some(e) = by else { return Ok(true) };
-        if engine.read_credentials(s)?.is_some_and(|c| c.read_secrets.iter().any(|(x, _)| x == e)) {
-            return Ok(true);
+        match by {
+            None => {
+                if engine.judge_peer(s, std::slice::from_ref(holder))? == osis_engine::sync::J::SyncHolder {
+                    return Ok(true);
+                }
+            }
+            Some(e) => {
+                if engine.read_credentials(s)?.is_some_and(|c| c.read_secrets.iter().any(|(x, _)| x == e)) {
+                    return Ok(true);
+                }
+            }
         }
     }
     Ok(false)

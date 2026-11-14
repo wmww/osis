@@ -221,6 +221,15 @@ impl Known {
         }
     }
 
+    /// What every connection's source showed of S goes (S shredded here; a record's rows went
+    /// with it). O(what connections showed in memory): S leaving is rare.
+    pub(super) fn forget_conns(&mut self, s: &SyncId) {
+        let srcs: BTreeSet<Source> = self.by_src.keys().filter(|(_, x)| x == s).map(|(src, _)| *src).chain(self.full.iter().filter(|(_, x)| x == s).map(|(src, _)| *src)).chain(self.heads.keys().filter(|(_, x)| x == s).map(|(src, _)| *src)).chain(self.refused.keys().filter(|(_, x, _)| x == s).map(|(src, ..)| *src)).collect();
+        for src in srcs {
+            self.forget_conn(src, *s);
+        }
+    }
+
     /// Everything a connection's source showed goes with it (its ephemeral entries and what a
     /// peer with no record showed).
     pub fn forget_source(&mut self, src: Source) {

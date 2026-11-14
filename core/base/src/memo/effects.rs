@@ -270,6 +270,12 @@ impl<K: Clone + 'static> Feed<K> {
     }
 }
 
+impl<K> std::fmt::Debug for Feed<K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Feed").field("at", &self.at).finish()
+    }
+}
+
 impl<K> Drop for Feed<K> {
     fn drop(&mut self) {
         lock(&self.table).unmark(self.at);

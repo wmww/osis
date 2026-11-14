@@ -150,6 +150,8 @@ pub struct Streams {
     pull: BTreeMap<ConnId, pull::Pulling>,
     /// Where this node stands in each source's log.
     places: BTreeMap<Source, pull::Place>,
+    /// Sync IDs the store shredded: dropped from every place kept in memory.
+    shreds: osis_base::memo::Feed<SyncId>,
     known: Known,
     /// Blobs asked from some source, and when (one source at a time).
     asked: HashMap<BlobId, (ConnId, WallMs)>,
@@ -169,7 +171,7 @@ pub struct Streams {
 impl Streams {
     /// Streams over the node's store: where a record source's place and word live.
     pub fn new(store: Store) -> Streams {
-        Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), known: Known::new(store), asked: HashMap::new(), holders: BTreeMap::new(), room: BTreeMap::new(), caught: Stamped::default(), fault: None, work: Work::default() }
+        Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), known: Known::new(store), asked: HashMap::new(), holders: BTreeMap::new(), room: BTreeMap::new(), caught: Stamped::default(), fault: None, work: Work::default() }
     }
 
     /// Tests only (world copies): reads the copy's store.
@@ -352,6 +354,14 @@ impl Streams {
 
     /// Settles every connection: pushes under `follow`, Pulls and Fetches due, room regained.
     pub fn tick(&mut self, ctx: &mut Ctx) -> Result<bool> {
+        // S left this node (spec/sync-set.md §3): what its places hold of it goes, so a later
+        // join reads it from the start
+        for s in self.shreds.added() {
+            for place in self.places.values_mut() {
+                place.forget(&s);
+            }
+            self.known.forget_conns(&s);
+        }
         let mut acted = self.room_grew(ctx)?;
         let conns: BTreeSet<ConnId> = self.serve.keys().chain(self.pull.keys()).copied().collect();
         for c in conns {

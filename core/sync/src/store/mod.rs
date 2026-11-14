@@ -480,6 +480,11 @@ impl Store {
         self.lock().mem.fed.feed()
     }
 
+    /// A cursor over the sync IDs shredded from now on (`shred`).
+    pub fn shred_feed(&self) -> osis_base::memo::Feed<SyncId> {
+        self.lock().mem.shreds.feed()
+    }
+
     /// Blob `b`'s bytes, whoever holds them.
     pub fn bytes(&self, b: &BlobId) -> Result<Option<Vec<u8>>> {
         let mut g = self.lock();
@@ -987,9 +992,12 @@ impl Store {
             entries::put_usage(t, env, s, u, Usage::default())?;
             t.log_forget(*s)?;
             t.changed_forget(s)?;
+            // S in every record goes with it (spec/sync-set.md §3 Leaving)
+            t.records_forget_sync(s)?;
             Ok(())
         })?;
         g.mem.forget(s, now);
+        g.mem.shreds.wrote_added(s, true, true);
         g.past_cap.remove(s);
         Ok(())
     }

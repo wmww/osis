@@ -30,6 +30,19 @@ pub(super) struct Place {
     pub stopped: BTreeMap<SyncId, Option<Cursor>>,
 }
 
+impl Place {
+    /// S goes from this place (its rows went with the shred).
+    pub(super) fn forget(&mut self, s: &SyncId) {
+        if self.at_stream.contains(s) {
+            self.at_stream.remove(s);
+        }
+        if self.joining.contains_key(s) {
+            self.joining.remove(s);
+        }
+        self.stopped.remove(s);
+    }
+}
+
 fn opt_cursor(c: &Option<Cursor>) -> Vec<u8> {
     match c {
         Some(c) => [&[1u8][..], c].concat(),

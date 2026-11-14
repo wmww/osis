@@ -45,6 +45,9 @@ pub(crate) struct Memory {
     /// Every entry added, or whose wrap, stamp or deposited flag changed, durable or in memory:
     /// a `Feed<(SyncId, BlobId)>` over it is a reader's cursor of entries to judge (inbox).
     pub fed: Stamps,
+    /// Every sync ID shredded (`Store::shred`): a `Feed<SyncId>` over it tells the modules that
+    /// keep S in memory per record (opens, streams) to drop it.
+    pub shreds: Stamps,
 }
 
 impl Memory {

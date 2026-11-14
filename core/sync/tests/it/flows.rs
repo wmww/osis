@@ -103,3 +103,13 @@ fn raised_from_sync_to_read_opens_what_is_held_spec_sync_3() {
     use crate::harness::history::Gives;
     crate::convergence::converge(5, 3, &[New(2), New(2), Grant(2, 1, 0, Gives::Syncs), Run, Grant(2, 1, 0, Gives::Reads)], String::new());
 }
+
+// spec/sync-inbox.md §2 (Re-send): a holder of sync alone, removed and granted read before either
+// reached it, reads the thing: its open by its old sync credential does not show the read grant
+// taken. Found by the differential.
+#[test]
+fn a_read_grant_after_a_sync_removal_reaches_the_grantee_spec_sync_inbox_2() {
+    use crate::harness::Step::*;
+    use crate::harness::history::Gives;
+    crate::convergence::converge(16, 3, &[New(0), New(1), New(0), Grant(0, 2, 1, Gives::Syncs), Run, Remove(0, 2, 1), Grant(0, 2, 1, Gives::Reads)], String::new());
+}

@@ -264,6 +264,31 @@ impl Transaction<'_> {
         Ok(out)
     }
 
+    /// Every module's rows about `l` in every record go (a node that stops holding `l` drops it
+    /// from every record, spec/sync-opens.md §3). Costs the rows it removes (the index is by
+    /// sync ID first).
+    pub fn records_forget_sync(&mut self, l: &SyncId) -> Result<(), Error> {
+        let prefix = [ROW_INDEX, &l.0].concat();
+        loop {
+            let rows = self.cat_scan(&prefix, &[], PAGE)?;
+            let n = rows.len();
+            for (k, _) in rows {
+                let rest = k.get(prefix.len()..).unwrap_or_default();
+                let Some((tag, rest)) = rest.split_first() else { continue };
+                let Some(split) = rest.len().checked_sub(16) else { continue };
+                let (key, id) = rest.split_at(split);
+                let Ok(id) = <RecordId>::try_from(id) else { continue };
+                if !self.record_remove_row(&id, *tag, l, key)? {
+                    // an index row whose row is gone: the index row alone
+                    self.cat_remove(&k, Shred::No)?;
+                }
+            }
+            if n < PAGE {
+                return Ok(());
+            }
+        }
+    }
+
     /// The records holding module `tag`'s row `key` about `l`, at most `limit`. Costs what it
     /// returns (the index is by sync ID, tag and key).
     pub fn records_with_row(&mut self, l: &SyncId, tag: u8, key: &[u8], limit: usize) -> Result<Vec<RecordId>, Error> {
