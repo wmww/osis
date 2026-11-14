@@ -26,3 +26,4 @@
 - A peer can refuse role entries or hold requests open: what waits on it there (deletes, logging again) waits, the stall rule closes the connection (spec/sync-streams.md §1), and other sources are unaffected.
 - A writer may stamp any entry as a role entry past the caps (spec/sync-ids.md §6). Anyone able to deposit can fill the deposit budget while no admin is online (spec/requirements.md). A lowered holder can delete at a node keeping S unread what its old role allowed until a writer logs it again (spec/permissions.md §6).
 - A dialer proves to any key it chose to dial (spec/sync-opens.md §2).
+- A body dropped as invalid is never deleted at a peer, so a writer's invalid entry can take a full store's room there until it expires or the caps give way (spec/sync-judgement.md §3).

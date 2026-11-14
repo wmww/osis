@@ -54,7 +54,6 @@ Encoding: spec/wire.md §4. Fields:
     - a relay-only one is delivered and never held (spec/sync-compaction.md §2).
 - An **ephemeral snapshot** is a compaction snapshot like any (spec/crdt.md §8, §5).
   - Its delta is the writer's state of the aspect, every author's writes under their stamps, with the tables over the sources that occur in it, the values of deltas with an `expires` value-less (spec/crdt.md §8: none is covered).
-  - A writer MAY instead snapshot the join of some of its own session-form bodies alone (coalescing, spec/sync-compaction.md §2), with its own session's entry reaching the last of their counters.
 - **Storage class**: an aspect's storage class is given by its AK's markers (spec/data-model.md §2), alike at every node. A part is bad when it is on:
   - an AK that is not an ephemeral aspect (`+` and `.`) in an ephemeral commit that is not relay-only;
   - an AK that is not an ephemeral signal (`+` and `~`) in a relay-only commit;

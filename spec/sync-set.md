@@ -13,17 +13,17 @@
 - No group names a node: groups name accounts, never their holders' nodes.
 
 ## 2. Sync set
-- **Closure** of a group G: G, the groups its `group.0` lists as subgroups, transitively, and the items of all of these (spec/data-model.md §8), each as a thing. A cycle adds an element, never a loop. Each node tags commits with the groups whose closures hold their things and tags again when a `group.0` changes.
+- **Closure** of a group G: G, the groups its `group.0` lists as subgroups, transitively, and the items of all of these (spec/data-model.md §8), each as a thing. A cycle adds an element, never a loop. The sync set follows every `group.0` change the node applies.
 - The closure is walked only through groups the node reads: a thing the node keeps unread is a **leaf** (its `group.0` is unread, so nothing it lists is in the closure through it).
 - **Sync set** of node N: for each thing T in G_N's closure,
   - T's home sync ID when N holds a read secret or a sync secret of T (read, or kept unread, spec/sync.md §3);
-  - nothing of T's own when T has no secrets of its own: a plain thing travels under the sync IDs of the groups holding it (spec/sync-judgement.md §1).
+  - nothing of T's own when T has no secrets of its own: a plain thing travels under the sync IDs of the groups holding it (spec/sync-judgement.md §1). Whether T has secrets of its own is spec/crypto.md §3's count from the role commits the node holds: a thing whose keyset commit it does not hold counts as plain until one arrives.
 - A thing of the closure that has secrets of its own and of which N holds neither a read nor a sync secret is **unsyncable**: nothing of it syncs at N, and the node reports it (`Unsyncable`, a diagnostic).
 - A received grant syncs nothing until the account lists its thing in some node's synced group closure (§4). A link's sync ID is followed as its redeemer redeems it (spec/sync-inbox.md §6).
-- **Cost**: adding a subtree under G_N costs the added subtree's index rows; a removal derives the set again by brute force (O(closure)). Both counted at n and 10n in tests.
+- **Cost**: a `group.0` change that adds a subtree costs work in proportion to that subtree; one that removes costs at most work in proportion to G_N's closure. Both counted at n and 10n in tests.
 
 ## 3. Leaving
-- S leaves N's sync set when its thing leaves G_N's closure, or N stops holding any secret of it. One rule ends syncing it: N stops syncing S once each of its own commits with an entry under S is **held elsewhere** (spec/sync-status.md §2), at once when none is (a node keeping S unread has none). While it waits, S stays a member of its shared sets as before.
+- S leaves N's sync set when its thing leaves G_N's closure, or N stops holding any secret of it. One rule ends syncing it: N stops syncing S once what it logged itself under S is elsewhere, at once when it logged nothing there: reading S, each of its own commits with an entry under S is **held elsewhere** (spec/sync-status.md §2); keeping S unread, each entry it logged itself under S (its deposits) is present, by blob ID, at a source. While it waits, S stays a member of its shared sets as before.
 - A node removed by another holds no secret of the thing (spec/permissions.md §3 Lost access), can open S nowhere and stops at once. A self-remover keeps the secrets until its self-removal is held elsewhere (spec/permissions.md §3), so the one rule covers it.
 - On stopping, N closes S on every connection, drops S from every record in that step (spec/sync-opens.md §3), and shreds S's entries in its store (keys and wraps erased); what S carried stays local data as the engine holds it.
 - Lowering from read to sync is no leaving: S becomes kept unread with its store (spec/sync.md §3).
@@ -41,4 +41,4 @@
 ## 5. Group source
 - A node MAY read and write a group through another node it is a client of (the group's source, spec/sync-transport.md §6).
 - A thing in a group sourced at another node goes there, whatever else holds it; the copy this node holds never answers.
-- A write on it is refused while a group carrying it (spec/sync-judgement.md §1) syncs here or is sourced at another node.
+- A write on it is refused while a group carrying it (spec/sync-judgement.md §1) syncs here or is sourced at a second other node (one other than the source the write goes to).

@@ -85,7 +85,7 @@ A node keeps one store of ciphertext for all the sync IDs it holds, read and kep
 
 Per sync ID:
 - **Path**: the steps from the genesis step to the head (§3): every step's role keys, step key, `prev` and signature; each step's claim set and entry boxes until it has been superseded for `ROLE_KEEP`, longer by policy. A node reading S holds the path its `sync.0` records; a node keeping S unread the path registered with it.
-- **Entries**: blob ID; wrap or, for chunk/tree/page and inbox blobs, a random filler; stamp or none; deposited flag; the peer that brought it (for an unstamped entry); optional pending deletion time.
+- **Entries**: blob ID; wrap or, for chunk/tree/page and inbox blobs, a random filler; stamp or none; deposited flag; optional pending deletion time. An unstamped entry's charge to the peer that brought it lives in that peer's record (Peer budget).
 - **Tombstones** (blob ID) of deleted entries, kept `TOMBSTONE_LIFETIME`; an ephemeral entry's `MAX_DRIFT`, in memory.
 - Its events go in the store's one node log (spec/sync-streams.md §3).
 
@@ -94,7 +94,7 @@ Across sync IDs:
 - Ephemeral entries and their tombstones are held in memory only and lost at a restart. Relay-only blobs are never held.
 - The code holding the store decrypts nothing and judges no open: every secret lives above it.
 - **Caps** (`caps^.0`, spec/data-model.md §9: `policy` and per-sync-ID `caps`, local policy) govern only the sync IDs the node keeps unread and count only their entries; a sync ID moving between read and kept unread is counted again. A reader's own sync IDs take nothing from the room others may use.
-- **Peer budget**: an unstamped entry that gives the node nothing held (it does not open, or opens to a commit not judged or known only for a part dropped as invalid) counts its size against the peer that brought it, within a bound per peer (local policy); past it such entries are not kept. The bringing peer is stored with the entry, so the charges survive a restart.
+- **Peer budget**: an unstamped entry that gives the node nothing held (it does not open, or opens to a commit not judged or known only for a part dropped as invalid) counts its size against the peer that brought it, within a bound per peer (local policy); past it such entries are not kept. The charges live in the bringing peer's record (spec/sync-opens.md §3), so they survive a restart. A peer with no record is charged per connection, and the entries it brought that still give nothing held are dropped when that connection closes, to be fetched again where present: dropping and fetching again beats a row keyed by a node key.
 
 ## 6. Operations at a store
 Each operation names a sync ID S. Writes are signed with the role keys of the receiving store's head; a Delete needs S open on the connection (spec/sync-opens.md §4).
