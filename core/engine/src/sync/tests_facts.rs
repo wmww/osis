@@ -201,3 +201,36 @@ fn a_blob_is_taken_only_while_its_parts_are_held_spec_sync_streams_4() {
     e.core.ix.commits.insert(c, m);
     assert!(!e.blob_taken(&b), "a part it carries missing");
 }
+
+// spec/sync-ids.md §1 (Prefix of a commit encryption: a node opening a blob refuses one whose
+// prefix expiry is not the commit's): a blob of an expiring commit framed again under a later
+// expiry, or none, is refused; framed again under the commit's own it opens.
+#[test]
+fn a_blob_under_another_expiry_is_refused_spec_sync_ids_1() {
+    let mut lp = LocalPeer::new_bare(1, 0, T0).unwrap();
+    let d = lp.peers[0].engine.create_account().unwrap().0.devices;
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, d);
+    e.commit(m).unwrap().unwrap();
+    let expires = osis_base::WallMs(e.now().0 + 60_000);
+    let mut m = Mutation::new();
+    m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
+    m.expires(t, &ak("x:a.0"), expires).unwrap();
+    let c = e.commit(m).unwrap().unwrap();
+    let body = e.body(&c).unwrap().expect("a body");
+    let rng = &mut osis_crypto::SeededRng::from_u64(7);
+    let sealed = e.seal(&body, osis_label::Class::Durable, &[], rng).unwrap().expect("sealed");
+    let (prefix, pt) = osis_label::open(&sealed.blob, &sealed.key).unwrap();
+    assert_eq!(prefix.expiry(), Some(expires));
+    let env = osis_commit::Envelope::decode(&pt).unwrap();
+    let groups = osis_commit::prefix_groups(&env.header, env.ais().iter().copied()).unwrap();
+    let mut framed = |at: Option<osis_base::WallMs>| {
+        let p = osis_label::Prefix::for_delete_keys(osis_label::Prefix::random_salt(rng), &env.header.blind, at, &groups).unwrap().with_class(osis_label::Class::Durable);
+        let (key, blob) = osis_label::frame(&p, &pt, rng).unwrap();
+        e.open_commit(&blob, &key)
+    };
+    assert!(framed(Some(osis_base::WallMs(expires.0 + 1))).is_err(), "a later expiry");
+    assert!(framed(None).is_err(), "no expiry");
+    assert!(framed(Some(expires)).is_ok(), "the commit's own");
+}

@@ -345,8 +345,8 @@ impl Engine {
         let env = Envelope::decode(&pt)?;
         let id = env.id();
         // linked header lists: resolved from held blobs when they are here, else the sections
-        // stay sealed (no aspect names a thing yet) and the prefix is checked once node-core
-        // resolved them (the pass, `check_linked_prefixes`)
+        // stay sealed (no aspect names a thing yet) and the prefix's commitment groups, which
+        // need the lists, go unchecked
         let header: Option<std::sync::Arc<osis_commit::Header>> = match self.core.ix.commits.get(&id) {
             Some(m) if !env.header.is_resolved() => m.header.decoded(),
             _ if env.header.is_resolved() => Some(std::sync::Arc::new(env.header.clone())),
@@ -362,6 +362,13 @@ impl Engine {
             }
         };
         let ais = env.ais();
+        // its expiry is the commit's (spec/sync-ids.md §1), from the header's own fields, checked
+        // whether or not its lists resolve here: a blob framed under another expiry is no
+        // encryption of the commit (it would outlive the commit, or expire with a smaller blob
+        // dropped beside it as a strict subset)
+        if prefix.expiry() != osis_commit::prefix_expiry(&env.header, &ais).map(WallMs) {
+            return Err(Error::BadInput("blob prefix expiry is not its commit's"));
+        }
         if let Some(h) = &header {
             let groups = osis_commit::prefix_groups(h, ais.iter().copied())?;
             if !prefix.agrees(osis_commit::prefix_expiry(h, &ais).map(WallMs), &h.blind, &groups, osis_label::Class::of_marker(h.ephemeral)) {
@@ -851,6 +858,7 @@ fn published_by_actor(core: &crate::engine::Core, labeled: &std::collections::BT
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use osis_schema::core_types as ct;
 
     // spec/crypto.md §3, spec/wire.md §4: a record chain of two plain things under the node: O,
     // whose first admin is the node, derives from the node's epochs and T, whose first admin is

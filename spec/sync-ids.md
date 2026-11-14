@@ -17,6 +17,7 @@
   - expiry = the commit's `expires`;
   - one commitment group per distinct delete-key set among those aspects, blinded by the new salt (spec/crypto.md §7; spec/wire.md §5);
   - a header-only blob (spec/commits.md §5) has neither.
+  - A node opening a blob of a commit refuses it unless its prefix expiry is the one this rule gives (from the header's `expires`, class and timestamp, and whether the blob carries sections), whatever else it can check of the prefix.
 - **Chunk reuse**: a chunk reused by a later delta keeps its blob and prefix, unless it must be re-encrypted.
   - It is re-encrypted when one of these holds:
     - its expiry is earlier than the new delta's;
