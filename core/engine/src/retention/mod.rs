@@ -1251,33 +1251,34 @@ impl Engine {
     }
 
     /// Whether commit `c` may be forgotten, ID included, once node-sync knows no entry of it
-    /// (spec/commits.md §5, Forgetting): nothing waiting, and either holding no part, known only
-    /// for a part dropped while invalid (`kept_invalid`, either class: spec/permissions.md §6),
-    /// holding only purged leftovers (`kept_purged`, either class: a fall then has nothing to fetch), or
-    /// a durable content commit or content snapshot every part of which dropped as covered, by
-    /// any writer's cover, no purge request (else each write another writer compacts, and each
-    /// snapshot under a later one, would leave a header for good: `growth::several_writers_grow_nothing`).
-    pub fn forgettable(&self, c: &CommitId) -> bool {
+    /// (spec/commits.md §5, Forgetting): only where forgetting changes no read, every part of
+    /// it covered, nothing waiting. A durable content commit or content snapshot every part of
+    /// which dropped as covered, by any writer's cover, no purge request (else each write another
+    /// writer compacts, and each snapshot under a later one, would leave a header for good:
+    /// `growth::several_writers_grow_nothing`); or one held only as purged leftovers
+    /// (`kept_purged`, either class) once each part not dropped as covered is covered here
+    /// (`part_covered`: a valid snapshot past the purge carries its kill). A part dropped while
+    /// invalid is never covered, so its commit stays.
+    pub fn forgettable(&mut self, c: &CommitId) -> Result<bool> {
         // counted: tests read how many commits forgetting looks at
         let _s = osis_base::costs::span("forgettable");
-        let core = &self.core;
-        let Some(m) = core.ix.commits.get(c) else { return false };
-        if core.ix.pending.contains_key(c) {
-            return false;
+        let Some(m) = self.core.ix.commits.get(c).cloned() else { return Ok(false) };
+        if self.core.ix.pending.contains_key(c) {
+            return Ok(false);
         }
-        if kept_invalid(m) || kept_purged(core, c, m) {
-            return true;
+        let covered = |ai: usize| m.dropped(ai).is_some_and(|d| d.why == DropFor::Cover);
+        if !m.view.memory && matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) && !m.view.purges && (0..m.view.aspects.len()).all(covered) {
+            return Ok(true);
         }
-        if m.view.memory {
-            return false;
+        if !kept_purged(&self.core, c, &m) {
+            return Ok(false);
         }
-        matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) && !m.view.purges && m.dropped_parts().count() == m.view.aspects.len() && m.dropped_parts().all(|(_, d)| d.why == DropFor::Cover)
-    }
-
-    /// Every commit `forgettable` holds true of (the first tick after an open: forgetting
-    /// is otherwise by events).
-    pub fn all_forgettable(&self) -> Vec<CommitId> {
-        self.core.ix.commits.keys().copied().filter(|c| self.forgettable(c)).collect()
+        for ai in 0..m.view.aspects.len() {
+            if !covered(ai) && self.part_covered(c, &m.header, ai)? != Some(true) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Forgets commits `cs`, IDs included: as if they had never applied (`apply::unindex_commit`).
@@ -2047,7 +2048,7 @@ mod tests {
         lp.sync_all().unwrap();
         let e = &mut lp.peers[2].engine;
         e.drop_body(&s1, &t, &reg).unwrap();
-        assert!(e.forgettable(&s1));
+        assert!(e.forgettable(&s1).unwrap());
         e.forget_commits(&[s1]).unwrap();
         // what S1 handed down is stored: the same after a restart
         lp.peers[2].restart(0).unwrap();
@@ -2136,5 +2137,47 @@ mod tests {
         let e = &mut lp.peers[0].engine;
         assert!(e.kept_purged(&w), "held value-less for the purge");
         assert_eq!(e.core.time.next(), Some(expires), "a wake at its expiry");
+    }
+
+    // spec/commits.md §5 (Forgetting: only where forgetting changes no read): a purged write
+    // held value-less still kills the write before it, so it stays until a valid snapshot past
+    // the purge carries the kill; then it and the write it killed go, and the read is unchanged.
+    #[test]
+    fn a_purged_leftover_goes_once_a_snapshot_carries_its_kill_spec_commits_5() {
+        let mut lp = LocalPeer::new(1, 956, WallMs(1_700_000_000_000)).unwrap();
+        let a = lp.peers[0].engine.me();
+        let x = Ak::new("x:m.0").unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        lp.peers[0].commit(m).unwrap();
+        let set = |lp: &mut LocalPeer, v: i64, purge: Option<CommitId>| {
+            lp.advance(10);
+            let mut m = Mutation::new();
+            if let Some(c) = purge {
+                m.purge_commit(c, t, x.clone());
+                m.set(t, &Ak::new("x:n.0").unwrap(), &Value::Int(v)).unwrap();
+            } else {
+                m.set(t, &x, &Value::Int(v)).unwrap();
+            }
+            lp.peers[0].commit(m).unwrap().unwrap()
+        };
+        let one = set(&mut lp, 1, None);
+        let two = set(&mut lp, 2, None);
+        set(&mut lp, 0, Some(two));
+        let e = &mut lp.peers[0].engine;
+        assert_eq!(e.get(&t, &x).unwrap(), None, "the purge leaves nothing read");
+        assert!(e.kept_purged(&two));
+        assert!(!e.forgettable(&two).unwrap(), "its kill carried by nothing else: kept");
+        lp.advance(10);
+        let e = &mut lp.peers[0].engine;
+        e.snapshot(&t, &x).unwrap().unwrap();
+        assert!(e.forgettable(&two).unwrap(), "a valid snapshot past the purge carries the kill");
+        e.forget_commits(&[two]).unwrap();
+        assert_eq!(e.get(&t, &x).unwrap(), None, "read unchanged");
+        assert_eq!(e.covered_drops(&one).unwrap(), vec![(t, x.clone())], "the killed write is covered too");
+        e.drop_body(&one, &t, &x).unwrap();
+        assert!(e.forgettable(&one).unwrap());
+        e.forget_commits(&[one]).unwrap();
+        assert_eq!(e.get(&t, &x).unwrap(), None);
     }
 }

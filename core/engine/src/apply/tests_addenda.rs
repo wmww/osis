@@ -402,11 +402,11 @@ fn a_bodiless_addendum_is_judged_by_its_header_spec_perm_5_2() {
     assert_eq!(d1.first_diff(&lp.peers[3].engine.index_digest()), None, "rebuilt with the body");
 }
 
-// spec/commits.md §5 (Forgetting), spec/permissions.md §5.2 (Addenda): an addendum dropped while
-// invalid lists nothing, so forgetting it leaves every judgment as it was (its thing is not
-// stale after the transaction).
+// spec/commits.md §5 (Forgetting: only where forgetting changes no read, every part covered),
+// spec/permissions.md §5.2 (Addenda): an addendum dropped while invalid lists nothing and is
+// never covered, so it is kept, never forgettable, and judges nothing.
 #[test]
-fn forgetting_an_invalid_addendum_judges_nothing_spec_perm_5_2() {
+fn an_invalid_addendum_is_kept_spec_commits_5() {
     let (mut lp, t) = world(3, &[Role::Write, Role::Read]);
     let e = write(&mut lp, 1, t, "x:e.0", 7);
     lp.sync(1, 2).unwrap();
@@ -415,11 +415,7 @@ fn forgetting_an_invalid_addendum_judges_nothing_spec_perm_5_2() {
     let forged = forge_addendum(&mut lp, 2, t, r, &[e]);
     lp.sync_all().unwrap();
     let eng = &mut lp.peers[0].engine;
-    assert!(eng.kept_invalid(&forged) && eng.forgettable(&forged), "dropped while invalid");
-    eng.forget_commits(&[forged]).unwrap();
-    assert!(!eng.core.ix.commits.contains_key(&forged));
-    assert!(!eng.core.stale());
-    assert!(addenda(&lp, 0, t).is_empty());
+    assert!(eng.kept_invalid(&forged) && !eng.forgettable(&forged).unwrap(), "dropped while invalid, kept");
     assert!(!valid(&lp, 0, &e, t, "x:e.0"));
     assert_eq!(reads(&mut lp, 0, t, "x:e.0"), None);
 }
@@ -729,7 +725,7 @@ fn a_removed_writers_later_snapshot_drops_nothing_spec_commits_5() {
     assert!(lp.peers[2].engine.core.ix.commits.get(&snap).is_some_and(|m| m.aspect(&t, &ak("x:e.0")).is_some_and(|ai| !m.valid_at(ai))), "the snapshot is invalid at peer 2");
     assert!(valid(&lp, 2, &e, t, "x:e.0"));
     assert!(lp.peers[2].engine.covered_drops(&e).unwrap().is_empty(), "an invalid snapshot drops nothing");
-    assert!(!lp.peers[2].engine.forgettable(&e));
+    assert!(!lp.peers[2].engine.forgettable(&e).unwrap());
     // control: peer 0's snapshot of the same state covers it
     let ours = lp.peers[0].engine.snapshot(&t, &ak("x:e.0")).unwrap().unwrap();
     lp.advance(1000);

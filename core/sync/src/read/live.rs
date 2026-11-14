@@ -557,7 +557,10 @@ impl Ground for Live<'_, '_> {
         Ok(self.cx.engine.freed_done(&[(*t, *b)])?)
     }
     fn forgettable(&mut self, c: &CommitId) -> Result<Option<bool>> {
-        Ok(self.cx.engine.holds_commit(c).then(|| self.cx.engine.forgettable(c)))
+        if !self.cx.engine.holds_commit(c) {
+            return Ok(None);
+        }
+        Ok(Some(self.cx.engine.forgettable(c)?))
     }
     fn known_under(&mut self, c: &CommitId) -> Result<BTreeSet<SyncId>> {
         let mut out = BTreeSet::new();

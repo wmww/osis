@@ -1084,12 +1084,12 @@ mod tests {
     }
 
     // spec/crdt.md §4.6 (exactly the writes of invalid deltas are removed), spec/commits.md §5
-    // Forgetting: a commit forgotten for a part dropped as invalid stands for nothing an undo may
-    // have replaced, as at a node that never received it. A puts `k` keeping history; R, a reader
-    // of the thing, writes `x` past its rules; A drops it invalid, forgets it, and still
+    // Forgetting: a commit kept for a part dropped as invalid (never covered, so never
+    // forgotten) stands for nothing an undo may have replaced. A puts `k` keeping history; R, a
+    // reader of the thing, writes `x` past its rules; A drops it invalid, keeps it, and still
     // undoes its removal of `k`.
     #[test]
-    fn forgotten_invalid_commit_blocks_no_undo_spec_crdt_4_6() {
+    fn invalid_commit_blocks_no_undo_spec_crdt_4_6() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let a = lp.peers[0].engine.me();
@@ -1113,8 +1113,7 @@ mod tests {
         let bytes = lp.peers[1].engine.take_forged().unwrap();
         lp.peers[0].receive(&bytes, Vec::new()).unwrap();
         let e = &mut lp.peers[0].engine;
-        assert!(e.forgettable(&bad), "R's commit kept for an invalid part only");
-        e.forget_commits(&[bad]).unwrap();
+        assert!(e.kept_invalid(&bad) && !e.forgettable(&bad).unwrap(), "R's commit kept for an invalid part only");
         remove_k(&mut lp, t, &x, keep).unwrap().unwrap();
     }
 

@@ -102,7 +102,7 @@ fn forgotten_survives_restart_spec_commits_5() {
     replaces(&mut lp, t, &a, 1..3);
     let e = &mut lp.peers[0].engine;
     e.drop_body(&c, &t, &a).unwrap();
-    assert!(e.forgettable(&c));
+    assert!(e.forgettable(&c).unwrap());
     e.forget_commits(&[c]).unwrap();
     let before = e.core.ix.forgotten.get(&(t, a.clone())).copied();
     assert!(before.is_some());
