@@ -2238,7 +2238,7 @@ fn a_destroyed_things_sync_id_stays_read_until_forgotten_spec_sync_judgement_5()
     assert!(!e.sync_set().unwrap().ids.contains_key(&s));
 }
 
-// spec/commits.md §4 (a part that does not hash to its header entry is no part of the commit),
+// spec/commits.md §4 (Judged alone: bytes that do not match the header's delta hash are not that delta),
 // spec/sync-judgement.md §3 (Own store: a reader keeps a pulled entry of a held commit as it came
 // and passes it on): a blob of a commit held here whose part does not hash to the header opens as
 // bad, so no reader keeps, serves or stamps it as an encryption of the commit.
