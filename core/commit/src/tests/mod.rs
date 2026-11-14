@@ -30,7 +30,6 @@ pub(crate) const SESSION: Form = Form::Session(NONCE);
 
 pub(crate) fn sample_header() -> Header {
     Header {
-        version: 1,
         author: t(1),
         actor: t(2),
         kind: Kind::Content,
@@ -160,9 +159,11 @@ fn version_parks() {
     let e = Header::decode(&osis_base::encode(&v)).unwrap_err();
     assert!(matches!(e, Error::UnknownVersion(2)));
     assert_eq!(e.class(), ErrorClass::Parked);
-    let mut h = sample_header();
-    h.version = 0;
-    assert!(matches!(Header::decode(&h.encode()), Err(Error::Malformed(_))));
+    let mut v = header_value(&sample_header());
+    if let Value::List(items) = &mut v {
+        items[0] = Value::Int(0);
+    }
+    assert!(matches!(Header::decode(&osis_base::encode(&v)), Err(Error::Malformed(_))));
 }
 
 // spec/wire.md §1, §4: wrong arity, wrong types and out-of-range items are rejected.

@@ -150,7 +150,7 @@ fn check_fragment(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
 /// A keyed map removal or tombstone (a keyed entry record with a reset) outside the
 /// role-class aspects is malformed: an app map's key must not outlive its entry
 /// (spec/crdt.md §5.6).
-pub fn check_entry_keys(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
+fn check_entry_keys(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
     if !osis_schema::core_types::is_role_class(ak) && f.keyed_resets() {
         return Err(Error::Malformed("keyed map removal outside a role-class aspect"));
     }
@@ -161,7 +161,7 @@ pub fn check_entry_keys(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> 
 /// enum cases; a link only where the type takes one, spec/data-model.md §6): every node judges it
 /// alike from the delta and its build's core schema, so a reader of the aspect never meets a
 /// value its type does not take (one bad element would make a whole `group.0` unreadable).
-pub fn check_types(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
+fn check_types(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
     match osis_schema::core_schema().view(ak) {
         Some(v) if !f.fits(&v) => Err(Error::Malformed("a value the core type does not take")),
         _ => Ok(()),

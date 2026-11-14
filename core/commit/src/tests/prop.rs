@@ -42,7 +42,7 @@ prop_compose! {
             l.set(f, x);
         }
         let mut h = Header {
-            version: 1, author, actor, kind: Kind::from_id(kind).unwrap(), ts: ts(wall).max(ts(0)),
+            author, actor, kind: Kind::from_id(kind).unwrap(), ts: ts(wall).max(ts(0)),
             form: if form { Form::Commit } else { SESSION },
             expires,
             aspects,

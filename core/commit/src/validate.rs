@@ -4,7 +4,7 @@ use crate::cbor::strictly_ascending;
 use crate::header::{EphClass, FOREVER, Form, Header, Kind, Links, ListField, PurgeItem, aspect_order, purge_bytes};
 use crate::retention::{CREATED, EPHEMERAL_RETENTION, RELEASED, RETENTION, delete_levels, fixed_retention, release_expires};
 use crate::Error;
-use osis_base::format::{DELETE_AUTHOR, FORMAT_VERSION};
+use osis_base::format::DELETE_AUTHOR;
 use osis_schema::PurgeBy;
 use osis_schema::core_types::is_role_class;
 
@@ -15,9 +15,6 @@ impl Header {
     pub fn validate(&self) -> Result<(), Error> {
         if !self.is_resolved() {
             return Err(Error::Missing);
-        }
-        if self.version != FORMAT_VERSION {
-            return Err(Error::Malformed("format version"));
         }
         let ord = |ok: bool, what: &'static str| if ok { Ok(()) } else { Err(Error::Malformed(what)) };
         ord(!self.aspects.is_empty(), "no aspects")?;
@@ -163,8 +160,9 @@ impl Header {
             if self.aspects.iter().any(|a| a.retention != EPHEMERAL_RETENTION) {
                 return Err(Error::Invalid("ephemeral commit with a retention other than writer"));
             }
-            if c == EphClass::Relay && (self.expires.is_some() || self.undoes.is_some()) {
-                return Err(Error::Invalid("relay-only commit with an expiry or an undo"));
+            // relay-only: snapshot deltas of signals, never stored, so nothing to expire or undo
+            if c == EphClass::Relay && (kind != Kind::ContentSnapshot || self.expires.is_some() || self.undoes.is_some()) {
+                return Err(Error::Invalid("relay-only commit not a content snapshot, or with an expiry or an undo"));
             }
         }
         Ok(())

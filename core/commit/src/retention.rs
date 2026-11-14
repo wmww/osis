@@ -29,13 +29,10 @@ pub const PURGE: &str = "purge.0";
 /// The AK of a release request's delta on each thing it releases (spec/commits.md §5 Destruction).
 pub const RELEASED: &str = "released.0";
 
-/// The AKs of a destroying request's delta on its thing, what tells another node the thing was destroyed
-/// (spec/commits.md §5 Destruction): a purge's `purge.0`, a release's `released.0`.
-pub const DESTROYING_REQUESTS: [&str; 2] = [PURGE, RELEASED];
-
-/// Whether a delta of `ak` is a destroying request's (`DESTROYING_REQUESTS`).
+/// Whether a delta of `ak` is a destroying request's, what tells another node its thing was
+/// destroyed (spec/commits.md §5 Destruction): a purge's `purge.0`, a release's `released.0`.
 pub fn destroying_request(ak: &str) -> bool {
-    DESTROYING_REQUESTS.contains(&ak)
+    ak == PURGE || ak == RELEASED
 }
 
 /// The expiry a commit carrying `released.0` deltas has: `wall_ms(ts) + ROLE_KEEP`
@@ -193,15 +190,10 @@ impl Timeline {
         )
     }
 
-    /// Whether no setting promises anything (every body leaves history when replaced).
-    pub fn is_empty(&self) -> bool {
-        self.0.iter().all(|x| x.1 == Opt::None)
-    }
-
     /// The moment a body replaced at wall ms `r` leaves history (spec/commits.md §5 The setting): the
     /// first t >= r at which the setting in force (before the first: none) does not keep it;
     /// `NEVER` if none ends it.
-    pub fn out(&self, r: u64) -> u64 {
+    fn out(&self, r: u64) -> u64 {
         let mut best = NEVER;
         let mut from = 0;
         let mut opt = Opt::None;

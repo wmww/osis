@@ -6,7 +6,7 @@ use crate::groups::{COMMIT_PAST_BLOB, blob_bound};
 use crate::keys::{Prefix, Secrets, delete_keys};
 use crate::lists::{BlobSink, write_list};
 use crate::Error;
-use osis_base::format::{CHUNK_THRESHOLD, DELETE_AUTHOR, FORMAT_VERSION, MAX_BLOB, MAX_LIST_BYTES};
+use osis_base::format::{CHUNK_THRESHOLD, DELETE_AUTHOR, MAX_BLOB, MAX_LIST_BYTES};
 use osis_base::{Ak, BlobId, CommitId, Tid, Ts, Value};
 use osis_crypto::{CryptoRngCore, Domain, Secret32, SigningSecret, delta_hash, seal_inner};
 use osis_schema::Retention;
@@ -142,7 +142,6 @@ impl CommitBuilder {
         purge.sort_by_cached_key(purge_bytes);
 
         let mut header = Header {
-            version: FORMAT_VERSION,
             author: self.author,
             actor: self.actor,
             kind,

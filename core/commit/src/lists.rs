@@ -84,7 +84,7 @@ impl LinkSource for ListSource<'_> {
 
 /// Writes the chunk tree of a header list's bytes and returns its root link (empty input: one
 /// empty chunk). `prefix` gives each blob's prefix inputs (a fresh salt each call).
-pub fn write_list(bytes: &[u8], dedup: &Secret32, sink: &mut dyn BlobSink, prefix: &mut dyn FnMut() -> Prefix) -> Result<Link, Error> {
+pub(crate) fn write_list(bytes: &[u8], dedup: &Secret32, sink: &mut dyn BlobSink, prefix: &mut dyn FnMut() -> Prefix) -> Result<Link, Error> {
     tree::write_tree(&mut ListSink { dedup, sink, prefix }, ChunkParams::FORMAT, bytes)
 }
 

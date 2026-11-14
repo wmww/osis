@@ -49,7 +49,7 @@ pub const COMMIT_PAST_BLOB: &str = "the commit does not fit a blob";
 /// An upper bound on the framed size of `c` as one blob (spec/sync-judgement.md §1: no size split):
 /// a section per thing with the deepest derivation chain (its list and ciphertext heads at their
 /// widest), a commitment group per distinct key set, an index per aspect, every delta's bytes.
-pub fn blob_bound(c: &CommitBlob) -> usize {
+pub(crate) fn blob_bound(c: &CommitBlob) -> usize {
     let h = &c.header;
     let things = h.aspects.iter().map(|a| a.tid).collect::<std::collections::BTreeSet<_>>().len().max(1);
     let groups = prefix_groups(h, 0..h.aspects.len()).map_or(h.aspects.len(), |g| g.len());
@@ -61,10 +61,6 @@ pub fn blob_bound(c: &CommitBlob) -> usize {
     osis_crypto::blob_len(prefix, fixed.saturating_add(parts).saturating_add(things.saturating_mul(section)).saturating_add(heads))
 }
 
-/// Whether part set `a` is a strict subset of `b` (aspect indices, both sorted).
-pub fn strict_subset(a: &[usize], b: &[usize]) -> bool {
-    a.len() < b.len() && a.iter().all(|x| b.binary_search(x).is_ok())
-}
 
 /// Purge rewrite: the same header and signature without the deltas `drop` names (header-only
 /// when none remain). Its prefix groups are those of its remaining aspects (`prefix_groups`).

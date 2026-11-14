@@ -611,7 +611,6 @@ fn signers_elsewhere(m: &Meta) -> Vec<Tid> {
 
 fn fallback_header(v: &View) -> Header {
     Header {
-        version: osis_base::format::FORMAT_VERSION,
         author: v.author,
         actor: v.actor,
         kind: v.kind,

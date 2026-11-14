@@ -2,9 +2,10 @@
 //! [creation+]]`, raw creation records a dependent's chain needs. A record proves itself by its
 //! hash (its tid), so a record blob carries no header, signature or commitments.
 
-use crate::cbor::as_list;
+use crate::cbor::{item, strictly_ascending};
 use crate::header::LIMITS;
 use crate::Error;
+use osis_base::cbor::Item;
 use osis_base::{CreationRecord, Value};
 
 const RECORDS_TAG: &str = "records";
@@ -17,17 +18,16 @@ pub fn encode_record_blob(records: &[CreationRecord]) -> Vec<u8> {
     osis_base::encode(&Value::List(vec![Value::Str(RECORDS_TAG.into()), Value::List(rs.iter().map(|r| r.to_value()).collect())]))
 }
 
-/// Reads a record blob's plaintext: canonical, at least one record, each a valid creation record,
+/// Reads a record blob's plaintext: at least one record, each a valid creation record,
 /// ascending by tid and distinct.
 pub fn decode_record_blob(plain: &[u8]) -> Result<Vec<CreationRecord>, Error> {
-    let v = osis_base::decode(plain, &LIMITS)?;
-    let [tag, records] = as_list(&v)? else { return Err(Error::Malformed("record blob arity")) };
-    if *tag != Value::Str(RECORDS_TAG.into()) {
+    let Some([tag, records]) = item::list(Item::parse(plain, &LIMITS)?)?.tuple() else { return Err(Error::Malformed("record blob arity")) };
+    if tag.as_str() != Some(RECORDS_TAG) {
         return Err(Error::Malformed("record blob tag"));
     }
-    let records = as_list(records)?.iter().map(|r| CreationRecord::from_value(r).ok_or(Error::Malformed("record blob record"))).collect::<Result<Vec<_>, _>>()?;
-    if records.is_empty() || !records.windows(2).all(|w| matches!(w, [x, y] if x.tid() < y.tid())) || osis_base::encode(&v) != plain {
-        return Err(Error::Malformed("record blob empty, unsorted or not canonical"));
+    let records = item::list(records)?.map(|r| CreationRecord::from_value(&r.to_value()?).ok_or(Error::Malformed("record blob record"))).collect::<Result<Vec<_>, _>>()?;
+    if records.is_empty() || !strictly_ascending(&records, CreationRecord::tid) {
+        return Err(Error::Malformed("record blob empty or unsorted"));
     }
     Ok(records)
 }

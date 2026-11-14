@@ -178,9 +178,11 @@ pub fn headers() -> VecFile {
     cases.push(case("header-only purge rewrite", "spec/wire.md §4; spec/commits.md §5").with("blob", hex(&purged.encode())).with("commit-id", hex(&c.id().0)));
 
     let h = &c.header;
-    let mut v = h.clone();
-    v.version = 2;
-    let bytes = v.encode();
+    let mut v = osis_base::decode(&h.encode(), &osis_base::Limits::DEFAULT).unwrap();
+    if let Value::List(items) = &mut v {
+        items[0] = Value::Int(2);
+    }
+    let bytes = osis_base::encode(&v);
     assert!(matches!(Header::decode(&bytes), Err(Error::UnknownVersion(2))));
     cases.push(case("unknown format version parks", "spec/versioning.md §2").with("header", hex(&bytes)).with("reject", "parked-version"));
     let mut x = h.clone();

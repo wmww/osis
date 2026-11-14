@@ -210,7 +210,8 @@ fn retention_rules() {
 }
 
 // spec/commits.md §2, spec/wire.md §4: an ephemeral commit's retention is `writer`, in session
-// form and as a commit-form snapshot alike; it may undo a commit. A relay-only commit undoes nothing.
+// form and as a commit-form snapshot alike; it may undo a commit. A relay-only commit is a content
+// snapshot and undoes nothing.
 #[test]
 fn ephemeral_retention_writer_spec_commits_2() {
     let mut session = sample_header();
@@ -239,6 +240,10 @@ fn ephemeral_retention_writer_spec_commits_2() {
     relay.validate().unwrap();
     let mut x = relay.clone();
     x.undoes = Some(CommitId([4; 32]));
+    assert!(invalid(&x).to_string().contains("relay-only"), "{}", invalid(&x));
+    let mut x = relay.clone();
+    x.kind = Kind::Content;
+    (x.aspects[0].lo, x.aspects[0].hi) = (1, 2);
     assert!(invalid(&x).to_string().contains("relay-only"), "{}", invalid(&x));
 }
 

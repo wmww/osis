@@ -70,7 +70,7 @@ pub fn parse_node(plaintext: &[u8]) -> Result<(u64, Vec<Kid>), Error> {
 }
 
 /// Plaintext length under a node (lengths parsed by `parse_node` sum within u64).
-pub fn kids_len(kids: &[Kid]) -> u64 {
+fn kids_len(kids: &[Kid]) -> u64 {
     kids.iter().fold(0u64, |a, (_, n)| a.saturating_add(*n))
 }
 
@@ -146,11 +146,6 @@ impl TreeWriter {
         open.closed += 1;
         let link = sink.node(level, &kids)?;
         self.push(sink, li + 1, (link, kids_len(&kids)))
-    }
-
-    /// Bytes held: the open chunk and the children of the open nodes.
-    pub fn buffered(&self) -> usize {
-        self.buf.len() + self.levels.iter().map(|l| l.kids.len()).sum::<usize>() * std::mem::size_of::<Kid>()
     }
 
     /// Closes every open node and returns the root link (always an interior node; an empty value

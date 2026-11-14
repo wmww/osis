@@ -242,8 +242,6 @@ fn sections_per_reader_actor() {
     assert_eq!(prefix_groups(&c.header, [1, 0]).unwrap(), groups);
     assert!(prefix_groups(&c.header, []).unwrap().is_empty());
     assert!(prefix_groups(&c.header, [6]).is_err());
-    assert!(strict_subset(&[], &[0]));
-    assert!(!strict_subset(&[0], &[0]));
 }
 
 // spec/wire.md §4: sections sorted by first aspect, no aspect twice, a wrap of its length.

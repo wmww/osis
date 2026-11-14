@@ -277,7 +277,6 @@ impl Links {
 /// [`Header::resolve`](crate::Header::resolve) fills it; its link stays in `links`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Header {
-    pub version: u64,
     pub author: Tid,
     pub actor: Tid,
     pub kind: Kind,
@@ -478,7 +477,7 @@ impl Header {
 
     pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
         put_array(out, 16);
-        put_uint(out, self.version);
+        put_uint(out, FORMAT_VERSION);
         put_tid_bytes(out, &self.author);
         put_tid_bytes(out, &self.actor);
         put_uint(out, self.kind.id());
@@ -621,7 +620,7 @@ fn read_purge(r: &mut Reader<'_>) -> Result<PurgeItem, Error> {
 }
 
 /// The value of a linked frontier's bytes: exactly `{0: set<32-byte ID>}` (spec/wire.md §4).
-pub fn frontier_value(bytes: &[u8]) -> Result<Value, Error> {
+fn frontier_value(bytes: &[u8]) -> Result<Value, Error> {
     let mut r = Reader::new(bytes);
     if r.map()? != 1 || r.uint()? != 0 {
         return Err(Error::Malformed("linked frontier"));
@@ -691,7 +690,6 @@ impl Header {
             return Err(Error::Malformed("header arity"));
         };
         let mut h = Header {
-            version,
             author: item::tid(author)?,
             actor: item::tid(actor)?,
             kind: Kind::from_id(item::uint(kind)?).ok_or(Error::Malformed("kind"))?,
