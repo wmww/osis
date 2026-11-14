@@ -724,7 +724,7 @@ impl Engine {
     }
 
     /// The account's sync record of `thing` keeps closed sync ID `s` no more (spec/sync.md §3,
-    /// spec/sync-judgement.md §6 Closes), its entry going whole once it keeps none. Returns
+    /// spec/sync-judgement.md §6 Closes), its recorded secrets too once it keeps none. Returns
     /// whether it wrote.
     pub fn close_kept(&mut self, thing: &Tid, s: &SyncId) -> Result<bool> {
         self.close_kept_now(thing, s)

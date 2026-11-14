@@ -2370,3 +2370,31 @@ fn repro_a_forgers_earlier_accept_takes_no_sync_id_from_a_later_thing_spec_sync_
     assert!(e.sync_record(&t).unwrap().is_some_and(|r| r.sync_ids.contains(&s)), "t keeps its own sync ID");
     assert_eq!(e.sync_set().unwrap().ids.get(&s), Some(&(t, Holding::Unread)), "s syncs t");
 }
+
+// spec/sync.md §3 (Sync record: a closed sync ID leaves its thing's entry; entries otherwise only
+// added), spec/crdt.md §5.6 (a map removal hides every nested write into the entry it removed):
+// one node of an account closing the only sync ID of a thing's entry while another node of it
+// concurrently keeps a second sync ID of the thing leaves that keep standing at both.
+#[test]
+fn a_close_hides_no_concurrent_keep_of_the_thing_spec_sync_3() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::Codec;
+    let (mut lp, d) = crate::flows::account_two_nodes();
+    let t = lp.peers[0].engine.tid();
+    let (s1, s2) = (osis_base::SyncId([1; 16]), osis_base::SyncId([2; 16]));
+    let keep = |lp: &mut LocalPeer, i: usize, ids: &[osis_base::SyncId]| {
+        let k = ct::Kept { ids: ids.iter().copied().collect(), secrets: Default::default() };
+        let mut m = Mutation::new();
+        m.op(d, &ct::KEPT, PathOp { path: vec![PathSeg::Key(osis_base::Value::Tid(t))], op: Op::Set(k.to_value()) }).unwrap();
+        lp.peers[i].engine.commit(m).unwrap().unwrap();
+    };
+    keep(&mut lp, 0, &[s1]);
+    spread(&mut lp);
+    assert!(lp.peers[0].engine.close_kept(&t, &s1).unwrap());
+    keep(&mut lp, 1, &[s1, s2]);
+    spread(&mut lp);
+    for i in 0..2 {
+        let r = lp.peers[i].engine.sync_record(&t).unwrap();
+        assert_eq!(r.map(|r| r.sync_ids.clone()), Some(vec![s2]), "node {i}: the concurrent keep stands, the closed one goes");
+    }
+}

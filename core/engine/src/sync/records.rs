@@ -267,24 +267,21 @@ pub(crate) fn keep_in(tx: &mut Tx<'_>, t: &Tid, ids: &[SyncId], secrets: impl In
     Ok(true)
 }
 
-/// Removes `s` from the account's sync record of `t` (a closed sync ID, spec/sync.md §3): the
-/// entry goes whole once it keeps no sync ID. Returns whether it wrote.
+/// Removes `s` from the account's sync record of `t` (a closed sync ID, spec/sync.md §3), and its
+/// recorded secrets once it keeps no sync ID: a write of what it removes into the entry, never a
+/// removal of the entry, which would hide every concurrent keep into it (spec/crdt.md §5.6).
+/// Returns whether it wrote.
 pub(crate) fn unkeep_in(tx: &mut Tx<'_>, t: &Tid, s: &SyncId) -> Result<bool> {
     let Some((_, d)) = tx.core.account_devices() else { return Ok(false) };
     let Some(mut k) = tx.core.ix.sync_kept.get(t).map(|k| (**k).clone()) else { return Ok(false) };
     if !k.ids.remove(s) {
         return Ok(false);
     }
-    let op = match k.ids.is_empty() {
-        true => Op::Remove(Value::Tid(*t)),
-        false => Op::Set(k.to_value()),
-    };
-    let path = match op {
-        Op::Remove(_) => Vec::new(),
-        _ => vec![PathSeg::Key(Value::Tid(*t))],
-    };
+    if k.ids.is_empty() {
+        k.secrets.clear();
+    }
     let mut m = crate::Mutation::new();
-    m.op(d, &ct::KEPT, PathOp { path, op })?;
+    m.op(d, &ct::KEPT, PathOp { path: vec![PathSeg::Key(Value::Tid(*t))], op: Op::Set(k.to_value()) })?;
     crate::engine::write::commit_in(tx, m)?;
     Ok(true)
 }
