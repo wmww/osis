@@ -6,4 +6,3 @@
 order::held_set_decides_plain OSIS_ORDER_START=539131766525 issues/order-required-floor-plain.md held_set_decides: \w+ seeds ran, but not
 order::held_set_decides_plain OSIS_ORDER_START=632680797673 issues/order-required-floor-plain.md held_set_decides: none of \d+ Undo steps made a commit
 runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issues/paired-peer-runtime-flake.md Unsynced \{ groups
-ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6 OSIS_EPH_START=8 issues/eph-reverts-fallen-cover-replace.md failed: seed 8: Tid\([\w-]+\) listed
