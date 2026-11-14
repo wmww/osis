@@ -3,7 +3,7 @@
 //! `redeem` keeps the link durably (store rows `I/r/`, shredded: they hold the seed) and follows
 //! it in the engine for this start (`Engine::follow_link`: L held, K's sync ID read in the sync
 //! set), so the node proves L, opens K by L's static entry (opens) and its boxes open; the sharer's dialable key and relays are dial hints. Once the join can be written
-//! (`Engine::redeemable`: K's roster lists L and K's keyset is held) it is written (`Engine::redeem`), once; the link is kept, and L held at every start,
+//! (`Engine::redeemable`: the target's roster lists K, K's lists L, K's keyset is held) it is written (`Engine::redeem`), once; the link is kept, and L held at every start,
 //! until the join is held at a source (a redeemer proves L until its join is there); then it is
 //! unfollowed and L forgotten. So a redeem
 //! dropped or a restart before the join reached the sharer's node still completes

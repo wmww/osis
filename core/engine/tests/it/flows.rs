@@ -1043,6 +1043,24 @@ fn redeem_with_the_clock_set_back_spec_crdt_2() {
     assert_eq!(lp.peers[0].engine.roster(&link.k).get(&ps1).map(|e| e.role), Some(Role::Read));
 }
 
+// spec/permissions.md §7 (Redeem step 3: the target is the link text's word, unsigned): a
+// link naming a thing K holds no grant on is not redeemable and its redeem refuses; the true
+// target redeems.
+#[test]
+fn a_link_naming_another_target_grants_nothing_spec_permissions_7() {
+    let (mut lp, ps) = people(2);
+    let (pa, ps1) = (ps[0], ps[1]);
+    let d = thing_of(&mut lp, 0, pa);
+    let other = thing_of(&mut lp, 0, pa);
+    let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
+    sync(&mut lp, 0, 1);
+    let forged = osis_label::ShareLink { target: other, ..link.clone() };
+    assert!(!lp.peers[1].engine.redeemable(&forged));
+    assert!(lp.peers[1].engine.redeem(&forged, &ps1, true).is_err());
+    assert!(lp.peers[1].engine.redeemable(&link));
+    lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
+}
+
 // spec/permissions.md §7: a stranger redeems a read link: signing as L it invite-grants its
 // own actor to K (deposited: read), single use removes L's edge in the same commit, so a
 // second redeemer finds no link; the redeemer reads the target through K.

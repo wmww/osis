@@ -353,25 +353,21 @@ pub fn hand_all(w: &mut World) {
 }
 
 /// The reference: a single engine handed every commit any node wrote, again while one
-/// applies, each as whole as any node holds it now. Every commit any node holds now is handed
-/// too (what sync wrote).
+/// applies. Every commit any node holds now is handed too (what sync wrote), each node's copy of
+/// it: `harvest` keeps one copy per commit, perhaps a certificate copy (its header and some
+/// parts), and the engine joins the parts a later copy carries (spec/commits.md §4).
 pub fn reference(w: &mut World) -> Peer {
     for i in 0..w.len() {
         harvest(w, i);
     }
     let mut r = Peer::new_bare(0x005e_ed0f_5eed, w.now()).expect("reference");
-    // a node holding a commit only as a certificate copy (its header and some parts) packages
-    // that much, and the engine takes a commit once: each goes as the most whole package any
-    // node holds of it
-    let mut handed = w.history.handed.clone();
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
-    for pk in handed.iter_mut() {
+    let mut handed = Vec::new();
+    for pk in w.history.handed.clone() {
+        let id = pk.id;
+        handed.push(pk);
         for &i in &on {
-            if let Some(o) = w.engine(i).package(&pk.id).ok().flatten()
-                && o.bytes.len() > pk.bytes.len()
-            {
-                *pk = o;
-            }
+            handed.extend(w.engine(i).package(&id).ok().flatten());
         }
     }
     for _ in 0..=handed.len() {
