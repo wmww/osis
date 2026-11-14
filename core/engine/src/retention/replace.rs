@@ -231,8 +231,9 @@ fn end_wait(core: &mut Core, t: &Tid) {
 /// opened epochs, own keys or delete-key hints changed (the journals of what it changed: O(what
 /// changed), nothing when nothing waits). Each that may be written on now leaves the waits with
 /// its purge-on-replace aspects due (`settle_none`) and the trigger's owed weighings woken
-/// (`compact::Trigger::wake`), so whether a writer covers is a function of the held set, whatever
-/// came last (spec/requirements.md Purge on replace).
+/// (`compact::Trigger::wake`) and its owed re-snapshots due (`Indexes::resnapshots_owed`), so
+/// whether a writer covers is a function of the held set, whatever came last
+/// (spec/requirements.md Purge on replace).
 pub(crate) fn wake_covers(tx: &mut Tx<'_>) -> Result<()> {
     // an inbox hint is taken up once its commit applies (`Core::promote_hints`)
     tx.core.promote_hints();
@@ -248,6 +249,11 @@ pub(crate) fn wake_covers(tx: &mut Tx<'_>) -> Result<()> {
     for t in woken {
         let may = may_write_on(tx, &t)?;
         end_wait(tx.core, &t);
+        // its owed re-snapshots are judged again (`Engine::purge_resnapshots`)
+        if may != MayWrite::Later {
+            let owed: Vec<Ak> = tx.core.ix.resnapshots_owed.get(&t).into_iter().flat_map(|m| m.keys().cloned()).collect();
+            tx.core.resnapshots_due.extend(owed.into_iter().map(|a| (t, a)));
+        }
         match may {
             // the chain may have grown (a record arrived): kept under all of it
             MayWrite::Later => await_cover(tx.core, &t),

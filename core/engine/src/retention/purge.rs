@@ -560,7 +560,7 @@ struct Carried {
 /// its copies' writes are held value-less (`Owned::Dots`, the only such entries on a list: a held
 /// delta's writes go on by its own range). Judged whole again on each call, so one no request
 /// takes any more leaves the list, its carriers kept as their leftovers as on any fall
-/// (`rejudge_purges`). Where it lists more, node-sync re-snapshots (`Changed::purges`). Cost: the
+/// (`rejudge_purges`). Where it lists more, a writer owes a re-snapshot (`owe_resnapshot`). Cost: the
 /// aspect's requests and its held snapshots, read whole; a lookup alone where it holds no
 /// snapshot and lists no such copy, or has no request.
 pub(crate) fn rejudge_carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
@@ -623,10 +623,8 @@ pub(crate) fn rejudge_carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut
     let gone: Vec<Owned> = had.iter().filter(|o| !want.contains(o)).cloned().collect();
     let new: Vec<Owned> = want.iter().filter(|o| !had.contains(o)).cloned().collect();
     off_valueless(tx, tid, ak, &gone);
-    if list_valueless(tx, tid, ak, &new)
-        && let Some(ch) = &mut tx.core.changed
-    {
-        ch.purges.entry(k.clone()).or_default();
+    if list_valueless(tx, tid, ak, &new) {
+        owe_resnapshot(tx, tid, ak, BTreeSet::new())?;
     }
     crate::apply::rebuild(tx, tid, ak)?;
     changed.insert(k);
@@ -662,7 +660,7 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
 /// Request `id` (header `h`) just applied: against the held deltas it names, then on the lists later
 /// ones find it by. Each named aspect where it dropped something here (it stood on a named delta:
 /// its writes are value-less here from now on) goes to node-sync with the named bodies it dropped
-/// that were applied here before (`Changed::purges`): a writer re-snapshots unless a snapshot the
+/// that were applied here before (`owe_resnapshot`): a writer re-snapshots unless a snapshot the
 /// purge left whole covers them all (spec/commits.md §5 Purge). A refused or no-op request
 /// changes nothing, so it asks for no snapshot.
 pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
@@ -686,16 +684,61 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
                 }
             }
         }
-        if stood
-            && let Some(ch) = &mut tx.core.changed
-        {
-            ch.purges.entry((*item.tid(), item.ak().clone())).or_default().extend(held);
+        if stood {
+            owe_resnapshot(tx, item.tid(), item.ak(), held)?;
         }
     }
     // the copies of commits not held here (`rejudge_carried`), once per named aspect
     let aspects: BTreeSet<(Tid, Ak)> = h.requests().iter().map(|i| (*i.tid(), i.ak().clone())).collect();
     for (tid, ak) in aspects {
         rejudge_carried(tx, &tid, &ak, purged)?;
+    }
+    Ok(())
+}
+
+/// Notes in this transaction that this node, a writer of `(tid, ak)`, owes a re-snapshot after a
+/// purge request dropped something there, with the named bodies it had applied (`held`, joined to
+/// any owed already): durable (`records::RESNAPSHOTS_OWED`), so a stop before
+/// `Engine::purge_resnapshots` writes it, or a snapshot that may come only later, keeps the duty
+/// (spec/commits.md §5 Purge). Nothing on an aspect never compacted, or where this node does not
+/// write.
+fn owe_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, held: BTreeSet<CommitId>) -> Result<()> {
+    if !super::snapshot::compacted(ak) || !writes_on(tx.core, tid) {
+        return Ok(());
+    }
+    let had = tx.core.ix.resnapshots_owed.get(tid).and_then(|m| m.get(ak)).cloned();
+    tx.core.resnapshots_due.insert((*tid, ak.clone()));
+    let mut all = had.clone().unwrap_or_default();
+    all.extend(held);
+    if had.as_ref() == Some(&all) {
+        return Ok(());
+    }
+    let v: Vec<u8> = all.iter().flat_map(|c| c.0).collect();
+    tx.txn.put_local(&records::aspect_key(records::RESNAPSHOTS_OWED, tid, ak), &v, Shred::No)?;
+    tx.core.ix.resnapshots_owed.insert(*tid, ak.clone(), all);
+    Ok(())
+}
+
+/// Whether this node holds write on `tid` now.
+fn writes_on(core: &Core, tid: &Tid) -> bool {
+    let Some(me) = core.me() else { return false };
+    let ts = osis_base::Ts::make(core.now(), 0).unwrap_or_default();
+    crate::engine::write::role_of(core, &me, tid, ts) >= Some(osis_base::Role::Write)
+}
+
+/// The re-snapshots owed at the last stop (`Indexes::resnapshots_owed`), each due again.
+pub(crate) fn load_owed(tx: &mut Tx<'_>) -> Result<()> {
+    let mut rows = Vec::new();
+    tx.scan(records::RESNAPSHOTS_OWED, |k, v| {
+        rows.push((k.to_vec(), v));
+        Ok(())
+    })?;
+    for (k, v) in rows {
+        let mut r = records::Rd::new(&k);
+        let (tid, ak) = (r.tid()?, r.ak()?);
+        let held = v.chunks(32).map(|c| c.try_into().map(CommitId).map_err(|_| Error::Corrupt("owed re-snapshot"))).collect::<Result<BTreeSet<_>>>()?;
+        tx.core.resnapshots_due.insert((tid, ak.clone()));
+        tx.core.ix.resnapshots_owed.insert(tid, ak, held);
     }
     Ok(())
 }

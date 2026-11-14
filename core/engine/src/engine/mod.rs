@@ -912,13 +912,19 @@ indexes! {
     pub kept: JMap<Tid, BTreeSet<Tid>>,
     /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
     pub hint_candidates: JMap<CommitId, Vec<(Tid, osis_base::Value)>>,
-    /// Things holding a purge-on-replace body this node would cover, or an aspect the trigger
-    /// owes a weighing (`compact::Trigger::owe`), but may not write on yet (`MayWrite::Later`:
-    /// their minting or delete keys are not here), under every thing on their record chain: what
-    /// may move them (`retention::replace::wake_covers`). Not persisted: an open judges every
-    /// held purge-on-replace aspect again (`Core::index_none`) and owes the trigger's weighings
-    /// again (`Engine::owe_unwritable_held`).
+    /// Things holding a purge-on-replace body this node would cover, an aspect the trigger owes
+    /// a weighing (`compact::Trigger::owe`) or an owed re-snapshot (`resnapshots_owed`), but may
+    /// not write on yet (`MayWrite::Later`: their minting or delete keys are not here), under
+    /// every thing on their record chain: what may move them
+    /// (`retention::replace::wake_covers`). Not persisted: an open judges every held
+    /// purge-on-replace aspect again (`Core::index_none`), owes the trigger's weighings again
+    /// (`Engine::owe_unwritable_held`) and makes every owed re-snapshot due (`purge::load_owed`).
     pub cover_waits: JSetMap<Tid, Tid>,
+    /// Aspects this node owes a re-snapshot after purge requests dropped something here, with the
+    /// named bodies it had applied (spec/commits.md §5 Purge, `purge::owe_resnapshot`): written in
+    /// the purge's transaction (`records::RESNAPSHOTS_OWED`), gone once the snapshot is written or
+    /// no longer owed (`Engine::purge_resnapshots`).
+    pub resnapshots_owed: JNested<Tid, Ak, BTreeSet<CommitId>>,
 }
 
 /// The steps run inside a transaction, each applied fully or not at all (`Tx::step`).
@@ -932,6 +938,8 @@ pub(crate) enum Step {
     Answer,
     /// One purge-on-replace cover written (`retention::settle_none`).
     Cover,
+    /// One re-snapshot owed after a purge written (`Engine::purge_resnapshots`).
+    Resnapshot,
     /// One account rotation answered with this node's listing or addenda
     /// (`flows::signing::answer_rotations`).
     Rotation,
@@ -1297,6 +1305,10 @@ pub struct Core {
     /// What changed since node-sync last took it (`Engine::take_changed`; `None`: no
     /// node-sync, nothing kept). A mark from an aborted transaction stays: one extra judgment.
     pub changed: Option<Changed>,
+    /// Owed re-snapshots to try at the next `Engine::purge_resnapshots`
+    /// (`Indexes::resnapshots_owed`): newly owed, every one at open, and those on a thing that
+    /// may be written on now (`replace::wake_covers`).
+    pub resnapshots_due: BTreeSet<(Tid, Ak)>,
     /// Aspects (`None`) and commits' parts (`Some`, that change's) a read found a link of whose
     /// blob is not held (`Engine::missed_blob`): the next blob stored re-delivers them to watches
     /// (`Tx::store_blobs`: `Cause::Fetched`, `Event::Commits`). Bounded by the aspects and entries
@@ -1473,6 +1485,7 @@ impl Core {
             cut_subs: self.cut_subs.clone(),
             refold: self.refold.clone(),
             changed: self.changed.clone(),
+            resnapshots_due: self.resnapshots_due.clone(),
             missed: self.missed.clone(),
             bodies: self.bodies.clone(),
             live_bodies: self.live_bodies.clone(),
@@ -1535,10 +1548,6 @@ pub struct Changed {
     pub edges: BTreeSet<(Tid, Tid)>,
     /// What node-sync fetches again (`waits::wake`).
     pub wakes: Wakes,
-    /// Purge requests applied, per aspect an item names: the named bodies applied here before
-    /// (`purge::apply_request`); node-sync re-snapshots unless a snapshot the purge left whole
-    /// covers them all (spec/commits.md §5 Purge, `Engine::purge_resnapshots`).
-    pub purges: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
 }
 
 /// What brings back what the node could not judge (notes/expiry-creation-design.md §3).
@@ -2063,6 +2072,7 @@ impl Core {
             destroyed_kept: _,
             lifetimes_rights: _,
             changed: _,
+            resnapshots_due: _,
             redeliver: _,
             pended: _,
             missed: _,
@@ -2302,6 +2312,7 @@ impl Core {
             cut_subs: BTreeSet::new(),
             refold: BTreeSet::new(),
             changed: None,
+            resnapshots_due: BTreeSet::new(),
             sync_records: None,
             missed: BTreeSet::new(),
             bodies: memo::Memo::new("label body"),

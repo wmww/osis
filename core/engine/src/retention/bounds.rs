@@ -34,7 +34,9 @@ pub(crate) fn kept_until(core: &Core, h: &Header, a: &osis_commit::AspectEntry, 
     super::history::of(core, &a.tid, &a.ak).leaves_at(replaced).max(osis_commit::retention::purge_keep_until(h).unwrap_or(0))
 }
 
-/// `Engine::holds_valid_snapshot`.
+/// Whether `s` is a snapshot whose part on `(tid, ak)` this node holds whole (received, not
+/// dropped or held as its leftover) and judges valid: one that may stand for the aspect's
+/// history (spec/commits.md §5 Purge).
 pub(crate) fn valid_snapshot_held(core: &Core, s: &CommitId, tid: &Tid, ak: &Ak) -> bool {
     let Some(m) = core.ix.commits.get(s) else { return false };
     m.view.kind.is_compaction() && m.aspect(tid, ak).is_some_and(|ai| !m.body_gone(ai) && !m.missing(ai) && m.valid_at(ai))
@@ -593,13 +595,6 @@ impl Engine {
     pub fn body_not_dropped(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
         let Some(m) = self.core.ix.commits.get(c) else { return false };
         m.aspect(tid, ak).is_some_and(|ai| !m.body_gone(ai))
-    }
-
-    /// Whether `s` is a snapshot whose part on `(tid, ak)` this node holds whole (received, not
-    /// dropped or held as its leftover) and judges valid: one that may stand for the aspect's
-    /// history (spec/commits.md §5 Purge).
-    pub fn holds_valid_snapshot(&self, s: &CommitId, tid: &Tid, ak: &Ak) -> bool {
-        valid_snapshot_held(&self.core, s, tid, ak)
     }
 
     /// Whether this node keeps held part `(tid, ak)` of `c` under cover `s` though `s` covers it

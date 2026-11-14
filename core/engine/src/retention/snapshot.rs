@@ -688,36 +688,65 @@ fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: Fragment, ts: Ts, node:
     build_and_apply(tx, plan, vec![d])
 }
 
+/// Whether `ak` is ever compacted (spec/commits.md §2): not role-class, `created.0`,
+/// `addenda.0`, `released.0` or a signal (no state).
+pub(crate) fn compacted(ak: &Ak) -> bool {
+    let a = ak.as_str();
+    !is_role_class(a) && a != "created.0" && a != osis_commit::retention::RELEASED && !osis_schema::core_types::is_addenda(a) && !ak.signal()
+}
+
+/// The re-snapshot owed on `(tid, ak)` (`Indexes::resnapshots_owed`), in `tx`: one this node may
+/// write only later (its minting or delete keys are not here) stays owed, waiting with the
+/// purge-on-replace covers for what moves that (`replace::await_cover`, `wake_covers`); else it is
+/// owed no more, and where this node may write it writes a snapshot from its whole state unless it
+/// holds a valid snapshot the purge left whole covering every named body it had applied
+/// (spec/commits.md §5 Purge). The write's error, if it failed (it then leaves nothing).
+fn owed_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Error>> {
+    let Some(held) = tx.core.ix.resnapshots_owed.get(tid).and_then(|m| m.get(ak)).cloned() else { return Ok(None) };
+    let memory = ak.ephemeral();
+    let ts = tx.core.hlc.peek();
+    let may = may_snapshot(tx, tid, ak, memory, ts)?;
+    if may == MayWrite::Later {
+        super::replace::await_cover(tx.core, tid);
+        return Ok(None);
+    }
+    tx.core.ix.resnapshots_owed.remove(tid, ak);
+    tx.txn.remove_local(&crate::engine::records::aspect_key(crate::engine::records::RESNAPSHOTS_OWED, tid, ak), osis_store::Shred::No)?;
+    if may == MayWrite::No {
+        return Ok(None);
+    }
+    // a snapshot the purge stripped goes at sources (`snapshot_first`): only a whole, valid one
+    // carries (and with no named body applied here, it alone decides)
+    let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| super::bounds::valid_snapshot_held(tx.core, s, tid, ak)).collect();
+    'snaps: for s in &snaps {
+        for b in &held {
+            if covered(tx, s, b, tid, ak)? != Some(true) {
+                continue 'snaps;
+            }
+        }
+        return Ok(None);
+    }
+    Ok(tx.step(crate::engine::Step::Resnapshot, |tx| tx.in_class(memory, |tx| write_snapshot(tx, tid, ak, memory))).err())
+}
+
 impl Engine {
-    /// After purge requests applied (`Changed::purges`): on each named aspect this node compacts
-    /// (it may write there; not role-class, `created.0` or `addenda.0`), unless it holds a valid
-    /// snapshot the purge left whole covering every named body it had applied (held, or dropped
-    /// as covered), it writes one from its whole state (spec/commits.md §5 Purge). It carries the
-    /// purged writes value-less, so a node that never held them reads as this one once it holds
-    /// it; duplicates from several writers are harmless (spec/sync.md §7). Each aspect whose
-    /// snapshot was refused, with why.
+    /// Writes the re-snapshots owed after purge requests (`Indexes::resnapshots_owed`) that are
+    /// due (`Core::resnapshots_due`), each in a transaction of its own (`owed_resnapshot`): it
+    /// carries the purged writes value-less, so a node that never held them reads as this one
+    /// once it holds it; duplicates from several writers are harmless (spec/sync.md §7). Each
+    /// aspect whose snapshot failed, with why.
     pub fn purge_resnapshots(&mut self) -> Result<Vec<(Tid, Ak, Error)>> {
-        let purges = self.core.changed.as_mut().map(|c| std::mem::take(&mut c.purges)).unwrap_or_default();
+        let mut due = std::mem::take(&mut self.core.resnapshots_due);
         let mut refused = Vec::new();
-        for ((t, a), held) in purges {
-            if is_role_class(a.as_str()) || a.as_str() == "created.0" || osis_schema::core_types::is_addenda(a.as_str()) || self.role_on(&t) < Some(osis_base::Role::Write) {
-                continue;
-            }
-            // a snapshot the purge stripped goes at sources (`snapshot_first`): only a whole, valid
-            // one carries (and with no named body applied here, it alone decides)
-            let snaps: Vec<CommitId> = self.core.ix.snapshots.get(&(t, a.clone())).into_iter().flatten().map(|x| x.1).filter(|s| self.holds_valid_snapshot(s, &t, &a)).collect();
-            let mut covered = false;
-            'snaps: for s in &snaps {
-                for b in &held {
-                    if self.covered(s, b, &t, &a)? != Some(true) {
-                        continue 'snaps;
-                    }
+        while let Some((t, a)) = due.pop_first() {
+            match self.run(|tx| owed_resnapshot(tx, &t, &a)) {
+                Ok(Some(e)) => refused.push((t, a, e)),
+                Ok(None) => {}
+                Err(e) => {
+                    due.insert((t, a));
+                    self.core.resnapshots_due.extend(due);
+                    return Err(e);
                 }
-                covered = true;
-                break;
-            }
-            if !covered && let Err(e) = self.snapshot(&t, &a) {
-                refused.push((t, a, e));
             }
         }
         Ok(refused)

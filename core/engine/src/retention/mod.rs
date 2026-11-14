@@ -53,7 +53,7 @@ pub mod suspect;
 pub(crate) use replace::settle_none;
 pub(crate) use pending::{emptied, fetch_fallen, forget_joined_leftovers, forget_waiting_leftovers, pending_drops, pending_expired, stripped_joined, waiting_stripped};
 use pending::{purge_pending, strip_pending};
-pub(crate) use purge::{check_request, counts_as_purged, known_purged, lasting, note_requests, purged_aspects, purged_by, rejudge_purges, requests_resting_on};
+pub(crate) use purge::{check_request, counts_as_purged, known_purged, lasting, load_owed, note_requests, purged_aspects, purged_by, rejudge_purges, requests_resting_on};
 pub(crate) use snapshot::covered;
 pub(crate) use bounds::{Killed, mark_killed, mark_bounded};
 
@@ -1348,6 +1348,8 @@ impl Engine {
 mod tests_own;
 #[cfg(test)]
 mod tests_carried;
+#[cfg(test)]
+mod tests_resnapshot;
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
