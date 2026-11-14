@@ -2149,7 +2149,7 @@ fn driver_duties(lp: &mut LocalPeer, i: usize) {
     }
 }
 
-// spec/crypto.md §4 (Encrypting under: a stale box blocks; a node that may rotate the actor
+// spec/crypto.md §4 (Encrypting under: a stale box blocks, a node that may rotate the actor
 // rotates before encrypting), spec/permissions.md §3 (Required rotation): as
 // `writer_rotates_past_a_stale_box_below_before_writing_spec_crypto_4`, but with only what
 // osis-sync's driver runs (the role duties and pass ends), not `ensure_rotated` by hand. M's
