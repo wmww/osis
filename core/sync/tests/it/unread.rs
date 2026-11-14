@@ -69,7 +69,7 @@ impl Keep {
     }
 
     fn kept(&self) -> osis_sync::unread::Kept {
-        let record = SyncRecord { sync_ids: vec![self.s], secrets: self.held.iter().map(|e| (epoch(*e), sync_secret(*e))).collect(), recorded: self.recorded.iter().map(|e| epoch(*e)).collect(), dial: None };
+        let record = SyncRecord { sync_ids: vec![self.s], secrets: self.held.iter().map(|e| (epoch(*e), sync_secret(*e))).collect(), recorded: self.recorded.iter().map(|e| epoch(*e)).collect(), dials: Vec::new() };
         judge(&Judged { record: Some(&record), steps: &self.path.steps })
     }
 

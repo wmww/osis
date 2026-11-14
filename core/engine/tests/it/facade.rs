@@ -313,7 +313,7 @@ fn an_offer_after_the_accept_attaches_nothing_spec_sync_3() {
         assert!(matches!(o.taken, Taken::Refused | Taken::Offered) && o.dial.is_none(), "{o:?}");
         let e = &mut lp.peers[1].engine;
         let r = e.sync_record(&t).unwrap().unwrap();
-        assert_eq!((r.sync_ids.clone(), r.recorded.clone(), r.dial.clone()), (before.sync_ids.clone(), before.recorded.clone(), None));
+        assert_eq!((r.sync_ids.clone(), r.recorded.clone(), r.dials.clone()), (before.sync_ids.clone(), before.recorded.clone(), Vec::new()));
         assert!(!e.record_borne(&t, &keys_of(&r)).unwrap(), "nothing new recorded");
     }
     let e = &mut lp.peers[1].engine;
@@ -2075,4 +2075,30 @@ fn an_accepted_offer_takes_no_kept_sync_id_from_another_thing_spec_sync_3() {
     let e = &mut lp.peers[1].engine;
     assert!(!matches!(e.thing_sync(&u).unwrap(), ThingSync::Unread(ids) if ids.contains(&s)), "the forger's thing holds no kept sync ID");
     assert_eq!(e.sync_set().unwrap().ids.get(&s), Some(&(t, Holding::Unread)), "t keeps its sync ID");
+}
+
+// spec/sync-inbox.md §2 (a boxes payload's dial hint is dialed while it is held and its sync IDs
+// are kept), spec/sync-hostile.md §2 (an accepted forger's sync ID): an insider's offer of the
+// kept thing under its own sync ID with its own dial hint, accepted, adds its hint beside the
+// granter's: it hides no granter.
+#[test]
+fn an_accepted_forgers_dial_hint_hides_no_granter_spec_sync_inbox_2() {
+    let (mut lp, t, _, _, blob) = granted(Role::Sync);
+    let (mut p, _) = boxes_of(&mut lp, 1, &blob);
+    let granter = osis_label::DialHint { dialable: [0x44; 32], urls: vec!["quic://granter".into()] };
+    p.dial = Some(granter.clone());
+    let genuine = boxes_by_hand(&mut lp, 1, &p);
+    lp.peers[1].engine.take_inbox_blob(&genuine, false).unwrap();
+    accept(&mut lp, 1, t);
+    let forger = osis_label::DialHint { dialable: [0x66; 32], urls: vec!["quic://forger".into()] };
+    let f = osis_label::BoxesPayload::new(&lp.peers[1].engine.me(), vec![osis_label::BoxedThing::new(t, Some(osis_base::SyncId([0x66; 16])), p.things[0].boxes.clone())], Some(forger.clone()), None);
+    lp.advance(1000);
+    let f = boxes_by_hand(&mut lp, 1, &f);
+    assert_eq!(lp.peers[1].engine.take_inbox_blob(&f, false).unwrap().unwrap().taken, Taken::Offered);
+    assert!(lp.peers[1].engine.invitations().unwrap().iter().any(|i| i.thing == t && !i.taken), "an invitation again");
+    let (_, d) = lp.peers[1].engine.account().unwrap().unwrap();
+    lp.peers[1].engine.accept_invite(&t, &d).unwrap();
+    let r = lp.peers[1].engine.sync_record(&t).unwrap().unwrap();
+    assert_eq!(r.sync_ids.len(), 2, "the user accepted the forger's sync ID too");
+    assert!(r.dials.contains(&granter) && r.dials.contains(&forger), "{:?}", r.dials);
 }

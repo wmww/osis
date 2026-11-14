@@ -64,10 +64,10 @@ impl Engine {
             }
             // its granter, by the grant's dial hint
             Holding::Unread => {
-                if let Some(DialHint { dialable, urls }) = self.sync_record_now(&t).and_then(|r| r.dial.clone())
-                    && let Some(x) = address(&dialable, &urls)
-                {
-                    out.entry(x.key).or_insert(x);
+                for DialHint { dialable, urls } in self.sync_record_now(&t).iter().flat_map(|r| r.dials.iter()) {
+                    if let Some(x) = address(dialable, urls) {
+                        out.entry(x.key).or_insert(x);
+                    }
                 }
             }
         }

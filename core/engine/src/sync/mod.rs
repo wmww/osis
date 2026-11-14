@@ -294,9 +294,10 @@ pub struct SyncRecord {
     pub secrets: BTreeMap<Epoch, Secret32>,
     /// Which of `secrets` are recorded.
     pub recorded: BTreeSet<Epoch>,
-    /// The dial hint of a boxes payload held whose sync IDs are kept (spec/sync-inbox.md §2):
-    /// for dialing only (spec/sync-opens.md §1).
-    pub dial: Option<DialHint>,
+    /// The dial hints of the boxes payloads held whose sync IDs are kept (spec/sync-inbox.md
+    /// §2), distinct: for dialing only (spec/sync-opens.md §1). Every one, so an accepted
+    /// forger's hint hides no granter's.
+    pub dials: Vec<DialHint>,
 }
 
 /// J of a peer for S (spec/sync-opens.md §4).

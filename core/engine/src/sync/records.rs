@@ -197,8 +197,8 @@ pub(crate) fn observe_own(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 /// The view of `t`'s sync record (`SyncRecord`): its kept sync IDs and recorded secrets with the
-/// secrets of the boxes payloads held offering it, and the dial hint of the one expiring last
-/// whose sync IDs for `t` are all kept. None while no sync ID of `t` is kept.
+/// secrets of the boxes payloads held offering it, and the dial hints of those whose sync ID for
+/// `t` is kept. None while no sync ID of `t` is kept.
 fn refresh(core: &mut Core, t: &Tid) {
     let kept = core.ix.sync_kept.get(t).cloned();
     let view = kept.filter(|k| !k.ids.is_empty()).map(|k| {
@@ -209,7 +209,7 @@ fn refresh(core: &mut Core, t: &Tid) {
                 r.recorded.insert(e);
             }
         }
-        let mut dial: Option<(WallMs, DialHint)> = None;
+        let mut dials = BTreeSet::new();
         for b in core.ix.offered.get(t).into_iter().flatten() {
             let Some(o) = core.ix.offers.get(b) else { continue };
             let Some(x) = o.things.iter().find(|x| x.tid == *t) else { continue };
@@ -218,12 +218,11 @@ fn refresh(core: &mut Core, t: &Tid) {
             }
             if x.sync_id.is_none_or(|s| k.ids.contains(&s))
                 && let Some(d) = &o.dial
-                && dial.as_ref().is_none_or(|(at, _)| o.expires > *at)
             {
-                dial = Some((o.expires, d.clone()));
+                dials.insert((d.dialable, d.urls.clone()));
             }
         }
-        r.dial = dial.map(|(_, d)| d);
+        r.dials = dials.into_iter().map(|(dialable, urls)| DialHint { dialable, urls }).collect();
         r
     });
     let before: BTreeSet<SyncId> = core.ix.sync_records.get(t).map(|r| r.sync_ids.iter().copied().collect()).unwrap_or_default();
