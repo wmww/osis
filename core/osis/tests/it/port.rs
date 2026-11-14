@@ -330,16 +330,21 @@ fn a_hidden_thing_answers_as_a_never_known_one_spec_wire_11() {
     // the client wrote it, with history kept, before its role went: its undo and its commit
     crate::common::keep_day(&w.a, w.t, &["x:v.0"]);
     let r = osis::internals::port_answers(&w.a, 9, false, vec![auth_as(Some(&w.secret), 9), write_call(1, w.actor, w.t, 6)]);
-    assert!(matches!(outcome(&r[1]), Outcome::Ok { .. }), "{r:?}");
+    // `Opt(commit)`, a commit's stamp first, its id first
+    let made = match outcome(&r[1]) {
+        Outcome::Ok { value: Value::List(c) } => match c.as_slice() {
+            [Value::List(c)] => match c.first() {
+                Some(Value::List(stamp)) => <[u8; 32]>::try_from(stamp[0].as_bytes().unwrap()).unwrap(),
+                o => panic!("{o:?}"),
+            },
+            o => panic!("{o:?}"),
+        },
+        o => panic!("{o:?}"),
+    };
     w.a.set_role(w.t, w.actor, None, osis::SetRoleOpts::default()).unwrap();
     let never = Tid::from_bytes([9; 15]);
     let call = |method: u64, args: Vec<Value>| Msg::Call { id: 3, max_reply: 1 << 20, method, args };
     let m = osis::internals::port_method::GET;
-    // the client's commit on the hidden thing, and one never made
-    use osis::internals::CommitRaw as _;
-    let changed = w.a.changed(w.t).unwrap().unwrap();
-    assert_eq!(changed.actor, w.actor);
-    let made = changed.id.raw().0;
     let rows = |t: Tid, session: u8, commit: [u8; 32]| {
         let (tv, ak) = (Value::Tid(t), Value::Str("x:v.0".into()));
         let scopes = [Value::List(vec![Value::uint(0), tv.clone()]), Value::List(vec![Value::uint(1), Value::List(vec![Value::List(vec![tv.clone(), ak.clone()])])]), Value::List(vec![Value::uint(2), tv.clone()])];
