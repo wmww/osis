@@ -98,5 +98,5 @@ The app, CLI and chat go through the osis API, which now runs the new sync; chec
 - When a phase finishes, update this issue's phase status here, not in a new file.
 
 ## Status
-- Phase 0: not started. Open branches to delete are listed above. Branch `unread-retainer` (engine data-loss fix, issues/lifetimes-unread-retainer.md) is engine work that stays: review, gate, merge it normally.
+- Phase 0: not started. Open branches to delete are listed above. Branch `unread-retainer` (5ca3237f4, engine data-loss fix for issues/lifetimes-unread-retainer.md, worker tests green, not gated) is engine work that stays: fresh reviewer, gate, merge; the merge deletes that issue and marks the Lifetimes row of notes/cannot-read-audit.md fixed.
 - Phases 1-5: not started.
