@@ -245,7 +245,7 @@ impl super::Engine {
             return Ok(false);
         }
         let (tid, ak, o) = (*tid, ak.clone(), *o);
-        self.run(|tx| original(tx, &o, &tid, &ak))
+        self.read(|tx| original(tx, &o, &tid, &ak))
     }
 
     /// The valid claims naming `o` on `(tid, ak)` by `o`'s actor, honored or not: what a purge of

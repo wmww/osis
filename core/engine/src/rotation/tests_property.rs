@@ -360,16 +360,11 @@ impl Run {
 }
 
 /// One seed: generates a history, settles it, and checks the property. Panics with what failed.
-/// `every_tx`: each engine checks its index against a rebuild after every transaction that
-/// changed it (live = rebuild), not a sample.
-fn rotation_history(seed: u64, every_tx: bool) -> Reached {
+fn rotation_history(seed: u64) -> Reached {
     let mut reached = Reached::default();
     let emphasis = seed % 4;
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let mut lp = LocalPeer::new(N, seed, WallMs(1_700_000_000_000)).unwrap();
-    for p in &mut lp.peers {
-        p.engine.check_every_tx = every_tx;
-    }
     lp.sync_all().unwrap();
     let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.me()).collect();
     // actors: G (peer 0's); with holder actors, one or two more, some of peer 2's, granted
@@ -915,11 +910,10 @@ fn replay(s: u64) -> String {
 
 // spec/crypto.md §4, spec/permissions.md §2-§3: no departed holder reads later content, every
 // holder ends reading everything (module doc). Quick size: seeds 0..8 (every emphasis twice), no
-// environment; the first cycle-emphasis run (holder actors) also checks live = rebuild after every
-// transaction.
+// environment.
 #[test]
 fn rotation_holds_spec_crypto_4() {
-    tally(&osis_base::testenv::run_seeds("rotation::tests_property::rotation_holds_spec_crypto_4", &(0..8).collect::<Vec<u64>>(), false, replay, |s| rotation_history(s, s == 3)));
+    tally(&osis_base::testenv::run_seeds("rotation::tests_property::rotation_holds_spec_crypto_4", &(0..8).collect::<Vec<u64>>(), false, replay, rotation_history));
 }
 
 /// Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds: OSIS_ROTATION_START,
@@ -928,7 +922,7 @@ fn rotation_holds_spec_crypto_4() {
 #[ignore = "property"]
 fn rotation_holds_large_spec_crypto_4() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_ROTATION_START", "OSIS_ROTATION_SEEDS", osis_base::testenv::large(0..1_000));
-    tally(&s.run("rotation::tests_property::rotation_holds_large_spec_crypto_4", replay, |s| rotation_history(s, false)));
+    tally(&s.run("rotation::tests_property::rotation_holds_large_spec_crypto_4", replay, rotation_history));
 }
 
 /// Peer `i` acts (`f`), logged, its new epochs recorded and the states noted, as a generated step

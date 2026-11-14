@@ -276,7 +276,7 @@ impl Engine {
             return Ok(true);
         }
         let ids: Vec<osis_base::CommitId> = self.core.ix.pending.iter().filter(|(_, r)| **r != crate::Reason::Parked).map(|(c, _)| *c).collect();
-        self.run(|tx| {
+        self.read(|tx| {
             for id in ids {
                 let Some((_, bytes)) = tx.txn.get_pending(&id)? else { continue };
                 let Ok(blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { continue };

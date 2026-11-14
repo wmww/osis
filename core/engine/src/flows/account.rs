@@ -842,7 +842,7 @@ impl Engine {
     /// How a box to account `p` is sealed: at its open epoch.
     pub fn account_holder_keys(&mut self, p: &Tid) -> Result<HolderKeys> {
         let a = *p;
-        self.run(|tx| holder_keys(tx, &a))
+        self.read(|tx| holder_keys(tx, &a))
     }
 
     /// Sets `cb` up to be signed as this node's account (a node that joined no account signs as
@@ -874,7 +874,7 @@ impl Engine {
 
     /// The account this node belongs to and its devices actor, once it has joined one.
     pub fn account(&mut self) -> Result<Option<(Tid, Tid)>> {
-        let Some(b) = self.run(|tx| Ok(tx.txn.get_local(records::ACCOUNT)?))? else { return Ok(None) };
+        let Some(b) = self.read(|tx| Ok(tx.txn.get_local(records::ACCOUNT)?))? else { return Ok(None) };
         let pair = |r: std::ops::Range<usize>| b.get(r).and_then(|x| <[u8; 15]>::try_from(x).ok()).map(Tid::from_bytes);
         Ok(Some((pair(0..15).ok_or(Error::Corrupt("account record"))?, pair(15..30).ok_or(Error::Corrupt("account record"))?)))
     }

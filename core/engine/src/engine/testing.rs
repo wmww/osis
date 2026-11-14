@@ -134,7 +134,7 @@ impl Engine {
     /// counting what grows (notes/growth.md).
     #[doc(hidden)]
     pub fn local_census(&mut self) -> Result<std::collections::BTreeMap<String, (usize, usize)>> {
-        let rows = self.run(|tx| Ok(tx.txn.scan_local(b"", b"", usize::MAX)?))?;
+        let rows = self.read(|tx| Ok(tx.txn.scan_local(b"", b"", usize::MAX)?))?;
         let mut out = std::collections::BTreeMap::<String, (usize, usize)>::new();
         for (k, v) in rows {
             let end = k.iter().position(|b| *b == b'/').map_or(3.min(k.len()), |p| (p + 1).min(k.len()));
@@ -150,7 +150,7 @@ impl Engine {
     /// tests that nothing of what a node forgot stays.
     #[doc(hidden)]
     pub fn local_rows_naming(&mut self, needle: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        let rows = self.run(|tx| Ok(tx.txn.scan_local(b"", b"", usize::MAX)?))?;
+        let rows = self.read(|tx| Ok(tx.txn.scan_local(b"", b"", usize::MAX)?))?;
         Ok(rows.into_iter().filter(|(k, v)| k.windows(needle.len()).any(|w| w == needle) || v.windows(needle.len()).any(|w| w == needle)).collect())
     }
 
@@ -191,7 +191,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn stripped_count(&mut self, id: &osis_base::CommitId) -> Result<usize> {
         let id = *id;
-        self.run(|tx| {
+        self.read(|tx| {
             let Some(b) = tx.txn.get_pending(&id)?.and_then(|(_, b)| osis_commit::CommitBlob::decode_stored(&b).ok()) else { return Ok(0) };
             let mut n = 0;
             for ai in 0..b.header.aspects.len() {
@@ -206,7 +206,7 @@ impl Engine {
     /// How many purge requests' dropped-a-permanent-delta notes are kept (`retention::lasting`).
     #[doc(hidden)]
     pub fn named_permanent_count(&mut self) -> Result<usize> {
-        self.run(|tx| {
+        self.read(|tx| {
             let mut n = 0;
             tx.scan(crate::engine::records::NAMED_PERMANENT, |_, _| {
                 n += 1;
@@ -223,7 +223,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn carried_dots(&mut self, tid: &Tid, ak: &osis_base::Ak) -> Vec<osis_crdt::Dot> {
         let (tid, ak) = (*tid, ak.clone());
-        self.run(|tx| {
+        self.read(|tx| {
             let snaps: Vec<(CommitId, usize)> = tx.core.ix.snapshots.get(&(tid, ak.clone())).into_iter().flatten().filter_map(|s| tx.core.ix.commits.get(&s.1).and_then(|m| m.aspect(&tid, &ak)).map(|ai| (s.1, ai))).collect();
             let mut out = std::collections::BTreeSet::new();
             for (s, ai) in snaps {
@@ -319,7 +319,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn body_fragment(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<osis_crdt::Fragment>> {
         let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.run(|tx| {
+        self.read(|tx| {
             let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(&tid, &ak)) else { return Ok(None) };
             let mut out: Option<osis_crdt::Fragment> = None;
             crate::apply::each_held_piece(tx, &c, ai, &mut |_, f| {
@@ -363,7 +363,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn pending_parts(&mut self, c: &CommitId) -> Result<Option<std::collections::BTreeSet<usize>>> {
         let c = *c;
-        self.run(|tx| {
+        self.read(|tx| {
             let Some((_, bytes)) = tx.txn.get_pending(&c)? else { return Ok(None) };
             let Ok(blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(None) };
             Ok(Some(blob.parts.iter().map(|p| p.ai).collect()))
@@ -376,7 +376,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn pending_value_past_end(&mut self, c: &CommitId, now: osis_base::WallMs) -> Result<Option<String>> {
         let c = *c;
-        self.run(|tx| {
+        self.read(|tx| {
             let Some((_, bytes)) = tx.txn.get_pending(&c)? else { return Ok(None) };
             let Ok(blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(None) };
             let emptied = crate::retention::emptied();
@@ -398,7 +398,7 @@ impl Engine {
     #[cfg(test)]
     pub fn stale_page_writes(&mut self, tid: &Tid, ak: &Ak) -> Result<usize> {
         let k = (*tid, ak.clone());
-        self.run(|tx| {
+        self.read(|tx| {
             tx.load_lazy(&k.0, &k.1)?;
             match (tx.core.pages.get(&k), tx.core.states.get(&k)) {
                 (Some(idx), Some(Some(f))) => super::pages::stale_in_pages(&mut tx.txn, &k.0, &k.1, idx, f),
@@ -584,7 +584,7 @@ impl Engine {
     /// The `EDGES` rows as stored (tests: what a rebuild writes equals what the writes kept).
     #[doc(hidden)]
     pub fn edges_rows(&mut self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        self.run(|tx| {
+        self.read(|tx| {
             let t = tx.txn.index(EDGES)?;
             Ok(tx.txn.table_range(t, &[], None, 1 << 20)?)
         })

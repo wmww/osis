@@ -1,0 +1,6 @@
+# test-optimizer-7
+- Per-module whole-process counts (`tools/icount BIN -q <module>::` for each of ~115 modules of node and osis `it`) held the heavy lock 656 s (limit 598): each module's run ends on its slowest test with the other cores idle. Count only the few modules a change touches.
+- Started that run with a trailing `&` inside a foreground Bash call: no task ID, so `claudewait` could not wait on it; had to read its output file by hand.
+- A pertest per-test sum is not a module's cost when the module caches setups (osis `tied` sums 244 G alone, 145 G in one process): rank setup-sharing candidates by the one-process count.
+- `Engine::read`'s debug assert is what found the one lookup that writes (`usable_role` takes up hints): converting a batch of `run`s blind and running the crate's tests was the fast way to sort them; two more (`own_delete_keys`, `holds_delete_keys`) pass every test as reads but their doc says why they stay transactions, so grep the doc before converting.
+- A throwaway planted-fault switch read from `OSIS_PLANT` failed 22 seed-runner tests at once (testenv refuses unknown `OSIS_*` variables): probes use the `OSIS_PROBE_` prefix. Cost one wasted matrix run.

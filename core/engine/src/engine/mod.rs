@@ -3227,7 +3227,8 @@ pub struct Engine {
     /// Tests: an index was edited in memory past the store, so `check_index` does not run.
     #[cfg(test)]
     pub(crate) index_poked: bool,
-    /// Tests: `check_index` after every transaction that changed something, not a sample.
+    /// Tests, set by hand: `check_index` after every transaction that changed something, not a
+    /// sample (a fix whose divergence the sample may miss).
     #[cfg(test)]
     pub(crate) check_every_tx: bool,
 }

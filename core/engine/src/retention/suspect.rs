@@ -117,7 +117,7 @@ impl Engine {
     /// The aspects this node flags suspect, with when each was last flagged (wall ms)
     /// and why (`Why` bits over the bodies it is about that are not dormant).
     pub fn suspects(&mut self) -> Result<Vec<(Tid, Ak, u64, u8)>> {
-        self.run(|tx| {
+        self.read(|tx| {
             let mut flags = Vec::new();
             tx.scan(records::SUSPECT, |k, v| {
                 let mut r = records::Rd::new(k);
@@ -145,7 +145,7 @@ impl Engine {
         let Some(r) = self.core.created(tid) else { return Ok(None) };
         let d = osis_crypto::dedup_secret(r.nonce());
         let (tid, ak) = (*tid, ak.clone());
-        let bytes = self.run(|tx| tx.state(&tid, &ak)?.map(crate::engine::state::encode).transpose())?.unwrap_or_default();
+        let bytes = self.read(|tx| tx.state(&tid, &ak)?.map(crate::engine::state::encode).transpose())?.unwrap_or_default();
         Ok(Some(osis_crypto::state_digest(&d, ak.as_str(), &bytes)))
     }
 }

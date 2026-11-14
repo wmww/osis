@@ -610,7 +610,7 @@ impl Engine {
             return Ok(None);
         }
         let id = *c;
-        let Some(f) = self.run(|tx| crate::apply::held_fragment(tx, &id, ai))? else { return Ok(None) };
+        let Some(f) = self.read(|tx| crate::apply::held_fragment(tx, &id, ai))? else { return Ok(None) };
         let Some(epochs) = self.epochs(&a) else { return Ok(None) };
         let Some(ks) = crate::apply::keys::keys_write(&f).keysets.remove(&Role::Read) else { return Ok(None) };
         let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) else { return Ok(None) };

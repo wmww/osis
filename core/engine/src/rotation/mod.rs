@@ -1065,7 +1065,7 @@ impl Engine {
     /// The departures from `actor` its epochs must cover, as this node knows them.
     pub fn departures(&mut self, actor: &Tid) -> Result<Vec<Departure>> {
         let a = *actor;
-        self.run(|tx| departures(tx, &a))
+        self.read(|tx| departures(tx, &a))
     }
 
     /// Gives `thing` secrets of its own (spec/permissions.md §3), with its one sync ID in the same

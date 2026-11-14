@@ -310,7 +310,7 @@ impl crate::engine::Engine {
 
     /// The things judged unreachable here and not destroyed (`PENDING`).
     pub fn lifetimes_pending(&mut self) -> Result<Vec<Tid>> {
-        self.run(|tx| rows(tx, PENDING))
+        self.read(|tx| rows(tx, PENDING))
     }
 
     /// How the lifetime judgment reads `t` here (known, destroyed, unknown).

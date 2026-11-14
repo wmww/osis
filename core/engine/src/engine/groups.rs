@@ -194,7 +194,7 @@ impl Engine {
         if missing.is_empty() {
             return Ok(true);
         }
-        self.run(|tx| Ok(partial_groups(tx, missing)?.is_empty()))
+        self.read(|tx| Ok(partial_groups(tx, missing)?.is_empty()))
     }
 
     /// The groups whose `group.0` may list `t`, as an item and as a subgroup: what a delete of `t`
@@ -203,7 +203,7 @@ impl Engine {
     /// known here.
     pub fn listing_groups(&mut self, t: &Tid) -> Result<(BTreeSet<Tid>, BTreeSet<Tid>)> {
         let t = *t;
-        self.run(|tx| listing_groups(tx, &t))
+        self.read(|tx| listing_groups(tx, &t))
     }
 }
 

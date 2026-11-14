@@ -840,7 +840,7 @@ impl Engine {
     /// held (nothing is established).
     pub fn covered(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
         let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
-        self.run(|tx| {
+        self.read(|tx| {
             let r = covered(tx, &s, &c, &tid, &ak)?;
             #[cfg(test)]
             if tx.core.ix.commits.get(&s).is_some_and(|m| m.view.kind.is_compaction()) {

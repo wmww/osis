@@ -128,7 +128,7 @@ impl Engine {
     /// From the name rows (`records::NAMED_BY`): no cert is decoded.
     pub fn rotation_lists(&mut self, r: &CommitId) -> Result<Vec<(Tid, Vec<CommitId>)>> {
         let r = *r;
-        let rows = self.run(|tx| named_by(tx, &r))?;
+        let rows = self.read(|tx| named_by(tx, &r))?;
         let mut by: std::collections::BTreeMap<Tid, Vec<CommitId>> = std::collections::BTreeMap::new();
         for (c, t) in rows {
             by.entry(t).or_default().push(c);
@@ -171,7 +171,7 @@ impl Engine {
     pub fn list_blob(&mut self, r: &CommitId, things: Option<&BTreeSet<Tid>>) -> Result<Option<Vec<u8>>> {
         let r = *r;
         let things = things.cloned();
-        let certs = self.run(|tx| certs_of(tx, &r, things.as_ref()))?;
+        let certs = self.read(|tx| certs_of(tx, &r, things.as_ref()))?;
         Ok((!certs.is_empty()).then(|| encode_list_blob(&certs)))
     }
 }

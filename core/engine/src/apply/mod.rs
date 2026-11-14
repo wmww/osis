@@ -1220,7 +1220,7 @@ impl Engine {
     /// only a new copy brings back (`SyncEngine::redeliver`).
     pub fn settled_slots(&mut self, id: &CommitId) -> Result<BTreeSet<usize>> {
         let id = *id;
-        self.run(|tx| {
+        self.read(|tx| {
             let now = tx.now().0;
             let mut out: BTreeSet<usize> = BTreeSet::new();
             let pending = tx.txn.get_pending(&id)?.and_then(|(_, b)| CommitBlob::decode_stored(&b).ok());
@@ -1250,7 +1250,7 @@ impl Engine {
         if self.core.redeliver.contains(id) {
             return Ok(false);
         }
-        self.run(|tx| {
+        self.read(|tx| {
             let meta = tx.core.ix.commits.get(id).cloned();
             let pending = if tx.core.ix.pending.contains_key(id) { tx.txn.get_pending(id)?.and_then(|(_, b)| CommitBlob::decode_stored(&b).ok()) } else { None };
             let Some(h) = meta.as_ref().map(|m| (*m.header).clone()).or_else(|| pending.as_ref().map(|b| b.header.clone())) else { return Ok(false) };
@@ -1634,7 +1634,7 @@ impl Engine {
     /// received), for relaying.
     pub fn commit_bytes(&mut self, id: &CommitId) -> Result<Option<Vec<u8>>> {
         let id = *id;
-        self.run(|tx| {
+        self.read(|tx| {
             if let Some(b) = tx.get_commit(&id)? {
                 return Ok(Some(b.encode()));
             }

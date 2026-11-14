@@ -119,7 +119,7 @@ impl Engine {
         }
         let id = *c;
         let keep = |ai: usize| h.aspects.get(ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "secrets.0"));
-        let parts = self.run(|tx| crate::apply::held_parts_at(tx, &id, &keep))?;
+        let parts = self.read(|tx| crate::apply::held_parts_at(tx, &id, &keep))?;
         for (ai, d) in parts {
             let (Some(a), Decoded::Delta(d)) = (h.aspects.get(ai), &d) else { continue };
             let named: Vec<Tid> = match a.ak.as_str() {
@@ -493,7 +493,7 @@ impl Engine {
     /// certificate copy. `None`: none of them held.
     pub fn part_body(&mut self, c: &CommitId, parts: &Parts) -> Result<Option<Body>> {
         let id = *c;
-        let Some(blob) = self.run(|tx| tx.get_commit(&id))? else { return Ok(None) };
+        let Some(blob) = self.read(|tx| tx.get_commit(&id))? else { return Ok(None) };
         let cut = osis_commit::rewrite(&blob, |ai| !parts.contains(&ai));
         if cut.parts.is_empty() {
             return Ok(None);
@@ -530,7 +530,7 @@ impl Engine {
             self.tree_blobs(l, &h.actor, &mut out)?;
         }
         let id = *c;
-        let found = self.run(|tx| {
+        let found = self.read(|tx| {
             let mut found = BTreeSet::new();
             for (ai, d) in crate::apply::held_parts_at(tx, &id, &|ai| parts.contains(&ai))? {
                 let (Some(a), Decoded::Delta(d)) = (h.aspects.get(ai), &d) else { continue };

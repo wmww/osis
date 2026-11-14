@@ -511,7 +511,7 @@ impl Engine {
     /// `missing`. Counted as the states move (`tree_refs`), not walked whole.
     pub fn live_trees(&mut self, tid: &Tid) -> Result<Trees> {
         let tid = *tid;
-        self.run(|tx| crate::engine::tree_refs::live_trees_in(tx, &tid))
+        self.read(|tx| crate::engine::tree_refs::live_trees_in(tx, &tid))
     }
 
     /// Chunks or tree nodes `lost`, gone from every host of a label, that this node's own

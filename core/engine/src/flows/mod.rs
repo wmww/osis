@@ -432,12 +432,12 @@ impl Engine {
     /// and the inbox.
     pub fn inbox_kem(&mut self, actor: &Tid) -> Result<Option<osis_crypto::KemPublicKey>> {
         let a = *actor;
-        self.run(|tx| edges::inbox_kem(tx, &a))
+        self.read(|tx| edges::inbox_kem(tx, &a))
     }
 
     pub fn inbox_of_actor(&mut self, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
         let h = *holder;
-        self.run(|tx| inbox_of(tx, &h))
+        self.read(|tx| inbox_of(tx, &h))
     }
 
     /// Takes up a key actor from its seed (a link key from its link)

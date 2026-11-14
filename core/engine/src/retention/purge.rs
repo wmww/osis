@@ -814,7 +814,7 @@ impl Engine {
     pub fn purged_on(&mut self, tid: &Tid, ak: &Ak) -> Result<BTreeMap<CommitId, CommitId>> {
         let core = &self.core;
         let dropped: Vec<CommitId> = core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|c| core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.body_gone(ai)))).collect();
-        self.run(|tx| {
+        self.read(|tx| {
             let mut out = BTreeMap::new();
             for c in dropped {
                 let Some((h, Some(ai))) = tx.core.ix.commits.get(&c).map(|m| (m.header.clone(), m.aspect(tid, ak))) else { continue };
@@ -841,7 +841,7 @@ impl Engine {
     /// nothing: a plain writer's aspect-wide one must not reopen every delete on the aspect.
     pub fn named_by_a_fallen_purge(&mut self, c: &CommitId, parts: &[usize]) -> Result<bool> {
         let c = *c;
-        self.run(|tx| {
+        self.read(|tx| {
             let Some(h) = tx.core.ix.commits.get(&c).map(|m| m.header.clone()) else { return Ok(false) };
             for ai in parts {
                 let Some(a) = h.aspects.get(*ai) else { continue };

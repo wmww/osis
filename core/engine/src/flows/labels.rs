@@ -279,7 +279,7 @@ impl Engine {
     /// The label of `group` with its hosts (`own_label`).
     pub fn label_of(&mut self, group: &Tid) -> Result<Option<(LabelId, Vec<Address>)>> {
         let g = *group;
-        self.run(|tx| own_label(tx, &g))
+        self.read(|tx| own_label(tx, &g))
     }
 }
 

@@ -534,14 +534,14 @@ impl Engine {
     /// need not hold the purge right.
     pub fn drop_from(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<u64> {
         let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.run(|tx| part_keep(tx, &c, &tid, &ak))
+        self.read(|tx| part_keep(tx, &c, &tid, &ak))
     }
 
     /// Whether held part `(tid, ak)` of `c` is replaced: a write of it is dead (spec/commits.md
     /// §5 Bodies and deaths; `false` when not held whole and valid).
     pub fn replaced(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
         let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.run(|tx| {
+        self.read(|tx| {
             let Some(ai) = held_part(tx.core, &c, &tid, &ak) else { return Ok(false) };
             if tx.core.ix.commits.get(&c).is_none_or(|m| m.bare(ai)) {
                 return Ok(false);
@@ -565,7 +565,7 @@ impl Engine {
     /// `None`: no relative bound on its aspect, or no write of it dead).
     pub fn replaced_at(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts>> {
         let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.run(|tx| {
+        self.read(|tx| {
             let (ai, h) = known_part(tx.core, &c, &tid, &ak)?;
             tx.core.replaced_reads += 1;
             part_replaced_at(tx, &h, &c, ai)
@@ -597,7 +597,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn body_min_ts(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts>> {
         let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.run(|tx| {
+        self.read(|tx| {
             let Some(ai) = aspect_index(tx.core, &c, &tid, &ak) else { return Ok(None) };
             let mut min = None;
             crate::apply::each_held_piece(tx, &c, ai, &mut |_, f| {
@@ -620,7 +620,7 @@ impl Engine {
     /// (`retention::own_kept_under`, spec/sync.md §7 Own bodies).
     pub fn own_kept_under(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
         let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
-        self.run(|tx| super::own_kept_under(tx, &s, &c, &tid, &ak))
+        self.read(|tx| super::own_kept_under(tx, &s, &c, &tid, &ak))
     }
 
     /// Whether `c`'s part on `(tid, ak)` drops as covered (compaction, spec/commits.md §5;
