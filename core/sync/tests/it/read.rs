@@ -857,13 +857,13 @@ fn missing_body_is_fetched_where_present() {
     let mut f = uncovered();
     f.missing = true;
     w.judge(S, cid(1), f);
-    assert!(w.g.sent.iter().any(|m| *m == Sent::Fetch(RC, b)), "fetched at the reader showing it: {:?}", w.g.sent);
+    assert!(w.g.sent.contains(&Sent::Fetch(RC, b)), "fetched at the reader showing it: {:?}", w.g.sent);
     assert_eq!(w.g.logged.len(), logs, "nothing logged while the body is missing");
     let rc2 = ConnId(RC.0 + 100);
     w.source(S, Source::Conn(rc2), rc2, false);
     w.g.put_seen((Source::Conn(rc2), S, cid(1)), Seen { present: [b].into(), deleted: BTreeSet::new() });
     w.settle();
-    assert!(w.g.sent.iter().any(|m| *m == Sent::Fetch(rc2, b)), "a source joining that shows it is asked too");
+    assert!(w.g.sent.contains(&Sent::Fetch(rc2, b)), "a source joining that shows it is asked too");
     w.judge(S, cid(1), uncovered());
     assert_eq!(w.g.logged.len(), logs + 1, "logged once held again");
 }

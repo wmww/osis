@@ -552,10 +552,7 @@ impl Engine {
                     b.parts.dedup();
                     Some(b)
                 }
-                None => match self.header(&id) {
-                    Some(full) => Some(Body { commit: id, parts: gone, expires: osis_commit::blob_expiry(&full), blind: full.blind, plaintext: Vec::new(), role_commit: full.kind.is_role(), order: fetch_order(&full), to_label: false }),
-                    None => None,
-                },
+                None => self.header(&id).map(|full| Body { commit: id, parts: gone, expires: osis_commit::blob_expiry(&full), blind: full.blind, plaintext: Vec::new(), role_commit: full.kind.is_role(), order: fetch_order(&full), to_label: false }),
             };
         }
         let mut out = Vec::new();
