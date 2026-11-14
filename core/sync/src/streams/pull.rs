@@ -125,6 +125,10 @@ impl Pulling {
         self.quiet && self.out.is_none() && !self.gap && self.pending.is_empty()
     }
 
+    pub(super) fn holding(&self) -> usize {
+        self.pending.len() + self.queue.len() + self.failed.len() + self.settled.len() + self.tell.len()
+    }
+
     pub(super) fn wake(&self) -> Option<WallMs> {
         self.retry_at.into_iter().chain(self.rejoin_at.values().copied()).min()
     }
@@ -247,7 +251,9 @@ impl Streams {
         }
         let members = ctx.shared.members(conn);
         let Some(p) = self.pull.get_mut(&conn) else { return };
-        if p.out.is_some() || p.pending.len() >= PENDING_CAP || members.is_empty() || p.retry_at.is_some_and(|t| t > ctx.now) {
+        // refusals not told yet hold the stream like messages in hand: what a peer makes this side
+        // owe it stays bounded
+        if p.out.is_some() || p.pending.len() >= PENDING_CAP || !p.tell.is_empty() || members.is_empty() || p.retry_at.is_some_and(|t| t > ctx.now) {
             return;
         }
         p.retry_at = None;
@@ -350,7 +356,13 @@ impl Streams {
         let Some(p) = self.pull.get_mut(&conn) else { return };
         let src = p.src;
         let Some(cursor) = st.cursor else {
+            // kept only for members and entries held here: a peer's word on anything else is
+            // nothing this side keeps
+            let members = ctx.shared.members(conn);
             for (s, e) in st.events {
+                if !members.contains_key(&s) {
+                    continue;
+                }
                 match e {
                     Event::Full(f) => self.known.set_full(src, s, f),
                     // code 6 counts as the entry deleted there
@@ -358,9 +370,9 @@ impl Streams {
                         self.known.remove(src, s, &b);
                     }
                     Event::Refused(b, code) => {
-                        let stamp = ctx.store.entry(&s, &b).ok().flatten().and_then(|e| e.stamp);
+                        let Ok(Some(e)) = ctx.store.entry(&s, &b) else { continue };
                         let head = self.known.head(src, &s);
-                        self.known.set_refused(src, s, b, Refusal { code, stamp, head });
+                        self.known.set_refused(src, s, b, Refusal { code, stamp: e.stamp, head });
                     }
                     _ => {}
                 }
@@ -642,6 +654,11 @@ impl Streams {
         }
         if let Some(p) = self.pull.get_mut(&conn) {
             p.settled.clear();
+            // what failed here matters only to messages in hand (an announcement again clears it)
+            if p.pending.is_empty() {
+                let failed = std::mem::take(&mut p.failed);
+                p.queue.retain(|_, (_, b)| !failed.contains(b));
+            }
         }
     }
 

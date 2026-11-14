@@ -212,6 +212,13 @@ impl Streams {
         p.caught_up() && self.places.get(&p.src).is_some_and(|pl| pl.at_stream.contains(s) && !pl.joining.contains_key(s))
     }
 
+    /// Tests only: what a connection's pulling holds for its peer (messages in hand, queued and
+    /// failed bodies, refusals to tell).
+    #[doc(hidden)]
+    pub fn holding(&self, conn: ConnId) -> usize {
+        self.pull.get(&conn).map_or(0, pull::Pulling::holding)
+    }
+
     /// Tests only: the work counted so far.
     #[doc(hidden)]
     pub fn work(&self) -> Work {

@@ -468,9 +468,17 @@ fn lost_push_read_again_by_seq_spec_sync_streams_4() {
     });
     assert!(lost);
     assert!(!knows(&p.b, p.b.src(), s, x));
-    // the next push has seq 1: a gap
+    // the next push has seq 1: a gap; while its Pull is out, not caught up
     let y = p.a.log(s, 101);
     let before = p.sent_by_b(41).len();
+    p.run_with(|ab, m| !ab && m.kind() == 41);
+    assert!(!p.b.streams.caught_up(C, &s), "a gap denies caught up");
+    for (_, f) in std::mem::take(&mut p.held) {
+        let Frame::Req(id, _) = f else { continue };
+        let m = f.msg();
+        p.seen.push((false, m.clone()));
+        p.a.with(p.now, |st, c| st.message(c, C, Incoming::Request(id, m)));
+    }
     p.run();
     let pulls = p.sent_by_b(41);
     assert_eq!(pulls.len(), before + 1, "read again");
@@ -560,6 +568,8 @@ fn absence_is_no_deletion_but_trimmed_spec_sync_streams_4() {
     let s = sid(1);
     let x = p.a.log(s, 100);
     let own = p.b.log(s, 300);
+    // b holds x too: what a's stream showed is no ground to drop it here
+    assert_eq!(p.b.log(s, 100), x);
     p.shared_read(s);
     p.run();
     assert!(knows(&p.b, p.b.src(), s, x));
@@ -577,6 +587,7 @@ fn absence_is_no_deletion_but_trimmed_spec_sync_streams_4() {
     assert!(replies.last().unwrap().trimmed);
     assert!(!knows(&p.b, p.b.src(), s, x), "a trimmed listing replaced what a holds");
     assert!(p.b.store.entry(&s, &own).unwrap().is_some(), "nothing of b's own store goes");
+    assert!(p.b.store.entry(&s, &x).unwrap().is_some(), "not what the source showed and lost either");
 }
 
 // spec/sync-streams.md §4 (Joining: a join in pages keeps its own position), SN_joindur, and
@@ -613,9 +624,10 @@ fn a_join_in_pages_keeps_its_position_spec_sync_streams_4() {
             [] => break,
             j => panic!("{j:?}"),
         }
-        let _ = c.len();
     }
     assert_eq!(seen, 300, "every event of the join, each once");
+    assert_eq!(a.reported_at(t), None, "its own position until an Applied covers the merge");
+    let _ = c;
     // merged: the member follows the stream once an Applied covers the merging reply
     a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(stream.clone()).unwrap() })));
     assert!(a.reported.contains(&Reported::Merged(C, t)));
@@ -902,6 +914,36 @@ fn the_next_source_takes_over_when_one_fails_spec_sync_streams_4() {
     p.run_on(&[C, D], |_, _, _| false);
     assert_eq!(p.b.table.opened, [x], "taken once, from the other source");
     assert!(p.b.streams.caught_up(C, &s) && p.b.streams.caught_up(D, &s));
+}
+
+// spec/sync-streams.md §4 (Bodies: what a Fetch answered with nothing is not asked there again
+// until announced again; Refused), hostile source: one listing bodies it refuses to give, and
+// telling refusals of entries this side never held, leaves nothing kept here once its messages
+// are applied.
+#[test]
+fn a_lying_source_leaves_nothing_held_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    let x: Vec<BlobId> = (0..5).map(|i| p.a.log(s, 40_000 + i)).collect();
+    p.shared_read(s);
+    // a refuses every Fetch: answered with none
+    p.run_with(|ab, m| ab && m.kind() == 20);
+    for (_, f) in std::mem::take(&mut p.held) {
+        let Frame::Ans(id, _) = f else { continue };
+        p.b.with(p.now, |st, c| st.message(c, C, Incoming::Reply(To::Streams, id, Msg::FetchReply { id, items: Vec::new() })));
+    }
+    p.run_with(|ab, m| ab && m.kind() == 20);
+    assert!(p.held.is_empty(), "not asked there again");
+    assert!(p.b.table.opened.is_empty());
+    assert!(p.b.streams.caught_up(C, &s), "its messages applied");
+    assert!(x.iter().all(|b| knows(&p.b, p.b.src(), s, *b)), "presence as it listed");
+    assert_eq!(p.b.streams.holding(C), 0, "nothing kept for it");
+    // refusals of entries b never held: nothing kept
+    let junk: Vec<(SyncId, Event)> = (0..50u8).map(|i| (s, Event::Refused(BlobId([i; 32]), Code::REFUSED))).collect();
+    let st = osis_proto::Stream { events: junk, cursor: None, report: false, seq: 0 };
+    p.b.with(p.now, |t, c| t.message(c, C, Incoming::Push(Msg::Stream(Box::new(st)))));
+    let src = p.b.src();
+    assert!((0..50u8).all(|i| p.b.streams.known().refusal(src, &s, &BlobId([i; 32])).is_none()));
 }
 
 // spec/sync-streams.md §4 (Costs): a push costs the events since the cursor, whatever the log
