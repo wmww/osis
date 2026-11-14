@@ -8,7 +8,7 @@ announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`t
 vouches for checked delta bytes (`checked_bytes`), and signature verdicts are read back only where kept (`kept_verdicts`), and every tools/known_failures.txt line names
 an existing issue file, an existing test or sim scenario and a valid pattern (`known_failures`),
 and every list under git's union merge has no duplicate line and a stale-line check (`union_lists`),
-and no code names a thing's destruction by the old word "ended" (`ended_names`), and each store's local-row key constants are prefix-free and never written as literals (`row_prefixes`), and every pointer into notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and no core `pub`
+and no code names a thing's destruction by the old word "ended" (`ended_names`), and each store's local-row key constants are prefix-free and never written as literals (`row_prefixes`), and sync's peer-record tags are distinct bytes never written as literals (`record_tags`), and every pointer into notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and no core `pub`
 item is used only by its own crate's tests or not at all unless tools/dead_pub_allow.txt lists it (tools/dead_pub.py).
 Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
 libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
@@ -429,7 +429,26 @@ def row_prefixes():
                 if a.startswith(b) or b.startswith(a):
                     yield f"{store} store: row key {a!r} ({wa}) and {b!r} ({wb}) collide (one is a prefix of the other)"
 
+# A peer record's rows are keyed by a one-byte tag per kind (sync's `store::rows::tag`): each tag
+# is its own byte, named there and nowhere written as a literal.
+RECORD_TAGS = "core/sync/src/store/rows.rs"
+RECORD_TAG = re.compile(r"const (\w+): u8 = b'(.)';")
+RECORD_CALL = re.compile(r"record_(?:put|get|remove)_(?:wide_)?rows?\([^,]*,\s*b'")
+
+def record_tags():
+    text = code_of(os.path.join(ROOT, RECORD_TAGS))
+    block = text.split("mod tag", 1)[1].split("\n}", 1)[0] if "mod tag" in text else ""
+    seen = {}
+    for m in RECORD_TAG.finditer(block):
+        if m.group(2) in seen:
+            yield f"{RECORD_TAGS}: record tags {seen[m.group(2)]} and {m.group(1)} are both b'{m.group(2)}'"
+        seen.setdefault(m.group(2), m.group(1))
+    for path, rel in all_files():
+        if rel.startswith("core/sync/src/") and rel.endswith(".rs") and RECORD_CALL.search(code_of(path)):
+            yield f"{rel}: a record row written with a literal tag (name it in {RECORD_TAGS}'s `tag`)"
+
 errs.extend(row_prefixes())
+errs.extend(record_tags())
 errs.extend(doc_refs.check())
 errs.extend(ended_names())
 errs.extend(dead_pub.check())

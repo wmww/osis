@@ -93,6 +93,9 @@ PLANTS = [
     ("core/test/tla/sync/MC.tla", None, "\n\\* NoLeakEnded"),
     # row_prefixes
     ("core/sync/src/life.rs", None, '\nconst PLANTED_ROW: &[u8] = b"zq/";\nconst PLANTED_SUB: &[u8] = b"zq/x";\nfn planted_inline() -> &\'static [u8] { b"zr/k" }\n'),
+    # record_tags
+    ("core/sync/src/store/rows.rs", "    pub(crate) const REFUSED: u8 = b'r';", "    pub(crate) const REFUSED: u8 = b'r';\n    pub(crate) const PLANTED_TAG: u8 = b'r';"),
+    ("core/sync/src/life.rs", None, "\nfn planted_tag(t: &mut T) { t.record_put_row(&rec, b'z', &s, b\"\", Vec::new()); }\n"),
     # doc_refs
     ("notes/build.md", None, "\nSee notes/no-such-planted.md and notes/gate.md, Planted Nonexistent Section.\n"),
     # dead_pub
@@ -147,6 +150,8 @@ EXPECT = [  # regexes the output must hold
     r"core/test/tla/sync/MC\.tla:\d+: `NoLeakEnded`",
     r"sync store: row key 'zq/x' \(core/sync/src/life\.rs:\d+ PLANTED_SUB\) and 'zq/' \(core/sync/src/life\.rs:\d+ PLANTED_ROW\) collide|sync store: row key 'zq/' \(core/sync/src/life\.rs:\d+ PLANTED_ROW\) and 'zq/x' \(core/sync/src/life\.rs:\d+ PLANTED_SUB\) collide",
     r"core/sync/src/life\.rs: a row key `b\"zr/\.\.\.` written as a literal",
+    r"core/sync/src/store/rows\.rs: record tags REFUSED and PLANTED_TAG are both b'r'",
+    r"core/sync/src/life\.rs: a record row written with a literal tag",
     r"notes/build\.md:\d+: notes/no-such-planted\.md does not exist",
     r"notes/build\.md:\d+: notes/gate\.md, \"planted nonexistent section\": no such section",
     r"pub fn osis-crdt::planted_dead_fn is used only",
