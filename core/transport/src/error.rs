@@ -18,6 +18,8 @@ pub enum Error {
     Closed,
     /// Local I/O or setup failure.
     Io(String),
+    /// Listening at the URL failed (`listen_all`).
+    Listen(String, Box<Error>),
 }
 
 osis_base::impl_error!(Error {
@@ -28,6 +30,7 @@ osis_base::impl_error!(Error {
     Unreachable(m) => ("unreachable: {m}"),
     Closed => ("closed"),
     Io(m) => ("transport i/o: {m}"),
+    Listen(u, e) => ("cannot listen at {u}: {e}"),
 });
 
 impl From<std::io::Error> for Error {
@@ -42,6 +45,7 @@ impl Classified for Error {
             Error::KeyMismatch | Error::Protocol(_) | Error::BadUrl(_) => ErrorClass::BadInput,
             Error::UnknownScheme(_) => ErrorClass::Parked,
             Error::Unreachable(_) | Error::Closed | Error::Io(_) => ErrorClass::Local,
+            Error::Listen(_, e) => e.class(),
         }
     }
 }

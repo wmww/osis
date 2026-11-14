@@ -127,10 +127,10 @@ impl<U: Udp> Transport for Multi<U> {
         each!(Pick; p, t => t.listen(cfg).await.map(Into::into))
     }
 
-    /// The LAN loop runs over the peer transport.
-    async fn lan(&self, port: u16) -> Result<std::sync::Arc<dyn crate::lan::LanSocket>, Error> {
+    /// LAN discovery runs over the peer transport.
+    async fn discover(&self, cfg: crate::LanConfig) -> Result<crate::Discovery<MultiConn<U>>, Error> {
         match &self.p2p {
-            Some(p) => p.lan(port).await,
+            Some(p) => p.discover_as(cfg, MultiConn::P2p).await,
             None => Err(Error::UnknownScheme(crate::PEER_SCHEME.to_owned())),
         }
     }
@@ -168,8 +168,8 @@ impl<U: Udp> Connection for MultiConn<U> {
         each!(self, c => c.source())
     }
 
-    fn relayed(&self) -> bool {
-        each!(self, c => c.relayed())
+    fn rank(&self) -> crate::Rank {
+        each!(self, c => c.rank())
     }
 
     async fn open_stream(&self) -> Result<(MultiSend<U>, MultiRecv<U>), Error> {

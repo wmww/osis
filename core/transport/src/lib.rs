@@ -1,4 +1,8 @@
-//! osis-transport: `Transport`: confidential authenticated byte streams; `InProcess` (with a NAT model, `nat`), QUIC (`quic`), P2P by dialable key with relaying and hole punching (`p2p`), `Multi` (by scheme); `link` sessions for tokio drivers (`link`) (spec/sync-transport.md §1).
+//! osis-transport: `Transport`: confidential authenticated byte streams; `InProcess` (with a NAT model, `nat`), QUIC (`quic`), P2P by dialable key with relaying and hole punching (`p2p`), LAN discovery (`lan`, run by `Transport::discover`), `Multi` (by scheme); `link` sessions for tokio drivers (`link`) (spec/sync-transport.md §1).
+//!
+//! The boundary sync's driver uses: `Transport` (`dial`, `listen`, `discover`, `listen_all`) and
+//! `Connection` (`peer_key`, `rank`, streams). Nothing above it names a transport or learns how a
+//! peer is reached beyond a connection's `Rank`.
 //! Layer 1 (notes/architecture.md). Notes: notes/networking.md (Implementation); P2P: notes/networking.md.
 //!
 //! Traits use `impl Future + Send` returns and no runtime types: `InProcess` and `Sched` run
@@ -21,6 +25,7 @@ pub use error::Error;
 pub use mem::{Faults, InProcess, MemConn, MemListener, MemRecv, MemSend, Net};
 pub use sched::{Sched, Spawner};
 pub use manage::Backoff;
+pub use lan::{Discovery, Found, LanConfig};
 pub use multi::{Multi, MultiConn, MultiListener, MultiRecv, MultiSend};
 pub use link::{Link, LinkRx, LinkTx};
 pub use quic::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend, QuicSock, QuicUdp};
@@ -78,6 +83,16 @@ pub enum Peer {
     Key(PublicKey),
     Unix { uid: u32 },
 }
+
+/// A connection's route rank (spec/sync-transport.md §1): lower is better, the same at both
+/// ends; all sync learns of how a peer is reached.
+pub type Rank = u8;
+/// A connection to a LAN listener (spec/sync-transport.md §4).
+pub const RANK_LAN: Rank = 0;
+/// Any other direct connection.
+pub const RANK_DIRECT: Rank = 1;
+/// A connection a relay carries (spec/sync-transport.md §3).
+pub const RANK_RELAYED: Rank = 2;
 
 /// Where to dial: a transport URL and the key the peer must authenticate with (spec/sync-transport.md §1).
 /// Mirrors the schema's `address` type; the scheme picks the implementation.
@@ -147,9 +162,10 @@ pub trait Transport: Send + Sync + 'static {
     type Listener: Listener<Conn = Self::Conn>;
     fn dial(&self, addr: &Address) -> impl Future<Output = Result<Self::Conn, Error>> + Send;
     fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<Self::Listener, Error>> + Send;
-    /// The LAN loop's announcement socket at `port` (spec/sync-transport.md §4; 0: any). A transport with
-    /// no LAN has none.
-    fn lan(&self, _port: u16) -> impl Future<Output = Result<std::sync::Arc<dyn lan::LanSocket>, Error>> + Send {
+    /// Starts LAN discovery (spec/sync-transport.md §4): joins at once (a fresh key and listener,
+    /// announced; a listener that cannot bind is the error), and again whenever the network may
+    /// have changed or `Discovery::rejoin` asks. A transport with no LAN refuses.
+    fn discover(&self, _cfg: LanConfig) -> impl Future<Output = Result<Discovery<Self::Conn>, Error>> + Send {
         async { Err(Error::Unreachable("no LAN on this transport".into())) }
     }
 }
@@ -164,9 +180,27 @@ impl<T: Transport> Transport for std::sync::Arc<T> {
     fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<Self::Listener, Error>> + Send {
         (**self).listen(cfg)
     }
-    fn lan(&self, port: u16) -> impl Future<Output = Result<std::sync::Arc<dyn lan::LanSocket>, Error>> + Send {
-        (**self).lan(port)
+    fn discover(&self, cfg: LanConfig) -> impl Future<Output = Result<Discovery<Self::Conn>, Error>> + Send {
+        (**self).discover(cfg)
     }
+}
+
+/// Listens at every URL of `urls` under one key (spec/sync-transport.md §5, One key): all or
+/// none. A URL that cannot be listened on closes the listeners made and is the error, naming it;
+/// a key change (`rotate_peer_address`) closes the old listeners first, then calls this with the
+/// new secret, so a failed relisten is never an `Ok`.
+pub async fn listen_all<T: Transport>(t: &T, urls: &[String], secret: &StaticSecret) -> Result<Vec<T::Listener>, Error> {
+    let mut out = Vec::with_capacity(urls.len());
+    for url in urls {
+        match t.listen(ListenConfig { url: url.clone(), secret: secret.clone() }).await {
+            Ok(l) => out.push(l),
+            Err(e) => {
+                out.iter().for_each(Listener::close);
+                return Err(Error::Listen(url.clone(), Box::new(e)));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Incoming connections.
@@ -193,9 +227,10 @@ pub trait Connection: Clone + Send + Sync + 'static {
     }
     /// Where the connection comes from, when the transport can tell (`Source`).
     fn source(&self) -> Option<Source>;
-    /// Whether a relay carries the connection's bytes (spec/sync-transport.md §3): both ends tell alike.
-    fn relayed(&self) -> bool {
-        false
+    /// The route rank (spec/sync-transport.md §1): both ends tell alike. `RANK_DIRECT` unless
+    /// overridden.
+    fn rank(&self) -> Rank {
+        RANK_DIRECT
     }
     /// A new stream. The peer's `accept_stream` sees it once data (or finish) is sent on it.
     fn open_stream(&self) -> impl Future<Output = Result<(Self::Send, Self::Recv), Error>> + Send;

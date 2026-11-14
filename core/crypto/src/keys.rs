@@ -141,62 +141,6 @@ pub fn link_tree_hash(dedup: &Secret32, level: u64, children: &[([u8; 32], u64)]
     *kdf(kdf::LINK_TREE, dedup.expose(), &input).expose()
 }
 
-/// LAN discovery tag: first 16 bytes of `kdf("lan tag", lan secret, le64(window))`, window =
-/// floor(unix ms / 600000) (spec/sync-transport.md §4).
-pub fn lan_tag(lan_secret: &Secret32, unix_ms: u64) -> [u8; 16] {
-    let full = kdf(kdf::LAN_TAG, lan_secret.expose(), &(unix_ms / 600_000).to_le_bytes());
-    let mut t = [0u8; 16];
-    t.copy_from_slice(full.expose().get(..16).unwrap_or(&[0; 16]));
-    t
-}
-
-/// What a LAN announcement's signature covers: BLAKE3(tag (16) || key (32) || be16(port))
-/// (spec/sync-transport.md §4).
-pub fn lan_digest(tag: &[u8; 16], key: &[u8; 32], port: u16) -> [u8; 32] {
-    let mut h = blake3::Hasher::new();
-    h.update(tag);
-    h.update(key);
-    h.update(&port.to_be_bytes());
-    h.finalize().into()
-}
-
-/// The 64-byte keystream hiding a LAN announcement's signature: `kdf("lan sig", lan secret,
-/// le64(window) || digest)` in the XOF form, `digest` = `lan_digest` (spec/sync-transport.md §4), so
-/// another key or port in the same window never reuses it.
-pub fn lan_keystream(lan_secret: &Secret32, window: u64, digest: &[u8; 32]) -> [u8; 64] {
-    let mut input = [0u8; 40];
-    let (w, d) = input.split_at_mut(8);
-    w.copy_from_slice(&window.to_le_bytes());
-    d.copy_from_slice(digest);
-    let mut k = [0u8; 64];
-    crate::kdf::kdf_xof(kdf::LAN_SIG, lan_secret.expose(), &input, &mut k);
-    k
-}
-
-fn xor64(a: &[u8; 64], b: &[u8; 64]) -> [u8; 64] {
-    let mut out = [0u8; 64];
-    for ((o, x), y) in out.iter_mut().zip(a).zip(b) {
-        *o = x ^ y;
-    }
-    out
-}
-
-/// A LAN announcement's sealed signature (spec/sync-transport.md §4): the Ed25519 signature under the
-/// dialable key over `"osis v1 lan announce"` and `lan_digest`, XORed with the window's
-/// keystream, so checking it needs both the lan secret and the dialable key.
-pub fn seal_lan_sig(dialable: &SigningSecret, lan_secret: &Secret32, window: u64, tag: &[u8; 16], key: &[u8; 32], port: u16) -> [u8; 64] {
-    let digest = lan_digest(tag, key, port);
-    let sig = dialable.sign(Domain::LanAnnounce, &digest);
-    xor64(&sig.0, &lan_keystream(lan_secret, window, &digest))
-}
-
-/// Whether `sealed` is `seal_lan_sig` of these inputs under `dialable`'s key.
-pub fn open_lan_sig(dialable: &VerifyingKey, lan_secret: &Secret32, window: u64, tag: &[u8; 16], key: &[u8; 32], port: u16, sealed: &[u8; 64]) -> bool {
-    let digest = lan_digest(tag, key, port);
-    let sig = Signature(xor64(sealed, &lan_keystream(lan_secret, window, &digest)));
-    dialable.verify(Domain::LanAnnounce, &digest, &sig).is_ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,27 +198,5 @@ mod tests {
         assert_ne!(link_tree_hash(&d, 1, &[a, b]), link_tree_hash(&d, 1, &[(a.0, 2), (b.0, 0)]));
         assert_ne!(link_hash(&d, b"a"), delta_hash(&d, b"a"));
         assert_ne!(link_hash(&d, b"a"), link_hash(&Secret32::from_bytes([8; 32]), b"a"));
-        let s = Secret32::from_bytes([1; 32]);
-        assert_eq!(lan_tag(&s, 0), lan_tag(&s, 599_999));
-        assert_ne!(lan_tag(&s, 0), lan_tag(&s, 600_000));
-    }
-
-    // spec/sync-transport.md §4: a sealed announcement signature opens only with the same lan secret,
-    // window, dialable key and signed fields.
-    #[test]
-    fn lan_sig_sealed_spec_sync_10() {
-        let d = SigningSecret::from_seed(&Secret32::from_bytes([8; 32]));
-        let lan = Secret32::from_bytes([12; 32]);
-        let (tag, key) = ([1u8; 16], [2u8; 32]);
-        let sealed = seal_lan_sig(&d, &lan, 7, &tag, &key, 9);
-        let vk = d.verifying_key();
-        assert!(open_lan_sig(&vk, &lan, 7, &tag, &key, 9, &sealed));
-        assert!(!open_lan_sig(&vk, &Secret32::from_bytes([13; 32]), 7, &tag, &key, 9, &sealed), "other lan secret");
-        assert!(!open_lan_sig(&vk, &lan, 8, &tag, &key, 9, &sealed), "other window");
-        assert!(!open_lan_sig(&vk, &lan, 7, &tag, &key, 10, &sealed), "other port");
-        let other = SigningSecret::from_seed(&Secret32::from_bytes([9; 32])).verifying_key();
-        assert!(!open_lan_sig(&other, &lan, 7, &tag, &key, 9, &sealed), "other dialable key");
-        let plain = d.sign(Domain::LanAnnounce, &lan_digest(&tag, &key, 9));
-        assert!(!open_lan_sig(&vk, &lan, 7, &tag, &key, 9, &plain.0), "unsealed");
     }
 }

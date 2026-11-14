@@ -22,6 +22,7 @@ osis-proto.workspace = true
 osis-crdt.workspace = true
 osis-commit.workspace = true
 osis-label.workspace = true
+osis-transport.workspace = true
 
 [[bin]]
 name = "fuzz-seeds"

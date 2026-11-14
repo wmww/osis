@@ -48,7 +48,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("secrets", "secrets.0", SECRETS.encode(&secrets)),
         ("label", "label.0", LABEL.encode(&labels)),
         ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into() })),
-        ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], items: vec!["https://relay.example".into()], lan_secret: [28; 32], account: None })),
+        ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], items: vec!["https://relay.example".into()], account: None })),
         ("host", "host^.0", HOST.encode(&Host {
             admit: Admit::Open,
             labels: BTreeSet::from([SyncId([31; 16])]),

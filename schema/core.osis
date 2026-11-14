@@ -285,14 +285,13 @@ aspect node.0: struct {
     software 0: string,
 };
 
-/// How to reach the device directly (spec/sync-opens.md §4): its 32-byte public key, its `peer://`
-/// addresses and relays, a 32-byte secret for finding it on the local network, and the account
-/// the device says it belongs to (a dial hint, never proof).
+/// How to reach the device directly (spec/sync-transport.md §1, §3): its 32-byte public key, its
+/// `peer://` global addresses and relays, and the account the device says it belongs to (a dial
+/// hint, never proof).
 aspect reach.0: struct {
     dialable 0: blob,
     items 1: list<string>,
-    lan_secret 2: blob,
-    account 3: option<tid>,
+    account 2: option<tid>,
 };
 
 /// Which labels a host stores for others: those `labels` lists, or anyone's.

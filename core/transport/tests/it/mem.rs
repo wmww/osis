@@ -361,3 +361,33 @@ fn deterministic_with_partition_heal_kill() {
     assert_eq!(ends, vec![(0, true), (1, true), (2, false)]);
     assert_eq!(a, faulty(0));
 }
+
+// spec/sync-transport.md §5 (one key, key change): every listener listens under the one key; a
+// URL that cannot be listened on is an error naming it, never an `Ok`, and leaves none of the
+// others listening; with the old listeners closed the new key listens at the same URLs.
+#[test]
+fn listen_all_is_all_or_none() {
+    let net = Net::new(0);
+    let mut s = Sched::new(0, Some(net.clone()));
+    let ep = net.endpoint("n");
+    let other = net.endpoint("o");
+    let urls: Vec<String> = vec!["mem://n-1".into(), "mem://n-2".into()];
+    let done = s.block_on(async move {
+        let ls = listen_all(&ep, &urls, &secret(1)).await.unwrap();
+        assert!(ls.iter().all(|l| l.address().key == secret(1).public_key()));
+        // a relisten while the old listeners hold the URLs fails, naming the URL, and closes what it made
+        let taken = ep.listen(ListenConfig { url: "mem://n-3".into(), secret: secret(9) }).await.unwrap();
+        let more = [urls.clone(), vec!["mem://n-3".into()]].concat();
+        drop(ls);
+        let err = listen_all(&ep, &more, &secret(2)).await.err();
+        assert!(matches!(&err, Some(Error::Listen(u, _)) if u == "mem://n-3"), "{err:?}");
+        let key2 = secret(2).public_key();
+        assert!(matches!(other.dial(&Address { url: "mem://n-1".into(), key: key2 }).await, Err(Error::Unreachable(_))), "none left listening");
+        drop(taken);
+        let ls = listen_all(&ep, &more, &secret(2)).await.unwrap();
+        assert!(other.dial(&Address { url: "mem://n-1".into(), key: key2 }).await.is_ok());
+        assert!(matches!(other.dial(&Address { url: "mem://n-2".into(), key: secret(1).public_key() }).await, Err(Error::KeyMismatch)), "nothing under the old key");
+        ls.len()
+    });
+    assert_eq!(done, Some(3));
+}

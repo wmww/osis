@@ -413,6 +413,11 @@ impl LanSocket for MemLan {
             }
         }))
     }
+
+    /// The model's networks never change: a rejoin comes from `Discovery::rejoin`.
+    fn changed(&self) -> LanFuture<'_, ()> {
+        Box::pin(std::future::pending())
+    }
 }
 
 impl Drop for MemLan {

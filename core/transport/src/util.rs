@@ -1,6 +1,8 @@
-//! Small helpers: poison-tolerant locking, a seeded rng.
+//! Small helpers: poison-tolerant locking, a seeded rng, a gate tasks wait on.
 
+use std::future::poll_fn;
 use std::sync::{Mutex, MutexGuard};
+use std::task::{Context, Poll, Waker};
 
 /// Locks, ignoring poisoning (a panicked test thread must not cascade).
 pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -35,5 +37,39 @@ impl Rng {
             }
         }
         out
+    }
+}
+
+/// Set once; wakes whoever waits for it.
+#[derive(Default)]
+pub(crate) struct Gate(Mutex<(bool, Vec<Waker>)>);
+
+impl Gate {
+    pub(crate) fn close(&self) {
+        let ws = {
+            let mut g = lock(&self.0);
+            g.0 = true;
+            std::mem::take(&mut g.1)
+        };
+        ws.into_iter().for_each(Waker::wake);
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        lock(&self.0).0
+    }
+
+    pub(crate) fn poll_closed(&self, cx: &mut Context<'_>) -> Poll<()> {
+        let mut g = lock(&self.0);
+        if g.0 {
+            return Poll::Ready(());
+        }
+        if !g.1.iter().any(|w| w.will_wake(cx.waker())) {
+            g.1.push(cx.waker().clone());
+        }
+        Poll::Pending
+    }
+
+    pub(crate) async fn closed(&self) {
+        poll_fn(|cx| self.poll_closed(cx)).await
     }
 }

@@ -17,8 +17,9 @@
 //!   observed address; the target punches and the dialer dials direct from the same socket.
 
 use crate::quic::{self, PinnedKey, ALPN, IDLE_TIMEOUT, SNI_NAME};
-use crate::util::lock;
-use crate::{evict_for, ip_source, Address, Backoff, Connection, Error, ListenConfig, Listener, PublicKey, RecvStream, SendStream, Source, StaticSecret, Transport};
+use crate::util::{lock, Gate};
+use crate::lan::{Discovery, Found, Joined, LanConfig, LanSocket};
+use crate::{evict_for, ip_source, Address, Backoff, Connection, Error, ListenConfig, Listener, PublicKey, Rank, RecvStream, SendStream, Source, StaticSecret, Transport, RANK_DIRECT, RANK_LAN, RANK_RELAYED};
 use std::collections::BTreeMap;
 use std::future::{poll_fn, Future};
 use std::io::{Read, Write};
@@ -259,42 +260,6 @@ async fn read_addr<R: RecvStream>(r: &mut R) -> Result<SocketAddr, Error> {
     Ok(SocketAddr::new(ip, u16::from_be_bytes(port)))
 }
 
-// ---- a close signal ----
-
-/// Set once; wakes whoever waits for it.
-#[derive(Default)]
-struct Gate(Mutex<(bool, Vec<Waker>)>);
-
-impl Gate {
-    fn close(&self) {
-        let ws = {
-            let mut g = lock(&self.0);
-            g.0 = true;
-            std::mem::take(&mut g.1)
-        };
-        ws.into_iter().for_each(Waker::wake);
-    }
-
-    fn is_closed(&self) -> bool {
-        lock(&self.0).0
-    }
-
-    fn poll_closed(&self, cx: &mut Context<'_>) -> Poll<()> {
-        let mut g = lock(&self.0);
-        if g.0 {
-            return Poll::Ready(());
-        }
-        if !g.1.iter().any(|w| w.will_wake(cx.waker())) {
-            g.1.push(cx.waker().clone());
-        }
-        Poll::Pending
-    }
-
-    async fn closed(&self) {
-        poll_fn(|cx| self.poll_closed(cx)).await
-    }
-}
-
 /// `f`'s output if it is ready when first polled.
 fn ready_now<F: Future>(f: F) -> Option<F::Output> {
     let mut f = std::pin::pin!(f);
@@ -489,16 +454,17 @@ impl<C: Connection> Relayed<C> {
     }
 }
 
-/// A P2P connection: direct, or through a relay.
+/// A P2P connection: direct (its rank: `RANK_LAN` to or from a LAN listener, else
+/// `RANK_DIRECT`), or through a relay.
 pub enum P2pConn<C: Connection> {
-    Direct(C),
+    Direct(C, Rank),
     Relayed(Arc<Relayed<C>>),
 }
 
 impl<C: Connection> Clone for P2pConn<C> {
     fn clone(&self) -> Self {
         match self {
-            P2pConn::Direct(c) => P2pConn::Direct(c.clone()),
+            P2pConn::Direct(c, r) => P2pConn::Direct(c.clone(), *r),
             P2pConn::Relayed(r) => P2pConn::Relayed(r.clone()),
         }
     }
@@ -520,7 +486,7 @@ impl<C: Connection> Connection for P2pConn<C> {
 
     fn peer_key(&self) -> PublicKey {
         match self {
-            P2pConn::Direct(c) => c.peer_key(),
+            P2pConn::Direct(c, _) => c.peer_key(),
             P2pConn::Relayed(r) => r.peer,
         }
     }
@@ -529,19 +495,22 @@ impl<C: Connection> Connection for P2pConn<C> {
     /// the dialer the relay's address.
     fn source(&self) -> Option<Source> {
         match self {
-            P2pConn::Direct(c) => c.source(),
+            P2pConn::Direct(c, _) => c.source(),
             P2pConn::Relayed(r) => Some(r.source),
         }
     }
 
-    fn relayed(&self) -> bool {
-        matches!(self, P2pConn::Relayed(_))
+    fn rank(&self) -> Rank {
+        match self {
+            P2pConn::Direct(_, r) => *r,
+            P2pConn::Relayed(_) => RANK_RELAYED,
+        }
     }
 
     /// A relayed connection carries one stream, which its dialer opens.
     async fn open_stream(&self) -> Result<(P2pSend<C>, P2pRecv<C>), Error> {
         match self {
-            P2pConn::Direct(c) => c.open_stream().await.map(|(s, r)| (P2pSend::Direct(s), P2pRecv::Direct(r))),
+            P2pConn::Direct(c, _) => c.open_stream().await.map(|(s, r)| (P2pSend::Direct(s), P2pRecv::Direct(r))),
             P2pConn::Relayed(r) if r.gate.is_closed() => Err(Error::Closed),
             P2pConn::Relayed(r) => match lock(&r.stream).take().filter(|_| r.dialer) {
                 Some((s, rx)) => Ok((P2pSend::Relayed(s), P2pRecv::Relayed(rx))),
@@ -552,7 +521,7 @@ impl<C: Connection> Connection for P2pConn<C> {
 
     async fn accept_stream(&self) -> Result<(P2pSend<C>, P2pRecv<C>), Error> {
         match self {
-            P2pConn::Direct(c) => c.accept_stream().await.map(|(s, r)| (P2pSend::Direct(s), P2pRecv::Direct(r))),
+            P2pConn::Direct(c, _) => c.accept_stream().await.map(|(s, r)| (P2pSend::Direct(s), P2pRecv::Direct(r))),
             P2pConn::Relayed(r) => {
                 let taken = if r.dialer { None } else { lock(&r.stream).take() };
                 match taken {
@@ -568,7 +537,7 @@ impl<C: Connection> Connection for P2pConn<C> {
 
     fn close(&self) {
         match self {
-            P2pConn::Direct(c) => c.close(),
+            P2pConn::Direct(c, _) => c.close(),
             P2pConn::Relayed(r) => r.close(),
         }
     }
@@ -834,11 +803,13 @@ pub struct P2p<U: Udp> {
     udp: U,
     relay: Option<Arc<RelayServer<U>>>,
     parked: Arc<Mutex<Parked<SConn<U>>>>,
+    /// The current LAN join (`discover`): which keys are LAN listeners'.
+    lan: Arc<Mutex<Joined>>,
 }
 
 impl<U: Udp> P2p<U> {
     pub fn new(udp: U) -> P2p<U> {
-        P2p { udp, relay: None, parked: Arc::new(Mutex::new(Parked { next: 0, conns: BTreeMap::new() })) }
+        P2p { udp, relay: None, parked: Arc::new(Mutex::new(Parked { next: 0, conns: BTreeMap::new() })), lan: Arc::default() }
     }
 
     /// Its listeners also relay, by `cfg`.
@@ -892,11 +863,11 @@ impl<U: Udp> P2p<U> {
     }
 }
 
-/// A direct attempt from `sock` to `to`; its result goes to `tx`.
-fn direct<U: Udp>(udp: &U, sock: &Arc<U::Sock>, to: SocketAddr, key: PublicKey, tx: mpsc::UnboundedSender<Result<P2pConn<SConn<U>>, Error>>) {
+/// A direct attempt from `sock` to `to`, of `rank`; its result goes to `tx`.
+fn direct<U: Udp>(udp: &U, sock: &Arc<U::Sock>, to: SocketAddr, key: PublicKey, rank: Rank, tx: mpsc::UnboundedSender<Result<P2pConn<SConn<U>>, Error>>) {
     let s = sock.clone();
     udp.spawn(async move {
-        let _ = tx.send(s.dial(to, key, None, Alpn::Osis).await.map(P2pConn::Direct));
+        let _ = tx.send(s.dial(to, key, None, Alpn::Osis).await.map(|c| P2pConn::Direct(c, rank)));
     });
 }
 
@@ -930,7 +901,7 @@ async fn relayed<U: Udp>(udp: U, sock: Arc<U::Sock>, relay: Relay, key: PublicKe
         let (mut ts, mut tr) = tls_stream(tls, s, r, raw);
         let theirs = exchange(&mut ts, &mut tr, seen).await?;
         if punchable(theirs, relay.addr) {
-            direct(&udp, &sock, theirs, key, tx.clone());
+            direct(&udp, &sock, theirs, key, RANK_DIRECT, tx.clone());
         }
         Ok(P2pConn::Relayed(Arc::new(Relayed::new(key, ip_source(relay.addr.ip()), true, (ts, tr), Some(rc)))))
     };
@@ -1067,8 +1038,10 @@ impl<U: Udp> Transport for P2p<U> {
     async fn dial(&self, addr: &Address) -> Result<Self::Conn, Error> {
         let tag = addr.key;
         if let Some((_, c)) = lock(&self.parked).conns.remove(&tag) {
-            return Ok(P2pConn::Direct(c));
+            return Ok(P2pConn::Direct(c, RANK_DIRECT));
         }
+        // a key heard announced is a LAN listener's (spec/sync-transport.md §1 Route rank)
+        let rank = if lock(&self.lan).is_lan(&addr.key) { RANK_LAN } else { RANK_DIRECT };
         let it = items(&addr.url)?;
         if it.direct.is_empty() && it.relays.is_empty() {
             return Err(Error::Unreachable(addr.url.clone()));
@@ -1085,7 +1058,7 @@ impl<U: Udp> Transport for P2p<U> {
         let stop = Arc::new(Gate::default());
         for d in it.direct {
             match sock_for(d) {
-                Ok(sock) => direct(&self.udp, &sock, d, addr.key, tx.clone()),
+                Ok(sock) => direct(&self.udp, &sock, d, addr.key, rank, tx.clone()),
                 Err(e) => drop(tx.send(Err(e))),
             }
         }
@@ -1113,7 +1086,7 @@ impl<U: Udp> Transport for P2p<U> {
         let me = self.clone();
         let mut relayed = match &first {
             P2pConn::Relayed(r) => Some(Arc::downgrade(r)),
-            P2pConn::Direct(_) => None,
+            P2pConn::Direct(..) => None,
         };
         self.udp.spawn(async move {
             while let Some(r) = rx.recv().await {
@@ -1123,7 +1096,7 @@ impl<U: Udp> Transport for P2p<U> {
                 // caller would take a switch for a failed dial and wait out its retry pause)
                 let rel = relayed.as_ref().and_then(std::sync::Weak::upgrade).filter(|r| !r.gate.is_closed() && lock(&r.stream).is_none());
                 match (c, rel) {
-                    (P2pConn::Direct(d), Some(rel)) => {
+                    (P2pConn::Direct(d, _), Some(rel)) => {
                         relayed = None;
                         me.park(tag, d);
                         rel.close();
@@ -1136,6 +1109,17 @@ impl<U: Udp> Transport for P2p<U> {
     }
 
     async fn listen(&self, cfg: ListenConfig) -> Result<P2pListener<U>, Error> {
+        self.listen_ranked(cfg, RANK_DIRECT)
+    }
+
+    fn discover(&self, cfg: LanConfig) -> impl Future<Output = Result<Discovery<Self::Conn>, Error>> + Send {
+        self.discover_as(cfg, |c| c)
+    }
+}
+
+impl<U: Udp> P2p<U> {
+    /// A listener (`Transport::listen`) whose connections are of `rank`.
+    fn listen_ranked(&self, cfg: ListenConfig, rank: Rank) -> Result<P2pListener<U>, Error> {
         let it = items(&cfg.url)?;
         let [bind] = it.direct.as_slice() else { return Err(Error::BadUrl(format!("{}: one socket address to bind", cfg.url))) };
         let sock = Arc::new(self.udp.bind(*bind, Some(&cfg.secret))?);
@@ -1148,7 +1132,7 @@ impl<U: Udp> Transport for P2p<U> {
             loop {
                 match s2.accept().await {
                     Ok((c, Alpn::Osis, _)) => {
-                        if tx2.send(P2pConn::Direct(c)).await.is_err() {
+                        if tx2.send(P2pConn::Direct(c, rank)).await.is_err() {
                             return;
                         }
                     }
@@ -1170,8 +1154,116 @@ impl<U: Udp> Transport for P2p<U> {
         Ok(P2pListener { rx, addr: Address { url: crate::peer_url(&list), key }, stop, sock, observed })
     }
 
-    async fn lan(&self, port: u16) -> Result<Arc<dyn crate::lan::LanSocket>, Error> {
-        self.udp.lan(port).await
+    /// One LAN join (spec/sync-transport.md §4): a fresh key and a listener of rank `RANK_LAN` at
+    /// the first of `cfg.listen` that binds; the join state starts empty. Failing, the join
+    /// state is empty and the error the last URL's.
+    fn join(&self, cfg: &LanConfig) -> Result<P2pListener<U>, Error> {
+        *lock(&self.lan) = Joined::default();
+        let secret = StaticSecret::from_bytes(self.udp.seed()?);
+        let mut err = Error::BadUrl("no LAN listen URL".into());
+        for url in &cfg.listen {
+            match self.listen_ranked(ListenConfig { url: url.clone(), secret: secret.clone() }, RANK_LAN) {
+                Ok(l) => {
+                    *lock(&self.lan) = Joined::new(secret.public_key());
+                    return Ok(l);
+                }
+                Err(e) => err = e,
+            }
+        }
+        Err(err)
+    }
+
+    /// `Transport::discover`, its connections as `wrap` makes them (`Multi`'s own type). Two
+    /// tasks: one hears announcements and hands up each new key to dial, `cfg.pace_ms` apart;
+    /// one runs the joins, each announcing `1 + cfg.repeats` times and handing up its
+    /// listener's connections until the next join.
+    pub(crate) async fn discover_as<C: Send + 'static>(&self, cfg: LanConfig, wrap: fn(P2pConn<SConn<U>>) -> C) -> Result<Discovery<C>, Error> {
+        let sock = self.udp.lan(cfg.port).await?;
+        let first = self.join(&cfg)?;
+        let (tx, rx) = mpsc::channel(ACCEPT_QUEUE);
+        let rejoin = Arc::new(tokio::sync::Notify::new());
+        let stop = Arc::new(Gate::default());
+        let (me, s, t, st) = (self.clone(), sock.clone(), tx.clone(), stop.clone());
+        let pace = cfg.pace_ms;
+        self.udp.spawn(async move {
+            loop {
+                let heard = tokio::select! {
+                    h = s.recv() => h,
+                    () = st.closed() => return,
+                };
+                let Ok((a, from)) = heard else { return };
+                let found = lock(&me.lan).heard(&a, from);
+                if let Some(addr) = found {
+                    if t.send(Found::Dial(addr)).await.is_err() {
+                        return;
+                    }
+                    me.udp.sleep_ms(pace).await;
+                }
+            }
+        });
+        let (me, again) = (self.clone(), rejoin.clone());
+        let st = stop.clone();
+        self.udp.spawn(async move {
+            let mut listener = Some(first);
+            loop {
+                let ended = Arc::new(Gate::default());
+                if let Some(l) = listener.take() {
+                    me.udp.spawn(announce(me.udp.clone(), sock.clone(), cfg.clone(), announcement(&l), ended.clone()));
+                    me.udp.spawn(hand_up(l, tx.clone(), wrap, ended.clone()));
+                }
+                tokio::select! {
+                    () = st.closed() => {}
+                    () = again.notified() => {}
+                    Ok(()) = sock.changed() => {}
+                }
+                ended.close();
+                if st.is_closed() {
+                    *lock(&me.lan) = Joined::default();
+                    return;
+                }
+                listener = me.join(&cfg).ok();
+            }
+        });
+        Ok(Discovery { rx, rejoin, stop })
+    }
+}
+
+/// The announcement of listener `l`: its key and its socket's port (one socket serves both
+/// families, so the port is the same on each).
+fn announcement<U: Udp>(l: &P2pListener<U>) -> crate::lan::Announce {
+    crate::lan::Announce { key: l.addr.key, port: l.sock.local().port() }
+}
+
+/// A join's announcements: at once, then `cfg.repeats` more `cfg.gap_ms` apart, to every target
+/// (an IPv6 one only when the socket has IPv6), until `ended`. A failed send is skipped.
+async fn announce<U: Udp>(udp: U, sock: Arc<dyn LanSocket>, cfg: LanConfig, a: crate::lan::Announce, ended: Arc<Gate>) {
+    for i in 0..=cfg.repeats {
+        if i > 0 {
+            tokio::select! {
+                () = udp.sleep_ms(cfg.gap_ms) => {}
+                () = ended.closed() => return,
+            }
+        }
+        if ended.is_closed() {
+            return;
+        }
+        for to in cfg.to.iter().filter(|t| t.is_ipv4() || sock.has_v6()) {
+            let _ = sock.announce(&a, *to).await;
+        }
+    }
+}
+
+/// Hands up a join's listener's connections until `ended`, then drops (closes) it.
+async fn hand_up<U: Udp, C>(mut l: P2pListener<U>, tx: mpsc::Sender<Found<C>>, wrap: fn(P2pConn<SConn<U>>) -> C, ended: Arc<Gate>) {
+    loop {
+        let c = tokio::select! {
+            c = l.accept() => c,
+            () = ended.closed() => return,
+        };
+        let Ok(c) = c else { return };
+        if tx.send(Found::Conn(wrap(c))).await.is_err() {
+            return;
+        }
     }
 }
 

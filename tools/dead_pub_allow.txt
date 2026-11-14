@@ -230,6 +230,7 @@ osis-transport::relaying  deferred: sync rebuild (issues/sync-rewrite.md Phase 3
 osis-transport::run_on_tokio  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-transport::set_dial_ms  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-transport::set_lan_loss  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
+osis-transport::listen_all  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); the driver's listeners and `rotate_peer_address` relisten through it
 osis::accept_invite  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
 osis::decline_invite  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
 osis::invite_requests  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)

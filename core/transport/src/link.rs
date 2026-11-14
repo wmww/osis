@@ -4,7 +4,7 @@
 //! every stream the dialer opens as a session (spec/sync-transport.md §2), finishes its side when a session
 //! ends, and closes only once the dialer closed or the connection sat idle without sessions.
 
-use crate::{Address, Connection, Error, Listener, Peer, PublicKey, RecvStream, SendStream, Source, Transport};
+use crate::{Address, Connection, Error, Listener, Peer, PublicKey, Rank, RecvStream, SendStream, Source, Transport, RANK_DIRECT};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -88,8 +88,8 @@ pub struct Link {
     pub peer: Peer,
     /// Where the connection carrying it comes from (`Connection::source`).
     pub source: Option<Source>,
-    /// A relay carries the connection (`Connection::relayed`).
-    pub relayed: bool,
+    /// The connection's route rank (`Connection::rank`).
+    pub rank: Rank,
     pub tx: LinkTx,
     pub rx: LinkRx,
 }
@@ -149,7 +149,7 @@ fn session<C: Connection>(c: &C, mut send: C::Send, mut recv: C::Recv, closer: O
             }
         }
     });
-    Link { peer_key: c.peer_key(), peer: c.peer(), source: c.source(), relayed: c.relayed(), tx: LinkTx { tx, queued, taken }, rx: LinkRx { rx: rrx, want } }
+    Link { peer_key: c.peer_key(), peer: c.peer(), source: c.source(), rank: c.rank(), tx: LinkTx { tx, queued, taken }, rx: LinkRx { rx: rrx, want } }
 }
 
 /// Dials `addr` and opens one session on it. The connection closes when the session ends.
@@ -164,7 +164,7 @@ pub async fn dial<T: Transport>(t: &T, addr: &Address, wait: Duration) -> Result
 pub fn pair(a_key: PublicKey, b_key: PublicKey) -> (Link, Link) {
     let (a_tx, b_rx) = pipe();
     let (b_tx, a_rx) = pipe();
-    (Link { peer_key: b_key, peer: Peer::Key(b_key), source: None, relayed: false, tx: a_tx, rx: a_rx }, Link { peer_key: a_key, peer: Peer::Key(a_key), source: None, relayed: false, tx: b_tx, rx: b_rx })
+    (Link { peer_key: b_key, peer: Peer::Key(b_key), source: None, rank: RANK_DIRECT, tx: a_tx, rx: a_rx }, Link { peer_key: a_key, peer: Peer::Key(a_key), source: None, rank: RANK_DIRECT, tx: b_tx, rx: b_rx })
 }
 
 /// One direction of a `pair`: a pump moves what is sent into the receiver's bounded queue,

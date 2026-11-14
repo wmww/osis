@@ -77,6 +77,5 @@ pub fn seed() -> VecFile {
             .with("tree-lens", "7,7")
             .with("tree-ab", hex(&link_tree_hash(&d, 1, &[(a, 7), (b, 7)]))),
     );
-    cases.push(case("lan tag", "spec/sync-transport.md §4").with("lan-secret", hex(d.expose())).with("unix-ms", "1234567890123").with("tag", hex(&lan_tag(&d, 1_234_567_890_123))));
     VecFile { header: generated_header("keys", "spec/crypto.md §3"), cases }
 }

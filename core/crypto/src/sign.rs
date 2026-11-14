@@ -14,8 +14,6 @@ pub enum Domain {
     Stamp,
     Deposit,
     Delete,
-    /// A LAN announcement, by a dialable key (spec/sync-transport.md §4).
-    LanAnnounce,
     /// A box's possession signature, by a keyset's possession key (spec/crypto.md §4).
     Possession,
     /// A node's inner signature over an account's commit ID (spec/permissions.md §5.5).
@@ -30,14 +28,13 @@ pub enum Domain {
 }
 
 impl Domain {
-    pub const ALL: [Domain; 12] = [
+    pub const ALL: [Domain; 11] = [
         Domain::Commit,
         Domain::LabelRegister,
         Domain::LabelOpen,
         Domain::Stamp,
         Domain::Deposit,
         Domain::Delete,
-        Domain::LanAnnounce,
         Domain::Possession,
         Domain::Inner,
         Domain::Merge,
@@ -52,7 +49,6 @@ impl Domain {
             Domain::Stamp => "osis v1 upload",
             Domain::Deposit => "osis v1 deposit",
             Domain::Delete => "osis v1 delete",
-            Domain::LanAnnounce => "osis v1 lan announce",
             Domain::Possession => "osis v1 possession",
             Domain::Inner => "osis v1 inner",
             Domain::Merge => "osis v1 merge",

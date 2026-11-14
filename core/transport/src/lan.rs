@@ -1,26 +1,19 @@
-//! LAN announcements (spec/sync-transport.md §4): a UDP datagram carrying
-//! the node's current LAN tag, the transport key it listens with on this network (fresh per
-//! network join, never the dialable key), that listener's port on the datagram's address family
-//! and a signature under the node's dialable key binding the three, sealed under the lan secret
-//! and window; broadcast on the IPv4 LAN, multicast to the IPv6 all-nodes group. A receiver that
-//! knows the tag's lan secret and the node's dialable key checks the signature and dials
-//! `peer://<sender address>:<port>` with the announced key. Not mDNS: the announcement carries
-//! nothing stable across windows or networks, nor anything a holder of the dialable key alone
-//! can check. Tag and signature are made and checked by the node (osis-crypto `seal_lan_sig`).
-//! `NetWatch` tells a network change (the node then joins with a fresh key).
-//!
-//! Datagram (spec/sync-transport.md §4, provisional): `"osis lan 1"` (10 bytes), tag (16), key (32),
-//! port (2, big-endian), signature (64).
+//! LAN discovery (spec/sync-transport.md §4): announcements of a transport key fresh per
+//! network join, never the dialable key, and nothing else (no tag, secret or signature): a
+//! datagram `"osis lan 2"` || key || be16 port, broadcast on the IPv4 LAN and multicast to the
+//! IPv6 all-nodes group. `LanSocket` sends and hears them (`Lan`: UDP sockets; `nat::MemLan`: a
+//! LAN segment of the NAT model) and tells a network change. `Joined` is one join's state: what
+//! it heard, and so which keys are LAN listeners'. `P2p::discover` runs the loop.
 
-use crate::{Address, PublicKey};
-use crate::Error;
+use crate::{Address, Error, PublicKey};
+use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::task::Poll;
 
-const MAGIC: &[u8; 10] = b"osis lan 1";
+const MAGIC: &[u8; 10] = b"osis lan 2";
 /// Datagram length.
-pub const LEN: usize = 10 + 16 + 32 + 2 + 64;
-/// Default UDP port announcements go to (provisional).
+pub const LEN: usize = 10 + 32 + 2;
+/// The UDP port announcements go to.
 pub const PORT: u16 = 47_380;
 
 /// Where IPv4 announcements are sent: the limited broadcast address at `port`.
@@ -83,52 +76,30 @@ pub fn if_inet6(text: &str) -> Vec<(Ipv6Addr, u32)> {
         .collect()
 }
 
-/// One announcement.
+/// One announcement: a join's transport key and its listener's port on the datagram's family.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Announce {
-    pub tag: [u8; 16],
     pub key: PublicKey,
     pub port: u16,
-    /// The sealed Ed25519 signature under the announcer's dialable key (spec/sync-transport.md §4).
-    pub sig: [u8; 64],
 }
 
 impl Announce {
     pub fn encode(&self) -> [u8; LEN] {
         let mut b = [0u8; LEN];
-        let parts: [&[u8]; 5] = [MAGIC, &self.tag, &self.key, &self.port.to_be_bytes(), &self.sig];
-        let mut at = 0;
-        for p in parts {
-            if let Some(d) = b.get_mut(at..at + p.len()) {
-                d.copy_from_slice(p);
-            }
-            at += p.len();
-        }
-        b
-    }
-
-    /// None for anything but an announcement of this version.
-    pub fn decode(b: &[u8]) -> Option<Announce> {
-        if b.len() != LEN {
-            return None;
-        }
-        let rest = b.strip_prefix(&MAGIC[..])?;
-        let (tag, rest) = rest.split_first_chunk::<16>()?;
-        let (key, rest) = rest.split_first_chunk::<32>()?;
-        let (port, rest) = rest.split_first_chunk::<2>()?;
-        let sig = rest.first_chunk::<64>()?;
-        Some(Announce { tag: *tag, key: *key, port: u16::from_be_bytes(*port), sig: *sig })
-    }
-
-    /// The signed bytes: tag || key || port (be16).
-    pub fn signed(&self) -> [u8; 50] {
-        let mut b = [0u8; 50];
-        let (t, rest) = b.split_at_mut(16);
+        let (m, rest) = b.split_at_mut(MAGIC.len());
         let (k, p) = rest.split_at_mut(32);
-        t.copy_from_slice(&self.tag);
+        m.copy_from_slice(MAGIC);
         k.copy_from_slice(&self.key);
         p.copy_from_slice(&self.port.to_be_bytes());
         b
+    }
+
+    /// None for any other datagram.
+    pub fn decode(b: &[u8]) -> Option<Announce> {
+        let rest = b.strip_prefix(&MAGIC[..])?;
+        let (key, port) = rest.split_first_chunk::<32>()?;
+        let port: [u8; 2] = port.try_into().ok()?;
+        Some(Announce { key: *key, port: u16::from_be_bytes(port) })
     }
 
     /// Where to dial the announcer, given the datagram's source address (an IPv6 link-local
@@ -140,11 +111,108 @@ impl Announce {
     }
 }
 
+/// One network join's state (spec/sync-transport.md §4): its listener's key and the keys it
+/// heard announced, so which keys are LAN listeners' (`is_lan`, rank 0).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Joined {
+    own: Option<PublicKey>,
+    heard: BTreeSet<PublicKey>,
+}
+
+impl Joined {
+    /// A join listening under `own`, nothing heard yet.
+    pub fn new(own: PublicKey) -> Joined {
+        Joined { own: Some(own), heard: BTreeSet::new() }
+    }
+
+    /// An announcement heard from `from`: where to dial its key, once per key in this join;
+    /// none for a source that cannot be on the LAN (`is_local`) or this join's own key.
+    /// Minor: keys heard are kept for the join, however many a LAN announces.
+    pub fn heard(&mut self, a: &Announce, from: SocketAddr) -> Option<Address> {
+        if !is_local(from.ip()) || self.own == Some(a.key) || !self.heard.insert(a.key) {
+            return None;
+        }
+        Some(a.address(from))
+    }
+
+    /// Whether `key` is a LAN listener's: this join's own, or one it heard announced.
+    pub fn is_lan(&self, key: &PublicKey) -> bool {
+        self.own == Some(*key) || self.heard.contains(key)
+    }
+}
+
+/// Announcements after the first in a join (minor: more ride out more loss; 0: one datagram,
+/// lost now and then; unbounded: announcing forever, which nothing needs, since every node
+/// dials every announcer).
+pub const JOIN_REPEATS: u32 = 3;
+/// Milliseconds between a join's announcements (minor: its first seconds, spec/sync-transport.md
+/// §4; 0: a burst one loss event takes whole).
+pub const JOIN_GAP_MS: u64 = 1000;
+/// Milliseconds the loop waits after handing up a key to dial (pacing, spec/sync-transport.md §4;
+/// 0: a flood of announcements is a flood of dials; unbounded: one dial ever).
+pub const PACE_MS: u64 = 50;
+
+/// How a node runs LAN discovery (`P2p::discover`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LanConfig {
+    /// The port announcements are heard on (`PORT`; 0: any, for tests).
+    pub port: u16,
+    /// Where announcements go: the broadcast address and the all-nodes group at `PORT`, then
+    /// any further addresses configured. An IPv6 one goes only when the socket has IPv6.
+    pub to: Vec<SocketAddr>,
+    /// Where each join's listener binds, tried in order (`peer://[::]:0`, both families; then
+    /// `peer://0.0.0.0:0`).
+    pub listen: Vec<String>,
+    /// `JOIN_REPEATS`, `JOIN_GAP_MS`, `PACE_MS`.
+    pub repeats: u32,
+    pub gap_ms: u64,
+    pub pace_ms: u64,
+}
+
+impl Default for LanConfig {
+    fn default() -> LanConfig {
+        LanConfig { port: PORT, to: vec![broadcast(PORT), multicast(PORT)], listen: vec!["peer://[::]:0".into(), "peer://0.0.0.0:0".into()], repeats: JOIN_REPEATS, gap_ms: JOIN_GAP_MS, pace_ms: PACE_MS }
+    }
+}
+
+/// What discovery hands up: an announcer to dial (a dial candidate), or a connection its
+/// listener accepted (rank 0).
+pub enum Found<C> {
+    Dial(Address),
+    Conn(C),
+}
+
+/// A running LAN discovery (`Transport::discover`): its events in order. Dropping it stops the
+/// loop and closes its listener.
+pub struct Discovery<C> {
+    pub(crate) rx: tokio::sync::mpsc::Receiver<Found<C>>,
+    pub(crate) rejoin: std::sync::Arc<tokio::sync::Notify>,
+    pub(crate) stop: std::sync::Arc<crate::util::Gate>,
+}
+
+impl<C> Discovery<C> {
+    /// The next event; none once the loop ended (its announcement socket failed).
+    pub async fn next(&mut self) -> Option<Found<C>> {
+        self.rx.recv().await
+    }
+
+    /// Joins anew now (an OS network-change callback): a fresh key and listener, announced.
+    pub fn rejoin(&self) {
+        self.rejoin.notify_one();
+    }
+}
+
+impl<C> Drop for Discovery<C> {
+    fn drop(&mut self) {
+        self.stop.close();
+    }
+}
+
 /// A boxed future of a `LanSocket` call.
 pub type LanFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, crate::Error>> + Send + 'a>>;
 
-/// Where the driver's LAN loop sends and hears announcements: UDP sockets (`Lan`) or a LAN
-/// segment of the NAT model (`nat::MemLan`); see `Transport::lan`.
+/// Where the LAN loop (`P2p::discover`) sends and hears announcements: UDP sockets (`Lan`) or a
+/// LAN segment of the NAT model (`nat::MemLan`); see `p2p::Udp::lan`.
 pub trait LanSocket: Send + Sync + 'static {
     /// Whether IPv6 announcements go out and are heard.
     fn has_v6(&self) -> bool;
@@ -153,6 +221,9 @@ pub trait LanSocket: Send + Sync + 'static {
     fn announce<'a>(&'a self, a: &'a Announce, to: SocketAddr) -> LanFuture<'a, ()>;
     /// The next announcement heard, and its sender's address.
     fn recv(&self) -> LanFuture<'_, (Announce, SocketAddr)>;
+    /// Resolves when the machine's network may have changed since the last time it resolved (or
+    /// since the socket was made): the node then joins anew.
+    fn changed(&self) -> LanFuture<'_, ()>;
 }
 
 /// UDP sockets sending and receiving announcements: IPv4 (broadcast) and, where
@@ -163,6 +234,8 @@ pub struct Lan {
     port: u16,
     /// Which socket `recv` looks at first (alternates, so a flood on one starves neither).
     turn: std::sync::atomic::AtomicBool,
+    /// The routes' networks as `changed` last saw them (`route_networks`).
+    route: std::sync::Mutex<(Option<IpAddr>, Option<IpAddr>)>,
 }
 
 /// A nonblocking UDP socket of `family` that shares its port with other nodes on the machine
@@ -200,7 +273,7 @@ impl Lan {
     pub async fn bind(port: u16) -> Result<Lan, Error> {
         let v4 = bind_v4(port)?;
         let port = v4.local_addr()?.port();
-        Ok(Lan { v4, v6: bind_v6(port).ok(), port, turn: Default::default() })
+        Ok(Lan { v4, v6: bind_v6(port).ok(), port, turn: Default::default(), route: std::sync::Mutex::new(route_networks().await) })
     }
 
     pub fn port(&self) -> u16 {
@@ -249,8 +322,8 @@ impl LanSocket for Lan {
         })
     }
 
-    /// The next announcement heard on either socket and its sender's address. Other datagrams,
-    /// and announcements from addresses that cannot be on the LAN (`is_local`), are skipped.
+    /// The next announcement heard on either socket and its sender's address. Other datagrams
+    /// are skipped.
     fn recv(&self) -> LanFuture<'_, (Announce, SocketAddr)> {
         Box::pin(async move {
             let mut b4 = [0u8; LEN + 1];
@@ -269,12 +342,27 @@ impl LanSocket for Lan {
                     Poll::Pending
                 })
                 .await?;
-                if !is_local(from.ip()) {
-                    continue;
-                }
                 let buf = if v6 { &b6[..] } else { &b4[..] };
                 if let Some(a) = buf.get(..n).and_then(Announce::decode) {
                     return Ok((a, from));
+                }
+            }
+        })
+    }
+
+    /// Polls the routes' local addresses every `ROUTE_POLL` (`route_networks`): another network
+    /// with the same addressing goes unseen; a P2P listener's registrations renew themselves
+    /// after such a change once their relay connections time out. OS network events (netlink
+    /// and the like) are not watched: no dependency for them.
+    fn changed(&self) -> LanFuture<'_, ()> {
+        Box::pin(async move {
+            loop {
+                tokio::time::sleep(ROUTE_POLL).await;
+                let r = route_networks().await;
+                let mut was = crate::util::lock(&self.route);
+                if *was != r {
+                    *was = r;
+                    return Ok(());
                 }
             }
         })
@@ -301,36 +389,10 @@ async fn route_networks() -> (Option<IpAddr>, Option<IpAddr>) {
     (v4, v6.map(network_of))
 }
 
-/// How often `NetWatch` looks at the routes' local addresses (provisional; minor: a change is
-/// seen this much later; 0: a busy loop; unbounded: no fresh LAN key per network, and
-/// registrations renew only at their relay connections' idle timeout).
+/// How often `Lan::changed` looks at the routes' local addresses (minor: a change is seen this
+/// much later; 0: a busy loop; unbounded: no fresh LAN key per network, and registrations renew
+/// only at their relay connections' idle timeout).
 pub const ROUTE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// Tells network changes by polling the routes' local addresses every
-/// `ROUTE_POLL`. Another network with the same addressing goes unseen; a P2P listener's
-/// registrations renew themselves after such a change once their relay connections time out.
-pub struct NetWatch {
-    route: (Option<IpAddr>, Option<IpAddr>),
-}
-
-impl NetWatch {
-    /// Starts watching (needs a tokio runtime); the current network is the baseline.
-    pub async fn new() -> NetWatch {
-        NetWatch { route: route_networks().await }
-    }
-
-    /// Resolves at the next network change.
-    pub async fn changed(&mut self) {
-        loop {
-            tokio::time::sleep(ROUTE_POLL).await;
-            let r = route_networks().await;
-            if r != self.route {
-                self.route = r;
-                return;
-            }
-        }
-    }
-}
 
 /// What identifies the network of a local address: an IPv4 address itself, an IPv6 address's
 /// /64 prefix (its interface part may be a temporary address that rotates).
@@ -370,16 +432,22 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
-    // spec/sync-transport.md §4: an announcement carries the tag and a transport key, and is dialed at
-    // the sender's address with that key; anything else is ignored.
+    // spec/sync-transport.md §4 (announcement): exactly 44 bytes, `"osis lan 2"`, the join's key,
+    // the be16 port, nothing else; dialed at the sender's address and the announced port with
+    // the announced key; any other datagram is ignored.
     #[test]
-    fn announce_round_trip_spec_sync_10() {
-        let a = Announce { tag: [1; 16], key: [2; 32], port: 4433, sig: [3; 64] };
+    fn announce_round_trip() {
+        let a = Announce { key: [2; 32], port: 4433 };
         let b = a.encode();
+        assert_eq!(b.len(), 44);
+        assert_eq!(&b[..10], b"osis lan 2");
+        assert_eq!(&b[10..42], &[2; 32]);
+        assert_eq!(&b[42..], &4433u16.to_be_bytes());
         assert_eq!(Announce::decode(&b), Some(a));
         assert_eq!(Announce::decode(&b[..LEN - 1]), None);
+        assert_eq!(Announce::decode(&[&b[..], &[0]].concat()), None);
         let mut bad = b;
-        bad[0] ^= 1;
+        bad[9] = b'1';
         assert_eq!(Announce::decode(&bad), None);
         let addr = a.address("192.168.1.5:47380".parse().unwrap());
         assert_eq!(addr, Address { url: "peer://192.168.1.5:4433".into(), key: [2; 32] });
@@ -388,12 +456,26 @@ mod tests {
         assert_eq!(addr.url, "peer://[fe80::1%3]:4433");
         let back: SocketAddr = "[fe80::1%3]:4433".parse().unwrap();
         assert!(matches!(back, SocketAddr::V6(v) if v.scope_id() == 3));
-        assert_eq!(&b[..10], b"osis lan 1");
-        assert_eq!(b.len(), 124);
-        assert_eq!(&b[LEN - 66..LEN - 64], &4433u16.to_be_bytes());
-        assert_eq!(&b[LEN - 64..], &[3; 64]);
-        assert_eq!(&a.signed()[..16], &[1; 16]);
-        assert_eq!(&a.signed()[48..], &4433u16.to_be_bytes());
+    }
+
+    // spec/sync-transport.md §4 (a receiver ignores, dialing): a source that cannot be on the LAN
+    // and the join's own key are ignored; each other key is dialed once per join; its key is a
+    // LAN listener's (rank 0) and stays so for the join.
+    #[test]
+    fn heard_once_per_join() {
+        let mut j = Joined::new([1; 32]);
+        let other = Announce { key: [2; 32], port: 9 };
+        let from: SocketAddr = "192.168.1.5:47380".parse().unwrap();
+        assert_eq!(j.heard(&Announce { key: [1; 32], port: 9 }, from), None, "own key");
+        assert_eq!(j.heard(&other, "8.8.8.8:47380".parse().unwrap()), None, "not on the LAN");
+        assert!(!j.is_lan(&[2; 32]));
+        assert_eq!(j.heard(&other, from), Some(Address { url: "peer://192.168.1.5:9".into(), key: [2; 32] }));
+        assert_eq!(j.heard(&other, "10.0.0.7:47380".parse().unwrap()), None, "once per join");
+        assert!(j.is_lan(&[2; 32]) && j.is_lan(&[1; 32]) && !j.is_lan(&[3; 32]));
+        // a new join dials it again
+        let mut j = Joined::new([4; 32]);
+        assert!(j.heard(&other, from).is_some());
+        assert!(!Joined::default().is_lan(&[1; 32]));
     }
 
     // spec/sync-transport.md §4: IPv6 announcements go to the all-nodes group on every link the machine is
@@ -440,7 +522,7 @@ mod tests {
     async fn announce_over_udp_spec_sync_10() {
         let rx = Lan::bind(0).await.unwrap();
         let tx = Lan::bind(0).await.unwrap();
-        let a = Announce { tag: [3; 16], key: [4; 32], port: 9, sig: [5; 64] };
+        let a = Announce { key: [4; 32], port: 9 };
         tx.announce(&a, SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), rx.port())).await.unwrap();
         let (got, from) = rx.recv().await.unwrap();
         assert_eq!(got, a);
@@ -462,7 +544,7 @@ mod tests {
         let a = Lan::bind(0).await.unwrap();
         let b = Lan::bind(a.port()).await.unwrap();
         let tx = Lan::bind(0).await.unwrap();
-        let msg = Announce { tag: [9; 16], key: [8; 32], port: 7, sig: [6; 64] };
+        let msg = Announce { key: [8; 32], port: 7 };
         tx.announce(&msg, SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 255, 255, 255)), a.port())).await.unwrap();
         for s in [&a, &b] {
             let (got, _) = tokio::time::timeout(std::time::Duration::from_secs(5), s.recv()).await.unwrap().unwrap();
@@ -485,7 +567,7 @@ mod tests {
         if !rx.has_v6() || scopes.is_empty() {
             return;
         }
-        let a = Announce { tag: [6; 16], key: [7; 32], port: 9, sig: [8; 64] };
+        let a = Announce { key: [7; 32], port: 9 };
         for sc in &scopes {
             tx.announce(&a, multicast_on(rx.port(), *sc)).await.unwrap();
         }
@@ -502,12 +584,13 @@ mod tests {
         assert!(heard.iter().all(|s| scopes.contains(s)), "{heard:?} {scopes:?}");
     }
 
-    // spec/sync-transport.md §4: a network watch starts and polls the routes (by hand: real sockets).
+    // spec/sync-transport.md §4 (joining): a socket's network watch starts and polls the routes
+    // (by hand: real sockets).
     #[tokio::test]
     #[ignore]
     async fn net_watch_starts_spec_sync_10() {
-        let mut w = NetWatch::new().await;
+        let l = Lan::bind(0).await.unwrap();
         // nothing changes here within a short wait
-        assert!(tokio::time::timeout(std::time::Duration::from_millis(200), w.changed()).await.is_err());
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(200), l.changed()).await.is_err());
     }
 }
