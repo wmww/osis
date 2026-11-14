@@ -389,6 +389,28 @@ mod entry_copies {
         }
     }
 
+    /// As above, the straddle met by join: the creation chain (chars gone: one range record) and
+    /// the flag write (one range record) arrive apart, in either order, and the joined state
+    /// encodes as the model's (`seq::flag_cut`: a record on one side of its flag).
+    #[test]
+    fn creation_run_meeting_its_flag_in_a_join_encodes_as_the_model_spec_5_7() {
+        let src = Source::session(1, 0);
+        let dot = |c: u64| Dot { source: src.clone(), ctr: c };
+        let seq = |f: &dyn Fn(u64) -> SeqElem| Frag::Seq { text: true, c: Default::default(), elems: (1..=4u64).map(|c| (dot(c), f(c))).collect() };
+        let created = seq(&|c| SeqElem::new(st(1, c), if c == 1 { Anchor::Head } else { Anchor::Dot(dot(c - 1)) }, Content::None));
+        let flags = seq(&|_| SeqElem::flag(st(1, 2), true, None));
+        let mut both = created.clone();
+        both.join(flags.clone());
+        let mbytes = crdt_model::wire::encode_snapshot(&both, &[], [3; 16], &mut crdt_model::wire::Ctx::new(1 << 40, Source::session(250, 0), 1));
+        let (fc, ff) = (frag(&created), frag(&flags));
+        for f in [join(&fc, &ff), join(&ff, &fc)] {
+            let bytes = snapshot_bytes(&f);
+            assert_eq!(bytes, mbytes, "the model's bytes");
+            let back = crate::codec::decode_snapshot(&bytes, &crate::tests_wire::snap_cx(), &mut crate::stamp::Interner::new(), None).unwrap();
+            assert_eq!(back.fragment, f, "round trip");
+        }
+    }
+
     fn snapshot_bytes(f: &Fragment) -> Vec<u8> {
         let s = crate::wire::Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Default::default() };
         crate::codec::encode_snapshot(&s, &crate::tests_wire::snap_cx(), None).unwrap()
