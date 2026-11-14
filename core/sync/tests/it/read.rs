@@ -11,6 +11,7 @@ use osis_base::memo::Stamped;
 use osis_base::{BlobId, CommitId, SyncId, WallMs};
 use osis_crypto::{LabelRole, Secret32, Signature, SigningSecret, label_role_key};
 use osis_engine::labeling::HeadKeys;
+use osis_engine::retention::{End, Minting, Standing};
 use osis_engine::sync::{BodyFacts, BodyMeta, Destruction, ReadCredentials};
 use osis_label::{Class, Step, StepKeys};
 use osis_sync::read::{BlobInfo, Facts, Ground, PieceAt, Read, CertBlobsMissing, Seen, SrcView, Verdict, Why};
@@ -66,7 +67,7 @@ fn creds(e: u64, writer: bool, delete: bool) -> Arc<ReadCredentials> {
 }
 
 fn meta() -> BodyMeta {
-    BodyMeta { parts: [0].into(), expires: None, order: 1, copy: false, certificate: false, header_only: false }
+    BodyMeta { parts: [0].into(), expires: None, order: 1, copy: false, certificate: false, header_only: false, mints: BTreeSet::new() }
 }
 
 /// A body of this node's own, established uncovered: must-hold.
@@ -173,9 +174,14 @@ struct Fake {
     freed: Stamped<(BlobId, Tid), ()>,
     freed_feed: Vec<(BlobId, Tid)>,
     carrying: Stamped<Tid, BTreeSet<SyncId>>,
+    /// Each thing's held mintings.
+    mintings: Stamped<Tid, Arc<Vec<Minting>>>,
 }
 
 impl Ground for Fake {
+    fn mintings(&mut self, t: &Tid) -> Result<Arc<Vec<Minting>>> {
+        Ok(self.mintings.get(t).cloned().unwrap_or_default())
+    }
     fn piece_roots(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Vec<PieceLink>>> {
         Ok(self.roots.get(&(*s, *c)).cloned().unwrap_or_default())
     }
@@ -2007,4 +2013,111 @@ fn judged_per_publish(n: usize) -> u64 {
 fn a_thing_published_under_an_actor_judges_what_it_moved_spec_sync_2() {
     let (a, b) = (judged_per_publish(2), judged_per_publish(20));
     assert_eq!(a, b, "judgements per publish grow with the things published before");
+}
+
+/// The thing whose mintings the minting tests copy under S (its record goes there; S's closure
+/// lacks it).
+const T: Tid = Tid::from_bytes([7; 15]);
+
+fn minting(c: u8, valued: bool, end: End, expires: Option<u64>) -> Minting {
+    Minting { commit: cid(c), standing: Standing { valued, end }, expires }
+}
+
+/// A peer's entry `b` in the own store (pulled from a reader).
+fn peer_entry(b: u8) -> Entry {
+    Entry { blob: BlobId([b; 32]), wrap: [0; osis_crypto::WRAP_LEN], stamp: Some(stamp_at(0)), deposited: false, own: false, role: false, class: Class::Durable, expires: None }
+}
+
+impl W {
+    /// The engine holds `ms` as T's mintings, each a header-only copy in S's required set.
+    fn mintings(&mut self, ms: &[Minting]) {
+        self.g.mintings.insert(T, Arc::new(ms.to_vec()));
+        for m in ms {
+            let mut f = uncovered();
+            f.own = false;
+            f.body.closure = false;
+            self.g.facts.insert((S, m.commit), f);
+            let meta = BodyMeta { parts: BTreeSet::new(), copy: true, certificate: true, header_only: true, mints: [T].into(), ..meta() };
+            self.g.bodies.insert(m.commit, Arc::new([(S, meta)].into()));
+            self.g.added.push(m.commit);
+        }
+        self.settle();
+    }
+}
+
+// spec/commits.md §5 (A thing's mintings travel with its record: a node logs a thing's witness
+// only where no entry there holds a minting of the same standing; a header-only copy goes where an
+// entry there holds a minting of the witness's standing expiring later and it stands lower):
+// T's copy minted with `expires` 100 (a peer's entry here and at K) and its durable witness: the
+// witness is logged, and once it is held there the lower copy leaves here and is deleted at K.
+#[test]
+fn the_witness_is_logged_and_a_lower_copy_goes_spec_commits_5() {
+    let mut w = W::new();
+    w.g.own.insert((S, cid(1)), vec![peer_entry(11)]);
+    w.g.k.held.insert((S, BlobId([11; 32])), cid(1));
+    w.g.logged.push((S, cid(1), BlobId([11; 32])));
+    w.mintings(&[minting(1, true, End::At(100, None), Some(100)), minting(2, true, End::Never, None)]);
+    assert_eq!(w.read.verdict(&S, &cid(2)), Some(Verdict::Must));
+    assert_eq!(w.logs(S, cid(2)), 1, "the witness logged");
+    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::MustNot(Why::Superseded)));
+    assert!(w.own_blobs(S, cid(1)).is_empty(), "the lower copy left the own store");
+    w.exchange();
+    w.exchange();
+    assert_eq!(w.at_k(S, cid(1)), 0, "deleted at K");
+    assert_eq!(w.at_k(S, cid(2)), 1, "the witness kept at K");
+    assert_eq!(w.logs(S, cid(2)), 1);
+}
+
+// spec/commits.md §5 (A thing's mintings travel with its record: logged only where no entry there
+// holds a minting of the same standing; the copies under a sync ID are its witness and its ties):
+// two durable mintings of T tie; one held there keeps the witness (the lower commit ID) unlogged
+// and both are kept; once it leaves, the witness is logged.
+#[test]
+fn a_tie_held_keeps_the_witness_unlogged_spec_commits_5() {
+    let mut w = W::new();
+    w.g.own.insert((S, cid(2)), vec![peer_entry(12)]);
+    w.mintings(&[minting(1, true, End::Never, None), minting(2, true, End::Never, None)]);
+    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::May));
+    assert_eq!(w.read.verdict(&S, &cid(2)), Some(Verdict::May));
+    w.exchange();
+    assert_eq!(w.logs(S, cid(1)), 0, "a tie held: the witness is not logged");
+    assert_eq!(w.own_blobs(S, cid(2)), vec![BlobId([12; 32])], "the tie is kept");
+    w.g.own.insert((S, cid(2)), Vec::new());
+    w.settle();
+    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Must));
+    assert_eq!(w.logs(S, cid(1)), 1, "no tie held: the witness is logged");
+}
+
+// spec/commits.md §5 (A thing's mintings travel with its record: a lower copy goes only where an
+// entry holds a minting of the witness's standing expiring later (none: never); one lacking a
+// request ranks a minting no lower than one holding it does): T's durable copy, dropped here by a
+// request stamped at 50 a peer may lack, stands below the witness expiring at 100 and is kept; one
+// expiring at 80 instead goes.
+#[test]
+fn a_lower_copy_goes_only_below_a_later_expiry_spec_commits_5() {
+    let by = osis_perm::Point { ts: osis_base::Ts::make(WallMs(50), 0).unwrap(), node: Tid::from_bytes([9; 15]), commit: cid(9) };
+    for (expires, goes) in [(None, false), (Some(80), true)] {
+        let mut w = W::new();
+        w.g.own.insert((S, cid(2)), vec![peer_entry(12)]);
+        w.mintings(&[minting(1, true, End::At(100, None), Some(100)), minting(2, true, End::At(50, Some(by)), expires)]);
+        assert_eq!(w.logs(S, cid(1)), 1, "the witness logged");
+        let want = if goes { Verdict::MustNot(Why::Superseded) } else { Verdict::May };
+        assert_eq!(w.read.verdict(&S, &cid(2)), Some(want), "expires {expires:?}");
+        assert_eq!(w.own_blobs(S, cid(2)).is_empty(), goes, "expires {expires:?}");
+    }
+}
+
+// spec/commits.md §5 (A thing's mintings travel with its record: a copy of a destroyed thing's
+// witness a node logged before and that went is logged again while the sync ID needs the thing):
+// T destroyed (its one minting value-less), its witness's own entry gone, is logged again.
+#[test]
+fn a_destroyed_things_witness_that_went_is_logged_again_spec_commits_5() {
+    let mut w = W::new();
+    w.mintings(&[minting(1, false, End::At(50, None), Some(50))]);
+    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Must));
+    assert_eq!(w.logs(S, cid(1)), 1);
+    let b = w.own_blobs(S, cid(1))[0];
+    w.g.drop_own(&S, &b, &cid(1)).unwrap();
+    w.settle();
+    assert_eq!(w.logs(S, cid(1)), 2, "logged again");
 }

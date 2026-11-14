@@ -9,6 +9,7 @@ use crate::types::{ConnId, Result};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::memo::{Clock, Stamped};
 use osis_base::{BlobId, CommitId, SyncId, Tid};
+use osis_engine::retention::Minting;
 use osis_engine::sync::{BodyMeta, PieceLink, ReadCredentials};
 use osis_label::StepId;
 use std::collections::{BTreeMap, BTreeSet};
@@ -117,6 +118,80 @@ pub(crate) struct Mine<'a> {
     pub clock: &'a Clock,
     /// Each (S, commit)'s body at S, as `Read::bodies` last settled it.
     pub metas: &'a Stamped<(SyncId, CommitId), BodyMeta>,
+    /// Per (S, minting, thing) the header-only copy's place among the thing's mintings, as
+    /// `Read::mintings` last settled them.
+    pub mints: &'a Stamped<(SyncId, CommitId, Tid), Mint>,
+}
+
+/// A header-only copy of a minting under S whose closure lacks its thing, by its standing among
+/// the thing's held mintings (spec/commits.md §5 A thing's mintings travel with its record).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mint {
+    /// The witness, with no entry under S holding another minting of its standing: logged.
+    Log,
+    /// Kept where held, not logged.
+    Keep,
+    /// Lower than the witness, where an entry under S holds a minting of the witness's standing
+    /// expiring later: must-not-hold.
+    Gone,
+}
+
+/// Each minting of `ms` (a thing's held mintings) under S where `held` says which have an entry
+/// there: the witness is logged unless another minting of its standing is held there; one
+/// standing lower goes where a minting of the witness's standing expiring later (`None`:
+/// never) is held there; the rest are kept. One lacking a request ranks a minting no lower than
+/// one holding it does, so what is left reads the thing live while it is.
+pub(crate) fn rank(ms: &[Minting], mut held: impl FnMut(&CommitId) -> Result<bool>) -> Result<BTreeMap<CommitId, Mint>> {
+    let mut out = BTreeMap::new();
+    let Some(w) = osis_engine::retention::highest(ms) else { return Ok(out) };
+    let mut top = Vec::new();
+    for m in ms.iter().filter(|m| m.standing == w.standing) {
+        if held(&m.commit)? {
+            top.push(*m);
+        }
+    }
+    let later = |x: Option<u64>, than: Option<u64>| match (x, than) {
+        (_, None) => false,
+        (None, Some(_)) => true,
+        (Some(a), Some(b)) => a > b,
+    };
+    for m in ms {
+        let v = if m.commit == w.commit {
+            if top.iter().any(|x| x.commit != m.commit) { Mint::Keep } else { Mint::Log }
+        } else if m.standing < w.standing && top.iter().any(|x| later(x.expires, m.expires)) {
+            Mint::Gone
+        } else {
+            Mint::Keep
+        };
+        out.insert(m.commit, v);
+    }
+    Ok(out)
+}
+
+/// Thing `t`'s mintings whose header-only copy is in S's required set as a minting of `t`
+/// (`BodyMeta::mints`), each by `rank` over every held minting of `t` and the own store of S.
+/// Empty: none is (no longer followed).
+pub(crate) fn mintings(g: &mut impl Ground, metas: &Stamped<(SyncId, CommitId), BodyMeta>, s: &SyncId, t: &Tid) -> Result<Arc<BTreeMap<CommitId, Mint>>> {
+    osis_base::costs::count("read: mintings", 1);
+    let ms = g.mintings(t)?;
+    let mut ranked = rank(&ms, |c| Ok(!g.own(s, c)?.is_empty()))?;
+    ranked.retain(|c, _| metas.get(&(*s, *c)).is_some_and(|m| m.mints.contains(t)));
+    Ok(Arc::new(ranked))
+}
+
+/// A header-only minting copy's verdict from its places among its things' mintings (`Mint`): the
+/// most any thing gives it; unjudged while a thing's is not settled.
+fn minted(mine: &Mine, s: &SyncId, c: &CommitId, meta: &BodyMeta) -> Verdict {
+    let mut v = Verdict::MustNot(Why::Superseded);
+    for t in &meta.mints {
+        match mine.mints.get(&(*s, *c, *t)) {
+            None => return Verdict::Unjudged,
+            Some(Mint::Log) => v = Verdict::Must,
+            Some(Mint::Keep) if v != Verdict::Must => v = Verdict::May,
+            Some(_) => {}
+        }
+    }
+    v
 }
 
 impl Mine<'_> {
@@ -133,7 +208,7 @@ impl Mine<'_> {
 }
 
 /// spec/sync-judgement.md §2: what the body is at S.
-fn classify(mine: &Mine, f: &Facts, meta: &BodyMeta, later_held: bool) -> Verdict {
+fn classify(mine: &Mine, f: &Facts, s: &SyncId, c: &CommitId, meta: &BodyMeta, later_held: bool) -> Verdict {
     if let Some(w) = f.must_not {
         return Verdict::MustNot(w);
     }
@@ -142,6 +217,9 @@ fn classify(mine: &Mine, f: &Facts, meta: &BodyMeta, later_held: bool) -> Verdic
     }
     if !f.body.required {
         return Verdict::MustNot(Why::OutsideRequired);
+    }
+    if !meta.mints.is_empty() {
+        return minted(mine, s, c, meta);
     }
     // not held here (dropped): kept by none of must-hold's clauses
     if f.body.dropped.is_some() {
@@ -229,7 +307,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
                     break;
                 }
             }
-            let mut v = classify(mine, &f, meta, later_held);
+            let mut v = classify(mine, &f, s, c, meta, later_held);
             if mine.told.get(s).is_some_and(|req| !req.contains(c)) {
                 v = Verdict::MustNot(Why::Emptied);
             }

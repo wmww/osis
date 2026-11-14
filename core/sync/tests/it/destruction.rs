@@ -1,9 +1,10 @@
-//! Destruction end to end (spec/commits.md §5 Destruction; spec/requirements.md Deletion: purging
-//! or expiring a thing's creation destroys it at every node): node 0 makes thing t with a home
-//! sync ID S, node 1's account syncs it (kept unread), node 2's writes it; node 0 destroys it.
-//! The engine's judgement of a destroyed thing is the engine's and held-model's; these check what
-//! crosses nodes: the destruction reaches every node, holds over a restart, a write after it
-//! counts nowhere, and S empties once nothing needs it.
+//! Destruction and mintings end to end (spec/commits.md §5 Destruction, A thing's mintings travel
+//! with its record; spec/requirements.md Deletion: purging or expiring a thing's creation destroys
+//! it at every node): node 0 makes thing t with a home sync ID S, node 1's account syncs it (kept
+//! unread), node 2's writes it; node 0 destroys it. The engine's judgement of a destroyed thing is
+//! the engine's and held-model's; these check what crosses nodes: the destruction reaches every
+//! node, holds over a restart, a write after it counts nowhere, S empties once nothing needs it,
+//! and the copies of a thing's mintings under a sync ID lacking it converge.
 
 use crate::harness::Step::*;
 use crate::harness::history::{Gives, value_ak, world};
@@ -166,4 +167,91 @@ fn a_node_alone_forgets_a_released_things_sync_id_spec_sync_judgement_5() {
     w.run();
     assert_eq!(w.engine(0).sync_holder(&s).unwrap(), None, "node 0 still syncs S");
     assert!(w.engine(0).epochs(&t).is_none(), "node 0 still holds t's secrets");
+}
+
+/// At node `i` (an account's node): thing t (its account first admin), minted with `expires`
+/// when given and filed nowhere, and u, t its first admin, filed in the account's D, so t's
+/// record goes under D's sync ID as a certificate (u's record chain) while D's closure lacks t.
+/// Run to quiet. Returns (t, t's minting, D's sync ID).
+fn admin_outside(w: &mut World, i: usize, expires: Option<u64>) -> (Tid, CommitId, SyncId) {
+    let (t, m) = w.write(i, |e| {
+        let me = e.me();
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, me);
+        m.set(t, &value_ak(), &Value::Str("t".into())).unwrap();
+        if let Some(x) = expires {
+            m.expires_all(osis_base::WallMs(x));
+        }
+        (t, e.commit(m).unwrap().unwrap())
+    });
+    let d = w.write(i, |e| {
+        let (_, d) = e.account().unwrap().unwrap();
+        let mut m = Mutation::new();
+        let u = e.new_thing(&mut m, t);
+        m.set(u, &value_ak(), &Value::Str("u".into())).unwrap();
+        let mut g = e.get_typed(&d, &ct::GROUP).unwrap().unwrap_or_default();
+        g.items.insert(u);
+        m.set(d, &ct::GROUP, &g).unwrap();
+        e.commit(m).unwrap().unwrap();
+        d
+    });
+    w.run();
+    let s = w.engine(i).home_sync_id(&d).unwrap().expect("D's sync ID");
+    (t, m, s)
+}
+
+/// Whether node `i`'s store holds an entry of commit `c` under `s`.
+fn holds(w: &mut World, i: usize, s: &SyncId, c: &CommitId) -> bool {
+    let blobs = w.engine(i).commit_blobs(c).unwrap();
+    w.store(i).entries(s).unwrap().iter().any(|e| blobs.contains(&e.blob))
+}
+
+// spec/commits.md §5 (A thing's mintings travel with its record: the witness is logged where no
+// entry holds a minting of its standing; a lower copy goes where one of the witness's standing
+// expiring later is held), spec/sync-judgement.md §2: siblings 1 and 2 sync D; t's record goes
+// under D as a certificate, minted at node 1 with an expiry. Node 2 mints t again, durable: the
+// two nodes' witnesses differ until node 1 holds the new minting, then both judge it the witness,
+// keep its copy under D and drop the expiring one's; neither loses the copy the other keeps.
+#[test]
+fn two_nodes_with_different_witnesses_keep_the_same_copy_spec_commits_5() {
+    let mut w = crate::harness::siblings();
+    w.cap = 20_000;
+    let far = w.engine(1).now().0 + 10 * ROLE_KEEP_MS;
+    let (t, first, s) = admin_outside(&mut w, 1, Some(far));
+    assert!(holds(&mut w, 2, &s, &first), "node 2 pulled t's witness under D");
+    let again = w.write(2, |e| {
+        let rec = e.core.created(&t).cloned().expect("node 2 holds t's record");
+        let mut m = Mutation::new();
+        m.create(rec);
+        e.commit_hostile(m).unwrap().unwrap()
+    });
+    w.run();
+    for i in [1, 2] {
+        let e = w.engine(i);
+        assert_eq!(e.witness(&t).map(|m| m.commit), Some(again), "node {i}: the durable minting is the witness");
+        assert!(holds(&mut w, i, &s, &again), "node {i}: the witness's copy under D");
+        assert!(!holds(&mut w, i, &s, &first), "node {i}: the lower copy left D");
+    }
+}
+
+// spec/commits.md §5 (A thing's mintings travel with its record; Destruction: a destroyed thing a
+// live thing needs keeps its record and requests, and its witness and requests go with its
+// record), spec/sync-judgement.md §2: node 1 destroys t, which u (in D) names first admin; a
+// sibling paired later holds t's record, its value-less witness and the request, and judges t
+// destroyed as node 1 does.
+#[test]
+fn a_destroyed_things_witness_reaches_a_late_node_spec_commits_5() {
+    let mut w = crate::harness::contacts();
+    w.cap = 20_000;
+    let (t, first, s) = admin_outside(&mut w, 1, None);
+    let q = purge_thing(&mut w, 1, t);
+    w.run();
+    assert!(w.engine(1).destroyed(&t), "node 1: t destroyed");
+    let late = w.pair(1);
+    w.run();
+    let e = w.engine(late);
+    assert!(e.destroyed(&t) && !e.knows(&t), "the late node judges t destroyed");
+    assert!(e.witness(&t).is_some_and(|m| m.commit == first && !m.standing.valued), "the late node holds t's value-less witness");
+    assert!(e.header(&q).is_some(), "the late node holds the request");
+    assert!(holds(&mut w, late, &s, &first), "the witness's copy under D at the late node");
 }

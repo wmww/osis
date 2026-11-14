@@ -8,6 +8,7 @@ use crate::store::{Source, Stand};
 use crate::types::{ConnId, Entry, Result};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::SigningSecret;
+use osis_engine::retention::Minting;
 use osis_engine::sync::{BodyFacts, BodyMeta, Destruction, PartSet, PieceLink, SealedSet, ReadCredentials};
 use osis_label::StepId;
 use std::collections::{BTreeMap, BTreeSet};
@@ -88,6 +89,9 @@ pub trait Ground {
     /// Per sync ID of the sync set, `c`'s body there (`Engine::sync_bodies`).
     fn bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>>;
     fn facts(&mut self, s: &SyncId, c: &CommitId) -> Result<Facts>;
+    /// Thing `t`'s held mintings with their standings and expiries (`Engine::mintings_of`,
+    /// spec/commits.md §5 A thing's mintings travel with its record).
+    fn mintings(&mut self, t: &Tid) -> Result<Arc<Vec<Minting>>>;
     /// Falls of held parts on `c`'s aspects so far (`Engine::fall_mark`, summed over them).
     fn fall_mark(&mut self, s: &SyncId, c: &CommitId) -> Result<u64>;
     fn credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>>;

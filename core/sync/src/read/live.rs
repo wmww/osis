@@ -144,6 +144,9 @@ impl Ground for Live<'_, '_> {
         });
         Ok(Facts { body: f.body, must_not, own: f.own, repair_fresh: f.repair_fresh, role: f.role, carriers: f.carriers, later_unheld: f.later_unheld, missing: f.missing })
     }
+    fn mintings(&mut self, t: &Tid) -> Result<Arc<Vec<osis_engine::retention::Minting>>> {
+        Ok(Arc::new(self.cx.engine.mintings_of(t)))
+    }
     fn fall_mark(&mut self, _s: &SyncId, c: &CommitId) -> Result<u64> {
         Ok(self.cx.engine.body_fall_mark(c)?)
     }

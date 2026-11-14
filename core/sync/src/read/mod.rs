@@ -65,6 +65,9 @@ pub enum Why {
     CardEnded,
     /// A destroyed thing's sync ID being emptied (§5).
     Emptied,
+    /// A header-only copy of a minting its thing's witness supersedes (spec/commits.md §5 A
+    /// thing's mintings travel with its record).
+    Superseded,
 }
 
 #[derive(Clone)]
@@ -78,6 +81,11 @@ pub struct Read {
     settled: BTreeMap<CommitId, Arc<BTreeMap<SyncId, BodyMeta>>>,
     metas: Stamped<(SyncId, CommitId), BodyMeta>,
     judged: Effects<(SyncId, CommitId), Judged>,
+    /// Per (S, thing) whose minting copies are in S's required set (`BodyMeta::mints`), each
+    /// copy's place among the thing's mintings (`judge::mintings`), and the same per (S, minting,
+    /// thing) (`Mine::mints`), so one minting moving re-judges the copies whose place moved alone.
+    mintings: Effects<(SyncId, Tid), Arc<BTreeMap<CommitId, judge::Mint>>>,
+    mints: Stamped<(SyncId, CommitId, Tid), judge::Mint>,
     toward: Effects<(SyncId, CommitId, Source), Toward>,
     dooms: Effects<SyncId, (Doom, BTreeSet<Act>)>,
     /// Per S, the records and thing lists it carries as certificates that no own record or
@@ -113,6 +121,8 @@ impl Default for Read {
             settled: BTreeMap::new(),
             metas: Stamped::default(),
             judged: Effects::new("read: judged"),
+            mintings: Effects::new("read: mintings"),
+            mints: Stamped::default(),
             toward: Effects::new("read: toward"),
             dooms: Effects::new("read: doom"),
             cert_blobs: Effects::new("read: certificate blobs"),
@@ -189,6 +199,11 @@ impl Read {
             for (s, m) in now.iter().filter(|(s, m)| was.get(*s) != Some(*m)) {
                 self.metas.insert((*s, c), m.clone());
             }
+            for (s, m) in now.iter() {
+                for t in &m.mints {
+                    self.mintings.want((*s, *t));
+                }
+            }
             for s in now.keys() {
                 self.judged.want((*s, c));
                 self.dooms.want(*s);
@@ -200,7 +215,7 @@ impl Read {
         let mut acted = false;
         for s in self.dooms.due() {
             let told_before = self.told.contains_key(&s);
-            let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas };
+            let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas, mints: &self.mints };
             let Some((was, (doom, acts))) = self.dooms.try_settle(&s, || judge::doom(g, &mine, told_before, &s))? else { continue };
             let before = was.map(|(_, a)| a).unwrap_or_default();
             acted = true;
@@ -268,6 +283,23 @@ impl Read {
                 acted = true;
             }
         }
+        // each thing's minting copies by standing, before the bodies that read them (it reads
+        // the engine, the own store and the bodies alone)
+        for k in self.mintings.due() {
+            let (s, t) = k;
+            let metas = &self.metas;
+            let Some((was, now)) = self.mintings.try_settle(&k, || judge::mintings(g, metas, &s, &t))? else { continue };
+            let was = was.unwrap_or_default();
+            for c in was.keys().filter(|c| !now.contains_key(*c)) {
+                self.mints.remove(&(s, *c, t));
+            }
+            for (c, m) in now.iter().filter(|(c, m)| was.get(*c) != Some(*m)) {
+                self.mints.insert((s, *c, t), *m);
+            }
+            if now.is_empty() {
+                self.mintings.unwant(&k);
+            }
+        }
         // the own judgement of each body, to its fixpoint
         let mut judged: Moved<(SyncId, CommitId), Judged> = BTreeMap::new();
         loop {
@@ -277,7 +309,7 @@ impl Read {
             }
             for k in due {
                 let (s, c) = k;
-                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas };
+                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas, mints: &self.mints };
                 let Some((was, now)) = self.judged.try_settle(&k, || judge::body(g, &mine, &s, &c))? else { continue };
                 if self.verdicts.get(&k) != Some(&now.verdict) {
                     self.verdicts.insert(k, now.verdict.clone());
@@ -351,7 +383,7 @@ impl Read {
             }
             for k in due {
                 let (s, c, at) = k;
-                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas };
+                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas, mints: &self.mints };
                 let Some((was, now)) = self.toward.try_settle(&k, || judge::toward(g, &mine, &s, &c, &at))? else { continue };
                 if now.idle {
                     self.toward.unwant(&k);
