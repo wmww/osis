@@ -687,8 +687,9 @@ impl Node {
             self.reports(out);
             // the lifecycle duties the engine judges (`life`), on what this round settled
             let net = NetView { streams: &self.streams, unread: &self.unread };
-            let status = &self.status;
-            acted |= self.life.settle(&mut self.engine, &self.store, |s| status.heard_out(s, &net))?;
+            let (status, opens, store) = (&self.status, &self.opens, &self.store);
+            // a sync ID no peer shares is heard out at once (the rule a leave's wait reads)
+            acted |= self.life.settle(&mut self.engine, &self.store, |s| Ok(!opens.shared(store, s, |_| false)? || status.heard_out(s, &net)))?;
             if !acted {
                 return Ok(());
             }

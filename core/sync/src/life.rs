@@ -4,9 +4,12 @@
 //! - **Lifetimes** (spec/commits.md §5 Lifetimes): the engine's judgment (`Engine::judge_lifetimes`)
 //!   runs when its work list or the rights mark moved (`Engine::lifetimes_due`, stamped), and its
 //!   held things again when a sync ID this node syncs is newly heard out. A group is heard out
-//!   when every sync ID this node syncs of it is (spec/sync-status.md §1, `Status::heard_out`); a
-//!   group with none here is at once (a thing under no sync ID is judged at once), so offline
-//!   nothing under a synced group is released.
+//!   when every sync ID this node syncs of it is: one no peer shares (no connection has it open,
+//!   no kept record lists it: `Opens::shared`, as a leave's wait reads it) at once, else once its
+//!   sources are (spec/sync-status.md §1, `Status::heard_out`); a group with none here is at once
+//!   (a thing under no sync ID is judged at once). So a node alone (one device, no contact
+//!   sharing the group) releases at once, and one whose sharing peers are away releases nothing
+//!   under what they share.
 //!
 //! State: the sync IDs synced here with their things (`SyncsFollow`), each one's heard-out value
 //! and whether one became heard out since the last judgment. Bounded by the sync IDs synced; a
@@ -51,8 +54,9 @@ impl std::fmt::Debug for Life {
 
 impl Life {
     /// Follows what moved; judges lifetimes when due. `heard_out(s)`: S heard out now (stamped
-    /// reads). Whether it judged (the engine's rows moved: the next round settles them).
-    pub fn settle(&mut self, engine: &mut Engine, store: &Store, mut heard_out: impl FnMut(&SyncId) -> bool) -> Result<bool> {
+    /// reads; no peer sharing S counts as heard out). Whether it judged (the engine's rows moved:
+    /// the next round settles them).
+    pub fn settle(&mut self, engine: &mut Engine, store: &Store, mut heard_out: impl FnMut(&SyncId) -> Result<bool>) -> Result<bool> {
         for (s, was, now) in self.syncs.settle(store) {
             if let Some((t, _)) = was
                 && let Some(ids) = self.ids.get_mut(&t)
@@ -74,7 +78,7 @@ impl Life {
             }
         }
         for s in self.heard.due() {
-            if let Some((was, now)) = self.heard.settle(&s, || heard_out(&s)) {
+            if let Some((was, now)) = self.heard.try_settle(&s, || heard_out(&s))? {
                 self.newly |= now && was != Some(true);
                 self.heard_now.insert(s, now);
             }
