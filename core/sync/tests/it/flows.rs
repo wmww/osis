@@ -876,15 +876,12 @@ fn a_removed_reader_opens_nothing_after_and_stops_spec_sync_set_3() {
     assert!(w.store(1).synced(&s).is_none(), "S synced no more once its pass ended");
 }
 
-// spec/sync-judgement.md §1 (Per-sync-ID copies), spec/permissions.md §3 (Lost access): node 0
-// files X (its secrets derive from group Y) in group G, which reads Y by role; node 1's account
-// reads G and Y. While node 1 is away, node 0 writes X (G's sync ID carries it as a copy) and
-// removes G from Y: that copy is stale at node 1 and gives nothing. Node 1 still reads X, so
-// the write should arrive under a sync ID carrying X; none does (X has no sync ID of its own and
-// is in no closure but G's), and no later write of X reaches node 1 either.
+// spec/sync-set.md §2 (key home): node 0 files X (its secrets derive from group Y) in group G,
+// which reads Y by role; node 1's account reads G and Y. While node 1 is away, node 0 writes X
+// and removes G from Y: G's sync ID carries X no more, but Y's carries it, listed nowhere under Y
+// (X's key home is Y). Node 1 gets that write and a later one under Y's sync ID.
 #[test]
-#[ignore = "issues/role-read-thing-outside-every-carrying-closure.md"]
-fn repro_a_part_a_stale_copy_leaves_out_arrives_spec_sync_judgement_1() {
+fn a_thing_read_through_its_key_home_arrives_listed_nowhere_there_spec_sync_set_2() {
     let mut w = contacts();
     let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
     let ak = Ak::new("u:v.0").unwrap();
@@ -913,16 +910,61 @@ fn repro_a_part_a_stale_copy_leaves_out_arrives_spec_sync_judgement_1() {
     w.run();
     assert_eq!(w.engine(1).get(&x, &ak).unwrap(), Some(Value::Str("before".into())), "node 1 reads X");
     w.partition(0, 1);
-    w.write(0, |e| {
-        let mut m = Mutation::new();
-        m.set(x, &ak, &Value::Str("after".into())).unwrap();
-        e.commit(m).unwrap();
-        e.demote(&y, &Demotion { holder: g, new: None, retain: None }).unwrap();
-    });
+    let write = |w: &mut World, v: &str| {
+        w.write(0, |e| {
+            let mut m = Mutation::new();
+            m.set(x, &ak, &Value::Str(v.into())).unwrap();
+            e.commit(m).unwrap();
+        })
+    };
+    write(&mut w, "after");
+    w.write(0, |e| e.demote(&y, &Demotion { holder: g, new: None, retain: None })).unwrap();
     w.run();
     assert!(!w.engine(0).reads_in(&g, &x), "G reads X no more");
     w.heal();
     w.run();
-    assert!(w.engine(1).epochs(&y).is_some_and(|e| e.read.holds_any()), "node 1 still reads X");
-    assert_eq!(w.engine(1).get(&x, &ak).unwrap(), Some(Value::Str("after".into())), "the write arrives");
+    assert_eq!(w.engine(1).get(&x, &ak).unwrap(), Some(Value::Str("after".into())), "the write before the removal arrives");
+    write(&mut w, "later");
+    w.run();
+    assert_eq!(w.engine(1).get(&x, &ak).unwrap(), Some(Value::Str("later".into())), "a later write arrives");
+}
+
+// spec/sync-set.md §2 (key home), spec/permissions.md §3 (Own secrets add only): node 1 files Y
+// as a subgroup and reads it; X (made under Y) and C (made under X) are listed nowhere and reach
+// node 1 under Y's sync ID. X then gets secrets of its own: X stays under Y's sync ID and C moves
+// to X's own, which node 1 syncs through Y; both keep arriving.
+#[test]
+fn dependants_keep_arriving_when_their_key_home_moves_spec_sync_set_2() {
+    let mut w = contacts();
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let ak = Ak::new("u:v.0").unwrap();
+    let (y, x, c) = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let y = e.new_thing(&mut m, a0);
+        e.commit(m).unwrap();
+        e.give_own_secrets(&y).unwrap();
+        let mut m = Mutation::new();
+        let x = e.new_thing(&mut m, y);
+        let c = e.new_thing(&mut m, x);
+        m.set(x, &ak, &Value::Str("x".into())).unwrap();
+        m.set(c, &ak, &Value::Str("c".into())).unwrap();
+        e.commit(m).unwrap();
+        e.grant(&y, &a1, &edge(Role::Read)).unwrap();
+        (y, x, c)
+    });
+    file(&mut w, 0, Vec::new(), vec![y]);
+    w.run();
+    file(&mut w, 1, Vec::new(), vec![y]);
+    w.run();
+    let reads = |w: &mut World, v: [&str; 2]| [x, c].map(|t| w.engine(1).get(&t, &ak).unwrap()) == v.map(|s| Some(Value::Str(s.into())));
+    assert!(reads(&mut w, ["x", "c"]), "X and C arrive under Y's sync ID");
+    w.write(0, |e| e.give_own_secrets(&x)).unwrap();
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(x, &ak, &Value::Str("x2".into())).unwrap();
+        m.set(c, &ak, &Value::Str("c2".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    assert!(reads(&mut w, ["x2", "c2"]), "both arrive after X has secrets of its own");
 }
