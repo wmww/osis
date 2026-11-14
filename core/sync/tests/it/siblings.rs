@@ -9,7 +9,7 @@ use osis_engine::flows::Demotion;
 use osis_schema::core_types as ct;
 
 fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, tied: None }
+    ct::Edge { role, until: None, invite: None, tied: None, floor: None }
 }
 
 /// Node `i`'s synced group (`synced^.0` on its account's D).
