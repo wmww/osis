@@ -1390,7 +1390,7 @@ fn record_of(lp: &mut LocalPeer, t: Tid) -> Vec<osis_engine::local_peer::Package
     lp.packages(0).unwrap().into_iter().filter(|p| osis_commit::CommitBlob::decode(&p.bytes).unwrap().header.aspects.iter().any(|a| a.tid == t)).collect()
 }
 
-// spec/commits.md §4 (Unjudgeable, Pending storage), §5 (Purge): a commit pending for its `ts`,
+// spec/commits.md §4 (Unjudgeable; Pending storage), §5 (Purge): a commit pending for its `ts`,
 // one part on a thing whose record is away, and a purge request naming that part (pending too):
 // the part waits in the pending copy while the record is away. With the record it is judged:
 // purged, or read as written when no request names it.

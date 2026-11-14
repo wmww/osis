@@ -261,6 +261,24 @@ impl Ground for Live<'_, '_> {
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &CommitId, stand: &Stand) -> Result<()> {
         self.cx.store.set_stand(*at, s, &c.0, Some(stand))
     }
+    fn records_missing(&mut self, s: &SyncId) -> Result<BTreeSet<osis_base::Tid>> {
+        let mut need: BTreeSet<osis_base::Tid> = (*self.cx.engine.certificate_records(s)?).clone();
+        if need.is_empty() {
+            return Ok(need);
+        }
+        for (b, tids) in self.cx.engine.record_blobs(s)?.iter() {
+            if self.cx.store.entry(s, b)?.is_some() {
+                need.retain(|t| !tids.contains(t));
+            }
+        }
+        Ok(need)
+    }
+    fn log_records(&mut self, s: &SyncId, records: &BTreeSet<osis_base::Tid>) -> Result<()> {
+        let Some((blob, bytes, wrap)) = self.cx.engine.seal_records(s, records, self.cx.rng)? else { return Ok(()) };
+        let e = own_entry(self.cx, s, blob, wrap, Class::Durable)?;
+        self.cx.store.log(s, e, Some(bytes), None)?;
+        Ok(())
+    }
     fn forget(&mut self, s: &SyncId) -> Result<()> {
         let thing = self.thing(s)?;
         self.cx.store.shred(s)?;

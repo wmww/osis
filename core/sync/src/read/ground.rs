@@ -155,4 +155,16 @@ pub trait Ground {
     /// A destroyed thing's sync ID left (§5: emptied and heard out, held with no delete key, or
     /// untold): its store shredded, then `Engine::forget_destroyed`.
     fn forget(&mut self, s: &SyncId) -> Result<()>;
+
+    /// The records S carries as certificates that no record blob in the own store of S carries
+    /// (spec/permissions.md §4 Logging certificates: the records missing).
+    fn records_missing(&mut self, s: &SyncId) -> Result<BTreeSet<osis_base::Tid>> {
+        let _ = s;
+        Ok(BTreeSet::new())
+    }
+    /// Logs one record blob of `records` under S in the own store (a fresh encryption).
+    fn log_records(&mut self, s: &SyncId, records: &BTreeSet<osis_base::Tid>) -> Result<()> {
+        let _ = (s, records);
+        Ok(())
+    }
 }

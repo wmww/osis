@@ -74,6 +74,9 @@ pub struct Read {
     judged: Effects<(SyncId, CommitId), Judged>,
     toward: Effects<(SyncId, CommitId, Source), Toward>,
     dooms: Effects<SyncId, (Doom, BTreeSet<Act>)>,
+    /// Per S, the records it carries as certificates that no own record blob carries
+    /// (spec/permissions.md §4): one record blob of them is logged as they move.
+    records: Effects<SyncId, Arc<BTreeSet<osis_base::Tid>>>,
     verdicts: Stamped<(SyncId, CommitId), Verdict>,
     /// Own role commits S must hold (§3 Role entries first).
     roles: Stamped<SyncId, BTreeSet<CommitId>>,
@@ -95,6 +98,7 @@ impl Default for Read {
             judged: Effects::new("read: judged"),
             toward: Effects::new("read: toward"),
             dooms: Effects::new("read: doom"),
+            records: Effects::new("read: records"),
             verdicts: Stamped::default(),
             roles: Stamped::default(),
             told: Stamped::default(),
@@ -159,6 +163,7 @@ impl Read {
             for s in now.keys() {
                 self.judged.want((*s, c));
                 self.dooms.want(*s);
+                self.records.want(*s);
             }
             // a sync ID no longer carrying it stays followed until nothing of it is left there
         }
@@ -181,6 +186,19 @@ impl Read {
             }
             for a in acts.difference(&before).cloned().collect::<Vec<_>>() {
                 self.act(g, &s, None, a)?;
+            }
+        }
+        // the records each S carries, as one record blob of those its own store lacks, while a
+        // reader can pull it (spec/permissions.md §4, spec/sync-judgement.md §3 Own store)
+        for s in self.records.due() {
+            if !g.reads(&s)? {
+                self.records.unwant(&s);
+                continue;
+            }
+            let Some((_, missing)) = run(&mut self.records, &s, || g.records_missing(&s).map(Arc::new))? else { continue };
+            if !missing.is_empty() && g.pullable(&s)? {
+                g.log_records(&s, &missing)?;
+                acted = true;
             }
         }
         // the own judgement of each body, to its fixpoint

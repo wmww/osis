@@ -32,15 +32,12 @@ osis-transport::set_max_steps  test hook: scheduler step cap
 
 osis-engine::body_min_ts  deferred: durable-compaction/chunk-blind (retention/bounds.rs)
 
-osis-commit::decode_record_blob  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-commit::encode_record_blob  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::account_rotations  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::all_forgettable  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::apply_waiting_memory  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::aspect_commit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::aspect_commits  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::await_reading  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::body_carried  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::body_page  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::carried_dots  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::commit_in_memory_hostile  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -56,7 +53,6 @@ osis-engine::destroyed_records_awaited  deferred: sync rebuild (issues/sync-rewr
 osis-engine::ephemeral_session  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::flag_suspect  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::forget_commits  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::forget_pending  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::freed_delete_secrets  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::freed_done  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::freed_wants  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync

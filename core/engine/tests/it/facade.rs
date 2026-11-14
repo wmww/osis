@@ -942,3 +942,20 @@ fn a_dead_tie_wants_a_pass_of_its_scope_spec_perm_2() {
     let w = lp.peers[0].engine.passes_wanted().unwrap();
     assert!(w.get(&st).is_some_and(|x| x.0 > now.0), "T's sync ID, from the role commit on G: {w:?}");
 }
+
+// spec/crypto.md §4 (names): a rotation names the edge writes its rotator held that pin a holder
+// below a role, and what it names travels with it: a removal's rotation logs with it the earlier
+// removal it names.
+#[test]
+fn a_rotation_logs_with_it_the_commits_it_names_spec_crypto_4() {
+    let (mut lp, ps) = people(3);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let e = &mut lp.peers[0].engine;
+    e.give_own_secrets(&t).unwrap();
+    e.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    e.grant(&t, &ps[2], &edge_of(Role::Read)).unwrap();
+    let first = *e.demote(&t, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits.last().unwrap();
+    let second = *e.demote(&t, &Demotion { holder: ps[2], new: None, retain: None }).unwrap().commits.last().unwrap();
+    let with = e.logged_with(&second).unwrap();
+    assert!(with.contains(&first), "the earlier removal it names: {with:?}");
+}

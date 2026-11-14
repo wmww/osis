@@ -500,7 +500,7 @@ impl Engine {
     }
 
     /// Whether the actor of `ctx` may read `t` (spec/sync-judgement.md §1).
-    pub(super) fn reads(&self, ctx: &BodyCtx, t: &Tid) -> bool {
+    pub(crate) fn reads(&self, ctx: &BodyCtx, t: &Tid) -> bool {
         self.actor_reads(&ctx.actor, t)
     }
 

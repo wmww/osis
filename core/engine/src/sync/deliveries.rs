@@ -190,12 +190,24 @@ impl Engine {
     }
 
     /// The commits logged with role commit `c` under the sync IDs it goes under (spec/crypto.md
-    /// §4 Carried): the held rotation commits of the keysets its boxes to holder actors name, and
-    /// of those its keysets record holder actors were left out at.
+    /// §4 Carried, names): the held rotation commits of the keysets its boxes to holder actors
+    /// name, and of those its keysets record holder actors were left out at; and, for a rotation,
+    /// the held commits its names point to (each epoch it introduces, as its history entries
+    /// opened here name them).
     pub(crate) fn logged_with_now(&mut self, c: &CommitId) -> Result<Vec<CommitId>> {
         let Some(h) = self.header(c) else { return Ok(Vec::new()) };
         let id = *c;
         let mut out = Vec::new();
+        for a in h.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid).collect::<BTreeSet<Tid>>() {
+            let Some(ep) = self.epochs(&a) else { continue };
+            for r in osis_keys::ROLES {
+                for (e, info) in ep.role(r).epochs() {
+                    if self.core.ix.epoch_intro.get(&(a, r, *e)).is_some_and(|x| x.1 == id) {
+                        out.extend(info.names.iter().flat_map(|n| n.list.iter().map(|x| x.key.commit)).filter(|x| self.core.ix.commits.contains_key(x)));
+                    }
+                }
+            }
+        }
         let actors: BTreeSet<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == "secrets.0").map(|a| a.tid).collect();
         for a in actors {
             let (Some(si), ki) = (h.aspect_index(&a, "secrets.0"), h.aspect_index(&a, "keys.0")) else { continue };

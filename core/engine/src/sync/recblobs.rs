@@ -1,0 +1,98 @@
+//! Record blobs under a sync ID (spec/wire.md §3, spec/permissions.md §4): the raw creation
+//! records a sync ID's chain certificates name that no closure body there carries, sealed as one
+//! record blob of the records missing, and taken when one opens. Each record blob sealed here is
+//! kept per sync ID with its records (`RECORD_BLOBS` rows: one per blob this node logged), so read
+//! knows what its own store carries across a restart.
+
+use super::Wrap;
+use crate::engine::{Engine, Tx};
+use crate::error::{Error, Result};
+use osis_base::{BlobId, SyncId, Tid};
+use osis_crypto::NodeRng;
+use osis_store::Shred;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+/// `rb/` + sync ID + blob ID: the tids of the records the record blob carries, 15 bytes each.
+pub(crate) const RECORD_BLOBS: &[u8] = b"rb/";
+
+/// Loads the record blobs kept (an open or reload).
+pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
+    let bad = || Error::Corrupt("record blob row");
+    let mut rows: BTreeMap<SyncId, BTreeMap<BlobId, BTreeSet<Tid>>> = BTreeMap::new();
+    tx.scan(RECORD_BLOBS, |k, v| {
+        let s = SyncId(k.get(..16).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
+        let b = BlobId(k.get(16..48).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
+        let tids = v.chunks(15).map(|x| x.try_into().map(Tid::from_bytes).map_err(|_| bad())).collect::<Result<BTreeSet<Tid>>>()?;
+        rows.entry(s).or_default().insert(b, tids);
+        Ok(())
+    })?;
+    for (s, m) in rows {
+        tx.core.ix.record_blobs.insert(s, Arc::new(m));
+    }
+    Ok(())
+}
+
+fn note(tx: &mut Tx<'_>, s: &SyncId, b: &BlobId, tids: &BTreeSet<Tid>) -> Result<()> {
+    let mut m = tx.core.ix.record_blobs.get(s).map(|x| (**x).clone()).unwrap_or_default();
+    if m.get(b) == Some(tids) {
+        return Ok(());
+    }
+    m.insert(*b, tids.clone());
+    let v: Vec<u8> = tids.iter().flat_map(|t| *t.as_bytes()).collect();
+    tx.txn.put_local(&[RECORD_BLOBS, &s.0, &b.0].concat(), &v, Shred::No)?;
+    tx.core.ix.record_blobs.insert(*s, Arc::new(m));
+    Ok(())
+}
+
+impl Engine {
+    /// The records sync ID `s` carries as certificates (spec/permissions.md §4): those its
+    /// certificates name (`sync_certificates`) whose `created.0` no closure body there carries
+    /// (a thing of the closure its actor reads), held here.
+    pub(crate) fn certificate_records_now(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<Tid>>> {
+        let Some(t) = self.read_thing(s)? else { return Ok(Arc::default()) };
+        let certs = self.sync_certificates(&t);
+        let ctx = self.body_ctx(&t);
+        let out = certs.records.iter().filter(|x| !(ctx.closure.contains(x) && self.reads(&ctx, x)) && self.core.created(x).is_some()).copied().collect();
+        Ok(Arc::new(out))
+    }
+
+    /// The record blobs sealed here under `s`, each with its records.
+    pub(crate) fn record_blobs_now(&self, s: &SyncId) -> Arc<BTreeMap<BlobId, BTreeSet<Tid>>> {
+        self.core.ix.record_blobs.get(s).cloned().unwrap_or_default()
+    }
+
+    /// One record blob of `records` (those held here) under `s` and its wrap (spec/wire.md §3: no
+    /// commitments, no expiry, durable; a fresh encryption per sync ID), wrapped under `s`'s
+    /// thing's current read epoch (`wrap_secret`). `None` when none is held or no epoch is.
+    pub(crate) fn seal_records_now(&mut self, s: &SyncId, records: &BTreeSet<Tid>, rng: &mut dyn NodeRng) -> Result<Option<(BlobId, Vec<u8>, Wrap)>> {
+        let Some(t) = self.read_thing(s)? else { return Ok(None) };
+        let recs: Vec<osis_base::CreationRecord> = records.iter().filter_map(|x| self.core.created(x).cloned()).collect();
+        if recs.is_empty() {
+            return Ok(None);
+        }
+        let Some(w) = self.wrap_secret(&t, None)? else { return Ok(None) };
+        let plain = osis_commit::record_blob::encode_record_blob(&recs);
+        let mut blind = [0u8; 16];
+        rng.fill_bytes(&mut blind);
+        let prefix = osis_label::Prefix::for_groups(osis_label::Prefix::random_salt(rng), &blind, None, &[])?.with_class(osis_label::Class::Durable);
+        let (key, blob) = osis_label::frame(&prefix, &plain, rng)?;
+        let id = osis_label::blob_id(&blob);
+        let wrap = osis_crypto::wrap(&w, &id, &key, 0)?;
+        let tids: BTreeSet<Tid> = records.iter().filter(|x| self.core.created(x).is_some()).copied().collect();
+        let s = *s;
+        self.run(|tx| note(tx, &s, &id, &tids))?;
+        Ok(Some((id, blob, wrap)))
+    }
+
+    /// Takes a record blob's plaintext `plain`: its records learned (a record proves itself by
+    /// its hash). Nothing of the blob is kept: a peer's record blob is not kept in the own store,
+    /// so it leaves no row (`record_blobs` holds what this node sealed). `None` when `plain` is no
+    /// record blob.
+    pub(crate) fn take_record_blob(&mut self, plain: &[u8]) -> Result<Option<BTreeSet<Tid>>> {
+        let Ok(recs) = osis_commit::record_blob::decode_record_blob(plain) else { return Ok(None) };
+        let tids: BTreeSet<Tid> = recs.iter().map(|r| r.tid()).collect();
+        self.learn_records(recs)?;
+        Ok(Some(tids))
+    }
+}

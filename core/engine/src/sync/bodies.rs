@@ -176,7 +176,7 @@ impl Engine {
     }
 
     /// The thing whose read sync ID `s` is here (`ThingSync::Read`).
-    fn read_thing(&mut self, s: &SyncId) -> Result<Option<Tid>> {
+    pub(crate) fn read_thing(&mut self, s: &SyncId) -> Result<Option<Tid>> {
         let owner = match self.sync_owner_of(s)? {
             Some(t) => Some(t),
             None => self.core.ix.destroyed_sync_ids.iter().find(|(_, v)| v.iter().any(|o| o.id == *s)).map(|(t, _)| *t),
@@ -443,7 +443,14 @@ impl Engine {
         let opened = match self.open_commit(bytes, &key) {
             Ok(o) => o,
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
-            Err(_) => return Ok(Opened::Bad),
+            Err(_) => {
+                // a record blob (spec/wire.md §3): its records taken
+                let Ok((_, pt)) = osis_label::open(bytes, &key) else { return Ok(Opened::Bad) };
+                return Ok(match self.take_record_blob(&pt)? {
+                    Some(tids) => Opened::Records(tids),
+                    None => Opened::Bad,
+                });
+            }
         };
         let id = opened.commit.id();
         let parts: PartSet = opened.parts().into_iter().collect();

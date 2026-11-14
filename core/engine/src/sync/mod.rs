@@ -14,6 +14,7 @@ pub(crate) mod facts;
 pub(crate) mod falls;
 pub(crate) mod held;
 pub(crate) mod inbox;
+pub(crate) mod recblobs;
 pub(crate) mod records;
 mod set;
 mod signing;
@@ -57,6 +58,8 @@ pub enum Opened {
     Linked,
     /// An inbox blob, opened and taken.
     Inbox(InboxOpened),
+    /// A record blob (spec/wire.md §3): its records learned.
+    Records(BTreeSet<Tid>),
     /// No held secret opens it (or nothing held links it).
     NotOpen,
     /// It opened and is bad (its sender is to blame).
@@ -382,6 +385,22 @@ impl Engine {
     /// A cursor over the commits held from now on (`memo::Feed`; a start lists `commit_ids`).
     pub fn commit_feed(&self) -> osis_base::memo::Feed<CommitId> {
         self.core.ix.commits.feed()
+    }
+
+    /// The records `s` carries as certificates (spec/permissions.md §4): a record blob of those
+    /// no record blob in the own store carries is logged there.
+    pub fn certificate_records(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<Tid>>> {
+        self.certificate_records_now(s)
+    }
+
+    /// The record blobs sealed here under `s`, each with its records.
+    pub fn record_blobs(&mut self, s: &SyncId) -> Result<Arc<BTreeMap<BlobId, BTreeSet<Tid>>>> {
+        Ok(self.record_blobs_now(s))
+    }
+
+    /// A record blob of `records` under `s` (spec/wire.md §3), its bytes and wrap.
+    pub fn seal_records(&mut self, s: &SyncId, records: &BTreeSet<Tid>, rng: &mut dyn NodeRng) -> Result<Option<(BlobId, Vec<u8>, Wrap)>> {
+        self.seal_records_now(s, records, rng)
     }
 
     /// This node's own certificates under `s` (spec/permissions.md §4), to log there.

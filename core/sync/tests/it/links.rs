@@ -31,15 +31,36 @@ fn a_link_opens_k_by_its_static_entry_spec_sync_inbox_6() {
     assert!(!w.engine(1).read_credentials(&s).unwrap().unwrap().read_secrets.is_empty(), "K's read secret from the entry box");
 }
 
-// spec/permissions.md §7 (Redeem): node 1's account joins K and the join is held at node 0.
+// spec/permissions.md §7 (Redeem), §4 (Chain certificates; Logging certificates):
+// node 1, holding nothing of node 0's account, joins K from the link alone: K's commits apply
+// there by the certificates and records K's sync ID carries; the join is held at node 0, and node
+// 1 reads K's roster and the content node 0 writes after.
 #[test]
-#[ignore = "fails: K's commits do not apply at the redeemer (issues/sync-link-first-contact.md)"]
 fn a_redeemer_joins_k_spec_permissions_7() {
     let (mut w, link) = redeemed();
-    let a1 = w.node(1).account.unwrap();
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
     assert!(w.engine(1).roster(&link.k).contains_key(&a1), "node 1's account joined K here");
     assert!(w.engine(0).roster(&link.k).contains_key(&a1), "the join held at the sharer");
+    assert_eq!(w.engine(1).roster(&link.k).get(&a0).map(|e| e.role), Some(Role::Admin), "K's roster as the sharer's");
     assert_eq!(w.redeem(1, &link), Waiting::Done);
+    // node 1's user files the profile (spec/sync-set.md §4): it syncs K as any thing of its D
+    let p0 = w.node(0).profile.unwrap();
+    w.write(1, |e| {
+        let (_, d) = e.account().unwrap().unwrap();
+        let mut g = e.get_typed(&d, &osis_schema::core_types::GROUP).unwrap().unwrap_or_default();
+        g.items.insert(p0);
+        let mut m = osis_engine::Mutation::new();
+        m.set(d, &osis_schema::core_types::GROUP, &g).unwrap();
+        e.commit(m).unwrap().unwrap();
+    });
+    w.run();
+    w.write(0, |e| {
+        let mut m = osis_engine::Mutation::new();
+        m.set(p0, &osis_base::Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(7)).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    assert_eq!(w.engine(1).get(&p0, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap(), Some(osis_base::Value::Int(7)), "K's content read");
 }
 
 /// Node 0's read link to its profile, followed at node 1 (not run): node 1 knows K only from the
@@ -128,3 +149,4 @@ fn an_ended_link_is_not_redeemed_spec_permissions_7() {
     assert!(matches!(w.redeem(0, &link), Waiting::Never(_)));
     assert!(w.engine(0).read_credentials(&link.k_label).unwrap().is_none_or(|c| c.acting.is_empty()), "L not acted for");
 }
+

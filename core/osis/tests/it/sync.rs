@@ -368,7 +368,7 @@ fn a_write_reaches_the_accounts_other_node_spec_sync_set_1() {
 // spec/sync-inbox.md §6 (first contact): a redeemer reaches the sharer node by the link and
 // joins; the thing is read there.
 #[test]
-#[ignore = "sync rewrite: needs the engine facade (branch sync-facade)"]
+#[ignore = "the join holds, but the redeemed thing is filed nowhere so it is not synced after (issues/sync-link-first-contact.md)"]
 fn redeeming_a_link_joins_its_thing_spec_sync_inbox_6() {
     let c = clock();
     let net = ManualNet::new(c.clone());
@@ -388,7 +388,6 @@ fn redeeming_a_link_joins_its_thing_spec_sync_inbox_6() {
 // spec/sync-inbox.md §5 (contact card), spec/sync-set.md §4: importing a card gives the account,
 // whose keys are then here (a grant to it goes through).
 #[test]
-#[ignore = "sync rewrite: needs the engine facade (branch sync-facade)"]
 fn importing_a_card_gives_the_account_spec_sync_inbox_5() {
     let c = clock();
     let net = ManualNet::new(c.clone());

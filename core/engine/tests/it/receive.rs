@@ -64,7 +64,7 @@ fn dedup_and_events_spec_commits_4() {
     assert!(changed.contains(&(t, ak("t:reg.0"))));
 }
 
-// spec/commits.md §4 (Unjudgeable, Pending storage): unknown `created.0` of the author or a
+// spec/commits.md §4 (Unjudgeable; Pending storage): unknown `created.0` of the author or a
 // touched thing: the commit pends, kept across a restart, and applies once the record comes.
 #[test]
 fn pending_until_created_spec_commits_4() {
@@ -364,7 +364,7 @@ fn grantee_waits_for_grant_spec_commits_4() {
     assert_eq!(lp.peers[2].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("from b")));
 }
 
-// spec/commits.md §4 (Unjudgeable, Pending storage): role commits on a thing that come before its
+// spec/commits.md §4 (Unjudgeable; Pending storage): role commits on a thing that come before its
 // creation pend, kept with their bytes; the creation coming last applies them all in one
 // re-examination, and nothing fetches them again.
 #[test]
@@ -387,6 +387,6 @@ fn role_commits_before_their_creation_pend_then_apply_spec_commits_4() {
     let e = &mut lp.peers[2].engine;
     assert!(e.pending().is_empty(), "{:?}", e.pending());
     assert_eq!(e.roster(&t).get(&ps[1]).map(|x| x.role), Some(Role::Write));
-    assert!(e.roster(&t).get(&ps[2]).is_none());
+    assert!(!e.roster(&t).contains_key(&ps[2]));
     assert_eq!(lp.peers[2].redelivered, 0, "nothing fetched again");
 }

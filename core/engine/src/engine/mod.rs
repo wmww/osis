@@ -778,6 +778,9 @@ indexes! {
     pub blob_parts: JMap<osis_base::BlobId, Arc<(CommitId, crate::sync::PartSet, bool)>>,
     /// `blob_parts`' blobs per commit: they go with it (`sync::bodies::forget`).
     pub commit_blobs: JSetMap<CommitId, osis_base::BlobId>,
+    /// The record blobs sealed here per sync ID, each with the records it carries
+    /// (`sync::recblobs`).
+    pub record_blobs: JMap<SyncId, Arc<BTreeMap<osis_base::BlobId, BTreeSet<Tid>>>>,
     /// Fall marks per aspect (`sync::falls`, spec/sync-judgement.md §4): a count of events, not
     /// derived from the commits held, so no rebuild compares it.
     pub falls: JMap<(Tid, Ak), u64>,

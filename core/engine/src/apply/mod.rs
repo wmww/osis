@@ -1808,6 +1808,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::sync::held::load(tx)?;
     crate::sync::falls::load(tx)?;
     crate::sync::bodies::load(tx)?;
+    crate::sync::recblobs::load(tx)?;
     let addenda_due = tx.scan_keys(records::ADDENDA_DUE, "addenda due", CommitId)?;
     tx.core.ix.addenda_due.extend(addenda_due);
     let rotations_due = tx.scan_keys(records::ROTATIONS_DUE, "listings due", CommitId)?;

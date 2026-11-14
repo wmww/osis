@@ -12,6 +12,7 @@ Four `Effects` (bodies per commit; the own judgement per (S, commit): verdict an
 - **Own store**: logs must-hold bodies with no own entry while a reader can pull S (a held blob verbatim, else `seal_body`), drops entries must-not-hold or covered and dropped (no delete key; never a must-hold one), lifts own tombstones of a body missing again.
 - **Toward each source keeping S unread**, keyed by what its stream wrote (`seen_added`) and, where this node is no writer at its head, every must-hold body: deletes (its head's delete key; carriers in its `known`, a full source counting one it lacks; duplicates by delta set and copy; never a body dropped as invalid), deposits, logs again once per ground; deletes and loggings again wait on role entries first.
 - **Destruction**: told (sticky); emptying deletes at a source holding every request or past their expiry; forgets once every source is heard out with nothing known, at once with no delete key, or untold past the requests' expiry (deleting nothing).
+- **Record blobs**: per S, one fresh record blob of the records S's certificates need that no own record blob carries (notes/sync-facade.md, Certificate bodies). A record blob names no commit, so it is never judged: it goes only with S.
 - Between readers nothing but streams.
 
 Work per change: a source's event judges that body at that source; a reader source joining judges nothing; a writer's store source joining judges what its stream shows; a non-writer's, each must-hold body (counted at n and 10n sources in `read.rs` `work_follows_sources`).
@@ -30,6 +31,5 @@ Work per change: a source's event judges that body at that source; a reader sour
 - `sole_certificate` is always false (the store's to judge); `body_facts.kept` and `covered` move with the memo clock when a keep bound passes.
 
 ## Not built
-- issues/sync-certificate-bodies.md: record blobs are not built.
 - issues/reseal-under-own-epoch-leaks.md (Sync side): `seal_body` and `rewrap` still pick the epoch by `section_epoch`, not `Engine::seal` with every held genuine section.
 - issues/sync-unbuilt.md (read): `SrcView::role_unheld` is always false (deletes toward a source do not wait for a role commit it lacks); level-key deletes (freed links, spec/sync-compaction.md §1); a peer's entry counting as lacking for its wrap (Duplicates, spec/sync-ids.md §6 Wraps); HN_fallany (a snapshot arriving invalid moves the fall mark as one held valid falling does) lives in the engine's `fall_mark`, untested end to end.

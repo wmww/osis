@@ -79,9 +79,8 @@ fn kept() -> (World, Tid, SyncId) {
     (w, t, s)
 }
 
-// spec/sync-judgement.md §2 (the certificate blobs of spec/permissions.md §4 are in S's required
-// set), §3 (Own store; Deletes: a delete-key holder deletes at a source only what its judgement
-// finds must-not-hold): the chain certificate a reader of S needs to judge node 0's writes there
+// spec/sync-judgement.md §3 (Own store; Deletes), §2 (required set: the certificate blobs are in
+// it): the chain certificate a reader of S needs to judge node 0's writes there
 // (its account's current `keys.0`, a part on a thing outside S's closure) is logged in node 0's
 // own store, reaches node 1 keeping S unread, and node 0, which holds S's delete key, never
 // deletes it there, an hour on.
