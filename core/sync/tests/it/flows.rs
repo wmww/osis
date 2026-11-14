@@ -517,3 +517,39 @@ fn a_wait_on_deliveries_ends_once_the_grant_is_taken_spec_sync_inbox_2() {
     assert!(w.engine(0).deliveries().unwrap().is_empty());
     assert_eq!(w.wait(0, Scope::Deliveries), Waiting::Done, "seen taken");
 }
+
+// spec/permissions.md §3 (Own secrets add only): node 0 makes group G (secrets of its own) and T
+// under it (plain, first admin G, an item of G); node 1's account reads G. T gets secrets of its
+// own, boxed to G like any holder: node 1 reads T's next write through G, with nothing granted on T.
+#[test]
+fn own_secrets_keep_a_reader_of_the_first_admin_reading_spec_perm_3() {
+    let mut w = contacts();
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let ak = Ak::new("u:v.0").unwrap();
+    let (g, t) = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, a0);
+        e.commit(m).unwrap();
+        e.give_own_secrets(&g).unwrap();
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, g);
+        m.set(t, &ak, &Value::Str("x".into())).unwrap();
+        m.set(g, &ct::GROUP, &ct::Group { items: [t].into(), ..Default::default() }).unwrap();
+        e.commit(m).unwrap();
+        (g, t)
+    });
+    file(&mut w, 0, vec![g], Vec::new());
+    w.write(0, |e| e.grant(&g, &a1, &edge(Role::Read))).unwrap();
+    w.run();
+    file(&mut w, 1, Vec::new(), vec![g]);
+    w.run();
+    assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("x".into())), "T read through G while plain");
+    w.write(0, |e| e.give_own_secrets(&t)).unwrap();
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Str("y".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("y".into())), "T read through G with secrets of its own");
+}

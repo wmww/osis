@@ -32,3 +32,4 @@ mod expiry_model;
 mod write;
 mod scale;
 mod memory;
+mod own_secrets;
