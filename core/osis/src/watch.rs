@@ -289,7 +289,7 @@ pub(crate) struct Sub {
 }
 
 #[derive(Default)]
-pub(crate) struct Registry {
+struct Registry {
     next: u64,
     subs: BTreeMap<u64, Arc<Sub>>,
     /// Who is found where: an event looks up the slots it names, O(log S + matched).

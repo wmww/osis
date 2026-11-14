@@ -54,7 +54,7 @@ pub enum Purge {
 /// One API op of a write in wire-ready form: tids resolved, aspects by index into the write's
 /// key table (`Write::keys`), values untyped and validated.
 #[derive(Clone, Debug)]
-pub(crate) enum WriteOp {
+enum WriteOp {
     /// A new thing; its record fixes its tid.
     Create(CreationRecord),
     /// Adds (removes) `member` to the items, or the subgroups, of `g`.

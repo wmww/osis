@@ -980,7 +980,7 @@ fn spawn_connection(via: Via, addr: Address, shown: crate::Address, secret: Opti
 }
 
 /// A connection to the node at `login`'s address as the client its secret stands for.
-pub(crate) fn spawn_client(login: &crate::NodeLogin, transport: &Option<osis_transport::InProcess>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Connection>> {
+fn spawn_client(login: &crate::NodeLogin, transport: &Option<osis_transport::InProcess>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Connection>> {
     let addr = &login.addr;
     // the secret goes only over a transport pinned to the node's key
     if addr.0.url.starts_with("unix://") {
@@ -1198,7 +1198,7 @@ pub(crate) fn grants_filter(thing: Tid) -> Value {
 /// A node's callback of `T`s.
 pub(crate) type CallbackOf<T> = Box<dyn FnMut(&Osis, T) + Send>;
 /// A node's callback of `Change<Value>`s.
-pub(crate) type ChangeFn = CallbackOf<crate::watch::Change<Value>>;
+type ChangeFn = CallbackOf<crate::watch::Change<Value>>;
 
 impl Osis {
     /// `on_diagnostic` at the connected node (its diagnostics; this process's own go nowhere).
@@ -1497,7 +1497,7 @@ impl crate::handle::ReadOnly {
     /// Registers `cb` for a subscription at the connected node: its Reply (`PortEvent::Initial`)
     /// and Notifies reach `cb` through the dispatcher, in wire order. Returns the subscription
     /// and the initial value (or the Sub's error).
-    pub(crate) fn node_sub(&self, r: &Arc<Connection>, on: Option<Tid>, filter: Value, again: bool, cb: Callback) -> Result<(Subscription, Value)> {
+    fn node_sub(&self, r: &Arc<Connection>, on: Option<Tid>, filter: Value, again: bool, cb: Callback) -> Result<(Subscription, Value)> {
         if let Some(e) = r.down() {
             return Err(e);
         }

@@ -426,7 +426,7 @@ impl ReadOnly {
     }
 
     /// Commit `id` as listed at `a` now, wherever it is read; `None` when it is not listed there.
-    pub(crate) fn listed_commit(&self, a: &Address, id: CommitId) -> Result<Option<Commit>> {
+    fn listed_commit(&self, a: &Address, id: CommitId) -> Result<Option<Commit>> {
         self.track_commits(a, Some(id))?;
         match self.source_address(a)? {
             Source::Node(r) => self.node_listed_commit(&r, a, id),
@@ -437,7 +437,7 @@ impl ReadOnly {
 
 impl Osis {
     /// Calls `f` for each commit that reads otherwise at `a`, wherever it is read.
-    pub(crate) fn on_commits(&self, a: Address, mut f: crate::port::client::CallbackOf<CommitEvent>) -> Result<Subscription> {
+    fn on_commits(&self, a: Address, mut f: crate::port::client::CallbackOf<CommitEvent>) -> Result<Subscription> {
         if let Source::Node(r) = self.source_address(&a)? {
             return self.node_on_commits(&r, a, f);
         }
@@ -535,7 +535,7 @@ impl Osis {
 }
 
 /// Commit `id` read in `r`, every listed part the reader may read; `None` when not held.
-pub(crate) fn commit_in(r: &mut Reader<'_>, id: CommitId) -> Result<Option<Commit>> {
+fn commit_in(r: &mut Reader<'_>, id: CommitId) -> Result<Option<Commit>> {
     let actor = r.actor;
     let shown = move |e: &mut osis_node::Engine, t: &Tid| actor.is_none_or(|a| e.readable_by(&a, t));
     let limit = r.limit;
@@ -660,7 +660,7 @@ impl crate::handle::ReadOnly {
 
     /// Commit `id` at this engine with every listed part the caller may read; `None` when it is
     /// not held here.
-    pub(crate) fn commit_here(&self, id: CommitId) -> Result<Option<Commit>> {
+    fn commit_here(&self, id: CommitId) -> Result<Option<Commit>> {
         Ok(self.read_local(|r| commit_in(r, id))?.map(|c| c.reporting(self)))
     }
 

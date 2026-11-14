@@ -312,7 +312,7 @@ impl ReadOnly {
 
     /// The one source of calls on all of `things`; `Invalid` when they resolve to two. None: as
     /// a call on no thing (`source_scope(None)`).
-    pub(crate) fn source_all(&self, things: &[Tid]) -> Result<Source> {
+    fn source_all(&self, things: &[Tid]) -> Result<Source> {
         let mut out: Option<Source> = None;
         for t in things.iter().collect::<BTreeSet<_>>() {
             let s = self.source(*t);
@@ -344,7 +344,7 @@ impl ReadOnly {
 
     /// The source holding commit `id`: of what it touched when this engine holds it; else an
     /// only connection. `Invalid` among several: a commit id does not say whose it is.
-    pub(crate) fn source_commit(&self, id: RawCommitId) -> Result<Source> {
+    fn source_commit(&self, id: RawCommitId) -> Result<Source> {
         if !self.sources_apply() {
             return Ok(Source::Local);
         }

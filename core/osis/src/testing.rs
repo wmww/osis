@@ -21,7 +21,7 @@ impl Osis {
     /// a directory, in-process transport, a `text_save` hook, `Dispatcher::Pump`, a runtime
     /// other than `None` or `Manual`, a call still waiting for another node, a connection to
     /// another node, a client port that ran. Inside a world copy (`osis_base::copying`) with the nodes beside it.
-    pub(crate) fn test_copy(&self, clock: Arc<dyn Clock>, runtime: &Runtime) -> Result<Osis> {
+    fn test_copy(&self, clock: Arc<dyn Clock>, runtime: &Runtime) -> Result<Osis> {
         let i = &self.inner;
         let refuse = |why: &str| Err(Error::Invalid(format!("test_copy: {why}")));
         if i.client.get().is_some() || i.store_dir.is_some() || i.transport.is_some() {

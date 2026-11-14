@@ -1701,7 +1701,7 @@ const PROFILE_OF: &str = "profile/";
 
 /// A held link key, forgotten when the guard goes: every outcome of a waiting call,
 /// a dropped future included.
-pub(crate) struct KeyGuard {
+struct KeyGuard {
     pub db: crate::handle::WeakOsis,
     pub l: Tid,
     /// A link's K whose follow (hint, sharer node) goes with the key: set until the redemption.

@@ -38,7 +38,7 @@ pub(crate) fn is_port(a: &Action) -> bool {
     matches!(a, Action::Request { .. } | Action::Room { .. } | Action::Ended { .. })
 }
 
-pub(crate) enum Job {
+enum Job {
     Act(Action),
     /// A subscription of this connection has something to send.
     Dirty(ConnId),
