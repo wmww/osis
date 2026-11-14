@@ -179,7 +179,7 @@ pub struct PassStats {
     /// `changed_at` passes and the labels they fingerprinted (`stamp_changes`).
     pub changed_passes: u64,
     pub changed_labels: u64,
-    /// Shared sets (issues/net-shared-set.md): filters sent and received, beacons in filters sent,
+    /// Shared sets (issues/sync-rewrite.md): filters sent and received, beacons in filters sent,
     /// Hits, ByRole and Deposit items offered, Hit tables built.
     pub filters_sent: u64,
     pub filters_received: u64,

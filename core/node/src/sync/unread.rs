@@ -1,5 +1,5 @@
 //! The serving side for sync IDs this node keeps and cannot read (issues/sync-rewrite.md step 3,
-//! Opens; issues/net-shared-set.md, Peers that cannot read): their heads come from the hub's
+//! Opens; issues/sync-rewrite.md): their heads come from the hub's
 //! store, whose head credentials (sync key, deposit key, the claim set's static entries) go in
 //! the filter to every connection; a member opened by one is served from the hub's store (its
 //! rows, its ephemeral entries as the log's memory part, its relay-only entries past the hub's
@@ -462,7 +462,7 @@ impl SyncEngine {
         Ok(!hub.entry(l, b).map_err(hub_err)?.is_some_and(|m| m.stamp.is_some()) && hub.blob(b).map_err(hub_err)?.is_none() && !osis_proto::store::LabelStore::tombstoned(&*hub, l, b).map_err(hub_err)?)
     }
 
-    /// A Deposit item for unread inbox `l` (issues/net-shared-set.md, Deposits): taken as a
+    /// A Deposit item for unread inbox `l` (issues/sync-rewrite.md): taken as a
     /// Deposit by the hub's store (its signature, budget, rate, caps: spec/sync.md §5): 0,
     /// refused for now (4, 5, 12), else 14.
     pub(crate) fn unread_deposit(&mut self, l: LabelId, blob: &[u8], wrap: [u8; WRAP_LEN], sig: &Signature) -> Result<Code> {

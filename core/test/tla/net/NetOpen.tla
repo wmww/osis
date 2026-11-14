@@ -1,5 +1,5 @@
 ---- MODULE NetOpen ----
-(* Who may open sync ID L on a connection (issues/net-6c-plan.md): the 6c rule that each side
+(* Who may open sync ID L on a connection (issues/sync-rewrite.md): the 6c rule that each side
    opens L only on its own proof that the peer may hold L, and the open signature's domain.
    Honest nodes are readers (hold L's sync secrets, the proof value and a key actor whose static
    entry L's head lists; they record an older step under another sync key, which their walk may

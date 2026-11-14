@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! spec: none (the record's layout is the store's own; issues/net-reconnect.md The record, and
+//! spec: none (the record's layout is the store's own; issues/sync-rewrite.md, and
 //! core/test/tla/net/ASSUMPTIONS.md: a record and the log are one durable unit).
 
 use crate::common;
@@ -45,7 +45,7 @@ fn create(s: &mut Store, rng: &mut SeededRng, r: u8, actor: u8) -> RecordId {
     id
 }
 
-// a record is one atomic unit (issues/net-reconnect.md, Restart and loss): a crash at any write
+// a record is one atomic unit (issues/sync-rewrite.md): a crash at any write
 // of its creation, a member's open and its close leaves it whole or absent
 #[test]
 fn crash_at_any_write_leaves_a_record_whole_or_absent() {
@@ -88,7 +88,7 @@ fn crash_at_any_write_leaves_a_record_whole_or_absent() {
     assert!(gone && whole, "the crash points reach both outcomes");
 }
 
-// a cursor is stored only by the transaction applying what it covers (issues/net-reconnect.md,
+// a cursor is stored only by the transaction applying what it covers (issues/sync-rewrite.md,
 // Restart and loss): data and cursor cannot split at any write of that transaction
 #[test]
 fn crash_at_any_write_keeps_a_cursor_with_its_applied_data() {
@@ -116,7 +116,7 @@ fn crash_at_any_write_keeps_a_cursor_with_its_applied_data() {
     assert!(seen_none && seen_both, "the crash points reach both outcomes");
 }
 
-// issues/net-shared-set.md, Re-marking: every close sets `acked_pos` to min(self, changed_at - 1),
+// issues/sync-rewrite.md: every close sets `acked_pos` to min(self, changed_at - 1),
 // whether or not the record held the member, and touches no other record
 #[test]
 fn a_close_remarks_this_record_alone_to_below_the_changed_at() {
@@ -135,7 +135,7 @@ fn a_close_remarks_this_record_alone_to_below_the_changed_at() {
     assert_eq!(t.record_rise_acked(&a, 5).unwrap(), 9, "only re-marking lowers it");
 }
 
-// issues/net-reconnect.md, Lost and rejoin: an older lag is kept, and a rejoin spends it
+// issues/sync-rewrite.md, Lost and rejoin: an older lag is kept, and a rejoin spends it
 #[test]
 fn a_stop_keeps_the_older_lag_until_a_rejoin_spends_it() {
     let (_d, mut s, mut rng) = Dev::new();
@@ -150,7 +150,7 @@ fn a_stop_keeps_the_older_lag_until_a_rejoin_spends_it() {
     assert_eq!(t.record_lag(&a, &l(1)).unwrap().as_deref(), Some(b"new".as_slice()));
 }
 
-// issues/net-reconnect.md, Changes: a node that stops holding L drops it from every record's S and
+// issues/sync-rewrite.md: a node that stops holding L drops it from every record's S and
 // every lag of it, in that same transaction; `changed_forget` is that transaction
 #[test]
 fn forgetting_a_sync_id_drops_it_from_every_record_in_one_step() {
@@ -173,7 +173,7 @@ fn forgetting_a_sync_id_drops_it_from_every_record_in_one_step() {
     assert_eq!(t.record_lag(&a, &l(1)).unwrap(), None, "its lag goes too");
 }
 
-// issues/net-reconnect.md, RECORD_BUDGET: past the budget the least recently used record not in
+// issues/sync-rewrite.md, RECORD_BUDGET: past the budget the least recently used record not in
 // use goes, whole, and its bytes come back to the count; a record in use is not dropped
 #[test]
 fn eviction_drops_the_least_recently_used_not_in_use_whole() {
@@ -239,7 +239,7 @@ fn a_lookup_reads_only_the_records_of_the_proven_actors() {
     }
 }
 
-// issues/net-reconnect.md, Agreement: a member only one side held leaves S with no lag (its
+// issues/sync-rewrite.md: a member only one side held leaves S with no lag (its
 // rejoin is a listing) and is pending again; a stream move of a member closed since adds nothing
 #[test]
 fn a_dropped_member_keeps_no_lag_and_a_late_move_reopens_nothing() {
@@ -255,7 +255,7 @@ fn a_dropped_member_keeps_no_lag_and_a_late_move_reopens_nothing() {
     assert!(t.record_members(&a).unwrap().is_empty(), "a member closed since stays closed");
 }
 
-// issues/net-shared-set.md, Stored filter: the peer's filter is kept by generation, a whole one
+// issues/sync-rewrite.md, Stored filter: the peer's filter is kept by generation, a whole one
 // replacing what was stored, and it goes with the record
 #[test]
 fn the_peer_filter_is_kept_by_generation_and_goes_with_its_record() {

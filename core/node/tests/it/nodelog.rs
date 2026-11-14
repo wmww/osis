@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! spec: none (issues/net-reconnect.md, One node log): the node log follows every path that
+//! spec: none (issues/sync-rewrite.md, One node log): the node log follows every path that
 //! changes a held entry, so a listing from its start is the node's live set of every label.
 
 use crate::net::{hosted, hosted_nodes};
@@ -164,7 +164,7 @@ fn a_chunk_is_logged_when_its_bytes_arrive() {
     }
 }
 
-// spec: none (issues/net-reconnect.md: a cursor is stored only with what it covers applied): a
+// spec: none (issues/sync-rewrite.md: a cursor is stored only with what it covers applied): a
 // crash at any write while a connected node takes a pushed event with its bytes leaves it,
 // restarted, with the log matching what it holds; it then converges
 #[test]
@@ -208,7 +208,7 @@ fn a_crash_taking_bytes_leaves_no_cursor_ahead_of_its_data() {
     }
 }
 
-// spec: none (issues/net-reconnect.md, One node log): a one-off failed write (the device stays up)
+// spec: none (issues/sync-rewrite.md, One node log): a one-off failed write (the device stays up)
 // at any write while a connected node takes a pushed event with its bytes: the node goes on with
 // no restart, its log matching what it holds, and converges
 #[test]

@@ -589,7 +589,7 @@ fn lan_route_proven_by_up_spec_sync_10() {
 }
 
 // spec/sync.md §10 (Shared set): what a session serves is its shared set's, and once the proved
-// node is removed from the group its member closes (issues/net-shared-set.md, Opens)
+// node is removed from the group its member closes (issues/sync-rewrite.md)
 #[test]
 fn a_member_closes_with_the_right_spec_sync_10() {
     let (mut net, [a, b]) = local_nodes::<2>();

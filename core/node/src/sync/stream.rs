@@ -1,4 +1,4 @@
-//! The node log stream between readers (spec/sync.md §10, Stream; issues/net-reconnect.md, One
+//! The node log stream between readers (spec/sync.md §10, Stream; issues/sync-rewrite.md, One
 //! node log, one cursor): one stream per connection over the node log (`osis_store` nodelog),
 //! filtered by the connection's shared set S, behind opaque cursors.
 //!
@@ -12,7 +12,7 @@
 //! - The log keeps each subject's latest event (compaction, never trimming by position), so a
 //!   later read of a subject shows that event or a newer one: re-delivery is harmless, and a
 //!   position never needs an event the log dropped but a deletion past `TOMBSTONE_LIFETIME`,
-//!   which no read carries (issues/net-reconnect.md, Deletions).
+//!   which no read carries (issues/sync-rewrite.md).
 //! - A member enters the requester's stream only with its join merged at the stream's position;
 //!   one leaving keeps its position as a lag. A connection with a record starts from the record's
 //!   S, each member where the record holds it (at the cursor, or joining from its own position),
@@ -680,7 +680,7 @@ impl SyncEngine {
         Ok((out, cut))
     }
 
-    /// Answers a Pull (issues/net-reconnect.md, One node log): after `served_labels` and a flush
+    /// Answers a Pull (issues/sync-rewrite.md, One node log): after `served_labels` and a flush
     /// (a moved head enters the log only there), read in a transaction of its own, filtered by S
     /// and by the bytes held. The Pull first reports what the requester stored (`pull_reports`):
     /// a member being ended whose `until` that passed closes before the reply
@@ -1161,7 +1161,7 @@ impl SyncEngine {
     /// A Pull whose `inline_limit` is no longer the one due (`stream_inline`) also goes, so the
     /// peer's pushes carry bodies inline only while it is this node's one source.
     pub(super) fn stream_ask(&mut self, conn: ConnId, fresh: bool, out: &mut Vec<Action>) -> Result<()> {
-        // no Pull before the two records agree (issues/net-reconnect.md, Agreement)
+        // no Pull before the two records agree (issues/sync-rewrite.md)
         if !self.shared_agreed(conn) {
             return Ok(());
         }

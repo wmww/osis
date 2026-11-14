@@ -921,7 +921,7 @@ fn removing_a_node_lists_its_links_spec_permissions_7() {
     assert_eq!(da.links().unwrap().iter().map(|l| l.id.actor()).collect::<Vec<_>>(), vec![here]);
 }
 
-// spec: none (issues/net-reconnect.md, Built): the blobs a pairing brings (`Joining::finish` ingests
+// spec: none (issues/sync-rewrite.md): the blobs a pairing brings (`Joining::finish` ingests
 // a package with them) are logged at the node that took them: whatever a new node holds under a
 // label, its bytes and row together, the node log lists, a chunk among them
 #[test]

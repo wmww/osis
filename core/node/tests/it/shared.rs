@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! The shared set over real sessions (issues/net-shared-set.md, spec/wire.md §11.2 Beacons, Offer,
+//! The shared set over real sessions (issues/sync-rewrite.md, spec/wire.md §11.2 Beacons, Offer,
 //! Lost): a hand dialer that is `a` in everything but the code, against a real node `b`.
 
 use crate::net::local_nodes;
@@ -40,7 +40,7 @@ pub(crate) fn dial_as(net: &mut Net, a: usize, b: usize, challenge: [u8; 32]) ->
 }
 
 /// A hand dialer that proved `a` and resumed the record whose key is `r`, holding an empty S: its
-/// digest and empty list close what `b`'s record held (issues/net-reconnect.md, Agreement), and
+/// digest and empty list close what `b`'s record held (issues/sync-rewrite.md), and
 /// `b`'s first filter comes back.
 fn resumed(net: &mut Net, a: usize, b: usize, r: &[u8; 32], challenge: [u8; 32]) -> (Dialer, Vec<Message>) {
     let mut p = dial_as(net, a, b, challenge);
@@ -109,7 +109,7 @@ fn a_valid_hit_opens_and_is_tagged_spec_wire_11_2() {
     assert!(net.sync(b).shared_members(p.conn).contains(&l));
 }
 
-// the reflection a symmetric beacon invites (issues/net-shared-set.md, Adversaries): a peer sending
+// the reflection a symmetric beacon invites (issues/sync-rewrite.md): a peer sending
 // back the digest of its own sender's side, or a digest for another connection or listener, shows
 // nothing, for every way the binding differs
 #[test]
@@ -133,7 +133,7 @@ fn a_reflected_or_carried_hit_opens_nothing_spec_wire_11_2() {
     assert!(net.sync(b).shared_members(p.conn).is_empty(), "nothing opened");
 }
 
-// issues/net-shared-set.md, Reply: a tester opens L only on an answer carrying the tag: a peer
+// issues/sync-rewrite.md, Reply: a tester opens L only on an answer carrying the tag: a peer
 // answering 0 to its Hit, without one, serves it nothing and is served nothing
 #[test]
 fn a_hit_answered_without_a_tag_opens_nothing_spec_wire_11_2() {
@@ -152,7 +152,7 @@ fn a_hit_answered_without_a_tag_opens_nothing_spec_wire_11_2() {
     assert!(net.sync(b).shared_members(p.conn).is_empty(), "no tag, no open");
 }
 
-// issues/net-shared-set.md, Adversaries: a filter breaking a page, ordering or width rule closes
+// issues/sync-rewrite.md: a filter breaking a page, ordering or width rule closes
 // the connection before it costs anything but a pass
 #[test]
 fn bad_filters_close_the_connection_spec_wire_11_2() {
@@ -169,7 +169,7 @@ fn bad_filters_close_the_connection_spec_wire_11_2() {
     }
 }
 
-// issues/net-shared-set.md, Lost: a Lost changes only a member of this connection's S: a peer naming
+// issues/sync-rewrite.md, Lost: a Lost changes only a member of this connection's S: a peer naming
 // something it does not share here changes nothing, and is idempotent
 #[test]
 fn a_lost_touches_only_members_spec_wire_11_2() {
@@ -187,7 +187,7 @@ fn a_lost_touches_only_members_spec_wire_11_2() {
     assert!(net.sync(b).shared_members(p.conn).is_empty(), "idempotent");
 }
 
-// issues/net-reconnect.md Costs (a Lost costs other peers nothing): a Lost for what is not shared
+// issues/sync-rewrite.md (a Lost costs other peers nothing): a Lost for what is not shared
 // here re-tests nothing: a refused Hit stays refused
 #[test]
 fn a_lost_for_what_is_not_shared_costs_no_test() {
@@ -205,7 +205,7 @@ fn a_lost_for_what_is_not_shared_costs_no_test() {
     assert_eq!(net.sync(b).pass_stats().hits_sent, hits, "not offered again");
 }
 
-// issues/net-shared-set.md, Words: what a node reads goes in a filter only to a peer that proved
+// issues/sync-rewrite.md: what a node reads goes in a filter only to a peer that proved
 // a known actor: a dialer knowing nothing of the listener shows no credential and tests the
 // listener's
 #[test]
@@ -307,7 +307,7 @@ fn a_node_never_dials_its_own_key_spec_sync_10() {
     assert!(!net.dialed.iter().any(|(n, x)| *n == a && x.key == me.key), "{:?}", net.dialed);
 }
 
-// issues/net-shared-set.md, Words and Peers that cannot read: a stranger's NoRecord starts the
+// issues/sync-rewrite.md and Peers that cannot read: a stranger's NoRecord starts the
 // connection's set, whose filter holds none of what the node reads (here nothing else: it keeps
 // nothing unread); before it, a shared-set request is refused
 #[test]
@@ -329,7 +329,7 @@ fn the_conn(net: &mut Net, n: usize) -> ConnId {
     net.sync(n).proven_connections().into_iter().find(|(_, p)| !p.is_empty()).map(|(c, _)| c).expect("a connection")
 }
 
-// issues/net-shared-set.md, Testing and Opens: a holder gaining a right mid-connection finds it by
+// issues/sync-rewrite.md and Opens: a holder gaining a right mid-connection finds it by
 // additions and a Hit, and losing it closes the member on both sides and stops the data
 #[test]
 fn a_right_gained_and_lost_mid_connection_opens_and_closes_spec_sync_5() {
@@ -367,7 +367,7 @@ fn proving_key_actor(net: &mut Net, a: usize, carrier: usize, seed: &osis_crypto
     p
 }
 
-// issues/net-shared-set.md, Words (static entry) and first contact: a link key proved on this
+// issues/sync-rewrite.md (static entry) and first contact: a link key proved on this
 // connection opens K by its static entry's Hit; the same Hit on a connection that proved another
 // actor opens nothing
 #[test]
@@ -392,7 +392,7 @@ fn a_static_entry_hit_opens_only_for_its_proved_key_actor_spec_wire_11_2() {
 }
 
 // spec/wire.md §11.2 (an open signature binds its signer's side), spec/sync.md §10 Offer
-// (issues/net-static-hit-to-dialer.md; model NetOpen `ON_side`): a reader holding a link's key
+// (issues/sync-rewrite.md; model NetOpen `ON_side`): a reader holding a link's key
 // actor Hits its static entry by a Static item on a second dial whose Hello challenge is the
 // reader's own from a first; that item offered back on the first, where the hand dialer proves
 // only another key actor, opens nothing (without the side byte its signature verifies there)
@@ -436,7 +436,7 @@ fn first_contact_cost(n: usize) -> (u64, u64, u64) {
     (st.filters_sent, st.beacons_sent, st.hits_sent)
 }
 
-// issues/net-shared-set.md, Costs: a first contact sharing n sync IDs sends one filter of about n beacons
+// issues/sync-rewrite.md: a first contact sharing n sync IDs sends one filter of about n beacons
 // and offers at most n Hits: the count grows with n and no more
 #[test]
 fn a_first_contact_costs_one_filter_of_n_beacons() {
@@ -471,7 +471,7 @@ fn the_same_connection_survives_whatever_the_order_spec_sync_10() {
     }
 }
 
-// issues/net-shared-set.md, Offer and Adversaries: a ByRole that lists a static entry's public
+// issues/sync-rewrite.md, Offer and Adversaries: a ByRole that lists a static entry's public
 // value does not open L: only a Hit on a connection that proved the key actor does
 #[test]
 fn a_by_role_listing_a_static_entry_opens_nothing_spec_wire_11_2() {
@@ -487,7 +487,7 @@ fn a_by_role_listing_a_static_entry_opens_nothing_spec_wire_11_2() {
     assert!(net.sync(a).shared_members(wrong.conn).is_empty());
 }
 
-// issues/net-shared-set.md, Offer: a ByRole the peer accepts opens L at its sender too (a holder a
+// issues/sync-rewrite.md, Offer: a ByRole the peer accepts opens L at its sender too (a holder a
 // rotation apart): the listener serves it and the dialer pulls it
 #[test]
 fn an_accepted_by_role_opens_at_its_sender_spec_wire_11_2() {
@@ -507,7 +507,7 @@ fn an_accepted_by_role_opens_at_its_sender_spec_wire_11_2() {
     assert!(net.sync(b).shared_members(p.conn).contains(&l), "the sender serves what its peer accepted");
 }
 
-// issues/net-shared-set.md, The rule: a peer whose only tie here ended still shares what it showed
+// issues/sync-rewrite.md: a peer whose only tie here ended still shares what it showed
 // an admissible credential of; only the filter stops
 #[test]
 fn a_credential_open_outlasts_the_peers_being_known_spec_sync_10() {
@@ -596,7 +596,7 @@ fn a_hit_declined_after_its_answer_opens_again_spec_sync_10() {
     }
 }
 
-// issues/net-shared-set.md, Reply and Divergence: a peer answering a static entry's Hit with a
+// issues/sync-rewrite.md, Reply and Divergence: a peer answering a static entry's Hit with a
 // grant that does not verify is told Lost, and the Hit is not sent again on that connection
 // until something else re-marks it: a forged grant buys no loop
 #[test]

@@ -839,7 +839,7 @@ fn redeem_past_its_wait_says_retrying_is_safe_notes_cli() {
 // Audit rows 3 and 12 (issues/no-server-audit.md), spec/permissions.md §7: with no saved peers
 // the CLI still makes a link, a chat link and a contact card; a store with no peers is not a dead end.
 #[test]
-#[ignore = "issues/net-first-contact.md"]
+#[ignore = "issues/sync-rewrite.md"]
 fn repro_row3_row12_links_and_cards_on_a_store_with_no_saved_peer() {
     let s = S::mem();
     let g = s.ok(&["create", "--in", "me", "t:made.0", "true"]).line().to_string();

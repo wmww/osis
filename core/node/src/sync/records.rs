@@ -1,4 +1,4 @@
-//! Pair keys and per-peer records on connections (issues/net-reconnect.md, Resume).
+//! Pair keys and per-peer records on connections (issues/sync-rewrite.md).
 //!
 //! What proves a record: the session's own proven actors, those this node knows now (`Judge`
 //! over the rosters it holds): the same set that gates the proof answer (spec/sync.md §10). A
@@ -20,7 +20,7 @@ use osis_proto::MAX_RESUME_TAGS;
 use osis_store::{RECORD_BUDGET, Record, RecordId};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A connection's working state of its record (issues/net-shared-set.md, Testing): the peer's last
+/// A connection's working state of its record (issues/sync-rewrite.md): the peer's last
 /// ack and `tested_pos`, which last the connection; `acked_pos` is durable, in the record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConnRecord {
@@ -42,7 +42,7 @@ impl ConnRecord {
         (self.offers_unanswered == 0).then_some(self.ack.min(self.tested))
     }
 
-    /// A member closed for this record (issues/net-shared-set.md, Re-marking): `tested` goes
+    /// A member closed for this record (issues/sync-rewrite.md): `tested` goes
     /// below it as `acked_pos` does in `Transaction::record_close`. The peer's ack stands.
     pub fn remark(&mut self, changed_at: u64) {
         self.tested = self.tested.min(changed_at.saturating_sub(1));
@@ -164,7 +164,7 @@ impl SyncEngine {
     /// This dialed connection keeps no record (the listener proved no known actor, or refused
     /// this side's Prove or Resume): NoRecord, so the listener runs the set
     /// under the connection's pair key (its unread entries go to any dialer), and this side tests
-    /// the filter it receives (first contact, issues/net-first-contact.md).
+    /// the filter it receives (first contact, issues/sync-rewrite.md).
     pub(super) fn no_record(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         self.records.sent.remove(&conn);
         self.hub_down(conn, osis_host::Down::Message(Box::new(osis_proto::Message::NoRecord { id: super::shared::NO_RECORD_ID })), out);

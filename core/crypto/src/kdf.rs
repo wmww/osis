@@ -91,7 +91,7 @@ pub const LAN_TAG: &str = "lan tag";
 pub const LAN_SIG: &str = "lan sig";
 /// The pair key of a record, or of a connection with none (`pair_key`).
 pub const PAIR_KEY: &str = "pair key";
-/// A beacon's key over its match value and sync ID (issues/net-shared-set.md, Beacons).
+/// A beacon's key over its match value and sync ID (issues/sync-rewrite.md).
 pub const BEACON: &str = "beacon";
 /// A Hit over a beacon, its sender's side and the connection (`beacon_hit`).
 pub const BEACON_HIT: &str = "beacon hit";
@@ -137,7 +137,7 @@ pub fn role_purpose(role: Role) -> &'static str {
     }
 }
 
-/// The pair key from two nodes' nonces (issues/net-reconnect.md, Resume), or from a connection's
+/// The pair key from two nodes' nonces (issues/sync-rewrite.md), or from a connection's
 /// challenges where no record is kept (spec/sync.md §10).
 pub fn pair_key(a: &[u8; 32], b: &[u8; 32]) -> Secret32 {
     kdf(PAIR_KEY, a, b)
@@ -156,7 +156,7 @@ pub fn resumed_tag(r: &[u8; 32], key: &[u8; 32], dialer: &[u8; 32], listener: &[
     resume_hash(r, b"resumed", key, dialer, listener)
 }
 
-/// A beacon: `BLAKE3(key = kdf("beacon", match, L), r)` (issues/net-shared-set.md, Beacons): the
+/// A beacon: `BLAKE3(key = kdf("beacon", match, L), r)` (issues/sync-rewrite.md): the
 /// value both sides compute for one credential, so a filter entry is its first bits.
 pub fn beacon(match_value: &[u8; 32], label: &[u8; 16], r: &[u8; 32]) -> [u8; 32] {
     *blake3::keyed_hash(kdf(BEACON, match_value, label).expose(), r).as_bytes()

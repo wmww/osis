@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Deposit items between readers (issues/net-shared-set.md, Deposits; spec/sync.md §10 Shared
+//! Deposit items between readers (issues/sync-rewrite.md; spec/sync.md §10 Shared
 //! set, spec/wire.md §11.2 Offer): an inbox blob goes as an Offer item to a connected node the
 //! depositor judges a holder of the inbox, with no host and no third node.
 
@@ -43,7 +43,7 @@ fn granted(net: &mut Net, a: usize, to: Tid) -> (Tid, Tid) {
     (t, item)
 }
 
-// issues/net-shared-set.md Tests: a grant between accounts that know each other arrives over
+// issues/sync-rewrite.md: a grant between accounts that know each other arrives over
 // their direct connection with no host or third node: the inbox blob goes as a Deposit item, the
 // recipient's node takes it, opens the granted group's sync ID by the read secret it boxed, and
 // the delivery leaves the granter's pending set
@@ -58,7 +58,7 @@ fn a_grant_between_known_accounts_lands_over_a_direct_link_spec_sync_10() {
     assert_eq!(net.read(b, item), Some(s("granted")), "the grant reached b and its group opened");
 }
 
-// issues/net-shared-set.md Deposits: a depositor sends a Deposit item only where it judged the
+// issues/sync-rewrite.md: a depositor sends a Deposit item only where it judged the
 // peer a holder of the inbox; a grant to an account no connected node proved stays pending and
 // shown (one-way knowledge: the recipient's nodes do not know the granter), whatever time passes
 #[test]

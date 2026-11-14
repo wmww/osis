@@ -827,7 +827,7 @@ async fn driver_lan_private_sources_connect_spec_sync_10() {
 // like; the source filter (`lan.rs` `is_local`, `lan_seen`) drops CGNAT, global IPv4 and IPv6 and
 // Yggdrasil sources.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "issues/net-connect.md"]
+#[ignore = "issues/sync-rewrite.md"]
 async fn repro_lan_any_source_connects() {
     lan_pair_connects(["100.64.0.1", "100.64.0.2"], lan_v4()).await;
     lan_pair_connects(["203.0.113.1", "203.0.113.2"], lan_v4()).await;

@@ -1,4 +1,4 @@
-//! The shared set of a connection (issues/net-shared-set.md): the rule: a node shares sync ID L with
+//! The shared set of a connection (issues/sync-rewrite.md): the rule: a node shares sync ID L with
 //! a connected peer exactly while, on what it holds now, the peer may hold L. Each side sends a
 //! filter of beacons of what it may share, tests its own beacons against the peer's filter and
 //! offers the hits; a hit opens L only with the tag or J proving it.
@@ -18,7 +18,7 @@
 //!   requester is served through the rotation and nothing logged after it, and gets `Lost` once
 //!   it reported a position past `until` (tests/it/until.rs).
 //!
-//! - A record says only what need not be sent again (issues/net-reconnect.md): a connection with
+//! - A record says only what need not be sent again (issues/sync-rewrite.md): a connection with
 //!   a record restores S, `acked_pos`, its own filter's generations and the peer's stored filter,
 //!   and first proves the two records agree: `Digest` is its first message each way, and on a
 //!   difference each side lists S (`Members`) and closes, with no lag, what only one side holds,
@@ -153,7 +153,7 @@ struct Pages {
     values: Vec<u64>,
 }
 
-/// One member of S (issues/net-shared-set.md, Opens).
+/// One member of S (issues/sync-rewrite.md).
 #[derive(Clone)]
 struct Member {
     class: u8,
@@ -161,7 +161,7 @@ struct Member {
     /// while a credential with that beacon is admissible.
     beacon: Option<[u8; 32]>,
     /// While being ended by a rotation: the node log position its stream ends at, inclusive
-    /// (issues/net-reconnect.md, Joining and rejoining).
+    /// (issues/sync-rewrite.md).
     until: Option<u64>,
 }
 
@@ -433,7 +433,7 @@ impl SyncEngine {
 
     /// The shared set of `conn` starts, whichever side dialed, under the record's `r` or, with no
     /// record, the connection's own pair key (spec/sync.md §10): a filter goes out, holding this
-    /// node's read credentials only if the peer proved a known actor (issues/net-shared-set.md,
+    /// node's read credentials only if the peer proved a known actor (issues/sync-rewrite.md,
     /// Words), and the head credentials of the sync IDs it keeps unread always. With a record (`bound`: its
     /// ID, and whether the session proved other actors than the record names) S, `acked_pos` and
     /// both filters are restored, the digest of S goes first, and S is re-judged: what changed
@@ -524,7 +524,7 @@ impl SyncEngine {
     }
 
     /// Every connection re-judged after a change of what this node holds, and the additions and
-    /// tests it makes due (issues/net-shared-set.md, Opens and Testing).
+    /// tests it makes due (issues/sync-rewrite.md and Testing).
     pub(super) fn shared_changed(&mut self, out: &mut Vec<Action>) -> Result<()> {
         if !std::mem::take(&mut self.shared_dirty) {
             return Ok(());
@@ -549,7 +549,7 @@ impl SyncEngine {
         self.connection_proven(conn).is_some_and(|p| !super::records::counted_actors(&self.engine, p).is_empty())
     }
 
-    /// `conn`'s credentials admissible now (issues/net-shared-set.md, Admissible), of the `only`
+    /// `conn`'s credentials admissible now (issues/sync-rewrite.md, Admissible), of the `only`
     /// labels when given, of the kinds `which` asks. A label J judges departed has none: a
     /// departure the peer's actors are covered past is not recognised yet (a rotation covering it
     /// reopens by a later credential). A sync ID this node keeps unread has its head's (J is
@@ -646,7 +646,7 @@ impl SyncEngine {
         let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
         let (f, whole_n, added) = (s.f, s.whole_n, s.added);
         let mut creds = if first { self.shared_creds(conn, None, which)? } else { self.shared_creds(conn, Some(&labels), which)? };
-        // a whole filter when its additions pass the entries in the last one (issues/net-shared-set.md, Staleness)
+        // a whole filter when its additions pass the entries in the last one (issues/sync-rewrite.md, Staleness)
         let whole = first || added + creds.len() > whole_n;
         if whole && !first {
             creds = self.shared_creds(conn, None, which)?;
@@ -835,11 +835,11 @@ impl SyncEngine {
         self.shared_test(conn, out)
     }
 
-    /// Tests the pending set against the peer's filter (issues/net-shared-set.md, Testing), when
+    /// Tests the pending set against the peer's filter (issues/sync-rewrite.md), when
     /// due, after a filter, and with no Offer of this side unanswered.
     fn shared_test(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
-        // no Offer before the peer's digest is read (issues/net-reconnect.md, Agreement)
+        // no Offer before the peer's digest is read (issues/sync-rewrite.md)
         if !s.test_due || s.peer.is_none() || !s.digest_read || s.pending.offers_unanswered > 0 {
             return Ok(());
         }
@@ -984,7 +984,7 @@ impl SyncEngine {
     }
 
     /// ByRole items once the Hits were answered: for L not open that J judges the peer holds
-    /// (issues/net-shared-set.md, Offer). Then the pending position may rise.
+    /// (issues/sync-rewrite.md, Offer). Then the pending position may rise.
     fn shared_roles(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         let Some(actors) = self.connection_proven(conn).map(Proven::all) else { return Ok(()) };
         let things = self.things();
@@ -1089,7 +1089,7 @@ impl SyncEngine {
             return Ok(());
         }
         // what its filter shows: a Hit on a read credential only from a known actor, so a stranger
-        // holding a read secret learns nothing of what this node reads (issues/net-shared-set.md,
+        // holding a read secret learns nothing of what this node reads (issues/sync-rewrite.md,
         // The rule)
         let known = self.shared_known(conn);
         let which = Which { read: known, unread: true, sync: false, accepts: known, proves: false };
@@ -1119,7 +1119,7 @@ impl SyncEngine {
         osis_crypto::VerifyingKey::from_slice(key).is_ok_and(|pk| osis_crypto::static_entry(&c.label, &pk) == c.value && osis_crypto::verify_open(&pk, !s.by_listener, &c.label, challenge, &s.key, sig).is_ok())
     }
 
-    /// Whether a Hit on credential `c` shows its class's proof (issues/net-shared-set.md, Offer):
+    /// Whether a Hit on credential `c` shows its class's proof (issues/sync-rewrite.md, Offer):
     /// a read secret's or a proof's beacon is its own (only a holder of the secret computes its
     /// match value); a static entry's key actor is a proven actor of this connection; a sync
     /// key's open signature (`proof`) verifies under it as made by the peer's side over this
@@ -1269,7 +1269,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// The answer to a Deposit item (issues/net-shared-set.md, Deposits): taken (0) when this
+    /// The answer to a Deposit item (issues/sync-rewrite.md): taken (0) when this
     /// side proved to the peer an actor holding L's read role and the signature verifies under
     /// its served head's deposit key; refused for now (5) past the peer budgets; else 14, the
     /// same whether or not L is held here. A blob held or dropped here is answered 0 and changes
@@ -1486,7 +1486,7 @@ impl SyncEngine {
     }
 
     /// L leaves S on this side (a Lost, a judgment, a digest difference) and is pending again
-    /// for this record (issues/net-shared-set.md, Re-marking), whether or not it was a member:
+    /// for this record (issues/sync-rewrite.md), whether or not it was a member:
     /// nothing more is served or pulled for it, and its stream position is kept as `stop` says.
     fn shared_close(&mut self, conn: ConnId, l: &LabelId, stop: super::stream::Stop, out: &mut Vec<Action>) -> Result<()> {
         // a sync ID not held here has nothing pending: nothing is re-marked
@@ -1520,7 +1520,7 @@ impl SyncEngine {
         self.unread_restream()
     }
 
-    /// Re-judges every member (issues/net-shared-set.md, Opens): a holder stays, and so does a
+    /// Re-judges every member (issues/sync-rewrite.md): a holder stays, and so does a
     /// member whose credential is still admissible. One opened by a credential no longer
     /// admissible, its peer's actors not departed, ends at a rotation: it is served through the
     /// rotation (`until`, `shared_until_at`) and closes once the requester reported a position
@@ -1612,7 +1612,7 @@ impl SyncEngine {
         }
         if !gone.is_empty() {
             // where each stopped for the peer: a position it reported, or its `until` if below
-            // (issues/net-reconnect.md, Lost and rejoin)
+            // (issues/sync-rewrite.md, Lost and rejoin)
             let mut items = Vec::with_capacity(gone.len());
             for l in &gone {
                 let c = self.shared_stopped(conn, l)?;
@@ -1683,7 +1683,7 @@ impl SyncEngine {
     }
 
     /// Where a member of `l` (held under `thing`) opened by the credential with beacon `b` under
-    /// pair key `r` ends (`until`; issues/net-reconnect.md, Joining and rejoining): where the last
+    /// pair key `r` ends (`until`; issues/sync-rewrite.md): where the last
     /// rotation superseding that credential's epoch was logged (the highest first-logged position
     /// of the entries in L of every such rotation), so each rotation is served (a holder this
     /// node judges unknown needs all of them to reach the current epoch) and nothing logged after
@@ -1927,7 +1927,7 @@ impl SyncEngine {
                         self.behind_answered(conn, *l, step.clone(), steps.clone(), *code, out)?;
                     }
                 }
-                // this tester's credential is gone (issues/net-shared-set.md, Divergence), unless
+                // this tester's credential is gone (issues/sync-rewrite.md, Divergence), unless
                 // another Hit on L opened it (the same Offer's, read after) or still may (one
                 // unanswered): the peer opened L for that one too, and a Lost would close it.
                 // Closed here first, so L is pending again (Re-marking) and tested anew
@@ -1964,7 +1964,7 @@ impl SyncEngine {
         self.shared_send(conn, Message::Lost { id, items: vec![(l, None)] }, out)
     }
 
-    /// The peer's digest, its first message (issues/net-reconnect.md, Agreement), compared with
+    /// The peer's digest, its first message (issues/sync-rewrite.md), compared with
     /// the one this side sent. A match ends it; on a difference this side lists S in full now,
     /// before it acts on any later message, and waits for the peer's list.
     fn shared_digest(&mut self, conn: ConnId, digest: [u8; 32], out: &mut Vec<Action>) -> Result<()> {

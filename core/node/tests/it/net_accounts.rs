@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Accounts on connections (spec/sync.md §10, Connection proofs, Pair key; issues/net-shared-set.md
+//! Accounts on connections (spec/sync.md §10, Connection proofs, Pair key; issues/sync-rewrite.md
 //! step 10): an account proved at an epoch open here counts like any actor; a node key proves no
 //! account and goes only to the nodes of its own account; a node removed from its account, once
 //! the removal's rotation is held, proves the account nowhere.
@@ -60,7 +60,7 @@ fn accounts_find_their_groups_and_resume_with_no_node_identity_spec_sync_10() {
     }
 }
 
-// spec/sync.md §10, issues/net-shared-set.md step 3: a node key proves no account. A node of P
+// spec/sync.md §10, issues/sync-rewrite.md step 3: a node key proves no account. A node of P
 // proving only its node key, at a node of another account that holds P's devices roster and
 // shares a group with P, is neither known nor a holder: no proofs back, J unknown, and neither
 // a record nor a shared set

@@ -121,7 +121,7 @@ pub enum Message {
     /// The dialer keeps no record of this listener: the connection's shared set runs under the
     /// connection's own pair key (spec/sync.md §10, Pair key).
     NoRecord { id: Id },
-    /// One generation of a side's beacon filter, in pages (issues/net-shared-set.md, Messages).
+    /// One generation of a side's beacon filter, in pages (issues/sync-rewrite.md).
     Beacons { id: Id, generation: u64, base: Option<u64>, f: u8, lo: u64, hi: u64, gcs: Vec<u8>, more: bool },
     /// What this side offers from testing the peer's filter (Hits, then ByRole).
     Offer { id: Id, items: Vec<OfferItem> },

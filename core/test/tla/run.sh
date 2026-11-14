@@ -149,7 +149,7 @@ instances=(
   "netblind net MCBlind BN_whole.cfg fail"
   "netblind net MCBlind BN_cover.cfg fail"
   "netblind net MCBlind BN_known.cfg fail"
-  "netopen net MCOpen O_rk.cfg pass"               # issues/net-6c-plan.md: each side opens only on its own proof
+  "netopen net MCOpen O_rk.cfg pass"               # issues/sync-rewrite.md: each side opens only on its own proof
   "netopen net MCOpen O_kk.cfg pass"
   "netopen net MCOpen O_rk_pair.cfg fail"          # witness: a reader and a store open both ways on one connection
   "netopen net MCOpen O_kk_pair.cfg fail"          # witness: two stores open both ways on one connection

@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Connection proofs (spec/sync.md §10, Connection proofs; issues/net-shared-set.md step 2): what
+//! Connection proofs (spec/sync.md §10, Connection proofs; issues/sync-rewrite.md step 2): what
 //! `SyncEngine::proven` reports comes from the connection's own exchange and nothing else.
 
 use crate::net::local_nodes;

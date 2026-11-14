@@ -158,7 +158,7 @@ impl LabelAt {
     }
 }
 
-/// One connection, whoever dialed it: a session of the node's hub (issues/net-sync-structure.md
+/// One connection, whoever dialed it: a session of the node's hub (issues/sync-rewrite.md
 /// (a)). Its proofs, records, shared set, stream, client port and push room run alike either
 /// way; which side dialed is read by the dial logic alone (`Dial`) and by the proof exchange's
 /// order (spec/sync.md §10, Connection proofs).

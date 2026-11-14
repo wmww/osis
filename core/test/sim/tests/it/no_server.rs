@@ -122,7 +122,7 @@ fn pair(w: &World, a: &Osis, seed: u64) -> Osis {
 
 // Row 5, spec/permissions.md §7: a link can be made on any node, saved peers or runtime or not.
 #[test]
-#[ignore = "issues/net-first-contact.md"]
+#[ignore = "issues/sync-rewrite.md"]
 fn repro_row5_a_link_needs_no_saved_peer() {
     let mut w = World::new();
     let a = w.account(1, &[]);
@@ -136,7 +136,7 @@ fn repro_row5_a_link_needs_no_saved_peer() {
 // Row 6, spec/sync.md §10: two strangers on one LAN, no uplink: a link
 // finds its sharer within the audit's 40 s.
 #[test]
-#[ignore = "issues/net-first-contact.md"]
+#[ignore = "issues/sync-rewrite.md"]
 fn repro_row6_redeem_a_direct_link_on_a_lan() {
     let mut w = World::new();
     let a = w.account(1, &[]);
@@ -155,7 +155,7 @@ fn repro_row6_redeem_a_direct_link_on_a_lan() {
 
 // Row 8, spec/permissions.md §7: a contact card and profile with no saved peer.
 #[test]
-#[ignore = "issues/net-first-contact.md"]
+#[ignore = "issues/sync-rewrite.md"]
 fn repro_row8_a_contact_card_needs_no_saved_peer() {
     let mut w = World::new();
     let a = w.account(1, &[]);
@@ -166,7 +166,7 @@ fn repro_row8_a_contact_card_needs_no_saved_peer() {
 // Row 9, spec/sync.md §3: a grant to an account this node shares a group with reaches it, with
 // nodes only: Bob holds the role within 100 s.
 #[test]
-#[ignore = "issues/net-first-contact.md"]
+#[ignore = "issues/sync-rewrite.md"]
 fn repro_row9_a_grant_reaches_a_known_account() {
     let (mut w, a, b, _) = co_readers(0, Role::Read);
     let mut wr = a.write();
@@ -849,7 +849,7 @@ fn last_sync_stands_though_nobody_asked_while_synced() {
 
 // Row 21, spec/wire.md §8, §12: a link redeems from a bundle alone, Alice and Bob unable to connect.
 #[test]
-#[ignore = "issues/net-first-contact.md"]
+#[ignore = "issues/sync-rewrite.md"]
 fn repro_row21_a_link_redeems_from_a_bundle_alone() {
     let mut w = World::new();
     let a = w.account(1, &[]);
@@ -992,7 +992,7 @@ fn repro_row27_a_saved_peer_named_by_key_is_dialed() {
 
 // Row 28, spec/sync.md §10: nodes on one LAN connect with nothing shared.
 #[test]
-#[ignore = "issues/net-connect.md"]
+#[ignore = "issues/sync-rewrite.md"]
 fn repro_row28_lan_nodes_connect_with_nothing_shared() {
     let mut w = World::new();
     let a = w.account(1, &[]);
@@ -1007,7 +1007,7 @@ fn repro_row28_lan_nodes_connect_with_nothing_shared() {
 // Row 30, spec/sync.md §10: an announcement counts whatever source address carried it: CGNAT,
 // global and mesh sources as a private one does.
 #[test]
-#[ignore = "issues/net-connect.md"]
+#[ignore = "issues/sync-rewrite.md"]
 fn repro_row30_a_lan_announcement_counts_from_any_source() {
     let (_w, a, b, _) = co_readers(0, Role::Read);
     let key = a.sync_engine(|s| s.own_reach()).unwrap().dialable;
@@ -1021,7 +1021,7 @@ fn repro_row30_a_lan_announcement_counts_from_any_source() {
 // Row 34, spec/sync.md §10: nodes whose clocks differ by less than `MAX_DRIFT` still recognise each
 // other on the LAN (30 min apart).
 #[test]
-#[ignore = "issues/net-connect.md"]
+#[ignore = "issues/sync-rewrite.md"]
 fn repro_row34_lan_recognition_tolerates_max_drift() {
     let mut w = World::new();
     let r = w.reach.add_relay(None);
@@ -1075,7 +1075,7 @@ fn a_slow_peer_does_not_move_a_nodes_clock_row_35_spec_sync_6() {
 // Row 36, spec/sync.md §10: unreachable co-readers never hide a reachable one (8 newer ones
 // reachable by nobody, the 9th the only way).
 #[test]
-#[ignore = "issues/net-connect.md"]
+#[ignore = "issues/sync-rewrite.md"]
 fn repro_row36_unreachable_co_readers_do_not_hide_a_reachable_one() {
     let mut w = World::new();
     let h = w.add_host();
@@ -1108,7 +1108,7 @@ fn repro_row36_unreachable_co_readers_do_not_hide_a_reachable_one() {
 // Row 37, spec/permissions.md §7: any node of the sharer's account finalizes an ended link, with
 // its maker gone and no saved peer.
 #[test]
-#[ignore = "issues/net-first-contact.md"]
+#[ignore = "issues/sync-rewrite.md"]
 fn repro_row37_another_node_of_the_sharer_finalizes_a_link() {
     let mut w = World::new();
     let r = w.reach.add_relay(None);

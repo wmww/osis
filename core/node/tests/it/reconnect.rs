@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Reconnects (issues/net-reconnect.md; spec/sync.md §10, Agreement): a record's shared set is
+//! Reconnects (issues/sync-rewrite.md; spec/sync.md §10, Agreement): a record's shared set is
 //! restored, the two records are compared by one digest each way, and a reconnect sends what
 //! changed: counted, at n and 10n sync IDs.
 
@@ -65,7 +65,7 @@ fn idle_reconnect(n: usize) -> (std::collections::BTreeMap<u64, usize>, usize, V
     (kinds, bytes, digests)
 }
 
-// issues/net-reconnect.md (What a reconnect sends): an idle reconnect, nothing changed on either
+// issues/sync-rewrite.md: an idle reconnect, nothing changed on either
 // side, sends no message per sync ID: no Offer, Lost or Members, no join, and the same messages
 // and about the same bytes at n and 10n. spec/sync.md §10 (Agreement): the digests of two equal
 // records match at any size: one 32-byte Digest each way, no list
@@ -93,7 +93,7 @@ fn record_of(net: &mut Net, n: usize, peer: usize) -> osis_store::Record {
     net.engine(n).run(|tx| Ok(tx.txn.records_of_actors(&[t])?)).unwrap().remove(0)
 }
 
-// issues/net-reconnect.md (Agreement): a record restored so that S differs (here: `a`'s record
+// issues/sync-rewrite.md: a record restored so that S differs (here: `a`'s record
 // lost a member while apart, as a store restored from a backup taken before it opened) shows as a
 // digest difference; the member only one side holds is closed on both and reopened by the shared
 // set's own rule, rejoining from the start, and what was written meanwhile arrives. A stopped
@@ -138,7 +138,7 @@ fn a_record_restored_so_s_differs_is_repaired_by_the_shared_set_spec_sync_10() {
     assert!(members.iter().any(|(l, _)| *l == l0), "and kept in b's record");
 }
 
-// issues/net-shared-set.md (Re-marking): a Lost re-marks the member for its own record only: the
+// issues/sync-rewrite.md: a Lost re-marks the member for its own record only: the
 // node receiving it sends nothing and tests nothing on its connection to another peer
 #[test]
 fn a_lost_costs_other_peers_nothing_spec_sync_10() {
@@ -164,7 +164,7 @@ fn a_lost_costs_other_peers_nothing_spec_sync_10() {
     assert_eq!(net.read(b, t), Some(s("after")));
 }
 
-// issues/net-reconnect.md (Restart and loss): a restarted node resumes: its S, filters and
+// issues/sync-rewrite.md: a restarted node resumes: its S, filters and
 // cursor are the record's, so nothing is offered or joined again
 #[test]
 fn a_restarted_node_resumes_its_shared_set_spec_sync_10() {
@@ -185,7 +185,7 @@ fn a_restarted_node_resumes_its_shared_set_spec_sync_10() {
     assert!(count(&seen, PULL) >= 1);
 }
 
-// issues/net-reconnect.md (Agreement): a `Lost` lost with its connection is never resent: the
+// issues/sync-rewrite.md: a `Lost` lost with its connection is never resent: the
 // next connection's digest finds the member only one side holds and closes it there, so the node
 // that missed the `Lost` no longer counts the peer a source of what the peer stopped sharing
 #[test]
@@ -340,7 +340,7 @@ fn nothing_is_offered_or_pulled_before_the_peers_digest_spec_sync_10() {
     assert_eq!(net.peer_sent(b, PULL), pulls, "no Pull");
 }
 
-// issues/net-reconnect.md (Adversaries): a peer's `Members` list keeps only what can matter here
+// issues/sync-rewrite.md: a peer's `Members` list keeps only what can matter here
 // (a member of S, or a sync ID this node holds), so a peer listing sync IDs this node never held
 // page after page makes it keep nothing
 #[test]

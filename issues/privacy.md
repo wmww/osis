@@ -4,7 +4,7 @@
 > Tags: transport, security
 
 - **IP settings**: who learns this node's IP, e.g. strangers only through relays, or tunnel everything through one chosen relay.
-- **Open audiences**: with `reach.0` under every synced group, everyone holding a public or bearer-read link learns the node's IP; so do holders of a link or card with connect hints (issues/net-first-contact.md).
-- Identity on the LAN is a requirement, not a setting: issues/net-connect.md.
-- **A node serving data it cannot read** shows every connection how many heads it serves (its beacon filter's size) and "I serve this one" to anyone holding that group's `label.0`, roster or `keys.0` (issues/net-shared-set.md, Peers that cannot read); a host answering Open and Deposit shows the same today. On the one listening key (issues/sync-rewrite.md step 2) this ties what a node serves unread to the key its contacts know it by, which a separate host key kept apart.
+- **Open audiences**: with `reach.0` under every synced group, everyone holding a public or bearer-read link learns the node's IP; so do holders of a link or card with connect hints (issues/sync-rewrite.md).
+- Identity on the LAN is a requirement, not a setting: issues/sync-rewrite.md.
+- **A node serving data it cannot read** shows every connection how many heads it serves (its beacon filter's size) and "I serve this one" to anyone holding that group's `label.0`, roster or `keys.0` (issues/sync-rewrite.md); a host answering Open and Deposit shows the same today. On the one listening key (issues/sync-rewrite.md step 2) this ties what a node serves unread to the key its contacts know it by, which a separate host key kept apart.
 - **A node keeping data unread learns who keeps what** (accepted, Tess): a node holding a group sync-only learns the granting account and which accounts' nodes open the group there (issues/sync-rewrite.md, Sync model), and that two groups it holds share a blob. Guarantees that a node learns nothing about the nodes it syncs encrypted groups with may be more than is reasonable to provide.

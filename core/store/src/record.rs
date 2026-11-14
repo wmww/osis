@@ -1,4 +1,4 @@
-//! Durable per-peer records (issues/net-reconnect.md, The record): one per peer node a node has
+//! Durable per-peer records (issues/sync-rewrite.md): one per peer node a node has
 //! shared something with or whose known actor it has met, found by what the peer proves and the
 //! pair key both hold, never by a node key.
 //!
@@ -19,7 +19,7 @@ use osis_base::{LabelId, Tid};
 use osis_base::format::TID_LEN;
 use std::collections::BTreeSet;
 
-/// Total bytes of durable records a node keeps (issues/net-reconnect.md, Picked values). Resource
+/// Total bytes of durable records a node keeps (issues/sync-rewrite.md). Resource
 /// bound: past it the least recently used record not in use goes, which is that record's loss, a
 /// first contact. 0: every connection a first contact (correct, more bytes); infinity: disk.
 pub const RECORD_BUDGET: u64 = 256 * 1024 * 1024;
@@ -49,7 +49,7 @@ pub struct Record {
     pub acked_pos: u64,
     /// Opaque position in the peer's node log.
     pub cursor: Option<Vec<u8>>,
-    /// This side's filter as sent to the peer (issues/net-shared-set.md, Messages).
+    /// This side's filter as sent to the peer (issues/sync-rewrite.md).
     pub own: Filter,
     /// The peer's filter as stored: its rows are `Transaction::record_peer_filter`'s.
     pub peer: Filter,
@@ -307,7 +307,7 @@ impl Transaction<'_> {
     }
 
     /// Stores the peer's cursor. Called by the transaction that applies what it covers, so a
-    /// cursor never runs ahead of its data (issues/net-reconnect.md, Restart and loss).
+    /// cursor never runs ahead of its data (issues/sync-rewrite.md).
     pub fn record_set_cursor(&mut self, id: &RecordId, cursor: Option<Vec<u8>>) -> Result<(), Error> {
         self.record_change(id, |_, rec| {
             rec.cursor = cursor;
@@ -364,7 +364,7 @@ impl Transaction<'_> {
 
     /// A member closes for this record (a `Lost` sent or received, a digest difference): `l`
     /// leaves S and `acked_pos` becomes `min(self, changed_at - 1)`, so `l` is pending again for
-    /// this record alone (issues/net-shared-set.md, Testing), whether or not it was a member: a
+    /// this record alone (issues/sync-rewrite.md), whether or not it was a member: a
     /// digest difference re-marks on both sides. `stop`, a `Lost`'s cursor, is kept for the
     /// rejoin unless an older one is. Returns `acked_pos`.
     pub fn record_close(&mut self, id: &RecordId, l: &LabelId, changed_at: u64, stop: Option<Vec<u8>>) -> Result<u64, Error> {
@@ -408,7 +408,7 @@ impl Transaction<'_> {
         Ok(out)
     }
 
-    /// A member only one side of the record held (a digest difference, issues/net-reconnect.md
+    /// A member only one side of the record held (a digest difference, issues/sync-rewrite.md
     /// Agreement): out of S with no lag kept, so its rejoin is a listing, and pending again as
     /// `record_close` re-marks. Returns `acked_pos`.
     pub fn record_drop(&mut self, id: &RecordId, l: &LabelId, changed_at: u64) -> Result<u64, Error> {
@@ -421,7 +421,7 @@ impl Transaction<'_> {
     }
 
     /// Everything is pending again for this record (the session proved other actors than the
-    /// record names: issues/net-reconnect.md, What a reconnect sends).
+    /// record names: issues/sync-rewrite.md).
     pub fn record_pending_all(&mut self, id: &RecordId) -> Result<(), Error> {
         self.record_change(id, |_, rec| {
             rec.acked_pos = 0;
@@ -500,7 +500,7 @@ impl Transaction<'_> {
     }
 
     /// The node stopped holding `l`: out of every record's S, every lag of it gone, in this one
-    /// transaction (issues/net-reconnect.md, Changes). O(records holding it).
+    /// transaction (issues/sync-rewrite.md). O(records holding it).
     pub(crate) fn records_forget_label(&mut self, l: &LabelId) -> Result<(), Error> {
         for (prefix, is_lag) in [(INDEX, false), (LAG_INDEX, true)] {
             self.cat_each(&[prefix, &l.0].concat(), |t, k, _| {

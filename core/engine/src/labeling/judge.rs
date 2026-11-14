@@ -1,4 +1,4 @@
-//! The judgment J of a connection (issues/net-shared-set.md, Words): whether its proven key
+//! The judgment J of a connection (issues/sync-rewrite.md): whether its proven key
 //! actors hold a thing here, have left it, or are unknown to it, read from the rosters this node
 //! holds and nothing else. `Judge` is built once per use: the roster walks are per actor, the
 //! lookups per thing.
@@ -10,7 +10,7 @@ use osis_crypto::VerifyingKey;
 use osis_perm::{At, Timeline};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// J(L) for a connection's proven actors (issues/net-shared-set.md, Words).
+/// J(L) for a connection's proven actors (issues/sync-rewrite.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Judgment {
     /// A proven actor holds L's read role here now.

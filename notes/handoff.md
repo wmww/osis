@@ -1,7 +1,7 @@
 # Handoff to the next coordinator
-> Summary: What is in flight and what comes next, for whoever coordinates after Fathom. Design principles and process live in notes/coordination.md; this note only holds state. Rewrite or delete once taken.
+> Summary: What is in flight and what comes next, for whoever coordinates after Fathom and Capstan. Design principles and process live in notes/coordination.md; this note only holds state. Rewrite or delete once taken.
 
-Read CLAUDE.md and notes/coordination.md first. Tess: opus only for every agent, no fable, until she says otherwise. Questions for Tess are issues tagged `tess-call`; priorities are on every issue. Fathom is the lead coordinator (Tess); a second coordinator takes the areas the lead assigns; the split and protocol run over the dogfood channel (notes/dogfood.md).
+Read CLAUDE.md and notes/coordination.md first. Tess: opus only for every agent, no fable, until she says otherwise. Questions for Tess are issues tagged `tess-call`; priorities are on every issue. Fathom and Capstan coordinate together over the dogfood channel (notes/dogfood.md): Capstan runs the sync rewrite (issues/sync-rewrite.md); Fathom holds keys, rotation, perm and engine judgement.
 
 ## Focus (Tess)
 Big features and refactors first; chase a bug only when it could threaten their viability. Don't rush to the goal API through shortcuts that later unravel it, but bring core to a settled, finalized state soon so the whole system can settle.
@@ -20,5 +20,5 @@ Signal edits: reuse the existing edit machinery rather than add a second mechani
 - Bounding rotation names (issues/rotation-names-grow.md): "chain coverage through supersedes" leaks (a TLA instance found it); a base-chain rule breaks when a base rotation turns invalid. Redo with the rotate-free principle (spec/crypto.md §4).
 
 ## Networking
-Order and state: issues/sync-rewrite.md; the build in progress is issues/sync-rewrite.md (one key, one store and serving path; step 3h2 under way). Step 10 of issues/net-shared-set.md (the epoch signature, account signing) decides when a proven account counts: check what main says before relying on "J counts key actors alone".
+The sync rewrite is the plan (issues/sync-rewrite.md, its Status says the phase): spec first, then all sync code and tests rebuilt from it; its checklist of inputs is notes/sync-rewrite-inputs.md. Freeze until its Phase 3 lands: nobody edits `core/node/src/sync`, `core/host`, `core/proto` session code or the sync tests, and no fixes go to code being dropped.
 - Dogfood channel served from devbox (`~/osis-dogfood`, port 4040, transient units `osis-dogfood-host` (the node both Claudes sync through; `restart-host.sh`), `osis-dogfood-me`): a box stop stops them; restart per notes/dogfood.md with the same stores.

@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! spec: none (the node log's layout is the store's own; issues/net-reconnect.md, One node log,
+//! spec: none (the node log's layout is the store's own; issues/sync-rewrite.md, One node log,
 //! and core/test/tla/net/README.md `SN_inc`, `SN_copies`, `SN_history` state its properties).
 
 use crate::common;
@@ -393,7 +393,7 @@ fn a_head_is_logged_only_when_it_moves_and_keeps_one_event() {
     assert!(!t.log_head(l(1), &[2; 32]).unwrap(), "an unchanged head after a restart logs nothing");
 }
 
-// `changed_at` of issues/net-reconnect.md, Changes: a sequence of its own, never given twice,
+// `changed_at` of issues/sync-rewrite.md: a sequence of its own, never given twice,
 // moving only when a fingerprint differs, sharing nothing with the log's positions
 #[test]
 fn changed_at_has_its_own_sequence() {

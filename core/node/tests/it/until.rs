@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! A rotation ends an open (issues/net-reconnect.md, Joining and rejoining; spec/sync.md §10
+//! A rotation ends an open (issues/sync-rewrite.md; spec/sync.md §10
 //! Shared set, Lost): a member opened by a credential the rotation made stale, its peer not judged
 //! a holder, is served through the rotation (`until`) and closes with a `Lost` once the requester
 //! reported a position past it, by the per-message reports or a Pull's cursor. A hand dialer is
@@ -154,7 +154,7 @@ fn position(net: &mut Net, b: usize, c: &[u8]) -> u64 {
     net.sync(b).hub_store().lock().unwrap().node_log(|t| t.log_position(c)).unwrap().expect("a cursor of b's")
 }
 
-// issues/net-reconnect.md (Reported position): a followed member whose credential a rotation made
+// issues/sync-rewrite.md: a followed member whose credential a rotation made
 // stale is pushed through the rotation and gets `Lost` only once the requester reported that push:
 // its `Applied` is what ends the wait. The rotation asks no report beyond the per-message ones:
 // every push asking one carries events
@@ -186,7 +186,7 @@ fn a_followed_member_gets_lost_after_its_rotation_spec_sync_10() {
     assert!(net.sync(b).shared_members(p.conn).is_empty());
 }
 
-// issues/net-reconnect.md (Joining and rejoining): nothing past `until` reaches a requester whose
+// issues/sync-rewrite.md: nothing past `until` reaches a requester whose
 // proof went stale, by push, by a Pull from its position, or by a Fetch
 #[test]
 fn nothing_is_served_past_until_to_a_peer_that_lost_the_right_spec_sync_10() {
@@ -210,7 +210,7 @@ fn nothing_is_served_past_until_to_a_peer_that_lost_the_right_spec_sync_10() {
     assert!(fetched.iter().all(|f| f.entry.is_none()), "a Fetch past until is answered with nothing");
 }
 
-// issues/net-reconnect.md (Hard cases, Lost and rejoin): a rotation while apart ends the member at
+// issues/sync-rewrite.md (Hard cases, Lost and rejoin): a rotation while apart ends the member at
 // the rotation, not at the reconnect. On the next connection the requester's Pull from its
 // position gets the rotation, its report brings the `Lost` naming where L stopped, the holder
 // finds L again by `b`'s added beacon (the new epoch's), and its rejoin from that position
@@ -255,7 +255,7 @@ fn a_rotation_while_apart_rejoins_from_its_lag_spec_sync_10() {
     assert!(!rejoin.whole);
 }
 
-// issues/net-reconnect.md (Reported position): a report lost with its connection needs no repair of
+// issues/sync-rewrite.md: a report lost with its connection needs no repair of
 // its own: the next connection's Pull carries the requester's cursor, past the rotation, and that
 // ends the wait with no Applied
 #[test]
@@ -271,7 +271,7 @@ fn a_report_lost_with_its_connection_is_repaired_by_the_next_pull_spec_sync_10()
     assert_eq!(events_of(&reply.events, l), 0);
 }
 
-// issues/net-shared-set.md (Opens: the event that ends sharing is still sent): a rotation while
+// issues/sync-rewrite.md (Opens: the event that ends sharing is still sent): a rotation while
 // apart is served to the ended member however often its entry was logged again since (here: b
 // rotates cut off from the peer that cannot read the label, so its own head moves by a local
 // step, and stamps the rotation again for that peer's older head once it is back), or a holder J
@@ -315,7 +315,7 @@ fn relayed(msgs: &[Message], l: LabelId) -> usize {
     pushes(msgs).iter().filter(|s| s.cursor.is_none()).map(|s| events_of(&s.events, l)).sum()
 }
 
-// issues/net-reconnect.md (Joining and rejoining): a member being ended gets none of its
+// issues/sync-rewrite.md: a member being ended gets none of its
 // ephemeral entries, a relay-only one included: no position bounds them
 #[test]
 fn a_member_being_ended_is_relayed_no_signal_spec_sync_10() {
@@ -332,7 +332,7 @@ fn a_member_being_ended_is_relayed_no_signal_spec_sync_10() {
     assert_eq!(relayed(&msgs, l), 0, "nothing relayed past the rotation");
 }
 
-// issues/net-reconnect.md (Joining and rejoining): `until` is where the rotation was logged, not
+// issues/sync-rewrite.md: `until` is where the rotation was logged, not
 // where the step that judged it ended. An app write made after the rotation, between the same two
 // steps, is placed by the same pass: logged after the rotation, it reaches the member being ended
 // neither by a Pull answered in the next step's event (nothing of either is logged by then), nor
@@ -364,7 +364,7 @@ fn a_write_logged_after_the_rotation_in_its_step_is_not_served_spec_sync_10() {
     assert!(served.is_disjoint(&after), "nothing logged after it");
 }
 
-// issues/net-reconnect.md (Joining and rejoining): a rotation arriving in a peer's batch ends the
+// issues/sync-rewrite.md: a rotation arriving in a peer's batch ends the
 // member where the rotation was logged: another writer's write logged after it in that batch is
 // not served to the member being ended (here while apart, then by a Pull from before the rotation)
 #[test]
@@ -394,7 +394,7 @@ fn a_write_after_the_rotation_in_its_batch_is_not_served_spec_sync_10() {
     assert!(served.is_disjoint(&after), "nothing logged after it");
 }
 
-// issues/net-reconnect.md (Joining and rejoining): two rotations superseding the credential's
+// issues/sync-rewrite.md: two rotations superseding the credential's
 // epoch applied in one step both reach the member being ended (`until` is past the last of them):
 // the requester, if a holder this node judges unknown, needs every one to reach the current epoch
 #[test]

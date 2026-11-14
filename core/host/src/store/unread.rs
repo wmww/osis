@@ -1,5 +1,5 @@
 //! What node sync reads of the sync IDs this store keeps and it does not read (issues/sync-rewrite.md
-//! step 3, Opens; issues/net-shared-set.md, Peers that cannot read): their heads and claim sets
+//! step 3, Opens; issues/sync-rewrite.md): their heads and claim sets
 //! (the filter's sync-key, deposit-key and static-entry entries, a static entry's grant), a
 //! generation that moves with any head, and the ephemeral entries of those its shared sets serve
 //! (`set_streamed`), whose adds and removals it takes as its log's memory part (`take_memory`).

@@ -173,7 +173,7 @@ fn grant_without_handover(sim: &mut NetSim, a: usize, b: usize) {
     sim.grant(a, g, pb, osis::Role::Write).unwrap();
 }
 
-// spec: none (test harness: issues/net-tests.md, Checks over peers): a holder the model keeps connected and that cannot
+// spec: none (test harness: issues/sync-rewrite.md, Checks over peers): a holder the model keeps connected and that cannot
 // read fails liveness with no host in the run; one the model cuts off is left out (counted), computed
 // from the model alone.
 #[test]
@@ -193,7 +193,7 @@ fn liveness_judges_the_holders_the_model_connects() {
     assert_eq!(sim.report.unjudged, 1, "{:?}", sim.report);
 }
 
-// spec: none (test harness: issues/net-tests.md, Checks over peers): a holder the model cuts off
+// spec: none (test harness: issues/sync-rewrite.md, Checks over peers): a holder the model cuts off
 // counts whether or not it reads, and a run that left any cut off (not `excused`) fails at
 // `finish`: a generator that cuts everyone off cannot pass by judging nobody.
 #[test]

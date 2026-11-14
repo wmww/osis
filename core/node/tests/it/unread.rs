@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! The serving side for sync IDs a node keeps and cannot read (issues/sync-rewrite.md build 3g;
-//! issues/net-shared-set.md, Peers that cannot read; spec/sync.md §10 Shared set): their head's
+//! issues/sync-rewrite.md; spec/sync.md §10 Shared set): their head's
 //! sync-key, deposit-key and static entries go in the filter to every connection; a Hit on the
 //! sync key with its open signature opens the sync ID, which is then served by the stream from the
 //! hub's store; a head with another sync key ends it through its event. A hand dialer proving
@@ -164,7 +164,7 @@ fn a_strangers_filter_holds_only_unread_entries_spec_sync_10() {
     }
 }
 
-// issues/net-shared-set.md, The rule (unknown actors see nothing of what a node reads): a
+// issues/sync-rewrite.md (unknown actors see nothing of what a node reads): a
 // stranger holding a read secret of what the node reads opens nothing by a Hit on it, though
 // it never saw its entry
 #[test]
@@ -199,7 +199,7 @@ fn a_reader_opens_an_unread_label_by_sync_key_pulls_takes_and_deletes_spec_sync_
     assert!(pushed(&shared_of(&evs)).iter().any(|(x, e)| *x == l && *e == Ev::Deleted(third_id)), "and its deletion: {evs:?}");
 }
 
-// issues/net-shared-set.md, Offer: of an unread L's entries only the sync key with its open
+// issues/sync-rewrite.md, Offer: of an unread L's entries only the sync key with its open
 // signature opens: no signature, another's, the deposit key's or the static entry's without its
 // key actor proved open nothing
 #[test]
@@ -225,7 +225,7 @@ fn nothing_else_of_an_unread_filter_opens_spec_sync_10() {
     assert!(s.net.sync(s.b).shared_members(s.p.conn).is_empty());
 }
 
-// issues/net-shared-set.md, Opens: an open by sync key ends when the head's sync key changes: the
+// issues/sync-rewrite.md: an open by sync key ends when the head's sync key changes: the
 // reader is served through the new head's event, and Lost once it reported past it
 #[test]
 fn a_head_change_ends_the_open_after_its_event_spec_sync_10() {
@@ -282,7 +282,7 @@ fn a_pull_after_a_head_change_gets_nothing_past_its_event_spec_sync_10() {
     assert!(!added(&events, l).contains(&osis_label::blob_id(&e4.blob)), "nothing past the head's event: {msgs:?}");
 }
 
-// issues/net-shared-set.md, Deposits: a depositor's Deposit item at a node keeping the inbox
+// issues/sync-rewrite.md: a depositor's Deposit item at a node keeping the inbox
 // unread is taken by the hub's store's deposit rules; a bad signature is 14
 #[test]
 fn a_deposit_at_an_unread_inbox_is_taken_spec_sync_10() {

@@ -749,7 +749,7 @@ fn decode_kind(r: &mut Rd) -> Result<Kind> {
 }
 
 /// What this node read of the stream of a peer that cannot read L, kept by the peer's key: no
-/// record finds a peer that proves no known actor (issues/net-reconnect.md, Peers that cannot read). A later join there
+/// record finds a peer that proves no known actor (issues/sync-rewrite.md). A later join there
 /// goes on from it, and a listing from the start marked trimmed tells what was deleted there.
 #[derive(Clone, Default, Debug)]
 pub struct StreamAt {
@@ -2831,7 +2831,7 @@ mod tests {
         Entry { wrap: [wrap; WRAP_LEN], stamp: None, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, source: None, memory: false }
     }
 
-    // spec: none (issues/net-reconnect.md, One node log): what a peer would be sent is one event;
+    // spec: none (issues/sync-rewrite.md, One node log): what a peer would be sent is one event;
     // a change only of what this node knows of the blob, or an ephemeral entry, is none.
     #[test]
     fn entries_write_log_events_with_their_flush() {
@@ -2863,7 +2863,7 @@ mod tests {
         assert!(logged(e).contains(&Deleted { label: l, blob: c, at: e.now().0 }));
     }
 
-    // spec: none (issues/net-reconnect.md, Built): an `Added` is logged when an entry becomes
+    // spec: none (issues/sync-rewrite.md): an `Added` is logged when an entry becomes
     // servable: no event while its bytes are absent, one when they arrive, whichever comes first
     // of row and bytes, and an entry that keeps changing is one event of the log.
     #[test]
@@ -2902,7 +2902,7 @@ mod tests {
         assert_eq!(logged(e).iter().filter(|x| **x == Added(m, d)).count(), 1, "compaction keeps one event per entry");
     }
 
-    // spec: none (issues/net-reconnect.md, One node log): a label forgotten logs no deletion
+    // spec: none (issues/sync-rewrite.md, One node log): a label forgotten logs no deletion
     // (this node stopped holding it, nobody deleted its entries) and leaves the log with nothing of it.
     #[test]
     fn forgetting_drops_a_labels_events_without_a_deletion() {
@@ -2918,7 +2918,7 @@ mod tests {
         assert_eq!(logged(e), [osis_store::NodeEvent::Added(m, y)]);
     }
 
-    // spec: none (issues/net-reconnect.md, One node log; core/test/tla/net/ASSUMPTIONS.md: log and
+    // spec: none (issues/sync-rewrite.md, One node log; core/test/tla/net/ASSUMPTIONS.md: log and
     // record are one atomic unit): a crash at any write of a flush leaves the entry row and its
     // event both or neither.
     #[test]

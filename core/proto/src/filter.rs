@@ -4,7 +4,7 @@
 
 use crate::Error;
 
-/// Rice parameter and false-positive width (issues/net-shared-set.md Picked values).
+/// Rice parameter and false-positive width (issues/sync-rewrite.md).
 pub const BEACON_P: u32 = 8;
 
 /// The width of a whole filter of `n` entries: `ceil(log2 n) + P` bits, `P` for an empty one.
@@ -188,7 +188,7 @@ mod tests {
         assert_eq!(pages(&[], f, 16), vec![Page { lo: 0, hi: 1 << f, gcs: vec![], more: false }]);
     }
 
-    // issues/net-shared-set.md Beacons: the width of a whole filter
+    // issues/sync-rewrite.md: the width of a whole filter
     #[test]
     fn filter_width_is_ceil_log2_plus_p() {
         assert_eq!(filter_width(0), BEACON_P as u8);

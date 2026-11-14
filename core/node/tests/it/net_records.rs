@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Records and the pair key on connections (spec/sync.md §10, Pair key; issues/net-reconnect.md,
-//! Resume), and `changed_at` (issues/net-reconnect.md, Changes).
+//! Records and the pair key on connections (spec/sync.md §10, Pair key; issues/sync-rewrite.md,
+//! Resume), and `changed_at` (issues/sync-rewrite.md).
 
 use crate::net::{hosted, hosted_nodes, local_nodes};
 use crate::connection_proofs::{CHALLENGE, Dialer, LISTENER, dial_with, prove, pump};
@@ -146,7 +146,7 @@ fn resume_is_once_a_connection_and_only_after_a_prove_spec_sync_10() {
     assert_eq!(code, Some(Code::MALFORMED));
 }
 
-// issues/net-reconnect.md, Resume: a connection that proved no known actor gets no record: it is
+// issues/sync-rewrite.md: a connection that proved no known actor gets no record: it is
 // refused and leaves nothing
 #[test]
 fn a_stranger_gets_no_record_spec_sync_10() {
@@ -180,7 +180,7 @@ fn an_unknown_account_resumes_nothing_spec_sync_10() {
     assert_eq!(records(&mut net, b, account)[0].id, id);
 }
 
-// issues/net-reconnect.md, Adversaries: a node removed from every roster held here no longer
+// issues/sync-rewrite.md: a node removed from every roster held here no longer
 // resumes its record
 #[test]
 fn a_removed_node_no_longer_resumes_spec_sync_10() {
@@ -201,7 +201,7 @@ fn a_removed_node_no_longer_resumes_spec_sync_10() {
     assert_eq!(net.sync(b).connection_record(p.conn), None);
 }
 
-// issues/net-reconnect.md, Resume: two connections of one dialer are one record, the smaller
+// issues/sync-rewrite.md: two connections of one dialer are one record, the smaller
 // `connection_order` keeps it and the other closes, on one end, whatever order they arrive
 #[test]
 fn two_connections_of_one_dialer_are_one_record_one_closing_spec_sync_10() {
@@ -299,7 +299,7 @@ fn a_resume_costs_the_records_of_its_actors_not_all_records() {
     assert_eq!(lookups_with_others(100), 1, "10x the records, the same reads");
 }
 
-// issues/net-shared-set.md, Testing: acked_pos rises to min(ack, tested), only with no Offer
+// issues/sync-rewrite.md: acked_pos rises to min(ack, tested), only with no Offer
 // unanswered; a re-mark puts tested below the member and the peer's ack stands
 #[test]
 fn acked_rises_only_past_a_finished_test() {
@@ -321,7 +321,7 @@ fn changed(net: &mut Net, n: usize, l: LabelId) -> Option<u64> {
     net.engine(n).run(|tx| Ok(tx.txn.changed_at(&l)?)).unwrap()
 }
 
-// issues/net-reconnect.md, Changes: a role change on the thing moves its changed_at; an ordinary
+// issues/sync-rewrite.md: a role change on the thing moves its changed_at; an ordinary
 // write and a restart with nothing changed do not, and append nothing
 #[test]
 fn changed_at_moves_on_a_role_change_only() {
@@ -418,7 +418,7 @@ fn a_lan_switch_keeps_one_record_spec_sync_10() {
     assert_eq!(b2, sorted(at_b), "no new record at b");
 }
 
-// issues/net-reconnect.md, Restart and loss: a copy of a store running beside the original
+// issues/sync-rewrite.md: a copy of a store running beside the original
 // resumes the same record at the live peer, one record there, and each connection's record is r
 #[test]
 fn a_copied_store_resumes_the_same_record_at_a_live_peer_spec_sync_10() {
@@ -434,7 +434,7 @@ fn a_copied_store_resumes_the_same_record_at_a_live_peer_spec_sync_10() {
     assert_eq!(records(&mut net, copy, tb)[0].r, r, "the copy holds the same r");
 }
 
-// issues/net-reconnect.md, Changes: a role change that reaches a thing through a roster moves it;
+// issues/sync-rewrite.md: a role change that reaches a thing through a roster moves it;
 // a holder reaching a sync ID through a cycle of rosters is seen from every member of the cycle,
 // whichever the pass reached first
 #[test]
@@ -628,7 +628,7 @@ fn stamp_work(n: u64) -> (u64, u64) {
     (t1.changed_passes - t0.changed_passes, t1.changed_labels - t0.changed_labels)
 }
 
-// issues/net-reconnect.md, Changes: a role change is one pass over the node's sync IDs, whatever
+// issues/sync-rewrite.md: a role change is one pass over the node's sync IDs, whatever
 // the node holds: linear in sync IDs, never a pass per sync ID
 #[test]
 fn a_role_change_is_one_pass_over_the_sync_ids() {

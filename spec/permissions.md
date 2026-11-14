@@ -179,7 +179,7 @@
   - a part of it pending at its expiry goes (spec/commits.md §5).
   - A flag names the bodies it is about. An entry goes as its body is held again (or with its thing).
   - An entry not about a part that went pending at its expiry is dormant while a held compaction snapshot of the aspect valid at the node is stamped after the body's commit, judged from what the node holds when it reports (a snapshot turned invalid gives nothing, §5.2, so what it had settled is suspect again). An entry about such a part is never dormant.
-- **Suspect list**: a node sends the flagged, not dormant aspects of things in L's closure to each connected peer it shares L with (issues/net-shared-set.md), as Suspect messages (spec/wire.md §11.2), the most recently flagged first, on sharing L and whenever its flags change. Each entry is `{ thing, ak, digest }`.
+- **Suspect list**: a node sends the flagged, not dormant aspects of things in L's closure to each connected peer it shares L with (issues/sync-rewrite.md), as Suspect messages (spec/wire.md §11.2), the most recently flagged first, on sharing L and whenever its flags change. Each entry is `{ thing, ak, digest }`.
   - `digest` is the state digest (spec/crypto.md §6) under the thing's dedup secret.
   - The state bytes are the canonical CBOR array `[snapshot delta bytes, [page*]]` of the aspect's state encoded as a snapshot delta (spec/crdt.md §8) with an all-zero nonce, no frontiers or `Absorbed`, its pages in the order of their hashes, or no bytes for an aspect holding no state.
   - An aspect with no known creation record is left out until it has one.

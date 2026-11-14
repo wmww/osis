@@ -1,4 +1,4 @@
-//! spec: none (the node log in the host's store: issues/sync-rewrite.md build 3e, issues/net-reconnect.md
+//! spec: none (the node log in the host's store: issues/sync-rewrite.md build 3e, issues/sync-rewrite.md
 //! One node log). The hub's store logs every entry and head it holds.
 
 use crate::common::*;

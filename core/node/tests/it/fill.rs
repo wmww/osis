@@ -207,7 +207,7 @@ fn own_writes_go_out_during_a_fill_spec_sync_6() {
 }
 
 // spec/sync.md §6: a fill goes on across a restart from what it holds: what came is not fetched
-// again (a peer with no record of this node lists again, issues/net-reconnect.md Peers that cannot
+// again (a peer with no record of this node lists again, issues/sync-rewrite.md Peers that cannot
 // read, Limit), and what does not open comes too (here a chunk: a filler wrap).
 #[test]
 fn restart_goes_on_without_fetching_again_spec_sync_6() {

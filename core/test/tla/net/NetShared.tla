@@ -1,5 +1,5 @@
 ---- MODULE NetShared ----
-(* The shared-set half of issues/net-shared-set.md: one sync ID between node
+(* The shared-set half of issues/sync-rewrite.md: one sync ID between node
    "a" and its peer "b" (or "c", a copy of b's store). A credential is the
    sync ID's current epoch; the rule is a function of what each node holds.
    Beacons (whole and additions, generations, pending set), Hit and its tag,

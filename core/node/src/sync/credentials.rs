@@ -1,4 +1,4 @@
-//! Credentials of a sync ID (issues/net-shared-set.md, Words): what this node holds, by class. A
+//! Credentials of a sync ID (issues/sync-rewrite.md): what this node holds, by class. A
 //! beacon keys over the match value; the proof its Hit must show is the class's.
 
 use super::{ConnId, SyncEngine};
@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub use osis_engine::labeling::Judgment;
 
-/// A credential of L by class (issues/net-shared-set.md, Words).
+/// A credential of L by class (issues/sync-rewrite.md).
 #[derive(Clone, Debug)]
 pub enum Credential {
     /// The read secret at a current epoch.
@@ -78,7 +78,7 @@ fn holders_hash(core: &Core, a: &Tid, memo: &mut BTreeMap<Tid, [u8; 32]>, stack:
 
 impl SyncEngine {
     /// `changed_at` of every held sync ID, stamped where its credentials or who reaches it moved
-    /// (issues/net-reconnect.md, Changes). Runs when a role, roster or read secret moved, the set
+    /// (issues/sync-rewrite.md). Runs when a role, roster or read secret moved, the set
     /// of sync IDs changed, or at a start (`role_generation`, which also moves on every held-set
     /// change: issues/derived-state-recomputed.md). O(N) labels and O(edges) over the
     /// rosters, memoized per pass; a start or pass that finds nothing changed appends nothing.
@@ -145,7 +145,7 @@ impl SyncEngine {
         out
     }
 
-    /// J of each of `labels` for `conn`'s proven actors (issues/net-shared-set.md, Words);
+    /// J of each of `labels` for `conn`'s proven actors (issues/sync-rewrite.md);
     /// `None` for a connection this engine does not have. O(N) for the label table, one walk
     /// per proven actor, then a lookup per label.
     pub fn judgments(&mut self, conn: ConnId, labels: &[LabelId]) -> Option<BTreeMap<LabelId, Judgment>> {
@@ -192,7 +192,7 @@ impl SyncEngine {
     }
 
     /// This node's credentials of each of `labels`, as a reader or as the key actor its link or
-    /// card names (issues/net-shared-set.md, Words): the read secret at each current epoch held
+    /// card names (issues/sync-rewrite.md): the read secret at each current epoch held
     /// (of a synced group, or of a hint's thing a held box gave one of), a static entry per key actor on the label's roster held, and the static entry of the key
     /// actor a hint names; of a sync ID this node keeps and cannot read, its head's
     /// (`head_credentials`). O(N) for the label table, then per label O(its roster).

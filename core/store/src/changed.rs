@@ -1,4 +1,4 @@
-//! `changed_at` (issues/net-reconnect.md, Changes): per sync ID a position of its own sequence
+//! `changed_at` (issues/sync-rewrite.md): per sync ID a position of its own sequence
 //! that moves when the sync ID's fingerprint (its credentials and who reaches it) changes.
 //! Only the per-peer records' `acked_pos` (record.rs, the same store) compares
 //! with it; it shares no positions with the node log, which may live in another store.

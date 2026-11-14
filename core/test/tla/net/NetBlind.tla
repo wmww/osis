@@ -1,5 +1,5 @@
 ---- MODULE NetBlind ----
-(* A reader "a" and a peer "b" that cannot read: issues/net-reconnect.md (Peers that
+(* A reader "a" and a peer "b" that cannot read: issues/sync-rewrite.md (Peers that
    cannot read). a opens L by the sync key on each connection; b tests nothing, keeps no
    record, never pulls and judges nothing. a pulls b's log, uploads what the last Pull
    did not show, and deletes what it covers (retention: a right holder's covering

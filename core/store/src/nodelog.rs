@@ -1,4 +1,4 @@
-//! The node log (issues/net-reconnect.md, One node log): one durable sequence of events over
+//! The node log (issues/sync-rewrite.md, One node log): one durable sequence of events over
 //! every sync ID a store holds, written in the transaction that makes each event true.
 //!
 //! The rule: a cursor names a position of this store's own history, and what it covers is
@@ -36,7 +36,7 @@ use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{BlobId, LabelId};
 use osis_crypto::aead::{self, NONCE_LEN, TAG_LEN};
 
-/// Ended incarnations kept, oldest evicted (issues/net-reconnect.md, Picked values). Resource
+/// Ended incarnations kept, oldest evicted (issues/sync-rewrite.md). Resource
 /// bound: 0 makes every cursor from before an appending start no cursor (correct, one listing
 /// per peer), infinity is disk growing with appending starts. 24 bytes each, one per start that
 /// appends: at 50 such starts a day the cap is 82 days and 98 KB.
@@ -264,7 +264,7 @@ impl Transaction<'_> {
 
     /// The position an entry was first logged at, kept while its slot is (its later events move
     /// only the latest): `None` with none in the log. What a member ended at `until` is served
-    /// (issues/net-reconnect.md, Joining and rejoining).
+    /// (issues/sync-rewrite.md).
     pub fn log_entry_first(&mut self, l: &LabelId, b: &BlobId) -> Result<Option<u64>, Error> {
         let Some(v) = self.cat_get(&entry_slot(l, b))? else { return Ok(None) };
         Ok(Some(pos_value(v.get(8..).ok_or(Error::Corrupt("node log slot"))?)?))
@@ -286,7 +286,7 @@ impl Transaction<'_> {
     }
 
     /// The position of `l`'s last logged head event: none with none in the log. Where an open by
-    /// the sync key of the head before it ends (issues/net-shared-set.md, Opens).
+    /// the sync key of the head before it ends (issues/sync-rewrite.md).
     pub fn log_head_at(&mut self, l: &LabelId) -> Result<Option<u64>, Error> {
         let Some(v) = self.cat_get(&head_slot(l))? else { return Ok(None) };
         Ok(Some(slot_pos(&v)?))

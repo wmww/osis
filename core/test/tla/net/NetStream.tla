@@ -1,5 +1,5 @@
 ---- MODULE NetStream ----
-(* The data half of issues/net-reconnect.md: a node-wide log, opaque cursors,
+(* The data half of issues/sync-rewrite.md: a node-wide log, opaque cursors,
    one Pull per side of a connection, joins, Lost and lag, restarts, record
    loss, deletion-event expiry, restored or copied stores, and `Synced`. Node
    "a" talks to one peer node: "b", or "c", a copy of b's store taken at some

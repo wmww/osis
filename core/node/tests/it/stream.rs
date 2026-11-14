@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! The node log stream between readers (spec/sync.md §10, Stream; issues/net-reconnect.md, One
+//! The node log stream between readers (spec/sync.md §10, Stream; issues/sync-rewrite.md, One
 //! node log, one cursor): counted costs, and the invariant `osis_node::sync` stream.rs states.
 
 use crate::net::local_nodes;
@@ -786,7 +786,7 @@ fn a_body_dropped_under_a_cover_reaches_a_co_reader_by_the_cover_spec_sync_5() {
     assert_eq!(net.read(r, t), Some(s("y")));
 }
 
-// issues/net-reconnect.md (Back after a long absence; Deletions): a node back after the peer's
+// issues/sync-rewrite.md (Back after a long absence; Deletions): a node back after the peer's
 // log dropped deletions past its cursor converges by one stream, whatever the number of sync IDs
 // (counted at n and 10n); a deletion older than the log reaches it by its own judgment (expiry,
 // and a cover it holds: spec/sync.md §5 Placed)
