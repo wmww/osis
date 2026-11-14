@@ -47,7 +47,7 @@ The rebuilt sync core is sans-IO: `Node::handle(Input) -> Outputs`.
 | **Debug checks stay on** (`check_rebuilt`, sampled `check_index`) | none (about 11%) | cost | they are the incremental-against-from-scratch oracle in every test; keep their sampling |
 
 ## Layers and budget
-The whole sync suite (the sync crate's one `tests/it` binary) is budgeted at about 1,200 G instructions: about 430 CPU-s, a minute of wall on fastbox-0 at the usual load. With contacts made by cards it costs about 6,000 G (1,335 CPU-s, 160 s wall at load 55: `convergence::` 763 CPU-s, `sims::` 368, `flows::` 177, every rule-test module under 10), issues/sync-read-rejudges-every-step.md.
+The whole sync suite (the sync crate's one `tests/it` binary) is budgeted at about 1,200 G instructions: about 430 CPU-s, a minute of wall on fastbox-0 at the usual load. With contacts made by cards and the read module re-judging only what an event moved, its default run took 29 s wall (not yet measured in instructions); `convergence::`, `sims::` and `flows::` dominate, every rule-test module is under 10 CPU-s.
 
 | layer | what | budget |
 |---|---|---|
