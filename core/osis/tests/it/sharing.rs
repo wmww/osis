@@ -170,6 +170,9 @@ fn purge_without_the_right_is_refused_spec_permissions_6() {
     let g = alice.commit_with(|w| w.create()).unwrap();
     alice.grant(g, bob.me(), Role::Write, Default::default()).unwrap();
     let k = || osis::DynamicAspectKey::untyped(ak("t:m.0"));
+    // kept in history, so no snapshot drops and forgets a write before it is purged by commit
+    // (spec/commits.md §5 Keep bounds, Forgetting)
+    alice.commit_with(|w| w.at(g, osis::core::RETENTION).set(&crate::common::setting(&[("t:m.0", crate::common::DAY)]))).unwrap();
     let hers = commit_with(&alice, |w| w.at(g, k()).set(&s("hers"))).stamp.id;
     deliver(&alice, &bob);
     let refused = |what: osis::Purge| {

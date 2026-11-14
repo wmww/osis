@@ -86,7 +86,7 @@ fn new_commit_clears_redo_spec_commits_7() {
 }
 
 // spec/commits.md §7: when the newest commit's body was dropped (as covered by a snapshot), undo
-// reports it and never undoes an older change instead.
+// is refused and never undoes an older change instead.
 #[test]
 fn undo_blocked_by_dropped_body_spec_commits_7() {
     let db = db(0);
@@ -101,9 +101,12 @@ fn undo_blocked_by_dropped_body_spec_commits_7() {
         e.drop_body(&newest, &t, &b)
     })
     .unwrap();
-    assert_eq!(db.undo(&Scope::Thing(t)), Err(Error::NotUndoable { commit: osis::CommitId::from(newest), reason: NotUndoableReason::NotKept }));
+    // `newest`, dropped as covered, is forgotten once no entry of it is known (spec/commits.md §5
+    // Forgetting): undo is refused for it or for the snapshot standing for it, never undoes `a`
+    let r = db.undo(&Scope::Thing(t));
+    assert!(matches!(r, Err(Error::NotUndoable { reason: NotUndoableReason::NotKept, .. })), "{r:?}");
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(a)).get().unwrap(), Some(Value::Int(1)));
-    assert_eq!(db.revert(osis::CommitId::from(newest)), Err(Error::NotUndoable { commit: osis::CommitId::from(newest), reason: NotUndoableReason::NotKept }));
+    assert!(db.revert(osis::CommitId::from(newest)).is_err());
 }
 
 // notes/engine.md: an undo mutation carries nothing else.
@@ -279,8 +282,11 @@ fn snapshot_only_attribution_api_history() {
     let ch = recv(&rx);
     assert_eq!(ch.value, Ok(Some(Value::Int(7))));
     assert!(matches!(ch.origin, Origin::Remote(i) if i.id == osis::CommitId::from(snap) && i.actor == a.me() && i.ts() == snap_ts), "{:?}", ch.origin);
+    // b holds `done` under the snapshot covering it: listed as itself while held, or forgotten
+    // (spec/commits.md §5 Forgetting), never under another's attribution
     let hb = listed(&b, Scope::Thing(t));
-    assert!(hb.iter().any(|e| e.stamp.id == done.stamp.id && e.stamp.actor == a.me() && e.stamp.ts() == done.ts()), "{hb:?}");
+    assert!(hb.iter().filter(|e| e.stamp.id == done.stamp.id).all(|e| e.stamp.actor == a.me() && e.stamp.ts() == done.ts()), "{hb:?}");
+    assert!(hb.iter().any(|e| e.stamp.id == osis::CommitId::from(snap) && e.kind == CommitKind::Snapshot), "{hb:?}");
     let hc = listed(&c, Scope::Thing(t));
     assert!(hc.iter().all(|e| e.stamp.id != done.stamp.id && e.stamp.ts() != done.ts()), "{hc:?}");
     assert!(hc.iter().any(|e| e.stamp.id == osis::CommitId::from(snap) && e.kind == CommitKind::Snapshot), "the snapshot as itself: {hc:?}");

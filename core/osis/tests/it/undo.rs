@@ -166,9 +166,9 @@ fn scope_of(t: osis::Tid) -> Scope {
     Scope::Aspects(vec![(t, ak("app:k.0"))])
 }
 
-// spec/crdt.md §4.6: one edit undoes to one outcome whether the body it replaced is still held or
-// was compacted into a snapshot: with history kept the value comes back either way, with none
-// the undo is `NotUndoable` either way.
+// spec/crdt.md §4.6: one edit undoes to one outcome whether or not the aspect was compacted into
+// a snapshot before it: with history kept the value comes back either way (the replaced body is
+// kept while live), with none the undo is `NotUndoable` either way.
 #[test]
 fn undo_alike_held_or_compacted_spec_crdt_4_6() {
     for name in ["app:k.0", "app:n.0"] {
@@ -176,14 +176,15 @@ fn undo_alike_held_or_compacted_spec_crdt_4_6() {
             let db = setup(0);
             let t = kept_thing(&db);
             let first = sets(&db, t, name, &[1]);
+            // compacted as node-sync compacts: a snapshot, then what it covers past its keep
+            // bound drops (none of a body kept while live) and its commit is forgotten
+            // (spec/commits.md §5 Keep bounds, Forgetting)
             if compact {
                 let k = ak(name);
-                db.engine(|e| {
-                    e.snapshot(&t, &k)?;
-                    e.drop_body(&first.raw(), &t, &k)
-                })
-                .unwrap();
-                assert!(!db.engine(|e| e.body_not_dropped(&first.raw(), &t, &k)), "compacted");
+                db.engine(|e| e.snapshot(&t, &k)).unwrap();
+                db.settle();
+                let held = db.engine(|e| e.commit_ids().contains(&first.raw()) && e.body_not_dropped(&first.raw(), &t, &k));
+                assert_eq!(held, name == "app:k.0", "{name}: kept while live, else dropped");
             }
             let second = sets(&db, t, name, &[2]);
             let r = db.undo(&Scope::Aspects(vec![(t, ak(name))])).map(|_| db.at(t, key(&db, name)).get().unwrap());
@@ -197,8 +198,8 @@ fn undo_alike_held_or_compacted_spec_crdt_4_6() {
 
 // spec/commits.md §7 (kept history only), Tess's decision: what only takes away what it made
 // (a list insert) undoes and redoes while the setting keeps it, and is refused once it leaves
-// history by the setting's bound (the list is kept until a time `T`), its body still held: the
-// setting decides, never compaction. With history a first register set undoes to absent and
+// history by the setting's bound (the list is kept until a time `T`), whether its body is still
+// held or dropped as covered since: the setting decides, never compaction. With history a first register set undoes to absent and
 // redoes.
 #[test]
 fn takings_undo_while_kept_spec_commits_7() {
@@ -226,9 +227,13 @@ fn takings_undo_while_kept_spec_commits_7() {
     assert_eq!(get(), ints(&[1, 2]), "and redone");
     let late = commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(2..2, &[Value::Int(3)])).stamp.id;
     c.advance(61_000);
-    assert!(db.engine(|e| e.body_not_dropped(&late.raw(), &t, &la)), "held");
-    assert_eq!(db.undo_target(&list), Err(gone(late)), "past T");
-    assert_eq!(db.revert(late), Err(gone(late)));
+    // past T nothing of the list undoes: refused for `late`, or, once its body dropped as covered
+    // and its commits forgotten, nothing left to undo (spec/commits.md §5 Forgetting Limit:
+    // forgetting narrows undo, never widens it)
+    let target = db.undo_target(&list);
+    assert!(matches!(target, Ok(None)) || target == Err(gone(late)), "past T: {target:?}");
+    assert!(db.revert(late).is_err());
+    let _ = db.undo(&list);
     assert_eq!(get(), ints(&[1, 2, 3]));
     let k = key(&db, "app:k.0");
     sets(&db, t, "app:k.0", &[7]);

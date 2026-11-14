@@ -175,7 +175,11 @@ fn kept_part_is_told_leaving_at_its_bound_api_commits() {
     assert_eq!(ids(&heard(&db, &rx2)), vec![(x, false)], "to a listener added after its replacement too");
     assert_eq!(bodies(&db, u, &k), vec![Body::Held(Some(s("b")))], "as a page reads");
     commit_with(&db, |w| w.at(u, kept(&db, &k)).set(&s("d")));
-    assert!(ids(&heard(&db, &rx)).iter().all(|x| x.0 != a), "told once");
+    // its own replaces now cover it: dropped and forgotten (spec/commits.md §5 Own replaces,
+    // Forgetting), each a change a listener may hear again, never as listed
+    let after = ids(&heard(&db, &rx));
+    assert!(after.iter().all(|x| x.0 != a || !x.1), "never listed again: {after:?}");
+    assert_eq!(bodies(&db, u, &k), vec![Body::Held(Some(s("b"))), Body::Held(Some(s("d")))]);
 }
 
 // spec/commits.md §7 (Listed parts), notes/api.md Commits (listeners): a write replacing a part
