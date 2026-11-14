@@ -329,11 +329,11 @@ impl Engine {
             true => osis_label::Class::Ephemeral,
             false => osis_label::Class::Durable,
         };
-        let sealed = match b.to_label {
-            true => self.seal_to(&b, class, rng)?,
+        let (sealed, unopened) = match b.to_label {
+            true => (self.seal_to(&b, class, rng)?, SealedSet::new()),
             false => {
-                let sections = self.held_sections(c, held);
-                self.seal(&b, class, &sections, rng)?
+                let (sections, unopened) = self.held_sections(c, held);
+                (self.seal(&b, class, &sections, rng)?, unopened)
             }
         };
         let Some(sealed) = sealed else { return Ok(None) };
@@ -342,7 +342,16 @@ impl Engine {
         }
         let Some(w) = self.wrap_secret(&t, Some((c, &sealed.parts)))? else { return Ok(None) };
         let wrap = osis_crypto::wrap(&w, &sealed.id, &sealed.key, b.order)?;
-        let row = BlobOf { commit: *c, parts: sealed.parts.iter().copied().collect(), sealed: sealed.unopened.clone(), copy: b.to_label, unchecked: false };
+        // a section copied verbatim that this node never opened counts by its bytes, whatever of
+        // its parts it holds from another blob (spec/sync-compaction.md §1 Only what the node checked)
+        let mut row = BlobOf { commit: *c, parts: sealed.parts.iter().copied().collect(), sealed: sealed.unopened.clone(), copy: b.to_label, unchecked: false };
+        if !unopened.is_empty() {
+            let env = osis_commit::Envelope::decode(&osis_label::open(&sealed.blob, &sealed.key)?.1)?;
+            for sec in env.sections.iter().filter(|sec| unopened.contains(&sec.digest())) {
+                row.sealed.insert(sec.digest());
+                row.parts.retain(|ai| !sec.ais.contains(ai));
+            }
+        }
         let bid = sealed.id;
         self.run(|tx| note_blob(tx, &bid, row))?;
         Ok(Some((sealed, wrap)))
@@ -351,15 +360,16 @@ impl Engine {
     /// The sections of commit `c`'s held genuine blobs among `held` (each opened by its entry's
     /// wrap under a read secret of its sync ID's thing): shared blobs of `c` opened or sealed
     /// here, never a copy (a section under its blob key is never copied into another encryption,
-    /// spec/sync-judgement.md §1). Opened or not; one per aspect set, largest first, none sharing
-    /// an aspect with one taken (a commit's sections never overlap).
-    fn held_sections(&mut self, c: &CommitId, held: &[HeldBlob]) -> Vec<osis_commit::Section> {
+    /// spec/sync-judgement.md §1). Opened or not; one per aspect set, those this node opened
+    /// first (a forger's section it could not open never stands in for a genuine one it did),
+    /// then largest first, none sharing an aspect with one taken (a commit's sections never
+    /// overlap). With the digests of those taken that it did not open (`BlobOf::sealed`).
+    fn held_sections(&mut self, c: &CommitId, held: &[HeldBlob]) -> (Vec<osis_commit::Section>, SealedSet) {
         let mut all = Vec::new();
+        let mut opened = SealedSet::new();
         for h in held {
             let b = osis_label::blob_id(&h.bytes);
-            if self.core.ix.blob_parts.get(&b).is_none_or(|x| x.commit != *c || x.copy) {
-                continue;
-            }
+            let Some(row) = self.core.ix.blob_parts.get(&b).filter(|x| x.commit == *c && !x.copy).cloned() else { continue };
             let Ok(Some(t)) = self.read_thing(&h.sync_id) else { continue };
             let Some((_, key)) = osis_label::unwrap_any(self.read_secrets(&t).iter(), &b, &h.wrap) else { continue };
             let Ok((_, pt)) = osis_label::open(&h.bytes, &key) else { continue };
@@ -367,15 +377,22 @@ impl Engine {
             if env.id() != *c {
                 continue;
             }
-            all.extend(env.sections.into_iter().filter(|sec| osis_crypto::unwrap_section(&key, c, &sec.wrap).is_err()));
+            for sec in env.sections.into_iter().filter(|sec| osis_crypto::unwrap_section(&key, c, &sec.wrap).is_err()) {
+                let d = sec.digest();
+                if !row.sealed.contains(&d) {
+                    opened.insert(d);
+                }
+                all.push((d, sec));
+            }
         }
-        all.sort_by_key(|sec| std::cmp::Reverse(sec.ais.len()));
+        all.sort_by_key(|(d, sec)| (!opened.contains(d), std::cmp::Reverse(sec.ais.len())));
         let mut seen = BTreeSet::new();
-        all.retain(|sec| sec.ais.iter().all(|ai| !seen.contains(ai)) && {
+        all.retain(|(_, sec)| sec.ais.iter().all(|ai| !seen.contains(ai)) && {
             seen.extend(sec.ais.iter().copied());
             true
         });
-        all
+        let unopened = all.iter().map(|(d, _)| *d).filter(|d| !opened.contains(d)).collect();
+        (all.into_iter().map(|(_, sec)| sec).collect(), unopened)
     }
 
     /// Certificate body `meta` of commit `c` under a sync ID of thing `t`, sealed (spec/sync-
