@@ -709,15 +709,18 @@ impl Engine {
     /// The read secret a list blob of rotation `r` is wrapped under at `g` (spec/crypto.md §5 Who
     /// wraps under what: a rotation's thing lists are parts of it and wrap as it does): the
     /// newest established read epoch of `g`'s secret actor whose secret is held and that no
-    /// rotation made after `r` minted (by order key, `ts`), so a rotation of `g` that `r` caused
-    /// takes nothing from whoever read `g` before it. Like a rotation's own wrap, it is not
-    /// subject to `wrap_blocked`. `None`: `r` or no such epoch is held.
+    /// rotation ordered at or after `r` minted (by (`ts`, author, commit ID), spec/permissions.md
+    /// §5.1; `r`'s own epoch is not current when it is made), so a rotation of `g` that `r`
+    /// caused takes nothing from whoever read `g` before it. Like a rotation's own wrap, it is
+    /// not subject to `wrap_blocked`. `None`: `r` or no such epoch is held.
     pub(crate) fn list_wrap_secret(&mut self, g: &Tid, r: &CommitId) -> Option<Secret32> {
         let a = self.core.secret_actor(g)?;
-        let at = self.header(r)?.ts;
+        let h = self.header(r)?;
+        let at = (h.ts, h.author, *r);
         let e = self.epochs(&a)?;
-        let intro = &self.core.ix.epoch_intro;
-        e.read.newest_held_where(|x| intro.get(&(a, Role::Read, *x)).is_none_or(|(ts, _)| *ts <= at)).map(|(_, s)| s.clone())
+        let (intro, commits) = (&self.core.ix.epoch_intro, &self.core.ix.commits);
+        let before = |(ts, c): &(osis_base::Ts, CommitId)| commits.get(c).map_or(*ts < at.0, |m| (*ts, m.view.author, *c) < at);
+        e.read.newest_held_where(|x| intro.get(&(a, Role::Read, *x)).is_none_or(before)).map(|(_, s)| s.clone())
     }
 
     /// For a rotation commit of the read role of `g`'s secret actor (its `keys.0` delta writes a

@@ -267,8 +267,16 @@ fn outsider_across_a_node_removal(mut w: World) {
     assert!(lost.is_empty(), "node 0 dropped {} commits it held", lost.len());
     assert!(w.engine(0).roster(&t).contains_key(&a0), "node 0's account keeps its read edge");
     assert_eq!(w.engine(0).get(&t, &ak).unwrap(), Some(Value::Str("before".into())), "the write before the removal");
-    for r in w.engine(1).account_rotations(&a1) {
-        assert!(w.engine(0).rotation_lists(&r).unwrap().iter().all(|(x, _)| *x != d), "node 0 holds no thing list of D");
+    // what an outsider learns of the account's lists: only lists of t and of the account (whose
+    // rotations are its certificates), naming only commits it holds: nothing of D or its nodes
+    let mine = w.engine(0).commit_ids();
+    let rots = w.engine(1).account_rotations(&a1);
+    assert!(rots.iter().any(|r| w.engine(1).rotation_lists(r).unwrap().iter().any(|(x, _)| *x == d)), "node 1 holds D's list");
+    for r in rots {
+        for (x, ids) in w.engine(0).rotation_lists(&r).unwrap() {
+            assert!(x == t || x == a1, "node 0 holds a thing list of {x:?} (d {d:?})");
+            assert!(ids.iter().all(|c| mine.contains(c)), "a list of {x:?} names a commit node 0 does not hold");
+        }
     }
     set(&mut w, Some(t), "after");
     w.run();

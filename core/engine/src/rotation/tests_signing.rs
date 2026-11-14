@@ -115,7 +115,8 @@ fn removal_rotates_the_account_and_its_lists_keep_its_writes_spec_permissions_5_
 // its rotation), spec/commits.md §4 (Pending storage): a list blob opened before its rotation is
 // kept loose, carried by its blob, and held as the rotation arrives without it, so the sibling's
 // write the list names counts; the carrier then carries nothing loose, and a reopen and a
-// rebuild read the lists alike
+// rebuild read the lists alike. A forged list of the same rotation, kept loose first, does not
+// keep the genuine one out (each is verified against the list root as the rotation arrives).
 #[test]
 fn a_list_blob_before_its_rotation_is_held_as_it_arrives_spec_sync_judgement_1() {
     let (mut lp, a, t) = world(3, 2);
@@ -124,6 +125,12 @@ fn a_list_blob_before_its_rotation_is_held_as_it_arrives_spec_sync_judgement_1()
     let done = remove(&mut lp, 0, a.devices, 1);
     let pk = lp.peers[0].engine.package(&done.commits[1]).unwrap().unwrap();
     assert!(!pk.lists.is_empty());
+    let forged: Vec<_> = osis_commit::thing_list::decode_list_blob(&pk.lists[0]).unwrap().into_iter().map(|mut c| {
+        c.list.ids = osis_commit::thing_list::ListIds::Inline(Vec::new());
+        c
+    }).collect();
+    let junk = osis_base::BlobId([6; 32]);
+    assert_eq!(lp.peers[2].engine.take_list_blob(&junk, &osis_commit::thing_list::encode_list_blob(&forged)).unwrap(), Some(done.commits[1]));
     let carrier = osis_base::BlobId([7; 32]);
     for l in &pk.lists {
         assert_eq!(lp.peers[2].engine.take_list_blob(&carrier, l).unwrap(), Some(done.commits[1]));
@@ -131,6 +138,7 @@ fn a_list_blob_before_its_rotation_is_held_as_it_arrives_spec_sync_judgement_1()
     assert!(lp.peers[2].engine.carries_loose(&carrier), "kept loose until its rotation");
     lp.peers[2].receive(&pk.bytes, pk.blobs.clone()).unwrap();
     assert!(!lp.peers[2].engine.carries_loose(&carrier), "held with its rotation");
+    assert!(!lp.peers[2].engine.carries_loose(&junk), "the forged list goes as its rotation arrives");
     assert_eq!(read(&mut lp, 2, t), Some(Value::Str("sibling".into())), "the sibling's write was listed");
     let d0 = lp.peers[2].engine.index_digest();
     lp.peers[2].engine.reload().unwrap();
