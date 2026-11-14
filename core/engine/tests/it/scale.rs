@@ -1278,7 +1278,7 @@ fn chunk_drop(n: usize) -> (u64, u64) {
     (n("tree refs: parts read"), n("tree refs: links counted") + n("tree refs: blobs read"))
 }
 
-// spec/sync-compaction.md §1 (a dropped body's chunk goes once nothing held links it); spec/requirements.md,
+// spec/sync-compaction.md §1 (freed links): a dropped body's chunk goes once nothing held links it; spec/requirements.md,
 // Scale: judging the chunks a write-and-compact drops reads the sources that changed (the new
 // bodies, the value's state), not every body held on the thing.
 #[test]

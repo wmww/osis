@@ -95,7 +95,7 @@ pub fn deposit_budget(claims: usize) -> (usize, usize) {
 mod tests {
     use super::*;
 
-    // spec/wire.md §2 (protocol limits): the derived limits are the spec's numbers
+    // spec/wire.md §2 (protocol version 1 limits): the derived limits are the spec's numbers
     #[test]
     fn derived_limits_spec_wire_2() {
         assert_eq!(MAX_MESSAGE, 9_437_184);

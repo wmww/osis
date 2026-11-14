@@ -69,7 +69,7 @@ fn start(sched: &mut Sched, hosts: Vec<P2p<MemUdp>>) -> Vec<D> {
     .unwrap()
 }
 
-// spec/sync-transport.md §4 (joining, dialing): each node on a segment hands up every other
+// spec/sync-transport.md §4 (joining; dialing): each node on a segment hands up every other
 // node's join once (repeats and its own announcements ignored), at the sender's address and
 // announced port; a node on another segment hears nothing; a rejoin is a fresh key, which the
 // others hand up again.

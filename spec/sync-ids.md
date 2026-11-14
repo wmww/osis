@@ -59,7 +59,7 @@
   - A step holds: sync ID, `prev` (the step ID of its parent; none in the genesis step), the four public keys (sync, write, delete, deposit), a fresh X25519 **step key**, BLAKE3 of the **claim set** (which holds the **entry boxes**), and a signature by the parent's delete key (the genesis step by its own).
   - Each step is carried with its claim set.
   - Every node holding S has one **head** per S: a node reading S the newest step its `sync.0` records (§4); a node keeping S unread the newest step registered with it (§6 Register).
-  - An admin issues steps (§6 Steps); it MAY issue a step without a rotation (same role keys, fresh step key) to list readers granted since its parent, key actors in particular.
+  - An admin issues steps (§6 Steps).
 - **Claim set** of a step: padded with random keys to a power of two, in random order. It lists each **reader** M of the registered read epoch (the registrar's newest read epoch at registration): every actor holding its read secret as the registrar knows it at registration (the holders of boxes carrying it, the first admin included while its record edge stands; a holder re-sealed later opens by sync key).
   - A reader is listed by its claim public key (derivation: spec/wire.md §8). M's X25519 key is the X25519 half of its read-role KEM key in the newest `keys.0` of M the registrar holds (a key actor: its single KEM key; an account: its newest open epoch's, spec/crypto.md §3). A non-contributory DH result omits M.
   - A reader that is a key actor other than a node or an account (a link key) is listed instead by its **static entry** (spec/wire.md §8), the same 32 bytes.
@@ -98,15 +98,15 @@ Across sync IDs:
 Each operation names a sync ID S. Writes are signed with the role keys of the receiving store's head; a Delete needs S open on the connection (spec/sync-opens.md §4).
 
 - **Steps** (who issues and registers):
-  - Only an admin issues a step: when it holds, for some role, an established epoch newer than the one its recorded head registers (spec/permissions.md §3 next-step triggers), a child of its recorded head, recorded in `sync.0` in the same commit. No step is issued or registered under a head this node has not recorded.
+  - Only an admin issues a step: when it holds, for some role, an established epoch newer than the one its recorded head registers (spec/permissions.md §3 next-step triggers), a child of its recorded head, recorded in `sync.0` in the same commit. It MAY also issue a step without a rotation (same role keys, fresh step key) to list readers granted since its parent, key actors in particular. No step is issued or registered under a head this node has not recorded.
   - A node reading S registers at each source that keeps S unread (an open by a store credential, spec/sync-opens.md §4) the recorded steps after that source's head, in order: each only once that source's stream showed it holding the role commits of the thing's actor the step's epochs depend on (the rotations of the epochs it registers and of those they supersede), which the registrar logs stamped under the source's head for it to pull. A remover logs the removal and the new `keys.0` first (spec/permissions.md §3).
   - Any reader holding the recorded path moves a source on an older step, not only an admin; Register needs no secret and no open, and is relayable by any node.
   - A deposit-only step (a new deposit key, no other role newer) waits while the node misses a valid `keys.0` part of the thing's actor that it knows of.
   - No rotation answers a fork: sibling steps stand until a step due for another reason lists past them.
 - **Register** (delete key of the parent): taken only for a sync ID the node keeps unread (spec/sync.md §3) and in its sync set; a node reading S refuses every Register of S (code 14), as does a node not syncing S.
   - Accept a genesis step only if its delete key hashes to the sync ID and the node holds no step of S.
-  - Accept a step whose `prev` is the head.
-  - Otherwise refuse anything else (a step with another `prev`, an operation under keys of a step it does not hold) with code 9 and nothing more (other codes: spec/wire.md §11.2). A refused registration never carries the head (a registrar learns it from the stream where S is open, or by Behind items).
+  - Accept a step whose `prev` is the head; the head itself again is answered OK and changes nothing.
+  - Otherwise refuse anything else (a step with another `prev`, a genesis step while the node holds a step of S, an operation under keys of a step it does not hold) with code 9 and nothing more (other codes: spec/wire.md §11.2). A refused registration never carries the head (a registrar learns it from the stream where S is open, or by Behind items).
   - A step is registered with its claim set when the registrar holds it (it MUST hash to the step's). A step held without its set serves no claims at it.
   - **Storage caps**: a step and its claim set count toward the sync ID's and the store's caps (the claim set until it is dropped, §5). Past them:
     - a genesis step is refused (code 12);
@@ -140,7 +140,7 @@ Each operation names a sync ID S. Writes are signed with the role keys of the re
     - at or past its expiry (code 7);
     - above `MAX_RELAY_BLOB` (code 3);
     - past S's relay rate (code 4).
-  - A node keeping S unread pushes a blob ID once per sync ID until its expiry (a repeat is answered OK and pushed to nobody), remembering a bounded number of them (past it the earliest-expiring is forgotten).
+  - **Taken once**: every node holding S, reading it or keeping it unread, takes a relay-only blob ID once per sync ID until its expiry, and drops a repeat. It remembers a bounded number of them: past the bound the earliest-expiring is forgotten and its expiry becomes the sync ID's **floor**, at or below which relay-only blobs of that sync ID are dropped.
 - **Wraps**:
   - **A node holding the blob's key**: it takes only a wrap opening to that key. An entry a source holds stamped, under any step's write key, under any other wrap counts as lacking at that source (spec/sync-judgement.md §2) for as long as the source holds it; a wrap that does not open at a source gets a fresh encryption there. A wrap opening under no read secret held counts so only until a read secret arrives under which it opens to the blob's key.
   - **A node holding no key**: it keeps its wrap unless one of these holds:

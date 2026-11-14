@@ -1142,7 +1142,7 @@ mod tests {
         assert!(lp.peers[1].engine.keys_write_unapplied(&t).unwrap(), "the admin's");
     }
 
-    // spec/sync-ids.md §6 (a deposit-only step waits for an unapplied `keys.0` write): a held commit
+    // spec/sync-ids.md §6 (a deposit-only step): waits for an unapplied `keys.0` write: a held commit
     // whose valid `keys.0` part is missing here is one (its body may give a newer seed, or secrets
     // of the thing's own); the body arriving lets the step go
     #[test]

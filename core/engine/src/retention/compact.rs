@@ -1048,7 +1048,7 @@ mod tests {
         }
     }
 
-    // spec/permissions.md §5.2, spec/sync-compaction.md §2 (covered; random churn seed 913562400022 shrunk):
+    // spec/permissions.md §5.2, spec/sync-compaction.md §2 (dropping covered bodies), random churn seed 913562400022 shrunk:
     // a snapshot whose writer held a body behind a gap in its session carries the body's writes
     // past its own frontier. A node holding the body judges it covered by the join, as a node
     // that dropped it under a cover that snapshot covers judges by its chain of covers; judged

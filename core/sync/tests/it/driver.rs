@@ -339,7 +339,7 @@ fn a_quiet_candidate_waits_for_a_change_spec_sync_opens_1() {
     assert_eq!(d.dial(at(11 * REDIAL_MS), MAX_PEERS).len(), 1);
 }
 
-// spec/sync-opens.md §1 (whom to dial, redial): due dials go by priority, then the longest
+// spec/sync-opens.md §1 (whom to dial; redial): due dials go by priority, then the longest
 // undialed first: silent candidates that time out together never keep the others from a slot.
 #[test]
 fn due_dials_take_turns_spec_sync_opens_1() {
@@ -488,7 +488,7 @@ async fn dial_up<T: osis_transport::Transport>(ta: T, tb: T, url: &str) {
     served.abort();
 }
 
-// spec/sync-transport.md §1 (streams and addresses): a configured address is dialed through the
+// spec/sync-transport.md §1 (address): a configured address is dialed through the
 // product's `TransportLinks` over an in-process transport; the dial comes up and the peer's
 // session answers.
 #[test]
@@ -500,7 +500,7 @@ fn transport_links_dial_in_process_spec_sync_transport_1() {
     });
 }
 
-// spec/sync-transport.md §2 (by hand: real QUIC on loopback): as above over `quic://`. Run with
+// spec/sync-transport.md §2 (QUIC v1), by hand: real QUIC on loopback: as above over `quic://`. Run with
 // `cargo test -p osis-sync --test it -- --ignored quic_loopback`.
 #[test]
 #[ignore = "by hand: real sockets"]

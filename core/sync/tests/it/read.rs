@@ -603,7 +603,7 @@ fn at_k_must_hold() -> W {
     w
 }
 
-// spec/sync-judgement.md §4 (logged again once) (log-liar): a peer deleting at K what this node
+// spec/sync-judgement.md §4 (logs the body again once) (log-liar): a peer deleting at K what this node
 // needs (a cover it hides) gets one fresh encryption per change of ground, however often it
 // deletes (HN_stand).
 #[test]
@@ -634,7 +634,7 @@ fn head_move_allows_one_more() {
     assert_eq!(w.logs(S, cid(1)), 3);
 }
 
-// spec/sync-judgement.md §4 (a held part falls) (again-stand): a held cover or killing write
+// spec/sync-judgement.md §4 (such a part falls) (again-stand): a held cover or killing write
 // falling here, with no head move, allows one more logging (HN_standfall).
 #[test]
 fn fall_allows_one_more() {
@@ -652,7 +652,7 @@ fn fall_allows_one_more() {
     assert_eq!(w.logs(S, cid(1)), 3);
 }
 
-// spec/sync-judgement.md §4 (judged invalid counts as a fall): the stand compares the engine's
+// spec/sync-judgement.md §4 (judged invalid here counts as a fall): the stand compares the engine's
 // fall mark, which a snapshot arriving invalid moves as one held valid falling does; nothing
 // else of the body changes here (HN_fallany).
 #[test]
@@ -765,7 +765,7 @@ fn later_unheld_snapshot_blocks_uncovered() {
     assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Must));
 }
 
-// spec/sync-judgement.md §4 (missing again lifts own tombstones) (eph-reverts-seeds): a part
+// spec/sync-judgement.md §4 (a part counting missing again lifts this node's own tombstones) (eph-reverts-seeds): a part
 // counting missing again lifts this node's own tombstones of its entries, so it is fetched again.
 #[test]
 fn missing_again_lifts_own_tombstones() {
@@ -782,7 +782,7 @@ fn missing_again_lifts_own_tombstones() {
     assert_eq!(w.g.tombs.get(&(S, cid(1))).cloned(), Some(vec![]));
 }
 
-// spec/sync-judgement.md §4 (stand durable) (forget-lost-mem): a start (or the reload a forget
+// spec/sync-judgement.md §4 (the stand's state): durable (forget-lost-mem): a start (or the reload a forget
 // runs) judges every held commit again: a must-hold value whose entry the restart lost is logged
 // again, and a stand kept in K's record still holds (a restart is no change of ground).
 #[test]
@@ -862,7 +862,7 @@ fn nothing_emptied_before_told() {
     assert_eq!(w.deletes(), 1);
 }
 
-// spec/sync-judgement.md §5 (emptying deletes no destroying request): told, it deletes every other
+// spec/sync-judgement.md §5 (emptying deletes none): told, it deletes every other
 // entry at K and keeps the request there until its expiry (DN_req).
 #[test]
 fn emptying_keeps_the_requests() {
@@ -872,7 +872,7 @@ fn emptying_keeps_the_requests() {
     assert_eq!(w.at_k(S, cid(1)), 0);
 }
 
-// spec/sync-judgement.md §5 (forgets once heard out with no entry): told and emptied, it forgets S
+// spec/sync-judgement.md §5 (it forgets the sync IDs once its sources): told and emptied, it forgets S
 // only once its sources are heard out with no entry and no tombstone known there: not while the
 // request lives at K (DN_forget).
 #[test]
@@ -1049,7 +1049,7 @@ fn duplicates_by_delta_set_and_copy() {
     assert!(deleted.contains(&lo) && shared.iter().all(|b| deleted.contains(b)), "{deleted:?}");
 }
 
-// spec/sync-judgement.md §5 (forgets once heard out with no entry): an entry at any source, one
+// spec/sync-judgement.md §5 (it forgets the sync IDs once its sources): an entry at any source, one
 // holding no destroying request included, keeps S; past the requests' expiry it is emptied there
 // too (no reader can be told any more), then S is forgotten.
 #[test]

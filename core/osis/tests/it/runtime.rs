@@ -199,7 +199,7 @@ fn close_then_runtime_shutdown_polls_no_dead_timer() {
     assert_eq!(PANICS.load(std::sync::atomic::Ordering::Relaxed), 0);
 }
 
-// spec/sync-transport.md §6 (unix path sockets), notes/client-port.md §5: the socket directory is
+// spec/sync-transport.md §6 (a path socket), notes/client-port.md §5: the socket directory is
 // made 0700 and used only when it is this uid's, mode 0700 and not a symlink; the socket's name
 // fits `sun_path`, one per store however its path is spelled; a runtime directory too deep for a
 // socket fails `Storage`, which a daemon survives.

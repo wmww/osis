@@ -47,7 +47,7 @@ fn every_kind_has_a_canonical_rejection_spec_wire_11_2() {
     assert_eq!(kinds, KINDS.into_iter().collect(), "a rejection per kind");
 }
 
-// spec/wire.md §1 (exact positions): a message of every kind takes exactly its layout's
+// spec/wire.md §1 (an array with exactly those positions): a message of every kind takes exactly its layout's
 // fields: one more or one fewer is malformed
 #[test]
 fn exact_arity_spec_wire_11_2() {
@@ -128,7 +128,7 @@ fn grown(m: &Msg, pos: usize, inner: Option<(usize, usize)>, n: usize) -> Value 
     Value::List(items)
 }
 
-// spec/wire.md §11.2 (Per-message caps, Offer, Lost, Digest, Prove, Resume): every list cap
+// spec/wire.md §11.2 (per-message caps): Offer, Lost, Digest, Prove, Resume: every list cap
 // takes its cap and refuses one more
 #[test]
 fn list_caps_spec_wire_11_2() {
@@ -248,7 +248,7 @@ fn item_cap_spec_wire_13() {
     assert_eq!(Msg::decode(&body), Ok(m));
 }
 
-// spec/wire.md §11.1 (ids): a request's or reply's id can be set; a push keeps 0
+// spec/wire.md §11.1 (`id` is 0 in a push): a request's or reply's id can be set; a push keeps 0
 #[test]
 fn set_id_spec_wire_11_1() {
     for (name, mut m) in messages() {

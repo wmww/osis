@@ -42,7 +42,7 @@ mod tests {
         CreationRecord::Thing { admin: Tid::from_bytes([n; 15]), nonce: [n; 32], link: None }
     }
 
-    // spec/wire.md §3 (Record blobs): records round-trip sorted and distinct; an empty blob, a
+    // spec/wire.md §3 (record blob): records round-trip sorted and distinct; an empty blob, a
     // record out of order or twice, or a malformed record is bad input
     #[test]
     fn record_blob_round_trips_spec_wire_3() {

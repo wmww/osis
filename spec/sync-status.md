@@ -4,7 +4,7 @@
 **Principle:** status says only what is true now, per sync ID, of the sources connected now. Nothing is "synced" with nobody connected, and no word of a peer counts until its stream showed it.
 
 ## 1. Sources and caught up
-- The **sources** of S at a node: the peers with S open on a connection up now (spec/sync-opens.md §4). A granted peer that has not taken its grant, or a node that refuses S, is no source.
+- The **sources** of S at a node: the peers with S open on a connection up now (spec/sync-opens.md §4). A granted peer that has not taken its grant, or a node that does not open S, is no source.
 - A source is **caught up** once this node applied its stream to the end (spec/sync-streams.md §4) and the source pulled this node's stream to its end (followed, nothing left to push, no join left in pages) and reported (Applied) every message served to it on that connection. A source **lacks** an entry only for what it would pull (stamped for its head, or a deposit it was offered); a full or refusing source (spec/sync-streams.md §4 Full, Refused) is named, counts as lacking what it lacks, and is not waited on.
 - S is **heard out** at a node when every source but those full or refusing is caught up, and at least one such source is. With no source S is **unconnected**, one state, never synced; with only full or refusing sources it is not heard out.
 - Readers are counted by identity (the accounts proven, spec/sync-opens.md §2), never by connection.
@@ -17,7 +17,7 @@
 ## 3. Status and waits
 - `status` per sync ID: unconnected, or its sources each with caught up, lacking (with counts), full, refusing, or stranded; while a complete pass of it waits, the recorded peers it waits for; and per node, idle when no request, fill or Hello is outstanding on any connection (a dialed session waiting for the peer's Hello is not idle).
 - A node keeping S unread reports S like any sync ID (its sources, its head, full, stranded).
-- **Stranded** (spec/permissions.md §4): a node holding S that has no credential of a source's head reports itself stranded there and sends its stranded notice again when its holder's current keys move.
+- **Stranded** at a source: as spec/sync-ids.md §6 Walk defines; the node reports itself stranded there and sends its stranded notice (spec/permissions.md §4) again when its holder's current keys move.
 - `wait_synced(S)` ends when S is heard out and each of this node's own commits under S is held elsewhere; a writer's wait ends on a source keeping S unread showing the writer's entries in its stream (§2). A wait on a thing covers every sync ID carrying it, and runs to its timeout while one is unconnected or none is held; a wait on all covers every sync ID held. It never ends while S is unconnected.
 - **History complete** for a thing: a complete pass (§1) of every sync ID carrying it.
 - `set_role` writes at once; an app that needs the change seen first waits with `wait_synced`.

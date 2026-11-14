@@ -88,7 +88,7 @@
   - **Dropped unopened**: a node drops a relay-only blob unopened when one of these holds:
     - it is larger than `MAX_RELAY_BLOB`;
     - its prefix expiry is passed or more than `2 × MAX_DRIFT` ahead of its wall clock;
-    - the node received that blob ID under that sync ID before its expiry (remembered for at most a bounded number of blobs: past it the earliest-expiring is forgotten and its expiry becomes the sync ID's floor, at or below which blobs are dropped).
+    - it is a repeat, or at or below the sync ID's floor (spec/sync-ids.md §6 Relay-only, Taken once).
   - **Delivery**: it verifies the rest like an ephemeral commit and tells its valid ephemeral signal parts to listeners once (spec/data-model.md §2). It holds and logs nothing.
   - **Replay**: it remembers delivered relay-only commit IDs until their `ts` is `MAX_DRIFT` old, at most `MAX_DELIVERED` (past that the earliest delivered is forgotten and its `ts` becomes its author's floor unless lower, at or below which that author's relay-only commits are dropped), and drops relay-only commits whose `ts` is more than `MAX_DRIFT` from its wall clock.
-  - **Passing on**: a node that reads S passes a verified new one on, stamped as received, to its other peers sharing S (spec/sync-streams.md §4); a node that keeps S unread passes on those it pulls and takes (spec/sync-ids.md §6 Relay-only) the same way.
+  - **Passing on**: a node that reads S passes a verified new one on, stamped as received, and a node that keeps S unread those it takes (spec/sync-ids.md §6 Relay-only), to the peers spec/sync-streams.md §4 (Relay-only entries) names.

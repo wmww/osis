@@ -845,7 +845,7 @@ fn registers_steps_after_source_step_spec_sync_ids_6() {
     assert_eq!(registers(&t).len(), 2, "at the head: nothing more");
 }
 
-// spec/sync-ids.md §6 (register refused for now): 4 and 12 register again after a back-off,
+// spec/sync-ids.md §6 (refused for now): 4 and 12 register again after a back-off,
 // never at once; any other refusal changes no view: nothing until the source's step moves.
 #[test]
 fn register_refusals_spec_sync_ids_6() {

@@ -676,8 +676,7 @@ fn a_join_in_pages_keeps_its_position_spec_sync_streams_4() {
     assert_eq!(a.reported_at(t), a.reported_at(s));
 }
 
-// spec/sync-streams.md §4 (Joining: a join of a member the server does not share is answered so;
-// one refused while S stays a member is joined again `resync_ms` later), SN_joinans.
+// spec/sync-streams.md §4 (joining): a join of a member the server does not share is answered so; one refused while S stays a member is joined again `resync_ms` later, SN_joinans.
 #[test]
 fn a_refused_join_is_joined_again_later_spec_sync_streams_4() {
     let mut p = Pair::new();
@@ -835,8 +834,7 @@ fn refusals_told_and_kept_spec_sync_streams_4() {
     assert!(!p.a.streams.known().knows(src, &k.id, &good), "6 counts as deleted there");
 }
 
-// spec/sync-set.md §3 (a node keeping S unread leaves once each own entry is present at a
-// source): `Sources::present` is what a source's stream showed.
+// spec/sync-set.md §3 (keeping S unread, each entry it logged itself under S (its deposits) is present): `Sources::present` is what a source's stream showed.
 #[test]
 fn present_at_a_source_spec_sync_set_3() {
     let mut p = Pair::new();
@@ -848,7 +846,7 @@ fn present_at_a_source_spec_sync_set_3() {
     assert!(Sources::present(&p.b.streams, &s, &x));
 }
 
-// spec/sync-streams.md §4 (ephemeral entries listed at the first Pull and with every join): the
+// spec/sync-streams.md §4 (with its live ephemeral entries listed): at the first Pull and with every join: the
 // memory part goes with its bytes; known through the connection alone, gone with it.
 #[test]
 fn ephemeral_listed_and_gone_with_the_connection_spec_sync_streams_4() {
@@ -868,8 +866,7 @@ fn ephemeral_listed_and_gone_with_the_connection_spec_sync_streams_4() {
     assert!(!p.b.streams.knows(Source::Conn(C), None, &s, &e));
 }
 
-// spec/sync-streams.md §4 (an ended member is served up to `until`; it reaching `until` goes as a
-// Stream with a cursor and no events, asking report).
+// spec/sync-streams.md §4 (an ended member; reports): served up to `until`; it reaching `until` goes as a Stream with a cursor and no events, asking report.
 #[test]
 fn an_ended_member_told_at_its_until_spec_sync_streams_4() {
     let mut p = Pair::new();

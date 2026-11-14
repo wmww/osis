@@ -333,7 +333,7 @@ fn void_names_round_trip_apart_from_applied_ones_spec_wire_7() {
     assert_eq!(n.list.iter().next(), Some(&applied));
 }
 
-// spec/wire.md §7 (names, canonical): the decoder takes only what `to_value` writes: names
+// spec/wire.md §7 (history box): names, canonical: the decoder takes only what `to_value` writes: names
 // strictly ascending, each exactly `[ts, author, commit, holder, void]` at its lengths, at most
 // one departs mark.
 #[test]

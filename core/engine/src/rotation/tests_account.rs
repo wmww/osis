@@ -377,7 +377,7 @@ fn account_view_is_built_once_per_rotation() {
     assert_eq!(builds(), 3, "once for the rotation, once each as D's roster and the seeds held (the side of a node of the account) went");
 }
 
-// spec/sync-inbox.md §2 (invite requests): the request gate reads an author's signature at the header's epoch: a commit signed at the first epoch verifies only there
+// spec/sync-inbox.md §2 (invite request): the request gate reads an author's signature at the header's epoch: a commit signed at the first epoch verifies only there
 #[test]
 fn request_gate_reads_the_header_epoch_spec_sync_3() {
     let mut lp = peers(2);

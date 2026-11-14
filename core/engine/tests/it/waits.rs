@@ -703,7 +703,7 @@ fn hidden_write_goes_at_compaction_spec_sync_7() {
     }
 }
 
-// spec/sync-compaction.md §1 (a creation is dead when a held valid snapshot's `Frontiers` reach its delta): a
+// spec/sync-compaction.md §1 (sweep): a creation is dead when a held valid snapshot's `Frontiers` reach its delta: a
 // node that never received the entry's creation, holding a snapshot past it and an edit into it,
 // sweeps the edit; without the snapshot it keeps it (the creation may arrive).
 #[test]

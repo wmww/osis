@@ -3465,7 +3465,7 @@ fn stranger_card_makes_no_node_spec_perm_4() {
     }
 }
 
-// spec/sync-ids.md §2 (a group's labels are its `label.0` state): a stranger's header-only commit
+// spec/sync-ids.md §4 (owner): a group's labels are its `label.0` state: a stranger's header-only commit
 // listing `label.0` on a thing (it applies, its part invalid) gives the thing no label here:
 // it is not a labeled group, nor published under its first admin's home label.
 #[test]
@@ -3627,8 +3627,7 @@ fn undo_needs_write_spec_crdt_4_6() {
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("prior")));
 }
 
-// spec/sync-ids.md §1 (a reused chunk a host deleted is written again with the reusing delta's
-// retention and expiry): an invalid commit linking the value (a reader's, expiring soon) lends
+// spec/sync-ids.md §1 (repair): a reused chunk a host deleted is written again with the reusing delta's retention and expiry: an invalid commit linking the value (a reader's, expiring soon) lends
 // the rewrite nothing.
 #[test]
 fn invalid_reuse_lends_relink_no_expiry_spec_sync_1() {

@@ -162,7 +162,7 @@ fn quiet_pair() -> Pair {
     p
 }
 
-// spec/wire.md §11.1 (Hello first): each side's first frame is its Hello, sent without waiting for
+// spec/wire.md §11.1 (as its first frame): each side's first frame is its Hello, sent without waiting for
 // the other's; nothing else goes before the peer's Hello; both sides then agree on the challenges
 // and the listener's static key.
 #[test]
@@ -193,7 +193,7 @@ fn no_common_version_closes_spec_wire_11_1() {
     assert!(ls.receive(&encode_frame(&h.encode()), &mut l.cx()).is_ok());
 }
 
-// spec/wire.md §11.1 (framing): a frame of length 0 or past the cap (a first frame past the Hello
+// spec/wire.md §11.1 (answered by Error 2): a frame of length 0 or past the cap (a first frame past the Hello
 // cap) is answered Error 2 with id 0 and closes the connection, as does a Hello that does not
 // decode.
 #[test]
@@ -211,7 +211,7 @@ fn broken_frames_close_spec_wire_11_1() {
     assert!(ls.receive(&[0, 0, 0, 0], &mut l.cx()).is_err());
 }
 
-// spec/wire.md §11.1 (malformed and unknown messages): a malformed request is answered Error 2
+// spec/wire.md §11.1 (a malformed request is answered Error 2; a request of unknown kind gets Error 11): a malformed request is answered Error 2
 // with its id, a request of unknown kind Error 11, a frame whose id cannot be read Error 2 with id
 // 0; a malformed reply or push, and a reply naming no request out, are dropped. None closes.
 #[test]
@@ -252,7 +252,7 @@ fn unknown_dialer_gets_no_proofs_spec_sync_opens_2() {
     assert!(p.ls.proved().is_empty());
 }
 
-// spec/sync-opens.md §2 (Order, own node): a listener that knows the dialer's proved actor (here
+// spec/sync-opens.md §2 (order; its own node key only to nodes of its own account): a listener that knows the dialer's proved actor (here
 // its own account) answers with its proofs: its node key first (the dialer proved the listener's
 // account), then its account, each signed as the listener's over the dialer's challenge.
 #[test]
@@ -406,7 +406,7 @@ fn flooding_peer_closes_spec_sync_streams_1() {
     assert_eq!(ls.receive(&big(TOP_BIT | 5), &mut l.cx()).err(), Some(Close("too many requests unanswered")));
 }
 
-// spec/wire.md §11.1 (ids): a request reusing the id of one not answered yet is answered Error 2
+// spec/wire.md §11.1 (not reused while its request is outstanding): a request reusing the id of one not answered yet is answered Error 2
 // and closes the connection.
 #[test]
 fn reused_request_id_closes_spec_wire_11_1() {
@@ -418,7 +418,7 @@ fn reused_request_id_closes_spec_wire_11_1() {
     assert_eq!(frames(&ls.take_bytes(), false).1, [Msg::Error { id: TOP_BIT | 3, code: Code::MALFORMED }]);
 }
 
-// spec/sync-streams.md §2 (Pushes): a push goes while the bytes not taken by the transport, it
+// spec/sync-streams.md §2 (a node sends a push): a push goes while the bytes not taken by the transport, it
 // included, stay within `REPLY_BUDGET`, or none are; else it waits until the transport takes them.
 #[test]
 fn pushes_wait_for_room_spec_sync_streams_2() {

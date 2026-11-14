@@ -224,7 +224,7 @@ fn head_move_strands_and_keeps_store_spec_sync_judgement_6() {
     assert_eq!(k.unread.credentials(&sync_id(0)).unwrap().sync.verifying_key(), step(sync_id(0), 1).keys.sync);
 }
 
-// spec/sync-opens.md §4 (keeping S unread shows its head's sync key): stranded, S opens by no
+// spec/sync-opens.md §4 (keeping S unread: shows its head's sync key): stranded, S opens by no
 // older secret it holds. NetKeep `KN_open` (opens by any held secret) fails this.
 #[test]
 fn stranded_opens_by_no_older_key_spec_sync_opens_4() {

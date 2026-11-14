@@ -127,8 +127,8 @@ fn a_digest_difference_closes_one_sided_members_spec_sync_opens_3() {
 }
 
 // spec/sync-opens.md §6 (Lost): the receiver keeps the Lost's cursor (where the member stopped for
-// it, in the sender's log) and its rejoin reads from there; a member this side closed itself, or
-// left with its connection, rejoins from where its own stream holds it.
+// it, in the sender's log) and its rejoin reads from there; a member left with its connection
+// rejoins from where its own stream holds it.
 #[test]
 fn a_rejoin_reads_from_the_losts_cursor_spec_sync_opens_6() {
     let mut p = readers();
@@ -151,6 +151,37 @@ fn a_rejoin_reads_from_the_losts_cursor_spec_sync_opens_6() {
     p.connect(2, account(1), account(2));
     p.run();
     assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::Held)), "{:?}", p.b.moved);
+}
+
+// spec/sync-opens.md §6 (closed here): a member this side closed rejoins from the start unless it
+// holds the peer's Lost for it. Here the peer's crossed Lost is lost with the connection (this
+// side's own Lost never arrives), so the rejoin reads from the start: nothing the peer logged
+// between its `until` and where this side's stream stood is skipped.
+#[test]
+fn a_member_closed_here_without_the_peers_lost_rejoins_from_the_start_spec_sync_opens_6() {
+    let st = StepKeys::new(1, 0);
+    let mut a = knowing(1, 2);
+    let mut b = knowing(2, 1);
+    a.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
+    b.table.set(S, Some(reader(&S, &read_secret(9, 0), &StepKeys::new(9, 0), &[], &[], &[])));
+    a.table.judge_as(S, tid(2), J::Reader);
+    b.table.judge_as(S, tid(1), J::Reader);
+    let mut p = Pair::new(a, b, account(1), account(2));
+    p.run();
+    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
+    p.a.reported(p.ca, S, 7);
+    // a judges b departed: S closes there at once with a Lost, which the connection drops
+    p.a.table.judge_as(S, tid(2), J::Departed);
+    p.a.settle();
+    assert!(!p.a.open(p.ca, &S));
+    p.close();
+    p.a.table.judge_as(S, tid(2), J::Reader);
+    p.a.settle();
+    p.a.moved.clear();
+    p.connect(2, account(1), account(2));
+    p.run();
+    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
+    assert!(p.a.moved.contains(&Moved::Joined(p.ca, S, Rejoin::From(None))), "from the start: {:?}", p.a.moved);
 }
 
 // spec/sync-opens.md §4 (shared set): a side keeping no shared set yet answers its requests 14.

@@ -39,7 +39,8 @@ Per node, a body it holds is **must-hold**, **must-not-hold** or **may-hold** at
   - a blob of commit C whose delta set is a strict subset of another held blob of C under that sync ID that is not itself must-not-hold and whose extra deltas include one only a blob carries: kept or holding a live write, and covered by no snapshot under the sync ID, established as for must-hold (not while an entry under the sync ID is being fetched or pending);
   - under D's home sync ID, another node's card commit (spec/permissions.md §4) once a later valid card commit of that node writing the same aspect is under the sync ID (an entry of it this node opened and checked against its header);
   - under D's home sync ID, another node's card commit, for `node.0` and `reach.0`, once that node is a node of the account no more after an applied edge write on D ended its grant (removed it, or its `until` passed).
-  - any entry but a destroying request's under a sync ID of a destroyed thing the node keeps nothing of, once its destruction is told (§5).
+  - any entry but a destroying request's under a sync ID of a destroyed thing the node keeps nothing of, once its destruction is told (§5);
+  - an inbox blob this node cleared (spec/sync-inbox.md §4 Clearing deposits) or deleted as an admin of the inbox's thing (spec/sync-inbox.md §2 Logging), unexpired or not.
 - **may-hold**: the rest: covered, out of history, parked, unfetched pages, dropped here (as invalid included: never deleted at a peer, §3), a certificate blob whose author has no other blob under the sync ID.
 
 ## 3. Acting on the judgement

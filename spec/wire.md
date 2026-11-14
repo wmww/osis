@@ -297,7 +297,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   - 2 when the step's sync ID is not the message's or the claim set does not hash to `claims_hash`;
   - 1 for a genesis step that does not verify;
   - 13 for a child step of an unknown sync ID;
-  - 9 for a step that is not a valid child of the head;
+  - 9 for a step that is not a valid child of the head, a genesis step included while the node holds a step of the sync ID;
   - 12 when that genesis step does not fit a storage cap (a child step that does not fit: spec/sync-ids.md §6);
   - 4 when registrations are rate-limited;
   - 14 when the node reads the sync ID or does not sync it.

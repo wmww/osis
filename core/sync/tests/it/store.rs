@@ -189,7 +189,7 @@ fn register_only_where_kept_unread_spec_sync_ids_6() {
     assert!(st.head(&s.id).unwrap().is_none());
 }
 
-// spec/sync-ids.md §6 (Register, storage caps): past the caps a genesis is refused (12), a child
+// spec/sync-ids.md §6 (register; storage caps): past the caps a genesis is refused (12), a child
 // is taken without its claim set, and past them even without it at most once per interval.
 #[test]
 fn register_past_the_caps_spec_sync_ids_6() {
@@ -327,7 +327,7 @@ fn a_stamp_replaces_a_deposit_once_spec_sync_ids_6() {
     assert_eq!(st.read_sync(&s.id, None, None, 100).unwrap().events, before, "no event");
 }
 
-// spec/sync-ids.md §6 (Role entries, Caps): a role entry is taken outside S's caps, stamped with
+// spec/sync-ids.md §6 (role entries; caps at a node keeping S unread): a role entry is taken outside S's caps, stamped with
 // no bound of its own, deposited within the deposit budget; other entries past the caps are
 // refused for room (12).
 #[test]
@@ -415,7 +415,7 @@ fn deposits_from_anyone_spec_sync_inbox_3() {
     }
 }
 
-// spec/sync-opens.md §3 (a record dropped drops everything of that peer with it) and
+// spec/sync-opens.md §3 (a record dropped): drops everything of that peer with it and
 // spec/sync-ids.md §5 (Peer budget): a record evicted past `RECORD_BUDGET` takes what was charged
 // to it in the same transaction: a failed eviction leaves both, a landed one neither.
 #[test]
@@ -497,7 +497,7 @@ fn delete_needs_a_store_credential_spec_sync_ids_6() {
     assert!(st.bytes(&b).unwrap().is_none(), "its bytes went with the last entry naming them");
 }
 
-// spec/wire.md §11.2 (Delete, not held): a Delete of an entry not held changes nothing: by the
+// spec/wire.md §11.2 (an item whose entry is not held): a Delete of an entry not held changes nothing: by the
 // delete key 0 where a tombstone of the blob exists (a repeat), else 1; by levels 1. So a peer
 // adds no row for a blob this node does not hold.
 #[test]
@@ -965,8 +965,7 @@ fn log_reads_cost_what_they_return_spec_sync_streams_3() {
     assert_eq!(a, b, "a join from the start: {a} rows at n, {b} at 10n");
 }
 
-// spec/sync-ids.md §5 (bytes deleted when no sync ID references them; tombstones kept
-// `TOMBSTONE_LIFETIME`; expiry): removing an entry, and expiring one, costs the same however many
+// spec/sync-ids.md §5 (deleted when no sync ID references them; tombstones), §6 (expiry): removing an entry, and expiring one, costs the same however many
 // entries the store holds (counted at n and 10n).
 #[test]
 fn removal_and_expiry_cost_alike_at_any_size_spec_sync_ids_5() {
@@ -1052,7 +1051,7 @@ fn deposited_index_and_entry_feed_follow_entries() {
     assert!(feed.added().is_empty(), "no change, nothing fed");
 }
 
-// spec/sync-status.md §2 (recorded): a source's report that an own entry is held elsewhere is
+// spec/sync-status.md §2 (a node records each such report): a source's report that an own entry is held elsewhere is
 // recorded durably on the entry, kept across a restart and while the entry is, and a relogging
 // keeps it; it goes with the entry.
 #[test]

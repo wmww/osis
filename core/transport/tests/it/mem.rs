@@ -362,7 +362,7 @@ fn deterministic_with_partition_heal_kill() {
     assert_eq!(a, faulty(0));
 }
 
-// spec/sync-transport.md §5 (one key, key change): every listener listens under the one key; a
+// spec/sync-transport.md §5 (one key; key change): every listener listens under the one key; a
 // URL that cannot be listened on is an error naming it, never an `Ok`, and leaves none of the
 // others listening; with the old listeners closed the new key listens at the same URLs.
 #[test]

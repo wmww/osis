@@ -326,7 +326,7 @@ fn own_commit_held_elsewhere_by_report_or_presence() {
     assert!(t.st.held(&cid(2)));
 }
 
-// spec/sync-status.md §2 (store source): a source keeping S unread holds a writer's entry once
+// spec/sync-status.md §2 (never one keeping S unread): a store source: a source keeping S unread holds a writer's entry once
 // its stream shows it; its reported position says nothing (it applies past what it refused for
 // room or does not pull), so a writer's wait ends on its stream alone.
 #[test]
@@ -427,7 +427,7 @@ fn complete_pass_needs_fresh_pulls_and_recorded_peers() {
     assert_eq!(t.st.of(&S, &t.g).unwrap().pass_waits, None);
 }
 
-// spec/sync-status.md §1 (no source, no record): with neither, a pass ends at once.
+// spec/sync-status.md §1 (with no source and no such record it ends at once): with neither, a pass ends at once.
 #[test]
 fn complete_pass_with_nobody_ends_at_once() {
     let mut t = T::new(&[(S, Holding::Read)]);

@@ -33,7 +33,7 @@ fn a_claimed_list_length_is_refused_spec_wire_13() {
     }
 }
 
-// spec/wire.md §13 (CBOR nesting at most 512 deep, values inside at most `MAX_VALUE_DEPTH`):
+// spec/wire.md §13 (CBOR nesting at most 512 deep; values inside it at most `MAX_VALUE_DEPTH`):
 // nesting past 512 is refused by the CBOR reader; a Call argument past 64 by the message
 #[test]
 fn nesting_bounds_spec_wire_13() {

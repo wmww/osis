@@ -780,7 +780,7 @@ mod tests {
         });
     }
 
-    // spec/sync-transport.md §2 (mutual auth, Ed25519 only): a client presenting a P-256 raw key is refused.
+    // spec/sync-transport.md §2 (mutual auth): Ed25519 only: a client presenting a P-256 raw key is refused.
     #[test]
     #[ignore]
     fn client_p256_key_refused() {
@@ -803,7 +803,7 @@ mod tests {
         });
     }
 
-    // spec/sync-transport.md §2 (raw Ed25519 keys only; the dialer pins the listener's key): the dialing
+    // spec/sync-transport.md §2 (raw public keys; the listener's key is the address key): the dialing
     // verifier takes exactly the pinned key, the listening one any Ed25519 key; both offer only
     // the ed25519 scheme and need raw keys.
     #[test]
@@ -854,7 +854,7 @@ mod tests {
         });
     }
 
-    // spec/sync-transport.md §2 (uRL form: port 4040 when absent, IPv6 in brackets), length cap
+    // spec/sync-transport.md §2 (port 4040 when absent, an IPv6 address in brackets), length cap
     #[test]
     fn url_forms_spec_sync_10() {
         assert_eq!(host_port("quic://example.org:4433").unwrap(), "example.org:4433");

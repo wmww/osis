@@ -11,7 +11,7 @@
 - An ephemeral commit is room-checked whole before any decode and waits only once its signature checks.
 - Unstamped entries a peer brings count against its peer budget (spec/sync-ids.md §5); deposits against the deposit budget (spec/sync-inbox.md §3).
 - Nothing reads a clock above the transport: a skewed peer affects only its own writes.
-- A peer without a credential or J learns only the entry count of its own filter and random bits; beacons are unlinkable across peers; only ByRole, Lost and Deposit items carry a sync ID, each to a judged holder.
+- A peer without a credential or J learns only the entry count of its own filter and random bits; beacons are unlinkable across peers; only ByRole, Lost, Behind and Deposit items carry a sync ID, each to a judged holder, except a Deposit reaching a peer through a false positive of its filter (spec/sync-inbox.md §3 Sending), which learns nothing beyond the deposit's existence.
 - A node holding only S's public values opens nothing; a static item reflected through a second dial, or an older step's signature, opens nothing toward the peer.
 - A removed sync holder gets nothing after the rotation's step; a removed reader or revoked link learns at most one rotation past what it read.
 - A forged head or box, or a substituted box, teaches nothing; a forged grant is not offered again.

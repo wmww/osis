@@ -1709,7 +1709,7 @@ mod tests {
         assert_eq!(readers(&lp.peers[0].engine), [p, p, p, a], "P's own, S still A's");
     }
 
-    // spec/sync-compaction.md §1 (a body with live writes needs a carrier), spec/permissions.md §5.2: a
+    // spec/sync-compaction.md §1 (carriers): a body with live writes needs a carrier, spec/permissions.md §5.2: a
     // write made invalid (its author's removal by an admin that had not received it) counts
     // dead; a re-grant that makes it valid again counts it live again.
     #[test]

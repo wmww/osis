@@ -1,6 +1,6 @@
 //! Relay-only entries at a node keeping a sync ID unread (spec/sync-ids.md §6 Relay-only): admitted
-//! by prefix expiry and size, counted against a per-sync-ID rate, and pushed once per blob within
-//! its expiry window (a repeat is answered OK and pushed to nobody).
+//! by prefix expiry and size, counted against a per-sync-ID rate, and taken once per blob within
+//! its expiry window (a repeat is dropped: a Stream is never answered).
 
 use crate::msg::Code;
 use osis_base::format::{MAX_DRIFT_MS, MAX_RELAY_BLOB};
@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 pub enum RelayVerdict {
     /// New: push it to the sync ID's other holders.
     Push,
-    /// Relayed already within its window: answered OK, pushed to nobody.
+    /// Taken already within its window, or at or below the sync ID's floor: dropped.
     Seen,
     Refused(Code),
 }
@@ -37,10 +37,10 @@ impl Default for RelayLimits {
 }
 
 /// Relayed (sync ID, blob) pairs remembered until their prefix expiry, node-wide. Resource bound:
-/// past it the earliest-expiring pair is forgotten, so a replay of that blob is pushed again
-/// (minor: counted against its sync ID's rate, and receivers drop what they delivered); 0: every
-/// replay within the window is pushed; infinity: memory grows with every relay of the last two
-/// hours. Each pair costs about 200 bytes (a hash-set and a B-tree entry): 13 MiB at the bound.
+/// past it the earliest-expiring pair is forgotten and its expiry becomes its sync ID's floor, at
+/// or below which that sync ID's relay-only blobs are dropped (spec/sync-ids.md §6 Taken once), so
+/// no replay is pushed twice; 0: every relay is dropped once one was; infinity: memory grows with
+/// every relay of the last two hours. Each pair costs about 200 bytes (a hash-set and a B-tree entry): 13 MiB at the bound.
 pub const MAX_RELAY_SEEN: usize = 1 << 16;
 
 /// The relay state of one node (in memory; a restart forgets it).
@@ -51,6 +51,9 @@ pub struct RelayGate {
     by_expiry: BTreeSet<(u64, SyncId, BlobId)>,
     window: u64,
     used: HashMap<SyncId, (u32, u64)>,
+    /// Per sync ID, the greatest expiry forgotten past `MAX_RELAY_SEEN` (one per sync ID that
+    /// overflowed; a past floor drops nothing an unexpired blob could be).
+    floor: HashMap<SyncId, u64>,
 }
 
 impl Default for RelayGate {
@@ -61,13 +64,14 @@ impl Default for RelayGate {
 
 impl RelayGate {
     pub fn new(limits: RelayLimits) -> RelayGate {
-        RelayGate { limits, seen: HashSet::new(), by_expiry: BTreeSet::new(), window: 0, used: HashMap::new() }
+        RelayGate { limits, seen: HashSet::new(), by_expiry: BTreeSet::new(), window: 0, used: HashMap::new(), floor: HashMap::new() }
     }
 
     /// Admits a stamped relay-only blob of `size` bytes with prefix expiry `expiry` at wall
     /// `now` (spec/sync-ids.md §6): too large, without an expiry, expired or expiring more than
     /// `2 × MAX_DRIFT` ahead (a writer's `ts` at most `MAX_DRIFT` ahead, plus its window) is
-    /// refused; a repeat within its window is `Seen`; past the sync ID's rate, code 4.
+    /// refused; a repeat within its window, or one expiring at or below the sync ID's floor, is
+    /// `Seen`; past the sync ID's rate, code 4.
     pub fn admit(&mut self, sync_id: &SyncId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> RelayVerdict {
         if size > MAX_RELAY_BLOB {
             return RelayVerdict::Refused(Code::TOO_LARGE);
@@ -85,7 +89,7 @@ impl RelayGate {
             self.by_expiry.pop_first();
             self.seen.remove(&(first.1, first.2));
         }
-        if self.seen.contains(&(*sync_id, *blob_id)) {
+        if self.seen.contains(&(*sync_id, *blob_id)) || self.floor.get(sync_id).is_some_and(|f| t <= *f) {
             return RelayVerdict::Seen;
         }
         let w = now / self.limits.window_ms.max(1);
@@ -105,6 +109,8 @@ impl RelayGate {
             && let Some(first) = self.by_expiry.pop_first()
         {
             self.seen.remove(&(first.1, first.2));
+            let f = self.floor.entry(first.1).or_insert(0);
+            *f = (*f).max(first.0);
         }
         RelayVerdict::Push
     }
@@ -154,16 +160,20 @@ mod tests {
         assert_eq!(g.remembered(), 1, "expired pairs are forgotten");
     }
 
-    // MAX_RELAY_SEEN: the memory is bounded; past it the earliest-expiring pair goes
+    // spec/sync-ids.md §6 (taken once): the memory is bounded; past it the earliest-expiring pair
+    // goes and its expiry becomes the sync ID's floor, at or below which its blobs are dropped
     #[test]
-    fn remembered_pairs_bounded() {
+    fn remembered_pairs_bounded_by_a_floor_spec_sync_ids_6() {
         let mut g = RelayGate::new(RelayLimits { count: u32::MAX, bytes: u64::MAX, window_ms: 60_000 });
         let l = SyncId([1; 16]);
         for n in 0..(MAX_RELAY_SEEN as u32 + 10) {
             assert_eq!(g.admit(&l, &id(n), 10, Some(NOW + 1_000 + u64::from(n)), NOW), RelayVerdict::Push);
         }
         assert_eq!(g.remembered(), MAX_RELAY_SEEN);
-        assert_eq!(g.admit(&l, &id(0), 10, Some(NOW + 1_000), NOW), RelayVerdict::Push, "the earliest went");
+        assert_eq!(g.admit(&l, &id(0), 10, Some(NOW + 1_000), NOW), RelayVerdict::Seen, "the earliest went: replayed, it is at the floor");
+        assert_eq!(g.admit(&l, &id(u32::MAX), 10, Some(NOW + 1_009), NOW), RelayVerdict::Seen, "a new blob at or below the floor");
+        assert_eq!(g.admit(&SyncId([2; 16]), &id(0), 10, Some(NOW + 1_000), NOW), RelayVerdict::Push, "the floor is per sync ID");
         assert_eq!(g.admit(&l, &id(MAX_RELAY_SEEN as u32 + 5), 10, Some(NOW + 1_000 + MAX_RELAY_SEEN as u64 + 5), NOW), RelayVerdict::Seen);
+        assert_eq!(g.admit(&l, &id(u32::MAX - 1), 10, Some(NOW + 1_010 + MAX_RELAY_SEEN as u64), NOW), RelayVerdict::Push, "above the floor");
     }
 }

@@ -216,7 +216,7 @@ fn punch_before_stream_open_stays_relayed_spec_sync_10() {
         .unwrap();
 }
 
-// spec/sync-transport.md §3 (hole punching, IP consent): the dialer, here with an ephemeral key (as a
+// spec/sync-transport.md §3 (hole punching; IP consent): the dialer, here with an ephemeral key (as a
 // link's redeemer), dials the target's observed address from the socket it reached the relay
 // from while the target punches back. Direct where a NAT's mapping
 // does not depend on the remote (or there is none) and the other side's filter allows the
@@ -566,7 +566,7 @@ fn relay_wire_spec_sync_10() {
     assert_eq!(done, Some(true));
 }
 
-// spec/sync-transport.md §3 (relay limits): forwarding is held to the per-source rate (virtual time), and
+// spec/sync-transport.md §3 (relaying): relay limits: forwarding is held to the per-source rate (virtual time), and
 // past the connection cap the source holding the most gives one up, else the newcomer is refused.
 #[test]
 fn relay_limits_spec_sync_10() {
@@ -729,7 +729,7 @@ async fn session<C: Connection>(c: &C) -> Result<(), Error> {
     Ok(())
 }
 
-// spec/sync-transport.md §3 (by hand, loopback QUIC): a listener registers at a relaying node over ALPN
+// spec/sync-transport.md §3 (relay wire), by hand, loopback QUIC: a listener registers at a relaying node over ALPN
 // `osis-relay` and learns its observed address; the relay wire runs over real QUIC; a dial
 // through the relay reaches the listener (directly once punched: no NAT on loopback) with the
 // key pinned.
@@ -769,7 +769,7 @@ fn quic_relay_loopback_spec_sync_10() {
     });
 }
 
-// spec/sync-transport.md §3 (registration streams, by hand: loopback QUIC): relayed sessions whose bytes
+// spec/sync-transport.md §3 (registration streams), by hand: loopback QUIC: relayed sessions whose bytes
 // the target never reads hold only their own stream's window of its registration connection:
 // with more unread in them than a `quic://` connection window, forwarding to the target
 // goes on and a new dial still connects.
@@ -852,7 +852,7 @@ async fn raw_dials(m: &MemUdp, relay: &Relay, key: [u8; 32], n: usize) -> (Vec<u
     (answers, held, conns)
 }
 
-// spec/sync-transport.md §3 (relay limits): dials that never start their handshake cannot block a target.
+// spec/sync-transport.md §3 (registration streams): relay limits: dials that never start their handshake cannot block a target.
 // Each forwarded stream takes one of the streams the target's registration grants its relay;
 // the target ends the oldest it has not handed to `accept` past MAX_FORWARDED, so an honest
 // dial after a flood of silent ones still connects, and the oldest silent ones see their end.
@@ -909,7 +909,7 @@ fn relay_busy_spec_sync_10() {
     assert_eq!(done, Some(true));
 }
 
-// spec/sync-transport.md §3 (`reach.0` items): a listener is listed at each global address it is bound
+// spec/sync-transport.md §3 (`reach.0` lists): a listener is listed at each global address it is bound
 // to, an unspecified IP standing for the routes' local addresses of the families it serves,
 // then its relays; local, loopback and carrier-NAT addresses are not listed.
 #[test]
@@ -961,7 +961,7 @@ fn allow_rechecked_spec_sync_10() {
     assert!(r.relayed_keys().is_empty());
 }
 
-// spec/sync-transport.md §3 (by hand, loopback QUIC; hole punching): a punch is the one byte 0x00 from the
+// spec/sync-transport.md §3 (hole punching), by hand, loopback QUIC: a punch is the one byte 0x00 from the
 // listening socket's own port (a dual-stack one reaching an IPv4 address too), and the QUIC
 // endpoint answers a punch with nothing and still accepts connections after it.
 #[test]
@@ -986,7 +986,7 @@ fn quic_punch_is_one_unanswered_datagram_spec_sync_10() {
     });
 }
 
-// spec/sync-transport.md §3 (by hand, loopback QUIC): a listener bound at `[::]` (as nodes bind) registers
+// spec/sync-transport.md §3 (relay wire), by hand, loopback QUIC: a listener bound at `[::]` (as nodes bind) registers
 // at an IPv6 relay and at an IPv4 one from its one dual-stack socket, and a dial through either
 // relay reaches it.
 #[test]
@@ -1023,7 +1023,7 @@ fn quic_relay_dual_stack_spec_sync_10() {
     });
 }
 
-// spec/sync-transport.md §3 (dialing, by hand: loopback QUIC): a dial reaches each item from a socket of
+// spec/sync-transport.md §3 (a fresh UDP socket per dial and address family), by hand: loopback QUIC: a dial reaches each item from a socket of
 // its address family: with an IPv4 item first (a node of another key) the IPv6 item still
 // connects.
 #[test]
@@ -1149,7 +1149,7 @@ fn peer_lan_address_connects_spec_sync_10() {
     dial_route(&mut w, a, peer_addr(&["10.0.0.2:7000".to_owned()], 2), lb).unwrap();
 }
 
-// spec/sync-transport.md §1 (route rank), §3, §4 (by hand, loopback QUIC): a session dial offers
+// spec/sync-transport.md §1 (route rank), §3 (a LAN listener serves ALPN `osis-lan` only), §4, by hand, loopback QUIC: a session dial offers
 // `osis` and `osis-lan`; a LAN listener's socket chooses `osis-lan` (rank 0), any other socket
 // `osis` (rank 1), and both ends see the same choice; a relay dial to a LAN listener fails.
 #[test]

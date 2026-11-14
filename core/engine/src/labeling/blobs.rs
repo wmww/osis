@@ -815,7 +815,7 @@ mod tests {
         assert_eq!(e.section_chain(&o), vec![me]);
     }
 
-    // spec/sync-judgement.md §3 (convergence after each change; the pass's cost): a group's bodies are
+    // spec/sync-judgement.md §3 (driven by events): convergence after each change; the pass's cost: a group's bodies are
     // projected per commit once and kept until what they read changes, so one more commit
     // leaves every other commit's bodies kept.
     #[test]

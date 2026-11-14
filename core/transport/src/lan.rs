@@ -494,7 +494,7 @@ mod tests {
         assert!(matches!(back, SocketAddr::V6(v) if v.scope_id() == 3));
     }
 
-    // spec/sync-transport.md §4 (a receiver ignores, dialing): a source that cannot be on the LAN
+    // spec/sync-transport.md §4 (a receiver ignores; dialing): a source that cannot be on the LAN
     // and the join's own key are ignored; each other key is dialed once while remembered; a new
     // join dials it again; a join with nothing to remember dials every announcement.
     #[test]

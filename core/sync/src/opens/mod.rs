@@ -128,8 +128,8 @@ struct Record {
     members: BTreeMap<SyncId, Member>,
     /// The beacon each member was opened by (none: by J).
     basis: BTreeMap<SyncId, Option<[u8; 32]>>,
-    /// Where each member that left rejoins: held by this side's stream (it closed the member, or
-    /// the connection ended), a Lost's cursor, or from the start (a digest difference).
+    /// Where each member that left rejoins: held by this side's stream (the connection ended), a
+    /// Lost's cursor, or from the start (a digest difference, or this side closed it).
     stopped: BTreeMap<SyncId, Rejoin>,
     acked_pos: u64,
     own: OwnFilter,
@@ -1697,7 +1697,9 @@ impl Opens {
         {
             cursor = ctx.holds.cursor_at(u);
         }
-        self.drop_member(conn, s, true, moved);
+        // Closed here with a Lost: it rejoins from the start unless the peer's Lost names where it
+        // stopped (spec/sync-opens.md §6: a crossed Lost lost with its connection skips nothing).
+        self.drop_member(conn, s, !lost, moved);
         self.remark(conn, &s);
         if lost {
             self.send_lost(ctx, conn, vec![(s, cursor)]);
@@ -1705,7 +1707,7 @@ impl Opens {
     }
 
     /// Removes member S from `conn`'s record; `keep`: its rejoin reads from where this side's
-    /// stream holds it, else (a digest difference) from the start.
+    /// stream holds it, else (a digest difference, or closed here with a Lost) from the start.
     fn drop_member(&mut self, conn: ConnId, s: SyncId, keep: bool, moved: &mut Vec<Moved>) {
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let Some(r) = c.rec.and_then(|r| self.records.get_mut(&r)) else { return };

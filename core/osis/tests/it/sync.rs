@@ -134,7 +134,7 @@ fn osis_key() -> String {
     osis::Address::new(&"peer://127.0.0.1:1".parse().unwrap(), [9; 32]).to_string().rsplit('#').next().unwrap().to_string()
 }
 
-// spec/wire.md §10 (Links): a link names its target, K and the sharer node's dialable key; it
+// spec/wire.md §10 (the sharer node's P2P reach): a link names its target, K and the sharer node's dialable key; it
 // gives read or above.
 #[test]
 fn a_link_names_its_target_and_this_node_spec_wire_10() {
@@ -166,7 +166,7 @@ fn the_contact_card_is_a_read_link_to_the_profile_spec_sync_inbox_5() {
     assert!(db.links().unwrap().iter().any(|x| x.target == p && x.role == Role::Read));
 }
 
-// spec/sync-set.md §1 (dial list; profile learnt from pairing): every node of the account knows the profile
+// spec/sync-set.md §1 (dial list; a node learns P's profile): from pairing: every node of the account knows the profile
 // (each writes its own `dial.0` entry there), a paired node from its offer,
 // before any sync; reading it there before it arrives reads nothing, and its card works.
 #[test]
@@ -327,7 +327,7 @@ fn paired(net: &ManualNet, c: &Arc<ManualClock>) -> (Osis, Osis) {
     (a, join.finish(&reply).unwrap())
 }
 
-// spec/sync-set.md §1 (home under the synced group): what one node of an account writes in its
+// spec/sync-set.md §1 (home under synced group): what one node of an account writes in its
 // home reaches its other nodes; `wait_synced` ends once the other node holds it.
 #[test]
 #[ignore = "sync rewrite: needs the engine facade (branch sync-facade)"]
@@ -385,7 +385,7 @@ fn importing_a_card_gives_the_account_spec_sync_inbox_5() {
     b.grant(t, a.me(), Role::Read, osis::GrantOpts::default()).unwrap();
 }
 
-// spec/sync-streams.md §6 (bundles): a bundle carries what a node holds of a group to another
+// spec/sync-streams.md §6 (a bundle is a one-way log replay): a bundle carries what a node holds of a group to another
 // node of the account by hand.
 #[test]
 #[ignore = "sync rewrite: bundle import (streams::import) and the engine facade are not built here"]

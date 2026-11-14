@@ -49,7 +49,7 @@ fn lost_and_repeated_messages() {
     sim("lost_and_repeated_messages", |_| [vec![Lossy(Loss { drop: 100, dup: 100, delay: 300, delay_ms: 5_000 })], writes(6)].concat(), |w| assert!(w.net.faulted != (0, 0, 0)));
 }
 
-// spec/sync.md §4 (area 8: a peer's word changes only what that peer holds): node 2, keeping the
+// spec/sync.md §4 (a peer's word changes only what that peer holds): area 8: node 2, keeping the
 // thing unread, lies in its own log (shows what it adds as deleted, or hides it) while node 1
 // reaches node 0 only through it for a while: no honest node drops or deletes anything for it,
 // and after healing node 1 reads every write.
@@ -86,7 +86,7 @@ fn a_peer_holding_requests_open() {
     sim("a_peer_holding_requests_open", |_| [vec![Lies(2, Lie::Hold)], writes(4)].concat(), |_| {});
 }
 
-// spec/sync-ids.md §5 (the store is the truth after a crash): nodes losing power at a durable
+// spec/sync-ids.md §5 (the store is the truth for ciphertext): after a crash: nodes losing power at a durable
 // write (drawn per seed) restart in place and converge.
 #[test]
 #[ignore = "wiring: the engine facade's sync_set, deliveries, open_entry and seal_body answer NotBuilt, so no grant or entry reaches another node"]

@@ -8,7 +8,10 @@ and uncited tests.
 
 Anchors: a citation `spec/<file>.md §N (anchor)` names one rule of §N. Every MUST sentence must
 match a RULES entry (by a substring of the sentence), else it is listed as unanchored. A rule is
-tested when a test cites its anchor, issued when an issue in issues/ does.
+tested when a test cites its anchor, issued when an issue in issues/ does. In the files of
+ANCHOR_CHECKED a test's anchor must name its rule: be a RULES anchor of §N, or appear in the text
+of §N or its subsections (ignoring case and markup), else `--gaps` reports it as stray, so moving
+or rewording a rule cannot silently orphan the tests citing it.
 
 A test's citations: `spec/<file>.md §N[.M]` in the comment or attribute lines right above it
 (a bare `§N` refers to the last file named there, else to the file header's); without any, the
@@ -20,7 +23,9 @@ Exempt from `--uncited`: the models in core/test/ (oracles, not the implementati
 Usage (repo root):
   python3 tools/spec_map.py            write notes/testing-map.md (generated, gitignored)
   python3 tools/spec_map.py --uncited  exit 1 if some test cites nothing (CI)
-  python3 tools/spec_map.py --gaps     exit 1 if a MUST or rule has neither a test nor an issue"""
+  python3 tools/spec_map.py --gaps     exit 1 if a MUST or rule has neither a test nor an issue,
+                                       or a test's anchor names no rule (ANCHOR_CHECKED)
+Tests: tools/spec_map_test.py."""
 import glob, os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -229,6 +234,35 @@ def rules():
     return items, problems, shoulds
 
 
+# Spec files whose test anchors must name a rule of their section (stray_anchors). The other
+# files' anchors are free text until their citations are fixed (issues/spec-anchors-rest.md).
+ANCHOR_CHECKED = ("spec/sync.md", "spec/sync-", "spec/wire.md")
+MARKUP = re.compile(r"[\s`*_]+")
+
+
+def norm(s):
+    return MARKUP.sub(" ", s.lower()).strip()
+
+
+def stray_anchors(tests, sents, rule_keys):
+    """A problem per test citation in ANCHOR_CHECKED whose anchor is neither a RULES anchor of its
+    section nor names rules of it: an anchor is rule names separated by `;`, each `name` or `name:
+    gloss`, and each name must be text of the section or its subsections (fail closed: an anchor
+    nothing matches is reported)."""
+    text = {}
+    for f, sec, s in sents:
+        parts = sec.split(".")
+        for k in range(1, len(parts) + 1):
+            key = (f, ".".join(parts[:k]))
+            text[key] = text.get(key, "") + " " + norm(s)
+    out = []
+    for t in tests:
+        for f, s, a in sorted(set(t["cites"]), key=str):
+            if a and f.startswith(ANCHOR_CHECKED) and (f, s, a) not in rule_keys and not all(norm(n.split(":")[0]) in text.get((f, s), "") for n in a.split(";")):
+                out.append(f"stray anchor: `{t['id']}` cites {f} §{s} ({a}), which names no rule there")
+    return out
+
+
 def issue_cites():
     by = {}
     for path in sorted(glob.glob(os.path.join(ROOT, "issues/*.md"))):
@@ -256,6 +290,7 @@ def render():
             if a:
                 anchored.setdefault((f, s, a), set()).add(t["id"])
     items, problems, shoulds = rules()
+    problems += stray_anchors(tests, spec_sentences(), {(f, s, a) for f, s, a, _ in RULES})
     issued = issue_cites()
     musts = sum(1 for it in items.values() if it["musts"])
     tested = {k for k in items if anchored.get(k)}
@@ -325,4 +360,5 @@ def main():
     print(f"wrote {os.path.relpath(OUT, ROOT)}")
 
 
-main()
+if __name__ == "__main__":
+    main()
