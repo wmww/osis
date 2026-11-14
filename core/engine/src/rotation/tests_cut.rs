@@ -1333,7 +1333,7 @@ fn late_bodies_a_cut_covers_owe_no_snapshot_spec_crypto_4() {
     assert_eq!(own_snapshots(&lp, 2), 0, "W snapshots state the cut's snapshots carry");
 }
 
-// spec/crypto.md §4 (State at a cut), spec/sync-ids.md §2 (Chunk reuse): a large value written
+// spec/crypto.md §4 (State at a cut), spec/sync-ids.md §1 (Chunk reuse): a large value written
 // before a cut reaches its holder through the cut's snapshot, which links the value's chunk
 // tree as written: the snapshot is a few hundred bytes and no chunk is encrypted again.
 #[test]
