@@ -708,14 +708,15 @@ impl Engine {
         let Some(h) = self.header(c) else { return false };
         parts.iter().filter_map(|ai| h.aspects.get(*ai)).any(|x| x.tid == a && matches!(x.ak.as_str(), "secrets.0" | "keys.0"))
     }
-
-    /// The read secret a list blob of rotation `r` is wrapped under at `g` (spec/crypto.md §5 Who
-    /// wraps under what: a rotation's thing lists are parts of it and wrap as it does): the
-    /// newest established read epoch of `g`'s secret actor whose secret is held and that no
-    /// rotation ordered at or after `r` minted (by (`ts`, author, commit ID), spec/permissions.md
-    /// §5.1; `r`'s own epoch is not current when it is made), so a rotation of `g` that `r`
-    /// caused takes nothing from whoever read `g` before it. Like a rotation's own wrap, it is
-    /// not subject to `wrap_blocked`. `None`: `r` or no such epoch is held.
+    /// The secret a list blob of rotation `r` is wrapped under at `g` (spec/crypto.md §5 Who
+    /// wraps under what: a rotation's thing lists are parts of it and wrap as it does): the roles
+    /// secret (lists are role-class, spec/crypto.md §4 Roles secrets: a history-less holder holds
+    /// it of every earlier epoch) of the newest established read epoch of `g`'s secret actor whose
+    /// secret is held and that no rotation ordered at or after `r` minted (by (`ts`, author,
+    /// commit ID), spec/permissions.md §5.1; `r`'s own epoch is not current when it is made), so
+    /// a rotation of `g` that `r` caused takes nothing from whoever read `g` before it. Like a
+    /// rotation's own wrap, it is not subject to `wrap_blocked`. `None`: `r` or no such epoch is
+    /// held.
     pub(crate) fn list_wrap_secret(&mut self, g: &Tid, r: &CommitId) -> Option<Secret32> {
         let a = self.core.secret_actor(g)?;
         let h = self.header(r)?;
@@ -723,7 +724,9 @@ impl Engine {
         let e = self.epochs(&a)?;
         let (intro, commits) = (&self.core.ix.epoch_intro, &self.core.ix.commits);
         let before = |(ts, c): &(osis_base::Ts, CommitId)| commits.get(c).map_or(*ts < at.0, |m| (*ts, m.view.author, *c) < at);
-        e.read.newest_held_where(|x| intro.get(&(a, Role::Read, *x)).is_none_or(before)).map(|(_, s)| s.clone())
+        // role-class metadata: under that epoch's roles secret, which a history-less holder gets
+        // of every earlier epoch (spec/crypto.md §4 Roles secrets)
+        e.read.newest_held_where(|x| intro.get(&(a, Role::Read, *x)).is_none_or(before)).map(|(_, s)| osis_crypto::roles_secret(s))
     }
 
     /// For a rotation commit of the read role of `g`'s secret actor (its `keys.0` delta writes a
