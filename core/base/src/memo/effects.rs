@@ -41,8 +41,8 @@ struct Indexed<K> {
     at: u64,
     /// Keys that read the container whole.
     whole: HashSet<K>,
-    /// Keys that read each key of it (by hash), and those hashes by absent bucket: a removal
-    /// moves every absent key of its bucket.
+    /// Keys that read each key of it (by hash), and the hashes read at their bucket's absent
+    /// stamp, by bucket: a removal moves those of its bucket.
     keys: HashMap<u64, HashSet<K>>,
     buckets: HashMap<usize, HashSet<u64>>,
     /// Reads indexed here: the mark goes with the last.
@@ -90,25 +90,27 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
         let mut maybe: HashSet<K> = std::mem::take(&mut self.pending);
         for ix in self.tables.values_mut() {
             let changes = lock(&ix.table).read_log(&mut ix.at);
+            if changes.is_empty() {
+                continue;
+            }
+            // any change moves what read it whole
+            maybe.extend(ix.whole.iter().cloned());
             for c in changes {
                 match c {
                     Logged::Key { h, present, .. } => {
                         maybe.extend(ix.keys.get(&h).into_iter().flatten().cloned());
-                        maybe.extend(ix.whole.iter().cloned());
                         if !present {
                             for x in ix.buckets.get(&bucket(h)).into_iter().flatten() {
                                 maybe.extend(ix.keys.get(x).into_iter().flatten().cloned());
                             }
                         }
                     }
-                    Logged::Whole => maybe.extend(ix.whole.iter().cloned()),
-                    Logged::All => {
-                        maybe.extend(ix.whole.iter().cloned());
-                        maybe.extend(ix.keys.values().flatten().cloned());
-                    }
+                    Logged::Whole => {}
+                    Logged::All => maybe.extend(ix.keys.values().flatten().cloned()),
                 }
             }
         }
+        crate::costs::count("effects: candidates", maybe.len() as u64);
         // a logged write of a key read, before the read or by a key sharing its hash, moved
         // nothing: the stamps say which did
         let mut due: Vec<(u64, K)> = maybe.into_iter().filter_map(|k| self.followed.get(&k).filter(|f| f.value.is_none() || !f.deps.iter().all(Dep::holds)).map(|f| (f.seq, k))).collect();
@@ -152,7 +154,12 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
                 }
                 Some(h) => {
                     ix.keys.entry(h).or_default().insert(k.clone());
-                    ix.buckets.entry(bucket(h)).or_default().insert(h);
+                    // only a key read at its bucket's absent stamp moves with another's removal
+                    // (one read present has a stamp of its own: its own removal names it); a
+                    // change since the read leaves `k` due at once (`settle`)
+                    if !lock(&ix.table).keys.contains_key(&h) {
+                        ix.buckets.entry(bucket(h)).or_default().insert(h);
+                    }
                 }
             }
         }
@@ -195,15 +202,13 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
     }
 }
 
-/// A table of this reader's, as a clone holds it: inside a world copy (`crate::copying`) the
-/// copy's table, whose log and marks are the original's (this reader's mark among them); outside
-/// one the same table, marked again at `at` for the clone.
+/// A table of this reader's, as a clone holds it, marked at `at` for the clone: inside a world
+/// copy (`crate::copying`) the copy's table (the original's log, none of its marks: a reader left
+/// outside the copy holds none on it), outside one the same table.
 fn cloned_table(t: &Arc<Mutex<Table>>, at: u64) -> Arc<Mutex<Table>> {
-    if crate::copying::in_copy() {
-        return copied(t);
-    }
-    lock(t).mark(at);
-    t.clone()
+    let t = if crate::copying::in_copy() { copied(t) } else { t.clone() };
+    lock(&t).mark(at);
+    t
 }
 
 /// A clone follows what the original follows, each value at the reads it was settled at, and
@@ -326,6 +331,10 @@ mod tests {
         m.remove(&removed);
         assert_eq!(e.due(), [100], "a removal in the bucket of an absent key read");
         e.settle(&100, || read(&m, &s, 100));
+        // a write logged before the settle that read it moved nothing since
+        m.insert(1, 3);
+        assert_eq!(e.settle(&1, || read(&m, &s, 1)), Some((Some(0), 3)));
+        assert_eq!(e.due(), Vec::<u8>::new(), "settled after the write");
         // a write after the read, before the settle indexed it, in a container no key read yet
         let mut n: Stamped<u8, u8> = Stamped::default();
         e.settle(&1, || {
@@ -389,6 +398,72 @@ mod tests {
         assert!(lock(&s.0).log.is_empty() && lock(&s.0).marks.is_empty());
     }
 
+    // spec: none (internal). `due` costs the writes since its last call times their readers,
+    // never the keys followed: a write, a removal of a key read, a removal of a key no one read
+    // and a write of a key read whole make the same candidates at n and 10n keys followed.
+    #[test]
+    fn due_costs_the_writes_not_the_keys_followed() {
+        let candidates = |n: u32| {
+            let mut m: Stamped<u32, u32> = Stamped::default();
+            let mut s: StampedSet<u32> = StampedSet::default();
+            (0..n).for_each(|k| { m.insert(k, k); });
+            let mut e: Effects<u32, u32> = Effects::new("test cost");
+            // every key read present, and one absent key; one reader of `s` whole
+            for k in (0..n).chain([n + 1, u32::MAX]) {
+                e.want(k);
+            }
+            e.due();
+            for k in (0..n).chain([n + 1]) {
+                e.settle(&k, || m.get(&k).copied().unwrap_or(0));
+            }
+            e.settle(&u32::MAX, || s.len() as u32);
+            fn step(e: &mut Effects<u32, u32>, m: &Stamped<u32, u32>, s: &StampedSet<u32>, due: Vec<u32>) -> u64 {
+                crate::costs::take();
+                let d = e.due();
+                assert_eq!(d, due);
+                let n = crate::costs::take().iter().filter(|x| x.0 == "effects: candidates").map(|x| x.2).sum::<u64>();
+                for k in d {
+                    e.settle(&k, || if k == u32::MAX { s.len() as u32 } else { m.get(&k).copied().unwrap_or(0) });
+                }
+                n
+            }
+            let mut out = Vec::new();
+            m.insert(1, 7);
+            out.push(step(&mut e, &m, &s, vec![1]));
+            m.remove(&2);
+            out.push(step(&mut e, &m, &s, vec![2]));
+            m.insert(n + 2, 0);
+            m.remove(&(n + 2));
+            out.push(step(&mut e, &m, &s, vec![]));
+            s.insert(1);
+            out.push(step(&mut e, &m, &s, vec![u32::MAX]));
+            out
+        };
+        let few = candidates(200);
+        assert_eq!(few, candidates(2000), "candidates per step");
+        assert!(few.iter().all(|c| *c <= 2), "{few:?}");
+    }
+
+    // spec: none (internal). A world copied without one of its readers holds no mark of that
+    // reader: its log stays empty, while a reader copied with it reads on in the copy.
+    #[test]
+    fn a_copy_holds_only_its_own_readers_marks() {
+        let m: Stamped<u8, u8> = Stamped::default();
+        let mut e: Effects<u8, u8> = Effects::new("test copy");
+        e.want(1);
+        e.due();
+        e.settle(&1, || m.get(&1).copied().unwrap_or(0));
+        let mut alone = crate::copying::copying(|| m.clone());
+        alone.insert(1, 1);
+        assert!(lock(&alone.stamps.0).log.is_empty() && lock(&alone.stamps.0).marks.is_empty(), "the reader was not copied");
+        let (mut both, mut ec) = crate::copying::copying(|| (m.clone(), e.clone()));
+        both.insert(1, 2);
+        assert_eq!(ec.due(), [1]);
+        assert_eq!(e.due(), Vec::<u8>::new(), "the original's world did not move");
+        drop(ec);
+        assert!(lock(&both.stamps.0).marks.is_empty());
+    }
+
     // spec: none (internal). A clone follows on from where the original stands, apart from it:
     // each sees the writes after the clone, and dropping one keeps the other's log.
     #[test]
@@ -432,5 +507,7 @@ mod tests {
         c.set(60);
         assert_eq!(c.next(), None);
         assert_eq!(e.due(), Vec::<u8>::new());
+        c.set(40);
+        assert_eq!(e.due(), [1], "the clock went back: every reader");
     }
 }

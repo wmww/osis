@@ -319,9 +319,14 @@ impl Stamps {
 }
 
 /// A table of the world being copied (`crate::copying`): the copy's one table for it, its
-/// stamps as they are; outside a copy, a table of its own.
+/// stamps and log as they are, no reader's marks; outside a copy, a table of its own.
 fn copied(t: &Arc<Mutex<Table>>) -> Arc<Mutex<Table>> {
-    crate::copying::remap(t, |m| Mutex::new(lock(m).clone()))
+    crate::copying::remap(t, |m| {
+        // each reader copied with the world marks the copy again (`effects::cloned_table`)
+        let mut t = lock(m).clone();
+        t.marks.clear();
+        Mutex::new(t)
+    })
 }
 
 /// A copy's stamps: the same stamps on a table of the copy's own (`copied`), so the copied memos

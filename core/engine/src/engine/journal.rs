@@ -547,6 +547,27 @@ mod tests {
         assert_eq!(f.added(), [5], "added, then undone");
     }
 
+    // spec: none (internal: notes/engine.md, Derived values). A write undone moves what read it
+    // twice: a value followed is due after either, and settles to the value acted on once the
+    // undo has run, so its owner acts on nothing.
+    #[test]
+    fn an_undone_write_settles_to_the_value_acted_on() {
+        let mut m: JMap<u8, u8> = JMap::default();
+        m.insert(1, 1);
+        m.commit();
+        let mut e: osis_base::memo::Effects<u8, Option<u8>> = osis_base::memo::Effects::new("test undone");
+        e.want(1);
+        e.due();
+        e.settle(&1, || m.get(&1).copied());
+        let mark = m.mark();
+        m.insert(1, 2);
+        m.remove(&1);
+        m.rollback_to(mark);
+        assert_eq!(e.due(), [1]);
+        assert_eq!(e.settle(&1, || m.get(&1).copied()), None, "back to the value acted on");
+        assert_eq!(e.due(), Vec::<u8>::new());
+    }
+
     // spec: none (internal: notes/engine.md, Atomic steps). A rollback to a mark (a failed step, `Tx::step`) restores the contents at the mark: what
     // changed before it stays, also for a key changed both before and after it; a rollback to
     // the transaction's start still restores the first value.

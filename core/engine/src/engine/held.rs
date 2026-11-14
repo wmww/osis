@@ -656,7 +656,7 @@ mod tests {
         h.add_commit(c2.clone());
         check(&h);
         // what reads g alone (and the first admins, unnamed on either commit) stays
-        assert_eq!(runs(), 4, "of t: its commits (twice) and holders; its new holder's things");
+        assert_eq!(runs(), 5, "of t: its commits (twice), holders and grants; its new holder's things");
         let m = h.mark();
         h.set_counted(c2.id, false);
         check(&h);
