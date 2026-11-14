@@ -1727,13 +1727,12 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     }
     crate::sides::load(tx)?;
     let mut created = Vec::new();
-    tx.scan(records::CREATED, |k, v| {
+    tx.scan(records::CREATED, |_, v| {
         let lim = osis_base::Limits { max_depth: 8, max_bytes: v.len() };
-        let rec = osis_base::decode(&v, &lim).ok().and_then(|v| CreationRecord::from_value(&v)).ok_or(Error::Corrupt("creation record"))?;
-        created.push((k.to_vec(), rec));
+        created.push(osis_base::decode(&v, &lim).ok().and_then(|v| CreationRecord::from_value(&v)).ok_or(Error::Corrupt("creation record"))?);
         Ok(())
     })?;
-    for (_, r) in created {
+    for r in created {
         tx.core.ix.held.create(r);
     }
     let syncing = tx.scan_keys(records::SYNCING, "syncing", Tid::from_bytes)?;
@@ -1936,9 +1935,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         }
         // perm inputs from role bodies, oldest first
         bodies.sort_by_key(|b| b.header.ts);
-        for blob in bodies {
-            let id = blob.id();
-            let b = blob;
+        for b in bodies {
+            let id = b.id();
             let parts = examine_stored(tx, &b.header, &b.parts, &id)?;
             let read = PartsRead::of(&b.header, &parts);
             atomic::note_rotation_sigs(tx.core, &b.header, &id, &b.sigs);
