@@ -510,7 +510,7 @@ pub struct State {
     /// Commits for nodes over a direct connection (pairing), until the app takes them.
     pub direct: BTreeMap<Tid, Vec<CommitId>>,
     /// Groups handed off to another node (`y/w`).
-    pub handed_off: crate::engine::memo::StampedSet<Tid>,
+    pub handed_off: osis_base::memo::StampedSet<Tid>,
     /// Labels with no first download outstanding: a pass finished once, or this node made them
     /// (`y/B`). History `complete` reads it, so it outlives the run.
     pub passed: BTreeSet<LabelId>,

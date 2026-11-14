@@ -5,7 +5,7 @@
 //! is stamped too: `get` and `contains` read one key, `Deref` the whole collection, so a `Memo`
 //! computing depends on what it read here.
 
-use super::memo::Stamps;
+use osis_base::memo::Stamps;
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;

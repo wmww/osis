@@ -153,7 +153,7 @@ fn moved(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId) {
 /// Place `p` of `(tid, ak)` left history at `now` (its timeline's bound passed): a value part is
 /// told, a held fire's body drops; a fire its commit's purge floor keeps gets a timer at the floor.
 fn left(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place, now: u64) -> Result<()> {
-    drop(crate::costs::span("leaving: place left"));
+    drop(osis_base::costs::span("leaving: place left"));
     let c = p.1;
     let Some(m) = tx.core.ix.commits.get(&c) else { return Ok(()) };
     let Some(ai) = m.aspect(tid, ak) else { return Ok(()) };
@@ -169,7 +169,7 @@ fn left(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place, now: u64) -> Result<()> {
         // A row may be late: an earlier superseder of a dead write arriving moves no row
         #[cfg(debug_assertions)]
         if whole && tx.recheck(format!("leaving {tid:?} {ak:?}")) {
-            let fresh = crate::costs::paused(|| super::bounds::fresh_replaced_at(tx, &h, &c, ai))?;
+            let fresh = osis_base::costs::paused(|| super::bounds::fresh_replaced_at(tx, &h, &c, ai))?;
             let k = history::of(tx.core, tid, ak);
             assert!(fresh.is_none_or(|f| leaves(&k, f) <= now), "{c:?} on {tid:?} {ak:?} left at row {p:?} while in history (replaced at {fresh:?})");
         }
@@ -292,7 +292,7 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()
                 if leaves(&k, p.0) <= now {
                     break;
                 }
-                drop(crate::costs::span("leaving: place back"));
+                drop(osis_base::costs::span("leaving: place back"));
                 moved(tx, tid, ak, &p.1);
                 out = tx.core.ix.leaving.get(&key).and_then(|s| s.range(..p).next_back().copied());
             }
@@ -382,7 +382,7 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
         if old == new {
             continue;
         }
-        drop(crate::costs::span("leaving: row dated"));
+        drop(osis_base::costs::span("leaving: row dated"));
         // a part replaced or dropped is told by its own change (`listing_moved`,
         // `commit_changes`); a row dated anew, where it crosses the clock
         let was = old.is_some_and(|o| leaves(&k, o) > now);

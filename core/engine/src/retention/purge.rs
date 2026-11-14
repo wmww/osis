@@ -138,7 +138,7 @@ fn right_holds(core: &Core, p: &Header, pc: &CommitId, a: &Right) -> bool {
                 return false;
             }
             let things = core.ix.held.upstream(&BTreeSet::from([a.tid, actor]));
-            crate::costs::count("destruction: cut walk things", things.len() as u64);
+            osis_base::costs::count("destruction: cut walk things", things.len() as u64);
             let cut = Cut { held: &core.ix.held, things, later };
             return judge(&osis_perm::Timeline::evaluate_with(&cut, &core.sides.trust()));
         }

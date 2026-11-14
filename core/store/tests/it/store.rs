@@ -835,3 +835,69 @@ fn unspilled_pages_roll_back_and_absent_removals_change_nothing() {
     let mut t = s.transaction(&mut rng).unwrap();
     assert_eq!(rows(&mut t), want, "reopened");
 }
+
+// spec: none (notes/local-store.md, Stamps): a memo reading the store holds until a row it read
+// changes: a write, and the undo of one (a savepoint rolled back, an aborted transaction); a scan
+// moves with a row under its prefix, a table's read with a row of the table or its aspect's unit;
+// a row elsewhere moves nothing.
+#[test]
+fn a_memo_over_the_store_moves_with_the_rows_it_read() {
+    use osis_base::memo::Memo;
+    use osis_store::Transaction;
+    let dev = MemDevice::new();
+    let mut rng = SeededRng::from_u64(0);
+    let mut s = create(&dev, &mut rng);
+    let (t1, a) = (tid(1), ak("name.0"));
+    let memo: Memo<u8, Vec<u8>> = Memo::new("test store read");
+    // 0: a row, 1: a scan, 2: a table row
+    let ask = |t: &mut Transaction<'_>, k: u8| -> Vec<u8> {
+        Memo::get_in(&mut (&memo, t), |c| c.0, &k, |(_, t)| {
+            Ok::<_, Error>(match k {
+                0 => t.get_local(b"r/a")?.unwrap_or_default(),
+                1 => t.scan_local(b"r/", b"", 100)?.into_iter().flat_map(|(k, v)| [k, v].concat()).collect(),
+                _ => match t.table(&t1, &a, 0)? {
+                    Some(tb) => t.table_get(tb, b"k")?.unwrap_or_default(),
+                    None => Vec::new(),
+                },
+            })
+        })
+        .unwrap()
+    };
+    let runs = || osis_base::costs::take().iter().filter(|x| x.0 == "test store read").map(|x| x.2).sum::<u64>();
+    {
+        let mut t = s.transaction(&mut rng).unwrap();
+        t.put_local(b"r/a", b"1", Shred::No).unwrap();
+        let tb = t.create_table(&t1, &a, 0).unwrap();
+        t.table_put(tb, b"k", b"v".to_vec(), Shred::No).unwrap();
+        t.commit().unwrap();
+    }
+    let mut t = s.transaction(&mut rng).unwrap();
+    osis_base::costs::take();
+    assert_eq!((ask(&mut t, 0), ask(&mut t, 1), ask(&mut t, 2)), (b"1".to_vec(), b"r/a1".to_vec(), b"v".to_vec()));
+    assert_eq!(runs(), 3);
+    t.put_local(b"q/x", b"x", Shred::No).unwrap();
+    t.put_aspect(&tid(2), &a, &AspectUnit { state: b"s".to_vec() }, Shred::No).unwrap();
+    assert_eq!((ask(&mut t, 0), ask(&mut t, 1), ask(&mut t, 2)), (b"1".to_vec(), b"r/a1".to_vec(), b"v".to_vec()));
+    assert_eq!(runs(), 0, "rows elsewhere");
+    t.put_local(b"r/b", b"2", Shred::No).unwrap();
+    assert_eq!((ask(&mut t, 0), ask(&mut t, 1)), (b"1".to_vec(), b"r/a1r/b2".to_vec()));
+    assert_eq!(runs(), 1, "a row under the scanned prefix");
+    let sp = t.savepoint();
+    t.put_local(b"r/a", b"3", Shred::No).unwrap();
+    assert_eq!(ask(&mut t, 0), b"3".to_vec());
+    t.rollback_to(sp);
+    assert_eq!(ask(&mut t, 0), b"1".to_vec());
+    assert_eq!(runs(), 2, "a write and its rollback");
+    t.put_aspect(&t1, &a, &AspectUnit { state: b"u".to_vec() }, Shred::No).unwrap();
+    assert_eq!(ask(&mut t, 2), b"v".to_vec());
+    let tb = t.table(&t1, &a, 0).unwrap().unwrap();
+    t.table_put(tb, b"k", b"w".to_vec(), Shred::No).unwrap();
+    assert_eq!(ask(&mut t, 2), b"w".to_vec());
+    assert_eq!(runs(), 2, "the table's aspect unit, a row of the table");
+    t.put_local(b"r/a", b"4", Shred::No).unwrap();
+    assert_eq!(ask(&mut t, 0), b"4".to_vec());
+    drop(t);
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!((ask(&mut t, 0), ask(&mut t, 2)), (b"1".to_vec(), b"v".to_vec()));
+    assert_eq!(runs(), 3, "a write, and the abort of it and of a table row");
+}

@@ -11,19 +11,18 @@ use osis_crdt::{ByWrite, Fragment, Winners, Won};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-/// `Engine::delta_live` in `tx`, through `Core::live_bodies` (per delta: what forgets it is a
-/// change of that aspect's state alone).
+/// `Engine::delta_live` in `tx` (`Core::live_bodies`).
 pub(crate) fn delta_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
     let key = (*c, *tid, ak.clone());
-    if let Some(v) = tx.core.live_bodies.get(&key.0).and_then(|m| m.get(&(key.1, key.2.clone()))) {
-        return Ok(*v);
-    }
-    // an unknown commit counts live, uncached (its apply may change nothing here)
+    osis_base::memo::Memo::get_in(tx, |tx| &tx.core.live_bodies, &key, |tx| delta_live_read(tx, &key))
+}
+
+/// `delta_live` read anew: an unknown commit counts live (its apply may change nothing here).
+fn delta_live_read(tx: &mut Tx<'_>, (c, tid, ak): &(CommitId, Tid, Ak)) -> Result<bool> {
     let Some(ai) = aspect_index(tx.core, c, tid, ak) else { return Ok(true) };
     let r = live(tx, c, ai)?;
     #[cfg(test)]
     assert_eq!(r, oracle::live(tx, c, ai)?, "live streamed vs whole");
-    tx.core.live_bodies.entry(key.0).or_default().insert((key.1, key.2), r);
     Ok(r)
 }
 
@@ -171,13 +170,13 @@ pub(super) fn dated_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: u
     if a.ak.signal() {
         return Ok(Some(h.ts));
     }
-    crate::engine::memo::Memo::get_in(tx, |tx| &tx.core.replaced_dates, &(*c, ai), |tx| judge_replaced_at(tx, h, c, ai, false))
+    osis_base::memo::Memo::get_in(tx, |tx| &tx.core.replaced_dates, &(*c, ai), |tx| judge_replaced_at(tx, h, c, ai, false))
 }
 
 /// Debug builds: `dated_replaced_at` judged anew, no memo read (the aspect's held bodies too).
 #[cfg(debug_assertions)]
 pub(super) fn fresh_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<Ts>> {
-    crate::engine::memo::unrecorded(|| judge_replaced_at(tx, h, c, ai, true))
+    osis_base::memo::unrecorded(|| judge_replaced_at(tx, h, c, ai, true))
 }
 
 /// `dated_replaced_at` judged anew (`fresh`: the held bodies read anew too).
@@ -231,7 +230,7 @@ pub(crate) struct HeldWrites {
 /// aspect only gained bodies since, amended by theirs (`amend_held_writes`), so a join reads its
 /// own body, not the aspect's.
 pub(super) fn held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Arc<HeldWrites>> {
-    crate::engine::memo::Memo::get_amended_in(
+    osis_base::memo::Memo::get_amended_in(
         tx,
         |tx| &tx.core.held_writes,
         &(*tid, ak.clone()),
@@ -244,7 +243,7 @@ pub(super) fn held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Arc<Hel
 /// `amend_held_writes` compares, read inside `memo::accounted`.
 fn aspect_bodies(core: &Core, tid: &Tid, ak: &Ak) -> (BTreeSet<CommitId>, Vec<(Ts, CommitId)>) {
     let k = (*tid, ak.clone());
-    crate::engine::memo::accounted(|| (core.ix.invalid.get(&k).cloned().unwrap_or_default(), core.ix.by_aspect.get(&k).into_iter().flatten().cloned().collect()))
+    osis_base::memo::accounted(|| (core.ix.invalid.get(&k).cloned().unwrap_or_default(), core.ix.by_aspect.get(&k).into_iter().flatten().cloned().collect()))
 }
 
 /// `HeldWrites` of `(tid, ak)` read anew: every held body of the aspect, each part whole.
@@ -304,7 +303,7 @@ fn note_body(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ts: Ts, x: CommitId, out: &mut
     let snap = m.header.kind.is_compaction();
     let carries = snap && !m.bare(xai);
     let Some(f) = crate::apply::held_fragment(tx, &x, xai)? else { return Ok(()) };
-    drop(crate::costs::span("deaths: a body"));
+    drop(osis_base::costs::span("deaths: a body"));
     if carries {
         out.carried.note(&f.winners(), |_, v| {
             v.push((ts, x));
@@ -490,7 +489,7 @@ impl Engine {
     /// Keep-at-least bound (wall ms, 0: none) of each part of known commit `c`, by aspect index
     /// (`part_keep`): a commit's judgment costs O(parts) death reads.
     pub fn part_keeps(&mut self, c: &CommitId) -> Result<Vec<u64>> {
-        let b = crate::engine::memo::Memo::get_in(self, |e| &e.core.part_bounds, c, |e| e.run(|tx| commit_bounds(tx, c)))?;
+        let b = osis_base::memo::Memo::get_in(self, |e| &e.core.part_bounds, c, |e| e.run(|tx| commit_bounds(tx, c)))?;
         Ok(b.iter().map(|x| at_clock(&self.core, *x)).collect())
     }
 
@@ -559,13 +558,10 @@ impl Engine {
     /// hold count dead: superseded, purged or expired ones, and those of deltas invalid here or
     /// undone (stripped from the state; live again once a validity flip or a redo puts them
     /// back). Any write counts: resets (a tombstone's, for its remover) and value-less writes
-    /// too. Kept until the aspect's state changes (`Core::live_bodies`).
+    /// too. A memo (`Core::live_bodies`): a hit runs no transaction.
     pub fn delta_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
-        if let Some(v) = self.core.live_bodies.get(c).and_then(|m| m.get(&(*tid, ak.clone()))) {
-            return Ok(*v);
-        }
-        let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.run(|tx| delta_live(tx, &c, &tid, &ak))
+        let key = (*c, *tid, ak.clone());
+        osis_base::memo::Memo::get_in(self, |e| &e.core.live_bodies, &key, |e| e.run(|tx| delta_live_read(tx, &key)))
     }
 
     /// Whether delta `ai` of `c` holds writes of its own and is held value-less for all of them: a

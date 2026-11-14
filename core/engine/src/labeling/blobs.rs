@@ -1,7 +1,7 @@
 //! Bodies, sealing, wraps, stamps, deposits and delete keys (spec/sync.md §1-§3, §5;
 //! spec/crypto.md §5, §7): what a commit becomes under a label, and the label keys a host's head calls for.
 
-use crate::engine::memo::Memo;
+use osis_base::memo::Memo;
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 use osis_commit::{CommitBlob, Envelope, Section};
@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 /// A held commit as one blob (spec/sync.md §3): every held part, each sealed to its thing's
 /// reader actor (`Engine::seal`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Body {
     pub commit: CommitId,
     /// Aspect indices, sorted: the parts a judgment reads. From `commit_bodies_under` those the
@@ -168,6 +168,11 @@ impl Engine {
     /// as the plaintext. `None`: not held, or no part of it held (a lasting header is
     /// `commit_bodies_under`'s).
     pub fn body(&mut self, c: &CommitId) -> Result<Option<Body>> {
+        self.body_with(c, true)
+    }
+
+    /// `body`, with the plaintext only if `plaintext` (a label pass projects it only to seal).
+    fn body_with(&mut self, c: &CommitId, plaintext: bool) -> Result<Option<Body>> {
         let id = *c;
         let Some(blob) = self.read(|tx| tx.get_commit(&id))? else { return Ok(None) };
         if blob.parts.is_empty() {
@@ -179,7 +184,7 @@ impl Engine {
             parts: blob.parts.iter().map(|p| p.ai).collect(),
             expires: osis_commit::blob_expiry(&resolved),
             blind: blob.header.blind,
-            plaintext: blob.encode(),
+            plaintext: if plaintext { blob.encode() } else { Vec::new() },
             role_commit: blob.header.kind.is_role(),
             order: fetch_order(&resolved),
             to_label: false,
@@ -204,7 +209,7 @@ impl Engine {
         if pt.is_empty() {
             return Ok(None);
         }
-        crate::costs::count("copy sealed", 1);
+        osis_base::costs::count("copy sealed", 1);
         let c = osis_commit::rewrite(&CommitBlob::decode_stored(&pt)?, |ai| !b.parts.contains(&ai));
         let resolved = self.resolved_header(&c);
         let key = osis_crypto::BlobKey::fresh(rng);
@@ -487,7 +492,7 @@ impl Engine {
     /// with the parts its actor may read among those inside the closure (or published there),
     /// when there are any; else, for a lasting commit, its header alone.
     pub fn commit_bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId) -> Result<Vec<Body>> {
-        drop(crate::costs::span("pass: bodies of a commit"));
+        drop(osis_base::costs::span("pass: bodies of a commit"));
         let id = *id;
         // the view: the header is decoded only for bodies the cache misses
         let Some(h) = self.core.ix.commits.get(&id).map(|m| m.view.clone()) else { return Ok(Vec::new()) };
@@ -495,21 +500,7 @@ impl Engine {
             return Ok(Vec::new());
         }
         let touches = h.aspects.iter().any(|a| ctx.closure.contains(&a.tid));
-        let body = match self.core.bodies.get(&id) {
-            Some(b) => b.clone(),
-            None => {
-                let b = self.body(&id)?.map(|mut b| {
-                    b.plaintext = Vec::new();
-                    b
-                });
-                // kept only while every reader actor is resolved (a missing first admin record
-                // arriving later moves it)
-                if h.aspects.iter().all(|a| self.core.secret_actor(&a.tid).is_some()) {
-                    self.core.bodies.insert(id, b.clone());
-                }
-                b
-            }
-        };
+        let body = Memo::get_in(self, |e| &e.core.bodies, &id, |e| e.body_with(&id, false))?;
         let mut out = Vec::new();
         if let Some(mut b) = body {
             let published = |ai: usize| h.aspects.get(ai).is_some_and(|a| !ctx.closure.contains(&a.tid) && ctx.published.contains(&a.tid) && matches!(a.ak.as_str(), "label.0" | "created.0"));
@@ -825,8 +816,8 @@ mod tests {
     }
 
     // spec/sync.md §6 (convergence after each change; the pass's cost): a group's bodies are
-    // projected per commit once and kept until that commit or the readers change, so one more
-    // commit leaves every other commit's bodies cached.
+    // projected per commit once and kept until what they read changes, so one more commit
+    // leaves every other commit's bodies kept.
     #[test]
     fn label_bodies_cached_per_commit_spec_sync_6() {
         use crate::Mutation;
@@ -849,14 +840,16 @@ mod tests {
         for _ in 0..30 {
             add(e, &mut group);
         }
+        let runs = || osis_base::costs::take().iter().filter(|x| x.0 == "label body").map(|x| x.2).sum::<u64>();
+        osis_base::costs::take();
         let first = e.label_bodies_meta(&g).unwrap();
         assert!(first.len() >= 30 && first.iter().all(|b| b.plaintext.is_empty()));
-        let cached: Vec<CommitId> = e.core.bodies.keys().copied().collect();
-        assert!(cached.len() >= 30);
+        assert!(runs() >= 30);
         let c = add(e, &mut group);
-        assert!(cached.iter().all(|x| e.core.bodies.contains_key(x)), "a new commit leaves the others' bodies cached");
+        osis_base::costs::take();
         let again = e.label_bodies_meta(&g).unwrap();
-        assert!(again.iter().any(|b| b.commit == c) && e.core.bodies.contains_key(&c));
+        assert!(again.iter().any(|b| b.commit == c));
+        assert_eq!(runs(), 1, "a new commit leaves the others' bodies kept");
         let b = again.iter().find(|b| b.commit == c).unwrap();
         assert!(!e.body_plaintext(b).unwrap().is_empty(), "the plaintext is projected on demand");
     }

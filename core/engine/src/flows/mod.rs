@@ -326,7 +326,7 @@ pub(crate) fn is_node(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
 
 /// `secrets.0` of `actor`, decoded (`Core::secrets_read`).
 pub(crate) fn secrets_in(tx: &mut Tx<'_>, actor: &Tid) -> Result<Arc<Secrets>> {
-    crate::engine::memo::Memo::get_in(tx, |tx| &tx.core.secrets_read, actor, |tx| secrets_decoded(tx, actor).map(Arc::new))
+    osis_base::memo::Memo::get_in(tx, |tx| &tx.core.secrets_read, actor, |tx| secrets_decoded(tx, actor).map(Arc::new))
 }
 
 fn secrets_decoded(tx: &mut Tx<'_>, actor: &Tid) -> Result<Secrets> {
@@ -382,9 +382,9 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
 /// `may_take` per listed actor and role, never per held actor (`retake: judged`).
 pub(crate) fn retake(tx: &mut Tx<'_>) -> Result<()> {
     let core = &*tx.core;
-    crate::costs::count("retake: calls", 1);
+    osis_base::costs::count("retake: calls", 1);
     let due = core.waits.untaken_due(|a, r| {
-        crate::costs::count("retake: judged", 1);
+        osis_base::costs::count("retake: judged", 1);
         crate::rotation::may_take(core, a, r)
     });
     for a in due {

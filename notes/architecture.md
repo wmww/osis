@@ -6,7 +6,7 @@ One workspace, root `Cargo.toml`: members `core/*` (library crates in unprefixed
 
 | layer | crate | contents |
 |---|---|---|
-| 0 | `osis-base` | Value, canonical CBOR, Tid, Ak, Link, ids, time, `format` constants, chunker, hashing, hex, base64url, `Clock`, `impl_error!` |
+| 0 | `osis-base` | Value, canonical CBOR, Tid, Ak, Link, ids, time, `format` constants, chunker, hashing, hex, base64url, `Clock`, `impl_error!`, `memo` (stamps, memos), `costs` |
 | 1 | `osis-crypto` | suite 1 primitives, kdf, sealed boxes, wraps, delete keys (blinded); `OsRng` for drivers |
 | 1 | `osis-crdt` | merge encodings, delta grammar, join/read/diff, paging; `View`, `PageSink`, `PageSource` |
 | 1 | `osis-perm` | role validity rules over an abstract held set |

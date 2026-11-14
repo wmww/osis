@@ -95,7 +95,7 @@ fn step(tx: &mut Tx<'_>, w: &mut Walk, link: Link, at: At, arrived: bool, stack:
         w.missing.insert(link.blob, (link, at));
         return Ok(());
     };
-    crate::costs::count("reach: blobs opened", 1);
+    osis_base::costs::count("reach: blobs opened", 1);
     // bytes that do not open under the link are no blob of it: the commit's own judging fails
     let Ok((_, pt)) = osis_label::open(&blob, &osis_crypto::Secret32::from_bytes(link.key)) else { return Ok(()) };
     if let Ok((level, kids)) = osis_label::tree::parse_node(&pt) {
@@ -288,7 +288,7 @@ pub(crate) fn unheld_bytes(tx: &mut Tx<'_>, roots: &[Link]) -> Result<u64> {
         if len.is_some() && tx.blobs.held(&l.blob)? {
             continue;
         }
-        crate::costs::count("reach: blobs opened", 1);
+        osis_base::costs::count("reach: blobs opened", 1);
         let node = tx.blobs.get(&l.blob)?.and_then(|b| osis_label::open(&b, &osis_crypto::Secret32::from_bytes(l.key)).ok()).and_then(|(_, pt)| osis_label::tree::parse_node(&pt).ok());
         match node {
             Some((level, kids)) => stack.extend(kids.into_iter().map(|(k, n)| (k, Some(n), level <= 1))),

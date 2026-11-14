@@ -982,7 +982,7 @@ fn possessed(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, a
 /// `retention::uncover` made missing loses what its body judged). Ends: only `uncover` marks
 /// stale here, and it turns parts dropped as covered missing, never back.
 pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
-    let _s = crate::costs::span("rejudge");
+    let _s = osis_base::costs::span("rejudge");
     let mut out: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     loop {
         out.extend(rejudge_once(tx, rebuild)?);
@@ -1041,7 +1041,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let mut whole = explicit;
     whole.extend(things.iter().flat_map(|t| tx.core.acting_for(t)));
     whole.extend(acting);
-    let judge = crate::costs::span("rejudge: judge");
+    let judge = osis_base::costs::span("rejudge: judge");
     // verdicts first (the core read only), each held commit once: by thing, a commit under the
     // first re-judged thing among its aspects; then the commits re-judged whole
     let mut news: Vec<(CommitId, Vec<bool>)> = Vec::new();
@@ -1049,7 +1049,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         let core: &Core = tx.core;
         let mut judge = Judge::new(core);
         let mut one = |id: &CommitId, m: &Meta, whole: bool| {
-            drop(crate::costs::span("rejudge: a commit"));
+            drop(osis_base::costs::span("rejudge: a commit"));
             let mut now: Option<Vec<bool>> = None;
             for (ai, a) in m.header.aspects.iter().enumerate() {
                 // parts on things not re-judged keep their flag
@@ -1183,7 +1183,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                     // spec/permissions.md §5.2): parts dropped under its cover alone are missing again
                     // (an own replace likewise, spec/commits.md §5 Own replaces)
                     let snaps = fell.get(&k).into_iter().flatten().any(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() || (0..m.hold.len()).any(|ai| m.whole(ai))));
-                    let _s = crate::costs::span("rejudge: rebuild");
+                    let _s = osis_base::costs::span("rejudge: rebuild");
                     if snaps {
                         crate::retention::uncover(tx, tid, ak)?;
                     }

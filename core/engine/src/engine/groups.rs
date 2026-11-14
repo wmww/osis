@@ -148,7 +148,7 @@ pub(crate) fn load(tx: &mut super::Tx<'_>, g: &Tid, ak: &Ak) -> Result<()> {
 fn check_refreshed(tx: &mut super::Tx<'_>, g: &Tid, ak: &Ak) -> Result<()> {
     let k = (*g, ak.clone());
     let cached = (tx.core.states.get(&k).cloned(), tx.core.pages.get(&k).cloned());
-    let whole = crate::costs::paused(|| -> Result<_> { Ok(crate::apply::atomic::group_def(tx.state(g, ak)?.and_then(Fragment::read))) })?;
+    let whole = osis_base::costs::paused(|| -> Result<_> { Ok(crate::apply::atomic::group_def(tx.state(g, ak)?.and_then(Fragment::read))) })?;
     match cached.0 {
         Some(s) => tx.core.states.insert(k.clone(), s),
         None => tx.core.states.remove(&k),
@@ -157,7 +157,7 @@ fn check_refreshed(tx: &mut super::Tx<'_>, g: &Tid, ak: &Ak) -> Result<()> {
         Some(p) => tx.core.pages.insert(k, p),
         None => tx.core.pages.remove(&k),
     };
-    crate::costs::paused(|| {
+    osis_base::costs::paused(|| {
         let ix = &tx.core.ix.groups;
         debug_assert_eq!(ix.def(g), whole, "the group index of {g:?} refreshed from a join differs from its whole state");
         ix.check_around(g);
@@ -357,6 +357,9 @@ pub struct Groups {
     /// Things whose `groups_of` answer the running transaction changed, and groups whose
     /// closure it changed (`Event::Groups`).
     pub(crate) moved: BTreeSet<Tid>,
+    /// Stamps the index as one (`osis_base::memo`): every read reads it whole, every change of
+    /// a listing or a definition moves it.
+    stamps: osis_base::memo::Stamps,
 }
 
 impl Clone for Groups {
@@ -370,6 +373,7 @@ impl Clone for Groups {
             closures: Mutex::new(self.kept().clone()),
             log: self.log.clone(),
             moved: self.moved.clone(),
+            stamps: self.stamps.clone(),
         }
     }
 }
@@ -406,27 +410,27 @@ impl Groups {
         if f == ITEMS { (&self.items, &self.item_of) } else { (&self.subs, &self.parents) }
     }
 
-    fn maps_mut(&mut self, f: u64) -> (&mut Edges, &mut Edges) {
-        if f == ITEMS { (&mut self.items, &mut self.item_of) } else { (&mut self.subs, &mut self.parents) }
-    }
-
     /// Whether `g` has a `group.0` state.
     pub(crate) fn is_defined(&self, g: &Tid) -> bool {
+        self.stamps.read_all();
         self.defined.contains(g)
     }
 
     /// The groups with a `group.0` state.
     pub(crate) fn defined(&self) -> impl Iterator<Item = &Tid> {
+        self.stamps.read_all();
         self.defined.iter()
     }
 
     /// Whether `g`'s field `f` lists `t`.
     pub(crate) fn listed(&self, g: &Tid, f: u64, t: &Tid) -> bool {
+        self.stamps.read_all();
         self.maps(f).0.get(g).is_some_and(|s| s.contains(t))
     }
 
     /// What `g`'s field `f` lists.
     pub(crate) fn listing(&self, g: &Tid, f: u64) -> impl Iterator<Item = &Tid> {
+        self.stamps.read_all();
         self.maps(f).0.get(g).into_iter().flatten()
     }
 
@@ -437,24 +441,28 @@ impl Groups {
 
     /// The groups listing `t` directly: (as an item, as a subgroup).
     pub(crate) fn listed_in(&self, t: &Tid) -> (BTreeSet<Tid>, BTreeSet<Tid>) {
+        self.stamps.read_all();
         let of = |m: &Edges| m.get(t).cloned().unwrap_or_default();
         (of(&self.item_of), of(&self.parents))
     }
 
     /// Lists or unlists `t` in `g`'s field `f`, both ways; whether that changed it.
     fn link(&mut self, g: Tid, f: u64, t: Tid, on: bool) -> bool {
-        let (fwd, rev) = self.maps_mut(f);
+        let stamps = &self.stamps;
+        let (fwd, rev) = if f == ITEMS { (&mut self.items, &mut self.item_of) } else { (&mut self.subs, &mut self.parents) };
         if on {
             if !fwd.entry(g).or_default().insert(t) {
                 return false;
             }
             rev.entry(t).or_default().insert(g);
+            stamps.moved();
             return true;
         }
         let Some(s) = fwd.get_mut(&g) else { return false };
         if !s.remove(&t) {
             return false;
         }
+        stamps.moved();
         if s.is_empty() {
             fwd.remove(&g);
         }
@@ -469,6 +477,7 @@ impl Groups {
 
     /// `g` and every group above it through subgroup lists.
     pub(crate) fn above(&self, g: &Tid) -> BTreeSet<Tid> {
+        self.stamps.read_all();
         let mut seen = BTreeSet::new();
         let mut stack = vec![*g];
         while let Some(x) = stack.pop() {
@@ -476,12 +485,13 @@ impl Groups {
                 stack.extend(self.parents.get(&x).into_iter().flatten().copied());
             }
         }
-        crate::costs::count("group index", seen.len() as u64);
+        osis_base::costs::count("group index", seen.len() as u64);
         seen
     }
 
     /// The groups containing `t` (`groups.0`): above each group listing it as an item.
     pub(crate) fn groups_of(&self, t: &Tid) -> BTreeSet<Tid> {
+        self.stamps.read_all();
         self.item_of.get(t).into_iter().flatten().flat_map(|g| self.above(g)).collect()
     }
 
@@ -504,7 +514,7 @@ impl Groups {
                 stack.extend(listing(&x, SUBGROUPS));
             }
         }
-        crate::costs::count("group index", (seen.len() + out.len()) as u64);
+        osis_base::costs::count("group index", (seen.len() + out.len()) as u64);
         out.extend(seen);
         out
     }
@@ -516,6 +526,7 @@ impl Groups {
     /// The closure of `g`: itself, its subgroups and every thing it contains, transitively.
     /// Derived the first time it is asked for (O(the closure)), then kept.
     pub fn closure(&self, g: &Tid) -> Arc<BTreeSet<Tid>> {
+        self.stamps.read_all();
         if let Some(c) = self.kept().get(g) {
             return c.clone();
         }
@@ -584,13 +595,13 @@ impl Groups {
         self.moved.extend(moved);
         // every path that edits the index (a refresh, a whole set, a rolled-back step)
         #[cfg(debug_assertions)]
-        crate::costs::paused(|| self.check_around(&g));
+        osis_base::costs::paused(|| self.check_around(&g));
     }
 
     /// Edits `g`'s listing (`refresh`: per tid), logged.
     pub(crate) fn change(&mut self, g: Tid, edits: &[Edit]) {
         let edits: Vec<Edit> = edits.iter().filter(|(f, t, on)| self.listed(&g, *f, t) != *on).copied().collect();
-        crate::costs::count("group index", edits.len() as u64);
+        osis_base::costs::count("group index", edits.len() as u64);
         self.log.extend(edits.iter().map(|(f, t, on)| Logged::Listed(g, *f, *t, !on)));
         self.apply(g, &edits);
     }
@@ -599,6 +610,7 @@ impl Groups {
     fn define(&mut self, g: Tid, on: bool) {
         let was = self.defined.contains(&g);
         if was != on {
+            self.stamps.moved();
             self.log.push(Logged::Defined(g, was));
             if on {
                 self.defined.insert(g);
@@ -624,15 +636,15 @@ impl Groups {
     /// At open (`load`): `g` listing `items` and `subs` besides what it lists already, and with
     /// `defined` defined; not logged, nothing told.
     pub(crate) fn load<'a>(&mut self, g: Tid, defined: bool, items: impl Iterator<Item = &'a Tid>, subs: impl Iterator<Item = &'a Tid>) {
-        if defined {
-            self.defined.insert(g);
+        if defined && self.defined.insert(g) {
+            self.stamps.moved();
         }
         let mut n = 0;
         for (f, t) in items.map(|t| (ITEMS, t)).chain(subs.map(|t| (SUBGROUPS, t))) {
             self.link(g, f, *t, true);
             n += 1;
         }
-        crate::costs::count("group index", n);
+        osis_base::costs::count("group index", n);
     }
 
     /// Debug builds: each tid `g` lists lists `g` back, and every kept closure of a group above
@@ -667,6 +679,7 @@ impl super::journal::Journaled for Groups {
         while self.log.len() > m {
             match self.log.pop() {
                 Some(Logged::Defined(g, was)) => {
+                    self.stamps.moved();
                     if was {
                         self.defined.insert(g);
                     } else {

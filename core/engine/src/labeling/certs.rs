@@ -4,7 +4,7 @@
 //! Labels come with secrets of their own (`rotation::own_secrets`), steps by `Engine::issue_step`.
 
 use super::blobs::Body;
-use crate::engine::memo::Memo;
+use osis_base::memo::Memo;
 use crate::engine::Engine;
 use crate::error::Result;
 use osis_commit::Decoded;
@@ -236,7 +236,7 @@ impl Engine {
         let mut out = self.destroyed_upstream(g);
         let closure = self.closure(g);
         for x in self.core.destroyed_kept() {
-            crate::costs::count("destroyed needed: candidates", 1);
+            osis_base::costs::count("destroyed needed: candidates", 1);
             if out.contains(&x) {
                 continue;
             }

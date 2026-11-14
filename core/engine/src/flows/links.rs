@@ -147,7 +147,7 @@ impl Engine {
     /// The links whose seed this node holds (a sharer-only thing's `link:seed.0`, readable on
     /// every node of the sharer; `Core::links`).
     pub fn held_links(&mut self) -> Result<Arc<Vec<HeldLink>>> {
-        crate::engine::memo::Memo::get_in(self, |e| &e.core.links, &(), Self::held_links_read)
+        osis_base::memo::Memo::get_in(self, |e| &e.core.links, &(), Self::held_links_read)
     }
 
     fn held_links_read(&mut self) -> Result<Arc<Vec<HeldLink>>> {

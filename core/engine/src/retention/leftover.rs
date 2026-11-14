@@ -44,8 +44,6 @@ impl Leftover {
 /// The leftover of part `ai` of `c` on `(tid, ak)`, if kept (an applied part's, `Hold::Leftover`,
 /// or a waiting part's).
 pub(crate) fn get(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Result<Option<Leftover>> {
-    // stamped with its record (`put`, `remove`)
-    tx.core.records_read.read(c);
     tx.txn.get_local(&records::leftover_key(tid, ak, c, ai))?.as_deref().map(Leftover::decode).transpose()
 }
 
@@ -53,21 +51,17 @@ pub(crate) fn get(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) 
 pub(crate) fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, l: &Leftover) -> Result<()> {
     let key = records::leftover_key(tid, ak, c, ai);
     let enc = l.encode()?;
-    // a part's leftover is read with its record (`apply::held_parts_at`)
-    tx.core.records_read.wrote(c, true);
     let memory = tx.txn.is_memory_aspect(tid, ak);
     tx.in_class(memory, |tx| Ok(tx.txn.put_local(&key, &enc, Shred::Yes)?))
 }
 
 /// Forgets the leftover of part `ai` of `c`, shredded.
 pub(crate) fn remove(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Result<()> {
-    tx.core.records_read.wrote(c, true);
     tx.txn.remove_local(&records::leftover_key(tid, ak, c, ai), Shred::Yes)?;
     Ok(())
 }
 
 /// Whether a leftover of part `ai` of `c` is kept.
 pub(crate) fn has(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Result<bool> {
-    tx.core.records_read.read(c);
     Ok(tx.txn.get_local(&records::leftover_key(tid, ak, c, ai))?.is_some())
 }

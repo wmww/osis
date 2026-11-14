@@ -115,7 +115,7 @@ fn hand_down(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
             let Some(d) = m.dropped_mut(ai) else { continue };
             if d.covered_by.remove(id) {
                 // counted: tests read how many parts a forget hands down to
-                crate::costs::count("forget: handed down", 1);
+                osis_base::costs::count("forget: handed down", 1);
                 let by = up.iter().filter(|x| (x.0, &x.1) == (a.0, &a.1)).flat_map(|x| x.2.iter().copied());
                 d.covered_by.extend(by.filter(|x| *x != c));
             }

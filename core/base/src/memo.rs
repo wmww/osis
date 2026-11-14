@@ -1,17 +1,16 @@
-//! Derived values that depend on exactly what they read (issues/derived-state-recomputed.md).
+//! Derived values that depend on exactly what they read (notes/engine.md, Derived values).
 //!
 //! Every mutable fact a derivation may read sits in a container that stamps its changes
-//! (`Stamps`: the journaled indexes in `journal`, the held set and timelines in `held`,
-//! `Stamped` maps, `Tracked` values). A read
-//! through such a container while a `Memo` computes records the stamp it saw; the memo's answer
-//! holds while every stamp it saw is the current one. So a memo has no key to pick and no
-//! invalidation to call: a write anywhere reaches exactly the memos that read what it changed.
-//! A container's `Deref` counts as a read of the whole container (any change of it moves the
-//! memo), `get` and `contains` as a read of one key.
+//! (`Stamps`: the store's rows (osis-store), the engine's journaled indexes, held set, timelines
+//! and blob holds, `Stamped` maps, `Tracked` values). A read through such a container while a
+//! `Memo` computes records the stamp it saw; the memo's answer holds while every stamp it saw is
+//! the current one. So a memo has no key to pick and no invalidation to call: a write anywhere
+//! reaches exactly the memos that read what it changed. A container's `Deref` counts as a read of
+//! the whole container (any change of it moves the memo), `get` and `contains` as a read of one
+//! key, a scan as a read of a prefix (`Stamps::read_prefix`).
 //!
-//! What a memo's function reads elsewhere (a field of `Core` in no such container, the store)
-//! must be immutable or stamped by hand (`Stamps::wrote`); debug builds compare a hit with a
-//! fresh run to find a read that was missed (`Checks`).
+//! What a memo's function reads elsewhere (a field in no such container) must be immutable;
+//! debug builds compare a hit with a fresh run to find a read that was missed (`Checks`).
 
 use std::borrow::Borrow;
 use std::cell::{Cell, RefCell};
@@ -21,27 +20,62 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-/// The change stamps of one container: one per key present, one for every absent key, one for
-/// the whole.
-#[derive(Clone, Debug, Default)]
+/// Absent keys share a stamp per bucket of their hash (`Table::absent`). Performance switch: at 1
+/// every removal moves what read any absent or unstamped key; at infinity every removed key keeps a
+/// stamp of its own, so the stamps grow with every key ever removed.
+const ABSENT_BUCKETS: usize = 64;
+
+/// The change stamps of one container: one per key with a stamp of its own, one per bucket of
+/// the other keys, one for the whole.
+#[derive(Clone, Debug)]
 struct Table {
     /// Counts changes: the whole container's stamp.
     ver: u64,
-    /// `ver` at the last removal: the stamp of every key absent (so an absent key costs nothing
-    /// to keep; a removal moves what read any absent key).
-    absent: u64,
-    /// `ver` at the last write of each key present, by the key's hash. Two keys sharing a hash
-    /// share a stamp: a write of one moves what read the other, never the reverse of that.
+    /// Per bucket of key hashes, `ver` at the last removal of a key in it: the stamp of every key
+    /// of the bucket without one of its own (an absent key costs nothing to keep; a removal moves
+    /// what read an absent key of its bucket, or one present since before the stamps were).
+    absent: [u64; ABSENT_BUCKETS],
+    /// `ver` at the last write of each key present, by the key's hash, and at the last write
+    /// under each prefix read (`Stamps::read_prefix`). Two keys sharing a hash share a stamp: a
+    /// write of one moves what read the other, never the reverse of that.
     keys: HashMap<u64, u64>,
+    /// The prefixes read (`read_prefix`), by length: a byte key's write (`wrote_bytes`) stamps
+    /// each of them it starts with.
+    prefixes: BTreeMap<usize, std::collections::HashSet<u64>>,
+}
+
+impl Default for Table {
+    fn default() -> Table {
+        Table { ver: 0, absent: [0; ABSENT_BUCKETS], keys: HashMap::new(), prefixes: BTreeMap::new() }
+    }
 }
 
 impl Table {
     fn stamp(&self, key: Option<u64>) -> u64 {
         match key {
             None => self.ver,
-            Some(h) => self.keys.get(&h).copied().unwrap_or(self.absent),
+            Some(h) => self.keys.get(&h).copied().unwrap_or_else(|| self.absent.get(bucket(h)).copied().unwrap_or(0)),
         }
     }
+
+    fn wrote(&mut self, h: u64, present: bool) {
+        self.ver += 1;
+        let v = self.ver;
+        if present {
+            self.keys.insert(h, v);
+        } else {
+            // every removal moves its bucket's absent stamp: a key present with no stamp of its
+            // own (one there before the stamps were, or since `wrote_all`) was read at it
+            self.keys.remove(&h);
+            if let Some(a) = self.absent.get_mut(bucket(h)) {
+                *a = v;
+            }
+        }
+    }
+}
+
+fn bucket(h: u64) -> usize {
+    (h % ABSENT_BUCKETS as u64) as usize
 }
 
 fn lock(t: &Mutex<Table>) -> MutexGuard<'_, Table> {
@@ -54,6 +88,16 @@ fn hash<Q: Hash + ?Sized>(k: &Q) -> u64 {
     h.finish()
 }
 
+/// The stamp key of prefix `p` (`Stamps::read_prefix`): apart from any key's.
+fn prefix_hash(p: &[u8]) -> u64 {
+    hash(&("prefix", p))
+}
+
+/// A key as its stamps name it (`Stamps::key`): for a writer that logs what it wrote and stamps
+/// it again later (an undo).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct StampKey(u64);
+
 /// A container's change stamps, owned by the container: its writes call `wrote`, its reads
 /// `read`. Dropped with the container, after which nothing that read it holds.
 #[derive(Debug, Default)]
@@ -61,30 +105,42 @@ pub struct Stamps(Arc<Mutex<Table>>);
 
 impl Stamps {
     /// Key `k` was written (`present`) or removed.
-    pub fn wrote<Q: Hash + ?Sized>(&mut self, k: &Q, present: bool) {
+    pub fn wrote<Q: Hash + ?Sized>(&self, k: &Q, present: bool) {
+        lock(&self.0).wrote(hash(k), present);
+    }
+
+    /// `k`'s stamp key.
+    pub fn key<Q: Hash + ?Sized>(k: &Q) -> StampKey {
+        StampKey(hash(k))
+    }
+
+    /// `wrote` of a key named by its stamp key.
+    pub fn wrote_key(&self, k: StampKey, present: bool) {
+        lock(&self.0).wrote(k.0, present);
+    }
+
+    /// Byte key `k` was written or removed: moves what read it and what read a prefix of it
+    /// (`read_prefix`).
+    pub fn wrote_bytes(&self, k: &[u8], present: bool) {
         let mut t = lock(&self.0);
-        t.ver += 1;
+        t.wrote(hash(k), present);
         let v = t.ver;
-        if present {
-            t.keys.insert(hash(k), v);
-        } else {
-            // every removal moves the absent stamp: a key present with no stamp of its own (one
-            // there before the stamps were, or since `wrote_all`) was read at it
-            t.keys.remove(&hash(k));
-            t.absent = v;
+        let under: Vec<u64> = t.prefixes.iter().filter_map(|(n, ps)| k.get(..*n).map(prefix_hash).filter(|h| ps.contains(h))).collect();
+        for h in under {
+            t.keys.insert(h, v);
         }
     }
 
     /// The container changed, but no key's value: moves only what read it whole.
-    pub fn moved(&mut self) {
+    pub fn moved(&self) {
         lock(&self.0).ver += 1;
     }
 
     /// The container changed in a way no key names.
-    pub fn wrote_all(&mut self) {
+    pub fn wrote_all(&self) {
         let mut t = lock(&self.0);
         t.ver += 1;
-        t.absent = t.ver;
+        t.absent = [t.ver; ABSENT_BUCKETS];
         t.keys.clear();
     }
 
@@ -97,6 +153,23 @@ impl Stamps {
     pub fn read<Q: Hash + ?Sized>(&self, k: &Q) {
         if RECORDING.load(Ordering::Relaxed) != 0 {
             self.record(Some(hash(k)));
+        }
+    }
+
+    /// `read` of a key named by its stamp key.
+    pub fn read_key(&self, k: StampKey) {
+        if RECORDING.load(Ordering::Relaxed) != 0 {
+            self.record(Some(k.0));
+        }
+    }
+
+    /// Every byte key starting with `p` is read (a scan): moved by a write of any such key
+    /// (`wrote_bytes`) from now on.
+    pub fn read_prefix(&self, p: &[u8]) {
+        if RECORDING.load(Ordering::Relaxed) != 0 {
+            let h = prefix_hash(p);
+            lock(&self.0).prefixes.entry(p.len()).or_default().insert(h);
+            self.record(Some(h));
         }
     }
 
@@ -117,10 +190,40 @@ impl Stamps {
     }
 }
 
-/// A table of the world being copied (`osis_base::copying`): the copy's one table for it, its
+/// A container's change count (`Stamps::changes`) read away from the container (`Stamps::counter`).
+#[derive(Debug)]
+pub struct Changes(Arc<Mutex<Table>>);
+
+impl Changes {
+    pub fn get(&self) -> u64 {
+        lock(&self.0).ver
+    }
+}
+
+impl Default for Changes {
+    fn default() -> Changes {
+        Changes(Arc::new(Mutex::new(Table::default())))
+    }
+}
+
+/// A copy's count is its copied container's (`copied`).
+impl Clone for Changes {
+    fn clone(&self) -> Changes {
+        Changes(copied(&self.0))
+    }
+}
+
+impl Stamps {
+    /// The container's change count, readable where the container is not.
+    pub fn counter(&self) -> Changes {
+        Changes(self.0.clone())
+    }
+}
+
+/// A table of the world being copied (`crate::copying`): the copy's one table for it, its
 /// stamps as they are; outside a copy, a table of its own.
 fn copied(t: &Arc<Mutex<Table>>) -> Arc<Mutex<Table>> {
-    osis_base::copying::remap(t, |m| Mutex::new(lock(m).clone()))
+    crate::copying::remap(t, |m| Mutex::new(lock(m).clone()))
 }
 
 /// A copy's stamps: the same stamps on a table of the copy's own (`copied`), so the copied memos
@@ -135,7 +238,7 @@ impl Drop for Stamps {
     fn drop(&mut self) {
         let mut t = lock(&self.0);
         t.ver = u64::MAX;
-        t.absent = u64::MAX;
+        t.absent = [u64::MAX; ABSENT_BUCKETS];
         t.keys.clear();
     }
 }
@@ -602,16 +705,16 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
     }
 }
 
-/// Inside a world copy (`osis_base::copying`) the copy keeps every answer, its reads moved to
+/// Inside a world copy (`crate::copying`) the copy keeps every answer, its reads moved to
 /// the copy's tables, so it computes again exactly when the original would; outside one it
 /// starts empty (its answers' reads are the original's).
 impl<K: Hash + Eq + Clone, V: Clone> Clone for Memo<K, V> {
     fn clone(&self) -> Self {
-        let entries = match osis_base::copying::in_copy() {
+        let entries = match crate::copying::in_copy() {
             true => self.entries.borrow().iter().map(|(k, e)| (k.clone(), Entry { deps: e.deps.iter().map(|d| Dep { table: copied(&d.table), ..d.clone() }).collect(), ..e.clone() })).collect(),
             false => HashMap::new(),
         };
-        let kept = if osis_base::copying::in_copy() { self.kept.get() } else { 0 };
+        let kept = if crate::copying::in_copy() { self.kept.get() } else { 0 };
         Memo { name: self.name, entries: RefCell::new(entries), kept: Cell::new(kept) }
     }
 }
@@ -787,7 +890,6 @@ impl<T: Ord + Hash> StampedSet<T> {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use crate::engine::journal::{JMap, JSet, Journaled};
 
     fn runs(name: &'static str) -> u64 {
         crate::costs::take().iter().filter(|x| x.0 == name).map(|x| x.2).sum()
@@ -795,13 +897,13 @@ mod tests {
 
     // spec: none (internal: notes/engine.md, Derived values). A memo runs again exactly when
     // something it read changed: a key it read, present or absent, or any key of a container it
-    // walked; an undo counts as a change; another key's write does not.
+    // walked; a write back to an earlier value counts as a change; another key's write does not.
     #[test]
     fn a_memo_runs_again_only_when_what_it_read_changed() {
-        let mut m: JMap<u8, u8> = JMap::default();
-        let mut s: JSet<u8> = JSet::default();
+        let mut m: Stamped<u8, u8> = Stamped::default();
+        let mut s: StampedSet<u8> = StampedSet::default();
         let memo: Memo<u8, Option<u8>> = Memo::new("test memo");
-        let ask = |m: &JMap<u8, u8>, k: u8| memo.get(&k, || m.get(&k).copied());
+        let ask = |m: &Stamped<u8, u8>, k: u8| memo.get(&k, || m.get(&k).copied());
         m.insert(1, 10);
         crate::costs::take();
         assert_eq!(ask(&m, 1), Some(10));
@@ -816,19 +918,17 @@ mod tests {
         m.insert(2, 20);
         assert_eq!((ask(&m, 1), ask(&m, 2)), (Some(10), Some(20)));
         assert_eq!(runs("test memo"), 1, "an absent key read came");
-        m.commit();
-        let mark = m.mark();
         m.insert(1, 11);
         assert_eq!(ask(&m, 1), Some(11));
-        m.rollback_to(mark);
+        m.insert(1, 10);
         assert_eq!(ask(&m, 1), Some(10));
-        assert_eq!(runs("test memo"), 2, "a write and its undo each move the key");
+        assert_eq!(runs("test memo"), 2, "a write and its write back each move the key");
         m.remove(&3);
         assert_eq!(ask(&m, 1), Some(10));
         assert_eq!(runs("test memo"), 0, "another key left");
         // a walk reads the whole container
         let count: Memo<(), usize> = Memo::new("test count");
-        let n = |s: &JSet<u8>| count.get(&(), || s.len());
+        let n = |s: &StampedSet<u8>| count.get(&(), || s.len());
         assert_eq!((n(&s), n(&s)), (1, 1));
         assert_eq!(runs("test count"), 1);
         s.insert(2);
@@ -841,10 +941,10 @@ mod tests {
     // container runs it again, however often it was asked in between
     #[test]
     fn a_hit_looks_at_keys_only_where_their_container_moved() {
-        let mut m: JMap<u8, u8> = JMap::default();
-        let mut s: JSet<u8> = JSet::default();
+        let mut m: Stamped<u8, u8> = Stamped::default();
+        let mut s: StampedSet<u8> = StampedSet::default();
         let memo: Memo<u8, (Option<u8>, bool)> = Memo::new("test pair");
-        let ask = |m: &JMap<u8, u8>, s: &JSet<u8>, k: u8| memo.get(&k, || (m.get(&k).copied(), s.contains(&k)));
+        let ask = |m: &Stamped<u8, u8>, s: &StampedSet<u8>, k: u8| memo.get(&k, || (m.get(&k).copied(), s.contains(&k)));
         crate::costs::take();
         assert_eq!(ask(&m, &s, 1), (None, false));
         for (step, (mk, sk)) in [(Some(2), None), (None, Some(2)), (Some(2), Some(3)), (None, None)].into_iter().enumerate() {
@@ -870,13 +970,18 @@ mod tests {
     // stamp read inside and outside `accounted` (as two keys sharing a hash share one).
     #[test]
     fn an_amend_is_kept_only_over_what_it_accounts_for() {
-        let mut list: JMap<u8, Vec<u8>> = JMap::default();
-        let mut other: JMap<u8, u8> = JMap::default();
+        let mut list: Stamped<u8, Vec<u8>> = Stamped::default();
+        let push = |l: &mut Stamped<u8, Vec<u8>>, x: u8| {
+            let mut v = l.get(&0).cloned().unwrap_or_default();
+            v.push(x);
+            l.insert(0, v);
+        };
+        let mut other: Stamped<u8, u8> = Stamped::default();
         list.insert(0, vec![1]);
         other.insert(0, 10);
         // (elements summed, their sum plus `other`'s); `bare` also reads the list unaccounted
         let memo: Memo<u8, (usize, u64)> = Memo::new("test amended");
-        let ask = |list: &JMap<u8, Vec<u8>>, other: &JMap<u8, u8>, bare: bool| {
+        let ask = |list: &Stamped<u8, Vec<u8>>, other: &Stamped<u8, u8>, bare: bool| {
             Memo::get_amended_in(
                 &mut &memo,
                 |m| *m,
@@ -903,14 +1008,14 @@ mod tests {
         crate::costs::take();
         assert_eq!(ask(&list, &other, false), (1, 11));
         assert_eq!(ran(), (1, 0));
-        list.get_mut(&0).unwrap().push(5);
+        push(&mut list, 5);
         assert_eq!(ask(&list, &other, false), (2, 16), "an accounted read moved");
         assert_eq!(ran(), (0, 1));
-        list.get_mut(&0).unwrap().push(2);
+        push(&mut list, 2);
         assert_eq!(ask(&list, &other, false), (3, 18), "again, over an amended answer");
         assert_eq!(ran(), (0, 1));
         other.insert(0, 20);
-        list.get_mut(&0).unwrap().push(1);
+        push(&mut list, 1);
         assert_eq!(ask(&list, &other, false), (4, 29), "a read not accounted for moved too");
         assert_eq!(ran(), (1, 1));
         list.insert(0, vec![2]);
@@ -919,13 +1024,13 @@ mod tests {
         other.insert(0, 30);
         assert_eq!(ask(&list, &other, true), (1, 32));
         assert_eq!(ran(), (1, 1));
-        list.get_mut(&0).unwrap().push(3);
+        push(&mut list, 3);
         assert_eq!(ask(&list, &other, true), (2, 35), "the moved read was also read unaccounted");
         assert_eq!(ran(), (1, 1));
-        list.get_mut(&0).unwrap().push(4);
+        push(&mut list, 4);
         assert_eq!(ask(&list, &other, false), (3, 39), "the kept answer read it unaccounted");
         assert_eq!(ran(), (1, 1));
-        list.get_mut(&0).unwrap().push(1);
+        push(&mut list, 1);
         assert_eq!(ask(&list, &other, false), (4, 40));
         assert_eq!(ran(), (0, 1));
     }
@@ -935,7 +1040,7 @@ mod tests {
     // moves what read it.
     #[test]
     fn removing_a_key_without_a_stamp_moves_its_readers() {
-        let mut stamps = Stamps::default();
+        let stamps = Stamps::default();
         let there = std::cell::Cell::new(true);
         stamps.wrote_all();
         let memo: Memo<u8, bool> = Memo::new("test unstamped");
@@ -989,12 +1094,12 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn a_hit_is_compared_after_what_it_read_changed() {
-        let mut m: JMap<u8, u8> = JMap::default();
+        let mut m: Stamped<u8, u8> = Stamped::default();
         m.insert(1, 1);
         let hidden = Cell::new(0u8);
         let memo: Memo<u8, u8> = Memo::new("test compared");
         // whether the comparison failed
-        let ask = |m: &JMap<u8, u8>| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| memo.get(&1, || m.get(&1).copied().unwrap_or(0) + hidden.get()))).is_err();
+        let ask = |m: &Stamped<u8, u8>| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| memo.get(&1, || m.get(&1).copied().unwrap_or(0) + hidden.get()))).is_err();
         assert!(!ask(&m));
         hidden.set(1);
         assert!(!ask(&m), "nothing it read changed: not compared");
@@ -1016,29 +1121,76 @@ mod tests {
     // dropped holds nothing that read it; a memo drops answers that no longer hold as it grows.
     #[test]
     fn memos_nest_and_forget() {
-        let mut m: JMap<u8, u8> = JMap::default();
+        let mut m: Stamped<u8, u8> = Stamped::default();
         m.insert(1, 1);
         let inner: Memo<u8, u8> = Memo::new("test inner");
         let outer: Memo<u8, u8> = Memo::new("test outer");
-        let ask = |m: &JMap<u8, u8>| outer.get(&1, || inner.get(&1, || m.get(&1).copied().unwrap_or(0)) + 1);
+        let ask = |m: &Stamped<u8, u8>| outer.get(&1, || inner.get(&1, || m.get(&1).copied().unwrap_or(0)) + 1);
         crate::costs::take();
         assert_eq!((ask(&m), ask(&m)), (2, 2));
         assert_eq!((runs("test outer"), ), (1, ));
         m.insert(1, 5);
         assert_eq!(ask(&m), 6);
         // the inner answer was kept when the outer one was asked again after a change elsewhere
-        let mut other: JMap<u8, u8> = JMap::default();
+        let mut other: Stamped<u8, u8> = Stamped::default();
         other.insert(1, 9);
         assert_eq!(ask(&m), 6);
-        let fresh: JMap<u8, u8> = JMap::default();
+        let fresh: Stamped<u8, u8> = Stamped::default();
         drop(m);
         assert_eq!(ask(&fresh), 1, "the container it read is gone");
         let grow: Memo<u8, u8> = Memo::new("test grow");
-        let mut t: JMap<u8, u8> = JMap::default();
+        let mut t: Stamped<u8, u8> = Stamped::default();
         for k in 0..100 {
             t.insert(k, k);
             grow.get(&k, || t.len() as u8);
         }
         assert!(grow.len() <= 2, "answers that no longer hold are dropped: {}", grow.len());
+    }
+
+    // spec: none (internal). A scan of a prefix moves with a write or removal of any key under it
+    // made after the scan, never with one elsewhere; a removal moves what read an absent key of
+    // its bucket only.
+    #[test]
+    fn a_prefix_read_moves_with_keys_under_it() {
+        let stamps = Stamps::default();
+        let memo: Memo<u8, u8> = Memo::new("test prefix");
+        let ask = |s: &Stamps| {
+            memo.get(&0, || {
+                s.read_prefix(b"ab");
+                0
+            })
+        };
+        crate::costs::take();
+        stamps.wrote_bytes(b"abc", true);
+        ask(&stamps);
+        stamps.wrote_bytes(b"ac", true);
+        stamps.wrote_bytes(b"a", true);
+        ask(&stamps);
+        assert_eq!(runs("test prefix"), 1, "keys elsewhere");
+        stamps.wrote_bytes(b"abd", true);
+        ask(&stamps);
+        stamps.wrote_bytes(b"abc", false);
+        ask(&stamps);
+        assert_eq!(runs("test prefix"), 2, "a key under it came, one went");
+        // absent keys in other buckets hold through a removal
+        let absent: Memo<u64, bool> = Memo::new("test absent");
+        let keys: Vec<u64> = (0..200).collect();
+        for k in &keys {
+            absent.get(k, || {
+                stamps.read(k);
+                false
+            });
+        }
+        crate::costs::take();
+        stamps.wrote(&7u64, true);
+        stamps.wrote(&7u64, false);
+        for k in &keys {
+            absent.get(k, || {
+                stamps.read(k);
+                false
+            });
+        }
+        let ran = runs("test absent");
+        assert!(ran > 0 && ran < 20, "only the removed key's bucket moved: {ran}");
     }
 }

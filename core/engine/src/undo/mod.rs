@@ -355,7 +355,7 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Ts, confined: 
         };
         let pre = kept_before(tx, &a.tid, &a.ak, (h.ts, target), &delta, &strip)?;
         #[cfg(debug_assertions)]
-        let whole = if compared() { Some(crate::costs::paused(|| kept_all(tx, &a.tid, &a.ak, (h.ts, target), &strip))?) } else { None };
+        let whole = if compared() { Some(osis_base::costs::paused(|| kept_all(tx, &a.tid, &a.ak, (h.ts, target), &strip))?) } else { None };
         parts.push(Undoing { a, delta, source, pre, #[cfg(debug_assertions)] whole });
     }
     let [plain, expiring] = [tx.core.session.nonce, tx.core.expiring.nonce];
@@ -490,7 +490,7 @@ fn inverse(tx: &mut Tx<'_>, parts: &[Undoing], mut unmade: BTreeMap<(Tid, Ak), V
             #[cfg(debug_assertions)]
             if let Some(whole) = &p.whole {
                 let w = Writer::new(ts, own.clone(), lo).keyed_removals(osis_schema::core_types::is_role_class(a.ak.as_str()));
-                let all = crate::costs::paused(|| undo_expiring(w, &undone, state, whole.clone(), schema.as_deref(), &a.ak, ts.wall_ms().0, &expiry))?;
+                let all = osis_base::costs::paused(|| undo_expiring(w, &undone, state, whole.clone(), schema.as_deref(), &a.ak, ts.wall_ms().0, &expiry))?;
                 let enc = |o: &Option<(Fragment, CounterRange, Copies)>| o.as_ref().map(|(f, r, c)| (crate::engine::state::encode(f).ok(), r.lo, r.hi, c.clone()));
                 assert_eq!(enc(&out), enc(&all), "the undo from the state before at its positions differs from the whole join's");
                 assert_eq!(pre.present(), whole.present(), "the state before at its positions reads present otherwise");
@@ -829,9 +829,9 @@ mod tests {
         let before = lp.peers[0].engine.get(&t, &x).unwrap();
         let last = write(&mut lp, n, &mut text);
         let e = &mut lp.peers[0].engine;
-        crate::costs::take();
+        osis_base::costs::take();
         assert!(e.check_revertible(&last).unwrap());
-        let c = crate::costs::take();
+        let c = osis_base::costs::take();
         let count = |name: &str| c.iter().find(|x| x.0 == name).map_or(0, |x| x.2);
         let cost = (count("part read"), count("state copied whole"));
         e.revert(&last).unwrap().unwrap();

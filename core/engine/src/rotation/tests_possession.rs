@@ -327,7 +327,7 @@ fn possession_judged_again_when_keyset_arrives_spec_crypto_4() {
 #[test]
 fn a_possession_signature_is_checked_once_spec_crypto_4() {
     let mut s = shape();
-    let checked = || crate::costs::take().iter().filter(|x| x.0 == "possession: signature").map(|x| x.2).sum::<u64>();
+    let checked = || osis_base::costs::take().iter().filter(|x| x.0 == "possession: signature").map(|x| x.2).sum::<u64>();
     checked();
     let (c, _) = rotate_unchecked(&mut s.lp, W, s.g, &BTreeSet::from([Role::Read, Role::Write]));
     deliver_w(&mut s);

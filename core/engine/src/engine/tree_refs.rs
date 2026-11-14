@@ -18,7 +18,7 @@
 use super::Tx;
 use super::blobs::TxBlobs;
 use super::large::{Trees, below, links_in, tree_blobs};
-use super::memo::Memo;
+use osis_base::memo::Memo;
 use super::records;
 use crate::error::{Error, Result};
 use osis_base::{Ak, BlobId, CommitId, Link, Tid};
@@ -45,7 +45,7 @@ fn roots_of(tx: &mut Tx<'_>, t: &Tid, s: &Source) -> Result<Vec<Link>> {
         }
         Source::Body(c) => {
             let Some(on) = tx.core.ix.commits.get(c).map(|m| m.view.aspects_on(t).filter(|ai| m.holds(*ai)).collect::<Vec<usize>>()) else { return Ok(roots) };
-            crate::costs::count("tree refs: parts read", on.len() as u64);
+            osis_base::costs::count("tree refs: parts read", on.len() as u64);
             for ai in on {
                 roots.extend(crate::retention::freed::part_links(tx, c, ai)?);
             }
@@ -62,7 +62,7 @@ fn trees_of(tx: &mut Tx<'_>, t: &Tid, s: &Source) -> Result<Trees> {
     let roots = roots_of(tx, t, s)?;
     let mut out = Trees::default();
     tree_blobs(tx, &dedup, &roots, &mut out)?;
-    crate::costs::count("tree refs: blobs read", out.blobs.len() as u64);
+    osis_base::costs::count("tree refs: blobs read", out.blobs.len() as u64);
     Ok(out)
 }
 
@@ -202,7 +202,7 @@ impl Reach {
                 if refs == 0 && inner == 0 {
                     continue;
                 }
-                crate::costs::count("tree refs: links counted", 1);
+                osis_base::costs::count("tree refs: links counted", 1);
                 let c = self.links.entry(o).or_insert_with(|| Counted { link: l, refs: 0, inner: 0, read: Read::No });
                 let was = c.inner;
                 let moved = |x: u64, n: i64| x.checked_add_signed(n).ok_or(Error::Corrupt("tree refs: a link counted down below zero"));
@@ -245,7 +245,7 @@ impl Reach {
 
 /// The blob of `link`, read one step down (`large::below`).
 fn read(tx: &mut Tx<'_>, dedup: &Secret32, link: &Link) -> Result<Read> {
-    crate::costs::count("tree refs: blobs read", 1);
+    osis_base::costs::count("tree refs: blobs read", 1);
     let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
     match below(&mut blobs, dedup, link) {
         Ok(Some((chunks, kids))) => Ok(Read::Kids(kids.into_iter().map(|k| (k, chunks)).collect())),
@@ -297,6 +297,28 @@ fn walked_all(tx: &mut Tx<'_>, t: &Tid, states: bool, gone: &dyn Fn(&Source) -> 
 }
 
 fn refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>, states: bool) -> Result<Trees> {
+    counted(tx, t, states, |rs| Trees { blobs: blobs.iter().filter(|b| rs.iter().any(|x| x.links_to(b))).copied().collect(), missing: whole(rs).missing })
+}
+
+/// Every blob the trees of `t`'s live states link, and the node blobs they lack
+/// (`Engine::live_trees`).
+pub(crate) fn live_trees_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Trees> {
+    counted(tx, t, true, whole)
+}
+
+/// Every blob counted in `rs`, and the node blobs not held.
+fn whole(rs: &[&Reach]) -> Trees {
+    let mut all = Trees::default();
+    for x in rs {
+        all.blobs.extend(x.links.keys().map(|o| o.0));
+        all.missing.extend(x.missing.iter().map(|o| o.0));
+    }
+    all
+}
+
+/// What `answer` makes of the reaches of `t`'s sources (its live states alone if `states`),
+/// counted up to now.
+fn counted<T>(tx: &mut Tx<'_>, t: &Tid, states: bool, answer: impl FnOnce(&[&Reach]) -> T) -> Result<T> {
     let t = *t;
     let (st, bodies): (BTreeSet<Source>, BTreeSet<Source>) = sources(tx, &t, states)?.into_iter().partition(|s| matches!(s, Source::State(_)));
     let dedup = tx.core.dedup(&t);
@@ -307,29 +329,18 @@ fn refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>, states: bool) -> 
     if !states {
         r.bodies.update(tx, &t, dedup.as_ref(), bodies)?;
     }
-    let asked = || [Some(&r.states), (!states).then_some(&r.bodies)].into_iter().flatten();
-    let mut out = Trees::default();
-    for x in asked() {
-        out.blobs.extend(blobs.iter().filter(|b| x.links_to(b)));
-        out.missing.extend(x.missing.iter().map(|o| o.0));
-    }
+    let asked: Vec<&Reach> = [Some(&r.states), (!states).then_some(&r.bodies)].into_iter().flatten().collect();
+    let out = answer(&asked);
     // debug builds, at every question: what is counted differs from a fresh walk (any blob, not
     // only those asked: a count gone wrong shows at once) leaves a linked chunk unprotected
     #[cfg(debug_assertions)]
-    let counted = {
-        let mut all = Trees::default();
-        for x in asked() {
-            all.blobs.extend(x.links.keys().map(|o| o.0));
-            all.missing.extend(x.missing.iter().map(|o| o.0));
-        }
-        all
-    };
+    let counted = whole(&asked);
     if !(r.states.is_empty() && r.bodies.is_empty()) {
         tx.core.tree_reach.insert(t, r);
     }
     #[cfg(debug_assertions)]
     {
-        let fresh = crate::costs::paused(|| crate::engine::memo::unrecorded(|| walked_all(tx, &t, states, &|_| false)))?;
+        let fresh = osis_base::costs::paused(|| osis_base::memo::unrecorded(|| walked_all(tx, &t, states, &|_| false)))?;
         assert_eq!(counted, fresh, "tree refs of {t:?} counted apart from a fresh walk");
     }
     Ok(out)

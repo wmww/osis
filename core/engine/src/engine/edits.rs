@@ -226,7 +226,7 @@ pub(super) fn newest_version(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid
         let upper = below.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
         let Some((ts, v)) = set.range((std::ops::Bound::Excluded(place), upper)).next_back().copied() else { return Ok(None) };
         below = Some((ts, v));
-        drop(crate::costs::span("listing: version judged"));
+        drop(osis_base::costs::span("listing: version judged"));
         let Some(vai) = tx.core.ix.commits.get(&v).and_then(|m| m.aspect(tid, ak)) else { continue };
         match listed(tx, &v, vai)? {
             Some((true, Here::NotFetched)) | None => continue,

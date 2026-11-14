@@ -118,7 +118,7 @@ fn walk(tx: &mut Tx<'_>, x: &Tid, gone: &BTreeSet<Tid>, read: &mut BTreeSet<Tid>
     let mut seen = BTreeSet::from([*x]);
     let mut stack = vec![*x];
     while let Some(y) = stack.pop() {
-        crate::costs::count("lifetimes: walked", 1);
+        osis_base::costs::count("lifetimes: walked", 1);
         let Some(l) = list(tx, &y)? else { return Ok(false) };
         for r in l {
             read.insert(r);

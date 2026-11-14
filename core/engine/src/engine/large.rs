@@ -508,24 +508,10 @@ impl Engine {
     }
 
     /// The chunk trees the live states of `tid`'s aspects link. Complete when no node blob is
-    /// `missing`.
+    /// `missing`. Counted as the states move (`tree_refs`), not walked whole.
     pub fn live_trees(&mut self, tid: &Tid) -> Result<Trees> {
-        let aks = self.aspects(tid)?;
         let tid = *tid;
-        self.read(|tx| {
-            let mut out = Trees::default();
-            let Some(dedup) = tx.core.dedup(&tid) else { return Ok(out) };
-            let mut roots = Vec::new();
-            for ak in &aks {
-                if let Some(v) = tx.state(&tid, ak)?.and_then(Fragment::read) {
-                    links_in(&v, &mut roots);
-                }
-            }
-            roots.sort_unstable_by_key(|l| l.blob);
-            roots.dedup();
-            tree_blobs(tx, &dedup, &roots, &mut out)?;
-            Ok(out)
-        })
+        self.run(|tx| crate::engine::tree_refs::live_trees_in(tx, &tid))
     }
 
     /// Chunks or tree nodes `lost`, gone from every host of a label, that this node's own

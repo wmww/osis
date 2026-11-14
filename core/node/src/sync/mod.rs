@@ -277,9 +277,9 @@ pub struct SyncEngine {
     /// The synced labels as last computed (`labels()`).
     /// The labels synced as `labels` last answered: what reads between two asks go by.
     pub(crate) synced: Arc<Synced>,
-    /// `labels` (`engine::memo`): built again when what it read of the engine or of the
+    /// `labels` (`osis_base::memo`): built again when what it read of the engine or of the
     /// handed-off set changed.
-    synced_of: crate::engine::memo::Memo<(), Arc<Synced>>,
+    synced_of: osis_base::memo::Memo<(), Arc<Synced>>,
     /// (snapshot, body, aspect) judgments settled with the body kept (spec/sync.md §7); a pair
     /// goes once either body is dropped.
     pub(crate) covered_judged: BTreeSet<(osis_base::CommitId, osis_base::CommitId, Tid, osis_base::Ak)>,
@@ -357,8 +357,8 @@ pub struct SyncEngine {
     /// connections reported.
     pub(crate) placed_waiting: BTreeSet<osis_base::CommitId>,
     /// Per secret actor, the roles `ensure_rotated` left blocked when it had nothing to do
-    /// (`rotations`, `engine::memo`).
-    rotated: crate::engine::memo::Memo<Tid, BTreeSet<osis_base::Role>>,
+    /// (`rotations`, `osis_base::memo`).
+    rotated: osis_base::memo::Memo<Tid, BTreeSet<osis_base::Role>>,
     /// This node's `clients^.0` changed since the last step (`clients_changed`).
     pub(crate) clients_moved: bool,
     /// Commit blobs with linked header lists whose prefix was checked against the resolved
@@ -465,7 +465,7 @@ impl SyncEngine {
             joined_failed: Default::default(),
             tied: Default::default(),
             synced: Default::default(),
-            synced_of: crate::engine::memo::Memo::new("labels synced"),
+            synced_of: osis_base::memo::Memo::new("labels synced"),
             hub_conns: Default::default(),
             refusals: Default::default(),
             dialed_peers: Default::default(),
@@ -497,7 +497,7 @@ impl SyncEngine {
             rotation_at: Default::default(),
             placed_cache: Default::default(),
             placed_waiting: Default::default(),
-            rotated: crate::engine::memo::Memo::new("ensure rotated"),
+            rotated: osis_base::memo::Memo::new("ensure rotated"),
             last_synced: Default::default(),
             clients_moved: Default::default(),
             prefix_checked: Default::default(),
@@ -592,7 +592,7 @@ impl SyncEngine {
         *joined_failed = BTreeSet::new();
         *tied = deliver::TiedWork { all: true, ..Default::default() };
         *synced = Default::default();
-        *synced_of = crate::engine::memo::Memo::new("labels synced");
+        *synced_of = osis_base::memo::Memo::new("labels synced");
         *hub_conns = BTreeMap::new();
         *refusals = BTreeMap::new();
         *dialed_peers = BTreeMap::new();
@@ -624,7 +624,7 @@ impl SyncEngine {
         *rotation_at = BTreeMap::new();
         *placed_cache = (u64::MAX, BTreeMap::new());
         *placed_waiting = BTreeSet::new();
-        *rotated = crate::engine::memo::Memo::new("ensure rotated");
+        *rotated = osis_base::memo::Memo::new("ensure rotated");
         *last_synced = BTreeMap::new();
         *clients_moved = false;
         *prefix_checked = BTreeSet::new();
@@ -989,7 +989,7 @@ impl SyncEngine {
         let now = self.now();
         self.engine.core.time.set(now);
         // a `label.0` the store refused to read: the labels last answered stand
-        let Ok(s) = crate::engine::memo::Memo::get_in(self, |s| &s.synced_of, &(), |s| s.compute_synced().map(Arc::new)) else { return self.synced.labels.clone() };
+        let Ok(s) = osis_base::memo::Memo::get_in(self, |s| &s.synced_of, &(), |s| s.compute_synced().map(Arc::new)) else { return self.synced.labels.clone() };
         // built again since the last ask
         if !Arc::ptr_eq(&s, &self.synced) {
             self.stats.label_reads += 1;
@@ -1074,7 +1074,7 @@ impl SyncEngine {
             assert!(still.is_some(), "rotations of {a:?} went stale: a rotation is due");
             Ok(still.unwrap_or_default())
         };
-        match crate::engine::memo::Memo::get_checked_in(self, |s| &s.rotated, a, run, fresh) {
+        match osis_base::memo::Memo::get_checked_in(self, |s| &s.rotated, a, run, fresh) {
             Ok(still) => Ok(still),
             Err(Rotating::Did(done, still)) => {
                 self.take_done(done)?;

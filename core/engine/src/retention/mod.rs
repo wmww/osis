@@ -354,7 +354,6 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
     }
     let any = !lost.is_empty();
     if any {
-        tx.core.forget_live(tid, ak);
         // until each comes back, this node may read less than one that kept it
         suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &lost)?;
     }
@@ -1275,7 +1274,7 @@ impl Engine {
     /// snapshot under a later one, would leave a header for good: `growth::several_writers_grow_nothing`).
     pub fn forgettable(&self, c: &CommitId) -> bool {
         // counted: tests read how many commits forgetting looks at
-        let _s = crate::costs::span("forgettable");
+        let _s = osis_base::costs::span("forgettable");
         let core = &self.core;
         let Some(m) = core.ix.commits.get(c) else { return false };
         if core.ix.pending.contains_key(c) {
@@ -1415,10 +1414,10 @@ mod tests {
         let first = write(&mut lp, &x, 1);
         write(&mut lp, &x, 2);
         let judged = |lp: &mut LocalPeer| {
-            crate::costs::take();
+            osis_base::costs::take();
             let k = lp.peers[0].engine.part_keeps(&first).unwrap();
             let n = |name: &str, c: &[(&str, std::time::Duration, u64)]| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
-            let c = crate::costs::take();
+            let c = osis_base::costs::take();
             (k, n("part bounds", &c) + n("replaced at", &c) + n("held writes", &c) + n("deaths: a body", &c))
         };
         let (k, n) = judged(&mut lp);
@@ -1464,10 +1463,10 @@ mod tests {
                 lp.peers[0].engine.part_keeps(&prev).unwrap();
                 prev = c;
             }
-            crate::costs::take();
+            osis_base::costs::take();
             write_x(&mut lp, t, &x, n + 1);
             assert!(lp.peers[0].engine.part_keeps(&prev).unwrap().iter().any(|k| *k > 0), "dated");
-            let c = crate::costs::take();
+            let c = osis_base::costs::take();
             let count = |name: &str| c.iter().filter(|s| s.0 == name).map(|s| s.2).sum::<u64>();
             (count("deaths: a body"), count("held writes"))
         };
@@ -1580,10 +1579,10 @@ mod tests {
         lp.advance(10);
         let more = lp.peers[1].commit(m).unwrap().unwrap();
         let more = lp.peers[1].engine.package(&more).unwrap().unwrap();
-        crate::costs::take();
+        osis_base::costs::take();
         lp.deliver(3, &more).unwrap();
         lp.peers[3].engine.run(|tx| super::bounds::held_writes(tx, &t, &x).map(drop)).unwrap();
-        let c = crate::costs::take();
+        let c = osis_base::costs::take();
         let count = |name: &str| c.iter().filter(|s| s.0 == name).map(|s| s.2).sum::<u64>();
         assert_eq!((count("deaths: a body"), count("held writes")), (1, 0), "a join beside an invalid part");
         check(&mut lp, "a join beside an invalid part");
@@ -1594,7 +1593,8 @@ mod tests {
     // write.
     #[test]
     fn memos_follow_leftovers_through_writes_and_undo() {
-        use crate::engine::{Tx, memo::Memo};
+        use crate::engine::Tx;
+        use osis_base::memo::Memo;
         use crate::error::Error;
         let mut lp = LocalPeer::new(1, 956, WallMs(1_700_000_000_000)).unwrap();
         let a = lp.peers[0].engine.me();
@@ -1605,7 +1605,7 @@ mod tests {
         let c = lp.peers[0].commit(m).unwrap().unwrap();
         let e = &mut lp.peers[0].engine;
         let ai = e.core.ix.commits.get(&c).unwrap().aspect(&t, &x).unwrap();
-        let runs = |name: &str| crate::costs::take().iter().filter(|s| s.0 == name).map(|s| s.2).sum::<u64>();
+        let runs = |name: &str| osis_base::costs::take().iter().filter(|s| s.0 == name).map(|s| s.2).sum::<u64>();
         let undo = || Err::<(), _>(Error::Misuse("test: undo"));
 
         // leaked: `Memo::get_in` finds its memo through the transaction's borrow
@@ -1617,7 +1617,7 @@ mod tests {
             put(tx, f)
         })
         .unwrap();
-        crate::costs::take();
+        osis_base::costs::take();
         let one = e.run(left).unwrap();
         assert_eq!((e.run(left).unwrap(), runs("test record")), (one.clone(), 1), "asked again");
         e.run(|tx| put(tx, osis_crdt::Fragment::default())).unwrap();
@@ -2081,7 +2081,7 @@ mod tests {
             m.set(t, &reg, &Value::Int(0)).unwrap();
             let c = e.commit(m).unwrap().unwrap();
             let mut last: Option<CommitId> = None;
-            crate::costs::take();
+            osis_base::costs::take();
             for v in 1..=n {
                 lp.advance(10);
                 let e = &mut lp.peers[0].engine;
@@ -2098,7 +2098,7 @@ mod tests {
                 }
                 last = Some(s);
             }
-            let handed = crate::costs::take().iter().find(|x| x.0 == "forget: handed down").map_or(0, |x| x.2);
+            let handed = osis_base::costs::take().iter().find(|x| x.0 == "forget: handed down").map_or(0, |x| x.2);
             let e = &mut lp.peers[0].engine;
             assert_eq!(e.coverers_of(&c, &t, &reg), vec![last.unwrap()], "the newest alone");
             e.check_index();

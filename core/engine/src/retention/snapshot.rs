@@ -449,7 +449,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
 /// size past one page.
 pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
     // counted: tests read how many pairs are joined
-    let _s = crate::costs::span("covered: join");
+    let _s = osis_base::costs::span("covered: join");
     let (Some(sai), Some(cai)) = (aspect_index(tx.core, s, tid, ak), aspect_index(tx.core, c, tid, ak)) else { return Ok(None) };
     // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2)
     if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) {
@@ -511,7 +511,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     }
     let (mut part, gives) = crate::apply::held_part_at(tx, s, sai, &joined)?;
     // counted: tests read how much of the snapshot a judgment walks
-    crate::costs::count_with("covered: snapshot part bytes", || part.approx_bytes() as u64);
+    osis_base::costs::count_with("covered: snapshot part bytes", || part.approx_bytes() as u64);
     // the snapshot not held: nothing is established
     let Some(g) = &gives else { return Ok(None) };
     if let Some((fr, abs, facts)) = g {
@@ -592,7 +592,7 @@ fn holds_valueless(tx: &mut Tx<'_>, s: &CommitId, sai: usize, own: &[Owned], tid
         return Ok(false);
     }
     // counted: tests read how often a cover's body is read for it
-    let _s = crate::costs::span("covered: value-less copies");
+    let _s = osis_base::costs::span("covered: value-less copies");
     let mut found = false;
     crate::apply::each_held_piece(tx, s, sai, &mut |_, f| {
         let mut none = BTreeSet::new();
@@ -779,7 +779,7 @@ impl Engine {
             let r = covered(tx, &s, &c, &tid, &ak)?;
             #[cfg(test)]
             if tx.core.ix.commits.get(&s).is_some_and(|m| m.view.kind.is_compaction()) {
-                let w = crate::costs::paused(|| oracle::covered(tx, &s, &c, &tid, &ak))?;
+                let w = osis_base::costs::paused(|| oracle::covered(tx, &s, &c, &tid, &ak))?;
                 assert_eq!(r, w, "covered streamed vs whole");
             }
             Ok(r)

@@ -1,7 +1,7 @@
 //! Actors, entitlement and closure (spec/sync.md §2, §3): a thing's reader actor (the thing if it
 //! has secrets of its own, else its first admin), who may read it, a group's closure and its labels.
 
-use crate::engine::memo::Memo;
+use osis_base::memo::Memo;
 use crate::engine::{Core, Engine};
 use crate::error::Result;
 use osis_base::{ChainStep, LabelId, Role, Tid};

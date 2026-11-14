@@ -1,5 +1,5 @@
 //! osis-base: values and their canonical CBOR, tids, ids, format constants, chunker, hashing, hex,
-//! base64url, `Clock`, `impl_error!` (spec/data-model.md, spec/versioning.md §1). Synchronous, no I/O.
+//! base64url, `Clock`, `impl_error!`, `memo` (stamps and memos), `costs` (spec/data-model.md, spec/versioning.md §1). Synchronous, no I/O.
 //! Layer 0 (notes/architecture.md). Surface: notes/base-schema.md.
 #![forbid(unsafe_code)]
 
@@ -7,12 +7,16 @@ pub mod base64url;
 pub mod cbor;
 mod chain;
 pub mod chunker;
+// phase timers and work counts for scale tests (always compiled)
+pub mod costs;
 #[doc(hidden)]
 pub mod copying;
 mod error;
 pub mod format;
 pub mod hash;
 pub mod hex;
+// derived values that depend on exactly what they read (engine, node-sync, the store's stamps)
+pub mod memo;
 // test support (panics on bad test settings; only tests call it)
 #[doc(hidden)]
 #[allow(clippy::panic, clippy::expect_used)]

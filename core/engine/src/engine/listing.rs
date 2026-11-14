@@ -256,7 +256,7 @@ fn listed_by_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Commi
     let mut out = BTreeSet::new();
     let kept = crate::retention::history::of(tx.core, tid, ak);
     for c in on {
-        drop(crate::costs::span("listing: commit judged"));
+        drop(osis_base::costs::span("listing: commit judged"));
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
         let Some(ai) = m.aspect(tid, ak) else { continue };
         let fixed = kept.kept_whenever_replaced(m.view.ts.wall_ms().0, now);
@@ -315,7 +315,7 @@ pub(crate) fn listing_moved(tx: &mut Tx<'_>) -> Result<()> {
     killed.sort();
     killed.dedup();
     for (tid, ak, c) in killed {
-        drop(crate::costs::span("listing: commit judged"));
+        drop(osis_base::costs::span("listing: commit judged"));
         let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(&tid, &ak)) else { continue };
         if listed(tx, &c, ai)?.is_none() {
             tx.core.commits_named(tid, ak.clone(), c);
@@ -332,7 +332,7 @@ fn past_due(core: &crate::engine::Core, h: &Header, ai: usize, now: u64) -> bool
 
 /// The read of a held part, its pieces joined up to `budget` bytes.
 fn held_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Result<PartBody> {
-    drop(crate::costs::span("listing: body read"));
+    drop(osis_base::costs::span("listing: body read"));
     let mut out: Option<osis_crdt::Fragment> = None;
     let mut over = false;
     crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {

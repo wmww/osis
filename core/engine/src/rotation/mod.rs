@@ -867,7 +867,7 @@ fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
 /// by the next rotation and its secret added by them). `tests_property::rotation_holds_*` checks it.
 /// A memo (`Core::reseal_scans`).
 pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
-    crate::engine::memo::Memo::get_in(tx, |tx| &tx.core.reseal_scans, a, |tx| reseal_scan(tx, a))
+    osis_base::memo::Memo::get_in(tx, |tx| &tx.core.reseal_scans, a, |tx| reseal_scan(tx, a))
 }
 
 fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {

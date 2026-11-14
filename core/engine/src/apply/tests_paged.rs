@@ -356,7 +356,7 @@ fn first_diff_names_the_entry() {
 /// with the cached ones and when each body was replaced after the last (`stored_each`: the
 /// stored states after each).
 fn differential(seed: u64, steps: u64, stored_each: bool) -> BTreeMap<&'static str, u64> {
-    crate::costs::take();
+    osis_base::costs::take();
     let (mut lp, t) = build(seed);
     let mut old = of(lp.copy().unwrap(), t, true);
     let mut new = of(lp, t, false);
@@ -382,7 +382,7 @@ fn differential(seed: u64, steps: u64, stored_each: bool) -> BTreeMap<&'static s
             panic!("seed {seed} step {g}: page-by-page apply differs from whole\n{}\nlog {:#?}", first_diff(x, y, ["page by page", "whole"]), new.log);
         }
     }
-    let mut c: BTreeMap<&'static str, u64> = crate::costs::take().into_iter().map(|(k, _, n)| (k, n)).collect();
+    let mut c: BTreeMap<&'static str, u64> = osis_base::costs::take().into_iter().map(|(k, _, n)| (k, n)).collect();
     c.insert("waited for pages", new.log.iter().filter(|l| l.contains("WaitBlobs")).count() as u64);
     c
 }
@@ -413,7 +413,7 @@ fn both(script: impl Fn(&mut World) -> Vec<Package>) -> (BTreeMap<&'static str, 
     for whole in [false, true] {
         let mut w = world(whole);
         let pks = script(&mut w);
-        crate::costs::take();
+        osis_base::costs::take();
         for pk in &pks {
             let out = deliver(&mut w.lp, 3, pk);
             w.log.push(format!("{:?}: {out}", pk.id));
@@ -422,7 +422,7 @@ fn both(script: impl Fn(&mut World) -> Vec<Package>) -> (BTreeMap<&'static str, 
             }
         }
         if !whole {
-            counts = crate::costs::take().into_iter().map(|(k, _, n)| (k, n)).collect();
+            counts = osis_base::costs::take().into_iter().map(|(k, _, n)| (k, n)).collect();
         }
         worlds.push(w);
     }
@@ -713,10 +713,10 @@ fn memory_commit_waits_only_signed_spec_sync_9() {
     let err = e.ingest_memory(&forged.encode(), u64::MAX).unwrap_err();
     assert_eq!(osis_base::Classified::class(&err), osis_base::ErrorClass::BadInput, "{err}");
     assert!(!e.memory_pending(&pk.id), "nothing kept waiting");
-    crate::costs::take();
+    osis_base::costs::take();
     let out = e.ingest_memory(&pk.bytes, u64::MAX).unwrap();
     assert_eq!(out, crate::Ingested::Pending(pk.id, crate::Reason::WaitBlobs));
-    assert!(!crate::costs::take().iter().any(|x| x.0 == "examine"), "nothing of it examined");
+    assert!(!osis_base::costs::take().iter().any(|x| x.0 == "examine"), "nothing of it examined");
 }
 
 /// Hostile paged snapshots with several problems each (a carried write stamped after the

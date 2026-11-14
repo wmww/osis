@@ -178,7 +178,8 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | `WALK_CACHE_MIN` 64 | P | |
 | `DECODED_MAX` 16 MiB (`engine/decoded.rs`: stored commit records and decoded parts kept, all forgotten past it) | P | every read decodes from the store / every commit read since the open stays decoded |
 | `TOUCHES_MAX` 16 MiB (`undo/touch.rs`: the undo index's approximate bytes, every aspect's forgotten past it when a check starts) | P | every undo check reads every held part of its aspect / every aspect checked since the open stays indexed |
-| `SWEEP` 2 (`engine/memo.rs`: a memo checks every entry and drops those that no longer hold when it has grown to this many times what the last check kept) | P | at 1 every new entry checks them all / an answer nobody asks for again is never dropped |
+| `SWEEP` 2 (`osis_base::memo`: a memo checks every entry and drops those that no longer hold when it has grown to this many times what the last check kept) | P | at 1 every new entry checks them all / an answer nobody asks for again is never dropped |
+| `ABSENT_BUCKETS` 64 (`osis_base::memo`: absent keys of a container share a stamp per bucket of their hash) | P | every removal moves what read any absent or unstamped key (every row read since an open) / a stamp per key ever removed, growing without bound |
 | pages (`engine/pages.rs`) `PAGE_BYTES` 8 KiB, `SEQ_PAGE_BYTES` 3 KiB, `MIN_PAGED` 64, `GROUP` 32, `PREFETCH` 8, `OP_RUNS` 8, prefetch budget `max(1024)`; `SCAN_PAGE` 256 (`engine/mod.rs`) | P | |
 | pages run expansion `1 << 20` | R (corrupt local row) | |
 | `MAX_REUSE` 16 GiB (`engine/large.rs`) | P | |

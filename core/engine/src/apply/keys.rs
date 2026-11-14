@@ -281,8 +281,6 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
         } else {
             tx.core.ix.own_keys.remove(t);
         }
-        // reader actors of things below it change
-        tx.core.bodies.clear();
         tx.core.role_changed();
     }
     Ok(())

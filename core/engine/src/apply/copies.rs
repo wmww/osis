@@ -29,7 +29,7 @@ pub(crate) fn delta_received(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
 /// Sweep): applied here and valid, or reached by a held valid snapshot's `Frontiers` or
 /// `Absorbed` (spec/crdt.md §8). Never a `Derived` dot: its record is its register write's.
 pub(crate) fn reflected(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
-    crate::costs::count("sweep: reflected", 1);
+    osis_base::costs::count("sweep: reflected", 1);
     if matches!(d.src.kind(), osis_crdt::SourceKind::Derived(_)) {
         return false;
     }

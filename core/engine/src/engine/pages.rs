@@ -301,7 +301,7 @@ fn join_row(f: &mut Fragment, set: &mut PageSet, key: Vec<u8>, row: &[u8]) -> Re
         return Ok(());
     }
     // counted: scale tests read the number of pages loaded
-    let _s = crate::costs::span("state page load");
+    let _s = osis_base::costs::span("state page load");
     let (range, p) = parse_page_row(row)?;
     if set.row_key(range.0.as_ref()) != key {
         return Err(Error::Corrupt("state page key"));
@@ -448,7 +448,7 @@ pub fn ensure_touch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Sta
 fn prefetch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, f: &mut Fragment, d: &Fragment) -> Result<()> {
     let Some(mut pl) = held(txn, tid, ak, set)? else { return Ok(()) };
     let Some(pt) = txn.table(tid, ak, PLACE_TABLE)? else { return Ok(()) };
-    let _s = crate::costs::span("placement prefetch");
+    let _s = osis_base::costs::span("placement prefetch");
     let at = steps(&set.path);
     // about one whole pass's work at most, then the join drops the placement
     let budget = pl.len().max(1024);
@@ -871,7 +871,7 @@ fn parse_top(top: &[u8], groups: &[Vec<u8>], chunks: &[u8]) -> Option<PlaceTop> 
 
 fn put_place(txn: &mut Transaction<'_>, pt: Table, key: Vec<u8>, block: bool, row: Vec<u8>) -> Result<()> {
     // counted: scale tests read the number of placement rows written
-    let _s = crate::costs::span(if block { "placement block write" } else { "placement row write" });
+    let _s = osis_base::costs::span(if block { "placement block write" } else { "placement row write" });
     txn.table_put(pt, &key, row, Shred::No)?;
     Ok(())
 }
@@ -884,7 +884,7 @@ fn held(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet) -> Res
         Place::Missing => return Ok(None),
         Place::Unread => {}
     }
-    let _s = crate::costs::span("placement open");
+    let _s = osis_base::costs::span("placement open");
     let mut p = None;
     set.groups.clear();
     if let Some(pt) = txn.table(tid, ak, PLACE_TABLE)?
@@ -911,7 +911,7 @@ fn held(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet) -> Res
 /// Loads into `p` the blocks and chunks `m` names; `false` if a row is missing or damaged.
 fn fill_place(txn: &mut Transaction<'_>, pt: Table, set: &PageSet, p: &mut SeqPlace, blocks: &[usize], chunks: &[Option<Dot>]) -> Result<bool> {
     for b in blocks {
-        let _s = crate::costs::span("placement block load");
+        let _s = osis_base::costs::span("placement block load");
         let Some(rows) = txn.table_get(pt, &place_key(set, 1, *b as u64))?.as_deref().and_then(parse_block) else { return Ok(false) };
         if !p.fill(*b, rows) {
             return Ok(false);
@@ -962,7 +962,7 @@ fn absorb_into(txn: &mut Transaction<'_>, t: Table, pt: Table, set: &mut PageSet
 /// Writes the placement `cur` of `set`: what changed against `old` (the placement as stored,
 /// which `cur` descends from), else all of it (`cur` loaded whole). `false`: neither fits.
 fn write_place(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet, cur: &SeqPlace, old: Option<&SeqPlace>, shred: Shred) -> Result<bool> {
-    let _s = crate::costs::span("placement write");
+    let _s = osis_base::costs::span("placement write");
     let top = cur.top();
     let pt = txn.create_table(tid, ak, PLACE_TABLE)?;
     let d = match old.and_then(|o| cur.diff(o)) {
@@ -1043,7 +1043,7 @@ fn clear_placement(txn: &mut Transaction<'_>, pt: Table, set: &PageSet, shred: S
 /// follow it and its writes keep it; none (missing or damaged) leaves the sequence to a whole
 /// pass.
 fn place_whole(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet, f: &mut Fragment) -> Result<()> {
-    let _s = crate::costs::span("placement whole");
+    let _s = osis_base::costs::span("placement whole");
     let at = steps(&set.path);
     let held = if set.pending { None } else { held(txn, tid, ak, set)? };
     let Some(mut p) = held else {
@@ -1141,7 +1141,7 @@ pub fn absorb(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePage
         any = true;
         if m.all {
             // counted: how often an op on the pages loaded gives up and loads whole
-            let _s = crate::costs::span(if m.whole { "paged op whole: whole pass" } else { "paged op whole: every record" });
+            let _s = osis_base::costs::span(if m.whole { "paged op whole: whole pass" } else { "paged op whole: every record" });
             return Ok(None);
         }
         let Some(pt) = txn.table(tid, ak, PLACE_TABLE)? else { return Ok(None) };
@@ -1384,7 +1384,7 @@ fn rewrite_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet
     index_keys(txn, kt, set, c, &mut dots.iter(), false)?;
     for (key, r) in dirty {
         // counted: scale tests read the number of pages written
-        let _s = crate::costs::span("state page write");
+        let _s = osis_base::costs::span("state page write");
         let ds = c.elem_dots(r.0.as_ref(), r.1.as_ref());
         if r.0.is_some() && ds.is_empty() {
             txn.table_remove(t, &key, shred)?;
@@ -1535,7 +1535,7 @@ pub fn page_keys(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &StatePages
 /// The page at row `key` (`page_keys`) of `(tid, ak)`, as its collection holds it (not loaded
 /// into the state).
 pub fn page_at(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, key: &[u8]) -> Result<Fragment> {
-    let _s = crate::costs::span("state page load");
+    let _s = osis_base::costs::span("state page load");
     let t = table(txn, tid, ak)?;
     let row = txn.table_get(t, key)?.ok_or(Error::Corrupt("state page missing"))?;
     Ok(parse_page_row(&row)?.1)

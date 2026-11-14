@@ -14,7 +14,7 @@ pub(crate) mod held;
 pub mod listing;
 pub(crate) mod index;
 pub(crate) mod journal;
-pub mod memo;
+use osis_base::memo;
 pub(crate) mod pages;
 pub(crate) mod large;
 pub(crate) mod read;
@@ -208,7 +208,7 @@ impl Verdicts {
             return *v;
         }
         let v = {
-            let _s = crate::costs::span("possession: signature");
+            let _s = osis_base::costs::span("possession: signature");
             s.verifies(pk)
         };
         self.verdicts().insert(k, v);
@@ -973,7 +973,7 @@ pub(crate) struct CoreMark {
     batched: Option<BTreeMap<(Tid, Ak), Batched>>,
     memory_tx: bool,
     dirty: bool,
-    /// `records_read.changes()`: a record or leftover written since moves every record.
+    /// `store_rows`: a row written alone (a commit record, a leftover) changes no index.
     records: u64,
     /// `reach_log`'s length.
     reached: usize,
@@ -1050,12 +1050,9 @@ pub struct Core {
     /// The holders lacking a box of each actor (`rotation::reseal_candidates`, `memo`): O(roster)
     /// a pass otherwise.
     pub(crate) reseal_scans: memo::Memo<Tid, Vec<(Tid, BTreeSet<osis_base::Role>)>>,
-    /// Stamps the states by aspect (`memo`): `Tx::load_lazy` reads; `wrote`, `state_changed`
-    /// and a written state's undo change.
-    pub(crate) states_read: memo::Stamps,
-    /// Stamps the stored commit records by ID: `Tx::get_commit` reads; `Tx::put_commit`,
-    /// `Tx::remove_commit` and (all of them) a transaction's undo change.
-    pub(crate) records_read: memo::Stamps,
+    /// The store's row change count (`Store::row_changes`): what `rollback_to` drops the caches
+    /// over the store for.
+    pub(crate) store_rows: memo::Changes,
     /// `Core::epochs` per thing (`memo`).
     pub(crate) epochs_of: memo::Memo<Tid, Option<Arc<osis_keys::ActorEpochs>>>,
     /// Numbers `Indexes::rotations`; never rolled back.
@@ -1304,14 +1301,11 @@ pub struct Core {
     /// stored costs a re-read of the watched aspects and entries holding one (an aspect's re-read
     /// already costs its size).
     pub missed: BTreeSet<(Tid, Ak, Option<CommitId>)>,
-    /// `Engine::bodies` per commit without their plaintexts (the label pass's cost): dropped
-    /// when the commit's record is written (late parts, drops), when a thing it touches gets
-    /// its creation record, and all when an actor gets secrets of its own (reader actors move);
-    /// only commits whose things' record chains are known are kept.
-    pub bodies: BTreeMap<CommitId, Option<crate::labeling::Body>>,
-    /// `Engine::delta_live` per delta, forgotten per aspect when its state changes (`forget_live`)
-    /// and wholly on rollback.
-    pub live_bodies: BTreeMap<CommitId, BTreeMap<(Tid, Ak), bool>>,
+    /// `Engine::body` per commit without its plaintext (`commit_bodies_under`, `memo`): the
+    /// label pass asks it per commit.
+    pub(crate) bodies: memo::Memo<CommitId, Option<crate::labeling::Body>>,
+    /// `Engine::delta_live` per delta (`memo`).
+    pub(crate) live_bodies: memo::Memo<(CommitId, Tid, Ak), bool>,
     /// Keep-bound judgments (`retention::bounds::part_keep`, `commit_bounds`: a commit's parts at once), for cost
     /// tests (`Engine::replaced_reads`).
     pub replaced_reads: u64,
@@ -1382,8 +1376,7 @@ impl Core {
             holders_named: self.holders_named.clone(),
             departures: self.departures.clone(),
             reseal_scans: self.reseal_scans.clone(),
-            states_read: self.states_read.clone(),
-            records_read: self.records_read.clone(),
+            store_rows: self.store_rows.clone(),
             epochs_of: self.epochs_of.clone(),
             rotation_seq: self.rotation_seq.clone(),
             account_views: self.account_views.clone(),
@@ -1786,7 +1779,7 @@ impl Core {
     /// Re-evaluates the timelines around the things whose held inputs changed; the things of
     /// changed timelines wait for `rejudge_all`.
     pub fn update_timelines(&mut self) {
-        let _s = crate::costs::span("timelines");
+        let _s = osis_base::costs::span("timelines");
         let touched = self.ix.held.take_touched();
         if !touched.is_empty() {
             let changed = self.timelines.update_touched(&self.ix.held, &touched);
@@ -1804,35 +1797,11 @@ impl Core {
         self.stale_all || !self.stale_things.is_empty() || !self.stale_commits.is_empty() || !self.stale_authors.is_empty() || !self.ix.epochs_due.is_empty()
     }
 
-    /// Drops what is derived from the state of `(tid, ak)` (a write changes it).
-    fn state_changed(&mut self, tid: &Tid, ak: &Ak) {
-        self.states_read.wrote(&(*tid, ak.clone()), true);
-        self.forget_live(tid, ak);
+    /// A write changes a state of aspect `ak`: a role-class one moves what `role_changed` keys.
+    fn state_changed(&mut self, ak: &Ak) {
         if osis_schema::core_types::is_role_class(ak.as_str()) {
             self.role_changed();
         }
-    }
-
-    /// Forgets the cached liveness of every delta on `(tid, ak)` (its state changed; a delta's
-    /// liveness reads that aspect's state alone).
-    pub fn forget_live(&mut self, tid: &Tid, ak: &Ak) {
-        let k = (*tid, ak.clone());
-        // whichever is fewer: the commits on the aspect (a roster's, not a chat's messages) or
-        // those with a cached answer
-        if let Some(on) = self.ix.by_aspect.get(&k)
-            && on.len() < self.live_bodies.len()
-        {
-            for (_, c) in on {
-                self.live_bodies.remove(c);
-            }
-            return;
-        }
-        let commits = &self.ix.commits;
-        self.live_bodies.retain(|c, m| {
-            drop(crate::costs::span("live bodies: walked"));
-            m.remove(&k);
-            !m.is_empty() && !commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some())
-        });
     }
 
     /// Marks commit `c` changed for node-sync (`changed`): its labels' passes judge it again
@@ -1857,7 +1826,6 @@ impl Core {
 
     /// Notes that the running transaction writes the state of `k` (evicted on rollback).
     pub fn wrote(&mut self, k: (Tid, Ak)) {
-        self.states_read.wrote(&k, true);
         self.written.push(k);
     }
 
@@ -1913,7 +1881,7 @@ impl Core {
             batched: self.batched.clone(),
             memory_tx: self.memory_tx,
             dirty: self.dirty,
-            records: self.records_read.changes(),
+            records: self.store_rows.get(),
             reached: self.reach_log.len(),
         }
     }
@@ -1922,7 +1890,7 @@ impl Core {
     /// for).
     fn changed_since(&mut self, m: &CoreMark) -> bool {
         // a record written alone (`put_commit`, `leftover::put`) changes no index: its stamp says
-        self.dirty || self.written.len() > m.written || self.ix.mark() != m.ix || self.records_read.changes() != m.records
+        self.dirty || self.written.len() > m.written || self.ix.mark() != m.ix || self.store_rows.get() != m.records
     }
 
     /// What `rollback_to` would restore that moved since `m`, by name (`Engine::read`'s check).
@@ -1944,7 +1912,7 @@ impl Core {
             ("batched", self.batched != m.batched),
             ("memory_tx", self.memory_tx != m.memory_tx),
             ("dirty", self.dirty != m.dirty),
-            ("records", self.records_read.changes() != m.records),
+            ("records", self.store_rows.get() != m.records),
         ]
         .into_iter()
         .filter_map(|(f, moved)| moved.then_some(f))
@@ -1959,11 +1927,8 @@ impl Core {
         let sides_back = self.sides.journaled() > m.sides.0 + m.sides.1;
         self.sides.rollback_to(m.sides);
         if self.changed_since(&m) {
-            self.live_bodies.clear();
-            self.bodies.clear();
             self.decoded.clear();
             self.touches.clear();
-            self.records_read.wrote_all();
             if self.memory_tx {
                 self.memory_generation += 1;
             } else {
@@ -1971,7 +1936,6 @@ impl Core {
             }
             self.role_changed();
             for k in self.written.split_off(m.written) {
-                self.states_read.wrote(&k, true);
                 self.states.remove(&k);
                 self.pages.remove(&k);
             }
@@ -2044,8 +2008,7 @@ impl Core {
             reach_log: _,
             // memos: each answer holds while what it read does (`memo`); the stamps of what a
             // rollback restores move
-            states_read: _,
-            records_read: _,
+            store_rows: _,
             epochs_of: _,
             account_views: _,
             account_epochs_of: _,
@@ -2228,7 +2191,7 @@ impl Core {
         self.member().ok_or(Error::Misuse("this node was removed from its account")).map(|_| p)
     }
 
-    fn new(id: Identity, clock: Arc<dyn Clock>, session: osis_crdt::Session, expiring: osis_crdt::Session) -> Core {
+    fn new(id: Identity, clock: Arc<dyn Clock>, session: osis_crdt::Session, expiring: osis_crdt::Session, store_rows: memo::Changes) -> Core {
         let key_salt = osis_base::hash::derive_key("osis node key index", id.seed().expose());
         Core {
             id,
@@ -2303,8 +2266,7 @@ impl Core {
             lie_facts: None,
             key_actors: Default::default(),
             epochs_of: memo::Memo::new("epochs"),
-            states_read: Default::default(),
-            records_read: Default::default(),
+            store_rows,
             account: Default::default(),
             time: Default::default(),
             left: BTreeSet::new(),
@@ -2338,8 +2300,8 @@ impl Core {
             changed: None,
             sync_records: None,
             missed: BTreeSet::new(),
-            bodies: BTreeMap::new(),
-            live_bodies: BTreeMap::new(),
+            bodies: memo::Memo::new("label body"),
+            live_bodies: memo::Memo::new("delta live"),
             replaced_reads: 0,
             death_walks: 0,
             rebuilds: 0,
@@ -2475,7 +2437,7 @@ impl Core {
     /// the indexes derived from it stay exact.
     pub(crate) fn put_meta(&mut self, id: CommitId, m: Meta) {
         // scale checks: each call walks every part of the commit
-        crate::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
+        osis_base::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
         let had = self.ix.commits.get(&id).map(missing_of).unwrap_or_default();
         self.index_missing(&id, &had, &missing_of(&m));
         let was = self.ix.commits.get(&id).map(signers_elsewhere).unwrap_or_default();
@@ -2495,7 +2457,7 @@ impl Core {
 
     pub(crate) fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
         let m = self.ix.commits.remove(id)?;
-        crate::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
+        osis_base::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
         self.index_missing(id, &missing_of(&m), &BTreeSet::new());
         self.note_signed(&signers_elsewhere(&m), &[]);
         self.note_rotation(&m);
@@ -2733,7 +2695,7 @@ impl Tx<'_> {
     /// as `ensure_*` and `load` need them).
     pub fn load_lazy(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
         let k = (*tid, ak.clone());
-        self.core.states_read.read(&k);
+        self.txn.noted_aspect(tid, ak);
         if self.core.states.contains_key(&k) {
             return Ok(());
         }
@@ -2827,7 +2789,7 @@ impl Tx<'_> {
             let whole = more.is_none() || runs >= pages::OP_RUNS;
             if whole {
                 if more.is_some() {
-                    let _s = crate::costs::span("paged op whole: runs");
+                    let _s = osis_base::costs::span("paged op whole: runs");
                 }
                 self.load(tid, ak)?;
             }
@@ -2924,12 +2886,12 @@ impl Tx<'_> {
         let mut moved = refs::Delta::default();
         match pages::join_reset(&mut self.txn, tid, ak, idx, f, delta, &mut moved)? {
             pages::Reset::Whole => {
-                let _s = crate::costs::span("reset: whole");
+                let _s = osis_base::costs::span("reset: whole");
                 Ok(None)
             }
             pages::Reset::Paged { skeleton, unit, changes } => {
-                let _s = crate::costs::span("reset: by pages");
-                self.core.state_changed(tid, ak);
+                let _s = osis_base::costs::span("reset: by pages");
+                self.core.state_changed(ak);
                 let mut u = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
                 u.state = unit;
                 self.txn.put_aspect(tid, ak, &u, Shred::No)?;
@@ -2938,7 +2900,7 @@ impl Tx<'_> {
                 Ok(Some(changes))
             }
             pages::Reset::Laid { state, changes } => {
-                let _s = crate::costs::span("reset: laid out");
+                let _s = osis_base::costs::span("reset: laid out");
                 self.set_state(tid, ak, state, Shred::No)?;
                 Ok(Some(changes))
             }
@@ -2958,7 +2920,7 @@ impl Tx<'_> {
         self.load_lazy(tid, ak)?;
         let touch = pages::touch_of(f, self.core.pages.get(&(*tid, ak.clone())));
         self.ensure_touch(tid, ak, &touch)?;
-        drop(crate::costs::span("state copied whole"));
+        drop(osis_base::costs::span("state copied whole"));
         let out = self.cached(tid, ak).cloned();
         self.evict_pages(tid, ak);
         Ok(out)
@@ -3000,7 +2962,7 @@ impl Tx<'_> {
     /// `set_state` for a join, whose caller keeps the reference index (`refs::Delta::reach`).
     fn write_state(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, shred: Shred) -> Result<()> {
         self.core.touch();
-        self.core.state_changed(tid, ak);
+        self.core.state_changed(ak);
         self.core.wrote((*tid, ak.clone()));
         let mut unit = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
         let (bytes, idx) = pages::write_full(&mut self.txn, tid, ak, f.as_ref(), pages::is_paged(&unit.state), &self.core.key_salt)?;
@@ -3037,7 +2999,7 @@ impl Tx<'_> {
     /// else is written whole (the pages not loaded joined in first). The caller has noted the
     /// state as written (`Core::written`).
     pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touch: &pages::Touch, shred: Shred) -> Result<()> {
-        self.core.state_changed(tid, ak);
+        self.core.state_changed(ak);
         let k = (*tid, ak.clone());
         if let (Some(st), Some(idx), Some(touch)) = (&f, self.core.pages.get_mut(&k), touch)
             && let Some(unit_state) = pages::write_touched(&mut self.txn, idx, tid, ak, st, touch, shred)?
@@ -3067,9 +3029,7 @@ impl Tx<'_> {
     /// they keep; then its blob), and for a role commit its `node/edges` row (`edges`: what the caller already
     /// read of `blob` with `edge_parts_of`, else decoded here).
     pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
-        self.core.bodies.remove(id);
         self.core.decoded.forget(id);
-        self.core.records_read.wrote(id, true);
         self.core.mark_changed(*id);
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
@@ -3093,9 +3053,7 @@ impl Tx<'_> {
 
     /// Removes a commit record (shredded) with what the index keeps beside it.
     pub fn remove_commit(&mut self, id: &CommitId) -> Result<()> {
-        self.core.bodies.remove(id);
         self.core.decoded.forget(id);
-        self.core.records_read.wrote(id, false);
         self.txn.remove_local(&records::commit_key(id), Shred::Yes)?;
         index::remove_edges(self, id)?;
         index::remove_addenda(self, id)
@@ -3104,13 +3062,13 @@ impl Tx<'_> {
     /// The blob of the stored record of commit `id`, decoded once per write of the record
     /// (`Core::decoded`).
     pub fn get_commit(&mut self, id: &CommitId) -> Result<Option<Arc<CommitBlob>>> {
-        self.core.records_read.read(id);
         let key = records::commit_key(id);
+        self.txn.noted_local(&key);
         let txn = &mut self.txn;
-        if let Some(b) = self.core.decoded.record(id, || crate::costs::paused(|| txn.get_local(&key)))? {
+        if let Some(b) = self.core.decoded.record(id, || osis_base::costs::paused(|| txn.get_local(&key)))? {
             return Ok(Some(b));
         }
-        drop(crate::costs::span("commit read"));
+        drop(osis_base::costs::span("commit read"));
         let Some(v) = self.txn.get_local(&key)? else { return Ok(None) };
         let b = Arc::new(decode_commit_record(&v)?.1);
         self.core.decoded.keep_record(*id, b.clone(), &v);
@@ -3220,6 +3178,8 @@ pub struct Engine {
     blobs: Arc<dyn osis_store::Ciphertext>,
     /// The next transaction's sequence in the ciphertext store's notes (`blobs::Cipher`).
     blob_seq: u64,
+    /// Stamps what the engine holds of `blobs`, by blob (`blobs::Cipher`).
+    blob_stamps: osis_base::memo::Stamps,
     /// A transaction's commit or its releases failed: `settle_blobs` runs before the next.
     blobs_unsettled: bool,
     /// The store's `Writes::unknown` when this engine last read it whole (`load`).
@@ -3305,7 +3265,8 @@ impl Engine {
         let store_rng = SeededRng::from_seed(seed);
         let id = Identity::generate(&mut *rng);
         let (session, expiring) = sessions(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, blobs, blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let rows = store.row_changes();
+        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -3330,7 +3291,8 @@ impl Engine {
         let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
         let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
         let (session, expiring) = sessions(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, blobs, blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let rows = store.row_changes();
+        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         e.load()?;
         Ok(e)
     }
@@ -3382,6 +3344,8 @@ impl Engine {
             last = last.max(n.seq);
         }
         t.commit()?;
+        // holds and releases of transactions never committed went
+        self.blob_stamps.wrote_all();
         self.blob_seq = self.blob_seq.max(last + 1);
         self.blobs_unsettled = false;
         Ok(())
@@ -3521,7 +3485,7 @@ impl Engine {
     /// should keep: a change (a lazy take-up) would be undone, dropping every cache, at each call,
     /// so a debug build panics at one that changed anything it undoes, the store or blobs.
     pub(crate) fn read<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
-        let _s = crate::costs::span("read");
+        let _s = osis_base::costs::span("read");
         if self.blobs_unsettled {
             memo::unrecorded(|| self.settle_blobs())?;
         }
@@ -3533,7 +3497,7 @@ impl Engine {
         }
         let start = self.core.mark();
         let txn = self.store.transaction(&mut self.store_rng)?;
-        let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
+        let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
         let r = f(&mut tx);
         // a read that changed something would have its change undone, and every cache dropped, at
         // every call
@@ -3552,7 +3516,7 @@ impl Engine {
 
     /// Runs `f` in one store transaction; events go out once it is durable.
     pub fn run<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
-        let _s = crate::costs::span("tx");
+        let _s = osis_base::costs::span("tx");
         // a store write's outcome was unknown (its sync failed): a commit answered `Err` may have
         // landed after all, so once the store works again everything is read as an open reads
         // it, under a fresh session (that commit's counters may be taken)
@@ -3590,7 +3554,7 @@ impl Engine {
         let mut sample = false;
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
-                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
+                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
                 // the persisted index follows the in-memory indexes in the same transaction
                 let mut r = f(&mut tx);
                 _after = memo::Unrecorded::start();
@@ -3680,13 +3644,13 @@ impl Engine {
                     }
                 }
                 let persisted = {
-                    let _s = crate::costs::span("tx: persist index");
+                    let _s = osis_base::costs::span("tx: persist index");
                     r.and_then(|v| crate::sides::persist(&mut tx).map(|_| v)).and_then(|v| index::persist(&mut tx).map(|_| v))
                 };
                 match persisted {
                     Ok(v) => {
                         let Tx { mut txn, mut blobs, .. } = tx;
-                        let _s = crate::costs::span("tx: store commit");
+                        let _s = osis_base::costs::span("tx: store commit");
                         // add before, remove after: the ciphertext store's holds commit first,
                         // the engine's store records this transaction's sequence with its own
                         // commit, the releases follow it (`blobs::Cipher`)
@@ -3763,7 +3727,7 @@ impl Engine {
         self.core = fresh;
         let r = {
             let txn = self.store.transaction(&mut self.store_rng)?;
-            let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
+            let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
             crate::apply::load(&mut tx, rebuild)
         };
         crate::apply::load_awaiting(&mut self.core);
@@ -3775,7 +3739,7 @@ impl Engine {
 
     /// An empty `Core` with this one's identity, sessions, clock and settings.
     fn blank_core(&self) -> Core {
-        let mut fresh = Core::new(self.core.id.clone(), self.clock.clone(), self.core.session, self.core.expiring);
+        let mut fresh = Core::new(self.core.id.clone(), self.clock.clone(), self.core.session, self.core.expiring, self.store.row_changes());
         fresh.later_sessions = self.core.later_sessions;
         fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
         fresh.commits_watched = self.core.commits_watched;
@@ -3812,7 +3776,7 @@ impl Engine {
             let mut store_rng = SeededRng::from_u64(0);
             let load = || -> Result<Option<u64>> {
                 let txn = self.store.transaction(&mut store_rng)?;
-                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, 0), core: &mut fresh, rng: &mut rng };
+                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, 0), core: &mut fresh, rng: &mut rng };
                 // a transaction that left the index stale (`index::invalidate`: commit records
                 // changed outside the in-memory indexes) is followed by a reload
                 if !index::current(&mut tx)? {
@@ -3831,7 +3795,7 @@ impl Engine {
                 Ok(Some(tx.blobs.reads))
             };
             // its work is not the measured code's (scale checks count work)
-            let r = crate::costs::paused(|| osis_perm::uncounted(load));
+            let r = osis_base::costs::paused(|| osis_perm::uncounted(load));
             let at = if rebuild { "rebuilt from the commit records" } else { "opened from the persisted index" };
             assert!(r.is_ok(), "{at}: {:?}", r.err());
             let Ok(Some(reads)) = r else { return };
@@ -3954,25 +3918,6 @@ mod tests {
                 f(&mut p.engine).unwrap()
             }
         }
-    }
-
-    // spec: none (costs, spec/requirements.md Scale): a write on an aspect with few commits (a
-    // roster) forgets their cached liveness without walking the others' (a chat's messages).
-    #[test]
-    fn forget_live_walks_no_other_bodies() {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
-        let core = &mut lp.peers[0].engine.core;
-        let (t, roster, msg) = (core.id.tid(), Ak::new("roles.0").unwrap(), Ak::new("chat:msg~0").unwrap());
-        let id = |i: u8| osis_base::CommitId([i; 32]);
-        for i in 0..9 {
-            core.live_bodies.entry(id(i)).or_default().insert((t, msg.clone()), true);
-        }
-        core.live_bodies.entry(id(9)).or_default().insert((t, roster.clone()), true);
-        core.ix.by_aspect.insert((t, roster.clone()), (osis_base::Ts::default(), id(9)));
-        crate::costs::take();
-        core.forget_live(&t, &roster);
-        assert!(!crate::costs::take().iter().any(|x| x.0 == "live bodies: walked"));
-        assert_eq!(core.live_bodies.len(), 9);
     }
 
     fn holder(t: Tid, m: Tid, role: Option<Role>) -> Mutation {

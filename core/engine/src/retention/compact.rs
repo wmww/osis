@@ -487,7 +487,7 @@ fn held_bytes<'b>(tx: &mut Tx<'_>, blobs: impl Iterator<Item = &'b BlobId>) -> R
         }
     }
     // counted: tests read that the trigger's work per write is flat in a value's size
-    crate::costs::count("compact: tree blobs sized", n);
+    osis_base::costs::count("compact: tree blobs sized", n);
     Ok(sum)
 }
 
@@ -519,7 +519,7 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
         })
         .collect();
     // counted: tests read how many bodies the trigger weighs
-    crate::costs::count("compact: bodies weighed", ids.len() as u64);
+    osis_base::costs::count("compact: bodies weighed", ids.len() as u64);
     // per session source of a candidate, the last counter to walk to
     let mut upto: BTreeMap<osis_crdt::Source, u64> = BTreeMap::new();
     for (c, ai, by_id, snapshot, _) in &ids {
@@ -761,7 +761,7 @@ impl Engine {
             let Ok(me) = self.core.writer_for(&tid) else { continue };
             let quiet_owed = self.core.compaction.est.get(&k).is_some_and(|e| e.quiet);
             // counted: tests read how often the trigger weighs and fires per write
-            crate::costs::count("compact: aspects weighed", 1);
+            osis_base::costs::count("compact: aspects weighed", 1);
             let Some((l, stops)) = Load::of(self, &tid, &ak, me)? else {
                 self.core.compaction.est.remove(&k);
                 continue;
@@ -774,10 +774,10 @@ impl Engine {
             if fire {
                 match self.snapshot(&tid, &ak) {
                     Ok(Some(c)) => {
-                        crate::costs::count("compact: snapshots written", 1);
+                        osis_base::costs::count("compact: snapshots written", 1);
                         if !full {
                             // counted: tests read how often a quiet aspect is covered
-                            crate::costs::count("compact: quiet snapshots", 1);
+                            osis_base::costs::count("compact: quiet snapshots", 1);
                         }
                         out.push((tid, ak.clone(), c));
                         held = 0;
@@ -874,9 +874,9 @@ mod tests {
 
     /// The trigger's step at `e`: (aspects weighed, snapshots written).
     fn step(e: &mut Engine) -> (u64, u64) {
-        crate::costs::take();
+        osis_base::costs::take();
         e.compactions().unwrap();
-        let c = crate::costs::take();
+        let c = osis_base::costs::take();
         let get = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
         (get("compact: aspects weighed"), get("compact: snapshots written"))
     }
@@ -1028,9 +1028,9 @@ mod tests {
                     }
                 }
                 for (p, o) in lp.peers[..2].iter_mut().zip(&mut out) {
-                    crate::costs::take();
+                    osis_base::costs::take();
                     let snaps = p.engine.compactions().unwrap();
-                    let c = crate::costs::take();
+                    let c = osis_base::costs::take();
                     weighed += c.iter().find(|x| x.0 == "compact: aspects weighed").map_or(0, |x| x.2);
                     written += snaps.len() as u64;
                     for (_, _, s) in snaps {
@@ -1175,9 +1175,9 @@ mod tests {
             lp.peers[0].engine.grant(&t, &b, &edge(Role::Write)).unwrap();
             lp.sync_all().unwrap();
             let e = &mut lp.peers[1].engine;
-            crate::costs::take();
+            osis_base::costs::take();
             let snaps = e.compactions().unwrap();
-            let c = crate::costs::take();
+            let c = osis_base::costs::take();
             let weighed = c.iter().find(|x| x.0 == "compact: aspects weighed").map_or(0, |x| x.2);
             assert_eq!(snaps.iter().map(|x| (x.0, x.1.clone())).collect::<Vec<_>>(), vec![(t, m_ak.clone())], "restart {restart}: compacted once it may write");
             assert_eq!(weighed, if restart { 2 } else { 1 }, "restart {restart}: only the owed aspects weighed");

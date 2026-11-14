@@ -3,6 +3,7 @@
 
 use osis_base::{Ak, BlobId, CommitId, Link, Tid, WallMs};
 use osis_crypto::{CryptoRngCore, Secret32};
+use osis_base::memo::Stamps;
 use osis_store::{CipherTx, Ciphertext};
 use std::collections::BTreeMap;
 
@@ -16,8 +17,13 @@ use std::collections::BTreeMap;
 /// holder makes (`defer`: node sync's entry rows in the hub's store) go with the releases. A step
 /// rolled back (`Tx::step`) releases what it held and keeps none of its releases or removals. A failed write to the ciphertext store
 /// (which drops its open writes) fails the commit.
+///
+/// It is the one door to what the engine holds, so it stamps it (`Engine::blob_stamps`): a blob
+/// by ID, read by `held`, `read` and `len`, changed by a hold or release here and again by its
+/// undo; settling (`Engine::settle_blobs`) changes them all.
 pub struct Cipher<'a> {
     src: &'a dyn Ciphertext,
+    stamps: &'a Stamps,
     tx: Option<Box<dyn CipherTx + 'a>>,
     /// This transaction's sequence (`Engine::blob_seq`).
     seq: u64,
@@ -42,8 +48,8 @@ pub struct Cipher<'a> {
 pub struct CipherMark(usize, usize, usize);
 
 impl<'a> Cipher<'a> {
-    pub fn new(src: &'a dyn Ciphertext, seq: u64) -> Cipher<'a> {
-        Cipher { src, tx: None, seq, held: Vec::new(), releases: BTreeMap::new(), journal: Vec::new(), removals: Vec::new(), failed: false, done: false, reads: 0 }
+    pub fn new(src: &'a dyn Ciphertext, stamps: &'a Stamps, seq: u64) -> Cipher<'a> {
+        Cipher { src, stamps, tx: None, seq, held: Vec::new(), releases: BTreeMap::new(), journal: Vec::new(), removals: Vec::new(), failed: false, done: false, reads: 0 }
     }
 
     fn tx(&mut self) -> &mut (dyn CipherTx + 'a) {
@@ -58,6 +64,7 @@ impl<'a> Cipher<'a> {
 
     /// Whether the engine holds blob `id` (a release this transaction made counts).
     pub fn held(&mut self, id: &BlobId) -> crate::error::Result<bool> {
+        self.stamps.read(id);
         if self.releases.contains_key(id) {
             return Ok(false);
         }
@@ -72,11 +79,13 @@ impl<'a> Cipher<'a> {
     /// Bytes `offset..offset+len` of blob `id`.
     pub fn read(&mut self, id: &BlobId, offset: u64, len: usize) -> crate::error::Result<Option<Vec<u8>>> {
         self.reads += 1;
+        self.stamps.read(id);
         Ok(self.tx().read(id, offset, len)?)
     }
 
     /// Blob `id`'s byte length, held by the engine or kept by the store for others, unread.
     pub fn len(&mut self, id: &BlobId) -> crate::error::Result<Option<u64>> {
+        self.stamps.read(id);
         Ok(self.tx().len(id)?)
     }
 
@@ -84,6 +93,7 @@ impl<'a> Cipher<'a> {
     pub fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> crate::error::Result<bool> {
         if let Some(m) = self.releases.remove(id) {
             // released and held again in one transaction: kept
+            self.stamps.wrote(id, true);
             self.journal.push((*id, Some(m)));
             return Ok(false);
         }
@@ -91,6 +101,7 @@ impl<'a> Cipher<'a> {
         self.failed |= r.is_err();
         let new = r?;
         if new {
+            self.stamps.wrote(id, true);
             self.held.push((*id, memory));
         }
         Ok(new)
@@ -100,6 +111,7 @@ impl<'a> Cipher<'a> {
     /// the engine's store committed.
     pub fn release(&mut self, id: &BlobId, memory: bool) -> crate::error::Result<()> {
         if !self.releases.contains_key(id) {
+            self.stamps.wrote(id, false);
             self.releases.insert(*id, memory);
             self.journal.push((*id, None));
         }
@@ -125,6 +137,7 @@ impl<'a> Cipher<'a> {
     /// Releases what was newly held since `m` and undoes the releases made since.
     pub fn rollback_to(&mut self, m: CipherMark) {
         for (id, was) in self.journal.drain(m.1.min(self.journal.len())..).rev() {
+            self.stamps.wrote(&id, true);
             match was {
                 None => drop(self.releases.remove(&id)),
                 Some(memory) => drop(self.releases.insert(id, memory)),
@@ -134,6 +147,7 @@ impl<'a> Cipher<'a> {
         let undo: Vec<_> = self.held.drain(m.0.min(self.held.len())..).rev().collect();
         if let Some(t) = self.tx.as_mut() {
             for (id, memory) in undo {
+                self.stamps.wrote(&id, false);
                 // a failure dropped the store's open writes: the commit fails
                 self.failed |= t.release(&id, memory).is_err();
             }

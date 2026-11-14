@@ -10,7 +10,7 @@
 //! stamped per thing.
 
 use super::journal::Journaled;
-use super::memo::Stamps;
+use osis_base::memo::Stamps;
 use osis_base::{CommitId, CreationRecord, RecordLink, Role, Tid};
 use osis_perm::{HeldSet, RoleCommit};
 use std::collections::{BTreeMap, BTreeSet};

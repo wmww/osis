@@ -178,7 +178,7 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
 /// Every departure `a`'s epochs must cover: its own (`direct_departures`). A memo
 /// (`Core::departures`).
 pub(crate) fn departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
-    crate::engine::memo::Memo::get_in(tx, |tx| &tx.core.departures, a, |tx| Ok(direct_departures(tx, a)?.into_iter().collect()))
+    osis_base::memo::Memo::get_in(tx, |tx| &tx.core.departures, a, |tx| Ok(direct_departures(tx, a)?.into_iter().collect()))
 }
 
 /// The roles of `a` that `who` (this node, a key actor it signs as, or a holder actor) may

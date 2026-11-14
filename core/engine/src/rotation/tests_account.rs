@@ -355,7 +355,7 @@ fn account_view_is_built_once_per_rotation() {
         lp.peers[0].engine.commit(m).unwrap();
     };
     write(&mut lp);
-    let builds = || crate::costs::take().into_iter().filter(|x| x.0 == "account view").map(|x| x.2).sum::<u64>();
+    let builds = || osis_base::costs::take().into_iter().filter(|x| x.0 == "account view").map(|x| x.2).sum::<u64>();
     builds();
     for _ in 0..50 {
         write(&mut lp);
@@ -533,14 +533,14 @@ fn rotation_judges_its_epochs_once_and_writes_stay_flat() {
         }
         lp.sync_all().unwrap();
         let e = &mut lp.peers[1].engine;
-        crate::costs::take();
+        osis_base::costs::take();
         e.ingest(&rot, Vec::new()).unwrap();
         let judged = |c: Vec<(&'static str, std::time::Duration, u64)>| c.into_iter().find(|x| x.0 == "rejudge: a commit").map_or(0, |x| x.2);
-        let on_rotation = judged(crate::costs::take());
+        let on_rotation = judged(osis_base::costs::take());
         let mut m = crate::Mutation::new();
         m.set(t, &Ak::new("x:c.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
         lp.peers[1].commit(m).unwrap();
-        let costs = crate::costs::take();
+        let costs = osis_base::costs::take();
         (on_rotation, judged(costs.clone()), costs.iter().filter(|x| x.0 == "account view").map(|x| x.2).sum::<u64>())
     };
     let (small, large) = (count(5), count(50));

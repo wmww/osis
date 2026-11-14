@@ -194,7 +194,7 @@ pub(crate) fn settle_due(tx: &mut Tx<'_>) -> Result<()> {
 /// the nodes they free, plus a memo hit per source of each thing.
 fn judge(tx: &mut Tx<'_>, fs: Vec<Freed>) -> Result<Judgment> {
     // counted: tests read how much a deletion judges in all
-    crate::costs::count("freed: rows judged", fs.len() as u64);
+    osis_base::costs::count("freed: rows judged", fs.len() as u64);
     let mut by_thing: BTreeMap<Tid, Vec<Freed>> = BTreeMap::new();
     for f in fs {
         by_thing.entry(f.tid).or_default().push(f);

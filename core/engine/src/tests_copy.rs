@@ -84,7 +84,7 @@ fn observe(lp: &mut LocalPeer, t: Tid) -> Vec<String> {
 
 /// Each memo's and phase's runs (not their time): a copy's memos hit and miss as the original's.
 fn runs() -> Vec<(&'static str, u64)> {
-    crate::costs::take().into_iter().map(|(k, _, n)| (k, n)).collect()
+    osis_base::costs::take().into_iter().map(|(k, _, n)| (k, n)).collect()
 }
 
 // spec: none (internal: notes/test-harnesses.md, Copied worlds). A copied world goes on exactly as the

@@ -345,7 +345,7 @@ pub(crate) fn signed_by_author(core: &crate::engine::Core, blob: &CommitBlob, id
 }
 
 fn check_signature(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId, vk: &VerifyingKey) -> Result<()> {
-    let _s = crate::costs::span("examine: signature");
+    let _s = osis_base::costs::span("examine: signature");
     if let Err(e) = osis_commit::verify_signature(id, &blob.sigs, vk) {
         // the first copy's signature, kept while the author was away: a true copy may be held
         if tx.core.ix.pending.contains_key(id) {
@@ -360,7 +360,7 @@ fn check_signature(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId, vk: &Verif
 /// more) or still unreadable by this build. A parked row may hold the bytes as received
 /// (`park`): decoded as a peer's, checked canonical, before anything applies from them.
 fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
-    let _s = crate::costs::span("reexamine: read pending");
+    let _s = osis_base::costs::span("reexamine: read pending");
     expire_stored(tx, id)?;
     let Some((kind, bytes)) = tx.txn.get_pending(id)? else {
         tx.core.ix.pending.remove(id);
@@ -782,7 +782,7 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
         return Ok(out);
     }
     let received = tx.now();
-    let _s = crate::costs::span("examine");
+    let _s = osis_base::costs::span("examine");
     let out = match examine(tx, &mut blob, &id, &BTreeSet::new(), origin)? {
         Exam::Ready(parts) => {
             let w = parts.waiting.as_ref().map(Waiting::copy);
@@ -1043,7 +1043,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
         return Ok(Ingested::Duplicate(*id));
     }
     let mut merged = merge_parts(held, blob.clone());
-    let _s = crate::costs::span("examine");
+    let _s = osis_base::costs::span("examine");
     let out = match examine(tx, &mut merged, id, &skip, Origin::Remote)? {
         // nothing joins: the late parts keep waiting under the applied commit
         Exam::Ready(Parts { waiting: Some(w), whole, streamed, unjudged, .. }) if whole.is_empty() && streamed.is_empty() && unjudged.is_empty() => {
@@ -1413,7 +1413,7 @@ impl Engine {
     /// `room`: a memory commit's (`ingest_memory`); `None` on the durable path.
     fn ingest_class(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>, room: Option<u64>, lists: &[Vec<u8>]) -> Result<Ingested> {
         let memory = room.is_some();
-        let _s = crate::costs::span("ingest");
+        let _s = osis_base::costs::span("ingest");
         let mut fresh = false;
         self.core.memory_room = room;
         let r = self.run(|tx| {
@@ -1533,14 +1533,14 @@ impl Engine {
     }
 
     pub fn reexamine(&mut self) -> Result<()> {
-        let _s = crate::costs::span("reexamine");
+        let _s = osis_base::costs::span("reexamine");
         loop {
             waits::wake(&mut self.core);
             let ids: Vec<CommitId> = self.core.ix.pending.keys().copied().collect();
             if ids.is_empty() {
                 return Ok(());
             }
-            let _s = crate::costs::span("reexamine: round");
+            let _s = osis_base::costs::span("reexamine: round");
             let progressed = self.run(|tx| {
                 let mut blobs: Vec<(CommitId, CommitBlob)> = Vec::new();
                 let pending = &tx.core.ix.pending;
@@ -1849,10 +1849,10 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     let old = if fast { None } else { crate::engine::index::old_judgments(tx) };
     if fast {
         {
-            let _s = crate::costs::span("open: index");
+            let _s = osis_base::costs::span("open: index");
             crate::engine::index::load(tx)?;
         }
-        let _s = crate::costs::span("open: adapt");
+        let _s = osis_base::costs::span("open: adapt");
         // perm's inputs: the edge writes of the role commits, oldest first, from what the
         // index keeps of their bodies
         let mut edges = crate::engine::index::load_edges(tx)?;
@@ -1994,7 +1994,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     // grant: another node's clock) is derived now, as it was when that record arrived
     validity::resolve_unresolved(tx)?;
     if fast {
-        let _s = crate::costs::span("open: walks");
+        let _s = osis_base::costs::span("open: walks");
         crate::engine::index::update_timelines_saved(tx)?;
     } else {
         tx.core.update_timelines();
@@ -2155,7 +2155,7 @@ fn each_held_page(tx: &mut Tx<'_>, id: &CommitId, ai: usize, want: Option<osis_c
     let Some(p) = blob.part(ai) else { return Ok(None) };
     let dedup = tx.core.dedup(&a.tid).ok_or(Error::Corrupt("dedup"))?;
     // counted with its pages (`atomic::SharedPages`)
-    crate::costs::count("stream: bytes", p.delta.len() as u64);
+    osis_base::costs::count("stream: bytes", p.delta.len() as u64);
     Ok(Some(atomic::stream_stored(tx, &h, id, ai, checked(&p.delta), &dedup, want, f)?))
 }
 
@@ -2206,7 +2206,7 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
         let d = match tx.core.decoded.part(id, p) {
             Some(d) => d,
             None => {
-                drop(crate::costs::span("part decode"));
+                drop(osis_base::costs::span("part decode"));
                 let d = Arc::new(examine_stored(tx, &header, [p], id)?.pop().map(|x| x.1).ok_or(Error::Corrupt("stored delta"))?);
                 tx.core.decoded.keep_part(*id, p, d.clone());
                 d
@@ -2215,7 +2215,7 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
         out.push((p.ai, (*d).clone()));
     }
     // cost tests: bodies read, decoded or kept
-    crate::costs::count("part read", out.len() as u64);
+    osis_base::costs::count("part read", out.len() as u64);
     for ai in stripped {
         let Some(a) = header.aspects.get(ai) else { continue };
         let Some(l) = crate::retention::leftover::get(tx, &a.tid, &a.ak, id, ai)? else { return Err(Error::Corrupt("leftover missing")) };

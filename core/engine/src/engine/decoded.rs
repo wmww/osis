@@ -181,10 +181,10 @@ mod tests {
         };
         let c = write(e, 1);
         let decodes = |e: &mut crate::Engine| {
-            crate::costs::take();
+            osis_base::costs::take();
             let part = e.run(|tx| crate::apply::held_part(tx, &c, 0)).unwrap();
             assert!(part.is_some());
-            let costs = crate::costs::take();
+            let costs = osis_base::costs::take();
             let n = |name: &str| costs.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
             (n("commit read"), n("part decode"))
         };
@@ -236,11 +236,11 @@ mod tests {
             e.core.decoded.clear();
             let mut judge = |c| assert_eq!(e.run(|tx| crate::retention::snapshot::covered(tx, &s, c, &t, &ak)).unwrap(), Some(true));
             let count = |costs: &[(&str, std::time::Duration, u64)], name: &str| costs.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
-            crate::costs::take();
+            osis_base::costs::take();
             judge(&bodies[0]);
-            let first = crate::costs::take();
+            let first = osis_base::costs::take();
             bodies[1..].iter().for_each(&mut judge);
-            let rest = crate::costs::take();
+            let rest = osis_base::costs::take();
             let blob = e.run(|tx| tx.get_commit(&s)).unwrap().unwrap();
             let index = e.core.decoded.page_index(&s, &blob.parts[0]).unwrap().approx_bytes();
             (count(&first, "stream: bytes"), count(&rest, "stream: bytes"), count(&rest, "apply: piece"), count(&rest, "covered: snapshot part bytes"), index)

@@ -60,7 +60,7 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
 fn strip_carried_waiting(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header, ai: usize) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     let Some(part) = blob.parts.iter().find(|p| p.ai == ai && p.delta != emptied()).cloned() else { return Ok(()) };
-    let carries = crate::engine::memo::Memo::get_in(tx, |tx| &tx.core.waiting_carries, &(*id, ai), |tx| {
+    let carries = osis_base::memo::Memo::get_in(tx, |tx| &tx.core.waiting_carries, &(*id, ai), |tx| {
         // read for the answer's life: its commit leaving the pending set moves it, so the memo's
         // sweep drops it (bounded by what waits); a look re-pending it unchanged does not (`pend`)
         let _ = tx.core.ix.pending.get(id);

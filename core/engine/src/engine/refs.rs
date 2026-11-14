@@ -58,7 +58,7 @@ impl Delta {
     /// Adds `sign` for every tid in the values `f` holds (`Fragment::each_value`).
     pub(crate) fn add(&mut self, f: &Fragment, sign: i64) {
         f.each_value(&mut |v| {
-            drop(crate::costs::span("refs: value read"));
+            drop(osis_base::costs::span("refs: value read"));
             tids(v, &mut |t| *self.0.entry(t).or_default() += sign);
         });
     }
@@ -131,7 +131,7 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
         let (to, from) = (tx.txn.index(TO)?, tx.txn.index(FROM)?);
         let pre = from_prefix(source, ak);
         for (target, n) in d.0.into_iter().filter(|x| x.1 != 0) {
-            drop(crate::costs::span("refs: row written"));
+            drop(osis_base::costs::span("refs: row written"));
             let fk = [pre.as_slice(), target.as_bytes()].concat();
             let tk = [target.as_bytes().as_slice(), source.as_bytes(), ak.as_str().as_bytes()].concat();
             let old = tx.txn.table_get(from, &fk)?.map(|v| count_of(&v)).transpose()?.unwrap_or(0);
@@ -249,7 +249,7 @@ pub(crate) fn references(tx: &mut Tx<'_>, source: &Tid, target: &Tid) -> Result<
     let end = [pre.as_slice(), &[0xff]].concat();
     let mut any = false;
     for (k, _) in tx.txn.table_range(to, &pre, Some(&end), usize::MAX)? {
-        drop(crate::costs::span("refs: row read"));
+        drop(osis_base::costs::span("refs: row read"));
         let a = k.get(pre.len()..).ok_or(Error::Corrupt("reference row"))?;
         let ak = std::str::from_utf8(a).ok().and_then(|a| Ak::new(a).ok()).ok_or(Error::Corrupt("reference row"))?;
         if !ak.ephemeral() && ak.as_str() != RETAINERS {
@@ -282,7 +282,7 @@ pub(crate) fn to_page(tx: &mut Tx<'_>, target: &Tid, after: Option<(&Tid, &Ak)>,
     let end = [pre.as_slice(), &[0xff; 16]].concat();
     let mut out = Vec::new();
     for (k, _) in tx.txn.table_range(to, &start, Some(&end), n)? {
-        drop(crate::costs::span("refs: row read"));
+        drop(osis_base::costs::span("refs: row read"));
         let bad = || Error::Corrupt("reference row");
         let rest = k.get(pre.len()..).ok_or_else(bad)?;
         let (s, a) = rest.split_at_checked(osis_base::format::TID_LEN).ok_or_else(bad)?;

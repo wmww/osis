@@ -125,7 +125,7 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
 /// A paged state loads only the pages the join touches, or where it resets or re-encodes a
 /// paged collection joins it a page at a time (`Tx::join_reset`).
 pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, dead: Option<&mut Killed>) -> Result<Changes> {
-    let _s = crate::costs::span("apply: join");
+    let _s = osis_base::costs::span("apply: join");
     tx.load_lazy(tid, ak)?;
     // the state is held stripped and stripping commutes with join (spec/crdt.md §4.7): the
     // one predicate, applied to what joins and to what a rebuild gives
@@ -225,7 +225,7 @@ impl osis_crdt::PageSource for SharedPages<'_, '_, '_> {
         let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
         let page = osis_label::BlobReader::new(self.dedup, &mut blobs).get(link)?;
         // counted: tests read how many stored bytes a stream decoded
-        crate::costs::count("stream: bytes", page.len() as u64);
+        osis_base::costs::count("stream: bytes", page.len() as u64);
         Ok(page)
     }
 }
@@ -266,7 +266,7 @@ pub(super) fn stream_stored(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usiz
     let mut interner = osis_crdt::Interner::new();
     let r = osis_commit::read_part(h, id, ai, delta, &mut interner, Some(source), want, &mut |piece| {
         // counted: tests read how many pieces streamed
-        let _s = crate::costs::span("apply: piece");
+        let _s = osis_base::costs::span("apply: piece");
         let mut tx = cell.try_borrow_mut().map_err(|_| STOPPED)?;
         #[cfg(test)]
         if let Some(n) = tx.core.piece_fault.as_mut() {
@@ -519,7 +519,6 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
     // the reader actor of the thing's deltas is known now
     let touching: Vec<CommitId> = tx.core.aspects_of(&t).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
     for c in touching {
-        tx.core.bodies.remove(&c);
         tx.core.mark_changed(c);
     }
     Ok(true)
@@ -536,7 +535,7 @@ fn note_addenda_due(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
 
 /// Applies a verified commit (`parts` examined) in this transaction.
 pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, origin: Origin, received: WallMs) -> Result<()> {
-    let _s = crate::costs::span("apply");
+    let _s = osis_base::costs::span("apply");
     tx.core.touch();
     let id = blob.id();
     let h = Arc::new(blob.header.clone());
@@ -603,19 +602,19 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     let pend = super::keys::before_join(tx, &h, &id, &read, &valid)?;
     let mut j = joins(tx, &h, &id, blob, &parts, &valid)?;
     {
-        let _s = crate::costs::span("apply: put_commit");
+        let _s = osis_base::costs::span("apply: put_commit");
         // role-class parts join whole: the record holds the parts read
         tx.put_commit(&id, blob, &meta, Shred::No, h.kind.is_role().then(|| read.edges()))?;
     }
     note_held_rules(tx, &h, &id, &parts)?;
     after_store(tx, &j);
     {
-        let _s = crate::costs::span("apply: retention");
+        let _s = osis_base::costs::span("apply: retention");
         crate::retention::stripped_joined(tx, &id, &parts.stripped_joined(), &mut j.changed)?;
         crate::retention::on_apply(tx, &id, &mut j.changed)?;
     }
     {
-        let _s = crate::costs::span("apply: observe");
+        let _s = osis_base::costs::span("apply: observe");
         observe_all(tx, &j)?;
     }
     super::keys::after_join(tx, &h, &parts.whole, &valid, pend)?;
@@ -986,7 +985,7 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         }
         // every path that changes a `group.0` (late deltas, re-judging) updates `groups.0`
         "group.0" => {
-            let _s = crate::costs::span("group.0 read whole");
+            let _s = osis_base::costs::span("group.0 read whole");
             let def = group_def(v);
             // an ephemeral membership carries nothing durable away (`Core::note_cut`)
             if !tx.core.memory_tx {
@@ -1092,7 +1091,7 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
         for c in tx.core.ix.by_aspect.get(&k).map(|s| s.iter().map(|(_, c)| *c).collect::<Vec<_>>()).unwrap_or_default() {
             let Some(ai) = tx.core.ix.commits.get(&c).filter(|m| !m.header.kind.has_own_writes()).and_then(|m| m.aspect(&tid, &ak)) else { continue };
             let mut held = Carried::default();
-            let gives = crate::costs::paused(|| super::each_held_piece(tx, &c, ai, &mut |_, f| {
+            let gives = osis_base::costs::paused(|| super::each_held_piece(tx, &c, ai, &mut |_, f| {
                 held.add(&f);
                 Ok(())
             }))?;
@@ -1103,9 +1102,9 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
             debug_assert!(bound.is_some_and(|b| b.holds(&held)), "held snapshot {c:?} on {tid:?} {ak:?}: its carried bounds miss a write it holds");
         }
         let cached = (tx.core.states.get(&k).cloned(), tx.core.pages.get(&k).cloned());
-        let (want, got) = crate::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, None)?, tx.state(&tid, &ak)?.cloned())) })?;
+        let (want, got) = osis_base::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, None)?, tx.state(&tid, &ak)?.cloned())) })?;
         // and the reference index, derived from it
-        crate::costs::paused(|| crate::engine::refs::check(tx, &tid, &ak, got.as_ref()))?;
+        osis_base::costs::paused(|| crate::engine::refs::check(tx, &tid, &ak, got.as_ref()))?;
         match cached.0 {
             Some(s) => tx.core.states.insert(k.clone(), s),
             None => tx.core.states.remove(&k),
@@ -1186,7 +1185,7 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         e.memory |= memory;
         return Ok(());
     }
-    let _s = crate::costs::span("rebuild");
+    let _s = osis_base::costs::span("rebuild");
     crate::engine::listing::before_rebuild(tx, tid, ak)?;
     let listed = tx.core.valueless_dirty.contains(&k).then(|| tx.core.ix.valueless.get(&k).cloned()).flatten().filter(|l| !l.is_empty());
     let mut carriers = Vec::new();
@@ -1221,7 +1220,7 @@ pub(crate) fn strip_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment, ow
     if tx.core.batched.as_ref().is_some_and(|b| b.contains_key(&k)) {
         return Ok(());
     }
-    let _s = crate::costs::span("expiry: strip");
+    let _s = osis_base::costs::span("expiry: strip");
     // the state changes: held purge-on-replace bodies are judged again (`retention::settle_none`)
     if crate::retention::history::of(tx.core, tid, ak).purges() {
         tx.core.none_due.insert(k.clone());
@@ -1321,7 +1320,7 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<
             break;
         }
         let Some((ai, snap, valid)) = joining(tx, c)? else { continue };
-        let _s = (!settled).then(|| crate::costs::span("rebuild: body"));
+        let _s = (!settled).then(|| osis_base::costs::span("rebuild: body"));
         debug_assert!(snapshots || !snap, "snapshot {c:?} of {tid:?} {ak:?} held and stored, not in `ix.snapshots`");
         // an invalid part joins nothing, but its body is held: un-merge takes exactly an invalid
         // delta's own writes, all its body carries (spec/crdt.md §3.3, §4.6), and an invalid

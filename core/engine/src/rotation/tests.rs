@@ -1711,9 +1711,9 @@ fn epochs_are_derived_once_per_change_of_what_they_read() {
     let (t, other) = (group(&mut lp, 0), group(&mut lp, 0));
     let w = lp.peers[1].engine.me();
     let derived = |lp: &mut LocalPeer| {
-        crate::costs::take();
+        osis_base::costs::take();
         assert!(lp.peers[0].engine.core.epochs(&t).is_some());
-        crate::costs::take().iter().filter(|x| x.0 == "epochs").map(|x| x.2).sum::<u64>()
+        osis_base::costs::take().iter().filter(|x| x.0 == "epochs").map(|x| x.2).sum::<u64>()
     };
     derived(&mut lp);
     assert_eq!(derived(&mut lp), 0, "asked again");

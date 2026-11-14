@@ -617,7 +617,7 @@ fn write_edges_all(tx: &mut Tx<'_>) -> Result<()> {
 /// The `EDGES` rows of the held role commits; an error when one is missing or does not
 /// decode (the open then rebuilds).
 pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::apply::validity::EdgeParts>> {
-    let _s = crate::costs::span("open: edges rows");
+    let _s = osis_base::costs::span("open: edges rows");
     let t = tx.txn.index(EDGES)?;
     let lim = |n: usize| osis_base::Limits { max_depth: 2 * osis_base::format::MAX_OBJECT_DEPTH, max_bytes: n };
     let mut out = BTreeMap::new();
@@ -1038,7 +1038,7 @@ pub(crate) fn old_judgments(tx: &mut Tx<'_>) -> Option<OldJudgments> {
 /// bodies.
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     // commit records: the head and the header's bytes only, nothing decoded
-    let hs = crate::costs::span("open: headers");
+    let hs = osis_base::costs::span("open: headers");
     let mut recs = Vec::new();
     tx.scan(records::COMMIT, |k, v| {
         let id = CommitId(k.try_into().map_err(|_| Error::Corrupt("commit record key"))?);
@@ -1050,7 +1050,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     drop(hs);
-    let _ms = crate::costs::span("open: metas");
+    let _ms = osis_base::costs::span("open: metas");
     let mut rows: BTreeMap<CommitId, Vec<u8>> = BTreeMap::new();
     let t = tx.txn.index(METAS)?;
     scan_table(&mut tx.txn, t, &[], None, |k, v| {

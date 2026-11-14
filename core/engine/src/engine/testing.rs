@@ -32,6 +32,7 @@ impl Engine {
             Ok(Engine {
                 store: self.store.test_copy()?,
                 blobs: self.blobs.clone().test_copy(clock.clone())?,
+                blob_stamps: self.blob_stamps.clone(),
                 blob_seq: self.blob_seq,
                 blobs_unsettled: self.blobs_unsettled,
                 unknown_seen: self.unknown_seen,
