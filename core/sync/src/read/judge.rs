@@ -484,7 +484,9 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen
 
 /// spec/sync-compaction.md §1 Duplicates: of entries of one commit with the same delta set, both
 /// copies or both not, all but the lowest blob ID go; where S's body is a per-sync-ID copy, a
-/// shared blob beside a copy goes whatever its ID. An entry whose bytes are not held is none.
+/// shared blob beside a copy goes whatever its ID. The same delta set as this node checked it: the
+/// same parts opened and the same unopened sections byte for byte. An entry whose bytes are not
+/// held is none.
 fn duplicates(g: &mut impl Ground, seen: &Seen, copy_body: bool) -> Result<Vec<BlobId>> {
     if seen.present.len() < 2 {
         return Ok(Vec::new());
@@ -492,7 +494,7 @@ fn duplicates(g: &mut impl Ground, seen: &Seen, copy_body: bool) -> Result<Vec<B
     let mut groups: BTreeMap<_, (Vec<BlobId>, Vec<BlobId>)> = BTreeMap::new();
     for b in &seen.present {
         if let Some(info) = g.blob(b)? {
-            let (copies, shared) = groups.entry(info.parts).or_default();
+            let (copies, shared) = groups.entry((info.parts, info.sealed)).or_default();
             if info.copy { copies } else { shared }.push(*b);
         }
     }

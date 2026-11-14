@@ -306,7 +306,7 @@ impl Ground for Fake {
         WallMs(self.now)
     }
     fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>> {
-        Ok(self.blobs.get(b).cloned().unwrap_or(Some(BlobInfo { parts: [0].into(), copy: false })))
+        Ok(self.blobs.get(b).cloned().unwrap_or(Some(BlobInfo { parts: [0].into(), sealed: Default::default(), copy: false })))
     }
     fn dropped(&mut self, b: &BlobId) -> Result<bool> {
         Ok(self.dropped.contains_key(b))
@@ -1274,6 +1274,35 @@ fn emptying_keeps_a_request_whose_part_is_dropped_here_spec_sync_judgement_5() {
     assert_eq!(w.read.verdict(&S, &cid(3)), Some(Verdict::May));
 }
 
+// spec/sync-compaction.md §1 (Only what the node checked): a blob of the
+// same opened parts whose unopened sections differ from the node's by their bytes (a forged
+// section of a thing it does not read, ground to the lowest blob ID and stamped by a writer that
+// copied it as it came) is no duplicate: neither goes. One whose unopened sections are byte for
+// byte the node's is, and the higher ID goes.
+#[test]
+fn duplicates_compare_unopened_sections_by_bytes() {
+    let mut w = at_k_must_hold();
+    let own: Vec<BlobId> = w.g.k.held.keys().map(|(_, b)| *b).collect();
+    for b in &own {
+        w.g.blobs.insert(*b, Some(BlobInfo { parts: [0].into(), sealed: [[1; 32]].into(), copy: false }));
+    }
+    let lo = BlobId([0; 32]);
+    w.g.blobs.insert(lo, Some(BlobInfo { parts: [0].into(), sealed: [[2; 32]].into(), copy: false }));
+    w.g.k.held.insert((S, lo), cid(1));
+    w.stream();
+    w.settle();
+    assert_eq!(w.deletes(), 0, "a blob with other unopened bytes deleted as a duplicate");
+    w.g.blobs.insert(lo, Some(BlobInfo { parts: [0].into(), sealed: Default::default(), copy: false }));
+    w.stream();
+    w.settle();
+    assert_eq!(w.deletes(), 0, "a blob lacking an unopened section deleted as a duplicate");
+    w.g.blobs.insert(lo, Some(BlobInfo { parts: [0].into(), sealed: [[1; 32]].into(), copy: false }));
+    w.stream();
+    w.settle();
+    let deleted: BTreeSet<BlobId> = w.g.sent.iter().filter_map(|m| if let Sent::Delete(_, b) = m { Some(*b) } else { None }).collect();
+    assert_eq!(deleted, own.into_iter().collect(), "the same bytes: the higher ID goes");
+}
+
 // spec/sync-judgement.md §5 (it forgets the sync IDs once its sources): told and emptied, it forgets S
 // only once its sources are heard out with no entry and no tombstone known there: not while the
 // request lives at K (DN_forget), nor while K keeps S (DN_closefirst).
@@ -1526,7 +1555,7 @@ fn nothing_judged_outside_an_unsettled_closure_or_an_unread_sync_id() {
 fn duplicates_by_delta_set_and_copy() {
     let mut w = at_k_must_hold();
     let (lo, hi) = (BlobId([0; 32]), BlobId([0xff; 32]));
-    w.g.blobs.insert(hi, Some(BlobInfo { parts: [0, 1].into(), copy: false }));
+    w.g.blobs.insert(hi, Some(BlobInfo { parts: [0, 1].into(), sealed: Default::default(), copy: false }));
     w.g.k.held.insert((S, hi), cid(1));
     w.stream();
     w.settle();
@@ -1538,7 +1567,7 @@ fn duplicates_by_delta_set_and_copy() {
     let mut m = meta();
     m.copy = true;
     w.g.bodies.insert(cid(1), Arc::new([(S, m)].into()));
-    w.g.blobs.insert(hi, Some(BlobInfo { parts: [0].into(), copy: true }));
+    w.g.blobs.insert(hi, Some(BlobInfo { parts: [0].into(), sealed: Default::default(), copy: true }));
     w.g.k.held.insert((S, lo), cid(1));
     w.stream();
     w.settle();

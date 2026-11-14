@@ -224,8 +224,8 @@ impl Ground for Live<'_, '_> {
         if self.cx.store.blob_len(b)?.is_none() {
             return Ok(None);
         }
-        let (Some(parts), Some(copy)) = (self.cx.engine.blob_parts(b)?, self.cx.engine.blob_copy(b)?) else { return Ok(None) };
-        Ok(Some(BlobInfo { parts, copy }))
+        let Some(x) = self.cx.engine.blob_of(b)? else { return Ok(None) };
+        Ok(Some(BlobInfo { parts: x.parts.clone(), sealed: x.sealed.clone(), copy: x.copy }))
     }
     fn dropped(&mut self, b: &BlobId) -> Result<bool> {
         Ok(self.cx.engine.blob_dropped(b)?)

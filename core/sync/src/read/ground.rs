@@ -8,7 +8,7 @@ use crate::store::{Source, Stand};
 use crate::types::{ConnId, Entry, Result};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::SigningSecret;
-use osis_engine::sync::{BodyFacts, BodyMeta, Destruction, PartSet, PieceLink, ReadCredentials};
+use osis_engine::sync::{BodyFacts, BodyMeta, Destruction, PartSet, PieceLink, SealedSet, ReadCredentials};
 use osis_label::StepId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -73,7 +73,10 @@ pub struct Seen {
 /// bytes are not held (an entry without bytes is no duplicate).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlobInfo {
+    /// The parts this node opened (or sealed) of it.
     pub parts: PartSet,
+    /// The sections it holds that this node did not open, by digest: compared by bytes alone.
+    pub sealed: SealedSet,
     /// A per-sync-ID copy (spec/sync-judgement.md §1).
     pub copy: bool,
 }
