@@ -642,6 +642,8 @@ fn a_join_in_pages_keeps_its_position_spec_sync_streams_4() {
 fn a_refused_join_is_joined_again_later_spec_sync_streams_4() {
     let mut p = Pair::new();
     let (s, t) = (sid(1), sid(2));
+    // a log with a position: b's stream holds a cursor, so its join is a join (not a listing)
+    p.a.log(s, 50);
     p.shared_read(s);
     p.run();
     p.a.hold(t, Holding::Read);
