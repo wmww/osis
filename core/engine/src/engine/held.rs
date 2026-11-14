@@ -126,9 +126,9 @@ impl Held {
         out
     }
 
-    /// Everyone named as a holder on `t`, of any validity and whatever followed.
+    /// Everyone granted on `t` (`granted_on`), for old node-sync's `downstream`.
     pub fn named_holders(&self, t: &Tid) -> Vec<Tid> {
-        self.named_with(t, Role::Sync).map(|(_, h)| h).collect()
+        self.granted_on(t).copied().collect()
     }
 
     /// `from` and everything authority comes to them from: their first admins and the

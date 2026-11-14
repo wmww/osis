@@ -262,7 +262,8 @@ The new sync asks narrow questions (per sync ID: held commits and their bodies, 
 | `JMap::get`, `contains_key`, `JSet::contains`, `JSetMap::get` | replace | journal internals exposed only for the above |
 | `Meta::{header, origin, received, valid, view, body_gone, dropped, missing, missing_as}`, `View::{actor, aspects, author, kind, memory, purges, ts}`, `AspectView::tid`, `Trees::{blobs, missing}`, `refs::Reference::{ak, source}`, `Dropped::why` | replace | commit metadata read field by field; the boundary returns what a judgement needs |
 | `Core::{account, accounts, id, key_actors, timelines, time, horizon, events, aspects_of, durable_on, held_on, cover_judged_on, destroyed, exists}`, `Core::created`, `held::Timelines::get` | replace | same; `horizon` and `time` become the memo clock the boundary's memos read |
-| `held::Held::{below, holders_of, named_holders, named_on, reach, upstream}` | keep | pure perm queries J and the open rule need |
+| `held::Held::{below, holders_of, named_on, reach, upstream}` | keep | pure perm queries J and the open rule need |
+| `held::Held::named_holders` | delete | `granted_on` collected; its caller (`marks::downstream`) takes `granted_on` |
 
 ### C. Change tracking for old sync
 | items | mark | reason |
