@@ -1,7 +1,7 @@
 //! The driver: whom a node dials and when, the pair rule's held dials, restarts in place after a
 //! store failure, and the one place outputs are applied (spec/sync-opens.md §1,
 //! spec/sync-transport.md; scenarios dial-bound, store-reopen, eph-sim-unlisted and no-host-chain
-//! of notes/sync-rewrite-inputs.md). World tests run the product's node; the dial rules alone
+//! of the Phase 1 checklist, issues/sync-rewrite.md). World tests run the product's node; the dial rules alone
 //! run on `Dials` with a table of dial peers.
 
 use crate::harness::{Seen, World, two_nodes};
@@ -237,7 +237,7 @@ fn a_store_failure_restarts_in_place_once_per_stretch() {
     let _ = &mut st;
 }
 
-// a failed step sends nothing it queued (notes/sync-boundary.md, driver): here a listener's
+// a failed step sends nothing it queued (notes/sync-driver.md, Failures): here a listener's
 // Hello, queued as the connection came up in a step whose store write failed; the dialer sees
 // a dropped connection, and the next dial comes up whole.
 #[test]

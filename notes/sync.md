@@ -1,70 +1,52 @@
-# Sync: design reasons
-> Summary: Index of the sync notes, then why spec/sync.md is shaped as it is at its core: one blob per commit, groups and labels, label keys, entitlement, sections, certificate blobs, self-certifying label IDs, the blob prefix, stamps and first-stamped-wins, delete keys and their levels, retention on the wire; rejected designs at that level, policy defaults, open items. Tess's node decisions. Not here: label access and re-seal (notes/label-access.md), deletion and convergence (notes/sync-convergence.md), inbox and deposits (notes/inbox.md), the code (notes/sync-boundary.md).
+# Sync: overview
+> Summary: Map of osis sync as built: the principle, the crates, the one step and its settle loop, how a write reaches a peer, where each spec area lives in code, and the index of the sync notes (one per osis-sync module, the engine facade, design reasons, harness).
 
-The requirements behind sync: spec/requirements.md, Data a node cannot read and Deletion. The rules: spec/sync.md. Byte layouts: spec/wire.md.
+The rules: spec/sync.md (words, the two holdings, one principle per area) and spec/sync-*.md; byte layouts spec/wire.md. The requirements behind them: spec/requirements.md, Data a node cannot read, Deletion, Offline and network.
+
+## Principle
+The engine owns plaintext and every judgement of what a thing carries; sync owns ciphertext, connections and what peers showed. Sync reads the engine only through one facade of memo-backed queries and a few commands (`osis_engine::sync`, notes/sync-facade.md); the engine calls nothing of sync's. Every rule is driven by change: each module follows what it reads through `osis_base::memo::Effects` keys and feeds, so an idle node does no per-sync-ID work and a change costs what it touched (spec/sync.md §2 Work in proportion to change).
+
+One kind of node: whether a node reads data is a property of the pair (node, S). Per S a node holds it read (a read secret held: full judgement in `read`), kept unread (a sync secret only: `unread` judges signatures and its own grant), or not at all.
+
+## Crates
+- **osis-sync** (core/sync): the node's connections, its store per sync ID and the judgement over them, as one sans-IO step. Modules, one per area, each owning its state and changing no other's: `session`, `opens`, `store`, `read`, `unread`, `streams`, `inbox`, `status`, `driver`; `set` (the sync set followed per key, shared by store, opens and dials); `types` (every type two modules share; a type one module owns and others only read lives in that module). A part not built answers `Error::NotBuilt` or does nothing; no path a test reaches panics. The tokio transport glue is behind the default `driver` feature, the crate's one feature set.
+- **osis-engine**'s `sync` module (core/engine/src/sync): the facade.
+- **osis-proto** (core/proto): codecs below sync (frames, Hello, proofs, messages and their limits, filters, relay gate, the client port's messages); no session or store (notes/sync-protocol.md).
+- **osis-label** (core/label): blob prefix and wraps, steps, claim sets, stamps and deposit signatures, inbox blobs, links, bundles.
+- **osis-store**: the store primitives sync builds on (local rows, per-peer `record` rows under `RECORD_BUDGET`, `nodelog`, `changed`), and `CipherHost`, through which the engine keeps blob bytes in sync's store.
+- **osis-transport**: connections below sync (notes/networking.md).
+- **osis** holds a `Node` per handle and steps it from its driver task (notes/api-implementation.md).
+
+## The one step
+`Node::handle(input) -> Vec<Out>` is all of sync: route the input to its module, run the compaction trigger, settle every module (store, unread, opens, read, inbox, streams, status) until none acted, flush opens' records, decide dials and keep-or-close, then emit sends, dials, closes and one wake. `apply(out, links)` alone carries outputs out. Inputs: a connection up or down, bytes, bytes the transport took, a wake, a discovery, and `Wrote` after the osis handle writes. Details and failure handling: notes/sync-driver.md.
+
+## How a write reaches a peer
+1. The app writes through the osis handle; the engine commits it and calls nothing; the handle calls `handle(Wrote)`.
+2. `read` follows the engine's commit feed: the commit's `sync_bodies` say under which sync IDs S of the sync set it has a body; per (S, commit) it judges must-hold and logs an own entry (`seal_body`, stamped where this node writes S's head, else deposited) into the `store`, one transaction with its node-log event.
+3. The store's entry and log changes are stamped. On each connection where S is in the shared set (`opens`), `streams` serves the peer's Pull from the node log filtered by the shared set; with the peer following, the event goes as a push under `follow` with `seq`, the body inline up to `INLINE_LIMIT` or fetched.
+4. At the peer, `streams` applies messages in order once their bodies are held: a reader opens the entry (`Engine::open_entry`), which ingests the commit; a node keeping S unread verifies the stamp and logs it. The peer stores its cursor only then and reports it in an Applied.
+5. `status` at the writer sees the source caught up and, once the peer's stream showed the entry (or a reader reported a position past it), counts the commit held elsewhere (but see issues/sync-held-elsewhere.md).
+
+## Spec areas in code
+| spec | code |
+|---|---|
+| spec/sync-set.md (what a node syncs) | engine `sync/set.rs` (`sync_things`, `thing_sync`, `sync_set`), osis-sync `set.rs`; `unread` for leaving |
+| spec/sync-ids.md (sync IDs, steps, the store, Register, Behind, Walk) | engine `labeling` and `sync/records.rs`; `store` (entries, paths, caps, Register, Delete, Behind); `opens` (Walk); `inbox/register.rs` |
+| spec/sync-opens.md (dials, proofs, records, the shared set) | `driver/dials.rs`, `session` (proofs), `opens` |
+| spec/sync-judgement.md, spec/sync-compaction.md | `read` (reader), `unread` (kept unread); engine `sync/facts.rs`, `bodies.rs`, retention |
+| spec/sync-inbox.md | `inbox`; engine `sync/inbox.rs`, `deliveries.rs` |
+| spec/sync-streams.md | `streams`, `session` (window, pushes) |
+| spec/sync-status.md | `status`; engine `sync/held.rs` (passes, held elsewhere) |
+| spec/sync-hostile.md | bounds in each module: `session` (per connection), `store` (caps, peer budget, deposits), `opens` (records, filters) |
+| spec/sync-transport.md | osis-transport, `driver/links.rs` |
+| spec/wire.md §11 | osis-proto `msg`, `session` |
 
 ## The sync notes
-- notes/sync.md (this): core design reasons, policy defaults, open items.
-- notes/sync-boundary.md: the osis-sync crate's modules and its interface to the engine; notes/sync-test-harness.md: the harness its tests run on.
-- notes/label-access.md: steps, sync-key gating, claim keys, opens, re-seal, entry boxes and static entries; lockout and stranding limits.
-- notes/sync-convergence.md: the convergence rule, compaction, purge, carriers, tombstones, header-only blobs, why no recycle bin.
-- notes/inbox.md: deposits and their budget, the inbox (grants, invites, clearing, stamping), delivery of flows' results, promotion.
-- notes/unreadable-data.md: what a node learns about data it cannot read, and the choices that keep it that small.
-- notes/sync-protocol.md: why the wire is so, osis-proto (frames, Hello, messages and their decode caps) and osis-label.
-- notes/networking.md: transports, reachability, first contact.
-- notes/growth.md: every known cause of permanent growth, sync's included.
+- notes/sync-session.md, sync-opens.md, sync-store.md, sync-read.md, sync-unread.md, sync-streams.md, sync-inbox.md, sync-status.md, sync-driver.md: one per module (what it owns, its implementation choices, bounds, reasons, what is not built).
+- notes/sync-facade.md: the engine's facade, the memo and `Effects` mechanism, the engine tables kept for sync.
+- notes/sync-test-harness.md: the one harness (worlds of `Node`s, scripted peers, histories, faults).
+- Design reasons: notes/sync-reasons.md (core: blobs, sync IDs, stamps, delete keys, nodes), notes/sync-access.md (steps, claims, re-seal, static entries), notes/sync-convergence.md (judgement and deletion), notes/inbox.md (deposits, inbox), notes/unreadable-data.md (what a node keeping S unread learns), notes/sync-protocol.md (wire, osis-proto, osis-label), notes/networking.md (transports, reachability, first contact), notes/growth.md (permanent growth).
+- Open: issues/sync-unbuilt.md (every stub, per module), issues/sync-tess-calls.md (reversible choices waiting on Tess), and the `sync`-tagged issues.
 
-## Nodes (Tess)
-- **One kind of node**: same binary, run the same way, on a laptop or a rented machine, with any mix of data it reads and data it cannot. Reading is per sync ID (a read secret held or not), so one node may read some groups and keep others unread; a machine that reads its own configuration group and keeps everything else unread is one osis instance.
-- **No separate program**: keeping data for others is part of the node, started by the one long-running command (`osis serve`), configured by osis data on the node's own thing (spec/data-model.md §9), so any admin of the node (the account's nodes) configures it remotely; it is never in the node card.
-- **The node's store of ciphertext is a shredding `Store`**: a node keeping S unread may read other sync IDs on the same machine, so wraps and blobs surviving a delete in freed pages would break spec/requirements.md Deletion (notes/local-store.md).
-- **No connection count limit** (Tess; spec/sync-transport.md §5 served connections): a count picked from memory per connection would mislead (that memory is not a fixed amount in practice) and refuse devices past it on large rosters. Later work: a node that detects low memory sheds load (refusing or closing connections, evicting caches).
-- **A child step past the caps** (spec/sync-ids.md §6 Register, Storage caps): a refused rotation would leave a removed holder's open and write keys valid at that node, and anyone may fill a node to its total cap; only a sync ID's own admin spends that room, so outsiders cannot starve an honest rotation, and growth past the caps is at most one bare step (about 300 B) per sync ID per interval. Rejected: forgetting old steps instead (a path walk from genesis is how a node verifies a head it has not recorded).
-
-## Blobs, groups and labels
-- **One commit ID, one blob per commit, a random key per blob.** A commit has one ID whatever groups contain it, so sharing history adds wraps and never re-encrypts.
-- **No commit size limit; only the header's lists are bounded** (`MAX_LIST_BYTES`). A delta pages like a snapshot and the lists go by link, so atomicity never depends on size and the API never splits a write. The costs (a reader stores pages it cannot apply yet, a writer that dies mid-upload leaves orphan pages for convergence to delete, apply streams pages through one staged transaction) are those snapshots carry anyway. A one-blob size limit would only add a second, non-atomic kind of edit every app must reason about.
-- **Groups are the sync unit**, not actors: groups are free and overlap; record chains as the unit would force a copy for every separately syncable subset.
-- **Label keys derive from the group's own role secrets**, never its first admin's: each group's label gets its own ID and keys, which only its holders derive. Not for unlinkable wraps: account proofs and shared commit blobs already show a host which labels overlap. The deposit key derives from the actor's deposit seed (a devices actor's from its account's), keyed by label ID so labels sharing a seed never share a deposit key.
-- **Entitlement, not membership, decides labeling**: a thing dropped into a shared folder without a grant is silently not shared, the intended failure; an "add to shared folder" helper writes both. The check is worth caching per (thing, label), invalidated by role changes of the label actor, the thing's grants or its record chain.
-- **Sections** (notes/whole-commits.md): one section per thing, under the thing's read secret (its own or derived by tid), so a thing given secrets of its own later still opens its earlier sections through its history boxes. A section lists its thing's record chain in the clear so a reader derives the key before it holds the thing's record. Copies (certificate copies; per-label copies: cross-published `label.0`/`created.0`, parts a label reads only by a role on a reader actor outside its closure, such as a thing added from another actor's tree) are one section under the blob key: whoever opens a wrap of the blob is meant to read it, so the wrap is the only gate. A part the writer holds no secret for (a key actor's own record or card) stays out of the shared blob and travels as a certificate copy.
-- **Mixed retention in one commit** (a "last modified, purge on replace" beside a "body, forever") costs a rewrite when the register is replaced: accepted (notes/whole-commits.md, Decisions). The prefix carries one commitment group per distinct delete-key set among the sections' aspects; a Delete needs every group signed.
-- **A certificate copy is one blob across labels**: a node placing the same parts of a commit under several labels seals once and wraps per label, so an account in k groups seals and stores its chain once, not k times. What sharing shows a host (account X acts in both labels) its account proofs (spec/sync-opens.md §4) and shared commit blobs already show. Parts that differ per label (chain-edge sets) are separate copies; per-label copies, list and record blobs stay per label. Certificates are outside the closure, so a label's required set is closure plus certificates; else a group admin's convergence pass would delete them and the node would re-deposit forever.
-- **Self-certifying label IDs**: a random ID would let anyone who learned it (an ex-reader, a leaked `label.0`) squat it at a fresh host under their own keys. Two admins creating a label concurrently derive the same ID.
-- **Blob prefix**: expiry and delete-key commitments are fixed by the blob ID, so no relayer can spoil them. Expiry is immutable: extending it would keep ciphertext meant to be gone for anyone who later obtains keys; content that must outlive it is re-encrypted. Commitments are the delete keys blinded by each blob's salt, not the keys, so no commitment is common to two blobs: one author's or actor's blobs show no shared key at the host; a delete signature reveals nothing beyond the blinded key.
-- **Retention always on the wire**: a node without the schema (generic tools, agents) could otherwise neither honour a MUST drop nor judge a purge request. A few bytes per delta.
-
-## Stamps and the write path
-- **Stamps** (read must not give upload): the author's signature sits inside the ciphertext, so the label write key is the only writer proof a host can check. Signing (label ID, blob ID, wrap) and storing the signature beside the wrap lets anyone relay a writer-vouched entry (LAN-first flows, host to host by push, bundles) while readers originate nothing; covering the wrap means a relaying reader can spoil nothing. Stamps check against the current step, so a removed writer's stamps die with the rotation its removal already does.
-- **Deposits** carry what a reader legitimately needs under a label: a provisional entry under a per-label budget, readable at once by co-readers, promoted by a writer's stamped re-upload, which frees the budget (notes/inbox.md). Rejected: upload under the write key alone (loses relay); per-holder upload keys (linkable).
-- **A stamped entry never changes at a host** (spec/sync-ids.md §6). Every writer shares one write key and a host cannot read a wrap, so it can tell nothing about a re-upload: last-wrap-wins let one member hide any message from every node not holding its key (reproduced). No honest node re-wraps a held stamped entry, so first-stamped-wins costs nothing and needs no replacement rate limit: one wrap per entry, no number to pick. A stamped upload over a deposit still replaces, or any reader could keep a writer's wrap out.
-  - Residual race: only a first upload at a host can put a useless wrap there, so the attacker must hold the blob from another host or promote a deposit first. It loses at a reader to any other host's wrap and to a holder's fresh encryption (the path for a tombstoned ID; `gone` marks the entry). The fresh copy goes to that host alone, where it is first by construction, so the race cannot repeat there.
-  - An honest wrap under an epoch the node lacks (two writers logging one blob under a new label across a rotation) looks like garbage when heard; every holder of the new epoch holds the older by history boxes. No hold-off: garbage and an unknown epoch look the same, and a time limit would be a guess.
-  - Rejected: several wraps per entry (writers share a key, so any bound fills with the attacker's garbage); key-check values or commitments in the blob (a blob is shared across labels and epochs, and the host still cannot check); holders re-uploading the same blob (with replacement it never settles and leaves a window, without it it is a no-op); asking co-readers (needs reach the reader may not have); an OK variant saying "another wrap is held" (a subscribed sender hears the add before its ack, and a bare code cannot tell a useless wrap from another epoch's).
-
-## Delete keys
-- **A delete-key signature plus a label key**: the delete key proves the purge right as of the delta, the label key current roles. Not redundant: everyone who ever held an epoch's secret (removed holders included) can sign with its delete key. Level 3 needs the write key, so a writer demoted to reader loses its delete power over `writer` bodies at the rotation the demotion does anyway. Levels 1 and 2 need only the sync key, because a thing's admin or author is often a mere reader of the label (anyone sharing a thing into a group they only read). The item names its level, so the host checks one commitment and knows which label signature it needs. Honest nodes enforce current write permission for every purge (spec/permissions.md §6); hosts only this approximation (spec/requirements.md, Data a node cannot read).
-- **Delete keys follow retention**, one per level (spec/crypto.md §7). Without the admin level a thing admin who is not an admin of the label's group could not delete at hosts; a writer without the admin secret lists the thing's published admin key (`keys.0`), so every delta carries every level its retention calls for (Tess: signatures over hashed tokens). A Delete needs every commitment group signed, so a `nobody` delta is never deletable through a commit-mate's key. Under the shared-actor pattern `author` collapses to `writer`.
-- Known gap: receivers check only how many keys a header lists per level and that one level-2 key serves the whole commit, never which keys. A vandal writer can list its own key at level 1 or 3 and so delete its own blob where an admin's key was due: no worse than hashed tokens, and the label delete key still removes the blob.
-- **Chunk commitments** derive from the creating delta's keys, the chunk's own salt and its link blind bound to its thing (notes/crypto.md Delete keys); the link carries the salt and those keys (Del), and deleting goes by link (spec/sync-compaction.md §1 freed links). Reuse re-encrypts by the rule in spec/sync-ids.md §1 because otherwise a writer could delete chunks of an `author` value, or an author be unable to delete its own; author-chain commitments need not match beside an admin or writer key, so dedup across editors survives (under `author` alone they must, or another author could delete it). Residue: an author's explicit purge cannot delete chunks it reused from another author's version; an admin can, and honest nodes drop the keys anyway.
-- Rule of thumb: per-entry rights are delete keys whose secrets travel client-side (role secrets) and whose public halves the header lists; label-wide rights are role keys; revocation rides on role keys. Nothing stored at the host states a reason.
-
-## Rejected
-- Record chains as the sync unit (above).
-- State Merkle trees over aspects or the group hierarchy: they expose shape and must follow a cyclic hierarchy.
-- Home closure = everything below the actor by record chain (a complete backup by default): every thing would sit under its first admin's home label beside any shared label. Tess chose explicit membership (spec/requirements.md, Offline and network).
-- Unverifiable per-entry expiry and commitment metadata (first or latest upload wins): the prefix fixes them by blob ID instead.
-- Elsewhere: rejected deletion designs in notes/sync-convergence.md, rejected access designs in notes/label-access.md, plain grants under a shared label in notes/inbox.md.
-
-## Policy defaults (non-normative, tune freely)
-- Compaction: every writer runs the trigger each step (notes/engine-retention-trigger.md); a thing whose admins want its current parts kept says so in its setting (spec/commits.md §5 Kept while live).
-- Deposit budget and deposit order: notes/inbox.md. `TOMBSTONE_LIFETIME` 30 days (notes/sync-convergence.md). `INBOX_LIFETIME` 90 days (format constant, matching `ROLE_KEEP`).
-- Fetching from a node that cannot read them, a client cannot put permission commits first before decrypting, so it downloads everything and applies role commits first.
-- Clients may batch uploads to blur timing.
-- Diagnostics: a clock offset of more than a few seconds against a peer (`ClockSkew`, the only use of the estimate: nothing a peer sends moves a node's clock); an ephemeral commit not applied for the node's cap; an ephemeral upload a node refused for its cap.
-- Repair of a deleted chunk (spec/sync-ids.md §1) runs at most once per aspect per back-off interval, doubling.
-- Handshakes have no deadline beyond the transport's idle timeout; a listener bounds the handshakes in progress (notes/networking.md).
-
-## Open
-- Partial restore from hosts: `label.0` writes of groups go under the home label of the nearest labeled actor up their record chain (a table of contents of labels); a subgroup's content is restorable alone only when it has its own label.
-- **Abuse limits** (open; deferred until a real problem, Tess): stamps (only writers add content), a deposit budget, caps and rate limits per sync ID bound a stranger, but any writer can fill a sync ID's cap with junk a node keeping it unread cannot tell from data. Per-holder limits would need pseudonymous holder keys (linkable uploads, forbidden) or anonymous credentials (zkgroup-class crypto). If paying accounts come, the credential goes to one node bound to (node, sync ID), never into the relayed `label.0` chain. Relaying: issues/p2p-own.md.
+## The osis API over sync
+The handle holds the `Node`. `status`, `on_status_change` (status reads are stamped, so a memo over `Node::status` moves with it), `wait_synced` (`Node::wait`; a `Never` is a part not built and fails `NotBuilt`), links and redeem (`Node::redeem`), contact cards and profiles, invitations and `accept_invite`, bundles, `listen`, `rotate_peer_address`, `Config::dial`, the client port (`PortEvent`), and `internals::ManualNet` (the API tests' in-memory fabric, one `Links` per node through `apply`) all run on it (notes/api.md Sync configuration and status). No peer list exists and sync IDs are internal: a thing syncs by being in a synced group's closure.

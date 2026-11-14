@@ -1,4 +1,4 @@
-//! Every type two modules share (notes/sync-boundary.md, Crate layout): each module builds
+//! Every type two modules share (notes/sync.md, Crates): each module builds
 //! against these and its own section's types alone. The step's input and outputs are here too:
 //! the driver makes them, every module's work ends in them.
 

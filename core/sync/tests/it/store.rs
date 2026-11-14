@@ -1013,7 +1013,7 @@ fn removal_and_expiry_cost_alike_at_any_size_spec_sync_ids_5() {
     assert_eq!(a, b, "ending a tombstone: {a} rows at n, {b} at 10n");
 }
 
-// The store's reads are memo-safe (notes/sync-boundary.md, the store's interface): an `Effects`
+// The store's reads are memo-safe (notes/sync-store.md): an `Effects`
 // value over S's head, or S's entries (durable and ephemeral), is due exactly when a write moves
 // what it read, and never for writes elsewhere.
 #[test]
@@ -1056,7 +1056,7 @@ fn store_values_are_due_when_their_rows_move() {
     assert_eq!(heads.due(), [s.id], "a Register moved the head");
 }
 
-// spec: none (internal: notes/sync-boundary.md, store). The deposited index and the entry feed
+// spec: none (internal: notes/sync-store.md). The deposited index and the entry feed
 // follow every entry's flags: a deposit is listed until stamped or removed, durably; the feed
 // gives each entry added or changed, once per change.
 #[test]

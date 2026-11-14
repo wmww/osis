@@ -5,7 +5,7 @@
 //! engine facade, streams' `known` by commit and the store's entries by commit are not built:
 //! every test here needs the real facade (sync-facade) and streams to run end to end in a world.
 //! Each negative control of core/test/tla/net/NetHold.tla and NetDestroy.tla has a test here that
-//! fails without its rule, and each area-4 scenario of notes/sync-rewrite-inputs.md one.
+//! fails without its rule, and each area-4 scenario of the Phase 1 checklist (issues/sync-rewrite.md) one.
 
 use osis_base::memo::Stamped;
 use osis_base::{BlobId, CommitId, SyncId, WallMs};

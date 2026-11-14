@@ -1,5 +1,5 @@
 //! The product's ground: the engine's facade, the store, the sources of each S (`views`, as opens
-//! moved them) and streams' `known` (notes/sync-boundary.md, 4. `read`, Read in a node). A call
+//! moved them) and streams' `known` (notes/sync-read.md, The ground in a node). A call
 //! failing in the middle of a settle fails the node's step, closing every connection.
 
 use super::Why;

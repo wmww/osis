@@ -25,7 +25,7 @@ fn address(key: &[u8], urls: &[String]) -> Option<Address> {
 
 /// Whether this node lists itself in its account's profile dial list (`dial^.0`), so its
 /// account's contacts can dial it. Every node does: the reversible reading while which nodes a
-/// profile lists is Tess's open question (notes/sync-rewrite-inputs.md, For Tess).
+/// profile lists is Tess's open question (issues/sync-tess-calls.md).
 fn lists_on_profile() -> bool {
     true
 }

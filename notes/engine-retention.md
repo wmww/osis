@@ -8,7 +8,7 @@
 - notes/engine-retention-covers.md: the cover rule, own live bodies, purge on replace, covering, own replaces, forgetting.
 - notes/engine-retention-purge.md: leftovers, purge requests, waiting parts at expiry or purge.
 
-Elsewhere: what each deletion promises users (notes/deletion.md), validity and uncovering (notes/engine-validity.md), suspects (notes/engine-suspects.md), host deletion (notes/sync.md), memory class (notes/ephemeral.md), freed links (notes/engine-paged.md).
+Elsewhere: what each deletion promises users (notes/deletion.md), validity and uncovering (notes/engine-validity.md), suspects (notes/engine-suspects.md), deletion at sources (notes/sync-convergence.md, notes/sync-read.md), memory class (notes/ephemeral.md), freed links (notes/engine-paged.md).
 
 ## Principle (spec/commits.md §5 Bodies and deaths)
 A body drops in one of four ways: as covered once past its keep bound (live bodies included), by expiry, by purge, or as invalid. A node without write drops only expired and invalid content and what writers' covers cover. Outside the four: a thing's bodies go whole when the node loses read access to it (spec/permissions.md §3, `retention/forget.rs`), and memory-class bodies vanish when superseded (notes/ephemeral.md Superseded expiring writes) or at a delete here (issues/eph-parity.md).

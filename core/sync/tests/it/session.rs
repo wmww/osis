@@ -388,7 +388,7 @@ fn replies_go_to_their_sender_spec_wire_11_2() {
     assert_eq!(ins[0].to(), Some(To::Read));
 }
 
-// spec: none (routing, notes/sync-boundary.md session): a request or push goes to the module of its
+// spec: none (routing, notes/sync-session.md, Routing): a request or push goes to the module of its
 // kind; the client port's requests go to the node's owner (`To::Port`), a Notify to none.
 #[test]
 fn routing_by_kind() {

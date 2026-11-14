@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! The engine's facade for sync (`osis_engine::sync`, notes/sync-boundary.md): each call against
+//! The engine's facade for sync (`osis_engine::sync`, notes/sync-facade.md): each call against
 //! the spec rule it serves, over `LocalPeer` (commits and inbox blobs carried by hand).
 
 use crate::flows::{edge_of, people, spread, thing_of};

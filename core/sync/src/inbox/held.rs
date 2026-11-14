@@ -324,7 +324,7 @@ pub fn act_of(f: &Facts, now: WallMs) -> Act {
 }
 
 /// Logs a promoted commit's author's chain under S as this node's certificate copies: whether
-/// it did. Not built: the engine seals no certificate copy yet (notes/sync-boundary.md, inbox),
+/// it did. Not built: the engine seals no certificate copy yet (issues/sync-unbuilt.md, inbox),
 /// so nothing is promoted.
 fn log_chain(h: &mut Here<'_>, s: &SyncId, chain: &Certs) -> Result<bool> {
     let _ = (h, s, chain);

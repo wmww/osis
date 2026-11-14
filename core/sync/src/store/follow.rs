@@ -1,4 +1,4 @@
-//! What the store follows of the engine (notes/sync-boundary.md, store): the sync set per key
+//! What the store follows of the engine (notes/sync-store.md): the sync set per key
 //! (`SetFollow`), the node's caps, and the served path of each sync ID read here (its thing's
 //! `sync.0` record, spec/sync-ids.md §5), each an `Effects` value, so a step costs what moved;
 //! and the held entries whose commit the engine could not judge yet, opened again as commits

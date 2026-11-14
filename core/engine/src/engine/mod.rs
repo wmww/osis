@@ -1076,8 +1076,7 @@ pub struct Core {
     pub(crate) to_date: Vec<(Tid, Ak, CommitId, crate::retention::leaving::Dating)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look. A name goes with its commit (forgotten, or dropped from pending while not
-    /// applied), so it holds at most one per commit held. Sync reads none of it yet
-    /// (notes/sync-boundary.md, Left for the integration).
+    /// applied), so it holds at most one per commit held. Sync reads none of it.
     pub(crate) redeliver: BTreeSet<CommitId>,
     /// Aspects whose deltas `Engine::commit_forged` replaces by bytes that do not decode.
     pub(crate) forge_bad: BTreeSet<(Tid, Ak)>,

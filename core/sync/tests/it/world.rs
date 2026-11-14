@@ -68,7 +68,7 @@ impl Links for Record {
     }
 }
 
-// spec: none (sync's one place of outputs, notes/sync-boundary.md The step): sends and dials leave
+// spec: none (sync's one place of outputs, notes/sync-driver.md, The step): sends and dials leave
 // in the order made, closes after them, then one wake, the earliest.
 #[test]
 fn apply_orders_closes_and_the_wake_last() {

@@ -53,7 +53,7 @@ Why this passes the notes:
 - **notes/app.md:** views stay data-driven, and memo and list are general concepts that name no feature.
 
 ## 4. Holding it there
-Counters: `osis_node::costs` spans (`read: engine`, `watch: considered`, `watch: dispatched`) plus `Graph::take_costs` (renders, memo runs, rows built). `osis_kit::testing::check_views` walks `registry.views`, so a new view is covered when it registers; kit's `view_costs` test runs it on kit's registry, the app's on the app's. `ViewType` has a required `sample: fn(&Data) -> Tid`, usually one line through an `Offer`, so a view without one does not compile.
+Counters: `osis_base::costs` spans (`read: engine`, `watch: considered`, `watch: dispatched`) plus `Graph::take_costs` (renders, memo runs, rows built). `osis_kit::testing::check_views` walks `registry.views`, so a new view is covered when it registers; kit's `view_costs` test runs it on kit's registry, the app's on the app's. `ViewType` has a required `sample: fn(&Data) -> Tid`, usually one line through an `Offer`, so a view without one does not compile.
 
 For each view the harness checks:
 - **Precision:** every aspect of the things it read, each moved in turn, and each aspect set and group membership it read: only the nodes that read that address (and what depends on them, and what reads the whole thing: `changed`, its commits) run, each reader exactly once; a write to an unread thing runs nothing.

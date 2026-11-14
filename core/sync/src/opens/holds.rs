@@ -124,7 +124,7 @@ pub trait Holds {
     fn step_creds(&mut self, s: &SyncId, step: &Step) -> Vec<(Tested, Option<Epoch>)>;
 }
 
-/// The memo effects opens follows (notes/sync-boundary.md, What the engine gives): the sync set,
+/// The memo effects opens follows (notes/sync-facade.md, Effects): the sync set,
 /// and per sync ID of it the digest of its credentials. A step settles only the keys whose reads
 /// moved.
 #[derive(Clone)]

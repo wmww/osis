@@ -217,7 +217,7 @@ fn a_lookup_reads_only_the_records_of_the_proven_actors() {
 
 
 
-// a module's rows in a record (notes/sync-boundary.md U3): counted in the record's bytes, gone
+// a module's rows in a record (notes/sync-store.md, Rows other modules keep): counted in the record's bytes, gone
 // with the record (eviction) and with their sync ID (`changed_forget`), never written into a
 // record that is gone
 #[test]

@@ -1,0 +1,35 @@
+# Sync: read
+> Summary: osis-sync's `read` module (core/sync/src/read/): judgement of every body under a sync ID this node reads, what it calls for in the own store and at each source keeping S unread, destruction; what its ground reads of the engine and of other modules, how work follows change, the engine facts it needs, and what is not built.
+
+Spec: spec/sync-judgement.md §1-§5, spec/sync-compaction.md §1, spec/sync-set.md §3. Models: core/test/tla/net/NetHold.tla, NetDestroy.tla. Principle and per-judgement outline: the module doc of core/sync/src/read/mod.rs. Overview: notes/sync.md. Design reasons for the convergence rule: notes/sync-convergence.md.
+
+## What it owns
+Four `Effects` (bodies per commit; the own judgement per (S, commit): verdict and own-store acts; what a body calls for per (S, commit, source keeping S unread); the destruction per S), a memo `Clock` (expiries move judgements; `next_wake`), and three stamped maps (verdicts, own role commits S must hold, S told destroyed), which status and inbox read (`Read::verdict`). Nothing durable of its own: stands live in the store's record rows (`s`, the head and the fall mark), so a start judges every held commit once. `on_message` takes the answers to read's own requests (Delete, deposits).
+
+`judge.rs` holds the pure judgements (`body`, `toward`, `doom`) over `Ground` values; `Read::settle` runs them inside its effects to a fixpoint, then acts on what a new judgement adds. A restart or a reconnect (a new `ConnId` in each act) carries each act out once more, never in a loop; logging again is bounded by the durable stand alone. Tests drive `settle_on` with a fake ground (core/sync/tests/it/read.rs).
+
+## Acts
+- **Own store**: logs must-hold bodies with no own entry while a reader can pull S (a held blob verbatim, else `seal_body`), drops entries must-not-hold or covered and dropped (no delete key; never a must-hold one), lifts own tombstones of a body missing again.
+- **Toward each source keeping S unread**, keyed by what its stream wrote (`seen_added`) and, where this node is no writer at its head, every must-hold body: deletes (its head's delete key; carriers in its `known`, a full source counting one it lacks; duplicates by delta set and copy; never a body dropped as invalid), deposits, logs again once per ground; deletes and loggings again wait on role entries first.
+- **Destruction**: told (sticky); emptying deletes at a source holding every request or past their expiry; forgets once every source is heard out with nothing known, at once with no delete key, or untold past the requests' expiry (deleting nothing).
+- Between readers nothing but streams.
+
+Work per change: a source's event judges that body at that source; a reader source joining judges nothing; a writer's store source joining judges what its stream shows; a non-writer's, each must-hold body (counted at n and 10n sources in `read.rs` `work_follows_sources`).
+
+## The ground in a node (`read/live.rs`)
+- Engine facade: `commit_feed` (`commit_ids` at the first settle), `read_facts`, `body_fall_mark`, `commit_blobs` against the store for own entries and tombstones, `blob_dropped` (an entry whose blob holds a part dropped here for good, purged, past its bounds, expired or destroyed, is must-not-hold itself; its rest is logged again as a fresh encryption; a part dropped as covered or while invalid does not count), `publishes_reach`, `rewrap` (a held shared blob of the commit, not tombstoned under S and holding nothing dropped, logged verbatim), else `seal_body`; stamped where this node writes S's head, else deposited; `sync_holding`, `closure_whole` (S's thing settled).
+- Other modules: sources per (S, source) from opens' moves (`read/views.rs`, stamped and fed), head and full from streams' `known`, what each source showed per blob mapped to commits by `commit_blobs`/`blob_commit` (a blob never opened or sealed here names no commit until opened), status's `heard_out`, the store's deletes seen of S at any source (`deletes_known`, brute force on the rare path of forgetting; streams writes one at each Deleted event and each refusal as tombstoned).
+- Deposits: a deposited own entry is offered by inbox; one stamped under the source's head write key is pulled as it is; else a fresh `seal_body` encryption is logged deposited.
+- A facade call failing mid-settle fails the node's step (every connection closes). A call answering `NotBuilt` makes read do nothing for that part.
+
+## Engine facts read needs (`read_facts`, `body_facts`)
+- `must_not`: `Purged`, `CardSuperseded` (a later valid card commit of the node on the same aspect with a blob opened or sealed here holding that part) or `CardEnded` (`node.0`/`reach.0` of a node that held D and has no live read grant on it now, `until` read on the memo clock). A card is judged by its header, before any body.
+- Strict subset and Neither need the blobs held at a place, so they are facade calls of their own (`strict_subset(s, b, held)`, `neither(s, c, there)`) over `blob_only` (the body's deltas kept or live and established uncovered; `None` while not established, which keeps). A blob counts only as opened or sealed here, of `c`, of the body's kind (copy or shared), holding no part dropped for good. Read drops an own entry that is a strict subset of another own entry, deletes one at a store source beside its superset there, and relays to a source unless `neither` over what the source shows present.
+- The "being fetched or pending" half of established is sync's and not read: leaving it out widens `blob_only`, which keeps for Neither (relays more) and drops a strict subset sooner, harmless as its superset is held and opened here.
+- Strict subset compares blobs of the body's kind only: a certificate copy beside the shared blob holds parts S's readers may not open there, however much of it this node opens.
+- `sole_certificate` is always false (the store's to judge); `body_facts.kept` and `covered` move with the memo clock when a keep bound passes.
+
+## Not built
+- issues/sync-certificate-bodies.md (critical): certificate bodies are not in `sync_bodies`, so read judges another node's card or a certificate outside the required set.
+- issues/reseal-under-own-epoch-leaks.md (Sync side): `seal_body` and `rewrap` still pick the epoch by `section_epoch`, not `Engine::seal` with every held genuine section.
+- issues/sync-unbuilt.md (read): `SrcView::role_unheld` is always false (deletes toward a source do not wait for a role commit it lacks); level-key deletes (freed links, spec/sync-compaction.md §1); a peer's entry counting as lacking for its wrap (Duplicates, spec/sync-ids.md §6 Wraps); HN_fallany (a snapshot arriving invalid moves the fall mark as one held valid falling does) lives in the engine's `fall_mark`, untested end to end.

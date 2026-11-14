@@ -1,12 +1,11 @@
-//! The engine's facade for sync (`osis_sync`; notes/sync-boundary.md, What sync calls on the
-//! engine): what sync reads of plaintext and judgement, per sync ID, and the few commands it gives.
-//! Sync reaches the engine only through these methods (and the opening, writing and clock calls
-//! any node makes); the engine calls nothing of sync's. Every value call is meant to be a memo,
-//! so a sync effect that reads one depends on exactly what the engine read.
+//! The engine's facade for sync (`osis_sync`; notes/sync-facade.md): what sync reads of
+//! plaintext and judgement, per sync ID, and the few commands it gives. Sync reaches the engine
+//! only through these methods (and the opening, writing and clock calls any node makes); the
+//! engine calls nothing of sync's. Every value call is a memo or reads stamped rows, so a sync
+//! effect that reads one depends on exactly what the engine read.
 //!
-//! Not built (each returns `Error::NotBuilt` naming itself): every call marked replace or new in
-//! the boundary note's table, until the engine is reshaped for it. Built: `ingest_relay`,
-//! `wants`, `freed`, `next_timer`, `tick`, `set_now`, `clock_next`, `known_actor`, `provers`, `own_node`, `own_node_key`, `key_open`.
+//! Not built (each returns `Error::NotBuilt` naming itself): `prove_rotations`,
+//! `take_rotations`.
 
 pub(crate) mod bodies;
 pub(crate) mod deliveries;

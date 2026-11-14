@@ -44,7 +44,7 @@ pub(crate) const DEPOSITED: &[u8] = b"D/";
 
 /// The tags of the rows each module keeps in a peer's record (`osis_store::Transaction::
 /// record_put_row`, `record_put_wide_row` for a row about the record as a whole), one owner per
-/// tag (notes/sync-boundary.md U3). All go with the record (`RECORD_BUDGET`), a sync ID's also
+/// tag (notes/sync-store.md). All go with the record (`RECORD_BUDGET`), a sync ID's also
 /// with their sync ID.
 pub(crate) mod tag {
     // store: the peer budget's charges (record-wide), stands, deletes seen
