@@ -340,9 +340,13 @@ fn a_removed_writers_last_write_reads_alike_at_every_holder_spec_sync_judgement_
     let (alice, bob) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
     assert!(bob < alice, "the seed orders v5 before the removal");
     let ak = crate::harness::history::value_ak();
+    // node 1 drops what it lost once it holds the removal (spec/permissions.md §3 Lost access),
+    // v5 among it when no peer took it first: the readers then read alike without it
+    let held = [0, 2].map(|i| w.engine(i).commit_bytes(&v5).unwrap().is_some());
+    assert_eq!(held[0], held[1], "both readers hold v5's body, or neither");
+    let want = if held[0] { Some(Value::Str("v5".into())) } else { w.engine(0).get(&t, &ak).unwrap() };
     for i in [0, 2] {
-        assert_eq!(w.engine(i).get(&t, &ak).unwrap(), Some(Value::Str("v5".into())), "node {i} reads v5");
-        assert!(w.engine(i).commit_bytes(&v5).unwrap().is_some(), "node {i} holds v5's body");
+        assert_eq!(w.engine(i).get(&t, &ak).unwrap(), want, "node {i} reads alike");
     }
     // the commits on the thing each reader holds; a difference is only a body a snapshot both hold covers
     let on = |w: &mut World, i: usize| -> BTreeSet<_> { w.engine(i).commit_ids().into_iter().filter(|c| w.engine(i).header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t))).collect() };
@@ -370,7 +374,7 @@ fn a_member_granted_again_writing_before_it_takes_it_reads_it_spec_sync_inbox_2(
 
 /// Node 0 makes a thing in its synced group and grants node 1's account `role` on it; node 1
 /// accepts it and reads it.
-fn granted_and_read(role: Role) -> (World, osis_base::Tid, Ak) {
+pub(crate) fn granted_and_read(role: Role) -> (World, osis_base::Tid, Ak) {
     let mut w = contacts();
     let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
     let ak = Ak::new("u:v.0").unwrap();

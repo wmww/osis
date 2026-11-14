@@ -192,7 +192,7 @@ impl Node {
         self.engine_reloaded(&mut out);
         // the compaction trigger runs at each step (spec/sync-compaction.md §1): what its snapshots
         // cover is judged by the settle after it
-        let r = self.step(input, &mut out).and_then(|()| self.engine.compactions().map(drop).map_err(Error::from)).and_then(|()| self.settle(&mut out)).and_then(|()| self.flush());
+        let r = self.step(input, &mut out).and_then(|()| self.engine.compactions().map(drop).map_err(Error::from)).and_then(|()| self.settle(&mut out)).and_then(|()| self.lost(&mut out)).and_then(|()| self.flush());
         // a durable commit since the restart ends the stretch, whatever this step did
         if self.driver.failing.is_some_and(|f| self.committed() > f.committed) {
             self.driver.failing = None;
@@ -769,6 +769,29 @@ impl Node {
         true
     }
 
+    /// spec/permissions.md §3 (Lost access): the engine's lost-access trigger, due when a role
+    /// commit applied from elsewhere (or an `until` passed, `next_lost_due` being a wake) left
+    /// actors this node may no longer read (`Engine::lost_due`, its work list written by that
+    /// change): their secrets drop. What the drop moved is settled again.
+    fn lost(&mut self, out: &mut Vec<Out>) -> Result<()> {
+        if !self.engine.lost_due() {
+            return Ok(());
+        }
+        let loads = self.engine.loads();
+        if self.engine.drop_lost_due()?.is_empty() {
+            return Ok(());
+        }
+        if self.engine.loads() == loads {
+            return self.settle(out);
+        }
+        // the forget read the engine's store again (spec/sync-judgement.md §3: the reload
+        // forgetting names), replacing every index the modules follow: they start again from the
+        // store, as after a write of unknown outcome
+        self.close_all(out);
+        self.restart_modules(out);
+        Ok(())
+    }
+
     fn close_all(&mut self, out: &mut Vec<Out>) {
         let conns: Vec<ConnId> = self.driver.sessions.conns().collect();
         for c in conns {
@@ -779,7 +802,7 @@ impl Node {
 
     /// The earliest wake any module, the store or the engine needs.
     fn next_wake(&mut self) -> Option<WallMs> {
-        let engine = self.engine.next_timer().ok().flatten().map(WallMs);
+        let engine = self.engine.next_timer().ok().flatten().into_iter().chain(self.engine.next_lost_due()).min().map(WallMs);
         let clock = self.engine.clock_next();
         [self.driver.sessions.next_wake(), self.driver.dials.next_wake(), self.store.next_wake(), self.opens.next_wake(), self.read.next_wake(), self.unread.next_wake(), self.streams.next_wake(), self.inbox.next_wake(), self.status.next_wake(), engine, clock].into_iter().flatten().min()
     }
