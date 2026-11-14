@@ -282,6 +282,9 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     let c = Engine::commit_tx(tx, m)?;
     if let Some(rot) = &cut {
         rotation::recorded(tx, target, c, rot, &unreached, &mut done)?;
+        // the current state under the cut: a snapshot owed of each aspect holding content from
+        // before it (spec/crypto.md §4, State at a cut), written right after this transaction
+        rotation::floors::owe_state(tx, &target)?;
     }
     // the history setting in force, written again under the cut: the holder opens no earlier one
     // (spec/crypto.md §4, Floors)
@@ -636,7 +639,12 @@ impl Engine {
             }
             false => None,
         };
-        self.run(|tx| grant_history(tx, signer, target, holder, edge, leave, frontier, history))
+        let done = self.run(|tx| grant_history(tx, signer, target, holder, edge, leave, frontier, history))?;
+        // a cut's owed snapshots (the state it carries to the holder) go right after it
+        if history == History::None {
+            self.purge_resnapshots()?;
+        }
+        Ok(done)
     }
 
     /// Whether an explicit write of `edge` (`None`: a removal) on `holder`'s edge on `target`,

@@ -696,13 +696,16 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
     Ok(())
 }
 
-/// Notes in this transaction that this node, a writer of `(tid, ak)`, owes a re-snapshot after a
-/// purge request dropped something there, with the named bodies it had applied (`held`, joined to
-/// any owed already): durable (`records::RESNAPSHOTS_OWED`), so a stop before
-/// `Engine::purge_resnapshots` writes it, or a snapshot that may come only later, keeps the duty
-/// (spec/commits.md §5 Purge); an ephemeral aspect's in memory, as its data. Nothing on an aspect
-/// never compacted, or where this node does not write.
-fn owe_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, held: BTreeSet<CommitId>) -> Result<()> {
+/// Notes in this transaction that this node, a writer of `(tid, ak)`, owes a re-snapshot, with
+/// the bodies it holds that the snapshot must cover (`held`, joined to any owed already): after a
+/// purge request dropped something there, the named bodies it had applied (spec/commits.md §5
+/// Purge); after a cut, those written below the floor its newest epoch reads (spec/crypto.md §4,
+/// State at a cut). Either way a node that never held those bodies reads as this one once it
+/// holds the snapshot. Durable (`records::RESNAPSHOTS_OWED`), so a stop before
+/// `Engine::purge_resnapshots` writes it, or a snapshot that may come only later, keeps the duty;
+/// an ephemeral aspect's in memory, as its data. Nothing on an aspect never compacted, or where
+/// this node does not write.
+pub(crate) fn owe_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, held: BTreeSet<CommitId>) -> Result<()> {
     if !super::snapshot::compacted(ak) || !writes_on(tx.core, tid) {
         return Ok(());
     }

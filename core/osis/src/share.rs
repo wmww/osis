@@ -32,11 +32,13 @@ pub enum Reads {
     /// As the holder reads now; a new holder reads everything.
     #[default]
     Kept,
-    /// Only what is written from the holder's first grant on: nothing written before opens on any
-    /// of its devices, nor through anyone it grants. A new holder's, or one already granted so
-    /// (`Grant::from_now`); `Invalid` on a holder that reads what came before. Needs admin.
-    /// Not kept yet: what came before shows once another holder compacts it or encrypts it again
-    /// (issues/history-less-grant.md).
+    /// From the holder's first grant on: it reads the thing's current values as they stand at the
+    /// grant, then every write after it, but no commit from before: no earlier version, no past
+    /// fire of a signal (a chat's past messages), no listed history, on any of its devices nor
+    /// through anyone it grants. A shared document shows its text, not the edits that made it.
+    /// A value with an expiry written before reads absent to it. A new holder's, or one already
+    /// granted so (`Grant::from_now`); `Invalid` on a holder that reads what came before. Needs
+    /// admin.
     FromNow,
     /// Everything, also for a holder granted `FromNow`, which it shows what came before.
     All,

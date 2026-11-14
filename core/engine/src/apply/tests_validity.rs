@@ -60,7 +60,7 @@ mod tests {
         lp.sync_all().unwrap();
         let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let t = thing(&mut lp, a);
-        let read = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { invite: Some(Role::Read), ..read.clone() }).unwrap();
         let mut m = Mutation::new();
         let team = lp.peers[2].engine.new_thing(&mut m, c);

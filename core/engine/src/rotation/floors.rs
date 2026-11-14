@@ -151,3 +151,73 @@ pub(crate) fn low_floor_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<bool>
     let boxing = super::recipients(tx, who, a, &[])?;
     Ok(boxing.holders.iter().any(|h| h.role >= Role::Read && h.floor > low))
 }
+
+/// The bodies of `(tid, ak)` held here with content whose floor (`labeling::opened::part_floor`)
+/// is below `f`, or unknown where `unknown` counts them.
+fn below(tx: &mut Tx<'_>, tid: &Tid, ak: &osis_base::Ak, f: u64, unknown: bool) -> Result<BTreeSet<osis_base::CommitId>> {
+    let held: Vec<(osis_base::CommitId, usize)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter_map(|(_, c)| {
+        let m = tx.core.ix.commits.get(c)?;
+        let ai = m.aspect(tid, ak)?;
+        matches!(m.hold.get(ai), Some(crate::engine::Hold::Body { .. } | crate::engine::Hold::Leftover { valued: true, .. })).then_some((*c, ai))
+    }).collect();
+    let mut out = BTreeSet::new();
+    for (c, ai) in held {
+        if crate::labeling::opened::part_floor(tx, &c, ai, tid)?.map_or(unknown, |x| x < f) {
+            out.insert(c);
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `(tid, ak)` is content a snapshot carries (spec/commits.md §2): no role part,
+/// record, setting, addendum or signal.
+fn stateful(ak: &osis_base::Ak) -> bool {
+    osis_schema::core_types::is_content(ak.as_str()) && crate::retention::snapshot::compacted(ak)
+}
+
+/// State at a cut (spec/crypto.md §4): where the floor of the epoch this node seals `a`'s
+/// content under (`Core::seal_epoch`) rose past what it last owed for, it owes a snapshot
+/// (`retention::purge::owe_resnapshot`) of every content aspect of a thing whose secrets are
+/// `a`'s holding a body written below that floor (or of unknown floor): the snapshot, sealed under
+/// that epoch, carries the current state to a holder granted without history, which never opens
+/// those bodies (spec/crypto.md §5 Passing on). Signals hold no state, so nothing of them goes.
+/// Run by a cut's author in its grant and by every node at the end of a complete pass: a scan of
+/// the aspects held here once per floor the actor's content is sealed under (a cut is rare),
+/// nothing for an actor never cut.
+pub(crate) fn owe_state(tx: &mut Tx<'_>, a: &Tid) -> Result<()> {
+    if !any_floor(tx.core, a) {
+        return Ok(());
+    }
+    let Some((_, f)) = tx.core.seal_epoch(a) else { return Ok(()) };
+    let key = [crate::engine::records::CUT_SETTLED, a.as_bytes().as_slice()].concat();
+    let settled = tx.txn.get_local(&key)?.and_then(|v| v.try_into().ok()).map_or(0, u64::from_le_bytes);
+    if f <= settled {
+        return Ok(());
+    }
+    let aspects: Vec<(Tid, osis_base::Ak)> = tx.core.ix.by_aspect.keys().filter(|(t, ak)| stateful(ak) && tx.core.secret_actor(t) == Some(*a)).cloned().collect();
+    for (t, ak) in aspects {
+        let held = below(tx, &t, &ak, f, true)?;
+        if !held.is_empty() {
+            crate::retention::purge::owe_resnapshot(tx, &t, &ak, held)?;
+        }
+    }
+    tx.txn.put_local(&key, &f.to_le_bytes(), osis_store::Shred::No)?;
+    Ok(())
+}
+
+/// State at a cut, for part `ai` of commit `c` (header `h`) applied here: one opened under an
+/// epoch whose floor is below the one this node seals its thing under (written beside the cut,
+/// or arriving late) owes a snapshot of its aspect (`owe_state`). A part of unknown floor (read
+/// in no section) owes nothing here, nor does this node's own (`owe_state` judges it).
+pub(crate) fn late_part(tx: &mut Tx<'_>, c: &osis_base::CommitId, h: &osis_commit::Header, ai: usize) -> Result<()> {
+    let Some(x) = h.aspects.get(ai) else { return Ok(()) };
+    if !stateful(&x.ak) || tx.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local) {
+        return Ok(());
+    }
+    // the memoized view: 0 on every actor never cut, so a part pays nothing more there
+    let Some((_, f)) = tx.core.seal_epoch(&x.tid) else { return Ok(()) };
+    if f == 0 || !crate::labeling::opened::part_floor(tx, c, ai, &x.tid)?.is_some_and(|p| p < f) {
+        return Ok(());
+    }
+    crate::retention::purge::owe_resnapshot(tx, &x.tid, &x.ak, BTreeSet::from([*c]))
+}

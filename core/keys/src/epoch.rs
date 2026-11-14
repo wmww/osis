@@ -494,8 +494,9 @@ impl RoleEpochs {
     /// Sets the floors this node reads (spec/crypto.md §4, Floors): `makers` the floor of each
     /// epoch's maker where it is known, `own` this node's. Each epoch's floor is the greatest its
     /// live history entries opened here write (only a holder of its secret writes one, so no
-    /// other party sets it), at most its n; a fixed or derived epoch's is 0; one with no entry
-    /// opened has none known.
+    /// other party sets it), at most its n; a fixed epoch's, or one a thing with secrets of its own
+    /// adopted from its base actor, is 0 (a plain thing's view reads its base epochs' floors,
+    /// `derived`); one with no entry opened has none known.
     pub fn set_floors(&mut self, makers: BTreeMap<Epoch, u64>, own: u64) {
         let known = self
             .map
@@ -787,6 +788,13 @@ impl ActorEpochs {
                     order: Some(o.order(e)).filter(|&x| x != de.n()),
                 };
                 a.role_mut(r).map.insert(*de, info);
+            }
+            // a plain thing's content is the base actor's: each derived epoch reads its base
+            // epoch's floor (spec/crypto.md §4, Floors), so what a cut keeps from a holder
+            // stays kept on every plain thing below it
+            if let Some(f) = &o.floors {
+                let through = |m: &BTreeMap<Epoch, u64>| m.iter().filter_map(|(e, x)| ids.get(e).map(|d| (d.0, *x))).collect();
+                a.role_mut(r).floors = Some(Box::new(Floors { known: through(&f.known), makers: through(&f.makers), own: f.own }));
             }
         }
         a

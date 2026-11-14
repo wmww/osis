@@ -99,6 +99,8 @@ impl Trigger {
     /// aspect is held (`part_held`).
     pub(crate) fn applied(tx: &mut Tx<'_>, id: &CommitId, h: &Header, blob: &CommitBlob) -> Result<()> {
         for ai in 0..h.aspects.len() {
+            // a body written below a cut owes the state it carries (spec/crypto.md §4)
+            crate::rotation::floors::late_part(tx, id, h, ai)?;
             Trigger::part_held(tx, id, h, blob, ai)?;
         }
         Ok(())

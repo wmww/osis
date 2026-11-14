@@ -28,7 +28,8 @@ pub struct Grant {
     /// The holder is a group and this grant goes when the thing stops being its member
     /// (`Osis::add_with_grant`). Not a member now (`Osis::groups_of`), it is on its way out.
     pub with_membership: bool,
-    /// The holder reads only what was written from its first grant on (`Reads::FromNow`).
+    /// The holder reads the values as they stood at its first grant and what was written after,
+    /// no earlier commit (`Reads::FromNow`).
     pub from_now: bool,
 }
 

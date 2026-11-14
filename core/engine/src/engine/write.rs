@@ -718,6 +718,9 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     }
     let received = tx.now();
     crate::apply::apply_local(tx, &built.commit, built.signed, received)?;
+    // the epoch each content part was made under, where it has a floor (spec/crypto.md §5
+    // Passing on)
+    crate::labeling::opened::note_own(tx, &built.commit)?;
     Ok(id)
 }
 

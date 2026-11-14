@@ -629,6 +629,9 @@ pub(crate) fn may_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts
 /// Whether every write a snapshot of `(tid, ak)` would carry from a held body may go under this
 /// node's epoch (`labeling::opened::passes_on`): a write it read only under an epoch not
 /// established here waits for that epoch (its withheld removal arriving) or stays uncompacted.
+/// A snapshot carries state, not the commits: the floor clause binds it not, so one written after
+/// a cut carries the state written before it to the cut's holder (spec/crypto.md §4, State at a
+/// cut).
 fn carried_passes_on(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
     let held: Vec<(CommitId, usize)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter_map(|(_, c)| {
         let m = tx.core.ix.commits.get(c)?;
@@ -636,7 +639,7 @@ fn carried_passes_on(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
         matches!(m.hold.get(ai), Some(crate::engine::Hold::Body { .. } | crate::engine::Hold::Leftover { .. })).then_some((*c, ai))
     }).collect();
     for (c, ai) in held {
-        if !crate::labeling::opened::passes_on(tx, &c, ai, tid, ak.as_str())? {
+        if !crate::labeling::opened::passes_on(tx, &c, ai, tid, ak.as_str(), None)? {
             return Ok(false);
         }
     }
@@ -734,8 +737,21 @@ fn owed_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Error>>
         return Ok(None);
     }
     // a snapshot the purge stripped goes at sources (`snapshot_first`): only a whole, valid one
-    // carries (and with no named body applied here, it alone decides)
-    let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| super::bounds::valid_snapshot_held(tx.core, s, tid, ak)).collect();
+    // carries (and with no named body applied here, it alone decides); and one under an epoch of
+    // at least the floor this node seals under (0 where its actor was never cut): what a holder
+    // granted without history reads (spec/crypto.md §4, State at a cut)
+    let floor = tx.core.seal_epoch(tid).map_or(0, |x| x.1);
+    let mut snaps = Vec::new();
+    for s in tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| super::bounds::valid_snapshot_held(tx.core, s, tid, ak)).collect::<Vec<_>>() {
+        let ai = tx.core.ix.commits.get(&s).and_then(|m| m.aspect(tid, ak));
+        let reads = floor == 0 || match ai {
+            Some(ai) => crate::labeling::opened::part_floor(tx, &s, ai, tid)?.is_some_and(|f| f >= floor),
+            None => false,
+        };
+        if reads {
+            snaps.push(s);
+        }
+    }
     'snaps: for s in &snaps {
         for b in &held {
             if covered(tx, s, b, tid, ak)? != Some(true) {

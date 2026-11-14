@@ -34,7 +34,7 @@ pub(crate) mod history;
 pub(crate) mod leaving;
 pub(crate) mod leftover;
 mod pending;
-mod purge;
+pub(crate) mod purge;
 pub(crate) mod replace;
 pub(crate) mod snapshot;
 #[cfg(test)]

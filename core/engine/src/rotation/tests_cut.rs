@@ -891,13 +891,15 @@ fn content(lp: &mut LocalPeer, i: usize, g: Tid) -> BTreeSet<String> {
     }
 }
 
-// spec/crypto.md §4 (Roles secrets): randomized differential. Admins A and B grant, raise and
-// remove members, rotate and write content, syncing at random (forks included); at a random step
-// A cuts for N while B keeps going. N takes every peer's commits on `g` only as `g`'s labels carry
-// them, sealed: it reads the same roster as A, holds no read secret below its cut and reads no
-// content written before it (the roles secrets open role parts only), but A's write right after
-// it. Fails without roles secrets in history entries (N misses every role commit before its cut),
-// and with content sealed and wrapped under the roles secret (N reads what came before).
+// spec/crypto.md §4 (Roles secrets, State at a cut), §5 (Passing on): randomized differential.
+// Admins A and B grant, raise and remove members, rotate and write content, syncing at random
+// (forks included); at a random step A cuts for N while B keeps going. N takes every peer's
+// commits on `g` only as `g`'s labels carry them, sealed: it reads the same roster as A, holds no
+// read secret below its cut, holds no content commit from before it (written by anyone, beside
+// the cut included, whatever a peer encrypts again), yet reads the same current state as A. Fails without roles secrets in
+// history entries (N misses every role commit before its cut), with content sealed and wrapped
+// under the roles secret or without the floor clause of Passing on (N holds what came before),
+// and without the state at a cut (N misses state from before it).
 #[test]
 fn newcomer_reads_the_roster_from_sealed_labels_spec_crypto_4() {
     let mut checked = 0;
@@ -911,10 +913,14 @@ fn newcomer_reads_the_roster_from_sealed_labels_spec_crypto_4() {
         sync_among(&mut lp, &among);
         let cut_at = rng.next(10) as usize;
         let mut done = None;
+        let mut before = BTreeSet::new();
         let mut label = Label::default();
         label.place(&mut lp, g, &among);
         for step in 0..14 {
             if step == cut_at {
+                for p in among {
+                    before.extend(edits_on(&lp, p, g));
+                }
                 done = lp.peers[0].engine.grant_with(&g, &tids[5], &edge(Role::Read), History::None).ok();
                 done.iter().for_each(|d| label.note(d));
                 put(&mut lp, 0, g, "after");
@@ -956,6 +962,11 @@ fn newcomer_reads_the_roster_from_sealed_labels_spec_crypto_4() {
         let cut = lp.peers[0].engine.epochs(&g).unwrap().read.held().map(|x| x.0).filter(|e| done.commits.iter().any(|c| lp.peers[0].engine.core.ix.epoch_intro.get(&(g, Role::Read, *e)).is_some_and(|(_, x)| x == c))).max_by_key(Epoch::n).unwrap();
         settle_among(&mut lp, g, &among, &mut label);
         label.place(&mut lp, g, &among);
+        // a peer encrypts again some commits it holds (node-sync seals a body again: a placement
+        // past a delete, a body with no held encryption)
+        let p = among[rng.next(5) as usize];
+        let again: Vec<osis_base::CommitId> = lp.packages(p).unwrap().into_iter().filter(|pk| on_g(pk, g) && rng.next(2) == 0).map(|pk| pk.id).collect();
+        label.held.extend(lp.sealed(p, &again).unwrap());
         deliver_as_newcomer(&mut lp, 0, 5, g, &done, &label);
         let roster = |lp: &LocalPeer, i: usize| lp.peers[i].engine.roster(&g).into_iter().map(|(h, e)| (h, e.role)).collect::<Vec<_>>();
         if std::env::var("OSIS_CUT_DUMP").is_ok() && roster(&lp, 5) != roster(&lp, 0) {
@@ -971,9 +982,10 @@ fn newcomer_reads_the_roster_from_sealed_labels_spec_crypto_4() {
         assert_eq!(roster(&lp, 5), roster(&lp, 0), "seed {seed}: N's roster differs from A's");
         let below: Vec<Epoch> = lp.peers[5].engine.epochs(&g).unwrap().read.held().map(|x| x.0).filter(|e| e.n() < cut.n()).collect();
         assert!(below.is_empty(), "seed {seed}: N holds {below:?} below its cut {cut:?}");
+        holds_none(&lp, 5, &before, &format!("seed {seed}"));
         let read = content(&mut lp, 5, g);
         assert!(read.contains("after"), "seed {seed}: N does not read A's write after its cut");
-        assert!(read.iter().all(|k| !k.starts_with("before")), "seed {seed}: N reads content from before its cut: {read:?}");
+        assert_eq!(read, content(&mut lp, 0, g), "seed {seed}: N reads another state than A");
     }
     assert!(checked >= 4, "only {checked} seeds cut");
 }
@@ -1045,37 +1057,217 @@ fn low_floor_waits_for_the_names_spec_crypto_4() {
     assert!(m.is_subset(&read), "B's state hands M {:?}, made knowing its removal", m.difference(&read).collect::<Vec<_>>());
 }
 
-// spec/crypto.md §4 (Floors): A writes "before", then cuts for N. A's fresh encryption of that
-// commit (node-sync seals a body again: a placement past a delete, a body with no held
-// encryption) and A's compaction snapshot of the aspect both go under A's newest epoch, the cut,
-// so N reads "before". Fails: nothing bars content from before a cut from being encrypted again
-// under an epoch at or after it (issues/history-less-grant.md, Content encrypted again).
+/// The content commits peer `i` holds on `g` (not role commits, not snapshots): every one an
+/// edit somebody made.
+fn edits_on(lp: &LocalPeer, i: usize, g: Tid) -> BTreeSet<osis_base::CommitId> {
+    let e = &lp.peers[i].engine;
+    e.core.ix.commits.iter().filter(|(_, m)| !m.header.kind.is_compaction() && m.header.aspects.iter().any(|a| a.tid == g && osis_schema::core_types::is_content(a.ak.as_str()))).map(|(c, _)| *c).collect()
+}
+
+/// Asserts N (peer `n`) holds no commit of `before` (the content commits from before its cut):
+/// neither as a commit nor as a header.
+fn holds_none(lp: &LocalPeer, n: usize, before: &BTreeSet<osis_base::CommitId>, what: &str) {
+    let held: Vec<_> = before.iter().filter(|c| lp.peers[n].engine.header(c).is_some()).collect();
+    assert!(held.is_empty(), "{what}: N holds commits from before its cut: {held:?}");
+}
+
+// spec/crypto.md §5 (Passing on, floors), §4 (State at a cut): A writes "draft", removes it and
+// writes "final", then cuts for N; B, another admin not holding the cut yet, writes "beside" and
+// goes offline for good. A encrypts its pre-cut commits again (node-sync seals a body again: a placement past a delete, a
+// body with no held encryption), and B's commit reaches A late. N never holds a commit from
+// before its cut, its own or as a header, nor B's (written beside the grant); it reads the
+// current state ("final", "beside", and "after", written after) and no earlier one ("draft").
+// Each shape fails without the floor clause (a fresh encryption or wrap hands N the commit) or
+// without the state at a cut (N misses "final" or "beside").
 #[test]
-#[ignore = "fails: issues/history-less-grant.md, Content encrypted again"]
-fn content_encrypted_again_after_a_cut_stays_hidden_spec_crypto_4() {
-    for snapshot in [false, true] {
-        let mut lp = synced(2);
-        let n = lp.peers[1].engine.me();
+fn content_encrypted_again_after_a_cut_stays_hidden_spec_crypto_5() {
+    for again in [false, true] {
+        let mut lp = synced(3);
+        let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
         let g = group(&mut lp, 0);
+        lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
+        lp.sync_all().unwrap();
         let mut label = Label::default();
-        put(&mut lp, 0, g, "before");
-        let ids: BTreeSet<osis_base::CommitId> = lp.peers[0].engine.core.ix.commits.keys().copied().collect();
-        label.place(&mut lp, g, &[0]);
-        let done = lp.peers[0].engine.grant_with(&g, &n, &edge(Role::Read), History::None).unwrap();
+        put(&mut lp, 0, g, "draft");
+        remove(&mut lp, 0, g, "draft");
+        put(&mut lp, 0, g, "final");
+        label.place(&mut lp, g, &[0, 1]);
+        let done = lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Read), History::None).unwrap();
         label.note(&done);
+        put(&mut lp, 1, g, "beside");
+        label.place(&mut lp, g, &[1]);
+        let mut before = edits_on(&lp, 0, g);
+        before.extend(edits_on(&lp, 1, g));
         label.place(&mut lp, g, &[0]);
         put(&mut lp, 0, g, "after");
         label.place(&mut lp, g, &[0]);
-        if snapshot {
-            assert!(lp.peers[0].engine.snapshot(&g, &osis_base::Ak::new("x:m.0").unwrap()).unwrap().is_some(), "A compacts");
-            label.place(&mut lp, g, &[0]);
-        } else {
-            let again: Vec<osis_base::CommitId> = ids.into_iter().filter(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.ak.as_str() == "x:m.0"))).collect();
-            label.held.extend(lp.sealed(0, &again).unwrap());
+        if again {
+            let ids: Vec<osis_base::CommitId> = edits_on(&lp, 0, g).intersection(&before).copied().collect();
+            label.held.extend(lp.sealed(0, &ids).unwrap());
         }
-        deliver_as_newcomer(&mut lp, 0, 1, g, &done, &label);
-        let read = content(&mut lp, 1, g);
-        assert!(read.contains("after"), "N reads A's write after its cut");
-        assert!(!read.contains("before"), "snapshot {snapshot}: N reads A's write from before its cut");
+        // B goes offline for good; its commit reaches A late, sealed as B placed it: A owes the
+        // state it carries
+        lp.deliver_sealed(0, &label.held).unwrap();
+        settle_among(&mut lp, g, &[0], &mut label);
+        label.place(&mut lp, g, &[0]);
+        deliver_as_newcomer(&mut lp, 0, 2, g, &done, &label);
+        holds_none(&lp, 2, &before, &format!("again {again}"));
+        assert_eq!(content(&mut lp, 2, g), content(&mut lp, 0, g), "again {again}: N reads another state than A");
+        assert_eq!(content(&mut lp, 2, g), BTreeSet::from(["final".to_string(), "beside".into(), "after".into()]), "again {again}");
     }
+}
+
+/// Peer `i` removes key `k` from `g`'s `x:m.0`.
+fn remove(lp: &mut LocalPeer, i: usize, g: Tid, k: &str) {
+    let mut m = crate::Mutation::new();
+    m.op(g, &osis_base::Ak::new("x:m.0").unwrap(), osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(osis_base::Value::Str(k.into())) }).unwrap();
+    lp.peers[i].commit(m).unwrap();
+}
+
+static DOC: osis_schema::StaticSchema = osis_schema::StaticSchema::new("cutdoc.osis", "revision 1; purgeable_by(author, admin) aspect k:t.0: text;\n");
+
+// spec/crypto.md §4 (State at a cut), Tess: a shared document granted from now shows its finished
+// text, never the edits before. A writes a text in four edits, history kept (P, granted with
+// history, lists every version), compacts it, then grants N read without history. N reads the final text, holds
+// none of the edits (so lists no earlier version), and reads A's next edit; P still lists every one.
+#[test]
+fn from_now_document_shows_its_text_not_its_edits_spec_crypto_4() {
+    let mut lp = synced(3);
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let g = group(&mut lp, 0);
+    let key: osis_schema::Aspect<osis_base::Value> = osis_schema::Aspect::new("k:t.0", &DOC);
+    let ak = osis_base::Ak::new("k:t.0").unwrap();
+    let mut m = crate::Mutation::new();
+    m.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(ak.clone(), osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None })).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Read)).unwrap();
+    let edit = |lp: &mut LocalPeer, op: osis_crdt::Op| {
+        let mut m = crate::Mutation::new();
+        m.op(g, &key, osis_crdt::PathOp { path: vec![], op }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    let text = |lp: &mut LocalPeer, i: usize| match lp.peers[i].engine.get(&g, &ak).unwrap() {
+        Some(osis_base::Value::Str(s)) => s,
+        v => format!("{v:?}"),
+    };
+    edit(&mut lp, osis_crdt::Op::Insert { at: 0, items: vec![osis_base::Value::Str("embarassing draft".into())] });
+    edit(&mut lp, osis_crdt::Op::Delete { at: 0, len: 12 });
+    edit(&mut lp, osis_crdt::Op::Insert { at: 0, items: vec![osis_base::Value::Str("the final ".into())] });
+    edit(&mut lp, osis_crdt::Op::Insert { at: 15, items: vec![osis_base::Value::Str(".".into())] });
+    assert_eq!(text(&mut lp, 0), "the final draft.");
+    // compacted before the grant: that snapshot is history as much as the edits
+    assert!(lp.peers[0].engine.snapshot(&g, &ak).unwrap().is_some(), "A compacts");
+    let mut label = Label::default();
+    label.place(&mut lp, g, &[0]);
+    let before = edits_on(&lp, 0, g);
+    let done = lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Read), History::None).unwrap();
+    label.note(&done);
+    label.place(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &label);
+    assert_eq!(text(&mut lp, 2), "the final draft.", "N reads another text");
+    holds_none(&lp, 2, &before, "the document");
+    let versions = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.held_parts(&g, &ak, crate::engine::listing::CommitFrom::Oldest, 100, usize::MAX).unwrap().0.len();
+    edit(&mut lp, osis_crdt::Op::Insert { at: 16, items: vec![osis_base::Value::Str("!".into())] });
+    label.place(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &label);
+    assert_eq!(text(&mut lp, 2), "the final draft.!", "N misses A's edit after its grant");
+    lp.sync(0, 1).unwrap();
+    assert!(versions(&mut lp, 1) >= 5, "P, with history, lists every edit");
+    holds_none(&lp, 2, &before, "after the next edit");
+}
+
+// spec/crypto.md §4 (State at a cut), notes/chat.md (a message is a signal fire with no current
+// value): a chat granted from now. N reads the chat's name, no message from before its grant
+// (a signal has no state a snapshot carries), and every message after it.
+#[test]
+fn from_now_chat_shows_no_earlier_message_spec_crypto_4() {
+    let mut lp = synced(2);
+    let n = lp.peers[1].engine.me();
+    let g = group(&mut lp, 0);
+    let (msg_ak, name_ak) = (osis_base::Ak::new("x:msg~0").unwrap(), osis_base::Ak::new("x:name.0").unwrap());
+    let mut m = crate::Mutation::new();
+    m.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(msg_ak.clone(), osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None })).unwrap();
+    m.op(g, &name_ak, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Set(osis_base::Value::Str("team".into())) }).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    let say = |lp: &mut LocalPeer, t: &str| {
+        let mut m = crate::Mutation::new();
+        m.op(g, &msg_ak, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Set(osis_base::Value::Str(t.into())) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    let early = [say(&mut lp, "secret plans"), say(&mut lp, "more plans")];
+    let mut label = Label::default();
+    label.place(&mut lp, g, &[0]);
+    let done = lp.peers[0].engine.grant_with(&g, &n, &edge(Role::Write), History::None).unwrap();
+    label.note(&done);
+    let welcome = say(&mut lp, "welcome");
+    label.place(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 1, g, &done, &label);
+    let fires = |lp: &mut LocalPeer, i: usize| -> Vec<osis_base::CommitId> {
+        let (parts, _) = lp.peers[i].engine.held_parts(&g, &msg_ak, crate::engine::listing::CommitFrom::Oldest, 100, usize::MAX).unwrap();
+        parts.iter().map(|p| p.id).collect()
+    };
+    assert_eq!(fires(&mut lp, 0).len(), 3, "A lists every message");
+    assert_eq!(fires(&mut lp, 1), vec![welcome], "N lists another set of messages than the one after its grant");
+    holds_none(&lp, 1, &BTreeSet::from(early), "the chat");
+    assert_eq!(lp.peers[1].engine.get(&g, &name_ak).unwrap(), Some(osis_base::Value::Str("team".into())), "N misses the chat's name");
+}
+
+// spec/crypto.md §4 (Floors: a plain thing's epoch reads its base epoch's floor), §5 (Passing
+// on): T, a plain thing under `g`, has content from before A's cut for N. A seals T's content
+// under the cut's derived epoch at the cut's floor, so T's commit from before it is neither
+// wrapped nor sealed again there, and A owes T's state a snapshot as `g`'s own.
+#[test]
+fn plain_thing_below_a_cut_keeps_its_floor_spec_crypto_4() {
+    let mut lp = synced(2);
+    let n = lp.peers[1].engine.me();
+    let g = group(&mut lp, 0);
+    let t = {
+        let mut m = crate::Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, g);
+        lp.peers[0].commit(m).unwrap();
+        t
+    };
+    put(&mut lp, 0, t, "before");
+    let old = edits_on(&lp, 0, t);
+    lp.peers[0].engine.grant_with(&g, &n, &edge(Role::Read), History::None).unwrap();
+    let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let (_, f) = lp.peers[0].engine.core.seal_epoch(&t).unwrap();
+    assert_eq!(f, cut.n(), "T's content is sealed below the cut's floor");
+    for c in &old {
+        let parts: Vec<usize> = (0..lp.peers[0].engine.header(c).unwrap().aspects.len()).collect();
+        assert!(lp.peers[0].engine.wrap_secret(&g, Some((c, &parts))).unwrap().is_none(), "T's commit from before the cut is wrapped under it");
+    }
+    assert!(lp.sealed(0, &old.iter().copied().collect::<Vec<_>>()).unwrap().is_empty(), "T's commit from before the cut is sealed again under it");
+    let snaps = lp.peers[0].engine.core.ix.snapshots.get(&(t, osis_base::Ak::new("x:m.0").unwrap())).map_or(0, |s| s.len());
+    assert_eq!(snaps, 1, "A writes no snapshot of T's state at the cut");
+}
+
+// spec/crypto.md §4 (State at a cut): the cut's snapshots carry state, not history: a thing with
+// 8 aspects, each written 3 or 30 times over (its state the same), costs the same commits and
+// bytes at the cut; one snapshot per aspect holding state, none for a signal.
+#[test]
+fn cut_state_cost_does_not_grow_with_history_spec_crypto_4() {
+    let cost = |rounds: usize| {
+        let mut lp = synced(2);
+        let n = lp.peers[1].engine.me();
+        let g = group(&mut lp, 0);
+        for r in 0..rounds {
+            let mut m = crate::Mutation::new();
+            for a in 0..8 {
+                m.op(g, &osis_base::Ak::new(format!("x:a{a}.0")).unwrap(), osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Set(osis_base::Value::Str(format!("value {}", if r + 1 == rounds { "last" } else { "earlier" }))) }).unwrap();
+            }
+            lp.peers[0].commit(m).unwrap();
+        }
+        let before: BTreeSet<osis_base::CommitId> = lp.peers[0].engine.core.ix.commits.keys().copied().collect();
+        lp.peers[0].engine.grant_with(&g, &n, &edge(Role::Read), History::None).unwrap();
+        let new: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|pk| !before.contains(&pk.id)).collect();
+        let snaps: Vec<_> = new.iter().filter(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header.kind.is_compaction()).collect();
+        let bytes: usize = snaps.iter().map(|pk| pk.bytes.len()).sum();
+        eprintln!("rounds {rounds}: {} commits at the cut, {} snapshots, {bytes} snapshot bytes", new.len(), snaps.len());
+        (new.len(), snaps.len(), bytes)
+    };
+    let (small, big) = (cost(3), cost(30));
+    assert_eq!(small.1, 8, "one snapshot per aspect holding state");
+    assert_eq!((small.0, small.1), (big.0, big.1), "the cut's commits grow with history");
+    assert!(big.2 <= small.2 + 8 * 4, "the cut's snapshot bytes grow with history: {} against {}", big.2, small.2);
 }

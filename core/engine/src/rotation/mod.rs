@@ -1186,9 +1186,10 @@ impl Engine {
     }
 
     /// Makes the rotations of `actor` nothing waits for (`pass_end_rotations`: withdraws), re-seals the
-    /// holders of `actor` the trigger names and adds the history its current epochs lack
-    /// (spec/permissions.md §3, spec/crypto.md §4 History box), decided at the end of a complete
-    /// pass of its labels (`sync`); nothing otherwise.
+    /// holders of `actor` the trigger names, adds the history its current epochs lack
+    /// (spec/permissions.md §3, spec/crypto.md §4 History box) and writes the snapshots a cut owes
+    /// (spec/crypto.md §4, State at a cut), decided at the end of a complete pass of its labels
+    /// (`sync`); nothing otherwise.
     pub fn reseal_due(&mut self, actor: &Tid, sync: &dyn SyncState) -> Result<Done> {
         if !sync.complete_pass(actor) {
             return Ok(Done::default());
@@ -1213,6 +1214,12 @@ impl Engine {
             }
             done.extend(add_history(tx, a)?);
             done.extend(tip_add(tx, a)?);
+            floors::owe_state(tx, &a)?;
+            Ok(done)
+        })
+        .and_then(|done| {
+            // the snapshots a cut owes (spec/crypto.md §4, State at a cut)
+            self.purge_resnapshots()?;
             Ok(done)
         })
     }
