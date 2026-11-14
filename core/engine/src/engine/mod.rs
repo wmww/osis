@@ -840,6 +840,8 @@ indexes! {
     pub section_epochs: JMap<(CommitId, Tid), osis_crypto::Epoch>,
     /// The commit and parts each opened or sealed blob holds (`sync::bodies`).
     pub blob_parts: JMap<osis_base::BlobId, Arc<(CommitId, crate::sync::PartSet)>>,
+    /// `blob_parts`' blobs per commit: they go with it (`sync::bodies::forget`).
+    pub commit_blobs: JSetMap<CommitId, osis_base::BlobId>,
     /// Fall marks per aspect (`sync::falls`, spec/sync-judgement.md §4): a count of events, not
     /// derived from the commits held, so no rebuild compares it.
     pub falls: JMap<(Tid, Ak), u64>,

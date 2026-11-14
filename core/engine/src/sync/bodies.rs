@@ -16,7 +16,8 @@ use std::sync::Arc;
 /// `se/` + commit ID + tid: the read epoch commit's section of a thing is sealed under, as this
 /// node sealed or opened it (`section_epoch`).
 pub(crate) const SECTION_EPOCHS: &[u8] = b"se/";
-/// `bp/` + blob ID: the commit and parts an opened or sealed blob holds (`blob_parts`).
+/// `bp/` + commit ID + blob ID: the parts an opened or sealed blob of the commit holds
+/// (`blob_parts`).
 pub(crate) const BLOB_PARTS: &[u8] = b"bp/";
 
 /// Loads the section epochs and blob parts (an open or reload).
@@ -33,13 +34,16 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     tx.core.ix.section_epochs.extend(rows);
     let mut parts = Vec::new();
     tx.scan(BLOB_PARTS, |k, v| {
-        let b = BlobId(k.try_into().map_err(|_| bad())?);
-        let c = CommitId(v.get(..32).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
-        let ps: PartSet = v.get(32..).unwrap_or_default().chunks(4).map(|x| x.try_into().map(u32::from_be_bytes).map(|n| n as usize).map_err(|_| bad())).collect::<Result<_>>()?;
-        parts.push((b, Arc::new((c, ps))));
+        let c = CommitId(k.get(..32).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
+        let b = BlobId(k.get(32..).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
+        let ps: PartSet = v.chunks(4).map(|x| x.try_into().map(u32::from_be_bytes).map(|n| n as usize).map_err(|_| bad())).collect::<Result<_>>()?;
+        parts.push((c, b, ps));
         Ok(())
     })?;
-    tx.core.ix.blob_parts.extend(parts);
+    for (c, b, ps) in parts {
+        tx.core.ix.blob_parts.insert(b, Arc::new((c, ps)));
+        tx.core.ix.commit_blobs.insert(c, b);
+    }
     Ok(())
 }
 
@@ -47,7 +51,9 @@ fn note_section(tx: &mut Tx<'_>, c: &CommitId, t: &Tid, e: &Epoch) -> Result<()>
     if tx.core.ix.section_epochs.get(&(*c, *t)) == Some(e) {
         return Ok(());
     }
-    tx.txn.put_local(&[SECTION_EPOCHS, &c.0, t.as_bytes()].concat(), &osis_base::encode(&e.to_wire()), Shred::No)?;
+    // a memory commit's rows are memory, gone with it at a restart
+    let k = [SECTION_EPOCHS, &c.0, t.as_bytes()].concat();
+    tx.in_class(tx.is_memory_commit(c), |tx| Ok(tx.txn.put_local(&k, &osis_base::encode(&e.to_wire()), Shred::No)?))?;
     tx.core.ix.section_epochs.insert((*c, *t), *e);
     Ok(())
 }
@@ -56,10 +62,31 @@ fn note_blob(tx: &mut Tx<'_>, b: &BlobId, c: &CommitId, parts: &PartSet) -> Resu
     if tx.core.ix.blob_parts.contains_key(b) {
         return Ok(());
     }
-    let v: Vec<u8> = c.0.iter().copied().chain(parts.iter().flat_map(|p| (*p as u32).to_be_bytes())).collect();
-    tx.txn.put_local(&[BLOB_PARTS, &b.0].concat(), &v, Shred::No)?;
+    let v: Vec<u8> = parts.iter().flat_map(|p| (*p as u32).to_be_bytes()).collect();
+    let k = [BLOB_PARTS, &c.0, &b.0].concat();
+    tx.in_class(tx.is_memory_commit(c), |tx| Ok(tx.txn.put_local(&k, &v, Shred::No)?))?;
     tx.core.ix.blob_parts.insert(*b, Arc::new((*c, parts.clone())));
+    tx.core.ix.commit_blobs.insert(*c, *b);
     Ok(())
+}
+
+/// Commit `c` is forgotten (`apply::unindex_commit`): its section epochs and blob parts go
+/// with it, in its transaction.
+pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
+    let tids: Vec<Tid> = tx.core.ix.section_epochs.range((*c, Tid::from_bytes([0; 15]))..=(*c, Tid::from_bytes([0xff; 15]))).map(|((_, t), _)| *t).collect();
+    let blobs: Vec<BlobId> = tx.core.ix.commit_blobs.get(c).into_iter().flatten().copied().collect();
+    tx.in_class(tx.is_memory_commit(c), |tx| {
+        for t in tids {
+            tx.core.ix.section_epochs.remove(&(*c, t));
+            tx.txn.remove_local(&[SECTION_EPOCHS, &c.0, t.as_bytes()].concat(), Shred::No)?;
+        }
+        for b in blobs {
+            tx.core.ix.commit_blobs.remove(c, &b);
+            tx.core.ix.blob_parts.remove(&b);
+            tx.txn.remove_local(&[BLOB_PARTS, &c.0, &b.0].concat(), Shred::No)?;
+        }
+        Ok(())
+    })
 }
 
 impl Engine {
@@ -155,11 +182,18 @@ impl Engine {
     }
 
     /// This node's commits (written here) with a body under `s` (spec/sync-status.md §2):
-    /// O(commits on `s`'s closure).
+    /// O(things on `s`'s closure + its account's and node's commits on them).
     pub(crate) fn own_commits_now(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>> {
         let Some(t) = self.read_thing(s)? else { return Ok(Arc::new(BTreeSet::new())) };
         let closure = self.closure(&t);
-        let own: BTreeSet<CommitId> = closure.iter().flat_map(|x| self.core.on_thing(x)).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local)).collect();
+        let authors: Vec<Tid> = self.core.me().into_iter().chain([self.core.id.tid()]).collect();
+        let ix = &self.core.ix;
+        let mut own = BTreeSet::new();
+        for x in closure.iter() {
+            for a in &authors {
+                own.extend(ix.by_thing.get(&(*x, *a)).into_iter().flatten().filter(|c| ix.commits.get(*c).is_some_and(|m| m.origin == crate::events::Origin::Local)));
+            }
+        }
         let ctx = self.body_ctx(&t);
         let mut out = BTreeSet::new();
         for c in own {

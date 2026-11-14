@@ -76,6 +76,23 @@ pub(crate) fn owe(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], edg
     Ok(())
 }
 
+/// Drops delivery (`c`, `holder`) (`Engine::delivered`).
+pub(crate) fn drop_owed(tx: &mut Tx<'_>, c: &CommitId, holder: &Tid) -> Result<()> {
+    if tx.core.ix.owed_inbox.remove(&(*c, *holder)).is_some() {
+        tx.txn.remove_local(&[OWED, &c.0, h_bytes(holder)].concat(), Shred::No)?;
+    }
+    Ok(())
+}
+
+/// Commit `c` is forgotten (`apply::unindex_commit`): nothing of it is owed any more.
+pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
+    let holders: Vec<Tid> = tx.core.ix.owed_inbox.range((*c, Tid::from_bytes([0; 15]))..=(*c, Tid::from_bytes([0xff; 15]))).map(|((_, h), _)| *h).collect();
+    for h in holders {
+        drop_owed(tx, c, &h)?;
+    }
+    Ok(())
+}
+
 fn h_bytes(t: &Tid) -> &[u8] {
     t.as_bytes()
 }

@@ -283,8 +283,8 @@ fn bodies_and_facts_under_home_spec_sync_judgement_1() {
     assert!(e.own_commits(&home).unwrap().contains(&c));
 }
 
-// spec/sync-judgement.md §1 (a fresh encryption; the section-epoch rule, Fathom's finding
-// issues/reseal-under-own-epoch-leaks.md): a held commit this node neither wrote nor opened from a blob is never sealed (its
+// spec/sync-judgement.md §1 (a fresh encryption; the section-epoch rule, Fathom's reseal-leak
+// finding): a held commit this node neither wrote nor opened from a blob is never sealed (its
 // written epoch unknown); an own commit is sealed under the epoch it is written under, and the
 // blob opens with its wrap under home's read secret.
 #[test]
@@ -317,7 +317,7 @@ fn section_epoch_of(lp: &LocalPeer, i: usize, t: &Tid, c: &osis_base::CommitId, 
 }
 
 // spec/sync-judgement.md §1, §4 (a fresh encryption of another writer's body; the section-epoch
-// rule, issues/reseal-under-own-epoch-leaks.md): a reader holding a newer read epoch seals another
+// rule, Fathom's reseal-leak finding): a reader holding a newer read epoch seals another
 // writer's section under the epoch it was written under (as it opened it), never under its
 // newest; a body it holds but never opened from a blob is refused (its written epoch unknown).
 #[test]
@@ -415,4 +415,40 @@ fn a_payload_sync_id_of_another_thing_is_not_kept_unread_spec_sync_inbox_2() {
     let e = &mut lp.peers[1].engine;
     assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Unread(Vec::new()), "home1 is D's");
     assert_eq!(e.sync_set().unwrap().ids.get(&home1), Some(&(d1, Holding::Read)));
+}
+
+// spec/sync-inbox.md §2 Re-send (until the sender has seen the recipient take it, an open by
+// the recipient among the signs: sync's to see): `delivered` ends a delivery, durably; a sync
+// holder writes nothing, so the engine alone never sees it taken.
+#[test]
+fn delivered_ends_a_delivery_spec_sync_inbox_2() {
+    let (mut lp, _, pb, g, _) = granted(Role::Sync);
+    let e = &mut lp.peers[0].engine;
+    assert!(e.deliveries().unwrap().contains(&(g, pb)));
+    e.delivered(&g, &pb).unwrap();
+    assert!(!e.deliveries().unwrap().contains(&(g, pb)));
+    lp.peers[0].restart(7).unwrap();
+    assert!(!lp.peers[0].engine.deliveries().unwrap().contains(&(g, pb)), "gone for good");
+}
+
+// spec/sync-judgement.md §1 (a fresh encryption under the epochs its sections were written
+// under; notes/sync-boundary.md seal_body): what this node keeps of a blob it sealed or opened
+// lasts across a restart and goes with its commit when that is forgotten.
+#[test]
+fn blob_rows_go_with_their_commit() {
+    let (mut lp, _) = people(1);
+    let (_, d) = lp.peers[0].engine.account().unwrap().unwrap();
+    let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
+    let t = thing_of(&mut lp, 0, d);
+    add_item(&mut lp, 0, d, t);
+    let mut m = Mutation::new();
+    m.set(t, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(5)).unwrap();
+    let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
+    let (sealed, _) = lp.peers[0].engine.seal_body(&home, &c, &mut SeededRng::from_u64(3)).unwrap().unwrap();
+    lp.peers[0].restart(8).unwrap();
+    assert!(lp.peers[0].engine.blob_parts(&sealed.id).unwrap().is_some(), "durable");
+    lp.peers[0].engine.forget_commits(&[c]).unwrap();
+    assert!(lp.peers[0].engine.blob_parts(&sealed.id).unwrap().is_none());
+    lp.peers[0].restart(9).unwrap();
+    assert!(lp.peers[0].engine.blob_parts(&sealed.id).unwrap().is_none(), "its row gone too");
 }

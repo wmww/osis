@@ -554,6 +554,14 @@ impl Engine {
         Ok(self.delivery_taken_now(c, holder))
     }
 
+    /// Sync stops delivering `c` to `holder`: it saw the holder take it (`delivery_taken`, or an
+    /// open of a sync ID the blob names by the holder), or gave up re-sending. The row goes: a
+    /// delivery is owed from its commit's transaction to here, or until its commit is forgotten.
+    pub fn delivered(&mut self, c: &CommitId, holder: &Tid) -> Result<()> {
+        let (c, h) = (*c, *holder);
+        self.run(|tx| deliveries::drop_owed(tx, &c, &h))
+    }
+
     /// The inbox blob of delivery (`c`, `holder`), sealed now (spec/wire.md §9): `None` for a
     /// node holder (sent `c` itself) or one whose inbox key is not known here.
     pub fn inbox_blob(&mut self, c: &CommitId, holder: &Tid, rng: &mut dyn NodeRng) -> Result<Option<Vec<u8>>> {
