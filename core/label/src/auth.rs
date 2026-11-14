@@ -8,7 +8,7 @@ use crate::step::Step;
 use crate::Error;
 use osis_base::cbor::encode;
 use osis_base::format::{DELETE_ADMIN, DELETE_WRITER};
-use osis_base::{BlobId, SyncId, Value};
+use osis_base::{BlobId, CommitId, SyncId, Tid, Value};
 use osis_crypto::{DeleteSecret, Domain, LabelRole, Signature, SigningSecret, VerifyingKey, verify_delete};
 
 /// Digest of a stamp, deposit or publish authorization: BLAKE3 of canonical
@@ -40,6 +40,22 @@ pub fn sign_deposit(deposit: &SigningSecret, label: &SyncId, blob: &BlobId, wrap
 pub fn verify_deposit(head_deposit: &VerifyingKey, label: &SyncId, blob: &BlobId, wrap: &[u8], sig: &Signature) -> Result<(), Error> {
     let d = entry_digest(label, blob, wrap);
     head_deposit.verify(Domain::Deposit, &d, sig).or_else(|_| head_deposit.verify(Domain::RoleEntry, &d, sig)).map_err(|_| Error::Verify("deposit"))
+}
+
+/// Digest of a removal signature (spec/wire.md §9 position 5): BLAKE3 of canonical
+/// `[sync_id, recipient, commit_id]`.
+pub fn removal_digest(s: &SyncId, recipient: &Tid, commit: &CommitId) -> [u8; 32] {
+    osis_base::hash::hash(&encode(&Value::List(vec![Value::bytes(&s.0), Value::bytes(recipient.as_bytes()), Value::bytes(&commit.0)])))
+}
+
+/// A removal signature by a step's delete key under `"osis v1 removal"`.
+pub fn sign_removal(delete: &SigningSecret, s: &SyncId, recipient: &Tid, commit: &CommitId) -> Signature {
+    delete.sign(Domain::Removal, &removal_digest(s, recipient, commit))
+}
+
+/// Checks a removal signature against a step's delete key.
+pub fn verify_removal(delete: &VerifyingKey, s: &SyncId, recipient: &Tid, commit: &CommitId, sig: &Signature) -> Result<(), Error> {
+    delete.verify(Domain::Removal, &removal_digest(s, recipient, commit), sig).map_err(|_| Error::Verify("removal"))
 }
 
 /// The signing domain of an entry's stamp or deposit signature (`plain`: `Stamp` or

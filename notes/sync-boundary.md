@@ -127,14 +127,16 @@ pub enum Verdict { Must, May, MustNot(Why), Unjudged }
 ```
 Acts on a verdict's change: logs its own must-hold bodies (`Engine::seal`), drops own entries must-not-hold or covered and dropped, and at each store source stamps for its head, relays or deposits, deletes, and logs again once; destruction's telling and emptying.
 
-**5. `unread`: judgement for kept-unread sync IDs** (spec/sync-judgement.md §6). State: per S stranded or not; nothing durable of its own (the sync record is the engine's, the head is the store's). Depends on engine (`sync_records`, `sync_set`, `removal_notices`, `drop_sync_record`) and store. Nothing else.
+**5. `unread`: judgement for kept-unread sync IDs** (spec/sync-judgement.md §6, spec/sync-set.md §3). State: per S kept unread its `Kept` (stranded, credentials), stamped for opens and status; stamped projections of the three engine values. Nothing durable of its own (the sync record is the engine's, the head is the store's). Reads through `Ground` (engine `sync_set`, `sync_records`, `removal_notices`, `drop_sync_record`; store `path`, own entries, `shred`; `Cx` implements it) and `Sources` (an own entry present at a source by its stream: streams implements it). Nothing else.
 ```rust
 impl Unread {
-    pub fn credentials(&self, cx: &mut Cx, s: &SyncId) -> Option<Arc<UnreadCredentials>>;  // head sync key, its proof, deposit key, head claim set
+    pub fn credentials(&self, s: &SyncId) -> Option<Arc<UnreadCredentials>>;  // head sync key, its proof, head deposit key (public), head claim set; None while stranded
     pub fn stranded(&self, s: &SyncId) -> bool;
-    pub fn settle(&mut self, cx: &mut Cx) -> Result<bool>;   // stop on a verified removal, strand on a head move, leave when unlisted
+    pub fn keeps(&self, s: &SyncId) -> bool;   // listed, or leaving and waiting for its own entries
+    pub fn settle(&mut self, g: &mut impl Ground, sources: &impl Sources) -> Result<bool>;   // stop on a verified removal, strand on a head move, leave when unlisted
 }
 ```
+The engine values are whole maps: each is read through one `Effects` key and diffed on change into per-key stamped maps, and one `Effects` key per S reads those and the store's path of S, so a head move, box or notice judges its own S only (counted at n and 10n); the diff costs the map's size per change of it, which per-key facade values (a `Feed`) would remove. Until the facade's `sync_set` is built, `settle` does nothing.
 **6. `streams`: streams and flow control** (spec/sync-streams.md §3-§6). State: per connection and member the cursor, joins, `seq`, owed bodies, fetches in flight, reports; `known` per source and S (durable in the record for a peer with one). Depends on session, store, opens (members), engine (`open_entry`, `wants`).
 ```rust
 impl Streams {

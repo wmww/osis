@@ -225,7 +225,7 @@ impl Node {
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
             let mut acted = cx.store.settle(cx.engine, cx.now)?;
-            acted |= self.unread.settle(&mut cx)?;
+            acted |= self.unread.settle(&mut cx, &self.streams)?;
             acted |= self.opens.settle(&mut cx, sessions, &self.unread, &mut moved)?;
             self.moved(&mut moved, out);
             let mut cx = cx!(self, out);
