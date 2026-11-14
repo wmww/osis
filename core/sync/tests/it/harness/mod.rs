@@ -429,6 +429,9 @@ pub struct World {
     pub seen: Vec<Seen>,
     /// Per step traced: the node, whether the step failed (a restart in place), its sends.
     pub stepped: Vec<(usize, bool, usize)>,
+    /// Checks after every step that every entry waiting for a read secret is parked
+    /// (`Node::lost_parks`): parking opens what re-reading every entry would.
+    pub parks: bool,
     /// Restarts in place after a device crash (`DiskFault::Crash`), so far.
     pub crashes: u64,
     /// The differential's state: things made, values written, commits handed to the reference.
@@ -468,6 +471,7 @@ impl World {
             trace: false,
             seen: Vec::new(),
             stepped: Vec::new(),
+            parks: false,
             crashes: 0,
             history: history::Made::default(),
             fixture: None,
@@ -648,6 +652,10 @@ impl World {
         }
         apply(out, &mut NodeLinks { net: &mut self.net, node: i });
         self.crashed(i);
+        if self.parks {
+            let lost = self.nodes.get_mut(i).expect("no such node").node.lost_parks().expect("a full scan");
+            assert!(lost.is_empty(), "node {i}: entries waiting for a read secret, not parked: {lost:?} ({seen:?})");
+        }
     }
 
     /// Whether node `i`'s device crashed (`DiskFault::Crash`); if so the node lost power at that
@@ -867,6 +875,7 @@ impl World {
             trace: self.trace,
             seen: Vec::new(),
             stepped: Vec::new(),
+            parks: self.parks,
             crashes: 0,
             history: self.history.clone(),
             fixture: None,

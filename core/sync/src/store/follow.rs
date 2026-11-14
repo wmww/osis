@@ -237,6 +237,35 @@ impl Follow {
     }
 }
 
+impl Follow {
+    /// Tests: the entries of a read S that opened to a commit neither held nor pending here yet
+    /// are not parked, by a full scan of every read S's entries (as `Engine::lost_wakes` is for
+    /// the engine's parking place): empty when a new read secret, opening the parked entries
+    /// alone, opens what opening every entry would. An entry that never opened to a commit is
+    /// parked by the feed or S's start and unparked only by `open_parked`, as it opens to
+    /// something no later read secret changes (records taken, bad bytes, a linked or inbox blob).
+    pub fn lost_parks(&self, engine: &mut Engine, store: &Store) -> Result<Vec<(SyncId, BlobId)>> {
+        let mut parked = self.parked.clone();
+        // entries the feed has not yet given (a clone of the cursor reads on alone)
+        if let Some(mut f) = self.entries.clone() {
+            for (s, b) in f.added() {
+                if self.read.contains_key(&s) {
+                    park(engine, parked.entry(s).or_default(), &b, store.entry(&s, &b)?.as_ref())?;
+                }
+            }
+        }
+        let mut lost = Vec::new();
+        for s in self.read.keys() {
+            for e in store.entries(s)? {
+                if engine.blob_commit(&e.blob)?.is_some() && waits(engine, &e)? && !parked.get(s).is_some_and(|p| p.contains(&e.blob)) {
+                    lost.push((*s, e.blob));
+                }
+            }
+        }
+        Ok(lost)
+    }
+}
+
 /// Opens again every entry in the store naming a blob of commit `c` (`Engine::take_redeliver`).
 /// Whether one opened.
 fn reopen(engine: &mut Engine, store: &mut Store, c: &CommitId) -> Result<bool> {

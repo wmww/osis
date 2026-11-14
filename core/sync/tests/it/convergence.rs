@@ -30,6 +30,7 @@ pub(crate) fn converge(seed: u64, n: usize, steps: &[Step], replay: String) {
         let mut w = world(seed, n);
         w.cap = 200_000;
         w.trace = true;
+        w.parks = true;
         let script = play(&mut w, steps, replay);
         let end: Vec<Step> = [Step::Lossy(crate::harness::Loss::NONE), Step::Heal].into_iter().chain((0..n).map(Step::PowerOn)).chain([Step::Run]).collect();
         for s in &end {

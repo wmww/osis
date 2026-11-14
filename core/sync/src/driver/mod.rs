@@ -244,6 +244,13 @@ impl Node {
         self.driver.restarts
     }
 
+    /// Tests only: entries of a read S that wait for a read secret yet are not parked
+    /// (`store::Follow::lost_parks`).
+    #[doc(hidden)]
+    pub fn lost_parks(&mut self) -> Result<Vec<(SyncId, osis_base::BlobId)>> {
+        self.driver.store.lost_parks(&mut self.engine, &self.store)
+    }
+
     /// Tests only: connection `c`'s session.
     #[doc(hidden)]
     pub fn session(&self, c: ConnId) -> Option<&Session> {
