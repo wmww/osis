@@ -103,6 +103,16 @@ Standard footer: CLAUDE.md, notes/build.md, `claudewait`, no wait loops, commit,
 - A branch touching node sync, links or transport runs the networking check by hand (notes/testing.md, When tests run).
 - A reviewer who needs main's behaviour builds main's test binary with `tools/bin-at main <out>` (notes/build.md, Profile and command forms) and runs old and new side by side, comparing CPU seconds, not wall time.
 
+## Rewriting an area
+The sync rewrite (issues/sync-rewrite.md) replaced an incremental port that had spiralled; spec-first delete-and-rebuild worked far better (Tess).
+- Spec, then models, then code: the models found about a dozen holes before any code existed.
+- Foundation first: one agent writes the crate skeleton with every module declared and every shared type in one place; a fresh reviewer checks the shapes by walking two end-to-end flows on paper.
+- One worker and one fresh reviewer per module; module reviews run crate tests only; one gate for the integration at the end.
+- Workers' handoffs list: every piece of state with its bound and what removes it; what an unproven peer controls per message; a mutation table; every clock read followed. Most review bugs were found by reading for what a hostile or removed party controls.
+- The integration branch only moves forward: modules fast-forward it; main comes in by merge.
+- A random-history differential with shrinking finds the cross-module bugs; check the oracle before the code (an unknown-outcome write may have happened). Histories replay twice and must match: no hashed collections in that code.
+- Decide fast but let implementers push back: prefer the rule whose failure is a wrong keep over a wrong drop, and state the limit.
+
 ## Release checks
 Seed-breadth runs reach what per-branch sizes never do. They detect design smells; they are not a safety net: a bug only they find names a subtle property (Design principles, Testing), fixed by a simpler rule plus a small default test.
 - When (Tess): as part of the release process (not yet defined: there are no releases yet), and when Tess asks. Never on a coordinator's own initiative, a merge count, a design step or a clock.
