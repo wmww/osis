@@ -1001,6 +1001,30 @@ fn thin_client_over_quic() {
     assert_eq!(crate::common::block_on(osis::internals::connect(&new, &secret, cfg)).unwrap().at(t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("again")));
 }
 
+// spec/sync.md §10, notes/api.md (`rotate_peer_address`): rotation returns once the node listens
+// under the new key: a thin client's one attempt reaches the new address at once, the old one never
+#[test]
+fn rotation_returns_listening_under_the_new_key() {
+    let net = osis_transport::Net::new(0);
+    let n = osis::internals::create(cfg_on(&net, "n", &MemStore::new(), vec![])).unwrap();
+    let (_, secret) = n.add_client(None).unwrap();
+    let addr = n.listen(&["mem://n-clients".parse().unwrap()]).unwrap().remove(0);
+    let thin = || {
+        let mut c = osis::internals::Opening::memory();
+        c.app.internals.transport = Some(net.endpoint("c"));
+        c.app.internals.connection_wait = Some(W);
+        c
+    };
+    n.rotate_peer_address().unwrap();
+    let new = Address::new(&addr.url(), n.sync_engine(|s| s.dialable_key()));
+    assert_ne!(new.key(), addr.key());
+    // a bare dial, quicker than any driver turn: nothing between the return and the listener
+    let at = |a: &Address| osis_transport::Address { url: a.url().to_string(), key: a.key() };
+    assert!(block_on(osis_transport::Transport::dial(&net.endpoint("d"), &at(&new))).is_ok());
+    block_on(osis::internals::connect(&new, &secret, thin())).unwrap();
+    assert!(matches!(block_on(osis::internals::connect(&addr, &secret, thin())), Err(Error::Network(_))));
+}
+
 // spec/sync.md §10, notes/client-port.md §6: with several node connections a thing known here to none goes to the first that knows it; an unreachable earlier one stops the search: Network, not the later one's answer, so a write cannot land at a node chosen by who happens to be up
 #[test]
 fn several_node_connections_never_skip_a_down_one() {

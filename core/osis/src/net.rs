@@ -287,6 +287,19 @@ impl Net {
         }
     }
 
+    /// Waits until the driver has carried out what was sent to it before, with what it does after
+    /// each message: listening again after a rotation. Nothing to wait for without a driver.
+    pub fn caught_up(&self) -> Result<()> {
+        let Net::Driver { ctl, .. } = self else { return Ok(()) };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mark: driver::Call = Box::new(move |_| {
+            let _ = tx.send(());
+            Vec::new()
+        });
+        ctl.send(Control::Call(mark)).map_err(|_| self.stopped())?;
+        blocking(|| rx.blocking_recv()).map_err(|_| self.stopped())
+    }
+
     /// Why the driver is gone: how it died, else "sync stopped".
     fn stopped(&self) -> Error {
         self.died().unwrap_or_else(|| Error::Network("sync stopped".into()))
@@ -579,8 +592,8 @@ impl crate::Osis {
     }
 
     /// Gives this node a new key, so a new address other nodes dial it directly at
-    /// (`Config::direct_sync`) and new `listen` addresses: it listens under it at once and tells the
-    /// groups it syncs. A node removed from those since can no longer
+    /// (`Config::direct_sync`) and new `listen` addresses: it returns once it listens under it (the
+    /// old key's listeners closed, their ports taken over), and tells the groups it syncs. A node removed from those since can no longer
     /// dial it or recognise it on a LAN, nor can a holder of a direct link. Direct links still open
     /// no longer reach this node directly (they still work through saved peers). Never done by
     /// itself: the address stays put until this is called.
@@ -589,9 +602,7 @@ impl crate::Osis {
         if !self.has_store() {
             return self.rcall(crate::port::method::ROTATE_PEER_ADDRESS, vec![]).map(drop);
         }
-        self.act(|l| {
-            l.sync.rotate_reach()
-        });
-        Ok(())
+        self.act(|l| l.sync.rotate_reach());
+        self.inner.net.caught_up()
     }
 }
