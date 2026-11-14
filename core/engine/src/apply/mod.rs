@@ -1468,11 +1468,11 @@ impl Engine {
         Ok(n)
     }
 
-    /// Tests: after a `reexamine`, examines every pending commit once more, as a full scan would
-    /// (`waits::Waits::every_due`): the commits that applied then, each a wake the index missed.
+    /// Tests: examines every pending commit, as a full scan would (`waits::Waits::every_due`),
+    /// from the state the engine's calls left (no `reexamine` first: one would apply what a wake
+    /// left due and hide it): the commits that applied then, each a wake the index missed.
     #[doc(hidden)]
     pub fn lost_wakes(&mut self) -> Result<Vec<CommitId>> {
-        self.reexamine()?;
         let before: Vec<CommitId> = self.core.ix.pending.keys().copied().collect();
         self.core.waits.every_due = true;
         self.reexamine()?;
