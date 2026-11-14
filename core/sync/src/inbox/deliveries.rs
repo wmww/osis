@@ -14,13 +14,11 @@
 //! does not seal again. A row goes when its delivery ends or the engine owes it no more.
 
 use super::offers::{Offers, Target};
-use super::{Here, Net, own_entry};
+use super::{Here, Net};
 use crate::types::{ConnId, Credential, Result};
-use osis_base::format::INBOX_LIFETIME_MS;
 use osis_base::memo::{Effects, Feed, Stamped};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_engine::Engine;
-use osis_proto::Code;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -208,27 +206,7 @@ impl Deliveries {
         let (c, holder) = k;
         let Some(bytes) = h.engine.inbox_blob(&c, &holder, &mut *h.rng)? else { return Ok(()) };
         osis_base::costs::count("inbox: sealed", 1);
-        let b = osis_label::blob_id(&bytes);
-        let expires = osis_label::Prefix::parse(&bytes).ok().and_then(|p| p.expiry()).unwrap_or(WallMs(h.now.0.saturating_add(INBOX_LIFETIME_MS)));
-        let keys = h.engine.signers(&s, Some(&holder))?;
-        let wrap = osis_crypto::filler_wrap(&mut *h.rng);
-        let deposited = match (&keys.stamp, &keys.deposit) {
-            (Some(w), _) => {
-                let stamp = osis_label::sign_stamp(w, &s, &b, &wrap, false);
-                if h.store.log(&s, own_entry(b, wrap, Some(stamp), Some(expires)), Some(bytes), None)? != Code::OK {
-                    return Ok(());
-                }
-                false
-            }
-            (None, Some(_)) => {
-                if h.store.log(&s, own_entry(b, wrap, None, Some(expires)), Some(bytes), None)? != Code::OK {
-                    return Ok(());
-                }
-                true
-            }
-            // no key to sign with: nothing here reaches the inbox
-            (None, None) => return Ok(()),
-        };
+        let Some((b, expires, deposited)) = super::log_inbox_blob(h, s, holder, bytes)? else { return Ok(()) };
         if let Some(old) = self.sent.get(&k) {
             offers.remove(&old.s, &old.blob);
             self.resend.remove(&(old.expires, k));

@@ -20,7 +20,10 @@
 //!   Lost access); with no such S, at once. Told to the engine (`removal_done`);
 //! - complete passes (§1) of each sync ID the engine wants one of, a fresh Pull at each source,
 //!   ended by every source caught up since and every recorded peer read at its next connection,
-//!   or `PASS_WAIT_MS`; each end told to the engine (`note_complete_pass`).
+//!   or `PASS_WAIT_MS`; each end told to the engine (`note_complete_pass`);
+//! - per read S, whether this node is stranded there (spec/permissions.md §4, `stranding`): the
+//!   engine's word (a current read epoch of S's thing known, none held) once S is heard out, the
+//!   reading of "after a complete pass there"; inbox sends the report.
 //!
 //! Only `handle` makes outputs: reading status or a wait changes nothing.
 
@@ -37,7 +40,7 @@ use crate::types::{ConnId, Cx, Holding, Position, RecordId, Result, Scope, Sourc
 use crate::unread::Unread;
 use osis_base::memo::{Clock, Effects, Stamped, StampedSet};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
-use osis_engine::sync::SyncSet;
+use osis_engine::sync::{Stranding, SyncSet};
 use osis_proto::limits::PASS_WAIT_MS;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -88,7 +91,8 @@ pub struct SyncStatus {
     pub holding: Option<Holding>,
     /// Its sources, by connection: none is unconnected.
     pub sources: BTreeMap<ConnId, SourceStatus>,
-    /// Kept unread here and stranded (spec/permissions.md §4).
+    /// Stranded here (spec/permissions.md §4): kept unread at a head past its keys, or read and
+    /// heard out holding no current read secret (`Status::strandings`).
     pub stranded: bool,
     /// While a complete pass of S waits: the recorded peers it waits for.
     pub pass_waits: Option<BTreeSet<RecordId>>,
@@ -184,6 +188,9 @@ pub trait Ground: Net {
     /// A complete pass of S begun at `began` ended (the engine drops S from `passes_wanted` once
     /// `began` is at or past its moment).
     fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()>;
+    /// Whether this node holds no current read secret of read S's thing though one is known
+    /// (`Engine::stranded`), with what its report names.
+    fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<Stranding>>>;
 }
 
 /// A complete pass of S under way (§1).
@@ -250,6 +257,9 @@ pub struct Status {
     wanted_fx: Effects<(), Arc<BTreeMap<SyncId, WallMs>>>,
     passes: Stamped<SyncId, Pass>,
     pass_fx: Effects<SyncId, PassNow>,
+    /// Per read S: stranded there (heard out, and the engine's `stranded`).
+    stranding_fx: Effects<SyncId, Option<Arc<Stranding>>>,
+    strandings: Stamped<SyncId, Arc<Stranding>>,
     /// S owes another pass once the one under way ends.
     again: BTreeSet<SyncId>,
     /// Sources that left since the last settle: what their streams showed still counts for held
@@ -279,6 +289,8 @@ impl Default for Status {
             wanted_fx: Effects::new("status: passes wanted"),
             passes: Stamped::default(),
             pass_fx: Effects::new("status: pass"),
+            stranding_fx: Effects::new("status: stranded"),
+            strandings: Stamped::default(),
             again: BTreeSet::new(),
             leaving: BTreeMap::new(),
             work: Work::default(),
@@ -358,6 +370,7 @@ impl Status {
         acted |= self.held_elsewhere(g)?;
         self.leaving.clear();
         acted |= self.passes(g, pulls)?;
+        self.judge_strandings(g)?;
         Ok(acted)
     }
 
@@ -374,19 +387,58 @@ impl Status {
             self.holding.remove(&s);
             self.own_fx.unwant(&s);
             self.forget_own(&s);
+            self.unstrand(&s);
         }
         for (s, (_, h)) in &set.ids {
             if self.holding.get(s) != Some(h) {
                 self.holding.insert(*s, *h);
                 if *h == Holding::Read {
                     self.own_fx.want(*s);
+                    self.stranding_fx.want(*s);
                 } else {
                     self.own_fx.unwant(s);
                     self.forget_own(s);
+                    self.unstrand(s);
                 }
             }
         }
         Ok(())
+    }
+
+    fn unstrand(&mut self, s: &SyncId) {
+        self.stranding_fx.unwant(s);
+        if self.strandings.contains_key(s) {
+            self.strandings.remove(s);
+        }
+    }
+
+    /// Per read S, whether this node is stranded there (spec/permissions.md §4): heard out (the
+    /// reading of "after a complete pass there": every unrefusing source caught up) and the
+    /// engine holding no current read secret of S's thing though one is known. O(keys moved).
+    fn judge_strandings(&mut self, g: &mut impl Ground) -> Result<()> {
+        for s in self.stranding_fx.due() {
+            let all = &self.sources;
+            let r = self.stranding_fx.try_settle(&s, || {
+                let srcs = all.get(&s).map_or(&NO_SOURCES, |x| &**x);
+                let heard = heard_out(srcs.iter().map(|(c, src)| (!g.full(src.at, &s) && !g.refusing(src.at, &s), g.caught_since(*c, &s).is_some())));
+                if heard { g.stranding(&s) } else { Ok(None) }
+            })?;
+            match r {
+                Some((_, Some(x))) => {
+                    self.strandings.insert(s, x);
+                }
+                Some((_, None)) if self.strandings.contains_key(&s) => {
+                    self.strandings.remove(&s);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// The read sync IDs this node is stranded on, with what each report names (stamped).
+    pub fn strandings(&self) -> &Stamped<SyncId, Arc<Stranding>> {
+        &self.strandings
     }
 
     fn forget_own(&mut self, s: &SyncId) {
@@ -589,7 +641,7 @@ impl Status {
             _ => Some(0),
         };
         let pass_waits = self.passes.get(s).map(|p| p.waits.clone());
-        Some(SyncStatus { holding, sources, stranded: net.stranded(s), pass_waits, unheld })
+        Some(SyncStatus { holding, sources, stranded: net.stranded(s) || self.strandings.contains_key(s), pass_waits, unheld })
     }
 
     /// Every sync ID held or shared, as `of` says each: O(sync IDs × their sources).
@@ -634,7 +686,7 @@ impl Status {
             },
             Scope::Deliveries => Vec::new(),
         };
-        let stranded: Vec<SyncId> = ids.iter().filter(|s| net.stranded(s)).copied().collect();
+        let stranded: Vec<SyncId> = ids.iter().filter(|s| net.stranded(s) || self.strandings.contains_key(*s)).copied().collect();
         if !stranded.is_empty() {
             return Waiting::Stranded(stranded);
         }

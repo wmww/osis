@@ -88,7 +88,6 @@ One agent writes a note `sync-boundary` in notes/: the interface between the eng
 4. Review each module (fresh reviewer, Briefs rules) and the integration; then one gate for the whole branch; then merge. Use a single integration branch the module branches merge into (local, not pushed), so main sees one fast-forward.
 
 ## Phase 4: tests from the spec (alongside Phase 3)
-- Rules written in Phase 1 with no test until Phase 4 writes one (each is a Phase 4 spec-rule test; drop it from this line when its test lands): spec/permissions.md §4 (stranded) (unbuilt: issues/sync-unbuilt.md).
 - **Scenarios from the old sync's issues** (each read with `git show 1dcacb6b0:issues/<name>.md`; drop a line when a test covers it):
   - unsettled-judgment-tests: a judgement staged while a fetch is out: a strict subset dropped as covered is not deleted by a node fetching the cover; a body killed by a write the holder lacks stays until its cover is there; a purged delta dropped as covered leaves at once without a carrier.
   - must-carry-liveness: deleter and holder judge a part's liveness differently (a later write only one holds): no delete and log-again loop past the bounded once.

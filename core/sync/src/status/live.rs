@@ -128,6 +128,9 @@ impl Ground for Live<'_, '_> {
     fn pass_clock(&mut self) -> WallMs {
         self.cx.engine.pass_clock()
     }
+    fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<osis_engine::sync::Stranding>>> {
+        Ok(self.cx.engine.stranded(s)?.map(Arc::new))
+    }
     fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
         self.cx.engine.note_complete_pass(s, began)?;
         // what a complete pass's end decides (spec/permissions.md §3 Complete pass, §5.5): the

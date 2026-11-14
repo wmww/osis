@@ -5,7 +5,7 @@
 
 use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
-use osis_engine::sync::{Holding, SyncSet};
+use osis_engine::sync::{Holding, Stranding, SyncSet};
 use osis_proto::limits::PASS_WAIT_MS;
 use osis_sync::Result;
 use osis_sync::read::Verdict;
@@ -74,6 +74,8 @@ struct Fake {
     passes: Vec<(SyncId, WallMs)>,
     /// Calls to `stamped` (lacking counts taken).
     stamped_reads: u64,
+    /// The engine's `stranded` per read S.
+    strandings: Stamped<SyncId, Arc<Stranding>>,
 }
 
 impl Net for Fake {
@@ -151,6 +153,9 @@ impl Ground for Fake {
     }
     fn pass_clock(&mut self) -> WallMs {
         self.now()
+    }
+    fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<Stranding>>> {
+        Ok(self.strandings.get(s).cloned())
     }
     fn note_complete_pass(&mut self, s: &SyncId, began: WallMs) -> Result<()> {
         self.passes.push((*s, began));
@@ -664,4 +669,30 @@ fn self_removal_judged_only_on_change() {
     t.g.shared.remove(&S);
     t.settle();
     assert_eq!(t.st.work().removals, n + 1);
+}
+
+fn stranding() -> Arc<Stranding> {
+    Arc::new(Stranding { actor: tid(5), holder: tid(6), step: [7; 32], keys: BTreeSet::new(), admins: vec![tid(8)] })
+}
+
+// spec/permissions.md §4 (stranded), spec/sync-status.md §3 (Stranded): after a complete pass
+// there it cannot open the current epoch, and reports itself stranded. A read S whose engine
+// holds no current read secret is stranded only once heard out (the reading of a complete pass
+// there), and a wait on it fails so; a secret arriving ends it, and a kept-unread S is never
+// judged so.
+#[test]
+fn a_read_sync_id_is_stranded_once_heard_out_spec_permissions_4() {
+    let u = sid(2);
+    let mut t = T::new(&[(S, Holding::Read), (u, Holding::Unread)]);
+    t.g.strandings.insert(S, stranding());
+    t.g.strandings.insert(u, stranding());
+    t.join(S, A, reader(RA, 1));
+    assert!(!t.st.of(&S, &t.g).unwrap().stranded && t.st.strandings().is_empty(), "not heard out yet");
+    t.caught(A, S, 0);
+    assert!(t.st.of(&S, &t.g).unwrap().stranded);
+    assert_eq!(t.st.strandings().keys().copied().collect::<Vec<_>>(), vec![S], "only the read S");
+    assert_eq!(t.st.wait(&t.g, Scope::All, |_| Ok(Vec::new())), Waiting::Stranded(vec![S]));
+    t.g.strandings.remove(&S);
+    t.settle();
+    assert!(!t.st.of(&S, &t.g).unwrap().stranded && t.st.strandings().is_empty(), "a current secret held");
 }

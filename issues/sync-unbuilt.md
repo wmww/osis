@@ -13,6 +13,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 ## opens
 - Records' named actors (spec/sync-opens.md §3: a record is honoured only while a proven actor it names is known here now) are judged at a connection's proof alone; a live connection keeps its record when the actor stops being known.
 - Static entries claimed in the walk's tests (`Tested::Static` always has no step).
+- Stranded by the walk (spec/permissions.md §4, spec/sync-ids.md §6 Walk: no credential of the newest step known at a source, or Behind refused the newest step it gave): opens keeps no stop per (connection, S), so a reader whose sources all keep S unread past its keys reports nothing; only the heard-out reading is built (status's `strandings`: no current read secret held of a known current epoch). Needs a stamped "walk stopped at step k" per (connection, S) and status counting S stranded when no source has it open and one stopped.
 
 ## store and streams
 - Fetching an unjudgeable body again (spec/commits.md §4 Unjudgeable, spec/sync-judgement.md §3 Dropped bodies): needs byte-less entries (a body counting missing is fetched again through `Streams::fetch_again`, notes/sync-read.md); until then an awaiting entry keeps its bytes (notes/sync-store.md).
@@ -33,7 +34,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 
 ## inbox
 - A promotion's chain (`held::log_chain`: not built; the engine seals certificate copies, `sync_bodies`).
-- Stranded and Suspect (spec/permissions.md §4, spec/wire.md §11.2) are neither sent nor acted on: received ones are answered Ok and dropped, no node reports itself stranded (`Unread::stranded` feeds only `wait`), and nothing flags or lists suspect aspects. A left-out holder actor's members thus never get it re-sealed (notes/crypto.md, Left out, then followed by report). Plan: engine `take_holder_keys(keys)` (judge and apply the report's `keys.0` commits and records) and `stranded_reseal(actor, holder)` (the re-seal Stranded asks for, judged by this node alone: `reshare` when the holder is current and unboxed at a current epoch this node may re-seal); inbox's serve calls both on Stranded; unread (or status) sends Stranded once per newest step's sync key to each connected peer proven with write on S's actor, else deposits a stranded notice; the suspect flags and repair as their own module. Test: osis `sharing::team_left_out_reads_again_by_its_stranded_report_spec_crypto_4` ported to a World.
+- Suspect lists and their repair (spec/permissions.md §4 Suspect, spec/sync-compaction.md §1 Repair): issues/sync-suspect.md.
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.
 - A decline stamping in place.
 - Opens' members are not stamped, so a source's step moving reaches Register only through its next join.
@@ -59,4 +60,4 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - osis-label's link carries a `hosts` list between K's sync ID and the peers that spec/wire.md §10 `Link` does not have.
 
 ## Own issues
-issues/sync-walk-reopen.md, issues/sync-link-first-contact.md, issues/group-source-hand-off.md, issues/sync-pending-leftovers.md, issues/holder-actor-sync-record.md, issues/sync-sibling-rotation-unopened.md.
+issues/sync-walk-reopen.md, issues/sync-link-first-contact.md, issues/sync-suspect.md, issues/group-source-hand-off.md, issues/sync-pending-leftovers.md, issues/holder-actor-sync-record.md, issues/sync-sibling-rotation-unopened.md.

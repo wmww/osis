@@ -12,7 +12,10 @@
 //!   writer), deposits promoted by a writer, own deposits offered, clearing past the bounds.
 //! - `register`: the recorded steps a source keeping S unread lacks, each once its stream showed
 //!   the role commits it depends on.
-//! - `serve`: Register, Delete, Stranded and Suspect from peers.
+//! - `serve`: Register, Delete, Stranded and Suspect from peers (a Stranded report taken by the
+//!   engine's `take_stranded`).
+//! - `stranded`: this node's own stranded reports (status's `strandings`), by message to a
+//!   connected writer of S's actor, else by notice to its admins' inboxes.
 //! - `links`: first contact through a link, durable until the join is held elsewhere.
 //!
 //! Work follows change: the engine's values are read through `Effects` keys, the store's entries
@@ -31,6 +34,7 @@ mod links;
 mod offers;
 mod register;
 mod serve;
+mod stranded;
 
 pub use deliveries::Sent;
 pub use held::{Act, Facts, act_of, adds_delta, goes_last, to_clear};
@@ -117,6 +121,7 @@ pub struct Inbox {
     held: held::Held,
     register: register::Register,
     links: links::Redemptions,
+    reports: stranded::Reports,
 }
 
 impl std::fmt::Debug for Inbox {
@@ -150,6 +155,7 @@ impl Inbox {
             self.links.start(h)?;
             self.deliveries.start(h, &mut self.offers)?;
             self.held.start(h, &mut self.offers)?;
+            self.reports.start(h)?;
             self.started = true;
             acted = true;
         }
@@ -157,6 +163,7 @@ impl Inbox {
         acted |= self.held.settle(h, &mut self.offers)?;
         acted |= self.links.settle(h)?;
         acted |= self.register.settle(h, net)?;
+        acted |= self.reports.settle(h, net, &mut self.offers)?;
         let engine = &mut *h.engine;
         acted |= self.offers.settle(h.now, h.store, net, &mut |s, actor| Ok(engine.signers(s, actor.as_ref())?.deposit))?;
         Ok(acted)
@@ -185,6 +192,7 @@ impl Inbox {
     /// A connection's proofs are done: it may take deposits.
     pub fn proved(&mut self, conn: ConnId, net: &impl Net) {
         self.offers.connected(conn, net);
+        self.reports.proved(conn);
     }
 
     /// A member joined or left a connection's shared set.
@@ -204,6 +212,7 @@ impl Inbox {
     pub fn on_closed(&mut self, conn: ConnId) {
         self.offers.closed(conn);
         self.register.closed(conn);
+        self.reports.closed(conn);
     }
 
     /// First contact through a link (spec/sync-inbox.md §6): durable until the join is held
@@ -236,6 +245,26 @@ impl Inbox {
     pub fn next_wake(&self) -> Option<WallMs> {
         [self.deliveries.next_wake(), self.offers.next_wake(), self.register.next_wake(), self.held.next_wake()].into_iter().flatten().min()
     }
+}
+
+/// Logs inbox blob `bytes` to `recipient` under its inbox `s`: stamped where this node writes
+/// `s`, else deposited (the caller offers it). Its blob ID, prefix expiry and whether it was
+/// deposited; `None` when it was not logged (no key to sign with, or the store refused it).
+fn log_inbox_blob(h: &mut Here<'_>, s: SyncId, recipient: Tid, bytes: Vec<u8>) -> Result<Option<(BlobId, WallMs, bool)>> {
+    let b = osis_label::blob_id(&bytes);
+    let expires = osis_label::Prefix::parse(&bytes).ok().and_then(|p| p.expiry()).unwrap_or(WallMs(h.now.0.saturating_add(osis_base::format::INBOX_LIFETIME_MS)));
+    let keys = h.engine.signers(&s, Some(&recipient))?;
+    let wrap = osis_crypto::filler_wrap(&mut *h.rng);
+    let (stamp, deposited) = match (&keys.stamp, &keys.deposit) {
+        (Some(w), _) => (Some(osis_label::sign_stamp(w, &s, &b, &wrap, false)), false),
+        (None, Some(_)) => (None, true),
+        // no key to sign with: nothing here reaches the inbox
+        (None, None) => return Ok(None),
+    };
+    if h.store.log(&s, own_entry(b, wrap, stamp, Some(expires)), Some(bytes), None)? != osis_proto::Code::OK {
+        return Ok(None);
+    }
+    Ok(Some((b, expires, deposited)))
 }
 
 /// An entry this node logs of its own.
