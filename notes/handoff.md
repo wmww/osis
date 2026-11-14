@@ -9,7 +9,6 @@ Big features and refactors first; chase a bug only when it could threaten their 
 Signal edits: reuse the existing edit machinery rather than add a second mechanism; full-replace-only is fine (Tess), with API questions to settle. App re-rendering (listener step 8) goes ahead without a session with Tess.
 
 ## Large designs, in order
-- **Rotation**: open issues/keys-depth0-removed-member-rotates.md.
 - **Test design** (notes/test-design.md, Open work): the ephemeral property (after connection-lived data), the default-test slow tail, small items.
 - **Account signing** (issues/account-signing.md): steps 1 and 4 built. Step 2 open with Tess (covered commits: keep listing everything; per-session ranges studied with header forgetting). Next: 3 (spec), 5, 6.
 - **Settings** (issues/settings.md, decided with Tess): account and node settings as ordinary aspects on private things in home; the design to reach for whenever persistent settings are needed, and bespoke settings systems get cut over to it. Not urgent. Build after account signing step 6, which moves node data under D's home label: reconcile the two first.

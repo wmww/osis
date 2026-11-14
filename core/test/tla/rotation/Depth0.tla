@@ -142,55 +142,42 @@ GNow(dn) == GAll \ {<<dp[2], dp[1]>> : dp \in {q \in dn : ActDep(q)}}
 \* be learned before the keysets its boxes name (carried as separate blobs);
 \* FALSE: they come along
 Late == FALSE
-\* a half-valid rotation (spec/crypto.md §4, Authority): HalfForgers
-\* {<<device, holder actor S, actor M>>}: the device, reaching M only through
-\* S, removes S from M in a commit rotating M whose secrets.0 part fails
-\* Authority (S departing, nothing shows it); the rotation boxes nobody, lists
-\* every honest keyset of M and makes the removal known. HalfMode: "keyset"
-\* (its keyset is held valid, its epoch established nowhere), "rotation" (the
-\* whole rotation is invalid where judged: at nodes syncing M, which hold its
-\* secrets.0 part; elsewhere as "keyset"), "keys" (invalid wherever its keyset
-\* is held: the Authority evidence travels with the keyset)
-HalfForgers == {}
-HalfMode == "keyset"
-\* possession proofs (spec/crypto.md \S 4, Possession, Stale): a rotation
-\* proves each holder actor it boxes at a keyset whose secret the rotator
-\* holds (pf), and a proof naming a stale keyset makes its epoch stale as a
-\* box does. ProofOnly {<<device, actor>>} (Eager pairs): that unprompted
-\* rotation boxes no holder actor, proving each it would seal (a writer
-\* through it keeping its route to itself)
-ProofOnly == {}
-\* a writer through holder actors whose proofs are not judged (spec/crypto.md
-\* \S 4, Possession: a keyset the node holds no valid body of before the
-\* commit shows its holder there): Bogus {<<device, actor, how>>} (Eager
+\* sealed at (spec/crypto.md \S 4, Stale): a rotation's keyset records the
+\* keyset it seals each holder actor at (pf, every node holding the keyset
+\* reads it), and a record naming a stale keyset makes its epoch stale as a
+\* box does
+\* a writer through holder actors whose proofs are not judged (under the
+\* rejected Possession rule, a keyset the node holds no valid body of before
+\* the commit shows its holder there): Bogus {<<device, actor, how>>} (Eager
 \* pairs), its unprompted rotation instead seals and proves each holder actor
 \* it boxes at a keyset no node holds (how "made": a fresh epoch of the holder
 \* made by the device, learned by nobody), or (how "back") at the holder's
 \* newest valid keyset it knows, whose secret it need not hold, its rotation
 \* stamped before every rotation (backdated). Either needs no possession.
 Bogus == {}
-\* candidate rule (issues/keys-depth0-removed-member-rotates.md, not built): a
+\* candidate rule (rejected: partial, and a cascade left a holder out): a
 \* proof a rotation of a carries naming a keyset of h that x held no valid body
 \* of before the rotation (none at all, or only ordered after it: Possession did
 \* not judge it) is a stale box of its epoch where x holds a valid keyset of h;
-\* FALSE (built): not judged, the leak of a Bogus rotation
+\* FALSE: not judged, the leak of a Bogus rotation without Travel
 AsOf == FALSE
-\* demotions travel with keys (issues/keys-depth0-rethink.md, candidate B): a
-\* keyset carries the removals of writers through holder actors (Via devices)
-\* and of admins from its actor or an actor below it that its rotator held
-\* (kw), and a node holds a keyset only with what it carries; FALSE: depth 0
-\* (a keyset carries only its own actor's names, judged by nobody above)
-Travel == FALSE
-\* possession (spec/crypto.md \S 4, Possession): a writer through holder
-\* actors rotates only sealing one at a keyset whose secret it holds, and
-\* proves it (pf); FALSE: no possession rule, no proofs
-Possession == TRUE
+\* demotions travel with keys (spec/crypto.md \S 4, Carried demotions; built):
+\* a keyset carries the removals of writers through holder actors (Via
+\* devices) and of admins from its actor or an actor below it that its
+\* rotator held (kw), and a node holds a keyset only with what it carries;
+\* FALSE (negative control): a keyset carries only its own actor's names,
+\* judged by nobody above
+Travel == TRUE
+\* the rejected possession rule (negative control): a writer through holder
+\* actors rotates only sealing one at a keyset whose secret it holds; FALSE
+\* (built): no possession rule
+Possession == FALSE
 \* Rogue {<<device, holder actor h, actor a>>}: the device, a writer of h and
 \* of a through holder actors, acting whatever it knows (it ignores its
 \* removal), once: it rotates h listing every honest keyset of h made so far
 \* (a keyset descending from h's knowing one), sealing h's holder actors at
 \* the newest keyset it holds the secret of, then rotates a sealing h at that
-\* keyset (issues/keys-depth0-removed-member-rotates.md, the first leak)
+\* keyset (notes/crypto.md, Carried demotions, the first leak)
 Rogue == {}
 \* spec/crypto.md §4 Encrypting under: a box carrying an epoch's secret is
 \* encrypted under its recipient's key, not under that epoch, so a re-seal
@@ -239,7 +226,7 @@ KK(k) == [t |-> "k", d |-> "", k |-> k]
 Idx(a) == CHOOSE i \in 1..Len(ActSeq) : ActSeq[i] = a
 InitKey(h) == IF h \in Acts THEN KK(Idx(h)) ELSE DK(h)
 
-VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged, half, race, out, pf, bog];
+VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged, race, out, pf (sealed at), bog];
                   \* a box: [h, key, by (its sealer)]
           rs,     \* re-seal boxes: [e, h, key, by]
           ha,     \* history adds: <<e, f>>: an entry at epoch e carries f
@@ -253,7 +240,7 @@ VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged, half, ra
           kpl,    \* kpl[x]: placements x holds
           done,   \* removals made
           dst,     \* destroyed actors
-          evd,    \* Eager pairs, Forgers and HalfForgers used
+          evd,    \* Eager pairs, Forgers, Bogus and Rogue used
           nw
 vars == <<ep, rs, ha, kn, krs, wr, kg, pl, kpl, done, evd, nw, dst>>
 \* the true key holders (every grant held; removed actor edges end theirs),
@@ -269,8 +256,8 @@ FrozenAct(a) == IF Expand THEN (TExp(a) \cap Acts) \ (dst \cup {a}) ELSE KeyAct(
 KClos(h) == Fix(LAMBDA S : S \cup UNION {KeyAct(b) : b \in S}, KeyAct(h))
 
 Ids == DOMAIN ep
-\* made by an honest rotator (not a forgery, not a half-valid rotation)
-Honest(e) == ~ep[e].forged /\ ~ep[e].half
+\* made by an honest rotator (not a forgery)
+Honest(e) == ~ep[e].forged
 \* what e lists, transitively, through honest keysets (ground truth, for
 \* the properties)
 RECURSIVE AncH(_)
@@ -300,15 +287,13 @@ OffPath(x, w, a) == \E dp \in Known(x) : (dp[1] = w \/ (ActDep(dp) /\ w \in Hold
 \* by a writer through holder actors where its removal from one is known
 Valid(x, k) == /\ ~ep[k].forged \/ ~\E dp \in Known(x) : dp[1] = ep[k].by /\ dp[2] = ep[k].act
                /\ ~(ThroughV(ep[k].by, ep[k].act) /\ OffPath(x, ep[k].by, ep[k].act))
-               \* a half-valid rotation where its Authority is judged
-               /\ ~(ep[k].half /\ (HalfMode = "keys" \/ (HalfMode = "rotation" /\ Syncs(x, ep[k].act))))
 \* what k lists, transitively, through keysets valid at x only (a forged
 \* keyset lists every keyset made: descent through it proves nothing)
 RECURSIVE AncV(_, _)
 AncV(x, k) == LET ps == {p \in ep[k].par : Valid(x, p)} IN ps \cup UNION {AncV(x, p) : p \in ps}
 KOf(x, a) == {e \in kn[x] : ep[e].act = a /\ Valid(x, e)}
-\* the established ones: a half-valid rotation's epoch is established nowhere
-Est(x, a) == {e \in KOf(x, a) : ~ep[e].half}
+\* the established ones
+Est(x, a) == KOf(x, a)
 \* a plain thing x holds no own epoch of: x derives it from its first admin
 PlainAt(x, a) == a \in PlainActs /\ KOf(x, a) = {}
 Cur(x, a) == {e \in Est(x, a) : ~\E f \in Est(x, a) : e \in AncV(x, f)}
@@ -420,7 +405,7 @@ Waits(x, a, extra) == \E h \in MemV(x, a, extra) \cap Acts :
   \/ SealK(x, a, h) = 0 /\ Forked(x, a, h)
   \/ Walk = "wait" /\ SealK(x, a, h) \in Blocked(x) /\ ~(IsAdm(x, h) \/ (Through(x, h) /\ ~OffPath(x, x, h)))
 
-Rotate(x, a, extra, race, po) ==
+Rotate(x, a, extra, race) ==
   LET lo(h) == h \in Acts /\
                (SealK(x, a, h) = 0 \/ SealK(x, a, h) \in Blocked(x))
       seal(h) == IF h \in Acts THEN KK(SealK(x, a, h)) ELSE DK(h)
@@ -431,13 +416,12 @@ Rotate(x, a, extra, race, po) ==
               par |-> Est(x, a),
               by |-> x,
               bx |-> {[h |-> h, key |-> seal(h), by |-> x] :
-                        h \in IF po THEN boxed \ Acts ELSE boxed},
-              pf |-> IF ~Possession THEN {} ELSE
-                     {SealK(x, a, h) : h \in {g \in boxed \cap Acts : SealK(x, a, g) \in Sec(x)}},
+                        h \in boxed},
+              pf |-> {SealK(x, a, h) : h \in boxed \cap Acts},
               hist |-> {e \in Sec(x) : ep[e].act = a},
               dhist |-> IF a \in PlainActs THEN DSec(Sec(x), a) ELSE {},
               knows |-> {dp \in Known(x) \cup extra : dp[2] = a},
-              forged |-> FALSE, half |-> FALSE,
+              forged |-> FALSE,
               race |-> race,
               at |-> done \cup extra,
               kw |-> {dp \in (Known(x) \cup extra) \cap Deps : WDep(dp)},
@@ -459,7 +443,7 @@ Init ==
                         h \in {g \in KeyIn(GAll, ActSeq[i]) : <<ActSeq[i], g>> \notin GLate}},
               hist |-> {},
               dhist |-> IF ActSeq[i] \in PlainActs THEN {Idx(PlainOf(ActSeq[i]))} ELSE {},
-              knows |-> {}, forged |-> FALSE, half |-> FALSE, race |-> FALSE, out |-> {}, pf |-> {}, bog |-> "", at |-> {}, kw |-> {}]]
+              knows |-> {}, forged |-> FALSE, race |-> FALSE, out |-> {}, pf |-> {}, bog |-> "", at |-> {}, kw |-> {}]]
   /\ rs = {}
   /\ ha = {}
   /\ kn = [x \in Learners |-> {i \in 1..Len(ActSeq) : <<x, ActSeq[i]>> \notin Unaware}]
@@ -505,7 +489,7 @@ Remove(dp) ==
   /\ dp \notin done /\ dp[2] \notin dst
   /\ IsAdm(dp[3], dp[2])
   /\ \/ /\ Len(ep) < MaxE
-        /\ Rotate(dp[3], dp[2], {dp}, FALSE, FALSE)
+        /\ Rotate(dp[3], dp[2], {dp}, FALSE)
         \* the remover places it under the labels it syncs the removed party
         \* read; placements only judge writers through holder actors (none:
         \* left out, a smaller state space)
@@ -523,7 +507,7 @@ Remove(dp) ==
 
 EagerRot(p) ==
   /\ p \notin evd /\ p[2] \notin dst /\ Len(ep) < MaxE /\ Writer(p[1], p[2]) /\ Possess(p[1], p[2])
-  /\ Rotate(p[1], p[2], {}, FALSE, p \in ProofOnly)
+  /\ Rotate(p[1], p[2], {}, FALSE)
   /\ evd' = evd \cup {p}
   /\ UNCHANGED <<kg, rs, krs, ha, wr, done, nw, dst, pl, kpl>>
 
@@ -542,13 +526,13 @@ BogusRot(q) ==
       e == Len(ep) + (IF q[3] = "made" THEN Cardinality(hs) ELSE 0) + 1
       made == [i \in 1..Cardinality(hs) |->
                  [act |-> seq[i], n |-> 99, par |-> {}, by |-> d, bx |-> {}, hist |-> {}, dhist |-> {},
-                  knows |-> {}, forged |-> FALSE, half |-> FALSE, race |-> FALSE, out |-> {}, pf |-> {},
+                  knows |-> {}, forged |-> FALSE, race |-> FALSE, out |-> {}, pf |-> {},
                   bog |-> "made", at |-> done, kw |-> {}]]
       rot == [act |-> a, n |-> 1 + ep[NewestV(d, a)].n, par |-> Est(d, a), by |-> d,
               bx |-> {[h |-> h, key |-> DK(h), by |-> d] : h \in ds} \cup {[h |-> h, key |-> KK(mk(h)), by |-> d] : h \in hs},
               pf |-> {mk(h) : h \in hs},
               hist |-> {f \in Sec(d) : ep[f].act = a}, dhist |-> {},
-              knows |-> {dp \in Known(d) : dp[2] = a}, forged |-> FALSE, half |-> FALSE, race |-> FALSE,
+              knows |-> {dp \in Known(d) : dp[2] = a}, forged |-> FALSE, race |-> FALSE,
               out |-> {}, bog |-> IF q[3] = "back" THEN "back" ELSE "", at |-> done, kw |-> {}]
   IN /\ q \in Bogus /\ q \notin evd /\ a \notin dst /\ e <= MaxE /\ Writer(d, a) /\ Est(d, a) # {}
      /\ q[3] = "back" => \A h \in hs : Cur(d, h) # {}
@@ -573,18 +557,18 @@ RogueRot(q) ==
       rh == [act |-> h, n |-> 1 + ep[Newest(hk)].n, par |-> hk, by |-> d,
              bx |-> {[h |-> g, key |-> DK(g), by |-> d] : g \in MemV(d, h, {}) \ Acts}
                     \cup {[h |-> g, key |-> KK(own(g)), by |-> d] : g \in gs},
-             pf |-> IF Possession THEN {own(g) : g \in gs} ELSE {},
+             pf |-> {own(g) : g \in gs},
              hist |-> {f \in Sec(d) : ep[f].act = h}, dhist |-> {},
-             knows |-> {}, forged |-> FALSE, half |-> FALSE, race |-> FALSE,
+             knows |-> {}, forged |-> FALSE, race |-> FALSE,
              out |-> {}, bog |-> "", at |-> done, kw |-> {}]
       ra == [act |-> a, n |-> 1 + ep[NewestV(d, a)].n, par |-> Est(d, a), by |-> d,
              bx |-> {[h |-> g, key |-> DK(g), by |-> d] : g \in MemV(d, a, {}) \ Acts}
                     \cup {[h |-> h, key |-> KK(k), by |-> d]}
                     \cup {[h |-> g, key |-> KK(SealK(d, a, g)), by |-> d] :
                             g \in {g2 \in (MemV(d, a, {}) \cap Acts) \ {h} : SealK(d, a, g2) # 0}},
-             pf |-> IF Possession THEN {k} ELSE {},
+             pf |-> {k},
              hist |-> {f \in Sec(d) : ep[f].act = a}, dhist |-> {},
-             knows |-> {}, forged |-> FALSE, half |-> FALSE, race |-> FALSE,
+             knows |-> {}, forged |-> FALSE, race |-> FALSE,
              out |-> {}, bog |-> "", at |-> done, kw |-> {}]
   IN /\ q \in Rogue /\ q \notin evd /\ Len(ep) + 2 <= MaxE /\ Est(d, a) # {}
      /\ hk # {} /\ \A g \in gs : KOf(d, g) \cap Sec(d) # {}
@@ -598,7 +582,7 @@ ForcedRot(x, a) ==
   /\ Len(ep) < MaxE /\ NeedRot(x, a)
   /\ LET race == ~OtherDue(x, a) /\ Racing(x, a)
      IN /\ race => Cardinality({e \in Ids : ep[e].race}) < MaxRace
-        /\ Rotate(x, a, {}, race, FALSE)
+        /\ Rotate(x, a, {}, race)
   /\ UNCHANGED <<kg, rs, krs, ha, wr, done, evd, nw, dst, pl, kpl>>
 
 Forge(d) ==
@@ -610,24 +594,10 @@ Forge(d) ==
                                n |-> 1 + ep[Newest(ms)].n,
                                par |-> ms, by |-> d,
                                bx |-> {[h |-> d, key |-> DK(d), by |-> d]},
-                               hist |-> {}, dhist |-> {}, knows |-> {}, forged |-> TRUE, half |-> FALSE, race |-> FALSE, out |-> {}, pf |-> {}, bog |-> "", at |-> done, kw |-> {}])
+                               hist |-> {}, dhist |-> {}, knows |-> {}, forged |-> TRUE, race |-> FALSE, out |-> {}, pf |-> {}, bog |-> "", at |-> done, kw |-> {}])
   /\ evd' = evd \cup {<<d, "forge">>}
   /\ UNCHANGED <<kg, rs, kn, krs, ha, wr, done, nw, dst, pl, kpl>>
 
-\* q = <<device f, holder actor S, actor M>>: f removes S from M (a self-removal
-\* through its admin on S) in one commit with a rotation of M failing Authority
-HalfForge(q) ==
-  /\ q \in HalfForgers /\ q \notin evd /\ Len(ep) < MaxE
-  /\ LET dp == <<q[2], q[3], q[1]>>
-         ms == {e \in Ids : ep[e].act = q[3] /\ Honest(e)}
-     IN /\ dp \in Deps \ done /\ q[3] \notin dst
-        /\ ep' = Append(ep, [act |-> q[3], n |-> 1 + ep[Newest(ms)].n,
-                             par |-> ms, by |-> q[1], bx |-> {},
-                             hist |-> {}, dhist |-> {}, knows |-> {dp},
-                             forged |-> FALSE, half |-> TRUE, race |-> FALSE, out |-> {}, pf |-> {}, bog |-> "", at |-> done \cup {dp}, kw |-> {}])
-        /\ done' = done \cup {dp}
-  /\ evd' = evd \cup {q}
-  /\ UNCHANGED <<kg, rs, kn, krs, ha, wr, nw, dst, pl, kpl>>
 
 \* named keysets come along where x sees their actor (carried)
 VisNamed(x, bs) == {k \in Named(bs) : Vis(x, ep[k].act) /\ ep[k].act \notin dst /\ ep[k].bog # "made"}
@@ -806,7 +776,6 @@ Next ==
   \/ \E q \in Bogus : BogusRot(q)
   \/ \E q \in Rogue : RogueRot(q)
   \/ \E d \in Forgers : Forge(d)
-  \/ \E q \in HalfForgers : HalfForge(q)
   \/ \E x \in Learners, a \in Acts : ForcedRot(x, a) \/ Write(x, a)
   \/ \E x \in Learners, a \in Acts : \E h \in AllHolders : Reseal(x, a, h)
   \/ \E x \in Learners, a \in Acts, e \in Ids : HistAdd(x, a, e)

@@ -186,22 +186,6 @@ faUnaware == {<<"f1", "T">>}
 \* derivation alone: no grant of T on F
 fdMem == faMem \ {<<"F", "T">>}
 fdG == << <<"T", "F">> >>
-\* half-valid rotation (spec/crypto.md §4, Authority): M holds A's role,
-\* S holds M's; f, S's one device and admin, reaches M only through S and
-\* removes S from M in a commit rotating M that fails Authority; m1 the admin
-\* of M, a1 of A
-hActs == <<"A", "M", "S">>
-hMem == {<<"A", "a1">>, <<"A", "M">>, <<"M", "m1">>, <<"M", "S">>, <<"S", "f">>}
-hAdm == {<<"A", "a1">>, <<"M", "m1">>, <<"S", "f">>}
-hLearners == {"a1", "m1"}
-hDeps == {<<"S", "M", "f">>}
-hHalf == {<<"f", "S", "M">>}
-hG == << <<"A", "M">>, <<"M", "S">> >>
-\* ... a1 does not sync M's label (it holds M's keys.0, not its secrets.0)
-hNoSync == {<<"a1", "M">>}
-hToday == "keyset"
-hRotation == "rotation"
-hKeys == "keys"
 \* a holder actor's admin removed from it (gone): T holds X's role; c, X's
 \* one admin, reads T and is removed from it by a1, T's admin (alone or with
 \* T's rotation); with lDeps2, d too. c may rotate X once unprompted and

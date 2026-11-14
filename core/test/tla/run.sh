@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, authority, account, withdrawn, netstream, netshared, netblind, netopen, nethold, netdestroy, netkeep
+#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, account, withdrawn, netstream, netshared, netblind, netopen, nethold, netdestroy, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker); with cfg names: those instances instead (the larger ones
 #   in the module's README, by hand), judged only if listed below.
@@ -57,10 +57,9 @@ instances=(
   "depth0 rotation Depth0MC D0_nc3.cfg pass"
   "depth0 rotation Depth0MC D0_fa_flip.cfg pass" # first admin removed: a keyless grant turns keyed
   "depth0 rotation Depth0MC D0_fa_dmerge.cfg pass" # liveness: a derived write is merged
-  "depth0 rotation Depth0MC D0_rm_possess0.cfg pass" # possession
+  "depth0 rotation Depth0MC D0_rm_np_travel.cfg pass" # a removed writer below a holder actor: its removal travels with the knowing keyset (spec/crypto.md §4, Carried demotions)
+  "depth0 rotation Depth0MC D0_rm_np.cfg fail"    # negative control: without travel W seals the knowing keyset it cannot open
   "depth0 rotation Depth0MC D0_readers.cfg fail" # negative control: Walk "rotator" leaks above (README)
-  "depth0 rotation Depth0MC D0_half.cfg fail"    # negative control: Authority judged on secrets.0 alone leaks
-  "depth0 rotation Depth0MC D0_half_keys_ns.cfg pass" # Authority judged from the keyset's proofs (spec/crypto.md §4)
   "depth0 rotation Depth0MC D0_gone_live.cfg pass" # a node's own departure blocks nothing (spec/crypto.md §4)
   "depth0 rotation Depth0MC D0_gone_role.cfg fail" # negative control: judging a holder actor only while in it re-seals into a leave-out
   "depth0 rotation Depth0MC D0_order.cfg pass"   # a keyset whose secret the node lacks is judged by order (spec/crypto.md §4)
@@ -99,9 +98,6 @@ instances=(
   "tail rotation Tail T_fin_takes.cfg fail"      # negative control: an applied name met only where it takes (Live)
   "cover rotation Cover C_regrant_reader.cfg fail" # the stated limit: a reader's write does not count
   "cover rotation Cover C_leaver_keyless.cfg fail" # negative control: a leaver holding through a keyless grant counted (Holds)
-  "authority rotation AuthorityMC A_order_nobase.cfg pass" # keysets read as of the commit's key (spec/crypto.md §4, Possession)
-  "authority rotation AuthorityMC A_order_3.cfg pass"
-  "authority rotation AuthorityMC A_held_nobase.cfg fail" # negative control: keysets read as held now give two fixpoints
   "withdrawn rotation Withdrawn W_met.cfg pass"         # a withdrawn epoch's secret goes nowhere: no leak (spec/crypto.md §4 Uses)
   "withdrawn rotation Withdrawn W_met_live.cfg fail"    # the stated limit: M and later holders never get it
   "withdrawn rotation Withdrawn W_refuted.cfg fail"     # negative control: passing a refuted epoch on leaks where a re-grant is unseen
@@ -231,7 +227,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|authority|account|netstream|netshared|netblind|netopen|nethold|netdestroy|netkeep [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|account|netstream|netshared|netblind|netopen|nethold|netdestroy|netkeep [cfg...]" >&2
   exit 2
 fi
 
