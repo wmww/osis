@@ -38,11 +38,12 @@ pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_c
     let mut out = match r {
         Reason::Parked | Reason::Unexamined => vec![Wake::Open],
         Reason::MissingChain(t) | Reason::UnknownCreated(t) => {
-            // every record a part of it awaits (`awaits_records`): any arriving may let a part apply
+            // every record a part of it awaits (`awaits_records`): any arriving may let a part apply;
+            // one held: a reach, which role commits bring (whichever part `t` names)
             let recs: BTreeSet<Tid> = std::iter::once(*t).chain(core.waits.records_of(id).iter().copied()).collect();
-            let mut out: Vec<Wake> = recs.into_iter().filter(|x| core.created(x).is_none()).map(Wake::Record).collect();
-            // a held record: a reach, or the actor's secrets (dedup), which role commits bring
-            if core.created(t).is_some() {
+            let (held, unknown): (Vec<Tid>, Vec<Tid>) = recs.into_iter().partition(|x| core.created(x).is_some());
+            let mut out: Vec<Wake> = unknown.into_iter().map(Wake::Record).collect();
+            if !held.is_empty() {
                 out.push(Wake::Moved);
             }
             out
@@ -55,7 +56,8 @@ pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_c
         Reason::Epoch(e) => vec![Wake::Commit(*e), Wake::Moved],
     };
     if let Some(h) = h {
-        if let Some(t) = h.expires {
+        // an expiry already passed was run (`expire_stored`): no wake, or the clock is due for good
+        if let Some(t) = h.expires.filter(|t| *t > core.now().0) {
             out.push(Wake::At(t));
         }
         out.extend(h.aspects.iter().map(|a| Wake::Thing(a.tid)));
@@ -238,6 +240,8 @@ pub(crate) struct Waits {
     /// The commits held since the last `wake` (`Wake::Commit`); started at the first, and again
     /// after a load (whose `Wake::Open` examines every pending commit).
     pub held_feed: Option<osis_base::memo::Feed<CommitId>>,
+    /// Tests: the next `wake` examines every pending commit, as a full scan (`Engine::lost_wakes`).
+    pub every_due: bool,
     /// Commits whose copy's parts on things this node cannot read were not taken
     /// (`Engine::copy_stale`), by those things' secret actor: fetched again once the node holds
     /// secrets of it (`read_again`). In memory: a restart fetches every missing part again.
@@ -431,15 +435,9 @@ pub(crate) fn wake(core: &mut Core) -> BTreeSet<CommitId> {
             }
         }
     }
+    // a pending one awaiting a reach among records is parked under `Wake::Moved` too (`wakes_of`)
     if !moved.is_empty() {
         undropped.append(&mut core.waits.awaiting.reach);
-        // a thrown-out commit with a reach wait (an author whose record is held) among others:
-        // the entry names only the first, perhaps a record still unknown
-        for (t, cs) in &core.waits.on_record {
-            if core.exists(t) {
-                reread.extend(cs.iter().filter(|c| !core.ix.commits.contains_key(*c)));
-            }
-        }
     }
     let mut out: BTreeSet<CommitId> = reread.iter().copied().collect();
     // the pending commits parked under what arrived (`Wake`)
@@ -461,6 +459,9 @@ pub(crate) fn wake(core: &mut Core) -> BTreeSet<CommitId> {
     }
     let now = core.now().0;
     keys.extend(pend_on.range(Wake::At(0)..=Wake::At(now)).map(|(w, _)| *w));
+    if std::mem::take(&mut core.waits.every_due) {
+        out.extend(core.ix.pending.keys().copied());
+    }
     for w in &keys {
         out.extend(pend_on.get(w).into_iter().flatten().copied());
     }

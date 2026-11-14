@@ -1056,3 +1056,69 @@ fn a_record_examines_only_what_awaits_it_spec_commits_4() {
         assert_eq!(left, n, "those of the other stranger still pend");
     }
 }
+
+/// Peer 0 writes one commit on its `x` and on peer 1's `y` (0 a writer there by a grant); peer 2
+/// holds all but `x`'s creation, the grant and the commit, then the commit: what it pends for
+/// there, then whether 2 reads 0's write on `y` once the grant came.
+fn record_and_reach(seed: u64) -> (Reason, Tid, Option<Value>) {
+    use osis_base::Role;
+    use osis_schema::core_types::Edge;
+    let mut lp = net(3, seed);
+    let a = lp.peers[0].engine.me();
+    sync(&mut lp, 0, 1);
+    let y = new_thing(&mut lp, 1);
+    sync(&mut lp, 1, 0);
+    lp.peers[1].engine.grant(&y, &a, &Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+    let grant = packages(&mut lp, 1).pop().unwrap();
+    sync(&mut lp, 1, 0);
+    let x = new_thing(&mut lp, 0);
+    let xc = packages(&mut lp, 0).pop().unwrap();
+    let mut m = Mutation::new();
+    m.set(y, &REG, &s("y")).unwrap();
+    m.set(x, &REG, &s("x")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let held_back = [grant.id, xc.id, c];
+    let pks: Vec<_> = packages(&mut lp, 1).into_iter().chain(packages(&mut lp, 0)).collect();
+    for p in pks.iter().filter(|p| !held_back.contains(&p.id)) {
+        lp.deliver(2, p).unwrap();
+    }
+    let cp = pks.iter().find(|p| p.id == c).unwrap();
+    let Ingested::Pending(_, r) = lp.deliver(2, cp).unwrap() else { panic!("pends") };
+    lp.deliver(2, &grant).unwrap();
+    (r, x, lp.peers[2].engine.get(&y, &ak("t:reg.0")).unwrap())
+}
+
+// spec/commits.md §4 (Unjudgeable; Examined again): a commit thrown out whole, one part awaiting
+// its thing's record and another a reach, is examined again when the reach comes, whichever its
+// first reason names: the reachable part applies, the other waits for its record.
+#[test]
+fn a_reach_wakes_a_commit_awaiting_a_record_too_spec_commits_4() {
+    let mut firsts = std::collections::BTreeSet::new();
+    for seed in 0..16 {
+        let (r, x, got) = record_and_reach(seed);
+        firsts.insert(matches!(r, Reason::UnknownCreated(t) if t == x));
+        assert_eq!(got, Some(s("y")), "seed {seed}, first {r:?}: the grant lets y's part apply");
+    }
+    assert!(firsts.contains(&true), "a first reason naming x's record was reached: {firsts:?}");
+}
+
+// spec/commits.md §4 (Examined again: the clock reaching its expiry): a commit awaiting a record
+// whose expiry passes is examined then, once; past it the clock wakes it no more, so no timer is
+// due for good.
+#[test]
+fn an_expiry_passed_while_pending_sets_no_timer_spec_commits_4() {
+    let mut lp = net(2, 0);
+    let t = new_thing(&mut lp, 0);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("brief")).unwrap();
+    let at = lp.peers[0].engine.now().0 + 3_600_000;
+    m.expires(t, &REG, WallMs(at)).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+    assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Pending(..)));
+    assert!(lp.peers[1].engine.next_timer().unwrap().is_some_and(|x| x <= at), "a wake at its expiry");
+    lp.peers[1].clock.advance(2 * 3_600_000);
+    lp.peers[1].tick().unwrap();
+    let now = lp.peers[1].engine.now().0;
+    assert!(lp.peers[1].engine.next_timer().unwrap().is_none_or(|x| x > now), "nothing due once it passed");
+}

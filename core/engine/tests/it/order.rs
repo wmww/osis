@@ -1816,6 +1816,9 @@ fn deliver_from(played: &Played, order: &[usize], (mut p, start): (Peer, usize),
             d.borrow_mut().before(&p.engine);
         }
         drop_covered(played, p);
+        // the wakes miss nothing a full scan of the pending commits would apply
+        let lost = p.engine.lost_wakes().unwrap();
+        assert!(lost.is_empty(), "applied by a full scan, missed by the wakes: {lost:?}");
         each(p)
     };
     if let Some(c) = clock {

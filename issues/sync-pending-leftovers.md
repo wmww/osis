@@ -1,5 +1,5 @@
 # Pending leftovers: redelivery untested in sync, coarse reach wakes
-> Summary: sync's reopen of a named commit's carriers has no end-to-end test; `rewrap`'s refusal of a per-sync-ID copy is unreached by tests; commits awaiting a reach, actor secrets or an epoch wake at every role change; a writer's stamped entries that never open stay while its key is the head's.
+> Summary: sync's reopen of a named commit's carriers has no end-to-end test; `rewrap`'s refusal of a per-sync-ID copy is unreached by tests; commits awaiting a reach, actor secrets or an epoch wake at every role change; a writer's stamped entries that never open stay while its key is the head's; loose records sit in memory up to the peer budget; any head move drops current writers' pending carriers too.
 > Priority: low
 > Tags: sync, engine, tests
 
@@ -7,3 +7,6 @@
 - `rewrap` refusing a per-sync-ID copy as a certificate of the same parts elsewhere has no test case that reaches it (no fixture found where both bodies hold the same parts).
 - **Coarse wake**: `Wake::Moved` (reach, actor secrets, epoch) is woken by any change of the held role inputs, so k such pending commits (a peer's, within its budget) cost k examinations per role commit applied (spec/commits.md §4 Limits). Keying a reach by the edge targets on its path would need the walk to say which things it read.
 - **Stamped entries that never open**: a reader keeps a writer's stamped entry that does not open (an epoch it may get later) uncharged while the stamp verifies under the head; `drop_unvouched` drops only carriers of pending commits and loose records at a head move, so a current writer's unopenable junk is bounded only by its writes until a delete-key holder or its removal.
+- **Loose records in memory**: `waits::Loose` holds every loose record in RAM, bounded only by the carriers' peer budgets (64 MiB per peer by default, per connection for record-less peers): disk-bounded input becomes RAM of the same order. Holding the record blob ID alone and reopening the carrier when a record is awaited would keep RAM per carrier, not per record.
+- **Any head move drops pending carriers**: every rotation of S changes the write key, so `drop_unvouched` drops the pending carriers a still-current writer stamped too (not only a removed writer's). They come back charged as unstamped from any peer still holding them; a legitimate pending write whose every holder dropped it and whose author is gone is lost. An entry stamped under a newer head than the reader's stays charged after the reader's head catches up.
+- **Blobs with a pending ingest**: `ingest` stores the blobs carried with a commit but reexamines only when that commit applies, so a commit waiting for those blobs (`Wake::Blobs`) waits for the next `reexamine`.
