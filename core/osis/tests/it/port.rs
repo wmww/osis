@@ -397,7 +397,7 @@ fn a_hidden_thing_notifies_nothing_spec_wire_11() {
     assert!(hidden.try_recv().is_err() && unknown.try_recv().is_err());
 }
 
-// spec/wire.md §11.2 (Auth, End of a client-actor session): an ended session is no
+// spec/wire.md §11.2 (an ended session (below) counts toward neither): an ended session is no
 // authenticated one, so it holds no place under `max_clients`; a client that can no longer
 // authenticate (removed, or past its `until`) keeps no write outcomes at the node.
 #[test]
