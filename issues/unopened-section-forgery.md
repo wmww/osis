@@ -1,0 +1,18 @@
+# A forged section a node cannot open makes it delete the genuine blob
+> Summary: nodes judge a commit blob only by the sections they open, so a reader of S (or anyone holding an old read secret of S's thing) can make a blob of a real commit with a junk section of another thing; a delete-key holder that cannot open that section counts it a duplicate of the genuine blob and deletes the higher blob ID at stores, while readers that open the junk judge the forgery bad: stores can end holding only the forgery, which those readers never take.
+> Priority: normal
+> Tags: sync, security
+
+Who: Mallory can wrap a blob under S (any read secret of S's thing a writer of S still tries, old ones included) and opens S on a connection with a writer W. Commit c (Alice's) writes things A (S's) and B; W reads A, not B; Bob reads A and holds some read secret of B (a current or former reader of B). Mallory copies c's header and A section and seals junk under that B secret in B's section, picking a blob ID below the genuine one (a fresh blob key per try).
+
+What honest nodes do now:
+- W opens A (hashes match, `open_entry_now`'s check sees only opened parts), leaves B sealed, notes the blob with parts {A}: kept charged to Mallory, or stamped by W when no entry of c stands there (`log_own`'s verbatim path takes the first held blob by ID).
+- Bob opens the junk B section: `Opened::Bad`, never noted, failed for that connection (fetched again once per connection: bounded).
+- W, holding the delete key, sees two blobs of c with delta set {A} (`judge::duplicates` groups by `BlobInfo::parts` alone) and deletes the higher, the genuine one, at each store. Bob, seeing c absent there, deposits (or the store pulls) his own encryption once per ground (§4), which W deletes again while its ID is the higher. Stores end holding the forgery: a reader that opens B and syncs only through stores never gets c's body under S. Own stores (Alice's, W's) keep both, so peers connected to them are unaffected.
+- Without any junk, a blob of c leaving B's section out does the same through strict subsets: Bob deletes it (subset of {A, B}), W deletes the genuine (same {A}, higher ID): both go at the store, healed by logging again.
+
+Rule (proposed): a node judges duplicates and strict subsets only over what it verified: a section it cannot open counts by its bytes. Two blobs of c are duplicates at a node iff their opened parts are equal and their unopened sections are byte-identical; one is a strict subset iff its opened parts and unopened sections are each included, one strictly. Otherwise they are incomparable and neither goes on that ground. Every delete a node makes is then one every node opening more agrees with (identical sealed bytes open to identical content), so W never deletes the genuine blob because of a forgery, and Bob's whole-blob Bad costs him nothing while the genuine one stays. Needs `BLOB_PARTS` rows to keep a digest of each unopened section (`OpenedBlob::sealed`), `BlobInfo` to carry it, `duplicates` and `strict_subset_now` to compare it. Test: the scenario above at the engine (W's `duplicates` keeps both, Bob's deletes neither) and one store-level run where the store keeps the genuine blob.
+
+Left as stated cost: W may stamp the forgery (one stamp per body per ground; S's caps) and copy its junk section verbatim into a fresh encryption (`log_own`); either blob is then bad at Bob but never displaces the genuine one.
+
+Also: `open_entry_now` checks an opened part's hash only when its thing's creation record is held (`created(&a.tid)`); a commit pending on records keeps a blob noted with a forged part, and nothing re-checks it once the record arrives and the engine drops that part.
