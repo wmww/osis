@@ -2077,10 +2077,10 @@ fn an_accepted_offer_takes_no_kept_sync_id_from_another_thing_spec_sync_3() {
     assert_eq!(e.sync_set().unwrap().ids.get(&s), Some(&(t, Holding::Unread)), "t keeps its sync ID");
 }
 
-// spec/sync-inbox.md §2 (a boxes payload's dial hint is dialed while it is held and its sync IDs
-// are kept), spec/sync-hostile.md §2 (an accepted forger's sync ID): an insider's offer of the
-// kept thing under its own sync ID with its own dial hint, accepted, adds its hint beside the
-// granter's: it hides no granter.
+// spec/sync-inbox.md §2 Taking (a boxes payload's dial hint: dialed while it is held and its sync
+// IDs are kept), spec/sync-hostile.md §2 (The user may accept an offer whose sync ID is a
+// forger's): an insider's offer of the kept thing under its own sync ID with its own dial hint,
+// accepted, adds its hint beside the granter's: it hides no granter.
 #[test]
 fn an_accepted_forgers_dial_hint_hides_no_granter_spec_sync_inbox_2() {
     let (mut lp, t, _, _, blob) = granted(Role::Sync);
