@@ -8,7 +8,9 @@
 //! logs a stranded notice under the inbox of each admin of the actor (stamped where it writes
 //! that inbox, else deposited and offered). Each once per peer's account and per admin for each
 //! report key: the step's sync key and the holder's current `keys.0` commits, so a report goes
-//! again when the node reaches a newer step or its holder's keys move.
+//! again when the node reaches a newer step or its holder's keys move. A peer counts as told on
+//! its Ok answer: one closed first, or answering otherwise (a store failure there), is told again
+//! at the next proof of a connection.
 //!
 //! A node keeping S unread sends none: it judges no peer's role and holds no roster of S's
 //! actor, so it knows no recipient (spec/permissions.md §4 "as the node judges it"); its way
@@ -22,6 +24,7 @@
 
 use super::offers::{Offers, Target};
 use super::{Here, Net};
+use crate::session::RequestId;
 use crate::types::{ConnId, Result};
 use osis_base::memo::Effects;
 use osis_base::{SyncId, Tid};
@@ -89,6 +92,10 @@ pub(super) struct Reports {
     seen: Effects<(), Arc<BTreeMap<SyncId, Arc<Stranding>>>>,
     now: Arc<BTreeMap<SyncId, Arc<Stranding>>>,
     sent: BTreeMap<SyncId, Sent>,
+    /// Stranded messages awaiting their answer: S, the report key, the account told.
+    out: BTreeMap<(ConnId, RequestId), (SyncId, [u8; 32], Tid)>,
+    /// S whose `sent` an answer moved, written at the next settle.
+    unsaved: BTreeSet<SyncId>,
     conns: BTreeSet<ConnId>,
     dirty: bool,
 }
@@ -97,7 +104,7 @@ impl Default for Reports {
     fn default() -> Self {
         let mut seen = Effects::new("inbox: stranded");
         seen.want(());
-        Reports { seen, now: Arc::default(), sent: BTreeMap::new(), conns: BTreeSet::new(), dirty: false }
+        Reports { seen, now: Arc::default(), sent: BTreeMap::new(), out: BTreeMap::new(), unsaved: BTreeSet::new(), conns: BTreeSet::new(), dirty: false }
     }
 }
 
@@ -118,6 +125,20 @@ impl Reports {
 
     pub(super) fn closed(&mut self, conn: ConnId) {
         self.conns.remove(&conn);
+        self.out.retain(|(c, _), _| *c != conn);
+    }
+
+    /// An answer to a Stranded message: an Ok tells its account at that report key. Whether it
+    /// was one of ours.
+    pub(super) fn answered(&mut self, conn: ConnId, id: RequestId, m: &Msg) -> bool {
+        let Some((s, key, acct)) = self.out.remove(&(conn, id)) else { return false };
+        if matches!(m, Msg::Ok { .. })
+            && let Some(sent) = self.sent.get_mut(&s).filter(|x| x.key == key)
+            && sent.to.insert(To::Peer(acct))
+        {
+            self.unsaved.insert(s);
+        }
+        true
     }
 
     pub(super) fn settle(&mut self, h: &mut Here<'_>, net: &mut impl Net, offers: &mut Offers) -> Result<bool> {
@@ -133,10 +154,16 @@ impl Reports {
                 h.store.with_tx(|t| t.remove_local(&[ROWS, &s.0[..]].concat(), Shred::No))?;
             }
         }
-        if !std::mem::take(&mut self.dirty) {
-            return Ok(false);
-        }
         let mut acted = false;
+        for s in std::mem::take(&mut self.unsaved) {
+            if let Some(sent) = self.sent.get(&s) {
+                h.store.with_tx(|t| t.put_local(&[ROWS, &s.0[..]].concat(), &sent.encode(), Shred::No))?;
+                acted = true;
+            }
+        }
+        if !std::mem::take(&mut self.dirty) {
+            return Ok(acted);
+        }
         for (s, st) in self.now.clone().iter() {
             acted |= self.report(h, net, offers, *s, st)?;
         }
@@ -154,16 +181,16 @@ impl Reports {
         for conn in self.conns.clone() {
             let Some(acct) = h.engine.writer_of(&s, &net.actors(conn))? else { continue };
             writers += 1;
-            if sent.to.contains(&To::Peer(acct)) {
+            if sent.to.contains(&To::Peer(acct)) || self.out.values().any(|o| *o == (s, key, acct)) {
                 continue;
             }
             let k = match &keys {
                 Some(k) => k,
                 None => keys.insert(h.engine.holder_keys(&st.holder)?),
             };
-            if net.request(conn, Msg::Stranded { id: 0, sync_id: s, holder: st.holder, keys: k.clone() }).is_some() {
+            if let Some(id) = net.request(conn, Msg::Stranded { id: 0, sync_id: s, holder: st.holder, keys: k.clone() }) {
                 osis_base::costs::count("inbox: stranded sent", 1);
-                sent.to.insert(To::Peer(acct));
+                self.out.insert((conn, id), (s, key, acct));
             }
         }
         if writers == 0 {
@@ -187,5 +214,31 @@ impl Reports {
         h.store.with_tx(|t| t.put_local(&[ROWS, &s.0[..]].concat(), &sent.encode(), Shred::No))?;
         self.sent.insert(s, sent);
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use osis_proto::Code;
+
+    // spec/permissions.md §4 (stranded), spec/wire.md §11.2: a peer counts as told only on its Ok
+    // answer; one answering otherwise (a store failure there) or closed first is told again.
+    #[test]
+    fn a_peer_is_told_only_on_its_ok_spec_permissions_4() {
+        let (s, key, acct) = (SyncId([1; 16]), [2; 32], Tid::from_bytes([3; 15]));
+        let mut r = Reports::default();
+        r.sent.insert(s, Sent { key, to: BTreeSet::new() });
+        let told = |r: &Reports| r.sent[&s].to.contains(&To::Peer(acct));
+        r.out.insert((ConnId(1), 5), (s, key, acct));
+        assert!(r.answered(ConnId(1), 5, &Msg::Error { id: 5, code: Code::REFUSED }));
+        assert!(!told(&r) && r.unsaved.is_empty(), "refused: untold");
+        r.out.insert((ConnId(1), 6), (s, key, acct));
+        r.closed(ConnId(1));
+        assert!(!r.answered(ConnId(1), 6, &Msg::Ok { id: 6 }), "closed first: no longer awaited");
+        assert!(!told(&r));
+        r.out.insert((ConnId(2), 7), (s, key, acct));
+        assert!(r.answered(ConnId(2), 7, &Msg::Ok { id: 7 }));
+        assert!(told(&r) && r.unsaved.contains(&s), "Ok: told, written at the next settle");
     }
 }

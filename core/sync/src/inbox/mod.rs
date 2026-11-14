@@ -169,7 +169,7 @@ impl Inbox {
         Ok(acted)
     }
 
-    /// Register, Delete, Stranded and Suspect requests; Deposit and Register answers.
+    /// Register, Delete, Stranded and Suspect requests; Deposit, Stranded and Register answers.
     pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, conn: ConnId, m: Incoming) {
         let Cx { engine, store, now, rng, .. } = cx;
         let mut here = Here { engine, status: None, store, now: *now, rng: &mut **rng };
@@ -181,7 +181,7 @@ impl Inbox {
         match m {
             Incoming::Request(id, m) => serve::request(h, net, conn, id, m),
             Incoming::Reply(_, id, m) => {
-                if !self.offers.answered(h.now, conn, id, &m) {
+                if !self.offers.answered(h.now, conn, id, &m) && !self.reports.answered(conn, id, &m) {
                     self.register.answered(h.now, conn, id, &m);
                 }
             }

@@ -21,12 +21,13 @@ pub(super) fn request(h: &mut Here<'_>, net: &mut impl Net, conn: ConnId, id: Re
         }
         // judged by this node alone (`Engine::take_stranded`: only a current holder of an actor
         // it may re-seal, keys only along the holder's chain, one ask per holder and keys);
-        // answered Ok whatever it does (spec/wire.md §11.2). A store failure loses the ask: the
-        // reporter sends again once its step or its holder's keys move.
-        Msg::Stranded { sync_id, holder, keys, .. } => {
-            let _ = h.engine.take_stranded(&sync_id, &holder, &keys);
-            Msg::Ok { id }
-        }
+        // answered Ok whatever it judges (spec/wire.md §11.2). A store failure answers refused,
+        // as Register's does: the reporter counts this peer told only on Ok and sends again at
+        // its next connection.
+        Msg::Stranded { sync_id, holder, keys, .. } => match h.engine.take_stranded(&sync_id, &holder, &keys) {
+            Ok(_) => Msg::Ok { id },
+            Err(_) => Msg::Error { id, code: Code::REFUSED },
+        },
         // not built: the suspect repair (issues/sync-suspect.md)
         Msg::Suspect { .. } => Msg::Ok { id },
         _ => Msg::Error { id, code: Code::UNSUPPORTED },
