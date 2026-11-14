@@ -825,6 +825,12 @@ impl Sessions {
         self.deadlines.first().map(|(at, _)| *at)
     }
 
+    /// The driver's: the sessions this step touched that a module closed (their closes go with
+    /// the step's outputs).
+    pub(crate) fn closing(&self) -> Vec<ConnId> {
+        self.touched.iter().filter(|c| self.conns.get(c).is_some_and(|s| s.closing().is_some())).copied().collect()
+    }
+
     /// The driver's: the bytes of every session the step touched as sends, their deadlines
     /// taken again.
     pub(crate) fn take_sends(&mut self, out: &mut Vec<Out>) {

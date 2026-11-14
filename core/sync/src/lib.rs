@@ -18,5 +18,7 @@ pub mod types;
 pub mod unread;
 
 pub use driver::{Links, Node, apply};
+#[cfg(feature = "driver")]
+pub use driver::links::TransportLinks;
 pub use store::Store;
 pub use types::{ConnId, Error, Input, NodeKey, Out, Result, SyncConfig};

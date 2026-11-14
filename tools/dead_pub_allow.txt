@@ -31,7 +31,6 @@ osis-engine::body_min_ts  deferred: durable-compaction/chunk-blind (retention/bo
 
 osis-commit::decode_record_blob  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-commit::encode_record_blob  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-crypto::connection_order  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::account_rotations  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::all_forgettable  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::apply_waiting_memory  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -191,7 +190,6 @@ osis-transport::relaying  deferred: sync rebuild (issues/sync-rewrite.md Phase 3
 osis-transport::run_on_tokio  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-transport::set_dial_ms  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-transport::set_lan_loss  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-transport::listen_all  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); the driver's listeners and `rotate_peer_address` relisten through it
 osis::accept_invite  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
 osis::decline_invite  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
 osis::invite_requests  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
@@ -273,3 +271,4 @@ osis-sync::uncharge  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); re
 osis-sync::take_deposit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a store operation another module calls
 osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::dial_hints  deferred: the driver's dial candidates read it (notes/sync-boundary.md, driver)
+osis-sync::set_config  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); the osis handle changes `Config::dial` through it (integration)

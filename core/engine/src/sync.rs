@@ -6,7 +6,7 @@
 //!
 //! Not built (each returns `Error::NotBuilt` naming itself): every call marked replace or new in
 //! the boundary note's table, until the engine is reshaped for it. Built: `ingest_relay`,
-//! `wants`, `freed`, `next_timer`, `tick`, `set_now`, `known_actor`, `provers`, `own_node`, `own_node_key`, `key_open`.
+//! `wants`, `freed`, `next_timer`, `tick`, `set_now`, `clock_next`, `known_actor`, `provers`, `own_node`, `own_node_key`, `key_open`.
 
 use crate::apply::reach::Wants;
 use crate::engine::DropFor;
@@ -407,6 +407,17 @@ impl Engine {
         self.account_key_open(record, key)
     }
 
+    /// The nodes this node may dial for S (spec/sync-opens.md §1 Whom to dial), each at the
+    /// address it is known by here: of S read, the nodes of each account holding sync or above on
+    /// S by that account's dial list (`dial.0` on its profile); the granting node of each grant of
+    /// S this node holds (the inbox blob's hint, spec/sync-inbox.md §2), S read or kept unread;
+    /// this node's own other nodes whose sync sets hold S, by their `reach.0`. Never this node.
+    /// For dialing only, never proof.
+    pub fn dial_peers(&mut self, s: &SyncId) -> Result<Arc<Vec<Address>>> {
+        let _ = s;
+        not_built("dial_peers")
+    }
+
     pub fn deliveries(&mut self) -> Result<Arc<BTreeSet<(CommitId, Tid)>>> {
         not_built("deliveries")
     }
@@ -449,6 +460,12 @@ impl Engine {
     }
 
     // Timers and config
+
+    /// When the memo clock next moves a value read with an `until` (`memo::Clock::next`): the
+    /// driver folds it into the node's wake.
+    pub fn clock_next(&self) -> Option<WallMs> {
+        self.core.time.next().map(WallMs)
+    }
 
     /// Moves the memo clock to `now`.
     pub fn set_now(&mut self, now: WallMs) {

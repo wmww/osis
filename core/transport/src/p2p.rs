@@ -1301,13 +1301,14 @@ async fn announce<U: Udp>(udp: U, sock: Arc<dyn LanSocket>, cfg: LanConfig, a: c
 
 /// Hands up a join's listener's connections until `ended`, then drops (closes) it.
 async fn hand_up<U: Udp, C>(mut l: P2pListener<U>, tx: mpsc::Sender<Found<C>>, wrap: fn(P2pConn<SConn<U>>) -> C, ended: Arc<Gate>) {
+    let key = l.addr.key;
     loop {
         let c = tokio::select! {
             c = l.accept() => c,
             () = ended.closed() => return,
         };
         let Ok(c) = c else { return };
-        if tx.send(Found::Conn(wrap(c))).await.is_err() {
+        if tx.send(Found::Conn(wrap(c), key)).await.is_err() {
             return;
         }
     }

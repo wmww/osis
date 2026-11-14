@@ -107,9 +107,11 @@ pub enum Input {
     Down { conn: ConnId },
     /// The time is `now` (a `Wake` came due, or any time the driver likes).
     Tick { now: WallMs },
-    /// The node's owner wrote through the engine: what the write moved reaches sync through the
-    /// memos it moved.
+    /// The node's owner wrote through the engine (or changed `SyncConfig`): what the write moved
+    /// reaches sync through the memos it moved.
     Wrote,
+    /// Discovery found a node to dial (spec/sync-transport.md §4): a dial candidate.
+    Discovered { addr: Address },
 }
 
 /// An output, carried out by `apply` alone.
@@ -187,10 +189,19 @@ impl From<osis_proto::Error> for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Sync's per-node configuration (local policy).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SyncConfig {
     /// This node's dialable key, as its transport listens with it.
     pub key: Option<NodeKey>,
     /// Configured dial candidates (spec/sync-opens.md §1): never a filter, never stored as data.
     pub dial: Vec<Address>,
+    /// `max_peers` (spec/sync-opens.md §1): this node dials while fewer connections than this
+    /// share something with it or are being dialed (`driver::MAX_PEERS` by default).
+    pub max_peers: usize,
+}
+
+impl Default for SyncConfig {
+    fn default() -> SyncConfig {
+        SyncConfig { key: None, dial: Vec::new(), max_peers: crate::driver::MAX_PEERS }
+    }
 }

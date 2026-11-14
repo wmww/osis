@@ -192,10 +192,11 @@ impl Default for LanConfig {
 }
 
 /// What discovery hands up (spec/sync-transport.md §1): a dial candidate, or a connection its
-/// own listener accepted.
+/// own listener accepted, with that listener's key (this join's transport key: the static key
+/// of the connection's sessions, spec/wire.md §11.1).
 pub enum Found<C> {
     Dial(Address),
-    Conn(C),
+    Conn(C, crate::PublicKey),
 }
 
 /// A running discovery (`Transport::discover`): its events in order. Dropping it stops the loop

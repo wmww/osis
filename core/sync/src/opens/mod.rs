@@ -67,6 +67,15 @@ pub enum Moved {
     Until(ConnId, SyncId),
 }
 
+impl Moved {
+    /// The connection it moved on.
+    pub fn conn(&self) -> ConnId {
+        match self {
+            Moved::Joined(c, ..) | Moved::Left(c, _) | Moved::Until(c, _) => *c,
+        }
+    }
+}
+
 /// How a module that sends reaches a connection: its binding and its sends. The product's is
 /// `Sessions`; a test's a recording pair.
 pub trait Wire {
@@ -248,6 +257,9 @@ struct Conn {
     /// Members with an `until`: what a reported position may close.
     ending: BTreeSet<SyncId>,
     walks: BTreeMap<SyncId, WalkState>,
+    /// It lost its record to this connection (spec/sync-opens.md §1 One connection per pair):
+    /// it closes, and acts on nothing meanwhile.
+    lost_to: Option<ConnId>,
 }
 
 /// `changed_at` (spec/sync-opens.md §3): per S a position of this node's own sequence, with the
@@ -419,6 +431,19 @@ impl Opens {
         self.conns.values().filter_map(|c| c.resync_at).min()
     }
 
+    /// The connection `conn` lost its record to (spec/sync-opens.md §1 One connection per pair),
+    /// while `conn` is not closed: a dialer does not dial that peer again while the winner lasts.
+    pub fn lost_to(&self, conn: ConnId) -> Option<ConnId> {
+        self.conns.get(&conn)?.lost_to
+    }
+
+    /// The newest `changed_at` position (spec/sync-opens.md §3): it moves on every change that
+    /// could make a peer share something (a sync ID new here, a credential or role moved), which
+    /// is what the redial rule follows (§1 Redial).
+    pub fn changed_end(&self) -> u64 {
+        self.changed.end
+    }
+
     /// Tests only: the work counted so far.
     #[doc(hidden)]
     pub fn work(&self) -> Work {
@@ -435,6 +460,9 @@ impl Opens {
 
     /// Takes one message for opens.
     pub fn message(&mut self, ctx: &mut Ctx, conn: ConnId, m: Incoming, moved: &mut Vec<Moved>) {
+        if self.conns.get(&conn).is_some_and(|c| c.lost_to.is_some()) {
+            return;
+        }
         match m {
             Incoming::Proved => self.proved(ctx, conn, moved),
             Incoming::Request(id, m) => self.request(ctx, conn, id, m, moved),
@@ -446,8 +474,14 @@ impl Opens {
 
     /// A connection ended.
     pub fn closed(&mut self, conn: ConnId, moved: &mut Vec<Moved>) {
-        let Some(c) = self.conns.remove(&conn) else { return };
-        let Some(rid) = c.rec else { return };
+        self.release(conn, moved);
+        self.conns.remove(&conn);
+    }
+
+    /// `conn` lets its record go: each member leaves it (the record keeps them); a record kept
+    /// nowhere goes.
+    fn release(&mut self, conn: ConnId, moved: &mut Vec<Moved>) {
+        let Some(rid) = self.conns.get_mut(&conn).and_then(|c| c.rec.take()) else { return };
         let Some(r) = self.records.get(&rid) else { return };
         for s in r.members.keys() {
             moved.push(Moved::Left(conn, *s));
@@ -458,6 +492,23 @@ impl Opens {
         if !r.kept {
             self.records.remove(&rid);
         }
+    }
+
+    /// spec/sync-opens.md §1 (one connection per pair): `conn` comes to take record `id` while
+    /// another connection holds it: the one of better route rank stays, then the smaller order
+    /// hash (`Bind::pair_order`, the same at both ends whatever order the two arrived in); the
+    /// other lets the record go and closes. Whether `conn` stays.
+    fn one_per_pair(&mut self, ctx: &mut Ctx, conn: ConnId, id: RecordId, moved: &mut Vec<Moved>) -> bool {
+        let Some(r) = self.records.get(&id).filter(|r| r.kept).map(|r| r.r) else { return true };
+        let Some((other, theirs)) = self.conns.iter().find(|(c, k)| **c != conn && k.rec == Some(id)).map(|(c, k)| (*c, k.bind.pair_order(&r))) else { return true };
+        let Some(ours) = self.conns.get(&conn).map(|k| k.bind.pair_order(&r)) else { return false };
+        let (loser, winner) = if ours < theirs { (other, conn) } else { (conn, other) };
+        self.release(loser, moved);
+        if let Some(k) = self.conns.get_mut(&loser) {
+            k.lost_to = Some(winner);
+        }
+        ctx.wire.close(loser, "one connection per pair");
+        loser != conn
     }
 
     /// Settles: each sync ID whose credentials moved advances `changed_at`, re-judges its
@@ -555,6 +606,7 @@ impl Opens {
             reported: Positions::default(),
             ending: BTreeSet::new(),
             walks: BTreeMap::new(),
+            lost_to: None,
         };
         if bind.dialer {
             if !c.named.is_empty() {
@@ -607,6 +659,9 @@ impl Opens {
     /// The connection takes record `id`: its members are this connection's (each re-judged),
     /// Digest first (with a record), then the filter.
     fn take(&mut self, ctx: &mut Ctx, conn: ConnId, id: RecordId, digest: bool, moved: &mut Vec<Moved>) {
+        if !self.one_per_pair(ctx, conn, id, moved) {
+            return;
+        }
         self.seq += 1;
         let seq = self.seq;
         let Some(c) = self.conns.get_mut(&conn) else { return };
@@ -650,7 +705,8 @@ impl Opens {
             Msg::Resume { nonce, tags, .. } => self.resume(ctx, conn, id, nonce, &tags, moved),
             Msg::NoRecord { .. } => {
                 if self.conns.get(&conn).is_some_and(|c| c.phase == Phase::Waiting && !c.bind.dialer) {
-                    ctx.wire.answer(conn, id, Msg::Shared { id, items: Vec::new() });
+                    // a Shared holds at least one item (spec/wire.md §11.2): one of code 0
+                    ctx.wire.answer(conn, id, Msg::Shared { id, items: vec![SharedItem::code(Code::OK)] });
                     self.run_unkept(ctx, conn, moved);
                 } else {
                     ctx.wire.answer(conn, id, Msg::Error { id, code: Code::MALFORMED });
@@ -793,6 +849,9 @@ impl Opens {
 
     /// The connection's due work: its next filter generation, then a test.
     fn run(&mut self, ctx: &mut Ctx, conn: ConnId, moved: &mut Vec<Moved>) {
+        if self.conns.get(&conn).is_none_or(|c| c.lost_to.is_some()) {
+            return;
+        }
         self.send_generation(ctx, conn);
         self.test(ctx, conn, moved);
     }
@@ -1542,7 +1601,7 @@ impl Wire for Sessions {
         let s = self.get(c)?;
         let b = s.binding()?;
         let (own, peer) = if s.dialer { (b.dialer_challenge, b.listener_challenge) } else { (b.listener_challenge, b.dialer_challenge) };
-        Some((Bind { dialer: s.dialer, own_challenge: own, peer_challenge: peer, listener_key: b.listener_key }, s.proven().clone()))
+        Some((Bind { dialer: s.dialer, own_challenge: own, peer_challenge: peer, listener_key: b.listener_key, rank: s.rank }, s.proven().clone()))
     }
 
     fn request(&mut self, c: ConnId, m: Msg) -> Id {

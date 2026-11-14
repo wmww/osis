@@ -72,6 +72,8 @@ impl Disks {
 pub struct WNode {
     node: Node,
     disks: Disks,
+    /// The node's store, the handle its node holds (tests reach its rows directly).
+    pub store: Store,
     pub key: NodeKey,
     /// Its account (`Engine::create_account`).
     pub account: Option<Tid>,
@@ -87,6 +89,7 @@ pub enum Seen {
     Down { node: usize, conn: ConnId },
     Tick { node: usize, at: WallMs },
     Wrote { node: usize },
+    Discovered { node: usize, key: [u8; 32] },
 }
 
 impl Seen {
@@ -99,6 +102,7 @@ impl Seen {
             Input::Down { conn } => Seen::Down { node, conn: *conn },
             Input::Tick { now } => Seen::Tick { node, at: *now },
             Input::Wrote => Seen::Wrote { node },
+            Input::Discovered { addr } => Seen::Discovered { node, key: addr.key },
         }
     }
 }
@@ -125,8 +129,13 @@ pub struct Net {
     /// transport still takes them).
     pub deaf: BTreeSet<usize>,
     pub mute: BTreeSet<usize>,
+    /// Silent routes: a dial to one of these nodes neither comes up nor fails (the dialer's
+    /// timeout ends it).
+    pub hang: BTreeSet<usize>,
+    /// Every dial made: (dialer, its conn, target key).
+    pub dials: Vec<(usize, ConnId, [u8; 32])>,
     rng_seed: u64,
-    dials: u64,
+    ephemerals: u64,
 }
 
 impl Net {
@@ -139,13 +148,17 @@ impl Net {
 
     /// A fresh ephemeral key for a dialer (spec/sync-transport.md §1): deterministic per world.
     fn ephemeral(&mut self) -> NodeKey {
-        self.dials += 1;
+        self.ephemerals += 1;
         let mut k = [0u8; 32];
-        SeededRng::from_u64(self.rng_seed ^ self.dials.rotate_left(17)).fill_bytes(&mut k);
+        SeededRng::from_u64(self.rng_seed ^ self.ephemerals.rotate_left(17)).fill_bytes(&mut k);
         NodeKey(k)
     }
 
     fn dial(&mut self, from: usize, conn: ConnId, to: &Address) {
+        self.dials.push((from, conn, to.key));
+        if self.reach.node_of(&to.key).is_some_and(|t| self.hang.contains(&t)) {
+            return;
+        }
         let route = self.reach.node_of(&to.key).filter(|t| *t != from && self.online.get(*t) == Some(&true)).and_then(|t| Some((t, self.reach.route(from, t, &to.url, |a, b| self.blocked(a, b))?)));
         let Some((target, route)) = route else {
             self.queue.push_back((from, Input::Down { conn }));
@@ -305,12 +318,12 @@ impl World {
         let mut key = [0u8; 32];
         self.rng.fill_bytes(&mut key);
         let key = NodeKey(key);
-        let node = Node::open(engine, store, SyncConfig { key: Some(key), dial: Vec::new() }, Box::new(SeededRng::from_u64(seed ^ 2))).expect("node");
+        let node = Node::open(engine, store.clone(), SyncConfig { key: Some(key), ..SyncConfig::default() }, Box::new(SeededRng::from_u64(seed ^ 2))).expect("node");
         self.net.reach.place(i, &[0], Uplink::Public, &[]);
         self.net.reach.listen(i, key.0);
         self.net.online.push(true);
         self.net.accepted.push(0);
-        self.nodes.push(WNode { node, disks, key, account: None });
+        self.nodes.push(WNode { node, disks, store, key, account: None });
         self.deliver(i, Input::Tick { now: self.now() });
         i
     }
@@ -356,7 +369,45 @@ impl World {
         if n.node.rounds() > ROUND_CAP {
             panic!("settle loop: {} rounds in one step ({seen:?})", n.node.rounds());
         }
+        // one place of outputs (scenario no-host-chain): a step gives at most one wake, last
+        let wakes = out.iter().filter(|o| matches!(o, Out::Wake(_))).count();
+        assert!(wakes <= 1 && (wakes == 0 || matches!(out.last(), Some(Out::Wake(_)))), "a step's wake is one and last: {out:?}");
         apply(out, &mut NodeLinks { net: &mut self.net, node: i });
+    }
+
+    /// Changes node `i`'s sync configuration, then steps it (`Input::Wrote`).
+    pub fn configure(&mut self, i: usize, f: impl FnOnce(&mut SyncConfig)) {
+        let n = self.nodes.get_mut(i).expect("no such node");
+        let mut cfg = n.node.config().clone();
+        f(&mut cfg);
+        n.node.set_config(cfg);
+        self.deliver(i, Input::Wrote);
+    }
+
+    /// Node `i` discovers node `j` (its address), as LAN discovery hands it up.
+    pub fn discover(&mut self, i: usize, j: usize) {
+        let addr = self.address(j);
+        self.deliver(i, Input::Discovered { addr });
+    }
+
+    /// Node `i`'s dial state.
+    pub fn dials(&self, i: usize) -> &osis_sync::driver::dials::Dials {
+        self.node(i).node.dials()
+    }
+
+    /// Node `i`'s restarts in place after store failures.
+    pub fn restarts(&self, i: usize) -> u64 {
+        self.node(i).node.restarts()
+    }
+
+    /// The fault plan of node `i`'s store device.
+    pub fn store_faults(&self, i: usize) -> osis_store::Faults {
+        self.node(i).disks.store.0.faults().clone()
+    }
+
+    /// Connections up at node `i` (each end of each link).
+    pub fn links_of(&self, i: usize) -> Vec<(ConnId, usize)> {
+        self.net.links.iter().filter(|((m, _), _)| *m == i).map(|((_, c), (t, _))| (*c, *t)).collect()
     }
 
     /// Tests of the harness only: carries out `out` as node `i`'s outputs.
@@ -442,6 +493,7 @@ impl World {
         let store = Store::open(Box::new(d.store.0.clone()), Box::new(d.store.1.clone()), Box::new(SeededRng::from_u64(seed ^ 1))).expect("store reopens");
         let engine = Engine::open(Box::new(d.engine.0.clone()), Box::new(d.engine.1.clone()), store.cipher(), osis_engine::Config::default(), clock, Box::new(SeededRng::from_u64(seed))).expect("engine reopens");
         let cfg = n.node.config().clone();
+        n.store = store.clone();
         n.node = Node::open(engine, store, cfg, Box::new(SeededRng::from_u64(seed ^ 2))).expect("node reopens");
     }
 
@@ -457,7 +509,14 @@ impl World {
         let clock = Arc::new(ManualClock::new(self.now()));
         let dyn_clock: Arc<dyn Clock> = clock.clone();
         let nodes = osis_base::copying::copying(|| {
-            self.nodes.iter().map(|n| WNode { node: n.node.test_copy(dyn_clock.clone()).expect("node copy"), disks: n.disks.test_copy(), key: n.key, account: n.account }).collect()
+            self.nodes
+                .iter()
+                .map(|n| {
+                    let node = n.node.test_copy(dyn_clock.clone()).expect("node copy");
+                    let store = n.store.test_copy(dyn_clock.clone()).expect("store copy");
+                    WNode { node, disks: n.disks.test_copy(), store, key: n.key, account: n.account }
+                })
+                .collect()
         });
         World { clock, rng: self.rng.test_copy(), nodes, net: self.net.clone(), deliveries: 0, cap: self.cap, horizon_ms: self.horizon_ms, trace: self.trace, seen: Vec::new(), fixture: None }
     }

@@ -19,6 +19,8 @@ pub struct Bind {
     pub peer_challenge: [u8; 32],
     /// The listener's static key (spec/wire.md §11.1 Static key).
     pub listener_key: [u8; 32],
+    /// The route rank, the same at both ends (spec/sync-transport.md §1).
+    pub rank: u8,
 }
 
 impl Bind {
@@ -56,6 +58,14 @@ impl Bind {
     /// An open signature by this side: over its side, S, the peer's challenge, the listener's key.
     pub fn sign(&self, key: &SigningSecret, s: &SyncId) -> Signature {
         sign_open(key, !self.dialer, s, &self.peer_challenge, &self.listener_key)
+    }
+
+    /// This connection's place among the connections of the record keyed `r` (spec/sync-opens.md
+    /// §1 One connection per pair): its route rank, then `BLAKE3(key = r, dialer challenge ||
+    /// listener challenge)`; the smaller stays. Both ends compute the same.
+    pub fn pair_order(&self, r: &[u8; 32]) -> (u8, [u8; 32]) {
+        let (d, l) = self.challenges();
+        (self.rank, osis_crypto::kdf::connection_order(r, d, l))
     }
 
     /// Whether `sig` is the peer's open signature by `key` on this connection.

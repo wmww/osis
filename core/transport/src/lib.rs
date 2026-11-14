@@ -27,7 +27,7 @@ pub use sched::{Sched, Spawner};
 pub use manage::Backoff;
 pub use lan::{Discovery, Found, LanConfig};
 pub use multi::{Multi, MultiConn, MultiListener, MultiRecv, MultiSend};
-pub use link::{Link, LinkRx, LinkTx};
+pub use link::{Link, LinkRx, LinkTx, Progress};
 pub use quic::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend, QuicSock, QuicUdp};
 pub use nat::{Dep, MemLan, MemSock, MemUdp, Nat};
 pub use p2p::{P2p, P2pConn, P2pListener, RelayConfig};

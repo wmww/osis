@@ -800,3 +800,71 @@ fn reconnect_with(n: u8) -> osis_sync::opens::Work {
 fn a_reconnect_costs_the_same_at_n_and_10n_spec_sync_opens_3() {
     assert_eq!(reconnect_with(10), reconnect_with(100));
 }
+
+/// Delivers what both sides of `p` sent on every connection between them (a's `n` is b's
+/// `ACCEPTED | n` and the other way round), until none flows. A side's last messages before it
+/// closed still go; none reach a side that closed its end.
+fn route_all(p: &mut Pair) {
+    use osis_sync::types::ConnId;
+    let peer = |c: ConnId| ConnId(c.0 ^ ConnId::ACCEPTED);
+    for _ in 0..500 {
+        let (fa, fb) = (p.a.sent(), p.b.sent());
+        if fa.is_empty() && fb.is_empty() {
+            return;
+        }
+        for (c, m) in fa {
+            if !p.b.pipe.closed.iter().any(|(x, _)| *x == peer(c)) {
+                p.b.take(peer(c), incoming(m));
+            }
+        }
+        for (c, m) in fb {
+            if !p.a.pipe.closed.iter().any(|(x, _)| *x == peer(c)) {
+                p.a.take(peer(c), incoming(m));
+            }
+        }
+    }
+    panic!("opens storm");
+}
+
+/// A second connection between the readers of `readers()`, `b` dialing `a` at `rank`.
+fn second_connection(p: &mut Pair, rank: u8) -> (osis_sync::types::ConnId, osis_sync::types::ConnId) {
+    use osis_sync::types::ConnId;
+    let (cb, ca) = (ConnId(2), ConnId(ConnId::ACCEPTED | 2));
+    let (bb, ba) = binds_at([0x5c; 32], [0x6d; 32], [0x4a; 32], rank);
+    p.b.pipe.binds.insert(cb, (bb, account(1)));
+    p.a.pipe.binds.insert(ca, (ba, account(2)));
+    p.a.take(ca, osis_sync::session::Incoming::Proved);
+    p.b.take(cb, osis_sync::session::Incoming::Proved);
+    route_all(p);
+    (ca, cb)
+}
+
+// spec/sync-opens.md §1 (one connection per pair): two connections of one record, whoever dialed
+// each: the one of better route rank stays and the other closes at both ends; the shared set is
+// the winner's.
+#[test]
+fn a_better_route_wins_the_pair_spec_sync_opens_1() {
+    let mut p = readers();
+    let (ca1, cb1) = (p.ca, p.cb);
+    let (ca2, cb2) = second_connection(&mut p, 0);
+    assert!(p.a.pipe.closed.iter().any(|(c, _)| *c == ca1) && p.b.pipe.closed.iter().any(|(c, _)| *c == cb1), "the direct one closed at both ends");
+    assert!(!p.a.pipe.closed.iter().any(|(c, _)| *c == ca2) && !p.b.pipe.closed.iter().any(|(c, _)| *c == cb2));
+    assert_eq!((p.a.opens.lost_to(ca1), p.b.opens.lost_to(cb1)), (Some(ca2), Some(cb2)));
+    assert!(p.a.open(ca2, &S) && p.b.open(cb2, &S) && !p.a.open(ca1, &S));
+    assert!(p.a.moved.contains(&Moved::Left(ca1, S)));
+}
+
+// spec/sync-opens.md §1 (one connection per pair): among two of one rank the one with the smaller
+// order hash stays, the same one at both ends whatever order they arrived in.
+#[test]
+fn the_order_hash_breaks_a_tie_alike_at_both_ends_spec_sync_opens_1() {
+    let mut p = readers();
+    let (ca1, cb1) = (p.ca, p.cb);
+    let (ca2, cb2) = second_connection(&mut p, 1);
+    let a_lost: Vec<_> = p.a.pipe.closed.iter().map(|(c, _)| *c).collect();
+    let b_lost: Vec<_> = p.b.pipe.closed.iter().map(|(c, _)| *c).collect();
+    assert_eq!(a_lost.len(), 1, "one closed: {a_lost:?}");
+    let pairs = [(ca1, cb1), (ca2, cb2)];
+    let lost = pairs.iter().find(|(a, _)| a_lost.contains(a)).unwrap();
+    assert_eq!(b_lost, [lost.1], "the same connection at both ends");
+}

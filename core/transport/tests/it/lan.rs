@@ -126,7 +126,7 @@ fn lan_connection_ranks_zero_at_both_ends() {
     assert_eq!(c.rank(), RANK_LAN);
     assert_eq!(dialable.0, RANK_DIRECT);
     let (db, eb) = drain(&mut sched, db);
-    let served: Vec<_> = eb.iter().filter_map(|f| if let Found::Conn(c) = f { Some(c.rank()) } else { None }).collect();
+    let served: Vec<_> = eb.iter().filter_map(|f| if let Found::Conn(c, _) = f { Some(c.rank()) } else { None }).collect();
     assert_eq!(served, vec![RANK_LAN], "the LAN listener's connection, handed up");
     drop((da, db));
 }

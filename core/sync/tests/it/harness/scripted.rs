@@ -315,9 +315,14 @@ pub const CH_A: [u8; 32] = [0xa1; 32];
 pub const CH_B: [u8; 32] = [0xb2; 32];
 pub const KEY_B: [u8; 32] = [0x4b; 32];
 
-/// The binds of a connection `a` dialed: `a`'s and `b`'s.
+/// The binds of a connection `a` dialed, a direct one (rank 1): `a`'s and `b`'s.
 pub fn binds(ch_a: [u8; 32], ch_b: [u8; 32], key_b: [u8; 32]) -> (Bind, Bind) {
-    (Bind { dialer: true, own_challenge: ch_a, peer_challenge: ch_b, listener_key: key_b }, Bind { dialer: false, own_challenge: ch_b, peer_challenge: ch_a, listener_key: key_b })
+    binds_at(ch_a, ch_b, key_b, 1)
+}
+
+/// The binds of a connection `a` dialed at route rank `rank`.
+pub fn binds_at(ch_a: [u8; 32], ch_b: [u8; 32], key_b: [u8; 32], rank: u8) -> (Bind, Bind) {
+    (Bind { dialer: true, own_challenge: ch_a, peer_challenge: ch_b, listener_key: key_b, rank }, Bind { dialer: false, own_challenge: ch_b, peer_challenge: ch_a, listener_key: key_b, rank })
 }
 
 impl Pair {

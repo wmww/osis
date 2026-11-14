@@ -2,16 +2,24 @@
 //!
 //! `Node::handle` is the whole of sync as a sans-IO step: it routes an input to its module (and
 //! each member opens reports moved to streams), then settles every module (store, unread, opens,
-//! read, inbox, streams, status, again while one acted), then collects sessions' bytes and the
-//! earliest wake. `apply` is the one place outputs
-//! are carried out, through a `Links`: the product's transports or a test's network. Sync never
-//! knows how a peer is reached.
+//! read, inbox, streams, status, again while one acted), then decides its dials (`dials`), closes
+//! what a module closed, and collects sessions' bytes and the earliest wake. `apply` is the one
+//! place outputs are carried out, through a `Links`: the product's transports (`links`) or a
+//! test's network. Sync never knows how a peer is reached.
 //!
-//! State: connections and their sessions; dial candidates (`reach.0`, `dial.0`, grant hints,
-//! link sharers, configured addresses, discovery), redial times, dial timeouts, one connection
-//! per pair. Depends on every module. Not built: dialing (no candidate is dialed), restart in place
-//! after a store failure (the node closes every connection and goes on), the memo clock's wake,
-//! and `TransportLinks` (the tokio driver over osis-transport, behind the `driver` feature).
+//! State: connections and their sessions; dial candidates, redial times and the pair rule's held
+//! dials (`dials`); whether a store failure's stretch is under way. A step that fails closes
+//! every connection and restarts the modules from the store (once per stretch, until a commit of
+//! the store lands): what they keep in memory goes, the store's memory part stays.
+//!
+//! Not built: the link sharer as a candidate (inbox's redeem), keep-or-close (a connection with
+//! nothing shared, pending or depositable stays up).
+
+pub mod dials;
+#[cfg(feature = "driver")]
+pub mod links;
+
+pub use dials::{DISCOVERED_KEEP, MAX_PEERS, REDIAL_MS};
 
 use crate::inbox::Inbox;
 use crate::opens::{Moved, Opens, Reported};
@@ -21,6 +29,8 @@ use crate::status::{Status, StatusView};
 use crate::store::Store;
 use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Error, Input, Out, Result, Scope, SyncConfig, Waiting};
+use dials::{Dials, NodePeers, Why};
+use osis_base::Tid;
 use crate::unread::Unread;
 use osis_base::WallMs;
 use osis_crypto::NodeRng;
@@ -68,6 +78,36 @@ struct Driver {
     sessions: Sessions,
     /// Reported positions streams gave this step, for opens.
     reported: Vec<Reported>,
+    dials: Dials,
+    /// The memo effects the dial peers follow.
+    fx: dials::PeersFx,
+    /// Opens' `changed_end` the dials last followed.
+    changed: u64,
+    /// The actors this node proves for, as of the last owner's write.
+    proving: Vec<Tid>,
+    /// A store failure's stretch, while no commit of the store has landed since it began.
+    failing: Option<Stretch>,
+    /// Restarts in place so far (tests).
+    restarts: u64,
+}
+
+/// The wait after a step fails before the node's next wake, doubling while steps go on failing
+/// up to `RETRY_MAX_MS` (the store's own recovery pace). Minor consequence: at 0 a failing store
+/// is tried again at the speed of the loop (a wake due now fails and wakes again at once); at
+/// infinity a failed node waits for an input from outside.
+pub const RETRY_FIRST_MS: u64 = 1_000;
+/// The longest wait between tries (minor consequence: the node comes back up to this late after
+/// the device works again; at 0 as `RETRY_FIRST_MS`'s, at infinity it stops trying by itself).
+pub const RETRY_MAX_MS: u64 = 60_000;
+
+/// A store failure's stretch.
+#[derive(Clone, Copy, Debug)]
+struct Stretch {
+    /// The store's commits when the modules restarted: a commit since ends the stretch.
+    committed: u64,
+    /// No wake before this; and the wait after the next failure.
+    retry_at: WallMs,
+    wait: u64,
 }
 
 /// One node's sync: its engine, its store and every module.
@@ -100,7 +140,9 @@ impl Node {
     /// `handle` settles every module.
     pub fn open(engine: Engine, store: Store, cfg: SyncConfig, rng: Box<dyn NodeRng>) -> Result<Node> {
         let now = engine.now();
-        Ok(Node { engine, store, rng, cfg, now, rounds: 0, driver: Driver::default(), opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::default(), inbox: Inbox::default(), status: Status::default() })
+        let mut driver = Driver::default();
+        driver.dials.set_own(cfg.key.map(|k| k.0));
+        Ok(Node { engine, store, rng, cfg, now, rounds: 0, driver, opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::default(), inbox: Inbox::default(), status: Status::default() })
     }
 
     /// One step: `input` taken, every module settled. The outputs must all reach `apply`.
@@ -112,9 +154,18 @@ impl Node {
         self.rounds = 0;
         if let Err(e) = self.step(input, &mut out).and_then(|()| self.settle(&mut out)) {
             self.failed(e, &mut out);
+        } else if self.driver.failing.is_some_and(|f| self.store.committed() > f.committed) {
+            self.driver.failing = None;
+        }
+        self.dial(&mut out);
+        for c in self.driver.sessions.closing() {
+            out.push(Out::Close(c));
+            self.closed(c, &mut out);
         }
         self.driver.sessions.take_sends(&mut out);
-        if let Some(at) = self.next_wake() {
+        // a failing stretch wakes no sooner than its retry (a wake due now would fail again)
+        let floor = self.driver.failing.map(|f| f.retry_at);
+        if let Some(at) = self.next_wake().map(|at| floor.map_or(at, |f| at.max(f))) {
             out.push(Out::Wake(at));
         }
         out
@@ -127,6 +178,23 @@ impl Node {
 
     pub fn config(&self) -> &SyncConfig {
         &self.cfg
+    }
+
+    /// The owner changed its configuration; the next step follows it (`Input::Wrote`).
+    pub fn set_config(&mut self, cfg: SyncConfig) {
+        self.cfg = cfg;
+        self.driver.dials.set_own(self.cfg.key.map(|k| k.0));
+    }
+
+    /// Where the node's dials stand.
+    pub fn dials(&self) -> &Dials {
+        &self.driver.dials
+    }
+
+    /// Tests only: restarts in place after a store failure so far.
+    #[doc(hidden)]
+    pub fn restarts(&self) -> u64 {
+        self.driver.restarts
     }
 
     /// Status as of the last step.
@@ -148,6 +216,9 @@ impl Node {
     fn step(&mut self, input: Input, out: &mut Vec<Out>) -> Result<()> {
         match input {
             Input::Up { conn, peer, rank, dialed, listener } => {
+                if dialed {
+                    self.driver.dials.up(conn);
+                }
                 let s = Session::new(conn, peer, dialed, rank, listener, &mut cx!(self, out));
                 self.driver.sessions.insert(s);
             }
@@ -163,9 +234,51 @@ impl Node {
                     self.closed(conn, out);
                 }
             }
-            Input::Wrote => {}
+            Input::Wrote => {
+                self.driver.dials.configure(&self.cfg.dial, self.now);
+                self.proving(out)?;
+            }
+            Input::Discovered { addr } => self.driver.dials.offer(Why::Discovered, addr, self.now),
         }
         Ok(())
+    }
+
+    /// spec/sync-opens.md §1: a connection proves once, at its start: one where this node proved
+    /// its own and now acts for an actor it did not prove there closes, and its dialer dials
+    /// again. The actors it acts for move only by its owner's writes (an account taken up, a link
+    /// key held), so they are read at `Wrote`, compared, and the sessions walked only on a move.
+    fn proving(&mut self, out: &mut Vec<Out>) -> Result<()> {
+        let mut now: Vec<Tid> = self.engine.provers(false)?.into_iter().map(|(_, r)| r.tid()).collect();
+        now.sort();
+        if now == self.driver.proving {
+            return Ok(());
+        }
+        let stale: Vec<ConnId> = self.driver.sessions.conns().filter(|c| self.driver.sessions.get(*c).is_some_and(|s| !s.proved().is_empty() && now.iter().any(|a| !s.proved().contains(a)))).collect();
+        self.driver.proving = now;
+        for c in stale {
+            self.driver.dials.redial_now(c);
+            out.push(Out::Close(c));
+            self.closed(c, out);
+        }
+        Ok(())
+    }
+
+    /// The dials the node makes now (spec/sync-opens.md §1): the dial peers that moved, a change
+    /// that could make a peer share something, the pauses ended, within `max_peers`.
+    fn dial(&mut self, out: &mut Vec<Out>) {
+        let now = self.now;
+        let d = &mut self.driver;
+        d.dials.settle_peers(&mut NodePeers { engine: &mut self.engine, fx: &mut d.fx }, now);
+        let changed = self.opens.changed_end();
+        if changed != d.changed {
+            d.changed = changed;
+            d.dials.changed();
+        }
+        d.dials.tick(now);
+        for (conn, to) in d.dials.dial(now, self.cfg.max_peers) {
+            d.sessions.dialing(conn);
+            out.push(Out::Dial(conn, to));
+        }
     }
 
     fn bytes(&mut self, conn: ConnId, bytes: &[u8], out: &mut Vec<Out>) {
@@ -207,12 +320,14 @@ impl Node {
         }
     }
 
-    /// Hands each member opens reported moved to streams, then streams' reported positions to
-    /// opens.
+    /// Hands each member opens reported moved to streams (and counts it for `max_peers`), then
+    /// streams' reported positions to opens.
     fn moved(&mut self, moved: &mut Vec<Moved>, out: &mut Vec<Out>) {
         let mut cx = cx!(self, out);
         for m in moved.drain(..) {
             self.inbox.moved(&m, &crate::inbox::Links { sessions: &mut self.driver.sessions, opens: &self.opens, streams: &self.streams });
+            let c = m.conn();
+            self.driver.dials.sharing(c, !self.opens.members(c).is_empty());
             self.streams.moved(&mut cx, &mut self.driver.sessions, &self.opens, m, &mut self.driver.reported);
         }
         self.reports(out);
@@ -226,6 +341,8 @@ impl Node {
             let mut cx = cx!(self, out);
             self.opens.on_reported(&mut cx, &mut self.driver.sessions, &self.unread, &mut self.driver.reported, &mut moved);
             for m in moved.drain(..) {
+                let c = m.conn();
+                self.driver.dials.sharing(c, !self.opens.members(c).is_empty());
                 self.streams.moved(&mut cx, &mut self.driver.sessions, &self.opens, m, &mut self.driver.reported);
             }
         }
@@ -233,7 +350,11 @@ impl Node {
 
     /// A connection ended: its last bytes go (before the close, `apply`), its members leave.
     fn closed(&mut self, conn: ConnId, out: &mut Vec<Out>) {
-        let Some(mut s) = self.driver.sessions.remove(conn) else { return };
+        // a dial that lost its pair to a live connection is held by it (spec/sync-opens.md §1)
+        let lost = self.opens.lost_to(conn).filter(|w| self.driver.sessions.get(*w).is_some());
+        let s = self.driver.sessions.remove(conn);
+        self.driver.dials.ended(conn, lost, self.now);
+        let Some(mut s) = s else { return };
         let bytes = s.take_bytes();
         if !bytes.is_empty() {
             out.push(Out::Send(conn, bytes));
@@ -273,10 +394,32 @@ impl Node {
         }
     }
 
-    /// A step failed: every connection closes (spec: a store failure reopens the node from
-    /// its store; not built).
+    /// A step failed (a store failure): every connection closes, and the modules restart from
+    /// the store, once per stretch until a commit of the store lands (scenario store-reopen).
+    /// The store's memory part (ephemeral entries) stays as it is: a failure judges none of it.
     fn failed(&mut self, e: Error, out: &mut Vec<Out>) {
         let _ = e;
+        self.close_all(out);
+        if let Some(f) = &mut self.driver.failing {
+            f.wait = f.wait.saturating_mul(2).min(RETRY_MAX_MS);
+            f.retry_at = WallMs(self.now.0.saturating_add(f.wait));
+            return;
+        }
+        self.driver.failing = Some(Stretch { committed: self.store.committed(), retry_at: WallMs(self.now.0.saturating_add(RETRY_FIRST_MS)), wait: RETRY_FIRST_MS });
+        self.driver.restarts += 1;
+        self.opens = Opens::default();
+        self.read = Read::default();
+        self.unread = Unread::default();
+        self.streams = Streams::default();
+        self.inbox = Inbox::default();
+        self.status = Status::default();
+        self.driver.changed = 0;
+        if self.settle(out).is_err() {
+            self.close_all(out);
+        }
+    }
+
+    fn close_all(&mut self, out: &mut Vec<Out>) {
         let conns: Vec<ConnId> = self.driver.sessions.conns().collect();
         for c in conns {
             out.push(Out::Close(c));
@@ -287,7 +430,8 @@ impl Node {
     /// The earliest wake any module, the store or the engine needs.
     fn next_wake(&mut self) -> Option<WallMs> {
         let engine = self.engine.next_timer().ok().flatten().map(WallMs);
-        [self.driver.sessions.next_wake(), self.store.next_wake(), self.opens.next_wake(), self.read.next_wake(), self.unread.next_wake(), self.streams.next_wake(), self.inbox.next_wake(), self.status.next_wake(), engine].into_iter().flatten().min()
+        let clock = self.engine.clock_next();
+        [self.driver.sessions.next_wake(), self.driver.dials.next_wake(), self.store.next_wake(), self.opens.next_wake(), self.read.next_wake(), self.unread.next_wake(), self.streams.next_wake(), self.inbox.next_wake(), self.status.next_wake(), engine, clock].into_iter().flatten().min()
     }
 
     /// Tests only: a copy of this node inside a world copy (`osis_base::copying`), its clock

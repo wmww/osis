@@ -318,6 +318,11 @@ impl Store {
         self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Durable writes committed since the open (a store failure's stretch ends at the next).
+    pub fn committed(&self) -> u64 {
+        self.lock().store.writes().committed
+    }
+
     /// The engine's ciphertext door (its `Engine::create`/`open` argument).
     pub fn cipher(&self) -> Arc<dyn Ciphertext> {
         self.0.clone()

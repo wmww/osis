@@ -33,6 +33,22 @@ pub struct LinkTx {
     tx: mpsc::UnboundedSender<Vec<u8>>,
     queued: Arc<AtomicUsize>,
     taken: Arc<AtomicU64>,
+    moved: Arc<tokio::sync::Notify>,
+}
+
+/// Where a link's `taken` stands, awaited apart from its sender (a driver's `Input::Taken`).
+#[derive(Clone, Debug)]
+pub struct Progress {
+    taken: Arc<AtomicU64>,
+    moved: Arc<tokio::sync::Notify>,
+}
+
+impl Progress {
+    /// The bytes taken so far, once that moved since the last call (moves in between coalesce).
+    pub async fn next(&self) -> u64 {
+        self.moved.notified().await;
+        self.taken.load(Ordering::Acquire)
+    }
 }
 
 impl LinkTx {
@@ -52,6 +68,11 @@ impl LinkTx {
     /// Bytes the transport has taken so far (grows as the link moves our bytes).
     pub fn taken(&self) -> u64 {
         self.taken.load(Ordering::Acquire)
+    }
+
+    /// A handle that waits for `taken` to move.
+    pub fn progress(&self) -> Progress {
+        Progress { taken: self.taken.clone(), moved: self.moved.clone() }
     }
 }
 
@@ -109,7 +130,8 @@ fn session<C: Connection>(c: &C, mut send: C::Send, mut recv: C::Recv, closer: O
     let (tx, mut wrx) = mpsc::unbounded_channel::<Vec<u8>>();
     let queued = Arc::new(AtomicUsize::new(0));
     let taken = Arc::new(AtomicU64::new(0));
-    let (q, t) = (queued.clone(), taken.clone());
+    let moved = Arc::new(tokio::sync::Notify::new());
+    let (q, t, m) = (queued.clone(), taken.clone(), moved.clone());
     tokio::spawn(async move {
         'pump: while let Some(b) = wrx.recv().await {
             for piece in b.chunks(WRITE_CHUNK) {
@@ -119,6 +141,7 @@ fn session<C: Connection>(c: &C, mut send: C::Send, mut recv: C::Recv, closer: O
                     break 'pump;
                 }
                 t.fetch_add(piece.len() as u64, Ordering::AcqRel);
+                m.notify_one();
             }
         }
         drop(wrx);
@@ -149,7 +172,7 @@ fn session<C: Connection>(c: &C, mut send: C::Send, mut recv: C::Recv, closer: O
             }
         }
     });
-    Link { peer_key: c.peer_key(), peer: c.peer(), source: c.source(), rank: c.rank(), tx: LinkTx { tx, queued, taken }, rx: LinkRx { rx: rrx, want } }
+    Link { peer_key: c.peer_key(), peer: c.peer(), source: c.source(), rank: c.rank(), tx: LinkTx { tx, queued, taken, moved }, rx: LinkRx { rx: rrx, want } }
 }
 
 /// Dials `addr` and opens one session on it. The connection closes when the session ends.
@@ -173,7 +196,8 @@ fn pipe() -> (LinkTx, LinkRx) {
     let (tx, mut wrx) = mpsc::unbounded_channel::<Vec<u8>>();
     let queued = Arc::new(AtomicUsize::new(0));
     let taken = Arc::new(AtomicU64::new(0));
-    let (q, t) = (queued.clone(), taken.clone());
+    let moved = Arc::new(tokio::sync::Notify::new());
+    let (q, t, m) = (queued.clone(), taken.clone(), moved.clone());
     let (rtx, rrx) = mpsc::channel(1);
     tokio::spawn(async move {
         while let Some(b) = wrx.recv().await {
@@ -183,9 +207,10 @@ fn pipe() -> (LinkTx, LinkRx) {
             }
             q.fetch_sub(n, Ordering::AcqRel);
             t.fetch_add(n as u64, Ordering::AcqRel);
+            m.notify_one();
         }
     });
-    (LinkTx { tx, queued, taken }, LinkRx { rx: rrx, want: Arc::default() })
+    (LinkTx { tx, queued, taken, moved }, LinkRx { rx: rrx, want: Arc::default() })
 }
 
 /// Accepts connections on `l` and hands each stream they open to `out` as a session, until
@@ -196,26 +221,29 @@ pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: m
         if out.is_closed() {
             break;
         }
-        let out = out.clone();
-        tokio::spawn(async move {
-            let live = Arc::new(AtomicUsize::new(0));
-            loop {
-                match timeout(idle, c.accept_stream()).await {
-                    Ok(Ok((send, recv))) => {
-                        live.fetch_add(1, Ordering::AcqRel);
-                        let link = session(&c, send, recv, None, Some(Live(live.clone())), wait);
-                        if out.send(link).await.is_err() {
-                            break;
-                        }
-                    }
-                    Ok(Err(_)) => break,
-                    Err(_) if live.load(Ordering::Acquire) == 0 => break,
-                    Err(_) => {}
+        tokio::spawn(serve_conn(c, idle, wait, out.clone()));
+    }
+}
+
+/// Hands each stream accepted connection `c`'s dialer opens to `out` as a session, as `serve`
+/// does for a listener's (a connection discovery hands up, `Found::Conn`).
+pub async fn serve_conn<C: Connection>(c: C, idle: Duration, wait: Duration, out: mpsc::Sender<Link>) {
+    let live = Arc::new(AtomicUsize::new(0));
+    loop {
+        match timeout(idle, c.accept_stream()).await {
+            Ok(Ok((send, recv))) => {
+                live.fetch_add(1, Ordering::AcqRel);
+                let link = session(&c, send, recv, None, Some(Live(live.clone())), wait);
+                if out.send(link).await.is_err() {
+                    break;
                 }
             }
-            c.close();
-        });
+            Ok(Err(_)) => break,
+            Err(_) if live.load(Ordering::Acquire) == 0 => break,
+            Err(_) => {}
+        }
     }
+    c.close();
 }
 
 #[cfg(test)]
@@ -294,7 +322,7 @@ mod tests {
     #[test]
     fn send_cap() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let t = LinkTx { tx, queued: Arc::new(AtomicUsize::new(0)), taken: Arc::new(AtomicU64::new(0)) };
+        let t = LinkTx { tx, queued: Arc::new(AtomicUsize::new(0)), taken: Arc::new(AtomicU64::new(0)), moved: Arc::default() };
         assert!(t.send(vec![0; 100], 10));
         assert!(!t.send(vec![0; 1], 10));
         assert_eq!(t.queued.load(Ordering::Acquire), 100);
