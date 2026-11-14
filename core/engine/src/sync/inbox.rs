@@ -270,7 +270,7 @@ impl Engine {
         let b = *blob;
         // the things not taken stay an invite request
         let rest: Vec<(Tid, Role)> = boxed.things.keys().filter(|t| !take.iter().any(|x| x.tid == **t)).filter_map(|t| Some((*t, boxed.role(t)?))).collect();
-        let w = (!rest.is_empty()).then(|| WaitingBlob { sync_id: *s, commit: id, things: rest, from: p.author, expires });
+        let w = (!rest.is_empty()).then_some(WaitingBlob { sync_id: *s, commit: id, things: rest, from: p.author, expires });
         self.run(|tx| set_waiting(tx, &b, w))?;
         if take.is_empty() {
             return Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Waiting, hints: Vec::new(), dial: None }));
