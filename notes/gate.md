@@ -12,7 +12,7 @@ The reviewer gates once per branch in the branch's worktree; a worker never does
 ## Steps
 Each prints its wall and CPU-s (compare CPU-s; wall follows load) and checks its time limit. The steps before the tests fail fast; every test stage runs to its end.
 1. The lockfile is current (`cargo metadata --locked`, about 1 s; not `--offline`, where an uncached crate fails like a stale lock; the failure prints the refresh command); `tools/policy.py`.
-2. Instant checks: the tools' own tests (`tools/gate_select_test.sh`, `test_select_test.py`, `gate_failures_test.py`, `gate_paths_test.py`, `limits_test.py`, `doc_refs_test.py`), `tools/limits.py split`, `tools/spec_map.py --uncited --gaps`.
+2. Instant checks: the tools' own tests (`tools/gate_select_test.sh`, `test_select_test.py`, `gate_failures_test.py`, `gate_paths_test.py`, `limits_test.py`, `doc_refs_test.py`, `policy_test.py`: one planted violation per policy check in a copy of the tree, each must be reported), `tools/limits.py split`, `tools/spec_map.py --uncited --gaps`.
 3. The selection, printed with its commands (The selection, below).
 4. Lints: core clippy, then the GUI's on the same artifacts (re-lints only kit and app, a few seconds; cold, about 1.5 min once per worktree).
 5. Builds, unlocked: `cargo test --no-run` and every binary the selection runs, with the runs' own cargo arguments, so the hold builds nothing (doctests still compile inside it).

@@ -16,6 +16,22 @@ def read(path):
         return f.read()
 
 
+@functools.cache
+def _loose(pat):
+    r"""`pat` without its `\b`s, which matches wherever `pat` does; `pat` itself where dropping one
+    could narrow it (in a negative lookaround), or the text may not be a `\b` (`[\b]`, `\\b`)."""
+    s = pat.pattern
+    if "(?" in s or "[" in s or "\\\\" in s:
+        return pat
+    return re.compile(s.replace(r"\b", ""), pat.flags)
+
+
+def has(pat, text):
+    r"""Whether `pat` matches in `text`, fast: sre scans quickly only for a pattern that starts with a
+    literal, which a leading `\b` hides; `_loose` rejects a text first, scanning fast."""
+    return bool(_loose(pat).search(text) and pat.search(text))
+
+
 def members(extra=()):
     """{absolute dir: package name} of the workspace members and of the crates the `extra` globs name."""
     out = {}

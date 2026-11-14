@@ -15,7 +15,7 @@ import functools, glob, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dead_pub, doc_refs, gate_failures
-from rustsrc import ROOT, members as workspace_members, read, rs_files, toml as load
+from rustsrc import ROOT, has, members as workspace_members, read, rs_files, toml as load
 
 errs = []
 ws = load(os.path.join(ROOT, "Cargo.toml"))
@@ -32,17 +32,6 @@ def code(text):
 def code_of(path):
     """`path`'s text without its `//` comments, made once per run."""
     return code(read(path))
-
-
-@functools.cache
-def _loose(pat):
-    return re.compile(pat.pattern.replace(r"\b", ""), pat.flags)
-
-
-def has(pat, text):
-    """Whether `pat` matches in `text`, fast: sre scans quickly only for a pattern that starts with a
-    literal, which a leading `\b` hides; the pattern without its `\b`s matches wherever it does."""
-    return bool(_loose(pat).search(text) and pat.search(text))
 
 
 CODE_TOPS = ("core", "cli", "libs", "app")
