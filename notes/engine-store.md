@@ -25,7 +25,7 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` store r
 | `u/`+name | API records (account, home group, settings) |
 | `sides` | sides taken in admin disputes (`sides.rs`): per (edge write, holder) trusted and chosen flags |
 | `i/v` | the persisted index's rules tag |
-| `sy/`, `ow/`, `iw/`, `ih/`, `cp/`, `hw/`, `fm/`, `se/`, `bp/` | the tables the engine keeps for sync (notes/sync-facade.md) |
+| `sy/`, `ow/`, `iw/`, `ih/`, `cp/`, `hw/`, `fm/`, `bp/` | the tables the engine keeps for sync (notes/sync-facade.md) |
 
 Other store kinds (osis-store's catalog):
 - **Aspect units**: the state (snapshot grammar with its pages inline, or for a paged state `[1, skeleton, [[set ID, path, encoding]*]]`: paged collections reduced to their reset and `W`).

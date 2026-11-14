@@ -496,7 +496,7 @@ fn facade_copy_read_content_withheld_without_the_removal_spec_crypto_5() {
     v_takes(&mut lp, &s, w, &held);
     assert!(reads(&mut lp, V, g, "w"), "V reads w from R's copy");
     let mut rng = osis_crypto::SeededRng::from_u64(25);
-    if let Some((sealed, wrap)) = lp.peers[V].engine.seal_body(&s, &w, &[held.clone()], &mut rng).unwrap() {
+    if let Some((sealed, wrap)) = lp.peers[V].engine.seal_body(&s, &w, std::slice::from_ref(&held), &mut rng).unwrap() {
         let (header, content) = m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap);
         panic!("V sealed w read from a copy lacking W: M opens its header {header}, content {content}");
     }

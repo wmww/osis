@@ -463,8 +463,8 @@ fn bodies_and_facts_under_home_spec_sync_judgement_1() {
     assert!(e.own_commits(&home).unwrap().contains(&c));
 }
 
-// spec/sync-judgement.md §1 (a fresh encryption of an own commit), spec/crypto.md §5 (who wraps
-// under what): the blob opens with its wrap under home's read secret, and its parts are noted.
+// spec/crypto.md §5 (who wraps under what: a node logging an entry of its own commit wraps under
+// the newest current read epoch): the blob opens under home's read secret; its parts are noted.
 #[test]
 fn seal_body_seals_an_own_commit_spec_crypto_5() {
     let (mut lp, _) = people(2);
