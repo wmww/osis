@@ -191,7 +191,7 @@ impl Engine {
     pub(crate) fn sync_holding_now(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
         let mut owners: Vec<Tid> = self.sync_owner_of(s)?.into_iter().collect();
         owners.extend(self.core.ix.destroyed_sync_ids.iter().filter(|(_, v)| v.iter().any(|o| o.id == *s)).map(|(t, _)| *t));
-        owners.extend(self.core.ix.sync_records.iter().filter(|(_, r)| r.sync_ids.contains(s)).map(|(t, _)| *t));
+        owners.extend(self.core.ix.record_ids.get(s).into_iter().flatten().copied());
         let things = self.sync_things_now()?;
         for t in owners {
             if !things.contains(&t) {

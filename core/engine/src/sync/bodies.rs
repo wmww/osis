@@ -309,8 +309,14 @@ impl Engine {
     /// A wrap for `to` of held blob `b` of commit `c`, whose entry under `from` has wrap
     /// `from_wrap` (spec/sync-judgement.md §3 Own store: a held blob logged verbatim under a wrap
     /// for S): the blob key and order from that wrap, wrapped under the epoch `c` was written
-    /// under at `to`'s thing (`section_epoch`). `None` when either wrap's epoch is not held.
+    /// under at `to`'s thing (`section_epoch`). `None` when either wrap's epoch is not held, when
+    /// `b` is not a shared blob opened or sealed here, or when `to`'s body of `c` is no shared
+    /// blob's: a per-sync-ID copy is never shared with another sync ID, and only a copy holds a
+    /// copy's body (spec/sync-judgement.md §1 Per-sync-ID copies).
     pub(crate) fn rewrap_now(&mut self, c: &CommitId, b: &BlobId, from: &SyncId, from_wrap: &Wrap, to: &SyncId) -> Result<Option<Wrap>> {
+        if self.blob_copy_now(b) != Some(false) || self.sync_bodies_now(c)?.get(to).is_none_or(|m| m.copy) {
+            return Ok(None);
+        }
         let (Some(tf), Some(tt)) = (self.read_thing(from)?, self.read_thing(to)?) else { return Ok(None) };
         let Some((key, order)) = self.read_secrets(&tf).iter().find_map(|x| osis_crypto::unwrap_order(x, b, from_wrap).ok()) else { return Ok(None) };
         let parts: Vec<usize> = self.blob_parts_now(b).map(|p| p.into_iter().collect()).unwrap_or_default();

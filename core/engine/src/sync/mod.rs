@@ -372,7 +372,8 @@ impl Engine {
     }
 
     /// A wrap for `to` of held blob `b` of commit `c`, from its entry's wrap under `from`: the
-    /// held blob logged verbatim under another sync ID (`None`: an epoch not held).
+    /// held blob logged verbatim under another sync ID (`None`: an epoch not held, or a
+    /// per-sync-ID copy on either side, which is never shared).
     pub fn rewrap(&mut self, c: &CommitId, b: &BlobId, from: &SyncId, from_wrap: &Wrap, to: &SyncId) -> Result<Option<Wrap>> {
         self.rewrap_now(c, b, from, from_wrap, to)
     }

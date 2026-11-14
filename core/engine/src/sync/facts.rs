@@ -31,13 +31,17 @@ impl Engine {
         f.own = m.origin == crate::events::Origin::Local;
         f.role = h.kind.is_role() || m.view.purges;
         f.missing = b.parts.iter().any(|ai| m.missing(*ai));
-        let id = *c;
-        for ai in &b.parts {
-            let hh = h.clone();
-            if self.run(|tx| crate::retention::purged_by(tx, &hh, &id, *ai))?.is_some() {
-                f.must_not = Some(MustNot::Purged);
-                break;
+        let (id, parts) = (*c, b.parts.clone());
+        let purged = self.read(|tx| {
+            for ai in &parts {
+                if crate::retention::purged_by(tx, &h, &id, *ai)?.is_some() {
+                    return Ok(true);
+                }
             }
+            Ok(false)
+        })?;
+        if purged {
+            f.must_not = Some(MustNot::Purged);
         }
         for ai in &b.parts {
             let Some(a) = h.aspects.get(*ai) else { continue };

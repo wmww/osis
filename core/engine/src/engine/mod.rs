@@ -829,6 +829,8 @@ indexes! {
     pub destroyed_sync_ids: JMap<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
     /// Sync records of things this node keeps unread (`sync::records`, spec/sync-judgement.md §6).
     pub sync_records: JMap<Tid, Arc<crate::sync::SyncRecord>>,
+    /// The things whose sync record names each sync ID (`sync_records` inverted).
+    pub record_ids: JSetMap<SyncId, Tid>,
     /// Removal notices inbox blobs to this node carried, per sync ID by blob (`sync::records`).
     pub removal_notices: JMap<SyncId, Arc<BTreeMap<osis_base::BlobId, crate::sync::records::HeldNotice>>>,
     /// Inbox deliveries owed per (commit, holder) (`sync::deliveries`).

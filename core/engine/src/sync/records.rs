@@ -78,6 +78,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     for (t, r) in records {
+        for s in &r.sync_ids {
+            tx.core.ix.record_ids.insert(*s, t);
+        }
         tx.core.ix.sync_records.insert(t, Arc::new(r));
     }
     let mut notices = Vec::new();
@@ -116,13 +119,19 @@ pub(crate) fn note_sync_secrets(tx: &mut Tx<'_>, thing: &Tid, sync_ids: &[SyncId
         return Ok(false);
     }
     tx.txn.put_local(&[SYNC_RECORDS, thing.as_bytes()].concat(), &osis_base::encode(&record_value(&r)), Shred::Yes)?;
+    for s in &r.sync_ids {
+        tx.core.ix.record_ids.insert(*s, *thing);
+    }
     tx.core.ix.sync_records.insert(*thing, Arc::new(r));
     Ok(true)
 }
 
 /// Drops `thing`'s sync record (`Engine::drop_sync_record`).
 pub(crate) fn drop_record(tx: &mut Tx<'_>, thing: &Tid) -> Result<()> {
-    if tx.core.ix.sync_records.remove(thing).is_some() {
+    if let Some(r) = tx.core.ix.sync_records.remove(thing) {
+        for s in &r.sync_ids {
+            tx.core.ix.record_ids.remove(s, thing);
+        }
         tx.txn.remove_local(&[SYNC_RECORDS, thing.as_bytes()].concat(), Shred::Yes)?;
     }
     Ok(())

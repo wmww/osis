@@ -462,8 +462,9 @@ fn wrap_opens_under(lp: &LocalPeer, i: usize, t: &Tid, e: &osis_crypto::Epoch, b
 // spec/crypto.md §5 (who wraps under what: a fresh encryption of a body wraps under the epoch
 // the commit was written under at S's thing, never the node's newest), spec/sync-judgement.md
 // §1: a reader that is no writer of S re-seals a shared blob and a per-sync-ID copy after a
-// rotation it holds; each wrap opens under the epoch it opened with, not the newer one. A copy's
-// wrap is its only key, so a newest-epoch wrap would hand it to whoever holds only that epoch.
+// rotation it holds, and rewraps the held shared blob; each wrap opens under the epoch it opened
+// with, not the newer one. A copy's wrap is its only key, so a newest-epoch wrap would hand it
+// to whoever holds only that epoch.
 #[test]
 fn a_fresh_encryption_wraps_under_its_written_epoch_spec_crypto_5() {
     let (mut lp, ps) = people(3);
@@ -496,9 +497,11 @@ fn a_fresh_encryption_wraps_under_its_written_epoch_spec_crypto_5() {
     let e1 = crate::flows::newest_read(&lp, 0, t).unwrap();
     // peer 1 opens both from the blobs peer 0 logged under S
     let mut rng = SeededRng::from_u64(5);
+    let mut held = Vec::new();
     for c in [plain, copy] {
         let (sealed, wrap) = lp.peers[0].engine.seal_body(&s, &c, &mut rng).unwrap().expect("peer 0 seals its own");
         assert!(matches!(lp.peers[1].engine.open_entry(&s, &sealed.id, &wrap, &sealed.blob).unwrap(), osis_engine::sync::Opened::Commit(x, _) if x == c));
+        held.push((sealed.id, wrap));
     }
     // removing peer 2 rotates read: peer 1 holds a newer epoch
     lp.peers[0].engine.demote(&t, &Demotion { holder: ps[2], new: None, retain: None }).unwrap();
@@ -510,6 +513,10 @@ fn a_fresh_encryption_wraps_under_its_written_epoch_spec_crypto_5() {
         assert!(wrap_opens_under(&lp, 1, &t, &e1, &again.id, &wrap), "{name}: wrapped under the epoch it was written under");
         assert!(!wrap_opens_under(&lp, 1, &t, &e2, &again.id, &wrap), "{name}: not under the newest");
     }
+    // the held shared blob logged verbatim again (`rewrap`): its wrap by the same rule
+    let (b, w) = &held[0];
+    let again = lp.peers[1].engine.rewrap(&plain, b, &s, w, &s).unwrap().expect("its written epoch is held");
+    assert!(wrap_opens_under(&lp, 1, &t, &e1, b, &again) && !wrap_opens_under(&lp, 1, &t, &e2, b, &again), "rewrapped under the epoch it was written under");
 }
 
 // spec/sync-inbox.md §2 (logging: a sender that does not write the inbox deposits under the
@@ -595,4 +602,32 @@ fn a_lowering_to_sync_writes_a_sync_record_spec_sync_judgement_6() {
     let r = e.sync_record(&t).unwrap().expect("lowered: a sync record");
     assert!(held.iter().all(|x| r.secrets.contains_key(x)), "the sync secrets it held");
     assert_eq!(r.sync_ids, vec![lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap()]);
+}
+
+// spec/sync-judgement.md §1 Per-sync-ID copies (never shared with another sync ID; only a copy
+// holds a copy's body): a held blob is logged verbatim under another sync ID only as a shared
+// blob for a shared body. A grant on u travels under t's sync ID as a copy and under u's own as
+// the shared blob; neither is rewrapped for the other.
+#[test]
+fn a_copy_is_never_logged_verbatim_elsewhere_spec_sync_judgement_1() {
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    let u = thing_of(&mut lp, 0, t);
+    lp.peers[0].engine.give_own_secrets(&u).unwrap();
+    add_item(&mut lp, 0, t, u);
+    let (_, d) = lp.peers[0].engine.account().unwrap().unwrap();
+    add_item(&mut lp, 0, d, t);
+    let e = &mut lp.peers[0].engine;
+    let (s, su) = (e.home_sync_id(&t).unwrap().unwrap(), e.home_sync_id(&u).unwrap().unwrap());
+    let done = e.grant(&u, &ps[1], &edge_of(Role::Read)).unwrap();
+    let c = *done.commits.iter().find(|c| e.sync_bodies(c).unwrap().get(&s).is_some_and(|b| b.copy)).expect("a copy under t's sync ID");
+    assert!(e.sync_bodies(&c).unwrap().get(&su).is_some_and(|b| !b.copy), "the shared blob under u's");
+    let mut rng = SeededRng::from_u64(9);
+    let (copy, copy_wrap) = e.seal_body(&s, &c, &mut rng).unwrap().expect("the copy seals");
+    let (shared, shared_wrap) = e.seal_body(&su, &c, &mut rng).unwrap().expect("the shared blob seals");
+    assert_eq!((e.blob_copy(&copy.id).unwrap(), e.blob_copy(&shared.id).unwrap()), (Some(true), Some(false)));
+    assert!(e.rewrap(&c, &copy.id, &s, &copy_wrap, &su).unwrap().is_none(), "a copy goes under no other sync ID");
+    assert!(e.rewrap(&c, &shared.id, &su, &shared_wrap, &s).unwrap().is_none(), "a copy body is held only by a copy");
+    assert!(e.rewrap(&c, &shared.id, &su, &shared_wrap, &su).unwrap().is_some(), "a shared blob for a shared body");
 }

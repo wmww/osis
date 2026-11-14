@@ -686,6 +686,7 @@ fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 42] {
         ("destroyed_secrets", &*ix.destroyed_secrets),
         ("destroyed_sync_ids", &*ix.destroyed_sync_ids),
         ("sync_records", &*ix.sync_records),
+        ("record_ids", &*ix.record_ids),
         ("removal_notices", &*ix.removal_notices),
         ("waiting_inbox", &*ix.waiting_inbox),
         ("inbox_hints", &*ix.inbox_hints),
