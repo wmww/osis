@@ -463,15 +463,6 @@ impl Opens {
         let mut holds = NodeHolds { cx, unread, fx: &mut fx };
         let mut ctx = Ctx { holds: &mut holds, wire: sessions, store: &mut store, now };
         let acted = self.tick(&mut ctx, moved);
-        // S left this node (spec/sync-set.md §3): its record rows went with the shred; where a
-        // member stopped goes from memory too, so a later join is from the start
-        let shreds = self.shreds.get_or_insert_with(|| store.shred_feed()).added();
-        for s in shreds {
-            for r in self.records.values_mut() {
-                r.stopped.remove(&s);
-                r.basis.remove(&s);
-            }
-        }
         self.fx = fx;
         if let Some(e) = self.fault.take() {
             return Err(e.into());
@@ -662,6 +653,16 @@ impl Opens {
     /// members and makes filters and tests due; then each connection's due work runs.
     pub fn tick(&mut self, ctx: &mut Ctx, moved: &mut Vec<Moved>) -> bool {
         let before = moved.len();
+        // S left this node (spec/sync-set.md §3): its record rows went with the shred; where a
+        // member stopped goes from memory too, before anything rejoins, so a later join is from
+        // the start
+        let shreds = self.shreds.get_or_insert_with(|| ctx.store.shred_feed()).added();
+        for s in shreds {
+            for r in self.records.values_mut() {
+                r.stopped.remove(&s);
+                r.basis.remove(&s);
+            }
+        }
         if !self.changed.loaded {
             let r = ctx.store.with_read(|t| t.changed_end());
             match r {

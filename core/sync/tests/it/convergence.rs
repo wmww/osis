@@ -1,16 +1,23 @@
 //! The reference-model differential (harness::history): random histories over a few nodes, at
 //! quiet every reader reads as a single engine handed every commit directly, and no needed body
 //! is deleted everywhere. Fresh worlds per seed; `OSIS_SYNC_SEED`/`OSIS_SYNC_SEEDS` pick the
-//! seeds (default: 4 at small size, 40 under `OSIS_FULL=1`: a history costs about ten times what notes/sync-test-harness.md budgets, issues/sync-test-cost.md); a failure prints the history
-//! as a script, `OSIS_SYNC_SHRINK=1` shrinks it.
+//! seeds (default: 1,000 under `OSIS_FULL=1`, 4 at small size, cut below a tenth while a history
+//! costs about ten times what notes/sync-test-harness.md budgets, issues/sync-test-cost.md); a
+//! failure prints the history as a script, `OSIS_SYNC_SHRINK=1` shrinks it.
 
 use crate::harness::history::{Gives, check, check_readers, hand, hand_all, history, world};
 use crate::harness::{Step, World, play, shrinking};
-use osis_base::testenv::{Seeds, large};
+use osis_base::testenv::{Seeds, u64_var};
 
 /// Nodes and steps of one history at the default size.
 const NODES: usize = 3;
 const STEPS: usize = 40;
+
+/// A default seed range: `full` seeds under `OSIS_FULL=1`, else `small` (the large size stays the
+/// release checks' while the small one is cut for cost, issues/sync-test-cost.md).
+pub(crate) fn sized(small: u64, full: u64) -> std::ops::Range<u64> {
+    0..if u64_var("OSIS_FULL") == Some(1) { full } else { small }
+}
 
 /// The world a history plays on, the history played, then the checks; replayed by `replay`.
 /// The checks run at quiet: every history ends healed, every node on, faults off, run (so a
@@ -81,7 +88,7 @@ fn a_history_replays_from_its_seed() {
 // reference, no needed body is deleted everywhere.
 #[test]
 fn histories_converge() {
-    let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", large(0..40));
+    let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", sized(4, 1000));
     seeds.run("histories_converge", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |s| converges(s, NODES, STEPS, true));
 }
 
@@ -89,7 +96,7 @@ fn histories_converge() {
 // network, so a failure there is sync's rules, not its recovery.
 #[test]
 fn clean_histories_converge() {
-    let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", large(0..40));
+    let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", sized(4, 1000));
     seeds.run("clean_histories_converge", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |s| converges(s, NODES, STEPS, false));
 }
 

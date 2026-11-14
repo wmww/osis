@@ -153,6 +153,27 @@ fn a_rejoin_reads_from_the_losts_cursor_spec_sync_opens_6() {
     assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::Held)), "{:?}", p.b.moved);
 }
 
+// spec/sync-opens.md §3 (a node that stops holding S drops S from every record in the step that
+// stops it): where a peer's Lost said the member stopped goes with S's shred, so a later join
+// does not read from that old cursor (the store holds nothing of S any more).
+#[test]
+fn a_shred_drops_where_a_member_stopped_spec_sync_opens_3() {
+    let mut p = readers();
+    p.a.reported(p.ca, S, 7);
+    let c = p.a.table.creds[&S].as_ref().clone();
+    p.a.table.set(S, None);
+    p.a.settle();
+    p.run();
+    assert!(!p.b.open(p.cb, &S));
+    p.b.store.shred(&S).unwrap();
+    p.b.moved.clear();
+    p.a.table.set(S, Some(c));
+    p.a.settle();
+    p.run();
+    assert!(p.b.open(p.cb, &S));
+    assert!(p.b.moved.iter().any(|m| matches!(m, Moved::Joined(c, s, r) if *c == p.cb && *s == S && *r != Rejoin::From(Some(7u64.to_be_bytes().to_vec())))), "not from the Lost's cursor: {:?}", p.b.moved);
+}
+
 // spec/sync-opens.md §6 (closed here): a member this side closed rejoins from the start unless it
 // holds the peer's Lost for it. Here the peer's crossed Lost is lost with the connection (this
 // side's own Lost never arrives), so the rejoin reads from the start: nothing the peer logged

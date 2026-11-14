@@ -522,9 +522,9 @@ fn verdicts_follow_the_facts() {
     assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::MustNot(Why::OutsideRequired)));
 }
 
-// spec/sync-judgement.md §1 (one the node dropped makes the blob must-not-hold: a delta it holds): an own entry
-// whose blob holds a part purged here leaves the own store while the body stays must-hold, and
-// the rest of the body is logged again as a fresh encryption without it.
+// spec/sync-judgement.md §1 (one the node dropped for good makes the blob must-not-hold): an own
+// entry whose blob holds a part purged here leaves the own store while the body stays
+// must-hold, and the rest of the body is logged again as a fresh encryption without it.
 #[test]
 fn entry_holding_a_purged_part_leaves_spec_sync_judgement_1() {
     let mut w = W::new();

@@ -891,6 +891,12 @@ impl Store {
         self.lock().read(|t, env| path::behind(t, env, s, named, cred, max_steps))
     }
 
+    /// The code a Behind of S carrying nothing is answered with (one whose open signature did
+    /// not verify): 13 where this node does not keep S, else 14.
+    pub fn behind_refusal(&self, s: &SyncId) -> Result<Code> {
+        self.lock().read(|t, env| path::behind_refusal(t, env, s))
+    }
+
     // The node log
 
     /// Up to `max` events of `members` after `from` (from the start with none, or one that names
@@ -991,9 +997,8 @@ impl Store {
             let u = entries::usage(t, s)?;
             entries::put_usage(t, env, s, u, Usage::default())?;
             t.log_forget(*s)?;
+            // S's rows in every record go with its `changed_at` (spec/sync-opens.md §3)
             t.changed_forget(s)?;
-            // S in every record goes with it (spec/sync-set.md §3 Leaving)
-            t.records_forget_sync(s)?;
             Ok(())
         })?;
         g.mem.forget(s, now);

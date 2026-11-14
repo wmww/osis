@@ -41,7 +41,8 @@ impl Follow {
     pub fn settle(&mut self, engine: &mut Engine, store: &mut Store, now: WallMs) -> Result<bool> {
         let moved = self.set.settle(engine)?;
         let mut acted = !moved.is_empty();
-        // kept unread to read opens what is there (spec/sync.md §3): every entry held, once
+        // kept unread to read opens what is there (spec/sync-judgement.md §6 Read and unread move):
+        // every entry held, once
         let raised: Vec<SyncId> = moved.iter().filter(|(s, now)| matches!(now, Some((_, Holding::Read))) && store.holding(s) == Some(Holding::Unread)).map(|(s, _)| *s).collect();
         for (s, now) in &moved {
             if let Some(t) = self.read.remove(s) {
@@ -52,7 +53,8 @@ impl Follow {
                 self.paths.want((*s, *t));
             }
         }
-        store.set_holdings(&moved);
+        // opened before the store holds S read: a failure on the way restarts the modules, whose
+        // fresh follow finds S still kept unread in the store and opens it all again
         for s in raised {
             for e in store.entries(&s)? {
                 if let Some(bytes) = store.bytes(&e.blob)? {
@@ -60,6 +62,7 @@ impl Follow {
                 }
             }
         }
+        store.set_holdings(&moved);
         if !self.caps.due().is_empty() {
             let mut failed = None;
             let r = self.caps.settle(&(), || {

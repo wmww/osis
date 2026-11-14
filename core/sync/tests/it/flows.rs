@@ -58,6 +58,58 @@ fn a_granted_thing_is_read_once_accepted_spec_sync_inbox_2() {
     assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("y".into())));
 }
 
+/// Node 0 makes a thing, grants node 1's account sync on it, node 1's user accepts it (at once,
+/// or after a run: `later`), node 0 writes again: node 1 keeps the thing unread with S's genesis
+/// registered and both writes held.
+fn kept_unread(later: bool) {
+    let mut w = contacts();
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let ak = Ak::new("u:v.0").unwrap();
+    let write = |w: &mut World, t: Option<osis_base::Tid>, v: &str| {
+        w.write(0, |e| {
+            let mut m = Mutation::new();
+            let t = t.unwrap_or_else(|| e.new_thing(&mut m, a0));
+            m.set(t, &ak, &Value::Str(v.into())).unwrap();
+            e.commit(m).unwrap();
+            t
+        })
+    };
+    let t = write(&mut w, None, "x");
+    file(&mut w, 0, vec![t], Vec::new());
+    w.write(0, |e| e.grant(&t, &a1, &edge(Role::Sync))).unwrap();
+    if later {
+        w.run();
+    }
+    file(&mut w, 1, Vec::new(), vec![t]);
+    w.run();
+    write(&mut w, Some(t), "y");
+    w.run();
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    assert_eq!(w.engine(1).thing_sync(&t).unwrap(), osis_engine::sync::ThingSync::Unread(vec![s]));
+    let st = &w.node(1).store;
+    assert!(st.path(&s).unwrap().is_some(), "S's genesis registered");
+    assert!(st.entries(&s).unwrap().len() >= 2, "both writes held");
+    assert_eq!(w.engine(1).get(&t, &ak).unwrap(), None, "unread");
+}
+
+// spec/sync-ids.md §6 (walk: answered 13, it registers its recorded path from genesis),
+// spec/sync-judgement.md §6 (takes): node 0 grants node 1's account sync on a thing node 1
+// accepts at once; it keeps the thing unread with no step; node 0's Behind there is answered 13,
+// so it registers S's genesis, opens S by its sync key and node 1 holds node 0's writes, unread.
+#[test]
+fn a_sync_grant_is_kept_unread_with_the_writes_spec_sync_ids_6() {
+    kept_unread(false);
+}
+
+// spec/sync-ids.md §6 (walk): as above, the user accepting after node 0 first tested S at node 1
+// (its Register of genesis then refused: node 1 did not sync S yet): node 0 never tests S there
+// again, so nothing is registered or held. Fails: issues/sync-walk-reopen.md.
+#[test]
+#[ignore = "fails: issues/sync-walk-reopen.md"]
+fn a_sync_grant_accepted_later_is_kept_unread_with_the_writes_spec_sync_ids_6() {
+    kept_unread(true);
+}
+
 // spec/sync-inbox.md §2 (Re-send: until seen taken): a grant, its removal and a grant again,
 // written before any of them reached the grantee, all reach it: it reads the thing (an open by
 // the first grant's read secret does not show the grant again taken). Found by the differential.

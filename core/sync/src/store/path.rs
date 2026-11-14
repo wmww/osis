@@ -191,14 +191,25 @@ pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, policy: &Poli
     Ok((Code::OK, past))
 }
 
+/// The code a Behind of S that carries nothing is answered with, whatever it names or shows
+/// (spec/sync-ids.md §6 Behind): 13 where this node does not keep S (kept unread with no step
+/// registered included), else 14 (a node reading S answers every Behind of S so).
+pub(crate) fn behind_refusal(t: &mut Transaction<'_>, env: &Env<'_>, s: &SyncId) -> Result<Code> {
+    Ok(match env.holding(s) {
+        None => Code::UNKNOWN_SYNC_ID,
+        Some(Holding::Unread) if steps(t, s)?.is_empty() => Code::UNKNOWN_SYNC_ID,
+        Some(_) => Code::DECLINED,
+    })
+}
+
 /// A Behind item's answer at a node keeping S unread (spec/sync-ids.md §6 Behind): at most
 /// `max_steps` steps in it.
 pub(crate) fn behind(t: &mut Transaction<'_>, env: &Env<'_>, s: &SyncId, named: Option<&StepId>, cred: &Cred, max_steps: usize) -> Result<Behind> {
     if env.holding(s) != Some(Holding::Unread) {
-        return Ok(refused(if env.holding(s).is_none() { Code::UNKNOWN_SYNC_ID } else { Code::DECLINED }));
+        return Ok(refused(behind_refusal(t, env, s)?));
     }
     let path = steps(t, s)?;
-    let Some(last) = path.len().checked_sub(1) else { return Ok(refused(Code::UNKNOWN_SYNC_ID)) };
+    let Some(last) = path.len().checked_sub(1) else { return Ok(refused(behind_refusal(t, env, s)?)) };
     let bound = |v: Vec<Step>| if v.is_empty() { refused(Code::RATE_LIMITED) } else { (Code::OK, Some(Grant { entry_box: None, steps: v })) };
     match (named, cred) {
         (Some(id), _) => {

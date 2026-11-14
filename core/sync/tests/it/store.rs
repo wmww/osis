@@ -246,6 +246,25 @@ fn behind_answers_up_to_the_next_sync_key_spec_sync_ids_6() {
     assert_eq!(st.behind(&SyncId([9; 16]), None, &Cred::Sync(k0), 100).unwrap().0, Code::UNKNOWN_SYNC_ID);
 }
 
+// spec/sync-ids.md §6 (behind: a sync ID it does not keep: code 13; anything else code 14): a
+// Behind carrying nothing (its signature did not verify) is 13 where S is not kept, or kept
+// unread with no step yet (the asker registers genesis), and 14 where S is kept with a step or
+// read here.
+#[test]
+fn a_behind_refused_is_13_only_where_s_is_not_kept_spec_sync_ids_6() {
+    let dev = Dev::new();
+    let s = Sid::new(10);
+    let mut st = dev.open();
+    assert_eq!(st.behind_refusal(&s.id).unwrap(), Code::UNKNOWN_SYNC_ID, "not held");
+    st.set_sync_set(&holding(&[(&s, Holding::Unread)]));
+    assert_eq!(st.behind_refusal(&s.id).unwrap(), Code::UNKNOWN_SYNC_ID, "kept unread, no step");
+    let (g, c) = &s.steps[0];
+    assert_eq!(st.take_register(&s.id, g, Some(c)).unwrap(), Code::OK);
+    assert_eq!(st.behind_refusal(&s.id).unwrap(), Code::DECLINED, "kept unread with a step");
+    st.set_sync_set(&holding(&[(&s, Holding::Read)]));
+    assert_eq!(st.behind_refusal(&s.id).unwrap(), Code::DECLINED, "read here");
+}
+
 // spec/sync-ids.md §6 (behind static): naming no step, by a key actor's signing key whose static
 // entry the head's claim set lists, the answer is the head's entry box for it and the path from
 // genesis.
@@ -791,7 +810,16 @@ fn shred_drops_everything_of_s_spec_sync_ids_5() {
     st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b2)], true).unwrap();
     let rec = st.with_tx(|t| t.record_create([1; 32], &[])).unwrap();
     st.saw_deleted(Source::Record(rec), &s.id, &b2).unwrap();
+    // opens' rejoin rows in the record: S's go, another sync ID's stay
+    let other = SyncId([7; 16]);
+    st.with_tx(|t| {
+        t.record_put_row(&rec, b'O', &s.id, b"k", vec![1])?;
+        t.record_put_row(&rec, b'O', &other, b"k", vec![1])
+    })
+    .unwrap();
     st.shred(&s.id).unwrap();
+    assert!(st.with_tx(|t| t.record_get_row(&rec, b'O', &s.id, b"k")).unwrap().is_none(), "S's rows in every record go");
+    assert!(st.with_tx(|t| t.record_get_row(&rec, b'O', &other, b"k")).unwrap().is_some());
     assert!(st.entries(&s.id).unwrap().is_empty() && st.path(&s.id).unwrap().is_none());
     assert!(st.tombstone(&s.id, &b2).unwrap().is_none() && st.bytes(&b).unwrap().is_none());
     assert!(events_of(&st, &s.id).is_empty());

@@ -289,7 +289,8 @@ impl Holds for NodeHolds<'_, '_> {
     }
 
     fn behind_unsigned(&mut self, s: &SyncId) -> SharedItem {
-        SharedItem::code(if self.cx.store.holding(s) == Some(Holding::Unread) { Code::DECLINED } else { Code::UNKNOWN_SYNC_ID })
+        // a store failure refuses for now: the asker asks again after a back-off
+        SharedItem::code(self.cx.store.behind_refusal(s).unwrap_or(Code::RATE_LIMITED))
     }
 
     fn genesis(&mut self, s: &SyncId) -> Option<(Step, Option<osis_label::ClaimSet>)> {
