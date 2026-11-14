@@ -379,7 +379,7 @@ pub(crate) fn forensic_peer(seed: u64, faults: &osis_store::Faults) -> osis_node
 }
 
 fn forensic_cfg() -> osis_node::Config {
-    osis_node::Config { store: osis_store::StoreConfig { arity: 4, depth: 8, page_max: 512, ..osis_store::StoreConfig::default() }, ..osis_node::Config::default() }
+    osis_node::Config { store: osis_store::StoreConfig { arity: 4, page_max: 512, ..osis_store::StoreConfig::default() }, ..osis_node::Config::default() }
 }
 
 /// Reopens peer `i` over its durable state, its rng seed one no open drew before (the peer's

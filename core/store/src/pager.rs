@@ -2,10 +2,11 @@
 //! section).
 //!
 //! A unit is a byte string addressed by a slot number. Each version of a unit is a backend row
-//! `u slot ver` encrypted under its own random key. Unit keys sit in the leaves of a fixed-depth
-//! `arity`-ary tree; a tree node lists its present children as `(index, key, ver)` and is a row
-//! `n level index ver` encrypted under its own key, held by its parent; the top node also holds
-//! the store's meta and is encrypted under the root key from `RootStorage`.
+//! `u slot ver` encrypted under its own random key. Unit keys sit in the leaves of an `arity`-ary
+//! tree with as many levels as the slots allocated so far need (`height`); a tree node lists its
+//! present children as `(index, key, ver)` and is a row `n level index ver` encrypted under its
+//! own key, held by its parent; the top node also holds the store's meta and is encrypted under
+//! the root key from `RootStorage`.
 //!
 //! A transaction writes new row versions (`ver` = its number), so the committed tree stays
 //! readable until the commit point. Without erasure the commit point is one backend batch that
@@ -28,14 +29,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Shape and budgets. `arity`, `depth` and `page_max` are fixed when the store is created
-/// (stored in the meta); the rest are per open.
+/// Shape and budgets. `arity` and `page_max` are fixed when the store is created (stored in the
+/// meta); the rest are per open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StoreConfig {
-    /// Children per key tree node (256: a full node is about 11 KB).
+    /// Children per key tree node (256: a full node is about 11 KB). The tree has as many
+    /// levels as its slots need (`height`).
     pub arity: u32,
-    /// Key tree levels; capacity is `arity^depth` unit slots, never reused.
-    pub depth: u32,
     /// Target maximum encoded size of a table page (B-tree node).
     pub page_max: usize,
     /// Unspilled bytes a transaction holds in memory before writing rows early.
@@ -48,18 +48,30 @@ pub struct StoreConfig {
 
 impl Default for StoreConfig {
     fn default() -> StoreConfig {
-        StoreConfig { arity: 256, depth: 5, page_max: 8 * 1024, spill_bytes: 16 << 20, node_cache: 4096, unit_cache_bytes: 16 << 20 }
+        StoreConfig { arity: 256, page_max: 8 * 1024, spill_bytes: 16 << 20, node_cache: 4096, unit_cache_bytes: 16 << 20 }
     }
 }
 
 impl StoreConfig {
-    /// Slots available, or an error for a shape outside 2..=65536 children, 1..=8 levels.
-    fn capacity(&self) -> Result<u64, Error> {
-        if !(2..=65536).contains(&self.arity) || !(1..=8).contains(&self.depth) || self.page_max < 64 {
+    /// An error for a shape outside 2..=65536 children or pages below 64 bytes.
+    fn validate(&self) -> Result<(), Error> {
+        if !(2..=65536).contains(&self.arity) || self.page_max < 64 {
             return Err(Error::Misuse("config"));
         }
-        u64::from(self.arity).checked_pow(self.depth).ok_or(Error::Misuse("config"))
+        Ok(())
     }
+}
+
+/// Levels of a key tree whose slots are `0..slots`: the fewest whose leaves cover them, at least
+/// one (the top). Slots are never reused, so a tree only grows, one level per `arity` times the
+/// slots, and a write rewrites a path no longer than the store needs.
+fn height(arity: u32, slots: u64) -> u32 {
+    let (mut h, mut cover) = (1, u64::from(arity));
+    while cover < slots {
+        cover = cover.saturating_mul(u64::from(arity));
+        h += 1;
+    }
+    h
 }
 
 const ROW_R: &[u8] = b"r";
@@ -123,7 +135,6 @@ impl Node {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Meta {
     pub arity: u32,
-    pub depth: u32,
     pub page_max: u32,
     pub next_slot: u64,
     pub next_ver: u64,
@@ -136,12 +147,12 @@ pub(crate) struct Meta {
 }
 
 impl Meta {
-    const LEN: usize = 3 * 4 + 3 * 8;
+    const LEN: usize = 2 * 4 + 3 * 8;
     fn encode(&self, w: &mut W) {
-        w.u32(self.arity).u32(self.depth).u32(self.page_max).u64(self.next_slot).u64(self.next_ver).u64(self.catalog);
+        w.u32(self.arity).u32(self.page_max).u64(self.next_slot).u64(self.next_ver).u64(self.catalog);
     }
     fn decode(r: &mut R) -> Result<Meta, Error> {
-        Ok(Meta { arity: r.u32()?, depth: r.u32()?, page_max: r.u32()?, next_slot: r.u64()?, next_ver: r.u64()?, catalog: r.u64()?, log_drawn: false })
+        Ok(Meta { arity: r.u32()?, page_max: r.u32()?, next_slot: r.u64()?, next_ver: r.u64()?, catalog: r.u64()?, log_drawn: false })
     }
 }
 
@@ -479,9 +490,8 @@ fn recover(backend: &mut dyn Backend, root: &mut dyn RootStorage, cfg: &mut Stor
     let top = Node::decode(&mut r, meta.arity)?;
     r.end()?;
     cfg.arity = meta.arity;
-    cfg.depth = meta.depth;
     cfg.page_max = meta.page_max as usize;
-    cfg.capacity()?;
+    cfg.validate()?;
     Ok((epoch, rec.key, ver, meta, top))
 }
 
@@ -556,13 +566,13 @@ impl Pager {
     /// the root record: a crash before that leaves no root, and `create` can run again.
     /// Refuses if the root storage already holds a root.
     pub fn create(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: StoreConfig, catalog: Vec<u8>, rng: &mut dyn CryptoRngCore) -> Result<Pager, Error> {
-        cfg.capacity()?;
+        cfg.validate()?;
         if root.load().map_err(Error::Root)?.is_some() {
             return Err(Error::Exists);
         }
         let root_key = Secret32::random(rng);
         let page_max = u32::try_from(cfg.page_max).map_err(|_| Error::Misuse("config"))?;
-        let meta = Meta { arity: cfg.arity, depth: cfg.depth, page_max, next_slot: 0, next_ver: 1, catalog: u64::MAX, log_drawn: false };
+        let meta = Meta { arity: cfg.arity, page_max, next_slot: 0, next_ver: 1, catalog: u64::MAX, log_drawn: false };
         let mut p = Pager::new(backend, root, cfg, 1, root_key, 0, meta, Node::default());
         let mut d = p.begin()?;
         let slot = p.alloc(&mut d)?;
@@ -580,7 +590,7 @@ impl Pager {
     }
 
     /// Opens a store, finishing or rolling back an interrupted commit. The stored shape wins
-    /// over `cfg.arity` and `cfg.depth`.
+    /// over `cfg.arity` and `cfg.page_max`.
     pub fn open(mut backend: Box<dyn Backend>, mut root: Box<dyn RootStorage>, mut cfg: StoreConfig) -> Result<Pager, Error> {
         let (epoch, key, ver, meta, top) = recover(&mut *backend, &mut *root, &mut cfg)?;
         Ok(Pager::new(backend, root, cfg, epoch, key, ver, meta, top))
@@ -672,14 +682,16 @@ impl Pager {
     fn arity(&self) -> u64 {
         u64::from(self.meta.arity)
     }
+    /// The committed tree's top level (its leaves, the unit keys, sit in level 0's nodes).
     fn top_level(&self) -> u32 {
-        self.meta.depth - 1
+        height(self.meta.arity, self.meta.next_slot) - 1
     }
 
-    /// Loads the committed node (level, idx) into the cache; false if absent.
+    /// Loads the committed node (level, idx) into the cache; false if absent. At and above the
+    /// top only the top (index 0) is present: a slot the tree does not cover yet has no entry.
     fn ensure(&mut self, level: u32, idx: u64) -> Result<bool, Error> {
         if level >= self.top_level() {
-            return Ok(true);
+            return Ok(level == self.top_level() && idx == 0);
         }
         if let Some(n) = self.nodes.get(&(level, idx)) {
             return Ok(n.is_some());
@@ -706,7 +718,7 @@ impl Pager {
     }
 
     fn node(&self, level: u32, idx: u64) -> Option<&Node> {
-        if level >= self.top_level() { Some(&self.top) } else { self.nodes.get(&(level, idx)).and_then(Option::as_ref) }
+        if level >= self.top_level() { (level == self.top_level() && idx == 0).then_some(&self.top) } else { self.nodes.get(&(level, idx)).and_then(Option::as_ref) }
     }
 
     /// The committed entry for child `child` of node (level, idx).
@@ -854,10 +866,7 @@ impl Pager {
 
     pub fn alloc(&self, d: &mut Dirty) -> Result<u64, Error> {
         let slot = d.meta.next_slot;
-        if slot >= self.cfg.capacity()? {
-            return Err(Error::Misuse("unit slots exhausted"));
-        }
-        d.meta.next_slot = slot + 1;
+        d.meta.next_slot = slot.checked_add(1).ok_or(Error::Misuse("unit slots exhausted"))?;
         Ok(slot)
     }
 
@@ -1058,14 +1067,27 @@ impl Pager {
             }
             changes.entry(slot / arity).or_default().insert((slot % arity) as u32, entry);
         }
-        let top_level = self.top_level();
+        // slots this transaction allocated past the tree's cover add levels: the old top becomes
+        // node 0 of its level, under a fresh key, and new nodes 0 lead up to the new top
+        let old_top = self.top_level();
+        let top_level = height(self.meta.arity, d.meta.next_slot) - 1;
+        let grows = top_level > old_top;
         let mut new_nodes: Vec<((u32, u64), Option<Node>)> = Vec::new();
         for level in 0..top_level {
+            if grows && level == old_top {
+                changes.entry(0).or_default();
+            }
             let mut next: BTreeMap<u64, BTreeMap<u32, Option<Entry>>> = BTreeMap::new();
             let mut next_rotate = BTreeSet::new();
             for (idx, ch) in changes {
-                let old = self.child_entry(level + 1, idx / arity, (idx % arity) as u32)?;
-                let mut node = if old.is_some() && self.ensure(level, idx)? { self.node(level, idx).cloned().unwrap_or_default() } else { Node::default() };
+                let old = if level < old_top { self.child_entry(level + 1, idx / arity, (idx % arity) as u32)? } else { None };
+                let mut node = if level == old_top && idx == 0 {
+                    self.top.clone()
+                } else if old.is_some() && self.ensure(level, idx)? {
+                    self.node(level, idx).cloned().unwrap_or_default()
+                } else {
+                    Node::default()
+                };
                 for (i, e) in ch {
                     match e {
                         Some(e) => node.entries.insert(i, e),
@@ -1104,7 +1126,7 @@ impl Pager {
             changes = next;
             rotate = next_rotate;
         }
-        let mut top = self.top.clone();
+        let mut top = if grows { Node::default() } else { self.top.clone() };
         for (i, e) in changes.into_values().flatten() {
             match e {
                 Some(e) => top.entries.insert(i, e),
@@ -1252,7 +1274,7 @@ mod tests {
     use osis_crypto::SeededRng;
 
     fn small() -> StoreConfig {
-        StoreConfig { arity: 4, depth: 3, ..StoreConfig::default() }
+        StoreConfig { arity: 4, ..StoreConfig::default() }
     }
 
     fn fresh(cfg: StoreConfig) -> (Pager, MemoryBackend, MemoryRoot, SeededRng) {
@@ -1344,18 +1366,17 @@ mod tests {
         assert_eq!(p.read(10).unwrap(), Some(vec![10; 10]));
     }
 
-    // spec/commits.md §5: dropping destroys every local copy; notes/local-store.md, Key tree: capacity is arity^depth; slots are never reused; empty
-    // nodes disappear.
+    // spec/commits.md §5: dropping destroys every local copy; notes/local-store.md, Key tree: the
+    // tree has the levels its slots need; slots are never reused; empty nodes disappear.
     #[test]
     fn full_tree() {
-        let cfg = StoreConfig { arity: 2, depth: 3, ..StoreConfig::default() };
+        let cfg = StoreConfig { arity: 2, ..StoreConfig::default() };
         let (mut p, b, _r, mut rng) = fresh(cfg);
         let mut d = p.begin().unwrap();
         for _ in 1..8 {
             let s = p.alloc(&mut d).unwrap();
             p.txn_write(&mut d, s, vec![1], false, &mut rng).unwrap();
         }
-        assert_eq!(p.alloc(&mut d), Err(Error::Misuse("unit slots exhausted")));
         p.commit(d, &mut rng).unwrap();
         // Levels 0 and 1 below the top: 4 + 2 nodes.
         assert_eq!(rows(&b, b'n'), 6);
@@ -1366,6 +1387,32 @@ mod tests {
         p.commit(d, &mut rng).unwrap();
         assert_eq!(rows(&b, b'n'), 0);
         assert_eq!(rows(&b, b'u'), 0);
+    }
+
+    // spec: none (internal: notes/local-store.md, Key tree; notes/coordination.md, Check scaling). A write rewrites its
+    // units and one path of the tree, as long as the slots need: a commit writing one unit seals
+    // it, a node per level below the top and the top (and the old top, when it adds a level), at
+    // every size, and a reopen reads every unit through the grown tree.
+    #[test]
+    fn a_write_seals_one_path_as_tall_as_the_slots_need() {
+        let cfg = StoreConfig { arity: 2, ..StoreConfig::default() };
+        let (mut p, b, r, mut rng) = fresh(cfg);
+        for n in 1..40u64 {
+            let before: std::collections::HashSet<_> = b.dump().into_iter().collect();
+            let mut d = p.begin().unwrap();
+            let s = p.alloc(&mut d).unwrap();
+            p.txn_write(&mut d, s, s.to_be_bytes().to_vec(), false, &mut rng).unwrap();
+            p.commit(d, &mut rng).unwrap();
+            let sealed = b.dump().into_iter().filter(|kv| !before.contains(kv) && kv.0 != ROW_R).count();
+            // a commit that adds a level also writes the old top as a node
+            let grew = height(2, n + 1) > height(2, n);
+            assert_eq!(sealed, 1 + height(2, n + 1) as usize + usize::from(grew), "slot {s}");
+        }
+        let mut p = Pager::open(Box::new(b.clone()), Box::new(r), cfg).unwrap();
+        for s in 1..40u64 {
+            assert_eq!(p.read(s).unwrap(), Some(s.to_be_bytes().to_vec()), "slot {s}");
+        }
+        assert_eq!(p.read(40).unwrap(), None);
     }
 
     // spec/commits.md §5; notes/local-store.md, Key tree: a unit spilled, written again and
@@ -1454,11 +1501,11 @@ mod tests {
     }
 
     // spec/commits.md §5: dropping destroys every local copy; notes/local-store.md, Key tree: three levels of 256 cover 16M units. Same shape at arity 16:
-    // a rotation rewrites exactly one node per level, whatever the store size.
+    // a rotation rewrites exactly one node per level the slots need (5 for 200k).
     #[test]
     #[ignore = "by hand"]
     fn shape_reduced_arity() {
-        let cfg = StoreConfig { arity: 16, depth: 6, ..StoreConfig::default() };
+        let cfg = StoreConfig { arity: 16, ..StoreConfig::default() };
         let (mut p, b, _r, mut rng) = fresh(cfg);
         let n = 200_000u64;
         for _ in 0..n / 10_000 {
@@ -1474,8 +1521,8 @@ mod tests {
         p.txn_write(&mut d, 123_456, b"x".to_vec(), true, &mut rng).unwrap();
         p.commit(d, &mut rng).unwrap();
         let changed: Vec<u8> = b.dump().into_iter().filter(|kv| !before.contains(kv)).map(|(k, _)| k[0]).collect();
-        // One unit row, depth-1 nodes, the top node, the pointer row.
-        assert_eq!(changed.len(), 1 + 5 + 1 + 1, "{changed:?}");
+        // One unit row, a node per level below the top, the top node, the pointer row.
+        assert_eq!(changed.len(), 1 + 4 + 1 + 1, "{changed:?}");
         assert_eq!(p.read(123_456).unwrap(), Some(b"x".to_vec()));
         assert_eq!(p.read(7).unwrap(), Some(7u64.to_be_bytes().to_vec()));
     }

@@ -671,7 +671,7 @@ impl Net {
         let backend = MemoryBackend::with_faults(faults.clone());
         backend.record_history();
         let cfg = SyncConfig { hosts: hosts.iter().map(|s| self.address(*s)).collect(), ..SyncConfig::default() };
-        let store = StoreConfig { arity: 4, depth: 8, page_max: 512, ..StoreConfig::default() };
+        let store = StoreConfig { arity: 4, page_max: 512, ..StoreConfig::default() };
         let hub = MemoryBackend::with_faults(faults.clone());
         hub.record_history();
         let disks = ((backend, MemoryRoot::with_faults(faults.clone())), (hub, MemoryRoot::with_faults(faults.clone())));

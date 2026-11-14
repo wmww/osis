@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 /// Small pages and a small key tree so tests exercise splits and several tree levels.
 pub fn cfg() -> StoreConfig {
-    StoreConfig { arity: 8, depth: 4, page_max: 512, ..StoreConfig::default() }
+    StoreConfig { arity: 8, page_max: 512, ..StoreConfig::default() }
 }
 
 pub fn tid(n: u8) -> Tid {

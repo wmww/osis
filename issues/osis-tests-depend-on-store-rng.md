@@ -1,0 +1,16 @@
+# Tests that pass or fail with the store's random draws
+> Summary: Nine node and osis tests flip with how many random values the store draws per commit (the store shares its rng with record ids, nonces and the node log incarnation). On unchanged store code, 2 extra draws per store commit fail six of them, 7 fail a seventh; the key tree growing with its slots draws fewer node keys and fails all nine. Each asserts an order or a pick that random ids decide.
+> Priority: normal
+> Tags: tests, sync, osis
+
+Reproduce: add `for _ in 0..k { let _ = Secret32::random(rng); }` at the top of `Pager::commit_inner` and run them (k = 2 fails the first six).
+- osis `disputes::disputes_listed_told_and_chosen_spec_permissions_5_1` (k=2): the told dispute is `(b, a, Author)`, not `(a, b, Holder)`; the setup orders b's removal first by going online first, but something orders by a random value.
+- node `awaits::a_part_missing_again_is_fetched_under_every_label_spec_sync_6` (k=2): fresh blobs per label `[1, 1]`, not `[2, 2]`.
+- node `ephemeral::restart_starts_a_new_session_spec_crdt_2_1` (k=2): sorts dots by session and expects the new session after the old one; sessions are random nonces.
+- node `leaving::an_until_under_no_host_a_co_reader_past_its_own_until_refuses_nothing_spec_perm_2` (k=2).
+- node `order::kill_and_purge_in_one_commit_keeps_leftover_spec_commits_5` (k=2): the leftover is dropped as covered.
+- node `scale::validity_flip_is_linear_and_invalid_arrival_flat_spec_permissions_5_2` (k=2): 31 tags left, not 30.
+- osis `sharing::redeem_after_a_joiner_left_spec_permissions_7` (k=7): the redeem fails `Unsynced`, a failure of the link flow itself for some streams.
+- node `unread::a_dialer_holding_only_the_public_sync_key_pulls_nothing_spec_sync_10` and `unread::a_node_holding_only_the_public_keys_finds_no_proof_in_a_readers_filter_spec_sync_10`: `dialing_node(false)` makes a second group that p reads, then `Net::label(a)` takes the first of a's labels by group tid, which may be that group's; the tests then check the wrong label.
+
+Each should pin what it means (the label of `g`, the session by identity, the removal by author) or the property should hold for every draw. All but the osis ones run on old node sync; check which shapes the rebuilt sync's tests keep before fixing here.

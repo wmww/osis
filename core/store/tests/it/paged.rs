@@ -133,3 +133,24 @@ fn a_table_page_is_decoded_once_per_write() {
     assert_eq!(s.pages_decoded() - before, 0, "a write of pages held decoded");
     assert_eq!(gets(&mut s, &mut rng), 0, "pages a transaction wrote");
 }
+
+// spec: none (internal: notes/local-store.md, Key tree; notes/coordination.md, Check scaling). A write seals the units
+// it changed and one key tree path as tall as the store's slots need, at n and 10n rows: here a
+// changed value rewrites its leaf page, and the store's few dozen slots sit under the top alone.
+#[test]
+fn a_small_write_seals_its_page_and_the_top() {
+    let sealed = |n: u32| {
+        let b = MemoryBackend::new();
+        let mut rng = SeededRng::from_u64(0);
+        let mut s = Store::create(Box::new(b.clone()), Box::new(osis_store::MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        fill(&mut s, &mut rng, n, 500);
+        let before: HashSet<(Vec<u8>, Vec<u8>)> = b.dump().into_iter().collect();
+        let mut t = s.transaction(&mut rng).unwrap();
+        let elems = t.table(&tid(1), &ak("big.0"), 0).unwrap().unwrap();
+        t.table_put(elems, format!("key{:08}", n / 2).as_bytes(), b"changed".to_vec(), Shred::No).unwrap();
+        t.commit().unwrap();
+        b.dump().into_iter().filter(|kv| kv.0 != b"r" && !before.contains(kv)).map(|kv| kv.0[0] as char).collect::<String>()
+    };
+    assert_eq!(sealed(300), "tu", "the leaf and the top");
+    assert_eq!(sealed(3_000), "tu", "the leaf and the top");
+}

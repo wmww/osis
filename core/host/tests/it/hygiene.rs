@@ -82,7 +82,7 @@ fn deleted_wraps_unrecoverable() {
     backend.record_history();
     // a small key tree and pages: few units share a node, so a shred elsewhere does not rotate a
     // leaked copy away by accident
-    let cfg = StoreConfig { arity: 4, depth: 8, page_max: 512, ..StoreConfig::default() };
+    let cfg = StoreConfig { arity: 4, page_max: 512, ..StoreConfig::default() };
     let store = Store::create(Box::new(backend.clone()), Box::new(root), cfg, &mut SeededRng::from_seed([0; 32])).unwrap();
     let clock = Arc::new(ManualClock::new(WallMs(T0)));
     let mut s = osis_host::HostStore::open(store, clock.clone(), HostPolicy::unlimited(), Box::new(SeededRng::from_seed([1; 32]))).unwrap();

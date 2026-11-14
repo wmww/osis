@@ -31,7 +31,7 @@ Where the 311 tests' CPU goes (`tools/cpuprof`, inclusive, overlapping): ingest 
 What the numbers say:
 - Setup and settling, not the rule under test, are half of a typical test; copies are nearly free. Fixtures are the first lever.
 - A commit's signature is verified about five times per receiving node (13.6 verifies for two receivers). That is a product cost: the rebuilt sync verifies a signed object once per node (spec-level "verified" is a fact of the held record). Fixing it in the product helps every test and every user; faking crypto would hide it.
-- The store re-seals about 180 pages per synced write. Also a product cost, also not the harness's to hide.
+- Of a synced write's AEAD seals, the stores' own rows are about 48 (counted after the table above was measured): 13 store transactions across writer, `Host` and reader, each sealing its top and about 3 units (a small store's key tree is its top alone, notes/local-store.md Key tree). The rest are commit blobs and boxes. Thirteen store transactions per write is old node sync's shape, not the store's.
 - The in-memory device is already cheap (0.9%); simulated time already has no sleeps, but tests advance it by hand 2,031 times (retry ticks "tens of seconds" later: a footgun in notes/test-harnesses.md).
 - Three harnesses apply a node's actions (node `Net`, sim `NetSim`, osis `World`), each with its own ordering bugs (hub messages after a call's other outputs). `Net` has 58 public fields, most of them scenario knobs (`tamper`, `hide_blobs`, `trickle`, `hold_blobs`, `deaf`, ...), and a separate `Host` type with about 200 `add_host` calls.
 

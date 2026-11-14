@@ -296,48 +296,67 @@ pub(crate) fn put(u: &mut dyn Units, root: u64, key: &[u8], val: Vec<u8>, shred:
 }
 
 /// Returns whether the key was new and this node's entries after the op (itself, then new
-/// right siblings).
+/// right siblings). A page is rewritten only when its content changes: an interior page whose
+/// child kept its first key and count (a value replaced in place) stays as it is.
 fn insert(u: &mut dyn Units, slot: u64, key: &[u8], val: Val, shred: bool) -> Result<(bool, Vec<InnerE>), Error> {
-    let mut page = u.take_page(slot)?;
-    let added = match &mut page {
-        Page::Leaf(es) => match es.binary_search_by(|e| e.key[..].cmp(key)) {
-            Ok(i) => {
-                if let Some(e) = es.get_mut(i) {
-                    let old = std::mem::replace(&mut e.val, val);
-                    if let (Val::Overflow { slot: a, .. }, Val::Overflow { slot: b, .. }) = (&old, &e.val) {
-                        if a != b {
-                            free_val(u, &old, shred);
-                        }
-                    } else {
-                        free_val(u, &old, true);
-                    }
-                }
-                false
-            }
-            Err(i) => {
-                es.insert(i, LeafE { key: key.into(), val });
-                true
-            }
-        },
-        Page::Inner(es) => {
-            let i = child_index(es, key);
-            let child = es.get(i).ok_or(Error::Corrupt("empty interior page"))?.child;
-            let (added, pieces) = insert(u, child, key, val, shred)?;
+    let current = u.page(slot)?;
+    if let Page::Inner(es) = &*current {
+        let i = child_index(es, key);
+        let old = es.get(i).ok_or(Error::Corrupt("empty interior page"))?.clone();
+        let (added, pieces) = insert(u, old.child, key, val, shred)?;
+        if let [e] = pieces.as_slice()
+            && e.child == old.child
+            && e.count == old.count
+            && e.key == old.key
+        {
+            return Ok((added, vec![entry(&current, slot)]));
+        }
+        drop(current);
+        let mut page = u.take_page(slot)?;
+        if let Page::Inner(es) = &mut page {
             es.splice(i..=i, pieces);
-            added
+        }
+        return fit(u, slot, page, shred).map(|es| (added, es));
+    }
+    drop(current);
+    let mut page = u.take_page(slot)?;
+    let Page::Leaf(es) = &mut page else { return Err(Error::Corrupt("table page changed kind")) };
+    let added = match es.binary_search_by(|e| e.key[..].cmp(key)) {
+        Ok(i) => {
+            if let Some(e) = es.get_mut(i) {
+                let old = std::mem::replace(&mut e.val, val);
+                if let (Val::Overflow { slot: a, .. }, Val::Overflow { slot: b, .. }) = (&old, &e.val) {
+                    if a != b {
+                        free_val(u, &old, shred);
+                    }
+                } else {
+                    free_val(u, &old, true);
+                }
+            }
+            false
+        }
+        Err(i) => {
+            es.insert(i, LeafE { key: key.into(), val });
+            true
         }
     };
+    fit(u, slot, page, shred).map(|es| (added, es))
+}
+
+/// Writes changed page `page` back as unit `slot`, split in two if it outgrew a page; its
+/// entries (itself, then a new right sibling).
+fn fit(u: &mut dyn Units, slot: u64, page: Page, shred: bool) -> Result<Vec<InnerE>, Error> {
     if page.size() <= u.page_max() {
         let e = entry(&page, slot);
         u.put_page(slot, page, shred)?;
-        return Ok((added, vec![e]));
+        return Ok(vec![e]);
     }
     let (a, b) = split(page);
     let right = u.alloc()?;
     let es = vec![entry(&a, slot), entry(&b, right)];
     u.put_page(slot, a, true)?;
     u.put_page(right, b, shred)?;
-    Ok((added, es))
+    Ok(es)
 }
 
 /// Removes `key`; true if it was present.

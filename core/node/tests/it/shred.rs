@@ -21,7 +21,7 @@ fn peer(seed: u64) -> Peer {
     let clock = Arc::new(ManualClock::new(T0));
     let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
     backend.record_history();
-    let cfg = Config { store: StoreConfig { arity: 4, depth: 8, page_max: 512, ..StoreConfig::default() }, ..Config::default() };
+    let cfg = Config { store: StoreConfig { arity: 4, page_max: 512, ..StoreConfig::default() }, ..Config::default() };
     let c: Arc<dyn Clock> = clock.clone();
     let blob_disk = (MemoryBackend::new(), MemoryRoot::new());
     blob_disk.0.record_history();
@@ -35,7 +35,7 @@ fn peer(seed: u64) -> Peer {
 /// `p` restarted over its durable state, as `peer` opens it.
 fn reopened(p: Peer, seed: u64) -> Peer {
     let Peer { clock, backend, root, blob_disk, discarded, .. } = p;
-    let cfg = Config { store: StoreConfig { arity: 4, depth: 8, page_max: 512, ..StoreConfig::default() }, ..Config::default() };
+    let cfg = Config { store: StoreConfig { arity: 4, page_max: 512, ..StoreConfig::default() }, ..Config::default() };
     let c: Arc<dyn Clock> = clock.clone();
     let mut engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), osis_node::local_peer::blob_area(&blob_disk, seed).unwrap(), cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
     let events = engine.subscribe();
