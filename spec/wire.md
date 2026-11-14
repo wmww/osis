@@ -316,7 +316,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     - A main session (the unix transport, spec/sync-transport.md §6) sends Auth without `secret`.
     - A client-actor session, on a keyed transport, sends it with its bearer secret (spec/data-model.md §9), which binds the session to the client actor of the `clients^.0` entry whose `secret_hash` is its BLAKE3, compared in constant time, `until` not passed.
     - Any other Auth is answered Error 1: no matching entry, no secret on a keyed transport, a secret on the unix transport, a second Auth of a client-actor session.
-    - Past `MAX_CONNS_PER_CLIENT` authenticated sessions of one client or `max_clients` of all clients: Error 4.
+    - Past `MAX_CONNS_PER_CLIENT` authenticated sessions of one client or `max_clients` of all clients: Error 4. An ended session (below) counts toward neither.
     - A Call or Sub before an Auth answered by Reply is answered Error 1.
   - **End of a client-actor session**: it ends when its entry goes, its `secret_hash` changes or its `until` passes. Each request is checked at the time it runs and does not run if any of those holds.
   - **A client actor's rights**: every method of a client-actor session runs as its client actor, by that actor's rights at that time.

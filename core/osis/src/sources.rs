@@ -84,15 +84,16 @@ pub(crate) fn sourced_in(l: &mut Locked, t: Tid) -> Option<Address> {
 }
 
 /// `t` is split (spec/sync-set.md §5): sourced at `at`, and carried by a group that syncs here
-/// or is sourced at another node.
-fn split(l: &mut Locked, t: Tid, at: &Address) -> Option<Tid> {
-    let synced: std::collections::BTreeSet<Tid> = l.engine().labeled_groups().into_iter().collect();
+/// (under a sync ID of its own in the sync set, spec/sync-judgement.md §1) or is sourced at
+/// another node.
+fn split(l: &mut Locked, t: Tid, at: &Address) -> Result<Option<Tid>> {
+    let synced: std::collections::BTreeSet<Tid> = l.engine().sync_set()?.ids.values().map(|(g, _)| *g).collect();
     let mut s = l.engine().enclosing(&t);
     s.insert(t);
-    s.into_iter().find(|g| match l.group_sources.get(g) {
+    Ok(s.into_iter().find(|g| match l.group_sources.get(g) {
         Some(a) => a != at,
         None => synced.contains(g),
-    })
+    }))
 }
 
 impl ReadOnly {
@@ -142,7 +143,7 @@ impl ReadOnly {
             && self.has_store()
         {
             for t in things {
-                if let Some(g) = self.locked(|l| split(l, *t, a)) {
+                if let Some(g) = self.locked(|l| split(l, *t, a))? {
                     return Err(Error::Invalid(format!("{t} is read at {a} and also carried by {g}, which syncs elsewhere: move one of the groups so the write reaches every holder")));
                 }
             }

@@ -9,6 +9,7 @@ osis::retaining  public API: keeps a thing alive from an aspect (the crate docs'
 osis::stream_work  test hook (internals)
 osis::faulty_store  test hook (internals)
 osis::port_answers  test hook (internals): the client port's answers without a transport
+osis::port_held  test hook (internals): the client port's sessions and nonce sessions held
 osis::set_online  test hook (internals): `ManualNet` cuts a node off
 osis::lose_next_bytes_to  test hook (internals): `ManualNet` loses a reply on the way
 
@@ -122,10 +123,6 @@ osis-proto::admit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); `Rel
 osis-proto::MAX_BEHIND_STEPS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-proto::NOT_UNDOABLE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::OFFSET_DIAGNOSTIC_MS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::OUTCOME_UNKNOWN  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::TYPE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::UNSYNCED  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-schema::HOST  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-schema::TID  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::changed_after  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::changed_labels  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync

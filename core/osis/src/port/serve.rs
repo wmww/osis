@@ -8,7 +8,8 @@
 //! hears `OutcomeUnknown`): per connection, who its session acts as, its session id and its
 //! subscriptions (at most `MAX_SUBS`, gone with the connection); per (identity, session id), the
 //! last `WRITE_NONCES` write outcomes, as many sessions per identity as its connection cap, least
-//! recently used going.
+//! recently used going. Each Auth first drops the sessions that ended and the outcomes of every
+//! client that can no longer authenticate, so the whole is bounded by the clients that can.
 
 use super::codec::{self, bad, list, opt, outcome_of, read_to, tid};
 use super::{MAX_CLIENTS, WRITE_NONCES, filter, method};
@@ -95,6 +96,24 @@ impl Port {
         self.sessions.remove(&conn)
     }
 
+    /// Drops the sessions that ended (`current`: the clients that authenticate now, by actor)
+    /// and the write outcomes of every client not among them; returns the sessions, to drop off
+    /// the lock (their subscriptions).
+    fn prune(&mut self, current: &BTreeMap<Tid, [u8; 32]>) -> Vec<Session> {
+        let live = |w: Who| match w {
+            Who::Main => true,
+            Who::Client { actor, hash } => current.get(&actor) == Some(&hash),
+        };
+        let ended: Vec<ConnId> = self.sessions.iter().filter(|(_, s)| !live(s.who)).map(|(c, _)| *c).collect();
+        self.nonces.retain(|(ident, _), _| ident.is_none_or(|a| current.contains_key(&a)));
+        ended.into_iter().filter_map(|c| self.sessions.remove(&c)).collect()
+    }
+
+    /// Tests: the sessions and the nonce sessions held.
+    pub fn held(&self) -> (usize, usize) {
+        (self.sessions.len(), self.nonces.len())
+    }
+
     /// The write outcomes of `who`'s session `id`, made if `make`; the identity's least recently
     /// used session goes past its cap.
     fn nonces(&mut self, who: Who, id: [u8; 16], make: bool) -> Option<&mut Nonces> {
@@ -176,14 +195,20 @@ fn request(db: &ReadOnly, conn: ConnId, id: osis_sync::session::RequestId, m: Ms
 
 /// Auth (spec/wire.md §11.2): a main session on the unix transport without a secret; a
 /// client-actor session elsewhere with its bearer secret, once; at most `MAX_CONNS_PER_CLIENT`
-/// sessions of one client and `MAX_CLIENTS` of all.
+/// sessions of one client and `MAX_CLIENTS` of all. Ended sessions go first: they hold no slot,
+/// and a client that can no longer authenticate keeps no write outcomes, so what the port holds
+/// is bounded by the clients that can (no timer needed: every later request of an ended
+/// session is checked when it runs).
 fn auth(db: &ReadOnly, conn: ConnId, secret: Option<[u8; 32]>, id: [u8; 16]) -> Msg {
+    let current = clients(db);
+    let gone = db.locked(|l| l.port.prune(&current));
+    drop(gone);
     let (main, had) = db.locked(|l| (l.port.main.contains(&conn), l.port.sessions.get(&conn).map(|s| s.who)));
     let who = match (secret, main) {
         (None, true) => Who::Main,
         (Some(s), false) if !matches!(had, Some(Who::Client { .. })) => {
             let hash = osis_base::hash::hash(&s);
-            let Some(actor) = client_of(db, &hash) else { return error(Code::REFUSED) };
+            let Some(actor) = holder(&current, &hash) else { return error(Code::REFUSED) };
             let (mine, all) = db.locked(|l| {
                 let clients = || l.port.sessions.iter().filter(|(c, _)| **c != conn).filter_map(|(_, s)| s.who.ident());
                 (clients().filter(|a| *a == actor).count(), clients().count())
@@ -199,12 +224,22 @@ fn auth(db: &ReadOnly, conn: ConnId, secret: Option<[u8; 32]>, id: [u8; 16]) -> 
     reply(Outcome::Ok { value: Value::List(Vec::new()) })
 }
 
-/// The client actor of the `clients^.0` entry whose secret hash is `hash`, its `until` not
-/// passed (compared in constant time).
-fn client_of(db: &ReadOnly, hash: &[u8; 32]) -> Option<Tid> {
+/// The `clients^.0` entries that authenticate now (`until` not passed): actor to secret hash.
+fn clients(db: &ReadOnly) -> BTreeMap<Tid, [u8; 32]> {
     let now = db.inner.clock.now_wall_ms();
-    let entries = db.read_local(|r| r.get(db.inner.node, &osis_schema::core_types::CLIENTS)).ok()??;
-    entries.into_iter().find(|(_, c)| same(&c.secret_hash, hash) && c.until.is_none_or(|u| u.0 > now.0)).map(|(a, _)| a)
+    let entries = db.read_local(|r| r.get(db.inner.node, &osis_schema::core_types::CLIENTS)).ok().flatten().unwrap_or_default();
+    entries.into_iter().filter(|(_, c)| c.until.is_none_or(|u| u.0 > now.0)).map(|(a, c)| (a, c.secret_hash)).collect()
+}
+
+/// The client actor of `current` whose secret hash is `hash` (compared in constant time).
+fn holder(current: &BTreeMap<Tid, [u8; 32]>, hash: &[u8; 32]) -> Option<Tid> {
+    current.iter().find(|(_, h)| same(h, hash)).map(|(a, _)| *a)
+}
+
+/// The client actor of the `clients^.0` entry whose secret hash is `hash`, its `until` not
+/// passed.
+fn client_of(db: &ReadOnly, hash: &[u8; 32]) -> Option<Tid> {
+    holder(&clients(db), hash)
 }
 
 fn same(a: &[u8; 32], b: &[u8; 32]) -> bool {

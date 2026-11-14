@@ -202,6 +202,11 @@ pub fn port_answers(db: &Osis, conn: u64, main: bool, msgs: Vec<osis_proto::Msg>
     crate::port::answer_all(db, osis_sync::ConnId(conn), main, msgs)
 }
 
+/// The client port's sessions and nonce sessions (per identity and session id) `db` holds.
+pub fn port_held(db: &Osis) -> (usize, usize) {
+    db.locked(|l| l.port.held())
+}
+
 pub use crate::port::method as port_method;
 pub use osis_proto as proto;
 pub use osis_crypto::Secret32;

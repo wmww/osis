@@ -308,6 +308,126 @@ fn write_nonces_spec_wire_11() {
     assert_eq!(a.at(t, v()).get().unwrap(), Some(Value::Int(17)));
 }
 
+/// `m` encoded, each `from` tid's bytes made `to`'s.
+fn bytes_as(m: &Msg, from: Tid, to: Tid) -> Vec<u8> {
+    let (mut b, f, t) = (m.encode(), *from.as_bytes(), *to.as_bytes());
+    let mut i = 0;
+    while i + f.len() <= b.len() {
+        if b[i..i + f.len()] == f[..] {
+            b[i..i + f.len()].copy_from_slice(&t);
+            i += f.len();
+        } else {
+            i += 1;
+        }
+    }
+    b
+}
+
+// spec/wire.md §11.2 (A client actor's rights): a thing the actor may not read answers every
+// method as a thing the node does not know: byte for byte the answers of every row, a write and
+// a subscription included, are a never-known thing's.
+#[test]
+fn a_hidden_thing_answers_as_a_never_known_one_spec_wire_11() {
+    let w = world(None);
+    let never = Tid::from_bytes([9; 15]);
+    let call = |method: u64, args: Vec<Value>| Msg::Call { id: 3, max_reply: 1 << 20, method, args };
+    let m = osis::internals::port_method::GET;
+    let rows = |t: Tid, session: u8| {
+        let (tv, ak) = (Value::Tid(t), Value::Str("x:v.0".into()));
+        let at = |path: Vec<Value>| vec![tv.clone(), ak.clone(), Value::List(path)];
+        let index = Value::List(vec![Value::uint(3), Value::uint(0)]);
+        vec![
+            auth_as(Some(&w.secret), session),
+            call(osis::internals::port_method::WHOAMI, vec![]),
+            call(m, at(vec![])),
+            call(m, at(vec![index.clone()])),
+            call(m, vec![tv.clone(), Value::Str("created.0".into()), Value::List(vec![])]),
+            call(m, vec![tv.clone(), Value::Str("group.0".into()), Value::List(vec![])]),
+            call(osis::internals::port_method::ASPECTS, vec![tv.clone()]),
+            call(osis::internals::port_method::HAS_CONTENT, vec![tv.clone()]),
+            call(osis::internals::port_method::HOLDS, vec![tv.clone()]),
+            write_call(1, w.actor, t, 7),
+            write_call(2 | RESENT, w.actor, t, 7),
+            Msg::Sub { id: 4, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(0), tv.clone(), ak.clone(), Value::List(vec![])]) },
+            Msg::Sub { id: 5, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(0), tv, ak, Value::List(vec![index])]) },
+        ]
+    };
+    let hidden = osis::internals::port_answers(&w.a, 1, false, rows(w.t, 1));
+    let unknown = osis::internals::port_answers(&w.a, 2, false, rows(never, 2));
+    assert!(matches!(&hidden[0], Msg::Reply { .. }), "{hidden:?}");
+    for (h, u) in hidden.iter().zip(&unknown) {
+        assert_eq!(bytes_as(h, w.t, never), u.encode(), "{h:?} / {u:?}");
+    }
+    assert_eq!(w.a.at(w.t, v()).get().unwrap(), Some(Value::Int(5)));
+    // the node itself, whose `clients^.0` holds every client's secret hash, is such a thing
+    let node = osis::internals::port_answers(&w.a, 3, false, vec![auth_as(Some(&w.secret), 3), call(m, vec![Value::Tid(w.a.node()), Value::Str("clients^.0".into()), Value::List(vec![])])]);
+    assert_eq!(bytes_as(&node[1], w.a.node(), never), unknown[2].encode(), "{node:?}");
+}
+
+// spec/wire.md §11.2 (A client actor's rights): a watch on a thing the actor may not read hears
+// what a watch on a never-known thing hears, nothing when the thing changes; one on a thing it
+// reads hears the change.
+#[test]
+fn a_hidden_thing_notifies_nothing_spec_wire_11() {
+    let w = world(None);
+    let mut x = w.a.write();
+    let seen = x.create().unwrap();
+    x.at(seen, v()).set(&Value::Int(1)).unwrap();
+    x.commit().unwrap();
+    w.a.grant(seen, w.actor, Role::Read, osis::GrantOpts::default()).unwrap();
+    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
+    let never = Tid::from_bytes([9; 15]);
+    let (_a, hidden) = changes(&cl, w.t);
+    let (_b, unknown) = changes(&cl, never);
+    let (_c, read) = changes(&cl, seen);
+    cl.settle();
+    for rx in [&hidden, &unknown] {
+        let first = rx.try_recv().unwrap();
+        assert_eq!((first.value, first.origin), (Ok(None), Origin::Initial));
+    }
+    read.try_recv().unwrap();
+    for n in 6..9 {
+        crate::common::commit_with(&w.a, |x| {
+            x.at(w.t, v()).set(&Value::Int(n))?;
+            x.at(seen, v()).set(&Value::Int(n))
+        });
+        cl.settle();
+        assert_eq!(read.try_recv().unwrap().value, Ok(Some(Value::Int(n))));
+    }
+    assert!(hidden.try_recv().is_err() && unknown.try_recv().is_err());
+}
+
+// spec/wire.md §11.2 (Auth, End of a client-actor session): an ended session is no
+// authenticated one, so it holds no place under `max_clients`; a client that can no longer
+// authenticate (removed, or past its `until`) keeps no write outcomes at the node.
+#[test]
+fn ended_sessions_hold_nothing_spec_wire_11() {
+    let w = world(Some(Role::Write));
+    let until = osis::Time(w.a.now().unwrap().0 + 60_000);
+    let mut clients: Vec<(Tid, ClientSecret)> = (0..7).map(|_| w.a.add_client(None).unwrap()).collect();
+    clients.push(w.a.add_client(Some(until)).unwrap());
+    for (actor, _) in &clients {
+        w.a.grant(w.t, *actor, Role::Write, osis::GrantOpts::default()).unwrap();
+    }
+    let mut conn = 100;
+    for (i, (actor, s)) in clients.iter().enumerate() {
+        for k in 0..8u8 {
+            conn += 1;
+            let r = osis::internals::port_answers(&w.a, conn, false, vec![auth_as(Some(s), k), write_call(1, *actor, w.t, (i * 8) as i64 + k as i64)]);
+            assert!(matches!(outcome(&r[1]), Outcome::Ok { .. }), "{r:?}");
+        }
+    }
+    assert_eq!(osis::internals::port_held(&w.a), (64, 64));
+    let late = w.a.add_client(None).unwrap().1;
+    let r = osis::internals::port_answers(&w.a, conn + 1, false, vec![auth_as(Some(&late), 1)]);
+    assert_eq!(error_code(&r[0]), Some(4), "full");
+    assert!(w.a.remove_client(clients[0].0).unwrap());
+    w.c.advance(60_000);
+    let r = osis::internals::port_answers(&w.a, conn + 2, false, vec![auth_as(Some(&late), 1)]);
+    assert!(matches!(&r[0], Msg::Reply { .. }), "{r:?}");
+    assert_eq!(osis::internals::port_held(&w.a), (49, 48), "the removed and the expired client's sessions and outcomes went");
+}
+
 // spec/wire.md §11.2 (Auth): past `max_clients` (64) authenticated client-actor sessions of all
 // clients, Error 4.
 #[test]
