@@ -20,12 +20,12 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` store r
 | `k/`+actor | opened epochs of an actor (`established`, `claims`, `snapshot`; never re-inferred). A plain thing's leftover epochs here are reading-only overlays on its derived ones (`Core::own_epochs`/`epochs`) |
 | `b/`+commit+tid | pending boxes kept sealed by forgetting (`apply/keys.rs` `SEALED`; notes/engine-lost-access.md) |
 | `q/`+aspect | suspect flags: le64 wall ms last raised, then per body its commit, aspect index and `Why` bits (`retention/suspect.rs`) |
-| `l/`, `T/`, `K/`, `B/` | the lost-access work list, timed losses, kept copies, bearers (`rotation/lost.rs`) |
+| `T/`, `K/`, `B/` | timed losses, kept copies, bearers (`rotation/lost.rs`) |
 | `d/`+AK | the local schema of each app AK (canonical form) |
 | `u/`+name | API records (account, home group, settings) |
 | `sides` | sides taken in admin disputes (`sides.rs`): per (edge write, holder) trusted and chosen flags |
 | `i/v` | the persisted index's rules tag |
-| `sy/`, `ow/`, `iw/`, `ih/`, `cp/`, `hw/`, `fm/`, `bp/` | the tables the engine keeps for sync (notes/sync-facade.md) |
+| `sy/`, `ow/`, `iw/`, `ih/`, `cp/`, `ra/`, `hw/`, `fm/`, `bp/` | the tables the engine keeps for sync (notes/sync-facade.md) |
 
 Other store kinds (osis-store's catalog):
 - **Aspect units**: the state (snapshot grammar with its pages inline, or for a paged state `[1, skeleton, [[set ID, path, encoding]*]]`: paged collections reduced to their reset and `W`).
