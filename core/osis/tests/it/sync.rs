@@ -477,6 +477,26 @@ fn an_unsynced_thing_is_forgotten_here_spec_sync_set_3() {
     assert_eq!(name(&b, t).as_deref(), Some("moved"));
 }
 
+// spec/sync-set.md §3 (it waits only while some peer shares S): a node alone, no peer ever sharing the thing, unsyncing
+// it drops its only copy at once (the user's choice), its own writes held nowhere else.
+#[test]
+fn an_unsynced_thing_no_peer_shares_goes_at_once_spec_sync_set_3() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let a = on(&net, 30, &c);
+    let t = shared_in(&a, a.home(), "alone");
+    let mut w = a.write();
+    w.at(t, osis::core::NAME).set(&"edited".to_string()).unwrap();
+    w.commit().unwrap();
+    net.run();
+    let mut w = a.write();
+    w.group(a.home()).remove(osis::Member::Item(t)).unwrap();
+    w.commit().unwrap();
+    net.run();
+    assert_eq!(name(&a, t), None, "forgotten here");
+    assert!(!a.status().unwrap().groups.contains_key(&t), "synced no more");
+}
+
 // spec/sync-set.md §3 (one rule ends syncing it; while it waits, S stays a member of its shared
 // sets): a write made while the other node was away, its thing then taken out of this node's
 // synced groups, stays here (the thing still synced) while no other node holds it, reaches the
@@ -511,7 +531,7 @@ fn an_unsynced_write_goes_out_before_the_copy_goes_spec_sync_set_3() {
     }
     assert_eq!(name(&b, t).as_deref(), Some("away"));
     // its creation commit also wrote home, so that commit stays and its name part may join again
-    // late (notes/sync-leave.md, forget_local): the write it waited on is what goes
-    assert_ne!(name(&a, t).as_deref(), Some("away"), "then forgotten here");
+    // under home's sync ID (notes/sync-leave.md, forget_local): what only t's sync ID carried goes
+    assert!(matches!(name(&a, t).as_deref(), None | Some("first")), "then forgotten here");
     assert!(!a.status().unwrap().groups.contains_key(&t), "synced no more");
 }

@@ -32,6 +32,8 @@ struct Fake {
     stored: Stamped<(), BTreeSet<SyncId>>,
     elsewhere: StampedSet<SyncId>,
     present: StampedSet<SyncId>,
+    /// Sync IDs no peer shares with this node (no source, no record holding them).
+    unshared: StampedSet<SyncId>,
     synced: BTreeMap<SyncId, Held>,
     shredded: Vec<SyncId>,
     forgot: Vec<Tid>,
@@ -72,6 +74,9 @@ impl Ground for Fake {
     }
     fn own_present(&mut self, s: &SyncId) -> Result<bool> {
         Ok(self.present.contains(s))
+    }
+    fn shared(&mut self, s: &SyncId) -> Result<bool> {
+        Ok(!self.unshared.contains(s))
     }
     fn shred(&mut self, s: &SyncId) -> Result<()> {
         self.shredded.push(*s);
@@ -144,6 +149,26 @@ fn kept_unread_stays_synced_until_own_entries_are_present_spec_sync_set_3() {
     assert_eq!(g.shredded, vec![sid(3)]);
     assert!(g.forgot.is_empty(), "nothing read to forget");
     assert_eq!(g.syncs(3), None);
+}
+
+// spec/sync-set.md §3 (it waits only while some peer shares S): a sync ID no peer shares (this node's only copy, no
+// source, no record holding it) stops at once, read or kept unread, its own writes held nowhere
+// else; one waiting whose last peer goes (its record evicted) stops then.
+#[test]
+fn unshared_stops_at_once_spec_sync_set_3() {
+    let (mut g, mut l) = settled();
+    g.unshared.insert(sid(1));
+    g.unshared.insert(sid(3));
+    g.closure(&[2]);
+    l.settle(&mut g).unwrap();
+    assert_eq!((g.forgot.clone(), g.shredded.clone()), (vec![tid(1)], vec![sid(1), sid(3)]));
+    assert_eq!((g.syncs(1), g.syncs(3)), (None, None));
+    g.closure(&[]);
+    l.settle(&mut g).unwrap();
+    assert!(l.waits(&sid(2)), "a peer shares it: waits");
+    g.unshared.insert(sid(2));
+    l.settle(&mut g).unwrap();
+    assert_eq!((g.forgot.clone(), g.syncs(2)), (vec![tid(1), tid(2)], None));
 }
 
 // spec/sync-set.md §3 (synced again before then, S is kept as it was): a leaving sync ID listed

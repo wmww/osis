@@ -9,7 +9,8 @@
 //! The rule, read or kept unread alike: S that left waits until what this node logged itself
 //! under S is elsewhere (read: each own commit with an entry under S held elsewhere, status's
 //! durable mark on one of its entries, `Store::elsewhere`; kept unread: each own entry present at
-//! a source, `Sources`), then stops: read and still read here (unsyncing), its thing's local copy
+//! a source, `Sources`), or no peer shares S to take it (no source now, no kept record holding S
+//! as a member: `Opens::shared`), then stops: read and still read here (unsyncing), its thing's local copy
 //! is forgotten first. While it waits, the node's keys must still let it hold S as it did
 //! (`Engine::sync_holder`): once they do not (its secrets lost, a removal), it stops at once.
 //! Synced again before then, it is kept as it was.
@@ -48,6 +49,9 @@ pub trait Ground: SetGround {
     fn own_elsewhere(&mut self, s: &SyncId) -> Result<bool>;
     /// Kept unread: each entry this node logged itself under S is present at a source.
     fn own_present(&mut self, s: &SyncId) -> Result<bool>;
+    /// Some peer shares S with this node: a source now, or a kept record holding S as a member
+    /// (`Opens::shared`). With none, nothing could take its own writes.
+    fn shared(&mut self, s: &SyncId) -> Result<bool>;
     fn shred(&mut self, s: &SyncId) -> Result<()>;
     /// Forgets `t`'s local copy (`Engine::forget_local`).
     fn forget_local(&mut self, t: &Tid) -> Result<()>;
@@ -58,7 +62,7 @@ pub trait Ground: SetGround {
 enum Wait {
     #[default]
     Waiting,
-    /// What it logged itself is elsewhere: it stops.
+    /// What it logged itself is elsewhere, or no peer shares S to take it: it stops.
     Done,
     /// This node's keys no longer hold S as they did: it stops at once.
     Lost,
@@ -173,7 +177,7 @@ fn judge(g: &mut impl Ground, s: &SyncId, held: Held) -> Result<Wait> {
     let done = match held.1 {
         Holding::Read => g.own_elsewhere(s)?,
         Holding::Unread => g.own_present(s)?,
-    };
+    } || !g.shared(s)?;
     Ok(if done { Wait::Done } else { Wait::Waiting })
 }
 
@@ -198,6 +202,7 @@ fn run<K: std::hash::Hash + Eq + Clone, V: Clone + PartialEq + Default>(fx: &mut
 pub struct Live<'a, 'b> {
     pub cx: &'a mut crate::types::Cx<'b>,
     pub sources: &'a dyn Sources,
+    pub opens: &'a crate::opens::Opens,
 }
 
 impl SetGround for Live<'_, '_> {
@@ -240,6 +245,9 @@ impl Ground for Live<'_, '_> {
     }
     fn own_present(&mut self, s: &SyncId) -> Result<bool> {
         Ok(self.cx.store.entries(s)?.into_iter().filter(|e| e.own).all(|e| self.sources.present(s, &e.blob)))
+    }
+    fn shared(&mut self, s: &SyncId) -> Result<bool> {
+        self.opens.shared(self.cx.store, s)
     }
     fn shred(&mut self, s: &SyncId) -> Result<()> {
         self.cx.store.shred(s)

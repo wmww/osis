@@ -38,7 +38,7 @@ pub struct GroupSync {
     /// this node sends. Informational: they are not waited for.
     pub not_taking: usize,
     /// It left this node's synced groups and is still synced here until what this node wrote to
-    /// it is held elsewhere (spec/sync-set.md §3), then forgotten here.
+    /// it is held elsewhere, or no peer shares it (spec/sync-set.md §3), then forgotten here.
     pub leaving: bool,
 }
 

@@ -286,7 +286,7 @@
 //!
 //! A call that waits for another node is `async`, works on any runtime or none, and lasts until it is
 //! done or dropped: to give up, wrap it in your runtime's timeout. Dropping one leaves nothing half
-//! done. When it is known that it can never finish it fails instead (`Unsynced`, `Network`, `Closed`).
+//! done. When it is known that it can never finish it fails instead (`Stranded`, `Network`, `Closed`).
 //! ```no_run
 //! # use osis::{Osis, SyncScope};
 //! # use std::time::Duration;

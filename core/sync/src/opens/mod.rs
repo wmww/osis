@@ -320,6 +320,9 @@ pub struct Opens {
     fx: holds::Fx,
     /// Stamped per connection as its reported positions move (`reported_at`: status follows it).
     reports: osis_base::memo::Stamps,
+    /// Stamped per S as a connection or record gains or loses it as a member, whole as records
+    /// are evicted (`shared`: leave follows it).
+    peers: osis_base::memo::Stamps,
     work: Work,
 }
 
@@ -336,6 +339,7 @@ impl Default for Opens {
             holding: BTreeMap::new(),
             fx: holds::Fx::default(),
             reports: osis_base::memo::Stamps::named("opens: reports"),
+            peers: osis_base::memo::Stamps::named("opens: peers"),
             work: Work::default(),
         }
     }
@@ -407,6 +411,9 @@ impl Opens {
             }
             Ok(())
         })?;
+        if !evicted.is_empty() {
+            self.peers.wrote_all();
+        }
         let held: BTreeSet<RecordId> = self.conns.values().filter_map(|c| c.rec).collect();
         self.records.retain(|id, r| !r.kept || held.contains(id));
         Ok(evicted)
@@ -524,6 +531,17 @@ impl Opens {
         Ok(stored.into_iter().filter(|id| held(id) != Some(false)).chain(self.records.iter().filter(|(_, r)| r.kept && r.members.contains_key(s)).map(|(id, _)| *id)).collect())
     }
 
+    /// Whether some peer shares S with this node (spec/sync-set.md §3: a sync ID that left waits
+    /// only while one could still take its own writes): S open on a connection up now, or a kept
+    /// record holding S as a member. Stamped per S (`peers`).
+    pub fn shared(&self, store: &Store, s: &SyncId) -> Result<bool> {
+        self.peers.read(s);
+        if self.holding.get(s).is_some_and(|c| !c.is_empty()) {
+            return Ok(true);
+        }
+        Ok(!self.records_holding(store, s)?.is_empty())
+    }
+
     /// Member S's reported position on `conn` (spec/sync-opens.md §6 Lost): none for a sync ID
     /// that is no member there.
     pub fn reported_at(&self, conn: ConnId, s: &SyncId) -> Option<&(Position, Cursor)> {
@@ -618,6 +636,7 @@ impl Opens {
             if let Some(set) = self.holding.get_mut(s) {
                 set.remove(&conn);
             }
+            self.peers.wrote(s, true);
         }
         // a kept one stays in memory until `flush` writes it (or another connection takes it)
         if !r.kept {
@@ -741,6 +760,7 @@ impl Opens {
                 for c in self.holding.get(&s).cloned().unwrap_or_default() {
                     self.close_member(ctx, c, s, true, moved);
                 }
+                self.peers.wrote(&s, false);
                 for r in self.records.values_mut() {
                     r.members.remove(&s);
                     r.basis.remove(&s);
@@ -1683,6 +1703,7 @@ impl Opens {
         let rejoin = r.stopped.remove(&s).unwrap_or(Rejoin::Held);
         self.dirty(rid).members.insert(s);
         self.holding.entry(s).or_default().insert(conn);
+        self.peers.wrote(&s, true);
         moved.push(Moved::Joined(conn, s, rejoin));
     }
 
@@ -1772,6 +1793,7 @@ impl Opens {
         if let Some(set) = self.holding.get_mut(&s) {
             set.remove(&conn);
         }
+        self.peers.wrote(&s, true);
         moved.push(Moved::Left(conn, s, at));
         self.dirty_member(conn, s);
     }
