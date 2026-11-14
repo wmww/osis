@@ -681,15 +681,6 @@ impl Engine {
         self.core.time.until(Some(at)) >= at
     }
 
-    /// When the work list's next entry not due now comes due (engine ms): an edge's `until` on a
-    /// listed target passes, or a plausible pending grant keeping an actor ages out. Every scope
-    /// arms these, so the duties run then with no other role commit arriving (an app driving the
-    /// engine alone wakes at it; node-sync follows `role_duties_due` on the memo clock).
-    pub fn next_lost_due(&self) -> Option<u64> {
-        let now = self.now().0;
-        self.core.ix.lost_due_at.iter().map(|(at, _)| *at).find(|at| *at > now)
-    }
-
     /// The duties a role change makes due, on the targets of received role commits applied or
     /// whose `until` passed (the work list, `role_duties_due`): first what this node owes before it next
     /// encrypts under each, where it may write it (`ensure_rotated`: the finalize of a grant past
@@ -699,7 +690,7 @@ impl Engine {
     /// own self-removal or an `until` passing alone is behind the loss (`lost_leaving`), and
     /// forgets what only those read. node-sync runs it when `role_duties_due` moves to true
     /// (`Life`); an app driving the engine alone calls it after ingesting and when
-    /// `next_lost_due` passes. Returns the actors dropped. The wrap gate refuses meanwhile
+    /// `role_duties_due` turns true (its memo clock wake, `clock_next`). Returns the actors dropped. The wrap gate refuses meanwhile
     /// (`wrap_blocked`), so a write made before this runs waits for it.
     pub fn role_duties(&mut self) -> Result<Vec<Tid>> {
         Ok(self.forget_lost(LostScope::Due)?.actors)

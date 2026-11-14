@@ -735,7 +735,7 @@ fn a_sync_grant_accepted_on_one_node_is_taken_at_its_sibling_spec_sync_inbox_2()
     }
 }
 
-// spec/permissions.md §2 (Finalize before the next commit encrypting under the target),
+// spec/permissions.md §2 (Finalize: before the next commit encrypting under the target),
 // spec/crypto.md §4 (Encrypting under): a reader's `until` passes with no write at all; node 0's
 // step finalizes it with the rotation at the wake, so the departed reader reads nothing written
 // after. (A run moves the clock only within its horizon, so the `until` lies beyond it.)
