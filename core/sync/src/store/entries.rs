@@ -9,10 +9,10 @@ use osis_base::{BlobId, SyncId};
 use osis_engine::sync::Holding;
 use osis_store::{Shred, Transaction};
 
-/// The record row tag of the bytes charged to a peer (spec/sync-ids.md §5 Peer budget).
-pub(crate) const CHARGES: u8 = b'b';
-/// The sync ID the charge row is filed under: charges are per peer, not per sync ID.
-pub(crate) const NO_SYNC_ID: SyncId = SyncId([0; 16]);
+/// The record row of the bytes charged to a peer (spec/sync-ids.md §5 Peer budget): record-wide,
+/// charges are per peer, not per sync ID.
+use super::rows::tag::CHARGES;
+use osis_store::NO_LABEL as NO_SYNC_ID;
 
 /// How an entry leaves.
 #[derive(Clone, Debug)]

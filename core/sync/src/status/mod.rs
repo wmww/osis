@@ -149,7 +149,7 @@ pub trait Ground: Net {
     /// The `until` of member S on `conn` (opens: a member being ended).
     fn until(&self, conn: ConnId, s: &SyncId) -> Option<Position>;
     /// The records holding S as a member (opens).
-    fn records_holding(&self, s: &SyncId) -> BTreeSet<RecordId>;
+    fn records_holding(&self, s: &SyncId) -> Result<BTreeSet<RecordId>>;
     /// This node's commits and self-removals with a body under S (engine).
     fn own_commits(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>>;
     /// The self-removals whose secrets wait on being held elsewhere (engine).
@@ -494,7 +494,7 @@ impl Status {
                     Some(_) => {
                         self.again.insert(*s);
                     }
-                    None => self.begin(g, *s, pulls),
+                    None => self.begin(g, *s, pulls)?,
                 }
             }
         }
@@ -516,7 +516,7 @@ impl Status {
                 skip_unbuilt(g.note_complete_pass(&s, p.began).map(Some))?;
                 acted = true;
                 if self.again.remove(&s) {
-                    self.begin(g, s, pulls);
+                    self.begin(g, s, pulls)?;
                 }
             } else if !now.read.is_empty() {
                 let waits = p.waits.difference(&now.read).copied().collect();
@@ -527,11 +527,13 @@ impl Status {
     }
 
     /// Begins a pass of S now: a fresh Pull at each source, the recorded peers to wait for.
-    fn begin(&mut self, g: &mut impl Ground, s: SyncId, pulls: &mut Vec<ConnId>) {
+    fn begin(&mut self, g: &mut impl Ground, s: SyncId, pulls: &mut Vec<ConnId>) -> Result<()> {
         let began = g.now();
+        let waits = g.records_holding(&s)?;
         pulls.extend(self.sources.get(&s).into_iter().flat_map(|x| x.keys().copied()));
-        self.passes.insert(s, Pass { began, waits: g.records_holding(&s) });
+        self.passes.insert(s, Pass { began, waits });
         self.pass_fx.want(s);
+        Ok(())
     }
 
     // ---- reads (stamped: memo-safe; none makes an output) ----

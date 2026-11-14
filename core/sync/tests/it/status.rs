@@ -109,8 +109,8 @@ impl Ground for Fake {
     fn reported(&self, conn: ConnId, s: &SyncId) -> Option<Position> {
         self.reported.get(&(conn, *s)).copied()
     }
-    fn records_holding(&self, s: &SyncId) -> BTreeSet<RecordId> {
-        self.records.get(s).cloned().unwrap_or_default()
+    fn records_holding(&self, s: &SyncId) -> Result<BTreeSet<RecordId>> {
+        Ok(self.records.get(s).cloned().unwrap_or_default())
     }
     fn own_commits(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>> {
         Ok(self.own.get(s).cloned().unwrap_or_default())

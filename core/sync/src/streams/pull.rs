@@ -3,10 +3,13 @@
 //! its joins, messages applied in order once their bodies are held, the cursor stored only then,
 //! `seq` checked and a gap read again, bodies fetched one source at a time in the fill order.
 
+use super::known::{self, Op};
 use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, PENDING_CAP, RESYNC_MS, Rank, Refusal, Streams};
 use crate::opens::Rejoin;
-use crate::store::Source;
-use crate::types::{ConnId, Cursor, Entry, Result};
+use crate::store::rows::tag::{AT_STREAM, CURSOR, JOINING, STOPPED};
+use crate::store::{Source, Store};
+use crate::types::{ConnId, Cursor, Entry, RecordId, Result};
+use osis_store::{NO_LABEL, Transaction};
 use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, SyncId, WallMs};
 use osis_engine::sync::Holding;
@@ -25,6 +28,58 @@ pub(super) struct Place {
     pub at_stream: StampedSet<SyncId>,
     pub joining: Stamped<SyncId, Option<Cursor>>,
     pub stopped: BTreeMap<SyncId, Option<Cursor>>,
+}
+
+fn opt_cursor(c: &Option<Cursor>) -> Vec<u8> {
+    match c {
+        Some(c) => [&[1u8][..], c].concat(),
+        None => vec![0],
+    }
+}
+
+fn read_cursor(v: &[u8]) -> std::result::Result<Option<Cursor>, osis_store::Error> {
+    match v.split_first() {
+        Some((0, [])) => Ok(None),
+        Some((1, c)) => Ok(Some(c.to_vec())),
+        _ => Err(osis_store::Error::Corrupt("streams place row")),
+    }
+}
+
+impl Place {
+    /// Record `rec`'s place as its rows hold it. O(its members and those that left).
+    fn load(t: &mut Transaction<'_>, rec: &RecordId) -> std::result::Result<Place, osis_store::Error> {
+        let mut p = Place::default();
+        if let Some(v) = t.record_get_row(rec, CURSOR, &NO_LABEL, b"")? {
+            p.cursor = read_cursor(&v)?;
+        }
+        for (s, ..) in t.record_tag_rows(rec, AT_STREAM)? {
+            p.at_stream.insert(s);
+        }
+        for (s, _, v) in t.record_tag_rows(rec, JOINING)? {
+            p.joining.insert(s, read_cursor(&v)?);
+        }
+        for (s, _, v) in t.record_tag_rows(rec, STOPPED)? {
+            p.stopped.insert(s, read_cursor(&v)?);
+        }
+        Ok(p)
+    }
+
+    /// Writes member S's place into record `rec`'s rows as memory holds it.
+    fn write(&self, t: &mut Transaction<'_>, rec: &RecordId, s: &SyncId) -> std::result::Result<(), osis_store::Error> {
+        if self.at_stream.contains(s) {
+            t.record_put_row(rec, AT_STREAM, s, b"", Vec::new())?;
+        } else {
+            t.record_remove_row(rec, AT_STREAM, s, b"")?;
+        }
+        match self.joining.get(s) {
+            Some(c) => t.record_put_row(rec, JOINING, s, b"", opt_cursor(c))?,
+            None => drop(t.record_remove_row(rec, JOINING, s, b"")?),
+        }
+        match self.stopped.get(s) {
+            Some(c) => t.record_put_row(rec, STOPPED, s, b"", opt_cursor(c)),
+            None => t.record_remove_row(rec, STOPPED, s, b"").map(drop),
+        }
+    }
 }
 
 /// A join on this connection: its generation (a join after a member left and opened again is
@@ -48,7 +103,6 @@ struct Batch {
 #[derive(Clone, Debug)]
 struct ReplyInfo {
     whole: bool,
-    trimmed: bool,
     more: bool,
     joins: BTreeMap<SyncId, Option<Cursor>>,
     asked: Vec<(SyncId, u64)>,
@@ -82,8 +136,10 @@ pub(super) struct Pulling {
     rejoin_at: BTreeMap<SyncId, WallMs>,
     inline: u64,
     pub(super) inline_check: bool,
-    /// A listing from the start marked trimmed: what it listed so far.
+    /// A whole listing from the start (trimmed or not) under way: what it listed so far.
     listing: Option<BTreeMap<SyncId, BTreeSet<BlobId>>>,
+    /// Joins from the start under way: what each listed so far.
+    join_listing: BTreeMap<SyncId, BTreeSet<BlobId>>,
     /// Full and Refused events to tell the source.
     tell: Vec<(SyncId, Event)>,
     told_full: BTreeSet<SyncId>,
@@ -121,6 +177,7 @@ impl Pulling {
             inline: INLINE_LIMIT,
             inline_check: false,
             listing: None,
+            join_listing: BTreeMap::new(),
             tell: Vec::new(),
             told_full: BTreeSet::new(),
             applied_owed: None,
@@ -145,6 +202,12 @@ impl Pulling {
     }
 
     fn join(&mut self, s: SyncId, cursor: Option<Cursor>) {
+        // a join from the start lists S's live set at the source
+        if cursor.is_none() {
+            self.join_listing.insert(s, BTreeSet::new());
+        } else {
+            self.join_listing.remove(&s);
+        }
         self.generation += 1;
         self.joins.insert(s, Join { generation: self.generation, cursor });
         self.rejoin_at.remove(&s);
@@ -169,27 +232,71 @@ fn entry_of(b: BlobId, wrap: Wrap, stamp: Option<Stamp>, bytes: &[u8]) -> Entry 
 }
 
 impl Streams {
-    fn place(&mut self, src: Source) -> &mut Place {
+    /// The source's place, held in memory while a connection pulls from it: a record's read from
+    /// its rows first.
+    fn place(&mut self, store: &Store, src: Source) -> &mut Place {
+        if !self.places.contains_key(&src) {
+            let p = match src {
+                Source::Record(rec) => match store.with_read(|t| Place::load(t, &rec)) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.failed(Err(e));
+                        Place::default()
+                    }
+                },
+                Source::Conn(_) => Place::default(),
+            };
+            self.places.insert(src, p);
+        }
         self.places.entry(src).or_default()
+    }
+
+    /// Makes durable what moved: `ops` of what sources showed, the place of each of `ss` and,
+    /// with `cursor`, the stream's cursor, in one transaction for a record source (the one
+    /// applying what they cover); a connection's in memory. Whether it was written (a store
+    /// failure fails the step at its settle).
+    pub(super) fn save(&mut self, ctx: &mut Ctx, src: Source, ss: &[SyncId], cursor: bool, ops: Vec<(Source, Op)>) -> bool {
+        let (rec_ops, conn_ops): (Vec<_>, Vec<_>) = ops.into_iter().partition(|(at, _)| matches!(at, Source::Record(_)));
+        for (at, op) in conn_ops {
+            self.known.apply_conn(at, std::slice::from_ref(&op));
+        }
+        if rec_ops.is_empty() && !matches!(src, Source::Record(_)) {
+            return true;
+        }
+        let place = self.places.get(&src);
+        let r = ctx.store.with_tx(|t| {
+            for (at, op) in &rec_ops {
+                if let Source::Record(rec) = at {
+                    known::write(t, rec, op)?;
+                }
+            }
+            if let (Source::Record(rec), Some(p)) = (src, place) {
+                for s in ss {
+                    p.write(t, &rec, s)?;
+                }
+                if cursor {
+                    t.record_put_row(&rec, CURSOR, &NO_LABEL, b"", opt_cursor(&p.cursor))?;
+                }
+            }
+            Ok(())
+        });
+        let ok = r.is_ok();
+        self.failed(r);
+        ok
     }
 
     /// A member joined: from where opens says, else where this side's record holds it, else from
     /// the start; none for a member at the stream's cursor (spec/sync-streams.md §4 Joining).
     pub(super) fn joined(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, rejoin: Rejoin) {
         let src = self.source(ctx.shared, conn);
-        let cursor = self.places.get(&src).and_then(|p| p.cursor.clone());
+        let cursor = self.place(ctx.store, src).cursor.clone();
         self.pull.entry(conn).or_insert_with(|| Pulling::new(src, cursor));
-        let place = self.place(src);
+        let place = self.place(ctx.store, src);
         let from = match rejoin {
-            Rejoin::From(c) => {
-                place.stopped.remove(&s);
-                place.at_stream.remove(&s);
-                place.joining.remove(&s);
-                Some(c)
-            }
+            Rejoin::From(c) => Some(c),
             Rejoin::Held => {
-                if let Some(c) = place.stopped.remove(&s) {
-                    Some(c)
+                if let Some(c) = place.stopped.get(&s) {
+                    Some(c.clone())
                 } else if let Some(c) = place.joining.get(&s) {
                     Some(c.clone())
                 } else if place.at_stream.contains(&s) {
@@ -199,10 +306,18 @@ impl Streams {
                 }
             }
         };
-        if let (Some(c), Some(p)) = (from, self.pull.get_mut(&conn)) {
+        // a join's cursor is its place from now on, durably: a restart joins from it again
+        let Some(c) = from else { return };
+        place.stopped.remove(&s);
+        place.at_stream.remove(&s);
+        if place.joining.get(&s) != Some(&c) {
+            place.joining.insert(s, c.clone());
+        }
+        if let Some(p) = self.pull.get_mut(&conn) {
             p.join(s, c);
             p.quiet = false;
         }
+        self.save(ctx, src, &[s], false, Vec::new());
     }
 
     /// A member left: its stream stops where it stands (its stored position kept for its rejoin);
@@ -213,7 +328,7 @@ impl Streams {
         p.rejoin_at.remove(&s);
         let src = p.src;
         let held = ctx.store.holding(&s).is_some();
-        let place = self.place(src);
+        let place = self.place(ctx.store, src);
         let at = if let Some(c) = place.joining.remove(&s) {
             Some(c)
         } else if place.at_stream.remove(&s) {
@@ -221,13 +336,15 @@ impl Streams {
         } else {
             None
         };
+        let mut ops = Vec::new();
         if !held {
             place.stopped.remove(&s);
-            self.known.forget(src, s);
-            self.known.forget(Source::Conn(conn), s);
+            ops.push((src, Op::Forget(s)));
+            ops.push((Source::Conn(conn), Op::Forget(s)));
         } else if let Some(c) = at {
             place.stopped.insert(s, c);
         }
+        self.save(ctx, src, &[s], false, ops);
     }
 
     /// Whatever is due on a connection: messages applied, fetches and a Pull sent, refusals told.
@@ -360,7 +477,7 @@ impl Streams {
                 }
             }
         }
-        let info = ReplyInfo { whole: r.whole, trimmed: r.trimmed, more: r.more, joins, asked };
+        let info = ReplyInfo { whole: r.whole, more: r.more, joins, asked };
         let batch = Batch { events: r.events, cursor: r.cursor.map(osis_proto::Cursor::into_bytes), report: r.report, reply: Some(info), owed: Vec::new() };
         self.stage(ctx, conn, batch);
     }
@@ -375,23 +492,25 @@ impl Streams {
             // kept only for members and entries held here: a peer's word on anything else is
             // nothing this side keeps
             let members = ctx.shared.members(conn);
+            let mut ops = Vec::new();
             for (s, e) in st.events {
                 if !members.contains_key(&s) {
                     continue;
                 }
                 match e {
-                    Event::Full(f) => self.known.set_full(src, s, f),
+                    Event::Full(f) => ops.push((src, Op::Full(s, f))),
                     // code 6 counts as the entry deleted there
-                    Event::Refused(b, Code::TOMBSTONED) => {
-                        self.known.remove(src, s, &b);
-                    }
+                    Event::Refused(b, Code::TOMBSTONED) => ops.push((src, Op::Remove(s, b))),
                     Event::Refused(b, code) => {
                         let Ok(Some(e)) = ctx.store.entry(&s, &b) else { continue };
                         let head = self.known.head(src, &s);
-                        self.known.set_refused(src, s, b, Refusal { code, stamp: e.stamp, head });
+                        ops.push((src, Op::Refused(s, b, Refusal { code, stamp: e.stamp, head })));
                     }
                     _ => {}
                 }
+            }
+            if !ops.is_empty() {
+                self.save(ctx, src, &[], false, ops);
             }
             return;
         };
@@ -554,9 +673,11 @@ impl Streams {
                 }
                 p.join(*s, None);
                 let src = p.src;
-                let place = self.place(src);
+                let place = self.place(ctx.store, src);
                 place.at_stream.remove(s);
-                place.joining.remove(s);
+                place.stopped.remove(s);
+                place.joining.insert(*s, None);
+                self.save(ctx, src, &[*s], false, Vec::new());
             }
         }
         Ok(!grew.is_empty())
@@ -680,19 +801,20 @@ impl Streams {
 
     /// Applies one message: what each source holds (`known`; a deletion only says the source no
     /// longer holds it, a head names its step), then the cursor stored (SN_cursor: only now),
-    /// joins moved, and an Applied when asked (spec/sync-streams.md §4 Applying, Reports).
+    /// joins moved, and an Applied when asked (spec/sync-streams.md §4 Applying, Reports); for a
+    /// record source all in one transaction.
     fn apply(&mut self, ctx: &mut Ctx, conn: ConnId, batch: Batch) {
         let members: BTreeSet<SyncId> = ctx.shared.members(conn).keys().copied().collect();
         let Some(p) = self.pull.get_mut(&conn) else { return };
         let src = p.src;
-        if let Some(r) = &batch.reply
-            && r.whole
-            && r.trimmed
-            && p.listing.is_none()
-        {
+        if batch.reply.as_ref().is_some_and(|r| r.whole) && p.listing.is_none() {
             p.listing = Some(BTreeMap::new());
+            // the whole listing covers every member: joins from the start are part of it
+            p.join_listing.clear();
         }
         let mut listing = p.listing.take();
+        let mut join_listing = std::mem::take(&mut p.join_listing);
+        let mut ops = Vec::new();
         for (s, e) in &batch.events {
             if !members.contains(s) {
                 continue;
@@ -705,23 +827,29 @@ impl Streams {
                         None => ctx.store.entry(s, b).ok().flatten().map_or(Class::Durable, |e| e.class),
                     };
                     let at = if class == Class::Ephemeral { Source::Conn(conn) } else { src };
-                    self.known.add(at, *s, *b);
+                    ops.push((at, Op::Add(*s, *b)));
                     if let Some(l) = listing.as_mut() {
                         l.entry(*s).or_default().insert(*b);
                     }
+                    if let Some(l) = join_listing.get_mut(s) {
+                        l.insert(*b);
+                    }
                 }
                 Event::Deleted(b) => {
-                    self.known.remove(src, *s, b);
-                    self.known.remove(Source::Conn(conn), *s, b);
+                    ops.push((src, Op::Remove(*s, *b)));
+                    ops.push((Source::Conn(conn), Op::Remove(*s, *b)));
                 }
-                Event::Head(step) => self.known.set_head(src, *s, step.id()),
+                Event::Head(step) => ops.push((src, Op::Head(*s, step.id()))),
                 _ => {}
             }
         }
-        let place = self.places.entry(src).or_default();
-        if batch.cursor.is_some() || batch.reply.as_ref().is_some_and(|r| r.whole) {
+        let place = self.place(ctx.store, src);
+        let cursor = batch.cursor.is_some() || batch.reply.as_ref().is_some_and(|r| r.whole);
+        if cursor {
             place.cursor = batch.cursor.clone();
         }
+        let mut touched: Vec<SyncId> = Vec::new();
+        let mut listed: BTreeMap<SyncId, BTreeSet<BlobId>> = BTreeMap::new();
         if let Some(r) = &batch.reply {
             if r.whole {
                 // every member from the start: each at the stream now
@@ -729,41 +857,59 @@ impl Streams {
                     place.at_stream.insert(*s);
                     place.joining.remove(s);
                     place.stopped.remove(s);
+                    touched.push(*s);
                 }
             } else {
                 for (s, _) in &r.asked {
+                    touched.push(*s);
                     match r.joins.get(s) {
                         Some(Some(c)) => {
                             place.joining.insert(*s, Some(c.clone()));
                         }
                         Some(None) => {
                             place.joining.remove(s);
+                            join_listing.remove(s);
                         }
                         None => {
                             place.joining.remove(s);
                             if members.contains(s) {
                                 place.at_stream.insert(*s);
+                                // a join from the start read to its end: S's live set there
+                                if let Some(l) = join_listing.remove(s) {
+                                    listed.insert(*s, l);
+                                }
                             }
                         }
                     }
                 }
             }
-            // SN_infer: a listing from the start replaces what this source holds only when trimmed
+            // a whole listing read to its end is the source's live set (spec/sync-streams.md §3
+            // Node log: compacted, never trimmed by position), trimmed or not
             if !r.more
                 && let Some(seen) = listing.take()
             {
                 for s in &members {
-                    let listed = seen.get(s);
-                    for b in self.known.list(src, s) {
-                        if listed.is_none_or(|l| !l.contains(&b)) {
-                            self.known.remove(src, *s, &b);
-                        }
-                    }
+                    listed.insert(*s, seen.get(s).cloned().unwrap_or_default());
                 }
             }
         }
+        // what a listing from the start did not list, the source no longer holds
+        for (s, l) in &listed {
+            for b in self.known.list(src, s) {
+                if !l.contains(&b) {
+                    ops.push((src, Op::Remove(*s, b)));
+                }
+            }
+        }
+        if let Some(p) = self.pull.get_mut(&conn) {
+            p.listing = listing;
+            p.join_listing = join_listing;
+        }
+        // an Applied says what is stored: none for what failed to be
+        if !self.save(ctx, src, &touched, cursor, ops) {
+            return;
+        }
         let Some(p) = self.pull.get_mut(&conn) else { return };
-        p.listing = listing;
         if batch.report
             && let Some(c) = batch.cursor
         {

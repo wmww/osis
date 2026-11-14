@@ -22,7 +22,7 @@ mod cipher;
 mod entries;
 mod memory;
 mod path;
-mod rows;
+pub(crate) mod rows;
 
 pub use path::{Behind, Cred};
 pub use rows::{Source, Tombstone, Usage};
@@ -66,10 +66,9 @@ pub(crate) const TOMB_OVERHEAD: u64 = 128;
 /// at most this much per kind and says it acted while more is due).
 const PAGE: usize = 256;
 
-/// The record row tags this module owns (notes/sync-boundary.md U3): a source's stand of
-/// "logged again once", and the deletes seen there (spec/sync-judgement.md §4).
-const STAND: u8 = b's';
-const SEEN: u8 = b'd';
+/// The record row tags this module owns: a source's stand of "logged again once", and the
+/// deletes seen there (spec/sync-judgement.md §4).
+use rows::tag::{SEEN, STAND};
 
 /// The local policy the caps apply (`caps^.0`, spec/data-model.md §9; spec/sync-ids.md §5-§6):
 /// every value a resource bound against peers filling this node's store. Each is read from
@@ -297,6 +296,12 @@ fn deposit_budget(policy: &Policy, claims: usize) -> (u64, u64) {
 #[derive(Clone)]
 pub struct Store(Arc<Mutex<Inner>>);
 
+impl std::fmt::Debug for Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Store")
+    }
+}
+
 impl Store {
     /// A store over `backend` and `root`, created there if none is. Entries a connection with no
     /// record brought that still gave nothing held go: every connection ended with the last start.
@@ -333,6 +338,12 @@ impl Store {
     /// each beside what makes it true. Not inside an engine call.
     pub fn with_tx<T>(&mut self, f: impl FnOnce(&mut Transaction<'_>) -> std::result::Result<T, osis_store::Error>) -> Result<T> {
         self.lock().write(|t, _| Ok(f(t)?))
+    }
+
+    /// Runs `f` over a transaction of the node's store that writes nothing: the door through
+    /// which the modules owning other rows of it read them. Not inside an engine call.
+    pub fn with_read<T>(&self, f: impl FnOnce(&mut Transaction<'_>) -> std::result::Result<T, osis_store::Error>) -> Result<T> {
+        self.lock().read(|t, _| Ok(f(t)?))
     }
 
     // Holdings and caps

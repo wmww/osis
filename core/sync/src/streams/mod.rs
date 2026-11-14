@@ -24,8 +24,12 @@
 //! at the stream, joins in pages and where members that left stopped; `known` per source; the
 //! blobs asked from some source.
 //!
-//! Not built: durability (positions and `known` live in memory, keyed by record: opens keeps its
-//! records in memory, so a restart is a first contact); relay-only entries (the engine's relay
+//! Durable (spec/sync-streams.md §3 Durability): a record source's place (the stream's cursor,
+//! members at it, joins, where members that left stopped) and what it showed (`known`) are rows of
+//! its record, written by the transaction that applies what they cover; a connection's are in
+//! memory and go with it. A place is held in memory while a connection pulls from its source.
+//!
+//! Not built: relay-only entries (the engine's relay
 //! path); the engine's linked blobs (`wants`: pages and header lists before apply); bundles
 //! (`import`); `Rank::Never` from the engine (a keyset without history: the facade has no call
 //! for it yet).
@@ -140,7 +144,7 @@ pub struct Work {
     pub members: u64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Streams {
     serve: BTreeMap<ConnId, serve::Serve>,
     pull: BTreeMap<ConnId, pull::Pulling>,
@@ -157,10 +161,23 @@ pub struct Streams {
     /// end, the peer applied every message served to it), with when the Pull the last reply
     /// answered was sent: status follows it per connection (`caught_up`).
     caught: Stamped<ConnId, WallMs>,
+    /// A store failure this step met: `settle` fails the step with it.
+    fault: Option<osis_store::Error>,
     work: Work,
 }
 
 impl Streams {
+    /// Streams over the node's store: where a record source's place and word live.
+    pub fn new(store: Store) -> Streams {
+        Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), known: Known::new(store), asked: HashMap::new(), holders: BTreeMap::new(), room: BTreeMap::new(), caught: Stamped::default(), fault: None, work: Work::default() }
+    }
+
+    /// Tests only (world copies): reads the copy's store.
+    #[doc(hidden)]
+    pub fn set_store(&mut self, store: Store) {
+        self.known.set_store(store);
+    }
+
     // ---- the product's entry points ----
 
     /// A member joined (its join is due) or left (its stream stops where it stands) a
@@ -318,8 +335,9 @@ impl Streams {
     /// its members' places stay with the record.
     pub fn closed(&mut self, conn: ConnId) {
         self.serve.remove(&conn);
+        // a record's place is in its rows: held again by the next connection taking it
         if let Some(p) = self.pull.remove(&conn)
-            && p.src == Source::Conn(conn)
+            && !self.pull.values().any(|q| q.src == p.src)
         {
             self.places.remove(&p.src);
         }
@@ -341,7 +359,20 @@ impl Streams {
             self.run(ctx, c);
             self.track(ctx, c);
         }
+        if let Some(e) = self.fault.take() {
+            return Err(e.into());
+        }
         Ok(acted)
+    }
+
+    /// Notes a store failure: the step fails at the next settle.
+    fn failed(&mut self, r: Result<()>) {
+        if let Err(e) = r {
+            self.fault.get_or_insert(match e {
+                Error::Store(e) => e,
+                _ => osis_store::Error::Corrupt("streams: store"),
+            });
+        }
     }
 }
 

@@ -42,6 +42,32 @@ pub(crate) const HEAD: &[u8] = b"H/";
 /// Deposited (unstamped) entries per sync ID: what promotion, clearing and offering read.
 pub(crate) const DEPOSITED: &[u8] = b"D/";
 
+/// The tags of the rows each module keeps in a peer's record (`osis_store::Transaction::
+/// record_put_row`), one owner per tag (notes/sync-boundary.md U3); a record-wide row names
+/// `osis_store::NO_LABEL`. All go with the record (`RECORD_BUDGET`) or with their sync ID.
+pub(crate) mod tag {
+    // store: the peer budget's charges (record-wide), stands, deletes seen
+    pub(crate) const CHARGES: u8 = b'b';
+    pub(crate) const STAND: u8 = b's';
+    pub(crate) const SEEN: u8 = b'd';
+    // opens: the record's own state (record-wide), the peer's filter by generation (record-wide),
+    // a member of the shared set, where a member that left rejoins
+    pub(crate) const OPENS: u8 = b'R';
+    pub(crate) const FILTER: u8 = b'F';
+    pub(crate) const MEMBER: u8 = b'M';
+    pub(crate) const REJOIN: u8 = b'O';
+    // streams: the stream's cursor (record-wide), a member at it, a join's cursor, where a member
+    // that left stood; what the source showed: an entry present, its head, full, a refusal
+    pub(crate) const CURSOR: u8 = b'c';
+    pub(crate) const AT_STREAM: u8 = b'a';
+    pub(crate) const JOINING: u8 = b'j';
+    pub(crate) const STOPPED: u8 = b'p';
+    pub(crate) const PRESENT: u8 = b'k';
+    pub(crate) const HEAD: u8 = b'h';
+    pub(crate) const FULL: u8 = b'f';
+    pub(crate) const REFUSED: u8 = b'r';
+}
+
 pub(crate) fn head_key(s: &SyncId) -> Vec<u8> {
     [HEAD, &s.0].concat()
 }

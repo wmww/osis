@@ -901,3 +901,76 @@ fn crossed_first_dials_between_own_nodes_keep_one_spec_sync_opens_1() {
     assert_eq!(b_lost, [lost.1], "the same connection at both ends");
     assert!(p.a.open(kept.0, &S) && p.b.open(kept.1, &S));
 }
+
+/// `a` and `b` share `n` sync IDs, close, both restart (opens started from their stores) and
+/// connect again with nothing changed. The bytes of every message the reconnect sent.
+pub(crate) fn restart_reconnect_bytes(n: u8) -> usize {
+    let st = StepKeys::new(1, 0);
+    let mut a = knowing(1, 2);
+    let mut b = knowing(2, 1);
+    for i in 1..=n {
+        for x in [&mut a, &mut b] {
+            x.table.set(sid(i), Some(reader(&sid(i), &read_secret(i, 0), &st, &[], &[], &[])));
+        }
+    }
+    let mut p = Pair::new(a, b, account(1), account(2));
+    p.run();
+    assert!((1..=n).all(|i| p.a.open(p.ca, &sid(i)) && p.b.open(p.cb, &sid(i))));
+    let changed: Vec<u64> = (1..=n).map(|i| p.a.opens.changed_at(&sid(i))).collect();
+    p.close();
+    p.a.restart();
+    p.b.restart();
+    assert_eq!((1..=n).map(|i| p.a.opens.changed_at(&sid(i))).collect::<Vec<_>>(), changed, "changed_at is durable: a restart advances nothing");
+    p.log.clear();
+    p.connect(2, account(1), account(2));
+    p.run();
+    assert!((1..=n).all(|i| p.a.open(p.ca, &sid(i)) && p.b.open(p.cb, &sid(i))), "the record's members are open again");
+    assert!((1..=n).all(|i| p.a.moved.contains(&Moved::Joined(p.ca, sid(i), Rejoin::Held))), "each rejoins where its stream holds it");
+    assert!(p.log.iter().any(|(_, m)| matches!(m, Msg::Resumed { tag: Some(_), .. })), "the record resumed");
+    assert!(!p.log.iter().any(|(_, m)| matches!(m, Msg::Members { .. } | Msg::Offer { .. })), "digests match, nothing tested: {:?}", p.log);
+    assert!(p.a.opens.agreed(p.ca) && p.b.opens.agreed(p.cb));
+    p.log.iter().map(|(_, m)| m.encode().len()).sum()
+}
+
+// spec/sync-opens.md §3 (records, `changed_at`; spec/sync-streams.md §3 Durability: the records
+// are durable): a restart keeps the record and `changed_at`, so a reconnect after it is no first
+// contact and costs the same at n and 10n shared sync IDs (but for the widths of the integers
+// it names).
+#[test]
+fn a_restart_keeps_records_and_changed_at_spec_sync_opens_3() {
+    let (small, large) = (restart_reconnect_bytes(10), restart_reconnect_bytes(100));
+    assert!(large <= small + 16, "{small} bytes at n, {large} at 10n");
+}
+
+// spec/sync-opens.md §3 (RECORD_BUDGET): past the budget the least recently used record no
+// connection holds goes with every module's rows; the next connection is a first contact.
+#[test]
+fn an_evicted_record_goes_whole_and_is_a_first_contact_spec_sync_opens_3() {
+    use osis_store::NO_LABEL;
+    use osis_sync::store::Source;
+    let mut p = readers();
+    let rid = p.a.opens.record(p.ca).unwrap();
+    // rows of other modules in the record: a stand (store), a source's word (streams)
+    let stand = osis_sync::store::Stand { at: osis_base::WallMs(1), logged: osis_base::BlobId([1; 32]), head: osis_label::StepId([2; 32]), fall: 0 };
+    p.a.store.set_stand(Source::Record(rid), &S, b"body", Some(&stand)).unwrap();
+    p.a.store.with_tx(|t| t.record_put_row(&rid, b'k', &S, &[3; 32], Vec::new())).unwrap();
+    // in use: kept whatever the budget
+    p.a.opens.set_record_budget(0);
+    assert!(p.a.flush().is_empty(), "a record a connection holds stays");
+    p.close();
+    assert_eq!(p.a.flush(), Vec::<osis_sync::types::RecordId>::new(), "gone at the close's own flush");
+    p.a.store.with_read(|t| {
+        assert!(t.record(&rid)?.is_none());
+        assert!(t.records_with_row(&S, b'M', b"", 10)?.is_empty(), "its members");
+        assert!(t.record_get_row(&rid, b'R', &NO_LABEL, b"")?.is_none(), "its own state");
+        assert!(t.records_with_row(&S, b'k', &[3; 32], 10)?.is_empty(), "streams' rows");
+        Ok(())
+    }).unwrap();
+    assert_eq!(p.a.store.stand(Source::Record(rid), &S, b"body").unwrap(), None, "read's stand");
+    p.log.clear();
+    p.connect(2, account(1), account(2));
+    p.run();
+    assert!(p.log.iter().any(|(_, m)| matches!(m, Msg::Resumed { tag: None, .. })), "nothing to resume");
+    assert!(p.log.iter().any(|(_, m)| matches!(m, Msg::Offer { .. })), "S is tested again");
+    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
+}

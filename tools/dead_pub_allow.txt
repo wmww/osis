@@ -22,7 +22,6 @@ osis-perm::kept_end  test hook: the retain value a removal writes
 osis-perm::may_purge  test hook: §6 purge rights at a point (the engine asks `purge_stands`)
 osis-perm::set_general_only  test hook: the general path against the fast one
 osis-perm::trusted_active  test hook: trusted ops in force
-osis-store::record_lag  test hook: reads a lag without spending it (`record_take_lag`)
 osis-transport::ADDRESS  table: the NAT kinds
 osis-transport::CONN_MEMORY  test hook: the resource bound the quic tests check
 osis-transport::relayed_keys  test hook
@@ -147,26 +146,10 @@ osis-proto::TYPE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its c
 osis-proto::UNSYNCED  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-schema::HOST  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-schema::TID  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::RECORD_BUDGET  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::changed_after  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::changed_labels  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::changed_note  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::log_head_at  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::log_heads  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::record_close  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::record_drop  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::record_member_at  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::record_member_until  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::record_peer_filter  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::record_pending_all  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::record_put_peer_filter  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::record_rise_acked  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::record_set_cursor  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::record_set_own  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::record_take_lag  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::record_used  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::records_evict  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::records_of_actors  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-store::table_len  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-transport::connections_between  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-transport::disconnect  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -239,10 +222,10 @@ osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md 
 osis-sync::take_deposit  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::proofs_done  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); opens refuses a Resume before the proofs with it
 osis-sync::clock_offset  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); status reports a large offset as a diagnostic (spec/sync-streams.md §1)
-osis-store::record_rows  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); a module's rows in a peer record (streams' known, read's deletes owed)
 osis-sync::saw_deleted  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-judgement.md §4)
 osis-sync::seen_deleted  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-judgement.md §4)
 osis-sync::serve_path  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (a read S's served head)
 osis-sync::uncharge  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); read's call (spec/sync-ids.md §5 Peer budget)
 osis-sync::dial_hints  deferred: the driver's dial candidates read it (notes/sync-boundary.md, driver)
 osis-sync::status_of  deferred: the osis API reads one sync ID's status (sync rebuild integration, issues/sync-rewrite.md Phase 3)
+osis-sync::set_record_budget  test hook: a small RECORD_BUDGET to drive eviction

@@ -14,16 +14,21 @@
 //! and a test due on each connection; nothing walks every sync ID per connection but a whole
 //! filter (first contact) and the Hits index, built at the connection's first Hit.
 //!
-//! Not built (notes/sync-boundary.md, opens: what the integration wires): records and
-//! `changed_at` live in memory, so a restart is a first contact; `RECORD_BUDGET` eviction.
+//! Durable (spec/sync-opens.md §3): records live in the store's record rows (`records`), held in
+//! memory while a connection holds them and written at the end of each step (`flush`), which
+//! also evicts past `RECORD_BUDGET`; `changed_at` per S is the store's (`changed_note`), with the
+//! digest of the credentials it was advanced for, so a restart advances it only for a value
+//! that moved.
 
 pub mod cred;
 pub mod holds;
 mod positions;
+mod records;
 
 pub use positions::{Positions, Rejoin, Reported};
 
 use crate::session::{Incoming, Proven, Sessions};
+use crate::store::Store;
 use crate::types::{ConnId, Credential, Cursor, Cx, Position, RecordId, Result, SourceClass};
 use crate::unread::Unread;
 use cred::{Bind, Shown, Tested, beacon_of, source_class};
@@ -95,6 +100,8 @@ pub trait Wire {
 pub struct Ctx<'a> {
     pub holds: &'a mut dyn Holds,
     pub wire: &'a mut dyn Wire,
+    /// Where records and `changed_at` live.
+    pub store: &'a mut Store,
     pub now: WallMs,
 }
 
@@ -111,14 +118,13 @@ pub struct Work {
     pub creds: u64,
 }
 
-/// A record (spec/sync-opens.md §3). One kept nowhere (`kept` false) serves a connection that
-/// proved no known actor, and goes with it.
+/// A record (spec/sync-opens.md §3), as a connection holding it sees it. One kept nowhere
+/// (`kept` false) serves a connection that proved no known actor, and goes with it.
 #[derive(Clone, Debug)]
 struct Record {
     r: [u8; 32],
     actors: Vec<Tid>,
     kept: bool,
-    used: u64,
     members: BTreeMap<SyncId, Member>,
     /// The beacon each member was opened by (none: by J).
     basis: BTreeMap<SyncId, Option<[u8; 32]>>,
@@ -128,8 +134,6 @@ struct Record {
     acked_pos: u64,
     own: OwnFilter,
     peer: Option<PeerFilter>,
-    /// The source's step per S (spec/sync-ids.md §6 Walk).
-    steps: BTreeMap<SyncId, StepId>,
 }
 
 /// This side's filter as sent through the record.
@@ -141,15 +145,18 @@ struct OwnFilter {
     f: u8,
     whole: u64,
     added: u64,
-    /// The `changed_at` position each generation sent covers.
-    pos: BTreeMap<u64, u64>,
+    /// The `changed_at` position the last generation sent covers, and the one the last
+    /// acknowledged covers (one generation is in flight at a time).
+    sent_reach: u64,
+    acked_reach: u64,
 }
 
 #[derive(Clone, Debug)]
 struct PeerFilter {
     generation: u64,
     f: u8,
-    values: BTreeSet<u64>,
+    /// Sorted: up to `MAX_FILTER_ENTRIES`, held while a connection holds the record.
+    values: Arc<Vec<u64>>,
     /// Entries of its whole generation, and of the additions since (at most `whole` in all).
     whole: u64,
     added: u64,
@@ -159,8 +166,8 @@ struct PeerFilter {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Phase {
-    /// Dialer: Resume sent with these records listed.
-    Resuming { nonce: [u8; 32], listed: Vec<RecordId> },
+    /// Dialer: Resume sent with these records listed (and their pair keys).
+    Resuming { nonce: [u8; 32], listed: Vec<(RecordId, [u8; 32])> },
     /// Listener: waiting for Resume or NoRecord.
     Waiting,
     /// A record or NoRecord: the shared set runs.
@@ -263,9 +270,12 @@ struct Conn {
 }
 
 /// `changed_at` (spec/sync-opens.md §3): per S a position of this node's own sequence, with the
-/// credentials it was advanced for.
+/// credentials it was advanced for; the store's (`changed_note`), mirrored here as each S comes
+/// due.
 #[derive(Clone, Debug, Default)]
 struct Changed {
+    /// The store's sequence end, read at the first settle.
+    loaded: bool,
     end: u64,
     at: BTreeMap<SyncId, (u64, [u8; 32], Arc<Creds>)>,
     order: BTreeMap<u64, SyncId>,
@@ -281,10 +291,16 @@ impl Changed {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Opens {
+    /// The records connections hold (and those released this step, until `flush`).
     records: BTreeMap<RecordId, Record>,
-    seq: u64,
+    /// What changed of each kept record since `flush`.
+    dirty: BTreeMap<RecordId, records::Dirty>,
+    /// A store failure this step met: `settle` and `flush` fail the step with it.
+    fault: Option<osis_store::Error>,
+    /// `RECORD_BUDGET`, as this node keeps it (tests set it).
+    budget: u64,
     conns: BTreeMap<ConnId, Conn>,
     changed: Changed,
     /// The connections each sync ID is a member on: what a change of S re-judges.
@@ -294,6 +310,23 @@ pub struct Opens {
     /// Stamped per connection as its reported positions move (`reported_at`: status follows it).
     reports: osis_base::memo::Stamps,
     work: Work,
+}
+
+impl Default for Opens {
+    fn default() -> Opens {
+        Opens {
+            records: BTreeMap::new(),
+            dirty: BTreeMap::new(),
+            fault: None,
+            budget: osis_store::RECORD_BUDGET,
+            conns: BTreeMap::new(),
+            changed: Changed::default(),
+            holding: BTreeMap::new(),
+            fx: holds::Fx::default(),
+            reports: osis_base::memo::Stamps::default(),
+            work: Work::default(),
+        }
+    }
 }
 
 static NO_MEMBERS: BTreeMap<SyncId, Member> = BTreeMap::new();
@@ -323,8 +356,9 @@ impl Opens {
     pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, unread: &Unread, conn: ConnId, m: Incoming, moved: &mut Vec<Moved>) {
         let now = cx.now;
         let mut fx = std::mem::take(&mut self.fx);
+        let mut store = cx.store.clone();
         let mut holds = NodeHolds { cx, unread, fx: &mut fx };
-        let mut ctx = Ctx { holds: &mut holds, wire: sessions, now };
+        let mut ctx = Ctx { holds: &mut holds, wire: sessions, store: &mut store, now };
         self.message(&mut ctx, conn, m, moved);
         self.fx = fx;
     }
@@ -335,6 +369,71 @@ impl Opens {
         self.closed(conn, moved);
     }
 
+    /// The end of the node's step: what changed of each record is written, records past the
+    /// budget go (least recently used first, none a connection holds), and records no connection
+    /// holds leave memory. Returns the records that went (their charges go too: the driver's
+    /// `Store::gone`). A store failure met during the step fails it here.
+    pub fn flush(&mut self, store: &mut Store) -> Result<Vec<RecordId>> {
+        if let Some(e) = self.fault.take() {
+            self.dirty.clear();
+            return Err(e.into());
+        }
+        // in use: held by a connection, or listed in a Resume whose answer may name it
+        let listed = self.conns.values().flat_map(|c| match &c.phase {
+            Phase::Resuming { listed, .. } => listed.iter().map(|(id, _)| *id).collect(),
+            _ => Vec::new(),
+        });
+        let in_use: BTreeSet<RecordId> = self.conns.values().filter_map(|c| c.rec).filter(|r| self.records.get(r).is_some_and(|r| r.kept)).chain(listed).collect();
+        let dirty = std::mem::take(&mut self.dirty);
+        let records = &self.records;
+        let budget = self.budget;
+        let evicted = store.with_tx(|t| {
+            for (id, d) in dirty {
+                if let Some(r) = records.get(&id).filter(|r| r.kept) {
+                    records::write(t, &id, r, d)?;
+                }
+            }
+            t.records_evict(budget, &in_use)
+        })?;
+        let held: BTreeSet<RecordId> = self.conns.values().filter_map(|c| c.rec).collect();
+        self.records.retain(|id, r| !r.kept || held.contains(id));
+        Ok(evicted)
+    }
+
+    /// Tests only: `RECORD_BUDGET` as this node keeps it.
+    #[doc(hidden)]
+    pub fn set_record_budget(&mut self, budget: u64) {
+        self.budget = budget;
+    }
+
+    /// Notes a store failure: the step fails at its end.
+    fn failed(&mut self, r: Result<()>) {
+        if let Err(e) = r {
+            self.fault.get_or_insert(match e {
+                crate::types::Error::Store(e) => e,
+                _ => osis_store::Error::Corrupt("opens: store"),
+            });
+        }
+    }
+
+    fn dirty(&mut self, rid: RecordId) -> &mut records::Dirty {
+        self.dirty.entry(rid).or_default()
+    }
+
+    /// Marks member S of `conn`'s record changed.
+    fn dirty_member(&mut self, conn: ConnId, s: SyncId) {
+        if let Some(rid) = self.conns.get(&conn).and_then(|c| c.rec) {
+            self.dirty(rid).members.insert(s);
+        }
+    }
+
+    /// Marks `conn`'s record's own state changed.
+    fn dirty_core(&mut self, conn: ConnId) {
+        if let Some(rid) = self.conns.get(&conn).and_then(|c| c.rec) {
+            self.dirty(rid).core = true;
+        }
+    }
+
     /// Streams' reported positions (`reported`).
     pub fn on_reported(&mut self, cx: &mut Cx, sessions: &mut Sessions, unread: &Unread, reported: &mut Vec<Reported>, moved: &mut Vec<Moved>) {
         if reported.is_empty() {
@@ -342,8 +441,9 @@ impl Opens {
         }
         let now = cx.now;
         let mut fx = std::mem::take(&mut self.fx);
+        let mut store = cx.store.clone();
         let mut holds = NodeHolds { cx, unread, fx: &mut fx };
-        let mut ctx = Ctx { holds: &mut holds, wire: sessions, now };
+        let mut ctx = Ctx { holds: &mut holds, wire: sessions, store: &mut store, now };
         for r in reported.drain(..) {
             self.reported(&mut ctx, r, moved);
         }
@@ -354,10 +454,14 @@ impl Opens {
     pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, unread: &Unread, moved: &mut Vec<Moved>) -> Result<bool> {
         let now = cx.now;
         let mut fx = std::mem::take(&mut self.fx);
+        let mut store = cx.store.clone();
         let mut holds = NodeHolds { cx, unread, fx: &mut fx };
-        let mut ctx = Ctx { holds: &mut holds, wire: sessions, now };
+        let mut ctx = Ctx { holds: &mut holds, wire: sessions, store: &mut store, now };
         let acted = self.tick(&mut ctx, moved);
         self.fx = fx;
+        if let Some(e) = self.fault.take() {
+            return Err(e.into());
+        }
         Ok(acted)
     }
 
@@ -390,7 +494,7 @@ impl Opens {
     pub fn shows_deposit_key(&self, conn: ConnId, s: &SyncId, key: &[u8; 32]) -> bool {
         let Some(r) = self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get(&r)) else { return false };
         let Some(p) = &r.peer else { return false };
-        p.values.contains(&beacon_value(&beacon_of(key, s, &r.r), p.f))
+        p.values.binary_search(&beacon_value(&beacon_of(key, s, &r.r), p.f)).is_ok()
     }
 
     /// Whether streams may Pull on `conn`: the digests matched or the peer's last Members page
@@ -400,9 +504,12 @@ impl Opens {
     }
 
     /// The kept records holding S as a member (spec/sync-status.md §1: a complete pass waits for
-    /// each). O(records, at most `RECORD_BUDGET`): read only as a pass begins.
-    pub fn records_holding(&self, s: &SyncId) -> BTreeSet<RecordId> {
-        self.records.iter().filter(|(_, r)| r.kept && r.members.contains_key(s)).map(|(id, _)| *id).collect()
+    /// each): as connections hold them, else as written. O(records holding S): read only as a
+    /// pass begins.
+    pub fn records_holding(&self, store: &Store, s: &SyncId) -> Result<BTreeSet<RecordId>> {
+        let stored = store.with_read(|t| t.records_with_row(s, crate::store::rows::tag::MEMBER, b"", usize::MAX))?;
+        let held = |id: &RecordId| self.records.get(id).filter(|r| r.kept).map(|r| r.members.contains_key(s));
+        Ok(stored.into_iter().filter(|id| held(id) != Some(false)).chain(self.records.iter().filter(|(_, r)| r.kept && r.members.contains_key(s)).map(|(id, _)| *id)).collect())
     }
 
     /// Member S's reported position on `conn` (spec/sync-opens.md §6 Lost): none for a sync ID
@@ -499,6 +606,7 @@ impl Opens {
                 set.remove(&conn);
             }
         }
+        // a kept one stays in memory until `flush` writes it (or another connection takes it)
         if !r.kept {
             self.records.remove(&rid);
         }
@@ -540,6 +648,19 @@ impl Opens {
     /// members and makes filters and tests due; then each connection's due work runs.
     pub fn tick(&mut self, ctx: &mut Ctx, moved: &mut Vec<Moved>) -> bool {
         let before = moved.len();
+        if !self.changed.loaded {
+            let r = ctx.store.with_read(|t| t.changed_end());
+            match r {
+                Ok(end) => {
+                    self.changed.end = end;
+                    self.changed.loaded = true;
+                }
+                Err(e) => {
+                    self.failed(Err(e));
+                    return false;
+                }
+            }
+        }
         for s in ctx.holds.due() {
             self.work.creds += 1;
             let now = ctx.holds.creds(&s);
@@ -564,15 +685,32 @@ impl Opens {
 
     /// S's credentials moved to `now` (none: S left the sync set).
     fn moved_creds(&mut self, ctx: &mut Ctx, s: SyncId, now: Option<Arc<Creds>>, moved: &mut Vec<Moved>) {
-        if let Some((p, ..)) = self.changed.at.remove(&s) {
-            self.changed.order.remove(&p);
+        let known = self.changed.at.remove(&s);
+        if let Some((p, ..)) = &known {
+            self.changed.order.remove(p);
         }
         match now {
             Some(c) => {
-                self.changed.end += 1;
-                let pos = self.changed.end;
-                self.changed.at.insert(s, (pos, c.digest(), c));
+                // the store's `changed_at` moves only for credentials that moved since it was
+                // written: a restart finds the rest as they were
+                let digest = c.digest();
+                let r = ctx.store.with_tx(|t| match t.changed_note(s, &digest)? {
+                    Some(p) => Ok((p, true)),
+                    None => Ok((t.changed_at(&s)?.unwrap_or(0), false)),
+                });
+                let (pos, advanced) = match r {
+                    Ok(x) => x,
+                    Err(e) => {
+                        self.failed(Err(e));
+                        return;
+                    }
+                };
+                self.changed.end = self.changed.end.max(pos);
+                self.changed.at.insert(s, (pos, digest, c));
                 self.changed.order.insert(pos, s);
+                if !advanced && known.is_none() {
+                    return;
+                }
             }
             None => {
                 // spec/sync-opens.md §3: a node that stops holding S drops S from every record in
@@ -584,8 +722,12 @@ impl Opens {
                     r.members.remove(&s);
                     r.basis.remove(&s);
                     r.stopped.remove(&s);
-                    r.steps.remove(&s);
                 }
+                for d in self.dirty.values_mut() {
+                    d.members.remove(&s);
+                }
+                let r = ctx.store.with_tx(|t| t.changed_forget(&s));
+                self.failed(r);
             }
         }
         for c in self.holding.get(&s).cloned().unwrap_or_default() {
@@ -638,13 +780,18 @@ impl Opens {
                 // spec/sync-opens.md §3: Resume lists each record naming a proven actor known here
                 // now, most recent first.
                 let actors = c.named.clone();
-                let mut listed: Vec<(u64, RecordId)> = self.records.iter().filter(|(_, r)| r.kept && r.actors.iter().any(|a| actors.contains(a))).map(|(id, r)| (r.used, *id)).collect();
-                listed.sort_by(|a, b| b.cmp(a));
+                let mut listed: Vec<(RecordId, [u8; 32])> = match ctx.store.with_read(|t| t.records_of_actors(&actors)) {
+                    Ok(rs) => rs.into_iter().map(|r| (r.id, r.r)).collect(),
+                    Err(e) => {
+                        self.failed(Err(e));
+                        Vec::new()
+                    }
+                };
                 listed.truncate(MAX_RESUME_TAGS);
                 let (d, l) = (bind.own_challenge, bind.peer_challenge);
-                let tags = listed.iter().filter_map(|(_, id)| self.records.get(id)).map(|r| resume_tag(&r.r, &bind.listener_key, &d, &l)).collect();
+                let tags = listed.iter().map(|(_, r)| resume_tag(r, &bind.listener_key, &d, &l)).collect();
                 let nonce = random32(ctx.holds.rng());
-                c.phase = Phase::Resuming { nonce, listed: listed.into_iter().map(|(_, id)| id).collect() };
+                c.phase = Phase::Resuming { nonce, listed };
                 let id = ctx.wire.request(conn, Msg::Resume { id: 0, nonce, tags });
                 c.reqs.insert(id, Req::Resume);
                 self.conns.insert(conn, c);
@@ -674,21 +821,54 @@ impl Opens {
         self.take(ctx, conn, id, false, moved);
     }
 
+    /// A new record: a kept one is written now (before the answer naming it goes, and before
+    /// any module writes rows in it); one kept nowhere lives in memory with its connection.
     fn new_record(&mut self, ctx: &mut Ctx, r: [u8; 32], actors: Vec<Tid>, kept: bool) -> RecordId {
-        let id = random16(ctx.holds.rng());
-        self.seq += 1;
-        self.records.insert(id, Record { r, actors, kept, used: self.seq, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None, steps: BTreeMap::new() });
+        let id = if kept {
+            let made = ctx.store.with_tx(|t| t.record_create(r, &actors));
+            match made {
+                Ok(id) => id,
+                Err(e) => {
+                    self.failed(Err(e));
+                    random16(ctx.holds.rng())
+                }
+            }
+        } else {
+            random16(ctx.holds.rng())
+        };
+        self.records.insert(id, Record { r, actors, kept, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None });
         id
+    }
+
+    /// Record `id` in memory: as a connection holds it, else as its rows hold it. Whether it is.
+    fn load(&mut self, ctx: &mut Ctx, id: RecordId) -> bool {
+        if self.records.contains_key(&id) {
+            return true;
+        }
+        match ctx.store.with_read(|t| records::load(t, &id)) {
+            Ok(Some(r)) => {
+                self.records.insert(id, r);
+                true
+            }
+            Ok(None) => false,
+            Err(e) => {
+                self.failed(Err(e));
+                false
+            }
+        }
     }
 
     /// The connection takes record `id`: its members are this connection's (each re-judged),
     /// Digest first (with a record), then the filter.
     fn take(&mut self, ctx: &mut Ctx, conn: ConnId, id: RecordId, digest: bool, moved: &mut Vec<Moved>) {
-        if !self.one_per_pair(ctx, conn, id, moved) {
+        if !self.load(ctx, id) || !self.one_per_pair(ctx, conn, id, moved) {
             return;
         }
-        self.seq += 1;
-        let seq = self.seq;
+        let kept = self.records.get(&id).is_some_and(|r| r.kept);
+        if kept {
+            self.dirty(id).used = true;
+        }
+        let mut core = false;
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let Some(r) = self.records.get_mut(&id) else { return };
         if r.kept && r.actors != c.named {
@@ -698,8 +878,8 @@ impl Opens {
             r.acked_pos = 0;
             r.own.acked = 0;
             c.whole_next = true;
+            core = true;
         }
-        r.used = seq;
         c.rec = Some(id);
         c.phase = Phase::Running;
         c.tested_pos = r.acked_pos;
@@ -714,6 +894,9 @@ impl Opens {
             c.peer_digest = true;
         }
         let members: Vec<SyncId> = r.members.keys().copied().collect();
+        if core {
+            self.dirty(id).core = true;
+        }
         for s in &members {
             self.holding.entry(*s).or_default().insert(conn);
             moved.push(Moved::Joined(conn, *s, Rejoin::Held));
@@ -766,14 +949,18 @@ impl Opens {
         let actors = c.named.clone();
         let (d, l) = (bind.peer_challenge, bind.own_challenge);
         // A record is honoured only while a proven actor of this session is named by it.
-        let mine: HashMap<[u8; 32], RecordId> = self.records.iter().filter(|(_, r)| r.kept && r.actors.iter().any(|a| actors.contains(a))).map(|(id, r)| (resume_tag(&r.r, &bind.listener_key, &d, &l), *id)).collect();
+        let held = match ctx.store.with_read(|t| t.records_of_actors(&actors)) {
+            Ok(rs) => rs,
+            Err(e) => {
+                self.failed(Err(e));
+                Vec::new()
+            }
+        };
+        let mine: HashMap<[u8; 32], (RecordId, [u8; 32])> = held.into_iter().map(|r| (resume_tag(&r.r, &bind.listener_key, &d, &l), (r.id, r.r))).collect();
         let found = tags.iter().find_map(|t| mine.get(t).copied());
         let lnonce = random32(ctx.holds.rng());
         let (rid, tag) = match found {
-            Some(rid) => {
-                let r = self.records.get(&rid).map(|r| r.r).unwrap_or_default();
-                (rid, Some(resumed_tag(&r, &bind.listener_key, &d, &l)))
-            }
+            Some((rid, r)) => (rid, Some(resumed_tag(&r, &bind.listener_key, &d, &l))),
             // On no match a new record, written before the answer goes.
             None => (self.new_record(ctx, *pair_key(&dnonce, &lnonce).expose(), actors, true), None),
         };
@@ -800,7 +987,7 @@ impl Opens {
         let (bind, nonce) = (c.bind, *nonce);
         let (d, l) = (bind.own_challenge, bind.peer_challenge);
         // An absent or unexpected answer finds nothing.
-        let found = tag.and_then(|t| listed.iter().copied().find(|id| self.records.get(id).is_some_and(|r| resumed_tag(&r.r, &bind.listener_key, &d, &l) == t)));
+        let found = tag.and_then(|t| listed.iter().find(|(_, r)| resumed_tag(r, &bind.listener_key, &d, &l) == t).map(|(id, _)| *id));
         let rid = match found {
             Some(rid) => rid,
             None => {
@@ -965,8 +1152,8 @@ impl Opens {
         } else {
             r.own.added += values.len() as u64;
         }
-        let pos = self.changed.end;
-        r.own.pos.insert(generation, pos);
+        r.own.sent_reach = self.changed.end;
+        self.dirty_core(conn);
         let Some(c) = self.conns.get_mut(&conn) else { return };
         c.first = false;
         c.whole_next = false;
@@ -1017,6 +1204,8 @@ impl Opens {
             c.whole_next = true;
         } else {
             r.own.acked = g.generation;
+            r.own.acked_reach = r.own.sent_reach;
+            self.dirty_core(conn);
             self.rise(conn);
         }
     }
@@ -1075,24 +1264,39 @@ impl Opens {
         if !p.held_base {
             return;
         }
-        match (&mut r.peer, p.base) {
+        let mut values = p.values;
+        values.sort_unstable();
+        let row = records::encode_values(&values);
+        let whole = match (&mut r.peer, p.base) {
             (Some(old), Some(_)) => {
                 old.generation = p.generation;
-                old.added += p.values.len() as u64;
-                old.values.extend(p.values);
+                old.added += values.len() as u64;
+                let all = Arc::make_mut(&mut old.values);
+                all.extend(values);
+                all.sort_unstable();
                 old.arrived += 1;
+                false
             }
             _ => {
                 let arrived = r.peer.as_ref().map_or(0, |o| o.arrived) + 1;
-                r.peer = Some(PeerFilter { generation: p.generation, f: p.f, whole: p.values.len() as u64, added: 0, values: p.values.into_iter().collect(), arrived });
+                r.peer = Some(PeerFilter { generation: p.generation, f: p.f, whole: values.len() as u64, added: 0, values: Arc::new(values), arrived });
+                true
             }
-        }
+        };
         // Testing at each filter arrival: from `acked_pos` (spec/sync-opens.md §5 Testing). Other
         // tests (an answer read, a change) go on from the position tested on this connection, so a
         // refused Hit is not sent again at each answer while the peer has not acknowledged a
         // generation.
         c.tested_pos = c.tested_pos.min(r.acked_pos);
         c.test_due = true;
+        if let Some(rid) = c.rec {
+            let d = self.dirty(rid);
+            d.core = true;
+            match &mut d.filter {
+                Some((_, gens)) if !whole => gens.push((p.generation, row)),
+                f => *f = Some((whole, vec![(p.generation, row)])),
+            }
+        }
     }
 
     // ---- testing and Offer (§5) ----
@@ -1141,7 +1345,7 @@ impl Opens {
                 let m = t.matched(&s);
                 let b = beacon_of(&m, &s, &rr);
                 self.work.beacons += 1;
-                if !pf.values.contains(&beacon_value(&b, pf.f)) {
+                if pf.values.binary_search(&beacon_value(&b, pf.f)).is_err() {
                     continue;
                 }
                 let h = bind.hit(&m, &s, &b);
@@ -1423,12 +1627,10 @@ impl Opens {
     fn open(&mut self, conn: ConnId, s: SyncId, m: Member, beacon: Option<[u8; 32]>, moved: &mut Vec<Moved>) {
         let Some(rid) = self.conns.get(&conn).and_then(|c| c.rec) else { return };
         let Some(r) = self.records.get_mut(&rid) else { return };
-        if let Some(step) = m.step {
-            r.steps.insert(s, step);
-        }
         r.members.insert(s, m);
         r.basis.insert(s, beacon);
         let rejoin = r.stopped.remove(&s).unwrap_or(Rejoin::Held);
+        self.dirty(rid).members.insert(s);
         self.holding.entry(s).or_default().insert(conn);
         moved.push(Moved::Joined(conn, s, rejoin));
     }
@@ -1476,6 +1678,7 @@ impl Opens {
             c.ending.remove(s);
         }
         moved.push(Moved::Until(conn, *s));
+        self.dirty_member(conn, *s);
     }
 
     /// The peer's reported position's cursor for S on `conn` (spec/sync-opens.md §6 Lost).
@@ -1518,6 +1721,7 @@ impl Opens {
             set.remove(&conn);
         }
         moved.push(Moved::Left(conn, s));
+        self.dirty_member(conn, s);
     }
 
     fn send_lost(&mut self, ctx: &mut Ctx, conn: ConnId, items: Vec<(SyncId, Option<Cursor>)>) {
@@ -1550,6 +1754,7 @@ impl Opens {
                 && let Some(at) = r.stopped.get_mut(&s)
             {
                 *at = Rejoin::From(cursor);
+                self.dirty_member(conn, s);
             }
             if let Some(u) = ending {
                 let c = if rp.is_none_or(|p| u < p) { ctx.holds.cursor_at(u).or(rc) } else { rc };
@@ -1573,8 +1778,11 @@ impl Opens {
         let Some(c) = self.conns.get_mut(&conn) else { return };
         c.tested_pos = c.tested_pos.min(below);
         c.test_due = true;
-        if let Some(r) = c.rec.and_then(|r| self.records.get_mut(&r)) {
-            r.acked_pos = r.acked_pos.min(below);
+        if let Some(r) = c.rec.and_then(|r| self.records.get_mut(&r))
+            && r.acked_pos > below
+        {
+            r.acked_pos = below;
+            self.dirty_core(conn);
         }
     }
 
@@ -1587,8 +1795,11 @@ impl Opens {
         }
         let tested = c.tested_pos;
         let Some(r) = c.rec.and_then(|r| self.records.get_mut(&r)) else { return };
-        let acked = r.own.pos.get(&r.own.acked).copied().unwrap_or(0);
-        r.acked_pos = r.acked_pos.max(acked.min(tested));
+        let to = r.acked_pos.max(r.own.acked_reach.min(tested));
+        if to != r.acked_pos {
+            r.acked_pos = to;
+            self.dirty_core(conn);
+        }
     }
 }
 

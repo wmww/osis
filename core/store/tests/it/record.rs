@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! spec: none (the record's layout is the store's own; issues/sync-rewrite.md, and
+//! spec: none (the record's layout is the store's own; spec/sync-opens.md §3 and
 //! core/test/tla/net/ASSUMPTIONS.md: a record and the log are one durable unit).
 
 use crate::common;
@@ -7,15 +7,11 @@ use crate::common;
 use common::*;
 use osis_base::SyncId;
 use osis_crypto::SeededRng;
-use osis_store::{At, Fault, Member, RecordId, Shred, Store};
+use osis_store::{Fault, NO_LABEL, RecordId, Shred, Store};
 use std::collections::BTreeSet;
 
 fn l(n: u8) -> SyncId {
     SyncId([n; 16])
-}
-
-fn member() -> Member {
-    Member { class: 1, beacon: Some([2; 32]), until: None, at: At::Stream }
 }
 
 fn create(s: &mut Store, rng: &mut SeededRng, r: u8, actor: u8) -> RecordId {
@@ -25,8 +21,8 @@ fn create(s: &mut Store, rng: &mut SeededRng, r: u8, actor: u8) -> RecordId {
     id
 }
 
-// a record is one atomic unit (issues/sync-rewrite.md): a crash at any write
-// of its creation, a member's open and its close leaves it whole or absent
+// a record is one atomic unit: a crash at any write of its creation with its first rows leaves
+// it whole or absent
 #[test]
 fn crash_at_any_write_leaves_a_record_whole_or_absent() {
     let run = |k: u64| {
@@ -34,8 +30,8 @@ fn crash_at_any_write_leaves_a_record_whole_or_absent() {
         d.backend.faults().at(k, Fault::Crash);
         let mut t = s.transaction(&mut rng).unwrap();
         let id = t.record_create([7; 32], &[tid(1), tid(2)]).unwrap();
-        t.record_open(&id, l(1), &member()).unwrap();
-        t.record_set_cursor(&id, Some(b"cur".to_vec())).unwrap();
+        t.record_put_row(&id, b'm', &l(1), b"", b"member".to_vec()).unwrap();
+        t.record_put_row(&id, b'c', &NO_LABEL, b"", b"cur".to_vec()).unwrap();
         let _ = t.commit();
         drop(s);
         d.backend.faults().revive();
@@ -46,11 +42,12 @@ fn crash_at_any_write_leaves_a_record_whole_or_absent() {
             [] => {
                 assert!(t.records_of_actors(&[tid(2)]).unwrap().is_empty(), "crash at write {k}: an actor index row outlived its record");
                 assert_eq!(t.records_total().unwrap(), 0, "crash at write {k}: a total without a record");
+                assert!(t.records_with_row(&l(1), b'm', b"", 10).unwrap().is_empty(), "crash at write {k}: an index row without its record");
                 false
             }
             [r] => {
-                assert_eq!(r.cursor.as_deref(), Some(b"cur".as_slice()), "crash at write {k}: a record without its cursor");
-                assert_eq!(t.record_members(&r.id).unwrap().len(), 1, "crash at write {k}: a record without its member");
+                assert_eq!(t.record_get_row(&r.id, b'c', &NO_LABEL, b"").unwrap().as_deref(), Some(b"cur".as_slice()), "crash at write {k}: a record without its row");
+                assert_eq!(t.records_with_row(&l(1), b'm', b"", 10).unwrap(), [r.id], "crash at write {k}: a row without its index");
                 assert!(t.records_total().unwrap() > 0);
                 true
             }
@@ -68,10 +65,10 @@ fn crash_at_any_write_leaves_a_record_whole_or_absent() {
     assert!(gone && whole, "the crash points reach both outcomes");
 }
 
-// a cursor is stored only by the transaction applying what it covers (issues/sync-rewrite.md,
-// Restart and loss): data and cursor cannot split at any write of that transaction
+// a cursor row is written by the transaction applying what it covers (spec/sync-streams.md §3
+// Durability): data and cursor cannot split at any write of that transaction
 #[test]
-fn crash_at_any_write_keeps_a_cursor_with_its_applied_data() {
+fn crash_at_any_write_keeps_a_row_with_its_applied_data() {
     let (mut seen_none, mut seen_both) = (false, false);
     for k in 0..24 {
         let (d, mut rng, mut s) = fresh(cfg());
@@ -80,14 +77,14 @@ fn crash_at_any_write_keeps_a_cursor_with_its_applied_data() {
         let mut t = s.transaction(&mut rng).unwrap();
         t.put_local(b"applied", b"1", Shred::Yes).unwrap();
         t.log_added(l(3), osis_base::BlobId([1; 32])).unwrap();
-        t.record_set_cursor(&id, Some(b"cur".to_vec())).unwrap();
+        t.record_put_row(&id, b'c', &NO_LABEL, b"", b"cur".to_vec()).unwrap();
         let _ = t.commit();
         drop(s);
         d.backend.faults().revive();
         let mut s = reopen(&d);
         let mut t = s.transaction(&mut rng).unwrap();
         let applied = t.get_local(b"applied").unwrap().is_some();
-        let cursor = t.record(&id).unwrap().unwrap().cursor;
+        let cursor = t.record_get_row(&id, b'c', &NO_LABEL, b"").unwrap();
         assert_eq!(applied, cursor.is_some(), "crash at write {k}: a cursor and its data split");
         assert_eq!(applied, t.log_end().unwrap() > 0, "crash at write {k}: a cursor and the log's event split");
         seen_none |= !applied;
@@ -96,65 +93,33 @@ fn crash_at_any_write_keeps_a_cursor_with_its_applied_data() {
     assert!(seen_none && seen_both, "the crash points reach both outcomes");
 }
 
-// issues/sync-rewrite.md: every close sets `acked_pos` to min(self, changed_at - 1),
-// whether or not the record held the member, and touches no other record
-#[test]
-fn a_close_remarks_this_record_alone_to_below_the_changed_at() {
-    let (_d, mut rng, mut s) = fresh(cfg());
-    let a = create(&mut s, &mut rng, 1, 1);
-    let b = create(&mut s, &mut rng, 2, 2);
-    let mut t = s.transaction(&mut rng).unwrap();
-    t.record_open(&a, l(1), &member()).unwrap();
-    assert_eq!(t.record_rise_acked(&a, 100).unwrap(), 100);
-    assert_eq!(t.record_rise_acked(&b, 100).unwrap(), 100);
-    assert_eq!(t.record_close(&a, &l(1), 40, None).unwrap(), 39, "below changed_at");
-    assert!(t.record_members(&a).unwrap().is_empty());
-    assert_eq!(t.record(&b).unwrap().unwrap().acked_pos, 100, "another peer's record is untouched");
-    assert_eq!(t.record_close(&a, &l(1), 90, None).unwrap(), 39, "a later changed_at leaves it");
-    assert_eq!(t.record_close(&a, &l(9), 10, None).unwrap(), 9, "a member the record did not hold is re-marked too");
-    assert_eq!(t.record_rise_acked(&a, 5).unwrap(), 9, "only re-marking lowers it");
-}
-
-// issues/sync-rewrite.md, Lost and rejoin: an older lag is kept, and a rejoin spends it
-#[test]
-fn a_stop_keeps_the_older_lag_until_a_rejoin_spends_it() {
-    let (_d, mut rng, mut s) = fresh(cfg());
-    let a = create(&mut s, &mut rng, 1, 1);
-    let mut t = s.transaction(&mut rng).unwrap();
-    t.record_close(&a, &l(1), 1, Some(b"old".to_vec())).unwrap();
-    t.record_close(&a, &l(1), 1, Some(b"new".to_vec())).unwrap();
-    assert_eq!(t.record_lag(&a, &l(1)).unwrap().as_deref(), Some(b"old".as_slice()));
-    assert_eq!(t.record_take_lag(&a, &l(1)).unwrap().as_deref(), Some(b"old".as_slice()));
-    assert_eq!(t.record_lag(&a, &l(1)).unwrap(), None);
-    t.record_close(&a, &l(1), 1, Some(b"new".to_vec())).unwrap();
-    assert_eq!(t.record_lag(&a, &l(1)).unwrap().as_deref(), Some(b"new".as_slice()));
-}
-
-// issues/sync-rewrite.md: a node that stops holding L drops it from every record's S and
-// every lag of it, in that same transaction; `changed_forget` is that transaction
+// spec/sync-opens.md §3: a node that stops holding S drops it from every record, every module's
+// rows of it, in that same transaction; `changed_forget` is that transaction
 #[test]
 fn forgetting_a_sync_id_drops_it_from_every_record_in_one_step() {
     let (_d, mut rng, mut s) = fresh(cfg());
     let a = create(&mut s, &mut rng, 1, 1);
     let b = create(&mut s, &mut rng, 2, 2);
     let mut t = s.transaction(&mut rng).unwrap();
-    t.record_open(&a, l(1), &member()).unwrap();
-    t.record_open(&b, l(1), &member()).unwrap();
-    t.record_open(&b, l(2), &member()).unwrap();
-    t.record_close(&a, &l(1), 1, Some(b"lag".to_vec())).unwrap();
-    t.record_open(&a, l(1), &member()).unwrap();
+    t.record_put_row(&a, b'm', &l(1), b"", vec![1]).unwrap();
+    t.record_put_row(&a, b'k', &l(1), &[7; 32], vec![]).unwrap();
+    t.record_put_row(&b, b'm', &l(1), b"", vec![1]).unwrap();
+    t.record_put_row(&b, b'm', &l(2), b"", vec![1]).unwrap();
+    t.record_put_row(&b, b'c', &NO_LABEL, b"", vec![1]).unwrap();
     t.commit().unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
     t.changed_forget(&l(1)).unwrap();
     t.commit().unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
-    assert!(t.record_members(&a).unwrap().is_empty());
-    assert_eq!(t.record_members(&b).unwrap().iter().map(|(x, _)| *x).collect::<Vec<_>>(), [l(2)]);
-    assert_eq!(t.record_lag(&a, &l(1)).unwrap(), None, "its lag goes too");
+    assert!(t.record_tag_rows(&a, b'm').unwrap().is_empty() && t.record_tag_rows(&a, b'k').unwrap().is_empty());
+    assert_eq!(t.record_tag_rows(&b, b'm').unwrap().iter().map(|(x, ..)| *x).collect::<Vec<_>>(), [l(2)]);
+    assert!(t.record_get_row(&b, b'c', &NO_LABEL, b"").unwrap().is_some(), "a record-wide row stays");
+    assert!(t.records_with_row(&l(1), b'm', b"", 10).unwrap().is_empty());
 }
 
-// issues/sync-rewrite.md, RECORD_BUDGET: past the budget the least recently used record not in
-// use goes, whole, and its bytes come back to the count; a record in use is not dropped
+// spec/sync-opens.md §3, RECORD_BUDGET: past the budget the least recently used record not in
+// use goes, whole, with every module's rows, and its bytes come back to the count; a record in
+// use is not dropped
 #[test]
 fn eviction_drops_the_least_recently_used_not_in_use_whole() {
     let (_d, mut rng, mut s) = fresh(cfg());
@@ -162,21 +127,24 @@ fn eviction_drops_the_least_recently_used_not_in_use_whole() {
     let b = create(&mut s, &mut rng, 2, 2);
     let c = create(&mut s, &mut rng, 3, 3);
     let mut t = s.transaction(&mut rng).unwrap();
-    t.record_open(&a, l(1), &member()).unwrap();
+    t.record_put_row(&a, b'm', &l(1), b"", vec![1; 10]).unwrap();
+    t.record_put_row(&a, b'F', &NO_LABEL, &1u64.to_be_bytes(), vec![0; 1000]).unwrap();
     // b most recent, a next, c least
     t.record_used(&a, &[tid(1)]).unwrap();
     t.record_used(&b, &[tid(2)]).unwrap();
     t.commit().unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
     let total = t.records_total().unwrap();
+    assert!(total > 1000, "every row counts");
     let in_use: BTreeSet<RecordId> = [c].into();
-    assert_eq!(t.records_evict(total - 1, &in_use).unwrap().len(), 1);
+    assert_eq!(t.records_evict(total - 1, &in_use).unwrap(), [a]);
     assert!(t.record(&a).unwrap().is_none(), "the least recently used not in use goes");
     assert!(t.record(&c).unwrap().is_some(), "a record in use stays");
     assert!(t.record(&b).unwrap().is_some());
     assert!(t.records_of_actors(&[tid(1)]).unwrap().is_empty(), "with its actor rows");
-    assert!(t.record_members(&a).unwrap().is_empty(), "and its members");
-    assert!(t.records_total().unwrap() < total);
+    assert!(t.record_tag_rows(&a, b'm').unwrap().is_empty() && t.record_tag_rows(&a, b'F').unwrap().is_empty(), "and its rows");
+    assert!(t.records_with_row(&l(1), b'm', b"", 10).unwrap().is_empty(), "and their index");
+    assert!(t.records_total().unwrap() < total - 1000);
     // 0: only what is in use is left (a resource bound, a defined outcome)
     t.records_evict(0, &in_use).unwrap();
     assert!(t.record(&b).unwrap().is_none());
@@ -191,7 +159,7 @@ fn a_copied_or_restored_store_keeps_its_records_as_of_the_copy() {
     let a = create(&mut s, &mut rng, 1, 1);
     let copy = d.copy();
     let mut t = s.transaction(&mut rng).unwrap();
-    t.record_set_cursor(&a, Some(b"later".to_vec())).unwrap();
+    t.record_put_row(&a, b'c', &NO_LABEL, b"", b"later".to_vec()).unwrap();
     let b = t.record_create([2; 32], &[tid(1)]).unwrap();
     t.commit().unwrap();
     let mut c = reopen(&copy);
@@ -199,8 +167,32 @@ fn a_copied_or_restored_store_keeps_its_records_as_of_the_copy() {
     let held = t.records_of_actors(&[tid(1)]).unwrap();
     assert_eq!(held.len(), 1, "the record made after the copy is not in it");
     assert_eq!(held[0].r, [1; 32], "the pair key is the copy's own, as it was");
-    assert_eq!(held[0].cursor, None, "and the cursor as of the copy");
+    assert_eq!(t.record_get_row(&a, b'c', &NO_LABEL, b"").unwrap(), None, "and its rows as of the copy");
     assert!(t.record(&b).unwrap().is_none());
+}
+
+// the index finds the records holding one row by its sync ID, tag and exact key: a longer key
+// under the same prefix is another row
+#[test]
+fn the_index_finds_records_by_exact_row() {
+    let (_d, mut rng, mut s) = fresh(cfg());
+    let a = create(&mut s, &mut rng, 1, 1);
+    let b = create(&mut s, &mut rng, 2, 2);
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.record_put_row(&a, b'k', &l(1), &[5; 32], vec![]).unwrap();
+    t.record_put_row(&b, b'k', &l(1), &[5; 32], vec![]).unwrap();
+    t.record_put_row(&b, b'k', &l(1), &[6; 32], vec![]).unwrap();
+    t.record_put_row(&a, b'm', &l(1), b"x", vec![]).unwrap();
+    let mut both = t.records_with_row(&l(1), b'k', &[5; 32], 10).unwrap();
+    both.sort();
+    let mut want = vec![a, b];
+    want.sort();
+    assert_eq!(both, want);
+    assert_eq!(t.records_with_row(&l(1), b'k', &[6; 32], 10).unwrap(), [b]);
+    assert_eq!(t.records_with_row(&l(1), b'k', &[5; 32], 1).unwrap().len(), 1, "at most the limit");
+    assert!(t.records_with_row(&l(1), b'm', b"", 10).unwrap().is_empty(), "a longer key is another row");
+    assert!(t.record_remove_row(&b, b'k', &l(1), &[6; 32]).unwrap());
+    assert!(t.records_with_row(&l(1), b'k', &[6; 32], 10).unwrap().is_empty());
 }
 
 // the lookup reads the records of the proven actors, however many others the node keeps
@@ -219,45 +211,7 @@ fn a_lookup_reads_only_the_records_of_the_proven_actors() {
     }
 }
 
-// issues/sync-rewrite.md: a member only one side held leaves S with no lag (its
-// rejoin is a listing) and is pending again; a stream move of a member closed since adds nothing
-#[test]
-fn a_dropped_member_keeps_no_lag_and_a_late_move_reopens_nothing() {
-    let (_d, mut rng, mut s) = fresh(cfg());
-    let a = create(&mut s, &mut rng, 1, 1);
-    let mut t = s.transaction(&mut rng).unwrap();
-    t.record_open(&a, l(1), &Member { at: At::Join(Some(b"lag".to_vec())), ..member() }).unwrap();
-    t.record_rise_acked(&a, 50).unwrap();
-    assert_eq!(t.record_drop(&a, &l(1), 20).unwrap(), 19);
-    assert!(t.record_members(&a).unwrap().is_empty());
-    assert_eq!(t.record_lag(&a, &l(1)).unwrap(), None, "no lag: a listing");
-    t.record_member_at(&a, l(1), At::Stream).unwrap();
-    assert!(t.record_members(&a).unwrap().is_empty(), "a member closed since stays closed");
-}
 
-// issues/sync-rewrite.md, Stored filter: the peer's filter is kept by generation, a whole one
-// replacing what was stored, and it goes with the record
-#[test]
-fn the_peer_filter_is_kept_by_generation_and_goes_with_its_record() {
-    use osis_store::Filter;
-    let (_d, mut rng, mut s) = fresh(cfg());
-    let a = create(&mut s, &mut rng, 1, 1);
-    let mut t = s.transaction(&mut rng).unwrap();
-    let g = |generation, added| Filter { generation, acked: generation, f: 9, whole: 2, added };
-    t.record_put_peer_filter(&a, true, g(1, 0), b"one".to_vec()).unwrap();
-    t.record_put_peer_filter(&a, false, g(2, 1), b"two".to_vec()).unwrap();
-    assert_eq!(t.record_peer_filter(&a).unwrap(), [b"one".to_vec(), b"two".to_vec()]);
-    assert_eq!(t.record(&a).unwrap().unwrap().peer, g(2, 1));
-    t.record_put_peer_filter(&a, true, g(3, 0), b"three".to_vec()).unwrap();
-    assert_eq!(t.record_peer_filter(&a).unwrap(), [b"three".to_vec()], "a whole one replaces");
-    let total = t.records_total().unwrap();
-    t.record_put_peer_filter(&a, false, g(4, 1), vec![0; 1000]).unwrap();
-    assert!(t.records_total().unwrap() >= total + 1000, "counted in the budget");
-    let in_use = BTreeSet::new();
-    t.records_evict(0, &in_use).unwrap();
-    assert!(t.record_peer_filter(&a).unwrap().is_empty(), "evicted with its record");
-    assert_eq!(t.records_total().unwrap(), 0);
-}
 
 // a module's rows in a record (notes/sync-boundary.md U3): counted in the record's bytes, gone
 // with the record (eviction) and with their sync ID (`changed_forget`), never written into a

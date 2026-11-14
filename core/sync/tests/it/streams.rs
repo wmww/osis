@@ -15,7 +15,7 @@ use osis_store::{MemoryBackend, MemoryRoot, RecordId};
 use osis_sync::opens::{Member, Moved, Positions, Rejoin, Reported};
 use osis_sync::session::{Incoming, To};
 use osis_sync::store::Source;
-use osis_sync::streams::{Ctx, Ground, Opening, Rank, Shared, Streams, Wire};
+use osis_sync::streams::{Ctx, Ground, INLINE_LIMIT, Opening, Rank, Shared, Streams, Wire};
 use osis_sync::types::{ConnId, Credential, Entry, Result, SourceClass};
 use osis_sync::unread::Sources;
 use osis_sync::Store;
@@ -143,14 +143,22 @@ struct Side {
     /// Reports opens folded.
     folded: usize,
     set: SyncSet,
+    /// Its device lost power (`Faults` crash): it takes and sends nothing until restarted.
+    down: bool,
 }
 
 impl Side {
     fn new(seed: u64) -> Side {
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
-        let store = Store::open(Box::new(backend.clone()), Box::new(root.clone()), Box::new(SeededRng::from_u64(seed))).unwrap();
+        let mut store = Store::open(Box::new(backend.clone()), Box::new(root.clone()), Box::new(SeededRng::from_u64(seed))).unwrap();
         let log = Log::default();
-        Side { backend, root, store, streams: Streams::default(), table: Table { log: log.clone(), ..Table::default() }, pipe: Pipe { log, ..Pipe::default() }, open: Open { record: Some([seed as u8; 16]), ..Open::default() }, reported: Vec::new(), folded: 0, set: SyncSet::default() }
+        let record = store.with_tx(|t| t.record_create([seed as u8; 32], &[])).unwrap();
+        Side { backend, root, streams: Streams::new(store.clone()), store, table: Table { log: log.clone(), ..Table::default() }, pipe: Pipe { log, ..Pipe::default() }, open: Open { record: Some(record), ..Open::default() }, reported: Vec::new(), folded: 0, set: SyncSet::default(), down: false }
+    }
+
+    /// Another peer record in this side's store.
+    fn new_record(&mut self, r: u8) -> RecordId {
+        self.store.with_tx(|t| t.record_create([r; 32], &[])).unwrap()
     }
 
     fn hold(&mut self, s: SyncId, h: Holding) {
@@ -162,6 +170,20 @@ impl Side {
     fn restart(&mut self, seed: u64) {
         self.store = Store::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), Box::new(SeededRng::from_u64(seed))).unwrap();
         self.store.set_sync_set(&self.set);
+        self.streams.set_store(self.store.clone());
+    }
+
+    /// A restart of the whole side: its store reopened and streams started from it, the
+    /// connection gone (what opens kept of the shared set stays: a reconnect takes the record).
+    fn restart_all(&mut self, seed: u64) {
+        self.backend.faults().revive();
+        self.down = false;
+        self.restart(seed);
+        self.streams = Streams::new(self.store.clone());
+        self.pipe.out.clear();
+        self.reported.clear();
+        self.folded = 0;
+        self.open.positions.clear();
     }
 
     fn with<T>(&mut self, now: u64, f: impl FnOnce(&mut Streams, &mut Ctx) -> T) -> T {
@@ -248,8 +270,19 @@ impl Pair {
     fn run_on(&mut self, conns: &[ConnId], mut drop: impl FnMut(bool, ConnId, &Msg) -> bool) {
         for _ in 0..10_000 {
             let now = self.now;
-            self.a.with(now, |s, c| s.tick(c).unwrap());
-            self.b.with(now, |s, c| s.tick(c).unwrap());
+            for side in [&mut self.a, &mut self.b] {
+                if side.down {
+                    continue;
+                }
+                // a step failing on its store fails only where the device lost power
+                if let Err(e) = side.with(now, |s, c| s.tick(c)) {
+                    assert!(side.backend.faults().crashed(), "{e}");
+                    side.down = true;
+                }
+                if side.down {
+                    side.pipe.out.clear();
+                }
+            }
             let on = |out: &mut Vec<(ConnId, Frame)>| {
                 let (here, rest): (Vec<_>, Vec<_>) = std::mem::take(out).into_iter().partition(|(c, _)| conns.contains(c));
                 *out = rest;
@@ -265,8 +298,11 @@ impl Pair {
                     self.held.push((ab, f));
                     continue;
                 }
-                self.seen.push((ab, m.clone()));
                 let to = if ab { &mut self.b } else { &mut self.a };
+                if to.down {
+                    continue;
+                }
+                self.seen.push((ab, m.clone()));
                 let inc = match f {
                     Frame::Req(id, _) => Incoming::Request(id, m),
                     Frame::Ans(id, _) => Incoming::Reply(To::Streams, id, m),
@@ -560,10 +596,10 @@ fn a_whole_listing_carries_deletions_spec_sync_streams_3() {
 }
 
 // spec/sync-streams.md §4 (Applying: a listing never treats an absent entry as deleted, except
-// one from the start marked trimmed), SN_infer_lit, SN_infer_knew: a whole listing leaves `known`
-// and the requester's own store alone; only a trimmed one replaces what the source holds.
+// one from the start read to its end), SN_infer_lit, SN_infer_knew: a trimmed whole listing
+// replaces what the source holds as present, and leaves the requester's own store alone.
 #[test]
-fn absence_is_no_deletion_but_trimmed_spec_sync_streams_4() {
+fn absence_is_no_deletion_but_from_the_start_spec_sync_streams_4() {
     let mut p = Pair::new();
     let s = sid(1);
     let x = p.a.log(s, 100);
@@ -788,7 +824,7 @@ fn refusals_told_and_kept_spec_sync_streams_4() {
     p.b.join(p.now, k.id);
     p.run();
     let src = p.a.src();
-    let r = p.a.streams.known().refusal(src, &k.id, &bad).cloned().unwrap();
+    let r = p.a.streams.known().refusal(src, &k.id, &bad).unwrap();
     assert_eq!(r.code, Code::REFUSED);
     assert!(r.stamp.is_some());
     assert!(p.sent_by_b(43).iter().any(|m| matches!(m, Msg::Stream(st) if st.cursor.is_none() && st.events.contains(&(k.id, Event::Refused(good, Code::TOMBSTONED))))));
@@ -891,8 +927,9 @@ fn the_next_source_takes_over_when_one_fails_spec_sync_streams_4() {
     p.a.hold(s, Holding::Read);
     p.b.hold(s, Holding::Read);
     // two sources at b: a's peer record on C, another on D (a serves both)
-    p.b.open.records.insert(D, [0xd; 16]);
-    p.a.open.records.insert(D, [0xe; 16]);
+    let (rb, ra) = (p.b.new_record(0xd), p.a.new_record(0xe));
+    p.b.open.records.insert(D, rb);
+    p.a.open.records.insert(D, ra);
     for c in [C, D] {
         p.a.join_on(p.now, c, s, Rejoin::Held);
         p.b.join_on(p.now, c, s, Rejoin::Held);
@@ -1111,4 +1148,172 @@ fn deliver(to: &mut Side, now: u64, f: Frame) {
 fn caught_up_matches_what_each_side_holds_spec_sync_status_1() {
     let said: usize = (1..=100).map(|seed| caught_up_history(seed, 6)).sum();
     assert!(said > 100 * 100, "caught up is said often enough to test: {said}");
+}
+
+// spec/sync-streams.md §4 (Applying: a listing from the start replaces what the source holds as
+// present, trimmed or not; issues of a restored source store): a source whose store went back to
+// before an entry answers the stored cursor with a whole listing not marked trimmed; the entry
+// it lost with no deletion event is no longer known there.
+#[test]
+fn a_whole_listing_replaces_presence_trimmed_or_not_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    let x = p.a.log(s, 100);
+    let y = p.a.log(s, 101);
+    let own = p.b.log(s, 300);
+    p.shared_read(s);
+    p.run();
+    assert!(knows(&p.b, p.b.src(), s, x) && knows(&p.b, p.b.src(), s, y));
+    // a's store is another history now (restored from before y): it holds x alone
+    let mut a = Side::new(5);
+    a.log(s, 100);
+    a.open.record = p.a.open.record;
+    p.a = a;
+    p.b.streams.closed(C);
+    p.shared_read(s);
+    p.seen.clear();
+    p.run();
+    let replies: Vec<_> = p.sent_by_a(42).into_iter().filter_map(|m| if let Msg::PullReply(r) = m { Some(r.clone()) } else { None }).collect();
+    assert!(replies.first().is_some_and(|r| r.whole && !r.trimmed), "{replies:?}");
+    assert!(knows(&p.b, p.b.src(), s, x));
+    assert!(!knows(&p.b, p.b.src(), s, y), "the whole listing is the source's live set");
+    assert!(!Sources::present(&p.b.streams, &s, &y));
+    assert!(p.b.store.entry(&s, &own).unwrap().is_some(), "nothing of b's own store goes");
+}
+
+// spec/sync-streams.md §4 (Applying; Joining: a join from the start is S's listing): a join of S
+// from the start read to its end replaces what the source holds of S as present.
+#[test]
+fn a_join_from_the_start_replaces_presence_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let (s, t) = (sid(1), sid(2));
+    let x = p.a.log(s, 100);
+    let y = p.a.log(s, 101);
+    p.shared_read(s);
+    p.shared_read(t);
+    p.run();
+    assert!(knows(&p.b, p.b.src(), s, y));
+    // S leaves both sides; a drops y and its deletion event leaves the log, while the stream
+    // (T at it) reads on past the deletion horizon
+    p.b.leave(p.now, s);
+    p.a.leave(p.now, s);
+    p.a.store.drop_entry(&s, &y, Vec::new()).unwrap();
+    p.now += TOMBSTONE_LIFETIME_MS + 1;
+    p.a.store.settle_at(WallMs(p.now)).unwrap();
+    p.a.log(t, 102);
+    p.run();
+    // a digest difference: b rejoins S from the start
+    p.a.join(p.now, s);
+    p.b.join_on(p.now, C, s, Rejoin::From(None));
+    p.seen.clear();
+    p.run();
+    assert!(p.sent_by_a(42).iter().all(|m| matches!(m, Msg::PullReply(r) if !r.whole)), "a join, not a whole listing");
+    assert!(knows(&p.b, p.b.src(), s, x));
+    assert!(!knows(&p.b, p.b.src(), s, y), "S's listing from the start is its live set there");
+}
+
+// spec/sync-streams.md §3 (Durability: the records and the cursors stored in them are durable):
+// a requester restarted (streams started from its store) reconnecting to its source pulls from
+// its stored cursor: no listing from the start, and what the source showed is still known.
+#[test]
+fn a_restart_pulls_from_the_stored_cursor_spec_sync_streams_3() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    let x = p.a.log(s, 100);
+    p.shared_read(s);
+    p.run();
+    p.b.restart_all(7);
+    p.a.streams.closed(C);
+    assert!(knows(&p.b, p.b.src(), s, x), "known is durable");
+    let y = p.a.log(s, 101);
+    p.shared_read(s);
+    p.seen.clear();
+    p.run();
+    let pulls = p.sent_by_b(41);
+    assert!(pulls.iter().all(|m| matches!(m, Msg::Pull(q) if q.cursor.is_some() && q.joins.is_empty())), "{pulls:?}");
+    assert!(p.sent_by_a(42).iter().all(|m| matches!(m, Msg::PullReply(r) if !r.whole)));
+    assert!(knows(&p.b, p.b.src(), s, y));
+}
+
+/// Two sides keeping `k` unread, synced; then `a` takes `n` more entries (one too large to come
+/// inline) and `b` loses power at its durable write `crash` while pulling them; `b` restarts and
+/// reconnects. Whether the crash came before the pull ended.
+fn crash_while_pulling(crash: u64) -> bool {
+    let mut p = Pair::new();
+    let k = Sid::new(10);
+    k.keep(&mut p.a);
+    k.keep(&mut p.b);
+    let w = k.stamped(&mut p.a, 100, true);
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run();
+    assert!(p.b.store.entry(&k.id, &w).unwrap().is_some());
+    let x = k.stamped(&mut p.a, 200, true);
+    let y = k.stamped(&mut p.a, INLINE_LIMIT as usize + 1000, true);
+    p.b.backend.faults().at(crash, osis_store::Fault::Crash);
+    p.run();
+    let crashed = p.b.down;
+    p.b.restart_all(8);
+    p.a.streams.closed(C);
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.seen.clear();
+    p.run();
+    assert!(!p.b.down);
+    let whole = p.sent_by_a(42).iter().any(|m| matches!(m, Msg::PullReply(r) if r.whole));
+    assert!(!whole, "crash at write {crash}: the reconnect read from the start");
+    for b in [w, x, y] {
+        assert!(p.b.store.entry(&k.id, &b).unwrap().is_some(), "crash at write {crash}: an entry is lost");
+        assert!(knows(&p.b, p.b.src(), k.id, b), "crash at write {crash}: presence is lost");
+    }
+    crashed
+}
+
+// spec/sync-streams.md §3 (Durability: a cursor is stored only with what it covers applied) and
+// §4 (Reports): a restart at every durable write between a pull and its Applied loses nothing,
+// and the reconnect reads from the stored cursor, never from the start.
+#[test]
+fn a_restart_at_any_write_of_a_pull_loses_nothing_spec_sync_streams_3() {
+    let mut n = 0;
+    while crash_while_pulling(n) {
+        n += 1;
+        assert!(n < 100, "the pull ends");
+    }
+    assert!(n > 2, "the pull wrote: {n}");
+}
+
+/// Both sides read `n` sync IDs with an entry each and are synced; `b` restarts and both rejoin
+/// every member over a new connection. The bytes and the Pulls of the reconnect's streams.
+fn restart_reconnect_streams(n: u8) -> (usize, usize) {
+    let mut p = Pair::new();
+    for i in 1..=n {
+        p.a.log(sid(i), 100 + i as usize);
+        p.shared_read(sid(i));
+    }
+    p.run();
+    p.b.restart_all(7);
+    p.a.streams.closed(C);
+    for i in 1..=n {
+        p.a.join(p.now, sid(i));
+        p.b.join(p.now, sid(i));
+    }
+    p.seen.clear();
+    p.run();
+    let bytes = p.seen.iter().map(|(_, m)| m.encode().len()).sum();
+    let pulls = p.seen.iter().filter(|(_, m)| m.kind() == 41).count();
+    (bytes, pulls)
+}
+
+// spec/sync-streams.md §4 (Costs: an idle reconnect costs under 1 KB and a few round trips
+// whatever the number of sync IDs shared), after a restart: opens' reconnect (Resume, Digest,
+// an empty filter generation; tests/it/opens.rs) and the streams' (a Pull each way from the
+// stored cursors), at n and 10n shared sync IDs.
+#[test]
+fn a_reconnect_after_a_restart_costs_under_1kb_spec_sync_streams_4() {
+    for n in [10, 100] {
+        let opens = crate::opens::restart_reconnect_bytes(n);
+        let (streams, pulls) = restart_reconnect_streams(n);
+        assert!(opens + streams < 1024, "at n = {n}: opens {opens} bytes, streams {streams}");
+        assert!(pulls <= 2, "at n = {n}: {pulls} Pulls");
+    }
 }

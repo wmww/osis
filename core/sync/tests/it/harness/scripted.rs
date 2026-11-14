@@ -15,6 +15,8 @@ use osis_sync::opens::cred::{Bind, Shown, Tested};
 use osis_sync::opens::holds::{Creds, Holds};
 use osis_sync::opens::{Ctx, Moved, Opens, Reported, Wire};
 use osis_sync::session::{Incoming, Proven};
+use osis_store::{MemoryBackend, MemoryRoot};
+use osis_sync::Store;
 use osis_sync::types::{ConnId, Credential, Cursor, Holding, Position};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -119,6 +121,11 @@ impl Table {
             None => self.creds.remove(&s),
         };
         self.due.insert(s);
+    }
+
+    /// Every sync ID held comes due again (a restart: the memos start over).
+    pub fn redue(&mut self) {
+        self.due.extend(self.creds.keys().copied());
     }
 
     /// J of `actor` for S is now `j`; S's roles moved.
@@ -227,6 +234,9 @@ impl Wire for Pipe {
 /// An honest side: the product's opens over its table and connections.
 pub struct Side {
     pub opens: Opens,
+    /// Where its records live (`Opens::flush` at the end of each step).
+    pub store: Store,
+    pub device: (MemoryBackend, MemoryRoot),
     pub table: Table,
     pub pipe: Pipe,
     pub moved: Vec<Moved>,
@@ -235,38 +245,58 @@ pub struct Side {
 
 impl Side {
     pub fn new(seed: u64) -> Side {
-        Side { opens: Opens::default(), table: Table::new(seed), pipe: Pipe::default(), moved: Vec::new(), now: WallMs(1_000) }
+        let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
+        let store = Store::open(Box::new(backend.clone()), Box::new(root.clone()), Box::new(SeededRng::from_u64(seed))).unwrap();
+        Side { opens: Opens::default(), store, device: (backend, root), table: Table::new(seed), pipe: Pipe::default(), moved: Vec::new(), now: WallMs(1_000) }
     }
 
     /// Settles (the driver's settle round for opens).
     pub fn settle(&mut self) {
-        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, now: self.now };
+        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, now: self.now };
         self.opens.tick(&mut ctx, &mut self.moved);
+        self.flush();
+    }
+
+    /// The end of the node's step: opens writes its records (and evicts past its budget).
+    pub fn flush(&mut self) -> Vec<osis_sync::types::RecordId> {
+        self.opens.flush(&mut self.store).unwrap()
+    }
+
+    /// A restart: the store reopened over its device, opens started from it, every connection
+    /// gone.
+    pub fn restart(&mut self) {
+        self.store = Store::open(Box::new(self.device.0.clone()), Box::new(self.device.1.clone()), Box::new(SeededRng::from_u64(99))).unwrap();
+        self.opens = Opens::default();
+        self.pipe = Pipe::default();
+        self.moved.clear();
+        self.table.redue();
+        self.settle();
     }
 
     /// Takes one message, then settles.
     pub fn take(&mut self, conn: ConnId, m: Incoming) {
-        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, now: self.now };
+        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, now: self.now };
         self.opens.message(&mut ctx, conn, m, &mut self.moved);
         self.settle();
     }
 
     /// The peer reported position `pos` for S (streams' word).
     pub fn reported(&mut self, conn: ConnId, s: SyncId, pos: Position) {
-        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, now: self.now };
+        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, now: self.now };
         self.opens.reported(&mut ctx, Reported::Member(conn, s, Some((pos, pos.to_be_bytes().to_vec()))), &mut self.moved);
         self.settle();
     }
 
     /// The peer's stream stands at `pos` (an Applied): every member at the stream stands there.
     pub fn reported_stream(&mut self, conn: ConnId, pos: Position) {
-        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, now: self.now };
+        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, now: self.now };
         self.opens.reported(&mut ctx, Reported::Stream(conn, pos, pos.to_be_bytes().to_vec()), &mut self.moved);
         self.settle();
     }
 
     pub fn closed(&mut self, conn: ConnId) {
         self.opens.closed(conn, &mut self.moved);
+        self.flush();
     }
 
     /// What it sent since the last call.

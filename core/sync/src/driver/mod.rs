@@ -157,9 +157,10 @@ impl Node {
     /// `handle` settles every module.
     pub fn open(engine: Engine, store: Store, cfg: SyncConfig, rng: Box<dyn NodeRng>) -> Result<Node> {
         let now = engine.now();
+        let store_handle = store.clone();
         let mut driver = Driver::default();
         driver.dials.set_own(cfg.key.map(|k| k.0));
-        Ok(Node { engine, store, rng, cfg, now, rounds: 0, driver, opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::default(), inbox: Inbox::default(), status: Status::default() })
+        Ok(Node { engine, store, rng, cfg, now, rounds: 0, driver, opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::new(store_handle), inbox: Inbox::default(), status: Status::default() })
     }
 
     /// One step: `input` taken, every module settled. The outputs must all reach `apply`.
@@ -171,7 +172,7 @@ impl Node {
         self.rounds = 0;
         // the compaction trigger runs at each step (spec/sync-compaction.md §1): what its snapshots
         // cover is judged by the settle after it
-        let r = self.step(input, &mut out).and_then(|()| self.engine.compactions().map(drop).map_err(Error::from)).and_then(|()| self.settle(&mut out));
+        let r = self.step(input, &mut out).and_then(|()| self.engine.compactions().map(drop).map_err(Error::from)).and_then(|()| self.settle(&mut out)).and_then(|()| self.flush());
         // a durable commit since the restart ends the stretch, whatever this step did
         if self.driver.failing.is_some_and(|f| self.committed() > f.committed) {
             self.driver.failing = None;
@@ -551,6 +552,15 @@ impl Node {
         }
     }
 
+    /// The end of a step: opens writes what changed of its records, and the records evicted past
+    /// `RECORD_BUDGET` take what was charged to them (every row of theirs went with them).
+    fn flush(&mut self) -> Result<()> {
+        for id in self.opens.flush(&mut self.store)? {
+            self.store.gone(crate::store::Source::Record(id))?;
+        }
+        Ok(())
+    }
+
     /// A step failed (a store failure): every connection closes, and the modules restart from
     /// the store, once per stretch until a commit of the store lands (scenario store-reopen).
     /// The store's memory part (ephemeral entries) stays as it is: a failure judges none of it.
@@ -567,11 +577,11 @@ impl Node {
         self.opens = Opens::default();
         self.read = Read::default();
         self.unread = Unread::default();
-        self.streams = Streams::default();
+        self.streams = Streams::new(self.store.clone());
         self.inbox = Inbox::default();
         self.status = Status::default();
         self.driver.changed = 0;
-        if self.settle(out).is_err() {
+        if self.settle(out).and_then(|()| self.flush()).is_err() {
             self.close_all(out);
         }
     }
@@ -596,9 +606,12 @@ impl Node {
     #[doc(hidden)]
     pub fn test_copy(&self, clock: Arc<dyn osis_base::Clock>) -> Result<Node> {
         osis_base::copying::copying(|| {
+            let store = self.store.test_copy(clock.clone())?;
+            let mut streams = self.streams.clone();
+            streams.set_store(store.clone());
             Ok(Node {
-                engine: self.engine.test_copy(clock.clone())?,
-                store: self.store.test_copy(clock)?,
+                engine: self.engine.test_copy(clock)?,
+                store,
                 rng: self.rng.test_copy(),
                 cfg: self.cfg.clone(),
                 now: self.now,
@@ -607,7 +620,7 @@ impl Node {
                 opens: self.opens.clone(),
                 read: self.read.clone(),
                 unread: self.unread.clone(),
-                streams: self.streams.clone(),
+                streams,
                 inbox: self.inbox.clone(),
                 status: self.status.clone(),
             })
