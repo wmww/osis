@@ -393,6 +393,12 @@ impl Engine {
         self.certificate_records_now(s)
     }
 
+    /// Record blob `b` sealed here under `s` is in the own store no more: its row goes.
+    pub fn forget_record_blob(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        let (s, b) = (*s, *b);
+        self.run(|tx| recblobs::forget_blob(tx, &s, &b))
+    }
+
     /// The record blobs sealed here under `s`, each with its records.
     pub fn record_blobs(&mut self, s: &SyncId) -> Result<Arc<BTreeMap<BlobId, BTreeSet<Tid>>>> {
         Ok(self.record_blobs_now(s))
@@ -842,10 +848,10 @@ impl Engine {
     }
 
     /// Sync ID `s` is read here no more (it left the sync set, or is kept unread): its noted
-    /// passes go, so reading it again wants a fresh pass. An open does the same for every sync
-    /// ID not read.
-    pub fn forget_pass(&mut self, s: &SyncId) -> Result<()> {
-        self.forget_pass_now(s)
+    /// passes go, so reading it again wants a fresh pass, and so do the record blobs sealed under
+    /// it. An open does the same for every sync ID not read.
+    pub fn forget_read(&mut self, s: &SyncId) -> Result<()> {
+        self.forget_read_now(s)
     }
 
     /// History complete for `thing` (spec/sync-status.md §3): a complete pass of every sync ID

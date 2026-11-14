@@ -13,7 +13,7 @@ use osis_crypto::{LabelRole, Secret32, Signature, SigningSecret, label_role_key}
 use osis_engine::labeling::HeadKeys;
 use osis_engine::sync::{BodyFacts, BodyMeta, Destruction, ReadCredentials};
 use osis_label::{Class, Step, StepKeys};
-use osis_sync::read::{BlobInfo, Facts, Ground, Read, Seen, SrcView, Verdict, Why};
+use osis_sync::read::{BlobInfo, Facts, Ground, Read, RecordsMissing, Seen, SrcView, Verdict, Why};
 use osis_sync::store::{Source, Stand};
 use osis_sync::types::{ConnId, Entry};
 use osis_sync::Result;
@@ -134,6 +134,11 @@ struct Fake {
     next: u32,
     sent: Vec<Sent>,
     logged: Vec<(SyncId, CommitId, BlobId)>,
+    /// Per S, the records it carries that no own record blob does, and own record blobs gone.
+    records: Stamped<SyncId, RecordsMissing>,
+    /// Record blobs logged, and rows of gone ones forgotten.
+    record_logs: Vec<(SyncId, BTreeSet<osis_base::Tid>)>,
+    records_forgotten: Vec<(SyncId, BlobId)>,
     k: Kstore,
 }
 
@@ -164,6 +169,23 @@ impl Ground for Fake {
     }
     fn pullable(&mut self, s: &SyncId) -> Result<bool> {
         Ok(!self.unpullable.contains_key(s))
+    }
+    fn records_missing(&mut self, s: &SyncId) -> Result<RecordsMissing> {
+        Ok(self.records.get(s).cloned().unwrap_or_default())
+    }
+    fn forget_record_blobs(&mut self, s: &SyncId, gone: &BTreeSet<BlobId>) -> Result<()> {
+        self.records_forgotten.extend(gone.iter().map(|b| (*s, *b)));
+        let mut r = self.records.get(s).cloned().unwrap_or_default();
+        r.gone.clear();
+        self.records.insert(*s, r);
+        Ok(())
+    }
+    fn log_records(&mut self, s: &SyncId, records: &BTreeSet<osis_base::Tid>) -> Result<()> {
+        self.record_logs.push((*s, records.clone()));
+        let mut r = self.records.get(s).cloned().unwrap_or_default();
+        r.records.retain(|t| !records.contains(t));
+        self.records.insert(*s, r);
+        Ok(())
     }
     fn now(&self) -> WallMs {
         WallMs(self.now)
@@ -1025,6 +1047,30 @@ fn logs_only_while_a_reader_can_pull() {
     w.g.unpullable.remove(&S);
     w.settle();
     assert_eq!(w.logs(S, cid(1)), 1);
+}
+
+// spec/permissions.md §4 (the records missing go as one record blob of the logging node's, while
+// held in its own store), spec/sync-judgement.md §3 (own store: logged only while a reader can
+// pull it): a sync ID's missing records are logged once as one record blob once a reader can pull
+// S, again only for what goes missing later; a sealed record blob's row whose own entry went is
+// forgotten.
+#[test]
+fn missing_records_are_logged_once_a_reader_can_pull() {
+    let mut w = W::new();
+    let (r1, r2) = (osis_base::Tid::from_bytes([1; 15]), osis_base::Tid::from_bytes([2; 15]));
+    w.g.unpullable.insert(S, ());
+    w.g.records.insert(S, RecordsMissing { records: [r1].into(), gone: BTreeSet::new() });
+    w.hold(cid(1), &[S], uncovered());
+    assert!(w.g.record_logs.is_empty(), "no reader can pull S yet");
+    w.g.unpullable.remove(&S);
+    w.settle();
+    assert_eq!(w.g.record_logs, vec![(S, [r1].into())]);
+    w.settle();
+    assert_eq!(w.g.record_logs.len(), 1, "once");
+    w.g.records.insert(S, RecordsMissing { records: [r2].into(), gone: [BlobId([9; 32])].into() });
+    w.settle();
+    assert_eq!(w.g.record_logs, vec![(S, [r1].into()), (S, [r2].into())]);
+    assert_eq!(w.g.records_forgotten, vec![(S, BlobId([9; 32]))]);
 }
 
 // spec/sync-judgement.md §2 (outside the required set): while a group of the closure holds part

@@ -30,7 +30,7 @@ mod judge;
 mod live;
 mod views;
 
-pub use ground::{BlobInfo, Facts, Ground, Seen, SrcView};
+pub use ground::{BlobInfo, Facts, Ground, RecordsMissing, Seen, SrcView};
 pub use live::Live;
 
 use crate::opens::Opens;
@@ -76,7 +76,7 @@ pub struct Read {
     dooms: Effects<SyncId, (Doom, BTreeSet<Act>)>,
     /// Per S, the records it carries as certificates that no own record blob carries
     /// (spec/permissions.md §4): one record blob of them is logged as they move.
-    records: Effects<SyncId, Arc<BTreeSet<osis_base::Tid>>>,
+    records: Effects<SyncId, Arc<RecordsMissing>>,
     verdicts: Stamped<(SyncId, CommitId), Verdict>,
     /// Own role commits S must hold (§3 Role entries first).
     roles: Stamped<SyncId, BTreeSet<CommitId>>,
@@ -195,9 +195,14 @@ impl Read {
                 self.records.unwant(&s);
                 continue;
             }
-            let Some((_, missing)) = run(&mut self.records, &s, || g.records_missing(&s).map(Arc::new))? else { continue };
-            if !missing.is_empty() && g.pullable(&s)? {
-                g.log_records(&s, &missing)?;
+            // pullable read inside: a sync ID a reader cannot pull yet is due again once it can
+            let Some((_, now)) = run(&mut self.records, &s, || records_missing(g, &s).map(Arc::new))? else { continue };
+            if !now.gone.is_empty() {
+                g.forget_record_blobs(&s, &now.gone)?;
+                acted = true;
+            }
+            if !now.records.is_empty() {
+                g.log_records(&s, &now.records)?;
                 acted = true;
             }
         }
@@ -354,6 +359,15 @@ impl Read {
 }
 
 /// Settles `k` with `f`; a failure leaves `k` due and is returned.
+/// `Ground::records_missing` while a reader can pull S, else nothing (`pullable` read inside, so
+/// S is due again once it can).
+fn records_missing(g: &mut impl Ground, s: &SyncId) -> Result<RecordsMissing> {
+    match g.pullable(s)? {
+        true => g.records_missing(s),
+        false => Ok(RecordsMissing::default()),
+    }
+}
+
 fn run<K: std::hash::Hash + Eq + Clone, V: Clone + PartialEq + Default>(fx: &mut Effects<K, V>, k: &K, f: impl FnOnce() -> Result<V>) -> Result<Option<(Option<V>, V)>> {
     let mut failed = None;
     let moved = fx.settle(k, || {

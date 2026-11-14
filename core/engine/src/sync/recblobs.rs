@@ -45,6 +45,32 @@ fn note(tx: &mut Tx<'_>, s: &SyncId, b: &BlobId, tids: &BTreeSet<Tid>) -> Result
     Ok(())
 }
 
+/// The rows of every record blob sealed under `s` go (`s` is read here no more).
+pub(crate) fn forget(tx: &mut Tx<'_>, s: &SyncId) -> Result<()> {
+    let Some(m) = tx.core.ix.record_blobs.get(s).cloned() else { return Ok(()) };
+    for b in m.keys() {
+        tx.txn.remove_local(&[RECORD_BLOBS, &s.0, &b.0].concat(), Shred::No)?;
+    }
+    tx.core.ix.record_blobs.remove(s);
+    Ok(())
+}
+
+/// The row of record blob `b` under `s` goes (no own entry holds it any more).
+pub(crate) fn forget_blob(tx: &mut Tx<'_>, s: &SyncId, b: &BlobId) -> Result<()> {
+    let Some(m) = tx.core.ix.record_blobs.get(s).cloned() else { return Ok(()) };
+    if !m.contains_key(b) {
+        return Ok(());
+    }
+    let mut m = (*m).clone();
+    m.remove(b);
+    tx.txn.remove_local(&[RECORD_BLOBS, &s.0, &b.0].concat(), Shred::No)?;
+    match m.is_empty() {
+        true => tx.core.ix.record_blobs.remove(s),
+        false => tx.core.ix.record_blobs.insert(*s, Arc::new(m)),
+    };
+    Ok(())
+}
+
 impl Engine {
     /// The records sync ID `s` carries as certificates (spec/permissions.md §4): those its
     /// certificates name (`sync_certificates`) whose `created.0` no closure body there carries

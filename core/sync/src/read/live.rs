@@ -3,7 +3,7 @@
 //! failing in the middle of a settle fails the node's step, closing every connection.
 
 use super::Why;
-use super::ground::{BlobInfo, Facts, Ground, Seen, SrcView};
+use super::ground::{BlobInfo, Facts, Ground, RecordsMissing, Seen, SrcView};
 use crate::opens::Opens;
 use crate::session::{Sessions, To};
 use crate::store::{Source, Stand};
@@ -261,17 +261,23 @@ impl Ground for Live<'_, '_> {
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &CommitId, stand: &Stand) -> Result<()> {
         self.cx.store.set_stand(*at, s, &c.0, Some(stand))
     }
-    fn records_missing(&mut self, s: &SyncId) -> Result<BTreeSet<osis_base::Tid>> {
-        let mut need: BTreeSet<osis_base::Tid> = (*self.cx.engine.certificate_records(s)?).clone();
-        if need.is_empty() {
-            return Ok(need);
-        }
+    fn records_missing(&mut self, s: &SyncId) -> Result<RecordsMissing> {
+        let mut out = RecordsMissing { records: (*self.cx.engine.certificate_records(s)?).clone(), gone: BTreeSet::new() };
         for (b, tids) in self.cx.engine.record_blobs(s)?.iter() {
-            if self.cx.store.entry(s, b)?.is_some() {
-                need.retain(|t| !tids.contains(t));
+            match self.cx.store.entry(s, b)?.is_some_and(|e| e.own) {
+                true => out.records.retain(|t| !tids.contains(t)),
+                false => {
+                    out.gone.insert(*b);
+                }
             }
         }
-        Ok(need)
+        Ok(out)
+    }
+    fn forget_record_blobs(&mut self, s: &SyncId, gone: &BTreeSet<osis_base::BlobId>) -> Result<()> {
+        for b in gone {
+            self.cx.engine.forget_record_blob(s, b)?;
+        }
+        Ok(())
     }
     fn log_records(&mut self, s: &SyncId, records: &BTreeSet<osis_base::Tid>) -> Result<()> {
         let Some((blob, bytes, wrap)) = self.cx.engine.seal_records(s, records, self.cx.rng)? else { return Ok(()) };

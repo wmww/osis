@@ -846,7 +846,7 @@ fn history_completes_with_a_pass_spec_sync_status_3() {
 
 // spec/sync-status.md §3 History complete: a pass belongs to a sync ID read here, so a sync ID
 // left and read again wants a pass of its own (what it missed while away is not here): one that
-// leaves loses its noted pass (sync's follow calls `forget_pass`; an open drops it too, for one
+// leaves loses its noted pass (sync's follow calls `forget_read`; an open drops it too, for one
 // left while down), and a pass of a sync ID not read is not kept.
 #[test]
 fn a_pass_goes_with_its_sync_id_spec_sync_status_3() {
@@ -872,7 +872,7 @@ fn a_pass_goes_with_its_sync_id_spec_sync_status_3() {
     assert_eq!(lp.peers[0].engine.passes_wanted().unwrap().get(&s), Some(&osis_base::WallMs(0)));
     let now = lp.peers[0].engine.pass_clock();
     lp.peers[0].engine.note_complete_pass(&s, now).unwrap();
-    lp.peers[0].engine.forget_pass(&s).unwrap();
+    lp.peers[0].engine.forget_read(&s).unwrap();
     assert!(!lp.peers[0].engine.history_complete(&t).unwrap(), "forgotten: wanted again");
 }
 
@@ -958,4 +958,76 @@ fn a_rotation_logs_with_it_the_commits_it_names_spec_crypto_4() {
     let second = *e.demote(&t, &Demotion { holder: ps[2], new: None, retain: None }).unwrap().commits.last().unwrap();
     let with = e.logged_with(&second).unwrap();
     assert!(with.contains(&first), "the earlier removal it names: {with:?}");
+}
+
+/// A record blob of `records` under `t`'s current read epoch at peer `i` (spec/wire.md §3), as
+/// any reader of the sync ID could frame one: its ID, bytes and wrap.
+fn record_blob_by_hand(lp: &mut LocalPeer, i: usize, t: &Tid, records: &[osis_base::CreationRecord]) -> (osis_base::BlobId, Vec<u8>, osis_engine::sync::Wrap) {
+    let mut rng = SeededRng::from_u64(17);
+    let plain = osis_commit::record_blob::encode_record_blob(records);
+    let prefix = osis_label::Prefix::for_groups(osis_label::Prefix::random_salt(&mut rng), &[7; 16], None, &[]).unwrap().with_class(osis_label::Class::Durable);
+    let (key, blob) = osis_label::frame(&prefix, &plain, &mut rng).unwrap();
+    let id = osis_label::blob_id(&blob);
+    let w = lp.peers[i].engine.wrap_secret(t, None).unwrap().expect("a read epoch");
+    let wrap = osis_crypto::wrap(&w, &id, &key, 0).unwrap();
+    (id, blob, wrap)
+}
+
+// spec/wire.md §3 (a creation record's tid is the hash of its encoding), spec/permissions.md §4
+// (records go raw in a record blob): a reader of S framing a record blob cannot plant a false
+// record for a thing it names: a record altered to name another first admin is a record of
+// another tid, and the receiver learns nothing of the thing; the genuine record, sealed by its
+// holder, is learned as it is.
+#[test]
+fn a_forged_record_in_a_record_blob_names_no_other_thing_spec_wire_3() {
+    let (mut lp, d) = crate::flows::account_two_nodes();
+    let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
+    let a = lp.peers[0].engine.account().unwrap().unwrap().0;
+    let u = thing_of(&mut lp, 0, a);
+    let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
+    assert!(lp.peers[1].engine.core.created(&u).is_none(), "u not spread");
+    let osis_base::CreationRecord::Thing { nonce, .. } = real.clone() else { panic!() };
+    let forged = osis_base::CreationRecord::Thing { admin: lp.peers[1].engine.tid(), nonce, link: None };
+    assert_ne!(forged.tid(), u);
+    let (id, blob, wrap) = record_blob_by_hand(&mut lp, 0, &d, &[forged.clone()]);
+    match lp.peers[1].engine.open_entry(&home, &id, &wrap, &blob).unwrap() {
+        osis_engine::sync::Opened::Records(tids) => assert_eq!(tids, [forged.tid()].into()),
+        o => panic!("{o:?}"),
+    }
+    assert!(lp.peers[1].engine.core.created(&u).is_none(), "nothing learned of u");
+    let (id, bytes, wrap) = lp.peers[0].engine.seal_records(&home, &[u].into(), &mut SeededRng::from_u64(3)).unwrap().expect("sealed");
+    assert!(matches!(lp.peers[1].engine.open_entry(&home, &id, &wrap, &bytes).unwrap(), osis_engine::sync::Opened::Records(_)));
+    assert_eq!(lp.peers[1].engine.core.created(&u), Some(&real));
+}
+
+// spec/permissions.md §4 (the records missing go as one record blob of the logging node's, while
+// held in its own store): what the engine keeps of a record blob it sealed under S lasts across a
+// restart, goes when its own entry does (`forget_record_blob`), and goes with S when S is read here
+// no more (`forget_read`; an open drops those of every sync ID not read).
+#[test]
+fn record_blob_rows_go_with_their_sync_id_spec_perm_4() {
+    let (mut lp, ps) = people(1);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    let (_, d) = lp.peers[0].engine.account().unwrap().unwrap();
+    add_item(&mut lp, 0, d, t);
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let mut rng = SeededRng::from_u64(4);
+    let (b, _, _) = lp.peers[0].engine.seal_records(&s, &[ps[0]].into(), &mut rng).unwrap().expect("sealed");
+    let (b2, _, _) = lp.peers[0].engine.seal_records(&s, &[ps[0]].into(), &mut rng).unwrap().expect("sealed");
+    lp.peers[0].restart(8).unwrap();
+    assert_eq!(lp.peers[0].engine.record_blobs(&s).unwrap().keys().copied().collect::<Vec<_>>().len(), 2, "durable");
+    lp.peers[0].engine.forget_record_blob(&s, &b2).unwrap();
+    assert_eq!(lp.peers[0].engine.record_blobs(&s).unwrap().keys().copied().collect::<Vec<_>>(), vec![b]);
+    lp.peers[0].engine.forget_read(&s).unwrap();
+    assert!(lp.peers[0].engine.record_blobs(&s).unwrap().is_empty());
+    lp.peers[0].restart(9).unwrap();
+    assert!(lp.peers[0].engine.record_blobs(&s).unwrap().is_empty(), "its rows gone too");
+    // left while down: an open drops them
+    lp.peers[0].engine.seal_records(&s, &[ps[0]].into(), &mut rng).unwrap().expect("sealed");
+    let mut m = Mutation::new();
+    m.op(d, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Remove(osis_base::Value::Tid(t)) }).unwrap();
+    lp.peers[0].engine.commit(m).unwrap().unwrap();
+    lp.peers[0].restart(10).unwrap();
+    assert!(lp.peers[0].engine.record_blobs(&s).unwrap().is_empty(), "S not read at the open");
 }

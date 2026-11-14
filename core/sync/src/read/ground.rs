@@ -157,14 +157,30 @@ pub trait Ground {
     fn forget(&mut self, s: &SyncId) -> Result<()>;
 
     /// The records S carries as certificates that no record blob in the own store of S carries
-    /// (spec/permissions.md §4 Logging certificates: the records missing).
-    fn records_missing(&mut self, s: &SyncId) -> Result<BTreeSet<osis_base::Tid>> {
+    /// (spec/permissions.md §4 Logging certificates: the records missing), and the record blobs
+    /// sealed here under S that the own store holds no more.
+    fn records_missing(&mut self, s: &SyncId) -> Result<RecordsMissing> {
         let _ = s;
-        Ok(BTreeSet::new())
+        Ok(RecordsMissing::default())
+    }
+    /// Record blobs sealed here under S that the own store holds no more: what the engine keeps
+    /// of them goes.
+    fn forget_record_blobs(&mut self, s: &SyncId, gone: &BTreeSet<osis_base::BlobId>) -> Result<()> {
+        let _ = (s, gone);
+        Ok(())
     }
     /// Logs one record blob of `records` under S in the own store (a fresh encryption).
     fn log_records(&mut self, s: &SyncId, records: &BTreeSet<osis_base::Tid>) -> Result<()> {
         let _ = (s, records);
         Ok(())
     }
+}
+
+/// `Ground::records_missing`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecordsMissing {
+    /// Records S carries that no own record blob of S carries: one record blob of them is logged.
+    pub records: BTreeSet<osis_base::Tid>,
+    /// Record blobs sealed here under S that the own store holds no more.
+    pub gone: BTreeSet<osis_base::BlobId>,
 }
