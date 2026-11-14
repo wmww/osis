@@ -8,3 +8,4 @@ order::held_set_decides_plain OSIS_ORDER_START=632680797673 issues/order-require
 runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issues/paired-peer-runtime-flake.md Unsynced \{ groups
 tests_laws::entry_copies::forged_entry_copies_join_and_expire_alike_spec_5_6 OSIS_CRDT_SEED=2854516606 issues/forged-entry-copies-expiry-seed.md before the joins
 order::held_set_decides_plain OSIS_ORDER_START=86543989739 issues/order-plain-purge-keeps-message.md shows other than the node keeping every body
+ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6 OSIS_EPH_START=606027154010 issues/eph-reverts-restarts-seed.md failed: seed \d+: Tid\(\w+\)
