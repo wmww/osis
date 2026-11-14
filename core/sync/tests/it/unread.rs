@@ -1,8 +1,8 @@
 //! Kept unread (spec/sync-judgement.md §6, spec/sync-set.md §3): the judgement of one S over
 //! plain values (`unread::judge`), as the module reads them from the engine facade and the store.
 //! Each negative control of core/test/tla/net/NetKeep.tla has a test here that fails without its
-//! rule. The module over a real engine (following the sync set, shredding, dropping the record,
-//! work at n and 10n) is tests/it/keep.rs.
+//! rule. The module over a real engine (following the sync set, a removal shredding S and
+//! dropping the record) is tests/it/keep.rs.
 
 use osis_base::{CommitId, SyncId, Tid};
 use osis_crypto::{Epoch, LabelRole, Secret32, Signature, SigningSecret, label_role_key};

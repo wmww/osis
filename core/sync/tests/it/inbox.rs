@@ -2,7 +2,7 @@
 //! (`act_of`, `adds_delta`, `to_clear`, `plan`), and Deposit items out (`Offers`) over a real
 //! store and a `Net` that records what is sent. One test per rule of spec/sync-inbox.md §2-§4 and
 //! spec/sync-ids.md §6 Steps and Register it implements. The module in a node over the engine
-//! (deliveries logged and sealed again, taking, a take at rest) is tests/it/keep.rs.
+//! (a delivery logged deposited, an inbox blob taken) is tests/it/keep.rs.
 
 use osis_base::format::{DEPOSITS_WAITING, INBOX_LIFETIME_MS};
 use osis_base::memo::{Stamped, StampedSet};
