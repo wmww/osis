@@ -1,8 +1,0 @@
-# reseal-epoch
-- A write transaction inside `Engine::open_commit` (to record openings) changed node-sync behaviour far away (resnapshots, purge falls, nodelog convergence): `Engine::run`'s end runs a dozen follow-ups. Engine state that must not settle anything has to ride in `Core` until a transaction that writes the commit anyway.
-- Old node-sync (frozen) passes only unopened sections to `Engine::seal` and ingests plaintext, so the engine cannot see which epoch a body came under without recording it at open; much of the design cost here was working around a caller I could not change.
-- A fresh seal copying a held section verbatim first resurrected purged content (the held part was a leftover): verbatim needs "the section carries what I hold".
-- Reproducer briefs that say "deliver everything of R's" with LocalPeer's plain `sync` bypass sections entirely; tests of what was opened under which epoch must deliver the write as its sealed entry.
-- Review: openings kept in memory until `put_commit` were lost by a restart while the commit was pending, and an absent opening read as "read in no section": fail-open. State absence-means-allowed rules only where absence cannot come from lost bookkeeping.
-- Review: LocalPeer's plain delivery (no sections) is the engine tests' main harness, so a fail-closed rule on unsectioned content breaks 13 unrelated compaction tests; harness realism decides which security rule is buildable.
-- Review: the gate's first run failed 12 NEW (relay-only signals, a growth count): `passes_on_all` looked up a held header and a relay-only commit built here is never held. Unit tests of the engine alone missed both.

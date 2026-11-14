@@ -1,5 +1,5 @@
 # Sync test harness
-> Summary: The one harness osis-sync's tests run on (core/sync/tests/it/harness): nodes stepped deterministically in one process behind the same link seam as QUIC, relay and LAN, shared fixtures copied per test, real crypto and store, faults, lies, scripts and shrinking, the differential, and the test layers with their instruction budget (the whole sync suite about 1,200 G instructions, about a minute on fastbox-0).
+> Summary: The one harness osis-sync's tests run on (core/sync/tests/it/harness): nodes stepped deterministically in one process behind the same link seam as QUIC, relay and LAN, shared fixtures copied per test, real crypto and store, faults, lies, scripts and shrinking, the differential, and the test layers with their instruction budget (the whole sync suite budgeted at about 1,200 G instructions).
 
 Principle: the marginal test is cheap. A test pays only for the changes it makes on a world someone already built; everything a test does runs the product's sync code byte for byte.
 
@@ -47,7 +47,7 @@ The rebuilt sync core is sans-IO: `Node::handle(Input) -> Outputs`.
 | **Debug checks stay on** (`check_rebuilt`, sampled `check_index`) | none (about 11%) | cost | they are the incremental-against-from-scratch oracle in every test; keep their sampling |
 
 ## Layers and budget
-The whole sync suite (the sync crate's one `tests/it` binary) is about 1,200 G instructions: about 430 CPU-s, a minute of wall on fastbox-0 at the usual load.
+The whole sync suite (the sync crate's one `tests/it` binary) is budgeted at about 1,200 G instructions: about 430 CPU-s, a minute of wall on fastbox-0 at the usual load. With contacts made by cards it costs about 6,000 G (1,335 CPU-s, 160 s wall at load 55: `convergence::` 763 CPU-s, `sims::` 368, `flows::` 177, every rule-test module under 10), issues/sync-read-rejudges-every-step.md.
 
 | layer | what | budget |
 |---|---|---|

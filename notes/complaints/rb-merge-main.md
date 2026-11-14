@@ -1,4 +1,0 @@
-# rb-merge-main (main into sync-rebuild)
-- Main's new osis tests were sync-world tests (`World`, `add_host`), gone on the rebuild: the roster test ported to the `deliver` harness, where it showed the grants watch missing a roster shown or hidden by a role change on another thing (the world test passed only on incidental later commits on M); the stale-grant repro could not be ported (issue points at f7ab0b344).
-- Main's test anchors failed the rebuild's stricter spec_map stray-anchor check (passes on main): anchors are `;`-separated rule names that must appear in the section text.
-- Known on sync-rebuild before the merge, still failing: engine `order::kill_and_purge_in_one_commit_keeps_leftover_spec_commits_5`, `scale::purge_rejudge_is_linear_in_requests_spec_permissions_6`; spec_map's uncited `core/sync/tests/it/flows.rs::a_reader_granted_after_a_writers_removal_reads_its_last_write`.
