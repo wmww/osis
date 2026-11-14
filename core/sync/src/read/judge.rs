@@ -23,6 +23,9 @@ pub(crate) enum Act {
     DropOwn(BlobId),
     /// The body counts missing again: its own tombstone ends (§4, §3 Dropped bodies).
     Lift(BlobId),
+    /// The body counts missing again: an entry of it held here is opened again from the store
+    /// (§3 Dropped bodies: a body dropped as invalid keeps its entries while it may come back).
+    Take(BlobId),
     /// The body counts missing again: an entry of it a source's stream shows present is fetched
     /// there (§3 Dropped bodies), by streams.
     Fetch { at: Source, conn: ConnId, blob: BlobId },
@@ -233,13 +236,17 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     };
     j.verdict = verdict.clone();
     j.role = verdict == Verdict::Must && f.as_ref().is_some_and(|f| f.own && f.role);
-    // a body counting missing again: its own tombstones end, and it is fetched again where a
-    // source shows an entry of it present (a source joining or showing one judges it again)
+    // a body counting missing again: its own tombstones end, an entry of it held here is taken
+    // again, and it is fetched again where a source shows another entry of it present (a source
+    // joining or showing one judges it again)
     if f.as_ref().is_some_and(|f| f.missing) {
         j.acts.extend(g.own_tombstones(s, c)?.into_iter().map(Act::Lift));
-        for src in g.sources(s)?.iter() {
-            for b in g.seen(&src.at, s, c)?.present {
-                j.acts.insert(Act::Fetch { at: src.at, conn: src.conn, blob: b });
+        j.acts.extend(own.iter().filter(|e| !stale.contains(&e.blob)).map(|e| Act::Take(e.blob)));
+        for (at, conn) in g.reached(s)? {
+            for b in g.seen(&at, s, c)?.present {
+                if !own.iter().any(|e| e.blob == b) {
+                    j.acts.insert(Act::Fetch { at, conn, blob: b });
+                }
             }
         }
     }
@@ -256,9 +263,20 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     if matches!(verdict, Verdict::MustNot(_)) || dropped_here {
         j.acts.extend(live.iter().map(|b| Act::DropOwn(*b)));
     }
-    // a body counting missing is logged once it is held again
-    if verdict == Verdict::Must && live.is_empty() && !f.as_ref().is_some_and(|f| f.missing) && g.pullable(s)? {
-        j.acts.insert(Act::Log);
+    // a body counting missing is logged once it is held again; a held entry it did not log
+    // stands as its log unless this node writes S and its stamp is not under S's head (then it
+    // is logged again verbatim, stamped in place)
+    if verdict == Verdict::Must && !f.as_ref().is_some_and(|f| f.missing) {
+        let mut logged = false;
+        for e in own.iter().filter(|e| live.contains(&e.blob)) {
+            if g.stands(s, e)? {
+                logged = true;
+                break;
+            }
+        }
+        if !logged && g.pullable(s)? {
+            j.acts.insert(Act::Log);
+        }
     }
     if verdict == Verdict::Must {
         j.roots = g.piece_roots(s, c)?;
@@ -282,9 +300,9 @@ pub(crate) fn piece(g: &mut impl Ground, s: &SyncId, p: &PieceLink) -> Result<Pi
             j.acts.insert(Act::TakePiece(b));
             return Ok(j);
         }
-        for src in g.sources(s)?.iter() {
-            if g.piece_shown(&src.at, s, &b)? {
-                j.acts.insert(Act::Fetch { at: src.at, conn: src.conn, blob: b });
+        for (at, conn) in g.reached(s)? {
+            if g.piece_shown(&at, s, &b)? {
+                j.acts.insert(Act::Fetch { at, conn, blob: b });
             }
         }
         return Ok(j);
@@ -296,14 +314,14 @@ pub(crate) fn piece(g: &mut impl Ground, s: &SyncId, p: &PieceLink) -> Result<Pi
     }
     // lost: some source shows it deleted and none present, S's sources heard out (every entry of
     // S each can open applied); deletes read only once no source shows it
-    let sources = g.sources(s)?;
-    for src in sources.iter() {
-        if g.piece_shown(&src.at, s, &b)? {
+    let sources = g.reached(s)?;
+    for (at, _) in &sources {
+        if g.piece_shown(at, s, &b)? {
             return Ok(j);
         }
     }
-    for src in sources.iter() {
-        if g.piece_deleted(&src.at, s, &b)? {
+    for (at, _) in &sources {
+        if g.piece_deleted(at, s, &b)? {
             if g.heard_out(s)? {
                 j.acts.insert(Act::Repair(b));
             }

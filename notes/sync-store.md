@@ -32,7 +32,7 @@ A peer's record holds other modules' rows (osis-store `record_put_row(id, tag, s
 - Deposits per sync ID by the shared deposit budget, which any holder of the deposit key can fill until a delete-key holder clears (spec/sync-inbox.md §4).
 
 ## A reader's store of S
-Its own entries plus those it pulled that did not open, or that opened to a commit pending in the engine (`Engine::pends`: unjudgeable, an epoch or pages away, drift; streams' `take_body` logs them as the commit's carrier, charged to the peer when unstamped).
+Its own entries plus those it pulled: each that opened to a commit held here (`Opening::Held`, kept as it came: read judges it as any entry of the body, so readers pass the writer's blob on and encrypt afresh only where spec/crypto.md §5 requires; charged to no one when it brought something new, else, a duplicate of what is held, charged to its bringer unless stamped, so a reader's fresh encryptions of held commits fill only its own peer budget), that did not open, or that opened to a commit pending in the engine (`Engine::pends`: unjudgeable, an epoch or pages away, drift; streams' `take_body` logs them as the commit's carrier, charged to the peer when unstamped). A pulled piece, inbox blob or record blob is taken and not kept (`Opening::Taken`).
 
 ## Reasons
 - One store for every sync ID, read or kept unread, and a shredding one: a node keeping S unread may read other sync IDs on the same machine, so wraps and blobs surviving a delete in freed pages would break spec/requirements.md Deletion (notes/local-store.md).

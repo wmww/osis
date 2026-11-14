@@ -92,6 +92,7 @@ enum Sent {
     Deposit(ConnId, BlobId),
     Forget(SyncId),
     Fetch(ConnId, BlobId),
+    Take(BlobId),
     LogPiece(BlobId),
     TakePiece(BlobId),
     Repair(CommitId, BlobId),
@@ -182,6 +183,15 @@ impl Ground for Fake {
         self.sent.push(Sent::LogPiece(*b));
         self.piece_at.insert((*s, *b), PieceAt::Own);
         Ok(())
+    }
+    fn take(&mut self, _s: &SyncId, b: &BlobId) -> Result<()> {
+        self.sent.push(Sent::Take(*b));
+        Ok(())
+    }
+    fn stands(&mut self, s: &SyncId, e: &Entry) -> Result<bool> {
+        // a stamp stands for one under the head's write key here
+        let writes = self.creds.get(s).is_some_and(|c| c.head.as_ref().and_then(|h| c.keys.get(&h.id())).is_some_and(|k| k.write.is_some()));
+        Ok(e.own || e.stamp.is_some() || !writes)
     }
     fn take_piece(&mut self, _s: &SyncId, b: &BlobId) -> Result<()> {
         self.sent.push(Sent::TakePiece(*b));
@@ -962,6 +972,43 @@ fn missing_body_is_fetched_where_present() {
     assert!(w.g.sent.contains(&Sent::Fetch(rc2, b)), "a source joining that shows it is asked too");
     w.judge(S, cid(1), uncovered());
     assert_eq!(w.g.logged.len(), logs + 1, "logged once held again");
+}
+
+// spec/sync-judgement.md §3 (Dropped bodies: fetched again where present): a body counting missing
+// whose entry this node still holds (a body dropped as invalid keeps its entries) takes it again
+// from its own store, and fetches only the entries of it it lacks. Fails without `Act::Take`
+// (the held blob is never fetched: its bytes are here).
+#[test]
+fn missing_body_held_here_is_taken_again_spec_sync_judgement_3() {
+    let mut w = W::new();
+    w.source(S, Source::Conn(RC), RC, false);
+    w.hold(cid(1), &[S], uncovered());
+    let b = w.own_blobs(S, cid(1))[0];
+    let other = BlobId([77; 32]);
+    w.g.put_seen((Source::Conn(RC), S, cid(1)), Seen { present: [b, other].into(), deleted: BTreeSet::new() });
+    let mut f = uncovered();
+    f.missing = true;
+    w.judge(S, cid(1), f);
+    assert!(w.g.sent.contains(&Sent::Take(b)), "{:?}", w.g.sent);
+    assert!(w.g.sent.contains(&Sent::Fetch(RC, other)));
+    assert!(!w.g.sent.contains(&Sent::Fetch(RC, b)), "what is held is taken, not fetched");
+}
+
+// spec/sync-judgement.md §3 (Own store: a held blob verbatim, stamped when it writes S): an entry
+// pulled from a peer stands as this node's log of the body, so nothing is encrypted afresh, but
+// at a writer of S's head one not stamped under it is logged again (stamped in place).
+#[test]
+fn a_peers_entry_stands_as_the_log_spec_sync_judgement_3() {
+    for (writer, stamped, logs) in [(true, true, 0), (false, false, 0), (true, false, 1)] {
+        let mut w = W::new();
+        w.g.creds.insert(S, creds(0, writer, true));
+        let peer = Entry { blob: BlobId([66; 32]), wrap: [0; osis_crypto::WRAP_LEN], stamp: stamped.then_some(Signature([1; 64])), deposited: !stamped, own: false, role: false, class: Class::Durable, expires: None };
+        w.g.own.insert((S, cid(1)), vec![peer]);
+        let mut f = uncovered();
+        f.own = false;
+        w.hold(cid(1), &[S], f);
+        assert_eq!(w.g.logged.len(), logs, "writer {writer}, stamped {stamped}");
+    }
 }
 
 // spec/sync-judgement.md §4 (the stand's state): durable (forget-lost-mem): a start (or the reload a forget

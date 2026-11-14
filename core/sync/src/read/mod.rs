@@ -432,6 +432,7 @@ impl Read {
             }
             (Act::DropOwn(b), Some(c)) => g.drop_own(s, &b, c)?,
             (Act::Lift(b), _) => g.lift(s, &b)?,
+            (Act::Take(b), _) => g.take(s, &b)?,
             (Act::Fetch { at, conn, blob }, _) => {
                 if let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) {
                     g.fetch(&src, s, &blob)?;

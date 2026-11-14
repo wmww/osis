@@ -40,10 +40,10 @@ struct Table {
     log: Log,
     /// Every body opens to a commit that pends here.
     pends: bool,
+    /// Every body opens to a commit held here, bringing something new or not.
+    held: Option<bool>,
     /// Bodies that opened to a pending commit and were not kept.
     unkept: Vec<BlobId>,
-    /// Blobs taken before: a fetch of one brings nothing.
-    taken: std::collections::BTreeSet<BlobId>,
     /// What opening a relay-only blob gives (none: it does not open).
     relay: Option<osis_engine::sync::RelayOpened>,
 }
@@ -52,7 +52,11 @@ impl Ground for Table {
     fn open(&mut self, _s: &SyncId, e: &Entry, _bytes: &[u8]) -> Result<Opening> {
         self.log.borrow_mut().push(("open", 0));
         self.opened.push(e.blob);
-        Ok(if self.pends { Opening::Pends } else { Opening::Taken })
+        Ok(match (self.pends, self.held) {
+            (true, _) => Opening::Pends,
+            (false, Some(gave)) => Opening::Held { gave },
+            (false, None) => Opening::Taken,
+        })
     }
     fn unkept(&mut self, _store: &Store, b: &BlobId) -> Result<()> {
         self.unkept.push(*b);
@@ -60,9 +64,6 @@ impl Ground for Table {
     }
     fn rank(&mut self, _s: &SyncId, b: &BlobId, _w: &[u8; WRAP_LEN]) -> Rank {
         self.rank.get(b).copied().unwrap_or(Rank::Unopened)
-    }
-    fn taken(&mut self, b: &BlobId) -> bool {
-        self.taken.contains(b)
     }
     fn open_relay(&mut self, _s: &SyncId, _e: &Entry, _bytes: &[u8]) -> Result<osis_engine::sync::RelayOpened> {
         Ok(self.relay.unwrap_or(osis_engine::sync::RelayOpened::NotOpen))
@@ -801,15 +802,17 @@ fn order_zero_first_never_not_fetched_spec_sync_streams_5() {
     assert!(p.b.streams.caught_up(C, &s), "the body never fetched holds nothing up");
 }
 
-// spec/sync-streams.md §4 (Bodies: only blob IDs its store lacks and it has not taken are
-// fetched): a reader that took a blob before (it opened to a commit held here) and keeps no entry
-// of it fetches only the other body announced, and is caught up.
+// spec/sync-streams.md §4 (Bodies: only blob IDs its store lacks are fetched): a reader holding
+// an entry it took before (kept as it came) fetches only the other body announced, and is caught
+// up.
 #[test]
 fn a_body_taken_before_is_not_fetched_again_spec_sync_streams_4() {
     let mut p = Pair::new();
     let s = sid(1);
     let (x, y) = (p.a.log(s, 40_001), p.a.log(s, 40_002));
-    p.b.table.taken.insert(x);
+    let e = p.a.store.entry(&s, &x).unwrap().unwrap();
+    let bytes = p.a.store.bytes(&x).unwrap();
+    p.b.store.log(&s, Entry { own: false, ..e }, bytes, None).unwrap();
     p.shared_read(s);
     p.run();
     let fetched: Vec<BlobId> = p.sent_by_b(19).into_iter().flat_map(|m| if let Msg::Fetch { ids, .. } = m { ids.clone() } else { vec![] }).collect();
@@ -919,6 +922,30 @@ fn a_flood_of_pending_commits_is_bounded_per_peer_spec_commits_4() {
     assert_eq!(p.a.table.unkept.len() + kept.len(), flood.len(), "each one not kept is let go");
     assert!(kept.iter().all(|b| !p.a.table.unkept.contains(b)));
     assert!(p.a.store.entry(&s, &theirs).unwrap().is_some(), "the other peer's carrier stays");
+}
+
+// spec/sync-judgement.md §3 (Own store: a held blob goes on verbatim), spec/sync-ids.md §5 (Peer
+// budget: an entry giving nothing held is charged unless stamped): a reader keeps each pulled body
+// opening to a held commit as it came; one that brought something is charged to no one, but
+// unstamped duplicates of what it holds (a peer's fresh encryptions) fill that peer's budget
+// alone: past it they are not kept.
+#[test]
+fn duplicates_of_held_commits_are_bounded_per_peer_spec_sync_ids_5() {
+    for gave in [true, false] {
+        let mut p = Pair::new();
+        let s = sid(1);
+        p.a.store.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), 5 * 400)]), ..Caps::default() });
+        let flood: Vec<BlobId> = (0..20).map(|i| p.b.log(s, 300 + i)).collect();
+        p.a.table.held = Some(gave);
+        p.shared_read(s);
+        p.run();
+        let kept = flood.iter().filter(|b| p.a.store.entry(&s, b).unwrap().is_some()).count();
+        if gave {
+            assert_eq!(kept, flood.len(), "what brought something is kept whatever the budget");
+        } else {
+            assert!(kept > 0 && kept < flood.len(), "duplicates kept within the budget: {kept}");
+        }
+    }
 }
 
 // spec/sync-set.md §3 (keeping S unread, each entry it logged itself under S (its deposits) is present): `Sources::present` is what a source's stream showed.

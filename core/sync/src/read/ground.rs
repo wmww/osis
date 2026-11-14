@@ -104,6 +104,13 @@ pub trait Ground {
 
     /// The entries of `c` in this node's own store of S.
     fn own(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<Entry>>;
+    /// Whether entry `e` of S stands as this node's log of its body (spec/sync-judgement.md §3
+    /// Own store: stamped where it writes S): one it logged, or, where it holds S's head write
+    /// key, one whose stamp verifies under it; anywhere else, any entry held.
+    fn stands(&mut self, s: &SyncId, e: &Entry) -> Result<bool> {
+        let _ = (s, e);
+        Ok(true)
+    }
     /// This node's own tombstones of `c`'s entries under S.
     fn own_tombstones(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>>;
     /// No entry of S in the own store.
@@ -122,6 +129,12 @@ pub trait Ground {
 
     /// The sources of S on connections up now.
     fn sources(&mut self, s: &SyncId) -> Result<Arc<Vec<SrcView>>>;
+    /// Where each source of S up now is reached, reading nothing of its streams' rows: what a
+    /// fetch needs (a piece reading `sources` would move with every source's head and full row,
+    /// read at its absent stamp, so a removal in that row's bucket would judge every piece).
+    fn reached(&mut self, s: &SyncId) -> Result<Vec<(Source, ConnId)>> {
+        Ok(self.sources(s)?.iter().map(|x| (x.at, x.conn)).collect())
+    }
     /// One source of S, if up now (read per source, so a source's change moves its rows alone).
     fn source(&mut self, s: &SyncId, at: &Source) -> Result<Option<SrcView>>;
     /// Sources of S whose view was written (joined or changed) since the last call.
@@ -212,6 +225,11 @@ pub trait Ground {
     /// Logs held piece `b` under S in the own store (filler wrap; a peer's entry of it becomes
     /// own, off its peer budget).
     fn log_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        let _ = (s, b);
+        Ok(())
+    }
+    /// The engine opens entry `b` of S again from the store (its body counts missing again).
+    fn take(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         let _ = (s, b);
         Ok(())
     }

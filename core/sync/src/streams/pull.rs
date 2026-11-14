@@ -623,7 +623,7 @@ impl Streams {
                     let r = ctx.store.log(s, Entry { stamp: Some(st), deposited: false, ..e }, None, src).map(|_| ());
                     self.failed(r);
                 }
-                if tomb || held.is_some() || ctx.ground.taken(b) {
+                if tomb || held.is_some() {
                     return None;
                 }
                 class(ctx.ground.rank(s, b, wrap), stamp.is_none())
@@ -707,6 +707,16 @@ impl Streams {
                 }
                 // an ephemeral commit held: its entry is kept, off the peer's budget, counted at
                 // what the commit costs held
+                // a commit held: its entry is kept as it came, read judges it as any entry of the
+                // body under S; charged to no one when it gave something held, else (a duplicate)
+                // charged to its bringer unless stamped, so a peer's fresh encryptions of held
+                // commits fill its own budget alone
+                Ok(Opening::Held { gave }) => {
+                    let src = if gave { None } else { self.pull.get(&conn).map(|p| p.src) };
+                    if let Err(e) = ctx.store.log(&s, e, Some(bytes.to_vec()), src) {
+                        return self.failed(Err(e));
+                    }
+                }
                 Ok(Opening::Memory(n)) => {
                     let src = self.pull.get(&conn).map(|p| p.src);
                     let r = ctx.store.log(&s, e, Some(bytes.to_vec()), src).and_then(|_| ctx.store.uncharge(&s, &b));

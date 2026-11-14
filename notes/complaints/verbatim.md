@@ -1,0 +1,3 @@
+# verbatim
+- `osis_label::verify_stamp` answers `Ok(false)` for a stamp that verifies (the bool says "role entry"), so `.unwrap_or(false)` reads a good stamp as bad: read's deposit path did that and encrypted afresh every body it should have relayed. A name or type saying what the bool means would have caught it.
+- A cost test over `Effects` can pass or fail by hash luck: a key read at its absent-bucket stamp moves with any removal in its bucket, so a different blob ID flips "pieces judged" from 24 to 130. Finding which row moved a key took hand instrumentation of `Effects::due` and the store's stamping (the `count_causes` labels name only the table); a debug hook naming the moved key would save that.

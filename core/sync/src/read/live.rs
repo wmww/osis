@@ -140,6 +140,12 @@ impl Ground for Live<'_, '_> {
         }
         Ok(out)
     }
+    fn stands(&mut self, s: &SyncId, e: &Entry) -> Result<bool> {
+        if e.own || self.cx.engine.signers(s, None)?.stamp.is_none() {
+            return Ok(true);
+        }
+        self.cx.store.stamp_vouches(s, e)
+    }
     fn own_tombstones(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>> {
         let mut out = Vec::new();
         for b in self.cx.engine.commit_blobs(c)?.iter() {
@@ -177,6 +183,9 @@ impl Ground for Live<'_, '_> {
             out.extend(self.source(s, &at)?);
         }
         Ok(Arc::new(out))
+    }
+    fn reached(&mut self, s: &SyncId) -> Result<Vec<(Source, ConnId)>> {
+        Ok(self.views.of(s).iter().filter_map(|at| self.views.get(s, at)).map(|v| (v.at, v.conn)).collect())
     }
     fn source(&mut self, s: &SyncId, at: &Source) -> Result<Option<SrcView>> {
         let Some(mut v) = self.views.get(s, at) else { return Ok(None) };
@@ -273,7 +282,7 @@ impl Ground for Live<'_, '_> {
         // stamped under the source's head write key: it pulls it as it is
         let write = at.head.and_then(|h| self.cx.store.path(s).ok().flatten().and_then(|p| p.steps.iter().find(|(st, _)| st.id() == h).map(|(st, _)| st.keys.write)));
         if let (Some(w), Some(stamp)) = (write, e.stamp)
-            && osis_label::verify_stamp(&w, s, b, &e.wrap, &stamp).unwrap_or(false)
+            && osis_label::verify_stamp(&w, s, b, &e.wrap, &stamp).is_ok()
         {
             return Ok(());
         }
@@ -364,6 +373,11 @@ impl Ground for Live<'_, '_> {
         // class and expiry come from the bytes' prefix
         let e = own_entry(self.cx, s, *b, wrap, Class::Durable)?;
         self.cx.store.log(s, e, Some(bytes), None)?;
+        Ok(())
+    }
+    fn take(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        let (Some(e), Some(bytes)) = (self.cx.store.entry(s, b)?, self.cx.store.bytes(b)?) else { return Ok(()) };
+        crate::store::open_entry(self.cx.engine, self.cx.store, s, b, &e.wrap, &bytes)?;
         Ok(())
     }
     fn take_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {

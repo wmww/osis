@@ -79,7 +79,13 @@ pub const ASKED_MS: u64 = crate::session::STALL_TIMEOUT_MS;
 /// What opening a pulled body did at a node reading S.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opening {
+    /// It opened to what no entry keeps: a piece, an inbox blob, records.
     Taken,
+    /// It opened to a commit held here: the entry is kept as it came, the reader's own store's
+    /// copy of the body (spec/sync-judgement.md §3 Own store: a held blob goes on verbatim);
+    /// `gave`: it brought something new, else it stays charged to its bringer unless stamped
+    /// (spec/sync-ids.md §5 Peer budget: it gives nothing held).
+    Held { gave: bool },
     NotOpen,
     /// It opened to a commit that pends here (spec/commits.md §4 Pending storage): the entry is
     /// kept as its carrier (`store::Follow`).
@@ -108,13 +114,6 @@ pub enum Rank {
 pub trait Ground {
     /// Opens the entry's wrap and takes what the blob holds (`Engine::open_entry`).
     fn open(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening>;
-    /// Whether blob `b` was taken here before and fetching it again brings nothing: it opened to
-    /// a commit held here, not pending, with no part it carries missing (spec/sync-streams.md §4
-    /// Bodies).
-    fn taken(&mut self, b: &BlobId) -> bool {
-        let _ = b;
-        false
-    }
     /// The body's place in the fill order.
     fn rank(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Rank;
     /// This node's own relay-only commits not sent yet, sealed per read sync ID
@@ -471,15 +470,12 @@ impl Ground for EngineGround<'_> {
         match crate::store::open_entry(self.engine, &self.store, s, &e.blob, &e.wrap, bytes) {
             Ok(o) if crate::store::pends(self.engine, &e.blob, &o) => Ok(Opening::Pends),
             Ok(Opened::Commit(c, _)) if self.engine.holds_memory(&c) => Ok(Opening::Memory(self.engine.memory_charge(&c)?)),
-            Ok(Opened::Commit(..) | Opened::Linked | Opened::Inbox(_) | Opened::Records(_)) => Ok(Opening::Taken),
+            Ok(Opened::Commit(_, i)) => Ok(Opening::Held { gave: !matches!(i, osis_engine::Ingested::Duplicate(_)) }),
+            Ok(Opened::Linked | Opened::Inbox(_) | Opened::Records(_)) => Ok(Opening::Taken),
             Ok(Opened::NotOpen) | Err(crate::types::Error::Engine(osis_engine::Error::NotBuilt(_))) => Ok(Opening::NotOpen),
             Ok(Opened::Bad) => Ok(Opening::Bad),
             Err(e) => Err(e),
         }
-    }
-
-    fn taken(&mut self, b: &BlobId) -> bool {
-        self.engine.blob_taken(b)
     }
 
     fn own_relays(&mut self) -> Result<Vec<osis_engine::sync::Relay>> {

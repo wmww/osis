@@ -169,3 +169,40 @@ fn a_small_edit_to_a_large_value_costs_its_new_pieces() {
     assert_eq!(small.1, large.1, "nodes decoded: {small:?} {large:?}");
     assert!(large.0 < 2 * small.0, "pieces judged grow with the tree: {small:?} {large:?}");
 }
+
+/// After `three(gives)`, node 0 writes thing 0 once: per commit it added with a body under S, the
+/// entries at node 1 and at node 2 of its blobs (any opened or sealed at nodes 0 and 2), and of
+/// those, the writer's (node 0's own entries).
+fn one_write_entries(gives: Gives) -> Vec<[usize; 4]> {
+    let (mut w, t, s) = three(gives);
+    let before: BTreeSet<CommitId> = w.engine(0).commit_ids().into_iter().collect();
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &crate::harness::history::value_ak(), &Value::Str("one".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    let mut out = Vec::new();
+    for c in w.engine(0).commit_ids() {
+        if before.contains(&c) || w.engine(0).sync_bodies(&c).unwrap().get(&s).is_none() {
+            continue;
+        }
+        let blobs: BTreeSet<BlobId> = [0, 2].iter().flat_map(|i| w.engine(*i).commit_blobs(&c).unwrap().to_vec()).collect();
+        let writers: BTreeSet<BlobId> = w.store(0).entries(&s).unwrap().iter().filter(|e| e.own && blobs.contains(&e.blob)).map(|e| e.blob).collect();
+        let at = |i: usize, of: &BTreeSet<BlobId>| w.store(i).entries(&s).unwrap().iter().filter(|e| of.contains(&e.blob)).count();
+        out.push([at(1, &blobs), at(1, &writers), at(2, &blobs), at(2, &writers)]);
+    }
+    out
+}
+
+// spec/sync-judgement.md §3 (Own store: a held blob of the commit goes on verbatim), spec/crypto.md
+// §5 (Passing on: a fresh encryption only where required): a reader keeps the writer's blob of a
+// write as its own store's entry and makes none of its own, so a node keeping S unread stores one
+// blob of the write, not one per reader; a reader that writes too likewise.
+#[test]
+fn a_write_is_one_blob_however_many_read_it_spec_sync_judgement_3() {
+    for gives in [Gives::Reads, Gives::Writes] {
+        let got = one_write_entries(gives);
+        assert_eq!(got, vec![[1; 4]], "{gives:?}: the write's blobs at the store, the writer's of them, at the reader, the writer's of them");
+    }
+}
