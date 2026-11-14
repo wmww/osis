@@ -9,7 +9,7 @@
 use crate::types::{ConnId, Cx, NodeKey, Out};
 use osis_base::Tid;
 use osis_crypto::Epoch;
-use osis_proto::Message;
+use osis_proto::Msg;
 use std::collections::BTreeMap;
 
 /// A request's id on its connection (spec/wire.md §11.2).
@@ -20,9 +20,9 @@ pub type RequestId = osis_proto::msg::Id;
 pub enum Incoming {
     /// The peer's proofs are done (`Session::proven`): opens begins.
     Proved,
-    Request(RequestId, Message),
-    Reply(RequestId, Message),
-    Push(Message),
+    Request(RequestId, Msg),
+    Reply(RequestId, Msg),
+    Push(Msg),
 }
 
 /// The module a received message goes to.
@@ -87,19 +87,19 @@ impl Session {
     }
 
     /// Sends a request, in order while under `WINDOW`.
-    pub fn request(&mut self, m: Message) -> RequestId {
+    pub fn request(&mut self, m: Msg) -> RequestId {
         let _ = m;
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         id
     }
 
-    pub fn answer(&mut self, to: RequestId, m: Message) {
+    pub fn answer(&mut self, to: RequestId, m: Msg) {
         let _ = (to, m);
     }
 
     /// Pushes; `false`: past `REPLY_BUDGET`, the pusher waits.
-    pub fn push(&mut self, m: Message) -> bool {
+    pub fn push(&mut self, m: Msg) -> bool {
         let _ = m;
         false
     }
