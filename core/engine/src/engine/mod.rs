@@ -695,6 +695,9 @@ indexes! {
     /// What a thing has reads the state (`Tx::has_state`); what a commit counts for (a field's retention) reads its parts valid here
     /// (`Meta::valid_at`), body held or not.
     pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
+    /// `by_aspect`'s keys, aspect first: the things holding a commit on each aspect, read per
+    /// aspect (the actors with a `secrets.0`, the link-seed things).
+    pub aspect_things: JSetMap<Ak, Tid>,
     /// Per account, the sequence number of its last rotation held or dropped
     /// (`Core::note_rotation`): what `Core::account_view` is cached by.
     pub rotations: JMap<Tid, u64>,

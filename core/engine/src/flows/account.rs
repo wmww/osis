@@ -948,7 +948,7 @@ impl Engine {
     /// is `p`.
     pub fn devices_held(&self, p: &Tid) -> Option<Tid> {
         let ak = osis_base::Ak::new("account.0").ok()?;
-        self.core.ix.by_aspect.keys().find(|(t, a)| *a == ak && self.core.first_admin(t) == Some(*p)).map(|(t, _)| *t)
+        self.core.ix.aspect_things.get(&ak)?.iter().find(|t| self.core.first_admin(t) == Some(*p)).copied()
     }
 
     /// The node whose inner signature `blob` carries, when this node holds the seed of the epoch

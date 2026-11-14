@@ -407,7 +407,7 @@ pub(crate) fn retake(tx: &mut Tx<'_>) -> Result<()> {
 /// epochs only grow, so no round cap is needed; a cap left deep chains unopened).
 fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
     let secrets_ak = ak("secrets.0")?;
-    let actors: BTreeSet<Tid> = tx.core.ix.by_aspect.keys().filter(|(_, a)| *a == secrets_ak).map(|(t, _)| *t).collect();
+    let actors: BTreeSet<Tid> = tx.core.ix.aspect_things.get(&secrets_ak).cloned().unwrap_or_default();
     loop {
         let mut any = false;
         for a in &actors {

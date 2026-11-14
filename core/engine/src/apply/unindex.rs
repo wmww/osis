@@ -43,6 +43,9 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     for (ai, a) in v.aspects.iter().enumerate() {
         let k = (a.tid, a.ak.clone());
         core.ix.by_aspect.remove(&k, &(v.ts, *id));
+        if !core.ix.by_aspect.contains_key(&k) {
+            core.ix.aspect_things.remove(&a.ak, &a.tid);
+        }
         core.ix.invalid.remove(&k, id);
         core.ix.by_thing.remove(&(a.tid, v.author), id);
         core.ix.dropped_snapshots.remove(&k, id);
