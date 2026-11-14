@@ -98,5 +98,5 @@ The app, CLI and chat go through the osis API, which now runs the new sync; chec
 - When a phase finishes, update this issue's phase status here, not in a new file.
 
 ## Status
-- Phase 0: steps 2-4 done (inputs in notes/sync-rewrite-inputs.md; old net issues deleted; freeze posted); step 1 (deleting the open branches listed above) is the coordinator's. Branch `unread-retainer` (5ca3237f4, engine data-loss fix for issues/lifetimes-unread-retainer.md, worker tests green, not gated) is engine work that stays: fresh reviewer, gate, merge; the merge deletes that issue and marks the Lifetimes row of notes/cannot-read-audit.md fixed.
+- Phase 0: done (inputs in notes/sync-rewrite-inputs.md; old net issues deleted; freeze posted; old branches deleted).
 - Phases 1-5: not started.
