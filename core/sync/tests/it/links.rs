@@ -152,13 +152,12 @@ fn an_ended_link_is_not_redeemed_spec_permissions_7() {
 
 
 
-// spec/permissions.md §7 (Redeem: the redeemer joins K once K's history is held): accounts 1
-// and 2 join K0 by node 0's link, account 0 joins K1 by node 1's link; node 2 then redeems node
-// 1's link. It opens K1 at node 1 and node 0, holds K1's whole roster with nothing pending, and
-// never writes its join (redeem stays Pending). Each pair alone, and every shorter order, joins.
-// Reproducer of issues/sync-link-first-contact.md (Contact cards in the differential).
+// spec/permissions.md §7 (Redeem: the join waits for K's history, then seals K's secrets to the
+// redeemer): accounts 1 and 2 join K0 by node 0's link, account 0 joins K1 by node 1's link; node
+// 2 then redeems node 1's link. Node 2 already shares a stream with node 1, so K1 joins it
+// mid-stream and L's grant (roster) arrives before K1's keyset (fetched last: wrapped under the
+// epoch it supersedes); the join waits for the keyset, never fails for want of it.
 #[test]
-#[ignore = "sync-link-first-contact"]
 fn a_third_redeemer_sharing_another_link_joins_spec_permissions_7() {
     let mut w = World::new(0);
     for _ in 0..3 {
@@ -176,4 +175,48 @@ fn a_third_redeemer_sharing_another_link_joins_spec_permissions_7() {
         let a = w.node(j).account.unwrap();
         assert!(w.engine(i).roster(&links[i].k).contains_key(&a), "{j}'s join held at {i}");
     }
+}
+
+// spec/sync-inbox.md §5 (Contact card), §2 (Inbox blob), spec/sync-opens.md §2 (Known actor):
+// nodes 0 and 1 exchange contact cards (each redeems the other's read link to its
+// profile, and accepts the profile), then node 0 grants node 1's account read on a thing and
+// node 1 accepts it: node 1 reads it. Fails: the connection node 1 dialed by node 0's link
+// proved L only, node 1's account was unknown to node 0 then and is never proved there after the
+// join, so the grant's inbox blob is offered to no connection (the recipient is not proven and
+// its inbox is not open there). Reproducer of issues/sync-link-first-contact.md (Contact cards
+// in the differential).
+#[test]
+#[ignore = "sync-link-first-contact"]
+fn a_grant_reaches_a_contact_by_card_spec_sync_inbox_5() {
+    use crate::harness::history::file;
+    let mut w = two_nodes();
+    let cards: Vec<ShareLink> = (0..2).map(|i| {
+        let p = w.node(i).profile.unwrap();
+        w.make_link(i, p, Role::Read)
+    }).collect();
+    for (j, i) in [(1, 0), (0, 1)] {
+        w.redeem(j, &cards[i]);
+    }
+    w.run();
+    for (j, i) in [(1, 0), (0, 1)] {
+        assert_eq!(w.redeem(j, &cards[i]), Waiting::Done, "{j} redeems {i}'s card");
+        file(&mut w, j, Vec::new(), vec![cards[i].target]);
+    }
+    w.run();
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let ak = osis_base::Ak::new("u:v.0").unwrap();
+    let t = w.write(0, |e| {
+        let mut m = osis_engine::Mutation::new();
+        let t = e.new_thing(&mut m, a0);
+        m.set(t, &ak, &osis_base::Value::Str("x".into())).unwrap();
+        e.commit(m).unwrap();
+        t
+    });
+    file(&mut w, 0, vec![t], Vec::new());
+    let read = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    w.write(0, |e| e.grant(&t, &a1, &read)).unwrap();
+    w.run();
+    file(&mut w, 1, Vec::new(), vec![t]);
+    w.run();
+    assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(osis_base::Value::Str("x".into())));
 }

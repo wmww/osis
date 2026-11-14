@@ -278,8 +278,8 @@ pub fn world(seed: u64, n: usize) -> World {
 /// and each node files every other account's profile in its account's D (what
 /// importing a contact card leaves, spec/sync-inbox.md §5: the granter is a known actor and a
 /// connected sender), all handed by hand before any history, so no history content travels this
-/// way. A stand-in for the contact exchange: replace it by contact cards once a link's first
-/// contact opens K (issues/sync-link-first-contact.md).
+/// way. A stand-in for the contact exchange: contact cards join, but a grant to the contact never
+/// reaches it after (issues/sync-link-first-contact.md, `links::a_grant_reaches_a_contact_by_card`).
 pub fn introduce(w: &mut World) {
     assert!(w.history.things.is_empty(), "introduce hands no content: before any history only");
     hand_all(w);
@@ -353,13 +353,27 @@ pub fn hand_all(w: &mut World) {
 }
 
 /// The reference: a single engine handed every commit any node wrote, again while one
-/// applies. Every commit any node holds now is handed too (what sync wrote).
+/// applies, each as whole as any node holds it now. Every commit any node holds now is handed
+/// too (what sync wrote).
 pub fn reference(w: &mut World) -> Peer {
     for i in 0..w.len() {
         harvest(w, i);
     }
     let mut r = Peer::new_bare(0x005e_ed0f_5eed, w.now()).expect("reference");
-    let handed = w.history.handed.clone();
+    // a node holding a commit only as a certificate copy (its header and some parts) packages
+    // that much, and the engine takes a commit once: each goes as the most whole package any
+    // node holds of it
+    let mut handed = w.history.handed.clone();
+    let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
+    for pk in handed.iter_mut() {
+        for &i in &on {
+            if let Some(o) = w.engine(i).package(&pk.id).ok().flatten()
+                && o.bytes.len() > pk.bytes.len()
+            {
+                *pk = o;
+            }
+        }
+    }
     for _ in 0..=handed.len() {
         let mut moved = false;
         for pk in &handed {
