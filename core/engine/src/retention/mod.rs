@@ -1311,6 +1311,66 @@ impl Engine {
         })
     }
 
+    /// The held parts of durable content commit `c` that drop as covered now, for node-sync to
+    /// drop (`drop_body`; spec/commits.md §5 Covered, Own replaces, Keep bounds;
+    /// spec/sync-compaction.md §1 Own bodies): each covered by a held valid snapshot (of two
+    /// covered-equal ones the higher commit ID goes) or by its author's own replaces, past its
+    /// keep-at-least bound (read on the memo clock: a bound ahead wakes the reader then), never a
+    /// delta this node wrote with no dead write under another's snapshot; under own replaces the
+    /// commit goes only whole. A memo-read judgement: what it read moving makes it due again.
+    pub fn covered_drops(&mut self, c: &CommitId) -> Result<Vec<(Tid, Ak)>> {
+        let Some(m) = self.core.ix.commits.get(c).cloned() else { return Ok(Vec::new()) };
+        if m.view.memory || !matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) {
+            return Ok(Vec::new());
+        }
+        let keeps = self.part_keeps(c)?;
+        let reached = |e: &Engine, t: u64| e.core.time.until(Some(t)) >= t;
+        // held parts a cover may drop: past their keep bound, a leftover only past its expiry
+        let mut parts = Vec::new();
+        let mut held = 0;
+        for (ai, a) in m.header.aspects.iter().enumerate() {
+            if !m.holds(ai) || m.is_dropped(ai) {
+                continue;
+            }
+            held += 1;
+            let leftover_due = !m.bare(ai) || m.header.expires.is_some_and(|t| reached(self, t));
+            let keep = keeps.get(ai).copied().unwrap_or(osis_commit::FOREVER);
+            if compact::compactable(&a.ak) && leftover_due && keep < osis_commit::FOREVER && reached(self, keep) {
+                parts.push((a.tid, a.ak.clone()));
+            }
+        }
+        let c = *c;
+        self.read(|tx| {
+            let mut by_snapshot = Vec::new();
+            let mut by_own = Vec::new();
+            for (tid, ak) in parts {
+                let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| *s != c).collect();
+                let mut done = false;
+                for s in snaps {
+                    if snapshot::drops_under(tx, &s, &c, &tid, &ak)? && !own_kept_under(tx, &s, &c, &tid, &ak)? {
+                        done = true;
+                        break;
+                    }
+                }
+                if done {
+                    by_snapshot.push((tid, ak));
+                    continue;
+                }
+                // `covered` asks a plain cover for its second own replace itself
+                if let Some(q) = snapshot::own_covers(tx.core, &c, &tid, &ak).first()
+                    && snapshot::covered(tx, q, &c, &tid, &ak)? == Some(true)
+                {
+                    by_own.push((tid, ak));
+                }
+            }
+            // own replaces drop a commit only whole: every part it holds covered (by them or a snapshot)
+            if by_snapshot.len() + by_own.len() == held {
+                by_snapshot.extend(by_own);
+            }
+            Ok(by_snapshot)
+        })
+    }
+
     /// Drops a body as covered (compaction, executed by node-sync): aspect `ak` of commit `c`.
     /// Refused unless a held valid snapshot covers it (every drop but expiry and purge is one
     /// as covered, spec/commits.md §5).

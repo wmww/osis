@@ -1462,8 +1462,8 @@ fn history_completes_with_a_pass_spec_sync_status_3() {
 
 // spec/sync-status.md §3 History complete: a pass belongs to a sync ID read here, so a sync ID
 // left and read again wants a pass of its own (what it missed while away is not here): one that
-// leaves loses its noted pass (sync's follow calls `forget_read`; an open drops it too, for one
-// left while down), and a pass of a sync ID not read is not kept.
+// leaves loses its noted pass (sync's follow calls `forget_read`; its start calls
+// `forget_unread`, for one left while down), and a pass of a sync ID not read is not kept.
 #[test]
 fn a_pass_goes_with_its_sync_id_spec_sync_status_3() {
     let (mut lp, ps) = people(1);
@@ -1483,6 +1483,7 @@ fn a_pass_goes_with_its_sync_id_spec_sync_status_3() {
     m.op(d, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Remove(osis_base::Value::Tid(t)) }).unwrap();
     lp.peers[0].engine.commit(m).unwrap().unwrap();
     lp.peers[0].restart(9).unwrap();
+    lp.peers[0].engine.forget_unread().unwrap();
     add_item(&mut lp, 0, d, t);
     assert!(!lp.peers[0].engine.history_complete(&t).unwrap(), "left while down: read again, history not complete");
     assert_eq!(lp.peers[0].engine.passes_wanted().unwrap().get(&s), Some(&0));
@@ -1834,7 +1835,7 @@ fn junk_records_go_with_their_carrier_spec_commits_4() {
 // spec/permissions.md §4 (Logging certificates: the records missing go as one record blob of the
 // logging node's, while held in its own store): what the engine keeps of a record blob it sealed under S lasts across a
 // restart, goes when its own entry does (`forget_record_blob`), and goes with S when S is read here
-// no more (`forget_read`; an open drops those of every sync ID not read).
+// no more (`forget_read`; a start drops those of every sync ID not read, `forget_unread`).
 #[test]
 fn record_blob_rows_go_with_their_sync_id_spec_perm_4() {
     let (mut lp, ps) = people(1);
@@ -1854,13 +1855,14 @@ fn record_blob_rows_go_with_their_sync_id_spec_perm_4() {
     assert!(lp.peers[0].engine.cert_blobs(&s, None).unwrap().is_empty());
     lp.peers[0].restart(9).unwrap();
     assert!(lp.peers[0].engine.cert_blobs(&s, None).unwrap().is_empty(), "its rows gone too");
-    // left while down: an open drops them
+    // left while down: the start drops them
     lp.peers[0].engine.seal_records(&s, &[ps[0]].into(), &mut rng).unwrap().expect("sealed");
     let mut m = Mutation::new();
     m.op(d, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Remove(osis_base::Value::Tid(t)) }).unwrap();
     lp.peers[0].engine.commit(m).unwrap().unwrap();
     lp.peers[0].restart(10).unwrap();
-    assert!(lp.peers[0].engine.cert_blobs(&s, None).unwrap().is_empty(), "S not read at the open");
+    lp.peers[0].engine.forget_unread().unwrap();
+    assert!(lp.peers[0].engine.cert_blobs(&s, None).unwrap().is_empty(), "S not read at the start");
 }
 
 // spec/permissions.md §4 (Logging certificates: each node logs its account's chain certificates

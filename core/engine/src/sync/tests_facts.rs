@@ -231,3 +231,53 @@ fn a_blob_under_another_expiry_is_refused_spec_sync_ids_1() {
     assert!(framed(None).is_err(), "no expiry");
     assert!(framed(Some(expires)).is_ok(), "the commit's own");
 }
+
+/// One node of an account writing `n` whole replaces of a register of a thing in D, with its
+/// home sync ID: the commits.
+fn replaces(n: i64) -> (LocalPeer, SyncId, Tid, Vec<CommitId>) {
+    let mut lp = LocalPeer::new_bare(1, 0, T0).unwrap();
+    let d = lp.peers[0].engine.create_account().unwrap().0.devices;
+    let e = &mut lp.peers[0].engine;
+    let home = e.home_sync_id(&d).unwrap().unwrap();
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, d);
+    e.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.op(d, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Add(Value::Tid(t)) }).unwrap();
+    e.commit(m).unwrap().unwrap();
+    let mut cs = Vec::new();
+    for i in 0..n {
+        lp.advance(1_000);
+        let e = &mut lp.peers[0].engine;
+        let mut m = Mutation::new();
+        m.set(t, &ak("x:a.0"), &Value::Int(i)).unwrap();
+        cs.push(e.commit(m).unwrap().unwrap());
+    }
+    (lp, home, t, cs)
+}
+
+// spec/commits.md §5 (Own replaces: every node judges C covered for must-hold by the same test),
+// spec/sync-judgement.md §2: a write its author replaced whole twice is covered under S, one
+// replaced once is not.
+#[test]
+fn own_replaces_cover_for_must_hold_spec_commits_5() {
+    let (mut lp, home, _, cs) = replaces(3);
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.body_facts(&home, &cs[0]).unwrap().covered, Some(true), "two own replaces later");
+    assert_eq!(e.body_facts(&home, &cs[1]).unwrap().covered, Some(false), "one own replace later");
+}
+
+// spec/sync-judgement.md §2 (may-hold: dropped here), spec/commits.md §5 (Own replaces): a write
+// its own replaces cover, once dropped, is still its body under S, judged dropped; the commit
+// they let go goes whole, nothing of it left uncovered.
+#[test]
+fn a_body_dropped_under_own_replaces_stays_under_its_sync_id_spec_sync_judgement_2() {
+    let (mut lp, home, t, cs) = replaces(3);
+    let e = &mut lp.peers[0].engine;
+    let drops = e.covered_drops(&cs[0]).unwrap();
+    assert_eq!(drops, vec![(t, ak("x:a.0"))]);
+    assert!(e.covered_drops(&cs[1]).unwrap().is_empty(), "one own replace later: kept");
+    e.drop_body(&cs[0], &t, &ak("x:a.0")).unwrap();
+    assert!(e.sync_bodies(&cs[0]).unwrap().contains_key(&home), "still a body under S");
+    assert_eq!(e.body_facts(&home, &cs[0]).unwrap().dropped, Some(crate::engine::DropFor::Cover));
+}

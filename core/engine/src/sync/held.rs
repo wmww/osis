@@ -192,9 +192,9 @@ impl Engine {
         })
     }
 
-    /// At an open: what `forget_read_now` drops, of each sync ID not read here (one left while
-    /// the node was down).
-    pub(crate) fn forget_unread(&mut self) -> Result<()> {
+    /// What `forget_read_now` drops, of each sync ID not read here (one left while the node was
+    /// down): `Engine::forget_unread`.
+    pub(crate) fn forget_unread_now(&mut self) -> Result<()> {
         let gone: BTreeSet<SyncId> = self.core.ix.passes.keys().chain(self.core.ix.cert_blobs.keys().map(|k| &k.0)).copied().collect();
         for s in gone {
             if !self.reads_now(&s)? {

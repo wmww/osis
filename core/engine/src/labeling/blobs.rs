@@ -539,10 +539,12 @@ impl Engine {
         self.bodies_under(ctx, id, false)
     }
 
-    /// `commit_bodies_under`, `missing` parts included (spec/sync-judgement.md §3 Dropped bodies:
-    /// a part counting as never received again is still the body's, to fetch again): what the
-    /// sync judgement reads (`sync_bodies`). A body of missing parts alone has no plaintext.
-    pub(crate) fn bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId, missing: bool) -> Result<Vec<Body>> {
+    /// `commit_bodies_under`, with `unheld` the parts not held included: missing ones
+    /// (spec/sync-judgement.md §3 Dropped bodies: a part counting as never received again is
+    /// still the body's, to fetch again) and dropped ones (§2: a body dropped here is may-hold,
+    /// its entries leaving by the carriers rule, not at once): what the sync judgement reads
+    /// (`sync_bodies`). A body of such parts alone has no plaintext.
+    pub(crate) fn bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId, unheld: bool) -> Result<Vec<Body>> {
         drop(osis_base::costs::span("pass: bodies of a commit"));
         let id = *id;
         // the view: the header is decoded only for bodies the cache misses
@@ -552,7 +554,7 @@ impl Engine {
         }
         let touches = h.aspects.iter().any(|a| ctx.closure.contains(&a.tid));
         let mut body = Memo::get_in(self, |e| &e.core.bodies, &id, |e| e.body_with(&id, false))?;
-        let gone: Vec<usize> = if missing { self.core.ix.commits.get(&id).map(|m| m.missing_parts().collect()).unwrap_or_default() } else { Vec::new() };
+        let gone: Vec<usize> = if unheld { self.core.ix.commits.get(&id).map(|m| m.missing_parts().chain(m.dropped_parts().map(|(ai, _)| ai)).collect()).unwrap_or_default() } else { Vec::new() };
         if !gone.is_empty() {
             body = match body {
                 Some(mut b) => {

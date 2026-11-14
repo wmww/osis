@@ -1095,9 +1095,16 @@ impl Engine {
 
     /// Sync ID `s` is read here no more (it left the sync set, or is kept unread): its noted
     /// passes go, so reading it again wants a fresh pass, and so do the record blobs sealed under
-    /// it. An open does the same for every sync ID not read.
+    /// it.
     pub fn forget_read(&mut self, s: &SyncId) -> Result<()> {
         self.forget_read_now(s)
+    }
+
+    /// `forget_read` of every sync ID not read here (one left while the node was down). Not at
+    /// an open: what node-sync has the engine follow (links being redeemed, `follow_link`) is
+    /// part of the sync set, so node-sync calls it at its start once it followed them again.
+    pub fn forget_unread(&mut self) -> Result<()> {
+        self.forget_unread_now()
     }
 
     /// History complete for `thing` (spec/sync-status.md §3): a complete pass of every sync ID

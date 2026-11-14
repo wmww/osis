@@ -220,7 +220,9 @@ impl Engine {
     pub(crate) fn body_facts_now(&mut self, s: &SyncId, c: &CommitId) -> Result<BodyFacts> {
         let Some(b) = self.sync_body_now(s, c)? else { return Ok(BodyFacts { required: false, closure: false, dropped: None, kept: false, hosts_from: 0, covered: Some(false), sole_certificate: false, lasting_header: false }) };
         let (Some(m), Some(h)) = (self.core.ix.commits.get(c).cloned(), self.header(c)) else { return Err(Error::UnknownCommit(*c)) };
-        let dropped = b.parts.iter().find_map(|ai| m.dropped(*ai).map(|d| d.why));
+        // dropped here: no part of the body held (a part dropped beside a held one leaves the
+        // body judged by what is held)
+        let dropped = if b.parts.iter().all(|ai| m.dropped(*ai).is_some()) { b.parts.iter().find_map(|ai| m.dropped(*ai).map(|d| d.why)) } else { None };
         let keeps = self.part_keeps(c)?;
         // a bound still ahead wakes the judgement when it passes
         let kept = b.parts.iter().any(|ai| keeps.get(*ai).is_some_and(|k| self.core.time.until(Some(*k)) < *k));
@@ -245,13 +247,20 @@ impl Engine {
         Ok(BodyFacts { required: true, closure: !b.certificate, dropped, kept, hosts_from, covered, sole_certificate: false, lasting_header: b.header_only })
     }
 
-    /// Whether held snapshots of its aspect cover delta `ai` of `c` (header `h`): `None` while one
-    /// stamped after it cannot be judged (spec/sync-judgement.md §2 established uncovered). A
+    /// Whether held snapshots of its aspect, or its author's own replaces, cover delta `ai` of `c`
+    /// (header `h`): `None` while a snapshot stamped after it cannot be judged
+    /// (spec/sync-judgement.md §2 established uncovered). A
     /// signal's delta is never joined, so never covered.
     pub(crate) fn part_covered(&mut self, c: &CommitId, h: &osis_commit::Header, ai: usize) -> Result<Option<bool>> {
         let Some(a) = h.aspects.get(ai) else { return Ok(Some(false)) };
         if a.ak.signal() {
             return Ok(Some(false));
+        }
+        // its author's own replaces cover it by the same test (spec/commits.md §5 Own replaces)
+        if let Some(q) = crate::retention::snapshot::own_covers(&self.core, c, &a.tid, &a.ak).first().copied()
+            && self.covered(&q, c, &a.tid, &a.ak)? == Some(true)
+        {
+            return Ok(Some(true));
         }
         let snaps: Vec<CommitId> = self.core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).filter(|x| x != c).collect();
         let mut this = Some(false);

@@ -3250,7 +3250,6 @@ impl Engine {
         self.reload()?;
         self.take_account()?;
         self.reexamine()?;
-        self.forget_unread()?;
         self.forget_gone_causes()?;
         // a leftover held from before goes uncovered no longer than a quiet time from here
         // (spec/sync-compaction.md §1 trigger)
