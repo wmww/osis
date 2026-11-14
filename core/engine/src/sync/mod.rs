@@ -461,6 +461,12 @@ impl Engine {
         self.core.ix.commits.feed()
     }
 
+    /// A cursor over the blobs this node comes to open or seal from now on (`blob_commit` names
+    /// their commit; `memo::Feed`, a blob noted again included).
+    pub fn blob_feed(&self) -> osis_base::memo::Feed<BlobId> {
+        self.core.ix.blob_parts.feed()
+    }
+
     /// A cursor over the held commits that pended no more from now on (their waiting parts
     /// joined or went, `memo::Feed`): each may be judged again (`pends`).
     pub fn unpended_feed(&self) -> osis_base::memo::Feed<CommitId> {

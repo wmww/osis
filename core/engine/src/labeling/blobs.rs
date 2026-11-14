@@ -521,7 +521,7 @@ impl Engine {
 
     fn actor_reads(&self, actor: &Tid, t: &Tid) -> bool {
         // the readers of an account's devices actor are its nodes: they read what the account reads
-        let reader = self.core.account_devices().filter(|x| x.1 == *actor).map_or(*actor, |x| x.0);
+        let reader = self.core.devices_of(actor).unwrap_or(*actor);
         self.core.may_read(&reader, &self.core.reader_of(t))
     }
 
