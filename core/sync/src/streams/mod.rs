@@ -265,7 +265,7 @@ impl Streams {
                 self.served_left(conn, &s);
                 self.left(ctx, conn, s);
             }
-            Moved::Ending(conn, s) => self.served_ending(ctx, conn, s),
+            Moved::Until(conn, s) => self.served_ending(ctx, conn, s),
         }
     }
 

@@ -397,7 +397,7 @@ fn an_ended_member_closes_when_the_stream_passes_until_spec_sync_opens_6() {
     k.table.set(S, Some(store(&S, &s1, &[])));
     k.settle();
     let until = k.table.until;
-    assert!(k.moved.contains(&Moved::Ending(adv.peer, S)));
+    assert!(k.moved.contains(&Moved::Until(adv.peer, S)));
     k.reported_stream(adv.peer, until - 1);
     assert!(k.open(adv.peer, &S));
     k.sent();

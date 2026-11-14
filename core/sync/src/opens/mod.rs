@@ -64,7 +64,7 @@ pub enum Moved {
     /// S stopped being a member on `conn` (closed, or the connection ended).
     Left(ConnId, SyncId),
     /// Member S's `until` was set or cleared.
-    Ending(ConnId, SyncId),
+    Until(ConnId, SyncId),
 }
 
 /// How a module that sends reaches a connection: its binding and its sends. The product's is
@@ -1378,7 +1378,7 @@ impl Opens {
         }
     }
 
-    /// Sets or clears member S's `until`; streams hears of it (`Moved::Ending`).
+    /// Sets or clears member S's `until`; streams hears of it (`Moved::Until`).
     fn set_until(&mut self, conn: ConnId, s: &SyncId, until: Option<Position>, moved: &mut Vec<Moved>) {
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let Some(m) = c.rec.and_then(|r| self.records.get_mut(&r)).and_then(|r| r.members.get_mut(s)) else { return };
@@ -1391,7 +1391,7 @@ impl Opens {
         } else {
             c.ending.remove(s);
         }
-        moved.push(Moved::Ending(conn, *s));
+        moved.push(Moved::Until(conn, *s));
     }
 
     /// The peer's reported position's cursor for S on `conn` (spec/sync-opens.md §6 Lost).

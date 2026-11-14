@@ -842,7 +842,7 @@ fn an_ended_member_told_at_its_until_spec_sync_streams_4() {
     p.a.log(u, 102);
     let (end, _) = p.a.store.log_bounds().unwrap();
     p.a.open.members.get_mut(&C).unwrap().get_mut(&s).unwrap().until = Some(end);
-    p.a.with(p.now, |st, c| st.member_moved(c, Moved::Ending(C, s)));
+    p.a.with(p.now, |st, c| st.member_moved(c, Moved::Until(C, s)));
     let late = p.a.log(s, 101);
     p.run();
     assert!(!knows(&p.b, p.b.src(), s, late), "nothing past until");
