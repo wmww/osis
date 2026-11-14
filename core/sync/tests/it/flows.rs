@@ -70,3 +70,16 @@ fn a_grant_again_after_a_removal_reaches_the_grantee_spec_sync_inbox_2() {
     let _ = crate::harness::play(&mut w, &[New(2), Grant(2, 0, 1, Gives::Reads), Remove(2, 0, 1), Grant(2, 0, 1, Gives::Reads), Run], String::new());
     crate::harness::history::check(&mut w);
 }
+
+// spec/sync-opens.md §3 (`changed_at` advances when a role on S changes): a reader removed, then
+// granted again after a write it could not read, opens S again (by J: no credential of its own
+// moved) and reads that write. Found by the differential.
+#[test]
+fn a_reader_granted_again_opens_by_its_role_spec_sync_opens_3() {
+    use crate::harness::Step::*;
+    use crate::harness::history::Gives;
+    let mut w = crate::harness::history::world(15, 3);
+    w.cap = 200_000;
+    let _ = crate::harness::play(&mut w, &[New(2), Grant(2, 0, 1, Gives::Reads), Run, Remove(2, 0, 1), Run, Write(2, 0), Grant(2, 0, 1, Gives::Reads), Run], String::new());
+    crate::harness::history::check(&mut w);
+}

@@ -136,6 +136,8 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
         match holding {
             Holding::Read => {
                 let rc = cx.engine.read_credentials(s).ok()??;
+                // what moves J (spec/sync-opens.md §3 `changed_at`: a role on S changes)
+                c.roles = rc.roster;
                 for (e, k) in &rc.read_secrets {
                     c.shows.push((Shown::Read(*e, *k.expose()), Some(*e)));
                     c.tests.push((Tested::Read(*e, k.clone()), Some(*e)));
