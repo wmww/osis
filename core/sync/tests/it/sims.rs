@@ -1,5 +1,5 @@
 //! The simulation set (issues/sync-rewrite.md Phase 4; notes/sync-test-harness.md, Layers):
-//! short scripted scenarios with fault schedules, each over 8 seeds at small size (the seed
+//! short scripted scenarios with fault schedules, each over 1 seed at small size, 10 under `OSIS_FULL=1` (sized to its share of the test budget, issues/sync-test-cost.md; the seed
 //! draws the world's IDs, keys and the network's faults), checked at quiet by the
 //! differential's oracle (`history::check`) plus the scenario's stated outcome.
 //!
@@ -30,7 +30,7 @@ fn end() -> Vec<Step> {
 /// Plays `start`, `body`, `end` on a fresh world of three nodes per seed, then the oracle and
 /// `outcome`.
 fn sim(name: &str, body: impl Fn(u64) -> Vec<Step> + Sync, outcome: impl Fn(&mut World) + Sync) {
-    let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", large(0..80));
+    let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", large(0..10));
     seeds.run(name, |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {
         let steps: Vec<Step> = start().into_iter().chain(body(seed)).chain(end()).collect();
         let mut w = world(seed, 3);
@@ -102,7 +102,7 @@ fn store_failures() {
 #[test]
 #[ignore = "wiring: a reader back on does not open S at a node keeping it unread whose head the writer registered after the reader last tested S there (issues/sync-walk-reopen.md)"]
 fn a_reader_through_a_node_keeping_it_unread() {
-    let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", large(0..80));
+    let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", large(0..10));
     seeds.run("a_reader_through_a_node_keeping_it_unread", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {
         let steps: Vec<Step> = [start(), vec![PowerOff(1)], writes(1), vec![Write(0, 0), Run, Write(0, 0), Run, PowerOff(0), PowerOn(1), Run]].concat();
         let mut w = world(seed, 3);
