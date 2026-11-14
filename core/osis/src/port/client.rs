@@ -405,6 +405,8 @@ fn redial_later(db: &ReadOnly, at: Address) {
 /// A Notify on client connection `conn`.
 pub(crate) fn notify(db: &ReadOnly, conn: ConnId, m: Msg) {
     let Msg::Notify { sub_id, payload } = m else { return };
+    // tests count what a node tells (no Notify where nothing the actor reads changed)
+    osis_base::costs::count("port: notify", 1);
     on_conn(db, conn, |cx, r| {
         let Some((&local, w)) = r.watches.iter().find(|(_, w)| w.sub == Some(sub_id)) else { return };
         let filter = w.filter.clone();

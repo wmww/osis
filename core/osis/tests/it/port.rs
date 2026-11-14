@@ -864,6 +864,11 @@ fn a_status_watch_through_a_thin_client_spec_wire_11() {
     assert!(matches!(cl.status(), Err(Error::Network(_))));
 }
 
+/// The Notifies this thread's thin clients heard since the last `costs::take`.
+fn notifies() -> u64 {
+    osis::internals::costs::take().into_iter().find(|(k, ..)| *k == "port: notify").map_or(0, |(.., n)| n)
+}
+
 /// `on_thing_change` of `t` through `db`, into a channel.
 fn thing_changes(db: &Osis, t: Tid) -> (osis::Subscription, Receiver<osis::Change<Value>>) {
     let (tx, rx) = channel();
@@ -928,10 +933,13 @@ fn a_grants_watch_through_a_thin_client_spec_wire_11() {
     cl.settle();
     assert_eq!(seen.try_recv().unwrap().unwrap(), w.a.grants(w.t).unwrap());
     let other = w.a.add_client(None).unwrap().0;
-    for t in [w.t, hidden] {
-        w.a.grant(t, other, Role::Read, osis::GrantOpts::default()).unwrap();
-    }
+    osis::internals::costs::take();
+    w.a.grant(hidden, other, Role::Read, osis::GrantOpts::default()).unwrap();
     cl.settle();
+    assert_eq!(notifies(), 0, "a hidden thing's grants change tells nothing on the wire");
+    w.a.grant(w.t, other, Role::Read, osis::GrantOpts::default()).unwrap();
+    cl.settle();
+    assert_eq!(notifies(), 1);
     let now = seen.try_recv().unwrap().unwrap();
     assert!(now.contains_key(&other));
     assert_eq!(now, w.a.grants(w.t).unwrap());
