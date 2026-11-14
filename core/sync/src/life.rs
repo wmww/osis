@@ -19,13 +19,27 @@
 //!   drop (`Engine::role_duties`) runs when `Engine::role_duties_due` (its work list and the
 //!   memo clock up to its first entry, stamped) settles true: a role commit applied from
 //!   elsewhere, or an `until` passing with nothing written (the clock's wake).
+//! - **Joiner's leave** (spec/permissions.md §7): per thing named a holder, whether it is a link
+//!   this account joined whose K's edge on its target ended (`Engine::joined_link_ended`); one
+//!   that became so is left (`Engine::leave_link`).
+//! - **Tied grants** (spec/permissions.md §2): per thing named a holder, the groups whose tied
+//!   edge on it this node removes now (`Engine::untie_due`: the tie held dead, a self-removal at
+//!   once, an explicit demotion once its scope's complete passes are noted); each is removed
+//!   (`Engine::untie`).
+//!
+//! The last two (holder duties) follow every thing a holder is named on (`Engine::role_things`,
+//! then its feed): what each value reads is stamped (records, timelines, placements, passes, the
+//! clock up to the next `until`), so a thing is judged again only when one of those moves. A
+//! holder duty's write refused for any reason but a store failure is left to the next move of
+//! what the value read.
 //!
 //! A duty whose drop forgot things makes the engine read its store again (`Engine::loads`): the
 //! driver ends the settle and restarts the modules (notes/sync-driver.md, Failures).
 //!
 //! State: the sync IDs synced here with their things (`SyncsFollow`), each one's heard-out value
-//! and whether one became heard out since the last judgment. Bounded by the sync IDs synced; a
-//! restart settles every key afresh (every held thing is judged again once heard out).
+//! and whether one became heard out since the last judgment. Bounded by the sync IDs synced; the
+//! holder duties, two values per thing a holder is named on. A restart settles every key afresh
+//! (every held thing is judged again once heard out, every holder duty once).
 
 use crate::set::SyncsFollow;
 use crate::store::Store;
@@ -55,6 +69,14 @@ pub struct Life {
     actors: Option<Feed<Tid>>,
     /// Per actor held, `Engine::role_duty_due` as last settled.
     owed: Effects<Tid, bool>,
+    /// The (holder, thing) pairs named since the last settle (`Engine::role_things`); `None`
+    /// before the first.
+    pairs: Option<Feed<(Tid, Tid)>>,
+    /// Per thing named a holder: a link this account joined that ended (`joined_link_ended`).
+    leaves: Effects<Tid, bool>,
+    /// Per thing named a holder: the groups whose tied edge on it this node removes now
+    /// (`untie_due`).
+    unties: Effects<Tid, BTreeSet<Tid>>,
 }
 
 impl Default for Life {
@@ -63,7 +85,7 @@ impl Default for Life {
         due.want(());
         let mut roles = Effects::new("life: role duties due");
         roles.want(());
-        Life { syncs: SyncsFollow::default(), ids: BTreeMap::new(), heard: Effects::new("life: heard out"), heard_now: BTreeMap::new(), due, last: (false, false), newly: false, roles, actors: None, owed: Effects::new("life: role duty owed") }
+        Life { syncs: SyncsFollow::default(), ids: BTreeMap::new(), heard: Effects::new("life: heard out"), heard_now: BTreeMap::new(), due, last: (false, false), newly: false, roles, actors: None, owed: Effects::new("life: role duty owed"), pairs: None, leaves: Effects::new("life: joiner's leave"), unties: Effects::new("life: tied grants") }
     }
 }
 
@@ -94,7 +116,8 @@ impl Life {
             }
             return Ok(true);
         }
-        self.lifetimes(engine, store, heard_out)
+        let acted = self.holders(engine)?;
+        Ok(self.lifetimes(engine, store, heard_out)? || acted)
     }
 
     /// Writes the role commits this node owes on each held actor whose `role_duty_due` moved
@@ -172,5 +195,45 @@ impl Life {
         engine.judge_lifetimes(&heard, self.newly)?;
         self.newly = false;
         Ok(true)
+    }
+
+    /// The holder duties: each thing named a holder whose value moved, a joined link that ended
+    /// left, the tied edges due removed. Whether it wrote.
+    fn holders(&mut self, engine: &mut Engine) -> Result<bool> {
+        let added: Vec<Tid> = match &mut self.pairs {
+            Some(f) => f.added().into_iter().map(|(_, t)| t).collect(),
+            None => {
+                let (f, all) = engine.role_things();
+                self.pairs = Some(f);
+                all.into_iter().collect()
+            }
+        };
+        for t in added {
+            self.leaves.want(t);
+            self.unties.want(t);
+        }
+        let mut acted = false;
+        for k in self.leaves.due() {
+            if let Some((_, true)) = self.leaves.settle(&k, || engine.joined_link_ended(&k)) {
+                acted |= wrote(engine.leave_link(&k))?;
+            }
+        }
+        for t in self.unties.due() {
+            let Some((_, gs)) = self.unties.try_settle(&t, || engine.untie_due(&t))? else { continue };
+            for g in gs {
+                acted |= wrote(engine.untie(&t, &g))?;
+            }
+        }
+        Ok(acted)
+    }
+}
+
+/// A duty's write: a store failure fails the step; any other refusal writes nothing (the value
+/// is judged again when what it read moves). Whether it wrote.
+fn wrote<T>(r: std::result::Result<T, osis_engine::Error>) -> Result<bool> {
+    match r {
+        Ok(_) => Ok(true),
+        Err(e @ osis_engine::Error::Store(_)) => Err(e.into()),
+        Err(_) => Ok(false),
     }
 }

@@ -776,8 +776,7 @@ fn a_passed_until_rotates_at_its_wake_spec_permissions_2() {
 // out of g with g's tied write grant on t standing; after a complete pass of t's sync ID (node 2
 // reads t) the edge is gone at both nodes.
 #[test]
-#[ignore = "issues/tied-edge-never-removed.md"]
-fn repro_a_dead_tie_is_removed_after_a_pass_spec_permissions_2() {
+fn a_dead_tie_is_removed_after_a_pass_spec_permissions_2() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, world};
     let mut w = world(0, 3);

@@ -533,18 +533,6 @@ impl Osis {
         Ok(())
     }
 
-    /// Removes the grants of `pairs` (thing, group) tied to a membership gone here, where this
-    /// node may as a self-removal (`Write::commit` after a removal). Otherwise, or on failure, a
-    /// node that may remove it does so later (node-sync's obligation).
-    pub(crate) fn untie_now(&self, pairs: &[(Tid, Tid)]) {
-        for (t, g) in pairs {
-            self.engine(|e| {
-                let due = e.may_remove(t, g).ok().flatten() == Some(flows::Untie::SelfRemoval) && e.tie_dead(t, g).unwrap_or(false);
-                if due { e.untie(t, g).ok() } else { None }
-            });
-        }
-    }
-
     /// Makes `holder`'s role on `target` this one: raises, lowers, or with `None` removes. The usual
     /// way to change a role (`grant` says why both exist). A role that does not change writes
     /// nothing. Someone with no role gets a `grant` with default options, or with `None` nothing is

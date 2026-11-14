@@ -410,7 +410,7 @@ impl<'d> Write<'d> {
         }
         let limit = db.inner.limit;
         let expires = self.expires.map(|e| expiry_at(db, e)).transpose()?;
-        let (r, removed) = db.locked(|l| {
+        let r = db.locked(|l| {
             // the source invariant's second half: under the lock this commit takes, every thing it
             // writes is still this engine's. A write decided Local before a move fails here, never
             // lands in a group that no longer syncs (crate::sources)
@@ -431,7 +431,7 @@ impl<'d> Write<'d> {
             }
             let who = self.actor;
             let sharing = self.sharing;
-            let Built { mut m, added, removed } = self.build(&mut Reader { e, limit, actor }, expires)?;
+            let Built { mut m, added } = self.build(&mut Reader { e, limit, actor }, expires)?;
             // whatever actor the write names, an acting handle's write is that actor's alone
             if let Some(a) = actor {
                 m.confine(a);
@@ -445,9 +445,8 @@ impl<'d> Write<'d> {
                 }
                 None => None,
             };
-            Ok((r, removed))
+            Ok(r)
         })?;
-        db.untie_now(&removed);
         Ok(r)
     }
 
@@ -456,7 +455,7 @@ impl<'d> Write<'d> {
         let (acting, db) = (self.db.acting, self.db);
         let Write { ops, keys, actor, created, .. } = self;
         let gk = DynamicAspectKey { ak: GROUP.name(), schema: Some(crate::keys::core_schema()) };
-        let mut b = Built { m: Mutation::new(), added: Vec::new(), removed: Vec::new() };
+        let mut b = Built { m: Mutation::new(), added: Vec::new() };
         let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its write".into()));
         // a release request carries `released.0` deltas alone (spec/commits.md §5 Destruction)
         let releases = ops.iter().filter(|o| matches!(o, WriteOp::Release(_))).count();
@@ -597,9 +596,6 @@ struct Built {
     m: Mutation,
     /// Things added to groups and the group (the `NotSynced` check).
     added: Vec<(Tid, Tid)>,
-    /// (thing, group) memberships removed, items and subgroups: their tied grants go after the
-    /// commit where that is a self-removal (`Osis::untie_now`).
-    removed: Vec<(Tid, Tid)>,
 }
 
 impl Built {
@@ -608,9 +604,6 @@ impl Built {
         if items && add {
             self.m.require_synced(member, g);
             self.added.push((member, g));
-        }
-        if !add {
-            self.removed.push((member, g));
         }
         Ok(())
     }
@@ -660,7 +653,7 @@ impl<'w, 'd> GroupWrite<'w, 'd> {
     /// Removes a member: the adds of it to the group this node holds, or holds as a commit
     /// header only; an add it never heard of, or a later one, keeps it. A grant made with the membership (`Osis::add_with_grant`) goes in a
     /// commit right after when this node may remove it as a self-removal; otherwise a node that
-    /// may remove it does so later. What a removed subgroup was the last way into a synced group
+    /// may remove it does so later (sync's tied-grant duty). What a removed subgroup was the last way into a synced group
     /// for stops syncing, each reported `NotSynced` (as when a subgroup's expiring membership ends). `commit` fails `Invalid` in a commit that
     /// expires.
     pub fn remove(&mut self, member: Member) -> Result<()> {

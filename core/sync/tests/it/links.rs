@@ -255,14 +255,30 @@ fn a_link_redeemed_after_inbox_lifetime_joins_spec_sync_inbox_5() {
 // once it holds K's edge on the link's target removed: node 0 takes K off its profile; node 1's
 // account leaves K, at node 1 and at node 0.
 #[test]
-#[ignore = "issues/joiner-leave-never-written.md"]
-fn repro_a_joiner_leaves_k_once_k_left_the_target_spec_permissions_7() {
+fn a_joiner_leaves_k_once_k_left_the_target_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
     assert!(w.engine(1).roster(&link.k).contains_key(&a1), "joined");
     w.write(0, |e| e.demote(&link.target, &osis_engine::flows::Demotion { holder: link.k, new: None, retain: None })).unwrap();
     w.run();
     assert!(!w.engine(1).roster(&link.target).contains_key(&link.k), "K off the target at node 1");
+    for i in 0..2 {
+        assert!(!w.engine(i).roster(&link.k).contains_key(&a1), "node {i}: node 1's account still holds K");
+    }
+}
+
+// spec/permissions.md §7 (joiner's leave: K's edge on the target past `until`): node 0 gives K's
+// edge on its profile an `until` a minute ahead; once it passes, by time alone, node 1's account
+// leaves K.
+#[test]
+fn a_joiner_leaves_k_once_its_edge_on_the_target_expired_spec_permissions_7() {
+    let (mut w, link) = redeemed();
+    let a1 = w.node(1).account.unwrap();
+    let until = osis_base::WallMs(w.now().0 + 60_000);
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: Some(until), invite: None, tied: None, floor: None };
+    w.write(0, |e| e.grant(&link.target, &link.k, &edge)).unwrap();
+    w.run();
+    assert!(w.now() >= until, "the run reached the expiry");
     for i in 0..2 {
         assert!(!w.engine(i).roster(&link.k).contains_key(&a1), "node {i}: node 1's account still holds K");
     }

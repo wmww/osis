@@ -15,6 +15,7 @@ Every value call is a memo (or reads stamped rows), so a module reading it insid
 - **Peers**: `judge_peer(s, proven) -> J` (`Reader`, `SyncHolder`, `Departed`, `Unknown`), `covers_departures`, `provers` (proof order: node key, account at its open epoch, key actors by tid), `own_node`, `own_node_key`, `key_open`, `prove_rotations`/`take_rotations` (not built).
 - **Records and inbox**: `sync_records`/`sync_record(t)`/`sync_record_feed`, `take_inbox(s, blob, accepted)`, `take_inbox_blob`, `invitations`, `inbox_of`, `inbox_blob`, `deliveries`/`delivery_feed`/`delivery_taken`/`delivery_names`/`delivered`, `logged_with(c)`.
 - **Status**: `carrying(t)` (the sync IDs held carrying t: its own and its enclosing groups'), `waiting_held_elsewhere`/`held_elsewhere(c)` (a self-removal's secrets drop once held elsewhere), `passes_wanted`, `pass_clock`, `note_complete_pass`, `forget_read`, `history_complete`.
+- **Duties** (`osis_sync::life`): `lifetimes_due`/`judge_lifetimes`; `role_things` (a feed of the (holder, thing) pairs named, and the things named now) with `joined_link_ended(k)`/`leave_link(k)` and `untie_due(t)`/`untie(t, g)`.
 - **Dials**: `dial_peers(s)`, `profile_of(a)`, `publish_reach`, `publishes_reach`.
 - **Time and config**: `next_timer`, `tick`, `set_now`, `clock_next`, `caps()` (`caps^.0` of this node).
 

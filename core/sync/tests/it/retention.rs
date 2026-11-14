@@ -85,7 +85,7 @@ fn a_body_out_of_history_stays_at_a_node_keeping_it_unread_for_the_margin_spec_c
 // a covered body leaves the stores once out of history and past the margin, by time alone: no
 // later write moves it.
 #[test]
-fn repro_a_covered_body_leaves_by_time_alone_spec_commits_5() {
+fn a_covered_body_leaves_by_time_alone_spec_commits_5() {
     let (mut w, _, s, one) = covered_in_history();
     w.advance(HOUR_MS + MAX_DRIFT_MS + 60_000);
     w.run();
