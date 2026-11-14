@@ -1,4 +1,4 @@
-//! `Multi`: one transport over several, picked by URL scheme (spec/sync.md §10): `mem://` to
+//! `Multi`: one transport over several, picked by URL scheme (spec/sync-opens.md §4): `mem://` to
 //! `InProcess`, `quic://` to `Quic`, `peer://` to `P2p` (over `QuicUdp`, or `MemUdp` in a test
 //! net), `unix://` to `Unix` (listen only). A scheme without its transport is `UnknownScheme`.
 
@@ -207,7 +207,7 @@ mod tests {
     use super::*;
     use crate::{Net, Sched, StaticSecret};
 
-    // spec/sync.md §10: the URL scheme picks the transport; `peer://` without `P2p` is a scheme
+    // spec/sync-opens.md §4: the URL scheme picks the transport; `peer://` without `P2p` is a scheme
     // without its transport, which is unknown (parked); unix:// is never dialed.
     #[test]
     fn dispatch_by_scheme_spec_sync_10() {

@@ -691,7 +691,7 @@ fn not_synced(e: &mut osis_node::Engine, added: &[(Tid, Tid)], sharing: bool) {
     }
     let labeled = e.labeled_groups();
     for (t, g) in added {
-        // entitlement (spec/sync.md §3): the group's holders read what is under it or was given
+        // entitlement (spec/sync-judgement.md §1): the group's holders read what is under it or was given
         if labeled.contains(g) && !e.may_read(&e.group_actor(g), t) {
             if sharing {
                 continue;

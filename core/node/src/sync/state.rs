@@ -16,7 +16,7 @@ use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A peer, as what this node keeps of what it holds is found again on a later connection,
-/// whoever dialed (notes/node-sync.md, Presence): the record of the pair (spec/sync.md §10, Pair
+/// whoever dialed (notes/node-sync.md, Presence): the record of the pair (spec/sync-opens.md §4, pair
 /// key), else, for a peer that proves no known actor, the dialable key this node dialed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PeerKey {
@@ -126,7 +126,7 @@ pub enum Kind {
     /// An inbox blob this node opened, with the commit it carried (`None`: opened by an older
     /// build).
     Inbox(Option<CommitId>),
-    /// An opened inbox blob not admitted (spec/sync.md §3, invite requests): its commit is not
+    /// An opened inbox blob not admitted (spec/sync-judgement.md §1, invite requests): its commit is not
     /// applied and nothing it names is followed until the user accepts or it is admitted.
     Request(CommitId),
     /// Unwraps under a held secret but is no valid commit blob (spec/versioning.md §2: bad
@@ -135,7 +135,7 @@ pub enum Kind {
     /// A commit this build cannot interpret, held parked (spec/versioning.md §2): relayed,
     /// never judged.
     Parked(CommitId),
-    /// A list blob of rotation `rotation`'s thing lists (spec/sync.md §3): `held` once the engine
+    /// A list blob of rotation `rotation`'s thing lists (spec/sync-judgement.md §1): `held` once the engine
     /// holds them (`Engine::hold_lists`), else it awaits the rotation and is held again once that
     /// is here.
     List { rotation: CommitId, held: bool },
@@ -187,27 +187,27 @@ pub struct Tomb {
     pub kind: Kind,
 }
 
-/// A label entry as this node knows it (spec/sync.md §4).
+/// A label entry as this node knows it (spec/sync-ids.md §5).
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub wrap: [u8; WRAP_LEN],
     pub stamp: Option<Signature>,
-    /// Placed by this node as a certificate blob (spec/sync.md §3).
+    /// Placed by this node as a certificate blob (spec/sync-judgement.md §1).
     pub cert: bool,
-    /// The blob's prefix salt, once its bytes were here (spec/sync.md §6 Tombstones): a
+    /// The blob's prefix salt, once its bytes were here (spec/sync-judgement.md §3 tombstones): a
     /// delete-key signature is made for it (spec/crypto.md §7), so it outlives the bytes.
     pub salt: Option<[u8; 16]>,
     /// The blob's prefix expiry, once its bytes were here: the entry goes at it, whatever its
     /// kind or what the engine knows of its commit (`SyncEngine::expire_entries`).
     pub expires: Option<u64>,
     /// The blob's length, once its bytes were here: what a clearer counts of a deposit whose
-    /// bytes it no longer holds (spec/sync.md §5, Clearing deposits).
+    /// bytes it no longer holds (spec/sync-inbox.md §4, clearing deposits).
     pub size: Option<u32>,
     pub kind: Kind,
     /// The peer account its unjudged input is charged to (`Proven::source`, notes/peers.md
     /// Budget): set only while the entry is charged to one, so the charge outlives a restart.
     pub source: Option<Tid>,
-    /// An ephemeral blob (its prefix class, spec/sync.md §9): the entry and everything recorded
+    /// An ephemeral blob (its prefix class, spec/sync-compaction.md §2): the entry and everything recorded
     /// about it (presence, blob record, tombstone) live in memory only, never in the sync
     /// records, and go when the node restarts (kept through a restart in place, `State::reload`).
     pub memory: bool,
@@ -261,7 +261,7 @@ pub enum Dest {
     /// A host of its label, until that host takes it.
     Host(Address),
     /// The nodes of inbox actor `0` (an inbox listing no host): a Deposit item to a connected
-    /// node judged a holder of the inbox (spec/sync.md §10 Shared set), until one takes it.
+    /// node judged a holder of the inbox (spec/sync-opens.md §4 shared set), until one takes it.
     Nodes(Tid),
 }
 
@@ -279,7 +279,7 @@ impl Dest {
 }
 
 /// A deposit (an inbox blob, a non-writer's role write) sealed, wrapped and signed, kept
-/// until where it goes takes it (spec/sync.md §3, §5, §10).
+/// until where it goes takes it (spec/sync-judgement.md §1, spec/sync-ids.md §6, spec/sync-opens.md §4).
 #[derive(Clone, Debug)]
 pub struct OutRec {
     pub label: LabelId,
@@ -292,7 +292,7 @@ pub struct OutRec {
     pub delivery: Option<(Tid, CommitId)>,
 }
 
-/// A role commit delivered by inbox to `holder` (spec/sync.md §3): re-sealed and sent
+/// A role commit delivered by inbox to `holder` (spec/sync-judgement.md §1): re-sealed and sent
 /// again once `INBOX_LIFETIME` passed since `at` (wall ms), or once `label` is no longer the
 /// holder's inbox, unless the holder acted; `at` 0: not sent yet (`SyncEngine::send_inbox`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -410,11 +410,11 @@ pub struct State {
     /// dropped body's blob that came back).
     pub new_blobs: BTreeSet<CommitId>,
     pub present: BTreeSet<(PeerKey, LabelId, BlobId)>,
-    /// Present entries the host holds deposited (no stamp there; spec/sync.md §5): a writer
+    /// Present entries the host holds deposited (no stamp there; spec/sync-ids.md §6): a writer
     /// promotes them at that host, whatever stamp this node knows.
     pub deposited: BTreeSet<(PeerKey, LabelId, BlobId)>,
     /// Own entries a co-reader source (`SyncEngine::pass_source`) reported holding: its
-    /// Applied position at or past where the node log first held them (spec/sync.md §5
+    /// Applied position at or past where the node log first held them (spec/sync-ids.md §6
     /// Placed). Recorded only for commits `placed` waits on (`SyncEngine::note_applied`), kept
     /// only while it waits.
     pub applied: BTreeSet<(LabelId, BlobId, Tid)>,
@@ -457,11 +457,11 @@ pub struct State {
     pub listed: BTreeSet<(LabelId, CommitId, Tid)>,
     /// Blob IDs of no use at a host, by when (wall ms): entries it refused as
     /// tombstoned, and entries it holds under a wrap not opening to the blob's key (a stamped
-    /// entry's wrap never changes there, spec/sync.md §5). Forgotten after `TOMBSTONE_LIFETIME`,
+    /// entry's wrap never changes there, spec/sync-ids.md §6). Forgotten after `TOMBSTONE_LIFETIME`,
     /// when the host's tombstone is gone too; not while the host still holds the entry.
     pub gone: BTreeMap<(PeerKey, LabelId, BlobId), u64>,
     /// Entries a peer that cannot read their label refused when it pulled them, for anything but
-    /// room (spec/sync.md §10, Refused): the stamp it refused and its head here then. Not taken
+    /// room (spec/sync-streams.md §4, refused): the stamp it refused and its head here then. Not taken
     /// there while both stand; either changing, it is offered again (`SyncEngine::at_source`).
     refused: BTreeMap<(LabelId, BlobId, PeerKey), (Signature, osis_label::StepId)>,
     /// The wraps behind those of `gone` that opened under no read secret when heard, while the host
@@ -471,14 +471,14 @@ pub struct State {
     pub doubts_at: usize,
     pub hints: BTreeMap<LabelId, Hint>,
     /// The snapshots carrying a body's live writes once it was dropped, one per aspect at most
-    /// (spec/sync.md §7), with when they were last set (`sweep_carriers`).
+    /// (spec/sync-compaction.md §1), with when they were last set (`sweep_carriers`).
     pub carriers: BTreeMap<CommitId, Carriers>,
-    /// This node's dialable transport secret (spec/sync.md §10).
+    /// This node's dialable transport secret (spec/sync-opens.md §4).
     pub reach_secret: Option<Secret32>,
     /// The node log's memory part: memory entries' events, which the durable log never holds.
     pub mem_log: super::stream::MemLog,
     /// Entries this node dropped (`remove_entry`): refused from peers for `TOMBSTONE_LIFETIME`
-    /// (spec/sync.md §5), so a peer cannot replay a deleted body, with what the entry was: a
+    /// (spec/sync-ids.md §6), so a peer cannot replay a deleted body, with what the entry was: a
     /// source's stream showing it within that time (one it pulled before the delete) gets it
     /// recorded again as present there without a fetch, so the pass judges it there as any
     /// (`SyncEngine::log_events_from`).
@@ -1576,7 +1576,7 @@ impl State {
         self.leftover_charge.insert(c, (labels, n));
     }
 
-    /// The parts of each blob of `c` a delete took from `l` (spec/sync.md §6).
+    /// The parts of each blob of `c` a delete took from `l` (spec/sync-judgement.md §2).
     pub fn deleted_bodies(&self, l: LabelId, c: CommitId) -> impl Iterator<Item = &Vec<usize>> {
         self.deleted.range((l, c, Vec::new())..).take_while(move |((x, y, _), _)| *x == l && *y == c).map(|((_, _, p), _)| p)
     }
@@ -1649,7 +1649,7 @@ impl State {
     }
 
     /// Records an entry announced without its bytes that turned out ephemeral (its blob's prefix
-    /// class, spec/sync.md §9) again as memory entry `e`, no tombstone. Its rows at the peers in
+    /// class, spec/sync-compaction.md §2) again as memory entry `e`, no tombstone. Its rows at the peers in
     /// `up` (connected now: a memory entry's presence lasts its connection, `memory_lost`) move
     /// with it as they were: each stream shows an entry once, so a row dropped here never comes
     /// back (the writer put the entry up there again every pass while others deleted it). Its
@@ -1689,7 +1689,7 @@ impl State {
     }
 
     /// Forgets every entry past its blob's prefix expiry (`by_expiry`) with its presence, no
-    /// tombstone: every host drops it unattended then (spec/sync.md §5). The blobs they named.
+    /// tombstone: every host drops it unattended then (spec/sync-ids.md §6). The blobs they named.
     pub fn expire_entries(&mut self, now: u64) -> Vec<BlobId> {
         let mut out = Vec::new();
         while let Some((t, l, b)) = self.by_expiry.first().copied()
@@ -1722,7 +1722,7 @@ impl State {
 
     /// Forgets tombstones, and hosts' tombstoned answers, past their lifetime.
     pub fn expire_tombs(&mut self, now: u64) {
-        // a memory entry's tombstone lasts `MAX_DRIFT`, as a host's does (spec/sync.md §5)
+        // a memory entry's tombstone lasts `MAX_DRIFT`, as a host's does (spec/sync-ids.md §6)
         let life = |memory: bool| if memory { osis_base::format::MAX_DRIFT_MS } else { osis_base::format::TOMBSTONE_LIFETIME_MS };
         let old: Vec<(PeerKey, LabelId, BlobId)> = self.gone.iter().filter(|((s, l, b), t)| t.saturating_add(life(self.memory_entries.contains(&(*l, *b)))) <= now && !self.is_present(s, l, b)).map(|(k, _)| *k).collect();
         for (s, l, b) in old {
@@ -2185,7 +2185,7 @@ impl State {
         }
     }
 
-    /// Forgets the carriers no body needs any more (spec/sync.md §7: they decide whether a
+    /// Forgets the carriers no body needs any more (spec/sync-compaction.md §1: they decide whether a
     /// dropped body's entry may go): kept for a body with an entry under some label or deleted
     /// from one within `TOMBSTONE_LIFETIME`, and for one set within that time (an entry of the
     /// body may still be learned). A kept body's carrier that was dropped in turn and is not kept
@@ -2336,7 +2336,7 @@ impl State {
 
     /// This node's own certificate copy of exactly `parts` of a commit (an entry of it is this
     /// node's certificate), placed under another label: one blob, a wrap per label
-    /// (spec/sync.md §3).
+    /// (spec/sync-judgement.md §1).
     pub fn own_copy(&self, c: &CommitId, parts: &[usize], skip: impl Fn(&BlobId) -> bool) -> Option<BlobId> {
         self.by_commit.get(c)?.iter().copied().filter(|b| !skip(b)).find(|b| self.blobs.get(b).is_some_and(|r| r.cert && r.parts == parts && r.ais == parts) && self.labels_of(b).iter().any(|l| self.entries.get(&(*l, *b)).is_some_and(|e| e.cert)))
     }
@@ -2613,7 +2613,7 @@ mod tests {
         crate::local_peer::LocalPeer::cached("node::one_peer", || (crate::local_peer::LocalPeer::new(1, 0, osis_base::WallMs(1_700_000_000_000)).unwrap(), ())).0
     }
 
-    // spec/sync.md §9: a memory entry dropped without a tombstone leaves no class mark (its
+    // spec/sync-compaction.md §2: a memory entry dropped without a tombstone leaves no class mark (its
     // records would otherwise be kept for good, one per entry)
     #[test]
     fn memory_entry_dropped_leaves_no_mark() {
@@ -2638,7 +2638,7 @@ mod tests {
         assert_eq!(decode_entry(&bytes).unwrap().source, charged.source);
     }
 
-    // spec/sync.md §3 (re-sends are the sender's policy): an inbox delivery record that does not
+    // spec/sync-judgement.md §1 (re-sends are the sender's policy): an inbox delivery record that does not
     // decode is skipped, never a failed load of the sync state.
     #[test]
     fn corrupt_delivery_record_skipped_spec_sync_3() {
@@ -2699,7 +2699,7 @@ mod tests {
         assert_eq!((h.via, h.inbox), (None, None));
     }
 
-    // spec/sync.md §5: a followed label keeps the key actor it follows for when an inbox
+    // spec/sync-ids.md §6: a followed label keeps the key actor it follows for when an inbox
     // payload names the same label first (its static entry is still tried).
     #[test]
     fn inbox_hint_keeps_followed_key_actor_spec_sync_5() {
@@ -2722,7 +2722,7 @@ mod tests {
         n
     }
 
-    // spec/sync.md §5: an entry a host holds under a useless wrap places nothing, and stays
+    // spec/sync-ids.md §6: an entry a host holds under a useless wrap places nothing, and stays
     // useless past `TOMBSTONE_LIFETIME` while the host holds it.
     #[test]
     fn useless_entry_held_nowhere_spec_sync_5() {
@@ -2742,7 +2742,7 @@ mod tests {
         assert!(!s.is_gone_at(&h1, &l, &b));
     }
 
-    // spec/sync.md §9: an entry recorded durable that its bytes show ephemeral keeps its rows
+    // spec/sync-compaction.md §2: an entry recorded durable that its bytes show ephemeral keeps its rows
     // at the peers connected now as they were, in memory only; the others go, from the store too.
     #[test]
     fn a_reclassed_entry_keeps_its_rows_at_connected_peers_spec_sync_9() {
@@ -2767,7 +2767,7 @@ mod tests {
         assert!(!s.is_gone_at(&down, &l, &b) && !s.doubts.contains_key(&(down, l, b)));
     }
 
-    // spec/sync.md §5, §7 (growth, notes/growth.md): a host's tombstoned answer is forgotten
+    // spec/sync-ids.md §6, spec/sync-compaction.md §1 (growth, notes/growth.md): a host's tombstoned answer is forgotten
     // after `TOMBSTONE_LIFETIME`, a dropped
     // body's carriers once no entry of it is left and they are that old (a kept body's dropped
     // carrier gives way to its own carrier), a certificate placement once its commit's parts are all dropped; each round trips

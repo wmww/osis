@@ -207,7 +207,7 @@ fn others_writes_in_an_invalid_record_read_alike_spec_crdt_4_6() {
     let read = net.engine(c).get(&t, &map).unwrap();
     assert_eq!(read, net.engine(a).get(&t, &map).unwrap(), "A and C read alike");
     assert!(!format!("{read:?}").contains("ash"), "the record shows nowhere: {read:?}");
-    // spec/sync.md §7: C's write is hidden, not hidden for good (a re-grant may bring B's delta
+    // spec/sync-compaction.md §1: C's write is hidden, not hidden for good (a re-grant may bring B's delta
     // back): a compaction leaves it, no sweep
     let n = net.engine(c).commit_ids().len();
     net.engine(c).snapshot(&t, &map).unwrap().unwrap();

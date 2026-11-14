@@ -51,7 +51,7 @@ fn take_memory(net: &mut crate::net::Net, x: usize) -> Vec<osis_commit::CommitBl
     ids.into_iter().filter(|c| TAKEN.with(|t| t.borrow_mut().insert(*c))).filter_map(|c| e.memory_blob(&c).unwrap()).collect()
 }
 
-// issues/eph-node-cost-bounds.md (memory), spec/sync.md §9 (caps): RSS a holder gains per
+// issues/eph-node-cost-bounds.md (memory), spec/sync-compaction.md §2 (caps): RSS a holder gains per
 // encoded byte held, against what the node cap charges (`Engine::memory_charge`), for
 // `OSIS_EPH_SHAPE` tiny (many tiny map entries), large (a few 8 KB strings) or aspects (one small
 // write on each of many aspects). `OSIS_EPH_PER` entries per commit (tiny), `OSIS_EPH_ROOM`: what

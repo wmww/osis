@@ -1,4 +1,4 @@
-//! Labels as role writes (spec/sync.md §2, §5): a group's genesis step and `label.0`
+//! Labels as role writes (spec/sync-ids.md §2, spec/sync-ids.md §6): a group's genesis step and `label.0`
 //! record, registration steps an admin issues after rotations (at each host when it next
 //! syncs there, after uploading the role commits it registers: node-sync orders that),
 //! the claim set's readers, the deposit seed's refresh.
@@ -31,7 +31,7 @@ fn kem_of(k: &KemKey) -> Result<KemPublicKey> {
     Ok(KemPublicKey::from_slice(b)?)
 }
 
-/// The readers of `group`'s read epoch `e` (spec/sync.md §2): holders of read boxes at `e`, its
+/// The readers of `group`'s read epoch `e` (spec/sync-ids.md §2): holders of read boxes at `e`, its
 /// first admin included while its record edge stands; a node by its KEM key, another key actor
 /// by static entry, an actor by its newest read keyset.
 pub(crate) fn readers(tx: &mut Tx<'_>, group: &Tid, e: &Epoch) -> Result<Vec<ReaderKey>> {
@@ -79,7 +79,7 @@ pub(crate) fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> 
     })
 }
 
-/// The deposit seed of the actor `group`'s labels derive from (spec/sync.md §2).
+/// The deposit seed of the actor `group`'s labels derive from (spec/sync-ids.md §2).
 fn deposit_seed(tx: &mut Tx<'_>, group: &Tid) -> Result<Secret32> {
     let actor = if tx.core.has_own_secrets(group) { *group } else { tx.core.first_admin(group).ok_or(Error::UnknownThing(*group))? };
     // a devices actor's labels derive from its account's seed
@@ -126,7 +126,7 @@ pub(crate) fn put_label(m: &mut Mutation, group: Tid, label: LabelId, step: &Ste
 }
 
 /// Drops, in `m`, the claim sets (with their entry boxes) of `group`'s steps superseded for
-/// `ROLE_KEEP` (spec/sync.md §2: an admin may): a step is superseded when the record of its
+/// `ROLE_KEEP` (spec/sync-ids.md §2: an admin may): a step is superseded when the record of its
 /// first child was written, by that write's stamp. Folded into every `label.0` write an admin
 /// makes, so a group's records hold the sets of its recent steps only.
 pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid) -> Result<()> {
@@ -164,14 +164,14 @@ pub(crate) fn new_label(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &
     Ok(step.label)
 }
 
-/// Names `label` on `hosts` as `actor`'s inbox in its `keys.0`, in `m` (spec/sync.md §2: in the
+/// Names `label` on `hosts` as `actor`'s inbox in its `keys.0`, in `m` (spec/sync-ids.md §2: in the
 /// commit that makes the label).
 pub(crate) fn name_inbox(m: &mut Mutation, actor: Tid, label: LabelId, hosts: &[Address]) -> Result<()> {
     m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(ct::Inbox { label, hosts: hosts.to_vec() }).to_value()) })?;
     Ok(())
 }
 
-/// The hosts of the nearest sync ID up `t`'s record chain, for a new one of `t` (spec/sync.md §2);
+/// The hosts of the nearest sync ID up `t`'s record chain, for a new one of `t` (spec/sync-ids.md §2);
 /// none there, no hosts.
 pub(crate) fn inherited_hosts(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<Address>> {
     for x in tx.core.standing_chain(t).into_iter().filter(|x| x != t) {
@@ -186,7 +186,7 @@ pub(crate) fn inherited_hosts(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<Address>> 
     Ok(Vec::new())
 }
 
-/// Whether a new label of actor `a` becomes its inbox (spec/sync.md §2): its `keys.0` names none.
+/// Whether a new label of actor `a` becomes its inbox (spec/sync-ids.md §2): its `keys.0` names none.
 pub(crate) fn takes_inbox(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
     Ok(Core::keys_in(tx, a)?.and_then(|k| k.inbox).is_none())
 }
@@ -217,7 +217,7 @@ impl Engine {
     }
 
     /// The step an admin issues at a host whose head is `head` of `group`'s label `label`
-    /// (spec/sync.md §5): when it holds the head's epochs and an established epoch newer than
+    /// (spec/sync-ids.md §6): when it holds the head's epochs and an established epoch newer than
     /// the head's, or the head's deposit key is not the one the actor's deposit seed derives
     /// (refreshed), a child at its newest epochs with the current readers, recorded in `label.0`
     /// (a role commit; node-sync uploads the rotation commits first, then registers, then

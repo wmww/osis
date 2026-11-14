@@ -1,11 +1,11 @@
-//! Other nodes' writes (spec/sync.md §5, §6): a writer relays them and promotes deposits after a
+//! Other nodes' writes (spec/sync-ids.md §6, spec/sync-judgement.md §2): a writer relays them and promotes deposits after a
 //! wait, once the author's chain is under the label; an admin clears deposits waiting for nothing.
 
 use super::*;
 
 impl SyncEngine {
     /// Whether this writer promotes deposited entry `id` under `l` (of `g`) at `source` (`None`:
-    /// its served state; spec/sync.md §5 Promotion): a commit it applied with a valid part the
+    /// its served state; spec/sync-inbox.md §4 promotion): a commit it applied with a valid part the
     /// label must hold that no stamped copy there holds yet (`stamped_parts`). By part, not
     /// `judged_valid`: a single-use race loser's role commit holds a void grant beside the valid
     /// removal of its link key the label needs. One copy per commit and part, however many
@@ -21,7 +21,7 @@ impl SyncEngine {
     /// edges it writes there) would be stamped for good. Never an entry whose bytes this node
     /// dropped (`forget_blob`: it holds a part gone here, a body the label must not hold), nor
     /// one it removed within its tombstone that a source still holds (recorded again only to be
-    /// deleted there, spec/sync.md §6 Tombstones: its stamp is not kept, and stamping it would
+    /// deleted there, spec/sync-judgement.md §3 tombstones: its stamp is not kept, and stamping it would
     /// serve the deleted blob on and place its chain again).
     pub(super) fn would_promote(&mut self, g: &Tid, l: LabelId, source: Option<&PeerKey>, id: &BlobId) -> Result<bool> {
         let Some(Entry { kind: Kind::Commit { commit, parts, .. }, cert: false, .. }) = self.state.entries.get(&(l, *id)).cloned() else { return Ok(false) };
@@ -119,7 +119,7 @@ impl SyncEngine {
         Ok(Some(complete))
     }
 
-    /// A writer promotes the deposits in its own store (spec/sync.md §5; sources pull the stamp):
+    /// A writer promotes the deposits in its own store (spec/sync-ids.md §6; sources pull the stamp):
     /// a deposited commit it applied, another node's past the relay wait since it arrived (a
     /// co-writer or the author may place the chain first), its own at once (one it deposited
     /// while it did not write the group), gets the missing parts of its author's chain placed as
@@ -157,7 +157,7 @@ impl SyncEngine {
     }
 
     /// An admin keeps at most `DEPOSITS_WAITING` entries and bytes of the deposits at a source it can
-    /// do nothing with, under any label (spec/sync.md §5, Clearing deposits): every one but a
+    /// do nothing with, under any label (spec/sync-inbox.md §4, clearing deposits): every one but a
     /// commit it judges valid (the judgment a reader deposits by: a writer promotes it), an inbox
     /// blob it stamps, and an inbox blob still waiting to apply. A deposit whose bytes never
     /// reached it is not judged yet. Over that, it deletes all but invite requests first, those
@@ -223,7 +223,7 @@ impl SyncEngine {
     /// every `keys.0` but the author's own (its card, spec/permissions.md §4): a verifier judges
     /// a commit by creation records and edge writes alone (`apply::examine`, `validity`), and a
     /// holder reads a thing's keys where its bodies are. Any other keyset is often not for the
-    /// label's readers (a removal's fresh deposit seed, spec/sync.md §3), a copier that took the
+    /// label's readers (a removal's fresh deposit seed, spec/sync-judgement.md §1), a copier that took the
     /// commit from an inbox blob may not hold it, and it moves at every rotation of anyone on the
     /// way: every copy would owe it for good.
     pub(crate) fn chain_under(&mut self, c: &CommitId, parts: &Parts) -> Option<crate::labeling::Certs> {

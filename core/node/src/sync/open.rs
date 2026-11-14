@@ -1,4 +1,4 @@
-//! A label at a peer that cannot read it (spec/sync.md §5, §10; issues/sync-rewrite.md 3h2, Stale
+//! A label at a peer that cannot read it (spec/sync-ids.md §6, spec/sync-opens.md §4; issues/sync-rewrite.md 3h2, Stale
 //! head): the credential of the newest step this node knows is tested against the peer's filter
 //! and Hit; not shown, the recorded path's earlier credentials are walked, then the path is
 //! registered from genesis; a peer whose head is past the recorded path is caught up with by
@@ -74,7 +74,7 @@ pub(crate) fn deepest_first(steps: &Steps) -> Vec<Step> {
 impl SyncEngine {
     /// X25519 keys this node may be listed by in a claim set: its own, the KEM key of each held
     /// epoch of its accounts, and the read-role KEM key of every held read epoch of the actors it
-    /// holds secrets of (spec/sync.md §2); of the actors in `only` (this node's own key if it is
+    /// holds secrets of (spec/sync-ids.md §2); of the actors in `only` (this node's own key if it is
     /// one), when given.
     fn claim_keys_of(&self, only: Option<&std::collections::BTreeSet<Tid>>) -> Vec<X25519Secret> {
         let mut v = Vec::new();
@@ -155,7 +155,7 @@ impl SyncEngine {
     }
 
     /// The seed of `step`'s sync key (`osis_crypto::label_role_seed`) when this node holds the
-    /// epoch's sync secret: what the step's proof derives from (spec/sync.md §10, Admissible).
+    /// epoch's sync secret: what the step's proof derives from (spec/sync-opens.md §4, admissible).
     /// O(sync epochs held of `g`).
     pub(crate) fn sync_seed(&mut self, g: &Tid, step: &Step) -> Option<osis_crypto::Secret32> {
         let e = self.engine.epochs(g)?;
@@ -374,11 +374,11 @@ impl SyncEngine {
     }
 
     /// Member `l` of `conn`, a connection the peer dialed, opened by its proof of `l`'s sync
-    /// secret (spec/sync.md §5 Opens): the peer keeps `l` unread and serves it as a store, so it
+    /// secret (spec/sync-ids.md §6 opens): the peer keeps `l` unread and serves it as a store, so it
     /// holds a `LabelAt` here, open from the start (this node walks nothing and Hits nothing
     /// there), at the head kept for the peer (`restored`) or the newest step `label.0` records
     /// (its proof was of that step's sync key); its stream's Head events move it. Only with a
-    /// record (`Conn::peer`, spec/sync.md §10 At a store).
+    /// record (`Conn::peer`, spec/sync-streams.md §4 at a store).
     fn member_proved_there(&mut self, conn: ConnId, l: LabelId, restored: bool, out: &mut Vec<super::Action>) -> Result<()> {
         let proved = self.shared_by_proof(conn, &l);
         // a dialer keeping no record with this node: nothing would find what it holds
@@ -416,7 +416,7 @@ impl SyncEngine {
         }
     }
 
-    /// Learns the read secret an accepted static-entry Hit's grant carries (spec/sync.md §10,
+    /// Learns the read secret an accepted static-entry Hit's grant carries (spec/sync-opens.md §4,
     /// Shared set): the path verified from the genesis step, the head's box opened by the key
     /// actor whose static entry `entry` is, and its sync secret deriving the head's sync key.
     /// The head is the newest step known at `conn` (`LabelAt::head`) and the path's write keys vouch
@@ -474,7 +474,7 @@ impl SyncEngine {
         self.engine.learn_secret(g, Role::Read, item.epoch, item.secret)
     }
 
-    /// The actors a claim on `g`'s label goes as (spec/sync.md §2, §5): those this node is or holds
+    /// The actors a claim on `g`'s label goes as (spec/sync-ids.md §2, spec/sync-ids.md §6): those this node is or holds
     /// that a held edge write names on `g`, of any validity and whatever followed, or `g`'s applied
     /// `secrets.0` boxes (`Engine::hint_actors`); for a hint's label (`hinted`) also those the
     /// inbox blobs naming `g` say hold it (a grant not applied yet: its chain comes by the label).
@@ -501,7 +501,7 @@ impl SyncEngine {
     /// The peer on `conn` holds `l` at a head past the newest step this node knows there, or lacks
     /// it (its filter shows no credential of it, a stream head off it): a Behind item on that step,
     /// by a credential of it this node holds (its sync key, else the key it opened by there,
-    /// else its claim keys), asks for the steps after it to the peer's head (spec/sync.md §5, Behind). A hint's label, knowing no step, asks by
+    /// else its claim keys), asks for the steps after it to the peer's head (spec/sync-ids.md §6, behind). A hint's label, knowing no step, asks by
     /// every sync key it holds at once, naming none. Not open there and holding no sync key to ask
     /// by, a link's label asks by its key actor's signing key, naming no step: answered with the
     /// head's entry box for its static entry, or refused (the head does not list it). Holding no
@@ -518,7 +518,7 @@ impl SyncEngine {
     /// or its stream named a head that is neither a child of it nor recorded (two admins' sibling
     /// steps share their keys, so a Hit opens at whichever the peer holds, and a walk assumes
     /// this node's own branch). No child is registered under it (`doubting`), and a Behind item on
-    /// it asks for the steps after it (spec/sync.md §5, Behind); refused, off the peer's path, the
+    /// it asks for the steps after it (spec/sync-ids.md §6, behind); refused, off the peer's path, the
     /// nearest earlier step holding a credential asks next (`doubt_answered`). L stays open; the
     /// answer, or a head the stream names, moves its head. Once per head.
     pub(crate) fn doubt(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
@@ -584,7 +584,7 @@ impl SyncEngine {
 
     /// `behind` on step `from` (none: a hint's, knowing no step). A step the peer refused a
     /// Behind item on in this walk is not asked again. None goes to a peer that dialed this node
-    /// (signed by a sync key or claim, spec/sync.md §10 Offer): its stream's Head events move
+    /// (signed by a sync key or claim, spec/sync-opens.md §5 offer): its stream's Head events move
     /// the head there.
     fn behind_from(&mut self, conn: ConnId, l: LabelId, from: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
         if self.conns.get(&conn).is_some_and(|c| c.dial.is_none()) {
@@ -639,7 +639,7 @@ impl SyncEngine {
     }
 
     /// Behind items on `asked` (none: a hint's) were answered, `steps` the first answer's steps
-    /// after it, through the first under another sync key (spec/sync.md §5, Behind): each verified under the one before,
+    /// after it, through the first under another sync key (spec/sync-ids.md §6, behind): each verified under the one before,
     /// the first under `asked`'s delete key (a hint's is the peer's word: it knows no parent; its
     /// credential opens only if the peer's filter lists it), the last is the newest step known
     /// there. Open there, the head moves along them; else the last one's credential is tested
@@ -792,7 +792,7 @@ impl SyncEngine {
         }
     }
 
-    /// A Behind item by the static entry `entry` of `l` was answered (spec/sync.md §5, Behind):
+    /// A Behind item by the static entry `entry` of `l` was answered (spec/sync-ids.md §6, behind):
     /// with the head's entry box and the path, the secrets learnt, the head is the newest step
     /// known there (`step_known`); 13, the peer does not hold `l` yet, or 4, past its budget for
     /// one Offer (tried again after a back-off); else its head does not list the entry: refused there
@@ -866,7 +866,7 @@ impl SyncEngine {
                 self.refused_for_now(conn, l, code);
                 Ok(())
             }
-            // a step of the path before the peer's head (spec/sync.md §5: 9 for a step that is
+            // a step of the path before the peer's head (spec/sync-ids.md §6: 9 for a step that is
             // not a child of its head): the steps after it still register. The last answered
             // 9: a genesis alone is asked past by a Behind item; a longer path's Behind item was
             // refused (or none could go): the peer holds L off this node's path
@@ -930,7 +930,7 @@ impl SyncEngine {
     }
 
     /// The host does not hold the label: register the recorded path from the genesis step
-    /// along the deepest branch (relayable by any node, spec/sync.md §5), then open.
+    /// along the deepest branch (relayable by any node, spec/sync-ids.md §6), then open.
     fn register_path(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(g) = self.label_at(conn, &l).map(|x| x.group) else { return Ok(()) };
         // nothing to register with: it is not at this host yet (an inbox blob's sender still
@@ -984,7 +984,7 @@ impl SyncEngine {
         (lc.step_retry, lc.step_refusals) = (0, 0);
         let g = lc.group;
         let parent = lc.head.clone();
-        // a new sync key ended this connection's open too (spec/sync.md §5): opened again under
+        // a new sync key ended this connection's open too (spec/sync-ids.md §6): opened again under
         // it, the first try (one round trip, the cursor kept)
         let ended = parent.as_ref().is_some_and(|p| p.keys.sync != step.keys.sync);
         let mut steps = Vec::new();

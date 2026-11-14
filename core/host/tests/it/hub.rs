@@ -1,5 +1,5 @@
 //! Scripted clients against hosts (`Hub` over `HostStore`): sessions through the protocol
-//! engines, entries as node sync puts them (spec/sync.md §4-§9, spec/wire.md §11).
+//! engines, entries as node sync puts them (spec/sync-ids.md §5, spec/wire.md §11).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
@@ -14,7 +14,7 @@ use osis_host::HostPolicy;
 /// A header blind (spec/crypto.md §7).
 const HB: [u8; 16] = [0x4b; 16];
 
-// spec/sync.md §5: a registered label opens by its sync key on every connection; a genesis whose
+// spec/sync-ids.md §6: a registered label opens by its sync key on every connection; a genesis whose
 // delete key does not hash to the label ID is refused
 #[test]
 fn register_and_open() {
@@ -30,8 +30,8 @@ fn register_and_open() {
     assert!(matches!(&ev[..], [Message::Error { code: Code::MALFORMED, .. }]), "{ev:?}");
 }
 
-// spec/sync.md §5 (Register): a claim set must hash to the step's
-// spec/sync.md §5 (claim set hash)
+// spec/sync-ids.md §6 (register): a claim set must hash to the step's
+// spec/sync-ids.md §6 (claim set hash)
 #[test]
 fn claim_set_must_hash_to_the_steps_spec_sync_5() {
     let mut w = World::new();
@@ -43,7 +43,7 @@ fn claim_set_must_hash_to_the_steps_spec_sync_5() {
     w.setup(a, &l);
 }
 
-// spec/sync.md §5: deposits by the deposit key within the budget; refused under another key
+// spec/sync-ids.md §6: deposits by the deposit key within the budget; refused under another key
 // (the depositor learning the code alone) or when full; a promoted one leaves the budget;
 // deposited entries are flagged
 #[test]
@@ -70,8 +70,8 @@ fn deposits_and_budget() {
     assert_eq!(deposited, max);
 }
 
-// spec/sync.md §5, spec/crypto.md §7: deletes by the delete key and by a level's delete key (level 3: write key, levels 1-2: sync key); tombstones refuse the identical blob for TOMBSTONE_LIFETIME
-// spec/sync.md §5 (delete keys)
+// spec/sync-ids.md §6, spec/crypto.md §7: deletes by the delete key and by a level's delete key (level 3: write key, levels 1-2: sync key); tombstones refuse the identical blob for TOMBSTONE_LIFETIME
+// spec/sync-ids.md §6 (delete keys)
 #[test]
 fn deletes_and_tombstones() {
     let mut w = World::new();
@@ -104,7 +104,7 @@ fn deletes_and_tombstones() {
     assert_eq!(live(&w, h, &l), vec![osis_label::blob_id(&blob(12))]);
 }
 
-// spec/sync.md §5: a delete runs at once and leaves a tombstone; expiry deletes at T with no
+// spec/sync-ids.md §6: a delete runs at once and leaves a tombstone; expiry deletes at T with no
 // tombstone; an expired prefix is refused
 #[test]
 fn deletes_and_expiry() {
@@ -149,7 +149,7 @@ fn relay_blob(w: &World, n: u8) -> Vec<u8> {
     classed_at(n, osis_label::Class::Relay, Some(w.now() + osis_base::format::MAX_DRIFT_MS), 20)
 }
 
-// spec/sync.md §5: a stamped relay-only entry is passed on and held by nobody (no entry, no store
+// spec/sync-ids.md §6: a stamped relay-only entry is passed on and held by nobody (no entry, no store
 // row); an unstamped one is refused
 #[test]
 fn relays_are_held_by_nobody() {
@@ -167,7 +167,7 @@ fn relays_are_held_by_nobody() {
     assert_eq!(deposit(&w, h, l.deposit(relay, &l.head_keys().deposit.clone())), Code::REFUSED);
 }
 
-// spec/sync.md §5 (relay-only entries; security review H1): a reader or removed holder holding
+// spec/sync-ids.md §6 (relay-only entries; security review H1): a reader or removed holder holding
 // one stamped relay blob re-sends it in a loop: it is passed on once; a blob without an expiry,
 // expired, expiring far ahead or over `MAX_RELAY_BLOB` is refused; past the label's relay rate
 // fresh relays get code 4
@@ -203,7 +203,7 @@ fn relay_replay_flood_bounded_spec_sync_5() {
     assert!(w.hubs[h].store().rows().unwrap() < 100, "nothing stored");
 }
 
-// spec/sync.md §4, §5: ephemeral entries are held in memory: live like any, no store row,
+// spec/sync-ids.md §5, spec/sync-ids.md §6: ephemeral entries are held in memory: live like any, no store row,
 // refused past the label's ephemeral cap (deposits too), gone after a restart
 #[test]
 fn ephemeral_entries_in_memory() {
@@ -231,7 +231,7 @@ fn ephemeral_entries_in_memory() {
     assert_eq!(w.hubs[h].store().ephemeral_bytes(&l.id), 0);
 }
 
-// spec/sync.md §4: the node's state is durable: after a restart the live set and the tombstones
+// spec/sync-ids.md §5: the node's state is durable: after a restart the live set and the tombstones
 // stand
 #[test]
 fn restart_keeps_state() {
@@ -293,7 +293,7 @@ fn node_kinds_go_up_answers_come_down() {
     assert_eq!(w.ups, vec![(h, conn, osis_host::Up::End)]);
 }
 
-// spec/sync.md §6 (Stall): node sync's requests on a hub session go within the session's
+// spec/sync-streams.md §1 (stall): node sync's requests on a hub session go within the session's
 // window and stall there as any requester's: unanswered past `STALL_TIMEOUT_MS`, the hub closes
 // the connection and hands up its end
 #[test]
@@ -326,7 +326,7 @@ fn binding(w: &World, h: usize, c: osis_host::ConnId) -> osis_host::Binding {
     }).expect("a start")
 }
 
-// spec/sync.md §10 (Connection proofs), §6 (Stall): a connection the hub dials starts at the
+// spec/sync-opens.md §2 (connection proofs), §6 (Stall): a connection the hub dials starts at the
 // listener's Hello, binding the key dialed and both challenges dialer first, as the listener
 // binds them; node sync's request on it stalls and closes it at tick as on a served one; its
 // end goes up even when it closes before the listener's Hello (the Hello deadline, or the

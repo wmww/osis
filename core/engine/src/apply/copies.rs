@@ -25,7 +25,7 @@ pub(crate) fn delta_received(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
     any_delta(core, tid, ak, d, &|_, m, ai| !m.missing(ai))
 }
 
-/// Whether the state of `(tid, ak)` reflects the delta that wrote dot `d` (spec/sync.md §7
+/// Whether the state of `(tid, ak)` reflects the delta that wrote dot `d` (spec/sync-compaction.md §1
 /// Sweep): applied here and valid, or reached by a held valid snapshot's `Frontiers` or
 /// `Absorbed` (spec/crdt.md §8). Never a `Derived` dot: its record is its register write's.
 pub(crate) fn reflected(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {

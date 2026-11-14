@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Certificates, suspect reports, pages and lazy chunks, the deletion horizon, inbox blobs
-//! through a host (spec/sync.md §3, §6; spec/permissions.md §4).
+//! through a host (spec/sync-judgement.md §1, spec/sync-judgement.md §2; spec/permissions.md §4).
 
 use crate::net::{hosted, hosted_nodes};
 use crate::net;
@@ -27,12 +27,12 @@ fn commits_under(net: &mut Net, n: usize, l: &osis_base::LabelId) -> Vec<(osis_b
     out
 }
 
-// spec/permissions.md §4, spec/sync.md §3, §5: every node placing under a label puts its node
+// spec/permissions.md §4, spec/sync-judgement.md §1, spec/sync-ids.md §6: every node placing under a label puts its node
 // card there, a reader by deposit; co-holders apply it.
 #[test]
 fn certificates_spec_permissions_4() {
     let (mut net, host, [a, r], _g, []) = hosted::<2, 0>(&[(1, Role::Read)], [], true);
-    // a deposit is promoted after a writer's relay wait (spec/sync.md §5)
+    // a deposit is promoted after a writer's relay wait (spec/sync-ids.md §6)
     net.advance(30_000);
     net.trace(&[a, r]);
     let l = net.label(a);
@@ -64,7 +64,7 @@ fn certificates_spec_permissions_4() {
     assert_eq!(net.host_ids(host, &l).len(), n);
 }
 
-// spec/sync.md §5 (Promotion: only once the author's chain is under the label; a writer holding
+// spec/sync-inbox.md §4 (promotion: only once the author's chain is under the label; a writer holding
 // neither leaves the deposit unpromoted): reader `r` deposits its card at the host, but its card
 // keyset (`keys.0`, in the card's chain) never gets there. Writer `w` applied the card but holds
 // the keyset as its header only (its body not here yet), so cannot place the chain; the admin,
@@ -160,7 +160,7 @@ fn certificates_once_per_label_spec_permissions_4() {
     }
 }
 
-// spec/sync.md §6, spec/commits.md §4: pages of a paged delta are fetched before its commit
+// spec/sync-judgement.md §2, spec/commits.md §4: pages of a paged delta are fetched before its commit
 // applies; chunks of a large value are fetched lazily, on demand.
 #[test]
 fn pages_and_lazy_chunks_spec_sync_6() {
@@ -237,7 +237,7 @@ fn stale_entry_after_away(age: bool, wipe: bool, restart: bool) -> (bool, bool) 
         net.set_online(a, false);
         net.wipe_host(host);
         // b lists the new log before a places v5 there again: once b holds v5 it drops v0's
-        // entry by its own judgment (spec/sync.md §5 Placed), whatever the listing said
+        // entry by its own judgment (spec/sync-status.md §2 Held elsewhere), whatever the listing said
         net.set_online(b, true);
         net.run();
         kept = Some(knows_v0(&mut net));
@@ -257,20 +257,20 @@ fn stale_entry_after_away(age: bool, wipe: bool, restart: bool) -> (bool, bool) 
     (kept, known == at_the_peer)
 }
 
-// spec/sync.md §10 (Reading): a reader away past the peer's deletion horizon is listed from the
+// spec/sync-streams.md §4 (reading): a reader away past the peer's deletion horizon is listed from the
 // start, marked trimmed, and takes an entry it knew present there and absent now as deleted.
 #[test]
 fn a_listing_past_the_deletion_horizon_deletes_absent_entries_spec_sync_10() {
     assert_eq!(stale_entry_after_away(true, false, false), (false, true));
 }
 
-// spec/sync.md §10: as above for a restarted reader (its stored position is below the horizon).
+// spec/sync-opens.md §4: as above for a restarted reader (its stored position is below the horizon).
 #[test]
 fn a_restarted_reader_past_the_deletion_horizon_deletes_absent_entries_spec_sync_10() {
     assert_eq!(stale_entry_after_away(true, false, true), (false, true));
 }
 
-// spec/sync.md §10 (Reading): a position of another log (a wiped peer) lists from the start
+// spec/sync-streams.md §4 (reading): a position of another log (a wiped peer) lists from the start
 // unmarked: what the reader knew stays known, nothing taken as deleted.
 #[test]
 fn another_logs_listing_keeps_entries_spec_sync_10() {
@@ -302,7 +302,7 @@ fn certificate_records_stay_while_a_part_is_held_spec_permissions_4() {
     assert_eq!(net.sync(w).sync_rows(b'k'), before, "the card's records stay with its created.0 part");
 }
 
-// spec/sync.md §2-§3, spec/crypto.md §5: an inbox blob sealed to an actor's read key and
+// spec/sync-ids.md §2-§3, spec/crypto.md §5: an inbox blob sealed to an actor's read key and
 // deposited under its inbox (its home label) is opened by a holder node and applied.
 #[test]
 fn inbox_delivery_spec_sync_3() {
@@ -335,7 +335,7 @@ fn inbox_delivery_spec_sync_3() {
 
 use osis_schema::Codec;
 
-// spec/sync.md §2: a group's `label.0` (with its `created.0`) is also published under the home
+// spec/sync-ids.md §2: a group's `label.0` (with its `created.0`) is also published under the home
 // label of the nearest record-chain actor that has one, so that actor's other nodes find it.
 #[test]
 fn label_published_under_home_label_spec_sync_2() {
@@ -361,7 +361,7 @@ fn label_published_under_home_label_spec_sync_2() {
     assert_eq!(net.read(b, t), Some(s("inside")));
 }
 
-// spec/sync.md §3 (inbox), spec/crypto.md §4 (secrets of a pending commit kept for reading;
+// spec/sync-judgement.md §1 (inbox), spec/crypto.md §4 (secrets of a pending commit kept for reading;
 // decided): a grant reaches another account's node only as an inbox
 // blob; it opens the pending grant's boxes, reaches the group's label from the blob's hints,
 // downloads the group's chain and content, and the grant applies. spec/crypto.md §4,
@@ -426,7 +426,7 @@ fn noise(n: usize, seed: u64) -> Vec<u8> {
     v
 }
 
-// spec/sync.md §1 (a reused chunk keeps its blob), §7 (chunk blobs still linked from a retained
+// spec/sync-ids.md §1 (a reused chunk keeps its blob), §7 (chunk blobs still linked from a retained
 // version are kept); spec/commits.md §5 (a purge drops every body carrying the values): purging
 // a version whose chunks the next version reuses deletes only the chunks only it reached, at
 // the host and locally; the shared ones still read through the live version, also at a
@@ -479,7 +479,7 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2)));
 }
 
-// spec/sync.md §7 Freed links (no node deletes a piece a held source of its thing links), §1
+// spec/sync-compaction.md §1 freed links (no node deletes a piece a held source of its thing links), §1
 // (reuse across authors keeps the blob): b edits a's large value, reusing most of its pieces
 // under a's links; a purges its own version. The pieces only it reached go at the host; those
 // b's version links stay, at the host and at both nodes, and b's value reads whole.
@@ -614,7 +614,7 @@ fn reused_blob(net: &mut Net, a: usize, b: usize, role: Role, host: usize) -> (o
     (t, Ak::new(BLOB.ak()).unwrap(), [c1, c2], v2, shared, unique)
 }
 
-// spec/sync.md §3 (closure: the chunk and tree-node blobs the commits reference), §5
+// spec/sync-judgement.md §1 (closure: the chunk and tree-node blobs the commits reference), §5
 // (re-registration): chunks the live value reuses are listed only by the version that introduced
 // them; once that version is purged and the host lost the label, the writer still logs them there
 // with the live body, so a reader there reads the value.
@@ -646,7 +646,7 @@ fn reused_chunks_follow_the_live_body_to_a_wiped_host_spec_sync_3() {
     assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2)));
 }
 
-// spec/sync.md §3 (closure): a commit touching a thing of the group and another thing of the
+// spec/sync-judgement.md §1 (closure): a commit touching a thing of the group and another thing of the
 // same reader actor outside the group's closure logs under the label only what its own
 // deltas link: never the outside thing's large value.
 #[test]
@@ -675,7 +675,7 @@ fn body_links_stay_in_the_closure_spec_sync_3() {
     assert!(outside.is_disjoint(&under), "{} blobs of an outside thing under the label", outside.intersection(&under).count());
 }
 
-// spec/sync.md §7 (chunk blobs still linked from a retained version are kept), spec/commits.md
+// spec/sync-compaction.md §1 (chunk blobs still linked from a retained version are kept), spec/commits.md
 // §5: a right holder that never fetched the value's tree (lazy chunks) fetches its node blobs
 // before judging the dropped chunks, so it shreds those only the purged version reached, like
 // a node that holds the tree, and keeps the shared ones.
@@ -850,7 +850,7 @@ fn newcomer_after_rotation_reads_older_copies_spec_crypto_4() {
     assert_eq!(net.read(r, t), Some(s("after")), "the newcomer verified the writer");
 }
 
-// spec/sync.md §1 (a chunk reused by a later delta keeps its blob; one a host deleted is
+// spec/sync-ids.md §1 (a chunk reused by a later delta keeps its blob; one a host deleted is
 // re-encrypted), §7: a purger that has not seen a co-writer's concurrent reuse deletes the
 // shared chunks at the host; the reuser, seeing them deleted, writes its value again with
 // them re-encrypted, so every reader still reads it whole.
@@ -965,7 +965,7 @@ fn reuse_race(expires: Option<u64>, keep: bool) -> (Net, [usize; 3], osis_base::
     (net, [a, b, c], t, doc, v2)
 }
 
-// spec/sync.md §1: the reuser repairs only the large positions whose chunks are gone, so a
+// spec/sync-ids.md §1: the reuser repairs only the large positions whose chunks are gone, so a
 // concurrent older edit of another position survives everywhere; the value reads whole, also when
 // the reusing edit compacted into the reuser's snapshot before the repair.
 #[test]
@@ -977,7 +977,7 @@ fn reencrypted_chunk_keeps_concurrent_edit_spec_sync_1() {
     }
 }
 
-// spec/sync.md §1: the repair carries the reusing delta's expiry.
+// spec/sync-ids.md §1: the repair carries the reusing delta's expiry.
 #[test]
 fn reencrypted_chunk_keeps_expiry_spec_sync_1() {
     let at = 1_700_000_000_000 + 30 * 86_400_000;
@@ -987,7 +987,7 @@ fn reencrypted_chunk_keeps_expiry_spec_sync_1() {
     assert!(w.iter().all(|e| *e == Some(at)), "{w:?}");
 }
 
-// spec/sync.md §1: a single hostile host (it alone decides what is gone) deleting each fresh
+// spec/sync-ids.md §1: a single hostile host (it alone decides what is gone) deleting each fresh
 // chunk again drives at most one repair per back-off interval per aspect, the interval doubling;
 // what the back-off holds back is retried when it passes.
 #[test]
@@ -1151,7 +1151,7 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     assert!(h.keys.iter().all(|k| k.key != ck.to_bytes()), "no forged hint is used");
 }
 
-// spec/sync.md §3, §6; spec/permissions.md §4: a role change re-judges only the labels
+// spec/sync-judgement.md §1, spec/sync-judgement.md §2; spec/permissions.md §4: a role change re-judges only the labels
 // whose verdicts can read it: a new holder, on an actor no other closure reaches (u, labeled by
 // its first holder) or on a label's group, judges no body of another label and no pass judges
 // everything.
@@ -1195,7 +1195,7 @@ fn role_change_judges_only_its_labels_spec_sync_6() {
     assert!(s3.bodies - s2.bodies < 8, "the add's bodies alone: {}", s3.bodies - s2.bodies);
 }
 
-// spec/sync.md §6: what a step's passes mark (their own writes, what a refetch applied) passes in
+// spec/sync-judgement.md §2: what a step's passes mark (their own writes, what a refetch applied) passes in
 // that step: another step right after has nothing to pass.
 #[test]
 fn marked_by_a_pass_passes_in_the_same_step_spec_sync_6() {
@@ -1290,7 +1290,7 @@ fn work_left_by_a_pass_is_not_waiting_spec_sync_6() {
     assert_eq!(s1.full, s0.full, "no pass over them is full");
 }
 
-// spec/sync.md §10 (Lost): a removed reader still connected when the remover registers the new
+// spec/sync-opens.md §6 (lost): a removed reader still connected when the remover registers the new
 // step (ignoring all it is sent from then on) is told of no entry added after it, while the
 // remaining reader and the admin go on over the same connections.
 #[test]
@@ -1405,7 +1405,7 @@ fn flip_after_drop_a_writers_cover_keeps_the_killer_spec_sync_7() {
 }
 
 /// Writer `b` and reader `c` of a group `a` administers, at a host, `b` dialable: `c` dials it,
-/// and they share the group's label (spec/sync.md §10).
+/// and they share the group's label (spec/sync-opens.md §4).
 fn suspect_world() -> (Net, [usize; 3], osis_base::Tid, osis_base::LabelId) {
     let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
     crate::peers::reach_ed(&mut net, b);
@@ -1424,7 +1424,7 @@ fn report(net: &mut Net, from: usize, to: usize, l: osis_base::LabelId, entries:
     net.run();
 }
 
-// spec/permissions.md §4 (Suspect list), spec/sync.md §7: a reader's flagged aspect reaches a
+// spec/permissions.md §4 (Suspect list), spec/sync-compaction.md §1: a reader's flagged aspect reaches a
 // writer it is connected to as a Suspect message, once while its flags stay as they are, and the
 // writer judges it (no host in between); a writer's snapshot for a differing state:
 // `unsettled_suspect_report_snapshots_once_spec_sync_7`.
@@ -1448,7 +1448,7 @@ fn suspect_list_goes_over_a_connection_spec_permissions_4() {
     assert!(diags.iter().any(|d| d.contains("Repair") && d.contains(&format!("suspect {t} {reg}")) && d.contains("same state here")), "{diags:?}");
 }
 
-// spec/sync.md §7 (repair, one snapshot per state): a report no snapshot can settle (order seed
+// spec/sync-compaction.md §1 (repair, one snapshot per state): a report no snapshot can settle (order seed
 // 5288: a reader's digest that never agrees) costs a writer one snapshot, not one per list.
 #[test]
 fn unsettled_suspect_report_snapshots_once_spec_sync_7() {
@@ -1464,7 +1464,7 @@ fn unsettled_suspect_report_snapshots_once_spec_sync_7() {
     assert!(diags.iter().any(|d| d.contains("already snapshotted")), "{diags:?}");
 }
 
-// spec/sync.md §7: a writer holding no state of the aspect writes nothing for a report on it.
+// spec/sync-compaction.md §1: a writer holding no state of the aspect writes nothing for a report on it.
 #[test]
 fn suspect_report_on_no_state_writes_nothing_spec_sync_7() {
     let (mut net, [a, b, c], g, l) = suspect_world();
@@ -1538,7 +1538,7 @@ fn card_waits_for_a_wrap_spec_permissions_4() {
     net.set_online(a, true);
     net.run();
     assert!(copies(&mut net) > before, "the flow's copy");
-    // a deposit is promoted after a writer's relay wait (spec/sync.md §5)
+    // a deposit is promoted after a writer's relay wait (spec/sync-ids.md §6)
     net.advance(30_000);
     assert!(net.engine(c).wrap_secret(&g, None).unwrap().is_some(), "re-sealed");
     let under = commits_under(&mut net, a, &l);
@@ -1580,7 +1580,7 @@ fn chain_blobs(net: &mut Net, a: usize, host: usize, gs: &[osis_base::Tid]) -> (
     (commits, blobs, entries)
 }
 
-// spec/sync.md §3 (Certificate blobs: copies with the same parts are one blob, a wrap per label):
+// spec/sync-judgement.md §1 (certificate blobs: copies with the same parts are one blob, a wrap per label):
 // an account in 10 groups seals and stores its chain certificates once, as in 1 group, with one
 // entry (a wrap) per label. Counts, not time.
 #[test]
@@ -1608,7 +1608,7 @@ fn chain_copies_one_blob_across_labels_spec_sync_3() {
     assert_eq!(s10, s1, "no copy is sealed per group");
 }
 
-// spec/sync.md §3, spec/wire.md §4 (a copy's section opens with the blob key): `c` reads only the
+// spec/sync-judgement.md §1, spec/wire.md §4 (a copy's section opens with the blob key): `c` reads only the
 // first of `a`'s groups. It opens `a`'s chain copies there, the very blobs the other labels carry,
 // and nothing of the other groups: no label of them, none of their content.
 #[test]
@@ -1627,7 +1627,7 @@ fn chain_copy_shared_reader_of_one_label_spec_sync_3() {
     assert!(net.group_labels(c).iter().all(|(g, _)| *g != gs[1]), "nor its label");
 }
 
-// spec/sync.md §3 (one certificate copy across labels), §6 (Tombstones): `a`'s chain copies are
+// spec/sync-judgement.md §1 (one certificate copy across labels), §6 (Tombstones): `a`'s chain copies are
 // tombstoned under a second label's host before `a` joins it (as after a removal and re-grant
 // within the tombstone's life), so the reused blobs meet a deletion `a` never saw. `a` places
 // fresh copies of every one there, its account card too (placed once, not by a pass), and later
@@ -1661,7 +1661,7 @@ fn reused_chain_copy_tombstoned_placed_fresh_spec_sync_3() {
     assert_eq!(sealed, 0, "no copy sealed again");
 }
 
-// spec/sync.md §10 (Shared set), §5 (Register, Behind): a reader away while the peer that cannot
+// spec/sync-opens.md §4 (shared set), §5 (Register, Behind): a reader away while the peer that cannot
 // read L moved its head past the reader's newest recorded step (the peer's filter shows only the
 // new head's sync key) opens L there again and reads it at the new head: its walk finds no
 // recorded step shown, the recorded path's registration is answered 9 (the head is past it), and
@@ -1689,7 +1689,7 @@ fn a_head_moved_past_while_away_is_opened_again_spec_sync_10() {
     assert_eq!(net.sync(b).pass_stats().behind_sent - behind, 1, "one Behind item");
 }
 
-// spec/sync.md §5 (Behind), §2 (Claim set): a reader away across two rotations, holding neither
+// spec/sync-ids.md §6 (behind), §2 (Claim set): a reader away across two rotations, holding neither
 // new epoch's sync secret, catches up at a node that cannot read L with no other reader online:
 // a Behind item on the step it holds the sync key of gives the first new step (an answer stops at
 // another sync key), one by its claim there gives the head, and its claim at the head is shown

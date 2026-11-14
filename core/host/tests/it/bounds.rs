@@ -1,4 +1,4 @@
-//! Resource bounds (spec/sync.md §5: hosts cap storage; spec/wire.md §11.2 Register Error 12;
+//! Resource bounds (spec/sync-ids.md §6: hosts cap storage; spec/wire.md §11.2 Register Error 12;
 //! §10 Served connections): Hello deadline, output and input bounds, one commit per message,
 //! host-wide caps, bounded sweeps.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -119,7 +119,7 @@ fn answers(out: &[HubOutput], to: u64) -> Vec<u64> {
     out.iter().filter_map(|o| if let HubOutput::Send(i, b) = o && *i == to { Message::decode(&b[4..]).ok().map(|m| m.id().into()) } else { None }).collect()
 }
 
-// spec/sync.md §10 (Served connections): a connection holding more than its share of
+// spec/sync-transport.md §5 (served connections): a connection holding more than its share of
 // `max_buffered_bytes` has its requests wait, in order, and takes no input meanwhile; readers
 // that read, however slowly, all keep their connections, and each request is answered once its
 // reader drained enough
@@ -168,7 +168,7 @@ fn slow_readers_drain_their_shares() {
     assert!((1..=6).all(|id| resumed.contains(&id)));
 }
 
-// spec/sync.md §10 (Served connections): fifteen readers trickling over their shares slow only
+// spec/sync-transport.md §5 (served connections): fifteen readers trickling over their shares slow only
 // themselves: with the bound full of their bytes, a newcomer's request is answered within one
 // report period every time (the bound's room it needs is kept for it), the tricklers wait, and
 // none is closed
@@ -217,7 +217,7 @@ fn tricklers_slow_only_themselves() {
     assert!((1..=15).all(|id| resumed.contains(&id)), "{resumed:?}");
 }
 
-// spec/sync.md §10 (Served connections): a request bigger than any share waits its turn while
+// spec/sync-transport.md §5 (served connections): a request bigger than any share waits its turn while
 // the bound has no room for it: the bound's room is kept for it (another's request within its
 // own share waits too), and once a report period passes, connections whose output did not move
 // are closed, the one holding the most first and only until it fits; it then runs
@@ -254,7 +254,7 @@ fn a_big_reply_waits_its_turn() {
     assert_eq!(hub.connections(), 2);
 }
 
-// spec/sync.md §10 (Served connections): push room granted is reserved until the pushes come:
+// spec/sync-transport.md §5 (served connections): push room granted is reserved until the pushes come:
 // room granted to every connection at once, each spent whole, stays within the bound
 #[test]
 fn granted_room_stays_within_the_bound() {
@@ -273,7 +273,7 @@ fn granted_room_stays_within_the_bound() {
     }
 }
 
-// spec/sync.md §10 (Served connections): requests queued behind holders that never read all
+// spec/sync-transport.md §5 (served connections): requests queued behind holders that never read all
 // run within a report period: the stuck holders are closed until the whole queue fits, not one
 // request's room a period
 #[test]
@@ -311,7 +311,7 @@ fn a_queue_behind_stuck_holders_runs_at_once() {
     assert!(hub.connections() >= 11 - 5, "closed only what the queue needs");
 }
 
-// spec/sync.md §6 (Stall), §10 (Served connections): a request waiting for the bound's room
+// spec/sync-streams.md §1 (stall), §10 (Served connections): a request waiting for the bound's room
 // while every holder drains slowly runs before its peer's stall time: once it has waited half of
 // it, the biggest holders are closed, moving or not, until it fits; not before
 #[test]
@@ -350,7 +350,7 @@ fn a_waiting_request_runs_within_half_the_stall_time() {
     assert_eq!(ran, Some(periods), "runs at half the stall time");
 }
 
-// spec/sync.md §10 (Served connections): while a request waits for the bound's room, only
+// spec/sync-transport.md §5 (served connections): while a request waits for the bound's room, only
 // output that does not move is closed for it: a connection holding only a reservation for a reply
 // to come (a request node sync answers later) has no bytes to move and stays
 #[test]
@@ -372,7 +372,7 @@ fn a_reservation_is_not_output_that_stalls() {
     assert_eq!(answers(&out, 3), vec![30]);
 }
 
-// spec/sync.md §10 (Served connections): shares follow the active connections: one over a
+// spec/sync-transport.md §5 (served connections): shares follow the active connections: one over a
 // smaller share, after another becomes active, just waits (nobody is closed) and is answered
 // as it drains
 #[test]
@@ -455,7 +455,7 @@ fn failed_commit_sends_nothing() {
     assert!(!live(&w, h, &l).contains(&osis_label::blob_id(&blob(10))));
 }
 
-// spec/wire.md §11.2 Register, spec/sync.md §5: host-wide caps refuse new labels (Error 12) and new entries (code 12)
+// spec/wire.md §11.2 Register, spec/sync-ids.md §6: host-wide caps refuse new labels (Error 12) and new entries (code 12)
 #[test]
 fn host_wide_caps() {
     let mut w = World::new();
@@ -471,7 +471,7 @@ fn host_wide_caps() {
     assert_eq!(w.hubs[h].store().totals().unwrap().entries, 3);
 }
 
-// spec/sync.md §5 Expiry: sweeps run in bounded steps; the hub asks for another tick at once while work remains
+// spec/sync-ids.md §6 expiry: sweeps run in bounded steps; the hub asks for another tick at once while work remains
 #[test]
 fn sweeps_are_bounded() {
     let mut w = World::new();
@@ -505,7 +505,7 @@ fn big_request(node: bool, size: usize) -> Vec<u8> {
     encode_frame(&msg.encode())
 }
 
-// spec/sync.md §10 (Served connections): received frames count against the input bound until
+// spec/sync-transport.md §5 (served connections): received frames count against the input bound until
 // they run or are answered: frames waiting for output room, and requests handed up to node sync
 // (whose reply allowance alone counts against the output bound); past it the connection holding
 // the most is closed
@@ -534,7 +534,7 @@ fn received_frames_stay_within_the_bound() {
     assert!(hub.buffered() <= mib && hub.held() <= mib);
 }
 
-// spec/sync.md §5 Role entries: a stamped role entry is taken past the label's and the host's
+// spec/sync-ids.md §6 role entries: a stamped role entry is taken past the label's and the host's
 // caps with no bound of its own; a deposited one is outside the caps too, within the deposit
 // budget; a plain entry still meets the cap
 #[test]

@@ -171,7 +171,7 @@ impl Engine {
         self.core.ix.groups.groups_of(tid)
     }
 
-    /// The groups whose closure holds the thing (spec/sync.md §3): itself, the groups containing
+    /// The groups whose closure holds the thing (spec/sync-judgement.md §1): itself, the groups containing
     /// it, and the groups above it through subgroup lists.
     pub fn enclosing(&self, tid: &Tid) -> BTreeSet<Tid> {
         self.core.ix.groups.enclosing(tid)
@@ -186,7 +186,7 @@ impl Engine {
 
 impl Engine {
     /// Whether `g`'s closure is known whole here: no group in it holds a part of its `group.0` as
-    /// a header only (`partial_groups`), whose list may hold any thing (spec/sync.md §6).
+    /// a header only (`partial_groups`), whose list may hold any thing (spec/sync-judgement.md §2).
     pub fn closure_whole(&mut self, g: &Tid) -> Result<bool> {
         let closure = self.closure(g);
         let missing = missing_groups(&self.core, |x| closure.contains(x))?;
@@ -348,7 +348,7 @@ pub struct Groups {
     subs: Edges,
     /// Subgroup -> the groups listing it.
     parents: Edges,
-    /// Closures asked for (`closure`, spec/sync.md §3), edited in place as they change: the same
+    /// Closures asked for (`closure`, spec/sync-judgement.md §1), edited in place as they change: the same
     /// `Arc` while unchanged, so node-sync reuses what it derived from it (`Arc::ptr_eq`). One
     /// still held elsewhere is copied by its first change.
     closures: Mutex<BTreeMap<Tid, Arc<BTreeSet<Tid>>>>,
@@ -502,7 +502,7 @@ impl Groups {
         out
     }
 
-    /// The closure of `g` (spec/sync.md §3) by `listing` (a group's field): `g`, the subgroups it
+    /// The closure of `g` (spec/sync-judgement.md §1) by `listing` (a group's field): `g`, the subgroups it
     /// reaches and their items.
     fn reach_by(&self, g: &Tid, listing: &dyn Fn(&Tid, u64) -> Vec<Tid>) -> BTreeSet<Tid> {
         let mut out = BTreeSet::new();
@@ -708,7 +708,7 @@ mod tests {
         Tid::from_bytes([n; 15])
     }
 
-    /// The reference, from the definitions alone: each group's closure (spec/sync.md §3: the
+    /// The reference, from the definitions alone: each group's closure (spec/sync-judgement.md §1: the
     /// group, its subgroups at any depth and their items) and each thing's containing groups.
     struct Naive {
         closure: BTreeMap<Tid, BTreeSet<Tid>>,
@@ -760,7 +760,7 @@ mod tests {
         all.iter().map(|x| (*x, (defs.iter().filter(|(_, d)| d.0.contains(x)).map(|(a, _)| *a).collect(), defs.iter().filter(|(_, d)| d.1.contains(x)).map(|(a, _)| *a).collect()))).collect()
     }
 
-    // spec/data-model.md §8, spec/sync.md §3: the index kept by edits (whole sets, per-tid edits,
+    // spec/data-model.md §8, spec/sync-judgement.md §1: the index kept by edits (whole sets, per-tid edits,
     // rolled-back steps; cycles allowed) answers as a derivation from scratch: `groups.0`,
     // listings, closures (kept ones edited in place; an unchanged one the same `Arc`) and what
     // a step tells moved.

@@ -207,7 +207,7 @@ fn ephemeral_expiry_spec_crdt_4_7() {
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
 }
 
-// spec/data-model.md §2 (signal), spec/sync.md §9: each fire of an ephemeral signal reaches the
+// spec/data-model.md §2 (signal), spec/sync-compaction.md §2: each fire of an ephemeral signal reaches the
 // aspect's history listener once, as it was fired, and nothing else: no page shows it (nobody holds
 // it), reads and value watches stay absent; any other op is Invalid
 #[test]
@@ -423,7 +423,7 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
 
 // notes/ephemeral.md Deletion: deleting a thing ends its ephemeral aspects here too and takes it
 // out of its groups, in one durable commit: no memory commit is written; listeners hear the
-// change once, from that commit. spec/data-model.md §1, spec/commits.md §2, spec/sync.md §9
+// change once, from that commit. spec/data-model.md §1, spec/commits.md §2, spec/sync-compaction.md §2
 #[test]
 fn delete_resets_ephemeral_aspects_spec_data_model_1() {
     let (db, _c) = setup(0);

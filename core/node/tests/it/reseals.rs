@@ -13,7 +13,7 @@ use osis_node::flows::Demotion;
 // rotates T (F's box is stale) before it opens the grant, then it re-seals t1 at the new epoch,
 // in a commit under T's label t1 cannot open; the inbox copy reaches t1 (its account's inbox is
 // at the host: an inbox listing no host, `hosted_nodes`' default, takes grants and re-seals only
-// over a direct connection to a node of it, spec/sync.md §5 Sending).
+// over a direct connection to a node of it, spec/sync-inbox.md §3 sending).
 #[test]
 fn reseal_reaches_grantee_left_out_spec_permissions_3() {
     let mut net = Net::new();
@@ -71,7 +71,7 @@ fn reseal_reaches_grantee_left_out_spec_permissions_3() {
     assert_eq!(net.read(t1, t), Some(s("later")), "t1 reads what f0 wrote after the fork");
 }
 
-// spec/sync.md §5 (Sending: an inbox blob for an inbox listing no host goes to a node of the
+// spec/sync-inbox.md §3 (sending: an inbox blob for an inbox listing no host goes to a node of the
 // inbox): the same left-out grantee with its account's inbox at no host reads nothing f1 writes
 // while no connection joins them (the re-seal stays pending at f1), and reads it once one does.
 // The harness dials t1 by the `reach.0` f1 is handed; any connection between them would do.

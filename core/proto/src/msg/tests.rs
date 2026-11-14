@@ -194,7 +194,7 @@ fn heads() {
 }
 
 // spec/wire.md §11.2: wrap 57 bytes, sig 64, label 16; blob at most MAX_BLOB
-// spec/sync.md §5 (deposit refusals): an oversized blob does not decode
+// spec/sync-ids.md §6 (deposit refusals): an oversized blob does not decode
 #[test]
 fn field_sizes() {
     let Value::List(offer) = messages().into_iter().find(|(n, _)| *n == "offer with a deposit").unwrap().1.to_value() else { unreachable!() };

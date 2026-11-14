@@ -28,7 +28,7 @@ pub struct Package {
     pub lists: Vec<Vec<u8>>,
 }
 
-/// A commit as labels carry it (spec/sync.md §1-§3): its one sealed blob with a wrap under
+/// A commit as labels carry it (spec/sync-ids.md §1-§3): its one sealed blob with a wrap under
 /// each reader actor among its parts, and the blobs the commit references (already sealed
 /// under link keys). Readers the sender holds no current read secret for get no wrap.
 #[derive(Clone, Debug)]

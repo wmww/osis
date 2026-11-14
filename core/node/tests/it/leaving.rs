@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! A leaver's self-removal placed by a co-reader's report (spec/sync.md §5 Placed, §10 Reports):
+//! A leaver's self-removal placed by a co-reader's report (spec/sync-status.md §2 Held elsewhere, §10 Reports):
 //! with no host, the removal counts as placed once a co-reader that reads the label reported
 //! (Applied) a position past where the leaver's log first held it; the report is kept across a
 //! restart; a peer that does not read the label reports nothing for it. A node whose access an
@@ -37,7 +37,7 @@ fn leaving(net: &mut Net, n: usize) -> bool {
     net.sync(n).leaving().next().is_some()
 }
 
-// spec/sync.md §5 (Placed: reported by a co-reader sharing the label), §10 (Reports): a removal a
+// spec/sync-status.md §2 (Held elsewhere: reported by a co-reader sharing the label), §10 (Reports): a removal a
 // co-reader with no host pulled and reported is placed: the leaver drops what it lost.
 #[test]
 fn a_removal_a_co_reader_reported_is_placed_spec_sync_5() {
@@ -48,7 +48,7 @@ fn a_removal_a_co_reader_reported_is_placed_spec_sync_5() {
     assert!(net.engine(b).epochs(&g).is_none_or(|e| e.read.held().next().is_none()), "the leaver dropped what it lost");
 }
 
-// spec/sync.md §5 (Placed): a report the leaver took stands across a crash before it forgot:
+// spec/sync-status.md §2 (Held elsewhere): a report the leaver took stands across a crash before it forgot:
 // restarted with the co-reader gone for good, it drops what it lost. Every crash point from the
 // report on is tried: once a crash point leaves the leaver able to forget, every later one does,
 // and some crash point falls after the report's step and before the forget.
@@ -91,7 +91,7 @@ fn a_co_readers_report_survives_a_restart_spec_sync_5() {
     assert!(between, "some crash point fell between the report and the forget");
 }
 
-// spec/sync.md §5 (Placed: only a co-reader sharing the label), §10: a peer that does not read
+// spec/sync-status.md §2 (Held elsewhere: only a co-reader sharing the label), §10: a peer that does not read
 // the label reports nothing for it, though it asks to join it and reports what it is served.
 #[test]
 fn a_strangers_report_counts_for_nothing_spec_sync_5() {
@@ -151,7 +151,7 @@ fn holds(net: &mut Net, n: usize, g: Tid) -> bool {
 
 // spec/permissions.md §2 (an `until` passing, a label with no host heard out): the node keeps
 // what it lost while its writes from before the `until` reached nobody; a co-reader takes them
-// and reports them (spec/sync.md §5 Placed), the node reads its log to the end; then it drops.
+// and reports them (spec/sync-status.md §2 Held elsewhere), the node reads its log to the end; then it drops.
 #[test]
 fn an_until_under_no_host_waits_for_a_co_reader_to_hold_its_writes_spec_perm_2() {
     let (mut net, [_, b, c], g, t) = timed_while_apart();

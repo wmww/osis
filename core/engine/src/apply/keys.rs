@@ -674,7 +674,7 @@ fn pending_deltas(blob: &osis_commit::CommitBlob, id: &CommitId, keep: impl Fn(&
 
 impl crate::engine::Engine {
     /// Records a read or sync secret learned from a label's entry box (a link key opening
-    /// by static entry, spec/sync.md §2) when it is the secret of epoch `e` of `g`'s role `r` (spec/crypto.md
+    /// by static entry, spec/sync-ids.md §2) when it is the secret of epoch `e` of `g`'s role `r` (spec/crypto.md
     /// §4; anyone holding the head's step key, a removed admin among them, can write the box, so
     /// it establishes nothing). False when it is not, or when the node lost `g` (`rotation::may_learn`,
     /// spec/permissions.md §3).
@@ -1021,7 +1021,7 @@ mod tests {
         lp.peers[1].engine.check_index();
     }
 
-    // spec/crypto.md §4, spec/sync.md §2: a read secret from a label's entry box (written by
+    // spec/crypto.md §4, spec/sync-ids.md §2: a read secret from a label's entry box (written by
     // whoever holds the head's step key: a removed admin before the remover re-registers) is
     // held only when it is the secret of the epoch it names; it establishes nothing, so the
     // node encrypts under it once the epoch's rotation commit applies.
@@ -1144,7 +1144,7 @@ mod tests {
         assert!(lp.peers[1].engine.keys_write_unapplied(&t).unwrap(), "the admin's");
     }
 
-    // spec/sync.md §5 (a deposit-only step waits for an unapplied `keys.0` write): a held commit
+    // spec/sync-ids.md §6 (a deposit-only step waits for an unapplied `keys.0` write): a held commit
     // whose valid `keys.0` part is missing here is one (its body may give a newer seed, or secrets
     // of the thing's own); the body arriving lets the step go
     #[test]

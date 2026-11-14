@@ -5,7 +5,7 @@
 //! part held pending
 //! at its expiry (counts as never received). The node reports them in suspect lists to the
 //! peers it shares a label with; a writer
-//! re-snapshots such an aspect (spec/sync.md §7). A flag names the bodies it is about; an entry
+//! re-snapshots such an aspect (spec/sync-compaction.md §1). A flag names the bodies it is about; an entry
 //! goes as its body comes back (held again: what the aspect lacked for it is in). An
 //! Uncovered entry is dormant while a held snapshot valid here is stamped after its commit
 //! (`receipt::settled`), judged when the flags are read, from what is held then: a snapshot that

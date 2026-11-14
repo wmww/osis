@@ -221,7 +221,7 @@ mod tests {
         (root, written, reused)
     }
 
-    // spec/sync.md §1, notes/local-store.md: a new version reuses the current tree's blobs by
+    // spec/sync-ids.md §1, notes/local-store.md: a new version reuses the current tree's blobs by
     // content hash; an insert in the middle writes O(change) new blobs.
     #[test]
     fn dedup_by_reuse() {
@@ -244,7 +244,7 @@ mod tests {
         assert!(reused == 0 && written > n / 2);
     }
 
-    // spec/sync.md §1: the re-encryption rule: a reused blob keeps its encryption unless its
+    // spec/sync-ids.md §1: the re-encryption rule: a reused blob keeps its encryption unless its
     // expiry is earlier than the new delta's or its commitments to the thing's delete keys are
     // not exactly the new delta's; author-chain commitments need not match beside an admin or
     // writer key, but need the new delta's own key where it lists no level 2 or only level 2: else
@@ -295,7 +295,7 @@ mod tests {
         assert_eq!((written, n > 0), (0, true));
     }
 
-    // spec/data-model.md §5, spec/sync.md §1: a written link carries its blob's prefix salt and
+    // spec/data-model.md §5, spec/sync-ids.md §1: a written link carries its blob's prefix salt and
     // its framing's keys as Del; a link whose salt or Del the blob's prefix does not bear is
     // never reused (the reuser copies links verbatim), its blob written afresh.
     #[test]

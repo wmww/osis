@@ -135,7 +135,7 @@ fn a_rejoined_box_at_runtime_gives_no_lost_secret_spec_permissions_3() {
     holds_nothing(&mut l);
 }
 
-// An entry box (spec/sync.md §2: anyone holding the label's step key can write one, a removed
+// An entry box (spec/sync-ids.md §2: anyone holding the label's step key can write one, a removed
 // admin among them) gives no secret of an actor whose held roles give the node none
 #[test]
 fn an_entry_box_gives_no_lost_secret_spec_permissions_3() {
@@ -293,7 +293,7 @@ fn retake_judges_only_listed_actors_spec_permissions_3() {
     reads_newest(&mut gr);
 }
 
-// After a removal, an entry box of x's current epoch (a link's label, spec/sync.md §2) is taken
+// After a removal, an entry box of x's current epoch (a link's label, spec/sync-ids.md §2) is taken
 // once the re-grant applied; one opened before the re-grant applies is refused, and the re-grant
 // gives that secret anyway
 #[test]
@@ -404,7 +404,7 @@ fn a_copys_role_class_parts_are_never_stale_spec_permissions_3() {
     assert!(accounts > 0);
 }
 
-// spec/sync.md §2 (Owner), spec/permissions.md §3 (lost access): a, an admin of t, names u's label
+// spec/sync-ids.md §4 (owner), spec/permissions.md §3 (lost access): a, an admin of t, names u's label
 // ul in t's `label.0`; r, a reader of both, loses t. Forgetting t, r keeps ul's sync state: ul is
 // owned by u, a group r keeps (judged from u's side: t's secrets are gone by then); without that,
 // every row naming ul goes with t

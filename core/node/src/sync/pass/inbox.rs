@@ -1,10 +1,10 @@
-//! Inbox labels (spec/sync.md §3, §5): stamping handled blobs and copying grants under the home
+//! Inbox labels (spec/sync-judgement.md §1, spec/sync-ids.md §6): stamping handled blobs and copying grants under the home
 //! label.
 
 use super::*;
 
 /// The least lifetime an inbox blob must have left for its grant to be copied under the home
-/// label (`inbox_certificates`, spec/sync.md §3): the copy outlives the blob, so a sender's short
+/// label (`inbox_certificates`, spec/sync-judgement.md §1): the copy outlives the blob, so a sender's short
 /// expiry would free its deposit budget for the next copy at once. At 0 a stranger with the
 /// deposit seed stores grants without bound; at `INBOX_LIFETIME` no node ever copies. Past it a
 /// node opening a late blob applies the grant without copying: unless another node copied it
@@ -15,7 +15,7 @@ const INBOX_COPY_MIN_LEFT: u64 = osis_base::format::INBOX_LIFETIME_MS / 2;
 
 impl SyncEngine {
     /// A writer stamps in its store the deposited inbox blobs of `scope` it would stamp
-    /// (`inbox_stampable`; spec/sync.md §3, Stamping in place): its sources pull the stamp.
+    /// (`inbox_stampable`; spec/sync-inbox.md §2, stamping in place): its sources pull the stamp.
     /// Those of the scope's commits too (an invite accepted applies its commit: no entry of the
     /// label moved); the label's inbox entries are bounded by its deposit budget.
     pub(super) fn stamp_inbox(&mut self, l: LabelId, scope: &Scope, write: &osis_crypto::SigningSecret) -> Result<()> {
@@ -38,7 +38,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// The latest prefix expiry an honest sender's inbox blob can carry (spec/sync.md §3).
+    /// The latest prefix expiry an honest sender's inbox blob can carry (spec/sync-judgement.md §1).
     pub(super) fn inbox_latest(&self) -> u64 {
         self.now().saturating_add(osis_base::format::INBOX_LIFETIME_MS + 2 * osis_base::format::MAX_DRIFT_MS)
     }
@@ -64,7 +64,7 @@ impl SyncEngine {
     }
 
     /// The things commit `c` (header in `m`) of an opened inbox blob is about for `actors`
-    /// (spec/sync.md §3): where it has an edge or box of one of them.
+    /// (spec/sync-judgement.md §1): where it has an edge or box of one of them.
     pub(super) fn inbox_about(&mut self, actors: &[Tid], c: &CommitId, m: &osis_engine::engine::Meta) -> BTreeSet<Tid> {
         let named = self.engine.holders_named(c);
         named.iter().filter(|(_, ms)| ms.iter().any(|x| actors.contains(x))).filter_map(|(ai, _)| m.header.aspects.get(*ai).map(|a| a.tid)).collect()
@@ -82,7 +82,7 @@ impl SyncEngine {
     }
 
     /// What a grantee node copies of what `g`'s inbox brought, once applied, under `g`'s home
-    /// label `l` (spec/sync.md §3): of a role commit, the carried parts on the things it writes
+    /// label `l` (spec/sync-judgement.md §1): of a role commit, the carried parts on the things it writes
     /// an edge of `g` on, or boxes it on, with the `label.0` and `created.0` commits of those
     /// things and their authors' chains (a granter who is no co-reader has placed none there), so
     /// the actor's other nodes and readers find the grant and its labels there; nothing from a

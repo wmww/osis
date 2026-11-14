@@ -770,7 +770,7 @@ pub(crate) fn holder_keys(tx: &mut Tx<'_>, p: &Tid) -> Result<HolderKeys> {
     holder_keys_at(tx, p, &name)?.ok_or(Error::Misuse("no keys.0 of the account's epoch held"))
 }
 
-/// The reader key of a label for account `p` (spec/sync.md §2): the X25519 half of its
+/// The reader key of a label for account `p` (spec/sync-ids.md §2): the X25519 half of its
 /// preferred head's KEM key. `None`: its KEM key is not held here.
 pub(crate) fn reader_key(tx: &mut Tx<'_>, p: &Tid) -> Result<Option<ReaderKey>> {
     let Some(v) = tx.core.account_view(p) else { return Ok(None) };
@@ -900,7 +900,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Pairing, existing node side (spec/sync.md §2: the only way a node receives a grant):
+    /// Pairing, existing node side (spec/sync-ids.md §2: the only way a node receives a grant):
     /// `node`'s card (`created.0`, `keys.0`) was received over the direct connection. A node
     /// that is not on the account's devices actor is granted admin there (spec/permissions.md
     /// §1: a grant of read or above on D makes a node of P); one that is (stranded) is re-sealed. Returns the
@@ -946,7 +946,7 @@ impl Engine {
 
     /// Pairing, new node side, after applying what `pair` sent: checks the grant put it on the
     /// account's devices actor, joins account `p` and returns the certificate copy of `grant` to place under D's home
-    /// label (spec/sync.md §3).
+    /// label (spec/sync-judgement.md §1).
     pub fn paired(&mut self, p: &Tid, grant: &CommitId) -> Result<Done> {
         let node = self.tid();
         let d = self.devices_held(p).ok_or(Error::UnknownThing(*p))?;

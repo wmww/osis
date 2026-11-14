@@ -1,4 +1,4 @@
-//! Pass work sets (spec/sync.md §6, §7; spec/requirements.md, Scale): what a pass at one source,
+//! Pass work sets (spec/sync-judgement.md §2, spec/sync-compaction.md §1; spec/requirements.md, Scale): what a pass at one source,
 //! or a local pass of a label served with no source (`SyncEngine::work`), judges again. A verdict on a commit's bodies and entries changes only through a trigger:
 //! its entries or their presence or certificate records changed (`State::touch`),
 //! the engine marked it changed (`Engine::take_changed`: applied, late parts, a drop, a fired
@@ -499,7 +499,7 @@ impl SyncEngine {
                     }
                     if !snapshot && self.engine.own_replace(c, &a.tid, &a.ak) {
                         own.entry((a.tid, a.ak.clone(), h.author)).or_default().push(*c);
-                        // a carrier for what a delete waits on (spec/sync.md §7)
+                        // a carrier for what a delete waits on (spec/sync-compaction.md §1)
                         if let Some(cs) = w.waits.aspects.remove(&(a.tid, a.ak.clone())) {
                             older.extend(cs);
                         }
@@ -535,7 +535,7 @@ impl SyncEngine {
     }
 
     /// What role changes that leave the actor of `g` alone move under its label `l`
-    /// (spec/sync.md §3 entitlement, §6, §7; spec/permissions.md §4): the things of the closure,
+    /// (spec/sync-judgement.md §1 entitlement, §6, §7; spec/permissions.md §4): the things of the closure,
     /// and of the `label.0`s its home label publishes, whose roles changed (`Held::reach` of the
     /// changed rosters and record links) or whose record chain holds an actor that got or lost
     /// secrets of its own (reader actors); the label's own commits with a delta on such a thing

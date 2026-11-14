@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Lazy chunks (spec/sync.md §6): a read that misses a chunk fetches that value's tree only.
+//! Lazy chunks (spec/sync-judgement.md §2): a read that misses a chunk fetches that value's tree only.
 
 use crate::net::hosted_nodes;
 use crate::net;
@@ -9,7 +9,7 @@ use osis_node::Mutation;
 use osis_node::sync::SyncConfig;
 use osis_schema::RawKey;
 
-// spec/sync.md §6 (chunk and tree-node blobs of large atomic values may be fetched lazily): a
+// spec/sync-judgement.md §2 (chunk and tree-node blobs of large atomic values may be fetched lazily): a
 // lazy reader fetches the tree of the value it reads, node by node, and nothing of another
 // large value.
 #[test]

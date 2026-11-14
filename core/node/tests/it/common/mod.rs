@@ -354,7 +354,7 @@ pub fn stamp_item(h: &osis_commit::Header, c: CommitId, tid: Tid, ak: osis_base:
 }
 
 /// The blobs a held commit's deltas link (their pages and their values' trees, through the node
-/// and page blobs `e` holds; spec/sync.md §3), durable or in memory; none when not held.
+/// and page blobs `e` holds; spec/sync-judgement.md §1), durable or in memory; none when not held.
 pub fn linked_blobs(e: &mut Engine, c: &CommitId) -> Vec<osis_base::BlobId> {
     held_bytes(e, c).and_then(|bytes| e.body_links(&bytes).ok()).map(|t| t.blobs.into_iter().collect()).unwrap_or_default()
 }

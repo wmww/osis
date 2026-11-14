@@ -39,7 +39,7 @@ pub fn stamped(sim: &NetSim, k: &LabelKeys, id: &BlobId, blob: Vec<u8>, key: &os
     Ok(Stamped { id: *id, blob, wrap, stamp })
 }
 
-/// A dishonest host (spec/sync.md §6; spec/requirements.md, Threat model: hosts are trusted
+/// A dishonest host (spec/sync-judgement.md §2; spec/requirements.md, Threat model: hosts are trusted
 /// for availability only): of two hosts holding every label, one holds back (reorders within a
 /// stream) and replays its messages. Expected: honest nodes converge through the honest one (the
 /// label invariants judge only it) and survive the protocol violations.
@@ -88,7 +88,7 @@ fn evil(name: &str, s: Seeds, e: Evil) -> Res<Report> {
     sim.finish()
 }
 
-/// A removed holder replays what it kept (spec/sync.md §2, §5; spec/permissions.md §5): it keeps
+/// A removed holder replays what it kept (spec/sync-ids.md §2, spec/sync-ids.md §6; spec/permissions.md §5): it keeps
 /// the label's old keys, step and entries. After its removal (and a purge it saw) it opens with
 /// its old sync key and registers its old step by hand, serves the host the entries it kept (the
 /// purged one included), then comes back with a commit it wrote offline after the removal.
@@ -231,7 +231,7 @@ fn run_noting(sim: &mut NetSim, n: u64, nodes: [usize; 2], g: Tid, holder: Tid, 
     Ok(())
 }
 
-/// A writer's malformed blobs (spec/sync.md §5, spec/commits.md §4; spec/versioning.md §2:
+/// A writer's malformed blobs (spec/sync-ids.md §6, spec/commits.md §4; spec/versioning.md §2:
 /// malformed data is rejected, never parked), stamped with its write key and placed in the host's
 /// store as the host's pull from that writer would take them (`host_put`): garbage bytes of an
 /// unknown framing version, a well-framed blob of garbage, a real commit under a prefix that
@@ -309,7 +309,7 @@ pub fn malformed_blobs(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// A flooding depositor (spec/sync.md §5, deposit budget; notes/serving.md, host policy): a reader
+/// A flooding depositor (spec/sync-ids.md §6, deposit budget; notes/serving.md, host policy): a reader
 /// holding the deposit key deposits hundreds of fresh encryptions of a body of the label at a host
 /// that cannot read it, as Deposit items its node sync takes (`host_deposit`). Expected: bounded:
 /// the host takes at most the label's deposit budget and refuses the rest; honest nodes delete the
@@ -460,7 +460,7 @@ pub fn equivocating_writer(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// A host lying about tombstones (spec/sync.md §5: a tombstoned blob ID is refused; §7: a
+/// A host lying about tombstones (spec/sync-ids.md §6: a tombstoned blob ID is refused; §7: a
 /// purge reaches every copy; spec/requirements.md: "nothing trusts a host's word"): after a
 /// purge is applied and deleted at the host, the host re-announces the purged entry, blob,
 /// wrap and stamp as they were, in a Stream at its node log's end, to every node on its open

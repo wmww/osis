@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! A rotation ends an open (issues/sync-rewrite.md; spec/sync.md §10
+//! A rotation ends an open (issues/sync-rewrite.md; spec/sync-opens.md §4
 //! Shared set, Lost): a member opened by a credential the rotation made stale, its peer not judged
 //! a holder, is served through the rotation (`until`) and closes with a `Lost` once the requester
 //! reported a position past it, by the per-message reports or a Pull's cursor. A hand dialer is
@@ -169,8 +169,8 @@ fn a_followed_member_gets_lost_after_its_rotation_spec_sync_10() {
     assert!(ps.iter().all(|s| !s.report || !s.events.is_empty()), "no report asked of a push without events");
     assert!(losts(&msgs).is_empty(), "no Lost before the requester reported the rotation");
     // more of g after the rotation: not pushed, and still no Lost. Its creation may compact g's
-    // `group.0` (spec/sync.md §7 Trigger), deleting entries held before the rotation: those
-    // later events of earlier entries are served (spec/sync.md §10 Lost), nothing added
+    // `group.0` (spec/sync-compaction.md §1 trigger), deleting entries held before the rotation: those
+    // later events of earlier entries are served (spec/sync-opens.md §6 lost), nothing added
     net.item(b, g, g, "after");
     let msgs = step(&mut net, b, &mut p);
     assert!(pushes(&msgs).iter().all(|s| s.events.iter().all(|(x, e)| *x != l || matches!(e, Ev::Deleted(_)))), "nothing of g past the rotation");

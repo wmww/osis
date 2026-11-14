@@ -194,7 +194,7 @@ pub fn write_tree(sink: &mut dyn TreeSink, params: ChunkParams, data: &[u8]) -> 
 /// last shorter than `min_chunk` (or empty) is bad input, and at most `max_len / min_chunk + 1`
 /// chunks are visited per pass (`TooLarge` beyond; spec/wire.md §6, tree reader bounds). An
 /// error leaves the reader where it was, so a `Missing` blob can be fetched and the call retried
-/// (lazy fetch, spec/sync.md §6).
+/// (lazy fetch, spec/sync-judgement.md §2).
 pub struct TreeReader {
     root: Link,
     /// The root node once read (children reversed): kept across seeks.

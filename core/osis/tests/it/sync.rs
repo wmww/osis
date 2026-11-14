@@ -40,7 +40,7 @@ fn x(db: &Osis, t: Tid) -> Option<Value> {
     db.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap()
 }
 
-// notes/api.md Handle (create), Sync status; spec/sync.md §2 (home label): a new account's home
+// notes/api.md Handle (create), Sync status; spec/sync-ids.md §2 (home label): a new account's home
 // label registers at its peer; status turns Synced and wait_synced resolves after a write.
 #[test]
 fn create_syncs_home_spec_sync_2() {
@@ -54,7 +54,7 @@ fn create_syncs_home_spec_sync_2() {
     w.until(db.wait_synced(SyncScope::All), 1000, 10).unwrap();
 }
 
-// notes/api.md Sharing (nodes), spec/sync.md §2 (pairing: the only way a node receives a
+// notes/api.md Sharing (nodes), spec/sync-ids.md §2 (pairing: the only way a node receives a
 // grant): the app carries the request and the reply; the new node becomes an admin of the
 // account, reads the home group and its writes reach the first node.
 #[test]
@@ -130,7 +130,7 @@ fn group(db: &Osis) -> Tid {
     g
 }
 
-// spec/permissions.md §4, spec/sync.md §10, notes/client-port.md §3 (attribution): a thin client's commit, written by its node as the client's actor, reaches another account holding the group through sync, applied there with that actor and that node in its header (the actor's creation record travels with its grant); its grants to the actor reach the account's other node through the home group
+// spec/permissions.md §4, spec/sync-opens.md §4, notes/client-port.md §3 (attribution): a thin client's commit, written by its node as the client's actor, reaches another account holding the group through sync, applied there with that actor and that node in its header (the actor's creation record travels with its grant); its grants to the actor reach the account's other node through the home group
 #[test]
 fn client_commit_reaches_a_third_node() {
     let (mut w, _, [alice, bob]) = hosted_accounts([1, 2]);
@@ -160,7 +160,7 @@ fn client_commit_reaches_a_third_node() {
     assert_eq!(c.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), Some(s("by bob")));
 }
 
-// spec/sync.md §3 (contact card, inbox), spec/permissions.md §2 (grant): Alice imports Bob's
+// spec/sync-judgement.md §1 (contact card, inbox), spec/permissions.md §2 (grant): Alice imports Bob's
 // contact card and grants him write on a synced group; the grant reaches Bob's node through
 // his inbox; both read and write things under the group (entitlement: things under others
 // stay unshared, notes/sync.md).
@@ -263,7 +263,7 @@ fn redeem_held_joins_nothing_spec_none() {
     assert_eq!(dave.role_on(g).unwrap(), Some(Role::Write), "a grant that ended: the link joined");
 }
 
-// spec/permissions.md §7, spec/sync.md §5: a used single-use link refuses a second redeemer
+// spec/permissions.md §7, spec/sync-ids.md §6: a used single-use link refuses a second redeemer
 // at once and later (0, 10, 20 s after the first redemption settled): the sharer registers a
 // step without L as soon as L's departure is covered, whoever rotated K.
 #[test]
@@ -531,7 +531,7 @@ fn removal_from_partial_node_keeps_unheld_edits_spec_permissions_5_2() {
     assert_eq!(x(carol, in_h), Some(s("bob in h")), "his edit under H stays: Carol vouches for it");
 }
 
-// spec/sync.md §5 (relay-only entries), notes/api.md Signals: an ephemeral signal fired on a shared
+// spec/sync-ids.md §6 (relay-only entries), notes/api.md Signals: an ephemeral signal fired on a shared
 // thing reaches another account's connected node through the peer: each node's history listener
 // hears it once, by the firing actor and node; nothing is held.
 #[test]
@@ -792,7 +792,7 @@ fn text_session_keeps_edits_across_delete_undo() {
     assert_eq!(sa.text(), "hello world!");
 }
 
-// notes/api.md Sync configuration (`add_peer`), spec/sync.md §2 (`label.0` peers, inbox): a
+// notes/api.md Sync configuration (`add_peer`), spec/sync-ids.md §2 (`label.0` peers, inbox): a
 // node created without peers has its home label on none; adding a peer moves the home
 // label and the account's inbox there, and the home group syncs.
 #[test]
@@ -892,7 +892,7 @@ fn wait_synced_waits_for_deliveries_without_peered_groups() {
     assert_eq!(carol.sync_engine(|s| s.deliveries_pending()), 0, "the delivery was taken");
 }
 
-// notes/api.md Sync configuration (`add_peer` scope), spec/sync.md §2: Alice's peer changes
+// notes/api.md Sync configuration (`add_peer` scope), spec/sync-ids.md §2: Alice's peer changes
 // move her home label and her own shared group, not a group under Bob's account that she co-administers,
 // not her link's actor (the link text names its peers); her shared group keeps its last
 // host.
@@ -998,7 +998,7 @@ fn plain(db: &Osis, v: &str) -> Tid {
     .unwrap()
 }
 
-// spec/sync.md §2: a grant on a thing in no group gives it its one sync ID, so the holder reads and writes it, and a later `sync` is a no-op
+// spec/sync-ids.md §2: a grant on a thing in no group gives it its one sync ID, so the holder reads and writes it, and a later `sync` is a no-op
 #[test]
 fn a_grant_gives_a_thing_its_sync_id() {
     let (mut w, alice, others, ids) = people(2);
@@ -1022,7 +1022,7 @@ fn a_grant_gives_a_thing_its_sync_id() {
     assert_eq!(alice.sync_ids(t).unwrap(), label);
 }
 
-// spec/sync.md §2: a holder of a role on a thing reads it through the thing's own sync ID: with the
+// spec/sync-ids.md §2: a holder of a role on a thing reads it through the thing's own sync ID: with the
 // granter offline and the group membership that also carried it gone
 #[test]
 fn a_direct_holder_reads_after_the_granter_and_the_group_are_gone() {
@@ -1048,7 +1048,7 @@ fn a_direct_holder_reads_after_the_granter_and_the_group_are_gone() {
     assert_eq!(x(bob, t), Some(s("two")));
 }
 
-// spec/sync.md §2: a share stops by removing its holders: the sync ID stays, and what follows is
+// spec/sync-ids.md §2: a share stops by removing its holders: the sync ID stays, and what follows is
 // no longer the removed holder's
 #[test]
 fn stopping_a_share_is_removing_its_holders() {
@@ -1067,7 +1067,7 @@ fn stopping_a_share_is_removing_its_holders() {
     assert_eq!(alice.sync_ids(t).unwrap(), label, "it stays");
 }
 
-// spec/sync.md §2: a thing in a synced group given a holder of its own syncs under both; a grant to a client gives it a sync ID as any grant
+// spec/sync-ids.md §2: a thing in a synced group given a holder of its own syncs under both; a grant to a client gives it a sync ID as any grant
 #[test]
 fn a_thing_in_a_group_shared_directly_syncs_under_both() {
     let (mut w, alice, others, ids) = people(2);
@@ -1087,7 +1087,7 @@ fn a_thing_in_a_group_shared_directly_syncs_under_both() {
     assert!(alice.status().unwrap().groups.contains_key(&u), "the grant gave it a sync ID");
 }
 
-// spec/sync.md §2 (the example Tess gave): T in synced G shared with Bob alone, who reads no part of G: the grant gives T its own sync ID: he reads T, and G's label stays closed to him
+// spec/sync-ids.md §2 (the example Tess gave): T in synced G shared with Bob alone, who reads no part of G: the grant gives T its own sync ID: he reads T, and G's label stays closed to him
 #[test]
 fn a_thing_in_a_synced_group_shared_with_an_outsider() {
     let (mut w, alice, others, ids) = people(1);
@@ -1100,7 +1100,7 @@ fn a_thing_in_a_synced_group_shared_with_an_outsider() {
     assert!(!bob.has_content(g).unwrap(), "G's label stays closed to him");
 }
 
-// spec/sync.md §2, spec/permissions.md §7: a link to a thing in no group resolves: K's grant gives the thing its sync ID, redeem returns and the thing reads
+// spec/sync-ids.md §2, spec/permissions.md §7: a link to a thing in no group resolves: K's grant gives the thing its sync ID, redeem returns and the thing reads
 #[test]
 fn a_link_to_a_plain_item_resolves() {
     let (mut w, alice, others, _) = people(1);
@@ -1113,7 +1113,7 @@ fn a_link_to_a_plain_item_resolves() {
     assert_eq!(x(&others[0], t), Some(s("linked")));
 }
 
-// spec/sync.md §2: a thing under someone else's account: an admin by a grant and a `may_grant` holder each reach an outside reader through the thing's one sync ID
+// spec/sync-ids.md §2: a thing under someone else's account: an admin by a grant and a `may_grant` holder each reach an outside reader through the thing's one sync ID
 #[test]
 fn a_grant_on_someone_elses_item() {
     let (mut w, alice, others, ids) = people(3);
@@ -1145,7 +1145,7 @@ fn a_grant_on_someone_elses_item() {
     assert_eq!(x(dan, t), Some(s("alice's")));
 }
 
-// spec/sync.md §3: a grant to a group, the item in no group: the item's sync ID carries it to the group's readers, a later reader as well
+// spec/sync-judgement.md §1: a grant to a group, the item in no group: the item's sync ID carries it to the group's readers, a later reader as well
 #[test]
 fn a_grant_to_a_group_reaches_its_readers() {
     let (mut w, alice, others, ids) = people(2);
@@ -1176,7 +1176,7 @@ fn a_grant_to_a_group_reaches_its_readers() {
     assert_ne!(x(carol, t), Some(s("after")));
 }
 
-// spec/sync.md §2 (Home label): a grant to one's own group gives it a sync ID: its readers read the copy and its items
+// spec/sync-ids.md §2 (home label): a grant to one's own group gives it a sync ID: its readers read the copy and its items
 #[test]
 fn a_grant_to_a_group_with_no_label() {
     let (mut w, alice, others, ids) = people(1);
@@ -1200,7 +1200,7 @@ fn a_grant_to_a_group_with_no_label() {
     assert_eq!(x(bob, private), Some(s("private")));
 }
 
-// spec/sync.md §2: a thing added to a synced group its actor may not read is excluded there, and a holder of its own reads it through its sync ID
+// spec/sync-ids.md §2: a thing added to a synced group its actor may not read is excluded there, and a holder of its own reads it through its sync ID
 #[test]
 fn an_excluded_thing_reaches_its_holder_by_its_own_sync_id() {
     let (mut w, alice, others, ids) = people(1);
@@ -1222,7 +1222,7 @@ fn an_excluded_thing_reaches_its_holder_by_its_own_sync_id() {
     assert_eq!(x(bob, t), Some(s("excluded")));
 }
 
-// spec/sync.md §2: a subgroup holding an item, the subgroup synced only through its parent: the parent's readers read the item through it
+// spec/sync-ids.md §2: a subgroup holding an item, the subgroup synced only through its parent: the parent's readers read the item through it
 #[test]
 fn a_holder_read_through_a_synced_group_has_a_route() {
     let (mut w, alice, others, ids) = people(1);
@@ -1248,7 +1248,7 @@ fn a_holder_read_through_a_synced_group_has_a_route() {
     assert_eq!(x(bob, t), Some(s("deep")));
 }
 
-// spec/sync.md §2, notes/api.md (`wait_synced`): a thing nothing syncs waits, as any wait with
+// spec/sync-ids.md §2, notes/api.md (`wait_synced`): a thing nothing syncs waits, as any wait with
 // nothing to judge: only `Stranded` is known never to finish
 #[test]
 fn waiting_on_a_thing_nothing_syncs_waits() {
@@ -1257,7 +1257,7 @@ fn waiting_on_a_thing_nothing_syncs_waits() {
     assert!(w.try_until(alice.wait_synced(SyncScope::Thing(t)), 1000, 10).is_none());
 }
 
-// spec/permissions.md §1, spec/sync.md §2: a group made by its record has its own label as inbox: its readers read the grant from there, and the admin's copy serves later ones
+// spec/permissions.md §1, spec/sync-ids.md §2: a group made by its record has its own label as inbox: its readers read the grant from there, and the admin's copy serves later ones
 #[test]
 fn a_grant_to_a_group_by_record() {
     let (mut w, alice, others, ids) = people(2);
@@ -1276,7 +1276,7 @@ fn a_grant_to_a_group_by_record() {
     assert_eq!(x(carol, t), Some(s("for f")));
 }
 
-// spec/sync.md §3: a reader's share to a group made by its record reaches the other readers from its inbox with the admin offline; only an admin copies it, so what the label takes is the same with more readers
+// spec/sync-judgement.md §1: a reader's share to a group made by its record reaches the other readers from its inbox with the admin offline; only an admin copies it, so what the label takes is the same with more readers
 #[test]
 fn a_grant_to_a_group_is_copied_only_by_its_admin() {
     let took = |readers: usize| {
@@ -1303,7 +1303,7 @@ fn a_grant_to_a_group_is_copied_only_by_its_admin() {
     assert_eq!(took(2), took(4));
 }
 
-// spec/sync.md §3, notes/chat.md Realms: realms nest by grants to groups: a reader of the top reads the child and what the child holds, whichever grant came first
+// spec/sync-judgement.md §1, notes/chat.md Realms: realms nest by grants to groups: a reader of the top reads the child and what the child holds, whichever grant came first
 #[test]
 fn grants_to_groups_nest() {
     let (mut w, alice, others, ids) = people(1);
@@ -1324,7 +1324,7 @@ fn grants_to_groups_nest() {
     assert_eq!(x(bob, u), Some(s("later in k")));
 }
 
-// spec/sync.md §2: a group made by its record has its label as inbox, with every chunk of its content: a reader tries none of them as an inbox blob
+// spec/sync-ids.md §2: a group made by its record has its label as inbox, with every chunk of its content: a reader tries none of them as an inbox blob
 #[test]
 fn chunks_under_an_inbox_label_cost_no_kem() {
     let (mut w, alice, others, ids) = people(1);
@@ -1347,7 +1347,7 @@ fn chunks_under_an_inbox_label_cost_no_kem() {
     assert_eq!(bob.sync_engine(|e| e.pass_stats().inbox_tries), before);
 }
 
-// spec/sync.md §3, spec/wire.md §9: a grant to a group by someone who reads no part of it: the inbox blob carries his chain, so the group's admin applies it with the thing still unsynced and copies it, and a reader who never met him verifies it; synced later, they read it
+// spec/sync-judgement.md §1, spec/wire.md §9: a grant to a group by someone who reads no part of it: the inbox blob carries his chain, so the group's admin applies it with the thing still unsynced and copies it, and a reader who never met him verifies it; synced later, they read it
 #[test]
 fn a_grant_to_a_group_by_an_outsider() {
     let (mut w, alice, others, ids) = people(2);
@@ -1391,7 +1391,7 @@ fn derived_adoption_order_item_granted_to_its_groups_reader() {
     assert_eq!(x(&others[1], t), Some(s("in g")));
 }
 
-// spec/sync.md §6, spec/permissions.md §4: an admin by a grant on a group's item reaches a holder outside the group: he keeps the creation records of its record chain under the item's label, though their commit wrote more
+// spec/sync-judgement.md §2, spec/permissions.md §4: an admin by a grant on a group's item reaches a holder outside the group: he keeps the creation records of its record chain under the item's label, though their commit wrote more
 #[test]
 fn a_grant_on_a_group_owned_item_by_an_admin_grant() {
     let (mut w, alice, others, ids) = people(3);
@@ -1420,7 +1420,7 @@ fn a_grant_on_a_group_owned_item_by_an_admin_grant() {
     assert_eq!(x(dan, u), Some(s("u")));
 }
 
-// spec/sync.md §2: a refused grant makes no sync ID: the thing stays as local as it was
+// spec/sync-ids.md §2: a refused grant makes no sync ID: the thing stays as local as it was
 #[test]
 fn a_refused_grant_makes_no_sync_id() {
     let (_w, alice, _, ids) = people(1);
@@ -1616,7 +1616,7 @@ fn kicked_from_a_nested_group_or_by_link_ends_what_it_holds() {
     assert_eq!(x(carol, t), Some(s("last")));
 }
 
-// spec/sync.md §3: with both admins away a reader's grant to the group waits under its label: back, they apply it and copy it, and a later reader reads it
+// spec/sync-judgement.md §1: with both admins away a reader's grant to the group waits under its label: back, they apply it and copy it, and a later reader reads it
 #[test]
 fn a_grant_to_a_group_with_the_admin_away_and_two_admins() {
     let (mut w, alice, others, ids) = people(3);
@@ -1645,7 +1645,7 @@ fn a_grant_to_a_group_with_the_admin_away_and_two_admins() {
     assert_eq!(x(dave, t), Some(s("for f")));
 }
 
-// spec/sync.md §3: two admins copy an outsider's grant from the inbox with his chain just received: a later reader finds it whatever order they went in
+// spec/sync-judgement.md §1: two admins copy an outsider's grant from the inbox with his chain just received: a later reader finds it whatever order they went in
 #[test]
 fn a_grant_to_a_group_by_an_outsider_with_two_admins() {
     let (mut w, alice, others, ids) = people(3);
@@ -1685,7 +1685,7 @@ fn poll_now<F: std::future::Future + Unpin>(f: &mut F) -> Option<F::Output> {
     }
 }
 
-// spec/sync.md §3, notes/api.md (`wait_synced`): a holder whose grant names a label it has not read yet (its peer out of reach for now) waits for it; its grant is pending there, so no missing route shows
+// spec/sync-judgement.md §1, notes/api.md (`wait_synced`): a holder whose grant names a label it has not read yet (its peer out of reach for now) waits for it; its grant is pending there, so no missing route shows
 #[test]
 fn a_holder_waits_for_the_label_its_grant_names() {
     let (mut w, alice, others, ids) = people(1);
@@ -1707,7 +1707,7 @@ fn a_holder_waits_for_the_label_its_grant_names() {
     assert_eq!(x(bob, t), Some(s("there")));
 }
 
-// spec/sync.md §3, notes/api.md (`wait_synced`): right after accepting a grant the holder waits for the label it names; before accepting nothing is on its way
+// spec/sync-judgement.md §1, notes/api.md (`wait_synced`): right after accepting a grant the holder waits for the label it names; before accepting nothing is on its way
 #[test]
 fn a_wait_right_after_accepting_a_grant() {
     let (mut w, alice, others, ids) = people(1);
@@ -1728,7 +1728,7 @@ fn a_wait_right_after_accepting_a_grant() {
     assert_eq!(x(bob, t), Some(s("there")));
 }
 
-// spec/sync.md §2: synced first, then granted: the one sync ID serves. spec/sync.md §3, notes/api.md (`wait_synced`): a brand new node of a holder, on a thing granted to its account before it existed and on one under its account: its first sync brings both, and it waits
+// spec/sync-ids.md §2: synced first, then granted: the one sync ID serves. spec/sync-judgement.md §1, notes/api.md (`wait_synced`): a brand new node of a holder, on a thing granted to its account before it existed and on one under its account: its first sync brings both, and it waits
 #[test]
 fn a_new_nodes_first_wait_on_a_shared_thing() {
     let (mut w, alice, others, ids) = people(1);
@@ -1757,7 +1757,7 @@ fn a_new_nodes_first_wait_on_a_shared_thing() {
     assert_eq!(x(&bob2, mine), Some(s("bob's")));
 }
 
-// spec/sync.md §2: `sync` and `grant` of a whole group: it gets the label, its items go along; the holder reads both
+// spec/sync-ids.md §2: `sync` and `grant` of a whole group: it gets the label, its items go along; the holder reads both
 #[test]
 fn grant_on_a_group_carries_its_items() {
     let (mut w, alice, others, ids) = people(1);

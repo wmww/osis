@@ -1,4 +1,4 @@
-//! Label keys, label ID, claim keys, static entries and the open signature (spec/sync.md §2, §5,
+//! Label keys, label ID, claim keys, static entries and the open signature (spec/sync-ids.md §2, spec/sync-ids.md §6,
 //! spec/wire.md §8, §11.2).
 
 use crate::kdf::{self, LABEL_ID, STATIC_CLAIM, kdf};
@@ -112,7 +112,7 @@ mod tests {
     use super::*;
     use crate::{KeyActorKeys, SeededRng};
 
-    // spec/sync.md §2: role keys differ per role and secret; deposit keys per label.
+    // spec/sync-ids.md §2: role keys differ per role and secret; deposit keys per label.
     #[test]
     fn role_keys() {
         let s = Secret32::from_bytes([9; 32]);
@@ -130,7 +130,7 @@ mod tests {
         assert_eq!(id.0, h.finalize().as_bytes()[..16]);
     }
 
-    // spec/sync.md §2: registrar and holder derive the same claim key; non-contributory omits.
+    // spec/sync-ids.md §2: registrar and holder derive the same claim key; non-contributory omits.
     #[test]
     fn claim_keys() {
         let mut rng = SeededRng::from_u64(0);

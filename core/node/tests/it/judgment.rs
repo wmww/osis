@@ -248,7 +248,7 @@ fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(
         }
     }
     // what counts as never received again (a body dropped while invalid, valid since; one whose
-    // cover fell) is fetched where present (spec/sync.md §6): every body entry received comes again
+    // cover fell) is fetched where present (spec/sync-judgement.md §2): every body entry received comes again
     for t in order {
         if let Tok::In(i) = *t
             && let Some((pt, _)) = open(i)
@@ -373,7 +373,7 @@ fn files() -> Vec<(&'static str, String)> {
     vec![
         ("judgment/models.vec", generate("spec/permissions.md §5", models(), false).render()),
         ("judgment/rules.vec", generate("spec/permissions.md §2, §5, spec/commits.md §5, spec/crdt.md §4", rules().into_iter().chain(edges()).chain(invites()).chain(remerges()).chain(bounds()).collect(), false).render()),
-        ("judgment/labels.vec", generate("spec/commits.md §4, spec/sync.md §3, spec/wire.md §12", labels(), true).render()),
+        ("judgment/labels.vec", generate("spec/commits.md §4, spec/sync-judgement.md §1, spec/wire.md §12", labels(), true).render()),
         ("judgment/blobs.vec", generate("spec/commits.md §4, spec/crdt.md §8, spec/permissions.md §5.1", blobs(), false).render()),
     ]
 }
@@ -687,7 +687,7 @@ fn labels() -> Vec<Scenario> {
     vec![
         Scenario {
             name: "content commit over two labels",
-            spec: "spec/commits.md §4, spec/sync.md §3",
+            spec: "spec/commits.md §4, spec/sync-judgement.md §1",
             source: "hand-built: 1 writes both G (it holds write) and H (it holds read) in one commit: each delta judged alone; nothing waits for a part",
             steps: vec![NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Two { by: 1, a: 0, b: 1, v: 1 }],
             orders: Some(orders),

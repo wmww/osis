@@ -2,15 +2,15 @@
 //! harness; none panics):
 //! - spec/requirements.md (convergence): nodes holding the same commits read the same; the
 //!   holders of a labeled group read the same values of its items.
-//! - spec/sync.md §6 (convergence): every body a writer judges must-hold at a label is in a live
+//! - spec/sync-judgement.md §2 (convergence): every body a writer judges must-hold at a label is in a live
 //!   entry at every host of the label it reaches; no entry a node judges must-not-hold (and may
 //!   delete) stays live there; a writer promotes the deposited entries it verified with a part
 //!   on the label's closure that no stamped entry holds (§5).
-//! - spec/sync.md §4, §5: no live entry is tombstoned, and a blob seen tombstoned never comes
+//! - spec/sync-ids.md §5, spec/sync-ids.md §6: no live entry is tombstoned, and a blob seen tombstoned never comes
 //!   back while the host keeps its data.
 //! - spec/commits.md §5: a purged body is at no host and no honest node keeps its key or
 //!   ciphertext.
-//! - spec/sync.md §6 (no ping-pong): once quiescent, further resync passes add and delete
+//! - spec/sync-judgement.md §2 (no ping-pong): once quiescent, further resync passes add and delete
 //!   nothing at any host.
 //! - spec/commits.md §4: nothing pends at quiescence (every reason resolved).
 //! - spec/requirements.md (Scale: state grows with the edits ever made; peer input never causes
@@ -447,7 +447,7 @@ fn gap(sim: &NetSim, m: usize, n: usize, items: &[Tid]) -> String {
     format!("only {m}: {:?}; only {n}: {:?}", only(&hm, &hn, n), only(&hn, &hm, m))
 }
 
-/// spec/sync.md §4-§6 at every up host and every label it holds.
+/// spec/sync-ids.md §5-§6 at every up host and every label it holds.
 fn labels(sim: &mut NetSim) -> Res<()> {
     for s in 0..sim.hosts.len() {
         if sim.dishonest.contains(&s) {
@@ -513,7 +513,7 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                             // the node's entries of that commit, and what the host says of them
                             let ents: Vec<(BlobId, osis_node::sync::EntryKind)> = sim.nodes.get(n).and_then(|x| x.sync.as_ref()).map(|x| x.entries(&l)).unwrap_or_default().into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c)).collect();
                             // an ephemeral body the host's cap keeps out, by its own accounting:
-                            // the defined outcome past a cap (spec/sync.md §5, §9), not a lack
+                            // the defined outcome past a cap (spec/sync-ids.md §6, spec/sync-compaction.md §2), not a lack
                             let sizes = sim.nodes.get(n).and_then(|x| x.sync.as_ref()).map(|x| x.ephemeral_held_entries(&l)).unwrap_or_default();
                             let (capped, at) = {
                                 let st = sim.hub(s).map(|h| h.store());
@@ -535,7 +535,7 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                         return Err(sim.fail(format!("host {s}: label {l:?} still holds {b:?}, must-not-hold ({why}) for node {n}")));
                     }
                 }
-                // spec/sync.md §5: a writer logs again, stamped, the deposited commits it verified
+                // spec/sync-ids.md §6: a writer logs again, stamped, the deposited commits it verified
                 if v.writer {
                     for (dl, db) in &deposited {
                         if *dl != l {
@@ -609,7 +609,7 @@ fn purged(sim: &mut NetSim) -> Res<()> {
     Ok(())
 }
 
-/// spec/sync.md §6: after quiescence, resync passes add and delete nothing at any host.
+/// spec/sync-judgement.md §2: after quiescence, resync passes add and delete nothing at any host.
 fn no_ping_pong(sim: &mut NetSim) -> Res<()> {
     let heads = log_heads(sim);
     for _ in 0..IDLE_ROUNDS {

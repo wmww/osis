@@ -70,7 +70,7 @@ Per node, a body it holds is **must-hold**, **must-not-hold** or **may-hold** at
 - A delete of that encryption stands, within its tombstone (`TOMBSTONE_LIFETIME`), while the source's head is the step it was logged at and no held part on the body's aspects has fallen at this node since, whatever carries the body (the deleter holds a cover this node lacks: one on its way, or one the deleter hides).
 - Once the head moves or such a part falls (a role change can make the deleter's cover or killing write fall), the node logs it again once more. Nothing else lets it log the body again there.
 - A part counting missing again lifts this node's own tombstones of that commit's entries (§3 Dropped bodies), so its own tombstone never blocks fetching it again.
-- So per (source, body) a node logs at most one encryption per change of ground, and a loop between a deleter and a node logging again ends within one exchange of each change: the property the model checks (notes/sync-rewrite-inputs.md, Covered by).
+- So per (source, body) a node logs at most one encryption per change of ground, and a loop between a deleter and a node logging again ends within one exchange of each change.
 
 ## 5. Destruction and emptying
 A destroyed thing (spec/commits.md §5 Destruction) with secrets of its own may be read under its own sync IDs alone, so its destruction is told there and nowhere else.

@@ -1,4 +1,4 @@
-//! A connection's proof exchange (spec/sync.md §10, Connection proofs): what this node proves on
+//! A connection's proof exchange (spec/sync-opens.md §2, connection proofs): what this node proves on
 //! a connection and what a peer's proofs show. The signature's check is osis-proto's; whether an
 //! account's key is open is `Engine::account_key_open`. `SyncEngine::proven` is the only reader:
 //! everything later reads a connection's actors from there, none from group data.
@@ -26,7 +26,7 @@ pub(super) fn provers(engine: &mut Engine, own: bool) -> Result<Vec<Prover>> {
     Ok(out)
 }
 
-/// What a connection proved (spec/sync.md §10), by how.
+/// What a connection proved (spec/sync-opens.md §4), by how.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Proven {
     /// Key actors proved by their own signing key over this connection.
@@ -35,9 +35,9 @@ pub struct Proven {
     /// it, known here or not).
     pub signing: std::collections::BTreeMap<Tid, [u8; 32]>,
     /// The first proof's actor when it is a node of this node's own account (`Core::own_node`):
-    /// a node proves its node key to its own account's nodes only (spec/sync.md §10).
+    /// a node proves its node key to its own account's nodes only (spec/sync-opens.md §4).
     pub node: Option<Tid>,
-    /// Accounts proved at an epoch open here: a closed epoch proves nothing (spec/sync.md §10).
+    /// Accounts proved at an epoch open here: a closed epoch proves nothing (spec/sync-opens.md §4).
     pub accounts: BTreeSet<Tid>,
 }
 
@@ -71,7 +71,7 @@ pub(super) fn proven_actors(engine: &mut Engine, proofs: &[ActorProof]) -> Resul
 }
 
 /// Whether a peer that proved `proven` gets this node's node key: it proved this node's account
-/// at an open epoch, or its own node key as a node of it (spec/sync.md §10).
+/// at an open epoch, or its own node key as a node of it (spec/sync-opens.md §4).
 pub(super) fn own_peer(engine: &Engine, proven: &Proven) -> bool {
     proven.node.is_some() || engine.core.account.get().is_some_and(|p| proven.accounts.contains(&p))
 }
@@ -88,7 +88,7 @@ impl SyncEngine {
         self.conns.iter().map(|(c, x)| (*c, x.proven.all())).collect()
     }
 
-    /// The actors `conn` proved on its own proof exchange (spec/sync.md §10), whoever dialed;
+    /// The actors `conn` proved on its own proof exchange (spec/sync-opens.md §4), whoever dialed;
     /// `None` for a connection this engine does not have. Empty until the exchange finished,
     /// and for a connection that proved nothing.
     pub fn proven(&self, conn: ConnId) -> Option<BTreeSet<Tid>> {
@@ -106,7 +106,7 @@ impl SyncEngine {
         self.conns.get(&conn).map(|c| &c.proven)
     }
 
-    /// A connection proves what this node held when it came up, once (spec/sync.md §10,
+    /// A connection proves what this node held when it came up, once (spec/sync-opens.md §4,
     /// Connection proofs): one where this node proved its actors and lacks one it would prove now
     /// (a link key held since, the account's seed) is closed, a dialed one dialed again at once and
     /// a served one by its dialer, so the new connection proves it. Without it a redeemer connected before it held

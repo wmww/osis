@@ -837,7 +837,7 @@ impl Engine {
 
     /// Whether a held request names a delta of `parts` of `c` and does not drop it, signed by one
     /// that could ever hold the right: a delete that took the body at a host may be that request's,
-    /// not its keep bounds' (spec/sync.md §6). A request no signer ever had the right for took
+    /// not its keep bounds' (spec/sync-judgement.md §2). A request no signer ever had the right for took
     /// nothing: a plain writer's aspect-wide one must not reopen every delete on the aspect.
     pub fn named_by_a_fallen_purge(&mut self, c: &CommitId, parts: &[usize]) -> Result<bool> {
         let c = *c;

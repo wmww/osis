@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! What a pass judges again after a change (spec/sync.md §6, §7; spec/requirements.md, Scale):
+//! What a pass judges again after a change (spec/sync-judgement.md §2, spec/sync-compaction.md §1; spec/requirements.md, Scale):
 //! the engine marks the commits whose parts, validity or deaths changed, not every commit on
 //! their aspect, and an unchanged closure is reused.
 
@@ -28,7 +28,7 @@ fn known(net: &mut Net, n: usize, l: &LabelId, c: &CommitId) -> usize {
     net.sync(n).entries(l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c)).count()
 }
 
-// spec/sync.md §5 (expiry), §6: a commit expiring is judged again (its entry goes), the live
+// spec/sync-ids.md §6 (expiry), §6: a commit expiring is judged again (its entry goes), the live
 // commits of its aspect are not.
 #[test]
 fn expiry_judges_only_the_expired_commit_spec_sync_5() {
@@ -50,7 +50,7 @@ fn expiry_judges_only_the_expired_commit_spec_sync_5() {
     assert!(s1.bodies - s0.bodies < 6, "the aspect's live bodies are not judged again: {s0:?} -> {s1:?}");
 }
 
-// spec/sync.md §3 (closure), §6: a pass reuses an unchanged closure; a thing entering it is
+// spec/sync-judgement.md §1 (closure), §6: a pass reuses an unchanged closure; a thing entering it is
 // judged (its commits go up).
 #[test]
 fn closure_reused_until_it_changes_spec_sync_3() {
@@ -96,7 +96,7 @@ fn purge_on_replace_removed_entry_no_live_write_spec_commits_5() {
     assert_eq!(at_the_peer(&mut net, a, host, &l, &b), 0, "the body without a live write was deleted in the same sync");
 }
 
-// spec/sync.md §6: a body its thing's setting keeps for good is must-hold for good, but nothing is
+// spec/sync-judgement.md §2: a body its thing's setting keeps for good is must-hold for good, but nothing is
 // due for it: passes do not judge it again. A later change elsewhere under the label judges as
 // many bodies whether 10 or 40 are kept.
 #[test]
@@ -125,7 +125,7 @@ fn kept_for_good_bodies_not_judged_again_spec_sync_6() {
     crate::scale::flat("bodies judged after a change elsewhere", judged(10), judged(40));
 }
 
-// spec/requirements.md Scale (a body's judgment costs O(its parts)), spec/sync.md §6, spec/commits.md
+// spec/requirements.md Scale (a body's judgment costs O(its parts)), spec/sync-judgement.md §2, spec/commits.md
 // §5: one body of many parts kept at least is judged once per commit, at its author and a reader,
 // written and then wholly replaced (its parts judged in one call per commit, never a call per
 // part).

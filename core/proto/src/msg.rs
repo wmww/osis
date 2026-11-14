@@ -72,10 +72,10 @@ pub enum Event {
     /// New head, without claim set.
     Head(Step),
     /// The sending node, which cannot read the label, refused an entry of it it pulled for room
-    /// (true), or has room again (false): carried by a Stream without cursor (spec/sync.md §10).
+    /// (true), or has room again (false): carried by a Stream without cursor (spec/sync-opens.md §4).
     Full(bool),
     /// The sending node, which cannot read the label, refused an entry of it it pulled, for
-    /// anything but room (`Full`): carried by a Stream without cursor (spec/sync.md §10).
+    /// anything but room (`Full`): carried by a Stream without cursor (spec/sync-opens.md §4).
     Refused(BlobId, Code),
 }
 
@@ -103,7 +103,7 @@ pub enum Message {
     /// Client port (notes/client-port.md §2): a main session sends no secret, a thin client
     /// its bearer secret (`Debug` redacted, zeroized on drop).
     Auth { id: Id, secret: Option<osis_crypto::Secret32>, session: [u8; 16] },
-    /// The dialer's connection proofs (spec/sync.md §10); at most one per connection.
+    /// The dialer's connection proofs (spec/sync-opens.md §4); at most one per connection.
     Prove { id: Id, proofs: Vec<crate::ActorProof> },
     /// The listener's answer: its own proofs, none unless the dialer proved a known actor.
     Proved { id: Id, proofs: Vec<crate::ActorProof> },
@@ -113,13 +113,13 @@ pub enum Message {
     /// Aspects of things in the label's closure the sender flags suspect (spec/permissions.md
     /// §4): node to node, answered Ok.
     Suspect { id: Id, label: LabelId, entries: Vec<SuspectEntry> },
-    /// The dialer's records for this peer (spec/sync.md §10, Pair key); at most one per
+    /// The dialer's records for this peer (spec/sync-opens.md §3, pair key); at most one per
     /// connection, after Proved.
     Resume { id: Id, nonce: [u8; 32], tags: Vec<[u8; 32]> },
     /// The listener's nonce, and the answering tag of a record it holds, if any.
     Resumed { id: Id, nonce: [u8; 32], tag: Option<[u8; 32]> },
     /// The dialer keeps no record of this listener: the connection's shared set runs under the
-    /// connection's own pair key (spec/sync.md §10, Pair key).
+    /// connection's own pair key (spec/sync-opens.md §3, pair key).
     NoRecord { id: Id },
     /// One generation of a side's beacon filter, in pages (issues/sync-rewrite.md).
     Beacons { id: Id, generation: u64, base: Option<u64>, f: u8, lo: u64, hi: u64, gcs: Vec<u8>, more: bool },
@@ -129,7 +129,7 @@ pub enum Message {
     Lost { id: Id, items: Vec<(LabelId, Option<Vec<u8>>)> },
     /// The answer to a Beacons, Offer or Lost: one entry per item, in order (one for a Beacons).
     Shared { id: Id, codes: Vec<SharedCode> },
-    /// A pull of the peer's node log stream (spec/sync.md §10, Stream): the events after
+    /// A pull of the peer's node log stream (spec/sync-streams.md §4, stream): the events after
     /// `cursor` of the shared set's members, and each join's after its own cursor (from the
     /// start when it has none).
     Pull(Box<Pull>),
@@ -140,7 +140,7 @@ pub enum Message {
     /// The requester applied what `cursor` covers (id 0).
     Applied { cursor: Vec<u8> },
     /// The digest of the record's shared set, a connection's first message each way after Resume
-    /// (id 0; spec/sync.md §10, Agreement).
+    /// (id 0; spec/sync-opens.md §3, agreement).
     Digest { digest: [u8; 32] },
     /// A page of the sender's shared set, sent only when the digests differ (id 0).
     Members { labels: Vec<LabelId>, more: bool },
@@ -215,7 +215,7 @@ pub struct Stream {
 pub enum OfferItem {
     /// A Hit: the role-bound digest of a credential whose filter entry hit (`beacon_hit`), with
     /// the credential's proof where its match value is public: for a sync key, an open signature
-    /// by it (spec/sync.md §10).
+    /// by it (spec/sync-opens.md §4).
     Hit([u8; 32], Option<Signature>),
     /// A sync ID the sender judged the peer holds, with the sender's Hit at each epoch it holds.
     ByRole(LabelId, Vec<[u8; 32]>),
@@ -223,12 +223,12 @@ pub enum OfferItem {
     /// Deposit carries them, to a peer the sender judged a holder of the inbox.
     Deposit { label: LabelId, blob: Vec<u8>, wrap: Wrap, sig: Signature },
     /// A Hit on a static entry with its key actor's signing key and an open signature by it
-    /// (spec/sync.md §10, Shared set): opens where the key's static entry is the credential hit.
+    /// (spec/sync-opens.md §4, shared set): opens where the key's static entry is the credential hit.
     Static { hit: [u8; 32], key: [u8; 32], sig: Signature },
     /// The sender is behind the peer's head of `label`: it holds credential key `key` of step
     /// `step` (a sync key, a claim, or a key actor's signing key; none: by a sync key, the newest
     /// step bearing it, by a signing key, the head), proven by an open signature by that key
-    /// (spec/sync.md §5, Behind). Answered with the steps after it to the head, or a Static
+    /// (spec/sync-ids.md §6, behind). Answered with the steps after it to the head, or a Static
     /// item's grant.
     Behind { label: LabelId, step: Option<StepId>, key: [u8; 32], sig: Signature },
 }
@@ -239,7 +239,7 @@ pub const MAX_SHARED_ITEMS: usize = 1024;
 pub const MAX_MEMBERS: usize = 4096;
 
 /// One item's answer in a Shared: its code, the tag of an accepted Hit, and the steps it carries
-/// (spec/sync.md §10, Shared set).
+/// (spec/sync-opens.md §4, shared set).
 pub type SharedCode = (Code, Option<[u8; 32]>, Option<Box<Grant>>);
 
 /// Steps an answer carries: for an accepted Hit on the tester's static entry, the box the head's

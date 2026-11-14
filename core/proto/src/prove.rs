@@ -1,4 +1,4 @@
-//! Connection proofs (spec/sync.md §10 Connection proofs, spec/wire.md §11.2 Prove): each proof
+//! Connection proofs (spec/sync-opens.md §2 connection proofs, spec/wire.md §11.2 Prove): each proof
 //! shows the prover holds an actor's signing key on this connection. The signature covers the
 //! prover's role, the verifier's Hello challenge and the listener's static key (the one key both
 //! sides authenticated for the connection, whichever of them proves). Invariant: a proof made as

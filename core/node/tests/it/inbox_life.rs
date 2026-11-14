@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! An inbox blob's life (spec/sync.md §3): the grantee's certificate copy, re-sending after
+//! An inbox blob's life (spec/sync-judgement.md §1): the grantee's certificate copy, re-sending after
 //! `INBOX_LIFETIME`; direct packages kept until the app takes them.
 
 use crate::net::hosted_nodes;
@@ -66,7 +66,7 @@ fn inbox_at(net: &mut Net, n: usize, host: usize, l: &LabelId) -> usize {
     net.sync(n).entries(l).into_iter().filter(|(id, k)| matches!(k, EntryKind::Inbox(_)) && ids.contains(id)).count()
 }
 
-// spec/sync.md §3: the grantee's node places a certificate copy of the grant under its home
+// spec/sync-judgement.md §1: the grantee's node places a certificate copy of the grant under its home
 // label (the inbox), with the `label.0` and `created.0` commits of the group it names.
 #[test]
 fn grantee_copy_placed_spec_sync_3() {
@@ -86,7 +86,7 @@ fn grantee_copy_placed_spec_sync_3() {
     assert_eq!(inbox_at(&mut net, b, host, &home), 1, "the inbox blob stays until it expires");
 }
 
-// spec/sync.md §3: an inbox blob nobody acts on expires at the host after `INBOX_LIFETIME`;
+// spec/sync-judgement.md §1: an inbox blob nobody acts on expires at the host after `INBOX_LIFETIME`;
 // the sender seals the commit again and re-sends it, and the holder, back online, reads.
 #[test]
 fn unanswered_inbox_blob_resent_spec_sync_3() {
@@ -108,7 +108,7 @@ fn unanswered_inbox_blob_resent_spec_sync_3() {
     assert_eq!(net.read(b, t), Some(s("for bob")));
 }
 
-// spec/permissions.md §1 (pairing), spec/sync.md §2: the commits for a node over a direct
+// spec/permissions.md §1 (pairing), spec/sync-ids.md §2: the commits for a node over a direct
 // connection stay until the app takes them, across a restart.
 #[test]
 fn direct_packages_survive_restart_spec_sync_2() {
@@ -139,7 +139,7 @@ fn under(net: &mut Net, n: usize, host: usize, l: &LabelId, t: Tid, ak: &str) ->
     k
 }
 
-// spec/sync.md §3 (the grantee's copy goes under the actor's HOME label): an actor whose inbox
+// spec/sync-judgement.md §1 (the grantee's copy goes under the actor's HOME label): an actor whose inbox
 // is another group's label gets no copy there (that group's readers would see its edges,
 // labels and box keys).
 #[test]
@@ -174,7 +174,7 @@ fn inbox_at_another_group_gets_no_copy_spec_sync_3() {
     assert_eq!(under(&mut net, b, host, &hl, g, "roles.0"), 0, "no copy of the grant under another group's label");
 }
 
-// spec/sync.md §3: an inbox payload's things are the sender's word; a copy carries the
+// spec/sync-judgement.md §1: an inbox payload's things are the sender's word; a copy carries the
 // `label.0` and `created.0` only of things its commit touches, never of another thing this
 // node holds that a hostile sender names.
 #[test]
@@ -214,7 +214,7 @@ fn inbox_copy_names_only_touched_things_spec_sync_3() {
     assert_eq!(under(&mut net, b, host, &home, p, "created.0"), 0, "the named private thing's created.0 is not copied");
 }
 
-// spec/sync.md §3 (re-send if the recipient has not acted), spec/permissions.md §3: a grant
+// spec/sync-judgement.md §1 (re-send if the recipient has not acted), spec/permissions.md §3: a grant
 // is not re-sent to a holder removed since: after the lifetime only the removal notice goes
 // again, never the grant with the target's current label.
 #[test]
@@ -257,7 +257,7 @@ fn plant_bytes(net: &mut Net, from: usize, (host, l): (usize, &LabelId), to: Tid
     id
 }
 
-// spec/sync.md §3, spec/requirements.md (read access never stores arbitrary content): a valid
+// spec/sync-judgement.md §1, spec/requirements.md (read access never stores arbitrary content): a valid
 // commit an inbox blob carries that is no role commit about the actor is applied but
 // never copied under its home label; nor are its things' labels followed (no box to the actor):
 // their hosts are never dialed.
@@ -308,7 +308,7 @@ fn grant_undelivered(net: &mut Net, a: usize, b: usize, host: usize, home: &Labe
     (c, osis_label::InboxThing { tid: g, label: Some(osis_label::InboxLabel { id: gl.id, hosts: gl.hosts.clone() }), delete_keys: None })
 }
 
-// spec/sync.md §3: an inbox blob whose expiry is far below `INBOX_LIFETIME` gets no copy (its
+// spec/sync-judgement.md §1: an inbox blob whose expiry is far below `INBOX_LIFETIME` gets no copy (its
 // sender would get the deposit budget back for the next one); the grant it carries still
 // applies, its label followed by the vetted hint (the grant boxes Bob on g).
 #[test]
@@ -326,7 +326,7 @@ fn short_lived_inbox_blob_not_copied_spec_sync_3() {
     assert_eq!(under(&mut net, b, host, &home, g, "roles.0"), 0, "no copy from a short-lived blob");
 }
 
-// spec/sync.md §3: a vetted inbox hint (the grant boxes Bob on g) goes with its blob: once the
+// spec/sync-judgement.md §1: a vetted inbox hint (the grant boxes Bob on g) goes with its blob: once the
 // blob expired, the host it named is dialed no more, though its label never opened.
 #[test]
 fn inbox_hint_goes_with_its_blob_spec_sync_3() {
@@ -370,7 +370,7 @@ fn grant_commit(net: &mut Net, a: usize, g: Tid, bob: Tid) -> osis_base::CommitI
     c
 }
 
-// spec/sync.md §3, §5: Bob knows nothing of Alice when her grant reaches him and the label's head has
+// spec/sync-judgement.md §1, spec/sync-ids.md §6: Bob knows nothing of Alice when her grant reaches him and the label's head has
 // moved past the epoch boxed in it (Carol's removal): his account's claim key on the head opens the
 // label, Alice's chain comes under it, and the grant applies. A commit released from an invite request
 // that cannot be judged yet waits for what it needs like any other.
@@ -421,7 +421,7 @@ fn an_outsider_reads_no_secret_of_the_account_spec_permissions_1() {
     assert_eq!(e.header(&id).map(|h| h.author), Some(alice), "the account is the author");
 }
 
-// spec/sync.md §3 (invite requests): Bob shares nothing with Alice, so her invite is a request:
+// spec/sync-judgement.md §1 (invite requests): Bob shares nothing with Alice, so her invite is a request:
 // its commit is not applied and g's hosts are never dialed until Bob accepts; accepting
 // applies it, dials them and joins g.
 #[test]
@@ -495,7 +495,7 @@ fn an_inbox_chain_applies_only_chain_deltas_spec_wire_9() {
     assert!(net.engine(b).get_typed(&x, &ct::GROUP).unwrap().is_none(), "and nothing but chain deltas");
 }
 
-// spec/sync.md §3: a declined request is forgotten: never listed again, its commit never
+// spec/sync-judgement.md §1: a declined request is forgotten: never listed again, its commit never
 // applied, across a restart and the sender's re-send after `INBOX_LIFETIME`.
 #[test]
 fn declined_invite_forgotten_spec_sync_3() {
@@ -523,7 +523,7 @@ fn declined_invite_forgotten_spec_sync_3() {
     assert!(!net.dialed.iter().any(|(n, x)| *n == b && x.key == rogue.key));
 }
 
-// spec/sync.md §3: once Bob shares g with Alice (he accepted), her next invite comes from a
+// spec/sync-judgement.md §1: once Bob shares g with Alice (he accepted), her next invite comes from a
 // connected sender (her node is named on her account, g's first admin) and goes through directly.
 #[test]
 fn connected_sender_invite_goes_through_spec_sync_3() {
@@ -593,7 +593,7 @@ fn bob_with_two_nodes_built() -> (Net, usize, usize, usize, Tid, Tid) {
     (net, a, b, b2, bob, g)
 }
 
-// spec/sync.md §3: a request accepted on one of Bob's nodes is admitted on his other one by
+// spec/sync-judgement.md §1: a request accepted on one of Bob's nodes is admitted on his other one by
 // the grant's copy under his home label (a commit blob of it under a synced label).
 #[test]
 fn invite_accepted_on_one_node_admitted_on_the_other_spec_sync_3() {
@@ -615,7 +615,7 @@ fn invite_accepted_on_one_node_admitted_on_the_other_spec_sync_3() {
     assert_eq!(net.read(b2, t), Some(s("for bob")));
 }
 
-// spec/sync.md §3 (a decline holds against inbox blobs only; a sibling's acceptance wins): Bob
+// spec/sync-judgement.md §1 (a decline holds against inbox blobs only; a sibling's acceptance wins): Bob
 // declines on b2, then accepts on b; b2 applies the grant from b's copy under the home label
 #[test]
 fn sibling_acceptance_wins_over_decline_spec_sync_3() {
@@ -639,7 +639,7 @@ fn sibling_acceptance_wins_over_decline_spec_sync_3() {
     assert_eq!(net.read(b2, t), Some(s("for bob")));
 }
 
-// spec/sync.md §3: a sender is connected by a current role only: Carol, removed from g (which
+// spec/sync-judgement.md §1: a sender is connected by a current role only: Carol, removed from g (which
 // Bob syncs), is a stranger to Bob again, and her invite is a request.
 #[test]
 fn removed_holder_invite_is_request_spec_sync_3() {
@@ -683,7 +683,7 @@ fn removed_holder_invite_is_request_spec_sync_3() {
     assert!(!holds(&mut net, b, &x));
 }
 
-// spec/sync.md §3 (direct packages kept until the app takes them): a crash between pairing's
+// spec/sync-judgement.md §1 (direct packages kept until the app takes them): a crash between pairing's
 // commit and carrying it out loses no direct package: the same commits wait for the new node
 // after the restart.
 #[test]
@@ -760,7 +760,7 @@ fn item_grant_then_group_grant_reaches_the_group_spec_wire_9() {
     assert_eq!(net.read(b, t), Some(s("item")));
 }
 
-// spec/sync.md §3: a label a group here records is never a hint, whatever a blob calls it: not
+// spec/sync-judgement.md §1: a label a group here records is never a hint, whatever a blob calls it: not
 // taken while the group is handed off here, nor in the way when it syncs again.
 #[test]
 fn inbox_blob_cannot_rename_a_groups_label_spec_sync_3() {
@@ -789,7 +789,7 @@ fn inbox_blob_cannot_rename_a_groups_label_spec_sync_3() {
     assert!(settled(&mut net, b, g), "{:?}", net.sync(b).label_status());
 }
 
-// spec/sync.md §3: a blob naming a group's label under an item, before the group is known, holds
+// spec/sync-judgement.md §1: a blob naming a group's label under an item, before the group is known, holds
 // the label only while that hint stands: once it fails and the group's own grant names the label
 // (or the blob expires), the label goes to the group on the same connection.
 #[test]
@@ -839,14 +839,14 @@ fn hint_first_then_group_grant(hosts: impl Fn(&[ct::Address]) -> Vec<ct::Address
     assert_eq!(net.read(b, t), Some(s("item")));
 }
 
-// spec/sync.md §3: blobs naming one label under different things: each thing is tried in turn, so
+// spec/sync-judgement.md §1: blobs naming one label under different things: each thing is tried in turn, so
 // a connected sender's word delays the label's own group by a few tries at most.
 #[test]
 fn hint_under_another_thing_does_not_hold_off_the_group_spec_sync_3() {
     hint_first_then_group_grant(|h| h.to_vec());
 }
 
-// spec/sync.md §3: nor by naming the label at a host that never answers: the label is tried at the
+// spec/sync-judgement.md §1: nor by naming the label at a host that never answers: the label is tried at the
 // hosts every blob names.
 #[test]
 fn hint_at_a_dead_host_does_not_hold_off_the_group_spec_sync_3() {
@@ -868,7 +868,7 @@ fn quiet(net: &mut Net, b: usize) {
     net.settle(5_000);
 }
 
-// spec/sync.md §3: nor by naming the label at a host of its own that takes the open and never
+// spec/sync-judgement.md §1: nor by naming the label at a host of its own that takes the open and never
 // answers, on a connection older than the real host's: what the real host sends reads under the
 // thing that opened there, not the one still opening elsewhere.
 #[test]
@@ -907,7 +907,7 @@ fn hint_at_a_silent_host_does_not_hold_off_the_group_spec_sync_3() {
     assert!(net.sync(b).labels().iter().any(|(x, l)| *x == g && l.id == gl.id), "{:?}", net.sync(b).label_status());
 }
 
-// spec/sync.md §3, §5: nor by naming it at a host of its own that holds the label's real path
+// spec/sync-judgement.md §1, spec/sync-ids.md §6: nor by naming it at a host of its own that holds the label's real path
 // (a past reader's) and none of its entries, on a connection older than the real host's: the
 // label is open under the hinted thing there, and what the real
 // host sends still reads under the group that opened it there, with no message loop; once the
@@ -1040,7 +1040,7 @@ fn hint_turns_replay(s: u64) -> String {
     format!("OSIS_HINTS_START={s} OSIS_HINTS_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact inbox_life::hint_turns_reach_the_group_large_spec_sync_3")
 }
 
-// spec/sync.md §3: whatever other things blobs name a label under and whichever hosts they name it
+// spec/sync-judgement.md §1: whatever other things blobs name a label under and whichever hosts they name it
 // at, its own group reads it within a few retries, with no message loop on the way.
 #[test]
 fn hint_turns_reach_the_group_spec_sync_3() {
@@ -1077,7 +1077,7 @@ fn budget_left(net: &mut Net, host: usize, l: &LabelId) -> u64 {
     net.deposit_room(host, l).0
 }
 
-// spec/sync.md §5: a grant accepted on one node is stamped out of the deposit budget and stays at the host, readable by the sibling that was away
+// spec/sync-ids.md §6: a grant accepted on one node is stamped out of the deposit budget and stays at the host, readable by the sibling that was away
 #[test]
 fn stamped_inbox_blob_reaches_a_sibling_spec_sync_5() {
     let (mut net, a, b, b2, bob, g) = bob_with_two_nodes();
@@ -1108,7 +1108,7 @@ fn stamped_inbox_blob_reaches_a_sibling_spec_sync_5() {
     assert_eq!(net.read(b2, t), Some(s("for bob")));
 }
 
-// spec/sync.md §5: a stranger's request holds its budget slot until the user answers it; declining frees the slot and the blob stays until it expires
+// spec/sync-ids.md §6: a stranger's request holds its budget slot until the user answers it; declining frees the slot and the blob stays until it expires
 #[test]
 fn declined_request_leaves_the_budget_spec_sync_5() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
@@ -1130,7 +1130,7 @@ fn declined_request_leaves_the_budget_spec_sync_5() {
     assert!(!holds(&mut net, b, &c), "and its commit stays unapplied");
 }
 
-// spec/sync.md §5: a commit from a connected sender that applies and is judged invalid leaves its blob in the budget
+// spec/sync-ids.md §6: a commit from a connected sender that applies and is judged invalid leaves its blob in the budget
 #[test]
 fn invalid_inbox_commit_keeps_its_slot_spec_sync_5() {
     let (mut net, host, a, b, alice, bob, g, home) = alice_and_bob();
@@ -1165,7 +1165,7 @@ fn invalid_inbox_commit_keeps_its_slot_spec_sync_5() {
     assert_eq!(budget_left(&mut net, host, &home), left - 1, "not stamped");
 }
 
-// spec/sync.md §3: a stranger holding a commit the actor applied or declined can seal it in many blobs: at most one leaves the budget, and a commit not about the actor none
+// spec/sync-judgement.md §1: a stranger holding a commit the actor applied or declined can seal it in many blobs: at most one leaves the budget, and a commit not about the actor none
 #[test]
 fn reseals_stay_in_the_budget_spec_sync_3() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
@@ -1196,7 +1196,7 @@ fn reseals_stay_in_the_budget_spec_sync_3() {
     assert_eq!(budget_left(&mut net, host, &home), left - 6, "not stamped");
 }
 
-// spec/sync.md §3: a copied grant's thing gets a new `label.0` write (a step registering a
+// spec/sync-judgement.md §1: a copied grant's thing gets a new `label.0` write (a step registering a
 // refreshed deposit seed): the copy under home gains it
 #[test]
 fn copied_grant_gains_a_new_step_spec_sync_3() {
@@ -1220,7 +1220,7 @@ fn copied_grant_gains_a_new_step_spec_sync_3() {
     assert!(copies(&mut net, &next), "the new step's copy under home");
 }
 
-// spec/sync.md §3: a blob expiring later than an honest sender's could is not stamped, its expiry being the sender's word; another blob of the commit is
+// spec/sync-judgement.md §1: a blob expiring later than an honest sender's could is not stamped, its expiry being the sender's word; another blob of the commit is
 #[test]
 fn far_expiry_stays_in_the_budget_spec_sync_3() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
@@ -1249,7 +1249,7 @@ fn far_expiry_stays_in_the_budget_spec_sync_3() {
     assert!(net.sync(b).entry_meta(&home, &near).unwrap().1.is_some());
 }
 
-// spec/sync.md §3: a blob of the commit without the parts about the actor takes no stamp, and leaves it to the one with them
+// spec/sync-judgement.md §1: a blob of the commit without the parts about the actor takes no stamp, and leaves it to the one with them
 #[test]
 fn partless_blob_takes_no_stamp_spec_sync_3() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
@@ -1277,7 +1277,7 @@ fn partless_blob_takes_no_stamp_spec_sync_3() {
     }
 }
 
-// spec/sync.md §5: a stranger's requests past the cap: those expiring too far ahead go first, then the earliest to expire, so a later request still reaches the user
+// spec/sync-ids.md §6: a stranger's requests past the cap: those expiring too far ahead go first, then the earliest to expire, so a later request still reaches the user
 #[test]
 fn requests_past_the_cap_go_earliest_first_spec_sync_5() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
@@ -1308,7 +1308,7 @@ fn requests_past_the_cap_go_earliest_first_spec_sync_5() {
     assert_eq!(requests(&mut net, b), vec![c], "the user still sees the invite");
 }
 
-// spec/sync.md §5: a burst of a connected sender's grants past the cap is stamped, none deleted while its stamp waits
+// spec/sync-ids.md §6: a burst of a connected sender's grants past the cap is stamped, none deleted while its stamp waits
 #[test]
 fn burst_of_grants_is_not_cleared_spec_sync_5() {
     let (mut net, host, a, b, alice, bob, g, home) = alice_and_bob();
@@ -1376,7 +1376,7 @@ fn deposit_junk(net: &mut Net, from: usize, (host, l): (usize, &LabelId), bob: T
     out
 }
 
-// spec/sync.md §5: a stranger's deposits that open to nothing, expiring after real requests, go before them: real deposits over the wire while Bob is away
+// spec/sync-ids.md §6: a stranger's deposits that open to nothing, expiring after real requests, go before them: real deposits over the wire while Bob is away
 #[test]
 fn junk_goes_before_real_requests_spec_sync_5() {
     let (mut net, host, a, b, alice, bob, _, home) = alice_and_bob();
@@ -1398,7 +1398,7 @@ fn junk_goes_before_real_requests_spec_sync_5() {
     assert_eq!(junk.iter().filter(|x| held.contains(x)).count(), osis_base::format::DEPOSITS_WAITING - real.len(), "the junk goes down to the cap");
 }
 
-// spec/sync.md §5: more real invites than the cap while their user is away: the latest stay, and the rest are lost to her until re-sent
+// spec/sync-ids.md §6: more real invites than the cap while their user is away: the latest stay, and the rest are lost to her until re-sent
 #[test]
 fn real_requests_past_the_cap_keep_the_latest_spec_sync_5() {
     let (mut net, _, a, b, alice, bob, _, _) = alice_and_bob();
@@ -1417,7 +1417,7 @@ fn real_requests_past_the_cap_keep_the_latest_spec_sync_5() {
     assert_eq!(seen, want);
 }
 
-// spec/sync.md §5: an account's new node clears as the old one would, once its first sync is whole: requests stay, junk goes
+// spec/sync-ids.md §6: an account's new node clears as the old one would, once its first sync is whole: requests stay, junk goes
 #[test]
 fn fresh_node_keeps_requests_over_junk_spec_sync_5() {
     let (mut net, host, a, b, alice, bob, _, home) = alice_and_bob();
@@ -1462,7 +1462,7 @@ fn fresh_node_keeps_requests_over_junk_spec_sync_5() {
     assert!(junk.iter().filter(|x| held.contains(x)).count() <= osis_base::format::DEPOSITS_WAITING - real.len());
 }
 
-// spec/sync.md §5, §2: a shared group's label is its own inbox, and its readers' card changes are deposits past the cap: its admin keeps them all
+// spec/sync-ids.md §6, spec/sync-ids.md §2: a shared group's label is its own inbox, and its readers' card changes are deposits past the cap: its admin keeps them all
 #[test]
 fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     let mut net = Net::bare();
@@ -1534,7 +1534,7 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     assert_eq!(junk.iter().filter(|x| after.contains(x)).count(), osis_base::format::DEPOSITS_WAITING, "the rule ran");
 }
 
-// Requirements: peer input never costs unbounded memory; spec/sync.md §3. A stranger needs only
+// Requirements: peer input never costs unbounded memory; spec/sync-judgement.md §1. A stranger needs only
 // the public `keys.0` to deposit a blob a node opens and decodes, before admission or any
 // signature (issue value-decode-memory, closed): a blob of `{0:0}` costs its reader under
 // `INBOX_PEAK_MAX` per byte in all (blob copies, the payload's decode and the commit's). In a child
@@ -1586,7 +1586,7 @@ fn hostile_inbox_blob_peak_is_bounded_spec_sync_3() {
     let id = osis_label::blob_id(&blob);
     net.set_online(b, false);
     // the label's host lists it with a stamp nobody signed: an honest host's deposit budget would
-    // stop a stranger at about 2 MiB (spec/sync.md §5), the host of an inbox label has no such limit
+    // stop a stranger at about 2 MiB (spec/sync-ids.md §6), the host of an inbox label has no such limit
     let stamp = Some(osis_crypto::Signature([0; 64]));
     let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp, expiry: Some(now.0 + osis_base::format::INBOX_LIFETIME_MS), ephemeral: false, now: 0, role: false };
     assert_eq!(osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &home, put).unwrap(), osis_proto::Code::OK);
@@ -1603,7 +1603,7 @@ fn hostile_inbox_blob_peak_is_bounded_spec_sync_3() {
     println!("peak_kib={peak}");
 }
 
-// spec/sync.md §2: an actor's home label is the inbox its `keys.0` names, from the commit that
+// spec/sync-ids.md §2: an actor's home label is the inbox its `keys.0` names, from the commit that
 // makes the label: a sender holding only the actor's `keys.0` finds it there. A plain group has
 // no label and no inbox until it is shared (secrets of its own and its sync ID).
 #[test]
@@ -1638,7 +1638,7 @@ fn a_home_label_is_named_the_inbox_spec_sync_2() {
     assert_eq!(net.engine(a).inbox(&plain), Some(pl));
 }
 
-// spec/sync.md §2 (one sync ID per actor): a shared thing costs one sync ID and one commit of about
+// spec/sync-ids.md §2 (one sync ID per actor): a shared thing costs one sync ID and one commit of about
 // the same size, however many this node already has.
 #[test]
 fn a_sync_id_costs_the_same_at_any_count_spec_sync_2() {
@@ -1666,7 +1666,7 @@ fn a_sync_id_costs_the_same_at_any_count_spec_sync_2() {
     assert!(large <= small + small / 5, "per sync ID {small} B at 4, {large} B at 40");
 }
 
-// spec/sync.md §2 (inbox): an admin of another actor may write any sync ID as its inbox. Alice's
+// spec/sync-ids.md §2 (inbox): an admin of another actor may write any sync ID as its inbox. Alice's
 // group M, which Bob reads, names Bob's inbox; a blob sealed to Bob under his inbox still opens
 // for him.
 #[test]
@@ -1707,7 +1707,7 @@ fn an_actor_naming_someone_elses_inbox_hides_nothing_spec_sync_2() {
     assert_eq!(net.engine(b).role_on(&t), Some(Role::Read), "his inbox still opens for him");
 }
 
-// spec/sync.md §5 (Promotion): records are unsigned with a free nonce, so a reader can pad one
+// spec/sync-inbox.md §4 (promotion): records are unsigned with a free nonce, so a reader can pad one
 // record of its own chain with made-up ones; such a deposited record blob counts toward no chain
 // and is never stamped, though the reader's later card is promoted (the promoter places its own
 // record blob)
@@ -1818,7 +1818,7 @@ fn moved_unheard(net: &mut Net, b: usize, host: usize, f: impl FnOnce(&mut Net))
     net.release();
 }
 
-// spec/sync.md §5 (Opens, Credential), §10 (Shared set): Bob, granted while away across a
+// spec/sync-ids.md §6 (opens, Credential), §10 (Shared set): Bob, granted while away across a
 // rotation, opens g's label at a node that cannot read it by his claim on its head, knowing no
 // step of it yet; the head moves while he reads nothing there. The open by the old step's claim
 // ends, and the head the peer's stream named is the newest step he knows there: his claim on it
@@ -1856,7 +1856,7 @@ fn a_claim_open_ended_by_a_head_move_opens_at_the_new_head_spec_sync_5() {
     assert_eq!(net.sync(b).pass_stats().behind_sent - behind, 0, "no Behind item");
 }
 
-// spec/sync.md §3 (an inbox payload's label followed only for a thing the commit gave a read
+// spec/sync-judgement.md §1 (an inbox payload's label followed only for a thing the commit gave a read
 // secret of), §10 Shared set: Bob, granted sync alone by his inbox (the grant judged by the chain
 // it carries), keeps g's label unread: the credentials he offers of it are the head's, which a
 // reader opening it at his node matches, never the empty read credentials of a followed hint.

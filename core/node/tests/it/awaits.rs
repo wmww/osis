@@ -199,14 +199,14 @@ fn reach_arriving_applies_its_part_spec_commits_4() {
     assert_eq!(named.len(), 2, "entries naming either wait");
 }
 
-// spec/sync.md §6 (Dropped bodies), spec/commits.md §4 (Unjudgeable): `x`'s group g is an item
+// spec/sync-judgement.md §3 (dropped bodies), spec/commits.md §4 (Unjudgeable): `x`'s group g is an item
 // and subgroup of `team`, so one blob of a commit on `x` and on a new `h` is under both labels.
 // Reader b gets it without `h`'s record: it applies without that part, and its copy goes, its
 // wraps under both labels with it. The record comes and the part is missing again: b fetches the
 // blob again under each label, though the first fetch brings the bytes the other entry names,
 // and every entry opens (taking only the bytes, the other stayed unopened for good; a writer
 // placed the commit there again, for another to delete, without end).
-// spec/sync.md §6 (Reader; a delete stands once it took a body placed again past one): the host
+// spec/sync-judgement.md §3 (reader; a delete stands once it took a body placed again past one): the host
 // never lists `r` to b, so b, holding `r` but no entry of it, judges the parts of g's group
 // record that `r` covers must-hold and a deposits; a, holding `r`, deletes them as covered. b
 // places each again once per label, not once per round trip (a storm of hundreds of fresh blobs,

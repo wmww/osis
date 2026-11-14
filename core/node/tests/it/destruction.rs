@@ -264,7 +264,7 @@ fn repro_first_admin_removal_after_destruction() {
     assert_eq!(net.read(b, t), Some(s("x")));
 }
 
-// spec/commits.md §5 (Destruction), spec/sync.md §5: a removal of the first admin racing a destruction, in
+// spec/commits.md §5 (Destruction), spec/sync-ids.md §6: a removal of the first admin racing a destruction, in
 // both arrival orders: the nodes agree the destruction fell, and then nothing is logged or deleted at
 // hosts over and over
 #[test]
@@ -540,7 +540,7 @@ fn a_destroyed_account_leaves_what_it_created_running_spec_commits_5() {
     assert_eq!(net.read(d, t2), Some(s("from c")));
 }
 
-// spec/commits.md §5 (Destruction: dependents), spec/permissions.md §4 (Placing): a thing whose first
+// spec/commits.md §5 (Destruction: dependents), spec/permissions.md §4 (Logging certificates): a thing whose first
 // admin destroyed by expiry before a node joined the group reads at that node, which learns the destroyed
 // first admin's record from the group's label (no body there carries it once it was destroyed), and takes
 // no write on that record alone: it cannot tell the thing was destroyed
@@ -663,7 +663,7 @@ fn destroy_with_c_away(net: &mut Net, c: usize) {
     }
 }
 
-// spec/commits.md §5 (Destruction: dependents), spec/permissions.md §4 (Placing): b is admin of x only
+// spec/commits.md §5 (Destruction: dependents), spec/permissions.md §4 (Logging certificates): b is admin of x only
 // by its edge on x's first admin t. t is destroyed by expiry while c holds no dependent of it (x reaches c
 // after the destruction), so c keeps nothing of t and its destruction deletes t's bodies at the host; the
 // holders of x place t's frozen edges under the label again (as closure bodies while g lists t,
@@ -1479,7 +1479,7 @@ fn removing_a_destroyed_only_admin_of_a_plain_thing_is_refused_spec_permissions_
 // label, and then a node is granted g. The request destroying t stays there for x's sake (every node
 // holding x needs it), so the newcomer reads t as destroyed as the others do; x's body, sealed under
 // t's secrets whose boxes went with t, goes there as a per-label copy, so the newcomer reads x, and
-// the shared blob placed before the destruction goes as the copy's duplicate (spec/sync.md §7)
+// the shared blob placed before the destruction goes as the copy's duplicate (spec/sync-compaction.md §1)
 #[test]
 fn a_destruction_by_purge_stays_under_a_dependents_label_for_a_newcomer_spec_commits_5() {
     for listed in [false, true] {
@@ -1800,7 +1800,7 @@ fn a_destroyed_things_own_label_is_emptied_before_its_secrets_go_spec_commits_5(
     }
 }
 
-// spec/sync.md §2 (Owner): a, an admin of t, names u's label ul in t's `label.0` (a copy of u's
+// spec/sync-ids.md §4 (owner): a, an admin of t, names u's label ul in t's `label.0` (a copy of u's
 // own record, every step verifying). No step of ul bears a sync key of t's secrets, so b and c,
 // holding both, take ul as u's alone: t lists no ul there, and once t is released and its labels
 // emptied, ul is never emptied nor forgotten with them (without the check: b empties ul as t's
@@ -1833,7 +1833,7 @@ fn a_label_named_in_another_groups_label_0_is_ignored_spec_sync_2() {
         let ls: Vec<_> = net.engine(n).group_labels(&t).unwrap().into_iter().map(|l| l.id).collect();
         assert_eq!(ls, vec![tl], "node {n}: t's labels are its own alone");
     }
-    // p, plain, takes ul unjudged (spec/sync.md §2, Owner: no sync secret of p's own): u's
+    // p, plain, takes ul unjudged (spec/sync-ids.md §4, owner: no sync secret of p's own): u's
     // writes still travel under ul between b and c
     net.write(c, u, "w");
     net.run();
@@ -2060,7 +2060,7 @@ fn an_expired_retainers_child_is_judged_and_released_at_a_later_node_spec_commit
     assert_eq!(net.engine(a).lifetime_status(&cx), Status::Destroyed, "a: released");
 }
 
-// notes/lifetimes.md (The release: Applying; Limits 5), spec/sync.md §6: a right holder
+// notes/lifetimes.md (The release: Applying; Limits 5), spec/sync-judgement.md §2: a right holder
 // places the release request at a host before any of the released thing's blobs is deleted
 // there, so no host holds neither (else a holder that missed the request logs the thing
 // again and right holders release it again, round for good): checked after every message
@@ -2088,7 +2088,7 @@ fn a_release_request_is_at_the_host_before_the_things_blobs_leave_spec_sync_6() 
 }
 
 // notes/lifetimes.md (Cost; The release: Not erasure, Forgotten), spec/commits.md §5
-// (Lasting, Forgetting), spec/sync.md §6: t is released and g's list lets go of it, so nothing
+// (Lasting, Forgetting), spec/sync-judgement.md §2: t is released and g's list lets go of it, so nothing
 // held lists or references it. No header of t lasts (its write leaves the host whole), and past
 // the request's expiry nothing of t is held anywhere: no node holds the request or t's write, and
 // the host holds no entry of either
@@ -2153,7 +2153,7 @@ fn a_released_group_member_is_forgotten_while_still_listed_spec_commits_5() {
     }
 }
 
-// spec/sync.md §6 (Dropped bodies: a commit forgotten with a released thing), spec/commits.md §5
+// spec/sync-judgement.md §3 (dropped bodies: a commit forgotten with a released thing), spec/commits.md §5
 // (Forgetting): a node forgets a released thing (r lets go of t past its request's expiry) and
 // restarts before deleting its commits' entries at the host, alone on the network: it still
 // deletes them, and keeps nothing of them past their tombstones
@@ -2189,7 +2189,7 @@ fn a_forgotten_commits_entries_are_deleted_after_a_restart_spec_sync_6() {
     assert!(net.engine(a).local_rows_naming(&req.0).unwrap().is_empty(), "nothing names it past its tombstones");
 }
 
-// spec/sync.md §6 (Dropped bodies: a commit forgotten with a released thing), spec/commits.md §5
+// spec/sync-judgement.md §3 (dropped bodies: a commit forgotten with a released thing), spec/commits.md §5
 // (Forgetting): a node away, running on its own (its dials failing), forgets a released thing (r
 // lets go of t past its request's expiry); back online, with no restart, it deletes the entries
 // of the commits it forgot at the host
@@ -2227,7 +2227,7 @@ fn a_commit_forgotten_while_away_has_its_entries_deleted_once_back_spec_sync_6()
     assert!(!net.sync(a).entries(&l).iter().any(|(id, _)| ids.contains(id)), "no entry of it known");
 }
 
-// spec/commits.md §5 (Forgetting), spec/sync.md §6: w writes x, an item of g, and y, a thing of
+// spec/commits.md §5 (Forgetting), spec/sync-judgement.md §2: w writes x, an item of g, and y, a thing of
 // g's no closure holds yet, so y's record is not held at b. b forgets x at its release's expiry
 // and w with it, here alone: its entries stay at the host, skipped at b as awaiting y's record,
 // not fetched again over later syncs. y then joins g: its record reaches b, w is fetched again
@@ -2394,7 +2394,7 @@ fn released_things_stay_forgotten_over_a_restart_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 (a release request expires at ts + ROLE_KEEP), spec/sync.md §5 (an entry
+// spec/commits.md §5 (a release request expires at ts + ROLE_KEEP), spec/sync-ids.md §6 (an entry
 // goes at its prefix expiry): x and y released together, b never having held y's record (its
 // entry of the request awaits it). At the expiry every node forgets the request and its entry
 // goes there too, whatever is known of its commit: no entry, no row in the node's own hub (it
@@ -2435,7 +2435,7 @@ fn a_release_requests_entry_goes_everywhere_at_its_expiry_spec_sync_5() {
     }
 }
 
-// spec/sync.md §5 (an entry goes at its prefix expiry, at any host), spec/commits.md §5
+// spec/sync-ids.md §6 (an entry goes at its prefix expiry, at any host), spec/commits.md §5
 // (Forgetting): b stops syncing g's label L (handed off), its rows there kept unread. A writer's
 // release request under L reaches b. Nothing at b reads L, yet the entry goes there at the
 // request's expiry, with every reader having forgotten it, as it goes at the host that never

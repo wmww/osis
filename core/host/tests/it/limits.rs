@@ -1,4 +1,4 @@
-//! Negative cases (spec/sync.md §5; notes/label-access.md and notes/inbox.md "Limits"): what a stale, reading or hostile
+//! Negative cases (spec/sync-ids.md §6; notes/label-access.md and notes/inbox.md "Limits"): what a stale, reading or hostile
 //! peer cannot do at a host.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -23,7 +23,7 @@ fn world() -> (World, usize) {
 /// A header blind (spec/crypto.md §7).
 const HB: [u8; 16] = [0x4b; 16];
 
-// spec/sync.md §5 (Taking a stamped entry): an entry stamped under a superseded write key gets
+// spec/sync-ids.md §6 (taking a stamped entry): an entry stamped under a superseded write key gets
 // code 9 alone
 #[test]
 fn a_superseded_write_key_gets_9_spec_sync_5() {
@@ -39,8 +39,8 @@ fn a_superseded_write_key_gets_9_spec_sync_5() {
     assert_eq!(pull(&w, H, &l, &l.entry_by(blob(2), &old.write)), Code::NOT_HEAD);
 }
 
-// spec/sync.md §5 Stamp, Deposit: a reader (sync key only) cannot stamp or deposit, nor sign deletes without a delete key
-// spec/sync.md §5 (stamp refusals), §5 (delete keys), §5 (register), §5 (deposit budget)
+// spec/sync-ids.md §6 stamp, Deposit: a reader (sync key only) cannot stamp or deposit, nor sign deletes without a delete key
+// spec/sync-ids.md §6 (stamp refusals), §5 (delete keys), §5 (register), §5 (deposit budget)
 #[test]
 fn reader_cannot_write() {
     let (mut w, c) = world();
@@ -48,12 +48,12 @@ fn reader_cannot_write() {
     w.setup(c, &l);
     let sk = l.head_keys().sync.clone();
     assert_eq!(pull(&w, H, &l, &l.entry_by(blob(1), &sk)), Code::REFUSED);
-    // a badly signed deposit learns its code only (spec/sync.md §5)
+    // a badly signed deposit learns its code only (spec/sync-ids.md §6)
     assert_eq!(deposit_verified(&w, H, l.deposit(blob(2), &sk)), (Code::REFUSED, false));
     assert_eq!(pull_all(&w, H, &l, [3]), vec![Code::OK]);
     let item = DeleteItem::sign(&sk, &l.id, bid(3));
     assert_eq!(statuses(&w.run(c, |id| Message::Delete { id, label: l.id, items: vec![item] })), vec![Code::REFUSED]);
-    // a register under a stranger's key: code 9 alone, never the head (spec/sync.md §5)
+    // a register under a stranger's key: code 9 alone, never the head (spec/sync-ids.md §6)
     let mut fork = Label::new(3);
     let (child, _) = fork.rotate(60);
     let mut forged = child.clone();
@@ -62,8 +62,8 @@ fn reader_cannot_write() {
     assert!(matches!(&ev[..], [Message::Error { code: Code::NOT_HEAD, .. }]), "{ev:?}");
 }
 
-// spec/sync.md §5 Delete, spec/crypto.md §7: a delete-key signature deletes only the body whose prefix commits to it (under that body's salt), at its level
-// spec/sync.md §5 (delete keys)
+// spec/sync-ids.md §6 delete, spec/crypto.md §7: a delete-key signature deletes only the body whose prefix commits to it (under that body's salt), at its level
+// spec/sync-ids.md §6 (delete keys)
 #[test]
 fn delete_key_deletes_only_its_own_body() {
     let (mut w, c) = world();
@@ -94,8 +94,8 @@ fn delete_key_deletes_only_its_own_body() {
     assert_eq!(live(&w, H, &l2), vec![osis_label::blob_id(&mine)]);
 }
 
-// spec/sync.md §5: deposits over the budget and tombstoned IDs are refused
-// spec/sync.md §5 (deposit refusals)
+// spec/sync-ids.md §6: deposits over the budget and tombstoned IDs are refused
+// spec/sync-ids.md §6 (deposit refusals)
 #[test]
 fn budget_and_tombstone() {
     let (mut w, c) = world();
@@ -113,8 +113,8 @@ fn budget_and_tombstone() {
     assert_eq!(pull_all(&w, H, &l, [0]), vec![Code::TOMBSTONED]);
 }
 
-// spec/sync.md §5: a genesis step for an existing label (another admin's) is refused (code 9, without the head); only a child of the head is accepted
-// spec/sync.md §5 (register)
+// spec/sync-ids.md §6: a genesis step for an existing label (another admin's) is refused (code 9, without the head); only a child of the head is accepted
+// spec/sync-ids.md §6 (register)
 #[test]
 fn registration_squatting() {
     let (mut w, c) = world();

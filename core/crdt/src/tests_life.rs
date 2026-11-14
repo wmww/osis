@@ -767,7 +767,7 @@ fn expired_list_reads_absent_spec_crdt_4_3() {
     assert_eq!(f.read(), None);
 }
 
-/// spec/sync.md §7: a sweep resets what a removal hid, once, so the join leaves no repeated key;
+/// spec/sync-compaction.md §1: a sweep resets what a removal hid, once, so the join leaves no repeated key;
 /// never a record merely lacking its creation or a value (one expired here), a live one or an
 /// empty tombstone.
 #[test]
@@ -839,7 +839,7 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     assert!(!gone.holds_write(&Dot::new(y, 1)));
 }
 
-/// spec/sync.md §7, spec/crdt.md §5.6 Live: a live map record reads as its fragment joined with its dot's
+/// spec/sync-compaction.md §1, spec/crdt.md §5.6 Live: a live map record reads as its fragment joined with its dot's
 /// key-erased record's, and the sweep judges it so. x puts `{k: [1]}`, y edits the element to 2, x's
 /// commit expires: the element's creation moves, value-less, to the key-erased record while y's
 /// write stays under `k`. The element shows y's value; it is not swept though x's delta is reflected.
@@ -859,7 +859,7 @@ fn sweep_reads_a_live_record_with_its_key_erased_record_spec_sync_7() {
     assert_eq!(st.sweep(&Writer::new(ts(20), y, 5).delta_stamp(), &in_ranges(&xs)), None, "the element shows");
 }
 
-/// spec/sync.md §7: a creation a parent's reset pruned is dead once the state reflects its delta, so
+/// spec/sync-compaction.md §1: a creation a parent's reset pruned is dead once the state reflects its delta, so
 /// what was written into its record since goes (a map entry, a list element, a text undelete's
 /// char); the record merely lacking its creation (not received, or its delta invalid) stays, and so
 /// does an enum's payload of a case not current, which a concurrent case write may show.
@@ -948,7 +948,7 @@ fn bare(f: &Fragment) -> u64 {
     }
 }
 
-/// spec/sync.md §7: a sweep takes at most `MAX_DELTA_BARE` content-less elements, so it is a
+/// spec/sync-compaction.md §1: a sweep takes at most `MAX_DELTA_BARE` content-less elements, so it is a
 /// valid writer delta whatever is hidden; sweeps again take the rest until none is left.
 #[test]
 fn sweep_is_bounded_and_finishes_spec_sync_7() {
@@ -1003,7 +1003,7 @@ fn shown(v: Value) -> Option<Value> {
     }
 }
 
-/// spec/sync.md §7: a sweep from any stale view (a random part of the commits, a random part of the
+/// spec/sync-compaction.md §1: a sweep from any stale view (a random part of the commits, a random part of the
 /// expiries) changes no read, there or at a node holding everything; it is a valid writer delta;
 /// joined back it finds nothing more, so a compaction does not write forever.
 pub(crate) fn sweep_laws(seed: u64, ty: &Ty) -> usize {

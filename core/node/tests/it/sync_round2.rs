@@ -18,7 +18,7 @@ fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::Comm
     net.sync(n).entries(l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c)).map(|(id, _)| id).collect()
 }
 
-// spec/versioning.md §2 (malformed data is rejected), spec/sync.md §6: a well-framed, stamped
+// spec/versioning.md §2 (malformed data is rejected), spec/sync-judgement.md §2: a well-framed, stamped
 // blob of junk under the label is marked bad once; the writers keep logging their must-hold
 // bodies (one such entry used to stop all logging under the label).
 // spec/versioning.md §2 (reject malformed)
@@ -49,7 +49,7 @@ fn junk_entry_does_not_stall_logging_spec_versioning_2() {
     assert_eq!(net.read(a, t), Some(s("v2")));
 }
 
-// spec/sync.md §6 (must-hold: established uncovered by held snapshots): a pending commit that is
+// spec/sync-judgement.md §2 (must-hold: established uncovered by held snapshots): a pending commit that is
 // no snapshot (here held for drift) does not make a writer's own body on the same aspect
 // may-hold (two writers' pending commits used to withhold exactly what the other waited for).
 #[test]
@@ -68,7 +68,7 @@ fn pending_commit_does_not_withhold_logging_spec_sync_6() {
     assert!(blobs_of(&mut net, a, &l, &c).iter().any(|x| at.contains(x)), "a's body went up beside the pending commit");
 }
 
-// spec/sync.md §6 (nothing another node sends changes a node's clock): a host two hours ahead is
+// spec/sync-judgement.md §2 (nothing another node sends changes a node's clock): a host two hours ahead is
 // reported (`ClockSkew`) and moves nothing: the node's writes keep its own clock.
 #[test]
 fn a_skewed_host_is_reported_not_followed_spec_sync_6() {
@@ -143,7 +143,7 @@ fn purge_on_replace_drop_forgets_blob_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5, spec/sync.md §7: the delete of a body replaced under purge on replace, lost
+// spec/commits.md §5, spec/sync-compaction.md §1: the delete of a body replaced under purge on replace, lost
 // with its connection, goes again on the next one.
 #[test]
 fn delete_resent_after_cut_spec_sync_7() {
@@ -170,7 +170,7 @@ fn delete_resent_after_cut_spec_sync_7() {
     assert!(first.iter().all(|x| !at.contains(x)), "the delete went again on the next connection");
 }
 
-// spec/sync.md §5 (deposits), §10 (Deposit items): deposits not answered yet are not offered
+// spec/sync-ids.md §6 (deposits), §10 (Deposit items): deposits not answered yet are not offered
 // again by later passes.
 #[test]
 fn deposits_in_flight_not_resent_spec_sync_5() {

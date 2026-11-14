@@ -44,7 +44,7 @@ fn view(db: &Osis, contact: Tid) -> Result<View> {
     Ok(View { name, emails: own_or(db, EMAILS)?, phones: own_or(db, PHONES)? })
 }
 
-// spec/sync.md §3 (contact card: a read link to the profile), notes/std.md (profile and
+// spec/sync-judgement.md §1 (contact card: a read link to the profile), notes/std.md (profile and
 // contact): Alice fills her profile; Bob imports her card, reads the profile, and keeps reading
 // it as she changes it. His contact for her links the profile, overrides her name and adds a
 // phone; a contact without a profile holds only his data.
@@ -99,7 +99,7 @@ fn profile_and_contact_overlay() {
     assert_eq!(bob.at(d, DATES).get().unwrap().unwrap()["birthday"].year, None);
 }
 
-/// spec/sync.md §3: a contact card needs peers; on a peerless node `contact_card` and
+/// spec/sync-judgement.md §1: a contact card needs peers; on a peerless node `contact_card` and
 /// `profile` fail before writing anything, so each try leaves no commit or thing behind.
 #[test]
 fn contact_card_without_peers_writes_nothing() {

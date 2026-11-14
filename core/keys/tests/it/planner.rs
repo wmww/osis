@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! What a removal reaches, wrap epochs, label epochs and delete keys (spec/permissions.md §3,
-//! spec/crypto.md §5, §7, spec/sync.md §2, §5).
+//! spec/crypto.md §5, §7, spec/sync-ids.md §2, spec/sync-ids.md §6).
 
 use crate::common;
 use common::*;
@@ -125,7 +125,7 @@ fn wrap_epochs() {
     assert_eq!(w.wrap_epoch(), None);
 }
 
-// spec/sync.md §2, §5: label keys come from the sync, write and admin roles' newest epochs (the
+// spec/sync-ids.md §2, spec/sync-ids.md §6: label keys come from the sync, write and admin roles' newest epochs (the
 // read epoch gives the claim set only); a node finds the held epoch a head registered by its key;
 // an admin holding a newer sync, write or admin epoch than the head re-registers, a newer read
 // epoch alone makes no step.
@@ -167,7 +167,7 @@ fn jumped_person(b: u8) -> ActorEpochs {
     pe
 }
 
-// spec/crypto.md §3, §4, spec/sync.md §5: past the cap derived epochs all sit at n 2^62 − 1 but
+// spec/crypto.md §3, §4, spec/sync-ids.md §6: past the cap derived epochs all sit at n 2^62 − 1 but
 // order as the base actor's, so after P's rotation removing a node the plain group U's head (its
 // epochs before) is stepped every time, not by nonce luck.
 #[test]

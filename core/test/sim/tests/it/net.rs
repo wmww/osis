@@ -11,7 +11,7 @@ fn ok(name: &str, seed: u64) -> Report {
     r
 }
 
-// spec/sync.md §2, §6; spec/commits.md §4: two nodes of one account through one host
+// spec/sync-ids.md §2, spec/sync-judgement.md §2; spec/commits.md §4: two nodes of one account through one host
 // under cut, delayed, reordered and duplicated messages and crashes mid-write.
 #[test]
 fn two_nodes_host() {
@@ -23,7 +23,7 @@ fn two_nodes_host() {
     assert!(r.writes > 5 && r.crashes > 0 && r.dropped > 0 && r.held_checked > 0, "{r:?}");
 }
 
-// spec/sync.md §5, §6; spec/sync.md §3 (grants by inbox): three accounts share a group through
+// spec/sync-ids.md §6, spec/sync-judgement.md §2; spec/sync-judgement.md §1 (grants by inbox): three accounts share a group through
 // two hosts, joined only by the admin reaching both, with host crashes and partitions.
 #[test]
 #[ignore = "by hand"]
@@ -42,7 +42,7 @@ fn replay_is_exact() {
     assert_eq!(r, ok("two_nodes_host", 0));
 }
 
-// notes/ephemeral.md, spec/sync.md §9: ephemeral (expiring ones included) and signal writes on a
+// notes/ephemeral.md, spec/sync-compaction.md §2: ephemeral (expiring ones included) and signal writes on a
 // window and a durable item under faults; holders converge, a refreshed cursor stays up while its
 // author is there and goes by its expiry after, signals once.
 #[test]
@@ -51,7 +51,7 @@ fn ephemeral() {
     assert!(r.writes > 20 && r.crashes > 0, "{r:?}");
 }
 
-// spec/commits.md §4, spec/sync.md §3, §6: a reader of two labels, one host out of reach, applies a
+// spec/commits.md §4, spec/sync-judgement.md §1, spec/sync-judgement.md §2: a reader of two labels, one host out of reach, applies a
 // commit across them whole from the other label's blob, across a restart, and stays so once that
 // host is back.
 #[test]
@@ -82,7 +82,7 @@ fn commit_across_labels_applies_from_one_label_across_restart_spec_commits_4() {
     m.set(i0, &REG, &word).unwrap();
     m.set(i1, &REG, &word).unwrap();
     let id = s.commit(a, m).unwrap().unwrap();
-    // one blob per commit (spec/sync.md §3): the blob under g0's label carries both parts, and
+    // one blob per commit (spec/sync-judgement.md §1): the blob under g0's label carries both parts, and
     // r, reading both groups, applies the commit whole from that label alone, across a restart
     for restart in [false, true] {
         if restart {
@@ -161,7 +161,7 @@ fn host_store_crash_takes_host_down() {
     s.finish().unwrap();
 }
 
-// spec/sync.md §9 (Holding: a part past its `expires` is held value-less, one arriving past it
+// spec/sync-compaction.md §2 (holding: a part past its `expires` is held value-less, one arriving past it
 // included): `author_leaves` holds a reader to a refreshed cursor only through carriers the write
 // was live at. The author reaches the reader only through a bridging admin; with the bridge's
 // clock even with theirs the reader reads every refresh, and with it ahead past the cursor's expiry

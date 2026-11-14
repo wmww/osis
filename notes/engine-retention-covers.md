@@ -1,5 +1,5 @@
 # Engine: covers
-> Summary: How bodies drop as covered (`retention/snapshot.rs`, `replace.rs`, node-sync `drop_covered`; spec/commits.md §5, spec/sync.md §7): the cover rule per part, own live bodies, purge on replace as the replacing writer's cover, frontiers and covering by the join, own replaces, forgetting and its accepted losses.
+> Summary: How bodies drop as covered (`retention/snapshot.rs`, `replace.rs`, node-sync `drop_covered`; spec/commits.md §5, spec/sync-compaction.md §1): the cover rule per part, own live bodies, purge on replace as the replacing writer's cover, frontiers and covering by the join, own replaces, forgetting and its accepted losses.
 
 ## The cover rule
 - A cover drops a body when it carries every live write of it and the body is past its keep bound, judged per part (`drop_part_for`). Judged per commit, a creation commit's live parts kept its replaced purge-on-replace part, and writers without the right re-covered it for good (sim `snapshot_rights`).
@@ -10,7 +10,7 @@
 - **Cover candidates**: node-sync judges an aspect's candidates when a snapshot arrives (`Core::cover_judged_on`). A durable delta is one from apply (`apply::join_part`) until found kept for good while live (`Engine::settle_kept`), and again when one of its writes dies (`mark_killed`), its aspect is rebuilt (`mark_bounded`), its thing's setting moves a live bound (`retention::settings_changed`), a role commit's `secrets.0` part drops (its `keys.0` part, `bounds::judged_by_held`) or the node opens. Limit: a write dying by a rebuild re-judges an unkept aspect's bodies only at the next snapshot or full pass (kept longer, never dropped early; tombstone.rs `a_body_replaced_before_a_restart_drops_under_a_later_cover_*`).
 - Tests: compaction.rs; sync_more `flip_after_drop_a_writers_cover_keeps_the_killer_*`.
 
-## Own live bodies (spec/sync.md §7 Own bodies)
+## Own live bodies (spec/sync-compaction.md §1 own bodies)
 A node drops a delta it wrote none of whose writes is dead only under its own covers. Why: another writer's snapshot can later count for nothing (a demotion whose frontier does not list it), and once every holder dropped the write and hosts deleted it nothing brings it back (retention.rs `none_writer_covers_once_the_cover_it_relied_on_falls_*`); the author still holding it re-places it as must-hold. Cost: an author holds its live writes until it writes a cover (the trigger counts them). Replaced bodies drop under any writer's cover: nothing visible rests on them.
 
 ## Purge on replace (`retention/replace.rs`)

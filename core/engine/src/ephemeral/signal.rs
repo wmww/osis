@@ -1,4 +1,4 @@
-//! Ephemeral signals (notes/ephemeral.md Ephemeral signals, spec/sync.md §9 Relay-only commits):
+//! Ephemeral signals (notes/ephemeral.md Ephemeral signals, spec/sync-compaction.md §2 relay-only commits):
 //! an ephemeral signal write is a delta in an ephemeral commit marked relay-only, built here from
 //! one write's ephemeral signal writes, pushed by hosts to the label's current subscribers and
 //! held by nobody. A received one is verified like any commit, its valid parts told to history
@@ -44,7 +44,7 @@ pub(super) struct Delivered {
 type Signal = (Tid, Ak, Fragment);
 
 impl Engine {
-    /// Fires `signals`, one write's ephemeral signal writes (spec/sync.md §9): one relay-only
+    /// Fires `signals`, one write's ephemeral signal writes (spec/sync-compaction.md §2): one relay-only
     /// commit, built and signed now, so the write is named by it; queued for sync when a thing of
     /// it is in a labeled closure; told to commit listeners here as it is (`CommitChange::fired`).
     pub(super) fn fire(&mut self, signals: Vec<(Tid, Ak, Value)>, ts: Ts, actor: Tid) -> Result<Written> {
@@ -100,7 +100,7 @@ impl Engine {
         })
     }
 
-    /// Receives a relay-only commit (spec/sync.md §9): dropped unopened when outside its replay
+    /// Receives a relay-only commit (spec/sync-compaction.md §2): dropped unopened when outside its replay
     /// window or delivered before (`MAX_DELIVERED`, per-author floors); else verified like any
     /// commit, its valid signal parts not delivered before told to commit listeners once, and nothing
     /// of it kept. Whether it was new here (a co-reader peer passes a new one on). Bad input is

@@ -1,7 +1,7 @@
 ------------------------------- MODULE Rotation -------------------------------
 (* Read-role rotation, removals, grants, label registration steps, claims and *)
 (* re-seal for one actor whose label sits at one host (spec/crypto.md         *)
-(* §3-§5, spec/sync.md §2 and §5, spec/permissions.md §3-§4, commits §2).      *)
+(* §3-§5, spec/sync-ids.md §2, spec/sync-ids.md §6, spec/permissions.md §3-§4, commits §2).      *)
 (* Crypto is access: sec[x] is the set of epochs whose secret x holds; a box   *)
 (* is a holder in ep[e].ob or a grant or re-seal commit in bx; a wrap is the  *)
 (* epoch a blob is under.                                                     *)

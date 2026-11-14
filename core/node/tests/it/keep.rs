@@ -854,7 +854,7 @@ fn leaving_with_a_copy_over_a_host_spec_perm_3() {
     assert!(net.group_labels(b).is_empty());
 }
 
-// spec/permissions.md §3, Retain; spec/sync.md §2: over a real host a copy leaves the label: no
+// spec/permissions.md §3, Retain; spec/sync-ids.md §2: over a real host a copy leaves the label: no
 // session, nothing logged, later writes do not reach it, others converge without it.
 #[test]
 fn copy_is_not_synced_spec_perm_3() {

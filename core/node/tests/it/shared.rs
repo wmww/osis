@@ -225,7 +225,7 @@ fn a_redeemer_knowing_nothing_shows_no_credential_spec_sync_10() {
     assert!(net.sync(a).pass_stats().filters_sent >= 1);
 }
 
-// spec/sync.md §10 (Shared set, Offer), spec/wire.md §11.2 (Offer: grant): a link's redeemer
+// spec/sync-opens.md §4 (shared set, Offer), spec/wire.md §11.2 (Offer: grant): a link's redeemer
 // reads K by the head's box an accepted static-entry Hit's answer carries, with no Open; a
 // joiner that read K so grants the next redeemer, who cannot reach the sharer, the same way
 #[test]
@@ -254,7 +254,7 @@ fn a_link_redeemed_through_a_joiner_gets_the_box_from_the_hit_reply_spec_sync_10
     assert_eq!(net.peer_sent(j, OPEN) + net.peer_sent(r, OPEN), 0, "no Open between readers");
 }
 
-// spec/sync.md §10 (Connection proofs): a connection proves what its node held when it came up;
+// spec/sync-opens.md §2 (connection proofs): a connection proves what its node held when it came up;
 // a redeemer already connected to a reader of K, a stranger there, holds the link key after its
 // proofs went, so the peer's filter never shows K to it. It dials again and reads K there
 #[test]
@@ -273,7 +273,7 @@ fn a_link_key_held_after_the_connection_is_proved_on_a_new_one_spec_sync_10() {
     assert_eq!(to_a(&net), before + 1, "by one new connection to it");
 }
 
-// spec/permissions.md §7, spec/sync.md §5: only the link's sharer lacking the key's static entry
+// spec/permissions.md §7, spec/sync-ids.md §6: only the link's sharer lacking the key's static entry
 // ends a link. A peer holding nothing of K (here a stranger; the redeemer's own other node alike)
 // shows no entry of K's label: that says nothing while the sharer is not reached
 #[test]
@@ -294,7 +294,7 @@ fn a_peer_other_than_the_sharer_does_not_end_a_link_spec_permissions_7() {
     assert!(!net.sync(c).static_entry_refused(&kl), "d's filter lacking K's entry ends nothing");
 }
 
-// spec/sync.md §10 (Node keys): a node is never its own peer, whatever address names it (its
+// spec/sync-transport.md §1 (node keys): a node is never its own peer, whatever address names it (its
 // account's saved peer, a label's host): no dial to its own key
 #[test]
 fn a_node_never_dials_its_own_key_spec_sync_10() {
@@ -391,7 +391,7 @@ fn a_static_entry_hit_opens_only_for_its_proved_key_actor_spec_wire_11_2() {
     assert!(net.sync(a).shared_members(right.conn).contains(&label));
 }
 
-// spec/wire.md §11.2 (an open signature binds its signer's side), spec/sync.md §10 Offer
+// spec/wire.md §11.2 (an open signature binds its signer's side), spec/sync-opens.md §5 offer
 // (issues/sync-rewrite.md; model NetOpen `ON_side`): a reader holding a link's key
 // actor Hits its static entry by a Static item on a second dial whose Hello challenge is the
 // reader's own from a first; that item offered back on the first, where the hand dialer proves
@@ -449,7 +449,7 @@ fn a_first_contact_costs_one_filter_of_n_beacons() {
 }
 
 // the keeper of two connections of one record is decided by what the connections showed, not by
-// which answer arrived first (spec/sync.md §10, Pair key)
+// which answer arrived first (spec/sync-opens.md §3, pair key)
 #[test]
 fn the_same_connection_survives_whatever_the_order_spec_sync_10() {
     for flip in [false, true] {
@@ -545,7 +545,7 @@ fn a_filter_past_the_entry_cap_closes_the_connection_spec_wire_11_2() {
     assert!(net.sync(b).proven(p.conn).is_none(), "closed");
 }
 
-// spec/sync.md §10: a node proving an account at an epoch open here is judged as that account: the
+// spec/sync-opens.md §4: a node proving an account at an epoch open here is judged as that account: the
 // shared set finds its way in by the account's role
 #[test]
 fn an_account_proved_at_an_open_epoch_gets_a_shared_set_spec_sync_10() {
@@ -562,7 +562,7 @@ fn an_account_proved_at_an_open_epoch_gets_a_shared_set_spec_sync_10() {
     assert!(msgs.iter().any(|m| matches!(m, Message::Beacons { .. })), "a filter goes out: {msgs:?}");
 }
 
-// spec/sync.md §10 Shared set, Re-marking: a Lost sent re-marks L, so a sync-key Hit the host
+// spec/sync-opens.md §4 shared set, Re-marking: a Lost sent re-marks L, so a sync-key Hit the host
 // accepted after this node stopped syncing L (handed off) opens L again once it syncs L again,
 // at whatever point of its opening the hand-off fell (every interleaving, one message at a time)
 #[test]
@@ -667,7 +667,7 @@ fn answer_static_hit(grant: impl FnOnce(&mut Net, usize, LabelId, osis_base::Tid
     (diags, before, after)
 }
 
-// spec/sync.md §10 Shared set (a static entry's grant: the path verified from its genesis step),
+// spec/sync-opens.md §4 shared set (a static entry's grant: the path verified from its genesis step),
 // spec/crypto.md §4 (sealed boxes are unauthenticated): a peer's forged head and entry box, its
 // path not the label's, teach the key actor no secret.
 #[test]
@@ -680,7 +680,7 @@ fn a_forged_head_and_box_teach_nothing_spec_sync_10() {
     assert_eq!(after, before, "a forged head's box teaches nothing");
 }
 
-// spec/sync.md §2 (a step's entry box carries the read secret of its epoch and the sync secret
+// spec/sync-ids.md §2 (a step's entry box carries the read secret of its epoch and the sync secret
 // whose key the step registers), spec/crypto.md §4 (sealed boxes are unauthenticated): the
 // label's genuine path with a substituted entry box (sealed by the peer to the key actor's public
 // KEM key) teaches no secret: its sync secret does not derive the head's sync key.

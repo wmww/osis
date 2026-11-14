@@ -119,14 +119,14 @@ impl Engine {
                 }
             }
         }
-        // an ephemeral signal is a relay-only commit of its own (spec/sync.md §9)
+        // an ephemeral signal is a relay-only commit of its own (spec/sync-compaction.md §2)
         if !signals.is_empty() {
             if let Some((t, k, _)) = eph_ops.iter().find(|(_, k, _)| !k.signal()) {
                 return Err(Error::Clash(format!("an ephemeral signal is a commit of its own, and this write also writes {t} {k}. Write them as separate commits")));
             }
             return self.fire(signals, ts, actor).map(Some);
         }
-        // one memory commit (spec/sync.md §9; spec/crdt.md §2.1: plain writes under this open's
+        // one memory commit (spec/sync-compaction.md §2; spec/crdt.md §2.1: plain writes under this open's
         // session, expiring ones under its second session, so an expired commit leaves no gap in
         // the plain writes' counters)
         let mut batches: BTreeMap<bool, Mutation> = BTreeMap::new();

@@ -1,5 +1,5 @@
 # Sync convergence (TLA+)
-> Summary: TLC model of one label's blobs at one host (spec/sync.md §5–§7, spec/commits.md §5, history modes): upload, download, deposit, token delete with carriers (per live write: a covering snapshot or another blob of the commit, blob-ID tiebreak), expiry, compaction, keep-at-least (until T and/or D after replaced, a limit on the compactor), `none` (a replaced body's cover owed by every writer holding it, the body gone once covered), due snapshots (before a deletion, an owed cover, a purge), purge, tombstones, offline nodes, a dropping/replaying/reordering host. Written from spec/ alone.
+> Summary: TLC model of one label's blobs at one host (spec/sync-ids.md §6, spec/commits.md §5, history modes): upload, download, deposit, token delete with carriers (per live write: a covering snapshot or another blob of the commit, blob-ID tiebreak), expiry, compaction, keep-at-least (until T and/or D after replaced, a limit on the compactor), `none` (a replaced body's cover owed by every writer holding it, the body gone once covered), due snapshots (before a deletion, an owed cover, a purge), purge, tombstones, offline nodes, a dropping/replaying/reordering host. Written from spec/ alone.
 
 Files: `SyncConvergence.tla` (the model), `MC.tla` (scenario constants), one `.cfg` per instance, `ASSUMPTIONS.md`, `AMBIGUITIES.md` (the findings).
 

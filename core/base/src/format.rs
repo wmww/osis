@@ -79,7 +79,7 @@ pub const DELETE_WRITER: u8 = 3;
 /// Most keys in a claim set (spec/wire.md §2, §8). fixed.
 pub const MAX_CLAIMS: usize = 65_536;
 
-/// Largest relay-only blob, prefix included (spec/wire.md §2, spec/sync.md §5, §9). fixed.
+/// Largest relay-only blob, prefix included (spec/wire.md §2, spec/sync-ids.md §6, spec/sync-compaction.md §2). fixed.
 /// Resource bound: each relay goes to every subscriber, so it bounds the traffic one upload
 /// causes (0: no ephemeral signals; `MAX_BLOB`: 8 MiB pushed per upload per subscriber).
 pub const MAX_RELAY_BLOB: usize = 64 * KIB;
@@ -92,7 +92,7 @@ pub const MAX_DRIFT_MS: u64 = HOUR_MS;
 pub const ROLE_KEEP_MS: u64 = 90 * DAY_MS;
 /// Inbox blob lifetime (spec/wire.md §2, §9). fixed.
 pub const INBOX_LIFETIME_MS: u64 = 90 * DAY_MS;
-/// Deposits an admin leaves waiting under a label per host (spec/wire.md §2, spec/sync.md §5
+/// Deposits an admin leaves waiting under a label per host (spec/wire.md §2, spec/sync-ids.md §6
 /// Clearing deposits): half the recommended minimum budget, so the rest stays free. Resource bound
 /// against a fill by a stranger (an inbox) or a reader; past it what is no invite request goes
 /// first, then the requests earliest to expire (a sender re-sends after `INBOX_LIFETIME`). 0:

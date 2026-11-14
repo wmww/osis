@@ -1,5 +1,5 @@
 //! HostStore over the redb file backend and a file key root: state survives closing and
-//! reopening the files (spec/sync.md §4). By hand (disk): `cargo test -p osis-host --test it -- --ignored file::`; the batch-write count runs on
+//! reopening the files (spec/sync-ids.md §5). By hand (disk): `cargo test -p osis-host --test it -- --ignored file::`; the batch-write count runs on
 //! the memory backend (default tests).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -24,7 +24,7 @@ fn put(b: &[u8]) -> Put<'_> {
     Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [1; osis_crypto::WRAP_LEN], stamp: Some(Signature([2; 64])), expiry: None, ephemeral: false, now: 0, role: false }
 }
 
-// spec/sync.md §4: registration path, entries, tombstones and blobs persist in the file
+// spec/sync-ids.md §5: registration path, entries, tombstones and blobs persist in the file
 #[test]
 #[ignore]
 fn redb_store_survives_reopen() {

@@ -1,5 +1,5 @@
 //! P2P (`p2p`) over the in-process NAT model (`nat`): relaying, observed addresses, hole
-//! punching, switching to direct, relay limits; the relay wire bytes. spec/sync.md §10.
+//! punching, switching to direct, relay limits; the relay wire bytes. spec/sync-opens.md §4.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_transport::p2p::{Alpn, Relay, Sock, Udp};
@@ -192,7 +192,7 @@ fn punch_in(mut w: World, a: MemUdp, b: MemUdp, b_at: &str, seen: &str) -> (bool
     (first_direct, direct_now)
 }
 
-// spec/sync.md §10 (switching): a punch that lands between `dial` returning and the caller opening
+// spec/sync-opens.md §4 (switching): a punch that lands between `dial` returning and the caller opening
 // its stream does not end that connection (the caller would see a dial that failed): it stays
 // relayed and carries the session.
 #[test]
@@ -216,7 +216,7 @@ fn punch_before_stream_open_stays_relayed_spec_sync_10() {
         .unwrap();
 }
 
-// spec/sync.md §10 (hole punching, IP consent): the dialer, here with an ephemeral key (as a
+// spec/sync-opens.md §4 (hole punching, IP consent): the dialer, here with an ephemeral key (as a
 // link's redeemer), dials the target's observed address from the socket it reached the relay
 // from while the target punches back. Direct where a NAT's mapping
 // does not depend on the remote (or there is none) and the other side's filter allows the
@@ -252,7 +252,7 @@ fn punch_by_nat_type_spec_sync_10() {
     }
 }
 
-// spec/sync.md §10 (hole punching): a relayed connection makes the target send one punch
+// spec/sync-opens.md §4 (hole punching): a relayed connection makes the target send one punch
 // datagram to the dialer's address, and none to an address the dialer may not have it punch:
 // here a dialer at a private address seen through a global relay (as one that lied in the
 // exchange), which stays relayed. Which addresses: `punchable_addresses_spec_sync_10`.
@@ -278,7 +278,7 @@ fn one_punch_and_none_to_a_refused_address_spec_sync_10() {
     assert_eq!(w.net.punches(), 0);
 }
 
-// spec/sync.md §10 (hole punching): a punch or a direct dial goes only to a unicast address with
+// spec/sync-opens.md §4 (hole punching): a punch or a direct dial goes only to a unicast address with
 // a port, global unless the relay is not.
 #[test]
 fn punchable_addresses_spec_sync_10() {
@@ -310,7 +310,7 @@ fn punchable_addresses_spec_sync_10() {
     }
 }
 
-// spec/sync.md §10: `nat::punch_opens`, the rule the sims apply, is what the packet machine does
+// spec/sync-opens.md §4: `nat::punch_opens`, the rule the sims apply, is what the packet machine does
 // for every mapping and filtering on either side, not only the table above.
 #[test]
 fn punch_rule_matches_the_packet_machine_spec_sync_10() {
@@ -324,7 +324,7 @@ fn punch_rule_matches_the_packet_machine_spec_sync_10() {
     }
 }
 
-// spec/sync.md §10: a relay on the pair's own LAN (here behind their one NAT) sees each one's LAN
+// spec/sync-opens.md §4: a relay on the pair's own LAN (here behind their one NAT) sees each one's LAN
 // address, so the punch stays on the LAN and goes direct whatever the NAT does (what
 // `osis_sim::reach` models as `Route::Punch` for a relay on a segment).
 #[test]
@@ -344,7 +344,7 @@ fn punch_over_a_relay_on_the_pairs_lan_is_direct_spec_sync_10() {
     }
 }
 
-// spec/sync.md §10: direct socket addresses in the URL are dialed as they are; the key is pinned
+// spec/sync-opens.md §4: direct socket addresses in the URL are dialed as they are; the key is pinned
 // (another key: KeyMismatch); nothing listening there and no relay: Unreachable.
 #[test]
 fn direct_items_spec_sync_10() {
@@ -370,7 +370,7 @@ fn direct_items_spec_sync_10() {
     assert!(matches!(empty, Some(Error::Unreachable(_))), "{empty:?}");
 }
 
-// spec/sync.md §10: through a relay the dialer pins the target's key end to end (TLS over the
+// spec/sync-opens.md §4: through a relay the dialer pins the target's key end to end (TLS over the
 // forwarded stream) and the target sees the dialer's key, fresh per dial; a key nobody registered
 // is unreachable.
 #[test]
@@ -440,7 +440,7 @@ fn relay_dial_grants_relay_no_streams() {
     assert_eq!(opened, Some(vec![false, true]));
 }
 
-// spec/sync.md §10 (relayed connection): a hostile relay answering a dial for key K and
+// spec/sync-opens.md §4 (relayed connection): a hostile relay answering a dial for key K and
 // forwarding the stream to another node Z (registered at an honest relay) cannot pass Z off as
 // K: the dialer pins K end to end and gets KeyMismatch.
 #[test]
@@ -501,7 +501,7 @@ fn wire_addr(a: SocketAddr) -> Vec<u8> {
     o
 }
 
-// spec/sync.md §10 (relay wire): register (kind 1, the connection's key) answers 0 and the
+// spec/sync-opens.md §4 (relay wire): register (kind 1, the connection's key) answers 0 and the
 // observed address; dial (kind 2 and the key) answers 0 and the dialer's own observed address,
 // never the target's; the target gets a stream starting with a 16-byte tag of the dialer's
 // source, never its address (the same for every dial from that source, another for another
@@ -566,7 +566,7 @@ fn relay_wire_spec_sync_10() {
     assert_eq!(done, Some(true));
 }
 
-// spec/sync.md §10 (relay limits): forwarding is held to the per-source rate (virtual time), and
+// spec/sync-opens.md §4 (relay limits): forwarding is held to the per-source rate (virtual time), and
 // past the connection cap the source holding the most gives one up, else the newcomer is refused.
 #[test]
 fn relay_limits_spec_sync_10() {
@@ -620,7 +620,7 @@ fn relay_limits_spec_sync_10() {
     assert_eq!(done, Some(true));
 }
 
-// spec/sync.md §10: a listener whose relay refuses its key stays unregistered (no observed
+// spec/sync-opens.md §4: a listener whose relay refuses its key stays unregistered (no observed
 // address) and retries with backoff; dials through that relay find nobody.
 #[test]
 fn registration_refused_spec_sync_10() {
@@ -729,7 +729,7 @@ async fn session<C: Connection>(c: &C) -> Result<(), Error> {
     Ok(())
 }
 
-// spec/sync.md §10 (by hand, loopback QUIC): a listener registers at a relaying node over ALPN
+// spec/sync-opens.md §4 (by hand, loopback QUIC): a listener registers at a relaying node over ALPN
 // `osis-relay` and learns its observed address; the relay wire runs over real QUIC; a dial
 // through the relay reaches the listener (directly once punched: no NAT on loopback) with the
 // key pinned.
@@ -769,7 +769,7 @@ fn quic_relay_loopback_spec_sync_10() {
     });
 }
 
-// spec/sync.md §10 (registration streams, by hand: loopback QUIC): relayed sessions whose bytes
+// spec/sync-opens.md §4 (registration streams, by hand: loopback QUIC): relayed sessions whose bytes
 // the target never reads hold only their own stream's window of its registration connection:
 // with more unread in them than a `quic://` connection window, forwarding to the target
 // goes on and a new dial still connects.
@@ -852,7 +852,7 @@ async fn raw_dials(m: &MemUdp, relay: &Relay, key: [u8; 32], n: usize) -> (Vec<u
     (answers, held, conns)
 }
 
-// spec/sync.md §10 (relay limits): dials that never start their handshake cannot block a target.
+// spec/sync-opens.md §4 (relay limits): dials that never start their handshake cannot block a target.
 // Each forwarded stream takes one of the streams the target's registration grants its relay;
 // the target ends the oldest it has not handed to `accept` past MAX_FORWARDED, so an honest
 // dial after a flood of silent ones still connects, and the oldest silent ones see their end.
@@ -883,7 +883,7 @@ fn silent_dials_do_not_block_spec_sync_10() {
     assert_eq!(ok, Some(true));
 }
 
-// spec/sync.md §10 (relay wire): a relay never waits for room on a registration connection: a
+// spec/sync-opens.md §4 (relay wire): a relay never waits for room on a registration connection: a
 // dial it cannot open a stream for at once is answered busy (3). A registration that accepts no
 // streams fills after REG_STREAMS dials.
 #[test]
@@ -909,7 +909,7 @@ fn relay_busy_spec_sync_10() {
     assert_eq!(done, Some(true));
 }
 
-// spec/sync.md §10 (`reach.0` items): a listener is listed at each global address it is bound
+// spec/sync-opens.md §4 (`reach.0` items): a listener is listed at each global address it is bound
 // to, an unspecified IP standing for the routes' local addresses of the families it serves,
 // then its relays; local, loopback and carrier-NAT addresses are not listed.
 #[test]
@@ -927,7 +927,7 @@ fn reach_items_global_addresses_spec_sync_10() {
     assert_eq!(reach_items("mem://a", &wide), Vec::<String>::new());
 }
 
-// spec/sync.md §10 (relaying): a key the relay stops allowing loses its registration at its next
+// spec/sync-opens.md §4 (relaying): a key the relay stops allowing loses its registration at its next
 // dial (answered as unknown) or when the relay rechecks.
 #[test]
 fn allow_rechecked_spec_sync_10() {
@@ -961,7 +961,7 @@ fn allow_rechecked_spec_sync_10() {
     assert!(r.relayed_keys().is_empty());
 }
 
-// spec/sync.md §10 (by hand, loopback QUIC; hole punching): a punch is the one byte 0x00 from the
+// spec/sync-opens.md §4 (by hand, loopback QUIC; hole punching): a punch is the one byte 0x00 from the
 // listening socket's own port (a dual-stack one reaching an IPv4 address too), and the QUIC
 // endpoint answers a punch with nothing and still accepts connections after it.
 #[test]
@@ -986,7 +986,7 @@ fn quic_punch_is_one_unanswered_datagram_spec_sync_10() {
     });
 }
 
-// spec/sync.md §10 (by hand, loopback QUIC): a listener bound at `[::]` (as nodes bind) registers
+// spec/sync-opens.md §4 (by hand, loopback QUIC): a listener bound at `[::]` (as nodes bind) registers
 // at an IPv6 relay and at an IPv4 one from its one dual-stack socket, and a dial through either
 // relay reaches it.
 #[test]
@@ -1023,7 +1023,7 @@ fn quic_relay_dual_stack_spec_sync_10() {
     });
 }
 
-// spec/sync.md §10 (dialing, by hand: loopback QUIC): a dial reaches each item from a socket of
+// spec/sync-opens.md §4 (dialing, by hand: loopback QUIC): a dial reaches each item from a socket of
 // its address family: with an IPv4 item first (a node of another key) the IPv6 item still
 // connects.
 #[test]
@@ -1101,7 +1101,7 @@ fn peer_addr(items: &[String], s: u8) -> Address {
     Address { url: peer_url(items), key: secret(s).public_key() }
 }
 
-// spec/sync.md §10: a dial with no route fails, whoever listens with the key: an empty URL, an
+// spec/sync-opens.md §4: a dial with no route fails, whoever listens with the key: an empty URL, an
 // address the dialer cannot reach (another NAT's inside), a relay the target is not at.
 #[test]
 fn peer_no_route_fails_spec_sync_10() {
@@ -1117,7 +1117,7 @@ fn peer_no_route_fails_spec_sync_10() {
     drop(lb);
 }
 
-// spec/sync.md §10: a direct item the dialer can reach connects, the target's key proven.
+// spec/sync-opens.md §4: a direct item the dialer can reach connects, the target's key proven.
 #[test]
 fn peer_direct_item_connects_spec_sync_10() {
     let mut w = world(0, anyone());
@@ -1127,7 +1127,7 @@ fn peer_direct_item_connects_spec_sync_10() {
     dial_route(&mut w, a, peer_addr(&[format!("{B_PUBLIC}:7000")], 2), lb).unwrap();
 }
 
-// spec/sync.md §10: a relay the target registered at connects, with no direct item.
+// spec/sync-opens.md §4: a relay the target registered at connects, with no direct item.
 #[test]
 fn peer_relay_connects_spec_sync_10() {
     let mut w = world(0, anyone());
@@ -1138,7 +1138,7 @@ fn peer_relay_connects_spec_sync_10() {
     dial_route(&mut w, a, peer_addr(&[item], 2), lb).unwrap();
 }
 
-// spec/sync.md §10: two hosts behind one NAT reach each other at their LAN addresses; a host
+// spec/sync-opens.md §4: two hosts behind one NAT reach each other at their LAN addresses; a host
 // behind another NAT does not.
 #[test]
 fn peer_lan_address_connects_spec_sync_10() {

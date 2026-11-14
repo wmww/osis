@@ -113,7 +113,7 @@ fn serving_listed_then_open_spec_sync_5() {
     assert_eq!(hosted(&w, s), vec![la]);
 }
 
-// spec/data-model.md §9, spec/sync.md §4; notes/api.md Serving, issues/sync-rewrite.md step 4: a node serves the groups it reads from its one
+// spec/data-model.md §9, spec/sync-ids.md §5; notes/api.md Serving, issues/sync-rewrite.md step 4: a node serves the groups it reads from its one
 // store with no setup and no peer of its own: Alice, not serving for others, listens; her group
 // names her address alone; Bob, granted it, syncs it there and reads it.
 #[test]
@@ -163,7 +163,7 @@ fn pair() -> (World, Osis, Osis, usize, Address, Tid, Tid) {
     (w, alice, bob, base, ha, a, b)
 }
 
-// spec/sync.md §3 (the nearest home label up a group's chain carries its `label.0` and
+// spec/sync-judgement.md §1 (the nearest home label up a group's chain carries its `label.0` and
 // `created.0`), spec/commits.md §4: Bob, granted a parent group after a labeled child group was made
 // under it, has neither the child's record nor its label's key. The copy under the parent's label,
 // opened with the box of the grant's chain, makes the child's records and keys reachable: he holds

@@ -1,4 +1,4 @@
-//! InProcess transport and Sched: the trait contract (spec/sync.md §10) without tokio or sleeps.
+//! InProcess transport and Sched: the trait contract (spec/sync-opens.md §4) without tokio or sleeps.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_base::{Classified, ErrorClass};
@@ -59,7 +59,7 @@ async fn echo(c: &MemConn, data: &[u8]) -> Vec<u8> {
     read_to_end(&mut rx).await.unwrap()
 }
 
-// spec/sync.md §10: ordered bidirectional byte stream; the dialer checks the listener's key; ephemeral dialer keys.
+// spec/sync-opens.md §4: ordered bidirectional byte stream; the dialer checks the listener's key; ephemeral dialer keys.
 #[test]
 fn round_trip_and_keys() {
     let (net, mut s, l, addr) = setup(0);
@@ -79,7 +79,7 @@ fn round_trip_and_keys() {
     assert_eq!(out, (b"hello".to_vec(), b"world".to_vec()));
 }
 
-// spec/sync.md §10: each connection gets a fresh ephemeral dialer key, the listener's peer key.
+// spec/sync-opens.md §4: each connection gets a fresh ephemeral dialer key, the listener's peer key.
 #[test]
 fn ephemeral_client_keys_differ() {
     let (net, mut s, mut l, addr) = setup(0);
@@ -97,7 +97,7 @@ fn ephemeral_client_keys_differ() {
     assert_ne!(keys.0, keys.2);
 }
 
-// spec/sync.md §10 (host key check): the dialer checks the listener's key against the address.
+// spec/sync-opens.md §4 (host key check): the dialer checks the listener's key against the address.
 #[test]
 fn pinned_key_mismatch_refused() {
     let (net, mut s, _l, mut addr) = setup(0);
@@ -127,7 +127,7 @@ fn unknown_scheme_and_unreachable() {
     assert!(matches!(r.1, Err(Error::Unreachable(_))));
 }
 
-// spec/sync.md §10: a partition holds data and refuses dials; after healing the stream completes intact.
+// spec/sync-opens.md §4: a partition holds data and refuses dials; after healing the stream completes intact.
 #[test]
 fn partition_heals() {
     let (net, mut s, l, addr) = setup(0);
@@ -151,7 +151,7 @@ fn partition_heals() {
     assert_eq!(got.borrow().as_deref(), Some(&b"through the cut"[..]));
 }
 
-// spec/sync.md §10: a reset connection fails pending and later operations on both sides.
+// spec/sync-opens.md §4: a reset connection fails pending and later operations on both sides.
 #[test]
 fn disconnect_resets() {
     let (net, mut s, mut l, addr) = setup(0);
@@ -235,7 +235,7 @@ fn scenario(seed: u64) -> Vec<(u64, usize, usize)> {
     log.take()
 }
 
-// spec/sync.md §10: ordered streams under latency, jitter and a bandwidth cap; same seed, same run.
+// spec/sync-opens.md §4: ordered streams under latency, jitter and a bandwidth cap; same seed, same run.
 #[test]
 fn deterministic_under_seed() {
     let a = scenario(0);
@@ -245,7 +245,7 @@ fn deterministic_under_seed() {
     assert_ne!(a, scenario(1));
 }
 
-// spec/sync.md §10: a large transfer arrives intact and in order through a capped link.
+// spec/sync-opens.md §4: a large transfer arrives intact and in order through a capped link.
 #[test]
 fn large_transfer_capped() {
     let (net, mut s, l, addr) = setup(0);
@@ -272,7 +272,7 @@ fn virtual_sleep() {
     assert_eq!(at, Some(5));
 }
 
-// spec/sync.md §10: closing a listener resets connections it never accepted; the dialer sees Closed, no hang.
+// spec/sync-opens.md §4: closing a listener resets connections it never accepted; the dialer sees Closed, no hang.
 #[test]
 fn listener_close_resets_queued() {
     let (net, mut s, l, addr) = setup(0);
@@ -284,7 +284,7 @@ fn listener_close_resets_queued() {
     assert_eq!(net.connections(), 0);
 }
 
-// spec/sync.md §10: a pending read on a queued connection ends when the listener closes.
+// spec/sync-opens.md §4: a pending read on a queued connection ends when the listener closes.
 #[test]
 fn listener_close_ends_pending_read() {
     let (net, mut s, l, addr) = setup(0);
@@ -352,7 +352,7 @@ fn faulty(seed: u64) -> (Log, Vec<(usize, bool)>) {
     (log.take(), ends.take())
 }
 
-// spec/sync.md §10: partitions, heals and kills replay identically under one seed; streams never corrupt.
+// spec/sync-opens.md §4: partitions, heals and kills replay identically under one seed; streams never corrupt.
 #[test]
 fn deterministic_with_partition_heal_kill() {
     let a = faulty(0);

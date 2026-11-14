@@ -1,5 +1,5 @@
 //! What the trees of a thing's held bodies and live states link (`Engine::tree_refs`): what a
-//! dropped body's chunk is judged against (spec/sync.md §1, §7: a blob goes only when nothing held
+//! dropped body's chunk is judged against (spec/sync-ids.md §1, spec/sync-compaction.md §1: a blob goes only when nothing held
 //! links it, by any body or state of its thing: a reused chunk or a snapshot's value included).
 //!
 //! Kept by what moved, never walked whole (`Reach`, per thing: one over its live states, one over

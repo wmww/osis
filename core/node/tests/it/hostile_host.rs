@@ -56,7 +56,7 @@ fn relay_sent(acts: &[Action], hc: osis_node::sync::ConnId) -> Option<(osis_base
     })
 }
 
-// spec/sync.md §9 (a relay-only commit older than `MAX_DRIFT` is dropped, its only replay window;
+// spec/sync-compaction.md §2 (a relay-only commit older than `MAX_DRIFT` is dropped, its only replay window;
 // one delivered is remembered): a host pushing a captured ephemeral signal again fires nothing, at once
 // or later.
 #[test]
@@ -82,7 +82,7 @@ fn replayed_ephemeral_signal_dropped_spec_sync_9() {
     assert!(fired(&rx).is_empty(), "a stale replay fires nothing");
 }
 
-// spec/sync.md §9, spec/requirements.md ("Nothing trusts a host's word"): a host pushing more
+// spec/sync-compaction.md §2, spec/requirements.md ("Nothing trusts a host's word"): a host pushing more
 // junk relay-only blobs (no keys needed: a relay prefix far ahead and random bytes) than a node
 // remembers cannot raise the label's floor, so a later real signal through any host still fires
 #[test]
@@ -121,7 +121,7 @@ fn junk_relays_raise_no_floor_spec_sync_9() {
     assert_eq!(fired(&rx).len(), 1, "the real signal fires");
 }
 
-// spec/requirements.md (peer input never causes unbounded storage), spec/sync.md §3 (only writers
+// spec/requirements.md (peer input never causes unbounded storage), spec/sync-judgement.md §1 (only writers
 // add stamped entries; deposits are readable by co-readers): a host's made-up unstamped
 // entries under an opened label that open under nothing held leave no blob, and only a capped
 // number of entries.
@@ -147,7 +147,7 @@ fn junk_under_opened_label_kept_nowhere_spec_sync_3() {
 }
 
 // spec/requirements.md, Deletion ("an admin's [purge of a large value] removes all of [its
-// chunks]" at nodes that cannot read them), spec/sync.md §5 (delete-key holders delete must-not-hold bodies): a
+// chunks]" at nodes that cannot read them), spec/sync-ids.md §6 (delete-key holders delete must-not-hold bodies): a
 // purged large value's chunk blobs leave the host.
 #[test]
 fn purged_chunks_leave_the_host_spec_sync_5() {
@@ -174,7 +174,7 @@ fn purged_chunks_leave_the_host_spec_sync_5() {
 }
 
 // spec/crypto.md §7 (a chunk commits to the delete keys of the delta that created it),
-// spec/sync.md §5: a writer that is no admin of the label purges a `writer` value another node
+// spec/sync-ids.md §6: a writer that is no admin of the label purges a `writer` value another node
 // wrote; it fetches the chunks it never read for their salts and deletes them by its delete key.
 #[test]
 fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
@@ -203,7 +203,7 @@ fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
     assert!(left.is_empty(), "{} of {} chunks of the purged value stay at the host", left.len(), chunks.len());
 }
 
-// spec/wire.md §5, spec/crypto.md §7, spec/sync.md §5: the chunks and tree nodes of a linked
+// spec/wire.md §5, spec/crypto.md §7, spec/sync-ids.md §6: the chunks and tree nodes of a linked
 // header list carry exactly the commit's level-2 (author-chain) commitments; a host deletes
 // them by the author-chain delete key, and refuses the thing-admin delete key of the same commit.
 #[test]
@@ -323,7 +323,7 @@ fn junk(l: &LabelId, tag: u8, n: u8, stamp_key: Option<&osis_crypto::SigningSecr
     (ids, crate::net::stream_msg(*l, events, 1 << 40))
 }
 
-// spec/sync.md §3 (unvouched entries); spec/requirements.md ("nothing trusts a host's word"; peer input never causes unbounded
+// spec/sync-judgement.md §1 (unvouched entries); spec/requirements.md ("nothing trusts a host's word"; peer input never causes unbounded
 // storage): the cap on unvouched entries counts per host, so one host's junk does not evict
 // what another host announces
 #[test]
@@ -385,7 +385,7 @@ fn host_lists_invalid(n: usize, memory: bool) -> usize {
     flood.iter().filter(|c| net.engine(b).header(c).is_some()).count()
 }
 
-// spec/sync.md §3 (unvouched entries), spec/permissions.md §6 (invalid deltas), spec/requirements.md
+// spec/sync-judgement.md §1 (unvouched entries), spec/permissions.md §6 (invalid deltas), spec/requirements.md
 // (peer input never causes unbounded storage), security: a host listing unstamped commits invalid
 // at the node (their bodies dropped, each header kept while its entry is) counts them against
 // `unvouched_cap` as entries it cannot judge, so the node knows as few of them at 10n as at n,
@@ -398,7 +398,7 @@ fn unvouched_invalid_entries_capped_spec_sync_3() {
     }
 }
 
-// spec/sync.md §5 (honest hosts take stamps under the head's write key only), spec/
+// spec/sync-ids.md §6 (honest hosts take stamps under the head's write key only), spec/
 // requirements.md (peer input never causes unbounded storage): stamps under a superseded step's
 // write key (a removed writer's) vouch for nothing once the head is newer: such entries are
 // capped and their bytes not kept
@@ -449,7 +449,7 @@ fn entries_of(net: &mut Net, n: usize, l: &LabelId, t: osis_base::Tid) -> Vec<os
         .collect()
 }
 
-// spec/sync.md §5 (a wrap may be replaced by another holder's), spec/requirements.md ("nothing
+// spec/sync-ids.md §6 (a wrap may be replaced by another holder's), spec/requirements.md ("nothing
 // trusts a host's word"): a host re-announcing a held entry with a wrap that opens under no
 // held read secret, or opens to another blob key, changes nothing; a wrap of the same key under
 // another held read secret is taken.
@@ -484,7 +484,7 @@ fn wrap_not_opening_to_known_key_ignored_spec_sync_5() {
     assert_eq!(net.sync(r).entry_meta(&l, &id).unwrap().0, rewrap, "a re-wrap of the known key is taken");
 }
 
-// spec/sync.md §5 (honest hosts take stamps under the head's write key only; anyone may relay
+// spec/sync-ids.md §6 (honest hosts take stamps under the head's write key only; anyone may relay
 // a stamped entry), spec/requirements.md ("nothing trusts a host's word"): a reader keeps an
 // announced entry's stamp only when it verifies under the head's write key, so it never relays
 // a forged one as stamped.
@@ -508,8 +508,8 @@ fn relayed_stamp_checked_against_head_spec_sync_5() {
     assert!(net.sync(r).entry_meta(&l, &honest[0]).and_then(|m| m.1).is_some(), "a head-key stamp dropped");
 }
 
-// spec/sync.md §6 (must-not-hold: outside the label's bodies; deletions wait while an entry that
-// opens is not applied, spec/sync.md §3: a receiver keeps what it cannot explain yet): once an item
+// spec/sync-judgement.md §2 (must-not-hold: outside the label's bodies; deletions wait while an entry that
+// opens is not applied, spec/sync-judgement.md §1: a receiver keeps what it cannot explain yet): once an item
 // leaves the group, its content entries under the label go only once the view is settled.
 #[test]
 fn outside_delete_waits_for_settled_view_spec_sync_6() {
@@ -546,7 +546,7 @@ fn outside_delete_waits_for_settled_view_spec_sync_6() {
     assert!(ids.iter().all(|i| !net.host_ids(host, &l).contains(i)), "content outside the group kept on a settled view");
 }
 
-// spec/crypto.md §7, spec/sync.md §5, spec/permissions.md §6: a thing's admin who is no admin of
+// spec/crypto.md §7, spec/sync-ids.md §6, spec/permissions.md §6: a thing's admin who is no admin of
 // its group deletes a write-only holder's blobs at a host by the level-1 delete key the writer
 // listed from the thing's published `keys.0` (the gap hashed tokens left), after a
 // rotation of the thing too (it holds the old epoch); the writer's own keys delete none of the
@@ -631,7 +631,7 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     assert!(left.is_empty(), "{} of {} blobs of the purged write stay at the host", left.len(), blobs.len());
 }
 
-// spec/sync.md §5, spec/crypto.md §7, spec/requirements.md (deletion needs current roles):
+// spec/sync-ids.md §6, spec/crypto.md §7, spec/requirements.md (deletion needs current roles):
 // a removed writer still holds a valid delete key for its own blob (its author chain), but its
 // label sync key is stale once the admin re-registers: the host refuses the delete.
 #[test]
@@ -683,7 +683,7 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
 }
 
 
-// spec/sync.md §5 Promotion, §6 Tombstones: a host showing again an entry its writer removed
+// spec/sync-inbox.md §4 promotion, §6 Tombstones: a host showing again an entry its writer removed
 // (one that kept it past the delete) is judged there as any entry, never taken for a deposit:
 // the writer promotes no blob within its tombstone, so nothing new goes to the host. Here the
 // removed blob holds a live part a snapshot covers, its bytes kept, its other part re-placed.
@@ -725,7 +725,7 @@ fn a_removed_entry_shown_again_is_not_promoted_spec_sync_5() {
     assert_eq!(net.host_ids(host, &l), before, "the writer placed something for the removed entry");
 }
 
-/// A forged chain on `real`, the head of a label (spec/sync.md §5 Opens): `real` with the delete
+/// A forged chain on `real`, the head of a label (spec/sync-ids.md §6 opens): `real` with the delete
 /// key swapped for the forger's own (it verifies under nothing), then a child signed by that key,
 /// carrying `real`'s sync key (an open by it lasts) and the forger's other keys.
 fn forged_chain(real: &osis_label::Step) -> Vec<osis_label::Step> {
@@ -819,7 +819,7 @@ fn opened_on_forged_heads(forge: impl Fn(&osis_label::Step) -> Vec<osis_label::S
     (net, [s, a, c], l, t, before)
 }
 
-// spec/sync.md §5 (Opens, Walk: a sync key no recorded step bears opens at the head the stream
+// spec/sync-ids.md §6 (opens, Walk: a sync key no recorded step bears opens at the head the stream
 // names), §2 (label.0 records the path): a peer that cannot read L names a forged head carrying
 // L's sync key under its own delete key, then a child signed by it, to an admin that opened L
 // with no head. The admin records neither step in `label.0` and registers nothing under them;
@@ -840,7 +840,7 @@ fn a_forged_head_and_its_child_are_never_recorded_spec_sync_5() {
     assert_eq!(net.read(a, t), Some(net::s("meanwhile")));
 }
 
-// spec/sync.md §5 (Re-registration: an admin issues a child of a head recorded in `label.0`): a
+// spec/sync-ids.md §6 (re-registration: an admin issues a child of a head recorded in `label.0`): a
 // peer names a head carrying L's real keys but another deposit key to an admin that opened L
 // with no head. Such a head would be due a child (its deposit key is not the actor's), but the
 // admin issues none under a head the peer alone named: none of its passes fails, and its write
@@ -859,7 +859,7 @@ fn no_step_under_an_unrecorded_head_spec_sync_5() {
 }
 
 
-// spec/sync.md §6 (a delete stands once it took a body placed again past one), notes/peers.md
+// spec/sync-judgement.md §2 (a delete stands once it took a body placed again past one), notes/peers.md
 // (a host lying in its log): host `h` never lists admin b's covering snapshots to writer a. b
 // deletes a's write as covered; a, seeing no cover, places it again once, b deletes that too, and
 // the delete stands: no fresh blob and tombstone per round trip at either writer (else a storm

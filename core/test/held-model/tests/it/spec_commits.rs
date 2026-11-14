@@ -201,7 +201,7 @@ fn snapshot_under_purge_on_replace_drops_covered_spec_commits_5() {
     assert_eq!(fate(&h2, 12), Fate::MustDrop(DropWhy::Covered { by: 14 }));
 }
 
-// spec/sync.md §7 (covered-equal): of two snapshots at one `ts` covering each other, only the lower
+// spec/sync-compaction.md §1 (covered-equal): of two snapshots at one `ts` covering each other, only the lower
 // commit ID covers: the higher goes, the lower stays
 #[test]
 fn covered_equal_snapshots_lower_id_covers_spec_sync_7() {

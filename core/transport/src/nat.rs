@@ -57,7 +57,7 @@ impl Nat {
 }
 
 /// Whether a punch between a dialer and a target (`None`: no NAT) ends in a direct connection
-/// (spec/sync.md §10): the dialer sends to the address the target's NAT showed the relay while
+/// (spec/sync-opens.md §4): the dialer sends to the address the target's NAT showed the relay while
 /// the target punches back to the one the dialer's NAT showed it. The observed port is the
 /// relay's mapping. A filter open to any source lets the packet through; a filter that lets in
 /// only sources the mapping sent to needs the target's punch to leave on that same port

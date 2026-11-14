@@ -29,7 +29,7 @@ Classes: **F** forged copies by an authenticated writer (bounded, out of scope b
 - Equivocation by a valid writer whose first commit's writes are all dead: nodes that held the first void both, nodes that forgot it count the second (spec/commits.md §5 Forgetting). F.
 - A forged snapshot listing a part makes the commit show partly until the part arrives (notes/engine-validity-snapshots.md Authority). F.
 - A keep-at-least bound or an edge's `until` straddled by two nodes' clocks: delete and re-place while clocks differ (notes/sync-convergence.md Limits). C, seconds.
-- A value reads past its T until the next call or Tick (notes/ephemeral.md Expiry). C. A relay-only signal delivered twice after a restart, or late within `MAX_DRIFT` (spec/sync.md §9). C.
+- A value reads past its T until the next call or Tick (notes/ephemeral.md Expiry). C. A relay-only signal delivered twice after a restart, or late within `MAX_DRIFT` (spec/sync-compaction.md §2). C.
 - Session-sources double removal: a write left out of A's frontier because Y's snapshot Z covered it, then Y removed by a frontier not covering Z: lost alike (spec/commits.md §5 Forgetting, Limit; roles-model `forget-any`). L; a demoter listing every commit avoids it.
 - Writes the revoker had not received (unreachable peers, edits not yet synced, in transit): lost alike; a re-grant brings back only those some node still holds (spec/requirements.md Permissions). The designed semantics.
 - Every writer dropped what only a reader kept: lasts to the next write (spec/requirements.md Deterministic; notes/engine-suspects.md Repair).

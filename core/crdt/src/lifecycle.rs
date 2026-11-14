@@ -356,7 +356,7 @@ impl Fragment {
         }
     }
 
-    /// The writes of a compacting writer's sweep (spec/crdt.md §4.8, spec/sync.md §7): a reset at
+    /// The writes of a compacting writer's sweep (spec/crdt.md §4.8, spec/sync-compaction.md §1): a reset at
     /// `r` of each map entry and list element that is not live, holds a write, and whose creation
     /// is dead (removal is final), so that it dies and its bytes go; for text, a delete at `r` of
     /// each element whose creation is dead holding an undelete's char. A creation is dead when the

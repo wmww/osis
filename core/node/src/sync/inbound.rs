@@ -1,4 +1,4 @@
-//! What arrives (spec/sync.md §3, §6, §8, §9): log events and fetched entries become label
+//! What arrives (spec/sync-judgement.md §1, spec/sync-judgement.md §2, spec/sync-streams.md §2, spec/sync-compaction.md §2): log events and fetched entries become label
 //! entries; blob bytes go to the store; commit blobs are unwrapped with the group's read secrets
 //! (newest first), checked against their prefix and ingested, role commits first; inbox
 //! blobs are opened with the read KEM key of the actor whose inbox the label is; entries that
@@ -80,7 +80,7 @@ pub(crate) enum Src {
 impl SyncEngine {
     /// The group label `l` belongs to as judged on connection `conn`: the group it is opened
     /// under there. Two connections may hold one label under different groups (a hint names it
-    /// under its sender's thing at a host the sender names, spec/sync.md §3), so whatever came
+    /// under its sender's thing at a host the sender names, spec/sync-judgement.md §1), so whatever came
     /// from a connection is judged by that connection's group alone. With no connection (or
     /// one not holding it): the group whose recorded `label.0` names it, else the group of a
     /// connection holding it (an open one first: a hint's thing may still be opening at a host
@@ -121,7 +121,7 @@ impl SyncEngine {
         }
     }
 
-    /// Repair (spec/sync.md §1) at `l`'s pass under group `g`: re-encrypts the chunks `l` lost
+    /// Repair (spec/sync-ids.md §1) at `l`'s pass under group `g`: re-encrypts the chunks `l` lost
     /// that a live value of `g`'s closure links (`Engine::relink`), judged by this node's view
     /// with the label settled, as deletes are: nothing while an entry of it is unopened, and no
     /// aspect a pending commit touches (`unsettled`). Those wait for a later pass, as do those
@@ -262,14 +262,14 @@ impl SyncEngine {
             // an entry this node deleted or saw deleted, announced again within its tombstone
             // (a host that pulled it, its report lost, a stale push crossing the deletion, a
             // peer echoing an announcement): not stored, fetched or served on, as a host's
-            // tombstone keeps the identical blob out (spec/sync.md §5); a source's is recorded as
+            // tombstone keeps the identical blob out (spec/sync-ids.md §6); a source's is recorded as
             // present there as it was, so the pass judges it there as any. Bytes
             // it sends give only their salt (a delete-key signature's, fetched for it)
             if let LogEvent::Added { blob_id, blob, .. } = &ev
                 && self.state.tombs.contains_key(&(l, *blob_id))
             {
                 // recorded again as it was, quietly (not fetched, not served on), so the pass
-                // judges it there as any present entry, whatever its kind (spec/sync.md §6
+                // judges it there as any present entry, whatever its kind (spec/sync-judgement.md §2
                 // Tombstones)
                 if let Some(s) = host {
                     if !self.state.entries.contains_key(&(l, *blob_id))
@@ -288,7 +288,7 @@ impl SyncEngine {
                 }
                 continue;
             }
-            // a blob's prefix class routes it (spec/sync.md §9): a relay-only one is delivered
+            // a blob's prefix class routes it (spec/sync-compaction.md §2): a relay-only one is delivered
             // and passed on, held by nobody; an ephemeral one is a memory entry, recorded in
             // memory only, whatever an announcement without its bytes made the sync records hold
             let mut memory = false;
@@ -335,7 +335,7 @@ impl SyncEngine {
                     // this node holds, or showing it again): only its presence there changed,
                     // which only that source's part of the next pass reads (`Work::lacked`), so
                     // nothing is judged again (a memory entry's replay is: its cover may drop
-                    // it, spec/sync.md §9)
+                    // it, spec/sync-compaction.md §2)
                     let present = host.is_some_and(|s| self.state.is_present(&s, &l, &blob_id));
                     let echo = host.is_some()
                         && self.engine.has_blob(&blob_id)
@@ -397,7 +397,7 @@ impl SyncEngine {
                             self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, source: None, memory: false })
                         }
                         // of two stamps of one entry (two writers stamped it, one as a role
-                        // entry: spec/sync.md §5) the lower is kept, so every holder settles on one
+                        // entry: spec/sync-ids.md §6) the lower is kept, so every holder settles on one
                         Some(mut e) if e.wrap != wrap || stamp.is_some_and(|s| e.stamp.is_none_or(|h| s.0 < h.0)) => {
                             if self.take_wrap(conn, host, l, blob_id, &mut e, &wrap, stamp.is_some(), held_stamped) {
                                 e.wrap = wrap;
@@ -413,7 +413,7 @@ impl SyncEngine {
                         self.keep_salts(&blob_id, Some(b))?;
                     }
                     match blob {
-                        // a piece judged freed here (spec/sync.md §7): its bytes are not kept,
+                        // a piece judged freed here (spec/sync-compaction.md §1): its bytes are not kept,
                         // whoever brings them
                         Some(_) if !self.engine.has_blob(&blob_id) && self.engine.is_freed(&blob_id)? => {}
                         Some(b) if memory => {
@@ -508,7 +508,7 @@ impl SyncEngine {
         }
         // a chunk a live value here links, deleted by a purger that had not seen its reuse:
         // written again re-encrypted at the label's pass, by what this batch brought too
-        // (spec/sync.md §1)
+        // (spec/sync-ids.md §1)
         self.relink_later(l, lost);
         let filling = conn.is_some_and(|c| self.label_at(c, &l).is_some_and(|x| x.fill.is_some()));
         // a push to a stream read to its end brings the log to its end: a pass end
@@ -577,7 +577,7 @@ impl SyncEngine {
     }
 
     /// Whether another wrap `wrap` a source gave for held entry `e` replaces its wrap. Invariant
-    /// (spec/sync.md §5): no wrap from anyone, a writer included, replaces one that opens to the
+    /// (spec/sync-ids.md §6): no wrap from anyone, a writer included, replaces one that opens to the
     /// blob's key, and a body stays readable through a host whose wrap is useless: a node knowing
     /// the key takes only a wrap opening to it and counts the host giving any other as lacking
     /// the entry (`State::holds_at`), so a writer logs a fresh encryption. Knowing
@@ -628,7 +628,7 @@ impl SyncEngine {
     }
 
     /// A wrap that opened under no read secret may be under an epoch this node lacks, and a node
-    /// cannot tell garbage from that (spec/sync.md §5): once more secrets are held, one that opens
+    /// cannot tell garbage from that (spec/sync-ids.md §6): once more secrets are held, one that opens
     /// to the blob's key was of use all along.
     pub(crate) fn recheck_doubts(&mut self) {
         let count = self.secrets_count();
@@ -772,12 +772,12 @@ impl SyncEngine {
             commits.sort_by_key(|o| (!carries_creation(&o.commit), !o.commit.header.kind.is_role(), !o.commit.header.kind.is_compaction(), o.commit.header.ts));
             let mut unjudged: Vec<(ToIngest, crate::Reason)> = Vec::new();
             for o in commits {
-                // a memory commit applies within the room the label's cap leaves (spec/sync.md §9)
+                // a memory commit applies within the room the label's cap leaves (spec/sync-compaction.md §2)
                 if o.commit.header.ephemeral.is_some() {
                     self.ingest_memory_entry(o.label, o.blob, o.size, &o.plaintext, &o.commit)?;
                     continue;
                 }
-                // a rotation with the thing lists that came with it (spec/sync.md §3)
+                // a rotation with the thing lists that came with it (spec/sync-judgement.md §1)
                 let with: Vec<Vec<u8>> = if o.commit.header.rotation.is_some() { lists.iter().map(|x| x.2.clone()).collect() } else { Vec::new() };
                 match self.engine.ingest_with_lists(&o.plaintext, Vec::new(), None, &with) {
                     Ok(Ingested::Awaits(_, r)) => unjudged.push((o, r)),
@@ -793,7 +793,7 @@ impl SyncEngine {
             todo = self.state.of_tag(Kind::TAG_UNKNOWN).into_iter().collect();
         }
         // what an earlier batch left awaiting a record this one brought is fetched again before a
-        // fill asks its next batch: what judging needs before the rest (spec/sync.md §6)
+        // fill asks its next batch: what judging needs before the rest (spec/sync-judgement.md §2)
         let woke: BTreeSet<(LabelId, BlobId)> = created.iter().filter(|t| self.engine.core.exists(t)).flat_map(|t| self.state.by_awaited.get(t).into_iter().flatten().copied()).collect();
         if !woke.is_empty() {
             self.reopen_awaiting(woke);
@@ -976,7 +976,7 @@ impl SyncEngine {
         }
         self.state.awaits_left.truncate(told);
         // a label still filling fetches them again in its order: what judging needs before the
-        // rest (spec/sync.md §6), also when what it awaited came in a later batch
+        // rest (spec/sync-judgement.md §2), also when what it awaited came in a later batch
         let filling: Vec<(ConnId, LabelId)> = self.conns.iter().flat_map(|(c, x)| x.labels.iter().filter(|(l, lc)| labels.contains(*l) && lc.fill.is_some()).map(move |(l, _)| (*c, *l))).collect();
         for (c, l) in filling {
             let ids: Vec<BlobId> = reopened.iter().filter(|(x, _)| *x == l).map(|(_, b)| *b).collect();
@@ -1347,7 +1347,7 @@ impl SyncEngine {
         let secrets = self.read_secrets(&g);
         let prefix = osis_label::Prefix::parse(&bytes).ok();
         if let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, &e.wrap) {
-            // this group's closure is synced (spec/sync.md §3) from the first entry it opens: a
+            // this group's closure is synced (spec/sync-judgement.md §1) from the first entry it opens: a
             // label named by another's word, with no entry readable, asks for nothing
             if !self.engine.core.ix.syncing.contains(&g) {
                 self.engine.set_syncing(g, true)?;
@@ -1358,7 +1358,7 @@ impl SyncEngine {
                     let commit = o.commit.id();
                     // a copy's parts the label carries no more (a revocation since it was placed):
                     // none taken, no byte kept, the entry left as a dropped body's until this node
-                    // reads their things again (spec/permissions.md §3, spec/sync.md §3)
+                    // reads their things again (spec/permissions.md §3, spec/sync-judgement.md §1)
                     let stale = if o.copy { self.engine.copy_stale(&g, &o.commit) } else { BTreeSet::new() };
                     if !stale.is_empty() {
                         self.engine.await_reading(&commit, &o.commit.header, &stale);
@@ -1390,7 +1390,7 @@ impl SyncEngine {
                     self.engine.learn_records(rs)?;
                 }
                 Err(err) => {
-                    // a list blob (spec/sync.md §3): held once the batch's commits are in
+                    // a list blob (spec/sync-judgement.md §1): held once the batch's commits are in
                     if let Ok((_, pt)) = osis_label::open(&bytes, &key)
                         && let Some(rotation) = osis_commit::thing_list::decode_list_blob(&pt).ok().and_then(|c| c.first().map(|c| c.rotation))
                     {
@@ -1549,7 +1549,7 @@ impl SyncEngine {
         out
     }
 
-    /// Whether an opened inbox blob carrying commit `c` is admitted (spec/sync.md §3, invite
+    /// Whether an opened inbox blob carrying commit `c` is admitted (spec/sync-judgement.md §1, invite
     /// requests): `c` is held (from a label this node syncs: a sibling node accepted it and
     /// placed its copy), or its sender is connected. `roots` caches what a sender must have a
     /// role on within one judging round.
@@ -1602,7 +1602,7 @@ impl SyncEngine {
             .collect()
     }
 
-    /// The invite requests waiting for the user (spec/sync.md §3), by commit, unexpired.
+    /// The invite requests waiting for the user (spec/sync-judgement.md §1), by commit, unexpired.
     pub fn invite_requests(&mut self) -> Result<Vec<CommitId>> {
         let now = self.now();
         let mut out = BTreeSet::new();
@@ -1656,7 +1656,7 @@ impl SyncEngine {
         Ok(released)
     }
 
-    /// Accepts invite request `c` (spec/sync.md §3): its commit applies and what it names is
+    /// Accepts invite request `c` (spec/sync-judgement.md §1): its commit applies and what it names is
     /// followed. Whether a request of `c` was waiting.
     pub fn accept_invite(&mut self, c: CommitId) -> Result<(bool, Vec<super::Action>)> {
         if !self.release_requests(Some(c))? {
@@ -1668,7 +1668,7 @@ impl SyncEngine {
         Ok((true, self.handle(super::Event::Local)))
     }
 
-    /// Declines invite request `c` (spec/sync.md §3): its commit stays unapplied for good, in
+    /// Declines invite request `c` (spec/sync-judgement.md §1): its commit stays unapplied for good, in
     /// every blob carrying it. Whether a request of `c` was waiting.
     pub fn decline_invite(&mut self, c: CommitId) -> Result<bool> {
         let mut found = false;
@@ -1747,7 +1747,7 @@ impl SyncEngine {
         self.engine.labeled_groups().iter().any(|g| self.engine.labels_of(g).iter().any(|x| x.id == *l))
     }
 
-    /// Follows the labels opened inbox blobs name (spec/sync.md §3) as hints, from scratch: per
+    /// Follows the labels opened inbox blobs name (spec/sync-judgement.md §1) as hints, from scratch: per
     /// unexpired blob whose commit is applied or pending, the first payload thing with no known
     /// label that the commit gave this node a read secret of (`Engine::boxed_by`), one per blob
     /// (a delivery names one thing), so the hints a stranger makes are bounded by the inbox's
@@ -1900,7 +1900,7 @@ impl SyncEngine {
     /// A new head in the log of a peer that cannot read `l`, open there: a child of the current
     /// one or a recorded step moves on (`open_moved`: when its credential is another the open by
     /// the old one ends). Any other doubts the current one (`doubt`): Behind items walk from it to
-    /// the peer's path (spec/sync.md §5, Behind). Opened with no head (a hint's label knowing no
+    /// the peer's path (spec/sync-ids.md §6, behind). Opened with no head (a hint's label knowing no
     /// step, or by a held sync key no recorded step bears) it takes the first head bearing the
     /// sync key it opened by; another ends the open, the head taken on the peer's word (only a Hit
     /// on its credential opens anything). A child is recorded only under a recorded head: one
@@ -2014,7 +2014,7 @@ impl SyncEngine {
     }
 
     /// Commits wait for blobs: fetch what their walks reach and is not held (`Engine::blob_wants`:
-    /// header lists, pages and value roots before apply, spec/sync.md §6; an applied memory
+    /// header lists, pages and value roots before apply, spec/sync-judgement.md §2; an applied memory
     /// commit's value trees, §9; the chunks of durable values stay lazy).
     fn fetch_waiting(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         // a page refused for the label's ephemeral cap waits for room as any entry does
@@ -2130,7 +2130,7 @@ impl SyncEngine {
     /// This node's tombstones of entries of commits with a part missing again
     /// (`Changed::undropped`: the cover, purge or invalidity it dropped under fell): the deletions
     /// they record no longer stand, so an entry of the commit a host still holds or a holder logs
-    /// again under the same blob ID is fetched (spec/sync.md §6 Dropped bodies). Rare (a role
+    /// again under the same blob ID is fetched (spec/sync-judgement.md §3 dropped bodies). Rare (a role
     /// change or a purge's fall): the tombstones are scanned.
     pub(crate) fn lift_undropped_tombs(&mut self, commits: &BTreeSet<osis_base::CommitId>) {
         if commits.is_empty() {
@@ -2180,7 +2180,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Records blob `b`'s prefix salt (spec/sync.md §6 Tombstones), expiry (§5: it goes then,
+    /// Records blob `b`'s prefix salt (spec/sync-judgement.md §3 tombstones), expiry (§5: it goes then,
     /// `expire_entries`) and size (§5 Clearing deposits) with every entry naming it that lacks them, from `bytes` (checked to be `b`'s,
     /// `log_events_from`) or the bytes held here: both outlive the bytes.
     pub(crate) fn keep_salts(&mut self, b: &BlobId, bytes: Option<&[u8]>) -> Result<()> {
@@ -2276,7 +2276,7 @@ impl SyncEngine {
     }
 
     /// Fetches the blobs of one large value's tree that are not held yet (`Engine::tree_missing`:
-    /// a read that missed a chunk; spec/sync.md §6), from the open labels holding them; empty
+    /// a read that missed a chunk; spec/sync-judgement.md §2), from the open labels holding them; empty
     /// when the tree is whole. Call again after they arrive: fetched nodes list more chunks.
     pub fn fetch_tree(&mut self, tid: &Tid, link: &osis_base::Link) -> Result<Vec<super::Action>> {
         let ids = self.engine.tree_missing(tid, link)?;
@@ -2313,7 +2313,7 @@ impl SyncEngine {
 
     /// Entry `b` under `l` reached a source: when it holds a body of a role commit of this node,
     /// the labels with an entry of it pass again (its held copies may go now, and deletes there
-    /// waited for it, spec/sync.md §5), and so do the labels whose rotations its placing unblocks
+    /// waited for it, spec/sync-ids.md §6), and so do the labels whose rotations its placing unblocks
     /// (`placing`: a self-removal from the label's keys actor counts once placed). A certificate
     /// copy places nothing: the commit is placed by its bodies.
     fn reached(&mut self, l: &LabelId, b: &BlobId) {

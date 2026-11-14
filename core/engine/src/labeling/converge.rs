@@ -1,4 +1,4 @@
-//! The convergence rule (spec/sync.md §6, §7): per body held under a label, must-hold, may-hold
+//! The convergence rule (spec/sync-judgement.md §2, spec/sync-compaction.md §1): per body held under a label, must-hold, may-hold
 //! or must-not-hold, "must-not" winning every overlap; and the carrier rule for deletions.
 
 /// What a node knows of one body under one label.
@@ -39,7 +39,7 @@ pub enum Hold {
     MustNot(Why),
 }
 
-/// The convergence rule (spec/sync.md §6).
+/// The convergence rule (spec/sync-judgement.md §2).
 pub fn classify(f: &Facts) -> Hold {
     let not = if f.dropped {
         Some(Why::Dropped)
@@ -61,7 +61,7 @@ pub fn classify(f: &Facts) -> Hold {
     if f.before_at_least || f.covered == Some(false) { Hold::Must } else { Hold::May }
 }
 
-/// Whether a must-not-hold body may go now (spec/sync.md §7 Carriers): one with a delta to
+/// Whether a must-not-hold body may go now (spec/sync-compaction.md §1 carriers): one with a delta to
 /// carry (a live write, kept, or dropped as covered) only while other entries under the label
 /// carry it. An expired one is no body here: node sync drops
 /// every entry at its prefix expiry before judging any (`SyncEngine::expire_entries`).
@@ -77,7 +77,7 @@ mod tests {
         Facts { required: true, closure: true, ..Facts::default() }
     }
 
-    // spec/sync.md §6: must-hold, may-hold and must-not-hold per body; a body meeting a
+    // spec/sync-judgement.md §2: must-hold, may-hold and must-not-hold per body; a body meeting a
     // must-not-hold condition is must-not-hold whatever else holds of it.
     #[test]
     fn convergence_table_spec_sync_6() {
@@ -102,7 +102,7 @@ mod tests {
         }
     }
 
-    // spec/sync.md §7: a body with live writes leaves a label only while another entry carries
+    // spec/sync-compaction.md §1: a body with live writes leaves a label only while another entry carries
     // them; dead content goes at once.
     #[test]
     fn carrier_rule_spec_sync_7() {

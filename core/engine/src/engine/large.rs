@@ -2,7 +2,7 @@
 //! position that must be chunked (blobs, register strings, set elements and map keys above
 //! `CHUNK_THRESHOLD`, in `set`/`replace`/`add` values and list `insert` and `edit` items) becomes a link to
 //! a chunk tree written as blob ciphertexts in the store, framed like the delta's pages. A
-//! position holding a large value now reuses that tree (spec/sync.md §1): unchanged chunks keep
+//! position holding a large value now reuses that tree (spec/sync-ids.md §1): unchanged chunks keep
 //! their blob and key and are not introduced again, so an edit writes and uploads O(change).
 //! Links compare by content hash, so an unchanged large value diffs as equal. Reads return the
 //! link; `Engine::read_large` materializes it.
@@ -353,7 +353,7 @@ pub(crate) fn lookup_form(v: &Value, dedup: &Secret32) -> Result<Value> {
 }
 
 /// Chunks the large positions of `ops` on `(tid, ak)` under `framing`, reusing the tree each
-/// position holds now (spec/sync.md §1: a reused chunk keeps its blob unless the re-encryption
+/// position holds now (spec/sync-ids.md §1: a reused chunk keeps its blob unless the re-encryption
 /// rule says otherwise, judged by each old link's blind; one this node no longer holds is
 /// written afresh). Returns the blobs written (reused ones are not). `fresh`: blobs never
 /// reused.
@@ -515,7 +515,7 @@ impl Engine {
     }
 
     /// Chunks or tree nodes `lost`, gone from every host of a label, that this node's own
-    /// commit links (spec/sync.md §1: a purger that had not seen this node's reuse judged them
+    /// commit links (spec/sync-ids.md §1: a purger that had not seen this node's reuse judged them
     /// dead), looked for among `things` (the label's closure: those whose live states link a
     /// held one). For each aspect whose newest own commit linking one is held: every large position
     /// of the current value whose tree holds one is written again (`Op::Put` at that position:
@@ -645,7 +645,7 @@ impl Engine {
 
     /// The blobs the deltas of a body (`plaintext`: its commit blob plaintext) link, through
     /// held node and page blobs: the trees of its values and the pages of its fragments, listed
-    /// by its commit or not (spec/sync.md §3 closure). Complete when nothing is `missing`.
+    /// by its commit or not (spec/sync-judgement.md §1 closure). Complete when nothing is `missing`.
     pub fn body_links(&mut self, plaintext: &[u8]) -> Result<Trees> {
         let Ok(cb) = osis_commit::CommitBlob::decode(plaintext) else { return Ok(Trees::default()) };
         let Some(h) = self.header(&cb.id()) else { return Ok(Trees::default()) };
@@ -685,7 +685,7 @@ impl Engine {
     }
 
     /// The blobs of the tree under `link` (a large value of `tid`) this node lacks: node blobs
-    /// below the held ones and the chunks held nodes list (spec/sync.md §6: a read that misses a
+    /// below the held ones and the chunks held nodes list (spec/sync-judgement.md §2: a read that misses a
     /// chunk fetches that tree only). Empty when the tree is whole here; a node fetched may list
     /// more, so a reader asks again once those arrive. `UnknownThing` when the thing's secrets
     /// are not held (nothing could be read either).

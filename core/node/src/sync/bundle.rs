@@ -1,4 +1,4 @@
-//! File bundles (spec/sync.md §11; spec/wire.md §12): export of the labels this node holds
+//! File bundles (spec/sync-streams.md §6; spec/wire.md §12): export of the labels this node holds
 //! entries of (registration path, blobs, entries with wraps and stamps); import as a peer's
 //! events with no cursor through osis-proto's `BundleImport`.
 
@@ -36,7 +36,7 @@ impl SyncEngine {
         Ok(w.finish()?)
     }
 
-    /// Imports a bundle as a peer with no cursor (spec/sync.md §11): paths recorded (by an
+    /// Imports a bundle as a peer with no cursor (spec/sync-streams.md §6): paths recorded (by an
     /// admin), entries opened and applied like downloaded ones.
     pub fn import_bundle(&mut self, bytes: &[u8]) -> Result<Vec<super::Action>> {
         let mut out = Vec::new();

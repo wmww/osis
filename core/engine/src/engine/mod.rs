@@ -161,7 +161,7 @@ pub struct Dropped {
     /// What a role commit's `secrets.0` or `keys.0` body showed for possession
     /// (`Indexes::shown`).
     pub shown: Option<Arc<Showing>>,
-    /// A memory part vanished as superseded (spec/sync.md §9): the later parts of its author's
+    /// A memory part vanished as superseded (spec/sync-compaction.md §2): the later parts of its author's
     /// that superseded it (the lane's carriers once its commit is forgotten). Never stored:
     /// memory commits are not.
     pub superseded_by: BTreeSet<CommitId>,
@@ -1011,7 +1011,7 @@ pub enum MemoryDrop {
     /// Every held body covered by held valid memory snapshots (spec/commits.md §5): a writer
     /// deletes its entries at a host once one of `by` is held there.
     Covered { by: BTreeSet<CommitId> },
-    /// Superseded by its author's later expiring writes (spec/sync.md §9): its author deletes
+    /// Superseded by its author's later expiring writes (spec/sync-compaction.md §2): its author deletes
     /// its entries once one of `by` is held there.
     Superseded { by: BTreeSet<CommitId> },
     /// Expired, freed with its things (forgotten or deleted here), or replaced by a coalescing
@@ -1177,7 +1177,7 @@ pub struct Core {
     pub later_sessions: u64,
     /// What memory commits and things report to the ephemeral lane and the local write path.
     pub memory: MemorySync,
-    /// The compaction trigger's state (spec/sync.md §7 Trigger), in memory.
+    /// The compaction trigger's state (spec/sync-compaction.md §1 trigger), in memory.
     pub compaction: crate::retention::compact::Trigger,
     /// Aspects a held valid compaction snapshot of either class turned invalid on since the last
     /// take (`Engine::take_fallen`).
@@ -1343,7 +1343,7 @@ pub struct Core {
     pub memory_generation: u64,
     /// The running transaction is a memory one (`Tx::set_memory`).
     pub memory_tx: bool,
-    /// The room node-sync gave the memory commit being ingested (spec/sync.md §9 Caps,
+    /// The room node-sync gave the memory commit being ingested (spec/sync-compaction.md §2 caps,
     /// `apply::memory::memory_gate`); `None` outside `ingest_memory`/`apply_waiting_memory`.
     pub memory_room: Option<u64>,
     /// Pending commits known to be memory commits, which `reexamine` leaves to node-sync (a
@@ -1583,7 +1583,7 @@ pub(crate) type EpochIntro = JMap<(Tid, osis_base::Role, osis_crypto::Epoch), (T
 
 impl Core {
     /// Whether the node syncs `t`: it was asked to, or a `group.0` it holds puts `t` in the
-    /// closure of a group it was asked to (a function of held data, whenever it was learned; spec/sync.md §3).
+    /// closure of a group it was asked to (a function of held data, whenever it was learned; spec/sync-judgement.md §1).
     pub fn syncs(&self, t: &Tid) -> bool {
         self.ix.groups.enclosing(t).iter().any(|g| self.ix.syncing.contains(g))
     }
@@ -1818,7 +1818,7 @@ impl Core {
     }
 
     /// Marks commit `c` changed for node-sync (`changed`): its labels' passes judge it again
-    /// (a memory commit's too: its bodies travel the same path, spec/sync.md §9).
+    /// (a memory commit's too: its bodies travel the same path, spec/sync-compaction.md §2).
     pub fn mark_changed(&mut self, c: CommitId) {
         if let Some(s) = &mut self.changed {
             s.commits.insert(c);
@@ -2133,7 +2133,7 @@ impl Core {
 
     /// Begins new plain and expiring sessions (spec/crdt.md §2.1), once an own session-form
     /// write of the current ones turned invalid: a demotion's invalid body would stop every
-    /// snapshot's frontier for its session below it for good (spec/sync.md §9), so what this
+    /// snapshot's frontier for its session below it for good (spec/sync-compaction.md §2), so what this
     /// node writes after a grant again starts a session with no such hole. The plain nonce's
     /// count steps by one (`nonce_count`, no random draw), so `own_plain` recognises every
     /// session of the open. Unique: within the open the first 8 bytes stay fixed (the flip tells
@@ -3333,7 +3333,7 @@ impl Engine {
         self.take_account()?;
         self.reexamine()?;
         // a leftover held from before goes uncovered no longer than a quiet time from here
-        // (spec/sync.md §7 Trigger)
+        // (spec/sync-compaction.md §1 trigger)
         let quiet = self.now().0.saturating_add(crate::retention::compact::QUIET_MS);
         let held: Vec<(Tid, Ak)> = self.core.ix.valueless.iter().filter(|(k, l)| !l.is_empty() && crate::retention::compact::compactable(&k.1)).map(|(k, _)| k.clone()).collect();
         for k in held {

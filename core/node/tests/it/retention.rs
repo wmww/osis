@@ -2037,7 +2037,7 @@ fn frontier_lists(e: &osis_node::Engine, done: &osis_node::flows::Done, p: &osis
     done.commits.iter().filter_map(|c| e.header(c)).filter_map(|h| h.frontier.clone()).any(|f| osis_schema::core_types::Frontier::from_value(&f).unwrap().commits.contains(p))
 }
 
-// spec/sync.md §6: a request no signer could ever hold the right for explains no delete: a plain
+// spec/sync-judgement.md §2: a request no signer could ever hold the right for explains no delete: a plain
 // writer's aspect-wide request leaves the keep-out rule alone.
 #[test]
 fn a_writers_request_explains_no_delete_spec_sync_6() {
@@ -2747,7 +2747,7 @@ fn snapshots_held(lp: &mut LocalPeer, i: usize, t: Tid, k: &osis_base::Ak) -> Ve
 // spec/commits.md §5 (purge on replace cover): a writer holding a replaced purge-on-replace body covers
 // it in the transaction that replaced it, and the body goes there at once; the replacing body,
 // live, is no purge-on-replace body and stays beside the one snapshot (a live one drops by the
-// compaction trigger's covers, spec/sync.md §7), and the writer reads the new value.
+// compaction trigger's covers, spec/sync-compaction.md §1), and the writer reads the new value.
 #[test]
 fn none_writer_covers_in_the_replacing_transaction_spec_commits_5() {
     let mut lp = net(1, 0);
@@ -3711,7 +3711,7 @@ fn snapshot_after_purge_comes_back(commit_form: bool) {
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")), "commit form {commit_form}: back, its value-less copy did not cover it");
 }
 
-// notes/ephemeral.md Own bodies under own covers, spec/sync.md §9: under purge on replace an
+// notes/ephemeral.md Own bodies under own covers, spec/sync-compaction.md §2: under purge on replace an
 // author's own ephemeral snapshot still carrying live writes is not under it, so another writer's
 // later cover does not drop it at its author (it drops only replaced bodies).
 #[test]

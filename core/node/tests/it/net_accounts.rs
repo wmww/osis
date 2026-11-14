@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Accounts on connections (spec/sync.md §10, Connection proofs, Pair key; issues/sync-rewrite.md
+//! Accounts on connections (spec/sync-opens.md §2, connection proofs, Pair key; issues/sync-rewrite.md
 //! step 10): an account proved at an epoch open here counts like any actor; a node key proves no
 //! account and goes only to the nodes of its own account; a node removed from its account, once
 //! the removal's rotation is held, proves the account nowhere.
@@ -25,7 +25,7 @@ fn node_keys_proved(net: &mut Net, n: usize, nodes: &BTreeSet<Tid>) -> Vec<BTree
     net.sync(n).proven_connections().into_iter().map(|(_, p)| p.intersection(nodes).copied().collect()).collect()
 }
 
-// spec/sync.md §10 (Connection proofs, Pair key, Shared set): two nodes of different accounts that
+// spec/sync-opens.md §2 (connection proofs, Pair key, Shared set): two nodes of different accounts that
 // know each other's accounts, not each other's nodes, find their shared group and resume by
 // record with no node identity exchanged: each side proved the other's account alone, and the
 // record names the account
@@ -60,7 +60,7 @@ fn accounts_find_their_groups_and_resume_with_no_node_identity_spec_sync_10() {
     }
 }
 
-// spec/sync.md §10, issues/sync-rewrite.md step 3: a node key proves no account. A node of P
+// spec/sync-opens.md §4, issues/sync-rewrite.md step 3: a node key proves no account. A node of P
 // proving only its node key, at a node of another account that holds P's devices roster and
 // shares a group with P, is neither known nor a holder: no proofs back, J unknown, and neither
 // a record nor a shared set
@@ -88,7 +88,7 @@ fn a_node_key_alone_reaches_nothing_at_another_account_spec_sync_10() {
     let _ = g;
 }
 
-// spec/sync.md §10, spec/permissions.md §3: a node removed from its account, once the removal's
+// spec/sync-opens.md §4, spec/permissions.md §3: a node removed from its account, once the removal's
 // rotation of P is held, proves P nowhere: its proofs as made before the removal (the closed
 // epoch's key) find no record that names P, get no proof back and open nothing
 #[test]
@@ -137,7 +137,7 @@ fn a_removed_node_after_the_rotation_matches_no_record_spec_sync_10() {
     let _ = g;
 }
 
-// spec/sync.md §10 (Connection proofs): a node proves its node key to the nodes of its own account
+// spec/sync-opens.md §2 (connection proofs): a node proves its node key to the nodes of its own account
 // only, whichever side dialed: counted over every real connection of two nodes of P and a node
 // of Q sharing a group
 #[test]

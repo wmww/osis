@@ -1,5 +1,5 @@
 # Sync convergence model: assumptions
-> Summary: What SyncConvergence.tla abstracts away from spec/sync.md §5–§7 and spec/commits.md §5, and why.
+> Summary: What SyncConvergence.tla abstracts away from spec/sync-ids.md §6 and spec/commits.md §5, and why.
 
 - **One label, one host.** Everything written is in the label's closure and entitled to it; "outside the required set", retagging, projections across labels and certificate copies are not modeled. Multi-label behaviour is per label, so one label carries the convergence question.
 - **Blobs are records** `[c, ds, v]`: commit, delta set, encryption index. A fresh encryption (new salt) is a new `v`, and `v` also stands for the blob ID order (duplicate and carrier tiebreaks); `Vs = {0,1}` bounds re-encryptions. Prefix, wrap, stamp, padding and token cryptography are not modeled: every writer holds every delete token (all retention is `writer`), stamps are always valid, so authorization never fails for honest nodes.

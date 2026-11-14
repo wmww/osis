@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! The serving side for sync IDs a node keeps and cannot read (issues/sync-rewrite.md build 3g;
-//! issues/sync-rewrite.md; spec/sync.md §10 Shared set): their head's
+//! issues/sync-rewrite.md; spec/sync-opens.md §4 shared set): their head's
 //! sync-key, deposit-key and static entries go in the filter to every connection; a Hit on the
 //! sync key with its open signature opens the sync ID, which is then served by the stream from the
 //! hub's store; a head with another sync key ends it through its event. A hand dialer proving
@@ -70,7 +70,7 @@ fn filter_of(msgs: &[Message]) -> (u8, Vec<u64>) {
 }
 
 /// Stamped entry `e` of `l` taken into node `b`'s store by its rules, as pulled from a reader
-/// (spec/sync.md §5, Taking a stamped entry).
+/// (spec/sync-ids.md §6, taking a stamped entry).
 fn put(net: &mut Net, b: usize, l: &Label, e: osis_proto::examples::Stamped) {
     let now = net.now();
     let hub = net.sync(b).hub_store();
@@ -144,7 +144,7 @@ fn opened(s: &mut Setup) -> PullReply {
     pull(&mut s.net, s.b, &mut s.p, vec![(s.l.id, None)]).1
 }
 
-// spec/sync.md §10 Shared set (a peer that cannot read): a stranger's filter holds the head
+// spec/sync-opens.md §4 shared set (a peer that cannot read): a stranger's filter holds the head
 // credentials of what the node keeps unread (sync key, deposit key, the claim set's entries)
 // and none of what it reads
 #[test]
@@ -179,7 +179,7 @@ fn a_strangers_hit_on_a_read_secret_opens_nothing_spec_sync_10() {
     assert!(s.net.sync(s.b).shared_members(s.p.conn).is_empty());
 }
 
-// spec/sync.md §10 Shared set, Stream: a reader opens an unread L by its sync key, pulls what the
+// spec/sync-opens.md §4 shared set, Stream: a reader opens an unread L by its sync key, pulls what the
 // node keeps of it, and what the node takes later and deletes there reach its stream
 #[test]
 fn a_reader_opens_an_unread_label_by_sync_key_pulls_takes_and_deletes_spec_sync_10() {
@@ -254,7 +254,7 @@ fn a_head_change_ends_the_open_after_its_event_spec_sync_10() {
     assert_eq!(ans[0].0, Code::OK, "the current sync key reopens");
 }
 
-// spec/sync.md §10 Shared set (Lost): a head the hub's store moved ends an open by its old sync
+// spec/sync-opens.md §4 shared set (Lost): a head the hub's store moved ends an open by its old sync
 // key before node sync answers anything after it: a Pull handled in the step that takes the move
 // in is served nothing past the new head's event
 #[test]
@@ -300,7 +300,7 @@ fn a_deposit_at_an_unread_inbox_is_taken_spec_sync_10() {
     assert!(held.is_some_and(|m| m.stamp.is_none()), "kept unstamped (deposited)");
 }
 
-// spec/sync.md §10 Stream (ephemeral): an unread L's ephemeral entries are listed from the hub's
+// spec/sync-streams.md §4 stream (ephemeral): an unread L's ephemeral entries are listed from the hub's
 // memory and follow on
 #[test]
 fn an_unread_labels_memory_entries_reach_the_reader_spec_sync_10() {
@@ -325,7 +325,7 @@ fn classed(n: u8, c: osis_label::Class, t: u64) -> Vec<u8> {
     osis_label::frame(&p, &[n; 20], &mut osis_crypto::SeededRng::from_seed([n; 32])).unwrap().1
 }
 
-// spec/sync.md §10 Shared set (static entry), spec/wire.md §11.2 Offer: a key actor listed in an
+// spec/sync-opens.md §4 shared set (static entry), spec/wire.md §11.2 Offer: a key actor listed in an
 // unread L's head claim set, proved on the connection, opens L by a Hit on its static entry and
 // gets the head's entry box for it with the path from the genesis step, from the hub's store
 #[test]
@@ -350,7 +350,7 @@ fn a_key_actors_static_entry_opens_an_unread_label_with_its_grant_spec_sync_10()
     assert!(s.net.sync(s.b).shared_members(q.conn).contains(&l));
 }
 
-// spec/sync.md §10 (Stream: a node that cannot read L pulls it from every reader that opened it
+// spec/sync-streams.md §4 (stream: a node that cannot read L pulls it from every reader that opened it
 // there): a write reaches the peer that cannot read its group by the peer's pull alone, and a second reader reads it through that peer with the writer offline.
 #[test]
 fn a_write_reaches_a_peer_that_cannot_read_by_its_pull_spec_sync_10() {
@@ -404,7 +404,7 @@ fn kept(net: &mut Net, p: usize, l: &LabelId) -> BTreeSet<BlobId> {
     osis_proto::LabelStore::live_ids(&*hub, l).unwrap().into_iter().collect()
 }
 
-// spec/sync.md §10 (Offer, Stream: each side pulls, whoever dialed), §5 Opens: a node that
+// spec/sync-opens.md §5 (offer, Stream: each side pulls, whoever dialed), §5 Opens: a node that
 // cannot read L, holding L's sync secret (Sync on its group), dials a reader of L and pulls L
 // from it: its own Hit on L's sync key, signed by it, opens L on the connection; the reader holds
 // per-label state there only for what the dialer proved, and shares only that.
@@ -426,7 +426,7 @@ fn a_peer_that_cannot_read_pulls_from_a_reader_it_dialed_spec_sync_10() {
     assert!(opened.iter().all(|(c, m)| states.get(c) == Some(&m.len())), "per-label state for what p proved alone: {states:?}");
 }
 
-// spec/sync.md §5 Opens (one sync-key run per proof): a dialer's proof of L's sync secret opens
+// spec/sync-ids.md §6 opens (one sync-key run per proof): a dialer's proof of L's sync secret opens
 // L only while the newest step the reader records bears that sync key: a rotation closes L
 // there, and while the dialer's head bears the old key (no reader moved it) nothing written
 // after it reaches the dialer.
@@ -449,7 +449,7 @@ fn a_dialers_proof_ends_at_the_next_sync_key_spec_sync_5() {
     assert_eq!(kept(&mut net, p, &l), held, "nothing after the rotation reaches p");
 }
 
-// spec/sync.md §10 (Admissible: the proof of the newest step `label.0` records), §5 Opens: after a rotation the reader's filter shows the new step's proof and no older step's,
+// spec/sync-opens.md §4 (admissible: the proof of the newest step `label.0` records), §5 Opens: after a rotation the reader's filter shows the new step's proof and no older step's,
 // though the dialer holds both secrets; a sync holder then removed keeps its sync secrets, and
 // the filter to it, a known actor still, shows no proof of any.
 #[test]
@@ -488,7 +488,7 @@ fn only_the_newest_steps_proof_is_in_a_readers_filter_spec_sync_10() {
     assert!(!got.iter().any(|x| *x), "no proof to a removed sync holder: {got:?}");
 }
 
-// spec/sync.md §10 (Stream, a store's presence), §6: a reader judges a peer that cannot read L
+// spec/sync-streams.md §4 (stream, a store's presence), §6: a reader judges a peer that cannot read L
 // and dialed it as a source of L, as one it dialed: what it must not hold there is deleted there
 // (a purge's deletes reach the dialer's store).
 #[test]
@@ -510,7 +510,7 @@ fn a_reader_deletes_at_a_peer_that_dialed_it_spec_sync_10() {
     assert!(!doomed.is_subset(&after), "the purged write left the dialer's store");
 }
 
-// spec/sync.md §10 (Pair key, Stream: a store's presence kept by the record): what a reader keeps
+// spec/sync-opens.md §3 (pair key, Stream: a store's presence kept by the record): what a reader keeps
 // of a peer that cannot read L and dialed it is kept by their record, so a reconnect resumes
 // where it left: the dialer's store is not listed to the reader again.
 #[test]
@@ -539,7 +539,7 @@ fn a_dialer_reconnecting_is_not_listed_again_spec_sync_10() {
     assert!(mine.is_subset(&kept(&mut net, p, &l)), "and it pulls on");
 }
 
-// spec/sync.md §10 (Offer), §5 (Opens): a node that keeps L unread and holds only L's public
+// spec/sync-opens.md §5 (offer), §5 (Opens): a node that keeps L unread and holds only L's public
 // sync key (no secret), proving an actor the reader knows, dials a reader of L and gets nothing
 // of L: no open, no stream, no Hit of the reader's (its filter shows the key's beacon).
 #[test]
@@ -555,7 +555,7 @@ fn a_dialer_holding_only_the_public_sync_key_pulls_nothing_spec_sync_10() {
     assert_eq!(net.sync(a).pass_stats().hits_sent, hits, "the reader sent no Hit");
 }
 
-// spec/sync.md §10 (Admissible: a proof derives from its sync key's seed; Filter), model NetOpen
+// spec/sync-opens.md §4 (admissible: a proof derives from its sync key's seed; Filter), model NetOpen
 // `ON_proofpub`: a peer holding every public value of L (each step's keys and claim set) and
 // proving an actor the reader knows dials a reader of L: no beacon those values give, the proof a
 // public sync key would derive included, is in the reader's filter, which shows L's proof (to a
@@ -582,7 +582,7 @@ fn a_node_holding_only_the_public_keys_finds_no_proof_in_a_readers_filter_spec_s
     assert!(shows(&proof), "the filter shows L's proof");
 }
 
-// spec/sync.md §10 (Stream): a peer that cannot read L, restored from a backup taken before a
+// spec/sync-streams.md §4 (stream): a peer that cannot read L, restored from a backup taken before a
 // write, pulls it again from a reader at the next connection, and a second reader gets it from
 // that peer with the writer offline.
 #[test]
@@ -606,7 +606,7 @@ fn a_peer_restored_from_a_backup_pulls_again_spec_sync_10() {
     assert_eq!(net.read(b, t), Some(osis_base::Value::Str("again".into())));
 }
 
-// spec/sync.md §10 (Stream: bytes cross once): an edit of a thing two groups read and list is
+// spec/sync-streams.md §4 (stream: bytes cross once): an edit of a thing two groups read and list is
 // one blob under both sync IDs; a peer that cannot read them, its bytes fetched under one, takes
 // it under both.
 #[test]
@@ -656,7 +656,7 @@ fn a_blob_under_two_sync_ids_is_taken_under_both_spec_sync_10() {
     assert_eq!(ids.len(), 1, "one blob under both");
 }
 
-// spec/sync.md §10 (Bodies): a body a peer that cannot read L answered a Fetch with nothing is not
+// spec/sync-streams.md §4 (bodies): a body a peer that cannot read L answered a Fetch with nothing is not
 // asked there again on that connection (no Fetch storm while it lacks it), and is fetched once the
 // peer announces it again (here, its listing on the next connection)
 #[test]
@@ -731,7 +731,7 @@ fn undelivered_blob_fetched_again_once_announced_spec_sync_6() {
     assert_eq!(net.read(b, t), Some(s("y")), "fetched once announced again");
 }
 
-// spec/sync.md §10 (Shared set: a reader opens a peer that cannot read L by a Hit on its head's
+// spec/sync-opens.md §4 (shared set: a reader opens a peer that cannot read L by a Hit on its head's
 // credential; Open only walks a head off the recorded path): readers whose recorded path ends at
 // the peer's head reconnect, write and read through it with no Open sent.
 #[test]
@@ -760,7 +760,7 @@ fn no_open_reaches_a_peer_on_the_newest_head_spec_sync_10() {
     assert_eq!(net.sent_kinds.get(&4).copied().unwrap_or(0), 0, "no Open");
 }
 
-// spec/sync.md §5 (Delete: signed by the head's delete key or level keys), §10 (a reader acts
+// spec/sync-ids.md §6 (delete: signed by the head's delete key or level keys), §10 (a reader acts
 // on a peer that cannot read L by deletes alone): a writer's purge-on-replace write reaches the
 // peer through a reader while the writer cannot reach it; the reader, holding no delete key,
 // sends no Delete and the purged body stays there; once the writer (its level-3 key) reaches
@@ -830,7 +830,7 @@ fn deletes_reach_a_peer_only_from_a_delete_key_holder_spec_sync_5() {
     assert_eq!(net.engine(a).get_typed(&t, &GONE).unwrap(), Some(s("new")), "the admin reads the new value through the peer");
 }
 
-// spec/sync.md §5 (Sending: every deposit a Deposit item), §10: A grants B while B is offline;
+// spec/sync-inbox.md §3 (sending: every deposit a Deposit item), §10: A grants B while B is offline;
 // A's grant lands as a Deposit item in B's inbox at the peer that keeps it, and B, connecting
 // only to that peer with A offline, sees the grant and reads the group.
 #[test]
@@ -919,7 +919,7 @@ fn edit_bytes(k: usize) -> usize {
     net.crossed.iter().filter(|(id, _)| listed.contains(id)).map(|(_, n)| *n).sum()
 }
 
-// spec/sync.md §3 (bytes cross once), §10 (Bodies: only blob IDs the store lacks are fetched):
+// spec/sync-judgement.md §1 (bytes cross once), §10 (Bodies: only blob IDs the store lacks are fetched):
 // an edit of a thing listed in three groups a peer that cannot read them keeps crosses to it
 // as many bytes as in one.
 #[test]
@@ -930,7 +930,7 @@ fn an_edit_in_a_group_nested_in_three_crosses_its_bytes_once_spec_sync_3() {
     assert_eq!(one, three, "bytes at 1 and 3 enclosing groups");
 }
 
-// spec/sync.md §5 (Deletes wait while a source lacks a body it takes now), §10 (Stream: a body a
+// spec/sync-ids.md §6 (deletes wait while a source lacks a body it takes now), §10 (Stream: a body a
 // peer that cannot read L refuses for its tombstone is told deleted there): the peer dropped a
 // writer's kept body on its own and the writer never read that deletion in the peer's log
 // (its events of it lost on the way), so the writer, listing the peer from the start after a
@@ -987,7 +987,7 @@ fn a_body_refused_for_a_tombstone_holds_no_delete_back_spec_sync_10() {
     assert!(of(&mut net, kept).iter().any(|id| held.contains(id)), "the kept body is at the peer again, under a new encryption");
 }
 
-// spec/sync.md §7 (Role view first), §10 (Refused): a peer that cannot read L refuses an entry a
+// spec/sync-compaction.md §1 (role view first), §10 (Refused): a peer that cannot read L refuses an entry a
 // writer logs for it under the peer's head (as it answers a stamp under keys it does not hold
 // yet, code 1) and says so. The writer's deletes there wait on it no more, the claim deletes
 // nothing of the writer's and status names the peer; once the peer's head moves (it gets the
@@ -1076,13 +1076,13 @@ fn behind_answers(s: &mut Setup, items: Vec<OfferItem>) -> Vec<(Code, Option<Vec
     offer_answers(s, items).into_iter().map(|(c, g)| (c, g.map(|g| { assert!(g.entry_box.is_none(), "steps alone"); g.steps }))).collect()
 }
 
-// spec/sync.md §5 (Behind), spec/wire.md §11.2 (Offer): a node keeping L unread answers a Behind
+// spec/sync-ids.md §6 (behind), spec/wire.md §11.2 (Offer): a node keeping L unread answers a Behind
 // item by a credential of a step on its path other than its head (its sync key, a claim of its
 // held set) with the steps after it through the first under another sync key, each verifying
 // under the one before; naming no step, the step after the newest bearing the sync key. One on the head, by a key that is no credential of the step
 // (a claim naming no step), or with a signature over another connection's challenge is refused
 // (14), one on a label not kept here answered 13, carrying nothing; nothing opens.
-// spec/sync.md §5 (behind)
+// spec/sync-ids.md §6 (behind)
 #[test]
 fn a_behind_item_gets_its_steps_child_spec_sync_5() {
     let mut s = setup();
@@ -1128,7 +1128,7 @@ fn redial(s: &mut Setup) {
     shared_of(&send(&mut s.net, s.b, &mut s.p, Message::NoRecord { id: 1 << 31 }));
 }
 
-// spec/sync.md §5 (Behind), notes/label-access.md (One sync key at a time): a reader removed at a
+// spec/sync-ids.md §6 (behind), notes/label-access.md (One sync key at a time): a reader removed at a
 // rotation keeps its old sync secret, and no time ends a sync key as a credential: long past
 // `ROLE_KEEP` (claim sets dropped), its Behind items, naming its step or none, learn the steps
 // under its own sync key and the first rotation past them, and nothing after: not how many
@@ -1157,7 +1157,7 @@ fn a_removed_reader_learns_at_most_the_next_rotation_spec_sync_5() {
     assert!(s.net.sync(s.b).shared_members(s.p.conn).is_empty(), "nothing opens");
 }
 
-// spec/sync.md §5 (Behind), spec/permissions.md §7: a used or revoked link's key actor, named by
+// spec/sync-ids.md §6 (behind), spec/permissions.md §7: a used or revoked link's key actor, named by
 // the static entry of an old step's claim set, asking by a Behind item on that step learns the
 // steps through the first rotation past it and nothing after; naming no step it is refused where
 // the head does not list it (a Static item's grant), and once the old step's claim set is
@@ -1186,7 +1186,7 @@ fn a_revoked_link_learns_at_most_the_next_rotation_spec_sync_5() {
     assert_eq!(got(&ans[0]), (Code::NOT_ADMITTED, None), "its claim set dropped: nothing");
 }
 
-// spec/sync.md §5 (Behind), notes/flow-control.md (Hub stall bounds): an Offer of 1024 Behind
+// spec/sync-ids.md §6 (behind), notes/flow-control.md (Hub stall bounds): an Offer of 1024 Behind
 // items each naming the genesis step by its sync key reads one step per item (the first under
 // another sync key) whatever the number of steps after it, and every item is answered.
 #[test]
@@ -1209,7 +1209,7 @@ fn behind_items_on_genesis_read_a_step_each_spec_sync_5() {
     assert_eq!(reads(12), (1024, 1024), "flat in the steps past genesis");
 }
 
-// spec/sync.md §5 (Behind), spec/wire.md §11.2 (Offer): the Behind answers of one Offer carry at
+// spec/sync-ids.md §6 (behind), spec/wire.md §11.2 (Offer): the Behind answers of one Offer carry at
 // most ⌊REPLY_BUDGET / 326⌋ steps: the item reaching the bound gets the steps it read, the items
 // after it 4 (refused for now), and a later Offer is answered.
 #[test]
@@ -1243,12 +1243,12 @@ fn an_offers_behind_answers_stop_at_the_step_bound_spec_sync_5() {
     assert_eq!(ans, vec![(Code::OK, Some(steps[1..].to_vec()))], "a later Offer is answered");
 }
 
-// spec/sync.md §5 (Behind), spec/wire.md §11.2 (Offer): a Behind item by a key actor's signing
+// spec/sync-ids.md §6 (behind), spec/wire.md §11.2 (Offer): a Behind item by a key actor's signing
 // key, naming no step, at a node keeping L unread is answered with the head's entry box for its
 // static entry and the path, as a Static item's Hit is, when the head's claim set lists the
 // entry; naming a step whose set lists it, with the steps after it alone; a key actor the head
 // does not list is refused (14); nothing opens.
-// spec/sync.md §5 (behind static)
+// spec/sync-ids.md §6 (behind static)
 #[test]
 fn a_behind_item_by_a_static_entry_gets_the_heads_box_spec_sync_5() {
     let mut s = setup();
@@ -1269,10 +1269,10 @@ fn a_behind_item_by_a_static_entry_gets_the_heads_box_spec_sync_5() {
     assert!(s.net.sync(s.b).shared_members(s.p.conn).is_empty(), "nothing opens");
 }
 
-// spec/sync.md §5 (Delete): a node keeping L unread takes a Delete of it only on a connection
+// spec/sync-ids.md §6 (delete): a node keeping L unread takes a Delete of it only on a connection
 // where L opened by a Hit on its head's sync key (or a static entry), and while the head bears
 // that key: before the open, and after a step with another sync key, it is refused whole (8)
-// spec/sync.md §5 (delete opened)
+// spec/sync-ids.md §6 (delete opened)
 #[test]
 fn a_delete_is_taken_only_under_an_open_spec_sync_5() {
     let mut s = setup();
@@ -1307,7 +1307,7 @@ fn rejoin(net: &mut Net, n: usize, s: usize) {
     net.blocked.remove(&(n, s));
 }
 
-// spec/sync.md §5 (Register: relayable by any node), issues/sync-rewrite.md 3h2 (Stale head): a
+// spec/sync-ids.md §6 (register: relayable by any node), issues/sync-rewrite.md 3h2 (Stale head): a
 // rotation while a peer that cannot read L is away leaves it on the old head (the child step
 // registered at another); a reader that is no admin, holding the recorded child, moves it there
 // by its walk (L opens at the old step it still shows) and registration; a reader added after
@@ -1370,7 +1370,7 @@ fn a_peer_on_an_older_head_is_moved_by_any_reader_spec_sync_5() {
     assert_eq!(net.read(c, t), Some(net::s("after")), "c reads through s alone: {:?}", net.sync(c).label_status());
 }
 
-// spec/sync.md §5 (Opens, Behind), notes/node-sync.md (Label states): two admins' sibling steps
+// spec/sync-ids.md §6 (opens, Behind), notes/node-sync.md (Label states): two admins' sibling steps
 // share their keys, so a reader's Hit by that sync key opens at the sibling the peer holds while
 // its walk found its own branch's step, which has a recorded child. The open head is doubted and
 // walked back to the peer's path by Behind items: the reader sends at most the one refused
@@ -1442,7 +1442,7 @@ fn a_reader_opened_at_a_sibling_registers_once_spec_sync_5() {
     assert!(net.sync(c).shared_members(conn).contains(&l));
 }
 
-// spec/sync.md §5 (Walk): a node holding the sync key of the peer's head opens L there whatever
+// spec/sync-ids.md §6 (walk): a node holding the sync key of the peer's head opens L there whatever
 // steps it recorded. While reader c is away it is removed (a step under a sync key it never
 // gets), the label rotates again, and c is granted anew; it learns the newest epoch's sync and
 // read secrets alone (as an inbox grant would bring them). Its `label.0` ends before both steps (it comes only by L),
@@ -1486,7 +1486,7 @@ fn a_node_holding_the_heads_sync_key_opens_past_steps_it_lacks_spec_sync_5() {
     assert_eq!(net.read(c, t), Some(net::s("after")));
 }
 
-// spec/sync.md §5 (Register: relayable by any node), issues/sync-rewrite.md 3h2 (Stale head): a
+// spec/sync-ids.md §6 (register: relayable by any node), issues/sync-rewrite.md 3h2 (Stale head): a
 // peer listed for L (in `label.0`) that lacks L entirely gets the recorded path, genesis first,
 // from a reader that is no admin: its walk finds no credential shown, a Behind item on its
 // newest step is refused there, and it registers the path; L then opens there at its head.
@@ -1528,7 +1528,7 @@ fn a_listed_peer_without_l_gets_the_recorded_path_spec_sync_5() {
     assert!(net.sync(b).shared_members(conn).contains(&l), "L open at s2");
 }
 
-// spec/sync.md §10 (Shared set), issues/sync-rewrite.md 3h2 (Stale head: found only at a peer
+// spec/sync-opens.md §4 (shared set), issues/sync-rewrite.md 3h2 (Stale head: found only at a peer
 // listed for L): a reader connected to a peer that keeps nothing of L and is not listed for it
 // registers nothing of L there, sends it no Behind item, and opens nothing.
 #[test]

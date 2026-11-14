@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Promotion of readers' deposits (spec/sync.md §5 Promotion, Clearing deposits): a writer
+//! Promotion of readers' deposits (spec/sync-inbox.md §4 promotion, Clearing deposits): a writer
 //! stamps a deposited commit only where the label must hold it and holds no stamped copy of it.
 
 use crate::net::hosted_nodes;
@@ -50,7 +50,7 @@ fn flood(net: &mut Net, r: usize, (host, g, l): (usize, Tid, LabelId), commits: 
     out
 }
 
-// spec/sync.md §5 (Promotion: a deposited commit the label must hold, one stamped copy; Clearing
+// spec/sync-inbox.md §4 (promotion: a deposited commit the label must hold, one stamped copy; Clearing
 // deposits: what no writer would promote counts toward the cap): reader `r` of groups `g` and `h`
 // deposits under `g`'s label fresh encryptions of every commit it holds under either label, ten
 // each, as many as the host takes while `a` is away. Writer `a` stamps none of a commit the label held stamped
@@ -124,7 +124,7 @@ fn whole(net: &mut Net, n: usize, c: CommitId) -> (CommitId, Vec<usize>) {
     (c, (0..h.aspects.len()).collect())
 }
 
-// spec/sync.md §5 (Promotion: a chain certificate outside the closure goes only with a commit the
+// spec/sync-inbox.md §4 (promotion: a chain certificate outside the closure goes only with a commit the
 // label must hold): reader `r`'s account reads the group, so it is on an authority path into it,
 // but the role commits `r` writes on its own account, each naming a fresh holder (15 bytes of its
 // choosing), are nothing the label must hold: deposited, none is stamped.
@@ -141,7 +141,7 @@ fn a_readers_own_role_commits_are_not_promoted_spec_sync_5() {
     assert_eq!(n, 0, "{n} of {} stamped", ids.len());
 }
 
-// spec/sync.md §5 (Promotion): reader `r` mints things and grants each a role on its own
+// spec/sync-inbox.md §4 (promotion): reader `r` mints things and grants each a role on its own
 // account: their creations and edge writes are on an authority path into the group, none a
 // commit the label must hold: deposited, none is stamped.
 #[test]
@@ -168,7 +168,7 @@ fn a_readers_fresh_things_are_not_promoted_spec_sync_5() {
     assert_eq!(n, 0, "{n} of {} stamped", ids.len());
 }
 
-// spec/sync.md §5 (Promotion: a key actor's newest card only): reader `r` rewrites its own node's
+// spec/sync-inbox.md §4 (promotion: a key actor's newest card only): reader `r` rewrites its own node's
 // `reach.0` twenty times with 4 KB of its choosing each and deposits them: no older rewrite is
 // ever shown a peer stamped.
 #[test]
@@ -262,7 +262,7 @@ fn a_readers_grants_to_the_group_stay_within_the_budget_spec_sync_5() {
     assert!(n <= osis_base::format::DEPOSITS_WAITING, "{n} of 40 grants stamped");
 }
 
-// spec/sync.md §5 (Promotion: a delta the label's bodies carry, not every closure delta): reader
+// spec/sync-inbox.md §4 (promotion: a delta the label's bodies carry, not every closure delta): reader
 // `r` admins team `t`, an actor listed in the group that the group's actor does not read (writer
 // `a` does, as a member); the role commits `r` writes on `t`, each naming a fresh holder, are
 // nothing the label must hold: deposited, none is stamped.

@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Co-reader nodes syncing labels peer to peer, in process (spec/sync.md §5, §10;
+//! Co-reader nodes syncing labels peer to peer, in process (spec/sync-ids.md §6, spec/sync-opens.md §4;
 //! spec/data-model.md §9).
 
 use crate::net::local_nodes;
@@ -18,7 +18,7 @@ fn reach(net: &mut Net, n: usize, key: u8) {
     net.actions(n, acts);
 }
 
-// spec/sync.md §5 (co-reader peer), §10: two holders of a group whose label names no host sync
+// spec/sync-ids.md §6 (co-reader peer), §10: two holders of a group whose label names no host sync
 // it directly: each dials the other by the dialable key in its `reach.0` and is served the label
 // through the host engine over the other's label state; writes flow both ways.
 #[test]
@@ -36,7 +36,7 @@ fn co_readers_sync_without_host_spec_sync_5() {
     assert!(net.sync(a).is_idle() && net.sync(b).is_idle());
 }
 
-// spec/sync.md §5, §10: a reader node with only a co-reader peer reachable gets the writer's
+// spec/sync-ids.md §6, spec/sync-opens.md §4: a reader node with only a co-reader peer reachable gets the writer's
 // content; the peer relays nothing it may not originate.
 #[test]
 fn reader_served_by_co_reader_peer_spec_sync_5() {
@@ -49,7 +49,7 @@ fn reader_served_by_co_reader_peer_spec_sync_5() {
     assert_eq!(net.read(r, t), Some(s("for the reader")));
 }
 
-// spec/sync.md §5, §10: co-readers are the nodes with a `reach.0` this node holds that may read
+// spec/sync-ids.md §6, spec/sync-opens.md §4: co-readers are the nodes with a `reach.0` this node holds that may read
 // a label it syncs; a node with `reach.0` that is no holder is not dialed, and nothing is dialed
 // while it is the only one known.
 #[test]
@@ -74,7 +74,7 @@ fn co_reader_selection_spec_sync_5() {
     assert!(d.iter().all(|d| d.key == [0x5e; 32] || d.key == [0xb3; 32] && d.url == "peer://https://relay.example"), "{d:?}");
 }
 
-// spec/sync.md §10: LAN tags are the kdf of the lan secret and the 10-minute window: equal
+// spec/sync-opens.md §4: LAN tags are the kdf of the lan secret and the 10-minute window: equal
 // within a window, different across windows and across secrets.
 #[test]
 fn lan_tag_windows_spec_sync_10() {
@@ -153,7 +153,7 @@ fn a_node_is_a_source_only_once_the_label_is_open() {
     assert!(told, "never connected");
 }
 
-// spec/sync.md §10: a co-reader's signed announcement matches for the current and adjacent
+// spec/sync-opens.md §4: a co-reader's signed announcement matches for the current and adjacent
 // windows, and the node then dials the announced transport key at the source address and port
 // (not the dialable key), even inside its retry pause (once per pause length); a stranger's tag,
 // one two windows off, a signature by another key, one not sealed under the lan secret, a
@@ -212,7 +212,7 @@ fn lan_match_dials_announced_key_spec_sync_10() {
     assert_eq!(dials(&acts), vec![Address { url: "peer://192.168.1.6:4433".into(), key: [0x78; 32] }]);
 }
 
-// spec/sync.md §10 (lan replay): an announcement counts only from the first
+// spec/sync-opens.md §4 (lan replay): an announcement counts only from the first
 // source it was verified from, so a LAN attacker replaying a co-reader's datagram from spoofed
 // sources never draws a dial (which would show it who reads that co-reader); nor does one of an
 // earlier window than the newest verified, whatever its source.
@@ -251,7 +251,7 @@ fn lan_replay_from_other_source_ignored_spec_sync_10() {
     assert!(dials(&acts).iter().all(|d| !d.url.starts_with("peer://192.168.1.1") && !d.url.contains("fe80")), "{acts:?}");
 }
 
-// spec/sync.md §10: the announcement is signed under the dialable key only when that key is
+// spec/sync-opens.md §4: the announcement is signed under the dialable key only when that key is
 // the dialable secret's Ed25519 key.
 #[test]
 fn lan_announcement_needs_own_key_spec_sync_10() {
@@ -263,7 +263,7 @@ fn lan_announcement_needs_own_key_spec_sync_10() {
     assert!(net.sync(a).lan_announcement([1; 32], 1).is_some());
 }
 
-// spec/sync.md §10 (a proven route first): a co-reader reached through its `peer://` route that
+// spec/sync-opens.md §4 (a proven route first): a co-reader reached through its `peer://` route that
 // is then heard on the LAN is dialed there beside the running connection; once that comes up
 // the other connection closes and the label goes on over the LAN.
 #[test]
@@ -297,7 +297,7 @@ fn lan_replaces_relay_route_spec_sync_10() {
     assert!(dials(&acts).is_empty());
 }
 
-// spec/permissions.md §4 (`reach.0` under every label), spec/sync.md §10 (IP consent): a node's
+// spec/permissions.md §4 (`reach.0` under every label), spec/sync-transport.md §3 (iP consent): a node's
 // `reach.0` reaches the readers of every group it syncs, other accounts' nodes included; a
 // rotation (`Osis::rotate_peer_address`) renews the dialable key and lan secret, tells the driver
 // to listen again, and the new `reach.0` reaches them too.
@@ -329,7 +329,7 @@ fn reach_under_every_label_and_rotation_spec_permissions_4() {
     assert_eq!(net.read(c, t), Some(s("after the rotation")));
 }
 
-// spec/sync.md §10 (a candidate never replaces a working route before it is up): a LAN address
+// spec/sync-opens.md §4 (a candidate never replaces a working route before it is up): a LAN address
 // whose dial fails beside a running relay connection leaves that connection in place.
 #[test]
 fn failed_lan_route_keeps_relay_spec_sync_10() {

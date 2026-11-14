@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Deposit items between readers (issues/sync-rewrite.md; spec/sync.md §10 Shared
+//! Deposit items between readers (issues/sync-rewrite.md; spec/sync-opens.md §4 shared
 //! set, spec/wire.md §11.2 Offer): an inbox blob goes as an Offer item to a connected node the
 //! depositor judges a holder of the inbox, with no host and no third node.
 
@@ -110,7 +110,7 @@ fn a_deposit_item_is_taken_only_signed_for_a_held_inbox_spec_wire_11_2() {
     assert!(net.sync(b).entries(&inbox.label).iter().any(|(x, _)| *x == id), "taken into the inbox");
 }
 
-// spec/sync.md §10 Shared set (Deposit items): the receiver judges by the actors it proved on this
+// spec/sync-opens.md §4 shared set (Deposit items): the receiver judges by the actors it proved on this
 // connection, not by what it could prove now: a listener that proved nothing to a stranger, and
 // came to know it before its NoRecord (so runs a set), answers a valid deposit for its own inbox
 // 14, as for one it does not hold
@@ -139,7 +139,7 @@ fn a_deposit_item_is_judged_by_what_the_receiver_proved_here_spec_sync_10() {
     assert!(!net.sync(b).entries(&inbox.label).iter().any(|(x, _)| *x == id));
 }
 
-// spec/sync.md §10 Shared set (Deposit items refused for now): a deposit past the receiver's
+// spec/sync-opens.md §4 shared set (Deposit items refused for now): a deposit past the receiver's
 // peer budget is answered 5, kept pending and offered again after the back-off; it lands once the
 // budget frees (the first deposit, opened at the receiver, no longer counts)
 #[test]
@@ -170,7 +170,7 @@ fn deposit_offers(msgs: &[Message]) -> Vec<(u32, usize)> {
     }).collect()
 }
 
-// spec/sync.md §10 Shared set (Deposit items): one refused (14) is not offered on that connection
+// spec/sync-opens.md §4 shared set (Deposit items): one refused (14) is not offered on that connection
 // again until what the sender holds changes or the receiver's next filter arrives: a peer
 // refusing for good gets it once per filter it sends, never per pass or tick
 #[test]

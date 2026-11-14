@@ -434,7 +434,7 @@ fn group_holders_learn_grant_removal() {
     // the seed itself, Carol may learn: issues/fresh-deposit-seed-readable-by-departed.md
 }
 
-// spec/sync.md §2 (an actor naming no inbox uses its first admin's), §3: Bob grants the tag (which names
+// spec/sync-ids.md §2 (an actor naming no inbox uses its first admin's), §3: Bob grants the tag (which names
 // no inbox) read on his own tag; the blob sealed to the tag under Alice's home label opens there,
 // so Alice, the tag's admin, learns the grant and its removal.
 #[test]
@@ -502,7 +502,7 @@ fn group_admin_learns_removal_elsewhere() {
     assert_eq!(of_card(&carol), before, "Carol logs nothing of the card again");
 }
 
-// spec/sync.md §3: a removal by someone who knows the group's keys comes by its inbox: the admin's copy, with the remover's chain, leaves out the thing's newest `keys.0` (a later reader of the group never learns the fresh seed: `zoe` below; Carol, a reader until the removal, can: issues/fresh-deposit-seed-readable-by-departed.md)
+// spec/sync-judgement.md §1: a removal by someone who knows the group's keys comes by its inbox: the admin's copy, with the remover's chain, leaves out the thing's newest `keys.0` (a later reader of the group never learns the fresh seed: `zoe` below; Carol, a reader until the removal, can: issues/fresh-deposit-seed-readable-by-departed.md)
 #[test]
 fn group_admin_copies_removal_without_new_keys() {
     let Setup { mut w, alice, bob, carol, g } = setup();
@@ -550,7 +550,7 @@ fn seed_of(db: &Osis, t: Tid) -> Option<[u8; 32]> {
     db.at(t, osis::internals::core_types::KEYS).get().ok().flatten().and_then(|k| k.deposit_seed)
 }
 
-// spec/sync.md §5, §6: Dave reads G and removes G's grant on his card outside G's closure: his deposit under G's label is promoted by its admin, who reads the card no more and holds none of its fresh `keys.0`, its author's chain complete without it; a reader joining later learns the removal and not the fresh deposit seed
+// spec/sync-ids.md §6, spec/sync-judgement.md §2: Dave reads G and removes G's grant on his card outside G's closure: his deposit under G's label is promoted by its admin, who reads the card no more and holds none of its fresh `keys.0`, its author's chain complete without it; a reader joining later learns the removal and not the fresh deposit seed
 #[test]
 fn group_removal_deposit_promoted_without_new_keys() {
     let Setup { mut w, alice, bob: _, carol: _, g } = setup();
@@ -584,7 +584,7 @@ fn group_removal_deposit_promoted_without_new_keys() {
     assert_ne!(seed_of(&zoe, t), seed_of(&dave, t), "zoe does not learn the fresh seed");
 }
 
-// spec/sync.md §3: M's first admin is group O; Dave removes M's grant on his card; the copy under O's home label leaves out the fresh deposit seed, which a reader joining O later would otherwise read there
+// spec/sync-judgement.md §1: M's first admin is group O; Dave removes M's grant on his card; the copy under O's home label leaves out the fresh deposit seed, which a reader joining O later would otherwise read there
 #[test]
 fn first_admin_home_copy_of_removal_without_new_keys() {
     let mut w = World::new();
@@ -654,7 +654,7 @@ fn built_outsider() -> (World, [Osis; 5], (Tid, Tid, Tid)) {
     (w, [alice, eve, dave, carol, bob], (h, b, t))
 }
 
-// spec/sync.md §3: a `label.0` write after a rotation is a delta on the record an earlier one set: a grant to a group of a thing rotated before it copies them all, or the group's readers never find the thing's label
+// spec/sync-judgement.md §1: a `label.0` write after a rotation is a delta on the record an earlier one set: a grant to a group of a thing rotated before it copies them all, or the group's readers never find the thing's label
 #[test]
 fn grant_to_group_of_a_thing_rotated_before() {
     let (mut w, alice, _eve, dave, carol, _bob, h, _b, t) = outsider();
@@ -675,7 +675,7 @@ fn grant_to_group_of_a_thing_rotated_before() {
     assert_eq!(text(&carol, t).as_deref(), Some("dave's"), "the group's reader");
 }
 
-// spec/sync.md §3, §6: H lost the grant while its one copying admin was away and got it back: she holds the removal from the inbox without its `keys.0`, and a co-admin must not delete her copies for lack of it; a reader joining later reads the thing
+// spec/sync-judgement.md §1, spec/sync-judgement.md §2: H lost the grant while its one copying admin was away and got it back: she holds the removal from the inbox without its `keys.0`, and a co-admin must not delete her copies for lack of it; a reader joining later reads the thing
 #[test]
 fn grant_lost_and_regained_with_the_admin_away() {
     let (mut w, alice, eve, dave, carol, bob, h, b, t) = outsider();
@@ -707,7 +707,7 @@ fn grant_lost_and_regained_with_the_admin_away() {
     }
 }
 
-// spec/sync.md §3, §6: a thing's grant to a group granted and removed in turn with its admins and a reader going away and back: all end alike, a later reader reads it or not by the last write and never learns a seed it should not, and the label goes quiet
+// spec/sync-judgement.md §1, spec/sync-judgement.md §2: a thing's grant to a group granted and removed in turn with its admins and a reader going away and back: all end alike, a later reader reads it or not by the last write and never learns a seed it should not, and the label goes quiet
 #[test]
 #[ignore = "property: 40 seeds, about 3 minutes"]
 fn grant_and_removal_orders_large() {
@@ -794,7 +794,7 @@ fn later_reader_reads(w: &mut World, alice: &Osis, bob: &Osis, h: Tid, b: Tid, t
     assert_eq!(text(bob, t).as_deref(), Some("dave's"), "{what}");
 }
 
-// spec/sync.md §6, spec/permissions.md §4: a copy's chain leaves out every `keys.0`: the outside granter rotating his account after the grant must not lose the copy
+// spec/sync-judgement.md §2, spec/permissions.md §4: a copy's chain leaves out every `keys.0`: the outside granter rotating his account after the grant must not lose the copy
 #[test]
 fn a_copy_survives_its_granter_rotating() {
     let (mut w, alice, _eve, dave, carol, bob, h, b, t) = outsider();
@@ -829,7 +829,7 @@ fn franks_thing(w: &mut World, dave: &Osis, h: Tid) -> (Osis, Tid, Tid) {
     (frank, t, fd)
 }
 
-// spec/sync.md §6: the granter's chain moves after the copy (his grant lowered) with the copying admin away: the co-admin completes it rather than delete the copy
+// spec/sync-judgement.md §2: the granter's chain moves after the copy (his grant lowered) with the copying admin away: the co-admin completes it rather than delete the copy
 #[test]
 fn a_copy_survives_its_granters_grant_changing() {
     let (mut w, alice, eve, dave, carol, bob, h, b, _t) = outsider();
@@ -847,7 +847,7 @@ fn a_copy_survives_its_granters_grant_changing() {
     assert_eq!(text(&alice, t).as_deref(), Some("dave's"));
 }
 
-// spec/sync.md §6: the same with the granter removed from the thing
+// spec/sync-judgement.md §2: the same with the granter removed from the thing
 #[test]
 fn a_copy_survives_its_granter_leaving() {
     let (mut w, alice, _e, dave, _c, bob, h, b, _t) = outsider();
@@ -857,7 +857,7 @@ fn a_copy_survives_its_granter_leaving() {
     later_reader_reads(&mut w, &alice, &bob, h, b, t, "the granter removed");
 }
 
-// spec/sync.md §3: a copy carries no `keys.0` of the thing: a group's reader with write finds them under its label, stamps and is read by all
+// spec/sync-judgement.md §1: a copy carries no `keys.0` of the thing: a group's reader with write finds them under its label, stamps and is read by all
 #[test]
 fn a_write_grant_by_an_outsider_writes() {
     let (mut w, alice, eve, dave, carol, bob, h, b, t) = outsider();
@@ -880,7 +880,7 @@ fn a_write_grant_by_an_outsider_writes() {
     }
 }
 
-// spec/sync.md §3, §6: a thing under a group the granter administers, and leaves after the grant
+// spec/sync-judgement.md §1, spec/sync-judgement.md §2: a thing under a group the granter administers, and leaves after the grant
 #[test]
 fn a_grant_on_a_thing_a_group_owns_by_an_outsider() {
     let (mut w, alice, _e, dave, carol, bob, h, b, _t) = outsider();
@@ -907,7 +907,7 @@ fn a_grant_on_a_thing_a_group_owns_by_an_outsider() {
     later_reader_reads(&mut w, &alice, &bob, h, b, t, "under a group");
 }
 
-// spec/sync.md §3, spec/permissions.md §4: the granter's chain runs through a thing made by its record
+// spec/sync-judgement.md §1, spec/permissions.md §4: the granter's chain runs through a thing made by its record
 #[test]
 fn a_grant_by_a_chain_through_a_record_made_thing() {
     let (mut w, alice, _e, dave, carol, bob, h, b, _t) = outsider();
@@ -934,7 +934,7 @@ fn a_grant_by_a_chain_through_a_record_made_thing() {
     later_reader_reads(&mut w, &alice, &bob, h, b, t, "through a record-made thing");
 }
 
-// spec/sync.md §3: after a removal a later reader of the group neither reads the thing nor learns its keys, however often it rotated since
+// spec/sync-judgement.md §1: after a removal a later reader of the group neither reads the thing nor learns its keys, however often it rotated since
 #[test]
 fn a_later_reader_learns_no_keys_of_a_thing_the_group_lost() {
     let (mut w, alice, _e, dave, _c, bob, h, b, t) = outsider();

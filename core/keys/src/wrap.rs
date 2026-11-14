@@ -1,5 +1,5 @@
 //! Which epoch to wrap under (spec/crypto.md §5) and which epochs label role keys come from
-//! (spec/sync.md §2, §5). osis-label derives and uses the keys.
+//! (spec/sync-ids.md §2, spec/sync-ids.md §6). osis-label derives and uses the keys.
 
 use crate::epoch::{ActorEpochs, RoleEpochs};
 use osis_base::Role;
@@ -25,7 +25,7 @@ pub fn registration_epochs(a: &ActorEpochs) -> Option<[(Epoch, &Secret32); 4]> {
 }
 
 /// The held epoch of `l`'s group role whose label key is `key` (a host head's
-/// registered key): the node talks to that host with it (spec/sync.md §2). Any held secret,
+/// registered key): the node talks to that host with it (spec/sync-ids.md §2). Any held secret,
 /// established or not: opening a label is not encrypting under (spec/crypto.md §4). A stamp,
 /// step or delete under it needs `RoleEpochs::is_established`.
 pub fn registered_epoch(a: &ActorEpochs, l: LabelRole, key: &VerifyingKey) -> Option<Epoch> {
@@ -39,7 +39,7 @@ pub fn registered_key(a: &ActorEpochs, l: LabelRole, key: &VerifyingKey) -> Opti
 }
 
 /// Whether an admin holds an established epoch newer than a head registers, per label role
-/// (spec/sync.md §5): it then issues the next step there. `head` gives the head's epoch per
+/// (spec/sync-ids.md §6): it then issues the next step there. `head` gives the head's epoch per
 /// label role (`LabelRole::ALL`: sync, write, delete) where the admin holds it; a role whose
 /// head epoch it does not hold returns false (it walks first), and so does an unestablished head
 /// admin epoch (the step is signed under its delete key: encrypting under, spec/crypto.md §4;

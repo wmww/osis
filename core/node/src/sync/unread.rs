@@ -56,7 +56,7 @@ struct Pending {
     n: u64,
 }
 
-/// A sync ID full here (spec/sync.md §10, Full): what its refusals found used, the entries
+/// A sync ID full here (spec/sync-streams.md §4, full): what its refusals found used, the entries
 /// refused (not fetched again while it is full), and the connections told.
 #[derive(Clone, Default)]
 struct Full {
@@ -174,7 +174,7 @@ impl SyncEngine {
         Ok(Some(osis_proto::msg::Grant { entry_box: Some(entry_box), steps }))
     }
 
-    /// The answer to a Behind item on `l` (spec/sync.md §5, Behind), its key `key` shown by `sig`,
+    /// The answer to a Behind item on `l` (spec/sync-ids.md §6, behind), its key `key` shown by `sig`,
     /// an open signature made as the peer's side (`by_listener`) over this side's Hello challenge
     /// and the listener's key (`challenge`, `listener`): when `step` is not the head and `key` is a credential of it (its sync key, a
     /// claim of its held claim set, or a key actor's signing key whose static entry the set
@@ -263,7 +263,7 @@ impl SyncEngine {
         })
     }
 
-    /// Events of unread `l` pulled from `conn`'s reader (spec/sync.md §10, Stream): a stamped
+    /// Events of unread `l` pulled from `conn`'s reader (spec/sync-streams.md §4, stream): a stamped
     /// entry with its bytes, or whose blob the hub's store holds already under any sync ID (bytes
     /// cross once), goes into the hub's store by its rules for a stamped entry (the stamp under its head's
     /// write key); a relay-only one passes the store's relay gate and goes on to the other members
@@ -463,7 +463,7 @@ impl SyncEngine {
     }
 
     /// A Deposit item for unread inbox `l` (issues/sync-rewrite.md): taken as a
-    /// Deposit by the hub's store (its signature, budget, rate, caps: spec/sync.md §5): 0,
+    /// Deposit by the hub's store (its signature, budget, rate, caps: spec/sync-ids.md §6): 0,
     /// refused for now (4, 5, 12), else 14.
     pub(crate) fn unread_deposit(&mut self, l: LabelId, blob: &[u8], wrap: [u8; WRAP_LEN], sig: &Signature) -> Result<Code> {
         let now = self.now();
@@ -471,11 +471,11 @@ impl SyncEngine {
             let mut hub = self.hub();
             // a sync ID not held here (yet: a label is registered after its first deposits may
             // go) is refused for now where its registration would be taken, as any Deposit before
-            // its label is (spec/sync.md §5)
+            // its label is (spec/sync-ids.md §6)
             let Some(k) = hub.head_keys(&l).map_err(hub_err)? else { return Ok(if hub.admits(&l) { Code::RATE_LIMITED } else { Code::NOT_ADMITTED }) };
             let mut struck = false;
             let (code, signed) = osis_proto::session::deposit(&mut *hub, now, &l, &k, blob, wrap, sig, &mut struck).map_err(hub_err)?;
-            // refused for now passes on (spec/sync.md §10, Deposit items); any other refusal is 14
+            // refused for now passes on (spec/sync-opens.md §5, deposit items); any other refusal is 14
             match code {
                 Code::OK | Code::RATE_LIMITED | Code::BUDGET_FULL | Code::STORAGE_CAP if signed => code,
                 _ => Code::NOT_ADMITTED,

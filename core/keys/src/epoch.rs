@@ -848,7 +848,7 @@ mod tests {
     }
 
     // spec/crypto.md §3: derived epochs keep the base actor's n below the cap, so each base actor rotation
-    // gives a newer derived epoch (a plain group's labels are stepped on it, spec/sync.md §5);
+    // gives a newer derived epoch (a plain group's labels are stepped on it, spec/sync-ids.md §6);
     // base epochs past the cap (a writer of the base actor jumped them) all derive at the cap, so a
     // thing's own chain starts at most at `MAX_FREE_N`; placeholders there stay distinct.
     #[test]

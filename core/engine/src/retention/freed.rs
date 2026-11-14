@@ -1,4 +1,4 @@
-//! Freed sets (spec/sync.md §7 Freed links): a dropped body's links (its values' tree roots and
+//! Freed sets (spec/sync-compaction.md §1 freed links): a dropped body's links (its values' tree roots and
 //! its pages) join a per-thing set, local only, before the body goes. Each link is judged when
 //! its delete is sent, against the sources of its thing held then (bodies and live states,
 //! `tree_refs`): one a held source reaches leaves the set, kept; one no held source reaches is
@@ -10,7 +10,7 @@
 //!
 //! A judged link keeps no key here: what it needs to delete (its blob ID, salt, Del and thing
 //! blind) stays, so a dropped body's pieces are unopenable from the store at the end of the
-//! drop's transaction (spec/sync.md §7 Freed links), where every freed set that took links is
+//! drop's transaction (spec/sync-compaction.md §1 freed links), where every freed set that took links is
 //! judged (`settle_due`). A link waiting for a node blob keeps its key until it is walked.
 //!
 //! A held blob is checked against its link first: a prefix that does not bear the link's Del under
@@ -489,7 +489,7 @@ mod tests {
         .unwrap()
     }
 
-    // spec/sync.md §7 Freed links: a dropped body's pieces no held source of its thing links
+    // spec/sync-compaction.md §1 freed links: a dropped body's pieces no held source of its thing links
     // are freed (the walk follows its unshared nodes and stops at shared ones); none a held
     // body or the live state links is; and each is judged by the delete keys of its link.
     #[test]
@@ -521,7 +521,7 @@ mod tests {
         assert_eq!(e.run(|tx| part_links(tx, &s1, 0)).unwrap().len(), 1, "a snapshot links its value's root");
     }
 
-    // spec/sync.md §7 Freed links (a judgment needs every node blob of the held sources'
+    // spec/sync-compaction.md §1 freed links (a judgment needs every node blob of the held sources'
     // trees): a held body's tree node not held blocks its thing's judgments, which ask for it;
     // once it is held, the next judgment of anything judges them.
     #[test]
@@ -542,7 +542,7 @@ mod tests {
         assert_eq!(e.freed_wants().count(), 0);
     }
 
-    // spec/sync.md §7 Freed links (a held source's node not held blocks judgments until held): a
+    // spec/sync-compaction.md §1 freed links (a held source's node not held blocks judgments until held): a
     // step, then a transaction, that held such a node, counted the tree under it and failed
     // leaves it missing: what was counted from the node goes with it.
     #[test]
@@ -571,7 +571,7 @@ mod tests {
         assert!(e.tree_refs(&t, &ask).unwrap().missing.contains(&root.blob), "a failed transaction's read went");
     }
 
-    // spec/sync.md §7 Freed links: a link judged freed whose next judgment waits for a held
+    // spec/sync-compaction.md §1 freed links: a link judged freed whose next judgment waits for a held
     // source's node (a co-writer's new tree not fetched yet) is handed on again once the node
     // comes, as one judged anew: its entries are judged again under their own label, whichever
     // pass woke it, so its delete at hosts is not stranded.
@@ -595,7 +595,7 @@ mod tests {
         assert_eq!(j.fresh, freed, "handed on so their labels judge them again");
     }
 
-    // spec/crypto.md §7, spec/sync.md §7 Freed links (a link is judged under its own thing; a
+    // spec/crypto.md §7, spec/sync-compaction.md §1 freed links (a link is judged under its own thing; a
     // held blob whose prefix does not bear the link under that thing is no piece of it): a
     // writer of t1 who reads t2 sets a t1 value to t2's value link verbatim. Its body dropped,
     // nothing of t2 is freed, released or deleted, and t1's link kept nothing of t2 alive.
@@ -626,7 +626,7 @@ mod tests {
         assert!(live.iter().all(|b| e.has_blob(b)), "t2's tree held");
     }
 
-    // spec/sync.md §7 Freed links (a piece goes once no held source of its thing links it): a
+    // spec/sync-compaction.md §1 freed links (a piece goes once no held source of its thing links it): a
     // value of the thing links a live tree's root blob by a wrong key. The tree stays linked
     // whichever link to that blob is counted first (here the wrong one: its aspect sorts first,
     // counted afresh as at open).
@@ -647,7 +647,7 @@ mod tests {
         assert_eq!(e.tree_refs(&t, &tree).unwrap().blobs, tree, "the live tree stays linked");
     }
 
-    // spec/sync.md §7 Freed links (the walk stops at shared nodes), notes/coordination.md (check
+    // spec/sync-compaction.md §1 freed links (the walk stops at shared nodes), notes/coordination.md (check
     // scaling): dropping an edited version of a value frees what the edit replaced, flat in the
     // value's size; the freed set holds no more.
     #[test]
@@ -711,7 +711,7 @@ mod tests {
         (tree1.iter().filter(|b| e.has_blob(b)).count(), tree2.iter().all(|b| e.has_blob(b)))
     }
 
-    // spec/permissions.md §3, spec/sync.md §7 Freed links (lost access drops the pieces the
+    // spec/permissions.md §3, spec/sync-compaction.md §1 freed links (lost access drops the pieces the
     // forgotten parts reach that no remaining source links), with no node-sync: a reader removed
     // from t1 drops t1's own tree
     #[test]
@@ -723,7 +723,7 @@ mod tests {
         assert!(t2, "t2's tree kept");
     }
 
-    // spec/sync.md §7 Freed links (a piece goes only by a link its prefix bears), spec/crypto.md
+    // spec/sync-compaction.md §1 freed links (a piece goes only by a link its prefix bears), spec/crypto.md
     // §7, with no node-sync: t1's value is t2's link copied verbatim; a reader removed from t1
     // drops nothing of t2, though no source of t1 links it any more
     #[test]

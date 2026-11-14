@@ -1,4 +1,4 @@
-//! osis-host: hosting, a node storing and serving labels it need not read (spec/sync.md §4-§9):
+//! osis-host: hosting, a node storing and serving labels it need not read (spec/sync-ids.md §5):
 //! `HostStore` (osis-proto's `LabelStore` over its own osis-store `Store`, removals shredded,
 //! with the `HostPolicy` and the admission) and `Hub` (sans-I/O: a session per
 //! connection, accepted on a listener of the node or dialed by node sync, sweeps). The node's driver drives the hub in its own loop, with the store its
@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub use hub::{Binding, ConnId, Down, Hub, HubOutput, Remote, Up};
 pub use store::{HostStore, DEPOSIT_ENTRY_BYTES, HostPolicy, MemEvent, Room, Swept, Totals};
 
-/// Which labels a host takes new registrations of (spec/sync.md §5: an unadmitted genesis
+/// Which labels a host takes new registrations of (spec/sync-ids.md §6: an unadmitted genesis
 /// step gets code 14). Labels it already holds stay served either way.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Admission {

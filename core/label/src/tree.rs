@@ -43,7 +43,7 @@ impl Framing {
     }
 
     /// Whether the blob `link` reaches, framed earlier, keeps its encryption when a delta framed
-    /// with `self` reuses it (spec/sync.md §1): its expiry is not earlier than this one's, and its
+    /// with `self` reuses it (spec/sync-ids.md §1): its expiry is not earlier than this one's, and its
     /// commitments to the thing's delete keys (levels 1 and 3) are exactly this framing's under
     /// its salt and the thing blind of the link's link blind (the link alone decides). An
     /// author-chain commitment need not match while this delta lists another level-2 key beside
@@ -118,7 +118,7 @@ impl BlobFetch for MemoryBlobs {
 /// and key, and records what it wrote. Built from a [`Reuse`] index of the value's current tree
 /// (`BlobWriter::reusing`, which takes the index's framing), a
 /// chunk or node of equal content hash keeps its blob when the re-encryption rule allows
-/// (spec/sync.md §1); reused blobs are not in `written` (the delta does not introduce them).
+/// (spec/sync-ids.md §1); reused blobs are not in `written` (the delta does not introduce them).
 pub struct BlobWriter<'a> {
     framing: &'a Framing,
     store: &'a mut dyn BlobStore,
@@ -243,7 +243,7 @@ fn kids_digest(kids: &[Kid]) -> [u8; 32] {
     h.finalize()
 }
 
-/// What a new version of a large value may reuse from the current tree (spec/sync.md §1,
+/// What a new version of a large value may reuse from the current tree (spec/sync-ids.md §1,
 /// notes/local-store.md): chunk links by content hash, and node links whose blob the
 /// re-encryption rule keeps, with the digest of their children. Memory: one link per chunk and
 /// node of the current tree.
@@ -258,7 +258,7 @@ impl Reuse {
     /// Walks the tree under `root` through the held node blobs (each verified; a missing,
     /// corrupt or foreign node just indexes nothing below it), visiting at most
     /// `max_len / CHUNK_MIN + 1` chunk links. Each blob's commitments are checked under its link
-    /// blind, whatever commit introduced it (spec/sync.md §1). Only `Storage` fails.
+    /// blind, whatever commit introduced it (spec/sync-ids.md §1). Only `Storage` fails.
     pub fn index(root: &Link, framing: Framing, fetch: &mut dyn BlobFetch, params: ChunkParams, max_len: usize) -> Result<Reuse, Error> {
         let mut r = Reuse { framing, chunks: HashMap::new(), nodes: HashMap::new() };
         let mut budget = (max_len / params.min.max(1)).saturating_add(1);
@@ -296,7 +296,7 @@ impl Reuse {
         Ok(Some((prefix, level, kids)))
     }
 
-    /// Never reuses `blob` (a chunk or node a peer deleted, spec/sync.md §1): it is written
+    /// Never reuses `blob` (a chunk or node a peer deleted, spec/sync-ids.md §1): it is written
     /// afresh, and so is every node above it.
     pub fn exclude(&mut self, blob: &BlobId) {
         self.chunks.retain(|_, l| l.blob != *blob);
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(r.get(&bad), Err(PageError::Missing));
     }
 
-    // spec/crdt.md §8, spec/sync.md §6, spec/commits.md §1: a paged snapshot goes out through
+    // spec/crdt.md §8, spec/sync-judgement.md §2, spec/commits.md §1: a paged snapshot goes out through
     // BlobWriter (pages framed with the delta's expiry and delete keys) and
     // back through BlobReader; without a page the commit cannot apply (Missing, fetch and retry).
     #[test]

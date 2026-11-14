@@ -17,7 +17,7 @@ CONSTANTS
     IncCheck,                       \* a cursor is honoured only on this store's own history
     KeepHistory,                    \* the first append after a start records the incarnation before it, so a restart honours earlier cursors
     ListingDels,                    \* a from-the-start reply carries the deletion events the log still holds
-    Infer,                          \* "literal" (issue) | "knew" (spec/sync.md §6) | "none" (proposed)
+    Infer,                          \* "literal" (issue) | "knew" (spec/sync-judgement.md §2) | "none" (proposed)
     JoinDurable,                    \* an unfinished join keeps its own position until its last page
     JoinAnswer,                     \* a join of what the server does not share is answered, not an empty success
     LostOlder,                      \* Lost keeps an older lag

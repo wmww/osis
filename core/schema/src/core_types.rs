@@ -35,7 +35,7 @@ pub fn is_content(ak: &str) -> bool {
 /// Whether a delete resets `ak` and `has_content` reads it: content, but the thing's retainer
 /// list, which says what keeps the thing, not what it holds (a deleted thing stays judged by its
 /// retainers, notes/lifetimes.md Interactions), and `purge.0`, which only places a purge
-/// request (spec/commits.md §5 Purge; a delete's own, spec/sync.md §9 Delete).
+/// request (spec/commits.md §5 Purge; a delete's own, spec/sync-compaction.md §2 delete).
 pub fn deletable(ak: &str) -> bool {
     is_content(ak) && ak != "retainers^.0" && ak != "purge.0"
 }

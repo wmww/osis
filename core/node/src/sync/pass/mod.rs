@@ -1,4 +1,4 @@
-//! The pass at one source for one label after its log was read to the end (spec/sync.md §5-§7;
+//! The pass at one source for one label after its log was read to the end (spec/sync-ids.md §6;
 //! spec/permissions.md §4): re-registration first when this admin holds newer epochs than the
 //! head (the actor's role commits the source lacks, then the step; the rest after it is
 //! registered), then logging of must-hold bodies (role commits first) or relays of stamped ones,
@@ -50,7 +50,7 @@ const SETTLE_MS: u64 = 30_000;
 /// The least a node waits, after receiving another node's commit or seeing a deposit, before
 /// it places, promotes or copies it itself (ms); the most is `SETTLE_MS`. The point in between
 /// is this node's per blob (`relay_delay`), so the author or the first co-writer is usually done
-/// and the others skip it: nodes online together otherwise each placed a copy (spec/sync.md §6,
+/// and the others skip it: nodes online together otherwise each placed a copy (spec/sync-judgement.md §2,
 /// §7; spec/permissions.md §4).
 const RELAY_MIN_MS: u64 = 5_000;
 
@@ -123,7 +123,7 @@ pub(crate) struct Head {
     pub(crate) l: LabelId,
     pub(crate) source: Option<PeerKey>,
     pub(crate) id: osis_label::StepId,
-    /// The head's write key: the stamps it takes (spec/sync.md §5 Stamp).
+    /// The head's write key: the stamps it takes (spec/sync-ids.md §6 stamp).
     pub(crate) stamps: osis_crypto::VerifyingKey,
     pub(crate) keys: HeadKeys,
     pub(crate) read_ok: bool,
@@ -149,7 +149,7 @@ struct At<'a> {
     /// one stamped for its head) is not at the source yet (its relay waits, or the source has
     /// not pulled it): deletions there wait (`deletions`), as an entry reaches the source before its delete.
     behind: bool,
-    /// The source is full for the label (spec/sync.md §10 Full): it takes nothing until room
+    /// The source is full for the label (spec/sync-streams.md §4 full): it takes nothing until room
     /// appears, so no delete waits for it to take a carrier.
     full: bool,
 }
@@ -222,7 +222,7 @@ impl SyncEngine {
     /// spread first; what touches the set during the pass collects in its place and joins it
     /// after; a failed pass judges everything next time.
     fn with_work(&mut self, g: &Tid, l: LabelId, f: impl FnOnce(&mut Self, &BodyCtx, &mut Work) -> Result<()>) -> Result<()> {
-        // this group's closure is synced (spec/sync.md §3)
+        // this group's closure is synced (spec/sync-judgement.md §1)
         if !self.engine.core.ix.syncing.contains(g) {
             self.engine.set_syncing(*g, true)?;
         }
@@ -249,7 +249,7 @@ impl SyncEngine {
 
     /// Stamps entry `id` under `l` and keeps the stamp, so a later pass does not promote it again.
     /// One deletes are judged by (`role`, or a role commit or request of its own) is stamped as
-    /// such: a peer that cannot read `l` takes it past its storage caps (spec/sync.md §5).
+    /// such: a peer that cannot read `l` takes it past its storage caps (spec/sync-ids.md §6).
     pub(super) fn stamp_entry(&mut self, l: LabelId, id: BlobId, mut e: Entry, write: &osis_crypto::SigningSecret, role: bool) -> osis_crypto::Signature {
         let role = role || self.role_entry(&e);
         let stamp = osis_label::sign_stamp(write, &l, &id, &e.wrap, role);
@@ -369,7 +369,7 @@ impl SyncEngine {
         self.due_labels.extend(fresh);
     }
 
-    /// The passes (spec/sync.md §5): every label this node syncs gets one pass per change,
+    /// The passes (spec/sync-ids.md §6): every label this node syncs gets one pass per change,
     /// whatever the number of its sources. Its own part runs once against this node's store
     /// (placing what the label must hold of its own, certificates, stamping, promotion,
     /// deletions there, re-seals, a step when it has no source); then, per source (a peer that
@@ -598,7 +598,7 @@ impl SyncEngine {
         if let Some(lc) = self.label_at_mut(conn, &l) {
             lc.keys = keys.clone();
         }
-        // no secret of the head's sync epoch: read first (spec/sync.md §5, reading without it),
+        // no secret of the head's sync epoch: read first (spec/sync-ids.md §6, reading without it),
         // stranded only once nothing more here opens
         if keys.epochs[0].is_none() {
             if self.read_first(conn, source, &g, l, out)? {
@@ -642,7 +642,7 @@ impl SyncEngine {
             }
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
             let stamped = e.stamp.is_some_and(|s| osis_label::verify_stamp(&p.stamps, &l, &o.id, &e.wrap, &s).is_ok());
-            // refused there (spec/sync.md §10, Refused) under its stamp and the source's head
+            // refused there (spec/sync-streams.md §4, refused) under its stamp and the source's head
             // now: not taken there, nothing waits for it. Either changed since: offered again, a
             // stamp changed by its own event, a head moved by showing it again here
             let refused = match self.state.refused_at(&source, &l, &o.id) {
@@ -673,7 +673,7 @@ impl SyncEngine {
                 Some(wk) if on_head && !stamped => {
                     self.stamp_entry(l, o.id, e, wk, o.prio <= 1);
                 }
-                // a source on an older head (its step refused for now, spec/sync.md §5) takes
+                // a source on an older head (its step refused for now, spec/sync-ids.md §6) takes
                 // what is stamped for its head: stamped for it unless the stamp already serves
                 // another source, which keeps it (its head moving judges everything again)
                 Some(_) if !stamped && !self.stamp_serves_a_source(l, o.id, &e) => {
@@ -812,7 +812,7 @@ impl SyncEngine {
     }
 
     /// The entries under `l` that certificate copies of `copied` placed for the blobs they link
-    /// (`place_linked`), of the commits no entry under `l` holds any more (spec/sync.md §3).
+    /// (`place_linked`), of the commits no entry under `l` holds any more (spec/sync-judgement.md §1).
     fn copy_links(&mut self, l: &LabelId, copied: Vec<CommitId>) -> Result<BTreeSet<BlobId>> {
         let mut out = BTreeSet::new();
         for c in copied {
@@ -867,14 +867,14 @@ impl SyncEngine {
 
     /// The content snapshots under `l` (`entries`: by aspect, from their entries), this node's
     /// own included (a carrier it wrote for a body it must delete covers others too): drops the
-    /// bodies they cover (spec/sync.md §7), so every right holder holding the same snapshots
+    /// bodies they cover (spec/sync-compaction.md §1), so every right holder holding the same snapshots
     /// drops alike; a snapshot judges every body of its aspect when in `scope`, else the bodies
     /// `scope` names. Dropped bodies join `scope`. Returns the label's snapshots by aspect.
     pub(super) fn drop_label_covered(&mut self, entries: &BTreeMap<(Tid, Ak), BTreeSet<(BlobId, CommitId)>>, scope: &mut Scope, left: &mut Left) -> Result<Snaps> {
         let snaps: BTreeMap<(Tid, Ak), Vec<CommitId>> = entries.iter().map(|(k, v)| (k.clone(), v.iter().map(|(_, c)| *c).collect())).collect();
         let mut dropped: BTreeSet<CommitId> = BTreeSet::new();
         for ((t, a), ss) in &snaps {
-            // a memory snapshot's covered drops are Core's, at apply (spec/sync.md §9: an own
+            // a memory snapshot's covered drops are Core's, at apply (spec/sync-compaction.md §2: an own
             // body drops only under an own snapshot)
             if a.ephemeral() {
                 continue;
@@ -965,8 +965,8 @@ impl SyncEngine {
 
     /// Aspects this node cannot judge deletions on yet: those of pending commits; every aspect
     /// (`None` in the set) while an entry of the label opens under a held secret and is not
-    /// applied (`unopened`: a snapshot not fetched or applied yet, spec/sync.md §6: may-hold).
-    /// And the aspects where a body is not established uncovered yet (spec/sync.md §6), so not
+    /// applied (`unopened`: a snapshot not fetched or applied yet, spec/sync-judgement.md §2: may-hold).
+    /// And the aspects where a body is not established uncovered yet (spec/sync-judgement.md §2), so not
     /// must-hold: those of pending snapshots (pages not fetched, deltas missing), and every aspect
     /// (`None`) while an entry of the label that opens under a held secret is asked (`fetching`,
     /// `asked`; it may be a snapshot). Other pending commits settle nothing there, nor do

@@ -231,7 +231,7 @@ fn one_own_replace_left_covers_nothing_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(Value::Int(6)));
 }
 
-// spec/sync.md §6, §7 (only a blob carries a delta kept or holding a live write): a delta's
+// spec/sync-judgement.md §2, spec/sync-compaction.md §1 (only a blob carries a delta kept or holding a live write): a delta's
 // liveness is its own writes', whatever its commit's other deltas hold: C writes x:a and x:b in
 // one body; once x:a is replaced, C's x:a delta has no live write while its x:b delta still has.
 #[test]

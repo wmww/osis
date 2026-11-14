@@ -15,20 +15,20 @@ A link is the whole authority to read and to delete its blob: whoever holds the 
 
 ## Reuse
 - A reused piece keeps its blob, prefix and commitments: the new parent copies the old link verbatim, Del and salt included. Nothing is listed anywhere else.
-- When to re-encrypt stays spec/sync.md §1, judged on the held prefix; the reuser also re-encrypts a link whose Del the prefix does not bear. A piece not held is written afresh.
+- When to re-encrypt stays spec/sync-ids.md §1, judged on the held prefix; the reuser also re-encrypts a link whose Del the prefix does not bear. A piece not held is written afresh.
 - Across authors the copied Del may name the first author's level-2 key beside the thing's level-1/3 keys; a deleter signs per group with whichever level it holds.
 
 ## The freed judgment
 - A drop (cover, own replace, purge, expiry; not invalid: an invalid body stays at hosts as a refetch source) puts the body's links in a durable per-thing freed set, then drops the body.
 - Each freed link is judged when its delete is sent, against the sources of its thing held then, never once at the drop (a body fetched again or a new reuse in between keeps the piece with no extra rule; held-model step 0 found this). Linked: kept. Else a node's links join the set (nodes are immutable, so the walk stops at shared nodes) and the piece is deleted at every host of the thing's labels holding an entry of it.
 - A judgment needs every node blob on the way; one no copy of which is left blocks that thing's judgments at that node (`Trees::missing`). Deletes go in shuffled batches, no level order.
-- A judged link keeps no key, so a dropped body's pieces are unopenable at once (spec/sync.md §7 Freed links).
+- A judged link keeps no key, so a dropped body's pieces are unopenable at once (spec/sync-compaction.md §1 freed links).
 
 ## What replaced each list use
 - **Fetch and memory gate**: by walking what a commit links (`apply/reach.rs`, `Engine::blob_wants`); the gate is staged (commit blob, pages, roots' claimed lengths), lengths are claims enforced as resolved (spec/wire.md §6).
 - **Upload**: a body's walk (`Engine::body_links`).
-- **Trigger** (spec/sync.md §7): a body weighs the tree its links free (a walk stopping at blobs a live state links); the estimate grows per join by what the unlinked trees hold beyond the linked ones (a level-aligned walk, flat in value size); a snapshot weighs its encoded state alone.
-- **Repair** (spec/sync.md §1): judged at the losing label's settled pass, after the deleting batch applies (notes/engine-paged.md); `Engine::relink` asks each thing of the closure whether its live states link the lost blob (the counted trees, `tree_refs::state_refs_in`; every thing of the closure is asked, a rare path).
+- **Trigger** (spec/sync-compaction.md §1): a body weighs the tree its links free (a walk stopping at blobs a live state links); the estimate grows per join by what the unlinked trees hold beyond the linked ones (a level-aligned walk, flat in value size); a snapshot weighs its encoded state alone.
+- **Repair** (spec/sync-ids.md §1): judged at the losing label's settled pass, after the deleting batch applies (notes/engine-paged.md); `Engine::relink` asks each thing of the closure whether its live states link the lost blob (the counted trees, `tree_refs::state_refs_in`; every thing of the closure is asked, a rare path).
 - **Relay-only commits** never page (spec/commits.md §2): a delta linking a page is bad input (`verify::NoPages`).
 - **Commit size**: no list bounds it; one commit blob (`MAX_BLOB`) does, which Tess judged ample (notes/whole-commits.md).
 

@@ -66,7 +66,7 @@ fn raw(net: &mut Net, n: usize, c: &Cl, m: &Message) -> Vec<Message> {
     net.hand_input(n, c.hc, osis_proto::encode_frame(&m.encode())).iter().filter_map(|b| Message::decode(&b[4..]).ok()).collect()
 }
 
-// spec/sync.md §10 (client port), notes/client-port.md §0, §5: main only from Peer::Unix; a keyed peer's Auth is refused by the sync engine (Error 1) whatever its key, never handed up
+// spec/sync-opens.md §4 (client port), notes/client-port.md §0, §5: main only from Peer::Unix; a keyed peer's Auth is refused by the sync engine (Error 1) whatever its key, never handed up
 #[test]
 fn tier_is_the_transport_types() {
     let (mut net, [a]) = local_nodes::<1>();
@@ -102,7 +102,7 @@ fn keyed_auth_flood_never_goes_up() {
     assert!(!net.hand_closed(a, k.hc));
 }
 
-// spec/sync.md §10 (client port), notes/client-port.md §3: a client acts on the node's one key (the listener of its dialable key, which serves sync too) only after Auth: a Call before it is Error 1 and goes nowhere, a bearer Auth binds the session to its client actor, and its Calls then go up as that actor's; a sync kind on the same session is answered as on any connection
+// spec/sync-opens.md §4 (client port), notes/client-port.md §3: a client acts on the node's one key (the listener of its dialable key, which serves sync too) only after Auth: a Call before it is Error 1 and goes nowhere, a bearer Auth binds the session to its client actor, and its Calls then go up as that actor's; a sync kind on the same session is answered as on any connection
 #[test]
 fn a_client_acts_on_the_dialable_key_only_after_auth() {
     let mut net = Net::new();
@@ -129,7 +129,7 @@ fn a_client_acts_on_the_dialable_key_only_after_auth() {
     assert!(!r.iter().any(|m| matches!(m, Message::Error { code, .. } if *code == osis_proto::Code::UNSUPPORTED)), "{r:?}");
 }
 
-// spec/sync.md §5, notes/client-port.md §3: an authenticated client's end is reported
+// spec/sync-ids.md §6, notes/client-port.md §3: an authenticated client's end is reported
 #[test]
 fn an_authenticated_clients_end_is_reported() {
     let mut net = Net::new();
@@ -189,7 +189,7 @@ fn request(acts: &[Action]) -> Option<(Tier, &Message)> {
     })
 }
 
-// spec/wire.md §11.2 (Auth), spec/sync.md §10, notes/client-port.md §3: a keyed session's Auth goes up only when its secret's hash is a current entry, bound to that entry's actor with the secret stripped; an unknown secret, no secret, and an entry past its until are Error 1 and never reach the worker; a second Auth on a bound session is Error 1; a main session's Auth with a secret is Error 1
+// spec/wire.md §11.2 (Auth), spec/sync-opens.md §4, notes/client-port.md §3: a keyed session's Auth goes up only when its secret's hash is a current entry, bound to that entry's actor with the secret stripped; an unknown secret, no secret, and an entry past its until are Error 1 and never reach the worker; a second Auth on a bound session is Error 1; a main session's Auth with a secret is Error 1
 #[test]
 fn bearer_auth_gated_in_the_sync_engine() {
     let (mut net, [a]) = local_nodes::<1>();
@@ -227,7 +227,7 @@ fn bearer_auth_gated_in_the_sync_engine() {
     assert!(request(&acts).is_none());
 }
 
-// spec/data-model.md §9, spec/sync.md §10, notes/client-port.md §3: a session ends when its entry goes, when its secret rotates, and at its until by the timer alone (a wake is asked for it, with no other change); an extended until moves the timer; client_of agrees before any of that reaches the session's connection
+// spec/data-model.md §9, spec/sync-opens.md §4, notes/client-port.md §3: a session ends when its entry goes, when its secret rotates, and at its until by the timer alone (a wake is asked for it, with no other change); an extended until moves the timer; client_of agrees before any of that reaches the session's connection
 #[test]
 fn bound_sessions_end_with_their_entry() {
     let (mut net, [a]) = local_nodes::<1>();
@@ -337,7 +337,7 @@ fn minting_a_client_is_all_or_nothing() {
 }
 
 
-// spec/sync.md §5 Opens (a dialer that cannot read L opens it only by its proof): a client's
+// spec/sync-ids.md §6 opens (a dialer that cannot read L opens it only by its proof): a client's
 // session on a reader holds no per-label state, before and after Auth, however many labels the
 // reader syncs; it never begins a shared set, so nothing is tested there either.
 #[test]

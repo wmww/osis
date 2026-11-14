@@ -849,7 +849,7 @@ fn tombstone_alike(stride: u64) {
     assert_eq!(cases, 2 * (24 * 5 + 6 * 4 + 24 * 5));
 }
 
-// spec/sync.md §6: a purge request becomes must-hold when the delta it names arrives after it: the
+// spec/sync-judgement.md §2: a purge request becomes must-hold when the delta it names arrives after it: the
 // purge commit is judged again then, not only at its own changes.
 #[test]
 fn request_is_judged_again_when_the_named_delta_arrives_spec_sync_6() {

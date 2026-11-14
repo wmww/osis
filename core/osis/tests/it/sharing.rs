@@ -190,7 +190,7 @@ fn redeem_link_after_a_rotation_and_a_late_peer_spec_permissions_4() {
     assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
 }
 
-// spec/permissions.md §4, spec/sync.md §5: a first admin's new node holds K's keyset under the target's label before any secret of K (K's box is under K's label alone): it still opens K's label, by the epochs its first admin's derive, and gets K's secrets
+// spec/permissions.md §4, spec/sync-ids.md §6: a first admin's new node holds K's keyset under the target's label before any secret of K (K's box is under K's label alone): it still opens K's label, by the epochs its first admin's derive, and gets K's secrets
 #[test]
 fn new_node_gets_k_keyset_before_its_box_spec_permissions_4() {
     let (mut w, _, [alice, bob]) = hosted_accounts([1, 2]);
@@ -214,7 +214,7 @@ fn new_node_gets_k_keyset_before_its_box_spec_permissions_4() {
     assert!(dev.engine(|e| e.epochs(&k).is_some_and(|x| x.read.held().next().is_some() && x.admin.held().next().is_some())), "the node holds K's secrets");
 }
 
-// spec/permissions.md §7, spec/sync.md §2 (entry boxes): a link works after a joiner left and K rotated; its new joiner reads what was there, is a holder and writes
+// spec/permissions.md §7, spec/sync-ids.md §2 (entry boxes): a link works after a joiner left and K rotated; its new joiner reads what was there, is a holder and writes
 #[test]
 fn redeem_after_a_joiner_left_spec_permissions_7() {
     let (mut w, _, [alice, bob, carol, dave]) = hosted_accounts([1, 2, 3, 4]);
@@ -393,7 +393,7 @@ fn redeem_of_a_mismatched_target_joins_nothing_spec_permissions_7() {
     assert_eq!(x(&dave, t), Some(s("in the other group")));
 }
 
-// spec/permissions.md §7 (Redeem), spec/sync.md §3 (certificate copy): K's grant on the target outlives the delivery that first carried it, so a link redeemed after its inbox blob expired works, target unknown
+// spec/permissions.md §7 (Redeem), spec/sync-judgement.md §1 (certificate copy): K's grant on the target outlives the delivery that first carried it, so a link redeemed after its inbox blob expired works, target unknown
 #[test]
 fn redeem_after_the_delivery_expired_spec_permissions_7() {
     let (mut w, _, [alice, carol]) = hosted_accounts([1, 3]);
@@ -423,7 +423,7 @@ fn redeem_after_k_left_the_target_spec_permissions_7() {
     assert!(!alice.grants(k).unwrap().contains_key(&carol.me()));
 }
 
-// spec/permissions.md §7 (Bearer use), spec/sync.md §3 (invite requests): a contact card naming a thing its K holds no grant on makes nobody a contact: its first admin would count as connected on the word of the card's text
+// spec/permissions.md §7 (Bearer use), spec/sync-judgement.md §1 (invite requests): a contact card naming a thing its K holds no grant on makes nobody a contact: its first admin would count as connected on the word of the card's text
 #[test]
 fn contact_card_with_a_mismatched_target_spec_permissions_7() {
     let (mut w, alice, carol, g) = alice_bob(Role::Read);
@@ -735,7 +735,7 @@ fn sharers_other_node_deposits_nothing_foreign_spec_permissions_4() {
     assert!(dev.engine(|e| e.epochs(&k).is_some_and(|x| x.read.held().next().is_some()) && e.group_actor(&k) == k), "the node reads K");
 }
 
-// spec/sync.md §11, notes/api.md Sync (bundles): a node that cannot reach the peer takes
+// spec/sync-streams.md §6, notes/api.md Sync (bundles): a node that cannot reach the peer takes
 // what it misses from a bundle another node exported.
 #[test]
 fn bundle_round_trip_spec_sync_11() {
@@ -826,7 +826,7 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     assert_eq!(bob.role_on(g).unwrap(), Some(Role::Admin));
 }
 
-// spec/sync.md §3 (invite requests), notes/api.md Sharing: an invite from a stranger waits as a
+// spec/sync-judgement.md §1 (invite requests), notes/api.md Sharing: an invite from a stranger waits as a
 // request; `decline_invite` forgets it, `accept_invite` joins; a request
 // answered once is gone.
 #[test]
@@ -860,7 +860,7 @@ fn invite_requests_accept_and_decline_spec_sync_3() {
     assert!(bob.invite_requests().unwrap().is_empty());
 }
 
-// spec/sync.md §3: a sender whose card was imported (a contact) is connected: its invite goes
+// spec/sync-judgement.md §1: a sender whose card was imported (a contact) is connected: its invite goes
 // through with no request.
 #[test]
 fn contact_invite_goes_through_spec_sync_3() {
@@ -962,7 +962,7 @@ fn pair_node(w: &mut World, da: &Osis, seed: u64) -> Osis {
     db
 }
 
-// spec/permissions.md §7, spec/sync.md §2: a link's text names its peers, so a working link's K
+// spec/permissions.md §7, spec/sync-ids.md §2: a link's text names its peers, so a working link's K
 // label stays on them whichever node of the account moves peers: redeemed there, it reaches
 // the sharer and reads the target on its new hosts.
 #[test]
@@ -995,7 +995,7 @@ fn moving_peers_keeps_a_link_made_on_another_node_spec_permissions_7() {
     }
 }
 
-// spec/permissions.md §7, spec/sync.md §2: a revoked link has no holder but the account's on K, yet
+// spec/permissions.md §7, spec/sync-ids.md §2: a revoked link has no holder but the account's on K, yet
 // K's label stays too, on either node: cut off from the link's peer, the node revokes and
 // moves peers, and the revocation still reaches a redeemer there.
 #[test]

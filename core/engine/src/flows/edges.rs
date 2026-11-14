@@ -1,7 +1,7 @@
 //! Edge writes (spec/permissions.md §2, §3, §5.3): grants with the grantee's boxes, changes,
 //! removals and demotions carrying the target's rotation, invite grants and self-removals,
 //! the frontier, inbox delivery and acceptance
-//! (spec/sync.md §3, spec/crypto.md §5).
+//! (spec/sync-judgement.md §1, spec/crypto.md §5).
 
 use super::{Delivery, Done, inbox_of, now_ts, own_label, put_edge, put_secrets};
 use crate::engine::{Engine, Tx};
@@ -121,7 +121,7 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
     let blob = seal_inbox_blob(&to, &kem, &payload, now, &mut *tx.rng)?;
     let resend = super::Resend { holder, commit: c, things: things.to_vec(), edge_only: parts == Parts::Edge };
     // its record in the commit's own transaction: node-sync sends it from there, also after a
-    // crash before `carry_out` (spec/sync.md §3, §5)
+    // crash before `carry_out` (spec/sync-judgement.md §1, spec/sync-ids.md §6)
     if let Some(r) = tx.core.sync_records {
         r.note_unsent(tx, holder, c, things.to_vec(), parts == Parts::Edge)?;
     }
@@ -144,7 +144,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     }
     let role = tx.core.role_now(&who, &target);
     let admin = crate::engine::secrets::usable_role(tx, &target, role)? == Some(Role::Admin);
-    // a non-writer of the target's label deposits its invite grant (spec/sync.md §5)
+    // a non-writer of the target's label deposits its invite grant (spec/sync-ids.md §6)
     let deposit = role < Some(Role::Write);
     let ts = now_ts(tx.core);
     let old = tx.core.timelines.get(&target).and_then(|tl| tl.roster(&target, At::now(ts)).get(&holder).copied());
@@ -635,7 +635,7 @@ impl Engine {
     }
 
     /// Opens an inbox blob addressed to an actor or account this node holds the keys of
-    /// (spec/sync.md §3), takes the author's chain it carries as node sync does (`inbox_chain`),
+    /// (spec/sync-judgement.md §1), takes the author's chain it carries as node sync does (`inbox_chain`),
     /// applies the role commit it carries and returns the things it
     /// names with their labels, plus the certificate copy to place under that actor's home
     /// label (a grant this node accepts).

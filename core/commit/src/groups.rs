@@ -1,5 +1,5 @@
 //! Prefix inputs of a commit blob (the commitment groups and expiry, spec/wire.md §5), the
-//! purge rewrite and the whole-commit size check (spec/commits.md §5; spec/sync.md §3).
+//! purge rewrite and the whole-commit size check (spec/commits.md §5; spec/sync-judgement.md §1).
 
 use crate::blob::{CommitBlob, Section, part_len};
 use crate::header::{DeleteKey, Header};
@@ -28,7 +28,7 @@ pub fn prefix_groups(h: &Header, ais: impl IntoIterator<Item = usize>) -> Result
 }
 
 /// The prefix expiry of a blob of `h`: the commit's `expires`; for a relay-only commit (which
-/// has none) `ts + MAX_DRIFT`, the end of its replay window (spec/wire.md §5, spec/sync.md §9).
+/// has none) `ts + MAX_DRIFT`, the end of its replay window (spec/wire.md §5, spec/sync-compaction.md §2).
 pub fn blob_expiry(h: &Header) -> Option<u64> {
     match h.ephemeral {
         Some(crate::EphClass::Relay) => Some(h.ts.wall_ms().0.saturating_add(MAX_DRIFT_MS)),
@@ -37,7 +37,7 @@ pub fn blob_expiry(h: &Header) -> Option<u64> {
 }
 
 /// The prefix expiry of a blob of `h` whose sections list `ais`: `blob_expiry`, but none for a
-/// header-only blob (no section: spec/sync.md §1), which outlives the commit's expiry (a lasting
+/// header-only blob (no section: spec/sync-ids.md §1), which outlives the commit's expiry (a lasting
 /// header, a minting's copy travelling with its record).
 pub fn prefix_expiry(h: &Header, ais: &[usize]) -> Option<u64> {
     if ais.is_empty() { None } else { blob_expiry(h) }
@@ -46,7 +46,7 @@ pub fn prefix_expiry(h: &Header, ais: &[usize]) -> Option<u64> {
 /// The build error of a commit that does not fit one blob.
 pub const COMMIT_PAST_BLOB: &str = "the commit does not fit a blob";
 
-/// An upper bound on the framed size of `c` as one blob (spec/sync.md §3: no size split):
+/// An upper bound on the framed size of `c` as one blob (spec/sync-judgement.md §1: no size split):
 /// a section per thing with the deepest derivation chain (its list and ciphertext heads at their
 /// widest), a commitment group per distinct key set, an index per aspect, every delta's bytes.
 pub fn blob_bound(c: &CommitBlob) -> usize {

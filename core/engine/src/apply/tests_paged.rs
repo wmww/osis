@@ -676,7 +676,7 @@ fn unknown_encoding(p: &mut Vec<u8>) {
     *p = osis_base::encode(&v);
 }
 
-/// spec/crdt.md §8, spec/sync.md §9 Caps: an ephemeral delta's page counts at most
+/// spec/crdt.md §8, spec/sync-compaction.md §2 caps: an ephemeral delta's page counts at most
 /// `MAX_PAGE_ITEMS` items as a durable one's does: a received memory snapshot whose page holds
 /// more (a string of that many bytes) is bad input at the engine, refused before it is decoded.
 #[test]
@@ -697,7 +697,7 @@ fn ephemeral_page_past_items_refused_spec_crdt_8() {
     assert!(!e.holds_memory(&pk.id) && !e.memory_pending(&pk.id), "nothing kept");
 }
 
-/// spec/sync.md §9 Caps, notes/ephemeral.md Bounds: a received memory commit waits for the blobs
+/// spec/sync-compaction.md §2 caps, notes/ephemeral.md Bounds: a received memory commit waits for the blobs
 /// its walk reaches (pages, value roots) only once its author's signature checks: a false one is bad input at
 /// once, nothing kept waiting (charged against the label's cap); a true one waits undecoded.
 #[test]

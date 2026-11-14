@@ -34,7 +34,7 @@ pub(crate) fn in_flight(c: &Conn, m: &BTreeMap<(LabelId, osis_base::BlobId), (u6
 /// `NODE_IDS`; the shared set's and the stream's are theirs).
 #[derive(Clone, Debug)]
 pub(crate) enum Pending {
-    /// A clock sample's start (spec/sync.md §6), wall ms.
+    /// A clock sample's start (spec/sync-judgement.md §2), wall ms.
     Ping { sent: u64 },
     Prove,
     Resume,
@@ -110,7 +110,7 @@ pub(crate) struct LabelAt {
     /// the role commits it lacks were logged under its head and go first (`roles_unreported`).
     pub report_at: Option<u64>,
     /// The peer said it refused an entry of the label it pulled for room and has none again
-    /// yet (spec/sync.md §10, Full): what it lacks it lacks, and nothing waits for it to take
+    /// yet (spec/sync-streams.md §4, full): what it lacks it lacks, and nothing waits for it to take
     /// it.
     pub full: bool,
     /// Bodies this node places, stamped for the peer's head, that the last pass found the peer
@@ -118,7 +118,7 @@ pub(crate) struct LabelAt {
     /// up there (`label_status`).
     pub lacking: usize,
     /// Bodies this node logs, stamped for the peer's head, that the peer refused under that
-    /// stamp and head (spec/sync.md §10, Refused; `State::refused`), at the last pass: it will
+    /// stamp and head (spec/sync-streams.md §4, refused; `State::refused`), at the last pass: it will
     /// not take them, so nothing waits for them, and status names it (`refused_by`).
     pub refused: usize,
     /// A child step refused for now: no pass registers one before this (wall ms).
@@ -161,7 +161,7 @@ impl LabelAt {
 /// One connection, whoever dialed it: a session of the node's hub (issues/sync-rewrite.md
 /// (a)). Its proofs, records, shared set, stream, client port and push room run alike either
 /// way; which side dialed is read by the dial logic alone (`Dial`) and by the proof exchange's
-/// order (spec/sync.md §10, Connection proofs).
+/// order (spec/sync-opens.md §2, connection proofs).
 #[derive(Clone)]
 pub(crate) struct Conn {
     /// What this node dialed; none when the peer dialed one of its listeners.
@@ -183,7 +183,7 @@ pub(crate) struct Conn {
     pub next_id: Id,
     /// When node sync last sent or got a message on it (wall ms; `refresh`).
     pub heard: u64,
-    /// What this connection's peer proved (spec/sync.md §10), read by `SyncEngine::proven`.
+    /// What this connection's peer proved (spec/sync-opens.md §4), read by `SyncEngine::proven`.
     pub proven: super::proofs::Proven,
     /// The actors this node proved on it, read by `SyncEngine::proved`.
     pub proved: BTreeSet<Tid>,
@@ -241,7 +241,7 @@ impl Conn {
     }
 
     /// The peer's key where no record holds what this node read of its stream (`StreamAt`): a
-    /// node it dialed that proves no known actor (spec/sync.md §10, At a store).
+    /// node it dialed that proves no known actor (spec/sync-streams.md §4, at a store).
     pub(crate) fn unrecorded(&self) -> Option<PeerKey> {
         self.peer.filter(|p| matches!(p, PeerKey::Node(_)))
     }
@@ -292,7 +292,7 @@ impl SyncEngine {
     /// for every source, a peer that cannot read the label or a reader: a fetch counts while it is younger than
     /// `STALL_TIMEOUT_MS`; older, it may be held behind a reply its source trickles (the stall
     /// rule only wants the oldest request to move), so the next source is asked too and whichever
-    /// answers first settles it (spec/sync.md §10, Bodies).
+    /// answers first settles it (spec/sync-streams.md §4, bodies).
     pub(crate) fn asked(&self, b: &osis_base::BlobId) -> Option<u64> {
         let now = self.now();
         self.stream_asks(b).map(|at| at.saturating_add(osis_proto::window::STALL_TIMEOUT_MS)).filter(|t| *t > now).max()
@@ -533,7 +533,7 @@ impl SyncEngine {
 
     /// Connection `conn`'s session started (`Up::Start`, the peer's Hello arrived): the binding
     /// and tier; on one this node dialed, pings and its proofs signed over the binding (the
-    /// dialer proves first, spec/sync.md §10); either way every label the peer may hold starts
+    /// dialer proves first, spec/sync-opens.md §4); either way every label the peer may hold starts
     /// opening.
     pub(super) fn conn_start(&mut self, conn: ConnId, b: osis_host::Binding, out: &mut Vec<Action>) -> Result<()> {
         let now = self.now();
@@ -556,7 +556,7 @@ impl SyncEngine {
             for _ in 0..osis_proto::hello::INITIAL_PINGS {
                 self.ping(conn, out);
             }
-            // to a key this node chose to dial (spec/sync.md §10): signed over the listener's
+            // to a key this node chose to dial (spec/sync-opens.md §4): signed over the listener's
             // challenge and key
             let own = self.dials_own_node(&key);
             let provers = proofs::provers(&mut self.engine, own)?;
@@ -595,7 +595,7 @@ impl SyncEngine {
             (Pending::Ping { sent }, M::Pong { wall_ms, .. }) => {
                 let sample = osis_proto::OffsetSample { sent, peer: wall_ms, received: now };
                 let offset = self.conns.get_mut(&conn).and_then(|c| c.dial.as_mut()).and_then(|d| d.clock.pong(sample));
-                // a diagnostic only: nothing another node sends moves this node's clock (spec/sync.md §6)
+                // a diagnostic only: nothing another node sends moves this node's clock (spec/sync-judgement.md §2)
                 if let Some(offset_ms) = offset.filter(|o| o.unsigned_abs() > osis_proto::hello::OFFSET_DIAGNOSTIC_MS)
                     && let Some(d) = self.conns.get(&conn).and_then(|c| c.dial.as_ref())
                 {

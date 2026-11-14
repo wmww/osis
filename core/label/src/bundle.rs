@@ -1,4 +1,4 @@
-//! File bundles (spec/wire.md §12, spec/sync.md §11): `osisbndl`, then length-framed canonical
+//! File bundles (spec/wire.md §12, spec/sync-streams.md §6): `osisbndl`, then length-framed canonical
 //! CBOR records. `BundleWriter` streams records out; `BundleReader` streams them in;
 //! `Importer` verifies paths, stamps and blob IDs as a peer does and yields the events its
 //! log would.
@@ -329,7 +329,7 @@ pub(crate) mod tests {
         assert_eq!(r.next_record().unwrap(), None);
     }
 
-    // spec/sync.md §5, spec/wire.md §12: a later path record replaces the head only if it
+    // spec/sync-ids.md §6, spec/wire.md §12: a later path record replaces the head only if it
     // extends it (no other branch, no rollback to an ancestor).
     #[test]
     fn path_extends_head() {
@@ -350,7 +350,7 @@ pub(crate) mod tests {
         assert_eq!(imp.head(&s0.label), Some(&a2));
     }
 
-    // spec/wire.md §12, spec/sync.md §5: an altered stamp, an entry before its blob or path, a
+    // spec/wire.md §12, spec/sync-ids.md §6: an altered stamp, an entry before its blob or path, a
     // bad magic, a truncated frame or another format are rejected.
     #[test]
     fn rejections() {

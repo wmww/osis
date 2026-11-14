@@ -1,5 +1,5 @@
 # Engine: the compaction trigger
-> Summary: When a writer writes a compaction snapshot, durable and ephemeral alike (`retention/compact.rs`; spec/sync.md §7 Trigger): what is counted and weighed, the estimate gating it, frontier gaps, weighings owed until a node may write, and the quiet cover for expired leftovers.
+> Summary: When a writer writes a compaction snapshot, durable and ephemeral alike (`retention/compact.rs`; spec/sync-compaction.md §1 trigger): what is counted and weighed, the estimate gating it, frontier gaps, weighings owed until a node may write, and the quiet cover for expired leftovers.
 
 ## Weighing
 - A writer of a compactable aspect (content, no fixed retention, not a signal) writes a snapshot once the bodies it holds that the snapshot would drop, two at least, cost more than `FACTOR` times the snapshot. A reader weighs nothing (`may_snapshot` first). No randomized delay: concurrent snapshots are covered-equal duplicates and the higher ID goes.

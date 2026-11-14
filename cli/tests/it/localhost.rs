@@ -82,7 +82,7 @@ fn pair(old: &Path, new: &Path, peer: Option<&str>) {
     assert!(offer.wait().unwrap().success(), "pair offer");
 }
 
-// spec/sync.md §10 (QUIC to a known address), spec/permissions.md §7 (links), notes/api.md
+// spec/sync-transport.md §2 (qUIC to a known address), spec/permissions.md §7 (links), notes/api.md
 // (Nodes, Sync), notes/cli.md Tests (by hand): two accounts and three nodes meet only through
 // one peer process.
 #[test]
@@ -166,7 +166,7 @@ fn serve_clients(store: &Path) -> (Running, String) {
     serve(store, &["--listen", "quic://127.0.0.1:0"])
 }
 
-// spec/sync.md §10 (client port), notes/client-port.md §3, §5, notes/cli.md: a thin CLI (`--node ADDR --client-secret FILE`, no store) over real QUIC with bearer Auth: the node's address from `serve --listen`; reads and writes within its grant, as its actor; not beyond it; a wrong secret is refused; `--connect` and `group source` make it the source of a group of another store, and fail, not fall back, once it is gone
+// spec/sync-opens.md §4 (client port), notes/client-port.md §3, §5, notes/cli.md: a thin CLI (`--node ADDR --client-secret FILE`, no store) over real QUIC with bearer Auth: the node's address from `serve --listen`; reads and writes within its grant, as its actor; not beyond it; a wrong secret is refused; `--connect` and `group source` make it the source of a group of another store, and fail, not fall back, once it is gone
 #[test]
 #[ignore]
 fn thin_cli_quic_localhost() {
@@ -372,7 +372,7 @@ fn run_in(store: &Path, args: &[&str], stdin: &[u8]) -> (i32, String, String) {
 /// A `write` script whose last line names an unknown thing (exit 3, nothing committed).
 const BAD_SCRIPT: &[u8] = b"create --in me --as x a:b.0 1\nset osis://AAAAAAAAAAAAAAAAAAAA a:b.0 1\n";
 
-// spec/sync.md §10 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as the main actor, with output and exit codes as the local run's (`get`, `--json`, `write` incl. a failing script, `watch`, `group sync`, `grant`, `sync`, `wait`: the grant reaches Bob, a group without a sync ID fails `wait` as locally; `node ls`, `card show`, `serving set/show/off`, `peers add/rm`, `link redeem/revoke`, `demote`, `bundle export/import`, `pair offer`, `node rm`); `inspect` and a dead daemon stay exit 8, `group source` exit 1 saying why; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
+// spec/sync-opens.md §4 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as the main actor, with output and exit codes as the local run's (`get`, `--json`, `write` incl. a failing script, `watch`, `group sync`, `grant`, `sync`, `wait`: the grant reaches Bob, a group without a sync ID fails `wait` as locally; `node ls`, `card show`, `serving set/show/off`, `peers add/rm`, `link redeem/revoke`, `demote`, `bundle export/import`, `pair offer`, `node rm`); `inspect` and a dead daemon stay exit 8, `group source` exit 1 saying why; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
 #[test]
 #[ignore]
 fn daemon_clients_localhost() {

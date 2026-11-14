@@ -1,4 +1,4 @@
-//! What a commit needs held, found by walking what it links (spec/sync.md §6, §9 Caps;
+//! What a commit needs held, found by walking what it links (spec/sync-judgement.md §2, spec/sync-compaction.md §2 caps;
 //! spec/commits.md §4): a header list given by link needs its whole chunk tree; a part needs its
 //! pages (followed: a page's links are pages or value roots) and, for the memory gate, its
 //! large values' roots (not followed: their chunks are fetched after, `Walks::trees`). A held
@@ -41,7 +41,7 @@ pub(crate) struct Walk {
     /// Large values' roots reached and held.
     pub roots: Vec<Link>,
     /// Whether value trees are walked below their roots (an applied memory commit's, whose
-    /// chunks are fetched at once: spec/sync.md §9).
+    /// chunks are fetched at once: spec/sync-compaction.md §2).
     trees: bool,
 }
 
@@ -222,7 +222,7 @@ pub struct Wants {
 }
 
 impl Engine {
-    /// The blobs commits here wait for (spec/sync.md §6, §9): of each pending commit waiting
+    /// The blobs commits here wait for (spec/sync-judgement.md §2, spec/sync-compaction.md §2): of each pending commit waiting
     /// for blobs, its header lists' trees while they do not resolve, then its pages and its
     /// large values' roots; of each memory commit from others applied here, its value trees
     /// (fetched at once: they are held in memory at hosts). Costs the blobs that arrived since
@@ -267,7 +267,7 @@ impl Engine {
 
 /// The bytes under `roots` not held here, as their held nodes state them (a node not held
 /// counts its length in its parent, a held one below a root none, `At::Tree`): what a memory commit's large values may still bring
-/// (spec/sync.md §9 Caps). Each distinct blob once. Lengths are claims: the tree reader refuses a
+/// (spec/sync-compaction.md §2 caps). Each distinct blob once. Lengths are claims: the tree reader refuses a
 /// liar at its first mismatch (spec/wire.md §6), and each chunk is charged its bytes on arrival.
 pub(crate) fn unheld_bytes(tx: &mut Tx<'_>, roots: &[Link]) -> Result<u64> {
     let mut seen = BTreeSet::new();

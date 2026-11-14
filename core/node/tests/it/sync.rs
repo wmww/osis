@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Node sync engines through hosts, in process (spec/sync.md §2-§9, §11).
+//! Node sync engines through hosts, in process (spec/sync-ids.md §2).
 
 use crate::net::{hosted, hosted_nodes};
 use crate::net;
@@ -8,7 +8,7 @@ use osis_base::{Ak, Role, Value};
 use osis_schema::RawKey;
 use osis_node::sync::Event;
 
-// spec/sync.md §3, §5, §6: two nodes of one group converge through one host: closure
+// spec/sync-judgement.md §1, spec/sync-ids.md §6, spec/sync-judgement.md §2: two nodes of one group converge through one host: closure
 // bodies logged stamped, downloaded, unwrapped and applied, both ways.
 #[test]
 fn two_nodes_converge_spec_sync_6() {
@@ -43,7 +43,7 @@ fn idle_waits_for_the_hosts_hello() {
     assert!(net.sync(a).is_idle());
 }
 
-// spec/sync.md §5, §6: a reader relays the stamped must-hold entries it holds to a host
+// spec/sync-ids.md §6, spec/sync-judgement.md §2: a reader relays the stamped must-hold entries it holds to a host
 // lacking them; it originates nothing it may not (no stamp of its own).
 #[test]
 fn reader_relays_spec_sync_6() {
@@ -58,14 +58,14 @@ fn reader_relays_spec_sync_6() {
     let g = net.group(a, &[(r, Role::Read), (c, Role::Read)], &[s1, s2]);
     let t = net.item(a, g, g, "relayed");
     net.run();
-    // another node's entries: left to their author for a while (spec/sync.md §6)
+    // another node's entries: left to their author for a while (spec/sync-judgement.md §2)
     net.advance(30_000);
     net.trace(&[a, r, c]);
     assert_eq!(net.read(r, t), Some(s("relayed")));
     assert_eq!(net.read(c, t), Some(s("relayed")), "the reader carried the writer's entries to the second host");
 }
 
-// spec/sync.md §8, §10 (Stream, `follow`): a node pulling a peer's stream gets new log events
+// spec/sync-streams.md §2, spec/sync-streams.md §4 (stream, `follow`): a node pulling a peer's stream gets new log events
 // pushed without asking.
 #[test]
 fn new_events_are_pushed_spec_sync_8() {
@@ -78,7 +78,7 @@ fn new_events_are_pushed_spec_sync_8() {
     assert_eq!(net.read(b, t), Some(s("two")));
 }
 
-// spec/sync.md §5 (relay-only entries), notes/ephemeral.md Ephemeral signals: an ephemeral signal
+// spec/sync-ids.md §6 (relay-only entries), notes/ephemeral.md Ephemeral signals: an ephemeral signal
 // write reaches the label's connected readers once, verified, fires the writer's own callbacks, is stored nowhere;
 // a reader cannot fire one.
 #[test]
@@ -102,7 +102,7 @@ fn ephemeral_signals_relay_only_spec_sync_5() {
     assert!(net.engine(c).write(m).is_err());
 }
 
-// spec/sync.md §11: a bundle replays a label as a peer with no cursor; a holder that never
+// spec/sync-streams.md §6: a bundle replays a label as a peer with no cursor; a holder that never
 // reached a host ends up with the content.
 #[test]
 fn bundle_round_trip_spec_sync_11() {
@@ -121,7 +121,7 @@ fn bundle_round_trip_spec_sync_11() {
     assert_eq!(net.read(b, t), Some(s("bundled")));
 }
 
-// spec/sync.md §6: the cursor, entries and heads survive a restart: the node resumes where it
+// spec/sync-judgement.md §2: the cursor, entries and heads survive a restart: the node resumes where it
 // was and logs again nothing it placed before.
 #[test]
 fn restart_resumes_spec_sync_6() {
@@ -136,7 +136,7 @@ fn restart_resumes_spec_sync_6() {
     assert_eq!(net.read(b, t), Some(s("two")));
 }
 
-// spec/sync.md §5-§7 (headline): two nodes that are never online together converge through
+// spec/sync-ids.md §6 (headline): two nodes that are never online together converge through
 // one host, across a rotation, a compaction and an expiring write.
 #[test]
 fn briefly_online_nodes_spec_sync_6() {

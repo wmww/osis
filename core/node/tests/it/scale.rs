@@ -521,7 +521,7 @@ fn one_more_write(n: usize, hosted: bool) -> ([u64; 5], [u64; 5]) {
     (pass_work(before.0, net.sync(a).pass_stats()), pass_work(before.1, net.sync(b).pass_stats()))
 }
 
-// spec/sync.md §5 (co-reader peer), §6, §7; spec/requirements.md, Scale (no operation
+// spec/sync-ids.md §6 (co-reader peer), §6, §7; spec/requirements.md, Scale (no operation
 // O(history)): in a settled label of n and 10n content commits, served by a host or by the
 // writer alone, one more write costs both nodes' passes the same work: no full pass, the bodies
 // and entries of that write.
@@ -564,7 +564,7 @@ fn one_more_write_at(k: usize) -> ([u64; 5], [u64; 5]) {
     (pass_work(before.0, net.sync(a).pass_stats()), pass_work(before.1, net.sync(b).pass_stats()))
 }
 
-// spec/sync.md §6, §10; issues/sync-rewrite.md 3h2 (one pass per label): a write to a label
+// spec/sync-judgement.md §2, spec/sync-opens.md §4; issues/sync-rewrite.md 3h2 (one pass per label): a write to a label
 // kept at 1 and at 3 peers that cannot read it costs each node the same full passes and bodies
 // judged: the own part judges the change once, whatever the number of sources; a source showing
 // what this node holds only marks presence there, which that source's part acts on from the
@@ -608,7 +608,7 @@ fn first_sync(n: usize) -> [u64; 4] {
     [net.engine(b).core.ix.commits.len() as u64 - before.3, net.engine(b).examined() - before.2, wa[2] + rb[2], wa[3] + rb[3]]
 }
 
-// spec/sync.md §6; spec/requirements.md, Scale: a first sync of N commits costs O(N): the
+// spec/sync-judgement.md §2; spec/requirements.md, Scale: a first sync of N commits costs O(N): the
 // commits taken, pending commits read again, bodies and entries judged grow linearly from n
 // to 10n.
 #[test]
@@ -682,7 +682,7 @@ fn aspect_passes(n: usize) -> Vec<([u64; 5], [u64; 5])> {
     out
 }
 
-// spec/sync.md §6, §7; spec/commits.md §5; spec/requirements.md, Scale: a change to one body of
+// spec/sync-judgement.md §2, spec/sync-compaction.md §1; spec/commits.md §5; spec/requirements.md, Scale: a change to one body of
 // a big aspect judges O(change), not the aspect. At n and 10n keys in live bodies: one more key,
 // a write killing one body, the oldest commit of an expiring map expiring alone, and one write
 // with as many things in the group's closure: the passes' work at both nodes is flat.
@@ -741,7 +741,7 @@ fn role_passes(n: usize) -> [([u64; 5], [u64; 5]); 2] {
     out
 }
 
-// spec/sync.md §6, §7; spec/permissions.md §4; spec/requirements.md, Scale: a role change
+// spec/sync-judgement.md §2, spec/sync-compaction.md §1; spec/permissions.md §4; spec/requirements.md, Scale: a role change
 // re-judges only the labels whose verdicts can read it. Three labels of n and 10n commits: an
 // edge on an actor no other closure reaches (labeled, under the account) judges its own label's
 // and the account's bodies alone, flat in n; one on a label's group re-judges that label alone,
@@ -762,7 +762,7 @@ fn role_change_judges_its_labels_only() {
     }
 }
 
-// issues/kill-judges-label-entries.md; spec/sync.md §6, §7; spec/requirements.md, Scale: under
+// issues/kill-judges-label-entries.md; spec/sync-judgement.md §2, spec/sync-compaction.md §1; spec/requirements.md, Scale: under
 // purge on replace a write killing one body of n judges every entry of the label at the writer
 // (n/2 + 3 entries), where one more key judges 1.
 #[test]
@@ -1391,7 +1391,7 @@ fn stale_walk_claims(n: usize) -> u64 {
     net.sync(b).pass_stats().claim_keys - before
 }
 
-// spec/sync.md §5; spec/requirements.md, Scale: a walk past a missed rotation claims as the
+// spec/sync-ids.md §6; spec/requirements.md, Scale: a walk past a missed rotation claims as the
 // thing's own named readers this node holds, not as every actor it holds nor every actor named.
 #[test]
 fn stale_walk_claims_are_flat() {
@@ -1454,7 +1454,7 @@ enum Change {
     Raise,
 }
 
-// spec/requirements.md, Scale; spec/permissions.md §3; spec/sync.md §6: one change in a small
+// spec/requirements.md, Scale; spec/permissions.md §3; spec/sync-judgement.md §2: one change in a small
 // group settles in a few passes per node, flat in the group's history: rotations due are judged
 // once per role change (not per pass), a body's keep bounds once per change of it (not per pass),
 // and a thing left plain with a holder gets secrets of its own from one admin, not one fork each.
@@ -1630,7 +1630,7 @@ fn chunk_drop(n: usize) -> (u64, u64) {
     (n("tree refs: parts read"), n("tree refs: links counted") + n("tree refs: blobs read"))
 }
 
-// spec/sync.md §7 (a dropped body's chunk goes once nothing held links it); spec/requirements.md,
+// spec/sync-compaction.md §1 (a dropped body's chunk goes once nothing held links it); spec/requirements.md,
 // Scale: judging the chunks a write-and-compact drops reads the sources that changed (the new
 // bodies, the value's state), not every body held on the thing.
 #[test]
@@ -1742,7 +1742,7 @@ fn role_entries_under_churn(n: usize, churn: usize) -> [u64; 2] {
     [before, role(&net)]
 }
 
-// spec/sync.md §5 Role entries: a peer takes a writer's stamped role entries outside its caps with
+// spec/sync-ids.md §6 role entries: a peer takes a writer's stamped role entries outside its caps with
 // no count of their own; what it holds grows with role churn, not with the members each change
 // boxes (the rotation's bytes do, its entries not)
 #[test]
@@ -1797,7 +1797,7 @@ fn tests_per_arrival(steps: usize) -> (u64, u64) {
     ((after.tested - before.tested) / arrivals, after.walk_tests - before.walk_tests)
 }
 
-// spec/sync.md §10 (Shared set, Testing), issues/sync-rewrite.md 3h2 (Stale head: cost),
+// spec/sync-opens.md §4 (shared set, Testing), issues/sync-rewrite.md 3h2 (Stale head: cost),
 // spec/requirements.md (Scale): a reader on the
 // newest head tests one credential per sync ID at each arrival of a peer's filter whatever the
 // number of steps the label went through (n and 10n rotations), and walks nothing.
@@ -1842,7 +1842,7 @@ fn catch_up(steps: usize, crossed: usize, head_held: bool) -> (u64, u64, usize) 
     (net.sync(b).pass_stats().behind_sent - sent, net.hosts[s].sync.as_mut().unwrap().pass_stats().behind_answered - answered, net.sent_kinds.get(&7).copied().unwrap_or(0) - registers)
 }
 
-// spec/sync.md §5 (Walk, Behind), spec/requirements.md (Scale): a reader behind a peer's head by
+// spec/sync-ids.md §6 (walk, Behind), spec/requirements.md (Scale): a reader behind a peer's head by
 // k rotations, holding the head's sync key, opens by it with no Behind item; claiming at the
 // head, it catches up with one Behind item and answer per rotation crossed (an answer stops at
 // the first step under another sync key). Either way it registers nothing, whether the label's

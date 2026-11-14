@@ -397,7 +397,7 @@ fn undo_needing_two_expiries_waits_spec_crdt_4_6() {
 }
 
 // spec/commits.md §7: a memory commit forgotten here (an expiring write superseded by its
-// author's next one vanishes, spec/sync.md §9) still counts as a part the undone write may have
+// author's next one vanishes, spec/sync-compaction.md §2) still counts as a part the undone write may have
 // replaced: two expiring sets keeping no history, then a setting keeping the aspect (the second
 // set now kept while live): undoing it is `NotUndoable`, never the field emptied.
 #[test]

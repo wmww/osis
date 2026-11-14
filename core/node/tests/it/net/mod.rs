@@ -73,7 +73,7 @@ pub struct Node {
     pub wake: Option<u64>,
     /// Restarts so far (`Msg`).
     pub life: u64,
-    /// Its user accepts every invite request (spec/sync.md §3) as it appears (default).
+    /// Its user accepts every invite request (spec/sync-judgement.md §1) as it appears (default).
     pub accepts: bool,
     /// Its engine's durable events, for `diagnostics`.
     events: Receiver<osis_node::Event>,
@@ -1773,7 +1773,7 @@ impl Net {
 
     /// A group whose first admin is node `admin`, `holders` granted with their roles, then given
     /// secrets of its own with its sync ID at `hosts` (the rotation boxing every holder, a deposit
-    /// seed; spec/sync.md §2); the setup commits delivered to the holders directly.
+    /// seed; spec/sync-ids.md §2); the setup commits delivered to the holders directly.
     pub fn group(&mut self, admin: usize, holders: &[(usize, Role)], hosts: &[usize]) -> Tid {
         let addrs: Vec<Address> = hosts.iter().map(|s| self.hosts[*s].address.clone()).collect();
         self.group_at(admin, holders, addrs)
@@ -1892,7 +1892,7 @@ impl Net {
     }
 
     /// Names an inbox for group `g` in its `keys.0` other than its own label (one nobody opens),
-    /// so its label is no inbox at its readers (spec/sync.md §2): tests of a label's unopened
+    /// so its label is no inbox at its readers (spec/sync-ids.md §2): tests of a label's unopened
     /// entries that are no inbox deposits.
     pub fn name_inbox_elsewhere(&mut self, n: usize, g: Tid) {
         let e = self.engine(n);
@@ -1934,7 +1934,7 @@ impl Net {
         }
     }
 
-    /// What remains of `l`'s deposit budget at peer `s` (spec/sync.md §5, spec/wire.md §2: 64
+    /// What remains of `l`'s deposit budget at peer `s` (spec/sync-ids.md §6, spec/wire.md §2: 64
     /// entries plus 4 per claim slot of the head's set, of `DEPOSIT_ENTRY_BYTES` each, times the
     /// policy's `deposit_factor`), less its deposited entries: (entries, bytes).
     pub fn deposit_room(&self, s: usize, l: &osis_base::LabelId) -> (u64, u64) {

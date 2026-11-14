@@ -1,11 +1,11 @@
 //! The tokio driver (feature `driver`; notes/architecture.md §2): dials what the `SyncEngine` asks
 //! for over osis-transport `link` sessions (one stream per connection, an ephemeral transport key
-//! per connection, the peer's key checked by the transport, spec/sync.md §10) and fires its
+//! per connection, the peer's key checked by the transport, spec/sync-opens.md §4) and fires its
 //! timers. Every connection is a session of the node's hub (`hub`, osis-host's sans-I/O `Hub`,
 //! driven in this loop with node sync above it): each dialed one once up, and each a peer opens
 //! on one of the node's listeners: the dialable key's (`Control::Reach`, `Control::Listen`), the
 //! unix socket's (`Control::Socket`) and the LAN loop's per-network one. `Control::Lan` runs the LAN loop
-//! (spec/sync.md §10): per network a fresh transport key and listener, announced on join and
+//! (spec/sync-opens.md §4): per network a fresh transport key and listener, announced on join and
 //! every `LAN_ANNOUNCE`; announcements heard go to `SyncEngine::lan_seen`. No sync logic lives
 //! here: every input is an `Event`, every output an `Action`. Engine calls run under
 //! `block_in_place` on a multi-thread runtime. The engine lives in a `Shared`: owned by the

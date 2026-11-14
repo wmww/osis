@@ -184,7 +184,7 @@ pub(crate) fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypt
     lp.peers[i].engine.epochs(&t).and_then(|e| e.read.newest_held().map(|x| x.0))
 }
 
-// spec/permissions.md §2, §3; spec/sync.md §3: a grant gives the thing secrets of its own
+// spec/permissions.md §2, §3; spec/sync-judgement.md §1: a grant gives the thing secrets of its own
 // first, carries the grantee's boxes, and reaches the grantee's nodes as an inbox blob,
 // whose acceptance yields a certificate copy for the grantee's home label.
 // spec/permissions.md §2 (edge inbox delivery): grants
@@ -289,7 +289,7 @@ fn a_chain_projection_and_its_commit_join_in_either_order_spec_commits_4() {
     assert_eq!(held_of(&mut last, 1, d, k), want, "the projection after the commit");
 }
 
-// spec/wire.md §9, spec/sync.md §3: an inbox payload's label is followed only for a thing the
+// spec/wire.md §9, spec/sync-judgement.md §1: an inbox payload's label is followed only for a thing the
 // commit gave this node a read secret of. A sync grant's box gives the sync secret alone: with
 // the chain taken (the thing's `keys.0`, so the grant applies valid), it names no such thing.
 #[test]
@@ -1495,7 +1495,7 @@ fn raced_then_rotated_built() -> (LocalPeer, Tid, Tid, Done) {
     (lp, t, pc, r2)
 }
 
-// spec/permissions.md §3 (rotation), spec/sync.md §3: a rotation boxing a holder that holds no
+// spec/permissions.md §3 (rotation), spec/sync-judgement.md §1: a rotation boxing a holder that holds no
 // box at the current read epoch before it (a grant raced by an earlier rotation; the single-use
 // link race's winner) reaches that holder by inbox: it could not open the rotation commit from
 // the label, which is wrapped under that epoch.
@@ -1684,7 +1684,7 @@ fn plain_first_admin_gets_secrets_before_its_thing_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 1, doc, "by H's writer"), BTreeSet::from([0, 2]), "H's writer writes the doc; its admin and reader read it");
 }
 
-// spec/sync.md §2, §5: after a rotation an admin issues a child of the host's head at the
+// spec/sync-ids.md §2, spec/sync-ids.md §6: after a rotation an admin issues a child of the host's head at the
 // newest epochs; the removed node has no claim key in it, the remaining one has.
 #[test]
 fn registration_step_after_rotation_spec_sync_5() {
@@ -1704,7 +1704,7 @@ fn registration_step_after_rotation_spec_sync_5() {
     assert_eq!(now.get(&card).unwrap().steps.len(), 2);
 }
 
-// spec/crypto.md §3 (fresh deposit seed), spec/sync.md §5: an admin's removal that rotates read writes a fresh
+// spec/crypto.md §3 (fresh deposit seed), spec/sync-ids.md §6: an admin's removal that rotates read writes a fresh
 // deposit seed in its rotation commit, and the step it issues registers the new deposit key, so
 // the removed account can no longer deposit under the thing's labels.
 #[test]
@@ -1730,7 +1730,7 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
     assert_eq!(step.keys.deposit, osis_crypto::deposit_key(&new, &card).verifying_key());
 }
 
-// spec/sync.md §5: a refreshed deposit seed alone (no rotation) is registered by the next step
+// spec/sync-ids.md §6: a refreshed deposit seed alone (no rotation) is registered by the next step
 // an admin issues: a child at the same role keys with the new deposit key; then nothing is due.
 #[test]
 fn refreshed_deposit_seed_issues_step_spec_sync_5() {
@@ -1908,7 +1908,7 @@ fn write_link_rotates_as_signer_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 0, d, "after"), BTreeSet::from([2]), "the removed joiner reads nothing new");
 }
 
-// spec/crypto.md §4, spec/sync.md §5: signing a step and sealing its entry boxes encrypt under
+// spec/crypto.md §4, spec/sync-ids.md §6: signing a step and sealing its entry boxes encrypt under
 // the group's epochs: after a node left the account that administers the team, the team rotates
 // before an admin issues its next step.
 #[test]

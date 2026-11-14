@@ -103,7 +103,7 @@ fn page_and_listener() {
     assert!(none.commits.is_empty() && !none.more);
 }
 
-// spec/commits.md §7 (Listed parts), §5 Kept while live, spec/sync.md §7 Trigger, notes/api.md
+// spec/commits.md §7 (Listed parts), §5 Kept while live, spec/sync-compaction.md §1 trigger, notes/api.md
 // Commits: a register keeping no history lists only its live write, and once the trigger compacts
 // it (no setting keeps it while live) only the snapshot carrying it; one keeping history, declared
 // or per write, lists every write until its keep bound, then only the live one again; a signal key
@@ -452,7 +452,7 @@ fn purge_without_the_right_is_refused_spec_perm_6() {
     }
 }
 
-// spec/sync.md §6, notes/api.md Commits (the seam for issues/partial-history-fetch.md): `complete` is false while a
+// spec/sync-judgement.md §2, notes/api.md Commits (the seam for issues/partial-history-fetch.md): `complete` is false while a
 // sync ID carrying the thing has more to bring from a connected node; a sync ID this node made has
 // nothing to bring before any pass.
 #[test]
@@ -478,7 +478,7 @@ fn page_says_when_it_may_miss_commits() {
     assert!(newest(&alone, u).complete);
 }
 
-// spec/sync.md §6: a new node reads the newest messages while older ones are on their way:
+// spec/sync-judgement.md §2: a new node reads the newest messages while older ones are on their way:
 // `complete` false, then true, and every page's commits the newest there are.
 #[test]
 fn a_new_node_reads_newest_first_spec_sync_6() {
@@ -527,7 +527,7 @@ fn a_new_node_reads_newest_first_spec_sync_6() {
     assert!(phone.at(t, untyped(msg())).writes(&page(CommitFrom::Newest, 1)).unwrap().complete);
 }
 
-// spec/sync.md §9, notes/api.md Commits, notes/ephemeral.md: memory commits list too: own commits
+// spec/sync-compaction.md §2, notes/api.md Commits, notes/ephemeral.md: memory commits list too: own commits
 // at once, another node's with their author; an expired one is listed no more, and the listener
 // says so (spec/crdt.md §4.7: held value-less).
 #[test]

@@ -23,7 +23,7 @@ use std::collections::BTreeSet;
 
 /// The held valid snapshot of `(tid, ak)` that covers held body `c`, holding the right over it
 /// when `right`, latest first (spec/commits.md §5 Covered; of two covered-equal snapshots only the
-/// lower ID covers, spec/sync.md §7).
+/// lower ID covers, spec/sync-compaction.md §1).
 fn coverer(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, right: bool) -> Result<Option<CommitId>> {
     let mut snaps: Vec<(Ts, CommitId)> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| (x.0, x.1)).filter(|x| x.1 != *c).collect();
     snaps.sort();
@@ -157,7 +157,7 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
                 continue;
             }
             // a live delta is no purge-on-replace body: it drops as any covered body does, by
-            // node-sync (its author's own covers only there, spec/sync.md §7 Own bodies). A memory
+            // node-sync (its author's own covers only there, spec/sync-compaction.md §1 own bodies). A memory
             // body only under purge on replace: any other (a snapshot carrying live writes, one
             // replaced under another setting) is node-sync's too, where its author keeps its own
             // (notes/ephemeral.md Own bodies under own covers)

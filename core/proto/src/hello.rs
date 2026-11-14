@@ -1,4 +1,4 @@
-//! Hello and version negotiation (spec/wire.md §11.1), clock offset estimation (spec/sync.md §6).
+//! Hello and version negotiation (spec/wire.md §11.1), clock offset estimation (spec/sync-judgement.md §2).
 
 use crate::Error;
 use crate::dec::{Fields, uint};
@@ -8,9 +8,9 @@ use osis_base::{Limits, Value, cbor};
 pub const PROTOCOL_VERSION: u64 = 1;
 /// Versions a Hello may list.
 pub const MAX_HELLO_VERSIONS: usize = 16;
-/// Clock offsets beyond this are reported as a diagnostic (spec/sync.md §6: "a few seconds").
+/// Clock offsets beyond this are reported as a diagnostic (spec/sync-judgement.md §2: "a few seconds").
 pub const OFFSET_DIAGNOSTIC_MS: u64 = 5_000;
-/// Pings a dialer sends when its connection starts (clock offset samples, spec/sync.md §6).
+/// Pings a dialer sends when its connection starts (clock offset samples, spec/sync-judgement.md §2).
 pub const INITIAL_PINGS: usize = 3;
 /// Interval of a dialer's later pings: offset samples, and a request out so the stall clock finds
 /// a dead connection. Minor: 0 pings in a loop, infinity finds a dead idle connection only by
@@ -104,7 +104,7 @@ pub fn estimate_offset(samples: &[OffsetSample]) -> Option<i64> {
     offsets.get(offsets.len().checked_sub(1)? / 2).copied()
 }
 
-/// A connection's Ping round trips (spec/sync.md §6): the newest `MAX_SAMPLES`, and the offset
+/// A connection's Ping round trips (spec/sync-judgement.md §2): the newest `MAX_SAMPLES`, and the offset
 /// once `MIN_PONGS` came back.
 #[derive(Clone, Debug, Default)]
 pub struct ClockSamples {
@@ -157,7 +157,7 @@ mod tests {
         assert!(bad(Value::List(vec![Value::Str("osiz".into()), Value::List(vec![Value::uint(1)]), Value::uint(5), Value::Bytes(vec![0; 32])])));
     }
 
-    // spec/sync.md §6: round-trip corrected, robust to an outlier
+    // spec/sync-judgement.md §2: round-trip corrected, robust to an outlier
     #[test]
     fn offset_median() {
         let s = |sent, peer, received| OffsetSample { sent, peer, received };
@@ -168,7 +168,7 @@ mod tests {
         assert_eq!(estimate_offset(&[s(200, 5, 100)]), None);
     }
 
-    // spec/sync.md §6: a round trip over MAX_SAMPLE_RTT_MS (pings held across a suspend) is no
+    // spec/sync-judgement.md §2: a round trip over MAX_SAMPLE_RTT_MS (pings held across a suspend) is no
     // sample: three of them set nothing, and beside short ones they move nothing
     #[test]
     fn offset_ignores_long_round_trips() {
@@ -181,7 +181,7 @@ mod tests {
         assert_eq!(estimate_offset(&mixed), Some(1000));
     }
 
-    // spec/sync.md §6: no offset before three Pongs, then the median of the samples kept
+    // spec/sync-judgement.md §2: no offset before three Pongs, then the median of the samples kept
     #[test]
     fn offset_after_three_pongs() {
         let s = |sent, peer, received| OffsetSample { sent, peer, received };

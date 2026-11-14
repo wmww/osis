@@ -46,7 +46,7 @@ use std::sync::Arc;
 /// Something a flow produced that must travel (node-sync carries it out).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Delivery {
-    /// An inbox blob for actor `to` (spec/sync.md §3): placed under `inbox.label` by deposit, or
+    /// An inbox blob for actor `to` (spec/sync-judgement.md §1): placed under `inbox.label` by deposit, or
     /// by upload when the sender holds that label's write key; `resend` seals it again.
     Inbox { to: Tid, inbox: Inbox, blob: Vec<u8>, resend: Resend },
     /// Commits for node `to` over a direct connection (pairing; a node has no inbox).
@@ -55,11 +55,11 @@ pub enum Delivery {
     /// node tracks of the things listed (a removal and the affected actors' new `keys.0`,
     /// spec/permissions.md §3), stamped or by deposit.
     First { commits: Vec<CommitId>, under: Vec<Tid> },
-    /// A certificate copy to place under the home label of `under` (spec/sync.md §3: a grantee
+    /// A certificate copy to place under the home label of `under` (spec/sync-judgement.md §1: a grantee
     /// node accepting a grant; deposit unless writer).
     Certificate { commits: Vec<CommitId>, under: Tid },
     /// A commit to place under the label of `under`, by deposit (a non-writer of that label: an
-    /// invite grant, spec/sync.md §5).
+    /// invite grant, spec/sync-ids.md §6).
     Deposit { commit: CommitId, under: Tid },
     /// A removal or lowering of actor `under`'s edge, placed under every label holding `under`
     /// as a certificate copy without its `secrets.0` and `keys.0` deltas (spec/permissions.md §2:
@@ -68,7 +68,7 @@ pub enum Delivery {
     Removal { commit: CommitId, under: Tid },
 }
 
-/// What seals an inbox delivery again (spec/sync.md §3: re-sent after `INBOX_LIFETIME` while
+/// What seals an inbox delivery again (spec/sync-judgement.md §1: re-sent after `INBOX_LIFETIME` while
 /// the holder has not acted): the holder, the commit, the things named, whether only its
 /// `roles.0` parts went (a removal).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -208,7 +208,7 @@ impl Core {
     /// first admin while `a`'s record edge stands here (any role), and so on up, the top
     /// included (a key actor, or a thing whose record is not held). The one walk for node rules
     /// that read the record chain as standing: inboxes, `label.0` cross-publishing, hosting
-    /// admission, inbox stamps and copies (spec/sync.md §2, §3; spec/data-model.md §9).
+    /// admission, inbox stamps and copies (spec/sync-ids.md §2, spec/sync-judgement.md §1; spec/data-model.md §9).
     /// Derivation and entitlement read the records alone (`record_chain`).
     pub fn standing_chain(&self, a: &Tid) -> Vec<Tid> {
         let mut out = Vec::new();
@@ -304,7 +304,7 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
     Ok(Recipient { holder, role, keys })
 }
 
-/// The inbox a role write about `holder` goes to (spec/sync.md §2): the one its `keys.0` names.
+/// The inbox a role write about `holder` goes to (spec/sync-ids.md §2): the one its `keys.0` names.
 /// `None` for a key actor (direct delivery only) and when none is known here.
 pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
     if tx.core.is_key_actor(holder) && !tx.core.is_account(holder) {

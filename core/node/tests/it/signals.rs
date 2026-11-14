@@ -430,7 +430,7 @@ fn signal_past_its_bound_never_missing_again_spec_commits_5() {
     }
 }
 
-// spec/sync.md §6, spec/commits.md §5 Signals: a signal part is must-hold only while kept: past
+// spec/sync-judgement.md §2, spec/commits.md §5 Signals: a signal part is must-hold only while kept: past
 // its bound a node still holding it (its timer not yet run) holds it as may-hold, so no pass
 // places it again. This engine runs due timers before every step, so a pass meets it only when
 // the clock crosses the bound during one; the judgment is checked directly

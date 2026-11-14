@@ -1,4 +1,4 @@
-//! `Hub`: a node's connections over one store, sans-I/O (spec/sync.md §5-§10). One osis-proto
+//! `Hub`: a node's connections over one store, sans-I/O (spec/sync-ids.md §6). One osis-proto
 //! `Session` per connection, accepted under the key of the listener that took it or dialed to a
 //! key (`dial`); bounded sweeps, Hello deadlines and stalls of the upper layer's requests. Node
 //! sync is every session's upper layer: the hub hands it each connection's start, node-kind
@@ -53,7 +53,7 @@ pub enum Up {
     End,
 }
 
-/// A connection's binding (spec/sync.md §10, Connection proofs).
+/// A connection's binding (spec/sync-opens.md §2, connection proofs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Binding {
     /// The dialer's and the listener's Hello challenges, and the listener's static key (this
@@ -232,7 +232,7 @@ impl Hub {
     }
 
     /// A connection from `remote` on the listener of static key `key` (bound by open signatures
-    /// and connection proofs; spec/sync.md §10): start its session (sends Hello). How many
+    /// and connection proofs; spec/sync-opens.md §4): start its session (sends Hello). How many
     /// connections a node serves is node sync's rule (it closes by `Down::Close`); the hub caps
     /// none.
     pub fn accept(&mut self, now: u64, id: ConnId, key: [u8; 32], remote: Remote) -> Vec<HubOutput> {
@@ -401,7 +401,7 @@ impl Hub {
         }
     }
 
-    /// Back-pressure on the output (spec/sync.md §10 Served connections): each
+    /// Back-pressure on the output (spec/sync-transport.md §5 served connections): each
     /// connection's replies, pushes and own requests go only within its share of
     /// `max_buffered_bytes` (the bound over the active connections) and the bytes the bound has
     /// left; its received requests wait for room in order, and it takes no input meanwhile. One
@@ -518,7 +518,7 @@ impl Hub {
     }
 
     /// Runs what is due: a bounded sweep (expiry, tombstones, claim sets), Hello
-    /// deadlines and stalls of node sync's requests (spec/sync.md §6 Stall).
+    /// deadlines and stalls of node sync's requests (spec/sync-streams.md §1 stall).
     pub fn tick(&mut self, now: u64) -> Vec<HubOutput> {
         self.now = now;
         self.batch(|h, st, out| h.tick_in(st, now, out))

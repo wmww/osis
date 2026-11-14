@@ -143,7 +143,7 @@ impl World {
     }
 }
 
-// spec/sync.md §10, notes/client-port.md §6: a group with no source node is local whatever a connected node also offers; a thing known only at the connected node goes there; with the node unreachable the local thing still reads and the one at the node fails Network
+// spec/sync-opens.md §4, notes/client-port.md §6: a group with no source node is local whatever a connected node also offers; a thing known only at the connected node goes there; with the node unreachable the local thing still reads and the one at the node fails Network
 #[test]
 fn known_stays_here_and_unknown_goes_to_the_node() {
     let x = world();
@@ -181,7 +181,7 @@ fn known_stays_here_and_unknown_goes_to_the_node() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6 Moving: to Node this node stops syncing for itself alone (N keeps syncing the group's label), reads and writes go to N at once, P's copy stays and is not read; back to Local it catches up before calls come home; a move refused changes nothing
+// spec/sync-opens.md §4, notes/client-port.md §6 Moving: to Node this node stops syncing for itself alone (N keeps syncing the group's label), reads and writes go to N at once, P's copy stays and is not read; back to Local it catches up before calls come home; a move refused changes nothing
 #[test]
 fn moving_a_group_both_ways() {
     let x = world();
@@ -393,7 +393,7 @@ fn served_status_leaves_out_groups_read_elsewhere() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6: moves with writes pending on either side refuse, changing nothing, and each write stays where it is readable: a local write not yet at a peer holds the move away; going home while this engine cannot catch up, or while the node holds a write no peer has, keeps the source, so calls still go to the node and the local copy never answers behind
+// spec/sync-opens.md §4, notes/client-port.md §6: moves with writes pending on either side refuse, changing nothing, and each write stays where it is readable: a local write not yet at a peer holds the move away; going home while this engine cannot catch up, or while the node holds a write no peer has, keeps the source, so calls still go to the node and the local copy never answers behind
 #[test]
 fn moves_with_pending_writes_refuse() {
     let x = world_waiting(Duration::from_millis(300));
@@ -431,7 +431,7 @@ fn moves_with_pending_writes_refuse() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6: the same moves finish once the link heals, and no write was lost (by hand: each heal waits a sync retry, 5 s)
+// spec/sync-opens.md §4, notes/client-port.md §6: the same moves finish once the link heals, and no write was lost (by hand: each heal waits a sync retry, 5 s)
 #[test]
 #[ignore]
 fn moves_with_pending_writes_finish_after_healing() {
@@ -474,7 +474,7 @@ fn moves_with_pending_writes_finish_after_healing() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6 Offline: a disconnected node fails Network at once, with no stale value from the copy this node still holds, no write to it; a Watch reads Err(Network) while down; status says connected: false; a new watch fails too; moving home still works with the node gone
+// spec/sync-opens.md §4, notes/client-port.md §6 Offline: a disconnected node fails Network at once, with no stale value from the copy this node still holds, no write to it; a Watch reads Err(Network) while down; status says connected: false; a new watch fails too; moving home still works with the node gone
 #[test]
 fn disconnected_node_is_network_never_stale() {
     let x = world();
@@ -517,7 +517,7 @@ fn disconnected_node_is_network_never_stale() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/api.md Tracked reads: a tracked read whose group moved listens at the new source, not at
+// spec/sync-opens.md §4, notes/api.md Tracked reads: a tracked read whose group moved listens at the new source, not at
 // the subscription the move ended.
 #[test]
 fn a_tracked_read_listens_at_its_new_source_after_a_move() {
@@ -535,7 +535,7 @@ fn a_tracked_read_listens_at_its_new_source_after_a_move() {
     rx.recv_timeout(W).expect("told at the node the group moved to");
 }
 
-// spec/sync.md §10, notes/client-port.md §6: moving a group ends a watch on the source it left with one last error: a local watch does not go silent over a group this node stopped syncing, a watch at the node does not outlive the move
+// spec/sync-opens.md §4, notes/client-port.md §6: moving a group ends a watch on the source it left with one last error: a local watch does not go silent over a group this node stopped syncing, a watch at the node does not outlive the move
 #[test]
 fn a_move_ends_watches_of_the_group() {
     let x = world();
@@ -556,7 +556,7 @@ fn a_move_ends_watches_of_the_group() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6, §3: a client of a node reads nothing the node stopped syncing: it is stale there, the client gets UnknownThing, not an old value, and through the node's own connection nothing runs as the node's actor
+// spec/sync-opens.md §4, notes/client-port.md §6, §3: a client of a node reads nothing the node stopped syncing: it is stale there, the client gets UnknownThing, not an old value, and through the node's own connection nothing runs as the node's actor
 #[test]
 fn a_nodes_client_does_not_read_what_it_moved_away() {
     let x = world();
@@ -578,7 +578,7 @@ fn a_nodes_client_does_not_read_what_it_moved_away() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §1 Reconnect: a write whose first send ran and whose reply was lost is answered from the node's memory under the same epoch: applied once, and the caller gets its one result
+// spec/sync-opens.md §4, notes/client-port.md §1 Reconnect: a write whose first send ran and whose reply was lost is answered from the node's memory under the same epoch: applied once, and the caller gets its one result
 #[test]
 fn lost_reply_retried_applies_once() {
     let x = world();
@@ -612,7 +612,7 @@ fn commits_of(db: &Osis, t: Tid) -> usize {
     crate::common::listed(db, osis::Scope::Thing(t)).len()
 }
 
-// spec/sync.md §10, notes/client-port.md §1 Reconnect: a write that never reached the node (the worker died before it) is sent again and applied once
+// spec/sync-opens.md §4, notes/client-port.md §1 Reconnect: a write that never reached the node (the worker died before it) is sent again and applied once
 #[test]
 fn unsent_write_retried_applies_once() {
     let x = world();
@@ -638,7 +638,7 @@ fn unsent_write_retried_applies_once() {
     drop(x.host);
 }
 
-// spec/sync.md §10, issues/cli-proxy.md Port worker panic: a panic ends that session at once, not after a stall timeout: its in-flight read fails Network, it reconnects; another client's session never noticed, and the worker lives on
+// spec/sync-opens.md §4, issues/cli-proxy.md Port worker panic: a panic ends that session at once, not after a stall timeout: its in-flight read fails Network, it reconnects; another client's session never noticed, and the worker lives on
 #[test]
 fn a_worker_panic_ends_one_session_and_the_port_lives() {
     let x = world();
@@ -655,7 +655,7 @@ fn a_worker_panic_ends_one_session_and_the_port_lives() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §1 Reconnect: node restart: Auth again; subscriptions again with the new value; later writes work
+// spec/sync-opens.md §4, notes/client-port.md §1 Reconnect: node restart: Auth again; subscriptions again with the new value; later writes work
 #[test]
 fn restart_keeps_the_node_connection_working() {
     let mut x = world();
@@ -746,7 +746,7 @@ fn resent_nonce_of_an_unknown_session_is_unknown() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §1: schemas registered through a main-actor connection are registered again after a node restart, and watches come back over the unix socket
+// spec/sync-opens.md §4, notes/client-port.md §1: schemas registered through a main-actor connection are registered again after a node restart, and watches come back over the unix socket
 #[test]
 fn main_reconnect_registers_schemas_again() {
     let d = std::env::temp_dir().join(format!("osis-sources-{}", std::process::id()));
@@ -780,7 +780,7 @@ fn main_reconnect_registers_schemas_again() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-// spec/sync.md §10, notes/client-port.md §1: a write held across a drop gives up after `CONNECTION_WAIT` with no connection, with one answer: unknown
+// spec/sync-opens.md §4, notes/client-port.md §1: a write held across a drop gives up after `CONNECTION_WAIT` with no connection, with one answer: unknown
 #[test]
 fn write_in_flight_gives_up_after_connection_wait() {
     let x = world();
@@ -802,7 +802,7 @@ fn write_in_flight_gives_up_after_connection_wait() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §5: a client reaches its node at the node's one key (its
+// spec/sync-opens.md §4, notes/client-port.md §5: a client reaches its node at the node's one key (its
 // dialable key, its listen addresses'): `rotate_peer_address` moves every listener to a new key,
 // so a client on the old address sees Network and connected: false and never reaches the node
 // again; the same URL under the new key works; no URL stops listening and ends the sessions
@@ -836,7 +836,7 @@ fn clients_follow_the_one_key() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §3: a bearer secret is only sent to the pinned key: an impostor at the node's URL under another key gets no session (the dial fails), and a unix address is refused before any dial
+// spec/sync-opens.md §4, notes/client-port.md §3: a bearer secret is only sent to the pinned key: an impostor at the node's URL under another key gets no session (the dial fails), and a unix address is refused before any dial
 #[test]
 fn bearer_secret_only_to_the_pinned_key() {
     let x = world();
@@ -850,7 +850,7 @@ fn bearer_secret_only_to_the_pinned_key() {
     drop(x.host);
 }
 
-// spec/sync.md §10, issues/cli-proxy.md: connect's wait for Hello has a deadline: a listener that takes the connection and never answers fails Network within `CONNECTION_WAIT`, not forever
+// spec/sync-opens.md §4, issues/cli-proxy.md: connect's wait for Hello has a deadline: a listener that takes the connection and never answers fails Network within `CONNECTION_WAIT`, not forever
 #[test]
 fn connect_to_a_silent_listener_ends() {
     let net = osis_transport::Net::new(0);
@@ -879,7 +879,7 @@ fn connect_to_a_silent_listener_ends() {
     assert!(matches!(r, Err(Error::Network(_))), "{r:?}");
 }
 
-// spec/sync.md §10, notes/client-port.md §6: osis::internals::Opening.node_connections without a store: every group at the node; two nodes as two actors are Invalid (one acting actor per process); with a store: the sources record survives a restart, without its attachment a group source fails Network (never the local copy), with it works again; status lists the source's node; a group whose source node was removed can go home
+// spec/sync-opens.md §4, notes/client-port.md §6: osis::internals::Opening.node_connections without a store: every group at the node; two nodes as two actors are Invalid (one acting actor per process); with a store: the sources record survives a restart, without its attachment a group source fails Network (never the local copy), with it works again; status lists the source's node; a group whose source node was removed can go home
 #[test]
 fn config_connections_and_the_persisted_source() {
     let mut x = world();
@@ -927,7 +927,7 @@ fn config_connections_and_the_persisted_source() {
     drop(x.host.take());
 }
 
-// spec/sync.md §10, notes/client-port.md §6, sources.rs invariant: a write decided Local and then overtaken by a move fails under its own lock: nothing lands in a group that no longer syncs here
+// spec/sync-opens.md §4, notes/client-port.md §6, sources.rs invariant: a write decided Local and then overtaken by a move fails under its own lock: nothing lands in a group that no longer syncs here
 #[test]
 fn a_write_overtaken_by_a_move_fails() {
     let x = world();
@@ -944,7 +944,7 @@ fn a_write_overtaken_by_a_move_fails() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §3, §5 (networking tier: `cargo test -p osis --test it -- --ignored quic`): a thin client over real QUIC with bearer Auth: reads, writes, watches where the node listens; a wrong pinned key dials nothing; a wrong secret is refused; a node restart on the same port reconnects under the same key; a rotation strands the old address
+// spec/sync-opens.md §4, notes/client-port.md §3, §5 (networking tier: `cargo test -p osis --test it -- --ignored quic`): a thin client over real QUIC with bearer Auth: reads, writes, watches where the node listens; a wrong pinned key dials nothing; a wrong secret is refused; a node restart on the same port reconnects under the same key; a rotation strands the old address
 #[test]
 #[ignore]
 fn thin_client_over_quic() {
@@ -1001,7 +1001,7 @@ fn thin_client_over_quic() {
     assert_eq!(crate::common::block_on(osis::internals::connect(&new, &secret, cfg)).unwrap().at(t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("again")));
 }
 
-// spec/sync.md §10, notes/api.md (`rotate_peer_address`): rotation returns once the node listens
+// spec/sync-transport.md §5, notes/api.md (`rotate_peer_address`): rotation returns once the node listens
 // under the new key: a thin client's one attempt reaches the new address at once, the old one never
 #[test]
 fn rotation_returns_listening_under_the_new_key() {
@@ -1069,7 +1069,7 @@ impl Rng {
     }
 }
 
-// spec/sync.md §10, notes/client-port.md §6, the invariant of core/osis/src/sources.rs: random groups, sources, syncs and node connections against a model of the rule: each call reaches exactly the source the model names, a value only from it, a write only to it, Network when that one is down, never another's answer
+// spec/sync-opens.md §4, notes/client-port.md §6, the invariant of core/osis/src/sources.rs: random groups, sources, syncs and node connections against a model of the rule: each call reaches exactly the source the model names, a value only from it, a write only to it, Network when that one is down, never another's answer
 #[test]
 fn sources_differential_against_a_model() {
     let refused: usize = (0..2).map(differential).sum();
@@ -1211,7 +1211,7 @@ fn lowering_a_role_on_a_sourced_group_is_refused() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6: a sharing flow decided Local and overtaken by a move fails under its commit's lock: a grant or revocation never sits unsent in a group that stopped syncing here
+// spec/sync-opens.md §4, notes/client-port.md §6: a sharing flow decided Local and overtaken by a move fails under its commit's lock: a grant or revocation never sits unsent in a group that stopped syncing here
 #[test]
 fn a_sharing_flow_overtaken_by_a_move_fails() {
     let x = world();
@@ -1279,7 +1279,7 @@ fn a_move_tells_a_client_nothing_of_what_it_never_read() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6, §3: while a group's move home catches up, the node's own clients read nothing of it: the source stands, the copy here is behind
+// spec/sync-opens.md §4, notes/client-port.md §6, §3: while a group's move home catches up, the node's own clients read nothing of it: the source stands, the copy here is behind
 #[test]
 fn a_nodes_client_reads_nothing_during_the_catch_up() {
     let x = world_waiting(Duration::from_millis(300));
@@ -1301,7 +1301,7 @@ fn a_nodes_client_reads_nothing_during_the_catch_up() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §1 Reconnect: a watch of a thing started while the node is down fails `Network`, and works once it is up.
+// spec/sync-opens.md §4, notes/client-port.md §1 Reconnect: a watch of a thing started while the node is down fails `Network`, and works once it is up.
 #[test]
 fn a_watch_started_while_down_fails_and_works_once_up() {
     let x = world();
@@ -1325,7 +1325,7 @@ fn a_watch_started_while_down_fails_and_works_once_up() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §8: the port worker never waits on another node: a main-actor call on a sourced group answers at once, so one silent node holds no other client of this node
+// spec/sync-opens.md §4, notes/client-port.md §8: the port worker never waits on another node: a main-actor call on a sourced group answers at once, so one silent node holds no other client of this node
 #[test]
 fn a_silent_node_holds_no_client_of_this_node() {
     let x = world();
@@ -1364,7 +1364,7 @@ fn a_silent_node_holds_no_client_of_this_node() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §1, §6: a differential of `group_source` with the peer up: random real moves, drops and lost replies against a model holding every value a write may have left: a read never shows an older acknowledged value through a settled source, no write is applied twice, a failed move changes no source; a thing in a second group that carries it refuses writes while sourced (no write acknowledged and silently never sent), and a thing added to a second group while sourced still reads there
+// spec/sync-opens.md §4, notes/client-port.md §1, §6: a differential of `group_source` with the peer up: random real moves, drops and lost replies against a model holding every value a write may have left: a read never shows an older acknowledged value through a settled source, no write is applied twice, a failed move changes no source; a thing in a second group that carries it refuses writes while sourced (no write acknowledged and silently never sent), and a thing added to a second group while sourced still reads there
 #[test]
 fn group_source_differential_against_a_model() {
     let (mut refused, mut added) = (0, 0);
@@ -1580,7 +1580,7 @@ fn third_node(x: &World) -> Osis {
     w_db
 }
 
-// spec/sync.md §2, §10: a sourced thing given its own sync ID by a grant elsewhere keeps its one source:
+// spec/sync-ids.md §2, spec/sync-opens.md §4: a sourced thing given its own sync ID by a grant elsewhere keeps its one source:
 // the source node syncs that ID too, so writes through it reach every holder
 #[test]
 fn a_sourced_thing_given_its_own_sync_id_is_not_split() {
@@ -1600,7 +1600,7 @@ fn a_sourced_thing_given_its_own_sync_id_is_not_split() {
     drop(x.host);
 }
 
-// spec/sync.md §10, the invariant of core/osis/src/sources.rs: `t` in sourced G and in H, which carries it and syncs here: reads go to the source and see what only G carries; a write is refused, not acknowledged and left missing G's or H's other holders; `status` lists it; home again it writes, and every holder gets it
+// spec/sync-opens.md §4, the invariant of core/osis/src/sources.rs: `t` in sourced G and in H, which carries it and syncs here: reads go to the source and see what only G carries; a write is refused, not acknowledged and left missing G's or H's other holders; `status` lists it; home again it writes, and every holder gets it
 #[test]
 fn a_split_thing_reads_at_its_source_and_refuses_writes() {
     let x = world();
@@ -1640,7 +1640,7 @@ fn a_split_thing_reads_at_its_source_and_refuses_writes() {
     drop(x.host);
 }
 
-// spec/sync.md §10: a split can arrive from elsewhere, where nothing could refuse it: another holder of H shares sourced `t` into H; reads stay where they were, the next write here says why it is refused, and `status` shows it
+// spec/sync-opens.md §4: a split can arrive from elsewhere, where nothing could refuse it: another holder of H shares sourced `t` into H; reads stay where they were, the next write here says why it is refused, and `status` shows it
 #[test]
 fn a_split_arriving_from_another_node_refuses_the_next_write() {
     let x = world();
@@ -1666,7 +1666,7 @@ fn a_split_arriving_from_another_node_refuses_the_next_write() {
     drop(x.host);
 }
 
-// spec/sync.md §10: adding a sourced thing to a group synced here changes no source: a write acknowledged through the node does not read as gone; with no grant H does not carry it, so writes go on
+// spec/sync-opens.md §4: adding a sourced thing to a group synced here changes no source: a write acknowledged through the node does not read as gone; with no grant H does not carry it, so writes go on
 #[test]
 fn adding_a_sourced_thing_to_a_local_group_changes_nothing() {
     let x = world();
@@ -1687,7 +1687,7 @@ fn adding_a_sourced_thing_to_a_local_group_changes_nothing() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §8: a client of this node reads no copy of a sourced thing, even one a local group still feeds
+// spec/sync-opens.md §4, notes/client-port.md §8: a client of this node reads no copy of a sourced thing, even one a local group still feeds
 #[test]
 fn a_client_of_this_node_reads_no_split_thing() {
     let x = world();
@@ -1702,7 +1702,7 @@ fn a_client_of_this_node_reads_no_split_thing() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §3: what deciding a source asks answers for a thing the client's actor may not read exactly as for a tid nobody knows: no existence oracle.
+// spec/sync-opens.md §4, notes/client-port.md §3: what deciding a source asks answers for a thing the client's actor may not read exactly as for a tid nobody knows: no existence oracle.
 #[test]
 fn the_source_of_what_the_actor_may_not_read_is_as_of_nothing() {
     let x = world();
@@ -1732,7 +1732,7 @@ fn a_secret_of_another_node_is_refused() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6 Moving: a group with no content yet is held at the node all the same: it can be moved there, though `has_content` reads `false`.
+// spec/sync-opens.md §4, notes/client-port.md §6 Moving: a group with no content yet is held at the node all the same: it can be moved there, though `has_content` reads `false`.
 #[test]
 fn an_empty_group_can_be_sourced_at_the_node() {
     let x = world();
@@ -1749,7 +1749,7 @@ fn an_empty_group_can_be_sourced_at_the_node() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6 Moving: a write landing after the move's wait ended, before the move takes the lock, is waited for too: no `Unsynced`, no stranded write
+// spec/sync-opens.md §4, notes/client-port.md §6 Moving: a write landing after the move's wait ended, before the move takes the lock, is waited for too: no `Unsynced`, no stranded write
 #[test]
 fn a_move_waits_again_for_a_write_after_its_wait() {
     use std::future::Future;
@@ -1783,7 +1783,7 @@ fn a_move_waits_again_for_a_write_after_its_wait() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6 Moving: a group held here without a live label comes home: this engine's role decides (the source would ask the node, where the client's actor reads nothing of it), and its first label is written while the source still stands
+// spec/sync-opens.md §4, notes/client-port.md §6 Moving: a group held here without a live label comes home: this engine's role decides (the source would ask the node, where the client's actor reads nothing of it), and its first label is written while the source still stands
 #[test]
 fn a_group_without_a_label_here_comes_home() {
     let x = world();
@@ -1818,7 +1818,7 @@ fn removing_a_client_of_a_sourced_group_waits_for_it_to_come_home() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §1 Reconnect: `watch_status` and `on_diagnostic` need no answer to start: started while the node is down, the first tells so, the second is quiet, and both come up with the connection. A roster watch losing its connection says so, and shows the roster again.
+// spec/sync-opens.md §4, notes/client-port.md §1 Reconnect: `watch_status` and `on_diagnostic` need no answer to start: started while the node is down, the first tells so, the second is quiet, and both come up with the connection. A roster watch losing its connection says so, and shows the roster again.
 #[test]
 fn status_and_diagnostic_watches_started_while_down_come_up() {
     let x = world();
@@ -1856,7 +1856,7 @@ fn status_and_diagnostic_watches_started_while_down_come_up() {
     drop(x.host);
 }
 
-// spec/wire.md §9, spec/sync.md §3: a share into a second group sends an inbox blob about the thing,
+// spec/wire.md §9, spec/sync-judgement.md §1: a share into a second group sends an inbox blob about the thing,
 // which names no group's label: moving the first group away and home finds its label free.
 #[test]
 fn moving_home_after_a_grant_to_a_second_group() {
@@ -1889,7 +1889,7 @@ fn moving_home_after_a_grant_to_a_second_group() {
     drop(x.host);
 }
 
-// spec/sync.md §10: undo and revert refuse what they would write on a split thing, also when the call names only the sourced group, or a commit this engine never held
+// spec/sync-opens.md §4: undo and revert refuse what they would write on a split thing, also when the call names only the sourced group, or a commit this engine never held
 #[test]
 fn undo_and_revert_refuse_a_split_thing_they_cannot_name() {
     let x = world();
@@ -1921,7 +1921,7 @@ fn undo_and_revert_refuse_a_split_thing_they_cannot_name() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6, cli `status`: a process connected to the node as its main actor sees what the node's status lists as split; so does a reopened node, whose sources come from its record
+// spec/sync-opens.md §4, notes/client-port.md §6, cli `status`: a process connected to the node as its main actor sees what the node's status lists as split; so does a reopened node, whose sources come from its record
 #[test]
 fn split_shows_through_the_port_and_after_a_restart() {
     let mut x = world();
@@ -1952,7 +1952,7 @@ fn split_shows_through_the_port_and_after_a_restart() {
     drop(x.host);
 }
 
-// spec/sync.md §10, the invariant of core/osis/src/sources.rs: a move landing between a write's source decision and its split check: the check sees the source, so a write that would miss H's other holders is refused, not sent to the source it never saw
+// spec/sync-opens.md §4, the invariant of core/osis/src/sources.rs: a move landing between a write's source decision and its split check: the check sees the source, so a write that would miss H's other holders is refused, not sent to the source it never saw
 #[test]
 fn a_split_made_after_the_source_decision_refuses_the_write() {
     let x = world();
@@ -1971,7 +1971,7 @@ fn a_split_made_after_the_source_decision_refuses_the_write() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/arbitrary-values.md, notes/client-port.md §1: `CONNECTION_WAIT`, as a test sets it: at 0 nothing connects, `Network`; long, it works as any
+// spec/sync-opens.md §4, notes/arbitrary-values.md, notes/client-port.md §1: `CONNECTION_WAIT`, as a test sets it: at 0 nothing connects, `Network`; long, it works as any
 #[test]
 fn connecting_at_zero_and_infinity() {
     let x = world();
@@ -1990,7 +1990,7 @@ fn connecting_at_zero_and_infinity() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6: a login names its secret: a new secret after a rotation connects at the first call, and a live connection by another secret is `Invalid`, never silently kept as someone else's
+// spec/sync-opens.md §4, notes/client-port.md §6: a login names its secret: a new secret after a rotation connects at the first call, and a live connection by another secret is `Invalid`, never silently kept as someone else's
 #[test]
 fn connect_node_takes_a_new_secret_and_refuses_a_second_login() {
     let x = world();
@@ -2006,7 +2006,7 @@ fn connect_node_takes_a_new_secret_and_refuses_a_second_login() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6: a node's connection to a node that is down is `Ok`, `status` says it is down, and it keeps trying; a refused secret keeps nothing; a thing known nowhere here then answers there
+// spec/sync-opens.md §4, notes/client-port.md §6: a node's connection to a node that is down is `Ok`, `status` says it is down, and it keeps trying; a refused secret keeps nothing; a thing known nowhere here then answers there
 #[test]
 fn connect_node_keeps_trying_a_node_that_is_down() {
     let x = world();

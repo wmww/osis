@@ -1,10 +1,10 @@
-//! What a label should hold (spec/sync.md §6): must-hold judgment, which entry holds a body,
+//! What a label should hold (spec/sync-judgement.md §2): must-hold judgment, which entry holds a body,
 //! placing one, and whether an entry is genuine.
 
 use super::*;
 
 impl SyncEngine {
-    /// The entries the must-hold bodies of `l` need (spec/sync.md §6), by priority: the entry of
+    /// The entries the must-hold bodies of `l` need (spec/sync-judgement.md §2), by priority: the entry of
     /// each body (at `source` if there, else any genuine one; `None`: this node's own served
     /// state, any entry), else a fresh placement when this node may log or deposit it, with
     /// the blobs it links when this node writes. Another node's body not at `source` waits for
@@ -35,7 +35,7 @@ impl SyncEngine {
             let entry = self.entry_for(source, &l, b);
             // another blob of the commit holding every needed delta holds it (a rewrite a
             // right holder dropped covered deltas from, a superset), unless it is must-not-hold
-            // (`holds_nothing`, spec/sync.md §6)
+            // (`holds_nothing`, spec/sync-judgement.md §2)
             let here = entry.is_some_and(|id| source.is_none_or(|s| self.state.is_present(s, &l, &id)));
             if !here && self.carried_by(source, &l, &b.commit, &needed, b.to_label) {
                 continue;
@@ -122,7 +122,7 @@ impl SyncEngine {
         !self.state.is_present(source, l, id) && !self.state.is_gone_at(source, l, id)
     }
 
-    /// Must-hold for a closure body (spec/sync.md §6), judged per part the label's actor reads
+    /// Must-hold for a closure body (spec/sync-judgement.md §2), judged per part the label's actor reads
     /// (`b.parts`): a part kept (`part_kept`) or established uncovered by the label's
     /// snapshots (never a signal's). Must-hold: the parts a blob of the commit must hold to hold the body (those
     /// kept, and those of the aspects no snapshot covers).
@@ -140,7 +140,7 @@ impl SyncEngine {
             let kept = self.part_kept(&keeps, *ai, note);
             before |= kept;
             // a signal's delta is never joined, so never established uncovered: must-hold only
-            // while kept (spec/sync.md §6, spec/commits.md §5 Signals)
+            // while kept (spec/sync-judgement.md §2, spec/commits.md §5 Signals)
             let mut c = a.signal();
             let mut open = false;
             for s in snaps.get(&(*t, a.clone())).into_iter().flatten().filter(|_| !c) {
@@ -179,7 +179,7 @@ impl SyncEngine {
         self.engine.header(c).map(|h| h.ts).or_else(|| self.memory.forgotten.get(c).map(|f| f.header.ts))
     }
 
-    /// Whether part `p` of commit `c` is kept whatever covers it (spec/sync.md §6): before its
+    /// Whether part `p` of commit `c` is kept whatever covers it (spec/sync-judgement.md §2): before its
     /// keep-at-least bound (noted when that ends; never for one kept for good). `keeps`: the
     /// commit's `Engine::part_keeps`, read once per commit judged.
     pub(super) fn part_kept(&self, keeps: &[u64], ai: usize, note: &mut Note) -> bool {
@@ -191,7 +191,7 @@ impl SyncEngine {
         kept
     }
 
-    /// Whether only a blob of commit `c` can carry its part on aspect `ai` under the label (spec/sync.md §6):
+    /// Whether only a blob of commit `c` can carry its part on aspect `ai` under the label (spec/sync-judgement.md §2):
     /// kept (`part_kept`) or holding a live write, and no snapshot under the label (`snaps`)
     /// covers it. A blob missing such a part (a rewrite that dropped it) is healed by placing
     /// the commit's blob again.
@@ -212,7 +212,7 @@ impl SyncEngine {
     /// body's, from this node's store, or at `source`: an entry of it gone there and not present,
     /// not a wrap of no use) and it stays out: every one of its `parts` only a blob can carry
     /// (`must_carry`) is held there (at `source`) by another genuine blob of the commit, and no
-    /// purge that fell may have been what took it (spec/sync.md §6).
+    /// purge that fell may have been what took it (spec/sync-judgement.md §2).
     /// A memory body's delete stands too while memory entries this node refused for its cap are
     /// held there (`refused_there`): a delete-key holder deletes only once the carrier is there,
     /// and this node, not reading those entries, cannot show it is not (a fresh encryption past
@@ -277,7 +277,7 @@ impl SyncEngine {
     /// Held parts on these aspects fell invalid here (`Engine::take_fell`): a cover or killing
     /// write the deleter of a placement again may have relied on, so the placements again of
     /// commits on them (`BlobRec::again`) mark one no more, their deletes stand only as any
-    /// other's and their commits are judged again (spec/sync.md §6 Placed again once). Walks the
+    /// other's and their commits are judged again (spec/sync-judgement.md §4 Logged again once). Walks the
     /// commits on each aspect (`by_aspect`), as the re-judge that found the fall did.
     pub(in crate::sync) fn again_fell(&mut self) {
         let fell = self.engine.take_fell();
@@ -353,7 +353,7 @@ impl SyncEngine {
     /// Whether a blob of commit `c` holding `parts` (those this node opened) is must-not-hold
     /// whatever its siblings: it holds a delta this node dropped (purge, expiry, compaction,
     /// purge on replace; not one it dropped while invalid, `Engine::left_at_hosts`). It holds no
-    /// body and makes no other blob a strict subset (spec/sync.md §6).
+    /// body and makes no other blob a strict subset (spec/sync-judgement.md §2).
     pub(super) fn holds_nothing(&self, c: &CommitId, parts: &[usize]) -> bool {
         let Some(m) = self.engine.core.ix.commits.get(c) else { return false };
         parts.iter().any(|p| m.body_gone(*p) && !self.engine.left_at_hosts(c, *p))
@@ -397,7 +397,7 @@ impl SyncEngine {
 
     /// The genuine entry under `l` holding exactly this body, not tombstoned at `source` (with no
     /// source: whose bytes this node holds), whoever placed it (a certificate copy of the same parts holds it too: other nodes see one entry).
-    /// One present at `source` first: the label then holds the body (spec/sync.md §6), and
+    /// One present at `source` first: the label then holds the body (spec/sync-judgement.md §2), and
     /// logging another encryption (this node's own, whose pull was lost) would only add a
     /// duplicate for the tiebreak of §7 to delete. `None`: any entry (this node's served state).
     pub(super) fn entry_for(&mut self, source: Option<&PeerKey>, l: &LabelId, b: &Body) -> Option<BlobId> {
@@ -463,11 +463,11 @@ impl SyncEngine {
     /// would go again under this label after its delete.
     pub(crate) fn place(&mut self, g: &Tid, l: LabelId, b: &Body, cert: bool, again: Option<osis_label::StepId>) -> Result<Option<BlobId>> {
         let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { return Ok(None) };
-        // a memory commit's blobs carry its class and live in memory (spec/sync.md §9)
+        // a memory commit's blobs carry its class and live in memory (spec/sync-compaction.md §2)
         let class = self.engine.header(&b.commit).map_or(osis_label::Class::Durable, |h| osis_label::Class::of_marker(h.ephemeral));
         let memory = class != osis_label::Class::Durable;
         // what the blob carries: every held part (a copy: the body's own, in one section under
-        // the blob key, spec/sync.md §3); a per-label copy (a cross-published `label.0`) is
+        // the blob key, spec/sync-judgement.md §1); a per-label copy (a cross-published `label.0`) is
         // shared with no other label, a certificate copy with every label needing its parts
         let own = cert || b.to_label;
         let held: Vec<usize> = if own { b.parts.clone() } else { self.engine.body(&b.commit)?.map(|x| x.parts).unwrap_or_default() };
@@ -516,7 +516,7 @@ impl SyncEngine {
     }
 
     /// Blobs the body's own delta values link (trees of large values, pages): reused chunks and
-    /// a snapshot's values belong to the closure too (spec/sync.md §3), so a reader under a label
+    /// a snapshot's values belong to the closure too (spec/sync-judgement.md §1), so a reader under a label
     /// new to the body (a move) gets them. Those held here or already an entry under `l`; the
     /// walk is cached per body once complete.
     pub(super) fn body_blobs(&mut self, l: &LabelId, b: &Body, left: &mut Left) -> Result<Vec<BlobId>> {
@@ -553,7 +553,7 @@ impl SyncEngine {
         e.cert || matches!(&e.kind, Kind::Commit { commit, .. } if self.own(commit))
     }
 
-    /// A non-writer deposits a must-hold body it holds no entry of (spec/sync.md §6 Reader):
+    /// A non-writer deposits a must-hold body it holds no entry of (spec/sync-judgement.md §3 reader):
     /// one it judges valid, and its own role writes (an invite grant, a self-removal, spec/sync.md
     /// §3) and requests (a destruction by an admin of the thing alone) whatever it judges. Else a
     /// value a reader alone holds, its entries deleted (its own write under its own snapshot that
@@ -581,7 +581,7 @@ impl SyncEngine {
     }
 
     /// This node's verdicts on label `l` at node `node` it dialed under the keys its last pass
-    /// there used (simulator invariants, spec/sync.md §6); `None` when the label is not open
+    /// there used (simulator invariants, spec/sync-judgement.md §2); `None` when the label is not open
     /// there.
     pub fn verdicts(&mut self, node: &[u8; 32], l: &LabelId) -> Result<Option<Verdicts>> {
         let Some((lc, source)) = self.conns.values().filter(|c| c.dial_key() == Some(*node)).find_map(|c| c.labels.get(l).filter(|x| x.phase.is_open()).zip(c.peer)) else { return Ok(None) };

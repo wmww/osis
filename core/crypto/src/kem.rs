@@ -68,7 +68,7 @@ impl KemPublicKey {
     pub fn as_bytes(&self) -> &[u8; KEM_PUBLIC_LEN] {
         &self.0
     }
-    /// The X25519 half: a key actor's or read role's claim key (spec/sync.md §2).
+    /// The X25519 half: a key actor's or read role's claim key (spec/sync-ids.md §2).
     pub fn x25519(&self) -> [u8; 32] {
         let mut x = [0u8; 32];
         x.copy_from_slice(self.0.get(..32).unwrap_or(&[0; 32]));
@@ -190,7 +190,7 @@ impl KemSecret {
     pub fn public(&self) -> &KemPublicKey {
         &self.public
     }
-    /// The X25519 half: claim key DH (spec/sync.md §2).
+    /// The X25519 half: claim key DH (spec/sync-ids.md §2).
     pub fn x25519(&self) -> &X25519Secret {
         &self.x
     }

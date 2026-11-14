@@ -170,7 +170,7 @@ impl SyncEngine {
     /// The thing lists of this node's account's rotations for the things in `g`'s closure, those
     /// its account's commits placed here touch (`extra`), and those a commit under `l` it names
     /// is on (a thing list is a chain certificate of its thing and goes where the thing's
-    /// commits go, spec/permissions.md §5.5), as list blobs under `l` (spec/sync.md §3), a fresh
+    /// commits go, spec/permissions.md §5.5), as list blobs under `l` (spec/sync-judgement.md §1), a fresh
     /// encryption per label; each thing's list once (`State::listed`). Costs the names of the
     /// account's rotations per pass, until each list is placed.
     fn place_lists(&mut self, g: &Tid, l: LabelId, mut extra: BTreeSet<Tid>) -> Result<()> {

@@ -1,4 +1,4 @@
-//! A label's listing at a peer that cannot read it (spec/sync.md §6): its stream lists the entries (announced without
+//! A label's listing at a peer that cannot read it (spec/sync-judgement.md §2): its stream lists the entries (announced without
 //! bytes), then they are fetched in the order their wraps give: what judging needs first, then
 //! newest first. Nothing about a body changes: one not fetched yet is one not received. Only the
 //! order, and when the pass ends.

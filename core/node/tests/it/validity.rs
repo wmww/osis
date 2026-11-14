@@ -2883,7 +2883,7 @@ fn cover_drop_coverer_flips_back_alike_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2, spec/sync.md §7: as `coverer_demoted_after_cover_drop_alike_*`, with
+// spec/permissions.md §5.2, spec/sync-compaction.md §1: as `coverer_demoted_after_cover_drop_alike_*`, with
 // an older valid snapshot S0 of Alice's that lacks Bob's tag. S1 missing again (S2 invalid) is no
 // body S0 covers: a compactor judging it against S0 keeps it, so once fetched again it gives
 // Bob's tag as at a node that never dropped it.
@@ -3465,7 +3465,7 @@ fn stranger_card_makes_no_node_spec_perm_4() {
     }
 }
 
-// spec/sync.md §2 (a group's labels are its `label.0` state): a stranger's header-only commit
+// spec/sync-ids.md §2 (a group's labels are its `label.0` state): a stranger's header-only commit
 // listing `label.0` on a thing (it applies, its part invalid) gives the thing no label here:
 // it is not a labeled group, nor published under its first admin's home label.
 #[test]
@@ -3627,7 +3627,7 @@ fn undo_needs_write_spec_crdt_4_6() {
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("prior")));
 }
 
-// spec/sync.md §1 (a reused chunk a host deleted is written again with the reusing delta's
+// spec/sync-ids.md §1 (a reused chunk a host deleted is written again with the reusing delta's
 // retention and expiry): an invalid commit linking the value (a reader's, expiring soon) lends
 // the rewrite nothing.
 #[test]

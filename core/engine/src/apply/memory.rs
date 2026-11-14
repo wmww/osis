@@ -1,4 +1,4 @@
-//! Memory class for node-sync (spec/sync.md §9, notes/ephemeral.md): what node-sync takes from
+//! Memory class for node-sync (spec/sync-compaction.md §2, notes/ephemeral.md): what node-sync takes from
 //! Core besides the ordinary change marks (commits forgotten with why, aspects whose snapshots
 //! fell invalid), the node cap's measures of memory commits (what a held part costs a holder,
 //! `part_charge`, and a bound on it from the part's bytes alone, `part_bound`, so
@@ -77,7 +77,7 @@ pub(crate) fn new_parts_bound(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<u64>
     Ok(sum.saturating_add(super::reach::unheld_bytes(tx, &w.roots)?))
 }
 
-/// What a received memory commit meets before anything of it is decoded (spec/sync.md §9 Caps),
+/// What a received memory commit meets before anything of it is decoded (spec/sync-compaction.md §2 caps),
 /// in stages: its header lists resolved, then every page and large value root its parts link
 /// held (`reach::walk`), else it waits for them, nothing decoded (`Some(Pending)`); then its
 /// `new_parts_bound` (parts, pages, and what its values' roots say the rest of their trees
@@ -129,7 +129,7 @@ fn wait(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<crate::Inge
 }
 
 impl Engine {
-    /// What held memory commit `id` costs a holder, as the node cap counts it (spec/sync.md §9
+    /// What held memory commit `id` costs a holder, as the node cap counts it (spec/sync-compaction.md §2
     /// Caps): per held part, a leftover included (expired, purged), its decoded heap size in each
     /// copy kept and `PART_OVERHEAD` (`part_charge`). 0 when not held. Decodes its held parts again.
     pub fn memory_charge(&mut self, id: &CommitId) -> Result<u64> {
@@ -206,10 +206,10 @@ impl Engine {
 
     /// Aspects a held valid compaction snapshot of which turned invalid since the last take (a
     /// compactor's demotion not listing it, spec/permissions.md §5.2), either class: node-sync
-    /// gets back what it covered (spec/sync.md §7 A snapshot turning invalid). A memory
+    /// gets back what it covered (spec/sync-compaction.md §1 a snapshot turning invalid). A memory
     /// snapshot's covered bodies were forgotten here and deleted at hosts by any writer, so a
     /// writer that still holds a valid memory part of the aspect also writes a fresh snapshot of
-    /// what it holds (spec/sync.md §9 Compaction): node-sync uploads it as a new commit (a host's
+    /// what it holds (spec/sync-compaction.md §2 compaction): node-sync uploads it as a new commit (a host's
     /// delete tombstone on the old entries does not stop it) and, stamped after every held
     /// snapshot, nothing held covers it away here.
     pub fn take_fallen(&mut self) -> Result<BTreeSet<(Tid, Ak)>> {
@@ -234,7 +234,7 @@ impl Engine {
 
     /// Aspects a held part of any commit (a cover, a killing write) turned invalid on since the
     /// last take: node-sync's placements again past deletes made on such grounds go once more
-    /// (spec/sync.md §6 Placed again once).
+    /// (spec/sync-judgement.md §4 Logged again once).
     pub fn take_fell(&mut self) -> BTreeSet<(Tid, Ak)> {
         std::mem::take(&mut self.core.fell)
     }

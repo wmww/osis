@@ -192,7 +192,7 @@ fn counted_work(dbs: &[&Osis], f: impl FnOnce()) -> osis_node::sync::PassStats {
     out
 }
 
-// spec/sync.md §6, spec/requirements.md (Scale): a new shared thing, a write and a connect
+// spec/sync-judgement.md §2, spec/requirements.md (Scale): a new shared thing, a write and a connect
 // do work by what changed, not by how many labels there are (counted, not timed).
 #[test]
 fn label_costs_do_not_grow_with_labels() {
@@ -224,7 +224,7 @@ fn label_costs_do_not_grow_with_labels() {
     assert!(large.2.label_reads <= small.2.label_reads + 8, "connect: {} label reads against {}", large.2.label_reads, small.2.label_reads);
 }
 
-// spec/sync.md §6: resyncs of settled, subscribed labels run no pass, however many there are, a
+// spec/sync-judgement.md §2: resyncs of settled, subscribed labels run no pass, however many there are, a
 // day on included: only a mark or a due time passes a label. Counted.
 #[test]
 fn idle_labels_pass_only_when_due() {
@@ -260,7 +260,7 @@ fn idle_labels_pass_only_when_due() {
 
 const DAY_MS: u64 = 24 * 3_600_000;
 
-// spec/sync.md §6, spec/permissions.md §3: a grant's `until` is a time only the clock brings: the
+// spec/sync-judgement.md §2, spec/permissions.md §3: a grant's `until` is a time only the clock brings: the
 // label it departs from passes then, though nothing else marks it (counted).
 #[test]
 fn an_edge_ending_passes_its_quiet_label() {
@@ -281,7 +281,7 @@ fn an_edge_ending_passes_its_quiet_label() {
     assert!(ended.passes >= 1, "the edge ended and no pass came");
 }
 
-// spec/sync.md §5: what a label waits for by time (a copy left to its author, a relay wait) brings
+// spec/sync-ids.md §6: what a label waits for by time (a copy left to its author, a relay wait) brings
 // back that label, not every label of the node (counted).
 #[test]
 fn a_timed_wait_passes_its_label_alone() {
@@ -303,7 +303,7 @@ fn a_timed_wait_passes_its_label_alone() {
     assert!(large <= small + 4, "{large} passes at 10 labels against {small} at 2");
 }
 
-// spec/crypto.md §4, spec/sync.md §3: a burst of grants reads each pending one about once, however
+// spec/crypto.md §4, spec/sync-judgement.md §1: a burst of grants reads each pending one about once, however
 // many wait, and a request waiting for the user is opened once, not at each vet (counted).
 #[test]
 fn a_burst_of_shares_costs_each_about_once() {
@@ -330,7 +330,7 @@ fn a_burst_of_shares_costs_each_about_once() {
     assert!(accepted.inbox_keys <= 2 * BURST as u64, "{} inbox keys tried for {BURST} accepted", accepted.inbox_keys);
 }
 
-// spec/sync.md §5 (Deposit): shares past an inbox's budget wait with the one refused, their bodies
+// spec/sync-inbox.md §3 (deposit): shares past an inbox's budget wait with the one refused, their bodies
 // unsent, and go as it frees, not all at each deposit it takes.
 #[test]
 #[ignore = "by hand: minutes in debug"]
@@ -404,7 +404,7 @@ fn add_judges_nothing_per_message() {
     assert_eq!((busy.0, busy.3), (0, 0), "no full pass, no decode");
 }
 
-// spec/sync.md §6: when the clock goes back, a quiet label passes once at its next resync: its own
+// spec/sync-judgement.md §2: when the clock goes back, a quiet label passes once at its next resync: its own
 // `pass_at` does not wait for the clock to catch up (counted).
 #[test]
 fn a_clock_gone_back_keeps_a_quiet_labels_bound() {

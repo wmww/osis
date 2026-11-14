@@ -22,7 +22,7 @@
 - **Known actor** of a node: its own account; its contacts; every actor holding a role, through the rosters it holds, on a thing other than itself that is not private to an account other than its own; the key actors listed by static entry on a roster or head claim set it holds; and the granting account of each grant it holds (the author of a grant's inbox blob it took, spec/sync-inbox.md §2). A thing is **private** to account P when its reader actor is P or P's devices actor D (spec/permissions.md §1): P's own actor, D, its home and what only P's nodes read.
 - **Order**: the dialer proves first, after the listener's Hello, only on a connection to a key it chose to dial; the listener answers with its own proofs only if the dialer proved a known actor, else with none. A key actor proved on a connection is the key actor of a static entry its Hit names whether it is known or not (§5). A proof is never sent unasked.
 - Nothing a connection proves comes from group data; a dial list is for dialing only, never proof.
-- Limit: a dialer proves to any key it chose to dial, so a key it took from a LAN announcement or a configured address learns its identity (notes/sync-rewrite-inputs.md, For Tess: private mutual recognition is not designed).
+- Limit: a dialer proves to any key it chose to dial, so a key it took from a LAN announcement or a configured address learns its identity (a private mutual recognition is not designed; open question for Tess).
 
 ## 3. Records and agreement
 - **Pair key**: two nodes that each proved a known actor to the other keep one record of each other, found by a 32-byte pair key `r` known only to the two. No node key finds a record.

@@ -133,7 +133,7 @@ fn repro_row5_a_link_needs_no_saved_peer() {
     none.make_link(g, Role::Read, LinkOpts::default()).unwrap();
 }
 
-// Row 6, spec/sync.md §10: two strangers on one LAN, no uplink: a link
+// Row 6, spec/sync-opens.md §4: two strangers on one LAN, no uplink: a link
 // finds its sharer within the audit's 40 s.
 #[test]
 #[ignore = "issues/sync-rewrite.md"]
@@ -163,7 +163,7 @@ fn repro_row8_a_contact_card_needs_no_saved_peer() {
     a.profile().unwrap();
 }
 
-// Row 9, spec/sync.md §3: a grant to an account this node shares a group with reaches it, with
+// Row 9, spec/sync-judgement.md §1: a grant to an account this node shares a group with reaches it, with
 // nodes only: Bob holds the role within 100 s.
 #[test]
 #[ignore = "issues/sync-rewrite.md"]
@@ -179,7 +179,7 @@ fn repro_row9_a_grant_reaches_a_known_account() {
     assert_eq!(heard(&b, t).as_deref(), Some("for bob"));
 }
 
-// Row 9, spec/sync.md §3: a grant with no way to arrive is not reported delivered: with Bob unreachable the wait
+// Row 9, spec/sync-judgement.md §1: a grant with no way to arrive is not reported delivered: with Bob unreachable the wait
 // does not end `Ok`.
 #[test]
 fn an_undelivered_grant_keeps_the_wait_open_row_9_spec_sync_3() {
@@ -407,7 +407,7 @@ fn served_only(role: Role) -> (World, Osis, Osis, Tid) {
     (w, a, b, g)
 }
 
-// spec/sync.md §10 Stream, notes/api.md Sync configuration and status: a connection only Bob
+// spec/sync-streams.md §4 stream, notes/api.md Sync configuration and status: a connection only Bob
 // dialed is pulled both ways, so each end judges it alike: Alice's write leaves `Synced` at her
 // end until Bob reported applying it, and both ends are `Synced` once each has the other's log.
 #[test]
@@ -485,7 +485,7 @@ fn a_local_write_leaves_synced_and_last_sync_says_when() {
     assert!(st.last_sync >= before, "still names the last time: {st:?}");
 }
 
-// spec/sync.md §5 (Placed), §10 (Reports): a leaver's removal pulled by a co-reader that rotates at once is placed by
+// spec/sync-status.md §2 (Held elsewhere), §10 (Reports): a leaver's removal pulled by a co-reader that rotates at once is placed by
 // that co-reader's Applied: `leaving` clears though the leaver's upload to it as host answers code 9 and its reopens
 // code 1.
 #[test]
@@ -505,9 +505,9 @@ fn leaving(n: &Osis, g: Tid) -> bool {
     n.status().unwrap().groups.get(&g).is_some_and(|s| s.leaving)
 }
 
-// spec/permissions.md §3 (a node drops once a self-removal by its account is placed), spec/sync.md §5 (Placed): Bob's
+// spec/permissions.md §3 (a node drops once a self-removal by its account is placed), spec/sync-status.md §2 (Held elsewhere): Bob's
 // laptop pulls his phone's removal while Alice is away from both; the laptop waits for it to be placed as the phone
-// does, and neither counts the other as a source (spec/sync.md §5), so neither forgets while Alice lacks it; the
+// does, and neither counts the other as a source (spec/sync-ids.md §6), so neither forgets while Alice lacks it; the
 // phone's removal reaches Alice and it stops leaving.
 #[test]
 fn own_nodes_never_both_forget_before_an_outside_source_spec_permissions_3() {
@@ -534,7 +534,7 @@ fn own_nodes_never_both_forget_before_an_outside_source_spec_permissions_3() {
     assert!(!leaving(&b, g), "the phone stopped leaving");
 }
 
-// spec/sync.md §5 (Placed: under a label with hosts, a co-reader's report counts only from an admin, which carries
+// spec/sync-status.md §2 (Held elsewhere: under a label with hosts, a co-reader's report counts only from an admin, which carries
 // the actor's role commits to the hosts when it re-registers): Bob, cut from the host, leaves; Carol (a writer) pulls
 // and reports his removal, which places nothing; Alice (the admin) pulls and reports it, which does, and the host ends
 // up holding the removal: Dave, who reaches only the host, sees Bob gone.
@@ -772,7 +772,7 @@ fn a_thing_wait_covers_a_source_further_up() {
     assert!(matches!(poll_for(&mut w, &mut wait, STEPS), Some(Ok(()))), "and it ends once Bob has the write");
 }
 
-// spec/sync.md §2: a grant to a node has no route outside pairing, so a commit stored for it is no delivery: an
+// spec/sync-ids.md §2: a grant to a node has no route outside pairing, so a commit stored for it is no delivery: an
 // earlier one holds up no later `Deliveries` wait.
 #[test]
 fn a_grant_to_a_node_holds_up_no_later_delivery_wait() {
@@ -869,7 +869,7 @@ fn repro_row21_a_link_redeems_from_a_bundle_alone() {
     assert!(matches!(got, Some(Ok(t)) if t == g), "{got:?}");
 }
 
-// Row 22, spec/sync.md §10: joiners of a link-shared group find each other: with the sharer and
+// Row 22, spec/sync-opens.md §4: joiners of a link-shared group find each other: with the sharer and
 // the relay gone, Bob's write reaches Carol.
 #[test]
 fn joiners_of_a_link_reach_each_other_row_22_spec_sync_10() {
@@ -888,7 +888,7 @@ fn joiners_of_a_link_reach_each_other_row_22_spec_sync_10() {
     assert_eq!(heard(&c, g).as_deref(), Some("from bob"));
 }
 
-// Row 23, spec/sync.md §10: a joiner hears its sharer's LAN announcement.
+// Row 23, spec/sync-opens.md §4: a joiner hears its sharer's LAN announcement.
 #[test]
 fn a_joiner_finds_its_sharer_on_the_lan_row_23_spec_sync_10() {
     let mut w = World::new();
@@ -932,7 +932,7 @@ fn over_a_reader() -> (World, Osis, Osis, Osis, Tid) {
     (w, a, b, c, g)
 }
 
-// Row 24, spec/sync.md §3: A and C apart with B, a reader, between them: writes cross both ways.
+// Row 24, spec/sync-judgement.md §1: A and C apart with B, a reader, between them: writes cross both ways.
 #[test]
 fn writes_cross_a_reader_both_ways_row_24_spec_sync_3() {
     let (mut w, a, _b, c, g) = over_a_reader();
@@ -944,7 +944,7 @@ fn writes_cross_a_reader_both_ways_row_24_spec_sync_3() {
     assert_eq!(heard(&c, g).as_deref(), Some("a to c"));
 }
 
-// spec/sync.md §3: as above, A writing first: a pass must not find a grant's copy wanted after
+// spec/sync-judgement.md §1: as above, A writing first: a pass must not find a grant's copy wanted after
 // an earlier pass found it all there (`inbox_certificates`' debug assertion).
 #[test]
 fn a_write_then_a_reply_over_a_reader_spec_sync_3() {
@@ -957,7 +957,7 @@ fn a_write_then_a_reply_over_a_reader_spec_sync_3() {
     assert_eq!(heard(&a, g).as_deref(), Some("c to a"));
 }
 
-// Row 26, spec/sync.md §10: a peer that cannot read can be added to a group already synced.
+// Row 26, spec/sync-opens.md §4: a peer that cannot read can be added to a group already synced.
 #[test]
 #[ignore = "issues/sync-rewrite.md"]
 fn repro_row26_a_peer_can_be_added_later() {
@@ -969,7 +969,7 @@ fn repro_row26_a_peer_can_be_added_later() {
     assert!(a.peers(g).unwrap().contains(&box_addr));
 }
 
-// Row 27, spec/sync.md §10: a saved peer named by key is dialed.
+// Row 27, spec/sync-opens.md §4: a saved peer named by key is dialed.
 #[test]
 #[ignore = "issues/sync-rewrite.md"]
 fn repro_row27_a_saved_peer_named_by_key_is_dialed() {
@@ -990,7 +990,7 @@ fn repro_row27_a_saved_peer_named_by_key_is_dialed() {
     assert!(!w.peer_routes(&a).is_empty(), "never dialed");
 }
 
-// Row 28, spec/sync.md §10: nodes on one LAN connect with nothing shared.
+// Row 28, spec/sync-opens.md §4: nodes on one LAN connect with nothing shared.
 #[test]
 #[ignore = "issues/sync-rewrite.md"]
 fn repro_row28_lan_nodes_connect_with_nothing_shared() {
@@ -1004,7 +1004,7 @@ fn repro_row28_lan_nodes_connect_with_nothing_shared() {
     assert!(!w.peer_routes(&a).is_empty(), "no connection");
 }
 
-// Row 30, spec/sync.md §10: an announcement counts whatever source address carried it: CGNAT,
+// Row 30, spec/sync-opens.md §4: an announcement counts whatever source address carried it: CGNAT,
 // global and mesh sources as a private one does.
 #[test]
 #[ignore = "issues/sync-rewrite.md"]
@@ -1018,7 +1018,7 @@ fn repro_row30_a_lan_announcement_counts_from_any_source() {
     assert_eq!(dropped, Vec::<&str>::new(), "dropped sources");
 }
 
-// Row 34, spec/sync.md §10: nodes whose clocks differ by less than `MAX_DRIFT` still recognise each
+// Row 34, spec/sync-opens.md §4: nodes whose clocks differ by less than `MAX_DRIFT` still recognise each
 // other on the LAN (30 min apart).
 #[test]
 #[ignore = "issues/sync-rewrite.md"]
@@ -1044,7 +1044,7 @@ fn repro_row34_lan_recognition_tolerates_max_drift() {
     assert!(w.peer_routes(&b).iter().any(|r| matches!(r, Route::Lan(_))), "{:?}", w.peer_routes(&b));
 }
 
-// Row 35, spec/sync.md §6 (a wrong local clock harms only that node's own writes; nothing another
+// Row 35, spec/sync-judgement.md §2 (a wrong local clock harms only that node's own writes; nothing another
 // node sends moves a node's clock): Bob, connected to Alice alone, whose clock is 120 min slow,
 // redeems her link, then takes Carol's writes (Carol dials him: a served session).
 #[test]
@@ -1072,7 +1072,7 @@ fn a_slow_peer_does_not_move_a_nodes_clock_row_35_spec_sync_6() {
     assert_eq!(heard(&b, g2).as_deref(), Some("from carol"));
 }
 
-// Row 36, spec/sync.md §10: unreachable co-readers never hide a reachable one (8 newer ones
+// Row 36, spec/sync-opens.md §4: unreachable co-readers never hide a reachable one (8 newer ones
 // reachable by nobody, the 9th the only way).
 #[test]
 #[ignore = "issues/sync-rewrite.md"]
@@ -1167,7 +1167,7 @@ fn a_link_expiring_with_both_sharer_nodes_online_settles_spec_permissions_7() {
     assert!(!listed(&a) && !listed(&a2), "an expired link is listed nowhere");
 }
 
-// issues/sync-rewrite.md step 1, spec/sync.md §10 (One key): a node that serves is a saved peer by
+// issues/sync-rewrite.md step 1, spec/sync-transport.md §5 (one key): a node that serves is a saved peer by
 // its `peer://` address, dialed by its key through its relay, and the serving reaches its hub
 // there: Alice's home syncs at the box, and her new node, offline until she is gone, reads there
 // what she wrote meanwhile

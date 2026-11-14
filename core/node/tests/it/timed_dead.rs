@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Deletes of bodies whose writes all died (spec/sync.md §7): under purge on replace the
+//! Deletes of bodies whose writes all died (spec/sync-compaction.md §1): under purge on replace the
 //! replacing writer's cover is the one snapshot.
 
 use crate::net::hosted;
@@ -8,7 +8,7 @@ use net::*;
 use osis_node::Mutation;
 use osis_node::sync::EntryKind;
 
-// spec/commits.md §5 (purge on replace, Kept while live), spec/sync.md §7: a register purged on
+// spec/commits.md §5 (purge on replace, Kept while live), spec/sync-compaction.md §1: a register purged on
 // replace and replaced whole goes under the writer's one cover, here and at the host in the same
 // sync; the cover carries the replacing write too, and no setting keeps a live write under purge
 // on replace, so the replacing body goes under it as well: the cover alone holds the value.
@@ -252,7 +252,7 @@ fn first_sync_waits_for_hidden_body_spec_commits_4() {
     net.hide_blobs.insert(b, hide);
     net.set_online(b, true);
     net.run();
-    // one blob per commit: hidden whole, nothing of c1 is received (spec/sync.md §3, §6)
+    // one blob per commit: hidden whole, nothing of c1 is received (spec/sync-judgement.md §1, spec/sync-judgement.md §2)
     assert_eq!(net.engine(b).get(&t, &reg).unwrap(), Some(s("x")), "c1's REG part never came");
     assert_eq!(net.engine(b).get(&t, &gone).unwrap(), None);
     assert!(net.engine(b).pending().is_empty());
@@ -263,7 +263,7 @@ fn first_sync_waits_for_hidden_body_spec_commits_4() {
     assert_eq!(net.engine(b).get(&t, &gone).unwrap(), Some(s("v1")));
 }
 
-// spec/sync.md §6 (must-hold: established uncovered by held snapshots; a commit not judged
+// spec/sync-judgement.md §2 (must-hold: established uncovered by held snapshots; a commit not judged
 // covers nothing): writer b cannot judge a's commit (it also writes thing `u`, whose
 // creating commit is hidden from b), which writes `t:reg.0`, and writes `t:reg.0` itself: b's
 // body goes to the host all the same (was issue sync-unsettled-deadlock: two writers'
@@ -312,7 +312,7 @@ fn pending_commit_holds_back_no_own_entry_spec_sync_6() {
     assert!(!at_the_peer(&mut net, b, host, &l, &c2).is_empty(), "b's own body held back behind a commit not judged");
 }
 
-// spec/commits.md §4, spec/sync.md §3: a reader's first sync of a label, a commit across two of its
+// spec/commits.md §4, spec/sync-judgement.md §1: a reader's first sync of a label, a commit across two of its
 // things, a host hiding its one blob: nothing of the commit is received.
 #[test]
 fn first_sync_waits_across_things_spec_commits_4() {
@@ -342,7 +342,7 @@ fn first_sync_waits_across_things_spec_commits_4() {
     net.hide_blobs.insert(b, hide);
     net.set_online(b, true);
     net.run();
-    // one blob per commit: hidden whole, nothing of it is received (spec/sync.md §3, §6)
+    // one blob per commit: hidden whole, nothing of it is received (spec/sync-judgement.md §1, spec/sync-judgement.md §2)
     assert_eq!(net.engine(b).get(&u, &reg).unwrap(), Some(s("u")), "the part on the other thing never came");
     assert!(net.engine(b).pending().is_empty());
     assert!(net.engine(b).header(&c).is_none());

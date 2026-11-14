@@ -1,5 +1,5 @@
 //! Thing lists and listings held (spec/permissions.md §5.5): the words naming an account's
-//! commits at closed epochs. A rotation's thing lists arrive as list blobs (spec/sync.md §3) and
+//! commits at closed epochs. A rotation's thing lists arrive as list blobs (spec/sync-judgement.md §1) and
 //! are kept as certificates, permanently, like the role commits they name; a listing is a commit
 //! whose `listing.0` deltas are read once, at apply. Both become name rows (`records::NAMES`:
 //! commit, thing, source; `records::NAMED_BY`: the reverse), which `refresh_epochs` reads for
@@ -141,7 +141,7 @@ impl Engine {
         self.core.account_view(p).map(|v| v.rotation_ids()).unwrap_or_default()
     }
 
-    /// Holds list blob plaintext `plain` (spec/sync.md §3, List blobs): every cert of one
+    /// Holds list blob plaintext `plain` (spec/sync-judgement.md §1, list blobs): every cert of one
     /// rotation, each verified against that rotation's list root. A list whose IDs are linked
     /// is kept without its names (linked thing lists are not read yet: issues/linked-thing-lists.md).
     pub fn hold_lists(&mut self, plain: &[u8]) -> Result<ListsHeld> {

@@ -79,7 +79,7 @@ fn scenario_built() -> (Net, usize, [usize; 3], Tid, Tid) {
     (net, host, [a, b, c], g, t)
 }
 
-// spec/sync.md §4, spec/requirements.md Data a node cannot read: no plaintext value or map key, tid, AK,
+// spec/sync-ids.md §5, spec/requirements.md Data a node cannot read: no plaintext value or map key, tid, AK,
 // holder identity (node tid or signing key) or role secret reaches the serving peer's
 // storage, live or overwritten
 #[test]
@@ -126,7 +126,7 @@ fn peer_that_cannot_read_stores_nothing_forbidden() {
     }
 }
 
-// spec/wire.md §5, spec/sync.md §1: every stored blob's padded plaintext is a Padmé length;
+// spec/wire.md §5, spec/sync-ids.md §1: every stored blob's padded plaintext is a Padmé length;
 // values of 1 to 48 bytes fall into a few size classes (Padmé leaks O(log log n) bits: a 1-byte
 // and a 100-byte value are in different classes, values within a class are not told apart)
 #[test]
@@ -154,7 +154,7 @@ fn stored_sizes_are_padme() {
     assert!(sizes.len() <= 5, "48 value lengths in {} size classes: {sizes:?}", sizes.len());
 }
 
-// spec/sync.md §1, §3 (certificate blobs), spec/crypto.md §5: two labels of one writer reuse no
+// spec/sync-ids.md §1, spec/sync-judgement.md §1 (certificate blobs), spec/crypto.md §5: two labels of one writer reuse no
 // wrap, and distinct blobs no salt; the certificate copies both need (the node card, chain
 // certificates) are one blob under both, wrapped per label
 #[test]
@@ -180,7 +180,7 @@ fn labels_share_no_wrap_or_salt() {
     assert!(of(l2).any(|x| ids1.contains(&x.1)), "certificate copies are one blob under both labels");
 }
 
-// spec/sync.md §2 (claim set), notes/unreadable-data.md: claim sets are padded
+// spec/sync-ids.md §2 (claim set), notes/unreadable-data.md: claim sets are padded
 // to a power of two in random order: labels with 3 and 4 readers show the same set size
 #[test]
 fn claim_sets_hide_reader_counts() {

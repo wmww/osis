@@ -35,7 +35,7 @@ fn proved_of(d: &Dialer, out: &[SessionOutput]) -> Vec<ActorProof> {
     d.verified(proofs)
 }
 
-// spec/sync.md §10, spec/wire.md §11.2 (Prove): the dialer's proofs sign the listener's Hello
+// spec/sync-opens.md §4, spec/wire.md §11.2 (Prove): the dialer's proofs sign the listener's Hello
 // challenge and the key it dialed; none can be made before that Hello
 #[test]
 fn prove_signs_the_listeners_challenge_spec_sync_10() {
@@ -49,7 +49,7 @@ fn prove_signs_the_listeners_challenge_spec_sync_10() {
     assert!(!proofs[0].verify(false, &[2; 32], &[1; 32]), "not over this side's own");
 }
 
-// spec/sync.md §10: the listener's proofs must sign this side's challenge and the key it dialed,
+// spec/sync-opens.md §4: the listener's proofs must sign this side's challenge and the key it dialed,
 // so a proof made for another connection (a replay), another dialer's challenge or another
 // listener (a relaying peer's) proves nothing here, and a proof that does counts
 #[test]

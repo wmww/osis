@@ -478,7 +478,7 @@ impl SyncEngine {
         h.aspects.iter().any(|a| closure.contains(&a.tid))
     }
 
-    /// Whether this node's commit `c` is placed (spec/sync.md §5): no deposit of it queued here
+    /// Whether this node's commit `c` is placed (spec/sync-ids.md §6): no deposit of it queued here
     /// under a label where no entry of it is present yet, and under every label this node syncs
     /// of the things it touches, each body of it the label must hold is in an entry held at a
     /// source (present at one of the label's hosts, or reported by a co-reader source: `held_at`)
@@ -536,7 +536,7 @@ impl SyncEngine {
             // a report counts from a source that passes the commit on to whoever this node
             // would have reached: under a label with no host any co-reader's; under one with
             // hosts only an admin of the label's actor, which logs the actor's role commits
-            // a host lacks for it to pull when it re-registers there (spec/sync.md §5, Re-registration)
+            // a host lacks for it to pull when it re-registers there (spec/sync-ids.md §6, re-registration)
             let carrier = if super::peers::hostless(&gl.hosts) {
                 None
             } else {
@@ -577,7 +577,7 @@ impl SyncEngine {
         }
     }
 
-    /// Groups with a label holding `t` (spec/sync.md §3): `t` itself when labeled, and those whose
+    /// Groups with a label holding `t` (spec/sync-judgement.md §1): `t` itself when labeled, and those whose
     /// closure holds `t` and whose actor reads it. A group enclosing `t` unread (a team listed in
     /// it) carries nothing of `t`: its readers learn none of `t`'s edge writes, and where `t`
     /// holds an edge on it, that edge's target is a delivery target of its own.
@@ -845,7 +845,7 @@ impl SyncEngine {
     /// (spec/permissions.md §3): at each node of `hosts` (the label's `label.0`) and, until `waited`, at each source it was
     /// received from that still reads it, connected or not (`peer_received`). With neither,
     /// nothing upstream holds what it lacks: it passes once `waited` (a node serving it alone,
-    /// spec/sync.md §5, else never re-seals or unties).
+    /// spec/sync-ids.md §6, else never re-seals or unties).
     fn label_passed(&self, l: &LabelId, thing: &Tid, hosts: impl Iterator<Item = [u8; 32]>, since: u64, waited: bool) -> bool {
         let after = |p: Option<&(u64, u64)>| p.is_some_and(|p| p.0 > since);
         let mut any = false;

@@ -1,9 +1,9 @@
-//! Connections at the hub (spec/sync.md §5, §10): every connection, dialed or one a peer opens
+//! Connections at the hub (spec/sync-ids.md §6, spec/sync-opens.md §4): every connection, dialed or one a peer opens
 //! on one of this node's listeners, is a session of the node's hub (`osis_host::Hub`), which
 //! answers the store's kinds; node sync is its upper layer (`hub_up`) and keeps one record of
 //! it (`Conn`): proofs, records, the shared set, the stream, push room and the client port run
 //! on it alike, its messages going down as `Action::Hub`. It serves any number of connections
-//! (spec/sync.md §10 Served connections). What a peer's stream or Deposit items bring is charged to
+//! (spec/sync-transport.md §5 served connections). What a peer's stream or Deposit items bring is charged to
 //! its source (`Proven::source`) when known here, else the label (dialer keys are fresh per
 //! connection), and to a node-wide total (`SyncConfig` `peer_bytes`, `peer_total_bytes`) while
 //! it gives nothing held and is at no host; the source is kept with the entry (`Entry::source`).
@@ -37,7 +37,7 @@ impl ServedLabel {
         self.path.last()
     }
 
-    /// What a holder of static entry `entry` needs to read the label (spec/sync.md §10, Shared
+    /// What a holder of static entry `entry` needs to read the label (spec/sync-opens.md §4, shared
     /// set): the head's entry box for it and the path to the head.
     pub(crate) fn grant(&self, entry: &[u8; 32]) -> Option<osis_proto::msg::Grant> {
         let head = self.path.last()?;
@@ -461,7 +461,7 @@ impl SyncEngine {
         self.charges.full = false;
     }
 
-    /// The Prove of `conn`'s dialer, on a connection the peer dialed (spec/sync.md §10): its proofs over this side's challenge and
+    /// The Prove of `conn`'s dialer, on a connection the peer dialed (spec/sync-opens.md §4): its proofs over this side's challenge and
     /// key count (one made for another connection or listener proves nothing here); this node
     /// answers its own, over the dialer's challenge, only to a dialer that proved an actor it
     /// knows. At most one per connection, after the dialer's Hello.
@@ -499,7 +499,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// The Resume of `conn`'s dialer, on a connection the peer dialed (spec/sync.md §10, Pair key): answered with a record of the
+    /// The Resume of `conn`'s dialer, on a connection the peer dialed (spec/sync-opens.md §3, pair key): answered with a record of the
     /// actors it proved that are known here, found by its tags or made; Error 1 when it proved
     /// none. At most one per connection, after its Prove. Returns the record for `bind_record`,
     /// which waits until the answer is out (`serve_with`).

@@ -433,7 +433,7 @@ fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
     assert!(flagged(&mut lp), "the snapshot that settled it turned invalid");
 }
 
-// spec/sync.md §7, spec/commits.md §5: snapshots of equal `ts` holding the same cover each other;
+// spec/sync-compaction.md §1, spec/commits.md §5: snapshots of equal `ts` holding the same cover each other;
 // the higher commit ID goes, as covered, and the lower counts for all it did (a commit stamped
 // before both, its missing part held under either).
 #[test]

@@ -1,4 +1,4 @@
-//! Tids, AKs, links and fixed-size ids (spec/data-model.md §1, §2, §6, §7; spec/sync.md §2).
+//! Tids, AKs, links and fixed-size ids (spec/data-model.md §1, §2, §6, §7; spec/sync-ids.md §2).
 
 use crate::cbor::encode;
 use crate::format::{MAX_AK_BYTES, TID_LEN, TID_TEXT_LEN};
@@ -413,7 +413,7 @@ byte_id!(
     CommitId, 32
 );
 byte_id!(
-    /// First 16 bytes of BLAKE3 over the label's genesis delete key (spec/sync.md §2).
+    /// First 16 bytes of BLAKE3 over the label's genesis delete key (spec/sync-ids.md §2).
     LabelId, 16
 );
 

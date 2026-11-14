@@ -1,7 +1,7 @@
 -------------------------------- MODULE Sides --------------------------------
 (* Hosts and storage during a dispute (notes/disputes-plan.md step 6).   *)
 (* Admins X and Y of actor A removed each other; each node takes a side and   *)
-(* runs the ordinary sync rules (spec/sync.md §6-§7) over its side's          *)
+(* runs the ordinary sync rules (spec/sync-judgement.md §2) over its side's          *)
 (* validity. One host, one label L (a label where both sides act with the     *)
 (* same keys), or with Fork a step race at L and a replacement label R for    *)
 (* the side that lost it (with HostBranch: the host's branch of L for it).    *)
@@ -202,7 +202,7 @@ Register(p) ==
   /\ Fork /\ p \in Parties /\ head = "pre"
   /\ head' = side[p]
   /\ UNCHANGED <<side, held, applied, host, ever, rside, compacted, reup, sw, pre>>
-\* The loser replaces L by R (spec/sync.md §2, keys from its side's secrets).
+\* The loser replaces L by R (spec/sync-ids.md §2, keys from its side's secrets).
 \* It deletes nothing at L: it does not control L's head there. HostBranch:
 \* the host takes its step as a child of the pre-dispute step instead, a
 \* branch starting with the entries stamped under the shared steps.

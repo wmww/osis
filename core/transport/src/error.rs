@@ -4,7 +4,7 @@ use osis_base::{Classified, ErrorClass};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// The peer authenticated with a key other than the pinned one (spec/sync.md §10).
+    /// The peer authenticated with a key other than the pinned one (spec/sync-opens.md §4).
     KeyMismatch,
     /// The peer broke the transport protocol (handshake, key form).
     Protocol(String),

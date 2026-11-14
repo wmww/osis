@@ -1,4 +1,4 @@
-//! What the host engine asks of a host's storage (spec/sync.md §4): the `LabelStore`
+//! What the host engine asks of a host's storage (spec/sync-ids.md §5): the `LabelStore`
 //! trait, which osis-host implements over osis-store, and `MemoryLabelStore` for tests.
 
 use crate::msg::{ClaimSet, Code, Signature, Step, StepId, Wrap};
@@ -36,7 +36,7 @@ pub struct EntryMeta {
 }
 
 /// An entry to add or re-wrap, already authorized. An ephemeral entry (`ephemeral`, from the
-/// blob's prefix class) is held in memory only, under a per-label byte cap (spec/sync.md §4,
+/// blob's prefix class) is held in memory only, under a per-label byte cap (spec/sync-ids.md §5,
 /// §5).
 #[derive(Clone, Copy, Debug)]
 pub struct Put<'a> {
@@ -49,7 +49,7 @@ pub struct Put<'a> {
     /// Wall ms.
     pub now: u64,
     /// Signed as an entry deletes are judged by (a role commit or a request, `Domain::RoleEntry`):
-    /// taken past the storage caps by up to a deposit budget (spec/sync.md §5, Storage caps).
+    /// taken past the storage caps by up to a deposit budget (spec/sync-ids.md §6, storage caps).
     pub role: bool,
 }
 
@@ -186,7 +186,7 @@ pub trait LabelStore {
     }
     /// Adds an entry; a stamped one replaces a deposited entry's wrap and stamp, clearing its
     /// flag. Anything else of a held blob changes nothing.
-    /// Invariant (spec/sync.md §5): a stamped entry's wrap and stamp never change while it lives,
+    /// Invariant (spec/sync-ids.md §6): a stamped entry's wrap and stamp never change while it lives,
     /// so no writer can take from readers a wrap they could open: only the first stamped entry can
     /// place a useless one, and nodes knowing the key place a fresh encryption past it.
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError>;
@@ -194,7 +194,7 @@ pub trait LabelStore {
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError>;
     /// IDs of the live entries, sorted.
     fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError>;
-    /// Admits a stamped relay-only entry (spec/sync.md §5; `RelayGate::admit`).
+    /// Admits a stamped relay-only entry (spec/sync-ids.md §6; `RelayGate::admit`).
     fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> Result<crate::RelayVerdict, StoreError>;
 }
 
@@ -220,7 +220,7 @@ impl LabelState {
     }
 }
 
-/// In-memory host store with the recommended deposit budget (spec/sync.md §5).
+/// In-memory host store with the recommended deposit budget (spec/sync-ids.md §6).
 #[derive(Clone, Debug, Default)]
 pub struct MemoryLabelStore {
     labels: BTreeMap<LabelId, LabelState>,
@@ -236,7 +236,7 @@ pub struct MemoryLabelStore {
     pub relays: crate::RelayGate,
 }
 
-/// Deposit budget unit (spec/sync.md §5 recommended minimum).
+/// Deposit budget unit (spec/sync-ids.md §6 recommended minimum).
 pub const DEPOSIT_ENTRY_BYTES: u64 = 32 * 1024;
 
 fn unknown() -> StoreError {
@@ -279,7 +279,7 @@ impl MemoryLabelStore {
         Ok(())
     }
 
-    /// Expires entries (no tombstone) and drops old tombstones (spec/sync.md §4).
+    /// Expires entries (no tombstone) and drops old tombstones (spec/sync-ids.md §5).
     pub fn sweep(&mut self, now: u64) {
         let mut expired = Vec::new();
         for (label, s) in &mut self.labels {
@@ -454,7 +454,7 @@ pub(crate) mod tests {
         }
     }
 
-    // spec/sync.md §5 (Open, Path): the path indexes `MemoryLabelStore` keeps step by step agree
+    // spec/sync-ids.md §6 (open, Path): the path indexes `MemoryLabelStore` keeps step by step agree
     // with scans of the whole path: the newest step per sync key, each step's child
     #[test]
     fn path_indexes_incremental() {

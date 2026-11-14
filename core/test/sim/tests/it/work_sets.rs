@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Pass work sets against full passes (spec/sync.md §6, §7): the same scenario and seed run
+//! Pass work sets against full passes (spec/sync-judgement.md §2, spec/sync-compaction.md §1): the same scenario and seed run
 //! with work sets and with every pass judging everything (`osis_sim::net::with_full_passes`)
 //! end alike: faults and writes, when each entry's bytes, deposit and registration first reached each
 //! host and when a delete took a host's last copy of a commit (`osis_sim::net::with_arrivals`),
@@ -59,7 +59,7 @@ fn same(name: &str, seed: u64) {
     assert!(apart.is_empty(), "{name} seed {seed}: {apart:#?}");
 }
 
-// spec/sync.md §6, §7: purge-on-replace writes, their drops and compaction under crashes: work sets
+// spec/sync-judgement.md §2, spec/sync-compaction.md §1: purge-on-replace writes, their drops and compaction under crashes: work sets
 // give the full passes' run.
 #[test]
 fn work_sets_purge_on_replace() {
@@ -78,7 +78,7 @@ fn compared_runs_ignore_the_random_stream() {
     assert!(apart.is_empty(), "{apart:#?}");
 }
 
-// spec/sync.md §6, §7: every scenario (`OSIS_SIM_ONLY=a,b` narrows them), 20 seeds
+// spec/sync-judgement.md §2, spec/sync-compaction.md §1: every scenario (`OSIS_SIM_ONLY=a,b` narrows them), 20 seeds
 // (`OSIS_SIM_SEEDS`) from 0 (`OSIS_SIM_FROM`) over the setup of `OSIS_SIM_SETUP` (default
 // `OSIS_SIM_FROM`): work sets give the full passes' run. A line to stderr gives the count either way.
 #[test]
@@ -120,7 +120,7 @@ fn work_sets_match_full_passes() {
     assert!(broken.is_empty(), "{} of {runs} runs panicked or hung:\n{}", broken.len(), broken.join("\n"));
 }
 
-// spec/sync.md §6: honest flows with no faults: everything the full passes' marks send to a host
+// spec/sync-judgement.md §2: honest flows with no faults: everything the full passes' marks send to a host
 // goes at the same moment with narrow marks, nothing waits for its label's next resync.
 #[test]
 #[ignore = "by hand"]

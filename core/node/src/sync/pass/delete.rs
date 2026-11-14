@@ -1,4 +1,4 @@
-//! A pass's deletion judgment (spec/sync.md §5-§7): which entries under the label are
+//! A pass's deletion judgment (spec/sync-ids.md §6): which entries under the label are
 //! must-not-hold and may go now (`judge`, `deletable`), carriers first, by the label delete key
 //! or a delete key, freed links of the scope (`freed_now`); at a source (`deletions`) and in this node's own served state (`local_deletions`).
 
@@ -7,7 +7,7 @@ use crate::engine::MemoryDrop;
 
 impl SyncEngine {
     /// The deletion step of a pass's own part, over the entries of `scope` no source holds (those
-    /// go by their deletions there, spec/sync.md §5-§7; one a source pulled before this is
+    /// go by their deletions there, spec/sync-ids.md §6; one a source pulled before this is
     /// recorded again from its tombstone when its stream shows it): a commit entry goes
     /// as `deletable` says
     /// (a live body only with a carrier, a covering snapshot asked for meanwhile, even when its
@@ -20,7 +20,7 @@ impl SyncEngine {
         let ids: Vec<BlobId> = self.scope_entries(&l, scope).into_iter().filter(|id| self.state.entries.contains_key(&(l, *id)) && !self.state.present_anywhere(&l, id)).collect();
         self.stats.entries += ids.len() as u64;
         let desired = desired(bodies);
-        // freed links (spec/sync.md §7), first: tombstoned, whether or not their bytes are here
+        // freed links (spec/sync-compaction.md §1), first: tombstoned, whether or not their bytes are here
         // (those went when judged, `freed_now`), never taken below as an entry serving nothing
         let all = self.scope_entries(&l, scope);
         for f in self.freed_now(all)? {
@@ -74,7 +74,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// What may become of entry `id` under `l` (spec/sync.md §6, §7): `judge`, then a body
+    /// What may become of entry `id` under `l` (spec/sync-judgement.md §2, spec/sync-compaction.md §1): `judge`, then a body
     /// with a delta to carry goes only with a carrier (`carried`; else a covering snapshot is asked for,
     /// `snapshot_first`, when `carrier`) and by a delete item this node can make. `source`
     /// `None`: this node's own served state.
@@ -96,7 +96,7 @@ impl SyncEngine {
         // Invariant: a delete key authorizes a delete at another node, never in this node's own
         // store. What this node judges must-not-hold there goes once carried, whatever keys it
         // holds, as its engine drops a body under any held valid writer's cover whatever its
-        // rights (spec/sync.md §5 Placed, §7). So a node that dropped what a right holder's
+        // rights (spec/sync-status.md §2 Held elsewhere, §7). So a node that dropped what a right holder's
         // cover covers ends without those entries even once the right holder's deletions aged
         // out of every log it could read. Every input is one this node verified: the cover is a
         // held valid snapshot (an invalid or forged one covers nothing, so drops nothing) and
@@ -104,7 +104,7 @@ impl SyncEngine {
         if at.source.is_none() {
             return Ok(Fate::Drop);
         }
-        // a Delete needs every commitment group signed (spec/sync.md §5)
+        // a Delete needs every commitment group signed (spec/sync-ids.md §6)
         Ok(match self.delete_for(at.keys, &at.l, id, e)? {
             Some(item) => Fate::Delete(why, item),
             None => {
@@ -114,7 +114,7 @@ impl SyncEngine {
         })
     }
 
-    /// Facts about an entry under the label (spec/sync.md §6): `None` when this node cannot
+    /// Facts about an entry under the label (spec/sync-judgement.md §2): `None` when this node cannot
     /// judge it (may-hold). `source` `None`: this node's own served state (every entry counts
     /// as present).
     fn judge(&mut self, at: &At, id: &BlobId, e: &Entry, desired: &Desired, note: &mut Note) -> Result<Option<Judged>> {
@@ -168,7 +168,7 @@ impl SyncEngine {
                 note.at(from);
                 return Ok(None);
             }
-            // every delta only a blob carries counts, the kept ones too (spec/sync.md §7,
+            // every delta only a blob carries counts, the kept ones too (spec/sync-compaction.md §1,
             // `carried`)
             let keeps = self.engine.part_keeps(commit)?;
             let to_carry = opened.iter().any(|ai| self.part_to_carry(commit, &m, &keeps, *ai, note));
@@ -188,7 +188,7 @@ impl SyncEngine {
         let mut f = Facts { required: false, closure: true, covered: None, ..Facts::default() };
         if desired.contains(&parts) {
             f.required = true;
-            // the duplicate with the higher blob ID goes (spec/sync.md §7): the same delta set
+            // the duplicate with the higher blob ID goes (spec/sync-compaction.md §1): the same delta set
             // (each encryption has its own salt), not only the same body (a blob holding a delta
             // another node dropped is must-not-hold there, no copy of its rewrite), only a
             // genuine one (a forged duplicate must not get the real entry deleted); one whose
@@ -256,7 +256,7 @@ impl SyncEngine {
             }
             // a superset whose extra deltas hold nothing only a blob can carry (`must_carry`)
             // carries nothing more: this blob is one a right holder dropped them from
-            // (spec/sync.md §6, §7)
+            // (spec/sync-judgement.md §2, spec/sync-compaction.md §1)
             let mut sup = false;
             let keeps = if sups.is_empty() { Default::default() } else { self.engine.part_keeps(commit)? };
             'sups: for p2 in sups {
@@ -269,7 +269,7 @@ impl SyncEngine {
             }
             if sup && !settled {
                 // "covered by no snapshot" needs a settled view, as must-hold's uncovered does
-                // (spec/sync.md §6): an entry being fetched may be the snapshot covering the
+                // (spec/sync-judgement.md §2): an entry being fetched may be the snapshot covering the
                 // extra delta, which a co-writer that dropped it judged by
                 return Ok(None);
             } else if sup {
@@ -298,7 +298,7 @@ impl SyncEngine {
                 }
                 // a lasting header this node does not judge lasting: a node may yet judge it so, or
                 // it is left from a purge that fell. Deleting what another must hold would not end:
-                // it stays (spec/sync.md §6)
+                // it stays (spec/sync-judgement.md §2)
                 if opened.is_empty() && (!h.purge.is_empty() || (h.ephemeral.is_none() && h.aspects.iter().any(|a| self.engine.permanent(&h, a)))) {
                     return Ok(None);
                 }
@@ -306,7 +306,7 @@ impl SyncEngine {
                 let c = *commit;
                 let held: Vec<usize> = self.engine.run(|tx| Ok(tx.get_commit(&c)?.map(|b| b.parts.iter().map(|p| p.ai).collect()).unwrap_or_default()))?;
                 // and only once the view is settled (a peer's placement this node cannot
-                // explain yet stays: a receiver keeps what a peer placed, spec/sync.md §3)
+                // explain yet stays: a receiver keeps what a peer placed, spec/sync-judgement.md §1)
                 if !opened.iter().all(|p| held.contains(p)) || !settled {
                     return Ok(None);
                 }
@@ -394,7 +394,7 @@ impl SyncEngine {
         minted.chain(requested).filter(|t| core.destroyed(t) && (!closure.contains(t) || !self.engine.may_last_on(h, t))).collect()
     }
 
-    /// An entry of a memory commit the engine forgot whole (spec/sync.md §9: covered,
+    /// An entry of a memory commit the engine forgot whole (spec/sync-compaction.md §2: covered,
     /// superseded, expired, freed): must-not-hold, with live writes to carry when a snapshot or
     /// superseder covers it (`carried`), none otherwise. Judged again every pass until it goes
     /// (`unsure`: what it waits for is the carrier's presence at the source, no state change here).
@@ -436,7 +436,7 @@ impl SyncEngine {
         // departed: it reads the actor no more, and an applied write removed an edge on its way
         // to the actor, or one there passed its `until`: its own, or that of an actor it reads
         // through (its person). A view lacking the node's chain holds no such write on its way
-        // and proves nothing ("reads no more" alone misjudged such holders, spec/sync.md §6)
+        // and proves nothing ("reads no more" alone misjudged such holders, spec/sync-judgement.md §2)
         let actor = self.engine.group_actor(g);
         // a node reads through its account, as its own `reach.0` states (one forged only keeps its card)
         let author = h.author;
@@ -468,7 +468,7 @@ impl SyncEngine {
         })
     }
 
-    /// Deletes must-not-hold entries present at the source, carriers first (spec/sync.md §6,
+    /// Deletes must-not-hold entries present at the source, carriers first (spec/sync-judgement.md §2,
     /// §7). Judges the entries and bodies of `scope`; what waits goes into `left`.
     pub(super) fn deletions(&mut self, conn: ConnId, at: &At, bodies: &[Body], scope: &Scope, left: &mut Left, out: &mut Vec<crate::sync::Action>) -> Result<()> {
         let (l, keys, settled) = (at.l, at.keys, at.settled);
@@ -506,7 +506,7 @@ impl SyncEngine {
                 }
             }
         }
-        // freed links, judged now (spec/sync.md §7: a piece no held source of its thing links),
+        // freed links, judged now (spec/sync-compaction.md §1: a piece no held source of its thing links),
         // deleted where present; the node blobs a judgment waits for fetched from here
         // of the scope, those whose delete is in flight wait for their resend, unjudged: a
         // judgment costs what the pass may send
@@ -612,7 +612,7 @@ impl SyncEngine {
     }
 
     /// Whether part `ai` of a commit (`m`, its `Engine::part_keeps` `keeps`) leaves a label only
-    /// with a carrier there (spec/sync.md §7): holding a live write; held and before its
+    /// with a carrier there (spec/sync-compaction.md §1): holding a live write; held and before its
     /// keep-at-least bound (must-hold whatever covers it: the deleter's side of `must_carry`,
     /// what a holder would place again); or dropped as covered (its cover is why it goes, and a
     /// holder lacking the cover judges it uncovered, so the cover goes up first). A purged one
@@ -636,7 +636,7 @@ impl SyncEngine {
         let (g, l, source) = (&at.g, &at.l, at.source.as_ref());
         let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok((false, Vec::new())) };
         // a forgotten memory commit not held again: carried once an entry of what covered or
-        // superseded it is held at the source (spec/sync.md §9); nothing here to snapshot for it.
+        // superseded it is held at the source (spec/sync-compaction.md §2); nothing here to snapshot for it.
         // At a source full for the label it goes without waiting: what carries it waits there
         // for the room it holds. Not once an entry of it left that source since it was forgotten
         // here: a holder lacking the carrier placed it again (it is held), and deleting that
@@ -671,7 +671,7 @@ impl SyncEngine {
                 continue;
             }
             all = false;
-            // a kept delta's carrier is the rewrite this node places (spec/sync.md §7, No
+            // a kept delta's carrier is the rewrite this node places (spec/sync-compaction.md §1, no
             // carrier): only a dropped delta's live writes need a snapshot
             if dropped {
                 need.push((t, a));
@@ -710,7 +710,7 @@ impl SyncEngine {
     }
 
     /// A right holder that must delete a body with live writes and finds no carrier writes a
-    /// covering snapshot first when it may write the aspect (spec/sync.md §7). A held valid
+    /// covering snapshot first when it may write the aspect (spec/sync-compaction.md §1). A held valid
     /// snapshot covering the body (another writer's carrier, arrived with the kill) is its
     /// carrier; else every writer dropping the body writes one (duplicates are harmless).
     pub(in crate::sync) fn snapshot_first(&mut self, aspects: &[(Tid, Ak)], body: &CommitId) -> Result<()> {
@@ -785,7 +785,7 @@ impl SyncEngine {
     }
 
     /// The freed links among `scope`'s blobs and those freed since the last call, judged now
-    /// (`Engine::judge_freed`, spec/sync.md §7), never the whole set: those freed for the first
+    /// (`Engine::judge_freed`, spec/sync-compaction.md §1), never the whole set: those freed for the first
     /// time are released (`freed_release`); those no label entry known here names leave the set.
     /// The rest, to delete where an entry of them is present.
     pub(crate) fn freed_now(&mut self, scope: impl IntoIterator<Item = BlobId>) -> Result<Vec<crate::retention::freed::Freed>> {

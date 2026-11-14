@@ -1166,7 +1166,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     crate::retention::valid_again(tx, &back)?;
     for k in &flipped {
         tx.core.mark_aspect_changed(&k.0, &k.1);
-        // a flip may uncover a leftover: covered once the aspect is quiet (spec/sync.md §7)
+        // a flip may uncover a leftover: covered once the aspect is quiet (spec/sync-compaction.md §1)
         crate::retention::compact::Trigger::stirred(tx, k);
     }
     // each aspect rebuilt once, after its flips and every purge request's verdict on it (a
@@ -1200,7 +1200,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         }
         Ok(())
     })?;
-    // memory parts turned valid may supersede held ones (spec/sync.md §9): after the rebuilds,
+    // memory parts turned valid may supersede held ones (spec/sync-compaction.md §2): after the rebuilds,
     // as a cover's keep bound reads the state (`bounds::part_keep`)
     let memory: BTreeSet<(Tid, Ak)> = if rebuild { rose.iter().filter(|(_, a)| a.ephemeral()).cloned().collect() } else { BTreeSet::new() };
     if !memory.is_empty() {

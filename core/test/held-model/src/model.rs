@@ -890,7 +890,7 @@ fn fate(
     // Covers: a valid snapshot whose part on the aspect covers the body by the join; an expiring
     // delta only once no value of it lives (a snapshot carries its values value-less,
     // spec/crdt.md §8); a snapshot body only by one stamped later, or at the same `ts` by one with
-    // a lower commit ID (covered-equal, spec/sync.md §7). Each with whether its commit holds the
+    // a lower commit ID (covered-equal, spec/sync-compaction.md §1). Each with whether its commit holds the
     // purge right over the body.
     let covering: Vec<(CommitId, bool)> = live
         .iter()
@@ -911,7 +911,7 @@ fn fate(
     // drops it (Tess's decision 4, notes/engine-retention-history.md). A live delta (held valid,
     // not replaced) is kept to its aspect's live bound, then drops under any cover as a replaced
     // one out of history (spec/commits.md §5 Kept while live; its author's own covers only is
-    // node-sync's rule, spec/sync.md §7 Own bodies, AMBIGUITIES 70). A live delta held invalid
+    // node-sync's rule, spec/sync-compaction.md §1 own bodies, AMBIGUITIES 70). A live delta held invalid
     // (the author's own, kept by spec/permissions.md §6) is no live delta of that rule.
     if c.kind != CommitKind::Snapshot && !o.replaced.contains(&pr) && o.valid.get(&pr) != Some(&true) {
         return (keep(KeepWhy::Plain), false);

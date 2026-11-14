@@ -1,4 +1,4 @@
-//! Memory class in node-sync (spec/sync.md §9, notes/ephemeral.md): the bodies of memory
+//! Memory class in node-sync (spec/sync-compaction.md §2, notes/ephemeral.md): the bodies of memory
 //! commits are judged, placed, relayed and deleted like durable bodies (the pass,
 //! `pass/`), with every record about them kept in memory (`State::memory_entries`, the store's
 //! memory overlay for their blobs). What stays particular to the class is here: the node cap on
@@ -268,7 +268,7 @@ impl SyncEngine {
     }
 
     /// A held valid snapshot of `t`'s aspect `ak` fell invalid here, either class, and the bodies
-    /// it covered are gone until copies holders still have arrive again (spec/sync.md §7 A
+    /// it covered are gone until copies holders still have arrive again (spec/sync-compaction.md §1 a
     /// snapshot turning invalid): the entries of the memory commits forgotten as covered or
     /// superseded there lose this node's tombstones and wait unopened (whatever brings their
     /// bytes again opens them), and the streams carrying a label whose closure holds `t` list
@@ -367,7 +367,7 @@ impl SyncEngine {
     /// (`Engine::forgettable`: durable ones all of whose parts went as covered by an own cover,
     /// memory ones known only for a part dropped while invalid), once node-sync tracks no entry
     /// of them and no delete of a body of them is within its tombstone (spec/commits.md §5,
-    /// spec/sync.md §9 Forgetting; what its bodies linked is deleted by the freed sets, needing
+    /// spec/sync-compaction.md §2 forgetting; what its bodies linked is deleted by the freed sets, needing
     /// no header). A commit becomes due when its last part is dropped, its last entry goes, or
     /// its tombstone expires.
     pub(crate) fn forget_forgettable(&mut self) -> Result<()> {
@@ -510,7 +510,7 @@ impl SyncEngine {
     /// Memory commits from others that wait (for their blobs, their `ts`, an epoch) are applied
     /// by the engine only within the room their labels' caps leave now, counting each entry's
     /// charge while it waited (`Engine::apply_waiting_memory`: nothing of one decoded past it,
-    /// spec/sync.md §9 Caps). Applied, each entry is charged what the commit costs held; past the
+    /// spec/sync-compaction.md §2 caps). Applied, each entry is charged what the commit costs held; past the
     /// room, refused as an arrival past it is; still waiting, left.
     pub(crate) fn apply_waiting(&mut self) -> Result<()> {
         let cap = self.cfg.ephemeral_bytes;
@@ -588,7 +588,7 @@ impl SyncEngine {
 
     /// Memory commit `c` changed here: held only as purged leftovers (`Engine::kept_purged`), it
     /// is charged its own bytes against the labels its entries were charged under, its entries
-    /// nothing (the purger deletes them at hosts; spec/sync.md §9 Caps), until it is forgotten
+    /// nothing (the purger deletes them at hosts; spec/sync-compaction.md §2 caps), until it is forgotten
     /// (`memory_dropped`) or held otherwise (a fall: its charge is its entries' again once a copy
     /// applies). An own commit, charged nowhere, stays so.
     /// Either class, it is looked at for forgetting: with no entry of it known, no entry's
@@ -651,7 +651,7 @@ impl SyncEngine {
     }
 
     /// Ingests the memory commit of entry `b` of `l` (opened as `cb`, plaintext `pt`, `size`
-    /// encoded bytes) within the room its label's cap leaves (spec/sync.md §9): applied, it is
+    /// encoded bytes) within the room its label's cap leaves (spec/sync-compaction.md §2): applied, it is
     /// charged what it costs held (`Engine::memory_charge`); waiting (for its blobs, its `ts`, an
     /// epoch), it is charged its bytes and applied later within the room then (`apply_waiting`);
     /// refused (nothing applies there), its bytes go and its record waits unopened for room
@@ -800,7 +800,7 @@ impl SyncEngine {
     }
 
     /// A connection ended: what waited on it goes with it. A memory entry counts as present at a
-    /// peer that cannot read L only as learned on the connection up now (spec/sync.md §9: a
+    /// peer that cannot read L only as learned on the connection up now (spec/sync-compaction.md §2: a
     /// restarted peer lost them, and its durable log says nothing of it; the next connection's
     /// stream lists those it holds), so the next connection's peer pulls what it lacks.
     pub(crate) fn memory_lost(&mut self, host: PeerKey) -> Result<()> {
@@ -812,7 +812,7 @@ impl SyncEngine {
     }
 
     /// Places a relay-only commit built here (`blob`: its header and parts) as one blob
-    /// (spec/sync.md §3, §9) under every synced label whose closure holds a thing of it the
+    /// (spec/sync-judgement.md §1, spec/sync-compaction.md §2) under every synced label whose closure holds a thing of it the
     /// label's actor may read, and sends it on every connection where the label is open.
     fn place_relay(&mut self, id: CommitId, blob: CommitBlob, out: &mut Vec<Action>) -> Result<()> {
         let body = Body {
@@ -873,7 +873,7 @@ impl SyncEngine {
     /// A relay-only entry (a push, a fetch, a peer's push, a reader's stream; `from`
     /// where it came from): dropped unopened when too large, outside its prefix window or seen
     /// before (`RelaySeen`); else verified and its signals delivered once, then passed on to
-    /// every other peer sharing the label (spec/sync.md §5, §9).
+    /// every other peer sharing the label (spec/sync-ids.md §6, spec/sync-compaction.md §2).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn relay_in(&mut self, from: RelayFrom, l: LabelId, b: BlobId, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<Signature>, out: &mut Vec<Action>) -> Result<()> {
         if blob.len() > osis_base::format::MAX_RELAY_BLOB {
@@ -1047,7 +1047,7 @@ mod tests {
         assert!(p.contains(l1, b(2)), "room for one more");
     }
 
-    // spec/sync.md §9 (relay-only entries remembered, a floor past the bound; security review
+    // spec/sync-compaction.md §2 (relay-only entries remembered, a floor past the bound; security review
     // L1): a repeat is dropped; past the bound the earliest-expiring entry is forgotten and its
     // label refuses everything expiring at or before it, so a forgotten one never comes back
     #[test]

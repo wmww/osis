@@ -1,4 +1,4 @@
-//! Labeling (spec/sync.md §1-§3, §6-§7): which blobs go under which label (closure,
+//! Labeling (spec/sync-ids.md §1): which blobs go under which label (closure,
 //! entitlement), sections per reader actor, wraps, stamps and deposits, the keys a host's head
 //! calls for, delete keys, certificate blobs, and the convergence rule.
 //! Synchronous functions over the `Engine`; `sync` acts on them.

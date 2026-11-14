@@ -1,4 +1,4 @@
-//! A requester's window and its stall clock (spec/sync.md §6): the upper layer's requests on a
+//! A requester's window and its stall clock (spec/sync-judgement.md §2): the upper layer's requests on a
 //! connection go within it, whichever side dialed, and the reply allowances it charges.
 
 use crate::frame::encode_frame;
@@ -8,12 +8,12 @@ use std::collections::{BTreeMap, VecDeque};
 
 /// The oldest request in flight not moving this long (`Window`: no byte of a reply to it received,
 /// none of its frame taken by the transport, no bytes but replies within `MAX_AHEAD`) closes the
-/// connection, whichever side dialed; the node redials (spec/sync.md §6). A body fetch (of a
+/// connection, whichever side dialed; the node redials (spec/sync-judgement.md §2). A body fetch (of a
 /// host or a reader) unanswered this long is asked of the next source too (node `asked`).
 /// Liveness only, any link speed passes: 0 closes every connection with a request out at once
 /// and asks every body twice, infinity keeps a peer that answers nothing and lets it hold the bodies it announced.
 pub const STALL_TIMEOUT_MS: u64 = 2 * 60 * 1000;
-/// Bytes in flight per session (spec/sync.md §6): per request sent and not answered, its frame
+/// Bytes in flight per session (spec/sync-judgement.md §2): per request sent and not answered, its frame
 /// plus its reply allowance. The next request goes while below it, so one always goes: 0 sends
 /// one at a time, infinity lets the peer's or our send queue overflow. Per-peer buffer against
 /// throughput on long fat links (at most `WINDOW` per round trip).
@@ -33,17 +33,17 @@ pub const SMALL_REPLY: usize = 16 << 10;
 pub const FIRST_REPLY: usize = 64 << 10;
 /// Frame bytes plus allowances of the requests a session within `WINDOW` can have unanswered:
 /// below `WINDOW` before its last one, which adds at most a whole frame and `MAX_MESSAGE`. A peer
-/// that receives more before answering any of them closes the connection (spec/sync.md §6;
+/// that receives more before answering any of them closes the connection (spec/sync-judgement.md §2;
 /// `Session`), so a pipelining peer cannot make one input cost more than a compliant one.
 pub const MAX_UNANSWERED: usize = WINDOW + (MAX_MESSAGE + 4) + MAX_MESSAGE;
 /// Bytes received that move the oldest request in flight since it last moved by its own events
 /// (`Window`): what an honest peer can have queued ahead of its reply, the spec's Closing bound
-/// (`SEND_QUEUE`) with the most a requester has in flight (`MAX_UNANSWERED`; spec/sync.md §6
+/// (`SEND_QUEUE`) with the most a requester has in flight (`MAX_UNANSWERED`; spec/sync-judgement.md §2
 /// Stall). Not picked: below it a slow link with a full push backlog closes honest peers; past it
 /// a peer pushing while answering nothing keeps the connection longer, its own stream only.
 pub const MAX_AHEAD: usize = crate::session::SEND_QUEUE + MAX_UNANSWERED;
 
-/// The most reply bytes the peer may queue for a request (spec/sync.md §6): `MAX_MESSAGE` for
+/// The most reply bytes the peer may queue for a request (spec/sync-judgement.md §2): `MAX_MESSAGE` for
 /// Prove, its `max_reply` for Fetch, Pull, Call and Sub, `SMALL_REPLY` for every other request,
 /// 0 for a message that is no request.
 pub fn allowance(msg: &Message) -> usize {
@@ -57,7 +57,7 @@ pub fn allowance(msg: &Message) -> usize {
         _ => 0,
     }
 }
-/// A requester's window (spec/sync.md §6): requests go in the order made while the bytes in
+/// A requester's window (spec/sync-judgement.md §2): requests go in the order made while the bytes in
 /// flight (per request sent and not answered, its frame plus `allowance`) are below `WINDOW`, so
 /// one always goes. A `Session` sends every request of its upper layer by one, whichever side
 /// dialed.

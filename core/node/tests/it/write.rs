@@ -269,7 +269,7 @@ fn new_chunk_bytes(old: &[u8], new: &[u8]) -> usize {
     cuts(new).into_iter().filter(|c| !have.contains(c)).map(|c| c.len()).sum()
 }
 
-// spec/requirements.md (Scale: a change inside a huge value costs O(change)); spec/sync.md §1
+// spec/requirements.md (Scale: a change inside a huge value costs O(change)); spec/sync-ids.md §1
 // (a chunk reused by a later delta keeps its blob and prefix): editing a value of many chunks
 // writes, and logs, only the chunks the edit changed plus the tree's root node.
 #[test]

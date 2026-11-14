@@ -105,7 +105,7 @@ pub struct World {
     /// (db, host): a node cut off one host only.
     cut: BTreeSet<(usize, usize)>,
     /// Nodes whose user leaves invite requests alone (the others accept each as it
-    /// appears, spec/sync.md §3), by start order.
+    /// appears, spec/sync-judgement.md §1), by start order.
     pub holds_invites: BTreeSet<usize>,
     /// Per node, by start order.
     traffic: Vec<Traffic>,

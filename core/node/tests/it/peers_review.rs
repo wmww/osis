@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Co-reader-peer serving limits and LAN routes (spec/sync.md §5, §10): tombstones, budgets,
+//! Co-reader-peer serving limits and LAN routes (spec/sync-ids.md §6, spec/sync-opens.md §4): tombstones, budgets,
 //! session caps, refused strangers and removed holders, LAN candidates, co-reader caps.
 
 use crate::net::{hosted_nodes, local_nodes};
@@ -95,7 +95,7 @@ fn kept_from_reader(peer_bytes: u64) -> bool {
     net.sync(b).entries(&l).iter().any(|(x, _)| *x == blob_id)
 }
 
-// spec/sync.md §5 (hosts cap storage per label; co-reader peer applies the same rule), spec/requirements.md
+// spec/sync-ids.md §6 (hosts cap storage per label; co-reader peer applies the same rule), spec/requirements.md
 // (peer input never grows storage unbounded): unopened, unstamped entries a reader's stream brings
 // count against the peer budget, and past it are not kept.
 #[test]
@@ -261,7 +261,7 @@ fn second_kept(fresh: bool) -> bool {
     kept
 }
 
-// spec/sync.md §5 (co-reader peer budgets), notes/peers.md Source: a peer's bytes count against
+// spec/sync-ids.md §6 (co-reader peer budgets), notes/peers.md Source: a peer's bytes count against
 // the account it proved, not one known by nothing here: proving a fresh account beside its own
 // gives a session no budget of its own.
 #[test]
@@ -405,7 +405,7 @@ fn reader_flood(n: usize, memory: bool) -> (usize, usize, bool) {
     (known, stored, applied)
 }
 
-// spec/requirements.md (peer input never causes unbounded storage), spec/sync.md §5 (co-reader
+// spec/requirements.md (peer input never causes unbounded storage), spec/sync-ids.md §6 (co-reader
 // peer budgets), spec/permissions.md §6 (invalid deltas), security: a reader serving the label as
 // a co-reader peer, no host between, streams genuine commits each invalid at the receiver
 // (durable and ephemeral alike); what the receiver keeps of them (a header each, no body) counts
@@ -424,10 +424,10 @@ fn reader_flood_of_invalid_commits_bounded_spec_sync_5() {
     }
 }
 
-// spec/sync.md §5, spec/permissions.md §3: a removed holder's node is not dialed (its old
+// spec/sync-ids.md §6, spec/permissions.md §3: a removed holder's node is not dialed (its old
 // `reach.0` is held, it may not read now) and, once the label has a new step, opens nothing
 // served.
-// spec/sync.md §5 (co-reader peer)
+// spec/sync-ids.md §6 (co-reader peer)
 #[test]
 fn removed_holder_not_dialed_nor_served_spec_sync_5() {
     let (mut net, host, [a]) = hosted_nodes::<1>();
@@ -480,7 +480,7 @@ fn src(ip: &str) -> std::net::SocketAddr {
     (ip.parse::<std::net::IpAddr>().unwrap(), 47380).into()
 }
 
-// spec/sync.md §10: a LAN address is only a candidate; one whose connection fails before coming
+// spec/sync-opens.md §4: a LAN address is only a candidate; one whose connection fails before coming
 // up is backed off without pausing the peer, which is reached by its `peer://` route at once,
 // and a repeat of its announcement is not dialed while backed off.
 #[test]
@@ -508,7 +508,7 @@ fn lan_candidate_failure_keeps_route_spec_sync_10() {
     assert!(dials(&acts).is_empty());
 }
 
-// spec/sync.md §10: a candidate that fails falls back to the most heard verified source (a
+// spec/sync-opens.md §4: a candidate that fails falls back to the most heard verified source (a
 // rejoin's announcement from a second address that is not reachable, then the first again).
 #[test]
 fn lan_candidate_falls_back_to_most_heard_spec_sync_10() {
@@ -552,7 +552,7 @@ fn lan_candidate_falls_back_to_most_heard_spec_sync_10() {
     assert_eq!(dials(&acts), vec![real_addr]);
 }
 
-// spec/sync.md §10: a connection through a LAN address that comes up proves the route (the
+// spec/sync-opens.md §4: a connection through a LAN address that comes up proves the route (the
 // signature bound the key to the node): it is dialed first from then on; a newer candidate
 // does not displace a running connection.
 #[test]
@@ -588,7 +588,7 @@ fn lan_route_proven_by_up_spec_sync_10() {
     assert!(dials(&acts).iter().all(|d| *d != Address { url: "peer://192.168.7.8:5000".into(), key: lk }), "{acts:?}");
 }
 
-// spec/sync.md §10 (Shared set): what a session serves is its shared set's, and once the proved
+// spec/sync-opens.md §4 (shared set): what a session serves is its shared set's, and once the proved
 // node is removed from the group its member closes (issues/sync-rewrite.md)
 #[test]
 fn a_member_closes_with_the_right_spec_sync_10() {
@@ -709,7 +709,7 @@ fn reach_under_every_label_spec_permissions_4() {
     assert!(net.sync(a).peers().contains_key(&kb));
 }
 
-// spec/sync.md §5: co-readers dialed per label are capped.
+// spec/sync-ids.md §6: co-readers dialed per label are capped.
 #[test]
 fn co_readers_capped_spec_sync_5() {
     let mut net = Net::new();

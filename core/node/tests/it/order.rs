@@ -2212,7 +2212,7 @@ fn orders(played: &Played, held: &[usize], cfg: Cfg, rng: &mut Rng) -> Vec<Vec<u
     out
 }
 
-/// `held` as a first sync fetches it (spec/sync.md §6): what judging needs, then newest first.
+/// `held` as a first sync fetches it (spec/sync-judgement.md §2): what judging needs, then newest first.
 fn fill_order(played: &Played, held: &[usize]) -> Vec<usize> {
     let mut o = held.to_vec();
     let rank = |i: usize| osis_commit::CommitBlob::decode_stored(&played.packs[i].bytes).map_or(0, |b| osis_node::labeling::fetch_order(&b.header));
@@ -3209,7 +3209,7 @@ fn settled_writers_fetch_what_their_first_side_dropped_before_compacting() {
     order_checks(&played, &order).unwrap();
 }
 
-// spec/commits.md §5 Invalid, spec/sync.md §7: a body dropped while invalid and valid again is
+// spec/commits.md §5 Invalid, spec/sync-compaction.md §1: a body dropped while invalid and valid again is
 // missing until a copy arrives or a writer next compacts. 1 writes G's register and 0 lowers 1
 // to read (keeping the write), then 2 and itself: no writer is left to compact G, so the settled
 // check spares G's register before the sync exchange. A node given 1's write after its lowering

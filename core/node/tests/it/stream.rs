@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! The node log stream between readers (spec/sync.md §10, Stream; issues/sync-rewrite.md, One
+//! The node log stream between readers (spec/sync-streams.md §4, stream; issues/sync-rewrite.md, One
 //! node log, one cursor): counted costs, and the invariant `osis_node::sync` stream.rs states.
 
 use crate::net::local_nodes;
@@ -21,7 +21,7 @@ fn mesh() -> (Net, [usize; 3], Tid) {
         reach_ed(&mut net, c);
         let g = net.group_at(b, &[(a, Role::Write), (c, Role::Write)], vec![]);
         // each item's creation writes g's `group.0`: kept history, so no compaction snapshot
-        // stands in for the bodies a test fetches (spec/sync.md §7 Trigger)
+        // stands in for the bodies a test fetches (spec/sync-compaction.md §1 trigger)
         net.keep(b, g, &[("group.0", osis_schema::History::FOREVER)]);
         net.pair(c, a);
         net.pair(b, c);
@@ -52,7 +52,7 @@ fn pair(net: &mut Net, n: usize) -> (usize, usize, Vec<Tid>) {
     (a, b, gs)
 }
 
-// spec/sync.md §10 (Stream: both sides pull): a reader's own write reaches a co-reader by the
+// spec/sync-streams.md §4 (stream: both sides pull): a reader's own write reaches a co-reader by the
 // co-reader pulling it, whoever dialed, with no Open between them
 #[test]
 fn a_readers_write_reaches_a_co_reader_by_its_pull_spec_sync_10() {
@@ -71,7 +71,7 @@ fn a_readers_write_reaches_a_co_reader_by_its_pull_spec_sync_10() {
     }
 }
 
-// spec/sync.md §10 (Stream, Applying), §7: a deletion in a reader's stream says only that the
+// spec/sync-streams.md §4 (stream, Applying), §7: a deletion in a reader's stream says only that the
 // source no longer holds the entry: a co-reader with no other source keeps it
 #[test]
 fn a_readers_deletion_leaves_the_entry_spec_sync_10() {
@@ -106,7 +106,7 @@ fn a_readers_deletion_leaves_the_entry_spec_sync_10() {
     assert_eq!(net.read(a, t), Some(s("kept")));
 }
 
-// spec/sync.md §10 (Stream): a Pull answered Error is answered: the stream asks again after
+// spec/sync-streams.md §4 (stream): a Pull answered Error is answered: the stream asks again after
 // `resync_ms` instead of waiting for a reply that never comes. Both sides pull, one Pull in flight
 // each, so the first two replies refused are one per side.
 #[test]
@@ -133,7 +133,7 @@ fn a_refused_pull_is_asked_again_spec_sync_10() {
     assert_eq!(net.read(a, t), Some(s("x")), "b's write reached a");
 }
 
-// spec/sync.md §10 (Shared set): a filter generation answered Error goes again, whole, after
+// spec/sync-opens.md §4 (shared set): a filter generation answered Error goes again, whole, after
 // `resync_ms`, as a refused Pull does: with both sides' first filters refused nothing is shared
 // until then
 #[test]
@@ -213,7 +213,7 @@ fn first_contact(n: usize) -> (usize, usize) {
     (net.peer_sent(a, PULL), pages)
 }
 
-// spec/sync.md §10 (Stream): a first contact sharing n sync IDs joins them in O(1) Pulls: the joins
+// spec/sync-streams.md §4 (stream): a first contact sharing n sync IDs joins them in O(1) Pulls: the joins
 // of one batch of opens go in one Pull, its reply pages by size, not per sync ID
 #[test]
 fn first_contact_joins_in_constant_pulls_spec_sync_10() {
@@ -222,7 +222,7 @@ fn first_contact_joins_in_constant_pulls_spec_sync_10() {
     assert!(p10 <= p1 + 1 && r10 <= r1 + 1, "Pulls {p1} at n, {p10} at 10n; replies {r1}, {r10}");
 }
 
-// spec/sync.md §10 (Stream): the stream's position is the record's, so a restarted node goes on
+// spec/sync-streams.md §4 (stream): the stream's position is the record's, so a restarted node goes on
 // from it: nothing it already applied comes again
 #[test]
 fn a_restarted_node_resumes_its_stream_spec_sync_10() {
@@ -245,7 +245,7 @@ fn a_restarted_node_resumes_its_stream_spec_sync_10() {
     assert!(listed <= 4, "only what changed since the cursor comes again: {listed} events");
 }
 
-// spec/sync.md §10 (Stream): a lost record is a first contact, a stream from the start, and what
+// spec/sync-streams.md §4 (stream): a lost record is a first contact, a stream from the start, and what
 // was written while apart arrives
 #[test]
 fn a_lost_record_is_a_first_contact_and_converges_spec_sync_10() {
@@ -263,7 +263,7 @@ fn a_lost_record_is_a_first_contact_and_converges_spec_sync_10() {
     assert!(seen.borrow().replies.first().is_some_and(|(whole, _)| *whole), "a stream from the start: {:?}", seen.borrow().replies);
 }
 
-// spec/sync.md §10 (Stream; spec/requirements.md, Nothing a node already holds is sent again): in a
+// spec/sync-streams.md §4 (stream; spec/requirements.md, Nothing a node already holds is sent again): in a
 // mesh a body crosses once to each node; a requester with more than one source of a sync ID is
 // sent announcements and fetches the body from one source
 #[test]
@@ -285,7 +285,7 @@ fn a_mesh_body_crosses_once_spec_sync_10() {
     assert_eq!(crossings, 2, "once to a, once to c");
 }
 
-// spec/sync.md §6 (flow control), §10 (Stream, Bodies): stream Pulls and Fetches go within the
+// spec/sync-judgement.md §2 (flow control), §10 (Stream, Bodies): stream Pulls and Fetches go within the
 // request window, so bodies of several labels fetched at once in a mesh (each past a Fetch's
 // first `max_reply`, asked again under `REPLY_BUDGET`), with what a node sends delivered as one
 // read, close no connection and all arrive
@@ -315,7 +315,7 @@ fn mesh_bodies_of_many_labels_fetched_at_once_spec_sync_6() {
     }
 }
 
-// spec/wire.md §11.2 (Fetch: possibly none below `REPLY_BUDGET`), spec/sync.md §10 (Bodies: the
+// spec/wire.md §11.2 (Fetch: possibly none below `REPLY_BUDGET`), spec/sync-streams.md §4 (bodies: the
 // next source when one fails): a source answering every stream Fetch with nothing is asked
 // once more under `REPLY_BUDGET`, then failed, so the body comes from another source rather
 // than being asked of it without end
@@ -367,7 +367,7 @@ fn silent_co_reader(a_dials: bool, wait: u64) -> bool {
     net.read(a, first) == Some(s("first"))
 }
 
-// spec/sync.md §6 (stall), §10 (Bodies: the next source): a co-reader that answers none of a
+// spec/sync-judgement.md §2 (stall), §10 (Bodies: the next source): a co-reader that answers none of a
 // node's requests while it keeps pushing (its pushes keep the connection, within `MAX_AHEAD`)
 // holds the node's Fetch only for the stall time, whichever side dialed; the body then comes
 // from an honest co-reader. Not before: one source at a time
@@ -380,7 +380,7 @@ fn a_silent_co_reader_holds_a_body_for_the_stall_time_only_spec_sync_6() {
     }
 }
 
-// spec/sync.md §6 (stall): a co-reader that answers none of a node's requests while it keeps
+// spec/sync-judgement.md §2 (stall): a co-reader that answers none of a node's requests while it keeps
 // pushing keeps the connection (its pushes move the stall clock, within `MAX_AHEAD`); the node
 // sends it no Ping while one is unanswered, so none pile up for as long as it holds out
 #[test]
@@ -462,7 +462,7 @@ fn trickling_co_reader(release: bool) -> (Option<u64>, bool, usize, usize, bool)
     (at, up, before, after, settled)
 }
 
-// spec/sync.md §10 (Bodies: a source slower than the stall time), issues: a co-reader trickling
+// spec/sync-streams.md §4 (bodies: a source slower than the stall time), issues: a co-reader trickling
 // its reply to a node's Fetch (so the stall rule never closes it) holds the body only for about
 // one stall time: then the next source that announced it is asked too, and the connection stays
 #[test]
@@ -475,7 +475,7 @@ fn a_trickling_co_reader_holds_a_body_for_the_stall_time_only_spec_sync_10() {
     assert!(before <= 2, "{before} Fetches: b's, then c's");
 }
 
-// spec/sync.md §10 (Bodies: whichever answers first settles it): once both sources answered,
+// spec/sync-streams.md §4 (bodies: whichever answers first settles it): once both sources answered,
 // the body is held once, nothing more is fetched, and every stream settles
 #[test]
 fn both_sources_answering_store_once_and_settle_spec_sync_10() {
@@ -485,7 +485,7 @@ fn both_sources_answering_store_once_and_settle_spec_sync_10() {
     assert!(settled, "every stream of a settled, no fetch out");
 }
 
-// spec/sync.md §10 (Bodies: a source slower than the stall time): a co-reader answering a
+// spec/sync-streams.md §4 (bodies: a source slower than the stall time): a co-reader answering a
 // Fetch of two bodies with one, just before the stall time, and holding the rest, holds the
 // other body for about one stall time from when it was first asked, not one more per answer
 #[test]
@@ -595,7 +595,7 @@ fn trickling_first_source(host: bool, release: bool) -> (Option<u64>, usize, usi
     (at, asked, after, settled)
 }
 
-// spec/sync.md §10 (Bodies: one rule for "asked" across sources): a co-reader trickling its
+// spec/sync-streams.md §4 (bodies: one rule for "asked" across sources): a co-reader trickling its
 // reply to a node's Fetch holds the body's fetch from a host for the stall time only, and a host
 // trickling its reply holds the body from a co-reader that announced it likewise; the other
 // source is asked when the first passes the stall time (a wake of its own, not the next resync)
@@ -610,7 +610,7 @@ fn a_trickling_source_of_either_kind_holds_a_body_for_the_stall_time_only_spec_s
     }
 }
 
-// spec/sync.md §10 (Bodies: whichever answers first settles it): a host and a co-reader both
+// spec/sync-streams.md §4 (bodies: whichever answers first settles it): a host and a co-reader both
 // answering store the body once, ask nothing more, and every stream settles
 #[test]
 fn a_host_and_a_co_reader_both_answering_store_once_and_settle_spec_sync_10() {
@@ -651,7 +651,7 @@ fn back_after_aging(n: usize) -> (usize, bool, bool, usize) {
     for (i, g) in gs.iter().enumerate() {
         let t = net.item(b, *g, *g, &format!("keep{i}"));
         let gone = net.item(b, *g, *g, "gone");
-        // an aspect of its own: its expiry is covered once quiet (spec/sync.md §7 Trigger), and a
+        // an aspect of its own: its expiry is covered once quiet (spec/sync-compaction.md §1 trigger), and a
         // cover in an aspect with other bodies would delete there too
         let short = osis_base::Ak::new("t:short.0").unwrap();
         let mut m = osis_node::Mutation::new();
@@ -692,7 +692,7 @@ fn back_after_aging(n: usize) -> (usize, bool, bool, usize) {
         same &= at(&mut net, a) == at(&mut net, b);
     }
     let whole = seen.borrow().replies.iter().any(|(w, _)| *w);
-    // spec/sync.md §5 Placed: `a` holds the cover of the `group.0` parts it dropped and
+    // spec/sync-status.md §2 Held elsewhere: `a` holds the cover of the `group.0` parts it dropped and
     // no delete key for them; its store ends without every entry holding one
     let (mut dropped, mut stale) = (0, 0);
     for (g, cs) in &writes {
@@ -706,7 +706,7 @@ fn back_after_aging(n: usize) -> (usize, bool, bool, usize) {
     (pulls, same, whole, per_id)
 }
 
-// spec/sync.md §5 (Placed), §7: a node drops from its own store, whatever delete keys it holds,
+// spec/sync-status.md §2 (Held elsewhere), §7: a node drops from its own store, whatever delete keys it holds,
 // an entry holding a body it dropped under a held valid cover; an invalid cover (a writer's snapshot
 // stamped after its demotion, unknown to it) drops nothing there, a valid one then does
 #[test]
@@ -750,7 +750,7 @@ fn only_a_valid_cover_drops_from_a_nodes_own_store_spec_sync_5() {
     assert_eq!(held(&mut net), Vec::<bool>::new(), "no entry at a holds it");
 }
 
-// spec/sync.md §5 (Placed), §7: what a node drops from its own store under a cover stays readable
+// spec/sync-status.md §2 (Held elsewhere), §7: what a node drops from its own store under a cover stays readable
 // through it: a reader that held neither the bodies nor the cover, back with only that node to
 // pull, reads the value from the cover there
 #[test]
@@ -789,7 +789,7 @@ fn a_body_dropped_under_a_cover_reaches_a_co_reader_by_the_cover_spec_sync_5() {
 // issues/sync-rewrite.md (Back after a long absence; Deletions): a node back after the peer's
 // log dropped deletions past its cursor converges by one stream, whatever the number of sync IDs
 // (counted at n and 10n); a deletion older than the log reaches it by its own judgment (expiry,
-// and a cover it holds: spec/sync.md §5 Placed)
+// and a cover it holds: spec/sync-status.md §2 Held elsewhere)
 #[test]
 fn back_after_aged_deletions_converges_in_one_stream_spec_sync_10() {
     let (p1, same1, whole1, s1) = back_after_aging(1);
@@ -1021,7 +1021,7 @@ fn a_body_whose_fetch_was_lost_comes_again_spec_sync_10() {
     assert_eq!(net.read(a, t), Some(s("x")), "the write reached a after its fetch was lost");
 }
 
-// spec/sync.md §10 (Stream, reports): a reader reports applying a body only once it holds it, so
+// spec/sync-streams.md §4 (stream, reports): a reader reports applying a body only once it holds it, so
 // the writer never reads `Synced` while the reader lacks its write
 #[test]
 fn a_body_is_reported_only_once_held_spec_sync_10() {
@@ -1092,7 +1092,7 @@ fn smallest_pulls(m: &osis_proto::Message) -> Option<osis_proto::Message> {
     Some(osis_proto::Message::Pull(Box::new(p)))
 }
 
-// spec/sync.md §10 (Stream; spec/wire.md §11.2 PullReply): a join from the start with more events
+// spec/sync-streams.md §4 (stream; spec/wire.md §11.2 PullReply): a join from the start with more events
 // than a reply holds pages at its own position behind the stream's and merges into it, nothing
 // dropped
 #[test]
@@ -1176,7 +1176,7 @@ fn a_member_opening_again_misses_nothing_spec_sync_10() {
     assert_eq!(net.read(a, two), Some(s("two")), "what came while it opened again arrives");
 }
 
-// spec/sync.md §10 (Stream; spec/sync.md §9): the stream's memory part has no position a cursor
+// spec/sync-streams.md §4 (stream; spec/sync-compaction.md §2): the stream's memory part has no position a cursor
 // names, so a member entering the stream on a connection, from a position or the start, gets its
 // live memory entries listed
 #[test]
@@ -1195,7 +1195,7 @@ fn a_member_rejoining_gets_its_live_memory_entries_spec_sync_10() {
     assert_eq!(net.eph_read(a, t, "t:typing+.0"), Some(s("typing")), "the live memory entry is listed at the rejoin");
 }
 
-// spec/sync.md §10 (Stream: filtered by the connection's shared set): a follow push goes out only
+// spec/sync-streams.md §4 (stream: filtered by the connection's shared set): a follow push goes out only
 // after the step's re-judging, so a peer whose right a step ends is pushed nothing of that step
 #[test]
 fn nothing_is_pushed_past_a_lost_right_spec_sync_10() {
@@ -1439,7 +1439,7 @@ fn a_position_never_passes_a_dropped_push_spec_sync_10() {
     assert_eq!(net.read(a, t), Some(s("pushed while full")));
 }
 
-// spec/sync.md §10 (Stream): numbered pushes cost an honest stream nothing: writes followed one by
+// spec/sync-streams.md §4 (stream): numbered pushes cost an honest stream nothing: writes followed one by
 // one arrive by pushes alone, with no PullReply re-reading after any
 #[test]
 fn in_order_pushes_need_no_reply_spec_sync_10() {
@@ -1471,7 +1471,7 @@ fn in_order_pushes_need_no_reply_spec_sync_10() {
     assert_eq!(replies, 0, "no reply read again");
 }
 
-// spec/sync.md §10 (Stream): a push the peer lost on the way (a dishonest host or co-reader
+// spec/sync-streams.md §4 (stream): a push the peer lost on the way (a dishonest host or co-reader
 // dropping it) is found by the next one, which does not follow on from the last taken: the stream
 // reads again from its cursor, so the lost push's write arrives with no reconnect or restart
 #[test]
@@ -1500,7 +1500,7 @@ fn a_push_lost_on_the_way_is_read_again_spec_sync_10() {
     assert_eq!(net.read(a, t), Some(s("in the lost push")), "the lost push's write arrived");
 }
 
-// spec/sync.md §10 (Bodies): an announcement without bytes in a Stream with no cursor is
+// spec/sync-streams.md §4 (bodies): an announcement without bytes in a Stream with no cursor is
 // ignored. No position would ever settle it, so a co-reader sending them would make this node
 // ask (and keep asked) a fetch per announcement, unbounded
 #[test]
@@ -1565,7 +1565,7 @@ fn purged_chunks_served(local: bool) -> (usize, usize) {
     (n, held)
 }
 
-// spec/commits.md §5 (a purge destroys every local copy), spec/sync.md §10 (Bodies): a node that
+// spec/commits.md §5 (a purge destroys every local copy), spec/sync-streams.md §4 (bodies): a node that
 // purged a large value sends a co-reader no byte of its chunks, even for a Fetch it reads before
 // the purge's own Local event
 #[test]

@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! The compaction trigger on durable data (spec/sync.md §7 Trigger; spec/commits.md §5 Covered,
+//! The compaction trigger on durable data (spec/sync-compaction.md §1 trigger; spec/commits.md §5 Covered,
 //! Kept while live): bodies held stay O(1) per aspect whatever was written, kept history is never
 //! compacted away, every holder reads alike, and undo works within kept history.
 
@@ -80,7 +80,7 @@ fn written_apart(n: usize) -> [(usize, usize); 4] {
     [held(&mut net, a, t), held(&mut net, r, t), (host_entries, 0), held(&mut net, late, t)]
 }
 
-// spec/sync.md §7 Trigger, spec/commits.md §5 Kept while live: on an aspect no setting keeps, a map
+// spec/sync-compaction.md §1 trigger, spec/commits.md §5 Kept while live: on an aspect no setting keeps, a map
 // whose keys are each written apart compacts: its writer, a reader and the host hold a bounded
 // number of bodies at n and 10n keys (not one per key), and a node that never received the
 // originals reads the same map from the snapshot.
@@ -94,7 +94,7 @@ fn map_written_apart_holds_bounded_bodies_spec_sync_7() {
     }
 }
 
-// spec/crdt.md §8 (Frontiers), spec/commits.md §5 Forgetting, spec/sync.md §7 Trigger: commits a
+// spec/crdt.md §8 (Frontiers), spec/commits.md §5 Forgetting, spec/sync-compaction.md §1 trigger: commits a
 // writer forgot under its own covers leave its session's counters with a hole no held commit
 // fills, yet its later writes keep compacting. On a map whose commits are forgettable (default
 // retention): whole replaces its own replaces cover, then keys put apart, each compaction
@@ -179,7 +179,7 @@ fn weighed(net: &mut Net, f: impl FnOnce(&mut Net)) -> u64 {
     osis_node::costs::take().iter().find(|x| x.0 == "compact: bodies weighed").map_or(0, |x| x.2)
 }
 
-// spec/sync.md §7 Trigger, spec/commits.md §5 Kept while live, notes/coordination.md (count
+// spec/sync-compaction.md §1 trigger, spec/commits.md §5 Kept while live, notes/coordination.md (count
 // work): where a setting keeps history the trigger's work per write is flat in the kept bodies.
 // Under keep-for-a-day, ten more puts after n live keys weigh nothing (every body is kept);
 // under keep-for-two-seconds, ten overwrites of one key, each replaced body leaving history
@@ -230,7 +230,7 @@ fn trigger_runs(net: &mut Net, f: impl FnOnce(&mut Net)) -> (u64, u64) {
     (get("compact: aspects weighed"), get("compact: snapshots written"))
 }
 
-// spec/sync.md §7 Trigger, spec/commits.md §5 Purge: the trigger weighs exactly what a snapshot
+// spec/sync-compaction.md §1 trigger, spec/commits.md §5 Purge: the trigger weighs exactly what a snapshot
 // written now drops. Here n puts kept while live are reached by a held snapshot's frontier,
 // then purged: their leftovers stay (the purge may fall), so they count for nothing. Ten
 // overwrites of one key follow, each replaced body leaving history before the next: after
@@ -307,7 +307,7 @@ fn undo_within_kept_history_spec_commits_7() {
     assert_eq!(map_of(&mut net, r, u), map_of(&mut net, a, u));
 }
 
-// spec/sync.md §7 (A snapshot turning invalid), spec/permissions.md §5.2: writer b puts y and
+// spec/sync-compaction.md §1 (a snapshot turning invalid), spec/permissions.md §5.2: writer b puts y and
 // compacts it under its own snapshot S while admin a is away; past `MAX_DRIFT` b deletes y at the
 // host (and, `forgotten`, forgets y once its tombstone ages out). a, holding y but never S,
 // demotes b: S falls, y stays valid (the frontier lists it). Both read y again: a holds y
@@ -356,7 +356,7 @@ fn fallen_own_snapshot_gets_back_forgotten_spec_sync_7() {
     fallen_own_snapshot_gets_back(true);
 }
 
-// spec/sync.md §7 (A snapshot turning invalid): as above (y known still at b), then the host is
+// spec/sync-compaction.md §1 (a snapshot turning invalid): as above (y known still at b), then the host is
 // wiped: a, back with the demotion, places y there again under its old entry, which b deleted
 // under S. S falls at b: its own tombstone of that entry no longer stands, so b fetches y.
 #[test]
@@ -473,7 +473,7 @@ fn rewritten(chunks: usize, edits: usize) -> Rewritten {
 /// and the nodes above them.
 const ONE_EDIT: usize = 2 * osis_base::format::CHUNK_MAX + 16 * 1024;
 
-// spec/sync.md §7 Trigger (a body weighs what dropping it frees, a replaced value's tree blobs
+// spec/sync-compaction.md §1 trigger (a body weighs what dropping it frees, a replaced value's tree blobs
 // no live state links included): a large value edited in place n and 10n times leaves, after
 // any edit, one edit's replaced tree blobs at most at the writer and the host, and one delta
 // held: each edit's replaced chunk outweighs twice the snapshot (its root link), so the trigger
@@ -488,7 +488,7 @@ fn rewritten_value_leaves_bounded_tree_garbage_spec_sync_7() {
     }
 }
 
-// spec/sync.md §7 Trigger, Freed links, notes/coordination.md (count work): the trigger's work
+// spec/sync-compaction.md §1 trigger, Freed links, notes/coordination.md (count work): the trigger's work
 // per edit of a large value is flat at n and 10n chunks (it sizes the blobs an edit lists and the
 // replaced ones a weighing finds, never the value's whole tree), as is the tree refs' (a drop's
 // pieces and the weighing judged against what the edit changed, never a walk of the whole tree),
@@ -506,7 +506,7 @@ fn trigger_work_flat_in_value_size_spec_sync_7() {
     }
 }
 
-// spec/sync.md §7 Trigger: a large value set to a small one unlinks a tree its write links none
+// spec/sync-compaction.md §1 trigger: a large value set to a small one unlinks a tree its write links none
 // of; the trigger counts it all the same (the estimate grows by what the write unlinked past
 // what it linked), so the whole tree goes from the writer and the host as soon as two bodies
 // are held, here by the next small write.
@@ -549,7 +549,7 @@ fn big_snapshot(len: usize) -> (usize, usize, usize) {
     (header, blob, crate::common::linked_blobs(e, &c).len())
 }
 
-// spec/wire.md §4, spec/sync.md §7: a snapshot lists none of the blobs its values link, so it is
+// spec/wire.md §4, spec/sync-compaction.md §1: a snapshot lists none of the blobs its values link, so it is
 // the same size whatever they hold: three large values of n and 10n chunks give a snapshot of
 // equal header and blob bytes, its values' root links alone.
 #[test]
@@ -560,7 +560,7 @@ fn snapshot_size_flat_in_value_size_spec_wire_4() {
     assert_eq!((small.0, small.1), (large.0, large.1), "the snapshot did not");
 }
 
-// spec/sync.md §7 Trigger, Own bodies, Other nodes: a body a held snapshot already covers counts
+// spec/sync-compaction.md §1 trigger, Own bodies, Other nodes: a body a held snapshot already covers counts
 // for nothing, since it drops without a new snapshot. A keeps its two own tags under B's snapshot
 // S (S is not its own), too few to compact; B's body x, which S covers, then arrives late (a host
 // that still shows it). A writes no snapshot for it: else whether a quiet writer compacts would

@@ -1,4 +1,4 @@
-//! Certificate blobs (spec/permissions.md §4; spec/sync.md §3): this node's chain certificates
+//! Certificate blobs (spec/permissions.md §4; spec/sync-judgement.md §1): this node's chain certificates
 //! for a group and its node card as (commit, parts) to place, partial bodies of a commit and the
 //! blobs its parts link.
 //! Labels come with secrets of their own (`rotation::own_secrets`), steps by `Engine::issue_step`.
@@ -81,7 +81,7 @@ impl Engine {
     }
 
     /// The newest held commit writing `(tid, ak)` with its aspect indexes there (a
-    /// grantee's certificate copy names a thing's `label.0` and `created.0`, spec/sync.md §3).
+    /// grantee's certificate copy names a thing's `label.0` and `created.0`, spec/sync-judgement.md §1).
     pub fn aspect_commit(&self, tid: &Tid, ak: &str) -> Option<(CommitId, BTreeSet<usize>)> {
         let c = self.latest_on(tid, ak)?;
         let h = self.header(&c)?;
@@ -104,7 +104,7 @@ impl Engine {
     }
 
     /// The holders each `roles.0` or `secrets.0` aspect of applied role commit `c` is
-    /// about (spec/sync.md §3): those whose edge a `roles.0` delta writes, those a `secrets.0`
+    /// about (spec/sync-judgement.md §1): those whose edge a `roles.0` delta writes, those a `secrets.0`
     /// delta boxes. Empty for any other commit kind.
     pub fn holders_named(&mut self, c: &CommitId) -> Arc<BTreeMap<usize, BTreeSet<Tid>>> {
         // parts the store refused to read name nobody now, and are read again at the next ask
@@ -132,7 +132,7 @@ impl Engine {
     }
 
     /// Whether commit `c` gave this node a read secret of `t` (an inbox payload's label is
-    /// followed only for such a thing, spec/sync.md §3): applied with a valid `secrets.0` delta
+    /// followed only for such a thing, spec/sync-judgement.md §1): applied with a valid `secrets.0` delta
     /// on `t` while this node holds a read secret of `t`, or a reading-only read candidate from
     /// it (its box opened). Invariant: a sync box alone (a sync-only holder, which keeps the
     /// label unread) is never one, whatever else of `t` it holds (its `keys.0` from the chain).
@@ -262,7 +262,7 @@ impl Engine {
     /// holder makes a request, so what a reader mints adds nothing. A minting's `expires` dates an
     /// expiry (a value-less part is never uploaded), a request's header names what it destroys
     /// (`Header::requests`; `t`'s frozen history judges its right), and a header-only blob has no
-    /// prefix expiry, so a release's copy outlives the request's own blobs (spec/sync.md §1).
+    /// prefix expiry, so a release's copy outlives the request's own blobs (spec/sync-ids.md §1).
     /// Each with its author's chains to `t` and to its actor. Once per `out`: its witness among
     /// `out`'s headers.
     pub fn minting_evidence(&mut self, t: &Tid, out: &mut Certs) {
@@ -512,7 +512,7 @@ impl Engine {
     }
 
     /// A header-only copy of held commit `c` (a minting or a destroying request, `minting_evidence`): no
-    /// part, so no expiry or commitments in its prefix (spec/sync.md §1), ordered by its `ts`
+    /// part, so no expiry or commitments in its prefix (spec/sync-ids.md §1), ordered by its `ts`
     /// (spec/crypto.md §5).
     pub fn header_body(&self, c: &CommitId) -> Option<Body> {
         let h = self.core.ix.commits.get(c).map(|m| m.header.clone())?;

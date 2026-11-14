@@ -40,7 +40,7 @@ fn deletions(net: &Net, host: usize, l: &LabelId) -> usize {
     net.logged_at(host, l).1.len()
 }
 
-// spec/sync.md §6, spec/commits.md §4 (sim two_nodes_host): an entry announced, its fetch lost
+// spec/sync-judgement.md §2, spec/commits.md §4 (sim two_nodes_host): an entry announced, its fetch lost
 // with the connection: the cursor is past it, so no host tells of it again. It stayed unopened
 // for good, which also froze what its holder judged must-hold, and the other node waited for
 // that holder's commits. Now a pass fetches it again.
@@ -120,7 +120,7 @@ fn crossed_snapshots() -> (usize, usize) {
     (deletions(&net, host, &l) - before, seen.len())
 }
 
-// spec/sync.md §6, §7 (sim compaction): two writers compact one aspect each of a commit on both,
+// spec/sync-judgement.md §2, spec/sync-compaction.md §1 (sim compaction): two writers compact one aspect each of a commit on both,
 // past the bound. Each dropped only what the other's snapshot covered, not its own, so each held
 // a different part of the commit and deleted the other's: a delete and re-place storm. Now
 // both drop the whole commit, its one blob deleted once.
@@ -139,7 +139,7 @@ fn record_step_again(net: &mut Net, n: usize, g: Tid, l: LabelId) {
     net.engine(n).commit(m).unwrap().unwrap();
 }
 
-// spec/sync.md §5 (one step per rotation), spec/permissions.md §3, §4 (sim stranded_reseal): another
+// spec/sync-ids.md §6 (one step per rotation), spec/permissions.md §3, §4 (sim stranded_reseal): another
 // admin's `label.0` write is no rotation: this admin's next rotation gets its step at once. It
 // was held back the settle wait, so the next rotation in that wait shared the step and a stale
 // node claimed through.

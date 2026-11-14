@@ -19,7 +19,7 @@ fn gone() -> Ak {
 
 const MARK: &str = "SYNCED-PURGE-MARK-6b2d";
 
-/// Two blob shapes (spec/sync.md §3): one commit on items of two groups, its one blob held under
+/// Two blob shapes (spec/sync-judgement.md §1): one commit on items of two groups, its one blob held under
 /// both groups' labels, and one on an item of one group, under one label.
 const TWO_LABELS: &[usize] = &[0, 1];
 const ONE_LABEL: &[usize] = &[0];
@@ -210,7 +210,7 @@ fn reaction_kept_value_gone(net: &mut Net, nodes: &[usize], forensic: &[usize], 
     }
 }
 
-// spec/crdt.md §4.7, spec/commits.md §5, spec/sync.md §7: `b` purges its message; `a`'s reaction to it
+// spec/crdt.md §4.7, spec/commits.md §5, spec/sync-compaction.md §1: `b` purges its message; `a`'s reaction to it
 // (with `a`'s own message in one delta) keeps the entry under its own key, at `a`, at `b` and at a
 // new node fetching after the purge once a writer compacts (the entry's creation reaches it only
 // in a snapshot, spec/commits.md §5), and the message's value is gone everywhere.

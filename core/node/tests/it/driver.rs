@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! The tokio driver over osis-transport's `InProcess`, one node hosting (spec/sync.md §10):
+//! The tokio driver over osis-transport's `InProcess`, one node hosting (spec/sync-opens.md §4):
 //! event-driven, nothing sleeps; a timeout guards against a hang.
 
 use crate::net;
@@ -118,7 +118,7 @@ async fn converge<T: Transport>(url: &str, a_ep: T, b_ep: T, cut: impl FnOnce())
     db.await.unwrap();
 }
 
-// spec/sync.md §5, §6, §10, notes/serving.md, Hosting in the node: two nodes under the tokio driver converge
+// spec/sync-ids.md §6, spec/sync-judgement.md §2, spec/sync-opens.md §4, notes/serving.md, Hosting in the node: two nodes under the tokio driver converge
 // through one node's host over in-process sessions (ephemeral client keys, the host's key
 // checked); the hosting node reaches its own host only through the loopback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -128,7 +128,7 @@ async fn driver_in_process_spec_sync_10() {
     converge("mem://s", tnet.endpoint("a"), tnet.endpoint("b"), move || t2.partition("a", "a")).await;
 }
 
-// spec/sync.md §10: the same over QUIC on localhost (by hand: touches the network).
+// spec/sync-opens.md §4: the same over QUIC on localhost (by hand: touches the network).
 // Run: `cargo test -p osis-node --test it -- --ignored driver:: --skip repro_`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
@@ -157,7 +157,7 @@ pub enum Direct<'a> {
 /// driver: each listens on its endpoint with its dialable secret, publishes the listener's key
 /// in `reach.0`, dials the other at `peer://` and serves the other's sessions (co-reader peer).
 /// `reach.0` carries `relays` and no address; `direct` says how else the nodes find each other
-/// (spec/sync.md §10).
+/// (spec/sync-opens.md §4).
 pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &str, relays: Vec<String>, direct: Direct<'_>) {
     let mut net = Net::new();
     let clock: Arc<dyn Clock> = net.clock.clone();
@@ -218,7 +218,7 @@ pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &s
     let _ = applied(brx, c).await;
     assert_eq!(call(&bctl, move |s| read(s, t)).await, Some(s_("second")));
     // with the LAN loop the pair ends on one connection, at a LAN route, whatever it reached
-    // first and whichever side's dial was kept (spec/sync.md §10: the proven route first; one
+    // first and whichever side's dial was kept (spec/sync-opens.md §4: the proven route first; one
     // connection per pair)
     if lan_loop {
         let (ca, cb) = (actl.clone(), bctl.clone());
@@ -250,7 +250,7 @@ fn on_host(tnet: &osis_transport::Net, name: &str, ip: &str, nat: Option<std::ne
     osis_transport::P2p::new(tnet.udp(name, ip.parse().unwrap(), nat))
 }
 
-// spec/sync.md §5 (co-reader peer), §10: two nodes behind NATs sync a label with no host under
+// spec/sync-ids.md §6 (co-reader peer), §10: two nodes behind NATs sync a label with no host under
 // the tokio driver over the real P2P code, each dialing the other by its dialable key through a
 // relay it names.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -279,7 +279,7 @@ async fn until(f: impl Fn() -> bool) {
     .unwrap();
 }
 
-// spec/sync.md §10 (switching), notes/networking.md: two nodes behind cone NATs, synced through a
+// spec/sync-opens.md §4 (switching), notes/networking.md: two nodes behind cone NATs, synced through a
 // relay, switch to direct: the punch, once it can get through, ends the relayed connections, the
 // engine's redial takes the parked direct ones, and the nodes keep syncing with the relay gone.
 // The hosts cannot reach each other (`partition`) until the relayed sessions are up, so the
@@ -353,7 +353,7 @@ async fn driver_relayed_becomes_direct_spec_sync_10() {
     db.await.unwrap();
 }
 
-// spec/sync.md §10: the same behind one NAT with no relay: each node also listens with a fresh
+// spec/sync-opens.md §4: the same behind one NAT with no relay: each node also listens with a fresh
 // LAN key, hears the other's signed announcement and dials its LAN address (the only route).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_p2p_lan_in_process_spec_sync_10() {
@@ -402,7 +402,7 @@ async fn relay_node() -> (osis_transport::P2pListener<osis_transport::QuicUdp>, 
     (l, item)
 }
 
-// spec/sync.md §5, §10: the same over P2P (QUIC) on localhost, no relay (by hand: touches the
+// spec/sync-ids.md §6, spec/sync-opens.md §4: the same over P2P (QUIC) on localhost, no relay (by hand: touches the
 // network). Run: `cargo test -p osis-node --test it -- --ignored driver:: --skip repro_`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
@@ -417,7 +417,7 @@ fn free_udp_ports(ip: std::net::IpAddr) -> [u16; 2] {
     [a.local_addr().unwrap().port(), b.local_addr().unwrap().port()]
 }
 
-// spec/sync.md §10: two nodes over P2P find each other only by the driver's LAN loop: fresh
+// spec/sync-opens.md §4: two nodes over P2P find each other only by the driver's LAN loop: fresh
 // keys per network, signed announcements over UDP on localhost (by hand).
 // Run: `cargo test -p osis-node --test it -- --ignored driver:: --skip repro_`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -430,7 +430,7 @@ async fn driver_lan_loop_localhost_spec_sync_10() {
     converge_p2p(p2p(), "peer://127.0.0.1:0", p2p(), "peer://127.0.0.1:0", vec![], Direct::Loop([cfg(p, q), cfg(q, p)])).await;
 }
 
-// spec/sync.md §10 (LAN discovery, over IPv6): the same over IPv6 loopback: announcements on the IPv6
+// spec/sync-transport.md §4 (lAN discovery, over IPv6): the same over IPv6 loopback: announcements on the IPv6
 // socket carry the listener's IPv6 port and are dialed at their IPv6 source (by hand).
 // Run: `cargo test -p osis-node --test it -- --ignored driver:: --skip repro_`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -442,7 +442,7 @@ async fn driver_lan_loop_ipv6_localhost_spec_sync_10() {
     converge_p2p(p2p(), "peer://127.0.0.1:0", p2p(), "peer://127.0.0.1:0", vec![], Direct::Loop([cfg(p, q), cfg(q, p)])).await;
 }
 
-// spec/sync.md §10 (the proven route first): two nodes whose `reach.0` names only a relay on
+// spec/sync-opens.md §4 (the proven route first): two nodes whose `reach.0` names only a relay on
 // localhost also run the LAN loop: whatever route came up first, each ends on the other's LAN
 // route alone (a relay connection is replaced once the LAN one is up) (by hand).
 // Run: `cargo test -p osis-node --test it -- --ignored driver:: --skip repro_`.
@@ -458,7 +458,7 @@ async fn driver_lan_replaces_relay_localhost_spec_sync_10() {
     converge_p2p(p2p(), &url, p2p(), &url, r, Direct::Loop([cfg(p, q), cfg(q, p)])).await;
 }
 
-// spec/sync.md §10: two nodes over P2P reach each other through a relaying node on localhost,
+// spec/sync-opens.md §4: two nodes over P2P reach each other through a relaying node on localhost,
 // the only route `reach.0` names (by hand).
 // Run: `cargo test -p osis-node --test it -- --ignored driver:: --skip repro_`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -470,7 +470,7 @@ async fn driver_p2p_relay_localhost_spec_sync_10() {
     converge_p2p(p2p(), &url, p2p(), &url, r, Direct::None).await;
 }
 
-// spec/sync.md §10 (a fresh key per network join), notes/networking.md (rejoin interval): a
+// spec/sync-opens.md §4 (a fresh key per network join), notes/networking.md (rejoin interval): a
 // network change right after a join is deferred to `rejoin_min` (each join drops the LAN
 // listener and its connections); the deferred join then announces a fresh key (by hand: over the
 // nat.rs model, but it watches wall-clock gaps: a default-test run on a loaded box could stall past them).
@@ -628,7 +628,7 @@ fn lan_v6() -> (std::net::SocketAddr, &'static str) {
     (osis_transport::lan::multicast(osis_transport::lan::PORT), "peer://[::]:0")
 }
 
-// spec/sync.md §10: two nodes on one LAN segment find each other only by the driver's LAN loop,
+// spec/sync-opens.md §4: two nodes on one LAN segment find each other only by the driver's LAN loop,
 // connect at the addresses their announcements came from, and sync.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_lan_same_segment_finds_and_connects_spec_sync_10() {
@@ -641,7 +641,7 @@ async fn driver_lan_same_segment_finds_and_connects_spec_sync_10() {
     run.stop().await;
 }
 
-// spec/sync.md §10: an announcement stays on its segment: an ear on each hears only its own
+// spec/sync-opens.md §4: an announcement stays on its segment: an ear on each hears only its own
 // segment's node, repeatedly, and the two nodes (holders of one group) never connect.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_lan_other_segment_not_found_spec_sync_10() {
@@ -659,7 +659,7 @@ async fn driver_lan_other_segment_not_found_spec_sync_10() {
     run.stop().await;
 }
 
-// spec/sync.md §10: a node on two segments is found on each, at its address on that segment,
+// spec/sync-opens.md §4: a node on two segments is found on each, at its address on that segment,
 // by nodes that cannot hear each other.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_lan_two_segments_found_on_each_spec_sync_10() {
@@ -675,7 +675,7 @@ async fn driver_lan_two_segments_found_on_each_spec_sync_10() {
     run.stop().await;
 }
 
-// spec/sync.md §10: announcements repeat, so losing them only delays finding a neighbour: nothing
+// spec/sync-opens.md §4: announcements repeat, so losing them only delays finding a neighbour: nothing
 // connects while every one is lost, and a later one connects the nodes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_lan_lost_announcement_recovered_by_later_spec_sync_10() {
@@ -692,7 +692,7 @@ async fn driver_lan_lost_announcement_recovered_by_later_spec_sync_10() {
     run.stop().await;
 }
 
-// spec/sync.md §10: the receiver sees the announcement's source as the model assigns it (the
+// spec/sync-opens.md §4: the receiver sees the announcement's source as the model assigns it (the
 // sender's address on that segment, not its host address), and dials that address.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_lan_source_is_the_segment_address_spec_sync_10() {
@@ -708,7 +708,7 @@ async fn driver_lan_source_is_the_segment_address_spec_sync_10() {
     run.stop().await;
 }
 
-// spec/sync.md §10: a stopped node stops announcing: an ear bound after it stopped hears the
+// spec/sync-opens.md §4: a stopped node stops announcing: an ear bound after it stopped hears the
 // node that still runs, repeatedly, and never the stopped one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_lan_stopped_node_not_announced_spec_sync_10() {
@@ -728,7 +728,7 @@ async fn driver_lan_stopped_node_not_announced_spec_sync_10() {
     run.stop().await;
 }
 
-// spec/sync.md §10: a network change inside the rejoin interval is not lost: with nothing else
+// spec/sync-opens.md §4: a network change inside the rejoin interval is not lost: with nothing else
 // due (announcements never repeat, the interval's end is the only timer), the loop joins again
 // with a fresh key when the interval ends. `Duration::MAX` announces once and does not overflow.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -756,7 +756,7 @@ async fn driver_lan_deferred_rejoin_runs_when_due_spec_sync_10() {
     run.stop().await;
 }
 
-// spec/sync.md §10: `LanConfig::announce` 0 repeats as fast as the loop runs and the driver still
+// spec/sync-opens.md §4: `LanConfig::announce` 0 repeats as fast as the loop runs and the driver still
 // takes controls: it stops when asked.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_lan_zero_announce_interval_stops_spec_sync_10() {
@@ -771,7 +771,7 @@ async fn driver_lan_zero_announce_interval_stops_spec_sync_10() {
     tokio::time::timeout(GUARD, run.stop()).await.unwrap();
 }
 
-// spec/sync.md §10 (Joining): a join announces a few more times soon after, so a lost first
+// spec/sync-opens.md §4 (joining): a join announces a few more times soon after, so a lost first
 // announcement does not wait a whole announcement period.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_lan_join_repeats_its_announcement_spec_sync_10() {
@@ -786,7 +786,7 @@ async fn driver_lan_join_repeats_its_announcement_spec_sync_10() {
     tokio::time::timeout(GUARD, run.stop()).await.unwrap();
 }
 
-// spec/sync.md §10: a node that cannot bind the announcement port (taken, denied) has no LAN loop
+// spec/sync-opens.md §4: a node that cannot bind the announcement port (taken, denied) has no LAN loop
 // and works on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_lan_failed_bind_leaves_the_node_working_spec_sync_10() {
@@ -815,7 +815,7 @@ async fn lan_pair_connects(addrs: [&str; 2], (to, listen): (std::net::SocketAddr
     lan_run(vec![a, b], to, listen, LAN_REPEAT).await.write_reaches_last().await.stop().await;
 }
 
-// spec/sync.md §10: announcements from private IPv4 and IPv6 sources (row 30's controls) match.
+// spec/sync-opens.md §4: announcements from private IPv4 and IPv6 sources (row 30's controls) match.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_lan_private_sources_connect_spec_sync_10() {
     lan_pair_connects(["10.3.0.1", "10.3.0.2"], lan_v4()).await;

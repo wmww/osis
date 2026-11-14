@@ -1,4 +1,4 @@
-//! `keys/`: keys derived from seeds and secrets (spec/crypto.md §3, §6, spec/sync.md §2, §10,
+//! `keys/`: keys derived from seeds and secrets (spec/crypto.md §3, §6, spec/sync-ids.md §2, spec/sync-opens.md §4,
 //! spec/wire.md §6, §8). Generated. Ed25519 keys are RFC 8032 keys from the 32-byte seed shown
 //! or derived as stated.
 
@@ -39,7 +39,7 @@ pub fn seed() -> VecFile {
     let by_holder = claim_key(k.kem.x25519(), &step.public(), &label, &step.public()).unwrap();
     assert_eq!(claim.verifying_key(), by_holder.verifying_key(), "both sides derive one claim key");
     cases.push(
-        case("claim key", "spec/sync.md §2")
+        case("claim key", "spec/sync-ids.md §2")
             .with("holder-seed", hex(seed.expose()))
             .with("step-private", hex(s32(0x06).expose()))
             .with("step-key", hex(&step.public()))
@@ -53,7 +53,7 @@ pub fn seed() -> VecFile {
             .with("entry", hex(&static_entry(&label, &k.signing.verifying_key()))),
     );
     {
-        let mut c = case("label keys", "spec/sync.md §2").with("secret", hex(seed.expose()));
+        let mut c = case("label keys", "spec/sync-ids.md §2").with("secret", hex(seed.expose()));
         for (n, r) in [("sync", LabelRole::Sync), ("write", LabelRole::Write), ("delete", LabelRole::Delete)] {
             c = c.with(&format!("{n}-public"), hex(&label_role_key(r, &seed).verifying_key().to_bytes()));
         }
@@ -77,6 +77,6 @@ pub fn seed() -> VecFile {
             .with("tree-lens", "7,7")
             .with("tree-ab", hex(&link_tree_hash(&d, 1, &[(a, 7), (b, 7)]))),
     );
-    cases.push(case("lan tag", "spec/sync.md §10").with("lan-secret", hex(d.expose())).with("unix-ms", "1234567890123").with("tag", hex(&lan_tag(&d, 1_234_567_890_123))));
+    cases.push(case("lan tag", "spec/sync-opens.md §4").with("lan-secret", hex(d.expose())).with("unix-ms", "1234567890123").with("tag", hex(&lan_tag(&d, 1_234_567_890_123))));
     VecFile { header: generated_header("keys", "spec/crypto.md §3"), cases }
 }

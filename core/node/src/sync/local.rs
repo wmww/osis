@@ -1,6 +1,6 @@
 //! Requests of the app and of role flows: compaction
-//! (spec/sync.md §7), certificate placement under a group's labels (spec/permissions.md §3, §4:
-//! the grantee's `keys.0`, a removal's new `keys.0`), inbox delivery (spec/sync.md §3), label
+//! (spec/sync-compaction.md §1), certificate placement under a group's labels (spec/permissions.md §3, §4:
+//! the grantee's `keys.0`, a removal's new `keys.0`), inbox delivery (spec/sync-judgement.md §1), label
 //! creation.
 
 use super::state::{Entry, Kind};
@@ -34,7 +34,7 @@ pub(crate) struct Outgoing {
 }
 
 impl SyncEngine {
-    /// Tests and the sim: compacts `(t, ak)` now, whatever the trigger says (spec/sync.md §7):
+    /// Tests and the sim: compacts `(t, ak)` now, whatever the trigger says (spec/sync-compaction.md §1):
     /// writes a snapshot from this node's state, then drops what it covers (`compacted`).
     #[doc(hidden)]
     pub fn compact_now(&mut self, t: &Tid, ak: &Ak) -> Result<Vec<Action>> {
@@ -43,7 +43,7 @@ impl SyncEngine {
         Ok(self.handle(super::Event::Local))
     }
 
-    /// Per step, the compaction trigger (spec/sync.md §7 Trigger, `Engine::compactions`): each
+    /// Per step, the compaction trigger (spec/sync-compaction.md §1 trigger, `Engine::compactions`): each
     /// durable snapshot it wrote drops what it covers here at once (`compacted`), the thing in a
     /// label's closure or not; an ephemeral one's covered bodies went as it applied.
     pub(crate) fn compact_due(&mut self) -> Result<()> {
@@ -155,7 +155,7 @@ impl CoverPass<'_> {
             }
             let Some(h) = self.engine.header(&c) else { continue };
             // a live delta this node wrote (none of its writes dead) drops only under its own
-            // covers (spec/sync.md §7 Own bodies): another writer's snapshot may fall later (a
+            // covers (spec/sync-compaction.md §1 own bodies): another writer's snapshot may fall later (a
             // demotion not listing it), and the author's copy is then what brings the write back
             if self.engine.own_kept_under(&s, &c, t, ak)? {
                 continue;
@@ -262,7 +262,7 @@ impl CoverPass<'_> {
 
 impl SyncEngine {
     /// Places commit `c`'s deltas on `aspects` as a certificate copy under every label of `g`
-    /// (spec/permissions.md §3, §4): one blob of those parts, wrapped per label (spec/sync.md §3),
+    /// (spec/permissions.md §3, §4): one blob of those parts, wrapped per label (spec/sync-judgement.md §1),
     /// logged or deposited at the label's next pass.
     pub fn place_certificate(&mut self, g: &Tid, c: &CommitId, aspects: &BTreeSet<usize>) -> Result<Vec<Action>> {
         self.place_certificate_in(g, c, aspects, None)?;
@@ -349,7 +349,7 @@ impl SyncEngine {
     }
 
     /// The blobs a certificate copy of `parts` of `c` links (header lists, linked frontiers) as
-    /// certificate entries under `l` (spec/sync.md §3), so a verifier that syncs nothing else
+    /// certificate entries under `l` (spec/sync-judgement.md §1), so a verifier that syncs nothing else
     /// under the label resolves them.
     pub(crate) fn place_linked(&mut self, l: LabelId, c: &CommitId, parts: &BTreeSet<usize>) -> Result<()> {
         for b in self.engine.linked_blobs(c, parts)? {
@@ -363,7 +363,7 @@ impl SyncEngine {
     }
 
     /// Delivers commit `c`'s deltas on `aspects` to actor `recipient` as an inbox blob
-    /// (spec/sync.md §3; spec/crypto.md §5): sealed to its read keyset's KEM key, with the label
+    /// (spec/sync-judgement.md §1; spec/crypto.md §5): sealed to its read keyset's KEM key, with the label
     /// IDs and hosts of the things the commit names, deposited under its inbox
     /// (`Engine::inbox_of_actor`).
     pub fn deliver_inbox(&mut self, recipient: &Tid, c: &CommitId, aspects: &BTreeSet<usize>) -> Result<Vec<Action>> {
@@ -387,7 +387,7 @@ impl SyncEngine {
         Ok(self.handle(super::Event::Local))
     }
 
-    /// Inbox deliveries from their records (spec/sync.md §3, §5): one not sent yet (`at` 0) is
+    /// Inbox deliveries from their records (spec/sync-judgement.md §1, spec/sync-ids.md §6): one not sent yet (`at` 0) is
     /// sealed and sent at once; one whose holder has not acted is sealed again (to its newest
     /// keyset) and sent again when `INBOX_LIFETIME` old, at most `MAX_INBOX_RESENDS` times in all; one whose commit is gone, or whose holder acted or (for a grant or re-seal) left,
     /// is forgotten.
@@ -575,7 +575,7 @@ impl SyncEngine {
     /// Whether `holder` acted on a delivery naming `things` after `since` as this node sees it:
     /// a held commit newer than that, by the holder, for it, or by a node with a role on it (its
     /// nodes), writing one of `things` or a thing whose record chain reaches one of them. Acting elsewhere says nothing of
-    /// this delivery (its blob may have been cleared, spec/sync.md §5), so it is sent again.
+    /// this delivery (its blob may have been cleared, spec/sync-ids.md §6), so it is sent again.
     /// The record chain as created, not `Core::standing_chain`: this reads evidence of receipt,
     /// not standing (a write below a named thing is one whatever edges stood since), and a
     /// mismatch costs only a re-send more or less.
@@ -635,7 +635,7 @@ impl SyncEngine {
     /// at a connected host, and has at no other: its recipient would look for the label before it
     /// is there, and try again only after a back-off (a new chat's first invite). Ends with the
     /// reply on a live connection (a host silent to it while alive holds only what it alone could
-    /// serve), and no connection holds nothing back: spec/sync.md §3.
+    /// serve), and no connection holds nothing back: spec/sync-judgement.md §1.
     pub(crate) fn names_label_opening(&mut self, d: &(Tid, CommitId)) -> bool {
         let Some(things) = self.state.sent_inbox.get(d).map(|s| s.things.clone()) else { return false };
         let labels = self.labels();

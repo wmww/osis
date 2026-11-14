@@ -29,14 +29,14 @@
 - Lowering from read to sync is no leaving: S becomes kept unread with its store (spec/sync.md §3).
 - A destroyed thing's own sync IDs stay in the sync set until emptied (spec/sync-judgement.md §5), whether or not the thing is still listed.
 - A thing whose role the account lost stays listed in the synced group: the group holds what the account chose, the sync set filters it.
-- Removing a thing from every node's synced group drops it from every node of the account once their own commits are held elsewhere, even when no other account holds it (it may lose the last copy). (Tess call: notes/sync-rewrite-inputs.md, For Tess.)
+- Removing a thing from every node's synced group drops it from every node of the account once their own commits are held elsewhere, even when no other account holds it (it may lose the last copy). (Open question for Tess.)
 
 ## 4. Invitations and accepting
 - A received grant is data the account holds; accepting is data it writes; core only lists. **Invitations**: the things with a sync ID the account holds a role on (by grant copies and rosters) that are in no node's synced group closure, each with its role, its granting account and whether its inbox blob was taken (spec/sync-inbox.md §2).
 - **Accepting** writes the thing as a subgroup (never an item: an item's subgroups would be outside the closure) of a synced group or of a group under one. The accept is a commit on that group's `group.0`, under home alone, so no other holder learns which accounts sync the thing.
 - **Declining** is the app's: `leave` (a self-removal), or filing the thing in a group outside every synced group. Neither is a diagnostic or a status.
 - Importing a contact card accepts the profile it names.
-- A holder whose highest role on a thing is sync keeps no subgroups of it: a new subgroup is kept only once granted too. (Tess call: notes/sync-rewrite-inputs.md, For Tess.)
+- A holder whose highest role on a thing is sync keeps no subgroups of it: a new subgroup is kept only once granted too. (Open question for Tess.)
 
 ## 5. Group source
 - A node MAY read and write a group through another node it is a client of (the group's source, spec/sync-transport.md §6).

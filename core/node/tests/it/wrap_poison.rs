@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! A hostile writer against other writers' wraps (spec/sync.md §5). Invariant: nothing a writer
+//! A hostile writer against other writers' wraps (spec/sync-ids.md §6). Invariant: nothing a writer
 //! logs keeps a body from a reader for good. A stamped entry's wrap never changes at a host;
 //! a useless first wrap (a race for a host the author has not reached yet, a hostile promotion)
 //! loses to another host's wrap at a reader and to a fresh encryption from a node knowing the key.
@@ -104,7 +104,7 @@ fn connect(fx: &mut Fx, hosts: &[usize], seed: u64) {
     fx.net.run();
 }
 
-// spec/sync.md §5: a writer logging a held stamped entry again under a garbage wrap, or one opening
+// spec/sync-ids.md §6: a writer logging a held stamped entry again under a garbage wrap, or one opening
 // to another key, changes nothing at the host and logs nothing; a fresh reader reads it.
 #[test]
 fn stamped_wrap_never_replaced_spec_sync_5() {
@@ -162,7 +162,7 @@ fn reconnect(fx: &mut Fx, n: usize, host: usize, seed: u64) {
     fx.net.run();
 }
 
-// spec/sync.md §5: a reader's deposit under a blob ID it saw elsewhere keeps no writer's wrap
+// spec/sync-ids.md §6: a reader's deposit under a blob ID it saw elsewhere keeps no writer's wrap
 // out: the writer's stamped entry replaces the deposit, and no second encryption is needed.
 #[test]
 fn stamped_entry_replaces_hostile_deposit_spec_sync_5() {
@@ -183,7 +183,7 @@ fn stamped_entry_replaces_hostile_deposit_spec_sync_5() {
     assert_eq!(entries_of(&mut fx.net, a, &l, t), ids, "no other encryption");
 }
 
-// spec/sync.md §5, §7: a writer that got first to a host with a useless wrap (a race the author
+// spec/sync-ids.md §6, spec/sync-compaction.md §1: a writer that got first to a host with a useless wrap (a race the author
 // cannot lose at the host it reached first): the author, knowing the key, places a fresh
 // encryption there, and the useless entry goes whatever the order of their IDs; a reader of that
 // host alone reads the body, and nothing more happens after that.
@@ -214,7 +214,7 @@ fn raced_wrap_repaired_by_fresh_encryption_spec_sync_5() {
     }
 }
 
-// spec/sync.md §5: with the author and the hostile writer gone, a reader of both hosts takes the
+// spec/sync-ids.md §6: with the author and the hostile writer gone, a reader of both hosts takes the
 // wrap that opens the blob, whichever host it hears first: it needs no repair.
 #[test]
 fn reader_takes_the_wrap_that_opens_spec_sync_5() {
@@ -230,7 +230,7 @@ fn reader_takes_the_wrap_that_opens_spec_sync_5() {
     }
 }
 
-// spec/sync.md §5, §7: the repairing author gone before its deletes leaves the useless entry beside
+// spec/sync-ids.md §6, spec/sync-compaction.md §1: the repairing author gone before its deletes leaves the useless entry beside
 // the copy. An admin that heard the useless wrap first and took the good one from the other host
 // deletes the useless entry, never the copy, whichever ID is higher.
 #[test]
@@ -282,7 +282,7 @@ fn useless_entry_found_late_still_goes_spec_sync_7() {
     }
 }
 
-// spec/sync.md §5: a node holding no key keeps a wrap that opens over a stamped one that does not
+// spec/sync-ids.md §6: a node holding no key keeps a wrap that opens over a stamped one that does not
 // (the first peer's reply lost, the second wrap garbage: it must fetch again), and takes a
 // stamped wrap over a deposited one when neither opens.
 #[test]
@@ -322,7 +322,7 @@ fn keyless_node_keeps_the_wrap_that_opens_spec_sync_5() {
     assert_eq!(fx.net.read(f, t), Some(s("message")));
 }
 
-// spec/sync.md §5, randomized: writers, hosts, attacks and reading orders picked per seed; every
+// spec/sync-ids.md §6, randomized: writers, hosts, attacks and reading orders picked per seed; every
 // reader ends up reading every message, at every host set it can reach, whatever a hostile writer
 // logged and whichever order it heard things in, once one honest holder has been back.
 #[test]
@@ -388,7 +388,7 @@ fn hostile_wraps_hide_nothing_randomized_spec_sync_5() {
     assert!(failed.is_empty(), "{failed:?}");
 }
 
-// spec/sync.md §5, §6: an entry a host holds under a stamp of a superseded write key counts as
+// spec/sync-ids.md §6, spec/sync-judgement.md §2: an entry a host holds under a stamp of a superseded write key counts as
 // lacking too: the hostile writer poisons a host and is removed before the author is back, so
 // the author hears the useless wrap under the new head. It still places a copy there.
 #[test]
@@ -448,7 +448,7 @@ fn announce(net: &mut Net, n: usize, host: usize, l: &LabelId, id: BlobId, wrap:
     net.receive(n, conn, encode_frame(&m.encode()));
 }
 
-// spec/sync.md §5, §6: writer `m`, its bytes on their way, holds the good wrap and hears the useless
+// spec/sync-ids.md §6, spec/sync-judgement.md §2: writer `m`, its bytes on their way, holds the good wrap and hears the useless
 // one: nothing opens to compare yet. Holding the key, it places a copy there.
 #[test]
 fn useless_wrap_heard_before_the_bytes_counts_spec_sync_5() {
@@ -490,7 +490,7 @@ fn useless_wrap_heard_before_the_bytes_counts_spec_sync_5() {
     assert_eq!(net.read(f, t), Some(s("message")));
 }
 
-// spec/sync.md §6, §7: a useless entry counts as lacking for as long as the host holds it: the
+// spec/sync-judgement.md §2, spec/sync-compaction.md §1: a useless entry counts as lacking for as long as the host holds it: the
 // author's copy got there, it left before deleting, and back past `TOMBSTONE_LIFETIME` it must
 // not delete the copy as the higher duplicate of the useless entry.
 #[test]
@@ -535,7 +535,7 @@ fn useless_mark_outlives_the_tombstone_lifetime_spec_sync_6() {
     assert!(higher > 0, "some copy above the useless ID");
 }
 
-// spec/sync.md §6: a superset whose entry at a host is useless holds nothing there: a readable
+// spec/sync-judgement.md §2: a superset whose entry at a host is useless holds nothing there: a readable
 // rewrite beside it is no strict subset. Writer `b`, which never heard of the purge behind the
 // rewrite, keeps it.
 #[test]
@@ -613,7 +613,7 @@ fn useless_superset_does_not_cost_a_rewrite_spec_sync_6() {
     assert!(net.host_ids(r, &l).contains(&q[0]), "the readable rewrite stays");
 }
 
-// spec/sync.md §7: a snapshot whose entry at a host is useless carries nothing there: the compactor,
+// spec/sync-compaction.md §1: a snapshot whose entry at a host is useless carries nothing there: the compactor,
 // its copy of the snapshot not arriving, keeps the live write's body at that host.
 #[test]
 fn useless_snapshot_carries_nothing_spec_sync_7() {
@@ -648,7 +648,7 @@ fn useless_snapshot_carries_nothing_spec_sync_7() {
     assert_eq!(fx.net.read(fx.f, t), Some(s("v3")));
 }
 
-// spec/sync.md §5, §6: a promoter counts a chain entry useless at a host as no entry there: a hostile
+// spec/sync-ids.md §6, spec/sync-judgement.md §2: a promoter counts a chain entry useless at a host as no entry there: a hostile
 // promotion of a new reader's `keys.0` deposit gets the writer's own certificate copy of it.
 #[test]
 fn useless_chain_entry_gets_a_copy_spec_sync_5() {
@@ -681,7 +681,7 @@ fn useless_chain_entry_gets_a_copy_spec_sync_5() {
     assert!(copies.iter().any(|b| at.contains(b)), "a readable copy of the chain's keys.0 at the host");
 }
 
-// spec/sync.md §5, §6: a certificate copy useless at a host places nothing there either: the
+// spec/sync-ids.md §6, spec/sync-judgement.md §2: a certificate copy useless at a host places nothing there either: the
 // writer's copy of a chain commit, poisoned at the host it has not reached, gets another.
 #[test]
 fn useless_certificate_copy_gets_another_spec_sync_5() {
@@ -815,7 +815,7 @@ fn other_epoch(lag: bool) -> (Vec<BlobId>, Vec<BlobId>, Vec<BlobId>, Vec<BlobId>
     (ids, before, net.host_ids(h2, &l), mine, net.read(f, t))
 }
 
-// spec/sync.md §5: an honest wrap under an epoch not held yet is doubted, not useless: heard with its
+// spec/sync-ids.md §6: an honest wrap under an epoch not held yet is doubted, not useless: heard with its
 // rotation (or any time before the node acts) the entry stays and no copy is made.
 #[test]
 fn other_epoch_wrap_heard_with_its_rotation_stays_spec_sync_5() {
@@ -826,7 +826,7 @@ fn other_epoch_wrap_heard_with_its_rotation_stays_spec_sync_5() {
     assert!(at.iter().filter(|b| mine.contains(b)).all(|b| before.contains(b)), "no fresh copy");
 }
 
-// spec/sync.md §5: heard with no sign of the rotation, it cannot be told from garbage: the node puts
+// spec/sync-ids.md §6: heard with no sign of the rotation, it cannot be told from garbage: the node puts
 // a fresh copy under the newest epoch it holds, which every holder of the new one reads, once per
 // entry (notes/sync.md).
 #[test]

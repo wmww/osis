@@ -44,7 +44,7 @@ pub enum Walk {
     /// For sealing a holder actor into an actor this node rotates or grants on: as `Encrypt`, and
     /// a stale box at any epoch walked blocks (the sealer is that actor's rotator).
     Seal,
-    /// For placing role commits and certificates under labels (spec/sync.md §5): through the
+    /// For placing role commits and certificates under labels (spec/sync-ids.md §6): through the
     /// holder actors this node may rotate only, so a node that may not rotate an actor still
     /// places the keysets and revokes that tell that actor's rotators (node-sync's pass).
     Place,
@@ -749,7 +749,7 @@ pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()
 }
 
 /// `own_secrets` with the sync ID on `hosts` (`None`: those of the nearest sync ID up its record
-/// chain, spec/sync.md §2) and listing `also` besides the holders it boxes (a link's key, granted
+/// chain, spec/sync-ids.md §2) and listing `also` besides the holders it boxes (a link's key, granted
 /// next).
 pub(crate) fn own_secrets_on(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[crate::flows::labels::ReaderKey], done: &mut Done) -> Result<()> {
     if let Some((c, rot, _)) = own_secrets_rot(tx, t, hosts, also, done)? {
@@ -789,7 +789,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[c
     let mut m = Mutation::new();
     let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, false)?;
     let deposit = fresh_deposit_seed(tx, &mut m, t)?;
-    // the rule (spec/sync.md §2): role secrets of its own and its one sync ID, its home and inbox,
+    // the rule (spec/sync-ids.md §2): role secrets of its own and its one sync ID, its home and inbox,
     // in this one commit
     let (label, at) = match crate::flows::own_label(tx, &t)? {
         Some((label, at)) => (label, at),
@@ -1069,7 +1069,7 @@ impl Engine {
     }
 
     /// Gives `thing` secrets of its own (spec/permissions.md §3), with its one sync ID in the same
-    /// commit (spec/sync.md §2): before its first holder other than its first admin, or before it
+    /// commit (spec/sync-ids.md §2): before its first holder other than its first admin, or before it
     /// is made a holder of anything. The sync ID's hosts: those of the nearest sync ID up its
     /// record chain.
     pub fn give_own_secrets(&mut self, thing: &Tid) -> Result<Done> {

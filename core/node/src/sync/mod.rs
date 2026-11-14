@@ -1,7 +1,7 @@
 //! The sans-I/O sync engine (notes/node-sync.md; notes/architecture.md §2): one synchronous
 //! state machine per node, `SyncEngine::handle(Event) -> Vec<Action>`, holding the engine, the
 //! upper layer of every session of the node's hub (dialed and served alike), the labeling
-//! decisions and the convergence loop (spec/sync.md §5-§9). Two drivers move its bytes and timers: the tokio driver
+//! decisions and the convergence loop (spec/sync-ids.md §6). Two drivers move its bytes and timers: the tokio driver
 //! (`driver`, feature `driver`) and the simulator's step driver. No sync logic lives in a driver.
 //!
 //! Per host and label: open (sync key of the head, else walk by stale key or claim key),
@@ -280,7 +280,7 @@ pub struct SyncEngine {
     /// `labels` (`osis_base::memo`): built again when what it read of the engine or of the
     /// handed-off set changed.
     synced_of: osis_base::memo::Memo<(), Arc<Synced>>,
-    /// (snapshot, body, aspect) judgments settled with the body kept (spec/sync.md §7); a pair
+    /// (snapshot, body, aspect) judgments settled with the body kept (spec/sync-compaction.md §1); a pair
     /// goes once either body is dropped.
     pub(crate) covered_judged: BTreeSet<(osis_base::CommitId, osis_base::CommitId, Tid, osis_base::Ak)>,
     /// What passes did so far (`pass_stats`).
@@ -378,7 +378,7 @@ pub struct SyncEngine {
 pub(crate) type Deferred = (Tid, osis_base::CommitId, BTreeSet<usize>, Option<[u8; 32]>);
 
 impl SyncEngine {
-    /// Wraps an engine; its wall clock is the node's (spec/sync.md §6).
+    /// Wraps an engine; its wall clock is the node's (spec/sync-judgement.md §2).
     pub fn new(mut engine: Engine, rng: Box<dyn osis_crypto::NodeRng>, cfg: SyncConfig) -> Result<SyncEngine> {
         // a memory commit marks itself changed like any (`Engine::take_changed`), not by event
         let events = engine.subscribe_durable();
@@ -790,7 +790,7 @@ impl SyncEngine {
     }
 
     /// Every entry past its blob's prefix expiry goes, its bytes with it unless another entry
-    /// names them (spec/sync.md §5): whatever its kind or what the engine still knows of its
+    /// names them (spec/sync-ids.md §6): whatever its kind or what the engine still knows of its
     /// commit (a request forgotten at its expiry, an entry awaiting a record), at hosts, served
     /// or both, connected or not. Hosts drop it unattended then, and the hub's rows of a sync ID
     /// this node reads expire only here (notes/serving.md), so they agree.
@@ -910,7 +910,7 @@ impl SyncEngine {
         self.engine_events()?;
         self.expire_entries()?;
         // a head the hub moved ends the opens by its old credentials before this event is
-        // answered: the hub logged it already, so a Pull would read past it (spec/sync.md §10 Lost)
+        // answered: the hub logged it already, so a Pull would read past it (spec/sync-opens.md §6 lost)
         if std::mem::take(&mut self.unread.moved) {
             self.stamp_changes()?;
             self.shared_changed(out)?;
@@ -968,7 +968,7 @@ impl SyncEngine {
         self.send_suspects(out)?;
         self.stream_settle_all(out)?;
         // after the re-judging and settling: a peer no longer wanted gets this node's reports
-        // of what it applied from it (spec/sync.md §5 Placed: its removal's Applied) first
+        // of what it applied from it (spec/sync-status.md §2 Held elsewhere: its removal's Applied) first
         self.drop_unwanted(out);
         // the unread sync IDs shared now, their memory entries before the pushes
         self.unread_restream()?;
@@ -1132,7 +1132,7 @@ mod tests {
         crate::local_peer::LocalPeer::cached("node::one_peer", || (crate::local_peer::LocalPeer::new(1, 0, osis_base::WallMs(1_700_000_000_000)).unwrap(), ())).0
     }
 
-    // spec/sync.md §6: a deposit in flight on a connection that ended (its session closed it,
+    // spec/sync-judgement.md §2: a deposit in flight on a connection that ended (its session closed it,
     // say on a request timeout, or the transport went down) goes again on the next connection;
     // the ended one is never answered (a fetch goes with its stream).
     #[test]
@@ -1195,7 +1195,7 @@ mod tests {
         assert_eq!(s.conns.len(), 1);
     }
 
-    // spec/sync.md §5: a deposit is kept until each of its hosts answers it, also across a
+    // spec/sync-ids.md §6: a deposit is kept until each of its hosts answers it, also across a
     // restart; one blob queued under two labels at one host is two deposits.
     #[test]
     fn one_blob_queued_under_two_labels_spec_sync_5() {

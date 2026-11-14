@@ -876,7 +876,7 @@ mod tests {
         drop(l);
     }
 
-    // spec/sync.md §10: `peer://` names routes, which `InProcess` has none of: a listener's key
+    // spec/sync-opens.md §4: `peer://` names routes, which `InProcess` has none of: a listener's key
     // alone reaches nobody here (`P2p<MemUdp>` is what dials `peer://` in process).
     #[test]
     fn peer_url_finds_no_listener_by_key_spec_sync_10() {

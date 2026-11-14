@@ -1,4 +1,4 @@
-//! HostStore rules (spec/sync.md §4, §5): the state a host keeps, the policy it applies,
+//! HostStore rules (spec/sync-ids.md §5, spec/sync-ids.md §6): the state a host keeps, the policy it applies,
 //! durability, and agreement with osis-proto's reference `MemoryLabelStore`.
 
 use super::*;
@@ -54,7 +54,7 @@ fn log_end(s: &mut HostStore) -> u64 {
     s.node_log(|t| t.log_end()).unwrap()
 }
 
-// spec/sync.md §4: entries, the head and its claim set are durable across reopen
+// spec/sync-ids.md §5: entries, the head and its claim set are durable across reopen
 #[test]
 fn state_survives_reopen() {
     let mut e = env(HostPolicy::default());
@@ -74,7 +74,7 @@ fn state_survives_reopen() {
     assert_eq!(again.blob(&id(1)).unwrap(), Some(blob(1)));
 }
 
-// spec/sync.md §4: blob bytes are stored once per host and deleted when no label references them
+// spec/sync-ids.md §5: blob bytes are stored once per host and deleted when no label references them
 #[test]
 fn blob_bytes_once_per_node() {
     let mut e = env(HostPolicy::default());
@@ -97,7 +97,7 @@ fn blob_bytes_once_per_node() {
     assert!(e.store.scan_prefix(b"R", 10).unwrap().is_empty());
 }
 
-// spec/sync.md §5: a stamped put of a deposited blob replaces wrap and stamp and clears the
+// spec/sync-ids.md §6: a stamped put of a deposited blob replaces wrap and stamp and clears the
 // deposited flag, logged once; a deposit of a held blob changes nothing
 #[test]
 fn promotion_and_deposited_flag() {
@@ -120,7 +120,7 @@ fn promotion_and_deposited_flag() {
     assert_eq!(log_end(&mut e.store), end);
 }
 
-// spec/sync.md §5: deposit budget 64 + 4 x claim slots entries and x 32 KiB bytes; freed on stamp, delete, expiry
+// spec/sync-ids.md §6: deposit budget 64 + 4 x claim slots entries and x 32 KiB bytes; freed on stamp, delete, expiry
 #[test]
 fn deposit_budget() {
     let mut e = env(HostPolicy::default());
@@ -152,7 +152,7 @@ fn deposit_budget() {
     assert_eq!(deposit(&mut e), Code::BUDGET_FULL);
 }
 
-// spec/sync.md §5 Deposit: an ephemeral deposit is held in memory under the one deposit budget
+// spec/sync-inbox.md §3 deposit: an ephemeral deposit is held in memory under the one deposit budget
 // (durable and ephemeral alike) and the ephemeral cap; promoting it frees its share; a delete
 // frees it too; a restart forgets it with the budget it held
 #[test]
@@ -192,7 +192,7 @@ fn ephemeral_deposits_share_the_budget() {
     }
 }
 
-// spec/sync.md §5: hosts cap storage per label (code 12); re-wrapping a held entry is not capped
+// spec/sync-ids.md §6: hosts cap storage per label (code 12); re-wrapping a held entry is not capped
 #[test]
 fn storage_cap() {
     // the genesis step and its claim set count too
@@ -212,7 +212,7 @@ fn storage_cap() {
     assert_eq!(e.store.put(&l, put(&blob(3), true, None)).unwrap(), Code::OK);
 }
 
-// spec/sync.md §5: rate limits per label on deletes and deposits (code 4); a new window resets them
+// spec/sync-ids.md §6: rate limits per label on deletes and deposits (code 4); a new window resets them
 #[test]
 fn rate_limits() {
     let mut e = env(HostPolicy { deletes: 2, deposits: 1, ..HostPolicy::default() });
@@ -229,7 +229,7 @@ fn rate_limits() {
     assert_eq!(e.store.delete(&l, &id(2), T0).unwrap(), Code::OK);
 }
 
-// spec/sync.md §5, randomized differential of both stores against the rule: a stamped entry's wrap
+// spec/sync-ids.md §6, randomized differential of both stores against the rule: a stamped entry's wrap
 // and stamp never change while it lives; a deposit changes nothing held; a stamped entry pulled takes a
 // deposited entry, once; anything that changes nothing logs nothing (the node log).
 #[test]
@@ -276,7 +276,7 @@ fn stamped_entry_never_changes_randomized() {
     }
 }
 
-// spec/sync.md §5: a delete leaves a tombstone; expiry removes outright, no tombstone, no event; tombstones last TOMBSTONE_LIFETIME
+// spec/sync-ids.md §6: a delete leaves a tombstone; expiry removes outright, no tombstone, no event; tombstones last TOMBSTONE_LIFETIME
 #[test]
 fn expiry_and_tombstones() {
     let mut e = env(HostPolicy::default());
@@ -297,7 +297,7 @@ fn expiry_and_tombstones() {
     assert_eq!(e.store.next_due().unwrap(), None);
 }
 
-// spec/sync.md §4: an expired entry's tombstone-less removal leaves a later deletion's tombstone
+// spec/sync-ids.md §5: an expired entry's tombstone-less removal leaves a later deletion's tombstone
 // of the same blob its full lifetime
 #[test]
 fn expiry_keeps_later_tombstone() {
@@ -337,7 +337,7 @@ fn tombstone_drop_progresses_under_a_small_budget() {
     assert_eq!(e.store.next_due().unwrap(), None);
 }
 
-// spec/sync.md §4: a claim set is kept until its step has been superseded for ROLE_KEEP
+// spec/sync-ids.md §5: a claim set is kept until its step has been superseded for ROLE_KEEP
 #[test]
 fn claim_sets_dropped_after_role_keep() {
     let mut e = env(HostPolicy::default());
@@ -448,7 +448,7 @@ fn overheads_cover_the_structures() {
     assert!(tomb <= TOMB_OVERHEAD, "{tomb}");
 }
 
-// spec/sync.md §4: `live_ids` lists a label's entries ascending, durable and ephemeral; node
+// spec/sync-ids.md §5: `live_ids` lists a label's entries ascending, durable and ephemeral; node
 // sync's `reader_rows` pages its rows ascending from after a given ID
 #[test]
 fn live_ids_and_reader_rows() {
@@ -492,7 +492,7 @@ fn expiry_of(n: u8) -> Option<u64> {
 }
 
 proptest! {
-    // spec/sync.md §4, §5: HostStore answers exactly as the reference MemoryLabelStore (no policy limits)
+    // spec/sync-ids.md §5, spec/sync-ids.md §6: HostStore answers exactly as the reference MemoryLabelStore (no policy limits)
     #[test]
     fn agrees_with_reference_and_replays(ops in prop::collection::vec(op(), 1..40)) {
         let mut e = env(HostPolicy::unlimited());
@@ -583,7 +583,7 @@ fn check_indexes(store: &HostStore, l: &LabelId, path: &[Step], pool: &[osis_cry
     Ok(())
 }
 
-// spec/sync.md §5 (code 9, Open, Path): what the store keeps step by step (the `K` head keys,
+// spec/sync-ids.md §6 (code 9, Open, Path): what the store keeps step by step (the `K` head keys,
 // the `V` sync-key and `W` child indexes) agrees with the whole path (`HeadKeys::of_path`, a
 // scan), across reopens, on long paths whose keys repeat and run past `OLDER_KEYS` distinct ones
 #[test]
@@ -624,7 +624,7 @@ fn child_of(f: &Fixture, prev: &Step) -> Step {
     s
 }
 
-// spec/sync.md §5 Register: a step and its claim set count toward the label's and the host's byte
+// spec/sync-ids.md §6 register: a step and its claim set count toward the label's and the host's byte
 // caps until the claim set is dropped; past them a child step is still taken, without its set (a
 // refused rotation would keep a removed holder's keys valid), and a new label is refused (code 12)
 #[test]
@@ -702,7 +702,7 @@ fn steps_count_toward_byte_caps() {
     assert_eq!((e.store.head(&g.label).unwrap(), e.store.totals().unwrap()), (None, totals));
 }
 
-// spec/sync.md §5 Register: hosts may rate-limit registrations per label (code 4, nothing changed)
+// spec/sync-ids.md §6 register: hosts may rate-limit registrations per label (code 4, nothing changed)
 #[test]
 fn registers_rate_limited() {
     let mut e = env(HostPolicy { registers: 2, ..HostPolicy::default() });
@@ -723,7 +723,7 @@ fn registers_rate_limited() {
 
 const SWEEP_TEST_BUDGET: usize = 1024;
 
-// spec/wire.md §8 (a set may list a key more than once), spec/sync.md §5 (Storage caps): a set
+// spec/wire.md §8 (a set may list a key more than once), spec/sync-ids.md §6 (storage caps): a set
 // listing a key many times counts its bytes once, and the totals return to the steps alone when
 // the sweep drops it
 #[test]
@@ -771,7 +771,7 @@ fn admission_and_label_caps() {
     assert_eq!(e.store.put(&l, put(&blob(2), true, None)).unwrap(), Code::OK);
 }
 
-// spec/sync.md §5, §6: policy knobs by field name; an unknown one, an out-of-range value or a
+// spec/sync-ids.md §6, spec/sync-judgement.md §2: policy knobs by field name; an unknown one, an out-of-range value or a
 // send queue below a client's window is refused
 #[test]
 fn policy_knobs_by_name() {

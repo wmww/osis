@@ -481,7 +481,7 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
 /// it meets. Not held (dropped or never received), which writes it carried are not known here: it
 /// is live while the state holds a write stamped at or before its `ts` (the header's `ts` bounds
 /// what it carried) or one without a `ts` (a sequence record whose creation is gone): an
-/// over-approximation, so its delete at hosts waits for a carrier (spec/sync.md §7).
+/// over-approximation, so its delete at hosts waits for a carrier (spec/sync-compaction.md §1).
 pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(a) = h.aspects.get(ai) else { return Ok(false) };
     // by dot: records without a `ts` count too
@@ -574,7 +574,7 @@ impl Engine {
 
     /// Whether a write of `c`'s delta on `(tid, ak)` is still in this node's state (a dot it owns
     /// survives there; unknown counts as live): what only a blob of `c` can carry (spec/sync.md
-    /// §6, §7). A delta without one needs no carrier before it leaves a label (spec/sync.md §7);
+    /// §6, §7). A delta without one needs no carrier before it leaves a label (spec/sync-compaction.md §1);
     /// one with one goes only after its carrier (spec/commits.md §5). Writes the state does not
     /// hold count dead: superseded, purged or expired ones, and those of deltas invalid here or
     /// undone (stripped from the state; live again once a validity flip or a redo puts them
@@ -617,7 +617,7 @@ impl Engine {
     }
 
     /// Whether this node keeps held part `(tid, ak)` of `c` under cover `s` though `s` covers it
-    /// (`retention::own_kept_under`, spec/sync.md §7 Own bodies).
+    /// (`retention::own_kept_under`, spec/sync-compaction.md §1 own bodies).
     pub fn own_kept_under(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
         let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
         self.read(|tx| super::own_kept_under(tx, &s, &c, &tid, &ak))

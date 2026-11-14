@@ -151,7 +151,7 @@ impl NetSim {
         Ok(code)
     }
 
-    /// The deposit budget of `label` at host `s` in entries (spec/sync.md §5: its policy's
+    /// The deposit budget of `label` at host `s` in entries (spec/sync-ids.md §6: its policy's
     /// factor over the head's claims).
     pub fn host_deposit_budget(&mut self, s: usize, label: LabelId) -> Res<u64> {
         let hub = self.hub(s).ok_or_else(|| self.fail(format!("host {s} is down")))?;

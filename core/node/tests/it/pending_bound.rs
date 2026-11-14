@@ -1,5 +1,5 @@
 //! What a node keeps pending is bounded by the entries carrying it (notes/node-sync.md, Input giving
-//! nothing; spec/sync.md §3 Unjudged blobs; spec/requirements.md: peer input never causes
+//! nothing; spec/sync-judgement.md §1 unjudged blobs; spec/requirements.md: peer input never causes
 //! unbounded storage).
 
 use crate::net::*;
@@ -11,7 +11,7 @@ const HOURS_2: i64 = 2 * 3_600_000;
 
 /// Node `r` writes its own card's `reach.0` `n` times, `HOURS_2` ahead: each a commit others hold
 /// pending for drift, deposited (a reader's own write) under the labels it syncs. The card keeps
-/// history of `reach.0`, so `r` compacts none of them into a snapshot (spec/sync.md §7 Trigger).
+/// history of `reach.0`, so `r` compacts none of them into a snapshot (spec/sync-compaction.md §1 trigger).
 fn cards_ahead(net: &mut Net, r: usize, n: u8) {
     let node = net.node_tid(r);
     net.keep(r, node, &[(osis_schema::RawKey::ak(&ct::REACH), osis_schema::History::FOREVER)]);

@@ -921,7 +921,7 @@ impl NetSim {
         }
         let Some(sync) = node.sync.as_mut() else { return Ok(()) };
         let mut acts = sync.handle(ev);
-        // its user accepts every invite request as it appears (spec/sync.md §3); not on a node
+        // its user accepts every invite request as it appears (spec/sync-judgement.md §1); not on a node
         // that crashed mid-write (`after_node` takes it down)
         let crashed = node.faults.crashed();
         let accepted = (|| -> osis_node::Result<Vec<Action>> {
@@ -2142,7 +2142,7 @@ impl NetSim {
         Ok(a)
     }
 
-    /// Pairs node `new` to `have`'s account through node `have` (spec/sync.md §2: the node card
+    /// Pairs node `new` to `have`'s account through node `have` (spec/sync-ids.md §2: the node card
     /// over a direct connection, the grant back).
     pub fn pair(&mut self, have: usize, new: usize) -> Res<()> {
         self.direct(new, have)?;
@@ -2165,7 +2165,7 @@ impl NetSim {
     }
 
     /// Node `n` creates a group whose first admin is `admin`, with secrets of its own and so its
-    /// sync ID, at `hosts` (spec/sync.md §2).
+    /// sync ID, at `hosts` (spec/sync-ids.md §2).
     pub fn group(&mut self, n: usize, admin: Tid, hosts: &[usize]) -> Res<Tid> {
         let e = self.engine(n)?;
         let mut m = Mutation::new();
@@ -2458,7 +2458,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
-    // spec/sync.md §6 (work sets, `work_sets`): one more message moves nothing else: not when
+    // spec/sync-judgement.md §2 (work sets, `work_sets`): one more message moves nothing else: not when
     // another goes, not the clocks, not the cuts.
     #[test]
     fn one_more_message_moves_nothing_else_spec_sync_6() {
@@ -2486,7 +2486,7 @@ mod tests {
         assert_eq!(run(false), run(true));
     }
 
-    // spec/sync.md §6 (ordered streams): a burst goes whole in compared runs and a message a step
+    // spec/sync-judgement.md §2 (ordered streams): a burst goes whole in compared runs and a message a step
     // in others, so an event or a cut can fall inside it there (or a sweep never sees part of one).
     #[test]
     fn a_burst_parts_unless_compared_spec_sync_6() {
@@ -2507,7 +2507,7 @@ mod tests {
         assert_eq!(with_arrivals(left_at_first).0, 0);
     }
 
-    // spec/sync.md §6 (connections): a crash ends a process's connections, the late close of one
+    // spec/sync-judgement.md §2 (connections): a crash ends a process's connections, the late close of one
     // the peer cut just before among them: a `Down` left queued would reach the restarted node,
     // whose hub and node sync never had that connection.
     #[test]
@@ -2526,7 +2526,7 @@ mod tests {
         assert_eq!(to_a(&sim), 0);
     }
 
-    // spec/sync.md §6 (ordered streams): a message sent on a stream after its cut can be due
+    // spec/sync-judgement.md §2 (ordered streams): a message sent on a stream after its cut can be due
     // before its predecessors; delivery waits for the stream's head instead of spinning
     // (evil_host sweep seed 134 reported this as a message storm).
     #[test]

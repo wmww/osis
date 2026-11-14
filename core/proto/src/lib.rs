@@ -1,4 +1,4 @@
-//! osis-proto: the node-to-node sync protocol (spec/sync.md §5-§9, §11; spec/wire.md §11-§13):
+//! osis-proto: the node-to-node sync protocol (spec/sync-ids.md §6; spec/wire.md §11-§13):
 //! frames, Hello, every message, and the sans-I/O session of one connection, either side
 //! (`handle(now, store, Input) -> Vec<Output>`; no async, no sockets, time passed in).
 //! Layer 5 (notes/architecture.md). Notes: notes/sync-protocol.md (osis-proto).

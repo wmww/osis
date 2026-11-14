@@ -50,7 +50,7 @@ fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
     }
     let at = net.host_ids(host, &l);
     assert!(dead.iter().all(|id| at.contains(id)), "deleted at the host before the bound");
-    // the host delete waits MAX_DRIFT past the bound (spec/sync.md §7)
+    // the host delete waits MAX_DRIFT past the bound (spec/sync-compaction.md §1)
     net.advance(86_400_000 + osis_base::format::MAX_DRIFT_MS);
     let acts = net.sync(a).compact_now(&t, &ak).unwrap();
     net.actions(a, acts);
@@ -115,7 +115,7 @@ fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
     (deletions_of(&net, host, &l, &seen), seen.len())
 }
 
-// spec/sync.md §7, spec/commits.md §5 (host delete margin): two right holders whose
+// spec/sync-compaction.md §1, spec/commits.md §5 (host delete margin): two right holders whose
 // clocks differ by MAX_DRIFT, either way, cross a keep-at-least bound: the two dead
 // bodies are deleted at the host once each and nobody places them again (the node past the
 // bound used to delete what the other, still before it, placed again as must-hold).
@@ -131,7 +131,7 @@ fn deletions_of(net: &Net, host: usize, l: &osis_base::LabelId, of: &std::collec
     net.logged_at(host, l).1.iter().filter(|id| of.contains(id)).count()
 }
 
-// spec/commits.md §5 (replaced, from the held set), spec/sync.md §6: X < Y < Z on a kept
+// spec/commits.md §5 (replaced, from the held set), spec/sync-judgement.md §2: X < Y < Z on a kept
 // register; right holder A held Y before Z, B held Z before Y: both date X at Y (arrival order
 // does not matter). Once the bound has passed A deletes X at the host (covered by its
 // compaction); B does not place it again (A's snapshot covers it): one deletion, no fresh

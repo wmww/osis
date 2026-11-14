@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! A non-writer's deposit of its own role write (spec/sync.md §5): queued once, sent
+//! A non-writer's deposit of its own role write (spec/sync-ids.md §6): queued once, sent
 //! until a host answers, also after the depositor forgot the label.
 
 use crate::net;
@@ -53,7 +53,7 @@ fn copies(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::Commit
     net.sync(n).entries(l).iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c)).count()
 }
 
-// spec/sync.md §5: an invite grant by a reader goes under the label as one deposit: its
+// spec/sync-ids.md §6: an invite grant by a reader goes under the label as one deposit: its
 // author records the queued deposit as its entry at once, so no pass places a second
 // encryption while the host has not answered.
 #[test]
@@ -71,7 +71,7 @@ fn invite_grant_deposited_once_spec_sync_5() {
     assert_eq!(after.1, before.1, "no second encryption deposited (and deleted as a duplicate)");
 }
 
-// spec/sync.md §5, spec/permissions.md §3: the deposit goes even when its author forgot the
+// spec/sync-ids.md §6, spec/permissions.md §3: the deposit goes even when its author forgot the
 // label before the host answered.
 #[test]
 fn queued_deposit_survives_forgetting_spec_sync_5() {
@@ -107,7 +107,7 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
     assert_eq!(whole, 1, "the deposit reached the label");
 }
 
-// spec/sync.md §5: a queued deposit survives a crash: sent and not answered (or never sent)
+// spec/sync-ids.md §6: a queued deposit survives a crash: sent and not answered (or never sent)
 // when the node restarts, it goes again and lands once.
 #[test]
 fn queued_deposit_survives_a_restart_spec_sync_5() {
@@ -203,7 +203,7 @@ fn missing(net: &mut Net, n: usize, c: &osis_base::CommitId) -> usize {
     net.engine(n).commit_bytes(c).unwrap().map_or(0, |b| osis_commit::CommitBlob::decode(&b).unwrap().missing().len())
 }
 
-// spec/commits.md §4 (a commit held in part applies, the rest joins on arrival), spec/sync.md §3, §5: a redeemer whose redemption never reaches K's host sends its
+// spec/commits.md §4 (a commit held in part applies, the rest joins on arrival), spec/sync-judgement.md §1, spec/sync-ids.md §6: a redeemer whose redemption never reaches K's host sends its
 // copies at once (its chain copy under the target's label, the inbox blob to its own
 // account); the sharer, who syncs K, applies the redemption from them and stays converged
 // while the redeemer is gone; once the redeemer is back and reaches K's host, its deposit
@@ -246,7 +246,7 @@ fn copy_applies_when_k_never_gets_it_spec_commits_4() {
     assert!(net.engine(a).pending().is_empty());
 }
 
-// spec/sync.md §3, §5: a crash between a redemption's commit and carrying out its deliveries
+// spec/sync-judgement.md §1, spec/sync-ids.md §6: a crash between a redemption's commit and carrying out its deliveries
 // loses neither: the inbox delivery's record was written in the commit's transaction, and
 // the deposit of the redeemer's own role write is placed by its next pass. Single use
 // too: L's self-removal, derived from the stored commit after the restart, holds back nothing
@@ -271,8 +271,8 @@ fn deliveries_survive_a_crash_before_carry_out_spec_sync_5() {
     }
 }
 
-// spec/sync.md §5 (a refused deposit at one host does not hold what another accepted; a rate
-// refusal is for now), spec/sync.md §3: K's label at two hosts, one refusing every deposit (its
+// spec/sync-ids.md §6 (a refused deposit at one host does not hold what another accepted; a rate
+// refusal is for now), spec/sync-judgement.md §1: K's label at two hosts, one refusing every deposit (its
 // deposit rate 0); the redeemer's deposit lands at the other, and its inbox blob to its own
 // account goes; the deposit at the refusing host is sent again and lands once its rate allows.
 #[test]
@@ -346,7 +346,7 @@ fn removal_copies_not_held_spec_permissions_3() {
     assert!(ids.iter().any(|id| at0.contains(id)), "the removal's copy under T went");
 }
 
-// spec/sync.md §5, spec/crypto.md §3: a deposit queued before the label's deposit seed was
+// spec/sync-ids.md §6, spec/crypto.md §3: a deposit queued before the label's deposit seed was
 // refreshed is refused as signed by an earlier key; it is signed again with the current one
 // (or, when this node has not read the new seed yet, dropped: the next pass places it again
 // under the current key), never resent unchanged forever.
@@ -390,7 +390,7 @@ fn queued_deposit_after_seed_refresh_spec_sync_5() {
     assert!(copies(&mut net, 0, &l, &c) >= 1, "the grant reached the label");
 }
 
-// spec/sync.md §5, spec/permissions.md §3: after an admin refreshes the deposit seed alone and
+// spec/sync-ids.md §6, spec/permissions.md §3: after an admin refreshes the deposit seed alone and
 // registers the new deposit key, a second admin that comes online before it applied the `keys.0`
 // write registers no step back to the old key (it waits until what it can open under the label
 // is applied), so the host's head keeps the new deposit key.

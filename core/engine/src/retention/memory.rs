@@ -1,4 +1,4 @@
-//! Memory-class retention: superseded memory parts vanish whole (spec/sync.md §9 Superseded
+//! Memory-class retention: superseded memory parts vanish whole (spec/sync-compaction.md §2 superseded
 //! parts); an expired one is held as its
 //! leftover like a durable one (spec/crdt.md §4.7) and drops once covered (`drop_covered`). A
 //! memory commit no part of which is held any more is forgotten, header included
@@ -34,7 +34,7 @@ pub(crate) fn vanish(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
 /// stays known (`super::kept_invalid`): a copy is not taken while it stays invalid, and valid again it
 /// is fetched (`valid_again`), the commit known until the part is back (`Missing::ToFetch`: a
 /// part to come is not spent); node-sync forgets it once it knows no entry of it
-/// (`Engine::forgettable`, spec/sync.md §9 Forgetting).
+/// (`Engine::forgettable`, spec/sync-compaction.md §2 forgetting).
 pub(crate) fn forget_if_spent(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(()) };
     if !m.view.memory || m.dropped_parts().next().is_none() || (0..m.view.aspects.len()).any(|ai| m.holds(ai)) || tx.core.ix.pending.contains_key(c) || super::kept_invalid(m) {
@@ -44,7 +44,7 @@ pub(crate) fn forget_if_spent(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
 }
 
 
-/// spec/sync.md §9 (Superseded parts): on `aspects`, each held part of a plain memory commit a
+/// spec/sync-compaction.md §2 (superseded parts): on `aspects`, each held part of a plain memory commit a
 /// valid held part of another commit of its author supersedes (`supersedes`) vanishes whole. Run when parts of a memory aspect turn valid (each commit judged
 /// against every other: a cost per flip quadratic in the commits held on the aspect). The aspects
 /// changed.
@@ -128,7 +128,7 @@ fn drop_superseded_of(tx: &mut Tx<'_>, cands: BTreeSet<CommitId>, keep: Option<&
     Ok(changed)
 }
 
-/// spec/sync.md §9 (Compaction, memory class): on `aspects`, each held memory body a valid held
+/// spec/sync-compaction.md §2 (compaction, memory class): on `aspects`, each held memory body a valid held
 /// memory snapshot covers (`covered`, spec/commits.md §5) is dropped as covered at once, its keep
 /// bounds aside (memory class keeps none), and its commit forgotten once spent (`keep` aside: the
 /// commit being applied, its caller forgets it). Of covered-equal snapshots (equal `ts`) the higher commit ID
@@ -215,7 +215,7 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
 }
 
 /// After a part of memory commit `c` went value-less at its expiry: `c` alone is judged again
-/// (spec/sync.md §9: its leftover may be superseded now). Not forgotten here: its caller
+/// (spec/sync-compaction.md §2: its leftover may be superseded now). Not forgotten here: its caller
 /// does.
 pub(crate) fn superseded_rest(tx: &mut Tx<'_>, c: &CommitId) -> Result<BTreeSet<(Tid, Ak)>> {
     if !tx.core.ix.commits.get(c).is_some_and(plain_memory) {

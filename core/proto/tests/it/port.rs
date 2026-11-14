@@ -132,7 +132,7 @@ fn serving_sub_ids_and_caps() {
     assert_eq!(sent(&out), vec![Message::Error { id: 9, code: Code::RATE_LIMITED }]);
 }
 
-// spec/sync.md §6: Notifies wait for push room: Room comes at once with nothing unwritten, else when the transport took enough
+// spec/sync-judgement.md §2: Notifies wait for push room: Room comes at once with nothing unwritten, else when the transport took enough
 #[test]
 fn serving_room_follows_the_push_rule() {
     let (mut s, mut st) = serving();
@@ -219,7 +219,7 @@ fn client_role_over_loopback() {
     assert!(!c.session.is_closed() && c.session.stall_at().is_none());
 }
 
-// spec/sync.md §6, spec/wire.md §11.2: client-port requests handed out keep their allowance counted across inputs until answered: Auths pipelined one per input and never answered close the session past MAX_UNANSWERED, after at most that many bytes' worth were handed out
+// spec/sync-judgement.md §2, spec/wire.md §11.2: client-port requests handed out keep their allowance counted across inputs until answered: Auths pipelined one per input and never answered close the session past MAX_UNANSWERED, after at most that many bytes' worth were handed out
 #[test]
 fn unanswered_auths_close_the_session() {
     let (mut s, mut st) = serving();
@@ -237,7 +237,7 @@ fn unanswered_auths_close_the_session() {
     assert!(handed <= osis_proto::window::MAX_UNANSWERED / SMALL_REPLY, "{handed} handed out");
 }
 
-// spec/sync.md §6: Calls pipelined one per input: a client within WINDOW never reaches the bound, one past it is closed; answering frees the allowance
+// spec/sync-judgement.md §2: Calls pipelined one per input: a client within WINDOW never reaches the bound, one past it is closed; answering frees the allowance
 #[test]
 fn unanswered_calls_past_the_window_close() {
     let (mut s, mut st) = serving();

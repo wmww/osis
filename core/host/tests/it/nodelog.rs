@@ -101,7 +101,7 @@ fn a_listing_from_the_start_is_the_live_set_plus_retained_deletions() {
     assert_eq!(heads(&e).len(), 2);
 }
 
-// spec/sync.md §10 (Node log: the deletion horizon): dropping deletion events raises the horizon
+// spec/sync-streams.md §3 (node log: the deletion horizon): dropping deletion events raises the horizon
 // to the highest dropped, so a cursor from before it is known to have missed deletions; a log
 // that dropped none has horizon 0.
 #[test]

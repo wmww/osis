@@ -659,7 +659,7 @@ fn list_element_expiry_in_any_order_spec_crdt_5_7() {
     assert!(digests.iter().all(|d| *d == digests[0]), "{digests:?}");
 }
 
-// spec/sync.md §7, spec/crdt.md §4.8: an edit into an entry a removal or a `replace` of the map
+// spec/sync-compaction.md §1, spec/crdt.md §4.8: an edit into an entry a removal or a `replace` of the map
 // ended is hidden, not dead, until a compacting writer's sweep: then a snapshot carries neither its
 // value nor the key, reads are unchanged, and its body goes under purge on replace while kept
 // history keeps it.
@@ -703,7 +703,7 @@ fn hidden_write_goes_at_compaction_spec_sync_7() {
     }
 }
 
-// spec/sync.md §7 (a creation is dead when a held valid snapshot's `Frontiers` reach its delta): a
+// spec/sync-compaction.md §1 (a creation is dead when a held valid snapshot's `Frontiers` reach its delta): a
 // node that never received the entry's creation, holding a snapshot past it and an edit into it,
 // sweeps the edit; without the snapshot it keeps it (the creation may arrive).
 #[test]
@@ -753,7 +753,7 @@ fn sweep_by_a_snapshots_frontier_spec_sync_7() {
     }
 }
 
-// spec/sync.md §7: a sweep's lookups are per hidden record (the creating delta of each record
+// spec/sync-compaction.md §1: a sweep's lookups are per hidden record (the creating delta of each record
 // lacking its creation), none for live ones; its walk is the state's, as the snapshot's.
 #[test]
 fn sweep_counts_hidden_records_spec_sync_7() {
@@ -798,7 +798,7 @@ fn sweep_counts_hidden_records_spec_sync_7() {
     assert_eq!(counts(200), (400, 0));
 }
 
-// spec/sync.md §7, spec/crdt.md §4.7: a purge of an edit hidden in a removed entry leaves no key.
+// spec/sync-compaction.md §1, spec/crdt.md §4.7: a purge of an edit hidden in a removed entry leaves no key.
 #[test]
 fn purged_hidden_edit_leaves_no_key_spec_sync_7() {
     let (mut lp, t) = one_writer(2);
@@ -830,7 +830,7 @@ fn purged_hidden_edit_leaves_no_key_spec_sync_7() {
     assert!(!carries(&mut lp, &gk, b"KEYTWO"), "the key after a purge of the edit");
 }
 
-// spec/sync.md §7: a sweep comes once for an edit hidden in a removed entry of text and not at all
+// spec/sync-compaction.md §1: a sweep comes once for an edit hidden in a removed entry of text and not at all
 // for the removal alone: a compaction does not write forever.
 #[test]
 fn sweep_of_removed_text_entry_ends_spec_sync_7() {
@@ -864,7 +864,7 @@ fn sweep_of_removed_text_entry_ends_spec_sync_7() {
     }
 }
 
-// spec/sync.md §7, spec/crdt.md §3.3 rule 7: more hidden text chars than `MAX_DELTA_BARE` (a
+// spec/sync-compaction.md §1, spec/crdt.md §3.3 rule 7: more hidden text chars than `MAX_DELTA_BARE` (a
 // large undelete, over several commits, concurrent with a replace of the text) are swept over
 // as many commits as that takes, each a valid writer delta, before the snapshot; the next
 // snapshot finds nothing more. The same at the crdt level, fast: `sweep_is_bounded_and_finishes`.
@@ -917,7 +917,7 @@ fn sweep_past_the_bare_cap_spec_sync_7() {
     assert_eq!(grew(&mut lp), 1, "swept: the snapshot alone");
 }
 
-// spec/sync.md §7: a record merely lacking its creation is no hidden one: a snapshot before the
+// spec/sync-compaction.md §1: a record merely lacking its creation is no hidden one: a snapshot before the
 // creation arrives leaves it, and the entry reads with the edit in it once it does.
 #[test]
 fn partial_receipt_survives_compaction_spec_sync_7() {

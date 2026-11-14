@@ -78,7 +78,7 @@ impl SyncEngine {
 
     /// Whether a host answered that the head of `l` does not list this node's static entry and
     /// every other route of `l` failed too: the key actor is no reader there, for a link's key one
-    /// it no longer holds K (spec/sync.md §5, spec/permissions.md §7). A route not answering (not
+    /// it no longer holds K (spec/sync-ids.md §6, spec/permissions.md §7). A route not answering (not
     /// connected yet, or down) says nothing: one host's word is no end while another may serve it.
     pub fn static_entry_refused(&mut self, l: &LabelId) -> bool {
         let routes = self.wanted_labels().into_iter().find(|(_, x, _)| x == l).map_or(Vec::new(), |(_, _, r)| r);
@@ -208,7 +208,7 @@ impl SyncEngine {
 
     /// `is_idle`, counting this node's requests that a peer `at` names has not answered as no
     /// work (tests): a dishonest host may skip a reply for good, its own requests moving the
-    /// stall clock (spec/sync.md §6 Stall), so nothing ever ends that wait.
+    /// stall clock (spec/sync-streams.md §1 stall), so nothing ever ends that wait.
     #[doc(hidden)]
     pub fn is_idle_but_unanswered_at(&self, at: impl Fn(&[u8; 32]) -> bool) -> bool {
         !self.passes_due() && self.conns.values().all(|c| (c.is_ready() || c.dial_key().is_none()) && (c.pending.is_empty() || c.dial_key().is_some_and(|k| at(&k))) && c.labels.values().all(|l| !l.phase.is_open() || l.settled()))

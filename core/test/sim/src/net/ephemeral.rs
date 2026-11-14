@@ -1,16 +1,16 @@
-//! Synced ephemeral data in the simulator (notes/ephemeral.md, spec/sync.md §9): random
+//! Synced ephemeral data in the simulator (notes/ephemeral.md, spec/sync-compaction.md §2): random
 //! ephemeral (expiring ones included) and signal writes on items of labeled groups (windows
 //! among them, made amid the faults), and their invariants at quiescence (`check`):
 //! - convergence among holders (spec/requirements.md Ephemeral data), within what a host cap
-//!   lets through (spec/sync.md §5: a host whose cap keeps out an entry an up node holds,
+//!   lets through (spec/sync-ids.md §6: a host whose cap keeps out an entry an up node holds,
 //!   checked against the host's own accounting, is no path): reader nodes connected through
 //!   the other hosts read the same ephemeral state of an item; expired writes (typing flags,
 //!   cursors) read absent everywhere.
-//! - own compaction (spec/sync.md §9): each up node's own held plain commits without expiry
+//! - own compaction (spec/sync-compaction.md §2): each up node's own held plain commits without expiry
 //!   cost at most twice their cover plus one commit in flight.
-//! - ephemeral signals (spec/sync.md §9 Relay-only commits): delivered at most once per node over the run
+//! - ephemeral signals (spec/sync-compaction.md §2 relay-only commits): delivered at most once per node over the run
 //!   (checked as events arrive).
-//! - bounded host memory (spec/sync.md §5): every label's ephemeral charge within its cap,
+//! - bounded host memory (spec/sync-ids.md §6): every label's ephemeral charge within its cap,
 //!   the total within the host's.
 //!
 //! Scenario helpers check two more after quiescence: `author_leaves` (a cursor its author keeps
@@ -267,7 +267,7 @@ impl NetSim {
             self.eph_write(a, m, format!("cursor {t} {v} (refresh {round})"))?;
             self.settle()?;
             // a node whose clock passed the write's expiry by the time it spread holds it dead
-            // (spec/sync.md §9 Holding: value-less on arrival) and carries it to nobody
+            // (spec/sync-compaction.md §2 holding: value-less on arrival) and carries it to nobody
             let mut live = Vec::new();
             for n in &ms {
                 if self.engine(*n)?.now().0 < until {
@@ -348,7 +348,7 @@ impl NetSim {
 
 impl NetSim {
     /// Up hosts whose ephemeral cap keeps out a plain entry some up node holds under a label
-    /// they carry, by their own accounting (spec/sync.md §5, the defined outcome past a cap).
+    /// they carry, by their own accounting (spec/sync-ids.md §6, the defined outcome past a cap).
     fn lossy_hosts(&self) -> BTreeSet<usize> {
         let mut out = BTreeSet::new();
         for s in 0..self.hosts.len() {
@@ -545,7 +545,7 @@ fn eph_alike(sim: &mut NetSim, t: &Tid, hs: &[usize]) -> Res<()> {
 }
 
 /// A random host ephemeral cap for the capped scenarios: nothing fits, below one cover, about
-/// the writers' covers, about twice them (what spec/sync.md §5 says always fits), plenty.
+/// the writers' covers, about twice them (what spec/sync-ids.md §6 says always fits), plenty.
 fn random_cap(d: &mut Dice) -> u64 {
     d.pick(&[0, 1_500, 4_000, 8_000, 16_000, 64_000]).copied().unwrap_or(0)
 }

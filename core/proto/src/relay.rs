@@ -1,4 +1,4 @@
-//! Relay-only entries at a host or a co-reader peer serving a label (spec/sync.md §5): admitted
+//! Relay-only entries at a host or a co-reader peer serving a label (spec/sync-ids.md §6): admitted
 //! by prefix expiry and size, counted against a per-label rate, and pushed once per blob within
 //! its expiry window (a repeat is answered OK and pushed to nobody).
 
@@ -17,7 +17,7 @@ pub enum RelayVerdict {
     Refused(Code),
 }
 
-/// Per-label relay rate (spec/sync.md §5 rate limits). Resource bound: each relay is pushed to
+/// Per-label relay rate (spec/sync-ids.md §6 rate limits). Resource bound: each relay is pushed to
 /// every subscriber of the label (0: no ephemeral signals; infinity: a writer or a replayer of stamped
 /// blobs sends traffic at line rate times subscribers).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,7 +64,7 @@ impl RelayGate {
     }
 
     /// Admits a stamped relay-only blob of `size` bytes with prefix expiry `expiry` at wall
-    /// `now` (spec/sync.md §5): too large, without an expiry, expired or expiring more than
+    /// `now` (spec/sync-ids.md §6): too large, without an expiry, expired or expiring more than
     /// `2 × MAX_DRIFT` ahead (a writer's `ts` at most `MAX_DRIFT` ahead, plus its window) is
     /// refused; a repeat within its window is `Seen`; past the label's rate, code 4.
     pub fn admit(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> RelayVerdict {
@@ -127,7 +127,7 @@ mod tests {
         BlobId(b)
     }
 
-    // spec/sync.md §5 (relay-only entries): a replay within the window is pushed once; expiry,
+    // spec/sync-ids.md §6 (relay-only entries): a replay within the window is pushed once; expiry,
     // size and rate bound what one replayer can make a host push
     #[test]
     fn replay_pushed_once_and_bounded_spec_sync_5() {

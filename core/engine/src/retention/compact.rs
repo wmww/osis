@@ -1,4 +1,4 @@
-//! The compaction trigger (spec/sync.md §7 Trigger), one for durable and ephemeral aspects: a
+//! The compaction trigger (spec/sync-compaction.md §1 trigger), one for durable and ephemeral aspects: a
 //! node that may write a content aspect writes a snapshot of it once the bodies it holds of it
 //! that the snapshot would drop, two at least, cost more than `FACTOR` times the snapshot. What a
 //! body costs is what dropping it frees, what holders and hosts pay for it: its deltas' bytes,
@@ -18,7 +18,7 @@ use osis_commit::{CommitBlob, Form, Header};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A node compacts an aspect once the bodies held of it a snapshot would drop cost more than
-/// this many times the snapshot (spec/sync.md §7 Trigger). Performance switch between correct
+/// this many times the snapshot (spec/sync-compaction.md §1 trigger). Performance switch between correct
 /// strategies: 0 compacts whenever two bodies are held (at every write), infinity never (live
 /// bodies pile up: a map's every key written apart keeps its own body, an ephemeral aspect's
 /// pile up to the node and host caps, past which entries are refused). Snapshots cost O(1) per
@@ -34,7 +34,7 @@ pub const FACTOR: usize = 2;
 pub const ENTRY_CHARGE: usize = 1024;
 
 /// How long an aspect with a leftover held here must be quiet (no write held, no expiry) before
-/// this node covers its leftovers whatever `FACTOR` says (spec/sync.md §7 Trigger, cover once
+/// this node covers its leftovers whatever `FACTOR` says (spec/sync-compaction.md §1 trigger, cover once
 /// quiet): `MAX_DRIFT`, the window in which nodes may already read an expiring write
 /// differently by their clocks. 0 is one snapshot per expiry (a collection of expiring elements
 /// pays its whole state per element), infinity never covers (a node that missed the write
@@ -439,7 +439,7 @@ fn body_bytes(tx: &mut Tx<'_>, blob: &CommitBlob, ai: usize) -> Result<Weighed> 
 
 /// The blobs under part `ai` of commit `c` (its values' trees, through its pages and held nodes)
 /// that no live state of `tid` links, none in `seen` (a blob two bodies link is freed once), not
-/// `pages`: what a drop of the part frees of its trees (spec/sync.md §7). The walk stops at a
+/// `pages`: what a drop of the part frees of its trees (spec/sync-compaction.md §1). The walk stops at a
 /// blob a live state links (a node is immutable: its subtree is linked too), so it costs what it
 /// frees and the nodes above it. `None` while a live tree is not all held (as
 /// `retention::freed` judges, nothing is freed then).
@@ -538,7 +538,7 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
     let mut weighed = Vec::new();
     for (c, ai, by_id, snapshot, leftover) in ids {
         // a snapshot is no body the trigger counts: each author keeps its own ephemeral one until
-        // its next (spec/sync.md §9), so two authors' would make each compact the other's forever.
+        // its next (spec/sync-compaction.md §2), so two authors' would make each compact the other's forever.
         // But the tree blobs it links that no live state links go with it when the new snapshot
         // covers it (durable; ephemeral, the author's own): the bulk of a large value's replaced
         // tree, linked by the snapshot that last carried it
@@ -583,7 +583,7 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
 /// `retention::own_kept_under`, `snapshot::drops_under`), so that it goes whether or not this
 /// node writes one: a new snapshot frees nothing by it, and counting it would make the trigger
 /// turn on whether a redundant body (a stale copy, a lagging holder's) passed through before
-/// its drop. A live own body under another node's snapshot stays (spec/sync.md §7 Own bodies),
+/// its drop. A live own body under another node's snapshot stays (spec/sync-compaction.md §1 own bodies),
 /// so it counts.
 fn covered_already(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
     let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| s != c && super::bounds::valid_snapshot_held(tx.core, s, tid, ak)).collect();
@@ -729,7 +729,7 @@ fn owe_unwritable(tx: &mut Tx<'_>, k: &(Tid, Ak), quiet: bool) -> Result<bool> {
 }
 
 impl Engine {
-    /// The compaction trigger (spec/sync.md §7 Trigger), at each step: every aspect due whose
+    /// The compaction trigger (spec/sync-compaction.md §1 trigger), at each step: every aspect due whose
     /// estimate passes `FACTOR` times its last snapshot cost (or asked to be weighed) is weighed,
     /// and where the bodies a snapshot would drop, two at least, cost more than `FACTOR` times
     /// it, or where the aspect has been quiet for `QUIET_MS` (`Trigger::quiet`) and holds an
@@ -909,7 +909,7 @@ mod tests {
         (lp, s, bodies)
     }
 
-    // spec/sync.md §7 (Trigger): bodies held behind a gap in their session no frontier passes
+    // spec/sync-compaction.md §1 (trigger): bodies held behind a gap in their session no frontier passes
     // (the author restarted: its first body went with the snapshot that covered it) count for
     // nothing, and writes behind the gap weigh nothing; once the snapshot that reaches the gap
     // arrives, though it adds nothing of its own and no write follows, they count and the writer
@@ -938,7 +938,7 @@ mod tests {
         assert!(l.held <= FACTOR * l.snapshot + l.largest, "{l:?}");
     }
 
-    // spec/sync.md §7 (Trigger): a gap closed by its missing body is noticed as it arrives: the
+    // spec/sync-compaction.md §1 (trigger): a gap closed by its missing body is noticed as it arrives: the
     // bodies held behind it count then and are compacted at the next step. With a body missing
     // at every other counter, filling the gaps one by one counts each body once: the trigger
     // weighs about once per snapshot's worth of bodies passed, not at each fill, at n and 10n.
@@ -972,7 +972,7 @@ mod tests {
         }
     }
 
-    // spec/sync.md §7 (Trigger): where the setting keeps live bodies, those that left history
+    // spec/sync-compaction.md §1 (trigger): where the setting keeps live bodies, those that left history
     // behind a gap count once their missing body fills it, as they would had they left after.
     #[test]
     fn out_of_history_bodies_behind_a_gap_count_once_it_fills_spec_sync_7() {
@@ -989,7 +989,7 @@ mod tests {
         assert_eq!(step(e), (1, 1), "the replaced bodies count once the gap fills");
     }
 
-    // spec/sync.md §7 (Trigger): two writers exchanging bodies and snapshots, with a third
+    // spec/sync-compaction.md §1 (trigger): two writers exchanging bodies and snapshots, with a third
     // writer's session held behind a gap at both (its first body withheld) and growing: the
     // held-back bodies weigh nothing (no snapshot passes the gap), so the two weigh and compact
     // alike with the third writing nothing or five bodies a round, each about once per own
@@ -1048,7 +1048,7 @@ mod tests {
         }
     }
 
-    // spec/permissions.md §5.2, spec/sync.md §9 (covered; random churn seed 913562400022 shrunk):
+    // spec/permissions.md §5.2, spec/sync-compaction.md §2 (covered; random churn seed 913562400022 shrunk):
     // a snapshot whose writer held a body behind a gap in its session carries the body's writes
     // past its own frontier. A node holding the body judges it covered by the join, as a node
     // that dropped it under a cover that snapshot covers judges by its chain of covers; judged
@@ -1115,7 +1115,7 @@ mod tests {
         .unwrap()
     }
 
-    // spec/sync.md §7 (Trigger): a snapshot costs its encoded state, a large value its root link
+    // spec/sync-compaction.md §1 (trigger): a snapshot costs its encoded state, a large value its root link
     // alone (it lists none of its tree): durable or ephemeral, the same at n and 10n chunks.
     #[test]
     fn a_snapshot_costs_its_values_roots_alone_spec_sync_7() {
@@ -1128,7 +1128,7 @@ mod tests {
         assert_eq!(at[0], at[1], "the same at 3 and 30 chunks");
     }
 
-    // spec/sync.md §7 (Trigger): a writer whose held bodies of an aspect passed the trigger while
+    // spec/sync-compaction.md §1 (trigger): a writer whose held bodies of an aspect passed the trigger while
     // it could not write (demoted to reader) compacts them once its write is granted again, with
     // no write of the aspect between, and so after a restart in between. The grant weighs only
     // the aspect owed: another aspect of the thing, weighed while Bob could write, weighs nothing
@@ -1185,7 +1185,7 @@ mod tests {
         }
     }
 
-    // spec/sync.md §7 (Trigger): a writer whose held bodies passed the trigger while the thing's
+    // spec/sync-compaction.md §1 (trigger): a writer whose held bodies passed the trigger while the thing's
     // delete keys were not here (`MayWrite::Later`: a first holder's grant gave the thing secrets
     // of its own, its `keys.0` not yet received) compacts them once the keys arrive, with no write
     // of the aspect between (`replace::wake_covers` wakes the owed weighing).

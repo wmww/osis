@@ -188,7 +188,7 @@ pub(crate) fn drops_as_covered(m: &crate::engine::Meta, ai: usize, now: u64) -> 
 }
 
 /// Whether this node keeps held part `(tid, ak)` of `c` under cover `s` though `s` covers it
-/// (spec/sync.md §7 Own bodies): a delta it wrote none of whose writes is dead drops only under
+/// (spec/sync-compaction.md §1 own bodies): a delta it wrote none of whose writes is dead drops only under
 /// a cover it wrote. The one judgment: node-sync's covered drops and the compaction trigger's
 /// count (`compact::covered_already`) both ask it.
 pub(crate) fn own_kept_under(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
@@ -337,7 +337,7 @@ pub(crate) fn coverers(core: &Core, c: &CommitId, ai: usize) -> Vec<CommitId> {
 /// one covering a coverer and so on, is held and valid: each turned invalid, went missing or was
 /// dropped other than as covered, by a purge) are missing again (spec/permissions.md §5.2): they
 /// give nothing, as at a node that never held them, until the body arrives again (a node still
-/// holding it finds it uncovered and re-uploads it, spec/sync.md §6; node-sync fetches it again,
+/// holding it finds it uncovered and re-uploads it, spec/sync-judgement.md §2; node-sync fetches it again,
 /// `Changed::undropped`). The caller rebuilds the aspect. Whether any part went missing.
 pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
     let core = &*tx.core;
@@ -379,7 +379,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
 /// Whether held part `ai` of `m` goes once judged invalid (spec/permissions.md §6): any but a
 /// role commit's (the role timeline and the possible holders read every held edge write, of any
 /// validity, spec/permissions.md §5.1, spec/commits.md §4; a label holds and promotes the commit
-/// whole, spec/sync.md §5) and a part of this node's own commit (its user is told the write was
+/// whole, spec/sync-ids.md §6) and a part of this node's own commit (its user is told the write was
 /// refused and may write it again from it, `DiagnosticKind::OwnWriteInvalid`). A memory part
 /// goes as a durable one: its commit stays known while an entry of it is (`forgettable`).
 fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
@@ -909,7 +909,7 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
     if let Some(k) = make_leftover(tx, c, ai, &own, &[], !purged)? {
         changed.insert(k);
     }
-    // a memory commit's leftover may be superseded now (spec/sync.md §9), or covered by a
+    // a memory commit's leftover may be superseded now (spec/sync-compaction.md §2), or covered by a
     // held snapshot (spec/commits.md §5); its caller forgets it
     changed.extend(memory::superseded_rest(tx, c)?);
     if let Some(a) = m.header.aspects.get(ai) {
@@ -1157,7 +1157,7 @@ pub(crate) fn expire_waiting(tx: &mut Tx<'_>, id: &CommitId, pending: &osis_comm
 impl Engine {
     /// Whether part `ai` of `c` was dropped here while invalid and no right took it since (not
     /// purged, not expired): no right deletes its blobs at hosts, which keep the copy fetched
-    /// again if it turns valid (spec/permissions.md §6, spec/sync.md §6).
+    /// again if it turns valid (spec/permissions.md §6, spec/sync-judgement.md §2).
     pub fn left_at_hosts(&self, c: &CommitId, ai: usize) -> bool {
         self.core.ix.commits.get(c).is_some_and(|m| m.dropped_invalid(ai) && !valueless(&self.core, c, ai))
     }
@@ -1713,7 +1713,7 @@ mod tests {
         assert_eq!(end(false), keys_first, "bob covers once the keys come");
     }
 
-    // spec/sync.md §3 Entitlement: a thing's reader actor is the nearest actor up its record
+    // spec/sync-judgement.md §1 entitlement: a thing's reader actor is the nearest actor up its record
     // chain with secrets of its own, through first-admin links: a plain thing's is its first
     // admin's, and so is that of a thing below it; once a grant
     // gives it secrets of its own, its own.
@@ -1737,7 +1737,7 @@ mod tests {
         assert_eq!(readers(&lp.peers[0].engine), [p, p, p, a], "P's own, S still A's");
     }
 
-    // spec/sync.md §7 (a body with live writes needs a carrier), spec/permissions.md §5.2: a
+    // spec/sync-compaction.md §1 (a body with live writes needs a carrier), spec/permissions.md §5.2: a
     // write made invalid (its author's removal by an admin that had not received it) counts
     // dead; a re-grant that makes it valid again counts it live again.
     #[test]
@@ -1852,7 +1852,7 @@ mod tests {
         assert!(e.core.ix.commits.get(&c).unwrap().stripped(0), "the purged part is held as its leftover");
     }
 
-    // spec/sync.md §6 (work sets): node-sync's change hook marks a commit whose validity flipped
+    // spec/sync-judgement.md §2 (work sets): node-sync's change hook marks a commit whose validity flipped
     // (its author's removal by an admin that had not received it), and one whose body was
     // dropped; nothing is kept until node-sync asks.
     #[test]

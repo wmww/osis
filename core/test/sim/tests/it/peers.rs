@@ -36,7 +36,7 @@ fn relay(r: &mut Reach) -> usize {
     r.add_relay(None)
 }
 
-// spec/sync.md §10: a dial connects through a LAN address on a shared segment, a public
+// spec/sync-opens.md §4: a dial connects through a LAN address on a shared segment, a public
 // address, a punch the NAT pair allows or a relay both reach, and the data goes over it.
 #[test]
 fn each_route_kind_connects_spec_sync_10() {
@@ -67,7 +67,7 @@ fn each_route_kind_connects_spec_sync_10() {
     }
 }
 
-// spec/sync.md §10: no item routes, so no connection and no data: separate LANs, NATs with
+// spec/sync-opens.md §4: no item routes, so no connection and no data: separate LANs, NATs with
 // no relay, a relay only one side reaches, a node with no uplink, a partition.
 #[test]
 fn blocked_cases_do_not_connect_spec_sync_10() {
@@ -102,7 +102,7 @@ fn blocked_cases_do_not_connect_spec_sync_10() {
     }
 }
 
-// spec/sync.md §10: a relayed connection ends with its relay; a punched one is direct and stays.
+// spec/sync-opens.md §4: a relayed connection ends with its relay; a punched one is direct and stays.
 #[test]
 fn a_relay_stopping_cuts_only_what_it_carries_spec_sync_10() {
     for (nat, want) in [(Nat::CONE, 2), (Nat::SYMMETRIC, 0)] {
@@ -119,7 +119,7 @@ fn a_relay_stopping_cuts_only_what_it_carries_spec_sync_10() {
     }
 }
 
-// spec/sync.md §5: a peer restarts over its own store under the key it listened with: dials reach
+// spec/sync-ids.md §6: a peer restarts over its own store under the key it listened with: dials reach
 // it again and what was written while it was down arrives.
 #[test]
 fn a_restart_reconnects_over_the_same_store_spec_sync_5() {
@@ -141,7 +141,7 @@ fn a_restart_reconnects_over_the_same_store_spec_sync_5() {
     assert!(sim.engine(b).unwrap().get(&t, &k).unwrap().is_some());
 }
 
-// spec/sync.md §10: a dropped LAN announcement is no route; one heard is, on the segment, from
+// spec/sync-opens.md §4: a dropped LAN announcement is no route; one heard is, on the segment, from
 // `lan_seen` alone (no reach item lists a LAN address).
 #[test]
 fn a_lan_announcement_makes_the_route_and_a_drop_does_not_spec_sync_10() {
@@ -255,7 +255,7 @@ fn pause_ms() -> u64 {
     osis_node::sync::SyncConfig::default().peer_retry_ms + 1_000
 }
 
-// spec/sync.md §10: in `World` a `peer://` dial reaches a node's listener by a route of the
+// spec/sync-opens.md §4: in `World` a `peer://` dial reaches a node's listener by a route of the
 // model (here public addresses), `SyncEngine::accept` serves it, and writes go over it with the hub cut off.
 #[test]
 fn world_public_route_connects_spec_sync_10() {
@@ -266,7 +266,7 @@ fn world_public_route_connects_spec_sync_10() {
     assert_eq!(heard(&b), Some(Value::Str("over the peer link".into())));
 }
 
-// spec/sync.md §10: separate LANs: no route, no data.
+// spec/sync-opens.md §4: separate LANs: no route, no data.
 #[test]
 fn world_blocked_case_does_not_connect_spec_sync_10() {
     let (mut w, a, b, _) = world(
@@ -281,7 +281,7 @@ fn world_blocked_case_does_not_connect_spec_sync_10() {
     assert_ne!(heard(&b), Some(Value::Str("stays home".into())));
 }
 
-// spec/sync.md §10: a LAN announcement heard is the route; a partition ends it and a heal lets it
+// spec/sync-opens.md §4: a LAN announcement heard is the route; a partition ends it and a heal lets it
 // connect again.
 #[test]
 fn world_lan_route_and_partition_spec_sync_10() {
@@ -312,7 +312,7 @@ fn world_lan_route_and_partition_spec_sync_10() {
     assert!(!w.peer_routes(&b).is_empty(), "healed");
 }
 
-// spec/sync.md §5: a node reopened over its own store is reached again at its place and key, and
+// spec/sync-ids.md §6: a node reopened over its own store is reached again at its place and key, and
 // catches up.
 #[test]
 fn world_restart_reconnects_spec_sync_5() {

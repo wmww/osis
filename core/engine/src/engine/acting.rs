@@ -39,7 +39,7 @@ impl Engine {
         self.entitled(actor, t) || self.copy_readable_by(actor, t)
     }
 
-    /// The permission model's entitlement (spec/sync.md §3). False for what this node does not
+    /// The permission model's entitlement (spec/sync-judgement.md §1). False for what this node does not
     /// know.
     pub fn entitled(&self, actor: &Tid, t: &Tid) -> bool {
         self.core.may_read(actor, t)
@@ -51,7 +51,7 @@ impl Engine {
     /// (spec/permissions.md §6). `group.0` gains only what it may
     /// read or this batch creates (`UnknownThing`, as for a tid nobody knows), by whatever op: else
     /// the answer would tell a hidden thing from an unknown one and its name would reach the
-    /// group's readers (its data would not: spec/sync.md §3 entitlement judges the group's actor).
+    /// group's readers (its data would not: spec/sync-judgement.md §1 entitlement judges the group's actor).
     pub(crate) fn check_confined(&self, m: &Mutation, actor: &Tid) -> Result<()> {
         let ts = self.acting_ts();
         let creates = &m.creates;

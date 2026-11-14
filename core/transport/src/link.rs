@@ -1,7 +1,7 @@
 //! Sessions over any `Transport` for tokio drivers: a `Link` is one stream's two
 //! directions as channel ends, with pump tasks between them and the stream. The dialer opens one
 //! stream per session and closes the connection when the session ends; the accepting side takes
-//! every stream the dialer opens as a session (spec/sync.md §10), finishes its side when a session
+//! every stream the dialer opens as a session (spec/sync-opens.md §4), finishes its side when a session
 //! ends, and closes only once the dialer closed or the connection sat idle without sessions.
 
 use crate::{Address, Connection, Error, Listener, Peer, PublicKey, RecvStream, SendStream, Source, Transport};
@@ -16,14 +16,14 @@ use tokio::time::timeout;
 /// after a cancelled `recv`.
 pub const READ_CHUNK: usize = 64 * 1024;
 /// The most the transport holds for one served connection in either direction, outside the
-/// hub's counts (spec/sync.md §10 Served connections): received, the QUIC connection window
+/// hub's counts (spec/sync-transport.md §5 served connections): received, the QUIC connection window
 /// (`quic`'s, which a `peer://` direct connection shares) and one read per stream the peer may
 /// open; sent, the QUIC send window, as large as the connection window. A relayed connection holds
 /// less (its bytes ride its registration's windows, `p2p::RELAY_STREAM_WINDOW` per stream); a
 /// unix one, the kernel's socket buffers.
 pub const CONN_MEMORY: usize = crate::quic::CONN_WINDOW as usize + crate::quic::MAX_STREAMS as usize * READ_CHUNK;
 /// Largest piece the writer pump hands the transport at once: the grain of `LinkTx::taken`
-/// (progress a slow link shows, spec/sync.md §6). Minor: smaller costs more awaits, larger
+/// (progress a slow link shows, spec/sync-judgement.md §2). Minor: smaller costs more awaits, larger
 /// shows a link slower than a piece per stall timeout as stalled.
 const WRITE_CHUNK: usize = 16 * 1024;
 
@@ -189,7 +189,7 @@ fn pipe() -> (LinkTx, LinkRx) {
 }
 
 /// Accepts connections on `l` and hands each stream they open to `out` as a session, until
-/// `out` or the listener closes; any number of them (spec/sync.md §10 Served connections). One
+/// `out` or the listener closes; any number of them (spec/sync-transport.md §5 served connections). One
 /// with no live session for `idle` is closed.
 pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: mpsc::Sender<Link>) {
     while let Ok(c) = l.accept().await {
@@ -226,7 +226,7 @@ mod tests {
 
     const W: Duration = Duration::from_secs(5);
 
-    // spec/sync.md §10, spec/wire.md §11.1: a session per dialer stream, peer keys as the transport authenticated them, bytes in order both ways, the end of one side ends the other's link
+    // spec/sync-opens.md §4, spec/wire.md §11.1: a session per dialer stream, peer keys as the transport authenticated them, bytes in order both ways, the end of one side ends the other's link
     #[tokio::test]
     async fn session_round_trip_and_end() {
         let net = Net::new(0);
@@ -248,7 +248,7 @@ mod tests {
         assert_eq!(b.rx.recv().await, None);
     }
 
-    // spec/sync.md §10: an in-process pair carries bytes in order both ways with each side's key,
+    // spec/sync-opens.md §4: an in-process pair carries bytes in order both ways with each side's key,
     // counts them taken, and ends the other side's link when one sender is dropped
     #[tokio::test]
     async fn pair_round_trip_and_end() {
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(b.rx.recv().await, None);
     }
 
-    // spec/sync.md §6: `taken` counts what the transport took, piece by piece, for the stall timeout
+    // spec/sync-judgement.md §2: `taken` counts what the transport took, piece by piece, for the stall timeout
     #[tokio::test]
     async fn taken_counts_written_bytes() {
         let net = Net::new(0);

@@ -24,7 +24,7 @@ fn setup(db: Osis) -> (Osis, Tid, DynamicAspectKey) {
 }
 
 /// `t`'s setting keeps the body's history a day: its commits stay commits of their own (no
-/// compaction snapshot stands for them, spec/sync.md §7 Trigger), and undo has what it needs.
+/// compaction snapshot stands for them, spec/sync-compaction.md §1 trigger), and undo has what it needs.
 fn keep_body(db: &Osis, t: Tid) {
     db.commit_with(|w| w.at(t, osis::core::RETENTION).set(&crate::common::setting(&[("n:body.0", crate::common::DAY)]))).unwrap();
 }

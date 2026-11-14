@@ -148,7 +148,7 @@ fn decide_in(l: &mut Locked, client: bool, tid: Tid) -> Decided {
 }
 
 /// The module comment's split: `t` reads at a source node, and a group that carries it (its actor may read
-/// `t`, spec/sync.md §3) goes elsewhere: it syncs here, or goes to another node. Returns (the
+/// `t`, spec/sync-judgement.md §1) goes elsewhere: it syncs here, or goes to another node. Returns (the
 /// group with the source node, that group). A membership in a group that does not sync carries nothing: no holder of it misses a write.
 fn split_in(l: &mut Locked, tid: Tid) -> Option<(Tid, Tid)> {
     let s = l.sync.engine().enclosing(&tid);

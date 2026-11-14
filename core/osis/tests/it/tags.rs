@@ -40,7 +40,7 @@ fn new_card(db: &Osis, admin: Tid, text: &str) -> Result<Tid> {
 
 /// Adds a thing under the account to a tag: a membership plus a tied grant for the tag's actor, so
 /// the tag's holders reach it (capped by their role on the tag) and it syncs under the tag's
-/// label (spec/sync.md §3, entitlement). Placing alone shares nothing.
+/// label (spec/sync-judgement.md §1, entitlement). Placing alone shares nothing.
 fn add(db: &Osis, tag: Tid, thing: Tid, role: Role) -> Result<()> {
     db.add_with_grant(Member::Item(thing), tag, role)?;
     assert_eq!(db.grants(thing)?.get(&tag).map(|e| (e.role, e.with_membership)), Some((role, true)));
@@ -82,7 +82,7 @@ fn grant_tag(db: &Osis, tag: Tid, person: Tid, role: Role, may_grant: Option<Rol
     db.grant(tag, person, role, GrantOpts { until: None, may_grant })
 }
 
-// notes/tags.md (sharing a tag per item through one roster), spec/sync.md §3 (entitlement),
+// notes/tags.md (sharing a tag per item through one roster), spec/sync-judgement.md §1 (entitlement),
 // spec/requirements.md (Permissions: grouping grants no rights): Alice's cards stay hers; each
 // one in the shared tag has a grant for the tag. Bob reads them (one added after he joined too),
 // capped by his role on the tag; a card only added is not shared; a card removed from the tag

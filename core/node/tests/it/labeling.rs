@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Labeling on hand-built groups (spec/sync.md §1-§3, §5; spec/crypto.md §5, §7): entitlement,
+//! Labeling on hand-built groups (spec/sync-ids.md §1; spec/crypto.md §5, §7): entitlement,
 //! one blob per commit with its prefix groups, wraps, head keys, delete keys.
 
 use crate::net::{hosted, local_nodes};
@@ -11,7 +11,7 @@ use osis_node::Mutation;
 use osis_crypto::SeededRng;
 use osis_schema::core_types as ct;
 
-// spec/sync.md §3 (entitlement): a shared folder's label holds what its actor may read: items
+// spec/sync-judgement.md §1 (entitlement): a shared folder's label holds what its actor may read: items
 // below it and the folder's own writes; an item under another first admin dropped into `group.0` without
 // an edge is silently not shared (only the folder's `group.0` delta goes).
 #[test]
@@ -37,7 +37,7 @@ fn shared_folder_entitlement_spec_sync_3() {
     assert!(touched(g, e));
 }
 
-// spec/sync.md §3 (closure through `group.0`), spec/data-model.md §8: an unlabeled group nested
+// spec/sync-judgement.md §1 (closure through `group.0`), spec/data-model.md §8: an unlabeled group nested
 // below g as a subgroup only (no item of g) carries its items to g's readers: they read them, list
 // them in g, and a reader arriving later finds them at the host (no reader deletes them there).
 #[test]
@@ -71,7 +71,7 @@ fn nested_subgroup_items_reach_readers_spec_sync_3() {
     assert_eq!(net.read(c, w), Some(s("w")), "a later reader finds it at the host");
 }
 
-// spec/sync.md §1, §3, spec/wire.md §5: one blob per commit whatever its retention classes; its
+// spec/sync-ids.md §1, spec/sync-judgement.md §1, spec/wire.md §5: one blob per commit whatever its retention classes; its
 // prefix carries the commit's expiry and one commitment group per distinct delete-key set, and
 // opens against its header.
 #[test]
@@ -126,7 +126,7 @@ fn rotation_wrap_exception_spec_crypto_5() {
     assert_eq!(e.wrap_secret(&g, None).unwrap().unwrap().expose(), after.expose());
 }
 
-// spec/sync.md §5, spec/crypto.md §4: a writer stamps with the head's write key, a reader only
+// spec/sync-ids.md §6, spec/crypto.md §4: a writer stamps with the head's write key, a reader only
 // opens (sync key) and deposits, an admin also holds the delete key; a holder of the thing's
 // write secret signs for the level-3 commitment of a `writer` body; a reader holds no delete key.
 #[test]
@@ -158,7 +158,7 @@ fn head_keys_and_delete_keys_spec_sync_5() {
     assert!(net.engine(r).delete_secrets_of(&c, &sealed.ais).iter().all(Vec::is_empty));
 }
 
-// spec/sync.md §2 (growth, notes/growth.md): an admin's `label.0` write drops the claim sets
+// spec/sync-ids.md §2 (growth, notes/growth.md): an admin's `label.0` write drops the claim sets
 // (entry boxes with them) of the steps superseded for `ROLE_KEEP`; the newer ones stay.
 #[test]
 fn old_claim_sets_dropped_spec_sync_2() {
@@ -233,7 +233,7 @@ fn registration_of_thousands_of_readers() {
         }
         e.commit_hostile(m).unwrap().unwrap();
     }
-    // the rotation boxing every holder, with the sync ID (spec/sync.md §2)
+    // the rotation boxing every holder, with the sync ID (spec/sync-ids.md §2)
     e.give_own_secrets(&a).unwrap();
     let label = e.label_of(&a).unwrap().unwrap().0;
     let labels = e.get_typed(&a, &ct::LABEL).unwrap().unwrap();
@@ -280,7 +280,7 @@ fn write_through_a_team(listed: bool) -> Option<osis_base::Value> {
     net.read(b, w)
 }
 
-// spec/sync.md §3 (entitlement), spec/permissions.md §4 (Placing): a part g's actor may not read
+// spec/sync-judgement.md §1 (entitlement), spec/permissions.md §4 (Logging certificates): a part g's actor may not read
 // reaches g's readers as a certificate copy whether or not its thing is in g's closure. Writer c
 // holds write on g through a team g does not read; listed as an item of g or not, a reader of g
 // gets the team's edge to c with c's write, and reads it.
@@ -291,7 +291,7 @@ fn a_chain_through_an_unread_closure_thing_reaches_readers_spec_sync_3() {
 }
 
 // spec/permissions.md §3 (a removal and the new `keys.0` go under the labels the removed party
-// could read), spec/sync.md §3 (entitlement): team `team` is listed in g, which does not read it
+// could read), spec/sync-judgement.md §1 (entitlement): team `team` is listed in g, which does not read it
 // and on which it holds no role. Removing c from the team leaves g's label without the removal:
 // reader b of g, who never reads the team, gets no entry of it.
 #[test]
@@ -368,7 +368,7 @@ fn team_removal_reaches() -> (bool, bool) {
 }
 
 // spec/permissions.md §3 (a removal of another actor's grant goes under the labels holding it),
-// spec/sync.md §3 (entitlement): a label holds the team only where its actor reads it. The team's
+// spec/sync-judgement.md §1 (entitlement): a label holds the team only where its actor reads it. The team's
 // removal from doc stays off the label of g, which lists the team unread, and reaches the label
 // of h, which reads it.
 #[test]

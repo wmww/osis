@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Records and the pair key on connections (spec/sync.md §10, Pair key; issues/sync-rewrite.md,
+//! Records and the pair key on connections (spec/sync-opens.md §3, pair key; issues/sync-rewrite.md,
 //! Resume), and `changed_at` (issues/sync-rewrite.md).
 
 use crate::net::{hosted, hosted_nodes, local_nodes};
@@ -60,7 +60,7 @@ fn resumed_tag_of(evs: &[Message]) -> (Option<[u8; 32]>, [u8; 32]) {
     evs.iter().find_map(|e| if let Message::Resumed { tag, nonce, .. } = e { Some((*tag, *nonce)) } else { None }).expect("a Resumed answer")
 }
 
-// spec/sync.md §10 (Pair key): each side keeps one record of the other, holding the same r, which
+// spec/sync-opens.md §3 (pair key): each side keeps one record of the other, holding the same r, which
 // a reconnect finds again rather than making another
 #[test]
 fn a_reconnect_finds_the_same_record_and_r_spec_sync_10() {
@@ -94,7 +94,7 @@ fn the_record(net: &mut Net, n: usize, actor: Tid) -> RecordId {
     r[0].id
 }
 
-// spec/sync.md §10 (Pair key): the listener answers a tag it holds with one only r's holder can
+// spec/sync-opens.md §3 (pair key): the listener answers a tag it holds with one only r's holder can
 // make, and that record's connection is this one
 #[test]
 fn a_matching_tag_is_answered_and_takes_the_record_spec_sync_10() {
@@ -113,7 +113,7 @@ fn a_matching_tag_is_answered_and_takes_the_record_spec_sync_10() {
     assert_eq!(records(&mut net, b, ta).len(), 1, "no new record");
 }
 
-// spec/sync.md §10 (Pair key): a tag the listener does not hold makes a new record from the two
+// spec/sync-opens.md §3 (pair key): a tag the listener does not hold makes a new record from the two
 // nonces on this side alone; the old one stays, for LRU
 #[test]
 fn a_pair_key_mismatch_makes_a_new_record_from_the_nonces_spec_sync_10() {
@@ -129,7 +129,7 @@ fn a_pair_key_mismatch_makes_a_new_record_from_the_nonces_spec_sync_10() {
     assert!(held.contains(pair_key(&[5; 32], &theirs).expose()), "the new r is the nonces' kdf");
 }
 
-// spec/sync.md §10 (Pair key): at most one Resume per connection, and only after Prove
+// spec/sync-opens.md §3 (pair key): at most one Resume per connection, and only after Prove
 #[test]
 fn resume_is_once_a_connection_and_only_after_a_prove_spec_sync_10() {
     let (mut net, a, b) = dialed();
@@ -159,7 +159,7 @@ fn a_stranger_gets_no_record_spec_sync_10() {
     assert_eq!(net.sync(b).connection_record(p.conn), None);
 }
 
-// spec/sync.md §10 (Pair key): an account proved but known by nothing here (no role on anything
+// spec/sync-opens.md §3 (pair key): an account proved but known by nothing here (no role on anything
 // this node holds) resumes nothing and makes no record, even where a record names that account
 #[test]
 fn an_unknown_account_resumes_nothing_spec_sync_10() {
@@ -225,7 +225,7 @@ fn two_connections_of_one_dialer_are_one_record_one_closing_spec_sync_10() {
     assert!(net.sync(b).proven(gone).is_none(), "the other closed");
 }
 
-// spec/sync.md §10 (Shared set): of two connections of one record a direct one stays before a
+// spec/sync-opens.md §4 (shared set): of two connections of one record a direct one stays before a
 // relayed one, whatever `connection_order` says: here the relayed one has the smaller order
 #[test]
 fn a_direct_connection_stays_before_a_relayed_one_spec_sync_10() {
@@ -252,7 +252,7 @@ fn peer_routes_up(net: &mut Net, n: usize) -> Vec<ConnId> {
     net.sync(n).proven_connections().into_iter().filter(|(_, p)| !p.is_empty()).map(|(c, _)| c).collect()
 }
 
-// spec/sync.md §10 (Shared set): two connections of one pair are one, whoever dialed each:
+// spec/sync-opens.md §4 (shared set): two connections of one pair are one, whoever dialed each:
 // crossing dials leave one record on each side and one connection, which stays without a redial
 #[test]
 fn crossing_dials_leave_one_connection_per_pair_spec_sync_10() {
@@ -350,7 +350,7 @@ fn changed_at_moves_on_a_role_change_only() {
     assert!(net.engine(a).run(|tx| Ok(tx.txn.changed_after(first, 10)?)).unwrap().iter().any(|(p, x)| *p == moved && *x == l));
 }
 
-// spec/sync.md §10 (Pair key): a tag names the listener it was made for, like a connection proof:
+// spec/sync-opens.md §3 (pair key): a tag names the listener it was made for, like a connection proof:
 // one made for a connection to another node (a node between relaying it) finds nothing
 #[test]
 fn a_tag_made_for_another_listener_finds_nothing_spec_sync_10() {
@@ -364,7 +364,7 @@ fn a_tag_made_for_another_listener_finds_nothing_spec_sync_10() {
     assert_eq!(records(&mut net, b, ta).len(), 2, "the old record untouched, a new one made");
 }
 
-// spec/sync.md §10 (Pair key): the dialer checks the answer: its own tag echoed back finds
+// spec/sync-opens.md §3 (pair key): the dialer checks the answer: its own tag echoed back finds
 // nothing, and it makes a new record rather than trusting the claim
 #[test]
 fn an_echoed_answer_finds_nothing_end_to_end_spec_sync_10() {
@@ -392,7 +392,7 @@ fn an_echoed_answer_finds_nothing_end_to_end_spec_sync_10() {
     assert_ne!(net.engine(a).run(|tx| Ok(tx.txn.record(&bound)?)).unwrap().unwrap().r, old, "not the record the echo named");
 }
 
-// spec/sync.md §10 (Pair key): a LAN route replacing a running connection resumes the record,
+// spec/sync-opens.md §3 (pair key): a LAN route replacing a running connection resumes the record,
 // one record however many routes it ran over
 #[test]
 fn a_lan_switch_keeps_one_record_spec_sync_10() {
@@ -589,7 +589,7 @@ fn resume_replay(seed: u64) -> String {
     format!("OSIS_RESUME_START={seed} OSIS_RESUME_SEEDS=1 cargo test -p osis-node --test it -- --ignored net_records::resume_invariant_random_large")
 }
 
-// spec/sync.md §10 (Pair key): over restarts, lost records, removed and re-added holders, no
+// spec/sync-opens.md §3 (pair key): over restarts, lost records, removed and re-added holders, no
 // connection resumes a record unless both ends hold it and it proved a known actor there
 #[test]
 fn no_connection_resumes_a_record_without_proof_and_a_shared_r_spec_sync_10() {
@@ -673,7 +673,7 @@ fn refused_dial(at_prove: bool) -> Vec<Message> {
     sent
 }
 
-// spec/sync.md §10 (Pair key, Shared set): a dialer whose Prove or Resume is refused keeps no
+// spec/sync-opens.md §3 (pair key, Shared set): a dialer whose Prove or Resume is refused keeps no
 // record and sends NoRecord, so the listener still runs the shared set with it
 #[test]
 fn a_refused_prove_or_resume_sends_no_record_spec_sync_10() {

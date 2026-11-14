@@ -234,7 +234,7 @@ impl SyncEngine {
 
     /// What a role, creation or group change on `things` can concern: where authority flows from
     /// them (`Held::reach`: things they are first admin of, things they are named on as a holder);
-    /// up their record chains, whose home labels carry their `label.0` and `created.0` (spec/sync.md §3); and
+    /// up their record chains, whose home labels carry their `label.0` and `created.0` (spec/sync-judgement.md §1); and
     /// their holders with those holders' record chains, whose labels carry a route to them.
     pub(crate) fn downstream(&self, things: &BTreeSet<Tid>) -> BTreeSet<Tid> {
         let held = &self.engine.core.ix.held;

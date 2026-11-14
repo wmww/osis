@@ -14,7 +14,7 @@ const MAX_GROUPS: usize = u16::MAX as usize;
 /// A delete level (spec/wire.md §1): 1 thing admin, 2 author chain, 3 thing write.
 pub type Level = u8;
 
-/// A blob's class (spec/wire.md §5, spec/sync.md §1): what a peer does with it. Durable
+/// A blob's class (spec/wire.md §5, spec/sync-ids.md §1): what a peer does with it. Durable
 /// blobs are stored; ephemeral ones are held in memory only; relay-only ones are pushed to the
 /// label's current subscribers and held by nobody.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -50,7 +50,7 @@ impl Class {
 pub type Group = Vec<[u8; COMMITMENT_LEN]>;
 
 /// The clear prefix of a blob: salt, optional expiry, class, commitment groups. A Delete needs
-/// a delete-key signature per group (spec/sync.md §5): an empty
+/// a delete-key signature per group (spec/sync-ids.md §6): an empty
 /// group (a `nobody` delta's) blocks deletion by level.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prefix {
@@ -211,7 +211,7 @@ impl Prefix {
     }
 
     /// Whether this prefix is what an encryption of a commit's deltas computes (spec/commits.md
-    /// §4, spec/sync.md §1): the same expiry, exactly the commitment groups of `groups` under
+    /// §4, spec/sync-ids.md §1): the same expiry, exactly the commitment groups of `groups` under
     /// this salt and the header's blind `hb`, and the class of the header's ephemeral marker. A
     /// mismatch makes the commit blob bad input.
     pub fn agrees(&self, expiry: Option<WallMs>, hb: &[u8; 16], groups: &[Vec<osis_commit::DeleteKey>], class: Class) -> bool {

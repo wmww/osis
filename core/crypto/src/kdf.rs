@@ -80,13 +80,13 @@ pub const LINK_BLIND: &str = "link blind";
 pub const THING_BLIND: &str = "thing blind";
 /// A keyset's possession key (spec/crypto.md §4, Holder actors).
 pub const POSSESSION: &str = "possession key";
-/// Label role keys (spec/sync.md §2).
+/// Label role keys (spec/sync-ids.md §2).
 pub const LABEL_SYNC: &str = "label sync";
 pub const LABEL_WRITE: &str = "label write";
 pub const LABEL_DELETE: &str = "label delete";
 pub const LABEL_DEPOSIT: &str = "label deposit";
 pub const LABEL_CLAIM: &str = "label claim";
-/// LAN discovery tag and the announcement signature's keystream (spec/sync.md §10).
+/// LAN discovery tag and the announcement signature's keystream (spec/sync-opens.md §4).
 pub const LAN_TAG: &str = "lan tag";
 pub const LAN_SIG: &str = "lan sig";
 /// The pair key of a record, or of a connection with none (`pair_key`).
@@ -138,7 +138,7 @@ pub fn role_purpose(role: Role) -> &'static str {
 }
 
 /// The pair key from two nodes' nonces (issues/sync-rewrite.md), or from a connection's
-/// challenges where no record is kept (spec/sync.md §10).
+/// challenges where no record is kept (spec/sync-opens.md §4).
 pub fn pair_key(a: &[u8; 32], b: &[u8; 32]) -> Secret32 {
     kdf(PAIR_KEY, a, b)
 }
@@ -162,7 +162,7 @@ pub fn beacon(match_value: &[u8; 32], label: &[u8; 16], r: &[u8; 32]) -> [u8; 32
     *blake3::keyed_hash(kdf(BEACON, match_value, label).expose(), r).as_bytes()
 }
 
-/// The match value of a proof of a sync secret (spec/sync.md §10, Admissible):
+/// The match value of a proof of a sync secret (spec/sync-opens.md §4, admissible):
 /// `kdf("sync proof", seed, "")`, `seed` the sync key's (`label::label_role_seed`). Invariant:
 /// only a holder of that sync secret computes it, so its beacon, Hit and tag prove the secret as
 /// a read secret's do, and a node holding only L's public keys finds no proof in a filter (model
@@ -194,7 +194,7 @@ pub fn beacon_reply(match_value: &[u8; 32], label: &[u8; 16], beacon: &[u8; 32],
     *kdf(BEACON_REPLY, &[&match_value[..], &label[..]].concat(), &input).expose()
 }
 
-/// A connection's place among the connections of one record (spec/sync.md §10, Pair key): the
+/// A connection's place among the connections of one record (spec/sync-opens.md §3, pair key): the
 /// smaller is kept. Both ends compute it from what the connection showed, so they agree whatever
 /// order the connections' answers arrived in.
 pub fn connection_order(r: &[u8; 32], dialer: &[u8; 32], listener: &[u8; 32]) -> [u8; 32] {
@@ -204,7 +204,7 @@ pub fn connection_order(r: &[u8; 32], dialer: &[u8; 32], listener: &[u8; 32]) ->
     *h.finalize().as_bytes()
 }
 
-/// The digest of a record's shared set (spec/sync.md §10, Agreement): the xor over its members of
+/// The digest of a record's shared set (spec/sync-opens.md §3, agreement): the xor over its members of
 /// `BLAKE3(key = r, sync_id)`. Equal sets give equal digests, whatever their size.
 pub fn members_digest<'a>(r: &[u8; 32], members: impl IntoIterator<Item = &'a [u8; 16]>) -> [u8; 32] {
     let mut d = [0u8; 32];

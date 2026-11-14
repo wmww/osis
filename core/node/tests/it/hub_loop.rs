@@ -1,7 +1,7 @@
 //! The hub in the node driver's loop over osis-transport's `InProcess` (perfect network: under
 //! tokio nothing needs stepping): a node keeping labels by its `host^.0` serves scripted dialers
 //! (an osis-proto dialer `Session`, `examples::Dialer`) end to end, with node sync above every hub session (proofs, the
-//! shared set, the stream), and serves connections in turns (spec/sync.md §5-§10).
+//! shared set, the stream), and serves connections in turns (spec/sync-ids.md §6).
 //! Event-driven only: a timeout guards against a hang. The slow-reader cap is a unit test of
 //! `osis_transport::link` (`InProcess` has no flow control to stall a writer).
 
@@ -175,7 +175,7 @@ impl Client {
     }
 
     /// A Hit on `l`'s head sync key with its open signature, as a reader opens a label the node
-    /// keeps unread (spec/sync.md §10, Shared set); the shared set started first. Its answer.
+    /// keeps unread (spec/sync-opens.md §4, shared set); the shared set started first. Its answer.
     async fn hit(&mut self, l: &Label, id: u32) -> osis_proto::msg::SharedCode {
         if !self.shared {
             let got = self.peer(Message::NoRecord { id: NODE_IDS }).await;
@@ -256,7 +256,7 @@ fn probe(l: &Label) -> impl FnOnce(u32) -> Message + use<> {
     move |id| Message::Register { id, label, step, claim_set: None }
 }
 
-// spec/sync.md §5, §10: clients of a node keeping a label it cannot read (multi-thread runtime:
+// spec/sync-ids.md §6, spec/sync-opens.md §4: clients of a node keeping a label it cannot read (multi-thread runtime:
 // hub calls in block_in_place): register, a delete refused unopened, open by a Hit, a delete by
 // the delete key
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -285,7 +285,7 @@ async fn clients_end_to_end() {
 }
 
 
-// spec/data-model.md §9, spec/sync.md §5: hosting stopping closes the connections that opened
+// spec/data-model.md §9, spec/sync-ids.md §6: hosting stopping closes the connections that opened
 // something of the host store; the others stay, served an empty store on the same listener and
 // key
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -357,7 +357,7 @@ async fn flood_does_not_delay_others() {
 }
 
 
-// issues/sync-rewrite.md 3c, spec/sync.md §5, §10: node sync above the hub. One connection to the
+// issues/sync-rewrite.md 3c, spec/sync-ids.md §6, spec/sync-opens.md §4: node sync above the hub. One connection to the
 // key of a node carries a label the node keeps and cannot read (Register, a Hit, Delete: the hub's
 // store) and a group the node reads (proofs, NoRecord, a Hit, the stream: node sync), each
 // answered by its layer
@@ -427,7 +427,7 @@ async fn one_connection_serves_hosted_and_read_labels() {
     host.stop().await;
 }
 
-// spec/sync.md §10 (Connection proofs, Pair key): a dialer at the node's key proving an actor the
+// spec/sync-opens.md §2 (connection proofs, Pair key): a dialer at the node's key proving an actor the
 // node does not know gets no proof back, no record and no shared set
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stranger_gets_no_proof_spec_sync_10() {

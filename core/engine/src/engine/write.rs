@@ -165,7 +165,7 @@ impl Mutation {
 
     /// The commit fails `Error::Unsynced` when, after it, `tid` is durable and in no synced
     /// (labeled) group's closure while `group` is: a membership in a group that is an item of a
-    /// synced group but no subgroup of one (spec/sync.md §3).
+    /// synced group but no subgroup of one (spec/sync-judgement.md §1).
     pub fn require_synced(&mut self, tid: Tid, group: Tid) -> &mut Self {
         self.synced.push((tid, group));
         self
@@ -698,7 +698,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         b.build(signing, &secrets, &mut sink, &mut *tx.rng)
     };
     let built = match built {
-        // an ephemeral commit past a blob is refused (spec/sync.md §9): its values are inline, so
+        // an ephemeral commit past a blob is refused (spec/sync-compaction.md §2): its values are inline, so
         // one past a page makes its delta's root too large (issues/eph-parity.md Large values)
         Err(osis_commit::Error::Build(osis_commit::COMMIT_PAST_BLOB)) if tx.txn.is_memory() => return Err(Error::Misuse("an ephemeral commit does not fit a blob")),
         b => b?,
@@ -752,7 +752,7 @@ pub(crate) fn check_delete(tx: &Tx<'_>, writers: &[Tid], creates: &Creates, thin
     Ok(())
 }
 
-/// A delete's ephemeral side (spec/sync.md §9 Delete): its durable commit carries a purge request
+/// A delete's ephemeral side (spec/sync-compaction.md §2 delete): its durable commit carries a purge request
 /// naming each of `t`'s ephemeral aspects that may hold content (`read::purged_aspects`), so every
 /// node applying it, this one first, holds `t`'s ephemeral writes stamped before it value-less,
 /// as a reset leaves its durable ones dead. The items; with no other part on `t` the commit places

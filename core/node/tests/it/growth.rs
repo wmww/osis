@@ -41,7 +41,7 @@ fn single_writer_replace_grows_nothing() {
     // a month settles the last write's deletes at the host, then a month alone adds nothing
     let (a2b, b2b, h2b, _) = at(&mut net, 200, 200);
     let (a3, b3, h3, _) = at(&mut net, 200, 200);
-    // the trigger compacts the register (spec/sync.md §7 Trigger): one snapshot holds the newest,
+    // the trigger compacts the register (spec/sync-compaction.md §1 trigger): one snapshot holds the newest,
     // and the creating commit's part on it went under it
     assert_eq!(held, 1, "one snapshot");
     assert_eq!(net.read(a, t), Some(s("v00000199")), "writer reads the newest");
@@ -98,7 +98,7 @@ fn replace_census_probe() {
 
 // spec/commits.md §5 (Own replaces): a writer's path write does not replace the aspect, so it covers
 // nothing and every body stays; another writer's whole replace covers none of a first's bodies.
-// Both below the compaction trigger (spec/sync.md §7 Trigger), which would drop them all under a
+// Both below the compaction trigger (spec/sync-compaction.md §1 trigger), which would drop them all under a
 // snapshot: the path writes are large (their snapshot costs about what they do), and the
 // register writes expire a year out (the trigger counts an expiring body only as its leftover).
 #[test]
@@ -140,7 +140,7 @@ fn only_a_whole_own_replace_covers() {
 }
 
 
-// spec/commits.md §5 (Own replaces), spec/sync.md §6: a commit with a part own replaces cover and
+// spec/commits.md §5 (Own replaces), spec/sync-judgement.md §2: a commit with a part own replaces cover and
 // a part they do not stays whole: nothing the host holds is judged must-not, and every node
 // can still relay its other part. A snapshot then drops the covered part alone (spec/sync.md
 // §7), and still nothing is must-not.
@@ -155,7 +155,7 @@ fn own_replace_of_one_part_keeps_the_other() {
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     // expiring a year out: below the compaction trigger, which counts an expiring body only as
-    // its leftover (a snapshot would drop the mixed commit's reg part alone, spec/sync.md §7)
+    // its leftover (a snapshot would drop the mixed commit's reg part alone, spec/sync-compaction.md §1)
     let year = osis_base::WallMs(net.now() + 365 * 24 * 3_600_000);
     for i in 1..=3 {
         let mut m = osis_node::Mutation::new();
@@ -188,7 +188,7 @@ fn own_replace_of_one_part_keeps_the_other() {
     }
 }
 
-// spec/commits.md §5 (Own replaces, Forgetting), spec/sync.md §6: a reader offline through the
+// spec/commits.md §5 (Own replaces, Forgetting), spec/sync-judgement.md §2: a reader offline through the
 // writes (a late joiner), and a copy of the writer's store taken early and offline since (a
 // restored device, holding replaces the writer later forgot), catch up: each reads the newest,
 // holds no more bodies than the writer, and judges nothing the host holds must-not.
@@ -272,7 +272,7 @@ fn a_writer_without_the_right_stays_flat() {
     let reg = osis_base::Ak::new("t:reg.0").unwrap();
     let kept = osis_base::Ak::new("t:kept.0").unwrap();
     // expiring a year out: below the compaction trigger, which counts an expiring body only as
-    // its leftover (spec/sync.md §7), so own replaces alone drop
+    // its leftover (spec/sync-compaction.md §1), so own replaces alone drop
     let year = osis_base::WallMs(net.now() + 365 * 24 * 3_600_000);
     for i in 0..6 {
         let mut m = osis_node::Mutation::new();
@@ -293,7 +293,7 @@ fn a_writer_without_the_right_stays_flat() {
 }
 
 // spec/commits.md §5 (Covered, Forgetting), notes/growth.md row 1: three writers replacing one
-// register in turn under automatic compaction (spec/sync.md §7 Trigger), each writer's
+// register in turn under automatic compaction (spec/sync-compaction.md §1 trigger), each writer's
 // snapshot covering the others' commits and the snapshots before it, store the same rows and
 // bytes at every writer, a reader and their host after n and 10n more writes, each step ending with
 // a month of no writes. Writes go on to the same point of the trigger's cycle (as many bodies

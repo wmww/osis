@@ -1,4 +1,4 @@
-//! A label's first sync at a host (spec/sync.md §6, spec/crypto.md §5 `order`): listed, then
+//! A label's first sync at a host (spec/sync-judgement.md §2, spec/crypto.md §5 `order`): listed, then
 //! fetched in the wraps' order, the pass ending with the fill. Order independence of what is read
 //! at each step: `order` (`fill_order`).
 
@@ -129,7 +129,7 @@ impl Chat {
     }
 }
 
-// spec/sync.md §6: what is held at each step is the newest messages, and from the first of them
+// spec/sync-judgement.md §2: what is held at each step is the newest messages, and from the first of them
 // on every role commit, wherever in the log it was written.
 #[test]
 fn newest_first_after_what_judging_needs_spec_sync_6() {
@@ -167,7 +167,7 @@ fn newest_first_after_what_judging_needs_spec_sync_6() {
     f.finish();
 }
 
-// spec/sync.md §6, §8: part way the label is not synced, no pass has ended, and a read says so
+// spec/sync-judgement.md §2, spec/sync-streams.md §2: part way the label is not synced, no pass has ended, and a read says so
 // (status `Syncing`, `HistoryPage.complete` false); at the end it is.
 #[test]
 fn pass_ends_with_the_fill_spec_sync_6() {
@@ -184,7 +184,7 @@ fn pass_ends_with_the_fill_spec_sync_6() {
     assert!(passes < 2 * N as u64 / FILL_BATCH as u64, "no pass per batch: {passes}");
 }
 
-// spec/sync.md §6: a filling node sends its own writes.
+// spec/sync-judgement.md §2: a filling node sends its own writes.
 #[test]
 fn own_writes_go_out_during_a_fill_spec_sync_6() {
     let mut f = chat(Role::Write);
@@ -206,7 +206,7 @@ fn own_writes_go_out_during_a_fill_spec_sync_6() {
     assert_eq!(f.net.read(f.a, t), Some(net::s("mine")));
 }
 
-// spec/sync.md §6: a fill goes on across a restart from what it holds: what came is not fetched
+// spec/sync-judgement.md §2: a fill goes on across a restart from what it holds: what came is not fetched
 // again (a peer with no record of this node lists again, issues/sync-rewrite.md Peers that cannot
 // read, Limit), and what does not open comes too (here a chunk: a filler wrap).
 #[test]
@@ -230,7 +230,7 @@ fn restart_goes_on_without_fetching_again_spec_sync_6() {
     }
 }
 
-// spec/sync.md §6, §2: a group's home label is its inbox, and what does not open there (here a
+// spec/sync-judgement.md §2, spec/sync-ids.md §2: a group's home label is its inbox, and what does not open there (here a
 // file's chunks, written before the messages) still comes after the newest messages.
 #[test]
 fn chunks_at_a_groups_inbox_come_last_spec_sync_6() {
@@ -251,7 +251,7 @@ fn chunks_at_a_groups_inbox_come_last_spec_sync_6() {
     assert!(chunks.iter().all(|b| f.net.engine(c).has_blob(b)), "every chunk in the end");
 }
 
-// spec/sync.md §6: at an inbox (a group's home label) a deposit that opens under nothing (here
+// spec/sync-judgement.md §2: at an inbox (a group's home label) a deposit that opens under nothing (here
 // junk; a grant waiting for the node's actor alike) comes right after order 0, before the newest
 // messages, while the chunks written before them come last.
 #[test]
@@ -319,7 +319,7 @@ fn secrets_arriving_order_the_rest_spec_sync_6() {
     f.finish();
 }
 
-// spec/sync.md §7, §6: a body this node holds from elsewhere, deleted at the host under a snapshot:
+// spec/sync-compaction.md §1, spec/sync-judgement.md §2: a body this node holds from elsewhere, deleted at the host under a snapshot:
 // while the fill has not fetched that snapshot the body is not established uncovered, so it does
 // not go up again.
 #[test]
@@ -361,7 +361,7 @@ fn a_covered_body_stays_gone_during_a_fill_spec_sync_6() {
     assert!(f.filling());
 }
 
-// spec/sync.md §7 Repair: a node part way through a fill does not answer another's suspect report:
+// spec/sync-compaction.md §1 repair: a node part way through a fill does not answer another's suspect report:
 // its snapshot would be of a state not whole yet.
 #[test]
 fn no_repair_from_a_state_part_way_spec_sync_6() {
@@ -395,7 +395,7 @@ fn no_repair_from_a_state_part_way_spec_sync_6() {
     f.finish();
 }
 
-// spec/sync.md §5: what no writer vouched for and does not open is listed before its bytes come in
+// spec/sync-ids.md §6: what no writer vouched for and does not open is listed before its bytes come in
 // a fill, and goes as they do, as it would have arriving inline.
 #[test]
 fn junk_listed_goes_when_it_comes_spec_sync_6() {
@@ -485,19 +485,19 @@ fn no_pass_before_order_0(hosts: usize, write: bool) {
     assert_eq!(f.held().len(), N / 2);
 }
 
-// spec/sync.md §6: order 0 before a pass.
+// spec/sync-judgement.md §2: order 0 before a pass.
 #[test]
 fn no_pass_before_order_0_spec_sync_6() {
     no_pass_before_order_0(1, true);
 }
 
-// spec/sync.md §6: order 0 before a pass, whichever host fetches it.
+// spec/sync-judgement.md §2: order 0 before a pass, whichever host fetches it.
 #[test]
 fn no_pass_before_order_0_at_two_hosts_spec_sync_6() {
     no_pass_before_order_0(2, false);
 }
 
-// spec/sync.md §6: a rotation part way ends the open at the host (a batch asked under it is
+// spec/sync-judgement.md §2: a rotation part way ends the open at the host (a batch asked under it is
 // refused, or the new head comes first): the reopen goes on from what is listed, in order, and
 // the pass still ends only when everything is here.
 #[test]
@@ -547,7 +547,7 @@ fn a_rotation_part_way_loses_nothing_spec_sync_6() {
     assert!(part_way > 0, "no rotation part way: nothing tested");
 }
 
-// spec/sync.md §6: a message written during a fill comes next, not after the backlog.
+// spec/sync-judgement.md §2: a message written during a fill comes next, not after the backlog.
 #[test]
 fn a_push_during_a_fill_comes_next_spec_sync_6() {
     let mut f = chat(Role::Read);
@@ -565,7 +565,7 @@ fn a_push_during_a_fill_comes_next_spec_sync_6() {
     assert_eq!(f.held().len(), N + 1);
 }
 
-// spec/sync.md §6, spec/crdt.md §5.7: text fetched newest first reads as what it holds, an own
+// spec/sync-judgement.md §2, spec/crdt.md §5.7: text fetched newest first reads as what it holds, an own
 // insert anchored in it goes out, and every node ends with one text.
 #[test]
 fn an_own_edit_of_text_part_way_joins_spec_sync_6() {
@@ -597,7 +597,7 @@ fn an_own_edit_of_text_part_way_joins_spec_sync_6() {
     assert!(text.contains('Z') && text.contains("base"), "{text}");
 }
 
-// spec/sync.md §6: a compaction part way (an app's own) covers only what it holds: nothing the
+// spec/sync-judgement.md §2: a compaction part way (an app's own) covers only what it holds: nothing the
 // node has not got is lost, for it or anyone.
 #[test]
 fn a_compaction_part_way_loses_nothing_spec_sync_6() {
@@ -743,7 +743,7 @@ fn fill_with_a_trickling_host(hosts: usize, batch: Option<usize>, trickle: bool,
     x
 }
 
-// spec/sync.md §6, §10 (Bodies: one rule for "asked"): a host trickling its reply to a fill's
+// spec/sync-judgement.md §2, spec/sync-streams.md §4 (bodies: one rule for "asked"): a host trickling its reply to a fill's
 // order-0 batch holds the label's passes, and the bodies the other host's fill skipped for that
 // fetch, for the stall time only: past it passes run and ask those bodies of the other host. The
 // messages, fetched from the other host before order 0 brought what opens them, kept no bytes and
@@ -759,7 +759,7 @@ fn a_trickled_order_0_batch_holds_the_label_for_the_stall_time_only_spec_sync_6(
     within(x.read, "read");
 }
 
-// spec/sync.md §6: two honest hosts filling: each body fetched once, everything at once
+// spec/sync-judgement.md §2: two honest hosts filling: each body fetched once, everything at once
 #[test]
 fn an_honest_fill_at_two_hosts_fetches_each_body_once_spec_sync_6() {
     let x = fill_with_a_trickling_host(2, None, false, false);
@@ -769,7 +769,7 @@ fn an_honest_fill_at_two_hosts_fetches_each_body_once_spec_sync_6() {
     assert_eq!(x.twice, 0, "blobs fetched twice");
 }
 
-// spec/sync.md §6, §10 (Bodies): passes wait on a fill's batch only while it counts as asked: a
+// spec/sync-judgement.md §2, spec/sync-streams.md §4 (bodies): passes wait on a fill's batch only while it counts as asked: a
 // lone host trickling order 0 holds the label's passes for the stall time, however many batches
 // order 0 takes, as one answering it without the bytes would not hold them at all
 #[test]
@@ -781,7 +781,7 @@ fn a_fill_waits_on_its_trickled_batch_for_the_stall_time_only_spec_sync_6() {
     }
 }
 
-// spec/sync.md §10 (Bodies): what a fill passed over while another host's fetch of it was fresh is
+// spec/sync-streams.md §4 (bodies): what a fill passed over while another host's fetch of it was fresh is
 // asked of this host once that fetch goes stale, not at this fill's end: the other host slow
 // (a batch per 25 s step, one blob each, longer than the stall time in all), the trickled
 // batch still comes from it within the stall time and two steps

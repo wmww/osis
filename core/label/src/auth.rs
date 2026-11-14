@@ -1,5 +1,5 @@
 //! Signatures of label operations and their checks at a node that cannot read the label
-//! (spec/sync.md §5, spec/wire.md §9, §11.2): stamps, deposits, deletes by the label delete key
+//! (spec/sync-ids.md §6, spec/wire.md §9, §11.2): stamps, deposits, deletes by the label delete key
 //! or by a delete-key signature.
 
 use crate::blob::{Level, Prefix};
@@ -48,7 +48,7 @@ fn entry_domain(plain: Domain, role: bool) -> Domain {
     if role { Domain::RoleEntry } else { plain }
 }
 
-/// The label key a delete by delete keys at `levels` needs beside them (spec/sync.md §5): the
+/// The label key a delete by delete keys at `levels` needs beside them (spec/sync-ids.md §6): the
 /// write key when any is level 3, else the sync key; the delete key with no level.
 pub fn key_for_levels(levels: &[Level]) -> Result<LabelRole, Error> {
     if levels.iter().any(|l| !(DELETE_ADMIN..=DELETE_WRITER).contains(l)) {
@@ -109,7 +109,7 @@ impl DeleteItem {
     /// The check at a node that cannot read the label, against its head and the entry's blob prefix (none: unknown framing, no
     /// commitments): without levels the delete key; with them, each delete-key signature under
     /// a group's commitment at its level, every group covered by one, and the label key the
-    /// levels need (spec/sync.md §5).
+    /// levels need (spec/sync-ids.md §6).
     pub fn verify(&self, head: &Step, prefix: Option<&Prefix>) -> Result<(), Error> {
         let levels = self.levels();
         let d = delete_digest(&head.label, &self.blob, &levels);
@@ -187,7 +187,7 @@ mod tests {
         Epoch::new(n, [n as u8; 32]).unwrap()
     }
 
-    // spec/sync.md §5, spec/wire.md §11.2: stamps and deposits verify
+    // spec/sync-ids.md §6, spec/wire.md §11.2: stamps and deposits verify
     // under their own key and domain only.
     #[test]
     fn entry_signatures() {
@@ -205,7 +205,7 @@ mod tests {
         s0.keys.deposit.verify(Domain::Deposit, &digest, &sign_deposit(&dep, &l, &b, &w, false)).unwrap();
     }
 
-    // spec/sync.md §5, spec/crypto.md §7: delete by the label delete key; by a level's delete
+    // spec/sync-ids.md §6, spec/crypto.md §7: delete by the label delete key; by a level's delete
     // key with the label key the level needs; a wrong level, a forged or unblinded key, a
     // missing commitment fail; layouts round trip.
     #[test]
@@ -246,7 +246,7 @@ mod tests {
         moved.by = moved.by.iter().map(|(_, s)| (3, *s)).collect();
         assert!(moved.verify(&s0, Some(&prefix)).is_err());
         assert!(DeleteItem::sign(&sync, &l, b).verify(&s0, None).is_err());
-        // groups (spec/sync.md §5): a Delete needs a signature under every group; an empty group
+        // groups (spec/sync-ids.md §6): a Delete needs a signature under every group; an empty group
         // blocks a Delete by level; no group refuses one; the author key shared by both
         // groups covers both with one signature
         let d1 = DeleteSecret::derive(&Secret32::from_bytes([4; 32]));
@@ -274,7 +274,7 @@ mod tests {
     }
 
     proptest! {
-        // spec/sync.md §5: a stamp binds the wrap: any altered wrap byte fails.
+        // spec/sync-ids.md §6: a stamp binds the wrap: any altered wrap byte fails.
         #[test]
         fn stamp_binds_wrap(i in 0usize..49, x in 1u8..=255) {
             let write = label_role_key(LabelRole::Write, &Secret32::from_bytes([1; 32]));

@@ -39,7 +39,7 @@ pub struct CommitChange {
     pub ak: Ak,
     pub id: CommitId,
     /// The commit as it arrived, for one nobody holds (an ephemeral signal fired here or
-    /// received, spec/sync.md §9): no read finds it, so it is told once, here.
+    /// received, spec/sync-compaction.md §2): no read finds it, so it is told once, here.
     pub fired: Option<crate::engine::listing::CommitRow>,
 }
 
@@ -152,7 +152,7 @@ pub enum DiagnosticKind {
     /// nothing syncs until the store is opened again; waits fail `Network` (`detail`: why).
     SyncStopped,
     /// A dialed peer's clock differs from this node's by more than `OFFSET_DIAGNOSTIC_MS`
-    /// (spec/sync.md §6): one of the two is wrong (`detail`: the peer and the offset).
+    /// (spec/sync-judgement.md §2): one of the two is wrong (`detail`: the peer and the offset).
     ClockSkew,
     /// A bound on unverified input from other nodes (hosts' unvouched entries, peers' uploads)
     /// was reached under a label: what came past it was not kept, and a real entry among it

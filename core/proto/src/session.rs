@@ -1,4 +1,4 @@
-//! One connection, whichever side dialed it (spec/sync.md §4-§10, spec/wire.md §11): a sans-I/O
+//! One connection, whichever side dialed it (spec/sync-ids.md §5, spec/wire.md §11): a sans-I/O
 //! state machine answering the store's requests (Ping, Register, Delete) from a `LabelStore`,
 //! handing node-kind messages and client-port requests to the upper layer, and sending the upper
 //! layer's requests within the request window (`window`), each answer to one of them handed back
@@ -33,7 +33,7 @@ pub fn reply_bound(max_reply: u64) -> usize {
 /// a peer names, opened or not. An entry is about 7 KB (parsed keys), so about 450 KB per
 /// connection, the scale of `MAX_CROSSED`.
 const MAX_CACHED: usize = 64;
-/// Unwritten push bytes a connection can hold (spec/sync.md §6): pushes go while the unwritten
+/// Unwritten push bytes a connection can hold (spec/sync-judgement.md §2): pushes go while the unwritten
 /// bytes, the push included, fit `REPLY_BUDGET` or none are unwritten, so at most one push frame.
 pub const PUSH_QUEUE: usize = MAX_MESSAGE + 4;
 /// Bytes a peer can have unwritten to a compliant subscriber: its windowed replies plus the
@@ -63,7 +63,7 @@ pub enum SessionInput {
     /// Bytes received on the stream.
     Bytes(Vec<u8>),
     /// The transport has taken this many bytes of this connection's output so far (cumulative):
-    /// pushes wait while too much is unwritten (spec/sync.md §6). A driver that never reports it
+    /// pushes wait while too much is unwritten (spec/sync-judgement.md §2). A driver that never reports it
     /// delivers instantly (no push is held back); one that does reports it before input bytes,
     /// at ticks, and every `PUSH_POLL_MS` while `held`.
     Taken(u64),
@@ -76,7 +76,7 @@ pub enum SessionInput {
     /// Each ends the grant: none gives it back.
     Notify(Vec<(Id, crate::api::Payload)>),
     /// A message of the upper layer's to send: a request (its id the upper layer's) within the
-    /// request window (spec/sync.md §6), sent once it fits; an answer to a request handed up frees
+    /// request window (spec/sync-judgement.md §2), sent once it fits; an answer to a request handed up frees
     /// its charge; a relay-only push (a Stream without cursor) without room is dropped.
     Peer(Box<Message>),
     /// The upper layer has Notifies to send: `SessionOutput::Room` when the push rule allows.
@@ -85,7 +85,7 @@ pub enum SessionInput {
     /// pushes and room go on as at a `Taken`.
     Resume,
     /// Node sync opened the label here by a sync-key or static-entry Hit: Deletes of it are
-    /// taken while the head bears the sync key it has now (spec/sync.md §5).
+    /// taken while the head bears the sync key it has now (spec/sync-ids.md §6).
     Open(LabelId),
     /// Node sync's open of the label here ended.
     Shut(LabelId),
@@ -156,7 +156,7 @@ impl Out {
     }
 }
 
-/// A relay-only entry (spec/sync.md §5): accepted by stamp, passed on to the label's other
+/// A relay-only entry (spec/sync-ids.md §6): accepted by stamp, passed on to the label's other
 /// holders by node sync's stream, held by nobody.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Relayed {
@@ -211,7 +211,7 @@ fn check(k: &HeadKeys, key: StepKey, domain: Domain, digest: &[u8; 32], sig: &Si
     Code::REFUSED
 }
 /// `check` of an entry's stamp or deposit signature (`plain`: `Stamp` or `Deposit`), or of one
-/// under `RoleEntry` (spec/sync.md §5): its code, and whether it verified as a role entry.
+/// under `RoleEntry` (spec/sync-ids.md §6): its code, and whether it verified as a role entry.
 fn check_entry(k: &HeadKeys, key: StepKey, plain: Domain, digest: &[u8; 32], sig: &Signature, struck: &mut bool) -> (Code, bool) {
     let mut first = *struck;
     let code = check(k, key, plain, digest, sig, &mut first);
@@ -231,7 +231,7 @@ pub struct Session {
     version: Option<u64>,
     closed: bool,
     /// Labels node sync opened here by a sync-key or static-entry Hit (`SessionInput::Open`), by
-    /// the sync key of the head then (spec/sync.md §5): a head with another sync key ends it
+    /// the sync key of the head then (spec/sync-ids.md §6): a head with another sync key ends it
     /// (`still_open`). A Delete is taken only for one of them.
     opened: BTreeMap<LabelId, osis_crypto::VerifyingKey>,
     /// Head keys per label, as of its head (`MAX_CACHED`).
@@ -323,7 +323,7 @@ impl Session {
         }
     }
 
-    /// The node's room for this connection's output (spec/sync.md §10 Served connections): its
+    /// The node's room for this connection's output (spec/sync-transport.md §5 served connections): its
     /// `share` of the node's bound, and the bytes the node has left beyond what the connection
     /// holds now (`holding`). A reply, push or own request goes only within both: within the
     /// share (or alone, when the connection holds nothing) and within what is left. Otherwise it
@@ -408,7 +408,7 @@ impl Session {
     }
 
     /// Whether `label` is opened and its open holds at the head: under the head's sync key
-    /// (spec/sync.md §5).
+    /// (spec/sync-ids.md §6).
     fn holds(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<bool, StoreError> {
         Ok(match self.opened.get(label).copied() {
             None => false,
@@ -416,7 +416,7 @@ impl Session {
         })
     }
 
-    /// `holds`, ending an open that no longer does (spec/sync.md §5).
+    /// `holds`, ending an open that no longer does (spec/sync-ids.md §6).
     fn still_open(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<bool, StoreError> {
         if self.holds(store, label)? {
             return Ok(true);
@@ -671,7 +671,7 @@ impl Session {
         let frame = body.len().saturating_add(4);
         *charged = charged.saturating_add(frame);
         let msg = Message::decode(body);
-        // a peer within its window (spec/sync.md §6) never sends more before any is answered:
+        // a peer within its window (spec/sync-judgement.md §2) never sends more before any is answered:
         // one that does is closed before the request runs, so one input costs at most a few
         // requests' reads (a Reconcile reads its ranges' live IDs: up to the whole label), and
         // the requests waiting for room stay within its window
@@ -698,7 +698,7 @@ impl Session {
             }
             let Some(p) = self.pending.pop_front() else { return };
             self.run(now, store, p, out);
-            // a peer within its window (spec/sync.md §6) never has more replies unwritten: one
+            // a peer within its window (spec/sync-judgement.md §2) never has more replies unwritten: one
             // that pipelines past it is closed here, before its further requests cost reads and
             // memory, not after (the driver's queue cap sees only what this input made). The
             // node's own requests unanswered may be unwritten too (an answered one was
@@ -853,7 +853,7 @@ impl Session {
             Some(h) if h.id() == step.id() => return Ok(Message::Ok { id }),
             // not a child of the head: the code alone, never the head (an ex-holder or link
             // holder would watch rotations; a registrar behind learns it by Behind items,
-            // spec/sync.md §5)
+            // spec/sync-ids.md §6)
             Some(h) => {
                 if step.verify_child(h).is_err() {
                     return Ok(Message::Error { id, code: Code::NOT_HEAD });
@@ -867,7 +867,7 @@ impl Session {
         Ok(Message::Ok { id })
     }
 
-    /// The signatures of a delete of held entry `item.blob` (spec/sync.md §5): by the head's
+    /// The signatures of a delete of held entry `item.blob` (spec/sync-ids.md §6): by the head's
     /// delete key, or by delete keys of levels (checked against the blob prefix's commitment
     /// groups: every group) with the label key the
     /// levels need. The prefix (`blob_prefix`, never the whole blob) is read only once the label
@@ -909,7 +909,7 @@ impl Session {
         Ok(code)
     }
 
-    /// One Delete item (spec/sync.md §5). A delete-key signature is checked against the blob's
+    /// One Delete item (spec/sync-ids.md §6). A delete-key signature is checked against the blob's
     /// prefix: without the entry it cannot be (nor a tombstone revealed).
     fn delete(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, item: &DeleteItem) -> Result<Code, StoreError> {
         let held = store.entry(label, &item.blob)?.is_some();
@@ -932,7 +932,7 @@ pub enum Taken {
     Relay(Relayed),
 }
 
-/// A stamped entry whose stamp verified, put into the store (spec/sync.md §5, Taking a stamped
+/// A stamped entry whose stamp verified, put into the store (spec/sync-ids.md §6, taking a stamped
 /// entry): a relay-only blob passes the relay gate and is not stored; an expired or tombstoned
 /// one is refused. Used by node sync's pull of a sync ID it cannot read.
 #[allow(clippy::too_many_arguments)]
@@ -978,7 +978,7 @@ pub fn pulled(store: &mut dyn LabelStore, now: u64, label: &LabelId, k: &HeadKey
     put_stamped(store, now, label, blob_id, blob, wrap, stamp, role)
 }
 
-/// A Deposit of `blob` under `label` (spec/sync.md §5), whose head keys are `k`: its code, and
+/// A Deposit of `blob` under `label` (spec/sync-ids.md §6), whose head keys are `k`: its code, and
 /// whether `sig` verified under the head's deposit key (only then may the depositor learn more
 /// than the code). Taken as an unstamped entry within the store's deposit rules; a relay-only
 /// blob is refused. `struck` as for `check`. Shared by a session's Deposit and node sync's
@@ -1009,7 +1009,7 @@ mod tests {
         out.iter().find_map(|o| if let SessionOutput::Send(b) = o { Message::decode(&b[4..]).ok() } else { None }).unwrap()
     }
 
-    // spec/sync.md §10 (Connection proofs, Pair key): Prove and Resume are the node's, not the
+    // spec/sync-opens.md §2 (connection proofs, Pair key): Prove and Resume are the node's, not the
     // store's: the session hands them up unanswered and sends the upper layer's answers
     #[test]
     fn prove_and_resume_go_up() {
@@ -1027,7 +1027,7 @@ mod tests {
         assert!(!c.is_closed());
     }
 
-    // spec/sync.md §6 (request window): a node request handed up counts against `MAX_UNANSWERED`
+    // spec/sync-judgement.md §2 (request window): a node request handed up counts against `MAX_UNANSWERED`
     // until the upper layer answers it, input after input: answered, it frees its room; left
     // unanswered, a peer adding more is closed before the one past the bound goes up
     #[test]
@@ -1081,7 +1081,7 @@ mod tests {
         out.iter().filter(|o| matches!(o, SessionOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::Pong { .. })))).count()
     }
 
-    // spec/sync.md §6 (request window), spec/requirements.md (peer input never causes unbounded
+    // spec/sync-judgement.md §2 (request window), spec/requirements.md (peer input never causes unbounded
     // work): a peer pipelining requests (two per input, within `MAX_UNANSWERED`) without taking
     // the replies is closed once they pass `SEND_QUEUE`; the rest of its input costs nothing
     #[test]
@@ -1104,7 +1104,7 @@ mod tests {
         assert!(sent > SEND_QUEUE && sent <= SEND_QUEUE + 2 * crate::window::SMALL_REPLY, "{sent}");
     }
 
-    // spec/sync.md §10 (Served connections): with a room set, requests are taken but each runs,
+    // spec/sync-transport.md §5 (served connections): with a room set, requests are taken but each runs,
     // in order, only once its reply allowance fits: within the share, or alone when the
     // connection holds nothing, and always within what the node has left; no input is taken
     // while one waits; the rest run as the transport takes the replies
@@ -1144,7 +1144,7 @@ mod tests {
         assert!(c.takes_input() && c.need().is_none());
     }
 
-    // spec/sync.md §10 (Served connections): push room granted is reserved against the room
+    // spec/sync-transport.md §5 (served connections): push room granted is reserved against the room
     // until the pushes it was for (or an empty Notify, giving it back) arrive; a reservation for
     // a reply to come (a request handed up, as a settle waiting for its Notifies) does not hold
     // back the room that lets those pushes go, even under a share smaller than both
@@ -1174,7 +1174,7 @@ mod tests {
         assert_eq!(c.holding(), asked);
     }
 
-    // spec/sync.md §6 (Requester, Closing): the node's own requests to the dialer, unwritten
+    // spec/sync-streams.md §1 (requester, Closing): the node's own requests to the dialer, unwritten
     // within their window, come on top of the replies a compliant dialer's window allows, so
     // the two together close no connection
     #[test]
@@ -1200,7 +1200,7 @@ mod tests {
         assert_eq!(pongs(&out), n as usize);
     }
 
-    // spec/sync.md §6 (request window), spec/requirements.md (peer input never causes unbounded
+    // spec/sync-judgement.md §2 (request window), spec/requirements.md (peer input never causes unbounded
     // work): requests that would carry more than `MAX_UNANSWERED` unanswered in one input close
     // the connection before any runs; spread over inputs, each runs
     #[test]
@@ -1242,7 +1242,7 @@ mod tests {
         codes
     }
 
-    // spec/sync.md §5, spec/requirements.md (peer input never causes unbounded work): checking
+    // spec/sync-ids.md §6, spec/requirements.md (peer input never causes unbounded work): checking
     // a Delete's signature reads the head keys the store keeps, never the
     // label's path, however long and whatever the connection has cached; a recent earlier key
     // still gets code 9
@@ -1309,7 +1309,7 @@ mod tests {
         assert_eq!(store.put(label, put).unwrap(), Code::OK);
     }
 
-    // spec/sync.md §5 (Delete), spec/requirements.md (peer input never causes unbounded work): items
+    // spec/sync-ids.md §6 (delete), spec/requirements.md (peer input never causes unbounded work): items
     // carrying a delete-key signature but no valid label signature are refused without reading
     // the blob (up to MAX_BLOB each) for its prefix
     #[test]
@@ -1331,7 +1331,7 @@ mod tests {
         assert_eq!(store.blob_reads.get(), 0);
     }
 
-    // spec/sync.md §5 (Delete): a signed delete by level checks the blob's prefix
+    // spec/sync-ids.md §6 (delete): a signed delete by level checks the blob's prefix
     // (`blob_prefix`), never reading the whole blob (up to MAX_BLOB per item)
     #[test]
     fn delete_by_level_reads_prefix_only() {
@@ -1354,7 +1354,7 @@ mod tests {
         assert!(store.entry(&f.label, &blob_id).unwrap().is_none());
     }
 
-    // spec/sync.md §5 (Deposit): a deposit verifies under the head's deposit key (another key
+    // spec/sync-inbox.md §3 (deposit): a deposit verifies under the head's deposit key (another key
     // learns its code only), is held unstamped within the deposit budget (64 + 4 x claim slots,
     // then code 5), an ephemeral blob too; a relay-only one is refused here, whatever the store
     // behind it checks, and nothing of it is held
@@ -1395,7 +1395,7 @@ mod tests {
         }
     }
 
-    // spec/sync.md §6 (flow control): a relay-only push (a Stream without cursor) goes only when
+    // spec/sync-judgement.md §2 (flow control): a relay-only push (a Stream without cursor) goes only when
     // it fits `REPLY_BUDGET` behind the unwritten bytes, else it is dropped; a stream push with a
     // cursor always goes
     #[test]
@@ -1424,7 +1424,7 @@ mod tests {
         c
     }
 
-    // spec/sync.md §10 (Connection proofs): both sides bind the same (dialer challenge, listener
+    // spec/sync-opens.md §2 (connection proofs): both sides bind the same (dialer challenge, listener
     // challenge, listener key): a dialed session its own challenge first and the key it dialed,
     // an accepted one the peer's first and its own key; none before the peer's Hello
     #[test]
@@ -1439,7 +1439,7 @@ mod tests {
         assert_eq!(acc.binding(), dialed.binding());
     }
 
-    // spec/sync.md §6 (request window), spec/wire.md §11.2: every answer to one of the upper
+    // spec/sync-judgement.md §2 (request window), spec/wire.md §11.2: every answer to one of the upper
     // layer's requests (ids below `NODE_IDS`) comes up, by its id, the session answering none; a
     // reply to no request in flight (answered already, or never asked) is a protocol error,
     // handed up to nobody
@@ -1487,7 +1487,7 @@ mod tests {
         assert_eq!(c.stall_at(), None, "the answer is no request of its own");
     }
 
-    // spec/wire.md §11.1, spec/sync.md §6 (Stall): a reply that does not decode is dropped, never
+    // spec/wire.md §11.1, spec/sync-streams.md §1 (stall): a reply that does not decode is dropped, never
     // answered (an Error under the requester's own id would be a reply to nothing at the peer);
     // the request stays out, so the stall clock still closes the connection if no answer comes
     #[test]

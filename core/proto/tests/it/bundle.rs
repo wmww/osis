@@ -1,4 +1,4 @@
-//! Bundle import as a peer with no cursor (spec/sync.md §11, spec/wire.md §12).
+//! Bundle import as a peer with no cursor (spec/sync-streams.md §6, spec/wire.md §12).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_base::{Value, cbor};
@@ -17,7 +17,7 @@ fn import(file: &[u8]) -> Vec<Imported> {
     out
 }
 
-// spec/wire.md §12, spec/sync.md §11: records replay as log events with no cursor; paths and stamps verified, unknown kinds skipped
+// spec/wire.md §12, spec/sync-streams.md §6: records replay as log events with no cursor; paths and stamps verified, unknown kinds skipped
 #[test]
 fn import_replays_records() {
     let f = Fixture::new(0x20);

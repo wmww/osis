@@ -2,7 +2,7 @@
 //! label (a Stranded message to a connected peer that may re-seal it, else a stranded notice
 //! under the label's admins' inboxes), and the aspects it flags suspect (Suspect messages to the
 //! peers it shares the label with). Both are judged by their receiver: a re-seal of a current
-//! holder at the end of a complete pass (`pass::reseal`), a repair snapshot (spec/sync.md §7).
+//! holder at the end of a complete pass (`pass::reseal`), a repair snapshot (spec/sync-compaction.md §1).
 
 use super::{Action, ConnId, SyncEngine};
 use crate::error::Result;
@@ -202,7 +202,7 @@ impl SyncEngine {
         Ok(out)
     }
 
-    /// Repair (spec/sync.md §7): a Suspect message from `conn`'s peer for `l`, a member of the
+    /// Repair (spec/sync-compaction.md §1): a Suspect message from `conn`'s peer for `l`, a member of the
     /// connection's shared set. For each entry of a thing in `l`'s closure this node may write,
     /// past its first sync of `l`, whose state digest here differs: a snapshot of it from this
     /// node's whole state, an ordinary compaction snapshot (it joins with the others', never

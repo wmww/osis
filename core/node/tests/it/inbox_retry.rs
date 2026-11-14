@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Deposits refused for now (spec/sync.md §3, §5; notes/inbox.md, The outbox): the grantee's inbox
+//! Deposits refused for now (spec/sync-judgement.md §1, spec/sync-ids.md §6; notes/inbox.md, The outbox): the grantee's inbox
 //! label is not registered yet or the deposit budget is full; the sender keeps the blob and offers
 //! it again (backing off from `retry_ms`) until a peer keeping the label takes it, and an admin's
 //! clearing frees a filled budget.
@@ -10,7 +10,7 @@ use osis_base::Role;
 use osis_node::Mutation;
 use osis_schema::core_types as ct;
 
-// spec/sync.md §3: a grant whose inbox deposit was refused (label unknown) reaches the grantee
+// spec/sync-judgement.md §1: a grant whose inbox deposit was refused (label unknown) reaches the grantee
 // once its node registered the inbox label.
 #[test]
 fn refused_inbox_deposit_retried_spec_sync_3() {
@@ -64,7 +64,7 @@ fn refused_inbox_deposit_retried_spec_sync_3() {
     assert_eq!((e.perm_digest(false), held(e.index_digest()), e.edges_rows().unwrap()), (perm, index, rows), "rebuilt");
 }
 
-// spec/sync.md §3: an invite naming a label its sender is registering at a connected host waits for that registration, so the invitee never finds the host without it (a new chat's first invite): at every round the blob at the inbox's host implies the label there
+// spec/sync-judgement.md §1: an invite naming a label its sender is registering at a connected host waits for that registration, so the invitee never finds the host without it (a new chat's first invite): at every round the blob at the inbox's host implies the label there
 #[test]
 fn invite_goes_after_the_labels_registration_spec_sync_3() {
     let mut net = Net::bare();
@@ -109,7 +109,7 @@ fn invite_goes_after_the_labels_registration_spec_sync_3() {
     assert!(net.engine(b).role_on(&g).is_some() || net.sync(b).invite_requests().unwrap().len() == 1);
 }
 
-// spec/sync.md §3: a peer of the label silent to its registration (its answers held) holds no
+// spec/sync-judgement.md §1: a peer of the label silent to its registration (its answers held) holds no
 // invite back while another connected peer has it
 #[test]
 fn silent_host_of_the_label_holds_no_invite_back_spec_sync_3() {
@@ -184,7 +184,7 @@ fn persons() -> (Net, usize, usize, osis_base::Tid, osis_base::Tid, osis_base::T
     (net, a, b, bob.account, g, item)
 }
 
-// spec/sync.md §3, §5 (a deposit goes until its host takes it): Bob's node is away for
+// spec/sync-judgement.md §1, spec/sync-ids.md §6 (a deposit goes until its host takes it): Bob's node is away for
 // hours, so every deposit of the grant's inbox blob is refused; Alice keeps one queued deposit
 // and Bob gets the grant once his node is back. Past `INBOX_LIFETIME` the re-sent seal
 // replaces the queued one.
@@ -260,7 +260,7 @@ fn fill_budget(net: &mut Net, host: usize, l: &osis_base::LabelId, spare: u64) -
     junk
 }
 
-// spec/sync.md §5: an account takes in more grants than the deposit budget holds: each handled inbox blob leaves the budget, so the refused ones get through
+// spec/sync-ids.md §6: an account takes in more grants than the deposit budget holds: each handled inbox blob leaves the budget, so the refused ones get through
 #[test]
 fn more_grants_than_the_budget_arrive_spec_sync_5() {
     let (mut net, host, a, b, alice, bob) = two_accounts();
@@ -275,7 +275,7 @@ fn more_grants_than_the_budget_arrive_spec_sync_5() {
     assert_eq!(lacking, 0, "grants lacking after 8 minutes");
 }
 
-// spec/sync.md §5: a deposit taken at a host and label ends the back-off of the others waiting there: room has appeared
+// spec/sync-ids.md §6: a deposit taken at a host and label ends the back-off of the others waiting there: room has appeared
 #[test]
 fn taken_deposit_ends_the_back_off_of_others_spec_sync_5() {
     let (mut net, host, a, b, alice, bob) = two_accounts();
@@ -308,7 +308,7 @@ fn budget_left(net: &mut Net, host: usize, l: &osis_base::LabelId) -> (u64, u64)
     net.deposit_room(host, l)
 }
 
-// spec/sync.md §5: junk with no expiry fills an inbox's budget while its account is away; the grants refused meanwhile get through once a node of hers comes back, and what she does not clear leaves the rest of the budget free
+// spec/sync-ids.md §6: junk with no expiry fills an inbox's budget while its account is away; the grants refused meanwhile get through once a node of hers comes back, and what she does not clear leaves the rest of the budget free
 #[test]
 fn stranger_fill_ends_with_a_pass_spec_sync_5() {
     let (mut net, host, a, b, alice, bob) = two_accounts();
@@ -329,7 +329,7 @@ fn stranger_fill_ends_with_a_pass_spec_sync_5() {
     assert!(budget_left(&mut net, host, &home).0 >= osis_base::format::DEPOSITS_WAITING as u64, "half stays free");
 }
 
-// spec/sync.md §5: the same fill by bytes, in few large blobs
+// spec/sync-ids.md §6: the same fill by bytes, in few large blobs
 #[test]
 fn stranger_fill_in_bytes_ends_with_a_pass_spec_sync_5() {
     let (mut net, host, _, b, _, _) = two_accounts();
@@ -354,7 +354,7 @@ fn stranger_fill_in_bytes_ends_with_a_pass_spec_sync_5() {
     assert!(budget_left(&mut net, host, &home).1 >= osis_base::format::DEPOSITS_WAITING_BYTES as u64, "half stays free");
 }
 
-// spec/sync.md §5 (Clearing deposits): under any label, deposits its admin can do nothing with
+// spec/sync-inbox.md §4 (clearing deposits): under any label, deposits its admin can do nothing with
 // (here chunks of another group) go down to the cap in bytes
 #[test]
 fn junk_under_any_label_goes_down_to_the_cap_spec_sync_5() {
@@ -398,7 +398,7 @@ fn junk_under_any_label_goes_down_to_the_cap_spec_sync_5() {
     assert!(budget_left(&mut net, host, &l).1 >= osis_base::format::DEPOSITS_WAITING_BYTES as u64, "half stays free");
 }
 
-// spec/sync.md §3, §5: a share whose inbox blob was cleared before its holder read it is sent
+// spec/sync-judgement.md §1, spec/sync-ids.md §6: a share whose inbox blob was cleared before its holder read it is sent
 // again after `INBOX_LIFETIME`, though the holder has since written elsewhere where the sender
 // sees it (that says nothing of this share; counting it dropped the share for good).
 #[test]
@@ -450,7 +450,7 @@ fn cleared_share_sent_again_after_the_holder_acted_elsewhere_spec_sync_3() {
     assert_eq!(net.engine(b).role_on(&t), Some(Role::Read), "the cleared share came again");
 }
 
-// spec/sync.md §5 (Clearing deposits): a reader fills a label's deposit budget with commits it
+// spec/sync-inbox.md §4 (clearing deposits): a reader fills a label's deposit budget with commits it
 // sealed and signed itself that open but are invalid (here a demoted writer's writes made after
 // its demotion, deposited by hand past its own judgment); another reader's self-removal, refused
 // meanwhile, reaches the admin once it is online, and the budget never runs over

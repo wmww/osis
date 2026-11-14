@@ -91,7 +91,7 @@ pub fn write_gone(sim: &mut NetSim, n: usize, t: Tid, v: &str) -> Res<osis_base:
     sim.commit(n, m)?.ok_or_else(|| sim.fail("wrote nothing"))
 }
 
-/// Two nodes of one account through one host (spec/sync.md §2, §6): the account's
+/// Two nodes of one account through one host (spec/sync-ids.md §2, spec/sync-judgement.md §2): the account's
 /// home label, the second node paired; both write items of the account's group under a lossy
 /// network with crashes mid-write.
 pub fn two_nodes_host(s: Seeds) -> Res<Report> {
@@ -117,7 +117,7 @@ pub fn two_nodes_host_under(s: Seeds, faults: LinkFaults) -> Res<Report> {
     sim.finish()
 }
 
-/// Three accounts share a group through two hosts (spec/sync.md §5, §6): A (admin, reaches
+/// Three accounts share a group through two hosts (spec/sync-ids.md §6, spec/sync-judgement.md §2): A (admin, reaches
 /// both, the only way data crosses between them), B (writer, s0 only), C (reader, s1 only);
 /// grants by inbox; host crashes mid-write, partitions.
 pub fn three_accounts_two_hosts(s: Seeds) -> Res<Report> {
@@ -142,7 +142,7 @@ pub fn three_accounts_two_hosts(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// A removed writer's bodies deleted by delete key (spec/sync.md §5 deletion by delete key; spec/commits.md
+/// A removed writer's bodies deleted by delete key (spec/sync-ids.md §6 deletion by delete key; spec/commits.md
 /// §5): W writes a writer-purgeable aspect, the admin removes W, then a remaining writer (no
 /// delete key) purges W's body while the admin is away; it is gone from the host and from
 /// every honest node.
@@ -189,7 +189,7 @@ pub fn removed_writer(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// Compaction, then deletion (spec/sync.md §7): two writers compact aspects while writing;
+/// Compaction, then deletion (spec/sync-compaction.md §1): two writers compact aspects while writing;
 /// covered bodies are deleted at the host once the snapshot is there; then a purge; no
 /// ping-pong.
 pub fn compaction(s: Seeds) -> Res<Report> {
@@ -234,7 +234,7 @@ fn live_at(sim: &NetSim, s: usize) -> BTreeSet<(LabelId, osis_base::BlobId)> {
     held.into_iter().flat_map(|l| h.store().live_ids(&l).unwrap_or_default().into_iter().map(move |b| (l, b))).collect()
 }
 
-/// A reader relays (spec/sync.md §5, §6): two hosts; the writer reaches
+/// A reader relays (spec/sync-ids.md §6, spec/sync-judgement.md §2): two hosts; the writer reaches
 /// only s0, a reader both, a second reader only s1; the second reader reads the writer's content
 /// carried by the first. The readers open the label while the admin registers the steps of the
 /// grants' rotations (an open answered with the old head follows the new one).
@@ -313,7 +313,7 @@ pub fn stranded_reseal(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// A host loses its data (spec/sync.md §6: a writer logs every must-hold body the label
+/// A host loses its data (spec/sync-judgement.md §2: a writer logs every must-hold body the label
 /// lacks): writers re-register the labels and the host pulls again; the quiescent check finds every
 /// must-hold body back.
 pub fn host_loses_data(s: Seeds) -> Res<Report> {
@@ -335,7 +335,7 @@ pub fn host_loses_data(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// A node offline across rotations catches up (spec/sync.md §5 Opens, Behind): a reader is
+/// A node offline across rotations catches up (spec/sync-ids.md §6 opens, Behind): a reader is
 /// off while the admin removes a reader and then a writer (two rotations, two steps) and keeps
 /// writing; back online it asks by its stale sync key and reads; the removed holders hold no
 /// later epoch.
@@ -379,7 +379,7 @@ pub fn offline_rotation(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// A grant to a group (spec/sync.md §3): a thing granted to group H, with H's admin away at the
+/// A grant to a group (spec/sync-judgement.md §1): a thing granted to group H, with H's admin away at the
 /// grant, reaches H's readers through the copy under H's label, a later reader too; a reader
 /// removed from H holds no later epoch of the thing, the others do.
 pub fn grant_to_group(s: Seeds) -> Res<Report> {
@@ -425,7 +425,7 @@ pub fn grant_to_group(s: Seeds) -> Res<Report> {
     if newest_read(&mut sim, c, &t)? != now || newest_read(&mut sim, e, &t)? != now {
         return Err(sim.fail("a staying reader of the group holds not the thing's newest epoch"));
     }
-    // a thing with secrets and so its own sync ID (spec/sync.md §2), granted to the group: its
+    // a thing with secrets and so its own sync ID (spec/sync-ids.md §2), granted to the group: its
     // readers read it through that sync ID
     let u = sim.thing_with_secrets(a, pa)?;
     sim.grant(a, u, h, Role::Read)?;
@@ -483,7 +483,7 @@ fn set_all(sim: &mut NetSim, n: usize, items: &[Tid], v: &str) -> Res<()> {
     sim.feed(n, Event::Local)
 }
 
-/// A grant whose inbox deposit is lost (spec/sync.md §3, §5): the admin's node crashes right
+/// A grant whose inbox deposit is lost (spec/sync-judgement.md §1, spec/sync-ids.md §6): the admin's node crashes right
 /// after granting, before the deposit reached the host; the grant reaches the grantee once the restarted node re-sends it.
 pub fn grant_lost_on_crash(s: Seeds) -> Res<Report> {
     let (mut sim, (a, pb, g)) = setup("grant_lost_on_crash", s, NetWeights::default(), |sim| {
@@ -523,7 +523,7 @@ fn new_chunk_bytes(old: &[u8], new: &[u8]) -> u64 {
 }
 
 /// Two nodes of one account edit a large blob of many chunks in turn through one host
-/// (spec/requirements.md Scale: a change inside a huge value costs O(change); spec/sync.md §1
+/// (spec/requirements.md Scale: a change inside a huge value costs O(change); spec/sync-ids.md §1
 /// chunk reuse): each reads the value whole (fetching the chunks it lacks), changes a few
 /// bytes and writes it back; what it logs per edit stays within 1.2x of the chunks the
 /// edit changed, plus the tree's root node and a fixed allowance for the commit and protocol.
@@ -582,7 +582,7 @@ pub fn large_edits(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// Pass work sets against full passes (spec/sync.md §6, §7): two hosts, an admin and a writer
+/// Pass work sets against full passes (spec/sync-judgement.md §2, spec/sync-compaction.md §1): two hosts, an admin and a writer
 /// reaching both and a writer reaching s1 only, writing at random under faults, then compactions (snapshots), purge-on-replace
 /// and expiring writes, a purge, a demotion of a writer, time past the bounds. Run as is and
 /// under `with_full_passes`, it must give the same run (`core/test/sim/tests/it/work_sets.rs`).
@@ -647,7 +647,7 @@ pub fn work_sets(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// Role moves against work sets and the re-judged set (spec/sync.md §6, §7; the differential is
+/// Role moves against work sets and the re-judged set (spec/sync-judgement.md §2, spec/sync-compaction.md §1; the differential is
 /// `core/test/sim/tests/it/work_sets.rs`): members added one by one under writes at skewed clocks,
 /// a guest whose grant ends by the clock, a node paired to a member, a change of role, two
 /// admins adding apart while one is removed (writes late, mid-history, flipped), a removal and a
@@ -803,7 +803,7 @@ pub fn coverer_revoked(s: Seeds) -> Res<Report> {
     sim.unsever(Party::N(a), Party::S(s));
     sim.run(40)?;
     sim.run_until_quiescent(60)?;
-    // A logs S1 again only while it has a live write (spec/sync.md §6): random writes may
+    // A logs S1 again only while it has a live write (spec/sync-judgement.md §2): random writes may
     // have removed them all
     let p = part(&mut sim)?;
     let live = sim.engine(a)?.delta_live(&s1, &t, &k).map_err(|e| sim.fail(e.to_string()))?;
@@ -816,7 +816,7 @@ pub fn coverer_revoked(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// Snapshot rights end to end (spec/commits.md §5, spec/sync.md §6, §7, spec/permissions.md §6):
+/// Snapshot rights end to end (spec/commits.md §5, spec/sync-judgement.md §2, spec/sync-compaction.md §1, spec/permissions.md §6):
 /// the seed picks a purge set, the thing's setting and a mix of compacters among an admin and two
 /// plain writers, under faults. A body stays at the host and reaches a node coming fresh unless it
 /// is replaced and a compacter wrote a snapshot after it (once out of history any writer's cover
@@ -1018,7 +1018,7 @@ pub fn peer_group(sim: &mut NetSim, ns: &[usize]) -> Res<Tid> {
     Ok(g)
 }
 
-/// spec/requirements.md (Decentralization), spec/sync.md §5, §10: holders with no host at all
+/// spec/requirements.md (Decentralization), spec/sync-ids.md §6, spec/sync-opens.md §4: holders with no host at all
 /// sync a group over peer links, by the seed's topology (one LAN, public addresses, relayed behind
 /// symmetric NATs, punched behind cone NATs), under link faults, partitions and crashes.
 pub fn no_host(s: Seeds) -> Res<Report> {

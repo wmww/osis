@@ -1,5 +1,5 @@
 ---------------------------- MODULE SyncConvergence ----------------------------
-(* Blob convergence of one label at one host (spec/sync.md §5-§7,              *)
+(* Blob convergence of one label at one host (spec/sync-ids.md §6,              *)
 (* spec/commits.md §5, history modes). A scenario module (MC.tla) fixes the    *)
 (* commits. Every drop that is not purge or expiry is as covered by a valid    *)
 (* snapshot; a `none` body is dropped once covered, and a writer holding one   *)

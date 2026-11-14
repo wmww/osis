@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Regression tests from the node-sync review (spec/sync.md §3, §5-§7; spec/crypto.md §4;
+//! Regression tests from the node-sync review (spec/sync-judgement.md §1, spec/sync-ids.md §6; spec/crypto.md §4;
 //! spec/commits.md §5; spec/permissions.md §3).
 
 use crate::net::{hosted, hosted_nodes};
@@ -80,7 +80,7 @@ fn purge_leaves_no_copy_spec_commits_5() {
     assert_eq!(net.engine(r).get(&t, &gone).unwrap(), None);
 }
 
-// spec/sync.md §6 (a must-not-hold blob holds nothing): writer a purges one delta of commit c
+// spec/sync-judgement.md §2 (a must-not-hold blob holds nothing): writer a purges one delta of commit c
 // whose two-delta blob p is under the label; a's rewrite q goes up in that pass and is kept, also
 // once writer b (offline through the purge, p was its body) is back and applies the purge.
 #[test]
@@ -122,7 +122,7 @@ fn purged_superset_holds_nothing_spec_sync_6() {
     assert_eq!(net.engine(b).get(&t, &gone).unwrap(), None);
 }
 
-// spec/sync.md §7 (a body with live writes leaves only while a carrier stays): writer a purges
+// spec/sync-compaction.md §1 (a body with live writes leaves only while a carrier stays): writer a purges
 // one delta of commit c whose two-delta blob p also holds a live write; p leaves the peer only
 // once a's rewrite q is there: after every hop the peer holds p or q (the kept live write is never
 // absent), and ends with q only.
@@ -190,7 +190,7 @@ fn full_peer() -> (Net, usize, usize, usize, Tid, Tid, osis_base::LabelId, osis_
     (net, host, a, b, t, t2, l, c, p[0], full)
 }
 
-// spec/sync.md §5, §10 (a peer that cannot read L takes what it pulls within its own caps and
+// spec/sync-ids.md §6, spec/sync-opens.md §4 (a peer that cannot read L takes what it pulls within its own caps and
 // says when it is full; presence there is what its stream showed): the label is at its byte cap at
 // the peer and a's next write does not fit: the peer stays within its cap, a keeps the write, and
 // a's status shows the peer full.
@@ -204,7 +204,7 @@ fn a_full_peer_stays_within_its_cap_and_the_writer_keeps_the_rest_spec_sync_10()
     assert!(net.refused_at(a, &l), "a's status shows the peer full");
 }
 
-// spec/sync.md §5 (an entry deletes are judged by is taken outside the caps), §7 (purge), §10:
+// spec/sync-ids.md §6 (an entry deletes are judged by is taken outside the caps), §7 (purge), §10:
 // as above, then a purges `c`: the purge request reaches the full peer, the purged body leaves
 // it, and the room freed takes the backlog the peer lacked, the purge-on-replace snapshot of the
 // emptied aspect and a's write that did not fit: b, reading through the peer only, reads it,
@@ -306,7 +306,7 @@ fn from_elsewhere(net: &mut Net, a: usize, b: usize, c: usize, g: Tid, role: Rol
     assert_eq!(net.engine(b).roster(&g).get(&tc).map(|e| e.role), Some(role), "applied from elsewhere");
 }
 
-// spec/sync.md §6-§7 (positive uncovered): a compactor deletes covered bodies; a writer that
+// spec/sync-judgement.md §2 (positive uncovered): a compactor deletes covered bodies; a writer that
 // has not fetched the snapshot yet treats them as may-hold and logs nothing again.
 #[test]
 fn no_log_again_ping_pong_spec_sync_6() {
@@ -330,7 +330,7 @@ fn no_log_again_ping_pong_spec_sync_6() {
     assert_eq!(net.read(b, t), Some(s("v3")));
 }
 
-// spec/sync.md §3 (one blob per commit, entitlement), spec/commits.md §4 (pending on
+// spec/sync-judgement.md §1 (one blob per commit, entitlement), spec/commits.md §4 (pending on
 // `created.0` only for things whose deltas the node holds or syncs): one commit touching a
 // shared thing and a private one goes under the group's label as one blob; a holder opens
 // only the shared section and applies it.
@@ -613,7 +613,7 @@ fn self_removal_shared_subgroup_spec_permissions_3() {
     assert!(net.sync(b).leaving().next().is_none());
 }
 
-// spec/sync.md §7 (two blobs of one commit with the same delta set: the higher blob ID goes):
+// spec/sync-compaction.md §1 (two blobs of one commit with the same delta set: the higher blob ID goes):
 // writers a and b both hold commit c while the peer pulls neither, and each places its own
 // encryption of its body; the peer pulls both, and the admin deletes the higher one there.
 #[test]
@@ -658,7 +658,7 @@ fn duplicate_encryptions_higher_goes_spec_sync_7() {
     assert_eq!(now, vec![both[0]], "one encryption stays");
 }
 
-// spec/sync.md §6 (a strict subset is must-not-hold beside a superset under the label, judged
+// spec/sync-judgement.md §2 (a strict subset is must-not-hold beside a superset under the label, judged
 // per host): writer a purges one delta of commit c, so h1 holds its rewrite q and no longer p;
 // b, back without hearing of the purge commit, still sees p at h2. At h1, q is no strict subset
 // for b (p is not there), so b keeps it, its own entries (p again) refused meanwhile.
@@ -722,7 +722,7 @@ fn strict_subset_needs_superset_at_that_host_spec_sync_6() {
     assert!(net.host_ids(h1, &l).contains(&q[0]), "q kept at h1: p is at h2 only");
 }
 
-// spec/sync.md §6 (sim host_loses_data once, seed 41): a host's data lost, a node restarted over its
+// spec/sync-judgement.md §2 (sim host_loses_data once, seed 41): a host's data lost, a node restarted over its
 // disk: every must-hold body goes up again.
 #[test]
 fn wiped_host_gets_bodies_back_from_restarted_node_spec_sync_6() {
@@ -743,7 +743,7 @@ fn wiped_host_gets_bodies_back_from_restarted_node_spec_sync_6() {
     assert!(!again.is_empty() && again.iter().all(|id| net.host_ids(host, &l).contains(id)), "{again:?}");
 }
 
-// spec/sync.md §5 Deposit, durable alike: c's write is held only by the reader b once the host
+// spec/sync-inbox.md §3 deposit, durable alike: c's write is held only by the reader b once the host
 // lost its data with every writer lacking it (a was away, c is gone), and a's demotion of b
 // rotates the write key: b's copy, stamped under a key the head no longer takes, goes as a
 // deposit and a promotes it
@@ -784,7 +784,7 @@ fn reader_copy_after_rotation_goes_as_a_deposit_durable_spec_sync_5() {
     assert_eq!(net.read(a, t), Some(s("v")));
 }
 
-// spec/sync.md §6 (no logging of a body a delete removed, keyed per body): commit c writes a plain
+// spec/sync-judgement.md §2 (no logging of a body a delete removed, keyed per body): commit c writes a plain
 // register and a purge-on-replace one, two bodies; both are overwritten, the second's body is
 // deleted past its bound, and the host is wiped: the first's body (must-hold: kept history, so no
 // compaction snapshot covers it) goes up again though another body of c was deleted
@@ -910,7 +910,7 @@ fn link_joiner_leave_forks_converge_spec_crypto_4() {
     assert_eq!(ea.read.current(), ed.read.current(), "one current read epoch at both");
 }
 
-// spec/sync.md §5 (reading without the head's read epoch: the pass counts as complete only
+// spec/sync-ids.md §6 (reading without the head's read epoch: the pass counts as complete only
 // once the node holds it), spec/permissions.md §4, spec/crypto.md §4 (Carried): R reads G
 // through M (B, M's admin, reads G too). B removes C from M, rotating M; A re-seals G at M's new
 // keyset and registers it while R has G open. R holds G's rotation (the epoch established) but
@@ -990,7 +990,7 @@ fn no_secret_of_the_heads_read_epoch_is_stranded_spec_sync_5() {
 }
 
 
-// spec/sync.md §5 (reading without the head's read epoch): another admin removes two readers,
+// spec/sync-ids.md §6 (reading without the head's read epoch): another admin removes two readers,
 // so the host's head registers the second removal's epoch, whose rotation commit is wrapped
 // under the first's (spec/crypto.md §5). The first rotation reaches this admin only after the
 // second was listed, which opened under nothing then. A node then holding the first epoch but
@@ -1036,7 +1036,7 @@ fn rotation_wrapped_under_epoch_learned_later_is_read_spec_sync_5() {
     assert_eq!(net.read(b, t), Some(s("after")), "a's write {w:?} left it");
 }
 
-// spec/sync.md §2, §5 (a step's claim set is the registrar's word), spec/permissions.md §5.1, §7:
+// spec/sync-ids.md §2, spec/sync-ids.md §6 (a step's claim set is the registrar's word), spec/permissions.md §5.1, §7:
 // two strangers redeem one single-use link, Y first. The sharer holds only X's redemption when it
 // finalizes the link (its frontier leaves Y's out) and rotates K listing X. X, handed Y's earlier
 // redemption directly, judges itself out of K until it holds the finalize, which only K's new step
@@ -1485,7 +1485,7 @@ fn stranded_goes_to_a_connected_admin_spec_permissions_4() {
     assert_eq!(net.engine(c).epochs(&g).unwrap().read.newest(), e1, "re-sealed");
 }
 
-// spec/sync.md §5 Deposit, §6 Reader: b's writes concurrent with its demotion, refused under the
+// spec/sync-inbox.md §3 deposit, §6 Reader: b's writes concurrent with its demotion, refused under the
 // rotated write key (code 9), are invalid at b too (kept only for its user): b deposits none of
 // them, since no writer would promote them and nobody deletes them, so they would hold the
 // label's deposit budget for good

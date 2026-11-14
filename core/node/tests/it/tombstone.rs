@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Lasting tombstones (spec/commits.md §5, spec/sync.md §6): a purged permanent delta keeps its
+//! Lasting tombstones (spec/commits.md §5, spec/sync-judgement.md §2): a purged permanent delta keeps its
 //! header for good, at the label and at a new node; every other retention leaves none.
 
 use crate::common::LIST;
@@ -73,7 +73,7 @@ fn purge_item(net: &mut Net, n: usize, t: Tid, item: PurgeItem, r: Retention) ->
 }
 
 /// `at_the_peer`, each delta set cut to the parts on `t` (an entry also carrying a part on a thing
-/// outside the label stands for the header alone there: the shared blob, spec/sync.md §3).
+/// outside the label stands for the header alone there: the shared blob, spec/sync-judgement.md §1).
 fn at_peer_on(net: &mut Net, n: usize, host: usize, l: &LabelId, c: CommitId, t: Tid) -> Vec<Vec<usize>> {
     let on: Vec<usize> = net.engine(n).header(&c).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| a.tid == t).map(|(i, _)| i).collect()).unwrap_or_default();
     at_the_peer(net, n, host, l, c).into_iter().map(|p| p.into_iter().filter(|i| on.contains(i)).collect()).collect()
@@ -142,7 +142,7 @@ fn sees_tombstone(net: &mut Net, n: usize, t: Tid, c: CommitId, p: CommitId, aut
     }
 }
 
-// spec/commits.md §5, spec/sync.md §6: a purged permanent delta stays under the label as its header
+// spec/commits.md §5, spec/sync-judgement.md §2: a purged permanent delta stays under the label as its header
 // alone, whatever the purge commit's own retention, and a new node applies it, seeing who wrote
 // it and when; the body is gone from the host.
 #[test]
@@ -525,7 +525,7 @@ fn a_kicked_writers_tombstone_stays_spec_perm_5_1() {
     sees_tombstone(&mut net, n, t, c, p, holder);
 }
 
-// spec/sync.md §1: a header-only blob's prefix carries no expiry and no commitment: any other is bad
+// spec/sync-ids.md §1: a header-only blob's prefix carries no expiry and no commitment: any other is bad
 // input, so a writer cannot set a tombstone to expire at the host.
 #[test]
 fn header_only_prefix_is_checked_spec_sync_1() {
@@ -818,7 +818,7 @@ fn known_entries(net: &mut Net, n: usize, host: usize) -> usize {
     net.labels_at(host).into_iter().map(|l| net.sync(n).entries(&l).len()).sum()
 }
 
-// spec/sync.md §6, spec/permissions.md §6: a holder that held the demotion first comes back to find
+// spec/sync-judgement.md §2, spec/permissions.md §6: a holder that held the demotion first comes back to find
 // the purge's delete at the host: the message has no live write (a later write killed it), so a
 // delete would keep it out; but the request falls there, so the holder logs it again and the
 // writer that dropped it takes it.
@@ -859,7 +859,7 @@ fn a_holder_that_saw_a_fallen_purges_delete_logs_again_spec_sync_6() {
     }
 }
 
-// spec/sync.md §6, spec/permissions.md §6: a purge that fell after every holder dropped the body: it
+// spec/sync-judgement.md §2, spec/permissions.md §6: a purge that fell after every holder dropped the body: it
 // is gone for good (no holder), the part missing at each, no purge shown. The header-only blobs up
 // by then stay, judged lasting by nobody: no log and delete for good.
 #[test]

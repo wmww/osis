@@ -1,4 +1,4 @@
-//! A new step of a label (spec/sync.md §5): when one is due, and registering it at a source.
+//! A new step of a label (spec/sync-ids.md §6): when one is due, and registering it at a source.
 
 use super::*;
 
@@ -18,7 +18,7 @@ impl SyncEngine {
         false
     }
 
-    /// Whether this admin re-registers `l` of `g` before anything else (spec/sync.md §5): it
+    /// Whether this admin re-registers `l` of `g` before anything else (spec/sync-ids.md §6): it
     /// holds, established, the head's epochs (`keys`) and a newer one, or the head's deposit key
     /// is not the one the actor's deposit seed derives (refreshed) and nothing under `l` that
     /// could carry a newer seed waits to be opened or applied (`keys_caught_up`: else a lagging
@@ -48,7 +48,7 @@ impl SyncEngine {
         !self.engine.keys_write_unapplied(g).unwrap_or(true)
     }
 
-    /// Registration at a source (spec/sync.md §5, Register): a source on a step of the recorded
+    /// Registration at a source (spec/sync-ids.md §6, register): a source on a step of the recorded
     /// path below its newest gets the recorded child of its head, by any reader holding the path
     /// (steps verify themselves); an admin holding the source head's epochs and a newer
     /// established one issues a child of it once `step_settled` (re-registration; the actor's role
@@ -60,7 +60,7 @@ impl SyncEngine {
         let (g, keys, head, retry) = (lc.group, lc.keys.clone(), lc.head.clone(), lc.step_retry);
         // a step refused for now goes again only after its back-off; meanwhile the pass runs
         // under the source's head: what it places is wrapped under the newest read epoch, so a
-        // removed holder still opening that head gets nothing it can read (spec/sync.md §5)
+        // removed holder still opening that head gets nothing it can read (spec/sync-ids.md §6)
         let Some(head) = head else { return Ok(false) };
         // a head the peer refused a child of is not where the peer is: nothing goes under it
         if retry > self.now() || self.doubting(conn, &l) {

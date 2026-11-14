@@ -154,7 +154,7 @@ pub fn seal_box(recipient: &KemPublicKey, slot: &BoxSlot, keyset: Option<Epoch>,
     seal(recipient, &ad, &payload, rng)
 }
 
-/// What an entry box carries (spec/sync.md §2): the read secret of the epoch its step registers
+/// What an entry box carries (spec/sync-ids.md §2): the read secret of the epoch its step registers
 /// and, when that epoch supersedes one, the earlier secret its rotation commit is wrapped under;
 /// and the sync secret whose label key the step registers.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -548,7 +548,7 @@ mod tests {
         assert_eq!(open_box(&kem, &at, BoxForm::Sealed { keyset: None, suite: 1 }, &b), Err(Error::Malformed("box item does not name its key's epoch")));
     }
 
-    // spec/wire.md §7, spec/sync.md §2: an entry box names epochs of the group, with or without the earlier secret; a box of the wrong payload or slot, a write secret, or a secret its epoch does not name, stays shut
+    // spec/wire.md §7, spec/sync-ids.md §2: an entry box names epochs of the group, with or without the earlier secret; a box of the wrong payload or slot, a write secret, or a secret its epoch does not name, stays shut
     #[test]
     fn entry_box_round_trip() {
         let mut rng = SeededRng::from_u64(0);

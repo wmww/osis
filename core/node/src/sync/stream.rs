@@ -1,4 +1,4 @@
-//! The node log stream between readers (spec/sync.md §10, Stream; issues/sync-rewrite.md, One
+//! The node log stream between readers (spec/sync-streams.md §4, stream; issues/sync-rewrite.md, One
 //! node log, one cursor): one stream per connection over the node log (`osis_store` nodelog),
 //! filtered by the connection's shared set S, behind opaque cursors.
 //!
@@ -154,7 +154,7 @@ pub(crate) struct Serving {
     unreported: std::collections::VecDeque<Unreported>,
     /// A Pull came on this connection.
     asked: bool,
-    /// Where the requester reported storing the stream (spec/sync.md §10 Reports): the first
+    /// Where the requester reported storing the stream (spec/sync-streams.md §4 reports): the first
     /// Pull's cursor (what it stored before this connection), then each `Applied`'s. A later
     /// Pull's cursor reports nothing: it may name positions not stored yet. For this connection
     /// only; it names every member `pulled` but those in `own`.
@@ -528,7 +528,7 @@ impl SyncEngine {
     }
 
     /// Records the entries of own commits `cs` that `conn`'s requester reported holding
-    /// (spec/sync.md §5 Placed): under a label L served to it as a member (it proved reading
+    /// (spec/sync-status.md §2 Held elsewhere): under a label L served to it as a member (it proved reading
     /// L), its reported position at or past where the node log first held the entry, and an
     /// ended member's `until` too (what it was served). Kept by its source (`pass_source`): a
     /// peer known by nothing here reports nothing, and neither does an own node (it leaves by
@@ -653,7 +653,7 @@ impl SyncEngine {
         let picked: Vec<(u64, LabelId, BlobId, bool)> = self.state.mem_log.after(from).filter(|(s, l, _, added)| (list.contains(l) && (*added || *s > after)) || (members.contains(l) && *s > after)).collect();
         let mut at = self.state.mem_log.seq();
         // a memory entry goes with its bytes up to this node's own limit, whatever the requester
-        // asked: one superseded before a fetch of it arrives is never fetched (spec/sync.md §10,
+        // asked: one superseded before a fetch of it arrives is never fetched (spec/sync-opens.md §4,
         // Bodies)
         let (inline, crossed) = self.streams.get(&conn).map_or((0, BTreeSet::new()), |s| (s.serving.inline_limit.max(self.cfg.inline_limit), s.serving.crossed.clone()));
         let mut out = Vec::new();
@@ -686,7 +686,7 @@ impl SyncEngine {
     /// a member being ended whose `until` that passed closes before the reply
     /// (`shared_until_due`).
     fn stream_serve(&mut self, conn: ConnId, p: Pull, out: &mut Vec<Action>) -> Result<()> {
-        // a connection with no shared set serves no stream (spec/sync.md §10)
+        // a connection with no shared set serves no stream (spec/sync-opens.md §4)
         if !self.records.shared.contains_key(&conn) {
             return self.shared_send(conn, Message::Error { id: p.id, code: osis_proto::Code::NOT_ADMITTED }, out);
         }
@@ -706,7 +706,7 @@ impl SyncEngine {
             Ok((base, join_at, horizon))
         })?;
         // a cursor below the deletion horizon: what was deleted since may be in no event any
-        // more, so the requester gets a listing from the start, marked so (spec/sync.md §10)
+        // more, so the requester gets a listing from the start, marked so (spec/sync-opens.md §4)
         let trimmed = p.cursor.is_some() && base.is_some_and(|b| b < horizon) || p.joins.iter().zip(&join_at).any(|((_, c), (_, at))| c.is_some() && at.is_some_and(|a| a < horizon));
         let members = self.stream_members(conn);
         {
@@ -982,7 +982,7 @@ impl SyncEngine {
         let listing = matches!(stop, Stop::Listing);
         let lag = match (stop, was_in, join) {
             (Stop::Listing, ..) => None,
-            // a position this side reported storing L at (spec/sync.md §10 Lost)
+            // a position this side reported storing L at (spec/sync-opens.md §6 lost)
             (Stop::Lost(c), ..) => c,
             _ if named => None,
             (Stop::Here, true, _) => p.settled.clone(),
@@ -1018,7 +1018,7 @@ impl SyncEngine {
     }
 
     /// The peer's `Lost` for `l` came after this side closed it (the two crossed): where `l`
-    /// stopped for this side is the Lost's (spec/sync.md §10, Lost), never above the position
+    /// stopped for this side is the Lost's (spec/sync-opens.md §6, lost), never above the position
     /// this side kept, which may be past events the peer skipped for a member it had ended
     /// (`until`). The kept lag, by the peer's key or in the record, becomes the Lost's.
     pub(super) fn stream_lost_closed(&mut self, conn: ConnId, l: &LabelId, c: Option<Vec<u8>>) -> Result<()> {
@@ -1275,7 +1275,7 @@ impl SyncEngine {
     }
 
     /// Whether entry `b` of `l` can open from what is here: its bytes held and its wrap kept
-    /// (a shredded one's comes back only with a fetch under `l`, spec/sync.md §6).
+    /// (a shredded one's comes back only with a fetch under `l`, spec/sync-judgement.md §2).
     pub(crate) fn opens_here(&mut self, l: &LabelId, b: &BlobId) -> bool {
         self.engine.has_blob(b) && !self.state.entries.get(&(*l, *b)).is_some_and(super::state::Entry::shredded)
     }
@@ -1535,7 +1535,7 @@ impl SyncEngine {
     }
 
     /// A relay-only entry to each reader sharing `l` but `except` (its source) and a member being
-    /// ended (`until`): a Stream with no cursor, as no position names it (spec/sync.md §9).
+    /// ended (`until`): a Stream with no cursor, as no position names it (spec/sync-compaction.md §2).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn stream_relay(&mut self, except: Option<ConnId>, l: LabelId, blob_id: BlobId, blob: &[u8], wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<osis_crypto::Signature>, out: &mut Vec<Action>) -> Result<()> {
         let to: Vec<ConnId> = self.records.shared.iter().filter(|(c, s)| Some(**c) != except && s.live(&l)).map(|(c, _)| *c).collect();
@@ -1757,7 +1757,7 @@ impl SyncEngine {
 mod tests {
     use super::*;
 
-    // spec/sync.md §10 (Reports): a message bringing an ended member the requester tracks to its
+    // spec/sync-streams.md §4 (reports): a message bringing an ended member the requester tracks to its
     // `until` asks a report, events or none, unless one awaited covers it or the requester
     // already reported a position past it; a member it does not track is not reported for
     #[test]
@@ -1778,7 +1778,7 @@ mod tests {
         assert!(!s.sent(&Some(vec![2]), BTreeSet::new(), 14, &[], Vec::new(), &untils), "nothing to ask");
     }
 
-    // spec/sync.md §10 (Reports): what the requester reported storing, per member: the first
+    // spec/sync-streams.md §4 (reports): what the requester reported storing, per member: the first
     // Pull's cursor and a join's first position; a later Pull's cursor reports nothing (it may
     // name what is not stored yet); a join is at its own position until the message merging it
     // is reported, a page it reached once that page is

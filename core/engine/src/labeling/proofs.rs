@@ -1,4 +1,4 @@
-//! What a connection's proof exchange shows about accounts (spec/sync.md §10, Connection proofs).
+//! What a connection's proof exchange shows about accounts (spec/sync-opens.md §2, connection proofs).
 
 use crate::engine::Engine;
 use crate::error::Result;
@@ -15,7 +15,7 @@ impl Engine {
     }
 
     /// Whether `key` signs for the account `record` creates at an epoch open by the rotations
-    /// held here: a closed epoch proves nothing (spec/sync.md §10). An account not held at all
+    /// held here: a closed epoch proves nothing (spec/sync-opens.md §4). An account not held at all
     /// has only its first epoch to show: the record's key.
     pub fn account_key_open(&self, record: &CreationRecord, key: &[u8; 32]) -> bool {
         let CreationRecord::KeyActor { public_key, account: true, .. } = record else { return false };

@@ -194,7 +194,7 @@ fn round_trip(n: u64, size: usize, rate: usize, step_ms: u64) -> Run {
     r
 }
 
-// spec/sync.md §6 (flow control): 72 MiB up and back at 64 KB/s (each way about 20 minutes, more than the old
+// spec/sync-judgement.md §2 (flow control): 72 MiB up and back at 64 KB/s (each way about 20 minutes, more than the old
 // queue caps and with replies minutes apart) on one session; queues stay within the window
 #[test]
 fn bulk_over_slow_link_spec_sync_6() {
@@ -203,7 +203,7 @@ fn bulk_over_slow_link_spec_sync_6() {
     assert!(r.up.max > WINDOW / 2, "the window was used: {}", r.up.max);
 }
 
-// spec/sync.md §6: at 1 KB/s one request takes over a quarter of an hour; progress keeps the
+// spec/sync-judgement.md §2: at 1 KB/s one request takes over a quarter of an hour; progress keeps the
 // session up
 #[test]
 fn crawling_link_spec_sync_6() {
@@ -227,7 +227,7 @@ fn whole_fetch(l: &Label, k: u32) -> Message {
     Message::Fetch { id: NODE_IDS | k, label: l.id, max_reply: REPLY_BUDGET as u64, ids: vec![osis_label::blob_id(&k.to_le_bytes())] }
 }
 
-// spec/sync.md §6: requests beyond the window wait for answers; one always goes
+// spec/sync-judgement.md §2: requests beyond the window wait for answers; one always goes
 #[test]
 fn window_holds_requests_back_spec_sync_6() {
     let mut c = ready();
@@ -243,7 +243,7 @@ fn window_holds_requests_back_spec_sync_6() {
     }
 }
 
-// spec/sync.md §6: a request waiting for room in the window, however long, is not out: it goes
+// spec/sync-judgement.md §2: a request waiting for room in the window, however long, is not out: it goes
 // in the order made once answers make room, its stall clock starts when it goes, and its answer
 // comes up then
 #[test]

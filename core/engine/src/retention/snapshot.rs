@@ -410,7 +410,7 @@ pub(crate) fn own_covers(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Vec<C
 }
 
 /// Whether `s` drops held body `c` as its cover: `covered`, but of two covered-equal snapshots only
-/// the higher commit ID goes (spec/sync.md §7).
+/// the higher commit ID goes (spec/sync-compaction.md §1).
 pub(crate) fn drops_under(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
     if covered(tx, s, c, tid, ak)? != Some(true) {
         return Ok(false);
@@ -629,7 +629,7 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
     let (tid, ak) = (*tid, ak.clone());
     // what no write can show any more goes first, by ordinary commits of at most
     // `MAX_DELTA_BARE` content-less elements each: its bodies die and the snapshot does not
-    // carry it (spec/sync.md §7)
+    // carry it (spec/sync-compaction.md §1)
     let probe = osis_crdt::Stamp::new(Default::default(), osis_crdt::Source::commit(CommitId([0; 32])), 1);
     let mut last = None;
     while !memory && osis_schema::core_types::is_content(ak.as_str()) {
@@ -733,7 +733,7 @@ impl Engine {
     /// Writes the re-snapshots owed after purge requests (`Indexes::resnapshots_owed`) that are
     /// due (`Core::resnapshots_due`), each in a transaction of its own (`owed_resnapshot`): it
     /// carries the purged writes value-less, so a node that never held them reads as this one
-    /// once it holds it; duplicates from several writers are harmless (spec/sync.md §7). Each
+    /// once it holds it; duplicates from several writers are harmless (spec/sync-compaction.md §1). Each
     /// aspect whose snapshot failed, with why.
     pub fn purge_resnapshots(&mut self) -> Result<Vec<(Tid, Ak, Error)>> {
         let mut due = std::mem::take(&mut self.core.resnapshots_due);
@@ -774,7 +774,7 @@ impl Engine {
         if osis_schema::core_types::is_addenda(ak.as_str()) {
             return Err(Error::Misuse("addenda.0 is never compacted"));
         }
-        // a signal holds no state: nothing to snapshot (spec/sync.md §7)
+        // a signal holds no state: nothing to snapshot (spec/sync-compaction.md §1)
         if ak.signal() {
             return Ok(None);
         }

@@ -1,4 +1,4 @@
-//! Bundle import (spec/sync.md §11, spec/wire.md §12): osis-label's reader and importer (paths,
+//! Bundle import (spec/sync-streams.md §6, spec/wire.md §12): osis-label's reader and importer (paths,
 //! stamps and blob IDs verified as a store does), yielding paths and log events as a peer's
 //! stream would, with no cursor.
 

@@ -222,7 +222,7 @@ impl Parts {
 
 /// Whether a content commit of the memory class (`memory`) or the durable one may carry `ak`,
 /// alike at every node (spec/commits.md §2): its `+` marker is the class, and an ephemeral
-/// signal is in neither (it travels in a relay-only commit, spec/sync.md §9). A part on an
+/// signal is in neither (it travels in a relay-only commit, spec/sync-compaction.md §2). A part on an
 /// aspect of another class is never applied, by anyone.
 pub(crate) fn fits_class(ak: &osis_base::Ak, memory: bool) -> bool {
     ak.ephemeral() == memory && !(memory && ak.signal())
@@ -1380,7 +1380,7 @@ impl Engine {
     }
 
     /// `ingest` of an account's rotation with list blobs that came with it (under the
-    /// same label, spec/sync.md §3): the thing lists of this rotation among them that verify are
+    /// same label, spec/sync-judgement.md §1): the thing lists of this rotation among them that verify are
     /// held in the same transaction, before it applies, so what they name never reads as
     /// unlisted here. Others are left (`hold_lists`).
     pub fn ingest_with_lists(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>, lists: &[Vec<u8>]) -> Result<Ingested> {
@@ -1389,7 +1389,7 @@ impl Engine {
 
     /// Receives a memory commit (session form, spec/commits.md §2-§3) through the commit path,
     /// every row it derives in memory. `room`: what holding it may cost, as `memory_charge`
-    /// counts it (the node cap, spec/sync.md §9 Caps): it waits undecoded until its header lists,
+    /// counts it (the node cap, spec/sync-compaction.md §2 caps): it waits undecoded until its header lists,
     /// pages and value roots are held (`reach::walk`), and when its parts not held here could
     /// cost more (`memory::new_parts_bound`, from their bytes, their pages' and their values'
     /// roots) it is `TooLarge`, nothing
@@ -1564,7 +1564,7 @@ impl Engine {
 
     /// Applies waiting memory commit `id` (pending for its blobs, its `ts` or an epoch) if its
     /// wait is over, within `room`, what holding it may cost under its label's cap now
-    /// (spec/sync.md §9 Caps, `memory::memory_gate`): `TooLarge` when its bound passes it, nothing
+    /// (spec/sync-compaction.md §2 caps, `memory::memory_gate`): `TooLarge` when its bound passes it, nothing
     /// of it kept. `None` when it is not waiting here. Waiting memory commits are applied only
     /// so, never by `reexamine`: the room is node-sync's.
     pub fn apply_waiting_memory(&mut self, id: &CommitId, room: u64) -> Result<Option<Ingested>> {
@@ -1616,7 +1616,7 @@ impl Engine {
         self.core.ix.pending.iter().map(|(k, v)| (*k, v.clone())).collect()
     }
 
-    /// The actors a label of `thing` known only by a hint is for (spec/sync.md §5: claims on a
+    /// The actors a label of `thing` known only by a hint is for (spec/sync-ids.md §6: claims on a
     /// step not verified yet): its applied holders, the holders its applied `secrets.0` boxes
     /// (one may read it through an actor a rotation boxed, with no grant held), and `named`,
     /// what the inbox blobs that named the label say of it (`keys::inbox_named`); those this

@@ -1,4 +1,4 @@
-//! Role `sync` (spec/permissions.md §1-§3, spec/sync.md §2): below read, it gives the sync secret
+//! Role `sync` (spec/permissions.md §1-§3, spec/sync-ids.md §2): below read, it gives the sync secret
 //! and with it the label sync key, and nothing to read.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -68,7 +68,7 @@ fn newest_step_keys(alice: &Osis, g: Tid) -> BTreeSet<[u8; 32]> {
     step_sync_keys(alice, g).into_iter().map(|k| k.to_bytes()).filter(|k| mine.contains(k)).collect()
 }
 
-// spec/permissions.md §1, spec/sync.md §2-§3: a sync grant reaches Bob by his inbox with his box of
+// spec/permissions.md §1, spec/sync-ids.md §2-§3: a sync grant reaches Bob by his inbox with his box of
 // the sync secret; he derives the label's current sync key from it, and holds no read, write or
 // admin secret: no section of the group opens, so he reads nothing of it.
 #[test]
@@ -168,7 +168,7 @@ fn a_reader_demoted_to_sync_keeps_the_sync_secret_alone_spec_permissions_3() {
     assert_eq!(bob.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), None, "what only they read goes");
 }
 
-// spec/sync.md §3, spec/permissions.md §3: a holder of sync alone reads no rotation under the
+// spec/sync-judgement.md §1, spec/permissions.md §3: a holder of sync alone reads no rotation under the
 // label (its commits open under read secrets), so a rotation boxing it reaches it by its inbox:
 // Bob derives the new sync key after Carol's removal.
 #[test]
@@ -191,7 +191,7 @@ fn a_rotation_reaches_a_sync_only_holder_by_its_inbox_spec_sync_3() {
     assert!(keys.is_disjoint(&derived(&secrets(carol, g, Role::Sync))), "Carol does not");
 }
 
-// spec/permissions.md §3, spec/sync.md §3, spec/wire.md §9: a removed holder learns its removal
+// spec/permissions.md §3, spec/sync-judgement.md §1, spec/wire.md §9: a removed holder learns its removal
 // by the notice its inbox gets, judged by the author's chain. Bob, holding sync alone, read
 // nothing under the group's label, so Carol's admin grant (after his) reaches him only as the
 // chain the notice carries: he then holds no role on the group, drops its sync secret and syncs

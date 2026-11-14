@@ -18,7 +18,7 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
-// spec/sync.md §4, spec/requirements.md Data a node cannot read: no tid, AK or author key reaches the host's storage
+// spec/sync-ids.md §5, spec/requirements.md Data a node cannot read: no tid, AK or author key reaches the host's storage
 #[test]
 fn stored_bytes_hold_no_plaintext_identifiers() {
     let mut w = World::new();
@@ -68,7 +68,7 @@ fn stored_bytes_hold_no_plaintext_identifiers() {
     }
 }
 
-// spec/requirements.md Deletion (forward secure), spec/sync.md §4: a node hosting a label it can
+// spec/requirements.md Deletion (forward secure), spec/sync-ids.md §5: a node hosting a label it can
 // also read holds the read secret, so a wrap it kept would open the blob: after a delete, an
 // expiry, a re-wrapped-then-deleted wrap and the label dropped (hosting stopped), an attacker holding the device (every key the
 // current root yields) and every row the host store ever wrote finds none of those wraps

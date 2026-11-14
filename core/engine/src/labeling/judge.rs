@@ -32,7 +32,7 @@ pub struct Judge<'a> {
 
 impl Core {
     /// The account `t` is private to: its reader actor is the account or the account's devices
-    /// actor, so only the account's nodes read it (spec/sync.md §10, Connection proofs).
+    /// actor, so only the account's nodes read it (spec/sync-opens.md §2, connection proofs).
     pub fn private_to(&self, t: &Tid) -> Option<Tid> {
         let r = self.reader_of(t);
         if self.is_account(&r) { Some(r) } else { self.devices_owner(&r) }
@@ -86,7 +86,7 @@ impl Judge<'_> {
         Judgment::Unknown
     }
 
-    /// Whether any actor is **known** here (spec/sync.md §10, Connection proofs): through the
+    /// Whether any actor is **known** here (spec/sync-opens.md §2, connection proofs): through the
     /// rosters this node holds, it holds a role on a thing other than itself that is not private
     /// to another account (`Core::private_to`). A node of another account is known only by the
     /// account it proves: its node key goes only to its own account's nodes. A departed actor is
@@ -105,7 +105,7 @@ impl Judge<'_> {
 
 impl Engine {
     /// The signing keys of the key actors on `g`'s read role's roster here that a claim set lists
-    /// by static entry (spec/sync.md §2): not a node, not an account. O(roster).
+    /// by static entry (spec/sync-ids.md §2): not a node, not an account. O(roster).
     pub fn static_listed(&mut self, g: &Tid) -> Result<Vec<VerifyingKey>> {
         let a = self.core.reader_of(g);
         let holders: BTreeSet<Tid> = self.core.key_holders(&a).into_iter().map(|h| h.0).filter(|m| self.core.is_key_actor(m)).collect();

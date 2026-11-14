@@ -380,7 +380,7 @@ fn write_nonces_per_session() {
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
 
-// spec/sync.md §10 (unix), spec/wire.md §11.2 (Error 1), notes/client-port.md §0, §5: the main-actor tier comes from the unix transport alone: a keyed InProcess peer on the node's own listener is refused at Auth (Error 1) and its calls too
+// spec/sync-opens.md §4 (unix), spec/wire.md §11.2 (Error 1), notes/client-port.md §0, §5: the main-actor tier comes from the unix transport alone: a keyed InProcess peer on the node's own listener is refused at Auth (Error 1) and its calls too
 #[test]
 fn keyed_peer_is_never_main() {
     let d = Dir::new();
@@ -400,7 +400,7 @@ fn keyed_peer_is_never_main() {
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
 
-// spec/sync.md §10 (unix path sockets), notes/client-port.md §5: the socket directory is made 0700 and used only when it is this uid's, mode 0700 and not a symlink; the socket name fits sun_path
+// spec/sync-opens.md §4 (unix path sockets), notes/client-port.md §5: the socket directory is made 0700 and used only when it is this uid's, mode 0700 and not a symlink; the socket name fits sun_path
 #[test]
 fn socket_dir_rules() {
     use std::os::unix::fs::PermissionsExt;

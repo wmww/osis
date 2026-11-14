@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Local passes (spec/sync.md §5, co-reader peer): a label a node syncs with no host is served
+//! Local passes (spec/sync-ids.md §6, co-reader peer): a label a node syncs with no host is served
 //! as such a host would hold it after its sync, so what the label must no longer hold leaves the
 //! served state too, and a removal moves its head; under a label with hosts the node's own
 //! entries are placed in its store, and what it must not hold of those no host took leaves it.
@@ -40,7 +40,7 @@ fn listed(net: &mut Net, n: usize, l: &LabelId) -> Vec<BlobId> {
     net.sync(n).entries(l).into_iter().map(|(id, _)| id).collect()
 }
 
-// spec/sync.md §5 (co-reader peer: served complete), spec/commits.md §5 (a purge drops every body
+// spec/sync-ids.md §6 (co-reader peer: served complete), spec/commits.md §5 (a purge drops every body
 // carrying the values, chunks included): a purged large value's chunks leave the served state
 // and the node.
 #[test]
@@ -70,7 +70,7 @@ fn purged_chunks_leave_local_label_spec_sync_5() {
     assert_eq!(bodies, 0, "the purged body's entry went");
 }
 
-// spec/sync.md §5 (re-registration: an admin holding a newer established epoch issues a child of
+// spec/sync-ids.md §6 (re-registration: an admin holding a newer established epoch issues a child of
 // the head), spec/permissions.md §3 (a removal rotates): removing a writer moves the head of the
 // label served with no host, so the removed holder's old keys open nothing new.
 #[test]
@@ -93,7 +93,7 @@ fn removal_moves_local_head_spec_sync_5() {
     assert_ne!(tip.keys.write, genesis.keys.write);
 }
 
-// spec/sync.md §5 (expiry: at the prefix's T the entry goes outright), spec/commits.md §5: an
+// spec/sync-ids.md §6 (expiry: at the prefix's T the entry goes outright), spec/commits.md §5: an
 // expired body leaves the label served with no host.
 #[test]
 fn expired_body_leaves_local_label_spec_sync_5() {
@@ -114,7 +114,7 @@ fn expired_body_leaves_local_label_spec_sync_5() {
     assert!(ids.iter().all(|id| !net.sync(a).holds_blob(id)), "and its bytes");
 }
 
-// spec/sync.md §7 (a body with live writes leaves a label only while another entry carries
+// spec/sync-compaction.md §1 (a body with live writes leaves a label only while another entry carries
 // them), spec/commits.md §5 (purge on replace): a map body partly replaced, its other key still
 // live, leaves the label served with no host in the replacing transaction, the writer's cover
 // carrying that key under it.
@@ -148,7 +148,7 @@ fn purge_on_replace_body_carried_on_local_label_spec_sync_7() {
     assert!(snap(&mut net), "k2 is carried under the label by a snapshot");
 }
 
-// spec/sync.md §5 (re-registration issues a child of the head; a recorded path is registered
+// spec/sync-ids.md §6 (re-registration issues a child of the head; a recorded path is registered
 // before a new step): three co-readers with no host, two of them admins; a removal's
 // rotation gives the label one new step at every node, not one per admin or per connection.
 #[test]
@@ -178,7 +178,7 @@ fn one_step_per_rotation_without_host_spec_sync_5() {
     }
 }
 
-// spec/sync.md §3 (a certificate copy carries the blobs its parts link), §5 (co-reader peer: what
+// spec/sync-judgement.md §1 (a certificate copy carries the blobs its parts link), §5 (co-reader peer: what
 // a host's sync would delete leaves the served state): once the copy has gone (here expired),
 // the entries of the blobs it linked go too.
 #[test]
@@ -215,7 +215,7 @@ fn linked_blobs_of_gone_copy_leave_local_label_spec_sync_5() {
     assert!(linked.iter().all(|b| !ids.contains(b)), "the linked blobs went with the copy");
 }
 
-// spec/permissions.md §4, spec/sync.md §3: certificate copies by part: a copy of one aspect of a commit (a chain's edge) leaves the next copy of another aspect placed, not skipped; the same aspect again places nothing
+// spec/permissions.md §4, spec/sync-judgement.md §1: certificate copies by part: a copy of one aspect of a commit (a chain's edge) leaves the next copy of another aspect placed, not skipped; the same aspect again places nothing
 #[test]
 fn certificate_copies_of_one_commit_add_up_spec_permissions_4() {
     let (mut net, a, _, g, l) = setup();
@@ -358,7 +358,7 @@ fn local_run(full: bool) -> (Vec<Vec<String>>, Vec<(u64, u64)>) {
     (steps, passes)
 }
 
-// spec/sync.md §5 (co-reader peer: served as a host's sync would leave it), §6, §7: local passes
+// spec/sync-ids.md §6 (co-reader peer: served as a host's sync would leave it), §6, §7: local passes
 // over work sets serve what local passes judging everything serve, at every step.
 #[test]
 fn local_work_sets_match_full_passes_spec_sync_5() {
@@ -429,7 +429,7 @@ fn local_inbox_run(full: bool, waits: &[u64]) -> Vec<Vec<String>> {
     steps
 }
 
-// spec/sync.md §3 (an inbox blob expires at its prefix's T), §5 (co-reader peer: served as a
+// spec/sync-judgement.md §1 (an inbox blob expires at its prefix's T), §5 (co-reader peer: served as a
 // host's sync would leave it): an inbox blob logged under a label served with no host
 // goes at its expiry, with local passes over work sets as with passes judging everything.
 #[test]
@@ -446,7 +446,7 @@ fn local_inbox_blob_expires_spec_sync_5() {
     }
 }
 
-// spec/sync.md §5 (a writer promotes a deposit it verified, completing the author's chain first;
+// spec/sync-ids.md §6 (a writer promotes a deposit it verified, completing the author's chain first;
 // co-reader peer: served as a host's sync would leave it): a reader that dials the writer serving
 // a label with no host (the writer cannot dial back: no `reach.0`) deposits its node card; the
 // writer's local pass stamps it as a promotion would.
@@ -517,7 +517,7 @@ fn promote_run(lose: &BTreeSet<osis_base::CommitId>) -> (Net, usize, LabelId, Ve
     (net, a, l, out)
 }
 
-// spec/sync.md §5, spec/permissions.md §4 (a promoter completes the author's chain it holds):
+// spec/sync-ids.md §6, spec/permissions.md §4 (a promoter completes the author's chain it holds):
 // as above, but the reader's deposit of its `keys.0` commit (part of its card's chain) never
 // reaches the writer; the writer places its own copy of it, then promotes the card.
 #[test]
@@ -563,7 +563,7 @@ fn expired_link_at_no_host_finalized_spec_permissions_7() {
 
 // spec/permissions.md §3 (re-seal at the end of a complete pass; a label with no host and no
 // peer it was received from passes vacuously, once the peer wait after the role change is
-// over), spec/sync.md §5 (co-reader peer): admin `a` serves g's label alone; admin `b`'s rotation
+// over), spec/sync-ids.md §6 (co-reader peer): admin `a` serves g's label alone; admin `b`'s rotation
 // leaves reader `c` out and `b` goes away. With `c` gone too, `a` re-seals `c` after
 // `peer_pass_wait_ms`, not before; with `c` connected (a co-reader `a` received g from), `a` hears
 // it out instead. Either way `a` re-seals only once, and the box reaches `c`. When `a`
@@ -678,7 +678,7 @@ fn copy_waiting_for_a_wrap_placed_by_local_pass_spec_permissions_4() {
     assert!(copies(&mut net) > 0, "placed");
 }
 
-// spec/sync.md §5 (Placed), §10 (Both sides pull): a node places its own write under a label with
+// spec/sync-status.md §2 (Held elsewhere), §10 (Both sides pull): a node places its own write under a label with
 // hosts in its own store whatever hosts are connected, so a reader pulling its log has it while
 // the hosts are away; the host gets it once back
 #[test]
@@ -702,7 +702,7 @@ fn own_write_placed_under_a_hosted_label_with_no_host_connected_spec_sync_5() {
 }
 
 /// Node `n` writes `v` to `t`'s register, expiring a year out: below the compaction trigger,
-/// which counts an expiring body only as its leftover (spec/sync.md §7 Trigger), so only own
+/// which counts an expiring body only as its leftover (spec/sync-compaction.md §1 trigger), so only own
 /// replaces cover these writes, two later ones each (spec/commits.md §5 Own replaces).
 fn overwrite(net: &mut Net, n: usize, t: osis_base::Tid, v: &str) -> osis_base::CommitId {
     let mut m = osis_node::Mutation::new();
@@ -711,7 +711,7 @@ fn overwrite(net: &mut Net, n: usize, t: osis_base::Tid, v: &str) -> osis_base::
     net.engine(n).commit(m).unwrap().unwrap()
 }
 
-// spec/sync.md §5 (Placed, deletion), notes/growth.md: a node overwriting a register under a
+// spec/sync-status.md §2 (Held elsewhere, deletion), notes/growth.md: a node overwriting a register under a
 // label with a host while that host is away places each write in its own store; what its own
 // replaces cover leaves that store before any host takes it, so its entries for the label stay
 // flat at n and 10n overwrites; the newest write, still must-hold, stays and reaches the host
@@ -748,7 +748,7 @@ fn own_entries_covered_while_the_host_is_away_leave_spec_sync_5() {
     assert_eq!(net.read(a, t), Some(s("v00000112")));
 }
 
-// spec/sync.md §5 (Placed, deleting at a host), §6 (Tombstones): an own entry the host has
+// spec/sync-status.md §2 (Held elsewhere, deleting at a host), §6 (Tombstones): an own entry the host has
 // not pulled yet when newer own writes cover it leaves the node's store, and the host's late OK
 // records it again as present there, so the host pass deletes it there too.
 #[test]
@@ -780,7 +780,7 @@ fn covered_own_entry_mid_pull_leaves_the_host_too_spec_sync_5() {
     assert_eq!(net.read(a, t), Some(s("v4")));
 }
 
-// spec/sync.md §5 (Placed), §7 (duplicates): writers a and b each place their own encryption
+// spec/sync-status.md §2 (Held elsewhere), §7 (duplicates): writers a and b each place their own encryption
 // of commit c while away from h2; b's, the lower, reaches h1, a's no host. a drops its own as
 // the higher duplicate, h1 then away too: c still reaches h2, from the lower copy a keeps.
 #[test]
@@ -852,7 +852,7 @@ fn own_duplicate_case(v: &str) -> bool {
     true
 }
 
-// spec/sync.md §5 (Placed, deleting at a host): an own entry the host pulled but
+// spec/sync-status.md §2 (Held elsewhere, deleting at a host): an own entry the host pulled but
 // whose answer was lost with the connection, covered meanwhile, leaves the host once the node
 // is back, whatever it dropped of it locally: the tombstone keeps what the entry was, so the
 // host announcing it records it as present there and the host pass deletes it; a restart
@@ -938,7 +938,7 @@ fn advance_unheld(net: &mut Net, n: usize, chunks: &[BlobId], ms: u64) {
     }
 }
 
-/// spec/sync.md §6 (Tombstones), spec/commits.md §5 (a purge drops every body carrying the
+/// spec/sync-judgement.md §3 (tombstones), spec/commits.md §5 (a purge drops every body carrying the
 /// values, chunks included): a large value's chunks a peer that cannot read pulled are purged
 /// while it is connected (`lost` false) or while it is away (`lost`: the connection went); the
 /// chunks leave the peer once its stream shows them, and the node keeps no record of them. `writer`: the purger is a writer, not an admin (it
@@ -1014,7 +1014,7 @@ fn purged_chunks_leave_a_peer_by_delete_key_spec_sync_6() {
     chunks_purged(false, true);
 }
 
-// spec/sync.md §7 Freed links (a link carries its blob's salt and delete keys), spec/commits.md
+// spec/sync-compaction.md §1 freed links (a link carries its blob's salt and delete keys), spec/commits.md
 // §5: a writer (no label delete key) purging another's large value whose blobs it never held
 // deletes them at the host by the delete keys their links name: it fetches the tree's node to
 // walk it and no chunk, and stores, logs and serves none of them. `hostile`: the host first
@@ -1085,7 +1085,7 @@ fn purged_chunks_never_held_are_deleted_by_delete_key_unstored_spec_sync_6() {
     never_held_chunks_deleted(false);
 }
 
-// spec/sync.md §7 Freed links, spec/crypto.md §7: a host's wrong bytes for a node fetched to
+// spec/sync-compaction.md §1 freed links, spec/crypto.md §7: a host's wrong bytes for a node fetched to
 // walk it give no children (they are not that blob), so its chunks are deleted once honest bytes
 // come
 #[test]
@@ -1093,7 +1093,7 @@ fn wrong_bytes_for_a_node_walk_nothing_spec_sync_7() {
     never_held_chunks_deleted(true);
 }
 
-/// spec/sync.md §6 (Tombstones), §3 (certificate copies' linked blobs), spec/commits.md §5: a
+/// spec/sync-judgement.md §3 (tombstones), §3 (certificate copies' linked blobs), spec/commits.md §5: a
 /// certificate copy and the blobs it links, whose pull answers were lost with the connection
 /// (`lost`) or arrive after the purge, leave the host once the copied delta is purged and the
 /// host reports them.
@@ -1175,7 +1175,7 @@ fn certificate_copy_mid_pull_leaves_the_host_with_its_links_spec_sync_6() {
     certificate_copy_answered_late(false);
 }
 
-// spec/commits.md §5 (a release request expires at ts + ROLE_KEEP), spec/sync.md §5: c releases
+// spec/commits.md §5 (a release request expires at ts + ROLE_KEEP), spec/sync-ids.md §6: c releases
 // x under a label a serves with no host, then b and c go away. At the request's expiry a, alone,
 // forgets it and its entry: no entry, no row, no bytes
 #[test]
@@ -1207,7 +1207,7 @@ fn a_release_request_leaves_a_node_keeping_it_unread_alone_at_its_expiry_spec_sy
     assert!(!ids.iter().any(|i| rows.contains(i) || net.sync(a).holds_blob(i)), "no row, no bytes of it");
 }
 
-// spec/sync.md §2, §5: a row another client wrote to the hub's store under a label the node
+// spec/sync-ids.md §2, spec/sync-ids.md §6: a row another client wrote to the hub's store under a label the node
 // serves, which the node cannot open, goes with its entry and bytes at its prefix expiry as at
 // any host
 #[test]

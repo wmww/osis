@@ -1,7 +1,7 @@
 //! Pair keys and per-peer records on connections (issues/sync-rewrite.md).
 //!
 //! What proves a record: the session's own proven actors, those this node knows now (`Judge`
-//! over the rosters it holds): the same set that gates the proof answer (spec/sync.md §10). A
+//! over the rosters it holds): the same set that gates the proof answer (spec/sync-opens.md §4). A
 //! record is honoured only while a
 //! proven actor of this session is one of its actors and known here now, so a node removed from
 //! every roster held here cannot use one. The tag binds r to this connection: its challenges and

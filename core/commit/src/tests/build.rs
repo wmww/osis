@@ -1,5 +1,5 @@
 //! Builder, header-list links, sections, purge rewrite (spec/commits.md §1, §5; spec/wire.md
-//! §4, §6; spec/sync.md §3).
+//! §4, §6; spec/sync-judgement.md §1).
 
 use crate::tests::{SESSION, t, ts};
 use crate::tests::verify::{TestSecrets, register_delta, sec};
@@ -187,7 +187,7 @@ fn mixed() -> CommitBlob {
     build(b, &mut MemoryBlobs::default()).unwrap().commit
 }
 
-// spec/wire.md §4, spec/sync.md §3: one blob per commit, one section per reader actor; a
+// spec/wire.md §4, spec/sync-judgement.md §1: one blob per commit, one section per reader actor; a
 // reader opens its section and nothing else (invariant: a non-reader learns only the `ai`
 // list and the size), the opened parts verify alone, a sealed section is copied verbatim into
 // a fresh encryption and still opens there; the prefix groups are the distinct key sets.
@@ -287,7 +287,7 @@ fn big_delta(author: Tid, at: Ts, len: usize) -> Vec<u8> {
     encode_delta(&Delta { nonce: [1; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, author, 1, 2), None).unwrap()
 }
 
-// spec/sync.md §3 (no size split), spec/commits.md §1 (commit fits a blob): the whole commit
+// spec/sync-judgement.md §1 (no size split), spec/commits.md §1 (commit fits a blob): the whole commit
 // must fit one blob: two 3 MiB deltas do, four do not; a delta over MAX_BLOB (a caller's
 // mistake: a value left unchunked) is refused.
 #[test]

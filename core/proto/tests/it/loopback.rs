@@ -1,5 +1,5 @@
 //! Dialer sessions against listener sessions over in-memory byte queues, with a
-//! `MemoryLabelStore` (spec/sync.md §4-§9, spec/wire.md §11).
+//! `MemoryLabelStore` (spec/sync-ids.md §5, spec/wire.md §11).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_base::{LabelId, Value, cbor};
@@ -133,7 +133,7 @@ fn statuses(ev: &[Message]) -> Vec<Code> {
 /// A header blind (spec/crypto.md §7).
 const HB: [u8; 16] = [0x4b; 16];
 
-// spec/wire.md §11.1, spec/sync.md §6: Hellos at once; the dialer's upper layer takes the clock
+// spec/wire.md §11.1, spec/sync-judgement.md §2: Hellos at once; the dialer's upper layer takes the clock
 // offset from three Ping round trips through its session (`ClockSamples`), a diagnostic above a
 // few seconds
 #[test]
@@ -161,7 +161,7 @@ fn handshake_and_clock_offset() {
     }
 }
 
-// spec/sync.md §5 (Register): a step that is no child of the head is refused with code 9 alone,
+// spec/sync-ids.md §6 (register): a step that is no child of the head is refused with code 9 alone,
 // never the head; the head itself is answered Ok
 #[test]
 fn a_step_off_the_head_is_refused_9_alone_spec_sync_5() {
@@ -179,7 +179,7 @@ fn a_step_off_the_head_is_refused_9_alone_spec_sync_5() {
     assert!(matches!(&ev[..], [Message::Error { code: Code::NOT_HEAD, .. }]), "{ev:?}");
 }
 
-// spec/sync.md §5, spec/crypto.md §7: deletes by key and by a level's delete key (level 3 write key, levels 1-2 sync key)
+// spec/sync-ids.md §6, spec/crypto.md §7: deletes by key and by a level's delete key (level 3 write key, levels 1-2 sync key)
 #[test]
 fn deletes() {
     let mut net = Net::new(1, 0);
@@ -209,11 +209,11 @@ fn deletes() {
     }
 }
 
-// spec/sync.md §5 (Delete, an open holds under the head's sync key): a Delete is taken only
+// spec/sync-ids.md §6 (delete, an open holds under the head's sync key): a Delete is taken only
 // where node sync opened the label by a sync-key or static-entry Hit; a head with another sync
 // key ends that open on every connection, the registrar's included, until node sync opens it
 // again. A step keeping the sync key keeps them; Register needs no open.
-// spec/sync.md §5 (delete opened)
+// spec/sync-ids.md §6 (delete opened)
 #[test]
 fn deletes_need_an_open_under_the_heads_sync_key_spec_sync_5() {
     let mut net = Net::new(2, 0);
@@ -357,7 +357,7 @@ fn stalled(c: &Dialer, now: u64) -> bool {
     c.session.stall_at().is_some_and(|at| now >= at)
 }
 
-// spec/sync.md §6 (stall): the oldest request in flight not moving closes the connection at the
+// spec/sync-judgement.md §2 (stall): the oldest request in flight not moving closes the connection at the
 // deadline (the node redials). Its frame taken by the transport moves it, and so do the first
 // bytes of a reply to it; a reply to a later request moves nothing, other bytes (a push, the
 // peer's own request) only until `MAX_AHEAD` of them arrived since it last moved by its own
@@ -390,7 +390,7 @@ fn stalled_requests_time_out() {
     assert!(stalled(&c, T0 + 3 * t - 2));
 }
 
-// spec/sync.md §6 (stall, honest slow peers): a reply trickling in over many stall times keeps
+// spec/sync-judgement.md §2 (stall, honest slow peers): a reply trickling in over many stall times keeps
 // the connection, as do answers one after another each within the stall time
 #[test]
 fn slow_replies_keep_the_connection_spec_sync_6() {
@@ -419,7 +419,7 @@ fn slow_replies_keep_the_connection_spec_sync_6() {
     assert_eq!(c.session.stall_at(), None);
 }
 
-// spec/sync.md §6 (stall, honest slow peers): a reply queued behind a full push backlog (pushes
+// spec/sync-judgement.md §2 (stall, honest slow peers): a reply queued behind a full push backlog (pushes
 // held within `REPLY_BUDGET`, one push frame past it) on a link far slower than that backlog per
 // stall time keeps the connection: the pushes move the oldest request while within `MAX_AHEAD`
 #[test]
@@ -446,7 +446,7 @@ fn a_slow_reply_behind_a_full_push_backlog_keeps_the_connection_spec_sync_6() {
     assert!(answered && !c.session.is_closed());
 }
 
-// spec/sync.md §6 (stall): a peer pushing at full speed while answering nothing is closed one
+// spec/sync-judgement.md §2 (stall): a peer pushing at full speed while answering nothing is closed one
 // stall time after `MAX_AHEAD` bytes, however much it pushes on
 #[test]
 fn a_pusher_answering_nothing_is_closed_after_max_ahead_spec_sync_6() {
@@ -469,7 +469,7 @@ fn a_pusher_answering_nothing_is_closed_after_max_ahead_spec_sync_6() {
     assert!(stalled(&c, T0 + 1 + t));
 }
 
-// spec/sync.md §6 (stall: replies to other requests move nothing): a peer that answers every
+// spec/sync-judgement.md §2 (stall: replies to other requests move nothing): a peer that answers every
 // later request, whole or in pieces, while the oldest goes unanswered is closed at the stall time;
 // Notifies beside those replies (a client-port `settle` waiting behind them) keep it
 #[test]
@@ -498,7 +498,7 @@ fn answering_later_requests_holds_no_older_one_spec_sync_6() {
     }
 }
 
-// spec/sync.md §6 (a node's own requests count as any): a peer silent on a stream Fetch is
+// spec/sync-judgement.md §2 (a node's own requests count as any): a peer silent on a stream Fetch is
 // closed at the stall deadline
 #[test]
 fn a_silent_node_request_times_out_spec_sync_6() {
@@ -510,7 +510,7 @@ fn a_silent_node_request_times_out_spec_sync_6() {
     assert!(stalled(&c, T0 + 1 + t));
 }
 
-// spec/sync.md §6 (stall, whichever side dialed): the listener's own request to the dialer
+// spec/sync-judgement.md §2 (stall, whichever side dialed): the listener's own request to the dialer
 // stalls as the dialer's would, however much the dialer pushes and asks meanwhile; an answer's
 // first bytes move it, and the transport taking its frame does too
 #[test]
@@ -553,7 +553,7 @@ fn a_listener_request_stalls_while_the_dialer_answers_nothing_spec_sync_6() {
     assert!(!s.is_closed());
 }
 
-// spec/sync.md §6 (flow control): a dialer within its window never sends more unanswered
+// spec/sync-judgement.md §2 (flow control): a dialer within its window never sends more unanswered
 // requests than `MAX_UNANSWERED`, so a listener delivering everything it sent in one input (as
 // `pump` does) closes nothing: deletes past a window's worth made at once all complete
 #[test]
@@ -608,7 +608,7 @@ fn charged(bytes: &[u8]) -> usize {
     n
 }
 
-// spec/sync.md §6 (flow control), spec/wire.md §11.2 (Pull): a node's own requests go within the
+// spec/sync-judgement.md §2 (flow control), spec/wire.md §11.2 (Pull): a node's own requests go within the
 // request window with every other, from the dialer's session and from the listener's: a Pull
 // and stream Fetches of several labels made at once, everything sent delivered as one input (a
 // real driver's read of several frames), close nothing and are all answered
@@ -685,7 +685,7 @@ fn request_ids(bytes: &[u8]) -> Vec<u32> {
     ids
 }
 
-// spec/sync.md §6 (Requester: in the order made), spec/wire.md §11.2 (Pull: a stream request
+// spec/sync-streams.md §1 (requester: in the order made), spec/wire.md §11.2 (Pull: a stream request
 // still out when a later one's answer arrives was skipped): the window holds back whole-budget
 // Fetches, and a Pull made after them, though it would fit, waits its turn, from either side.
 // So a peer answering in arrival order answers in the order made, and a held-back request is

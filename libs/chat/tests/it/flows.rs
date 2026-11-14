@@ -252,7 +252,7 @@ fn concurrent_edits_agree_spec_crdt_1() {
     assert_eq!(versions(&a, c, m), versions(&a2, c, m));
 }
 
-// spec/commits.md §5, spec/sync.md §6: delete for everyone by author and moderator; a participant cannot delete another's; a tombstone reaches a new node with its sender
+// spec/commits.md §5, spec/sync-judgement.md §2: delete for everyone by author and moderator; a participant cannot delete another's; a tombstone reaches a new node with its sender
 #[test]
 fn delete_for_everyone_spec_commits_5() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
@@ -692,7 +692,7 @@ fn erased_then_added_again_spec_perm_3() {
     assert_eq!(texts(&a, c), ["one", "two", "back"]);
 }
 
-// spec/sync.md §2-3: the creator's node paired after the chat exists finds it, unplaced as it is
+// spec/sync-ids.md §2-3: the creator's node paired after the chat exists finds it, unplaced as it is
 #[test]
 fn creator_on_a_new_node_spec_sync_3() {
     let (mut w, [a]) = accounts();
@@ -807,7 +807,7 @@ fn link_joiner_leaves_spec_perm_7() {
     assert!(!texts(&b, c).contains(&"still here".to_string()));
 }
 
-// spec/permissions.md §7, spec/sync.md §2: a link shared in advance keeps working: someone joins by it and leaves, the next account joins by it, reads, posts; a leaver comes back by it; a kick ends it, says so, and a new link works
+// spec/permissions.md §7, spec/sync-ids.md §2: a link shared in advance keeps working: someone joins by it and leaves, the next account joins by it, reads, posts; a leaver comes back by it; a kick ends it, says so, and a new link works
 #[test]
 fn link_after_leave_and_kick_spec_perm_7() {
     let (mut w, [a, b, d, e]) = accounts();

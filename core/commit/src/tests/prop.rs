@@ -1,4 +1,4 @@
-//! Property tests (spec/wire.md §4, spec/sync.md §3).
+//! Property tests (spec/wire.md §4, spec/sync-judgement.md §1).
 
 use crate::tests::{SESSION, dkey, t, ts};
 use crate::tests::build::{key, rng};
@@ -178,7 +178,7 @@ proptest! {
         prop_assert_eq!(back, h);
     }
 
-    // spec/wire.md §4, spec/sync.md §3: sections partition the commit's deltas by reader, each
+    // spec/wire.md §4, spec/sync-judgement.md §1: sections partition the commit's deltas by reader, each
     // opens under its reader's secret alone and the opened parts verify; a non-reader's copy
     // carries the others' sections verbatim; the prefix groups are one per key set.
     #[test]

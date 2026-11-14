@@ -254,7 +254,7 @@ pub(crate) fn deleted_aspects(tx: &mut super::Tx<'_>, t: &Tid) -> Result<Vec<Ak>
     may_hold(tx, t, false)
 }
 
-/// The ephemeral aspects a delete of `t` purges (spec/sync.md §9 Delete): of its `+` value
+/// The ephemeral aspects a delete of `t` purges (spec/sync-compaction.md §2 delete): of its `+` value
 /// aspects some held commit header names, each that may hold content, as `deleted_aspects`
 /// judges the durable ones.
 pub(crate) fn purged_aspects(tx: &mut super::Tx<'_>, t: &Tid) -> Result<Vec<Ak>> {

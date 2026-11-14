@@ -144,7 +144,7 @@ fn box_to_a_closed_epoch_reads_stale_spec_crypto_4() {
     assert_eq!(osis_keys::seal_keyset(&ks, &[first_name].into(), &none, &Default::default()), osis_keys::Seal::At([next_name].into()), "sealed at the open epoch");
 }
 
-// spec/sync.md §10: an account's proof counts at an open epoch only: its first key alone while no
+// spec/sync-opens.md §4: an account's proof counts at an open epoch only: its first key alone while no
 // rotation is held, the rotation's key and no longer the first once it is
 #[test]
 fn account_key_open_follows_the_rotations_held_spec_sync_10() {
@@ -377,7 +377,7 @@ fn account_view_is_built_once_per_rotation() {
     assert_eq!(builds(), 3, "once for the rotation, once each as D's roster and the seeds held (the side of a node of the account) went");
 }
 
-// spec/sync.md §3 (invite requests): the request gate reads an author's signature at the header's epoch: a commit signed at the first epoch verifies only there
+// spec/sync-judgement.md §1 (invite requests): the request gate reads an author's signature at the header's epoch: a commit signed at the first epoch verifies only there
 #[test]
 fn request_gate_reads_the_header_epoch_spec_sync_3() {
     let mut lp = peers(2);
@@ -569,7 +569,7 @@ fn witness_before_its_rotation_saves_alike_and_reopens_alike_spec_permissions_5_
     assert_eq!(e.get(&t, &x).unwrap(), Some(osis_base::Value::Int(1)));
 }
 
-// spec/permissions.md §5.5 (a commit that does not count is invalid whole), spec/sync.md §9: a
+// spec/permissions.md §5.5 (a commit that does not count is invalid whole), spec/sync-compaction.md §2: a
 // signal the account fired at an epoch closed where it arrives is not delivered there
 #[test]
 fn signal_at_a_closed_epoch_is_not_delivered_spec_permissions_5_5() {

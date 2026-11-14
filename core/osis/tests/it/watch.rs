@@ -598,7 +598,7 @@ fn path_listeners_one_write_one_call_n_reads() {
         let t = thing(&db);
         db.commit_set(t, untyped("t:m.0"), &big(n_entries)).unwrap();
         // a second body first: the compaction trigger weighs the aspect then (reading its whole
-        // state, spec/sync.md §7 Trigger), not in the measured step
+        // state, spec/sync-compaction.md §1 trigger), not in the measured step
         db.commit_with(|w| w.at(t, untyped("t:m.0")).path(osis::p!["k2"]).set(&Value::Int(0))).unwrap();
         let _s = if whole {
             db.at(t, untyped("t:m.0")).on_change(|_, _| {}).unwrap()

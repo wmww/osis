@@ -84,7 +84,7 @@ fn entry_of(l: &LabelId, seed: &Secret32) -> [u8; 32] {
     osis_crypto::static_entry(l, &Identity::from_seed(seed.clone()).keys().signing.verifying_key())
 }
 
-// spec/sync.md §10, issues/sync-rewrite.md (J, key actor listed by static entry): a link key on K's roster
+// spec/sync-opens.md §4, issues/sync-rewrite.md (J, key actor listed by static entry): a link key on K's roster
 // is a holder of K by its own proof; once removed from K it is departed, not unknown, and a
 // peer that never held K is unknown; the gate follows: a holder is known, a departed actor is not
 #[test]
@@ -113,7 +113,7 @@ fn key_actor_holder_then_departed_unknown_never_held_spec_sync_10() {
     assert_eq!(answered, 0, "an actor on no roster is unknown");
 }
 
-// spec/sync.md §10, issues/sync-rewrite.md: departed is by path: a key actor on a team that is removed
+// spec/sync-opens.md §4, issues/sync-rewrite.md: departed is by path: a key actor on a team that is removed
 // from the thing has left it too; it never counts a thing whose secrets are not its own actor's
 #[test]
 fn departed_through_a_roster_path_spec_sync_10() {
@@ -150,7 +150,7 @@ fn departed_through_a_roster_path_spec_sync_10() {
     assert_eq!(net.engine(a).core.judge([actor]).of(&g2), Judgment::Departed, "off the roster that holds g2");
 }
 
-// issues/sync-rewrite.md step 3 (security rule), spec/sync.md §10: a node's own key reaches
+// issues/sync-rewrite.md step 3 (security rule), spec/sync-opens.md §4: a node's own key reaches
 // what the rosters HELD here say: a node on its devices actor's roster is a holder of what the
 // roster's owner holds only once that roster is held here
 #[test]
@@ -167,7 +167,7 @@ fn node_key_reaches_only_through_rosters_held_spec_sync_10() {
     let _ = account;
 }
 
-// spec/sync.md §2, issues/sync-rewrite.md: an account on a roster has no static entry
+// spec/sync-ids.md §2, issues/sync-rewrite.md: an account on a roster has no static entry
 #[test]
 fn an_account_on_the_roster_has_no_static_entry_spec_sync_2() {
     let mut net = Net::bare();
@@ -185,7 +185,7 @@ fn an_account_on_the_roster_has_no_static_entry_spec_sync_2() {
     assert!(static_entries(&net.sync(a).credentials(&[gl]).unwrap().remove(&gl).unwrap()).is_empty());
 }
 
-// spec/sync.md §10: an account proved at an epoch open here is judged by its roles: J knows it on a
+// spec/sync-opens.md §4: an account proved at an epoch open here is judged by its roles: J knows it on a
 // thing it holds here, and the prover gets a proof back
 #[test]
 fn proven_account_is_judged_by_its_roles_spec_sync_10() {
@@ -207,7 +207,7 @@ fn proven_account_is_judged_by_its_roles_spec_sync_10() {
     assert!(answered > 0, "a known actor gets a proof back");
 }
 
-// spec/sync.md §2, issues/sync-rewrite.md, credentials table: a reader holds a read secret per current
+// spec/sync-ids.md §2, issues/sync-rewrite.md, credentials table: a reader holds a read secret per current
 // epoch and a static entry per key actor on the roster; adding and removing a key actor, and a
 // rotation, change the credentials
 #[test]
@@ -242,7 +242,7 @@ fn credentials_follow_the_roster_spec_sync_2() {
     assert_ne!(rotated, before_rotation, "the rotation's secret");
 }
 
-// spec/sync.md §2, issues/sync-rewrite.md, a peer that cannot read: a served head's credentials are its
+// spec/sync-ids.md §2, issues/sync-rewrite.md, a peer that cannot read: a served head's credentials are its
 // sync and deposit keys and every claim of its claim set
 #[test]
 fn head_credentials_are_sync_deposit_and_claims_spec_sync_2() {
@@ -254,7 +254,7 @@ fn head_credentials_are_sync_deposit_and_claims_spec_sync_2() {
     assert_eq!(c.len(), 2 + claims.claims.len());
 }
 
-// spec/sync.md §10, issues/sync-rewrite.md: J counts one pass of the history per actor per use, whatever number
+// spec/sync-opens.md §4, issues/sync-rewrite.md: J counts one pass of the history per actor per use, whatever number
 // of things is asked about
 #[test]
 fn judgment_work_does_not_grow_with_things_asked_spec_sync_10() {
@@ -289,7 +289,7 @@ fn judgment_work_does_not_grow_with_things_asked_spec_sync_10() {
     assert!(small.0 <= 1 && small.1 <= 1, "one walk of the actor, once: {small:?}");
 }
 
-// spec/sync.md §10 (Connection proofs): a connection proves once, at its start. A listener that
+// spec/sync-opens.md §2 (connection proofs): a connection proves once, at its start. A listener that
 // comes to hold an actor it did not prove to a known dialer closes the session (the dialer
 // dials again and is answered with it), as a dialer closes and redials its own
 #[test]

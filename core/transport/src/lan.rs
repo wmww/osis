@@ -1,4 +1,4 @@
-//! LAN announcements (spec/sync.md §10): a UDP datagram carrying
+//! LAN announcements (spec/sync-opens.md §4): a UDP datagram carrying
 //! the node's current LAN tag, the transport key it listens with on this network (fresh per
 //! network join, never the dialable key), that listener's port on the datagram's address family
 //! and a signature under the node's dialable key binding the three, sealed under the lan secret
@@ -9,7 +9,7 @@
 //! can check. Tag and signature are made and checked by the node (osis-crypto `seal_lan_sig`).
 //! `NetWatch` tells a network change (the node then joins with a fresh key).
 //!
-//! Datagram (spec/sync.md §10, provisional): `"osis lan 1"` (10 bytes), tag (16), key (32),
+//! Datagram (spec/sync-opens.md §4, provisional): `"osis lan 1"` (10 bytes), tag (16), key (32),
 //! port (2, big-endian), signature (64).
 
 use crate::{Address, PublicKey};
@@ -43,7 +43,7 @@ pub fn multicast_on(port: u16, scope: u32) -> SocketAddr {
 }
 
 /// Where an announcement to `to` goes: the all-nodes group with no interface named goes to it
-/// on each interface of `scopes` (spec/sync.md §10: every link the machine is on), or out the
+/// on each interface of `scopes` (spec/sync-opens.md §4: every link the machine is on), or out the
 /// default multicast interface when there is none; any other address as it is.
 pub fn targets(to: SocketAddr, scopes: &[u32]) -> Vec<SocketAddr> {
     match to {
@@ -89,7 +89,7 @@ pub struct Announce {
     pub tag: [u8; 16],
     pub key: PublicKey,
     pub port: u16,
-    /// The sealed Ed25519 signature under the announcer's dialable key (spec/sync.md §10).
+    /// The sealed Ed25519 signature under the announcer's dialable key (spec/sync-opens.md §4).
     pub sig: [u8; 64],
 }
 
@@ -370,7 +370,7 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
-    // spec/sync.md §10: an announcement carries the tag and a transport key, and is dialed at
+    // spec/sync-opens.md §4: an announcement carries the tag and a transport key, and is dialed at
     // the sender's address with that key; anything else is ignored.
     #[test]
     fn announce_round_trip_spec_sync_10() {
@@ -396,7 +396,7 @@ mod tests {
         assert_eq!(&a.signed()[48..], &4433u16.to_be_bytes());
     }
 
-    // spec/sync.md §10: IPv6 announcements go to the all-nodes group on every link the machine is
+    // spec/sync-opens.md §4: IPv6 announcements go to the all-nodes group on every link the machine is
     // on, each send naming its interface; with no interface known, out the default one.
     #[test]
     fn v6_targets_per_interface_spec_sync_10() {
@@ -423,7 +423,7 @@ mod tests {
         }
     }
 
-    // spec/sync.md §10: only addresses that can be on the LAN are heard.
+    // spec/sync-opens.md §4: only addresses that can be on the LAN are heard.
     #[test]
     fn local_sources_spec_sync_10() {
         for ip in ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.0.9", "169.254.1.1", "::1", "fd00::1", "fe80::1"] {
@@ -434,7 +434,7 @@ mod tests {
         }
     }
 
-    // spec/sync.md §10: an announcement sent over UDP is heard (by hand: localhost socket).
+    // spec/sync-opens.md §4: an announcement sent over UDP is heard (by hand: localhost socket).
     #[tokio::test]
     #[ignore]
     async fn announce_over_udp_spec_sync_10() {
@@ -445,7 +445,7 @@ mod tests {
         let (got, from) = rx.recv().await.unwrap();
         assert_eq!(got, a);
         assert!(from.ip().is_loopback());
-        // and over IPv6 on the same port (spec/sync.md §10: both families)
+        // and over IPv6 on the same port (spec/sync-opens.md §4: both families)
         if rx.has_v6() && tx.has_v6() {
             tx.announce(&a, SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), rx.port())).await.unwrap();
             let (got, from) = rx.recv().await.unwrap();
@@ -454,7 +454,7 @@ mod tests {
         }
     }
 
-    // spec/sync.md §10: two nodes on one machine both bind the announcement port and both hear
+    // spec/sync-opens.md §4: two nodes on one machine both bind the announcement port and both hear
     // a broadcast to it (by hand: real sockets).
     #[tokio::test]
     #[ignore]
@@ -470,7 +470,7 @@ mod tests {
         }
     }
 
-    // spec/sync.md §10: an announcement to the all-nodes group goes out every IPv6 link, each
+    // spec/sync-opens.md §4: an announcement to the all-nodes group goes out every IPv6 link, each
     // send naming its interface (a scope no interface has fails); copies looped back are heard
     // from that link's address (by hand: real sockets and interfaces; a machine whose firewall drops
     // multicast, as the dev VM's, hears none, so hearing is checked only when something comes).
@@ -502,7 +502,7 @@ mod tests {
         assert!(heard.iter().all(|s| scopes.contains(s)), "{heard:?} {scopes:?}");
     }
 
-    // spec/sync.md §10: a network watch starts and polls the routes (by hand: real sockets).
+    // spec/sync-opens.md §4: a network watch starts and polls the routes (by hand: real sockets).
     #[tokio::test]
     #[ignore]
     async fn net_watch_starts_spec_sync_10() {

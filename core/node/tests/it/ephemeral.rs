@@ -1,4 +1,4 @@
-//! Synced ephemeral data (notes/ephemeral.md Synced ephemeral data, spec/sync.md §4-§6): ephemeral commits held
+//! Synced ephemeral data (notes/ephemeral.md Synced ephemeral data, spec/sync-ids.md §5): ephemeral commits held
 //! in memory at nodes and hosts, carried by the ordinary sync path; signals as relay-only
 //! commits.
 
@@ -185,7 +185,7 @@ pub(crate) fn rows(b: &osis_store::MemoryBackend) -> usize {
     b.scan(&[], None, usize::MAX).unwrap().len()
 }
 
-// notes/ephemeral.md Synced ephemeral data, spec/sync.md §4: a window's ephemeral state in a synced group
+// notes/ephemeral.md Synced ephemeral data, spec/sync-ids.md §5: a window's ephemeral state in a synced group
 // reaches the other holder's reads and watches; neither its store nor the host's gains a row
 // (the host reserves log numbers in its label meta, the same row)
 #[test]
@@ -210,7 +210,7 @@ fn window_reaches_holder_no_store_rows_spec_sync_4() {
     assert_eq!(net.engine(b).commit_ids().len(), commits);
 }
 
-// spec/sync.md §9 (a thing entering a labeled closure goes out whole): an own expiring write
+// spec/sync-compaction.md §2 (a thing entering a labeled closure goes out whole): an own expiring write
 // made while its thing was in no labeled closure (after a restart, before its membership came
 // back: `ephemeral::random_churn_converges_large` seed 203) goes with it, under its expiry
 #[test]
@@ -235,7 +235,7 @@ fn expiring_write_before_entering_closure_goes_spec_sync_9() {
     assert_eq!(notes(&mut net, a, w), BTreeMap::new());
 }
 
-// spec/sync.md §9: the same with a sync step between the write and the add: a commit taken
+// spec/sync-compaction.md §2: the same with a sync step between the write and the add: a commit taken
 // while its thing was in no labeled closure still goes once one holds it.
 #[test]
 fn write_before_add_goes_after_a_step_spec_sync_9() {
@@ -254,7 +254,7 @@ fn write_before_add_goes_after_a_step_spec_sync_9() {
     assert_eq!(net.eph_read(b, w, STATE), Some(s("local")));
 }
 
-// spec/sync.md §3, §6 (as for a durable thing): a thing listed nowhere any more is in no label's
+// spec/sync-judgement.md §1, spec/sync-judgement.md §2 (as for a durable thing): a thing listed nowhere any more is in no label's
 // closure, so nothing of it syncs any more and its entries leave the label.
 #[test]
 fn removed_member_stops_syncing_spec_sync_3() {
@@ -307,7 +307,7 @@ fn entries_under(net: &mut Net, n: usize, l: &osis_base::LabelId) -> BTreeSet<os
     net.sync(n).ephemeral_held_entries(l).into_iter().map(|x| x.0).collect()
 }
 
-// spec/sync.md §3 (closure, retag; as for a durable thing): a thing moved from group A to group
+// spec/sync-judgement.md §1 (closure, retag; as for a durable thing): a thing moved from group A to group
 // B leaves A's label (its entries there are deleted, nothing new reaches it) and goes on under B's.
 #[test]
 fn moved_thing_leaves_old_label_spec_sync_3() {
@@ -340,7 +340,7 @@ fn moved_thing_leaves_old_label_spec_sync_3() {
     assert_eq!(notes(&mut net, c, w).get("k1"), None, "a reader of A alone gets nothing");
 }
 
-// spec/sync.md §9: a commit written in no labeled closure goes once any way brings its thing into
+// spec/sync-compaction.md §2: a commit written in no labeled closure goes once any way brings its thing into
 // one: a durable membership, a label made after the write.
 #[test]
 fn written_outside_goes_on_any_way_in_spec_sync_9() {
@@ -393,7 +393,7 @@ fn sub_add(net: &mut Net, a: usize, g: Tid, sub: Tid) {
     local(net, a);
 }
 
-// spec/sync.md §9: what a thing in an unlabeled group held goes once that group becomes a
+// spec/sync-compaction.md §2: what a thing in an unlabeled group held goes once that group becomes a
 // subgroup of a synced one.
 #[test]
 fn subgroup_edge_brings_parked_writes_spec_sync_9() {
@@ -419,7 +419,7 @@ fn subgroup_edge_brings_parked_writes_spec_sync_9() {
     assert_eq!(net.eph_read(b, w, STATE), Some(s("parked")), "parked commit went");
 }
 
-// spec/sync.md §3 (retag), §6: what a thing held before it entered a label's closure reaches that
+// spec/sync-judgement.md §1 (retag), §6: what a thing held before it entered a label's closure reaches that
 // label's readers (a writer holding its bodies places them under the new label).
 #[test]
 fn second_label_gets_held_state_spec_sync_3() {
@@ -437,7 +437,7 @@ fn second_label_gets_held_state_spec_sync_3() {
     assert_eq!(net.eph_read(c, w, STATE), Some(s("old")), "the second label's reader gets the state");
 }
 
-// spec/sync.md §9 Delete: a delete is one durable commit, which purges the thing's ephemeral
+// spec/sync-compaction.md §2 delete: a delete is one durable commit, which purges the thing's ephemeral
 // writes made before it at every holder, a holder offline at the delete included; a later
 // ephemeral write stands
 #[test]
@@ -482,7 +482,7 @@ fn delete_purges_ephemeral_state_at_every_holder_spec_sync_9() {
     }
 }
 
-// spec/sync.md §9 Delete: a delete that leaves the thing in a group (g2, here as one the deleter
+// spec/sync-compaction.md §2 delete: a delete that leaves the thing in a group (g2, here as one the deleter
 // could not write) leaves it in g2's closure, and purges its ephemeral state at g2's holders, a
 // reader of g2 alone included
 #[test]
@@ -506,7 +506,7 @@ fn delete_purges_ephemeral_state_where_the_thing_stays_spec_sync_9() {
     assert!(net.engine(c).groups_of(&w).contains(&g2), "still in g2");
 }
 
-// spec/sync.md §9 Delete: a delete leaving the thing in g2, a group the deleter only reads, its
+// spec/sync-compaction.md §2 delete: a delete leaving the thing in g2, a group the deleter only reads, its
 // ephemeral entries held there by the other holders (g2's writer b, its reader c): the purged
 // entries leave g2's host, and once settled nothing is placed there or deleted again (no holder
 // deletes what another re-places)
@@ -558,7 +558,7 @@ fn delete_into_unwritable_group_settles_spec_sync_9() {
     assert_eq!(net.hosts[host].hub.store().ephemeral_ids(&l2), held, "g2's ephemeral entries at the host unchanged");
 }
 
-// spec/sync.md §9 Delete, spec/commits.md §5 Purge: the delete purges by stamp, not by arrival:
+// spec/sync-compaction.md §2 delete, spec/commits.md §5 Purge: the delete purges by stamp, not by arrival:
 // an ephemeral write stamped before it on an aspect it names, reaching holders only after it (its
 // writer offline at the delete), is purged at every holder, its writer included; one stamped
 // after it stands
@@ -585,7 +585,7 @@ fn delete_purges_earlier_writes_arriving_after_it_spec_sync_9() {
     }
 }
 
-// spec/sync.md §9 Delete: a synced thing (g itself) in no group with only ephemeral content:
+// spec/sync-compaction.md §2 delete: a synced thing (g itself) in no group with only ephemeral content:
 // its delete is a commit of its purge request alone, which clears the values at every holder;
 // their entries leave the host
 #[test]
@@ -639,7 +639,7 @@ fn shared_window_merges_after_offline_spec_sync_6() {
     assert_eq!(notes(&mut net, b, w), want);
 }
 
-// the shared window over a direct peer link (a co-reader peer serving the label, spec/sync.md §5):
+// the shared window over a direct peer link (a co-reader peer serving the label, spec/sync-ids.md §6):
 // edits while apart merge on reconnect
 #[test]
 fn shared_window_merges_over_peer_link_spec_sync_5() {
@@ -722,7 +722,7 @@ fn bridge_node_carries_between_hosts_spec_sync_6() {
     let w = window(&mut net, a, g, "bridged");
     note(&mut net, a, w, "a", "1");
     net.run();
-    // b relays another node's bodies after its relay wait (spec/sync.md §6)
+    // b relays another node's bodies after its relay wait (spec/sync-judgement.md §2)
     net.advance(31_000);
     assert_eq!(net.eph_read(c, w, STATE), Some(s("bridged")));
     note(&mut net, c, w, "c", "2");
@@ -827,7 +827,7 @@ fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
     assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]));
 }
 
-// spec/sync.md §9 (caps, Deleting at a host), §10 (a peer that cannot read L takes what it pulls
+// spec/sync-compaction.md §2 (caps, Deleting at a host), §10 (a peer that cannot read L takes what it pulls
 // within its own caps and says when it is full): writes past a peer's ephemeral cap for the label,
 // small ones a snapshot brings back within it, then ones past what the writer's compactions bring
 // the state down to: the peer stays within its cap, everything settles (no compaction of the
@@ -862,7 +862,7 @@ fn ephemeral_writes_past_a_peers_cap_stay_with_the_writer_spec_sync_9() {
     }
 }
 
-// spec/sync.md §9 (caps), §10: one write larger than a peer's whole ephemeral cap stays out of
+// spec/sync-compaction.md §2 (caps), §10: one write larger than a peer's whole ephemeral cap stays out of
 // it (the writer keeps it, its status shows the peer full); later writes that fit still reach the
 // other writer through that peer
 #[test]
@@ -892,7 +892,7 @@ fn a_write_past_a_peers_whole_cap_stays_out_and_later_ones_sync_spec_sync_9() {
     assert_eq!(notes(&mut net, b, w), map(&[("k", "v")]), "a later write that fits syncs");
 }
 
-// spec/sync.md §9 (caps), notes/ephemeral.md Bounds: the node cap counts what a held commit
+// spec/sync-compaction.md §2 (caps), notes/ephemeral.md Bounds: the node cap counts what a held commit
 // takes in memory, not its encoded bytes, and a commit is checked against the room left before it
 // is decoded (`Engine::memory_bound`): one of many tiny entries (about 200 times its size
 // decoded) is refused whole and reported, never held past the cap; a small one is held, counted
@@ -1027,7 +1027,7 @@ fn ephemeral_signal_once_to_connected_nodes_spec_sync_5() {
     assert!(fired(&rb).is_empty(), "a restarted node does not see it again");
 }
 
-// spec/sync.md §5 (an ephemeral signal is delivered once): a relay-only commit with parts on two things
+// spec/sync-ids.md §6 (an ephemeral signal is delivered once): a relay-only commit with parts on two things
 // (two sections, spec/wire.md §4) delivers every part's signals, each once
 #[test]
 fn ephemeral_signal_commit_in_two_sections_all_delivered_spec_sync_5() {
@@ -1054,7 +1054,7 @@ fn ephemeral_signal_commit_in_two_sections_all_delivered_spec_sync_5() {
     assert!(!net.engine(b).ingest_relay(blob).unwrap(), "the whole commit again");
 }
 
-// spec/sync.md §9 Ephemeral signals (a write's ephemeral signal writes go as one relay-only
+// spec/sync-compaction.md §2 ephemeral signals (a write's ephemeral signal writes go as one relay-only
 // commit): two writes of one ephemeral signal before a pass sends either are two commits, and both arrive (as one commit
 // they repeated the aspect and the build failed, so neither went)
 #[test]
@@ -1078,7 +1078,7 @@ fn ephemeral_signal_writes_one_commit_each_spec_sync_9() {
     assert_eq!(fires, want);
 }
 
-// spec/crdt.md §4.7, spec/sync.md §1 (an ephemeral commit's expiry rides in its header and its
+// spec/crdt.md §4.7, spec/sync-ids.md §1 (an ephemeral commit's expiry rides in its header and its
 // blob prefix): a typing indicator written with an expiry reaches the other holder and is gone
 // everywhere at its time, hosts included
 #[test]
@@ -1194,7 +1194,7 @@ fn quiet_cover(ak: &str, n: usize) -> (u64, u64) {
     (quiet, later)
 }
 
-// spec/sync.md §7 (Trigger, cover once quiet), spec/crdt.md §4.7 (Limit): an expired Put's
+// spec/sync-compaction.md §1 (trigger, cover once quiet), spec/crdt.md §4.7 (Limit): an expired Put's
 // leftover is the only carrier of its entry's creation once hosts deleted the body, so c,
 // restarted after the expiry, reads b's lasting Set in that entry only once a writer holding the
 // leftover covers it: once the aspect has been quiet for `QUIET_MS`, though one leftover is far
@@ -1208,7 +1208,7 @@ fn leftover_covered_once_quiet_spec_sync_7() {
     }
 }
 
-// spec/sync.md §7 (Trigger, cover once quiet): the quiet rule writes at most one snapshot per
+// spec/sync-compaction.md §1 (trigger, cover once quiet): the quiet rule writes at most one snapshot per
 // writer per quiet time, however many writes expired in it (n and 10n), and the writers'
 // snapshots set off no more in the quiet times after
 #[test]
@@ -1414,7 +1414,7 @@ fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
     net.run();
     net.advance(6_000);
     let me = net.tid(a);
-    // compacted away once its values expired (forgotten, spec/sync.md §9), or written back empty
+    // compacted away once its values expired (forgotten, spec/sync-compaction.md §2), or written back empty
     let r = net.engine(a).revert_commit(rm, me);
     assert!(matches!(r, Ok(_) | Err(osis_node::Error::UnknownCommit(_))), "{r:?}");
     local(&mut net, a);
@@ -1426,7 +1426,7 @@ fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
 
 // spec/crdt.md §4.6, §4.7, §5.6 Live (random churn seed 79 shrunk): A's lasting `Set` into B's entry
 // at a key shadowing A's own older entry there, both expiring; past both the `Set` keeps B's entry,
-// and undoing it (before a snapshot covers its commit and it is forgotten, spec/sync.md §9) strips
+// and undoing it (before a snapshot covers its commit and it is forgotten, spec/sync-compaction.md §2) strips
 // B's value from what it restores, which then finds A's, also gone: nothing expired comes back
 #[test]
 fn undo_of_set_past_expiry_restores_no_shadowed_entry_spec_crdt_4_6() {
@@ -1463,7 +1463,7 @@ fn undo_of_set_past_expiry_restores_no_shadowed_entry_spec_crdt_4_6() {
     }
 }
 
-// spec/crdt.md §4.7 (expiry), spec/sync.md §9 (notes/ephemeral.md Values that live while their
+// spec/crdt.md §4.7 (expiry), spec/sync-compaction.md §2 (notes/ephemeral.md Values that live while their
 // author is there): a cursor (a map entry under the author's key, expiring 30 s after each write)
 // its author rewrites every 15 s stays up at B without a gap, the host holding at most a few
 // of its entries; once the author goes away the refreshes stop and the cursor is gone at B and
@@ -1525,7 +1525,7 @@ fn eph_replace_at_map_key_read_at_holder_spec_crdt_5_1() {
     assert_eq!(net.eph_read(b, w, CURSOR), want);
 }
 
-// spec/sync.md §9 (a part on a thing whose record is not held waits): an ephemeral write on a
+// spec/sync-compaction.md §2 (a part on a thing whose record is not held waits): an ephemeral write on a
 // durable thing that arrives before the thing's own commit joins once that commit is here
 #[test]
 fn ephemeral_part_waits_for_its_record_spec_sync_9() {
@@ -1573,7 +1573,7 @@ fn never_fitting_blob_not_fetched_again_spec_sync_9() {
     assert_eq!(net.fetched[&b], Vec::new(), "not fetched again");
 }
 
-// spec/commits.md §4, spec/sync.md §9 (only verified commits are held and spread): another blob
+// spec/commits.md §4, spec/sync-compaction.md §2 (only verified commits are held and spread): another blob
 // of a held ephemeral commit, the same header with a junk delta or signature, is refused
 #[test]
 fn forged_copy_of_held_commit_refused_spec_sync_9() {
@@ -1594,7 +1594,7 @@ fn forged_copy_of_held_commit_refused_spec_sync_9() {
     assert_eq!(net.engine(b).parts_genuine(&unsigned), Some(false), "a junk signature");
 }
 
-// spec/sync.md §4 (blob ID = BLAKE3 of the bytes), spec/requirements.md ("Nothing trusts a
+// spec/sync-ids.md §5 (blob ID = BLAKE3 of the bytes), spec/requirements.md ("Nothing trusts a
 // host's word"): a host pushing a held ephemeral blob again under other IDs (the wrap's
 // nonce is only the ID's first 24 bytes, so it still opens) adds no entry and charges nothing
 #[test]
@@ -1708,7 +1708,7 @@ fn compacted_write_of_removed_holder_stays_spec_permissions_5_2() {
     assert_eq!(notes(&mut net, d, w), all, "a node arriving later agrees");
 }
 
-// spec/requirements.md Convergence, spec/permissions.md §5.2, spec/sync.md §9 (a snapshot
+// spec/requirements.md Convergence, spec/permissions.md §5.2, spec/sync-compaction.md §2 (a snapshot
 // turning invalid): writer w writes X, removes itself from the group (no demotion frontier),
 // then snapshots X's aspect as C stamped after the removal, so C is invalid wherever the removal
 // is known and X stays valid. Holder a gets C before the removal (drops X as covered, then C
@@ -1826,7 +1826,7 @@ fn sessions_of_one_node_never_collide_spec_crdt_2_1() {
     assert_eq!(items(&mut net, b, w), want, "a restarted holder, from the host");
 }
 
-// spec/sync.md §9 (what a cover absorbs is deleted at a peer once the cover is held there):
+// spec/sync-compaction.md §2 (what a cover absorbs is deleted at a peer once the cover is held there):
 // the author crashes before the peer pulls its cover; nothing was deleted, so the state
 // stays at the peer for holders, a restarted holder and the author itself (deleting first
 // lost those writes there for good: the tombstones keep holders from bringing them back)
@@ -1856,7 +1856,7 @@ fn author_crash_before_cover_lands_keeps_state_spec_sync_9() {
     assert_eq!(notes(&mut net, b, w), want, "the host still holds them");
 }
 
-// spec/sync.md §5 (code 4: the delete rate is used up, replacements counting), §9 (absorbed
+// spec/sync-ids.md §6 (code 4: the delete rate is used up, replacements counting), §9 (absorbed
 // entries leave a host once the cover is held there): a cover refused for the rate goes again
 // at the periodic pass, and what it absorbs leaves the host then
 #[test]
@@ -1929,7 +1929,7 @@ fn restarted_node_gets_no_old_host_bytes() {
 /// hosts (odd seeds: one with a random ephemeral cap, 0 and below one cover included), random
 /// ephemeral writes, partitions (offline, one host blocked), node restarts and host
 /// restarts; after healing every holder reads the same notes (through the uncapped host), and
-/// each writer's own held commits cost at most twice their cover (spec/sync.md §9).
+/// each writer's own held commits cost at most twice their cover (spec/sync-compaction.md §2).
 fn random_window_run(seed: u64) {
     random_window_run_on(seed, false, false)
 }
@@ -2033,7 +2033,7 @@ fn window_step(net: &mut Net, nodes: &[usize], w: Tid, restarts: &mut u64, scrip
 /// `single`: one host only, always capped (what it holds is all others get): holders read
 /// alike unless an entry a holder has stays out of it because it genuinely does not fit there.
 /// `inflight`: half the steps end after one hop of delivery instead of settling, so later
-/// writes meet entries not yet pulled (coalesced, spec/sync.md §9), and the second host is
+/// writes meet entries not yet pulled (coalesced, spec/sync-compaction.md §2), and the second host is
 /// at times slow (its messages held back for some steps). A failure prints the run as a
 /// `window_replay` script.
 fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
@@ -2113,7 +2113,7 @@ fn window_end(mut net: Net, hosts: &[usize], nodes: &[usize], w: Tid, seed: u64,
     // one more periodic pass: entries a full host refused go again once room appeared
     net.advance(61_000);
     // and more while room appeared only after a pass (deletes of what an entry accepted at that
-    // pass absorbs): the retry is the next pass's (spec/sync.md §9, "later"). Each such pass
+    // pass absorbs): the retry is the next pass's (spec/sync-compaction.md §2, "later"). Each such pass
     // lets in an entry that fits (or another takes its room), so at most one per entry.
     if single {
         let l = net.label(nodes[0]);
@@ -2136,7 +2136,7 @@ fn window_end(mut net: Net, hosts: &[usize], nodes: &[usize], w: Tid, seed: u64,
         assert!(synced(&mut net, *n, w), "seed {seed}: node {n} holds the window in no labeled closure");
     }
     let l = net.label(holders[0]);
-    // spec/sync.md §5 (defined outcome past a cap): an entry some holder has that the only host
+    // spec/sync-ids.md §6 (defined outcome past a cap): an entry some holder has that the only host
     // lacks and could not fit
     let refused = single && {
         let ids: BTreeSet<osis_base::BlobId> = net.host_ids(s1, &l).into_iter().collect();
@@ -2178,7 +2178,7 @@ fn window_end(mut net: Net, hosts: &[usize], nodes: &[usize], w: Tid, seed: u64,
             panic!("seed {seed}: node {n} differs from node {m} (cap {cap})\n{}", lane_dump(&mut net, nodes, hosts, &l, w));
         }
     }
-    // spec/sync.md §9 §7 (compaction trigger): the bodies each writer holds of an aspect within `FACTOR`
+    // spec/sync-compaction.md §2 §7 (compaction trigger): the bodies each writer holds of an aspect within `FACTOR`
     // times a snapshot of it and one in flight
     for n in nodes {
         for x in net.engine(*n).compaction_load().unwrap() {
@@ -2352,7 +2352,7 @@ fn random_window_converges_large() {
 }
 
 // the same with half the steps ending while messages are in flight, so writes meet entries not
-// yet pulled and are coalesced (spec/sync.md §9)
+// yet pulled and are coalesced (spec/sync-compaction.md §2)
 #[test]
 fn random_window_inflight_spec_sync_9() {
     for seed in 0..2 {
@@ -2582,7 +2582,7 @@ impl Churn {
         }
         net.advance(61_000);
         // holders read alike once quiet: a leftover reaches a node that missed its write only in a
-        // writer's snapshot, written once the aspect has been quiet (spec/sync.md §7 Trigger)
+        // writer's snapshot, written once the aspect has been quiet (spec/sync-compaction.md §1 trigger)
         net.advance(osis_node::retention::compact::QUIET_MS);
         net.advance(61_000);
         let holders: Vec<usize> = nodes.iter().copied().filter(|n| synced(net, *n, w)).collect();
@@ -2609,7 +2609,7 @@ impl Churn {
     }
 }
 
-/// One random run of superseded expiring writes (spec/sync.md §9): four writers on two hosts
+/// One random run of superseded expiring writes (spec/sync-compaction.md §2): four writers on two hosts
 /// make expiring and plain writes at a few shared and own keys of a map and to a register
 /// (several ops per batch, sometimes two aspects), removals and replaces (resets), undos of
 /// their own changes, demotions and promotions of writers, with partitions and node and host
@@ -2680,7 +2680,7 @@ fn churn_replay(seed: u64, steps: &[C]) {
     c.end(seed);
 }
 
-// spec/sync.md §9 (superseded expiring writes, randomized): holders read alike after random
+// spec/sync-compaction.md §2 (superseded expiring writes, randomized): holders read alike after random
 // expiring writes, removals, resets, undos, demotions, partitions and restarts
 #[test]
 fn random_churn_converges_spec_sync_9() {
@@ -2836,7 +2836,7 @@ fn superseded_part_beside_one_valid_again_fetched_spec_permissions_6() {
     }
 }
 
-// spec/sync.md §7 (a delete waits for the role commits it is judged by; random churn seed
+// spec/sync-compaction.md §1 (a delete waits for the role commits it is judged by; random churn seed
 // 460971879377 shrunk): writer c is promoted again while writer b reaches only host 0 and the
 // admin only host 1, so b judges c a reader until the promotion reaches host 0. c's snapshot
 // covers b's write; c holds the promotion, so host 0 pulls it from c with the snapshot: b never
@@ -2887,7 +2887,7 @@ fn delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
     assert_eq!(net.eph_read(b, w, CURSOR), net.eph_read(c, w, CURSOR));
 }
 
-// spec/sync.md §7 (random churn seed 501814946361 shrunk): writer d, away and cut from the
+// spec/sync-compaction.md §1 (random churn seed 501814946361 shrunk): writer d, away and cut from the
 // admin's peer, snapshots the cursor before it hears of its demotion, covering b's write. Peer 0
 // moved to the demotion's step meanwhile (b and c registered it), so d's snapshot, stamped under
 // the old write key, never lands there to carry a delete, and d learns its demotion from peer 0:
@@ -2935,7 +2935,7 @@ fn a_stale_deleter_meets_one_re_placement_spec_sync_7() {
     assert_eq!(net.eph_read(b, w, CURSOR), net.eph_read(d, w, CURSOR));
 }
 
-// spec/sync.md §7, §9 A snapshot turning invalid (random churn seed 807204137413 shrunk): admin
+// spec/sync-compaction.md §1, spec/sync-compaction.md §2 a snapshot turning invalid (random churn seed 807204137413 shrunk): admin
 // a writes X on the cursor and the flag, then is away; b snapshots the cursor, c the flag, and
 // the others forget X as covered by both. a, not having c's snapshot, demotes c: that snapshot
 // falls, so X's flag write is uncovered and a places X again. b and d hold X again with its
@@ -2981,7 +2981,7 @@ fn held_again_judged_by_the_join_not_its_forgotten_cover_spec_sync_9() {
     }
 }
 
-// spec/sync.md §6 (must-hold needs a positive uncovered; random_window_one_capped_host_large
+// spec/sync-judgement.md §2 (must-hold needs a positive uncovered; random_window_one_capped_host_large
 // seed 889902233287 shrunk): four writers at one host whose ephemeral cap is about two
 // snapshots of the map write in turn, so the trigger compacts and the host refuses snapshots
 // for room. A writer keeps its own snapshot under a co-writer's later one it forgot (covered by a
@@ -3018,7 +3018,7 @@ fn commit_entries_at(net: &mut Net, host: usize, n: usize, l: &osis_base::LabelI
     net.sync(n).entries(l).into_iter().filter(|(x, k)| held.contains(x) && matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)).count()
 }
 
-// spec/sync.md §6 (a writer stamps every ephemeral entry it logs; held at a host only as
+// spec/sync-judgement.md §2 (a writer stamps every ephemeral entry it logs; held at a host only as
 // learned on the current connection; random churn seed 154 shrunk): a restarted author's
 // commit, invalid while it is demoted, is fetched back by the holders to wait apart; the hosts
 // restart and lose it, the admin too; once the author is promoted the holders hold it valid
@@ -3103,7 +3103,7 @@ fn restart_mid_handshake_reopens() {
 }
 
 
-// spec/sync.md §9 (security review H3): ephemeral commits the engine did not verify and hold are
+// spec/sync-compaction.md §2 (security review H3): ephemeral commits the engine did not verify and hold are
 // neither kept nor spread: one more than `MAX_DRIFT` ahead is dropped; one by an author whose
 // record is unknown waits apart, under a share of the cap, unserved and unspread
 #[test]
@@ -3148,7 +3148,7 @@ fn unverified_ephemeral_not_kept_or_spread_spec_sync_9() {
     assert_eq!(net.hosts[s2].hub.store().ephemeral_bytes(&l), at_s2, "nothing spread to the other host");
 }
 
-// spec/sync.md §9 (security review L2): a replay of an entry its author's held valid cover
+// spec/sync-compaction.md §2 (security review L2): a replay of an entry its author's held valid cover
 // absorbs is not held again, and a writer deletes it where it was found
 #[test]
 fn replayed_covered_entry_dropped_spec_sync_9() {
@@ -3213,7 +3213,7 @@ fn invalid_on_arrival_held_once_valid_spec_sync_9() {
     assert_eq!(notes(&mut net, d, w).get("r").map(String::as_str), Some("ok"), "valid now: joined; the earlier one still invalid");
 }
 
-// spec/permissions.md §6 (invalid deltas), spec/sync.md §9 Caps (security): a reader's flood of
+// spec/permissions.md §6 (invalid deltas), spec/sync-compaction.md §2 caps (security): a reader's flood of
 // ephemeral commits, each invalid on arrival, takes nothing of a writer's cap: their bodies are
 // dropped, each commit stays known (header only) while an entry of it is known here and is
 // forgotten with its last entry; another writer's ephemeral writes still reach it
@@ -3294,7 +3294,7 @@ fn capped_label_reconciles_once_room_spec_sync_9() {
     assert_eq!(net.eph_read(b, t, "doc:big+.0"), Some(s(&"b".repeat(40_000))), "fetched again\n{}", net.sync(b).ephemeral_dump(&l));
 }
 
-// spec/sync.md §9 (ephemeral parts on core aspects; security review L3): a writer's ephemeral
+// spec/sync-compaction.md §2 (ephemeral parts on core aspects; security review L3): a writer's ephemeral
 // part on a core aspect other than `group.0` (here `reach.0`) is invalid: never joined
 #[test]
 fn core_aspect_part_refused_spec_sync_9() {
@@ -3332,7 +3332,7 @@ fn ephemeral_signals_through_co_reader_peer_spec_sync_5() {
     assert_eq!(fired(&ra).iter().filter(|x| x.2 == s("from c")).count(), 1, "the peer passes it to the host, once");
 }
 
-// spec/sync.md §4 (ephemeral entries are held in memory only): an ephemeral entry announced
+// spec/sync-ids.md §5 (ephemeral entries are held in memory only): an ephemeral entry announced
 // without its bytes (above the inline limit) is fetched and recorded in memory once its prefix
 // shows its class; no stored sync record of it stays (one did, and a restart then counted it as
 // held). Entry, presence and blob rows (`y/e`, `y/p`, `y/b`) are counted before and after.
@@ -3386,7 +3386,7 @@ fn bytes_under_stuck_entry(stuck: usize) -> usize {
     net.sent_bytes - before
 }
 
-// spec/sync.md §9, §10: an own entry a peer lacks for good (one write past its cap) costs no
+// spec/sync-compaction.md §2, spec/sync-opens.md §4: an own entry a peer lacks for good (one write past its cap) costs no
 // bytes at every other node's write (it did, by the compaction a refusal triggered: 5.5x)
 #[test]
 fn an_entry_past_a_peers_cap_costs_no_churn_spec_sync_9() {
@@ -3395,7 +3395,7 @@ fn an_entry_past_a_peers_cap_costs_no_churn_spec_sync_9() {
     assert!(stuck < fits + fits / 4, "{stuck} bytes sent with a refused entry held, {fits} without");
 }
 
-// spec/sync.md §9, §10 (presence at a peer that cannot read L is what its stream showed; random
+// spec/sync-compaction.md §2, spec/sync-opens.md §4 (presence at a peer that cannot read L is what its stream showed; random
 // churn seed 564958814858 shrunk): an entry both hosts announce without bytes (two sources) and
 // a reader fetches from one turns out ephemeral there; it stays present at both, so no pass puts
 // it up again at the other (there the writers' passes and others' deletes looped)
@@ -3494,7 +3494,7 @@ fn many_authors_run(authors: usize, secs: u64) -> (usize, u64, u64) {
     (del2 - del, peak, cap)
 }
 
-// spec/sync.md §9 (an expiring commit superseded by its author's later writes is dropped and its
+// spec/sync-compaction.md §2 (an expiring commit superseded by its author's later writes is dropped and its
 // author deletes it), §5 (a peer that cannot read L rate-limits deletes and caps ephemeral bytes
 // per label): 4 authors at 30 cursor moves a second, scaled to a 1 s window (10 authors took
 // 4.5-12 s: by hand below)
@@ -3514,7 +3514,7 @@ fn many_authors_under_a_peers_rates_by_hand() {
     eprintln!("10 authors, 60 s: {del} deletes, peak {peak} of {cap} ephemeral bytes");
 }
 
-// spec/sync.md §9 (an unsent write superseded by a later one expiring no earlier is not sent):
+// spec/sync-compaction.md §2 (an unsent write superseded by a later one expiring no earlier is not sent):
 // cursor moves made before the next take (an entry not yet pulled), each expiring at its own time,
 // go as one commit, the last move's, not one per expiry
 #[test]
@@ -3537,7 +3537,7 @@ fn superseded_unsent_moves_one_commit_spec_sync_9() {
     assert_eq!((cs[0].1.header.aspects.len(), cs[0].1.header.expires), (1, Some(last)), "the last move's");
 }
 
-// spec/sync.md §9 (a superseded part's writes are held value-less at every node, its author
+// spec/sync-compaction.md §2 (a superseded part's writes are held value-less at every node, its author
 // included): once a holder removes the newer entry at the key, the author and the holder both read
 // the key gone; the older entry does not show again at the author
 #[test]
@@ -3576,7 +3576,7 @@ fn superseded_stays_gone_when_newer_removed_spec_sync_9() {
     assert_eq!((net.eph_read(a, w, CURSOR), net.eph_read(b, w, CURSOR)), (gone.clone(), gone));
 }
 
-// spec/sync.md §9 (each part is superseded alone, whatever else its commit holds): a's move
+// spec/sync-compaction.md §2 (each part is superseded alone, whatever else its commit holds): a's move
 // writes a flag beside it; once b's snapshot covers the dead flag, b holds the move alone and a,
 // the author (its own bodies go only under its own snapshots), holds both; c gets the move and
 // its superseder before the snapshot. a's next move supersedes the old move at all three, so
@@ -3624,7 +3624,7 @@ fn superseded_part_goes_whatever_its_commit_holds_spec_sync_9() {
     assert_eq!(reads, vec![Some(Value::Map(osis_base::ValueMap::new())); 3], "the old move reads nowhere");
 }
 
-// spec/sync.md §9 (a superseding part's writes are all later than the superseded part's and it
+// spec/sync-compaction.md §2 (a superseding part's writes are all later than the superseded part's and it
 // carries no reset): an equal earlier write expiring later supersedes no later one, and a replace
 // of the aspect (a reset) supersedes nothing, so each stays held at the author and the holder
 #[test]
@@ -3654,7 +3654,7 @@ fn superseding_needs_later_stamps_and_no_reset_spec_sync_9() {
     assert_eq!((net.eph_read(a, w, CURSOR), net.eph_read(b, w, CURSOR)), (want.clone(), want));
 }
 
-// spec/sync.md §9 (a superseding part expires): a plain move after an expiring one supersedes
+// spec/sync-compaction.md §2 (a superseding part expires): a plain move after an expiring one supersedes
 // nothing. Else: b drops the expiring move for the plain one, a's cover absorbs the plain one,
 // and c, offline meanwhile, gets only the cover beside the move it held; b's removal of the key
 // tombstones the plain entry alone and the expiring move read again at c alone
@@ -3699,7 +3699,7 @@ fn superseding_part_expires_spec_sync_9() {
     assert!(reads.iter().all(|r| *r == reads[0]), "alike: {reads:?}");
 }
 
-// spec/sync.md §9 (only a later write expiring no earlier, none of whose writes is into a record
+// spec/sync-compaction.md §2 (only a later write expiring no earlier, none of whose writes is into a record
 // it did not create, supersedes): a move expiring sooner than the one before leaves that one
 // held, so it reads again once the sooner one expires; a `Set` into the entry a move created
 // supersedes nothing and keeps its own expiry, and the entry with it (spec/crdt.md §4.7); holders
@@ -3734,7 +3734,7 @@ fn superseding_needs_later_expiry_and_own_records_spec_sync_9() {
     assert_eq!((at(&mut net, a), at(&mut net, b)), (None, None), "the set goes at its own expiry");
 }
 
-// spec/sync.md §9: ephemeral signals are never held back or merged: each write of one made in a
+// spec/sync-compaction.md §2: ephemeral signals are never held back or merged: each write of one made in a
 // burst beside a plain write is its own relay-only commit, and each fires once at B
 #[test]
 fn ephemeral_signals_not_held_back_spec_sync_9() {
@@ -3750,7 +3750,7 @@ fn ephemeral_signals_not_held_back_spec_sync_9() {
     assert_eq!(net.eph_read(b, w, STATE), Some(s("busy")));
 }
 
-// spec/sync.md §9 (own plain writes wait only while every connection of the label has an own
+// spec/sync-compaction.md §2 (own plain writes wait only while every connection of the label has an own
 // entry unpulled): with one host slow to answer, each edit reaches B through the other at
 // once
 #[test]
@@ -3812,7 +3812,7 @@ fn covered_while_slow(reconnect: bool) -> (BTreeSet<osis_base::BlobId>, BTreeSet
     (net.host_ids(fast, &l).into_iter().collect(), net.host_ids(slow, &l).into_iter().collect())
 }
 
-// spec/sync.md §9 (a covered entry deleted where it is held, once it was
+// spec/sync-compaction.md §2 (a covered entry deleted where it is held, once it was
 // pulled there): a slow host ends holding what the fast one does
 #[test]
 fn covered_while_slow_deleted_once_answered_spec_sync_9() {
@@ -3950,7 +3950,7 @@ fn large_write_pages_and_syncs_spec_crdt_8() {
     assert!(net.hosts[host].hub.store().ephemeral_bytes(&l) > 9 << 20, "and at the host");
 }
 
-// spec/data-model.md §6, spec/sync.md §9: an ephemeral value past a blob (20 MiB) is a chunk tree
+// spec/data-model.md §6, spec/sync-compaction.md §2: an ephemeral value past a blob (20 MiB) is a chunk tree
 // of ephemeral blobs, as a durable one is: it writes, syncs through the host and reads alike; its
 // blobs are held in memory, charged at the holder, and once its commit is forgotten (covered by
 // a snapshot of a later small write) none of them is held at any node or at the host
@@ -3999,7 +3999,7 @@ fn large_value_chunks_syncs_and_goes_spec_data_model_6() {
     assert!(tree.is_disjoint(&at_the_peer), "nor the host");
 }
 
-// spec/sync.md §6, §9 (walk cost): an edit of a large ephemeral value reusing its tree brings a
+// spec/sync-judgement.md §2, spec/sync-compaction.md §2 (walk cost): an edit of a large ephemeral value reusing its tree brings a
 // holder only what it changed: the blobs its walks open are the same for a value of n and of 10n
 // chunks, and the blobs fetched a few at either (the gate and the tree fetch pass held nodes below
 // a root by)
@@ -4045,7 +4045,7 @@ fn edit_of_a_large_value_walks_what_it_changed_spec_sync_9() {
     assert!(f1 <= 5 && f10 <= 5, "new blobs at n: {f1}; at 10n: {f10}");
 }
 
-// spec/sync.md §7 Freed links, §9: an ephemeral value's tree carried by another writer's snapshot
+// spec/sync-compaction.md §1 freed links, §9: an ephemeral value's tree carried by another writer's snapshot
 // (b compacts over a's write), then replaced and compacted by a: its pieces are freed under their
 // own links' keys (the introducer's, whichever commit carried them last), so none of its blobs
 // stays at the host or at a; b keeps them while it holds its own snapshot carrying them, until
@@ -4096,7 +4096,7 @@ fn large_value_carried_by_anothers_snapshot_goes_spec_sync_7() {
     assert_eq!(at_host(&net), 0, "nor the host");
 }
 
-// spec/crdt.md §8, spec/sync.md §5: a paged ephemeral commit reaches a co-reader peer by its
+// spec/crdt.md §8, spec/sync-ids.md §6: a paged ephemeral commit reaches a co-reader peer by its
 // stream (no host), pages charged there
 #[test]
 fn paged_write_over_peer_link_spec_crdt_8() {
@@ -4126,7 +4126,7 @@ fn paged_write_over_peer_link_spec_crdt_8() {
     assert!(net.sync(b).ephemeral_bytes(&l) > 1 << 20, "its pages count at b");
 }
 
-// spec/crdt.md §8, spec/sync.md §9 Caps: a receiver's pre-decode bound counts the pages an
+// spec/crdt.md §8, spec/sync-compaction.md §2 caps: a receiver's pre-decode bound counts the pages an
 // ephemeral commit links, not a durable blob a value links: a note holding a link to a large durable
 // value the receiver holds applies there as any small note does
 #[test]
@@ -4151,7 +4151,7 @@ fn value_link_is_no_page_spec_crdt_8() {
     assert_eq!(held(&mut net, a), Some(link), "a, holding the value's tree, applies the note");
 }
 
-// spec/crdt.md §8, spec/sync.md §9 Compaction: an ephemeral map grown past a blob by several
+// spec/crdt.md §8, spec/sync-compaction.md §2 compaction: an ephemeral map grown past a blob by several
 // writers' valid commits (each fitting a blob) still compacts: the snapshot pages, every holder
 // reads alike, others' covered bodies and their pages go at every node and at the host
 #[test]
@@ -4213,7 +4213,7 @@ fn grown_past_a_blob_compacts_spec_sync_9() {
     assert!(old_pages.iter().all(|b| !net.engine(a).has_blob(b)), "a holds no page of the bodies it forgot");
 }
 
-// spec/sync.md §9 Caps: a paged ephemeral commit's pages count against a holder's per-label cap
+// spec/sync-compaction.md §2 caps: a paged ephemeral commit's pages count against a holder's per-label cap
 // like any memory entry: at a node whose cap cannot hold it nothing past the cap is held, the
 // refusal is reported, and a node with room holds and counts it
 #[test]
@@ -4249,7 +4249,7 @@ fn pages_count_against_the_cap_spec_sync_9() {
     assert!(at_c > 6 << 20, "c counts the pages: {at_c}");
 }
 
-// spec/sync.md §9 Caps: a page entry from others counts against the holder's cap when its bytes
+// spec/sync-compaction.md §2 caps: a page entry from others counts against the holder's cap when its bytes
 // arrive, its commit not held (not arrived yet, or never), and is released when its entry goes
 #[test]
 fn page_before_its_commit_counts_spec_sync_9() {
@@ -4299,7 +4299,7 @@ fn tiny_entries(net: &mut Net, a: usize, w: Tid, n: usize) -> (osis_commit::Comm
     (blob, pages)
 }
 
-// spec/sync.md §9 Caps: a writer logging a paged commit's root before its pages makes a holder
+// spec/sync-compaction.md §2 caps: a writer logging a paged commit's root before its pages makes a holder
 // decode nothing past its cap: the root waits for its pages undecoded (nothing examined), and
 // once they are held its bound, pages included, is checked against the room left before any
 // decode: past it the commit is refused (reported), nothing of it held, and the holder's charge
@@ -4341,7 +4341,7 @@ fn root_before_pages_decodes_within_cap_spec_sync_9() {
     assert!(rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused)), "reported");
 }
 
-// spec/sync.md §9 Caps, staged gate: a memory commit's large value is gated by its root: the
+// spec/sync-compaction.md §2 caps, staged gate: a memory commit's large value is gated by its root: the
 // commit waits for the root alone (nothing of the tree below is wanted), then the root's
 // lengths, the value's claimed size, are checked against the room before any chunk is wanted:
 // past it the commit is refused, nothing of it kept and nothing more wanted. Within room it
@@ -4386,7 +4386,7 @@ fn value_past_the_room_refused_at_its_root_spec_sync_9() {
     assert_eq!(lp.peers[1].engine.get_full(&w, &ak).unwrap(), full, "reads alike");
 }
 
-// spec/sync.md §9 Caps: a memory commit that waited for its root and then applied has its tree
+// spec/sync-compaction.md §2 caps: a memory commit that waited for its root and then applied has its tree
 // wanted after, as one applied at arrival does (the walk kept while it waited stops at roots)
 #[test]
 fn value_applied_after_waiting_wants_its_tree_spec_sync_9() {
@@ -4407,7 +4407,7 @@ fn value_applied_after_waiting_wants_its_tree_spec_sync_9() {
     assert!(!want.is_empty() && want.is_subset(&tree), "its tree is wanted: {}", want.len());
 }
 
-// spec/sync.md §9 Caps: a memory commit waiting for its `ts` (past MAX_DRIFT ahead) is checked
+// spec/sync-compaction.md §2 caps: a memory commit waiting for its `ts` (past MAX_DRIFT ahead) is checked
 // against the room its holder has when its wait ends, before anything of it is decoded: re-
 // examination leaves it waiting, and applied within too small a room it is refused, nothing
 // kept; within enough room it applies
@@ -4439,7 +4439,7 @@ fn drift_waiting_commit_room_checked_spec_sync_9() {
     }
 }
 
-// spec/sync.md §5 (a new sync key ends an open), §6: a read rotation landing while b reconnects
+// spec/sync-ids.md §6 (a new sync key ends an open), §6: a read rotation landing while b reconnects
 // with an offline note: the pass after the reopen on the same connection still places it where c
 // reads it.
 #[test]
@@ -4463,7 +4463,7 @@ fn offline_note_placed_across_a_rotation_on_reconnect_spec_sync_5() {
     assert_eq!(notes(&mut net, c, w).get("b").map(String::as_str), Some("1"), "b's offline note reaches c");
 }
 
-// spec/sync.md §5, §9: a writer's note built offline under
+// spec/sync-ids.md §6, spec/sync-compaction.md §2: a writer's note built offline under
 // the write key of a head the label rotated past meanwhile is refused 9 at its reconnection;
 // stamped again under the new head's key and sent again, it reaches the other readers there.
 #[test]
@@ -4485,7 +4485,7 @@ fn offline_entry_across_rotation_restamped_spec_sync_5() {
     assert_eq!(notes(&mut net, c, w).get("b").map(String::as_str), Some("1"), "b's offline note reaches c");
 }
 
-// spec/sync.md §5, §9: a writer demoted to reader while its note waited offline holds no write
+// spec/sync-ids.md §6, spec/sync-compaction.md §2: a writer demoted to reader while its note waited offline holds no write
 // key of the new head: once it sees it no longer writes the label it stops trying (reported
 // when the entry was already waiting for a key then), and the note reaches nobody.
 #[test]
@@ -4510,7 +4510,7 @@ fn demoted_writer_entry_stops_spec_sync_5() {
     assert_eq!(notes(&mut net, c, w).get("b"), None, "the demoted writer's note never reaches c");
 }
 
-// spec/sync.md §5, §9: a writer compacts before it reads a rotation: the cover and the deletes
+// spec/sync-ids.md §6, spec/sync-compaction.md §2: a writer compacts before it reads a rotation: the cover and the deletes
 // of what it absorbs (carried as replacements) are signed under the old write key and refused 9;
 // once the writer reads the rotation the cover lands and the absorbed entries go at the host.
 // Code 9 carries no head (spec/wire.md §11.2): the writer learns it by its stream from the host.
@@ -4553,7 +4553,7 @@ fn cover_across_unread_rotation_lands_spec_sync_9() {
     assert!(before.difference(&after).count() > 0, "what it absorbs is deleted at the host");
 }
 
-// spec/sync.md §5, §9: the writer compacts while it hears nothing from the peer, and a rotation
+// spec/sync-ids.md §6, spec/sync-compaction.md §2: the writer compacts while it hears nothing from the peer, and a rotation
 // moves the peer's head before the writer reads it: the absorbed entry still leaves the peer,
 // by a delete under the head the writer reads there. The admin holds no ephemeral entries of
 // others, nor the writer it removes: the writer alone deletes.
@@ -4629,7 +4629,7 @@ fn memory_commit_session_form_spec_commits_3() {
 }
 
 // a memory commit is nothing durable to node-sync: marked changed
-// (its bodies travel like any commit's, spec/sync.md §9) but no generation step, not among
+// (its bodies travel like any commit's, spec/sync-compaction.md §2) but no generation step, not among
 // `commit_ids` or a thing's durable commits, an `Ephemeral` event (none on a durable
 // subscription). spec: none (internal)
 #[test]
@@ -5028,7 +5028,7 @@ fn memory_expiry_goes_valueless_spec_crdt_4_7() {
     assert!(faults.iter().all(|f| f.forbidden() == 0), "nothing durable written");
 }
 
-// spec/sync.md §9 (Superseded parts): an expiring move of 0's cursor entry vanishes
+// spec/sync-compaction.md §2 (superseded parts): an expiring move of 0's cursor entry vanishes
 // once its later move (expiring no earlier) is held: at the author, at 1 (older first) and at 2
 // (newer first: the older one is not kept); one expiring earlier supersedes nothing; once the
 // newer entries are removed the superseded move does not read again anywhere
@@ -5066,7 +5066,7 @@ fn memory_superseded_expiring_write_vanishes_spec_sync_9() {
     }
 }
 
-// spec/sync.md §9 (Superseded parts, a function of the commits held): 2 holds 1's
+// spec/sync-compaction.md §2 (superseded parts, a function of the commits held): 2 holds 1's
 // two moves while a removal of 1 by admin 3 makes them invalid there: nothing is superseded;
 // once 0's earlier removal of 3 arrives, 3's removal is invalid, the moves valid again, and the
 // older move goes there too
@@ -5106,7 +5106,7 @@ fn memory_superseded_once_superseder_valid_spec_sync_9() {
     assert_eq!(lp.peers[2].engine.get(&d, &eph("t:big+.0")).unwrap(), Some(Value::Map([(me, s("c1"))].into())));
 }
 
-// spec/sync.md §9 (Caps: a holder decodes nothing past the room its cap leaves): a memory commit
+// spec/sync-compaction.md §2 (caps: a holder decodes nothing past the room its cap leaves): a memory commit
 // whose parts could cost more decoded than the room given is refused before decoding, nothing
 // of it held or kept waiting; within the room it applies, charged its decoded size per copy
 // kept and less than its bound; a copy of it again needs no room
@@ -5129,7 +5129,7 @@ fn memory_ingest_within_room_spec_sync_9() {
     assert!(matches!(e.ingest_memory(&pk.bytes, 0).unwrap(), osis_node::Ingested::Duplicate(_)), "held parts need no room");
 }
 
-// spec/sync.md §9 (an expiring commit superseded by its author's later writes is dropped and
+// spec/sync-compaction.md §2 (an expiring commit superseded by its author's later writes is dropped and
 // deleted by its author; superseded unsent writes are not sent): a cursor moved 30 times a second,
 // each move a fresh entry at the author's key expiring 30 s out (what `osis::KeepAlive::set`
 // writes), costs about one held commit at every node and one entry at the host, not one per
@@ -5196,7 +5196,7 @@ fn compact_then_note(net: &mut Net, nodes: &[usize], w: Tid) {
     }
 }
 
-// spec/sync.md §9 Deleting at a host, §10 Full: the full peer refuses the snapshots a and b write
+// spec/sync-compaction.md §2 deleting at a host, §10 Full: the full peer refuses the snapshots a and b write
 // of the window, and both forget what theirs cover, so no node holds the entries there. Those go
 // anyway (what covers them waits there for the room they hold), so a's next note finds room
 // there and reaches b
@@ -5206,7 +5206,7 @@ fn full_peer_frees_what_every_holder_forgot_spec_sync_9() {
     compact_then_note(&mut net, &nodes, w);
 }
 
-// spec/sync.md §9 Deleting at a host, §10 Full: a's large note does not fit the full peer, so
+// spec/sync-compaction.md §2 deleting at a host, §10 Full: a's large note does not fit the full peer, so
 // neither does a's snapshot of the window (nor once the notes there are gone). a forgets the
 // notes under it and deletes them there; b, which holds both and gets no snapshot (none reaches
 // it but through that peer), places them again, and they stay (placed again since a forgot them:
@@ -5226,7 +5226,7 @@ fn full_peer_keeps_what_a_holder_placed_again_spec_sync_9() {
     assert_eq!(notes(&mut net, b, w), map(&[("j", "b"), ("k", "a")]));
 }
 
-// spec/sync.md §9 Superseded parts, §10 Full: a peer with room for one entry of a refreshed
+// spec/sync-compaction.md §2 superseded parts, §10 Full: a peer with room for one entry of a refreshed
 // cursor and not two refuses each refresh for room while the last one is there; the author deletes
 // the superseded entry anyway (the superseder waits there for that room), the peer pulls again and
 // takes the refresh, so the other holder reads each refresh before the last one expires
@@ -5294,7 +5294,7 @@ fn set_into_expiring_entry_reads_alike_spec_crdt_4_7() {
     assert_eq!(reads, vec![kept.clone(), kept.clone(), kept], "b's write keeps the entry everywhere");
 }
 
-// spec/crdt.md §4.7 (Ephemeral data), spec/sync.md §9 (Superseded parts), issues/
+// spec/crdt.md §4.7 (Ephemeral data), spec/sync-compaction.md §2 (superseded parts), issues/
 // eph-unify.md Step A (review differential): random memory histories (expiring and plain puts
 // at shared keys, removals, replaces, two writers) reach four nodes through the Core hooks in
 // random orders, ticked at random times: once all are delivered, every node reads alike at each
@@ -5305,7 +5305,7 @@ fn memory_random_histories_read_alike_spec_crdt_4_7() {
     memory_random_histories(0..6, false);
 }
 
-// spec/sync.md §9 (Compaction, memory class), spec/commits.md §5 (covered)
+// spec/sync-compaction.md §2 (compaction, memory class), spec/commits.md §5 (covered)
 // `memory_random_histories_read_alike_spec_crdt_4_7` with memory snapshots among the
 // writes (any writer or the admin, of the aspect's whole state at that node): each holder drops
 // what the snapshots it holds cover and forgets it, and all still read alike
@@ -5416,7 +5416,7 @@ fn memory_snapshot(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid) 
     (id, e.package(&id).unwrap().unwrap().bytes)
 }
 
-// spec/sync.md §9 (Compaction, memory class), spec/commits.md §5 (covered): a memory snapshot of
+// spec/sync-compaction.md §2 (compaction, memory class), spec/commits.md §5 (covered): a memory snapshot of
 // an aspect's whole state is a memory commit; each holder drops the bodies it covers at once and
 // forgets their headers, at the writer, at a holder of them all and at one receiving them after
 // the snapshot; an expiring write is neither carried nor covered and vanishes at T alike;
@@ -5480,7 +5480,7 @@ fn memory_snapshot_covers_held_bodies_spec_sync_9() {
     assert!(faults.iter().all(|f| f.forbidden() == 0), "nothing durable written");
 }
 
-// spec/sync.md §7 (covered-equal snapshots: only the higher commit ID goes), memory class: two
+// spec/sync-compaction.md §1 (covered-equal snapshots: only the higher commit ID goes), memory class: two
 // writers snapshot the same state; a holder keeps the lower one; each writer keeps its own
 // (until one of its own snapshots covers it, notes/ephemeral.md, Own bodies under own covers) and the other's
 // when it is the lower
@@ -5687,7 +5687,7 @@ fn memory_random_demotion(seed: u64) {
     }
 }
 
-// spec/permissions.md §5.2 (a snapshot its demotion does not list falls), spec/sync.md §9 (an
+// spec/permissions.md §5.2 (a snapshot its demotion does not list falls), spec/sync-compaction.md §2 (an
 // author drops its own body only under its own snapshot): 2 writes X; 1 snapshots it and every
 // holder but 2 drops X as covered and forgets it; the admin then removes 1 by a frontier listing
 // none of its commits. X, a valid write of a node still writing, still reads everywhere
@@ -5719,7 +5719,7 @@ fn memory_compactor_demoted_keeps_others_writes_spec_permissions_5_2() {
     }
 }
 
-// spec/sync.md §9 (Compaction, memory class), notes/growth.md (eph-unify-b review, pinned for
+// spec/sync-compaction.md §2 (compaction, memory class), notes/growth.md (eph-unify-b review, pinned for
 // B2): a session's expiring write on an aspect leaves out its counters from every snapshot's
 // frontier (and, once vanished, a gap no frontier passes), so none of that session's later
 // plain writes there is ever covered: held for the session's life, and a size trigger fires on
@@ -5737,7 +5737,7 @@ fn memory_snapshot_covers_plain_after_expired_spec_sync_9() {
     }
 }
 
-// spec/sync.md §9 (Compaction, memory class), spec/commits.md §5 (covered): a memory snapshot
+// spec/sync-compaction.md §2 (compaction, memory class), spec/commits.md §5 (covered): a memory snapshot
 // and the body it covers, both invalid on arrival (their author's new write edge not yet known
 // there), turn valid with the edge; the holder then drops the covered body as one that knew the
 // edge first did (eph-unify-b review: no test reached `drop_covered` on a rise)
@@ -5829,7 +5829,7 @@ fn memory_snapshot_invalid_on_arrival_not_covered_spec_permissions_6() {
     }
 }
 
-// spec/sync.md §9 (Compaction, memory class), spec/crdt.md §2.1, spec/permissions.md §5.2: 1 is
+// spec/sync-compaction.md §2 (compaction, memory class), spec/crdt.md §2.1, spec/permissions.md §5.2: 1 is
 // removed by a frontier listing none of its commits and granted write again with an `until` (no
 // re-grant: its earlier memory body stays invalid); what it writes after that goes under a fresh
 // session (`Core::fresh_session`), so snapshots' frontiers pass it and every holder drops it as
@@ -6027,7 +6027,7 @@ fn revert_run_with(seed: u64, restarts: bool) {
                         ids.push(w.id);
                     }
                     Err(e) => {
-                        // an own ephemeral commit superseded or covered is forgotten (spec/sync.md §9)
+                        // an own ephemeral commit superseded or covered is forgotten (spec/sync-compaction.md §2)
                         assert!(matches!(e, osis_node::Error::Permission { .. } | osis_node::Error::UnknownCommit(_)), "seed {seed} step {step}: {e:?}");
                         assert_eq!(before, reads(&mut net, &things), "seed {seed} step {step}: a refused revert");
                         assert_eq!(held, memory_ids(&mut net, b), "seed {seed} step {step}: a refused revert");
@@ -6060,7 +6060,7 @@ fn revert_run_with(seed: u64, restarts: bool) {
         let (ga, gb) = (net.engine(a).groups_of(t), net.engine(b).groups_of(t));
         assert_eq!(ga, gb, "seed {seed}: {t:?} listed");
         // a thing no group lists is in no label's closure: nothing of it syncs any more, as
-        // for a durable thing (spec/sync.md §3), so only listed things read alike
+        // for a durable thing (spec/sync-judgement.md §1), so only listed things read alike
         if ga.is_empty() {
             continue;
         }
@@ -6068,7 +6068,7 @@ fn revert_run_with(seed: u64, restarts: bool) {
     }
 }
 
-// spec/sync.md §9 (Compaction), spec/permissions.md §5.2: a writer's snapshot covering another
+// spec/sync-compaction.md §2 (compaction), spec/permissions.md §5.2: a writer's snapshot covering another
 // author's write falls with its demotion (the admin never received it); the host still holds
 // the covered write, so the writer fetches it back at once and both read it
 // (`ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6` seed 751305619689)
@@ -6136,7 +6136,7 @@ fn fallen_snapshot_lifts_own_tombstone_spec_sync_9() {
     assert_eq!(net.eph_read(a, t, STATE), Some(s("y")));
 }
 
-// spec/sync.md §6 (Dropped bodies), §9 Delete: writer b deletes w, purging its own write x,
+// spec/sync-judgement.md §3 (dropped bodies), §9 Delete: writer b deletes w, purging its own write x,
 // while cut off from the host; admin a, not having the delete, demotes b, so the delete and its
 // purge fall at b. The purge's fall makes x missing again at b, and b's tombstone of x's entry no
 // longer stands: b fetches x from the host, which still holds it
@@ -6169,7 +6169,7 @@ fn fallen_purge_lifts_own_tombstone_spec_sync_6() {
     assert_eq!(net.eph_read(b, w, STATE), Some(s("x")), "fetched back");
 }
 
-// spec/sync.md §6 (Placed again once): writer b, cut off by a host restart, undoes its creation
+// spec/sync-judgement.md §4 (Logged again once): writer b, cut off by a host restart, undoes its creation
 // of w (a delete purging its write "6"); b and the host restart, and admin a demotes b, its role
 // commits refused at the host until the demotion's step registers there. Restarted b fetches 6
 // from a, still judges its purge valid and deletes it at the host. a places 6 again only once the
@@ -6224,7 +6224,7 @@ fn placement_again_waits_for_role_commits_spec_sync_6() {
     assert_eq!(net.eph_read(b, w, STATE), Some(s("6")), "placed again past the demotion");
 }
 
-// spec/sync.md §6 Reader, §9 (A snapshot turning invalid): a reader deposits a must-hold body it
+// spec/sync-judgement.md §3 reader, §9 (A snapshot turning invalid): a reader deposits a must-hold body it
 // holds and no entry of. Writer w covers its write x by a snapshot S and deletes x at the host;
 // the admin, reading nothing meanwhile, demotes w, so S is invalid (the admin had not received
 // it) and falls at w, and x stays valid. Reader r, never hearing of S, keeps x with no entry of
@@ -6273,7 +6273,7 @@ fn reader_alone_holding_a_value_deposits_it_spec_sync_6() {
     assert_eq!(net.eph_read(w, t, STATE), Some(s("x")));
 }
 
-// spec/sync.md §6 (outside the required set), §7 (A snapshot turning invalid): writer b's
+// spec/sync-judgement.md §2 (outside the required set), §7 (A snapshot turning invalid): writer b's
 // snapshot S2 of the group's list covers its S1, which covers the commit listing window w; S2
 // falls with b's demotion (the admin never received it), so b holds the earlier parts of that
 // list as headers only until the admin, still holding S1, logs it again (after its relay delay).
@@ -6318,7 +6318,7 @@ fn header_only_list_keeps_what_it_may_list_spec_sync_6() {
     assert_eq!(net.eph_read(b, w, STATE), Some(s("v")));
 }
 
-// spec/sync.md §6 (Placed again once): writer b's snapshot S2 of the group's list covers its S1,
+// spec/sync-judgement.md §4 (Logged again once): writer b's snapshot S2 of the group's list covers its S1,
 // and b deletes S1 at a restarted host the admin cannot reach. The admin, not holding S2, demotes
 // b while cut off, placing its role commits with no source to judge them at; reconnected, it
 // learns of S1's delete in a pass before it has read the host to its end. It places S1 again only
@@ -6429,7 +6429,7 @@ fn written(r: osis_node::ephemeral::Reverted) -> CommitId {
 
 // spec/crdt.md §4.6: the undo of a creation removes the membership at the group's holders and
 // resets the thing: one durable commit, which purges its ephemeral state as a delete's does
-// (spec/sync.md §9 Delete), at the reverter and the holders alike.
+// (spec/sync-compaction.md §2 delete), at the reverter and the holders alike.
 #[test]
 fn undo_of_creation_reaches_holders_spec_crdt_4_6() {
     let (mut net, a, b, g, tb, w, id) = undo_world();
@@ -6498,7 +6498,7 @@ fn reverting_second_undo_leaves_thing_undone_spec_crdt_4_6() {
     assert_eq!(net.eph_read(b, w, STATE), None);
 }
 
-// spec/sync.md §9 (records about ephemeral commits in memory only; tombstones last `MAX_DRIFT`):
+// spec/sync-compaction.md §2 (records about ephemeral commits in memory only; tombstones last `MAX_DRIFT`):
 // a writer typing through a host stores no row, however its bodies go (coalesced, logged and
 // deleted; its cursor row only moves), and once `MAX_DRIFT` passes nothing is left of them but
 // the last entries
@@ -6538,7 +6538,7 @@ fn typing_leaves_nothing_stored_or_kept_spec_sync_9() {
     }
 }
 
-// spec/sync.md §9 (Compaction): a local-only ephemeral aspect, on a thing never a label entry
+// spec/sync-compaction.md §2 (compaction): a local-only ephemeral aspect, on a thing never a label entry
 // here, is compacted like a synced one: its bodies do not pile up per write
 #[test]
 fn local_only_bodies_do_not_pile_up_spec_sync_9() {
@@ -6558,7 +6558,7 @@ fn local_only_bodies_do_not_pile_up_spec_sync_9() {
     assert!(held <= 8, "{held} bodies held for one register");
 }
 
-// spec/sync.md §3, §9: a memory commit spanning things goes under a label only as
+// spec/sync-judgement.md §1, spec/sync-compaction.md §2: a memory commit spanning things goes under a label only as
 // the parts its actor may read: a co-holder of the group reads nothing of the writer's private
 // thing written beside the window
 #[test]
@@ -6578,7 +6578,7 @@ fn memory_commit_part_on_private_thing_stays_out_of_label_spec_sync_3() {
     assert_eq!(net.eph_read(a, private, STATE), Some(s("secret")));
 }
 
-// spec/commits.md §5 (Covered), spec/sync.md §9: ephemeral data follows the durable rule. B's
+// spec/commits.md §5 (Covered), spec/sync-compaction.md §2: ephemeral data follows the durable rule. B's
 // expiring write overwrites A's on an ephemeral register; a writer's snapshot covers A's dead
 // write before its expiry, so every holder forgets it then (another author's: no superseding
 // rule reaches it; its author drops it under its own snapshot, Memory commits). B's live write
@@ -6620,7 +6620,7 @@ fn dead_expiring_ephemeral_write_covered_before_expiry_spec_commits_5() {
 // spec/requirements.md Ephemeral data (a restarted node gets ephemeral state back from the nodes
 // that still hold it): a's write is held only by b once the host and a restart, and a demotion
 // rotates the write key before b is back; b, now a reader, holds it stamped under a key the head
-// no longer takes, so it deposits it (spec/sync.md §5 Deposit) and a promotes it
+// no longer takes, so it deposits it (spec/sync-inbox.md §3 deposit) and a promotes it
 #[test]
 fn reader_copy_after_rotation_goes_as_a_deposit_spec_sync_5() {
     let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["t"], true);
@@ -6651,7 +6651,7 @@ fn reader_copy_after_rotation_goes_as_a_deposit_spec_sync_5() {
     assert_eq!(net.eph_read(a, t, STATE), Some(s("v")));
 }
 
-// A demoted writer gains no way to push its writes by depositing (spec/sync.md §5 Deposit: a
+// A demoted writer gains no way to push its writes by depositing (spec/sync-inbox.md §3 deposit: a
 // deposit is judged by its author's rights): b's ephemeral write, held only by b once the host
 // and a restart, is invalid after b's demotion (spec/permissions.md §5.1: frontiers list no
 // ephemeral commit), so nothing b deposits brings it to a, while a's write b holds comes back
@@ -6745,7 +6745,7 @@ fn purge_rounds(rounds: usize, cap: u64) -> Rounds {
     (out, held(&mut net).1)
 }
 
-// spec/sync.md §9 Forgetting and Caps, spec/requirements.md (peer input never causes unbounded
+// spec/sync-compaction.md §2 forgetting and Caps, spec/requirements.md (peer input never causes unbounded
 // storage; security): a writer's rounds of ephemeral writes it purges and deletes at the host
 // leave a holder within its cap, at n rounds as at 10n: a purged leftover is charged its own
 // bytes, not through the entries the purger deletes, so once leftovers fill the cap new writes
@@ -6813,7 +6813,7 @@ fn purge_that_falls(wait: u64, copy: bool) -> (Net, usize, Tid, CommitId) {
     (net, b, t, c)
 }
 
-// spec/permissions.md §6, spec/sync.md §9 Forgetting: a purged ephemeral write is kept as its
+// spec/permissions.md §6, spec/sync-compaction.md §2 forgetting: a purged ephemeral write is kept as its
 // leftover while a delete of it is within its tombstone, so a fall of the purge then finds a
 // copy a holder still has and the value is back (without the copy it is not; once back, the
 // body may drop under a snapshot carrying it)
@@ -6823,7 +6823,7 @@ fn purge_falling_within_the_tombstone_refetches_spec_permissions_6() {
     assert_eq!(net.eph_read(b, t, "doc:n+.0"), Some(s("SECRET")), "back from the copy");
 }
 
-// spec/permissions.md §6, spec/sync.md §9 Forgetting: past its tombstone with no entry of it known,
+// spec/permissions.md §6, spec/sync-compaction.md §2 forgetting: past its tombstone with no entry of it known,
 // a purged ephemeral write is forgotten, so a fall of the purge then finds it never received
 // there: not known, nothing to fetch, read as a node that never held it
 #[test]

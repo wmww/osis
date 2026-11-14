@@ -1,4 +1,4 @@
-//! QUIC transport on localhost (by hand: touches the network). spec/sync.md §10.
+//! QUIC transport on localhost (by hand: touches the network). spec/sync-opens.md §4.
 //! Run: `cargo test -p osis-transport --test it -- --ignored quic::`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -54,7 +54,7 @@ async fn echo(c: &QuicConn, data: &[u8]) -> Vec<u8> {
     read_to_end(&mut r).await
 }
 
-// spec/sync.md §10: pinned listener key, ephemeral dialer key per connection, ordered byte stream.
+// spec/sync-opens.md §4: pinned listener key, ephemeral dialer key per connection, ordered byte stream.
 #[test]
 #[ignore]
 fn quic_round_trip_keys() {
@@ -74,7 +74,7 @@ fn quic_round_trip_keys() {
     });
 }
 
-// spec/sync.md §10 (host key check): the dialer checks the listener's key against the address.
+// spec/sync-opens.md §4 (host key check): the dialer checks the listener's key against the address.
 #[test]
 #[ignore]
 fn quic_pinned_key_mismatch_refused() {
@@ -86,7 +86,7 @@ fn quic_pinned_key_mismatch_refused() {
     });
 }
 
-// spec/sync.md §10: a large stream transfer arrives intact and in order.
+// spec/sync-opens.md §4: a large stream transfer arrives intact and in order.
 #[test]
 #[ignore]
 fn quic_large_transfer() {
@@ -124,7 +124,7 @@ fn quic_framed_session() {
     });
 }
 
-// spec/sync.md §10 (Served connections; by hand: loopback QUIC): what a dialer sends on sessions
+// spec/sync-transport.md §5 (served connections; by hand: loopback QUIC): what a dialer sends on sessions
 // the listener's consumer does not read stays in one connection window there
 // (`quic::CONN_WINDOW`, shared by the streams; links read only as asked), so a served connection
 // holds at most `link::CONN_MEMORY`; read again, the rest goes through

@@ -834,7 +834,7 @@ fn a_copy_beside_a_live_holder_spec_permissions_3() {
     assert_eq!(b2.close().unwrap(), osis::Close::Closed);
 }
 
-// spec/sync.md §2, notes/client-port.md: a thing granted to Bob reaches his app through its one sync ID
+// spec/sync-ids.md §2, notes/client-port.md: a thing granted to Bob reaches his app through its one sync ID
 #[test]
 fn a_thin_client_reads_a_thing_granted_to_its_account() {
     let x = chat(GrantOpts::default(), Role::Read);

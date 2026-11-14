@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Reconnects (issues/sync-rewrite.md; spec/sync.md §10, Agreement): a record's shared set is
+//! Reconnects (issues/sync-rewrite.md; spec/sync-opens.md §3, agreement): a record's shared set is
 //! restored, the two records are compared by one digest each way, and a reconnect sends what
 //! changed: counted, at n and 10n sync IDs.
 
@@ -67,7 +67,7 @@ fn idle_reconnect(n: usize) -> (std::collections::BTreeMap<u64, usize>, usize, V
 
 // issues/sync-rewrite.md: an idle reconnect, nothing changed on either
 // side, sends no message per sync ID: no Offer, Lost or Members, no join, and the same messages
-// and about the same bytes at n and 10n. spec/sync.md §10 (Agreement): the digests of two equal
+// and about the same bytes at n and 10n. spec/sync-opens.md §3 (agreement): the digests of two equal
 // records match at any size: one 32-byte Digest each way, no list
 #[test]
 fn an_idle_reconnect_sends_no_per_sync_id_message_spec_sync_10() {
@@ -207,7 +207,7 @@ fn a_lost_lost_with_its_connection_is_found_by_the_digest_spec_sync_10() {
     assert_eq!(net.read(a, t), Some(s("still shared")), "the other member goes on");
 }
 
-// spec/sync.md §10 (filter): a generation lost with its connection is not one the peer holds, so
+// spec/sync-opens.md §4 (filter): a generation lost with its connection is not one the peer holds, so
 // the next connection's first generation does not build on it. Here `a`'s whole filter at a new
 // width (its credentials grew past doubling) never reaches `b`: additions at that width on `b`'s
 // older generation would break `b`'s width rule and close every connection that follows
@@ -232,7 +232,7 @@ fn a_generation_lost_with_its_connection_is_not_built_on_spec_sync_10() {
     assert_eq!(net.peer_closes, closes, "no connection closed");
 }
 
-// spec/sync.md §10 (Lost): a Lost names a position the receiver reported storing, which it keeps.
+// spec/sync-opens.md §6 (lost): a Lost names a position the receiver reported storing, which it keeps.
 // A push it did not take (`MAX_WAITING`) is received and not applied: the sender's last cursor is
 // then past a write this node lacks, so the Lost names an older one, and the rejoin from it brings
 // that write
@@ -286,7 +286,7 @@ fn a_lost_after_a_dropped_push_names_a_reported_position_spec_sync_10() {
     assert_eq!(net.read(a, t), Some(s("pushed while full")));
 }
 
-// spec/sync.md §10 (Lost): a peer ending a member skips its events while this side's stream
+// spec/sync-opens.md §6 (lost): a peer ending a member skips its events while this side's stream
 // position moves on. This side closing it itself keeps that position, so the peer's Lost, crossing
 // the close, sets where the member stopped: the rejoin starts there and brings what was skipped
 #[test]
@@ -320,7 +320,7 @@ fn a_lost_crossing_an_own_close_sets_where_the_rejoin_starts_spec_sync_10() {
     assert_eq!(net.read(a, t), Some(s("skipped")));
 }
 
-// spec/sync.md §10 (Agreement): no Offer before the peer's Digest is read and no Pull before the
+// spec/sync-opens.md §3 (agreement): no Offer before the peer's Digest is read and no Pull before the
 // records agree. Here `a`'s Digest never reaches `b`: `b`, with a group new to `a` to offer and a
 // filter of `a`'s to test it against, offers and pulls nothing on that connection
 #[test]

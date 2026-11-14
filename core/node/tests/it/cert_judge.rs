@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Others' certificates judged (spec/permissions.md §4; spec/sync.md §6): a node card
+//! Others' certificates judged (spec/permissions.md §4; spec/sync-judgement.md §2): a node card
 //! superseded by a newer one, and the dialing parts of a departed node's card, leave the label.
 
 use crate::net::{hosted, hosted_nodes};
@@ -56,7 +56,7 @@ fn superseded_card_deleted_spec_permissions_4() {
     assert!(!now.is_empty() && now.iter().all(|(_, c)| old.iter().all(|(_, o)| o != c)), "only the newer card is left: {old:?} {now:?}");
 }
 
-// spec/permissions.md §4, spec/sync.md §6 (required set): a removed reader's `reach.0` and
+// spec/permissions.md §4, spec/sync-judgement.md §2 (required set): a removed reader's `reach.0` and
 // `node.0` go from the label; its `keys.0`, which chains of its old writes may need, stays.
 #[test]
 fn departed_node_card_deleted_spec_permissions_4() {
@@ -148,7 +148,7 @@ fn account_reader(net: &mut Net, a: usize, r: usize, host: usize, until: Option<
     (g, p, l)
 }
 
-// spec/permissions.md §4, spec/sync.md §6 (required set): a node that departs through its
+// spec/permissions.md §4, spec/sync-judgement.md §2 (required set): a node that departs through its
 // account's removal (its own grant on the account stands) leaves the label's `reach.0` and `node.0`;
 // its `keys.0` stays.
 #[test]
@@ -169,7 +169,7 @@ fn account_removed_node_card_deleted_spec_permissions_4() {
     assert!(card_entries(&mut net, a, host, &l, rt, "node.0").iter().all(|e| keys.contains(e) || with_kept(&mut net, a, &l, e)), "and its node.0");
 }
 
-// spec/permissions.md §4, spec/sync.md §6: a node whose account's grant passes its `until` leaves
+// spec/permissions.md §4, spec/sync-judgement.md §2: a node whose account's grant passes its `until` leaves
 // the label's `reach.0` and `node.0` once the clock passes it (no write says so).
 #[test]
 fn until_expired_node_card_deleted_spec_permissions_4() {

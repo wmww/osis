@@ -1,4 +1,4 @@
-//! Bodies, sealing, wraps, stamps, deposits and delete keys (spec/sync.md §1-§3, §5;
+//! Bodies, sealing, wraps, stamps, deposits and delete keys (spec/sync-ids.md §1-§3, §5;
 //! spec/crypto.md §5, §7): what a commit becomes under a label, and the label keys a host's head calls for.
 
 use osis_base::memo::Memo;
@@ -13,7 +13,7 @@ use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-/// A held commit as one blob (spec/sync.md §3): every held part, each sealed to its thing's
+/// A held commit as one blob (spec/sync-judgement.md §1): every held part, each sealed to its thing's
 /// reader actor (`Engine::seal`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Body {
@@ -31,7 +31,7 @@ pub struct Body {
     /// Its wrap's fetch order (`fetch_order`).
     pub order: u64,
     /// A per-label copy: `parts` in one section under the blob key (`Engine::seal_to`), never
-    /// shared with another label (spec/sync.md §3): a role commit with a part on a thing other
+    /// shared with another label (spec/sync-judgement.md §1): a role commit with a part on a thing other
     /// than the actor (its boxes give the readers that thing's secrets), or a part whose thing's
     /// read secret derives from neither the actor nor an actor of its closure (a cross-published
     /// `created.0`, a thing added from another actor's tree, read by role).
@@ -87,7 +87,7 @@ pub fn seal_plain(plaintext: &[u8], class: osis_label::Class, rng: &mut dyn Cryp
 }
 
 /// Frames an envelope: random salt and key, prefix from the header and the sections' aspects
-/// (spec/sync.md §1, spec/wire.md §5).
+/// (spec/sync-ids.md §1, spec/wire.md §5).
 pub fn frame_envelope(env: &Envelope, resolved: &osis_commit::Header, class: osis_label::Class, rng: &mut dyn CryptoRngCore, from: &CommitBlob) -> Result<Sealed> {
     framed(osis_crypto::BlobKey::fresh(rng), env, resolved, class, rng, from)
 }
@@ -117,7 +117,7 @@ impl BodyCtx {
     }
 }
 
-/// The label keys this node holds for a host's head (spec/sync.md §2, §5).
+/// The label keys this node holds for a host's head (spec/sync-ids.md §2, spec/sync-ids.md §6).
 #[derive(Clone, Default)]
 pub struct HeadKeys {
     /// Opens (any held secret, spec/crypto.md §4: opening is not encrypting under).
@@ -200,7 +200,7 @@ impl Engine {
         }
     }
 
-    /// Seals a body's parts (`b.parts` alone) as a copy (spec/sync.md §3): a fresh blob of one
+    /// Seals a body's parts (`b.parts` alone) as a copy (spec/sync-judgement.md §1): a fresh blob of one
     /// section under its own blob key (spec/wire.md §4), so whoever opens a wrap of it reads it: a
     /// certificate copy, wrapped under every label needing exactly those parts, or a per-label
     /// copy (`Body::to_label`).
@@ -276,7 +276,7 @@ impl Engine {
         out
     }
 
-    /// Seals a body as a fresh blob (spec/sync.md §3, spec/wire.md §4): one section per thing
+    /// Seals a body as a fresh blob (spec/sync-judgement.md §1, spec/wire.md §4): one section per thing
     /// among the commit's held parts, each under that thing's read secret (a plain thing's
     /// derives from its base actor's by tid, spec/crypto.md §3, so a thing given secrets of its own
     /// later opens its earlier sections by its history; `wrap_secret`: the newest current
@@ -371,10 +371,10 @@ impl Engine {
         Ok(OpenedBlob { plaintext: opened.commit.encode(), commit: opened.commit, ais, sealed: opened.sealed, copy })
     }
 
-    /// The bodies a group's label must hold from its closure (spec/sync.md §3): held commits
+    /// The bodies a group's label must hold from its closure (spec/sync-judgement.md §1): held commits
     /// touching the closure with a part the group's actor may read. A home label (an actor
     /// synced as a group of itself) also carries the `label.0` and `created.0` writes of the
-    /// labeled groups it is the nearest labeled record-chain actor of (spec/sync.md §2).
+    /// labeled groups it is the nearest labeled record-chain actor of (spec/sync-ids.md §2).
     pub fn label_bodies(&mut self, g: &Tid) -> Result<Vec<Body>> {
         let mut out = self.label_bodies_meta(g)?;
         for b in &mut out {
@@ -428,7 +428,7 @@ impl Engine {
     }
 
     /// The parts of commit `id` (its held parts, or `parts`) the actor of `ctx` may read
-    /// (spec/sync.md §3): those on things whose reader actor it may read.
+    /// (spec/sync-judgement.md §1): those on things whose reader actor it may read.
     pub fn readable_parts(&self, ctx: &BodyCtx, id: &CommitId, parts: &[usize]) -> Vec<usize> {
         let Some(m) = self.core.ix.commits.get(id) else { return Vec::new() };
         let h = &m.header;
@@ -436,7 +436,7 @@ impl Engine {
     }
 
     /// The parts of copy `c`, opened under a label of `g`, that the label carries no more
-    /// (spec/sync.md §3: a label carries the parts its group's actor may read, and certificate
+    /// (spec/sync-judgement.md §1: a label carries the parts its group's actor may read, and certificate
     /// copies of role-class parts on any thing): content (`is_content`) on a
     /// thing under an actor with secrets of its own that the group's actor may not read now, left
     /// by a revocation since the per-label copy was placed
@@ -464,7 +464,7 @@ impl Engine {
         }
     }
 
-    /// Whether the actor of `ctx` may read `t` (spec/sync.md §3).
+    /// Whether the actor of `ctx` may read `t` (spec/sync-judgement.md §1).
     pub(super) fn reads(&self, ctx: &BodyCtx, t: &Tid) -> bool {
         self.actor_reads(&ctx.actor, t)
     }
@@ -481,7 +481,7 @@ impl Engine {
         self.core.may_read(&reader, &self.core.reader_of(t))
     }
 
-    /// The parts of `h` a label of `ctx`'s group carries in its bodies (spec/sync.md §3): those on
+    /// The parts of `h` a label of `ctx`'s group carries in its bodies (spec/sync-judgement.md §1): those on
     /// things of its closure its actor may read. A chain certificate's part on any other thing goes
     /// there as a certificate copy (spec/permissions.md §4).
     pub fn body_carried(&self, ctx: &BodyCtx, h: &osis_commit::Header) -> std::collections::BTreeSet<usize> {
@@ -510,7 +510,7 @@ impl Engine {
             if !readable.is_empty() {
                 // judged on what the actor reads; the blob carries every held part (`body_plaintext`),
                 // unless the label's readers could not open a section of it: a per-label copy
-                // (spec/sync.md §3, `Body::to_label`): a role commit on another thing (its
+                // (spec/sync-judgement.md §1, `Body::to_label`): a role commit on another thing (its
                 // rotation, its grants, a cross-published `label.0`), whose boxes are what gives
                 // the readers that thing's secrets, so its own section cannot be under them
                 // (certificate blobs are copies for the same reason), or a part whose thing's
@@ -525,7 +525,7 @@ impl Engine {
             }
         }
         // nothing of it here and a lasting header on the label's things: its header alone
-        // (spec/commits.md §5, spec/sync.md §6)
+        // (spec/commits.md §5, spec/sync-judgement.md §2)
         let now = self.now().0;
         let forever = |a: &crate::engine::AspectView| !h.memory && osis_commit::retention::fixed_retention(a.ak.as_str()).is_none() && crate::retention::history::of(&self.core, &a.tid, &a.ak).forever(now);
         if out.is_empty() && touches && (h.purges || h.aspects.iter().any(forever)) {
@@ -540,7 +540,7 @@ impl Engine {
     }
 
     /// Labeled groups whose nearest labeled record-chain actor is `g` (its home label publishes
-    /// their `label.0`, spec/sync.md §2). Empty unless `g` is an actor with secrets of its own.
+    /// their `label.0`, spec/sync-ids.md §2). Empty unless `g` is an actor with secrets of its own.
     /// Taken for every actor at once (`Core::published`): O(labeled things) per change of what
     /// it reads, not per pass.
     pub fn published_under(&mut self, g: &Tid) -> std::sync::Arc<std::collections::BTreeSet<Tid>> {
@@ -624,7 +624,7 @@ impl Engine {
         Ok(self.get_typed(&x, &ct::KEYS)?.and_then(|k| k.deposit_seed).map(Secret32::from_bytes))
     }
 
-    /// The keys this node holds for `head` of a label of `g` (spec/sync.md §2, §5): any
+    /// The keys this node holds for `head` of a label of `g` (spec/sync-ids.md §2, spec/sync-ids.md §6): any
     /// held secret opens; stamps and deletes need an established epoch (spec/crypto.md §4).
     pub fn head_keys(&mut self, g: &Tid, head: &Step) -> Result<HeadKeys> {
         Memo::get_in(self, |e| &e.core.head_keys, &(*g, head.id()), |e| e.head_keys_derived(g, head))
@@ -707,7 +707,7 @@ impl Engine {
 
 /// A delete item for an entry: by the label delete key when held, else by delete keys of
 /// levels (`groups`: the secrets held per commitment group, for the blob's prefix salt and its
-/// header's blind) and the label key those levels need (spec/sync.md §5), under established
+/// header's blind) and the label key those levels need (spec/sync-ids.md §6), under established
 /// epochs only (spec/crypto.md §4), one signature per group.
 pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, blinding: Option<(&[u8; 16], &[u8; 16])>, groups: &[Vec<(u8, DeleteSecret)>]) -> Option<osis_label::DeleteItem> {
     if let Some(d) = &keys.delete {
@@ -775,7 +775,7 @@ pub fn delete_key<'a>(keys: &'a HeadKeys, item: &osis_label::DeleteItem) -> Opti
 }
 
 /// Labeled things by the nearest labeled actor with secrets of its own up their record chain
-/// whose record edges up to it stand here (`Core::standing_chain`; spec/sync.md §2; `Engine::published_under`).
+/// whose record edges up to it stand here (`Core::standing_chain`; spec/sync-ids.md §2; `Engine::published_under`).
 fn published_by_actor(core: &crate::engine::Core, labeled: &std::collections::BTreeSet<Tid>) -> std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> {
     let mut map: std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> = std::collections::BTreeMap::new();
     for h in labeled {
@@ -815,7 +815,7 @@ mod tests {
         assert_eq!(e.section_chain(&o), vec![me]);
     }
 
-    // spec/sync.md §6 (convergence after each change; the pass's cost): a group's bodies are
+    // spec/sync-judgement.md §2 (convergence after each change; the pass's cost): a group's bodies are
     // projected per commit once and kept until what they read changes, so one more commit
     // leaves every other commit's bodies kept.
     #[test]

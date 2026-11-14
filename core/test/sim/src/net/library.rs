@@ -474,7 +474,7 @@ fn member_thing(sim: &mut NetSim, n: usize, p: Tid, team: Tid) -> Res<Tid> {
     let done = r.map_err(|e| sim.fail(format!("node {n} thing secrets: {e}")))?;
     sim.carry(n, done)?;
     sim.grant(n, t, team, Role::Read)?;
-    // a subgroup: it and its items are in T's closure (spec/sync.md §3)
+    // a subgroup: it and its items are in T's closure (spec/sync-judgement.md §1)
     let mut grp = sim.engine(n)?.get_typed(&team, &ct::GROUP).map_err(|e| sim.fail(e.to_string()))?.unwrap_or_default();
     grp.subgroups.insert(t);
     let mut m = Mutation::new();
@@ -536,7 +536,7 @@ pub fn folders(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// Bundles by hand (spec/sync.md §8): a holder cut off from every host gets the group's label
+/// Bundles by hand (spec/sync-streams.md §2): a holder cut off from every host gets the group's label
 /// as a bundle exported by the admin and reads what the admin reads; later online, it converges.
 pub fn bundles(s: Seeds) -> Res<Report> {
     let (mut sim, (s, a, b, g, t)) = setup("bundles", s, NetWeights::default(), |sim| {
@@ -747,7 +747,7 @@ pub fn purge_on_replace(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// Lasting tombstones under churn (spec/commits.md §5, spec/sync.md §6): a writer's and an admin's
+/// Lasting tombstones under churn (spec/commits.md §5, spec/sync-judgement.md §2): a writer's and an admin's
 /// permanent messages, some purged by their author or an admin, one aspect-wide request by a writer
 /// with no right over the rest, the host's data lost midway, and a node down through it all: it
 /// sees each purged message as a tombstone with a purge that had the right and every other as a
@@ -948,7 +948,7 @@ fn purge_falls_how(name: &str, s: Seeds, churn: bool) -> Res<Report> {
     sim.finish()
 }
 
-/// Writers online together (spec/sync.md §5, §6): an admin and three writers of one group, all
+/// Writers online together (spec/sync-ids.md §6, spec/sync-judgement.md §2): an admin and three writers of one group, all
 /// online, while two readers are granted at once and the admin writes items; time moves a
 /// second at a time (continuous enough for the relay wait). Expected: each content body the
 /// admin wrote is placed as one blob, by the admin alone (the first stream to show the peer the

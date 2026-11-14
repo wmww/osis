@@ -11,14 +11,14 @@ pub struct SyncConfig {
     /// Hosts to keep a connection to besides those the labels name.
     pub hosts: Vec<Address>,
     /// Blobs above this many bytes are announced without their bytes and fetched when needed
-    /// (lazy chunks, spec/sync.md §6).
+    /// (lazy chunks, spec/sync-judgement.md §2).
     pub inline_limit: u64,
     /// Re-sync interval of opened labels without a subscription.
     pub resync_ms: u64,
     /// Pause before re-dialing a node whose connection ended, and a failed dial's first one
     /// (`SyncEngine::lost`).
     pub retry_ms: u64,
-    /// Dial co-reader nodes known from their `reach.0` (spec/sync.md §5, §10).
+    /// Dial co-reader nodes known from their `reach.0` (spec/sync-ids.md §6, spec/sync-opens.md §4).
     pub peers: bool,
     /// The longest pause before re-dialing a node whose dials fail (the pause doubles from
     /// `retry_ms`), and how often a relayed connection's end redials at once.
@@ -49,7 +49,7 @@ pub struct SyncConfig {
     /// Ephemeral bytes per label this node holds from others (notes/ephemeral.md Bounds): past
     /// it, further ephemeral commits of that label are not applied (`EphemeralRefused`).
     pub ephemeral_bytes: u64,
-    /// Blobs a fill asks for at a time (spec/sync.md §6). Applying a batch holds the node's lock
+    /// Blobs a fill asks for at a time (spec/sync-judgement.md §2). Applying a batch holds the node's lock
     /// (at 10^6 about 0.5 s), and each batch waits a round trip. 0 would fetch nothing, so at
     /// least 1 is taken; infinity loses the order to what a reply fits and holds the lock for
     /// minutes.
@@ -129,10 +129,10 @@ pub enum Tier {
 /// Outputs for the driver.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// Open a connection to `address` (checking the host's key against it, spec/sync.md §10)
+    /// Open a connection to `address` (checking the host's key against it, spec/sync-opens.md §4)
     /// with an ephemeral transport key, hand it to the node's hub (`osis_host::Hub::dial`, its key
     /// `address.key`) and report `Up`, or `Down` if it fails. A co-reader learns this node by its
-    /// connection proofs (spec/sync.md §10).
+    /// connection proofs (spec/sync-opens.md §4).
     Dial { conn: ConnId, address: Address },
     /// Abandon a dial not up yet (once up, a connection closes by its hub session).
     Close { conn: ConnId },
@@ -225,7 +225,7 @@ pub struct LabelStatus {
     /// Every host refused every key this node holds: none can serve it here (waits for a re-seal).
     pub stranded: bool,
     /// Hosts whose last refusal in a row was "not admitted" (code 14), connected now or not, and
-    /// connected ones full for it or refusing a body this node logs for it (spec/sync.md §10,
+    /// connected ones full for it or refusing a body this node logs for it (spec/sync-opens.md §4,
     /// Full, Refused): nodes this node holds to serve it, that will not take it, or not all of it.
     pub refused_by: Vec<Address>,
     /// This node left the group and keeps its secrets until its self-removal is placed

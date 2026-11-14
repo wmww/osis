@@ -1,4 +1,4 @@
-//! Reachability and co-reader dialing (spec/sync.md §5 last bullet, §10; spec/data-model.md §9;
+//! Reachability and co-reader dialing (spec/sync-ids.md §6 last bullet, §10; spec/data-model.md §9;
 //! spec/permissions.md §4): this node's `reach.0` (dialable key, relays, lan secret), the co-reader
 //! nodes it knows from theirs, and LAN discovery tags. A co-reader of a label is a node thing
 //! other than this node, holding `reach.0`, that may read the label's group; this node dials it at
@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-/// LAN tag window (spec/sync.md §10).
+/// LAN tag window (spec/sync-opens.md §4).
 pub const LAN_WINDOW_MS: u64 = 600_000;
 /// How long a LAN announcement is used for dialing.
 pub const LAN_FRESH_MS: u64 = 2 * LAN_WINDOW_MS;
@@ -26,7 +26,7 @@ const PEERS_TTL_MS: u64 = 60_000;
 /// A co-reader's LAN candidate changes at most once in this long (announcement floods).
 pub const LAN_CHANGE_MS: u64 = 5_000;
 
-/// The LAN announcement tag of a lan secret at `unix_ms` (spec/sync.md §10):
+/// The LAN announcement tag of a lan secret at `unix_ms` (spec/sync-opens.md §4):
 /// `kdf("lan tag", lan secret, le64(floor(unix ms / 600000)))`, first 16 bytes.
 pub fn lan_tag(lan_secret: &[u8; 32], unix_ms: u64) -> [u8; 16] {
     let window = unix_ms / LAN_WINDOW_MS;
@@ -47,7 +47,7 @@ pub(crate) fn hostless(hosts: &[Address]) -> bool {
 }
 
 /// The keys of the hosts a label at `hosts` syncs with, whatever their scheme: an address
-/// names a node by its key (a `peer://` one is dialed by key with hints, spec/sync.md §10).
+/// names a node by its key (a `peer://` one is dialed by key with hints, spec/sync-opens.md §4).
 pub(crate) fn host_keys(hosts: &[Address]) -> impl Iterator<Item = [u8; 32]> + '_ {
     hosts.iter().map(|a| a.key)
 }
@@ -61,7 +61,7 @@ pub struct Peer {
     pub labels: BTreeSet<LabelId>,
 }
 
-/// Where a co-reader was heard on the LAN (spec/sync.md §10). The announcement's signature binds
+/// Where a co-reader was heard on the LAN (spec/sync-opens.md §4). The announcement's signature binds
 /// its transport key to the node, so a connection through an address that comes up (the
 /// transport authenticated that key) proves the route. Until then the address is a candidate:
 /// the proven route is dialed first, a candidate never displaces a running connection, and an
@@ -121,7 +121,7 @@ impl Default for PeerCache {
 }
 
 impl SyncEngine {
-    /// This node's dialable transport secret (spec/sync.md §10; separate from its signing key):
+    /// This node's dialable transport secret (spec/sync-opens.md §4; separate from its signing key):
     /// generated on first use and kept in the local records. The driver listens with it and
     /// publishes the key the listener presents (`publish_reach`).
     pub fn dialable_secret(&mut self) -> Secret32 {
@@ -149,7 +149,7 @@ impl SyncEngine {
     }
 
     /// This node's key: the Ed25519 key of its dialable secret, under which every listener of
-    /// it but the LAN's listens (spec/sync.md §10).
+    /// it but the LAN's listens (spec/sync-opens.md §4).
     pub fn dialable_key(&mut self) -> [u8; 32] {
         SigningSecret::from_seed(&self.dialable_secret()).verifying_key().to_bytes()
     }
@@ -248,7 +248,7 @@ impl SyncEngine {
         Ok(true)
     }
 
-    /// A fresh transport secret for a LAN listener (one per network join, spec/sync.md §10).
+    /// A fresh transport secret for a LAN listener (one per network join, spec/sync-opens.md §4).
     pub fn lan_secret(&mut self) -> Secret32 {
         let mut b = [0u8; 32];
         self.rng.fill_bytes(&mut b);
@@ -257,7 +257,7 @@ impl SyncEngine {
 
     /// This node's LAN announcement now for a listener with transport key `key` at `port`:
     /// the current tag and the signature under the dialable key, sealed under the lan secret
-    /// and window (spec/sync.md §10). None before `reach.0` is published, or when its dialable
+    /// and window (spec/sync-opens.md §4). None before `reach.0` is published, or when its dialable
     /// key is not the Ed25519 key of the dialable secret.
     pub fn lan_announcement(&mut self, key: [u8; 32], port: u16) -> Option<Announce> {
         let r = self.own_reach()?;
@@ -300,13 +300,13 @@ impl SyncEngine {
     }
 
     /// Whether dialable key `key` is a node of this node's account by the `reach.0` held here: a
-    /// dialer proves its node key only then (spec/sync.md §10). The word of its own account's
+    /// dialer proves its node key only then (spec/sync-opens.md §4). The word of its own account's
     /// data; the listener still proves itself.
     pub(crate) fn dials_own_node(&mut self, key: &[u8; 32]) -> bool {
         self.reach_nodes().get(key).is_some_and(|n| self.engine.core.own_node(n))
     }
 
-    /// Co-reader nodes known from their `reach.0`, by dialable key (spec/sync.md §5, §10): node
+    /// Co-reader nodes known from their `reach.0`, by dialable key (spec/sync-ids.md §6, spec/sync-opens.md §4): node
     /// things other than this one that may read a label this node syncs now. Per label at most
     /// `SyncConfig.max_peers_per_label`, in total at most `max_peers`, by node tid.
     /// Cached until the engine's state changes, and at most a minute (edges expire).
@@ -382,7 +382,7 @@ impl SyncEngine {
     }
 
     /// A connection to a co-reader came up: the transport authenticated the address's key, so a
-    /// LAN candidate it went to is the proven route (spec/sync.md §10). True when the connection
+    /// LAN candidate it went to is the proven route (spec/sync-opens.md §4). True when the connection
     /// goes through the proven LAN route.
     pub(crate) fn lan_up(&mut self, peer: [u8; 32], addr: &Address) -> bool {
         let now = self.now();
@@ -407,7 +407,7 @@ impl SyncEngine {
 
     /// A co-reader's connection through its proven LAN route came up: the other connections to
     /// it (a relay route it ran over before) close; its labels go on over the LAN connection
-    /// from their cursors (spec/sync.md §10: the proven route first).
+    /// from their cursors (spec/sync-opens.md §4: the proven route first).
     pub(crate) fn lan_switched(&mut self, conn: super::ConnId, peer: [u8; 32], out: &mut Vec<Action>) {
         let old: Vec<super::ConnId> = self.conns.iter().filter(|(id, c)| **id != conn && c.dial_key() == Some(peer)).map(|(id, _)| *id).collect();
         if old.is_empty() {
@@ -431,7 +431,7 @@ impl SyncEngine {
     /// the link text only; spec/permissions.md §7). It is dialed like a co-reader (ephemeral key)
     /// for K's labels and the target's, and nothing else, while one of them is synced here
     /// (`end_idle_links`) or until `forget_link`. Whatever the link lists learns this node's IP
-    /// (following the link is consent: spec/sync.md §10).
+    /// (following the link is consent: spec/sync-opens.md §4).
     pub fn follow_link_peer(&mut self, k: Tid, target: Tid, peers: Vec<Address>) {
         let peers: Vec<Address> = peers.into_iter().filter(is_peer).collect();
         if peers.is_empty() {
@@ -562,7 +562,7 @@ impl SyncEngine {
         false
     }
 
-    /// A LAN announcement heard from `from` (spec/sync.md §10). It counts when the source can be
+    /// A LAN announcement heard from `from` (spec/sync-opens.md §4). It counts when the source can be
     /// on the LAN, the tag is a co-reader's for the current or an adjacent window (tags computed
     /// once per window) and the signature verifies under that co-reader's dialable key, from the
     /// first source that announcement came from (`LanRoute::bound`); the address then becomes the
@@ -591,7 +591,7 @@ impl SyncEngine {
         let dialed = address.clone();
         // an announcement counts from the first source it was verified from: a copy from another
         // source, or one of an earlier window than the newest verified, is a replay (dialing
-        // it would show a LAN attacker who reads this node; spec/sync.md §10)
+        // it would show a LAN attacker who reads this node; spec/sync-opens.md §4)
         match r.bound.iter().find(|(x, _)| x == a) {
             Some((_, first)) if *first != address => return (Some(k), Vec::new()),
             Some(_) => {}

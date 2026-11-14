@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Connection proofs (spec/sync.md §10, Connection proofs; issues/sync-rewrite.md step 2): what
+//! Connection proofs (spec/sync-opens.md §2, connection proofs; issues/sync-rewrite.md step 2): what
 //! `SyncEngine::proven` reports comes from the connection's own exchange and nothing else.
 
 use crate::net::local_nodes;
@@ -110,7 +110,7 @@ fn set(tids: &[Tid]) -> BTreeSet<Tid> {
     tids.iter().copied().collect()
 }
 
-// spec/sync.md §10: a dialer's proof shows its node and its account by the epoch's key; the
+// spec/sync-opens.md §4: a dialer's proof shows its node and its account by the epoch's key; the
 // listener answers with its own proofs to a dialer that proved an actor it knows
 #[test]
 fn dialer_proves_then_known_listener_answers_spec_sync_10() {
@@ -125,7 +125,7 @@ fn dialer_proves_then_known_listener_answers_spec_sync_10() {
     assert!(back.iter().all(|x| x.verify(true, &CHALLENGE, &LISTENER)), "signed for this dialer and this listener");
 }
 
-// spec/sync.md §10 (identity only to known actors): a dialer proving only actors the listener
+// spec/sync-opens.md §4 (identity only to known actors): a dialer proving only actors the listener
 // holds no record of gets no proof back, though what it proved stands
 #[test]
 fn listener_proves_nothing_to_a_stranger_spec_sync_10() {
@@ -140,7 +140,7 @@ fn listener_proves_nothing_to_a_stranger_spec_sync_10() {
     assert!(!proven(&mut net, a, &p).contains(&ts));
 }
 
-// spec/sync.md §10: a key actor (a link key) proves itself by its signing key, no chain
+// spec/sync-opens.md §4: a key actor (a link key) proves itself by its signing key, no chain
 #[test]
 fn key_actor_proved_by_its_signing_key_spec_sync_10() {
     let (mut net, [a]) = local_nodes::<1>();
@@ -152,7 +152,7 @@ fn key_actor_proved_by_its_signing_key_spec_sync_10() {
     assert_eq!(proven(&mut net, a, &p), set(&[actor]));
 }
 
-// spec/sync.md §10: a proof by a key that is not the record's proves nothing
+// spec/sync-opens.md §4: a proof by a key that is not the record's proves nothing
 #[test]
 fn forged_key_proves_nothing_spec_sync_10() {
     let (mut net, [a]) = local_nodes::<1>();
@@ -165,7 +165,7 @@ fn forged_key_proves_nothing_spec_sync_10() {
     assert_eq!(proved_by(&evs), Vec::new());
 }
 
-// spec/sync.md §10, spec/wire.md §11.2: a proof signed for another connection's challenge, or for
+// spec/sync-opens.md §4, spec/wire.md §11.2: a proof signed for another connection's challenge, or for
 // another listener, proves nothing here: replay across connections fails
 #[test]
 fn proof_for_another_session_or_listener_proves_nothing_spec_sync_10() {
@@ -204,7 +204,7 @@ fn second_prove_refused_spec_wire_11_2() {
     assert_eq!(proven(&mut net, a, &p), set(&[record.tid()]), "the first stands");
 }
 
-// spec/sync.md §10: an account proof by a key that is no open epoch of that account proves it not;
+// spec/sync-opens.md §4: an account proof by a key that is no open epoch of that account proves it not;
 // the node's own key still stands
 #[test]
 fn an_account_is_proved_only_by_its_own_epoch_key_spec_sync_10() {
@@ -225,7 +225,7 @@ fn an_account_is_proved_only_by_its_own_epoch_key_spec_sync_10() {
     assert_eq!(proven(&mut net, a, &p), set(&[ts, other]));
 }
 
-// spec/sync.md §10: group data never proves anything: b's roster entry held at a in full, a Prove
+// spec/sync-opens.md §4: group data never proves anything: b's roster entry held at a in full, a Prove
 // without the account's proof proves the node alone
 #[test]
 fn held_group_data_proves_nothing_spec_sync_10() {
@@ -237,7 +237,7 @@ fn held_group_data_proves_nothing_spec_sync_10() {
     assert_eq!(proven(&mut net, a, &p), set(&[tb]), "the account was not proved on this connection");
 }
 
-// spec/sync.md §10: a connection whose peer sent no Prove proved nothing, and the listener shows
+// spec/sync-opens.md §4: a connection whose peer sent no Prove proved nothing, and the listener shows
 // nothing of its own unasked
 #[test]
 fn a_session_with_no_prove_proves_nothing_spec_sync_10() {
@@ -247,7 +247,7 @@ fn a_session_with_no_prove_proves_nothing_spec_sync_10() {
     assert_eq!(net.sync(a).proven(ConnId::MAX), None, "no such connection");
 }
 
-// spec/sync.md §10: connection proofs run over real dials (no hand driver): the dialing node's
+// spec/sync-opens.md §4: connection proofs run over real dials (no hand driver): the dialing node's
 // `proven` gets the listener's actors, the listener's the dialer's, and neither depends on
 // which side dialed
 #[test]
@@ -270,7 +270,7 @@ fn actors(proofs: &[ActorProof]) -> BTreeSet<Tid> {
     proofs.iter().map(ActorProof::actor).collect()
 }
 
-// spec/sync.md §10 (a connection's proven actors are only what its peer proved on it): adversary
+// spec/sync-opens.md §4 (a connection's proven actors are only what its peer proved on it): adversary
 // M runs other sessions in parallel, choosing every Hello challenge it controls (it reads a peer's
 // Hello before sending its own), and presents any proof it collected on any session. Honest parties
 // a (a listener, M dials it twice) and h (a dialer, dials M) never prove anything to each other:

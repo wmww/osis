@@ -278,7 +278,7 @@ impl crate::engine::Engine {
     }
 
     /// `put_blobs` of blobs of memory commits: kept in the store's memory overlay, never on disk
-    /// (spec/sync.md §9).
+    /// (spec/sync-compaction.md §2).
     pub fn put_memory_blobs(&mut self, blobs: Vec<(BlobId, Vec<u8>)>) -> crate::error::Result<()> {
         if blobs.is_empty() {
             return Ok(());

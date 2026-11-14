@@ -1,4 +1,4 @@
-//! `HostStore`: osis-proto's `LabelStore` over its own osis-store `Store` (spec/sync.md §4, §5):
+//! `HostStore`: osis-proto's `LabelStore` over its own osis-store `Store` (spec/sync-ids.md §5, spec/sync-ids.md §6):
 //! registration paths, entries, tombstones, blob bytes stored once with reference counts, expiry,
 //! claim-set retention, the node log (notes/local-store.md, Node log), and the host policy
 //! (storage caps, deposit budget, rate limits). Every mutation's writes apply together to the open store
@@ -21,7 +21,7 @@
 //! `Z t label step` (claim-set drop); `N` host-wide totals (labels, entries,
 //! bytes); `B blob` the engine's hold (`engine.rs`), `n label` node sync's (`reader.rs`).
 //!
-//! Ephemeral entries (blob prefix class ephemeral, spec/sync.md §4) are held in memory only:
+//! Ephemeral entries (blob prefix class ephemeral, spec/sync-ids.md §5) are held in memory only:
 //! entry, blob and tombstone; a restart loses them.
 
 use osis_base::format::{MAX_DRIFT_MS, ROLE_KEEP_MS, TOMBSTONE_LIFETIME_MS};
@@ -35,10 +35,10 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-/// Deposit budget unit (spec/sync.md §5 recommended minimum).
+/// Deposit budget unit (spec/sync-ids.md §6 recommended minimum).
 pub const DEPOSIT_ENTRY_BYTES: u64 = 32 * 1024;
 
-/// Host policy (spec/sync.md §5: caps, budget, rate limits; notes/serving.md Host policy).
+/// Host policy (spec/sync-ids.md §6: caps, budget, rate limits; notes/serving.md Host policy).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostPolicy {
     /// Live entries per label beyond which new entries are refused.
@@ -79,14 +79,14 @@ pub struct HostPolicy {
     pub hello_ms: u64,
     /// Bytes queued for one connection beyond which it is dropped (a peer that does not read);
     /// at least `osis_proto::session::SEND_QUEUE` plus `osis_proto::window::WINDOW_QUEUE`
-    /// (windowed replies and held pushes, and node sync's own requests, spec/sync.md §6).
+    /// (windowed replies and held pushes, and node sync's own requests, spec/sync-judgement.md §2).
     pub max_queued_bytes: usize,
     /// Bytes the hub holds for connections in each direction, over all of them: partially
     /// received frames (past it the connection holding the most is closed), and bytes written
     /// and not yet taken by the transport with the reply allowances reserved (never passed:
     /// output waits for room, `Hub::held`). The transport's own buffers, up to
     /// `osis_transport::link::CONN_MEMORY` per connection, are outside it: connections are not
-    /// counted (spec/sync.md §10 Served connections).
+    /// counted (spec/sync-transport.md §5 served connections).
     pub max_buffered_bytes: usize,
 }
 
@@ -152,7 +152,7 @@ impl HostPolicy {
                 let q = nz()?;
                 let least = osis_proto::session::SEND_QUEUE + osis_proto::window::WINDOW_QUEUE;
                 if q < least {
-                    return Err(format!("{name}: below {least} (a peer's window plus a reply and a push, and this node's own window, spec/sync.md §6)"));
+                    return Err(format!("{name}: below {least} (a peer's window plus a reply and a push, and this node's own window, spec/sync-judgement.md §2)"));
                 }
                 self.max_queued_bytes = q;
             }
@@ -1006,7 +1006,7 @@ impl HostStore {
         true
     }
 
-    /// Adds an ephemeral entry or promotes a deposited one (spec/sync.md §4, §5): past the
+    /// Adds an ephemeral entry or promotes a deposited one (spec/sync-ids.md §5, spec/sync-ids.md §6): past the
     /// label's ephemeral cap code 12; past the node's, the label charged most gives way; a
     /// deposit within the deposit budget, as a durable one.
     fn eph_put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError> {
@@ -1062,7 +1062,7 @@ impl HostStore {
         Ok(Code::OK)
     }
 
-    /// Adds a durable entry or promotes a deposited one (spec/sync.md §4, §5): past the label's
+    /// Adds a durable entry or promotes a deposited one (spec/sync-ids.md §5, spec/sync-ids.md §6): past the label's
     /// or the node's cap, code 12.
     fn durable_put(&mut self, label: &LabelId, put: Put<'_>, held: Option<Row>) -> Result<Code, StoreError> {
         let mut tx = self.tx(label)?;
@@ -1080,7 +1080,7 @@ impl HostStore {
             let p = &self.policy;
             // an entry deletes are judged by is outside the storage caps, else no purge or
             // compaction frees room here; a stamped one is a writer's, bounded by nothing
-            // more, a deposited one by the deposit budget below (spec/sync.md §5, Role entries)
+            // more, a deposited one by the deposit budget below (spec/sync-ids.md §6, role entries)
             if !put.role {
                 let (entries, bytes) = m.capped();
                 let (cap_entries, cap_bytes) = self.label_caps(label);

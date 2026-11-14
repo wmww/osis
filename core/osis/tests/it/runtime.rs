@@ -93,7 +93,7 @@ impl Hosts {
 
 /// An account writes into its home group and waits until it is at the peer; a new node paired
 /// with it reads it. `p2p`: the peer then stops, and a write
-/// reaches the other node directly (each listens with its dialable key, spec/sync.md §5, §10).
+/// reaches the other node directly (each listens with its dialable key, spec/sync-ids.md §6, spec/sync-opens.md §4).
 async fn round_trip(host_ep: Option<osis::internals::InProcess>, url: &str, a: Option<osis::internals::InProcess>, b: Option<osis::internals::InProcess>, p2p: Option<[osis_transport::MemUdp; 2]>) {
     let (mut host_db, host) = host_node(host_ep, url).await;
 
@@ -140,14 +140,14 @@ async fn round_trip(host_ep: Option<osis::internals::InProcess>, url: &str, a: O
     drop(host_db);
 }
 
-// notes/api.md Handle (Config.runtime), spec/sync.md §10: the tokio driver under the handle.
+// notes/api.md Handle (Config.runtime), spec/sync-opens.md §4: the tokio driver under the handle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_in_process_spec_sync_10() {
     let net = osis_transport::Net::new(0);
     round_trip(Some(net.endpoint("s")), "mem://s", Some(net.endpoint("a")), Some(net.endpoint("b")), None).await;
 }
 
-// spec/sync.md §5 (co-reader peer), §10, notes/api.md (Config::direct_sync): two nodes on public
+// spec/sync-ids.md §6 (co-reader peer), §10, notes/api.md (Config::direct_sync): two nodes on public
 // hosts of a NAT net, under the handle's driver, keep syncing peer to peer at each other's
 // published address once their peer is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -159,7 +159,7 @@ async fn runtime_peers_in_process_spec_sync_5() {
     round_trip(Some(net.endpoint("s")), "mem://s", Some(net.endpoint("a")), Some(net.endpoint("b")), Some(p2p)).await;
 }
 
-// spec/sync.md §10: the same over localhost QUIC (by hand: touches the network).
+// spec/sync-opens.md §4: the same over localhost QUIC (by hand: touches the network).
 // Run: `cargo test -p osis --test it -- --ignored runtime::`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
@@ -183,14 +183,14 @@ async fn redeem_over(host_ep: Option<osis::internals::InProcess>, url: &str, a: 
     drop(host_db);
 }
 
-// spec/permissions.md §7 (links), spec/sync.md §10: a link redeemed over the tokio driver.
+// spec/permissions.md §7 (links), spec/sync-opens.md §4: a link redeemed over the tokio driver.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_in_process_spec_permissions_7() {
     let net = osis_transport::Net::new(0);
     redeem_over(Some(net.endpoint("s")), "mem://s", Some(net.endpoint("a")), Some(net.endpoint("b"))).await;
 }
 
-// spec/permissions.md §7, spec/sync.md §10: the same over localhost QUIC (by hand).
+// spec/permissions.md §7, spec/sync-opens.md §4: the same over localhost QUIC (by hand).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn redeem_quic_localhost_spec_permissions_7() {
@@ -301,7 +301,7 @@ async fn reach_of(db: &Osis) -> osis::internals::node::sync::peers::Peer {
     .unwrap()
 }
 
-// spec/permissions.md §7, spec/sync.md §10 (links list relays only): a direct link carries the
+// spec/permissions.md §7, spec/sync-opens.md §4 (links list relays only): a direct link carries the
 // relays of the sharer's `reach.0`, never the socket addresses it lists.
 #[test]
 fn direct_link_carries_relays_only_spec_permissions_7() {
@@ -319,7 +319,7 @@ fn direct_link_carries_relays_only_spec_permissions_7() {
 }
 
 // spec/permissions.md §7 (first contact: the link carries the sharer's dialable key and relays),
-// spec/sync.md §5 (co-reader peer): Bob cannot reach Alice's peer; he redeems her direct link at
+// spec/sync-ids.md §6 (co-reader peer): Bob cannot reach Alice's peer; he redeems her direct link at
 // her node, opening the link's label there by the link key, and then syncs the target with
 // her node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -421,7 +421,7 @@ async fn redeem_direct_in_process_spec_permissions_7() {
     drop(host_db);
 }
 
-// spec/permissions.md §7 (a node without peers makes only direct links), spec/sync.md §5
+// spec/permissions.md §7 (a node without peers makes only direct links), spec/sync-ids.md §6
 // (co-reader peer: a label synced with nobody is served complete): Alice has no peer and no
 // other node; Bob redeems her direct link at her node and the two sync the target there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -461,7 +461,7 @@ async fn redeem_direct_no_peer_in_process_spec_permissions_7() {
     })
     .await
     .unwrap();
-    // Bob leaves, K rotates: the link goes on for a next redeemer at her node (spec/sync.md §2)
+    // Bob leaves, K rotates: the link goes on for a next redeemer at her node (spec/sync-ids.md §2)
     let k = alice.links_of(g).unwrap()[0].id.actor();
     let before = alice.engine(|e| e.epochs(&k).unwrap().read.newest().unwrap());
     bob.set_role(k, bob.me(), None, SetRoleOpts { retain_copy: None }).unwrap();
@@ -535,7 +535,7 @@ async fn peers_lists_what_a_group_saved() {
     assert!(db.saved_peers().unwrap().is_empty());
 }
 
-// spec/sync.md §10, notes/api.md (`rotate_peer_address`): a rotated dialable key is listened on at once,
+// spec/sync-opens.md §4, notes/api.md (`rotate_peer_address`): a rotated dialable key is listened on at once,
 // without a restart, and the old one no longer answers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rotate_peer_address_relistens_in_process_spec_sync_10() {
@@ -922,7 +922,7 @@ async fn heard_at(ear: &osis_transport::MemLan) -> std::net::IpAddr {
     tokio::time::timeout(GUARD, ear.recv()).await.expect("nothing heard").unwrap().1.ip()
 }
 
-// Audit row 1 (issues/no-server-audit.md), spec/sync.md §10: a default node is on its LAN, in
+// Audit row 1 (issues/no-server-audit.md), spec/sync-opens.md §4: a default node is on its LAN, in
 // every build; `Lan::Off` keeps one quiet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_default_node_announces_and_lan_off_stays_quiet() {
@@ -939,7 +939,7 @@ async fn a_default_node_announces_and_lan_off_stays_quiet() {
     }
 }
 
-// Audit row 31, spec/sync.md §10: a configured target hears announcements a broadcast would not
+// Audit row 31, spec/sync-opens.md §4: a configured target hears announcements a broadcast would not
 // reach (another segment of a routed mesh).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lan_announces_to_configured_targets_across_segments() {

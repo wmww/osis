@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Deletions, compaction and re-registration through a host (spec/sync.md §5-§7;
+//! Deletions, compaction and re-registration through a host (spec/sync-ids.md §6;
 //! spec/commits.md §5; spec/permissions.md §3, §4).
 
 use crate::net::{hosted, hosted_nodes};
@@ -11,7 +11,7 @@ use osis_node::sync::EntryKind;
 use osis_schema::RawKey;
 use osis_schema::core_types as ct;
 
-// spec/sync.md §3 (retag), §5 (deletion by delete key), §6: a thing leaving the folder takes its own
+// spec/sync-judgement.md §1 (retag), §5 (deletion by delete key), §6: a thing leaving the folder takes its own
 // bodies out of the folder's label; a writer without the label delete key deletes them by delete key.
 #[test]
 fn thing_leaving_deleted_by_delete_key_spec_sync_5() {
@@ -59,7 +59,7 @@ fn expired_leftover_dropped_once_covered_spec_commits_5() {
     assert_eq!(net.read(a, t), None);
 }
 
-// spec/sync.md §7, spec/commits.md §5: compaction logs the snapshot first, then drops and
+// spec/sync-compaction.md §1, spec/commits.md §5: compaction logs the snapshot first, then drops and
 // deletes the covered bodies (the live one too: no setting keeps it while live, the snapshot
 // carries it), and the snapshot stays; a holder joining later reads the live value; the carriers go
 // `TOMBSTONE_LIFETIME` after the deletions, and a body that keeps its entry keeps one carrier row
@@ -128,7 +128,7 @@ fn compaction_then_deletion_spec_sync_7() {
     assert_eq!(net.read(c, t), Some(s("y3")));
 }
 
-// spec/sync.md §5 Register: at a host past its byte caps a child step is still taken, once per
+// spec/sync-ids.md §6 register: at a host past its byte caps a child step is still taken, once per
 // `over_cap_step_ms` per label; a second removal within it is refused for now (code 12): the
 // admin's open stays (not stranded) and the step lands once the time has passed.
 #[test]
@@ -165,7 +165,7 @@ fn rotation_at_full_host_waits_spec_sync_5() {
     assert_eq!(net.host_path(host, &l).len(), 3, "it lands after over_cap_step_ms");
 }
 
-// spec/sync.md §5 Register (a registrar keeps its open on a step refused for now and registers it
+// spec/sync-ids.md §6 register (a registrar keeps its open on a step refused for now and registers it
 // again after a back-off, never at once): while the host refuses a child step for its cap, the
 // admin's own writes (each a pass) do not send it again each time.
 #[test]
@@ -196,7 +196,7 @@ fn refused_step_backs_off_spec_sync_5() {
     assert!(sent <= 2, "{sent} registrations sent in 2 s");
 }
 
-// spec/sync.md §5 Re-registration (a step refused for now holds back nothing else): at a full host
+// spec/sync-ids.md §6 re-registration (a step refused for now holds back nothing else): at a full host
 // refusing the child step (a second removal within `over_cap_step_ms`), the admin still deletes
 // there what the label must not hold, which is what frees room.
 #[test]
@@ -238,7 +238,7 @@ fn refused_step_deletes_still_spec_sync_5() {
     assert!(blobs.iter().all(|id| !ids.contains(id)), "deleted while the step waits");
 }
 
-// spec/sync.md §5 Re-registration (a step refused for now holds back nothing else): while a host
+// spec/sync-ids.md §6 re-registration (a step refused for now holds back nothing else): while a host
 // refuses the child step for its rate (code 4), the admin's new writes go up under the host's
 // head, wrapped under the newest read epoch: the remaining writer reads them, the removed reader,
 // whose sync key still opens that head, cannot.
@@ -280,7 +280,7 @@ fn refused_step_host_still_pulls_spec_sync_5() {
     assert_ne!(net.read(c, t), Some(s("after")), "nothing new readable to the removed reader");
 }
 
-// spec/sync.md §7 Role view first: a writer whose rotation the host lacks, and would take now
+// spec/sync-compaction.md §1 role view first: a writer whose rotation the host lacks, and would take now
 // (stamped for the host's head, while the host refuses the writer's step), deletes nothing
 // there meanwhile: a co-writer judging by what the host holds cannot read the cover under the
 // new epoch, judges the covered bodies uncovered and places them again (member_churn storm).
@@ -315,7 +315,7 @@ fn deletes_wait_for_a_role_commit_the_host_lacks_spec_sync_7() {
     assert!(old.iter().all(|id| !net.deleted.contains_key(&(a, l, *id))), "no delete of it sent");
 }
 
-// spec/sync.md §5 (re-registration, logging order), spec/permissions.md §3-§4 (stranded): an
+// spec/sync-ids.md §6 (re-registration, logging order), spec/permissions.md §3-§4 (stranded): an
 // admin rotating out a holder issues a child step at the host after logging the rotation
 // commit; the remaining writer follows; the removed holder's open walks to the new step, its
 // claim is refused and it sends a stranded notice to the admin's inbox, which re-seals nobody:
@@ -367,7 +367,7 @@ fn reregistration_after_rotation_spec_sync_5() {
     assert!(diags.iter().any(|d| d.contains("re-seal of stranded") && d.contains("not a current holder")), "the admin read the notice and re-sealed nobody: {diags:?}");
 }
 
-// spec/sync.md §5 (re-registration): two admins holding epochs newer than the head while one's
+// spec/sync-ids.md §6 (re-registration): two admins holding epochs newer than the head while one's
 // rotation is fresh (a grant, then at once a demotion with no rotation, whose rotation of g
 // rotates t at once too): no stream shows the peer an entry again that it holds unchanged (same
 // wrap, same stamp), so the role commits travel once and no admin places its own copy of
@@ -398,7 +398,7 @@ fn reregistration_waits_and_sends_once_spec_sync_5() {
     assert_eq!(net.read(c, t), Some(s("x")));
 }
 
-// spec/sync.md §5 (re-registration): another admin's rotation reaches the peer from an admin
+// spec/sync-ids.md §6 (re-registration): another admin's rotation reaches the peer from an admin
 // holding it, under the peer's head, while that admin's own step waits to settle; the step goes
 // once, once settled
 #[test]
@@ -546,7 +546,7 @@ fn text_partly_erased_covered_at_once_spec_commits_5() {
     let l = net.label(a);
     let old = ids[1];
     // what carries the marker at the host: its body, or the trigger's snapshot of the text
-    // (spec/sync.md §7 Trigger: five live bodies compact)
+    // (spec/sync-compaction.md §1 trigger: five live bodies compact)
     let before = snapshots(&mut net, a, &t, &ak);
     let carriers: Vec<_> = ids.iter().chain(&before).flat_map(|c| blobs(&mut net, a, &l, c)).collect();
     let at_the_peer: Vec<_> = carriers.into_iter().filter(|b| net.host_ids(host, &l).contains(b)).collect();
@@ -605,7 +605,7 @@ fn text_fully_erased_covered_at_once_spec_commits_5() {
 }
 
 // spec/commits.md §5 (a dropped body's liveness counts every write the state holds by dot),
-// spec/sync.md §7 (a body with live writes is deleted at a label only while another entry carries
+// spec/sync-compaction.md §1 (a body with live writes is deleted at a label only while another entry carries
 // them): under purge on replace, a word typed and its first char deleted: the carrier written then
 // holds the rest of the word live. A word typed and another char deleted: the carrier drops at its
 // first death with the rest live, written while the peer is away: once it is back, the first
@@ -666,7 +666,7 @@ fn dropped_snapshot_waits_for_its_carrier_spec_sync_7() {
 }
 
 // spec/commits.md §5 (purge on replace is the thing's setting; a node that may write the aspect
-// writes the carrier before dropping a body with live writes), spec/sync.md §7: the typed writer
+// writes the carrier before dropping a body with live writes), spec/sync-compaction.md §1: the typed writer
 // of a purge-on-replace record goes away; another writer, which never knew the schema, erases an
 // entry with an untyped edit, writes the carrier at once and deletes the replaced body at the host.
 #[test]
@@ -875,7 +875,7 @@ fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: osis_base::Commi
     net.sync(n).entries(l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect()
 }
 
-// spec/commits.md §5 Out of history, spec/sync.md §7: a body no setting keeps drops under any
+// spec/commits.md §5 Out of history, spec/sync-compaction.md §1: a body no setting keeps drops under any
 // writer's covering snapshot, whoever holds the purge right over it: of b's delta, compacted by
 // admin a, by b or by plain writer w, under every purge set, gone at every node and at the host
 // (a holds the admin's delete key over every write).
@@ -907,7 +907,7 @@ fn out_of_history_goes_under_any_writers_cover_spec_sync_7() {
     }
 }
 
-// spec/commits.md §5 (host delete margin), spec/sync.md §7: a body that was in history drops at a node
+// spec/commits.md §5 (host delete margin), spec/sync-compaction.md §1: a body that was in history drops at a node
 // as covered once out of history on its clock, and leaves the host only `MAX_DRIFT` later, when
 // every node's clock agrees (a local drop changes only this node's reads)
 #[test]
@@ -936,7 +936,7 @@ fn host_delete_waits_drift_past_history_spec_sync_7() {
     assert!(blobs.iter().all(|id| !left.contains(id)), "gone from the host past it");
 }
 
-// spec/commits.md §5, spec/sync.md §6: bodies in history are must-hold, covered or not, whoever's
+// spec/commits.md §5, spec/sync-judgement.md §2: bodies in history are must-hold, covered or not, whoever's
 // snapshot covers them (here a plain writer's, without the purge right),
 // so a label a thing joins and a host that lost its copies get them, and holders keep their copies
 // when the thing leaves the first label; a covered body out of history is neither, and goes at its
@@ -1020,7 +1020,7 @@ fn insert(net: &mut Net, n: usize, t: osis_base::Tid, v: &str) -> osis_base::Com
 
 /// `insert` of `v` behind a first character `n` deletes at once: the body holds a dead write and
 /// live ones, so any writer's cover may drop it, at its author too (a delta none of whose writes
-/// is dead drops there only under the author's own covers, spec/sync.md §7 Own bodies). Reads as
+/// is dead drops there only under the author's own covers, spec/sync-compaction.md §1 own bodies). Reads as
 /// `insert` of `v`.
 fn insert_partly(net: &mut Net, n: usize, t: osis_base::Tid, v: &str) -> osis_base::CommitId {
     use osis_crdt::{Op, PathOp};
@@ -1221,7 +1221,7 @@ fn fresh_snapshot_covers_past_a_gap_spec_commits_5() {
     assert_eq!(net.engine(f).get_typed(&t, &SEQ).unwrap(), net.engine(a).get_typed(&t, &SEQ).unwrap());
 }
 
-// spec/commits.md §5, spec/sync.md §7: the join decides what is covered, the setting whether it may
+// spec/commits.md §5, spec/sync-compaction.md §1: the join decides what is covered, the setting whether it may
 // drop: an admin that was away through a writer's compaction writes a fresh snapshot covering the
 // writer's replaced write, and drops it only where the thing's setting keeps no history.
 #[test]
@@ -1306,7 +1306,7 @@ fn purge_naming_a_cover_keeps_its_writes_spec_commits_5() {
     assert!(net.engine(a).body_not_dropped(&snap, &t, &ak), "the snapshot stays held");
 }
 
-// spec/permissions.md §6 (a purge's fall), spec/sync.md §7: c was dropped as covered under a's
+// spec/permissions.md §6 (a purge's fall), spec/sync-compaction.md §1: c was dropped as covered under a's
 // snapshot and deleted at the host; x's purge of c strips the snapshot at r and x, then a, which
 // never saw the request, demotes x: the request falls. c's body is gone everywhere, the snapshot
 // whole only at a. Every node reads c's value again, the reader r and a fresh reader f too.
@@ -1368,7 +1368,7 @@ fn purge_request_of(net: &mut Net, by: usize, t: osis_base::Tid) -> osis_node::R
     net.engine(by).commit(m)
 }
 
-// spec/commits.md §5 (Destruction), spec/sync.md §5: a purge of a thing's creation by its first admin's
+// spec/commits.md §5 (Destruction), spec/sync-ids.md §6: a purge of a thing's creation by its first admin's
 // holder destroys it at every node, hosts dropping its blobs; a write after the destruction is ignored
 #[test]
 fn purge_destroys_the_thing_everywhere_spec_commits_5() {
@@ -1436,7 +1436,7 @@ fn log_len(net: &Net, host: usize, l: &osis_base::LabelId) -> usize {
     a.len() + d.len()
 }
 
-// spec/sync.md §6, §7 (what a node deletes it would not log): B writes C on a map and t:seq,
+// spec/sync-judgement.md §2, spec/sync-compaction.md §1 (what a node deletes it would not log): B writes C on a map and t:seq,
 // then replaces part of each (C's other writes stay live), compacts t:seq, and, the admin A away,
 // the map; it drops C under both snapshots and deletes it at the host. A demotes B to read with a
 // frontier not listing the map snapshot: it falls, C's live map write is covered by nothing, so A,
@@ -1492,7 +1492,7 @@ fn fallen_carrier_carries_nothing_spec_sync_7() {
     assert_eq!(net.engine(b).get_typed(&t, &GONEMAP).unwrap(), net.engine(a).get_typed(&t, &GONEMAP).unwrap());
 }
 
-// spec/commits.md §5 The setting, spec/sync.md §7: one side lacking the thing's setting (writer b
+// spec/commits.md §5 The setting, spec/sync-compaction.md §1: one side lacking the thing's setting (writer b
 // never hears of its blob) judges X, its own register write, out of history: it compacts, drops X
 // and deletes it at the host. Admin a holds the setting keeping the register for good, so X is in
 // history there and a keeps it; b's snapshot under the label covers it, so a never places it
@@ -1539,7 +1539,7 @@ fn one_side_lacking_the_setting_no_log_delete_repeat_spec_sync_7() {
     assert!(net.engine(a).body_not_dropped(&x, &t, &k) && !net.engine(b).body_not_dropped(&x, &t, &k));
 }
 
-// spec/permissions.md §6, spec/sync.md §6: a purge of a valid delta takes its blob off the host
+// spec/permissions.md §6, spec/sync-judgement.md §2: a purge of a valid delta takes its blob off the host
 // though the blob also holds a delta the purger dropped as invalid (a writer's admin-only write)
 #[test]
 fn purge_beside_invalid_delta_leaves_host_spec_perm_6() {
@@ -1581,7 +1581,7 @@ fn purge_beside_invalid_delta_leaves_host_spec_perm_6() {
     }
 }
 
-// spec/sync.md §7 (a dropped body's chunk goes only once nothing held links it): a held
+// spec/sync-compaction.md §1 (a dropped body's chunk goes only once nothing held links it): a held
 // snapshot's value reuses chunks of the covered bodies it dropped; a later write that no
 // longer links them leaves them while the snapshot is held, and they go with it.
 #[test]
@@ -1626,7 +1626,7 @@ fn held_snapshot_keeps_the_chunks_it_links_spec_sync_7() {
     assert_eq!(kept, 0, "blobs nothing held links kept, of {}", tree.len());
 }
 
-// spec/sync.md §1 (chunk reuse: the link alone decides), §7 Freed links: a node that never received the commit introducing a value's chunks (its
+// spec/sync-ids.md §1 (chunk reuse: the link alone decides), §7 Freed links: a node that never received the commit introducing a value's chunks (its
 // author compacted it and deleted it at the host first) reuses them on its next edit, logging
 // the changed chunks and the root's links whatever the value's size, and once nothing it holds
 // links them deletes them at the host by its own delete keys.
@@ -1714,7 +1714,7 @@ fn edit_unseen(len: usize) -> (usize, usize, usize) {
     (sent, need, cuts(&v1).len())
 }
 
-// spec/sync.md §7 Freed links (a piece goes once no held source of its thing links it, by the
+// spec/sync-compaction.md §1 freed links (a piece goes once no held source of its thing links it, by the
 // keys its link names): a value's chunks reused by the author's own replaces outlive the commit
 // that introduced them, dropped under those replaces and forgotten with its tombstones aged
 // out; once a later write stops linking them they still leave the host.
@@ -1746,7 +1746,7 @@ fn chunks_outliving_their_introducer_leave_the_host_spec_commits_5() {
     let tree = net.engine(a).live_trees(&t).unwrap().blobs;
     assert!(!net.engine(a).body_not_dropped(&first, &t, &Ak::new(BLOB.ak()).unwrap()), "the first write dropped under a cover");
     assert!(net.engine(a).header(&first).is_none(), "the introducer is forgotten");
-    // two small writes, compacted (the trigger needs two bodies, spec/sync.md §7 Trigger)
+    // two small writes, compacted (the trigger needs two bodies, spec/sync-compaction.md §1 trigger)
     for v in [vec![1, 2, 3], vec![4]] {
         let mut m = Mutation::new();
         m.set(t, &BLOB, &osis_base::Value::Bytes(v)).unwrap();
@@ -1797,7 +1797,7 @@ fn linked_header_reopens_past_its_expiry_spec_commits_6() {
     assert_eq!(net.engine(a).get(&t, &aks[1]).unwrap(), None, "expired");
 }
 
-// spec/sync.md §7 Role view first, for every delete a pass sends: c, promoted again by a while
+// spec/sync-compaction.md §1 role view first, for every delete a pass sends: c, promoted again by a while
 // a is cut from the host, holds the promotion before the host does (its relay waits,
 // `relay_at`) and purges b's large value meanwhile. b, still judging c a reader, holds the
 // purge invalid and the value live: had c deleted the chunks, b would write them again
@@ -1849,7 +1849,7 @@ fn chunk_delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
     assert_eq!(net.read(c, t), None);
 }
 
-// spec/sync.md §1 Repair, §7: repair judges by the node's view after the batch that brought
+// spec/sync-ids.md §1 repair, §7: repair judges by the node's view after the batch that brought
 // the deletes applies. b, away while writer c purges b's large value and deletes its chunks
 // (in the second case c is a reader that a promotes first), reads the host's log on its
 // return: the promotion, the purge and the chunk deletes come in one batch. b applies them
@@ -1904,7 +1904,7 @@ fn local(net: &mut Net, n: usize) {
     net.actions(n, acts);
 }
 
-// spec/sync.md §7 Freed links (a link is judged under its own thing), spec/crypto.md §7 (a
+// spec/sync-compaction.md §1 freed links (a link is judged under its own thing), spec/crypto.md §7 (a
 // linked blob's commitments name its thing), spec/requirements.md Threat model: a writer of
 // thing t1 who reads t2 sets a t1 value to t2's value link verbatim. Once that body drops at
 // t2's author (its own copies of t2's earlier bodies dropped under its replaces and forgotten),
@@ -1975,7 +1975,7 @@ fn forged_link_keeps(author: usize) {
 // writer of t1 who reads t2 sets a t1 value to t2's value link. A node removed from t1's group,
 // still reading t2 (whose earlier bodies it dropped under t2's author's replaces), keeps t2's
 // blobs: offline, it reads t2 whole. Here t2's label entries keep them too; the bears rule alone
-// (spec/sync.md §7 Freed links) is `freed::tests::lost_access_keeps_another_things_piece_*`.
+// (spec/sync-compaction.md §1 freed links) is `freed::tests::lost_access_keeps_another_things_piece_*`.
 #[test]
 fn losing_a_thing_keeps_chunks_another_thing_links_spec_sync_7() {
     let (mut net, host, [a, v, f]) = hosted_nodes::<3>();
@@ -2029,7 +2029,7 @@ fn losing_a_thing_keeps_chunks_another_thing_links_spec_sync_7() {
     assert_eq!(net.engine(v).get_full(&t2, &Ak::new(BLOB.ak()).unwrap()).unwrap(), Some(osis_base::Value::Bytes(v1)), "v reads t2 offline");
 }
 
-// spec/sync.md §7 Freed links, notes/coordination.md (check scaling): purging a large value of
+// spec/sync-compaction.md §1 freed links, notes/coordination.md (check scaling): purging a large value of
 // n and of 10n pieces and syncing until the host holds none of them judges freed links in
 // proportion to the pieces (each judgment reads the whole set: a fixed number of judgments).
 #[test]
@@ -2065,7 +2065,7 @@ fn freed_judgment_linear_in_pieces_spec_sync_7() {
     assert!(small > 0 && big * n <= 2 * small * n10, "rows judged: {small} for {n} pieces, {big} for {n10}");
 }
 
-// spec/sync.md §7 Freed links, notes/coordination.md (check scaling): with the host away, a
+// spec/sync-compaction.md §1 freed links, notes/coordination.md (check scaling): with the host away, a
 // purged large value's freed links wait to be deleted there; ten unrelated small writes meanwhile
 // judge none of them (a judgment covers what changed, never the whole set), at n and 10n pieces.
 #[test]
@@ -2104,7 +2104,7 @@ fn unrelated_writes_judge_no_waiting_freed_link_spec_sync_7() {
     assert!(small <= 10 && big <= 10, "rows judged by 10 writes: {small} at {n} pieces, {big} at {n10}");
 }
 
-// spec/sync.md §6, §7: a delta before its keep-at-least bound is must-hold whatever covers it, so
+// spec/sync-judgement.md §2, spec/sync-compaction.md §1: a delta before its keep-at-least bound is must-hold whatever covers it, so
 // a writer deleting a blob of its commit for another delta it dropped as covered waits until
 // another blob carries the kept one, as the author holding the blob would place it again
 // (`delete_stands`): one judgment per delta on both sides, no delete-and-place loop.
@@ -2123,7 +2123,7 @@ fn kept_delta_waits_for_its_carrier_spec_sync_7() {
     m.set(t, &GONE, &s("g2")).unwrap();
     net.engine(b).commit(m).unwrap().unwrap();
     net.run();
-    // a covers REG and drops c's REG delta; b keeps its own (spec/sync.md §7 Own bodies)
+    // a covers REG and drops c's REG delta; b keeps its own (spec/sync-compaction.md §1 own bodies)
     let (reg, gone) = (Ak::new(REG.ak()).unwrap(), Ak::new(GONE.ak()).unwrap());
     let acts = net.sync(a).compact_now(&t, &reg).unwrap();
     net.actions(a, acts);
@@ -2138,8 +2138,8 @@ fn kept_delta_waits_for_its_carrier_spec_sync_7() {
 
 /// Groups `f` and `s` of admin a, b and w writing both, an item of each (`top`, `inner`). b's
 /// commit on both (`GONE` on `top`, a `GONEMAP` key on `inner`) goes under each group's label as
-/// one blob, each label's actor reading one of its deltas (spec/sync.md §3). Node `by` (a or w)
-/// then covers `top` and drops b's delta there (b keeps its own: spec/sync.md §7 Own bodies):
+/// one blob, each label's actor reading one of its deltas (spec/sync-judgement.md §1). Node `by` (a or w)
+/// then covers `top` and drops b's delta there (b keeps its own: spec/sync-compaction.md §1 own bodies):
 /// - `late`: `by` is offline meanwhile and gets the commit `MAX_DRIFT` later (its relay wait
 ///   starting then);
 /// - `dead`: `by` removes the key first, so b's delta on `inner` holds no live write and nothing
@@ -2203,7 +2203,7 @@ fn unread_part_outcome(net: &mut Net, host: usize, l: &osis_base::LabelId, c: os
     (left, deletes)
 }
 
-// spec/sync.md §6, §7: a, getting b's commit late, deletes its blob under `s`'s label at once (its
+// spec/sync-judgement.md §2, spec/sync-compaction.md §1: a, getting b's commit late, deletes its blob under `s`'s label at once (its
 // own rewrite waiting to be relayed) for the delta on `top` it dropped, which `s`'s actor may not
 // read; the dead delta on `inner` needs no carrier. b, judging by what `s`'s actor reads, finds
 // that blob was its body there, and the delete stands: no fresh encryption for a to delete
@@ -2216,7 +2216,7 @@ fn a_delete_for_an_unread_dropped_delta_stands_spec_sync_6() {
     assert_eq!(deletes, [1, 0, 0], "deletes by a, b and w");
 }
 
-// spec/sync.md §7 Carriers, Duplicates: w drops b's delta on `top` (making no delete of b's blob),
+// spec/sync-compaction.md §1 carriers, Duplicates: w drops b's delta on `top` (making no delete of b's blob),
 // so its rewrite of b's commit under `s`'s label, without that delta, carries the live one on
 // `inner` there. b, not having dropped that delta, does not take the rewrite for a duplicate of
 // its blob (they hold different delta sets, alike in what the label's actor reads): both stay,
@@ -2269,7 +2269,7 @@ fn cover_kept_from_b(net: &mut Net, host: usize, [a, x, b]: [usize; 3], t: osis_
     at
 }
 
-// spec/sync.md §6 (Placed again once; once no valid snapshot under the label covers it, its
+// spec/sync-judgement.md §4 (Logged again once; once no valid snapshot under the label covers it, its
 // holders place it again): `cover_kept_from_b`; the stand outlasts b's restart. Owner a, away and
 // never holding C or S, demotes x to read: S falls and the label's head moves. b, C's only
 // holder, places it again and every node reads it (a stand lasting the tombstone's life left C
@@ -2298,7 +2298,7 @@ fn a_placement_again_deleted_goes_again_once_the_head_moves_spec_sync_6() {
     assert_eq!(read(&mut net, x), Some(s("b's")), "x reads C");
 }
 
-// spec/sync.md §6 (Placed again once), spec/permissions.md §3 (a removal rotates the actor left
+// spec/sync-judgement.md §4 (Logged again once), spec/permissions.md §3 (a removal rotates the actor left
 // only; a thing above it rotates when next encrypted under): `cover_kept_from_b` with x admin on G
 // only through team T. a removes x from T: S falls, G's head moves all the same (a rotates G, its
 // box to T stale), and b places C again.
@@ -2329,7 +2329,7 @@ fn a_placement_again_deleted_goes_again_once_a_team_demotion_moves_the_head_spec
     assert_eq!(net.engine(a).get_typed(&t, &SEQ).unwrap(), Some(s("b's")), "a reads C");
 }
 
-// spec/sync.md §6 (Placed again once), spec/permissions.md §5.1 (a self-removal audits nothing;
+// spec/sync-judgement.md §4 (Logged again once), spec/permissions.md §5.1 (a self-removal audits nothing;
 // the next explicit write on that grant audits): admins x and y, writer b, owner a away. x
 // compacts b's write C under S, which the host keeps from b, and removes itself; b places C again,
 // a delete of that stands. b then gets S (C covered there). a, away, removes x explicitly: its
