@@ -1,0 +1,3 @@
+- `tools/dup_windows.py core/engine/src/apply` mostly lists test setups; the real duplication in apply (the pending-row forget sequence, done four ways, one in the wrong order) only showed by grepping `forget_waiting_leftovers` callers.
+- The `pub(crate)` probe over all of osis-engine found one test-only method (`retention::bounds::body_min_ts`, used by a tests_paged log line): little left to find that way.
+- `Tid::from_bytes`/`CommitId` key scans had their own 5-line copy at eight sites before `Tx::scan_keys`.
