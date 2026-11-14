@@ -586,12 +586,12 @@ fn removal_erasure_crash_safe_spec_perm_3() {
 fn applied_removal_triggers_forgetting_spec_perm_3() {
     let mut x = lost_setup();
     assert!(x.lp.peers[1].engine.lost_due());
-    let lost: BTreeSet<Tid> = x.lp.peers[1].engine.drop_lost_due().unwrap().into_iter().collect();
+    let lost: BTreeSet<Tid> = x.lp.peers[1].engine.role_duties().unwrap().into_iter().collect();
     assert!(lost.contains(&x.d) && lost.contains(&x.f) && !lost.contains(&x.e), "{lost:?}");
     assert!(!x.lp.peers[1].engine.lost_due());
     assert_forgotten(&mut x);
     // idempotent
-    assert!(x.lp.peers[1].engine.drop_lost_due().unwrap().is_empty());
+    assert!(x.lp.peers[1].engine.role_duties().unwrap().is_empty());
     assert_forgotten(&mut x);
 }
 
@@ -602,7 +602,7 @@ fn lost_access_trigger_survives_restart_spec_perm_3() {
     let mut x = lost_setup();
     reopen(&mut x.lp, 1).unwrap();
     assert!(x.lp.peers[1].engine.lost_due());
-    assert!(x.lp.peers[1].engine.drop_lost_due().unwrap().contains(&x.d));
+    assert!(x.lp.peers[1].engine.role_duties().unwrap().contains(&x.d));
     assert_forgotten(&mut x);
     reopen(&mut x.lp, 1).unwrap();
     assert!(!x.lp.peers[1].engine.lost_due());
@@ -615,7 +615,7 @@ fn lost_access_trigger_survives_restart_spec_perm_3() {
 fn removal_with_another_path_keeps_all_spec_perm_3() {
     let mut x = lost_setup_from(true);
     assert_eq!(x.lp.peers[1].engine.role_on(&x.e), Some(Role::Read));
-    assert!(x.lp.peers[1].engine.drop_lost_due().unwrap().is_empty());
+    assert!(x.lp.peers[1].engine.role_duties().unwrap().is_empty());
     assert!(x.lp.peers[1].engine.drop_lost_secrets().unwrap().is_empty());
     let reg = ak("t:reg.0");
     for (t, mark) in [(x.d, D_MARK), (x.e, E_MARK), (x.f, F_MARK), (x.mine, MINE_MARK)] {
@@ -638,7 +638,7 @@ fn pending_grant_survives_unrelated_removal_spec_perm_3() {
     assert_eq!(x.lp.peers[1].engine.role_on(&g), None);
     let reading = |x: &Lost| x.lp.peers[1].engine.epochs(&g).is_some_and(|e| e.read.holds_any());
     assert!(reading(&x), "secrets from the grant not yet judged");
-    let lost = x.lp.peers[1].engine.drop_lost_due().unwrap();
+    let lost = x.lp.peers[1].engine.role_duties().unwrap();
     assert!(lost.contains(&x.d) && !lost.contains(&g), "{lost:?}");
     assert!(!x.lp.peers[1].engine.drop_lost_secrets().unwrap().contains(&g));
     assert!(reading(&x));
@@ -676,7 +676,7 @@ fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
     let mut dropped = false;
     for c in rest {
         send(&mut lp, 0, 1, &[c]);
-        let lost = lp.peers[1].engine.drop_lost_due().unwrap();
+        let lost = lp.peers[1].engine.role_duties().unwrap();
         dropped |= lost.contains(&g);
     }
     assert!(dropped);

@@ -655,8 +655,10 @@ impl Engine {
     /// Whether read of `a` is blocked here for a wrap of commit `c` (spec/crypto.md §4 Encrypting
     /// under): a role commit, which goes as a certificate or as this node's own, by the placing
     /// walk (`Walk::Place`: through holder actors this node may rotate only, so a node that may
-    /// not still logs what tells their rotators); anything else by the encrypting walk. A key
-    /// actor's epochs are its seed's: never blocked.
+    /// not still logs what tells their rotators); anything else by the encrypting walk, and also
+    /// while this node holds a grant on `a` it may finalize (spec/permissions.md §2 Finalize: the
+    /// finalize goes before its next commit encrypting under `a`; the driver's role duties write
+    /// it, `Engine::role_duties`). A key actor's epochs are its seed's: never blocked.
     fn wrap_blocked(&mut self, a: &Tid, c: Option<&CommitId>) -> Result<bool> {
         if self.core.is_key_actor(a) {
             return Ok(false);
@@ -668,6 +670,9 @@ impl Engine {
         let a = *a;
         self.read(|tx| {
             let who = tx.core.writer()?;
+            if matches!(walk, crate::rotation::Walk::Encrypt) && !crate::flows::edges::finalizable(tx.core, &who, &a).is_empty() {
+                return Ok(true);
+            }
             let deps = crate::rotation::departures(tx, &a)?;
             Ok(crate::rotation::blocked_roles_of(tx, &who, &a, &deps, walk)?.contains(&Role::Read))
         })

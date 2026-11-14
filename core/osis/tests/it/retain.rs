@@ -1,7 +1,7 @@
 //! Retain (spec/permissions.md §3): what a removed holder's node keeps. Commits travel by
 //! `deliver` (no sync; as plaintext packages, so what a copy refuses is the node's rule, not a
 //! key it lacks), and the lost-access trigger, sync's to run, is run by hand after each delivery
-//! (`drop_lost_due`).
+//! (`role_duties`).
 
 use crate::common::*;
 use osis::internals::Internals as _;
@@ -18,7 +18,7 @@ fn s(v: &str) -> Value {
 /// Delivers what `from` holds to `to`, then runs `to`'s lost-access trigger.
 fn carry(from: &Osis, to: &Osis) {
     deliver(from, to);
-    to.engine(|e| e.drop_lost_due().unwrap());
+    to.engine(|e| e.role_duties().unwrap());
 }
 
 /// Alice's group `g` holding `t` (`t:x.0` "before"), `g`'s retain default `default`, Bob granted

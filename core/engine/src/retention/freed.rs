@@ -720,7 +720,7 @@ mod tests {
             lp.deliver(1, &pk).unwrap();
         }
         let e = &mut lp.peers[1].engine;
-        e.drop_lost_due().unwrap();
+        e.role_duties().unwrap();
         assert_eq!(e.get(&t1, &a).unwrap(), None, "peer 1 forgot t1");
         assert_eq!(e.get_full(&t2, &a).unwrap(), Some(Value::Bytes(x)), "peer 1 reads t2");
         (tree1.iter().filter(|b| e.has_blob(b)).count(), tree2.iter().all(|b| e.has_blob(b)))

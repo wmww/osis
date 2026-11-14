@@ -473,7 +473,7 @@ fn arrival_order_holds_alike_spec_permissions_3() {
                     for &j in order {
                         applied |= matches!(lp.peers[i].receive(&all[j].bytes, all[j].blobs.clone()), Ok(crate::Ingested::Applied(_)));
                         // the lost-access trigger, as node-sync runs it every step
-                        lp.peers[i].engine.drop_lost_due().unwrap();
+                        lp.peers[i].engine.role_duties().unwrap();
                     }
                     if !applied {
                         break;

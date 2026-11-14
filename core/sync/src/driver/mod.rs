@@ -777,10 +777,9 @@ impl Node {
         if !self.engine.lost_due() {
             return Ok(());
         }
+        // a finalize or rotation it wrote is logged by the settle after it, as any own commit
         let loads = self.engine.loads();
-        if self.engine.drop_lost_due()?.is_empty() {
-            return Ok(());
-        }
+        self.engine.role_duties()?;
         if self.engine.loads() == loads {
             return self.settle(out);
         }

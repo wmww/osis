@@ -439,7 +439,7 @@ fn every_changed_answer_fires() {
                 }
                 8 => { let _ = a.set_role(t, groups[1], None, Default::default()); }
                 9 => { let _ = a.commit_with(|w| w.at(t, kept(&a, &ak("t:k.0"))).purge(osis::Purge::All)); }
-                10 => { c.advance(1 + roll(&mut rng, 3_000)); a.engine(|e| { e.tick().unwrap(); e.drop_lost_due().unwrap(); }); }
+                10 => { c.advance(1 + roll(&mut rng, 3_000)); a.engine(|e| { e.tick().unwrap(); e.role_duties().unwrap(); }); }
                 11 => { let _ = a.undo(&Scope::Thing(t)); }
                 12 => { let _ = b.commit_with(|w| w.at(t, untyped(k)).set(&v)); deliver(&a, &b); deliver(&b, &a); }
                 _ => { deliver(&b, &a); }

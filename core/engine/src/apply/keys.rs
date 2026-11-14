@@ -1118,7 +1118,7 @@ mod tests {
         let (mut lp, t) = removed_reader();
         forged_grant(&mut lp, 2, t);
         remove(&mut lp, t);
-        assert!(lp.peers[1].engine.drop_lost_due().unwrap().contains(&t));
+        assert!(lp.peers[1].engine.role_duties().unwrap().contains(&t));
         assert!(lp.peers[1].engine.core.ix.secrets.get(&t).is_none());
         assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("x:a.0").unwrap()).unwrap(), None);
     }
@@ -1192,7 +1192,7 @@ mod tests {
             lp.deliver(1, &pk).unwrap();
         }
         assert_eq!(lp.peers[1].engine.core.role_now(&b, &t), None, "removed; the re-grant pending");
-        lp.peers[1].engine.drop_lost_due().unwrap();
+        lp.peers[1].engine.role_duties().unwrap();
         lp.peers[1].engine.drop_lost_secrets().unwrap();
         assert!(lp.peers[1].engine.core.ix.secrets.get(&t).is_none(), "outside the wait: dropped, candidates too");
         assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("x:a.0").unwrap()).unwrap(), None, "content forgotten");
@@ -1252,7 +1252,7 @@ mod tests {
         lp.peers[0].engine.core.ix.secrets.insert(x, reading_only(9, c));
         lp.peers[0].engine.run(|tx| super::forget_unchecked(tx, &c)).unwrap();
         assert!(lp.peers[0].engine.core.ix.lost_due.contains_key(&x));
-        lp.peers[0].engine.drop_lost_due().unwrap();
+        lp.peers[0].engine.role_duties().unwrap();
         assert!(lp.peers[0].engine.core.ix.secrets.get(&x).is_none_or(|e| !e.read.holds_any()));
     }
 

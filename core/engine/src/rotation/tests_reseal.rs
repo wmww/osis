@@ -806,3 +806,25 @@ fn a_wrap_waits_for_a_rotation_covering_a_known_removal_spec_crypto_4() {
     send_skipping(&mut lp, 0, 1, &BTreeSet::new());
     assert!(lp.peers[1].engine.wrap_secret(&g, Some((&c0, &parts))).unwrap().is_some(), "the rotation held, W wraps");
 }
+
+// spec/permissions.md §2 (Finalize: a node with write holding a grant past its `until` writes the
+// finalize before its next commit encrypting under the target), spec/crypto.md §4 (Encrypting
+// under): with the role duties not yet run, admin A wraps nothing of its write after the `until`
+// (the gate refuses); the duties finalize with the rotation, and the write then wraps under the
+// new epoch, which the departed reader is not boxed at
+#[test]
+fn a_write_after_a_passed_until_waits_for_the_finalize_spec_permissions_2() {
+    let (mut lp, g, tids) = granted(2, &[]);
+    let until = osis_base::WallMs(lp.peers[0].engine.core.now().0 + 100);
+    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.sync_all().unwrap();
+    let old = newest_read(&lp, 0, g);
+    lp.peers[0].clock.advance(1_000);
+    let w = put(&mut lp, 0, g, "after");
+    let parts = lp.peers[0].engine.body(&w).unwrap().unwrap().parts;
+    assert!(lp.peers[0].engine.wrap_secret(&g, Some((&w, &parts))).unwrap().is_none(), "no wrap before the finalize");
+    assert!(lp.peers[0].engine.lost_due(), "the `until` is due on the work list");
+    lp.peers[0].engine.role_duties().unwrap();
+    assert_ne!(newest_read(&lp, 0, g), old, "the finalize rotated read");
+    assert!(lp.peers[0].engine.wrap_secret(&g, Some((&w, &parts))).unwrap().is_some(), "then the write wraps");
+}

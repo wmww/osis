@@ -628,7 +628,7 @@ fn a_siblings_self_removal_waits_and_drops_alike_spec_perm_3() {
     lp.peers[1].restart(1).unwrap();
     let e = &mut lp.peers[1].engine;
     assert!(e.waiting_removals().unwrap().contains(&c), "the sibling waits too, through a restart");
-    e.drop_lost_due().unwrap();
+    e.role_duties().unwrap();
     assert!(e.epochs(&t).is_some_and(|x| x.read.holds_any()), "kept while it waits");
     e.removal_done(&c).unwrap();
     assert!(e.waiting_removals().unwrap().is_empty());
@@ -677,7 +677,7 @@ fn a_loss_behind_a_done_self_removal_drops_at_the_trigger_spec_perm_3() {
     lp.peers[0].engine.demote(&g, &Demotion { holder: ps[1], new: None, retain: None }).unwrap();
     spread(&mut lp);
     let e = &mut lp.peers[1].engine;
-    e.drop_lost_due().unwrap();
+    e.role_duties().unwrap();
     assert!(e.epochs(&t).is_none_or(|x| x.read.held().next().is_none()), "dropped");
 }
 
@@ -755,7 +755,7 @@ fn a_regrant_during_the_wait_keeps_the_secrets_spec_perm_3() {
     spread(&mut lp);
     for i in [0, 1] {
         all_done(&mut lp, i);
-        lp.peers[i].engine.drop_lost_due().unwrap();
+        lp.peers[i].engine.role_duties().unwrap();
         assert!(reads(&lp, i, &t), "node {i} re-granted: kept");
     }
 }
