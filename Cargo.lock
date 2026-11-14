@@ -2907,6 +2907,7 @@ name = "osis-sync"
 version = "0.1.0"
 dependencies = [
  "osis-base",
+ "osis-commit",
  "osis-crypto",
  "osis-engine",
  "osis-label",
