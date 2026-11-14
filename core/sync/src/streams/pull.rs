@@ -3,7 +3,8 @@
 //! its joins, messages applied in order once their bodies are held, the cursor stored only then,
 //! `seq` checked and a gap read again, bodies fetched one source at a time in the fill order.
 
-use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, PENDING_CAP, RESYNC_MS, Rank, Rejoin, Refusal, Streams};
+use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, PENDING_CAP, RESYNC_MS, Rank, Refusal, Streams};
+use crate::opens::Rejoin;
 use crate::store::Source;
 use crate::types::{ConnId, Cursor, Entry, Result};
 use osis_base::{BlobId, SyncId, WallMs};
@@ -159,12 +160,12 @@ impl Streams {
 
     /// A member joined: from where opens says, else where this side's record holds it, else from
     /// the start; none for a member at the stream's cursor (spec/sync-streams.md §4 Joining).
-    pub(super) fn joined(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
+    pub(super) fn joined(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, rejoin: Rejoin) {
         let src = self.source(ctx.shared, conn);
         let cursor = self.places.get(&src).and_then(|p| p.cursor.clone());
         self.pull.entry(conn).or_insert_with(|| Pulling::new(src, cursor));
         let place = self.place(src);
-        let from = match ctx.shared.rejoin(conn, &s) {
+        let from = match rejoin {
             Rejoin::From(c) => {
                 place.stopped.remove(&s);
                 place.at_stream.remove(&s);

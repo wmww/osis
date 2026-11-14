@@ -19,6 +19,9 @@
 
 pub mod cred;
 pub mod holds;
+mod positions;
+
+pub use positions::{Positions, Rejoin, Reported};
 
 use crate::session::{Incoming, Proven, Sessions};
 use crate::types::{ConnId, Credential, Cursor, Cx, Position, RecordId, Result, SourceClass};
@@ -54,12 +57,14 @@ pub struct Member {
 }
 
 /// A change of a connection's shared set: the driver hands each to `Streams::moved`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Moved {
-    /// S became a member on `conn` (newly open, or open again).
-    Joined(ConnId, SyncId),
+    /// S became a member on `conn` (newly open, or open again), rejoining from where opens says.
+    Joined(ConnId, SyncId, Rejoin),
     /// S stopped being a member on `conn` (closed, or the connection ended).
     Left(ConnId, SyncId),
+    /// Member S's `until` was set or cleared.
+    Ending(ConnId, SyncId),
 }
 
 /// How a module that sends reaches a connection: its binding and its sends. The product's is
@@ -108,8 +113,9 @@ struct Record {
     members: BTreeMap<SyncId, Member>,
     /// The beacon each member was opened by (none: by J).
     basis: BTreeMap<SyncId, Option<[u8; 32]>>,
-    /// Where each member that left stopped (the Lost's cursor).
-    stopped: BTreeMap<SyncId, Option<Cursor>>,
+    /// Where each member that left rejoins: held by this side's stream (it closed the member, or
+    /// the connection ended), a Lost's cursor, or from the start (a digest difference).
+    stopped: BTreeMap<SyncId, Rejoin>,
     acked_pos: u64,
     own: OwnFilter,
     peer: Option<PeerFilter>,
@@ -238,7 +244,9 @@ struct Conn {
     test_due: bool,
     offer: Option<Vec<Sent>>,
     /// Reported positions (spec/sync-opens.md §6 Lost): streams' word, through `reported`.
-    reported: BTreeMap<SyncId, (Position, Option<Cursor>)>,
+    reported: Positions,
+    /// Members with an `until`: what a reported position may close.
+    ending: BTreeSet<SyncId>,
     walks: BTreeMap<SyncId, WalkState>,
 }
 
@@ -276,6 +284,15 @@ pub struct Opens {
 
 static NO_MEMBERS: BTreeMap<SyncId, Member> = BTreeMap::new();
 
+impl crate::store::Members for BTreeMap<SyncId, Member> {
+    fn until(&self, s: &SyncId) -> Option<Option<Position>> {
+        self.get(s).map(|m| m.until)
+    }
+    fn is_empty(&self) -> bool {
+        BTreeMap::is_empty(self)
+    }
+}
+
 /// What a connection may open S by, judged now (spec/sync-opens.md §4 Admissible).
 struct Adm {
     j: J,
@@ -302,6 +319,21 @@ impl Opens {
     pub fn on_closed(&mut self, cx: &mut Cx, conn: ConnId, moved: &mut Vec<Moved>) {
         let _ = cx;
         self.closed(conn, moved);
+    }
+
+    /// Streams' reported positions (`reported`).
+    pub fn on_reported(&mut self, cx: &mut Cx, sessions: &mut Sessions, unread: &Unread, reported: &mut Vec<Reported>, moved: &mut Vec<Moved>) {
+        if reported.is_empty() {
+            return;
+        }
+        let now = cx.now;
+        let mut fx = std::mem::take(&mut self.fx);
+        let mut holds = NodeHolds { cx, unread, fx: &mut fx };
+        let mut ctx = Ctx { holds: &mut holds, wire: sessions, now };
+        for r in reported.drain(..) {
+            self.reported(&mut ctx, r, moved);
+        }
+        self.fx = fx;
     }
 
     /// Whether anything acted (a member that moved is in `moved`).
@@ -353,19 +385,32 @@ impl Opens {
         self.conns.get(&conn).is_some_and(|c| c.phase == Phase::Running && c.agree == Agree::Done)
     }
 
-    /// Where member S that left `conn`'s record stopped (the Lost's cursor), for its rejoin.
-    pub fn stopped(&self, conn: ConnId, s: &SyncId) -> Option<&Cursor> {
-        let r = self.records.get(&self.conns.get(&conn)?.rec?)?;
-        r.stopped.get(s)?.as_ref()
+    /// Member S's reported position on `conn` (spec/sync-opens.md §6 Lost): none for a sync ID
+    /// that is no member there.
+    pub fn reported_at(&self, conn: ConnId, s: &SyncId) -> Option<&(Position, Cursor)> {
+        self.member(conn, s)?;
+        self.conns.get(&conn)?.reported.get(s)
     }
 
-    /// Streams' word: the peer reported position `pos` (cursor `cursor`) for S on `conn`
-    /// (spec/sync-opens.md §6 Lost). An ended member at or past its `until` closes with a Lost.
-    pub fn reported(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, pos: Position, cursor: Option<Cursor>, moved: &mut Vec<Moved>) {
+    /// Streams' word: the peer reported a position on `conn` (spec/sync-opens.md §6 Lost). An
+    /// ended member at or past its `until` closes with a Lost; only ended members are looked at.
+    pub fn reported(&mut self, ctx: &mut Ctx, r: Reported, moved: &mut Vec<Moved>) {
+        let conn = r.conn();
         let Some(c) = self.conns.get_mut(&conn) else { return };
-        c.reported.insert(s, (pos, cursor));
-        let until = self.member(conn, &s).and_then(|m| m.until);
-        if until.is_some_and(|u| pos >= u) {
+        let moved_one = c.reported.take(r);
+        let check: Vec<SyncId> = match moved_one {
+            Some(s) => c.ending.contains(&s).then_some(s).into_iter().collect(),
+            None => c.ending.iter().copied().collect(),
+        };
+        for s in check {
+            self.close_if_reached(ctx, conn, s, moved);
+        }
+    }
+
+    /// An ended member whose reported position is at or past its `until` closes with a Lost.
+    fn close_if_reached(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, moved: &mut Vec<Moved>) {
+        let Some(until) = self.member(conn, &s).and_then(|m| m.until) else { return };
+        if self.reported_at(conn, &s).is_some_and(|(p, _)| *p >= until) {
             self.close_member(ctx, conn, s, true, moved);
         }
     }
@@ -507,7 +552,8 @@ impl Opens {
             tested_pos: 0,
             test_due: false,
             offer: None,
-            reported: BTreeMap::new(),
+            reported: Positions::default(),
+            ending: BTreeSet::new(),
             walks: BTreeMap::new(),
         };
         if bind.dialer {
@@ -590,7 +636,7 @@ impl Opens {
         let members: Vec<SyncId> = r.members.keys().copied().collect();
         for s in &members {
             self.holding.entry(*s).or_default().insert(conn);
-            moved.push(Moved::Joined(conn, *s));
+            moved.push(Moved::Joined(conn, *s, Rejoin::Held));
         }
         // spec/sync-opens.md §6: a member is re-judged when a connection takes a record.
         for s in members {
@@ -1298,9 +1344,9 @@ impl Opens {
         }
         r.members.insert(s, m);
         r.basis.insert(s, beacon);
-        r.stopped.remove(&s);
+        let rejoin = r.stopped.remove(&s).unwrap_or(Rejoin::Held);
         self.holding.entry(s).or_default().insert(conn);
-        moved.push(Moved::Joined(conn, s));
+        moved.push(Moved::Joined(conn, s, rejoin));
     }
 
     /// Re-judges member S of `conn` (spec/sync-opens.md §6): J reader or sync holder stays; an
@@ -1322,28 +1368,35 @@ impl Opens {
         let stays = holder || admissible;
         if stays {
             // A member ended and then judged holder or admissible again is no longer ended.
-            self.set_until(conn, &s, None);
+            self.set_until(conn, &s, None, moved);
         } else if m.by == Credential::J || adm.j == J::Departed {
             self.close_member(ctx, conn, s, true, moved);
         } else if m.until.is_none() {
             let until = ctx.holds.until(&s, &m.by);
-            self.set_until(conn, &s, Some(until));
-            let reached = self.conns.get(&conn).and_then(|c| c.reported.get(&s)).is_some_and(|(p, _)| *p >= until);
-            if reached {
-                self.close_member(ctx, conn, s, true, moved);
-            }
+            self.set_until(conn, &s, Some(until), moved);
+            self.close_if_reached(ctx, conn, s, moved);
         }
     }
 
-    fn set_until(&mut self, conn: ConnId, s: &SyncId, until: Option<Position>) {
-        if let Some(m) = self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get_mut(&r)).and_then(|r| r.members.get_mut(s)) {
-            m.until = until;
+    /// Sets or clears member S's `until`; streams hears of it (`Moved::Ending`).
+    fn set_until(&mut self, conn: ConnId, s: &SyncId, until: Option<Position>, moved: &mut Vec<Moved>) {
+        let Some(c) = self.conns.get_mut(&conn) else { return };
+        let Some(m) = c.rec.and_then(|r| self.records.get_mut(&r)).and_then(|r| r.members.get_mut(s)) else { return };
+        if m.until == until {
+            return;
         }
+        m.until = until;
+        if until.is_some() {
+            c.ending.insert(*s);
+        } else {
+            c.ending.remove(s);
+        }
+        moved.push(Moved::Ending(conn, *s));
     }
 
     /// The peer's reported position's cursor for S on `conn` (spec/sync-opens.md §6 Lost).
     fn reported_cursor(&self, conn: ConnId, s: &SyncId) -> Option<Cursor> {
-        self.conns.get(&conn).and_then(|c| c.reported.get(s)).and_then(|(_, c)| c.clone())
+        self.reported_at(conn, s).map(|(_, c)| c.clone())
     }
 
     /// Closes member S of `conn`; with `lost`, back to testing with a Lost naming where it stopped
@@ -1352,7 +1405,7 @@ impl Opens {
         let Some(m) = self.member(conn, &s).cloned() else { return };
         // Where it stopped for the peer: its reported position, or `until` where lower.
         let mut cursor = self.reported_cursor(conn, &s);
-        if let (Some(u), Some((p, _))) = (m.until, self.conns.get(&conn).and_then(|c| c.reported.get(&s)))
+        if let (Some(u), Some((p, _))) = (m.until, self.reported_at(conn, &s))
             && u < *p
         {
             cursor = ctx.holds.cursor_at(u);
@@ -1364,20 +1417,18 @@ impl Opens {
         }
     }
 
-    /// Removes member S from `conn`'s record; `keep` keeps where it stopped (a digest difference
-    /// keeps none: its rejoin is from the start).
+    /// Removes member S from `conn`'s record; `keep`: its rejoin reads from where this side's
+    /// stream holds it, else (a digest difference) from the start.
     fn drop_member(&mut self, conn: ConnId, s: SyncId, keep: bool, moved: &mut Vec<Moved>) {
-        let cursor = self.conns.get(&conn).and_then(|c| c.reported.get(&s)).and_then(|(_, c)| c.clone());
-        let Some(r) = self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get_mut(&r)) else { return };
+        let Some(c) = self.conns.get_mut(&conn) else { return };
+        let Some(r) = c.rec.and_then(|r| self.records.get_mut(&r)) else { return };
         if r.members.remove(&s).is_none() {
             return;
         }
+        c.reported.forget(&s);
+        c.ending.remove(&s);
         r.basis.remove(&s);
-        if keep {
-            r.stopped.insert(s, cursor);
-        } else {
-            r.stopped.remove(&s);
-        }
+        r.stopped.insert(s, if keep { Rejoin::Held } else { Rejoin::From(None) });
         if let Some(set) = self.holding.get_mut(&s) {
             set.remove(&conn);
         }
@@ -1402,6 +1453,8 @@ impl Opens {
         for (s, cur) in items {
             let cursor = cur.map(osis_proto::Cursor::into_bytes);
             let ending = self.member(conn, &s).and_then(|m| m.until);
+            // where it stopped for the peer, read before the member goes
+            let (rc, rp) = (self.reported_cursor(conn, &s), self.reported_at(conn, &s).map(|(p, _)| *p));
             if self.member(conn, &s).is_some() {
                 self.drop_member(conn, s, true, moved);
             }
@@ -1411,13 +1464,10 @@ impl Opens {
             if let Some(r) = self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get_mut(&r))
                 && let Some(at) = r.stopped.get_mut(&s)
             {
-                *at = cursor;
+                *at = Rejoin::From(cursor);
             }
             if let Some(u) = ending {
-                let mut c = self.reported_cursor(conn, &s);
-                if self.conns.get(&conn).and_then(|k| k.reported.get(&s)).is_none_or(|(p, _)| u < *p) {
-                    c = ctx.holds.cursor_at(u).or(c);
-                }
+                let c = if rp.is_none_or(|p| u < p) { ctx.holds.cursor_at(u).or(rc) } else { rc };
                 answer.push((s, c));
             }
         }

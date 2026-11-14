@@ -54,7 +54,7 @@ fn a_record_resumes_its_shared_set_spec_sync_opens_3() {
     p.connect(2, account(1), account(2));
     p.run();
     assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
-    assert!(p.a.moved.contains(&Moved::Joined(p.ca, S)));
+    assert!(p.a.moved.iter().any(|m| matches!(m, Moved::Joined(c, s, _) if *c == p.ca && *s == S)));
     assert!(p.a.opens.agreed(p.ca) && p.b.opens.agreed(p.cb));
 }
 

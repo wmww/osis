@@ -27,6 +27,21 @@ mod rows;
 pub use path::{Behind, Cred};
 pub use rows::{Source, Tombstone, Usage};
 
+/// The members a log read serves: each with its `until` (none: not served).
+pub trait Members {
+    fn until(&self, s: &SyncId) -> Option<Option<Position>>;
+    fn is_empty(&self) -> bool;
+}
+
+impl Members for BTreeMap<SyncId, Option<Position>> {
+    fn until(&self, s: &SyncId) -> Option<Option<Position>> {
+        self.get(s).copied()
+    }
+    fn is_empty(&self) -> bool {
+        BTreeMap::is_empty(self)
+    }
+}
+
 use crate::types::{Cursor, Entry, Position, Result};
 use entries::Removal;
 use memory::Memory;
@@ -816,7 +831,7 @@ impl Store {
     /// no position: `whole`), in log order (spec/sync-streams.md §4 Reading). A member with an
     /// `until` is served only its events up to it and the later events of entries first logged
     /// at or below it. The cursor covers what was scanned. Costs the events after `from`.
-    pub fn read_log(&self, members: &BTreeMap<SyncId, Option<Position>>, from: Option<&Cursor>, max: usize) -> Result<LogRead> {
+    pub fn read_log(&self, members: &impl Members, from: Option<&Cursor>, max: usize) -> Result<LogRead> {
         self.lock().read(|t, _| {
             let mut out = LogRead { events: Vec::new(), cursor: from.cloned(), whole: false, more: true };
             let mut first = true;
@@ -828,8 +843,8 @@ impl Store {
                 }
                 for e in r.events {
                     let s = e.event.sync_id();
-                    if let Some(until) = members.get(&s)
-                        && served(t, &e, *until)?
+                    if let Some(until) = members.until(&s)
+                        && served(t, &e, until)?
                     {
                         out.events.push(e);
                     }

@@ -14,12 +14,12 @@
 //! and `TransportLinks` (the tokio driver over osis-transport, behind the `driver` feature).
 
 use crate::inbox::Inbox;
-use crate::opens::{Moved, Opens};
+use crate::opens::{Moved, Opens, Reported};
 use crate::read::Read;
 use crate::session::{Incoming, Session, Sessions, To};
 use crate::status::{Status, StatusView};
 use crate::store::Store;
-use crate::streams::{Reported, Streams};
+use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Error, Input, Out, Result, Scope, SyncConfig, Waiting};
 use crate::unread::Unread;
 use osis_base::WallMs;
@@ -207,12 +207,27 @@ impl Node {
         }
     }
 
-    /// Hands each member opens reported moved to streams.
+    /// Hands each member opens reported moved to streams, then streams' reported positions to
+    /// opens.
     fn moved(&mut self, moved: &mut Vec<Moved>, out: &mut Vec<Out>) {
         let mut cx = cx!(self, out);
         for m in moved.drain(..) {
             self.inbox.moved(&m, &crate::inbox::Links { sessions: &mut self.driver.sessions, opens: &self.opens, streams: &self.streams });
             self.streams.moved(&mut cx, &mut self.driver.sessions, &self.opens, m, &mut self.driver.reported);
+        }
+        self.reports(out);
+    }
+
+    /// Streams' reported positions to opens; the members that closes go back to streams, until
+    /// nothing is left.
+    fn reports(&mut self, out: &mut Vec<Out>) {
+        let mut moved = Vec::new();
+        while !self.driver.reported.is_empty() {
+            let mut cx = cx!(self, out);
+            self.opens.on_reported(&mut cx, &mut self.driver.sessions, &self.unread, &mut self.driver.reported, &mut moved);
+            for m in moved.drain(..) {
+                self.streams.moved(&mut cx, &mut self.driver.sessions, &self.opens, m, &mut self.driver.reported);
+            }
         }
     }
 
@@ -249,8 +264,8 @@ impl Node {
             acted |= self.read.settle(&mut cx, sessions, &self.opens, &self.streams)?;
             acted |= self.inbox.settle(&mut cx, sessions, &self.opens, &self.streams)?;
             acted |= self.streams.settle(&mut cx, sessions, &self.opens, &mut self.driver.reported)?;
-            // reported positions go to opens (`Opens::reported`) with its module
-            self.driver.reported.clear();
+            self.reports(out);
+            let mut cx = cx!(self, out);
             acted |= self.status.settle(&mut cx, &self.opens, &self.streams, &self.read)?;
             if !acted {
                 return Ok(());

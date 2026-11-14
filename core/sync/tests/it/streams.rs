@@ -12,10 +12,10 @@ use osis_label::{ClaimSet, Class, Parent, Prefix, Step, StepKeys};
 use osis_proto::limits::{REPLY_BUDGET, SMALL_REPLY, TOP_BIT};
 use osis_proto::{Code, Event, Id, Msg, Pull};
 use osis_store::{MemoryBackend, MemoryRoot, RecordId};
-use osis_sync::opens::Member;
+use osis_sync::opens::{Member, Moved, Positions, Rejoin, Reported};
 use osis_sync::session::{Incoming, To};
 use osis_sync::store::Source;
-use osis_sync::streams::{Ctx, Ground, Opening, Rank, Rejoin, Reported, Shared, Streams, Wire};
+use osis_sync::streams::{Ctx, Ground, Opening, Rank, Shared, Streams, Wire};
 use osis_sync::types::{ConnId, Credential, Entry, Result, SourceClass};
 use osis_sync::unread::Sources;
 use osis_sync::Store;
@@ -90,12 +90,12 @@ impl Wire for Pipe {
     }
 }
 
-/// The shared set as opens would hold it.
+/// The shared set as opens would hold it, and the reported positions it folds.
 #[derive(Default)]
 struct Open {
     members: BTreeMap<ConnId, BTreeMap<SyncId, Member>>,
     record: Option<RecordId>,
-    rejoin: BTreeMap<SyncId, Rejoin>,
+    positions: BTreeMap<ConnId, Positions>,
 }
 
 static NONE: BTreeMap<SyncId, Member> = BTreeMap::new();
@@ -110,8 +110,9 @@ impl Shared for Open {
     fn record(&self, _c: ConnId) -> Option<RecordId> {
         self.record
     }
-    fn rejoin(&self, _c: ConnId, s: &SyncId) -> Rejoin {
-        self.rejoin.get(s).cloned().unwrap_or(Rejoin::Held)
+    fn reported(&self, c: ConnId, s: &SyncId) -> Option<osis_sync::types::Position> {
+        self.members(c).get(s)?;
+        self.positions.get(&c)?.get(s).map(|(p, _)| *p)
     }
 }
 
@@ -128,6 +129,8 @@ struct Side {
     pipe: Pipe,
     open: Open,
     reported: Vec<Reported>,
+    /// Reports opens folded.
+    folded: usize,
     set: SyncSet,
 }
 
@@ -135,7 +138,7 @@ impl Side {
     fn new(seed: u64) -> Side {
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let store = Store::open(Box::new(backend.clone()), Box::new(root.clone()), Box::new(SeededRng::from_u64(seed))).unwrap();
-        Side { backend, root, store, streams: Streams::default(), table: Table::default(), pipe: Pipe::default(), open: Open { record: Some([seed as u8; 16]), ..Open::default() }, reported: Vec::new(), set: SyncSet::default() }
+        Side { backend, root, store, streams: Streams::default(), table: Table::default(), pipe: Pipe::default(), open: Open { record: Some([seed as u8; 16]), ..Open::default() }, reported: Vec::new(), folded: 0, set: SyncSet::default() }
     }
 
     fn hold(&mut self, s: SyncId, h: Holding) {
@@ -150,21 +153,40 @@ impl Side {
     }
 
     fn with<T>(&mut self, now: u64, f: impl FnOnce(&mut Streams, &mut Ctx) -> T) -> T {
-        let Side { store, streams, table, pipe, open, reported, .. } = self;
+        let Side { store, streams, table, pipe, open, reported, folded, .. } = self;
         let mut ctx = Ctx { store, ground: table, wire: pipe, shared: &*open, now: WallMs(now), reported };
-        f(streams, &mut ctx)
+        let out = f(streams, &mut ctx);
+        // opens folds the reports (and keeps them for the test to read)
+        for r in reported.drain(*folded..).collect::<Vec<_>>() {
+            open.positions.entry(r.conn()).or_default().take(r.clone());
+            reported.push(r);
+        }
+        *folded = reported.len();
+        out
     }
 
     fn join(&mut self, now: u64, s: SyncId) {
-        self.open.members.entry(C).or_default().insert(s, member());
-        self.with(now, |st, ctx| st.member_moved(ctx, osis_sync::opens::Moved::Joined(C, s)));
+        self.join_on(now, C, s, Rejoin::Held);
+    }
+
+    fn join_on(&mut self, now: u64, c: ConnId, s: SyncId, rejoin: Rejoin) {
+        self.open.members.entry(c).or_default().insert(s, member());
+        self.with(now, |st, ctx| st.member_moved(ctx, Moved::Joined(c, s, rejoin)));
     }
 
     fn leave(&mut self, now: u64, s: SyncId) {
         if let Some(m) = self.open.members.get_mut(&C) {
             m.remove(&s);
         }
-        self.with(now, |st, ctx| st.member_moved(ctx, osis_sync::opens::Moved::Left(C, s)));
+        if let Some(p) = self.open.positions.get_mut(&C) {
+            p.forget(&s);
+        }
+        self.with(now, |st, ctx| st.member_moved(ctx, Moved::Left(C, s)));
+    }
+
+    /// Member S's reported position on C.
+    fn reported_at(&self, s: SyncId) -> Option<osis_sync::types::Position> {
+        Shared::reported(&self.open, C, &s)
     }
 
     /// A durable entry of its own logged under a read S.
@@ -394,7 +416,7 @@ fn cursor_stored_once_bodies_held_spec_sync_streams_4() {
     p.run_with(|ab, m| ab && m.kind() == 20);
     assert!(!p.b.streams.caught_up(C, &s));
     assert!(p.sent_by_b(44).is_empty(), "no Applied before the body");
-    assert_eq!(p.a.streams.reported(C, &s), None);
+    assert_eq!(p.a.reported_at(s), None);
     assert!(!knows(&p.b, p.b.src(), s, big));
     // the fetch answered: applied, stored, reported
     let held = std::mem::take(&mut p.held);
@@ -407,7 +429,7 @@ fn cursor_stored_once_bodies_held_spec_sync_streams_4() {
     assert!(knows(&p.b, p.b.src(), s, big));
     assert_eq!(p.b.table.opened, [big]);
     assert!(!p.sent_by_b(44).is_empty());
-    assert!(p.a.streams.reported(C, &s).is_some());
+    assert!(p.a.reported_at(s).is_some());
     assert!(p.b.streams.caught_up(C, &s));
 }
 
@@ -561,7 +583,7 @@ fn a_join_in_pages_keeps_its_position_spec_sync_streams_4() {
     assert_eq!(*jt, t);
     let first = added(&r.events).len();
     assert!(first > 0 && first < 300);
-    assert_eq!(a.streams.reported(C, &t), None, "joined from the start: no position yet");
+    assert_eq!(a.reported_at(t), None, "joined from the start: no position yet");
     let mut seen = first;
     let mut jc = jc.clone().into_bytes();
     let mut stream = r.cursor.unwrap().into_bytes();
@@ -580,7 +602,7 @@ fn a_join_in_pages_keeps_its_position_spec_sync_streams_4() {
     // merged: the member follows the stream once an Applied covers the merging reply
     a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(stream.clone()).unwrap() })));
     assert!(a.reported.contains(&Reported::Merged(C, t)));
-    assert_eq!(a.streams.reported(C, &t), a.streams.reported(C, &s));
+    assert_eq!(a.reported_at(t), a.reported_at(s));
 }
 
 // spec/sync-streams.md §4 (Joining: a join of a member the server does not share is answered so;
@@ -618,14 +640,12 @@ fn a_rejoin_from_the_start_names_no_cursor_spec_sync_opens_3() {
     p.shared_read(s);
     p.run();
     p.b.leave(p.now, s);
-    p.b.open.rejoin.insert(s, Rejoin::From(None));
-    p.b.join(p.now, s);
+    p.b.join_on(p.now, C, s, Rejoin::From(None));
     p.run();
     let last = p.sent_by_b(41).into_iter().last().unwrap();
     assert!(matches!(last, Msg::Pull(q) if q.joins == vec![(s, None)]));
     // held: from where the stream stood
     p.b.leave(p.now, s);
-    p.b.open.rejoin.clear();
     p.b.join(p.now, s);
     p.run();
     let last = p.sent_by_b(41).into_iter().last().unwrap();
@@ -661,7 +681,7 @@ fn bodies_one_source_at_a_time_spec_sync_streams_4() {
     // a second source of S at b: a connection whose frames never go anywhere
     p.b.hold(s, Holding::Read);
     p.b.open.members.entry(ConnId(9)).or_default().insert(s, member());
-    p.b.with(p.now, |st, c| st.member_moved(c, osis_sync::opens::Moved::Joined(ConnId(9), s)));
+    p.b.join_on(p.now, ConnId(9), s, Rejoin::Held);
     p.shared_read(s);
     p.run();
     let pulls = p.sent_by_b(41);
@@ -789,6 +809,7 @@ fn an_ended_member_told_at_its_until_spec_sync_streams_4() {
     p.a.log(u, 102);
     let (end, _) = p.a.store.log_bounds().unwrap();
     p.a.open.members.get_mut(&C).unwrap().get_mut(&s).unwrap().until = Some(end);
+    p.a.with(p.now, |st, c| st.member_moved(c, Moved::Ending(C, s)));
     let late = p.a.log(s, 101);
     p.run();
     assert!(!knows(&p.b, p.b.src(), s, late), "nothing past until");

@@ -36,10 +36,10 @@ mod serve;
 
 pub use known::{Known, Refusal};
 
-use crate::opens::{Member, Moved, Opens};
+use crate::opens::{Member, Moved, Opens, Reported};
 use crate::session::{Incoming, Sessions, To};
 use crate::store::{Source, Store};
-use crate::types::{ConnId, Cursor, Cx, Entry, Error, Position, RecordId, Result};
+use crate::types::{ConnId, Cx, Entry, Error, Position, RecordId, Result};
 use crate::unread::Sources;
 use osis_base::{BlobId, SyncId, WallMs};
 use osis_engine::Engine;
@@ -69,28 +69,6 @@ pub const RESYNC_MS: u64 = 30_000;
 /// How long a blob counts as asked at one source before another that has it is asked too
 /// (spec/sync-streams.md §4 Bodies: the Stall rule's wait).
 pub const ASKED_MS: u64 = crate::session::STALL_TIMEOUT_MS;
-
-/// Where a member that rejoins a connection's stream reads from (opens decides: it saw the
-/// peer's Lost and the digest).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Rejoin {
-    /// From where this side's stream held it when it left (or the record holds it).
-    Held,
-    /// From a Lost's cursor (`Some`), or from the start (a digest difference: no position).
-    From(Option<Cursor>),
-}
-
-/// A reported position (spec/sync-opens.md §6 Lost): what the peer stored of this side's log, for
-/// opens (an ended member at its `until` closes; a Lost names where a member stopped).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Reported {
-    /// The peer's stream stands at this position: every member at the stream stands there.
-    Stream(ConnId, Position, Cursor),
-    /// A member joining in pages stands at its own position (none: from the start).
-    Member(ConnId, SyncId, Option<(Position, Cursor)>),
-    /// The member's join merged into the stream and the peer stored it: it follows `Stream`.
-    Merged(ConnId, SyncId),
-}
 
 /// What opening a pulled body did at a node reading S.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,13 +107,14 @@ pub trait Wire {
     fn push(&mut self, c: ConnId, m: Msg) -> bool;
 }
 
-/// What streams reads of opens: the shared set, agreement, the record, rejoins.
+/// What streams reads of opens: the shared set, agreement, the record, reported positions.
 pub trait Shared {
     fn members(&self, c: ConnId) -> &BTreeMap<SyncId, Member>;
     /// Whether this side may Pull (spec/sync-opens.md §3 Agreement).
     fn agreed(&self, c: ConnId) -> bool;
     fn record(&self, c: ConnId) -> Option<RecordId>;
-    fn rejoin(&self, c: ConnId, s: &SyncId) -> Rejoin;
+    /// Member S's reported position (spec/sync-opens.md §6), as opens folded streams' reports.
+    fn reported(&self, c: ConnId, s: &SyncId) -> Option<Position>;
 }
 
 /// What one step gives streams.
@@ -233,11 +212,6 @@ impl Streams {
         p.caught_up() && self.places.get(&p.src).is_some_and(|pl| pl.at_stream.contains(s) && !pl.joining.contains_key(s))
     }
 
-    /// The reported position of S on `conn` as server (spec/sync-opens.md §6).
-    pub fn reported(&self, conn: ConnId, s: &SyncId) -> Option<Position> {
-        self.serve.get(&conn)?.reported(s)
-    }
-
     /// Tests only: the work counted so far.
     #[doc(hidden)]
     pub fn work(&self) -> Work {
@@ -262,9 +236,10 @@ impl Streams {
     /// A member moved.
     pub fn member_moved(&mut self, ctx: &mut Ctx, m: Moved) {
         match m {
-            Moved::Joined(conn, s) => {
+            Moved::Joined(conn, s, rejoin) => {
                 self.holders.entry(s).or_default().insert(conn);
-                self.joined(ctx, conn, s);
+                self.served_joined(ctx, conn, s);
+                self.joined(ctx, conn, s, rejoin);
                 // a member gaining another source: its other streams ask inline 0 again
                 for c in self.holders.get(&s).into_iter().flatten() {
                     if let Some(p) = self.pull.get_mut(c) {
@@ -280,8 +255,10 @@ impl Streams {
                         self.holders.remove(&s);
                     }
                 }
+                self.served_left(conn, &s);
                 self.left(ctx, conn, s);
             }
+            Moved::Ending(conn, s) => self.served_ending(ctx, conn, s),
         }
     }
 
@@ -372,17 +349,12 @@ impl Shared for Opens {
         Opens::members(self, c)
     }
     fn agreed(&self, c: ConnId) -> bool {
-        // opens' agreement gate (`Opens::agreed`) arrives with its module; until then a member
-        // exists only once opens agreed
-        let _ = c;
-        true
+        Opens::agreed(self, c)
     }
     fn record(&self, c: ConnId) -> Option<RecordId> {
         Opens::record(self, c)
     }
-    fn rejoin(&self, c: ConnId, s: &SyncId) -> Rejoin {
-        // opens' `stopped` (a Lost's cursor, none after a digest difference) arrives with its module
-        let _ = (c, s);
-        Rejoin::Held
+    fn reported(&self, c: ConnId, s: &SyncId) -> Option<Position> {
+        self.reported_at(c, s).map(|(p, _)| *p)
     }
 }

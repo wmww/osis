@@ -13,7 +13,7 @@ use osis_label::StepId;
 use osis_proto::{BehindItem, Code, DepositItem, Flow, Grant, Id, Msg, SharedItem};
 use osis_sync::opens::cred::{Bind, Shown, Tested};
 use osis_sync::opens::holds::{Creds, Holds};
-use osis_sync::opens::{Ctx, Moved, Opens, Wire};
+use osis_sync::opens::{Ctx, Moved, Opens, Reported, Wire};
 use osis_sync::session::{Incoming, Proven};
 use osis_sync::types::{ConnId, Credential, Cursor, Holding, Position};
 use std::collections::{BTreeMap, BTreeSet};
@@ -250,7 +250,7 @@ impl Side {
     /// The peer reported position `pos` for S (streams' word).
     pub fn reported(&mut self, conn: ConnId, s: SyncId, pos: Position) {
         let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, now: self.now };
-        self.opens.reported(&mut ctx, conn, s, pos, Some(pos.to_be_bytes().to_vec()), &mut self.moved);
+        self.opens.reported(&mut ctx, Reported::Member(conn, s, Some((pos, pos.to_be_bytes().to_vec()))), &mut self.moved);
         self.settle();
     }
 
