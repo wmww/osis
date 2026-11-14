@@ -783,7 +783,7 @@ fn a_stale_copy_gives_no_content_spec_permissions_3() {
     send_skipping(&mut lp, 0, 1, &BTreeSet::from([w]));
     assert!(!lp.peers[1].engine.reads_in(&g, &t), "G reads X no more");
     let wrap = osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap();
-    let o = lp.peers[1].engine.open_entry(&s, &copy.id, &wrap, &copy.blob).unwrap();
+    let o = lp.peers[1].engine.open_entry(&s, &copy.id, &wrap, &copy.blob, u64::MAX).unwrap();
     assert!(matches!(o, crate::sync::Opened::NotOpen), "the stale copy is not taken: {o:?}");
     assert!(!lp.peers[1].engine.holds_commit(&w), "nothing of w is held");
 }
