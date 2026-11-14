@@ -381,6 +381,9 @@ fn genuine_deposit_promoted_beside_stamped_forgery_spec_sync_inbox_4() {
     assert!(adds_delta(&need, &opened(&[0], &[1]), std::slice::from_ref(&forgery)), "the genuine deposit");
     assert!(!adds_delta(&need, &opened(&[0], &[9]), std::slice::from_ref(&forgery)), "byte-identical to the stamped one");
     assert!(!adds_delta(&need, &opened(&[0], &[]), std::slice::from_ref(&forgery)), "nothing unopened: a copy of part 0");
+    // a stamped entry holding no needed part (a certificate copy) takes no bytes-only slot
+    let copy = opened(&[5], &[]);
+    assert!(adds_delta(&need, &opened(&[0], &[1]), &[forgery.clone(), copy]), "a certificate copy beside the forgery shuts nothing out");
 }
 
 // spec/sync-hostile.md §2 (promotes one more deposit of the commit by its bytes alone): a forger depositing N variants of a commit

@@ -295,7 +295,12 @@ pub fn adds_delta(need: &PartSet, mine: &Judged, stamped: &[Judged]) -> bool {
         return true;
     }
     let covered = |x: &Judged| mine.sealed.is_subset(&x.sealed);
-    let bytes_only = |(i, x): (usize, &Judged)| x.parts.iter().filter(|p| need.contains(p)).all(|p| stamped.iter().enumerate().any(|(j, y)| j != i && y.parts.contains(p)));
+    // a stamped entry promoted by its bytes alone: it holds a needed part, every one of which
+    // another stamped entry holds (one holding no needed part, a certificate copy, was not)
+    let bytes_only = |(i, x): (usize, &Judged)| {
+        let mut needed = x.parts.iter().filter(|p| need.contains(p)).peekable();
+        needed.peek().is_some() && needed.all(|p| stamped.iter().enumerate().any(|(j, y)| j != i && y.parts.contains(p)))
+    };
     !mine.sealed.is_empty() && !stamped.iter().any(covered) && !stamped.iter().enumerate().any(bytes_only)
 }
 
