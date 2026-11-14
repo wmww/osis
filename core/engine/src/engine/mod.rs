@@ -3041,7 +3041,6 @@ impl Tx<'_> {
         self.core.mark_changed(*id);
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
-        crate::labeling::opened::write(self, id, meta)?;
         if meta.header.kind.is_role() {
             // perm's reading of it, persisted beside the record (an open decodes no body)
             match edges {

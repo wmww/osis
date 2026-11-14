@@ -316,7 +316,7 @@ impl Engine {
                 let t = (*t)?;
                 // another's write goes under this node's epoch only where `opened::passes_on`
                 // (its invariant), else as a held section of it or not at all
-                if !self.passes_on_all(&id, parts, &t).ok()? {
+                if !self.passes_on_all(&id, parts).ok()? {
                     return None;
                 }
                 let (e, s) = self.wrap_under(&t, Some((&id, parts))).ok().flatten()?;
@@ -592,7 +592,8 @@ impl Engine {
     fn wrap_under(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>) -> Result<Option<(Epoch, Secret32)>> {
         let Some(e) = self.epochs(g) else { return Ok(None) };
         // the wrap gates the header, and a copy's whole content: under this node's epoch only
-        // where every part it carries may go so (`opened::passes_on`, spec/crypto.md §5 Passing on)
+        // where every part it carries may go so and the commit's header may (`Engine::passes_on_parts`,
+        // spec/crypto.md §5 Passing on)
         if let Some((c, parts)) = c
             && !self.passes_on_parts(c, parts)?
         {

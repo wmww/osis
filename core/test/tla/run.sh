@@ -42,6 +42,10 @@ instances=(
   "reseal rotation Reseal RS_newest.cfg fail"      # negative control: under the sealer's newest current epoch (the leak)
   "reseal rotation Reseal RS_forged.cfg fail"      # negative control: a forged section's opening counts
   "reseal rotation Reseal RS_atopen.cfg fail"      # negative control: establishment judged at the opening
+  "reseal rotation Reseal RS_closed.cfg pass"      # w read in no section, openings lost once: passes on only once opened (fail closed)
+  "reseal rotation Reseal RS_closed_live.cfg pass" # ... and live
+  "reseal rotation Reseal RS_exempt.cfg fail"      # the build's exemption: w read in no section at a node lacking W leaks (no node-sync path does it)
+  "reseal rotation Reseal RS_exempt_lost.cfg fail" # negative control: openings lost by a restart counted as none (kept in memory only)
   "joint rotation JointMC J_gone.cfg pass"        # a forked holder actor sealed jointly: A's rotation needs nobody of M (spec/crypto.md §4 Seal)
   "joint rotation JointMC J_stay.cfg pass"        # ... every member no fork removes reads A, with one admin of M staying
   "joint rotation JointMC J_wait_gone.cfg fail"   # negative control: waiting for M's merge stalls A's rotation

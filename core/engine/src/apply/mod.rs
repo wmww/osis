@@ -932,6 +932,10 @@ fn unpend(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
 /// (read from it: first). Whether it was pending.
 fn drop_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
     crate::retention::forget_waiting_leftovers(tx, id)?;
+    // thrown out unapplied: its openings with it (`labeling::opened`)
+    if !tx.core.ix.commits.contains_key(id) {
+        crate::labeling::opened::forget(tx, id)?;
+    }
     unpend(tx, id)
 }
 
@@ -1347,13 +1351,13 @@ impl Engine {
                 // rolled back
                 return Err(Error::Misuse("refused"));
             }
+            crate::labeling::opened::persist(tx, &id)?;
             Ok(out)
         });
+        // written where kept, or nothing of it is kept (`labeling::opened`)
+        self.openings_done(&id);
         if refused {
             return Ok(None);
-        }
-        if let Ok(Ingested::Applied(c) | Ingested::Duplicate(c)) = &r {
-            self.openings_done(c);
         }
         if let Ok(Ingested::Applied(_)) = &r {
             self.reexamine()?;
@@ -1410,9 +1414,11 @@ impl Engine {
         let memory = room.is_some();
         let _s = osis_base::costs::span("ingest");
         let mut fresh = false;
+        let mut seen = None;
         self.core.memory_room = room;
         let r = self.run(|tx| {
             let decoded = CommitBlob::decode(bytes);
+            seen = decoded.as_ref().ok().map(CommitBlob::id);
             if matches!(&decoded, Ok(b) if b.header.ephemeral.is_some() != memory) {
                 return Err(Error::BadInput(if memory { "a durable commit on the memory path" } else { "an ephemeral commit on the durable path" }));
             }
@@ -1432,7 +1438,12 @@ impl Engine {
                 crate::flows::lists::keep_certs(tx, &certs)?;
             }
             match decoded {
-                Ok(blob) => ingest_blob(tx, blob, Origin::Remote),
+                Ok(blob) => {
+                    let id = blob.id();
+                    let out = ingest_blob(tx, blob, Origin::Remote)?;
+                    crate::labeling::opened::persist(tx, &id)?;
+                    Ok(out)
+                }
                 Err(e) if e.class() == ErrorClass::Parked => {
                     let id = raw_id(bytes)?;
                     park(tx, &id, bytes, Vec::new(), peer)?;
@@ -1445,9 +1456,9 @@ impl Engine {
         if fresh && r.is_ok() {
             self.blobs_stored();
         }
-        // its openings went with its record, or nothing of it is kept
-        if let Ok(Ingested::Applied(c) | Ingested::Duplicate(c) | Ingested::TooLarge(c)) = &r {
-            self.openings_done(c);
+        // written where kept, or nothing of it is kept (`labeling::opened`)
+        if let Some(id) = seen {
+            self.openings_done(&id);
         }
         match &r {
             Err(e) if e.class() == ErrorClass::BadInput => {

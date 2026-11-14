@@ -23,17 +23,21 @@
 (*   "atopen"    ... established when it opened (negative control);        *)
 (*   "never"     no fresh encryption of another's content (a snapshot      *)
 (*               cannot copy a section verbatim).                           *)
+(* Unsectioned: w may also reach V in no section (an inbox payload, a     *)
+(* direct connection: read under no epoch). Restarts: V may lose the      *)
+(* openings not yet written, once. Exempt: "chosen" also takes a w V holds *)
+(* with no opening recorded as V's own (negative control).                *)
 (* NoLeak: M never holds a ciphertext of w while W applies in the world's   *)
 (* commits. Live (world plain, W delivered): V encrypts w again.           *)
 EXTENDS FiniteSets
 
-CONSTANTS ResealRule, SnapRule, Genuine, Worlds
+CONSTANTS ResealRule, SnapRule, Genuine, Worlds, Unsectioned, Restarts, Exempt
 
 Nodes == {"V", "A", "a3", "a4"}
 Cs == {"D", "W", "Rot", "G", "X"}
 
-VARIABLES world, held, cts, opened, again
-vars == <<world, held, cts, opened, again>>
+VARIABLES world, held, cts, opened, again, plain, lost
+vars == <<world, held, cts, opened, again, plain, lost>>
 
 All == UNION {held[n] : n \in Nodes} \cup {"W", "Rot"}
 
@@ -60,24 +64,38 @@ Init ==
   \* V's record of w's openings: epoch, and whether it was established then
   /\ opened = {}
   /\ again = FALSE
+  \* V holds w read in no section; V lost its openings once
+  /\ plain = FALSE
+  /\ lost = FALSE
 
 Deliver(c) ==
   /\ c \in Cs /\ c \notin held["V"]
   /\ c = "W" \/ c \in UNION {held[s] : s \in Nodes \ {"V"}}
   /\ held' = [held EXCEPT !["V"] = @ \cup {c}]
-  /\ UNCHANGED <<world, cts, opened, again>>
+  /\ UNCHANGED <<world, cts, opened, again, plain, lost>>
 
 Forge ==
   /\ [c |-> "junk", e |-> "eV"] \notin cts
   /\ cts' = cts \cup {[c |-> "junk", e |-> "eV"]}
-  /\ UNCHANGED <<world, held, opened, again>>
+  /\ UNCHANGED <<world, held, opened, again, plain, lost>>
 
 Open(ct) ==
   /\ ct \in cts
   /\ ct.c = "w" \/ ~Genuine
   /\ [e |-> ct.e, est |-> Est(held["V"], ct.e)] \notin opened
   /\ opened' = opened \cup {[e |-> ct.e, est |-> Est(held["V"], ct.e)]}
-  /\ UNCHANGED <<world, held, cts, again>>
+  /\ UNCHANGED <<world, held, cts, again, plain, lost>>
+
+Arrive ==
+  /\ Unsectioned /\ ~plain
+  /\ plain' = TRUE
+  /\ UNCHANGED <<world, held, cts, opened, again, lost>>
+
+\* a restart between opening and ingesting: openings not yet written go
+Lose ==
+  /\ Restarts /\ ~lost /\ opened # {}
+  /\ opened' = {} /\ lost' = TRUE
+  /\ UNCHANGED <<world, held, cts, again, plain>>
 
 \* the epochs V may put w under by rule r
 Under(r) ==
@@ -86,7 +104,7 @@ Under(r) ==
   IN CASE r = "newest" -> IF es # {} THEN {Newest(h)} ELSE {}
        [] r = "opened" -> es
        [] r = "openedest" -> {e \in es : Est(h, e)}
-       [] r = "chosen" -> IF \E e \in es : Est(h, e) THEN {Newest(h)} ELSE {}
+       [] r = "chosen" -> IF (\E e \in es : Est(h, e)) \/ (Exempt /\ es = {} /\ (plain \/ lost)) THEN {Newest(h)} ELSE {}
        [] r = "atopen" -> IF \E o \in opened : o.est THEN {Newest(h)} ELSE {}
        [] r = "never" -> {}
 
@@ -95,12 +113,14 @@ Encrypt(r) ==
     /\ ~again \/ [c |-> "w", e |-> e] \notin cts
     /\ cts' = cts \cup {[c |-> "w", e |-> e]}
     /\ again' = TRUE
-    /\ UNCHANGED <<world, held, opened>>
+    /\ UNCHANGED <<world, held, opened, plain, lost>>
 
 Next ==
   \/ \E c \in Cs : Deliver(c)
   \/ Forge
   \/ \E ct \in cts : Open(ct)
+  \/ Arrive
+  \/ Lose
   \/ Encrypt(ResealRule)
   \/ Encrypt(SnapRule)
 

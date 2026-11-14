@@ -298,3 +298,71 @@ fn wrap_of_others_write_withheld_spec_crypto_5() {
     assert!(lp.peers[V].engine.wrap_secret(&g, Some((&w, &body.parts))).unwrap().is_some(), "V wraps once e_R is established");
     assert!(!m_opens(&mut lp, g, w, &fresh, &body.parts) && !m_opens(&mut lp, g, w, &copy, &body.parts));
 }
+
+// spec/crypto.md §5 (Passing on): R's write reaches V first in no section (the plaintext
+// `ingest`, as an inbox payload carries a commit), then V opens R's entry of it under e_R, not
+// established at V. The opening of a commit already held counts: V neither seals the write
+// under its own (M's) epoch nor wraps a copy of it so. Once W arrives it does, also after a
+// restart (the openings were written with the entry's ingest).
+#[test]
+fn opened_after_plain_arrival_counts_spec_crypto_5() {
+    let (mut lp, g, w_commits, e_r, w, entry) = shape(false);
+    send_skipping(&mut lp, R, V, &w_commits);
+    assert!(reads(&mut lp, V, g, "w"), "V holds w, read in no section");
+    lp.deliver_sealed(V, &entry).unwrap();
+    assert!(!lp.peers[V].engine.epochs(&g).unwrap().read.is_established(&e_r));
+    let body = lp.peers[V].engine.body(&w).unwrap().unwrap();
+    let copy = lp.peers[V].engine.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(4)).unwrap().unwrap();
+    assert!(!m_opens(&mut lp, g, w, &copy, &body.parts), "M opens V's copy of w");
+    let (sealed, leak) = v_reseals_to_m(&mut lp, g, w);
+    assert!(!leak, "M reads R's write through V's fresh encryption");
+    assert!(!sealed, "V seals w it opened only under e_R, not established");
+    for pk in lp.packages(A2).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
+        let _ = lp.deliver(V, &pk);
+    }
+    assert!(lp.peers[V].engine.epochs(&g).unwrap().read.is_established(&e_r));
+    lp.peers[V].restart(11).unwrap();
+    let (sealed, leak) = v_reseals_to_m(&mut lp, g, w);
+    assert!(sealed && !leak, "V seals w once it opened it under e_R, established: sealed {sealed}");
+}
+
+// spec/crypto.md §5 (Passing on: the wrap gates the header): V opened R's write only under e_R,
+// not established at V. A blob of it carrying no part (a header-only blob, a lasting header)
+// is wrapped under no epoch of V's choosing either, so M opens not even its header.
+#[test]
+fn header_only_wrap_withheld_spec_crypto_5() {
+    let (mut lp, g, w_commits, _, w, entry) = shape(false);
+    send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
+    lp.deliver_sealed(V, &entry).unwrap();
+    let body = lp.peers[V].engine.body(&w).unwrap().unwrap();
+    let copy = lp.peers[V].engine.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(4)).unwrap().unwrap();
+    assert!(!m_opens(&mut lp, g, w, &copy, &[]), "M opens a blob of w V wrapped as carrying no part");
+    for pk in lp.packages(A2).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
+        let _ = lp.deliver(V, &pk);
+    }
+    assert!(lp.peers[V].engine.wrap_secret(&g, Some((&w, &[]))).unwrap().is_some(), "V wraps w's header once e_R is established");
+}
+
+// spec/crypto.md §5 (Passing on): R's write w2, stamped past V's drift window, opened by V from
+// R's entry under e_R (not established at V) waits pending; V restarts before it applies. Its
+// openings were written with the pending copy, so once it applies V still seals it under no
+// epoch of its own choosing.
+#[test]
+fn openings_of_a_pending_write_survive_a_restart_spec_crypto_5() {
+    let (mut lp, g, w_commits, e_r, w, _) = shape(false);
+    send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
+    lp.peers[R].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
+    let w2 = put(&mut lp, R, g, "w2");
+    let entry = lp.sealed(R, &[w2]).unwrap();
+    lp.deliver_sealed(V, &entry).unwrap();
+    assert!(lp.peers[V].engine.core.ix.pending.contains_key(&w2), "w2 waits for V's clock");
+    lp.peers[V].restart(13).unwrap();
+    lp.peers[V].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
+    lp.peers[V].tick().unwrap();
+    assert!(reads(&mut lp, V, g, "w2"), "w2 applies at V");
+    assert!(!lp.peers[V].engine.epochs(&g).unwrap().read.is_established(&e_r));
+    let pks = lp.sealed(V, &[w2]).unwrap();
+    assert!(!pks.iter().any(|p| p.id == w2), "V seals w2 it opened only under e_R");
+    lp.deliver_sealed(M, &pks).unwrap();
+    assert!(!reads(&mut lp, M, g, "w2"), "M reads R's write through V's fresh encryption");
+}

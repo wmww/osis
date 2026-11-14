@@ -636,7 +636,7 @@ fn carried_passes_on(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
         matches!(m.hold.get(ai), Some(crate::engine::Hold::Body { .. } | crate::engine::Hold::Leftover { .. })).then_some((*c, ai))
     }).collect();
     for (c, ai) in held {
-        if !crate::labeling::opened::passes_on(tx, &c, ai, tid)? {
+        if !crate::labeling::opened::passes_on(tx, &c, ai, tid, ak.as_str())? {
             return Ok(false);
         }
     }
