@@ -2,7 +2,10 @@
 //! writes, grants of read and sync, removals, rotations, restarts and faults over a few nodes;
 //! at quiet every reader reads alike and as the reference, a single engine handed every commit
 //! directly (sync's property is perfect delivery; the engine's own read rules are held-model's
-//! and the order harness's), and no needed body is deleted everywhere.
+//! and the order harness's), every other node reads nothing it may not (a node never granted
+//! read, a node keeping the thing unread: no value; a removed reader: no value written by a
+//! writer that held its removal, spec/requirements.md Permissions), and no needed body is deleted
+//! everywhere. "Needed" and "may not" come from the history played, never from a node under test.
 //!
 //! A history's writes are `Step`s (`New`, `Write`, `Grant`, `Remove`, `Rotate`) played through
 //! the product's engine flows at one node, which sync then carries. Each commit a step writes is
@@ -63,6 +66,13 @@ pub struct Made {
     pub handed: Vec<Package>,
     handed_ids: BTreeSet<CommitId>,
     written: u64,
+    /// (thing, node) pairs whose node's account was ever granted read or write.
+    ever_read: BTreeSet<(usize, usize)>,
+    /// The commits each removal (thing, node) wrote, until a grant to that node again.
+    removals: BTreeMap<(usize, usize), Vec<CommitId>>,
+    /// Values a removed reader may never read, with their thing: written by a writer holding the
+    /// removal and not counting that node a reader. A grant to the node again clears it.
+    pub hidden: BTreeMap<String, (usize, BTreeSet<usize>)>,
     /// Hand commits to the reference (`World::differential`); off, a step only writes.
     pub harvest: bool,
 }
@@ -134,6 +144,10 @@ pub fn step(w: &mut World, s: &Step) -> String {
             }) {
                 Ok(c) => {
                     w.history.values.extend(c.map(|c| (v.clone(), c)));
+                    let hidden = hidden_from(w, i, *k, &t);
+                    if !hidden.is_empty() {
+                        w.history.hidden.insert(v.clone(), (*k, hidden));
+                    }
                     Ok(v)
                 }
                 Err(e) => Err(e.to_string()),
@@ -142,11 +156,32 @@ pub fn step(w: &mut World, s: &Step) -> String {
         Step::Grant(_, k, j, g) => {
             let (Some(t), Some(holder)) = (thing(w, k), account(w, j)) else { return "skipped: no such thing or holder".into() };
             let edge = Edge { role: g.role(), until: None, invite: None, tied: None };
-            w.write(i, |e| e.grant(&t, &holder, &edge)).map(|_| String::new()).map_err(|e| e.to_string())
+            let r = w.write(i, |e| e.grant(&t, &holder, &edge)).map(|_| String::new()).map_err(|e| e.to_string());
+            if r.is_ok() {
+                let h = &mut w.history;
+                if *g >= Gives::Reads {
+                    h.ever_read.insert((*k, *j));
+                }
+                // granted again: what it is shown from now on is the reference's to say
+                h.removals.remove(&(*k, *j));
+                h.hidden.retain(|_, (thing, nodes)| {
+                    if thing == k {
+                        nodes.remove(j);
+                    }
+                    !nodes.is_empty()
+                });
+            }
+            r
         }
         Step::Remove(_, k, j) => {
             let (Some(t), Some(holder)) = (thing(w, k), account(w, j)) else { return "skipped: no such thing or holder".into() };
-            w.write(i, |e| e.demote(&t, &Demotion { holder, new: None, retain: None })).map(|_| String::new()).map_err(|e| e.to_string())
+            let before: BTreeSet<CommitId> = w.engine(i).commit_ids().into_iter().collect();
+            let r = w.write(i, |e| e.demote(&t, &Demotion { holder, new: None, retain: None })).map(|_| String::new()).map_err(|e| e.to_string());
+            if r.is_ok() && w.online(i) {
+                let made: Vec<CommitId> = w.engine(i).commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
+                w.history.removals.entry((*k, *j)).or_default().extend(made);
+            }
+            r
         }
         Step::Rotate(_, k) => {
             let Some(t) = thing(w, k) else { return "skipped: no such thing".into() };
@@ -163,6 +198,22 @@ pub fn step(w: &mut World, s: &Step) -> String {
     }
 }
 
+/// The nodes a value node `i` writes on thing `k` now is hidden from: each removed from `k`
+/// (not granted again since) whose removal `i` holds and whose account `i` does not count a reader.
+fn hidden_from(w: &mut World, i: usize, k: usize, t: &Tid) -> BTreeSet<usize> {
+    let removed: Vec<(usize, Vec<CommitId>)> = w.history.removals.iter().filter(|((x, _), _)| *x == k).map(|((_, j), c)| (*j, c.clone())).collect();
+    let roster = w.engine(i).roster(t);
+    let mut out = BTreeSet::new();
+    for (j, commits) in removed {
+        let reads = w.node(j).account.and_then(|a| roster.get(&a)).is_some_and(|e| e.role >= Role::Read);
+        let knows = commits.iter().any(|c| w.engine(i).commit_bytes(c).ok().flatten().is_some());
+        if knows && !reads {
+            out.insert(j);
+        }
+    }
+    out
+}
+
 /// What a node reads of a thing: the history's value and the roster's roles.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reads {
@@ -177,7 +228,7 @@ pub fn reads(e: &mut Engine, t: &Tid) -> Reads {
 }
 
 /// A world of `n` nodes, each with an account of its own, each account known to every node,
-/// quiet, handing its commits to the reference from now on. Fresh per seed (drawn IDs, keys and
+/// each node discovered by every other, quiet, handing its commits to the reference from now on. Fresh per seed (drawn IDs, keys and
 /// tie-breaks), never a fixture copy.
 pub fn world(seed: u64, n: usize) -> World {
     let mut w = World::new(seed);
@@ -185,29 +236,55 @@ pub fn world(seed: u64, n: usize) -> World {
         w.add_node();
     }
     introduce(&mut w);
+    // every node is on LAN segment 0: each finds every other as LAN discovery hands them up
+    for i in 0..n {
+        for j in (0..n).filter(|j| *j != i) {
+            w.discover(i, j);
+        }
+    }
     w.run();
     w.history.harvest = true;
     w
 }
 
-/// Every node learns every other node's account: each one's commits handed to every other's
-/// engine directly. A stand-in for the contact exchange (a link redeemed through the inbox),
-/// made before any history so no content travels this way.
+/// Every node learns every other node's account: `hand_all` before any history, so no content
+/// travels this way. A stand-in for the contact exchange: remove it once the inbox's link flow is
+/// wired (a link redeemed through the inbox), and introduce accounts that way.
 pub fn introduce(w: &mut World) {
-    let n = w.len();
-    let mut all: Vec<Vec<Package>> = Vec::new();
-    for i in 0..n {
-        let e = w.engine(i);
-        let pks = e.commit_ids().iter().filter_map(|id| e.package(id).ok().flatten()).collect();
-        all.push(pks);
+    assert!(w.history.things.is_empty(), "introduce hands no content: before any history only");
+    hand_all(w);
+}
+
+/// Delivery without sync, by hand: every commit node `from` holds that node `to` lacks is
+/// handed to `to`'s engine directly, as plaintext (an engine judges what it is handed; it is sync
+/// that keeps content from those that may not read it). Whether anything new applied.
+pub fn hand(w: &mut World, from: usize, to: usize) -> bool {
+    if from == to || !w.online(from) || !w.online(to) {
+        return false;
     }
-    for (i, pks) in all.iter().enumerate() {
-        for j in (0..n).filter(|j| *j != i) {
-            w.write(j, |e| {
-                for pk in pks {
-                    let _ = e.ingest_with_lists(&pk.bytes, pk.blobs.clone(), None, &pk.lists);
-                }
-            });
+    let held: BTreeSet<CommitId> = w.engine(to).commit_ids().into_iter().collect();
+    let e = w.engine(from);
+    let new: Vec<Package> = e.commit_ids().iter().filter(|id| !held.contains(id)).filter_map(|id| e.package(id).ok().flatten()).collect();
+    if new.is_empty() {
+        return false;
+    }
+    w.write(to, |e| new.iter().filter(|pk| matches!(e.ingest_with_lists(&pk.bytes, pk.blobs.clone(), None, &pk.lists), Ok(x) if !matches!(x, Ingested::Duplicate(_)))).count() > 0)
+}
+
+/// `hand` between every pair of online nodes until nothing new applies: perfect delivery to
+/// every node, readers or not (`check_readers` holds of it; `check_others` is sync's alone).
+/// `introduce` and tests of the oracle only.
+pub fn hand_all(w: &mut World) {
+    let n = w.len();
+    for _ in 0..=n {
+        let mut moved = false;
+        for from in 0..n {
+            for to in 0..n {
+                moved |= hand(w, from, to);
+            }
+        }
+        if !moved {
+            break;
         }
     }
 }
@@ -249,23 +326,57 @@ pub fn reads_as(w: &mut World, r: &mut Peer, k: usize, i: usize) {
     assert_eq!(got, want, "node {i} reads thing {k} unlike the reference");
 }
 
-/// The checks at quiet: for each thing, every node that reads it per the reference reads as the
-/// reference (each must be on), and the commit of the value the reference reads is held by some
-/// node.
+/// The checks at quiet (`check_readers`, `check_others`).
 pub fn check(w: &mut World) {
     let mut r = reference(w);
+    reader_clauses(w, &mut r);
+    other_clauses(w, &mut r);
+}
+
+/// `check`'s reader clauses: every node that reads a thing per the reference reads as the
+/// reference (each must be on), and the commit of the value the reference reads is held by some
+/// node.
+pub fn check_readers(w: &mut World) {
+    let mut r = reference(w);
+    reader_clauses(w, &mut r);
+}
+
+fn reader_clauses(w: &mut World, r: &mut Peer) {
     let things = w.history.things.clone();
     for (k, (t, _)) in things.iter().enumerate() {
         let want = reads(&mut r.engine, t);
         for i in readers(w, k, &want) {
             assert!(w.online(i), "node {i}, a reader of thing {k}, is off at the check");
-            reads_as(w, &mut r, k, i);
+            assert_eq!(reads(w.engine(i), t), want, "node {i} reads thing {k} unlike the reference");
         }
         if let Some(Value::Str(v)) = &want.value
             && let Some(c) = w.history.values.get(v).copied()
         {
             let held = (0..w.len()).any(|i| w.engine(i).commit_bytes(&c).ok().flatten().is_some());
             assert!(held, "thing {k}: the body of its value {v} (commit {c:?}) is deleted everywhere");
+        }
+    }
+}
+
+/// `check`'s other clauses: every online node that does not read a thing per the reference reads
+/// no value of it if its account was never granted read, and no value hidden from it
+/// (`Made::hidden`).
+fn other_clauses(w: &mut World, r: &mut Peer) {
+    let things = w.history.things.clone();
+    for (k, (t, _)) in things.iter().enumerate() {
+        let want = reads(&mut r.engine, t);
+        let readers = readers(w, k, &want);
+        let others: Vec<usize> = (0..w.len()).filter(|i| !readers.contains(i) && w.online(*i)).collect();
+        for i in others {
+            let value = reads(w.engine(i), t).value;
+            if !w.history.ever_read.contains(&(k, i)) {
+                assert_eq!(value, None, "node {i}, never granted read on thing {k}, reads it");
+            }
+            if let Some(Value::Str(v)) = &value
+                && w.history.hidden.get(v).is_some_and(|(x, nodes)| *x == k && nodes.contains(&i))
+            {
+                panic!("node {i}, removed from thing {k}, reads {v}, written by a writer that held its removal");
+            }
         }
     }
 }

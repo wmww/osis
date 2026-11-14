@@ -135,7 +135,9 @@ impl Seen {
 
 /// The network's content-blind faults, per send of bytes, each in thousandths: the send is lost
 /// and its connection resets (`drop`: an ordered stream never delivers past a hole, so both ends
-/// are told it closed); delivered twice in a row (`dup`); or held back 1..=`delay_ms` ms
+/// are told it closed); it arrives, then its connection resets (`dup`: its sender cannot tell it
+/// arrived and sends it again on a later connection, the one way a message repeats over an
+/// ordered stream, which never repeats within itself); or it is held back 1..=`delay_ms` ms
 /// (`delay`), later bytes on its connection queued behind it, so delay reorders across
 /// connections, never within one. Drawn from the world's seed in send order; all zero, nothing
 /// is drawn.
@@ -217,7 +219,7 @@ pub struct Net {
     /// Every dial that came up: (dialer, target node).
     pub ups: Vec<(usize, usize)>,
     pub loss: Loss,
-    /// What the faults did so far: (lost, repeated, held back).
+    /// What the faults did so far: (lost, arrived then reset, held back).
     pub faulted: (u64, u64, u64),
     rng_seed: u64,
     ephemerals: u64,
@@ -335,7 +337,7 @@ impl Net {
         } else if r < drop + dup {
             self.faulted.1 += 1;
             self.push(to, tc, bytes(), 0);
-            self.push(to, tc, bytes(), 0);
+            self.reset(from, conn);
         } else if r < drop + dup + delay && l.delay_ms > 0 {
             self.faulted.2 += 1;
             let d = 1 + self.draw() * l.delay_ms / 1000;
@@ -581,9 +583,15 @@ impl World {
         if self.trace {
             self.seen.push(seen.clone());
         }
-        if let (Some(l), Input::Bytes { conn, bytes }) = (self.liars.get_mut(&i), &input) {
-            let nodes = &self.nodes;
-            l.heard(*conn, bytes, &|s, b| nodes.iter().any(|n| n.node.store().entry(s, b).ok().flatten().is_some_and(|e| e.role)));
+        if let Some(l) = self.liars.get_mut(&i) {
+            match &input {
+                Input::Bytes { conn, bytes } => {
+                    let nodes = &self.nodes;
+                    l.heard(*conn, bytes, &|s, b| nodes.iter().any(|n| n.node.store().entry(s, b).ok().flatten().is_some_and(|e| e.role)));
+                }
+                Input::Closed { conn } | Input::Down { conn } => l.closed(*conn),
+                _ => {}
+            }
         }
         let n = self.nodes.get_mut(i).expect("no such node");
         let mut out = n.node.handle(input);

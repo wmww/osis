@@ -4,7 +4,7 @@
 //! seeds (default: 100 at small size, 1,000 under `OSIS_FULL=1`); a failure prints the history
 //! as a script, `OSIS_SYNC_SHRINK=1` shrinks it.
 
-use crate::harness::history::{check, history, world};
+use crate::harness::history::{Gives, check, check_readers, hand, hand_all, history, world};
 use crate::harness::{Step, World, play, shrinking};
 use osis_base::testenv::{Seeds, large};
 
@@ -74,7 +74,7 @@ fn a_history_replays_from_its_seed() {
 // messages, device faults and clock skew, healed and run to quiet: every reader reads as the
 // reference, no needed body is deleted everywhere.
 #[test]
-#[ignore = "wiring: the driver dials no candidate, and the engine facade's sync_set, deliveries, open_entry and seal_body answer NotBuilt, so no grant or entry reaches another node"]
+#[ignore = "wiring: the engine facade's sync_set, deliveries, open_entry and seal_body answer NotBuilt, so no grant or entry reaches another node"]
 fn histories_converge() {
     let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", large(0..1000));
     seeds.run("histories_converge", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |s| converges(s, NODES, STEPS, true));
@@ -83,8 +83,94 @@ fn histories_converge() {
 // spec: none (property: as `histories_converge`, no faults): the same histories on a clean
 // network, so a failure there is sync's rules, not its recovery.
 #[test]
-#[ignore = "wiring: the driver dials no candidate, and the engine facade's sync_set, deliveries, open_entry and seal_body answer NotBuilt, so no grant or entry reaches another node"]
+#[ignore = "wiring: the engine facade's sync_set, deliveries, open_entry and seal_body answer NotBuilt, so no grant or entry reaches another node"]
 fn clean_histories_converge() {
     let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", large(0..1000));
     seeds.run("clean_histories_converge", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |s| converges(s, NODES, STEPS, false));
+}
+
+/// Plays `steps`, after each handing every node's commits to every other (`hand_all`): perfect
+/// delivery without sync, so the oracle is checked on its own.
+fn handed(seed: u64, n: usize, steps: &[Step]) -> World {
+    let mut w = world(seed, n);
+    w.cap = 200_000;
+    for s in steps {
+        crate::harness::step(&mut w, s);
+        hand_all(&mut w);
+    }
+    w
+}
+
+/// The panic message of `f`, which must panic.
+fn caught(f: impl FnOnce()) -> String {
+    let e = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).expect_err("the oracle catches it");
+    e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default()
+}
+
+// spec: none (test harness): the reader clauses pass what is right. Generated histories over
+// three nodes (removals, grants of sync, rotations, writes by nodes that may not, faults)
+// delivered to every node by hand pass them, so a reader clause failing with sync wired is
+// sync's. (Delivery by hand hands non-readers plaintext too: the other clauses are checked by
+// `the_oracle_catches_planted_faults`.)
+#[test]
+fn handed_histories_pass_the_reader_clauses() {
+    for seed in 0..3 {
+        let mut w = handed(seed, NODES, &history(seed, NODES, 30, seed % 2 == 1));
+        assert!(!w.history.things.is_empty());
+        check_readers(&mut w);
+    }
+}
+
+// spec: none (test harness): the whole oracle passes delivery that keeps content from those that
+// may not read it, and catches each planted fault: a write never delivered to a reader; a later
+// write delivered to a removed reader; a write delivered to a node keeping the thing unread; the
+// body of the value read deleted everywhere.
+#[test]
+fn the_oracle_catches_planted_faults() {
+    use Step::*;
+    // node 1 reads until it is removed; node 2 keeps the thing unread (delivery shows it nothing)
+    let to1 = |w: &mut World, steps: &[Step]| {
+        for s in steps {
+            crate::harness::step(w, s);
+            hand(w, 0, 1);
+        }
+    };
+    let mut pre = world(0, NODES);
+    pre.cap = 200_000;
+    to1(&mut pre, &[New(0), Grant(0, 0, 1, Gives::Reads), Grant(0, 0, 2, Gives::Syncs), Write(0, 0)]);
+    let mut base = pre.copy();
+    to1(&mut base, &[Remove(0, 0, 1)]);
+    let mut w = base.copy();
+    let _ = play(&mut w, &[Write(0, 0)], String::new());
+    check(&mut w);
+    assert!(!w.history.hidden.is_empty(), "the write after the removal is hidden from node 1");
+    // a write never delivered to reader 1 (before its removal)
+    let mut w = pre.copy();
+    let _ = play(&mut w, &[Write(0, 0)], String::new());
+    assert!(caught(|| check(&mut w)).contains("node 1 reads thing 0 unlike the reference"));
+    // the later write delivered to removed reader 1
+    let mut w = base.copy();
+    to1(&mut w, &[Write(0, 0)]);
+    assert!(caught(|| check(&mut w)).contains("node 1, removed from thing 0, reads"));
+    // a write delivered to node 2, which keeps the thing unread
+    let mut w = base.copy();
+    hand(&mut w, 0, 2);
+    assert!(caught(|| check(&mut w)).contains("node 2, never granted read on thing 0, reads it"));
+    // the value's body gone everywhere (its commit unknown to every node)
+    let mut w = base;
+    let last = w.history.values.keys().max_by_key(|v| v[1..].parse::<u64>().unwrap_or(0)).cloned().expect("a value");
+    w.history.values.insert(last, osis_base::CommitId([0xee; 32]));
+    assert!(caught(|| check(&mut w)).contains("is deleted everywhere"));
+}
+
+// spec: none (test harness): a differential world's nodes find each other as LAN discovery hands
+// them up, and each pair connects (the driver dials discovered candidates).
+#[test]
+fn a_world_connects_every_pair() {
+    let w = world(0, NODES);
+    for a in 0..NODES {
+        for b in (a + 1)..NODES {
+            assert!(w.net.ups.iter().any(|u| *u == (a, b) || *u == (b, a)), "{a} and {b} connected: {:?}", w.net.ups);
+        }
+    }
 }

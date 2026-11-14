@@ -177,7 +177,8 @@ impl Liar {
         res
     }
 
-    fn closed(&mut self, c: ConnId) {
+    /// The connection `c` closed: what the lie kept of it goes.
+    pub fn closed(&mut self, c: ConnId) {
         self.conns.remove(&c);
         self.owed.remove(&c);
         self.told.retain(|(x, _)| *x != c);

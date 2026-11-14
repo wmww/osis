@@ -1,5 +1,5 @@
 //! The harness's faults (notes/sync-test-harness.md, The seam): content-blind network faults
-//! (lost, repeated, held-back sends), clock skew per node, device faults with restart in place,
+//! (lost, arrived-then-reset, held-back sends), clock skew per node, device faults with restart in place,
 //! hostile peers as lies over an honest node's frames, all replayable from the seed and the
 //! script. What a fault does to sync is the simulations' (sims) and the differential's
 //! (convergence); these check the faults themselves on what runs today: connections, Hello,
@@ -64,10 +64,25 @@ fn held_back_sends_keep_each_connection_in_order() {
         assert_eq!(closed(&w.seen, n), closed(&clean, n), "node {n} closes as on a clean network: {:?}", w.seen);
     }
     for n in [0, 1] {
-        let got: usize = bytes_to(&w.seen, n).iter().map(|x| x.1).sum();
-        let want: usize = bytes_to(&clean, n).iter().map(|x| x.1).sum();
-        assert_eq!(got, want, "node {n} received what a clean network carries");
+        assert_eq!(bytes_to(&w.seen, n), bytes_to(&clean, n), "node {n} received what a clean network carries, in its order");
     }
+}
+
+// spec: none (test harness): sends held back at random still arrive in the order sent on their
+// connection (each waits behind the one before it).
+#[test]
+fn held_back_sends_never_reorder_within_a_connection() {
+    let mut w = bare_pair();
+    dial(&mut w);
+    w.flush();
+    w.trace = true;
+    w.net.loss = Loss { delay: 500, delay_ms: 5_000, ..Loss::NONE };
+    let sends: Vec<Out> = (1..=40).map(|n| Out::Send(ConnId(1), vec![0xff; n])).collect();
+    w.apply_as(0, sends);
+    w.run();
+    assert!(w.net.faulted.2 > 0, "sends were held back");
+    let got: Vec<usize> = bytes_to(&w.seen, 1).iter().map(|x| x.1).filter(|n| *n <= 40).collect();
+    assert_eq!(got, (1..=40).collect::<Vec<_>>());
 }
 
 // spec: none (test harness): a lost send resets its connection (an ordered stream never delivers
@@ -84,17 +99,23 @@ fn a_lost_send_resets_its_connection() {
     assert!(bytes_to(&w.seen, 0).is_empty() && bytes_to(&w.seen, 1).is_empty(), "no byte arrives");
 }
 
-// spec: none (test harness): a repeated send arrives twice in a row on its connection.
+// spec: none (test harness): a repeated send arrives, then its connection resets (both ends
+// told), so its sender sends it again only on a later connection: nothing arrives twice on one
+// connection.
 #[test]
-fn a_repeated_send_arrives_twice() {
+fn a_repeated_send_arrives_then_its_connection_resets() {
     let mut w = bare_pair();
     w.trace = true;
     w.net.loss = Loss { dup: 1000, ..Loss::NONE };
     dial(&mut w);
-    w.flush();
-    let got = bytes_to(&w.seen, 1);
-    assert!(got.len() >= 2 && got[0] == got[1], "the dialer's Hello twice: {got:?}");
+    w.run();
     assert!(w.net.faulted.1 >= 1);
+    let got = bytes_to(&w.seen, 1);
+    assert_eq!(got.len(), 1, "the dialer's Hello arrives once: {got:?}");
+    assert!(closed(&w.seen, 0) && closed(&w.seen, 1), "both ends told: {:?}", w.seen);
+    let at = |n: usize| w.seen.iter().position(|s| matches!(s, Seen::Closed { node, .. } if *node == n));
+    let bytes_at = w.seen.iter().position(|s| matches!(s, Seen::Bytes { node: 1, .. }));
+    assert!(bytes_at < at(1), "it arrives before the close: {:?}", w.seen);
 }
 
 // spec: none (test harness): faults are drawn from the world's seed in send order: one seed and
