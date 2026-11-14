@@ -441,7 +441,7 @@ fn real_node(seed: u64, key: [u8; 32]) -> osis_sync::Node {
     let clock: Arc<dyn osis_base::Clock> = Arc::new(osis_base::SystemClock);
     let store = osis_sync::Store::open(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), Box::new(SeededRng::from_u64(seed ^ 1))).unwrap();
     let mut engine = osis_engine::Engine::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), store.cipher(), osis_engine::Config::default(), clock, Box::new(SeededRng::from_u64(seed))).unwrap();
-    engine.create_account(&[]).unwrap();
+    engine.create_account().unwrap();
     let cfg = osis_sync::SyncConfig { key: Some(osis_sync::NodeKey(key)), ..osis_sync::SyncConfig::default() };
     osis_sync::Node::open(engine, store, cfg, Box::new(SeededRng::from_u64(seed ^ 2))).unwrap()
 }
