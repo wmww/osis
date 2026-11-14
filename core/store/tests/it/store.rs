@@ -898,12 +898,18 @@ fn a_memo_over_the_store_moves_with_the_rows_it_read() {
     t.put_local(b"r/a", b"4", Shred::No).unwrap();
     assert_eq!(ask(&mut t, 0), b"4".to_vec());
     drop(t);
+    assert_eq!(memo.held(&0), None, "aborted, before another transaction");
     let mut t = s.transaction(&mut rng).unwrap();
     assert_eq!((ask(&mut t, 0), ask(&mut t, 2)), (b"1".to_vec(), b"v".to_vec()));
     assert_eq!(runs(), 3, "a write, and the abort of it and of a table row");
     t.remove_local(b"r/a", Shred::No).unwrap();
     assert_eq!((ask(&mut t, 0), ask(&mut t, 1)), (Vec::new(), Vec::new()));
+    let tb = t.table(&t1, &a, 0).unwrap().unwrap();
+    let rows: Memo<(), Vec<u8>> = Memo::new("test table rows");
+    let got = Memo::get_in(&mut (&rows, &mut t), |c| c.0, &(), |(_, t)| t.table_get(tb, b"k").map(Option::unwrap_or_default)).unwrap();
+    assert_eq!(got, b"v".to_vec());
     t.drop_table(&t1, &a, 0).unwrap();
+    assert_eq!(rows.held(&()), None, "a table dropped, read by its handle");
     assert_eq!(ask(&mut t, 2), Vec::new());
     assert_eq!(runs(), 3, "a removal, a table dropped");
     t.commit().unwrap();
