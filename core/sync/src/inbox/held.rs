@@ -30,7 +30,7 @@ use osis_base::memo::{Effects, Feed, Stamped, StampedSet};
 use osis_base::{BlobId, CommitId, SyncId, WallMs};
 use osis_engine::Engine;
 use osis_engine::labeling::Certs;
-use osis_engine::sync::{InboxOpened, Opened, PartSet, Promote, Taken};
+use osis_engine::sync::{InboxOpened, Opened, PartSet, Promote, SealedSet, Taken};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -274,11 +274,29 @@ fn within_bound(expires: Option<WallMs>, now: WallMs) -> bool {
     expires.is_some_and(|t| t.0 <= now.0.saturating_add(INBOX_LIFETIME_MS + 2 * MAX_DRIFT_MS))
 }
 
-/// spec/sync-inbox.md §4 Promotion (one stamped copy per delta): a deposit holding parts `mine`
-/// of a commit S must hold parts `need` of adds a delta when some part of `need` it holds is in
-/// none of the parts `stamped` (the other entries of S holding that commit stamped).
-pub fn adds_delta(need: &PartSet, mine: &PartSet, stamped: &[PartSet]) -> bool {
-    mine.iter().any(|p| need.contains(p) && !stamped.iter().any(|x| x.contains(p)))
+/// A blob of a commit as this node judges it for promotion: the parts it opened and checked, and
+/// its other sections by their bytes (`BlobOf::parts`, `BlobOf::sealed`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Judged {
+    pub parts: PartSet,
+    pub sealed: SealedSet,
+}
+
+/// spec/sync-inbox.md §4 Promotion: whether a deposit `mine` of a commit S must hold parts `need`
+/// of adds to the entries of S holding that commit stamped (`stamped`):
+/// - by a delta: a part of `need` it holds is in none of them (one stamped copy per delta);
+/// - by its bytes alone: some section it did not open or check is byte-identical to none in any
+///   one stamped entry, so it is no duplicate or strict subset of one as this node judges it
+///   (spec/sync-compaction.md §1 Duplicates), while no stamped entry adds only bytes (each of
+///   its `need` parts held by another stamped entry): one bytes-only promotion per commit while
+///   one stands.
+pub fn adds_delta(need: &PartSet, mine: &Judged, stamped: &[Judged]) -> bool {
+    if mine.parts.iter().any(|p| need.contains(p) && !stamped.iter().any(|x| x.parts.contains(p))) {
+        return true;
+    }
+    let covered = |x: &Judged| mine.sealed.is_subset(&x.sealed);
+    let bytes_only = |(i, x): (usize, &Judged)| x.parts.iter().filter(|p| need.contains(p)).all(|p| stamped.iter().enumerate().any(|(j, y)| j != i && y.parts.contains(p)));
+    !mine.sealed.is_empty() && !stamped.iter().any(covered) && !stamped.iter().enumerate().any(bytes_only)
 }
 
 /// What one held entry is judged on (spec/sync-inbox.md §2 Taking, Stamping in place, §4).
@@ -387,13 +405,14 @@ fn judge(engine: &mut Engine, store: &Store, inboxes: &StampedSet<SyncId>, stamp
             let p = engine.promotable(s, &c)?;
             let adds = matches!(p, Promote::Yes { .. }) && {
                 let need = engine.sync_bodies(&c)?.get(s).map(|m| m.parts.clone()).unwrap_or_default();
-                let mine = engine.blob_parts(b)?.unwrap_or_default();
+                let judged = |o: Arc<osis_engine::sync::BlobOf>| Judged { parts: o.parts.clone(), sealed: o.sealed.clone() };
+                let mine = engine.blob_of(b)?.map(judged).unwrap_or_default();
                 let mut others = Vec::new();
                 for x in engine.commit_blobs(&c)?.iter().filter(|x| *x != b) {
                     if store.entry(s, x)?.is_some_and(|e| !e.deposited)
-                        && let Some(held) = engine.blob_parts(x)?
+                        && let Some(held) = engine.blob_of(x)?
                     {
-                        others.push(held);
+                        others.push(judged(held));
                     }
                 }
                 adds_delta(&need, &mine, &others)

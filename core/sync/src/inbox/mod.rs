@@ -37,7 +37,7 @@ mod serve;
 mod stranded;
 
 pub use deliveries::Sent;
-pub use held::{Act, Facts, act_of, adds_delta, goes_last, to_clear};
+pub use held::{Act, Facts, Judged, act_of, adds_delta, goes_last, to_clear};
 pub use offers::{BACKOFF_MAX_MS, BACKOFF_MIN_MS, Offers, Target, backoff_ms};
 pub use osis_engine::sync::Signers;
 pub use register::{Plan, Progress, plan};

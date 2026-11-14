@@ -14,7 +14,7 @@ use osis_label::{ClaimSet, Class, Parent, Prefix, Step, StepId, StepKeys};
 use osis_proto::{Code, Msg, OfferItem, SharedItem};
 use osis_store::{MemoryBackend, MemoryRoot};
 use osis_sync::Result;
-use osis_sync::inbox::{Act, Facts, Net, Offers, Plan, Progress, Target, act_of, adds_delta, goes_last, plan, to_clear};
+use osis_sync::inbox::{Act, Facts, Net, Offers, Plan, Progress, Judged, Target, act_of, adds_delta, goes_last, plan, to_clear};
 use osis_sync::opens::{Member, Moved};
 use osis_sync::session::RequestId;
 use osis_sync::store::Source;
@@ -364,17 +364,61 @@ fn writer_promotes_promotable_deposit_spec_sync_inbox_4() {
     assert_eq!(act_of(&deposit_facts(None, true), now), Act::Offer, "an own deposit is offered");
 }
 
+/// A blob as a promoter judges it: the parts it opened and checked, its other sections by
+/// their bytes (one byte each, as a digest).
+fn opened(parts: &[usize], sealed: &[u8]) -> Judged {
+    Judged { parts: parts.iter().copied().collect(), sealed: sealed.iter().map(|b| [*b; 32]).collect() }
+}
+
+// spec/sync-inbox.md §4 (by its bytes alone): a writer that cannot open B's section holds a
+// stamped forgery of the commit (its checked part 0, junk where B's section goes); the genuine
+// deposit holds the same checked part and B's section by bytes it does not hold stamped, so it is
+// no duplicate and is promoted beside the forgery; one byte-identical to a stamped entry's is not.
+#[test]
+fn genuine_deposit_promoted_beside_stamped_forgery_spec_sync_inbox_4() {
+    let need: BTreeSet<usize> = [0, 1].into();
+    let forgery = opened(&[0], &[9]);
+    assert!(adds_delta(&need, &opened(&[0], &[1]), std::slice::from_ref(&forgery)), "the genuine deposit");
+    assert!(!adds_delta(&need, &opened(&[0], &[9]), std::slice::from_ref(&forgery)), "byte-identical to the stamped one");
+    assert!(!adds_delta(&need, &opened(&[0], &[]), std::slice::from_ref(&forgery)), "nothing unopened: a copy of part 0");
+}
+
+// spec/sync-hostile.md §2 (promotes one more deposit of the commit by its bytes alone): a forger depositing N variants of a commit
+// (each with other junk) gets at most one promoted beside the stamped entries while one stands;
+// the rest stay deposits. A writer that opens B judges the genuine deposit by its part 1, which
+// no stamped variant holds, and promotes it: the slot starves it only until such a writer acts.
+#[test]
+fn forger_variants_hold_one_slot_until_an_opener_promotes_spec_sync_hostile_2() {
+    let need: BTreeSet<usize> = [0, 1].into();
+    // as a writer that cannot open B judges them: the forgery stamped first, one variant
+    // promoted, every later one (the genuine deposit too) waits
+    let mut stamped = vec![opened(&[0], &[100])];
+    let mut promoted = 0;
+    for v in 101..=110u8 {
+        if adds_delta(&need, &opened(&[0], &[v]), &stamped) {
+            stamped.push(opened(&[0], &[v]));
+            promoted += 1;
+        }
+    }
+    assert_eq!(promoted, 1, "one bytes-only promotion while it stands");
+    assert!(!adds_delta(&need, &opened(&[0], &[1]), &stamped), "the genuine deposit waits");
+    // a writer of S that opens B: the forged sections do not open under B's secrets (junk), the
+    // genuine one opens and checks
+    let at_opener = [opened(&[0], &[100]), opened(&[0], &[101])];
+    assert!(adds_delta(&need, &opened(&[0, 1], &[]), &at_opener), "the genuine deposit adds part 1");
+}
+
 // spec/sync-inbox.md §4 (promotion): one stamped copy per delta, however many encryptions are
 // deposited: a deposit adds a delta only by a part S must hold that no stamped entry of the
 // commit holds.
 #[test]
 fn one_stamped_copy_per_delta_spec_sync_inbox_4() {
     let need: BTreeSet<usize> = [0, 1].into();
-    let stamped = [BTreeSet::from([0])];
-    assert!(!adds_delta(&need, &[0].into(), &stamped), "a second copy of part 0");
-    assert!(!adds_delta(&need, &[0, 2].into(), &stamped), "part 2 is no part S must hold");
-    assert!(adds_delta(&need, &[0, 1].into(), &stamped), "part 1 not held stamped");
-    assert!(adds_delta(&need, &[0].into(), &[]), "the first copy");
+    let stamped = [opened(&[0], &[])];
+    assert!(!adds_delta(&need, &opened(&[0], &[]), &stamped), "a second copy of part 0");
+    assert!(!adds_delta(&need, &opened(&[0, 2], &[]), &stamped), "part 2 is no part S must hold");
+    assert!(adds_delta(&need, &opened(&[0, 1], &[]), &stamped), "part 1 not held stamped");
+    assert!(adds_delta(&need, &opened(&[0], &[]), &[]), "the first copy");
     let f = deposit_facts(Some((Promote::Yes { chain: Certs::default() }, false)), false);
     assert_eq!(act_of(&f, WallMs(T0)), Act::Waiting { never: false }, "promotable but adding no delta: kept deposited");
 }
