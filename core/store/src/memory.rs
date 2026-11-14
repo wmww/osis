@@ -245,12 +245,6 @@ impl MemoryBackend {
     pub fn test_copy(&self) -> MemoryBackend {
         MemoryBackend { data: osis_base::copying::remap(&self.data, |m| Mutex::new(lock(m).clone())), faults: self.faults.test_copy() }
     }
-    /// Drops every value and blob (a removed database file).
-    pub fn erase(&self) {
-        let mut d = self.lock();
-        d.live = Image::default();
-        d.disk = None;
-    }
     /// Power loss: what reads see falls back to what reached the disk, dropping writes whose
     /// sync failed (`Fault::Unsynced`).
     pub fn power_cut(&self) {
@@ -356,9 +350,9 @@ impl Backend for MemoryBackend {
     fn note_sealed(&self, value: &[u8], key: &[u8; 32]) {
         let mut d = self.lock();
         if d.history.is_some()
-            && let Some(tag) = value.len().checked_sub(16).and_then(|n| value.get(n..)).and_then(|t| <[u8; 16]>::try_from(t).ok())
+            && let Some(tag) = value.last_chunk::<16>()
         {
-            d.sealed.insert(tag, *key);
+            d.sealed.insert(*tag, *key);
         }
     }
 

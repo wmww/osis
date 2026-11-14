@@ -1,0 +1,3 @@
+# cleanup-store
+- The `pub(crate)` probe found almost nothing here: most of osis-store's `pub fn`s sit in private modules on `pub(crate)` types, so narrowing them changes nothing rustc can see. A sharper probe: mark every `pub fn` `#[deprecated]` and run `cargo clippy --all-targets --message-format=short`; the warnings give each item's every use site, other crates included (25 s warm). Match on `use of deprecated [a-z ]+`: associated functions say "associated function".
+- Name-based greps across the workspace (`git grep -w name`) over-report: `erase`, `dump`, `copy`, `new` collide with other types' methods.

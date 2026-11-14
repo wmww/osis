@@ -41,9 +41,7 @@ fn transactions_commit_or_abort() {
 // session) starts from 1 again.
 #[test]
 fn counters() {
-    let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (dev, mut rng, mut s) = fresh(cfg());
     let (t1, a) = (tid(1), ak("c.0"));
     let mut t = s.transaction(&mut rng).unwrap();
     assert_eq!(t.counter(&t1, &a, &[7u8; 16]).unwrap(), 1);
@@ -69,9 +67,7 @@ fn counters() {
 // spec/commits.md §4: pending and parked commits are stored as bytes until applied.
 #[test]
 fn pending_commits() {
-    let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (_dev, mut rng, mut s) = fresh(cfg());
     let mut t = s.transaction(&mut rng).unwrap();
     for i in 0..10u8 {
         let k = if i % 3 == 0 { PendingKind::Parked } else { PendingKind::Pending };
@@ -91,9 +87,7 @@ fn pending_commits() {
 // shredded drops of one transaction rewrite their pages under one key-tree rotation.
 #[test]
 fn shredded_drops_rotate_once() {
-    let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (_dev, mut rng, mut s) = fresh(cfg());
     let mut t = s.transaction(&mut rng).unwrap();
     for b in 0..20u8 {
         t.put_local(&[b"a/", &[b][..]].concat(), &[b; 49], Shred::No).unwrap();
@@ -116,9 +110,7 @@ fn shredded_drops_rotate_once() {
 // spec: none (node-local bookkeeping); notes/local-store.md, Units: `*_local` records.
 #[test]
 fn local_records() {
-    let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (_dev, mut rng, mut s) = fresh(cfg());
     let mut t = s.transaction(&mut rng).unwrap();
     t.put_local(b"roster/1", b"a", Shred::No).unwrap();
     t.put_local(b"roster/2", b"b", Shred::No).unwrap();
@@ -171,10 +163,8 @@ fn lifecycle_errors() {
 // spec/commits.md §4: an aborted transaction that spilled leaves nothing that harms later commits.
 #[test]
 fn abort_after_spill() {
-    let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(0);
     let cfg = StoreConfig { spill_bytes: 100, ..cfg() };
-    let mut s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
+    let (dev, mut rng, mut s) = fresh(cfg);
     let mut t = s.transaction(&mut rng).unwrap();
     let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
     for i in 0..20u32 {
@@ -199,10 +189,8 @@ fn abort_after_spill() {
 #[test]
 fn rollback_keeps_committed_blob() {
     for shredding in [false, true] {
-        let dev = MemDevice::new();
-        let mut rng = SeededRng::from_u64(0);
         let cfg = StoreConfig { spill_bytes: 100, ..cfg() };
-        let mut s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
+        let (dev, mut rng, mut s) = fresh(cfg);
         let id = BlobId([7; 32]);
         let mut t = s.transaction(&mut rng).unwrap();
         t.put_blob(&id, vec![9; 50]).unwrap();
@@ -258,9 +246,7 @@ fn crash_during_create() {
 // spec/commits.md §1
 #[test]
 fn memory_overlay_rows() {
-    let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (dev, mut rng, mut s) = fresh(cfg());
     let (t1, a, b) = (tid(1), ak("mem+.0"), ak("dur.0"));
     let unit = AspectUnit { state: b"m".to_vec() };
     {
@@ -292,7 +278,6 @@ fn memory_overlay_rows() {
     {
         // a memory-class aspect's rows stay memory in a durable-mode transaction
         let mut t = s.transaction(&mut rng).unwrap();
-        assert!(t.is_memory_aspect(&t1, &a) && !t.is_memory_aspect(&t1, &b));
         t.reserve_counters(&t1, &a, &[7u8; 16], 3).unwrap();
         t.put_local(b"z/3", b"durable", Shred::No).unwrap();
         t.table_put(ix, b"k1", b"d".to_vec(), Shred::No).unwrap();
@@ -349,10 +334,8 @@ fn memory_overlay_rows() {
 // spec/commits.md §1
 #[test]
 fn memory_rows_never_spill() {
-    let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(0);
     let cfg = StoreConfig { spill_bytes: 100, ..cfg() };
-    let mut s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
+    let (dev, mut rng, mut s) = fresh(cfg);
     let ix = {
         let mut t = s.transaction(&mut rng).unwrap();
         let ix = t.index(b"ix").unwrap();
@@ -795,9 +778,7 @@ fn savepoint_release_spills() {
 // reopens is the model's.
 #[test]
 fn unspilled_pages_roll_back_and_absent_removals_change_nothing() {
-    let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (dev, mut rng, mut s) = fresh(cfg());
     let mut t = s.transaction(&mut rng).unwrap();
     let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
     let mut model = std::collections::BTreeMap::new();
@@ -845,9 +826,7 @@ fn unspilled_pages_roll_back_and_absent_removals_change_nothing() {
 fn a_memo_over_the_store_moves_with_the_rows_it_read() {
     use osis_base::memo::Memo;
     use osis_store::Transaction;
-    let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (dev, mut rng, mut s) = fresh(cfg());
     let (t1, a) = (tid(1), ak("name.0"));
     let memo: Memo<u8, Vec<u8>> = Memo::new("test store read");
     // 0: a row, 1: a scan, 2: a table row

@@ -47,6 +47,10 @@ impl MemDevice {
         let faults = Faults::new();
         MemDevice { backend: MemoryBackend::with_faults(faults.clone()), root: MemoryRoot::with_faults(faults.clone()), faults }
     }
+    /// The device as it stands, sharing its faults: a backup, or a copy to run beside it.
+    pub fn copy(&self) -> MemDevice {
+        MemDevice { backend: self.backend.copy(), root: self.root.copy(), faults: self.faults.clone() }
+    }
 }
 
 impl Device for MemDevice {
@@ -267,6 +271,14 @@ impl StorageBackend for FaultyFile {
 /// Every device kind this build has, fresh.
 pub fn devices(name: &str) -> Vec<Box<dyn Device>> {
     vec![Box::new(MemDevice::new()), Box::new(FileDevice::new(name))]
+}
+
+/// A store created on a fresh memory device, and the rng that made it.
+pub fn fresh(cfg: StoreConfig) -> (MemDevice, SeededRng, Store) {
+    let dev = MemDevice::new();
+    let mut rng = SeededRng::from_u64(0);
+    let s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
+    (dev, rng, s)
 }
 
 pub fn create(dev: &dyn Device, rng: &mut SeededRng) -> Store {

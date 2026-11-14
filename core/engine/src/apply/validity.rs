@@ -1176,7 +1176,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         if rebuild {
             for (tid, ak) in &flipped {
                 // a memory aspect's rebuild is memory work, whatever transaction re-judges it
-                let memory = tx.txn.is_memory_aspect(tid, ak);
+                let memory = ak.ephemeral();
                 tx.in_class(memory, |tx| {
                     let k = (*tid, ak.clone());
                     // a snapshot turned invalid gives nothing (its writer no longer vouches for it,
@@ -1202,7 +1202,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     })?;
     // memory parts turned valid may supersede held ones (spec/sync.md §9): after the rebuilds,
     // as a cover's keep bound reads the state (`bounds::part_keep`)
-    let memory: BTreeSet<(Tid, Ak)> = if rebuild { rose.iter().filter(|(t, a)| tx.txn.is_memory_aspect(t, a)).cloned().collect() } else { BTreeSet::new() };
+    let memory: BTreeSet<(Tid, Ak)> = if rebuild { rose.iter().filter(|(_, a)| a.ephemeral()).cloned().collect() } else { BTreeSet::new() };
     if !memory.is_empty() {
         let gone = tx.in_class(true, |tx| {
             let gone = crate::retention::memory::drop_superseded(tx, &memory)?;

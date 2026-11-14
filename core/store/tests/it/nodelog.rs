@@ -8,7 +8,7 @@ use common::*;
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{BlobId, LabelId};
 use osis_crypto::SeededRng;
-use osis_store::{Fault, INCARNATIONS_KEPT, MemoryBackend, MemoryRoot, NodeEvent, Shred, Store, StoreConfig};
+use osis_store::{Fault, INCARNATIONS_KEPT, NodeEvent, Shred, Store, StoreConfig};
 
 fn l(n: u8) -> LabelId {
     LabelId([n; 16])
@@ -22,27 +22,6 @@ fn b(n: u32) -> BlobId {
 
 fn big() -> StoreConfig {
     StoreConfig::default()
-}
-
-struct Dev {
-    backend: MemoryBackend,
-    root: MemoryRoot,
-}
-
-impl Dev {
-    fn new() -> (Dev, Store, SeededRng) {
-        let mut rng = SeededRng::from_u64(0);
-        let d = MemDevice::new();
-        let s = Store::create(d.backend(), d.root(), cfg(), &mut rng).unwrap();
-        (Dev { backend: d.backend, root: d.root }, s, rng)
-    }
-    fn open(&self) -> Store {
-        Store::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), cfg()).unwrap()
-    }
-    /// The device as it stands: a backup, or a copy to run beside it.
-    fn copy(&self) -> Dev {
-        Dev { backend: self.backend.copy(), root: self.root.copy() }
-    }
 }
 
 fn add(s: &mut Store, rng: &mut SeededRng, n: u32) {
@@ -68,7 +47,7 @@ fn events(s: &mut Store, rng: &mut SeededRng) -> Vec<NodeEvent> {
 
 #[test]
 fn read_pages_in_order_and_resumes_from_its_cursor() {
-    let (_d, mut s, mut rng) = Dev::new();
+    let (_d, mut rng, mut s) = fresh(cfg());
     for n in 1..=5 {
         add(&mut s, &mut rng, n);
     }
@@ -88,7 +67,7 @@ fn read_pages_in_order_and_resumes_from_its_cursor() {
 
 #[test]
 fn empty_log_has_no_cursor() {
-    let (_d, mut s, mut rng) = Dev::new();
+    let (_d, mut rng, mut s) = fresh(cfg());
     let mut t = s.transaction(&mut rng).unwrap();
     let r = t.log_read(None, 10).unwrap();
     assert!(r.whole && r.events.is_empty() && r.cursor.is_none());
@@ -99,7 +78,7 @@ fn empty_log_has_no_cursor() {
 #[test]
 fn crash_at_any_write_keeps_event_and_effect_together() {
     let mut writes = 0;
-    let (d, mut s, mut rng) = Dev::new();
+    let (d, mut rng, mut s) = fresh(cfg());
     let base = d.backend.faults().writes();
     let mut t = s.transaction(&mut rng).unwrap();
     t.put_local(b"effect", b"1", Shred::Yes).unwrap();
@@ -109,7 +88,7 @@ fn crash_at_any_write_keeps_event_and_effect_together() {
     assert!(writes > 0);
     let (mut seen_before, mut seen_after) = (false, false);
     for k in 0..=writes + 2 {
-        let (d, mut s, mut rng) = Dev::new();
+        let (d, mut rng, mut s) = fresh(cfg());
         d.backend.faults().at(k, Fault::Crash);
         let mut t = s.transaction(&mut rng).unwrap();
         t.put_local(b"effect", b"1", Shred::Yes).unwrap();
@@ -117,7 +96,7 @@ fn crash_at_any_write_keeps_event_and_effect_together() {
         let _ = t.commit();
         drop(s);
         d.backend.faults().revive();
-        let mut s = d.open();
+        let mut s = reopen(&d);
         let mut t = s.transaction(&mut rng).unwrap();
         let effect = t.get_local(b"effect").unwrap().is_some();
         let logged = !t.log_read(None, 10).unwrap().events.is_empty();
@@ -130,11 +109,11 @@ fn crash_at_any_write_keeps_event_and_effect_together() {
 
 #[test]
 fn a_rolled_back_append_leaves_the_draw_for_the_next() {
-    let (d, mut s, mut rng) = Dev::new();
+    let (d, mut rng, mut s) = fresh(cfg());
     add(&mut s, &mut rng, 1);
     let c = at_end(&mut s, &mut rng);
     drop(s);
-    let mut s = d.open();
+    let mut s = reopen(&d);
     {
         let mut t = s.transaction(&mut rng).unwrap();
         t.log_added(l(1), b(2)).unwrap();
@@ -146,20 +125,20 @@ fn a_rolled_back_append_leaves_the_draw_for_the_next() {
 // SN_history: the first append after a start records the incarnation before it, so a restart honours earlier cursors
 #[test]
 fn restart_with_appends_honours_earlier_cursors() {
-    let (d, mut s, mut rng) = Dev::new();
+    let (d, mut rng, mut s) = fresh(cfg());
     add(&mut s, &mut rng, 1);
     let c1 = at_end(&mut s, &mut rng);
     add(&mut s, &mut rng, 2);
     let c2 = at_end(&mut s, &mut rng);
     drop(s);
-    let mut s = d.open();
+    let mut s = reopen(&d);
     add(&mut s, &mut rng, 3);
     assert_eq!(position(&mut s, &mut rng, &c1), Some(1));
     assert_eq!(position(&mut s, &mut rng, &c2), Some(2));
     let c3 = at_end(&mut s, &mut rng);
     assert_eq!(c3.len(), osis_store::CURSOR_LEN);
     drop(s);
-    let mut s = d.open();
+    let mut s = reopen(&d);
     add(&mut s, &mut rng, 4);
     let r = s.transaction(&mut rng).unwrap().log_read(Some(&c2), 10).unwrap();
     assert!(!r.whole, "two restarts later a cursor still resumes");
@@ -169,12 +148,12 @@ fn restart_with_appends_honours_earlier_cursors() {
 // a start that appends nothing costs nothing, and the cursor it issues names the incarnation still current
 #[test]
 fn restart_without_appends_writes_nothing() {
-    let (d, mut s, mut rng) = Dev::new();
+    let (d, mut rng, mut s) = fresh(cfg());
     add(&mut s, &mut rng, 1);
     let c = at_end(&mut s, &mut rng);
     drop(s);
     let before = d.backend.dump();
-    let mut s = d.open();
+    let mut s = reopen(&d);
     let c2 = at_end(&mut s, &mut rng);
     assert_eq!(position(&mut s, &mut rng, &c), Some(1));
     let mut t = s.transaction(&mut rng).unwrap();
@@ -185,7 +164,7 @@ fn restart_without_appends_writes_nothing() {
     t.commit().unwrap();
     drop(s);
     assert_eq!(d.backend.dump(), before, "a start and a read draw no incarnation");
-    let mut s = d.open();
+    let mut s = reopen(&d);
     add(&mut s, &mut rng, 2);
     assert_eq!(position(&mut s, &mut rng, &c2), Some(1), "a cursor issued by an appendless start names the incarnation that ended at 1");
 }
@@ -194,7 +173,7 @@ fn restart_without_appends_writes_nothing() {
 // sibling's: only the ended incarnation's recorded end tells the lost cursor from one it holds.
 #[test]
 fn restored_store_refuses_cursors_from_the_lost_history() {
-    let (d, mut s, mut rng) = Dev::new();
+    let (d, mut rng, mut s) = fresh(cfg());
     for n in 1..=3 {
         add(&mut s, &mut rng, n);
     }
@@ -205,7 +184,7 @@ fn restored_store_refuses_cursors_from_the_lost_history() {
     }
     let lost = at_end(&mut s, &mut rng);
     drop(s);
-    let mut r = backup.open();
+    let mut r = reopen(&backup);
     assert_eq!(position(&mut r, &mut rng, &lost), None, "past the restored end");
     for n in 10..=20 {
         add(&mut r, &mut rng, n);
@@ -219,12 +198,12 @@ fn restored_store_refuses_cursors_from_the_lost_history() {
 // SN_copies: a copy running beside the original
 #[test]
 fn live_copy_cursors_are_no_cursor_at_the_other() {
-    let (d, mut orig, mut rng) = Dev::new();
+    let (d, mut rng, mut orig) = fresh(cfg());
     for n in 1..=3 {
         add(&mut orig, &mut rng, n);
     }
     let shared = at_end(&mut orig, &mut rng);
-    let mut copy = d.copy().open();
+    let mut copy = reopen(&d.copy());
     for n in 4..=8 {
         add(&mut orig, &mut rng, n);
     }
@@ -244,7 +223,7 @@ fn live_copy_cursors_are_no_cursor_at_the_other() {
 
 #[test]
 fn garbage_and_foreign_cursors_are_no_cursor() {
-    let (_d, mut s, mut rng) = Dev::new();
+    let (_d, mut rng, mut s) = fresh(cfg());
     add(&mut s, &mut rng, 1);
     let mut c = at_end(&mut s, &mut rng);
     // another store: its own generator, so its own key
@@ -261,11 +240,11 @@ fn garbage_and_foreign_cursors_are_no_cursor() {
 
 #[test]
 fn incarnation_list_is_capped_oldest_first() {
-    let (d, mut s, mut rng) = Dev::new();
+    let (d, mut rng, mut s) = fresh(cfg());
     add(&mut s, &mut rng, 0);
     let mut cursors = vec![at_end(&mut s, &mut rng)];
     for n in 1..=INCARNATIONS_KEPT as u32 + 1 {
-        s = d.open();
+        s = reopen(&d);
         add(&mut s, &mut rng, n);
         cursors.push(at_end(&mut s, &mut rng));
     }
@@ -277,7 +256,7 @@ fn incarnation_list_is_capped_oldest_first() {
 
 #[test]
 fn an_entry_keeps_one_event_and_a_listing_is_the_live_set() {
-    let (_d, mut s, mut rng) = Dev::new();
+    let (_d, mut rng, mut s) = fresh(cfg());
     let mut t = s.transaction(&mut rng).unwrap();
     for _ in 0..5 {
         t.log_added(l(1), b(1)).unwrap();
@@ -291,7 +270,7 @@ fn an_entry_keeps_one_event_and_a_listing_is_the_live_set() {
 // compaction drops an earlier event but a cursor before the drop still gets the later one
 #[test]
 fn compaction_never_hides_the_later_event_from_a_cursor() {
-    let (_d, mut s, mut rng) = Dev::new();
+    let (_d, mut rng, mut s) = fresh(cfg());
     add(&mut s, &mut rng, 1);
     add(&mut s, &mut rng, 2);
     let c = at_end(&mut s, &mut rng);
@@ -302,7 +281,7 @@ fn compaction_never_hides_the_later_event_from_a_cursor() {
 
 #[test]
 fn deletion_events_last_the_tombstone_lifetime() {
-    let (_d, mut s, mut rng) = Dev::new();
+    let (_d, mut rng, mut s) = fresh(cfg());
     let mut t = s.transaction(&mut rng).unwrap();
     t.log_deleted(l(1), b(1), 100).unwrap();
     t.log_deleted(l(1), b(2), 200).unwrap();
@@ -319,7 +298,7 @@ fn deletion_events_last_the_tombstone_lifetime() {
 
 #[test]
 fn a_readded_entry_is_not_swept_as_its_old_deletion() {
-    let (_d, mut s, mut rng) = Dev::new();
+    let (_d, mut rng, mut s) = fresh(cfg());
     let mut t = s.transaction(&mut rng).unwrap();
     t.log_deleted(l(1), b(1), 100).unwrap();
     t.log_added(l(1), b(1)).unwrap();
@@ -331,7 +310,7 @@ fn a_readded_entry_is_not_swept_as_its_old_deletion() {
 // cost about 60 B per entry ever deleted)
 #[test]
 fn swept_entries_leave_no_rows() {
-    let (d, mut s, mut rng) = Dev::new();
+    let (d, mut rng, mut s) = fresh(cfg());
     add(&mut s, &mut rng, 0);
     let baseline = d.backend.held_bytes();
     let n = 400;
@@ -348,7 +327,7 @@ fn swept_entries_leave_no_rows() {
 
 #[test]
 fn sweep_pages_until_done() {
-    let (_d, mut s, mut rng) = Dev::new();
+    let (_d, mut rng, mut s) = fresh(cfg());
     let mut t = s.transaction(&mut rng).unwrap();
     for n in 0..600 {
         t.log_deleted(l(1), b(n), 1).unwrap();
@@ -363,7 +342,7 @@ fn sweep_pages_until_done() {
 
 #[test]
 fn forgetting_a_label_logs_no_deletion_and_keeps_others() {
-    let (_d, mut s, mut rng) = Dev::new();
+    let (_d, mut rng, mut s) = fresh(cfg());
     let mut t = s.transaction(&mut rng).unwrap();
     for n in 0..600 {
         t.log_added(l(1), b(n)).unwrap();
@@ -379,7 +358,7 @@ fn forgetting_a_label_logs_no_deletion_and_keeps_others() {
 
 #[test]
 fn a_head_is_logged_only_when_it_moves_and_keeps_one_event() {
-    let (d, mut s, mut rng) = Dev::new();
+    let (d, mut rng, mut s) = fresh(cfg());
     let mut t = s.transaction(&mut rng).unwrap();
     assert!(t.log_head(l(1), &[1; 32]).unwrap());
     assert!(!t.log_head(l(1), &[1; 32]).unwrap());
@@ -387,7 +366,7 @@ fn a_head_is_logged_only_when_it_moves_and_keeps_one_event() {
     t.commit().unwrap();
     assert_eq!(events(&mut s, &mut rng), [NodeEvent::Head(l(1))]);
     drop(s);
-    let mut s = d.open();
+    let mut s = reopen(&d);
     let mut t = s.transaction(&mut rng).unwrap();
     assert_eq!(t.log_heads().unwrap(), [(l(1), [2; 32])]);
     assert!(!t.log_head(l(1), &[2; 32]).unwrap(), "an unchanged head after a restart logs nothing");
@@ -397,7 +376,7 @@ fn a_head_is_logged_only_when_it_moves_and_keeps_one_event() {
 // moving only when a fingerprint differs, sharing nothing with the log's positions
 #[test]
 fn changed_at_has_its_own_sequence() {
-    let (d, mut s, mut rng) = Dev::new();
+    let (d, mut rng, mut s) = fresh(cfg());
     add(&mut s, &mut rng, 1);
     let mut t = s.transaction(&mut rng).unwrap();
     assert_eq!(t.changed_note(l(1), &[1; 32]).unwrap(), Some(1));
@@ -406,14 +385,14 @@ fn changed_at_has_its_own_sequence() {
     assert_eq!(t.log_end().unwrap(), 1, "the log does not move");
     t.commit().unwrap();
     drop(s);
-    let mut s = d.open();
+    let mut s = reopen(&d);
     let mut t = s.transaction(&mut rng).unwrap();
     assert_eq!(t.changed_note(l(2), &[1; 32]).unwrap(), Some(3), "a position is never given twice");
     assert_eq!(t.changed_after(1, 10).unwrap(), [(2, l(1)), (3, l(2))]);
     assert_eq!(t.changed_at(&l(1)).unwrap(), Some(2));
 }
 
-fn filled(n: u32) -> (Dev, Vec<u8>) {
+fn filled(n: u32) -> (MemDevice, Vec<u8>) {
     let mut rng = SeededRng::from_u64(0);
     let d = MemDevice::new();
     let mut s = Store::create(d.backend(), d.root(), big(), &mut rng).unwrap();
@@ -427,7 +406,7 @@ fn filled(n: u32) -> (Dev, Vec<u8>) {
         t.log_cursor(u64::from(n) - 5).unwrap().unwrap()
     };
     drop(s);
-    (Dev { backend: d.backend, root: d.root }, c)
+    (d, c)
 }
 
 // a reader's cost is what comes after its cursor, whatever the log holds

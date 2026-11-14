@@ -3,7 +3,6 @@
 
 use crate::Error;
 
-#[derive(Default)]
 pub(crate) struct W(pub Vec<u8>);
 
 impl W {

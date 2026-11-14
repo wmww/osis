@@ -55,9 +55,9 @@ fn leaves(k: &history::Kept, ts: Ts) -> u64 {
     k.leaves_at(Some(r)).max(r)
 }
 
-/// Writes local row `key` (`val`; `None`: removed) in `(tid, ak)`'s class.
-fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, key: &[u8], val: Option<&[u8]>) -> Result<()> {
-    let memory = tx.txn.is_memory_aspect(tid, ak);
+/// Writes local row `key` (`val`; `None`: removed) in `ak`'s class.
+fn put(tx: &mut Tx<'_>, ak: &Ak, key: &[u8], val: Option<&[u8]>) -> Result<()> {
+    let memory = ak.ephemeral();
     tx.in_class(memory, |tx| {
         match val {
             Some(v) => tx.txn.put_local(key, v, Shred::No)?,
@@ -70,13 +70,13 @@ fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, key: &[u8], val: Option<&[u8]>) -> R
 fn put_row(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place) -> Result<()> {
     tx.core.ix.leaving.insert((*tid, ak.clone()), p);
     tx.core.ix.dated.insert((p.1, *tid, ak.clone()), p.0);
-    put(tx, tid, ak, &row_key(tid, ak, &p), Some(&[]))
+    put(tx, ak, &row_key(tid, ak, &p), Some(&[]))
 }
 
 fn remove_row(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place) -> Result<()> {
     tx.core.ix.leaving.remove(&(*tid, ak.clone()), &p);
     tx.core.ix.dated.remove(&(p.1, *tid, ak.clone()));
-    put(tx, tid, ak, &row_key(tid, ak, &p), None)
+    put(tx, ak, &row_key(tid, ak, &p), None)
 }
 
 /// Sets `(tid, ak)`'s cursor (`None`: the aspect has none: nothing of it leaves in order).
@@ -103,11 +103,11 @@ fn set_from(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: Option<From>) -> Result<()> 
             if let Some(p) = out {
                 w = w.u64(p.0.to_u64()).raw(&p.1.0);
             }
-            put(tx, tid, ak, &key, Some(&w.take()))
+            put(tx, ak, &key, Some(&w.take()))
         }
         None => {
             tx.core.ix.leave_from.remove(&k);
-            put(tx, tid, ak, &key, None)
+            put(tx, ak, &key, None)
         }
     }
 }
@@ -425,7 +425,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             tx.core.ix.leaving.insert((tid, ak.clone()), p);
             tx.core.ix.dated.insert((p.1, tid, ak), p.0);
         } else {
-            put(tx, &tid, &ak, &row_key(&tid, &ak, &p), None)?;
+            put(tx, &ak, &row_key(&tid, &ak, &p), None)?;
         }
     }
     let mut froms = Vec::new();

@@ -322,8 +322,7 @@ pub fn attack(ev: &Evidence, ciphers: Option<&Ciphers>) -> Vec<Recovered> {
         .rows
         .iter()
         .map(|(row, value)| {
-            let tag = value.len().checked_sub(16).and_then(|n| value.get(n..)).and_then(|t| <[u8; 16]>::try_from(t).ok());
-            tag.and_then(|t| ev.sealed.get(&t)).filter(|k| forensic_open(row, value, k).is_some())
+            value.last_chunk::<16>().and_then(|t| ev.sealed.get(t)).filter(|k| forensic_open(row, value, k).is_some())
         })
         .collect();
     let mut tried = 0;

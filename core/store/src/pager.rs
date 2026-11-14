@@ -185,9 +185,8 @@ fn seal(key: &Secret32, row: &[u8], plaintext: &[u8], rng: &mut dyn CryptoRngCor
 
 /// Opens and unpads a row; the padded length must be `padded_len`'s.
 fn open(key: &Secret32, row: &[u8], value: &[u8]) -> Result<Vec<u8>, Error> {
-    let (nonce, ct) = value.split_at_checked(NONCE_LEN).ok_or(Error::Corrupt("row"))?;
-    let nonce: [u8; NONCE_LEN] = nonce.try_into().map_err(|_| Error::Corrupt("row"))?;
-    let mut plain = aead::open(key.expose(), &nonce, row, ct).map_err(|_| Error::Corrupt("row decryption"))?;
+    let (nonce, ct) = value.split_first_chunk::<NONCE_LEN>().ok_or(Error::Corrupt("row"))?;
+    let mut plain = aead::open(key.expose(), nonce, row, ct).map_err(|_| Error::Corrupt("row decryption"))?;
     let end = plain.iter().rposition(|&b| b != 0).ok_or(Error::Corrupt("row padding"))?;
     if plain.get(end) != Some(&0x80) || padded_len(row, end) != plain.len() {
         return Err(Error::Corrupt("row padding"));
@@ -1022,6 +1021,14 @@ impl Pager {
             let old = self.unit_entry(slot)?;
             let row = unit_row(slot, ver);
             let shred = u.shred();
+            let u = match u {
+                DirtyUnit::Page { page, len, shred } => {
+                    let data = page.encode();
+                    debug_assert_eq!(data.len(), len);
+                    DirtyUnit::Plain { data, shred, page: Some(page) }
+                }
+                u => u,
+            };
             let entry = match u {
                 DirtyUnit::Plain { data, page, .. } => {
                     let key = Secret32::random(rng);
@@ -1030,16 +1037,7 @@ impl Pager {
                     cached.push((slot, Some((data, page))));
                     Some(Entry { key, ver })
                 }
-                DirtyUnit::Page { page, len, .. } => {
-                    let data = page.encode();
-                    debug_assert_eq!(data.len(), len);
-                    let key = Secret32::random(rng);
-                    batch.put(row.clone(), self.seal(&key, &row, &data, rng)?);
-                    j.new_rows.push(row);
-                    cached.push((slot, Some((data, Some(page)))));
-                    Some(Entry { key, ver })
-                }
-                DirtyUnit::Taken { .. } => return Err(Error::Corrupt("table page left out for change")),
+                DirtyUnit::Page { .. } | DirtyUnit::Taken { .. } => return Err(Error::Corrupt("table page left out for change")),
                 DirtyUnit::Spilled { key, .. } => {
                     cached.push((slot, None));
                     Some(Entry { key, ver })
@@ -1210,11 +1208,11 @@ impl Pager {
 }
 
 /// Opens a stored row with a candidate key: the plaintext, or `None`. Shredding tests only.
-pub fn forensic_open(row: &[u8], value: &[u8], key: &[u8; 32]) -> Option<Vec<u8>> {
+pub(crate) fn forensic_open(row: &[u8], value: &[u8], key: &[u8; 32]) -> Option<Vec<u8>> {
     // a padded row ends in 0x80 or 0x00 (`open`): another last byte rules the key out without
     // the whole AEAD pass (an attack tries every key on every row)
-    let (nonce, ct) = value.split_at_checked(NONCE_LEN)?;
-    if !matches!(aead::Keystream::new(key, nonce.try_into().ok()?).last_plain_byte(ct), Some(0 | 0x80)) {
+    let (nonce, ct) = value.split_first_chunk::<NONCE_LEN>()?;
+    if !matches!(aead::Keystream::new(key, nonce).last_plain_byte(ct), Some(0 | 0x80)) {
         return None;
     }
     open(&Secret32::from_bytes(*key), row, value).ok()
@@ -1233,7 +1231,7 @@ pub(crate) fn forensic_clear_row(row: &[u8]) -> bool {
 }
 
 /// The keys a decrypted tree-node row lists (top node: after the meta). Shredding tests only.
-pub fn forensic_node_keys(row: &[u8], plaintext: &[u8]) -> Vec<[u8; 32]> {
+pub(crate) fn forensic_node_keys(row: &[u8], plaintext: &[u8]) -> Vec<[u8; 32]> {
     let mut r = R::new(plaintext);
     let top = match row.first() {
         Some(b't') => true,

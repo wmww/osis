@@ -51,7 +51,7 @@ pub(crate) fn get(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) 
 pub(crate) fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, l: &Leftover) -> Result<()> {
     let key = records::leftover_key(tid, ak, c, ai);
     let enc = l.encode()?;
-    let memory = tx.txn.is_memory_aspect(tid, ak);
+    let memory = ak.ephemeral();
     tx.in_class(memory, |tx| Ok(tx.txn.put_local(&key, &enc, Shred::Yes)?))
 }
 

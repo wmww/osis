@@ -34,9 +34,7 @@ fn fill(s: &mut Store, rng: &mut SeededRng, n: u32, batch: u32) {
 // spec/crdt.md §8: large states page; spec/requirements.md, Scale: large values stream; no API materializes a whole state.
 #[test]
 fn stream_and_positions() {
-    let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (dev, mut rng, mut s) = fresh(cfg());
     fill(&mut s, &mut rng, 1500, 1500);
     let mut t = s.transaction(&mut rng).unwrap();
     let elems = t.table(&tid(1), &ak("big.0"), 0).unwrap().unwrap();

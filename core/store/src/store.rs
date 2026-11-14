@@ -93,7 +93,7 @@ fn u64_value(v: Option<Vec<u8>>) -> Result<Option<u64>, Error> {
 }
 
 pub(crate) fn tail<const N: usize>(key: &[u8]) -> Result<[u8; N], Error> {
-    key.get(key.len().saturating_sub(N)..).and_then(|t| t.try_into().ok()).ok_or(Error::Corrupt("catalog key"))
+    key.last_chunk().copied().ok_or(Error::Corrupt("catalog key"))
 }
 
 /// The encrypted local store, with its memory overlay (`crate::overlay`): rows of the memory
@@ -293,7 +293,7 @@ impl Store {
         // a suspended transaction not resumed is dropped: what it wrote is undone
         self.stamping.undo_to(0);
         let d = self.pager.begin()?;
-        Ok(Transaction { pager: &mut self.pager, d, rng, mem: MemTxn { o: &mut self.mem, undo: Vec::new(), done: false }, memory: false, st: StampTxn { s: &mut self.stamping, done: false } })
+        Ok(self.resume(Suspended { d }, rng))
     }
 
     /// Continues a transaction set aside by `Transaction::suspend`. No other transaction may
@@ -384,8 +384,8 @@ pub struct Savepoint {
 ///
 /// Rows go to the memory overlay or the durable store by class (notes/local-store.md, Memory
 /// overlay): in memory mode (`set_memory`) every new row is memory; a row already held in memory
-/// stays there; every row of a memory-class aspect (`is_memory_aspect`: its key's marker) is memory. Reads see
-/// both, memory first; removals remove from both.
+/// stays there; every row of a memory-class aspect (its key's `+` marker, spec/commits.md §2) is
+/// memory. Reads see both, memory first; removals remove from both.
 pub struct Transaction<'a> {
     pager: &'a mut Pager,
     d: Dirty,
@@ -517,15 +517,10 @@ impl Transaction<'_> {
     pub fn is_memory(&self) -> bool {
         self.memory
     }
-    /// Whether the aspect's rows are of the memory class: its key's `+` marker
-    /// (spec/commits.md §2), whatever this node holds.
-    pub fn is_memory_aspect(&self, _tid: &Tid, ak: &Ak) -> bool {
-        ak.ephemeral()
-    }
-    /// Whether rows of this aspect written now go to memory. In memory mode an unmarked key's
+    /// Whether rows of aspect `ak` written now go to memory. In memory mode an unmarked key's
     /// rows go there too: only a writer breaking the marker rule (tests) makes one.
-    fn aspect_mem(&self, tid: &Tid, ak: &Ak) -> bool {
-        self.memory || self.is_memory_aspect(tid, ak)
+    fn aspect_mem(&self, ak: &Ak) -> bool {
+        self.memory || ak.ephemeral()
     }
 
     /// 32 random bytes from this transaction's generator.
@@ -624,7 +619,7 @@ impl Transaction<'_> {
             return Err(Error::Misuse("aspect unit field above 4 GiB"));
         }
         let v = W::new().bytes(&unit.state).take();
-        let m = self.aspect_mem(tid, ak);
+        let m = self.aspect_mem(ak);
         self.cat_put_to(&aspect_key(kind::ASPECT, tid, ak), v, shred, m)
     }
 
@@ -662,7 +657,7 @@ impl Transaction<'_> {
         if let Some(t) = self.table(tid, ak, idx)? {
             return Ok(t);
         }
-        let m = self.aspect_mem(tid, ak);
+        let m = self.aspect_mem(ak);
         let root = if m { self.mem.new_table() } else { btree::create(self)? };
         let key = [aspect_key(kind::TABLE, tid, ak), vec![idx]].concat();
         self.cat_put_to(&key, W::new().u64(root).take(), Shred::No, m)?;

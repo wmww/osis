@@ -86,9 +86,6 @@ impl MemoryRoot {
     pub fn test_copy(&self) -> MemoryRoot {
         MemoryRoot { slot: osis_base::copying::remap(&self.slot, |m| Mutex::new(lock(m).clone())), faults: self.faults.test_copy() }
     }
-}
-
-impl MemoryRoot {
     fn write(&mut self, record: Option<RootRecord>) -> Result<(), BackendError> {
         let sync = self.faults.check()?;
         lock(&self.slot).write(record, sync);

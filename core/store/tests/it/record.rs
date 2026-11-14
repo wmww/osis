@@ -7,31 +7,11 @@ use crate::common;
 use common::*;
 use osis_base::LabelId;
 use osis_crypto::SeededRng;
-use osis_store::{At, Fault, Member, MemoryBackend, MemoryRoot, RecordId, Shred, Store};
+use osis_store::{At, Fault, Member, RecordId, Shred, Store};
 use std::collections::BTreeSet;
 
 fn l(n: u8) -> LabelId {
     LabelId([n; 16])
-}
-
-struct Dev {
-    backend: MemoryBackend,
-    root: MemoryRoot,
-}
-
-impl Dev {
-    fn new() -> (Dev, Store, SeededRng) {
-        let mut rng = SeededRng::from_u64(0);
-        let d = MemDevice::new();
-        let s = Store::create(d.backend(), d.root(), cfg(), &mut rng).unwrap();
-        (Dev { backend: d.backend, root: d.root }, s, rng)
-    }
-    fn open(&self) -> Store {
-        Store::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), cfg()).unwrap()
-    }
-    fn copy(&self) -> Dev {
-        Dev { backend: self.backend.copy(), root: self.root.copy() }
-    }
 }
 
 fn member() -> Member {
@@ -50,7 +30,7 @@ fn create(s: &mut Store, rng: &mut SeededRng, r: u8, actor: u8) -> RecordId {
 #[test]
 fn crash_at_any_write_leaves_a_record_whole_or_absent() {
     let run = |k: u64| {
-        let (d, mut s, mut rng) = Dev::new();
+        let (d, mut rng, mut s) = fresh(cfg());
         d.backend.faults().at(k, Fault::Crash);
         let mut t = s.transaction(&mut rng).unwrap();
         let id = t.record_create([7; 32], &[tid(1), tid(2)]).unwrap();
@@ -59,7 +39,7 @@ fn crash_at_any_write_leaves_a_record_whole_or_absent() {
         let _ = t.commit();
         drop(s);
         d.backend.faults().revive();
-        let mut s = d.open();
+        let mut s = reopen(&d);
         let mut t = s.transaction(&mut rng).unwrap();
         let found = t.records_of_actors(&[tid(1)]).unwrap();
         match found.as_slice() {
@@ -94,7 +74,7 @@ fn crash_at_any_write_leaves_a_record_whole_or_absent() {
 fn crash_at_any_write_keeps_a_cursor_with_its_applied_data() {
     let (mut seen_none, mut seen_both) = (false, false);
     for k in 0..24 {
-        let (d, mut s, mut rng) = Dev::new();
+        let (d, mut rng, mut s) = fresh(cfg());
         let id = create(&mut s, &mut rng, 7, 1);
         d.backend.faults().at(k, Fault::Crash);
         let mut t = s.transaction(&mut rng).unwrap();
@@ -104,7 +84,7 @@ fn crash_at_any_write_keeps_a_cursor_with_its_applied_data() {
         let _ = t.commit();
         drop(s);
         d.backend.faults().revive();
-        let mut s = d.open();
+        let mut s = reopen(&d);
         let mut t = s.transaction(&mut rng).unwrap();
         let applied = t.get_local(b"applied").unwrap().is_some();
         let cursor = t.record(&id).unwrap().unwrap().cursor;
@@ -120,7 +100,7 @@ fn crash_at_any_write_keeps_a_cursor_with_its_applied_data() {
 // whether or not the record held the member, and touches no other record
 #[test]
 fn a_close_remarks_this_record_alone_to_below_the_changed_at() {
-    let (_d, mut s, mut rng) = Dev::new();
+    let (_d, mut rng, mut s) = fresh(cfg());
     let a = create(&mut s, &mut rng, 1, 1);
     let b = create(&mut s, &mut rng, 2, 2);
     let mut t = s.transaction(&mut rng).unwrap();
@@ -138,7 +118,7 @@ fn a_close_remarks_this_record_alone_to_below_the_changed_at() {
 // issues/sync-rewrite.md, Lost and rejoin: an older lag is kept, and a rejoin spends it
 #[test]
 fn a_stop_keeps_the_older_lag_until_a_rejoin_spends_it() {
-    let (_d, mut s, mut rng) = Dev::new();
+    let (_d, mut rng, mut s) = fresh(cfg());
     let a = create(&mut s, &mut rng, 1, 1);
     let mut t = s.transaction(&mut rng).unwrap();
     t.record_close(&a, &l(1), 1, Some(b"old".to_vec())).unwrap();
@@ -154,7 +134,7 @@ fn a_stop_keeps_the_older_lag_until_a_rejoin_spends_it() {
 // every lag of it, in that same transaction; `changed_forget` is that transaction
 #[test]
 fn forgetting_a_sync_id_drops_it_from_every_record_in_one_step() {
-    let (_d, mut s, mut rng) = Dev::new();
+    let (_d, mut rng, mut s) = fresh(cfg());
     let a = create(&mut s, &mut rng, 1, 1);
     let b = create(&mut s, &mut rng, 2, 2);
     let mut t = s.transaction(&mut rng).unwrap();
@@ -177,7 +157,7 @@ fn forgetting_a_sync_id_drops_it_from_every_record_in_one_step() {
 // use goes, whole, and its bytes come back to the count; a record in use is not dropped
 #[test]
 fn eviction_drops_the_least_recently_used_not_in_use_whole() {
-    let (_d, mut s, mut rng) = Dev::new();
+    let (_d, mut rng, mut s) = fresh(cfg());
     let a = create(&mut s, &mut rng, 1, 1);
     let b = create(&mut s, &mut rng, 2, 2);
     let c = create(&mut s, &mut rng, 3, 3);
@@ -207,14 +187,14 @@ fn eviction_drops_the_least_recently_used_not_in_use_whole() {
 // same pair key, the state of that moment, nothing shared with the original afterwards
 #[test]
 fn a_copied_or_restored_store_keeps_its_records_as_of_the_copy() {
-    let (d, mut s, mut rng) = Dev::new();
+    let (d, mut rng, mut s) = fresh(cfg());
     let a = create(&mut s, &mut rng, 1, 1);
     let copy = d.copy();
     let mut t = s.transaction(&mut rng).unwrap();
     t.record_set_cursor(&a, Some(b"later".to_vec())).unwrap();
     let b = t.record_create([2; 32], &[tid(1)]).unwrap();
     t.commit().unwrap();
-    let mut c = copy.open();
+    let mut c = reopen(&copy);
     let mut t = c.transaction(&mut rng).unwrap();
     let held = t.records_of_actors(&[tid(1)]).unwrap();
     assert_eq!(held.len(), 1, "the record made after the copy is not in it");
@@ -227,7 +207,7 @@ fn a_copied_or_restored_store_keeps_its_records_as_of_the_copy() {
 #[test]
 fn a_lookup_reads_only_the_records_of_the_proven_actors() {
     for n in [10u32, 100] {
-        let (_d, mut s, mut rng) = Dev::new();
+        let (_d, mut rng, mut s) = fresh(cfg());
         let mut t = s.transaction(&mut rng).unwrap();
         for i in 0..n {
             let mut a = [0u8; 15];
@@ -243,7 +223,7 @@ fn a_lookup_reads_only_the_records_of_the_proven_actors() {
 // rejoin is a listing) and is pending again; a stream move of a member closed since adds nothing
 #[test]
 fn a_dropped_member_keeps_no_lag_and_a_late_move_reopens_nothing() {
-    let (_d, mut s, mut rng) = Dev::new();
+    let (_d, mut rng, mut s) = fresh(cfg());
     let a = create(&mut s, &mut rng, 1, 1);
     let mut t = s.transaction(&mut rng).unwrap();
     t.record_open(&a, l(1), &Member { at: At::Join(Some(b"lag".to_vec())), ..member() }).unwrap();
@@ -260,7 +240,7 @@ fn a_dropped_member_keeps_no_lag_and_a_late_move_reopens_nothing() {
 #[test]
 fn the_peer_filter_is_kept_by_generation_and_goes_with_its_record() {
     use osis_store::Filter;
-    let (_d, mut s, mut rng) = Dev::new();
+    let (_d, mut rng, mut s) = fresh(cfg());
     let a = create(&mut s, &mut rng, 1, 1);
     let mut t = s.transaction(&mut rng).unwrap();
     let g = |generation, added| Filter { generation, acked: generation, f: 9, whole: 2, added };

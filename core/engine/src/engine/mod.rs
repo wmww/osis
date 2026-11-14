@@ -2696,7 +2696,7 @@ impl Tx<'_> {
     /// Writes the local record `records::aspect_key(prefix, tid, ak)`: memory for a memory
     /// aspect (as the store routes the aspect's own rows), whichever transaction writes it.
     pub(crate) fn put_aspect_local(&mut self, prefix: &[u8], tid: &Tid, ak: &Ak, val: &[u8]) -> Result<()> {
-        let memory = self.txn.is_memory_aspect(tid, ak);
+        let memory = ak.ephemeral();
         self.in_class(memory, |tx| Ok(tx.txn.put_local(&records::aspect_key(prefix, tid, ak), val, Shred::No)?))
     }
 

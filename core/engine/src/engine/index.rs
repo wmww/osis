@@ -535,7 +535,7 @@ fn put_aspect_map<V: Rec + Clone>(txn: &mut Transaction<'_>, name: &[u8], m: &JM
         return Ok(());
     }
     let mode = txn.is_memory();
-    let (mem, dur): (Vec<_>, Vec<_>) = keys.into_iter().partition(|(t, a)| txn.is_memory_aspect(t, a));
+    let (mem, dur): (Vec<_>, Vec<_>) = keys.into_iter().partition(|(_, a)| a.ephemeral());
     put_rows(txn, name, dur, |k| m.get(k).map(enc))?;
     txn.set_memory(true);
     let r = put_rows(txn, name, mem, |k| m.get(k).map(enc));

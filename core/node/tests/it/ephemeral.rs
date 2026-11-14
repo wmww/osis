@@ -4895,7 +4895,6 @@ fn memory_trio() -> (osis_node::local_peer::LocalPeer, Tid) {
 #[test]
 fn memory_part_on_unmarked_key_dropped_spec_commits_2() {
     let (mut lp, d) = memory_trio();
-    let tags = crate::common::ak("t:tags.0");
     // 1 holds a durable delta of `t:tags.0`, 0 none
     let mut m = Mutation::new();
     m.set(d, &crate::common::TAGS, &Value::Set([s("durable")].into())).unwrap();
@@ -4904,7 +4903,6 @@ fn memory_part_on_unmarked_key_dropped_spec_commits_2() {
     let pk = lp.peers[2].engine.package(&id).unwrap().unwrap();
     for i in [0, 1] {
         lp.peers[i].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap();
-        assert!(!lp.peers[i].engine.run(|tx| Ok(tx.txn.is_memory_aspect(&d, &tags))).unwrap(), "{i}: the aspect turned memory class");
     }
     assert_eq!(durable_tags(&mut lp, 0, d), None);
     assert_eq!(durable_tags(&mut lp, 1, d), Some(Value::Set([s("durable")].into())));

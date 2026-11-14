@@ -1185,7 +1185,7 @@ impl Engine {
                     tx.in_class(memory, |tx| run_timer(tx, &[records::TIMER, &k].concat(), &c, ai, kind, &mut changed))?;
                 }
                 for (tid, ak) in leave {
-                    let memory = tx.txn.is_memory_aspect(&tid, &ak);
+                    let memory = ak.ephemeral();
                     tx.in_class(memory, |tx| leaving::passed(tx, &tid, &ak))?;
                 }
                 Ok(())

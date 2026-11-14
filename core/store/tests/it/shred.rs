@@ -10,6 +10,15 @@ use osis_base::{BlobId, CommitId};
 use osis_crypto::SeededRng;
 use osis_store::{AspectUnit, Evidence, PendingKind, Shred, Store};
 
+/// A store on a device recording every row and blob written (`MemoryBackend::record_history`).
+fn recorded() -> (MemDevice, SeededRng, Store) {
+    let dev = MemDevice::new();
+    dev.backend.record_history();
+    let mut rng = SeededRng::from_u64(0);
+    let s = create(&dev, &mut rng);
+    (dev, rng, s)
+}
+
 /// Everything an attacker recovers (`osis_store::attack`): from the keys the current tree
 /// yields and every row and blob ever written.
 fn attack(s: &mut Store, dev: &MemDevice) -> Vec<Vec<u8>> {
@@ -70,10 +79,7 @@ fn shred_all(s: &mut Store, rng: &mut SeededRng) {
 // spec/commits.md §5: dropping a body destroys every local copy so that later compromise recovers nothing; aspect units, catalog records, table pages and pending commits likewise.
 #[test]
 fn shredded_content_is_unrecoverable() {
-    let dev = MemDevice::new();
-    dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (dev, mut rng, mut s) = recorded();
     let marker = b"MARKER-7f3a9c";
     plant(&mut s, &mut rng, marker);
     assert!(recoverable(&mut s, &dev, marker), "the attack finds live content");
@@ -94,10 +100,7 @@ fn shredded_content_is_unrecoverable() {
 // attack recovers the same, while the content is live and once shredded
 #[test]
 fn sealed_keys_change_no_recovery() {
-    let dev = MemDevice::new();
-    dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (dev, mut rng, mut s) = recorded();
     let both = |s: &mut Store| {
         let ev = Evidence::of(s.forensic_keys().unwrap(), &dev.backend);
         assert!(!ev.sealed.is_empty());
@@ -120,10 +123,7 @@ fn sealed_keys_change_no_recovery() {
 // spec/commits.md §5: a whole-aspect purge drops the units: nothing of the aspect survives.
 #[test]
 fn dropped_aspect_is_unrecoverable() {
-    let dev = MemDevice::new();
-    dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (dev, mut rng, mut s) = recorded();
     plant(&mut s, &mut rng, b"MARKER-big");
     let mut t = s.transaction(&mut rng).unwrap();
     t.drop_aspect(&tid(1), &ak("big.0")).unwrap();
@@ -137,10 +137,7 @@ fn dropped_aspect_is_unrecoverable() {
 // unrecoverable after its shredded removal (pages losing entries are rewritten shredded).
 #[test]
 fn shred_after_splits_and_merges() {
-    let dev = MemDevice::new();
-    dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (dev, mut rng, mut s) = recorded();
     let mut t = s.transaction(&mut rng).unwrap();
     for i in 0..200u32 {
         t.put_local(format!("a{i:04}").as_bytes(), &[1; 40], Shred::No).unwrap();
@@ -177,10 +174,7 @@ fn shred_after_splits_and_merges() {
 // freed storage; any later shred along the same key path makes it unrecoverable too.
 #[test]
 fn unshredded_overwrite_is_recoverable_until_a_later_shred() {
-    let dev = MemDevice::new();
-    dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (dev, mut rng, mut s) = recorded();
     let mut t = s.transaction(&mut rng).unwrap();
     t.put_local(b"k", b"old-MARK", Shred::No).unwrap();
     t.commit().unwrap();
@@ -199,10 +193,7 @@ fn unshredded_overwrite_is_recoverable_until_a_later_shred() {
 // in a unit of its own (spec/commits.md §5: dropping destroys every local copy).
 #[test]
 fn unshredded_large_overwrite_is_unrecoverable_after_a_later_shred() {
-    let dev = MemDevice::new();
-    dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (dev, mut rng, mut s) = recorded();
     let big = |m: &[u8]| [m, &[7u8; 300][..]].concat();
     // Other units around the old value, so its leaf of the key tree holds only units the later
     // writes leave alone.
@@ -262,10 +253,7 @@ const CIPHERS: osis_store::Ciphers = osis_store::Ciphers {
 // shredded (the read secret still held)
 #[test]
 fn blob_keys_and_wraps_dropped_leave_the_blob_unopenable() {
-    let dev = MemDevice::new();
-    dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (dev, mut rng, mut s) = recorded();
     let secret = osis_crypto::Secret32::from_bytes([9; 32]);
     let blob = |m: &[u8], rng: &mut SeededRng| {
         let (key, b) = osis_crypto::encrypt_blob(&[], m, rng).unwrap();
@@ -312,10 +300,7 @@ fn blob_keys_and_wraps_dropped_leave_the_blob_unopenable() {
 // journal rows) and blobs as stored
 #[test]
 fn attack_reads_clear_rows_and_raw_blobs() {
-    let dev = MemDevice::new();
-    dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (dev, mut rng, mut s) = recorded();
     let mut t = s.transaction(&mut rng).unwrap();
     t.put_blob(&BlobId([5; 32]), b"CLEAR-BLOB-MARK".to_vec()).unwrap();
     t.commit().unwrap();
@@ -329,10 +314,7 @@ fn attack_reads_clear_rows_and_raw_blobs() {
 // (notes/local-store.md, Row padding), so freed versions do not show the entry's length
 #[test]
 fn shredded_small_drop_keeps_unit_lengths_within_a_class_step() {
-    let dev = MemDevice::new();
-    dev.backend.record_history();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = create(&dev, &mut rng);
+    let (dev, mut rng, mut s) = recorded();
     let mut t = s.transaction(&mut rng).unwrap();
     for i in 0..100u32 {
         t.put_local(format!("a{i:04}").as_bytes(), &[1; 40], Shred::No).unwrap();
