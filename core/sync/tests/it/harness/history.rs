@@ -180,7 +180,7 @@ pub fn step(w: &mut World, s: &Step) -> String {
             let (Some(t), Some(holder)) = (thing(w, k), account(w, j)) else { return "skipped: no such thing or holder".into() };
             let edge = Edge { role: g.role(), until: None, invite: None, tied: None };
             let r = w.write(i, |e| e.grant(&t, &holder, &edge)).map(|_| String::new()).map_err(|e| e.to_string());
-            if r.is_ok() {
+            if r.is_ok() || stands(w, i, &t, &holder, g.role()) {
                 let h = &mut w.history;
                 if *g >= Gives::Reads {
                     h.ever_read.insert((*k, *j));
@@ -202,8 +202,9 @@ pub fn step(w: &mut World, s: &Step) -> String {
             let (Some(t), Some(holder)) = (thing(w, k), account(w, j)) else { return "skipped: no such thing or holder".into() };
             let before: BTreeSet<CommitId> = w.engine(i).commit_ids().into_iter().collect();
             let r = w.write(i, |e| e.demote(&t, &Demotion { holder, new: None, retain: None })).map(|_| String::new()).map_err(|e| e.to_string());
-            if r.is_ok() && w.online(i) {
-                let made: Vec<CommitId> = w.engine(i).commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
+            // a removal refused with its outcome unknown counts as made where it stands
+            let made: Vec<CommitId> = if w.online(i) { w.engine(i).commit_ids().into_iter().filter(|c| !before.contains(c)).collect() } else { Vec::new() };
+            if !made.is_empty() || (r.is_ok() && w.online(i)) {
                 w.history.removals.entry((*k, *j)).or_default().extend(made);
             }
             r
@@ -221,6 +222,12 @@ pub fn step(w: &mut World, s: &Step) -> String {
         }
         Err(e) => format!("refused: {e}"),
     }
+}
+
+/// Whether node `i` reads `holder` at `role` on `t`: a write refused with its outcome unknown
+/// may have applied, and its user reads before repeating it (as the API's `OutcomeUnknown` says).
+fn stands(w: &mut World, i: usize, t: &Tid, holder: &Tid, role: Role) -> bool {
+    w.online(i) && w.engine(i).roster(t).get(holder).is_some_and(|e| e.role == role)
 }
 
 /// The nodes a value node `i` writes on thing `k` now is hidden from: each removed from `k`

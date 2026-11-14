@@ -249,12 +249,11 @@ fn a_sync_holder_removed_and_granted_read_while_away_reads_spec_sync_set_3() {
 }
 
 // spec/sync-ids.md §5 (the store is the truth for ciphertext: so after a failure): a read grant
-// whose durable write fails at the granter (its outcome unknown) reaches the grantee, which reads
-// the thing. Found by the full-size differential (faulty seed 188669321416, shrunk); fails:
-// issues/sync-grant-after-unsynced-write-reads.md.
+// whose durable write fails unsynced at the granter (its outcome unknown) stands there, reaches
+// the grantee, and the grantee, accepting it (spec/sync-set.md §4), reads the thing. Found by the
+// full-size differential (faulty seed 188669321416, shrunk).
 #[test]
-#[ignore = "fails: issues/sync-grant-after-unsynced-write-reads.md"]
-fn a_reader_granted_through_an_unsynced_write_reads() {
+fn a_reader_granted_through_an_unsynced_write_reads_spec_sync_ids_5() {
     use crate::harness::DiskFault::Unsynced;
     use crate::harness::Step::*;
     use crate::harness::history::Gives;
