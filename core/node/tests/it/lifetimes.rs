@@ -835,13 +835,9 @@ fn things_released_together_are_forgotten_whole() {
     assert!(e.header(&req).is_none() && e.header(&made).is_none(), "both commits gone whole");
 }
 
-// notes/lifetimes.md (The judgment: an unknown retainer keeps; Interactions: Removal, lost access):
-// b, a writer of folder f, makes d under its own account (so b may destroy it), lets f read it,
-// lists f as d's retainer and f references d. a removes b from f: b forgets f but keeps f's
-// `created.0`, and holds no reference row from f. f is unread at b, so unknown: b releases
-// nothing, and d lives at every node, where f's remaining member reads it
-#[test]
-fn a_member_removed_from_a_retainer_releases_nothing() {
+/// b, a writer of folder f, makes d under its own account (so b may destroy it), lets f read it,
+/// lists f as d's retainer and f references d; then a removes b from f. Returns (net, a, b, f, d).
+fn member_removed_from_retainer() -> (Net, usize, usize, Tid, Tid) {
     let (mut net, host, [a, b], f, []) = crate::net::hosted::<2, 0>(&[(1, osis_base::Role::Write)], [], true);
     let tb = net.tid(b);
     let home = vec![net.address(host)];
@@ -876,11 +872,38 @@ fn a_member_removed_from_a_retainer_releases_nothing() {
     }
     net.run();
     assert!(!net.engine(b).may_read(&tb, &f), "b lost f");
-    for n in [a, b] {
+    (net, a, b, f, d)
+}
+
+/// d lives at every node, and nothing is pending.
+fn d_lives(net: &mut Net, nodes: [usize; 2], d: Tid) {
+    for n in nodes {
         let e = net.engine(n);
         assert_eq!(e.lifetime_status(&d), Status::Known, "node {n}: d not released");
         assert!(e.lifetimes_pending().unwrap().is_empty(), "node {n}");
         assert_eq!(net.read(n, d), Some(Value::Str("kept".into())), "node {n} reads d");
     }
+}
+
+// notes/lifetimes.md (The judgment: an unknown retainer keeps; Interactions: Removal, lost access):
+// b forgets f but keeps f's `created.0`, and holds no reference row from f. f is unread at b, so
+// unknown: b releases nothing, and d lives at every node, where f's remaining member reads it
+#[test]
+fn a_member_removed_from_a_retainer_releases_nothing() {
+    let (mut net, a, b, f, d) = member_removed_from_retainer();
+    d_lives(&mut net, [a, b], d);
     assert_eq!(net.engine(b).lifetime_status(&f), Status::Unknown, "b: f unread, unknown");
+}
+
+// The way back: a grants b f again. f is known at b once read, before or after its reference rows
+// come back; the walk waits for f's label to be heard out, so b releases nothing meanwhile
+#[test]
+fn a_member_granted_a_retainer_again_releases_nothing() {
+    let (mut net, a, b, f, d) = member_removed_from_retainer();
+    let tb = net.tid(b);
+    net.grant(a, f, tb, osis_base::Role::Write);
+    net.run();
+    assert!(net.engine(b).may_read(&tb, &f), "b reads f again");
+    assert_eq!(net.engine(b).lifetime_status(&f), Status::Known, "b: f known");
+    d_lives(&mut net, [a, b], d);
 }
