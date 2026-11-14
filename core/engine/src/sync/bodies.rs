@@ -139,7 +139,7 @@ impl Engine {
     fn closure_body(&mut self, g: &Tid, c: &CommitId) -> Result<Option<BodyMeta>> {
         let ctx = self.body_ctx(g);
         let last = self.bodies_under(&ctx, c, true)?.pop();
-        Ok(last.map(|b| BodyMeta { parts: b.parts.iter().copied().collect(), expires: b.expires.map(WallMs), order: b.order, copy: b.to_label, certificate: false, header_only: b.parts.is_empty() }))
+        Ok(last.map(|b| BodyMeta { parts: b.parts.iter().copied().collect(), expires: b.expires.map(WallMs), order: b.order, copy: b.to_label, certificate: false, header_only: b.parts.is_empty(), mints: BTreeSet::new() }))
     }
 
     /// Adds to `out` the certificate bodies of commit `c` (spec/sync-judgement.md §1-§2,
@@ -181,12 +181,14 @@ impl Engine {
             }
             true => PartSet::new(),
         };
-        if parts.is_empty() && !named.header {
+        if parts.is_empty() && !named.header && named.mints.is_empty() {
             return Ok(None);
         }
         let (expires, order) = (osis_commit::blob_expiry(&h).map(WallMs), crate::labeling::fetch_order(&h));
         let header_only = parts.is_empty();
-        Ok(Some(BodyMeta { parts, expires, order, copy: true, certificate: true, header_only }))
+        // a header copy that is a request goes as one, whatever it mints
+        let mints = if header_only && !named.header { named.mints.clone() } else { BTreeSet::new() };
+        Ok(Some(BodyMeta { parts, expires, order, copy: true, certificate: true, header_only, mints }))
     }
 
     /// The thing whose read sync ID `s` is here (`ThingSync::Read`).

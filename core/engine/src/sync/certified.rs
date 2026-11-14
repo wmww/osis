@@ -20,19 +20,22 @@ use osis_base::{CommitId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// What one thing's certificates name of a commit: parts to carry, and whether its header goes
-/// alone (a minting or request, `Certs::headers`).
+/// What one thing's certificates name of a commit: parts to carry, whether its header goes alone
+/// (a request, `Certs::headers`), and the things it is a held minting of whose records go
+/// (`Certs::mintings`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Named {
     pub parts: Parts,
     pub header: bool,
+    pub mints: BTreeSet<Tid>,
 }
 
 impl Named {
     fn of(certs: &Certs, c: &CommitId) -> Option<Named> {
         let parts = certs.commits.get(c).cloned().unwrap_or_default();
         let header = certs.headers.contains(c);
-        (header || !parts.is_empty()).then_some(Named { parts, header })
+        let mints = certs.mintings.get(c).cloned().unwrap_or_default();
+        (header || !parts.is_empty() || !mints.is_empty()).then_some(Named { parts, header, mints })
     }
 }
 
@@ -168,7 +171,7 @@ impl Certified {
     /// Piece `p` under `t` moved from `was` to `now`: the rows of the commits and the records
     /// either names.
     fn apply(&mut self, t: Tid, p: Piece, was: &Certs, now: &Certs) {
-        let commits: BTreeSet<&CommitId> = was.commits.keys().chain(&was.headers).chain(now.commits.keys()).chain(&now.headers).collect();
+        let commits: BTreeSet<&CommitId> = was.commits.keys().chain(&was.headers).chain(was.mintings.keys()).chain(now.commits.keys()).chain(&now.headers).chain(now.mintings.keys()).collect();
         for c in commits {
             let n = Named::of(now, c);
             if Named::of(was, c) == n {
@@ -184,6 +187,7 @@ impl Certified {
                 by.values().fold(Named::default(), |mut u, n| {
                     u.parts.extend(n.parts.iter().copied());
                     u.header |= n.header;
+                    u.mints.extend(n.mints.iter().copied());
                     u
                 })
             });
@@ -484,6 +488,9 @@ mod tests {
             }
             if n.header {
                 got.headers.insert(*c);
+            }
+            if !n.mints.is_empty() {
+                got.mintings.insert(*c, n.mints.clone());
             }
         }
         for (t, r) in e.core.certified.records.iter() {

@@ -34,3 +34,4 @@ mod scale;
 mod memory;
 mod own_secrets;
 mod readers_reach;
+mod destruction;

@@ -19,12 +19,15 @@ const CARD: [&str; 3] = ["keys.0", "node.0", "reach.0"];
 pub type Parts = BTreeSet<usize>;
 
 /// Chain material a verifier needs (spec/permissions.md §4): parts of commits to copy, commits
-/// to copy as headers alone (the mintings of things whose records go), and raw creation records (a record
-/// blob's), which outlive the commits that minted them.
+/// to copy as headers alone (the requests destroying things whose records go), the held
+/// mintings of things whose records go (each with those things: a header-only copy of each is
+/// judged by its standing, spec/commits.md §5), and raw creation records (a record blob's),
+/// which outlive the commits that minted them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Certs {
     pub commits: BTreeMap<CommitId, Parts>,
     pub headers: BTreeSet<CommitId>,
+    pub mintings: BTreeMap<CommitId, BTreeSet<Tid>>,
     pub records: BTreeSet<Tid>,
 }
 
@@ -36,15 +39,18 @@ impl Certs {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.commits.is_empty() && self.headers.is_empty() && self.records.is_empty()
+        self.commits.is_empty() && self.headers.is_empty() && self.mintings.is_empty() && self.records.is_empty()
     }
 
-    /// Adds `other`'s commits, headers and records.
+    /// Adds `other`'s commits, headers, mintings and records.
     pub fn extend(&mut self, other: Certs) {
         for (c, p) in other.commits {
             self.add(c, p);
         }
         self.headers.extend(other.headers);
+        for (c, ts) in other.mintings {
+            self.mintings.entry(c).or_default().extend(ts);
+        }
         self.records.extend(other.records);
     }
 }
@@ -439,24 +445,29 @@ impl Engine {
     }
 
     /// What goes with `t`'s record, added to `out` (spec/commits.md §5, A thing's mintings travel
-    /// with its record; `cert_parts` adds it for every thing whose record goes): its witness
-    /// (`witness`) as a header alone and, destroyed, each held request destroying it. A node
-    /// knowing `t` by its record so judges it live or destroyed, and when, as one holding every
-    /// minting does: a minting again travels only while it is the witness, and only a right
+    /// with its record; `cert_parts` adds it for every thing whose record goes): each held minting
+    /// of `t` (`out.mintings`: sync judges each header-only copy by its standing, logging the
+    /// witness, `witness`) and, destroyed, each held request destroying it as a header alone. A
+    /// node knowing `t` by its record so judges it live or destroyed, and when, as one holding
+    /// every minting does: a minting again travels only while it is the witness, and only a right
     /// holder makes a request, so what a reader mints adds nothing. A minting's `expires` dates an
     /// expiry (a value-less part is never uploaded), a request's header names what it destroys
     /// (`Header::requests`; `t`'s frozen history judges its right), and a header-only blob has no
     /// prefix expiry, so a release's copy outlives the request's own blobs (spec/sync-ids.md §1).
-    /// Each with its author's chains to `t` and to its actor. Once per `out`: its witness among
-    /// `out`'s headers.
+    /// The witness and the requests each with its author's chains to `t` and to its actor. Once
+    /// per `out`: `t` among its witness's things in `out.mintings`.
     pub fn minting_evidence(&mut self, t: &Tid, out: &mut Certs) {
-        let Some(w) = self.witness(t) else { return };
-        if out.headers.contains(&w.commit) {
+        let all = self.mintings_of(t);
+        let Some(w) = crate::retention::destroy::highest(&all) else { return };
+        if out.mintings.get(&w.commit).is_some_and(|x| x.contains(t)) {
             return;
         }
+        for m in &all {
+            out.mintings.entry(m.commit).or_default().insert(*t);
+        }
         let requests = if w.standing.valued { BTreeSet::new() } else { crate::retention::destroy::destroying_requests(&self.core, t) };
+        out.headers.extend(requests.iter().copied());
         let evidence: Vec<CommitId> = std::iter::once(w.commit).chain(requests).collect();
-        out.headers.extend(evidence.iter().copied());
         for c in &evidence {
             let Some(h) = self.header(c) else { continue };
             for x in [*t, h.actor, h.author] {

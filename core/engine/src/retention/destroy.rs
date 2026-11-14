@@ -79,11 +79,12 @@ pub struct Standing {
     pub end: End,
 }
 
-/// A held minting of a thing: its commit and its standing.
-#[derive(Clone, Copy, Debug)]
+/// A held minting of a thing: its commit, its standing and its commit's `expires` (`None`: never).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Minting {
     pub commit: CommitId,
     pub standing: Standing,
+    pub expires: Option<u64>,
 }
 
 /// `t`'s destruction (spec/commits.md §5 Destruction): the end of its witness, the point by which
@@ -144,7 +145,7 @@ pub fn mintings(core: &Core, t: &Tid) -> Vec<Minting> {
         .map(|Held { at: (commit, ai), expires, by }| {
             let expiry = expires.map_or(End::Never, |x| End::At(x, None));
             let request = by.into_iter().min().map_or(End::Never, |p| End::At(p.ts.wall_ms().0, Some(p)));
-            Minting { commit, standing: Standing { valued: !core.minting_gone(&commit, ai), end: expiry.min(request) } }
+            Minting { commit, standing: Standing { valued: !core.minting_gone(&commit, ai), end: expiry.min(request) }, expires }
         })
         .collect()
 }
@@ -154,7 +155,13 @@ pub fn mintings(core: &Core, t: &Tid) -> Vec<Minting> {
 /// destroying it (`destroying_requests`). A node holding them judges `t` live or destroyed, and
 /// when, as one holding every minting does.
 pub fn witness(core: &Core, t: &Tid) -> Option<Minting> {
-    mintings(core, t).into_iter().max_by(|a, b| a.standing.cmp(&b.standing).then(b.commit.cmp(&a.commit)))
+    highest(&mintings(core, t))
+}
+
+/// The witness among `ms` (a thing's held mintings): the highest standing, ties by the lowest
+/// commit ID.
+pub fn highest(ms: &[Minting]) -> Option<Minting> {
+    ms.iter().copied().max_by(|a, b| a.standing.cmp(&b.standing).then(b.commit.cmp(&a.commit)))
 }
 
 /// The held requests standing over a minting of `t` (spec/commits.md §5 Destruction): with its

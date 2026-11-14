@@ -146,6 +146,11 @@ pub struct BodyMeta {
     /// A certificate copy.
     pub certificate: bool,
     pub header_only: bool,
+    /// A header-only certificate copy of a held minting of these things, whose records go under
+    /// the sync ID (its closure lacks them): sync judges it by its standing among each thing's
+    /// mintings (`Engine::mintings_of`, spec/commits.md §5 A thing's mintings travel with its
+    /// record). Empty for any other body.
+    pub mints: BTreeSet<Tid>,
 }
 
 /// The facts the judgement of one body at one sync ID reads (spec/sync-judgement.md §2).
