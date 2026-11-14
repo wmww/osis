@@ -1,7 +1,8 @@
 ---- MODULE NetKeep ----
 (* A node K keeping S unread follows its own grant (spec/sync-judgement.md §6): it holds sync
    secrets by epoch from boxes sealed to it, keeps its store while its synced group lists the
-   thing, opens S only by the sync key of its head's step, is stranded (keeping its store) when
+   thing, opens S only by the sync key of its head's step (with no head, of its newest secret's
+   step, spec/sync-opens.md §4 Admissible), is stranded (keeping its store) when
    the head moves to a step whose secret it lacks, and drops S on its removal notice or when
    unlisted. A granter rotates (a new step per sync epoch, boxing K unless it removed K) and
    registers steps at K; boxes, notices and Registers arrive in any order. A removal notice
@@ -13,7 +14,8 @@
    boxes K again); the removal's old notice may still reach K. A removal signature binds the
    newest sync epoch its sender boxed the recipient at, and K takes it only at or past every sync
    epoch it holds (BindEpoch). With NoHead, K starts granted before any step is registered with it
-   (no head: it opens nowhere and is not stranded) and its first box on its way. A notice held is
+   (no head: it opens by its newest secret once one arrives and is not stranded) and its first box
+   on its way. A notice held is
    judged again at each head move and each sync secret K takes (RejudgeBox). With Inflate, a
    hostile node seals K a box claiming a future epoch (a secret K cannot check before that step is
    registered): K counts that epoch among those it holds, so no genuine notice binds past it. *)
@@ -160,7 +162,7 @@ Next == \/ \E sig \in 0..MaxEp : Rotate(TRUE, sig) \/ Rotate(FALSE, sig)
         \/ \E m \in msgs : GetBox(m) \/ GetRm(m)
 Spec == Init /\ [][Next]_vars
 
-Opens == keeping /\ IF OpenAny THEN secrets # {} ELSE head \in secrets
+Opens == keeping /\ IF OpenAny \/ head < 0 THEN secrets # {} ELSE head \in secrets
 Stranded == keeping /\ head >= 0 /\ head \notin secrets   \* no head: not stranded
 
 \* §6 Stranded: K never drops data on a head move alone, on a forged notice or on its old removal

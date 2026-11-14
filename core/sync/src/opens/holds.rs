@@ -25,31 +25,33 @@ pub struct Creds {
     /// Credentials it tests, in test order (spec/sync-ids.md §6 Walk: deepest step first, then
     /// sync keys newest first), each with its epoch.
     pub tests: Vec<(Tested, Option<Epoch>)>,
-    /// The sync key of this node's step (its head kept unread, its newest recorded step read),
-    /// the step's id, and its epoch: what answers a Hit on a sync key, claim or static entry.
-    pub step: Option<(osis_label::StepId, osis_crypto::SigningSecret, Option<Epoch>)>,
+    /// The sync key of this node's step (its step kept unread, its newest recorded step read)
+    /// and its epoch: what answers a Hit on a sync key, claim or static entry.
+    pub step: Option<(osis_crypto::SigningSecret, Option<Epoch>)>,
     /// A digest of what moves J for S here (its roster, spec/sync-opens.md §3 `changed_at`):
     /// two values with equal credentials and equal roles are one value.
     pub roles: [u8; 32],
 }
 
 impl Creds {
-    /// What a node keeping S unread holds (spec/sync-opens.md §4 Admissible): it shows its head's
-    /// sync key, the sync proof of it, its deposit key and every key of the head's claim set; it
-    /// tests the sync key and the proof; its head answers a Hit on what it shows (§5 Proof), so
-    /// everything it shows it can accept.
+    /// What a node keeping S unread holds (spec/sync-opens.md §4 Admissible): it shows its step's
+    /// sync key, the sync proof of it, and its head's deposit key and every key of the head's
+    /// claim set; it tests the sync key and the proof; its step answers a Hit on what it shows
+    /// (§5 Proof), so everything it shows it can accept.
     pub fn kept_unread(uc: &UnreadCredentials) -> Creds {
         let mut c = Creds { holding: Some(Holding::Unread), ..Creds::default() };
         c.shows.push((Shown::SyncKey(uc.sync.verifying_key().to_bytes()), None));
         c.shows.push((Shown::Proof(*uc.proof.expose()), None));
-        c.shows.push((Shown::Deposit(uc.deposit.to_bytes()), None));
+        if let Some(d) = &uc.deposit {
+            c.shows.push((Shown::Deposit(d.to_bytes()), None));
+        }
         if let Some(cs) = &uc.claims {
             c.shows.extend(cs.claims.iter().map(|k| (Shown::Claim(*k), None)));
             c.shows.extend(cs.entries.keys().map(|k| (Shown::Static(*k), None)));
         }
         c.tests.push((Tested::SyncKey { step: uc.step, key: uc.sync.clone() }, None));
         c.tests.push((Tested::Proof(*uc.proof.expose()), None));
-        c.step = Some((uc.step, uc.sync.clone(), None));
+        c.step = Some((uc.sync.clone(), None));
         c
     }
 
@@ -64,8 +66,8 @@ impl Creds {
         for (c, e) in &self.tests {
             h.update(b"t").update(&c.matched(&SyncId([0; 16]))).update(&epoch_bytes(e));
         }
-        if let Some((id, k, e)) = &self.step {
-            h.update(b"k").update(&id.0).update(&k.verifying_key().to_bytes()).update(&epoch_bytes(e));
+        if let Some((k, e)) = &self.step {
+            h.update(b"k").update(&k.verifying_key().to_bytes()).update(&epoch_bytes(e));
         }
         h.finalize()
     }
@@ -111,9 +113,6 @@ pub trait Holds {
     /// Answers a Behind item whose signature did not verify: 13 for a sync ID not kept unread
     /// here, else 14.
     fn behind_unsigned(&mut self, s: &SyncId) -> SharedItem;
-    /// S's recorded genesis step and its claim set, when this node reads S (a Register from
-    /// genesis, spec/sync-ids.md §6 Walk).
-    fn genesis(&mut self, s: &SyncId) -> Option<(Step, Option<osis_label::ClaimSet>)>;
     /// Takes a Deposit item (spec/sync-inbox.md §3) a peer offered; `src` is where its peer
     /// budget charge lives (the peer's record, else the connection).
     fn deposit(&mut self, src: crate::store::Source, item: &DepositItem) -> Code;
@@ -193,7 +192,7 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
                         let id = step.id();
                         let keys = rc.keys.get(&id);
                         if let Some(k) = keys.and_then(|k| k.sync.clone()) {
-                            c.tests.push((Tested::SyncKey { step: id, key: k }, keys.and_then(|k| k.epochs[0])));
+                            c.tests.push((Tested::SyncKey { step: Some(id), key: k }, keys.and_then(|k| k.epochs[0])));
                         } else if let Ok(Some(k)) = cx.engine.claim_key(s, &id) {
                             c.tests.push((Tested::Claim { step: id, key: k, sync: step.keys.sync.to_bytes() }, None));
                         }
@@ -203,12 +202,12 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
                     let keys = rc.keys.get(&head.id());
                     if let Some(k) = keys.and_then(|k| k.sync.clone()) {
                         let e = keys.and_then(|k| k.epochs[0]);
-                        c.step = Some((head.id(), k, e));
+                        c.step = Some((k, e));
                     }
                 }
             }
-            // with no head (nothing registered yet) or stranded it holds S and shows nothing: S is
-            // still in the sync set, so its `changed_at` moves and the peer hears a generation
+            // stranded it holds S and shows nothing: S is still in the sync set, so its
+            // `changed_at` moves and the peer hears a generation
             Holding::Unread => {
                 if let Some(uc) = unread.credentials(s) {
                     c = Creds::kept_unread(&uc);
@@ -321,13 +320,6 @@ impl Holds for NodeHolds<'_, '_> {
     fn behind_unsigned(&mut self, s: &SyncId) -> SharedItem {
         // a store failure refuses for now: the asker asks again after a back-off
         SharedItem::code(self.cx.store.behind_refusal(s).unwrap_or(Code::RATE_LIMITED))
-    }
-
-    fn genesis(&mut self, s: &SyncId) -> Option<(Step, Option<osis_label::ClaimSet>)> {
-        let (t, Holding::Read) = self.cx.engine.sync_holding(s).ok()?? else { return None };
-        let ids = self.cx.engine.sync_ids(&t).ok()?;
-        let o = ids.iter().find(|o| o.id == *s && !o.hint)?;
-        o.path.steps.first().cloned()
     }
 
     fn deposit(&mut self, src: crate::store::Source, item: &DepositItem) -> Code {

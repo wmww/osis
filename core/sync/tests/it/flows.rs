@@ -91,26 +91,27 @@ fn kept_unread_away(later: bool, away: bool) {
     assert_eq!(w.engine(1).get(&t, &ak).unwrap(), None, "unread");
 }
 
-// spec/sync-ids.md §6 (walk: answered 13, it registers its recorded path from genesis),
-// spec/sync-judgement.md §6 (takes): node 0 grants node 1's account sync on a thing node 1
-// accepts at once; it keeps the thing unread with no step; node 0's Behind there is answered 13,
-// so it registers S's genesis, opens S by its sync key and node 1 holds node 0's writes, unread.
+// spec/sync-ids.md §6 (walk: moving it, genesis first while the source's step is not known),
+// spec/sync-opens.md §4 (Admissible: with no head, a node keeping S unread shows its newest
+// sync secret's key), spec/sync-judgement.md §6 (takes): node 0 grants node 1's account sync on a thing node 1
+// accepts at once; it keeps the thing unread with no step and opens S by its grant's sync proof;
+// node 0 registers S's genesis there and node 1 holds node 0's writes, unread.
 #[test]
 fn a_sync_grant_is_kept_unread_with_the_writes_spec_sync_ids_6() {
     kept_unread(false);
 }
 
-// spec/sync-ids.md §6 (walk: tested again at each arrival of the source's filter): as above, the
-// user accepting after node 0 first tested S at node 1 (its Register of genesis then refused:
-// node 1 did not sync S yet): S joins node 1's sync set with no head, its `changed_at` moves, its
-// next filter arrives at node 0, which walks S again and registers genesis.
+// spec/sync-ids.md §6 (walk: a source's newly shown credentials are found by its own test): as
+// above, the user accepting after node 0 first tested S at node 1 (its Behind then answered 13):
+// S joins node 1's sync set with no head, its `changed_at` moves, and node 1's own test opens S.
 #[test]
 fn a_sync_grant_accepted_later_is_kept_unread_with_the_writes_spec_sync_ids_6() {
     kept_unread(true);
 }
 
-// spec/sync-ids.md §6 (walk: tested again at each arrival of the source's filter): as above, the
-// user accepting while node 0 is out of reach: the walk lasts in their record, so the next connection asks Behind again.
+// spec/sync-ids.md §6 (walk: a source's newly shown credentials are found by its own test): as
+// above, the user accepting while node 0 is out of reach: node 1's test on the next connection
+// opens S.
 #[test]
 fn a_sync_grant_accepted_while_away_is_kept_unread_with_the_writes_spec_sync_ids_6() {
     kept_unread_away(true, true);

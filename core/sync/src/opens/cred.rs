@@ -121,8 +121,9 @@ impl Shown {
 pub enum Tested {
     Read(Epoch, Secret32),
     Proof([u8; 32]),
-    /// A sync key (`step`'s) and its secret: the Hit carries an open signature by it.
-    SyncKey { step: StepId, key: SigningSecret },
+    /// A sync key (`step`'s, none at a node keeping S unread with no head) and its secret: the
+    /// Hit carries an open signature by it.
+    SyncKey { step: Option<StepId>, key: SigningSecret },
     /// A claim of `step`'s claim set; `sync` that step's sync key, which signs the answer.
     Claim { step: StepId, key: SigningSecret, sync: [u8; 32] },
     /// A key actor's static entry this node acts for, with that actor's signing key.
@@ -153,8 +154,8 @@ impl Tested {
     /// The step a walk credential belongs to (spec/sync-ids.md §6 Walk).
     pub fn step(&self) -> Option<StepId> {
         match self {
-            Tested::SyncKey { step, .. } | Tested::Claim { step, .. } => Some(*step),
-            Tested::Static { step, .. } => *step,
+            Tested::Claim { step, .. } => Some(*step),
+            Tested::SyncKey { step, .. } | Tested::Static { step, .. } => *step,
             _ => None,
         }
     }

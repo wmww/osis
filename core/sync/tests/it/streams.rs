@@ -128,7 +128,7 @@ impl Shared for Open {
 }
 
 fn member() -> Member {
-    Member { class: SourceClass::Reader, by: Credential::J, until: None, step: None }
+    Member { class: SourceClass::Reader, by: Credential::J, until: None }
 }
 
 struct Side {

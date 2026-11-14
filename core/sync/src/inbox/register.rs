@@ -1,9 +1,13 @@
 //! Registering steps at sources keeping S unread (spec/sync-ids.md §6 Steps, Register).
 //!
 //! A node reading S registers, at each connection where a source keeping S unread is open (a
-//! member of class `Store`), the steps its `sync.0` records after the source's step, in order,
-//! one Register out at a time; each only once the source's stream showed every role commit the
-//! step's epochs depend on (`Engine::step_needs`, a blob of each present by `Net::present`). Ok moves on to the
+//! member of class `Store`), the steps its `sync.0` records after the source's step (the head its
+//! stream names), in order, one Register out at a time; each only once the source's stream showed
+//! every role commit the step's epochs depend on (`Engine::step_needs`, a blob of each present by
+//! `Net::present`). At a source whose step is not known (its stream named no head yet) the
+//! genesis step goes first, at once: a source holding no step takes it before anything it pulls
+//! (it can take no entry of S without a head), one holding a step refuses it (9) and waits for
+//! its head event, which comes with its first Pull reply. Ok moves on to the
 //! next; refused for now (4, 12) backs off (`offers::backoff_ms`) and registers again; any other
 //! refusal waits for the source's step to move (a refused Register changes no view; the next head
 //! event does). Nothing is registered at a source on a step `sync.0` does not record (a sibling,
@@ -103,7 +107,7 @@ impl Register {
             let Some((_, plan)) = settled(&mut self.plans, &k, Plan::Nothing, || judge(engine, &*net, progress, &k))? else { continue };
             let Plan::Send(step, claims) = plan else { continue };
             let (conn, s) = k;
-            let source = net.member(conn, &s).and_then(|m| m.step);
+            let source = net.head(conn, &s);
             let Some(id) = net.request(conn, Msg::Register { id: 0, sync_id: s, step: (*step).clone(), claim_set: claims }) else { continue };
             osis_base::costs::count("inbox: registered", 1);
             self.out.insert((conn, id), (s, step.id(), source));
@@ -147,7 +151,9 @@ impl Register {
 fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>, k: &Key) -> Result<Plan> {
     osis_base::costs::count("inbox: register judged", 1);
     let (conn, s) = k;
-    let Some(member) = net.member(*conn, s).filter(|m| m.class == SourceClass::Store) else { return Ok(Plan::Nothing) };
+    if net.member(*conn, s).is_none_or(|m| m.class != SourceClass::Store) {
+        return Ok(Plan::Nothing);
+    }
     let Some(t) = engine.sync_owner(s)? else { return Ok(Plan::Nothing) };
     let Some(path) = engine.sync_ids(&t)?.iter().find(|o| o.id == *s && !o.hint).map(|o| o.path.clone()) else { return Ok(Plan::Nothing) };
     let p = progress.get(k).copied().unwrap_or_default();
@@ -159,19 +165,25 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
         }
         Ok(true)
     };
-    plan(member.step, &path, &p, &mut needs_held)
+    plan(net.head(*conn, s), &path, &p, &mut needs_held)
 }
 
-/// spec/sync-ids.md §6 Steps (Register): at a source keeping S unread standing at step
-/// `source`, given this node's recorded `path` and its progress there, the next recorded step
-/// to register, once `held` says the source holds the role commits it depends on.
+/// spec/sync-ids.md §6 Steps (Register), Walk (Moving it): at a source keeping S unread standing
+/// at step `source` (its head event's), given this node's recorded `path` and its progress
+/// there, the next recorded step to register, once `held` says the source holds the role
+/// commits it depends on; at a source whose step is not known, its genesis step, at once.
 pub fn plan(source: Option<StepId>, path: &Path, p: &Progress, held: &mut dyn FnMut(&StepId) -> Result<bool>) -> Result<Plan> {
     if p.out || p.backoff.is_some() || p.stuck.is_some_and(|x| x == source) {
         return Ok(Plan::Wait);
     }
     let index = |id: &Option<StepId>| id.and_then(|id| path.steps.iter().position(|(st, _)| st.id() == id));
     // the source's step: its head event's, or a later one this node registered there
-    let Some(i) = index(&source).max(index(&p.at)) else { return Ok(Plan::Nothing) };
+    let Some(i) = index(&source).max(index(&p.at)) else {
+        return Ok(match path.steps.first() {
+            Some((genesis, claims)) if source.is_none() && p.at.is_none() => Plan::Send(Box::new(genesis.clone()), claims.clone()),
+            _ => Plan::Nothing,
+        });
+    };
     let Some((next, claims)) = path.steps.get(i + 1) else { return Ok(Plan::Nothing) };
     if held(&next.id())? { Ok(Plan::Send(Box::new(next.clone()), claims.clone())) } else { Ok(Plan::Wait) }
 }

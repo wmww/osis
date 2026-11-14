@@ -67,16 +67,22 @@ pub fn reader(s: &SyncId, read: &(Epoch, Secret32), step: &StepKeys, older: &[St
     c.tests.push((Tested::Read(read.0, read.1.clone()), Some(read.0)));
     c.tests.extend(own_links.iter().map(|k| (Tested::Static { step: None, key: (*k).clone() }, None)));
     for st in std::iter::once(step).chain(older) {
-        c.tests.push((Tested::SyncKey { step: st.id, key: st.sync.clone() }, Some(st.epoch)));
+        c.tests.push((Tested::SyncKey { step: Some(st.id), key: st.sync.clone() }, Some(st.epoch)));
     }
-    c.step = Some((step.id, step.sync.clone(), Some(step.epoch)));
+    c.step = Some((step.sync.clone(), Some(step.epoch)));
     c
 }
 
 /// What a node keeping S unread at head `head` holds: the product's own (`Creds::kept_unread`),
 /// with no claim set.
 pub fn store(head: &StepKeys) -> Creds {
-    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: head.id, sync: head.sync.clone(), proof: Secret32::from_bytes(head.proof), deposit: SigningSecret::from_seed(&Secret32::from_bytes(head.proof)).verifying_key(), claims: None })
+    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: Some(head.id), sync: head.sync.clone(), proof: Secret32::from_bytes(head.proof), deposit: Some(SigningSecret::from_seed(&Secret32::from_bytes(head.proof)).verifying_key()), claims: None })
+}
+
+/// What a node keeping S unread holds before any step is registered there, granted `step`'s sync
+/// secret: the product's own, with no head.
+pub fn store_no_head(step: &StepKeys) -> Creds {
+    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: None, sync: step.sync.clone(), proof: Secret32::from_bytes(step.proof), deposit: None, claims: None })
 }
 
 /// What a link holder holds: its own static entry to test, no secret of S.
@@ -185,9 +191,6 @@ impl Holds for Table {
     }
     fn behind_unsigned(&mut self, _s: &SyncId) -> SharedItem {
         SharedItem::code(Code::DECLINED)
-    }
-    fn genesis(&mut self, _s: &SyncId) -> Option<(osis_label::Step, Option<osis_label::ClaimSet>)> {
-        None
     }
     fn deposit(&mut self, _src: osis_sync::store::Source, _item: &DepositItem) -> Code {
         Code::DECLINED

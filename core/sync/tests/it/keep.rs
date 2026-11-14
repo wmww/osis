@@ -54,8 +54,8 @@ fn kept_then_removed() -> (World, Tid, SyncId) {
     add_to_d(&mut w, 1, t);
     w.run();
     assert_eq!(w.engine(1).sync_holding(&s).unwrap(), Some((t, Holding::Unread)), "kept unread");
-    // node 0 walks S at node 1 again at node 1's filter, which shows the accept: Behind answered
-    // 13, the genesis registered, then the rest of the recorded path (spec/sync-ids.md §6 Walk)
+    // node 1's filter shows its grant's sync key once it accepts and its own test opens S: node 0
+    // registers the genesis, then the rest of the recorded path (spec/sync-ids.md §6 Walk)
     let path = w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.clone();
     assert_eq!(w.store(1).head(&s).unwrap().map(|h| h.id()), path.steps.last().map(|(st, _)| st.id()), "S's path registered at node 1");
     let c = w.write(0, |e| {
@@ -73,8 +73,8 @@ fn kept_then_removed() -> (World, Tid, SyncId) {
 }
 
 // spec/sync-judgement.md §6 (Keeps; Stops), spec/sync-inbox.md §2 (Logging), spec/sync-ids.md
-// §6 (Taking a stamped entry; Walk: a Behind answered 13 registers the path from genesis, tested
-// again at each filter of the source), spec/sync-opens.md §1 (whom to dial):
+// §6 (Taking a stamped entry; Walk: moving it, genesis first), spec/sync-opens.md §1 (whom to
+// dial), §4 (Admissible: with no head, its newest sync secret's key):
 // `kept_then_removed`: the removal's notice reaches node 1 as the grant did and stops it: S
 // shredded with its path.
 #[test]

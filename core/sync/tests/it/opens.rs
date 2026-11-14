@@ -83,9 +83,52 @@ fn a_reader_opens_a_store_at_its_step_spec_sync_opens_4() {
     p.run();
     assert!(p.a.opens.record(p.ca).is_none() && p.b.opens.record(p.cb).is_none());
     assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
-    let m = &p.a.opens.members(p.ca)[&S];
-    assert_eq!(m.class, SourceClass::Store);
-    assert!(m.step == Some(st.id) || m.by == Credential::SyncProof);
+    assert_eq!(p.a.opens.members(p.ca)[&S].class, SourceClass::Store);
+}
+
+// spec/sync-opens.md §4 (Admissible: keeping S unread with no head, its step is the newest sync
+// secret it holds) and spec/sync-ids.md §6 (Walk): a node granted sync that starts keeping S
+// after the reader tested it there (nothing shown then) opens S by its own test when it does:
+// the reader tests nothing again. NetOpen `ON_shownkey` (a store with no step shows and tests
+// nothing) fails this.
+#[test]
+fn a_store_granted_later_opens_with_no_head_spec_sync_opens_4() {
+    let st = StepKeys::new(1, 0);
+    let mut r = knowing(1, 2);
+    let k = knowing(2, 1);
+    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
+    r.table.judge_as(S, tid(2), J::SyncHolder);
+    r.settle();
+    let mut p = Pair::new(r, k, account(1), account(2));
+    p.run();
+    assert!(!p.a.open(p.ca, &S));
+    let tested = p.a.opens.work().tested;
+    p.b.table.set(S, Some(store_no_head(&st)));
+    p.b.settle();
+    p.run();
+    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "open both ways");
+    assert_eq!(p.a.opens.members(p.ca)[&S].class, SourceClass::Store);
+    assert_eq!(p.a.opens.work().tested, tested, "the reader tested nothing again");
+}
+
+// spec/sync-ids.md §6 (Walk: a refused Hit counts as none shown): a reader whose walk Hit at a
+// sync holder is refused (a false positive of the filter) asks Behind next.
+#[test]
+fn a_refused_walk_hit_asks_behind_spec_sync_ids_6() {
+    let st = StepKeys::new(1, 0);
+    let mut r = knowing(1, 9);
+    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
+    r.table.judge_as(S, tid(9), J::SyncHolder);
+    r.settle();
+    let (mut adv, _) = Adv::dials(&mut r, account(9), [2; 32]);
+    adv.filter(&mut r, &[st.pk()], &S);
+    let sent = r.sent();
+    let Some(Msg::Offer { id, items }) = of_kind(&sent, 37).pop() else { panic!("an Offer") };
+    assert!(matches!(items.as_slice(), [OfferItem::Hit { .. }]), "the walk's sync key shown: Hit, {items:?}");
+    adv.send(&mut r, Msg::Shared { id, items: vec![osis_proto::SharedItem::code(Code::DECLINED)] });
+    let sent = r.sent();
+    let Some(Msg::Offer { items, .. }) = of_kind(&sent, 37).pop() else { panic!("a Behind follows") };
+    assert!(matches!(items.as_slice(), [OfferItem::Behind(b)] if b.sync_id == S), "{items:?}");
 }
 
 // spec/sync-opens.md §5 (Proof an answer carries: its head at a node keeping S unread): a node
@@ -1192,9 +1235,10 @@ fn a_crash_before_a_step_writes_its_records_spec_sync_opens_3() {
     }
 }
 
-/// Behind items a reader sends per arrival of an unchanged filter from Adv, an account J judges a
-/// sync holder of `n` sync IDs it does not keep (each Behind answered 13).
-fn behinds_per_arrival(n: u8) -> usize {
+/// Behind items a reader sends at each of three arrivals of Adv's filter (whole, then empty
+/// additions), Adv an account J judges a sync holder of `n` sync IDs it does not keep (each
+/// Behind answered 13).
+fn behinds_per_arrival(n: u8) -> Vec<usize> {
     let mut r = knowing(1, 9);
     for i in 0..n {
         let s = SyncId([i; 16]);
@@ -1230,14 +1274,14 @@ fn behinds_per_arrival(n: u8) -> usize {
         }
         per.push(count);
     }
-    per[2]
+    per
 }
 
-// spec/sync-ids.md §6 (walk: tested again at each arrival of the source's filter): an arrival of
-// a filter that changed nothing costs the same at n and 10n walks. Fails: each arrival asks Behind
-// again on every walk (issues/sync-walk-cost.md).
+// spec/sync-ids.md §6 (Walk: tested as spec/sync-opens.md §5 Testing says, on this node's own
+// changes): a reader asks Behind once per sync ID its own change made due; an arrival of the
+// peer's filter asks nothing again, at n and 10n walks alike.
 #[test]
-#[ignore = "fails: issues/sync-walk-cost.md"]
 fn an_unchanged_filter_asks_behind_on_nothing_spec_sync_ids_6() {
-    assert_eq!(behinds_per_arrival(2), behinds_per_arrival(20));
+    assert_eq!(behinds_per_arrival(2), vec![2, 0, 0]);
+    assert_eq!(behinds_per_arrival(20), vec![20, 0, 0]);
 }

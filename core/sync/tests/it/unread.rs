@@ -118,7 +118,7 @@ fn keeps_and_opens_by_head_spec_sync_judgement_6() {
     let k = Keep::new(&[0]);
     let c = k.kept().and_then(|k| k.credentials).expect("opens at its head");
     assert_eq!(c.sync.verifying_key(), step(sync_id(0), 0).keys.sync);
-    assert_eq!(c.deposit, step(sync_id(0), 0).keys.deposit);
+    assert_eq!(c.deposit, Some(step(sync_id(0), 0).keys.deposit));
     assert_eq!(c.proof, Secret32::from_bytes(osis_crypto::kdf::sync_proof(&osis_crypto::label_role_seed(LabelRole::Sync, &sync_secret(0)))));
     assert!(!k.stranded());
 }
@@ -144,6 +144,25 @@ fn stranded_opens_by_no_older_key_spec_sync_opens_4() {
     assert!(k.opens());
     k.register(1);
     assert!(!k.opens(), "epoch 0's secret is held, but the head is step 1's");
+}
+
+// spec/sync-opens.md §4 (keeping S unread: with no head, its step is the newest sync secret it
+// holds, its grant's): before any step is registered S opens by that secret's sync key and
+// proof, at no step, with no deposit key or claim set; the first step registered moves it to the
+// head.
+#[test]
+fn no_head_opens_by_its_newest_sync_secret_spec_sync_opens_4() {
+    let mut k = Keep::new(&[0, 1]);
+    k.path.steps.clear();
+    let c = k.kept().and_then(|k| k.credentials).expect("opens with no head");
+    assert_eq!((c.step, c.sync.verifying_key(), c.deposit), (None, step(sync_id(0), 1).keys.sync, None));
+    assert!(!k.stranded());
+    k.held.clear();
+    assert!(!k.opens(), "no sync secret: nothing");
+    k.held.push(1);
+    k.register(0);
+    k.held.push(0);
+    assert_eq!(k.kept().unwrap().credentials.unwrap().sync.verifying_key(), step(sync_id(0), 0).keys.sync, "at the head");
 }
 
 // spec/sync-judgement.md §6 (stops): a notice signed by no delete key of the path changes

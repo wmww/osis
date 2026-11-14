@@ -81,6 +81,9 @@ impl Net for FakeNet {
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member> {
         self.members.get(&(conn, *s)).cloned()
     }
+    fn head(&self, _conn: ConnId, _s: &SyncId) -> Option<StepId> {
+        None
+    }
     fn present(&self, conn: ConnId, s: &SyncId, b: &BlobId) -> bool {
         self.present.contains(&(conn, *s, *b))
     }
@@ -146,7 +149,7 @@ impl T {
     }
 
     fn join(&mut self, c: ConnId, s: SyncId, class: SourceClass) {
-        self.net.members.insert((c, s), Member { class, by: Credential::SyncKey, until: None, step: None });
+        self.net.members.insert((c, s), Member { class, by: Credential::SyncKey, until: None });
         let _ = Moved::Joined(c, s, osis_sync::opens::Rejoin::Held);
         self.offers.joined(c, &s, &self.net);
         self.settle();
@@ -454,7 +457,20 @@ fn registers_steps_after_source_step_spec_sync_ids_6() {
     let after = Progress { at: Some(st.id(1)), ..Progress::default() };
     assert_eq!(sends(&plan_at(&st, Some(st.id(0)), after, &all)), Some(st.id(2)), "registered there: the next");
     assert_eq!(plan_at(&st, Some(st.id(2)), Progress::default(), &all), Plan::Nothing, "at the head");
-    assert_eq!(plan_at(&st, None, Progress::default(), &all), Plan::Nothing, "a source on a step not recorded");
+    assert_eq!(plan_at(&st, Some(StepId([7; 32])), Progress::default(), &all), Plan::Nothing, "a source on a step not recorded");
+}
+
+// spec/sync-ids.md §6 (walk: moving it, from genesis while the source's step is not known): a
+// source whose stream named no head gets the genesis step at once, whatever it holds; refused
+// there, nothing until its head event; once registered there, the next.
+#[test]
+fn a_source_holding_no_step_gets_genesis_first_spec_sync_ids_6() {
+    let st = Steps::new(3);
+    assert_eq!(sends(&plan_at(&st, None, Progress::default(), &[])), Some(st.id(0)), "genesis, at once");
+    assert_eq!(plan_at(&st, None, Progress { stuck: Some(None), ..Progress::default() }, &[]), Plan::Wait, "refused: waits for a head event");
+    let all = [st.id(0), st.id(1), st.id(2)];
+    let at = Progress { at: Some(st.id(0)), ..Progress::default() };
+    assert_eq!(sends(&plan_at(&st, None, at, &all)), Some(st.id(1)), "then the next");
 }
 
 // spec/sync-ids.md §6 (register; refused for now): one Register out at a time; refused for now (4,

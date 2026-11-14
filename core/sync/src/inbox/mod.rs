@@ -46,7 +46,7 @@ use crate::types::{ConnId, Cx, Entry, Result, Waiting, Wrap};
 use osis_base::{BlobId, SyncId, Tid, WallMs};
 use osis_crypto::NodeRng;
 use osis_engine::Engine;
-use osis_label::{DialHint, ShareLink};
+use osis_label::{DialHint, ShareLink, StepId};
 use osis_proto::Msg;
 use std::collections::BTreeSet;
 
@@ -55,6 +55,8 @@ pub trait Net {
     /// The known actors a connection's proofs count for (opens' `proven`).
     fn actors(&self, conn: ConnId) -> Vec<Tid>;
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member>;
+    /// That source's step for S: the head its stream last named (spec/sync-ids.md §6 Walk).
+    fn head(&self, conn: ConnId, s: &SyncId) -> Option<StepId>;
     /// Whether that source's stream showed `b` present under S.
     fn present(&self, conn: ConnId, s: &SyncId, b: &BlobId) -> bool;
     /// Moves at each arrival of the peer's filter (spec/sync-inbox.md §3: a refused Deposit item
@@ -81,6 +83,9 @@ impl Net for Links<'_> {
     }
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member> {
         self.opens.members(conn).get(s).cloned()
+    }
+    fn head(&self, conn: ConnId, s: &SyncId) -> Option<StepId> {
+        self.streams.known().head(self.streams.source(self.opens, conn), s)
     }
     fn present(&self, conn: ConnId, s: &SyncId, b: &BlobId) -> bool {
         self.streams.knows(self.streams.source(self.opens, conn), Some(conn), s, b)

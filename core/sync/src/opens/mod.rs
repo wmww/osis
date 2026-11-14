@@ -57,8 +57,6 @@ pub struct Member {
     pub by: Credential,
     /// Being ended: served up to this position.
     pub until: Option<Position>,
-    /// The source's step for S (spec/sync-ids.md §6 Walk).
-    pub step: Option<StepId>,
 }
 
 /// A change of a connection's shared set: the driver hands each to `Streams::moved`.
@@ -131,9 +129,6 @@ struct Record {
     /// Where each member that left rejoins: held by this side's stream (the connection ended), a
     /// Lost's cursor, or from the start (a digest difference, or this side closed it).
     stopped: BTreeMap<SyncId, Rejoin>,
-    /// The sync IDs this side walks at the peer (J a sync holder, no Hit shown) and has not
-    /// opened there: tested again at each arrival of the peer's filter (spec/sync-ids.md §6 Walk).
-    walking: BTreeSet<SyncId>,
     acked_pos: u64,
     own: OwnFilter,
     peer: Option<PeerFilter>,
@@ -194,8 +189,6 @@ enum Req {
     Beacons { generation: u64 },
     Offer,
     Lost,
-    /// A genesis step registered at a source that keeps S without a step (a Behind answered 13).
-    Register,
 }
 
 /// An Offer item sent, to read its answer by.
@@ -233,6 +226,8 @@ struct WalkState {
     /// Steps a Behind was refused on, this walk.
     refused: BTreeSet<Option<StepId>>,
     asked: bool,
+    /// A Hit on a walk credential refused (a false positive of the filter): it asks Behind.
+    missed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -269,9 +264,6 @@ struct Conn {
     /// Members with an `until`: what a reported position may close.
     ending: BTreeSet<SyncId>,
     walks: BTreeMap<SyncId, WalkState>,
-    /// A filter arrived since the last test: every walk not open here is tested again with the
-    /// pending sync IDs (spec/sync-ids.md §6 Walk: at each arrival of the source's filter).
-    rewalk: bool,
     /// It lost its record to this connection (spec/sync-opens.md §1 One connection per pair):
     /// it closes, and acts on nothing meanwhile.
     lost_to: Option<ConnId>,
@@ -743,7 +735,6 @@ impl Opens {
                     r.members.remove(&s);
                     r.basis.remove(&s);
                     r.stopped.remove(&s);
-                    r.walking.remove(&s);
                 }
                 for d in self.dirty.values_mut() {
                     d.members.remove(&s);
@@ -795,7 +786,6 @@ impl Opens {
             reported: Positions::default(),
             ending: BTreeSet::new(),
             walks: BTreeMap::new(),
-            rewalk: false,
             lost_to: None,
         };
         if bind.dialer {
@@ -859,7 +849,7 @@ impl Opens {
         } else {
             random16(ctx.holds.rng())
         };
-        self.records.insert(id, Record { r, actors, kept, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), walking: BTreeSet::new(), acked_pos: 0, own: OwnFilter::default(), peer: None });
+        self.records.insert(id, Record { r, actors, kept, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None });
         id
     }
 
@@ -997,7 +987,7 @@ impl Opens {
             (Req::Resume, Msg::Resumed { nonce, tag, .. }) => self.resumed(ctx, conn, nonce, tag, moved),
             (Req::Resume, _) => self.no_record(ctx, conn, moved),
             // the source's filter shows its new head's credentials when it moves: nothing to do
-            (Req::NoRecord | Req::Lost | Req::Register, _) => {}
+            (Req::NoRecord | Req::Lost, _) => {}
             (Req::Beacons { generation }, m) => self.beacons_answered(ctx, conn, id, generation, &m),
             (Req::Offer, Msg::Shared { items, .. }) => self.answered(ctx, conn, items, moved),
             (Req::Offer, _) => self.answered(ctx, conn, Vec::new(), moved),
@@ -1313,7 +1303,6 @@ impl Opens {
         // generation.
         c.tested_pos = c.tested_pos.min(r.acked_pos);
         c.test_due = true;
-        c.rewalk = true;
         if let Some(rid) = c.rec {
             let d = self.dirty(rid);
             d.core = true;
@@ -1338,7 +1327,7 @@ impl Opens {
         let mut ok = |e: &Option<osis_crypto::Epoch>| j != J::Departed || e.as_ref().is_some_and(|e| ctx.holds.covers_departures(s, e));
         let shows = creds.shows.iter().filter(|(_, e)| ok(e)).map(|(x, _)| x.clone()).collect();
         let tests = creds.tests.iter().filter(|(_, e)| ok(e)).map(|(x, _)| x.clone()).collect();
-        let step = creds.step.as_ref().filter(|(_, _, e)| ok(e)).map(|(_, k, _)| k.clone());
+        let step = creds.step.as_ref().filter(|(_, e)| ok(e)).map(|(k, _)| k.clone());
         Some(Adm { j, shows, tests, step })
     }
 
@@ -1355,28 +1344,29 @@ impl Opens {
         let Some(pf) = r.peer.clone() else { return };
         let (rr, bind, from) = (r.r, c.bind, c.tested_pos);
         let mut pending = self.changed.after(from);
-        // a walk not open here: the source's credentials may have moved (spec/sync-ids.md §6 Walk)
-        if c.rewalk && !r.walking.is_empty() {
+        // a walk Hit refused: S asks Behind (spec/sync-ids.md §6 Walk)
+        let missed: Vec<SyncId> = c.walks.iter().filter(|(_, w)| w.missed).map(|(s, _)| *s).collect();
+        if !missed.is_empty() {
             let have: BTreeSet<SyncId> = pending.iter().copied().collect();
-            pending.extend(r.walking.iter().filter(|s| !have.contains(s)));
+            pending.extend(missed.into_iter().filter(|s| !have.contains(s)));
         }
         let end = self.changed.end;
         let mut sent = Vec::new();
         let mut items = Vec::new();
         let mut cut = false;
-        // each S tested: whether it is walked here and not open (a sync holder that showed nothing)
-        let mut walk: Vec<(SyncId, bool)> = Vec::new();
         for s in pending {
+            // a refused walk Hit counts as none shown, once
+            let missed = self.conns.get_mut(&conn).and_then(|c| c.walks.get_mut(&s)).is_some_and(|w| std::mem::take(&mut w.missed));
             if self.member(conn, &s).is_some() {
                 continue;
             }
-            let Some(adm) = self.admissible(ctx, conn, &s) else {
-                walk.push((s, false));
-                continue;
-            };
+            let Some(adm) = self.admissible(ctx, conn, &s) else { continue };
             self.work.tested += 1;
             let mut hit = false;
             for t in &adm.tests {
+                if missed && t.step().is_some() {
+                    continue;
+                }
                 let m = t.matched(&s);
                 let b = beacon_of(&m, &s, &rr);
                 self.work.beacons += 1;
@@ -1409,20 +1399,15 @@ impl Opens {
             } else if !hit && adm.j == J::SyncHolder {
                 self.behind_item(ctx, conn, &s, &adm, &mut items, &mut sent);
             }
-            walk.push((s, !hit && adm.j == J::SyncHolder));
             if items.len() >= MAX_OFFER_ITEMS {
                 cut = true;
                 break;
             }
         }
-        for (s, on) in walk {
-            self.set_walking(conn, s, on);
-        }
         let Some(c) = self.conns.get_mut(&conn) else { return };
         if !cut {
             c.tested_pos = end;
             c.test_due = false;
-            c.rewalk = false;
         }
         items.truncate(MAX_OFFER_ITEMS);
         sent.truncate(MAX_OFFER_ITEMS);
@@ -1445,8 +1430,8 @@ impl Opens {
         let cand = known.iter().chain(adm.tests.iter()).find(|t| matches!(t, Tested::SyncKey { .. } | Tested::Claim { .. } | Tested::Static { .. }) && !w.refused.contains(&t.step()));
         let Some(t) = cand else { return };
         let (key, step) = match t {
-            Tested::SyncKey { key, step } | Tested::Claim { key, step, .. } => (key, Some(*step)),
-            Tested::Static { key, step } => (key, *step),
+            Tested::Claim { key, step, .. } => (key, Some(*step)),
+            Tested::SyncKey { key, step } | Tested::Static { key, step } => (key, *step),
             _ => return,
         };
         w.asked = true;
@@ -1467,7 +1452,17 @@ impl Opens {
         for (i, x) in sent.into_iter().enumerate() {
             let a = items.get(i).cloned().unwrap_or(SharedItem::code(Code::DECLINED));
             match x {
-                Sent::Hit { s, cred, beacon } if a.code == Code::OK => {
+                // A refused Hit on a walk credential (a false positive of the filter) counts as
+                // none shown: S asks Behind in the next Offer (spec/sync-ids.md §6 Walk).
+                Sent::Hit { s, cred, .. } if a.code != Code::OK => {
+                    if cred.step().is_some()
+                        && self.member(conn, &s).is_none()
+                        && let Some(c) = self.conns.get_mut(&conn)
+                    {
+                        c.walks.entry(s).or_default().missed = true;
+                    }
+                }
+                Sent::Hit { s, cred, beacon } => {
                     let m = cred.matched(&s);
                     // The tag: computable only with the credential and S, by the replier's side.
                     // Without it the peer showed no knowledge of S: no Lost names S to it (a
@@ -1488,13 +1483,13 @@ impl Opens {
                         continue;
                     }
                     let by = cred.credential(&s);
-                    self.open(conn, s, Member { class: source_class(&by, true), by, until: None, step: cred.step() }, Some(beacon), moved);
+                    self.open(conn, s, Member { class: source_class(&by, true), by, until: None }, Some(beacon), moved);
                 }
                 Sent::ByRole(s) if a.code == Code::OK => {
                     accepted.insert(s);
                     // An accepted ByRole opens S at its sender while J is still reader there.
                     if self.member(conn, &s).is_none() && self.admissible(ctx, conn, &s).is_some_and(|a| a.j == J::Reader) {
-                        self.open(conn, s, Member { class: SourceClass::Reader, by: Credential::J, until: None, step: None }, None, moved);
+                        self.open(conn, s, Member { class: SourceClass::Reader, by: Credential::J, until: None }, None, moved);
                     }
                 }
                 Sent::Behind(s, named) => {
@@ -1509,17 +1504,9 @@ impl Opens {
                                 retest = true;
                             }
                         }
-                        // The source keeps S with no step: register the recorded path from genesis
-                        // (spec/sync-ids.md §6 Walk), its genesis step first; the rest follows
-                        // once S opens there by that step's credential (Steps).
-                        (Code::UNKNOWN_SYNC_ID, _) => {
-                            if let Some((step, claim_set)) = ctx.holds.genesis(&s) {
-                                let id = ctx.wire.request(conn, Msg::Register { id: 0, sync_id: s, step, claim_set });
-                                if let Some(c) = self.conns.get_mut(&conn) {
-                                    c.reqs.insert(id, Req::Register);
-                                }
-                            }
-                        }
+                        // The source does not keep S: once it does, its filter shows its step's
+                        // sync key (spec/sync-opens.md §4 Admissible) and a test opens it.
+                        (Code::UNKNOWN_SYNC_ID, _) => {}
                         // Refused on a step: off the source's path; ask on an earlier one.
                         _ => {
                             w.refused.insert(named);
@@ -1636,7 +1623,7 @@ impl Opens {
         };
         if self.member(conn, &s).is_none() {
             let by = shown.credential();
-            self.open(conn, s, Member { class: source_class(&by, false), by, until: None, step: None }, Some(beacon), moved);
+            self.open(conn, s, Member { class: source_class(&by, false), by, until: None }, Some(beacon), moved);
         }
         SharedItem { code: Code::OK, tag: Some(bind.tag(shown.matched(), &s, &beacon)), grant, sig: answer_sig }
     }
@@ -1647,7 +1634,7 @@ impl Opens {
         let Some(adm) = self.admissible(ctx, conn, &s) else { return SharedItem::code(Code::DECLINED) };
         if adm.j == J::Reader {
             if self.member(conn, &s).is_none() {
-                self.open(conn, s, Member { class: SourceClass::Reader, by: Credential::J, until: None, step: None }, None, moved);
+                self.open(conn, s, Member { class: SourceClass::Reader, by: Credential::J, until: None }, None, moved);
             }
             return SharedItem::code(Code::OK);
         }
@@ -1668,7 +1655,7 @@ impl Opens {
             Some((_, sh, b)) => {
                 if self.member(conn, &s).is_none() {
                     let by = sh.credential();
-                    self.open(conn, s, Member { class: SourceClass::Reader, by, until: None, step: None }, Some(b), moved);
+                    self.open(conn, s, Member { class: SourceClass::Reader, by, until: None }, Some(b), moved);
                 }
                 SharedItem::code(Code::OK)
             }
@@ -1682,20 +1669,9 @@ impl Opens {
         self.members(conn).get(s)
     }
 
-    /// Whether S is walked at `conn`'s peer and not open there, in its record.
-    fn set_walking(&mut self, conn: ConnId, s: SyncId, on: bool) {
-        let Some(rid) = self.conns.get(&conn).and_then(|c| c.rec) else { return };
-        let Some(r) = self.records.get_mut(&rid) else { return };
-        let moved = if on { r.walking.insert(s) } else { r.walking.remove(&s) };
-        if moved {
-            self.dirty(rid).members.insert(s);
-        }
-    }
-
     fn open(&mut self, conn: ConnId, s: SyncId, m: Member, beacon: Option<[u8; 32]>, moved: &mut Vec<Moved>) {
         let Some(rid) = self.conns.get(&conn).and_then(|c| c.rec) else { return };
         let Some(r) = self.records.get_mut(&rid) else { return };
-        r.walking.remove(&s);
         r.members.insert(s, m);
         r.basis.insert(s, beacon);
         let rejoin = r.stopped.remove(&s).unwrap_or(Rejoin::Held);

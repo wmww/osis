@@ -29,18 +29,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// What a node keeping S unread opens and acts with, from its sync record and its store's head
-/// (spec/sync-opens.md §4: it shows its head's sync key, the sync proof of it, its deposit key and
-/// the head's claim set).
+/// (spec/sync-opens.md §4: it shows its step's sync key, the sync proof of it, and its head's
+/// deposit key and claim set).
 #[derive(Clone, Debug)]
 pub struct UnreadCredentials {
-    /// The head: the step whose sync key answers a Hit (spec/sync-opens.md §5 Proof).
-    pub step: StepId,
-    /// The head's sync key.
+    /// Its step, whose sync key answers a Hit (spec/sync-opens.md §5 Proof): the head, or none
+    /// before any step is registered (the sync key of the newest sync secret held then).
+    pub step: Option<StepId>,
+    /// The step's sync key.
     pub sync: SigningSecret,
     /// Its sync proof (spec/sync-ids.md §2).
     pub proof: Secret32,
     /// The head's deposit key (public: a node keeping S unread signs no deposit).
-    pub deposit: VerifyingKey,
+    pub deposit: Option<VerifyingKey>,
     /// The head's claim set.
     pub claims: Option<ClaimSet>,
 }
@@ -57,7 +58,7 @@ pub struct Kept {
     /// Its head moved to a step whose sync key no held secret derives (spec/sync-judgement.md §6
     /// Stranded): it opens S nowhere but keeps its store.
     pub stranded: bool,
-    /// `None` while stranded or before any step is registered.
+    /// `None` while stranded, or holding no sync secret.
     pub credentials: Option<Arc<UnreadCredentials>>,
 }
 
@@ -103,18 +104,25 @@ pub fn judge(j: &Judged) -> Verdict {
     if !j.listed && j.own_elsewhere {
         return Verdict::Leave;
     }
-    let Some((head, claims)) = j.steps.last() else { return Verdict::Keep(Kept { stranded: false, credentials: None }) };
-    let Some((_, secret, _)) = secrets.iter().find(|(k, _, _)| *k == head.keys.sync) else {
+    let creds = |step: Option<StepId>, secret: &Secret32, head: Option<&(Step, Option<ClaimSet>)>| {
+        Some(Arc::new(UnreadCredentials {
+            step,
+            sync: label_role_key(LabelRole::Sync, secret),
+            proof: Secret32::from_bytes(sync_proof(&label_role_seed(LabelRole::Sync, secret))),
+            deposit: head.map(|(h, _)| h.keys.deposit),
+            claims: head.and_then(|(_, c)| c.clone()),
+        }))
+    };
+    // no step registered yet: its step is the newest sync secret it holds (its grant's), so a
+    // reader's test finds S here and registers its path (spec/sync-opens.md §4 Admissible)
+    let Some(head) = j.steps.last() else {
+        let newest = j.record.and_then(|r| r.secrets.values().next_back());
+        return Verdict::Keep(Kept { stranded: false, credentials: newest.and_then(|x| creds(None, x, None)) });
+    };
+    let Some((_, secret, _)) = secrets.iter().find(|(k, _, _)| *k == head.0.keys.sync) else {
         return Verdict::Keep(Kept { stranded: true, credentials: None });
     };
-    let credentials = UnreadCredentials {
-        step: head.id(),
-        sync: label_role_key(LabelRole::Sync, secret),
-        proof: Secret32::from_bytes(sync_proof(&label_role_seed(LabelRole::Sync, secret))),
-        deposit: head.keys.deposit,
-        claims: claims.clone(),
-    };
-    Verdict::Keep(Kept { stranded: false, credentials: Some(Arc::new(credentials)) })
+    Verdict::Keep(Kept { stranded: false, credentials: creds(Some(head.0.id()), secret, Some(head)) })
 }
 
 /// spec/sync-judgement.md §6 Stops: the notice's epoch is at or past every sync epoch held (a
