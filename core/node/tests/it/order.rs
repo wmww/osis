@@ -730,8 +730,6 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     };
     for i in 0..3 {
         collect(&mut lp, i, &mut seen, &mut packs, &mut authors, &mut own);
-        // the purges each writer applies from here on (`Engine::purge_resnapshots`)
-        lp.peers[i].engine.take_changed();
     }
     let base = packs.len();
     let mut things = vec![g];

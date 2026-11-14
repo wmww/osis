@@ -437,11 +437,12 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
         crate::apply::rebuild(tx, t, ak)?;
         crate::engine::refs::clear(tx, t, ak)?;
         tx.txn.drop_aspect(t, ak)?;
-        for p in [records::ASPECTS, records::SUSPECT, records::FORGOTTEN] {
+        for p in [records::ASPECTS, records::SUSPECT, records::FORGOTTEN, records::RESNAPSHOTS_OWED] {
             tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
         }
-        // as a node that never held it (spec/commits.md §5 Forgetting)
+        // as a node that never held it (spec/commits.md §5 Forgetting); no write on it is owed
         tx.core.ix.forgotten.remove(&k);
+        tx.core.ix.resnapshots_owed.remove(t, ak);
         if tx.core.ix.valueless.get(&k).is_some() {
             tx.core.touch();
             tx.core.ix.valueless.remove(&k);
@@ -707,10 +708,11 @@ impl crate::engine::Engine {
 pub(super) fn forget_aspect_rows(tx: &mut Tx<'_>, t: &Tid, ak: &Ak) -> Result<()> {
     let k = (*t, ak.clone());
     tx.core.ix.forgotten.remove(&k);
+    tx.core.ix.resnapshots_owed.remove(t, ak);
     if tx.core.ix.valueless.remove(&k).is_some() {
         tx.core.touch();
     }
-    for p in [records::ASPECTS, records::VALUELESS, records::PURGES, records::SUSPECT, records::FORGOTTEN] {
+    for p in [records::ASPECTS, records::VALUELESS, records::PURGES, records::SUSPECT, records::FORGOTTEN, records::RESNAPSHOTS_OWED] {
         tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
     }
     for p in [records::LEFTOVER, records::PURGES_NAMED] {

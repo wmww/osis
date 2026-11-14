@@ -700,8 +700,8 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
 /// purge request dropped something there, with the named bodies it had applied (`held`, joined to
 /// any owed already): durable (`records::RESNAPSHOTS_OWED`), so a stop before
 /// `Engine::purge_resnapshots` writes it, or a snapshot that may come only later, keeps the duty
-/// (spec/commits.md §5 Purge). Nothing on an aspect never compacted, or where this node does not
-/// write.
+/// (spec/commits.md §5 Purge); an ephemeral aspect's in memory, as its data. Nothing on an aspect
+/// never compacted, or where this node does not write.
 fn owe_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, held: BTreeSet<CommitId>) -> Result<()> {
     if !super::snapshot::compacted(ak) || !writes_on(tx.core, tid) {
         return Ok(());
@@ -714,7 +714,13 @@ fn owe_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, held: BTreeSet<CommitId>)
         return Ok(());
     }
     let v: Vec<u8> = all.iter().flat_map(|c| c.0).collect();
-    tx.txn.put_local(&records::aspect_key(records::RESNAPSHOTS_OWED, tid, ak), &v, Shred::No)?;
+    // of the aspect's class whatever the transaction's: an ephemeral aspect's duty goes with its
+    // data at a stop
+    let mode = tx.txn.is_memory();
+    tx.txn.set_memory(ak.ephemeral());
+    let put = tx.txn.put_local(&records::aspect_key(records::RESNAPSHOTS_OWED, tid, ak), &v, Shred::No);
+    tx.txn.set_memory(mode);
+    put?;
     tx.core.ix.resnapshots_owed.insert(*tid, ak.clone(), all);
     Ok(())
 }

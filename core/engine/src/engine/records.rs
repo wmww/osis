@@ -34,7 +34,7 @@ pub const NAMED_PERMANENT: &[u8] = b"z/";
 /// Purge requests naming a commit's deltas: `pn/` + aspect key + commit ID, the requests.
 pub const PURGES_NAMED: &[u8] = b"pn/";
 /// Re-snapshots owed after purge requests (`Indexes::resnapshots_owed`): `ro/` + aspect key, the
-/// named bodies applied here (commit IDs, 32 bytes each).
+/// named bodies applied here (commit IDs, 32 bytes each); in memory for an ephemeral aspect.
 pub const RESNAPSHOTS_OWED: &[u8] = b"ro/";
 /// Per aspect, the newest `ts` of a durable commit forgotten on it (`Indexes::forgotten`):
 /// `f/` + aspect key (`aspect_key`), gone with the thing.
