@@ -443,13 +443,15 @@ impl Core {
     }
 
     /// The commits on this node's account's devices actor `d` signed (inner signature) by one of
-    /// `nodes` that count here: what a removal of them from D lists in its frontier, so their
-    /// word on D stands only as far as this node held it (spec/permissions.md §5.1, Frontier;
+    /// `nodes` that count here, and the commits creating D held: what a removal of them from D
+    /// lists in its frontier, so their word on D (and a creating commit made again) stands only
+    /// as far as this node held it (spec/permissions.md §5.1, Frontier;
     /// §5.4, Following, at a node of P).
     pub(crate) fn devices_word(&self, d: &Tid, nodes: &BTreeSet<Tid>) -> BTreeSet<CommitId> {
         let Some((p, _)) = self.accounts.iter().find(|(_, a)| a.devices == *d) else { return BTreeSet::new() };
         let Some(dv) = self.account_view(p).and_then(|v| v.devices.clone()) else { return BTreeSet::new() };
-        dv.commits.iter().filter(|(c, (s, _))| s.is_some_and(|s| nodes.contains(&s)) && self.ix.commits.get(c).is_some_and(|m| self.standing(c, &m.view) == EpochStanding::Counts)).map(|(c, _)| *c).collect()
+        let first = dv.first.iter().map(|(c, _)| c);
+        dv.commits.iter().filter(|(c, (s, _))| s.is_some_and(|s| nodes.contains(&s)) && self.ix.commits.get(c).is_some_and(|m| self.standing(c, &m.view) == EpochStanding::Counts)).map(|(c, _)| c).chain(first).copied().collect()
     }
 
     /// The node that signed `id` (a commit of held account `a` signed at the epoch with signing
@@ -486,7 +488,7 @@ impl Core {
                 if o.edge.is_some() {
                     d.grants.insert((*c, o.holder));
                     if created.contains(c) {
-                        d.first.insert(o.holder);
+                        d.first.insert((*c, o.holder));
                     }
                 } else if let Some(s) = s {
                     removals.push((o.holder, e, s, rc.frontier.as_ref().map(|f| f.commits.clone()).unwrap_or_default()));
@@ -535,7 +537,7 @@ impl Core {
         });
         // the order this node came to hold the rotations and D's grants in: by receipt, one
         // millisecond's by ID
-        let grants = devices.iter().flat_map(|d| d.grants.iter().map(|(g, _)| *g));
+        let grants = devices.iter().flat_map(|d| d.grants.iter().map(|(g, _)| *g).chain(d.first.iter().map(|(c, _)| *c)));
         let mut order: Vec<(osis_base::WallMs, CommitId)> = rots.iter().map(|(id, ..)| *id).chain(grants).filter_map(|id| Some((self.ix.commits.get(&id)?.received, id))).collect();
         order.sort();
         order.dedup();

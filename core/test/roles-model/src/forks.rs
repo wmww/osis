@@ -95,6 +95,9 @@ pub enum Kind {
     Rot { at: u32, names: Vec<u32>, sup: Vec<u32>, removes: Option<usize>, covers: Vec<u32> },
     /// A grant of D to `to` (pairing), signed at `epoch` by `signer`.
     Grant { to: usize },
+    /// A commit creating D that grants it to `to`: the account's first nodes are paired by the
+    /// real one; one made again (X holds the first epoch's key) is forged.
+    Creation { to: usize },
     Content,
     /// The author's word that its writes `names` count.
     Listing { names: Vec<u32> },
@@ -220,6 +223,13 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
         loop {
             let mut changed = false;
             for g in j.held.iter().map(|id| w.item(*id)) {
+                if let Kind::Creation { to } = g.kind {
+                    if known.get(&to).is_none_or(|k| (g.recv[v], g.id) < *k) {
+                        known.insert(to, (g.recv[v], g.id));
+                        changed = true;
+                    }
+                    continue;
+                }
                 let Kind::Grant { to } = g.kind else { continue };
                 let Some(t) = known.get(&g.signer).filter(|_| g.signer != to).map(|t| (*t).max((g.recv[v], g.id))) else { continue };
                 if known.get(&to).is_none_or(|k| t < *k) {
@@ -280,7 +290,8 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
     let mut followed: BTreeSet<u32> = BTreeSet::new();
     // what a node of P reads of D: the grants it holds (pairings), who signed each
     let grants: Vec<&Item> = j0.held.iter().map(|id| w.item(*id)).filter(|i| matches!(i.kind, Kind::Grant { .. })).collect();
-    let to_of = |g: &Item| match g.kind { Kind::Grant { to } => to, _ => unreachable!() };
+    let creations: Vec<&Item> = j0.held.iter().map(|id| w.item(*id)).filter(|i| matches!(i.kind, Kind::Creation { .. })).collect();
+    let to_of = |g: &Item| match g.kind { Kind::Grant { to } | Kind::Creation { to } => to, _ => unreachable!() };
     // removal (node, epoch, rotation carrying it) hits grant g by that node unless its frontier
     // covers g (control 4: unless held before the removal and signed at an epoch strictly
     // before the removal's, or at it)
@@ -294,6 +305,9 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
     // a node other than itself (least fixpoint). Control 3: any key actor that signs.
     let nodes_of = |removals: &[(usize, u32, u32)]| -> BTreeSet<usize> {
         let mut nodes: BTreeSet<usize> = (0..OWN).collect();
+        // a commit creating D pairs its node while every removal's frontier lists it (a remover
+        // lists the creating commits it holds)
+        nodes.extend(creations.iter().filter(|c| removals.iter().all(|(_, _, rr)| w.covers(*rr).contains(&c.id))).map(|c| to_of(c)));
         if control == 3 {
             nodes.insert(Z);
             return nodes;
@@ -503,8 +517,8 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
         for (m, b) in boxed.iter_mut().enumerate() {
             *b = j.roster.contains(&m) && Some(m) != removes;
         }
-        // the removal's frontier: the removed node's D commits held here
-        let covers = removes.map(|y| w.items.iter().filter(|i| i.signer == y && i.recv[n] <= now && matches!(i.kind, Kind::Grant { .. })).map(|i| i.id).collect()).unwrap_or_default();
+        // the removal's frontier: the removed node's D commits held here, and the commits creating D
+        let covers = removes.map(|y| w.items.iter().filter(|i| i.recv[n] <= now && (i.signer == y && matches!(i.kind, Kind::Grant { .. }) || matches!(i.kind, Kind::Creation { .. }))).map(|i| i.id).collect()).unwrap_or_default();
         head = w.add(Kind::Rot { at: h, names, sup, removes, covers }, n, h, now, boxed);
         made.push(head);
     }
@@ -525,7 +539,7 @@ fn deliver(w: &mut World, ids: &[u32], rng: &mut Rng, floor: &[u32; N]) {
         let i = &mut w.items[*id as usize - 1];
         let off = if i.author == B { floor[B] } else { 0 };
         // D's commits go to P's nodes only
-        let d = matches!(i.kind, Kind::Grant { .. });
+        let d = matches!(i.kind, Kind::Grant { .. } | Kind::Creation { .. });
         for m in 0..N {
             if m == i.author || m == Z || d && m >= OWN {
                 continue;
@@ -600,7 +614,7 @@ pub fn random_world(rng: &mut Rng) -> World {
                         // signed as X, or as Z, a key actor it made up
                         // (Z paired in plain sight is a node: what it signs is the stated limit)
                         let signer = if rng.below(2) == 0 || w.z_paired() { X } else { Z };
-                        let covers = removes.map(|y| w.items.iter().filter(|i| i.signer == y && matches!(i.kind, Kind::Grant { .. })).map(|i| i.id).collect()).unwrap_or_default();
+                        let covers = removes.map(|y| w.items.iter().filter(|i| i.signer == y && matches!(i.kind, Kind::Grant { .. }) || matches!(i.kind, Kind::Creation { .. })).map(|i| i.id).collect()).unwrap_or_default();
                         let r = w.add_as(Kind::Rot { at: e, names, sup, removes, covers }, X, signer, e, t, bx);
                         made.push(r);
                         if rng.below(2) == 0 {
@@ -618,7 +632,12 @@ pub fn random_world(rng: &mut Rng) -> World {
                     // pairing Z, re-adding itself, or Z re-adding it
                     k => {
                         let (to, signer) = [(Z, X), (X, X), (X, if w.z_paired() { X } else { Z })][k - 6];
-                        made.push(w.add_as(Kind::Grant { to }, X, signer, e, t, [false; N]));
+                        if k == 6 && !w.z_paired() && rng.below(3) == 0 {
+                            // a commit creating D made again, pairing Z
+                            made.push(w.add_as(Kind::Creation { to: Z }, X, Z, 0, t, [false; N]));
+                        } else {
+                            made.push(w.add_as(Kind::Grant { to }, X, signer, e, t, [false; N]));
+                        }
                     }
                 }
                 deliver(&mut w, &made, rng, &floor);
@@ -666,7 +685,7 @@ pub fn random_world(rng: &mut Rng) -> World {
 /// side first switches to A's removal, its user told) until none owes anything.
 pub fn settle(w: &mut World, settle: u32) -> u32 {
     for i in w.items.iter_mut() {
-        let d = matches!(i.kind, Kind::Grant { .. });
+        let d = matches!(i.kind, Kind::Grant { .. } | Kind::Creation { .. });
         for (m, r) in i.recv.iter_mut().enumerate() {
             if m != Z && !(d && m >= OWN) {
                 *r = (*r).min(settle.max(i.t));
@@ -1142,5 +1161,26 @@ mod tests {
         all_at(&mut w, &[g], 5);
         let j = judge(&w, B, 5);
         assert!(j.counting.contains(&w.removal) && !j.counting.contains(&f), "{j:?}");
+    }
+
+    // X holds the first epoch's key, so it makes a commit creating D again, pairing Z, and B
+    // (offline) holds it before the removal. The removal's frontier lists the commits creating
+    // D its maker held, which this one is not among: once B holds the removal, Z is no node
+    #[test]
+    fn a_commit_creating_d_made_again_pairs_no_one() {
+        let mut w = World::default();
+        let made = act(&mut w, A, 1, Some(X), false);
+        w.removal = made[0];
+        all_at(&mut w, &made, 5);
+        to(&mut w, made[0], X, NEVER);
+        let c = w.add_as(Kind::Creation { to: Z }, X, Z, 0, 2, [false; N]);
+        all_at(&mut w, &[c], 3);
+        assert!(judge(&w, B, 3).roster.contains(&Z));
+        let f = w.add_as(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, X, Z, 0, 6, boxed_to(&[X, Z]));
+        all_at(&mut w, &[f], 7);
+        for n in [A, B, T] {
+            let j = judge(&w, n, 7);
+            assert!(!j.roster.contains(&Z) && !j.counting.contains(&f), "{}: {j:?}", NAMES[n]);
+        }
     }
 }

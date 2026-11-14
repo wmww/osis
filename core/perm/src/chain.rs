@@ -81,8 +81,10 @@ pub struct Devices<E, M> {
     pub commits: BTreeMap<E, (Option<M>, E)>,
     /// D's grants: (commit, among `commits`; node granted).
     pub grants: BTreeSet<(E, M)>,
-    /// The nodes the commit creating D grants D: the account's first.
-    pub first: BTreeSet<M>,
+    /// The grants in commits creating D: (commit, node). A removed node holding the first
+    /// epoch's key can make such a commit again, so one pairs its node only while every removal
+    /// taken lists it in its frontier (a remover lists the creating commits it holds).
+    pub first: BTreeSet<(E, M)>,
 }
 
 impl<E, M> Default for Devices<E, M> {
@@ -247,10 +249,11 @@ impl<E: Ord + Copy> Chain<E> {
         removed.iter().filter(|(y, _)| y == s).any(|(_, rr)| !d.covers.get(rr).is_some_and(|f| f.contains(c)) && !self.readded(*s, *rr, *e, removed, d, nodes))
     }
 
-    /// The nodes under `removed`: the first, and every node a grant of D by another node grants
-    /// that no removal hits (a least fixpoint, so grants cannot vouch for each other).
+    /// The nodes under `removed`: those a commit creating D every removal's frontier lists
+    /// grants, and every node a grant of D by another node grants that no removal hits (a least
+    /// fixpoint, so grants cannot vouch for each other).
     fn nodes<M: Ord + Copy>(&self, removed: &BTreeSet<(M, E)>, d: &Devices<E, M>) -> BTreeSet<M> {
-        let mut nodes = d.first.clone();
+        let mut nodes: BTreeSet<M> = d.first.iter().filter(|(c, _)| removed.iter().all(|(_, rr)| d.covers.get(rr).is_some_and(|f| f.contains(c)))).map(|(_, m)| *m).collect();
         loop {
             let more: Vec<M> = d.grants.iter().filter(|(g, n)| !nodes.contains(n) && d.commits.get(g).is_some_and(|(s, _)| s.is_some_and(|s| s != *n && nodes.contains(&s))) && !self.hit(g, removed, d, &nodes)).map(|(_, n)| *n).collect();
             if more.is_empty() {
@@ -423,10 +426,16 @@ impl<E: Ord + Copy> Chain<E> {
 
 impl<E: Ord + Copy, M: Ord + Copy> Devices<E, M> {
     /// When each key actor came to be known as a node, as a place in the receipt order: the
-    /// first at once; the holder of a grant by another node known, once both the grant and its
+    /// holder of a grant in a commit creating D once it is held; the holder of a grant by another node known, once both the grant and its
     /// signer are. Removals are not read: they decide what stands, not what is held.
     fn known(&self, rank_of: &impl Fn(&E) -> usize) -> BTreeMap<M, usize> {
-        let mut known: BTreeMap<M, usize> = self.first.iter().map(|m| (*m, 0)).collect();
+        let mut known: BTreeMap<M, usize> = BTreeMap::new();
+        for (c, m) in &self.first {
+            let t = rank_of(c);
+            if known.get(m).is_none_or(|k| t < *k) {
+                known.insert(*m, t);
+            }
+        }
         loop {
             let mut changed = false;
             for (g, n) in &self.grants {

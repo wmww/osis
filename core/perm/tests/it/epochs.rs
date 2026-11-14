@@ -261,6 +261,9 @@ fn role_part_over_the_bound_is_refused() {
 const D: usize = usize::MAX;
 
 /// Perm's ID of model item `i`: a rotation's is the epoch it mints, others' 1000 past the item ID.
+/// The commit creating D, as the differential names it.
+const CREATED: u32 = u32::MAX - 1_000_000;
+
 fn pid(w: &World, i: usize) -> u32 {
     match &w.items[i].kind {
         Kind::Rotation { new, .. } => *new,
@@ -312,16 +315,17 @@ fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judge
     }
     let mut received: Vec<usize> = (0..w.items.len()).filter(|&i| held[i] && matches!(w.items[i].kind, Kind::Rotation { .. })).collect();
     received.sort_by_key(|&i| (w.items[i].recv[o], w.items[i].id));
-    let received: Vec<u32> = received.into_iter().map(|i| pid(w, i)).collect();
+    let received: Vec<u32> = std::iter::once(CREATED).chain(received.into_iter().map(|i| pid(w, i))).collect();
     // a node of P reads who minted each rotation and whom it removes
     let devices = (o < w.np).then(|| {
-        // P's nodes paired at D's creation
-        let mut d = Devices { first: (0..w.np).collect(), ..Devices::default() };
+        // P's nodes paired by the commit creating D, held first and on every removal's frontier
+        let mut d = Devices { first: (0..w.np).map(|m| (CREATED, m)).collect(), ..Devices::default() };
         for (i, it) in w.items.iter().enumerate().filter(|(i, _)| held[*i]) {
             if let Kind::Rotation { new, removes, .. } = &it.kind {
                 d.minter.insert(*new, it.author);
                 if let Some(Kind::Removal { node }) = removes.map(|rc| &w.items[rc as usize - 1].kind) {
                     d.removes.insert(*new, [*node].into());
+                    d.covers.insert(*new, [CREATED].into());
                 }
                 let _ = i;
             }

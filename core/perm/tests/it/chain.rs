@@ -21,13 +21,22 @@ fn outside(rots: &[Rotation<u32>], chosen: Option<u32>, received: &[u32]) -> Cha
     Chain::new::<char>(0, rots.to_vec(), chosen, received, None)
 }
 
-/// D at a node of the account: A, B, T, X and Y paired at its creation; `minted` (rotation,
-/// node), `removes` (rotation, node it removes; its frontier empty), `grants` (node, epoch) by
-/// A, each a commit 100 and up.
+/// The commit creating D in `devices`, held before anything (`rec`).
+const CREATED: u32 = 99;
+
+/// `received` after the commit creating D.
+fn rec(received: &[u32]) -> Vec<u32> {
+    [&[CREATED], received].concat()
+}
+
+/// D at a node of the account: A, B, T, X and Y paired by its creating commit (`CREATED`);
+/// `minted` (rotation, node), `removes` (rotation, node it removes; its frontier the creating
+/// commit), `grants` (node, epoch) by A, each a commit 100 and up.
 fn devices(minted: &[(u32, char)], removes: &[(u32, char)], grants: &[(char, u32)]) -> Devices<u32, char> {
-    let mut d = Devices { minter: minted.iter().copied().collect(), first: "ABTXY".chars().collect(), ..Devices::default() };
+    let mut d = Devices { minter: minted.iter().copied().collect(), first: "ABTXY".chars().map(|m| (CREATED, m)).collect(), ..Devices::default() };
     for (r, n) in removes {
         d.removes.entry(*r).or_insert_with(BTreeSet::new).insert(*n);
+        d.covers.insert(*r, [CREATED].into());
     }
     for (i, (n, e)) in grants.iter().enumerate() {
         let g = 100 + i as u32;
@@ -39,7 +48,7 @@ fn devices(minted: &[(u32, char)], removes: &[(u32, char)], grants: &[(char, u32
 
 /// At a node of the account (`devices`).
 fn own(rots: &[Rotation<u32>], received: &[u32], minted: &[(u32, char)], removes: &[(u32, char)], grants: &[(char, u32)]) -> Chain<u32> {
-    Chain::new(0, rots.to_vec(), None, received, Some(&devices(minted, removes, grants)))
+    Chain::new(0, rots.to_vec(), None, &rec(received), Some(&devices(minted, removes, grants)))
 }
 
 /// A's removal of X (1) and B's of Y (2), made at once at the root.
@@ -191,6 +200,7 @@ fn a_key_actor_a_removed_node_makes_up_is_no_node() {
         let mut d = devices(&[(1, 'A'), (2, 'Z')], &[(1, 'X')], &[]);
         if revokes {
             d.removes.insert(2, ['A'].into());
+            d.covers.insert(2, [CREATED].into());
         }
         d.commits.insert(101, (Some('X'), 0));
         d.grants.insert((101, 'Z'));
@@ -199,17 +209,17 @@ fn a_key_actor_a_removed_node_makes_up_is_no_node() {
         d.commits.insert(103, (Some('Z'), 0));
         d.commits.insert(104, (None, 0));
         if covered {
-            d.covers.insert(1, [101].into());
+            d.covers.insert(1, [CREATED, 101].into());
         }
         d
     };
     for received in [[2, 1, 101], [101, 1, 2]] {
-        let c = Chain::new(0, rots.clone(), None, &received, Some(&world(true, false)));
+        let c = Chain::new(0, rots.clone(), None, &rec(&received), Some(&world(true, false)));
         assert!(c.counts(&1) && !c.counts(&2), "{received:?}");
         assert!(c.cut(&101) && c.cut(&102) && c.cut(&103) && c.cut(&104), "{:?}", c.cuts());
     }
     for covered in [false, true] {
-        let c = Chain::new(0, rots.clone(), None, &[1, 101, 2], Some(&world(false, covered)));
+        let c = Chain::new(0, rots.clone(), None, &rec(&[1, 101, 2]), Some(&world(false, covered)));
         assert!(c.counts(&1) && c.counts(&2) == covered && c.cut(&101) != covered, "covered {covered}");
     }
 }
@@ -232,7 +242,7 @@ fn a_removed_nodes_grant_to_itself_is_no_readd() {
     let mut d = devices(&[(1, 'A'), (2, 'B'), (3, 'X')], &[(1, 'X')], &[]);
     d.commits.insert(101, (Some('X'), 2));
     d.grants.insert((101, 'X'));
-    let c = Chain::new(0, rots, None, &[1, 2, 101, 3], Some(&d));
+    let c = Chain::new(0, rots, None, &rec(&[1, 2, 101, 3]), Some(&d));
     assert!(c.counts(&1) && c.counts(&2) && !c.counts(&3) && c.cut(&101));
 }
 
@@ -246,23 +256,29 @@ fn forks_chain(w: &forks::World, v: usize, now: u32, chosen: Option<u32>) -> Cha
         forks::Kind::Rot { at, names, sup, .. } => Some(Rotation { id: i.id, at: *at, supersedes: sup.iter().copied().collect(), names: names.iter().copied().collect(), signed: names.iter().copied().collect() }),
         _ => None,
     }).collect();
-    let mut order: Vec<(u32, u32)> = held.iter().filter(|i| matches!(i.kind, forks::Kind::Rot { .. } | forks::Kind::Grant { .. })).map(|i| (i.recv[v], i.id)).collect();
+    let mut order: Vec<(u32, u32)> = held.iter().filter(|i| matches!(i.kind, forks::Kind::Rot { .. } | forks::Kind::Grant { .. } | forks::Kind::Creation { .. })).map(|i| (i.recv[v], i.id)).collect();
     order.sort();
-    let received: Vec<u32> = order.into_iter().map(|x| x.1).collect();
+    // the real commit creating D (pairing P's nodes before the world), held first
+    let created = 1_000_000;
+    let received: Vec<u32> = std::iter::once(created).chain(order.into_iter().map(|x| x.1)).collect();
     let devices = (v < forks::OWN).then(|| {
-        let mut d = Devices { first: (0..forks::OWN).collect(), ..Devices::default() };
+        let mut d = Devices { first: (0..forks::OWN).map(|m| (created, m)).collect(), ..Devices::default() };
         for i in &held {
             match &i.kind {
                 forks::Kind::Rot { removes, covers, .. } => {
                     d.minter.insert(i.id, i.signer);
                     if let Some(y) = removes {
                         d.removes.insert(i.id, [*y].into());
-                        d.covers.insert(i.id, covers.iter().copied().collect());
+                        d.covers.insert(i.id, covers.iter().copied().chain([created]).collect());
                     }
                 }
                 forks::Kind::Grant { to } => {
                     d.commits.insert(i.id, (Some(i.signer), i.epoch));
                     d.grants.insert((i.id, *to));
+                }
+                forks::Kind::Creation { to } => {
+                    d.commits.insert(i.id, (Some(i.signer), i.epoch));
+                    d.first.insert((i.id, *to));
                 }
                 _ => {}
             }
@@ -290,8 +306,12 @@ fn forks_run(samples: u64, seed: u64) -> u64 {
                 assert!(counting == j.counting && heads == j.heads && c.warning() == j.warning, "seed {seed:#x} world {s} node {v} at {now}: perm counts {counting:?} heads {heads:?} warning {}, model {:?} {:?} {}", c.warning(), j.counting, j.heads, j.warning);
                 if v < forks::OWN {
                     // Z (never removed) is on the model's roster iff a grant to it by another
-                    // signer counts here
-                    let granted = w.items.iter().any(|i| i.recv[v] <= now && i.signer != forks::Z && matches!(i.kind, forks::Kind::Grant { to: forks::Z }) && !c.cut(&i.id));
+                    // signer, or a commit creating D made again pairing it, counts here
+                    let granted = w.items.iter().any(|i| i.recv[v] <= now && !c.cut(&i.id) && match i.kind {
+                        forks::Kind::Grant { to } => to == forks::Z && i.signer != forks::Z,
+                        forks::Kind::Creation { to } => to == forks::Z,
+                        _ => false,
+                    });
                     assert_eq!(granted, j.roster.contains(&forks::Z), "seed {seed:#x} world {s} node {v} at {now}: Z on the roster");
                 }
                 checked += 1;
