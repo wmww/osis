@@ -183,8 +183,14 @@ pub enum J {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemovalNotice {
     pub sync_id: SyncId,
+    /// The newest sync epoch number the sender boxed the recipient at.
+    pub epoch: u64,
     pub sig: Signature,
+    /// The blob's recipient as its AD bound it when it opened here (an actor this node acts
+    /// for), never a value of the payload: the signature binds it, so a notice to another
+    /// recipient re-sealed to this node verifies nowhere.
     pub recipient: Tid,
+    /// The commit of the blob's position 0.
     pub commit: CommitId,
 }
 

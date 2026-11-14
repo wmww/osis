@@ -43,19 +43,20 @@ pub fn verify_deposit(head_deposit: &VerifyingKey, label: &SyncId, blob: &BlobId
 }
 
 /// Digest of a removal signature (spec/wire.md §9 position 5): BLAKE3 of canonical
-/// `[sync_id, recipient, commit_id]`.
-pub fn removal_digest(s: &SyncId, recipient: &Tid, commit: &CommitId) -> [u8; 32] {
-    osis_base::hash::hash(&encode(&Value::List(vec![Value::bytes(&s.0), Value::bytes(recipient.as_bytes()), Value::bytes(&commit.0)])))
+/// `[sync_id, recipient, commit_id, epoch]`, `epoch` the newest sync epoch number the sender
+/// boxed the recipient at.
+pub fn removal_digest(s: &SyncId, recipient: &Tid, commit: &CommitId, epoch: u64) -> [u8; 32] {
+    osis_base::hash::hash(&encode(&Value::List(vec![Value::bytes(&s.0), Value::bytes(recipient.as_bytes()), Value::bytes(&commit.0), Value::uint(epoch)])))
 }
 
 /// A removal signature by a step's delete key under `"osis v1 removal"`.
-pub fn sign_removal(delete: &SigningSecret, s: &SyncId, recipient: &Tid, commit: &CommitId) -> Signature {
-    delete.sign(Domain::Removal, &removal_digest(s, recipient, commit))
+pub fn sign_removal(delete: &SigningSecret, s: &SyncId, recipient: &Tid, commit: &CommitId, epoch: u64) -> Signature {
+    delete.sign(Domain::Removal, &removal_digest(s, recipient, commit, epoch))
 }
 
 /// Checks a removal signature against a step's delete key.
-pub fn verify_removal(delete: &VerifyingKey, s: &SyncId, recipient: &Tid, commit: &CommitId, sig: &Signature) -> Result<(), Error> {
-    delete.verify(Domain::Removal, &removal_digest(s, recipient, commit), sig).map_err(|_| Error::Verify("removal"))
+pub fn verify_removal(delete: &VerifyingKey, s: &SyncId, recipient: &Tid, commit: &CommitId, epoch: u64, sig: &Signature) -> Result<(), Error> {
+    delete.verify(Domain::Removal, &removal_digest(s, recipient, commit, epoch), sig).map_err(|_| Error::Verify("removal"))
 }
 
 /// The signing domain of an entry's stamp or deposit signature (`plain`: `Stamp` or

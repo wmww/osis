@@ -8,8 +8,9 @@
 //! keeps its store) while no held secret derives its head's sync key; it stops at once, shredding
 //! S and dropping the record, on a removal notice whose signature verifies under the delete key of
 //! a step of its path from the newest step whose sync secret it holds up to its head (judged again
-//! at each head move while held); unlisted, it leaves once each entry it logged itself is present
-//! at a source. Model: core/test/tla/net/NetKeep.tla.
+//! at each head move while held) and whose epoch is at or past every sync epoch it holds (a
+//! re-grant's box makes the removal's notice stale); unlisted, it leaves once each entry it logged
+//! itself is present at a source, keeping its record. Model: core/test/tla/net/NetKeep.tla.
 //!
 //! Work follows change: the three engine values are whole maps, read each through one `Effects`
 //! key and projected, by a diff on change, into per-key stamped maps (`listed`, `records`,
@@ -338,11 +339,13 @@ fn judge(
     thing: &Tid,
 ) -> Result<Verdict> {
     osis_base::costs::count("unread: judged", 1);
-    let secrets: Vec<(VerifyingKey, &Secret32)> = records.get(thing).map(|r| r.secrets.values().map(|x| (label_role_key(LabelRole::Sync, x).verifying_key(), x)).collect()).unwrap_or_default();
+    let record = records.get(thing);
+    let secrets: Vec<(VerifyingKey, &Secret32)> = record.map(|r| r.secrets.values().map(|x| (label_role_key(LabelRole::Sync, x).verifying_key(), x)).collect()).unwrap_or_default();
+    let newest = record.and_then(|r| r.secrets.keys().map(|e| e.n()).max()).unwrap_or(0);
     let path = g.path(s)?;
     let steps = path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default();
     if let Some(ns) = notices.get(s)
-        && ns.iter().any(|n| removal_verifies(n, steps, &secrets))
+        && ns.iter().any(|n| n.epoch >= newest && removal_verifies(n, steps, &secrets))
     {
         return Ok(Verdict::Stop);
     }
@@ -366,18 +369,19 @@ fn judge(
 }
 
 /// spec/sync-judgement.md §6 Stops: the notice's signature verifies under the delete key of a
-/// step on the path from the newest step whose sync secret is held up to the head (from the
-/// genesis step when none is held).
+/// step on the path from the newest step whose sync secret is held up to the head (the head alone
+/// when no step's is held: an older step's delete key may be a removed admin's).
 fn removal_verifies(n: &RemovalNotice, steps: &[(osis_label::Step, Option<ClaimSet>)], secrets: &[(VerifyingKey, &Secret32)]) -> bool {
-    let from = steps.iter().rposition(|(st, _)| secrets.iter().any(|(k, _)| *k == st.keys.sync)).unwrap_or(0);
+    let from = steps.iter().rposition(|(st, _)| secrets.iter().any(|(k, _)| *k == st.keys.sync)).unwrap_or(steps.len().saturating_sub(1));
     steps.get(from..).unwrap_or_default().iter().any(|(st, _)| {
         osis_base::costs::count("unread: verifies", 1);
-        verify_removal(&st.keys.delete, &n.sync_id, &n.recipient, &n.commit, &n.sig).is_ok()
+        verify_removal(&st.keys.delete, &n.sync_id, &n.recipient, &n.commit, n.epoch, &n.sig).is_ok()
     })
 }
 
 /// Not built: a source's `known` (streams). Until it is, no own entry counts as present, so a
-/// node keeping S unread that logged entries there waits.
+/// node keeping S unread that logged entries there never leaves; streams makes
+/// tests/it/unread.rs `leaves_once_own_entries_held_at_a_source` hold on a real source.
 impl Sources for Streams {
     fn present(&self, s: &SyncId, b: &BlobId) -> bool {
         let _ = (s, b);

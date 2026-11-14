@@ -202,7 +202,8 @@ instances=(
   "netkeep net MCKeep KN_open.cfg fail"            # negative control: open by any held sync secret
   "netkeep net MCKeep KN_sig.cfg fail"             # negative control: a removal notice's signature unchecked, a forged one drops the store
   "netkeep net MCKeep KF_late.cfg fail"            # finding: a notice signed before the removing step, arriving after it, never verifies
-  "netkeep net MCKeep K_held.cfg pass"             # proposed fix for KF_late
+  "netkeep net MCKeep KF_regrant.cfg fail"         # finding: the removal's old notice drops a re-granted K
+  "netkeep net MCKeep K_held.cfg pass"             # the spec's rule: fixes KF_late and KF_regrant
 )
 
 module=${1:-}

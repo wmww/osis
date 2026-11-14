@@ -61,9 +61,10 @@ fn step(s: SyncId, e: u64) -> Step {
     }
 }
 
-fn notice(s: SyncId, signer: &SigningSecret) -> RemovalNotice {
+/// A removal notice signed by `signer`, binding sync epoch `e` (the newest its sender boxed ME at).
+fn notice(s: SyncId, signer: &SigningSecret, e: u64) -> RemovalNotice {
     let commit = CommitId([0xc0; 32]);
-    RemovalNotice { sync_id: s, sig: sign_removal(signer, &s, &ME, &commit), recipient: ME, commit }
+    RemovalNotice { sync_id: s, epoch: e, sig: sign_removal(signer, &s, &ME, &commit, e), recipient: ME, commit }
 }
 
 /// The engine and store as unread sees them, each a stamped value; `drop_sync_record` drops the
@@ -239,12 +240,16 @@ fn stranded_opens_by_no_older_key_spec_sync_opens_4() {
 #[test]
 fn forged_removal_changes_nothing_spec_sync_judgement_6() {
     let mut k = Keep::new(1, &[0]);
-    k.notify(notice(sync_id(0), &label_role_key(LabelRole::Delete, &secret(0xf0, 0))));
-    let other = notice(sync_id(0), &delete_key(0));
-    let sig = sign_removal(&delete_key(0), &sync_id(0), &Tid::from_bytes([8; 15]), &other.commit);
+    k.notify(notice(sync_id(0), &label_role_key(LabelRole::Delete, &secret(0xf0, 0)), 0));
+    let other = notice(sync_id(0), &delete_key(0), 0);
+    let sig = sign_removal(&delete_key(0), &sync_id(0), &Tid::from_bytes([8; 15]), &other.commit, 0);
+    k.notify(RemovalNotice { sig, ..other.clone() });
+    let sig = sign_removal(&delete_key(0), &sync_id(1), &ME, &other.commit, 0);
+    k.notify(RemovalNotice { sig, ..other.clone() });
+    let sig = sign_removal(&delete_key(0), &sync_id(0), &ME, &other.commit, 1);
     k.notify(RemovalNotice { sig, ..other });
-    assert!(!k.stopped(sync_id(0)) && k.opens(sync_id(0)), "forged, or signed over another recipient");
-    k.notify(notice(sync_id(0), &delete_key(0)));
+    assert!(!k.stopped(sync_id(0)) && k.opens(sync_id(0)), "forged, or signed over another recipient, sync ID or epoch");
+    k.notify(notice(sync_id(0), &delete_key(0), 0));
     assert!(k.stopped(sync_id(0)) && !k.unread.keeps(&sync_id(0)));
     assert_eq!(k.g.dropped, [thing(0)]);
 }
@@ -257,7 +262,7 @@ fn removal_signed_before_a_late_head_move_stops_spec_sync_judgement_6() {
     let mut k = Keep::new(1, &[0]);
     k.register(sync_id(0), 1);
     assert!(k.unread.stranded(&sync_id(0)));
-    k.notify(notice(sync_id(0), &delete_key(0)));
+    k.notify(notice(sync_id(0), &delete_key(0), 0));
     assert!(k.stopped(sync_id(0)));
 }
 
@@ -267,7 +272,7 @@ fn removal_signed_before_a_late_head_move_stops_spec_sync_judgement_6() {
 #[test]
 fn held_removal_judged_again_at_head_move_spec_sync_judgement_6() {
     let mut k = Keep::new(1, &[0]);
-    k.notify(notice(sync_id(0), &delete_key(1)));
+    k.notify(notice(sync_id(0), &delete_key(1), 0));
     assert!(!k.stopped(sync_id(0)), "step 1 not registered yet");
     k.register(sync_id(0), 1);
     assert!(k.stopped(sync_id(0)));
@@ -281,13 +286,69 @@ fn removal_below_newest_held_step_ignored_spec_sync_judgement_6() {
     let mut k = Keep::new(1, &[0, 1]);
     k.register(sync_id(0), 1);
     assert!(!k.unread.stranded(&sync_id(0)));
-    k.notify(notice(sync_id(0), &delete_key(0)));
+    k.notify(notice(sync_id(0), &delete_key(0), 1));
     assert!(!k.stopped(sync_id(0)) && k.opens(sync_id(0)));
+}
+
+// spec/sync-judgement.md §6 (stops): a notice binding a sync epoch older than one held is stale: K
+// removed at epoch 0 (the rotation to step 1 leaving it out) and re-granted at epoch 1 keeps S
+// when the removal's notice arrives after the re-grant's box, before or after step 1 is
+// registered; a removal of the re-grant stops it. NetKeep `KF_regrant` (no epoch bound) fails
+// this.
+#[test]
+fn removal_notice_stale_after_regrant_spec_sync_judgement_6() {
+    let mut k = Keep::new(1, &[0]);
+    k.boxed(thing(0), 1);
+    k.notify(notice(sync_id(0), &delete_key(0), 0));
+    assert!(!k.stopped(sync_id(0)) && k.g.dropped.is_empty(), "the re-grant's box came first");
+    k.register(sync_id(0), 1);
+    assert!(!k.stopped(sync_id(0)) && k.opens(sync_id(0)));
+    k.notify(notice(sync_id(0), &delete_key(1), 1));
+    assert!(k.stopped(sync_id(0)), "removed from the re-grant");
+}
+
+// spec/sync-judgement.md §6 (stops): a node that stopped on its removal and is re-granted later
+// keeps S again although the old notice is still in its inbox, even before any step of its new
+// secret is registered. NetKeep `KF_regrant` fails this.
+#[test]
+fn removal_notice_stale_after_stop_and_regrant_spec_sync_judgement_6() {
+    let mut k = Keep::new(1, &[0]);
+    k.notify(notice(sync_id(0), &delete_key(0), 0));
+    assert!(k.stopped(sync_id(0)));
+    let (s, t) = (sync_id(0), thing(0));
+    let mut records = (**k.g.records.get(&()).unwrap()).clone();
+    records.insert(t, SyncRecord { sync_ids: vec![s], secrets: [(epoch(1), sync_secret(1))].into() });
+    k.g.records.insert((), Arc::new(records));
+    let mut set = (**k.g.set.get(&()).unwrap()).clone();
+    set.ids.insert(s, (t, Holding::Unread));
+    k.g.set.insert((), Arc::new(set));
+    k.g.paths.insert(s, Arc::new(Path { steps: vec![(step(s, 0), None)] }));
+    k.g.shredded.clear();
+    k.settle();
+    assert!(k.unread.keeps(&s) && k.unread.stranded(&s) && !k.stopped(s), "re-granted, old notice held");
+    k.register(s, 1);
+    assert!(k.opens(s));
+}
+
+// spec/sync-judgement.md §6 (stops): holding the sync secret of no step on its path, a node takes
+// a removal signed by its head's delete key only, not an older step's (which may be a removed
+// admin's).
+#[test]
+fn removal_with_no_held_step_checks_head_only_spec_sync_judgement_6() {
+    let mut k = Keep::new(1, &[2]);
+    k.register(sync_id(0), 1);
+    assert!(k.unread.stranded(&sync_id(0)));
+    k.notify(notice(sync_id(0), &delete_key(0), 2));
+    assert!(!k.stopped(sync_id(0)), "step 0 is below the head");
+    k.notify(notice(sync_id(0), &delete_key(1), 2));
+    assert!(k.stopped(sync_id(0)));
 }
 
 // spec/sync-set.md §3 (leaving): unlisted, a node keeping S unread stays (and keeps serving)
 // until each entry it logged itself is present at a source, then shreds S and keeps its record;
-// one that logged nothing leaves at once.
+// one that logged nothing leaves at once. Presence here is a fake `Sources`; the real one is
+// streams' (`impl Sources for Streams` answers false until streams builds `known`), which must
+// make this hold on a real source (issues/sync-rewrite.md Phase 4).
 #[test]
 fn leaves_once_own_entries_held_at_a_source_spec_sync_set_3() {
     let mut k = Keep::new(2, &[0]);
@@ -332,7 +393,7 @@ fn work_follows_change_spec_sync_judgement_6() {
     for (name, f) in [
         ("head move", (|k: &mut Keep| k.register(sync_id(3), 1)) as fn(&mut Keep)),
         ("box", |k: &mut Keep| k.boxed(thing(3), 1)),
-        ("notice", |k: &mut Keep| k.notify(notice(sync_id(3), &delete_key(0)))),
+        ("notice", |k: &mut Keep| k.notify(notice(sync_id(3), &delete_key(0), 0))),
         ("idle", |k: &mut Keep| {
             k.settle();
         }),
