@@ -513,6 +513,7 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
     let key = [records::CREATED, t.as_bytes()].concat();
     tx.txn.put_local(&key, &osis_base::encode(&rec.to_value()), Shred::No)?;
     tx.core.ix.held.create(rec);
+    tx.core.rehome(&[t]);
     if tx.core.destroyed(&t) {
         tx.core.note_destroyed_kept(&t, true);
         crate::retention::destroy::record_back(tx, &t)?;

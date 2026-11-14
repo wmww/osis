@@ -298,6 +298,8 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
         } else {
             tx.core.ix.own_keys.remove(t);
         }
+        // its dependants' key homes (spec/sync-set.md §2)
+        tx.core.rehome(&[*t]);
     }
     Ok(())
 }
