@@ -332,8 +332,8 @@ fn a_sync_grant_gives_no_read_secret_to_follow_spec_wire_9() {
     for (role, reads) in [(Role::Sync, false), (Role::Read, true)] {
         let (d, _, g, with, _) = grant_with_chain(&mut lp, pa, pb, role);
         lp.peers[1].engine.take_inbox_blob(&with, true).unwrap();
-        // a sync grant writes the sync record and applies nothing (spec/sync-judgement.md §6)
-        assert_eq!(lp.peers[1].engine.sync_record(&d).unwrap().is_some(), !reads, "{role:?}");
+        // a sync grant is held as an offer and applies nothing (spec/sync.md §3)
+        assert!(lp.peers[1].engine.sync_record(&d).unwrap().is_none(), "{role:?}: nothing kept before an accept");
         assert_eq!(lp.peers[1].engine.core.ix.commits.get(&g).is_some(), reads, "the {role:?} grant applied");
         sync(&mut lp, 0, 1);
         assert_eq!(lp.peers[1].engine.role_on(&d), Some(role));

@@ -102,26 +102,22 @@ fn caps_read_from_the_node_spec_sync_ids_5() {
     assert_eq!(c.things.get(&t).map(|x| (x.entries, x.bytes)), Some((3, 4)));
 }
 
-// spec/sync-judgement.md §6 (kept unread: a sync record from a box sealed to its own key, no
-// engine state of what S carries), spec/sync-inbox.md §2 (taking: the user accepted it).
+// spec/sync-inbox.md §2 Taking (a boxes payload is never taken and applies nothing), spec/sync.md
+// §3 (Sync record: a sync ID kept only by an accept): a sync grant is held as an offer, with no
+// sync record and no engine state of the thing, and is an invitation.
 #[test]
-fn a_sync_grant_writes_a_sync_record_only_spec_sync_judgement_6() {
+fn a_sync_grant_is_held_as_an_offer_spec_sync_inbox_2() {
     let (mut lp, t, _, g, blob) = granted(Role::Sync);
     let e = &mut lp.peers[1].engine;
-    let o = e.take_inbox_blob(&blob, true).unwrap().expect("opens");
-    assert_eq!((o.commit, o.taken), (Some(g), Taken::Applied));
-    let r = e.sync_record(&t).unwrap().expect("a sync record");
-    assert_eq!(r.sync_ids.len(), 1, "the payload's sync ID");
-    assert!(!r.secrets.is_empty());
+    let o = e.take_inbox_blob(&blob, false).unwrap().expect("opens");
+    assert_eq!((o.commit, o.taken), (None, Taken::Offered));
+    assert!(o.hints.is_empty() && o.dial.is_none());
+    assert!(e.sync_record(&t).unwrap().is_none(), "nothing kept before an accept");
     assert!(e.core.ix.commits.get(&g).is_none(), "the grant is not applied");
     assert!(e.epochs(&t).is_none(), "no engine state of the thing");
-    assert!(o.hints.is_empty(), "a sync box gives no read hint");
-    assert!(o.dial.is_none(), "the sender publishes no reach.0");
-    // in the closure: kept unread
-    let (_, d) = e.account().unwrap().unwrap();
-    add_item(&mut lp, 1, d, t);
-    let e = &mut lp.peers[1].engine;
-    assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Unread(r.sync_ids.clone()));
+    let inv = e.invitations().unwrap();
+    assert!(inv.iter().any(|i| i.thing == t && i.role == Role::Sync && !i.taken), "an invitation: {inv:?}");
+    assert_eq!(e.take_inbox_blob(&blob, true).unwrap().unwrap().taken, Taken::Offered, "a stamp vouches for no boxes payload");
 }
 
 /// The aspects of the parts an inbox blob's commit carries to peer `to`, with the header's
@@ -146,11 +142,16 @@ fn names(bytes: &[u8], t: &Tid) -> bool {
     bytes.windows(15).any(|w| w == t.as_bytes())
 }
 
+/// The inbox blob `done` owes `h`.
+fn blob_to(lp: &mut LocalPeer, done: &osis_engine::flows::Done, h: Tid) -> Vec<u8> {
+    lp.inbox_blobs(0, done).unwrap().into_iter().find(|(x, _)| *x == h).expect("an inbox blob").1
+}
+
 // spec/sync-inbox.md §2 (What it carries about G: to a holder of sync alone, a boxes payload),
-// spec/wire.md §9 (boxes payload), spec/sync-ids.md §2 (What a sync holder learns: of the thing
-// its tid alone, never its roster): a grant and a later rotation carry the holder's own boxes on
-// the thing and name no other holder (another sync holder, a reader, the one removed), and a
-// grant sent after its holder was removed carries no more; a reader's grant carries the commit.
+// spec/wire.md §9 (boxes payload: signed only on a grant), spec/sync-ids.md §2 (What a sync holder
+// learns: of the thing its tid alone, never its roster, no rotator): a grant carries the holder's
+// own boxes, signed by its granter; a rotation carries the holder's boxes, no author; neither names
+// another holder; a grant sent after its holder was removed carries no more.
 #[test]
 fn a_sync_holder_is_sent_its_boxes_only_spec_sync_inbox_2() {
     let (mut lp, ps) = people(6);
@@ -158,27 +159,25 @@ fn a_sync_holder_is_sent_its_boxes_only_spec_sync_inbox_2() {
     lp.peers[0].engine.grant(&t, &ps[3], &edge_of(Role::Sync)).unwrap();
     lp.peers[0].engine.grant(&t, &ps[2], &edge_of(Role::Read)).unwrap();
     let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Sync)).unwrap();
-    let blob = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[1]).unwrap().1;
+    let blob = blob_to(&mut lp, &done, ps[1]);
     let (p, bytes) = boxes_of(&mut lp, 1, &blob);
     assert_eq!(p.things.iter().map(|x| x.tid).collect::<Vec<_>>(), vec![t], "the thing's tid alone");
     assert!(p.things[0].boxes.iter().all(|(r, _, _)| *r == Role::Sync));
+    assert_eq!(p.grant.as_ref().map(|g| g.author), Some(ps[0]), "a grant names its granter");
     assert!(!names(&bytes, &ps[2]) && !names(&bytes, &ps[3]), "no other holder");
-    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
-    assert!(lp.peers[1].engine.sync_record(&t).unwrap().is_some(), "taken");
     // a rotation (removing a reader) boxing every holder at the new sync epoch
     let done = lp.peers[0].engine.grant(&t, &ps[4], &edge_of(Role::Read)).unwrap();
-    let to_reader = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[4]).unwrap().1;
+    let to_reader = blob_to(&mut lp, &done, ps[4]);
     assert!(inbox_parts(&mut lp, 4, &to_reader).0.contains("roles.0"), "a reader gets the commit");
     let done = lp.peers[0].engine.demote(&t, &Demotion { holder: ps[4], new: None, retain: None }).unwrap();
-    let rot = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[1]).expect("the rotation boxes peer 1").1;
-    let (_, bytes) = boxes_of(&mut lp, 1, &rot);
-    assert!(![ps[2], ps[3], ps[4]].iter().any(|x| names(&bytes, x)), "the rotation names no holder but the recipient's own boxes");
-    lp.peers[1].engine.take_inbox_blob(&rot, true).unwrap();
-    assert_eq!(lp.peers[1].engine.sync_record(&t).unwrap().unwrap().secrets.len(), 2, "the rotation's sync secret taken");
+    let rot = blob_to(&mut lp, &done, ps[1]);
+    let (p, bytes) = boxes_of(&mut lp, 1, &rot);
+    assert!(p.grant.is_none(), "a rotation names no author");
+    assert!(![ps[0], ps[2], ps[3], ps[4]].iter().any(|x| names(&bytes, x)), "the rotation names nobody");
     // removed before its grant went: still its boxes alone
     let done = lp.peers[0].engine.grant(&t, &ps[5], &edge_of(Role::Sync)).unwrap();
     lp.peers[0].engine.demote(&t, &Demotion { holder: ps[5], new: None, retain: None }).unwrap();
-    let late = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[5]).expect("still owed").1;
+    let late = blob_to(&mut lp, &done, ps[5]);
     let (_, bytes) = boxes_of(&mut lp, 5, &late);
     assert!(![ps[1], ps[2], ps[3]].iter().any(|x| names(&bytes, x)));
 }
@@ -193,132 +192,175 @@ fn boxes_by_hand(lp: &mut LocalPeer, to: usize, p: &osis_label::BoxesPayload) ->
     osis_label::seal_boxes_payload(&a, &kem, p, now, &mut SeededRng::from_u64(12)).unwrap()
 }
 
-// spec/sync-inbox.md §2 Taking (a boxes payload whose signature fails under its author's key is
-// refused, accepted or not), spec/wire.md §9 (boxes payload: its signature binds every box): a box swapped in
-// from another grant, or a payload signed by another key in the author's name, gives nothing.
-#[test]
-fn a_forged_boxes_payload_is_refused_spec_sync_inbox_2() {
-    let (mut lp, ps) = people(2);
-    let t = thing_of(&mut lp, 0, ps[0]);
-    let u = thing_of(&mut lp, 0, ps[0]);
-    let mut blobs = Vec::new();
-    for x in [t, u] {
-        let done = lp.peers[0].engine.grant(&x, &ps[1], &edge_of(Role::Sync)).unwrap();
-        blobs.push(lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[1]).unwrap().1);
-    }
-    let (real, _) = boxes_of(&mut lp, 1, &blobs[0]);
-    let (other, _) = boxes_of(&mut lp, 1, &blobs[1]);
-    let mut swapped = real.clone();
-    swapped.things[0].boxes = other.things[0].boxes.clone();
-    let mut resigned = real.clone();
-    let key = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
-    resigned.signature = osis_label::BoxesPayload::signed(&ps[1], real.commit, real.proof.clone(), real.epoch, real.things.clone(), None, &key).signature;
-    for forged in [swapped, resigned] {
-        let blob = boxes_by_hand(&mut lp, 1, &forged);
-        let o = lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap().expect("opens");
-        assert_eq!(o.taken, Taken::Refused);
-        assert!(lp.peers[1].engine.sync_record(&t).unwrap().is_none(), "no sync record");
-    }
-    let blob = boxes_by_hand(&mut lp, 1, &real);
-    let o = lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap().unwrap();
-    assert_eq!(o.taken, Taken::Applied, "the real one, sealed again, is taken");
+/// The user's accept of `t` as the product writes it (`Engine::write`): filed in D, the synced
+/// group's closure, as a subgroup.
+pub(crate) fn accept(lp: &mut LocalPeer, i: usize, t: Tid) {
+    let (_, d) = lp.peers[i].engine.account().unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.op(d, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(1)], op: osis_crdt::Op::Add(osis_base::Value::Tid(t)) }).unwrap();
+    lp.peers[i].engine.write(m).unwrap().unwrap();
 }
 
-/// A key actor of seed byte `n`'s creation proof and its signing key: an author no node holds.
-fn stranger(n: u8) -> (osis_label::AuthorProof, osis_crypto::SigningSecret) {
-    let key = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([n; 32]));
-    let record = osis_base::CreationRecord::KeyActor { alg: osis_base::SIGNING_KEY_ED25519, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [n; 32], account: false };
-    (osis_label::AuthorProof { record, rotations: Vec::new() }, key)
+/// The sync keys of `r`'s held secrets.
+fn keys_of(r: &osis_engine::sync::SyncRecord) -> BTreeSet<[u8; 32]> {
+    r.secrets.values().map(|x| osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, x).verifying_key().to_bytes()).collect()
 }
 
-// spec/sync-inbox.md §2 Taking (a boxes payload not taken gives a listed thing its boxes' sync
-// secrets alone, no sync ID or dial hint; stamped by a writer of the inbox, a sibling that took
-// it, it is taken whole).
-#[test]
-fn a_boxes_payload_for_a_listed_thing_is_taken_spec_sync_inbox_2() {
+/// Peer 1 offered a sync grant on a thing of peer 0's and accepted it, its secret recorded as a
+/// step bearing it would: (peers, thing, peer 1's account, the thing's sync ID).
+fn kept() -> (LocalPeer, Vec<Tid>, Tid, osis_base::SyncId) {
     let (mut lp, ps) = people(3);
     let t = thing_of(&mut lp, 0, ps[0]);
     let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Sync)).unwrap();
-    let s = lp.peers[0].engine.home_sync_id(&t).unwrap();
-    assert!(s.is_some());
-    let blob = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[1]).unwrap().1;
-    let o = lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap().unwrap();
-    assert_eq!((o.commit, o.taken), (Some(*done.commits.last().unwrap()), Taken::Waiting));
-    assert!(lp.peers[1].engine.sync_record(&t).unwrap().is_none());
-    let (_, d) = lp.peers[1].engine.account().unwrap().unwrap();
-    add_item(&mut lp, 1, d, t);
-    let o = lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap().unwrap();
-    assert_eq!((o.taken, o.dial.is_none()), (Taken::Waiting, true));
-    let r = lp.peers[1].engine.sync_record(&t).unwrap().expect("the listed thing's sync secret");
-    assert!(!r.secrets.is_empty() && r.sync_ids.is_empty() && r.dial.is_none(), "no sync ID or hint by the listing: {r:?}");
-    let o = lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap().unwrap();
-    assert_eq!(o.taken, Taken::Applied, "stamped (vouched): taken");
-    assert_eq!(lp.peers[1].engine.sync_record(&t).unwrap().unwrap().sync_ids, s.into_iter().collect::<Vec<_>>());
-    let o = lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap().unwrap();
-    assert_eq!(o.taken, Taken::Applied, "taken again: the same answer");
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let blob = blob_to(&mut lp, &done, ps[1]);
+    lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap();
+    accept(&mut lp, 1, t);
+    let e = &mut lp.peers[1].engine;
+    let r = e.sync_record(&t).unwrap().expect("kept");
+    assert!(e.record_borne(&t, &keys_of(&r)).unwrap());
+    (lp, ps, t, s)
 }
 
-// spec/sync-inbox.md §2 Taking (a boxes payload not taken gives the listed things' boxes alone),
-// spec/wire.md §9 (boxes payload: its author's key proved by the record it carries): a payload by an author no
-// node holds, boxing a listed thing and another, gives the listed one its sync secret; the other
-// stays an invite request, with no sync record.
+// spec/sync.md §3 (A kept sync ID: added by an accept, the sync IDs every held boxes payload
+// offering the thing names), spec/sync-set.md §4 (accepting): once accepted, the offered sync ID
+// is kept, the thing is kept unread under it with the offer's secret held (not recorded), and it
+// is no invitation; the record lasts the offer's expiry and a restart.
 #[test]
-fn a_listed_thing_takes_only_its_own_boxes_spec_sync_inbox_2() {
-    let (mut lp, ps) = people(2);
-    let t = thing_of(&mut lp, 0, ps[0]);
-    let x = thing_of(&mut lp, 0, ps[0]);
-    let mut real = Vec::new();
-    for th in [t, x] {
-        let done = lp.peers[0].engine.grant(&th, &ps[1], &edge_of(Role::Sync)).unwrap();
-        let blob = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[1]).unwrap().1;
-        real.push(boxes_of(&mut lp, 1, &blob).0);
-    }
-    let things = real.iter().flat_map(|p| p.things.clone()).collect();
-    let (proof, key) = stranger(5);
-    let p = osis_label::BoxesPayload::signed(&ps[1], real[0].commit, proof, None, things, None, &key);
-    let (_, d) = lp.peers[1].engine.account().unwrap().unwrap();
-    add_item(&mut lp, 1, d, t);
-    let blob = boxes_by_hand(&mut lp, 1, &p);
-    let o = lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap().unwrap();
-    assert_eq!(o.taken, Taken::Waiting);
-    assert!(lp.peers[1].engine.sync_record(&t).unwrap().is_some_and(|r| !r.secrets.is_empty()));
-    assert!(lp.peers[1].engine.sync_record(&x).unwrap().is_none(), "an unlisted thing's box is not taken");
-    let inv = lp.peers[1].engine.invitations().unwrap();
-    assert!(inv.iter().any(|i| i.thing == x && !i.taken), "it stays an invite request");
+fn an_accept_keeps_the_offered_sync_id_spec_sync_3() {
+    let (mut lp, t, _, _, blob) = granted(Role::Sync);
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap();
+    accept(&mut lp, 1, t);
+    let e = &mut lp.peers[1].engine;
+    let r = e.sync_record(&t).unwrap().expect("kept");
+    assert_eq!(r.sync_ids, vec![s]);
+    assert!(!r.secrets.is_empty() && r.recorded.is_empty(), "held from the offer, not recorded yet");
+    assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Unread(vec![s]));
+    assert!(!e.invitations().unwrap().iter().any(|i| i.thing == t && !i.taken), "no longer an invitation");
+    let (_, d) = e.account().unwrap().unwrap();
+    assert!(e.get_typed(&d, &ct::KEPT).unwrap().is_some_and(|k| k.get(&t).is_some_and(|x| x.ids.contains(&s))), "in kept^.0 on D");
+    lp.advance(osis_base::format::INBOX_LIFETIME_MS + 1);
+    lp.peers[1].tick().unwrap();
+    let r = lp.peers[1].engine.sync_record(&t).unwrap().expect("the record outlives the offer");
+    assert!(r.secrets.is_empty(), "the offer's secret went with it: never recorded");
+    lp.peers[1].restart(5).unwrap();
+    assert_eq!(lp.peers[1].engine.sync_record(&t).unwrap().unwrap().sync_ids, vec![s], "a restart changes nothing");
 }
 
-// spec/sync-inbox.md §2 Taking (a payload's sync IDs and dial hint are the sender's word: a
-// listing alone takes neither; a payload whose signature does not verify under the key its own
-// record gives is refused): a forger knowing a listed thing's tid, signing as itself or in a real
-// author's name, attaches no sync ID or dial hint of its own to the thing.
+// spec/sync.md §3 (A recorded secret: only once a step on the node's own path bears its sync key):
+// a held secret is recorded by a borne key and only so; a key no held secret derives records
+// nothing; with no kept sync ID nothing is recorded. NetTrust `UN_any` (unconfirmed) fails this.
 #[test]
-fn a_forged_payload_naming_a_listed_thing_adds_nothing_spec_sync_inbox_2() {
-    let (mut lp, ps) = people(2);
-    let t = thing_of(&mut lp, 0, ps[0]);
-    let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Sync)).unwrap();
-    let blob = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[1]).unwrap().1;
+fn a_secret_is_recorded_only_borne_spec_sync_3() {
+    let (mut lp, t, _, _, blob) = granted(Role::Sync);
+    let e = &mut lp.peers[1].engine;
+    e.take_inbox_blob(&blob, false).unwrap();
+    let junk: BTreeSet<[u8; 32]> = [[7; 32]].into();
+    assert!(!e.record_borne(&t, &junk).unwrap(), "not kept: nothing recorded");
+    accept(&mut lp, 1, t);
+    let e = &mut lp.peers[1].engine;
+    assert!(!e.record_borne(&t, &junk).unwrap(), "a key no held secret derives");
+    assert!(e.sync_record(&t).unwrap().unwrap().recorded.is_empty());
+    let r = e.sync_record(&t).unwrap().unwrap();
+    assert!(e.record_borne(&t, &keys_of(&r)).unwrap());
+    let r2 = e.sync_record(&t).unwrap().unwrap();
+    assert_eq!(r2.recorded, r.secrets.keys().copied().collect(), "recorded");
+    assert!(!e.record_borne(&t, &keys_of(&r)).unwrap(), "recorded once");
+}
+
+/// A key actor of seed byte `n` no node holds, signing as `as_author`.
+fn stranger_key(n: u8) -> osis_crypto::SigningSecret {
+    osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([n; 32]))
+}
+
+// spec/sync.md §3 (A kept sync ID: only by an accept), spec/sync-inbox.md §2 (Following a payload
+// sync ID: the sender's word), spec/sync-hostile.md §1: once the
+// thing is kept, a forger (unsigned, or signing in the granter's name) naming its own sync ID or
+// the genuine one, with a box of another thing, attaches nothing: the kept sync IDs, recorded
+// secrets and dial hint stay, and nothing new is recorded. NetTrust `UN_vouch` (taken on the
+// sender's word) fails this.
+#[test]
+fn an_offer_after_the_accept_attaches_nothing_spec_sync_3() {
+    let (mut lp, ps, t, s) = kept();
+    let before = lp.peers[1].engine.sync_record(&t).unwrap().unwrap();
+    let blob = {
+        let u = thing_of(&mut lp, 0, ps[0]);
+        let done = lp.peers[0].engine.grant(&u, &ps[1], &edge_of(Role::Sync)).unwrap();
+        blob_to(&mut lp, &done, ps[1])
+    };
     let (real, _) = boxes_of(&mut lp, 1, &blob);
-    let (_, d) = lp.peers[1].engine.account().unwrap().unwrap();
-    add_item(&mut lp, 1, d, t);
-    // the forger's own sync ID and address under t
-    let mut things = real.things.clone();
-    things[0].sync_id = Some(osis_base::SyncId([0x66; 16]));
     let dial = Some(osis_label::DialHint { dialable: [0x66; 32], urls: vec!["quic://forger".into()] });
-    let (proof, key) = stranger(6);
-    let as_itself = osis_label::BoxesPayload::signed(&ps[1], real.commit, proof.clone(), None, things.clone(), dial.clone(), &key);
-    let mut in_a_name = as_itself.clone();
-    in_a_name.author = ps[0];
-    in_a_name.epoch = real.epoch;
-    in_a_name.proof = real.proof.clone();
-    in_a_name.signature = osis_label::BoxesPayload::signed(&ps[1], real.commit, proof, real.epoch, things, dial, &key).signature;
-    for (forged, refused) in [(as_itself, false), (in_a_name, true)] {
-        let blob = boxes_by_hand(&mut lp, 1, &forged);
-        let o = lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap().unwrap();
-        assert_eq!(o.taken == Taken::Refused, refused);
-        assert!(o.dial.is_none() && o.taken != Taken::Applied);
-        let r = lp.peers[1].engine.sync_record(&t).unwrap();
-        assert!(r.as_ref().is_none_or(|r| r.sync_ids.is_empty() && r.dial.is_none()), "nothing of the forger's: {r:?}");
+    // another thing's genuine box relabelled t, under the forger's sync ID or the genuine one
+    let relabel = |sid: osis_base::SyncId| vec![osis_label::BoxedThing::new(t, Some(sid), real.things[0].boxes.clone())];
+    let forger = osis_base::SyncId([0x66; 16]);
+    let k = stranger_key(6);
+    let offers = [
+        osis_label::BoxesPayload::new(&ps[1], relabel(forger), dial.clone(), None),
+        osis_label::BoxesPayload::new(&ps[1], relabel(forger), dial.clone(), Some((ps[0], real.grant.as_ref().unwrap().epoch, &k))),
+        osis_label::BoxesPayload::new(&ps[1], relabel(s), dial.clone(), None),
+    ];
+    for p in offers {
+        let b = boxes_by_hand(&mut lp, 1, &p);
+        let o = lp.peers[1].engine.take_inbox_blob(&b, true).unwrap().unwrap();
+        // a box of another thing opens to no secret of t: refused or offered, never more
+        assert!(matches!(o.taken, Taken::Refused | Taken::Offered) && o.dial.is_none(), "{o:?}");
+        let e = &mut lp.peers[1].engine;
+        let r = e.sync_record(&t).unwrap().unwrap();
+        assert_eq!((r.sync_ids.clone(), r.recorded.clone(), r.dial.clone()), (before.sync_ids.clone(), before.recorded.clone(), None));
+        assert!(!e.record_borne(&t, &keys_of(&r)).unwrap(), "nothing new recorded");
     }
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(e.sync_record(&t).unwrap().unwrap().sync_ids, vec![s], "only the accepted sync ID");
+}
+
+// spec/sync.md §3 (A recorded secret: from any box that opens here, no accept), spec/wire.md §9
+// (GrantSig: a rotation's payload is unsigned): a rotation's boxes payload
+// to a kept holder is unsigned and no invitation; its secret is held at once and recorded once a
+// step bears it.
+#[test]
+fn a_rotation_needs_no_accept_spec_sync_3() {
+    let (mut lp, ps, t, s) = kept();
+    let first = lp.peers[1].engine.sync_record(&t).unwrap().unwrap();
+    lp.peers[0].engine.grant(&t, &ps[2], &edge_of(Role::Read)).unwrap();
+    // removing peer 2 rotates read and sync: the rotation boxes peer 1 at the new sync epoch
+    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: ps[2], new: None, retain: None }).unwrap();
+    let rot = blob_to(&mut lp, &done, ps[1]);
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(e.take_inbox_blob(&rot, false).unwrap().unwrap().taken, Taken::Offered);
+    assert!(!e.invitations().unwrap().iter().any(|i| i.thing == t && !i.taken), "no accept asked");
+    let r = e.sync_record(&t).unwrap().unwrap();
+    assert_eq!(r.sync_ids, vec![s]);
+    assert!(r.secrets.len() > first.secrets.len() && first.secrets.keys().all(|x| r.secrets.contains_key(x)), "the new epoch held, nothing lost");
+    assert!(e.record_borne(&t, &keys_of(&r)).unwrap());
+    assert_eq!(e.sync_record(&t).unwrap().unwrap().recorded.len(), r.secrets.len());
+}
+
+// spec/sync-inbox.md §2 Taking (a grant's payload names its granting account only when its
+// signature verifies under a key of its author held here), spec/wire.md §9 (`GrantSig`: no
+// creation record or rotation carried): a grant by an account at a rotated epoch names nobody to a
+// node holding nothing of it, and its granter once that node holds the author's chain; a signature
+// by another key names nobody.
+#[test]
+fn a_grant_names_its_granter_only_where_its_key_is_held_spec_sync_inbox_2() {
+    let (mut lp, a, b) = rotated_author();
+    let t = thing_of(&mut lp, 0, a);
+    let done = lp.peers[0].engine.grant(&t, &b, &edge_of(Role::Sync)).unwrap();
+    let blob = blob_to(&mut lp, &done, b);
+    assert!(lp.peers[2].engine.core.created(&a).is_none(), "the recipient holds nothing of the author");
+    let from = |lp: &mut LocalPeer, blob: &[u8]| {
+        lp.peers[2].engine.take_inbox_blob(blob, false).unwrap();
+        lp.peers[2].engine.invitations().unwrap().iter().find(|i| i.thing == t).expect("an invitation").from
+    };
+    assert_eq!(from(&mut lp, &blob), None, "unknown");
+    let (p, _) = boxes_of(&mut lp, 2, &blob);
+    let mut resigned = p.clone();
+    resigned.grant = osis_label::BoxesPayload::new(&b, p.things.clone(), None, Some((a, p.grant.as_ref().unwrap().epoch, &stranger_key(7)))).grant;
+    let resigned = boxes_by_hand(&mut lp, 2, &resigned);
+    let ids = lp.peers[0].engine.commit_ids();
+    crate::flows::send(&mut lp, 0, 2, &ids);
+    assert_eq!(from(&mut lp, &resigned), None, "another key's signature");
+    assert_eq!(from(&mut lp, &blob), Some(a), "the author's chain held: verified");
 }
 
 /// An account (peer 0) that rotated once (removing its second node, peer 1), and a stranger
@@ -340,85 +382,51 @@ fn rotated_author() -> (LocalPeer, Tid, Tid) {
     (lp, a.account, b.account)
 }
 
-// spec/sync-inbox.md §2 Taking (a boxes payload counts once its signature verifies under the key
-// its own record and rotations give, whatever the node holds), spec/wire.md §9 (boxes payload):
-// a sync grant by an account at a rotated epoch reaches a node holding nothing of that account;
-// listed, its sync secret is taken alone; stamped (vouched), taken whole with its sync ID; the
-// same payload with its rotation left out or its rotation's signature swapped is refused.
+// spec/sync-set.md §4 (invitations: a thing a held boxes payload offers under a sync ID not kept,
+// wherever listed; accepting: listing it again), spec/sync.md §3: a sync grant on a thing a group
+// the account reads already lists is unsyncable and an invitation until the user accepts it.
 #[test]
-fn a_grant_from_an_unknown_author_is_taken_spec_sync_inbox_2() {
-    let (mut lp, a, b) = rotated_author();
-    let t = thing_of(&mut lp, 0, a);
-    let done = lp.peers[0].engine.grant(&t, &b, &edge_of(Role::Sync)).unwrap();
-    let s = lp.peers[0].engine.home_sync_id(&t).unwrap();
-    assert!(s.is_some());
-    let blob = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == b).expect("an inbox blob").1;
-    assert!(lp.peers[2].engine.core.created(&a).is_none(), "the recipient holds nothing of the author");
-    let (p, _) = boxes_of(&mut lp, 2, &blob);
-    assert_eq!((p.author, p.proof.rotations.len()), (a, 1), "the rotation it signs at carried");
-    let mut short = p.clone();
-    short.proof.rotations.clear();
-    let short = boxes_by_hand(&mut lp, 2, &short);
-    let o = lp.peers[2].engine.take_inbox_blob(&short, true).unwrap().unwrap();
-    assert_eq!(o.taken, Taken::Refused, "no line to the epoch: no key");
-    let mut bad = p.clone();
-    let osis_base::Value::List(r) = &mut bad.proof.rotations[0] else { panic!("a rotation") };
-    r[1] = p.signature.to_value();
-    let bad = boxes_by_hand(&mut lp, 2, &bad);
-    let o = lp.peers[2].engine.take_inbox_blob(&bad, true).unwrap().unwrap();
-    assert_eq!(o.taken, Taken::Refused, "a rotation whose signature fails: no key");
-    let (_, d) = lp.peers[2].engine.account().unwrap().unwrap();
-    add_item(&mut lp, 2, d, t);
-    let o = lp.peers[2].engine.take_inbox_blob(&blob, false).unwrap().unwrap();
-    assert_eq!(o.taken, Taken::Waiting);
-    assert!(lp.peers[2].engine.sync_record(&t).unwrap().is_some_and(|r| !r.secrets.is_empty() && r.sync_ids.is_empty()));
-    let o = lp.peers[2].engine.take_inbox_blob(&blob, true).unwrap().unwrap();
-    assert_eq!(o.taken, Taken::Applied);
-    assert_eq!(lp.peers[2].engine.sync_record(&t).unwrap().unwrap().sync_ids, s.into_iter().collect::<Vec<_>>());
-    assert_eq!(lp.peers[2].engine.thing_sync(&t).unwrap(), ThingSync::Unread(s.into_iter().collect()), "kept unread");
+fn a_listed_thing_offered_waits_for_an_accept_spec_sync_set_4() {
+    let (mut lp, t, _, _, blob) = granted(Role::Sync);
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let (_, d) = lp.peers[1].engine.account().unwrap().unwrap();
+    add_item(&mut lp, 1, d, t);
+    let e = &mut lp.peers[1].engine;
+    e.take_inbox_blob(&blob, false).unwrap();
+    assert!(e.sync_record(&t).unwrap().is_none());
+    assert!(!matches!(e.thing_sync(&t).unwrap(), ThingSync::Unread(_)), "listed, no kept sync ID: not kept");
+    assert!(e.invitations().unwrap().iter().any(|i| i.thing == t && !i.taken), "an invitation though listed");
+    accept(&mut lp, 1, t);
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Unread(vec![s]));
 }
 
-/// The user's accept of `t` as the product writes it (`Engine::write`): filed in D, the synced
-/// group's closure.
-fn accept(lp: &mut LocalPeer, i: usize, t: Tid) {
-    let (_, d) = lp.peers[i].engine.account().unwrap().unwrap();
-    let mut m = Mutation::new();
-    m.op(d, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(1)], op: osis_crdt::Op::Add(osis_base::Value::Tid(t)) }).unwrap();
-    lp.peers[i].engine.write(m).unwrap().unwrap();
-}
-
-// spec/sync-inbox.md §2 Taking (the user accepted it), spec/sync-set.md §4 (accepting): an
-// invite request, read or sync, is taken whole once the user accepts its thing here, and stays
-// taken as judged again; a blob arriving after the accept is no accepted one.
+// spec/sync-inbox.md §2 Taking (the user accepted it), spec/sync-set.md §4 (accepting): a read
+// invite request is taken whole once the user accepts its thing here, and stays taken as judged
+// again; a sync one keeps its sync ID; an offer of another sync ID arriving after the accept is
+// an invitation again and keeps nothing.
 #[test]
 fn an_accept_takes_the_waiting_blob_spec_sync_set_4() {
-    for role in [Role::Read, Role::Sync] {
-        let (mut lp, t, _, g, blob) = granted(role);
-        let s = lp.peers[0].engine.home_sync_id(&t).unwrap();
-        let e = &mut lp.peers[1].engine;
-        assert_eq!(e.take_inbox_blob(&blob, false).unwrap().unwrap().taken, Taken::Waiting);
-        accept(&mut lp, 1, t);
-        let e = &mut lp.peers[1].engine;
-        for _ in 0..2 {
-            assert_eq!(e.take_inbox_blob(&blob, false).unwrap().unwrap().taken, Taken::Applied, "{role:?}");
-        }
-        if role == Role::Read {
-            assert!(e.core.ix.commits.contains_key(&g));
-        } else {
-            assert_eq!(e.sync_record(&t).unwrap().unwrap().sync_ids, s.into_iter().collect::<Vec<_>>());
-        }
-    }
-    // a payload by an author no node holds, arriving after the accept: listed, not accepted
-    let (mut lp, t, b, _, blob) = granted(Role::Sync);
-    let (real, _) = boxes_of(&mut lp, 1, &blob);
+    let (mut lp, t, _, g, blob) = granted(Role::Read);
+    assert_eq!(lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap().unwrap().taken, Taken::Waiting);
     accept(&mut lp, 1, t);
-    let (proof, key) = stranger(7);
+    for _ in 0..2 {
+        assert_eq!(lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap().unwrap().taken, Taken::Applied);
+    }
+    assert!(lp.peers[1].engine.core.ix.commits.contains_key(&g));
+    let (mut lp, t, b, _, blob) = granted(Role::Sync);
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let (real, _) = boxes_of(&mut lp, 1, &blob);
+    lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap();
+    accept(&mut lp, 1, t);
+    assert_eq!(lp.peers[1].engine.sync_record(&t).unwrap().unwrap().sync_ids, vec![s]);
     let mut things = real.things.clone();
     things[0].sync_id = Some(osis_base::SyncId([0x77; 16]));
-    let p = osis_label::BoxesPayload::signed(&b, real.commit, proof, None, things, None, &key);
-    let late = boxes_by_hand(&mut lp, 1, &p);
-    assert_eq!(lp.peers[1].engine.take_inbox_blob(&late, false).unwrap().unwrap().taken, Taken::Waiting);
-    assert!(lp.peers[1].engine.sync_record(&t).unwrap().is_none_or(|r| r.sync_ids.is_empty()));
+    let late = boxes_by_hand(&mut lp, 1, &osis_label::BoxesPayload::new(&b, things, None, None));
+    assert_eq!(lp.peers[1].engine.take_inbox_blob(&late, false).unwrap().unwrap().taken, Taken::Offered);
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(e.sync_record(&t).unwrap().unwrap().sync_ids, vec![s]);
+    assert!(e.invitations().unwrap().iter().any(|i| i.thing == t && !i.taken), "the user decides again");
 }
 
 // spec/sync-inbox.md §2 (invite request: an untaken blob, not applied, nothing followed),
@@ -433,37 +441,10 @@ fn an_untaken_grant_is_an_invitation_spec_sync_set_4() {
     assert!(e.core.ix.commits.get(&g).is_none());
     let inv = e.invitations().unwrap();
     let i = inv.iter().find(|i| i.thing == t).expect("listed");
-    assert_eq!((i.role, i.from, i.taken), (Role::Read, from, false));
+    assert_eq!((i.role, i.from, i.taken), (Role::Read, Some(from), false));
     let o = e.take_inbox_blob(&blob, true).unwrap().unwrap();
     assert_eq!(o.taken, Taken::Applied);
     assert!(!e.invitations().unwrap().iter().any(|i| i.thing == t && !i.taken));
-}
-
-// spec/sync-judgement.md §6 Keeps: a box arriving after a new step (the rotation that
-// stepped boxing the holder again) adds its epoch's sync secret to the record; nothing of the
-// first is lost.
-#[test]
-fn a_box_after_a_new_step_extends_the_record_spec_sync_judgement_6() {
-    let (mut lp, ps) = people(3);
-    let t = thing_of(&mut lp, 0, ps[0]);
-    let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Sync)).unwrap();
-    for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
-        if h == ps[1] {
-            lp.peers[1].engine.take_inbox_blob(&b, true).unwrap();
-        }
-    }
-    let first = lp.peers[1].engine.sync_record(&t).unwrap().unwrap();
-    lp.peers[0].engine.grant(&t, &ps[2], &edge_of(Role::Read)).unwrap();
-    // removing peer 2 rotates read and sync: the rotation boxes peer 1 at the new sync epoch
-    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: ps[2], new: None, retain: None }).unwrap();
-    for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
-        if h == ps[1] {
-            lp.peers[1].engine.take_inbox_blob(&b, true).unwrap();
-        }
-    }
-    let after = lp.peers[1].engine.sync_record(&t).unwrap().unwrap();
-    assert!(first.secrets.keys().all(|e| after.secrets.contains_key(e)), "nothing lost");
-    assert!(after.secrets.len() > first.secrets.len(), "the new sync epoch's secret");
 }
 
 // spec/sync-ids.md §6 (Steps: an admin issues a step when it holds an epoch newer than its
@@ -901,26 +882,25 @@ fn inbox_by_hand(lp: &mut LocalPeer, to: usize, commit: &osis_commit::CommitBlob
     osis_label::seal_inbox_blob(&a, &kem, &payload, now, &mut SeededRng::from_u64(11)).unwrap()
 }
 
-// spec/sync-inbox.md §2 Taking (connected: the commit's signature verifies under the author's
-// key): a sync grant whose header names a connected author it was not signed by is not taken
-// (a sync-alone blob is never ingested, so nothing else checks its signature).
+// spec/sync-inbox.md §2 Taking, spec/sync.md §3: a commit blob boxing sync alone is held as an
+// offer like a boxes payload: one whose header names an author it was not signed by names no
+// granting account and keeps nothing.
 #[test]
-fn a_forged_author_is_not_connected_spec_sync_inbox_2() {
+fn a_forged_author_names_nobody_spec_sync_inbox_2() {
     let (mut lp, t, pb, g, _) = granted(Role::Sync);
     let mut forged = commit_of(&mut lp, 0, &g);
-    // peer 1's own account: connected (a role on its D), but it never signed this
     forged.header.author = pb;
     let s = lp.peers[0].engine.home_sync_id(&t).unwrap();
     let blob = inbox_by_hand(&mut lp, 1, &forged, vec![osis_label::InboxThing { tid: t, sync_id: s, delete_keys: None }]);
     let e = &mut lp.peers[1].engine;
-    let o = e.take_inbox_blob(&blob, false).unwrap().expect("opens");
-    assert_eq!(o.taken, Taken::Waiting, "the author's signature does not verify: an invite request");
-    assert!(e.sync_record(&t).unwrap().is_none(), "no sync record from an untaken blob");
+    assert_eq!(e.take_inbox_blob(&blob, false).unwrap().expect("opens").taken, Taken::Offered);
+    assert!(e.sync_record(&t).unwrap().is_none());
+    assert_eq!(e.invitations().unwrap().iter().find(|i| i.thing == t).expect("an invitation").from, None);
 }
 
-// spec/sync-inbox.md §2 (sync ID hints: the sender's word until a held `sync.0` records
-// them), spec/sync-set.md §2: a sync grant naming a sync ID that a held `sync.0` gives
-// another thing keeps nothing unread under it; that sync ID stays its owner's.
+// spec/sync-inbox.md §2 (sync ID hints), spec/sync-set.md §2: an accepted sync grant naming a
+// sync ID that a held `sync.0` gives another thing keeps nothing unread under it; that sync ID
+// stays its owner's.
 #[test]
 fn a_payload_sync_id_of_another_thing_is_not_kept_unread_spec_sync_inbox_2() {
     let (mut lp, t, _, g, _) = granted(Role::Sync);
@@ -928,10 +908,10 @@ fn a_payload_sync_id_of_another_thing_is_not_kept_unread_spec_sync_inbox_2() {
     let home1 = lp.peers[1].engine.home_sync_id(&d1).unwrap().unwrap();
     let commit = commit_of(&mut lp, 0, &g);
     let blob = inbox_by_hand(&mut lp, 1, &commit, vec![osis_label::InboxThing { tid: t, sync_id: Some(home1), delete_keys: None }]);
-    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
-    assert_eq!(lp.peers[1].engine.sync_record(&t).unwrap().expect("a sync record").sync_ids, vec![home1], "recorded as the payload named it");
-    add_item(&mut lp, 1, d1, t);
+    lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap();
+    accept(&mut lp, 1, t);
     let e = &mut lp.peers[1].engine;
+    assert_eq!(e.sync_record(&t).unwrap().expect("kept").sync_ids, vec![home1], "kept as the payload named it");
     assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Unread(Vec::new()), "home1 is D's");
     assert_eq!(e.sync_set().unwrap().ids.get(&home1), Some(&(d1, Holding::Read)));
 }
@@ -1098,8 +1078,9 @@ fn read_facts_of_own_and_role_commits_spec_sync_judgement_3() {
     assert_eq!(key(&again), key(&wrap));
 }
 
-// spec/sync-judgement.md §6 (Read and unread move: a node lowered to sync keeps the sync secrets
-// it held as its sync record and drops its engine state of S, which becomes kept unread).
+// spec/sync-judgement.md §6 (Read and unread move: a node lowered to sync writes its account's
+// sync record from its own reading, spec/sync.md §3, and drops its engine state of S, which
+// becomes kept unread).
 #[test]
 fn a_lowering_to_sync_writes_a_sync_record_spec_sync_judgement_6() {
     let (mut lp, t, pb, _, blob) = granted(Role::Read);
@@ -1119,7 +1100,7 @@ fn a_lowering_to_sync_writes_a_sync_record_spec_sync_judgement_6() {
     e.forget_lost(osis_engine::rotation::LostScope::All).unwrap();
     assert!(e.epochs(&t).is_none_or(|x| !x.read.holds_any()), "read secrets gone");
     let r = e.sync_record(&t).unwrap().expect("lowered: a sync record");
-    assert!(held.iter().all(|x| r.secrets.contains_key(x)), "the sync secrets it held");
+    assert!(held.iter().all(|x| r.recorded.contains(x)), "the sync secrets it held, recorded");
     assert_eq!(r.sync_ids, vec![lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap()]);
 }
 
@@ -1915,16 +1896,14 @@ fn a_strangers_grants_add_nothing_to_the_accounts_inbox_spec_sync_inbox_5() {
     assert_eq!((kept(4), kept(40)), (0, 0));
 }
 
-// spec/sync-inbox.md §5 (Grant copy: as the inbox blob projects it), spec/sync-ids.md §2 (What a
-// sync holder learns): a holder of sync alone's grant copy is its `secrets.0` part alone, no
-// record, step or chain; its removal copies nothing.
+// spec/sync-inbox.md §5 (Grant copy: none for an actor holding sync alone after the edge write:
+// its account's sync record holds what it keeps), spec/sync-ids.md §2 (What a sync holder
+// learns: never the roster a `secrets.0` part would show): a sync holder's grant and removal copy
+// nothing.
 #[test]
-fn a_sync_holders_grant_copy_is_its_box_alone_spec_sync_inbox_5() {
-    let (mut lp, t, p1, g, _) = granted(Role::Sync);
-    let copy = lp.peers[0].engine.grant_copy(&p1, &t);
-    assert_eq!(copy.commits.keys().copied().collect::<Vec<_>>(), vec![g]);
-    assert_eq!(copied_aks(&mut lp, &g, &copy), BTreeSet::from(["secrets.0".to_string()]));
-    assert!(copy.records.is_empty() && copy.headers.is_empty());
+fn a_sync_holder_has_no_grant_copy_spec_sync_inbox_5() {
+    let (mut lp, t, p1, _, _) = granted(Role::Sync);
+    assert!(lp.peers[0].engine.grant_copy(&p1, &t).is_empty(), "a sync grant");
     lp.peers[0].engine.demote(&t, &Demotion { holder: p1, new: None, retain: None }).unwrap();
     assert!(lp.peers[0].engine.grant_copy(&p1, &t).is_empty(), "a sync holder's removal");
 }

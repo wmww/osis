@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use osis_base::{CommitId, Role, Tid, Value};
 use osis_commit::CommitBlob;
 use osis_crypto::NodeRng;
-use osis_label::{AuthorProof, BoxedThing, BoxesPayload, DialHint, InboxPayload, InboxThing, seal_boxes_payload, seal_inbox_blob};
+use osis_label::{BoxedThing, BoxesPayload, DialHint, InboxPayload, InboxThing, seal_boxes_payload, seal_inbox_blob};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -26,19 +26,22 @@ pub(crate) const OWED: &[u8] = b"ow/";
 pub struct Owed {
     pub things: Vec<Tid>,
     pub edge_only: bool,
+    /// The commit writes an edge naming the holder (a grant): a boxes payload of it is signed by
+    /// its author (spec/wire.md §9 `GrantSig`).
+    pub grant: bool,
 }
 
 fn owed_value(o: &Owed) -> Value {
-    Value::List(vec![Value::List(o.things.iter().map(|t| Value::Tid(*t)).collect()), Value::Bool(o.edge_only)])
+    Value::List(vec![Value::List(o.things.iter().map(|t| Value::Tid(*t)).collect()), Value::Bool(o.edge_only), Value::Bool(o.grant)])
 }
 
 fn owed_of(b: &[u8]) -> Result<Owed> {
     let bad = || Error::Corrupt("owed delivery");
     let v = osis_base::decode(b, &osis_base::Limits { max_depth: 4, max_bytes: b.len() }).map_err(|_| bad())?;
     let Value::List(f) = v else { return Err(bad()) };
-    let [Value::List(ts), Value::Bool(edge_only)] = f.as_slice() else { return Err(bad()) };
+    let [Value::List(ts), Value::Bool(edge_only), Value::Bool(grant)] = f.as_slice() else { return Err(bad()) };
     let things = ts.iter().map(|t| if let Value::Tid(t) = t { Ok(*t) } else { Err(bad()) }).collect::<Result<_>>()?;
-    Ok(Owed { things, edge_only: *edge_only })
+    Ok(Owed { things, edge_only: *edge_only, grant: *grant })
 }
 
 /// Loads the owed deliveries (an open or reload).
@@ -58,19 +61,20 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 /// Owes `holder` an inbox delivery of commit `c` naming `things`, in `c`'s own transaction (so a
-/// crash loses nothing). A key actor that is neither a node nor an account (a link key) reads
+/// crash loses nothing); `grant`: `c` writes an edge naming `holder`. A key actor that is neither a node nor an account (a link key) reads
 /// its sync ID by static entry and is owed nothing.
-pub(crate) fn owe(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], edge_only: bool) -> Result<()> {
+pub(crate) fn owe(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], edge_only: bool, grant: bool) -> Result<()> {
     if tx.core.is_key_actor(&holder) && !tx.core.is_account(&holder) && !crate::flows::is_node(tx, &holder)? {
         return Ok(());
     }
-    let mut o = tx.core.ix.owed_inbox.get(&(c, holder)).map(|o| (**o).clone()).unwrap_or(Owed { things: Vec::new(), edge_only });
+    let mut o = tx.core.ix.owed_inbox.get(&(c, holder)).map(|o| (**o).clone()).unwrap_or(Owed { things: Vec::new(), edge_only, grant });
     for t in things {
         if !o.things.contains(t) {
             o.things.push(*t);
         }
     }
     o.edge_only &= edge_only;
+    o.grant |= grant;
     tx.txn.put_local(&[OWED, &c.0, h_bytes(&holder)].concat(), &osis_base::encode(&owed_value(&o)), Shred::No)?;
     tx.core.ix.owed_inbox.insert((c, holder), Arc::new(o));
     Ok(())
@@ -193,9 +197,9 @@ impl Engine {
     }
 
     /// The boxes payload of delivery (`c`, `holder`) (spec/wire.md §9): `holder`'s boxes of `c`'s
-    /// `secrets.0` deltas on the things owed, each with its thing's sync ID, signed by `c`'s
-    /// author. `None` when it boxes `holder` on none of them or this node cannot sign as the
-    /// author.
+    /// `secrets.0` deltas on the things owed, each with its thing's sync ID; a grant's signed by
+    /// `c`'s author. `None` when it boxes `holder` on none of them, or it is a grant this node
+    /// cannot sign as its author.
     fn boxes_blob(&mut self, c: &CommitId, holder: &Tid, o: &Owed, rng: &mut dyn NodeRng) -> Result<Option<Vec<u8>>> {
         let (h, id) = (*holder, *c);
         let Some((blob, kem, ids)) = self.read(|tx| {
@@ -222,37 +226,16 @@ impl Engine {
         if things.is_empty() {
             return Ok(None);
         }
-        let Some((epoch, key)) = self.author_signer(&author)? else { return Ok(None) };
-        let Some(proof) = self.author_proof(&author, epoch)? else { return Ok(None) };
-        let payload = BoxesPayload::signed(&h, id, proof, epoch, things, self.dial_hint()?, &key);
+        let signer = match o.grant {
+            true => match self.author_signer(&author)? {
+                Some(s) => Some(s),
+                None => return Ok(None),
+            },
+            false => None,
+        };
+        let payload = BoxesPayload::new(&h, things, self.dial_hint()?, signer.as_ref().map(|(e, k)| (author, *e, k)));
         let now = self.now();
         Ok(Some(seal_boxes_payload(&h, &kem, &payload, now, rng)?))
-    }
-
-    /// What proves `author`'s key at `epoch` with nothing held (spec/wire.md §9 boxes payload):
-    /// its creation record and, for an account, header-only copies of the rotations from its first
-    /// epoch to `epoch` along the epochs each is signed at. `None` when a record or rotation is
-    /// not held here, or the line is longer than `MAX_ROTATIONS`.
-    fn author_proof(&mut self, author: &Tid, epoch: Option<CommitId>) -> Result<Option<AuthorProof>> {
-        let Some(record) = self.core.created(author).cloned() else { return Ok(None) };
-        let mut line = Vec::new();
-        let mut at = epoch.unwrap_or(osis_commit::FIRST_EPOCH);
-        while at != osis_commit::FIRST_EPOCH {
-            if line.len() == osis_base::format::MAX_ROTATIONS {
-                return Ok(None);
-            }
-            let Some(next) = self.header(&at).filter(|h| h.author == *author && h.rotation.is_some()).and_then(|h| h.epoch) else { return Ok(None) };
-            line.push(at);
-            at = next;
-        }
-        let mut rotations = Vec::with_capacity(line.len());
-        for c in line.into_iter().rev() {
-            let Some(blob) = self.read(|tx| tx.get_commit(&c))? else { return Ok(None) };
-            let mut copy = Arc::unwrap_or_clone(blob);
-            copy.parts.clear();
-            rotations.push(osis_base::decode(&copy.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB }).map_err(|_| Error::Corrupt("rotation header"))?);
-        }
-        Ok(Some(AuthorProof { record, rotations }))
     }
 
     /// The key this node signs as `author` with, and the epoch it names (an account's open

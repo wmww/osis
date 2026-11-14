@@ -687,13 +687,11 @@ impl crate::engine::Engine {
             return Ok(false);
         }
         let g = *g;
-        // a sync secret of a thing this node does not read goes to its sync record, not thing
-        // state (spec/sync-judgement.md §6)
+        // a sync secret of a thing this node does not read goes to its account's sync record, not
+        // thing state, and only beside a kept sync ID (spec/sync.md §3: the box derives the
+        // head's sync key, so a step of the path bears it)
         if r == Role::Sync && !self.core.epochs(&g).is_some_and(|x| x.role(Role::Read).holds_any()) {
-            return self.run(|tx| {
-                let ids: Vec<osis_base::SyncId> = crate::flows::home_sync_id(tx, &g)?.into_iter().collect();
-                crate::sync::records::note_sync_secrets(tx, &g, &ids, [(e, secret)], None)
-            });
+            return self.run(|tx| crate::sync::records::keep_in(tx, &g, &[], [(e, secret)]));
         }
         self.run(|tx| {
             tx.core.touch();

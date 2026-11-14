@@ -1163,6 +1163,7 @@ impl Engine {
             }
             // inbox blobs expired: their invite requests go
             crate::sync::inbox::expire_waiting(tx, osis_base::WallMs(now))?;
+            crate::sync::records::expire_offers(tx, osis_base::WallMs(now))?;
             // quiet times passed: after the expiries, which end an aspect's quiet time
             tx.core.compaction.quiet_passed(now);
             tx.core.timer_floor = tx.core.timer_floor.min(tx.core.compaction.next_at());
@@ -1190,7 +1191,7 @@ impl Engine {
             let part = first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _)| t);
             let aspect = tx.core.ix.leave_due.keys().next().copied();
             let live = Some(tx.core.compaction.next_at()).filter(|t| *t != u64::MAX);
-            let inbox = tx.core.ix.waiting_inbox.values().map(|w| w.expires.0).min();
+            let inbox = tx.core.ix.waiting_inbox.values().map(|w| w.expires.0).chain(tx.core.ix.offers.values().map(|o| o.expires.0)).min();
             let fallen = (!tx.core.fallen.is_empty()).then(|| tx.now().0);
             // a commit pending for its `ts` ahead (`apply::Wake::At`)
             let drift = crate::apply::next_at(tx.core);

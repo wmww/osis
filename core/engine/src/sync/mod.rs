@@ -100,6 +100,9 @@ pub enum Taken {
     Applied,
     /// Waits for the user (an invitation, spec/sync-set.md §4).
     Waiting,
+    /// A boxes payload (or a blob boxing sync alone), held as an offer: never taken
+    /// (spec/sync-inbox.md §2; spec/sync.md §3).
+    Offered,
     /// Not for this node, or refused.
     Refused,
 }
@@ -281,13 +284,18 @@ pub struct Signers {
     pub delete: Option<SigningSecret>,
 }
 
-/// A thing this node keeps a sync record of (spec/sync.md §3 Kept unread).
+/// A thing this node keeps unread, as its account's sync record and the boxes payloads held give
+/// it (spec/sync.md §3 Sync record).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SyncRecord {
+    /// The kept sync IDs (`kept^.0` on D).
     pub sync_ids: Vec<SyncId>,
+    /// The held sync secrets: the recorded ones and those of the boxes payloads held.
     pub secrets: BTreeMap<Epoch, Secret32>,
-    /// The granting node's dial hint of the newest grant taken that carried one (spec/sync-inbox.md
-    /// §2): where this node dials the thing's granter (spec/sync-opens.md §1), for dialing only.
+    /// Which of `secrets` are recorded.
+    pub recorded: BTreeSet<Epoch>,
+    /// The dial hint of a boxes payload held whose sync IDs are kept (spec/sync-inbox.md §2):
+    /// for dialing only (spec/sync-opens.md §1).
     pub dial: Option<DialHint>,
 }
 
@@ -305,7 +313,8 @@ pub enum J {
 pub struct Invitation {
     pub thing: Tid,
     pub role: Role,
-    pub from: Tid,
+    /// The granting account, where this node can tell it (spec/sync-inbox.md §2).
+    pub from: Option<Tid>,
     pub taken: bool,
     /// The account acted on it before (`acted^.0` on D): accepted, filed elsewhere or unsynced.
     pub acted: bool,
@@ -660,9 +669,9 @@ impl Engine {
         Ok(())
     }
 
-    /// The sync records of things this node keeps unread (spec/sync-judgement.md §6): each
-    /// thing's sync IDs and sync secrets by epoch, from boxes sealed to its own key. Whole: a
-    /// start lists them, then follows `sync_record_feed` and `sync_record` per thing.
+    /// The sync records of things this node keeps unread (spec/sync.md §3): each thing's kept
+    /// sync IDs and held sync secrets by epoch. Whole: a start lists them, then follows
+    /// `sync_record_feed` and `sync_record` per thing.
     pub fn sync_records(&mut self) -> Result<Arc<BTreeMap<Tid, SyncRecord>>> {
         Ok(self.sync_records_now())
     }
@@ -675,6 +684,13 @@ impl Engine {
     /// A cursor over the things whose sync record is made from now on (`memo::Feed`).
     pub fn sync_record_feed(&self) -> osis_base::memo::Feed<Tid> {
         self.core.ix.sync_records.feed()
+    }
+
+    /// Records the held sync secrets of `thing` that a step on this node's path of a kept sync ID
+    /// of it bears (`borne`: those steps' sync keys) in the account's sync record (spec/sync.md
+    /// §3 A recorded secret). Returns whether it wrote.
+    pub fn record_borne(&mut self, thing: &Tid, borne: &BTreeSet<[u8; 32]>) -> Result<bool> {
+        self.record_borne_now(thing, borne)
     }
 
     // Grants, removals, peers
@@ -900,9 +916,9 @@ impl Engine {
     }
 
     /// Takes the inbox blob `blob` held under `s` (its bytes from the ciphertext store), or
-    /// judges it again (spec/sync-inbox.md §2 Taking); `vouched`: the user accepted it
-    /// (spec/sync-set.md §4) or a writer of the inbox stamped it in place (a node of the account
-    /// took it). `None`: its bytes are not held or nothing here opens it.
+    /// judges it again (spec/sync-inbox.md §2 Taking); `vouched`: a writer of the inbox stamped
+    /// it in place (a node of the account took it). A boxes payload is held as an offer, never
+    /// taken. `None`: its bytes are not held or nothing here opens it.
     pub fn take_inbox(&mut self, s: &SyncId, blob: &BlobId, vouched: bool) -> Result<Option<InboxOpened>> {
         osis_base::costs::count("inbox: take", 1);
         let b = *blob;

@@ -56,6 +56,8 @@ fn step(s: SyncId, e: u64) -> Step {
 struct Keep {
     s: SyncId,
     held: Vec<u64>,
+    /// The epochs of `held` the account's record holds (the rest from boxes payloads held).
+    recorded: Vec<u64>,
     path: Path,
 }
 
@@ -63,11 +65,11 @@ impl Keep {
     /// Holding the sync secrets of `held` epochs, its head at step 0.
     fn new(held: &[u64]) -> Keep {
         let s = sync_id(0);
-        Keep { s, held: held.to_vec(), path: Path { steps: vec![(step(s, 0), None)] } }
+        Keep { s, held: held.to_vec(), recorded: held.to_vec(), path: Path { steps: vec![(step(s, 0), None)] } }
     }
 
     fn kept(&self) -> osis_sync::unread::Kept {
-        let record = SyncRecord { sync_ids: vec![self.s], secrets: self.held.iter().map(|e| (epoch(*e), sync_secret(*e))).collect(), dial: None };
+        let record = SyncRecord { sync_ids: vec![self.s], secrets: self.held.iter().map(|e| (epoch(*e), sync_secret(*e))).collect(), recorded: self.recorded.iter().map(|e| epoch(*e)).collect(), dial: None };
         judge(&Judged { record: Some(&record), steps: &self.path.steps })
     }
 
@@ -190,4 +192,24 @@ fn a_box_at_a_self_made_epoch_keeps_nothing_spec_sync_hostile_1() {
     k.register(1);
     assert!(k.stranded(), "removed: its copy goes whatever box it holds");
     assert_eq!(k.shows(), vec![label_role_key(LabelRole::Sync, &sync_secret(1_000_000)).verifying_key()]);
+}
+
+/// The sync key of epoch `e`, as bytes.
+fn key_bytes(e: u64) -> [u8; 32] {
+    label_role_key(LabelRole::Sync, &sync_secret(e)).verifying_key().to_bytes()
+}
+
+// spec/sync.md §3 (A recorded secret: a held secret goes to the account's record once a step on
+// the node's own path bears its sync key): a box's secret a step of the path bears is borne; one
+// no step bears (a later epoch not registered yet, a self-made one) is not; a recorded one never
+// is again. NetTrust `UN_any` (recorded unconfirmed) fails this.
+#[test]
+fn a_secret_is_recorded_once_its_path_bears_it_spec_sync_3() {
+    let mut k = Keep::new(&[0, 1, 9]);
+    k.recorded = vec![0];
+    assert!(k.kept().borne.is_empty(), "epoch 1 has no step here yet, 9 never will");
+    k.register(1);
+    assert_eq!(k.kept().borne, [key_bytes(1)].into(), "step 1 bears epoch 1");
+    k.recorded = vec![0, 1];
+    assert!(k.kept().borne.is_empty(), "recorded: nothing more");
 }

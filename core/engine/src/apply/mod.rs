@@ -340,6 +340,16 @@ pub(crate) fn signature(core: &crate::engine::Core, id: &CommitId, sigs: &osis_c
     osis_commit::verify_signature(id, sigs, key).ok()
 }
 
+/// `author`'s signing key at epoch `epoch` (`None` for a key actor other than an account) as held
+/// here: its creation record and, at a later epoch, the rotation minting it.
+pub(crate) fn held_key(core: &crate::engine::Core, author: &Tid, epoch: Option<CommitId>) -> Option<VerifyingKey> {
+    let Some(CreationRecord::KeyActor { public_key, account, .. }) = core.created(author) else { return None };
+    if *account != epoch.is_some() {
+        return None;
+    }
+    epoch_key(core, author, epoch, public_key).ok().flatten()
+}
+
 /// Whether `sigs` are `author`'s for commit `id` at epoch `epoch` (`None` for a key actor other
 /// than an account, spec/wire.md §4), from what is held: `false` when that cannot be told.
 pub fn signed_at(core: &crate::engine::Core, id: &CommitId, author: &Tid, epoch: Option<CommitId>, sigs: &osis_commit::Sigs) -> bool {
@@ -2100,6 +2110,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             // takes them up after (`Engine::take_account`), a reload keeps those held
             "account.0" => {}
             // a state-list row is a state (`Tx::derive`)
+            // the account's, read once the account is known (`records::observe_own`)
+            "kept^.0" => {}
             "sync.0" => {
                 tx.core.ix.sync_recorded.insert(tid);
                 if let Some(f) = tx.state(&tid, &ak)?.cloned() {
@@ -2130,6 +2142,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         let actors: BTreeSet<Tid> = tx.core.ix.commits.values().flat_map(|m| m.view.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid)).collect();
         keys::rebuild_keysets(tx, &actors)?;
     }
+    // the account's sync records, where its D is known (else once it is: `records::observe_own`)
+    crate::sync::records::observe_own(tx)?;
     if fast {
         return Ok(None);
     }

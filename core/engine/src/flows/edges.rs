@@ -75,7 +75,12 @@ pub enum Parts {
 /// spec/sync-inbox.md §2): an inbox blob for an actor, the commit itself over a connection for a
 /// node, nothing for a link key (it reads its sync ID by static entry).
 pub(crate) fn deliver_to(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid]) -> Result<()> {
-    crate::sync::deliveries::owe(tx, holder, c, things, false)
+    crate::sync::deliveries::owe(tx, holder, c, things, false, false)
+}
+
+/// `deliver_to` for an edge write naming `holder` (a grant or change of its grant).
+fn deliver_grant(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid]) -> Result<()> {
+    crate::sync::deliveries::owe(tx, holder, c, things, false, true)
 }
 
 /// The KEM key an inbox blob to `actor` is sealed to (spec/crypto.md §5): an account's current
@@ -252,7 +257,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     };
     done.add(c);
     if let Some(c) = c {
-        deliver_to(tx, holder, c, &[target])?;
+        deliver_grant(tx, holder, c, &[target])?;
     }
     if let Some(s) = setting {
         let mut m = Mutation::new();
@@ -441,7 +446,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
 /// inbox to `unreached`.
 fn lowered_deliveries(tx: &mut Tx<'_>, target: Tid, c: CommitId, unreached: &[Tid], lowered: &[Tid]) -> Result<()> {
     for x in lowered {
-        crate::sync::deliveries::owe(tx, *x, c, &[target], true)?;
+        crate::sync::deliveries::owe(tx, *x, c, &[target], true, false)?;
     }
     rotation::deliver_rotation(tx, target, Some(c), unreached)
 }

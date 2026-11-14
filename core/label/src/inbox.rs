@@ -8,8 +8,7 @@ use crate::step::OBJECT_LIMITS;
 use crate::Error;
 use osis_base::cbor::{decode, encode};
 use osis_base::format::INBOX_LIFETIME_MS;
-use osis_base::format::{MAX_ROTATIONS, MAX_URL_BYTES};
-use osis_commit::CommitBlob;
+use osis_base::format::MAX_URL_BYTES;
 use osis_base::{CommitId, CreationRecord, Role, SyncId, Tid, Value, WallMs};
 use osis_crypto::{CryptoRngCore, Domain, KemPublicKey, KemSecret, Signature, SigningSecret, VerifyingKey, open_inbox, seal_inbox};
 use osis_schema::Codec;
@@ -262,71 +261,52 @@ impl BoxedThing {
     }
 }
 
-/// `BoxesPayload := ["boxes", commit_id, author, Opt(epoch_id), [BoxedThing+], Opt([dialable,
-/// [url*]]), signature, creation, [CommitBlobPlaintext*]]` (spec/wire.md §9): to a recipient below
-/// read on every thing a role commit names, its own boxes of that commit, signed by the commit's
-/// author, in place of the commit, with what proves the author's key.
+/// `BoxesPayload := ["boxes", Opt(GrantSig), [BoxedThing+], Opt([dialable, [url*]])]`
+/// (spec/wire.md §9): to a recipient below read on every thing a role commit names, its own boxes
+/// of that commit and nothing else of it; a grant's signed by its granter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoxesPayload {
-    pub commit: CommitId,
-    pub author: Tid,
-    /// The epoch the author (an account) signs at; `None` for another key actor.
-    pub epoch: Option<CommitId>,
+    /// Present iff the commit grants the recipient.
+    pub grant: Option<GrantSig>,
     /// Sorted by tid, distinct, at least one.
     pub things: Vec<BoxedThing>,
     pub dial: Option<DialHint>,
-    pub signature: Signature,
-    /// The author's creation record and, for an account, the header-only copies of its rotations
-    /// from the first epoch to `epoch` (spec/wire.md §9 positions 7, 8): its key, proved here.
-    pub proof: AuthorProof,
 }
 
-/// What proves a boxes payload's author key with nothing held (spec/wire.md §9): its creation
-/// record and, for an account, the header-only copies of its rotations from the first epoch to the
-/// epoch it signs at, each signed at the epoch the one before mints.
+/// `GrantSig := [author, Opt(epoch_id), signature]`: a grant's author signing its boxes payload
+/// for the recipient. It proves nothing by itself: it verifies only under a key of the author the
+/// recipient holds (spec/sync-inbox.md §2 Taking).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AuthorProof {
-    pub record: CreationRecord,
-    /// `CommitBlobPlaintext` values, each with no part.
-    pub rotations: Vec<Value>,
+pub struct GrantSig {
+    pub author: Tid,
+    /// The epoch the author (an account) signs at; `None` for another key actor.
+    pub epoch: Option<CommitId>,
+    pub signature: Signature,
 }
 
 impl BoxesPayload {
-    /// The payload by `proof`'s actor at `epoch`, `things` sorted by tid, signed by `key` for
-    /// `recipient`.
-    pub fn signed(recipient: &Tid, commit: CommitId, proof: AuthorProof, epoch: Option<CommitId>, mut things: Vec<BoxedThing>, dial: Option<DialHint>, key: &SigningSecret) -> BoxesPayload {
+    /// The payload of `things` (sorted by tid here); signed for `recipient` as `author` at
+    /// `epoch` by `key` when given (a grant), else unsigned.
+    pub fn new(recipient: &Tid, mut things: Vec<BoxedThing>, dial: Option<DialHint>, grant: Option<(Tid, Option<CommitId>, &SigningSecret)>) -> BoxesPayload {
         things.sort_by_key(|t| t.tid);
         things.dedup_by_key(|t| t.tid);
-        let mut p = BoxesPayload { commit, author: proof.record.tid(), epoch, things, dial, signature: Signature([0; 64]), proof };
-        p.signature = key.sign(Domain::InboxBoxes, &p.digest(recipient));
+        let mut p = BoxesPayload { grant: None, things, dial };
+        if let Some((author, epoch, key)) = grant {
+            let signature = key.sign(Domain::InboxBoxes, &p.digest(recipient, &author, epoch));
+            p.grant = Some(GrantSig { author, epoch, signature });
+        }
         p
     }
 
-    /// The author's key at `epoch` as the payload's own proof gives it (`osis_commit::epoch_key`):
-    /// `None` when the record is not the author's or the rotations do not reach `epoch`.
-    pub fn author_key(&self) -> Option<VerifyingKey> {
-        if self.proof.record.tid() != self.author {
-            return None;
-        }
-        let rotations: Vec<CommitBlob> = self.proof.rotations.iter().map(|r| CommitBlob::decode(&encode(r))).collect::<Result<_, _>>().ok()?;
-        osis_commit::epoch_key(&self.proof.record, self.epoch, &rotations)
-    }
-
-    /// Whether the signature verifies for `recipient` under the author's key its proof gives
-    /// (spec/sync-inbox.md §2 Taking: taken only so).
-    pub fn verified(&self, recipient: &Tid) -> bool {
-        self.author_key().is_some_and(|k| self.verifies(recipient, &k))
-    }
-
-    /// What the signature signs: BLAKE3 of `[recipient, commit_id, author, Opt(epoch_id), things]`.
-    fn digest(&self, recipient: &Tid) -> [u8; 32] {
-        let v = Value::List(vec![tid(recipient), Value::bytes(&self.commit.0), tid(&self.author), Value::opt(self.epoch.map(|e| Value::bytes(&e.0))), self.things_value()]);
+    /// What a grant's signature signs: BLAKE3 of `[recipient, author, Opt(epoch_id), things]`.
+    fn digest(&self, recipient: &Tid, author: &Tid, epoch: Option<CommitId>) -> [u8; 32] {
+        let v = Value::List(vec![tid(recipient), tid(author), Value::opt(epoch.map(|e| Value::bytes(&e.0))), self.things_value()]);
         osis_base::hash::hash(&encode(&v))
     }
 
-    /// Whether the signature is `key`'s for `recipient`.
+    /// Whether the grant's signature is `key`'s for `recipient` (false unsigned).
     pub fn verifies(&self, recipient: &Tid, key: &VerifyingKey) -> bool {
-        key.verify(Domain::InboxBoxes, &self.digest(recipient), &self.signature).is_ok()
+        self.grant.as_ref().is_some_and(|g| key.verify(Domain::InboxBoxes, &self.digest(recipient, &g.author, g.epoch), &g.signature).is_ok())
     }
 
     fn things_value(&self) -> Value {
@@ -334,23 +314,14 @@ impl BoxesPayload {
     }
 
     pub fn to_value(&self) -> Value {
-        Value::List(vec![
-            Value::Str("boxes".into()),
-            Value::bytes(&self.commit.0),
-            tid(&self.author),
-            Value::opt(self.epoch.map(|e| Value::bytes(&e.0))),
-            self.things_value(),
-            dial_value(self.dial.as_ref()),
-            self.signature.to_value(),
-            self.proof.record.to_value(),
-            Value::List(self.proof.rotations.clone()),
-        ])
+        let grant = self.grant.as_ref().map(|g| Value::List(vec![tid(&g.author), Value::opt(g.epoch.map(|e| Value::bytes(&e.0))), g.signature.to_value()]));
+        Value::List(vec![Value::Str("boxes".into()), Value::opt(grant), self.things_value(), dial_value(self.dial.as_ref())])
     }
 
     pub fn from_value(v: &Value) -> Result<BoxesPayload, Error> {
         let bad = Error::Malformed("boxes payload");
         let Value::List(items) = v else { return Err(bad) };
-        let [Value::Str(k), commit, author, epoch, Value::List(ts), dial, sig, record, Value::List(rots)] = items.as_slice() else { return Err(bad) };
+        let [Value::Str(k), grant, Value::List(ts), dial] = items.as_slice() else { return Err(bad) };
         if k != "boxes" {
             return Err(bad);
         }
@@ -365,29 +336,20 @@ impl BoxesPayload {
         if things.is_empty() {
             return Err(Error::Malformed("boxes payload with no thing"));
         }
-        Ok(BoxesPayload {
-            commit: CommitId(get_bytes(commit, "boxes commit ID")?),
-            author: get_tid(author, "boxes author")?,
-            epoch: get_opt(epoch, "boxes epoch")?.map(|e| get_bytes(e, "boxes epoch").map(CommitId)).transpose()?,
-            things,
-            dial: dial_from(dial)?,
-            signature: Signature::from_value(sig).map_err(|_| Error::Malformed("boxes signature"))?,
-            proof: AuthorProof { record: CreationRecord::from_value(record).ok_or(Error::Malformed("boxes author record"))?, rotations: rotations_from(rots)? },
-        })
+        let grant = match get_opt(grant, "boxes grant")? {
+            None => None,
+            Some(Value::List(g)) => {
+                let [author, epoch, sig] = g.as_slice() else { return Err(Error::Malformed("boxes grant")) };
+                Some(GrantSig {
+                    author: get_tid(author, "boxes author")?,
+                    epoch: get_opt(epoch, "boxes epoch")?.map(|e| get_bytes(e, "boxes epoch").map(CommitId)).transpose()?,
+                    signature: Signature::from_value(sig).map_err(|_| Error::Malformed("boxes signature"))?,
+                })
+            }
+            Some(_) => return Err(Error::Malformed("boxes grant")),
+        };
+        Ok(BoxesPayload { grant, things, dial: dial_from(dial)? })
     }
-}
-
-/// A boxes payload's rotations: at most `MAX_ROTATIONS`, each a header-only copy (spec/wire.md §9).
-fn rotations_from(rots: &[Value]) -> Result<Vec<Value>, Error> {
-    if rots.len() > MAX_ROTATIONS {
-        return Err(Error::Malformed("boxes rotations past MAX_ROTATIONS"));
-    }
-    for r in rots {
-        if !CommitBlob::decode(&encode(r)).map_err(|_| Error::Malformed("boxes rotation"))?.parts.is_empty() {
-            return Err(Error::Malformed("boxes rotation with a part"));
-        }
-    }
-    Ok(rots.to_vec())
 }
 
 /// What an inbox blob carries: a role commit with what it names, a recipient's boxes of one, or a
@@ -522,66 +484,26 @@ mod tests {
         assert_eq!(open_inbox_item(&b, &r, &kem).unwrap().1, Inbox::Payload(payload()));
     }
 
-    fn boxes(signer: &SigningSecret, recipient: &Tid) -> BoxesPayload {
+    fn boxes(signer: Option<&SigningSecret>, recipient: &Tid) -> BoxesPayload {
         let e = |n: u64| Epoch { n, nonce: [n as u8; 32] };
         let sym = |n: u64| SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: e(n), wrap: vec![n as u8; 49] });
         let things = vec![
             BoxedThing::new(Tid::from_bytes([3; 15]), None, vec![(Role::Sync, e(2), sym(2)), (Role::Sync, e(1), sym(1))]),
             BoxedThing::new(Tid::from_bytes([1; 15]), Some(SyncId([2; 16])), vec![(Role::Sync, e(0), sym(0))]),
         ];
-        BoxesPayload::signed(recipient, CommitId([7; 32]), key_actor(signer), None, things, Some(DialHint { dialable: [6; 32], urls: vec!["quic://s".into()] }), signer)
-    }
-
-    /// The proof of a key actor (no account) whose key is `signer`'s.
-    fn key_actor(signer: &SigningSecret) -> AuthorProof {
-        let record = CreationRecord::KeyActor { alg: osis_base::SIGNING_KEY_ED25519, public_key: signer.verifying_key().to_bytes().to_vec(), nonce: [8; 32], account: false };
-        AuthorProof { record, rotations: Vec::new() }
-    }
-
-    // spec/wire.md §9 (boxes payload: the author's creation record and rotations prove its key),
-    // spec/sync-inbox.md §2 Taking (taken only once its signature verifies under that key): a key
-    // actor's own record proves it; a record of another key, another tid's record, an epoch named
-    // for a key actor, or a rotation carried for one prove nothing.
-    #[test]
-    fn boxes_payload_proves_its_author_spec_sync_inbox_2() {
-        let r = Tid::from_bytes([5; 15]);
-        let key = SigningSecret::from_seed(&Secret32::from_bytes([4; 32]));
-        let p = boxes(&key, &r);
-        assert_eq!(p.author_key(), Some(key.verifying_key()));
-        assert!(p.verified(&r));
-        let other = SigningSecret::from_seed(&Secret32::from_bytes([3; 32]));
-        let mut q = p.clone();
-        q.proof = key_actor(&other);
-        assert!(!q.verified(&r), "another record: not the author's");
-        let mut q = boxes(&other, &r);
-        q.signature = p.signature;
-        assert!(!q.verified(&r), "its own record, another's signature");
-        let mut q = p.clone();
-        q.epoch = Some(CommitId([9; 32]));
-        assert!(q.author_key().is_none(), "an epoch for a key actor");
-        let mut q = p.clone();
-        q.proof.rotations.push(Value::List(vec![]));
-        assert!(q.author_key().is_none(), "a rotation for a key actor");
-        // an account at its first epoch: its record's key; at a later one, only along its rotations
-        let mut acct = key_actor(&key);
-        let osis_base::CreationRecord::KeyActor { account, .. } = &mut acct.record else { panic!() };
-        *account = true;
-        let first = BoxesPayload::signed(&r, CommitId([7; 32]), acct.clone(), Some(osis_commit::FIRST_EPOCH), p.things.clone(), None, &key);
-        assert!(first.verified(&r));
-        let later = BoxesPayload::signed(&r, CommitId([7; 32]), acct, Some(CommitId([9; 32])), p.things.clone(), None, &key);
-        assert!(later.author_key().is_none(), "an epoch no rotation carried reaches");
+        BoxesPayload::new(recipient, things, Some(DialHint { dialable: [6; 32], urls: vec!["quic://s".into()] }), signer.map(|k| (Tid::from_bytes([8; 15]), None, k)))
     }
 
     // spec/wire.md §9 (boxes payload), spec/crypto.md §2 ("osis v1 inbox boxes"): it seals and
-    // opens as an inbox blob, things by tid and boxes by (role, epoch); its signature is the
-    // signer's for that recipient and binds every box.
+    // opens as an inbox blob, things by tid and boxes by (role, epoch); a grant's signature is the
+    // signer's for that recipient and binds every box; an unsigned one verifies under no key.
     #[test]
-    fn boxes_payload_round_trip_and_signature() {
+    fn boxes_payload_round_trip_and_signature_spec_wire_9() {
         let mut rng = SeededRng::from_u64(0);
         let kem = KemSecret::derive(&Secret32::from_bytes([9; 32]));
         let r = Tid::from_bytes([5; 15]);
         let key = SigningSecret::from_seed(&Secret32::from_bytes([4; 32]));
-        let p = boxes(&key, &r);
+        let p = boxes(Some(&key), &r);
         assert!(p.things.windows(2).all(|w| w[0].tid < w[1].tid) && p.things[1].boxes[0].1.n == 1);
         let b = seal_boxes_payload(&r, kem.public(), &p, WallMs(1000), &mut rng).unwrap();
         let (_, got) = open_inbox_item(&b, &r, &kem).unwrap();
@@ -595,20 +517,23 @@ mod tests {
         forged.things[0].boxes[0].2 = forged.things[1].boxes[0].2.clone();
         assert!(!forged.verifies(&r, &key.verifying_key()), "a box swapped");
         let mut forged = p.clone();
-        forged.commit = CommitId([1; 32]);
-        assert!(!forged.verifies(&r, &key.verifying_key()), "another commit");
+        forged.grant.as_mut().unwrap().author = Tid::from_bytes([9; 15]);
+        assert!(!forged.verifies(&r, &key.verifying_key()), "another author");
         let mut moved = p.clone();
         moved.dial = None;
         assert!(moved.verifies(&r, &key.verifying_key()), "the dial hint is not signed");
+        let unsigned = boxes(None, &r);
+        assert!(unsigned.grant.is_none() && !unsigned.verifies(&r, &key.verifying_key()));
+        assert_eq!(BoxesPayload::from_value(&unsigned.to_value()).unwrap(), unsigned);
     }
 
     // spec/wire.md §9 (boxes payload): things sorted by tid, distinct, at least one; boxes sorted,
-    // distinct, at least one.
+    // distinct, at least one; four positions.
     #[test]
-    fn boxes_payload_rejections() {
+    fn boxes_payload_rejections_spec_wire_9() {
         let r = Tid::from_bytes([5; 15]);
         let key = SigningSecret::from_seed(&Secret32::from_bytes([4; 32]));
-        let p = boxes(&key, &r);
+        let p = boxes(Some(&key), &r);
         assert_eq!(BoxesPayload::from_value(&p.to_value()).unwrap(), p);
         let mut q = p.clone();
         q.things.reverse();
@@ -622,9 +547,9 @@ mod tests {
         let mut q = p.clone();
         q.things.clear();
         assert!(BoxesPayload::from_value(&q.to_value()).is_err());
-        let mut q = p.clone();
-        q.proof.rotations.push(Value::List(vec![]));
-        assert!(BoxesPayload::from_value(&q.to_value()).is_err(), "a rotation that is no commit");
+        let Value::List(mut v) = p.to_value() else { panic!() };
+        v.push(Value::List(vec![]));
+        assert!(BoxesPayload::from_value(&Value::List(v)).is_err(), "a fifth position");
     }
 
     // spec/wire.md §9: things sorted by tid and distinct; layout positions.

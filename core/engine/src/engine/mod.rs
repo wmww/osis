@@ -796,7 +796,13 @@ indexes! {
     /// Destroyed things' own sync IDs kept for emptying once they keep nothing
     /// (`records::DESTROYED_SYNC_IDS`, `retention::destroy::keep_sync_ids`).
     pub destroyed_sync_ids: JMap<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
-    /// Sync records of things this node keeps unread (`sync::records`, spec/sync-judgement.md §6).
+    /// The account's sync records (`kept^.0` on D, by thing; `sync::records::observe`).
+    pub sync_kept: JMap<Tid, Arc<osis_schema::core_types::Kept>>,
+    /// The boxes payloads held (`sync::records`, persisted), and those offering each thing.
+    pub offers: JMap<osis_base::BlobId, Arc<crate::sync::records::Offer>>,
+    pub offered: JSetMap<Tid, osis_base::BlobId>,
+    /// The sync record view per thing kept unread (`sync::records::refresh`: `sync_kept` with
+    /// `offers`, spec/sync.md §3).
     pub sync_records: JMap<Tid, Arc<crate::sync::SyncRecord>>,
     /// The things whose sync record names each sync ID (`sync_records` inverted).
     pub record_ids: JSetMap<SyncId, Tid>,
@@ -2867,6 +2873,9 @@ impl Tx<'_> {
     /// Keeps the index derived from states at the state `f` of `(tid, ak)`, whatever wrote it:
     /// `Indexes::sync_recorded`.
     fn derive(&mut self, tid: &Tid, ak: &Ak, f: Option<&Fragment>) {
+        if ak.as_str() == "kept^.0" && self.core.account_devices().is_some_and(|(_, d)| d == *tid) {
+            crate::sync::records::observe(self.core, f);
+        }
         if ak.as_str() == "sync.0" {
             let before = self.core.ix.sync_recorded_ids.get(tid).cloned().unwrap_or_default();
             let after = f.map(crate::sync::recorded_ids).unwrap_or_default();
@@ -3724,6 +3733,8 @@ impl Engine {
             // leaves the open as it is)
             let _ = self.run(|_| Ok(()));
         }
+        // the account's sync records, read once its D is known (`take_account` at an open)
+        self.run(crate::sync::records::observe_own)?;
         self.start_detection();
         Ok(())
     }

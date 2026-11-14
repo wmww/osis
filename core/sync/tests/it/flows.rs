@@ -70,8 +70,11 @@ fn kept_unread_away(later: bool, away: bool) -> (World, osis_base::Tid) {
     let t = write(&mut w, None, "x");
     file(&mut w, 0, vec![t], Vec::new());
     w.write(0, |e| e.grant(&t, &a1, &edge(Role::Sync))).unwrap();
+    // the grant delivered (an accept takes only what is held), then tested at node 1 (`later`)
     if later {
         w.run();
+    } else {
+        w.flush();
     }
     if away {
         w.partition(0, 1);

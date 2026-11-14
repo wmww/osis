@@ -237,6 +237,12 @@ codec_struct! {
     pub struct Caps { 0 policy: BTreeMap<String, u64>, 1 things: BTreeMap<Tid, ThingCaps> }
 }
 codec_struct! {
+    /// An account's sync record of a thing it keeps unread (spec/sync.md §3): its kept sync IDs
+    /// and recorded sync secrets by epoch.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Kept { 0 ids: BTreeSet<SyncId>, 1 secrets: BTreeMap<Epoch, [u8; 32]> }
+}
+codec_struct! {
     /// One entry of `clients^.0` (spec/data-model.md §9): a thin client's secret hash and end.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Client { 0 secret_hash: [u8; 32], 1 until: Option<WallMs> }
@@ -389,6 +395,8 @@ pub const CAPS: Aspect<Caps> = Aspect::new("caps^.0", &CORE);
 pub const SYNCED: Aspect<BTreeMap<Tid, Tid>> = Aspect::new("synced^.0", &CORE);
 /// `acted^.0` on an account's devices actor: the things it acted on as invitations (spec/sync-set.md §4).
 pub const ACTED: Aspect<BTreeSet<Tid>> = Aspect::new("acted^.0", &CORE);
+/// `kept^.0` on an account's devices actor: its sync records (spec/sync.md §3).
+pub const KEPT: Aspect<BTreeMap<Tid, Kept>> = Aspect::new("kept^.0", &CORE);
 /// `clients^.0`: by client actor.
 pub const CLIENTS: Aspect<BTreeMap<Tid, Client>> = Aspect::new("clients^.0", &CORE);
 /// `retention^.0`: what the thing keeps of replaced content (spec/commits.md §5); fixed retention.

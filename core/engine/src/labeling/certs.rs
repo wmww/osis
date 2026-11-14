@@ -289,10 +289,10 @@ impl Engine {
     /// Actor `a`'s grant copy for thing `t` (spec/sync-inbox.md §5), logged under `a`'s inbox: the
     /// newest edge write naming `a` on `t` the timeline applies (a removal included: it tells `a`'s
     /// other nodes the grant ended), projected as the grant's inbox blob projects it (spec/sync-
-    /// inbox.md §2, `inbox_blob`): one boxing `a` gives its `secrets.0` part on `t`, with its
-    /// `roles.0` part while `a` reads `t`; one not boxing `a` (a removal or lowering) its `roles.0`
-    /// part, none when `a`'s edge was below read before it and `a` reads `t` neither now (a sync
-    /// holder's). While `a` reads `t`, also what the blob carries beside it (`carried_chain`),
+    /// inbox.md §2, `inbox_blob`): one boxing `a` while it reads `t` gives its `secrets.0` and
+    /// `roles.0` parts on `t`; one not boxing `a` (a removal or lowering of a reader) its `roles.0`
+    /// part; any other (`a` holding sync alone after it) none: its account's sync record holds
+    /// what it keeps (spec/sync.md §3). While `a` reads `t`, also what the blob carries beside it (`carried_chain`),
     /// every commit writing `t`'s `sync.0` with its author's chain, and `t`'s records with their
     /// mintings; below read, nothing more (a sync holder learns none of them, spec/sync-ids.md
     /// §2). Nothing for a commit not applied here. One per (actor, thing), read from `t`'s edges
@@ -311,11 +311,12 @@ impl Engine {
         };
         let reads = self.core.role_now(a, t) >= Some(osis_base::Role::Read);
         let aks: &[&str] = match (boxes, reads) {
-            // a lowering or removal of a reader; a sync holder's is sent none
+            // a lowering or removal of a reader
             (false, _) if read_before || reads => &["roles.0"],
-            (false, _) => return out,
             (true, true) => &["roles.0", "secrets.0"],
-            (true, false) => &["secrets.0"],
+            // `a` holding sync alone after it: none, its account's sync record holds what it
+            // keeps (spec/sync.md §3)
+            _ => return out,
         };
         let parts = self.parts_of(&c, &on, aks);
         if !reads {

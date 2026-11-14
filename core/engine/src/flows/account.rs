@@ -878,7 +878,7 @@ impl Engine {
         if !self.core.accounts.contains_key(&p) && !self.core.of_devices(&d) {
             self.run(|tx| super::signing::leave(tx, p, d))?;
         }
-        Ok(())
+        self.run(crate::sync::records::observe_own)
     }
 
     /// Pairing, existing node side (spec/sync-inbox.md §1: the only way a node receives a grant):
@@ -937,8 +937,8 @@ impl Engine {
         }
         self.hold_account(p, &d)?;
         self.core.account.set(Some(*p));
-        self.save_account(p, &d)
-
+        self.save_account(p, &d)?;
+        self.run(crate::sync::records::observe_own)
     }
 
     /// The devices actor of account `p` as held here: the thing with `account.0` whose first admin

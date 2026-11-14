@@ -88,15 +88,21 @@ impl Made {
 }
 
 /// Every user accepts what it was granted (spec/sync-set.md §4): each grant's thing not yet a
-/// subgroup of its grantee node's D is filed there, at the nodes on now.
+/// subgroup of its grantee node's D is filed there, at the nodes on now; and accepted again
+/// (`Engine::accept_invite`) while it is an invitation there not taken (an offer whose sync ID the
+/// account does not keep yet: spec/sync.md §3).
 pub fn accept(w: &mut World) {
     let pending: Vec<(Tid, usize)> = w.history.accepts.iter().copied().filter(|(_, i)| w.online(*i)).collect();
     for (t, i) in pending {
-        let filed = w.engine(i).account().ok().flatten().is_some_and(|(_, d)| w.engine(i).get_typed(&d, &osis_schema::core_types::GROUP).ok().flatten().is_some_and(|g| g.subgroups.contains(&t)));
-        if filed {
+        let Some((_, d)) = w.engine(i).account().ok().flatten() else { continue };
+        let filed = w.engine(i).get_typed(&d, &osis_schema::core_types::GROUP).ok().flatten().is_some_and(|g| g.subgroups.contains(&t));
+        let invited = w.engine(i).invitations().is_ok_and(|v| v.iter().any(|x| x.thing == t && !x.taken));
+        // done once it holds the thing (reads it, or keeps it unread)
+        let holds = w.engine(i).sync_record(&t).is_ok_and(|r| r.is_some()) || w.engine(i).epochs(&t).is_some_and(|e| e.read.holds_any());
+        if filed && !invited && holds {
             w.history.accepts.remove(&(t, i));
-        } else {
-            file(w, i, Vec::new(), vec![t]);
+        } else if !filed || invited {
+            let _ = w.write(i, |e| e.accept_invite(&t, &d));
         }
     }
 }

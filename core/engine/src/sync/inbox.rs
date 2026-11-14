@@ -2,11 +2,12 @@
 //! (spec/sync-set.md §4): an inbox blob opens under an actor whose `keys.0` names its sync ID as
 //! its inbox; its commit applies only once taken (held already, its sender connected, or vouched for:
 //! the user accepted it or a writer of the inbox stamped it).
-//! A taken blob boxing the recipient read applies as any commit; one boxing it sync alone writes a
-//! sync record and applies nothing (spec/sync-judgement.md §6: no engine state of what S carries).
-//! An untaken one waits, listed as an invitation, until judged again.
+//! A taken blob boxing the recipient read applies as any commit. A boxes payload, or a blob boxing
+//! the recipient sync alone, is never taken: it is held as an offer (`records::Offer`, spec/sync.md
+//! §3), its sync IDs kept only by an accept. An untaken one waits, listed as an invitation, until
+//! judged again.
 
-use super::{InboxOpened, Invitation, Taken};
+use super::{DialHint, InboxOpened, Invitation, Taken};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{BlobId, CommitId, Role, SyncId, Tid, Value, WallMs};
@@ -20,7 +21,8 @@ use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// `iw/` + blob ID: an inbox blob not taken (an invite request), with what it offers.
+/// `iw/` + blob ID: an inbox blob carrying a role commit not taken (an invite request), with what
+/// it offers.
 pub(crate) const WAITING: &[u8] = b"iw/";
 
 /// An inbox blob held untaken: its commit, the things its boxes give the recipient with the role
@@ -262,45 +264,37 @@ impl Engine {
         Ok(things.iter().any(|t| self.core.role_now(author, t).is_some()))
     }
 
-    /// Takes boxes payload `p` to `a` (spec/sync-inbox.md §2 Taking): refused unless its
-    /// signature verifies under the author's key its own proof gives (`BoxesPayload::verified`);
-    /// taken when vouched for (the user accepted it, or a writer of the inbox stamped it) or its
-    /// author is connected, giving the sync secrets of its boxes that open with its sync IDs and
-    /// dial hint (spec/sync-judgement.md §6), and nothing else. Not taken, it gives the things a
-    /// synced group's closure lists their boxes' sync secrets alone: no sync ID and no dial hint,
-    /// which are the sender's word (a forger knowing a listed tid would otherwise attach its own
-    /// data and address to the thing); the blob waits, its other things an invite request.
-    fn take_boxes(&mut self, s: &SyncId, blob: &BlobId, a: &Tid, expires: WallMs, p: BoxesPayload, vouched: bool) -> Result<Option<InboxOpened>> {
-        let id = p.commit;
-        let refused = |dial| Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Refused, hints: Vec::new(), dial }));
-        if !p.verified(a) {
-            return refused(None);
-        }
+    /// Holds boxes payload `p` to `a` as an offer (spec/sync-inbox.md §2 Taking: never taken; spec/sync.md
+    /// §3): the sync secrets of its boxes that open, the sync ID it names per thing, its dial
+    /// hint, and its granting account when its grant signature verifies under a key of the author
+    /// held here. Nothing is kept or applied: an accept keeps its sync IDs, a step of this node's
+    /// path records its secrets.
+    fn hold_offer(&mut self, blob: &BlobId, a: &Tid, expires: WallMs, p: BoxesPayload) -> Result<Option<InboxOpened>> {
         let boxed = self.boxes_payload_to(a, &p);
-        let whole = vouched || self.author_connected(&p.author)?;
-        let listed = if whole { BTreeSet::new() } else { self.synced_closures()? };
-        let take: Vec<&osis_label::BoxedThing> = p.things.iter().filter(|x| whole || listed.contains(&x.tid)).collect();
+        let from = p.grant.as_ref().filter(|g| crate::apply::held_key(&self.core, &g.author, g.epoch).is_some_and(|k| p.verifies(a, &k))).map(|g| g.author);
+        let things: Vec<(Tid, Option<SyncId>)> = p.things.iter().map(|t| (t.tid, t.sync_id)).collect();
+        self.offer_of(blob, expires, from, &boxed, &things, p.dial)
+    }
+
+    /// Holds `blob` as an offer of what `boxed` gives per thing of `things` (each with the sync ID
+    /// its payload names): `None`-like `Refused` when no box opens.
+    fn offer_of(&mut self, blob: &BlobId, expires: WallMs, from: Option<Tid>, boxed: &Boxed, things: &[(Tid, Option<SyncId>)], dial: Option<DialHint>) -> Result<Option<InboxOpened>> {
+        let mut offered = Vec::new();
+        for (t, sync_id) in things {
+            let Some(role) = boxed.role(t) else { continue };
+            let sync = boxed.things.get(t).into_iter().flatten().filter(|o| o.role == Role::Sync && o.epoch.names(t, Role::Sync, &o.secret)).map(|o| (o.epoch, o.secret.clone())).collect();
+            offered.push(super::records::OfferedThing { tid: *t, sync_id: *sync_id, role, sync });
+        }
         let b = *blob;
-        // the things not taken stay an invite request
-        let rest: Vec<(Tid, Role)> = boxed.things.keys().filter(|t| !take.iter().any(|x| x.tid == **t)).filter_map(|t| Some((*t, boxed.role(t)?))).collect();
-        let w = (!rest.is_empty()).then_some(WaitingBlob { sync_id: *s, commit: id, things: rest, from: p.author, expires, accepted: false });
-        self.run(|tx| set_waiting(tx, &b, w))?;
-        let dial = if whole { p.dial.as_ref() } else { None };
-        let mut any = false;
-        for t in take {
-            let secrets: Vec<_> = boxed.things.get(&t.tid).into_iter().flatten().filter(|o| o.role == Role::Sync && o.epoch.names(&t.tid, Role::Sync, &o.secret)).map(|o| (o.epoch, o.secret.clone())).collect();
-            if secrets.is_empty() {
-                continue;
-            }
-            any = true;
-            let (tid, ids) = (t.tid, if whole { t.sync_id.into_iter().collect::<Vec<_>>() } else { Vec::new() });
-            self.run(|tx| super::records::note_sync_secrets(tx, &tid, &ids, secrets, dial))?;
+        if offered.is_empty() {
+            self.run(|tx| super::records::set_offer(tx, &b, None))?;
+            return Ok(Some(InboxOpened { commit: None, taken: Taken::Refused, hints: Vec::new(), dial: None }));
         }
-        match (whole, any) {
-            (true, true) => Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Applied, hints: Vec::new(), dial: p.dial })),
-            (true, false) => refused(p.dial),
-            (false, _) => Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Waiting, hints: Vec::new(), dial: None })),
-        }
+        // its dial hint is dialed while every sync ID it names is kept for its thing
+        let kept = offered.iter().all(|x| x.sync_id.is_none_or(|s| self.core.ix.sync_kept.get(&x.tid).is_some_and(|k| k.ids.contains(&s))));
+        let o = super::records::Offer { expires, from, things: offered, dial: dial.clone() };
+        self.run(|tx| super::records::set_offer(tx, &b, Some(o)))?;
+        Ok(Some(InboxOpened { commit: None, taken: Taken::Offered, hints: Vec::new(), dial: dial.filter(|_| kept) }))
     }
 
     /// Takes the inbox blob `bytes` (ID `blob`) held under `s`: see the module doc. `vouched`:
@@ -313,7 +307,7 @@ impl Engine {
         // §4): not a role commit to take
         let p = match inbox {
             Inbox::Payload(p) => p,
-            Inbox::Boxes(p) => return self.take_boxes(s, blob, &a, expires, p, vouched),
+            Inbox::Boxes(p) => return self.hold_offer(blob, &a, expires, p),
             Inbox::Stranded(_) => return Ok(Some(InboxOpened { commit: None, taken: Taken::Refused, hints: Vec::new(), dial: None })),
         };
         let (plain, rest) = InboxPayload::split(p);
@@ -323,6 +317,14 @@ impl Engine {
         let b = *blob;
         let boxed = self.boxed_to(&a, &cb, &id);
         let held = self.core.ix.commits.contains_key(&id);
+        let payload_ids: BTreeMap<Tid, SyncId> = things.iter().filter_map(|t| Some((t.tid, t.sync_id?))).collect();
+        // boxes giving sync alone: an offer, as a boxes payload's (spec/sync.md §3); its granting
+        // account only when the commit's signature verifies under a key held here
+        if !boxed.things.is_empty() && !boxed.reads() {
+            let from = crate::apply::signed_at(&self.core, &id, &cb.header.author, cb.header.epoch, &cb.sigs).then_some(cb.header.author);
+            let named: Vec<(Tid, Option<SyncId>)> = boxed.things.keys().map(|t| (*t, payload_ids.get(t).copied())).collect();
+            return self.offer_of(blob, expires, from, &boxed, &named, dial);
+        }
         let taken = held || vouched || self.sender_connected(&cb, &id)?;
         if !taken {
             let w = WaitingBlob { sync_id: *s, commit: id, things: boxed.things.keys().filter_map(|t| Some((*t, boxed.role(t)?))).collect(), from: cb.header.author, expires, accepted: false };
@@ -330,20 +332,6 @@ impl Engine {
             return Ok(Some(InboxOpened { commit: Some(id), taken: Taken::Waiting, hints: Vec::new(), dial: None }));
         }
         self.run(|tx| set_waiting(tx, &b, None))?;
-        let payload_ids: BTreeMap<Tid, SyncId> = things.iter().filter_map(|t| Some((t.tid, t.sync_id?))).collect();
-        // boxes giving sync alone: the sync record, nothing applied (spec/sync-judgement.md §6);
-        // a payload boxing nothing (a removal's edges) is applied
-        if !boxed.things.is_empty() && !boxed.reads() {
-            let mut any = false;
-            for (t, opened) in &boxed.things {
-                let secrets: Vec<_> = opened.iter().filter(|o| o.role == Role::Sync).map(|o| (o.epoch, o.secret.clone())).collect();
-                let ids: Vec<SyncId> = payload_ids.get(t).copied().into_iter().collect();
-                let t = *t;
-                any |= self.run(|tx| super::records::note_sync_secrets(tx, &t, &ids, secrets, dial.as_ref()))?;
-            }
-            let taken = if any || held { Taken::Applied } else { Taken::Refused };
-            return Ok(Some(InboxOpened { commit: Some(id), taken, hints: Vec::new(), dial }));
-        }
         let chain: Vec<Vec<u8>> = crate::flows::inbox_chain(chain).into_iter().map(|(c, _)| c).collect();
         let mut taken = self.take_payload(&chain, &plain)?;
         // its records learned only where what it brought awaits them (with their record chains),
@@ -387,6 +375,25 @@ impl Engine {
         }
     }
 
+    /// The user accepts `thing` into group `into` (spec/sync-set.md §4 Accepting): written as a
+    /// subgroup of `into` (`Engine::write`, so the accept marks and keeps as any listing does),
+    /// and, where a synced closure listed it already (no listing change to see), the sync IDs the
+    /// boxes payloads held offering it name kept in the account's sync record (spec/sync.md §3)
+    /// in a commit of its own.
+    pub fn accept_invite(&mut self, thing: &Tid, into: &Tid) -> Result<()> {
+        let mut g = self.get_typed(into, &ct::GROUP)?.unwrap_or_default();
+        if g.subgroups.insert(*thing) {
+            let mut m = crate::Mutation::new();
+            m.set(*into, &ct::GROUP, &g)?;
+            self.write(m)?;
+        }
+        let t = *thing;
+        self.run(|tx| {
+            let now = tx.now();
+            keep_offered(tx, &t, now)
+        })
+    }
+
     /// Opens inbox blob `bytes` under whichever inbox here opens it, taking nothing (tests: what
     /// a recipient learns from it).
     #[doc(hidden)]
@@ -411,8 +418,11 @@ impl Engine {
 
     /// The invitations (spec/sync-set.md §4): the things no node's synced group closure holds
     /// that a held inbox blob boxes this node's account or actors on (untaken) or that this node
-    /// holds a role on (`Core::held_role`, taken); each acted on while `acted^.0` on D lists it.
-    /// The granting account of a taken one is the thing's first admin's account as known here.
+    /// holds a role on (`Core::held_role`, taken), and the things a held boxes payload offers
+    /// under a sync ID the account's sync record does not keep for them, wherever listed; each
+    /// acted on while `acted^.0` on D lists it. A boxes payload's granting account is the one its
+    /// grant signature verifies for here; a held role's, the thing's first admin's account as
+    /// known here.
     pub(crate) fn invitations_now(&mut self) -> Result<Arc<Vec<Invitation>>> {
         let now = WallMs(self.core.time.get());
         let acted = match self.core.account_devices() {
@@ -420,12 +430,15 @@ impl Engine {
             None => BTreeSet::new(),
         };
         let mut out: BTreeMap<Tid, Invitation> = BTreeMap::new();
-        let next = self.core.ix.waiting_inbox.values().map(|w| w.expires.0).filter(|e| *e > now.0).min();
+        let next = self.core.ix.waiting_inbox.values().map(|w| w.expires.0).chain(self.core.ix.offers.values().map(|o| o.expires.0)).filter(|e| *e > now.0).min();
         self.core.time.until(next);
+        for (t, o) in unkept_offers(&self.core, now) {
+            out.entry(t).or_insert(Invitation { thing: t, role: o.0, from: o.1, taken: false, acted: acted.contains(&t) });
+        }
         let listed = self.synced_closures()?;
         for w in self.core.ix.waiting_inbox.values().filter(|w| w.expires > now && !w.accepted) {
             for (t, role) in w.things.iter().filter(|(t, _)| !listed.contains(t)) {
-                out.entry(*t).or_insert(Invitation { thing: *t, role: *role, from: w.from, taken: false, acted: acted.contains(t) });
+                out.entry(*t).or_insert(Invitation { thing: *t, role: *role, from: Some(w.from), taken: false, acted: acted.contains(t) });
             }
         }
         let held: BTreeSet<Tid> = self.core.ix.sync_records.keys().chain(self.core.ix.secrets.keys()).copied().collect();
@@ -434,11 +447,30 @@ impl Engine {
                 continue;
             }
             let Some(role) = self.core.held_role(&t) else { continue };
-            let from = self.core.first_admin(&t).map(|a| self.core.home_owner(&a)).unwrap_or(t);
+            let from = self.core.first_admin(&t).map(|a| self.core.home_owner(&a));
             out.insert(t, Invitation { thing: t, role, from, taken: true, acted: acted.contains(&t) });
         }
         Ok(Arc::new(out.into_values().collect()))
     }
+}
+
+/// The things the boxes payloads held unexpired at `now` offer under a sync ID the account's sync
+/// record does not keep for them (spec/sync-set.md §4), each with the highest role offered and a
+/// verified granting account.
+fn unkept_offers(core: &crate::engine::Core, now: WallMs) -> BTreeMap<Tid, (Role, Option<Tid>)> {
+    let mut out: BTreeMap<Tid, (Role, Option<Tid>)> = BTreeMap::new();
+    for o in core.ix.offers.values().filter(|o| o.expires > now) {
+        for x in &o.things {
+            let Some(s) = x.sync_id else { continue };
+            if core.ix.sync_kept.get(&x.tid).is_some_and(|k| k.ids.contains(&s)) {
+                continue;
+            }
+            let e = out.entry(x.tid).or_insert((x.role, o.from));
+            e.0 = e.0.max(x.role);
+            e.1 = e.1.or(o.from);
+        }
+    }
+    out
 }
 
 impl crate::engine::Core {
@@ -454,6 +486,15 @@ impl crate::engine::Core {
         }
         self.role_now(&self.me()?, t)
     }
+}
+
+/// Keeps in the account's sync record the sync IDs the boxes payloads held unexpired at `now`
+/// name for `t` (an accept, spec/sync.md §3).
+fn keep_offered(tx: &mut Tx<'_>, t: &Tid, now: WallMs) -> Result<()> {
+    let ids: BTreeSet<SyncId> = tx.core.ix.offered.get(t).into_iter().flatten().filter_map(|b| tx.core.ix.offers.get(b)).filter(|o| o.expires > now).flat_map(|o| o.things.iter().filter(|x| x.tid == *t).filter_map(|x| x.sync_id)).collect();
+    let ids: Vec<SyncId> = ids.into_iter().collect();
+    super::records::keep_in(tx, t, &ids, [])?;
+    Ok(())
 }
 
 /// Marks what local write `tx` acted on as invitations (spec/sync-set.md §4 Acted): each thing a
@@ -491,10 +532,12 @@ pub(crate) fn mark_acted(tx: &mut Tx<'_>) -> Result<()> {
     let was_synced = groups.under_at_start(&listed.union(&left).copied().collect(), &roots);
     let mut acted: BTreeSet<Tid> = listed.difference(&was_synced).copied().collect();
     acted.extend(left.intersection(&was_synced).filter(|t| !groups.under(t, &roots)));
-    if acted.is_empty() {
-        return Ok(());
-    }
-    let waiting: BTreeSet<Tid> = tx.core.ix.waiting_inbox.values().flat_map(|w| w.things.iter().map(|(t, _)| *t)).collect();
+    // a thing offered under a sync ID not kept is an invitation wherever listed: listing it
+    // again accepts it
+    let now = tx.now();
+    let unkept = unkept_offers(tx.core, now);
+    acted.extend(listed.iter().filter(|t| unkept.contains_key(t)));
+    let waiting: BTreeSet<Tid> = tx.core.ix.waiting_inbox.values().flat_map(|w| w.things.iter().map(|(t, _)| *t)).chain(unkept.keys().copied()).collect();
     acted.retain(|t| waiting.contains(t) || tx.core.held_role(t).is_some());
     if acted.is_empty() {
         return Ok(());
@@ -505,6 +548,10 @@ pub(crate) fn mark_acted(tx: &mut Tx<'_>) -> Result<()> {
     let blobs: Vec<(BlobId, WaitingBlob)> = tx.core.ix.waiting_inbox.iter().filter(|(_, w)| !w.accepted && w.things.iter().any(|(t, _)| accepted.contains(t))).map(|(b, w)| (*b, WaitingBlob { accepted: true, ..(**w).clone() })).collect();
     for (b, w) in blobs {
         put_waiting(tx, &b, Some(w))?;
+    }
+    // ... and keeps the sync IDs the boxes payloads held offer for it (spec/sync.md §3)
+    for t in &accepted {
+        keep_offered(tx, t, now)?;
     }
     // a thing marked already adds nothing: such a commit changes nothing and is not written
     let mut m = crate::Mutation::new();

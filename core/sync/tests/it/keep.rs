@@ -23,7 +23,8 @@ fn add_to_d(w: &mut World, i: usize, t: Tid) {
         g.items.insert(t);
         let mut m = Mutation::new();
         m.set(d, &ct::GROUP, &g).unwrap();
-        e.commit(m).unwrap().unwrap();
+        // as the product writes (`Engine::write`): an accept keeps what it offers
+        e.write(m).unwrap().unwrap();
     });
 }
 
@@ -60,12 +61,13 @@ fn kept() -> (World, Tid, SyncId) {
     let s: SyncId = w.engine(0).home_sync_id(&t).unwrap().unwrap();
     w.write(0, |e| e.grant(&t, &a1, &edge(Role::Sync))).unwrap();
     w.run();
-    // the grant's inbox blob reached node 1's inbox and was taken (a connected sender): a taken
-    // invitation, which node 1's user accepts by listing the thing (spec/sync-set.md §4)
+    // the grant's inbox blob reached node 1's inbox, held as an offer: an invitation, which node
+    // 1's user accepts by listing the thing (spec/sync-set.md §4), keeping its sync ID
     let inv = w.engine(1).invitations().unwrap();
-    assert!(inv.iter().any(|i| i.thing == t && i.taken && i.role == Role::Sync), "a taken invitation: {inv:?}");
-    assert_eq!(w.engine(1).sync_record(&t).unwrap().expect("a sync record").sync_ids, vec![s]);
+    assert!(inv.iter().any(|i| i.thing == t && !i.taken && i.role == Role::Sync), "an invitation: {inv:?}");
+    assert!(w.engine(1).sync_record(&t).unwrap().is_none(), "nothing kept before the accept");
     add_to_d(&mut w, 1, t);
+    assert_eq!(w.engine(1).sync_record(&t).unwrap().expect("kept").sync_ids, vec![s]);
     w.run();
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some((t, Holding::Unread)), "kept unread");
     // node 1's filter shows its grant's sync key once it accepts and its own test opens S: node 0

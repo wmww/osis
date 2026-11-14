@@ -1,8 +1,11 @@
 //! Judgement for kept-unread sync IDs (spec/sync-judgement.md §6, spec/sync-set.md §3).
 //!
-//! Principle: a node keeping S unread decides its own grant by the boxes sealed to it, and by
-//! nothing else. It holds no engine state of what S carries: its inputs are the sync IDs this
-//! node syncs kept unread, the engine facade's sync record and the store's path of S. It keeps S
+//! Principle: a node keeping S unread trusts only its own account (spec/sync.md §3 Sync record):
+//! it keeps the sync IDs its account's record keeps and holds the secrets the record and the
+//! boxes payloads held give; it holds no engine state of what S carries. Its inputs are the sync
+//! IDs this node syncs kept unread, the engine facade's sync record and the store's path of S. A
+//! held secret not recorded whose sync key a step of the path bears is recorded
+//! (`Engine::record_borne`). Model of the record: core/test/tla/net/NetTrust.tla. It keeps S
 //! while its head's sync key is one a held
 //! secret derives; at a head whose key none derives it drops its copy and takes nothing
 //! (`Store::set_unheld`), showing only the secrets no step of its path bears, so a reader holding
@@ -23,7 +26,7 @@ use osis_crypto::kdf::sync_proof;
 use osis_crypto::{LabelRole, Secret32, SigningSecret, VerifyingKey, label_role_key, label_role_seed};
 use osis_engine::sync::{Holding, SyncRecord};
 use osis_label::{ClaimSet, Step, StepId};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// What a node keeping S unread opens and acts with, from its sync record and its store's head
@@ -62,6 +65,9 @@ pub struct Kept {
     pub stranded: bool,
     /// `None` when it shows no sync key.
     pub credentials: Option<Arc<UnreadCredentials>>,
+    /// The sync keys of the held secrets not recorded that a step of its path bears: what the
+    /// account's sync record takes (spec/sync.md §3 A recorded secret).
+    pub borne: BTreeSet<[u8; 32]>,
 }
 
 /// What one S is judged on, every value read by key (spec/sync-judgement.md §6).
@@ -80,7 +86,11 @@ pub fn judge(j: &Judged) -> Kept {
         .record
         .map(|r| r.secrets.values().rev().map(|x| (label_role_key(LabelRole::Sync, x), Secret32::from_bytes(sync_proof(&label_role_seed(LabelRole::Sync, x))))).collect())
         .unwrap_or_default();
-    let keep = |stranded: bool, credentials: Option<UnreadCredentials>| Kept { stranded, credentials: credentials.map(Arc::new) };
+    let borne: BTreeSet<[u8; 32]> = j
+        .record
+        .map(|r| r.secrets.iter().filter(|(e, _)| !r.recorded.contains(e)).map(|(_, x)| label_role_key(LabelRole::Sync, x).verifying_key()).filter(|k| j.steps.iter().any(|(st, _)| st.keys.sync == *k)).map(|k| k.to_bytes()).collect())
+        .unwrap_or_default();
+    let keep = |stranded: bool, credentials: Option<UnreadCredentials>| Kept { stranded, credentials: credentials.map(Arc::new), borne: borne.clone() };
     let Some(head) = j.steps.last() else {
         // no step registered yet: each sync secret it holds counts as its step, so a reader's
         // test finds S here and registers its path, and a box at a self-made epoch hides no
@@ -170,6 +180,11 @@ impl Unread {
             acted = true;
             // at a head past its keys its copy goes and it takes nothing (§6)
             cx.store.set_unheld(&s, k.stranded)?;
+            // a held secret a step of its path bears goes to the account's record: its own
+            // write moves the record, and the next judgement finds it recorded
+            if !k.borne.is_empty() {
+                cx.engine.record_borne(&thing, &k.borne)?;
+            }
             self.kept.insert(s, k);
         }
         Ok(acted)

@@ -124,7 +124,6 @@ osis-transport::relaying  deferred: sync rebuild (issues/sync-rewrite.md Phase 3
 osis-transport::run_on_tokio  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-transport::set_dial_ms  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-transport::set_lan_loss  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis::accept_invite  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
 osis::rotate_peer_address  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
 osis-engine::bear  test hook (tests/it)
 osis-engine::commit_forged  test hook (tests/it)

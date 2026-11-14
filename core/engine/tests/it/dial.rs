@@ -94,8 +94,9 @@ fn accounts_holding_a_role_by_their_dial_list_spec_sync_opens_1() {
 }
 
 // spec/sync-opens.md §1 (whom to dial: the granters of what it keeps unread; where: the grant's
-// inbox blob hint, spec/sync-inbox.md §2): a node keeping a thing unread dials the node that
-// granted it, by the hint its sync record keeps (durable: it is there after a restart).
+// inbox blob hint, spec/sync-inbox.md §2: dialed while the blob is held and its sync IDs are
+// kept): a node keeping a thing unread it accepted dials the node that granted it (also after a
+// restart).
 #[test]
 fn the_granter_of_what_it_keeps_unread_spec_sync_opens_1() {
     let (mut lp, ps) = people(2);
@@ -104,9 +105,8 @@ fn the_granter_of_what_it_keeps_unread_spec_sync_opens_1() {
     let (t, s) = synced_thing(&mut lp, 0, d0);
     let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Sync)).unwrap();
     let blob = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[1]).expect("an inbox blob to peer 1").1;
-    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap().expect("opens");
-    let d1 = lp.peers[1].engine.account().unwrap().unwrap().1;
-    file(&mut lp.peers[1].engine, d1, t);
+    lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap().expect("opens");
+    crate::facade::accept(&mut lp, 1, t);
     assert_eq!(lp.peers[1].engine.sync_holder(&s).unwrap(), Some((t, osis_engine::sync::Holding::Unread)));
     assert_eq!(peers(&mut lp, 1, &s), vec![addr(0)]);
     lp.peers[1].restart(7).unwrap();

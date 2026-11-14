@@ -31,7 +31,7 @@ fn list_own(w: &mut World, i: usize, t: Tid, add: bool) {
         }
         let mut m = Mutation::new();
         m.set(g, &ct::GROUP, &x).unwrap();
-        e.commit(m).unwrap();
+        e.write(m).unwrap();
     });
 }
 
@@ -100,23 +100,80 @@ fn a_self_removal_shared_only_with_a_sibling_drops_at_once_spec_perm_3() {
     assert!(w.engine(1).epochs(&t).is_none_or(|e| e.read.held().next().is_none()), "dropped");
 }
 
-// spec/sync-inbox.md §2 (Taking: its sender is connected, a taken boxes payload gives its sync IDs):
-// the stranger redeemed account 1's contact card, so it
-// holds read on the profile both siblings sync and is connected at each: a grant of sync to
-// account 1 is no invite request at either node, and node 2 takes it with its own synced group
-// not listing the thing. (An accept on one sibling taking at the other:
-// `flows::a_sync_grant_accepted_on_one_node_is_taken_at_its_sibling_spec_sync_inbox_2`.)
-#[test]
-fn a_contacts_boxes_payload_is_taken_at_both_siblings_spec_sync_inbox_2() {
+/// `stranger_siblings` with a sync grant from node 0's account to account 1 accepted on node 1
+/// (`Engine::accept_invite` into its synced group), run to quiet: (world, thing, its sync ID).
+fn accepted_on_one() -> (World, Tid, osis_base::SyncId) {
     let mut w = stranger_siblings();
     let (t, _) = granted(&mut w, Role::Sync);
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
     for i in [1, 2] {
         let inv = w.engine(i).invitations().unwrap();
-        assert!(!inv.iter().any(|x| x.thing == t && !x.taken), "node {i}: no invite request: {inv:?}");
-        assert!(w.engine(i).sync_record(&t).unwrap().is_some(), "node {i} took it");
+        assert!(inv.iter().any(|x| x.thing == t && !x.taken && x.role == Role::Sync), "node {i}: an invitation: {inv:?}");
+        assert!(w.engine(i).sync_record(&t).unwrap().is_none(), "node {i}: nothing kept before the accept");
     }
-    let g2 = synced_group(&mut w, 2);
-    assert!(!w.engine(2).get_typed(&g2, &ct::GROUP).unwrap().unwrap().subgroups.contains(&t), "node 2's own group lists it not");
+    let g1 = synced_group(&mut w, 1);
+    w.write(1, |e| e.accept_invite(&t, &g1)).unwrap();
+    w.run();
+    (w, t, s)
+}
+
+// spec/sync.md §3 (Sync record: a kept sync ID only by an accept, the record read by every node
+// of the account), spec/sync-set.md §4 (Invitations; Accepting), spec/sync-inbox.md §2 (a boxes
+// payload is never taken: no author is connected for it): a grant of sync from a contact of
+// account 1 (node 0 holds its card) waits for an accept at both siblings like any other; accepted
+// on node 1, both keep it under the granter's sync ID, node 1 opens it and records its secret.
+#[test]
+fn a_sync_grant_accepted_on_one_sibling_is_kept_at_both_spec_sync_3() {
+    let (mut w, t, s) = accepted_on_one();
+    for i in [1, 2] {
+        let r = w.engine(i).sync_record(&t).unwrap().unwrap_or_else(|| panic!("node {i} keeps it"));
+        assert_eq!(r.sync_ids, vec![s], "node {i}");
+        assert!(!r.recorded.is_empty(), "node {i}: the secret its path bears, recorded");
+        assert!(!w.engine(i).invitations().unwrap().iter().any(|x| x.thing == t && !x.taken), "node {i}: no invitation");
+    }
+    assert!(!w.store(1).entries(&s).unwrap().is_empty(), "node 1 holds the writes");
+}
+
+// spec/sync.md §3 (Sync record: read by a node paired later, whatever inbox blobs have expired),
+// spec/sync-inbox.md §5 (Grant copy: none for a holder of sync alone): a node paired past
+// INBOX_LIFETIME, the grant's blob gone, keeps the thing from the record alone and holds its
+// writes. NetTrust `UN_local` (a record per node) fails this.
+#[test]
+fn a_sibling_paired_after_inbox_lifetime_keeps_an_accepted_grant_spec_sync_3() {
+    let (mut w, t, s) = accepted_on_one();
+    w.advance(osis_base::format::INBOX_LIFETIME_MS + 3 * osis_base::format::MAX_DRIFT_MS);
+    w.run();
+    let n = w.pair(1);
+    w.run();
+    let r = w.engine(n).sync_record(&t).unwrap().expect("kept from the record");
+    assert_eq!(r.sync_ids, vec![s]);
+    assert!(!r.recorded.is_empty() && r.secrets.keys().all(|e| r.recorded.contains(e)), "only recorded secrets: every offer expired");
+    assert_eq!(w.engine(n).thing_sync(&t).unwrap(), osis_engine::sync::ThingSync::Unread(vec![s]));
+    assert!(!w.store(n).entries(&s).unwrap().is_empty(), "the late node holds the writes");
+}
+
+// spec/sync.md §3 (A recorded secret: from any box that opens, no accept), spec/wire.md §9
+// (GrantSig: a rotation's boxes payload is unsigned): node 0 grants a third account
+// read and removes it, rotating read and sync; both siblings follow to the new step without an
+// accept, the new sync secret recorded.
+#[test]
+fn a_rotation_reaches_kept_siblings_without_an_accept_spec_sync_3() {
+    let (mut w, t, s) = accepted_on_one();
+    let before = w.engine(1).sync_record(&t).unwrap().unwrap().recorded.len();
+    let x = w.add_node();
+    let ax = w.node(x).account.unwrap();
+    w.run();
+    crate::harness::history::hand(&mut w, x, 0);
+    w.write(0, |e| e.grant(&t, &ax, &edge(Role::Read))).unwrap();
+    w.run();
+    w.write(0, |e| e.demote(&t, &Demotion { holder: ax, new: None, retain: None })).unwrap();
+    w.run();
+    let head = w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.last().map(|(st, _)| st.id());
+    assert_eq!(w.store(1).head(&s).unwrap().map(|h| h.id()), head, "node 1 at the new step");
+    for i in [1, 2] {
+        assert!(w.engine(i).sync_record(&t).unwrap().unwrap().recorded.len() > before, "node {i}: the rotation's secret recorded");
+        assert!(!w.engine(i).invitations().unwrap().iter().any(|x| x.thing == t && !x.taken), "node {i}: no accept asked");
+    }
 }
 
 // spec/sync-set.md §3 (Unsyncing: whoever holds it elsewhere): each sibling lists a thing in its

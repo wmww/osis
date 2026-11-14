@@ -9,7 +9,9 @@
 //!   writer of the inbox, a node of this account, took it; judged again as what it read moves) until its commit applied, then taken for good: while the commit is held it is judged
 //!   from the commit alone (`taken`), never opened or taken again; a deposited one whose commit applied is stamped in place by a writer of the inbox,
 //!   at most one blob per commit and none whose expiry is more than `INBOX_LIFETIME + 2 ×
-//!   MAX_DRIFT` ahead; its dial hint kept while it lives;
+//!   MAX_DRIFT` ahead; its dial hint kept while it lives. A boxes payload is never taken or
+//!   stamped: the engine holds it as an offer (spec/sync.md §3), its dial hint given once the
+//!   account keeps its sync IDs;
 //! - a deposit under a sync ID this node reads and writes: promoted (stamped, with the author's
 //!   chain logged as certificate copies) once `Engine::promotable` says so and it holds a part of
 //!   the commit S must hold that no other entry of S holds stamped;
@@ -217,8 +219,9 @@ impl Held {
                 continue;
             }
             let Some(size) = h.store.blob_len(&e.blob)?.filter(|n| *n > 0) else { continue };
-            // an invite request: an opened inbox blob not taken (a refused one is none)
-            let request = matches!(act, Some(Act::Inbox { taken: Some(Taken::Waiting), .. })) && within_bound(e.expires, h.now);
+            // an invite request (an opened inbox blob not taken; a refused one is none) or a boxes
+            // payload held as an offer: both go last
+            let request = matches!(act, Some(Act::Inbox { taken: Some(Taken::Waiting | Taken::Offered), .. })) && within_bound(e.expires, h.now);
             idle.push((e, size, request));
         }
         osis_base::costs::count("inbox: clearing read", idle.len() as u64);
@@ -241,7 +244,8 @@ impl Held {
 }
 
 /// spec/sync-inbox.md §4 Clearing deposits: of the deposits a holder of S's delete key can do
-/// nothing with (each with its size and whether it is an invite request), the ones it drops to
+/// nothing with (each with its size and whether it is an invite request or a boxes payload), the
+/// ones it drops to
 /// keep at most `DEPOSITS_WAITING` and `DEPOSITS_WAITING_BYTES`: every deposit but the invite
 /// requests first, those with no expiry or one past the bound before the rest, then earliest to
 /// expire; then the invite requests, earliest to expire (they count toward the bounds and go

@@ -176,8 +176,9 @@ pub struct Invitation {
     pub thing: Tid,
     /// The role given.
     pub role: Role,
-    /// The account that gave it.
-    pub from: Tid,
+    /// The account that gave it, where this node can tell: `None` for a holder of sync alone
+    /// granted by an account whose keys this node does not hold.
+    pub from: Option<Tid>,
     /// This node took the grant's delivery: its keys are here.
     pub taken: bool,
     /// This account acted on it before: accepted it, filed it outside the synced groups, or
@@ -892,9 +893,7 @@ impl Osis {
         if !synced {
             return Err(Error::Invalid(format!("{into} is not synced here: accept into a synced group")));
         }
-        let mut w = self.write();
-        w.group(into).add(Member::Subgroup(thing))?;
-        w.commit()?;
+        self.engine(|e| e.accept_invite(&thing, &into))?;
         Ok(())
     }
 

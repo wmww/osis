@@ -1,10 +1,10 @@
 # Sync: unread
 > Summary: osis-sync's `unread` module (core/sync/src/unread.rs): judgement for sync IDs this node keeps unread (keep, stop at a head past its keys); why it needs nothing of what S carries, and the reasons behind its rules.
 
-Spec: spec/sync-judgement.md §6, spec/sync-set.md §3, spec/sync-opens.md §4 (what it shows). Model: core/test/tla/net/NetKeep.tla. Principle: the module doc. Overview: notes/sync.md.
+Spec: spec/sync-judgement.md §6, spec/sync-set.md §3, spec/sync-opens.md §4 (what it shows), spec/sync.md §3 (the sync record). Models: core/test/tla/net/NetKeep.tla, NetTrust.tla. Principle: the module doc. Overview: notes/sync.md.
 
 ## What it owns
-Per S kept unread a `Kept` (stranded, credentials), stamped, which opens (`Unread::credentials`) and status (`stranded`) read. Nothing durable of its own: the sync record is the engine's, the path the store's; a start settles every key once. The rule is `unread::judge` over plain values (`Judged`), which the rule tests drive (core/sync/tests/it/unread.rs).
+Per S kept unread a `Kept` (stranded, credentials, `borne`: the held secrets not recorded that a step of its path bears, which settle hands to `Engine::record_borne`), stamped, which opens (`Unread::credentials`) and status (`stranded`) read. Nothing durable of its own: the sync record is the engine's, the path the store's; a start settles every key once. The rule is `unread::judge` over plain values (`Judged`), which the rule tests drive (core/sync/tests/it/unread.rs).
 
 The rule: keep while a held sync secret derives the head's sync key (credentials: that key, its proof, the head's deposit key and claim set). At a head no held secret derives (`stranded`) the store holds and takes nothing (`Store::set_unheld`: drops every entry, durable and in memory, with no deletion event, keeping path and tombstones; refuses stamped entries, deposits and Deletes as with no head), and it shows only the held secrets whose sync key no step of its path bears. With no head it shows every held secret. Unlisted, it is `leave`'s (notes/sync-leave.md): it stays synced, so judged here, until each own entry is present at a source, then is shredded, keeping its record.
 

@@ -20,13 +20,17 @@ fn devices(lp: &mut LocalPeer, i: usize) -> Tid {
     lp.peers[i].engine.account().unwrap().unwrap().1
 }
 
-/// Peer `from` grants `role` on `a` to `to`'s account; `to` takes its inbox blobs.
+/// Peer `from` grants `role` on `a` to `to`'s account; `to` takes its inbox blobs, and accepts a
+/// sync grant (spec/sync.md §3: kept only by an accept).
 fn grant(lp: &mut LocalPeer, ps: &[Tid], from: usize, a: Tid, to: usize, role: Role) {
     let done = lp.peers[from].engine.grant(&a, &ps[to], &edge_of(role)).unwrap();
     for (h, b) in lp.inbox_blobs(from, &done).unwrap() {
         if h == ps[to] {
             lp.peers[to].engine.take_inbox_blob(&b, true).unwrap();
         }
+    }
+    if role == Role::Sync {
+        crate::facade::accept(lp, to, a);
     }
 }
 
