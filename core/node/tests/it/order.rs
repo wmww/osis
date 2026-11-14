@@ -4000,7 +4000,6 @@ fn record_after_a_waiting_commit_applied_fetches_its_thrown_out_part_spec_commit
     caught_up(&[NewTop { by: 0 }, TwoEdges { by: 0, a: 0, b: 1, holder: 1, role: Role::Write }], 1, 0, true);
 }
 
-
 // spec/commits.md §5 Purge, Never received: the keep-everything node judges 2's m8 invalid under
 // 0's backdated demotion of 2 and drops it; walking 2's side of the dispute (2 removed 0) turns it
 // valid and 2's purge of it standing at once, so it is missing when purged: never received, not
