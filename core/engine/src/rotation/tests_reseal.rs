@@ -478,3 +478,29 @@ fn facade_header_only_wrap_withheld_without_the_removal_spec_crypto_5() {
     let wrap = lp.peers[V].engine.rewrap(&w, &hdr.id, &s, &held.wrap, &s).unwrap().expect("V wraps the header once e_R is established");
     assert_eq!(m_opens_entry(&mut lp, g, w, &hdr.id, &hdr.blob, &wrap), (false, false));
 }
+
+// spec/crypto.md §5 (Passing on: the wrap gates the header, and all of a copy): R logs w as a
+// per-sync-ID copy (one section under its blob key) wrapped under e_R; V, lacking W, reads w's
+// content from it in no section of a read epoch. The copy's wrap epoch is an opening of the
+// header, so V's fresh encryption of w is wrapped for no sync ID until W arrives.
+#[test]
+fn facade_copy_read_content_withheld_without_the_removal_spec_crypto_5() {
+    let (mut lp, g, w_commits, e_r, w, _) = shape(false);
+    send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
+    let r = &mut lp.peers[R].engine;
+    let body = r.body(&w).unwrap().unwrap();
+    let copy = r.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(24)).unwrap().unwrap();
+    let k = r.wrap_secret(&g, Some((&w, &body.parts))).unwrap().expect("R wraps its own");
+    let held = HeldBlob { sync_id: lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap(), wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
+    let s = held.sync_id;
+    v_takes(&mut lp, &s, w, &held);
+    assert!(reads(&mut lp, V, g, "w"), "V reads w from R's copy");
+    let mut rng = osis_crypto::SeededRng::from_u64(25);
+    if let Some((sealed, wrap)) = lp.peers[V].engine.seal_body(&s, &w, &[held.clone()], &mut rng).unwrap() {
+        let (header, content) = m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap);
+        panic!("V sealed w read from a copy lacking W: M opens its header {header}, content {content}");
+    }
+    w_arrives(&mut lp, g, &w_commits, &e_r);
+    let (sealed, wrap) = lp.peers[V].engine.seal_body(&s, &w, &[held], &mut rng).unwrap().expect("V seals w once e_R is established");
+    assert_eq!(m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap), (false, false));
+}
