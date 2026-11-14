@@ -100,17 +100,39 @@ fn h_bytes(t: &Tid) -> &[u8] {
 impl Engine {
     /// Whether this node has seen `holder` take its delivery of `c` (spec/sync-inbox.md §2
     /// Re-send): a held commit by the holder writing a thing the delivery names, stamped after
-    /// `c`; or `c` is no longer held (forgotten: nothing to deliver). The other sign, an open by
-    /// the holder of a sync ID the blob names, is sync's to see. Reads only the delivery's keys.
-    pub(crate) fn delivery_taken_now(&self, c: &CommitId, holder: &Tid) -> bool {
-        let Some(o) = self.core.ix.owed_inbox.get(&(*c, *holder)) else { return true };
-        let Some(ts) = self.core.ix.commits.get(c).map(|m| m.view.ts) else { return true };
-        o.things.iter().any(|t| self.core.ix.by_thing.get(&(*t, *holder)).is_some_and(|cs| cs.iter().any(|x| x != c && self.core.ix.commits.get(x).is_some_and(|m| m.view.ts > ts))))
+    /// `c` and opened here under a current read epoch of that thing (a secret only a grant at
+    /// that epoch gives: a commit sealed under an older one may have been written before the
+    /// holder took `c`, and shows nothing); or `c` is no longer held (forgotten: nothing to
+    /// deliver). The other sign, an open by the holder of a sync ID the blob names, is sync's to
+    /// see. Reads the delivery's keys and those commits' openings.
+    pub(crate) fn delivery_taken_now(&mut self, c: &CommitId, holder: &Tid) -> Result<bool> {
+        let Some(o) = self.core.ix.owed_inbox.get(&(*c, *holder)).cloned() else { return Ok(true) };
+        let Some(ts) = self.core.ix.commits.get(c).map(|m| m.view.ts) else { return Ok(true) };
+        for t in o.things.iter().copied() {
+            let later: Vec<CommitId> = self.core.ix.by_thing.get(&(t, *holder)).map(|cs| cs.iter().filter(|x| *x != c && self.core.ix.commits.get(x).is_some_and(|m| m.view.ts > ts)).copied().collect()).unwrap_or_default();
+            if later.is_empty() {
+                continue;
+            }
+            let current: Vec<osis_crypto::Epoch> = self.current_read_secrets(&t).into_iter().map(|(e, _)| e).collect();
+            for x in later {
+                if self.read(|tx| crate::labeling::opened::opened_epochs(tx, &x, &t))?.iter().any(|e| current.contains(e)) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// The deliveries owed and not seen taken, whole (`delivery_feed` follows additions).
-    pub(crate) fn deliveries_now(&self) -> Arc<BTreeSet<(CommitId, Tid)>> {
-        Arc::new(self.core.ix.owed_inbox.keys().filter(|(c, h)| !self.delivery_taken_now(c, h)).copied().collect())
+    pub(crate) fn deliveries_now(&mut self) -> Result<Arc<BTreeSet<(CommitId, Tid)>>> {
+        let owed: Vec<(CommitId, Tid)> = self.core.ix.owed_inbox.keys().copied().collect();
+        let mut out = BTreeSet::new();
+        for (c, h) in owed {
+            if !self.delivery_taken_now(&c, &h)? {
+                out.insert((c, h));
+            }
+        }
+        Ok(Arc::new(out))
     }
 
     /// The inbox blob of delivery (`c`, `holder`), sealed now to the holder's current KEM key

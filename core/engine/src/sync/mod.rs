@@ -673,7 +673,7 @@ impl Engine {
     /// them, then follows `delivery_feed` and `delivery_taken` per delivery. A delivery to a node
     /// (pairing) is its commit sent over a connection; to an actor, `inbox_blob`.
     pub fn deliveries(&mut self) -> Result<Arc<BTreeSet<(CommitId, Tid)>>> {
-        Ok(self.deliveries_now())
+        self.deliveries_now()
     }
 
     /// A cursor over the deliveries owed from now on (`memo::Feed`).
@@ -684,7 +684,7 @@ impl Engine {
     /// Whether this node saw `holder` take delivery `c` (a commit of the holder's on a thing it
     /// names; an open the blob names at this node is sync's to see). Reads only its keys.
     pub fn delivery_taken(&mut self, c: &CommitId, holder: &Tid) -> Result<bool> {
-        Ok(self.delivery_taken_now(c, holder))
+        self.delivery_taken_now(c, holder)
     }
 
     /// Sync stops delivering `c` to `holder`: it saw the holder take it (`delivery_taken`, or an

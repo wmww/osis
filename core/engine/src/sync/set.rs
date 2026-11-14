@@ -135,14 +135,7 @@ impl Engine {
         for (step, _) in &o.path.steps {
             c.keys.insert(step.id(), self.head_keys(&t, step)?);
         }
-        if let Some(e) = self.core.epochs(&t) {
-            let read = e.role(Role::Read);
-            let current: Vec<(Epoch, Secret32)> = read.current().into_iter().filter_map(|ep| Some((ep, read.secret(&ep)?.clone()))).collect();
-            c.read_secrets = match current.is_empty() {
-                true => read.held_newest_first().into_iter().take(1).map(|(ep, s)| (ep, s.clone())).collect(),
-                false => current,
-            };
-        }
+        c.read_secrets = self.current_read_secrets(&t);
         for k in self.static_listed(&t)? {
             c.statics.insert(osis_crypto::static_entry(s, &k));
         }
@@ -162,6 +155,19 @@ impl Engine {
             }
         }
         Ok(Some(Arc::new(c)))
+    }
+
+    /// Thing `t`'s read secrets at its current epochs (history-less floors), else its newest
+    /// held: what an open of its sync ID proves and what a commit on it shows (spec/sync-inbox.md
+    /// §2 Re-send).
+    pub(crate) fn current_read_secrets(&self, t: &Tid) -> Vec<(Epoch, Secret32)> {
+        let Some(e) = self.core.epochs(t) else { return Vec::new() };
+        let read = e.role(Role::Read);
+        let current: Vec<(Epoch, Secret32)> = read.current().into_iter().filter_map(|ep| Some((ep, read.secret(&ep)?.clone()))).collect();
+        match current.is_empty() {
+            true => read.held_newest_first().into_iter().take(1).map(|(ep, s)| (ep, s.clone())).collect(),
+            false => current,
+        }
     }
 
     /// The thing whose sync ID `s` is, read here, with its record (`sync_ids`).

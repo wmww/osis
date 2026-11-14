@@ -275,13 +275,14 @@ fn a_removed_writers_last_write_reads_alike_at_every_holder() {
     crate::convergence::converge(347110580059, 3, &[New(1), New(0), Write(0, 1), Grant(0, 1, 1, Gives::Writes), Write(0, 1), Grant(0, 1, 2, Gives::Writes), Run, Write(1, 1), Remove(0, 1, 1)], String::new());
 }
 
-// spec/sync-inbox.md §2 (Re-send): a sync
-// holder raised to write, removed, then granted read again while a durable write of its fails,
-// never gets the read grant: it reads the roster without its own edge. Found by the full-size
-// differential (faulty seed 347110579992, shrunk); issues/sync-grant-again-after-failed-write.md.
+// spec/sync-inbox.md §2 (Re-send: a commit sealed under an older epoch shows nothing): a sync
+// holder raised to write, removed, then granted read again, which writes the thing before it
+// takes the grant (a failed durable write of its delays the take, so the granter holds a
+// snapshot of that write, stamped after the grant, first), still gets the grant: the snapshot is
+// sealed under the epoch from before its removal, so the granter re-sends.
+// Found by the full-size differential (faulty seed 347110579992, shrunk).
 #[test]
-#[ignore = "fails: issues/sync-grant-again-after-failed-write.md"]
-fn a_member_granted_again_through_a_failed_write_reads_its_grant() {
+fn a_member_granted_again_writing_before_it_takes_it_reads_it_spec_sync_inbox_2() {
     use crate::harness::DiskFault::Fail;
     use crate::harness::Step::*;
     use crate::harness::history::Gives;

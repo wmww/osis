@@ -2,7 +2,7 @@
 //! The engine's facade for sync (`osis_engine::sync`, notes/sync-facade.md): each call against
 //! the spec rule it serves, over `LocalPeer` (commits and inbox blobs carried by hand).
 
-use crate::flows::{edge_of, people, spread, thing_of};
+use crate::flows::{edge_of, people, spread, spread_sealed, thing_of};
 use osis_base::{Ak, Role, Tid};
 use osis_crypto::SeededRng;
 use osis_engine::flows::Demotion;
@@ -251,7 +251,7 @@ fn a_box_after_a_new_step_extends_the_record_spec_sync_judgement_6() {
 }
 
 // spec/sync-inbox.md §2 (Re-send: until the sender has seen the recipient take it, a commit by
-// the recipient writing a thing the blob names).
+// the recipient writing a thing the blob names, opened under a current read epoch).
 #[test]
 fn a_delivery_is_owed_until_taken_spec_sync_inbox_2() {
     let (mut lp, t, pb, g, blob) = granted(Role::Write);
@@ -259,12 +259,41 @@ fn a_delivery_is_owed_until_taken_spec_sync_inbox_2() {
     assert!(!lp.peers[0].engine.delivery_taken(&g, &pb).unwrap());
     lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
     spread(&mut lp);
-    let mut m = Mutation::new();
-    m.set(t, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
-    lp.peers[1].engine.commit(m).unwrap().unwrap();
-    spread(&mut lp);
+    write_reg(&mut lp, 1, t, 1);
+    spread_sealed(&mut lp);
     assert!(lp.peers[0].engine.delivery_taken(&g, &pb).unwrap());
     assert!(!lp.peers[0].engine.deliveries().unwrap().contains(&(g, pb)));
+}
+
+// spec/sync-inbox.md §2 (Re-send: a commit sealed under an older epoch shows nothing): a writer
+// removed and granted write again, holding neither yet, writes under the epoch from before its
+// removal; that write, stamped after the grant, leaves the grant owed; one written once it holds
+// both, under the grant's epoch, shows it taken.
+#[test]
+fn a_write_under_an_older_epoch_shows_no_grant_again_taken_spec_sync_inbox_2() {
+    let (mut lp, t, pb, _, blob) = granted(Role::Write);
+    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
+    spread(&mut lp);
+    lp.peers[0].engine.demote(&t, &Demotion { holder: pb, new: None, retain: None }).unwrap();
+    let g = *lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Write)).unwrap().commits.last().unwrap();
+    lp.advance(1_000);
+    let stale = write_reg(&mut lp, 1, t, 2);
+    let pks = lp.sealed(1, &[stale]).unwrap();
+    lp.deliver_sealed(0, &pks).unwrap();
+    assert!(lp.peers[0].engine.commit_bytes(&stale).unwrap().is_some(), "the stale write is held at the granter");
+    assert!(!lp.peers[0].engine.delivery_taken(&g, &pb).unwrap(), "a write under the old epoch shows nothing");
+    spread(&mut lp);
+    let fresh = write_reg(&mut lp, 1, t, 3);
+    let pks = lp.sealed(1, &[fresh]).unwrap();
+    lp.deliver_sealed(0, &pks).unwrap();
+    assert!(lp.peers[0].engine.delivery_taken(&g, &pb).unwrap(), "a write under the grant's epoch shows it taken");
+}
+
+/// Peer `i` writes `v` on `t`'s `t:reg.0`: the commit.
+fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: i64) -> osis_base::CommitId {
+    let mut m = Mutation::new();
+    m.set(t, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(v)).unwrap();
+    lp.peers[i].engine.commit(m).unwrap().unwrap()
 }
 
 // spec/permissions.md §3 (drops once that commit is held elsewhere: a self-remover keeps its
