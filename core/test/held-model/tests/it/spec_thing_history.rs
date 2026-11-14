@@ -492,7 +492,8 @@ fn ev_who_may_purge_changes_no_history() {
 #[test]
 fn ev_only_valid_settings_are_in_force_and_none_judges_validity() {
     let bodies = || vec![body(10, 1, false), body(11, 3, false)];
-    let by_writer = setting_by(19, 1, 0, Setting { rules: vec![(REG.name, SettingEntry { history: KEPT, expires: Some(HOUR) })], default: None });
+    // just after the grant: a write at its `ts` is concurrent with it (spec/permissions.md §5.2, Position)
+    let by_writer = Commit { ts: ts(0) + 1, ..setting_by(19, 1, 0, Setting { rules: vec![(REG.name, SettingEntry { history: KEPT, expires: Some(HOUR) })], default: None }) };
     let grant = |role| edge(5, FIRST_ADMIN, 0, 1, Some(role), None);
     let h = held(4, [vec![grant(Role::Write), by_writer.clone()], bodies()].concat());
     assert!(listed(&h, REG).is_empty(), "a writer's setting is none");

@@ -223,7 +223,7 @@ fn apply(h: &History, steps: &[Step]) -> RoleEpochs {
             })
             .collect();
         for (e, names, list) in opened {
-            r.set_history(e, names, list);
+            r.set_history(e, names, list, None);
         }
         r.establish(&Observer(h));
     }
@@ -313,10 +313,10 @@ fn forged_entry_by_a_holder_is_accepted() {
     r.set_secret(e, Secret32::from_bytes([1; 32]));
     let h = History { commits: Vec::new(), held: BTreeSet::new(), secrets: BTreeSet::new(), reading: BTreeSet::new(), snapshots: BTreeSet::new() };
     let genuine = Names { list: [Name::applied(key(0), THING)].into(), departs: None };
-    r.set_history(e, [genuine.clone()].into(), []);
+    r.set_history(e, [genuine.clone()].into(), [], None);
     r.establish(&Observer(&h));
     assert!(!r.is_established(&e));
-    r.set_history(e, [genuine, Names::default()].into(), []);
+    r.set_history(e, [genuine, Names::default()].into(), [], None);
     r.establish(&Observer(&h));
     assert!(r.is_established(&e));
 }

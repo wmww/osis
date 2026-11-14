@@ -404,12 +404,12 @@ fn roster_removal(n: usize) -> (u64, usize, u64) {
     // account-like holders: keysets per role (one KEM key reused; a box's size does not depend on it)
     let kem = KeyActorKeys::from_seed(&Secret32::from_bytes([9; 32])).kem.public().clone();
     let ep = Epoch::new(1, [3; 32]).unwrap();
-    let mut holders = vec![Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } }];
+    let mut holders = vec![Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None }, floor: 0 }];
     for i in 0..n - 1 {
         let mut x = [0u8; 15];
         x[..8].copy_from_slice(&(i as u64 + 1).to_le_bytes());
         let keysets = [Role::Read, Role::Write].into_iter().map(|r| (r, vec![(ep, kem.clone())])).collect();
-        holders.push(Recipient { holder: Tid::from_bytes(x), role: Role::Write, keys: HolderKeys::Actor { keysets, own: BTreeMap::new() } });
+        holders.push(Recipient { holder: Tid::from_bytes(x), role: Role::Write, keys: HolderKeys::Actor { keysets, own: BTreeMap::new() }, floor: 0 });
     }
     // secrets of its own are all three roles' (spec/crypto.md §3): the thing gets them first
     let all = BTreeSet::from(Role::ALL);

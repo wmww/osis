@@ -37,6 +37,7 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
             until: (rng.below(3) == 0).then(|| WallMs(rng.below(12) as u64)),
             invite: (rng.below(2) == 0).then(|| pick(rng, &roles)),
             tied: None,
+            floor: None,
         })
     };
     let frontier = |rng: &mut Rng| -> Option<Arc<Frontier>> {

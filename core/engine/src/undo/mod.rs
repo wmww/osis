@@ -1003,7 +1003,7 @@ mod tests {
         let [a, c] = [0, 1].map(|i| lp.peers[i].engine.me());
         let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
-        lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+        lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
         // history kept a day after replaced on `x:m.0` and `x:r.0`
         let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
         let mut setting = ct::RetentionSetting::of(Ak::new("x:m.0").unwrap(), day);
@@ -1096,7 +1096,7 @@ mod tests {
         let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         let r = lp.peers[1].engine.me();
-        lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, until: None, invite: None, tied: None }).unwrap();
+        lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None }).unwrap();
         let x = Ak::new("x:m.0").unwrap();
         let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
         let mut m = Mutation::new();
@@ -1150,7 +1150,7 @@ mod tests {
         let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
         let setting = ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(day), ..Default::default() }), ..Default::default() };
         for t in &ts {
-            lp.peers[0].engine.grant(t, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+            lp.peers[0].engine.grant(t, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
             let mut m = Mutation::new();
             m.set(*t, &ct::RETENTION, &setting).unwrap();
             lp.peers[0].commit(m).unwrap();
@@ -1194,7 +1194,7 @@ mod tests {
         let n = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(n, &x, &Value::Int(1)).unwrap().set(ts[0], &x, &Value::Int(1)).unwrap();
         let c = lp.peers[0].commit(m).unwrap().unwrap();
-        lp.peers[0].engine.grant(&n, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+        lp.peers[0].engine.grant(&n, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
         lp.advance(10);
         let mut m = Mutation::new();
         m.set(n, &y, &Value::Int(2)).unwrap();
@@ -1222,7 +1222,7 @@ mod tests {
             let n = lp.peers[0].engine.new_thing(&mut m, a);
             m.set(n, &x, &Value::Int(1)).unwrap();
             let c = lp.peers[0].commit(m).unwrap().unwrap();
-            lp.peers[0].engine.grant(&n, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+            lp.peers[0].engine.grant(&n, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
             lp.advance(10);
             let add = || PathOp { path: vec![PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(n)) };
             let mut m = Mutation::new();

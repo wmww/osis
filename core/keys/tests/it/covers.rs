@@ -14,7 +14,7 @@ use osis_schema::core_types::Secrets;
 use std::collections::BTreeSet;
 
 fn admin_rcpt(p: Tid, pe: &ActorEpochs) -> Recipient {
-    Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(pe)).unwrap().with_own(pe) }
+    Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(pe)).unwrap().with_own(pe), floor: 0 }
 }
 
 /// The roles a reader holds.

@@ -585,6 +585,14 @@ impl<'a> On<'a> {
     pub fn roster(&self, at: osis_perm::At) -> BTreeMap<Tid, osis_perm::Edge> {
         self.tl.roster(&self.thing, at)
     }
+    /// The edge write on it in force for `holder` (`Timeline::in_force`).
+    pub fn in_force(&self, holder: &Tid) -> Option<osis_base::CommitId> {
+        self.tl.in_force(holder, &self.thing)
+    }
+    /// The applied edge writes on it (`Timeline::applied_on`).
+    pub fn applied(&self) -> impl Iterator<Item = (&'a RoleCommit, &'a osis_perm::EdgeOp)> + 'a {
+        self.tl.applied_on(&self.thing)
+    }
     /// `Timeline::standing_since` of it.
     pub fn standing_since(&self) -> BTreeMap<Tid, Option<osis_perm::Point>> {
         self.tl.standing_since(&self.thing)

@@ -70,6 +70,20 @@ fn value(genuine: bool, delta: &[u8]) -> Vec<u8> {
 }
 
 impl Core {
+    /// The floor of read epoch `ep` of thing `t` as this node reads it (spec/crypto.md §4,
+    /// Floors; a plain thing's, its base epoch's): 0 where unknown.
+    pub(crate) fn read_floor(&self, t: &Tid, ep: &Epoch) -> u64 {
+        self.epochs(t).map_or(0, |e| e.read.floor(ep))
+    }
+
+    /// The epoch this node seals `t`'s content under now (its newest current read epoch held,
+    /// spec/crypto.md §5) with its floor.
+    pub(crate) fn seal_epoch(&self, t: &Tid) -> Option<(Epoch, u64)> {
+        let e = self.epochs(t)?;
+        let ep = osis_keys::wrap_epoch(&e.read)?;
+        Some((ep, e.read.floor(&ep)))
+    }
+
     /// Whether read epoch `ep` of thing `t` (own, or derived from its first admin's) is
     /// established here (spec/crypto.md §4).
     fn read_established(&self, t: &Tid, ep: &Epoch) -> bool {
@@ -171,6 +185,21 @@ impl Engine {
     pub fn openings_done(&mut self, c: &CommitId) {
         self.core.openings.remove(c);
     }
+}
+
+/// Records the epoch each content part of `c`, this node's own new commit, was made under: the
+/// newest current read epoch of its thing, where its floor is above 0 (a part with no record has
+/// floor 0, so a node never cut writes nothing here). What the floor clause of `passes_on` reads.
+pub(crate) fn note_own(tx: &mut Tx<'_>, c: &osis_commit::CommitBlob) -> Result<()> {
+    let id = c.id();
+    for p in &c.parts {
+        let Some(a) = c.header.aspects.get(p.ai).filter(|a| is_content(a.ak.as_str())) else { continue };
+        let Some((e, f)) = tx.core.seal_epoch(&a.tid) else { continue };
+        if f > 0 {
+            tx.txn.put_local(&key(&id, p.ai, &e), &value(true, &p.delta), Shred::No)?;
+        }
+    }
+    Ok(())
 }
 
 /// Writes the openings of commit `c` not yet written, where `c` is held or pending (the end of
@@ -304,34 +333,50 @@ fn established_genuine(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid, mut un
 }
 
 /// Whether this node may encrypt part `ai` (on aspect `ak` of thing `t`) of held commit `c`
-/// under an epoch of its own choosing (the module's invariant): not content, its own write,
-/// one of whose content nothing is held (value-less, or dropped), or one it opened a genuine
-/// section of under an epoch established here now, or read in no section.
-pub(crate) fn passes_on(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid, ak: &str) -> Result<bool> {
+/// under an epoch of its own choosing of floor `floor` (`None`: a snapshot, which carries state:
+/// the floor clause binds it not): not content, or one of whose content nothing is held
+/// (value-less, or dropped); else, where `floor` is above 0, only by an opening (its own write's
+/// record, `note_own`) under an epoch of at least that floor; and its own write, or one read in
+/// no section, or one it opened a genuine section of under an epoch established here now (the
+/// module's invariant).
+pub(crate) fn passes_on(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid, ak: &str, floor: Option<u64>) -> Result<bool> {
     if !is_content(ak) {
         return Ok(true);
     }
-    if tx.core.ix.commits.get(c).is_some_and(|m| m.origin == Origin::Local || matches!(m.hold.get(ai), Some(Hold::Leftover { valued: false, .. } | Hold::Dropped(_)))) {
+    let m = tx.core.ix.commits.get(c);
+    if m.is_some_and(|m| matches!(m.hold.get(ai), Some(Hold::Leftover { valued: false, .. } | Hold::Dropped(_)))) {
         return Ok(true);
     }
+    let own = m.is_some_and(|m| m.origin == Origin::Local);
     let under = openings(tx, c, Some(ai))?;
+    let Some(under) = above_floor(tx, t, under, floor) else { return Ok(false) };
     // read in no section: it came to this node directly, under no epoch (an inbox payload, a
     // direct connection; neither carries another's content in node-sync)
-    if under.is_empty() {
+    if own || under.is_empty() {
         return Ok(true);
     }
     established_genuine(tx, c, ai, t, under)
 }
 
+/// The floor clause: of `under` (a part's openings on thing `t`), those under an epoch whose
+/// floor is at least `floor`; `None` where `floor` is above 0 and none is (the part was written
+/// below it, or its epoch is unknown). Every opening where `floor` is `None` or 0.
+fn above_floor(tx: &Tx<'_>, t: &Tid, mut under: Vec<Opening>, floor: Option<u64>) -> Option<Vec<Opening>> {
+    let Some(f) = floor.filter(|f| *f > 0) else { return Some(under) };
+    under.retain(|(_, e, ..)| tx.core.read_floor(t, e) >= f);
+    (!under.is_empty()).then_some(under)
+}
+
 /// Whether this node may wrap a blob of commit `c` (its header) under an epoch of its own
-/// choosing: its own, one with no content part, or one each of whose content parts it opened
-/// has a genuine opening under an epoch established here now (a part dropped or held
-/// value-less keeps none) and, if an entry's wrap of it opened here, one such wrap's epoch is
-/// established here now (`note_unwrapped`: kept whatever is dropped).
-fn header_passes(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header) -> Result<bool> {
-    if tx.core.ix.commits.get(c).is_some_and(|m| m.origin == Origin::Local) {
-        return Ok(true);
-    }
+/// choosing: one with no content part, or one each of whose content parts it opened (its own:
+/// any) has a genuine opening under an epoch established here now (a part dropped or held
+/// value-less keeps none); if an entry's wrap of it opened here, one such wrap's epoch is
+/// established here now (`note_unwrapped`: kept whatever is dropped); and, the wrap under an
+/// epoch of actor `a` of floor f (`floor`), every content part on a thing whose secrets are
+/// `a`'s has an opening (or own record) under an epoch of floor at least f: the header names the
+/// part's thing, aspect and delta hash.
+fn header_passes(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header, floor: Option<(Tid, u64)>) -> Result<bool> {
+    let own = tx.core.ix.commits.get(c).is_some_and(|m| m.origin == Origin::Local);
     let content: Vec<(usize, Tid)> = h.aspects.iter().enumerate().filter(|(_, a)| is_content(a.ak.as_str())).map(|(ai, a)| (ai, a.tid)).collect();
     if content.is_empty() {
         return Ok(true);
@@ -343,7 +388,9 @@ fn header_passes(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header) -> Resu
     let all = openings(tx, c, None)?;
     for (ai, t) in content {
         let under: Vec<_> = all.iter().filter(|r| r.0 == ai).cloned().collect();
-        if under.is_empty() {
+        let f = floor.filter(|(a, _)| tx.core.secret_actor(&t) == Some(*a)).map(|x| x.1);
+        let Some(under) = above_floor(tx, &t, under, f) else { return Ok(false) };
+        if own || under.is_empty() {
             continue;
         }
         if !established_genuine(tx, c, ai, &t, under)? {
@@ -351,6 +398,18 @@ fn header_passes(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header) -> Resu
         }
     }
     Ok(true)
+}
+
+/// The floor of part `ai` (on thing `t`) of held commit `c` (spec/crypto.md §4 Floors): the
+/// greatest floor of an epoch it was opened (or, this node's own, made) under; this node's own
+/// with no record has 0 (`note_own`), another's read in no section none known.
+pub(crate) fn part_floor(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid) -> Result<Option<u64>> {
+    let under = openings(tx, c, Some(ai))?;
+    let own = tx.core.ix.commits.get(c).is_some_and(|m| m.origin == Origin::Local);
+    Ok(match under.iter().map(|(_, e, ..)| tx.core.read_floor(t, e)).max() {
+        Some(f) => Some(f),
+        None => own.then_some(0),
+    })
 }
 
 /// Removes the openings of commit `c` (`Tx::remove_commit`, a pending copy thrown out).
@@ -369,30 +428,32 @@ pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
 
 impl Engine {
     /// Whether this node may wrap a blob of commit `c` carrying parts `ais` under an epoch of its
-    /// choosing (the wrap gates the header, and a copy's whole content): `passes_on` for each,
-    /// and `header_passes`.
-    pub(super) fn passes_on_parts(&mut self, c: &CommitId, ais: &[usize]) -> Result<bool> {
+    /// choosing, of actor `floor.0` with floor `floor.1` (the wrap gates the header, and a copy's
+    /// whole content): `passes_on` for each (the floor clause for a part on a thing whose secrets
+    /// are that actor's), and `header_passes`.
+    pub(super) fn passes_on_parts(&mut self, c: &CommitId, ais: &[usize], floor: Option<(Tid, u64)>) -> Result<bool> {
         let c = *c;
         let Some(h) = self.header(&c) else { return Ok(true) };
         self.read(|tx| {
             for ai in ais {
                 let Some(a) = h.aspects.get(*ai) else { continue };
-                if !passes_on(tx, &c, *ai, &a.tid, a.ak.as_str())? {
+                let f = floor.filter(|(x, _)| tx.core.secret_actor(&a.tid) == Some(*x)).map(|x| x.1);
+                if !passes_on(tx, &c, *ai, &a.tid, a.ak.as_str(), f)? {
                     return Ok(false);
                 }
             }
-            header_passes(tx, &c, &h)
+            header_passes(tx, &c, &h, floor)
         })
     }
 
     /// `passes_on` for each part of `ais` of commit `c` (header `h`; a fresh encryption's
-    /// section).
-    pub(super) fn passes_on_all(&mut self, c: &CommitId, h: &osis_commit::Header, ais: &[usize]) -> Result<bool> {
+    /// section under an epoch of floor `floor`).
+    pub(super) fn passes_on_all(&mut self, c: &CommitId, h: &osis_commit::Header, ais: &[usize], floor: u64) -> Result<bool> {
         let c = *c;
         self.read(|tx| {
             for ai in ais {
                 let Some(a) = h.aspects.get(*ai) else { return Ok(false) };
-                if !passes_on(tx, &c, *ai, &a.tid, a.ak.as_str())? {
+                if !passes_on(tx, &c, *ai, &a.tid, a.ak.as_str(), Some(floor))? {
                     return Ok(false);
                 }
             }

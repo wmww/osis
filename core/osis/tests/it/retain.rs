@@ -101,7 +101,7 @@ fn an_until_ending_keeps_a_copy_that_takes_nothing_new_spec_permissions_3() {
     w.commit().unwrap();
     alice.set_retain_copies_default(g, true).unwrap();
     let until = osis::Time(T0 + 60_000);
-    alice.grant(g, bob.me(), Role::Write, osis::GrantOpts { until: Some(until), may_grant: None }).unwrap();
+    alice.grant(g, bob.me(), Role::Write, osis::GrantOpts { until: Some(until), may_grant: None, reads: osis::Reads::Kept }).unwrap();
     carry(&alice, &bob);
     c.advance(120_000);
     // lost by the time alone: sync drops it once it has heard the sync IDs out (§2)

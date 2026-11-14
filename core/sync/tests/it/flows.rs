@@ -10,7 +10,7 @@ use osis_sync::types::{Scope, Waiting};
 use osis_schema::core_types as ct;
 
 fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, tied: None }
+    ct::Edge { role, until: None, invite: None, tied: None, floor: None }
 }
 
 

@@ -104,6 +104,7 @@ impl W {
         self.opt(e.until, |w, u| w.n(u.0));
         self.opt(e.invite, W::role);
         self.opt(e.tied.as_ref(), W::tie);
+        self.opt(e.floor, W::n);
     }
     fn tie(&mut self, t: &Tie) {
         self.ts(t.ts);
@@ -490,7 +491,8 @@ impl<'a> R<'a> {
         let until = self.opt(|r| r.n().map(WallMs))?;
         let invite = self.opt(R::role)?;
         let tied = self.opt(R::tie)?;
-        Some(Edge { role, until, invite, tied })
+        let floor = self.opt(R::n)?;
+        Some(Edge { role, until, invite, tied, floor })
     }
     fn tie(&mut self) -> Option<Tie> {
         let ts = self.ts()?;

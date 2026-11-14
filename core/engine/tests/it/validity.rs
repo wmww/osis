@@ -3859,22 +3859,22 @@ fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
 }
 
 // spec/requirements.md Convergence (holders of the same commits read alike), spec/permissions.md
-// §5.2 (Addenda: an addendum counts for the commits ordered before its removal) and §6: Alice
-// grants Bob and Carol write; in one fresh millisecond Bob writes v5 and Alice, not having seen
-// it, removes Bob, so both carry the same `ts` and their authors' tids order them. Carol receives
-// v5 before the removal (`carol_first`) or after it; then everyone exchanges everything, and a
-// fresh node is handed every commit. All read alike: v5 iff Carol received it first and it is
-// ordered before the removal (Bob's tid below Alice's), else v4; for every assignment of the
-// three peers. Ported from the sync rebuild's differential (clean seed 347110580059), where the
-// remover read v4 and the others v5 with v5 ordered after the removal.
+// §5.2 (Position; Addenda): Alice grants Bob and Carol write; in one fresh millisecond Bob writes v5
+// and Alice, not having seen it, removes Bob, so both carry the same `ts`. The HLC makes that tie
+// proof they were concurrent, so layer 2 orders v5 before the removal whatever the tids: Carol
+// received v5 before the removal (`carol_first`) and her addendum keeps it, else it is lost. Then
+// everyone exchanges everything, and a fresh node is handed every commit: all read alike, for
+// every assignment of the three peers (so either tid order). Found by the sync rebuild's
+// differential (seed 347110580059), where ordering v5 after the removal by tid made the outcome
+// depend on whose tid was lower.
 #[test]
-fn a_removed_writers_last_write_reads_alike_at_every_holder_spec_perm_5_2() {
+fn a_removed_writers_write_at_the_removals_ts_reads_alike_whatever_the_tids_spec_perm_5_2() {
     for [a, b, c] in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
         for carol_first in [true, false] {
             let mut lp = net(3, 0);
             lp.sync_all().unwrap();
             let t = new_thing(&mut lp, a);
-            let (alice, bob, carol) = (lp.peers[a].engine.me(), lp.peers[b].engine.me(), lp.peers[c].engine.me());
+            let (bob, carol) = (lp.peers[b].engine.me(), lp.peers[c].engine.me());
             let write = |lp: &mut LocalPeer, i: usize, v: &str| {
                 let mut m = Mutation::new();
                 m.set(t, &REG, &s(v)).unwrap();
@@ -3911,8 +3911,94 @@ fn a_removed_writers_last_write_reads_alike_at_every_holder_spec_perm_5_2() {
             let reads: Vec<_> = (0..4).map(|i| lp.peers[i].engine.get_typed(&t, &REG).unwrap()).collect();
             let at = format!("Alice {a}, Bob {b}, Carol {c}, Carol first {carol_first}");
             assert!(held.iter().all(|h| *h == held[0]), "{at}: every node holds the same commits");
-            let want = s(if carol_first && bob < alice { "v5" } else { "v4" });
+            let want = s(if carol_first { "v5" } else { "v4" });
             assert!(reads.iter().all(|r| *r == Some(want.clone())), "{at}: every node and the fresh one read {want:?}; reads {reads:?}");
+        }
+    }
+}
+
+// spec/permissions.md §5.2 (Position; Addenda: security): Bob, removed, makes a write stamped at
+// exactly his removal's `ts` (from a copy of his node from before he learned of it: byte for byte
+// what a backdating forger makes) and sends it only after the removal reached every writer. The
+// tie orders it before the removal, so it needs an addendum, and no writer received it by the
+// removal's `ts`: it is lost everywhere, whatever the tids.
+#[test]
+fn a_removed_writers_write_forged_at_the_removals_ts_is_lost_everywhere_spec_perm_5_2() {
+    for [a, b, c] in [[0, 1, 2], [1, 0, 2], [2, 1, 0]] {
+        let mut lp = net(3, 0);
+        lp.sync_all().unwrap();
+        let t = new_thing(&mut lp, a);
+        let (bob, carol) = (lp.peers[b].engine.me(), lp.peers[c].engine.me());
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s("v4")).unwrap();
+        lp.peers[a].commit(m).unwrap().unwrap();
+        lp.peers[a].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
+        lp.peers[a].engine.grant(&t, &carol, &edge(Role::Write)).unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(DAY);
+        let mut unaware = lp.peers[b].copy().unwrap();
+        let rm = lp.peers[a].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap().commits;
+        for _ in 0..3 {
+            lp.sync_all().unwrap();
+        }
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s("forged")).unwrap();
+        let f = unaware.commit(m).unwrap().unwrap();
+        let ts = unaware.engine.header(&f).unwrap().ts;
+        assert!(rm.iter().all(|r| lp.peers[a].engine.header(r).unwrap().ts == ts), "stamped at the removal's ts");
+        let pk = unaware.engine.package(&f).unwrap().unwrap();
+        for i in 0..3 {
+            let _ = lp.deliver(i, &pk);
+        }
+        for _ in 0..3 {
+            lp.sync_all().unwrap();
+        }
+        for i in 0..3 {
+            assert!(lp.peers[i].engine.commit_ids().contains(&f), "peer {i} holds the forged write");
+            assert_eq!(lp.peers[i].engine.get_typed(&t, &REG).unwrap(), Some(s("v4")), "Alice {a}, Bob {b}, Carol {c}: peer {i}");
+        }
+    }
+}
+
+// spec/permissions.md §5.1 (audits: falls, security), §5.2 Position: Bob, an admin, is removed; a copy
+// of his node from before he learned of it grants Carol admin stamped at exactly the removal's
+// `ts`, sent only after the removal reached every node. Ordered before the removal or after it by
+// the tids, the grant is no part of the removal's frontier: Carol's role is what Alice gave her at
+// every node, whatever the tids.
+#[test]
+fn a_removed_admins_grant_forged_at_the_removals_ts_counts_nowhere_spec_perm_5_1() {
+    for [a, b, c] in [[0, 1, 2], [1, 0, 2], [2, 1, 0], [1, 2, 0]] {
+        let mut lp = net(3, 0);
+        lp.sync_all().unwrap();
+        let t = new_thing(&mut lp, a);
+        let (bob, carol) = (lp.peers[b].engine.me(), lp.peers[c].engine.me());
+        lp.peers[a].engine.grant(&t, &bob, &edge(Role::Admin)).unwrap();
+        lp.peers[a].engine.grant(&t, &carol, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(DAY);
+        let mut unaware = lp.peers[b].copy().unwrap();
+        let rm = lp.peers[a].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap().commits;
+        for _ in 0..3 {
+            lp.sync_all().unwrap();
+        }
+        let fs = unaware.engine.grant(&t, &carol, &edge(Role::Admin)).unwrap().commits;
+        let f = *fs.last().unwrap();
+        let ts = unaware.engine.header(&f).unwrap().ts;
+        let at = format!("Alice {a}, Bob {b}, Carol {c}");
+        assert!(rm.iter().all(|r| lp.peers[a].engine.header(r).unwrap().ts == ts), "{at}: stamped at the removal's ts");
+        for f in &fs {
+            let pk = unaware.engine.package(f).unwrap().unwrap();
+            for i in 0..3 {
+                let _ = lp.deliver(i, &pk);
+            }
+        }
+        for _ in 0..3 {
+            lp.sync_all().unwrap();
+        }
+        for i in 0..3 {
+            assert!(lp.peers[i].engine.commit_ids().contains(&f), "{at}: peer {i} holds the forged grant");
+            assert_eq!(lp.peers[i].engine.roster(&t).get(&carol).map(|e| e.role), Some(Role::Read), "{at}: peer {i}: Carol's role");
+            assert_eq!(lp.peers[i].engine.roster(&t).get(&bob), None, "{at}: peer {i}: Bob removed");
         }
     }
 }

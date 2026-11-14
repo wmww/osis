@@ -1126,7 +1126,7 @@ struct Auditor {
 fn join(a: Option<Edge>, b: Edge) -> Edge {
     match a {
         None => Edge { until: None, ..b },
-        Some(a) => Edge { role: a.role.max(b.role), invite: a.invite.max(b.invite), until: None, tied: b.tied },
+        Some(a) => Edge { role: a.role.max(b.role), invite: a.invite.max(b.invite), until: None, tied: b.tied, floor: a.floor.min(b.floor) },
     }
 }
 

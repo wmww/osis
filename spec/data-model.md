@@ -105,7 +105,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 ## 9. Core schema
 The core aspects form the core schema, evolving under spec/versioning.md. `schema/core.osis` (normative, in the DSL of notes/data-model.md) gives their exact types, flags and default retentions; `creation`, `signing_key`, `signature`, `kem_key`, `sealed` are spec/wire.md §3. Rules beyond the types:
 
-- `roles.0` reads as the role timeline's roster (spec/permissions.md §5). `tied`: spec/permissions.md §2. `until` 0: a removal saying retain (spec/permissions.md §2).
+- `roles.0` reads as the role timeline's roster (spec/permissions.md §5). `tied`, `floor`: spec/permissions.md §2. `until` 0: a removal saying retain (spec/permissions.md §2).
 - `addenda.0` is read per delta, never as state.
 - `keys.0`: spec/crypto.md §3, spec/sync-ids.md §2; `signing` is set only on an account's (the current epoch's signing key; `key` beside it is that epoch's KEM key). `secrets.0`: spec/crypto.md §4. `sync.0`: spec/sync-ids.md §4. `reach.0`: spec/sync-transport.md §3 (a node's dialable key, its global addresses and relays). Box payloads, history box layout and AD tuples: spec/wire.md §7.
 - `node.0`, `reach.0`, `caps^.0`, `clients^.0` are written on node things; `synced^.0` and `acted^.0` on D; `dial^.0` on an account's profile. `node.0` and `reach.0` go under the node's account's D's home sync ID only (spec/permissions.md §4). A node's last sync is its own record; stranded reports and suspect lists go over connections and inboxes (spec/permissions.md §4).

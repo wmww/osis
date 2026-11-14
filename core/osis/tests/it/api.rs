@@ -1751,3 +1751,27 @@ fn a_cut_or_expiring_subgroup_tells_what_it_strands() {
     let detail = by_write[0].1.clone();
     assert_eq!(rx.try_iter().collect::<BTreeSet<_>>(), BTreeSet::from([(expiring, detail.clone()), (in_expiring, detail)]));
 }
+
+// notes/api.md (`Reads`; spec/crypto.md §4 Floors): a grant without history reads back as such; a
+// later grant keeps it unless it says `Reads::All` (never by default), and asking `FromNow` of a
+// holder that reads what came before is `Invalid`.
+#[test]
+fn from_now_grant_is_kept_until_a_grant_shows_everything() {
+    let db = common::db(41);
+    let g = db.commit_with(|w| w.create()).unwrap();
+    let n = db.node();
+    let opts = |reads| osis::GrantOpts { reads, ..Default::default() };
+    db.grant(g, n, Role::Read, opts(osis::Reads::FromNow)).unwrap();
+    assert!(db.grants(g).unwrap()[&n].from_now, "granted from now");
+    db.grant(g, n, Role::Write, Default::default()).unwrap();
+    assert!(db.grants(g).unwrap()[&n].from_now, "a raise by default keeps it");
+    db.grant(g, n, Role::Write, opts(osis::Reads::FromNow)).unwrap();
+    assert!(db.grants(g).unwrap()[&n].from_now, "a grant saying so keeps it");
+    db.set_role(g, n, Some(Role::Admin), Default::default()).unwrap();
+    assert!(db.grants(g).unwrap()[&n].from_now, "set_role raising keeps it");
+    db.grant(g, n, Role::Admin, opts(osis::Reads::All)).unwrap();
+    assert!(!db.grants(g).unwrap()[&n].from_now, "Reads::All shows everything");
+    db.grant(g, n, Role::Admin, Default::default()).unwrap();
+    assert!(!db.grants(g).unwrap()[&n].from_now, "kept: everything");
+    assert!(matches!(db.grant(g, n, Role::Admin, opts(osis::Reads::FromNow)), Err(Error::Invalid(_))), "a holder reading what came before");
+}

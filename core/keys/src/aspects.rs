@@ -167,19 +167,42 @@ pub fn snapshot_keyed(s: &Secrets, commit: CommitId, epochs: &mut ActorEpochs) -
     Ok(changed)
 }
 
-/// The `secrets.0` compaction gate (spec/crypto.md §4): every epoch the state `s` keys is
-/// established, its names condition aside, so the snapshot vouches for no epoch whose rotation
-/// this node did not verify. Names are each holder's own judgement (a receiver holding the secret
-/// judges them itself), and an epoch whose names its holders find unmet (withdrawn) keeps its
-/// boxes for good: gating on them would stop compaction at its holders for good.
-pub fn may_compact_secrets(s: &Secrets, epochs: &ActorEpochs) -> Result<bool, Error> {
+/// The entries of the `secrets.0` state `s` a compaction snapshot leaves out (spec/crypto.md §4):
+/// those at an epoch not established here, names aside. A snapshot keying an epoch bases it at
+/// every receiver, so it vouches only for what this node verified: a reader's history add or a
+/// writer's box at an epoch no valid rotation made is left out, and the commit writing it stays
+/// beside the snapshot (uncovered), never holding compaction back. Names are each holder's own
+/// judgement, so a withdrawn epoch's entries are carried.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Unvouched {
+    pub boxes: Vec<BoxKey>,
+    pub history: Vec<HistoryKey>,
+}
+
+impl Unvouched {
+    pub fn is_empty(&self) -> bool {
+        self.boxes.is_empty() && self.history.is_empty()
+    }
+}
+
+pub fn unvouched(s: &Secrets, epochs: &ActorEpochs) -> Result<Unvouched, Error> {
     let mut based: BTreeMap<Role, BTreeMap<Epoch, crate::Provenance>> = BTreeMap::new();
-    for (r, e) in keyed(s)? {
-        if !based.entry(r).or_insert_with(|| epochs.role(r).established_names_aside()).contains_key(&e) {
-            return Ok(false);
+    let mut vouched = |r: Role, e: &ct::Epoch| -> Result<bool, Error> {
+        let e = from_schema(e)?;
+        Ok(based.entry(r).or_insert_with(|| epochs.role(r).established_names_aside()).contains_key(&e))
+    };
+    let mut out = Unvouched::default();
+    for k in s.boxes.keys() {
+        if !vouched(k.role, &k.epoch)? {
+            out.boxes.push(k.clone());
         }
     }
-    Ok(true)
+    for k in s.history.keys() {
+        if !vouched(k.role, &k.epoch)? {
+            out.history.push(k.clone());
+        }
+    }
+    Ok(out)
 }
 
 /// A write to `keys.0` by a rotation: the rotated roles' keysets (spec/crypto.md §3).

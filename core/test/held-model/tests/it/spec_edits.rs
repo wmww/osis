@@ -95,7 +95,7 @@ fn u_forged() -> Vec<Commit> {
     u.push(edit(30, B, 4, 10)); // another actor's claim
     u.push(Commit { actor: A, ..edit(31, B, 4, 10) }); // actor claimed, not verified: invalid
     u.push(edit(32, A, 4, 11)); // names a version (chain)
-    u.push(edit(33, A, 0, 10)); // sorts before it
+    u.push(Commit { ts: ts(0) + 1, ..edit(33, A, 0, 10) }); // sorts before it (just after the grants: a write at their `ts` is concurrent with them)
     let mut other = edit(34, A, 4, 10); // on another aspect
     other.parts[0] = part(SIG2, Retention::PLAIN, vec![set(4, 34, 34)]);
     other.parts[0].replaces = Some(10);

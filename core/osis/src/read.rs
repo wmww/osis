@@ -28,6 +28,9 @@ pub struct Grant {
     /// The holder is a group and this grant goes when the thing stops being its member
     /// (`Osis::add_with_grant`). Not a member now (`Osis::groups_of`), it is on its way out.
     pub with_membership: bool,
+    /// The holder reads the values as they stood at its first grant and what was written after,
+    /// no earlier commit (`Reads::FromNow`).
+    pub from_now: bool,
 }
 
 /// A commit's author and time, as the commit itself signs them (a `CommitKind::Snapshot` is reported
@@ -361,7 +364,7 @@ impl Reader<'_> {
         if !self.shows_roster(thing) {
             return Grants::new();
         }
-        self.e.roster(&thing).into_iter().map(|(m, e)| (m, Grant { role: e.role, until: e.until, may_grant: e.invite, with_membership: e.tied.is_some() })).collect()
+        self.e.roster(&thing).into_iter().map(|(m, e)| (m, Grant { role: e.role, until: e.until, may_grant: e.invite, with_membership: e.tied.is_some(), from_now: e.floor.is_some() })).collect()
     }
 
     /// Whether `thing`'s roster is shown here: to a reader of it, or of the target a link's actor

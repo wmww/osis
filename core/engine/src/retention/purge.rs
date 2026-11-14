@@ -82,8 +82,8 @@ fn names(p: &Header, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
 }
 
 /// Whether a snapshot this node would write as `who` stamped `ts` (author and actor `who`) holds
-/// the right over held body `(tid, ak)` of `c` (`holds_right` for a snapshot not written yet; its ID
-/// sorts after every commit of `who` at `ts`). A purge-on-replace cover asks it
+/// the right over held body `(tid, ak)` of `c` (`holds_right` for a snapshot not written yet: judged
+/// at the start of `ts`, its ID never counts). A purge-on-replace cover asks it
 /// (`replace::settle_none`).
 pub(super) fn would_hold_right(core: &Core, who: &Tid, ts: Ts, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
     let Some(m) = core.ix.commits.get(c) else { return false };
@@ -132,7 +132,7 @@ fn right_holds(core: &Core, p: &Header, pc: &CommitId, a: &Right) -> bool {
     // over what authority on the thing and the delta's actor comes from (`Held::upstream`), not
     // the node's whole role graph
     if a.ak.as_str() == osis_commit::retention::CREATED {
-        let later: BTreeSet<CommitId> = HeldSet::edge_commits(&core.ix.held, &a.tid).iter().filter(|c| c.point() > point).map(|c| c.id).collect();
+        let later: BTreeSet<CommitId> = HeldSet::edge_commits(&core.ix.held, &a.tid).iter().filter(|c| c.point().ts > p.ts).map(|c| c.id).collect();
         if !later.is_empty() {
             if !signers_could(core, p, a) {
                 return false;
@@ -612,7 +612,7 @@ pub(crate) fn rejudge_carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut
     let new: Vec<Owned> = want.iter().filter(|o| !had.contains(o)).cloned().collect();
     off_valueless(tx, tid, ak, &gone);
     if list_valueless(tx, tid, ak, &new) {
-        owe_resnapshot(tx, tid, ak, BTreeSet::new())?;
+        owe_resnapshot(tx, tid, ak, BTreeSet::new(), true)?;
     }
     crate::apply::rebuild(tx, tid, ak)?;
     changed.insert(k);
@@ -674,7 +674,7 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
             }
         }
         if stood {
-            owe_resnapshot(tx, item.tid(), item.ak(), held)?;
+            owe_resnapshot(tx, item.tid(), item.ak(), held, true)?;
         }
     }
     // the copies of commits not held here (`rejudge_carried`), once per named aspect
@@ -685,18 +685,25 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
     Ok(())
 }
 
-/// Notes in this transaction that this node, a writer of `(tid, ak)`, owes a re-snapshot after a
-/// purge request dropped something there, with the named bodies it had applied (`held`, joined to
-/// any owed already): durable (`records::RESNAPSHOTS_OWED`), so a stop before
-/// `Engine::purge_resnapshots` writes it, or a snapshot that may come only later, keeps the duty
-/// (spec/commits.md §5 Purge); an ephemeral aspect's in memory, as its data. Nothing on an aspect
-/// never compacted, or where this node does not write.
-fn owe_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, held: BTreeSet<CommitId>) -> Result<()> {
+/// Notes in this transaction that this node, a writer of `(tid, ak)`, owes a re-snapshot, with
+/// the bodies it holds that the snapshot must cover (`held`, joined to any owed already): after a
+/// purge request dropped something there, the named bodies it had applied (spec/commits.md §5
+/// Purge); after a cut, those written below the floor its newest epoch reads (spec/crypto.md §4,
+/// State at a cut). Either way a node that never held those bodies reads as this one once it
+/// holds the snapshot. Durable (`records::RESNAPSHOTS_OWED`), so a stop before
+/// `Engine::purge_resnapshots` writes it, or a snapshot that may come only later, keeps the duty;
+/// an ephemeral aspect's in memory, as its data. Nothing on an aspect never compacted, or where
+/// this node does not write. `due`: tried at the next `Engine::purge_resnapshots`; else only once
+/// something marks it due (a body arriving late below a cut waits for the end of a complete
+/// pass, `rotation::floors::owe_state`, when the node holds the snapshots that may cover it).
+pub(crate) fn owe_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, held: BTreeSet<CommitId>, due: bool) -> Result<()> {
     if !super::snapshot::compacted(ak) || !writes_on(tx.core, tid) {
         return Ok(());
     }
     let had = tx.core.ix.resnapshots_owed.get(tid).and_then(|m| m.get(ak)).cloned();
-    tx.core.resnapshots_due.insert((*tid, ak.clone()));
+    if due {
+        tx.core.resnapshots_due.insert((*tid, ak.clone()));
+    }
     let mut all = had.clone().unwrap_or_default();
     all.extend(held);
     if had.as_ref() == Some(&all) {

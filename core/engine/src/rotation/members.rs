@@ -248,6 +248,15 @@ pub(crate) fn sealed(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -
 /// (`seal_blocked`), the roles above the cut included: what a rotation leaving `m`
 /// out records (`left_out`).
 pub(crate) fn sealing(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<(Sealed, BTreeMap<Role, BTreeSet<Epoch>>)> {
+    let (mut sealed, blocked) = sealing_at(tx, who, a, m, role)?;
+    if let Sealed::Boxed(r) = &mut sealed {
+        r.floor = super::floors::holder_floor(tx.core, a, m);
+    }
+    Ok((sealed, blocked))
+}
+
+/// `sealing`, the recipient's floor 0.
+fn sealing_at(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<(Sealed, BTreeMap<Role, BTreeSet<Epoch>>)> {
     let mut blocked = BTreeMap::new();
     if !tx.core.seals_to(a, m) {
         return Ok((Sealed::Out, blocked));
@@ -299,7 +308,7 @@ pub(crate) fn sealing(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) 
         secrets.extend(wrap.map(|p| (r, p)));
         top = Some(r);
     }
-    let sealed = top.map_or(Sealed::Out, |role| Sealed::Boxed(Recipient { holder: *m, role, keys: HolderKeys::Actor { keysets, own: secrets } }));
+    let sealed = top.map_or(Sealed::Out, |role| Sealed::Boxed(Recipient { holder: *m, role, keys: HolderKeys::Actor { keysets, own: secrets }, floor: 0 }));
     Ok((sealed, blocked))
 }
 
@@ -309,7 +318,7 @@ pub(crate) fn sealing(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) 
 fn seal_blocked(tx: &mut Tx<'_>, who: &Tid, m: &Tid, r: Role, ks: &BTreeSet<Epoch>, deps: &[osis_keys::Departure]) -> Result<BTreeSet<Epoch>> {
     let mut why = BTreeMap::new();
     for k in ks {
-        if let Some(b) = super::blocking(tx, who, m, r, k, deps, super::Walk::Seal)? {
+        if let Some(b) = super::blocking(tx, who, m, r, k, deps, super::Walk::Encrypt)? {
             why.insert(*k, b);
         }
     }
@@ -342,7 +351,7 @@ fn sealed_to_account(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -
     }
     let Some(role) = top else { return Ok((Sealed::Out, blocked)) };
     if let [k] = Vec::from_iter(&ks).as_slice() {
-        let sealed = crate::flows::account::holder_keys_at(tx, m, k)?.map_or(Sealed::Out, |keys| Sealed::Boxed(Recipient { holder: *m, role, keys }));
+        let sealed = crate::flows::account::holder_keys_at(tx, m, k)?.map_or(Sealed::Out, |keys| Sealed::Boxed(Recipient { holder: *m, role, keys, floor: 0 }));
         return Ok((sealed, blocked));
     }
     // jointly: sealed to each epoch's KEM key, at every role
@@ -352,7 +361,7 @@ fn sealed_to_account(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -
         row.push((*k, kem));
     }
     let keysets = ROLES.into_iter().filter(|r| *r <= role).map(|r| (r, row.clone())).collect();
-    Ok((Sealed::Boxed(Recipient { holder: *m, role, keys: HolderKeys::Actor { keysets, own: BTreeMap::new() } }), blocked))
+    Ok((Sealed::Boxed(Recipient { holder: *m, role, keys: HolderKeys::Actor { keysets, own: BTreeMap::new() }, floor: 0 }), blocked))
 }
 
 /// The holders of `a` as a rotation by `who` boxes them, and what it records of the holder

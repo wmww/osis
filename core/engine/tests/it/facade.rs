@@ -1047,7 +1047,7 @@ fn a_dead_tie_wants_a_pass_of_its_scope_spec_perm_2() {
     add_item(&mut lp, 0, g, t);
     let e = &mut lp.peers[0].engine;
     let tie = e.placement(&t, &g, false).unwrap().unwrap();
-    e.grant(&t, &g, &ct::Edge { role: Role::Write, until: None, invite: None, tied: Some(osis_engine::flows::tied::tie_ct(tie)) }).unwrap();
+    e.grant(&t, &g, &ct::Edge { role: Role::Write, until: None, invite: None, tied: Some(osis_engine::flows::tied::tie_ct(tie)), floor: None }).unwrap();
     let mut m = Mutation::new();
     m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Remove(osis_base::Value::Tid(t)) }).unwrap();
     e.commit(m).unwrap().unwrap();

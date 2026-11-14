@@ -1068,7 +1068,7 @@ fn record_and_reach(seed: u64) -> (Reason, Tid, Option<Value>) {
     sync(&mut lp, 0, 1);
     let y = new_thing(&mut lp, 1);
     sync(&mut lp, 1, 0);
-    lp.peers[1].engine.grant(&y, &a, &Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+    lp.peers[1].engine.grant(&y, &a, &Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
     let grant = packages(&mut lp, 1).pop().unwrap();
     sync(&mut lp, 1, 0);
     let x = new_thing(&mut lp, 0);

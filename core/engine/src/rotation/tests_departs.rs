@@ -43,7 +43,7 @@ fn forged_entry(tx: &mut crate::engine::Tx<'_>, m: &mut Mutation, g: Tid, names:
     let mut history = std::collections::BTreeMap::new();
     for e in held.read.current() {
         let Some(s) = held.read.secret(&e) else { continue };
-        let ct = osis_crypto::seal_history(s, &g, Role::Read, &e, &[], &names.to_value()).unwrap();
+        let ct = osis_crypto::seal_history(s, &g, Role::Read, &e, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: names.to_value(), floor: 0, roles: Vec::new() }).unwrap();
         history.insert(ct::HistoryKey { role: Role::Read, epoch: ct::Epoch { n: e.n(), nonce: *e.nonce() } }, ct);
     }
     if history.is_empty() {

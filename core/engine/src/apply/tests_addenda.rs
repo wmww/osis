@@ -4,7 +4,7 @@
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
 use crate::Mutation;
-use osis_base::{Ak, CommitId, Role, Tid, Value};
+use osis_base::{Ak, Clock, CommitId, Role, Tid, Value};
 use osis_schema::core_types as ct;
 
 const T0: osis_base::WallMs = osis_base::WallMs(1_700_000_000_000);
@@ -14,7 +14,7 @@ fn ak(s: &str) -> Ak {
 }
 
 fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, tied: None }
+    ct::Edge { role, until: None, invite: None, tied: None, floor: None }
 }
 
 /// `n` peers; peer 0 makes thing `t` and grants peers 1.. `roles`; everyone synced.
@@ -422,4 +422,289 @@ fn forgetting_an_invalid_addendum_judges_nothing_spec_perm_5_2() {
     assert!(addenda(&lp, 0, t).is_empty());
     assert!(!valid(&lp, 0, &e, t, "x:e.0"));
     assert_eq!(reads(&mut lp, 0, t, "x:e.0"), None);
+}
+
+/// One of the removed writer's writes in
+/// `a_removed_writers_writes_read_alike_in_any_arrival_order_and_tie_spec_perm_5_2`: its `ts`,
+/// whether the remover and the witness had it before the removal.
+struct BobWrite {
+    ts: osis_base::Ts,
+    to_alice: bool,
+    to_carol: bool,
+}
+
+// spec/requirements.md Convergence, spec/permissions.md §5.2 (Position; Addenda; re-grant): Alice
+// removes Bob while his writes reach her, Carol (a writer) or neither, his last one stamped before
+// the removal, in its very `ts` (the HLC tie) or after it, the three roles on random peers so
+// either tid order; maybe a re-grant after. Every peer, a restarted remover, and fresh nodes handed
+// every commit in random orders (twice, so a body dropped while invalid comes back) read what the
+// history gives: Bob's write counts iff re-granted, or stamped no later than the removal and
+// received before it by Alice (her frontier) or Carol (her addendum), whatever the tids.
+#[test]
+fn a_removed_writers_writes_read_alike_in_any_arrival_order_and_tie_spec_perm_5_2() {
+    let mut rng = 0x9e37_79b9_7f4a_7c15u64;
+    let mut below = |n: u64| {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        rng % n
+    };
+    let mut ties = [0usize; 3];
+    for seed in 0..24u64 {
+        let p: [usize; 3] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]][below(6) as usize];
+        let [a, b, c] = p;
+        let mut lp = LocalPeer::fresh(3, T0);
+        lp.sync_all().unwrap();
+        let alice = lp.peers[a].engine.me();
+        let mut m = Mutation::new();
+        let t = lp.peers[a].engine.new_thing(&mut m, alice);
+        m.set(t, &ak("x:v.0"), &Value::Int(0)).unwrap();
+        lp.peers[a].commit(m).unwrap();
+        for i in [b, c] {
+            let who = lp.peers[i].engine.me();
+            lp.peers[a].engine.grant(&t, &who, &edge(Role::Write)).unwrap();
+        }
+        lp.sync_all().unwrap();
+        // 0: Bob's last write a millisecond before the removal; 1: at its `ts`; 2: after it
+        let tie = below(3) as usize;
+        ties[tie] += 1;
+        let n = 1 + below(2);
+        let mut bobs: Vec<BobWrite> = Vec::new();
+        let bob_writes = |lp: &mut LocalPeer, k: u64, before: bool, below: &mut dyn FnMut(u64) -> u64| {
+            let mut m = Mutation::new();
+            m.set(t, &ak("x:v.0"), &Value::Int(k as i64 + 1)).unwrap();
+            let id = lp.peers[b].commit(m).unwrap().unwrap();
+            let ts = lp.peers[b].engine.header(&id).unwrap().ts;
+            let (mut to_alice, mut to_carol) = (false, false);
+            if before {
+                let pk = lp.peers[b].engine.package(&id).unwrap().unwrap();
+                // to Alice only if no tie is wanted: her clock passes the write's `ts`
+                if below(3) == 0 && tie != 1 {
+                    lp.deliver(a, &pk).unwrap();
+                    to_alice = true;
+                }
+                if below(2) == 0 {
+                    lp.deliver(c, &pk).unwrap();
+                    to_carol = true;
+                }
+            }
+            BobWrite { ts, to_alice, to_carol }
+        };
+        for k in 0..n {
+            lp.advance(1000);
+            if k + 1 < n || tie != 2 {
+                let w = bob_writes(&mut lp, k, true, &mut below);
+                bobs.push(w);
+            }
+        }
+        if tie == 0 {
+            lp.advance(1);
+        }
+        let bob = lp.peers[b].engine.me();
+        let r = *lp.peers[a].engine.demote(&t, &Demotion { holder: bob, new: None, retain: None }).unwrap().commits.last().unwrap();
+        let r_ts = lp.peers[a].engine.header(&r).unwrap().ts;
+        if tie == 2 {
+            lp.advance(1);
+            let w = bob_writes(&mut lp, n - 1, false, &mut below);
+            bobs.push(w);
+        }
+        if tie == 1 {
+            assert_eq!(bobs.last().unwrap().ts, r_ts, "seed {seed}: the tie");
+        }
+        // what arrives from here on arrives after the removal's `ts`
+        lp.advance(1);
+        let regrant = below(4) == 0;
+        if regrant {
+            lp.advance(1000);
+            lp.peers[a].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
+        }
+        for _ in 0..3 {
+            lp.sync_all().unwrap();
+        }
+        // the history's word: the newest counting write of Bob's, else Alice's
+        let counts = |w: &BobWrite| regrant || w.ts <= r_ts && (w.to_alice || w.to_carol);
+        let want = Some(Value::Int(bobs.iter().filter(|w| counts(w)).map(|w| w.ts).max().and_then(|ts| bobs.iter().position(|w| w.ts == ts)).map_or(0, |i| i as i64 + 1)));
+        let at = format!("seed {seed}: Alice {a}, Bob {b}, Carol {c}, tie {tie}, regrant {regrant}, writes {:?}", bobs.iter().map(|w| (w.to_alice, w.to_carol)).collect::<Vec<_>>());
+        let held: Vec<Vec<CommitId>> = (0..3).map(|i| lp.peers[i].engine.commit_ids()).collect();
+        assert!(held.iter().all(|h| *h == held[0]), "{at}: every peer holds the same commits");
+        for i in 0..3 {
+            assert_eq!(reads(&mut lp, i, t, "x:v.0"), want, "{at}: peer {i}");
+        }
+        lp.peers[a].restart(seed).unwrap();
+        assert_eq!(reads(&mut lp, a, t, "x:v.0"), want, "{at}: the remover restarted");
+        let mut pks = lp.packages(a).unwrap();
+        let mut fresh = crate::local_peer::Peer::new(3 + seed, lp.peers[a].clock.now_wall_ms()).unwrap();
+        for _ in 0..3 {
+            for i in (1..pks.len()).rev() {
+                pks.swap(i, below(i as u64 + 1) as usize);
+            }
+            let mut f = fresh.copy().unwrap();
+            for _ in 0..2 {
+                for pk in &pks {
+                    f.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists).unwrap();
+                }
+            }
+            assert_eq!(f.engine.get(&t, &ak("x:v.0")).unwrap(), want, "{at}: a fresh node, order {:?}", pks.iter().map(|p| p.id).collect::<Vec<_>>());
+        }
+    }
+    assert!(ties.iter().all(|n| *n > 0), "every tie case ran: {ties:?}");
+}
+
+// spec/requirements.md Convergence, spec/permissions.md §5.2 (Position; Addenda: compaction
+// snapshot): Bob writes in the very `ts` of his removal, Alice not having it. Carol received it
+// first and compacts the register over it, or Bob compacts in that `ts` himself (a snapshot, no
+// plain content: no addendum lists it). Every peer, a restarted one and fresh nodes handed every
+// commit in either order read alike: Bob's write stands by Carol's addendum when she had it, and
+// Bob's own snapshot never stands, whatever the tids.
+#[test]
+fn a_compaction_around_a_write_at_its_removals_ts_reads_alike_spec_perm_5_2() {
+    for [a, b, c] in [[0, 1, 2], [1, 0, 2], [2, 1, 0]] {
+        for bob_compacts in [false, true] {
+            let mut lp = LocalPeer::fresh(3, T0);
+            lp.sync_all().unwrap();
+            let alice = lp.peers[a].engine.me();
+            let mut m = Mutation::new();
+            let t = lp.peers[a].engine.new_thing(&mut m, alice);
+            m.set(t, &ak("x:v.0"), &Value::Int(0)).unwrap();
+            lp.peers[a].commit(m).unwrap();
+            let (bob, carol) = (lp.peers[b].engine.me(), lp.peers[c].engine.me());
+            for who in [bob, carol] {
+                lp.peers[a].engine.grant(&t, &who, &edge(Role::Write)).unwrap();
+            }
+            lp.sync_all().unwrap();
+            lp.advance(1000);
+            let mut m = Mutation::new();
+            m.set(t, &ak("x:v.0"), &Value::Int(5)).unwrap();
+            let w = lp.peers[b].commit(m).unwrap().unwrap();
+            let snap = bob_compacts.then(|| lp.peers[b].engine.snapshot(&t, &ak("x:v.0")).unwrap().unwrap());
+            let pk = lp.peers[b].engine.package(&w).unwrap().unwrap();
+            lp.deliver(c, &pk).unwrap();
+            if let Some(s) = snap {
+                let pk = lp.peers[b].engine.package(&s).unwrap().unwrap();
+                lp.deliver(c, &pk).unwrap();
+            }
+            let r = *lp.peers[a].engine.demote(&t, &Demotion { holder: bob, new: None, retain: None }).unwrap().commits.last().unwrap();
+            let r_ts = lp.peers[a].engine.header(&r).unwrap().ts;
+            let at = format!("Alice {a}, Bob {b}, Carol {c}, Bob compacts {bob_compacts}");
+            assert_eq!(lp.peers[b].engine.header(&w).unwrap().ts, r_ts, "{at}: the tie");
+            if !bob_compacts {
+                lp.advance(1);
+                lp.peers[c].engine.snapshot(&t, &ak("x:v.0")).unwrap().unwrap();
+            }
+            lp.advance(1);
+            for _ in 0..3 {
+                lp.sync_all().unwrap();
+            }
+            let want = Some(Value::Int(5));
+            for i in 0..3 {
+                assert_eq!(reads(&mut lp, i, t, "x:v.0"), want, "{at}: peer {i}");
+                if let Some(s) = snap {
+                    assert!(!valid(&lp, i, &s, t, "x:v.0"), "{at}: peer {i}: Bob's snapshot");
+                }
+            }
+            lp.peers[c].restart(1).unwrap();
+            assert_eq!(reads(&mut lp, c, t, "x:v.0"), want, "{at}: Carol restarted");
+            let mut fresh = crate::local_peer::Peer::new(3, lp.peers[a].clock.now_wall_ms()).unwrap();
+            for from in [a, c] {
+                let mut pks = lp.packages(from).unwrap();
+                for rev in [false, true] {
+                    if rev {
+                        pks.reverse();
+                    }
+                    let mut f = fresh.copy().unwrap();
+                    for _ in 0..2 {
+                        for pk in &pks {
+                            f.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists).unwrap();
+                        }
+                    }
+                    assert_eq!(f.engine.get(&t, &ak("x:v.0")).unwrap(), want, "{at}: a fresh node from {from}, reversed {rev}");
+                }
+            }
+        }
+    }
+}
+
+// spec/permissions.md §5.2 (Position; re-grant: security): Alice grants Bob write, and a write of
+// Bob's (forged: he did not hold write yet) carries the grant's very `ts`. Ordered before the
+// grant whatever the tids, it is invalid at every peer though Bob holds write for good; his next
+// write, after the grant, stands.
+#[test]
+fn a_write_at_its_authors_grants_ts_is_before_the_grant_spec_perm_5_2() {
+    for [a, b] in [[0, 1], [1, 0]] {
+        let mut lp = LocalPeer::fresh(3, T0);
+        lp.sync_all().unwrap();
+        let alice = lp.peers[a].engine.me();
+        let mut m = Mutation::new();
+        let t = lp.peers[a].engine.new_thing(&mut m, alice);
+        m.set(t, &ak("x:v.0"), &Value::Int(0)).unwrap();
+        lp.peers[a].commit(m).unwrap();
+        let bob = lp.peers[b].engine.me();
+        lp.peers[a].engine.grant(&t, &bob, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(1000);
+        let mut m = Mutation::new();
+        m.set(t, &ak("x:v.0"), &Value::Int(5)).unwrap();
+        m.unchecked = true;
+        lp.peers[b].engine.core.skip_writer_rules = true;
+        let w = lp.peers[b].commit(m).unwrap().unwrap();
+        lp.peers[b].engine.core.skip_writer_rules = false;
+        let g = *lp.peers[a].engine.grant(&t, &bob, &edge(Role::Write)).unwrap().commits.last().unwrap();
+        let at = format!("Alice {a}, Bob {b}");
+        assert_eq!(lp.peers[b].engine.header(&w).unwrap().ts, lp.peers[a].engine.header(&g).unwrap().ts, "{at}: the tie");
+        lp.advance(1);
+        lp.sync_all().unwrap();
+        for p in 0..3 {
+            assert!(!valid(&lp, p, &w, t, "x:v.0"), "{at}: peer {p}: the write at the grant's ts");
+            assert_eq!(reads(&mut lp, p, t, "x:v.0"), Some(Value::Int(0)), "{at}: peer {p}");
+        }
+        let later = write(&mut lp, b, t, "x:v.0", 6);
+        lp.sync_all().unwrap();
+        for p in 0..3 {
+            assert!(valid(&lp, p, &later, t, "x:v.0"), "{at}: peer {p}: the write after the grant");
+        }
+    }
+}
+
+// spec/permissions.md §5.2 (Position: addenda rules 1 and 5): Carol answers Bob's removal, and in
+// that very `ts` Alice, not having her addendum, removes Carol too. Carol held write at the start
+// of her addendum's `ts`, and Dave, who received it in time, vouches for it: it counts, and Bob's
+// edit with it, at every peer whatever the tids.
+#[test]
+fn an_addendum_at_its_authors_removals_ts_counts_when_vouched_for_spec_perm_5_2() {
+    for [a, b, c, d] in [[0, 1, 2, 3], [2, 1, 0, 3]] {
+        let mut lp = LocalPeer::fresh(4, T0);
+        lp.sync_all().unwrap();
+        let alice = lp.peers[a].engine.me();
+        let mut m = Mutation::new();
+        let t = lp.peers[a].engine.new_thing(&mut m, alice);
+        m.set(t, &ak("x:a.0"), &Value::Int(0)).unwrap();
+        lp.peers[a].commit(m).unwrap();
+        let (bob, carol) = (lp.peers[b].engine.me(), lp.peers[c].engine.me());
+        for i in [b, c, d] {
+            let who = lp.peers[i].engine.me();
+            lp.peers[a].engine.grant(&t, &who, &edge(Role::Write)).unwrap();
+        }
+        lp.sync_all().unwrap();
+        lp.advance(1000);
+        let e = write(&mut lp, b, t, "x:e.0", 7);
+        lp.sync(b, c).unwrap();
+        lp.advance(1000);
+        lp.peers[a].engine.demote(&t, &Demotion { holder: bob, new: None, retain: None }).unwrap();
+        lp.advance(1000);
+        lp.sync(a, c).unwrap();
+        let (_, ad) = addenda(&lp, c, t).into_iter().find(|(x, _)| *x == carol).unwrap();
+        lp.sync(c, d).unwrap();
+        let rc = *lp.peers[a].engine.demote(&t, &Demotion { holder: carol, new: None, retain: None }).unwrap().commits.last().unwrap();
+        let at = format!("Alice {a}, Carol {c}");
+        assert_eq!(lp.peers[c].engine.header(&ad).unwrap().ts, lp.peers[a].engine.header(&rc).unwrap().ts, "{at}: the tie");
+        lp.advance(1000);
+        for _ in 0..3 {
+            lp.sync_all().unwrap();
+        }
+        for p in 0..4 {
+            assert!(valid(&lp, p, &ad, t, ct::ADDENDA_AK), "{at}: peer {p}: Carol's addendum");
+            assert!(valid(&lp, p, &e, t, "x:e.0"), "{at}: peer {p}: Bob's edit");
+            assert_eq!(reads(&mut lp, p, t, "x:e.0"), Some(Value::Int(7)), "{at}: peer {p}");
+        }
+    }
 }

@@ -21,7 +21,7 @@ pub mod wrap;
 pub use covers::{Departure, EdgeLog, EdgeWrite, Holder, covers, pins, reseal_missing, reseal_needed, uncovered};
 pub use members::{Grant, Keysets, Seal, boxing_keyless, key_access, seal_keyset, stale};
 pub use account::{account_epoch, account_keysets};
-pub use aspects::{KeysWrite, SecretsWrite, keyset, may_compact_secrets, observe_secrets, snapshot_keyed};
+pub use aspects::{KeysWrite, SecretsWrite, keyset, observe_secrets, snapshot_keyed, unvouched, Unvouched};
 pub use epoch::{ActorEpochs, EpochInfo, MAX_FREE_N, MAX_READING, MAX_READING_PER_AUTHOR, Provenance, ROLES, RoleEpochs, SUITE, UNKNOWN_AUTHOR, Unchecked, is_newer, newest_of};
 pub use names::{AllHeld, Held, Key, Name, Names, NamesDigest, Own};
 pub use error::Error;
@@ -29,5 +29,5 @@ pub use open::{HistoryAlts, Opened, Opener, ingest, ingest_with, open_boxes, ope
 pub use osis_crypto::Epoch;
 pub use planner::{Graph, PermGraph, reached};
 pub use delete::{delete_candidates, delete_key};
-pub use wrap::{newer_than_head, registered_epoch, registered_key, registration_epochs, wrap_epoch};
-pub use produce::{Carried, HistoryBox, HistoryBoxes, HolderKeys, LeftOut, Recipient, Rotated, Rotation, box_holder, box_keysets, history_adds, history_boxes, reseal_holder, roles_up_to, rotate, rotate_leaving_out, symmetric_box};
+pub use wrap::{UNDER_ROLES, newer_than_head, registered_epoch, registered_key, registration_epochs, under_roles, wrap_epoch};
+pub use produce::{Carried, HistoryBox, HistoryBoxes, HolderKeys, LeftOut, Recipient, Rotated, Rotation, box_dropped, box_holder, box_keysets, history_adds, history_boxes, reseal_holder, roles_up_to, rotate, rotate_leaving_out, symmetric_box};

@@ -224,7 +224,7 @@ fn a_grant_reaches_a_contact_by_card_spec_sync_inbox_5() {
         t
     });
     file(&mut w, 0, vec![t], Vec::new());
-    let read = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let read = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
     w.write(0, |e| e.grant(&t, &a1, &read)).unwrap();
     w.run();
     file(&mut w, 1, Vec::new(), vec![t]);

@@ -45,6 +45,31 @@ pub(crate) fn of(core: &Core, tid: &Tid, ak: &Ak) -> Kept {
     Kept { tl, ..Kept::default() }
 }
 
+/// The setting in force on `tid` now as one setting reads alone (spec/commits.md §5 One way): the
+/// newest valid one held, with each `keep` the one-way rule voids (an earlier setting purging that
+/// AK on replace) written as no history, for each AK any held setting names and for the default.
+/// What a grant without history writes again under its cut (spec/crypto.md §4, Floors): its
+/// holder opens no earlier setting. `None` without a setting.
+pub(crate) fn in_force_alone(core: &Core, tid: &Tid) -> Option<osis_schema::core_types::RetentionSetting> {
+    use osis_schema::History;
+    let all = crate::apply::validity::settings(core, tid);
+    let ((_, last), earlier) = all.split_last()?;
+    let keeps = |e: Option<&osis_schema::core_types::RetentionEntry>| matches!(e.and_then(|x| x.history), Some(History::Keep { .. }));
+    let purged = |e: Option<&osis_schema::core_types::RetentionEntry>| matches!(e.and_then(|x| x.history), Some(History::PurgeOnReplace));
+    let mut out = (**last).clone();
+    let aks: std::collections::BTreeSet<Ak> = all.iter().flat_map(|(_, s)| s.rules.keys().cloned()).collect();
+    for k in aks {
+        if keeps(last.entry(&k)) && earlier.iter().any(|(_, s)| purged(s.entry(&k))) {
+            let e = last.entry(&k).cloned().map(|e| osis_schema::core_types::RetentionEntry { history: None, ..e });
+            out.rules.extend(e.map(|e| (k, e)));
+        }
+    }
+    if keeps(last.default.as_ref()) && earlier.iter().any(|(_, s)| purged(s.default.as_ref())) {
+        out.default = out.default.map(|e| osis_schema::core_types::RetentionEntry { history: None, ..e });
+    }
+    Some(out)
+}
+
 /// Whether delta `a` of `h` is permanent (spec/commits.md §5): durable, no expiry, an aspect with
 /// no fixed retention, and a body of its AK replaced now would never leave history. It leaves
 /// by purge request, and leaves its header behind for good.

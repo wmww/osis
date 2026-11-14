@@ -49,7 +49,7 @@ Terms:
 - Nothing a node already holds is sent again. A thing in many groups is stored and transferred once per node.
 - Dropping replaced content and deleting cost proportional to what changed, not to group size or history.
 - Removing a holder costs proportional to the rosters of the actors and things it could read, plus 32 bytes for each of its writes the remover and the other writers had received, at each writer that lists them. Limit: removing a holder that made more than about 1.9 million permission-changing and admin-only writes fails.
-- Removing a device costs about the account's recent changes not yet compacted, once per group they are in, plus its permission-changing and purge writes under the limit above.
+- Removing a node costs about the account's recent changes not yet compacted, once per group they are in, plus its permission-changing and purge writes under the limit above.
 - Connected nodes see each other's commits promptly, pushed, not polled.
 
 ## Data a node cannot read
@@ -134,7 +134,7 @@ Binds released formats only; until a stable release formats change in place.
 - Every write is attributable to an account (or a share link) and verifiable by anyone who may read it. Which of the account's devices made it is visible only to the account's own devices. Hiding authorship is a deliberate choice, never the default.
 - Rights held by different parties never combine into a right neither has alone. Limit: a writer who lies about when it received an edit can make a removed party's own signed edit count.
 - When an editor is removed their edits the remover or other remaining editors had seen at the time of the removal are generally kept. Edits not seen by any remaining editors are discarded, as there's no way to verify they were actually created before the removal.
-- Removing a device from an account works like removing a holder: its later changes stop counting, and which of its earlier changes still count depends on what the account's other devices and the other writers had received by then, never on its own timestamps.
+- Removing a node from an account works like removing a holder.
 - Admins are equals: no admin outranks another, and no removal settles a fight between admins (a removal voided by writes its author had not received, the removed admin's own or another admin's). Each node settles such a dispute for itself, by a trust set that is an input to its judgment, and reports it; nodes on different sides read the disputed thing and what it reaches differently until they side alike. A side changes nothing outside the disputed thing's reach. Limit: a removed admin's backdated writes stand at every node that has not sided against them.
 - Limit: when a removal is voided because its author was demoted concurrently, what writers wrote between seeing the removal and seeing the demotion stays readable only to the holders they counted then, not to the removed holder or to holders added later.
 - A removal nobody stamps (a timed grant ending, a self-removal, a link expiring) cuts off nothing by itself: until another holder publishes an explicit demotion, the removed holder's own timestamps decide, within the allowed clock drift.

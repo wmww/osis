@@ -269,9 +269,9 @@ impl Engine {
     fn derived_through(&self, t: &Tid, chain: &[Tid], last: &mut Option<(Vec<Tid>, Vec<Arc<ActorEpochs>>)>) -> Vec<Secret32> {
         let mut out: Vec<Secret32> = Vec::new();
         for e in self.chain_epochs(chain, last) {
-            for (_, s) in ActorEpochs::derived(&e, t).read.held_newest_first() {
+            for s in ActorEpochs::derived(&e, t).read.opening_newest_first() {
                 if !out.iter().any(|x| x.expose() == s.expose()) {
-                    out.push(s.clone());
+                    out.push(s);
                 }
             }
         }
@@ -279,7 +279,8 @@ impl Engine {
     }
 
     /// Seals a body as a fresh blob (spec/sync-judgement.md §1, spec/wire.md §4; a fresh blob key,
-    /// salt and blob ID): one section per thing among the commit's held parts that may go under
+    /// salt and blob ID): one section per thing (its role parts, `osis_keys::under_roles`, in one of their own under
+    /// the epoch's roles secret, spec/crypto.md §4 Roles secrets) among the commit's held parts that may go under
     /// an epoch of this node's choosing (`opened::passes_on`, spec/crypto.md §5 Passing on), each
     /// under that thing's read secret (a plain thing's derives from its base actor's by tid,
     /// spec/crypto.md §3, so a thing given secrets of its own later opens its earlier sections by
@@ -300,6 +301,7 @@ impl Engine {
         let c = CommitBlob::decode_stored(&pt)?;
         let resolved = self.resolved_header(&c);
         let things: Vec<Tid> = resolved.aspects.iter().map(|a| a.tid).collect();
+        let roles: Vec<bool> = resolved.aspects.iter().map(|a| osis_keys::under_roles(a.ak.as_str())).collect();
         let id = c.id();
         // a held section goes as it came only where it carries what this node holds of it: none
         // of its parts held stripped or dropped (a purge's or an expiry's leftover)
@@ -307,19 +309,31 @@ impl Engine {
             let m = self.core.ix.commits.get(&id);
             extra.iter().filter(|s| s.ais.iter().all(|ai| m.is_none_or(|m| matches!(m.hold.get(*ai), None | Some(crate::engine::Hold::Body { .. } | crate::engine::Hold::Missing(_)))))).cloned().collect()
         };
+        // per thing, every part of it here: its sections' epoch is chosen from them all (a
+        // rotation's roles.0 section goes under the epoch it supersedes too)
+        let mut of_thing: std::collections::BTreeMap<Tid, Vec<usize>> = std::collections::BTreeMap::new();
+        for p in &c.parts {
+            if let Some(t) = things.get(p.ai) {
+                of_thing.entry(*t).or_default().push(p.ai);
+            }
+        }
         let mut under = Vec::new();
         let env = osis_commit::seal_commit(
             &c,
-            |ai| things.get(ai).copied(),
-            |t, parts| {
+            |ai| (things.get(ai).copied(), roles.get(ai).copied().unwrap_or(false)),
+            |(t, is_roles), parts| {
                 let t = (*t)?;
-                // another's write goes under this node's epoch only where `opened::passes_on`
-                // (its invariant), else as a held section of it or not at all
-                if !self.passes_on_all(&id, &resolved, parts).ok()? {
+                let (e, s) = self.wrap_under(&t, Some((&id, of_thing.get(&t)?))).ok().flatten()?;
+                // a write goes under this node's epoch only where `opened::passes_on` (its
+                // invariant and the floor clause, at that epoch's floor), else as a held section
+                // of it or not at all
+                if !self.passes_on_all(&id, &resolved, parts, self.core.read_floor(&t, &e)).ok()? {
                     return None;
                 }
-                let (e, s) = self.wrap_under(&t, Some((&id, parts))).ok().flatten()?;
                 under.push((t, e));
+                // role parts in a section of their own under the epoch's roles secret
+                // (spec/crypto.md §4, Roles secrets)
+                let s = if *is_roles { osis_crypto::roles_secret(&s) } else { s };
                 Some((s, self.section_chain(&t)))
             },
             &whole,
@@ -608,36 +622,47 @@ impl Engine {
     /// derive from, which goes under the newest epoch its rotation supersedes. `None`: no
     /// current secret held (stranded: nothing is placed), or a part of `c` it carries this node
     /// may not pass on under an epoch of its choosing (spec/crypto.md §5 Passing on).
+    /// A blob carrying a role part of that actor (`osis_keys::under_roles`) goes under the epoch's
+    /// roles secret (spec/crypto.md §4, Roles secrets): every holder of the actor opens it.
     pub fn wrap_secret(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>) -> Result<Option<Secret32>> {
-        Ok(self.wrap_under(g, c)?.map(|(_, s)| s))
+        let roles = c.is_some_and(|(c, parts)| self.carries_roles(g, c, parts));
+        Ok(self.wrap_under(g, c)?.map(|(_, s)| if roles { osis_crypto::roles_secret(&s) } else { s }))
+    }
+
+    /// Whether these deltas of `c` hold a role part (`osis_keys::under_roles`) of the actor `g`'s
+    /// secrets derive from.
+    fn carries_roles(&self, g: &Tid, c: &CommitId, parts: &[usize]) -> bool {
+        let Some(a) = self.core.secret_actor(g) else { return false };
+        let Some(h) = self.header(c) else { return false };
+        parts.iter().filter_map(|ai| h.aspects.get(*ai)).any(|x| x.tid == a && osis_keys::under_roles(x.ak.as_str()))
     }
 
     /// `wrap_secret` with its epoch.
     fn wrap_under(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>) -> Result<Option<(Epoch, Secret32)>> {
         let Some(e) = self.epochs(g) else { return Ok(None) };
+        let rotation = match c {
+            Some((c, parts)) if self.carries_secrets(g, c, parts) => self.rotation_wrap_epoch(g, c)?.and_then(|ep| e.read.secret(&ep).map(|s| (ep, s.clone()))),
+            _ => None,
+        };
+        let Some((ep, s)) = rotation.or_else(|| osis_keys::wrap_epoch(&e.read).and_then(|ep| e.read.secret(&ep).map(|s| (ep, s.clone())))) else { return Ok(None) };
         // the wrap gates the header, and a copy's whole content: under this node's epoch only
-        // where every part it carries may go so and the commit's header may (`Engine::passes_on_parts`,
-        // spec/crypto.md §5 Passing on)
+        // where every part it carries may go so and the commit's header may, at that epoch's
+        // floor (`Engine::passes_on_parts`, spec/crypto.md §5 Passing on)
         if let Some((c, parts)) = c
-            && !self.passes_on_parts(c, parts)?
+            && !self.passes_on_parts(c, parts, Some((self.core.reader_of(g), e.read.floor(&ep))))?
         {
             return Ok(None);
         }
-        if let Some((c, parts)) = c
-            && self.carries_secrets(g, c, parts)
-            && let Some(ep) = self.rotation_wrap_epoch(g, c)?
-            && let Some(s) = e.read.secret(&ep)
-        {
-            return Ok(Some((ep, s.clone())));
-        }
-        Ok(osis_keys::wrap_epoch(&e.read).and_then(|ep| e.read.secret(&ep).map(|s| (ep, s.clone()))))
+        Ok(Some((ep, s)))
     }
 
     /// Held read secrets of a group, newest first; then those derived from its first admin's (a
     /// thing that got secrets of its own, or one under a key actor this node holds: the rotation
     /// that gave it its own is wrapped under the derived epoch, spec/crypto.md §5).
+    /// Each epoch's roles secret follows its secret (spec/crypto.md §4, Roles secrets), and one
+    /// held without its secret stands alone.
     pub fn read_secrets(&self, g: &Tid) -> Vec<Secret32> {
-        let mut v: Vec<Secret32> = self.epochs(g).map(|e| e.read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect()).unwrap_or_default();
+        let mut v: Vec<Secret32> = self.epochs(g).map(|e| e.read.opening_newest_first()).unwrap_or_default();
         // the first admin's epochs; a thing whose `created.0` is not here yet (a link's
         // person) may have any key actor held as first admin
         let firsts: Vec<Arc<osis_keys::ActorEpochs>> = match self.core.created(g).map(osis_base::CreationRecord::first_admin) {
@@ -646,9 +671,9 @@ impl Engine {
             None => self.core.key_actors.values().map(|id| Arc::new(osis_keys::ActorEpochs::key_actor(id.seed()))).collect(),
         };
         for oe in firsts {
-            for (_, s) in osis_keys::ActorEpochs::derived(&oe, g).read.held_newest_first() {
+            for s in osis_keys::ActorEpochs::derived(&oe, g).read.opening_newest_first() {
                 if !v.iter().any(|x| x.expose() == s.expose()) {
-                    v.push(s.clone());
+                    v.push(s);
                 }
             }
         }

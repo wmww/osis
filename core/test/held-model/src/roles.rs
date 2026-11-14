@@ -241,6 +241,13 @@ pub fn addenda<'a>(view: impl IntoIterator<Item = &'a Commit>) -> Vec<Addendum> 
 
 const LAST: Key = (u64::MAX, NodeId::MAX, CommitId::MAX);
 
+/// Where layer 2 judges a commit at `key` (spec/permissions.md §5.2, Position): before every edge
+/// write at its `ts`, at or after every one before it. A key at the same `ts` is never below it,
+/// so "after" reads `>=` and "before" `<`.
+fn start(key: Key) -> Key {
+    (key.0, 0, 0)
+}
+
 impl Timeline {
     /// The edge as restored on (n, h) before the walk's current point.
     fn restored(initial: &Edges, applied: &[Applied], n: ThingId, h: NodeId) -> Option<Edge> {
@@ -373,11 +380,12 @@ impl Timeline {
     }
 
     /// spec/permissions.md §5.2: would a delta by X on the thing, needing `need`, in commit `c` at
-    /// `key`, be valid.
+    /// `key`, be valid. Judged at the start of its `ts` (`start`).
     pub fn valid_as(&self, x: NodeId, thing: ThingId, need: Role, key: Key, c: CommitId) -> bool {
+        let key = start(key);
         let held = self.role_at(thing, x, key).is_some_and(|r| r >= need);
         let demos = self.demotions(thing, x, need);
-        if held && !demos.iter().any(|d| d.ev.key > key) {
+        if held && !demos.iter().any(|d| d.ev.key >= key) {
             return true;
         }
         // a frontier is what its demoter had received: any demotion's, whatever the order
@@ -387,7 +395,7 @@ impl Timeline {
         // re-grant: holding the role in the final state revives writes since it first held it
         if self.final_role(thing, x).is_some_and(|r| r >= need) {
             if let Some(k) = self.first_hold(thing, x, need) {
-                return key >= k;
+                return k == (0, 0, 0) || k.0 < key.0;
             }
         }
         false
@@ -416,15 +424,16 @@ impl Timeline {
     }
 
     fn writes_at(&self, a: &Addendum) -> bool {
-        self.role_at(a.thing, a.author, a.key).is_some_and(|r| r >= Role::Write)
+        self.role_at(a.thing, a.author, start(a.key)).is_some_and(|r| r >= Role::Write)
     }
 
     /// A counting addendum of `counting` on the thing names an explicit demotion of X below
-    /// write there ordered after `key` and before the addendum, and lists `c`.
+    /// write there ordered after `key` and before the addendum (each at the start of its `ts`,
+    /// `start`), and lists `c`.
     fn vouched_by(&self, counting: &[&Addendum], thing: ThingId, x: NodeId, key: Key, c: CommitId) -> bool {
         let demos = self.demotions(thing, x, Role::Write);
         counting.iter().filter(|a| a.thing == thing).any(|a| {
-            a.entries.iter().any(|(removal, lists)| lists.contains(&c) && demos.iter().any(|d| d.ev.commit == *removal && key < d.ev.key && d.ev.key < a.key))
+            a.entries.iter().any(|(removal, lists)| lists.contains(&c) && demos.iter().any(|d| d.ev.commit == *removal && start(key) <= d.ev.key && d.ev.key < start(a.key)))
         })
     }
 

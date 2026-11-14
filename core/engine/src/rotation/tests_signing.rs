@@ -9,7 +9,7 @@ use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_schema::core_types as ct;
 
 fn edge(r: Role) -> ct::Edge {
-    ct::Edge { role: r, until: None, invite: None, tied: None }
+    ct::Edge { role: r, until: None, invite: None, tied: None, floor: None }
 }
 
 fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId]) {

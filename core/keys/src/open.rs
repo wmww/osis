@@ -161,16 +161,17 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs
             done.insert(k.clone(), checked);
             progress = true;
             let mut opened_any = false;
-            let (mut named, mut listed) = (BTreeSet::new(), BTreeSet::new());
+            let (mut named, mut listed, mut floor) = (BTreeSet::new(), BTreeSet::new(), None);
             for c in std::iter::once(ct).chain(alts.get(k).into_iter().flatten()) {
-                let Ok((earlier, names)) = open_history(&s, actor, k.role, &e, c) else { continue };
+                let Ok(h) = open_history(&s, actor, k.role, &e, c) else { continue };
                 // an entry whose names do not parse opens nothing
-                let Some(names) = Names::from_value(&names) else { continue };
+                let Some(names) = Names::from_value(&h.names) else { continue };
                 opened_any = true;
                 named.insert(names);
-                listed.extend(earlier.iter().map(|(x, _)| *x));
+                floor = floor.max(Some(h.floor));
+                listed.extend(h.earlier.iter().map(|(x, _)| *x));
                 let re = epochs.role_mut(k.role);
-                for (x, sx) in earlier {
+                for (x, sx) in h.earlier {
                     if checked {
                         re.set_secret(x, sx);
                     } else {
@@ -179,9 +180,20 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs
                         }
                     }
                 }
+                // a roles secret opens role parts only; from a pending commit's entry, for opening
+                // alone, as a reading-only secret
+                for (x, rx) in h.roles {
+                    if checked {
+                        re.set_roles(x, rx);
+                    } else {
+                        for u in &sources {
+                            re.set_reading_roles(x, rx.clone(), *u);
+                        }
+                    }
+                }
             }
             if checked {
-                epochs.role_mut(k.role).set_history(e, named, listed);
+                epochs.role_mut(k.role).set_history(e, named, listed, floor);
             }
             if opened_any {
                 failed.remove(k);

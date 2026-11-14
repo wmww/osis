@@ -43,16 +43,9 @@ To everyone outside account P, P is its **signing chain**: epochs, each a key ev
 
 ## Tess
 - Decided: account disputes get the simplest rule (above), the recovery redesign may revisit; covered commits are left out at both levels; other accounts' writers act as witnesses.
-- Awaiting her requirements rewrite (drafts below; she approved the direction).
+- Requirements wording signed off (spec/requirements.md: attribution, removing a node, what readers learn).
 - Open (blocks step 2 and the account level's covered commits): leaving out what another writer's snapshot covers loses writes (step 2); list everything, or leave out only what the leaver's own snapshot covers?
 - To raise with it (no decision blocks the build): a removed device's changes can count at a reader until the account's merge reaches it (the fork window, whichever epoch the device forks from), and the device can fork again after every merge, its fork's list naming its later changes again, so the window recurs for as long as it keeps forking (each fork is a plain rotation from an epoch it holds, which no rule outsiders can evaluate tells from an unaware sibling's; requirements Permissions says its later changes stop counting, with no limit stated); and two devices rotating at once (say each removing a device) hide each other's later changes until the merge at readers following the other line; a reader following a sibling's concurrent line counts a removed device's later changes signed there until the merge.
-
-### Draft requirements wording
-- Permissions: "Every write is attributable to an account and verifiable by anyone who may read it. Which of the account's devices made it is visible only to the account's own devices."
-- Permissions: "Removing a device from an account works like removing a holder: its later changes stop counting, and which of its earlier changes still count depends on what the account's other devices and the other writers had received by then, never on its own timestamps."
-- Confidentiality between readers: replace "each other's node identities" with: "Readers of shared data learn which accounts take part, never which devices an account has. They can generally not tell which device made a change; they may tell that changes were made in one session, or at the same time on different devices, and when a device was removed."
-- Cost: "Removing a device costs about the account's recent changes not yet compacted, once per group they are in, plus its role and purge changes under the existing limit."
-- Cost, if Tess keeps listing everything (what spec/permissions.md §5.5 states): "Removing a device costs about 32 bytes for each change the account made since it last removed a device, once per group the change is in. Limit: removing a device fails when the account's permission-changing and purge writes since then pass the limit above."
 
 ## Steps
 Each: one worker plus a reviewer. Default tests name their property and stay small.

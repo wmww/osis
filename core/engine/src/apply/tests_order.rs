@@ -31,7 +31,7 @@ fn reg() -> Ak {
 fn edge(lp: &mut LocalPeer, by: usize, t: Tid, m: Tid, role: Option<Role>, frontier: Option<Value>) -> CommitId {
     let mut mu = Mutation::new();
     let op = match role {
-        Some(role) => PathOp { path: vec![PathSeg::Key(Value::Tid(m))], op: Op::Set(ct::Edge { role, until: None, invite: None, tied: None }.to_value()) },
+        Some(role) => PathOp { path: vec![PathSeg::Key(Value::Tid(m))], op: Op::Set(ct::Edge { role, until: None, invite: None, tied: None, floor: None }.to_value()) },
         None => PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(m)) },
     };
     mu.op(t, &ct::ROLES, op).unwrap();
@@ -77,13 +77,15 @@ fn perms(n: usize) -> Vec<Vec<usize>> {
 /// admin of G), the grandchild of G (0: none; 1: created in a later commit, so it can arrive
 /// late under a late parent; 2: in its parent's commit), and what follows the
 /// demotion (0 nothing, 1 B writes again unaware, 2 A grants B again, 3 A gives B read on the
-/// item: a commit naming a former leaf).
+/// item: a commit naming a former leaf), and whether B's last write, which the demoter then
+/// has not received, carries the demotion's very `ts` (`tie`: an HLC tie, so concurrent).
 struct Shape {
     writes: usize,
     at: usize,
     by: usize,
     sub: usize,
     tail: usize,
+    tie: bool,
 }
 
 /// One history of `shape`, the rest random. Peer 0 (A) is first admin of G, gives peer 1 (B) write and
@@ -132,17 +134,24 @@ fn sample(shape: Shape) -> usize {
         lp.advance(1_000);
         let on = [g, item, item2, sub][rng.below(4)];
         let id = write(&mut lp.peers[1], on, &format!("b{k}"));
-        if rng.below(2) == 0 {
+        if rng.below(2) == 0 && !(shape.tie && k + 1 == shape.writes) {
             let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
             lp.deliver(by, &pk).unwrap();
         }
         marks.push(lp.peers[1].clock.now_wall_ms());
     }
-    lp.advance(1_000);
+    if !shape.tie {
+        lp.advance(1_000);
+    }
     let as_of = marks[shape.at.min(shape.writes)];
     let scope = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([g]))]), content: BTreeMap::from([(b, BTreeSet::from([g, item, item2, sub]))]) };
     let f = lp.peers[by].engine.frontier(&scope, as_of).unwrap();
-    edge(&mut lp, by, g, b, None, Some(f.to_value()));
+    let rm = edge(&mut lp, by, g, b, None, Some(f.to_value()));
+    if shape.tie {
+        let ts = |p: &Peer, id: &CommitId| p.engine.header(id).unwrap().ts;
+        let last = *lp.peers[1].engine.commit_ids().iter().max_by_key(|id| ts(&lp.peers[1], id)).unwrap();
+        assert_eq!(ts(&lp.peers[1], &last), ts(&lp.peers[by], &rm), "B's last write at the demotion's ts");
+    }
     lp.advance(1_000);
     match shape.tail {
         1 => {
@@ -188,11 +197,11 @@ fn sample(shape: Shape) -> usize {
 // spec/permissions.md §5 (validity is a deterministic function of the commits a node holds), §5.2 (lists its commit, whatever their order), spec/crdt.md §4.6:
 // frontiers before (backdated), inside and after the writer's writes; children of the demoted
 // actor created in one commit, a grandchild in a later commit or in theirs; a demotion by an admin other than the
-// first admin; a commit naming a former leaf.
+// first admin; a commit naming a former leaf; B's last write at the demotion's `ts` (§5.2, Position).
 #[test]
 fn validity_alike_in_every_arrival_order_spec_permissions_5_2() {
-    let cases = [(1, 0, 0, 1, 0), (1, 1, 2, 1, 0), (2, 1, 2, 2, 0), (2, 1, 0, 0, 0), (1, 0, 2, 0, 3)];
-    for (writes, at, by, sub, tail) in cases {
-        assert_eq!(sample(Shape { writes, at, by, sub, tail }), 24);
+    let cases = [(1, 0, 0, 1, 0, false), (1, 1, 2, 1, 0, false), (2, 1, 2, 2, 0, false), (2, 1, 0, 0, 0, false), (1, 0, 2, 0, 3, false), (2, 2, 2, 2, 0, true)];
+    for (writes, at, by, sub, tail, tie) in cases {
+        assert_eq!(sample(Shape { writes, at, by, sub, tail, tie }), 24);
     }
 }

@@ -88,7 +88,7 @@ Format: `file:line test | action | why safe | confidence`.
 - label `step.rs claim_key_per_step` | one seed | low
 
 ### Category 3: cross-crate duplication
-- keys `props.rs departures_and_current_holders` | maybe delete | a keys-level copy of engine `rotation::tests_property`; its unique part is the `snapshot_keyed` / `may_compact_secrets` check | low
+- keys `props.rs departures_and_current_holders` | maybe delete | a keys-level copy of engine `rotation::tests_property`; its unique part is the `snapshot_keyed` / `unvouched` check | low
 
 Kept on purpose: perm scenarios (seed-named minimal reproducers; the properties don't reliably hit them), engine rotation tests (model-case and churn reproducers), `tests_paged` and `engine::pages` (store internals the upper layers cannot see).
 

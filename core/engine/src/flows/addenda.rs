@@ -10,7 +10,6 @@ use crate::error::Result;
 use crate::events::{Diagnostic, DiagnosticKind};
 use osis_base::{CommitId, Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
-use osis_perm::Point;
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use osis_store::Shred;
@@ -71,7 +70,6 @@ fn answer(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<Option<BTreeMap<Tid,
     let mut out: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
     let Some(m) = tx.core.ix.commits.get(&r) else { return Ok(Some(out)) };
     let Some(frontier) = m.view.frontier.clone() else { return Ok(Some(out)) };
-    let point = Point { ts: m.view.ts, node: m.view.author, commit: r };
     let wall = m.view.ts.wall_ms().0;
     let targets: BTreeSet<Tid> = m.view.aspects.iter().filter(|a| crate::apply::validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect();
     let mut demoted: BTreeSet<(Tid, Tid)> = BTreeSet::new();
@@ -90,8 +88,8 @@ fn answer(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<Option<BTreeMap<Tid,
             let Some(cm) = core.ix.commits.get(c) else { continue };
             let v = &cm.view;
             // rule 4: plain content only (no role commit, no snapshot); rule 2: received by the demotion's `ts`, ordered
-            // before it; what the frontier lists needs no witness
-            if v.purges || v.kind != osis_commit::Kind::Content || frontier.covers(c) || cm.received.0 > wall || (Point { ts: v.ts, node: v.author, commit: *c }) >= point {
+            // before it (at its `ts` or earlier, §5.2 Position); what the frontier lists needs no witness
+            if v.purges || v.kind != osis_commit::Kind::Content || frontier.covers(c) || cm.received.0 > wall || v.ts > m.view.ts {
                 continue;
             }
             // a part on n (an acting commit's part on n is its Acting check), rule 3: what this

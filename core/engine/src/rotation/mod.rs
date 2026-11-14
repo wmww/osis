@@ -10,6 +10,7 @@
 //! dropping what this node lost read access to: `lost`.
 
 pub(crate) mod departures;
+pub(crate) mod floors;
 mod lost;
 pub(crate) mod members;
 pub(crate) mod merge;
@@ -37,12 +38,10 @@ pub(crate) use lost::{arm_untils, boxes_kept, load_lost_due, mark_lost_due, may_
 /// How far `blocked_epoch` follows boxes to holder actors (spec/crypto.md §4, Encrypting under).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Walk {
-    /// For encrypting under: through every holder actor whose boxes this node holds, rights
-    /// aside (what a departed party opens does not depend on who may rotate).
+    /// For encrypting under, sealing a holder actor at a keyset included: through every holder
+    /// actor whose boxes this node holds, rights aside (what a departed party opens does not
+    /// depend on who may rotate), a stale box at any epoch walked blocking.
     Encrypt,
-    /// For sealing a holder actor into an actor this node rotates or grants on: as `Encrypt`, and
-    /// a stale box at any epoch walked blocks (the sealer is that actor's rotator).
-    Seal,
     /// For placing role commits and certificates under labels (spec/sync-judgement.md §1): through the
     /// holder actors this node may rotate only, so a node that may not rotate an actor still
     /// places the keysets and revokes that tell that actor's rotators (node-sync's pass).
@@ -65,21 +64,23 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure],
 }
 
 /// Whether `who` may not encrypt under epoch `e` of role `r` of `a` (spec/crypto.md §4,
-/// encrypting under), `deps` the departures from `a` counted: `e` does not cover one of them
-/// (`uncovered`); or `who` may rotate `r` and `e` has a stale box to a holder actor (rule 2) or
-/// boxes a holder past its key access to `a` (rule 4); or `e` boxes a holder actor M at a
-/// keyset of M under which `who` may not encrypt, by this same rule with every departure from M
-/// this node knows (sealing at that keyset was encrypting under it). Stale and keyless bind
-/// rotators only: they say a rotation is due, not that a departed party opens `e`. Sealing a
-/// holder actor at keyset `e` (`Walk::Seal`, from `members::sealed`) is held back too by a stale
-/// box at any epoch walked, whoever may rotate it and whether or not its secret is held: the
-/// sealer rotates the actor sealed into, and a co-writer that cannot judge M's departure would
-/// otherwise re-seal M where a knowing node left it out, over and over. The box clause follows
-/// every box at an epoch whose secret this node holds (`Walk::Encrypt`: what a departed party
-/// opens does not depend on who may rotate), or for placing only those of actors
-/// it may rotate (`Walk::Place`): a node that may not rotate places its chain certificates (and
-/// revokes) under the actor's labels meanwhile, the holder actors' new `keys.0` among them, which
-/// is how the rotators learn of the staleness. Only epochs whose secret this node holds are
+/// encrypting under; sealing a holder actor at keyset `e` is encrypting under it), `deps` the
+/// departures from `a` counted: `e` does not cover one of them (`uncovered`); or `e`, or an
+/// epoch the walk follows from it, has a stale box to a holder actor (rule 2), whoever may rotate
+/// it and whether or not its secret is held; or `who` may rotate `r` and `e` boxes a holder past
+/// its key access to `a` (rule 4); or `e` boxes a holder actor M at a keyset of M under which
+/// `who` may not encrypt, by this same rule with every departure from M this node knows (sealing
+/// at that keyset was encrypting under it). A stale box names a keyset its own holder actor has
+/// moved past: what that keyset's departed party opens, the epoch boxing it hands on, and past an
+/// epoch whose secret this node lacks it is all the node can judge (a writer of G holding M's
+/// new keyset but none of A's secrets would otherwise write under G's epoch boxing A at an epoch
+/// boxing M at the old one). Keyless binds rotators only: it says a rotation is due, not that a
+/// departed party opens `e`. The box clause follows every box at an epoch whose secret this node
+/// holds (`Walk::Encrypt`: what a departed party opens does not depend on who may rotate), or for
+/// placing only those of actors it may rotate, stale boxes binding only those rotators
+/// (`Walk::Place`): a node that may not rotate places its chain certificates (and revokes) under
+/// the actor's labels meanwhile, the holder actors' new `keys.0` among them, which is how the
+/// rotators learn of the staleness. Only epochs whose secret this node holds are
 /// walked past (it reads that actor's labels, so it learns the actor's next keyset and re-seals
 /// it), and only other parties' departures count (`others`); past any other epoch (but for
 /// placing) only a box to this node's own account is judged, at any depth: an account epoch it
@@ -145,11 +146,11 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
                 return Ok(Some(Block::Departure));
             }
         }
-        // sealing at a keyset whose epoch, or one it boxes, names a superseded keyset hands the
-        // new secret to what that keyset's departed party opens; the box and keysets are state,
-        // so judged without the epoch's secret; an account boxes only its key actors, which have
-        // no keysets to go stale (its `secrets.0` is not read for it)
-        if read && walk == Walk::Seal && !tx.core.is_account(&x) && members::stale_at(tx, &x, r, &k)? {
+        // encrypting under an epoch that boxes, at any depth, a superseded keyset hands the secret
+        // to what that keyset's departed party opens; the box and keysets are state, so judged
+        // without the epoch's secret; an account boxes only its key actors, which have no keysets
+        // to go stale (its `secrets.0` is not read for it)
+        if read && walk == Walk::Encrypt && !tx.core.is_account(&x) && members::stale_at(tx, &x, r, &k)? {
             return Ok(Some(Block::Box));
         }
         let next = if !read || !tx.core.epochs(&x).is_some_and(|ep| ep.role(r).is_established(&k) && ep.role(r).secret(&k).is_some()) {
@@ -173,7 +174,7 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
             false
         } else {
             let rotator = may_rotate(tx.core, who, &x).contains(&r);
-            if rotator && (members::stale_at(tx, &x, r, &k)? || members::keyless_at(tx, &x, r, &k)?) {
+            if rotator && ((walk == Walk::Place && members::stale_at(tx, &x, r, &k)?) || members::keyless_at(tx, &x, r, &k)?) {
                 return Ok(Some(Block::Box));
             }
             if !rotator && walk == Walk::Place {
@@ -287,8 +288,9 @@ enum Due {
 /// orphaned (`orphaned`), or is a derived read epoch this node wrote under (`merge::due`); one
 /// due only for current epochs whose secret this node lacks, where
 /// its new epoch boxes a rotator (`boxes_rotator`). With `Due::PassEnd` also when an unsuperseded
-/// epoch is not current here and `who` withdraws it. A fork alone is due nothing: it stands
-/// until the role next rotates (spec/crypto.md §4). No secret of the role is needed; the commit
+/// epoch is not current here and `who` withdraws it, or when a current read epoch's floor is
+/// below a holder's (`floors::low_floor_due`). A fork alone is due nothing else: it stands until
+/// the role next rotates (spec/crypto.md §4). No secret of the role is needed; the commit
 /// must be uploadable (`wrappable`), else the rotation waits for a re-seal.
 fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
     let may = may_rotate(tx.core, who, a);
@@ -324,6 +326,8 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<
         // epoch); withdraws by several fork, which stands
         let current = epochs.role(r).current();
         due = due || mode == Due::PassEnd && epochs.role(r).unsuperseded().iter().any(|e| !current.contains(e) && maker(tx.core, who, a, r, e).is_none_or(|m| m.me || !m.may_rotate));
+        // a current read epoch a holder's floor bars it from (spec/crypto.md §4, Floors)
+        due = due || mode == Due::PassEnd && r == Role::Read && floors::low_floor_due(tx, who, a)?;
         if due {
             out.insert(r);
         }
@@ -444,6 +448,13 @@ pub(crate) enum Departs {
 /// names mark it by `ts`, signer and blind, and the commit covers that departure itself
 /// (spec/crypto.md §4, covers).
 pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, boxing: &Boxing, departs: Departs) -> Result<Rotation> {
+    cut_into(tx, m, a, roles, held, boxing, departs, false)
+}
+
+/// `rotation_into`; `cut`: a grant without history's rotation (spec/crypto.md §4, Floors): its
+/// read history box carries no earlier secret and its floor is its own n.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, boxing: &Boxing, departs: Departs, cut: bool) -> Result<Rotation> {
     let secrets = secrets_in(tx, &a)?;
     let own = if departs != Departs::No {
         let ts = *m.ts.get_or_insert_with(|| tx.core.hlc.next());
@@ -458,7 +469,7 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
     };
     let names = departures::names(tx.core, &a, own);
     let carried = osis_keys::Carried { demotions: departures::carried(tx.core, &a), demotes: departs == Departs::Demoting };
-    let rot = osis_keys::rotate_leaving_out(&a, roles, held, &secrets, &boxing.holders, &boxing.left_out, &carried, &names, &mut *tx.rng)?;
+    let rot = osis_keys::rotate_leaving_out(&a, roles, held, &secrets, &boxing.holders, &boxing.left_out, &carried, &names, cut, &mut *tx.rng)?;
     put_secrets(m, a, &rot.secrets, false)?;
     flows::unseal(tx, m, a, &rot.secrets.removed)?;
     put_keysets(m, a, &rot.keys)?;
@@ -476,7 +487,11 @@ pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<
     let mut out: Vec<Tid> = rot.secrets.boxes.keys().map(|k| k.holder).filter(|m| *m != me).collect();
     out.sort();
     out.dedup();
-    out.retain(|m| !secrets.boxes.keys().any(|k| k.holder == *m && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| epochs.read.is_current(&e))));
+    // reached: boxed at the epoch the commit is wrapped under (a current one: held by box), or,
+    // with none, at a current epoch. A holder a floor bars from that epoch (spec/crypto.md §4,
+    // Floors: a fork beside its cut) is boxed at another and must take the commit by inbox
+    let wrap = rot.wrap_epoch();
+    out.retain(|m| !secrets.boxes.keys().any(|k| k.holder == *m && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| wrap.map_or(epochs.read.is_current(&e), |w| e == w))));
     Ok(out)
 }
 
@@ -534,7 +549,7 @@ fn rotate_boxing(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>, hold
 
 /// Records rotation `rot` of `a`, committed as `c`, into `done` with its inbox deliveries to
 /// `to`.
-fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotation, to: &[Tid], done: &mut Done) -> Result<()> {
+pub(crate) fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotation, to: &[Tid], done: &mut Done) -> Result<()> {
     record(tx, a, rot)?;
     done.add(c);
     deliver_rotation(tx, a, c, to)
@@ -834,7 +849,9 @@ fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
         // holding the secret of an epoch the holder lacks a box at (`box_holder` boxes just
         // those held; a node may lack a fork's). Every re-seal adds a box until the forks end,
         // so the trigger settles.
-        let mut keep: BTreeSet<Role> = roles.into_iter().filter(|r| may.contains(r) && osis_keys::reseal_missing(&secrets, &epochs, &m, *r).iter().any(|e| epochs.role(*r).secret(e).is_some())).collect();
+        // and only at an epoch the holder's floor allows (spec/crypto.md §4, the boxing rule)
+        let floor = floors::holder_floor(tx.core, a, &m);
+        let mut keep: BTreeSet<Role> = roles.into_iter().filter(|r| may.contains(r) && osis_keys::reseal_missing(&secrets, &epochs, &m, *r).iter().any(|e| epochs.role(*r).secret(e).is_some() && epochs.role(*r).allows(e, floor))).collect();
         let Some(role) = holders.iter().find(|h| h.holder == m).map(|h| h.role) else { continue };
         if keep.is_empty() {
             continue;
@@ -932,6 +949,7 @@ pub(crate) fn history_boxes(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<Histo
     for ((r, e), h) in hist.iter_mut() {
         if blocked_epoch(tx, who, a, *r, e, &deps, Walk::Encrypt)? {
             h.earlier.retain(|x, _| h.listed.contains(x));
+            h.roles.retain(|x, _| h.roles_listed.contains(x));
         }
     }
     Ok(hist)
@@ -963,6 +981,72 @@ pub(crate) fn add_history(tx: &mut Tx<'_>, a: Tid) -> Result<Done> {
     let c = Engine::commit_tx(tx, m)?;
     done.add(c);
     Ok(done)
+}
+
+/// The tip add for `a` (spec/crypto.md §4, Floors): a node that may rotate read and holds a
+/// dropped epoch (one no history entry carries on: what a cut lists, a fork beside a cut) boxes
+/// it to each current holder of read its floor allows that cannot open it, as this node sees,
+/// from the live boxes and the entries it opens; and a holder re-added without history, each
+/// epoch its removal's rotation listed (`floors::readd_epochs`) alike. One commit; nothing when
+/// none lacks one.
+pub(crate) fn tip_add(tx: &mut Tx<'_>, a: Tid) -> Result<Done> {
+    let mut done = Done::default();
+    // no floors: nothing is dropped and nobody re-added without history
+    let Some(epochs) = tx.core.epochs(&a).filter(|e| e.read.has_floors()) else { return Ok(done) };
+    let dropped: BTreeSet<osis_crypto::Epoch> = epochs.read.dropped().into_iter().collect();
+    let me = tx.core.writer()?;
+    if !may_rotate(tx.core, &me, &a).contains(&Role::Read) {
+        return Ok(done);
+    }
+    let secrets = secrets_in(tx, &a)?;
+    let mut w = osis_keys::SecretsWrite::default();
+    for (x, role) in tx.core.key_holders(&a) {
+        if x == me || role < Role::Read {
+            continue;
+        }
+        let floor = floors::holder_floor(tx.core, &a, &x);
+        let readd = floors::readd_epochs(tx.core, &a, &x, &epochs);
+        let mut want: BTreeSet<osis_crypto::Epoch> = dropped.iter().filter(|t| epochs.read.allows(t, floor)).copied().collect();
+        want.extend(readd.into_iter().filter(|t| epochs.read.is_established(t) && epochs.read.secret(t).is_some()));
+        if want.is_empty() {
+            continue;
+        }
+        let opens = opened_from(&epochs, &secrets, &x);
+        want.retain(|t| !opens.contains(t));
+        if want.is_empty() {
+            continue;
+        }
+        let Sealed::Boxed(rcpt) = sealed(tx, &me, &a, &x, Role::Read)? else { continue };
+        // the floors were judged above: a re-added holder's listed epochs lie below its floor
+        let rcpt = osis_keys::Recipient { floor: 0, ..rcpt };
+        if let Some(b) = osis_keys::box_dropped(&a, &epochs, &rcpt, &want, &mut *tx.rng)? {
+            w.extend(b);
+        }
+    }
+    if w.is_empty() {
+        return Ok(done);
+    }
+    let mut m = Mutation::new();
+    put_secrets(&mut m, a, &w, false)?;
+    // logged under `a`'s sync IDs as an own commit, with the keysets its boxes carry (sync's
+    // logging, notes/sync-facade.md)
+    done.add(Engine::commit_tx(tx, m)?);
+    Ok(done)
+}
+
+/// The read epochs of the actor holder `x` opens from the live boxes `secrets` to it and, through
+/// them, the entries this node opens (`EpochInfo::supersedes`).
+fn opened_from(epochs: &ActorEpochs, secrets: &osis_schema::core_types::Secrets, x: &Tid) -> BTreeSet<osis_crypto::Epoch> {
+    let mut out: BTreeSet<osis_crypto::Epoch> = secrets.boxes.keys().filter(|k| k.holder == *x && k.role == Role::Read).filter_map(|k| osis_keys::aspects::from_schema(&k.epoch).ok()).collect();
+    let mut todo: Vec<osis_crypto::Epoch> = out.iter().copied().collect();
+    while let Some(e) = todo.pop() {
+        for f in epochs.read.get(&e).map(|i| i.supersedes.clone()).unwrap_or_default() {
+            if out.insert(f) {
+                todo.push(f);
+            }
+        }
+    }
+    out
 }
 
 impl Engine {
@@ -1049,10 +1133,10 @@ impl Engine {
     }
 
     /// Makes the rotations of `actor` nothing waits for (`pass_end_rotations`: withdraws), re-seals the
-    /// holders of `actor` the trigger names and adds the history its current epochs lack
-    /// (spec/permissions.md §3, spec/crypto.md §4 History box), once a complete pass of its sync
-    /// IDs began after every role commit on it received from elsewhere (`note_complete_pass`);
-    /// nothing otherwise.
+    /// holders of `actor` the trigger names, adds the history its current epochs lack
+    /// (spec/permissions.md §3, spec/crypto.md §4 History box) and writes the snapshots a cut owes
+    /// (spec/crypto.md §4, State at a cut), once a complete pass of its sync IDs began after every
+    /// role commit on it received from elsewhere (`note_complete_pass`); nothing otherwise.
     pub fn reseal_due(&mut self, actor: &Tid) -> Result<Done> {
         if !self.complete_pass(actor)? {
             return Ok(Done::default());
@@ -1081,6 +1165,13 @@ impl Engine {
                 done.extend(reseal_one(tx, a, m, &roles, Reseal::Missing)?);
             }
             done.extend(add_history(tx, a)?);
+            done.extend(tip_add(tx, a)?);
+            floors::owe_state(tx, &a)?;
+            Ok(done)
+        })
+        .and_then(|done| {
+            // the snapshots a cut owes (spec/crypto.md §4, State at a cut)
+            self.purge_resnapshots()?;
             Ok(done)
         })
     }
@@ -1124,8 +1215,14 @@ mod tests_members;
 #[cfg(test)]
 mod tests_carried;
 #[cfg(test)]
+mod tests_deep;
+#[cfg(test)]
 mod tests_departs;
+#[cfg(test)]
+mod tests_cut;
 #[cfg(test)]
 mod tests_property;
 #[cfg(test)]
 mod tests_reseal;
+#[cfg(test)]
+mod tests_planted;

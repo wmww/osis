@@ -36,7 +36,7 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
         };
     }
     let retain = old.is_some() && d.retain.unwrap_or_else(|| crate::apply::validity::retain_now(core, target));
-    Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, tied: None }))
+    Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, tied: None, floor: None }))
 }
 
 /// The chain commits an inbox payload carries (spec/wire.md §9) that decode as commit blobs, each
@@ -59,7 +59,7 @@ pub fn inbox_chain(chain: Vec<osis_base::Value>) -> Vec<(Vec<u8>, CommitBlob)> {
 }
 
 fn perm_edge(e: &Edge) -> PermEdge {
-    PermEdge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.map(super::tied::tie_perm) }
+    PermEdge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.map(super::tied::tie_perm), floor: e.floor }
 }
 
 /// Which parts of a commit an inbox blob carries.
@@ -94,6 +94,22 @@ pub(crate) fn inbox_kem(tx: &mut Tx<'_>, actor: &Tid) -> Result<Option<osis_cryp
 /// own edge removed in the same commit (a single-use redemption, spec/permissions.md §7).
 /// `frontier`: the one a grant that audits carries (`Engine::grant_signed`).
 pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_base::Value>) -> Result<Done> {
+    grant_history(tx, signer, target, holder, edge, leave, frontier, History::All)
+}
+
+/// What a grant hands its holder of what was written before it (spec/crypto.md §4, Floors).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum History {
+    /// Everything this node holds (the history boxes of each epoch it boxes).
+    All,
+    /// Nothing: the grant's commit is a cut, a read rotation whose history box carries no earlier
+    /// secret, and the edge's floor is the cut's n.
+    None,
+}
+
+/// `grant_in`, handing `history`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_base::Value>, history: History) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.writer()?);
     if edge.invite.is_some_and(|i| i > edge.role) {
         return Err(Error::Misuse("invite above the edge's role"));
@@ -116,9 +132,13 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     }
     if !admin {
         let ok = old.is_none() && invite.is_some_and(|i| edge.role <= i && edge.invite.is_none_or(|x| x <= i));
-        if !ok || below {
+        if !ok || below || history == History::None {
             return Err(Error::Permission { tid: target });
         }
+    }
+    // a holder reading the target already holds its history: a cut gives it nothing to withhold
+    if history == History::None && tx.core.key_holders(&target).iter().any(|(m, _)| *m == holder) {
+        return Err(Error::Misuse("a grant without history is for a holder that holds no role on the target"));
     }
     let mut done = Done::default();
     // a thing is made a holder only with secrets of its own; a target gets them on its first
@@ -140,25 +160,67 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
         let me = tx.core.writer()?;
         rotation::ensure_rotated(tx, me, holder, &mut done)?;
     }
-    let roles = roles_up_to(edge.role);
+    let mut roles = roles_up_to(edge.role);
     // a renewal of an ended edge is not finalized first: the grant writes it anew
     rotation::ensure_rotated_but(tx, who, target, &[holder], &BTreeSet::new(), &mut done)?;
     let epochs = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
+    let keyless = rotation::grant_keyless(tx.core, &target, &holder);
     // a holder actor is boxed at the keyset Seal gives, per role (spec/crypto.md §4); one whose
     // grant would close a key cycle is keyless and boxed nothing; one this node can seal to no
     // keyset is not granted (its boxes would say nothing)
-    let boxes = if rotation::grant_keyless(tx.core, &target, &holder) {
-        None
-    } else {
-        let rcpt = match rotation::sealed(tx, &who, &target, &holder, edge.role)? {
-            rotation::Sealed::Boxed(r) => r,
+    let rcpt = match keyless {
+        true => None,
+        false => match rotation::sealed(tx, &who, &target, &holder, edge.role)? {
+            // boxed at the floor this grant gives (spec/crypto.md §4, A party's floor): its own
+            // (a change keeping it), at least its author's
+            rotation::Sealed::Boxed(r) => Some(osis_keys::Recipient { floor: edge.floor.unwrap_or(0).max(rotation::floors::holder_floor(tx.core, &target, &who)), ..r }),
             rotation::Sealed::Out => return Err(Error::Misuse("the holder has no keyset this node may seal it to")),
-        };
-        let hist = rotation::history_boxes(tx, &who, &target)?;
-        Some(box_holder(&target, &epochs, &hist, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?)
+        },
     };
     let mut m = Mutation::new();
     reset_current(tx, &mut m, target, holder)?;
+    // a grant without history: the cut, a read rotation boxing every current holder and the
+    // grantee, carrying no earlier secret; the edge's floor is its n (spec/crypto.md §4, Floors)
+    let mut edge = edge.clone();
+    let cut = match history {
+        History::All => None,
+        History::None => {
+            if let Some(s) = signer {
+                m.sign_as(s);
+            }
+            let mut boxing = rotation::recipients(tx, &who, &target, &[])?;
+            boxing.holders.extend(rcpt.clone());
+            if !rotation::may_rotate(tx.core, &who, &target).contains(&Role::Read) {
+                return Err(Error::Misuse("this node may not rotate the target's read role now"));
+            }
+            let rotated = BTreeSet::from([Role::Read]);
+            let rot = rotation::cut_into(tx, &mut m, target, &rotated, &epochs, &boxing, rotation::Departs::No, true)?;
+            edge.floor = rot.role(Role::Read).map(|x| x.epoch.n());
+            // a re-add: boxes at each epoch the holder's removal's rotation listed that this node
+            // holds (what its earlier nodes read before it left), below its floor; a holder that
+            // holds the rest boxes them (the tip add)
+            let listed = rotation::floors::removal_listed(tx.core, &target, &holder, &epochs, None);
+            let held: BTreeSet<osis_crypto::Epoch> = listed.into_iter().filter(|e| epochs.read.is_established(e) && epochs.read.secret(e).is_some()).collect();
+            if let Some(r) = rcpt.clone().filter(|_| !held.is_empty()) {
+                let w = osis_keys::box_dropped(&target, &epochs, &osis_keys::Recipient { floor: 0, ..r }, &held, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?;
+                put_secrets(&mut m, target, &w, false)?;
+            }
+            roles.retain(|r| !rotated.contains(r));
+            Some(rot)
+        }
+    };
+    let boxes = match rcpt {
+        Some(rcpt) if !roles.is_empty() => {
+            let hist = rotation::history_boxes(tx, &who, &target)?;
+            Some(box_holder(&target, &epochs, &hist, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?)
+        }
+        _ => None,
+    };
+    let unreached = match &cut {
+        Some(rot) => rotation::unreached(tx, &target, rot)?.into_iter().filter(|x| *x != holder).collect(),
+        None => Vec::new(),
+    };
+    let edge = &edge;
     put_edge(&mut m, target, holder, edge)?;
     if leave {
         removal(tx, &mut m, target, who)?;
@@ -166,7 +228,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     if let Some(w) = &boxes {
         put_secrets(&mut m, target, w, !admin)?;
     }
-    if let Some(s) = signer {
+    if let Some(s) = signer.filter(|_| cut.is_none()) {
         m.sign_as(s);
     }
     if let Some(f) = frontier {
@@ -176,9 +238,26 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
         m.unchecked();
     }
     let c = Engine::commit_tx(tx, m)?;
+    if let Some(rot) = &cut {
+        rotation::recorded(tx, target, c, rot, &unreached, &mut done)?;
+        // the current state under the cut: a snapshot owed of each aspect holding content from
+        // before it (spec/crypto.md §4, State at a cut), written right after this transaction
+        rotation::floors::owe_state(tx, &target)?;
+    }
+    // the history setting in force, written again under the cut: the holder opens no earlier one
+    // (spec/crypto.md §4, Floors)
+    let setting = match cut {
+        Some(_) => crate::retention::history::in_force_alone(tx.core, &target),
+        None => None,
+    };
     done.add(c);
     if let Some(c) = c {
         deliver_to(tx, holder, c, &[target])?;
+    }
+    if let Some(s) = setting {
+        let mut m = Mutation::new();
+        m.set(target, &ct::RETENTION, &s)?;
+        done.add(Engine::commit_tx(tx, m)?);
     }
     Ok(done)
 }
@@ -416,7 +495,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     for (x, e, keep) in ended {
         removal(tx, &mut m, target, *x)?;
         if *keep {
-            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(WallMs(0)), invite: None, tied: None })?;
+            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(WallMs(0)), invite: None, tied: None, floor: None })?;
         }
         if let Some(dep) = Departure::of_change(*x, Some(e.role), None) {
             left.extend(ROLES.into_iter().filter(|r| *r <= e.role));
@@ -459,13 +538,20 @@ impl Engine {
     /// as an admin of the target or by invite. Gives the target (and a plain holder) secrets of
     /// their own first where needed. Delivers the grant to the holder's inbox (a node: direct).
     pub fn grant(&mut self, target: &Tid, holder: &Tid, edge: &Edge) -> Result<Done> {
-        self.grant_signed(None, *target, *holder, edge, false)
+        self.grant_signed(None, *target, *holder, edge, false, History::All)
+    }
+
+    /// `grant` handing `history` of what was written before it (spec/crypto.md §4, Floors): a
+    /// grant without it is a cut, so `holder` reads only what is written under its epoch and
+    /// those after it. An admin's grant to a holder holding no role on the target.
+    pub fn grant_with(&mut self, target: &Tid, holder: &Tid, edge: &Edge, history: History) -> Result<Done> {
+        self.grant_signed(None, *target, *holder, edge, false, history)
     }
 
     /// `grant`, signed as a held key actor (a link key).
     #[cfg(test)]
     pub fn grant_as(&mut self, signer: &Tid, target: &Tid, holder: &Tid, edge: &Edge) -> Result<Done> {
-        self.grant_signed(Some(*signer), *target, *holder, edge, false)
+        self.grant_signed(Some(*signer), *target, *holder, edge, false, History::All)
     }
 
     /// `grant_in` with the frontier of what this node received when the grant audits: an admin's
@@ -473,7 +559,7 @@ impl Engine {
     /// or a role below one the holder lost with no explicit write on the edge since. Invariant: an
     /// explicit write that audits carries its author's frontier, else every write of the holder's
     /// it puts in question drops, received or not.
-    pub(crate) fn grant_signed(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool) -> Result<Done> {
+    pub(crate) fn grant_signed(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, history: History) -> Result<Done> {
         let who = signer.unwrap_or(self.core.writer()?);
         let new = Some(perm_edge(edge));
         let audits = self.core.role_now(&who, &target) == Some(Role::Admin) && self.needs_frontier(&target, &holder, Some(edge));
@@ -484,7 +570,12 @@ impl Engine {
             }
             false => None,
         };
-        self.run(|tx| grant_in(tx, signer, target, holder, edge, leave, frontier))
+        let done = self.run(|tx| grant_history(tx, signer, target, holder, edge, leave, frontier, history))?;
+        // a cut's owed snapshots (the state it carries to the holder) go right after it
+        if history == History::None {
+            self.purge_resnapshots()?;
+        }
+        Ok(done)
     }
 
     /// Whether an explicit write of `edge` (`None`: a removal) on `holder`'s edge on `target`,

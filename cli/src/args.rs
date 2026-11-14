@@ -326,6 +326,11 @@ pub enum Cmd {
         /// The highest role HOLDER may grant others
         #[arg(long = "may-grant", value_name = "ROLE")]
         may_grant: Option<String>,
+        /// What HOLDER reads of what was written before its first grant: from-now (the values as
+        /// they stand then and what is written after, no earlier version or message), all, or as
+        /// it reads now (unset; a new holder: all)
+        #[arg(long, value_name = "WHAT")]
+        reads: Option<String>,
     },
     /// Make HOLDER's role on T this one: read, write, admin, or none to remove
     SetRole {

@@ -766,11 +766,11 @@ fn thing_wait(
 ) -> Option<Reason> {
     // a destroyed thing is unknown, but for what judges its destruction written before it
     // (`retention::destroy`); a destruction by expiry keeps no record but for a dependent
-    let destroyed = |id: &CommitId| !crate::retention::destroy::judges_destruction(a.ak.as_str()) || a.ak.as_str() != osis_commit::retention::CREATED && crate::retention::destroy::Destruction::of(core, &a.tid).is_some_and(|e| e.after(h, id));
+    let destroyed = || !crate::retention::destroy::judges_destruction(a.ak.as_str()) || a.ak.as_str() != osis_commit::retention::CREATED && crate::retention::destroy::Destruction::of(core, &a.tid).is_some_and(|e| e.after(h));
     // destroyed for good: no minting is taken, and nothing on it without its record held (a
     // dependent's verdict brings it back, `retention::destroy::record_back`)
     let for_good = || core.ix.destroyed_for_good.contains(&a.tid) && (a.ak.as_str() == osis_commit::retention::CREATED || core.created(&a.tid).is_none());
-    if record(&a.tid).is_none() || core.destroyed(&a.tid) && destroyed(&h.id()) || for_good() {
+    if record(&a.tid).is_none() || core.destroyed(&a.tid) && destroyed() || for_good() {
         return Some(Reason::UnknownCreated(a.tid));
     }
     let mut chain = vec![a.tid];
@@ -2360,7 +2360,7 @@ mod tests {
         let c = osis_base::Tid::from_bytes([7; 15]);
         let mut m = Mutation::new();
         for x in [b, c] {
-            let e = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+            let e = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
             m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(e.to_value()) }).unwrap();
         }
         lp.peers[0].engine.core.skip_writer_rules = true;
@@ -2395,7 +2395,7 @@ mod tests {
         }
         let (x, y) = (things[0], things[1]);
         let mut m = Mutation::new();
-        let e = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+        let e = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
         m.op(x, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(a1))], op: Op::Set(e.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.sync_all().unwrap();
@@ -2431,7 +2431,7 @@ mod tests {
         let levels: Vec<u8> = wf.keys.iter().map(|i| h.keys[*i].level).collect();
         assert_eq!(levels, [1, 2, 3]);
         // a writer of X gets no admin on what it creates below X: no edges there
-        let adm = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
+        let adm = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None };
         for depth in [1, 3] {
             let p1 = &mut lp.peers[1];
             let mut m = Mutation::new();

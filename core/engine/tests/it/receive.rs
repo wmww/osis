@@ -124,7 +124,7 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
     lp.peers[1].commit(m).unwrap();
     lp.peers[1].engine.demote(&t, &osis_engine::flows::Demotion { holder: a, new: None, retain: None }).unwrap();
     // the grant that makes 0 able to sign, held back from 2 till the end
-    lp.peers[1].engine.grant(&t, &a, &Edge { role: Role::Read, until: None, invite: None, tied: None }).unwrap();
+    lp.peers[1].engine.grant(&t, &a, &Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None }).unwrap();
     let grant = packages(&mut lp, 1).pop().unwrap();
     for p in packages(&mut lp, 1) {
         lp.deliver(0, &p).unwrap();
@@ -132,7 +132,7 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
     let mut m = Mutation::new();
     for x in [t, u] {
         m.op(x, &ROLES, PathOp { path: vec![], op: Op::Remove(Value::Tid(a)) }).unwrap();
-        m.op(x, &ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(a))], op: Op::Set(Edge { role: Role::Admin, until: None, invite: None, tied: None }.to_value()) }).unwrap();
+        m.op(x, &ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(a))], op: Op::Set(Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None }.to_value()) }).unwrap();
     }
     let forged = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
     let forged = packages(&mut lp, 0).into_iter().find(|p| p.id == forged).unwrap();

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, account, withdrawn, netstream, netshared, netblind, netopen, nethold, netdestroy, netkeep
+#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, account, withdrawn, planted, netstream, netshared, netblind, netopen, nethold, netdestroy, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker); with cfg names: those instances instead (the larger ones
 #   in the module's README, by hand), judged only if listed below.
@@ -63,6 +63,7 @@ instances=(
   "depth0 rotation Depth0MC D0_pf_true.cfg fail"  # negative control: true box records without travel: W's own epoch of G looks fresh
   "depth0 rotation Depth0MC D0_rs.cfg pass"       # a grant's box to a holder actor is recorded too: a node holding none of G's boxes finds it stale (spec/crypto.md §4 Stale)
   "depth0 rotation Depth0MC D0_rs_off.cfg fail"   # negative control: only rotations record, the grant's stale box goes unseen
+  "depth0 rotation Depth0MC D0_rs_noenc.cfg fail" # negative control: stale records judged for sealing only, a writer encrypts under an epoch boxing a stale one
   "depth0 rotation Depth0MC D0_rs_lie.cfg fail"   # negative control: a writer of G recording falsely (it may hand G's secrets out anyway)
   "depth0 rotation Depth0MC D0_readers.cfg fail" # negative control: Walk "rotator" leaks above (README)
   "depth0 rotation Depth0MC D0_gone_live.cfg pass" # a node's own departure blocks nothing (spec/crypto.md §4)
@@ -75,18 +76,19 @@ instances=(
   "lockout rotation Lockout L_rogue.cfg pass"    # notes/crypto.md (Lockouts)
   "lockout rotation Lockout L_none.cfg fail"     # negative control: no re-key
   "cut rotation Cut X_names.cfg pass"            # history cuts (issues/history-less-grant.md)
-  "cut rotation Cut X_race.cfg pass"
+  "cut rotation Cut X_race.cfg pass"             # ... and with them it does (Roster)
   "cut rotation Cut X_cut_old.cfg fail"          # negative control: no floor
   "cut rotation Cut X_cut_oldadd.cfg fail"       # negative control: the History add without the carry rule
   "cut rotation Cut X_cut_nocarry.cfg fail"      # negative control: carry rule off
   "cut rotation Cut X_cut_nofloor.cfg fail"      # negative control: boxing rule off
-  "cut rotation Cut X_names_noreplace.cfg fail"  # negative control: no re-placing of role commits
+  "cut rotation Cut X_names_noroles.cfg fail"    # negative control: entries carry no roles secrets
+  "cut rotation Cut X_race_noroles.cfg fail"     # negative control: a grant beside a cut with no rotation never reaches the newcomer without roles secrets
   "cut rotation Cut X_host.cfg pass"             # a hostile history-less writer rotating with any floor or listing
   "cut rotation Cut X_gone.cfg pass"
   "cut rotation Cut X_host_nomaker.cfg fail"     # negative control: the carry rule blind to e's maker
   "cut rotation Cut X_acc_nogfloor.cfg fail"     # negative control: a history-less admin grants history
   "cut rotation Cut X_cap_nocap.cfg fail"        # negative control: a floor above n
-  "cut rotation Cut X_host2_nolist.cfg fail"     # negative control: floors read as written
+  "cut rotation Cut X_host2_all.cfg fail"        # accepted lockout: a hostile writer's low-floor epoch after the cut misses the newcomer
   "cut rotation Cut X_readd_fresh.cfg pass"      # a re-added member's new node opens what it read before its removal
   "cut rotation Cut X_readd_fresh_noreadd.cfg fail" # negative control: the re-add boxes m only at the cut
   "cut rotation Cut X_two_strict.cfg fail"       # accepted: two history-less adds at once each read content beside the other's
@@ -110,6 +112,11 @@ instances=(
   "withdrawn rotation Withdrawn W_waitall_live.cfg fail" # negative control: waiting for every admin is safe and stalls
   "withdrawn rotation Withdrawn W_regrant_live.cfg fail" # an explicit re-grant of M unlocks it safely but nothing makes one
   "withdrawn rotation Withdrawn W_joiners.cfg pass"     # later holders only, M left out by names: safe and live for them
+  "planted rotation Planted P_leaveout.cfg pass"    # a secrets.0 snapshot leaves out records at epochs its writer has not verified (spec/crypto.md §4)
+  "planted rotation Planted P_wait.cfg fail"        # negative control: waiting for every keyed epoch stops compaction for good
+  "planted rotation Planted P_all.cfg fail"         # negative control: carrying everything bases a planted epoch
+  "planted rotation Planted P_drop.cfg fail"        # negative control: covering what was left out loses a genuine grant's box
+  "planted rotation Planted P_keyset.cfg fail"      # negative control: keyset-vouched basis loses older epochs once keys.0 compacts
   "account rotation Account Acc_descent.cfg pass"   # an account epoch covers a removal by descent (spec/crypto.md §4 Encrypting under)
   "account rotation Account Acc_order.cfg fail"     # negative control: judged by order, an ignorant fork ordered after the removal covers it
   "account rotation Account Acc_nomet.cfg fail"     # negative control: a seed taken under a D epoch whose names are unmet extends a line past a removal its maker does not hold

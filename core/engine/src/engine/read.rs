@@ -19,7 +19,7 @@ fn synthetic_ak(ak: &str) -> bool {
 }
 
 fn edge_value(e: &Edge) -> Value {
-    ct::Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.map(crate::flows::tied::tie_ct) }.to_value()
+    ct::Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.map(crate::flows::tied::tie_ct), floor: e.floor }.to_value()
 }
 
 impl Core {

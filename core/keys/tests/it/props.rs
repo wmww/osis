@@ -81,7 +81,7 @@ impl Sim {
     }
 
     fn holders(&self) -> Vec<Recipient> {
-        let mut v = vec![Recipient { holder: self.p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&self.pe)).unwrap().with_own(&self.pe) }];
+        let mut v = vec![Recipient { holder: self.p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&self.pe)).unwrap().with_own(&self.pe), floor: 0 }];
         v.extend(self.roster.iter().map(|(i, r)| self.rcpt(*i, *r)));
         v
     }
@@ -170,7 +170,7 @@ impl Sim {
             let mut sv = v.clone();
             osis_keys::snapshot_keyed(&self.s, osis_base::CommitId([1; 32]), &mut sv).unwrap();
             sv.establish(&osis_keys::AllHeld);
-            assert!(osis_keys::may_compact_secrets(&self.s, &sv).unwrap());
+            assert!(osis_keys::unvouched(&self.s, &sv).unwrap().is_empty());
             for r in ROLES.into_iter().filter(|r| r <= role) {
                 assert_eq!(sv.role(r).newest_held().map(|x| x.0), self.view.role(r).newest(), "holder {i} role {r:?}");
             }

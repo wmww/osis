@@ -76,10 +76,14 @@ pub const OWN_KEYS: &[u8] = b"g/";
 /// yet carried by a rotation of it (`Indexes::derived_written`, `rotation::merge`): `dw/` + tid +
 /// the epoch's n (8 bytes, big endian) + nonce, empty.
 pub const DERIVED_WRITTEN: &[u8] = b"dw/";
-/// The epochs sections of commits another wrote opened under, per part (`labeling::opened`):
+/// The epochs sections of commits another wrote opened under, per part, and those this node's own
+/// content parts were made under where their floor is above 0 (`labeling::opened`):
 /// `ou/` + commit ID + aspect index (4 bytes, big endian) + the epoch's n (8 bytes, big endian)
 /// + nonce; the value a byte (1: the delta checked against its header) and the delta's hash.
 pub const OPENED_UNDER: &[u8] = b"ou/";
+/// The read floor up to which this node owed the state at a cut of an actor's content
+/// (`rotation::floors::owe_state`): `cs/` + tid, the floor (le64).
+pub const CUT_SETTLED: &[u8] = b"cs/";
 /// Suspect aspects (`retention::suspect`): `q/` + aspect key, le64 wall ms last
 /// raised, then per body its commit ID, aspect index and `Why` bits.
 pub const SUSPECT: &[u8] = b"q/";

@@ -50,7 +50,7 @@ fn sibling_opens_the_inner_signature_spec_crypto_3() {
         lp.sync(1, 0).unwrap();
     };
     both(&mut lp);
-    let edge = osis_schema::core_types::Edge { role: Role::Admin, until: None, invite: None, tied: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None };
     lp.peers[0].engine.grant_as(&a.account, &a.devices, &sib, &edge).unwrap();
     both(&mut lp);
     lp.peers[1].engine.hold_account(&a.account, &a.devices).unwrap();
@@ -205,7 +205,7 @@ fn forked_account_reads_every_head_spec_permissions_5_4() {
 }
 
 fn edge(r: Role) -> osis_schema::core_types::Edge {
-    osis_schema::core_types::Edge { role: r, until: None, invite: None, tied: None }
+    osis_schema::core_types::Edge { role: r, until: None, invite: None, tied: None, floor: None }
 }
 
 /// An actor of peer 1 with secrets of its own.
@@ -383,7 +383,7 @@ fn a_siblings_far_future_commit_waits_spec_crdt_2_2() {
         lp.sync(1, 0).unwrap();
     };
     both(&mut lp);
-    let edge = osis_schema::core_types::Edge { role: Role::Admin, until: None, invite: None, tied: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None };
     lp.peers[0].engine.grant_as(&a.account, &a.devices, &sib, &edge).unwrap();
     both(&mut lp);
     lp.peers[1].engine.hold_account(&a.account, &a.devices).unwrap();

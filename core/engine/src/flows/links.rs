@@ -115,9 +115,9 @@ impl Engine {
         if !self.roster(&link.target).get(&k).is_some_and(|e| e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default()))) {
             return Err(Error::Misuse("K's grant on the link's target is not held here"));
         }
-        let grant = Edge { role: edge.role, until: None, invite: None, tied: None };
+        let grant = Edge { role: edge.role, until: None, invite: None, tied: None, floor: None };
         // L signs with its own role, so the grant deposits only below write
-        self.grant_signed(Some(l), k, grantee, &grant, single_use)
+        self.grant_signed(Some(l), k, grantee, &grant, single_use, crate::flows::edges::History::All)
     }
 
     /// Whether the held role history shows `holder` put on `thing` and its edge over: removed, or
@@ -293,11 +293,11 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     rotation::own_secrets_listing(tx, k, &[ReaderKey::Static(lvk, lkeys.kem.public().clone())], &mut done)?;
     // L's edge (r, invite r, until) with its boxes
     let epochs = tx.core.epochs(&k).ok_or(Error::Misuse("K's secrets"))?;
-    let rcpt = Recipient { holder: l, role: spec.role, keys: HolderKeys::KeyActor { kem: lkeys.kem.public().clone(), seed: None } };
+    let rcpt = Recipient { holder: l, role: spec.role, keys: HolderKeys::KeyActor { kem: lkeys.kem.public().clone(), seed: None }, floor: 0 };
     let hist = crate::rotation::history_boxes(tx, &sharer, &k)?;
     let boxes = box_holder(&k, &epochs, &hist, &rcpt, &roles_up_to(spec.role), &mut *tx.rng)?.ok_or(Error::Misuse("L's keys"))?;
     let mut m = Mutation::new();
-    put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), tied: None })?;
+    put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), tied: None, floor: None })?;
     super::put_secrets(&mut m, k, &boxes, false)?;
     done.add(Engine::commit_tx(tx, m)?);
     let label = super::home_sync_id(tx, &k)?.ok_or(Error::Misuse("K's sync ID"))?;
@@ -308,7 +308,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
         done.add(Engine::commit_tx(tx, m)?);
     }
     // K on the target
-    let target_edge = Edge { role: spec.role, until: None, invite: None, tied: None };
+    let target_edge = Edge { role: spec.role, until: None, invite: None, tied: None, floor: None };
     // K is new: the grant demotes nobody, so it carries no frontier
     done.extend(grant_in(tx, None, spec.target, k, &target_edge, false, None)?);
     // the seed on a thing only the sharer's actor reads (derived secrets)

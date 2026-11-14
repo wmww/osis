@@ -99,6 +99,8 @@ impl Trigger {
     /// aspect is held (`part_held`).
     pub(crate) fn applied(tx: &mut Tx<'_>, id: &CommitId, h: &Header, blob: &CommitBlob) -> Result<()> {
         for ai in 0..h.aspects.len() {
+            // a body written below a cut owes the state it carries (spec/crypto.md §4)
+            crate::rotation::floors::late_part(tx, id, h, ai)?;
             Trigger::part_held(tx, id, h, blob, ai)?;
         }
         Ok(())
@@ -1004,7 +1006,7 @@ mod tests {
             let [a, b, x] = [0, 1, 2].map(|i| lp.peers[i].engine.me());
             let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
             for w in [b, x] {
-                lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+                lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
             }
             lp.sync_all().unwrap();
             put(&mut lp.peers[2].engine, t, "x", "withheld");
@@ -1062,7 +1064,7 @@ mod tests {
         lp.sync_all().unwrap();
         let [a, b] = [0, 1].map(|i| lp.peers[i].engine.me());
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
-        lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+        lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
         lp.sync_all().unwrap();
         let ak = Ak::new("x:m+.0").unwrap();
         let w: Vec<CommitId> = ["k1", "k2", "k3"].iter().map(|k| put(&mut lp.peers[0].engine, t, k, "v")).collect();
@@ -1142,7 +1144,7 @@ mod tests {
             lp.sync_all().unwrap();
             let [a, b] = [0, 1].map(|i| lp.peers[i].engine.me());
             let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
-            let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
+            let edge = |role| ct::Edge { role, until: None, invite: None, tied: None, floor: None };
             lp.peers[0].engine.grant(&t, &b, &edge(Role::Write)).unwrap();
             lp.sync_all().unwrap();
             let (m_ak, n_ak) = (Ak::new("x:m.0").unwrap(), Ak::new("x:n.0").unwrap());
@@ -1196,7 +1198,7 @@ mod tests {
         let mut lp = LocalPeer::fresh(3, osis_base::WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let [a, b, c] = [0, 1, 2].map(|i| lp.peers[i].engine.me());
-        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
+        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None, floor: None };
         // bob writes `t` by a raw edge write: `t` keeps its first admin's secrets
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);

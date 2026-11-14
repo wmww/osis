@@ -83,6 +83,12 @@ impl Item {
     pub fn key(&self) -> Key {
         (self.t, self.author, self.id)
     }
+    /// Where layer 2 judges it (spec/permissions.md §5.2, Position): before every role write at
+    /// its `ts`, at or after every one before it. No role write's key is below it at its `ts`, so
+    /// "a role write after it" reads `>=` and "before it" `<`.
+    pub fn pos(&self) -> Key {
+        (self.t, 0, 0)
+    }
     /// Plain content commits and addenda (rule 4): no role-class, admin-only or purge write;
     /// a compaction snapshot only where the cover rule lets addenda name one
     /// (spec/permissions.md §5.2, Addenda).
@@ -247,14 +253,14 @@ impl<'a> Ctx<'a> {
     /// rule 4 and A's own validity are checked by the caller).
     fn vouches(&self, a: usize, c: usize, m: usize, d: &Dem) -> bool {
         let (ad, l1) = (&self.w.items[a], self.v.l1);
-        let k = ad.key();
-        k > d.key && self.w.items[c].key() < d.key && l1.role(ad.author, m, k) >= Role::Write
+        let k = ad.pos();
+        d.key < k && self.w.items[c].pos() <= d.key && l1.role(ad.author, m, k) >= Role::Write
     }
 
     /// Whether item c's part on thing m is valid, given which items are valid (`valid`).
     pub fn part_ok(&self, c: usize, m: usize, valid: &[bool]) -> bool {
         let it = &self.w.items[c];
-        let (x, key, l1) = (it.author, it.key(), self.v.l1);
+        let (x, key, l1) = (it.author, it.pos(), self.v.l1);
         if let Kind::RemSnap { removal, .. } = &it.kind {
             return l1.applied(*removal);
         }
@@ -263,7 +269,7 @@ impl<'a> Ctx<'a> {
         }
         let dems: Vec<&Dem> = l1.dems.iter().filter(|d| d.victim == x && d.thing == m).collect();
         let held = l1.role(x, m, key) >= Role::Write;
-        if held && !dems.iter().any(|d| d.key > key) {
+        if held && !dems.iter().any(|d| d.key >= key) {
             return true;
         }
         if self.rules.held_only && !held {
@@ -274,7 +280,7 @@ impl<'a> Ctx<'a> {
         // a frontier is what its demoter had received: it saves what it lists whatever the order
         let saving: Vec<&Dem> = match self.rules.rerem {
             Rerem::Any => dems.clone(),
-            Rerem::Later => dems.iter().copied().filter(|d| d.key > key).collect(),
+            Rerem::Later => dems.iter().copied().filter(|d| d.key >= key).collect(),
             _ => vec![newest],
         };
         if saving.iter().any(|d| lists(d)) {
@@ -282,7 +288,7 @@ impl<'a> Ctx<'a> {
         }
         let cands: Vec<&Dem> = match self.rules.rerem {
             Rerem::Newest => vec![newest],
-            _ => dems.iter().copied().filter(|d| d.key > key).collect(),
+            _ => dems.iter().copied().filter(|d| d.key >= key).collect(),
         };
         if !it.listable(self.rules) {
             return false;
@@ -433,14 +439,14 @@ impl World {
                     if let Some(f) = add_recv {
                         recv = f(w, time);
                     }
-                    let key = (time, w, id);
+                    let key = (time, 0, 0);
                     if g.role(w, d.thing, key) < Role::Write {
                         continue;
                     }
                     let front = &self.frontier[&d.rid];
                     // an addendum saves the leaver's snapshot the frontier lists, or one it lists
                     // itself ordered before the removal
-                    let covered = self.omitted(w, d.key.0, rules, |s| front.contains(&s.id) || s.author == d.victim && s.thing == d.thing && s.key() < d.key);
+                    let covered = self.omitted(w, d.key.0, rules, |s| front.contains(&s.id) || s.author == d.victim && s.thing == d.thing && s.pos() <= d.key);
                     let lists: Vec<u32> = self
                         .items
                         .iter()
@@ -996,7 +1002,7 @@ fn attack_gains(w: &World, f: &World, rules: Rules) -> bool {
             }
             !(w.items.len()..f.items.len()).any(|a| {
                 let ad = &f.items[a];
-                let k = ad.key();
+                let k = ad.pos();
                 v1[a] && ad.thing == m && l1.role(ad.author, m, k) >= Role::Write
             })
         })

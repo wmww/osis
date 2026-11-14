@@ -58,8 +58,10 @@ pub const CREATION_NONCE: &str = "creation nonce";
 pub const BOX: &str = "box";
 /// History box key.
 pub const HISTORY: &str = "history";
-/// Epoch nonce from its secret (spec/crypto.md §4).
+/// Epoch nonce from its roles secret (spec/crypto.md §4).
 pub const EPOCH: &str = "epoch";
+/// A read epoch's roles secret from its secret (spec/crypto.md §4, Roles secrets).
+pub const ROLES: &str = "roles";
 /// Wrap key from a label read secret (spec/crypto.md §5).
 pub const WRAP: &str = "wrap";
 /// Section wrap key from a reader actor's read secret (spec/wire.md §4).
@@ -96,8 +98,8 @@ pub const BEACON_REPLY: &str = "beacon reply";
 pub const SYNC_PROOF: &str = "sync proof";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 35] = [
-    THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, WRAP, SECTION,
+pub const PURPOSES: [&str; 36] = [
+    THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, ROLES, WRAP, SECTION,
     DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, LABEL_SYNC, LABEL_WRITE, LABEL_DELETE, LABEL_DEPOSIT, LABEL_CLAIM,
     INNER_SECRET, INNER, BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF,
 ];

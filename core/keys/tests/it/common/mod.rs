@@ -52,11 +52,11 @@ pub fn key_actor_keys(seed: &Secret32) -> Keys {
 }
 
 pub fn actor_rcpt(holder: Tid, role: Role, a: &ActorEpochs) -> Recipient {
-    Recipient { holder, role, keys: HolderKeys::from_keys(&keys_of(a)).unwrap() }
+    Recipient { holder, role, keys: HolderKeys::from_keys(&keys_of(a)).unwrap(), floor: 0 }
 }
 
 pub fn key_rcpt(holder: Tid, role: Role, seed: &Secret32) -> Recipient {
-    Recipient { holder, role, keys: HolderKeys::from_keys(&key_actor_keys(seed)).unwrap() }
+    Recipient { holder, role, keys: HolderKeys::from_keys(&key_actor_keys(seed)).unwrap(), floor: 0 }
 }
 
 /// `view` after the rotator applies its own rotation commit `rot` under ID `[id; 32]`: what a

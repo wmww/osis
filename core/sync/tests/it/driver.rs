@@ -191,7 +191,7 @@ fn hints_are_followed_after_a_restart_in_place_spec_sync_opens_1() {
         let x = e.new_thing(&mut m, a1);
         e.commit(m).unwrap();
         e.give_own_secrets(&x).unwrap();
-        e.grant(&x, &a0, &osis_schema::core_types::Edge { role: osis_base::Role::Sync, until: None, invite: None, tied: None }).unwrap();
+        e.grant(&x, &a0, &osis_schema::core_types::Edge { role: osis_base::Role::Sync, until: None, invite: None, tied: None, floor: None }).unwrap();
     });
     w.run();
     assert!(w.dials(0).why(&w.node(1).key.0).contains(&Why::Hint), "{:?}", w.dials(0).why(&w.node(1).key.0));

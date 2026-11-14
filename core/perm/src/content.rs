@@ -39,9 +39,17 @@ pub enum Validity {
     Invalid { by: Option<Point> },
 }
 
+/// Whether a delta of a commit stamped `ts` is valid by the re-grant bound `from`
+/// (`Timeline::valid_from`): judged at the start of its `ts` (§5.2, Position), it is after `p`
+/// only at a later `ts`.
+pub fn regranted(from: Option<Option<Point>>, ts: Ts) -> bool {
+    from.is_some_and(|b| b.is_none_or(|p| p <= Point::start(ts)))
+}
+
 impl Timeline {
     /// §5.2: is a delta on `thing` of the commit at `at` (its author node, `ts` and commit ID)
-    /// valid, addenda aside (`Vouching`)? `required` is the role its aspect needs: write for
+    /// valid, addenda aside (`Vouching`)? Judged at the start of its `ts` (§5.2, Position).
+    /// `required` is the role its aspect needs: write for
     /// content, the aspect's role for `secrets.0`, `keys.0`, `label.0`. A re-grant (the author
     /// holds `required` at the end of the timeline) validates every write; otherwise a write
     /// made while holding the role stands unless a valid explicit demotion below it follows,
@@ -60,22 +68,25 @@ impl Timeline {
 
     /// Where `node`'s deltas on `thing` needing `required` start being valid whatever their
     /// commit (`delta_valid`'s re-grant case): `Some(None)` every one, `Some(Some(p))`
-    /// those at or after `p`, `None` no such bound (judge each with `delta_valid`). For judging
-    /// many deltas of one author at once.
+    /// those after `p` (`regranted`), `None` no such bound (judge each with `delta_valid`). For
+    /// judging many deltas of one author at once.
     pub fn valid_from(&self, node: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
         if self.role(node, thing, At::END) >= Some(required) { self.first_held(node, thing, required) } else { None }
     }
 
     fn delta_valid_uncached(&self, at: Point, thing: &Tid, required: Role) -> Validity {
         let x = at.node;
+        // judged at the start of its `ts` (§5.2, Position): an edge write at the same `ts` is
+        // concurrent with it, so it follows it whatever the tids
+        let pos = Point::start(at.ts);
         // A re-grant makes valid *again*: only writes from the first point X held `required`
         // on the thing.
-        if self.valid_from(&x, thing, required).is_some_and(|s| s.is_none_or(|p| p <= at)) {
+        if regranted(self.valid_from(&x, thing, required), at.ts) {
             return Validity::Valid;
         }
-        let held = self.role(&x, thing, At::before(at)) >= Some(required);
+        let held = self.role(&x, thing, At::before(pos)) >= Some(required);
         let dems: Vec<&Demotion> = self.demotions(&x, thing).iter().filter(|d| d.below == required).collect();
-        let later = dems.iter().any(|d| d.point > at);
+        let later = dems.iter().any(|d| d.point >= pos);
         if held && !later {
             return Validity::Valid;
         }
@@ -99,7 +110,7 @@ impl Timeline {
     /// no timeline or epoch reads).
     pub fn vouching(&self, thing: &Tid, addenda: &[Addendum], standing: impl Fn(&CommitId) -> EpochStanding<CommitId>) -> Vouching {
         // (addendum, its author held write at its key, its standing, valid so far)
-        let mut st: Vec<(&Addendum, bool, EpochStanding<CommitId>, bool)> = addenda.iter().map(|a| (a, self.role(&a.point.node, thing, At::before(a.point)) >= Some(Role::Write), standing(&a.point.commit), false)).collect();
+        let mut st: Vec<(&Addendum, bool, EpochStanding<CommitId>, bool)> = addenda.iter().map(|a| (a, self.role(&a.point.node, thing, At::before(Point::start(a.point.ts))) >= Some(Role::Write), standing(&a.point.commit), false)).collect();
         loop {
             let mut changed = false;
             for i in 0..st.len() {
@@ -129,10 +140,11 @@ impl Timeline {
 
     /// Whether addendum `a` (counting) vouches for the write at `at` on `thing`: an entry of it
     /// names an explicit demotion of `at.node` below write on the thing ordered after `at` and
-    /// before `a`, and lists `at`'s commit.
+    /// before `a`, each judged at the start of its `ts` (§5.2, Position), and lists `at`'s
+    /// commit.
     fn vouches(&self, thing: &Tid, a: &Addendum, at: Point) -> bool {
-        a.point > at
-            && a.entries.iter().any(|(removal, lists)| lists.contains(&at.commit) && self.demotions(&at.node, thing).iter().any(|d| d.below == Role::Write && d.point.commit == *removal && at < d.point && d.point < a.point))
+        let (from, to) = (Point::start(at.ts), Point::start(a.point.ts));
+        a.entries.iter().any(|(removal, lists)| lists.contains(&at.commit) && self.demotions(&at.node, thing).iter().any(|d| d.below == Role::Write && d.point.commit == *removal && from <= d.point && d.point < to))
     }
 
 

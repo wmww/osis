@@ -178,7 +178,7 @@ pub fn step(w: &mut World, s: &Step) -> String {
         }
         Step::Grant(_, k, j, g) => {
             let (Some(t), Some(holder)) = (thing(w, k), account(w, j)) else { return "skipped: no such thing or holder".into() };
-            let edge = Edge { role: g.role(), until: None, invite: None, tied: None };
+            let edge = Edge { role: g.role(), until: None, invite: None, tied: None, floor: None };
             let r = w.write(i, |e| e.grant(&t, &holder, &edge)).map(|_| String::new()).map_err(|e| e.to_string());
             if r.is_ok() || stands(w, i, &t, &holder, g.role()) {
                 let h = &mut w.history;

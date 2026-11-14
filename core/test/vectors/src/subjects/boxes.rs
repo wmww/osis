@@ -60,13 +60,14 @@ pub fn boxes() -> VecFile {
     let (actor, holder) = (Tid::from_bytes([0x01; 15]), Tid::from_bytes([0x02; 15]));
     let mut cases = Vec::new();
 
-    // The nonce rule: kdf("epoch", s, actor || role byte || le64(n)).
+    // The nonce rule: kdf("epoch", kdf("roles", s), actor || role byte || le64(n)).
     let e = named(&actor, Role::Write, 4, &s32(0x09));
     let mut input = actor.as_bytes().to_vec();
     input.push(1);
     input.extend(4u64.to_le_bytes());
-    assert_eq!(e.nonce(), kdf::kdf(kdf::EPOCH, s32(0x09).expose(), &input).expose());
-    cases.push(case("epoch nonce", "spec/crypto.md §4").with("actor", hex(actor.as_bytes())).with("role", "1").with("n", "4").with("secret", hex(s32(0x09).expose())).with("nonce", hex(e.nonce())));
+    let roles = kdf::kdf(kdf::ROLES, s32(0x09).expose(), b"");
+    assert_eq!(e.nonce(), kdf::kdf(kdf::EPOCH, roles.expose(), &input).expose());
+    cases.push(case("epoch nonce", "spec/crypto.md §4").with("actor", hex(actor.as_bytes())).with("role", "1").with("n", "4").with("secret", hex(s32(0x09).expose())).with("roles-secret", hex(roles.expose())).with("nonce", hex(e.nonce())));
 
     let sealed = seal_with(recipient.public(), b"ad", b"payload", &Secret32::from_bytes(EPH), &M).unwrap();
     cases.push(
@@ -141,10 +142,14 @@ pub fn boxes() -> VecFile {
     let name = Value::List(vec![Value::Bytes(actor.as_bytes().to_vec()), Value::Int(1_700_000_000_000 << 16), Value::Bytes(vec![0x31; 15]), Value::Bytes(vec![0x32; 32])]);
     let departs = Value::List(vec![Value::Int(1_700_000_000_001 << 16), Value::Bytes(vec![0x31; 15])]);
     let names = Value::List(vec![Value::List(vec![name.clone()]), Value::List(vec![departs])]);
-    let h = seal_history(&s32(0x09), &actor, Role::Read, &e3, &earlier, &names).unwrap();
-    assert_eq!(open_history(&s32(0x09), &actor, Role::Read, &e3, &h).unwrap(), (earlier.clone(), names.clone()));
-    let pairs = Value::List(earlier.iter().map(|(e, s)| Value::List(vec![Value::Int(e.n() as i64), Value::Bytes(s.expose().to_vec())])).collect());
-    let pt = encode(&Value::List(vec![pairs, names]));
+    // a roles secret carried apart (spec/crypto.md §4, Roles secrets)
+    let r23 = osis_crypto::roles_secret(&s32(0x23));
+    let roles = vec![(named(&actor, Role::Read, 2, &s32(0x23)), r23)];
+    let entry = osis_crypto::HistoryEntry { earlier: earlier.clone(), names: names.clone(), floor: 2, roles: roles.clone() };
+    let h = seal_history(&s32(0x09), &actor, Role::Read, &e3, &entry).unwrap();
+    assert_eq!(open_history(&s32(0x09), &actor, Role::Read, &e3, &h).unwrap(), entry);
+    let list = |v: &[(osis_crypto::Epoch, osis_crypto::Secret32)]| Value::List(v.iter().map(|(e, s)| Value::List(vec![Value::Int(e.n() as i64), Value::Bytes(s.expose().to_vec())])).collect());
+    let pt = encode(&Value::List(vec![list(&earlier), names, Value::Int(2), list(&roles)]));
     let ad = encode(&Value::List(vec![Value::Bytes(actor.as_bytes().to_vec()), Value::Int(0), Value::Int(3), Value::Bytes(e3.nonce().to_vec())]));
     cases.push(
         case("history box", "spec/wire.md §7")

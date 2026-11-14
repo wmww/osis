@@ -187,6 +187,10 @@ Rogue == {}
 \* role on the actor); FALSE: such an epoch is judged by order only
 BoxBlind == {}
 PfJudge == FALSE
+\* PfJudge for encrypting as for sealing (built: one rule); FALSE (negative
+\* control): only for sealing a holder actor, so an epoch boxing such an
+\* epoch is judged by order alone for encrypting under it
+PfEnc == TRUE
 \* LiePf {<<device, actor>>}: the device's rotations and re-seals of the actor
 \* record no keyset (a writer records what it likes: a record naming nothing,
 \* or keysets nobody holds, or fresh ones, is never stale) while boxing as Seal
@@ -390,8 +394,9 @@ Before(x, k) == \E dp \in Known(x) : /\ dp[2] = ep[k].act /\ dp \notin ep[k].at
 \* epochs x may not encrypt under, of those whose secret it holds: missing a
 \* departure it knows; for an admin, stale or keyless; boxing an actor at
 \* one (sealing there was encrypting under it), any depth: for an admin
-\* (Walk "rotator") or for any holder of the secret
-Blocked(x) ==
+\* (Walk "rotator") or for any holder of the secret; enc: for encrypting
+\* (~PfEnc judges stale records only for sealing)
+BlockedAs(x, enc) ==
   LET sx == Sec(x)
   IN Fix(LAMBDA S : S \cup {k \in sx : (Walk # "rotator" \/ IsAdm(x, ep[k].act)) /\
                                      \E b \in BoxesAt(x, k) : b.key.t = "k" /\ b.key.k \in S},
@@ -399,7 +404,11 @@ Blocked(x) ==
                      \/ IsAdm(x, ep[k].act) /\ (StaleAt(x, k) \/ Keyless(x, k))
                      \/ GoneBox(x, k)}
          \cup {k \in kn[x] \ sx : Order /\ Before(x, k)}
-         \cup {k \in kn[x] \ sx : PfJudge /\ StaleAt(x, k)})
+         \cup {k \in kn[x] \ sx : PfJudge /\ (PfEnc \/ ~enc) /\ StaleAt(x, k)})
+\* for sealing a holder actor at a keyset (Rotate, Reseal)
+Blocked(x) == BlockedAs(x, FALSE)
+\* for encrypting under an epoch (Write, a rotation due, a history add)
+BlockedEnc(x) == BlockedAs(x, TRUE)
 
 Anchors(x, a, h) ==
   {k \in Named({b \in UNION {BoxesAt(x, e) : e \in Cur(x, a)} : b.h = h}) :
@@ -494,7 +503,7 @@ MayRot(x, y, a) == IsAdm(y, a) \/ (y \in Learners /\ Through(y, a) /\ ~OffPath(x
 \* departure, with a stale box, or boxing a keyless holder
 OtherDue(x, a) ==
   LET e == NewestV(x, a)
-  IN \/ e \in Blocked(x)
+  IN \/ e \in BlockedEnc(x)
      \/ \E f \in Cur(x, a) : ~Covers(x, f, a) \/ StaleAt(x, f)
      \/ \E f \in Cur(x, a) : Keyless(x, f) \/ GoneBox(x, f)
 \* a plain thing given secrets of its own: x wrote it under a derived secret
@@ -686,7 +695,7 @@ Place(x, dp, l) ==
 Reseal(x, a, h) ==
   /\ a \notin dst /\ Writer(x, a) /\ h \in MemV(x, a, {})
   /\ \E e \in Cur(x, a) \cap Sec(x) :
-       /\ CarryFree \/ (Covers(x, e, a) /\ e \notin Blocked(x))
+       /\ CarryFree \/ (Covers(x, e, a) /\ e \notin BlockedEnc(x))
        /\ ~\E b \in BoxesAt(x, e) : b.h = h
        /\ LET k == IF h \in Acts THEN SealK(x, a, h) ELSE 0
               r == [e |-> e, h |-> h, key |-> IF h \in Acts THEN KK(k) ELSE DK(h),
@@ -706,7 +715,7 @@ Carry(x, e) == {f \in Sec(x) \ Cur(x, ep[e].act) : ep[e].act = ep[f].act /\ Hone
 \* lists: a history add is due (spec/crypto.md §4, History box)
 AddDue(x, a, e) ==
   /\ a \notin dst
-  /\ e \in Cur(x, a) \cap Sec(x) /\ Covers(x, e, a) /\ e \notin Blocked(x)
+  /\ e \in Cur(x, a) \cap Sec(x) /\ Covers(x, e, a) /\ e \notin BlockedEnc(x)
   /\ ~(Carry(x, e) \subseteq ListedAt(x, e))
 HistAdd(x, a, e) ==
   /\ AddDue(x, a, e)
@@ -763,7 +772,7 @@ Write(x, a) ==
   /\ LET der == PlainAt(x, a)
          ea == IF der THEN PlainOf(a) ELSE a
          e == NewestV(x, ea)
-     IN /\ e \in Sec(x) /\ Covers(x, e, ea) /\ ~StaleAt(x, e) /\ e \notin Blocked(x)
+     IN /\ e \in Sec(x) /\ Covers(x, e, ea) /\ ~StaleAt(x, e) /\ e \notin BlockedEnc(x)
         /\ ~Keyless(x, e)
         /\ wr' = wr \cup {[a |-> a, e |-> e, w |-> x, der |-> der,
                            p1 |-> {dp \in Known(x) : dp[2] = a},

@@ -435,7 +435,7 @@ fn every_changed_answer_fires() {
                 6 => { let _ = a.commit_with(|w| w.group(g).remove(if roll(&mut rng, 2) == 0 { Member::Item(t) } else { Member::Subgroup(groups[0]) })); }
                 7 => {
                     let until = (roll(&mut rng, 2) == 0).then(|| osis::Time(a.now().unwrap().0 + 2_000));
-                    let _ = a.grant(t, groups[1], osis::Role::Read, osis::GrantOpts { until, may_grant: None });
+                    let _ = a.grant(t, groups[1], osis::Role::Read, osis::GrantOpts { until, may_grant: None, reads: osis::Reads::Kept });
                 }
                 8 => { let _ = a.set_role(t, groups[1], None, Default::default()); }
                 9 => { let _ = a.commit_with(|w| w.at(t, kept(&a, &ak("t:k.0"))).purge(osis::Purge::All)); }

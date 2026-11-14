@@ -472,7 +472,7 @@ fn rotation_history(seed: u64) -> Reached {
                 5 if ri == Role::Admin && j != o && j != i => {
                     let until = WallMs(run.lp.peers[i].engine.core.now().0 + 1 + run.rng.next(500));
                     if let Some(r) = run.lp.peers[i].engine.core.role_now(&run.tids[j], &t) {
-                        lowered = run.lp.peers[i].engine.demote(&t, &Demotion { holder: run.tids[j], new: Some(ct::Edge { role: r, until: Some(until), invite: None, tied: None }), retain: None }).is_ok();
+                        lowered = run.lp.peers[i].engine.demote(&t, &Demotion { holder: run.tids[j], new: Some(ct::Edge { role: r, until: Some(until), invite: None, tied: None, floor: None }), retain: None }).is_ok();
                     }
                 }
                 // re-grants of every holder it sees, or one, at its role (re-writing their boxes)

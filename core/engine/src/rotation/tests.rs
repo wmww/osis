@@ -164,7 +164,7 @@ pub(super) fn group(lp: &mut LocalPeer, i: usize) -> Tid {
 }
 
 pub(super) fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, tied: None }
+    ct::Edge { role, until: None, invite: None, tied: None, floor: None }
 }
 
 pub(super) fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypto::Epoch> {
@@ -264,7 +264,7 @@ pub(super) fn opens_by(lp: &LocalPeer, states: &[(Tid, ct::Secrets)], secrets: &
             for (k, c) in &s.history {
                 let Ok(e) = from_schema(&k.epoch) else { continue };
                 let Some(x) = out.contains_key(&(*a, k.role, e)).then(|| secrets.get(&(*a, k.role, e))).flatten() else { continue };
-                if let Ok((earlier, _)) = osis_crypto::open_history(x, a, k.role, &e, c) {
+                if let Ok(osis_crypto::HistoryEntry { earlier, .. }) = osis_crypto::open_history(x, a, k.role, &e, c) {
                     for (y, _) in earlier {
                         out.entry((*a, k.role, y)).or_insert(Via::History((*a, k.role, e)));
                     }
@@ -1124,7 +1124,7 @@ fn finalize_without_secret_rotates_history_added_spec_permissions_2() {
 
 /// The rotations every peer of `lp` makes on `g` per round (`ensure_rotated` at each, then a
 /// sync), until a round makes none.
-fn rounds_to_settle(lp: &mut LocalPeer, g: Tid) -> Vec<usize> {
+pub(super) fn rounds_to_settle(lp: &mut LocalPeer, g: Tid) -> Vec<usize> {
     let mut out = Vec::new();
     loop {
         // what is due at once, then what a complete pass decides
@@ -1504,7 +1504,7 @@ fn bad_rotation_parts_read_as_missing_spec_commits_4() {
 fn keyset_before_box_reads_only_spec_permissions_4() {
     let mut lp = synced(3);
     let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let admin = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
+    let admin = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None };
     let mut m = Mutation::new();
     let o = lp.peers[0].engine.new_thing(&mut m, a);
     lp.peers[0].commit(m).unwrap();
@@ -1690,12 +1690,12 @@ fn reader_history_add_valid_box_put_not_spec_permissions_3() {
         (e, s.clone())
     };
     let names = lp.peers[1].engine.run(|tx| Ok(tx.core.epochs(&g).unwrap().read.history_names(Role::Read, &e, &tx.core.names_held(&g)).unwrap())).unwrap();
-    let ct = osis_crypto::seal_history(&secret, &g, Role::Read, &e, &[], &names.to_value()).unwrap();
+    let ct = osis_crypto::seal_history(&secret, &g, Role::Read, &e, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: names.to_value(), floor: 0, roles: Vec::new() }).unwrap();
     let mut m = Mutation::new();
     let history = [(osis_keys::aspects::history_key(Role::Read, &e), ct)].into_iter().collect();
     crate::flows::put_secrets(&mut m, g, &osis_keys::SecretsWrite { history, ..Default::default() }, true).unwrap();
     let add = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
-    let rcpt = osis_keys::Recipient { holder: r, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: lp.peers[1].engine.identity().keys().kem.public().clone(), seed: None } };
+    let rcpt = osis_keys::Recipient { holder: r, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: lp.peers[1].engine.identity().keys().kem.public().clone(), seed: None }, floor: 0 };
     let w = lp.peers[1]
         .engine
         .run(|tx| {
@@ -1927,7 +1927,7 @@ fn unmet_epoch_withdrawn_by_its_maker_spec_crypto_4() {
 }
 
 /// Puts `k` = `v` on `g`'s content aspect `x:m.0` by peer `i`.
-fn put_on(lp: &mut LocalPeer, i: usize, g: Tid, k: &str, v: i64) {
+pub(super) fn put_on(lp: &mut LocalPeer, i: usize, g: Tid, k: &str, v: i64) {
     lp.advance(7);
     let mut m = Mutation::new();
     let path = vec![osis_crdt::PathSeg::Key(osis_base::Value::Str(k.into()))];
@@ -1936,7 +1936,7 @@ fn put_on(lp: &mut LocalPeer, i: usize, g: Tid, k: &str, v: i64) {
 }
 
 /// Whether peer `i` reads key `k` on `g`'s `x:m.0`.
-fn reads_key(lp: &mut LocalPeer, i: usize, g: Tid, k: &str) -> bool {
+pub(super) fn reads_key(lp: &mut LocalPeer, i: usize, g: Tid, k: &str) -> bool {
     let v = lp.peers[i].engine.get(&g, &osis_base::Ak::new("x:m.0").unwrap()).unwrap();
     matches!(v, Some(osis_base::Value::Map(m)) if m.contains_key(&osis_base::Value::Str(k.into())))
 }
@@ -1992,9 +1992,10 @@ fn withdrawn_epoch_content_reaches_its_box_holders_only_spec_crypto_4() {
     }
 }
 
-// spec/crypto.md §4 (a node compacts `secrets.0` only while every epoch its state keys would be established), spec/commits.md §5: a withdrawn epoch (names unmet at every holder of
-// its secret) keeps its boxes in `secrets.0` for good, so a gate reading names stopped its holders'
-// compaction for good. Invariant: a holder compacts, drops the covered bodies and still reads what
+// spec/crypto.md §4 (A `secrets.0` compaction snapshot leaves out every live box: at epochs not
+// established, names aside), spec/commits.md §5: a withdrawn epoch (names unmet at every holder of
+// its secret) keeps its boxes in `secrets.0` for good, and they are carried (names aside), so its
+// holders cover and drop them. Invariant: a holder compacts, drops the covered bodies and still reads what
 // was written under e_R; a node granted after and fed by it judges every `secrets.0` part and the
 // current epochs as the compactor does. Randomized over the compactor, which aspects it compacts,
 // the clock, restarts and arrival order.

@@ -441,18 +441,18 @@ pub(crate) fn groups_of_from(v: Value) -> Result<GroupsOf> {
     Ok(GroupsOf { item_of: tids_from(i, "groups")?, subgroup_of: tids_from(s, "groups")?, within: tids_from(w, "groups")? })
 }
 
-/// `grants`: `[[holder, role, Opt(until), Opt(may_grant), with_membership]*]`.
+/// `grants`: `[[holder, role, Opt(until), Opt(may_grant), with_membership, from_now]*]`.
 pub(crate) fn grants_to(g: &Grants) -> Value {
-    Value::List(g.iter().map(|(h, g)| Value::List(vec![Value::Tid(*h), role_to(g.role), time_to(g.until), opt(g.may_grant.map(role_to)), Value::Bool(g.with_membership)])).collect())
+    Value::List(g.iter().map(|(h, g)| Value::List(vec![Value::Tid(*h), role_to(g.role), time_to(g.until), opt(g.may_grant.map(role_to)), Value::Bool(g.with_membership), Value::Bool(g.from_now)])).collect())
 }
 
 pub(crate) fn grants_from(v: Value) -> Result<Grants> {
     list(v, "grants")?
         .into_iter()
         .map(|g| {
-            let [h, role, until, may, with] = <[Value; 5]>::try_from(list(g, "grant")?).map_err(|_| bad("grant"))?;
+            let [h, role, until, may, with, from_now] = <[Value; 6]>::try_from(list(g, "grant")?).map_err(|_| bad("grant"))?;
             let may_grant = opt_from(may, "grant")?.map(|r| role_from(&r)).transpose()?;
-            Ok((tid(&h)?, Grant { role: role_from(&role)?, until: time_from(until, "grant")?, may_grant, with_membership: bool_from(&with, "grant")? }))
+            Ok((tid(&h)?, Grant { role: role_from(&role)?, until: time_from(until, "grant")?, may_grant, with_membership: bool_from(&with, "grant")?, from_now: bool_from(&from_now, "grant")? }))
         })
         .collect()
 }

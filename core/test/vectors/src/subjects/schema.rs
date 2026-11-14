@@ -27,8 +27,8 @@ fn tie_ts() -> Ts {
 /// (case, AK, value) per core aspect a commit writes; inputs are repeated bytes.
 fn samples() -> Vec<(&'static str, &'static str, Value)> {
     let holders: Holders = BTreeMap::from([
-        (tid(5), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), tied: Some(Tie { ts: tie_ts(), source: Source::Commit(CommitId([7; 32])), ctr: 2, subgroup: false }) }),
-        (tid(7), Edge { role: Role::Admin, until: None, invite: None, tied: None }),
+        (tid(5), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), tied: Some(Tie { ts: tie_ts(), source: Source::Commit(CommitId([7; 32])), ctr: 2, subgroup: false }), floor: None }),
+        (tid(7), Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None }),
     ]);
     let keys = Keys {
         read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]), names: [6; 32], left_out: BTreeMap::new(), demotions: BTreeSet::from([CommitId([7; 32])]), demotes: true }),
