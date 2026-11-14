@@ -1869,6 +1869,28 @@ fn a_readers_grant_copy_carries_the_grant_spec_sync_inbox_5() {
     assert!(body.certificate, "a certificate copy");
 }
 
+// spec/sync-inbox.md §5 (Grant copy: kept once `acted^.0` lists the thing), spec/sync-set.md §4:
+// peer 1 takes a stranger's grant, then marks the thing in `acted^.0` on D alone (no listing, so
+// nothing else moves): the grant copy joins its inbox's required set; unmarked, it leaves again.
+#[test]
+fn marking_a_grant_acted_on_keeps_its_copy_spec_sync_inbox_5() {
+    let (mut lp, t, p1, g, blob) = granted(Role::Read);
+    let e = &mut lp.peers[1].engine;
+    e.take_inbox_blob(&blob, true).unwrap();
+    let inbox = e.inbox_of(&p1).expect("an inbox");
+    assert!(!e.sync_bodies(&g).unwrap().contains_key(&inbox), "not accepted");
+    let d = e.account().unwrap().unwrap().1;
+    let mark = |e: &mut osis_engine::Engine, op| {
+        let mut m = Mutation::new();
+        m.op(d, &ct::ACTED, osis_crdt::PathOp { path: Vec::new(), op }).unwrap();
+        e.write(m).unwrap().unwrap();
+    };
+    mark(e, osis_crdt::Op::Add(osis_base::Value::Tid(t)));
+    assert!(e.sync_bodies(&g).unwrap().contains_key(&inbox), "accepted: a grant copy");
+    mark(e, osis_crdt::Op::Remove(osis_base::Value::Tid(t)));
+    assert!(!e.sync_bodies(&g).unwrap().contains_key(&inbox), "unmarked: none");
+}
+
 // spec/sync-inbox.md §5 (Grant copy: only one its author held write on the actor for, or the
 // account accepted), spec/requirements.md (a node that cannot read stores content only with a
 // writer's signature, beyond a small budget): peer 0 grants peer 1's account read on n things it
