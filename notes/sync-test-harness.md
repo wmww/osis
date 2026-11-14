@@ -53,11 +53,11 @@ The rebuilt sync core is sans-IO: `Node::handle(Input) -> Outputs`.
 
 ## Built (core/sync/tests/it/harness)
 - `World::new(seed)`; `add_node()` (engine with an account of its own, sync `Node` over a fresh `Store`, LAN segment 0 and a public address, a fresh dialable key) and `add_bare_node()` (no account); `address(i)`; `engine(i)` for reads, `write(i, f)` for writes (then `Input::Wrote`), `status(i)`. No test reaches a node's `handle`: `World::deliver` is the one place a node is stepped and its outputs go to `osis_sync::apply` into `Net`.
-- `run()` to quiet (queue empty, no wake within `horizon_ms`), `flush()`, `advance(ms)`; `partition(a, b)`, `heal()`, `power_off(i)` (connections cut, in-flight inputs and wake lost, the disks power-cut and the node reopened over them: nothing in memory survives), `power_on(i)`; `trace` records every delivery in `seen` (`Seen`); `deliveries` against `cap` (`RULE_CAP`, panics naming what still flows); settle rounds per step against `ROUND_CAP` (`Node::rounds`); `net.bytes`.
+- `run()` to quiet (queue empty, no wake within `horizon_ms`), `flush()`, `advance(ms)`; `partition(a, b)`, `heal()`, `power_off(i)` (connections cut, in-flight inputs and wake lost, the disks power-cut and the node reopened over them: nothing in memory survives), `power_on(i)`; `net.deaf` / `net.mute` (bytes to, or from, those nodes are lost; the transport still takes them: silent peers); `trace` records every delivery in `seen` (`Seen`); `deliveries` against `cap` (`RULE_CAP`, panics naming what still flows); settle rounds per step against `ROUND_CAP` (`Node::rounds`); `net.bytes`.
 - Dials: the key names the target (`Reach::node_of`), the route gives the rank; the accepting side gets `ConnId::ACCEPTED | n` and a fresh ephemeral peer key; an unknown key, an offline target or no route is `Down` at the dialer.
 - `fixture(key, build)` (`osis_base::copying::cached`, `World::copy`), refusing a second live copy per test; `two_nodes()`.
 - `Step` and `play(world, steps, replay)`; `shrinking(run, replay)` with `OSIS_SYNC_SHRINK=1`.
-- Not built: fabric faults beyond partition and power (drop, duplicate, delay), per-node clock skew, store faults (`osis_store::Faults`), scripted hostile peers, LAN discovery.
+- Not built: fabric faults beyond partition and power (drop, duplicate, delay), per-node clock skew, store faults (`osis_store::Faults`), scripted hostile peers beyond deaf and mute (session tests script a peer's frames against one `Session` instead), LAN discovery.
 
 ## Making the marginal test cheap
 | choice | saves | risk | guard |

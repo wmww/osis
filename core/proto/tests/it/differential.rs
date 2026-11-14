@@ -286,12 +286,12 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
     let id = uint(&all[1]).filter(|i| *i < 1 << 32).ok_or("id")?;
     let a = &all[2..];
     // spec/wire.md §11.1, §11.2: pushes 0; requests and replies nonzero but an Error; the shared
-    // set's and the stream's requests and answers top-bit; NoRecord 2^31
+    // set's and the stream's requests and answers (every Fetch) top-bit; NoRecord 2^31
     let push = matches!(kind, 29 | 43..=46);
     let id_ok = match kind {
         0 => true,
         _ if push => id == 0,
-        36..=42 => id & TOP != 0 && (kind != 40 || id == TOP),
+        19 | 20 | 36..=42 => id & TOP != 0 && (kind != 40 || id == TOP),
         _ => id != 0,
     };
     let n = |k: usize| ok(a.len() == k, "arity");

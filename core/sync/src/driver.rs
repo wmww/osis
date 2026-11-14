@@ -145,12 +145,7 @@ impl Node {
 
     fn step(&mut self, input: Input, out: &mut Vec<Out>) -> Result<()> {
         match input {
-            Input::Up { conn, peer, rank, dialed } => {
-                // the listener's static key: the key dialed, or the one this node listens with
-                let Some(listener) = (if dialed { Some(peer) } else { self.cfg.key }) else {
-                    out.push(Out::Close(conn));
-                    return Ok(());
-                };
+            Input::Up { conn, peer, rank, dialed, listener } => {
                 let s = Session::new(conn, peer, dialed, rank, listener, &mut cx!(self, out));
                 self.driver.sessions.insert(s);
             }

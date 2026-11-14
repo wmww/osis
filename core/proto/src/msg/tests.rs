@@ -65,7 +65,7 @@ fn exact_arity_spec_wire_11_2() {
 
 // spec/wire.md §11.1: an id is 0 in a push and nonzero in every request and reply, but an Error
 // answering a frame whose id cannot be read; spec/wire.md §11.2: the shared set's and the
-// stream's requests and answers have the top bit set, NoRecord exactly 2^31
+// stream's requests and answers (every Fetch) have the top bit set, NoRecord exactly 2^31
 #[test]
 fn ids_spec_wire_11_1() {
     for (name, m) in messages() {
@@ -76,7 +76,7 @@ fn ids_spec_wire_11_1() {
             Some(_) => assert_ne!(id, 0, "{name}"),
             None => panic!("{name}"),
         }
-        assert_eq!(top_bit_kind(kind), (36..=42).contains(&kind));
+        assert_eq!(top_bit_kind(kind), matches!(kind, 19 | 20 | 36..=42));
         if top_bit_kind(kind) {
             assert_ne!(id & crate::limits::TOP_BIT, 0, "{name}");
         }

@@ -120,6 +120,10 @@ pub struct Net {
     /// Bytes each end sent on each connection: the transport takes them at once (no buffer), so
     /// each send is answered `Taken` with the total.
     written: BTreeMap<(usize, ConnId), u64>,
+    /// Hostile peers: bytes a deaf node is sent, and bytes a mute node sends, are lost (the
+    /// transport still takes them).
+    pub deaf: BTreeSet<usize>,
+    pub mute: BTreeSet<usize>,
     rng_seed: u64,
     dials: u64,
 }
@@ -159,8 +163,8 @@ impl Net {
         let eph = self.ephemeral();
         self.links.insert((from, conn), (target, accepted));
         self.links.insert((target, accepted), (from, conn));
-        self.queue.push_back((from, Input::Up { conn, peer: NodeKey(to.key), rank, dialed: true }));
-        self.queue.push_back((target, Input::Up { conn: accepted, peer: eph, rank, dialed: false }));
+        self.queue.push_back((from, Input::Up { conn, peer: NodeKey(to.key), rank, dialed: true, listener: NodeKey(to.key) }));
+        self.queue.push_back((target, Input::Up { conn: accepted, peer: eph, rank, dialed: false, listener: NodeKey(to.key) }));
     }
 
     fn send(&mut self, from: usize, conn: ConnId, bytes: &[u8]) {
@@ -170,7 +174,9 @@ impl Net {
             let w = self.written.entry((from, conn)).or_default();
             *w += bytes.len() as u64;
             let total = *w;
-            self.queue.push_back((to, Input::Bytes { conn: tc, bytes: bytes.to_vec() }));
+            if !self.mute.contains(&from) && !self.deaf.contains(&to) {
+                self.queue.push_back((to, Input::Bytes { conn: tc, bytes: bytes.to_vec() }));
+            }
             self.queue.push_back((from, Input::Taken { conn, bytes: total }));
         }
     }

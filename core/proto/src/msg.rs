@@ -299,10 +299,9 @@ pub fn answers(request: u64, reply: u64) -> bool {
 }
 
 /// Kinds whose id has its top bit set: the shared set's and the stream's requests and their
-/// answers (spec/wire.md §11.2 Shared-set request ids). A Fetch of stream bodies has one too,
-/// but a Fetch may also have another id.
+/// answers, Fetch and FetchReply among them (spec/wire.md §11.2 Shared-set request ids).
 fn top_bit_kind(kind: u64) -> bool {
-    matches!(kind, 36..=42)
+    matches!(kind, 19 | 20 | 36..=42)
 }
 
 /// A frame body that is not a valid message: its kind and request id when readable (`read`;

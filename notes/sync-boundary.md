@@ -32,7 +32,7 @@ pub struct SyncConfig { pub key: Option<NodeKey>, pub dial: Vec<Address> }   // 
 
 ## The step
 ```rust
-pub enum Input { Up { conn: ConnId, peer: NodeKey, rank: u8, dialed: bool }, Bytes { conn: ConnId, bytes: Vec<u8> }, Taken { conn: ConnId, bytes: u64 }, Closed { conn: ConnId }, Down { conn: ConnId }, Tick { now: WallMs }, Wrote }
+pub enum Input { Up { conn: ConnId, peer: NodeKey, rank: u8, dialed: bool, listener: NodeKey }, Bytes { conn: ConnId, bytes: Vec<u8> }, Taken { conn: ConnId, bytes: u64 }, Closed { conn: ConnId }, Down { conn: ConnId }, Tick { now: WallMs }, Wrote }
 impl Node {
     pub fn open(engine: Engine, store: Store, cfg: SyncConfig, rng: Box<dyn NodeRng>) -> Result<Node>;
     #[must_use] pub fn handle(&mut self, input: Input) -> Vec<Out>;
@@ -58,7 +58,7 @@ Each module is a `Clone` struct (world copies: `Node::test_copy`) owning its sta
 **1. `session`: wire and session** (spec/wire.md §11.1-§11.2, spec/sync-streams.md §1-§2, spec/sync-opens.md §1 Dial timeout and §2, spec/sync-transport.md §1). Pure: messages in, frames out; time comes in inputs. State: per connection, in memory: Hello and the challenges, proofs shown and proven, request ids and their send order, the window, the stall clock, unanswered-in bytes, bytes written and taken, clock samples; per dial not up, its deadline. Depends on osis-proto and the engine's proof calls (`provers`, `own_node_key`, `own_node`, `key_open`, `known_actor`, `account_tid`, `prove_rotations`, `take_rotations`).
 ```rust
 impl Session {
-    pub fn new(conn: ConnId, peer: NodeKey, dialer: bool, rank: u8, listener_key: NodeKey, cx: &mut Cx) -> Session;  // queues Hello; listener_key: the key dialed, or the node's own
+    pub fn new(conn: ConnId, peer: NodeKey, dialer: bool, rank: u8, listener_key: NodeKey, cx: &mut Cx) -> Session;  // queues Hello; listener_key: `Input::Up`'s `listener` (the key dialed, or the key of the listener that took it)
     pub fn receive(&mut self, bytes: &[u8], cx: &mut Cx) -> Result<Vec<Incoming>, Close>;   // Hello, Prove/Proved, Ping/Pong run here
     pub fn request(&mut self, by: To, m: Msg) -> RequestId;   // id chosen here (top bit for kinds 19, 36-41; NoRecord 2^31); sent in order while under WINDOW; the answer goes to `by`
     pub fn answer(&mut self, to: RequestId, m: Msg);
@@ -79,7 +79,8 @@ pub struct Close(pub &'static str);
 - **Skipped**: Pulls and Fetches are answered in order; one still out when a later one's answer arrives reaches its module as `Reply(.., Error 14)` (a Pull) or an empty `FetchReply`, so streams has one path for refusals. Every Fetch takes a top-bit id.
 - **Deadlines**: `STALL_TIMEOUT_MS` (2 min) from the oldest request's last move, or from Up while the peer's Hello has not come; `DIAL_TIMEOUT_MS` (the same) from `Sessions::dialing`. Kept in one ordered set, refreshed only for sessions a step touched (`take_sends`), so a step's work is in proportion to the connections it reached. A world with no request out has no wake: `PINGS` (3) Pings by the dialer only, one at a time, then none.
 - **`Input::Taken { conn, bytes }`**: the transport took that many bytes of the connection in all (`osis_transport` link's `taken`); the push rule and the stall clock need it. The harness answers each send with it at once.
-- Not built: closing a connection where the node came to act for an actor it did not prove there (spec/sync-opens.md §1); the account's rotations in a Prove (`Engine::prove_rotations` and `take_rotations` return NotBuilt: none sent, those received not taken); the closing rule is checked only when bytes arrive.
+- **Hostile peers**: memory per connection is bounded by constants (one partial frame, `UNANSWERED` of the peer's requests, unwritten bytes past `CLOSING` plus this side's in flight close it, checked as bytes arrive: what this side writes otherwise is its own window and pushes). The stall clock catches stuck peers, not hostile ones: a peer trickling a reply to the oldest request, or a small push every few minutes, holds its own connection, as does a dialer that sends Hello and nothing more (a served connection is never closed for silence, spec/sync-transport.md §5); each holds only its own connection at that bounded cost.
+- Not built: closing a connection where the node came to act for an actor it did not prove there (spec/sync-opens.md §1): it needs a change signal for the actors the engine proves for (`key_actors` is not a memo container, so watching it per step would cost every step); the account's rotations in a Prove (`Engine::prove_rotations` and `take_rotations` return NotBuilt: none sent, those received not taken); the node-wide bound on what served connections hold (spec/sync-transport.md §5 Served connections: requests waiting for the bound's room, reading paused, the largest holders closed), which needs `Sessions` to hold answers back.
 **2. `opens`: records, agreement, the shared set** (spec/sync-opens.md §2-§6, spec/sync-ids.md §6 Walk). State: records (durable, in the store's record rows, `RECORD_BUDGET` LRU), per connection the members, filter generations sent and received, Offer in flight, walk state; `changed_at` per S (durable). Depends on session, store, unread (its credentials), engine (J, credentials, known actors).
 ```rust
 impl Opens {

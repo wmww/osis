@@ -546,3 +546,105 @@ fn a_connection_goes_quiet_spec_sync_opens_2() {
     w.run();
     assert!(w.deliveries - before < 40, "{} deliveries", w.deliveries - before);
 }
+
+/// A Stream push carrying one blob of `n` bytes.
+fn big_push(n: usize) -> Msg {
+    let event = osis_proto::msg::Event::Added { blob_id: osis_base::BlobId([1; 32]), blob: Some(vec![0; n]), wrap: [0; osis_proto::msg::WRAP_LEN], stamp: None };
+    Msg::Stream(Box::new(osis_proto::msg::Stream { events: vec![(osis_base::SyncId([1; 16]), event)], cursor: None, report: false, seq: 0 }))
+}
+
+// spec/sync-streams.md §1 (Closing): a peer that takes none of what this side writes is kept while
+// the unwritten bytes stay within `WINDOW + 2 × (MAX_MESSAGE + 4)` plus this side's own in flight,
+// and closed past it; the transport taking them makes room.
+#[test]
+fn peer_that_reads_nothing_closes_spec_sync_streams_1() {
+    let (_, mut l, mut ls, _) = listener_with_scripted_dialer();
+    let blob = vec![0u8; 8 << 20];
+    let mut kept = None;
+    for i in 1..=5u32 {
+        let id = TOP_BIT | i;
+        let fetch = Msg::Fetch { id, sync_id: osis_base::SyncId([1; 16]), max_reply: REPLY_BUDGET as u64, ids: vec![osis_base::BlobId([2; 32])] };
+        let r = ls.receive(&frame(&fetch), &mut l.cx());
+        assert!(r.is_ok(), "{i}: within the bound ({} MiB unwritten)", (i - 1) * 8);
+        ls.answer(id, Msg::FetchReply { id, items: vec![osis_proto::msg::Fetched { blob_id: osis_base::BlobId([2; 32]), entry: Some((blob.clone(), [0; osis_proto::msg::WRAP_LEN], None)) }] });
+        if i == 4 {
+            kept = Some(ls.clone());
+        }
+    }
+    let ping = frame(&Msg::Ping { id: 1, wall_ms: 0 });
+    assert_eq!(ls.receive(&ping, &mut l.cx()).err(), Some(Close("the peer reads nothing")), "40 MiB unwritten");
+    let mut ls = kept.expect("copy");
+    assert!(ls.receive(&ping, &mut l.cx()).is_ok(), "32 MiB unwritten: kept");
+}
+
+// spec/sync-streams.md §1 (Stall): a frame trickled byte by byte moves the stall clock only when it
+// is a reply to the oldest request out: the partial bytes of a push, or of a reply to another
+// request, move nothing (a push counts once its frame is whole); and other bytes stop moving it
+// past their bound, until it moves by its own events again.
+#[test]
+fn trickled_and_other_bytes_spec_sync_streams_1() {
+    let mut p = quiet_pair();
+    let stall = |at: u64| Some(WallMs(T0.0 + at + STALL_TIMEOUT_MS));
+    let a = p.ds.request(To::Streams, pull(SMALL_REPLY as u64));
+    let b = p.ds.request(To::Inbox, Msg::Ping { id: 0, wall_ms: 0 });
+    p.ds.take_bytes();
+    assert_eq!(p.ds.deadline(), stall(0));
+    // one byte a millisecond
+    let trickle = |p: &mut Pair, bytes: &[u8]| {
+        for x in bytes {
+            p.d.now = WallMs(p.d.now.0 + 1);
+            p.ds.receive(&[*x], &mut p.d.cx()).expect("kept");
+        }
+        p.d.now.0 - T0.0
+    };
+    let push = frame(&Msg::Digest { digest: [3; 32] });
+    trickle(&mut p, &push[..push.len() - 1]);
+    assert_eq!(p.ds.deadline(), stall(0), "a push's partial bytes move nothing");
+    let moved = trickle(&mut p, &push[push.len() - 1..]);
+    assert_eq!(p.ds.deadline(), stall(moved), "a whole push does");
+    trickle(&mut p, &frame(&Msg::Pong { id: b, wall_ms: 0 }));
+    assert_eq!(p.ds.deadline(), stall(moved), "nor does a reply to another request, partial or whole");
+    // other bytes past `WINDOW + 2 × (MAX_MESSAGE + 4) + WINDOW + 2 × MAX_MESSAGE + 4` (about 68 MiB)
+    let big = frame(&big_push(8_000_000));
+    let mut moves = 0;
+    for i in 0..10u64 {
+        p.d.now = WallMs(T0.0 + 1000 + i);
+        p.ds.receive(&big, &mut p.d.cx()).expect("kept");
+        if p.ds.deadline() == stall(1000 + i) {
+            moves += 1;
+        }
+    }
+    assert_eq!(moves, 8, "eight 8 MB pushes move it, the ninth passes the bound");
+    p.d.now = WallMs(T0.0 + 2000);
+    p.ds.receive(&frame(&pull_reply(a)), &mut p.d.cx()).expect("kept");
+    assert_eq!(p.ds.deadline(), None, "answered: nothing out");
+}
+
+// spec/sync-streams.md §1 (Stall), spec/sync-transport.md §1: in a world, a dialer whose peer
+// sends no Hello (mute), or never answers its Prove (deaf), closes the connection at its tick
+// `STALL_TIMEOUT_MS` after it came up, not before; the close reaches the peer.
+#[test]
+fn silent_peers_close_at_the_tick_spec_sync_streams_1() {
+    for deaf in [false, true] {
+        let mut w = fixture("session_two_bare", || {
+            let mut w = World::new(0);
+            w.add_bare_node();
+            w.add_bare_node();
+            w.run();
+            w
+        });
+        if deaf {
+            w.net.deaf.insert(1);
+        } else {
+            w.net.mute.insert(1);
+        }
+        w.trace = true;
+        let to = w.address(1);
+        w.apply_as(0, vec![Out::Dial(ConnId(1), to)]);
+        let closed = |w: &World| w.seen.iter().any(|s| matches!(s, crate::harness::Seen::Closed { node: 1, .. }));
+        w.advance(STALL_TIMEOUT_MS - 1);
+        assert!(!closed(&w), "deaf {deaf}: kept until the bound");
+        w.advance(1);
+        assert!(closed(&w), "deaf {deaf}: closed at the bound");
+    }
+}
