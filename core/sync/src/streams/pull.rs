@@ -604,7 +604,7 @@ impl Streams {
                 class(Rank::Unopened, false)
             }
             Holding::Read => {
-                if tomb || held.is_some() {
+                if tomb || held.is_some() || ctx.ground.taken(b) {
                     return None;
                 }
                 class(ctx.ground.rank(s, b, wrap), stamp.is_none())

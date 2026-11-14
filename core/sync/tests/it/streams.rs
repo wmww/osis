@@ -42,6 +42,8 @@ struct Table {
     pends: bool,
     /// Bodies that opened to a pending commit and were not kept.
     unkept: Vec<BlobId>,
+    /// Blobs taken before: a fetch of one brings nothing.
+    taken: std::collections::BTreeSet<BlobId>,
 }
 
 impl Ground for Table {
@@ -56,6 +58,9 @@ impl Ground for Table {
     }
     fn rank(&mut self, _s: &SyncId, b: &BlobId, _w: &[u8; WRAP_LEN]) -> Rank {
         self.rank.get(b).copied().unwrap_or(Rank::Unopened)
+    }
+    fn taken(&mut self, b: &BlobId) -> bool {
+        self.taken.contains(b)
     }
 }
 
@@ -789,6 +794,22 @@ fn order_zero_first_never_not_fetched_spec_sync_streams_5() {
     // an unstamped entry is deposited: one that does not open goes before the highest order
     assert_eq!(order, [z, u, h]);
     assert!(p.b.streams.caught_up(C, &s), "the body never fetched holds nothing up");
+}
+
+// spec/sync-streams.md §4 (Bodies: only blob IDs its store lacks and it has not taken are
+// fetched): a reader that took a blob before (it opened to a commit held here) and keeps no entry
+// of it fetches only the other body announced, and is caught up.
+#[test]
+fn a_body_taken_before_is_not_fetched_again_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    let (x, y) = (p.a.log(s, 40_001), p.a.log(s, 40_002));
+    p.b.table.taken.insert(x);
+    p.shared_read(s);
+    p.run();
+    let fetched: Vec<BlobId> = p.sent_by_b(19).into_iter().flat_map(|m| if let Msg::Fetch { ids, .. } = m { ids.clone() } else { vec![] }).collect();
+    assert_eq!(fetched, [y]);
+    assert!(p.b.streams.caught_up(C, &s));
 }
 
 // spec/sync-streams.md §4 (Full): a node keeping S unread refusing a pulled entry for room tells

@@ -262,45 +262,54 @@ pub fn reads(e: &mut Engine, t: &Tid) -> Reads {
 /// A world of `n` nodes, each with an account of its own, each account every other's contact
 /// (`introduce`), quiet, handing its commits to the reference from now on. Nodes find each other
 /// only as the product does: whom each dials is `Engine::dial_peers` (contacts' dial lists).
-/// Fresh per seed (drawn IDs, keys and tie-breaks), never a fixture copy.
+/// Drawn per seed (IDs, keys and tie-breaks); built once per (seed, n) per process and copied
+/// (`osis_base::copying::cached`: a history plays twice, and several tests share seeds). Its
+/// setup has its own delivery cap (`RULE_CAP` per node); a test's count starts after it.
 pub fn world(seed: u64, n: usize) -> World {
-    let mut w = World::new(seed);
-    for _ in 0..n {
-        w.add_node();
-    }
-    introduce(&mut w);
-    w.run();
-    w.history.harvest = true;
-    w
+    osis_base::copying::cached(
+        &format!("history world {seed} {n}"),
+        || {
+            let mut w = World::new(seed);
+            w.cap = super::RULE_CAP * n as u64;
+            for _ in 0..n {
+                w.add_node();
+            }
+            introduce(&mut w);
+            w.run();
+            w.cap = super::RULE_CAP;
+            w.history.harvest = true;
+            w
+        },
+        |w: &mut World| w.copy(),
+    )
 }
 
-/// Every account becomes every other's contact: each grants every other read on its profile,
-/// and each node files every other account's profile in its account's D (what
-/// importing a contact card leaves, spec/sync-inbox.md §5), all handed by hand before any
-/// history, so no history content travels this way. A stand-in for the contact exchange by cards
-/// (`links::a_grant_reaches_a_contact_by_card`), which costs more here and fails two flows tests
-/// (issues/sync-link-first-contact.md).
+/// Every account becomes every other's contact by contact cards (spec/sync-inbox.md §5): each
+/// node makes a read link to its account's profile, every other node redeems it, and once
+/// joined files the profile in its account's D (an accept, spec/sync-set.md §4). Before any
+/// history only; nothing is handed by hand.
 pub fn introduce(w: &mut World) {
-    assert!(w.history.things.is_empty(), "introduce hands no content: before any history only");
-    hand_all(w);
+    assert!(w.history.things.is_empty(), "introduce before any history only");
     let n = w.len();
-    let who: Vec<(Option<Tid>, Option<Tid>)> = (0..n).map(|i| (w.node(i).account, w.node(i).profile)).collect();
-    let read = Edge { role: Role::Read, until: None, invite: None, tied: None };
-    for (i, (_, p)) in who.iter().enumerate() {
-        let Some(p) = p else { continue };
-        for (j, (a, _)) in who.iter().enumerate() {
-            if let (true, Some(a)) = (i != j, a) {
-                w.write(i, |e| e.grant(p, a, &read)).expect("a profile grant");
-            }
+    let cards: Vec<Option<osis_label::ShareLink>> = (0..n).map(|i| w.node(i).profile.map(|p| w.make_link(i, p, Role::Read))).collect();
+    let pairs: Vec<(usize, usize)> = (0..n).flat_map(|j| (0..n).map(move |i| (j, i))).filter(|(j, i)| j != i && w.node(*j).account.is_some()).collect();
+    for &(j, i) in &pairs {
+        if let Some(c) = &cards[i] {
+            w.redeem(j, c);
         }
     }
-    hand_all(w);
-    // each account's own profile is in its D from its creation
-    for i in 0..n {
-        let others: Vec<Tid> = who.iter().enumerate().filter(|(j, _)| *j != i).filter_map(|(_, x)| x.1).collect();
-        file(w, i, Vec::new(), others);
+    w.run();
+    for &(j, i) in &pairs {
+        if let Some(c) = &cards[i] {
+            assert_eq!(w.redeem(j, c), osis_sync::types::Waiting::Done, "{j} redeems {i}'s card");
+        }
     }
-    hand_all(w);
+    for j in 0..n {
+        let others: Vec<Tid> = pairs.iter().filter(|(a, _)| *a == j).filter_map(|(_, i)| cards[*i].as_ref().map(|c| c.target)).collect();
+        if !others.is_empty() {
+            file(w, j, Vec::new(), others);
+        }
+    }
 }
 
 /// Node `i` files `items` and `subgroups` in its account's D, in every synced group's closure of

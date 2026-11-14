@@ -151,6 +151,10 @@ impl Deliveries {
                     if !live {
                         self.send(h, offers, k, s)?;
                     }
+                    if self.sent.get(&k).is_some_and(|x| x.s == s) && took_own(h.engine, &s)? {
+                        h.engine.delivered(&k.0, &k.1)?;
+                        self.forget(h, offers, &k)?;
+                    }
                 }
                 Want::Unreachable => {
                     self.wants.insert(k, Want::Unreachable);
@@ -274,6 +278,13 @@ fn judge(engine: &mut Engine, seen: &Stamped<Key, BTreeSet<(SyncId, Option<osis_
         Some(s) => Want::To(s),
         None => Want::Unreachable,
     })
+}
+
+/// spec/sync-inbox.md §2 Re-send (the sender reads the inbox): a blob logged here under an inbox
+/// this node reads is taken here (this node holds its commit), so the delivery ends once sent;
+/// the inbox's other readers get the logged blob by syncing the inbox.
+fn took_own(engine: &mut Engine, s: &SyncId) -> Result<bool> {
+    Ok(matches!(engine.sync_holding(s)?, Some((_, osis_engine::sync::Holding::Read))))
 }
 
 /// spec/sync-inbox.md §2 Re-send: an open of a sync ID the blob names, the recipient proven,

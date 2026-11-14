@@ -103,6 +103,12 @@ pub enum Rank {
 pub trait Ground {
     /// Opens the entry's wrap and takes what the blob holds (`Engine::open_entry`).
     fn open(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening>;
+    /// Whether blob `b` was taken here before and fetching it again brings nothing: it opened to
+    /// a commit held here, not pending (spec/sync-streams.md §4 Bodies).
+    fn taken(&mut self, b: &BlobId) -> bool {
+        let _ = b;
+        false
+    }
     /// The body's place in the fill order.
     fn rank(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Rank;
     /// An entry that opened to a pending commit was not kept (`store::release`).
@@ -437,6 +443,13 @@ impl Ground for EngineGround<'_> {
             Ok(Opened::NotOpen) | Err(osis_engine::Error::NotBuilt(_)) => Ok(Opening::NotOpen),
             Ok(Opened::Bad) => Ok(Opening::Bad),
             Err(e) => Err(e.into()),
+        }
+    }
+
+    fn taken(&mut self, b: &BlobId) -> bool {
+        match self.engine.blob_commit(b) {
+            Ok(Some(c)) => self.engine.holds_commit(&c) && !self.engine.pends(&c),
+            _ => false,
         }
     }
 

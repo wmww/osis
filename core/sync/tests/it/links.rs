@@ -63,6 +63,21 @@ fn a_redeemer_joins_k_spec_permissions_7() {
     assert_eq!(w.engine(1).get(&p0, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap(), Some(osis_base::Value::Int(7)), "K's content read");
 }
 
+// spec/sync-inbox.md §2 (Re-send: the sender reads the inbox it logged the blob under): making a
+// link owes K its grant on the target, and the join owes the redeemer's own account its grant on
+// K; each sender reads that inbox (K's, its own account's), so each delivery ends once logged and
+// a wait on deliveries is done at both.
+#[test]
+fn a_delivery_to_an_inbox_the_sender_reads_ends_once_logged_spec_sync_inbox_2() {
+    use osis_sync::types::Scope;
+    let (mut w, link) = redeemed();
+    assert_eq!(w.redeem(1, &link), Waiting::Done);
+    for i in 0..2 {
+        assert!(w.engine(i).deliveries().unwrap().is_empty(), "node {i} owes nothing");
+        assert_eq!(w.wait(i, Scope::Deliveries), Waiting::Done);
+    }
+}
+
 /// Node 0's read link to its profile, followed at node 1 (not run): node 1 knows K only from the
 /// link text.
 fn followed() -> (World, ShareLink) {
