@@ -98,10 +98,10 @@ impl Ground for Cx<'_> {
         Ok(self.engine.removal_notices()?)
     }
     fn path(&mut self, s: &SyncId) -> Result<Option<Arc<Path>>> {
-        Ok(Store::path(self.store, s))
+        Store::path(self.store, s)
     }
     fn own_entries(&mut self, s: &SyncId) -> Result<Vec<BlobId>> {
-        Ok(self.store.entries(s).filter(|e| e.own).map(|e| e.blob).collect())
+        Ok(self.store.entries(s)?.into_iter().filter(|e| e.own).map(|e| e.blob).collect())
     }
     fn shred(&mut self, s: &SyncId) -> Result<()> {
         self.store.shred(s)
