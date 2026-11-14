@@ -639,9 +639,9 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
 fn forged_role_class_unmerged_spec_perm_1() {
     use osis_schema::{RawKey, core_types as ct};
     let (mut lp, d, _, _) = setup();
-    let label = ct::Label { steps: BTreeMap::new(), hosts: Vec::new() };
-    let labels: ct::Labels = BTreeMap::from([(osis_base::SyncId([5; 16]), label)]);
-    let a = ak(ct::LABEL.ak());
+    let label = ct::SyncEntry { steps: BTreeMap::new() };
+    let labels: ct::SyncIds = BTreeMap::from([(osis_base::SyncId([5; 16]), label)]);
+    let a = ak(ct::SYNC.ak());
     let before = lp.peers[0].engine.get(&d, &a).unwrap();
     let forged = forge_role_commit(&mut lp, 1, d, &a, &labels.to_value(), 1);
     lp.peers[0].receive(&forged, Vec::new()).unwrap();
@@ -1281,19 +1281,16 @@ fn edge_change_is_remove_and_put_spec_perm_2() {
 
 /// Account actors for `lp`'s peers, known to all.
 fn persons(lp: &mut LocalPeer) -> Vec<Tid> {
-    let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
-    let ps = (0..lp.peers.len()).map(|i| lp.peers[i].engine.create_account(&hosts).unwrap().0.account).collect();
+    let ps = (0..lp.peers.len()).map(|i| lp.peers[i].engine.create_account().unwrap().0.account).collect();
     lp.sync_all().unwrap();
     ps
 }
 
 /// Hands `done`'s inbox blobs to every other peer.
 fn carry(lp: &mut LocalPeer, from: usize, done: &osis_engine::flows::Done) {
-    for d in &done.deliveries {
-        if let osis_engine::flows::Delivery::Inbox { blob, .. } = d {
-            for i in (0..lp.peers.len()).filter(|i| *i != from) {
-                let _ = lp.peers[i].engine.accept_inbox(blob);
-            }
+    for (_, blob) in lp.inbox_blobs(from, done).unwrap() {
+        for i in (0..lp.peers.len()).filter(|i| *i != from) {
+            let _ = lp.peers[i].engine.take_inbox_blob(&blob, true);
         }
     }
 }
@@ -3427,12 +3424,11 @@ fn stranger_card_makes_no_node_spec_perm_4() {
     for header_only in [true, false] {
         let mut lp = net_bare(2, 0);
         lp.sync_all().unwrap();
-        let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
-        let (p, _) = lp.peers[0].engine.create_account(&hosts).unwrap();
+        let (p, _) = lp.peers[0].engine.create_account().unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, p.account);
         lp.peers[0].commit(m).unwrap();
-        let spec = osis_engine::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts, peers: Vec::new(), single_use: false };
+        let spec = osis_engine::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: Vec::new(), peers: Vec::new(), single_use: false };
         let (link, _, _) = lp.peers[0].engine.create_link(&p.account, &spec).unwrap();
         let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
         {
@@ -3458,25 +3454,24 @@ fn stranger_card_makes_no_node_spec_perm_4() {
 fn stranger_label_listing_labels_nothing_spec_sync_2() {
     let mut lp = net_bare(2, 0);
     lp.sync_all().unwrap();
-    let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
-    let (p, _) = lp.peers[0].engine.create_account(&hosts).unwrap();
+    let (p, _) = lp.peers[0].engine.create_account().unwrap();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, p.account);
     lp.peers[0].commit(m).unwrap();
     let e = &mut lp.peers[0].engine;
-    assert!(e.labeled_groups().contains(&p.devices), "the account's home label");
+    assert!(e.things_with_sync_ids().contains(&p.devices), "the account's home label");
     let before = e.published_under(&p.devices);
-    let mut blob = forge_on(&mut lp, t, "label.0");
+    let mut blob = forge_on(&mut lp, t, "sync.0");
     blob.parts.clear();
     let id = blob.id();
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.ingest(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(id));
-    assert!(!e.labeled_groups().contains(&t), "a listing labels nothing");
+    assert!(!e.things_with_sync_ids().contains(&t), "a listing labels nothing");
     assert!(!e.published_under(&p.devices).contains(&t));
     assert_eq!(e.published_under(&p.devices), before);
     // nor after a reopen
     e.reload().unwrap();
-    assert!(!e.labeled_groups().contains(&t));
+    assert!(!e.things_with_sync_ids().contains(&t));
 }
 
 /// Secrets for hand-built commits on several things: each thing's dedup from its record, a

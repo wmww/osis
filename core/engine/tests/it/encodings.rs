@@ -374,11 +374,11 @@ fn label_claim_set_above_the_threshold_stays_inline_spec_dm_6() {
     let t = new_thing(&mut lp, 0);
     let claims = osis_label::ClaimSet { claims: vec![[1; 32]; 4096], entries: Default::default() }.to_bytes();
     assert!(claims.len() > osis_base::format::CHUNK_THRESHOLD);
-    let l = ct::Label { steps: [([9; 32], ct::StepRecord { step: vec![1; 200], claims: Some(claims) })].into_iter().collect(), hosts: Vec::new() };
+    let l = ct::SyncEntry { steps: [([9; 32], ct::StepRecord { step: vec![1; 200], claims: Some(claims) })].into_iter().collect() };
     let mut m = Mutation::new();
-    m.op(t, &ct::LABEL, PathOp { path: vec![PathSeg::Key(Value::Bytes(vec![5; 16]))], op: Op::Set(osis_schema::Codec::to_value(&l)) }).unwrap();
+    m.op(t, &ct::SYNC, PathOp { path: vec![PathSeg::Key(Value::Bytes(vec![5; 16]))], op: Op::Set(osis_schema::Codec::to_value(&l)) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
-    assert!(lp.peers[0].engine.get(&t, &ak("label.0")).unwrap().is_some(), "held by its writer");
+    assert!(lp.peers[0].engine.get(&t, &ak("sync.0")).unwrap().is_some(), "held by its writer");
     sync(&mut lp, 0, 1);
-    assert!(lp.peers[1].engine.get(&t, &ak("label.0")).unwrap().is_some(), "held by the reader");
+    assert!(lp.peers[1].engine.get(&t, &ak("sync.0")).unwrap().is_some(), "held by the reader");
 }

@@ -6,7 +6,7 @@ use crate::common;
 use common::*;
 use osis_base::{Clock, CommitId, SyncId, Role, Tid, Value};
 use osis_label::Address;
-use osis_engine::flows::{Delivery, Demotion, Done};
+use osis_engine::flows::{Demotion, Done};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::Mutation;
 use osis_schema::core_types as ct;
@@ -80,26 +80,15 @@ pub(crate) fn sealed_write(lp: &mut LocalPeer, from: usize, t: Tid, v: &str) -> 
     out
 }
 
-/// Carries out a flow's deliveries addressed to the peers of `lp` (direct sends and inbox
-/// blobs; placement under labels is node-sync's and is skipped here).
-fn carry(lp: &mut LocalPeer, from: usize, done: &Done) {
-    for d in &done.deliveries {
-        match d {
-            Delivery::Direct { to, commits } => {
-                if let Some(i) = lp.peers.iter().position(|p| p.engine.tid() == *to) {
-                    send(lp, from, i, commits);
-                }
-            }
-            Delivery::Inbox { blob, .. } => {
-                for i in 0..lp.peers.len() {
-                    if i != from {
-                        let _ = lp.peers[i].engine.accept_inbox(blob);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
+/// Carries out the deliveries `from` owes to the peers of `lp` (direct sends and inbox blobs;
+/// logging under sync IDs is sync's and is skipped here).
+fn carry(lp: &mut LocalPeer, from: usize) {
+    lp.carry_deliveries(from).unwrap();
+}
+
+/// The inbox blobs `from` owes `to` for the commits of `done`.
+fn blobs_to(lp: &mut LocalPeer, from: usize, done: &Done, to: Tid) -> Vec<Vec<u8>> {
+    lp.inbox_blobs(from, done).unwrap().into_iter().filter(|(h, _)| *h == to).map(|(_, b)| b).collect()
 }
 
 fn tags(lp: &mut LocalPeer, i: usize, t: Tid) -> BTreeSet<String> {
@@ -132,16 +121,15 @@ fn account_two_nodes() -> (LocalPeer, Tid) {
 
 fn account_two_nodes_built() -> (LocalPeer, Tid) {
     let mut lp = net_bare(2, 0);
-    let (p, done) = lp.peers[0].engine.create_account(&hosts()).unwrap();
+    let (p, done) = lp.peers[0].engine.create_account().unwrap();
     assert_eq!(done.commits.len(), 1, "one commit: account, devices actor, profile");
     // the new node's card over the direct connection
     let n = lp.peers[1].engine.tid();
     let card: Vec<CommitId> = lp.peers[1].engine.commit_ids();
     send(&mut lp, 1, 0, &card);
-    let paired = lp.peers[0].engine.pair(&n).unwrap();
-    carry(&mut lp, 0, &paired);
-    let grant = *paired.commits.last().unwrap();
-    lp.peers[1].engine.paired(&p.account, &grant).unwrap();
+    let (_, send_) = lp.peers[0].engine.pair(&n).unwrap();
+    send(&mut lp, 0, 1, &send_);
+    lp.peers[1].engine.paired(&p.account).unwrap();
     (lp, p.devices)
 }
 
@@ -152,7 +140,7 @@ fn account_and_pairing_spec_perm_1() {
     let (mut lp, d) = account_two_nodes();
     let e0 = &mut lp.peers[0].engine;
     assert_eq!(e0.role_on(&d), Some(Role::Admin));
-    let labels = e0.get_typed(&d, &ct::LABEL).unwrap().unwrap();
+    let labels = e0.get_typed(&d, &ct::SYNC).unwrap().unwrap();
     assert_eq!(labels.len(), 1);
     let (step, _) = osis_label::parse_record(labels.values().next().unwrap().steps.values().next().unwrap()).unwrap();
     step.verify_genesis().unwrap();
@@ -169,7 +157,7 @@ pub(crate) fn people(n: usize) -> (LocalPeer, Vec<Tid>) {
         let mut lp = net_bare(n, 0);
         let mut ps = Vec::new();
         for i in 0..n {
-            ps.push(lp.peers[i].engine.create_account(&hosts()).unwrap().0.account);
+            ps.push(lp.peers[i].engine.create_account().unwrap().0.account);
         }
         spread(&mut lp);
         (lp, ps)
@@ -195,21 +183,18 @@ fn grant_by_inbox_spec_perm_2() {
     let d = thing_of(&mut lp, 0, pa);
     let done = lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
     assert_eq!(done.commits.len(), 2, "own secrets, then the grant");
-    let inbox: Vec<&Delivery> = done.deliveries.iter().filter(|d| matches!(d, Delivery::Inbox { .. })).collect();
+    let inbox = lp.inbox_blobs(0, &done).unwrap();
     assert_eq!(inbox.len(), 1);
-    let Delivery::Inbox { to, inbox: ib, blob, .. } = inbox[0] else { unreachable!() };
+    let (to, blob) = &inbox[0];
     assert_eq!(*to, pb);
     let devices = lp.peers[1].engine.account().unwrap().unwrap().1;
-    let home = lp.peers[1].engine.label_of(&devices).unwrap().unwrap().0;
-    assert_eq!(ib.label, home);
-    // bob's node first lacks the doc's chain: the grant waits; once synced it applies
-    let (things, acc) = lp.peers[1].engine.accept_inbox(blob).unwrap();
-    assert_eq!(things.len(), 1);
-    assert_eq!(things[0].tid, d);
+    let home = lp.peers[1].engine.home_sync_id(&devices).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.inbox_of(&pb), Some(home));
+    let opened = lp.peers[1].engine.take_inbox_blob(blob, true).unwrap().expect("bob's inbox opens it");
+    assert_eq!(opened.commit, done.commits.last().copied());
     sync(&mut lp, 0, 1);
     assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
     assert_eq!(newest_read(&lp, 1, d), newest_read(&lp, 0, d));
-    assert!(acc.deliveries.is_empty() || matches!(acc.deliveries[0], Delivery::Certificate { under, .. } if under == pb));
     add_tag(&mut lp, 1, d, "bob");
     sync(&mut lp, 1, 0);
     assert!(tags(&mut lp, 0, d).contains("bob"));
@@ -229,20 +214,17 @@ fn grant_with_chain(lp: &mut LocalPeer, pa: Tid, pb: Tid, role: Role) -> (Tid, C
     for x in e.current_keys(&d) {
         let mut c = osis_commit::CommitBlob::decode(&e.package(&x).unwrap().unwrap().bytes).unwrap();
         let aspects = c.header.aspects.clone();
-        if aspects.iter().any(|a| a.tid == d && a.ak.as_str() == "label.0") {
+        if aspects.iter().any(|a| a.tid == d && a.ak.as_str() == "sync.0") {
             keys = Some(x);
         }
         c.parts.retain(|p| aspects.get(p.ai).is_some_and(|a| a.tid == d && a.ak.as_str() == "keys.0"));
         chain.push(osis_base::decode(&c.encode(), &osis_base::Limits { max_depth: 64, max_bytes: 1 << 22 }).unwrap());
     }
     let records = vec![e.core.created(&d).cloned().unwrap()];
-    let blob = |e: &mut osis_engine::Engine, chain, records| {
-        let ds = e.run(|tx| osis_engine::flows::edges::deliver_parts(tx, pb, g, &[d], osis_engine::flows::edges::Parts::All, chain, records)).unwrap();
-        let Some(Delivery::Inbox { blob, .. }) = ds.into_iter().next() else { panic!("no inbox blob") };
-        blob
-    };
-    let with = blob(e, chain, records);
-    let without = blob(e, Vec::new(), Vec::new());
+    let _ = (chain, records);
+    let mut rng = osis_crypto::SeededRng::from_u64(1);
+    let with = e.inbox_blob(&g, &pb, &mut rng).unwrap().expect("an inbox blob");
+    let without = e.inbox_blob_without_chain(&g, &pb, &mut rng).unwrap().expect("an inbox blob");
     (d, keys.expect("d's first keys commit is current"), g, with, without)
 }
 
@@ -253,7 +235,7 @@ type Held = (Option<Role>, BTreeSet<osis_crypto::Epoch>, [Option<Value>; 3], usi
 fn held_of(lp: &mut LocalPeer, i: usize, d: Tid, k: CommitId) -> Held {
     let e = &mut lp.peers[i].engine;
     let ak = |x: &str| osis_base::Ak::new(x).unwrap();
-    let vals = [e.get(&d, &ak("keys.0")).unwrap(), e.get(&d, &ak("label.0")).unwrap(), e.get(&d, &ak("t:reg.0")).unwrap()];
+    let vals = [e.get(&d, &ak("keys.0")).unwrap(), e.get(&d, &ak("sync.0")).unwrap(), e.get(&d, &ak("t:reg.0")).unwrap()];
     let epochs = e.epochs(&d).map(|x| x.read.held().map(|y| y.0).collect()).unwrap_or_default();
     let valid = e.valid_parts(&k).unwrap_or_default();
     let parts = e.core.ix.commits.get(&k).map(|m| (0..m.header.aspects.len()).map(|ai| (valid.contains(&ai), !m.missing(ai))).collect());
@@ -271,13 +253,13 @@ fn a_chain_projection_and_its_commit_join_in_either_order_spec_commits_4() {
     let (d, k, _, with, without) = grant_with_chain(&mut lp, pa, pb, Role::Read);
     let mut never = lp.copy().unwrap();
     sync(&mut never, 0, 1);
-    never.peers[1].engine.accept_inbox(&without).unwrap();
+    never.peers[1].engine.take_inbox_blob(&without, true).unwrap();
     let want = held_of(&mut never, 1, d, k);
     assert_eq!(want.0, Some(Role::Read));
     assert!(want.4.as_ref().is_some_and(|p| p.iter().all(|x| *x == (true, true))), "every part held and valid: {want:?}");
     // the projection first: its commit applies with the `keys.0` part alone
     let mut first = lp.copy().unwrap();
-    first.peers[1].engine.accept_inbox(&with).unwrap();
+    first.peers[1].engine.take_inbox_blob(&with, true).unwrap();
     let projected = held_of(&mut first, 1, d, k).4.expect("the projection applied under its commit's ID");
     assert_eq!(projected.iter().filter(|x| x.1).count(), 1, "the `keys.0` part alone: {projected:?}");
     sync(&mut first, 0, 1);
@@ -285,7 +267,7 @@ fn a_chain_projection_and_its_commit_join_in_either_order_spec_commits_4() {
     // the full commit first: the projection brings nothing
     let mut last = lp.copy().unwrap();
     sync(&mut last, 0, 1);
-    last.peers[1].engine.accept_inbox(&with).unwrap();
+    last.peers[1].engine.take_inbox_blob(&with, true).unwrap();
     assert_eq!(held_of(&mut last, 1, d, k), want, "the projection after the commit");
 }
 
@@ -298,11 +280,12 @@ fn a_sync_grant_gives_no_read_secret_to_follow_spec_wire_9() {
     let (pa, pb) = (ps[0], ps[1]);
     for (role, reads) in [(Role::Sync, false), (Role::Read, true)] {
         let (d, _, g, with, _) = grant_with_chain(&mut lp, pa, pb, role);
-        lp.peers[1].engine.accept_inbox(&with).unwrap();
+        lp.peers[1].engine.take_inbox_blob(&with, true).unwrap();
+        // a sync grant writes the sync record and applies nothing (spec/sync-judgement.md §6)
+        assert_eq!(lp.peers[1].engine.sync_record(&d).unwrap().is_some(), !reads, "{role:?}");
+        assert_eq!(lp.peers[1].engine.core.ix.commits.get(&g).is_some(), reads, "the {role:?} grant applied");
         sync(&mut lp, 0, 1);
         assert_eq!(lp.peers[1].engine.role_on(&d), Some(role));
-        assert!(lp.peers[1].engine.core.ix.commits.get(&g).is_some(), "the {role:?} grant applied");
-        assert_eq!(lp.peers[1].engine.boxed_by(&g, &d), reads, "{role:?}");
     }
 }
 
@@ -318,8 +301,10 @@ fn grant_carries_history_spec_crypto_4() {
     let held = |lp: &LocalPeer, i: usize| -> BTreeSet<osis_crypto::Epoch> { lp.peers[i].engine.epochs(&d).map(|e| e.read.held().map(|x| x.0).collect()).unwrap_or_default() };
     let want = held(&lp, 0);
     assert!(want.len() >= 2, "derived epoch and own epoch");
-    let Some(Delivery::Inbox { blob, .. }) = done.deliveries.iter().find(|d| matches!(d, Delivery::Inbox { .. })) else { panic!("no inbox blob") };
-    lp.peers[1].engine.accept_inbox(blob).unwrap();
+    // without its chain: the grant waits for it
+    let mut rng = osis_crypto::SeededRng::from_u64(1);
+    let blob = lp.peers[0].engine.inbox_blob_without_chain(done.commits.last().unwrap(), &pb, &mut rng).unwrap().expect("an inbox blob");
+    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
     // from the grant not yet judged for reading only (spec/crypto.md §4: never encrypted under until
     // an applied valid box carries it)
     let reading: BTreeSet<osis_crypto::Epoch> = lp.peers[1].engine.epochs(&d).unwrap().read.held_newest_first().into_iter().map(|x| x.0).collect();
@@ -350,7 +335,6 @@ fn removal_rotates_spec_perm_3() {
     let aks: BTreeSet<&str> = h.aspects.iter().map(|a| a.ak.as_str()).collect();
     assert_eq!(aks, BTreeSet::from(["roles.0", "secrets.0", "keys.0"]));
     assert!(h.frontier.is_some());
-    assert!(done.deliveries.iter().any(|x| matches!(x, Delivery::First { .. })));
     let e1 = newest_read(&lp, 0, d).unwrap();
     assert_ne!(e0, e1);
     // sealed: the removal is wrapped under the epoch it supersedes, so bob still opens it
@@ -433,8 +417,8 @@ fn lost_setup_from(from_e: bool) -> Lost {
 fn lost_built(from_e: bool) -> (LocalPeer, (Tid, Tid, Tid, Tid)) {
     let faults = osis_store::Faults::new();
     let mut lp = LocalPeer::of(vec![forensic_peer(0, &osis_store::Faults::new()), forensic_peer(1, &faults)], 0);
-    let pa = lp.peers[0].engine.create_account(&hosts()).unwrap().0.account;
-    let pb = lp.peers[1].engine.create_account(&hosts()).unwrap().0.account;
+    let pa = lp.peers[0].engine.create_account().unwrap().0.account;
+    let pb = lp.peers[1].engine.create_account().unwrap().0.account;
     spread(&mut lp);
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
@@ -597,8 +581,9 @@ fn pending_grant_survives_unrelated_removal_spec_perm_3() {
     let (pa, pb) = (x.lp.peers[0].engine.first_admin(&x.d).unwrap(), x.lp.peers[1].engine.first_admin(&x.mine).unwrap());
     let g = thing_of(&mut x.lp, 0, pa);
     let done = x.lp.peers[0].engine.grant(&g, &pb, &edge_of(Role::Read)).unwrap();
-    let Some(Delivery::Inbox { blob, .. }) = done.deliveries.iter().find(|d| matches!(d, Delivery::Inbox { .. })) else { panic!("no inbox blob") };
-    x.lp.peers[1].engine.accept_inbox(blob).unwrap();
+    let mut rng = osis_crypto::SeededRng::from_u64(1);
+    let blob = x.lp.peers[0].engine.inbox_blob_without_chain(done.commits.last().unwrap(), &pb, &mut rng).unwrap().expect("an inbox blob");
+    x.lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
     assert_eq!(x.lp.peers[1].engine.role_on(&g), None);
     let reading = |x: &Lost| x.lp.peers[1].engine.epochs(&g).is_some_and(|e| e.read.holds_any());
     assert!(reading(&x), "secrets from the grant not yet judged");
@@ -618,8 +603,8 @@ fn pending_grant_survives_unrelated_removal_spec_perm_3() {
 #[test]
 fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
     let mut lp = net_bare(2, 0);
-    let pa = lp.peers[0].engine.create_account(&hosts()).unwrap().0.account;
-    let pb = lp.peers[1].engine.create_account(&hosts()).unwrap().0.account;
+    let pa = lp.peers[0].engine.create_account().unwrap().0.account;
+    let pb = lp.peers[1].engine.create_account().unwrap().0.account;
     let bobs: Vec<CommitId> = lp.peers[1].engine.commit_ids();
     send(&mut lp, 1, 0, &bobs);
     let g = thing_of(&mut lp, 0, pa);
@@ -659,8 +644,7 @@ fn invite_power_spec_perm_2() {
     spread(&mut lp);
     // bob invites carol with read, not with write
     assert!(lp.peers[1].engine.grant(&d, &pc, &edge_of(Role::Write)).is_err());
-    let done = lp.peers[1].engine.grant(&d, &pc, &edge_of(Role::Read)).unwrap();
-    assert!(!done.deliveries.iter().any(|x| matches!(x, Delivery::Deposit { .. })), "a writer stamps its own invite grant");
+    lp.peers[1].engine.grant(&d, &pc, &edge_of(Role::Read)).unwrap();
     spread(&mut lp);
     for i in 0..3 {
         assert_eq!(lp.peers[i].engine.roster(&d).get(&pc).map(|e| e.role), Some(Role::Read), "peer {i}");
@@ -963,18 +947,17 @@ fn nodes_and_alice() -> (LocalPeer, Tid, Tid, SyncId) {
 
 fn nodes_and_alice_built() -> (LocalPeer, Tid, Tid, SyncId) {
     let mut lp = net_bare(3, 0);
-    let (p, _) = lp.peers[1].engine.create_account(&hosts()).unwrap();
+    let (p, _) = lp.peers[1].engine.create_account().unwrap();
     let d1 = lp.peers[0].engine.tid();
     let ids = lp.peers[0].engine.commit_ids();
     send(&mut lp, 0, 1, &ids);
-    let paired = lp.peers[1].engine.pair(&d1).unwrap();
-    let grant = paired.commits[0];
-    carry(&mut lp, 1, &paired);
-    lp.peers[0].engine.paired(&p.account, &grant).unwrap();
-    let pa = lp.peers[2].engine.create_account(&hosts()).unwrap().0.account;
+    let (_, send_) = lp.peers[1].engine.pair(&d1).unwrap();
+    send(&mut lp, 1, 0, &send_);
+    lp.peers[0].engine.paired(&p.account).unwrap();
+    let pa = lp.peers[2].engine.create_account().unwrap().0.account;
     spread(&mut lp);
     assert_eq!(lp.peers[0].engine.role_on(&p.devices), Some(Role::Admin));
-    let home = *lp.peers[1].engine.get_typed(&p.devices, &ct::LABEL).unwrap().unwrap().keys().next().unwrap();
+    let home = *lp.peers[1].engine.get_typed(&p.devices, &ct::SYNC).unwrap().unwrap().keys().next().unwrap();
     (lp, p.devices, pa, home)
 }
 
@@ -1077,7 +1060,6 @@ fn link_redeem_single_use_spec_perm_7() {
     sync(&mut lp, 0, 1);
     let done = lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
     assert_eq!(done.commits.len(), 1);
-    assert!(done.deliveries.iter().any(|x| matches!(x, Delivery::Deposit { under, .. } if *under == link.k)));
     let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
     sync(&mut lp, 1, 0);
     for i in [0, 1] {
@@ -1189,7 +1171,7 @@ fn revoke_joiner_one_rotation_spec_commits_2() {
     let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
     assert!(h.frontier.is_some());
     assert_eq!(h.aspects.iter().filter(|a| a.tid == link.k && a.ak.as_str() == "secrets.0").count(), 1, "one rotation");
-    carry(&mut lp, 0, &done);
+    carry(&mut lp, 0);
     spread(&mut lp);
     let k1 = newest_read(&lp, 0, link.k).unwrap();
     assert_ne!(k0, k1);
@@ -1221,7 +1203,7 @@ fn revoke_joiner_after_single_use_spec_commits_2() {
     // (L's self-removal is first rotated out by the cascade; then the joiner's removal)
     let removal = done.commits.iter().filter(|c| lp.peers[0].engine.header(c).unwrap().frontier.is_some()).count();
     assert_eq!(removal, 1, "one removal");
-    carry(&mut lp, 0, &done);
+    carry(&mut lp, 0);
     spread(&mut lp);
     for i in 0..2 {
         assert!(!lp.peers[i].engine.roster(&link.k).contains_key(&ps1), "peer {i}");
@@ -1272,7 +1254,7 @@ fn until_link_backdated_grant_void_spec_perm_7() {
     let (mut lp, p) = account_two_nodes();
     let mut more = net_bare(3, 1);
     lp.peers.append(&mut more.peers);
-    let ps: Vec<Tid> = (2..5).map(|i| lp.peers[i].engine.create_account(&hosts()).unwrap().0.account).collect();
+    let ps: Vec<Tid> = (2..5).map(|i| lp.peers[i].engine.create_account().unwrap().0.account).collect();
     let (joiner, forger) = (ps[0], ps[1]);
     spread(&mut lp);
     let d = thing_of(&mut lp, 0, p);
@@ -1348,22 +1330,16 @@ fn reseal_raced_grant_spec_perm_3() {
     assert_eq!(newest_read(&lp, 0, t), Some(e1));
     assert!(lp.peers[2].engine.epochs(&t).is_none_or(|e| e.read.secret(&e1).is_none()), "carol stranded");
     // no pass, no decision
-    struct NoPass;
-    impl osis_engine::flows::SyncState for NoPass {
-        fn complete_pass(&self, _: &Tid) -> bool {
-            false
-        }
-    }
-    assert!(lp.peers[0].engine.reseal_due(&t, &NoPass).unwrap().commits.is_empty());
-    let done = lp.peers[0].engine.reseal_due(&t, &Pass).unwrap();
+    assert!(lp.peers[0].engine.reseal_due(&t).unwrap().commits.is_empty());
+    let done = lp.peers[0].engine.reseal_after_pass(&t).unwrap();
     assert_eq!(done.commits.len(), 1, "carol only");
-    let inbox: Vec<&Vec<u8>> = done.deliveries.iter().filter_map(|x| if let Delivery::Inbox { to, blob, .. } = x { (*to == pc).then_some(blob) } else { None }).collect();
+    let inbox = blobs_to(&mut lp, 0, &done, pc);
     assert_eq!(inbox.len(), 1);
-    lp.peers[2].engine.accept_inbox(inbox[0]).unwrap();
+    lp.peers[2].engine.take_inbox_blob(&inbox[0], true).unwrap();
     assert_eq!(newest_read(&lp, 2, t), Some(e1));
     spread(&mut lp);
     assert!(lp.peers[3].engine.epochs(&t).is_none_or(|e| e.read.secret(&e1).is_none()), "dave stays out");
-    assert!(lp.peers[1].engine.reseal_due(&t, &Pass).unwrap().commits.is_empty(), "nothing left");
+    assert!(lp.peers[1].engine.reseal_after_pass(&t).unwrap().commits.is_empty(), "nothing left");
     assert_eq!(sealed_write(&mut lp, 0, t, "after"), BTreeSet::from([1, 2]), "carol reads, dave does not");
 }
 
@@ -1374,27 +1350,26 @@ fn reseal_raced_grant_spec_perm_3() {
 #[test]
 fn key_actor_holders_not_resealed_spec_perm_3() {
     let mut lp = net_bare(3, 0);
-    let (a, _) = lp.peers[0].engine.create_account(&hosts()).unwrap();
+    let (a, _) = lp.peers[0].engine.create_account().unwrap();
     let (p, d) = (a.account, a.devices);
     for i in [1, 2] {
         let n = lp.peers[i].engine.tid();
         let card: Vec<CommitId> = lp.peers[i].engine.commit_ids();
         send(&mut lp, i, 0, &card);
-        let paired = lp.peers[0].engine.pair(&n).unwrap();
-        carry(&mut lp, 0, &paired);
-        let grant = *paired.commits.last().unwrap();
-        lp.peers[i].engine.paired(&p, &grant).unwrap();
+        let (_, send_) = lp.peers[0].engine.pair(&n).unwrap();
+        send(&mut lp, 0, i, &send_);
+        lp.peers[i].engine.paired(&p).unwrap();
     }
     spread(&mut lp);
     let n2 = lp.peers[2].engine.tid();
-    let done = lp.peers[0].engine.demote(&d, &Demotion { holder: n2, new: None, retain: None }).unwrap();
-    carry(&mut lp, 0, &done);
+    let _ = lp.peers[0].engine.demote(&d, &Demotion { holder: n2, new: None, retain: None }).unwrap();
+    carry(&mut lp, 0);
     spread(&mut lp);
     let e = newest_read(&lp, 0, d).unwrap();
     assert_eq!(newest_read(&lp, 1, d), Some(e), "the remaining node follows");
     assert!(newest_read(&lp, 2, d) != Some(e), "the removed node does not");
     for i in [0, 1] {
-        assert!(lp.peers[i].engine.reseal_due(&d, &Pass).unwrap().commits.is_empty(), "peer {i}: nothing to re-seal");
+        assert!(lp.peers[i].engine.reseal_after_pass(&d).unwrap().commits.is_empty(), "peer {i}: nothing to re-seal");
     }
 }
 
@@ -1429,15 +1404,15 @@ fn an_ended_edge_departs_by_its_finalize_spec_crypto_4() {
 #[test]
 fn stranded_node_repaired_spec_perm_3() {
     let mut lp = net_bare(4, 0);
-    let (a, _) = lp.peers[0].engine.create_account(&hosts()).unwrap();
+    let (a, _) = lp.peers[0].engine.create_account().unwrap();
     let (pa, p) = (a.account, a.devices);
     for i in [1, 2] {
         let n = lp.peers[i].engine.tid();
         let ids = lp.peers[i].engine.commit_ids();
         send(&mut lp, i, 0, &ids);
-        let done = lp.peers[0].engine.pair(&n).unwrap();
-        carry(&mut lp, 0, &done);
-        lp.peers[i].engine.paired(&pa, &done.commits[0]).unwrap();
+        let (_, send_) = lp.peers[0].engine.pair(&n).unwrap();
+        send(&mut lp, 0, i, &send_);
+        lp.peers[i].engine.paired(&pa).unwrap();
     }
     spread(&mut lp);
     // d0 pairs n while d1, unaware, removes d2 (rotating P)
@@ -1445,8 +1420,8 @@ fn stranded_node_repaired_spec_perm_3() {
     let n = lp.peers[3].engine.tid();
     let ids = lp.peers[3].engine.commit_ids();
     send(&mut lp, 3, 0, &ids);
-    let first = lp.peers[0].engine.pair(&n).unwrap();
-    carry(&mut lp, 0, &first);
+    let (_, first) = lp.peers[0].engine.pair(&n).unwrap();
+    send(&mut lp, 0, 3, &first);
     let d2 = lp.peers[2].engine.tid();
     lp.peers[1].engine.demote(&p, &Demotion { holder: d2, new: None, retain: None }).unwrap();
     spread(&mut lp);
@@ -1455,9 +1430,9 @@ fn stranded_node_repaired_spec_perm_3() {
     assert_eq!(lp.peers[3].engine.roster(&p).get(&n).map(|e| e.role), Some(Role::Admin), "its grant stands: its granter's listing names it");
     assert_eq!(sealed_write(&mut lp, 1, p, "stranded"), BTreeSet::from([0]), "n reads nothing new");
     // re-pairing an existing holder re-seals it
-    let again = lp.peers[0].engine.pair(&n).unwrap();
+    let (again, send_) = lp.peers[0].engine.pair(&n).unwrap();
     assert_eq!(again.commits.len(), 1);
-    carry(&mut lp, 0, &again);
+    send(&mut lp, 0, 3, &send_);
     assert_eq!(newest_read(&lp, 3, p), Some(e1));
     assert!(lp.peers[2].engine.epochs(&p).unwrap().read.secret(&e1).is_none());
     assert_eq!(sealed_write(&mut lp, 1, p, "repaired"), BTreeSet::from([0, 3]));
@@ -1483,8 +1458,8 @@ fn raced_then_rotated_built() -> (LocalPeer, Tid, Tid, Done) {
     lp.peers[0].engine.grant(&t, &pe, &edge_of(Role::Read)).unwrap();
     spread(&mut lp);
     lp.advance(1000);
-    let g = lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Read)).unwrap();
-    carry(&mut lp, 0, &g);
+    let _ = lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Read)).unwrap();
+    carry(&mut lp, 0);
     let r1 = lp.peers[1].engine.demote(&t, &Demotion { holder: pd, new: None, retain: None }).unwrap();
     send(&mut lp, 1, 0, &r1.commits);
     send(&mut lp, 1, 2, &r1.commits);
@@ -1502,13 +1477,14 @@ fn raced_then_rotated_built() -> (LocalPeer, Tid, Tid, Done) {
 #[test]
 fn rotation_reaches_unboxed_holder_spec_perm_3() {
     let (mut lp, t, pc, r2) = raced_then_rotated();
-    let inbox: Vec<&Vec<u8>> = r2.deliveries.iter().filter_map(|x| if let Delivery::Inbox { to, blob, .. } = x { (*to == pc).then_some(blob) } else { None }).collect();
+    let inbox = blobs_to(&mut lp, 0, &r2, pc);
     assert_eq!(inbox.len(), 1, "the rotation goes to carol's inbox");
-    lp.peers[2].engine.accept_inbox(inbox[0]).unwrap();
+    lp.peers[2].engine.take_inbox_blob(&inbox[0], true).unwrap();
     let e2 = newest_read(&lp, 0, t).unwrap();
     assert_eq!(newest_read(&lp, 2, t), Some(e2));
     assert!(lp.peers[2].engine.epochs(&t).unwrap().read.is_established(&e2), "carol holds e2's chain");
-    assert!(!r2.deliveries.iter().any(|x| matches!(x, Delivery::Inbox { to, .. } if *to == lp.peers[1].engine.me())));
+    let pb = lp.peers[1].engine.me();
+    assert!(blobs_to(&mut lp, 0, &r2, pb).is_empty());
 }
 
 // spec/permissions.md §3 (re-seal), spec/crypto.md §4: a re-seal of a holder whose box at the
@@ -1520,18 +1496,10 @@ fn reseal_over_unheld_box_spec_perm_3() {
     let e2 = newest_read(&lp, 0, t).unwrap();
     assert!(lp.peers[2].engine.epochs(&t).unwrap().read.secret(&e2).is_none());
     let done = lp.peers[0].engine.reshare(&t, &pc).unwrap();
-    let inbox: Vec<&Vec<u8>> = done.deliveries.iter().filter_map(|x| if let Delivery::Inbox { to, blob, .. } = x { (*to == pc).then_some(blob) } else { None }).collect();
+    let inbox = blobs_to(&mut lp, 0, &done, pc);
     assert_eq!(inbox.len(), 1);
-    lp.peers[2].engine.accept_inbox(inbox[0]).unwrap();
+    lp.peers[2].engine.take_inbox_blob(&inbox[0], true).unwrap();
     assert!(lp.peers[2].engine.epochs(&t).unwrap().read.secret(&e2).is_some(), "carol reads e2");
-}
-
-/// A complete pass of every actor's labels (re-seal decisions).
-struct Pass;
-impl osis_engine::flows::SyncState for Pass {
-    fn complete_pass(&self, _: &Tid) -> bool {
-        true
-    }
 }
 
 /// Alice (0) is first admin of C, K1 and K2; K1 and K2 are writers of C; o0 (1) writes K1; late (2)
@@ -1620,7 +1588,7 @@ fn inside_member_departure_leaves_holder_out_spec_perm_3() {
     let (rot, _) = lp.peers[0].engine.ensure_rotated(&k1).unwrap();
     assert_eq!(rot.commits.len(), 1, "alice rotates K1; C boxes no K1, so nothing is stale above");
     spread(&mut lp);
-    assert!(!lp.peers[0].engine.reseal_due(&c, &Pass).unwrap().commits.is_empty(), "alice re-seals K1 to C");
+    assert!(!lp.peers[0].engine.reseal_after_pass(&c).unwrap().commits.is_empty(), "alice re-seals K1 to C");
     spread(&mut lp);
     let top = newest_read(&lp, 0, c).unwrap();
     assert!(lp.peers[2].engine.epochs(&c).is_some_and(|e| e.read.secret(&top).is_some()), "late reads C again");
@@ -1640,7 +1608,7 @@ fn grant_in_derived_base_spec_crypto_4() {
     let doc = thing_of(&mut lp, 0, team);
     spread(&mut lp);
     let before: BTreeSet<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
-    let done = lp.peers[0].engine.grant(&doc, &pb, &edge_of(Role::Write)).unwrap();
+    let _ = lp.peers[0].engine.grant(&doc, &pb, &edge_of(Role::Write)).unwrap();
     let new: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
     let (own, rest): (Vec<CommitId>, Vec<CommitId>) = new.into_iter().partition(|c| {
         let h = lp.peers[0].engine.header(c).unwrap();
@@ -1648,7 +1616,7 @@ fn grant_in_derived_base_spec_crypto_4() {
     });
     assert_eq!(own.len(), 1, "the doc's own-secrets rotation");
     send(&mut lp, 0, 1, &rest);
-    carry(&mut lp, 0, &done);
+    carry(&mut lp, 0);
     let e = lp.peers[1].engine.epochs(&doc).unwrap();
     let derived = lp.peers[0].engine.epochs(&doc).unwrap().read.epochs().filter(|(_, i)| i.established == Some(osis_keys::Provenance::Derived)).map(|(k, _)| *k).max_by_key(|k| k.n()).unwrap();
     let genuine = lp.peers[0].engine.epochs(&doc).unwrap().read.secret(&derived).cloned().unwrap();
@@ -1690,7 +1658,7 @@ fn plain_first_admin_gets_secrets_before_its_thing_spec_perm_3() {
 fn registration_step_after_rotation_spec_sync_5() {
     let (mut lp, p, _pa, card) = nodes_and_alice();
     let d1 = lp.peers[0].engine.tid();
-    let labels = lp.peers[1].engine.get_typed(&p, &ct::LABEL).unwrap().unwrap();
+    let labels = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap();
     let genesis = osis_label::StepId(*labels.get(&card).unwrap().steps.keys().next().unwrap());
     assert!(lp.peers[1].engine.issue_step(&p, &card, &genesis, false).unwrap().0.is_none(), "nothing newer");
     lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, retain: None }).unwrap();
@@ -1700,7 +1668,7 @@ fn registration_step_after_rotation_spec_sync_5() {
     let claims = |i: usize| step.claim_key(lp.peers[i].engine.identity().keys().kem.x25519()).unwrap().verifying_key().to_bytes();
     assert!(set.contains(&claims(1)));
     assert!(!set.contains(&claims(0)));
-    let now = lp.peers[1].engine.get_typed(&p, &ct::LABEL).unwrap().unwrap();
+    let now = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap();
     assert_eq!(now.get(&card).unwrap().steps.len(), 2);
 }
 
@@ -1713,11 +1681,11 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
     let pp = lp.peers[1].engine.me();
     let t = thing_of(&mut lp, 2, pa);
     lp.peers[2].engine.grant(&t, &pp, &edge_of(Role::Read)).unwrap();
-    lp.peers[2].engine.give_own_secrets_on(&t, &hosts()).unwrap();
-    let card = lp.peers[2].engine.label_of(&t).unwrap().unwrap().0;
+    lp.peers[2].engine.give_own_secrets(&t).unwrap();
+    let card = lp.peers[2].engine.home_sync_id(&t).unwrap().unwrap();
     spread(&mut lp);
     assert_ne!(pp, p);
-    let labels = lp.peers[2].engine.get_typed(&t, &ct::LABEL).unwrap().unwrap();
+    let labels = lp.peers[2].engine.get_typed(&t, &ct::SYNC).unwrap().unwrap();
     let genesis = osis_label::StepId(*labels.get(&card).unwrap().steps.keys().next().unwrap());
     let old = lp.peers[2].engine.deposit_seed(&t).unwrap().unwrap();
     let done = lp.peers[2].engine.demote(&t, &Demotion { holder: pp, new: None, retain: None }).unwrap();
@@ -1735,7 +1703,7 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
 #[test]
 fn refreshed_deposit_seed_issues_step_spec_sync_5() {
     let (mut lp, p, _pa, card) = nodes_and_alice();
-    let labels = lp.peers[1].engine.get_typed(&p, &ct::LABEL).unwrap().unwrap();
+    let labels = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap();
     let genesis = osis_label::StepId(*labels.get(&card).unwrap().steps.keys().next().unwrap());
     let parent = osis_label::parse_record(&labels.get(&card).unwrap().steps[&genesis.0]).unwrap().0;
     assert!(lp.peers[1].engine.issue_step(&p, &card, &genesis, false).unwrap().0.is_none(), "nothing newer");
@@ -1800,9 +1768,10 @@ fn writer_leaves_spec_perm_3() {
     let done = lp.peers[1].engine.demote(&d, &Demotion { holder: pb, new: None, retain: None }).unwrap();
     assert_eq!(aks_of(&lp, 1, &done.commits[0]), BTreeSet::from(["roles.0".to_string()]));
     assert!(lp.peers[1].engine.header(&done.commits[0]).unwrap().frontier.is_none());
-    // the leaver drops what it lost once its removal is placed (sync's part)
-    assert!(done.drop_lost);
-    lp.peers[1].engine.drop_lost_secrets().unwrap();
+    // the leaver drops what it lost once its removal is held elsewhere (sync's word)
+    assert!(lp.peers[1].engine.waiting_held_elsewhere().unwrap().contains(&done.commits[0]));
+    lp.peers[1].engine.held_elsewhere(&done.commits[0]).unwrap();
+    assert!(lp.peers[1].engine.waiting_held_elsewhere().unwrap().is_empty());
     assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.held().next().is_none()), "dropped on leaving");
     spread(&mut lp);
     let (rot, still) = lp.peers[0].engine.ensure_rotated(&d).unwrap();
@@ -1919,8 +1888,8 @@ fn issue_step_after_inside_removal_spec_sync_5() {
     lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Admin)).unwrap();
     spread(&mut lp);
     let t0 = newest_read(&lp, 1, t).unwrap();
-    let label = lp.peers[1].engine.label_of(&t).unwrap().unwrap().0;
-    let labels = lp.peers[1].engine.get_typed(&t, &ct::LABEL).unwrap().unwrap();
+    let label = lp.peers[1].engine.home_sync_id(&t).unwrap().unwrap();
+    let labels = lp.peers[1].engine.get_typed(&t, &ct::SYNC).unwrap().unwrap();
     let genesis = osis_label::StepId(*labels.get(&label).unwrap().steps.keys().next().unwrap());
     lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, retain: None }).unwrap();
     let (step, _) = lp.peers[1].engine.issue_step(&t, &label, &genesis, false).unwrap().0.unwrap();
@@ -1986,12 +1955,11 @@ fn edge_change_and_removal_by_inbox_spec_perm_2() {
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
     spread(&mut lp);
-    let to_pb = |done: &Done| done.deliveries.iter().filter(|x| matches!(x, Delivery::Inbox { to, .. } if *to == pb)).count();
     let down = lp.peers[0].engine.demote(&d, &Demotion { holder: pb, new: Some(edge_of(Role::Read)), retain: None }).unwrap();
-    assert_eq!(to_pb(&down), 1, "change");
+    assert_eq!(blobs_to(&mut lp, 0, &down, pb).len(), 1, "change");
     spread(&mut lp);
     let gone = lp.peers[0].engine.demote(&d, &Demotion { holder: pb, new: None, retain: None }).unwrap();
-    assert_eq!(to_pb(&gone), 1, "removal");
+    assert_eq!(blobs_to(&mut lp, 0, &gone, pb).len(), 1, "removal");
 }
 
 // spec/permissions.md §5.1; spec/data-model.md §6: a demotion's frontier above `CHUNK_THRESHOLD`
@@ -2375,7 +2343,7 @@ fn lockout_beside_kept_writer_superseded_history_added_spec_crypto_4() {
         assert_eq!(lp.peers[i].engine.epochs(&d).unwrap().read.current(), vec![e1], "peer {i}");
         assert_eq!(newest_read(&lp, i, d), Some(e1), "peer {i}");
     }
-    assert!(!lp.peers[2].engine.reseal_due(&d, &Pass).unwrap().commits.is_empty(), "the honest writer adds its epoch to the history");
+    assert!(!lp.peers[2].engine.reseal_after_pass(&d).unwrap().commits.is_empty(), "the honest writer adds its epoch to the history");
     spread_sealed(&mut lp);
     for i in [0, 3] {
         assert!(lp.peers[i].engine.epochs(&d).unwrap().read.secret(&eh).is_some(), "peer {i} holds the honest epoch by history");
@@ -2572,7 +2540,7 @@ fn rotation_missing_admin_recovered_spec_perm_3() {
     assert_eq!(lp.peers[2].engine.body_valid(&w, &d, &ak("t:reg.0")), Some(true), "the member's content stays valid");
     assert!(lp.peers[2].engine.epochs(&d).unwrap().read.secret(&ev).is_some(), "and readable to it");
     assert!(lp.peers[3].engine.epochs(&d).unwrap().read.reading_secret(&ev).is_none(), "the joiner lacks ev");
-    assert!(!lp.peers[2].engine.reseal_due(&d, &Pass).unwrap().commits.is_empty(), "the member adds ev to the history");
+    assert!(!lp.peers[2].engine.reseal_after_pass(&d).unwrap().commits.is_empty(), "the member adds ev to the history");
     spread_sealed(&mut lp);
     assert!(lp.peers[3].engine.epochs(&d).unwrap().read.reading_secret(&ev).is_some(), "the joiner reads ev after the member's add");
 }
@@ -2889,7 +2857,7 @@ fn a_fork_by_two_siblings_ends_quiet_spec_crypto_4() {
     let (mut lp, _) = account_two_nodes();
     let mut more = net_bare(2, 1);
     lp.peers.append(&mut more.peers);
-    let (x, y) = (lp.peers[2].engine.create_account(&hosts()).unwrap().0.account, lp.peers[3].engine.create_account(&hosts()).unwrap().0.account);
+    let (x, y) = (lp.peers[2].engine.create_account().unwrap().0.account, lp.peers[3].engine.create_account().unwrap().0.account);
     spread(&mut lp);
     let p = lp.peers[0].engine.me();
     let t = thing_of(&mut lp, 0, p);
@@ -2905,7 +2873,7 @@ fn a_fork_by_two_siblings_ends_quiet_spec_crypto_4() {
         for i in 0..2 {
             // what is due at once, then what a complete pass's end decides
             n += lp.peers[i].engine.ensure_rotated(&t).unwrap().0.commits.len();
-            n += lp.peers[i].engine.reseal_due(&t, &Pass).unwrap().commits.len();
+            n += lp.peers[i].engine.reseal_after_pass(&t).unwrap().commits.len();
         }
         made.push(n);
         spread(&mut lp);

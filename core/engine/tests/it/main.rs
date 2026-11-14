@@ -9,6 +9,7 @@ mod corrupt;
 mod crash;
 mod disputes;
 mod edits;
+mod facade;
 mod groups;
 mod finalize;
 mod encodings;

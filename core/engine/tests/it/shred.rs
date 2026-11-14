@@ -26,7 +26,7 @@ fn peer(seed: u64) -> Peer {
     let blob_disk = (MemoryBackend::new(), MemoryRoot::new());
     blob_disk.0.record_history();
     let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_engine::local_peer::blob_area(&blob_disk, seed).unwrap(), cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
-    engine.create_account(&[]).unwrap();
+    engine.create_account().unwrap();
     engine.take_wakes();
     let events = engine.subscribe();
     Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0 }

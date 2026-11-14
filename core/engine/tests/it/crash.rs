@@ -29,7 +29,7 @@ impl Dev {
     fn create(&self) -> Engine {
         let c: Arc<dyn Clock> = self.clock.clone();
         let mut e = Engine::create(Box::new(self.backend.clone()), Box::new(self.root.clone()), osis_engine::local_peer::blob_area(&self.blob_disk, 0).unwrap(), Config::default(), c, Box::new(SeededRng::from_u64(0))).unwrap();
-        e.create_account(&[]).unwrap();
+        e.create_account().unwrap();
         e
     }
     fn open(&self) -> osis_engine::Result<Engine> {

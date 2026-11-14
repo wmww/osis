@@ -175,7 +175,7 @@ fn crash_at_every_write_keeps_caches_exact() {
             Ok(e)
         };
         let mut e = open(true, 0).unwrap();
-        e.create_account(&[]).unwrap();
+        e.create_account().unwrap();
         let me = e.me();
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, me);

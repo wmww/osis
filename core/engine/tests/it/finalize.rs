@@ -12,13 +12,6 @@ use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
-struct Pass;
-impl osis_engine::flows::SyncState for Pass {
-    fn complete_pass(&self, _: &Tid) -> bool {
-        true
-    }
-}
-
 /// A timed share: `t` (first admin: peer 0), write to peers 1 and 3, read to peer 2 until `until`
 /// (`role`: G's role). Returns (lp, t, persons, until).
 /// Built once per `role` (`LocalPeer::cached`).
@@ -66,7 +59,7 @@ fn holds(lp: &LocalPeer, i: usize, t: Tid, m: Tid) -> bool {
 fn reseal(lp: &mut LocalPeer, t: Tid) {
     for _ in 0..2 {
         for i in [0, 1, 3] {
-            lp.peers[i].engine.reseal_due(&t, &Pass).unwrap();
+            lp.peers[i].engine.reseal_after_pass(&t).unwrap();
         }
         spread(lp);
     }

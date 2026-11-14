@@ -289,7 +289,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     let plain = {
         // G's part is no `secrets.0` (an empty `label.0`): only the waiting part's boxes can be read
         let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
-        let lab = osis_base::Ak::new("label.0").unwrap();
+        let lab = osis_base::Ak::new("sync.0").unwrap();
         let mut w = Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), r.hi);
         let f = create(&mut w, &osis_schema::core_schema().view(lab.as_str()).unwrap(), &Value::Map(Default::default())).unwrap();
         let lr = w.range();
