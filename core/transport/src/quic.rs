@@ -749,7 +749,7 @@ mod tests {
         });
     }
 
-    // spec/sync-opens.md §4 (mutual auth): a client presenting no key is refused: the serving side yields
+    // spec/sync-transport.md §2 (mutual auth): a client presenting no key is refused: the serving side yields
     // no connection and the client's is closed.
     #[test]
     #[ignore]
@@ -765,7 +765,7 @@ mod tests {
         });
     }
 
-    // spec/sync-opens.md §4 (mutual auth, Ed25519 only): a client presenting a P-256 raw key is refused.
+    // spec/sync-transport.md §2 (mutual auth, Ed25519 only): a client presenting a P-256 raw key is refused.
     #[test]
     #[ignore]
     fn client_p256_key_refused() {
@@ -818,7 +818,7 @@ mod tests {
         assert_eq!((AnyClientKey.supported_verify_schemes(), AnyClientKey.requires_raw_public_keys()), (vec![SignatureScheme::ED25519], true));
     }
 
-    // spec/sync-opens.md §4 (no 0-rtt): the serving side issues no session tickets, so a client asking for
+    // spec/sync-transport.md §2 (no 0-rtt): the serving side issues no session tickets, so a client asking for
     // 0-RTT cannot use it on its next connection.
     #[test]
     #[ignore]

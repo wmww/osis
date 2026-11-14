@@ -344,7 +344,7 @@ fn punch_over_a_relay_on_the_pairs_lan_is_direct_spec_sync_10() {
     }
 }
 
-// spec/sync-opens.md §4: direct socket addresses in the URL are dialed as they are; the key is pinned
+// spec/sync-transport.md §1 (node key check): direct socket addresses in the URL are dialed as they are; the key is pinned
 // (another key: KeyMismatch); nothing listening there and no relay: Unreachable.
 #[test]
 fn direct_items_spec_sync_10() {
