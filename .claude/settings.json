@@ -10,5 +10,13 @@
   },
   "enabledPlugins": {
     "reasonable-rust-builds@wmww-agent-skills": true
+  },
+  "permissions": {
+    "deny": [
+      "Bash(git stash:*)",
+      "Bash(pkill:*)",
+      "Bash(killall:*)",
+      "Bash(pgrep:*)"
+    ]
   }
 }
