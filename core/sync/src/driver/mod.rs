@@ -1,8 +1,8 @@
 //! The node, dials, timers and outputs (spec/sync-opens.md §1, spec/sync-transport.md).
 //!
 //! `Node::handle` is the whole of sync as a sans-IO step: it routes an input to its module (and
-//! each member opens reports moved to streams), then settles every module (store, unread,
-//! opens, read, inbox, streams, status, leave, again while one acted),
+//! each member opens reports moved to streams), then settles every module (leave, store, unread,
+//! opens, read, inbox, streams, status, again while one acted),
 //! then decides its dials (`dials`), closes what a module closed, and collects sessions' bytes
 //! and the earliest wake. `apply` is the one place outputs are carried out, through a `Links`:
 //! the product's transports (`links`) or a test's network. Sync never knows how a peer is reached.
@@ -496,7 +496,7 @@ impl Node {
     fn dial(&mut self, out: &mut Vec<Out>) {
         let now = self.now;
         let d = &mut self.driver;
-        d.dials.settle_peers(&mut NodePeers { engine: &mut self.engine, fx: &mut d.fx }, now);
+        d.dials.settle_peers(&mut NodePeers { engine: &mut self.engine, store: &self.store, fx: &mut d.fx }, now);
         let inbox = &self.inbox;
         if let Some(hints) = d.fx.hints_moved(|| inbox.dial_hints().into_iter().filter_map(|h| Some(Address { url: h.urls.first()?.clone(), key: h.dialable })).collect()) {
             d.dials.hint(&hints, now);
@@ -653,8 +653,10 @@ impl Node {
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
             let mut acted = cx.engine.follow()?;
+            // leave first: what this node syncs, which every other module follows
+            acted |= self.leave.settle(&mut crate::leave::Live { cx: &mut cx, sources: &self.streams })?;
             acted |= self.driver.store.settle(cx.engine, cx.store, cx.now)?;
-            acted |= self.unread.settle(&mut cx, &self.streams)?;
+            acted |= self.unread.settle(&mut cx)?;
             acted |= self.opens.settle(&mut cx, sessions, &self.unread, &mut moved)?;
             self.moved(&mut moved, out);
             let mut cx = cx!(self, out);
@@ -680,8 +682,6 @@ impl Node {
                 self.streams.pull_again(&mut cx, &mut self.driver.sessions, &self.opens, conn, &mut self.driver.reported);
                 acted = true;
             }
-            let mut cx = cx!(self, out);
-            acted |= self.leave.settle(&mut crate::leave::Live { cx: &mut cx, unread: &self.unread })?;
             self.reports(out);
             if !acted {
                 return Ok(());

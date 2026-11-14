@@ -27,8 +27,9 @@ pub enum Error {
     /// The newest commit in an undo or redo scope cannot be undone (its body was dropped, or a
     /// register it wrote is no longer its winner). Nothing older is undone instead.
     NotUndoable { commit: CommitId, reason: NotUndoableReason },
-    /// These groups cannot catch up, and waiting would not help (`wait_synced`, `group_source`).
-    Unsynced { groups: Vec<Tid> },
+    /// These groups are stranded here: they cannot catch up, and waiting would not help
+    /// (`wait_synced`, `group_source`).
+    Stranded { groups: Vec<Tid> },
     /// What was asked cannot be done as asked: a malformed argument (value, link, card, path, op,
     /// retention), or writes that cannot share a commit. The text says which.
     Invalid(String),
@@ -63,7 +64,7 @@ osis_base::impl_error!(Error {
     Type { path, reason } => ("type error at {path}: {reason}"),
     TooLarge { limit } => ("value larger than the materialization bound ({limit} bytes)"),
     NotUndoable { commit, reason } => ("cannot revert {commit:?}: {reason:?}"),
-    Unsynced { groups } => ("could not sync {} group(s)", groups.len()),
+    Stranded { groups } => ("{} group(s) stranded: they cannot sync", groups.len()),
     Invalid(m) => ("invalid: {m}"),
     Storage(m) => ("storage: {m}"),
     InUse => ("store in use by another process or another open node"),

@@ -130,7 +130,7 @@ pub trait Peers {
 /// The memo effects the product's `Peers` settles: the sync set, and per sync ID its dial peers.
 #[derive(Clone)]
 pub struct PeersFx {
-    set: crate::set::SetFollow,
+    set: crate::set::SyncsFollow,
     peers: Effects<SyncId, Arc<Vec<Address>>>,
     /// The inbox's dial hints (`Inbox::dial_hints`), read again only as they move.
     hints: Effects<(), Arc<Vec<Address>>>,
@@ -140,7 +140,7 @@ impl Default for PeersFx {
     fn default() -> PeersFx {
         let mut hints = Effects::new("dial hints");
         hints.want(());
-        PeersFx { set: crate::set::SetFollow::new("dials sync set"), peers: Effects::new("dial peers"), hints }
+        PeersFx { set: crate::set::SyncsFollow::default(), peers: Effects::new("dial peers"), hints }
     }
 }
 
@@ -160,9 +160,11 @@ impl std::fmt::Debug for PeersFx {
     }
 }
 
-/// The product's `Peers`: the engine's facade. A part not built answers as if nothing were.
+/// The product's `Peers`: the engine's facade over the sync IDs this node syncs (the store's). A
+/// part not built answers as if nothing were.
 pub struct NodePeers<'a> {
     pub engine: &'a mut Engine,
+    pub store: &'a crate::store::Store,
     pub fx: &'a mut PeersFx,
 }
 
@@ -173,7 +175,7 @@ fn dial_peers(engine: &mut Engine, s: &SyncId) -> Arc<Vec<Address>> {
 impl Peers for NodePeers<'_> {
     fn due(&mut self) -> Vec<SyncId> {
         let mut out = Vec::new();
-        for (s, now) in self.fx.set.settle(self.engine).unwrap_or_default() {
+        for (s, _, now) in self.fx.set.settle(self.store) {
             match now {
                 Some(_) => self.fx.peers.want(s),
                 None => {

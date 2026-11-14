@@ -52,7 +52,7 @@ pub fn category(e: &Error) -> (i32, &'static str) {
         Error::TooLarge { .. } => (5, "TooLarge"),
         Error::Type { .. } => (5, "Type"),
         Error::Network(_) => (6, "Network"),
-        Error::Unsynced { .. } => (6, "Unsynced"),
+        Error::Stranded { .. } => (6, "Stranded"),
         Error::OutcomeUnknown => (6, "OutcomeUnknown"),
         Error::Invalid(_) => (7, "Invalid"),
         Error::NotUndoable { .. } => (1, "NotUndoable"),

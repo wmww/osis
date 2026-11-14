@@ -139,7 +139,9 @@ pub trait Net {
 /// fake). Reads are stamped.
 pub trait Ground: Net {
     fn now(&self) -> WallMs;
-    fn sync_set(&mut self) -> Result<Arc<SyncSet>>;
+    /// The sync IDs this node syncs (`Store::syncs`: the sync set, and each leaving one while it
+    /// waits), whole.
+    fn syncs(&mut self) -> Result<Arc<SyncSet>>;
     /// The entries of S here a source keeping S unread would pull: the stamped ones.
     fn stamped(&mut self, s: &SyncId) -> Result<Vec<BlobId>>;
     /// Whether that source's stream showed `b` present under S (streams' `knows`).
@@ -348,14 +350,14 @@ impl Status {
         Ok(acted)
     }
 
-    /// The sync set's projection: a row per S held, read or kept unread (§3), and own commits
+    /// The projection of the sync IDs this node syncs: a row per S held, read or kept unread (§3), and own commits
     /// followed per read S.
     fn sync_set(&mut self, g: &mut impl Ground) -> Result<()> {
         self.set.want(());
         if self.set.due().is_empty() {
             return Ok(());
         }
-        let Some(set) = whole(&mut self.set, || g.sync_set())? else { return Ok(()) };
+        let Some(set) = whole(&mut self.set, || g.syncs())? else { return Ok(()) };
         let gone: Vec<SyncId> = self.holding.keys().filter(|s| !set.ids.contains_key(*s)).copied().collect();
         for s in gone {
             self.holding.remove(&s);

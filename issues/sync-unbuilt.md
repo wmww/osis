@@ -29,7 +29,6 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 ## inbox
 - Grant copies (spec/sync-inbox.md §5): nobody logs one, so an actor's other and later nodes and readers find a grant only by its inbox blob until `INBOX_LIFETIME` ends it; a delivery a sender ended by reading the inbox (`took_own`: a link's grant to K, a join to the redeemer's own account) is not sent again, so a link redeemed after that finds no grant of K on the target.
 - A promotion's chain (`held::log_chain`: not built; the engine seals certificate copies, `sync_bodies`).
-- Leaving S does not stay a member of its shared sets while it waits (spec/sync-set.md §3): opens closes it once the engine's sync set drops it. Read: a commit not held elsewhere when S left keeps S waiting, its thing's copy and rows kept and the write sent nowhere, until synced again: stuck (notes/sync-leave.md). Kept unread: a deposit not yet present waits the same way.
 - Stranded and Suspect are answered Ok and acted on by nobody (spec/permissions.md §4: the stranded holder's re-seal, the suspect repair).
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.
 - A decline stamping in place.

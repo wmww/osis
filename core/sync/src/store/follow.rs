@@ -1,11 +1,11 @@
-//! What the store follows of the engine (notes/sync-store.md): the sync set per key
-//! (`SetFollow`), the node's caps, and the served path of each sync ID read here (its thing's
+//! What the store follows (notes/sync-store.md): the sync IDs this node syncs
+//! (`SyncsFollow`), the engine's caps, and the served path of each sync ID read here (its thing's
 //! `sync.0` record, spec/sync-ids.md §5), each an `Effects` value, so a step costs what moved;
 //! the entries that did not open, parked under their sync ID's read secrets (`parked`); and the
 //! entries carrying a commit that pends here (`Carriers`).
 
 use super::Store;
-use crate::set::SetFollow;
+use crate::set::SyncsFollow;
 use crate::types::{Holding, Result};
 use osis_base::memo::{Effects, Feed};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct Follow {
-    set: SetFollow,
+    set: SyncsFollow,
     caps: Effects<(), Arc<Caps>>,
     /// Per sync ID read here, its thing and its recorded path.
     paths: Effects<(SyncId, Tid), Option<Arc<Path>>>,
@@ -137,7 +137,7 @@ impl Default for Follow {
     fn default() -> Follow {
         let mut caps = Effects::new("store: caps");
         caps.want(());
-        Follow { set: SetFollow::new("store: sync set"), caps, paths: Effects::new("store: paths"), creds: Effects::new("store: read secrets"), parked: BTreeMap::new(), entries: None, read: BTreeMap::new(), carriers: Carriers::default() }
+        Follow { set: SyncsFollow::default(), caps, paths: Effects::new("store: paths"), creds: Effects::new("store: read secrets"), parked: BTreeMap::new(), entries: None, read: BTreeMap::new(), carriers: Carriers::default() }
     }
 }
 
@@ -164,12 +164,12 @@ impl Follow {
             }
             None => self.entries = Some(store.entry_feed()),
         }
-        let moved = self.set.settle(engine)?;
+        let moved = self.set.settle(store);
         let mut acted = !moved.is_empty();
         // kept unread to read opens what is there (spec/sync-judgement.md §6 Read and unread move):
-        // every entry held, once
-        let raised: Vec<SyncId> = moved.iter().filter(|(s, now)| matches!(now, Some((_, Holding::Read))) && store.holding(s) == Some(Holding::Unread)).map(|(s, _)| *s).collect();
-        for (s, now) in &moved {
+        // every entry held, once (after a restart, S's start parks what did not open, below)
+        let raised: Vec<SyncId> = moved.iter().filter(|(_, was, now)| matches!(was, Some((_, Holding::Unread))) && matches!(now, Some((_, Holding::Read)))).map(|(s, _, _)| *s).collect();
+        for (s, _, now) in &moved {
             if let Some(t) = self.read.remove(s) {
                 self.paths.unwant(&(*s, t));
                 self.creds.unwant(s);
@@ -186,8 +186,6 @@ impl Follow {
                 self.creds.want(*s);
             }
         }
-        // opened before the store holds S read: a failure on the way restarts the modules, whose
-        // fresh follow finds S still kept unread in the store and opens it all again
         for s in raised {
             for e in store.entries(&s)? {
                 if let Some(bytes) = store.bytes(&e.blob)? {
@@ -195,9 +193,8 @@ impl Follow {
                 }
             }
         }
-        store.set_holdings(&moved);
         // S read from now on (a start, a grant): its entries that did not open are parked once
-        for (s, now) in &moved {
+        for (s, _, now) in &moved {
             if matches!(now, Some((_, Holding::Read))) {
                 let parked = self.parked.entry(*s).or_default();
                 for e in store.entries(s)? {

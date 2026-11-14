@@ -88,7 +88,7 @@ pub trait Holds {
     /// The sync IDs whose `Creds` may have moved since the last call (each settled again; the
     /// product's is the memo effects' `due`).
     fn due(&mut self) -> Vec<SyncId>;
-    /// S's credentials, `None` when S is not in the sync set.
+    /// S's credentials, `None` when this node does not sync S.
     fn creds(&mut self, s: &SyncId) -> Option<Arc<Creds>>;
     /// The actors a connection's proofs count for now (spec/sync-opens.md §2): its account only
     /// while the key it proved with is at an epoch open here, its node, its key actors; sorted.
@@ -125,18 +125,18 @@ pub trait Holds {
     fn step_creds(&mut self, s: &SyncId, step: &Step) -> Vec<(Tested, Option<Epoch>)>;
 }
 
-/// The memo effects opens follows (notes/sync-facade.md, Effects): the sync set,
+/// The memo effects opens follows (notes/sync-facade.md, Effects): the sync IDs this node syncs,
 /// and per sync ID of it the digest of its credentials. A step settles only the keys whose reads
 /// moved.
 #[derive(Clone)]
 pub struct Fx {
-    set: crate::set::SetFollow,
+    set: crate::set::SyncsFollow,
     creds: Effects<SyncId, Option<[u8; 32]>>,
 }
 
 impl Default for Fx {
     fn default() -> Fx {
-        Fx { set: crate::set::SetFollow::new("opens sync set"), creds: Effects::new("opens credentials") }
+        Fx { set: crate::set::SyncsFollow::default(), creds: Effects::new("opens credentials") }
     }
 }
 
@@ -156,14 +156,14 @@ pub struct NodeHolds<'a, 'c> {
 
 /// S's recorded path, read here.
 fn path_of(cx: &mut Cx, s: &SyncId) -> Option<Arc<osis_engine::sync::Path>> {
-    let (t, _) = cx.engine.sync_holding(s).ok()??;
+    let (t, _) = cx.store.synced(s)?;
     cx.engine.sync_ids(&t).ok()?.iter().find(|o| o.id == *s && !o.hint).map(|o| o.path.clone())
 }
 
 /// S's credentials as the engine (read) or `unread` (kept unread) gives them.
 fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
     {
-        let (_, holding) = cx.engine.sync_holding(s).ok()??;
+        let (_, holding) = cx.store.synced(s)?;
         let mut c = Creds { holding: Some(holding), ..Creds::default() };
         match holding {
             Holding::Read => {
@@ -242,7 +242,7 @@ pub fn walk_tests(rc: &ReadCredentials, path: &Path, claim: &mut dyn FnMut(&Step
 /// reader) ends at the log's end.
 pub(crate) fn member_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate::types::Result<Position> {
     let end = cx.store.log_bounds()?.0;
-    match (cx.engine.sync_holding(s)?, by) {
+    match (cx.store.synced(s), by) {
         (Some((_, Holding::Unread)), _) => Ok(cx.store.head_at(s)?.unwrap_or(end)),
         (Some((_, Holding::Read)), Credential::ReadSecret(e)) => {
             let mut at = None;
@@ -264,9 +264,8 @@ impl Holds for NodeHolds<'_, '_> {
 
     fn due(&mut self) -> Vec<SyncId> {
         let mut out = Vec::new();
-        // the sync set per key: what moved of it alone (a failing engine read is tried again at
-        // the next settle; nothing moved is reported meanwhile)
-        for (s, now) in self.fx.set.settle(self.cx.engine).unwrap_or_default() {
+        // the sync IDs this node syncs: what moved of them alone
+        for (s, _, now) in self.fx.set.settle(self.cx.store) {
             match now {
                 Some(_) => self.fx.creds.want(s),
                 None => {
@@ -316,7 +315,7 @@ impl Holds for NodeHolds<'_, '_> {
 
     fn grant(&mut self, s: &SyncId, entry: &[u8; 32]) -> Option<Grant> {
         // the path this node keeps: a reader's recorded one, else the one registered here
-        let steps: Vec<(Step, Option<osis_label::ClaimSet>)> = match self.cx.engine.sync_holding(s).ok()?? {
+        let steps: Vec<(Step, Option<osis_label::ClaimSet>)> = match self.cx.store.synced(s)? {
             (_, Holding::Read) => path_of(self.cx, s)?.steps.clone(),
             (_, Holding::Unread) => self.cx.store.path(s).ok()??.steps.clone(),
         };

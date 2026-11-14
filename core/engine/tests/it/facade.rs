@@ -1112,7 +1112,7 @@ fn a_chain_goes_under_a_sync_id_only_for_its_group_or_a_write_there_spec_perm_4(
     e.grant(&x, &h, &edge_of(Role::Write)).unwrap();
     let member = *e.grant(&h, &ps[1], &edge_of(Role::Write)).unwrap().commits.iter().find(|c| e.header(c).is_some_and(|hd| hd.aspects.iter().any(|a| a.tid == h && a.ak.as_str() == "roles.0"))).expect("the edge write on h");
     let s = e.home_sync_id(&t).unwrap().unwrap();
-    assert_eq!(e.sync_holding(&s).unwrap(), Some((t, Holding::Read)));
+    assert_eq!(e.sync_holder(&s).unwrap(), Some((t, Holding::Read)));
     // (its `keys.0` part, the record of h's box to peer 1's account, goes as h's current `keys.0`)
     let roles = e.header(&member).unwrap().aspect_index(&h, "roles.0").unwrap();
     assert!(e.sync_bodies(&member).unwrap().get(&s).is_none_or(|b| !b.parts.contains(&roles)), "h's roster is nobody's chain into t: {:?}", e.sync_bodies(&member).unwrap());

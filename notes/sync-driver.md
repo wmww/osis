@@ -29,7 +29,7 @@ pub fn apply(out: Vec<Out>, links: &mut impl Links);   // Out: Send, Dial, Close
 - Modules' effects are not durable (but opens' `changed_at`), so a start or restart settles every key once: the same reload spec/sync-judgement.md §3 names for forgetting.
 
 ## Dials (`driver/dials.rs`)
-Candidates, reasons as priorities, the one retry rule (`REDIAL_MS` 30 s, quiet candidates waiting for a change), `max_peers` (`MAX_PEERS` 32 by default), `DISCOVERED_KEEP` (1024) and the pair rule's held dials: the module doc. Sources of candidates: `Engine::dial_peers(s)` per S of the sync set (followed through `Effects`, notes/sync-facade.md), `Inbox::dial_hints` (read whole each step, O(hints)), `SyncConfig::dial`, discovery (`Input::Discovered`). Unbounded candidate counts from hostile dial lists: issues/sync-dial-amplification.md.
+Candidates, reasons as priorities, the one retry rule (`REDIAL_MS` 30 s, quiet candidates waiting for a change), `max_peers` (`MAX_PEERS` 32 by default), `DISCOVERED_KEEP` (1024) and the pair rule's held dials: the module doc. Sources of candidates: `Engine::dial_peers(s)` per S this node syncs (`set::SyncsFollow`, then `Effects`, notes/sync-facade.md), `Inbox::dial_hints` (read whole each step, O(hints)), `SyncConfig::dial`, discovery (`Input::Discovered`). Unbounded candidate counts from hostile dial lists: issues/sync-dial-amplification.md.
 
 **Keep or close**: a dialed connection closes when `Opens::idle` (no member, nothing of opens under way), `!Inbox::may_deposit` and `Session::quiet` all hold; its candidate is dialed again after a change. A served connection is never closed for sharing nothing (spec/sync-transport.md §5). Each step reads the dialed connections, at most `max_peers` sharing ones plus those about to close.
 

@@ -37,7 +37,8 @@ pub struct GroupSync {
     /// Connected nodes with it open that take no more of it for now: full, or refusing what
     /// this node sends. Informational: they are not waited for.
     pub not_taking: usize,
-    /// It is no longer synced here, and a connected node still has it open with this node.
+    /// It left this node's synced groups and is still synced here until what this node wrote to
+    /// it is held elsewhere (spec/sync-set.md §3), then forgotten here.
     pub leaving: bool,
 }
 
@@ -86,16 +87,18 @@ pub(crate) fn status_in(l: &mut Locked, actor: Option<Tid>) -> Result<Status> {
     if per_id.is_empty() {
         return Ok(Status { connected: if actor.is_some() { 0 } else { connected }, groups });
     }
+    // what this node syncs: the sync set, and each sync ID that left it while it waits to stop
+    let syncs = l.node.store().syncs();
     let e = l.engine();
     let set = e.sync_set()?;
     let mut seen = std::collections::BTreeSet::new();
     for (s, st) in per_id {
-        let Some((t, _)) = set.ids.get(&s).copied() else { continue };
+        let Some((t, _)) = syncs.get(&s).copied() else { continue };
         if actor.is_some_and(|a| !e.readable_by(&a, &t)) {
             continue;
         }
         seen.extend(st.sources.keys().copied());
-        let g = GroupSync { state: state_of(&st), not_taking: st.sources.values().filter(|x| !x.waited()).count(), leaving: st.holding.is_none() };
+        let g = GroupSync { state: state_of(&st), not_taking: st.sources.values().filter(|x| !x.waited()).count(), leaving: !set.ids.contains_key(&s) };
         merge(&mut groups, t, g);
     }
     if actor.is_some() {
@@ -159,7 +162,7 @@ impl Osis {
     /// connected node with it open caught up both ways, none of them full or refusing it left
     /// waited for) and each commit of this node's on it held elsewhere, and in `All` and
     /// `Deliveries` every delivery taken. It never resolves while nobody is connected; it fails
-    /// `Unsynced` while a sync ID in scope is stranded here (naming its things); with no network
+    /// `Stranded` while a sync ID in scope is stranded here (naming its things); with no network
     /// (`Runtime::None`) it fails `Network`.
     pub async fn wait_synced(&self, scope: SyncScope) -> Result<()> {
         self.local("wait_synced")?;
@@ -180,7 +183,7 @@ impl Osis {
                 }
                 groups.sort();
                 groups.dedup();
-                Err(Error::Unsynced { groups })
+                Err(Error::Stranded { groups })
             })),
             // spec/sync-status.md §3 has no wait sure never to end: sync's `Never` here is a part
             // of it not built yet, never an answer about the thing

@@ -1,149 +1,180 @@
-//! Leaving the sync set, read side (spec/sync-set.md §3): a read sync ID that left the set is
-//! shredded once each of this node's own commits with an entry under it is held elsewhere, and when
-//! its thing left the synced group's closure while still read here (unsyncing), the thing's local
-//! copy is forgotten first. Kept unread leaving is `unread`'s.
+//! Leaving the sync set (spec/sync-set.md §3), and the sync IDs this node syncs.
 //!
-//! Work follows change: the sync set through one `Effects` key, diffed on change; each leaving S
-//! judged through its own key over S's own commits and status's durable held-elsewhere marks on
-//! their entries (O(own commits under S)). Status judges S no more once it left, so the marks are
-//! what the node knew when S left. At a start, every sync ID with rows in the store, outside the sync set,
-//! whose thing reads it here counts as leaving (the store is the truth after a restart): nothing
-//! of this module's is durable.
+//! `leave` alone follows the engine's sync set (`SetFollow`) and writes what this node syncs into
+//! the store (`Store::set_holdings`): the sync set, and each sync ID that left it while it waits
+//! to stop. Every other module follows that (crate::set), so a waiting sync ID stays open,
+//! served, logged into, judged and counted as before until it stops (§3: it stays a member of its
+//! shared sets as before).
+//!
+//! The rule, read or kept unread alike: S that left waits until what this node logged itself
+//! under S is elsewhere (read: each own commit with an entry under S held elsewhere, status's
+//! durable mark on one of its entries, `Store::elsewhere`; kept unread: each own entry present at
+//! a source, `Sources`), then stops: read and still read here (unsyncing), its thing's local copy
+//! is forgotten first. While it waits, the node's keys must still let it hold S as it did
+//! (`Engine::sync_holder`): once they do not (its secrets lost, a removal), it stops at once.
+//! Synced again before then, it is kept as it was.
+//!
+//! Work follows change: the sync set per key; each waiting S judged through its own `Effects`
+//! key over its own commits or entries (O(own writes under S)). At a start, every sync ID with
+//! rows in the store, not synced, that this node's keys still hold (`Engine::sync_holder`), left
+//! while the node was down: it waits as above (the store is the truth after a restart). Nothing of
+//! this module's is durable.
 
+use crate::set::{Held, SetFollow, SetGround};
 use crate::types::{Holding, Result};
 use osis_base::memo::Effects;
-use osis_base::{SyncId, Tid};
-use osis_engine::sync::SyncSet;
+use osis_base::{BlobId, SyncId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+
+/// Whether a source of S showed `b` present by its stream (spec/sync-set.md §3: what a node
+/// keeping S unread waits for before leaving). Stamped reads, so a waiting S is judged again when
+/// presence moves.
+pub trait Sources {
+    fn present(&self, s: &SyncId, b: &BlobId) -> bool;
+}
 
 /// What leave reads and does (the product's is `Live`; a test's a table).
-pub trait Ground {
-    fn sync_set(&mut self) -> Result<Arc<SyncSet>>;
+pub trait Ground: SetGround {
+    /// S's entry in the sync IDs this node syncs (`Store::synced`).
+    fn synced(&mut self, s: &SyncId) -> Option<Held>;
+    /// Sets it (`Store::set_holdings`; `None`: not synced).
+    fn set_synced(&mut self, s: &SyncId, now: Option<Held>);
     /// The sync IDs whose store holds rows (`Store::held_ids`).
     fn stored(&mut self) -> Result<BTreeSet<SyncId>>;
-    /// The thing owning S by its `sync.0` (`Engine::sync_owner`).
-    fn owner(&mut self, s: &SyncId) -> Result<Option<Tid>>;
-    /// Whether this node reads `t` under S (`Engine::thing_sync`, whatever lists `t`): it still
-    /// holds a read secret of `t`, so S left because `t` left the synced group's closure.
-    fn reads(&mut self, t: &Tid, s: &SyncId) -> Result<bool>;
-    /// `unread` follows S (listed, or leaving and waiting).
-    fn unread_keeps(&self, s: &SyncId) -> bool;
-    /// Each of this node's own commits with an entry under S is held elsewhere: one of its
+    /// S's thing and how this node's keys let it hold S, whatever lists it (`Engine::sync_holder`).
+    fn holder(&mut self, s: &SyncId) -> Result<Option<Held>>;
+    /// Read: each of this node's own commits with an entry under S is held elsewhere: one of its
     /// entries there recorded so (`Store::elsewhere`, status's durable mark, spec/sync-status.md §2).
     fn own_elsewhere(&mut self, s: &SyncId) -> Result<bool>;
+    /// Kept unread: each entry this node logged itself under S is present at a source.
+    fn own_present(&mut self, s: &SyncId) -> Result<bool>;
     fn shred(&mut self, s: &SyncId) -> Result<()>;
     /// Forgets `t`'s local copy (`Engine::forget_local`).
     fn forget_local(&mut self, t: &Tid) -> Result<()>;
 }
 
+/// A waiting S's judgement.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Wait {
+    #[default]
+    Waiting,
+    /// What it logged itself is elsewhere: it stops.
+    Done,
+    /// This node's keys no longer hold S as they did: it stops at once.
+    Lost,
+}
+
 #[derive(Clone)]
 pub struct Leave {
-    set: Effects<(), Arc<SyncSet>>,
-    /// The sync IDs read here as last settled, each with its thing.
-    read: BTreeMap<SyncId, Tid>,
+    set: SetFollow,
     /// The start's sweep of the store is done.
     swept: bool,
-    /// Read sync IDs that left while their thing is still read here, waiting for their own
-    /// entries to be elsewhere, each with its thing.
-    leaving: BTreeMap<SyncId, Tid>,
-    elsewhere: Effects<SyncId, bool>,
-    /// Judgements of a leaving S made (tests: what a change costs).
+    /// Sync IDs that left the sync set and wait, each with its entry when it left.
+    waiting: BTreeMap<SyncId, Held>,
+    wait: Effects<SyncId, Wait>,
+    /// Judgements of a waiting S made (tests: what a change costs).
     judged: u64,
 }
 
 impl Default for Leave {
     fn default() -> Leave {
-        let mut set = Effects::new("leave: sync set");
-        set.want(());
-        Leave { set, read: BTreeMap::new(), swept: false, leaving: BTreeMap::new(), elsewhere: Effects::new("leave: own entries elsewhere"), judged: 0 }
+        Leave { set: SetFollow::new("leave: sync set"), swept: false, waiting: BTreeMap::new(), wait: Effects::new("leave: own writes elsewhere"), judged: 0 }
     }
 }
 
 impl std::fmt::Debug for Leave {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Leave").field("leaving", &self.leaving).finish_non_exhaustive()
+        f.debug_struct("Leave").field("waiting", &self.waiting).finish_non_exhaustive()
     }
 }
 
 impl Leave {
-    /// Follows the sync set and stops each read sync ID that left it once its own entries are
-    /// elsewhere (spec/sync-set.md §3). Whether it acted.
+    /// Follows the sync set into what this node syncs, and stops each sync ID that left it once
+    /// what it logged itself there is elsewhere (spec/sync-set.md §3). Whether it acted.
     pub fn settle(&mut self, g: &mut impl Ground) -> Result<bool> {
         let mut acted = false;
-        if !self.set.due().is_empty()
-            && let Some((_, set)) = run(&mut self.set, &(), || g.sync_set())?
-        {
-            let gone: Vec<(SyncId, Tid)> = self.read.iter().filter(|(s, _)| !matches!(set.ids.get(*s), Some((_, Holding::Read)))).map(|(s, t)| (*s, *t)).collect();
-            for (s, t) in gone {
-                self.read.remove(&s);
-                // lowered to kept unread is no leaving (spec/sync.md §3)
-                if !set.ids.contains_key(&s) && !g.unread_keeps(&s) {
-                    acted |= self.left(g, s, t)?;
-                }
-            }
-            for (s, (t, h)) in &set.ids {
-                if *h == Holding::Read {
-                    self.read.insert(*s, *t);
-                }
-            }
-            // synced again before it stopped: kept as it was
-            let back: Vec<SyncId> = self.leaving.keys().filter(|s| set.ids.contains_key(*s)).copied().collect();
-            for s in back {
-                self.leaving.remove(&s);
-                self.elsewhere.unwant(&s);
-            }
-            if !self.swept {
-                // a read sync ID's rows outside the sync set: it left while the node was down
-                // (another account's inbox this node deposits to, or one kept unread, is none)
-                for s in g.stored()? {
-                    if set.ids.contains_key(&s) || self.leaving.contains_key(&s) || g.unread_keeps(&s) {
-                        continue;
+        for (s, now) in self.set.settle(g)? {
+            match now {
+                Some(h) => {
+                    // synced again before it stopped: kept as it was
+                    if self.waiting.remove(&s).is_some() {
+                        self.wait.unwant(&s);
                     }
-                    let Some(t) = g.owner(&s)? else { continue };
-                    if g.reads(&t, &s)? {
-                        acted |= self.left(g, s, t)?;
+                    if g.synced(&s) != Some(h) {
+                        g.set_synced(&s, Some(h));
+                        acted = true;
                     }
                 }
-                self.swept = true;
+                None => {
+                    if let Some(h) = g.synced(&s) {
+                        self.waiting.insert(s, h);
+                        self.wait.want(s);
+                    }
+                }
             }
         }
-        for s in self.elsewhere.due() {
-            let Some(&t) = self.leaving.get(&s) else {
-                self.elsewhere.unwant(&s);
+        if !self.swept {
+            // rows of a sync ID not synced that this node's keys still hold: it left while the
+            // node was down (another account's inbox this node deposits to is none)
+            for s in g.stored()? {
+                if g.synced(&s).is_some() {
+                    continue;
+                }
+                if let Some(h) = g.holder(&s)? {
+                    g.set_synced(&s, Some(h));
+                    self.waiting.insert(s, h);
+                    self.wait.want(s);
+                    acted = true;
+                }
+            }
+            self.swept = true;
+        }
+        for s in self.wait.due() {
+            let Some(&(t, h)) = self.waiting.get(&s) else {
+                self.wait.unwant(&s);
                 continue;
             };
             self.judged += 1;
-            let Some((_, now)) = run(&mut self.elsewhere, &s, || g.own_elsewhere(&s))? else { continue };
-            if now {
-                // forgotten before the shred: a crash between finds the rows at the next start
-                g.forget_local(&t)?;
-                g.shred(&s)?;
-                self.leaving.remove(&s);
-                self.elsewhere.unwant(&s);
-                acted = true;
+            let Some((_, now)) = run(&mut self.wait, &s, || judge(g, &s, (t, h)))? else { continue };
+            if now == Wait::Waiting {
+                continue;
             }
+            // unsyncing: forgotten before the shred, so a crash between finds the rows at the
+            // next start and does both again
+            if now == Wait::Done && h == Holding::Read {
+                g.forget_local(&t)?;
+            }
+            g.shred(&s)?;
+            g.set_synced(&s, None);
+            self.waiting.remove(&s);
+            self.wait.unwant(&s);
+            acted = true;
         }
         Ok(acted)
     }
 
-    /// S left the sync set: still read here (unsyncing), it waits for its own entries to be
-    /// elsewhere; else (no secret of it held) it stops at once.
-    fn left(&mut self, g: &mut impl Ground, s: SyncId, t: Tid) -> Result<bool> {
-        if g.reads(&t, &s)? {
-            self.leaving.insert(s, t);
-            self.elsewhere.want(s);
-            return Ok(false);
-        }
-        g.shred(&s)?;
-        Ok(true)
+    /// Whether S left the sync set and waits to stop.
+    pub fn waits(&self, s: &SyncId) -> bool {
+        self.waiting.contains_key(s)
     }
 
-    /// Tests only: the judgements of a leaving S made so far.
+    /// Tests only: the judgements of a waiting S made so far.
     #[doc(hidden)]
     pub fn judged(&self) -> u64 {
         self.judged
     }
+}
+
+/// Waiting S's judgement, reading its own keys only.
+fn judge(g: &mut impl Ground, s: &SyncId, held: Held) -> Result<Wait> {
+    if g.holder(s)? != Some(held) {
+        return Ok(Wait::Lost);
+    }
+    let done = match held.1 {
+        Holding::Read => g.own_elsewhere(s)?,
+        Holding::Unread => g.own_present(s)?,
+    };
+    Ok(if done { Wait::Done } else { Wait::Waiting })
 }
 
 /// `Effects::settle` with a failing function: the key stays due, the error goes up.
@@ -163,27 +194,33 @@ fn run<K: std::hash::Hash + Eq + Clone, V: Clone + PartialEq + Default>(fx: &mut
     Ok(moved)
 }
 
-/// The product's ground: the engine's facade, the store and unread.
+/// The product's ground: the engine's facade, the store and what sources showed (streams).
 pub struct Live<'a, 'b> {
     pub cx: &'a mut crate::types::Cx<'b>,
-    pub unread: &'a crate::unread::Unread,
+    pub sources: &'a dyn Sources,
+}
+
+impl SetGround for Live<'_, '_> {
+    fn sync_things(&mut self) -> Result<std::sync::Arc<BTreeSet<Tid>>> {
+        Ok(self.cx.engine.sync_things()?)
+    }
+    fn thing_sync(&mut self, t: &Tid) -> Result<osis_engine::sync::ThingSync> {
+        Ok(self.cx.engine.thing_sync(t)?)
+    }
 }
 
 impl Ground for Live<'_, '_> {
-    fn sync_set(&mut self) -> Result<Arc<SyncSet>> {
-        Ok(self.cx.engine.sync_set()?)
+    fn synced(&mut self, s: &SyncId) -> Option<Held> {
+        self.cx.store.synced(s)
+    }
+    fn set_synced(&mut self, s: &SyncId, now: Option<Held>) {
+        self.cx.store.set_holdings(&[(*s, now)]);
     }
     fn stored(&mut self) -> Result<BTreeSet<SyncId>> {
         self.cx.store.held_ids()
     }
-    fn owner(&mut self, s: &SyncId) -> Result<Option<Tid>> {
-        Ok(self.cx.engine.sync_owner(s)?)
-    }
-    fn reads(&mut self, t: &Tid, s: &SyncId) -> Result<bool> {
-        Ok(matches!(self.cx.engine.thing_sync(t)?, osis_engine::sync::ThingSync::Read(ids) if ids.contains(s)))
-    }
-    fn unread_keeps(&self, s: &SyncId) -> bool {
-        self.unread.keeps(s)
+    fn holder(&mut self, s: &SyncId) -> Result<Option<Held>> {
+        Ok(self.cx.engine.sync_holder(s)?)
     }
     fn own_elsewhere(&mut self, s: &SyncId) -> Result<bool> {
         for c in self.cx.engine.own_commits(s)?.iter() {
@@ -200,6 +237,9 @@ impl Ground for Live<'_, '_> {
             }
         }
         Ok(true)
+    }
+    fn own_present(&mut self, s: &SyncId) -> Result<bool> {
+        Ok(self.cx.store.entries(s)?.into_iter().filter(|e| e.own).all(|e| self.sources.present(s, &e.blob)))
     }
     fn shred(&mut self, s: &SyncId) -> Result<()> {
         self.cx.store.shred(s)

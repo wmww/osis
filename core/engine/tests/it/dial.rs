@@ -107,7 +107,7 @@ fn the_granter_of_what_it_keeps_unread_spec_sync_opens_1() {
     lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap().expect("opens");
     let d1 = lp.peers[1].engine.account().unwrap().unwrap().1;
     file(&mut lp.peers[1].engine, d1, t);
-    assert_eq!(lp.peers[1].engine.sync_holding(&s).unwrap(), Some((t, osis_engine::sync::Holding::Unread)));
+    assert_eq!(lp.peers[1].engine.sync_holder(&s).unwrap(), Some((t, osis_engine::sync::Holding::Unread)));
     assert_eq!(peers(&mut lp, 1, &s), vec![addr(0)]);
     lp.peers[1].restart(7).unwrap();
     assert_eq!(peers(&mut lp, 1, &s), vec![addr(0)], "after a restart");

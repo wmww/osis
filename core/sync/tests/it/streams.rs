@@ -17,7 +17,7 @@ use osis_sync::session::{Incoming, To};
 use osis_sync::store::Source;
 use osis_sync::streams::{Ctx, Ground, INLINE_LIMIT, Opening, Rank, Shared, Streams, Wire};
 use osis_sync::types::{ConnId, Credential, Entry, Result, SourceClass};
-use osis_sync::unread::Sources;
+use osis_sync::leave::Sources;
 use osis_sync::Store;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};

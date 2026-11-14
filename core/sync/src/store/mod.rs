@@ -252,7 +252,7 @@ impl Inner {
     }
 
     fn holding(&self, s: &SyncId) -> Option<Holding> {
-        self.mem.stamps.read(&("holding", s));
+        self.mem.syncs.read(s);
         self.holdings.get(s).map(|(_, h)| *h)
     }
 }
@@ -355,9 +355,7 @@ impl Store {
 
     // Holdings and caps
 
-    /// The node's sync set (`Engine::sync_set`): which sync IDs it holds, of which thing, read or
-    /// kept unread. A sync ID moving between read and kept unread is counted again in the unread
-    /// total (spec/sync-ids.md §5 Caps); only the sync IDs whose holding moved stamp.
+    /// Tests: the sync IDs this node syncs, whole (`set_holdings` of what differs).
     pub fn set_sync_set(&mut self, set: &SyncSet) {
         let moved: Vec<(SyncId, Option<(Tid, Holding)>)> = {
             let g = self.lock();
@@ -366,7 +364,11 @@ impl Store {
         self.set_holdings(&moved);
     }
 
-    /// Sync IDs whose sync set entry moved, each with its entry now (`None`: left the set).
+    /// The sync IDs this node syncs (spec/sync-set.md §3: the sync set, and each sync ID that
+    /// left it while it waits to stop; `leave` writes them): those whose entry moved, each with its
+    /// entry now (`None`: no longer synced), of which thing, read or kept unread. A sync ID moving
+    /// between read and kept unread is counted again in the unread total (spec/sync-ids.md §5
+    /// Caps); only the sync IDs whose entry moved stamp.
     pub fn set_holdings(&mut self, moved: &[(SyncId, Option<(Tid, Holding)>)]) {
         let mut g = self.lock();
         let unread = |h: Option<&(Tid, Holding)>| h.is_some_and(|(_, h)| *h == Holding::Unread);
@@ -379,7 +381,7 @@ impl Store {
             if unread(was.as_ref()) != unread(now.as_ref()) {
                 recount.push((*s, unread(now.as_ref())));
             }
-            g.mem.stamps.wrote(&("holding", s), true);
+            g.mem.syncs.wrote_added(s, true, true);
             match now {
                 Some(h) => g.holdings.insert(*s, *h),
                 None => g.holdings.remove(s),
@@ -407,8 +409,28 @@ impl Store {
         g.caps = caps.clone();
     }
 
+    /// How this node syncs S (stamped read).
     pub fn holding(&self, s: &SyncId) -> Option<Holding> {
         self.lock().holding(s)
+    }
+
+    /// S's entry in the sync IDs this node syncs: its thing and how it is held (stamped read).
+    pub fn synced(&self, s: &SyncId) -> Option<(Tid, Holding)> {
+        let g = self.lock();
+        g.mem.syncs.read(s);
+        g.holdings.get(s).copied()
+    }
+
+    /// The sync IDs this node syncs, whole (a stamped read of all of them).
+    pub fn syncs(&self) -> BTreeMap<SyncId, (Tid, Holding)> {
+        let g = self.lock();
+        g.mem.syncs.read_all();
+        g.holdings.clone()
+    }
+
+    /// A cursor over the sync IDs whose entry moves from now on (`set_holdings`).
+    pub fn syncs_feed(&self) -> osis_base::memo::Feed<SyncId> {
+        self.lock().mem.syncs.feed()
     }
 
     // Reads

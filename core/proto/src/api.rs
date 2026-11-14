@@ -114,7 +114,7 @@ impl ApiCode {
     /// `[commit, reason]`
     pub const NOT_UNDOABLE: u64 = 6;
     /// `[[tid*]]`
-    pub const UNSYNCED: u64 = 7;
+    pub const STRANDED: u64 = 7;
     /// `[text]`
     pub const INVALID: u64 = 8;
     /// `[text]`

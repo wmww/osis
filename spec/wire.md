@@ -375,7 +375,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | 4 | type | `[path, text]` |
     | 5 | too large | `[limit]` |
     | 6 | not undoable | `[commit, reason]` |
-    | 7 | unsynced | `[[tid*]]` |
+    | 7 | stranded | `[[tid*]]` |
     | 8 | invalid | `[text]` |
     | 9 | storage | `[text]` |
     | 10 | network | `[text]` |

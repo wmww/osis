@@ -87,7 +87,8 @@ pub trait Ground {
     fn credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>>;
     /// S's thing's destruction, when S is a destroyed thing's own sync ID.
     fn destruction(&mut self, s: &SyncId) -> Result<Option<Arc<Destruction>>>;
-    /// S is in the sync set, read here: read judges nothing else.
+    /// This node syncs S read (`Store::holding`: the sync set, or leaving and waiting): read judges
+    /// nothing else.
     fn reads(&mut self, s: &SyncId) -> Result<bool>;
     /// No group of S's closure holds a part of its `group.0` as a header only (spec/sync-judgement.md
     /// §2 outside the required set, §3 Header-only parts): until then nothing is judged outside it.

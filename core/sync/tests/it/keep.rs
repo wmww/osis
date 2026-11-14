@@ -67,7 +67,7 @@ fn kept() -> (World, Tid, SyncId) {
     assert_eq!(w.engine(1).sync_record(&t).unwrap().expect("a sync record").sync_ids, vec![s]);
     add_to_d(&mut w, 1, t);
     w.run();
-    assert_eq!(w.engine(1).sync_holding(&s).unwrap(), Some((t, Holding::Unread)), "kept unread");
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some((t, Holding::Unread)), "kept unread");
     // node 1's filter shows its grant's sync key once it accepts and its own test opens S: node 0
     // registers the genesis, then the rest of the recorded path (spec/sync-ids.md §6 Walk)
     let path = w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.clone();
@@ -80,7 +80,7 @@ fn kept() -> (World, Tid, SyncId) {
     w.run();
     let blobs = w.engine(0).commit_blobs(&c).unwrap();
     assert!(blobs.iter().any(|b| w.store(1).entry(&s, b).ok().flatten().is_some()), "the write held at the node keeping S unread");
-    assert_eq!(w.engine(1).sync_holding(&s).unwrap(), Some((t, Holding::Unread)), "still kept: nothing opens there");
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some((t, Holding::Unread)), "still kept: nothing opens there");
     (w, t, s)
 }
 
@@ -262,7 +262,7 @@ fn a_store_granted_again_after_its_removal_reaches_the_head_spec_sync_ids_6() {
     let a1 = w.node(1).account.unwrap();
     w.write(0, |e| e.grant(&t, &a1, &edge(Role::Sync))).unwrap();
     w.run();
-    assert_eq!(w.engine(1).sync_holding(&s).unwrap(), Some((t, Holding::Unread)), "kept unread again");
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some((t, Holding::Unread)), "kept unread again");
     let path = w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.clone();
     assert_eq!(w.store(1).head(&s).unwrap().map(|h| h.id()), path.steps.last().map(|(st, _)| st.id()), "S's path registered at node 1");
     assert!(!w.status(1)[&s].stranded, "node 1 holds its head's sync secret");

@@ -342,8 +342,7 @@ impl Engine {
 
     // Held parts and bodies
 
-    /// Brings the facade values kept per entry (`memo::Spread`: `Core::published`,
-    /// `Core::sync_holding`; each read thing's certificates per commit, `certified`) up to date
+    /// Brings the facade values kept per entry (`memo::Spread`: `Core::published`; each read thing's certificates per commit, `certified`) up to date
     /// with what moved since the last call: whether any entry moved. Each refreshes itself when
     /// asked, but an `Effects` key that read an entry goes due only once the entry is written, so
     /// a module calls this before its `due()` (the driver, before each module's settle and until
@@ -352,8 +351,7 @@ impl Engine {
     /// transactions between two sync steps would cost n walks, not one (notes/engine.md).
     pub fn follow(&mut self) -> Result<bool> {
         let core = &self.core;
-        let mut moved = core.published.refresh(|| crate::labeling::published_all(core));
-        moved |= osis_base::memo::Spread::refresh_in(self, |e| &e.core.sync_holding, |e| Ok::<_, Error>(e.sync_set()?.ids.clone()))?;
+        let moved = core.published.refresh(|| crate::labeling::published_all(core));
         Ok(self.follow_certificates()? | moved)
     }
 
@@ -511,10 +509,12 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.sync_set, &(), |e| e.sync_set_now())
     }
 
-    /// How this node holds sync ID `s`, and its thing (`sync_set`'s entry for `s`): a reader moves
-    /// only when the answer does (`Core::sync_holding`).
-    pub fn sync_holding(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
-        osis_base::memo::Spread::get_in(self, |e| &e.core.sync_holding, s, |e| Ok::<_, Error>(e.sync_set()?.ids.clone()))
+    /// Sync ID `s`'s thing and how this node's keys let it hold `s` (read or kept unread),
+    /// whatever lists the thing: `sync_set`'s entry for `s` while the synced group's closure holds
+    /// the thing, and what a sync ID leaving the sync set is held as while it waits
+    /// (spec/sync-set.md §3). Reads only `s`'s owner's keys.
+    pub fn sync_holder(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
+        self.sync_holder_now(s)
     }
 
     /// The things the sync set is judged over: the synced group's closure (the same `Arc` while
@@ -581,7 +581,7 @@ impl Engine {
         {
             return Ok(None);
         }
-        let Some((thing, _)) = self.sync_holding(s)? else { return Ok(None) };
+        let Some((thing, _)) = self.sync_holder(s)? else { return Ok(None) };
         let ids: Vec<Arc<crate::identity::Identity>> = self.core.key_actors.values().cloned().collect();
         let Some(id) = ids.iter().find(|id| osis_crypto::static_entry(s, &id.keys().signing.verifying_key()) == *entry) else { return Ok(None) };
         let Ok(item) = osis_label::open_entry_box(b, head, &id.keys().kem, &thing) else { return Ok(None) };

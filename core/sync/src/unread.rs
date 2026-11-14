@@ -1,31 +1,29 @@
 //! Judgement for kept-unread sync IDs (spec/sync-judgement.md §6, spec/sync-set.md §3).
 //!
 //! Principle: a node keeping S unread decides its own grant by the boxes sealed to it, and by
-//! nothing else. It holds no engine state of what S carries: its inputs are the engine facade's
-//! sync set (per thing) and sync record, the store's path and own entries of S, and whether a
-//! source holds an own entry (`Sources`). It keeps S while its head's sync key is one a held
+//! nothing else. It holds no engine state of what S carries: its inputs are the sync IDs this
+//! node syncs kept unread, the engine facade's sync record and the store's path of S. It keeps S
+//! while its head's sync key is one a held
 //! secret derives; at a head whose key none derives it drops its copy and takes nothing
 //! (`Store::set_unheld`), showing only the secrets no step of its path bears, so a reader holding
-//! one registers its path onward (a re-grant past its head); unlisted, it leaves once each entry
-//! it logged itself is present at a source, keeping its record. Model:
-//! core/test/tla/net/NetKeep.tla.
+//! one registers its path onward (a re-grant past its head). Leaving (unlisted) is `leave`'s: S
+//! is kept here while it waits there. Model: core/test/tla/net/NetKeep.tla.
 //!
-//! Work follows change: the synced group's closure (`sync_things`) through one `Effects` key,
-//! diffed on change (O(closure) per closure change), each thing's `thing_sync` through its own,
-//! and each S's judgement through one `Effects` key that reads its record, path and own entries
-//! by key, so a head move or a box judges only its own S.
+//! Work follows change: the sync IDs this node syncs kept unread (`set::SyncsFollow`, O(moved)),
+//! and each S's judgement through one `Effects` key that reads its record and path by key, so a
+//! head move or a box judges only its own S.
 //!
 //! State: `kept` (per S: stranded, credentials), which `opens` and `status` read stamped.
 //! Nothing durable of its own: a start settles every key once.
 
 use crate::types::{Cx, Result};
 use osis_base::memo::{Effects, Stamped};
-use osis_base::{BlobId, SyncId, Tid, WallMs};
+use osis_base::{SyncId, Tid, WallMs};
 use osis_crypto::kdf::sync_proof;
 use osis_crypto::{LabelRole, Secret32, SigningSecret, VerifyingKey, label_role_key, label_role_seed};
-use osis_engine::sync::{SyncRecord, ThingSync};
+use osis_engine::sync::{Holding, SyncRecord};
 use osis_label::{ClaimSet, Step, StepId};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// What a node keeping S unread opens and acts with, from its sync record and its store's head
@@ -66,45 +64,23 @@ pub struct Kept {
     pub credentials: Option<Arc<UnreadCredentials>>,
 }
 
-/// Whether a source of S showed `b` present by its stream (spec/sync-set.md §3: what a node
-/// keeping S unread waits for before leaving). Stamped reads, so a leaving S is judged again when
-/// presence moves.
-pub trait Sources {
-    fn present(&self, s: &SyncId, b: &BlobId) -> bool;
-}
-
-/// A judgement of one S.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Verdict {
-    Keep(Kept),
-    /// Unlisted and every own entry is present at a source.
-    Leave,
-}
-
 /// What one S is judged on, every value read by key (spec/sync-judgement.md §6).
 pub struct Judged<'a> {
-    /// The sync set lists S kept unread.
-    pub listed: bool,
     /// The thing's sync record (sync secrets by epoch).
     pub record: Option<&'a SyncRecord>,
     /// S's verified path as Registers gave it (its head last).
     pub steps: &'a [(Step, Option<ClaimSet>)],
-    /// Unlisted only: each entry this node logged itself under S is present at a source.
-    pub own_elsewhere: bool,
 }
 
-/// spec/sync-judgement.md §6 (keeps, stops) and spec/sync-set.md §3 (leaving), over plain values.
-pub fn judge(j: &Judged) -> Verdict {
+/// spec/sync-judgement.md §6 (keeps, stops), over plain values.
+pub fn judge(j: &Judged) -> Kept {
     osis_base::costs::count("unread: judged", 1);
-    if !j.listed && j.own_elsewhere {
-        return Verdict::Leave;
-    }
     // each sync secret held, newest first, with its sync key and proof
     let held: Vec<(SigningSecret, Secret32)> = j
         .record
         .map(|r| r.secrets.values().rev().map(|x| (label_role_key(LabelRole::Sync, x), Secret32::from_bytes(sync_proof(&label_role_seed(LabelRole::Sync, x))))).collect())
         .unwrap_or_default();
-    let keep = |stranded: bool, credentials: Option<UnreadCredentials>| Verdict::Keep(Kept { stranded, credentials: credentials.map(Arc::new) });
+    let keep = |stranded: bool, credentials: Option<UnreadCredentials>| Kept { stranded, credentials: credentials.map(Arc::new) };
     let Some(head) = j.steps.last() else {
         // no step registered yet: each sync secret it holds counts as its step, so a reader's
         // test finds S here and registers its path, and a box at a self-made epoch hides no
@@ -122,35 +98,17 @@ pub fn judge(j: &Judged) -> Verdict {
 
 #[derive(Clone)]
 pub struct Unread {
-    /// The synced group's closure (`sync_things`), and its last value.
-    closure: Effects<(), Arc<BTreeSet<Tid>>>,
-    things: BTreeSet<Tid>,
-    /// Each thing of the closure: how it is synced (`thing_sync`).
-    thing: Effects<Tid, ThingSync>,
-    /// The sync IDs each thing is kept unread under.
-    thing_ids: BTreeMap<Tid, Vec<SyncId>>,
-    /// S kept unread by the sync set, and its thing.
-    listed: Stamped<SyncId, Tid>,
-    /// Each S followed (listed, or leaving) and its thing.
+    /// The sync IDs this node syncs.
+    syncs: crate::set::SyncsFollow,
+    /// Each S kept unread (listed, or leaving and waiting) and its thing.
     followed: BTreeMap<SyncId, Tid>,
-    judged: Effects<SyncId, Verdict>,
+    judged: Effects<SyncId, Kept>,
     kept: Stamped<SyncId, Kept>,
 }
 
 impl Default for Unread {
     fn default() -> Self {
-        let mut closure = Effects::new("unread: closure");
-        closure.want(());
-        Unread {
-            closure,
-            things: BTreeSet::new(),
-            thing: Effects::new("unread: thing"),
-            thing_ids: BTreeMap::new(),
-            listed: Stamped::default(),
-            followed: BTreeMap::new(),
-            judged: Effects::new("unread: judged"),
-            kept: Stamped::default(),
-        }
+        Unread { syncs: Default::default(), followed: BTreeMap::new(), judged: Effects::new("unread: judged"), kept: Stamped::default() }
     }
 }
 
@@ -176,50 +134,43 @@ impl Unread {
         self.kept.contains_key(s)
     }
 
-    /// Keeps, drops its copy at a head past its keys, leaves when unlisted; whether anything
-    /// another module reads changed.
-    pub fn settle(&mut self, cx: &mut Cx, sources: &impl Sources) -> Result<bool> {
+    /// Keeps, or drops its copy at a head past its keys; whether anything another module reads
+    /// changed.
+    pub fn settle(&mut self, cx: &mut Cx) -> Result<bool> {
         let mut acted = false;
-        if !self.closure.due().is_empty() {
-            let engine = &mut *cx.engine;
-            if let Some((_, now)) = self.closure.try_settle(&(), || engine.sync_things())? {
-                let gone: Vec<Tid> = self.things.iter().filter(|t| !now.contains(*t)).copied().collect();
-                for t in gone {
-                    self.things.remove(&t);
-                    self.thing.unwant(&t);
-                    acted |= self.thing_moved(cx, &t, &ThingSync::Plain)?;
+        for (s, _, now) in self.syncs.settle(cx.store) {
+            match now {
+                Some((t, Holding::Unread)) => {
+                    if self.followed.insert(s, t) != Some(t) {
+                        self.judged.unwant(&s);
+                        self.judged.want(s);
+                    }
                 }
-                for t in now.iter() {
-                    if self.things.insert(*t) {
-                        self.thing.want(*t);
+                // raised to read: no longer this module's (its store stays); stopped: shredded
+                _ => {
+                    if self.followed.remove(&s).is_some() {
+                        if matches!(now, Some((_, Holding::Read))) {
+                            cx.store.set_unheld(&s, false)?;
+                        }
+                        self.judged.unwant(&s);
+                        if self.kept.contains_key(&s) {
+                            self.kept.remove(&s);
+                            acted = true;
+                        }
                     }
                 }
             }
-        }
-        for t in self.thing.due() {
-            let engine = &mut *cx.engine;
-            let Some((_, now)) = self.thing.try_settle(&t, || engine.thing_sync(&t))? else { continue };
-            acted |= self.thing_moved(cx, &t, &now)?;
         }
         for s in self.judged.due() {
             let Some(&thing) = self.followed.get(&s) else {
                 self.judged.unwant(&s);
                 continue;
             };
-            let listed = &self.listed;
-            let Some((_, now)) = self.judged.try_settle(&s, || judge_s(cx, sources, listed, &s, &thing))? else { continue };
+            let Some((_, k)) = self.judged.try_settle(&s, || judge_s(cx, &s, &thing))? else { continue };
             acted = true;
-            match now {
-                Verdict::Keep(k) => {
-                    // at a head past its keys its copy goes and it takes nothing (§6)
-                    cx.store.set_unheld(&s, k.stranded)?;
-                    self.kept.insert(s, k);
-                }
-                Verdict::Leave => {
-                    cx.store.shred(&s)?;
-                    self.forget(&s);
-                }
-            }
+            // at a head past its keys its copy goes and it takes nothing (§6)
+            cx.store.set_unheld(&s, k.stranded)?;
+            self.kept.insert(s, k);
         }
         Ok(acted)
     }
@@ -227,52 +178,11 @@ impl Unread {
     pub fn next_wake(&self) -> Option<WallMs> {
         None
     }
-
-    /// Thing `t`'s sync moved: S newly kept unread is followed, S no longer listed is judged
-    /// again (leaving), S raised to read is no longer this module's (its store stays).
-    fn thing_moved(&mut self, cx: &mut Cx, t: &Tid, now: &ThingSync) -> Result<bool> {
-        let mut acted = false;
-        let ids: Vec<SyncId> = match now {
-            ThingSync::Unread(ids) => ids.clone(),
-            _ => Vec::new(),
-        };
-        let was = self.thing_ids.remove(t).unwrap_or_default();
-        for s in was.iter().filter(|s| !ids.contains(s)) {
-            self.listed.remove(s);
-            if matches!(now, ThingSync::Read(r) if r.contains(s)) {
-                acted |= self.kept.contains_key(s);
-                cx.store.set_unheld(s, false)?;
-                self.forget(s);
-            }
-        }
-        for s in ids.iter().filter(|s| !was.contains(s)) {
-            self.listed.insert(*s, *t);
-            self.followed.insert(*s, *t);
-            self.judged.want(*s);
-        }
-        if !ids.is_empty() {
-            self.thing_ids.insert(*t, ids);
-        }
-        Ok(acted)
-    }
-
-    fn forget(&mut self, s: &SyncId) {
-        self.judged.unwant(s);
-        self.followed.remove(s);
-        if self.listed.contains_key(s) {
-            self.listed.remove(s);
-        }
-        if self.kept.contains_key(s) {
-            self.kept.remove(s);
-        }
-    }
 }
 
 /// One S's judgement, reading its own keys only.
-fn judge_s(cx: &mut Cx, sources: &impl Sources, listed: &Stamped<SyncId, Tid>, s: &SyncId, thing: &Tid) -> Result<Verdict> {
+fn judge_s(cx: &mut Cx, s: &SyncId, thing: &Tid) -> Result<Kept> {
     let record = cx.engine.sync_record(thing)?;
     let path = cx.store.path(s)?;
-    let listed = listed.get(s).is_some();
-    let own_elsewhere = !listed && cx.store.entries(s)?.into_iter().filter(|e| e.own).all(|e| sources.present(s, &e.blob));
-    Ok(judge(&Judged { listed, record: record.as_deref(), steps: path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default(), own_elsewhere }))
+    Ok(judge(&Judged { record: record.as_deref(), steps: path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default() }))
 }

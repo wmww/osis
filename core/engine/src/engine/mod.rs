@@ -1022,10 +1022,6 @@ pub struct Core {
     /// What each read thing's certificates name, per commit (`sync::certified`): `sync_bodies`
     /// reads one commit's row.
     pub(crate) certified: crate::sync::certified::Certified,
-    /// `Engine::sync_holding`: the sync set's entries (`memo::Spread`), so a reader of one sync ID
-    /// moves only when its entry does (the set moves at every thing made); a sync ID not in the
-    /// set keeps nothing, whoever names it.
-    pub(crate) sync_holding: memo::Spread<SyncId, (Tid, crate::sync::Holding)>,
     /// `rotation::departures` per actor (`memo`).
     pub(crate) departures: memo::Memo<Tid, Vec<osis_keys::Departure>>,
     /// The holders lacking a box of each actor (`rotation::reseal_candidates`, `memo`): O(roster)
@@ -1347,7 +1343,6 @@ impl Core {
             holders_named: self.holders_named.clone(),
             sync_certs: self.sync_certs.clone(),
             certified: self.certified.clone(),
-            sync_holding: self.sync_holding.clone(),
             departures: self.departures.clone(),
             reseal_scans: self.reseal_scans.clone(),
             store_rows: self.store_rows.clone(),
@@ -1915,7 +1910,6 @@ impl Core {
             // followed (`Effects`): what a rollback restores moves its reads, so the next follow
             // indexes again
             certified: _,
-            sync_holding: _,
             key_roles: _,
             inbox_actors: _,
             acting_of: _,
@@ -2102,7 +2096,6 @@ impl Core {
             holders_named: memo::Memo::new("holders named: read"),
             sync_certs: memo::Memo::new("sync: certificates"),
             certified: Default::default(),
-            sync_holding: memo::Spread::new("sync: holding"),
             departures: memo::Memo::new("departures"),
             reseal_scans: memo::Memo::new("reseal: scan"),
             rotation_seq: 0,

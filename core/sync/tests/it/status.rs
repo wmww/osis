@@ -93,7 +93,7 @@ impl Ground for Fake {
     fn now(&self) -> WallMs {
         WallMs(self.now)
     }
-    fn sync_set(&mut self) -> Result<Arc<SyncSet>> {
+    fn syncs(&mut self) -> Result<Arc<SyncSet>> {
         Ok(self.set.get(&()).cloned().unwrap_or_default())
     }
     fn stamped(&mut self, s: &SyncId) -> Result<Vec<BlobId>> {

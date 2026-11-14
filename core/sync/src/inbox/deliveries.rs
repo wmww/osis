@@ -288,7 +288,7 @@ fn judge(engine: &mut Engine, seen: &Stamped<Key, BTreeSet<(SyncId, Option<osis_
 /// deposited one is not: its Deposit item would go moot with the delivery, and a source keeping
 /// the inbox unread gets it by that item alone.
 fn took_own(h: &mut Here<'_>, x: &Sent) -> Result<bool> {
-    let reads = matches!(h.engine.sync_holding(&x.s)?, Some((_, osis_engine::sync::Holding::Read)));
+    let reads = h.store.holding(&x.s) == Some(osis_engine::sync::Holding::Read);
     Ok(reads && h.store.entry(&x.s, &x.blob)?.is_some_and(|e| !e.deposited))
 }
 

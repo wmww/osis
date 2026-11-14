@@ -67,8 +67,8 @@ impl Ground for Live<'_, '_> {
     fn now(&self) -> WallMs {
         self.cx.now
     }
-    fn sync_set(&mut self) -> Result<Arc<SyncSet>> {
-        Ok(self.cx.engine.sync_set()?)
+    fn syncs(&mut self) -> Result<Arc<SyncSet>> {
+        Ok(Arc::new(SyncSet { ids: self.cx.store.syncs(), ..SyncSet::default() }))
     }
     fn stamped(&mut self, s: &SyncId) -> Result<Vec<BlobId>> {
         Ok(self.cx.store.entries(s)?.into_iter().filter(|e| e.stamp.is_some()).map(|e| e.blob).collect())

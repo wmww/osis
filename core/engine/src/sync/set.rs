@@ -219,6 +219,23 @@ impl Engine {
     }
 
     /// The thing that owns sync ID `s` here by its `sync.0` (`sync_ids`); `None` when none does.
+    /// `s`'s thing and how this node's keys let it hold `s`, whatever lists the thing: its owner
+    /// (by `sync.0`, a destroyed thing's kept sync IDs, or a sync record naming it) whose
+    /// `thing_sync` lists `s`. The sync set's entry for `s` when the closure holds that thing.
+    pub(crate) fn sync_holder_now(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
+        let mut owners: Vec<Tid> = self.sync_owner_of(s)?.into_iter().collect();
+        owners.extend(self.core.ix.destroyed_sync_ids.iter().filter(|(_, v)| v.iter().any(|o| o.id == *s)).map(|(t, _)| *t));
+        owners.extend(self.core.ix.record_ids.get(s).into_iter().flatten().copied());
+        for t in owners {
+            match self.thing_sync(&t)? {
+                ThingSync::Read(ids) if ids.contains(s) => return Ok(Some((t, Holding::Read))),
+                ThingSync::Unread(ids) if ids.contains(s) => return Ok(Some((t, Holding::Unread))),
+                _ => {}
+            }
+        }
+        Ok(None)
+    }
+
     pub(crate) fn sync_owner_of(&mut self, s: &SyncId) -> Result<Option<Tid>> {
         let mut things: Vec<Tid> = self.core.ix.sync_recorders.get(s).into_iter().flatten().copied().collect();
         // a thing a taken inbox blob named it for (O(hints held))

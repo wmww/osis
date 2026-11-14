@@ -25,8 +25,8 @@ fn redeemed() -> (World, ShareLink) {
 fn a_link_opens_k_by_its_static_entry_spec_sync_inbox_6() {
     let (mut w, link) = redeemed();
     let s = link.k_label;
-    assert!(matches!(w.engine(0).sync_holding(&s).unwrap(), Some((_, osis_engine::sync::Holding::Read))), "the sharer syncs K");
-    assert!(matches!(w.engine(1).sync_holding(&s).unwrap(), Some((t, osis_engine::sync::Holding::Read)) if t == link.k), "the redeemer follows K's sync ID");
+    assert!(matches!(w.engine(0).sync_holder(&s).unwrap(), Some((_, osis_engine::sync::Holding::Read))), "the sharer syncs K");
+    assert!(matches!(w.engine(1).sync_holder(&s).unwrap(), Some((t, osis_engine::sync::Holding::Read)) if t == link.k), "the redeemer follows K's sync ID");
     assert!(w.status(1).get(&s).is_some_and(|st| !st.sources.is_empty()), "K open at the sharer");
     assert!(!w.engine(1).read_credentials(&s).unwrap().unwrap().read_secrets.is_empty(), "K's read secret from the entry box");
 }
@@ -141,7 +141,7 @@ fn a_link_text_never_moves_another_things_sync_id_spec_sync_set_2() {
     let as_k = ShareLink { k: t, ..real.clone() };
     w.write(1, |e| e.follow_link(&as_k)).unwrap();
     assert_eq!(w.engine(1).thing_sync(&t).unwrap(), thing_before, "a held thing named as K syncs as before");
-    assert_eq!(w.engine(1).sync_holding(&real.k_label).unwrap(), None, "the link's sync ID is nobody's here");
+    assert_eq!(w.engine(1).sync_holder(&real.k_label).unwrap(), None, "the link's sync ID is nobody's here");
     w.write(1, |e| e.unfollow_link(&t));
     // K's sync ID = that thing's
     let stolen = ShareLink { k_label: own, ..real };

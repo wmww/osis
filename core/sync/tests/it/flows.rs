@@ -433,6 +433,48 @@ fn a_self_removal_drops_its_secrets_once_held_elsewhere_spec_sync_status_2() {
     assert!(w.engine(1).epochs(&t).is_none_or(|e| e.read.held().next().is_none()), "dropped");
 }
 
+// spec/sync-set.md §3 (while it waits, S stays a member of its shared sets as before;
+// Unsyncing): node 1 writes a thing it reads and writes while node 0 is out of reach, then
+// unsyncs it (takes it out of its synced group) and restarts. S stays synced at node 1 through
+// the restart, the write reaches node 0 once healed, and only then is node 1's copy forgotten.
+#[test]
+fn an_unsynced_write_reaches_a_peer_before_the_copy_goes_spec_sync_set_3() {
+    let (mut w, t, ak) = granted_and_read(Role::Write);
+    w.cap = 4_000;
+    let s = w.engine(1).sync_ids(&t).unwrap()[0].id;
+    let mine = Some(Value::Str("from 1".into()));
+    w.partition(0, 1);
+    w.run();
+    w.write(1, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Str("from 1".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    w.write(1, |e| {
+        let d = e.account().unwrap().unwrap().1;
+        let mut g = e.get_typed(&d, &ct::GROUP).unwrap().unwrap_or_default();
+        g.subgroups.retain(|x| *x != t);
+        let mut m = Mutation::new();
+        m.set(d, &ct::GROUP, &g).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    assert!(!w.engine(1).sync_set().unwrap().ids.contains_key(&s), "left the sync set");
+    assert!(w.store(1).synced(&s).is_some(), "still synced while its write is only here");
+    assert_eq!(w.engine(1).get(&t, &ak).unwrap(), mine);
+    w.power_off(1);
+    w.power_on(1);
+    w.run();
+    assert!(w.store(1).synced(&s).is_some(), "a restart finds it waiting");
+    assert_eq!(w.engine(1).get(&t, &ak).unwrap(), mine);
+    w.heal();
+    w.run();
+    assert_eq!(w.engine(0).get(&t, &ak).unwrap(), mine, "the write reached node 0");
+    assert_eq!(w.engine(1).get(&t, &ak).unwrap(), None, "then forgotten here");
+    assert!(w.store(1).synced(&s).is_none() && !w.store(1).held_ids().unwrap().contains(&s), "stopped and shredded");
+}
+
 // spec/permissions.md §3 (Re-seal: a node that may rotate re-seals a current holder without a box
 // at a current epoch; Complete pass: it decides at the end of a complete pass of the actor's sync
 // IDs): node 0 grants node 2 read while node 1, an admin cut off from it, removes node 3 (a

@@ -1,16 +1,23 @@
-//! The sync set followed per key (spec/sync-set.md §2): the synced group's closure
-//! (`Engine::sync_things`) through one `Effects` key, diffed on change, and each thing's
-//! `thing_sync` through its own, so a change of one thing's keys moves that thing's sync IDs
-//! alone and a closure change costs O(closure). Each module that acts on the sync set (store,
-//! opens, the driver's dials) keeps its own `SetFollow` and reads what moved since its last
-//! settle; none reads the whole `sync_set` per step.
+//! What a node syncs, in two layers.
+//!
+//! - The engine's sync set followed per key (spec/sync-set.md §2, `SetFollow`): the synced
+//!   group's closure (`Engine::sync_things`) through one `Effects` key, diffed on change, and
+//!   each thing's `thing_sync` through its own, so a change of one thing's keys moves that thing's
+//!   sync IDs alone and a closure change costs O(closure). `leave` alone follows it.
+//! - The sync IDs this node syncs: the sync set, and each sync ID that left it while it waits to
+//!   stop (spec/sync-set.md §3: it stays a member of its shared sets as before). `leave` writes
+//!   them into the store (`Store::set_holdings`); every other module (store, opens, dials, read,
+//!   unread, streams, status) follows them there, each by its own `SyncsFollow` (the store's feed
+//!   of moved sync IDs) or by stamped reads (`Store::synced`, `Store::holding`), never the
+//!   engine's sync set. So a leaving sync ID is synced everywhere until `leave` stops it.
 //!
 //! An S two things name (two records naming one sync ID, or a read thing and a record) is held
 //! as `Engine::sync_set` folds it: read by the greatest thing reading it, else kept unread by the
 //! least thing keeping it.
 
+use crate::store::Store;
 use crate::types::{Holding, Result};
-use osis_base::memo::Effects;
+use osis_base::memo::{Effects, Feed};
 use osis_base::{SyncId, Tid};
 use osis_engine::Engine;
 use osis_engine::sync::ThingSync;
@@ -19,6 +26,63 @@ use std::sync::Arc;
 
 /// One sync ID's entry of the sync set: its thing and how it is held.
 pub type Held = (Tid, Holding);
+
+/// What `SetFollow` reads (the product's is the engine; a test's a table).
+pub trait SetGround {
+    /// The synced group's closure (`Engine::sync_things`).
+    fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>>;
+    /// How this node syncs thing `t` (`Engine::thing_sync`).
+    fn thing_sync(&mut self, t: &Tid) -> Result<ThingSync>;
+}
+
+impl SetGround for Engine {
+    fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
+        Ok(Engine::sync_things(self)?)
+    }
+    fn thing_sync(&mut self, t: &Tid) -> Result<ThingSync> {
+        Ok(Engine::thing_sync(self, t)?)
+    }
+}
+
+/// One module's cursor over the sync IDs this node syncs (the store's `syncs_feed`): what moved
+/// since its last settle, O(moved). Its first settle lists every one.
+#[derive(Clone, Default)]
+pub struct SyncsFollow {
+    feed: Option<Feed<SyncId>>,
+    seen: BTreeMap<SyncId, Held>,
+}
+
+impl SyncsFollow {
+    /// The sync IDs whose entry moved since the last call, each with its entry then and now
+    /// (`None`: not synced).
+    pub fn settle(&mut self, store: &Store) -> Vec<(SyncId, Option<Held>, Option<Held>)> {
+        let ids: BTreeSet<SyncId> = match self.feed.as_mut() {
+            Some(f) => f.added().into_iter().collect(),
+            None => {
+                self.feed = Some(store.syncs_feed());
+                store.syncs().into_keys().chain(self.seen.keys().copied()).collect()
+            }
+        };
+        let mut out = Vec::new();
+        for s in ids {
+            let now = store.synced(&s);
+            let was = match now {
+                Some(h) => self.seen.insert(s, h),
+                None => self.seen.remove(&s),
+            };
+            if was != now {
+                out.push((s, was, now));
+            }
+        }
+        out
+    }
+}
+
+impl std::fmt::Debug for SyncsFollow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyncsFollow").field("seen", &self.seen).finish_non_exhaustive()
+    }
+}
 
 #[derive(Clone)]
 pub struct SetFollow {
@@ -43,14 +107,14 @@ impl SetFollow {
 
     /// The sync IDs whose entry moved since the last call, each with its entry now (`None`: it
     /// left the sync set).
-    pub fn settle(&mut self, engine: &mut Engine) -> Result<Vec<(SyncId, Option<Held>)>> {
+    pub fn settle(&mut self, g: &mut impl SetGround) -> Result<Vec<(SyncId, Option<Held>)>> {
         let mut touched = std::mem::take(&mut self.touched);
         if !self.closure.due().is_empty() {
-            let moved = match self.closure.try_settle(&(), || engine.sync_things()) {
+            let moved = match self.closure.try_settle(&(), || g.sync_things()) {
                 Ok(m) => m,
                 Err(e) => {
                     self.touched = touched;
-                    return Err(e.into());
+                    return Err(e);
                 }
             };
             if let Some((_, now)) = moved {
@@ -68,11 +132,11 @@ impl SetFollow {
             }
         }
         for t in self.thing.due() {
-            let moved = match self.thing.try_settle(&t, || engine.thing_sync(&t)) {
+            let moved = match self.thing.try_settle(&t, || g.thing_sync(&t)) {
                 Ok(m) => m,
                 Err(e) => {
                     self.touched = touched;
-                    return Err(e.into());
+                    return Err(e);
                 }
             };
             let Some((_, now)) = moved else { continue };
@@ -116,15 +180,6 @@ impl SetFollow {
         }
     }
 
-    /// S's entry as of the last settle.
-    pub fn get(&self, s: &SyncId) -> Option<Held> {
-        self.held.get(s).copied()
-    }
-
-    /// The whole sync set as of the last settle.
-    pub fn held(&self) -> &BTreeMap<SyncId, Held> {
-        &self.held
-    }
 }
 
 /// `Engine::sync_set`'s fold of the things naming one sync ID.

@@ -1,4 +1,4 @@
-//! Kept unread (spec/sync-judgement.md §6, spec/sync-set.md §3): the judgement of one S over
+//! Kept unread (spec/sync-judgement.md §6): the judgement of one S over
 //! plain values (`unread::judge`), as the module reads them from the engine facade and the store.
 //! Each negative control of core/test/tla/net/NetKeep.tla has a test here that fails without its
 //! rule. The module over a real engine (following the sync set) is tests/it/keep.rs; the store's
@@ -8,7 +8,7 @@ use osis_base::SyncId;
 use osis_crypto::{Epoch, LabelRole, Secret32, Signature, SigningSecret, label_role_key};
 use osis_engine::sync::{Path, SyncRecord};
 use osis_label::{Step, StepKeys};
-use osis_sync::unread::{Judged, Verdict, judge};
+use osis_sync::unread::{Judged, judge};
 
 
 fn sync_id(i: u32) -> SyncId {
@@ -51,27 +51,24 @@ fn step(s: SyncId, e: u64) -> Step {
     }
 }
 
-/// One S kept unread: its record's sync epochs, its registered path's steps, listed or not, and
-/// whether its own entries are present at a source.
+/// One S kept unread: its record's sync epochs and its registered path's steps.
 #[derive(Clone)]
 struct Keep {
     s: SyncId,
     held: Vec<u64>,
     path: Path,
-    listed: bool,
-    own_elsewhere: bool,
 }
 
 impl Keep {
     /// Holding the sync secrets of `held` epochs, its head at step 0.
     fn new(held: &[u64]) -> Keep {
         let s = sync_id(0);
-        Keep { s, held: held.to_vec(), path: Path { steps: vec![(step(s, 0), None)] }, listed: true, own_elsewhere: false }
+        Keep { s, held: held.to_vec(), path: Path { steps: vec![(step(s, 0), None)] } }
     }
 
-    fn verdict(&self) -> Verdict {
+    fn kept(&self) -> osis_sync::unread::Kept {
         let record = SyncRecord { sync_ids: vec![self.s], secrets: self.held.iter().map(|e| (epoch(*e), sync_secret(*e))).collect(), dial: None };
-        judge(&Judged { listed: self.listed, record: Some(&record), steps: &self.path.steps, own_elsewhere: self.own_elsewhere })
+        judge(&Judged { record: Some(&record), steps: &self.path.steps })
     }
 
     /// A Register moves S's head to step `e`.
@@ -79,24 +76,17 @@ impl Keep {
         self.path.steps.push((step(self.s, e), None));
     }
 
-    fn kept(&self) -> Option<osis_sync::unread::Kept> {
-        match self.verdict() {
-            Verdict::Keep(k) => Some(k),
-            _ => None,
-        }
-    }
-
     fn opens(&self) -> bool {
-        self.kept().is_some_and(|k| k.credentials.is_some())
+        self.kept().credentials.is_some()
     }
 
     fn stranded(&self) -> bool {
-        self.kept().is_some_and(|k| k.stranded)
+        self.kept().stranded
     }
 
     /// The sync keys it shows.
     fn shows(&self) -> Vec<osis_crypto::VerifyingKey> {
-        self.kept().and_then(|k| k.credentials).map(|c| sync_keys(&c)).unwrap_or_default()
+        self.kept().credentials.map(|c| sync_keys(&c)).unwrap_or_default()
     }
 }
 
@@ -106,7 +96,7 @@ impl Keep {
 #[test]
 fn keeps_and_opens_by_head_spec_sync_judgement_6() {
     let k = Keep::new(&[0]);
-    let c = k.kept().and_then(|k| k.credentials).expect("opens at its head");
+    let c = k.kept().credentials.expect("opens at its head");
     assert_eq!(sync_keys(&c), vec![step(sync_id(0), 0).keys.sync]);
     assert_eq!(c.deposit, Some(step(sync_id(0), 0).keys.deposit));
     assert_eq!(c.keys[0].1, Secret32::from_bytes(osis_crypto::kdf::sync_proof(&osis_crypto::label_role_seed(LabelRole::Sync, &sync_secret(0)))));
@@ -144,7 +134,7 @@ fn sync_keys(c: &osis_sync::unread::UnreadCredentials) -> Vec<osis_crypto::Verif
 fn no_head_opens_by_every_sync_secret_spec_sync_opens_4() {
     let mut k = Keep::new(&[0, 1]);
     k.path.steps.clear();
-    let c = k.kept().and_then(|k| k.credentials).expect("opens with no head");
+    let c = k.kept().credentials.expect("opens with no head");
     assert_eq!((c.step, c.deposit), (None, None));
     assert_eq!(sync_keys(&c), vec![step(sync_id(0), 1).keys.sync, step(sync_id(0), 0).keys.sync]);
     assert!(!k.stranded());
@@ -168,7 +158,7 @@ fn a_regrant_past_its_head_shows_the_new_key_spec_sync_opens_4() {
     assert!(k.shows().is_empty(), "removed: nothing");
     k.held.push(2);
     assert!(k.stranded(), "still past its keys: holds and takes nothing");
-    let c = k.kept().and_then(|k| k.credentials).expect("shows the re-grant's key");
+    let c = k.kept().credentials.expect("shows the re-grant's key");
     assert_eq!((c.step, c.deposit, sync_keys(&c)), (None, None, vec![step(sync_id(0), 2).keys.sync]));
     k.register(2);
     assert!(!k.stranded());
@@ -200,17 +190,4 @@ fn a_box_at_a_self_made_epoch_keeps_nothing_spec_sync_hostile_1() {
     k.register(1);
     assert!(k.stranded(), "removed: its copy goes whatever box it holds");
     assert_eq!(k.shows(), vec![label_role_key(LabelRole::Sync, &sync_secret(1_000_000)).verifying_key()]);
-}
-
-// spec/sync-set.md §3 (leaving): unlisted, a node keeping S unread stays (and keeps serving)
-// until each entry it logged itself is present at a source.
-#[test]
-fn leaves_once_own_entries_held_at_a_source_spec_sync_set_3() {
-    let mut k = Keep::new(&[0]);
-    k.listed = false;
-    assert!(k.opens(), "its deposits not yet at a source");
-    k.own_elsewhere = true;
-    assert_eq!(k.verdict(), Verdict::Leave);
-    k.listed = true;
-    assert!(k.opens(), "listed: kept");
 }
