@@ -5,7 +5,11 @@
    "a" talks to one peer node: "b", or "c", a copy of b's store taken at some
    instant. A rule of the design is a flag; turning it off must break a
    property. The shared set is NetShared.tla: here who may open is the ghost
-   `rights`. *)
+   `rights`. With Trim, a cursor or join position below the deletion horizon (the newest
+   expired deletion event) is answered from the start, marked trimmed. With TrackPres, a node keeps
+   the presence of entries at its peer (what the peer's stream showed present and not removed
+   since); a listing from the start, when it completes, replaces the presence of its members
+   (PresReplace "whole": every such listing; "trimmed": only a trimmed one). *)
 EXTENDS Naturals, FiniteSets, TLC
 
 CONSTANTS
@@ -25,7 +29,12 @@ CONSTANTS
     ServerGate,                     \* each reply is judged on the server's S now
     BothPull,                       \* the listener pulls too
     SReconcile,                     \* a connection's first message carries a digest of S; a member on one side only leaves the stream with no lag
-    Rearm                           \* a change announced during a Pull denies that Pull's caught-up
+    Rearm,                          \* a change announced during a Pull denies that Pull's caught-up
+    Trim,                           \* a position below the deletion horizon is answered from the start (trimmed)
+    TrackPres,                      \* model presence at the peer
+    PresReplace,                    \* "whole" | "trimmed": which completed listings replace presence
+    ServeHalf                       \* caught up's serving half: "apply" (the peer pulled to the end and
+                                    \* Applied it), "serve" (served to the end, Applied not awaited), "none"
 
 A == "a"
 Other(x, l) == CHOOSE y \in l : y # x
@@ -36,10 +45,12 @@ Older(c1, c2) == IF c1.pos < c2.pos THEN c1 ELSE c2
 NoDig == [on |-> FALSE, set |-> {}]
 Mem0 == [st |-> "out", c |-> NoCur]
 Rec0 == [rid |-> 0, cur |-> NoCur, mem |-> [l \in Ls |-> Mem0], srv |-> [l \in Ls |-> FALSE],
-         lostp |-> {}, listing |-> [on |-> FALSE, seen |-> {}], knew |-> {}, last |-> NoCur, everCur |-> FALSE]
+         lostp |-> {}, listing |-> [on |-> FALSE, seen |-> {}], knew |-> {}, last |-> NoCur, everCur |-> FALSE,
+         pres |-> {}, plist |-> [l \in Ls |-> "none"]]
 Store0(sid, inc) == [log |-> {}, end |-> 0, held |-> {}, tomb |-> {}, lid |-> sid, inc |-> inc, sid |-> sid, draws |-> 0,
-                     pend |-> FALSE, hist |-> {[inc |-> inc, end |-> Inf]}, rec |-> Rec0]
-NoReply == [on |-> FALSE, items |-> {}, whole |-> FALSE, listing |-> FALSE, more |-> FALSE, cur |-> NoCur, refused |-> {}, stale |-> FALSE, asked |-> {}]
+                     pend |-> FALSE, hist |-> {[inc |-> inc, end |-> Inf]}, rec |-> Rec0, hz |-> 0]
+NoReply == [on |-> FALSE, items |-> {}, whole |-> FALSE, listing |-> FALSE, more |-> FALSE, cur |-> NoCur, refused |-> {}, stale |-> FALSE, asked |-> {},
+            lfrom |-> {}, ltrim |-> {}, snap |-> {}]
 
 VARIABLES st, link, dialer, inflight, active, cloned, cu, dirty, ever, written,
           rights, cnt, unforced, lostW, badServe, dig
@@ -98,11 +109,14 @@ Lineage(c, s) == \E h \in s.hist : h.inc = c.inc /\ c.pos <= h.end
 Valid(c, s) ==
     /\ c # NoCur /\ c.lid = s.lid /\ c.pos <= s.end
     /\ (IncCheck => Lineage(c, s))
+    /\ (Trim => c.pos >= s.hz)
+Trimmed(c, s) == Trim /\ c # NoCur /\ c.pos < s.hz
 \* Real need for a from-the-start reply: nothing to resume from, or a restored
 \* or copied store's other history.
 Forced(r, s) ==
     \/ r.cur = NoCur /\ ~r.everCur
     \/ r.cur # NoCur /\ (r.cur.lid # s.lid \/ (cloned /\ (r.cur.pos > s.end \/ ~Lineage(r.cur, s))))
+    \/ Trimmed(r.cur, s)
 
 Page(S) == {ev \in S : Cardinality({u \in S : u.pos < ev.pos}) < PageK}
 
@@ -124,6 +138,10 @@ Pull(x) ==
         more == pg # all
         p == IF more THEN CHOOSE q \in {ev.pos : ev \in pg} : \A ev \in pg : ev.pos <= q ELSE s.end
         refused == {l \in Ls : ~s.rec.srv[l] /\ r.mem[l].st = "join"}
+        lfrom == IF wholeNew THEN {l \in Ls : r.mem[l].st # "out"}
+                 ELSE {l \in Ls : r.mem[l].st = "join" /\ ~Valid(r.mem[l].c, s)}
+        ltrim == IF wholeNew THEN (IF Trimmed(r.cur, s) THEN lfrom ELSE {})
+                 ELSE {l \in lfrom : Trimmed(r.mem[l].c, s)}
     IN
     /\ x \in link
     /\ ~inflight[x].on
@@ -133,7 +151,9 @@ Pull(x) ==
     /\ inflight' = [inflight EXCEPT ![x] =
             [on |-> TRUE, items |-> {[k |-> ev.k, e |-> ev.e] : ev \in pg},
              whole |-> wholeNew, listing |-> wholeNew \/ r.listing.on, more |-> more,
-             cur |-> [lid |-> s.lid, inc |-> s.inc, pos |-> p], refused |-> refused, stale |-> FALSE, asked |-> {l \in Ls : r.mem[l].st # "out"}]]
+             cur |-> [lid |-> s.lid, inc |-> s.inc, pos |-> p], refused |-> refused, stale |-> FALSE, asked |-> {l \in Ls : r.mem[l].st # "out"},
+             lfrom |-> IF TrackPres THEN lfrom ELSE {}, ltrim |-> IF TrackPres THEN ltrim ELSE {},
+             snap |-> IF TrackPres THEN {e \in s.held : Shared(EL[e])} ELSE {}]]
     /\ st' = [st EXCEPT ![y].rec.last = r.cur,
                         ![x].rec.cur = IF CursorOnApply THEN @ ELSE inflight'[x].cur,
                         ![x].rec.everCur = IF CursorOnApply THEN @ ELSE TRUE]
@@ -164,6 +184,14 @@ Apply(x) ==
             ELSE IF m.st = "join" /\ rp.more /\ JoinDurable /\ ~rp.whole THEN [st |-> "join", c |-> rp.cur]
             ELSE [st |-> "stream", c |-> NoCur]
         mem2 == [l \in Ls |-> Mem2(l)]
+        \* presence: events mark it; a completed listing from the start replaces its members' (the
+        \* server's holdings when it read the last page: what the listing showed, horizon checked)
+        pres1 == (r.pres \cup {i.e : i \in {i \in rp.items : i.k = "add"}}) \ {i.e : i \in {i \in rp.items : i.k = "del"}}
+        plist1 == [l \in Ls |-> IF l \in rp.lfrom THEN (IF l \in rp.ltrim THEN "trim" ELSE "whole") ELSE r.plist[l]]
+        Done(l) == plist1[l] # "none" /\ ~rp.more /\ mem2[l].st = "stream" /\ l \in rp.asked
+        Repl(l) == Done(l) /\ (PresReplace = "whole" \/ plist1[l] = "trim")
+        pres2 == {e \in pres1 : ~Repl(EL[e])} \cup {e \in rp.snap : Repl(EL[e])}
+        plist2 == [l \in Ls |-> IF Done(l) \/ mem2[l].st = "out" THEN "none" ELSE plist1[l]]
     IN
     /\ x \in link
     /\ inflight[x].on
@@ -174,7 +202,9 @@ Apply(x) ==
                 !.rec.everCur = TRUE,
                 !.rec.mem = mem2,
                 !.rec.listing = IF rp.more THEN listing2 ELSE [on |-> FALSE, seen |-> {}],
-                !.rec.knew = @ \cup {i.e : i \in rp.items}],
+                !.rec.knew = @ \cup {i.e : i \in rp.items},
+                !.rec.pres = IF TrackPres THEN pres2 ELSE @,
+                !.rec.plist = IF TrackPres THEN plist2 ELSE @],
               ![y].rec.last = rp.cur]
     /\ cu' = [cu EXCEPT ![x] = [l \in Ls |-> ~rp.more /\ ~(Rearm /\ rp.stale) /\ mem2[l].st = "stream" /\ l \in rp.asked]]
     /\ dirty' = [dirty EXCEPT ![x] = @ \/ s2.end # st[x].end]
@@ -238,7 +268,8 @@ DeliverLost(x) ==
                   ELSE IF LostOlder THEN Older(m.c, it.c) ELSE it.c
         IN
         /\ st' = [st EXCEPT ![y].rec.lostp = @ \ {it},
-                            ![x].rec.mem[it.l] = [st |-> "out", c |-> c2]]
+                            ![x].rec.mem[it.l] = [st |-> "out", c |-> c2],
+                            ![x].rec.plist[it.l] = "none"]
         /\ cu' = [cu EXCEPT ![x][it.l] = FALSE]
     /\ UNCHANGED <<link, dialer, inflight, active, cloned, dirty, ever, written, rights, cnt, unforced, lostW, badServe, dig>>
 
@@ -268,7 +299,8 @@ Expire(s) ==
     /\ cnt.expire < MaxExpire
     /\ Dels(st[s]) # {}
     /\ LET ev == CHOOSE d \in Dels(st[s]) : d.pos = MinPos(Dels(st[s]))
-       IN st' = [st EXCEPT ![s].log = @ \ {ev}, ![s].tomb = @ \ {ev.e}]
+       IN st' = [st EXCEPT ![s].log = @ \ {ev}, ![s].tomb = @ \ {ev.e},
+                           ![s].hz = IF Trim /\ ev.pos > @ THEN ev.pos ELSE @]
     /\ cnt' = [cnt EXCEPT !.expire = @ + 1]
     /\ UNCHANGED <<link, dialer, inflight, active, cloned, cu, dirty, ever, written, rights, unforced, lostW, badServe, dig>>
 
@@ -360,7 +392,8 @@ RecvDigest(x) ==
     /\ x \in link
     /\ dig[x].on
     /\ st' = [st EXCEPT ![x].rec.mem = [l \in Ls |->
-                 IF @[l].st # "out" /\ l \notin dig[x].set THEN Mem0 ELSE @[l]]]
+                 IF @[l].st # "out" /\ l \notin dig[x].set THEN Mem0 ELSE @[l]],
+                        ![x].rec.plist = [l \in Ls |-> IF l \notin dig[x].set THEN "none" ELSE @[l]]]
     /\ dig' = [dig EXCEPT ![x] = NoDig]
     /\ cu' = [cu EXCEPT ![x] = [l \in Ls |-> FALSE]]
     /\ UNCHANGED <<link, dialer, inflight, active, cloned, dirty, ever, written, rights, cnt, unforced, lostW, badServe>>
@@ -403,6 +436,35 @@ DeletionsArrive ==
         (st[x].rec.mem[l].st = "stream" /\ cu[x][l] /\ ~dirty[y]
          /\ st[y].rec.srv[l] /\ ~inflight[x].on)
         => \A ev \in Dels(st[y]) : EL[ev.e] = l => ev.e \notin st[x].held
+
+\* Presence (spec/sync-judgement.md §3 `known`): caught up with a source, nothing this node holds
+\* as present there is missing there (the direction that would count a body held elsewhere that
+\* is not). The other direction is a limit: an entry a restored source holds again (deleted at
+\* the original after the backup, its add event compacted away below a cursor read there later)
+\* is not shown to a node whose cursor that store still honours.
+PresenceSound ==
+    \A x \in link : LET y == Other(x, link) IN
+      \A l \in Ls :
+        (st[x].rec.mem[l].st = "stream" /\ cu[x][l] /\ ~dirty[y]
+         /\ st[y].rec.srv[l] /\ ~inflight[x].on)
+        => \A e \in st[x].rec.pres : EL[e] = l => e \in st[y].held
+
+\* spec/sync-status.md §1: caught up both ways. x applied y's stream to its end (the pulling
+\* half above) and y pulled x's stream to its end and Applied every message served (nothing left
+\* to push): then y holds what x holds, or it was deleted somewhere. ServeHalf weakens the
+\* serving half for the controls.
+ServeDone(x, y, l) ==
+    /\ ~dirty[x]
+    /\ CASE ServeHalf = "apply" -> cu[y][l]
+         [] ServeHalf = "serve" -> cu[y][l] \/ (inflight[y].on /\ ~inflight[y].more /\ ~inflight[y].stale
+                                               /\ l \in inflight[y].asked /\ st[y].rec.mem[l].st = "stream")
+         [] OTHER -> TRUE
+CaughtUpServed ==
+    \A x \in link : LET y == Other(x, link) IN
+      \A l \in Ls :
+        (st[x].rec.mem[l].st = "stream" /\ cu[x][l] /\ ~dirty[y]
+         /\ st[y].rec.srv[l] /\ ~inflight[x].on /\ ServeDone(x, y, l))
+        => \A e \in st[x].held : EL[e] = l => (e \in st[y].held \/ e \in ever)
 
 \* (3) Nothing is served for a sync ID the node has lost the right to.
 ServedRight == ~badServe

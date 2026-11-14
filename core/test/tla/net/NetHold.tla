@@ -7,7 +7,12 @@
    logged again. r2, b's author, keeps b as local data under r1's cover (spec/sync-compaction.md
    §1 Own bodies), but b's entries leave its log (§3 Own store): no stream from r2 lists them. K takes what it pulls from a reader's store unless tombstoned (code 6) and Deletes;
    it judges nothing. A reader learns K's store only from K's stream (Sync: the stream read to
-   its end). Each rule is a flag; a rule removed must fail for its stated reason (cfg comments). *)
+   its end). With KeepB, b is must-hold whatever covers it (a kept delta, a lasting header, or a
+   delta on another aspect no snapshot covers). With XFall, x itself falls once (a later role
+   change every reader learns at once): c is valid again, and a reader that dropped it as invalid
+   counts it never received and fetches it where present. With MaxRestart, readers restart; the
+   stand and the deletes seen live in the record (durable). Each rule is a flag; a rule removed
+   must fail for its stated reason (cfg comments). *)
 EXTENDS Naturals, FiniteSets, TLC
 
 CONSTANTS
@@ -31,7 +36,14 @@ CONSTANTS
     Dups,           \* compaction §1 Duplicates: of two entries of one body at K, a delete-key holder deletes the higher
     Cap,            \* K's cap on entries of b and c (x, a role entry, counts toward none); 9: none
     FullCarrier,    \* §3 Deletes: at a source full for S, a carrier it lacks counts as held
-    OwnLog          \* §3 Own store: an entry covered and dropped leaves the log even where its body stays local
+    OwnLog,         \* §3 Own store: an entry covered and dropped leaves the log even where its body stays local
+    KeepB,          \* b is must-hold whatever snapshot covers it
+    MustNoDrop,     \* §3 Own store, Deletes: covered and dropped is a may-hold body only (a must-hold body never is)
+    XFall,          \* x falls once within the run
+    InvalidKeep,    \* §2 may-hold, §3 Deletes: a body dropped as invalid is never deleted at a peer
+    Fixpoint,       \* §3 Driven by events: judging runs to a fixpoint before acting (FALSE: c's verdict lags a step)
+    MaxRestart,     \* reader restarts
+    StandDurable    \* §4: the stand's state and the deletes seen live in the peer's record, durably
 
 Readers == {"r1", "r2"}
 Bodies == {"b", "c", "x"}
@@ -57,8 +69,13 @@ VARIABLES
     full,       \* K is full for S (refused a pulled entry for room, code 12)
     refused,    \* entries K refused for room while full (not fetched again while full)
     kFull,      \* kFull[r]: K's full flag as r last read it (event 2 in K's stream)
-    badDel      \* an honest delete took b at K while K held no entry of c
-vars == <<store, unlog, dropT, falls, known, kHead, delK, againG, againN, enc, storeK, tombK, headK, written, hN, dlog, full, refused, kFull, badDel>>
+    badDel,     \* an honest delete took b at K while K held no entry of c
+    xFell,      \* x fell (XFall)
+    cAtK,       \* K held an entry of c at some point
+    vc,         \* vc[r]: c's validity as r last judged it (only without Fixpoint)
+    nRestart    \* restarts so far
+vars == <<store, unlog, dropT, falls, known, kHead, delK, againG, againN, enc, storeK, tombK, headK, written, hN, dlog, full, refused, kFull, badDel, xFell, cAtK, vc, nRestart>>
+ext == <<xFell, cAtK, vc, nRestart>>
 
 Hostile == MaxH > 0
 Held(r) == {B(e) : e \in store[r] \cup unlog[r]}
@@ -80,16 +97,19 @@ Init ==
     /\ storeK = {} /\ tombK = {} /\ headK = 0
     /\ written = {} /\ hN = 0 /\ dlog = {} /\ badDel = FALSE
     /\ full = FALSE /\ refused = {} /\ kFull = [r \in Readers |-> FALSE]
+    /\ xFell = FALSE /\ cAtK = FALSE /\ vc = [r \in Readers |-> TRUE] /\ nRestart = 0
 
 (* Judgement at r (spec/sync-judgement.md §2). c is valid at r while r holds no x. *)
-Valid(r) == "x" \notin Held(r)
-Covered(r) == "c" \in Held(r) /\ Valid(r)
+Valid(r) == "x" \notin Held(r) \/ xFell
+Covered(r) == "c" \in Held(r) /\ (IF Fixpoint THEN Valid(r) ELSE vc[r])
+\* covered and dropped (§3): a may-hold body under a held valid snapshot
+CovDrop(r) == Covered(r) /\ (MustNoDrop => ~KeepB)
 UnheldSnap(r) ==
     /\ SnapClause /\ "c" \notin Held(r)
     /\ IF "c" \in dropT[r] THEN InvalidBlocks ELSE "c" \in KnownB(r)
 MustHold(r, d) ==
     /\ d \in Held(r)
-    /\ d = "b" => ~Covered(r) /\ ~UnheldSnap(r)       \* established uncovered (b is past its keep bound)
+    /\ d = "b" => KeepB \/ (~Covered(r) /\ ~UnheldSnap(r))  \* kept, or established uncovered
 Read(r) == IF "b" \in Held(r) \/ Covered(r) THEN "w" ELSE "none"
 
 (* r's store becomes s: c held beside x is invalid and dropped at once (spec/permissions.md §6);
@@ -99,7 +119,7 @@ Read(r) == IF "b" \in Held(r) \/ Covered(r) THEN "w" ELSE "none"
 Settle(r, s) ==
     LET h == {B(e) : e \in s \cup unlog[r]}
         wasValid == Covered(r)
-    IN IF "c" \in h /\ "x" \in h
+    IN IF "c" \in h /\ "x" \in h /\ ~xFell
        THEN [st |-> {e \in s : B(e) # "c"} \cup (IF wasValid THEN unlog[r] ELSE {}),
              ul |-> IF wasValid THEN {} ELSE unlog[r],
              dt |-> (dropT[r] \cup {"c"}) \ (IF wasValid THEN {"b"} ELSE {}),
@@ -129,12 +149,24 @@ Sync(r) ==
     /\ kHead' = [kHead EXCEPT ![r] = headK]
     /\ delK' = [delK EXCEPT ![r] = d]
     /\ UNCHANGED <<store, unlog, dropT, falls, againG, againN, enc, storeK, tombK, headK, written, badDel, hN, full, refused, dlog>>
+    /\ UNCHANGED ext
 
 \* r fetches an entry K's stream showed, or (ReadersMeet) one another reader holds; not one it dropped.
 Take(r, e) ==
     /\ B(e) \notin Held(r) \cup dropT[r]
-    /\ SetR(r, Settle(r, store[r] \cup {e}))
+    /\ IF Fixpoint THEN SetR(r, Settle(r, store[r] \cup {e}))
+       ELSE /\ store' = [store EXCEPT ![r] = @ \cup {e}]
+            /\ UNCHANGED <<unlog, dropT, falls>>
     /\ UNCHANGED <<known, kHead, delK, againG, againN, enc, storeK, tombK, headK, written, badDel, hN, full, refused, kFull, dlog>>
+    /\ UNCHANGED ext
+\* without Fixpoint: r judges what it took, a step later
+Judge(r) ==
+    /\ ~Fixpoint
+    /\ LET n == Settle(r, store[r]) IN
+       /\ n.st # store[r] \/ n.ul # unlog[r] \/ n.dt # dropT[r] \/ vc[r] # Valid(r)
+       /\ SetR(r, n)
+    /\ vc' = [vc EXCEPT ![r] = Valid(r)]
+    /\ UNCHANGED <<known, kHead, delK, againG, againN, enc, storeK, tombK, headK, written, badDel, hN, full, refused, kFull, dlog, xFell, cAtK, nRestart>>
 Fetch(r, e) == e \in known[r] \cap storeK /\ Take(r, e)
 PullR(r, e) == ReadersMeet /\ e \in store[Other(r)] /\ Take(r, e)
 
@@ -142,7 +174,7 @@ PullR(r, e) == ReadersMeet /\ e \in store[Other(r)] /\ Take(r, e)
    tombstone); r2, its author, keeps the body as local data only (spec/sync-compaction.md §1 Own
    bodies: it wrote no cover), so no stream from r2 lists it. *)
 DropB(r) ==
-    /\ Covered(r) /\ \E e \in store[r] : B(e) = "b"
+    /\ CovDrop(r) /\ \E e \in store[r] : B(e) = "b"
     /\ store' = [store EXCEPT ![r] = {e \in @ : B(e) # "b"}]
     /\ IF r = "r2"
        THEN /\ OwnLog
@@ -151,6 +183,7 @@ DropB(r) ==
        ELSE /\ dropT' = [dropT EXCEPT ![r] = @ \cup {"b"}]
             /\ UNCHANGED unlog
     /\ UNCHANGED <<falls, known, kHead, delK, againG, againN, enc, storeK, tombK, headK, written, badDel, hN, full, refused, kFull, dlog>>
+    /\ UNCHANGED ext
 
 \* K pulls what it lacks of r's store; a tombstoned blob ID is refused, code 6 (deleted there).
 PullK(r, e) ==
@@ -165,6 +198,8 @@ PullK(r, e) ==
             /\ UNCHANGED <<storeK, delK>>
        ELSE /\ storeK' = storeK \cup {e}
             /\ UNCHANGED <<delK, full, refused>>
+    /\ cAtK' = (cAtK \/ (B(e) = "c" /\ e \notin tombK /\ (Counted(storeK) < Cap \/ B(e) = "x")))
+    /\ UNCHANGED <<xFell, vc, nRestart>>
     /\ UNCHANGED <<store, unlog, dropT, falls, known, kHead, againG, againN, enc, tombK, headK, written, badDel, hN, kFull, dlog>>
 
 \* §3 Deletes, spec/sync-compaction.md §1 Carriers and Duplicates: r deletes at K an entry K's
@@ -175,15 +210,17 @@ Delete(r, e) ==
     /\ kHead[r] = headK
     /\ ~RoleWait(r)
     /\ DelRoleView => ("x" \in KnownB(r) => "x" \in Held(r))
-    /\ \/ /\ B(e) = "b" /\ Covered(r)
+    /\ \/ /\ B(e) = "b" /\ CovDrop(r)
           /\ IF KnownGround THEN "c" \in KnownB(r) \/ (FullCarrier /\ kFull[r]) ELSE "c" \in Held(r)
        \/ Dups /\ \E f \in known[r] : B(f) = B(e) /\ f[2] < e[2]
+       \/ ~InvalidKeep /\ B(e) = "c" /\ "c" \in dropT[r]   \* control: deletes what it dropped as invalid
     /\ Leave(e)
     /\ badDel' = (badDel \/ (B(e) = "b" /\ "c" \notin KB /\ ~full /\ ~(FullCarrier /\ kFull[r])))
     /\ store' = IF ReadersOnly THEN store ELSE [store EXCEPT ![Other(r)] = @ \ {e}]
     /\ unlog' = IF ReadersOnly THEN unlog ELSE [unlog EXCEPT ![Other(r)] = @ \ {e}]
     /\ delK' = [delK EXCEPT ![r] = @ \cup {e}]     \* a deleter knows its own delete
     /\ UNCHANGED <<dropT, falls, known, kHead, againG, againN, enc, headK, written, hN, kFull>>
+    /\ UNCHANGED ext
 
 \* §4: past a delete at K that does not stand (§3 Neither), r logs d again once per ground.
 LogAgain(r, d) ==
@@ -199,12 +236,14 @@ LogAgain(r, d) ==
     /\ againG' = [againG EXCEPT ![r][d] = Ground(r)]
     /\ againN' = [againN EXCEPT ![r][d] = @ + 1]
     /\ UNCHANGED <<unlog, dropT, falls, known, kHead, delK, storeK, tombK, headK, written, badDel, hN, full, refused, kFull, dlog>>
+    /\ UNCHANGED ext
 
 Honest ==
     \E r \in Readers :
         \/ Sync(r) \/ DropB(r)
         \/ \E e \in Blobs : Fetch(r, e) \/ PullR(r, e) \/ PullK(r, e) \/ Delete(r, e)
         \/ \E d \in Bodies : LogAgain(r, d)
+        \/ Judge(r)
 
 (* ---- the world ---- *)
 WriteC ==
@@ -212,36 +251,62 @@ WriteC ==
     /\ written' = written \cup {"c"}
     /\ SetR("r1", Settle("r1", store["r1"] \cup {<<"c", 0>>}))
     /\ UNCHANGED <<known, kHead, delK, againG, againN, enc, storeK, tombK, headK, badDel, hN, full, refused, kFull, dlog>>
+    /\ UNCHANGED ext
 WriteX ==
     /\ WithX /\ "x" \notin written
     /\ written' = written \cup {"x"}
     /\ SetR("r2", Settle("r2", store["r2"] \cup {<<"x", 0>>}))
     /\ UNCHANGED <<known, kHead, delK, againG, againN, enc, storeK, tombK, headK, badDel, hN, full, refused, kFull, dlog>>
+    /\ UNCHANGED ext
 MoveHead ==
     /\ headK < MaxHead /\ headK' = headK + 1
     /\ UNCHANGED <<store, unlog, dropT, falls, known, kHead, delK, againG, againN, enc, storeK, tombK, written, badDel, hN, full, refused, kFull, dlog>>
+    /\ UNCHANGED ext
 HDelete(e) ==
     /\ hN < MaxH /\ e \in storeK
     /\ Leave(e) /\ hN' = hN + 1
     /\ UNCHANGED <<store, unlog, dropT, falls, known, kHead, delK, againG, againN, enc, headK, written, badDel, kFull>>
+    /\ UNCHANGED ext
 Expire(e) ==
     /\ TombExpire /\ e \in tombK
     /\ \A r \in Readers : e \notin known[r]     \* every reader read K's stream past the delete within TOMBSTONE_LIFETIME
     /\ tombK' = tombK \ {e}
     /\ UNCHANGED <<store, unlog, dropT, falls, known, kHead, delK, againG, againN, enc, storeK, headK, written, badDel, hN, full, refused, kFull, dlog>>
+    /\ UNCHANGED ext
 
-Next == Honest \/ WriteC \/ WriteX \/ MoveHead \/ \E e \in Blobs : HDelete(e) \/ Expire(e)
+\* x falls (a later role change, learned by every reader at once): c valid again; a reader that
+\* dropped it as invalid counts it never received (spec/permissions.md §6).
+FallX ==
+    /\ XFall /\ "x" \in written /\ ~xFell
+    /\ xFell' = TRUE
+    /\ dropT' = [r \in Readers |-> dropT[r] \ {"c"}]
+    /\ vc' = [r \in Readers |-> TRUE]
+    /\ UNCHANGED <<store, unlog, falls, known, kHead, delK, againG, againN, enc, storeK, tombK, headK, written, hN, dlog, full, refused, kFull, badDel, cAtK, nRestart>>
+\* a reader restarts: with StandDurable nothing of the stand is lost (it lives in K's record).
+Restart(r) ==
+    /\ nRestart < MaxRestart
+    /\ nRestart' = nRestart + 1
+    /\ IF StandDurable THEN UNCHANGED <<againG, delK>>
+       ELSE /\ againG' = [againG EXCEPT ![r] = [d \in Bodies |-> NoGround]]
+            /\ delK' = [delK EXCEPT ![r] = {}]
+    /\ UNCHANGED <<store, unlog, dropT, falls, known, kHead, againN, enc, storeK, tombK, headK, written, hN, dlog, full, refused, kFull, badDel, xFell, cAtK, vc>>
+
+Next == Honest \/ WriteC \/ WriteX \/ MoveHead \/ FallX \/ \E e \in Blobs : HDelete(e) \/ Expire(e)
+        \/ \E r \in Readers : Restart(r)
 Fair == \A r \in Readers :
     /\ SF_vars(Sync(r)) /\ WF_vars(DropB(r))   \* SF: a stream is read within TOMBSTONE_LIFETIME
     /\ \A e \in Blobs : WF_vars(Fetch(r, e)) /\ WF_vars(PullR(r, e)) /\ WF_vars(PullK(r, e))
     /\ WF_vars(\E e \in Blobs : Delete(r, e))
     /\ WF_vars(\E d \in Bodies : LogAgain(r, d))
+    /\ WF_vars(Judge(r))
 Spec == Init /\ [][Next]_vars /\ Fair
 
 (* ---- properties ---- *)
 Quiet == ~ENABLED Honest
-Needed(d) == CASE d = "b" -> "c" \notin written \/ "x" \in written
-             [] d = "c" -> "c" \in written /\ "x" \notin written
+XLive == "x" \in written /\ ~xFell
+\* c once x fell is claimed only if K ever held it (with none it stays gone, spec/permissions.md §6)
+Needed(d) == CASE d = "b" -> KeepB \/ "c" \notin written \/ XLive
+             [] d = "c" -> "c" \in written /\ ("x" \notin written \/ (xFell /\ cAtK))
              [] d = "x" -> "x" \in written
 
 \* §4: per (reader, body) at most one logging again per change of ground (no loop).
@@ -255,6 +320,7 @@ NoLoss == \A d \in Bodies : Needed(d) => d \in Held("r1") \cup Held("r2") \cup K
 \* at quiet (no hostile node) every reader reads w, and K holds every needed body.
 QuietAlike == (~Hostile /\ Quiet) =>
     /\ \A r \in Readers : Read(r) = "w"
+    /\ \A r \in Readers : \A d \in {"b", "c"} : (Needed(d) /\ (d = "b" => KeepB)) => d \in Held(r)
     /\ \A d \in Bodies : Needed(d) => d \in KB
 \* liveness (no hostile node): the system reaches quiet and stays.
 Settles == <>[]Quiet

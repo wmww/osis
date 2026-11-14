@@ -23,6 +23,10 @@
    sender's side) is modelled by its key, side, the verifier's challenge and the listener's key.
    An answer to a Hit on a sync key or static entry is signed by the sync key of the replier's
    step (a store's head, a reader's newest known step), made only while it holds that seed.
+   With AdvPublic FALSE, Adv holds no value of S at all; with AdvJunk its filter may show an entry
+   matching anything an honest tester tests (a false positive), which the tester Hits. A tester
+   ends with Lost only an acceptance that carries a valid tag (LostTag): one keyed by the Hit's
+   match, which Adv can make only for a value it holds.
    A rule of the design is a flag. *)
 EXTENDS Naturals, FiniteSets, Sequences, TLC
 
@@ -43,7 +47,10 @@ CONSTANTS
     JNow,           \* J reads the roster the node holds now (FALSE: the roster it started with)
     Rejudge,        \* the bases ("J", "sync", "proof", "link") an open is re-judged on at a change
     Departed,       \* a credential of a peer J judges departed counts only at a step covering it
-    DialProves      \* TRUE: the dialer opens toward the key it dialed (who dialed proves nothing)
+    DialProves,     \* TRUE: the dialer opens toward the key it dialed (who dialed proves nothing)
+    AdvPublic,      \* Adv holds S's public values (each step's sync key, every static entry)
+    AdvJunk,        \* Adv's filter may show junk matching any value a tester tests
+    LostTag         \* a Lost answers only an acceptance with a valid tag (FALSE: any acceptance)
 
 Honest == Nodes \ {Adv}
 NE == Len(Events)
@@ -77,8 +84,9 @@ Secret(key) == key.c = "proof"
 Tok(key, sd, ch, lk) == [k |-> key, sd |-> sd, ch |-> ch, lk |-> lk]
 NoTok == Tok(Key("none", 0, "-"), 0, 0, "-")
 
-VARIABLES conns, opens, known, seen, next, happened, know
-vars == <<conns, opens, known, seen, next, happened, know>>
+VARIABLES conns, opens, known, seen, next, happened, know,
+    leak        \* a Lost named S to Adv while Adv held no value of S
+vars == <<conns, opens, known, seen, next, happened, know, leak>>
 
 KnowOf(n) == IF n = Adv THEN happened ELSE know[n]
 \* The steps whose seed n holds (and so their sync key and proof).
@@ -98,8 +106,10 @@ ShowsAt(n, k) ==
     (IF Role[n] = "store" THEN {SyncK(St[k]), ProofK(St[k])} ELSE IF Role[n] = "reader" THEN {ProofK(St[k])} ELSE {})
     \cup (IF Role[n] = "link" THEN {} ELSE {LinkK(a) : a \in Listed(k)})
 ShowsEver(n) == UNION {ShowsAt(n, j) : j \in 0..know[n]}
-AdvShows == {SyncK(s) : s \in 0..St[happened]} \cup {LinkK(a) : a \in LinkNodes}
-            \cup {key \in HoldsKeys(Adv) : key.c = "proof"}
+PubValues == IF AdvPublic THEN {SyncK(s) : s \in 0..St[happened]} \cup {LinkK(a) : a \in LinkNodes} ELSE {}
+\* the values of S Adv holds: it can make a tag keyed by any of them
+AdvValues == PubValues \cup HoldsKeys(Adv)
+AdvShows == PubValues \cup {key \in HoldsKeys(Adv) : key.c = "proof"}
 \* What honest t Hits in a peer's filter: a reader a sync key it holds (its walk: older steps
 \* too); a store its head's sync key or proof; a link holder its own static entry.
 Tests(t, v) ==
@@ -137,14 +147,26 @@ IsOpen(i, n) == \E o \in opens : o[1] = i /\ o[2] = n
 \* t accepts of the class the Hit asks (the tag on a proof, else an open signature by a sync
 \* key); else Lost, closing both sides.
 Finish(i, t, p, v, a, base) ==
-    LET c == conns[i] IN
-    opens' = IF ~AnswerSig THEN base \cup {<<i, t, v>>}
+    LET c == conns[i]
+        \* the peer accepted (an honest one always, with a valid tag); Adv answering with any token
+        \* accepted, its tag valid only on a match it holds
+        accepted == p # Adv \/ a # NoTok
+        tagOK == p # Adv \/ v \in AdvValues
+        lost == accepted /\ (LostTag => tagOK)
+        opensT == IF J(t, p, know[t]) \/ ~AnswerSig THEN TRUE
+                  ELSE /\ a # NoTok /\ Valid(a, a.k, c, t)
+                       /\ a.k.c = (IF v.c = "proof" THEN "proof" ELSE "sync")
+                       /\ Accept(t, know[t], a.k, p)
+    IN
+    /\ leak' = (leak \/ (p = Adv /\ ~opensT /\ lost /\ AdvValues = {}))
+    /\ opens' = IF ~AnswerSig THEN base \cup {<<i, t, v>>}
              ELSE IF J(t, p, know[t]) THEN base \cup {<<i, t, JB>>}
              ELSE IF /\ a # NoTok /\ Valid(a, a.k, c, t)
                      /\ a.k.c = (IF v.c = "proof" THEN "proof" ELSE "sync")
                      /\ Accept(t, know[t], a.k, p)
                   THEN base \cup {<<i, t, a.k>>}
-             ELSE {o \in base : o[1] # i}
+             ELSE IF lost THEN {o \in base : o[1] # i}
+             ELSE base
 
 Init ==
     /\ conns = <<>>
@@ -154,6 +176,7 @@ Init ==
     /\ next = 1
     /\ happened = 0
     /\ know = [n \in Honest |-> 0]
+    /\ leak = FALSE
 
 \* A connection: honest sides draw a fresh challenge; Adv any it has seen, the other side's of
 \* this connection, or a fresh one.
@@ -165,12 +188,12 @@ Connect(d, l) ==
         /\ conns' = Append(conns, [d |-> d, l |-> l, cd |-> cd, cl |-> cl])
         /\ seen' = IF Adv \in {d, l} THEN seen \cup {cd, cl} ELSE seen
     /\ next' = next + 2
-    /\ UNCHANGED <<opens, known, happened, know>>
+    /\ UNCHANGED <<opens, known, happened, know, leak>>
 
 Happen ==
     /\ happened < NE
     /\ happened' = happened + 1
-    /\ UNCHANGED <<conns, opens, known, seen, next, know>>
+    /\ UNCHANGED <<conns, opens, known, seen, next, know, leak>>
 
 \* Honest n learns the next event and re-judges every open it holds on what it holds now; an open
 \* whose basis it no longer accepts ends (with its Lost, both sides). A node that stops syncing S
@@ -187,7 +210,7 @@ Learn(n) ==
     /\ know[n] < happened
     /\ know' = [know EXCEPT ![n] = k]
     /\ opens' = {o \in opens : o[1] \notin Drop}
-    /\ UNCHANGED <<conns, known, seen, next, happened>>
+    /\ UNCHANGED <<conns, known, seen, next, happened, leak>>
 
 \* Honest t Hits v in its peer's filter with a token made over its own side, the peer's challenge
 \* and the listener's key. An honest peer opens if it accepts v and answers with its proof: the tag
@@ -202,7 +225,7 @@ HonestHit(i, t, v) ==
     /\ ~IsOpen(i, t)
     /\ Syncs(t) /\ Tests(t, v) /\ CanSign(t, c, v)
     /\ IF p = Adv
-       THEN /\ v \in AdvShows
+       THEN /\ v \in AdvShows \/ AdvJunk
             /\ known' = IF v \in HoldsKeys(Adv) THEN known ELSE known \cup {s}
             /\ \E a \in known' \cup Forge(c, t) \cup {NoTok} : Finish(i, t, p, v, a, opens)
        ELSE LET ak == IF v.c = "proof" THEN v
@@ -230,7 +253,7 @@ AdvHit(i, v) ==
     /\ opens' = opens \cup {<<i, h, v>>}
     /\ known' = IF ak \in HoldsKeys(h) /\ CanSign(h, c, ak) /\ ak \notin HoldsKeys(Adv)
                 THEN known \cup {Tok(ak, Side(c, h), Ch(c, Adv), c.l)} ELSE known
-    /\ UNCHANGED <<conns, seen, next, happened, know>>
+    /\ UNCHANGED <<conns, seen, next, happened, know, leak>>
 
 \* A reader opens toward a peer J judges a holder (ByRole); Adv proves its account to anyone.
 JOpen(i, v) ==
@@ -238,14 +261,14 @@ JOpen(i, v) ==
     /\ v \in {c.d, c.l} /\ ~IsOpen(i, v)
     /\ Syncs(v) /\ J(v, Peer(c, v), know[v])
     /\ opens' = opens \cup {<<i, v, JB>>}
-    /\ UNCHANGED <<conns, known, seen, next, happened, know>>
+    /\ UNCHANGED <<conns, known, seen, next, happened, know, leak>>
 
 \* The rejected rule: a dialer opens toward the key it dialed.
 DialOpen(i) ==
     LET c == conns[i] IN
     /\ DialProves /\ c.d \in Honest /\ ~IsOpen(i, c.d) /\ Syncs(c.d)
     /\ opens' = opens \cup {<<i, c.d, DialB>>}
-    /\ UNCHANGED <<conns, known, seen, next, happened, know>>
+    /\ UNCHANGED <<conns, known, seen, next, happened, know, leak>>
 
 Values == {SyncK(s) : s \in 0..St[NE]} \cup {ProofK(s) : s \in 0..St[NE]} \cup {LinkK(a) : a \in LinkNodes}
 
@@ -270,6 +293,9 @@ Safe == \A o \in opens :
     LET n == o[2] IN
     (n \in Honest /\ Peer(conns[o[1]], n) = Adv) =>
         (Adv \in Mem[know[n]] \/ St[know[n]] \in Seeds(Adv))
+
+\* Adv holding no value of S learns nothing of S from a Lost: no Lost names S to it.
+Private == ~leak
 
 \* A removal ends at once: no reader opens toward Adv once it knows Adv's removal.
 SafeRm == \A o \in opens :

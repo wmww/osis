@@ -124,6 +124,10 @@ instances=(
   "netstream net MCStream SN_rearm.cfg fail"
   "netstream net MCStream SN_history.cfg fail"
   "netstream net MCStream SN_listdels.cfg fail"
+  "netstream net MCStream SN_servehalf.cfg fail"   # negative control: caught up from the pulling half alone (CaughtUpServed)
+  "netstream net MCStream SN_applied.cfg fail"     # negative control: served to the end counted before the peer's Applied
+  "netstream net MCStream SN_pres.cfg fail"        # finding: only a trimmed listing replaces presence (the spec as written)
+  "netstream net MCStream SN_trim.cfg fail"        # negative control: no trimmed reply below the deletion horizon (PresenceSound)
   "netshared net MCShared T_cred.cfg pass"
   "netshared net MCShared T_gain.cfg pass"
   "netshared net MCShared T_remove.cfg pass"
@@ -174,6 +178,9 @@ instances=(
   "netopen net MCOpen ON_departed.cfg fail"        # finding: without the departed clause a removal does not end opens at once
   "netopen net MCOpen ON_dialer.cfg fail"          # negative control: the dialer trusts the key it dialed
   "netopen net MCOpen ON_nolisten.cfg fail"        # negative control (Live): listeners never sign
+  "netopen net MCOpen O_none.cfg pass"             # Adv holds no value of S, shows junk: no Lost names S to it (Private)
+  "netopen net MCOpen O_rkjunk.cfg pass"           # O_rk with junk filter entries Hit
+  "netopen net MCOpen ON_losttag.cfg fail"         # negative control: a Lost on an acceptance without a valid tag (Private)
   "nethold net MCHold H_quiet.cfg pass"            # hold/log/delete per sync ID (net/README.md)
   "nethold net MCHold H_head.cfg pass"
   "nethold net MCHold H_meet.cfg pass"
@@ -196,6 +203,13 @@ instances=(
   "nethold net MCHold HL_capjunk.cfg fail"         # stated limit: an invalid body holds a full store's room
   "nethold net MCHold HN_standhead.cfg pass"       # rule not needed here: stand ground without the head
   "nethold net MCHold HN_snap.cfg pass"            # rule not needed here: no unheld-snapshot clause
+  "nethold net MCHold H_keep.cfg pass"            # b kept: must-hold whatever covers it
+  "nethold net MCHold H_xfall.cfg pass"            # x falls: c fetched back where dropped as invalid
+  "nethold net MCHold H_restart.cfg pass"          # restarts, the stand durable in the record
+  "nethold net MCHold HN_mustdrop.cfg fail"        # negative control: a must-hold body covered and dropped
+  "nethold net MCHold HN_invaliddel.cfg fail"      # negative control: a body dropped as invalid deleted at K (NoLoss once x falls)
+  "nethold net MCHold HN_fixpoint.cfg fail"        # negative control: acting on c's verdict from before x was taken
+  "nethold net MCHold HN_durable.cfg fail"         # negative control: a restart loses the stand (Bounded)
   "netdestroy net MCDestroy D_present.cfg pass"    # destruction and emptying (net/README.md)
   "netdestroy net MCDestroy D_away.cfg pass"
   "netdestroy net MCDestroy D_live.cfg pass"
@@ -204,6 +218,12 @@ instances=(
   "netdestroy net MCDestroy DN_told.cfg fail"      # negative control: emptying before told
   "netdestroy net MCDestroy DN_stand.cfg fail"     # negative control: no stand, the released-team storm
   "netdestroy net MCDestroy DN_forget.cfg fail"    # negative control: forget while an entry is known
+  "netdestroy net MCDestroy D_meet.cfg pass"       # readers also each other's sources
+  "netdestroy net MCDestroy D_meetaway.cfg pass"   # ... b away, then untold (forgets T)
+  "netdestroy net MCDestroy D_meetlive.cfg pass"   # ... settles
+  "netdestroy net MCDestroy DN_toldsrc.cfg fail"   # negative control: told by a reader, deletes at K before K holds the request
+  "netdestroy net MCDestroy DN_forgetall.cfg fail" # negative control: forget counting K alone, not a reader source
+  "netdestroy net MCDestroy DN_untold.cfg fail"    # negative control: untold leaves S keeping T
   "netkeep net MCKeep K_all.cfg pass"              # a node keeping S unread follows its own grant
   "netkeep net MCKeep KN_drop.cfg fail"            # negative control: drop on a head move with no box
   "netkeep net MCKeep KN_open.cfg fail"            # negative control: open by any held sync secret
@@ -211,6 +231,11 @@ instances=(
   "netkeep net MCKeep KF_late.cfg fail"            # finding: a notice signed before the removing step, arriving after it, never verifies
   "netkeep net MCKeep KF_regrant.cfg fail"         # finding: the removal's old notice drops a re-granted K
   "netkeep net MCKeep K_held.cfg pass"             # the spec's rule: fixes KF_late and KF_regrant
+  "netkeep net MCKeep K_nohead.cfg pass"           # granted before any Register: no head, first box late
+  "netkeep net MCKeep KN_box.cfg fail"             # negative control: a held notice not judged again when a secret is taken
+  "netkeep net MCKeep KN_noheld.cfg pass"          # rule not needed here: no held step, any step to the head (head's alone)
+  "netkeep net MCKeep K_inflate.cfg pass"          # a hostile box inflating K's epochs never drops
+  "netkeep net MCKeep KL_inflate.cfg fail"         # stated limit: ... it keeps a removed grant (RemovedDrops)
 )
 
 module=${1:-}
