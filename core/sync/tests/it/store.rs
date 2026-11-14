@@ -207,8 +207,8 @@ fn register_takes_a_closing_step_and_nothing_after_it_spec_wire_8() {
 }
 
 // spec/wire.md §8 (closing step: a zero step key, a zero claims hash), spec/sync-ids.md §6
-// (Register: a child of the head only), spec/sync-hostile.md §2 (Register refuses both: a removed
-// admin closes S only at a node still at a head whose delete key it holds): a closing step with a claims hash is refused
+// (Register: a child of the head only), spec/sync-hostile.md §2 (A removed admin holding the delete key of a
+// step: it closes S only at a node still at a head whose delete key it holds; Register refuses both): a closing step with a claims hash is refused
 // (2); once the head moved past the removal, the removed admin's closing step of its old head is
 // no child of the head, and one under the new head fails its signature: both refused (9).
 #[test]
