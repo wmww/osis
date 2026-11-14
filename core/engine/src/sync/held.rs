@@ -290,6 +290,20 @@ impl Engine {
         }
     }
 
+    /// At an open: forgets each cause whose subject went while the node was down or before its
+    /// follower judged it again (a loss of an actor no longer held, a tie whose group holds no
+    /// edge on its target): rows `jc/` stay bounded by what is held.
+    pub(crate) fn forget_gone_causes(&mut self) -> Result<()> {
+        let gone: Vec<Cause> = self.core.ix.cause_at.keys().filter(|c| match c {
+            Cause::Lost(a) => !self.core.ix.secrets.contains_key(a),
+            Cause::Tie(t, g) => !self.core.ix.held.holders_of(t).any(|x| x == g),
+        }).copied().collect();
+        for c in gone {
+            self.judge_cause(c, false)?;
+        }
+        Ok(())
+    }
+
     /// The tied grants on `t` judged dead and removable explicitly here: their places kept, every
     /// other tie on `t` forgotten (`judge_cause`).
     pub(crate) fn judge_ties(&mut self, t: &Tid, now: &BTreeSet<Tid>) -> Result<()> {

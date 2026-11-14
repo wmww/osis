@@ -171,3 +171,4 @@ osis-engine::history_complete  deferred: the osis API's history completeness (sp
 osis-engine::loose_records  test hook (tests/it): counts loose records at n and 10n
 osis-engine::lost_wakes  test hook (tests/it order harness): a full scan of the pending commits finds no wake the index missed
 osis-engine::role_arrival_place  test hook (tests/it): role commits arrived after a pass began, in the pass-wait churn tests
+osis-engine::causes_judged  test hook (tests/it): the cause rows a pass wait keeps go with their cause

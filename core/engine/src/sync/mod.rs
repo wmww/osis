@@ -1061,6 +1061,11 @@ impl Engine {
         self.role_arrival(actor)
     }
 
+    /// Causes a pass wait runs from, kept (rows `jc/`; bound checks).
+    pub fn causes_judged(&self) -> usize {
+        self.core.ix.cause_at.len()
+    }
+
     /// The pass place now: a pass begun after this call begins above it.
     pub fn pass_place(&self) -> u64 {
         self.core.place

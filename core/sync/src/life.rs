@@ -257,6 +257,8 @@ impl Life {
         // `untie_due` reads the thing's holders, so its key is due when the last one goes
         for t in self.unties.due() {
             if !engine.named_a_holder(&t) {
+                // judged once more with no holder: the engine forgets its ties' places (`jc/`)
+                isolate(engine.untie_due(&t))?;
                 self.unties.unwant(&t);
                 self.leaves.unwant(&t);
                 continue;

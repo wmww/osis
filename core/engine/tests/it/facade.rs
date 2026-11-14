@@ -1349,6 +1349,9 @@ fn role_commits_after_the_loss_do_not_hold_the_drop_off_spec_permissions_3() {
     e.note_complete_pass(&s, began).unwrap();
     assert!(e.lost_passed(&t).unwrap(), "the pass begun after the loss was judged ends the wait");
     assert!(e.drop_lost(&t).unwrap(), "dropped");
+    assert_eq!(e.causes_judged(), 1, "the loss's place, until judged again or reopened");
+    crate::flows::reopen(&mut lp, 1).unwrap();
+    assert_eq!(lp.peers[1].engine.causes_judged(), 0, "an open forgets the place of a loss of an actor no longer held");
 }
 
 // spec/permissions.md §3 (When it learns it: a loss that ends and comes again is judged afresh):
@@ -1595,6 +1598,7 @@ fn a_tie_dead_again_is_judged_afresh_spec_perm_2() {
     assert_eq!(e.untie_due(&t).unwrap(), [g].into());
     e.untie(&t, &g).unwrap();
     assert!(e.untie_due(&t).unwrap().is_empty(), "removed");
+    assert_eq!(e.causes_judged(), 0, "a removed tie's place forgotten");
     let between = e.begin_pass();
     tie_and_unplace(&mut lp);
     let e = &mut lp.peers[0].engine;
