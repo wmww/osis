@@ -50,7 +50,7 @@ use osis_base::{BlobId, SyncId, WallMs};
 use osis_engine::Engine;
 use osis_engine::sync::Opened;
 use osis_proto::{Id, Msg, Wrap};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Bytes a requester lets a server inline per body while a member has no other source
 /// (spec/sync-streams.md §4 Bodies; local policy). At 0 every body costs a Fetch round trip; at
@@ -157,7 +157,7 @@ pub struct Streams {
     shreds: osis_base::memo::Feed<SyncId>,
     known: Known,
     /// Blobs asked from some source, and when (one source at a time).
-    asked: HashMap<BlobId, (ConnId, WallMs)>,
+    asked: BTreeMap<BlobId, (ConnId, WallMs)>,
     /// The connections each sync ID is a member on (its sources).
     holders: BTreeMap<SyncId, BTreeSet<ConnId>>,
     /// Kept unread: entries refused for room per S, with S's bytes when the last was refused.
@@ -174,7 +174,7 @@ pub struct Streams {
 impl Streams {
     /// Streams over the node's store: where a record source's place and word live.
     pub fn new(store: Store) -> Streams {
-        Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), known: Known::new(store), asked: HashMap::new(), holders: BTreeMap::new(), room: BTreeMap::new(), caught: Stamped::default(), fault: None, work: Work::default() }
+        Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), room: BTreeMap::new(), caught: Stamped::default(), fault: None, work: Work::default() }
     }
 
     /// Tests only (world copies): reads the copy's store.

@@ -33,7 +33,7 @@ fn dial(w: &mut World) {
 /// Bytes delivered to `node` in order, per connection.
 fn bytes_to(seen: &[Seen], node: usize) -> Vec<(ConnId, usize)> {
     seen.iter().filter_map(|s| match s {
-        Seen::Bytes { node: n, conn, len } if *n == node => Some((*conn, *len)),
+        Seen::Bytes { node: n, conn, len, .. } if *n == node => Some((*conn, *len)),
         _ => None,
     }).collect()
 }

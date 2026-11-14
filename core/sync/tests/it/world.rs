@@ -36,7 +36,7 @@ fn every_output_reaches_the_network() {
     let want = [
         Seen::Up { node: 0, conn: c, dialed: true, rank: 1 },
         Seen::Up { node: 1, conn: acc, dialed: false, rank: 1 },
-        Seen::Bytes { node: 1, conn: acc, len: 3 },
+        Seen::Bytes { node: 1, conn: acc, len: 3, digest: osis_base::hash::hash(&[1, 2, 3])[..8].try_into().unwrap() },
         Seen::Taken { node: 0, conn: c, bytes: 3 },
         Seen::Down { node: 0, conn: ConnId(2) },
         Seen::Closed { node: 1, conn: acc },

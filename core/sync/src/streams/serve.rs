@@ -12,7 +12,7 @@ use osis_proto::limits::REPLY_BUDGET;
 use osis_proto::msg::stream_event_len;
 use osis_proto::{Code, Event, Fetched, Id, Msg, Pull, PullReply, Stream};
 use osis_store::NodeEvent;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Bytes of a reply's frame body besides its events and joins (kind, id, cursor, flags), and of
 /// one join (a sync ID and a cursor): what paging keeps aside.
@@ -35,7 +35,7 @@ pub(super) struct Serve {
     /// Joins merged into the stream at a reply's position, awaiting an Applied covering it.
     merging: BTreeMap<SyncId, Position>,
     /// Blobs whose bytes crossed this connection, either way (spec/wire.md §11.2 Pull).
-    pub(super) crossed: HashSet<BlobId>,
+    pub(super) crossed: BTreeSet<BlobId>,
     inline: u64,
     /// The ephemeral listing per member: the memory counter read to.
     eph: BTreeMap<SyncId, u64>,

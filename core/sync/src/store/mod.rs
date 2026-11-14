@@ -55,7 +55,7 @@ use osis_label::{Class, ClaimSet, DeleteItem, Prefix, Step, StepId};
 use osis_proto::{Code, DepositItem};
 use osis_store::{Ciphertext, LogRead, LoggedEvent, NodeEvent, Shred, Suspended, Transaction};
 use rows::{EntryRow, R, W};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 /// Bytes an entry counts toward the caps beside its blob: its row, index rows and log record.
@@ -224,7 +224,7 @@ pub(crate) struct Inner {
     mem: Memory,
     total: Option<u64>,
     /// When each sync ID last took a child step past its caps (spec/sync-ids.md §6).
-    past_cap: HashMap<SyncId, WallMs>,
+    past_cap: BTreeMap<SyncId, WallMs>,
 }
 
 impl Inner {
@@ -311,7 +311,7 @@ impl Store {
     /// record brought that still gave nothing held go: every connection ended with the last start.
     pub fn open(backend: Box<dyn osis_store::Backend>, root: Box<dyn osis_store::RootStorage>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Store> {
         let store = osis_store::Store::open_or_create(backend, root, osis_store::StoreConfig::default(), &mut *rng)?;
-        let mut inner = Inner { store, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: HashMap::new() };
+        let mut inner = Inner { store, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: BTreeMap::new() };
         inner.write(|t, env| {
             for (k, _) in t.scan_local(&[rows::CHARGED, &[0]].concat(), b"", usize::MAX)? {
                 let (s, b) = rows::tail_ids(&k)?;

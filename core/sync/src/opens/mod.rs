@@ -41,7 +41,7 @@ use osis_label::StepId;
 use osis_proto::filter::{beacon_value, decode_gcs, filter_width, pages};
 use osis_proto::limits::{MAX_FILTER_ENTRIES, MAX_FILTER_WIDTH, MAX_MEMBERS, MAX_OFFER_ITEMS, MAX_RESUME_TAGS, MIN_FILTER_WIDTH, NO_RECORD_ID, REPLY_BUDGET};
 use osis_proto::{Code, Id, Msg, OfferItem, SharedItem};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// After a refused filter generation, the wait before a whole one (spec/sync-opens.md §5,
@@ -256,7 +256,7 @@ struct Conn {
     first: bool,
     /// The Hits this side's filter makes possible: expected peer Hit -> (S, credential, beacon).
     /// Built at the connection's first Hit (`indexed`), then kept by each change of S.
-    shown: HashMap<[u8; 32], (SyncId, Shown, [u8; 32])>,
+    shown: BTreeMap<[u8; 32], (SyncId, Shown, [u8; 32])>,
     indexed: bool,
     /// Sync IDs whose shown credentials go in the next generation's additions.
     adds: BTreeSet<SyncId>,
@@ -785,7 +785,7 @@ impl Opens {
             resync_at: None,
             whole_next: false,
             first: true,
-            shown: HashMap::new(),
+            shown: BTreeMap::new(),
             indexed: false,
             adds: BTreeSet::new(),
             peer_gen: None,
@@ -979,7 +979,7 @@ impl Opens {
                 Vec::new()
             }
         };
-        let mine: HashMap<[u8; 32], (RecordId, [u8; 32])> = held.into_iter().map(|r| (resume_tag(&r.r, &bind.listener_key, &d, &l), (r.id, r.r))).collect();
+        let mine: BTreeMap<[u8; 32], (RecordId, [u8; 32])> = held.into_iter().map(|r| (resume_tag(&r.r, &bind.listener_key, &d, &l), (r.id, r.r))).collect();
         let found = tags.iter().find_map(|t| mine.get(t).copied());
         let lnonce = random32(ctx.holds.rng());
         let (rid, tag) = match found {

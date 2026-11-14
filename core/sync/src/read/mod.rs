@@ -42,7 +42,7 @@ use judge::{Act, Doom, Judged, Mine, Toward};
 use osis_base::memo::{Clock, Effects, Stamped};
 use osis_base::{CommitId, SyncId, WallMs};
 use osis_engine::sync::BodyMeta;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// A body's verdict at S (spec/sync-judgement.md §2).
@@ -113,9 +113,9 @@ impl std::fmt::Debug for Read {
 
 /// The first value a settle saw for each key it moved, and the last: acts go on the difference
 /// once the judgements reach their fixpoint.
-type Moved<K, V> = HashMap<K, (Option<V>, V)>;
+type Moved<K, V> = BTreeMap<K, (Option<V>, V)>;
 
-fn note<K: std::hash::Hash + Eq, V>(moved: &mut Moved<K, V>, k: K, was: Option<V>, now: V) {
+fn note<K: Ord, V>(moved: &mut Moved<K, V>, k: K, was: Option<V>, now: V) {
     match moved.get_mut(&k) {
         Some(m) => m.1 = now,
         None => {
@@ -184,7 +184,7 @@ impl Read {
             }
         }
         // the own judgement of each body, to its fixpoint
-        let mut judged: Moved<(SyncId, CommitId), Judged> = HashMap::new();
+        let mut judged: Moved<(SyncId, CommitId), Judged> = BTreeMap::new();
         loop {
             let due = self.judged.due();
             if due.is_empty() {
@@ -231,7 +231,7 @@ impl Read {
                 }
             }
         }
-        let mut toward: Moved<(SyncId, CommitId, Source), Toward> = HashMap::new();
+        let mut toward: Moved<(SyncId, CommitId, Source), Toward> = BTreeMap::new();
         loop {
             let due = self.toward.due();
             if due.is_empty() {

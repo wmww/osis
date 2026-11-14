@@ -22,14 +22,27 @@ pub(crate) fn sized(small: u64, full: u64) -> std::ops::Range<u64> {
 /// The world a history plays on, the history played, then the checks; replayed by `replay`.
 /// The checks run at quiet: every history ends healed, every node on, faults off, run (so a
 /// shrunk history ends so too).
+/// Each history plays twice and its two traces (every delivery, the bytes' digest included) must
+/// be identical: a history is a function of its seed (notes/sync-test-harness.md), so a failure
+/// replays and shrinks.
 pub(crate) fn converge(seed: u64, n: usize, steps: &[Step], replay: String) {
-    let mut w = world(seed, n);
-    w.cap = 200_000;
-    let _script = play(&mut w, steps, replay);
-    let end: Vec<Step> = [Step::Lossy(crate::harness::Loss::NONE), Step::Heal].into_iter().chain((0..n).map(Step::PowerOn)).chain([Step::Run]).collect();
-    for s in &end {
-        crate::harness::step(&mut w, s);
+    let played = |replay: String| {
+        let mut w = world(seed, n);
+        w.cap = 200_000;
+        w.trace = true;
+        let script = play(&mut w, steps, replay);
+        let end: Vec<Step> = [Step::Lossy(crate::harness::Loss::NONE), Step::Heal].into_iter().chain((0..n).map(Step::PowerOn)).chain([Step::Run]).collect();
+        for s in &end {
+            crate::harness::step(&mut w, s);
+        }
+        (w, script)
+    };
+    let (mut w, _script) = played(replay.clone());
+    let (again, _) = played(replay);
+    if let Some(i) = (0..w.seen.len().max(again.seen.len())).find(|&i| w.seen.get(i) != again.seen.get(i)) {
+        panic!("not deterministic: replay differs at delivery {i} of {}: {:?} then {:?}", w.seen.len(), w.seen.get(i), again.seen.get(i));
     }
+    drop(again);
     check(&mut w);
 }
 
@@ -64,21 +77,13 @@ fn one_node_through_device_faults_reads_as_the_reference() {
     check(&mut w);
 }
 
-// spec: none (test harness): a history is a function of its seed, and a world of one seed plays
-// it the same way twice, faults included.
+// spec: none (test harness): a history is a function of its seed, faults included (`converge`
+// checks that a world plays it the same way twice).
 #[test]
-fn a_history_replays_from_its_seed() {
+fn a_history_is_a_function_of_its_seed() {
     let h = history(3, 2, 24, true);
     assert_eq!(h, history(3, 2, 24, true));
     assert!(h.iter().any(|s| matches!(s, Step::Grant(..))) && h.iter().any(|s| matches!(s, Step::Lossy(..) | Step::Disk(..) | Step::PowerOff(..))));
-    let run = || {
-        let mut w: World = world(3, 2);
-        w.cap = 200_000;
-        w.trace = true;
-        let _ = play(&mut w, &h, String::new());
-        (w.seen.clone(), w.history.handed.len(), w.now())
-    };
-    assert_eq!(run(), run());
 }
 
 // spec: none (property: spec/requirements.md Convergence, Deterministic; spec/sync.md §2-§3):

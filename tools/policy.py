@@ -4,7 +4,7 @@ workspace lints on, every external dependency has its line in notes/architecture
 target marked `test = false` / `doctest = false` has unit tests / doctests that would silently not run,
 and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name, and no
 test can bind the real LAN port or
-announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`), and only the engine's `apply::checked`
+announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`), and sync keeps no hashed collection (`sync_hashed`), and only the engine's `apply::checked`
 vouches for checked delta bytes (`checked_bytes`), and signature verdicts are read back only where kept (`kept_verdicts`), and every tools/known_failures.txt line names
 an existing issue file, an existing test or sim scenario and a valid pattern (`known_failures`),
 and every list under git's union merge has no duplicate line and a stale-line check (`union_lists`),
@@ -323,6 +323,15 @@ def kept_verdicts():
         if n != want:
             yield f"{rel}: {n} Signed::from_kept uses, want {want}"
 
+# notes/sync-test-harness.md (Determinism): a world replays from its seed, so sync's order never comes
+# from a hash seed. Sync's product code keeps no hashed collection (BTreeMap/BTreeSet).
+HASHED = re.compile(r"\b(HashMap|HashSet)\b")
+
+def sync_hashed():
+    for rel, n in product_lines(HASHED, lambda rel: not rel.startswith(("core/sync/src/", "core/engine/src/sync/"))):
+        yield f"{rel}:{n}: a hashed collection in sync (its order varies per run; use BTreeMap/BTreeSet)"
+
+
 def known_failures():
     names, bad = gate_failures.known(ROOT)
     yield from bad
@@ -403,6 +412,7 @@ errs.extend(union_lists())
 errs.extend(test_copies())
 errs.extend(checked_bytes())
 errs.extend(kept_verdicts())
+errs.extend(sync_hashed())
 errs.extend(real_lan_tests())
 errs.extend(peer_ticks())
 errs.extend(env_vars())

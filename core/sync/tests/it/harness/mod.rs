@@ -111,7 +111,8 @@ pub struct WNode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Seen {
     Up { node: usize, conn: ConnId, dialed: bool, rank: u8 },
-    Bytes { node: usize, conn: ConnId, len: usize },
+    /// `digest`: the first 8 bytes of the bytes' BLAKE3, so a replay that sends other bytes differs.
+    Bytes { node: usize, conn: ConnId, len: usize, digest: [u8; 8] },
     Taken { node: usize, conn: ConnId, bytes: u64 },
     Closed { node: usize, conn: ConnId },
     Down { node: usize, conn: ConnId },
@@ -124,7 +125,7 @@ impl Seen {
     fn of(node: usize, input: &Input) -> Seen {
         match input {
             Input::Up { conn, rank, dialed, .. } => Seen::Up { node, conn: *conn, dialed: *dialed, rank: *rank },
-            Input::Bytes { conn, bytes } => Seen::Bytes { node, conn: *conn, len: bytes.len() },
+            Input::Bytes { conn, bytes } => Seen::Bytes { node, conn: *conn, len: bytes.len(), digest: osis_base::hash::hash(bytes)[..8].try_into().unwrap() },
             Input::Taken { conn, bytes } => Seen::Taken { node, conn: *conn, bytes: *bytes },
             Input::Closed { conn } => Seen::Closed { node, conn: *conn },
             Input::Down { conn } => Seen::Down { node, conn: *conn },

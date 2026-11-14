@@ -8,7 +8,7 @@ use super::rows::{EntryRow, Source, Usage};
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::memo::Stamps;
 use osis_base::{BlobId, SyncId, WallMs};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A row a connection's source keeps: (connection, sync ID, owner tag, key).
 pub(crate) type ConnRow = (crate::types::ConnId, SyncId, u8, Vec<u8>);
@@ -19,26 +19,26 @@ struct Listing<'a>(&'a SyncId);
 
 #[derive(Clone, Default)]
 pub(crate) struct Memory {
-    pub entries: HashMap<(SyncId, BlobId), EntryRow>,
+    pub entries: BTreeMap<(SyncId, BlobId), EntryRow>,
     /// The memory log: per S, by counter, an entry added (`None`) or removed at a time.
     pub log: BTreeMap<(SyncId, u64), (BlobId, Option<WallMs>)>,
     /// Each entry's latest memory log event.
-    pub slot: HashMap<(SyncId, BlobId), u64>,
+    pub slot: BTreeMap<(SyncId, BlobId), u64>,
     pub next: u64,
-    pub tombs: HashMap<(SyncId, BlobId), WallMs>,
+    pub tombs: BTreeMap<(SyncId, BlobId), WallMs>,
     /// Tombstones and removal events by when they were made, for the sweep.
     pub aging: BTreeSet<(WallMs, SyncId, BlobId)>,
     pub expiry: BTreeSet<(WallMs, SyncId, BlobId)>,
-    pub blobs: HashMap<BlobId, Vec<u8>>,
+    pub blobs: BTreeMap<BlobId, Vec<u8>>,
     /// Blobs the engine holds in memory.
-    pub engine: HashSet<BlobId>,
+    pub engine: BTreeSet<BlobId>,
     /// The sync IDs whose ephemeral entries name each blob.
-    pub by_blob: HashMap<BlobId, BTreeSet<SyncId>>,
-    pub usage: HashMap<SyncId, Usage>,
+    pub by_blob: BTreeMap<BlobId, BTreeSet<SyncId>>,
+    pub usage: BTreeMap<SyncId, Usage>,
     /// Bytes charged to each source by ephemeral entries and connections.
-    pub charges: HashMap<Source, u64>,
+    pub charges: BTreeMap<Source, u64>,
     /// Rows a connection's source keeps for this connection only (stands, deletes seen).
-    pub conn_rows: HashMap<ConnRow, Vec<u8>>,
+    pub conn_rows: BTreeMap<ConnRow, Vec<u8>>,
     /// Those rows by when they were written: they end after `TOMBSTONE_LIFETIME` as a record's do.
     pub conn_aging: BTreeSet<(WallMs, ConnRow)>,
     pub stamps: Stamps,

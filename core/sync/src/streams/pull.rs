@@ -16,7 +16,7 @@ use osis_engine::sync::Holding;
 use osis_label::{Class, Prefix};
 use osis_proto::limits::{MAX_FETCH_IDS, REPLY_BUDGET};
 use osis_proto::{Code, Event, Fetched, Id, Msg, Pull, PullReply, Stamp, Stream, Wrap};
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Where this node stands in one source's log: what it stored (spec/sync-opens.md §3: the
 /// stream's cursor, each member at it or joining from its own position, where members that left
@@ -142,9 +142,9 @@ pub(super) struct Pulling {
     queue: BTreeMap<(u8, u64, u64), (SyncId, BlobId)>,
     arrivals: u64,
     /// What this source answered without, until it announces it again.
-    failed: HashSet<BlobId>,
+    failed: BTreeSet<BlobId>,
     /// Bodies settled (taken, opened, refused) while messages are in hand.
-    pub(super) settled: HashSet<(SyncId, BlobId)>,
+    pub(super) settled: BTreeSet<(SyncId, BlobId)>,
     retry_at: Option<WallMs>,
     rejoin_at: BTreeMap<SyncId, WallMs>,
     inline: u64,
@@ -183,8 +183,8 @@ impl Pulling {
             fetches: BTreeMap::new(),
             queue: BTreeMap::new(),
             arrivals: 0,
-            failed: HashSet::new(),
-            settled: HashSet::new(),
+            failed: BTreeSet::new(),
+            settled: BTreeSet::new(),
             retry_at: None,
             rejoin_at: BTreeMap::new(),
             inline: INLINE_LIMIT,

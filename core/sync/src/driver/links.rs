@@ -11,7 +11,7 @@ use osis_label::Address;
 use osis_transport::link::{self, Link, LinkTx};
 use osis_transport::lan::Found;
 use osis_transport::{Error, StaticSecret, Transport};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -55,9 +55,9 @@ pub struct TransportLinks<T: Transport> {
     clock: Arc<dyn Clock>,
     tx: mpsc::UnboundedSender<Event>,
     rx: mpsc::UnboundedReceiver<Event>,
-    live: HashMap<ConnId, Live>,
+    live: BTreeMap<ConnId, Live>,
     /// Dials in flight: one closed before its result came is not here, and its result is dropped.
-    dialing: HashMap<ConnId, JoinHandle<()>>,
+    dialing: BTreeMap<ConnId, JoinHandle<()>>,
     background: Vec<JoinHandle<()>>,
     wake: Option<WallMs>,
     accepted: u64,
@@ -75,7 +75,7 @@ impl<T: Transport> TransportLinks<T> {
     /// Links over `transport`, the node's time from `clock` (its engine's).
     pub fn new(transport: Arc<T>, clock: Arc<dyn Clock>) -> TransportLinks<T> {
         let (tx, rx) = mpsc::unbounded_channel();
-        TransportLinks { transport, clock, tx, rx, live: HashMap::new(), dialing: HashMap::new(), background: Vec::new(), wake: None, accepted: 0 }
+        TransportLinks { transport, clock, tx, rx, live: BTreeMap::new(), dialing: BTreeMap::new(), background: Vec::new(), wake: None, accepted: 0 }
     }
 
     /// Listens at every URL of `urls` under `secret`, all or none (spec/sync-transport.md §5 One
