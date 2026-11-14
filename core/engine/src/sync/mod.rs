@@ -17,6 +17,8 @@ pub(crate) mod facts;
 pub(crate) mod falls;
 pub(crate) mod held;
 pub(crate) mod inbox;
+pub(crate) mod pieces;
+pub use pieces::Pieces;
 pub(crate) mod recblobs;
 pub(crate) use recblobs::with_chains;
 pub(crate) mod records;
@@ -513,6 +515,38 @@ impl Engine {
     /// Whether `b` is a freed link's blob.
     pub fn freed(&mut self, b: &BlobId) -> Result<bool> {
         self.is_freed(b)
+    }
+
+    /// The linked blobs of `c`'s body made of `parts` (spec/sync-judgement.md §1: chunk,
+    /// tree-node and page blobs its deltas link, header-list trees): held, and missing as far as
+    /// the held node and page blobs reach.
+    pub fn pieces(&mut self, c: &CommitId, parts: &PartSet) -> Result<Arc<Pieces>> {
+        self.pieces_now(c, parts)
+    }
+
+    /// Takes a piece's bytes (a blob a held body links, `pieces`' missing) from a store entry:
+    /// held here from now on (`put_blobs`).
+    pub fn take_piece(&mut self, b: &BlobId, bytes: Vec<u8>) -> Result<()> {
+        if osis_label::blob_id(&bytes) != *b {
+            return Ok(());
+        }
+        self.put_blobs(vec![(*b, bytes)])
+    }
+
+    /// Freed links judged freed (spec/sync-compaction.md §1 Freed links), whole: a start lists
+    /// them, then follows `freed_feed` and `freed_link` per row.
+    pub fn freed_rows(&mut self) -> Vec<(BlobId, Tid)> {
+        self.core.ix.freed.keys().copied().collect()
+    }
+
+    /// A cursor over the freed links judged from now on (`memo::Feed`).
+    pub fn freed_feed(&self) -> osis_base::memo::Feed<(BlobId, Tid)> {
+        self.core.ix.freed.feed()
+    }
+
+    /// Freed link `b` of thing `t`, while judged freed and in the set (stamped).
+    pub fn freed_link(&mut self, b: &BlobId, t: &Tid) -> Option<Arc<crate::retention::freed::Freed>> {
+        self.core.ix.freed.get(&(*b, *t)).cloned()
     }
 
     // Keys and secrets for a sync ID

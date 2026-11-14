@@ -797,6 +797,8 @@ indexes! {
     pub sync_records: JMap<Tid, Arc<crate::sync::SyncRecord>>,
     /// The things whose sync record names each sync ID (`sync_records` inverted).
     pub record_ids: JSetMap<SyncId, Tid>,
+    /// Freed links judged freed, by (blob, thing) (`retention::freed`): what sync deletes.
+    pub freed: JMap<(osis_base::BlobId, Tid), Arc<crate::retention::freed::Freed>>,
     /// Inbox deliveries owed per (commit, holder) (`sync::deliveries`).
     pub owed_inbox: JMap<(CommitId, Tid), Arc<crate::sync::deliveries::Owed>>,
     /// The commit and parts each opened or sealed blob holds (`sync::bodies`).

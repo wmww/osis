@@ -27,6 +27,7 @@ use osis_base::{Ak, BlobId, CommitId, Link, Tid, Value};
 use osis_crypto::DeleteSecret;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// One freed link of a thing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,12 +93,28 @@ fn key(b: &BlobId, t: &Tid) -> Vec<u8> {
 
 /// A row a link's blob key may have been committed in (one waiting for a node blob) is
 /// overwritten and removed shredded (spec/commits.md §5: a dropped body's keys go).
+/// A judged row is indexed (`Indexes::freed`): sync deletes it wherever an entry of it is.
 fn put(tx: &mut Tx<'_>, f: &Freed) -> Result<()> {
-    tx.in_class(f.memory, |tx| Ok(tx.txn.put_local(&f.key(), &f.encode(), Shred::Yes)?))
+    tx.in_class(f.memory, |tx| Ok(tx.txn.put_local(&f.key(), &f.encode(), Shred::Yes)?))?;
+    if f.judged {
+        tx.core.ix.freed.insert((f.link.blob, f.tid), Arc::new(f.clone()));
+    }
+    Ok(())
 }
 
 fn remove(tx: &mut Tx<'_>, f: &Freed) -> Result<()> {
     tx.txn.remove_local(&f.key(), Shred::Yes)?;
+    tx.core.ix.freed.remove(&(f.link.blob, f.tid));
+    Ok(())
+}
+
+/// Loads the judged rows into `Indexes::freed` (an open or reload).
+pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
+    for f in rows(tx, records::FREED)? {
+        if f.judged {
+            tx.core.ix.freed.insert((f.link.blob, f.tid), Arc::new(f));
+        }
+    }
     Ok(())
 }
 
@@ -232,6 +249,11 @@ fn judge(tx: &mut Tx<'_>, fs: Vec<Freed>) -> Result<Judgment> {
                                 kids.extend(links.into_iter().map(|link| Freed::new(t, link, f.author, leaf, f.memory)));
                             }
                             f.borne = true;
+                            // its bytes go here (spec/sync-compaction.md §1: freed, the node keeps
+                            // its blob ID, salt, delete keys and thing blind, no key)
+                            if tx.blobs.held(&f.link.blob)? {
+                                tx.blobs.release(&f.link.blob, f.memory)?;
+                            }
                         }
                         None if f.leaf => {}
                         None => {
@@ -303,6 +325,10 @@ pub(crate) fn lost(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, roots: BTreeMap<Tid,
         let _blob: [u8; 32] = r.arr()?;
         Ok(things.contains(&r.tid()?))
     })?;
+    let gone: Vec<(BlobId, Tid)> = tx.core.ix.freed.keys().filter(|(_, t)| things.contains(t)).copied().collect();
+    for k in gone {
+        tx.core.ix.freed.remove(&k);
+    }
     // their waits go too: nothing is fetched for a thing lost
     tx.core.freed_waits.retain(|_, s| {
         s.retain(|(t, _)| !things.contains(t));
@@ -396,6 +422,7 @@ impl Engine {
         self.run(|tx| {
             for (t, b) in done {
                 tx.txn.remove_local(&key(b, t), Shred::Yes)?;
+                tx.core.ix.freed.remove(&(*b, *t));
             }
             Ok(())
         })

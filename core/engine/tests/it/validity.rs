@@ -3634,6 +3634,33 @@ fn invalid_reuse_lends_relink_no_expiry_spec_sync_1() {
     assert_eq!(e.header(&c).unwrap().expires, None, "the own commit's expiry, not the reader's");
 }
 
+// spec/sync-ids.md §1 (repair: judged holding no commit pending, not parked, on the aspect):
+// a write of a co-writer pending here for drift on the aspect holds back the rewrite.
+#[test]
+fn relink_waits_for_a_commit_pending_on_the_aspect_spec_sync_1() {
+    let mut lp = net(2, 0);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let w = lp.peers[1].engine.me();
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    let mut big = vec![0u8; 1 << 20];
+    osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(1), &mut big);
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(big.clone())).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+    big[0] ^= 1;
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(big)).unwrap();
+    let c = lp.peers[1].commit(m).unwrap().unwrap();
+    let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
+    assert!(matches!(lp.deliver(0, &pk).unwrap(), Ingested::Pending(_, osis_engine::Reason::Drift)));
+    let e = &mut lp.peers[0].engine;
+    let lost = e.live_trees(&t).unwrap().blobs;
+    assert_eq!(e.relink(&lost, &[t].into(), &mut |_, _| true).unwrap(), None, "a commit pends on the aspect");
+}
+
 // spec/wire.md §4 position 12, spec/permissions.md §5.1 step 4 (writer rule): an explicit edge
 // write carries a frontier iff it audits. A lower role with none is refused (it would drop
 // every write of the holder's), as is a frontier on a write whose `until` is alive (it audits

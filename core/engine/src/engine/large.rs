@@ -494,6 +494,20 @@ pub(crate) fn walk_trees(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out:
     Ok(())
 }
 
+/// Whether a commit pending here (not parked) writes `(tid, ak)`. A rare path's scan (repair):
+/// the pending commits are bounded by the peers' budgets.
+fn pending_on(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
+    let ids: Vec<CommitId> = tx.core.ix.pending.iter().filter(|(_, r)| !matches!(r, crate::apply::Reason::Parked)).map(|(c, _)| *c).collect();
+    for c in ids {
+        let Some(p) = tx.txn.get_pending(&c)? else { continue };
+        let Ok(b) = osis_commit::CommitBlob::decode_stored(&p.bytes) else { continue };
+        if b.header.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Whether the trees under `roots`, as far as the held node blobs go, hold one of `blobs`.
 fn tree_hits(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], blobs: &BTreeSet<BlobId>) -> Result<bool> {
     let mut out = Trees::default();
@@ -550,6 +564,13 @@ impl Engine {
         m.fresh.clone_from(&held);
         for (tid, ak) in cands {
             if is_role_class(ak.as_str()) || self.role_on(&tid) < Some(crate::engine::write::required_role(ak.as_str())) {
+                continue;
+            }
+            // judged with no commit pending on the aspect (spec/sync-ids.md §1), and, as a
+            // snapshot, only while every write it would carry may go under this node's epoch
+            // (spec/crypto.md §5 Passing on): it waits otherwise
+            let k = (tid, ak.clone());
+            if self.read(|tx| Ok(pending_on(tx, &k.0, &k.1)? || (osis_schema::core_types::is_content(k.1.as_str()) && !crate::retention::snapshot::carried_passes_on(tx, &k.0, &k.1)?)))? {
                 continue;
             }
             // one field failing (a blob not held, a value too large) leaves the others

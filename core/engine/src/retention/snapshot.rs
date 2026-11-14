@@ -632,7 +632,7 @@ pub(crate) fn may_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts
 /// A snapshot carries state, not the commits: the floor clause binds it not, so one written after
 /// a cut carries the state written before it to the cut's holder (spec/crypto.md §4, State at a
 /// cut).
-fn carried_passes_on(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
+pub(crate) fn carried_passes_on(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
     let held: Vec<(CommitId, usize)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter_map(|(_, c)| {
         let m = tx.core.ix.commits.get(c)?;
         let ai = m.aspect(tid, ak)?;
