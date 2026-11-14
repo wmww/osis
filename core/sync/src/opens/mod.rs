@@ -138,6 +138,8 @@ struct PeerFilter {
     /// Entries of its whole generation, and of the additions since (at most `whole` in all).
     whole: u64,
     added: u64,
+    /// Generations arrived through this record, counted here (the peer's numbering is its word).
+    arrived: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -322,6 +324,27 @@ impl Opens {
     pub fn record(&self, conn: ConnId) -> Option<RecordId> {
         let id = self.conns.get(&conn)?.rec?;
         self.records.get(&id).filter(|r| r.kept).map(|_| id)
+    }
+
+    /// The actors `conn`'s proofs count for that are known here (what its record names), as
+    /// judged at its proofs (spec/sync-opens.md §2-§3).
+    pub fn proven(&self, conn: ConnId) -> &[Tid] {
+        self.conns.get(&conn).map_or(&[], |c| &c.named)
+    }
+
+    /// How many of the peer's filter generations have arrived through `conn`'s record: moves at
+    /// each arrival (spec/sync-inbox.md §3: a refused Deposit item waits for the next).
+    pub fn filter_arrivals(&self, conn: ConnId) -> u64 {
+        self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get(&r)).and_then(|r| r.peer.as_ref()).map_or(0, |p| p.arrived)
+    }
+
+    /// Whether the peer's latest filter shows `key` as S's deposit key (spec/sync-opens.md §4
+    /// Audiences: a node keeping S unread shows it to every connection): a deposit of S may land
+    /// there (filters have false positives: the answer tells).
+    pub fn shows_deposit_key(&self, conn: ConnId, s: &SyncId, key: &[u8; 32]) -> bool {
+        let Some(r) = self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get(&r)) else { return false };
+        let Some(p) = &r.peer else { return false };
+        p.values.contains(&beacon_value(&beacon_of(key, s, &r.r), p.f))
     }
 
     /// Whether streams may Pull on `conn`: the digests matched or the peer's last Members page
@@ -927,8 +950,12 @@ impl Opens {
                 old.generation = p.generation;
                 old.added += p.values.len() as u64;
                 old.values.extend(p.values);
+                old.arrived += 1;
             }
-            _ => r.peer = Some(PeerFilter { generation: p.generation, f: p.f, whole: p.values.len() as u64, added: 0, values: p.values.into_iter().collect() }),
+            _ => {
+                let arrived = r.peer.as_ref().map_or(0, |o| o.arrived) + 1;
+                r.peer = Some(PeerFilter { generation: p.generation, f: p.f, whole: p.values.len() as u64, added: 0, values: p.values.into_iter().collect(), arrived });
+            }
         }
         // Testing at each filter arrival: from `acked_pos` (spec/sync-opens.md §5 Testing). Other
         // tests (an answer read, a change) go on from the position tested on this connection, so a

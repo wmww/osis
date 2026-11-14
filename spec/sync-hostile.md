@@ -22,6 +22,7 @@
 - A revoked node of a known actor holds only the closed epoch's key; a verifier not yet holding the rotation counts its proof (the account signing fork window).
 - A node keeping S unread shows that it keeps S to anyone holding S's public values (its filter goes to every connection).
 - A depositor holding a team's `keys.0` but not its roster learns from 0 against 14 whether a node holds the team's inbox (team membership of that node's account).
+- A peer showing an actor's inbox deposit key (anyone holding that actor's `keys.0`) is offered the inbox blobs a connected node sends that actor (spec/sync-inbox.md §3): it learns that this connection's node sends to that inbox, when, and the blobs' padded sizes.
 - A known peer can force work linear in its filter per small message (each additions page re-sorts and tests; a Hit then Lost re-tests); there is no rate limit.
 - A peer can refuse role entries or hold requests open: what waits on it there (deletes, logging again) waits, the stall rule closes the connection (spec/sync-streams.md §1), and other sources are unaffected.
 - A writer may stamp any entry as a role entry past the caps (spec/sync-ids.md §6). Anyone able to deposit can fill the deposit budget while no admin is online (spec/requirements.md). A lowered holder can delete at a node keeping S unread what its old role allowed until a writer logs it again (spec/permissions.md §6).

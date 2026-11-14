@@ -10,7 +10,8 @@
 //!   at most one blob per commit and none whose expiry is more than `INBOX_LIFETIME + 2 ×
 //!   MAX_DRIFT` ahead; its dial hint kept while it lives;
 //! - a deposit under a sync ID this node reads and writes: promoted (stamped, with the author's
-//!   chain logged as certificate copies) once `Ground::promotable` says so;
+//!   chain logged as certificate copies) once `Ground::promotable` says so and it holds a part of
+//!   the commit S must hold that no other entry of S holds stamped;
 //! - an own deposit: offered (`offers`, to the sources keeping S unread) until stamped or gone.
 //!
 //! Clearing: a node holding S's delete key keeps at most `DEPOSITS_WAITING` (and
@@ -177,7 +178,8 @@ impl Held {
                 continue;
             }
             let Some(size) = h.store.blob_len(&e.blob)?.filter(|n| *n > 0) else { continue };
-            let request = matches!(act, Some(Act::Inbox { taken: Some(t), .. }) if *t != Taken::Applied) && within_bound(e.expires, h.now);
+            // an invite request: an opened inbox blob not taken (a refused one is none)
+            let request = matches!(act, Some(Act::Inbox { taken: Some(Taken::Waiting), .. })) && within_bound(e.expires, h.now);
             idle.push((e, size, request));
         }
         osis_base::costs::count("inbox: clearing read", idle.len() as u64);
@@ -214,8 +216,8 @@ impl Held {
 
 /// The order deposits are cleared in (spec/sync-inbox.md §4): every deposit but the invite
 /// requests first, those with no expiry or one past the bound before the rest, then earliest to
-/// expire; then the invite requests, earliest to expire. Reading: an invite request counts toward
-/// the bounds (else the second step would never run) and goes last.
+/// expire; then the invite requests, earliest to expire (an invite request counts toward the
+/// bounds and goes last).
 fn clearing_order(e: &Entry, request: bool, now: WallMs) -> (bool, bool, u64) {
     let t = e.expires.map_or(u64::MAX, |t| t.0);
     (request, within_bound(e.expires, now), t)
@@ -224,6 +226,21 @@ fn clearing_order(e: &Entry, request: bool, now: WallMs) -> (bool, bool, u64) {
 /// The prefix expiry is within `INBOX_LIFETIME + 2 × MAX_DRIFT` of `now` (spec/sync-inbox.md §2).
 fn within_bound(expires: Option<WallMs>, now: WallMs) -> bool {
     expires.is_some_and(|t| t.0 <= now.0.saturating_add(INBOX_LIFETIME_MS + 2 * MAX_DRIFT_MS))
+}
+
+/// Deposit `b` of commit `c` holds a part of `c` S must hold that no other entry of S holds
+/// stamped (spec/sync-inbox.md §4 Promotion: one stamped copy per delta).
+fn adds_delta<G: Ground>(g: &mut G, store: &crate::store::Store, s: &SyncId, b: &BlobId, c: &CommitId) -> Result<bool> {
+    let (Some(need), Some(mut mine)) = (g.body_parts(s, c)?, g.blob_parts(b)?) else { return Ok(false) };
+    mine.retain(|p| need.contains(p));
+    for x in g.commit_blobs(c)?.iter().filter(|x| *x != b) {
+        if store.entry(s, x)?.is_some_and(|e| !e.deposited)
+            && let Some(held) = g.blob_parts(x)?
+        {
+            mine.retain(|p| !held.contains(p));
+        }
+    }
+    Ok(!mine.is_empty())
 }
 
 /// Stamps entry `b` of S in place with this node's write key: whether it did.
@@ -263,6 +280,8 @@ fn judge<G: Ground>(g: &mut G, store: &crate::store::Store, inboxes: &StampedSet
         && let Some(c) = g.blob_commit(s, b)?
     {
         match g.promotable(s, &c)? {
+            // one stamped copy per delta under S, however many encryptions are deposited
+            Promote::Yes { .. } if !adds_delta(g, store, s, b, &c)? => {}
             Promote::Yes { chain } => return Ok(Act::Promote(chain)),
             Promote::Never => never = true,
             Promote::NotYet => {}

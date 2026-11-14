@@ -42,7 +42,7 @@ use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::{NodeRng, SigningSecret};
 use osis_engine::Engine;
 use osis_engine::labeling::Certs;
-use osis_engine::sync::{InboxOpened, Path, Promote};
+use osis_engine::sync::{InboxOpened, PartSet, Path, Promote};
 use osis_label::{ShareLink, StepId};
 use osis_proto::Msg;
 use std::collections::BTreeSet;
@@ -95,6 +95,13 @@ pub trait Ground {
     /// The commit a held blob of S opened as.
     fn blob_commit(&mut self, s: &SyncId, b: &BlobId) -> Result<Option<CommitId>>;
     fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote>;
+    /// The blobs held here that opened as commit `c` (any sync ID): a promoter stamps one copy
+    /// per delta under S.
+    fn commit_blobs(&mut self, c: &CommitId) -> Result<Arc<Vec<BlobId>>>;
+    /// The parts an opened blob holds.
+    fn blob_parts(&mut self, b: &BlobId) -> Result<Option<PartSet>>;
+    /// The parts of `c` S must hold (its body under S).
+    fn body_parts(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<PartSet>>;
     /// Logs a promoted commit's author's chain under S as this node's certificate copies.
     fn log_chain(&mut self, s: &SyncId, chain: &Certs) -> Result<()>;
 
@@ -118,14 +125,16 @@ pub trait Ground {
 
 /// What this module reads of sessions, opens and streams, and how it sends.
 pub trait Net {
-    /// The actors proven on a connection whose proofs are done.
+    /// The known actors a connection's proofs count for (opens' `proven`).
     fn actors(&self, conn: ConnId) -> Vec<Tid>;
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member>;
     /// Whether that source's stream showed `b` present under S.
     fn present(&self, conn: ConnId, s: &SyncId, b: &BlobId) -> bool;
-    /// The generation of the peer's filter last received (spec/sync-inbox.md §3: a refused
-    /// Deposit item waits for the next).
+    /// Moves at each arrival of the peer's filter (spec/sync-inbox.md §3: a refused Deposit item
+    /// waits for the next; a new one may show a deposit key).
     fn filter_generation(&self, conn: ConnId) -> u64;
+    /// Whether the peer's filter shows `key` as S's deposit key: it may keep S unread.
+    fn shows_deposit_key(&self, conn: ConnId, s: &SyncId, key: &[u8; 32]) -> bool;
     /// Where that peer's charges and rows live.
     fn source(&self, conn: ConnId) -> Source;
     fn request(&mut self, conn: ConnId, m: Msg) -> Option<RequestId>;
@@ -172,6 +181,15 @@ impl Ground for Eng<'_> {
     fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote> {
         Ok(self.engine.promotable(s, c)?)
     }
+    fn commit_blobs(&mut self, _c: &CommitId) -> Result<Arc<Vec<BlobId>>> {
+        not_built("Engine::commit_blobs")
+    }
+    fn blob_parts(&mut self, b: &BlobId) -> Result<Option<PartSet>> {
+        Ok(self.engine.blob_parts(b)?)
+    }
+    fn body_parts(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<PartSet>> {
+        Ok(self.engine.sync_bodies(c)?.get(s).map(|m| m.parts.clone()))
+    }
     fn log_chain(&mut self, _s: &SyncId, _chain: &Certs) -> Result<()> {
         not_built("Engine::log_chain")
     }
@@ -208,7 +226,7 @@ pub struct Links<'a> {
 
 impl Net for Links<'_> {
     fn actors(&self, conn: ConnId) -> Vec<Tid> {
-        self.sessions.get(conn).filter(|s| s.proofs_done()).map(|s| s.proven().actors()).unwrap_or_default()
+        self.opens.proven(conn).to_vec()
     }
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member> {
         self.opens.members(conn).get(s).cloned()
@@ -217,9 +235,10 @@ impl Net for Links<'_> {
         self.streams.known(conn, s).present.contains(b)
     }
     fn filter_generation(&self, conn: ConnId) -> u64 {
-        // not built: opens' generation of the filter received (each arrival moves it)
-        let _ = conn;
-        0
+        self.opens.filter_arrivals(conn)
+    }
+    fn shows_deposit_key(&self, conn: ConnId, s: &SyncId, key: &[u8; 32]) -> bool {
+        self.opens.shows_deposit_key(conn, s, key)
     }
     fn source(&self, conn: ConnId) -> Source {
         self.opens.record(conn).map_or(Source::Conn(conn), Source::Record)

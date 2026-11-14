@@ -272,10 +272,10 @@ osis-engine::promotable  deferred: sync rebuild skeleton (issues/sync-rewrite.md
 osis-engine::take_inbox  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::read_credentials  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::seal_body  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::sync_bodies  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::waiting_held_elsewhere  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::agreed  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); streams gates its Pull on it (spec/sync-opens.md §3)
 osis-sync::ItemAnswer  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
+osis-sync::proofs_done  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); opens refuses a Resume before the proofs with it
 osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::take_deposit  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::take_stamped  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)

@@ -10,7 +10,7 @@ use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::{Epoch, LabelRole, Secret32, SeededRng, SigningSecret, deposit_key, label_role_key};
 use osis_engine::labeling::Certs;
-use osis_engine::sync::{Holding, InboxOpened, Path, Promote, SyncSet, Taken};
+use osis_engine::sync::{Holding, InboxOpened, PartSet, Path, Promote, SyncSet, Taken};
 use osis_label::{ClaimSet, Class, Parent, Prefix, ShareLink, Step, StepId, StepKeys};
 use osis_proto::{Code, Msg, OfferItem, SharedItem};
 use osis_store::{MemoryBackend, MemoryRoot};
@@ -81,7 +81,12 @@ struct Fake {
     keys: Stamped<SyncId, (bool, Option<u8>, bool)>,
     inboxes: Stamped<(), Arc<BTreeSet<SyncId>>>,
     takes: Stamped<(SyncId, BlobId), InboxOpened>,
+    /// What a take wrote and reads back (the engine's waiting row of an untaken blob).
+    waiting: Stamped<BlobId, bool>,
+    takes_run: u64,
     commits: Stamped<(SyncId, BlobId), CommitId>,
+    /// The parts a blob holds (none listed: part 0).
+    parts: Stamped<BlobId, PartSet>,
     promote: Stamped<CommitId, Promote>,
     chains: Vec<(SyncId, Certs)>,
     paths: Stamped<SyncId, Arc<Path>>,
@@ -117,13 +122,30 @@ impl Ground for Fake {
         Ok(self.inboxes.get(&()).cloned().unwrap_or_default())
     }
     fn take_inbox(&mut self, s: &SyncId, b: &BlobId) -> Result<Option<InboxOpened>> {
-        Ok(self.takes.get(&(*s, *b)).cloned())
+        self.takes_run += 1;
+        let o = self.takes.get(&(*s, *b)).cloned();
+        // a command: it writes what it reads, only where that changes it (as the engine's
+        // waiting row: written once, left alone when judged again)
+        let waits = o.as_ref().is_some_and(|o| o.taken == Taken::Waiting);
+        if self.waiting.get(b).copied().unwrap_or(false) != waits {
+            self.waiting.insert(*b, waits);
+        }
+        Ok(o)
     }
     fn blob_commit(&mut self, s: &SyncId, b: &BlobId) -> Result<Option<CommitId>> {
         Ok(self.commits.get(&(*s, *b)).copied())
     }
     fn promotable(&mut self, _s: &SyncId, c: &CommitId) -> Result<Promote> {
         Ok(self.promote.get(c).cloned().unwrap_or(Promote::NotYet))
+    }
+    fn commit_blobs(&mut self, c: &CommitId) -> Result<Arc<Vec<BlobId>>> {
+        Ok(Arc::new(self.commits.iter().filter(|(_, x)| *x == c).map(|((_, b), _)| *b).collect()))
+    }
+    fn blob_parts(&mut self, b: &BlobId) -> Result<Option<PartSet>> {
+        Ok(Some(self.parts.get(b).cloned().unwrap_or_else(|| [0].into())))
+    }
+    fn body_parts(&mut self, _s: &SyncId, _c: &CommitId) -> Result<Option<PartSet>> {
+        Ok(Some([0, 1].into()))
     }
     fn log_chain(&mut self, s: &SyncId, chain: &Certs) -> Result<()> {
         self.chains.push((*s, chain.clone()));
@@ -158,6 +180,8 @@ struct FakeNet {
     members: Stamped<(ConnId, SyncId), Member>,
     present: StampedSet<(ConnId, SyncId, BlobId)>,
     generation: BTreeMap<ConnId, u64>,
+    /// (connection, S, deposit key) its peer's filter shows.
+    shown: BTreeSet<(ConnId, SyncId, [u8; 32])>,
     next: RequestId,
     requests: Vec<(ConnId, RequestId, Msg)>,
     answers: Vec<(ConnId, RequestId, Msg)>,
@@ -175,6 +199,9 @@ impl Net for FakeNet {
     }
     fn filter_generation(&self, conn: ConnId) -> u64 {
         self.generation.get(&conn).copied().unwrap_or(0)
+    }
+    fn shows_deposit_key(&self, conn: ConnId, s: &SyncId, key: &[u8; 32]) -> bool {
+        self.shown.contains(&(conn, *s, *key))
     }
     fn source(&self, conn: ConnId) -> Source {
         Source::Conn(conn)
@@ -339,6 +366,29 @@ fn inbox_blob_deposited_and_offered_spec_sync_inbox_2() {
     let [OfferItem::Deposit(d)] = items.as_slice() else { panic!() };
     let head = deposit_key(&deposit_seed(sync_id(100).0[0]), &sync_id(100)).verifying_key();
     assert!(osis_label::verify_deposit(&head, &d.sync_id, &e[0].blob, &d.wrap, &d.sig).is_ok());
+}
+
+// spec/sync-inbox.md §3 (sending): an inbox blob also goes to a peer whose filter shows the
+// inbox's deposit key (a node keeping it unread shows it to every connection,
+// spec/sync-opens.md §4 Audiences), once that filter arrives; never to one showing another key.
+#[test]
+fn inbox_blob_offered_where_filter_shows_deposit_key_spec_sync_inbox_3() {
+    let mut t = T::new();
+    t.connect(conn(1), &[tid(9)]);
+    t.connect(conn(2), &[tid(8)]);
+    t.owe(0, 1, false);
+    assert!(t.deposits_sent().is_empty(), "no peer may hold the inbox");
+    let s = sync_id(100);
+    let key = deposit_key(&deposit_seed(s.0[0]), &s).verifying_key().to_bytes();
+    t.net.shown.insert((conn(1), s, key));
+    t.net.shown.insert((conn(2), s, [7; 32]));
+    t.settle();
+    assert!(t.deposits_sent().is_empty(), "nothing before the filter that shows it arrives");
+    t.net.generation.insert(conn(1), 1);
+    t.net.generation.insert(conn(2), 1);
+    t.settle();
+    let sent: Vec<ConnId> = t.deposits_sent().iter().map(|x| x.0).collect();
+    assert_eq!(sent, vec![conn(1)]);
 }
 
 // spec/sync-inbox.md §2 (logging): a writer of the inbox logs the blob stamped, filler wrap, and
@@ -569,6 +619,28 @@ fn promote_covered_only_deposit_spec_sync_inbox_4() {
     assert!(t.g.chains.is_empty());
 }
 
+// spec/sync-inbox.md §4 (promotion): one stamped copy per delta, however many encryptions are
+// deposited: a second deposit of a promoted commit's parts stays deposited (and is clearable);
+// one holding a part S must hold that no stamped entry holds is promoted.
+#[test]
+fn one_stamped_copy_per_delta_spec_sync_inbox_4() {
+    let (mut t, s, b) = writer_with_deposit(Promote::Yes { chain: Certs::default() });
+    assert!(!t.store.entry(&s, &b).unwrap().unwrap().deposited);
+    let deposit = |t: &mut T, tag: u64, parts: PartSet| {
+        let (x, bytes) = blob(tag, 100, None);
+        t.g.commits.insert((s, x), commit(1));
+        t.g.parts.insert(x, parts);
+        let e = Entry { blob: x, wrap: [6; 57], stamp: None, deposited: true, own: false, role: false, class: Class::Durable, expires: None };
+        t.store.log(&s, e, Some(bytes), None).unwrap();
+        t.settle();
+        t.store.entry(&s, &x).unwrap().unwrap().deposited
+    };
+    assert!(deposit(&mut t, 4, [0].into()), "a second copy of part 0");
+    assert!(deposit(&mut t, 5, [0, 2].into()), "part 2 is no part S must hold");
+    assert!(!deposit(&mut t, 6, [0, 1].into()), "part 1 not held stamped: promoted");
+    assert_eq!(t.g.chains.len(), 2);
+}
+
 // spec/sync-inbox.md §4 (promotion): a node that does not write S promotes nothing.
 #[test]
 fn non_writer_promotes_nothing_spec_sync_inbox_4() {
@@ -636,6 +708,20 @@ fn inbox_blob_judged_again_spec_sync_inbox_2() {
     t.g.takes.insert((s, b), InboxOpened { commit: commit(1), taken: Taken::Applied, hints: vec![], dial: None });
     t.settle();
     assert!(t.store.entry(&s, &b).unwrap().unwrap().stamp.is_some());
+}
+
+// spec/sync-inbox.md §2 (taking): taking is a command judged again as what it read moves; one
+// that writes what it read (the engine's waiting row) is judged once more and then rests: later
+// settles take nothing.
+#[test]
+fn a_take_writing_what_it_read_rests_spec_sync_inbox_2() {
+    let (mut t, s) = inbox_node(true);
+    deposit_inbox_blob(&mut t, s, 1, commit(1), Taken::Waiting, T0 + INBOX_LIFETIME_MS);
+    assert!(t.g.takes_run <= 2, "{}", t.g.takes_run);
+    let before = t.g.takes_run;
+    t.advance(1);
+    t.advance(1);
+    assert_eq!(t.g.takes_run, before, "at rest");
 }
 
 // spec/sync-inbox.md §2 (taking): scenario inbox-full-walk-scale: a contact's blobs up to the

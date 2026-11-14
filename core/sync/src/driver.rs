@@ -175,9 +175,7 @@ impl Node {
                 for m in ms {
                     let mut cx = cx!(self, out);
                     let sessions = &mut self.driver.sessions;
-                    if matches!(m, Incoming::Proved) {
-                        self.inbox.proved(conn, &crate::inbox::Links { sessions, opens: &self.opens, streams: &self.streams });
-                    }
+                    let proved = matches!(m, Incoming::Proved);
                     match m.to() {
                         Some(To::Opens) => self.opens.on_message(&mut cx, sessions, &self.unread, conn, m, &mut moved),
                         Some(To::Streams) => self.streams.on_message(&mut cx, sessions, &self.opens, conn, m),
@@ -187,6 +185,10 @@ impl Node {
                             close = true;
                             break;
                         }
+                    }
+                    // after opens took it: the actors it names for the connection are known
+                    if proved {
+                        self.inbox.proved(conn, &crate::inbox::Links { sessions: &mut self.driver.sessions, opens: &self.opens, streams: &self.streams });
                     }
                     self.moved(&mut moved, out);
                     if self.driver.sessions.get(conn).is_some_and(|s| s.closing().is_some()) {

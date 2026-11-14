@@ -1,9 +1,11 @@
 //! Deposit items out (spec/sync-inbox.md §3 Sending).
 //!
 //! An offer is an own deposited entry (S, blob) and who may take it: a source of S keeping S
-//! unread (`Target::Stores`: readers pull deposited entries), or, for an inbox blob to another
-//! actor's inbox this node does not hold, a peer that may hold that inbox: one where S is open,
-//! or one where the recipient is proven (its own nodes read it) (`Target::Recipient`).
+//! unread (`Target::Stores`: readers pull deposited entries), or, for an inbox blob, a peer that
+//! may hold that inbox (`Target::Recipient`): one where S is open, one where the recipient is
+//! proven (its own nodes read it), or one whose filter shows S's deposit key (a node keeping S
+//! unread shows it to every connection, spec/sync-opens.md §4 Audiences). Never another peer: a
+//! deposit tells its taker that this connection's node sends to that inbox.
 //!
 //! Per connection: one Deposit item unanswered at a time; answered 0, it is done there and every
 //! other offer of S backed off there is ready again (one taken ends the others' back-off); 4, 5
@@ -14,8 +16,10 @@
 //!
 //! Work follows change: each connection keeps the offers ready for it; an offer added is placed
 //! at the connections it may go to (O(connections)), a connection proved gets the offers it may
-//! take (O(offers)), a member joining gets the offers of its S (a range); a settle sends only on
-//! connections with something ready, a back-off due or a refusal waiting for a filter.
+//! take (O(offers)), a member joining gets the offers of its S (a range), a peer's filter arriving
+//! gets the inbox offers (O(offers), tested against it); a settle sends only on connections with
+//! something ready, a back-off due or a refusal waiting for a filter, and reads each connection's
+//! filter count (O(connections)).
 
 use super::{Ground, Here, Net, settled};
 use crate::session::RequestId;
@@ -26,8 +30,9 @@ use osis_crypto::{Signature, VerifyingKey};
 use osis_proto::{Code, DepositItem, Msg, OfferItem};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The first back-off after a refusal for now (local policy). At 0 a full peer is asked again at
-/// once, every settle; at infinity a deposit refused once is never offered there again.
+/// The first back-off after a refusal for now (local policy; minor consequence: how soon a
+/// deposit is offered again). At 0 a full peer is asked again at once, every settle; at infinity
+/// a deposit refused once is never offered there again.
 pub const BACKOFF_MIN_MS: u64 = 2_000;
 /// The longest back-off (local policy, the spec's bound): at 0 as above; at infinity a peer full
 /// for a while is asked again ever more rarely, so a deposit waits long after room returned.
@@ -40,13 +45,16 @@ type Key = (SyncId, BlobId);
 pub(super) enum Target {
     /// Sources of S keeping S unread.
     Stores,
-    /// A peer where S is open, or where this recipient is proven.
+    /// A peer where S is open, where this recipient is proven, or whose filter shows S's
+    /// deposit key.
     Recipient(Tid),
 }
 
 #[derive(Clone, Debug, Default)]
 struct Conn {
     actors: Vec<Tid>,
+    /// The peer's filter arrivals seen: one more readies the inbox offers again.
+    filter: u64,
     out: Option<(RequestId, Key, Signature)>,
     ready: BTreeSet<Key>,
     /// Refused for now: until when, and how many times in a row.
@@ -115,7 +123,7 @@ impl Offers {
 
     /// A connection's proofs are done.
     pub(super) fn connected(&mut self, conn: ConnId, net: &impl Net) {
-        let c = Conn { actors: net.actors(conn), ready: self.items.keys().copied().collect(), ..Conn::default() };
+        let c = Conn { actors: net.actors(conn), filter: net.filter_generation(conn), ready: self.items.keys().copied().collect(), ..Conn::default() };
         osis_base::costs::count("inbox: offer placed", self.items.len() as u64);
         if !c.ready.is_empty() {
             self.active.insert(conn);
@@ -177,6 +185,21 @@ impl Offers {
                 self.active.insert(conn);
             }
         }
+        // a peer's new filter may show an inbox's deposit key
+        for (id, c) in &mut self.conns {
+            let arrived = net.filter_generation(*id);
+            if arrived == c.filter {
+                continue;
+            }
+            c.filter = arrived;
+            let inbox = self.items.iter().filter(|(_, t)| matches!(t, Target::Recipient(_))).map(|(k, _)| *k);
+            let fresh: Vec<Key> = inbox.filter(|k| !c.backoff.contains_key(k) && !c.parked.contains_key(k) && c.out.is_none_or(|(_, o, _)| o != *k)).collect();
+            osis_base::costs::count("inbox: offer placed", fresh.len() as u64);
+            if !fresh.is_empty() {
+                c.ready.extend(fresh);
+                self.active.insert(*id);
+            }
+        }
         for conn in std::mem::take(&mut self.parked) {
             let generation = net.filter_generation(conn);
             let Some(c) = self.conns.get_mut(&conn) else { continue };
@@ -213,7 +236,11 @@ impl Offers {
             while let Some(k) = c.ready.pop_first() {
                 let Some(target) = self.items.get(&k) else { continue };
                 osis_base::costs::count("inbox: offer judged", 1);
-                if !may_take(net, conn, &c.actors, &k.0, *target) {
+                let Some(key) = h.g.signers(&k.0, target.actor().as_ref())?.deposit else {
+                    self.items.remove(&k);
+                    continue;
+                };
+                if !may_take(net, conn, &c.actors, &k.0, *target, &key.verifying_key().to_bytes()) {
                     continue;
                 }
                 let Some(item) = item(h, &k, target)? else {
@@ -291,12 +318,13 @@ impl Target {
     }
 }
 
-/// Whether the peer on `conn` may take a deposit of S.
-fn may_take(net: &impl Net, conn: ConnId, actors: &[Tid], s: &SyncId, target: Target) -> bool {
+/// Whether the peer on `conn` may take a deposit of S signed by `key` (spec/sync-inbox.md §3
+/// Sending).
+fn may_take(net: &impl Net, conn: ConnId, actors: &[Tid], s: &SyncId, target: Target, key: &[u8; 32]) -> bool {
     let member = net.member(conn, s);
     match target {
         Target::Stores => member.is_some_and(|m| m.class == SourceClass::Store),
-        Target::Recipient(r) => member.is_some() || actors.contains(&r),
+        Target::Recipient(r) => member.is_some() || actors.contains(&r) || net.shows_deposit_key(conn, s, key),
     }
 }
 
