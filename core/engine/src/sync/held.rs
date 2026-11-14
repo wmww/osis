@@ -187,10 +187,23 @@ impl Engine {
             if self.core.timelines.get(&t).and_then(|tl| tl.role(&me, &t, osis_perm::At::KEYS)) != Some(Role::Admin) {
                 continue;
             }
-            let since = self.role_arrival(&g).max(self.role_arrival(&t)).unwrap_or(WallMs(0));
-            out.push((since, self.demotion_scope_sync_ids(&t)?));
+            out.push(self.tie_scope(&t, &g)?);
         }
         Ok(out)
+    }
+
+    /// The sync IDs tied grant (`t`, `g`)'s explicit demotion waits a complete pass of, and the
+    /// moment each pass must begin at or after: the last role commit of G or T applied from
+    /// elsewhere (spec/permissions.md §2 Tied grants).
+    fn tie_scope(&mut self, t: &Tid, g: &Tid) -> Result<(WallMs, BTreeSet<SyncId>)> {
+        let since = self.role_arrival(g).max(self.role_arrival(t)).unwrap_or(WallMs(0));
+        Ok((since, self.demotion_scope_sync_ids(t)?))
+    }
+
+    /// Whether every pass tied grant (`t`, `g`)'s explicit demotion waits (`tie_scope`) is noted.
+    pub(crate) fn tie_passes_done(&mut self, t: &Tid, g: &Tid) -> Result<bool> {
+        let (since, ids) = self.tie_scope(t, g)?;
+        Ok(ids.iter().all(|s| self.core.ix.passes.get(s).is_some_and(|b| *b >= since)))
     }
 
     /// The read sync IDs whose bodies carry a thing of a demotion's pre-sync scope on `t`

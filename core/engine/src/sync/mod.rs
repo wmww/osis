@@ -962,6 +962,14 @@ impl Engine {
         self.now()
     }
 
+    /// What sync's role duties follow per thing (`osis_sync::life`: `joined_link_ended`,
+    /// `untie_due`): a cursor over the (holder, thing) pairs named from now on, and every thing
+    /// a holder is named on now.
+    pub fn role_things(&self) -> (osis_base::memo::Feed<(Tid, Tid)>, BTreeSet<Tid>) {
+        let held = &self.core.ix.held;
+        (held.pairs_feed(), held.holders().flat_map(|h| held.named_on(h)).copied().collect())
+    }
+
     /// A complete pass of `s` begun at `began` (`pass_clock`) ended (spec/sync-status.md §1):
     /// kept durably, the last per sync ID; the re-seal and history-add trigger (`pass_end`) and
     /// history completeness read it.

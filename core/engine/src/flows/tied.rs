@@ -150,6 +150,27 @@ impl Engine {
         self.ties_dead(pairs)
     }
 
+    /// The groups whose tied edge on `t` this node removes now (spec/permissions.md §2): the tie
+    /// is held dead (`tie_dead`) and this node may remove it (`may_remove`), as a self-removal at
+    /// once, as an explicit demotion once the complete passes of the demotion's scope it waits are
+    /// noted (`passes_wanted` lists none). Reads `t`'s holders, their ties' placements and those
+    /// passes: sync's duty follows it per thing (`osis_sync::life`).
+    pub fn untie_due(&mut self, t: &Tid) -> Result<BTreeSet<Tid>> {
+        let pairs: BTreeSet<(Tid, Tid)> = self.core.ix.held.holders_of(t).map(|g| (*t, *g)).collect();
+        let mut out = BTreeSet::new();
+        for (_, g) in self.ties_dead(pairs)? {
+            let due = match self.may_remove(t, &g)? {
+                Some(Untie::SelfRemoval) => true,
+                Some(Untie::Explicit) => self.tie_passes_done(t, &g)?,
+                None => false,
+            };
+            if due {
+                out.insert(g);
+            }
+        }
+        Ok(out)
+    }
+
     /// Removes `group`'s tied edge on `t` (spec/permissions.md §2): an explicit demotion
     /// (stamped as pre-synced: the caller synced first) or a self-removal, as `may_remove` says.
     pub fn untie(&mut self, t: &Tid, group: &Tid) -> Result<Done> {

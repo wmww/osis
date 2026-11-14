@@ -18,7 +18,6 @@ use osis_crypto::{KeyActorKeys, Secret32};
 use osis_keys::{HolderKeys, Recipient, box_holder, roles_up_to};
 use osis_label::{Address, ShareLink};
 use osis_schema::core_types::{self as ct, Edge};
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// The untyped aspect of the sharer-only thing that keeps a link's seed.
@@ -138,30 +137,29 @@ impl Engine {
         self.edge_gone(&link.k, &l) || self.edge_gone(&link.target, &link.k)
     }
 
-    /// The links this account joined that have ended (spec/permissions.md §7, Joiner's leave),
-    /// among those whose K or K's target is in `touched` (`None`: all): it holds K by a grant
-    /// (the sharer holds it by K's record), and the held role history shows K's edge on the
-    /// target K's record names removed or past `until`. The caller leaves each K. Only K's
-    /// creator wrote that target, and it may remove any joiner anyway. Idempotent across this
-    /// account's nodes: once one's leave is here, its edge is gone. O(touched things' holders),
-    /// and the target's history for each joined K among them.
-    pub fn joined_links_ended(&mut self, touched: Option<&BTreeSet<Tid>>) -> Vec<Tid> {
-        let Some(me) = self.core.me() else { return Vec::new() };
-        let ts = super::now_ts(&self.core);
-        let held = &self.core.ix.held;
-        let cands: BTreeSet<Tid> = match touched {
-            None => held.named_on(&me).copied().collect(),
-            Some(set) => set.iter().flat_map(|t| std::iter::once(*t).chain(held.holders_of(t).copied())).collect(),
-        };
-        let mut out = Vec::new();
-        for k in cands {
-            let Some(target) = self.core.created(&k).and_then(|r| r.link_target()) else { continue };
-            let granted = self.first_admin(&k) != Some(me) && self.core.timelines.get(&k).is_some_and(|tl| tl.edges_at(None).get(&me, &k).is_some_and(|e| e.alive_at(Some(ts))));
-            if granted && self.edge_gone(&target, &k) {
-                out.push(k);
-            }
+    /// Whether `k` is a link this account joined that has ended (spec/permissions.md §7, Joiner's
+    /// leave): it holds K by a grant (the sharer holds it by K's record), and the held role
+    /// history shows K's edge on the target K's record names removed or past `until`. The caller
+    /// leaves K (`leave_link`): sync's duty follows it per thing (`osis_sync::life`). Only K's
+    /// creator wrote that target, and it may remove any joiner anyway. Reads the clock up to the
+    /// next `until` or role commit of K's and the target's components.
+    pub fn joined_link_ended(&mut self, k: &Tid) -> bool {
+        let Some(me) = self.core.me() else { return false };
+        let Some(target) = self.core.created(k).and_then(|r| r.link_target()) else { return false };
+        if self.first_admin(k) == Some(me) {
+            return false;
         }
-        out
+        self.core.time.until(self.core.horizon([*k, target].into_iter()));
+        let ts = super::now_ts(&self.core);
+        let granted = self.core.timelines.get(k).is_some_and(|tl| tl.edges_at(None).get(&me, k).is_some_and(|e| e.alive_at(Some(ts))));
+        granted && self.edge_gone(&target, k)
+    }
+
+    /// This account's leave of link actor `k` (`joined_link_ended`): a self-removal of its grant
+    /// on K. Idempotent across the account's nodes: once one's leave is here, the grant is gone.
+    pub fn leave_link(&mut self, k: &Tid) -> Result<Done> {
+        let me = self.core.me().ok_or(Error::Misuse("no account"))?;
+        self.demote(k, &crate::flows::Demotion { holder: me, new: None, retain: None })
     }
 
     /// Finalizes a link (spec/permissions.md §7): a sharer node's plain removal of L from K,

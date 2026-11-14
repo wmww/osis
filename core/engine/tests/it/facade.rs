@@ -1363,7 +1363,8 @@ fn passes_wanted_moves_with_a_role_commit_spec_perm_3() {
 // spec/permissions.md §2 Tied grants (an explicit demotion of a tied grant held dead waits for a
 // complete pass of every sync ID whose bodies carry a thing of the demotion's pre-sync scope,
 // ended after the last role commit of G or T applied from elsewhere): a role commit on G from
-// another node wants a pass of T's sync ID, which no other rule wants once passed.
+// another node wants a pass of T's sync ID, which no other rule wants once passed; the removal is
+// due (`untie_due`) only while no pass is wanted.
 #[test]
 fn a_dead_tie_wants_a_pass_of_its_scope_spec_perm_2() {
     let (mut lp, ps) = people(3);
@@ -1383,11 +1384,13 @@ fn a_dead_tie_wants_a_pass_of_its_scope_spec_perm_2() {
     e.commit(m).unwrap().unwrap();
     assert!(e.tied_unplaced(&Default::default(), &Default::default(), true).unwrap().contains(&(t, g)), "the tie is dead");
     let st = e.home_sync_id(&t).unwrap().unwrap();
+    assert!(e.untie_due(&t).unwrap().is_empty(), "the explicit removal waits its passes");
     let now = e.pass_clock();
     for x in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
         e.note_complete_pass(&x, now).unwrap();
     }
     assert!(e.passes_wanted().unwrap().is_empty());
+    assert_eq!(e.untie_due(&t).unwrap(), [g].into(), "due once passed");
     let done = e.grant(&g, &ps[1], &edge_of(Role::Admin)).unwrap();
     for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
         if h == ps[1] {
@@ -1400,6 +1403,34 @@ fn a_dead_tie_wants_a_pass_of_its_scope_spec_perm_2() {
     spread(&mut lp);
     let w = lp.peers[0].engine.passes_wanted().unwrap();
     assert!(w.get(&st).is_some_and(|x| x.0 > now.0), "T's sync ID, from the role commit on G: {w:?}");
+    assert!(lp.peers[0].engine.untie_due(&t).unwrap().is_empty(), "waits the new pass");
+}
+
+// spec/permissions.md §2 Tied grants (else as a self-removal by an admin of G): peer 1, admin of
+// G alone, takes T out of G; the tied edge peer 0 granted G on T is due at once (`untie_due`),
+// waiting no pass, and gone once removed.
+#[test]
+fn a_dead_tie_an_admin_of_g_alone_removes_at_once_spec_perm_2() {
+    let (mut lp, ps) = people(2);
+    let g = thing_of(&mut lp, 1, ps[1]);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[1].engine.give_own_secrets(&g).unwrap();
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    add_item(&mut lp, 1, g, t);
+    spread(&mut lp);
+    let e = &mut lp.peers[0].engine;
+    let tie = e.placement(&t, &g, false).unwrap().unwrap();
+    e.grant(&t, &g, &ct::Edge { tied: Some(osis_engine::flows::tied::tie_ct(tie)), ..edge_of(Role::Write) }).unwrap();
+    spread(&mut lp);
+    let e = &mut lp.peers[1].engine;
+    assert!(e.untie_due(&t).unwrap().is_empty(), "placed: nothing due");
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Remove(osis_base::Value::Tid(t)) }).unwrap();
+    e.commit(m).unwrap().unwrap();
+    assert_eq!(e.may_remove(&t, &g).unwrap(), Some(osis_engine::flows::Untie::SelfRemoval));
+    assert_eq!(e.untie_due(&t).unwrap(), [g].into(), "due at once");
+    e.untie(&t, &g).unwrap();
+    assert!(e.untie_due(&t).unwrap().is_empty() && !e.roster(&t).contains_key(&g), "removed");
 }
 
 // spec/crypto.md §4 (names): a rotation names the edge writes its rotator held that pin a holder
