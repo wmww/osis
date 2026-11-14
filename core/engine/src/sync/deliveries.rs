@@ -262,10 +262,11 @@ impl Engine {
         boxes.iter().filter(|(a, _)| a == t).filter_map(|(_, k)| osis_schema::core_types::BoxKey::from_value(k).ok()).filter(|k| k.role == Role::Sync).map(|k| k.epoch.n).max()
     }
 
-    /// This node's dial hint (spec/wire.md §9 position 4): its `reach.0` dialable key and items.
+    /// This node's dial hint (spec/wire.md §9 position 4): its `reach.0` dialable key and URL, as
+    /// in its `dial.0` entry (`Engine::publish_reach`).
     fn dial_hint(&mut self) -> Result<Option<DialHint>> {
         let me = self.core.id.tid();
-        Ok(self.get_typed(&me, &osis_schema::core_types::REACH)?.map(|r| DialHint { dialable: r.dialable, urls: r.items.into_iter().take(osis_label::MAX_DIAL_URLS).collect() }))
+        Ok(self.get_typed(&me, &osis_schema::core_types::REACH)?.map(|r| DialHint { dialable: r.dialable, urls: super::dial::urls_of(&r.items) }))
     }
 
 }

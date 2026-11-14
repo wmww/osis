@@ -6,6 +6,7 @@ mod covered;
 mod setting;
 mod caches;
 mod corrupt;
+mod dial;
 mod crash;
 mod disputes;
 mod edits;

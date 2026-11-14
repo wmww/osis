@@ -77,7 +77,7 @@ impl Keep {
     }
 
     fn verdict(&self) -> Verdict {
-        let record = SyncRecord { sync_ids: vec![self.s], secrets: self.held.iter().map(|e| (epoch(*e), sync_secret(*e))).collect() };
+        let record = SyncRecord { sync_ids: vec![self.s], secrets: self.held.iter().map(|e| (epoch(*e), sync_secret(*e))).collect(), dial: None };
         judge(&Judged { listed: self.listed, record: Some(&record), notices: &self.notices, steps: &self.path.steps, own_elsewhere: self.own_elsewhere })
     }
 

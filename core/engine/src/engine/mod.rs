@@ -1041,6 +1041,8 @@ pub struct Core {
     /// `Engine::thing_sync` per thing and `Engine::sync_set` (`memo`): sync reads them every step.
     pub(crate) thing_sync: memo::Memo<Tid, crate::sync::ThingSync>,
     pub(crate) sync_set: memo::Memo<(), Arc<crate::sync::SyncSet>>,
+    /// `Engine::dial_peers` per sync ID (`memo`): sync's dials read it at each move of what it read.
+    pub(crate) dial_peers: memo::Memo<SyncId, Arc<Vec<osis_base::Address>>>,
     /// `Engine::holders_named` per commit (`memo`): an admin's pass reads it for every inbox
     /// copy, and it decodes role parts.
     pub(crate) holders_named: memo::Memo<CommitId, Arc<BTreeMap<usize, BTreeSet<Tid>>>>,
@@ -1359,6 +1361,7 @@ impl Core {
             head_keys: self.head_keys.clone(),
             thing_sync: self.thing_sync.clone(),
             sync_set: self.sync_set.clone(),
+            dial_peers: self.dial_peers.clone(),
             holders_named: self.holders_named.clone(),
             departures: self.departures.clone(),
             reseal_scans: self.reseal_scans.clone(),
@@ -1897,6 +1900,7 @@ impl Core {
             head_keys: _,
             thing_sync: _,
             sync_set: _,
+            dial_peers: _,
             holders_named: _,
             key_access: _,
             key_roles: _,
@@ -2080,6 +2084,7 @@ impl Core {
             head_keys: memo::Memo::new("head keys: derive"),
             thing_sync: memo::Memo::new("sync: thing sync"),
             sync_set: memo::Memo::new("sync: sync set"),
+            dial_peers: memo::Memo::new("sync: dial peers"),
             holders_named: memo::Memo::new("holders named: read"),
             departures: memo::Memo::new("departures"),
             reseal_scans: memo::Memo::new("reseal: scan"),

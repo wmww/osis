@@ -204,10 +204,6 @@ pub struct Net {
     cut_off: BTreeSet<(usize, usize)>,
     online: Vec<bool>,
     accepted: Vec<u64>,
-    /// What each node's LAN discovery found (`World::discover`): discovery finds it again when
-    /// the node comes back (a node remembers nothing of its discoveries over a restart, and LAN
-    /// discovery announces again).
-    pub discovered: BTreeSet<(usize, usize)>,
     /// Bytes carried so far.
     pub bytes: u64,
     /// Bytes each end sent on each connection: the transport takes them at once (no buffer), so
@@ -504,7 +500,7 @@ impl World {
     }
 
     /// A new node with an account of its own (`Engine::create_account`), on LAN segment 0 with a
-    /// public address, listening under a fresh key. Settled once.
+    /// public address, listening under a fresh key and publishing where (`publish`). Settled once.
     pub fn add_node(&mut self) -> usize {
         let i = self.add_bare_node();
         let made = self.engine(i).create_account().expect("account").0;
@@ -512,8 +508,15 @@ impl World {
             n.account = Some(made.account);
             n.profile = Some(made.profile);
         }
-        self.deliver(i, Input::Wrote);
+        self.publish(i);
         i
+    }
+
+    /// Node `i` publishes its address as it listens (`Engine::publish_reach`: its `reach.0` and
+    /// its profile's dial list entry), as the product's `listen` does; then it is stepped.
+    pub fn publish(&mut self, i: usize) {
+        let (key, items) = (self.node(i).key.0, self.net.reach.items(i));
+        self.write(i, |e| e.publish_reach(key, items)).expect("publish reach");
     }
 
     /// A new node with no account, placed and listening as `add_node`'s.
@@ -643,7 +646,6 @@ impl World {
 
     /// Node `i` discovers node `j` (its address), as LAN discovery hands it up.
     pub fn discover(&mut self, i: usize, j: usize) {
-        self.net.discovered.insert((i, j));
         let addr = self.address(j);
         self.deliver(i, Input::Discovered { addr });
     }
@@ -809,11 +811,6 @@ impl World {
             *o = true;
         }
         self.tick(i);
-        let found: Vec<usize> = self.net.discovered.iter().filter(|(x, _)| *x == i).map(|(_, j)| *j).collect();
-        for j in found {
-            let addr = self.address(j);
-            self.deliver(i, Input::Discovered { addr });
-        }
     }
 
     /// An exact copy sharing nothing with this world (`osis_base::copying`).
@@ -870,6 +867,19 @@ pub fn two_nodes() -> World {
         let mut w = World::new(0);
         w.add_node();
         w.add_node();
+        w.run();
+        w
+    })
+}
+
+/// Two nodes of two accounts, each the other's contact (`history::introduce`), quiet: each dials
+/// the other by its dial list once they share something.
+pub fn contacts() -> World {
+    fixture("two contacts", || {
+        let mut w = World::new(0);
+        w.add_node();
+        w.add_node();
+        history::introduce(&mut w);
         w.run();
         w
     })

@@ -1,0 +1,2 @@
+- `python3 tools/spec_map.py --gaps --uncited` exits 1 on sync-rebuild itself (22 stray anchors, other modules' tests citing rules the spec names no anchor for): a branch can't tell its own from the base's without checking out the base.
+- Engine `order::kill_and_purge_in_one_commit_keeps_leftover_spec_commits_5` and `scale::purge_rejudge_is_linear_in_requests_spec_permissions_6` still fail on sync-rebuild (known, notes/complaints/sync-integrate-4.md): `cargo test -p osis-engine` is red for every branch.

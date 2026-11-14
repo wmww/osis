@@ -387,6 +387,9 @@ pub const ACCOUNT: Aspect<Account> = Aspect::new("account.0", &CORE);
 pub const LISTING: Aspect<Listings> = Aspect::new("listing.0", &CORE);
 pub const NODE: Aspect<NodeInfo> = Aspect::new("node.0", &CORE);
 pub const REACH: Aspect<Reach> = Aspect::new("reach.0", &CORE);
+/// `dial.0` on an account's profile: each node's 32-byte dialable key to its URLs (spec/sync-set.md §1).
+pub type DialList = BTreeMap<Vec<u8>, Vec<String>>;
+pub const DIAL: Aspect<DialList> = Aspect::new("dial.0", &CORE);
 pub const CAPS: Aspect<Caps> = Aspect::new("caps^.0", &CORE);
 /// `synced^.0` on an account's devices actor: each node to its synced group (spec/sync-set.md §1).
 pub const SYNCED: Aspect<BTreeMap<Tid, Tid>> = Aspect::new("synced^.0", &CORE);

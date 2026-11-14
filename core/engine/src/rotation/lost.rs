@@ -491,7 +491,7 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
             let syncs: Vec<(osis_crypto::Epoch, osis_crypto::Secret32)> = ep.sync.held().map(|(e, x)| (e, x.clone())).collect();
             if !syncs.is_empty() {
                 let ids: Vec<osis_base::SyncId> = crate::flows::home_sync_id(tx, a)?.into_iter().collect();
-                crate::sync::records::note_sync_secrets(tx, a, &ids, syncs)?;
+                crate::sync::records::note_sync_secrets(tx, a, &ids, syncs, None)?;
             }
         }
         tx.core.ix.secrets.remove(a);

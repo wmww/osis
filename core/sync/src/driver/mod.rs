@@ -13,8 +13,6 @@
 //! commit of either store lands): what they keep in memory goes, the store's memory part stays.
 //! A connection this node dialed closes once it shares nothing and nothing is under way on it
 //! (`keep_or_close`).
-//!
-//! Not built: grant hints and link sharers as candidates (`Inbox::dial_hints`, not read yet).
 
 pub mod dials;
 #[cfg(feature = "driver")]
@@ -475,6 +473,8 @@ impl Node {
         let now = self.now;
         let d = &mut self.driver;
         d.dials.settle_peers(&mut NodePeers { engine: &mut self.engine, fx: &mut d.fx }, now);
+        let hints: Vec<Address> = self.inbox.dial_hints().into_iter().filter_map(|h| Some(Address { url: h.urls.first()?.clone(), key: h.dialable })).collect();
+        d.dials.hint(&hints, now);
         let changed = self.opens.changed_end();
         if changed != d.changed {
             d.changed = changed;

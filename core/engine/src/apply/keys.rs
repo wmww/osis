@@ -658,7 +658,7 @@ impl crate::engine::Engine {
         if r == Role::Sync && !self.core.epochs(&g).is_some_and(|x| x.role(Role::Read).holds_any()) {
             return self.run(|tx| {
                 let ids: Vec<osis_base::SyncId> = crate::flows::home_sync_id(tx, &g)?.into_iter().collect();
-                crate::sync::records::note_sync_secrets(tx, &g, &ids, [(e, secret)])
+                crate::sync::records::note_sync_secrets(tx, &g, &ids, [(e, secret)], None)
             });
         }
         self.run(|tx| {

@@ -185,6 +185,7 @@ impl crate::Osis {
                 net.bind(*index, self.downgrade());
                 if cfg.direct_sync {
                     net.listen(*index, secret.public_key());
+                    self.publish_reach(secret.public_key(), &[], &[]);
                 }
             }
             Net::Driver { .. } => {
@@ -226,7 +227,12 @@ impl crate::Osis {
     pub fn listen(&self, urls: &[crate::Url]) -> Result<Vec<crate::Address>> {
         self.local("listen")?;
         let secret = self.locked(|l| StaticSecret::from_bytes(*l.secret.as_bytes()));
+        let key = secret.public_key();
         let a = self.inner.net.listen(Some(urls.iter().map(ToString::to_string).collect()), None, secret)?;
+        // the driver publishes what it listens at itself, with the routes out it found
+        if let Net::Manual { .. } = &self.inner.net {
+            self.publish_reach(key, &a, &[]);
+        }
         Ok(a.into_iter().map(crate::Address).collect())
     }
 
@@ -245,10 +251,41 @@ impl crate::Osis {
             l.handle(Input::Wrote);
             Ok(s)
         })?;
+        let key = secret.public_key();
         match &self.inner.net {
             Net::Off => Ok(()),
+            Net::Manual { .. } => {
+                self.inner.net.listen(None, None, secret)?;
+                self.publish_reach(key, &[], &[]);
+                Ok(())
+            }
             net => net.listen(None, None, secret).map(drop),
         }
+    }
+
+    /// Publishes where this node is dialed after it listened under `key` at `addrs` (spec/sync-
+    /// transport.md §3, §5 Key change; spec/sync-set.md §1): its `reach.0`, listing each
+    /// `peer://` listener's global addresses (an unspecified one standing for `routes`) and
+    /// relays, and its entry in its profile's dial list. A failed write is published again at the
+    /// next listen.
+    pub(crate) fn publish_reach(&self, key: [u8; 32], addrs: &[osis_label::Address], routes: &[std::net::IpAddr]) {
+        let items: Vec<String> = addrs.iter().flat_map(|a| osis_transport::p2p::reach_items(&a.url, routes)).collect();
+        let _ = self.engine(|e| e.publish_reach(key, items));
+    }
+}
+
+/// The local addresses of this host's routes out (`reach.0`'s stand-ins for an unspecified bound
+/// address, spec/sync-transport.md §3).
+async fn routes() -> Vec<std::net::IpAddr> {
+    let (v4, v6) = osis_transport::lan::route_ips().await;
+    v4.into_iter().chain(v6).collect()
+}
+
+/// The driver's half of `Osis::publish_reach`: after a listen that succeeded.
+async fn published(db: &WeakOsis, key: [u8; 32], addrs: &[osis_label::Address]) {
+    let routes = routes().await;
+    if let Some(db) = db.hold() {
+        blocking(|| db.publish_reach(key, addrs, &routes));
     }
 }
 
@@ -258,7 +295,9 @@ async fn drive<T: Transport>(db: WeakOsis, mut links: TransportLinks<T>, mut rx:
     let (mut urls, mut socket) = (Vec::new(), None::<String>);
     // a failed start is the node's to report: it syncs with what it dials meanwhile
     if let Some((u, secret)) = start.listen {
-        let _ = links.listen(&u, &secret).await;
+        if let Ok(a) = links.listen(&u, &secret).await {
+            published(&db, secret.public_key(), &a).await;
+        }
         urls = u;
     }
     if start.discover {
@@ -284,6 +323,9 @@ async fn drive<T: Transport>(db: WeakOsis, mut links: TransportLinks<T>, mut rx:
                         socket = sock;
                     }
                     let mut r = links.listen(&urls, &secret).await.map_err(|e| e.to_string());
+                    if let Ok(a) = &r {
+                        published(&db, secret.public_key(), a).await;
+                    }
                     if let (Some(s), true) = (&socket, r.is_ok()) {
                         r = links.listen(std::slice::from_ref(s), &secret).await.map(|_| Vec::<osis_label::Address>::new()).map_err(|e| e.to_string()).and(r);
                     }

@@ -3,8 +3,10 @@
 //!
 //! A **candidate** is a dialable key with the reasons it is one (`Why`), each with the address
 //! it is known by: the dial peers of a sync ID it syncs (`Engine::dial_peers`: holders of sync or
-//! above, granters, its own nodes holding S), configured addresses, discovered nodes. Reasons
-//! are priorities, never a filter on what opens: they order the dials, nothing else.
+//! above, granters, its own nodes holding S), the inbox's hints (granting nodes of inbox blobs
+//! held, sharer nodes of links being redeemed: `Inbox::dial_hints`), configured addresses,
+//! discovered nodes. Reasons are priorities, never a filter on what opens: they order the dials,
+//! nothing else.
 //!
 //! One retry rule: a candidate not connected is due again `REDIAL_MS` after its last dial; one
 //! whose connection closed sharing nothing (keep or close) is **quiet**: due only after a change
@@ -50,6 +52,8 @@ pub const DISCOVERED_KEEP: usize = 1024;
 pub enum Why {
     /// A dial peer of a sync ID this node syncs (`Engine::dial_peers`).
     Sync(SyncId),
+    /// A dial hint of the inbox (`Inbox::dial_hints`): a granting or link-sharing node.
+    Hint,
     /// A configured address (`SyncConfig::dial`).
     Configured,
     /// Found by discovery (`Input::Discovered`).
@@ -60,8 +64,9 @@ impl Why {
     fn rank(&self) -> u8 {
         match self {
             Why::Sync(_) => 0,
-            Why::Configured => 1,
-            Why::Discovered => 2,
+            Why::Hint => 1,
+            Why::Configured => 2,
+            Why::Discovered => 3,
         }
     }
 }
@@ -207,6 +212,7 @@ pub struct Dials {
     /// Each sync ID's dial peers as last applied.
     by_sync: BTreeMap<SyncId, Arc<Vec<Address>>>,
     configured: Vec<Address>,
+    hinted: Vec<Address>,
     discovered: VecDeque<[u8; 32]>,
     next_conn: u64,
     /// This node's own dialable key: never dialed.
@@ -288,6 +294,20 @@ impl Dials {
         }
         for a in addrs {
             self.offer(Why::Configured, a.clone(), now);
+        }
+    }
+
+    /// The inbox's dial hints are now `addrs`.
+    pub fn hint(&mut self, addrs: &[Address], now: WallMs) {
+        if self.hinted == addrs {
+            return;
+        }
+        let old = std::mem::replace(&mut self.hinted, addrs.to_vec());
+        for a in old.iter().filter(|a| !addrs.iter().any(|b| b.key == a.key)) {
+            self.withdraw(&Why::Hint, &a.key);
+        }
+        for a in addrs {
+            self.offer(Why::Hint, a.clone(), now);
         }
     }
 

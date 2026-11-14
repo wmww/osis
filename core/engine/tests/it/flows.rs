@@ -115,7 +115,7 @@ pub(crate) fn thing_of(lp: &mut LocalPeer, i: usize, admin: Tid) -> Tid {
 }
 
 /// Peer 0 creates an account; peer 1 is paired as its second node: built once (`LocalPeer::cached`).
-fn account_two_nodes() -> (LocalPeer, Tid) {
+pub(crate) fn account_two_nodes() -> (LocalPeer, Tid) {
     LocalPeer::cached("flows::account_two_nodes", account_two_nodes_built)
 }
 

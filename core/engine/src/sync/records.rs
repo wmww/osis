@@ -3,7 +3,7 @@
 //! transaction where the box opened; and the removal signatures inbox blobs to this node carried,
 //! kept while their blob is unexpired. No other engine state of a kept-unread thing exists.
 
-use super::{RemovalNotice, SyncRecord};
+use super::{DialHint, RemovalNotice, SyncRecord};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{BlobId, CommitId, SyncId, Tid, Value, WallMs};
@@ -28,6 +28,7 @@ fn record_value(r: &SyncRecord) -> Value {
     Value::List(vec![
         Value::List(r.sync_ids.iter().map(|s| Value::Bytes(s.0.to_vec())).collect()),
         Value::List(r.secrets.iter().map(|(e, s)| Value::List(vec![e.to_wire(), Value::Bytes(s.expose().to_vec())])).collect()),
+        Value::List(r.dial.iter().map(|d| Value::List(vec![Value::Bytes(d.dialable.to_vec()), Value::List(d.urls.iter().cloned().map(Value::Str).collect())])).collect()),
     ])
 }
 
@@ -35,7 +36,7 @@ fn record_of(b: &[u8]) -> Result<SyncRecord> {
     let bad = || Error::Corrupt("sync record");
     let v = osis_base::decode(b, &osis_base::Limits { max_depth: 8, max_bytes: b.len() }).map_err(|_| bad())?;
     let Value::List(f) = v else { return Err(bad()) };
-    let [Value::List(ids), Value::List(secrets)] = f.as_slice() else { return Err(bad()) };
+    let [Value::List(ids), Value::List(secrets), Value::List(dial)] = f.as_slice() else { return Err(bad()) };
     let mut r = SyncRecord::default();
     for id in ids {
         let Value::Bytes(b) = id else { return Err(bad()) };
@@ -46,6 +47,12 @@ fn record_of(b: &[u8]) -> Result<SyncRecord> {
         let [e, Value::Bytes(k)] = p.as_slice() else { return Err(bad()) };
         let e = Epoch::from_wire(e).map_err(|_| bad())?;
         r.secrets.insert(e, Secret32::from_bytes(k.as_slice().try_into().map_err(|_| bad())?));
+    }
+    if let Some(d) = dial.first() {
+        let Value::List(p) = d else { return Err(bad()) };
+        let [Value::Bytes(k), Value::List(urls)] = p.as_slice() else { return Err(bad()) };
+        let urls = urls.iter().map(|u| if let Value::Str(u) = u { Ok(u.clone()) } else { Err(bad()) }).collect::<Result<_>>()?;
+        r.dial = Some(DialHint { dialable: k.as_slice().try_into().map_err(|_| bad())?, urls });
     }
     Ok(r)
 }
@@ -99,11 +106,15 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
 
 /// Adds `sync_ids` and the sync `secrets` (each checked to name its epoch of `thing`'s sync role,
 /// spec/crypto.md §4: a box's secret establishes nothing, it is held as that epoch's) to `thing`'s
-/// sync record, written in the running transaction: the one where the box sealed to this node's
-/// own key opened (spec/sync-judgement.md §6). Returns whether the record changed.
-pub(crate) fn note_sync_secrets(tx: &mut Tx<'_>, thing: &Tid, sync_ids: &[SyncId], secrets: impl IntoIterator<Item = (Epoch, Secret32)>) -> Result<bool> {
+/// sync record, with the granting node's `dial` hint in place of the one before, written in the
+/// running transaction: the one where the box sealed to this node's own key opened
+/// (spec/sync-judgement.md §6). Returns whether the record changed.
+pub(crate) fn note_sync_secrets(tx: &mut Tx<'_>, thing: &Tid, sync_ids: &[SyncId], secrets: impl IntoIterator<Item = (Epoch, Secret32)>, dial: Option<&DialHint>) -> Result<bool> {
     let mut r = tx.core.ix.sync_records.get(thing).map(|r| (**r).clone()).unwrap_or_default();
     let before = r.clone();
+    if let Some(d) = dial {
+        r.dial = Some(d.clone());
+    }
     for s in sync_ids {
         if !r.sync_ids.contains(s) {
             r.sync_ids.push(*s);

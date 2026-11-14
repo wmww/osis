@@ -174,8 +174,8 @@ fn the_oracle_catches_planted_faults() {
     assert!(caught(|| check(&mut w)).contains("is deleted everywhere"));
 }
 
-// spec: none (test harness): a differential world's nodes find each other as LAN discovery hands
-// them up, and each pair connects (the driver dials discovered candidates).
+// spec/sync-opens.md §1 (whom to dial): a differential world's nodes, contacts reading each
+// other's profiles, each dial the others by their dial lists: each pair connects, no discovery.
 #[test]
 fn a_world_connects_every_pair() {
     let w = world(0, NODES);

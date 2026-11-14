@@ -253,7 +253,7 @@ impl Engine {
                 let secrets: Vec<_> = opened.iter().filter(|o| o.role == Role::Sync).map(|o| (o.epoch, o.secret.clone())).collect();
                 let ids: Vec<SyncId> = payload_ids.get(t).copied().into_iter().collect();
                 let t = *t;
-                any |= self.run(|tx| super::records::note_sync_secrets(tx, &t, &ids, secrets))?;
+                any |= self.run(|tx| super::records::note_sync_secrets(tx, &t, &ids, secrets, dial.as_ref()))?;
             }
             let taken = if any || held { Taken::Applied } else { Taken::Refused };
             return Ok(Some(InboxOpened { commit: Some(id), taken, hints: Vec::new(), dial }));

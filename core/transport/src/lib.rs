@@ -98,15 +98,8 @@ pub const RANK_RELAYED: Rank = 2;
 /// picks the implementation.
 pub use osis_base::Address;
 
-/// Scheme of P2P addresses (spec/sync-transport.md §3): a node dialed by its dialable key at the socket
-/// addresses and through the relays the URL lists (`peer://` then items separated by single
-/// spaces, `p2p::items`). The key is `Address::key`.
-pub const PEER_SCHEME: &str = "peer";
-
-/// The `peer://` URL listing `items`.
-pub fn peer_url(items: &[String]) -> String {
-    format!("{PEER_SCHEME}://{}", items.join(" "))
-}
+/// Scheme of P2P addresses and their URLs (`p2p::items` reads one).
+pub use osis_base::{PEER_SCHEME, peer_url};
 
 /// The items of a `peer://` URL; none for another scheme.
 pub fn peer_items(url: &str) -> Option<Vec<String>> {

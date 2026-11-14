@@ -30,7 +30,7 @@ struct Pending {
 
 /// A link's sharer nodes as dial hints.
 fn link_hints(link: &ShareLink) -> Vec<DialHint> {
-    link.peers.iter().map(|p| DialHint { dialable: p.dialable, urls: p.relays.clone() }).collect()
+    link.peers.iter().map(|p| DialHint { dialable: p.dialable, urls: vec![osis_base::peer_url(&p.relays)] }).collect()
 }
 
 impl Pending {

@@ -746,3 +746,13 @@ pub struct Address {
     pub url: String,
     pub key: [u8; 32],
 }
+
+/// Scheme of P2P addresses (spec/sync-transport.md §3): a node dialed by its dialable key at the
+/// socket addresses and through the relays the URL lists (`peer://` then items separated by
+/// single spaces). The key is `Address::key`.
+pub const PEER_SCHEME: &str = "peer";
+
+/// The `peer://` URL listing `items` (`reach.0`'s, spec/sync-transport.md §3).
+pub fn peer_url(items: &[String]) -> String {
+    format!("{PEER_SCHEME}://{}", items.join(" "))
+}

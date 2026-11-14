@@ -1,8 +1,8 @@
 //! Flows between nodes of different accounts end to end through the product's sync, nothing
 //! carried by hand after the contact exchange (`introduce`).
 
-use crate::harness::World;
-use crate::harness::history::{file, introduce};
+use crate::harness::{World, contacts};
+use crate::harness::history::file;
 use osis_base::{Ak, Role, Value};
 use osis_engine::Mutation;
 use osis_schema::core_types as ct;
@@ -11,19 +11,6 @@ fn edge(role: Role) -> ct::Edge {
     ct::Edge { role, until: None, invite: None, tied: None }
 }
 
-/// Two contacts on one LAN, quiet.
-fn contacts() -> World {
-    crate::harness::fixture("flows: two contacts", || {
-        let mut w = World::new(0);
-        w.add_node();
-        w.add_node();
-        introduce(&mut w);
-        w.discover(0, 1);
-        w.discover(1, 0);
-        w.run();
-        w
-    })
-}
 
 // spec/sync-inbox.md §2 (taking: a connected sender), spec/sync-set.md §4 (accepting), spec/sync.md
 // §3 (read): node 0 writes a thing in its synced group and grants node 1's account read; the

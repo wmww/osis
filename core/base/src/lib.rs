@@ -30,7 +30,7 @@ pub use chain::{ChainStep, RecordLink, RecordChain, record_chain};
 pub use cbor::{CanonicalBytes, DecodeError, Limits, Place, Reader, decode, decode_prefix, encode, item_prefix, visit_items, visit_links};
 pub use chunker::{ChunkParams, Chunker, PageCutter};
 pub use error::{Classified, ErrorClass};
-pub use ids::{Address, Ak, AkError, BlobId, CommitId, CreationRecord, Del, SyncId, Link, Markers, PurgeBy, Role, SIGNING_KEY_ED25519, Tid, TidParseError};
+pub use ids::{PEER_SCHEME, peer_url, Address, Ak, AkError, BlobId, CommitId, CreationRecord, Del, SyncId, Link, Markers, PurgeBy, Role, SIGNING_KEY_ED25519, Tid, TidParseError};
 pub use time::{Clock, ManualClock, SystemClock, Time, Ts, WallMs};
 pub use sorted::{ValueMap, ValueSet};
 pub use value::{Float, Unknown, Value};

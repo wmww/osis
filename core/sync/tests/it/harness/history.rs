@@ -252,21 +252,16 @@ pub fn reads(e: &mut Engine, t: &Tid) -> Reads {
     Reads { value, roles }
 }
 
-/// A world of `n` nodes, each with an account of its own, each account known to every node,
-/// each node discovered by every other, quiet, handing its commits to the reference from now on. Fresh per seed (drawn IDs, keys and
-/// tie-breaks), never a fixture copy.
+/// A world of `n` nodes, each with an account of its own, each account every other's contact
+/// (`introduce`), quiet, handing its commits to the reference from now on. Nodes find each other
+/// only as the product does: whom each dials is `Engine::dial_peers` (contacts' dial lists).
+/// Fresh per seed (drawn IDs, keys and tie-breaks), never a fixture copy.
 pub fn world(seed: u64, n: usize) -> World {
     let mut w = World::new(seed);
     for _ in 0..n {
         w.add_node();
     }
     introduce(&mut w);
-    // every node is on LAN segment 0: each finds every other as LAN discovery hands them up
-    for i in 0..n {
-        for j in (0..n).filter(|j| *j != i) {
-            w.discover(i, j);
-        }
-    }
     w.run();
     w.history.harvest = true;
     w
@@ -276,8 +271,8 @@ pub fn world(seed: u64, n: usize) -> World {
 /// and each node files its own profile and every other account's in its account's D (what
 /// importing a contact card leaves, spec/sync-inbox.md §5: the granter is a known actor and a
 /// connected sender), all handed by hand before any history, so no history content travels this
-/// way. A stand-in for the contact exchange: replace it by contact cards redeemed through the
-/// inbox's link flow once that is wired.
+/// way. A stand-in for the contact exchange: replace it by contact cards once a link's first
+/// contact opens K (issues/sync-link-first-contact.md).
 pub fn introduce(w: &mut World) {
     assert!(w.history.things.is_empty(), "introduce hands no content: before any history only");
     hand_all(w);

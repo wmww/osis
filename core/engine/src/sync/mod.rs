@@ -10,6 +10,7 @@
 
 pub(crate) mod bodies;
 pub(crate) mod deliveries;
+pub(crate) mod dial;
 pub(crate) mod facts;
 pub(crate) mod falls;
 pub(crate) mod held;
@@ -250,6 +251,9 @@ pub struct Signers {
 pub struct SyncRecord {
     pub sync_ids: Vec<SyncId>,
     pub secrets: BTreeMap<Epoch, Secret32>,
+    /// The granting node's dial hint of the newest grant taken that carried one (spec/sync-inbox.md
+    /// §2): where this node dials the thing's granter (spec/sync-opens.md §1), for dialing only.
+    pub dial: Option<DialHint>,
 }
 
 /// J of a peer for S (spec/sync-opens.md §4).
@@ -610,14 +614,14 @@ impl Engine {
     }
 
     /// The nodes this node may dial for S (spec/sync-opens.md §1 Whom to dial), each at the
-    /// address it is known by here: of S read, the nodes of each account holding sync or above on
-    /// S by that account's dial list (`dial.0` on its profile); the granting node of each grant of
-    /// S this node holds (the inbox blob's hint, spec/sync-inbox.md §2), S read or kept unread;
-    /// this node's own other nodes whose sync sets hold S, by their `reach.0`. Never this node.
-    /// For dialing only, never proof.
+    /// address it is known by here: of S read, the nodes of each account holding a role on S's
+    /// thing by that account's dial list (`dial.0` on its profile); of S kept unread, its granting
+    /// node (the newest grant's dial hint, kept in the sync record, spec/sync-inbox.md §2); either
+    /// way this node's own other nodes whose synced group's closure holds S's thing, by their
+    /// `reach.0` (the driver never dials its own key). A memo per sync ID; for dialing only, never
+    /// proof.
     pub fn dial_peers(&mut self, s: &SyncId) -> Result<Arc<Vec<Address>>> {
-        let _ = s;
-        not_built("dial_peers")
+        osis_base::memo::Memo::get_in(self, |e| &e.core.dial_peers, s, |e| e.dial_peers_now(s))
     }
 
     /// The inbox deliveries owed and not seen taken (spec/sync-inbox.md §2), whole: a start lists
