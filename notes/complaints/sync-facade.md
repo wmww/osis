@@ -5,3 +5,4 @@
 - `wt claim` had already run (worktree given detached at the base); the preamble's `git rebase --onto sync-rebuild e476f2149` is wrong after the first rebase (the upstream is the previous sync-rebuild tip).
 - A python `s.index(a) .. s.index(b)` cut where `b` occurs earlier duplicated half of engine/mod.rs: anchor the end search after the start.
 - Review: `tools/bin-at REV OUT -p osis-vectors` fails ("no executable for osis-vectors --test it"): the crate's test target is `vectors`, so `--test vectors` is needed; the error does not say which targets exist.
+- Review: sync-rebuild moved during the review (sync-read merged); its tests build facade structs literally, so the rebase compiled nothing in osis-sync's tests until `..Default::default()` was added. Tests outside the engine building facade value types could use a constructor or Default.

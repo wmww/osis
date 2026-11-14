@@ -55,7 +55,7 @@ fn creds(e: u64, writer: bool, delete: bool) -> Arc<ReadCredentials> {
     for i in 0..=e {
         keys.insert(step(i).id(), hk.clone());
     }
-    Arc::new(ReadCredentials { head: Some(step(e)), keys, read_secrets: Vec::new(), statics: BTreeSet::new() })
+    Arc::new(ReadCredentials { head: Some(step(e)), keys, read_secrets: Vec::new(), statics: BTreeSet::new(), ..Default::default() })
 }
 
 fn meta() -> BodyMeta {
@@ -835,7 +835,7 @@ fn duplicate_higher_goes() {
 /// logged by the releaser (another node) at K or not.
 fn released(request_at_k: bool) -> W {
     let mut w = at_k_must_hold();
-    w.g.doom.insert(S, Arc::new(Destruction { requests: vec![cid(3)] }));
+    w.g.doom.insert(S, Arc::new(Destruction { requests: vec![cid(3)], ..Default::default() }));
     if request_at_k {
         w.g.k.held.insert((S, BlobId([3; 32])), cid(3));
         w.g.logged.push((S, cid(3), BlobId([3; 32])));
@@ -904,7 +904,7 @@ fn untold_leaves_and_logs_again_once() {
     let mut m = meta();
     m.expires = Some(WallMs(10));
     w.g.bodies.insert(cid(3), Arc::new([(S, m)].into()));
-    w.g.doom.insert(S, Arc::new(Destruction { requests: vec![cid(3)] }));
+    w.g.doom.insert(S, Arc::new(Destruction { requests: vec![cid(3)], ..Default::default() }));
     w.settle();
     assert!(!w.g.sent.contains(&Sent::Forget(S)));
     // the window's end alone moves it: read's wake is the request's expiry
