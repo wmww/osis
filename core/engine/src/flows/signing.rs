@@ -506,9 +506,17 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Option<C
     }
     let Some(p) = tx.core.member() else { return Ok(None) };
     let Some(d) = tx.core.accounts.get(&p).map(|a| a.devices) else { return Ok(None) };
-    take_seeds(tx, &d)?;
-    // a seed taken up moves what the account's epochs judge
-    crate::apply::rejudged(tx, false)?;
+    // a seed taken up moves what the account's epochs judge, and opens the inner signatures
+    // of D's commits signed at its epoch, which may establish the D epoch the next seed sits
+    // under (each sits under one its writer's earlier commits establish): until none is new
+    loop {
+        let held = tx.core.accounts.get(&p).map_or(0, |a| a.keys.len());
+        take_seeds(tx, &d)?;
+        crate::apply::rejudged(tx, false)?;
+        if tx.core.accounts.get(&p).map_or(0, |a| a.keys.len()) == held {
+            break;
+        }
+    }
     let Some(v) = tx.core.account_view(&p) else { return Ok(None) };
     let dep = departures(tx, &p, &v)?;
     let named = dep.all();

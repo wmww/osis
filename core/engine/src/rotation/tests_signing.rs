@@ -1065,7 +1065,6 @@ fn inner_as(lp: &mut LocalPeer, from: usize, id: &CommitId, k: &osis_crypto::Acc
 // no head at a node of the account holding the removal, and its write at the fork counts at none
 // of them nor at an outsider holding the removal's rotation
 #[test]
-#[ignore = "a removed node's fork signed as a key actor it made counts at the account's nodes: issues/forged-minter.md"]
 fn a_removed_nodes_fork_signed_as_another_key_actor_counts_nowhere_spec_permissions_5_4() {
     let (mut lp, a, t) = world(4, 3);
     let done = remove(&mut lp, 0, a.devices, 2);
@@ -1169,7 +1168,6 @@ fn merge_rounds_after_concurrent_rotations() {
 // removal's epoch, as a re-add's must: the removed node's fork from there is no head at the
 // account's nodes, and its write there counts nowhere the removal is held
 #[test]
-#[ignore = "a removed node's grant to itself at an unaware sibling's epoch puts it back on D: issues/self-readd-at-sibling-epoch.md"]
 fn a_removed_node_readding_itself_is_not_put_back_spec_permissions_5_4() {
     let (mut lp, a, t) = world(4, 3);
     let done = remove(&mut lp, 0, a.devices, 2);
@@ -1196,5 +1194,49 @@ fn a_removed_node_readding_itself_is_not_put_back_spec_permissions_5_4() {
     }
     for k in [0, 1, 3] {
         assert_ne!(read(&mut lp, k, t), Some(Value::Str("removed".into())), "peer {k}: the removed node's write counts");
+    }
+}
+
+/// Pairs peer `new` from node `by` of account `a`; returns the grant.
+fn pair_from(lp: &mut LocalPeer, a: &CreatedAccount, by: usize, new: usize) -> CommitId {
+    let node = lp.peers[new].engine.tid();
+    let ids = lp.peers[new].engine.commit_ids();
+    send(lp, new, by, &ids);
+    let done = lp.peers[by].engine.pair(&node).unwrap();
+    carry(lp, by, &done);
+    lp.peers[new].engine.paired(&a.account, &done.commits[0]).unwrap();
+    done.commits[0]
+}
+
+// spec/permissions.md §5.1 (Frontier: a node's removal from D lists its word on D) and §5.4
+// (Following, at a node of P: a removal hits its node's commits on D its frontier does not
+// list). The laptop (node 2) pairs the tablet (peer 3); the phone (node 0) removes the laptop.
+// Holding that grant before, the phone lists it: the tablet stays on D at the phone and at node
+// 1. Holding it only after, the grant counts nowhere the removal is held: the tablet is no node
+#[test]
+fn a_device_a_removed_node_paired_stays_as_its_remover_held_it_spec_permissions_5_4() {
+    for held in [true, false] {
+        let mut lp = LocalPeer::new_bare(4, 0, WallMs(1_700_000_000_000)).unwrap();
+        let (a, _) = lp.peers[0].engine.create_account(&[]).unwrap();
+        pair_from(&mut lp, &a, 0, 1);
+        pair_from(&mut lp, &a, 0, 2);
+        lp.sync_all().unwrap();
+        lp.advance(1000);
+        let tablet = lp.peers[3].engine.tid();
+        let card = lp.peers[3].engine.commit_ids();
+        let g = pair_from(&mut lp, &a, 2, 3);
+        for k in [0, 1] {
+            send(&mut lp, 3, k, &card);
+        }
+        if held {
+            send(&mut lp, 2, 0, &[g]);
+        }
+        let done = remove(&mut lp, 0, a.devices, 2);
+        send(&mut lp, 0, 1, &done.commits);
+        for k in [0, 1] {
+            send(&mut lp, 2, k, &[g]);
+            let _ = lp.peers[k].engine.signing_due();
+            assert_eq!(lp.peers[k].engine.roster(&a.devices).contains_key(&tablet), held, "peer {k}, held before the removal: {held}");
+        }
     }
 }

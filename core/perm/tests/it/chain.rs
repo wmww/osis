@@ -4,7 +4,8 @@
 //! core/test/roles-model `forks`; a rotation's ID is the epoch it mints, the root 0.
 
 use osis_perm::{Chain, Devices, Rotation};
-use std::collections::{BTreeMap, BTreeSet};
+use roles_model::forks;
+use std::collections::BTreeSet;
 
 fn set(v: &[u32]) -> BTreeSet<u32> {
     v.iter().copied().collect()
@@ -20,14 +21,25 @@ fn outside(rots: &[Rotation<u32>], chosen: Option<u32>, received: &[u32]) -> Cha
     Chain::new::<char>(0, rots.to_vec(), chosen, received, None)
 }
 
-/// At a node of the account: `minted` (rotation, node), `removes` (rotation, node it removes),
-/// `grants` (node, epoch).
-fn own(rots: &[Rotation<u32>], received: &[u32], minted: &[(u32, char)], removes: &[(u32, char)], grants: &[(char, u32)]) -> Chain<u32> {
-    let mut d = Devices { minter: minted.iter().copied().collect(), removes: BTreeMap::new(), grants: grants.iter().copied().collect() };
+/// D at a node of the account: A, B, T, X and Y paired at its creation; `minted` (rotation,
+/// node), `removes` (rotation, node it removes; its frontier empty), `grants` (node, epoch) by
+/// A, each a commit 100 and up.
+fn devices(minted: &[(u32, char)], removes: &[(u32, char)], grants: &[(char, u32)]) -> Devices<u32, char> {
+    let mut d = Devices { minter: minted.iter().copied().collect(), first: "ABTXY".chars().collect(), ..Devices::default() };
     for (r, n) in removes {
         d.removes.entry(*r).or_insert_with(BTreeSet::new).insert(*n);
     }
-    Chain::new(0, rots.to_vec(), None, received, Some(&d))
+    for (i, (n, e)) in grants.iter().enumerate() {
+        let g = 100 + i as u32;
+        d.commits.insert(g, (Some('A'), *e));
+        d.grants.insert((g, *n));
+    }
+    d
+}
+
+/// At a node of the account (`devices`).
+fn own(rots: &[Rotation<u32>], received: &[u32], minted: &[(u32, char)], removes: &[(u32, char)], grants: &[(char, u32)]) -> Chain<u32> {
+    Chain::new(0, rots.to_vec(), None, received, Some(&devices(minted, removes, grants)))
 }
 
 /// A's removal of X (1) and B's of Y (2), made at once at the root.
@@ -162,4 +174,143 @@ fn a_node_takes_the_revocation_it_held_first_and_never_follows_an_unminted_rotat
     assert!(c.counts(&2) && !c.counts(&1));
     let c = own(&rots, &[3, 1, 2], &minted, &[], &[]);
     assert!(!c.counts(&3) && c.counts(&1) && c.counts(&2) && c.heads() == &set(&[1, 2]));
+}
+
+/// A removed node seals inner signatures as Z, a key actor it makes up, with its old epochs'
+/// inner key (spec/permissions.md §5.4, Following, at a node of P).
+/// A removes X at the root (1); Z forks at the root (2), revoking A or no one. X's grant of D
+/// to Z (101) stands only when the removal's frontier covers it (X paired Z in plain sight, its
+/// remover held it); else Z is no node and its fork stands by nothing. Z's fork counts as held
+/// only once Z is known (the grant held), so a revocation held before then is placed after the
+/// removal. X's commits on D the frontier does not cover, Z's, and one signed by no key actor
+/// do not count (`cut`).
+#[test]
+fn a_key_actor_a_removed_node_makes_up_is_no_node() {
+    let rots = vec![rot(1, 0, &[0], &[]), rot(2, 0, &[0], &[])];
+    let world = |revokes: bool, covered: bool| {
+        let mut d = devices(&[(1, 'A'), (2, 'Z')], &[(1, 'X')], &[]);
+        if revokes {
+            d.removes.insert(2, ['A'].into());
+        }
+        d.commits.insert(101, (Some('X'), 0));
+        d.grants.insert((101, 'Z'));
+        d.commits.insert(102, (Some('X'), 0));
+        d.grants.insert((102, 'X'));
+        d.commits.insert(103, (Some('Z'), 0));
+        d.commits.insert(104, (None, 0));
+        if covered {
+            d.covers.insert(1, [101].into());
+        }
+        d
+    };
+    for received in [[2, 1, 101], [101, 1, 2]] {
+        let c = Chain::new(0, rots.clone(), None, &received, Some(&world(true, false)));
+        assert!(c.counts(&1) && !c.counts(&2), "{received:?}");
+        assert!(c.cut(&101) && c.cut(&102) && c.cut(&103) && c.cut(&104), "{:?}", c.cuts());
+    }
+    for covered in [false, true] {
+        let c = Chain::new(0, rots.clone(), None, &[1, 101, 2], Some(&world(false, covered)));
+        assert!(c.counts(&1) && c.counts(&2) == covered && c.cut(&101) != covered, "covered {covered}");
+    }
+}
+
+/// X rotated before its removal (2) and A merges it in the rotation carrying the removal (3, at
+/// A's 1, naming 2): 2 is on the removal's line, made before it, so the removal stands.
+#[test]
+fn a_removal_merging_its_targets_earlier_rotation_stands() {
+    let rots = vec![rot(1, 0, &[0], &[]), rot(2, 0, &[0], &[]), rot(3, 1, &[1, 2], &[2])];
+    let c = own(&rots, &[1, 2, 3], &[(1, 'A'), (2, 'X'), (3, 'A')], &[(3, 'X')], &[]);
+    assert!(c.counts(&3) && c.counts(&2) && c.heads() == &set(&[3]));
+}
+
+/// X's self-grant (101) at B's rotation made unaware of X's removal (2, boxed to X) puts X
+/// nowhere: a re-add is a grant by another node, and the removal's frontier does not cover it
+/// (spec/permissions.md §5.4, Following, at a node of P). X's fork from 2 (3) stands nowhere.
+#[test]
+fn a_removed_nodes_grant_to_itself_is_no_readd() {
+    let rots = vec![rot(1, 0, &[0], &[]), rot(2, 0, &[0], &[]), rot(3, 2, &[2], &[])];
+    let mut d = devices(&[(1, 'A'), (2, 'B'), (3, 'X')], &[(1, 'X')], &[]);
+    d.commits.insert(101, (Some('X'), 2));
+    d.grants.insert((101, 'X'));
+    let c = Chain::new(0, rots, None, &[1, 2, 101, 3], Some(&d));
+    assert!(c.counts(&1) && c.counts(&2) && !c.counts(&3) && c.cut(&101));
+}
+
+/// `Chain` as node `v` of core/test/roles-model `forks` world `w` judges it at `now`, with the
+/// model's choice `chosen`: the held rotations, the receipt order of rotations and D grants
+/// (one tick's by ID), and at a node of P what D says (signers by inner signature, removals with
+/// their frontiers, grants, the nodes paired before the world).
+fn forks_chain(w: &forks::World, v: usize, now: u32, chosen: Option<u32>) -> Chain<u32> {
+    let held: Vec<&forks::Item> = w.items.iter().filter(|i| i.recv[v] <= now).collect();
+    let rots: Vec<Rotation<u32>> = held.iter().filter_map(|i| match &i.kind {
+        forks::Kind::Rot { at, names, sup, .. } => Some(Rotation { id: i.id, at: *at, supersedes: sup.iter().copied().collect(), names: names.iter().copied().collect(), signed: names.iter().copied().collect() }),
+        _ => None,
+    }).collect();
+    let mut order: Vec<(u32, u32)> = held.iter().filter(|i| matches!(i.kind, forks::Kind::Rot { .. } | forks::Kind::Grant { .. })).map(|i| (i.recv[v], i.id)).collect();
+    order.sort();
+    let received: Vec<u32> = order.into_iter().map(|x| x.1).collect();
+    let devices = (v < forks::OWN).then(|| {
+        let mut d = Devices { first: (0..forks::OWN).collect(), ..Devices::default() };
+        for i in &held {
+            match &i.kind {
+                forks::Kind::Rot { removes, covers, .. } => {
+                    d.minter.insert(i.id, i.signer);
+                    if let Some(y) = removes {
+                        d.removes.insert(i.id, [*y].into());
+                        d.covers.insert(i.id, covers.iter().copied().collect());
+                    }
+                }
+                forks::Kind::Grant { to } => {
+                    d.commits.insert(i.id, (Some(i.signer), i.epoch));
+                    d.grants.insert((i.id, *to));
+                }
+                _ => {}
+            }
+        }
+        d
+    });
+    Chain::new(0, rots, chosen, &received, devices.as_ref())
+}
+
+/// `samples` random `forks` worlds from `seed`, settled: at every node and time, what perm
+/// counts, its heads and the warning agree with the model; at P's nodes a key actor X made up
+/// is on the model's roster iff a grant of D to it counts (is not `cut`).
+fn forks_run(samples: u64, seed: u64) -> u64 {
+    let mut rng = roles_model::Rng(seed | 1);
+    let mut checked = 0;
+    for s in 0..samples {
+        let mut w = forks::random_world(&mut rng);
+        let end = forks::settle(&mut w, 12);
+        for v in (0..forks::N).filter(|v| *v != forks::Z) {
+            for now in 0..=end {
+                let j = forks::judge(&w, v, now);
+                let c = forks_chain(&w, v, now, j.chosen);
+                let counting: BTreeSet<u32> = j.chain.iter().copied().filter(|r| c.counts(r)).collect();
+                let heads: BTreeSet<u32> = c.heads().clone();
+                assert!(counting == j.counting && heads == j.heads && c.warning() == j.warning, "seed {seed:#x} world {s} node {v} at {now}: perm counts {counting:?} heads {heads:?} warning {}, model {:?} {:?} {}", c.warning(), j.counting, j.heads, j.warning);
+                if v < forks::OWN {
+                    // Z (never removed) is on the model's roster iff a grant to it by another
+                    // signer counts here
+                    let granted = w.items.iter().any(|i| i.recv[v] <= now && i.signer != forks::Z && matches!(i.kind, forks::Kind::Grant { to: forks::Z }) && !c.cut(&i.id));
+                    assert_eq!(granted, j.roster.contains(&forks::Z), "seed {seed:#x} world {s} node {v} at {now}: Z on the roster");
+                }
+                checked += 1;
+            }
+        }
+    }
+    checked
+}
+
+/// spec/permissions.md §5.4: the chain agrees with core/test/roles-model `forks` (a removed
+/// node making up key actors and editing D among its moves) at every node and time.
+#[test]
+fn forks_model_agrees() {
+    assert!(forks_run(150, 0xf0c5) > 0);
+}
+
+/// spec/permissions.md §5.4: as above, more samples (a property).
+#[test]
+#[ignore]
+fn forks_model_agrees_large() {
+    crate::common::sharded(20_000, 0xf0c5_0e01, forks_run);
 }

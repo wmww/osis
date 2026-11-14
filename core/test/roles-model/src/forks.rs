@@ -10,20 +10,30 @@
 //! when a followed rotation is beside it (neither on the other's line); otherwise it is
 //! followed with its whole line (a merge naming a disregarded fork brings it back). That is
 //! the rule outside the account, where a removed device's fork looks like any other. A node of
-//! the account reads who minted each rotation and whom each removes (the devices list): the
-//! revocations take effect in the order it came to hold them, each only while its own line
-//! stands (no rotation on it minted by a node an earlier revocation removed, beside that
-//! removal), and it follows every rotation whose line stands: two of its devices' rotations
-//! made at once both count, and a plain fork of a removed device never outweighs its removal. Followed rotations count; nothing else does (checked: the §5.4 rejection fixpoint
-//! over the followed ones voids none). A disregarded rotation rejecting or rejected by a
-//! counting one is the warning ("the account has forked"). Nothing reads `ts`; checks read
-//! only what was placed before, so a later arrival never reopens a decision.
+//! the account reads who signed each rotation and each D grant (the inner signature) and whom
+//! each rotation removes, with the removal's frontier (the removed node's D commits its remover
+//! held): the revocations take effect in the order it came to hold them, each only while its
+//! own line stands (every rotation on it minted by a node, none by a node an earlier revocation
+//! removed, off that removal's rotation's line), and it follows every rotation whose line
+//! stands: two of its devices' rotations made at once both count, and a plain fork of a removed
+//! device never outweighs its removal. The nodes: those paired before the world, and every
+//! holder of a grant by another node no removal hits (a removal hits its node's grants its
+//! frontier does not cover); a rotation counts as held only once its minter is known as a node.
+//! D's roster (whom an honest rotation boxes) is the nodes but the removed. Followed rotations
+//! count; nothing else does (at P's nodes a followed rotation may reject another, when a device
+//! that sided otherwise supersedes a line this node follows: counted, `View::cross`). A
+//! disregarded rotation rejecting or rejected by a counting one is the warning ("the account
+//! has forked"). Nothing reads `ts`; checks read only what was placed before, so a later
+//! arrival never reopens a decision.
 //!
 //! Parties: account P with nodes A (honest, removes X at time 1), B (honest, may be offline
 //! until it reconnects: unaware of the removal, it writes, rotates, boxes X), X (removed: from
 //! time 1 it forks from any epoch whose seed it holds, any number of times, may revoke A or B
-//! in its forks, may counter-merge, writes and lists its writes), T (a node of P that only
-//! reads, offline through the fight); outside readers R1, R2 (R2's user may switch). Honest
+//! in its forks, may counter-merge, writes and lists its writes; it signs as itself or as Z, a
+//! key actor it makes up, and writes D grants at any epoch it holds, backdated or at B's:
+//! pairing Z, re-adding itself, Z re-adding it; in some worlds it paired Z in plain sight
+//! before), T (a node of P that only reads, offline through the fight); outside readers R1, R2
+//! (R2's user may switch). Honest
 //! policy (not an input of judgment): a node of P signs at its preferred head; whenever it
 //! acts it rotates if it holds a counting head other than its preferred one whose seed it
 //! holds (naming it: a merge; one it cannot sign at is left to a node that can, as superseding
@@ -40,6 +50,9 @@
 //!   followed stops counting only once a node on its rotation's line is removed (a removed
 //!   node removes no one).
 //! - No false alarm: with no rotation by X there is never a warning.
+//! - Seeds stay away from X: no rotation an honest node of P makes while X's removal counts
+//!   there boxes X or Z (Z paired in plain sight, its grant on the removal's frontier, aside:
+//!   stated limit), and once settled no honest-side head's seed is X's.
 //! - Settled (everything delivered, honest nodes acted in turn): every node but X holds the warning
 //!   when X made a rotation after its removal; every node on the honest side (A's removal
 //!   counts) has one head, the same one, and counts every honest write (B's writes made
@@ -70,7 +83,7 @@ pub const NEVER: u32 = u32::MAX;
 /// nodes judge as outsiders do (every beside rotation ends another); 3 any key actor that signs
 /// is a node and D's roster reads every grant at a counting epoch (a removed node's own
 /// included); 4 first-seen grants: a removed node's grant is hit only when held after its
-/// removal or signed beside it (issues/forged-minter.md, option 1).
+/// removal or signed beside it (notes/engine-validity-epochs.md, Sides: rejected).
 pub static CONTROL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 const NAMES: [&str; N] = ["A", "B", "X", "T", "R1", "R2", "Z"];
 
@@ -201,13 +214,14 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
     // or the holder of a held grant by one known, once both are (removals aside: those decide
     // what stands, not what is held)
     let control = CONTROL.load(std::sync::atomic::Ordering::Relaxed);
-    let mut known: BTreeMap<usize, u32> = (0..OWN).map(|m| (m, 0)).collect();
+    // (receipts are (time, id): one tick's by ID)
+    let mut known: BTreeMap<usize, (u32, u32)> = (0..OWN).map(|m| (m, (0, 0))).collect();
     if own && control == 0 {
         loop {
             let mut changed = false;
             for g in j.held.iter().map(|id| w.item(*id)) {
                 let Kind::Grant { to } = g.kind else { continue };
-                let Some(t) = known.get(&g.signer).filter(|_| g.signer != to).map(|t| (*t).max(g.recv[v])) else { continue };
+                let Some(t) = known.get(&g.signer).filter(|_| g.signer != to).map(|t| (*t).max((g.recv[v], g.id))) else { continue };
                 if known.get(&to).is_none_or(|k| t < *k) {
                     known.insert(to, t);
                     changed = true;
@@ -219,14 +233,14 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
         }
     }
     // with its chain (a merge with every fork it names) and, at a node of P, its minter known,
-    // and when it came to be held so
-    let mut when: BTreeMap<u32, u32> = BTreeMap::new();
-    when.insert(0, 0);
+    // and when it came to be held so: the latest receipt on its line or of its minter's grant
+    let mut when: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
+    when.insert(0, (0, 0));
     loop {
-        let more: Vec<(u32, u32)> = j.held.iter().filter(|id| !when.contains_key(id)).filter_map(|id| {
+        let more: Vec<(u32, (u32, u32))> = j.held.iter().filter(|id| !when.contains_key(id)).filter_map(|id| {
             let (at, names, ..) = w.rot(*id)?;
             let i = w.item(*id);
-            let first = known.get(&i.signer).map_or(i.recv[v], |k| i.recv[v].max(*k));
+            let first = known.get(&i.signer).map_or((i.recv[v], i.id), |k| (i.recv[v], i.id).max(*k));
             std::iter::once(&at).chain(names).map(|p| when.get(p).copied()).try_fold(first, |a, t| t.map(|t| a.max(t))).map(|t| (*id, t))
         }).collect();
         if more.is_empty() {
@@ -272,7 +286,7 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
     // before the removal's, or at it)
     let hit = |g: &Item, (y, e, rr): (usize, u32, u32)| -> bool {
         y == g.signer && match control {
-            4 => if g.epoch == e { g.recv[v] > when[&rr] } else { !j0.on(g.epoch, e) },
+            4 => if g.epoch == e { (g.recv[v], g.id) > when[&rr] } else { !j0.on(g.epoch, e) },
             _ => !w.covers(rr).contains(&g.id),
         }
     };
@@ -1017,8 +1031,7 @@ mod tests {
     // actor it makes up, and backdates a grant of D to Z at the first epoch, reaching B (offline)
     // before the removal does. The removal's frontier does not cover that grant, so once a node
     // of P holds the removal Z is no node there: its revocation of A stands nowhere and no
-    // honest rotation boxes it (spec/permissions.md §5.4, Following, at a node of P;
-    // issues/forged-minter.md)
+    // honest rotation boxes it (spec/permissions.md §5.4, Following, at a node of P)
     #[test]
     fn a_key_actor_the_removed_node_makes_up_is_no_node() {
         let mut w = World::default();
@@ -1044,7 +1057,6 @@ mod tests {
     // B, unaware of X's removal, rotates and boxes X (stated limit). X grants D to itself at B's
     // epoch, and again sealed as a key actor it made up: neither puts it back on D's roster,
     // so the merge joining B's rotation to the removal boxes the honest nodes alone
-    // (issues/self-readd-at-sibling-epoch.md)
     #[test]
     fn a_removed_node_granting_itself_at_an_unaware_siblings_epoch_stays_off_the_roster() {
         let mut w = World::default();

@@ -686,8 +686,13 @@ impl Engine {
         let Some(tl) = self.core.timelines.get(&target) else { return Ok(None) };
         let own = tl.certificates(&who, &target).commits;
         let mut scope = tl.demotion_scope(self.demotion_probe(who, ops.clone(), tl.all_held()));
+        // a node's removal from its account's devices actor also lists the removed node's own
+        // word on it (inner signature) held here: its commits there it does not list stop
+        // counting (spec/permissions.md §5.4, Following, at a node of P)
+        let removed: BTreeSet<Tid> = ops.iter().filter(|o| o.edge.is_none()).map(|o| o.holder).collect();
+        let keep: BTreeSet<CommitId> = own.iter().copied().chain(self.core.devices_word(&target, &removed)).collect();
         loop {
-            let f = self.frontier_fitted(&scope, as_of, &own)?;
+            let f = self.frontier_fitted(&scope, as_of, &keep)?;
             let probe = self.demotion_probe(who, ops.clone(), osis_perm::Frontier { commits: f.commits.clone() });
             let s = self.core.timelines.get(&target).map(|tl| tl.demotion_scope(probe)).unwrap_or_default();
             if scope.covers(&s) {

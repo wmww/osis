@@ -315,7 +315,8 @@ fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judge
     let received: Vec<u32> = received.into_iter().map(|i| pid(w, i)).collect();
     // a node of P reads who minted each rotation and whom it removes
     let devices = (o < w.np).then(|| {
-        let mut d = Devices { minter: BTreeMap::new(), removes: BTreeMap::new(), grants: BTreeSet::new() };
+        // P's nodes paired at D's creation
+        let mut d = Devices { first: (0..w.np).collect(), ..Devices::default() };
         for (i, it) in w.items.iter().enumerate().filter(|(i, _)| held[*i]) {
             if let Kind::Rotation { new, removes, .. } = &it.kind {
                 d.minter.insert(*new, it.author);
@@ -329,7 +330,10 @@ fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judge
         let rooted = w.rooted(held);
         for y in 0..w.np {
             if let Some(Kind::Rotation { new, .. }) = w.grant_of(&rooted, y).map(|g| &w.items[g].kind) {
-                d.grants.insert((y, *new));
+                // by node 0, a commit of its own
+                let g = u32::MAX - y as u32;
+                d.commits.insert(g, (Some(0), *new));
+                d.grants.insert((g, y));
             }
         }
         d
