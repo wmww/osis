@@ -26,7 +26,7 @@ pub struct InboxThing {
 }
 
 /// The sending node's dialable key and URLs: a dial hint (spec/wire.md §9 position 4).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DialHint {
     pub dialable: [u8; 32],
     pub urls: Vec<String>,

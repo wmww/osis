@@ -43,7 +43,7 @@ use osis_crypto::{NodeRng, SigningSecret};
 use osis_engine::Engine;
 use osis_engine::labeling::Certs;
 use osis_engine::sync::{InboxOpened, PartSet, Path, Promote};
-use osis_label::{ShareLink, StepId};
+use osis_label::{DialHint, ShareLink, StepId};
 use osis_proto::Msg;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -57,14 +57,6 @@ pub struct Signers {
     pub deposit: Option<SigningSecret>,
     /// Its head's delete key, established here: clearing deposits.
     pub delete: Option<SigningSecret>,
-}
-
-/// A dial hint: the sending node's dialable key and URLs (spec/wire.md §9 position 4, a link's
-/// peers, spec/wire.md §10), for dialing only.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct DialHint {
-    pub key: [u8; 32],
-    pub urls: Vec<String>,
 }
 
 /// What this module reads of the engine and the few commands it gives it (the facade,
@@ -166,7 +158,7 @@ impl Ground for Eng<'_> {
         Ok(self.engine.inbox(a))
     }
     fn inbox_blob(&mut self, c: &CommitId, holder: &Tid, rng: &mut dyn NodeRng) -> Result<Option<Vec<u8>>> {
-        Ok(self.engine.inbox_blob(c, holder, rng)?.map(|s| s.blob))
+        Ok(self.engine.inbox_blob(c, holder, rng)?)
     }
     fn signers(&mut self, _s: &SyncId, _actor: Option<&Tid>) -> Result<Signers> {
         not_built("Engine::signers")
@@ -175,7 +167,7 @@ impl Ground for Eng<'_> {
         Ok(Arc::new(self.engine.inbox_actors().keys().copied().collect()))
     }
     fn take_inbox(&mut self, s: &SyncId, b: &BlobId) -> Result<Option<InboxOpened>> {
-        Ok(Some(self.engine.take_inbox(s, b, false)?))
+        Ok(self.engine.take_inbox(s, b, false)?)
     }
     fn blob_commit(&mut self, _s: &SyncId, _b: &BlobId) -> Result<Option<CommitId>> {
         not_built("Engine::blob_commit")

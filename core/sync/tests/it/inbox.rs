@@ -670,7 +670,7 @@ fn inbox_node(writes: bool) -> (T, SyncId) {
 
 fn deposit_inbox_blob(t: &mut T, s: SyncId, tag: u64, c: CommitId, taken: Taken, expiry: u64) -> BlobId {
     let (b, bytes) = blob(tag, 64, Some(expiry));
-    t.g.takes.insert((s, b), InboxOpened { commit: c, taken, hints: vec![], dial: None });
+    t.g.takes.insert((s, b), InboxOpened { commit: Some(c), taken, hints: vec![], dial: None });
     let e = Entry { blob: b, wrap: [5; 57], stamp: None, deposited: true, own: false, role: false, class: Class::Durable, expires: Some(WallMs(expiry)) };
     assert_eq!(t.store.log(&s, e, Some(bytes), None).unwrap(), Code::OK);
     t.settle();
@@ -705,7 +705,7 @@ fn inbox_blob_judged_again_spec_sync_inbox_2() {
     let (mut t, s) = inbox_node(true);
     let b = deposit_inbox_blob(&mut t, s, 1, commit(1), Taken::Waiting, T0 + INBOX_LIFETIME_MS);
     assert!(t.store.entry(&s, &b).unwrap().unwrap().deposited);
-    t.g.takes.insert((s, b), InboxOpened { commit: commit(1), taken: Taken::Applied, hints: vec![], dial: None });
+    t.g.takes.insert((s, b), InboxOpened { commit: Some(commit(1)), taken: Taken::Applied, hints: vec![], dial: None });
     t.settle();
     assert!(t.store.entry(&s, &b).unwrap().unwrap().stamp.is_some());
 }
@@ -739,7 +739,7 @@ fn inbox_work_follows_change_spec_sync_inbox_2() {
         });
         let (b, _) = blob(100, 64, Some(T0 + INBOX_LIFETIME_MS));
         let take = counted(["inbox: held judged"], || {
-            t.g.takes.insert((s, b), InboxOpened { commit: commit(100), taken: Taken::Applied, hints: vec![], dial: None });
+            t.g.takes.insert((s, b), InboxOpened { commit: Some(commit(100)), taken: Taken::Applied, hints: vec![], dial: None });
             t.settle();
         });
         [arrive[0], take[0]]
@@ -903,10 +903,10 @@ fn redeem_survives_restart_spec_sync_inbox_6() {
     let now = t.now();
     let w = t.inbox.redeem_on(&mut Here { g: &mut t.g, store: &mut t.store, now, rng: &mut t.rng }, &link(k));
     assert_eq!(w, Waiting::Pending);
-    assert!(t.inbox.dial_hints().iter().any(|h| h.key == [6; 32]));
+    assert!(t.inbox.dial_hints().iter().any(|h| h.dialable == [6; 32]));
     t.restart();
     assert_eq!(t.g.held_links, vec![k, k], "L held again after the restart");
-    assert!(t.inbox.dial_hints().iter().any(|h| h.key == [6; 32]));
+    assert!(t.inbox.dial_hints().iter().any(|h| h.dialable == [6; 32]));
     t.g.ready.insert(k, true);
     t.settle();
     assert_eq!(t.g.redeemed, vec![k]);

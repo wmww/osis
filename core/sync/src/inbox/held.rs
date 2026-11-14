@@ -258,17 +258,18 @@ fn judge<G: Ground>(g: &mut G, store: &crate::store::Store, inboxes: &StampedSet
     let Some(e) = store.entry(s, b)? else { return Ok(Act::Gone) };
     if inboxes.contains(s) {
         let o = g.take_inbox(s, b)?;
-        let (taken, commit) = (o.as_ref().map(|o| o.taken), o.as_ref().map(|o| o.commit));
+        let (taken, commit) = (o.as_ref().map(|o| o.taken), o.as_ref().and_then(|o| o.commit));
         if e.deposited
             && let Some(o) = &o
             && o.taken == Taken::Applied
+            && let Some(c) = o.commit
             && within_bound(e.expires, now)
-            && stamped.get(&(*s, o.commit)).is_none_or(|x| x == b)
+            && stamped.get(&(*s, c)).is_none_or(|x| x == b)
             && g.signers(s, None)?.stamp.is_some()
         {
-            return Ok(Act::StampInbox(o.commit));
+            return Ok(Act::StampInbox(c));
         }
-        let dial = o.and_then(|o| o.dial).map(|a| DialHint { key: a.key, urls: vec![a.url] });
+        let dial = o.and_then(|o| o.dial);
         return Ok(Act::Inbox { stamped: !e.deposited, taken, commit, dial, expires: e.expires });
     }
     if !e.deposited {
