@@ -11,6 +11,10 @@
 //!
 //! What a memo's function reads elsewhere (a field in no such container) must be immutable;
 //! debug builds compare a hit with a fresh run to find a read that was missed (`Checks`).
+//!
+//! `Effects` turns the same reads into work in proportion to change: it follows keys whose
+//! values an owner acts on and gives those whose reads were written since, from each container's
+//! log of its writes; `Feed` is a reader's cursor over the keys a container added (`effects`).
 
 use std::borrow::Borrow;
 use std::cell::{Cell, RefCell};
@@ -20,13 +24,17 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+mod effects;
+pub use effects::{Effects, Feed};
+
 /// Absent keys share a stamp per bucket of their hash (`Table::absent`). Performance switch: at 1
 /// every removal moves what read any absent or unstamped key; at infinity every removed key keeps a
 /// stamp of its own, so the stamps grow with every key ever removed.
 const ABSENT_BUCKETS: usize = 64;
 
 /// The change stamps of one container: one per key with a stamp of its own, one per bucket of
-/// the other keys, one for the whole.
+/// the other keys, one for the whole; and, while a reader holds a mark on it (`Effects`, `Feed`),
+/// a log of its changes since the oldest mark.
 #[derive(Clone, Debug)]
 struct Table {
     /// Counts changes: the whole container's stamp.
@@ -42,11 +50,38 @@ struct Table {
     /// The prefixes read (`read_prefix`), by length: a byte key's write (`wrote_bytes`) stamps
     /// each of them it starts with.
     prefixes: BTreeMap<usize, std::collections::HashSet<u64>>,
+    /// Each change after the oldest mark, with the `ver` it moved to (in order): kept only while
+    /// a mark is held, so a container nobody follows logs nothing.
+    log: std::collections::VecDeque<(u64, Logged)>,
+    /// The readers' marks (`ver` up to which each read the log), counted.
+    marks: BTreeMap<u64, usize>,
+}
+
+/// One change in a `Table`'s log.
+#[derive(Clone)]
+enum Logged {
+    /// A key written or removed (`present`), by hash; the key itself when it was added through
+    /// `Stamps::wrote_added` (`Feed`).
+    Key { h: u64, present: bool, added: Option<Arc<dyn std::any::Any + Send + Sync>> },
+    /// The container changed but no key's value (`Stamps::moved`).
+    Whole,
+    /// The container changed in a way no key names (`Stamps::wrote_all`, a drop).
+    All,
+}
+
+impl std::fmt::Debug for Logged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Logged::Key { h, present, added } => write!(f, "Key({h:x}, {present}, {})", added.is_some()),
+            Logged::Whole => write!(f, "Whole"),
+            Logged::All => write!(f, "All"),
+        }
+    }
 }
 
 impl Default for Table {
     fn default() -> Table {
-        Table { ver: 0, absent: [0; ABSENT_BUCKETS], keys: HashMap::new(), prefixes: BTreeMap::new() }
+        Table { ver: 0, absent: [0; ABSENT_BUCKETS], keys: HashMap::new(), prefixes: BTreeMap::new(), log: Default::default(), marks: BTreeMap::new() }
     }
 }
 
@@ -58,8 +93,10 @@ impl Table {
         }
     }
 
-    fn wrote(&mut self, h: u64, present: bool) {
+    /// Key `h` written or removed; `added`: the key, for a `Feed`, when it was absent before.
+    fn wrote(&mut self, h: u64, present: bool, added: Option<Arc<dyn std::any::Any + Send + Sync>>) {
         self.ver += 1;
+        self.log(Logged::Key { h, present, added });
         let v = self.ver;
         if present {
             self.keys.insert(h, v);
@@ -71,6 +108,43 @@ impl Table {
                 *a = v;
             }
         }
+    }
+
+    /// Logs change `e` at `ver`, while some reader holds a mark.
+    fn log(&mut self, e: Logged) {
+        if !self.marks.is_empty() {
+            self.log.push_back((self.ver, e));
+        }
+    }
+
+    /// A reader's mark at `at`: the log keeps every change after it.
+    fn mark(&mut self, at: u64) {
+        *self.marks.entry(at).or_default() += 1;
+    }
+
+    /// Drops a reader's mark at `at`, and the log no mark needs any more.
+    fn unmark(&mut self, at: u64) {
+        if let std::collections::btree_map::Entry::Occupied(mut e) = self.marks.entry(at) {
+            *e.get_mut() -= 1;
+            if *e.get() == 0 {
+                e.remove();
+            }
+        }
+        let oldest = self.marks.keys().next().copied().unwrap_or(u64::MAX);
+        while self.log.front().is_some_and(|(v, _)| *v <= oldest) {
+            self.log.pop_front();
+        }
+    }
+
+    /// The changes after `at`, and the mark moved from `at` to now.
+    fn read_log(&mut self, at: &mut u64) -> Vec<Logged> {
+        let start = self.log.partition_point(|(v, _)| *v <= *at);
+        let out = self.log.iter().skip(start).map(|(_, e)| e.clone()).collect();
+        let now = self.ver;
+        self.mark(now);
+        self.unmark(*at);
+        *at = now;
+        out
     }
 }
 
@@ -106,7 +180,7 @@ pub struct Stamps(Arc<Mutex<Table>>);
 impl Stamps {
     /// Key `k` was written (`present`) or removed.
     pub fn wrote<Q: Hash + ?Sized>(&self, k: &Q, present: bool) {
-        lock(&self.0).wrote(hash(k), present);
+        lock(&self.0).wrote(hash(k), present, None);
     }
 
     /// `k`'s stamp key.
@@ -116,24 +190,41 @@ impl Stamps {
 
     /// `wrote` of a key named by its stamp key.
     pub fn wrote_key(&self, k: StampKey, present: bool) {
-        lock(&self.0).wrote(k.0, present);
+        lock(&self.0).wrote(k.0, present, None);
     }
 
     /// Byte key `k` was written or removed: moves what read it and what read a prefix of it
     /// (`read_prefix`).
     pub fn wrote_bytes(&self, k: &[u8], present: bool) {
         let mut t = lock(&self.0);
-        t.wrote(hash(k), present);
+        t.wrote(hash(k), present, None);
         let v = t.ver;
         let under: Vec<u64> = t.prefixes.iter().filter_map(|(n, ps)| k.get(..*n).map(prefix_hash).filter(|h| ps.contains(h))).collect();
         for h in under {
             t.keys.insert(h, v);
+            t.log(Logged::Key { h, present: true, added: None });
         }
+    }
+
+    /// `wrote(k, present)` by a container that knows whether `k` was absent before (`added`):
+    /// a `Feed` on it is given `k`.
+    pub fn wrote_added<Q: Hash + Clone + Send + Sync + 'static>(&self, k: &Q, present: bool, added: bool) {
+        let mut t = lock(&self.0);
+        // the key itself goes to the log only while a reader may take it
+        let key = (added && present && !t.marks.is_empty()).then(|| Arc::new(k.clone()) as Arc<dyn std::any::Any + Send + Sync>);
+        t.wrote(hash(k), present, key);
+    }
+
+    /// A reader's cursor over the keys this container adds from now on (`wrote_added`).
+    pub fn feed<K: Clone + 'static>(&self) -> Feed<K> {
+        Feed::new(self.0.clone())
     }
 
     /// The container changed, but no key's value: moves only what read it whole.
     pub fn moved(&self) {
-        lock(&self.0).ver += 1;
+        let mut t = lock(&self.0);
+        t.ver += 1;
+        t.log(Logged::Whole);
     }
 
     /// The container changed in a way no key names.
@@ -142,6 +233,7 @@ impl Stamps {
         t.ver += 1;
         t.absent = [t.ver; ABSENT_BUCKETS];
         t.keys.clear();
+        t.log(Logged::All);
     }
 
     /// Key `k`'s stamp now, read by no memo: equal at two times, `k` was not written or removed
@@ -246,6 +338,7 @@ impl Drop for Stamps {
         t.ver = u64::MAX;
         t.absent = [u64::MAX; ABSENT_BUCKETS];
         t.keys.clear();
+        t.log(Logged::All);
     }
 }
 
@@ -813,6 +906,12 @@ impl Clock {
             self.ahead.borrow_mut().insert(k);
         }
         self.now
+    }
+
+    /// The earliest time an `until` reader's answer stops holding, if any is ahead: when a driver
+    /// next sets the clock to move something. A reader gone since leaves a wake that moves nothing.
+    pub fn next(&self) -> Option<u64> {
+        self.ahead.borrow().first().copied()
     }
 
     pub fn set(&mut self, now: u64) {

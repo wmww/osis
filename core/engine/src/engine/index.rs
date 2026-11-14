@@ -522,7 +522,7 @@ fn put_rows<K: Rec>(txn: &mut Transaction<'_>, name: &[u8], keys: Vec<K>, value:
 }
 
 /// Writes what the running transaction changed of `m` (`all`: every entry) to index `name`.
-fn put_map<K: Rec + Ord + Clone + std::hash::Hash, V: Rec + Clone>(txn: &mut Transaction<'_>, name: &[u8], m: &JMap<K, V>, all: bool) -> Result<()> {
+fn put_map<K: Rec + Ord + Clone + std::hash::Hash + Send + Sync + 'static, V: Rec + Clone>(txn: &mut Transaction<'_>, name: &[u8], m: &JMap<K, V>, all: bool) -> Result<()> {
     let keys = if all { m.keys().cloned().collect() } else { m.logged() };
     put_rows(txn, name, keys, |k| m.get(k).map(enc))
 }

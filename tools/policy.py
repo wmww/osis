@@ -294,7 +294,7 @@ def peer_ticks():
 COPY_HOOKS = re.compile(r"\btest_copy\b|\btest_copy_boxed\b|\bcopying::|\btest_subscribe_with\b")
 COPY_DEFS = {"core/base/src/copying.rs", "core/base/src/lib.rs", "core/crypto/src/rng.rs", "core/store/src/memory.rs", "core/store/src/root.rs",
              "core/store/src/backend.rs", "core/store/src/pager.rs", "core/store/src/store.rs", "core/engine/src/engine/testing.rs",
-             "core/engine/src/engine/mod.rs", "core/base/src/memo.rs", "core/engine/src/events/mod.rs",
+             "core/engine/src/engine/mod.rs", "core/base/src/memo/mod.rs", "core/engine/src/events/mod.rs",
              "core/engine/src/local_peer.rs", "core/engine/src/tests_copy.rs", "core/node/src/sync/testing.rs", "core/host/src/store.rs", "core/host/src/hub.rs",
              "core/store/src/cipher.rs", "core/host/src/store/engine.rs",
              "core/osis/src/testing.rs"}

@@ -32,7 +32,7 @@ pub(crate) trait Journaled {
 /// the first: a value changed many times in one transaction, as a value-less list growing by one
 /// per expiry in a round, costs one copy, not one per change).
 #[derive(Clone, Debug)]
-pub struct JMap<K: Ord + Clone + Hash, V: Clone> {
+pub struct JMap<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> {
     map: BTreeMap<K, V>,
     stamps: Stamps,
     log: Vec<(K, Option<V>)>,
@@ -40,13 +40,13 @@ pub struct JMap<K: Ord + Clone + Hash, V: Clone> {
     seen: BTreeSet<K>,
 }
 
-impl<K: Ord + Clone + Hash, V: Clone> Default for JMap<K, V> {
+impl<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> Default for JMap<K, V> {
     fn default() -> Self {
         JMap { map: BTreeMap::new(), stamps: Stamps::default(), log: Vec::new(), seen: BTreeSet::new() }
     }
 }
 
-impl<K: Ord + Clone + Hash, V: Clone> Deref for JMap<K, V> {
+impl<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> Deref for JMap<K, V> {
     type Target = BTreeMap<K, V>;
     fn deref(&self) -> &BTreeMap<K, V> {
         self.stamps.read_all();
@@ -54,7 +54,7 @@ impl<K: Ord + Clone + Hash, V: Clone> Deref for JMap<K, V> {
     }
 }
 
-impl<K: Ord + Clone + Hash, V: Clone> JMap<K, V> {
+impl<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> JMap<K, V> {
     /// Journals `k`'s value before this transaction's first change of it.
     fn note(&mut self, k: &K, old: impl FnOnce(&BTreeMap<K, V>) -> Option<V>) {
         if !self.seen.contains(k) {
@@ -78,7 +78,7 @@ impl<K: Ord + Clone + Hash, V: Clone> JMap<K, V> {
     }
     pub fn insert(&mut self, k: K, v: V) -> Option<V> {
         self.note(&k, |m| m.get(&k).cloned());
-        self.stamps.wrote(&k, true);
+        self.stamps.wrote_added(&k, true, !self.map.contains_key(&k));
         self.map.insert(k, v)
     }
     pub fn remove(&mut self, k: &K) -> Option<V> {
@@ -87,6 +87,11 @@ impl<K: Ord + Clone + Hash, V: Clone> JMap<K, V> {
             self.stamps.wrote(k, false);
         }
         self.map.remove(k)
+    }
+    /// A reader's cursor over the keys added from now on (`memo::Feed`), an undo restoring one
+    /// included; one added and then undone is given too (the reader finds it absent).
+    pub fn feed(&self) -> osis_base::memo::Feed<K> {
+        self.stamps.feed()
     }
     /// What the running transaction changed, each key with its value before it.
     pub fn before(&self) -> BTreeMap<&K, Option<&V>> {
@@ -108,7 +113,7 @@ impl<K: Ord + Clone + Hash, V: Clone> JMap<K, V> {
     /// The value of `k`, inserted from `default` if absent, to change in place.
     pub fn entry_or(&mut self, k: K, default: impl FnOnce() -> V) -> &mut V {
         self.note(&k, |m| m.get(&k).cloned());
-        self.stamps.wrote(&k, true);
+        self.stamps.wrote_added(&k, true, !self.map.contains_key(&k));
         self.map.entry(k).or_insert_with(default)
     }
     /// Changes the value of `k` (from `default` if absent) by `f`, journaled only if it changed.
@@ -120,8 +125,8 @@ impl<K: Ord + Clone + Hash, V: Clone> JMap<K, V> {
         let mut v = old.clone().unwrap_or_else(default);
         f(&mut v);
         if old.as_ref() != Some(&v) {
+            self.stamps.wrote_added(&k, true, old.is_none());
             self.note(&k, |_| old);
-            self.stamps.wrote(&k, true);
             self.map.insert(k, v);
         }
     }
@@ -158,7 +163,7 @@ impl<K: Ord + Clone + Hash, V: Clone> JMap<K, V> {
     }
 }
 
-impl<K: Ord + Clone + Hash + Debug, V: Clone + Debug> Journaled for JMap<K, V> {
+impl<K: Ord + Clone + Hash + Send + Sync + 'static + Debug, V: Clone + Debug> Journaled for JMap<K, V> {
     #[cfg(test)]
     fn contents(&self) -> String {
         format!("{:?}", self.map)
@@ -177,7 +182,7 @@ impl<K: Ord + Clone + Hash + Debug, V: Clone + Debug> Journaled for JMap<K, V> {
         self.seen.clear();
         while self.log.len() > m {
             let Some((k, old)) = self.log.pop() else { break };
-            self.stamps.wrote(&k, old.is_some());
+            self.stamps.wrote_added(&k, old.is_some(), !self.map.contains_key(&k));
             match old {
                 Some(v) => self.map.insert(k, v),
                 None => self.map.remove(&k),
@@ -517,6 +522,29 @@ mod tests {
         t.insert(2);
         t.rollback_to(0);
         assert_eq!(*t, BTreeSet::from([1]));
+    }
+
+    // spec: none (internal: notes/engine.md, Derived values). A map's feed gives each key added
+    // since its last read, whatever wrote it: an insert, an entry made, an upsert, an undo
+    // restoring a removed key; a change of a key present gives nothing.
+    #[test]
+    fn a_maps_feed_gives_the_keys_added() {
+        let mut m: JMap<u8, u8> = JMap::default();
+        m.insert(1, 1);
+        let mut f = m.feed();
+        m.insert(1, 2);
+        m.insert(2, 2);
+        *m.entry_or(3, || 3) += 1;
+        m.upsert(4, || 0, |v| *v = 4);
+        assert_eq!(f.added(), [2, 3, 4]);
+        m.commit();
+        let mark = m.mark();
+        m.remove(&2);
+        m.rollback_to(mark);
+        assert_eq!(f.added(), [2], "restored by the undo");
+        m.insert(5, 5);
+        m.rollback_to(mark);
+        assert_eq!(f.added(), [5], "added, then undone");
     }
 
     // spec: none (internal: notes/engine.md, Atomic steps). A rollback to a mark (a failed step, `Tx::step`) restores the contents at the mark: what
