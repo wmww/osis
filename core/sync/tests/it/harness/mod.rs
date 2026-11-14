@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 
 pub mod reach;
+pub mod scripted;
 
 use osis_base::testenv::Script;
 use osis_base::{Clock, ManualClock, Tid, WallMs};

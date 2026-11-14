@@ -5,4 +5,5 @@ mod harness;
 mod session;
 mod unread;
 mod store;
+mod opens;
 mod world;

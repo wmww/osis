@@ -32,14 +32,7 @@ osis-engine::body_min_ts  deferred: durable-compaction/chunk-blind (retention/bo
 osis-base::DEPOSITS_WAITING_BYTES  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-commit::decode_record_blob  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-commit::encode_record_blob  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-crypto::beacon_hit  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-crypto::beacon_reply  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-crypto::connection_order  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-crypto::members_digest  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-crypto::pair_key  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-crypto::resume_tag  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-crypto::resumed_tag  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-crypto::verify_open  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::account_rotations  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::all_forgettable  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::apply_waiting_memory  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -166,9 +159,6 @@ osis-proto::TYPE  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its c
 osis-proto::UNKNOWN_ACTOR  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::UNKNOWN_THING  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::UNSYNCED  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::beacon_value  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::decode_gcs  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-proto::filter_width  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-proto::stream_event_len  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
 osis-schema::HOST  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-schema::TID  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -271,22 +261,20 @@ osis-engine::write_addenda  test hook (tests/it)
 
 # The sync rebuild's skeleton (notes/sync-boundary.md): each module's owner uses or removes these.
 osis-engine::blob_parts  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::covers_departures  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::delivery_taken  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::fall_mark  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::forget_destroyed  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::held_elsewhere  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::inbox_blob  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::invitations  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::judge_peer  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::note_complete_pass  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::own_commits  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::promotable  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
-osis-engine::read_credentials  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::seal_body  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::sync_bodies  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::take_inbox  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-engine::waiting_held_elsewhere  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
+osis-sync::agreed  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); streams gates its Pull on it (spec/sync-opens.md §3)
 osis-sync::drop_entry  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::ItemAnswer  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)
 osis-sync::SourceEvent  deferred: sync rebuild skeleton (issues/sync-rewrite.md Phase 3)

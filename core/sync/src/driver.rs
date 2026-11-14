@@ -176,7 +176,7 @@ impl Node {
                     let mut cx = cx!(self, out);
                     let sessions = &mut self.driver.sessions;
                     match m.to() {
-                        Some(To::Opens) => self.opens.on_message(&mut cx, sessions, conn, m, &mut moved),
+                        Some(To::Opens) => self.opens.on_message(&mut cx, sessions, &self.unread, conn, m, &mut moved),
                         Some(To::Streams) => self.streams.on_message(&mut cx, sessions, &self.opens, conn, m),
                         Some(To::Read) => self.read.on_message(&mut cx, sessions, conn, m),
                         Some(To::Inbox) => self.inbox.on_message(&mut cx, sessions, conn, m),
@@ -186,6 +186,10 @@ impl Node {
                         }
                     }
                     self.moved(&mut moved, out);
+                    if self.driver.sessions.get(conn).is_some_and(|s| s.closing().is_some()) {
+                        close = true;
+                        break;
+                    }
                 }
             }
             Err(_) => close = true,

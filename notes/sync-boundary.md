@@ -84,16 +84,23 @@ pub struct Close(pub &'static str);
 **2. `opens`: records, agreement, the shared set** (spec/sync-opens.md §2-§6, spec/sync-ids.md §6 Walk). State: records (durable, in the store's record rows, `RECORD_BUDGET` LRU), per connection the members, filter generations sent and received, Offer in flight, walk state; `changed_at` per S (durable). Depends on session, store, unread (its credentials), engine (J, credentials, known actors).
 ```rust
 impl Opens {
-    pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, conn: ConnId, m: Incoming, moved: &mut Vec<Moved>);  // Proved (Resume / NoRecord, then Digest), Resume, Digest, Members, Beacons, Offer, Shared, Lost
-    pub fn on_closed(&mut self, cx: &mut Cx, conn: ConnId, moved: &mut Vec<Moved>);   // each member Left
+    pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, unread: &Unread, conn: ConnId, m: Incoming, moved: &mut Vec<Moved>);  // Proved (Resume / NoRecord, then Digest), Resume(d), Digest, Members, Beacons, Offer, Shared, Lost
+    pub fn on_closed(&mut self, cx: &mut Cx, conn: ConnId, moved: &mut Vec<Moved>);   // each member Left; the record keeps them
     pub fn members(&self, conn: ConnId) -> &BTreeMap<SyncId, Member>;
-    pub fn record(&self, conn: ConnId) -> Option<RecordId>;     // where streams, read and store keep their per-peer rows
+    pub fn record(&self, conn: ConnId) -> Option<RecordId>;     // where streams, read and store keep their per-peer rows (none: no record kept)
+    pub fn agreed(&self, conn: ConnId) -> bool;                 // streams' Pull gate (§3 Agreement)
+    pub fn stopped(&self, conn: ConnId, s: &SyncId) -> Option<&Cursor>;   // where a member that left stopped (its rejoin)
+    pub fn reported(&mut self, ctx: &mut opens::Ctx, conn: ConnId, s: SyncId, pos: Position, cursor: Option<Cursor>, moved: &mut Vec<Moved>);  // streams' reported position: an ended member at its until closes with Lost
     pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, unread: &Unread, moved: &mut Vec<Moved>) -> Result<bool>;
 }
-pub enum Moved { Joined(ConnId, SyncId), Left(ConnId, SyncId) }   // Left: ended to its until, closed, or the connection ended
+pub enum Moved { Joined(ConnId, SyncId), Left(ConnId, SyncId) }   // Left: closed, or the connection ended
 pub struct Member { pub class: SourceClass, pub by: Credential, pub until: Option<Position>, pub step: Option<StepId> }
+pub trait Wire { fn bind(&self, c) -> Option<(Bind, Proven)>; fn id(&mut self, c) -> Id; fn send(&mut self, c, m: Msg); fn close(&mut self, c, why) }   // Sessions; a test's Pipe
+pub trait Holds { .. }   // what the node holds per S (Creds: shows, tests, step) and J; NodeHolds over the engine and unread; a test's Table
 ```
-Settle: per S, `admissible(s)` is an effect over the engine's `read_credentials(s)` or unread's `credentials(s)`; a moved value advances `changed_at(s)`, re-judges members of S on every connection (ending or closing them), and makes filter additions and tests due. The durable `changed_at` row keeps the digest of the value it was advanced for, so a restart advances it only for a value that moved.
+The core (`Opens::message`, `tick`, `closed`) runs over `opens::Ctx { holds: &mut dyn Holds, wire: &mut dyn Wire, now }`, so the rules run against scripted peers (core/sync/tests/it/harness/scripted.rs) before the session and the engine facade are built. Session gives opens `Session::bind` (role, both Hello challenges, the listener's static key), `shared_id`, `send` and `close` (the driver closes a connection a module marked after its message).
+
+Settle: `NodeHolds::due` follows `sync_set` and, per S of it, the digest of its credentials (from the engine's `read_credentials(s)` or unread's `credentials(s)`) as `osis_base::memo::Effects`; a moved value advances `changed_at(s)`, re-judges members of S on the connections holding it (`holding`), and makes a filter addition and a test due on each connection. The durable `changed_at` row keeps the digest of the value it was advanced for, so a restart advances it only for a value that moved. Not wired yet: records and `changed_at` are in memory until the store gives a transaction handle.
 
 **3. `store`: the store per sync ID** (spec/sync-ids.md §5-§6, spec/sync-streams.md §3, spec/sync-inbox.md §3 Deposits, spec/sync-judgement.md §4 stand state). State: entries, tombstones, blob bytes once per node, paths (steps, claim sets), the node log (osis-store `nodelog`, with a per-sync-ID index so a join costs that sync ID's events), usage per sync ID against the caps and the deposit budget, peer-budget charges, the stand rows a source's record keeps for `read`; ephemeral entries, their tombstones, bytes and the log's memory part in memory. Implements `osis_store::CipherHost`, so the engine stores and reads blob bytes through it: `Store` is a cheap handle over one locked store, held by the engine's ciphertext door and by `Cx`; the engine locks it only inside its own transactions, sync only between engine calls, so one step never holds both. Every operation is one transaction of the underlying store (crash safety is its), and every row change stamps. Learns its holdings from `Engine::sync_set` and its caps from `Engine::caps` in `settle`. Depends on osis-store, osis-label crypto, osis-proto's codes and items. Decrypts nothing.
 ```rust
