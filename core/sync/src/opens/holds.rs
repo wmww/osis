@@ -175,6 +175,10 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
                 for st in &rc.statics {
                     c.shows.push((Shown::Static(*st), None));
                 }
+                // the static entries of the key actors it acts for (its link, spec/sync-opens.md §4)
+                for k in &rc.acting {
+                    c.tests.push((Tested::Static { key: k.clone(), step: None }, None));
+                }
                 // the sync proof of the newest recorded step's sync key (spec/sync-opens.md §4)
                 if let (Some(head), Some((id, p))) = (&rc.head, rc.proofs.first())
                     && head.id() == *id
@@ -274,12 +278,25 @@ impl Holds for NodeHolds<'_, '_> {
         None
     }
 
-    fn grant(&mut self, _s: &SyncId, _entry: &[u8; 32]) -> Option<Grant> {
-        None
+    fn grant(&mut self, s: &SyncId, entry: &[u8; 32]) -> Option<Grant> {
+        // the path this node keeps: a reader's recorded one, else the one registered here
+        let steps: Vec<(Step, Option<osis_label::ClaimSet>)> = match self.cx.engine.sync_holding(s).ok()?? {
+            (_, Holding::Read) => path_of(self.cx, s)?.steps.clone(),
+            (_, Holding::Unread) => self.cx.store.path(s).ok()??.steps.clone(),
+        };
+        let (_, claims) = steps.last()?;
+        let entry_box = claims.as_ref()?.entries.get(entry)?.clone();
+        Some(Grant { entry_box: Some(entry_box), steps: steps.into_iter().map(|(st, _)| st).collect() })
     }
 
-    fn take_grant(&mut self, _s: &SyncId, _entry: &[u8; 32], _grant: &Grant) -> Option<[u8; 32]> {
-        None
+    fn take_grant(&mut self, s: &SyncId, entry: &[u8; 32], grant: &Grant) -> Option<[u8; 32]> {
+        osis_label::verify_path(s, &grant.steps).ok()?;
+        let head = grant.steps.last()?;
+        let (t, _) = self.cx.engine.sync_holding(s).ok()??;
+        let secrets = self.cx.engine.open_entry_box(s, &t, head, entry, grant.entry_box.as_ref()?).ok()??;
+        // the box's sync secret derives the head's sync key (spec/sync-opens.md §5)
+        let key = osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, &secrets.sync.1).verifying_key();
+        (key == head.keys.sync).then(|| key.to_bytes())
     }
 
     fn behind(&mut self, item: &BehindItem) -> SharedItem {

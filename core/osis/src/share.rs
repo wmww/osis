@@ -694,12 +694,7 @@ impl Osis {
         let me = self.me();
         let peer = self.own_peer();
         let spec = flows::LinkSpec { target, role, until: opts.until.map(|t| osis_base::WallMs(t.0)), hosts: Vec::new(), peers: vec![peer], single_use: opts.single_use };
-        let (link, keep, _) = self.engine(|e| e.create_link(&me, &spec)).map_err(needs_admin)?;
-        // the seed thing in the home group: every node of this account holds it and may
-        // finalize the link (spec/sync-inbox.md §6)
-        let mut w = self.write();
-        w.group(self.home()).add(Member::Item(keep))?;
-        w.commit()?;
+        let (link, _, _) = self.engine(|e| e.create_link(&me, &spec)).map_err(needs_admin)?;
         Ok(ShareLink(link.to_text().map_err(bad("link"))?))
     }
 

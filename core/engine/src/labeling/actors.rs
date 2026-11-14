@@ -186,6 +186,9 @@ impl Engine {
     /// again at the next ask.
     pub(crate) fn owned_sync_ids(&mut self, g: &Tid) -> Result<Arc<Vec<OwnedSyncId>>> {
         if self.core.created(g).is_none() {
+            if let Some(h) = followed(self, g) {
+                return Ok(Arc::new(vec![h]));
+            }
             return Ok(self.core.ix.destroyed_sync_ids.get(g).cloned().unwrap_or_default());
         }
         Memo::get_in(self, |e| &e.core.sync_ids, g, |e| {
@@ -201,7 +204,19 @@ impl Engine {
             {
                 out.push(OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), hint: true });
             }
+            if out.is_empty()
+                && let Some(h) = followed(e, g)
+            {
+                out.push(h);
+            }
             Ok::<_, crate::error::Error>(Arc::new(out))
         })
     }
+}
+
+/// A link being redeemed (`Engine::follow_link`): K's sync ID from its link text, followed with no
+/// recorded path while no applied `sync.0` records it, as a hint is (spec/sync-set.md §2).
+fn followed(e: &Engine, k: &Tid) -> Option<OwnedSyncId> {
+    let (s, _) = e.core.followed_links.get(k).copied()?;
+    (!crate::sync::inbox::recorded(e, &s)).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), hint: true })
 }

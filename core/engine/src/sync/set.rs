@@ -55,7 +55,9 @@ impl Engine {
             Some(root) => self.closure(&root),
             None => Arc::new(BTreeSet::new()),
         };
-        let emptying: Vec<Tid> = self.core.ix.destroyed_sync_ids.keys().filter(|t| self.core.ix.destroyed_secrets.contains(t)).copied().collect();
+        let mut emptying: Vec<Tid> = self.core.ix.destroyed_sync_ids.keys().filter(|t| self.core.ix.destroyed_secrets.contains(t)).copied().collect();
+        // links being redeemed (spec/sync-set.md §2)
+        emptying.extend(self.core.followed_links.keys().copied());
         if emptying.iter().all(|t| closure.contains(t)) {
             return Ok(closure);
         }
@@ -78,6 +80,10 @@ impl Engine {
             && let Some(home) = home_of(&self.owned_sync_ids(t)?)
         {
             return Ok(ThingSync::Read(vec![home]));
+        }
+        // a link being redeemed: its sync ID read while followed, whatever is held of K yet
+        if let Some((s, _)) = self.core.followed_links.get(t).copied() {
+            return Ok(ThingSync::Read(vec![s]));
         }
         if let Some(r) = self.core.ix.sync_records.get(t).cloned() {
             // a record's sync IDs are its payloads' word (spec/sync-inbox.md §2): one a held
@@ -135,6 +141,12 @@ impl Engine {
         }
         for k in self.static_listed(&t)? {
             c.statics.insert(osis_crypto::static_entry(s, &k));
+        }
+        if let Some((fs, l)) = self.core.followed_links.get(&t).copied()
+            && fs == *s
+            && let Some(id) = self.core.key_actors.get(&l)
+        {
+            c.acting.push(id.keys().signing.clone());
         }
         c.roster = self.roster_digest(&t);
         if let Some(e) = self.core.epochs(&t) {
@@ -210,6 +222,7 @@ impl Engine {
         let mut things: Vec<Tid> = self.core.ix.sync_recorders.get(s).into_iter().flatten().copied().collect();
         // a thing a taken inbox blob named it for (O(hints held))
         things.extend(self.core.ix.inbox_hints.iter().filter(|(_, x)| x.0 == *s).map(|(t, _)| *t));
+        things.extend(self.core.followed_links.iter().filter(|(_, x)| x.0 == *s).map(|(t, _)| *t));
         for t in things {
             if self.owned_sync_ids(&t)?.iter().any(|o| o.id == *s) {
                 return Ok(Some(t));

@@ -180,7 +180,7 @@ impl Step {
 
 /// Verifies a registration path: the genesis step of `label`, then each step a child of the one
 /// before (spec/sync-ids.md §3).
-pub(crate) fn verify_path(label: &SyncId, path: &[Step]) -> Result<(), Error> {
+pub fn verify_path(label: &SyncId, path: &[Step]) -> Result<(), Error> {
     let (first, rest) = path.split_first().ok_or(Error::Verify("empty path"))?;
     if first.label != *label {
         return Err(Error::Verify("path of another label"));

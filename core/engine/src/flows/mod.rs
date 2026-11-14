@@ -380,6 +380,24 @@ impl Engine {
         Ok(t)
     }
 
+    /// Follows a link being redeemed (spec/sync-set.md §2, spec/sync-inbox.md §6): holds its key
+    /// L (`hold_key_actor`) and keeps K's sync ID from the link text in the sync set, read,
+    /// until `unfollow_link`. Returns L.
+    pub fn follow_link(&mut self, link: &osis_label::ShareLink) -> Result<Tid> {
+        let l = self.hold_key_actor(link.seed.clone())?;
+        if self.core.followed_links.get(&link.k) != Some(&(link.k_label, l)) {
+            self.core.followed_links.insert(link.k, (link.k_label, l));
+        }
+        Ok(l)
+    }
+
+    /// Stops following link K (its join is held elsewhere) and forgets its key (spec/permissions.md §7).
+    pub fn unfollow_link(&mut self, k: &Tid) {
+        if let Some((_, l)) = self.core.followed_links.remove(k) {
+            self.drop_key_actor(&l);
+        }
+    }
+
     /// Whether key actor `t` is a node (`is_node`): it has a `node.0` card here.
     pub fn is_node(&mut self, t: &Tid) -> Result<bool> {
         let t = *t;

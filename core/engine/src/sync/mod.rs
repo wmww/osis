@@ -218,6 +218,9 @@ pub struct ReadCredentials {
     pub read_secrets: Vec<(Epoch, Secret32)>,
     /// Static entries of S's roster (link keys).
     pub statics: BTreeSet<[u8; 32]>,
+    /// The signing keys of the key actors this node acts for on S (the link it redeems): their
+    /// static entries are tested (spec/sync-opens.md §4).
+    pub acting: Vec<osis_crypto::SigningSecret>,
     /// A digest of S's roster as J judges it (its reader actor's holders for keys, each with its
     /// role): moves with every grant, change or removal, rotated or not (spec/sync-opens.md §4).
     pub roster: [u8; 32],
@@ -474,16 +477,13 @@ impl Engine {
     /// ids.md §3 Entry boxes), when it is a key actor this node holds (a link key): the secrets it
     /// carries, each checked to name its epoch of `thing` and learned (`learn_secret`). `None`
     /// when no held key actor has that entry or the box does not open.
-    pub fn open_entry_box(&mut self, s: &SyncId, thing: &Tid, step: &Step, entry: &[u8; 32], sealed: &[u8]) -> Result<Option<EntryBoxSecrets>> {
-        use osis_schema::Codec;
-        let Ok(v) = osis_base::decode(sealed, &osis_base::Limits { max_depth: 8, max_bytes: sealed.len() }) else { return Ok(None) };
-        let Ok(b) = osis_schema::core_types::SecretBox::from_value(&v) else { return Ok(None) };
+    pub fn open_entry_box(&mut self, s: &SyncId, thing: &Tid, step: &Step, entry: &[u8; 32], b: &osis_schema::core_types::SecretBox) -> Result<Option<EntryBoxSecrets>> {
         let ids: Vec<Arc<crate::identity::Identity>> = self.core.key_actors.values().cloned().collect();
         for id in ids {
             if osis_crypto::static_entry(s, &id.keys().signing.verifying_key()) != *entry {
                 continue;
             }
-            let Ok(item) = osis_label::open_entry_box(&b, step, &id.keys().kem, thing) else { return Ok(None) };
+            let Ok(item) = osis_label::open_entry_box(b, step, &id.keys().kem, thing) else { return Ok(None) };
             self.learn_secret(thing, osis_base::Role::Read, item.epoch, item.secret.clone())?;
             if let Some((e, x)) = &item.earlier {
                 self.learn_secret(thing, osis_base::Role::Read, *e, x.clone())?;

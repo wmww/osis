@@ -519,6 +519,22 @@ impl World {
         self.write(i, |e| e.publish_reach(key, items)).expect("publish reach");
     }
 
+    /// Node `i`'s read link to `target` as the product's `make_link` makes it (spec/wire.md §10:
+    /// the node's dialable key and where it is reached, as first-contact hints).
+    pub fn make_link(&mut self, i: usize, target: Tid, role: osis_base::Role) -> osis_label::ShareLink {
+        let me = self.node(i).account.expect("an account");
+        let peer = osis_label::Peer { dialable: self.node(i).key.0, relays: self.net.reach.items(i) };
+        let spec = osis_engine::flows::LinkSpec { target, role, until: None, hosts: Vec::new(), peers: vec![peer], single_use: false };
+        self.write(i, |e| e.create_link(&me, &spec)).expect("a link").0
+    }
+
+    /// Node `i` redeems `link` (`Node::redeem`), then it is stepped.
+    pub fn redeem(&mut self, i: usize, link: &osis_label::ShareLink) -> osis_sync::types::Waiting {
+        let w = self.nodes.get_mut(i).expect("no such node").node.redeem(link);
+        self.deliver(i, Input::Wrote);
+        w
+    }
+
     /// A new node with no account, placed and listening as `add_node`'s.
     pub fn add_bare_node(&mut self) -> usize {
         let i = self.nodes.len();

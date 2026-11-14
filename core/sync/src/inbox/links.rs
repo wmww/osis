@@ -1,10 +1,11 @@
 //! First contact through a link (spec/sync-inbox.md §6), on the redeemer's side.
 //!
-//! `redeem` keeps the link durably (store rows `I/r/`, shredded: they hold the seed) and holds
-//! link key L for this start, so the node proves L, opens K by L's static entry (opens) and its
-//! boxes open; the sharer's dialable key and relays are dial hints. Once K's roster here lists L
+//! `redeem` keeps the link durably (store rows `I/r/`, shredded: they hold the seed) and follows
+//! it in the engine for this start (`Engine::follow_link`: L held, K's sync ID read in the sync
+//! set), so the node proves L, opens K by L's static entry (opens) and its boxes open; the sharer's dialable key and relays are dial hints. Once K's roster here lists L
 //! the join is written (`Engine::redeem`), once; the link is kept, and L held at every start,
-//! until the join is held at a source (a redeemer proves L until its join is there). So a redeem
+//! until the join is held at a source (a redeemer proves L until its join is there); then it is
+//! unfollowed and L forgotten. So a redeem
 //! dropped or a restart before the join reached the sharer's node still completes
 //! (`redeem-dropped-before-delivery`). "Held at a source" is status's view (spec/sync-status.md
 //! §2).
@@ -80,7 +81,7 @@ impl Redemptions {
     }
 
     fn follow(&mut self, h: &mut Here<'_>, k: Tid, p: Pending) -> Result<()> {
-        h.engine.hold_key_actor(p.link.seed.clone())?;
+        h.engine.follow_link(&p.link)?;
         match p.joined {
             None => self.ready.want(k),
             Some(_) => self.held.want(k),
@@ -132,6 +133,7 @@ impl Redemptions {
             let Some((_, true)) = settled(&mut self.held, &k, false, || Ok(status.is_some_and(|st| st.held(&c))))? else { continue };
             self.held.unwant(&k);
             self.pending.remove(&k);
+            h.engine.unfollow_link(&k);
             if self.hints.contains_key(&k) {
                 self.hints.remove(&k);
             }

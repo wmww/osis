@@ -268,7 +268,7 @@ pub fn world(seed: u64, n: usize) -> World {
 }
 
 /// Every account becomes every other's contact: each grants every other read on its profile,
-/// and each node files its own profile and every other account's in its account's D (what
+/// and each node files every other account's profile in its account's D (what
 /// importing a contact card leaves, spec/sync-inbox.md §5: the granter is a known actor and a
 /// connected sender), all handed by hand before any history, so no history content travels this
 /// way. A stand-in for the contact exchange: replace it by contact cards once a link's first
@@ -288,10 +288,10 @@ pub fn introduce(w: &mut World) {
         }
     }
     hand_all(w);
+    // each account's own profile is in its D from its creation
     for i in 0..n {
-        let own = who[i].1;
         let others: Vec<Tid> = who.iter().enumerate().filter(|(j, _)| *j != i).filter_map(|(_, x)| x.1).collect();
-        file(w, i, own.into_iter().collect(), others);
+        file(w, i, Vec::new(), others);
     }
     hand_all(w);
 }

@@ -287,6 +287,13 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     let mut m = Mutation::new();
     let keep = m.create(crate::identity::thing_record(sharer, &mut *tx.rng));
     m.op(keep, &super::ak(LINK_SEED)?, PathOp { path: Vec::new(), op: Op::Set(Value::Map([(Value::Int(0), Value::Tid(k)), (Value::Int(1), Value::Bytes(seed.expose().to_vec())), (Value::Int(2), Value::Tid(spec.target)), (Value::Int(3), Value::Bool(spec.single_use))].into_iter().collect())) })?;
+    // the seed thing and K are items of the sharer's D: every node of the account holds the seed
+    // and may finalize, and serves K's sync ID to redeemers (spec/permissions.md §7)
+    if let Some((_, d)) = tx.core.account_devices() {
+        for t in [keep, k] {
+            m.op(d, &ct::GROUP, PathOp { path: vec![osis_crdt::PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(t)) })?;
+        }
+    }
     done.add(Engine::commit_tx(tx, m)?);
     Ok((k, label, keep, done))
 }

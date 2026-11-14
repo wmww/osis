@@ -954,14 +954,16 @@ impl Core {
 
 /// This node's synced group (spec/sync-set.md §1): a plain group whose first admin is `d`, an item
 /// of `d`'s `group.0`, listing `d` as a subgroup, and `synced^.0` on `d` naming it for this node:
-/// one commit after the role commit, signed as account `p`.
-fn synced_group_in(tx: &mut Tx<'_>, p: Tid, d: Tid) -> Result<Tid> {
+/// one commit after the role commit, signed as account `p`. It also lists `profile` as an item of
+/// `d`: every node of the account syncs it (its dial list, spec/sync-set.md §1).
+fn synced_group_in(tx: &mut Tx<'_>, p: Tid, d: Tid, profile: Tid) -> Result<Tid> {
     let me = tx.core.id.tid();
     let mut m = Mutation::new();
     let g = m.create(thing_record(d, &mut *tx.rng));
     m.sign_as(p);
     m.set(g, &ct::GROUP, &ct::Group { items: BTreeSet::new(), subgroups: [d].into() })?;
     m.op(d, &ct::GROUP, PathOp { path: vec![PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(g)) })?;
+    m.op(d, &ct::GROUP, PathOp { path: vec![PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(profile)) })?;
     m.op(d, &ct::SYNCED, PathOp { path: vec![PathSeg::Key(Value::Tid(me))], op: Op::Set(Value::Tid(g)) })?;
     Engine::commit_tx(tx, m)?;
     Ok(g)
@@ -990,7 +992,7 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     m.set(d, &ct::ACCOUNT, &ct::Account { seeds: [(signing, ct::AccountSeed { seed: keys.seed().expose().to_vec(), under })].into() })?;
     let c = Engine::commit_tx(tx, m)?;
     rotation::record(tx, d, &rot)?;
-    synced_group_in(tx, p, d)?;
+    synced_group_in(tx, p, d, profile)?;
     Ok((profile, c))
 }
 

@@ -7,6 +7,7 @@ mod flows;
 mod harness;
 mod inbox;
 mod keep;
+mod links;
 mod session;
 mod sims;
 mod read;

@@ -1127,6 +1127,11 @@ pub struct Core {
     /// its card, a link key; role flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
     pub key_actors: memo::Stamped<Tid, Arc<Identity>>,
+    /// Links this node redeems (`Engine::follow_link`): K to its sync ID from the link text and
+    /// the link key L, held in `key_actors`. K's sync ID is in the sync set while followed
+    /// (spec/sync-set.md §2). In memory only: sync holds the link durably and follows it again
+    /// at a start.
+    pub followed_links: memo::Stamped<Tid, (osis_base::SyncId, Tid)>,
     /// The account this node belongs to (`Engine::join_account`): the author of its commits and
     /// the holder of its roles. `None` before it joins one.
     pub account: memo::Tracked<Option<Tid>>,
@@ -1359,6 +1364,7 @@ impl Core {
             #[cfg(test)]
             lie_facts: self.lie_facts.clone(),
             key_actors: self.key_actors.clone(),
+            followed_links: self.followed_links.clone(),
             account: self.account.clone(),
             time: self.time.clone(),
             accounts: self.accounts.clone(),
@@ -1927,6 +1933,7 @@ impl Core {
             forged: _,
             header_fault: _,
             key_actors: _,
+            followed_links: _,
             account: _,
             time: _,
             accounts: _,
@@ -2102,6 +2109,7 @@ impl Core {
             #[cfg(test)]
             lie_facts: None,
             key_actors: Default::default(),
+            followed_links: Default::default(),
             epochs_of: memo::Memo::new("epochs"),
             store_rows,
             account: Default::default(),
