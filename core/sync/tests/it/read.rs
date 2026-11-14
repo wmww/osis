@@ -2020,7 +2020,7 @@ fn a_thing_published_under_an_actor_judges_what_it_moved_spec_sync_2() {
 const T: Tid = Tid::from_bytes([7; 15]);
 
 fn minting(c: u8, valued: bool, end: End, expires: Option<u64>) -> Minting {
-    Minting { commit: cid(c), standing: Standing { valued, end }, expires }
+    Minting { commit: cid(c), standing: Standing { valued, end }, expires, by: osis_base::PurgeBy::Admin, actor: T }
 }
 
 /// A peer's entry `b` in the own store (pulled from a reader).

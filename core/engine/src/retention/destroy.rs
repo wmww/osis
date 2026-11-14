@@ -30,7 +30,7 @@ use crate::engine::records;
 use crate::engine::{Core, DropFor, Hold, Missing, Tx};
 use crate::error::Result;
 use crate::events::{Cause, Event};
-use osis_base::{Ak, CommitId, Tid};
+use osis_base::{Ak, CommitId, PurgeBy, Tid};
 use osis_commit::Header;
 use osis_perm::Point;
 use osis_store::Shred;
@@ -79,12 +79,34 @@ pub struct Standing {
     pub end: End,
 }
 
-/// A held minting of a thing: its commit, its standing and its commit's `expires` (`None`: never).
+/// A held minting of a thing: its commit, its standing, its commit's `expires` (`None`: never),
+/// and who may purge it: its retention's set and its header actor (spec/permissions.md §6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Minting {
     pub commit: CommitId,
     pub standing: Standing,
     pub expires: Option<u64>,
+    pub by: PurgeBy,
+    pub actor: Tid,
+}
+
+impl Minting {
+    /// Whether this minting, kept, may stand in for `lower`, dropped (spec/commits.md §5, A thing's
+    /// mintings travel with its record): it cannot end before `lower` could. It expires no
+    /// earlier (`None`: never), and whoever may purge it may purge `lower` (a request on a
+    /// thing's creation names a minting whatever its stamp): `lower`'s set holds the admins
+    /// where this one's does, its author where this one's does with the same actor, every writer
+    /// where this one's does.
+    pub fn stands_in_for(&self, lower: &Minting) -> bool {
+        let expires = match (self.expires, lower.expires) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(a), Some(b)) => a >= b,
+        };
+        let (k, d) = (self.by, lower.by);
+        let rights = (!k.admin() || d.admin()) && (!k.author() || (d.author() && self.actor == lower.actor)) && (!k.writer() || d.writer());
+        expires && rights
+    }
 }
 
 /// `t`'s destruction (spec/commits.md §5 Destruction): the end of its witness, the point by which
@@ -112,6 +134,8 @@ impl Destruction {
 struct Held {
     at: (CommitId, usize),
     expires: Option<u64>,
+    class: PurgeBy,
+    actor: Tid,
     by: Vec<Point>,
 }
 
@@ -128,11 +152,12 @@ fn creation_requests<'a>(core: &'a Core, t: &'a Tid) -> impl Iterator<Item = (Co
 fn per_minting(core: &Core, t: &Tid) -> Vec<Held> {
     let requests: Vec<(CommitId, &Header)> = creation_requests(core, t).collect();
     let held = core.mintings(t).map(|(c, ai)| {
-        let none = Held { at: (c, ai), expires: None, by: Vec::new() };
+        // no header held: purgeable by every writer as its own author, so it stands in for none
+        let none = Held { at: (c, ai), expires: None, class: PurgeBy::Writer, actor: *t, by: Vec::new() };
         let Some(m) = core.ix.commits.get(&c) else { return none };
         let Some(a) = m.header.aspects.get(ai) else { return none };
         let by = requests.iter().filter(|(pc, p)| super::purge::stands(core, p, pc, a, &m.header, &c)).map(|(pc, p)| Point { ts: p.ts, node: p.author, commit: *pc }).collect();
-        Held { at: (c, ai), expires: m.header.expires, by }
+        Held { at: (c, ai), expires: m.header.expires, class: a.retention.by, actor: m.header.actor, by }
     });
     held.collect()
 }
@@ -142,10 +167,10 @@ fn per_minting(core: &Core, t: &Tid) -> Vec<Held> {
 pub fn mintings(core: &Core, t: &Tid) -> Vec<Minting> {
     let per = per_minting(core, t);
     per.into_iter()
-        .map(|Held { at: (commit, ai), expires, by }| {
+        .map(|Held { at: (commit, ai), expires, class, actor, by }| {
             let expiry = expires.map_or(End::Never, |x| End::At(x, None));
             let request = by.into_iter().min().map_or(End::Never, |p| End::At(p.ts.wall_ms().0, Some(p)));
-            Minting { commit, standing: Standing { valued: !core.minting_gone(&commit, ai), end: expiry.min(request) }, expires }
+            Minting { commit, standing: Standing { valued: !core.minting_gone(&commit, ai), end: expiry.min(request) }, expires, by: class, actor }
         })
         .collect()
 }
