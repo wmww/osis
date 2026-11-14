@@ -106,7 +106,7 @@ impl Ground for Live<'_, '_> {
     }
     fn pullable(&mut self, s: &SyncId) -> Result<bool> {
         // a source of S up now (stamped: a source joining judges again)
-        if !self.views.of(s).is_empty() {
+        if self.views.any(s) {
             return Ok(true);
         }
         Ok(self.cx.engine.publishes_reach()?)

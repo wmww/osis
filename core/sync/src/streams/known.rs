@@ -124,7 +124,7 @@ pub type Row = (Source, SyncId, BlobId);
 
 impl Known {
     pub(super) fn new(store: Store) -> Known {
-        Known { store, by_src: BTreeMap::new(), by_blob: BTreeMap::new(), heads: BTreeMap::new(), full: BTreeSet::new(), refused: BTreeMap::new(), stamps: Stamps::default(), log: Stamps::default() }
+        Known { store, by_src: BTreeMap::new(), by_blob: BTreeMap::new(), heads: BTreeMap::new(), full: BTreeSet::new(), refused: BTreeMap::new(), stamps: Stamps::named("streams: known"), log: Stamps::named("streams: known rows") }
     }
 
     /// Tests only (world copies): the copy's store.

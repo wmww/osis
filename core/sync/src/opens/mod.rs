@@ -335,7 +335,7 @@ impl Default for Opens {
             changed: Changed::default(),
             holding: BTreeMap::new(),
             fx: holds::Fx::default(),
-            reports: osis_base::memo::Stamps::default(),
+            reports: osis_base::memo::Stamps::named("opens: reports"),
             work: Work::default(),
         }
     }

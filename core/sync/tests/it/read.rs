@@ -1241,3 +1241,34 @@ fn work_follows_sources() {
     assert_eq!(costs[0], costs[1], "work per source event grows with the sources");
     assert!(costs[0].1 <= 4, "{costs:?}");
 }
+
+/// The judgements (`read: judged`, `read: toward` settles) node 0 and node 1 make for a write and
+/// a grant on thing 0, after `n` writes on each of 3 other things node 0 made (other sync IDs),
+/// each run to quiet: through the product's sync over the real engine.
+fn judged_per_event(n: usize) -> (u64, u64) {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, world};
+    let mut w = world(0, 2);
+    let mut steps = vec![New(0), Grant(0, 0, 1, Gives::Reads), New(0), New(0), New(0), Run];
+    steps.extend((0..n).flat_map(|_| [Write(0, 1), Write(0, 2), Write(0, 3), Run]));
+    for s in &steps {
+        crate::harness::step(&mut w, s);
+    }
+    osis_base::costs::take();
+    for s in [Write(0, 0), Run, Grant(0, 0, 1, Gives::Writes), Run] {
+        crate::harness::step(&mut w, &s);
+    }
+    let taken = osis_base::costs::take();
+    let n = |name: &str| taken.iter().filter(|(k, _, _)| *k == name).map(|(_, _, n)| n).sum::<u64>();
+    (n("read: judged"), n("read: toward"))
+}
+
+// spec/sync.md §2 (work in proportion to change): over the real engine, a write and a role
+// change on one thing re-judge the (sync ID, commit) pairs they moved, never every pair held: the
+// same judgements after n and 10n commits under other sync IDs (each thing's certificates read
+// its whole component, so they are followed per commit, `Engine::follow`).
+#[test]
+fn an_event_on_one_sync_id_judges_what_it_moved() {
+    let (a, b) = (judged_per_event(2), judged_per_event(20));
+    assert_eq!(a, b, "judgements per event grow with the commits under other sync IDs");
+}

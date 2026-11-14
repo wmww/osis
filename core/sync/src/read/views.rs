@@ -33,6 +33,9 @@ impl Views {
                 if let Some(old) = self.by_conn.insert((*conn, *s), at) {
                     self.drop_conn(*s, old, *conn);
                 }
+                if !self.open.contains_key(s) {
+                    self.stamps.wrote(&("any", *s), true);
+                }
                 self.open.entry(*s).or_default().entry(at).or_default().insert(*conn, store);
                 self.wrote(*s, at);
             }
@@ -55,6 +58,7 @@ impl Views {
             }
             if by.is_empty() {
                 self.open.remove(&s);
+                self.stamps.wrote(&("any", s), true);
             }
         }
         self.wrote(s, at);
@@ -77,6 +81,12 @@ impl Views {
     pub fn of(&self, s: &SyncId) -> Vec<Source> {
         self.stamps.read(&("s", *s));
         self.open.get(s).map(|by| by.keys().copied().collect()).unwrap_or_default()
+    }
+
+    /// Some source of S is up now: moves only when that flips.
+    pub fn any(&self, s: &SyncId) -> bool {
+        self.stamps.read(&("any", *s));
+        self.open.contains_key(s)
     }
 
     /// A cursor over the views written from now on.
