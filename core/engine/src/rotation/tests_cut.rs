@@ -371,7 +371,7 @@ fn cut_replay(test: &'static str) -> impl Fn(u64) -> String + Sync {
 /// One seed of `nothing_before_a_cut_reaches_its_holder_spec_crypto_4`.
 fn nothing_before_a_cut(seed: u64) {
     let read = BTreeSet::from(READ);
-    let mut rng = super::tests::Rng(seed * 0x9e37_79b9 + 7);
+    let mut rng = super::tests::Rng(seed.wrapping_mul(0x9e37_79b9).wrapping_add(7));
     let (mut lp, g, tids) = granted(5, &[(1, Role::Admin), (2, Role::Read)]);
     let mut before: Vec<(usize, BTreeSet<Epoch>)> = Vec::new();
     let cut_at = [rng.next(4) as usize, 4 + rng.next(4) as usize];
@@ -947,7 +947,7 @@ fn newcomer_reads_the_roster_from_sealed_labels_large_spec_crypto_4() {
 
 /// One seed of `newcomer_reads_the_roster_from_sealed_labels_spec_crypto_4`: whether A cut.
 fn newcomer_reads_the_roster(seed: u64) -> bool {
-    let mut rng = super::tests::Rng(seed * 0x2545_f491 + 3);
+    let mut rng = super::tests::Rng(seed.wrapping_mul(0x2545_f491).wrapping_add(3));
     let among = [0usize, 1, 2, 3, 4];
     let (mut lp, (g, tids)) = LocalPeer::cached("rotation::tests_cut::newcomer_reads_the_roster", || {
         let mut lp = synced(6);
