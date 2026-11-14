@@ -1,10 +1,10 @@
 # Privacy
-> Summary: Low priority (Tess): where every privacy concern of networking and sharing goes, so the rework (issues/sync-rewrite.md) does not design for it. Who learns this node's IP (settings: strangers only through relays, one chosen relay for everything), open audiences learning IPs. Today any positive action counts as IP consent (spec/sync-opens.md §4). Don't spend effort here until asked.
+> Summary: Low priority (Tess): where every privacy concern of networking and sharing goes, so sync does not design for it yet. Who learns this node's IP (settings: strangers only through relays, one chosen relay for everything), open audiences learning IPs. Today any positive action counts as IP consent (spec/sync-opens.md §4). Don't spend effort here until asked.
 > Priority: low
 > Tags: transport, security
 
 - **IP settings**: who learns this node's IP, e.g. strangers only through relays, or tunnel everything through one chosen relay.
-- **Open audiences**: with `reach.0` under every synced group, everyone holding a public or bearer-read link learns the node's IP; so do holders of a link or card with connect hints (issues/sync-rewrite.md).
-- Identity on the LAN is a requirement, not a setting: issues/sync-rewrite.md.
-- **A node serving data it cannot read** shows every connection how many heads it serves (its beacon filter's size) and "I serve this one" to anyone holding that group's `label.0`, roster or `keys.0` (issues/sync-rewrite.md); a host answering Open and Deposit shows the same today. On the one listening key (issues/sync-rewrite.md step 2) this ties what a node serves unread to the key its contacts know it by, which a separate host key kept apart.
-- **A node keeping data unread learns who keeps what** (accepted, Tess): a node holding a group sync-only learns the granting account and which accounts' nodes open the group there (issues/sync-rewrite.md, Sync model), and that two groups it holds share a blob. Guarantees that a node learns nothing about the nodes it syncs encrypted groups with may be more than is reasonable to provide.
+- **Open audiences**: with `reach.0` under every synced group (issues/account-signing.md steps 7-8), everyone holding a public or bearer-read link learns the node's IP; so do holders of a link, card or profile with dial hints.
+- LAN discovery announces a transport key fresh per network join, never the dialable key (spec/sync-transport.md §4).
+- **A node serving data it cannot read** shows every connection how many sync IDs it holds (its filter's size, spec/sync-opens.md §5) and "I keep this one" to anyone holding a credential of it. On the one listening key (spec/sync-transport.md §5) this ties what a node keeps unread to the key its contacts know it by.
+- **A node keeping data unread learns who keeps what** (accepted, Tess): a node holding a group sync-only learns the granting account and which accounts' nodes open the group there (notes/unreadable-data.md), and that two groups it holds share a blob. Guarantees that a node learns nothing about the nodes it syncs encrypted groups with may be more than is reasonable to provide.

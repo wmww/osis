@@ -1,7 +1,7 @@
 # Expired ephemeral writes leave anchors that fill a holder's cap
 > Summary: An expired ephemeral list element or fresh map entry stays in the aspect's state as a value-less record (about 575 B decoded, charged about 1.15 KB at holders), never collected, so an ephemeral event list or per-message map hits the 16 MiB node cap after about 14,000 expired elements over its lifetime; the lattice needs the records, so an O(live) fix changes a convergence limit (Tess) and a smaller form keeps the growth.
 > Priority: normal
-> Tags: ephemeral, crdt, node, tess-call
+> Tags: ephemeral, crdt, engine, tess-call
 
 **Question for Tess:** expired ephemeral list elements and map entries keep a value-less record each, so a per-message ephemeral list fills its 16 MiB cap after about 14,000 lifetime messages. Fix B frees them but lets a late reaction to an expired message read differently on some nodes until a writer's snapshot repairs it; fix A keeps exact convergence and shrinks each record to a few bytes (about a million lifetime messages). B or A?
 
@@ -14,6 +14,6 @@ Follows from the principle (notes/ephemeral.md: durable semantics held in memory
 - spec/requirements.md Scale accepts the growth itself (state grows with the edits ever made, a few bytes each). The defect is the in-memory size.
 
 ## Options
-- **A. A compact form** for value-less records (a stamp and an anchor each, sources interned, chains as runs), charged near its encoded size. Keeps every rule; still O(ever written), at a few bytes (about a million lifetime elements per label at 16 MiB). osis-crdt `Seq` storage and placement work.
+- **A. A compact form** for value-less records (a stamp and an anchor each, sources interned, chains as runs), charged near its encoded size. Keeps every rule; still O(ever written), at a few bytes (about a million lifetime elements per sync ID at 16 MiB). osis-crdt `Seq` storage and placement work.
 - **B. Spent records leave snapshots** (O(live)). A record all of whose writes are value-less and at which no record anchors is spent in a node's state; a snapshot omits spent records, and a body counts as covered when joining it into the snapshot adds only records spent in the node's state (spec/commits.md §5 Covered), so holders drop the leftovers and rebuild without them. The crdt join is unchanged. Cost: a late child or nested write of a record already dropped reads differently there (child at its virtual anchor, nested write hidden) until a writer holding both writes a snapshot, which carries the record again (the writer of the late write holds it). That widens spec/requirements.md Decentralization's arrival-order limit from "a node that never held an expiring edit" to one that dropped it: Tess's call. Durable too, by the principle: the sweep then can no longer take "no creation held though its delta is reflected" as dead (it would reset a late reaction everywhere), so the sweep needs another test of a pruned creation.
-- **C. A stated limit** in notes/ephemeral.md Bounds: lifetime elements per label about cap / 1.15 KB.
+- **C. A stated limit** in notes/ephemeral.md Bounds: lifetime elements per sync ID about cap / 1.15 KB.

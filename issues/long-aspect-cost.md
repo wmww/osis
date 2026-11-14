@@ -1,7 +1,7 @@
 # One aspect with very many kept writes: what is left
-> Summary: Measured on one long kept aspect (chat design E, release, by hand). At 10^6 a write takes 2.4 ms before its fsync (measured on tmpfs), a fall of 3*10^5 deltas 11 s, a rise 0.6-11 s; every flip still walks the thing's commits (0.6 s) and the first decodes all headers (+2 GB). A kick over about 1.9*10^6 commits fails at the author (a stated limit: kick frontiers are IDs only). Open takes 5 s and 2.6 GB. A new device reads the newest page after the listing (spec/sync-judgement.md §2), not the whole log.
+> Summary: Measured on one long kept aspect (chat design E, release, by hand). At 10^6 a write takes 2.4 ms before its fsync (measured on tmpfs), a fall of 3*10^5 deltas 11 s, a rise 0.6-11 s; every flip still walks the thing's commits (0.6 s) and the first decodes all headers (+2 GB). A kick over about 1.9*10^6 commits fails at the author (a stated limit: kick frontiers are IDs only). Open takes 5 s and 2.6 GB. A new node reads the newest page after the listing (spec/sync-judgement.md §2), not the whole log.
 > Priority: low
-> Tags: node, permissions, performance
+> Tags: engine, permissions, performance
 
 Counted in the default tests: osis-engine `scale::long_aspect_writes_are_flat` (a write and its arrival flat, a writer's removal linear), `scale::purge_rejudge_is_linear_in_requests_spec_permissions_6` (a requester's flip rebuilds the aspect once). The numbers below are release measurements at 10^4..10^6 messages.
 
@@ -14,7 +14,7 @@ In order of damage:
 5. **Ingest's CPU per message grows with the aspect during a fill**: 0.75 ms at 10^5, 3.4 at 6*10^5, 5.4 at 10^6, while a write after reopening at 10^6 takes 1.3-4 ms. Unexplained; not a budget break.
 6. **Store writes per message grow**: 70 / 115 / 170 KB per batch at 10^4 / 10^5 / 10^6 (about 35 key-tree nodes of 10 KB each); store size stays 1.2-2 KB per message. A disk-wear problem (a 200 B message writes 800 times its size).
 7. **Bulk upload**: one writer uploading N offline writes runs 30 engine transactions per message: 4.3 / 6.6 ms per message at 10^4 / 10^5. Only after long offline writing.
-8. **Host cap**: `cap_entries` 2^20 per label stops a chat at about 10^6 messages unless the host raises it. Not measured past it.
+8. **Entry caps**: a node keeping the chat unread caps its entries per sync ID (spec/sync-ids.md §6 Caps), so a chat stops at its cap's message count unless that node raises it. Not measured past it.
 
 Purge by author: about 1.4 ms per delta dropped at 10^6, all in one store transaction under the engine lock: 10^5 deltas 2.3 min on every node from one request, the hostile 10^7-message flood of notes/chat.md 3.9 h. Memory grows with it, 35-66 KB per delta held by the open transaction (1500 deltas +52 MiB, in-memory store, 0.22 ms each; 1040 at 10^6 +69 MiB), so 10^5 is 3.5-6.6 GB and the flood does not fit: it fails before it stalls. Chunking needs a persistent cursor per request, a job run from the tick, resuming after a restart and after every later delta (the request is already listed in `p/`), reads and the watch seeing it part done, and `lasting` and re-snapshots at its end; the order oracles judge the end state only.
 

@@ -1,5 +1,4 @@
 # A node holding only a snapshot of a current epoch cannot see its maker depart
-
 > Summary: the maker departure (spec/crypto.md §4 Departure: the author of a current epoch's held rotation commit that no longer holds r) needs that rotation commit (`epoch_intro`); a node that keys the epoch from a `secrets.0`/`keys.0` compaction snapshot only, or after `retention::uncover`, knows no maker, so where the maker's role ran through a keyless holder actor it may encrypt under an epoch the departed maker holds.
 > Priority: low
 > Tags: security, engine, keys

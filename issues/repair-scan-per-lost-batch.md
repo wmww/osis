@@ -1,8 +1,8 @@
-# Repair asks every thing of the closure on each lost-blob batch
-> Summary: `Engine::relink` finds the aspects linking a lost blob by asking each thing of the closures that lost it whether its live states link it (memoized walks). A host reporting held chunks deleted, batch after batch, costs O(closure things) per batch; the per-aspect back-off gates only the rewrite.
-> Priority: low
-> Tags: engine, security
+# Chunk repair: not wired, and a closure scan per lost batch
+> Summary: Chunk and tree-node repair (spec/sync-ids.md §1 Repair) has no caller in the rebuilt sync: `Engine::relink` is reached only by an engine test. When it is wired, mind its cost: it finds the aspects linking a lost blob by asking each thing of the closures that lost it whether its live states link it (memoized walks), so a peer reporting held chunks gone, batch after batch, costs O(closure things) per batch.
+> Priority: normal
+> Tags: sync, engine, security
 
-- Where: `SyncEngine::relink_lost` (core/node/src/sync/inbound.rs) runs at the label's next settled pass after a batch with a lost blob, and again at each later pass of the label while a pending commit's aspect holds a candidate back (at least once per resync, the label being unsettled; a commit pending for good, e.g. a writer's paged delta whose page never comes, repeats it for good); a label only the back-off holds is not scanned again before it passes; `Engine::relink` (core/engine/src/engine/large.rs) loops `tree_refs::state_refs_in` over the closure.
-- Bound: lookups in `Core::tree_refs` per thing (walks are memoized), so cost is like a full pass's; only a host that is the label's only host can trigger it (the blob must be gone from every host).
-- Options: skip blobs already judged linked since the last batch, or rate the scan by the same back-off as the rewrite.
+- Where: `Engine::relink` (core/engine/src/engine/large.rs) loops `tree_refs::state_refs_in` over the things given; lookups in `Core::tree_refs` per thing (walks are memoized).
+- Wiring it: the facade exposes the lost blobs' repair as a command the read module runs when a body's linked blob is gone at every source; a per-aspect back-off gates the rewrite.
+- Cost options: skip blobs already judged linked since the last batch, or rate the scan by the same back-off as the rewrite.

@@ -1,7 +1,7 @@
 # Texts and lists: what still loads whole or writes more than it needs
 > Summary: An edit against a stale read (or a list edit whose window the list does not lend) and writing a whole collection load a paged sequence whole; a cold edit writes the stored placement's B-tree leaves (about twice the bytes of the edit's pages alone). Reads by index, local inserts, deletes, moves and pastes, text and list edits, anything inside a list element at an index, undos and received joins load only their pages.
 > Priority: low
-> Tags: performance, node, store, crdt
+> Tags: performance, engine, store, crdt
 
 Counted: osis-engine `scale::text_edits_are_flat` (by hand) and `scale::map_edit_is_flat`, `set_by_value_is_flat`: pages loaded and written and store bytes at n and 10n; a move: issues/text-move-loads-placement.md.
 

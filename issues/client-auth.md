@@ -1,7 +1,7 @@
 # Client credentials name their actor
 > Summary: Default policy (Tess): a unix socket opens unauthenticated as the node's main actor; a localhost or network listener lets a client act only as actors it has cryptographically authenticated for. Today the transport decides (socket: main actor; secret: an actor minted for it). Build credentials that name the actor.
 > Priority: low
-> Tags: api, node, security, tess-call
+> Tags: api, osis, security, tess-call
 
 **Question for Tess**: does "cryptographically authenticated" accept today's bearer secret inside TLS, or must the client sign with the actor's key?
 

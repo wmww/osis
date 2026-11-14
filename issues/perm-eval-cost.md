@@ -1,7 +1,7 @@
 # Evaluating the role timeline: what is still not incremental
 > Summary: Appending to a group's role history costs about a quarter of a millisecond at 10^4 role writes; a late write in the middle is placed without a re-walk unless something forces one (2-5 ms when nothing later reads it; 0.1-0.3 s when over a hundred later items must be re-judged, about what a re-walk costs); new holders and things named before their `created.0` join by going on from where the walk meets them. Still costly: the late writes that must re-walk, re-judging many dependents, and demotion frontiers that grow with the remover's chain.
 > Priority: low
-> Tags: permissions, node, performance
+> Tags: permissions, performance
 
 Repro: osis-perm `scale::repro_late_write_rejudges_flat`, `scale::repro_evaluate_with_drops_linear` (`osis_perm::commits_walked` at 10^2 and 10^3 edge writes; notes/test-scale.md Scale checks).
 

@@ -82,9 +82,9 @@ One actor, one key role. Admins a and b rotate, grant, remove and re-seal, a als
 - **Hostile boxes**: the model's hostile rotation boxes by the boxing rule. Extra boxes hand only what their writer opens (counted in `NoPast`); missing boxes and removed ones (any writer may remove boxes) lock holders out, not specific to cuts (notes/crypto.md, Lockouts).
 - **A history-less re-adder**: the re-add boxes m only at the removal's listed epochs the re-adder opens; one granted without history after the removal opens none of them, so m's new node opens only what stands below the last cut before the removal. The build must have a holder that opens them box them (a tip add, m allowed them by its re-add). The model's admins all have history.
 - **A hostile member re-added without history**: the model's hostile m rotates only before its removal. An epoch made knowing the removal is carried only by a node holding the removal, where m's later writes count only with its re-add, which gives m its floor.
-- Withdraw, void names, labels and steps (Decided 3).
+- Withdraw, void names, sync IDs and steps (Decided 3).
 
 ### Decided (Tess)
 1. **New devices see what old devices display:** a member's new device may sync anything its account's existing devices display. So a re-add without history boxes the member at the epochs its removal's rotation listed, and rotations take a removed member's boxes only where they carry, as anyone's: a removed member's later device opens what its earlier devices could (Re-added without history, Removed members, above).
 2. **Two history-less adds at once:** each newcomer can read what was written around the other's add, never anything from before its own (accepted).
-3. **Labels and steps** (build): spec/sync-ids.md §2 role keys in use assumes every holder holds older secrets by history; a history-less holder opens from its cut's step on, and a walk to an older step must not strand it. Not modelled.
+3. **Sync IDs and steps** (build): spec/sync-ids.md §2 role keys in use assumes every holder holds older secrets by history; a history-less holder opens from its cut's step on, and a walk to an older step must not strand it. Not modelled.

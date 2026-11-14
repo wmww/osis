@@ -1,5 +1,4 @@
 # Counted tree reach memory grows with the data asked about
-
 > Summary: `Core::tree_reach` keeps, per thing a tree question was asked of, an entry per tree blob in each of two reaches (states, bodies), until the thing is destroyed or the node restarts: about 600 B per 80 KiB chunk per reach (about 1.5% of the value bytes held), unbounded across things.
 > Priority: low
 > Tags: engine, retention

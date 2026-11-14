@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: security, engine
 
-Found building box records (notes/crypto.md, Box records). Shape: osis `sharing::late_sealer_judges_an_earlier_grant_by_its_record_spec_crypto_4` without Frank's removal of Erin: Frank holds A's records naming M's keyset 1 and M's keyset 2 superseding it, yet writes "mid" under G's existing epoch boxing A at A's epoch (Carol reads it, so A was not left out); Dave, removed from M, keeps M's keyset 1 secret, which opens A's epoch through the grant's box, so G's (read off the box chain; no openable oracle checked it). The sibling tests force a rotation of G (a removal from G) to reach the Seal rule.
+Found building box records (notes/crypto.md, Box records). Shape: the late-sealer grant (a writer judging an earlier grant by its box record) without Frank's removal of Erin: Frank holds A's records naming M's keyset 1 and M's keyset 2 superseding it, yet writes "mid" under G's existing epoch boxing A at A's epoch (Carol reads it, so A was not left out); Dave, removed from M, keeps M's keyset 1 secret, which opens A's epoch through the grant's box, so G's (read off the box chain; no openable oracle checked it). The sibling tests force a rotation of G (a removal from G) to reach the Seal rule.
 
 `rotation::walk_from` checks `members::stale_at` at an epoch whose secret the node lacks only for `Walk::Seal`; at `Walk::Encrypt` such an epoch (A's, at G's writer) is judged by order alone. The model's `Blocked` blocks it (`PfJudge`), and with it G's epoch for an admin of G, so the admin rotates G leaving A out (Seal skips A's epoch).
 
