@@ -417,3 +417,29 @@ fn an_ended_member_at_a_node_keeping_s_unread_ends_at_its_heads_event_spec_sync_
     let head = w.store(1).head_at(&s).unwrap().expect("a head logged");
     assert_eq!(w.member_until(1, &s, &osis_sync::types::Credential::SyncKey), head);
 }
+
+// spec/sync-inbox.md §2 (Re-send: until seen taken): a wait on deliveries ends once every
+// delivery this node owes is seen taken, and a wait on all waits for them too.
+#[test]
+fn a_wait_on_deliveries_ends_once_the_grant_is_taken_spec_sync_inbox_2() {
+    let mut w = contacts();
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let t = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a0);
+        e.commit(m).unwrap();
+        t
+    });
+    file(&mut w, 0, vec![t], Vec::new());
+    w.partition(0, 1);
+    w.run();
+    w.write(0, |e| e.grant(&t, &a1, &edge(Role::Read))).unwrap();
+    w.run();
+    assert_eq!(w.wait(0, Scope::Deliveries), Waiting::Pending, "the grant is owed");
+    w.heal();
+    w.run();
+    file(&mut w, 1, Vec::new(), vec![t]);
+    w.run();
+    assert!(w.engine(0).deliveries().unwrap().is_empty());
+    assert_eq!(w.wait(0, Scope::Deliveries), Waiting::Done, "seen taken");
+}

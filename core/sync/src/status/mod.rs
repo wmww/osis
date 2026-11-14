@@ -590,29 +590,29 @@ impl Status {
         self.held.contains(c)
     }
 
-    /// Where a wait on `scope` stands (§3): each sync ID in scope heard out with its own commits
-    /// held elsewhere; never while one is unconnected. Reads only.
+    /// Where a wait on `scope`'s sync IDs stands (§3): each heard out with its own commits held
+    /// elsewhere; never while one is unconnected; failed `Stranded` while one is stranded here
+    /// (notes/api-design.md: a wait on `Stranded` fails). Deliveries are not status's: their
+    /// scope holds no sync ID. Reads only.
     /// `ids_of`: the sync IDs carrying a thing (the engine's `carrying`).
     pub fn wait(&self, net: &impl Net, scope: Scope, ids_of: impl FnOnce(&Tid) -> Result<Vec<SyncId>>) -> Waiting {
         let ids: Vec<SyncId> = match scope {
             Scope::All => self.holding.keys().copied().collect(),
             Scope::Thing(t) => match ids_of(&t) {
-                Ok(ids) => ids,
-                Err(_) => return Waiting::Pending,
-            },
-            Scope::Deliveries => return Waiting::Never("inbox: deliveries are inbox's wait"),
-        };
-        // a thing that never arrives runs to the caller's timeout (§3)
-        if ids.is_empty() {
-            return Waiting::Pending;
-        }
-        for s in &ids {
-            match self.of(s, net) {
-                Some(st) if st.synced() => {}
+                // a thing that never arrives runs to the caller's timeout (§3)
+                Ok(ids) if !ids.is_empty() => ids,
                 _ => return Waiting::Pending,
-            }
+            },
+            Scope::Deliveries => Vec::new(),
+        };
+        let stranded: Vec<SyncId> = ids.iter().filter(|s| net.stranded(s)).copied().collect();
+        if !stranded.is_empty() {
+            return Waiting::Stranded(stranded);
         }
-        Waiting::Done
+        match ids.iter().all(|s| self.of(s, net).is_some_and(|st| st.synced())) {
+            true => Waiting::Done,
+            false => Waiting::Pending,
+        }
     }
 
     /// When the earliest pass waiting on a recorded peer gives up (`PASS_WAIT_MS`).

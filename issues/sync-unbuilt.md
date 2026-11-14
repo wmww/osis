@@ -35,8 +35,6 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 
 ## status and API
 - Covered by a snapshot at a source (spec/sync-status.md §2): needs the engine's covering snapshots of a commit; a body a source dropped under a snapshot before showing it never counts (an under-claim).
-- A wait on a stranded sync ID failing `Unsynced` (notes/api-design.md Standing rules); best as a distinct answer of `Node::wait`, not a `Never`.
-- Waits on deliveries: `Scope::Deliveries` answers `Never` in status, which the API fails `NotBuilt`.
 - `caps()`/`set_caps` in the osis API over `caps^.0` (the engine reads `caps^.0`; nothing writes it but a raw write).
 
 ## facade

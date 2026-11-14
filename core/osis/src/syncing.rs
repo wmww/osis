@@ -158,8 +158,9 @@ impl Osis {
     /// Resolves once everything in `scope` is synced: each sync ID carrying it heard out (every
     /// connected node with it open caught up both ways, none of them full or refusing it left
     /// waited for) and each commit of this node's on it held elsewhere, and in `All` and
-    /// `Deliveries` every delivery taken. It never resolves while nobody is connected; with no
-    /// network (`Runtime::None`) it fails `Network`.
+    /// `Deliveries` every delivery taken. It never resolves while nobody is connected; it fails
+    /// `Unsynced` while a sync ID in scope is stranded here (naming its things); with no network
+    /// (`Runtime::None`) it fails `Network`.
     pub async fn wait_synced(&self, scope: SyncScope) -> Result<()> {
         self.local("wait_synced")?;
         let s = match scope {
@@ -170,6 +171,17 @@ impl Osis {
         self.waiting(move |db| match db.locked(|l| l.node.wait(s)) {
             osis_sync::types::Waiting::Done => Some(Ok(())),
             osis_sync::types::Waiting::Pending => None,
+            // a stranded sync ID fails the wait (notes/api-design.md), naming the things whose
+            // sync IDs are stranded
+            osis_sync::types::Waiting::Stranded(ids) => Some(db.locked(|l| {
+                let mut groups = Vec::new();
+                for s in &ids {
+                    groups.extend(l.engine().sync_owner(s)?);
+                }
+                groups.sort();
+                groups.dedup();
+                Err(Error::Unsynced { groups })
+            })),
             // spec/sync-status.md §3 has no wait sure never to end: sync's `Never` here is a part
             // of it not built yet, never an answer about the thing
             osis_sync::types::Waiting::Never(_) => Some(Err(Error::NotBuilt)),

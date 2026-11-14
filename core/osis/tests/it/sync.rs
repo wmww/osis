@@ -46,9 +46,9 @@ fn wait_synced_with_no_network_fails_network_spec_sync_status_3() {
     }
 }
 
-// spec/sync-status.md §3 (waits): on a network with nobody connected no wait ends, however long;
-// a wait sync cannot answer yet fails `NotBuilt`, never an `Unsynced` it did not find
-// (notes/api-design.md: never faked).
+// spec/sync-status.md §3 (waits): on a network with nobody connected no wait on sync IDs ends,
+// however long (never an `Unsynced` it did not find, notes/api-design.md: never faked); a wait on
+// deliveries with none owed ends at once.
 #[test]
 fn on_a_network_no_wait_ends_unconnected_spec_sync_status_3() {
     let c = clock();
@@ -56,13 +56,10 @@ fn on_a_network_no_wait_ends_unconnected_spec_sync_status_3() {
     let a = on(&net, 5, &c);
     net.run();
     net.advance(60_000);
-    for scope in [SyncScope::All, SyncScope::Thing(a.home()), SyncScope::Deliveries] {
-        match now(a.wait_synced(scope)) {
-            std::task::Poll::Pending | std::task::Poll::Ready(Err(Error::NotBuilt)) => {}
-            r => panic!("{scope:?}: {r:?}"),
-        }
+    for scope in [SyncScope::All, SyncScope::Thing(a.home())] {
+        assert!(now(a.wait_synced(scope)).is_pending(), "{scope:?}");
     }
-    assert!(now(a.wait_synced(SyncScope::All)).is_pending());
+    assert!(matches!(now(a.wait_synced(SyncScope::Deliveries)), std::task::Poll::Ready(Ok(()))));
 }
 
 // spec/sync-status.md §3 (waits): on a network, a wait on a thing whose sync IDs no node has

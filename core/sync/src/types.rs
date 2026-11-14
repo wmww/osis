@@ -3,7 +3,7 @@
 //! the driver makes them, every module's work ends in them.
 
 use crate::store::Store;
-use osis_base::{BlobId, Tid, WallMs};
+use osis_base::{BlobId, SyncId, Tid, WallMs};
 use osis_crypto::{Epoch, NodeRng, Signature};
 use osis_engine::Engine;
 use osis_label::{Address, Class, Step};
@@ -139,6 +139,9 @@ pub enum Scope {
 pub enum Waiting {
     Done,
     Pending,
+    /// These sync IDs in scope are stranded here (spec/permissions.md §4): it fails, though a
+    /// re-seal may still come.
+    Stranded(Vec<SyncId>),
     /// It can never end, and why.
     Never(&'static str),
 }

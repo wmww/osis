@@ -396,10 +396,17 @@ impl Node {
         self.driver.sessions.idle()
     }
 
+    /// Where a wait on `scope` stands (spec/sync-status.md §3): status's for its sync IDs, and
+    /// for `All` and `Deliveries` every delivery this node owes taken (the engine owes none).
     pub fn wait(&mut self, scope: Scope) -> Waiting {
         let net = NetView { streams: &self.streams, unread: &self.unread };
         let engine = &mut self.engine;
-        self.status.wait(&net, scope, |t| Ok(engine.carrying(t)?.into_iter().collect()))
+        let w = self.status.wait(&net, scope, |t| Ok(engine.carrying(t)?.into_iter().collect()));
+        let mut owes = || engine.deliveries().map_or(true, |d| !d.is_empty());
+        match (w, scope) {
+            (Waiting::Done, Scope::All | Scope::Deliveries) if owes() => Waiting::Pending,
+            (w, _) => w,
+        }
     }
 
     fn net(&self) -> NetView<'_> {

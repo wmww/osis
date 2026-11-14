@@ -526,6 +526,20 @@ fn stranded_reported() {
     assert!(t.st.of(&S, &t.g).unwrap().stranded);
 }
 
+// spec/sync-status.md §3 (stranded), notes/api-design.md (a wait on Stranded fails, though it is
+// not sure never to finish): a wait whose scope holds a stranded sync ID fails naming it; one on
+// a thing carried elsewhere only does not.
+#[test]
+fn a_wait_on_a_stranded_sync_id_fails_spec_sync_status_3() {
+    let u = sid(2);
+    let mut t = T::new(&[(S, Holding::Unread), (u, Holding::Read)]);
+    t.g.stranded.insert(S);
+    t.settle();
+    assert_eq!(t.st.wait(&t.g, Scope::All, |_| unreachable!()), Waiting::Stranded(vec![S]));
+    assert_eq!(t.st.wait(&t.g, Scope::Thing(tid(1)), |_| Ok(vec![S])), Waiting::Stranded(vec![S]));
+    assert_eq!(t.st.wait(&t.g, Scope::Thing(tid(1)), |_| Ok(vec![u])), Waiting::Pending, "not stranded: unconnected");
+}
+
 /// Work for one source's report on one own commit, at `n` sync IDs each with a source and an
 /// own commit not held.
 fn work_for_one_report(n: u32) -> (u64, u64) {
