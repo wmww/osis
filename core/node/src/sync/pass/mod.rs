@@ -495,7 +495,9 @@ impl SyncEngine {
         // from here yet
         let mut behind = false;
         if own {
-            sends = self.body_sends(p, &bodies, &snaps, &snapping, &mut left, &mut behind)?;
+            // own role commits and requests a source lacked at the last pass (`Work::lacked`)
+            let roles_lacked = w.lacked.values().any(|(prio, of)| self.own_role(*prio, Some(*of)));
+            sends = self.body_sends(p, &bodies, &snaps, &snapping, &mut left, (&mut behind, roles_lacked))?;
             self.relay_now.remove(&l);
             let ours: BTreeSet<BlobId> = sends.iter().filter(|o| o.fresh).map(|o| o.id).collect();
             let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
@@ -732,7 +734,8 @@ impl SyncEngine {
     /// source pulls the new one. While a role commit this node must hold waits for its relay
     /// (`behind`), the deleter may judge by an older role view: nothing is encrypted again and
     /// the label's role commits are placed at once instead (`relay_now`), so the source learns
-    /// them first (issues: churn seed 361's storm).
+    /// them first (issues: churn seed 361's storm); nor while the source lacks one of this
+    /// node's own (`roles_lacking_at`).
     fn encrypt_again(&mut self, source: PeerKey, own: &Head, (sends, behind): (&[Out], bool), bodies: &[Body], snaps: &Snaps, left: &mut Left) -> Result<Vec<Out>> {
         let (g, l) = (own.g, own.l);
         let mut again = Vec::new();
@@ -767,6 +770,10 @@ impl SyncEngine {
             left.commits.insert(c);
             if behind {
                 self.relay_now.insert(l);
+                continue;
+            }
+            // as a placement again past this node's own store's delete (`body_sends`)
+            if self.roles_lacking_at(&source, &l, sends) {
                 continue;
             }
             // a body deleted there (not one under a useless wrap) goes as a placement again

@@ -131,6 +131,7 @@ impl SyncEngine {
         // changed commits: their aspects' states (verdicts waiting on them)
         let ch = self.engine.take_changed();
         let undropped: BTreeSet<_> = ch.undropped.union(&ch.wakes.woken).copied().collect();
+        self.lift_undropped_tombs(&ch.undropped);
         self.reopen_undropped(Some(&undropped))?;
         self.wake_awaiting(&ch.wakes)?;
         self.note_role_moves(&roots, &ch.edges);

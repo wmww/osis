@@ -269,22 +269,19 @@ impl SyncEngine {
 
     /// A held valid snapshot of `t`'s aspect `ak` fell invalid here, either class, and the bodies
     /// it covered are gone until copies holders still have arrive again (spec/sync.md §7 A
-    /// snapshot turning invalid): the entries of the commits dropped as covered there lose this
-    /// node's tombstones (a durable one's part is missing again, its known entries reopened by
-    /// `reopen_undropped`; a memory one was forgotten as covered or superseded, and its entries
-    /// wait unopened: whatever brings their bytes again opens them), and the streams carrying a
-    /// label whose closure holds `t` list their memory entries again (`stream_relist`). A durable
-    /// commit forgotten under the fallen snapshot left no tombstone: it reads as never received,
-    /// and a holder logging it as must-hold brings it.
+    /// snapshot turning invalid): the entries of the memory commits forgotten as covered or
+    /// superseded there lose this node's tombstones and wait unopened (whatever brings their
+    /// bytes again opens them), and the streams carrying a label whose closure holds `t` list
+    /// their memory entries again (`stream_relist`). A held commit dropped as covered is missing
+    /// again (`Changed::undropped`: `lift_undropped_tombs`, `reopen_undropped`). A durable commit
+    /// forgotten under the fallen snapshot left no tombstone: it reads as never received, and a
+    /// holder logging it as must-hold brings it.
     fn relist_fallen(&mut self, t: &Tid, ak: &osis_base::Ak, out: &mut Vec<Action>) -> Result<()> {
         let on = |f: &Forgotten| matches!(f.why, MemoryDrop::Covered { .. } | MemoryDrop::Superseded { .. }) && f.header.aspect_index(t, ak.as_str()).is_some();
         let memory: Vec<CommitId> = self.memory.forgotten.iter().filter(|(c, f)| on(f) && !self.engine.holds_memory(c)).map(|(c, _)| *c).collect();
-        let ix = &self.engine.core.ix;
-        let missing = |c: &CommitId| ix.commits.get(c).is_some_and(|m| !m.view.memory && m.view.aspect(t, ak.as_str()).is_some_and(|ai| m.missing(ai)));
-        let durable: BTreeSet<CommitId> = ix.by_aspect.get(&(*t, ak.clone())).into_iter().flatten().map(|(_, c)| *c).filter(|c| missing(c)).collect();
         // deleted here as covered: those deletions no longer stand (a role change, rare: the
         // tombstones, kept their lifetime, are scanned)
-        let tombs: Vec<(LabelId, BlobId)> = self.state.tombs.iter().filter(|(_, tb)| matches!(&tb.kind, Kind::Commit { commit, .. } if memory.contains(commit) || durable.contains(commit))).map(|(k, _)| *k).collect();
+        let tombs: Vec<(LabelId, BlobId)> = self.state.tombs.iter().filter(|(_, tb)| matches!(&tb.kind, Kind::Commit { commit, .. } if memory.contains(commit))).map(|(k, _)| *k).collect();
         for (l, b) in tombs {
             self.state.lift_tomb(l, b);
         }

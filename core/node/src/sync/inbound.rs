@@ -2127,6 +2127,23 @@ impl SyncEngine {
         self.engine.spent_copy(&r.commit, &o.commit)
     }
 
+    /// This node's tombstones of entries of commits with a part missing again
+    /// (`Changed::undropped`: the cover, purge or invalidity it dropped under fell): the deletions
+    /// they record no longer stand, so an entry of the commit a host still holds or a holder logs
+    /// again under the same blob ID is fetched (spec/sync.md §6 Dropped bodies). Rare (a role
+    /// change or a purge's fall): the tombstones are scanned.
+    pub(crate) fn lift_undropped_tombs(&mut self, commits: &BTreeSet<osis_base::CommitId>) {
+        if commits.is_empty() {
+            return;
+        }
+        let ix = &self.engine.core.ix;
+        let again = |c: &osis_base::CommitId, parts: &[usize]| commits.contains(c) && ix.commits.get(c).is_some_and(|m| parts.iter().any(|p| m.missing(*p)));
+        let lift: Vec<(LabelId, BlobId)> = self.state.tombs.iter().filter(|(_, t)| matches!(&t.kind, Kind::Commit { commit, parts, .. } if again(commit, parts))).map(|(k, _)| *k).collect();
+        for (l, b) in lift {
+            self.state.lift_tomb(l, b);
+        }
+    }
+
     /// The entries of commits with a part missing again (`Changed::undropped`: dropped under a
     /// cover that no longer carries it, spec/permissions.md §5.2, held value-less for a purge
     /// that fell, or dropped while invalid and valid since, §6): unopened again, so a pass fetches

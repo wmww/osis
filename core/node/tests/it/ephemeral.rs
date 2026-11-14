@@ -5900,6 +5900,94 @@ fn fallen_snapshot_lifts_own_tombstone_spec_sync_9() {
     assert_eq!(net.eph_read(a, t, STATE), Some(s("y")));
 }
 
+// spec/sync.md §6 (Dropped bodies), §9 Delete: writer b deletes w, purging its own write x,
+// while cut off from the host; admin a, not having the delete, demotes b, so the delete and its
+// purge fall at b. The purge's fall makes x missing again at b, and b's tombstone of x's entry no
+// longer stands: b fetches x from the host, which still holds it
+// (`ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6` seed 606027154010)
+#[test]
+fn fallen_purge_lifts_own_tombstone_spec_sync_6() {
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
+    let w = window(&mut net, b, g, "x");
+    net.run();
+    assert_eq!(net.eph_read(a, w, STATE), Some(s("x")));
+    net.set_online(b, false);
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
+    m.deleting(w);
+    net.engine(b).write(m).unwrap();
+    local(&mut net, b);
+    assert_eq!(net.eph_read(b, w, STATE), None, "purged at the deleter");
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: net.tid(b), new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.set_online(b, true);
+    net.run();
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    assert_eq!(net.engine(a).groups_of(&w), net.engine(b).groups_of(&w), "the delete fell");
+    assert_eq!(net.eph_read(a, w, STATE), Some(s("x")));
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("x")), "fetched back");
+}
+
+// spec/sync.md §6 (Placed again once): writer b, cut off by a host restart, undoes its creation
+// of w (a delete purging its write "6"); b and the host restart, and admin a demotes b, its role
+// commits refused at the host until the demotion's step registers there. Restarted b fetches 6
+// from a, still judges its purge valid and deletes it at the host. a places 6 again only once the
+// host holds its role commits, so b reads the demotion first: placed before them, b deletes it
+// again judging by its old role and that delete stands
+// (`ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6` seed 960857231402; the other
+// writes order the passes so)
+#[test]
+fn placement_again_waits_for_role_commits_spec_sync_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let addr = net.hosts[host].address.clone();
+    let g0 = net.group(a, &[(b, Role::Write)], &[host]);
+    let g = net.group_at(a, &[(b, Role::Write)], vec![addr]);
+    net.item(a, g0, g0, "t");
+    let t = net.item(a, g, g, "t");
+    net.run();
+    let tb = net.tid(b);
+    let step = |net: &mut Net| {
+        local(net, b);
+        net.run();
+    };
+    let mut m = Mutation::new();
+    m.set(t, &eph(STATE), &s("0")).unwrap();
+    net.engine(b).write(m).unwrap();
+    step(&mut net);
+    made_window(&mut net, b, g, "2");
+    step(&mut net);
+    let (w, made) = made_window(&mut net, b, g, "6");
+    step(&mut net);
+    net.restart_host(host);
+    net.advance(10_000);
+    step(&mut net);
+    net.engine(b).revert_commit(made, tb).unwrap();
+    step(&mut net);
+    assert_eq!(net.eph_read(b, w, STATE), None, "purged at the deleter");
+    net.restart(b, 7);
+    net.restart_host(host);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    for _ in 0..4 {
+        net.advance(15_000);
+    }
+    assert_eq!(net.engine(a).groups_of(&w), net.engine(b).groups_of(&w), "the delete fell");
+    assert_eq!(net.eph_read(a, w, STATE), Some(s("6")));
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("6")), "placed again past the demotion");
+}
+
 // spec/sync.md §6 Reader, §9 (A snapshot turning invalid): a reader deposits a must-hold body it
 // holds and no entry of. Writer w covers its write x by a snapshot S and deletes x at the host;
 // the admin, reading nothing meanwhile, demotes w, so S is invalid (the admin had not received
@@ -6722,4 +6810,5 @@ fn partly_forgotten_durable_commit_keeps_no_key_of_the_lost_part_spec_permission
     }
     assert_eq!(net.read(r, w2), Some(s("x")), "a re-grant fetches the lost part again");
 }
+
 
