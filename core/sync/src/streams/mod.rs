@@ -431,7 +431,7 @@ struct EngineGround<'a> {
 impl Ground for EngineGround<'_> {
     fn open(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening> {
         match self.engine.open_entry(s, &e.blob, &e.wrap, bytes) {
-            Ok(o) if crate::store::pends(self.engine, &o) => Ok(Opening::Pends),
+            Ok(o) if crate::store::pends(self.engine, &e.blob, &o) => Ok(Opening::Pends),
             Ok(Opened::Commit(..) | Opened::Linked | Opened::Inbox(_) | Opened::Records(_)) => Ok(Opening::Taken),
             Ok(Opened::NotOpen) | Err(osis_engine::Error::NotBuilt(_)) => Ok(Opening::NotOpen),
             Ok(Opened::Bad) => Ok(Opening::Bad),
@@ -440,6 +440,7 @@ impl Ground for EngineGround<'_> {
     }
 
     fn unkept(&mut self, store: &crate::store::Store, b: &BlobId) -> Result<()> {
+        self.engine.forget_carrier(b);
         if let Some(c) = self.engine.blob_commit(b)? {
             crate::store::release(self.engine, store, &c)?;
         }

@@ -580,14 +580,22 @@ impl Store {
         if expired(expires, g.now) {
             return Ok(Code::EXPIRED);
         }
-        let charged = if e.stamp.is_none() { from } else { None };
+        // a peer's stamp vouches only under S's head write key (spec/sync-ids.md §5 Peer budget):
+        // one that does not verify there is charged as unstamped, and replaces no stamp held
+        let vouched = match (&e.stamp, from) {
+            (None, _) => false,
+            (Some(_), None) => true,
+            (Some(_), Some(_)) => g.read(|t, _| stamp_vouches(t, s, &e))?,
+        };
+        let charged = if vouched { None } else { from };
         let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: e.deposited, own: e.own, role: e.role, class, expires, size: 0, charged };
+        let stamp = |old: &EntryRow| if vouched || old.stamp.is_none() { e.stamp } else { old.stamp };
         if class == Class::Ephemeral {
             if g.mem.tombstoned(s, &b) {
                 return Ok(Code::TOMBSTONED);
             }
             if let Some(old) = g.mem.read(s, &b).cloned() {
-                let new = EntryRow { size: old.size, charged: if e.stamp.is_some() { None } else { old.charged }, own: old.own || e.own, role: old.role || e.role, ..row };
+                let new = EntryRow { size: old.size, stamp: stamp(&old), charged: if vouched { None } else { old.charged }, own: old.own || e.own, role: old.role || e.role, ..row };
                 g.mem.change(s, &b, new);
                 return Ok(Code::OK);
             }
@@ -625,7 +633,7 @@ impl Store {
                         entries::bytes_arrived(t, env, &b)?;
                     }
                     let old = entries::get(t, s, &b)?.unwrap_or(old);
-                    let new = EntryRow { size: old.size, role: old.role || e.role, charged: if e.stamp.is_some() { None } else { old.charged }, own: old.own || e.own, ..row };
+                    let new = EntryRow { size: old.size, role: old.role || e.role, stamp: stamp(&old), charged: if vouched { None } else { old.charged }, own: old.own || e.own, ..row };
                     entries::change(t, env, s, &b, &old, new)?;
                 }
                 None => entries::insert(t, env, s, &b, row, bytes)?,
@@ -655,16 +663,41 @@ impl Store {
         g.write(|t, env| entries::lift(t, env, s, b))
     }
 
+    /// Drops entry `b` of S, a peer's (not own, not charged), when its stamp no longer vouches
+    /// for it: it does not verify under S's head write key (spec/sync-ids.md §5 Peer budget: an
+    /// entry giving nothing held whose stamp does not vouch counts as unstamped, its bringer not
+    /// known here, so not kept). No tombstone: fetched again where present. Whether it went.
+    pub fn drop_unvouched(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
+        let mut g = self.lock();
+        let now = g.now;
+        if let Some(old) = g.mem.read(s, b).cloned() {
+            let e = entries::to_entry(*b, &old);
+            if old.own || old.charged.is_some() || old.stamp.is_none() || g.read(|t, _| stamp_vouches(t, s, &e))? {
+                return Ok(false);
+            }
+            return Ok(g.mem.remove(s, b, now, false, false));
+        }
+        g.write(|t, env| {
+            let Some(old) = entries::get(t, s, b)? else { return Ok(false) };
+            if old.own || old.charged.is_some() || old.stamp.is_none() || stamp_vouches(t, s, &entries::to_entry(*b, &old))? {
+                return Ok(false);
+            }
+            entries::remove(t, env, s, b, Removal::Untombed)
+        })
+    }
+
     /// Entry `b` of S gives this node something held: its charge to the peer that brought it ends.
     pub fn uncharge(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         let mut g = self.lock();
         if let Some(old) = g.mem.read(s, b).cloned() {
-            g.mem.change(s, b, EntryRow { charged: None, ..old });
+            if old.charged.is_some() {
+                g.mem.change(s, b, EntryRow { charged: None, ..old });
+            }
             return Ok(());
         }
         g.write(|t, env| match entries::get(t, s, b)? {
-            Some(old) => entries::change(t, env, s, b, &old.clone(), EntryRow { charged: None, ..old }),
-            None => Ok(()),
+            Some(old) if old.charged.is_some() => entries::change(t, env, s, b, &old.clone(), EntryRow { charged: None, ..old }),
+            _ => Ok(()),
         })
     }
 
@@ -1320,6 +1353,13 @@ fn served(t: &mut Transaction<'_>, e: &LoggedEvent, until: Option<Position>) -> 
 
 /// Whether `size` more bytes charged to `src` pass its peer budget (spec/sync-ids.md §5 Peer
 /// budget): what its durable and ephemeral entries giving nothing held are charged so far.
+/// Whether entry `e`'s stamp verifies under S's head write key, in either domain.
+fn stamp_vouches(t: &mut Transaction<'_>, s: &SyncId, e: &Entry) -> Result<bool> {
+    let Some(stamp) = e.stamp else { return Ok(false) };
+    let Some((_, head)) = path::head(t, s)? else { return Ok(false) };
+    Ok(osis_label::verify_stamp(&head.keys.write, s, &e.blob, &e.wrap, &stamp).is_ok())
+}
+
 fn over_peer_budget(t: &mut Transaction<'_>, env: &Env<'_>, src: Source, size: u64) -> Result<bool> {
     let mem = env.mem.charges.get(&src).copied().unwrap_or(0);
     Ok(source_charge(t, src)?.saturating_add(mem).saturating_add(size) > env.policy.peer_bytes)

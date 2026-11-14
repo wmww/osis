@@ -1136,3 +1136,64 @@ fn held_elsewhere_kept_while_the_entry_is() {
     assert!(st.drop_entry(&s.id, &b, Vec::new()).unwrap());
     assert!(!st.elsewhere(&s.id, &b).unwrap(), "gone with the entry");
 }
+
+/// A reader's store of `s` (S read here) serving `s`'s path as issued so far, `peer_bytes` its
+/// peer budget.
+fn reader(s: &Sid, peer_bytes: u64) -> Store {
+    let mut st = Dev::new().open();
+    st.set_sync_set(&holding(&[(s, Holding::Read)]));
+    st.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), peer_bytes)]), ..Caps::default() });
+    st.serve_path(&s.id, &osis_engine::sync::Path { steps: s.steps.iter().map(|(p, c)| (p.clone(), Some(c.clone()))).collect() }).unwrap();
+    st
+}
+
+// spec/sync-ids.md §5 (Peer budget: a stamp vouches under S's head write key): a peer's entry
+// whose stamp does not verify under the head is charged as unstamped, so a forged stamp floods
+// no reader past the peer's bound; one under the head is charged to nobody.
+#[test]
+fn a_forged_stamp_is_charged_as_unstamped_spec_sync_ids_5() {
+    let s = Sid::new(60);
+    let mut st = reader(&s, 1500);
+    let c = Source::Conn(ConnId(5));
+    let forged = |b: BlobId| Entry { stamp: Some(osis_label::sign_stamp(&label_role_key(LabelRole::Write, &Secret32::from_bytes([3; 32])), &s.id, &b, &wrap(1), false)), ..stamped(&s, b, false) };
+    let (b1, x1) = blob(1000, Class::Durable, None, &[]);
+    let (b2, x2) = blob(1001, Class::Durable, None, &[]);
+    assert_eq!(st.log(&s.id, forged(b1), Some(x1), Some(c)).unwrap(), Code::OK);
+    assert_eq!(st.log(&s.id, forged(b2), Some(x2.clone()), Some(c)).unwrap(), Code::DEPOSIT_BUDGET_FULL, "past the peer's bound");
+    assert_eq!(st.log(&s.id, stamped(&s, b2, false), Some(x2), Some(c)).unwrap(), Code::OK, "vouched: charged to nobody");
+    // a forged stamp brought again replaces no stamp held
+    assert_eq!(st.log(&s.id, forged(b2), None, Some(c)).unwrap(), Code::OK);
+    assert_eq!(st.entry(&s.id, &b2).unwrap().unwrap().stamp, stamped(&s, b2, false).stamp);
+}
+
+// spec/sync-ids.md §5 (Peer budget), spec/commits.md §4 (Pending storage): an entry kept as a
+// carrier under a stamp vouches only while its write key is the head's. Once the head moves (a
+// writer removed), one that still gives nothing held is not kept (`drop_unvouched`; no
+// tombstone), one stamped under the new head and one charged to a peer stay. n and 10n of them:
+// what stays does not grow with what the removed writer stamped.
+#[test]
+fn a_stamp_vouches_only_under_the_head_spec_sync_ids_5() {
+    for n in [3usize, 30] {
+        let mut s = Sid::new(70);
+        let mut st = reader(&s, 1 << 20);
+        let c = Source::Conn(ConnId(6));
+        let mut old = Vec::new();
+        for i in 0..n {
+            let (b, x) = blob(100 + i, Class::Durable, None, &[]);
+            assert_eq!(st.log(&s.id, stamped(&s, b, false), Some(x), Some(c)).unwrap(), Code::OK);
+            old.push(b);
+        }
+        let (charged, xc) = blob(90, Class::Durable, None, &[]);
+        let unstamped = Entry { stamp: None, deposited: true, ..stamped(&s, charged, false) };
+        assert_eq!(st.log(&s.id, unstamped, Some(xc), Some(c)).unwrap(), Code::OK);
+        s.rotate(80);
+        st.serve_path(&s.id, &osis_engine::sync::Path { steps: s.steps.iter().map(|(p, cs)| (p.clone(), Some(cs.clone()))).collect() }).unwrap();
+        let (fresh, xf) = blob(91, Class::Durable, None, &[]);
+        assert_eq!(st.log(&s.id, stamped(&s, fresh, false), Some(xf), Some(c)).unwrap(), Code::OK);
+        let dropped = [old.as_slice(), &[charged, fresh]].concat().iter().filter(|b| st.drop_unvouched(&s.id, b).unwrap()).count();
+        assert_eq!(dropped, n, "every entry the old write key stamped");
+        assert!(st.entry(&s.id, &fresh).unwrap().is_some() && st.entry(&s.id, &charged).unwrap().is_some());
+        assert_eq!(st.tombstone(&s.id, &old[0]).unwrap(), None, "fetched again where present");
+        assert_eq!(st.entries(&s.id).unwrap().len(), 2, "at {n}");
+    }
+}

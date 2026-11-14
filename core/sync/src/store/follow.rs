@@ -38,11 +38,18 @@ pub struct Follow {
 struct Carriers {
     unnamed: Option<Feed<BlobId>>,
     commits: Option<Feed<CommitId>>,
+    /// Record blobs whose loose records were all learned (`Engine::loose_feed`).
+    loose: Option<Feed<BlobId>>,
 }
 
-/// Whether an open left the entry's commit pending here: the entry is kept as its carrier.
-pub(crate) fn pends(engine: &mut Engine, o: &Opened) -> bool {
-    matches!(o, Opened::Commit(c, _) if engine.pends(c))
+/// Whether an open of entry `b` left its commit pending here, or a record it carries loose: the
+/// entry is kept as its carrier.
+pub(crate) fn pends(engine: &mut Engine, b: &BlobId, o: &Opened) -> bool {
+    match o {
+        Opened::Commit(c, _) => engine.pends(c),
+        Opened::Records(_) => engine.carries_loose(b),
+        _ => false,
+    }
 }
 
 /// Commit `c`'s pending copy goes when no entry in the store names a blob of it (spec/commits.md
@@ -71,6 +78,7 @@ impl Carriers {
         match self.unnamed.as_mut() {
             Some(f) => {
                 for b in f.added() {
+                    engine.forget_carrier(&b);
                     if let Some(c) = engine.blob_commit(&b)? {
                         release(engine, store, &c)?;
                     }
@@ -96,16 +104,23 @@ impl Carriers {
                 Vec::new()
             }
         };
+        let mut given: Vec<BlobId> = Vec::new();
         for c in held {
             if !engine.holds_commit(&c) || engine.pends(&c) {
                 continue;
             }
-            for b in engine.commit_blobs(&c)?.iter() {
-                for s in store.naming(b)? {
-                    if store.entry(&s, b)?.is_some_and(|e| !e.own && e.stamp.is_none()) {
-                        store.uncharge(&s, b)?;
-                        acted = true;
-                    }
+            given.extend(engine.commit_blobs(&c)?.iter().copied());
+        }
+        // a record blob whose records were all learned (spec/commits.md §4 Pending storage)
+        match self.loose.as_mut() {
+            Some(f) => given.extend(f.added().into_iter().filter(|b| !engine.carries_loose(b))),
+            None => self.loose = Some(engine.loose_feed()),
+        }
+        for b in &given {
+            for s in store.naming(b)? {
+                if store.entry(&s, b)?.is_some_and(|e| !e.own) {
+                    store.uncharge(&s, b)?;
+                    acted = true;
                 }
             }
         }
@@ -196,6 +211,7 @@ impl Follow {
             }
             if let Some((_, Some(p))) = r {
                 store.serve_path(&s, &p)?;
+                drop_unvouched(engine, store, &s)?;
                 acted = true;
             }
         }
@@ -242,6 +258,27 @@ fn reopen(engine: &mut Engine, store: &mut Store, c: &CommitId) -> Result<bool> 
     Ok(opened)
 }
 
+/// Drops S's peer entries kept as carriers (their commit pending, or a record loose) whose stamp
+/// no longer vouches under S's served head (`Store::drop_unvouched`): a writer's pending input is
+/// vouched only while its write key is the head's, so what a removed writer stamped pends no
+/// longer than its removal (spec/commits.md §4 Pending storage). Their pending copies go as their
+/// blobs go unnamed (`Carriers`). At a start and each move of the head: O(entries of S).
+fn drop_unvouched(engine: &mut Engine, store: &mut Store, s: &SyncId) -> Result<()> {
+    for e in store.entries(s)? {
+        if e.own || e.stamp.is_none() {
+            continue;
+        }
+        let carries = match engine.blob_commit(&e.blob)? {
+            Some(c) => engine.pends(&c) && !engine.holds_commit(&c),
+            None => engine.carries_loose(&e.blob),
+        };
+        if carries {
+            store.drop_unvouched(s, &e.blob)?;
+        }
+    }
+    Ok(())
+}
+
 /// Opens S's held entries whose commit is neither held nor pending here (kept as they did not
 /// open, or a peer's); one that gives something held is off its peer budget (spec/sync-ids.md
 /// §5). Whether one opened.
@@ -253,10 +290,10 @@ fn open_unopened(engine: &mut Engine, store: &mut Store, s: &SyncId) -> Result<b
         }
         let Some(bytes) = store.bytes(&e.blob)? else { continue };
         let o = engine.open_entry(s, &e.blob, &e.wrap, &bytes)?;
-        if pends(engine, &o) {
+        if pends(engine, &e.blob, &o) {
             continue;
         }
-        if matches!(o, Opened::Commit(..) | Opened::Linked) {
+        if matches!(o, Opened::Commit(..) | Opened::Linked | Opened::Records(_)) {
             store.uncharge(s, &e.blob)?;
             opened = true;
         }
