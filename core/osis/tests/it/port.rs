@@ -850,6 +850,14 @@ fn a_status_watch_through_a_thin_client_spec_wire_11() {
     let _s = cl.on_status_change(move |_, s| tx.send(s).unwrap()).unwrap();
     cl.settle();
     assert!(!rx.try_recv().unwrap().groups.contains_key(&w.t));
+    osis::internals::costs::take();
+    let hidden = crate::common::commit_with(&w.a, |x| x.create().map(drop)).parts().next().unwrap().0;
+    shared_in_home(&w.a, hidden);
+    w.a.settle();
+    w.net.run();
+    cl.settle();
+    assert_eq!(notifies(), 0, "a thing it may not read entering the node's status tells nothing");
+    assert!(rx.try_recv().is_err());
     w.a.grant(w.t, w.actor, Role::Read, osis::GrantOpts::default()).unwrap();
     w.a.settle();
     w.net.run();
@@ -894,6 +902,7 @@ fn a_thing_watch_through_a_thin_client_spec_wire_11() {
     cl.settle();
     let first: Vec<_> = read.try_iter().collect();
     assert!(first.iter().any(|c| c.ak == ak("x:v.0") && c.value == Ok(Some(Value::Int(1))) && c.origin == Origin::Initial), "{first:?}");
+    osis::internals::costs::take();
     for n in 6..9 {
         crate::common::commit_with(&w.a, |x| {
             x.at(w.t, v()).set(&Value::Int(n))?;
@@ -905,6 +914,7 @@ fn a_thing_watch_through_a_thin_client_spec_wire_11() {
         assert!(matches!(c.origin, Origin::Local(s) if s.actor == w.a.me()), "{:?}", c.origin);
     }
     assert!(hidden.try_recv().is_err() && unknown.try_recv().is_err());
+    assert_eq!(notifies(), 3, "one per change of the thing it reads, none of the hidden one");
     w.net.set_online(0, false);
     w.net.run();
     cl.settle();
