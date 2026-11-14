@@ -210,7 +210,7 @@ fn auth(secret: Option<[u8; 32]>) -> Msg {
 }
 
 fn get(t: osis::Tid, ak: &str) -> Msg {
-    Msg::Call { id: 2, max_reply: 65_536, method: osis::internals::port_method::GET, args: vec![Value::Tid(t), Value::Str(ak.into())] }
+    Msg::Call { id: 2, max_reply: 65_536, method: osis::internals::port_method::GET, args: vec![Value::Tid(t), Value::Str(ak.into()), Value::List(Vec::new())] }
 }
 
 fn ok_reply(m: &Msg) -> bool {
@@ -239,7 +239,7 @@ fn a_main_session_authenticates_without_a_secret_spec_wire_11() {
     let (db, t, _, _) = port_node();
     let r = osis::internals::port_answers(&db, 1, true, vec![auth(None), get(t, "x:v.0")]);
     assert!(ok_reply(&r[0]), "{r:?}");
-    assert!(matches!(&r[1], Msg::Reply { outcome: Outcome::Ok { value: Value::List(v) }, .. } if v == &vec![Value::Int(5)]), "{r:?}");
+    assert!(matches!(&r[1], Msg::Reply { outcome: Outcome::Ok { value: Value::List(v) }, .. } if v == &vec![Value::uint(0), Value::List(vec![Value::Int(5)])]), "{r:?}");
 }
 
 // spec/wire.md §11.2 (Auth): any other Auth is Error 1: no secret on a keyed transport, a secret
@@ -269,7 +269,7 @@ fn a_client_actor_reads_only_what_it_may_spec_wire_11() {
     assert!(matches!(&r[3], Msg::Reply { outcome: Outcome::Err { code, .. }, .. } if *code == ApiCode::UNSUPPORTED), "{r:?}");
     db.grant(t, actor, Role::Read, osis::GrantOpts::default()).unwrap();
     let r = osis::internals::port_answers(&db, 1, false, vec![get(t, "x:v.0")]);
-    assert!(matches!(&r[0], Msg::Reply { outcome: Outcome::Ok { value: Value::List(v) }, .. } if v == &vec![Value::Int(5)]), "granted: {r:?}");
+    assert!(matches!(&r[0], Msg::Reply { outcome: Outcome::Ok { value: Value::List(v) }, .. } if v == &vec![Value::uint(0), Value::List(vec![Value::Int(5)])]), "granted: {r:?}");
 }
 
 // spec/wire.md §11.2 (End of a client-actor session): it ends when the entry goes, its secret

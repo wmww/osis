@@ -53,6 +53,7 @@ impl Osis {
     /// client reaches (it starts with none).
     /// `Unsupported` on a client with its own actor.
     pub fn add_client(&self, until: Option<Time>) -> Result<(Tid, ClientSecret)> {
+        self.local("add_client")?;
         let now = self.now()?;
         if until.is_some_and(|u| u <= now) {
             return Err(Error::Invalid("a client's until must be in the future".into()));
@@ -81,6 +82,7 @@ impl Osis {
     /// The clients registered with `add_client`.
     /// `Unsupported` on a client with its own actor.
     pub fn clients(&self) -> Result<Vec<Client>> {
+        self.local("clients")?;
         Ok(self.at(self.node(), ct::CLIENTS).get()?.unwrap_or_default().into_iter().map(|(actor, c)| Client { actor, until: c.until }).collect())
     }
 
@@ -95,6 +97,7 @@ impl Osis {
     /// staying: move its group home and call this again).
     /// `Unsupported` on a client with its own actor.
     pub fn remove_client(&self, actor: Tid) -> Result<bool> {
+        self.local("remove_client")?;
         let node = self.node();
         let Some(e) = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&actor) else { return Ok(false) };
         // ended under any clock: one moved back revives no half-removed client
@@ -117,6 +120,7 @@ impl Osis {
     /// actor and its grants stay. `Invalid` when there is no entry.
     /// `Unsupported` on a client with its own actor.
     pub fn rotate_client_secret(&self, actor: Tid) -> Result<ClientSecret> {
+        self.local("rotate_client_secret")?;
         let node = self.node();
         let e = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&actor).ok_or_else(|| Error::Invalid(format!("no client {actor}")))?;
         let secret = ClientSecret::generate();

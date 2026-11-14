@@ -42,7 +42,7 @@ impl Osis {
         })?;
         let _ = &mut node;
         let secret = osis_transport::StaticSecret::from_bytes(*l.secret.as_bytes());
-        let locked = Locked { node, events, seq: l.seq, offers: l.offers.clone(), out: Vec::new(), wake: l.wake, stepped: false, secret, port: Default::default() };
+        let locked = Locked { node, events, seq: l.seq, offers: l.offers.clone(), out: Vec::new(), wake: l.wake, stepped: false, secret, port: Default::default(), remotes: Vec::new(), group_sources: l.group_sources.clone() };
         drop(l);
         let inner = Arc::new(Inner {
             eng: Mutex::new(locked),
@@ -61,6 +61,8 @@ impl Osis {
             relays: i.relays.clone(),
             store_dir: None,
             waiters: Mutex::new(Vec::new()),
+            thin: std::sync::OnceLock::new(),
+            has_sources: std::sync::atomic::AtomicBool::new(false),
             life: LifeGuard(Arc::default()),
         });
         inner.dispatch.start(Arc::downgrade(&inner))?;

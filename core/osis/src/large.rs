@@ -179,6 +179,7 @@ impl<K: ValueKey, H: std::borrow::Borrow<ReadOnly>> PathRef<'_, '_, K, H> {
     /// The string or blob here as a stream (`Read + Seek`), of any size. `None` when absent.
     pub fn stream(&self) -> Result<Option<ValueStream>> {
         let (db, tid, key, path) = self.read_parts();
+        db.local_at(tid, "stream")?;
         if db.tracking.is_some() {
             // the link, not the bytes: a change of the value is a new link
             let (ak, at) = (ak_of(key)?, path.clone());

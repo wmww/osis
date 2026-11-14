@@ -180,6 +180,26 @@ fn hello_first_spec_wire_11_1() {
     assert_ne!(db.map(|b| b.dialer_challenge), db.map(|b| b.listener_challenge));
 }
 
+// spec/sync-transport.md §6 (Client connection): a client connection's dialer sends no Prove,
+// so neither side proves anything; its client-port requests and their answers, and Notifies,
+// go to the port.
+#[test]
+fn a_client_connection_proves_nothing_spec_sync_transport_6() {
+    let mut p = Pair::new();
+    p.ds.client();
+    p.flow();
+    assert!(!p.ds.proofs_done() && !p.ls.proofs_done());
+    assert!(p.ds.proved().is_empty() && p.ls.proven().actors().is_empty());
+    let id = p.ds.request(To::Port, Msg::Call { id: 0, max_reply: SMALL_REPLY as u64, method: 0, args: Vec::new() });
+    p.flow();
+    let Some(Incoming::Request(rid, m)) = p.l_in.pop() else { panic!("no request: {:?}", p.l_in) };
+    assert_eq!(Incoming::Request(rid, m.clone()).to(), Some(To::Port));
+    p.ls.answer(rid, Msg::Reply { id: 0, outcome: osis_proto::api::Outcome::Ok { value: osis_base::Value::List(Vec::new()) } });
+    assert!(p.ls.push(Msg::Notify { sub_id: 9, payload: osis_proto::api::Payload::Lapsed }));
+    p.flow();
+    assert!(matches!(&p.d_in[..], [Incoming::Reply(To::Port, r, Msg::Reply { .. }), n @ Incoming::Push(Msg::Notify { .. })] if *r == id && n.to() == Some(To::Port)), "{:?}", p.d_in);
+}
+
 // spec/wire.md §11.1 (versions): with no version in common both close; the greatest common one is
 // used.
 #[test]

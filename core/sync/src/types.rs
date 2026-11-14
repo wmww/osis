@@ -20,6 +20,8 @@ pub struct ConnId(pub u64);
 impl ConnId {
     /// The bit set in the numbers of accepted connections.
     pub const ACCEPTED: u64 = 1 << 63;
+    /// The bit set in the numbers of the owner's client connections (`Node::connect`).
+    pub const CLIENT: u64 = 1 << 62;
 
     pub fn accepted(self) -> bool {
         self.0 & ConnId::ACCEPTED != 0

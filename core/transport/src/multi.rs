@@ -1,6 +1,7 @@
 //! `Multi`: one transport over several, picked by URL scheme (spec/sync-transport.md §1): `mem://` to
 //! `InProcess`, `quic://` to `Quic`, `peer://` to `P2p` (over `QuicUdp`, or `MemUdp` in a test
-//! net), `unix://` to `Unix` (listen only). A scheme without its transport is `UnknownScheme`.
+//! net), `unix://` to `Unix` (listened on; dialed only with `unix_dial`). A scheme without its
+//! transport is `UnknownScheme`.
 
 use crate::{Address, Connection, Error, InProcess, ListenConfig, Listener, MemConn, MemListener, MemRecv, MemSend, PublicKey, RecvStream, SendStream, Transport};
 use crate::p2p::{P2pRecv, P2pSend};
@@ -16,11 +17,15 @@ pub struct Multi<U: Udp = QuicUdp> {
     pub quic: Option<Quic>,
     pub p2p: Option<P2p<U>>,
     pub unix: Option<Unix>,
+    /// `unix://` is dialed too: a local client of a node's socket (spec/sync-transport.md §6),
+    /// which syncs nothing. Never on a node's own transports: an address another node published
+    /// must not make a node dial a local socket.
+    pub unix_dial: bool,
 }
 
 impl<U: Udp> Default for Multi<U> {
     fn default() -> Self {
-        Multi { mem: None, quic: None, p2p: None, unix: None }
+        Multi { mem: None, quic: None, p2p: None, unix: None, unix_dial: false }
     }
 }
 
@@ -44,10 +49,10 @@ impl<U: Udp> Multi<U> {
         }
     }
 
-    /// `pick` for a dial: never `unix://`.
+    /// `pick` for a dial: `unix://` only with `unix_dial`.
     fn pick_dial(&self, url: &str) -> Result<Pick<'_, U>, Error> {
         match self.pick(url)? {
-            Pick::Unix(_) => Err(Error::UnknownScheme(crate::unix::SCHEME.to_owned())),
+            Pick::Unix(_) if !self.unix_dial => Err(Error::UnknownScheme(crate::unix::SCHEME.to_owned())),
             p => Ok(p),
         }
     }
@@ -115,8 +120,9 @@ impl<U: Udp> Transport for Multi<U> {
     type Conn = MultiConn<U>;
     type Listener = MultiListener<U>;
 
-    /// `unix://` is listened on only (the client port, notes/client-port.md §5): an address
-    /// another node published never makes this process dial a local socket.
+    /// `unix://` is listened on, and dialed only with `unix_dial` (the client port,
+    /// notes/client-port.md §5): an address another node published never makes a node dial a
+    /// local socket.
     async fn dial(&self, addr: &Address) -> Result<MultiConn<U>, Error> {
         let p = self.pick_dial(&addr.url)?;
         each!(Pick; p, t => t.dial(addr).await.map(Into::into))
@@ -208,7 +214,7 @@ mod tests {
     use crate::{Net, Sched, StaticSecret};
 
     // spec/sync-transport.md §1: the URL scheme picks the transport; `peer://` without `P2p` is a scheme
-    // without its transport, which is unknown (parked); unix:// is never dialed.
+    // without its transport, which is unknown (parked); unix:// is dialed only by a local client.
     #[test]
     fn dispatch_by_scheme_spec_sync_10() {
         let net = Net::new(0);
@@ -229,6 +235,9 @@ mod tests {
             // unix:// is listened on, never dialed through a Multi (a published address cannot reach a local socket)
             let u: Multi = Multi { unix: Some(Unix), ..Multi::default() };
             assert!(matches!(u.dial(&Address { url: "unix:///tmp/x.sock".into(), key }).await, Err(Error::UnknownScheme(_))));
+            // a local client dials it (no socket there: an error of the socket's, not the scheme's)
+            let c: Multi = Multi { unix: Some(Unix), unix_dial: true, ..Multi::default() };
+            assert!(!matches!(c.dial(&Address { url: "unix:///nonexistent/x.sock".into(), key }).await, Err(Error::UnknownScheme(_)) | Ok(_)));
             drop(l);
         });
         assert!(done.is_some());

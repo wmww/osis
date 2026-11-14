@@ -80,6 +80,7 @@ fn state_of(s: &SyncStatus) -> SyncState {
 impl ReadOnly {
     /// How sync stands now.
     pub fn status(&self) -> Result<Status> {
+        self.local("status")?;
         self.locked(|l| {
             let connected = l.node.connections();
             let per_id = l.node.status();
@@ -108,6 +109,7 @@ impl ReadOnly {
 impl Osis {
     /// Calls `f` with the status now and on every change.
     pub fn on_status_change(&self, mut f: impl FnMut(&Osis, Status) + Send + 'static) -> Result<Subscription> {
+        self.local("on_status_change")?;
         let mut last = self.status()?;
         let first = last.clone();
         let mut told = false;
@@ -136,6 +138,7 @@ impl Osis {
     /// `Deliveries` every delivery taken. It never resolves while nobody is connected; with no
     /// network (`Runtime::None`) it fails `Network`.
     pub async fn wait_synced(&self, scope: SyncScope) -> Result<()> {
+        self.local("wait_synced")?;
         let s = match scope {
             SyncScope::All => osis_sync::types::Scope::All,
             SyncScope::Thing(t) => osis_sync::types::Scope::Thing(t),

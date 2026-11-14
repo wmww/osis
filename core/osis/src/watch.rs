@@ -98,6 +98,9 @@ pub(crate) enum Filter {
     Status,
     /// A text session's `on_merge`: called by the session, no message reaches it.
     Text,
+    /// A watch at another node (`port::client`): its deliveries come addressed to it
+    /// (`Msg::Deliver`).
+    Remote,
     /// A tracked read with no value of its own (`track`): `Delivery::Due` when `Watch` may answer
     /// otherwise.
     Due(Watch),
@@ -153,7 +156,7 @@ impl Filter {
             Filter::Diagnostics => vec![Slot::Diagnostics],
             Filter::Disputes => vec![Slot::Disputes],
             Filter::Status => vec![Slot::Status],
-            Filter::Text => Vec::new(),
+            Filter::Text | Filter::Remote => Vec::new(),
             Filter::Due(Watch::CommitsOf(t)) => vec![Slot::CommitsOf(*t)],
             Filter::Due(Watch::Groups(t)) => vec![Slot::Groups(*t)],
             Filter::Due(Watch::Roles) => vec![Slot::Roles],
@@ -238,6 +241,8 @@ pub(crate) enum Msg {
     /// Sync stepped: status may read otherwise.
     Status,
     Initial(u64),
+    /// A delivery for one subscription (a watch at another node).
+    Deliver(u64, Delivery),
     Barrier(Sender<()>),
 }
 
@@ -447,6 +452,11 @@ impl Dispatch {
         Subscription { shared: Arc::downgrade(&self.shared), id: Some(id) }
     }
 
+    /// Whether subscription `id` is still registered.
+    pub fn registered(&self, id: u64) -> bool {
+        lock(&self.shared.registry).subs.contains_key(&id)
+    }
+
     /// Whether a status listener is registered (sync steps tell it, `Msg::Status`).
     pub fn status_listened(&self) -> bool {
         lock(&self.shared.registry).index.contains_key(&Slot::Status)
@@ -529,6 +539,9 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     if let Msg::Initial(id) = m {
         return lock(&sh.registry).subs.get(id).map(|s| (s.clone(), Pre::Ready(Delivery::Initial))).into_iter().collect();
     }
+    if let Msg::Deliver(id, d) = m {
+        return lock(&sh.registry).sub(*id, seq).map(|s| (s, Pre::Ready(d.clone()))).into_iter().collect();
+    }
     // the engine lock is taken before the registry's everywhere (the engine asks it under its
     // lock): a group listener's groups are read here, before the registry is locked
     let groups: HashMap<Tid, BTreeSet<Tid>> = match m {
@@ -563,7 +576,7 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
                     Filter::Thing(_) | Filter::Commits(_) => Pre::Ready(Delivery::Reread),
                     // events, not reads (status follows every change on its own); a session's
                     // merge hears its aspect's; another node's store did not move
-                    Filter::Diagnostics | Filter::Disputes | Filter::Text => return None,
+                    Filter::Diagnostics | Filter::Disputes | Filter::Text | Filter::Remote => return None,
                     Filter::Status => Pre::Ready(Delivery::Due),
                 };
                 Some((s, pre))

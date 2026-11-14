@@ -302,6 +302,7 @@ impl<K: ValueKey> PathRef<'_, '_, K> {
     /// through a connected node.
     pub fn edit_text(&self) -> Result<TextSession> {
         let (db, tid, key, path) = self.parts();
+        db.local_at(tid, "edit_text")?;
         let seq = matches!(crate::large::type_of(key, path)?, Some(Type::Text));
         let key = crate::DynamicAspectKey { ak: ak_of(key)?, schema: key.schema().map(|s| Arc::new(s.clone())) };
         let now = match db.read_local(|r| r.get_path(tid, &key, path))? {

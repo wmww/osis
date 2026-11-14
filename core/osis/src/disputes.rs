@@ -120,6 +120,7 @@ impl Osis {
     /// them leaves some uncounted here: the second value is how many were not examined.
     /// `Unsupported` on a thin client.
     pub fn disputes(&self) -> Result<(Vec<Dispute>, usize)> {
+        self.local("disputes")?;
         self.locked(|l| {
             let (ds, left) = l.engine().disputes(LIST_MAX);
             let mut out: Vec<Dispute> = ds.iter().map(Dispute::of).collect();
@@ -131,6 +132,7 @@ impl Osis {
     /// Calls `f` with every dispute as this node finds one, with the side it took by default.
     /// `Unsupported` on a thin client.
     pub fn on_dispute(&self, mut f: impl FnMut(&Osis, Dispute) + Send + 'static) -> Result<Subscription> {
+        self.local("on_dispute")?;
         Ok(self.subscribe(Filter::Disputes, false, |_| {
             Box::new(move |db, d| {
                 if let Delivery::Dispute(x) = d {
@@ -146,6 +148,7 @@ impl Osis {
     /// slow on a long history. `Invalid` when no such removal or change is held, or the side is
     /// of another kind of dispute; `Unsupported` on a thin client.
     pub fn choose_side(&self, id: DisputeId, side: Side) -> Result<()> {
+        self.local("choose_side")?;
         let misfit = || Error::Invalid(format!("{side:?} is no side of dispute {id}"));
         self.locked(|l| match (id.0, side) {
             (Key::Removal { commit, op, holder }, Side::Author | Side::Holder) => Ok(l.engine().choose(commit, op, holder, side == Side::Author)?),

@@ -14,6 +14,7 @@ use osis_schema::core_types::GROUP;
 use crate::track::{thing, thing_key};
 use osis_schema::{Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// A role granted to one holder (`Osis::grants`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -428,12 +429,38 @@ impl ReadOnly {
     /// The aspects that read as present on the thing, core ones included (`created.0`). A register
     /// whose live write was purged reads absent, and is not listed.
     pub fn aspects(&self, tid: Tid) -> Result<Vec<Ak>> {
+        if let Some(at) = self.remote(tid, "aspects")? {
+            let v = self.remote_call(&at, crate::port::method::ASPECTS, vec![Value::Tid(tid)], crate::port::VALUE_REPLY)?;
+            return crate::port::codec::list(v, "aspects")?.iter().map(crate::port::codec::ak).collect();
+        }
         self.read_answer(|| thing_key("aspects", tid), thing(tid), move |r| r.aspects(tid))
+    }
+
+    /// Where a read of `t` goes when not here: the node's address. A tracked read (`tracking`)
+    /// of a thing at another node is not built: `Unsupported`, named `what`.
+    pub(crate) fn remote(&self, t: Tid, what: &str) -> Result<Option<crate::share::Address>> {
+        match self.source(t)? {
+            crate::sources::Source::Local => Ok(None),
+            crate::sources::Source::Node(_) if self.tracking.is_some() => Err(Error::Unsupported(format!("a tracked {what} of a thing at another node"))),
+            crate::sources::Source::Node(a) => Ok(Some(a)),
+        }
+    }
+
+    /// The value at `path` of `tid`'s `key` at the node at `at`: read there untyped, projected
+    /// here through the key's schema (typing is the client's), as `Reader::get_path` reads it.
+    pub(crate) fn remote_path<K: AspectKey>(&self, at: &crate::share::Address, tid: Tid, key: &K, path: &Path) -> Result<Option<Value>> {
+        let ak = ak_of(key)?;
+        let (Some(s), Some(ty)) = (key.schema(), key.ty()) else { return self.remote_get(at, tid, &ak, path) };
+        type_at(s, ty, path)?;
+        let (from, field) = remote_path_parts(s, ty, path);
+        let Some(v) = self.remote_get(at, tid, &ak, &from)? else { return Ok(None) };
+        Ok(project(s, ty, &from, field, tid, &ak, &v))
     }
 
     /// The groups the thing is in: those listing it as an item or as a subgroup, and every group
     /// holding it transitively.
     pub fn groups_of(&self, tid: Tid) -> Result<GroupsOf> {
+        self.local_at(tid, "groups_of")?;
         Ok(self.read_answer(|| thing_key("groups_of", tid), Filter::Due(Watch::Groups(tid)), move |r| r.groups_of(tid)))
     }
 
@@ -447,6 +474,7 @@ impl ReadOnly {
 
     /// The roles granted on `thing`, by holder. Whoever holds through those: `holders`.
     pub fn grants(&self, thing: Tid) -> Result<Grants> {
+        self.local_at(thing, "grants")?;
         Ok(self.read_answer(|| thing_key("grants", thing), Filter::Grants(thing), move |r| r.grants(thing)))
     }
 
@@ -454,6 +482,7 @@ impl ReadOnly {
     /// read until this node can write the thing: the keys a write needs can arrive after the role
     /// (on another node of the account, say), and a write before then fails `Permission`.
     pub fn role_on(&self, tid: Tid) -> Result<Option<Role>> {
+        self.local_at(tid, "role_on")?;
         self.read_answer(|| thing_key("role_on", tid), Filter::Due(Watch::Roles), move |r| r.role_on(tid))
     }
 
@@ -461,6 +490,9 @@ impl ReadOnly {
     /// content, which is a deleted one and equally one never written: a thing just created, or
     /// only added to a group or granted. Its creation being here needs no content, and is all a write needs.
     pub fn has_content(&self, tid: Tid) -> Result<bool> {
+        if let Some(at) = self.remote(tid, "has_content")? {
+            return Ok(self.remote_call(&at, crate::port::method::HAS_CONTENT, vec![Value::Tid(tid)], crate::port::SMALL_REPLY)? == Value::Bool(true));
+        }
         self.read_answer(|| thing_key("has_content", tid), thing(tid), move |r| r.knows(tid))
     }
 
@@ -471,6 +503,7 @@ impl ReadOnly {
     /// When the thing was created: the oldest valid commit carrying its creation; `None` while it
     /// is unknown here, or once it was destroyed (`Write::purge`, `Write::release`, an expiry).
     pub fn created(&self, tid: Tid) -> Result<Option<ThingStamp>> {
+        self.local_at(tid, "created")?;
         Ok(self.read_answer(|| thing_key("created", tid), Filter::Due(Watch::CommitsOf(tid)), move |r| r.created(tid)))
     }
 
@@ -478,6 +511,7 @@ impl ReadOnly {
     /// is); its creation if never since. A commit known here only from a `CommitKind::Snapshot` is
     /// not seen.
     pub fn changed(&self, tid: Tid) -> Result<Option<ThingStamp>> {
+        self.local_at(tid, "changed")?;
         Ok(self.read_answer(|| thing_key("changed", tid), Filter::Due(Watch::CommitsOf(tid)), move |r| r.changed(tid)))
     }
 
@@ -503,6 +537,11 @@ impl Osis {
     /// for app timestamps. On a thin client, its node's: `Network` when it cannot be
     /// reached.
     pub fn now(&self) -> Result<Time> {
+        if !self.has_store() {
+            let at = self.locked(|l| l.remotes.first().map(|r| r.addr.clone())).ok_or_else(|| Error::Network("not connected".into()))?;
+            let v = self.remote_call(&at, crate::port::method::NOW, Vec::new(), crate::port::SMALL_REPLY)?;
+            return Ok(Time(crate::port::codec::uint(&v, "time")?));
+        }
         Ok(self.engine(|e| e.now()))
     }
 
@@ -524,6 +563,7 @@ impl Osis {
     /// Fails `Network` when `tid` is at a node that cannot be reached now. A live watch hears a
     /// lost connection as an `Err` value, and the aspects again once it is back.
     pub fn on_thing_change(&self, tid: Tid, mut f: impl FnMut(&Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
+        self.local_at(tid, "on_thing_change")?;
         let mut failed = None;
         let sub = self.subscribe(Filter::Thing(tid), true, |r| {
             let mut first: BTreeMap<Ak, Result<Option<Value>>> = BTreeMap::new();
@@ -569,6 +609,7 @@ impl Osis {
     /// `Network` when `thing` is at a node that cannot be reached now; a live watch hears a lost
     /// connection as an `Err`, and the grants again once it is back.
     pub fn on_grants_change(&self, thing: Tid, mut f: impl FnMut(&Osis, Result<Grants>) + Send + 'static) -> Result<Subscription> {
+        self.local_at(thing, "on_grants_change")?;
         Ok(self.subscribe(Filter::Grants(thing), true, move |r| {
             let mut last = r.grants(thing);
             Box::new(move |db, d| match d {
@@ -590,6 +631,7 @@ impl Osis {
     /// of its node: while it cannot be reached none come, and
     /// `status` says so; a session the node has ended fails as its calls do.
     pub fn on_diagnostic(&self, mut f: impl FnMut(&Osis, crate::Diagnostic) + Send + 'static) -> Result<Subscription> {
+        self.local("on_diagnostic")?;
         Ok(self.subscribe(Filter::Diagnostics, false, |_| {
             Box::new(move |db, d| {
                 if let Delivery::Diagnostic(x) = d {
@@ -597,6 +639,26 @@ impl Osis {
                 }
             })
         }))
+    }
+}
+
+/// Where a typed path read at another node reads: the path, or for a struct field its struct
+/// (an absent field reads as its default, spec/versioning.md §5), and the field.
+fn remote_path_parts(s: &Schema, ty: &Type, path: &Path) -> (Path, Option<u64>) {
+    match path.0.split_last() {
+        Some((Step::Field(f), parent)) if type_at(s, ty, &Path(parent.to_vec())).is_ok() => (Path(parent.to_vec()), Some(*f)),
+        _ => (path.clone(), None),
+    }
+}
+
+/// `v`, read untyped at `from` (`remote_path_parts`), projected through the schema, then its
+/// `field`; `None` when it does not match (no diagnostic here: the node holds the data).
+fn project(s: &Schema, ty: &Type, from: &Path, field: Option<u64>, tid: Tid, ak: &Ak, v: &Value) -> Option<Value> {
+    let (t, _) = type_at(s, ty, from).ok()?;
+    let p = lenient(tid, ak, typed_read(s, v, &t), |_| {})?;
+    match field {
+        Some(f) => value_at(&p, &Path(vec![Step::Field(f)])).cloned(),
+        None => Some(p),
     }
 }
 
@@ -623,6 +685,11 @@ impl<'d, K, H: Borrow<ReadOnly>> AspectRef<'d, K, H> {
 impl<'d, K: ValueKey, H: Borrow<ReadOnly>> AspectRef<'d, K, H> {
     /// The value now; `None` when it is absent or does not read as the key's type.
     pub fn get(&self) -> Result<Option<K::T>> {
+        if let Some(at) = self.ro().remote(self.tid, "get")? {
+            let ak = ak_of(&self.key)?;
+            let v = self.ro().remote_get(&at, self.tid, &ak, &Path::root())?;
+            return Ok(v.and_then(|x| lenient(self.tid, &ak, self.key.decode(&x), |_| {})));
+        }
         if self.ro().tracking.is_none() {
             return self.ro().read_local(|r| r.get(self.tid, &self.key));
         }
@@ -651,6 +718,12 @@ impl<K: ValueKey + Clone + Send + 'static> AspectRef<'_, K> {
     /// every later one arrive in order, with no gap between reading and subscribing.
     pub fn on_change(&self, mut f: impl FnMut(&Osis, Change<K::T>) + Send + 'static) -> Result<Subscription> {
         let (tid, ak, key) = (self.tid, ak_of(&self.key)?, self.key.clone());
+        if let Some(at) = self.db.remote(tid, "watch")? {
+            return self.db.remote_watch(&at, tid, ak, &Path::root(), move |db, ch| {
+                let value = ch.value.map(|v| v.and_then(|x| lenient(ch.tid, &ch.ak, key.decode(&x), |_| {})));
+                f(db, Change { tid: ch.tid, ak: ch.ak, value, origin: ch.origin })
+            });
+        }
         let ak2 = ak.clone();
         let read = ReadAt::new(move |r| r.value(tid, &ak2));
         self.db.watch_value(tid, ak, read, move |db, ch| {
@@ -708,6 +781,9 @@ impl<'d, K: ValueKey + Clone + Send + 'static, H: Borrow<ReadOnly>> PathRef<'_, 
     /// The untyped value at the path (typed projection when the key has a schema).
     fn value(&self) -> Result<Option<Value>> {
         let (db, tid, ak) = (self.a.ro(), self.a.tid, ak_of(&self.a.key)?);
+        if let Some(at) = db.remote(tid, "get")? {
+            return db.remote_path(&at, tid, &self.a.key, &self.path);
+        }
         if db.tracking.is_none() {
             return db.read_local(|r| r.get_path(tid, &self.a.key, &self.path));
         }
@@ -734,6 +810,23 @@ impl<K: ValueKey + Clone + Send + 'static> PathRef<'_, '_, K> {
         let ak = ak_of(&key)?;
         if let (Some(s), Some(ty)) = (key.schema(), key.ty()) {
             type_at(s, ty, &self.path)?;
+        }
+        if let Some(at) = db.remote(tid, "watch")? {
+            // read there untyped, projected here as `remote_path` projects it
+            let typed = key.schema().zip(key.ty()).map(|(s, ty)| (Arc::new(s.clone()), ty.clone()));
+            let (from, field) = match &typed {
+                Some((s, ty)) => remote_path_parts(s, ty, &self.path),
+                None => (self.path.clone(), None),
+            };
+            let at_path = from.clone();
+            return db.remote_watch(&at, tid, ak, &at_path, move |db, ch| {
+                let projected = |v: Value| match &typed {
+                    Some((s, ty)) => project(s, ty, &from, field, ch.tid, &ch.ak, &v),
+                    None => Some(v),
+                };
+                let value = ch.value.map(|v| v.and_then(projected).and_then(|x| lenient(ch.tid, &ch.ak, U::from_value(&x), |_| {})));
+                f(db, Change { tid: ch.tid, ak: ch.ak, value, origin: ch.origin })
+            });
         }
         let (path, k) = (self.path.clone(), std::sync::Mutex::new(key));
         let read = ReadAt::new(move |r| r.get_path(tid, &*crate::watch::lock(&k), &path));

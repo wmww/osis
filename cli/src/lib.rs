@@ -241,7 +241,7 @@ fn open(sel: &Store, g: &Global, net: Network, use_daemon: bool) -> anyhow::Resu
 fn daemon(d: &Path, g: &Global) -> anyhow::Result<Osis> {
     let wait = connect_wait(g)?;
     crate::cmd::within(wait, Osis::connect_socket(d, app_config(g))).map_err(|e| match e {
-        Error::Network(_) | Error::NotBuilt => anyhow::Error::new(e).context(Error::InUse),
+        Error::Network(_) => anyhow::Error::new(e).context(Error::InUse),
         e => anyhow::Error::new(e).context("store in use; reaching its daemon"),
     })
 }

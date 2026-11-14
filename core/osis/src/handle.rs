@@ -146,6 +146,11 @@ pub(crate) struct Locked {
     pub secret: osis_transport::StaticSecret,
     /// The client port's sessions (`port`).
     pub port: crate::port::Port,
+    /// The nodes this process is a client of (`Osis::connect`, `connect_node`), in the order
+    /// connected.
+    pub remotes: Vec<crate::port::client::Remote>,
+    /// Groups read and written at another node (`group_source`), by its address.
+    pub group_sources: std::collections::BTreeMap<Tid, Address>,
 }
 
 impl Locked {
@@ -185,6 +190,12 @@ pub(crate) struct Inner {
     pub store_dir: Option<std::path::PathBuf>,
     /// Futures waiting on sync (`wait_synced`, `redeem`): polled again after each step.
     pub waiters: Mutex<Vec<std::task::Waker>>,
+    /// A thin client (`Osis::connect`, `connect_socket`): its node's answers to who it is. Its
+    /// own engine is a scratch one no call reads.
+    pub thin: std::sync::OnceLock<crate::port::client::Thin>,
+    /// Some node is connected or some group sourced elsewhere: only then is a source looked up
+    /// (no cost on a local call).
+    pub has_sources: std::sync::atomic::AtomicBool,
     /// User handles and whether the store closed (the last field: it drops after `eng`).
     pub life: LifeGuard,
 }
@@ -633,7 +644,7 @@ impl Osis {
         if let crate::net::Net::Manual { net: m, index } = &mut net {
             *index = m.join();
         }
-        let locked = Locked { node: sync, events, seq: 0, offers: Vec::new(), out: Vec::new(), wake: None, stepped: false, secret, port: Default::default() };
+        let locked = Locked { node: sync, events, seq: 0, offers: Vec::new(), out: Vec::new(), wake: None, stepped: false, secret, port: Default::default(), remotes: Vec::new(), group_sources: Default::default() };
         let store_dir = match &store {
             Store::Dir(p) => Some(p.clone()),
             Store::Memory(_) => None,
@@ -655,10 +666,13 @@ impl Osis {
             relays: cfg.relays.iter().filter_map(Address::relay_item).collect(),
             store_dir,
             waiters: Mutex::new(Vec::new()),
+            thin: std::sync::OnceLock::new(),
+            has_sources: std::sync::atomic::AtomicBool::new(false),
             life: LifeGuard(Arc::default()),
         });
         inner.dispatch.start(Arc::downgrade(&inner))?;
         let db = Osis::user(inner);
+        db.load_sources()?;
         db.go_online(cfg, driver)?;
         // the first step settles every module (and dials what the config names)
         db.locked(|l| l.handle(osis_sync::Input::Wrote));
@@ -722,19 +736,19 @@ impl ReadOnly {
 
     /// This node's own identity, an actor apart from its account (a thin client: its node's).
     pub fn node(&self) -> Tid {
-        self.inner.node
+        self.inner.thin.get().map_or(self.inner.node, |t| t.node)
     }
 
     /// The account this node belongs to (a thin client: the actor its node acts as for it): the
     /// author of its writes and the holder of its roles.
     pub fn me(&self) -> Tid {
-        self.acting.unwrap_or(self.inner.me)
+        self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.me, |t| t.me))
     }
 
     /// The group private to this account: what is in it reaches every node of the account and
     /// nobody else. On a client with its own actor it is that actor.
     pub fn home(&self) -> Tid {
-        self.acting.unwrap_or(self.inner.home)
+        self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.home, |t| t.home))
     }
 
     /// Runs `f` on the engine under the node lock, then queues its events for the
@@ -841,6 +855,19 @@ impl Osis {
     /// how the app pumps (after its wake callback). Returns at once inside a callback.
     // Never inside an `Internals::engine` closure: a callback may need the lock it holds (deadlock).
     pub fn settle(&self) {
+        if self.inner.dispatch.shared.on_dispatcher() {
+            return;
+        }
+        // the nodes this process watches at: their Notifies for commits so far come first
+        let remotes: Vec<Address> = if self.inner.has_sources.load(std::sync::atomic::Ordering::Acquire) { self.locked(|l| l.remotes.iter().map(|r| r.addr.clone()).collect()) } else { Vec::new() };
+        for a in remotes {
+            let _ = self.remote_call(&a, crate::port::method::SETTLE, Vec::new(), crate::port::SMALL_REPLY);
+        }
+        self.settle_here();
+    }
+
+    /// `settle` for this process's own callbacks alone (the port never waits on another node).
+    pub(crate) fn settle_here(&self) {
         self.inner.dispatch.settle(Arc::downgrade(&self.inner));
     }
 

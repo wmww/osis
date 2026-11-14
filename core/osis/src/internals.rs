@@ -120,6 +120,8 @@ pub struct Knobs {
     pub net: Option<crate::net::ManualNet>,
     /// An in-process transport (`mem://`) beside the product's, under a runtime.
     pub transport: Option<osis_transport::InProcess>,
+    /// A thin client's scratch node (`sources::scratch`): it dials its node's socket.
+    pub(crate) thin: bool,
 }
 
 /// The hooks on `Osis` (`use osis::internals::Internals;`).

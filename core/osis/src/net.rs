@@ -151,6 +151,9 @@ impl Net {
             Net::Manual { net, index } => {
                 let key = secret.public_key();
                 net.listen(*index, key);
+                if let Some(sock) = socket {
+                    lock(&net.0).sockets.insert(sock, *index);
+                }
                 Ok(urls.unwrap_or_default().into_iter().map(|url| osis_label::Address { url, key }).collect())
             }
             Net::Driver { ctl, .. } => {
@@ -191,7 +194,7 @@ impl crate::Osis {
                 if let Lan::On { also_announce_to } = &cfg.lan {
                     lan.to.extend(also_announce_to.iter().copied());
                 }
-                let multi = osis_transport::Multi { mem: cfg.app.internals.transport.clone(), quic: Some(osis_transport::Quic::new()), p2p: Some(osis_transport::P2p::new(osis_transport::QuicUdp::new()).lan(lan)), unix: Some(osis_transport::Unix) };
+                let multi = osis_transport::Multi { mem: cfg.app.internals.transport.clone(), quic: Some(osis_transport::Quic::new()), p2p: Some(osis_transport::P2p::new(osis_transport::QuicUdp::new()).lan(lan)), unix: Some(osis_transport::Unix), unix_dial: cfg.app.internals.thin };
                 let clock: Arc<dyn Clock> = self.inner.clock.clone();
                 let links = TransportLinks::new(Arc::new(multi), clock);
                 let start = Start { listen: cfg.direct_sync.then(|| (vec![osis_transport::peer_url(&relays)], secret)), discover: cfg.direct_sync && matches!(cfg.lan, Lan::On { .. }) };
@@ -208,6 +211,7 @@ impl crate::Osis {
     /// others. `Invalid` for a store in memory (no directory names it); `Storage` when the
     /// socket's directory is not safely this user's; `Network` without a runtime.
     pub fn listen_socket(&self) -> Result<()> {
+        self.local("listen_socket")?;
         let Some(dir) = &self.inner.store_dir else { return Err(Error::Invalid("a store in memory has no client socket".into())) };
         let url = osis_transport::unix::url_of(&crate::sources::socket_path(dir)?);
         let secret = self.locked(|l| StaticSecret::from_bytes(*l.secret.as_bytes()));
@@ -220,6 +224,7 @@ impl crate::Osis {
     /// no URL stops them. Needs a runtime. Listening does not last past this process: call it at
     /// each start.
     pub fn listen(&self, urls: &[crate::Url]) -> Result<Vec<crate::Address>> {
+        self.local("listen")?;
         let secret = self.locked(|l| StaticSecret::from_bytes(*l.secret.as_bytes()));
         let a = self.inner.net.listen(Some(urls.iter().map(ToString::to_string).collect()), None, secret)?;
         Ok(a.into_iter().map(crate::Address).collect())
@@ -230,6 +235,7 @@ impl crate::Osis {
     /// what the account tells them (`reach.0`). Links made before stop reaching it directly. Never
     /// done by itself.
     pub fn rotate_peer_address(&self) -> Result<()> {
+        self.local("rotate_peer_address")?;
         let secret = self.locked(|l| -> Result<StaticSecret> {
             let s = crate::handle::new_node_secret(l.engine())?;
             let mut c = l.node.config().clone();
@@ -310,6 +316,12 @@ struct Fabric {
     accepted: u64,
     /// Nodes cut off from the network: dials to and from them fail.
     offline: std::collections::BTreeSet<usize>,
+    /// Client sockets by URL (`Osis::listen_socket`), and the accepted ends of connections
+    /// dialed there: main sessions (spec/sync-transport.md §6).
+    sockets: BTreeMap<String, usize>,
+    main: std::collections::BTreeSet<(usize, ConnId)>,
+    /// `lose_next_bytes_to`: the node whose next bytes are lost, its connection cut.
+    lose: Option<usize>,
     /// Connections that came up at each node so far (tests: what dialed).
     ups: BTreeMap<usize, usize>,
     /// Deliveries so far, against `cap`.
@@ -328,7 +340,7 @@ pub const MANUAL_HORIZON_MS: u64 = 3_600_000;
 impl ManualNet {
     /// A network whose nodes run on `clock` (give each node the same clock, `Knobs::clock`).
     pub fn new(clock: Arc<ManualClock>) -> ManualNet {
-        ManualNet(Arc::new(Mutex::new(Fabric { clock, nodes: Vec::new(), queue: VecDeque::new(), wakes: BTreeMap::new(), links: BTreeMap::new(), sent: BTreeMap::new(), ups: BTreeMap::new(), accepted: 0, offline: Default::default(), deliveries: 0, cap: MANUAL_CAP })))
+        ManualNet(Arc::new(Mutex::new(Fabric { clock, nodes: Vec::new(), queue: VecDeque::new(), wakes: BTreeMap::new(), links: BTreeMap::new(), sent: BTreeMap::new(), ups: BTreeMap::new(), accepted: 0, offline: Default::default(), sockets: BTreeMap::new(), main: Default::default(), lose: None, deliveries: 0, cap: MANUAL_CAP })))
     }
 
     /// A new node's place (`Osis::start`).
@@ -364,6 +376,12 @@ impl ManualNet {
         }
     }
 
+    /// Loses the next bytes delivered to node `i` and cuts that connection, both ends told: a
+    /// reply lost on the way.
+    pub fn lose_next_bytes_to(&self, i: usize) {
+        lock(&self.0).lose = Some(i);
+    }
+
     /// The node at place `i` of this network, while it is open.
     pub fn node(&self, i: usize) -> Option<crate::Osis> {
         lock(&self.0).nodes.get(i).and_then(|n| n.0.as_ref()).and_then(WeakOsis::upgrade)
@@ -396,6 +414,13 @@ impl ManualNet {
         self.until(horizon, false);
     }
 
+    /// Delivers what is queued and the wakes due now, leaving the clock where it is: what a call
+    /// through another node on this network waits on (`port::client`).
+    pub(crate) fn deliver(&self) {
+        let now = lock(&self.0).clock.now_wall_ms();
+        self.until(now, false);
+    }
+
     /// Delivers every input and wake up to `ms` from now, then sets the clock there.
     pub fn advance(&self, ms: u64) {
         let to = WallMs(lock(&self.0).clock.now_wall_ms().0.saturating_add(ms));
@@ -421,14 +446,26 @@ impl ManualNet {
                 }
             };
             let Some((i, input)) = next else { break };
-            let db = {
+            let (db, main) = {
                 let mut f = lock(&self.0);
                 f.deliveries += 1;
                 assert!(f.deliveries <= f.cap, "manual net: past {} deliveries (a storm); queued {}", f.cap, f.queue.len());
-                f.nodes.get(i).and_then(|n| n.0.as_ref()).and_then(WeakOsis::hold)
+                let main = matches!(input, Input::Up { conn, .. } if f.main.remove(&(i, conn)));
+                if let (Some(l), Input::Bytes { conn, .. }) = (f.lose, &input)
+                    && l == i
+                {
+                    f.lose = None;
+                    // the other end holds this end as its peer: cut from there
+                    let other = f.links.get(&(i, *conn)).copied();
+                    if let Some((b, d)) = other {
+                        f.cut(b, d);
+                    }
+                    continue;
+                }
+                (f.nodes.get(i).and_then(|n| n.0.as_ref()).and_then(WeakOsis::hold), main)
             };
             if let Some(db) = db {
-                db.step(input, false);
+                db.step(input, main);
             }
         }
         if set {
@@ -460,13 +497,17 @@ struct FabricLinks<'a> {
 impl Links for FabricLinks<'_> {
     fn dial(&mut self, conn: ConnId, to: &osis_label::Address) {
         let f = &mut *self.f;
-        let target = f.nodes.iter().position(|n| n.1 == Some(to.key));
+        let socket = f.sockets.get(&to.url).copied();
+        let target = socket.or_else(|| f.nodes.iter().position(|n| n.1 == Some(to.key)));
         let Some(t) = target.filter(|t| *t != self.node && !f.offline.contains(t) && !f.offline.contains(&self.node)) else {
             f.queue.push_back((self.node, Input::Down { conn }));
             return;
         };
         f.accepted += 1;
         let acc = ConnId(ConnId::ACCEPTED | f.accepted);
+        if socket.is_some() {
+            f.main.insert((t, acc));
+        }
         f.links.insert((self.node, conn), (t, acc));
         f.links.insert((t, acc), (self.node, conn));
         // a dialer's key is ephemeral (spec/sync-transport.md §1): any key no node listens with

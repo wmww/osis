@@ -221,6 +221,11 @@ impl Commit {
         })
     }
 
+    /// A commit read through another node (`port::codec`).
+    pub(crate) fn of(stamp: Stamp, kind: CommitKind, reverts: Option<CommitId>, reverted_by: Vec<CommitId>, in_effect: bool, parts: Vec<(Tid, Ak, Part<Value>)>) -> Commit {
+        Commit { stamp, kind, reverts, reverted_by, in_effect, parts, report: Reporter::default() }
+    }
+
     /// Reports mismatches at `db`'s node (a commit read through another node).
     pub(crate) fn reporting(mut self, db: &ReadOnly) -> Commit {
         self.report = Reporter(Some(std::sync::Arc::downgrade(&db.inner)));
@@ -368,6 +373,7 @@ impl ReadOnly {
     }
 
     fn target(&self, scope: &Scope, redo: bool) -> Result<Option<Commit>> {
+        self.local_things(&Address::Writes(scope.clone()).things(), "undo")?;
         self.track_commits(&Address::Writes(scope.clone()), None)?;
         let Some(c) = self.target_id(scope, redo)? else { return Ok(None) };
         self.commit_here(c)
@@ -412,6 +418,7 @@ impl ReadOnly {
 
     /// Commit `id` as listed at `a` now, wherever it is read; `None` when it is not listed there.
     fn listed_commit(&self, a: &Address, id: CommitId) -> Result<Option<Commit>> {
+        self.local_things(&a.things(), "commits")?;
         self.track_commits(a, Some(id))?;
         self.commit_told_here(a, id, None)
     }
@@ -420,6 +427,7 @@ impl ReadOnly {
 impl Osis {
     /// Calls `f` for each commit that reads otherwise at `a`, wherever it is read.
     fn on_commits(&self, a: Address, mut f: crate::watch::CallbackOf<CommitEvent>) -> Result<Subscription> {
+        self.local_things(&a.things(), "commit listeners")?;
         // the dispatcher's handle acts for no one: read as this one does
         let acting = self.acting;
         Ok(self.subscribe(Filter::Commits(a.clone()), false, move |_| {
@@ -465,12 +473,14 @@ impl Osis {
     /// Reverts any held commit or revert, durable or ephemeral, this node may write (an admin
     /// reverting someone else's).
     pub fn revert(&self, id: CommitId) -> Result<Commit> {
+        self.local("revert")?;
         let _g = lock(&self.inner.undo);
         self.revert_one(id)
     }
 
     /// Undo or redo, serialized under one lock: choose by query, then revert.
     fn step(&self, scope: &Scope, redo: bool) -> Result<Option<Commit>> {
+        self.local_things(&Address::Writes(scope.clone()).things(), "undo")?;
         let _g = lock(&self.inner.undo);
         self.target_id(scope, redo)?.map(|c| self.revert_one(c)).transpose()
     }
@@ -481,6 +491,11 @@ impl Osis {
         let blocked = |reason| Error::NotUndoable { commit: target, reason };
         let (mat, actor) = (self.inner.limit, self.acting);
         let c = self.locked(|l| {
+            // what it touched at another node is that node's to revert
+            let touched: Vec<Tid> = l.engine().header(&target.0).map(|h| h.aspects.iter().map(|x| x.tid).collect()).unwrap_or_default();
+            if let Some(at) = touched.into_iter().find_map(|t| crate::sources::sourced_in(l, t)) {
+                return Err(Error::Unsupported(format!("revert of a commit on things read at {at}: not through a connection")));
+            }
             let e = l.engine();
             let c = target.0;
             let h = e.header(&c).filter(|h| self.acting.is_none_or(|a| h.aspects.iter().any(|x| e.readable_by(&a, &x.tid)))).ok_or_else(|| Error::Invalid("unknown commit".into()))?;
@@ -592,6 +607,7 @@ impl<K: SignalKey> AspectRef<'_, K> {
 impl crate::handle::ReadOnly {
     /// A page of the commits listed at `a`, wherever it is read.
     pub(crate) fn listing(&self, a: &Address, q: &CommitQuery) -> Result<CommitPage> {
+        self.local_things(&a.things(), "commit listings")?;
         // a fire's versions change exactly when it is told
         let only = match a {
             Address::Versions(_, _, id) => Some(*id),

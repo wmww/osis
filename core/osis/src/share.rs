@@ -346,6 +346,7 @@ impl ReadOnly {
     /// `may_grant` and whether a grant goes with a membership: `grants`. On a client with its own actor,
     /// what that actor may read: nothing behind an actor it may not read.
     pub fn holders(&self, target: Tid) -> Result<Vec<Holder>> {
+        self.local_at(target, "holders")?;
         Ok(self.read_answer(|| crate::track::thing_key("holders", target), crate::watch::Filter::Due(crate::watch::Watch::Roles), move |r| {
             let mut out: Vec<Holder> = Vec::new();
             // the ways looked behind so far, per actor: a way none of them beats goes behind it too,
@@ -382,6 +383,7 @@ impl ReadOnly {
     /// The profile thing of an account whose card this node imported, if any.
     /// `Unsupported` on a client with its own actor.
     pub fn profile_of(&self, account: Tid) -> Result<Option<Tid>> {
+        self.local("profile_of")?;
         let key = format!("{PROFILE_OF}{account}");
         // written only by `import_contact`: a tracking handle has nothing to listen to here
         let b = self.engine(|e| e.app_record(&key))?;
@@ -415,6 +417,7 @@ impl Osis {
     /// Each grant costs about 2.6 KB of keys: to share with many, grant one group. `Unsupported` on
     /// a client with its own actor.
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: GrantOpts) -> Result<()> {
+        self.local_at(target, "grant")?;
         if !self.holds(target) {
             return Err(Error::UnknownThing { tid: target });
         }
@@ -447,6 +450,7 @@ impl Osis {
     /// group having no grant yet), else `Permission` before anything is written. `Invalid`, as for
     /// `grant`, below a grant of the group ended and still on record. To add without granting: `Write::group`. `Unsupported` on a client with its own actor.
     pub fn add_with_grant(&self, member: Member, group: Tid, role: Role) -> Result<()> {
+        self.local_at(group, "add_with_grant")?;
         let (tid, subgroup) = member.parts();
         for x in [tid, group] {
             if !self.holds(x) {
@@ -538,6 +542,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor, and on a thing this node reads at another node: move its group
     /// home first. A removal written to the copy here would never leave it.
     pub fn set_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
+        self.local_at(target, "set_role")?;
         retain_only_on_removal(role, o)?;
         self.change_role(target, holder, role, o)
     }
@@ -609,6 +614,7 @@ impl Osis {
     /// `Permission` when this node is no admin of `holder`; on a client with its own
     /// actor, for any `holder` but that actor.
     pub fn leave(&self, holder: Tid, target: Tid) -> Result<()> {
+        self.local_at(target, "leave")?;
         let own = holder == self.me();
         // the flow below runs with the node's authority: a client ends only its own actor's role
         if self.acting.is_some() && !own {
@@ -657,6 +663,7 @@ impl Osis {
     /// with its own actor, those it reads). A copy reads as before, and nothing syncs or writes it.
     /// `drop_retained_copy` erases one.
     pub fn retained_copies(&self) -> Result<Vec<Tid>> {
+        self.local("retained_copies")?;
         Ok(self.engine(|e| {
             let mut v = e.kept_copies();
             // acting as an actor: the copies it reads
@@ -669,6 +676,7 @@ impl Osis {
 
     /// Erases the retained copy of `actor`, and what only it retained: its disk space is this user's.
     pub fn drop_retained_copy(&self, actor: Tid) -> Result<()> {
+        self.local("drop_retained_copy")?;
         self.engine(|e| e.forget_lost(osis_engine::rotation::LostScope::Kept(&[actor])))?;
         Ok(())
     }
@@ -676,6 +684,7 @@ impl Osis {
     /// Makes a share link to `target` with `role` (read or above: `Invalid` below). Anyone
     /// holding the link can redeem it until `until` or `revoke_link`.
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
+        self.local_at(target, "make_link")?;
         let me = self.me();
         let peer = self.own_peer();
         let spec = flows::LinkSpec { target, role, until: opts.until.map(|t| osis_base::WallMs(t.0)), hosts: Vec::new(), peers: vec![peer], single_use: opts.single_use };
@@ -699,6 +708,7 @@ impl Osis {
     /// (wrap it in a timeout). A link this account already reaches the thing by joins nothing.
     /// What the link holds is kept until the join is held elsewhere, a dropped call included.
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
+        self.local("redeem")?;
         let link = link.parse()?;
         let target = link.target;
         if self.engine(|e| e.role_on(&target).is_some()) {
@@ -728,6 +738,7 @@ impl Osis {
     /// from the node that made it is not listed); filter by `LinkInfo::target`. `Unsupported` on
     /// a client with its own actor, which is also why a node connected with a client secret adds none.
     pub fn links(&self) -> Result<Vec<LinkInfo>> {
+        self.local("links")?;
         self.live_links()
     }
 
@@ -758,6 +769,7 @@ impl Osis {
     /// one, `set_role`. Writes at once: a join this node has not received yet is undone (one another
     /// writer received stands, as `set_role` says). `Unsupported` on a client with its own actor.
     pub fn revoke_link(&self, id: LinkId) -> Result<()> {
+        self.local("revoke_link")?;
         let l = self.link_key(id.0)?;
         self.lower(id.0, l, None, SetRoleOpts::default())
     }
@@ -775,6 +787,7 @@ impl Osis {
     /// others need to grant this account a role. Made once per node; later calls return the
     /// same card.
     pub fn contact_card(&self) -> Result<ContactCard> {
+        self.local("contact_card")?;
         if let Some(b) = self.engine(|e| e.app_record(CONTACT))? {
             return Ok(ContactCard(String::from_utf8(b).map_err(|_| Error::Storage("contact record".into()))?));
         }
@@ -790,6 +803,7 @@ impl Osis {
     /// card reads them. Every node of the account knows it (a new node from its pairing
     /// offer), though a node paired a moment ago may not hold the thing yet.
     pub fn profile(&self) -> Result<Tid> {
+        self.local("profile")?;
         let b = self.engine(|e| e.app_record(crate::handle::PROFILE))?.ok_or_else(|| Error::Storage("no profile record".into()))?;
         Ok(Tid::from_bytes(b.as_slice().try_into().map_err(|_| Error::Storage("profile record".into()))?))
     }
@@ -798,6 +812,7 @@ impl Osis {
     /// the account once its keys are here, usable in `grant`. Waits for the card's node
     /// meanwhile (wrap it in a timeout).
     pub async fn import_contact(&self, card: &ContactCard) -> Result<Tid> {
+        self.local("import_contact")?;
         let link = card.parse()?;
         let p = link.target;
         let mut started = false;
@@ -827,6 +842,7 @@ impl Osis {
     /// The things this account was given a role on that no node of it syncs yet (spec/sync-set.md
     /// §4), newest grant last.
     pub fn invitations(&self) -> Result<Vec<Invitation>> {
+        self.local("invitations")?;
         let v = self.engine(|e| e.invitations())?;
         Ok(v.iter().map(|i| Invitation { thing: i.thing, role: i.role, from: i.from, taken: i.taken }).collect())
     }
@@ -835,6 +851,7 @@ impl Osis {
     /// one under it (`Invalid` otherwise), so every node of the account syncs it. The same write
     /// as `w.group(into).add(Member::Subgroup(thing))`.
     pub fn accept_invite(&self, thing: Tid, into: Tid) -> Result<()> {
+        self.local("accept_invite")?;
         let synced = self.engine(|e| -> Result<bool> {
             let set = e.sync_set()?;
             Ok(set.ids.values().any(|(t, _)| *t == into))
@@ -852,6 +869,7 @@ impl Osis {
     /// the account's inbox and is no node).
     /// `Unsupported` on a client with its own actor.
     pub fn nodes(&self) -> Result<Vec<AccountNode>> {
+        self.local("nodes")?;
         let home = self.home();
         let node_ak = ct::NODE.name();
         self.engine(|e| -> Result<Vec<AccountNode>> {
@@ -871,6 +889,7 @@ impl Osis {
     /// ending them is the caller's choice. None when `node` was not one of this account's.
     /// `Unsupported` on a client with its own actor.
     pub fn remove_node(&self, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {
+        self.local("remove_node")?;
         let home = self.home();
         let was = self.grants(home)?.contains_key(&node);
         self.set_role(home, node, None, o)?;
@@ -880,6 +899,7 @@ impl Osis {
     /// Writes what this node syncs of `groups` (each thing's sync IDs, with what it holds there)
     /// as a bundle to `out`, for another node's `import_bundle`: sync by hand, carried any way.
     pub fn export_bundle(&self, groups: &[Tid], mut out: impl std::io::Write) -> Result<()> {
+        self.local("export_bundle")?;
         let bytes = self.locked(|l| -> Result<Vec<u8>> {
             let mut ids = Vec::new();
             for g in groups {
@@ -894,6 +914,7 @@ impl Osis {
 
     /// Reads a bundle: what this node can open applies like synced content.
     pub fn import_bundle(&self, mut input: impl std::io::Read) -> Result<()> {
+        self.local("import_bundle")?;
         let mut b = Vec::new();
         input.read_to_end(&mut b).map_err(|e| Error::Storage(e.to_string()))?;
         self.locked(|l| {

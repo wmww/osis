@@ -52,6 +52,7 @@ impl<K: ValueKey + Clone + Send + Sync + 'static> PathRef<'_, '_, K> {
     /// (`Invalid` otherwise); the rewrites need a runtime (`Network` without one).
     pub fn keep_alive<U: Codec>(&self, value: &U) -> Result<KeepAlive> {
         let (db, tid, key, path) = self.parts();
+        db.local_at(tid, "keep_alive")?;
         let Some(exp) = key.defaults().expires.filter(|_| key.ephemeral()) else {
             return Err(Error::Invalid(format!("{} is not an ephemeral key with a default expiry", key.ak())));
         };

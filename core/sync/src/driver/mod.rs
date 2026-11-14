@@ -99,15 +99,28 @@ struct Driver {
     port: Vec<PortEvent>,
     /// Outputs made outside a step (`Node::redeem`), carried out with the next step's.
     pending: Vec<Out>,
+    /// The owner's client connections (`Node::connect`), dialing or up, and the last one's
+    /// number.
+    clients: std::collections::BTreeSet<ConnId>,
+    next_client: u64,
 }
 
 /// The client port as the node's owner sees it (spec/wire.md §11.2 kinds 24-29): sync carries
-/// these requests and their answers on its sessions and judges none of them.
+/// these requests and their answers on its sessions and judges none of them. Served: a peer's
+/// requests on any connection. Used: the owner's own requests on its client connections
+/// (`Node::connect`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PortEvent {
     /// A request of the peer's (Auth, Call, Sub, Unsub): answered with `Node::port_answer`.
     Request(ConnId, crate::session::RequestId, Box<osis_proto::Msg>),
-    /// A connection ended: its port session goes.
+    /// A client connection came up: its requests may go (`Node::port_request`).
+    Up(ConnId),
+    /// The answer to the owner's request (`Node::port_request`): Reply, Ok or Error.
+    Reply(ConnId, crate::session::RequestId, Box<osis_proto::Msg>),
+    /// A Notify on a client connection.
+    Notify(ConnId, Box<osis_proto::Msg>),
+    /// A connection ended, or a client connection's dial failed: its port session goes, and
+    /// every request of the owner's on it is unanswered.
     Closed(ConnId),
 }
 
@@ -270,6 +283,73 @@ impl Node {
         if bytes.is_empty() { Vec::new() } else { vec![Out::Send(conn, bytes)] }
     }
 
+    /// Dials `to` as a client connection (spec/sync-transport.md §6), the owner's own: it proves
+    /// nothing and shares nothing, so it carries only the client port's requests, kept until the
+    /// owner ends it (`disconnect`) or it closes (`PortEvent::Closed`). `PortEvent::Up` once it is
+    /// up. No dial candidate, never counted against `max_peers`.
+    #[must_use = "every output must reach `apply`"]
+    pub fn connect(&mut self, to: Address) -> (ConnId, Vec<Out>) {
+        self.driver.next_client += 1;
+        let conn = ConnId(ConnId::CLIENT | self.driver.next_client);
+        self.driver.clients.insert(conn);
+        self.driver.sessions.set_now(self.now.max(self.engine.now()));
+        self.driver.sessions.dialing(conn);
+        let mut out = vec![Out::Dial(conn, to)];
+        self.wake(&mut out);
+        (conn, out)
+    }
+
+    /// Ends client connection `conn` (`connect`); `PortEvent::Closed` follows.
+    #[must_use = "every output must reach `apply`"]
+    pub fn disconnect(&mut self, conn: ConnId) -> Vec<Out> {
+        let mut out = Vec::new();
+        if self.driver.clients.contains(&conn) {
+            out.push(Out::Close(conn));
+            self.closed(conn, &mut out);
+            self.wake(&mut out);
+        }
+        out
+    }
+
+    /// Sends the owner's request `m` (Auth, Call, Sub, Unsub) on client connection `conn`, under
+    /// the window; its answer comes as `PortEvent::Reply` with the id returned. `None`: the
+    /// connection is not up.
+    #[must_use = "every output must reach `apply`"]
+    pub fn port_request(&mut self, conn: ConnId, m: osis_proto::Msg) -> Option<(crate::session::RequestId, Vec<Out>)> {
+        if !self.driver.clients.contains(&conn) {
+            return None;
+        }
+        self.driver.sessions.set_now(self.now.max(self.engine.now()));
+        let id = self.driver.sessions.get_mut(conn)?.request(To::Port, m);
+        let mut out = Vec::new();
+        self.driver.sessions.take_sends(&mut out);
+        self.wake(&mut out);
+        Some((id, out))
+    }
+
+    /// Pushes a Notify on `conn` under the push rule (spec/sync-streams.md §2), or with `now`
+    /// whatever the room (a lapse, the one small Notify that must go); `None`: it did not go, for
+    /// lack of room (or the connection is gone).
+    #[must_use = "every output must reach `apply`"]
+    pub fn port_push(&mut self, conn: ConnId, m: osis_proto::Msg, now: bool) -> Option<Vec<Out>> {
+        let s = self.driver.sessions.get_mut(conn)?;
+        if now {
+            s.push_now(m);
+        } else if !s.push(m) {
+            return None;
+        }
+        let mut out = Vec::new();
+        self.driver.sessions.take_sends(&mut out);
+        Some(out)
+    }
+
+    /// The node's wake as it stands, outside a step.
+    fn wake(&mut self, out: &mut Vec<Out>) {
+        if let Some(at) = self.next_wake() {
+            out.push(Out::Wake(at));
+        }
+    }
+
     /// Redeems a share link (spec/sync-inbox.md §6): first contact, kept until the join is held
     /// elsewhere. `Done` once the join is written.
     pub fn redeem(&mut self, link: &osis_label::ShareLink) -> Waiting {
@@ -341,7 +421,11 @@ impl Node {
                 if dialed {
                     self.driver.dials.up(conn);
                 }
-                let s = Session::new(conn, peer, dialed, rank, listener, &mut cx!(self, out));
+                let mut s = Session::new(conn, peer, dialed, rank, listener, &mut cx!(self, out));
+                if self.driver.clients.contains(&conn) {
+                    s.client();
+                    self.driver.port.push(PortEvent::Up(conn));
+                }
                 self.driver.sessions.insert(s);
             }
             Input::Taken { conn, bytes } => self.driver.sessions.taken(conn, bytes),
@@ -447,11 +531,13 @@ impl Node {
                         Some(To::Streams) => self.streams.on_message(&mut cx, sessions, &self.opens, conn, m, &mut self.driver.reported),
                         Some(To::Read) => self.read.on_message(&mut cx, sessions, conn, m),
                         Some(To::Inbox) => self.inbox.on_message(&mut cx, sessions, &self.opens, &self.streams, conn, m),
-                        Some(To::Port) => {
-                            if let Incoming::Request(id, m) = m {
-                                self.driver.port.push(PortEvent::Request(conn, id, Box::new(m)));
-                            }
-                        }
+                        Some(To::Port) => match m {
+                            Incoming::Request(id, m) => self.driver.port.push(PortEvent::Request(conn, id, Box::new(m))),
+                            Incoming::Reply(_, id, m) => self.driver.port.push(PortEvent::Reply(conn, id, Box::new(m))),
+                            // a Notify only where this node is the client
+                            Incoming::Push(m) if self.driver.clients.contains(&conn) => self.driver.port.push(PortEvent::Notify(conn, Box::new(m))),
+                            _ => {}
+                        },
                         None => {
                             close = true;
                             break;
@@ -513,6 +599,9 @@ impl Node {
         let lost = self.opens.lost_to(conn).filter(|w| self.driver.sessions.get(*w).is_some());
         let s = self.driver.sessions.remove(conn);
         self.driver.dials.ended(conn, lost, self.now);
+        if self.driver.clients.remove(&conn) && s.is_none() {
+            self.driver.port.push(PortEvent::Closed(conn));
+        }
         let Some(mut s) = s else { return };
         let bytes = s.take_bytes();
         if !bytes.is_empty() {

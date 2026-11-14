@@ -79,8 +79,9 @@ pub enum To {
     Read,
     /// Register, Delete, Stranded, Suspect.
     Inbox,
-    /// The client port's requests: Auth, Call, Sub, Unsub (spec/wire.md §11.2 kinds 24-29),
-    /// answered by the node's owner (`Node::port`).
+    /// The client port (spec/wire.md §11.2 kinds 24-29), the node's owner's (`Node::port`): the
+    /// peer's Auth, Call, Sub and Unsub to answer; on a client connection (`Session::client`)
+    /// the answers to the owner's own and the node's Notifies.
     Port,
 }
 
@@ -95,6 +96,7 @@ impl Incoming {
                 19 | 41 | 43 | 44 => Some(To::Streams),
                 7 | 14 | 30 | 31 => Some(To::Inbox),
                 24 | 25 | 27 | 28 if matches!(self, Incoming::Request(..)) => Some(To::Port),
+                29 if matches!(self, Incoming::Push(..)) => Some(To::Port),
                 _ => None,
             },
         }
@@ -229,6 +231,8 @@ pub struct Session {
     /// the last one came back with nothing before it.
     probe: Option<(RequestId, u64)>,
     quiet: Option<u64>,
+    /// A client connection (`client`): the dialer proves nothing.
+    client: bool,
 }
 
 impl Session {
@@ -276,9 +280,18 @@ impl Session {
             frames_in: 0,
             probe: None,
             quiet: None,
+            client: false,
         };
         s.write(Hello::new(cx.now.0, challenge).encode());
         s
+    }
+
+    /// Makes this a client connection (spec/sync-transport.md §6): the owner's own, to use a
+    /// node's client port. Its dialer sends no Prove, so it proves no actor, keeps no record and
+    /// opens nothing (spec/sync-opens.md §2-§3): no pair rule closes it beside a sync connection
+    /// to the same node. Set before the peer's Hello.
+    pub fn client(&mut self) {
+        self.client = true;
     }
 
     /// Takes bytes received; proofs run here. `Err`: the connection closes (with the Error frame
@@ -532,10 +545,10 @@ impl Session {
         let (dialer_challenge, listener_challenge) = if self.dialer { (self.challenge, h.challenge) } else { (h.challenge, self.challenge) };
         self.binding = Some(Binding { dialer_challenge, listener_challenge, listener_key: self.listener_key.0 });
         self.proofs = Proofs::Proving;
-        if self.dialer {
+        if self.dialer && !self.client {
             self.prove(cx)?;
-            self.next_ping();
         }
+        self.next_ping();
         Ok(())
     }
 

@@ -53,7 +53,7 @@ pub enum Purge {
 /// One API op of a write in wire-ready form: tids resolved, aspects by index into the write's
 /// key table (`Write::keys`), values untyped and validated.
 #[derive(Clone, Debug)]
-enum WriteOp {
+pub(crate) enum WriteOp {
     /// A new thing; its record fixes its tid.
     Create(CreationRecord),
     /// Adds (removes) `member` to the items, or the subgroups, of `g`.
@@ -194,9 +194,89 @@ impl<'d> Write<'d> {
         self
     }
 
-    /// `t`, failing `UnknownThing` when it is not held.
+    /// `t`, failing `UnknownThing` when it is not held; one at another node is that node's to
+    /// judge, at commit.
     fn known(&self, t: Tid) -> Result<Tid> {
-        if self.created.contains(&t) || self.db.holds(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
+        if self.created.contains(&t) || matches!(self.db.source(t)?, crate::sources::Source::Node(_)) || self.db.holds(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
+    }
+
+    /// The things the ops name: where the write goes.
+    pub(crate) fn things(&self) -> Vec<Tid> {
+        let mut ts: Vec<Tid> = self
+            .ops
+            .iter()
+            .flat_map(|o| match o {
+                WriteOp::Create(r) => match r {
+                    CreationRecord::Thing { admin, .. } => vec![r.tid(), *admin],
+                    CreationRecord::KeyActor { .. } => vec![r.tid()],
+                },
+                WriteOp::Group { g, member, .. } => vec![*g, *member],
+                WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => vec![*tid],
+                WriteOp::Delete(t) | WriteOp::PurgeThing(t) | WriteOp::Release(t) => vec![*t],
+                WriteOp::Retain { by, thing, .. } => vec![*by, *thing],
+            })
+            .filter(|t| !self.created.contains(t))
+            .collect();
+        ts.sort();
+        ts.dedup();
+        ts
+    }
+
+    /// The write as the client port carries it (`WRITE`, notes/client-port.md §2): `[actor,
+    /// [ak*], [op*], Opt(expiry)]`, the nonce put before it as it is sent; an expiry `[0, at]`
+    /// or `[1, ms from now]`.
+    fn wire(self) -> Result<Vec<Value>> {
+        use crate::port::codec::{ak_to, opt, write_op_to};
+        let expires = self.expires.map(|e| match e {
+            Expiry::At(t) => Value::List(vec![Value::uint(0), Value::uint(t.0)]),
+            Expiry::In(d) => Value::List(vec![Value::uint(1), Value::uint(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))]),
+        });
+        Ok(vec![
+            Value::Tid(self.actor),
+            Value::List(self.keys.iter().map(|k| ak_to(&k.ak)).collect()),
+            Value::List(self.ops.iter().map(write_op_to).collect::<Result<Vec<_>>>()?),
+            opt(expires),
+        ])
+    }
+
+    /// The write a client port's `WRITE` carries (`wire`), on `db`, its keys typed as `db` types
+    /// them; refused past `MAX_WRITE_OPS` ops.
+    pub(crate) fn from_wire(db: &'d Osis, args: Vec<Value>) -> Result<Write<'d>> {
+        use crate::port::codec::{ak, bad, list, opt_from, uint, write_op_from};
+        let [actor, aks, ops, expires] = <[Value; 4]>::try_from(args).map_err(|_| bad("write"))?;
+        let ops = list(ops, "write ops")?;
+        if ops.len() > crate::port::MAX_WRITE_OPS {
+            return Err(Error::Invalid(format!("a write through another node has at most {} ops", crate::port::MAX_WRITE_OPS)));
+        }
+        let mut w = db.write();
+        w.actor = crate::port::codec::tid(&actor)?;
+        for a in list(aks, "aspect keys")? {
+            let a = ak(&a)?;
+            let k = db.aspect_key(a.as_str())?;
+            let i = u32::try_from(w.keys.len()).unwrap_or(u32::MAX);
+            w.key_ix.insert((a, 0), i);
+            w.keys.push(k);
+        }
+        for o in ops {
+            let o = write_op_from(o)?;
+            if let WriteOp::Create(r) = &o {
+                w.created.push(r.tid());
+            }
+            w.ops.push(o);
+        }
+        w.expires = match opt_from(expires, "expiry")? {
+            None => None,
+            Some(e) => {
+                let [case, n] = <[Value; 2]>::try_from(list(e, "expiry")?).map_err(|_| bad("expiry"))?;
+                let n = uint(&n, "expiry")?;
+                Some(match uint(&case, "expiry")? {
+                    0 => Expiry::At(Time(n)),
+                    1 => Expiry::In(Duration::from_millis(n)),
+                    _ => return Err(bad("expiry")),
+                })
+            }
+        };
+        Ok(w)
     }
 
     /// The index of `key` (AK `ak`) in the key table: one entry, and one copy of its schema,
@@ -321,6 +401,13 @@ impl<'d> Write<'d> {
             return Err(e);
         }
         let db = self.db;
+        // a handle acting for a client of this node never writes through another node (the port
+        // never waits on one): what it may not read here is unknown to it, below
+        if db.acting.is_none()
+            && let crate::sources::Source::Node(at) = db.source_of_all(&self.things())?
+        {
+            return db.remote_write(&at, self.wire()?);
+        }
         let limit = db.inner.limit;
         let expires = self.expires.map(|e| expiry_at(db, e)).transpose()?;
         let (r, removed) = db.locked(|l| {
@@ -334,6 +421,14 @@ impl<'d> Write<'d> {
                 return Err(Error::UnknownThing { tid: t });
             }
             let actor = db.acting;
+            // what the acting actor may not read is a thing this node does not know, writes
+            // included (spec/wire.md §11.2): no Permission tells it apart
+            if actor.is_some() {
+                let r = Reader { e: &mut *e, limit, actor };
+                if let Some(t) = self.things().into_iter().find(|t| r.hidden(*t)) {
+                    return Err(Error::UnknownThing { tid: t });
+                }
+            }
             let who = self.actor;
             let sharing = self.sharing;
             let Built { mut m, added, removed } = self.build(&mut Reader { e, limit, actor }, expires)?;

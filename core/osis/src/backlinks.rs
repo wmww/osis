@@ -82,6 +82,7 @@ impl ReadOnly {
     /// aspect, a page at a time. Only what this node holds and the handle may read counts, never
     /// history; a group listing `tid` is one (on `group.0`). `tid` itself need not be known here.
     pub fn backlinks(&self, tid: Tid, q: &BacklinkQuery) -> Result<BacklinkPage> {
+        self.local_at(tid, "backlinks")?;
         if self.tracking.is_some() {
             self.engine(|e| e.watch_references());
         }
@@ -96,6 +97,7 @@ impl Osis {
     /// is at a node that cannot be reached now; a live watch hears a lost connection as an `Err`,
     /// and the page again once it is back.
     pub fn on_backlinks_change(&self, tid: Tid, q: &BacklinkQuery, mut f: impl FnMut(&Osis, Result<BacklinkPage>) + Send + 'static) -> Result<Subscription> {
+        self.local_at(tid, "on_backlinks_change")?;
         let (q, limit, actor) = (q.clone(), self.inner.limit, self.acting);
         let mut failed = None;
         let sub = self.subscribe(watch(self, tid), true, |r| {

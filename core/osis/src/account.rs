@@ -145,6 +145,7 @@ impl Osis {
     /// expires (10 minutes): show it only to the new node.
     /// `Unsupported` on a client with its own actor.
     pub fn pair_offer(&self) -> Result<PairOffer> {
+        self.local("pair_offer")?;
         let (me, home, node) = (self.me(), self.home(), self.node());
         // every node of the account learns the profile from the offer it paired by
         let profile = self.profile()?;
@@ -164,6 +165,7 @@ impl Osis {
     /// with the reply to carry back.
     /// `Unsupported` on a client with its own actor.
     pub fn pair_accept(&self, req: &PairRequest) -> Result<(Tid, PairReply)> {
+        self.local("pair_accept")?;
         let items = req.parse()?;
         let [_, Value::Tid(node), pks, Value::Bytes(_)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing request".into())) };
         let now = self.inner.clock.now_wall_ms().0;
