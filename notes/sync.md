@@ -25,7 +25,7 @@ A failed read is no wait: `Effects::try_settle` records nothing and leaves the k
 - **osis** holds a `Node` per handle and steps it from its driver task (notes/api-implementation.md).
 
 ## The one step
-`Node::handle(input) -> Vec<Out>` is all of sync: route the input to its module, run the compaction trigger, settle every module (leave, store, unread, opens, read, inbox, streams, status) until none acted, flush opens' records, decide dials and keep-or-close, then emit sends, dials, closes and one wake. `apply(out, links)` alone carries outputs out. Inputs: a connection up or down, bytes, bytes the transport took, a wake, a discovery, and `Wrote` after the osis handle writes. Details and failure handling: notes/sync-driver.md.
+`Node::handle(input) -> Vec<Out>` is all of sync: route the input to its module, run the compaction trigger, settle every module (leave, store, unread, opens, read, inbox, streams, status, life) until none acted, flush opens' records, decide dials and keep-or-close, then emit sends, dials, closes and one wake. `apply(out, links)` alone carries outputs out. Inputs: a connection up or down, bytes, bytes the transport took, a wake, a discovery, and `Wrote` after the osis handle writes. Details and failure handling: notes/sync-driver.md.
 
 ## How a write reaches a peer
 1. The app writes through the osis handle; the engine commits it and calls nothing; the handle calls `handle(Wrote)`.

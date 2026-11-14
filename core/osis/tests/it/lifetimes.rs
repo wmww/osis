@@ -1,7 +1,7 @@
 //! Thing lifetimes through the API (notes/lifetimes.md, API; notes/api.md Lifetimes):
 //! `core::RETAINERS`, `AspectWrite::retaining`, `Write::release`, and the writer refusing its own
 //! list change that leaves a thing unreachable. The judgment itself is node-sync's (node
-//! `lifetimes::`); a thing under no label is judged at once, after each call.
+//! `life::`); a thing under no synced group is judged at once, at the sync step after each write.
 //! spec/commits.md §5 Lifetimes, Destruction.
 
 use crate::common::*;
