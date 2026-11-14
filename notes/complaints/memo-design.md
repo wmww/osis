@@ -5,3 +5,4 @@
 - Test binaries panic on an unknown `OSIS_*` variable (core/base/testenv-known.txt): a throwaway counter switch needs a line there too, and that line must not be committed.
 - The policy check lists the files allowed to hold world-copy hooks by path (tools/policy.py `COPY_DEFS`), so moving `memo.rs` to `memo/mod.rs` broke it until the list was updated.
 - osis-node `it` misses a dropped stamp in the held set (no test failed when `mark_counted` stamped nothing): a stamp needs a unit test per key, as `held_reads_move_with_what_they_read` now does.
+- Review: valgrind is not installed on this box although the issue's Method names callgrind; `tools/cpuprof` (inclusive shares) answered instead.
