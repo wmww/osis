@@ -2032,8 +2032,8 @@ fn a_secret_without_a_kept_sync_id_records_nothing_spec_sync_3() {
 }
 
 // spec/sync.md §3 (A kept sync ID: an accept keeps the sync IDs every held boxes payload offering
-// the thing names), spec/sync-hostile.md §2 (the user may accept a forger's offer: the thing is
-// then kept under that sync ID too, and the genuine one is kept as well): an accept made while a
+// the thing names), spec/sync-hostile.md §2 (The user may accept an offer whose sync ID is a
+// forger's: the genuine sync ID is kept too): an accept made while a
 // forger's offer of another sync ID is held keeps both, so a forger arriving first displaces
 // nothing; the forger's secret, which no step of the genuine path bears, is never recorded.
 #[test]
