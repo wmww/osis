@@ -340,6 +340,40 @@ mod tests {
         assert_eq!(r[..5], l[..5]);
     }
 
+    // spec/wire.md §6: a content cut at exactly `min` and just past it, with lead bytes unhashed
+    // (`MID`): chunker and page cutter, fed whole and in pieces, match the rule as written.
+    #[test]
+    fn cut_at_min() {
+        for want in [MID.min, MID.min + 1] {
+            let (d, l) = (0..)
+                .map(|seed| data(seed, 3 * MID.max))
+                .map(|d| { let l = pages_reference(&d, &vec![1; d.len()], MID); (d, l) })
+                .find(|(_, l)| l[0] == want)
+                .unwrap();
+            assert_eq!(chunk_lengths(&d, MID), l);
+            assert_eq!(incremental(&d, MID, &[1, 7, 299, 64]), l);
+            for (size, split) in [(1, 1), (5, 2), (300, 7), (301, 300)] {
+                let sizes: Vec<usize> = (0..d.len() / size).map(|_| size).collect();
+                let mut c = PageCutter::new(MID);
+                let (mut got, mut pos) = (Vec::new(), 0);
+                for &s in &sizes {
+                    for piece in d[pos..pos + s].chunks(split) {
+                        c.feed(piece);
+                    }
+                    pos += s;
+                    let n = c.pending();
+                    if c.end_element() {
+                        got.push(n);
+                    }
+                }
+                if c.pending() > 0 {
+                    got.push(c.pending());
+                }
+                assert_eq!(got, pages_reference(&d, &sizes, MID), "elements of {size}, pieces of {split}");
+            }
+        }
+    }
+
     // spec/wire.md §6: format parameters give chunks of about CHUNK_MIN + 64 KiB.
     #[test]
     fn format_average() {
