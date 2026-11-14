@@ -279,7 +279,7 @@ impl Read {
                 }
                 let links = |j: &Judged| (j.roots.to_vec(), j.repairs);
                 let (old, new) = (was.as_ref().map(links).unwrap_or_default(), links(&now));
-                self.pieces.body(&s, &c, (&old.0, old.1), (&new.0, new.1));
+                self.pieces.body(&s, &c, (&old.0, old.1), (&new.0, new.1), &now.fresh);
                 note(&mut judged, k, was, now);
             }
         }

@@ -119,7 +119,8 @@ fn a_reused_chunk_a_purger_deleted_is_repaired_spec_sync_ids_1() {
     let n = v.len();
     v[n - 10..].copy_from_slice(b"node 2 was");
     write_big(&mut w, 2, t, v.clone());
-    let reused: BTreeSet<BlobId> = live(&mut w, 2, &t).intersection(&first).copied().collect();
+    let edited = live(&mut w, 2, &t);
+    let reused: BTreeSet<BlobId> = edited.intersection(&first).copied().collect();
     assert!(!reused.is_empty(), "the edit reuses chunks");
     purge(&mut w, 0, t, c);
     w.run();
@@ -130,8 +131,12 @@ fn a_reused_chunk_a_purger_deleted_is_repaired_spec_sync_ids_1() {
     assert_eq!(read_big(&mut w, 0, &t), Some(Value::Bytes(v)), "node 0 reads the repaired value whole");
     assert!(reused.is_disjoint(&live(&mut w, 2, &t)), "node 2's value links no deleted chunk");
     let own: Vec<CommitId> = w.engine(2).own_commits(&s).unwrap().iter().copied().collect();
-    let repairs = own.iter().filter(|c| w.engine(2).read_facts(&s, c).unwrap().repair).count();
-    assert_eq!(repairs, 1, "one commit, marked a repair: what it wrote is never repaired");
+    let repairs: Vec<_> = own.iter().map(|c| w.engine(2).read_facts(&s, c).unwrap().repair_fresh).filter(|f| !f.is_empty()).collect();
+    assert_eq!(repairs.len(), 1, "one commit, marked a repair");
+    // marked with what it encrypted afresh alone: the chunks it reused stay repairable through it
+    let now = live(&mut w, 2, &t);
+    assert!(repairs[0].is_subset(&now) && repairs[0].is_disjoint(&edited), "{:?}", repairs[0]);
+    assert!(now.iter().any(|b| edited.contains(b) && !repairs[0].contains(b)), "the repair reuses chunks");
 }
 
 /// Pieces judged (`read: piece judged`) and nodes decoded across the three nodes for a 4-byte edit

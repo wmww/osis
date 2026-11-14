@@ -25,8 +25,9 @@ pub struct Facts {
     pub must_not: Option<Why>,
     /// This node's own commit (`own_commits`).
     pub own: bool,
-    /// An own commit a repair wrote: its pieces are never repaired (spec/sync-ids.md §1 Repair).
-    pub repair: bool,
+    /// An own commit a repair wrote: the blobs it encrypted afresh, never repaired by way of it
+    /// (spec/sync-ids.md §1 Repair); empty for any other commit.
+    pub repair_fresh: Arc<BTreeSet<BlobId>>,
     /// A role commit or request (spec/sync-judgement.md §3 Role entries first).
     pub role: bool,
     /// Per delta needing a carrier (holding a live write, kept, or dropped as covered and not

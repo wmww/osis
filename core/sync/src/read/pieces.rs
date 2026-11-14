@@ -22,7 +22,7 @@ use std::sync::Arc;
 /// What links a piece under S.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Linker {
-    /// A must-hold body, and whether its pieces are repaired (an own body a repair did not write).
+    /// A must-hold body, and whether its pieces are repaired (an own body).
     Body { c: CommitId, repairs: bool },
     /// An acting node one step above.
     Node(BlobId),
@@ -60,17 +60,26 @@ pub(crate) struct Pieces {
     touched: BTreeSet<Key>,
     /// Lost pieces a linker joined since the last `acts`: repaired in the bodies over them.
     relinked: BTreeSet<Key>,
+    /// Per own repair body linking pieces, the blobs it encrypted afresh: never repaired by way
+    /// of it.
+    fresh: BTreeMap<(SyncId, CommitId), Arc<BTreeSet<BlobId>>>,
 }
 
 impl Default for Pieces {
     fn default() -> Self {
-        Pieces { judged: Effects::new("read: pieces"), linked: BTreeMap::new(), touched: BTreeSet::new(), relinked: BTreeSet::new() }
+        Pieces { judged: Effects::new("read: pieces"), linked: BTreeMap::new(), touched: BTreeSet::new(), relinked: BTreeSet::new(), fresh: BTreeMap::new() }
     }
 }
 
 impl Pieces {
-    /// Body `c`'s links moved from `was` (roots, repairs) to `now`: what it links under S follows.
-    pub fn body(&mut self, s: &SyncId, c: &CommitId, was: (&[PieceLink], bool), now: (&[PieceLink], bool)) {
+    /// Body `c`'s links moved from `was` (roots, repairs) to `now`: what it links under S follows;
+    /// `fresh`: what it encrypted afresh as a repair.
+    pub fn body(&mut self, s: &SyncId, c: &CommitId, was: (&[PieceLink], bool), now: (&[PieceLink], bool), fresh: &Arc<BTreeSet<BlobId>>) {
+        if fresh.is_empty() || now.0.is_empty() {
+            self.fresh.remove(&(*s, *c));
+        } else {
+            self.fresh.insert((*s, *c), fresh.clone());
+        }
         if was == now {
             return;
         }
@@ -192,7 +201,8 @@ impl Pieces {
         (out, self.repairs(&lost))
     }
 
-    /// The pieces of `lost` to repair, per own body over them a repair did not write.
+    /// The pieces of `lost` to repair, per own body over them, but a repair's over what it
+    /// encrypted afresh.
     fn repairs(&self, lost: &BTreeSet<Key>) -> Repairs {
         let mut out = Repairs::new();
         for k in lost {
@@ -204,7 +214,7 @@ impl Pieces {
                 }
                 for by in self.linked.get(&at).map(|e| &e.by).into_iter().flatten() {
                     match by {
-                        Linker::Body { c, repairs: true } => drop(out.entry(*c).or_default().insert(k.1)),
+                        Linker::Body { c, repairs: true } if !self.fresh.get(&(at.0, *c)).is_some_and(|f| f.contains(&k.1)) => drop(out.entry(*c).or_default().insert(k.1)),
                         Linker::Body { .. } => {}
                         Linker::Node(b) => todo.push((at.0, *b)),
                     }

@@ -70,7 +70,7 @@ fn uncovered() -> Facts {
         body: BodyFacts { required: true, closure: true, dropped: None, kept: false, covered: Some(false), sole_certificate: false, lasting_header: false },
         must_not: None,
         own: true,
-        repair: false,
+        repair_fresh: Arc::default(),
         role: false,
         carriers: Vec::new(),
         later_unheld: Vec::new(),
@@ -1440,21 +1440,25 @@ fn a_piece_every_source_deleted_is_repaired_once_spec_sync_ids_1() {
     assert_eq!(sent_of(&other, |m| matches!(m, Sent::Repair(..))), 0, "another's body is not repaired here");
 }
 
-// spec/sync-ids.md §1 (Repair): a commit a repair wrote is never repaired: a source deleting what
-// it wrote afresh is refusing it, not a purger that missed a reuse, so a store refusing each
+// spec/sync-ids.md §1 (Repair): what a repair encrypted afresh is never repaired by way of it: a
+// source deleting it is refusing, not a purger that missed a reuse, so a store refusing each
 // re-encryption makes this node write one repair per piece its other own commits link, not one
-// per refusal.
+// per refusal; a chunk the repair reused is repaired through it like any own commit's.
 #[test]
-fn a_repair_commit_is_never_repaired_spec_sync_ids_1() {
-    let mut w = with_pieces(&[10], &[]);
+fn a_repair_repairs_what_it_reused_not_what_it_wrote_afresh_spec_sync_ids_1() {
+    let mut w = with_pieces(&[10, 11], &[]);
     let mut f = uncovered();
-    f.repair = true;
+    f.repair_fresh = Arc::new([bid(10)].into());
     w.judge(S, cid(1), f);
     w.g.heard.insert(S, true);
     w.g.piece_seen.insert((K, S, bid(10)), (false, true));
     w.settle();
     w.exchange();
     assert_eq!(sent_of(&w, |m| matches!(m, Sent::Repair(..))), 0, "{:?}", w.g.sent);
+    w.g.piece_seen.insert((K, S, bid(11)), (false, true));
+    w.settle();
+    assert_eq!(sent_of(&w, |m| matches!(m, Sent::Repair(..))), 1, "{:?}", w.g.sent);
+    assert!(w.g.sent.contains(&Sent::Repair(cid(1), bid(11))), "{:?}", w.g.sent);
 }
 
 /// A piece link to blob `i` (big-endian in its first bytes), a chunk when `leaf`.

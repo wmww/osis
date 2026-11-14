@@ -59,13 +59,15 @@ pub(crate) struct Judged {
     pub idle: bool,
     /// A must-hold body's links (`Engine::piece_roots`): where its pieces start.
     pub roots: Arc<Vec<PieceLink>>,
-    /// An own body a repair did not write: its pieces are repaired (spec/sync-ids.md §1).
+    /// An own body: its pieces are repaired, but those it encrypted afresh as a repair
+    /// (`fresh`; spec/sync-ids.md §1).
     pub repairs: bool,
+    pub fresh: Arc<BTreeSet<BlobId>>,
 }
 
 impl Default for Judged {
     fn default() -> Self {
-        Judged { verdict: Verdict::Unjudged, role: false, acts: BTreeSet::new(), idle: false, roots: Arc::default(), repairs: false }
+        Judged { verdict: Verdict::Unjudged, role: false, acts: BTreeSet::new(), idle: false, roots: Arc::default(), repairs: false, fresh: Arc::default() }
     }
 }
 
@@ -252,7 +254,8 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     }
     if verdict == Verdict::Must {
         j.roots = g.piece_roots(s, c)?;
-        j.repairs = f.as_ref().is_some_and(|f| f.own && !f.repair);
+        j.repairs = f.as_ref().is_some_and(|f| f.own);
+        j.fresh = f.as_ref().map(|f| f.repair_fresh.clone()).unwrap_or_default();
     }
     Ok(j)
 }

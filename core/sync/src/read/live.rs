@@ -100,7 +100,7 @@ impl Ground for Live<'_, '_> {
             MustNot::CardSuperseded => Why::CardSuperseded,
             MustNot::CardEnded => Why::CardEnded,
         });
-        Ok(Facts { body: f.body, must_not, own: f.own, repair: f.repair, role: f.role, carriers: f.carriers, later_unheld: f.later_unheld, missing: f.missing })
+        Ok(Facts { body: f.body, must_not, own: f.own, repair_fresh: f.repair_fresh, role: f.role, carriers: f.carriers, later_unheld: f.later_unheld, missing: f.missing })
     }
     fn fall_mark(&mut self, _s: &SyncId, c: &CommitId) -> Result<u64> {
         Ok(self.cx.engine.body_fall_mark(c)?)
