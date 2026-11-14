@@ -2122,6 +2122,7 @@ fn own_secrets_and_the_home_sync_id_come_in_one_commit_spec_sync_ids_2() {
         let first = done.commits.iter().map(|c| e.header(c).unwrap()).find(|h| h.aspects.iter().any(|a| a.tid == t && a.ak == secrets)).expect("a commit gives t its secrets");
         assert!(first.aspects.iter().any(|a| a.ak == sync), "the commit giving t secrets writes sync.0 (by grant: {by_grant})");
     }
+}
 
 // spec/sync-judgement.md §5 (Telling: from its destruction a node holding a destroyed thing's
 // secrets keeps syncing its own sync IDs, logging the destroying requests there; Emptying: a
