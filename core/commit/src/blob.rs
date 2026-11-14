@@ -211,6 +211,14 @@ pub struct Section {
 }
 
 impl Section {
+    /// Hash of the section's encoding: what a node that cannot open it compares of it
+    /// (spec/sync-compaction.md §1 Duplicates).
+    pub fn digest(&self) -> [u8; 32] {
+        let mut out = Vec::with_capacity(self.encoded_len());
+        self.put(&mut out);
+        osis_base::hash::hash(&out)
+    }
+
     /// Encoded length.
     pub fn encoded_len(&self) -> usize {
         use osis_base::cbor::head_len;

@@ -52,6 +52,26 @@ pub type Wrap = [u8; WRAP_LEN];
 /// The parts (aspect indexes) a blob holds.
 pub type PartSet = BTreeSet<usize>;
 
+/// The sections of a blob this node did not open, each by its digest (`Section::digest`): all a
+/// node checked of them (spec/sync-compaction.md §1 Duplicates).
+pub type SealedSet = BTreeSet<[u8; 32]>;
+
+/// A blob of a commit as this node opened or sealed it (`bp/` row, `Engine::blob_of`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlobOf {
+    pub commit: CommitId,
+    /// The parts it opened (or sealed) of the commit.
+    pub parts: PartSet,
+    /// The sections it holds that this node did not open, or opened but could not check a part
+    /// of against the header (its thing's record not held): by their bytes alone.
+    pub sealed: SealedSet,
+    /// A per-sync-ID copy (spec/sync-judgement.md §1).
+    pub copy: bool,
+    /// A section is in `sealed` only for want of a record: the blob opens again once its
+    /// commit stops pending (`apply::unpend`, through `take_redeliver`).
+    pub unchecked: bool,
+}
+
 /// A blob of a commit held in the sync store, with an entry's wrap of it under a sync ID: what a
 /// fresh encryption copies sections from (`Engine::seal_body`).
 #[derive(Clone, Debug)]
@@ -487,6 +507,12 @@ impl Engine {
         self.own_certificates_now(s)
     }
 
+    /// A held blob as opened or sealed here: its commit, the parts opened, the sections not
+    /// opened (by digest), and whether it is a per-sync-ID copy.
+    pub fn blob_of(&mut self, b: &BlobId) -> Result<Option<Arc<BlobOf>>> {
+        Ok(self.blob_of_now(b))
+    }
+
     /// The parts an opened or sealed blob holds (as opened or sealed here).
     pub fn blob_parts(&mut self, b: &BlobId) -> Result<Option<PartSet>> {
         Ok(self.blob_parts_now(b))
@@ -891,15 +917,9 @@ impl Engine {
         self.signers_now(s, actor)
     }
 
-    /// Whether a held blob, as opened or sealed here, is a per-sync-ID copy (spec/sync-judgement.md
-    /// §1; `None`: not opened or sealed here).
-    pub fn blob_copy(&mut self, b: &BlobId) -> Result<Option<bool>> {
-        Ok(self.blob_copy_now(b))
-    }
-
     /// The commit a held blob opened or was sealed as (`blob_parts`' row).
     pub fn blob_commit(&mut self, b: &BlobId) -> Result<Option<CommitId>> {
-        Ok(self.core.ix.blob_parts.get(b).map(|x| x.0))
+        Ok(self.core.ix.blob_parts.get(b).map(|x| x.commit))
     }
 
     /// Whether commit `c` is held here (applied or judged).

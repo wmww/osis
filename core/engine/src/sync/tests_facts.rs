@@ -27,7 +27,7 @@ fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId]) {
 /// Peer `i` notes blob `b` of `c` holding `parts` as opened (a shared blob unless `copy`).
 fn opened(lp: &mut LocalPeer, i: usize, b: u8, c: &CommitId, parts: &[usize], copy: bool) -> BlobId {
     let (id, c, ps) = (BlobId([b; 32]), *c, parts.iter().copied().collect::<PartSet>());
-    lp.peers[i].engine.run(|tx| note_blob(tx, &id, &c, &ps, copy)).unwrap();
+    lp.peers[i].engine.run(|tx| note_blob(tx, &id, super::BlobOf { commit: c, parts: ps, sealed: Default::default(), copy, unchecked: false })).unwrap();
     id
 }
 
@@ -85,6 +85,21 @@ fn a_fake_superset_drops_nothing_spec_sync_judgement_2() {
     for x in [claimed, elsewhere, kind] {
         assert!(!e.strict_subset(&home, &small, &BTreeSet::from([small, x])).unwrap(), "{x:?} carries nothing of it");
     }
+}
+
+// spec/sync-compaction.md §1 (Only what the node checked): a smaller blob holding a section this
+// node did not open that the larger lacks byte for byte (a junk section of a thing it does not
+// read) is no strict subset of it; with that section byte-identical in both, it is.
+#[test]
+fn a_strict_subset_holds_the_others_unopened_bytes_spec_sync_compaction_1() {
+    let (mut lp, (home, c, [p0, p1], copy)) = two_parts();
+    let row = |parts: &[usize], sealed: u8| super::BlobOf { commit: c, parts: parts.iter().copied().collect(), sealed: [[sealed; 32]].into(), copy, unchecked: false };
+    let (small, big, same) = (BlobId([1; 32]), BlobId([2; 32]), BlobId([3; 32]));
+    let rows = [(small, row(&[p0], 7)), (big, row(&[p0, p1], 8)), (same, row(&[p0, p1], 7))];
+    lp.peers[0].engine.run(|tx| rows.iter().try_for_each(|(b, r)| note_blob(tx, b, r.clone()))).unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(!e.strict_subset(&home, &small, &BTreeSet::from([small, big])).unwrap(), "other unopened bytes");
+    assert!(e.strict_subset(&home, &small, &BTreeSet::from([small, same])).unwrap(), "the same unopened bytes");
 }
 
 // spec/sync-judgement.md §2 strict subset, §1 Certificate blobs: a blob of the other kind than

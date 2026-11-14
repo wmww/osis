@@ -54,6 +54,8 @@ pub struct Sealed {
     pub salt: [u8; 16],
     pub ais: Vec<usize>,
     pub parts: Vec<usize>,
+    /// The digests of the sections holding none of `parts` (copied verbatim, not opened here).
+    pub unopened: crate::sync::SealedSet,
 }
 
 /// A commit blob opened (`Engine::open_commit`): the opened form of the parts this node could
@@ -101,8 +103,9 @@ fn framed(key: osis_crypto::BlobKey, env: &Envelope, resolved: &osis_commit::Hea
     let salt = osis_label::Prefix::random_salt(rng);
     let prefix = osis_label::Prefix::for_delete_keys(salt, &env.header.blind, osis_commit::prefix_expiry(resolved, &ais).map(WallMs), &groups)?.with_class(class);
     let (key, blob) = osis_label::frame_under(key, &prefix, &env.encode())?;
-    let parts = from.parts.iter().filter(|p| ais.contains(&p.ai)).map(|p| p.ai).collect();
-    Ok(Sealed { id: osis_label::blob_id(&blob), blob, key, salt, ais, parts })
+    let parts: Vec<usize> = from.parts.iter().filter(|p| ais.contains(&p.ai)).map(|p| p.ai).collect();
+    let unopened = env.sections.iter().filter(|s| !s.ais.iter().any(|ai| parts.contains(ai))).map(|s| s.digest()).collect();
+    Ok(Sealed { id: osis_label::blob_id(&blob), blob, key, salt, ais, parts, unopened })
 }
 
 /// A group as `Engine::commit_bodies_under` sees it.

@@ -810,8 +810,8 @@ indexes! {
     pub freed: JMap<(osis_base::BlobId, Tid), Arc<crate::retention::freed::Freed>>,
     /// Inbox deliveries owed per (commit, holder) (`sync::deliveries`).
     pub owed_inbox: JMap<(CommitId, Tid), Arc<crate::sync::deliveries::Owed>>,
-    /// The commit and parts each opened or sealed blob holds (`sync::bodies`).
-    pub blob_parts: JMap<osis_base::BlobId, Arc<(CommitId, crate::sync::PartSet, bool)>>,
+    /// The commit, parts and unopened sections each opened or sealed blob holds (`sync::bodies`).
+    pub blob_parts: JMap<osis_base::BlobId, Arc<crate::sync::BlobOf>>,
     /// `blob_parts`' blobs per commit: they go with it (`sync::bodies::forget`).
     pub commit_blobs: JSetMap<CommitId, osis_base::BlobId>,
     /// The certificate blobs sealed here per sync ID, each with what it carries

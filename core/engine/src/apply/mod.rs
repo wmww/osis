@@ -941,6 +941,11 @@ fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) 
 /// Commit `id` pends no more: its stored bytes go. Whether it was pending.
 fn unpend(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
     let was = tx.core.ix.pending.contains_key(id);
+    // a blob of it opened with a part not checked against the header (its record not held then)
+    // opens again, now checked (`sync::BlobOf::unchecked`)
+    if was && tx.core.ix.commit_blobs.get(id).into_iter().flatten().any(|b| tx.core.ix.blob_parts.get(b).is_some_and(|x| x.unchecked)) {
+        tx.core.redeliver.insert(*id);
+    }
     if was {
         set_pending(tx.core, id, None);
         tx.core.touch();
@@ -953,12 +958,13 @@ fn unpend(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
 /// (read from it: first). Whether it was pending.
 fn drop_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
     crate::retention::forget_waiting_leftovers(tx, id)?;
+    let was = unpend(tx, id)?;
     // nothing of it held: no copy of it is needed again
     if !tx.core.ix.commits.contains_key(id) {
         tx.core.redeliver.remove(id);
         crate::labeling::opened::forget(tx, id)?;
     }
-    unpend(tx, id)
+    Ok(was)
 }
 
 /// The parts of the stored pending copy of `id` past their expiry go, as their timers take them

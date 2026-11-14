@@ -5,7 +5,7 @@
 //! a deposit. The must-hold / may-hold / must-not-hold rule itself is `read`'s; these are its
 //! inputs.
 
-use super::{BodyFacts, BodyMeta, HeldBlob, Opened, PartSet, Promote, ThingSync, Wrap};
+use super::{BlobOf, BodyFacts, BodyMeta, HeldBlob, Opened, PartSet, Promote, SealedSet, ThingSync, Wrap};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{BlobId, CommitId, Role, SyncId, Tid, WallMs};
@@ -14,8 +14,8 @@ use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// `bp/` + commit ID + blob ID: whether an opened or sealed blob of the commit is a per-sync-ID
-/// copy (one byte), then the parts it holds (`blob_parts`, `blob_copy`).
+/// `bp/` + commit ID + blob ID: flags (one byte: 1 a per-sync-ID copy, 2 unchecked), the count of parts it holds (u32), those parts (u32 each), then the digest of
+/// each section it holds that this node did not open (32 bytes each; `BlobOf`).
 pub(crate) const BLOB_PARTS: &[u8] = b"bp/";
 
 /// Loads the blob parts (an open or reload).
@@ -26,27 +26,54 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         let c = CommitId(k.get(..32).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
         let b = BlobId(k.get(32..).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
         let (copy, rest) = v.split_first().ok_or_else(bad)?;
-        let ps: PartSet = rest.chunks(4).map(|x| x.try_into().map(u32::from_be_bytes).map(|n| n as usize).map_err(|_| bad())).collect::<Result<_>>()?;
-        parts.push((c, b, ps, *copy != 0));
+        let (n, rest) = rest.split_first_chunk::<4>().ok_or_else(bad)?;
+        let (ps, sealed) = rest.split_at_checked(u32::from_be_bytes(*n) as usize * 4).ok_or_else(bad)?;
+        let ps: PartSet = ps.chunks(4).map(|x| x.try_into().map(u32::from_be_bytes).map(|n| n as usize).map_err(|_| bad())).collect::<Result<_>>()?;
+        let sealed: SealedSet = sealed.chunks(32).map(|x| x.try_into().map_err(|_| bad())).collect::<Result<_>>()?;
+        parts.push((b, BlobOf { commit: c, parts: ps, sealed, copy: copy & 1 != 0, unchecked: copy & 2 != 0 }));
         Ok(())
     })?;
-    for (c, b, ps, copy) in parts {
-        tx.core.ix.blob_parts.insert(b, Arc::new((c, ps, copy)));
-        tx.core.ix.commit_blobs.insert(c, b);
+    for (b, row) in parts {
+        tx.core.ix.commit_blobs.insert(row.commit, b);
+        tx.core.ix.blob_parts.insert(b, Arc::new(row));
     }
     Ok(())
 }
 
-pub(super) fn note_blob(tx: &mut Tx<'_>, b: &BlobId, c: &CommitId, parts: &PartSet, copy: bool) -> Result<()> {
-    if tx.core.ix.blob_parts.contains_key(b) {
-        return Ok(());
+/// Notes blob `b` as this node opened or sealed it (`row`), in place of what an earlier opening
+/// noted (opened again once more is checked, `BlobOf::unchecked`).
+pub(super) fn note_blob(tx: &mut Tx<'_>, b: &BlobId, row: BlobOf) -> Result<()> {
+    match tx.core.ix.blob_parts.get(b) {
+        Some(old) if **old == row => return Ok(()),
+        Some(_) => unnote_blob(tx, b)?,
+        None => {}
     }
     // a memory commit's rows are memory, gone with it at a restart
-    let v: Vec<u8> = std::iter::once(u8::from(copy)).chain(parts.iter().flat_map(|p| (*p as u32).to_be_bytes())).collect();
+    let mut v = vec![u8::from(row.copy) | u8::from(row.unchecked) << 1];
+    v.extend((row.parts.len() as u32).to_be_bytes());
+    v.extend(row.parts.iter().flat_map(|p| (*p as u32).to_be_bytes()));
+    v.extend(row.sealed.iter().flatten());
+    let c = row.commit;
     let k = [BLOB_PARTS, &c.0, &b.0].concat();
-    tx.in_class(tx.is_memory_commit(c), |tx| Ok(tx.txn.put_local(&k, &v, Shred::No)?))?;
-    tx.core.ix.blob_parts.insert(*b, Arc::new((*c, parts.clone(), copy)));
-    tx.core.ix.commit_blobs.insert(*c, *b);
+    tx.in_class(tx.is_memory_commit(&c), |tx| Ok(tx.txn.put_local(&k, &v, Shred::No)?))?;
+    tx.core.ix.blob_parts.insert(*b, Arc::new(row));
+    tx.core.ix.commit_blobs.insert(c, *b);
+    Ok(())
+}
+
+/// Blob `b`'s row goes, from where it was noted (its commit forgotten, or the blob opened again
+/// bad).
+fn unnote_blob(tx: &mut Tx<'_>, b: &BlobId) -> Result<()> {
+    let Some(row) = tx.core.ix.blob_parts.get(b).cloned() else { return Ok(()) };
+    let c = row.commit;
+    tx.core.ix.blob_parts.remove(b);
+    tx.core.ix.commit_blobs.remove(&c, b);
+    // from either class: a row noted while its commit was pending went durable, one noted once
+    // a memory commit was held went to memory
+    let k = [BLOB_PARTS, &c.0, &b.0].concat();
+    for memory in [false, true] {
+        tx.in_class(memory, |tx| Ok(tx.txn.remove_local(&k, Shred::No)?))?;
+    }
     Ok(())
 }
 
@@ -54,14 +81,10 @@ pub(super) fn note_blob(tx: &mut Tx<'_>, b: &BlobId, c: &CommitId, parts: &PartS
 /// transaction.
 pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
     let blobs: Vec<BlobId> = tx.core.ix.commit_blobs.get(c).into_iter().flatten().copied().collect();
-    tx.in_class(tx.is_memory_commit(c), |tx| {
-        for b in blobs {
-            tx.core.ix.commit_blobs.remove(c, &b);
-            tx.core.ix.blob_parts.remove(&b);
-            tx.txn.remove_local(&[BLOB_PARTS, &c.0, &b.0].concat(), Shred::No)?;
-        }
-        Ok(())
-    })
+    for b in blobs {
+        unnote_blob(tx, &b)?;
+    }
+    Ok(())
 }
 
 impl Engine {
@@ -260,9 +283,14 @@ impl Engine {
         Ok(Arc::new(self.certificates(&t)))
     }
 
+    /// Blob `b` as this node opened or sealed it.
+    pub(crate) fn blob_of_now(&self, b: &BlobId) -> Option<Arc<BlobOf>> {
+        self.core.ix.blob_parts.get(b).cloned()
+    }
+
     /// The parts blob `b` holds of its commit, as this node opened or sealed it.
     pub(crate) fn blob_parts_now(&self, b: &BlobId) -> Option<PartSet> {
-        self.core.ix.blob_parts.get(b).map(|x| x.1.clone())
+        self.core.ix.blob_parts.get(b).map(|x| x.parts.clone())
     }
 
     /// Whether held blob `b` holds a part of its commit this node dropped for good (spec/sync-
@@ -272,13 +300,13 @@ impl Engine {
     /// (no right deletes it) does not count. `false` for a blob not opened or sealed here.
     pub(crate) fn blob_dropped_now(&self, b: &BlobId) -> bool {
         let Some(x) = self.core.ix.blob_parts.get(b) else { return false };
-        let Some(m) = self.core.ix.commits.get(&x.0) else { return false };
-        x.1.iter().any(|ai| m.dropped(*ai).is_some_and(|d| matches!(d.why, crate::engine::DropFor::Other | crate::engine::DropFor::Destroyed)))
+        let Some(m) = self.core.ix.commits.get(&x.commit) else { return false };
+        x.parts.iter().any(|ai| m.dropped(*ai).is_some_and(|d| matches!(d.why, crate::engine::DropFor::Other | crate::engine::DropFor::Destroyed)))
     }
 
     /// Whether blob `b`, as opened or sealed here, is a per-sync-ID copy.
     pub(crate) fn blob_copy_now(&self, b: &BlobId) -> Option<bool> {
-        self.core.ix.blob_parts.get(b).map(|x| x.2)
+        self.core.ix.blob_parts.get(b).map(|x| x.copy)
     }
 
     /// `c`'s body under `s` as a fresh encryption, with its wrap for `s` (spec/sync-judgement.md
@@ -314,9 +342,9 @@ impl Engine {
         }
         let Some(w) = self.wrap_secret(&t, Some((c, &sealed.parts)))? else { return Ok(None) };
         let wrap = osis_crypto::wrap(&w, &sealed.id, &sealed.key, b.order)?;
-        let (id, ps) = (*c, sealed.parts.iter().copied().collect::<PartSet>());
-        let (bid, copy) = (sealed.id, b.to_label);
-        self.run(|tx| note_blob(tx, &bid, &id, &ps, copy))?;
+        let row = BlobOf { commit: *c, parts: sealed.parts.iter().copied().collect(), sealed: sealed.unopened.clone(), copy: b.to_label, unchecked: false };
+        let bid = sealed.id;
+        self.run(|tx| note_blob(tx, &bid, row))?;
         Ok(Some((sealed, wrap)))
     }
 
@@ -329,7 +357,7 @@ impl Engine {
         let mut all = Vec::new();
         for h in held {
             let b = osis_label::blob_id(&h.bytes);
-            if self.core.ix.blob_parts.get(&b).is_none_or(|x| x.0 != *c || x.2) {
+            if self.core.ix.blob_parts.get(&b).is_none_or(|x| x.commit != *c || x.copy) {
                 continue;
             }
             let Ok(Some(t)) = self.read_thing(&h.sync_id) else { continue };
@@ -364,8 +392,9 @@ impl Engine {
         }
         let Some(w) = self.wrap_secret(t, Some((c, &parts)))? else { return Ok(None) };
         let wrap = osis_crypto::wrap(&w, &sealed.id, &sealed.key, meta.order)?;
-        let (id, bid, ps) = (*c, sealed.id, meta.parts.clone());
-        self.run(|tx| note_blob(tx, &bid, &id, &ps, true))?;
+        let row = BlobOf { commit: *c, parts: meta.parts.clone(), sealed: SealedSet::new(), copy: true, unchecked: false };
+        let bid = sealed.id;
+        self.run(|tx| note_blob(tx, &bid, row))?;
         Ok(Some((sealed, wrap)))
     }
 
@@ -401,7 +430,17 @@ impl Engine {
     /// (`open_commit`, each section's opening kept) and ingested, the epoch its wrap opened under
     /// kept as an opening of its header (`note_unwrapped`); a chunk, tree node or page a held commit is
     /// waiting for, stored.
+    /// A blob opening bad is no blob of its commit here, whatever an earlier opening noted (one
+    /// opened again once its parts can be checked, `BlobOf::unchecked`).
     pub(crate) fn open_entry_now(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], room: u64) -> Result<Opened> {
+        let o = self.open_entry_once(s, blob, wrap, bytes, room)?;
+        if matches!(o, Opened::Bad) && self.core.ix.blob_parts.contains_key(blob) {
+            self.run(|tx| unnote_blob(tx, blob))?;
+        }
+        Ok(o)
+    }
+
+    fn open_entry_once(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], room: u64) -> Result<Opened> {
         if osis_label::blob_id(bytes) != *blob {
             return Ok(Opened::Bad);
         }
@@ -465,18 +504,35 @@ impl Engine {
         };
         // a part that does not hash to its header entry is no part of the commit (spec/commits.md
         // §4): the blob is no encryption of it, whatever the engine took of it (a forged copy of
-        // a held commit is a duplicate to apply), so no reader keeps, serves or stamps it
-        if let Some(h) = self.header(&id) {
-            let forged = opened.commit.parts.iter().any(|p| {
-                let Some(a) = h.aspects.get(p.ai) else { return true };
-                self.core.created(&a.tid).is_some_and(|r| osis_crypto::delta_hash(&osis_crypto::dedup_secret(r.nonce()), &p.delta) != a.hash)
-            });
-            if forged {
-                return Ok(Opened::Bad);
+        // a held commit is a duplicate to apply), so no reader keeps, serves or stamps it. A
+        // part whose thing's record is not held is unchecked: counted by its section's bytes
+        // until the commit stops pending, when the blob opens again (`BlobOf::unchecked`)
+        let h = self.header(&id);
+        let mut unchecked = BTreeSet::new();
+        for p in &opened.commit.parts {
+            let Some(a) = h.as_ref().and_then(|h| h.aspects.get(p.ai)) else {
+                unchecked.insert(p.ai);
+                continue;
+            };
+            match self.core.created(&a.tid) {
+                None => {
+                    unchecked.insert(p.ai);
+                }
+                Some(r) if osis_crypto::delta_hash(&osis_crypto::dedup_secret(r.nonce()), &p.delta) != a.hash => return Ok(Opened::Bad),
+                Some(_) => {}
             }
         }
+        // a section not opened, or holding a part not checked, counts by its bytes alone
+        // (spec/sync-compaction.md §1 Duplicates)
+        let mut sealed: SealedSet = opened.sealed.iter().map(|s| s.digest()).collect();
+        let mut parts = parts;
+        for sec in opened.sections.iter().filter(|sec| !opened.sealed.contains(sec) && sec.ais.iter().any(|ai| unchecked.contains(ai))) {
+            sealed.insert(sec.digest());
+            parts.retain(|ai| !sec.ais.contains(ai));
+        }
+        let row = BlobOf { commit: id, parts, sealed, copy: opened.copy, unchecked: !unchecked.is_empty() };
         let b = *blob;
-        self.run(|tx| note_blob(tx, &b, &id, &parts, opened.copy))?;
+        self.run(|tx| note_blob(tx, &b, row))?;
         Ok(Opened::Commit(id, ingested))
     }
 

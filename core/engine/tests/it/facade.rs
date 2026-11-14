@@ -1083,7 +1083,7 @@ fn read_facts_of_own_and_role_commits_spec_sync_judgement_3() {
     assert!(r.own && r.role, "the grant is an own role commit");
     assert_eq!(e.body_fall_mark(&c).unwrap(), 0, "nothing fell yet");
     let (sealed, wrap) = e.seal_body(&s, &c, &[], &mut SeededRng::from_u64(4)).unwrap().unwrap();
-    assert_eq!(e.blob_copy(&sealed.id).unwrap(), Some(false));
+    assert_eq!(e.blob_of(&sealed.id).unwrap().map(|r| r.copy), Some(false));
     // the held blob logged verbatim under the same sync ID: a wrap of the same key
     let again = e.rewrap(&c, &sealed.id, &s, &wrap, &s).unwrap().expect("its epoch is held");
     let rc = e.read_credentials(&s).unwrap().unwrap();
@@ -1139,7 +1139,7 @@ fn a_copy_is_never_logged_verbatim_elsewhere_spec_sync_judgement_1() {
     let mut rng = SeededRng::from_u64(9);
     let (copy, copy_wrap) = e.seal_body(&s, &c, &[], &mut rng).unwrap().expect("the copy seals");
     let (shared, shared_wrap) = e.seal_body(&su, &c, &[], &mut rng).unwrap().expect("the shared blob seals");
-    assert_eq!((e.blob_copy(&copy.id).unwrap(), e.blob_copy(&shared.id).unwrap()), (Some(true), Some(false)));
+    assert_eq!((e.blob_of(&copy.id).unwrap().map(|r| r.copy), e.blob_of(&shared.id).unwrap().map(|r| r.copy)), (Some(true), Some(false)));
     assert!(e.rewrap(&c, &copy.id, &s, &copy_wrap, &su).unwrap().is_none(), "a copy goes under no other sync ID");
     assert!(e.rewrap(&c, &shared.id, &su, &shared_wrap, &s).unwrap().is_none(), "a copy body is held only by a copy");
     assert!(e.rewrap(&c, &shared.id, &su, &shared_wrap, &su).unwrap().is_some(), "a shared blob for a shared body");
@@ -1240,7 +1240,7 @@ fn another_nodes_card_is_in_the_required_set_spec_sync_judgement_2() {
     let f = e.body_facts(&home, &r).unwrap();
     assert!(f.required && !f.closure, "{f:?}");
     let (sealed, wrap) = e.seal_body(&home, &r, &[], &mut SeededRng::from_u64(1)).unwrap().expect("sealed as a certificate copy");
-    assert_eq!(e.blob_copy(&sealed.id).unwrap(), Some(true));
+    assert_eq!(e.blob_of(&sealed.id).unwrap().map(|r| r.copy), Some(true));
     match lp.peers[1].engine.open_entry(&home, &sealed.id, &wrap, &sealed.blob, u64::MAX).unwrap() {
         osis_engine::sync::Opened::Commit(c, _) => assert_eq!(c, r),
         o => panic!("{o:?}"),
@@ -2467,4 +2467,149 @@ fn a_section_the_node_cannot_open_goes_as_it_came_spec_sync_judgement_3() {
     assert_eq!(lp.peers[1].engine.blob_commit(&id).unwrap(), Some(c));
     let parts = lp.peers[1].engine.blob_parts(&id).unwrap().expect("opened");
     assert!(parts.iter().all(|i| h.aspects[*i].tid == t) && !parts.is_empty(), "t's part alone: {parts:?}");
+}
+
+/// Peer 0 holds things `t` (peer 1 reads it) and `u` (peer 1 does not), and commit `c` writing
+/// both: `t`'s home sync ID, `c`, `t`'s and `u`'s aspect indexes in `c`.
+fn two_things() -> (LocalPeer, Tid, Tid, osis_base::SyncId, osis_base::CommitId, usize, usize) {
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let u = thing_of(&mut lp, 0, ps[0]);
+    for x in [t, u] {
+        lp.peers[0].engine.give_own_secrets(&x).unwrap();
+    }
+    let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
+        if h == ps[1] {
+            lp.peers[1].engine.take_inbox_blob(&b, true).unwrap();
+        }
+    }
+    for i in 0..2 {
+        let (_, d) = lp.peers[i].engine.account().unwrap().unwrap();
+        add_item(&mut lp, i, d, t);
+    }
+    spread(&mut lp);
+    let sid = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("t")).unwrap();
+    m.set(u, &REG, &s("u")).unwrap();
+    let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
+    let h = osis_commit::CommitBlob::decode(&lp.peers[0].engine.commit_bytes(&c).unwrap().unwrap()).unwrap().header;
+    let (at, au) = (h.aspect_index(&t, "t:reg.0").unwrap(), h.aspect_index(&u, "t:reg.0").unwrap());
+    (lp, t, u, sid, c, at, au)
+}
+
+/// A blob of commit `c` framed from `env` (the header and signatures of `from`), wrapped for
+/// `t`'s sync IDs by peer 0.
+fn framed(lp: &mut LocalPeer, t: &Tid, from: &osis_commit::CommitBlob, env: &osis_commit::Envelope, rng: &mut SeededRng) -> (osis_engine::labeling::Sealed, osis_engine::sync::Wrap) {
+    let f = osis_engine::labeling::frame_envelope(env, &from.header, osis_label::Class::Durable, rng, from).unwrap();
+    let w = lp.peers[0].engine.wrap_secret(t, None).unwrap().expect("a read epoch");
+    let wrap = osis_crypto::wrap(&w, &f.id, &f.key, 0).unwrap();
+    (f, wrap)
+}
+
+// spec/sync-compaction.md §1 (Only what the node checked): a section a node cannot open counts
+// by its bytes. Commit c writes t (peer 1 reads it) and u (it does not).
+// Beside the genuine blob, a copy with junk in u's section and a copy leaving u's section out:
+// peer 1 opens t's part of each alike, but notes each by its unopened sections too, so none is a
+// duplicate or strict subset of the genuine one there. Peer 0, opening u, finds the junk copy bad.
+#[test]
+fn an_unopened_section_counts_by_its_bytes_spec_sync_compaction_1() {
+    let (mut lp, t, u, s, c, at, au) = two_things();
+    let mut rng = SeededRng::from_u64(4);
+    let e0 = &mut lp.peers[0].engine;
+    let body = e0.body(&c).unwrap().unwrap();
+    let genuine = e0.seal(&body, osis_label::Class::Durable, &[], &mut rng).unwrap().unwrap();
+    let from = osis_commit::CommitBlob::decode(&e0.commit_bytes(&c).unwrap().unwrap()).unwrap();
+    let env = osis_commit::Envelope::decode(&osis_label::open(&genuine.blob, &genuine.key).unwrap().1).unwrap();
+    assert_eq!(env.sections.len(), 2, "a section per thing");
+    let secret = e0.epochs(&u).unwrap().read.newest_held().unwrap().1.clone();
+    let mut junk_env = env.clone();
+    let sec = junk_env.sections.iter_mut().find(|x| x.ais.contains(&au)).unwrap();
+    let junk = osis_commit::Part { ai: au, delta: osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Bytes(vec![1; 40])])) };
+    *sec = osis_commit::Section::seal(&c, &[&junk], sec.chain.clone(), &secret, &mut rng).unwrap();
+    let mut omit_env = env.clone();
+    omit_env.sections.retain(|x| !x.ais.contains(&au));
+    let (g, gw) = framed(&mut lp, &t, &from, &env, &mut rng);
+    let (j, jw) = framed(&mut lp, &t, &from, &junk_env, &mut rng);
+    let (o, ow) = framed(&mut lp, &t, &from, &omit_env, &mut rng);
+    let e1 = &mut lp.peers[1].engine;
+    for (x, w) in [(&g, &gw), (&j, &jw), (&o, &ow)] {
+        assert!(matches!(e1.open_entry(&s, &x.id, w, &x.blob, u64::MAX).unwrap(), osis_engine::sync::Opened::Commit(y, _) if y == c));
+    }
+    let rows: Vec<_> = [&g, &j, &o].iter().map(|x| e1.blob_of(&x.id).unwrap().unwrap()).collect();
+    assert!(rows.iter().all(|r| r.parts == BTreeSet::from([at]) && !r.unchecked), "t's part opened of each");
+    assert_eq!(rows[0].sealed.len(), 1);
+    assert_ne!(rows[0].sealed, rows[1].sealed, "the junk section counts as other bytes");
+    assert!(rows[2].sealed.is_empty());
+    let held = BTreeSet::from([g.id, j.id, o.id]);
+    for x in [&g, &j, &o] {
+        assert!(!e1.strict_subset(&s, &x.id, &held).unwrap(), "a strict subset where unopened sections differ");
+    }
+    // the same bytes again: the same row, a duplicate of the genuine blob
+    let (d, dw) = framed(&mut lp, &t, &from, &env, &mut rng);
+    let e1 = &mut lp.peers[1].engine;
+    e1.open_entry(&s, &d.id, &dw, &d.blob, u64::MAX).unwrap();
+    let row = e1.blob_of(&d.id).unwrap().unwrap();
+    assert_eq!((&row.parts, &row.sealed), (&rows[0].parts, &rows[0].sealed), "a copy of the same sections notes alike");
+    // peer 0 opens u's section: the junk copy is bad there, the others open whole or short
+    let e0 = &mut lp.peers[0].engine;
+    assert!(matches!(e0.open_entry(&s, &j.id, &jw, &j.blob, u64::MAX).unwrap(), osis_engine::sync::Opened::Bad));
+    e0.open_entry(&s, &g.id, &gw, &g.blob, u64::MAX).unwrap();
+    let row = e0.blob_of(&g.id).unwrap().unwrap();
+    assert_eq!((row.parts.clone(), row.sealed.is_empty()), (BTreeSet::from([at, au]), true));
+}
+
+// spec/sync-compaction.md §1 (Only what the node checked): a part not checked for want of its
+// thing's record is judged by its section's bytes until the record is held. Peer 1 opens two
+// blobs of a write on thing t2 (derived from t, which it reads) before t2's record reaches it, the
+// genuine one first (its pending copy is no junk, so only the unchecked rows name it for
+// redelivery): neither part can be checked, so each counts by its section's bytes and neither is
+// bad yet. Once the record arrives and the write stops pending, both open again: the
+// forged one is bad and no blob of the write, the genuine one counts by its part.
+#[test]
+fn a_part_unchecked_for_want_of_its_record_opens_again_spec_sync_compaction_1() {
+    let (mut lp, t, _, sid, _, _, _) = two_things();
+    let mut rng = SeededRng::from_u64(6);
+    let e0 = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let t2 = e0.new_thing(&mut m, t);
+    m.set(t2, &REG, &s("new")).unwrap();
+    let cr = e0.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(t2, &REG, &s("w")).unwrap();
+    let c = e0.commit(m).unwrap().unwrap();
+    let body = e0.body(&c).unwrap().unwrap();
+    let genuine = e0.seal(&body, osis_label::Class::Durable, &[], &mut rng).unwrap().unwrap();
+    let from = osis_commit::CommitBlob::decode(&e0.commit_bytes(&c).unwrap().unwrap()).unwrap();
+    let env = osis_commit::Envelope::decode(&osis_label::open(&genuine.blob, &genuine.key).unwrap().1).unwrap();
+    let ai = from.header.aspect_index(&t2, "t:reg.0").unwrap();
+    let secret = e0.epochs(&t).unwrap().read.newest_held().unwrap().1.clone();
+    let mut junk_env = env.clone();
+    let sec = junk_env.sections.iter_mut().find(|x| x.ais.contains(&ai)).unwrap();
+    let derived = e0.read_secrets(&t2).first().cloned().unwrap_or(secret);
+    let junk = osis_commit::Part { ai, delta: osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Bytes(vec![1; 40])])) };
+    *sec = osis_commit::Section::seal(&c, &[&junk], sec.chain.clone(), &derived, &mut rng).unwrap();
+    let (f, fw) = framed(&mut lp, &t, &from, &junk_env, &mut rng);
+    let (g, gw) = framed(&mut lp, &t, &from, &env, &mut rng);
+    let e1 = &mut lp.peers[1].engine;
+    for (x, w) in [(&g, &gw), (&f, &fw)] {
+        let o = e1.open_entry(&sid, &x.id, w, &x.blob, u64::MAX).unwrap();
+        assert!(matches!(o, osis_engine::sync::Opened::Commit(y, _) if y == c), "{o:?}");
+        let row = e1.blob_of(&x.id).unwrap().unwrap();
+        assert!(row.unchecked && row.parts.is_empty() && row.sealed.len() == 1, "{row:?}");
+    }
+    assert!(e1.pends(&c));
+    e1.take_redeliver();
+    let pk = lp.peers[0].engine.package(&cr).unwrap().unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    e1.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    e1.reexamine().unwrap();
+    assert!(!e1.pends(&c));
+    assert!(e1.take_redeliver().contains(&c), "the write's blobs open again");
+    assert!(matches!(e1.open_entry(&sid, &f.id, &fw, &f.blob, u64::MAX).unwrap(), osis_engine::sync::Opened::Bad));
+    assert_eq!(e1.blob_of(&f.id).unwrap(), None, "the forged blob is no blob of the write");
+    e1.open_entry(&sid, &g.id, &gw, &g.blob, u64::MAX).unwrap();
+    let row = e1.blob_of(&g.id).unwrap().unwrap();
+    assert_eq!((row.parts.clone(), row.sealed.is_empty(), row.unchecked), (BTreeSet::from([ai]), true, false));
 }

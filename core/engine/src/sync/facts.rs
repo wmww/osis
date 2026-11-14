@@ -3,7 +3,7 @@
 //! falls on a body's aspects. Each field is a direct statement of its spec clause over what the
 //! engine holds; every one answers the side that keeps data while it cannot be judged.
 
-use super::{BodyFacts, MustNot, PartSet, ReadFacts};
+use super::{BlobOf, BodyFacts, MustNot, PartSet, ReadFacts};
 use crate::engine::{DropFor, Engine};
 use crate::error::Result;
 use osis_base::{BlobId, CommitId, Role, SyncId, Tid};
@@ -119,7 +119,7 @@ impl Engine {
             h.ts > ts
                 && h.aspects.iter().all(|a| a.tid == *node && CARD.contains(&a.ak.as_str()))
                 && self.judged_valid(&x, &(0..h.aspects.len()).collect::<Vec<_>>())
-                && ix.commit_blobs.get(&x).into_iter().flatten().any(|b| ix.blob_parts.get(b).is_some_and(|p| p.1.contains(&ai)))
+                && ix.commit_blobs.get(&x).into_iter().flatten().any(|b| ix.blob_parts.get(b).is_some_and(|p| p.parts.contains(&ai)))
         })
     }
 
@@ -168,34 +168,42 @@ impl Engine {
         Ok(Some(out))
     }
 
-    /// The parts held blob `x` carries of `c`'s body under `s`: a blob of `c` this node opened or
+    /// Held blob `x` as a carrier of `c`'s body under `s`: a blob of `c` this node opened or
     /// sealed (its delta set checked against the header, never a peer's word), not must-not-hold
     /// (no part of it dropped here for good), of the body's kind (only a copy holds a copy's body,
     /// spec/sync-judgement.md §1 Per-sync-ID copies).
-    fn carried_by(&self, c: &CommitId, copy: bool, x: &BlobId) -> Option<PartSet> {
+    fn carried_by(&self, c: &CommitId, copy: bool, x: &BlobId) -> Option<Arc<BlobOf>> {
         let p = self.core.ix.blob_parts.get(x)?;
-        (p.0 == *c && p.2 == copy && !self.blob_dropped_now(x)).then(|| p.1.clone())
+        (p.commit == *c && p.copy == copy && !self.blob_dropped_now(x)).then(|| p.clone())
     }
 
     /// spec/sync-judgement.md §2 must-not-hold: blob `b` of commit C, whose delta set is a strict
     /// subset of another held blob of C under that sync ID (one of `held`) that is not itself
     /// must-not-hold and whose extra deltas include one only a blob carries. A blob not opened or
     /// sealed here is no blob of C to this node; both are of the body's kind (copy or shared).
+    /// Judged over what this node checked (spec/sync-compaction.md §1 Duplicates): the larger
+    /// holds each section of `b` this node did not open byte for byte, and its extra deltas are
+    /// among those it opened.
     pub(crate) fn strict_subset_now(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool> {
         let Some(mine) = self.core.ix.blob_parts.get(b).cloned() else { return Ok(false) };
-        let (c, parts) = (mine.0, &mine.1);
+        let (c, parts) = (mine.commit, &mine.parts);
         let Some(copy) = self.sync_body_now(s, &c)?.map(|m| m.copy) else { return Ok(false) };
         // a blob of the other kind holds no body of it here (a certificate copy beside the shared
         // blob carries parts S's readers cannot open there, whatever this node opens of it)
-        if mine.2 != copy {
+        if mine.copy != copy {
             return Ok(false);
         }
-        let larger: Vec<PartSet> = held.iter().filter(|x| *x != b).filter_map(|x| self.carried_by(&c, copy, x)).filter(|o| parts.is_subset(o) && o.len() > parts.len()).collect();
+        let larger: Vec<Arc<BlobOf>> = held
+            .iter()
+            .filter(|x| *x != b)
+            .filter_map(|x| self.carried_by(&c, copy, x))
+            .filter(|o| parts.is_subset(&o.parts) && o.parts.len() > parts.len() && mine.sealed.is_subset(&o.sealed))
+            .collect();
         if larger.is_empty() {
             return Ok(false);
         }
         let Some(only) = self.blob_only(s, &c)? else { return Ok(false) };
-        Ok(larger.iter().any(|other| other.difference(parts).any(|ai| only.contains(ai))))
+        Ok(larger.iter().any(|other| other.parts.difference(parts).any(|ai| only.contains(ai))))
     }
 
     /// spec/sync-judgement.md §3 Neither: a body a delete removed from S (an entry of it that is
@@ -208,7 +216,7 @@ impl Engine {
         if meta.certificate {
             return Ok(false);
         }
-        let held: PartSet = there.iter().filter_map(|x| self.carried_by(c, meta.copy, x)).flatten().collect();
+        let held: PartSet = there.iter().filter_map(|x| self.carried_by(c, meta.copy, x)).flat_map(|x| x.parts.iter().copied().collect::<Vec<_>>()).collect();
         // a blob there holding the whole body carries what only a blob carries of it, whatever that is
         if !meta.parts.is_subset(&held) {
             let Some(only) = self.blob_only(s, c)? else { return Ok(false) };
