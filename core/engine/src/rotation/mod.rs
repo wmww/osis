@@ -1130,8 +1130,11 @@ impl Engine {
     /// record arriving, a restart), so a follower (sync's `Life`, one `Effects` key per held
     /// actor) runs `ensure_rotated` when it settles true; its reads are stamped, and the memo
     /// clock is read up to the earliest `until` ahead on `actor`, so its passing moves it.
+    /// Nothing on an actor that does not exist here (`Core::exists`): a destroyed thing's secrets
+    /// are held for its destruction alone and nothing is written on it (spec/commits.md §5,
+    /// spec/sync-judgement.md §5); one whose record is not held yet is judged when it arrives.
     pub fn role_duty_due(&mut self, actor: &Tid) -> Result<bool> {
-        if self.core.writer().is_err() || !self.core.ix.secrets.contains_key(actor) {
+        if self.core.writer().is_err() || !self.core.ix.secrets.contains_key(actor) || !self.core.exists(actor) {
             return Ok(false);
         }
         self.core.time.until(lost::next_until(&self.core, actor));

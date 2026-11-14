@@ -2276,3 +2276,61 @@ fn a_forged_copy_of_a_held_commit_opens_bad_spec_commits_4() {
     assert!(matches!(got, osis_engine::sync::Opened::Bad), "{got:?}");
     assert_eq!(lp.peers[1].engine.blob_commit(&f.id).unwrap(), None, "no blob of c");
 }
+
+// spec/commits.md §5 Destruction, spec/sync-judgement.md §5: a destroyed thing's secrets are
+// held for its destruction alone and nothing is written on it, so no role commit is owed there.
+// Peer 0 grants a reader with an `until`, destroys t and the `until` passes: the derived duty
+// owes nothing on t, purged and keeping, or keeping nothing (it failed with `UnknownThing`, which
+// fails sync's `Life` at every settle before the lifetimes duty that would forget t).
+#[test]
+fn a_destroyed_thing_owes_no_role_commit_spec_sync_judgement_5() {
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 100);
+    lp.peers[0].engine.grant(&t, &ps[1], &ct::Edge { until: Some(until), ..edge_of(Role::Read) }).unwrap();
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let now = e.now();
+    m.set(t, &ct::PURGE, &now).unwrap();
+    m.purge(osis_commit::PurgeItem::Aspect { tid: t, ak: ct::CREATED.name() });
+    e.commit(m).unwrap().unwrap();
+    assert!(!e.knows(&t), "t destroyed");
+    lp.advance(1_000);
+    let e = &mut lp.peers[0].engine;
+    assert!(e.held_actors().contains(&t), "its secrets held for the destruction");
+    assert!(!e.role_duty_due(&t).unwrap(), "purged, keeping: nothing owed on t");
+    lp.advance(osis_base::format::ROLE_KEEP_MS + 1_000);
+    lp.peers[0].tick().unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(e.destruction(&t).unwrap().is_some(), "keeps nothing");
+    assert!(!e.role_duty_due(&t).unwrap(), "keeping nothing: nothing owed on t");
+}
+
+// spec/sync.md §3 (A kept sync ID: an accept keeps none the record keeps for another thing),
+// spec/sync-hostile.md §2, notes/coordination.md (no rule that differs by arrival order): the
+// forger's offer of its own thing u naming the sync ID s of peer 0's t comes first, and the user
+// accepts u (an invitation: s is kept for nothing yet). The genuine offer of t arrives and is
+// accepted: t must keep s, its own sync ID, whatever was accepted before.
+#[test]
+#[ignore = "issues/kept-sync-id-first-come.md"]
+fn repro_a_forgers_earlier_accept_takes_no_sync_id_from_a_later_thing_spec_sync_3() {
+    let (mut lp, ps) = people(3);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Sync)).unwrap();
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let genuine = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[1]).unwrap().1;
+    let u = thing_of(&mut lp, 2, ps[2]);
+    let done = lp.peers[2].engine.grant(&u, &ps[1], &edge_of(Role::Sync)).unwrap();
+    let blob = lp.inbox_blobs(2, &done).unwrap().into_iter().find(|(h, _)| *h == ps[1]).unwrap().1;
+    let (mut p, _) = boxes_of(&mut lp, 1, &blob);
+    p.things[0].sync_id = Some(s);
+    p.grant = None;
+    let forged = boxes_by_hand(&mut lp, 1, &p);
+    assert_eq!(lp.peers[1].engine.take_inbox_blob(&forged, false).unwrap().unwrap().taken, Taken::Offered);
+    accept(&mut lp, 1, u);
+    lp.peers[1].engine.take_inbox_blob(&genuine, false).unwrap();
+    accept(&mut lp, 1, t);
+    let e = &mut lp.peers[1].engine;
+    assert!(e.sync_record(&t).unwrap().is_some_and(|r| r.sync_ids.contains(&s)), "t keeps its own sync ID");
+    assert_eq!(e.sync_set().unwrap().ids.get(&s), Some(&(t, Holding::Unread)), "s syncs t");
+}

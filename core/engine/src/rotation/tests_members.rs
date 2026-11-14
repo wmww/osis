@@ -2124,3 +2124,78 @@ fn box_records_do_not_displace_the_newest_card_spec_permissions_4() {
     let keys = lp.peers[0].engine.current_keys(&a);
     assert!(keys.contains(&seed), "the deposit seed refresh among A's current keys.0 commits");
 }
+
+/// What osis-sync's driver runs at peer `i` with nothing written: the role commits owed on each
+/// held actor (`Life`, when `role_duty_due`), the lost-access drop (when `role_duties_due`), then
+/// a complete pass of each sync ID it wants one of, its end deciding (`pass_end`, as status calls
+/// it).
+fn driver_duties(lp: &mut LocalPeer, i: usize) {
+    let e = &mut lp.peers[i].engine;
+    for a in e.held_actors() {
+        if e.role_duty_due(&a).unwrap() {
+            e.ensure_rotated(&a).unwrap();
+        }
+    }
+    if e.role_duties_due() {
+        e.role_duties().unwrap();
+    }
+    let wanted: Vec<_> = e.passes_wanted().unwrap().keys().copied().collect();
+    for s in wanted {
+        let now = e.pass_clock();
+        e.note_complete_pass(&s, now).unwrap();
+        if let Some(o) = e.sync_owner(&s).unwrap() {
+            e.pass_end(&o).unwrap();
+        }
+    }
+}
+
+// spec/crypto.md §4 (Encrypting under: a stale box blocks; a node that may rotate the actor
+// rotates before encrypting), spec/permissions.md §3 (Required rotation): as
+// `writer_rotates_past_a_stale_box_below_before_writing_spec_crypto_4`, but with only what
+// osis-sync's driver runs (the role duties and pass ends), not `ensure_rotated` by hand. M's
+// rotation is a role commit on M alone, so nothing lists G (nor A) for the duties, and no pass
+// of G's sync IDs is wanted (no role commit on G arrived): the derived duty (`role_duty_due`, per
+// held actor) is what rotates A and G, else every write under them waits for good.
+#[test]
+fn the_driver_rotates_past_a_stale_box_below_spec_crypto_4() {
+    let (mut lp, m, a, g) = co_writer_world();
+    let e = lp.peers[3].engine.me();
+    // every sync ID read had its complete pass: nothing is owed before the removal
+    for i in 0..5 {
+        driver_duties(&mut lp, i);
+    }
+    assert!(blocked_at(&mut lp, 1, a).is_empty() && blocked_at(&mut lp, 4, g).is_empty(), "nothing blocked before");
+    removal(&mut lp, 2, m, e);
+    lp.sync_all().unwrap();
+    for _ in 0..3 {
+        for i in 0..5 {
+            driver_duties(&mut lp, i);
+        }
+        lp.sync_all().unwrap();
+    }
+    assert!(blocked_at(&mut lp, 1, a).is_empty(), "A's admin rotated A past its stale box to M");
+    for i in [0, 4] {
+        assert!(blocked_at(&mut lp, i, g).is_empty(), "peer {i}, an admin of G, rotated G");
+    }
+}
+
+// spec/crypto.md §4 (Stale; Encrypting under), issues/removal-rotation-not-followed-up.md: the
+// remover is A's only admin. Its removal of R from M rotates M, whose box from A at M's old
+// keyset is then stale; the removal's own rotation is not followed upward, and nothing arrives
+// from elsewhere, so the derived duty on A rotates it, else A's epoch would stay blocked at its
+// only rotator for good.
+#[test]
+fn the_removers_duties_rotate_above_its_own_removal_spec_crypto_4() {
+    let mut lp = synced(2);
+    let r = lp.peers[1].engine.me();
+    let m = group(&mut lp, 0);
+    let a = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&m, &r, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    driver_duties(&mut lp, 0);
+    assert!(blocked_at(&mut lp, 0, a).is_empty(), "nothing blocked before");
+    removal(&mut lp, 0, m, r);
+    driver_duties(&mut lp, 0);
+    assert!(blocked_at(&mut lp, 0, a).is_empty(), "A rotated past its stale box to M");
+}
