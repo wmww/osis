@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, authority, account, withdrawn, netstream, netshared, netblind, netopen, nethold, netdestroy, netkeep
+#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, authority, account, withdrawn, netstream, netshared, netblind, netopen, nethold, netdestroy, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker); with cfg names: those instances instead (the larger ones
 #   in the module's README, by hand), judged only if listed below.
@@ -35,6 +35,13 @@ instances=(
   "rotation rotation Rotation MC_reorder.cfg pass"
   "rotation rotation Rotation MC_fork.cfg pass"
   "rotation rotation Rotation MC_c2_boxcovers.cfg fail" # negative control: a box-less holder covered
+  "reseal rotation Reseal RS_build.cfg pass"       # another's content encrypted under the node's epoch only while an epoch it opened it under is established (spec/crypto.md §5 Passing on)
+  "reseal rotation Reseal RS_build_live.cfg pass"  # ... and once W arrives, it is
+  "reseal rotation Reseal RS_openedest.cfg pass"   # sealing again under the opened epoch itself is safe too
+  "reseal rotation Reseal RS_opened.cfg pass"      # ... established or not
+  "reseal rotation Reseal RS_newest.cfg fail"      # negative control: under the sealer's newest current epoch (the leak)
+  "reseal rotation Reseal RS_forged.cfg fail"      # negative control: a forged section's opening counts
+  "reseal rotation Reseal RS_atopen.cfg fail"      # negative control: establishment judged at the opening
   "joint rotation JointMC J_gone.cfg pass"        # a forked holder actor sealed jointly: A's rotation needs nobody of M (spec/crypto.md §4 Seal)
   "joint rotation JointMC J_stay.cfg pass"        # ... every member no fork removes reads A, with one admin of M staying
   "joint rotation JointMC J_wait_gone.cfg fail"   # negative control: waiting for M's merge stalls A's rotation

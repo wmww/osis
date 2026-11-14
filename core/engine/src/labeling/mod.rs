@@ -8,6 +8,7 @@ mod blobs;
 mod certs;
 pub(crate) use certs::judged_valid;
 mod judge;
+pub(crate) mod opened;
 mod proofs;
 pub mod converge;
 

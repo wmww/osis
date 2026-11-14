@@ -107,6 +107,8 @@ impl Engine {
     /// an error.
     pub fn ingest_relay(&mut self, blob: CommitBlob) -> Result<bool> {
         let id = blob.id();
+        // passed on as it came (node-sync streams its blob), never sealed here again
+        self.openings_done(&id);
         let h = &blob.header;
         if h.ephemeral != Some(EphClass::Relay) {
             return Err(Error::BadInput("not a relay-only commit"));

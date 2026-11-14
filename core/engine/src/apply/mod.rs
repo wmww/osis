@@ -1352,6 +1352,9 @@ impl Engine {
         if refused {
             return Ok(None);
         }
+        if let Ok(Ingested::Applied(c) | Ingested::Duplicate(c)) = &r {
+            self.openings_done(c);
+        }
         if let Ok(Ingested::Applied(_)) = &r {
             self.reexamine()?;
         }
@@ -1441,6 +1444,10 @@ impl Engine {
         self.core.memory_room = None;
         if fresh && r.is_ok() {
             self.blobs_stored();
+        }
+        // its openings went with its record, or nothing of it is kept
+        if let Ok(Ingested::Applied(c) | Ingested::Duplicate(c) | Ingested::TooLarge(c)) = &r {
+            self.openings_done(c);
         }
         match &r {
             Err(e) if e.class() == ErrorClass::BadInput => {

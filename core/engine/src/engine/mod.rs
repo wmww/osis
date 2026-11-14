@@ -1309,6 +1309,10 @@ pub struct Core {
     /// (`Indexes::resnapshots_owed`): newly owed, every one at open, and those on a thing that
     /// may be written on now (`replace::wake_covers`).
     pub resnapshots_due: BTreeSet<(Tid, Ak)>,
+    /// Openings of sections not yet written beside their commit (`labeling::opened`): `ou/` rows
+    /// by commit, written with its record (`Tx::put_commit`), read as rows until then; a commit
+    /// never held (a relay-only one) is judged on them alone.
+    pub openings: BTreeMap<CommitId, crate::labeling::opened::Rows>,
     /// Aspects (`None`) and commits' parts (`Some`, that change's) a read found a link of whose
     /// blob is not held (`Engine::missed_blob`): the next blob stored re-delivers them to watches
     /// (`Tx::store_blobs`: `Cause::Fetched`, `Event::Commits`). Bounded by the aspects and entries
@@ -1483,6 +1487,7 @@ impl Core {
             refold: self.refold.clone(),
             changed: self.changed.clone(),
             resnapshots_due: self.resnapshots_due.clone(),
+            openings: self.openings.clone(),
             missed: self.missed.clone(),
             bodies: self.bodies.clone(),
             live_bodies: self.live_bodies.clone(),
@@ -2070,6 +2075,7 @@ impl Core {
             lifetimes_rights: _,
             changed: _,
             resnapshots_due: _,
+            openings: _,
             redeliver: _,
             pended: _,
             missed: _,
@@ -2309,6 +2315,7 @@ impl Core {
             refold: BTreeSet::new(),
             changed: None,
             resnapshots_due: BTreeSet::new(),
+            openings: BTreeMap::new(),
             sync_records: None,
             missed: BTreeSet::new(),
             bodies: memo::Memo::new("label body"),
@@ -3034,6 +3041,7 @@ impl Tx<'_> {
         self.core.mark_changed(*id);
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
+        crate::labeling::opened::write(self, id, meta)?;
         if meta.header.kind.is_role() {
             // perm's reading of it, persisted beside the record (an open decodes no body)
             match edges {
@@ -3055,6 +3063,7 @@ impl Tx<'_> {
     /// Removes a commit record (shredded) with what the index keeps beside it.
     pub fn remove_commit(&mut self, id: &CommitId) -> Result<()> {
         self.txn.remove_local(&records::commit_key(id), Shred::Yes)?;
+        crate::labeling::opened::forget(self, id)?;
         index::remove_edges(self, id)?;
         index::remove_addenda(self, id)
     }
