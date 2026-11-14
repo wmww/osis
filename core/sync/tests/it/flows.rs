@@ -212,3 +212,14 @@ fn a_reader_opens_what_it_pulled_before_its_secret_spec_sync_streams_4() {
     use crate::harness::history::Gives;
     crate::convergence::converge(7, 3, &[New(1), Grant(1, 0, 0, Gives::Syncs), Grant(1, 0, 0, Gives::Reads), Remove(1, 0, 0), Grant(1, 0, 2, Gives::Syncs), Grant(1, 0, 0, Gives::Reads)], String::new());
 }
+
+// spec/sync-streams.md §4 (Fill order: what does not open is held and opened as secrets arrive):
+// a reader granted, removed and granted again while a durable write of its fails reads the value
+// (the full-size differential, seed 468073306024 shrunk).
+#[test]
+fn a_reader_granted_again_through_a_failed_write_reads_spec_sync_streams_4() {
+    use crate::harness::DiskFault::Fail;
+    use crate::harness::Step::*;
+    use crate::harness::history::Gives;
+    crate::convergence::converge(468073306024, 3, &[New(0), Grant(0, 0, 2, Gives::Syncs), Write(0, 0), Disk(1, 20, Fail), Write(0, 0), Remove(0, 0, 2), Grant(0, 0, 1, Gives::Reads), Remove(0, 0, 1), Grant(0, 0, 1, Gives::Reads)], String::new());
+}
