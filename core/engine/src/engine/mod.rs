@@ -956,6 +956,8 @@ pub(crate) enum Step {
     /// One account rotation answered with this node's listing or addenda
     /// (`flows::signing::answer_rotations`).
     Rotation,
+    /// A commit applied to find what it leaves unfiled (`write::commit_in`).
+    Filing,
 }
 
 /// Tests: after `skip` more steps of kind `site` run, every later one fails (`BadInput`), before

@@ -717,6 +717,33 @@ impl Groups {
         self.under_by(t, roots, &|f, x| self.maps(f).1.get(x).into_iter().flatten().copied().collect())
     }
 
+    /// `under`, not counting `home` or what is above it as a key home: whether a listing, or a key
+    /// home below `home`, puts `t` in the closure of one of `roots` (spec/sync-set.md §1 Filing).
+    pub(crate) fn listed_under(&self, t: &Tid, roots: &BTreeSet<Tid>, home: &Tid) -> bool {
+        self.stamps.read_all();
+        let homes = self.homes(t);
+        let below: Vec<Tid> = homes.iter().take_while(|h| *h != home).copied().collect();
+        self.walk_up(below, roots, &|f, x| self.maps(f).1.get(x).into_iter().flatten().copied().collect())
+    }
+
+    /// Of `unfiled` (things `listed_under` holds in no synced closure), the fewest, roughly, to
+    /// list as subgroups of home so that each is held: those no other of them lists first, then
+    /// the rest (a cycle), each skipped when the closure of one chosen already holds it.
+    /// O(the closures of those chosen).
+    pub(crate) fn to_file(&self, unfiled: &[Tid]) -> Vec<Tid> {
+        let lists = |t: &Tid| unfiled.iter().any(|u| u != t && (self.listed(u, ITEMS, t) || self.listed(u, SUBGROUPS, t)));
+        let (roots, rest): (Vec<Tid>, Vec<Tid>) = unfiled.iter().partition(|t| !lists(t));
+        let mut held = BTreeSet::new();
+        let mut out = Vec::new();
+        for t in roots.into_iter().chain(rest) {
+            if !held.contains(&t) {
+                held.extend(self.reach(&t));
+                out.push(t);
+            }
+        }
+        out
+    }
+
     /// `under` as the index stood when the running transaction began (its edits undone), for
     /// each of `ts`: the journal is read once.
     pub(crate) fn under_at_start(&self, ts: &BTreeSet<Tid>, roots: &BTreeSet<Tid>) -> BTreeSet<Tid> {
@@ -744,7 +771,6 @@ impl Groups {
     /// Whether `t` is one of `roots` or under one, by `listed_in` (field, tid -> the groups
     /// listing it there): walks up from `t` and the groups listing it as an item, and so from each key home up its chain (`DERIVED`).
     fn under_by(&self, t: &Tid, roots: &BTreeSet<Tid>, listed_in: &dyn Fn(u64, &Tid) -> Vec<Tid>) -> bool {
-        let mut seen = BTreeSet::new();
         let mut homes = vec![*t];
         while let Some(h) = homes.last().and_then(|x| listed_in(DERIVED, x).first().copied()) {
             if homes.contains(&h) {
@@ -752,6 +778,13 @@ impl Groups {
             }
             homes.push(h);
         }
+        self.walk_up(homes, roots, listed_in)
+    }
+
+    /// Whether one of `roots` is, or lists by subgroups, one of `homes` or a group listing one of
+    /// them as an item.
+    fn walk_up(&self, homes: Vec<Tid>, roots: &BTreeSet<Tid>, listed_in: &dyn Fn(u64, &Tid) -> Vec<Tid>) -> bool {
+        let mut seen = BTreeSet::new();
         let mut stack: Vec<Tid> = homes.iter().flat_map(|h| listed_in(ITEMS, h)).collect();
         stack.extend(homes);
         while let Some(x) = stack.pop() {

@@ -83,6 +83,8 @@ pub struct Mutation {
     /// A rotation of the signing account's chain, with the key of each fork it names
     /// (spec/crypto.md §9; `flows::signing`).
     pub(crate) rotation: Option<crate::flows::signing::AccountRotation>,
+    /// Lists what it creates under home where nothing synced holds it (`file_created`).
+    pub(crate) file: bool,
 }
 
 impl Default for Mutation {
@@ -97,7 +99,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new(), kept: Vec::new(), references: Vec::new(), rotation: None }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new(), kept: Vec::new(), references: Vec::new(), rotation: None, file: false }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -160,6 +162,15 @@ impl Mutation {
     /// state (`delete_purges`).
     pub fn deleting(&mut self, tid: Tid) -> &mut Self {
         self.deleting.insert(tid);
+        self
+    }
+
+    /// In a commit acting as the account: each thing it creates that, after it, no synced
+    /// group's closure holds other than as a thing home is the key home of, it also lists as a
+    /// subgroup of home (the account's devices actor D), so it reaches the account's other nodes
+    /// (spec/sync-set.md §1 Filing).
+    pub fn file_created(&mut self) -> &mut Self {
+        self.file = true;
         self
     }
 
@@ -770,8 +781,61 @@ pub(crate) fn purge_placer(ts: Ts) -> PathOp {
     PathOp { path: Vec::new(), op: Op::Replace(ts.wall_ms().to_value()) }
 }
 
-/// Commits `m` in `tx` as one commit (`one_commit`); none when it changes nothing.
+/// Commits `m` in `tx` as one commit (`one_commit`); none when it changes nothing. Filing
+/// (`Mutation::file_created`) applies the commit, finds what it created that nothing synced
+/// holds, and, where any is, rolls back and applies it again listing those under home: the
+/// state the commit leaves decides, so a listing anywhere in it counts.
 pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
+    let synced = std::mem::take(&mut m.synced);
+    let kept = std::mem::take(&mut m.kept);
+    let references = std::mem::take(&mut m.references);
+    let id = match filing(tx, &m)? {
+        None => apply_in(tx, m)?,
+        Some((d, roots)) => {
+            let created: Vec<Tid> = m.creates.keys().copied().collect();
+            let (mut unfiled, mut expires) = (Vec::new(), None);
+            let first = tx.step(super::Step::Filing, |tx| {
+                let id = apply_in(tx, m.clone())?;
+                // the listing expires with the commit (a disappearing thing leaves home with it)
+                expires = id.and_then(|c| tx.core.ix.commits.get(&c)).and_then(|c| c.header.expires);
+                let groups = &tx.core.ix.groups;
+                let left: Vec<Tid> = created.iter().filter(|t| tx.core.created(t).is_some() && !groups.listed_under(t, &roots, &d)).copied().collect();
+                unfiled = groups.to_file(&left);
+                // rolled back and applied again below, never returned
+                if unfiled.is_empty() { Ok(id) } else { Err(Error::Misuse("unfiled")) }
+            });
+            if unfiled.is_empty() {
+                first?
+            } else {
+                for t in unfiled {
+                    m.op(d, &osis_schema::core_types::GROUP, PathOp { path: vec![osis_crdt::PathSeg::Field(super::groups::SUBGROUPS)], op: Op::Add(Value::Tid(t)) })?;
+                }
+                if let (Some(e), Some(am)) = (expires, m.aspects.get_mut(&(d, Ak::new(osis_schema::core_types::GROUP.ak()).map_err(|_| Error::Misuse("ak"))?))) {
+                    am.expires = Some(e);
+                }
+                apply_in(tx, m)?
+            }
+        }
+    };
+    if id.is_some() {
+        check_synced(tx.core, &synced)?;
+        check_lifetimes(tx, &kept, &references)?;
+    }
+    Ok(id)
+}
+
+/// Home (the account's D) and the account's synced groups, where `m` files what it creates: it
+/// asks to, creates something and acts as the account.
+fn filing(tx: &mut Tx<'_>, m: &Mutation) -> Result<Option<(Tid, BTreeSet<Tid>)>> {
+    let Some((p, d)) = tx.core.account_devices() else { return Ok(None) };
+    if !m.file || m.creates.is_empty() || m.actor != Some(p) {
+        return Ok(None);
+    }
+    Ok(Some((d, crate::sync::inbox::synced_roots(tx, d)?)))
+}
+
+/// `commit_in` without the checks over the state it leaves.
+fn apply_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
     let node = match m.signer {
         Some(k) if tx.core.key_actors.contains_key(&k) || tx.core.accounts.contains_key(&k) => k,
         Some(_) => return Err(Error::Misuse("signer not held")),
@@ -1008,8 +1072,6 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         return Err(Error::Clash(format!("a purge goes under a write of its thing, and this commit writes nothing on {}. Write the purge as a commit of its own", p.tid())));
     }
     let id = build_and_apply(tx, plan, deltas)?;
-    check_synced(tx.core, &m.synced)?;
-    check_lifetimes(tx, &m.kept, &m.references)?;
     Ok(Some(id))
 }
 

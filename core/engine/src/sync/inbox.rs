@@ -503,6 +503,16 @@ fn keep_offered(tx: &mut Tx<'_>, t: &Tid, now: WallMs) -> Result<()> {
     Ok(())
 }
 
+/// The account's synced groups (`synced^.0` on its devices actor `d`), or `d` alone before any is
+/// read (spec/sync-set.md §1): the roots of the closures a node of the account syncs.
+pub(crate) fn synced_roots(tx: &mut Tx<'_>, d: Tid) -> Result<BTreeSet<Tid>> {
+    let synced = tx.state(&d, &ct::SYNCED.name())?.and_then(osis_crdt::Fragment::read).and_then(|v| ct::SYNCED.decode(&v).ok());
+    Ok(match synced {
+        Some(m) if !m.is_empty() => m.into_values().collect(),
+        _ => [d].into(),
+    })
+}
+
 /// Marks what local write `tx` acted on as invitations (spec/sync-set.md §4 Acted): each thing a
 /// held inbox blob offers or `held_role` gives a role (none the write created: a content commit
 /// gives no secrets) that was in no synced group's closure when the write began and is listed by
@@ -516,11 +526,7 @@ pub(crate) fn mark_acted(tx: &mut Tx<'_>) -> Result<()> {
         return Ok(());
     }
     let Some((_, d)) = tx.core.account_devices() else { return Ok(()) };
-    let synced = tx.state(&d, &ct::SYNCED.name())?.and_then(osis_crdt::Fragment::read).and_then(|v| ct::SYNCED.decode(&v).ok());
-    let roots: BTreeSet<Tid> = match synced {
-        Some(m) if !m.is_empty() => m.into_values().collect(),
-        _ => [d].into(),
-    };
+    let roots = synced_roots(tx, d)?;
     let groups = &tx.core.ix.groups;
     let (mut listed, mut subs, mut items) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     for (_, f, t, now) in changed {
