@@ -118,10 +118,16 @@ codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Epoch { 0 n: u64, 1 nonce: [u8; 32] }
 }
-codec_struct! {
-    /// Transport URL and 32-byte host static key.
-    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct Address { 0 url: String, 1 key: [u8; 32] }
+pub use osis_base::Address;
+
+impl Codec for Address {
+    fn to_value(&self) -> Value {
+        rt::struct_value(vec![(0, self.url.to_value()), (1, self.key.to_value())])
+    }
+    fn from_value(v: &Value) -> Result<Address, PathError> {
+        let m = rt::struct_map(v)?;
+        Ok(Address { url: rt::field(m, 0)?, key: rt::field(m, 1)? })
+    }
 }
 codec_enum! {
     /// A dot's source (spec/crdt.md §2.1); a session as `Sources` encodes it (spec/crdt.md

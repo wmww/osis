@@ -1,4 +1,5 @@
-//! Tids, AKs, links and fixed-size ids (spec/data-model.md §1, §2, §6, §7; spec/sync-ids.md §2).
+//! Tids, AKs, links, node addresses and fixed-size ids (spec/data-model.md §1, §2, §6, §7, §9;
+//! spec/sync-ids.md §2; spec/sync-transport.md §1).
 
 use crate::cbor::encode;
 use crate::format::{MAX_AK_BYTES, TID_LEN, TID_TEXT_LEN};
@@ -735,4 +736,13 @@ mod tests {
         assert_eq!(Del::from_keys([(4, [1; 32])]), None);
         assert!(Del::NONE.is_empty());
     }
+}
+
+/// Where to dial a node (spec/sync-transport.md §1, spec/data-model.md §9 `address`): a transport
+/// URL and the 32-byte key the node must authenticate with. One type from the transport to the
+/// data model: osis-schema gives it its `Codec`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Address {
+    pub url: String,
+    pub key: [u8; 32],
 }

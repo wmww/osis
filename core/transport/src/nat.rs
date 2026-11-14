@@ -110,11 +110,13 @@ struct LanEntry {
 }
 
 /// A bound socket: its endpoint (for partitions), the key it accepts with (none: dials only),
-/// and connections that reached it, not yet accepted (connection id, ALPN, where it came from).
+/// whether it is a LAN listener's (serving `osis-lan` only, else `osis` and `osis-relay`), and
+/// connections that reached it, not yet accepted (connection id, ALPN, where it came from).
 struct Entry {
     id: u64,
     endpoint: String,
     key: Option<PublicKey>,
+    lan: bool,
     queue: VecDeque<(u64, Alpn, SocketAddr)>,
     waker: Option<Waker>,
 }
@@ -343,11 +345,9 @@ impl MemUdp {
     }
 }
 
-impl UdpT for MemUdp {
-    type Sock = MemSock;
-
-    /// The host's own address only (an unspecified one means it); port 0: the next free one.
-    fn bind(&self, at: SocketAddr, secret: Option<&StaticSecret>) -> Result<MemSock, Error> {
+impl MemUdp {
+    /// `bind`, or with `lan` `bind_lan`.
+    fn bind_as(&self, at: SocketAddr, secret: Option<&StaticSecret>, lan: bool) -> Result<MemSock, Error> {
         if !at.ip().is_unspecified() && at.ip() != self.ip {
             return Err(Error::Io(format!("{at} is not this host's")));
         }
@@ -355,8 +355,21 @@ impl UdpT for MemUdp {
         let addr = self.free(&st.udp.socks, at.port())?;
         let id = st.id();
         let key = secret.map(StaticSecret::public_key);
-        st.udp.socks.insert(addr, Entry { id, endpoint: self.name.clone(), key, queue: VecDeque::new(), waker: None });
+        st.udp.socks.insert(addr, Entry { id, endpoint: self.name.clone(), key, lan, queue: VecDeque::new(), waker: None });
         Ok(MemSock { net: self.net.clone(), name: self.name.clone(), addr, id })
+    }
+}
+
+impl UdpT for MemUdp {
+    type Sock = MemSock;
+
+    /// The host's own address only (an unspecified one means it); port 0: the next free one.
+    fn bind(&self, at: SocketAddr, secret: Option<&StaticSecret>) -> Result<MemSock, Error> {
+        self.bind_as(at, secret, false)
+    }
+
+    fn bind_lan(&self, at: SocketAddr, secret: &StaticSecret) -> Result<MemSock, Error> {
+        self.bind_as(at, Some(secret), true)
     }
 
     fn now_ms(&self) -> u64 {
@@ -435,21 +448,24 @@ pub struct MemSock {
 }
 
 impl MemSock {
-    /// One attempt: the connection, if this packet got through.
-    fn try_dial(&self, to: SocketAddr, key: PublicKey, own: Option<&StaticSecret>, alpn: Alpn) -> Result<Option<MemConn>, Error> {
+    /// One attempt: the connection and the protocol the listener chose from `alpn.offer()`, if
+    /// this packet got through.
+    fn try_dial(&self, to: SocketAddr, key: PublicKey, own: Option<&StaticSecret>, alpn: Alpn) -> Result<Option<(MemConn, Alpn)>, Error> {
         let mut st = self.net.state();
         if st.udp.socks.get(&self.addr).is_none_or(|e| e.id != self.id) {
             return Err(Error::Closed);
         }
         let Some((at, src)) = st.udp.route(self.addr, to) else { return Ok(None) };
         let Some(e) = st.udp.socks.get(&at) else { return Ok(None) };
-        let (Some(theirs), endpoint) = (e.key, e.endpoint.clone()) else { return Ok(None) };
+        let (Some(theirs), endpoint, lan) = (e.key, e.endpoint.clone(), e.lan) else { return Ok(None) };
         if st.cut(&self.name, &endpoint) {
             return Ok(None);
         }
         if theirs != key {
             return Err(Error::KeyMismatch);
         }
+        let serves: &[Alpn] = if lan { &[Alpn::Lan] } else { &[Alpn::Osis, Alpn::Relay] };
+        let Some(chosen) = serves.iter().copied().find(|a| alpn.offer().contains(&a.bytes())) else { return Err(Error::Protocol("no common ALPN".into())) };
         let mine = match own {
             Some(s) => s.public_key(),
             None => st.rng().bytes32(),
@@ -457,10 +473,10 @@ impl MemSock {
         let limit = [crate::quic::MAX_STREAMS as usize, crate::p2p::dialer_limits(alpn, own.is_some()).0 as usize];
         let (id, c) = st.new_conn(&self.net, [self.name.clone(), endpoint], [mine, theirs], limit, Some(to));
         if let Some(e) = st.udp.socks.get_mut(&at) {
-            e.queue.push_back((id, alpn, src));
+            e.queue.push_back((id, chosen, src));
             wake(&mut e.waker);
         }
-        Ok(Some(c))
+        Ok(Some((c, chosen)))
     }
 }
 
@@ -471,7 +487,7 @@ impl Sock for MemSock {
         self.addr
     }
 
-    async fn dial(&self, to: SocketAddr, key: PublicKey, own: Option<StaticSecret>, alpn: Alpn) -> Result<MemConn, Error> {
+    async fn dial(&self, to: SocketAddr, key: PublicKey, own: Option<StaticSecret>, alpn: Alpn) -> Result<(MemConn, Alpn), Error> {
         let give_up = self.net.state().udp.dial_ms.unwrap_or(DIAL_MS);
         let end = self.net.now().saturating_add(give_up);
         loop {

@@ -10,7 +10,7 @@ One workspace, root `Cargo.toml`: members `core/*` (library crates in unprefixed
 | 1 | `osis-crypto` | suite 1 primitives, kdf, sealed boxes, wraps, delete keys (blinded); `OsRng` for drivers |
 | 1 | `osis-crdt` | merge encodings, delta grammar, join/read/diff, paging; `View`, `PageSink`, `PageSource` |
 | 1 | `osis-perm` | role validity rules over an abstract held set |
-| 1 | `osis-transport` | `Transport`; `InProcess`, QUIC, P2P (`p2p`), LAN announcements (`lan`); `link` sessions (channel pairs with tokio pump tasks) for the node driver |
+| 1 | `osis-transport` | `Transport`; `InProcess`, QUIC, P2P (`p2p`), LAN discovery (`lan`); `link` sessions (channel pairs with tokio pump tasks) for the node driver |
 | 2 | `osis-schema` | DSL, types, core aspect types, implements `View` |
 | 2 | `osis-store` | `Backend`, `MemoryBackend`, `RedbBackend` and `FileRoot`, `RootStorage`, `Store`, `Transaction` |
 | 3 | `osis-commit` | commit header and blob, kinds, retention, delete keys, signatures, builder, verification, sections and prefix groups, chunk trees (the one writer and reader; osis-label re-exports it) and header lists (notes/crdt.md) |
@@ -70,7 +70,7 @@ Compile and test time are the bottleneck of agent-driven work.
 ## 5. Dependency allowlist
 One line per external crate; adding a dependency means adding its line. No serde, no CBOR crates, no parser generators, no proc-macro crates in core-layer crates.
 - `blake3` (core, crypto; `default-features = false, features = ["std", "zeroize"]`; `zeroize` wipes crypto's kdf hasher state): the only hash (spec/crypto.md §1); crypto uses it directly for the kdf XOF and `SeededRng`.
-- `ed25519-dalek` 2.2 (crypto, transport; `std`, `zeroize`, `fast` (curve25519-dalek `precomputed-tables`); `hazmat` and `digest` for crypto's blinded delete signing (`raw_sign` with an `ExpandedSecretKey`); no `rand_core`/`batch`): Ed25519 with `verify_strict`, plus our canonical-encoding check on keys. Transport derives `InProcess` keys with it (Ed25519 like every transport's, so a dialable key verifies LAN announcements).
+- `ed25519-dalek` 2.2 (crypto, transport; `std`, `zeroize`, `fast` (curve25519-dalek `precomputed-tables`); `hazmat` and `digest` for crypto's blinded delete signing (`raw_sign` with an `ExpandedSecretKey`); no `rand_core`/`batch`): Ed25519 with `verify_strict`, plus our canonical-encoding check on keys. Transport derives `InProcess` keys with it (Ed25519 like every transport's).
 - `curve25519-dalek` 4.1 (crypto; no default features, `zeroize`, `precomputed-tables`; already ed25519-dalek's): scalar and point multiplication for delete-key blinding (spec/crypto.md §7).
 - `x25519-dalek` 2.0 (crypto; `static_secrets`, `zeroize`, `precomputed-tables`): X25519 with the contributory check.
 - `libcrux-ml-kem` 0.0.11 (crypto; `mlkem768` only, no `rand` feature): ML-KEM-768. Chosen over RustCrypto `ml-kem` 0.3: keygen from the 64-byte `d || z` seed and encapsulation from 32 explicit bytes are plain array functions, and it is formally verified. Its `libcrux-traits` dependency still compiles `rand` 0.10 and `rand_core` 0.10 (no OS randomness, unused by us). Checked against NIST ACVP FIPS 203 answers (test `mlkem_fips203_acvp`).

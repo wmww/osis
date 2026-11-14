@@ -2,11 +2,13 @@
 //! network join, never the dialable key, and nothing else (no tag, secret or signature): a
 //! datagram `"osis lan 2"` || key || be16 port, broadcast on the IPv4 LAN and multicast to the
 //! IPv6 all-nodes group. `LanSocket` sends and hears them (`Lan`: UDP sockets; `nat::MemLan`: a
-//! LAN segment of the NAT model) and tells a network change. `Joined` is one join's state: what
-//! it heard, and so which keys are LAN listeners'. `P2p::discover` runs the loop.
+//! LAN segment of the NAT model) and tells a network change. `Joined` is one join's state: its own
+//! key and the keys it handed up lately. `P2p::discover` runs the loop. A LAN listener serves
+//! ALPN `osis-lan` only, so a connection's rank (`p2p::Alpn::rank`) needs no record of what was
+//! heard and is the same at both ends whatever an announcement claims.
 
 use crate::{Address, Error, PublicKey};
-use std::collections::BTreeSet;
+use std::collections::VecDeque;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::task::Poll;
 
@@ -111,33 +113,35 @@ impl Announce {
     }
 }
 
-/// One network join's state (spec/sync-transport.md §4): its listener's key and the keys it
-/// heard announced, so which keys are LAN listeners' (`is_lan`, rank 0).
+/// One network join's state (spec/sync-transport.md §4): its listener's key (none while it has
+/// no listener) and the last `cap` keys it handed up (`LanConfig::recent`), so the repeats of
+/// one announcer's join are dialed once. Bounded whatever a LAN sends.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Joined {
     own: Option<PublicKey>,
-    heard: BTreeSet<PublicKey>,
+    recent: VecDeque<PublicKey>,
+    cap: usize,
 }
 
 impl Joined {
-    /// A join listening under `own`, nothing heard yet.
-    pub fn new(own: PublicKey) -> Joined {
-        Joined { own: Some(own), heard: BTreeSet::new() }
+    /// A join listening under `own`, nothing heard yet, remembering `cap` keys.
+    pub fn new(own: Option<PublicKey>, cap: usize) -> Joined {
+        Joined { own, recent: VecDeque::new(), cap }
     }
 
-    /// An announcement heard from `from`: where to dial its key, once per key in this join;
-    /// none for a source that cannot be on the LAN (`is_local`) or this join's own key.
-    /// Minor: keys heard are kept for the join, however many a LAN announces.
+    /// An announcement heard from `from`: where to dial its key; none for a source that cannot
+    /// be on the LAN (`is_local`), this join's own key, or a key among the last `cap` handed up.
     pub fn heard(&mut self, a: &Announce, from: SocketAddr) -> Option<Address> {
-        if !is_local(from.ip()) || self.own == Some(a.key) || !self.heard.insert(a.key) {
+        if !is_local(from.ip()) || self.own == Some(a.key) || self.recent.contains(&a.key) {
             return None;
         }
+        if self.cap > 0 {
+            if self.recent.len() == self.cap {
+                self.recent.pop_front();
+            }
+            self.recent.push_back(a.key);
+        }
         Some(a.address(from))
-    }
-
-    /// Whether `key` is a LAN listener's: this join's own, or one it heard announced.
-    pub fn is_lan(&self, key: &PublicKey) -> bool {
-        self.own == Some(*key) || self.heard.contains(key)
     }
 }
 
@@ -169,21 +173,33 @@ pub struct LanConfig {
     pub pace_ms: u64,
 }
 
+impl LanConfig {
+    /// How many keys a join remembers having handed up (`Joined`): those of one join's
+    /// announcements, `repeats` more `gap_ms` apart, plus one gap of slack, at one key handed
+    /// up per `pace_ms` (at least 1 ms). Derived, not picked: a repeat heard within that span
+    /// finds its key still remembered; one heard later, or under a flood, is dialed again, which
+    /// costs a dial the pacing already allows.
+    pub fn recent(&self) -> usize {
+        let span = u64::from(self.repeats).saturating_add(1).saturating_mul(self.gap_ms);
+        usize::try_from(span / self.pace_ms.max(1)).unwrap_or(usize::MAX).saturating_add(1)
+    }
+}
+
 impl Default for LanConfig {
     fn default() -> LanConfig {
         LanConfig { port: PORT, to: vec![broadcast(PORT), multicast(PORT)], listen: vec!["peer://[::]:0".into(), "peer://0.0.0.0:0".into()], repeats: JOIN_REPEATS, gap_ms: JOIN_GAP_MS, pace_ms: PACE_MS }
     }
 }
 
-/// What discovery hands up: an announcer to dial (a dial candidate), or a connection its
-/// listener accepted (rank 0).
+/// What discovery hands up (spec/sync-transport.md §1): a dial candidate, or a connection its
+/// own listener accepted.
 pub enum Found<C> {
     Dial(Address),
     Conn(C),
 }
 
-/// A running LAN discovery (`Transport::discover`): its events in order. Dropping it stops the
-/// loop and closes its listener.
+/// A running discovery (`Transport::discover`): its events in order. Dropping it stops the loop
+/// and closes its listener.
 pub struct Discovery<C> {
     pub(crate) rx: tokio::sync::mpsc::Receiver<Found<C>>,
     pub(crate) rejoin: std::sync::Arc<tokio::sync::Notify>,
@@ -196,7 +212,10 @@ impl<C> Discovery<C> {
         self.rx.recv().await
     }
 
-    /// Joins anew now (an OS network-change callback): a fresh key and listener, announced.
+    /// Starts afresh now: the network may have changed (an OS network-change callback). For LAN
+    /// discovery a fresh key and listener, announced. Calls made while one is pending make one
+    /// join; no other limit is needed, since only the local node calls it and each join replaces
+    /// the last.
     pub fn rejoin(&self) {
         self.rejoin.notify_one();
     }
@@ -330,7 +349,7 @@ impl LanSocket for Lan {
             let mut b6 = [0u8; LEN + 1];
             loop {
                 let v6_first = self.turn.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
-                let (n, from, v6) = std::future::poll_fn(|cx| {
+                let got = std::future::poll_fn(|cx| {
                     for v6 in [v6_first, !v6_first] {
                         let (sock, buf) = if v6 { (self.v6.as_ref(), &mut b6) } else { (Some(&self.v4), &mut b4) };
                         let Some(sock) = sock else { continue };
@@ -341,7 +360,14 @@ impl LanSocket for Lan {
                     }
                     Poll::Pending
                 })
-                .await?;
+                .await;
+                // an error one datagram caused (an ICMP answer to an announcement, an oversized
+                // datagram where the OS reports it) is skipped; any other ends the loop
+                let (n, from, v6) = match got {
+                    Ok(x) => x,
+                    Err(e) if datagram_error(&e) => continue,
+                    Err(e) => return Err(e.into()),
+                };
                 let buf = if v6 { &b6[..] } else { &b4[..] };
                 if let Some(a) = buf.get(..n).and_then(Announce::decode) {
                     return Ok((a, from));
@@ -367,6 +393,15 @@ impl LanSocket for Lan {
             }
         })
     }
+}
+
+/// Whether a UDP receive error belongs to one datagram, so the socket reads on: an ICMP answer
+/// to something sent (reported as reset or refused) or a datagram larger than the buffer.
+fn datagram_error(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{ConnectionRefused, ConnectionReset, Interrupted, WouldBlock};
+    // "message too long": WSAEMSGSIZE, EMSGSIZE (Linux and Android; the BSDs)
+    const EMSGSIZE: i32 = if cfg!(windows) { 10040 } else if cfg!(any(target_os = "linux", target_os = "android")) { 90 } else { 40 };
+    matches!(e.kind(), ConnectionRefused | ConnectionReset | Interrupted | WouldBlock) || e.raw_os_error() == Some(EMSGSIZE)
 }
 
 /// The local IP addresses of the IPv4 and IPv6 routes to the internet, if any. No packet is sent.
@@ -459,23 +494,20 @@ mod tests {
     }
 
     // spec/sync-transport.md §4 (a receiver ignores, dialing): a source that cannot be on the LAN
-    // and the join's own key are ignored; each other key is dialed once per join; its key is a
-    // LAN listener's (rank 0) and stays so for the join.
+    // and the join's own key are ignored; each other key is dialed once while remembered; a new
+    // join dials it again; a join with nothing to remember dials every announcement.
     #[test]
     fn heard_once_per_join() {
-        let mut j = Joined::new([1; 32]);
+        let mut j = Joined::new(Some([1; 32]), 4);
         let other = Announce { key: [2; 32], port: 9 };
         let from: SocketAddr = "192.168.1.5:47380".parse().unwrap();
         assert_eq!(j.heard(&Announce { key: [1; 32], port: 9 }, from), None, "own key");
         assert_eq!(j.heard(&other, "8.8.8.8:47380".parse().unwrap()), None, "not on the LAN");
-        assert!(!j.is_lan(&[2; 32]));
         assert_eq!(j.heard(&other, from), Some(Address { url: "peer://192.168.1.5:9".into(), key: [2; 32] }));
         assert_eq!(j.heard(&other, "10.0.0.7:47380".parse().unwrap()), None, "once per join");
-        assert!(j.is_lan(&[2; 32]) && j.is_lan(&[1; 32]) && !j.is_lan(&[3; 32]));
-        // a new join dials it again
-        let mut j = Joined::new([4; 32]);
-        assert!(j.heard(&other, from).is_some());
-        assert!(!Joined::default().is_lan(&[1; 32]));
+        let mut j = Joined::new(Some([4; 32]), 4);
+        assert!(j.heard(&other, from).is_some(), "a new join dials it again");
+        assert!(Joined::new(None, 4).heard(&other, from).is_some(), "a join without a listener still dials");
     }
 
     // spec/sync-transport.md §4: IPv6 announcements go to the all-nodes group on every link the machine is

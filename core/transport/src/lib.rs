@@ -94,13 +94,9 @@ pub const RANK_DIRECT: Rank = 1;
 /// A connection a relay carries (spec/sync-transport.md §3).
 pub const RANK_RELAYED: Rank = 2;
 
-/// Where to dial: a transport URL and the key the peer must authenticate with (spec/sync-transport.md §1).
-/// Mirrors the schema's `address` type; the scheme picks the implementation.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Address {
-    pub url: String,
-    pub key: PublicKey,
-}
+/// Where to dial (spec/sync-transport.md §1): osis-base's one address type; the URL's scheme
+/// picks the implementation.
+pub use osis_base::Address;
 
 /// Scheme of P2P addresses (spec/sync-transport.md §3): a node dialed by its dialable key at the socket
 /// addresses and through the relays the URL lists (`peer://` then items separated by single
@@ -162,11 +158,12 @@ pub trait Transport: Send + Sync + 'static {
     type Listener: Listener<Conn = Self::Conn>;
     fn dial(&self, addr: &Address) -> impl Future<Output = Result<Self::Conn, Error>> + Send;
     fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<Self::Listener, Error>> + Send;
-    /// Starts LAN discovery (spec/sync-transport.md §4): joins at once (a fresh key and listener,
-    /// announced; a listener that cannot bind is the error), and again whenever the network may
-    /// have changed or `Discovery::rejoin` asks. A transport with no LAN refuses.
-    fn discover(&self, _cfg: LanConfig) -> impl Future<Output = Result<Discovery<Self::Conn>, Error>> + Send {
-        async { Err(Error::Unreachable("no LAN on this transport".into())) }
+    /// Starts discovery (spec/sync-transport.md §1; how is the transport's, configured when it
+    /// is made: `P2p::lan`, spec/sync-transport.md §4): it hands up dial candidates and the
+    /// connections its own listeners take, and starts afresh whenever the network may have
+    /// changed or `Discovery::rejoin` asks. A transport with no discovery refuses.
+    fn discover(&self) -> impl Future<Output = Result<Discovery<Self::Conn>, Error>> + Send {
+        async { Err(Error::Unreachable("no discovery on this transport".into())) }
     }
 }
 
@@ -180,8 +177,8 @@ impl<T: Transport> Transport for std::sync::Arc<T> {
     fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<Self::Listener, Error>> + Send {
         (**self).listen(cfg)
     }
-    fn discover(&self, cfg: LanConfig) -> impl Future<Output = Result<Discovery<Self::Conn>, Error>> + Send {
-        (**self).discover(cfg)
+    fn discover(&self) -> impl Future<Output = Result<Discovery<Self::Conn>, Error>> + Send {
+        (**self).discover()
     }
 }
 

@@ -128,9 +128,9 @@ impl<U: Udp> Transport for Multi<U> {
     }
 
     /// LAN discovery runs over the peer transport.
-    async fn discover(&self, cfg: crate::LanConfig) -> Result<crate::Discovery<MultiConn<U>>, Error> {
+    async fn discover(&self) -> Result<crate::Discovery<MultiConn<U>>, Error> {
         match &self.p2p {
-            Some(p) => p.discover_as(cfg, MultiConn::P2p).await,
+            Some(p) => p.discover_as(MultiConn::P2p).await,
             None => Err(Error::UnknownScheme(crate::PEER_SCHEME.to_owned())),
         }
     }

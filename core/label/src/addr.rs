@@ -5,7 +5,7 @@ use crate::Error;
 use osis_base::{Value, base64url};
 use osis_base::format::MAX_URL_BYTES;
 use osis_schema::Codec;
-pub use osis_schema::core_types::Address;
+pub use osis_base::Address;
 
 /// An `address` value, strictly (re-encodes to itself), URL at most 256 bytes.
 pub(crate) fn address_from_value(v: &Value) -> Result<Address, Error> {

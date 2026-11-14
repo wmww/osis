@@ -32,6 +32,11 @@ fn cfg() -> LanConfig {
     LanConfig { to: vec![broadcast(PORT)], listen: vec!["peer://0.0.0.0:0".into()], ..LanConfig::default() }
 }
 
+/// A P2P transport on `udp` running discovery by `cfg()`.
+fn node(udp: MemUdp) -> P2p<MemUdp> {
+    P2p::new(udp).lan(cfg())
+}
+
 type D = Discovery<P2pConn<MemConn>>;
 type Events = Vec<Found<P2pConn<MemConn>>>;
 
@@ -57,7 +62,7 @@ fn start(sched: &mut Sched, hosts: Vec<P2p<MemUdp>>) -> Vec<D> {
     sched.block_on(async move {
         let mut out = Vec::new();
         for h in &hosts {
-            out.push(h.discover(cfg()).await.unwrap());
+            out.push(h.discover().await.unwrap());
         }
         out
     })
@@ -73,9 +78,9 @@ fn joins_are_dialed_once_per_key() {
     let net = Net::new(0);
     let mut sched = Sched::new(0, Some(net.clone()));
     let hosts = vec![
-        P2p::new(on_lan(&net, "a", "10.0.0.1", "home")),
-        P2p::new(on_lan(&net, "b", "10.0.0.2", "home")),
-        P2p::new(on_lan(&net, "c", "10.9.0.3", "away")),
+        node(on_lan(&net, "a", "10.0.0.1", "home")),
+        node(on_lan(&net, "b", "10.0.0.2", "home")),
+        node(on_lan(&net, "c", "10.9.0.3", "away")),
     ];
     let mut ds = start(&mut sched, hosts).into_iter();
     let (da, db, dc) = (ds.next().unwrap(), ds.next().unwrap(), ds.next().unwrap());
@@ -103,7 +108,7 @@ fn joins_are_dialed_once_per_key() {
 fn lan_connection_ranks_zero_at_both_ends() {
     let net = Net::new(1);
     let mut sched = Sched::new(1, Some(net.clone()));
-    let (a, b) = (P2p::new(on_lan(&net, "a", "10.0.0.1", "home")), P2p::new(on_lan(&net, "b", "10.0.0.2", "home")));
+    let (a, b) = (node(on_lan(&net, "a", "10.0.0.1", "home")), node(on_lan(&net, "b", "10.0.0.2", "home")));
     let mut ds = start(&mut sched, vec![a.clone(), b.clone()]).into_iter();
     let (da, db) = (ds.next().unwrap(), ds.next().unwrap());
     let (da, ea) = drain(&mut sched, da);
@@ -124,4 +129,73 @@ fn lan_connection_ranks_zero_at_both_ends() {
     let served: Vec<_> = eb.iter().filter_map(|f| if let Found::Conn(c) = f { Some(c.rank()) } else { None }).collect();
     assert_eq!(served, vec![RANK_LAN], "the LAN listener's connection, handed up");
     drop((da, db));
+}
+
+// spec/sync-transport.md §1 (route rank), §4: an announcement of a key that is not a LAN
+// listener's (a node announcing its dialable key at its dialable listener) cannot make a rank 0
+// connection: the dialer ranks it 1, as the listener does.
+#[test]
+fn an_announced_dialable_key_ranks_one_at_both_ends() {
+    let net = Net::new(2);
+    let mut sched = Sched::new(2, Some(net.clone()));
+    let bu = on_lan(&net, "b", "10.0.0.2", "home");
+    let (a, b) = (node(on_lan(&net, "a", "10.0.0.1", "home")), node(bu.clone()));
+    let mut ds = start(&mut sched, vec![a.clone()]).into_iter();
+    let da = ds.next().unwrap();
+    let (b2, l2) = (b, bu);
+    let mut l = sched
+        .block_on(async move {
+            let l = b2.listen(ListenConfig { url: "peer://10.0.0.2:7000".into(), secret: StaticSecret::from_bytes([5; 32]) }).await.unwrap();
+            let sock = osis_transport::p2p::Udp::lan(&l2, 0).await.unwrap();
+            sock.announce(&lan::Announce { key: l.address().key, port: 7000 }, broadcast(PORT)).await.unwrap();
+            l
+        })
+        .unwrap();
+    let (da, ea) = drain(&mut sched, da);
+    let to_b = dials(&ea);
+    assert_eq!(to_b.len(), 1, "{to_b:?}");
+    assert_eq!(to_b[0].url, "peer://10.0.0.2:7000");
+    let (c, s) = sched
+        .block_on(async move {
+            let c = a.dial(&to_b[0]).await.unwrap();
+            let s = l.accept().await.unwrap();
+            (c.rank(), s.rank())
+        })
+        .unwrap();
+    assert_eq!((c, s), (RANK_DIRECT, RANK_DIRECT));
+    drop(da);
+}
+
+// spec/sync-transport.md §4 (dialing), spec/requirements.md (no unbounded work from peer input):
+// a flood of announcements of distinct keys is handed up paced, and what a join remembers stays
+// within `LanConfig::recent` however many keys come; a repeat within that span is not handed
+// up again.
+#[test]
+fn a_flood_of_keys_is_bounded() {
+    let c = cfg();
+    let cap = c.recent();
+    assert_eq!(cap, (c.repeats as usize + 1) * (c.gap_ms / c.pace_ms) as usize + 1);
+    let mut j = lan::Joined::new(Some([0; 32]), cap);
+    let from: std::net::SocketAddr = "10.0.0.5:47380".parse().unwrap();
+    let key = |i: u32| {
+        let mut k = [1u8; 32];
+        k[..4].copy_from_slice(&i.to_be_bytes());
+        k
+    };
+    for i in 0..u32::try_from(cap).unwrap() {
+        assert!(j.heard(&lan::Announce { key: key(i), port: 9 }, from).is_some());
+    }
+    // every one of the last `cap` is still known
+    for i in 0..u32::try_from(cap).unwrap() {
+        assert!(j.heard(&lan::Announce { key: key(i), port: 9 }, from).is_none());
+    }
+    for i in 0..u32::try_from(10 * cap).unwrap() {
+        j.heard(&lan::Announce { key: key(1_000_000 + i), port: 9 }, from);
+    }
+    // the newest `cap` are known, so it holds no more than `cap`: the one before them is forgotten
+    let n = u32::try_from(10 * cap).unwrap();
+    assert!(j.heard(&lan::Announce { key: key(1_000_000 + n - 1), port: 9 }, from).is_none());
+    assert!(j.heard(&lan::Announce { key: key(1_000_000 + n - 1 - u32::try_from(cap).unwrap()), port: 9 }, from).is_some(), "past cap, forgotten");
+    // pace 0 counts as 1 ms; nothing is repeated: one key
+    assert_eq!(LanConfig { pace_ms: 0, repeats: 0, gap_ms: 0, ..cfg() }.recent(), 1);
 }
