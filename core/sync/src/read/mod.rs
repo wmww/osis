@@ -222,9 +222,9 @@ impl Read {
                 continue;
             }
             let mut ready = false;
-            run(&mut self.steps, &s, || {
+            self.steps.try_settle(&s, || {
                 ready = g.step_ready(&s)?;
-                Ok(ready)
+                Ok::<bool, crate::types::Error>(ready)
             })?;
             if ready && g.issue_step(&s)? {
                 acted = true;
