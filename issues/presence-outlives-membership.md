@@ -4,7 +4,7 @@
 > Tags: sync, opens
 
 ## What leaks
-Presence rows (`k` per record, S, blob) go only when the peer's stream removes them, when this node stops holding S (`streams::left` with S not held: `Op::Forget`), or with the record. A peer whose member S closed (its Lost, or this node's) keeps its rows while the record keeps "where it stopped" for a rejoin. So the peer that left S, or that went away for good, keeps every commit whose entry it last showed known here (`judge::local`), keeps `later_held` true for snapshots only it showed, and holds back what reads presence. Bodies judged invalid are not affected: their headers go whatever sources show (spec/commits.md §5 Forgetting).
+Presence rows (`k` per record, S, blob) go only when the peer's stream removes them, when this node stops holding S (`streams::left` with S not held: `Op::Forget`), or with the record. A peer whose member S closed (its Lost, or this node's) keeps its rows while the record keeps "where it stopped" for a rejoin. So the peer that left S, or that went away for good, keeps every commit whose entry it last showed known here (`judge::local`), keeps `later_held` true for snapshots only it showed, and holds back what reads presence. Bodies judged invalid alike: a source's entry keeps the header known so the body is fetched there valid again (issues/invalid-junk-kept.md).
 
 "Left S" is what this node knows of the peer's membership: opens' `drop_member` (member removed from the record by a Lost either way, or by this node closing it). A connection ending keeps the record's members (`release`) and is not a leave.
 

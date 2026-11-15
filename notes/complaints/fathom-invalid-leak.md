@@ -1,3 +1,4 @@
 # fathom-invalid-leak
 - Base origin/capstan-sync-rebuild (9f28aade3) fails three osis-sync tests without this branch's change: `destruction::a_remint_wider_to_purge_keeps_the_lower_copy_spec_commits_5`, `a_remint_expiring_earlier_keeps_the_lower_copy_spec_commits_5`, `no_request_ends_a_standing_in_minting_alone_spec_commits_5` and osis-engine `order::held_set_decides` (engine index check: `role_sigs` rebuilt from commit records holds one more commit than the live index). Not in known_failures.
 - issues/invalid-junk-kept.md described the reader-header leak as a side note; the brief's part 2 (presence outliving membership) turned out to be an opens/wire redesign, split off.
+- Review: the change lost writes at a reader (a body made valid again before its author heard of the demotion, author never re-logs, reader forgot the header the refetch needs); no test covered that case, so the forgetting rule went back.

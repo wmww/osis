@@ -33,7 +33,7 @@ pub(crate) fn vanish(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
 /// again applies again and goes again by the same rule. One with a part dropped while invalid
 /// stays known (`super::kept_invalid`): a copy is not taken while it stays invalid, and valid again it
 /// is fetched (`valid_again`), the commit known until the part is back (`Missing::ToFetch`: a
-/// part to come is not spent); node-sync forgets it once it holds no entry of it (`judge::local`)
+/// part to come is not spent); node-sync forgets it once it knows no entry of it
 /// (`Engine::forgettable`, spec/sync-compaction.md §2 forgetting).
 pub(crate) fn forget_if_spent(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(()) };
