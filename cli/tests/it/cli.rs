@@ -686,7 +686,7 @@ fn clients_commands_plan_cli() {
 // only in groups no synced group holds (`NotSynced`), by `add-with-grant` (it syncs), for its
 // membership commit, before its grant gives the thing a sync ID, and by `group add` (local).
 #[test]
-#[ignore = "sync rewrite: NotSynced needs the engine facade's sync IDs, not built here (branch sync-facade)"]
+#[ignore = "issues/cli-delivering-commands.md: add-with-grant runs local, so -v prints nothing for it"]
 fn verbose_prints_diagnostics_plan_cli_4() {
     let s = S::mem();
     let group = || s.ok(&["create", "t:made.0", "true"]).line().to_string();

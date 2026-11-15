@@ -222,8 +222,8 @@ impl Reader {
         self.db.profile_of(self.db.me())
     }
 
-    /// Everything held: the app groups' members, every other group this store syncs, the
-    /// profile once made, and through tags what they hold. Racing nodes' seed views count once
+    /// Everything held: the app groups' members, every other group this store syncs (with a sync
+    /// ID or carried as a subgroup), the profile once made, and through tags what they hold. Racing nodes' seed views count once
     /// (equal `(collection.0, name.0)`, the smallest tid).
     pub fn things(&self) -> Result<Rc<BTreeSet<Tid>>> {
         self.memo(("things", ()), |r, _| r.compute_things())
@@ -239,8 +239,16 @@ impl Reader {
         for g in &groups {
             todo.extend(self.members(*g)?.iter().copied().map(Member::tid).filter(|t| !skip(t)));
         }
-        // the things this store syncs
-        todo.extend(self.db.status()?.groups.into_iter().filter(|(t, g)| !g.leaving && !skip(t)).map(|(t, _)| t));
+        // the things this store syncs: each with a sync ID here, and the subgroups at any depth
+        // of those, which a synced group carries (spec/sync-judgement.md §1)
+        let mut synced: Vec<Tid> = self.db.status()?.groups.into_iter().filter(|(_, g)| !g.leaving).map(|(t, _)| t).collect();
+        let mut carried = BTreeSet::new();
+        while let Some(g) = synced.pop() {
+            if carried.insert(g) {
+                synced.extend(self.members(g)?.iter().filter_map(|m| if let Member::Subgroup(s) = m { Some(*s) } else { None }));
+            }
+        }
+        todo.extend(carried.into_iter().filter(|t| !skip(t)));
         todo.extend(self.db.profile_of(home)?);
         while let Some(t) = todo.pop() {
             if !seen.insert(t) {
