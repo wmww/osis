@@ -1263,6 +1263,10 @@ pub struct Core {
     /// Tests: the original's floor this node's edits claim, over the true one (`commit_in`).
     #[cfg(test)]
     pub(crate) lie_floor: Option<u64>,
+    /// Tests, a fault: boxes to an account at a stale epoch (revoked, or not counting) stay shut,
+    /// as if stale meant unread (`Core::account_keys_by_name`).
+    #[cfg(test)]
+    pub(crate) stale_shut: bool,
     /// Key actors other than the node whose seed this node holds for now: they sign commits
     /// (`Mutation::sign_as`) and open their boxes. Derived: each is held exactly while
     /// `held_keys` or a followed link names it (`Engine::settle_key_actor`). In memory only.
@@ -1547,6 +1551,8 @@ impl Core {
             lie_facts: self.lie_facts.clone(),
             #[cfg(test)]
             lie_floor: self.lie_floor,
+            #[cfg(test)]
+            stale_shut: self.stale_shut,
             key_actors: self.key_actors.clone(),
             held_keys: self.held_keys.clone(),
             followed_links: self.followed_links.clone(),
@@ -2184,6 +2190,8 @@ impl Core {
             lie_facts: _,
             #[cfg(test)]
             lie_floor: _,
+            #[cfg(test)]
+            stale_shut: _,
         } = c;
     }
 
@@ -2362,6 +2370,8 @@ impl Core {
             lie_facts: None,
             #[cfg(test)]
             lie_floor: None,
+            #[cfg(test)]
+            stale_shut: false,
             key_actors: Default::default(),
             held_keys: Default::default(),
             followed_links: Default::default(),

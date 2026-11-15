@@ -768,10 +768,17 @@ impl Core {
         })
     }
 
-    /// The epoch keys of `p` held, by epoch name (spec/crypto.md §3).
+    /// The epoch keys of `p` held, by epoch name (spec/crypto.md §3): every held one, whether or
+    /// not its epoch counts, is open or is revoked (custody follows holding: stale means not
+    /// encrypted under, re-sealed or rotated from, never unread, spec/crypto.md §4 Account
+    /// keysets).
     pub(crate) fn account_keys_by_name(&self, p: &Tid) -> BTreeMap<Epoch, Arc<AccountEpochKeys>> {
         let (Some(a), Some(v)) = (self.accounts.get(p), self.account_view(p)) else { return BTreeMap::new() };
-        v.epochs.values().filter_map(|e| Some((v.name(e)?, a.keys.get(&e.signing)?.clone()))).collect()
+        #[cfg(test)]
+        let shut = |id: &CommitId, e: &EpochPublic| self.stale_shut && (*id != FIRST_EPOCH && !v.rotation_counts(id) || v.revoked(&e.signing.to_bytes()));
+        #[cfg(not(test))]
+        let shut = |_: &CommitId, _: &EpochPublic| false;
+        v.epochs.iter().filter(|(id, e)| !shut(id, e)).filter_map(|(_, e)| Some((v.name(e)?, a.keys.get(&e.signing)?.clone()))).collect()
     }
 
     /// An account's delete key (spec/crypto.md §7): the signing key of its preferred head.
