@@ -8,3 +8,4 @@ props::settled_histories_keep_their_laws_large_spec_commits_5 OSIS_HELD_START=38
 runtime::redeem_in_process_spec_permissions_7 - issues/paired-peer-runtime-flake.md Unsynced
 validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6 - issues/osis-tests-depend-on-store-rng.md one rebuild per flipped aspect\s+left: 7\s+right: 5
 rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4 OSIS_FORKS_START=916629000175 issues/account-removal-before-its-rotation.md still rotates in the last settle round
+sim-sweep:ephemeral 393591877074/393591877085 issues/sim-ephemeral-refreshed-cursor.md does not read node \d+'s refreshed cursor
