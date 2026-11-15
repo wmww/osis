@@ -175,7 +175,7 @@ fn a_sender_lists_only_past_its_first_sync_spec_permissions_4() {
     assert_eq!(snapshots(&mut w, t), before + 1, "and repaired");
 }
 
-// spec/sync-compaction.md §1 (Repair: past its first sync there; the last list a peer sent
+// spec/sync-compaction.md §1 (Repair): past its first sync there; the last list a peer sent
 // before the node's first sync ended is judged as that sync ends): node 0 mid its first sync
 // keeps node 1's list, writes nothing, and repairs as its first sync ends.
 #[test]
